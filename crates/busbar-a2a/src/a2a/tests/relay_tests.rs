@@ -390,7 +390,7 @@ async fn the_hop_is_metered_and_the_callees_own_reported_spend_is_not() {
         .gov
         .store()
         .list_metering(busbar_kernel::governance::metering_bucket(
-            busbar_substrate_values::store::now(),
+            busbar_kernel::store::now(),
         ))
         .expect("metering reads back");
     let mine: Vec<_> = rows.iter().filter(|r| r.provider == "a2a").collect();

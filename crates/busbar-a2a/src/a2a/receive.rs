@@ -377,7 +377,7 @@ pub(crate) async fn plane_rpc(ctx: busbar_kernel::plane_routes::PlaneReqCtx) -> 
         principal,
         FromCatalogue,
         wire,
-        busbar_substrate_values::transport::Transport::JsonRpc,
+        busbar_contract::transport::transport::Transport::JsonRpc,
         ctx.body,
     )
     .await
@@ -792,7 +792,7 @@ pub(crate) async fn agent_rpc(ctx: busbar_kernel::plane_routes::PlaneReqCtx) -> 
         principal,
         Named(agent_id),
         wire,
-        busbar_substrate_values::transport::Transport::JsonRpc,
+        busbar_contract::transport::transport::Transport::JsonRpc,
         ctx.body,
     )
     .await
@@ -878,8 +878,8 @@ impl busbar_kernel::plane_host::GauntletPlane for A2aInvokePlane {
 
 /// THE INBOUND CALL, EVERY ENDPOINT AND EVERY BINDING, ONE SEQUENCE.
 ///
-/// `transport` is the leg the request arrived on — [`busbar_substrate_values::transport::Transport::JsonRpc`],
-/// [`busbar_substrate_values::transport::Transport::HttpJson`] or [`busbar_substrate_values::transport::Transport::Grpc`] — and it is
+/// `transport` is the leg the request arrived on — [`busbar_contract::transport::transport::Transport::JsonRpc`],
+/// [`busbar_contract::transport::transport::Transport::HttpJson`] or [`busbar_contract::transport::transport::Transport::Grpc`] — and it is
 /// carried as a VALUE, never compared. It is read in exactly one place, the metric label at the end
 /// of this function, and the reason it has to be carried at all is a consequence the second binding
 /// made unavoidable: `plane::observe` can only name the binding a DOOR declares, and two of this
@@ -894,7 +894,7 @@ pub(super) async fn invoke(
     principal: busbar_contract::auth::AuthPrincipal,
     target: Target,
     wire: Wire,
-    transport: busbar_substrate_values::transport::Transport,
+    transport: busbar_contract::transport::transport::Transport,
     body: axum::body::Bytes,
 ) -> Response {
     let started = std::time::Instant::now();
@@ -2508,7 +2508,7 @@ fn ledger_hop_bytes(
     let Some(pin) = engine_host.meter_pin() else {
         return;
     };
-    let usage = busbar_substrate_values::billing::Usage {
+    let usage = busbar_contract::billing::Usage {
         usage_units: std::collections::BTreeMap::from([(
             busbar_plane_a2a::meta::CLASS_BYTES.as_str().to_string(),
             bytes,

@@ -25,7 +25,7 @@ use std::sync::Arc;
 
 use super::receive::{notify_push, Admitted};
 use crate::diagnostics::{A2A_OUTBOUND_CRED_UNLEASED, A2A_PUSH_REARM_FAILED};
-use busbar_substrate_values::diag_warn;
+use busbar_contract::diag_warn;
 
 /// EVERYTHING ONE BUSBAR-ORIGINATED HOP NEEDS that is neither the document nor the verb.
 ///

@@ -415,7 +415,6 @@ dependencies = [
  "busbar-plane-a2a",
  "busbar-plugin",
  "busbar-plugin-loader",
- "busbar-substrate-values",
  "bytes",
  "ed25519-dalek",
  "futures",

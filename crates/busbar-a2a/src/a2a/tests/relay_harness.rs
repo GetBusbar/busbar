@@ -754,11 +754,11 @@ async fn harness_core(
                 ..Default::default()
             },
             2_000_000_000,
-            busbar_substrate_values::store::now(),
+            busbar_kernel::store::now(),
         )
         .expect("mint");
     let generation = TokenVerifier::single(signer.kid(), signer.verifying_key())
-        .verify(plain.as_str(), busbar_substrate_values::store::now(), None)
+        .verify(plain.as_str(), busbar_kernel::store::now(), None)
         .expect("the plain token verifies")
         .generation;
     // THE GRANT. `agent:<id>` is what `inbound::authorize`, the catalogue and the EGRESS gate all

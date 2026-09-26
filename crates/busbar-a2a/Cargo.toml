@@ -37,10 +37,10 @@ path = "src/lib.rs"
 # alone (see the header). Optional rather than a dev-dependency because a feature cannot reference a
 # dev-dep-only crate.
 busbar-kernel = { path = "../busbar-kernel", default-features = false, features = ["plane-a2a"] }
-# The substrate crate: the neutral shared surface the plugin names instead of busbar-core — the
-# diagnostics macros, the config-section split, the task-reader / hostless-egress / admin-envelope
-# seams. Carries `plane-a2a` so the plane-gated items are present in this crate's own default build.
-busbar-substrate-values = { path = "../busbar-substrate-values" }
+# THE CONTRACT: the shapes this plane fills — the diagnostic shape and its three emit macros, the
+# protocol `Transport` names, `Usage`, the upstream-error signal, and the SSE line grammar the
+# plane's own `sse` reader frames on (#83a, SD-5c: busbar-substrate-values left this closure; its
+# kernel-semantics items are read through busbar-kernel above).
 busbar-contract = { path = "../busbar-contract" }
 # THE PLANE. The direction of this edge INVERTED, and that is the point of the fold: the A2A wire
 # dialect — the registry key, the config section, the mount, the gRPC service path, the eight

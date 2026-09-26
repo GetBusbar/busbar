@@ -44,7 +44,7 @@ fn planner_lane() -> String {
 /// The `bytes` the caller's group bucket holds on the `planner` lane, or `None` when no row exists.
 fn bytes_ledgered(h: &Harness) -> Option<u64> {
     h.gov.flush_budgets();
-    let now = busbar_substrate_values::store::now();
+    let now = busbar_kernel::store::now();
     let window = budget_window("day", now);
     let ledger = h.gov.store().get_usage("group:g@day", window).ok()?;
     let lane = planner_lane();
@@ -67,7 +67,7 @@ fn group_spend(h: &Harness) -> Result<i64, String> {
             "group:g@day",
             "day",
             true,
-            busbar_substrate_values::store::now(),
+            busbar_kernel::store::now(),
         )
         .map(|u| u.spend_cents)
 }
@@ -318,7 +318,7 @@ async fn agents_fees_per_request_boots_and_charges_and_per_session_refuses() {
     let groups = [("g".to_string(), group)].into();
     let cost = CostModel::resolve_parts(None, 0, &groups).with_plane_fees(&root.plane_fees);
     let priced: std::sync::Arc<dyn CostKit> = std::sync::Arc::new(cost);
-    let now = busbar_substrate_values::store::now();
+    let now = busbar_kernel::store::now();
     let read = h
         .gov
         .derived_bucket_usage(&*priced, "group:g@day", "day", true, now)

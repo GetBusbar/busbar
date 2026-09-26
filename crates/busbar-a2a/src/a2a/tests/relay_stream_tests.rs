@@ -822,7 +822,7 @@ async fn a_streamed_artifact_advances_the_durable_resume_cursor() {
 /// latch this process is on.
 #[test]
 fn a_resume_cursor_the_store_refuses_is_surfaced() {
-    use busbar_substrate_values::testkit::warn_capture::WarnCapture;
+    use busbar_kernel::test_support::warn_capture::WarnCapture;
     use tracing_subscriber::layer::SubscriberExt as _;
 
     let cap = WarnCapture::capturing_debug();

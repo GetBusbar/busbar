@@ -43,6 +43,10 @@ pub mod taskstore;
 /// it always did.
 pub mod diagnostics;
 
+/// THE RELAY'S SSE FRAME READER — the plane's own dialect machinery (#83a, SD-5c): bytes in, whole
+/// events out, for the relay's streaming legs, with the one coded diagnostic it prints.
+pub(crate) mod sse;
+
 /// THE DURABLE RECORD VOCABULARY. The row STRUCTS are this crate's: they name the store seam, which a pure kind may not. Their two KIND strings are the plane's schema ids and are read from there.
 ///
 /// The task and task-event row shapes moved to the pure half of this plugin — split out so
@@ -74,7 +78,7 @@ pub mod testkit;
 pub use a2a::{PLANE_DECLARATION, PLANE_HOOKS};
 
 /// A2A'S PLANE-CONTRIBUTED DIAGNOSTICS — the `&'static [&'static Diagnostic]` the composition root
-/// hands to `busbar_substrate_values::diagnostics::install_diagnostics` at boot, re-exported at the crate
+/// hands to `busbar_kernel::diagnostics::install_diagnostics` at boot, re-exported at the crate
 /// root so the `busbar` binary names one stable path (`busbar_a2a::DIAGNOSTICS`). See [`diagnostics`].
 pub use diagnostics::DIAGNOSTICS;
 

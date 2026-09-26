@@ -32,7 +32,7 @@ async fn a2a_rows(h: &Harness) -> Vec<busbar_contract::records::MeteringRow> {
     h.gov
         .store()
         .list_metering(busbar_kernel::governance::metering_bucket(
-            busbar_substrate_values::store::now(),
+            busbar_kernel::store::now(),
         ))
         .expect("metering reads back")
         .into_iter()
