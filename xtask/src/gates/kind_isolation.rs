@@ -68,7 +68,7 @@
 //! The owner's scheme (2026-09-07) is `busbar-<kind>-<name>`: SEGMENT TWO IS THE KIND. The tree is
 //! not renamed yet, so the kinds whose crates predate it — `busbar-caps`, `busbar-kernel`,
 //! `busbar-contract`, `busbar-grammar`, `busbar-timing`,
-//! `busbar-api`, the `*-codec` halves and the `busbar-plugin-*` tooling — reach their kind through
+//! the `*-codec` halves and the `busbar-plugin-*` tooling — reach their kind through
 //! the EXPLICIT TABLE below rather than through segment two. That table is the whole of the
 //! exception: a name that is neither in it nor `busbar-<kind>-…` for a kind IN it is refused, in
 //! the owner's own words. Nothing is grandfathered by silence, and a FIVE-segment name is refused
@@ -343,11 +343,8 @@ static KINDS: &[KindDef] = &[
         family: Family::Neutral,
         matchers: &["=busbar-substrate", "=busbar-substrate-values"],
     },
-    KindDef {
-        kind: "api",
-        family: Family::Neutral,
-        matchers: &["=busbar-api"],
-    },
+    // There is no `api` kind: `busbar-api` retired in fold F4 (7cbf9b133) — its last pieces went to
+    // the homes their definitions name — so the row matched no crate and scored `dead-kind`.
     KindDef {
         kind: "timing",
         family: Family::Neutral,
@@ -443,7 +440,6 @@ const PENDING_EDGES: &[(&str, &str)] = &[
     //
     // `(core, caps)` and `(core, grammar)` are struck: neither `caps` nor `grammar` is a kind (both
     // crates folded into `busbar-contract`, W2.c and #40), so they granted nothing (`dead-grant`).
-    ("core", "api"),
     ("core", "contract"),
     ("core", "kernel"),
     ("core", "substrate"),
@@ -557,35 +553,9 @@ const ACCEPTED_NAMES: &[(&str, &str)] = &[(
 /// [`PENDING_EDGES`] joins it: those are classes the DESIGN grants ahead of the tree, which is the
 /// same kind of statement made about a crate that does not exist yet.
 const ARCHITECTURE_ALLOWED: &[(&str, &str)] = &[
-    // `busbar-api` REACHES THE CONTRACT FACE, and that is the #84 fix rather than a widening.
-    //
-    // Every plugin in the tree names `busbar-api`, so whatever `busbar-api` names is in every
-    // third-party plugin's compile closure. What it named was `busbar-kernel-ledger` — THE MONEY
-    // ONE-BOOK — for one re-export shim and nothing else, so a store plugin transitively linked
-    // settlement and a ledger type change forced every third-party plugin to rebuild. DECISIONS #84
-    // (owner-locked 2026-09-22) calls that "the nightmare" by name and rules that nothing on the
-    // plugin path may link a crate holding SEMANTICS; DECISIONS #83 draws the seam the record
-    // shapes move along (contract = SHAPES, ledger = SEMANTICS).
-    //
-    // So this grant REPLACES a `not-allowed` row (`busbar-api -> busbar-kernel-ledger`, struck in
-    // qa/kind-isolation.toml in the same commit) with the class every other kind already has:
-    // `kernel`, `legacy`, `plane`, `store`, `substrate`, `transport`, `unit`, `cleanliness` and
-    // `root` are all granted `-> contract` below, on ARCHITECTURE.md 1.2's own words that
-    // busbar-contract "is the face every kind is written against". `api` was absent from that list
-    // only because `busbar-api` had never named the contract — not because the architecture said it
-    // may not.
-    //
-    // THIS GRANT IS TRANSITIONAL, AND SAYING SO IS THE POINT OF THIS PARAGRAPH. #84's end state is
-    // that `busbar-contract` and the plugin-facing half of `busbar-api` MERGE — "`busbar-plugin`'s
-    // ABI declarations and the plugin-facing half of `busbar-api` fold INTO it" — so `busbar-api`
-    // CEASES TO EXIST (#35/W5.b) and the `api` kind loses its only member. The edge then disappears
-    // with the crate rather than being drained: there is no `api` left to name anything. Struck at
-    // that point, not kept.
-    //
-    // Written out because an `allowed` row reads as permanent, and an unexplained row risks being
-    // preserved out of caution during a future audit of this table. It is here because a crate is
-    // on its way out, and it goes when the crate does.
-    ("api", "contract"),
+    // `(api, contract)` WAS HERE, a transitional grant for `busbar-api`'s re-export of the record
+    // SHAPES (#83/#84). #84's end state retired the crate (fold F4, 7cbf9b133), the `api` kind lost
+    // its only member, and the grant went with it, as its own paragraph said it would.
     // THE #40 WALL, GRANTED FOR ALL SEVEN PLUGIN KINDS AT ONCE. DECISIONS #40(a), OWNER-LOCKED:
     // "a plugin crate's entire workspace dependency closure = `busbar-contract` and nothing else".
     // So a plugin-kind crate's edge to the contract is not a coupling this gate ratchets: it is the
@@ -643,7 +613,6 @@ const ARCHITECTURE_ALLOWED: &[(&str, &str)] = &[
     // tree that does not exist. `the_root_is_granted_every_plugin_kind_it_links` measures the
     // root's shipped edges and refuses a plugin kind the root links without a grant here. The
     // grant is the ROOT's: a non-root crate reaching a plugin crate is still refused (selftest).
-    ("root", "api"),
     ("root", "cleanliness"),
     ("root", "contract"),
     ("root", "export"),
@@ -712,7 +681,6 @@ pub(super) fn is_the_wall(from: &str, to: &str) -> bool {
 /// written down instance by instance, and the ship twin still refuses them: a tag's criterion is
 /// the architecture's own graph, and the TCB is a hole in that graph rather than a clause of it.
 const ARCHITECTURE_TCB: &[(&str, &str)] = &[
-    ("plugin-tooling", "api"),
     // The loader's store adapter names the folded capability vocabulary at its new home in
     // `busbar-contract` (formerly `busbar-caps`, W2.c).
     ("plugin-tooling", "contract"),
@@ -6198,7 +6166,7 @@ impl Gate for KindIsolationGate {
                 "a negative `[[cell]]` count is refused at load — it is not a ceiling, it is the \
                  absence of one",
                 &[ROW_DEPS],
-                matrix::cell_subst(cx, "busbar", "api", "-1"),
+                matrix::cell_subst(cx, "busbar", "contract", "-1"),
                 &[
                     "bad-count",
                     "is negative",
@@ -6349,7 +6317,7 @@ impl Gate for KindIsolationGate {
             // unlisted `[[dep]]`, `[[cell]]` and `[[edge]]` the day `busbar-hooks-ranking` was
             // repointed at the contract, for doing exactly what the wall asks. GREEN on the shipped
             // graph, the test graph and the vocabulary matrix alike, with a source file that names
-            // the contract the way every plugin does. And the same crate reaching `busbar-api` is
+            // the contract the way every plugin does. And the same crate reaching `busbar-plugin` is
             // RED: the wall is one crate wide, not "the contract plus whatever else".
             report.push(prove_rows_green(
                 cx,
@@ -9405,18 +9373,13 @@ mod plant_tests {
                 verdict_for(&(k.to_string(), CONTRACT_KIND.to_string())),
                 "allowed"
             );
-            assert!(!is_the_wall(k, "api"), "{k} -> api is past the wall");
+            assert!(
+                !is_the_wall(k, "plugin-abi"),
+                "{k} -> plugin-abi is past the wall"
+            );
             assert!(!is_the_wall(k, "kernel"), "{k} -> kernel is past the wall");
         }
-        for neutral in [
-            "kernel",
-            "core",
-            "api",
-            "root",
-            "unit",
-            "legacy",
-            "plugin-tooling",
-        ] {
+        for neutral in ["kernel", "core", "root", "unit", "legacy", "plugin-tooling"] {
             assert!(
                 !is_the_wall(neutral, CONTRACT_KIND),
                 "`{neutral}` is not a plugin kind; its contract edge is an ordinary ledger row"
@@ -9426,7 +9389,7 @@ mod plant_tests {
 
     /// Asked of the rule directly, finding by finding, so no standing debt on the real tree can
     /// answer it: the planted crate on the wall draws NO finding on either half of the graph, and
-    /// the same crate reaching busbar-api draws one that names the api edge.
+    /// the same crate reaching busbar-plugin draws one that names the plugin-abi edge.
     #[test]
     fn a_plugin_crate_on_the_wall_draws_no_finding_and_one_past_it_is_red() {
         let green = the_wall_plant(&[]);

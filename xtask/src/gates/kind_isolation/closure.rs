@@ -308,7 +308,7 @@ fn banned_set(name: &str) -> &'static str {
         Some("secret") => "a secret implementation",
         Some(k) if PLUGIN_KINDS.contains(&k) => "another plugin",
         Some(k) => match k {
-            "api" | "plugin-abi" | "plugin-tooling" | "substrate" | "timing" | "codec" | "unit" => {
+            "plugin-abi" | "plugin-tooling" | "substrate" | "timing" | "codec" | "unit" => {
                 "not `busbar-contract`"
             }
             _ => "not `busbar-contract`",
@@ -748,7 +748,7 @@ mod tests {
             "a secret implementation"
         );
         assert_eq!(banned_set("busbar-transport-tcp"), "another plugin");
-        assert_eq!(banned_set("busbar-api"), "not `busbar-contract`");
+        assert_eq!(banned_set("busbar-plugin"), "not `busbar-contract`");
     }
 
     /// NO PLUGIN KIND IS GRANTED AN EDGE TO ITSELF, in any of the three class tables. The rule
