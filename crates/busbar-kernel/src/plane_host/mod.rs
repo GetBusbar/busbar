@@ -85,11 +85,12 @@ pub struct HostState<'a> {
     /// slots that REQUIRE an attributable emitter refuse a `None`. Use
     /// [`with_borrowed_host_as`] to mint a handle that carries one.
     pub emitter: Option<&'static str>,
-    /// WHOSE request a plane's dispatch runs for (DEC-SERVE G1, DECISIONS #65/#40): the caller the
-    /// auth middleware resolved, stamped by the minter from that context — never a word the plane
-    /// wrote. `Some` on every PLANE mint ([`with_plane_door`], [`with_borrowed_host_as`]), and then
-    /// `meter_charge` bills THIS caller and ignores any key id in the plane's `Usage` tail; `None`
-    /// only on the host's own mints, where the kernel composed the `Usage` itself.
+    /// WHOSE request this dispatch runs for (DEC-SERVE G1/G1b, DECISIONS #65/#40): the caller the auth
+    /// middleware resolved, stamped by the minter from that context — never a word the plane wrote.
+    /// THE ONE ATTRIBUTION RULE: `govern_admit`/`govern_admit_reason` admit, and `meter_charge`
+    /// bills, THIS caller; the identity words of a `Facts`/`Usage` tail are never read. `None` (an
+    /// open route, or a mint with no request behind it) admits and bills the named synthetic keys
+    /// (`govern::SYNTH_TENANT_KEY`, `govern::SYNTH_ADMISSION_KEY`).
     caller: Option<HostCaller>,
     /// The operator's destinations for the plane this handle was minted for (DEC-SERVE G3): the only
     /// source of the privilege scope the `egress_open` slot judges a hop against. `None` ⇒ scope `0`.
@@ -99,14 +100,18 @@ pub struct HostState<'a> {
 /// The middleware-resolved caller behind a plane mint (DEC-SERVE G1): an OPAQUE, kernel-only handle.
 /// It has no public constructor — the only way one comes to exist is [`with_plane_door`] lifting it
 /// off the auth context the middleware attached — so neither a plane nor a crate outside the kernel
-/// can hand the host a caller of its choosing (#65). `None` inside: an unauthenticated route, which
-/// bills the synthetic admission-derived attribution, never the plane's tail.
-pub(crate) struct HostCaller(Option<Arc<busbar_contract::records::VirtualKey>>);
+/// can hand the host a caller of its choosing (#65).
+pub(crate) struct HostCaller(Arc<busbar_contract::records::VirtualKey>);
 
 impl HostCaller {
-    /// The resolved key this dispatch is billed to, if the request carried one.
-    pub(crate) fn key(&self) -> Option<&busbar_contract::records::VirtualKey> {
-        self.0.as_deref()
+    /// Lift the caller off the middleware-resolved request context (`None`: no key resolved).
+    fn of(ctx: Option<&busbar_contract::records::PlaneRequestCtx>) -> Option<Self> {
+        ctx.and_then(|g| g.key.clone()).map(HostCaller)
+    }
+
+    /// The resolved key this dispatch is admitted and billed as.
+    pub(crate) fn key(&self) -> &busbar_contract::records::VirtualKey {
+        &self.0
     }
 }
 
@@ -195,16 +200,15 @@ pub fn with_borrowed_host<R>(
 /// attribution unforgeable rather than merely present.
 ///
 /// The mint a plane dispatched over the C ABI rides: every host call the plane makes back during the
-/// dispatch is recovered, and attributed, as that plane's. It resolves no caller, so its metering
-/// bills the synthetic admission key, never the plane's tail — [`with_plane_door`] carries one.
+/// dispatch is recovered, and attributed, as that plane's. It carries no caller, so it admits and
+/// bills the named synthetic keys (see `HostState::caller`) — [`with_plane_door`] carries one.
 pub fn with_borrowed_host_as<R>(
     plane: &'static str,
     app: &App,
     scope: &DispatchScope,
     f: impl FnOnce(HostCtx, &PlaneHostVtable) -> R,
 ) -> R {
-    let caller = Some(HostCaller(None));
-    mint(Some(plane), caller, None, app, scope, f)
+    mint(Some(plane), None, None, app, scope, f)
 }
 
 /// THE HOT DOOR'S MINT (DEC-SERVE G1 + G3): [`with_borrowed_host_as`], plus the two facts only the
@@ -220,8 +224,14 @@ pub fn with_plane_door<R>(
     scope: &DispatchScope,
     f: impl FnOnce(HostCtx, &PlaneHostVtable) -> R,
 ) -> R {
-    let caller = HostCaller(caller.and_then(|g| g.key.clone()));
-    mint(Some(plane), Some(caller), Some(destinations), app, scope, f)
+    mint(
+        Some(plane),
+        HostCaller::of(caller),
+        Some(destinations),
+        app,
+        scope,
+        f,
+    )
 }
 
 /// THE ONE MINT: run `f` with a [`HostCtx`] over a [`HostState`] of `app` + `scope` (attributed to
@@ -289,31 +299,37 @@ pub fn card_sign_over(app: &App, signing_input: &[u8]) -> Option<[u8; 64]> {
 /// Admit one unit of work over the host [`govern_admit_reason`](vtable) seam, REGISTERING the RAII
 /// grant in `scope`'s arena on success and returning the RENDERED refusal reason on a blocked limit —
 /// a SAFE wrapper that keeps the `#[repr(C)]` [`GovRefusal`](busbar_plugin::hot::GovRefusal) out-param
-/// read inside this audited module (busbar-core denies `unsafe` everywhere else). The `Facts` carry the
-/// caller's REAL `(identity_id, group)` and `tokens = budget_remaining = 0`, so the POD gate is a no-op
-/// and the reconstructed chain is the sole decider — identical to the in-place `try_admit`.
+/// read inside this audited module (busbar-core denies `unsafe` everywhere else). The mint carries
+/// `caller` — the middleware-resolved request context (DEC-SERVE G1b) — and the host admits THAT key's
+/// chain; `tokens = budget_remaining = 0`, so the POD gate is a no-op and the chain is the sole
+/// decider — identical to the in-place `try_admit(cost, key, pool)`.
 #[must_use]
 pub fn govern_admit_reason_over(
     app: &App,
     scope: &DispatchScope,
+    caller: &busbar_contract::records::PlaneRequestCtx,
     pool: &[u8],
-    identity_id: &[u8],
-    group: Option<&[u8]>,
 ) -> GovAdmit {
     let mut reason_buf = [0u8; 512];
     let mut out = core::mem::MaybeUninit::<busbar_plugin::hot::GovRefusal>::uninit();
-    let decision = with_borrowed_host(app, scope, |hctx, vt| {
-        let facts =
-            busbar_plugin::hot::Facts::with_attribution(0, 0, 0, 0, 0, pool, identity_id, group);
-        (vt.govern_admit_reason
-            .expect("govern_admit_reason is a wired slot"))(
-            hctx,
-            &*facts as *const busbar_plugin::hot::Facts,
-            reason_buf.as_mut_ptr(),
-            reason_buf.len(),
-            std::ptr::from_mut(&mut out),
-        )
-    });
+    let decision = mint(
+        None,
+        HostCaller::of(Some(caller)),
+        None,
+        app,
+        scope,
+        |hctx, vt| {
+            let facts = busbar_plugin::hot::Facts::new(0, 0, 0, 0, 0, pool);
+            (vt.govern_admit_reason
+                .expect("govern_admit_reason is a wired slot"))(
+                hctx,
+                &*facts as *const busbar_plugin::hot::Facts,
+                reason_buf.as_mut_ptr(),
+                reason_buf.len(),
+                std::ptr::from_mut(&mut out),
+            )
+        },
+    );
     if decision == busbar_plugin::hot::Decision::Admit {
         return GovAdmit::Admitted;
     }
@@ -875,11 +891,17 @@ impl busbar_kernel::plane_host::BudgetHost for EngineHostImpl {
         self.app.governance.is_some()
     }
 
-    fn meter_charge(&self, scope: &DispatchScope, usage: &busbar_plugin::hot::Usage) {
-        // SAME dispatch as the in-place `with_borrowed_host` meter the plane's round-charge drove: mint
-        // the transient `HostCtx` over the caller's arena, fire the `meter_charge` slot, and drop the
-        // host pointer without letting it escape. Fire-and-forget, exactly as the direct call was.
-        with_borrowed_host(&self.app, scope, |host, vt| {
+    fn meter_charge(
+        &self,
+        scope: &DispatchScope,
+        caller: &busbar_contract::records::PlaneRequestCtx,
+        usage: &busbar_plugin::hot::Usage,
+    ) {
+        // Mint the transient `HostCtx` over the caller's arena CARRYING the middleware-resolved
+        // `caller` (DEC-SERVE G1b — the host bills that key, never the `Usage` tail's), fire the
+        // `meter_charge` slot, and drop the host pointer without letting it escape. Fire-and-forget.
+        let caller = HostCaller::of(Some(caller));
+        mint(None, caller, None, &self.app, scope, |host, vt| {
             let _ = (vt.meter_charge.expect("meter_charge is a wired slot"))(
                 host,
                 usage as *const busbar_plugin::hot::Usage,
@@ -1129,11 +1151,10 @@ impl busbar_kernel::plane_host::AdmissionHost for EngineHostImpl {
     fn govern_admit_reason(
         &self,
         scope: &DispatchScope,
+        caller: &busbar_contract::records::PlaneRequestCtx,
         pool: &[u8],
-        identity_id: &[u8],
-        group: Option<&[u8]>,
     ) -> busbar_kernel::plane_host::GovAdmit {
-        govern_admit_reason_over(&self.app, scope, pool, identity_id, group)
+        govern_admit_reason_over(&self.app, scope, caller, pool)
     }
 
     fn destination_guard(
@@ -2913,12 +2934,17 @@ pub trait BudgetHost: Send + Sync {
     /// `busbar_kernel::state::App::governance.is_some()`.
     fn governance_enabled(&self) -> bool;
 
-    /// Record ONE metered, attributed event through the host `meter_charge` seam over `scope`'s arena.
-    /// `usage` carries the resolved `(key_id, model, provider)` attribution the host writes the cost row
-    /// from; the transient `HostCtx` is minted over `scope` and consumed SYNCHRONOUSLY inside the call.
-    /// Fire-and-forget: a store miss is not surfaced, exactly as the plane's in-place `record_metering`
-    /// was. Identical to driving the `meter_charge` vtable slot under a `with_borrowed_host` over `scope`.
-    fn meter_charge(&self, scope: &DispatchScope, usage: &busbar_plugin::hot::Usage);
+    /// Record ONE metered, attributed event through the host `meter_charge` seam over `scope`'s arena,
+    /// billed to `caller` — the request's middleware-resolved context, carried INTO the mint (DEC-SERVE
+    /// G1b); `usage` supplies the counts and the `(model, provider)` words, never the key. The
+    /// transient `HostCtx` is minted over `scope` and consumed SYNCHRONOUSLY inside the call.
+    /// Fire-and-forget: a store miss is not surfaced, exactly as the in-place `record_metering` was.
+    fn meter_charge(
+        &self,
+        scope: &DispatchScope,
+        caller: &PlaneRequestCtx,
+        usage: &busbar_plugin::hot::Usage,
+    );
 
     /// The per-caller RATE HEADROOM (min fraction of remaining request/token budget across the key's
     /// chain, `None` when unconstrained) — the host-driven form of
@@ -3130,15 +3156,15 @@ pub trait AdmissionHost: Send + Sync {
         session_id: Option<&str>,
     ) -> TransformVerdict;
 
-    /// Admit one unit of work over the host `govern_admit_reason` seam, REGISTERING the RAII grant in
-    /// `scope`'s arena on success and returning the RENDERED refusal reason on a blocked limit.
+    /// Admit one unit of work for `caller` (the request's middleware-resolved context, DEC-SERVE G1b)
+    /// over the host `govern_admit_reason` seam, REGISTERING the RAII grant in `scope`'s arena on
+    /// success and returning the RENDERED refusal reason on a blocked limit.
     /// Identical to `busbar_kernel::plane_host::govern_admit_reason_over`.
     fn govern_admit_reason(
         &self,
         scope: &DispatchScope,
+        caller: &PlaneRequestCtx,
         pool: &[u8],
-        identity_id: &[u8],
-        group: Option<&[u8]>,
     ) -> GovAdmit;
 
     /// STAGE 2 pre-admission DESTINATION guard through the host: the pool ACL, the fallback-pool ACL,

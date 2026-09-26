@@ -2591,8 +2591,8 @@ fn charge_round(
     // ADMIT through the host `govern_admit_reason` seam (CLUSTER-4). The grant `try_admit` yields is
     // registered in `scope`'s dispatch arena (the request-wide arena the breaker admission already
     // rides, threaded through `Ctx::scope`), so it releases exactly when that arena reclaims — the
-    // lifetime the caller-held `Vec<AdmitGrant>` had. The `Facts` carry this caller's REAL
-    // `(key.id, key.group)`, so the host reconstructs the SAME enforcement chain
+    // lifetime the caller-held `Vec<AdmitGrant>` had. The mint carries this request's resolved
+    // `ctx.gov` (DEC-SERVE G1b), so the host admits the SAME enforcement chain
     // `try_admit(&ctx.app.cost, key, namespaced)` walks (`namespaced` is the pool); `tokens`/
     // `budget_remaining` are 0 so the POD gate is a no-op and the chain is the sole decider. On a
     // BLOCKED limit the host renders the SAME `format!("{blocked:?}")` bytes the in-place
@@ -2601,20 +2601,17 @@ fn charge_round(
     // to the MCP plane — `tools.fees`, never the pools plane's fee (#47) — and reads the pool
     // predicate off the unqualified tool.
     let pool = plane_qualified(namespaced);
-    if let busbar_kernel::plane_host::GovAdmit::Blocked { reason, .. } =
-        ctx.host.govern_admit_reason(
-            scope,
-            pool.as_bytes(),
-            key.id.as_bytes(),
-            key.group.as_deref().map(str::as_bytes),
-        )
+    if let busbar_kernel::plane_host::GovAdmit::Blocked { reason, .. } = ctx
+        .host
+        .govern_admit_reason(scope, ctx.gov, pool.as_bytes())
     {
         // Byte-identical to the in-place `Err(format!("{blocked:?}"))` the flip replaced.
         return Err(reason);
     }
     // ONE METERED, ATTRIBUTED EVENT PER ROUND, through the host `meter_charge` seam (CLUSTER-4). A
-    // pure request meter with no token split (component `Queries` → `None`), so the recorded
-    // `(key_id, model, provider)` row is byte-identical to the in-place
+    // pure request meter with no token split (component `Queries` → `None`), billed to `ctx.gov`'s
+    // key (carried into the mint, G1b), so the recorded `(key_id, model, provider)` row is
+    // byte-identical to the in-place
     // `record_metering(&key.id, namespaced, Plane::Mcp.key(), None, ..)`: `model` carries the
     // namespaced tool and `provider` the plane, so an existing cost dashboard groups MCP traffic
     // without knowing what MCP is. Fire-and-forget, exactly as the direct call was.
@@ -2627,7 +2624,7 @@ fn charge_round(
         namespaced.as_bytes(),
         "mcp".as_bytes(),
     );
-    ctx.host.meter_charge(scope, &usage);
+    ctx.host.meter_charge(scope, ctx.gov, &usage);
     tracing::debug!(
         capability = %namespaced,
         round = rec.round,

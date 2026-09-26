@@ -539,7 +539,13 @@ impl BudgetHost for FixtureHost {
     fn governance_enabled(&self) -> bool {
         self.governed
     }
-    fn meter_charge(&self, _scope: &DispatchScope, _usage: &busbar_plugin::hot::Usage) {}
+    fn meter_charge(
+        &self,
+        _scope: &DispatchScope,
+        _caller: &PlaneRequestCtx,
+        _usage: &busbar_plugin::hot::Usage,
+    ) {
+    }
     fn rate_headroom(
         &self,
         _pin: &MeterPin,
@@ -716,9 +722,8 @@ impl AdmissionHost for FixtureHost {
     fn govern_admit_reason(
         &self,
         _scope: &DispatchScope,
+        _caller: &PlaneRequestCtx,
         _pool: &[u8],
-        _identity_id: &[u8],
-        _group: Option<&[u8]>,
     ) -> GovAdmit {
         GovAdmit::Admitted
     }
