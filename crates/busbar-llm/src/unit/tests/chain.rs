@@ -271,7 +271,6 @@ async fn rig_inner(fixture: Fixture, billed: bool) -> Rig {
 
     let store = crate::test_support::engine_kit::CORE_ENGINE_KIT.scratch_store();
     if let Some(requests) = fixture.seeded_group_requests() {
-        use busbar_api::Store as _;
         store
             .put_usage(
                 &format!("group:{group}@total"),
