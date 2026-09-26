@@ -4721,6 +4721,37 @@ fn rule_control(cx: &Ctx, crates: &[CrateInfo]) -> Row {
 /// an entry HERE, in a commit that says why.
 const WIRE_PERMITTED_KINDS: &[&str] = &["root", "transport"];
 
+/// THE ONE TEST EDGE A NON-WIRE CRATE MAY TAKE ON A WIRE: the loader's both-ways witness of the
+/// transport kind (ARCHITECT (K8 residue): both-ways fixture dev-edge, #2 (4)/(5), K5 precedent; #3
+/// makes transport a swappable kind like any other). A `plugin-tooling` crate's `[dev-dependencies]`
+/// edge to EXACTLY the crate its own `[package.metadata.busbar.both-ways]` names for kind `transport`
+/// is the fixture both doors of that witness load — the linked rlib and the dropped-in cdylib — and
+/// not a plugin choosing its wire. Nothing else is excused: a NORMAL edge, a dev-edge to any other
+/// wire, or a crate of any other kind is the finding it always was.
+const WIRE_FIXTURE_KIND: &str = "plugin-tooling";
+
+/// The crate a manifest's `[package.metadata.busbar.both-ways]` table names for kind `transport`,
+/// read line by line exactly as the loader's own `build.rs` reads that table.
+fn both_ways_transport_fixture(manifest: &str) -> Option<String> {
+    let mut in_table = false;
+    for line in manifest.lines() {
+        let code = line.split('#').next().unwrap_or("").trim();
+        if code.starts_with('[') {
+            in_table = code == "[package.metadata.busbar.both-ways]";
+            continue;
+        }
+        if !in_table {
+            continue;
+        }
+        if let Some((kind, krate)) = code.split_once('=') {
+            if kind.trim().trim_matches('"') == "transport" {
+                return Some(krate.trim().trim_matches('"').to_string());
+            }
+        }
+    }
+    None
+}
+
 /// The registration symbol a wire is composed under: `busbar-transport-http` -> `HttpTransport`.
 fn wire_symbol(instance: &str) -> String {
     let mut out = String::new();
@@ -4839,7 +4870,17 @@ fn rule_wires(cx: &Ctx, crates: &[CrateInfo]) -> Row {
         // binary picks a wire is a plugin whose author has already decided which wire it is for —
         // the shape reaches production one refactor later, and the row that would have said so was
         // reading one of the two dependency tables.
-        for dep in c.deps.iter().chain(c.dev_deps.iter()) {
+        // The both-ways witness's fixture, when this crate is plugin tooling that declares one.
+        let fixture = (kind == WIRE_FIXTURE_KIND)
+            .then(|| cx.read(&c.manifest).ok())
+            .flatten()
+            .and_then(|m| both_ways_transport_fixture(&m));
+        let witness = |dep: &crate::manifest::DepDecl| fixture.as_deref() == Some(dep.pkg.as_str());
+        for dep in c
+            .deps
+            .iter()
+            .chain(c.dev_deps.iter().filter(|d| !witness(d)))
+        {
             if by_name.get(dep.pkg.as_str()).and_then(|t| t.kind) == Some("transport") {
                 let dep = dep.cite();
                 offenders.push(format!(
@@ -7686,6 +7727,68 @@ impl Gate for KindIsolationGate {
             &[ROW_WIRES],
             ov,
             &["wire-dependency", "busbar-store-memory", "dev-dependencies"],
+        ));
+
+        // THE BOTH-WAYS WITNESS'S FIXTURE (ARCHITECT (K8 residue)). The loader's `[dev-dependencies]`
+        // edge to the crate its own `[package.metadata.busbar.both-ways]` names for `transport` is
+        // the fixture both doors load, and is not a plugin choosing a wire…
+        let loader = |deps: &str, dev: &str, fixture: &str| {
+            let mut ov = Overlay::new();
+            ov.set(
+                "crates/plugin-loader/Cargo.toml",
+                format!(
+                    "[package]\nname = \"busbar-plugin-loader\"\nversion = \"0.0.0\"\n\n\
+                     [dependencies]\nbusbar-contract = {{ path = \"../busbar-contract\" }}\n{deps}\n\
+                     [dev-dependencies]\n{dev}\n\
+                     [package.metadata.busbar.both-ways]\ntransport = \"{fixture}\"\n"
+                ),
+            );
+            ov
+        };
+        report.push(prove_rows_green(
+            cx,
+            subject,
+            "the loader's dev-edge to its declared transport both-ways fixture is the witness, not a wire choice",
+            &[ROW_WIRES],
+            loader(
+                "",
+                "busbar-transport-tcp = { path = \"../busbar-transport-tcp\" }",
+                "busbar-transport-tcp",
+            ),
+        ));
+        // …but the SAME crate as a NORMAL dependency is a wire the loader links into the product…
+        report.push(prove_rows_red(
+            cx,
+            subject,
+            "plugin tooling taking a NORMAL edge on its declared fixture wire",
+            &[ROW_WIRES],
+            loader(
+                "busbar-transport-tcp = { path = \"../busbar-transport-tcp\" }",
+                "",
+                "busbar-transport-tcp",
+            ),
+            &[
+                "wire-dependency",
+                "busbar-plugin-loader",
+                "busbar-transport-tcp [dependencies]",
+            ],
+        ));
+        // …and a dev-edge to a wire the table does NOT name is a wire chosen, not a fixture.
+        report.push(prove_rows_red(
+            cx,
+            subject,
+            "plugin tooling's dev-edge to a wire its both-ways table does not name",
+            &[ROW_WIRES],
+            loader(
+                "",
+                "busbar-transport-stdio = { path = \"../busbar-transport-stdio\" }",
+                "busbar-transport-tcp",
+            ),
+            &[
+                "wire-dependency",
+                "busbar-plugin-loader",
+                "busbar-transport-stdio [dev-dependencies]",
+            ],
         ));
 
         // A SECOND REGISTRY. Two places compose the same wire, and nothing says which one ran.
