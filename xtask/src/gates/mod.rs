@@ -247,7 +247,7 @@ pub const REPORT_ONLY: &[Posture] = &[
     },
     Posture {
         name: "structure-lint",
-        why: "RED ON FOUR NAMED ROWS, AND THEY ARE TRUE FINDINGS. be9c473f5 derived the plane set, \
+        why: "RED ON FIVE NAMED ROWS, AND THEY ARE TRUE FINDINGS. be9c473f5 derived the plane set, \
               the protocol crates and the tree-wide scope from the tree instead of from lists that \
               had gone stale, and the lint then saw what it had been blind to: \
               `plane-dup:unledgered` (24 plane-local reimplementations of a shared concern), \
@@ -255,7 +255,11 @@ pub const REPORT_ONLY: &[Posture] = &[
               `axis:purity` (4 places the agnostic core asks an axis its identity) and \
               `census:count` (3 shared words with a second spelling). DRAIN: Phase 4, when the \
               plane owners dedupe or sign ledger rows; strike each name from \
-              STRUCTURE_LINT_STANDING_REDS in the commit that turns its row green. Every OTHER row \
+              STRUCTURE_LINT_STANDING_REDS in the commit that turns its row green. The fifth, \
+              `choke-point:bypass`, is tcp's three hand-rolled door exports (compiled only under \
+              `dropped-in`; its closure is contract-only, so it cannot take the SDK's door): it \
+              drains when the SDK merges into the contract and tcp takes the contract's door. \
+              Every OTHER row \
               of this gate is scored like any gate's, so a new red anywhere else reds `--all` and \
               the blocking `--posture` step in ci.yml alike, and a listed row that goes green \
               without its strike is STALE and reds them too. \
@@ -469,6 +473,12 @@ pub const STRUCTURE_LINT_STANDING_REDS: &[&str] = &[
     "structure-lint:census:count",
     "structure-lint:plane-dup:stale-ledger",
     "structure-lint:plane-dup:unledgered",
+    // `choke-point:bypass`: three hand-rolled `#[no_mangle]` door exports in
+    // crates/busbar-transport-tcp/src/hot.rs. They are compiled only under `dropped-in`, so the
+    // release link sees the frozen symbols once. tcp's closure is contract-only, so it cannot take
+    // the plugin SDK's one door. DRAIN: when the plugin SDK merges into busbar-contract, tcp uses the
+    // contract's door, the hand-rolled exports are deleted, and this line is struck in that commit.
+    "structure-lint:choke-point:bypass",
 ];
 
 /// One entry of [`REPORT_ONLY`].
