@@ -5,10 +5,10 @@
 
 use super::*;
 
-fn ident(ttl: Option<u64>) -> AuthOutcome {
+fn ident(ttl: Option<u64>) -> AuthVerdict {
     let mut p = Principal::from_id("u1");
     p.ttl_secs = ttl;
-    AuthOutcome::Identify(p)
+    AuthVerdict::Identify(p)
 }
 
 /// The verdict rules: Identify cached (module TTL clamped), Pass cached short,
@@ -21,7 +21,7 @@ fn verdict_rules_and_expiry() {
     c.put("m", "cred-a", &ident(None), t, c.generation());
     assert!(matches!(
         c.get("m", "cred-a", t + DEFAULT_IDENTIFY_TTL_SECS - 1),
-        Some(AuthOutcome::Identify(_))
+        Some(AuthVerdict::Identify(_))
     ));
     assert!(
         c.get("m", "cred-a", t + DEFAULT_IDENTIFY_TTL_SECS + 1)
@@ -38,15 +38,15 @@ fn verdict_rules_and_expiry() {
     );
 
     // Pass cached briefly (base + ≤2s jitter)…
-    c.put("m", "cred-c", &AuthOutcome::Pass, t, c.generation());
+    c.put("m", "cred-c", &AuthVerdict::Pass, t, c.generation());
     assert!(matches!(
         c.get("m", "cred-c", t + 1),
-        Some(AuthOutcome::Pass)
+        Some(AuthVerdict::Pass)
     ));
     assert!(c.get("m", "cred-c", t + PASS_TTL_SECS + 3).is_none());
 
     // …and Reject NEVER lands.
-    c.put("m", "cred-d", &AuthOutcome::Reject, t, c.generation());
+    c.put("m", "cred-d", &AuthVerdict::Reject, t, c.generation());
     assert!(
         c.get("m", "cred-d", t + 1).is_none(),
         "Reject is never cached"

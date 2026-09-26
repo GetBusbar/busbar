@@ -27,7 +27,6 @@ path = "src/pack.rs"
 required-features = ["pack"]
 
 [dependencies]
-busbar-api = { path = "../api" }
 busbar-plugin = { path = "../busbar-plugin" }
 # The three unit-side store seams the composition root binds to one loaded store (`store_adapter`).
 # None of the three crates may name a store, so the adapter that implements all three lives on this
@@ -53,7 +52,7 @@ ed25519-dalek = { workspace = true }
 sha2 = { workspace = true }
 hex = { workspace = true }
 libloading = { workspace = true }
-# The kind:hook seam: `DlopenPolicy` implements the async `busbar_api::RoutingPolicy` trait, running
+# The kind:hook seam: `DlopenPolicy` implements the async `busbar_contract::hooks::RoutingPolicy` trait, running
 # the blocking `busbar_call` on `spawn_blocking` (a hook gate can be CPU-heavy). `async-trait` matches
 # the engine's; `tokio` is `rt`/`time`/`sync` only (spawn_blocking, timeout, the hook-call semaphore)
 # — no runtime is started in this crate.

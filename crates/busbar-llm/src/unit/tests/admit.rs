@@ -34,7 +34,7 @@ fn governed(
     seed: Option<(&str, u64)>,
 ) -> (
     std::sync::Arc<crate::test_support::BuiltApp>,
-    std::sync::Arc<busbar_api::VirtualKey>,
+    std::sync::Arc<busbar_contract::records::VirtualKey>,
 ) {
     busbar_kernel::metrics::init();
     let store = crate::test_support::engine_kit::CORE_ENGINE_KIT.scratch_store();
@@ -43,7 +43,7 @@ fn governed(
             .put_usage(
                 bucket,
                 0,
-                &busbar_api::UsageLedger {
+                &busbar_contract::records::UsageLedger {
                     requests,
                     billable_requests: requests,
                     models: vec![],
@@ -117,7 +117,7 @@ fn tokens() -> (KernelSeal, Pass<Admit>) {
 async fn the_step_charges_the_same_slot_fee_base_and_cent_as_the_live_door() {
     let (app, key) = governed(BTreeMap::new(), None, None);
     let (host, _rt) = crate::engine::test_host_rt(&app);
-    let gov = busbar_api::PlaneRequestCtx {
+    let gov = busbar_contract::records::PlaneRequestCtx {
         key: Some(key.clone()),
     };
     let charged_at = busbar_kernel::store::now();
@@ -225,7 +225,7 @@ async fn over_budget_refuses_with_no_charge_and_nothing_to_refund() {
     )]);
     let (app, key) = governed(groups, Some("bgrp"), Some(("group:bgrp@total", 250)));
     let (host, _rt) = crate::engine::test_host_rt(&app);
-    let gov = busbar_api::PlaneRequestCtx {
+    let gov = busbar_contract::records::PlaneRequestCtx {
         key: Some(key.clone()),
     };
     let charged_at = busbar_kernel::store::now();

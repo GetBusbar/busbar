@@ -28,7 +28,9 @@
 
 use std::collections::{BTreeMap, HashMap};
 
-use busbar_api::{ScopeRef, UNIT_CACHE_READ, UNIT_CACHE_WRITE, UNIT_INPUT, UNIT_OUTPUT};
+use busbar_contract::records::{
+    ScopeRef, UNIT_CACHE_READ, UNIT_CACHE_WRITE, UNIT_INPUT, UNIT_OUTPUT,
+};
 
 use crate::config::groups::LimitMetric;
 
@@ -661,7 +663,7 @@ impl CostModel {
     /// durable store whose keys reference a group another node's config no longer has).
     pub(crate) fn chain_for<'a>(
         &'a self,
-        key: &'a busbar_api::VirtualKey,
+        key: &'a busbar_contract::records::VirtualKey,
     ) -> Result<Chain<'a>, &'a str> {
         let mut buckets: Vec<ChainBucket<'a>> = Vec::with_capacity(8);
         // The key's own attribution bucket: uncapped, unscoped, all-time.

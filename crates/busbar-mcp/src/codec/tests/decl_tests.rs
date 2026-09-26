@@ -9,7 +9,7 @@
 //! would move MCP's registry entry fails this test rather than shipping.
 
 use super::*;
-use busbar_api::operation::Operation;
+use busbar_contract::operation::OpVerb;
 use busbar_substrate_values::proto::ProtocolDecl;
 
 #[test]
@@ -18,7 +18,7 @@ fn the_mcp_decl_is_the_neutral_row_but_for_its_handler_and_verbs() {
     assert_eq!(d.name, busbar_plane_mcp::PLANE_KEY);
     assert!(d.codec.is_none(), "MCP declares no codec");
     assert!(d.handler.is_some(), "MCP declares its request handler");
-    assert_eq!(d.verbs, &[Operation::INVOKE, Operation::SUBSCRIBE]);
+    assert_eq!(d.verbs, &[OpVerb::INVOKE, OpVerb::SUBSCRIBE]);
     assert!(d.head_keys.is_empty());
     assert!(d.array_stream_shim_key.is_none());
     assert!(d.native_tool_id_prefix.is_none());

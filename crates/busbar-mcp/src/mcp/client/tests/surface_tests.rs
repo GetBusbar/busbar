@@ -18,7 +18,7 @@ use crate::mcp::client::{
     dispatch::DispatchRefusal, Endpoint, McpClientEngine, McpServerRegistration,
 };
 use crate::mcp::config::McpPinMechanism;
-use busbar_api::Redacted;
+use busbar_contract::redacted::Redacted;
 use busbar_kernel::trust::PinnedArtifact as _;
 
 #[test]

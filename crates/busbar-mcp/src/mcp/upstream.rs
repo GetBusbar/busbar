@@ -55,7 +55,8 @@ use super::client::pool::McpConnectionPool;
 use super::client::ssrf::SsrfPolicy;
 use super::client::wire::{TransportError, WireLeg};
 use super::inputreq::{Ask, Round};
-use busbar_api::{Redacted, VirtualKey};
+use busbar_contract::records::VirtualKey;
+use busbar_contract::redacted::Redacted;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -196,7 +197,7 @@ impl SetupRefusal {
     /// two audiences need different information from the SAME refusal.
     ///
     /// `Credential` is the one arm that differs. Its `Display` message is built from
-    /// `busbar_api::resolve_builtin_string`'s error, whose own doc requires it to "name the source,
+    /// `busbar_plugin_loader::builtin_secret::resolve_builtin_string`'s error, whose own doc requires it to "name the source,
     /// not the value" — correct when the reader is the operator, who must know WHICH env var or
     /// file is missing to fix it, and wrong when the reader is the calling client: it is not the
     /// operator, and the secret's SOURCE (`env:VAR_NAME`, `file:/path/to/secret`) is a targeting
@@ -387,7 +388,7 @@ fn ungoverned_principal() -> VirtualKey {
 pub(super) fn credential_mode(server: &ServerEntry) -> Result<UpstreamCredential, String> {
     if matches!(
         server.upstream.credentials,
-        Some(busbar_api::UpstreamCreds::Passthrough)
+        Some(busbar_contract::config::UpstreamCreds::Passthrough)
     ) {
         // Honest and fail-closed: this revision's ingress defines no carrier for a credential the
         // caller holds FOR THE UPSTREAM (the inbound `Authorization` is the caller's BUSBAR key, and
@@ -406,8 +407,10 @@ pub(super) fn credential_mode(server: &ServerEntry) -> Result<UpstreamCredential
          issued token is spendable at any backend the authorization server serves"
             .to_string()
     })?;
-    let subject_token = busbar_api::resolve_builtin_string(&tx.subject_token)
-        .map_err(|e| format!("busbar's own subject token for this upstream cannot resolve: {e}"))?;
+    let subject_token = busbar_plugin_loader::builtin_secret::resolve_builtin_string(
+        &tx.subject_token,
+    )
+    .map_err(|e| format!("busbar's own subject token for this upstream cannot resolve: {e}"))?;
     Ok(UpstreamCredential::Exchange(ExchangeCfg {
         token_url: tx.token_url.clone(),
         subject_token: Redacted::new(subject_token),

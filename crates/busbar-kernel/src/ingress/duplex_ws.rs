@@ -224,9 +224,9 @@ pub struct WsArrival {
     /// is [`serve_gauntlet`] / [`accept_gauntlet`]; a plane's accept fn never calls a bare `on_upgrade`.
     pub upgrade: WebSocketUpgrade,
     /// The middleware-resolved governance request context (`None` on a `RouteAuth::None` route).
-    pub gov: Option<busbar_api::PlaneRequestCtx>,
+    pub gov: Option<busbar_contract::records::PlaneRequestCtx>,
     /// The middleware-resolved auth principal (`None` on a `RouteAuth::None` route).
-    pub principal: Option<busbar_api::AuthPrincipal>,
+    pub principal: Option<busbar_contract::auth::AuthPrincipal>,
     /// The resolved caller principal id, lifted from `gov` — the identity a plane binds session state to.
     pub caller_principal: Option<String>,
     /// The request path this route was matched at.
@@ -262,7 +262,7 @@ pub type WsAcceptFn = Arc<dyn Fn(WsArrival) -> WsAcceptFuture + Send + Sync>;
 /// `CoreRouteTable` (identical shape to `PlaneRouteSpec::auth`, so the auth middleware enforces it
 /// BEFORE the accept fn), the neutral accept fn, and the plane's registry `slot_key` so the core mount
 /// resolves the live per-generation slot to carry on each [`WsArrival`] (exactly as the non-WS adapter
-/// resolves it from `plane_slots`). Names only `axum`, `busbar_api`, `busbar_plugin` and this crate —
+/// resolves it from `plane_slots`). Names only `axum`, `busbar_contract`, `busbar_plugin` and this crate —
 /// no plane token, so adding a duplex plane is a new-crate-only diff.
 #[derive(Clone)]
 pub struct WsArrivalSpec {

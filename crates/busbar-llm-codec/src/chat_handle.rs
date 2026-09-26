@@ -10,7 +10,7 @@
 //! warn strings and their order are unchanged.
 
 use crate::ir::{IrRequest, IrResponse};
-use busbar_api::operation::Operation;
+use busbar_contract::operation::OpVerb;
 use busbar_substrate_values::billing::Billing;
 use busbar_substrate_values::handlers::{CodecError, IngressReject, OperationHandler};
 use busbar_substrate_values::ir::egress_prep::EgressPrep;
@@ -372,8 +372,8 @@ impl Sealed for ChatReqHandle {}
 impl Sealed for ChatRespHandle {}
 
 impl IrHandle for ChatReqHandle {
-    fn verb(&self) -> Operation {
-        Operation::CHAT
+    fn verb(&self) -> OpVerb {
+        OpVerb::CHAT
     }
     fn wants_stream(&self) -> bool {
         self.0.stream
@@ -405,8 +405,8 @@ impl IrHandle for ChatReqHandle {
 }
 
 impl IrHandle for ChatRespHandle {
-    fn verb(&self) -> Operation {
-        Operation::CHAT
+    fn verb(&self) -> OpVerb {
+        OpVerb::CHAT
     }
     fn billing(&self) -> Option<Billing> {
         chat_usage(&self.0)

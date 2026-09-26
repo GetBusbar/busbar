@@ -1179,7 +1179,7 @@ fn every_push_config_verb_mirrors_and_nothing_else_does() {
 /// A timing property cannot be measured honestly in a unit test — a wall-clock assertion over two
 /// `==` calls is noise on a loaded CI box, and the green it produces would be worth nothing. So this
 /// asserts the thing that actually decides the property: that the comparison in `task_of` is spelled
-/// `busbar_api::constant_time_eq` and not `==`, read off the source of the function that performs
+/// `busbar_contract::redacted::constant_time_eq` and not `==`, read off the source of the function that performs
 /// it.
 ///
 /// It matters here more than at most call sites. This endpoint is `RouteAuth::None`; the party
@@ -1203,7 +1203,7 @@ fn the_callback_mac_is_compared_in_constant_time() {
         .0;
 
     assert!(
-        body.contains("busbar_api::constant_time_eq"),
+        body.contains("busbar_contract::redacted::constant_time_eq"),
         "the presented MAC is no longer compared through the tree's one constant-time primitive; \
          on an unauthenticated endpoint whose caller controls the value and can time the answer, \
          that is a MAC oracle"

@@ -27,8 +27,8 @@ use std::sync::Arc;
 
 const LANE: &str = "voice\u{1f}gpt-realtime";
 
-fn key() -> busbar_api::VirtualKey {
-    busbar_api::VirtualKey {
+fn key() -> busbar_contract::records::VirtualKey {
+    busbar_contract::records::VirtualKey {
         id: "vk-oracle".to_string(),
         ..Default::default()
     }

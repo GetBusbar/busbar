@@ -93,11 +93,6 @@ busbar-plugin-loader = { path = "../plugin-loader" }
 # provisioning have somewhere to live that is not a unit and not a plane.
 busbar-kernel = { path = "../busbar-kernel", default-features = false }
 busbar-contract = { path = "../busbar-contract" }
-# THE PUBLISHED STORE PROTOCOL. A plane's durable records reach the node through record legs on its
-# route plan, and the eight kind-tagged operations those legs run are declared here. Named by the
-# root and by nothing else on this path: a plane may not hold a store and a unit may not know a
-# schema, so the mapping from one to the other belongs to the composition and lives in `src/root/`.
-busbar-api = { path = "../api" }
 # The eight kernel workflow crates (#36).
 busbar-kernel-identity = { path = "../busbar-kernel-identity", features = ["sha256"] }
 busbar-kernel-scope = { path = "../busbar-kernel-scope" }

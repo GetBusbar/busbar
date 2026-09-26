@@ -28,7 +28,7 @@ fn lane_with_auth(auth: Option<&str>) -> Lane {
         authority: "https://res.openai.azure.com",
         #[cfg(feature = "teller-waist")]
         lane_id: "gpt-4o",
-        api_key: busbar_api::Redacted::new("SECRETKEY".to_string()),
+        api_key: busbar_contract::redacted::Redacted::new("SECRETKEY".to_string()),
         protocol: "openai",
         max: 1,
         error_map: Arc::new(HashMap::new()),
@@ -49,7 +49,7 @@ fn ctx<'a>(body: &'a [u8]) -> SigningContext<'a> {
         canonical_uri: "/openai/deployments/gpt-4o/chat/completions",
         body,
         timestamp_epoch: 0,
-        upstream_creds: busbar_api::UpstreamCreds::Own,
+        upstream_creds: busbar_contract::config::UpstreamCreds::Own,
     }
 }
 

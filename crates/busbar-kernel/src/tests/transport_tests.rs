@@ -8,7 +8,7 @@
 //! seam costs nothing before anything depends on it.
 
 use crate::handlers::request_handler;
-use crate::operation::Operation;
+use crate::operation::OpVerb;
 use crate::transport::*;
 
 #[test]
@@ -41,13 +41,13 @@ fn framing_carries_the_codec_through_unchanged() {
         .expect("a residual-default protocol is registered");
     let rh = request_handler(protocol).unwrap_or_else(|| panic!("{protocol} is registered"));
     let codec = rh
-        .operation_handler(Operation::CHAT)
+        .operation_handler(OpVerb::CHAT)
         .unwrap_or_else(|| panic!("{protocol} serves chat"));
-    let framed = crate::handlers::frame(Transport::Http, Operation::CHAT, codec);
+    let framed = crate::handlers::frame(Transport::Http, OpVerb::CHAT, codec);
 
-    assert_eq!(framed.operation, Operation::CHAT);
+    assert_eq!(framed.operation, OpVerb::CHAT);
     assert_eq!(framed.transport(), Transport::Http);
-    assert_eq!(framed.name(), Operation::CHAT.name());
+    assert_eq!(framed.name(), OpVerb::CHAT.name());
     assert_eq!(framed.transport().name(), "http");
     // The codec is the SAME object, not a wrapper around it.
     assert!(std::ptr::eq(

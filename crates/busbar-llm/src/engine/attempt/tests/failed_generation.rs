@@ -42,7 +42,7 @@ async fn drive_from(
     let state = Arc::new(MockServerState::new());
     state.push(reply);
     let server = MockServer::new(state).await;
-    let store: Arc<dyn busbar_api::Store> =
+    let store: Arc<dyn busbar_contract::records::RecordStore> =
         crate::test_support::engine_kit::CORE_ENGINE_KIT.scratch_store();
     let gov_kit = crate::test_support::engine_kit::CORE_ENGINE_KIT
         .governance(store, None, None)

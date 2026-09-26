@@ -134,7 +134,7 @@ pub fn residual_default_dialect() -> Option<&'static str> {
 // `busbar-core`; re-exported here at its historical `busbar_kernel::proto::SigningContext` path so
 // every in-core / plugin caller (`egress_auth`, `proxy::egress`, `health`, the walk/engine forward
 // paths, the netted dialect writers) is unchanged. Its only non-primitive field is
-// `busbar_api::UpstreamCreds`, so the move carries no core-only machinery.
+// `busbar_contract::config::UpstreamCreds`, so the move carries no core-only machinery.
 
 // ProtocolWriter rewrites intents for the upstream wire format.
 // Extract `(role, text)` pairs from a hook's rewrite reply for a dialect that must RE-FRAME the

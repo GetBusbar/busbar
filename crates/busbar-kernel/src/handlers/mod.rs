@@ -77,7 +77,7 @@ pub use busbar_substrate_values::handlers::request_handler;
 // own `#[path]`-netted handler test modules (`use super::*`) still name them, so keep the vocabulary
 // in test scope only (production core no longer references either directly).
 #[cfg(test)]
-use crate::operation::Operation;
+use crate::operation::OpVerb;
 
 // `WireBody`, `EgressCtx`, `EgressWire` and `TranslatedResponse` are codec-cell SHAPES
 // (`busbar_contract::codec`, #83a SD-2b) that every caller names through the contract or its

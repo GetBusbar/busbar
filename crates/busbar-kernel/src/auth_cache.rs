@@ -18,7 +18,7 @@
 //! - `flush(module)` / `flush_all()` — wired to the admin flush endpoint for instant revocation
 //!   of the CACHED-ALLOW window.
 
-use crate::auth::{AuthOutcome, Principal};
+use crate::auth::{AuthVerdict, Principal};
 use std::collections::HashMap;
 use std::sync::Mutex;
 
@@ -113,16 +113,16 @@ impl CredentialCache {
 
     /// Look up a cached verdict for `(module, credential)` at time `now`. `None` = miss (expired
     /// entries are treated as misses and removed).
-    pub fn get(&self, module: &str, credential: &str, now: u64) -> Option<AuthOutcome> {
+    pub fn get(&self, module: &str, credential: &str, now: u64) -> Option<AuthVerdict> {
         let key = (
             module.to_string(),
-            busbar_api::sha256_hex(credential.as_bytes()),
+            busbar_contract::redacted::sha256_hex(credential.as_bytes()),
         );
         let mut guard = self.lock();
         match guard.entries.get(&key) {
             Some(e) if e.expires_at > now => Some(match &e.verdict {
-                CachedVerdict::Identify(p) => AuthOutcome::Identify(p.clone()),
-                CachedVerdict::Pass => AuthOutcome::Pass,
+                CachedVerdict::Identify(p) => AuthVerdict::Identify(p.clone()),
+                CachedVerdict::Pass => AuthVerdict::Pass,
             }),
             Some(_) => {
                 guard.entries.remove(&key);
@@ -145,24 +145,24 @@ impl CredentialCache {
         &self,
         module: &str,
         credential: &str,
-        outcome: &AuthOutcome,
+        outcome: &AuthVerdict,
         now: u64,
         r#gen: CacheGeneration,
     ) {
-        let hash = busbar_api::sha256_hex(credential.as_bytes());
+        let hash = busbar_contract::redacted::sha256_hex(credential.as_bytes());
         let (verdict, ttl) = match outcome {
-            AuthOutcome::Identify(p) => (
+            AuthVerdict::Identify(p) => (
                 CachedVerdict::Identify(p.clone()),
                 p.ttl_secs
                     .unwrap_or(DEFAULT_IDENTIFY_TTL_SECS)
                     .min(MAX_IDENTIFY_TTL_SECS),
             ),
-            AuthOutcome::Pass => {
+            AuthVerdict::Pass => {
                 // 0..=2s of deterministic per-key jitter on top of the base.
                 let jitter = u64::from(hash.as_bytes()[0] % 3);
                 (CachedVerdict::Pass, PASS_TTL_SECS + jitter)
             }
-            AuthOutcome::Reject => return,
+            AuthVerdict::Reject => return,
         };
         let mut guard = self.lock();
         if guard.flush_gen != r#gen.0 {

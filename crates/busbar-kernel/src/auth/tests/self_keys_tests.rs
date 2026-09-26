@@ -321,7 +321,7 @@ fn issued_token_verifies_through_the_unchanged_path() {
 /// forever.
 #[test]
 fn re_login_updates_allowed_pools_when_they_change() {
-    use busbar_api::ScopeRef;
+    use busbar_contract::records::ScopeRef;
     let gov = gov();
     let (b1, _t1) = gov
         .issue_self("sam", Some(vec!["poolA".into()]), 5000, 1000)
@@ -620,7 +620,10 @@ struct FakeKeys;
 impl SelfServeKeys for FakeKeys {
     async fn issue(&self, principal: &Principal, _ttl: Duration) -> Result<IssuedKey, String> {
         Ok(IssuedKey {
-            secret: busbar_api::Redacted::new(format!("fake-scheme-token:{}", principal.id)),
+            secret: busbar_contract::redacted::Redacted::new(format!(
+                "fake-scheme-token:{}",
+                principal.id
+            )),
             key_id: "fake".into(),
             group: format!("user:{}", principal.id),
             exp: 9999,

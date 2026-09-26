@@ -6,7 +6,7 @@
 //! monotonic-cursor no-op-vs-advance, the retention cap sweep, and the boot rehydrate's counts.
 
 use super::*;
-use busbar_api::{PlaneDisposition, PlaneRecord, PlaneSelector, StoreResult};
+use busbar_contract::records::{PlaneDisposition, PlaneRecord, PlaneSelector, RecordStoreResult};
 use std::sync::{Arc, Mutex};
 
 /// A stand-in plane row: the engine holds it opaquely and never names it.
@@ -77,7 +77,7 @@ struct MemStore {
 }
 
 impl PlaneStore for MemStore {
-    fn upsert_plane_record(&self, record: &PlaneRecord) -> StoreResult<()> {
+    fn upsert_plane_record(&self, record: &PlaneRecord) -> RecordStoreResult<()> {
         let mut rows = self.rows.lock().unwrap();
         if let Some(existing) = rows.iter_mut().find(|r| r.id == record.id) {
             *existing = record.clone();
@@ -86,7 +86,7 @@ impl PlaneStore for MemStore {
         }
         Ok(())
     }
-    fn get_plane_record(&self, _kind: &str, id: &str) -> StoreResult<Option<Vec<u8>>> {
+    fn get_plane_record(&self, _kind: &str, id: &str) -> RecordStoreResult<Option<Vec<u8>>> {
         Ok(self
             .rows
             .lock()
@@ -95,9 +95,11 @@ impl PlaneStore for MemStore {
             .find(|r| r.id == id)
             .map(|r| r.body.clone()))
     }
-    fn append_plane_record(&self, record: &PlaneRecord) -> StoreResult<()> {
+    fn append_plane_record(&self, record: &PlaneRecord) -> RecordStoreResult<()> {
         if self.append_fails.load(std::sync::atomic::Ordering::Relaxed) {
-            return Err(busbar_api::StoreError("the append did not land".into()));
+            return Err(busbar_contract::records::RecordStoreError(
+                "the append did not land".into(),
+            ));
         }
         self.events.lock().unwrap().push(record.clone());
         Ok(())
@@ -106,7 +108,7 @@ impl PlaneStore for MemStore {
         &self,
         _kind: &str,
         selector: &PlaneSelector,
-    ) -> StoreResult<Vec<Vec<u8>>> {
+    ) -> RecordStoreResult<Vec<Vec<u8>>> {
         match selector {
             PlaneSelector::All => Ok(self
                 .rows
@@ -129,16 +131,16 @@ impl PlaneStore for MemStore {
             }
         }
     }
-    fn list_plane_record_parents(&self, _kind: &str) -> StoreResult<Vec<String>> {
+    fn list_plane_record_parents(&self, _kind: &str) -> RecordStoreResult<Vec<String>> {
         Ok(Vec::new())
     }
-    fn purge_plane_records_before(&self, _kind: &str, before: u64) -> StoreResult<u64> {
+    fn purge_plane_records_before(&self, _kind: &str, before: u64) -> RecordStoreResult<u64> {
         let mut rows = self.rows.lock().unwrap();
         let before_count = rows.len();
         rows.retain(|r| !(r.disposition == PlaneDisposition::Terminal && r.ts < before));
         Ok((before_count - rows.len()) as u64)
     }
-    fn delete_plane_record(&self, kind: &str, id: &str) -> StoreResult<()> {
+    fn delete_plane_record(&self, kind: &str, id: &str) -> RecordStoreResult<()> {
         self.rows
             .lock()
             .unwrap()
@@ -151,7 +153,7 @@ impl PlaneStore for MemStore {
         _token: &str,
         _expires_at: u64,
         _now: u64,
-    ) -> StoreResult<bool> {
+    ) -> RecordStoreResult<bool> {
         Ok(true)
     }
     /// The multi-use capability check. `false` — the fail-closed direction the neutral trait
@@ -162,7 +164,7 @@ impl PlaneStore for MemStore {
         _token: &str,
         _expires_at: u64,
         _now: u64,
-    ) -> StoreResult<bool> {
+    ) -> RecordStoreResult<bool> {
         Ok(false)
     }
 }
@@ -188,7 +190,7 @@ fn demo_abandon(
     })
 }
 
-fn no_report(_id: &str, _e: &busbar_api::StoreError) {}
+fn no_report(_id: &str, _e: &busbar_contract::records::RecordStoreError) {}
 
 fn bounds() -> SweepBounds {
     SweepBounds {

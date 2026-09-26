@@ -134,7 +134,7 @@ pub(crate) struct Ctx<'a> {
     /// route adapter, so the live re-read genuinely re-reads.
     pub(crate) host: std::sync::Arc<dyn busbar_kernel::plane_host::EngineHost>,
     /// The caller's resolved governance key. `None` when governance is disabled.
-    pub(crate) gov: &'a busbar_api::PlaneRequestCtx,
+    pub(crate) gov: &'a busbar_contract::records::PlaneRequestCtx,
     /// The attributed principal, for the audit row.
     pub(crate) actor: &'a str,
     /// The CALLER'S DECLARED CAPABILITIES, exactly as they arrived in
@@ -2655,7 +2655,7 @@ fn charge_round(
 /// (so pool-scoped buckets see the same predicate), and the lane is that tool qualified by the plane.
 pub(super) fn ledger_tool_call(
     host: &dyn busbar_kernel::plane_host::EngineHost,
-    key: Option<&busbar_api::VirtualKey>,
+    key: Option<&busbar_contract::records::VirtualKey>,
     namespaced: &str,
 ) {
     // No governance, or no key on a governed deployment: nothing to ledger against — the same two

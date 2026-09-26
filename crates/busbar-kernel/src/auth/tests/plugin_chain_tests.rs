@@ -769,14 +769,14 @@ struct BlockingModule {
     entered: std::sync::mpsc::Sender<()>,
     hold: std::time::Duration,
 }
-impl busbar_api::AuthModule for BlockingModule {
+impl busbar_contract::auth::AuthModule for BlockingModule {
     fn name(&self) -> &'static str {
         "blocking-test-module"
     }
-    fn authenticate(&self, _candidate: Option<&str>) -> busbar_api::AuthOutcome {
+    fn authenticate(&self, _candidate: Option<&str>) -> busbar_contract::auth::AuthVerdict {
         let _ = self.entered.send(());
         std::thread::sleep(self.hold);
-        busbar_api::AuthOutcome::Pass
+        busbar_contract::auth::AuthVerdict::Pass
     }
     fn cacheable(&self) -> bool {
         false
@@ -887,12 +887,12 @@ fn an_in_process_chain_is_not_offloaded() {
 /// Always `Pass`es, and is cacheable — the shape of a `cacheable` introspection/directory module
 /// that does not recognize a given credential.
 struct CacheablePass;
-impl busbar_api::AuthModule for CacheablePass {
+impl busbar_contract::auth::AuthModule for CacheablePass {
     fn name(&self) -> &'static str {
         "cacheable-pass-module"
     }
-    fn authenticate(&self, _candidate: Option<&str>) -> busbar_api::AuthOutcome {
-        busbar_api::AuthOutcome::Pass
+    fn authenticate(&self, _candidate: Option<&str>) -> busbar_contract::auth::AuthVerdict {
+        busbar_contract::auth::AuthVerdict::Pass
     }
     fn cacheable(&self) -> bool {
         true
@@ -902,12 +902,12 @@ impl busbar_api::AuthModule for CacheablePass {
 /// Always `Reject`s, and is cacheable (cacheability is irrelevant to `Reject`, which
 /// `auth_cache.rs:104` never caches regardless — included so the chain-position test is honest).
 struct CacheableReject;
-impl busbar_api::AuthModule for CacheableReject {
+impl busbar_contract::auth::AuthModule for CacheableReject {
     fn name(&self) -> &'static str {
         "cacheable-reject-module"
     }
-    fn authenticate(&self, _candidate: Option<&str>) -> busbar_api::AuthOutcome {
-        busbar_api::AuthOutcome::Reject
+    fn authenticate(&self, _candidate: Option<&str>) -> busbar_contract::auth::AuthVerdict {
+        busbar_contract::auth::AuthVerdict::Reject
     }
     fn cacheable(&self) -> bool {
         true
@@ -916,19 +916,19 @@ impl busbar_api::AuthModule for CacheableReject {
 
 /// `Identify`s any candidate that equals `"good"`, else `Pass`es. Cacheable.
 struct CacheableIdentify;
-impl busbar_api::AuthModule for CacheableIdentify {
+impl busbar_contract::auth::AuthModule for CacheableIdentify {
     fn name(&self) -> &'static str {
         "cacheable-identify-module"
     }
-    fn authenticate(&self, candidate: Option<&str>) -> busbar_api::AuthOutcome {
+    fn authenticate(&self, candidate: Option<&str>) -> busbar_contract::auth::AuthVerdict {
         match candidate {
-            Some("good") => busbar_api::AuthOutcome::Identify(crate::auth::Principal {
+            Some("good") => busbar_contract::auth::AuthVerdict::Identify(crate::auth::Principal {
                 id: "test:good".to_string(),
                 name: None,
                 roles: vec![],
                 ttl_secs: None,
             }),
-            _ => busbar_api::AuthOutcome::Pass,
+            _ => busbar_contract::auth::AuthVerdict::Pass,
         }
     }
     fn cacheable(&self) -> bool {
@@ -1025,7 +1025,7 @@ fn pass_churn_cannot_evict_an_identity() {
     cache.put(
         "real-identity-module",
         "real-credential",
-        &busbar_api::AuthOutcome::Identify(crate::auth::Principal {
+        &busbar_contract::auth::AuthVerdict::Identify(crate::auth::Principal {
             id: "real:identity".to_string(),
             name: None,
             roles: vec![],
@@ -1043,7 +1043,7 @@ fn pass_churn_cannot_evict_an_identity() {
     assert!(
         matches!(
             cache.get("real-identity-module", "real-credential", now),
-            Some(busbar_api::AuthOutcome::Identify(_))
+            Some(busbar_contract::auth::AuthVerdict::Identify(_))
         ),
         "unauthenticated Pass churn must not evict a real identity from the cache"
     );
@@ -1094,20 +1094,22 @@ fn an_identified_chain_still_caches_the_leading_pass() {
 struct CountingIdentify {
     calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
 }
-impl busbar_api::AuthModule for CountingIdentify {
+impl busbar_contract::auth::AuthModule for CountingIdentify {
     fn name(&self) -> &'static str {
         "counting-identify-module"
     }
-    fn authenticate(&self, candidate: Option<&str>) -> busbar_api::AuthOutcome {
+    fn authenticate(&self, candidate: Option<&str>) -> busbar_contract::auth::AuthVerdict {
         self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         match candidate {
-            Some("revocable") => busbar_api::AuthOutcome::Identify(crate::auth::Principal {
-                id: "test:revocable".to_string(),
-                name: None,
-                roles: vec![],
-                ttl_secs: Some(10),
-            }),
-            _ => busbar_api::AuthOutcome::Pass,
+            Some("revocable") => {
+                busbar_contract::auth::AuthVerdict::Identify(crate::auth::Principal {
+                    id: "test:revocable".to_string(),
+                    name: None,
+                    roles: vec![],
+                    ttl_secs: Some(10),
+                })
+            }
+            _ => busbar_contract::auth::AuthVerdict::Pass,
         }
     }
     fn cacheable(&self) -> bool {
@@ -1238,7 +1240,9 @@ fn admin_pass_churn_cannot_evict_an_identified_data_plane_row() {
     app.credential_cache.put(
         "data-plane-module",
         "data-plane-credential",
-        &busbar_api::AuthOutcome::Identify(busbar_api::Principal::from_id("acct:paying-customer")),
+        &busbar_contract::auth::AuthVerdict::Identify(busbar_contract::auth::Principal::from_id(
+            "acct:paying-customer",
+        )),
         now,
         app.credential_cache.generation(),
     );
@@ -1258,7 +1262,7 @@ fn admin_pass_churn_cannot_evict_an_identified_data_plane_row() {
         matches!(
             app.credential_cache
                 .get("data-plane-module", "data-plane-credential", now),
-            Some(busbar_api::AuthOutcome::Identify(_))
+            Some(busbar_contract::auth::AuthVerdict::Identify(_))
         ),
         "unauthenticated admin churn must not evict an identified data-plane row from the shared \
          cache"
@@ -1297,16 +1301,16 @@ fn an_identified_admin_chain_still_caches_its_identity() {
 struct JwsAdminModule;
 
 #[cfg(feature = "auth-admin-tokens")]
-impl busbar_api::AuthModule for JwsAdminModule {
+impl busbar_contract::auth::AuthModule for JwsAdminModule {
     fn name(&self) -> &'static str {
         "jws-admin-module"
     }
-    fn authenticate(&self, candidate: Option<&str>) -> busbar_api::AuthOutcome {
+    fn authenticate(&self, candidate: Option<&str>) -> busbar_contract::auth::AuthVerdict {
         match candidate {
-            Some(c) if c.split('.').count() == 3 => {
-                busbar_api::AuthOutcome::Identify(busbar_api::Principal::from_id("idp:operator"))
-            }
-            _ => busbar_api::AuthOutcome::Pass,
+            Some(c) if c.split('.').count() == 3 => busbar_contract::auth::AuthVerdict::Identify(
+                busbar_contract::auth::Principal::from_id("idp:operator"),
+            ),
+            _ => busbar_contract::auth::AuthVerdict::Pass,
         }
     }
     fn cacheable(&self) -> bool {

@@ -59,7 +59,7 @@ fn test_bedrock_sigv4_sign_request_structure() {
         canonical_uri: &canonical,
         body: br#"{"messages":[]}"#,
         timestamp_epoch: 1_440_938_160, // 20150830T123600Z
-        upstream_creds: busbar_api::UpstreamCreds::Own,
+        upstream_creds: busbar_contract::config::UpstreamCreds::Own,
     };
     let headers = super::writer::sigv4_sign_headers("AKIDEXAMPLE:SECRETKEY", &ctx);
 
@@ -93,7 +93,7 @@ fn test_bedrock_sigv4_session_token() {
         canonical_uri: "/model/m/converse",
         body: b"{}",
         timestamp_epoch: 1_440_938_160,
-        upstream_creds: busbar_api::UpstreamCreds::Own,
+        upstream_creds: busbar_contract::config::UpstreamCreds::Own,
     };
     let headers = super::writer::sigv4_sign_headers("AKID:SECRET:SESSIONTOKEN", &ctx);
     let tok = headers
@@ -119,7 +119,7 @@ fn test_bedrock_sigv4_misconfigured_key_no_signature() {
         canonical_uri: "/model/m/converse",
         body: b"{}",
         timestamp_epoch: 1_440_938_160,
-        upstream_creds: busbar_api::UpstreamCreds::Own,
+        upstream_creds: busbar_contract::config::UpstreamCreds::Own,
     };
     assert!(super::writer::sigv4_sign_headers("not-a-valid-key", &ctx).is_empty());
 }
@@ -708,7 +708,7 @@ fn test_bedrock_sigv4_control_char_in_access_key_no_panic() {
         canonical_uri: "/model/m/converse",
         body: b"{}",
         timestamp_epoch: 1_440_938_160,
-        upstream_creds: busbar_api::UpstreamCreds::Own,
+        upstream_creds: busbar_contract::config::UpstreamCreds::Own,
     };
     // CR/LF embedded in the access key id → invalid Authorization header value
     // (HeaderValue::from_str rejects ASCII control chars, including CR/LF). This is the
@@ -1890,7 +1890,7 @@ fn test_bedrock_sigv4_unencodable_session_token_bails_gracefully() {
         canonical_uri: "/model/m/converse",
         body: b"{}",
         timestamp_epoch: 1_440_938_160,
-        upstream_creds: busbar_api::UpstreamCreds::Own,
+        upstream_creds: busbar_contract::config::UpstreamCreds::Own,
     };
     // Session token with an embedded control char → un-encodable HeaderValue.
     let headers = super::writer::sigv4_sign_headers("AKID:SECRET:TOK\r\nEN", &ctx);
@@ -3258,7 +3258,7 @@ fn test_bedrock_sigv4_fips_host_derives_correct_region() {
         canonical_uri: "/model/m/converse",
         body: b"{}",
         timestamp_epoch: 1_440_938_160,
-        upstream_creds: busbar_api::UpstreamCreds::Own,
+        upstream_creds: busbar_contract::config::UpstreamCreds::Own,
     };
     let headers = super::writer::sigv4_sign_headers("AKID:SECRET", &ctx);
     let auth = headers
@@ -3286,7 +3286,7 @@ fn test_bedrock_sigv4_undecodable_host_falls_back_to_us_east_1() {
         canonical_uri: "/model/m/converse",
         body: b"{}",
         timestamp_epoch: 1_440_938_160,
-        upstream_creds: busbar_api::UpstreamCreds::Own,
+        upstream_creds: busbar_contract::config::UpstreamCreds::Own,
     };
     let headers = super::writer::sigv4_sign_headers("AKID:SECRET", &ctx);
     let auth = headers
@@ -6321,25 +6321,25 @@ fn bedrock_input_tier_excludes_cache_at_billing_boundary() {
     let tier = crate::wire_shim::tier_usage(&tu);
     let u = |k: &str| tier.usage_units.get(k).copied().unwrap_or(0);
     assert_eq!(
-        u(busbar_api::UNIT_INPUT),
+        u(busbar_contract::records::UNIT_INPUT),
         10,
         "the INPUT tier must be Bedrock's raw uncached inputTokens (10), NOT input+cache — cache \
          folded into input would over-bill the input rate on cache tokens"
     );
     assert_eq!(
-        u(busbar_api::UNIT_CACHE_READ),
+        u(busbar_contract::records::UNIT_CACHE_READ),
         1000,
         "cache-read tokens must bill under the cache_read tier, not input"
     );
     assert_eq!(
-        u(busbar_api::UNIT_CACHE_WRITE),
+        u(busbar_contract::records::UNIT_CACHE_WRITE),
         200,
         "cache-write tokens must bill under the cache_write tier, not input"
     );
-    assert_eq!(u(busbar_api::UNIT_OUTPUT), 5);
+    assert_eq!(u(busbar_contract::records::UNIT_OUTPUT), 5);
     // The double-count the guard forbids: input must NOT equal input+cache_read+cache_write.
     assert_ne!(
-        u(busbar_api::UNIT_INPUT),
+        u(busbar_contract::records::UNIT_INPUT),
         10 + 1000 + 200,
         "inputTokens must never be treated as cache-INCLUSIVE for Bedrock (additive convention)"
     );

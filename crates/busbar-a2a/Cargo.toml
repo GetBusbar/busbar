@@ -40,8 +40,6 @@ busbar-kernel = { path = "../busbar-kernel", default-features = false, features 
 # The substrate crate: the neutral shared surface the plugin names instead of busbar-core — the
 # diagnostics macros, the config-section split, the task-reader / hostless-egress / admin-envelope
 # seams. Carries `plane-a2a` so the plane-gated items are present in this crate's own default build.
-# The plugin contracts crate, named ahead of use per owner ruling R-E (see header).
-busbar-api = { path = "../api" }
 busbar-substrate-values = { path = "../busbar-substrate-values" }
 busbar-contract = { path = "../busbar-contract" }
 # THE PLANE. The direction of this edge INVERTED, and that is the point of the fold: the A2A wire

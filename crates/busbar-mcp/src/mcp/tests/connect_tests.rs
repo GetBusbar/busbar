@@ -158,7 +158,7 @@ async fn a_passthrough_server_refuses_an_operator_driven_refresh() {
         &peer,
         &[("read", Some(approved_hash("read", DESCRIPTION, schema())))],
     );
-    cfg.upstream_credentials = Some(busbar_api::UpstreamCreds::Passthrough);
+    cfg.upstream_credentials = Some(busbar_contract::config::UpstreamCreds::Passthrough);
     let app = test_app()
         .mcp(&mcp_cfg())
         .mcp_server("fs", cfg)

@@ -55,7 +55,7 @@ fn poisoned_schema() -> serde_json::Value {
     })
 }
 
-fn granted() -> busbar_api::PlaneRequestCtx {
+fn granted() -> busbar_contract::records::PlaneRequestCtx {
     gov_with_scopes(&[("mcp_server", "fs"), ("mcp_tool", "fs_read")])
 }
 
@@ -73,7 +73,7 @@ fn granted() -> busbar_api::PlaneRequestCtx {
 fn boot(
     peer: &Peer,
     sightings: Arc<CatalogueCache>,
-    store: Option<Arc<dyn busbar_api::Store>>,
+    store: Option<Arc<dyn busbar_contract::records::RecordStore>>,
 ) -> Arc<dyn EngineApp> {
     let hash = approved_hash("read", DESCRIPTION, honest_schema());
     let mut cfg = server_cfg(peer, &[("read", Some(hash))]);
@@ -106,7 +106,7 @@ fn boot(
 async fn quarantined(
     peer: &Peer,
     sightings: Arc<CatalogueCache>,
-    store: Option<Arc<dyn busbar_api::Store>>,
+    store: Option<Arc<dyn busbar_contract::records::RecordStore>>,
 ) -> Arc<dyn EngineApp> {
     let app = boot(peer, sightings, store);
     let (status, body) = read_call(&app).await;
@@ -393,13 +393,13 @@ async fn a_demotion_row_that_will_not_decode_still_holds_the_upstream_quarantine
     let store =
         busbar_kernel::plane::store::PlaneStoreView::narrow(engine().open_store_plugin(&cfg));
     store
-        .upsert_plane_record(&busbar_api::PlaneRecord {
+        .upsert_plane_record(&busbar_contract::records::PlaneRecord {
             kind: crate::record::KIND_DEMOTION.to_string(),
             id: "fs".to_string(),
             parent: None,
             seq: 0,
             ts: 0,
-            disposition: busbar_api::PlaneDisposition::Active,
+            disposition: busbar_contract::records::PlaneDisposition::Active,
             body: br#"{"server":"fs","this_row":"is not a demotion"}"#.to_vec(),
         })
         .expect("the corrupted row is written");
@@ -444,13 +444,13 @@ async fn an_undecodable_demotion_row_is_counted_as_replayed_rather_than_dropped_
     let store =
         busbar_kernel::plane::store::PlaneStoreView::narrow(engine().open_store_plugin(&cfg));
     store
-        .upsert_plane_record(&busbar_api::PlaneRecord {
+        .upsert_plane_record(&busbar_contract::records::PlaneRecord {
             kind: crate::record::KIND_DEMOTION.to_string(),
             id: "fs".to_string(),
             parent: None,
             seq: 0,
             ts: 0,
-            disposition: busbar_api::PlaneDisposition::Active,
+            disposition: busbar_contract::records::PlaneDisposition::Active,
             body: br#"{"server":"fs","this_row":"is not a demotion"}"#.to_vec(),
         })
         .expect("the corrupted row is written");

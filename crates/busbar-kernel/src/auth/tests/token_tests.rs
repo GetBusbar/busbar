@@ -6,8 +6,8 @@
 //! `callback`), the render fns, and the cookie/PKCE/hop helpers directly.
 
 use super::*;
-use busbar_api::{
-    AuthModule, AuthOutcome, BeginLogin, CompleteLogin, FieldKind, LoginField, LoginForm, LoginHop,
+use busbar_contract::auth::{
+    AuthModule, AuthVerdict, BeginLogin, CompleteLogin, FieldKind, LoginField, LoginForm, LoginHop,
     LoginKind, LoginModule, LoginOutcome, Principal,
 };
 
@@ -22,8 +22,8 @@ impl AuthModule for TestLogin {
     fn name(&self) -> &'static str {
         "test-login"
     }
-    fn authenticate(&self, _c: Option<&str>) -> AuthOutcome {
-        AuthOutcome::Pass
+    fn authenticate(&self, _c: Option<&str>) -> AuthVerdict {
+        AuthVerdict::Pass
     }
 }
 impl LoginModule for TestLogin {
@@ -503,8 +503,8 @@ impl AuthModule for CredLogin {
     fn name(&self) -> &'static str {
         "ldap"
     }
-    fn authenticate(&self, _c: Option<&str>) -> AuthOutcome {
-        AuthOutcome::Pass
+    fn authenticate(&self, _c: Option<&str>) -> AuthVerdict {
+        AuthVerdict::Pass
     }
 }
 impl LoginModule for CredLogin {
@@ -750,7 +750,7 @@ async fn refresh_rotates_key_and_revokes_the_old_one() {
 
 #[test]
 fn browser_login_secret_required_for_redirect_absent_for_credential() {
-    use busbar_api::LoginKind;
+    use busbar_contract::auth::LoginKind;
     // Redirect (OAuth confidential client): secret REQUIRED.
     assert!(validate_browser_login_secret(LoginKind::Redirect, true).is_ok());
     assert!(
@@ -949,8 +949,8 @@ async fn hop_loop_runs_at_most_max_hops_times() {
         fn name(&self) -> &'static str {
             "counting"
         }
-        fn authenticate(&self, _c: Option<&str>) -> AuthOutcome {
-            AuthOutcome::Pass
+        fn authenticate(&self, _c: Option<&str>) -> AuthVerdict {
+            AuthVerdict::Pass
         }
     }
     impl LoginModule for CountingLogin {
@@ -1484,8 +1484,8 @@ impl AuthModule for ParkingLogin {
     fn name(&self) -> &'static str {
         "parking-login"
     }
-    fn authenticate(&self, _c: Option<&str>) -> AuthOutcome {
-        AuthOutcome::Pass
+    fn authenticate(&self, _c: Option<&str>) -> AuthVerdict {
+        AuthVerdict::Pass
     }
 }
 impl LoginModule for ParkingLogin {

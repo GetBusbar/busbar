@@ -1456,7 +1456,7 @@ fn admin_token_secret_ref_re_resolves_on_apply() {
     let gov = prior.governance.clone().expect("governance");
     assert_eq!(
         gov.admin_token_hash().as_deref(),
-        Some(busbar_api::sha256_hex(b"tok-v1").as_str()),
+        Some(busbar_contract::redacted::sha256_hex(b"tok-v1").as_str()),
         "boot accepts the resolved token"
     );
 
@@ -1471,12 +1471,12 @@ fn admin_token_secret_ref_re_resolves_on_apply() {
     );
     assert_eq!(
         gov.admin_token_hash().as_deref(),
-        Some(busbar_api::sha256_hex(b"tok-v2").as_str()),
+        Some(busbar_contract::redacted::sha256_hex(b"tok-v2").as_str()),
         "the rotated admin token is the one now accepted"
     );
     assert_ne!(
         gov.admin_token_hash().as_deref(),
-        Some(busbar_api::sha256_hex(b"tok-v1").as_str()),
+        Some(busbar_contract::redacted::sha256_hex(b"tok-v1").as_str()),
         "the pre-rotation admin token is no longer accepted"
     );
     let _ = std::fs::remove_dir_all(&dir);
@@ -1593,11 +1593,11 @@ fn blank_admin_token_refuses_to_start() {
     let gov = app.governance.clone().expect("governance");
     assert_eq!(
         gov.admin_token_hash().as_deref(),
-        Some(busbar_api::sha256_hex(b"real-token").as_str())
+        Some(busbar_contract::redacted::sha256_hex(b"real-token").as_str())
     );
     assert_ne!(
         gov.admin_token_hash().as_deref(),
-        Some(busbar_api::sha256_hex(b"").as_str()),
+        Some(busbar_contract::redacted::sha256_hex(b"").as_str()),
         "the blank-string digest must never be a live admin credential"
     );
     let _ = std::fs::remove_dir_all(&dir);

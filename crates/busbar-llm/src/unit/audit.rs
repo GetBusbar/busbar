@@ -58,9 +58,9 @@ use axum::response::Response;
 // Imported (rather than named at each site) so this file spells the api-crate path once: the
 // kind-isolation matrix counts each spelling as this crate naming that kind, and the door
 // pass-throughs would otherwise repeat it per signature.
-use busbar_api::PlaneRequestCtx;
 #[cfg(feature = "teller-waist")]
 use busbar_contract::caps::{step::Audit, AuditFacts, Decision, OpClassId, Pass};
+use busbar_contract::records::PlaneRequestCtx;
 #[cfg(feature = "teller-waist")]
 use busbar_contract::FinishClass;
 use busbar_kernel::plane_host::EngineHost;

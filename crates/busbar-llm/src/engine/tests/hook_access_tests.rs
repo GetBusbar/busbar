@@ -8,7 +8,9 @@
 use super::*;
 use crate::engine::WeightedLane;
 use crate::test_support::{LaneSpec, TestApp};
-use busbar_api::{Candidate, PolicyResult, RoutingContext, RoutingDecision, RoutingRequest};
+use busbar_contract::hooks::{
+    Candidate, PolicyResult, RoutingContext, RoutingDecision, RoutingRequest,
+};
 use busbar_kernel::{
     audit::amend::{node_recent, Access, AmendBody, Reader},
     config::PolicyOnError,
@@ -35,7 +37,7 @@ struct Named {
 }
 
 #[async_trait::async_trait]
-impl busbar_api::RoutingPolicy for Named {
+impl busbar_contract::hooks::RoutingPolicy for Named {
     async fn decide(
         &self,
         _req: &RoutingRequest<'_>,
@@ -55,12 +57,12 @@ impl busbar_api::RoutingPolicy for Named {
         &self,
         _req: &RoutingRequest<'_>,
         _budget: std::time::Duration,
-    ) -> busbar_api::TransformOutcome {
-        busbar_api::TransformOutcome::Abstain
+    ) -> busbar_contract::hooks::TransformOutcome {
+        busbar_contract::hooks::TransformOutcome::Abstain
     }
 }
 
-fn named(name: &'static str) -> Arc<dyn busbar_api::RoutingPolicy> {
+fn named(name: &'static str) -> Arc<dyn busbar_contract::hooks::RoutingPolicy> {
     Arc::new(Named { name, fails: false })
 }
 
@@ -100,7 +102,7 @@ async fn decide(resolved: ResolvedPolicy) -> PolicyOutcome {
         crate::engine::APPLICATION_JSON,
         "p",
         "anthropic",
-        busbar_api::operation::Operation::CHAT,
+        busbar_contract::operation::OpVerb::CHAT,
         false,
         None,
         None,
@@ -109,7 +111,7 @@ async fn decide(resolved: ResolvedPolicy) -> PolicyOutcome {
 }
 
 fn policy(
-    primary: Arc<dyn busbar_api::RoutingPolicy>,
+    primary: Arc<dyn busbar_contract::hooks::RoutingPolicy>,
     send_prompt: bool,
     send_user: bool,
     on_error_chain: Vec<FallbackHook>,
@@ -161,7 +163,7 @@ async fn a_decision_gate_handed_only_the_shape_leaves_no_access_amendment() {
 #[tokio::test]
 async fn an_on_error_fallback_handed_the_prompt_leaves_its_own_access_amendment() {
     crate::testkit::install_test_seams();
-    let primary: Arc<dyn busbar_api::RoutingPolicy> = Arc::new(Named {
+    let primary: Arc<dyn busbar_contract::hooks::RoutingPolicy> = Arc::new(Named {
         name: "access-primary-fails",
         fails: true,
     });
@@ -193,7 +195,7 @@ async fn an_on_error_fallback_handed_the_prompt_leaves_its_own_access_amendment(
 #[tokio::test]
 async fn an_on_error_fallback_without_the_prompt_grant_leaves_no_access_amendment() {
     crate::testkit::install_test_seams();
-    let primary: Arc<dyn busbar_api::RoutingPolicy> = Arc::new(Named {
+    let primary: Arc<dyn busbar_contract::hooks::RoutingPolicy> = Arc::new(Named {
         name: "access-primary-fails-2",
         fails: true,
     });
@@ -228,7 +230,7 @@ async fn a_rewrite_hook_handed_the_prompt_leaves_exactly_one_access_amendment() 
         &mut v,
         "p",
         "anthropic",
-        busbar_api::operation::Operation::CHAT,
+        busbar_contract::operation::OpVerb::CHAT,
         false,
         1,
     )

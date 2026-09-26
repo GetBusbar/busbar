@@ -23,7 +23,7 @@
 //!
 //! Every type on these signatures is neutral: the substrate's own `EngineHost` / `PlaneSlots` /
 //! `LiveHostFactory` / `BreakerState` / `TokenSigner` / `NewKeySpec` / `CallRecorded`, the
-//! `busbar_api` store contracts (`Store`, `VirtualKey`, `MeteringRow`, `AuditRecord`), axum's
+//! `busbar_contract` store contracts (`Store`, `VirtualKey`, `MeteringRow`, `AuditRecord`), axum's
 //! `Router` / `Method`, `serde_json::Value` for config documents the engine parses itself, and an
 //! opaque `Box<dyn Any>` for the one fixture (the hook plugin environment) that has no neutral shape.
 
@@ -39,7 +39,7 @@ use crate::plane::PlaneAdmission;
 use crate::plane_host::{EngineHost, LiveHostFactory, PlaneSlots};
 use crate::store::BreakerState;
 use crate::trust::validate::GovResolve;
-use busbar_api::{AuditRecord, MeteringRow, Store, VirtualKey};
+use busbar_contract::records::{AuditRecord, MeteringRow, RecordStore, VirtualKey};
 use busbar_plugin::hot::GuardClass;
 use std::any::Any;
 use std::collections::BTreeMap;
@@ -151,7 +151,7 @@ pub trait GovKit: Any + Send + Sync {
     /// against — the same object, seen through the seam the trust layer names.
     fn gov_resolve(&self) -> &dyn GovResolve;
     /// The store this registry is over.
-    fn store(&self) -> Arc<dyn Store>;
+    fn store(&self) -> Arc<dyn RecordStore>;
     /// Flush the pending metering rows to the store; the number flushed.
     fn flush_metering(&self) -> usize;
     /// The metering rows persisted for `bucket`.
@@ -258,7 +258,7 @@ pub trait TestAppKit: TestAppSeam {
     /// Add one upstream LANE (`model` served by `protocol` at `base_url`) to the fallback plane.
     fn add_lane(&mut self, model: &str, protocol: &'static str, base_url: &str);
     /// The durable store the plane's write-through sinks (spent ledger, demotion record) land in.
-    fn set_durable_store(&mut self, store: Arc<dyn Store>);
+    fn set_durable_store(&mut self, store: Arc<dyn RecordStore>);
     /// Build the App.
     fn build(self: Box<Self>) -> Arc<dyn EngineApp>;
 }
@@ -285,7 +285,7 @@ pub trait TestAppKitExt: Sized {
     /// Chaining twin of [`TestAppKit::add_lane`].
     fn lane(self, model: &str, protocol: &'static str, base_url: &str) -> Self;
     /// Chaining twin of [`TestAppKit::set_durable_store`].
-    fn durable_store(self, store: Arc<dyn Store>) -> Self;
+    fn durable_store(self, store: Arc<dyn RecordStore>) -> Self;
 }
 
 impl TestAppKitExt for Box<dyn TestAppKit> {
@@ -325,7 +325,7 @@ impl TestAppKitExt for Box<dyn TestAppKit> {
         self.add_lane(model, protocol, base_url);
         self
     }
-    fn durable_store(mut self, store: Arc<dyn Store>) -> Self {
+    fn durable_store(mut self, store: Arc<dyn RecordStore>) -> Self {
         self.set_durable_store(store);
         self
     }
@@ -388,14 +388,14 @@ pub trait EngineTestKit: Send + Sync {
     /// bearer-token signer (a signer makes `mint_signed` possible).
     fn governance(
         &self,
-        store: Arc<dyn Store>,
+        store: Arc<dyn RecordStore>,
         admin_token: Option<String>,
         signer: Option<TokenSigner>,
     ) -> Result<Arc<dyn GovKit>, String>;
     /// A fresh, empty SCRATCH STORE — the engine's own default in-memory backend, ephemeral and
     /// private to the caller. What a test hands a governance registry, a durable-sink slot or a
     /// store wrapper when the store itself is not under test, without naming a backend crate.
-    fn scratch_store(&self) -> Arc<dyn Store>;
+    fn scratch_store(&self) -> Arc<dyn RecordStore>;
     /// A pricing table that charges a FLAT `price_per_request_cents` per request and nothing per
     /// token — the shape a test takes when the figure under assertion is the fee, not the card.
     fn cost_flat(&self, price_per_request_cents: i64) -> Arc<dyn CostKit>;
@@ -452,7 +452,7 @@ pub trait EngineTestKit: Send + Sync {
     /// mode.
     fn durable_store_cfg(&self, tag: &str) -> (PathBuf, String);
     /// Open the example store plugin over the ABI with `cfg` — a fresh dlopen per call (a restart).
-    fn open_store_plugin(&self, cfg: &str) -> Arc<dyn Store>;
+    fn open_store_plugin(&self, cfg: &str) -> Arc<dyn RecordStore>;
 }
 
 // ── THE ENGINE'S OWN IMPLEMENTATION ──────────────────────────────────────────────────────────────

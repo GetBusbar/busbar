@@ -62,7 +62,7 @@ fn variation_op_needs_no_prompt() {
 
 // ── IrFacts projection + the new-String-field forcing function ───────────────────────────────────────────────────────
 
-use busbar_api::operation::Operation;
+use busbar_contract::operation::OpVerb;
 use busbar_substrate_values::ir::facts::{ContentItem, IrFacts, OPAQUE_CONTENT_MARKER};
 
 fn screened(items: &[ContentItem<'_>]) -> Vec<String> {
@@ -113,7 +113,7 @@ fn image_projection_covers_every_text_field() {
         weighted_prompts: vec![("WEIGHTED-TXT".into(), 1.0)],
         extra: Default::default(),
     };
-    assert_eq!(IrFacts::verb(&req), Operation::IMAGE);
+    assert_eq!(IrFacts::verb(&req), OpVerb::IMAGE);
     let items = req.content();
     let text = screened(&items).join("\u{0}");
     // Every caller-authored text field is screenable.

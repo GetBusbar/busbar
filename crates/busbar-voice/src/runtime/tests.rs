@@ -26,8 +26,8 @@ use std::sync::Arc;
 // ── fixtures ──────────────────────────────────────────────────────────────────────────────────────
 
 /// The presenting key every metered cell opens its session for.
-fn caller() -> busbar_api::VirtualKey {
-    busbar_api::VirtualKey {
+fn caller() -> busbar_contract::records::VirtualKey {
+    busbar_contract::records::VirtualKey {
         id: "vk-voice".to_string(),
         name: "voice".to_string(),
         ..Default::default()
@@ -156,15 +156,24 @@ fn usage_folds_five_classes_onto_the_four_reserved_keys() {
     };
     let usage = u.to_billing_usage();
     assert_eq!(
-        usage.usage_units.get(busbar_api::UNIT_INPUT).copied(),
+        usage
+            .usage_units
+            .get(busbar_contract::records::UNIT_INPUT)
+            .copied(),
         Some(20 + 5 - 11)
     );
     assert_eq!(
-        usage.usage_units.get(busbar_api::UNIT_OUTPUT).copied(),
+        usage
+            .usage_units
+            .get(busbar_contract::records::UNIT_OUTPUT)
+            .copied(),
         Some(3 + 7)
     );
     assert_eq!(
-        usage.usage_units.get(busbar_api::UNIT_CACHE_READ).copied(),
+        usage
+            .usage_units
+            .get(busbar_contract::records::UNIT_CACHE_READ)
+            .copied(),
         Some(11)
     );
     assert!(IrDuplexUsage::default()
@@ -293,7 +302,7 @@ async fn a_chain_dried_elsewhere_closes_the_session_at_its_next_turn() {
     let host = governed_host(None);
     let (core, _drx) = core_on(Some(&host));
     assert!(!core.on_server_frame(usage_frame(1)).await.close);
-    host.set_budget_chain(vec![busbar_api::BudgetBucketState {
+    host.set_budget_chain(vec![busbar_contract::hooks::BudgetBucketState {
         bucket_id: "group:g@day".to_string(),
         budget_group: Some("g".to_string()),
         pool: None,
@@ -326,18 +335,17 @@ fn a_dry_chain_refuses_the_open() {
         "an ungoverned host opens no account"
     );
     // A pool-scoped bucket for another pool does not govern this one.
-    let other_pool =
-        FixtureHost::new()
-            .governed()
-            .with_budget_chain(vec![busbar_api::BudgetBucketState {
-                bucket_id: "group:g@day#other-pool".to_string(),
-                budget_group: Some("g".to_string()),
-                pool: Some("other-pool".to_string()),
-                spend_micros_at_current_rate: 1,
-                remaining_micros: Some(0),
-                window_start: 0,
-                budget_period: "day".to_string(),
-            }]);
+    let other_pool = FixtureHost::new().governed().with_budget_chain(vec![
+        busbar_contract::hooks::BudgetBucketState {
+            bucket_id: "group:g@day#other-pool".to_string(),
+            budget_group: Some("g".to_string()),
+            pool: Some("other-pool".to_string()),
+            spend_micros_at_current_rate: 1,
+            remaining_micros: Some(0),
+            window_start: 0,
+            budget_period: "day".to_string(),
+        },
+    ]);
     assert_eq!(open(Arc::new(other_pool)), Ok(true));
 }
 

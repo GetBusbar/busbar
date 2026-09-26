@@ -241,7 +241,7 @@ impl Fleet {
     /// ONE NODE of the deployment: its own `App`, its own in-process spent-approval ledger, the
     /// fleet's signing key and key registry, and — when `store` is `Some` — its own handle on the
     /// durable store the approvals are recorded in. Served on its own socket.
-    async fn node(&self, store: Option<Arc<dyn busbar_api::Store>>) -> Node {
+    async fn node(&self, store: Option<Arc<dyn busbar_contract::records::RecordStore>>) -> Node {
         let gov = GovState::new_with_signer(
             self.registry.clone(),
             None,

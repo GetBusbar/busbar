@@ -1015,12 +1015,12 @@ fn counting_host(limit: Option<u64>) -> Arc<FixtureHost> {
 }
 
 /// The presenting key every metered probe opens its session for.
-fn probe_key() -> busbar_api::VirtualKey {
+fn probe_key() -> busbar_contract::records::VirtualKey {
     key_with_scopes("vk", vec![])
 }
 
 /// `key`'s meter over `host` — the attribution the served door builds, before the account opens.
-fn meter(host: &Arc<FixtureHost>, key: busbar_api::VirtualKey) -> TurnMeter {
+fn meter(host: &Arc<FixtureHost>, key: busbar_contract::records::VirtualKey) -> TurnMeter {
     TurnMeter::new(
         Arc::clone(host) as Arc<dyn EngineHost>,
         key,
@@ -1212,15 +1212,18 @@ fn gov_v4() -> (&'static str, String) {
 /// A stand-in for a deployment's secret resolver: answers ONE declared reference and refuses every
 /// other, so the probe can tell "resolved through the seam" apart from "guessed".
 struct OneSecretResolver {
-    expect: busbar_api::SecretRef,
+    expect: busbar_contract::secret_ref::SecretRef,
     value: String,
 }
 
-impl busbar_api::SecretResolve for OneSecretResolver {
-    fn resolve(&self, secret: &busbar_api::SecretRef) -> Result<Vec<u8>, String> {
+impl busbar_contract::secret::SecretResolve for OneSecretResolver {
+    fn resolve(&self, secret: &busbar_contract::secret_ref::SecretRef) -> Result<Vec<u8>, String> {
         self.resolve_string(secret).map(String::into_bytes)
     }
-    fn resolve_string(&self, secret: &busbar_api::SecretRef) -> Result<String, String> {
+    fn resolve_string(
+        &self,
+        secret: &busbar_contract::secret_ref::SecretRef,
+    ) -> Result<String, String> {
         if secret == &self.expect {
             Ok(self.value.clone())
         } else {
@@ -1230,8 +1233,8 @@ impl busbar_api::SecretResolve for OneSecretResolver {
 }
 
 /// One bucket of a caller's budget chain, with `remaining` micro-units (`None` = uncapped).
-fn budget_bucket(id: &str, remaining: Option<i64>) -> busbar_api::BudgetBucketState {
-    busbar_api::BudgetBucketState {
+fn budget_bucket(id: &str, remaining: Option<i64>) -> busbar_contract::hooks::BudgetBucketState {
+    busbar_contract::hooks::BudgetBucketState {
         bucket_id: id.to_string(),
         budget_group: None,
         pool: None,
@@ -1243,8 +1246,11 @@ fn budget_bucket(id: &str, remaining: Option<i64>) -> busbar_api::BudgetBucketSt
 }
 
 /// A key carrying an EXPLICIT scope list (exhaustive across kinds — whatever is absent is not granted).
-fn key_with_scopes(id: &str, scopes: Vec<busbar_api::ScopeRef>) -> busbar_api::VirtualKey {
-    busbar_api::VirtualKey {
+fn key_with_scopes(
+    id: &str,
+    scopes: Vec<busbar_contract::records::ScopeRef>,
+) -> busbar_contract::records::VirtualKey {
+    busbar_contract::records::VirtualKey {
         id: id.to_string(),
         name: id.to_string(),
         allowed_scopes: Some(scopes),
@@ -1281,13 +1287,13 @@ fn probe_provider_credential() -> (&'static str, String) {
             "a provider was already composed before the probe ran".into(),
         );
     }
-    let reference = busbar_api::SecretRef::env("REALTIME_PROVIDER_KEY");
+    let reference = busbar_contract::secret_ref::SecretRef::env("REALTIME_PROVIDER_KEY");
     let resolver = OneSecretResolver {
         expect: reference.clone(),
         value: "sk-realtime-key-held-server-side".to_string(),
     };
     // Fail closed: a reference this deployment does not declare composes nothing.
-    let undeclared = busbar_api::SecretRef::env("NOT_DECLARED_HERE");
+    let undeclared = busbar_contract::secret_ref::SecretRef::env("NOT_DECLARED_HERE");
     if busbar_voice::mount::compose_provider("https://api.example.com", &undeclared, &resolver)
         .is_ok()
         || busbar_voice::mount::provider_composed()
@@ -1699,18 +1705,18 @@ fn probe_metering_lease() -> (&'static str, String) {
 /// K-gap 3 — the plane's declared `session` scope kind is enforced at session open. Without this, any
 /// key valid for the voice audience opens a session, and the declared vocabulary is inert.
 fn probe_session_scope() -> (&'static str, String) {
-    let pool_scope = busbar_api::ScopeRef::pool("fast");
-    let session_here = busbar_api::ScopeRef {
+    let pool_scope = busbar_contract::records::ScopeRef::pool("fast");
+    let session_here = busbar_contract::records::ScopeRef {
         kind: "session".to_string(),
         value: "voice-server".to_string(),
     };
-    let session_elsewhere = busbar_api::ScopeRef {
+    let session_elsewhere = busbar_contract::records::ScopeRef {
         kind: "session".to_string(),
         value: "some-other-pool".to_string(),
     };
 
     // A wildcard principal (no list at all) is granted every kind, as on every other plane.
-    let wildcard = busbar_api::VirtualKey {
+    let wildcard = busbar_contract::records::VirtualKey {
         id: "vk-wildcard".to_string(),
         ..Default::default()
     };

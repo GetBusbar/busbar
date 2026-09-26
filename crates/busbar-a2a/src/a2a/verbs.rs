@@ -541,7 +541,7 @@ pub(crate) async fn approve(ctx: AdminReqCtx) -> AdminReply {
     let principal = ctx
         .principal
         .clone()
-        .unwrap_or(busbar_api::AuthPrincipal(None));
+        .unwrap_or(busbar_contract::auth::AuthPrincipal(None));
     let name = ctx.name.clone();
     // THE 404 BEFORE THE BODY. An unknown agent must answer the same way whether or not the caller
     // sent something parseable, or the shape of the error becomes an existence oracle. This verb builds

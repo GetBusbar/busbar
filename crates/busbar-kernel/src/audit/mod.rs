@@ -77,7 +77,7 @@ use std::marker::PhantomData;
 ///
 /// This is a WIRE FACT of chains that already exist on disk, not a preference. Every framing here is
 /// the one the corresponding records were written with, and the store contract documents the formula
-/// (see `busbar_api::AuditRecord`/`TaskEventRow`). Changing the framing of an existing stream would
+/// (see `busbar_contract::records::AuditRecord`/`TaskEventRow`). Changing the framing of an existing stream would
 /// make every persisted chain in every deployment fail to verify at the next boot — which is to say
 /// it would report the whole history as TAMPERED. That is the one migration this module may never do
 /// silently, so the framing travels with the record type instead of being unified away.
@@ -160,7 +160,7 @@ impl Digest {
     }
 
     fn finish(self) -> String {
-        busbar_api::sha256_hex(&self.buf)
+        busbar_contract::redacted::sha256_hex(&self.buf)
     }
 }
 

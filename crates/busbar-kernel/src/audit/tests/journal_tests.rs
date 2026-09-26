@@ -19,7 +19,9 @@
 use super::{Journal, JournalRecord, NeutralRecord, Restored};
 use crate::audit::{frame_prelude, ChainLabels, ChainedRecord, Digest, Framing};
 use crate::plane::store::{decode, encode, PlaneStore};
-use busbar_api::{PlaneDisposition, PlaneRecord, PlaneSelector, StoreError, StoreResult};
+use busbar_contract::records::{
+    PlaneDisposition, PlaneRecord, PlaneSelector, RecordStoreError, RecordStoreResult,
+};
 use std::sync::{Arc, Mutex};
 
 // ── THE THROWAWAY RECORD ────────────────────────────────────────────────────────────────────────
@@ -81,7 +83,7 @@ impl ChainedRecord for Widget {
 
 impl JournalRecord for Widget {
     const KIND: &'static str = KIND_WIDGET;
-    fn to_plane_record(&self) -> StoreResult<PlaneRecord> {
+    fn to_plane_record(&self) -> RecordStoreResult<PlaneRecord> {
         Ok(PlaneRecord {
             kind: KIND_WIDGET.to_string(),
             id: self.tenant.clone(),
@@ -137,16 +139,16 @@ impl MockStore {
 }
 
 impl PlaneStore for MockStore {
-    fn upsert_plane_record(&self, record: &PlaneRecord) -> StoreResult<()> {
+    fn upsert_plane_record(&self, record: &PlaneRecord) -> RecordStoreResult<()> {
         self.rows.lock().unwrap().push(record.clone());
         Ok(())
     }
-    fn get_plane_record(&self, _kind: &str, _id: &str) -> StoreResult<Option<Vec<u8>>> {
+    fn get_plane_record(&self, _kind: &str, _id: &str) -> RecordStoreResult<Option<Vec<u8>>> {
         Ok(None)
     }
-    fn append_plane_record(&self, record: &PlaneRecord) -> StoreResult<()> {
+    fn append_plane_record(&self, record: &PlaneRecord) -> RecordStoreResult<()> {
         if *self.fail_appends.lock().unwrap() {
-            return Err(StoreError("append refused (test)".to_string()));
+            return Err(RecordStoreError("append refused (test)".to_string()));
         }
         self.rows.lock().unwrap().push(record.clone());
         Ok(())
@@ -155,7 +157,7 @@ impl PlaneStore for MockStore {
         &self,
         kind: &str,
         selector: &PlaneSelector,
-    ) -> StoreResult<Vec<Vec<u8>>> {
+    ) -> RecordStoreResult<Vec<Vec<u8>>> {
         let rows = self.rows.lock().unwrap();
         Ok(rows
             .iter()
@@ -167,7 +169,7 @@ impl PlaneStore for MockStore {
             .map(|r| r.body.clone())
             .collect())
     }
-    fn list_plane_record_parents(&self, kind: &str) -> StoreResult<Vec<String>> {
+    fn list_plane_record_parents(&self, kind: &str) -> RecordStoreResult<Vec<String>> {
         let rows = self.rows.lock().unwrap();
         let mut parents: Vec<String> = rows
             .iter()
@@ -178,10 +180,10 @@ impl PlaneStore for MockStore {
         parents.dedup();
         Ok(parents)
     }
-    fn purge_plane_records_before(&self, _kind: &str, _before: u64) -> StoreResult<u64> {
+    fn purge_plane_records_before(&self, _kind: &str, _before: u64) -> RecordStoreResult<u64> {
         Ok(0)
     }
-    fn delete_plane_record(&self, _kind: &str, _id: &str) -> StoreResult<()> {
+    fn delete_plane_record(&self, _kind: &str, _id: &str) -> RecordStoreResult<()> {
         Ok(())
     }
     fn redeem_plane_token(
@@ -190,7 +192,7 @@ impl PlaneStore for MockStore {
         _token: &str,
         _expires_at: u64,
         _now: u64,
-    ) -> StoreResult<bool> {
+    ) -> RecordStoreResult<bool> {
         Ok(true)
     }
     /// The multi-use capability check. `false` — the fail-closed direction the neutral trait
@@ -201,7 +203,7 @@ impl PlaneStore for MockStore {
         _token: &str,
         _expires_at: u64,
         _now: u64,
-    ) -> StoreResult<bool> {
+    ) -> RecordStoreResult<bool> {
         Ok(false)
     }
 }
@@ -408,7 +410,7 @@ impl NeutralRecord for NeutralRec {
 
 /// The plane-side reframe for the neutral test: decode the journal's own `NeutralBody` back into a
 /// `NeutralRec`, taking the scope from the store parent (never the body).
-fn neutral_reframe(scope: &str, body: &[u8]) -> StoreResult<NeutralRec> {
+fn neutral_reframe(scope: &str, body: &[u8]) -> RecordStoreResult<NeutralRec> {
     let nb: super::NeutralBody = decode(body)?;
     Ok(NeutralRec {
         tenant: scope.to_string(),
@@ -495,7 +497,7 @@ fn restore_scoped_skips_one_undecodable_record_and_keeps_the_rest() {
             parent: Some("acme".to_string()),
             seq: 3,
             ts: 0,
-            disposition: busbar_api::PlaneDisposition::Active,
+            disposition: busbar_contract::records::PlaneDisposition::Active,
             body: b"{ not a neutral body".to_vec(),
         })
         .unwrap();
@@ -587,7 +589,7 @@ fn a_scope_with_only_undecodable_rows_is_unreadable_not_empty() {
                 parent: Some("acme".to_string()),
                 seq,
                 ts: 0,
-                disposition: busbar_api::PlaneDisposition::Active,
+                disposition: busbar_contract::records::PlaneDisposition::Active,
                 body: b"{ not a neutral body".to_vec(),
             })
             .unwrap();
@@ -750,7 +752,8 @@ fn an_evicted_neutral_scopes_tampered_tail_surfaces_a_break_on_resume() {
 /// whose cutoff is safely in the past.
 #[test]
 fn append_scoped_stamps_a_real_instant_so_a_fresh_row_survives_retention() {
-    let store: Arc<dyn busbar_api::Store> = Arc::new(crate::governance::MemoryStore::new());
+    let store: Arc<dyn busbar_contract::records::RecordStore> =
+        Arc::new(crate::governance::MemoryStore::new());
     let plane_store = crate::plane::store::PlaneStoreView::narrow(store.clone());
     let j: Journal<NeutralRec> = Journal::new(1024);
     j.set_sink(plane_store);

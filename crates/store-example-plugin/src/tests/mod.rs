@@ -6,7 +6,7 @@
 //! Every test drives the store PURELY over the opaque `PlaneRecord` envelope and its serde_json
 //! `body` bytes — it writes through a neutral kind-tagged verb (`upsert_/append_/redeem_plane_*`) and
 //! reads back through the neutral read verbs (`get_/list_/list_..._parents/purge_plane_*`), proving
-//! the plugin ROUND-TRIPS ENVELOPES over the ABI. No test names a `busbar_api` plane row struct: the
+//! the plugin ROUND-TRIPS ENVELOPES over the ABI. No test names a `busbar_contract` plane row struct: the
 //! bodies here are small throwaway serde structs (or opaque byte blobs) defined in THIS module, since
 //! the store persists the body verbatim and never decodes it. The purge test pins the retention split
 //! the neutral surface must preserve — kind `task` drops only `Terminal` rows, kind `call` drops all

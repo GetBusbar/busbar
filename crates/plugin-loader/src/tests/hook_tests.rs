@@ -4,7 +4,7 @@
 //! Tests for `crates/plugin-loader/src/hook.rs`.
 
 use super::*;
-use busbar_api::{RoutingDecision, TransformOutcome};
+use busbar_contract::hooks::{RoutingDecision, TransformOutcome};
 
 /// Locate the test hook plugin cdylib in the build's target dir (mirrors the sqlite loader test).
 /// Under CI (`cargo test --workspace` always builds it) a missing cdylib is a HARD failure, never
@@ -121,7 +121,7 @@ fn test_projectors() -> Arc<HookProjectors> {
                 .and_then(|m| m.as_array())
             {
                 Some(msgs) if !msgs.is_empty() => {
-                    TransformOutcome::Rewrite(busbar_api::RewriteReply {
+                    TransformOutcome::Rewrite(busbar_contract::hooks::RewriteReply {
                         messages: msgs.clone(),
                         tools: Vec::new(),
                     })
@@ -130,7 +130,7 @@ fn test_projectors() -> Arc<HookProjectors> {
             }
         }),
         status: Box::new(|v| {
-            v.get("status").map(|s| busbar_api::HookStatus {
+            v.get("status").map(|s| busbar_contract::hooks::HookStatus {
                 settings_version: None,
                 settings: None,
                 metrics: s.get("metrics").and_then(|m| m.as_array()).cloned(),
@@ -167,7 +167,7 @@ pub(crate) fn req_with_prompt(text: &str) -> RoutingRequest<'static> {
         system_chars: 0,
         max_tokens: None,
         stream: false,
-        prompt: Some(busbar_api::PromptProjection {
+        prompt: Some(busbar_contract::hooks::PromptProjection {
             system: None,
             messages: vec![("user".into(), text.to_string().into())],
         }),

@@ -87,7 +87,7 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
         Some(&CODEC)
     },
     handler: Some(&handler::ResponsesRequestHandler),
-    verbs: &[busbar_api::operation::Operation::CHAT],
+    verbs: &[busbar_contract::operation::OpVerb::CHAT],
     head_keys: super::proto_codec::LLM_CHAT_HEAD_KEYS,
     streaming_content_type: Some(busbar_substrate_values::proxy::TEXT_EVENT_STREAM),
     array_stream_shim_key: None,

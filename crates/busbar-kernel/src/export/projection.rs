@@ -59,7 +59,7 @@ use serde_json::Value;
 /// - `traces` — the OpenTelemetry span pipeline (`crate::observability`), exported by the `otlp`
 ///   module; and, for an export-axis sink subscribed to it, the kernel's traces producer
 ///   (`crate::export::traces`, K9a S7), which builds one record per closed span.
-/// - `events` — the hash-chained admin records in `crate::audit_ring` (`busbar_api::AuditRecord`:
+/// - `events` — the hash-chained admin records in `crate::audit_ring` (`busbar_contract::records::AuditRecord`:
 ///   `seq`/`ts`/`action`/`resource`/`outcome`/`principal`/`prev_hash`/`hash`). PARTIAL: admin
 ///   mutations only; config applies, plugin loads/refusals, boot and shutdown are a later unit.
 ///
@@ -105,7 +105,7 @@ pub(crate) fn produced_fields(stream: ExportStream) -> &'static [ExportField] {
         // axis is GRANTED the stream's documented set — see `resolve_projection` — which the
         // traces producer, K9a S7, fills.)
         ExportStream::Traces => &[],
-        // `busbar_api::AuditRecord`, mapped onto the stream's field names: seq → seq, ts → ts,
+        // `busbar_contract::records::AuditRecord`, mapped onto the stream's field names: seq → seq, ts → ts,
         // prev_hash → prev_hash, action → kind, principal → actor, resource → resource,
         // outcome → outcome.
         ExportStream::Events => &[

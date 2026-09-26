@@ -2,11 +2,11 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! Invariant (a) proof for the plane store seam: `PlaneStore` carries EXACTLY the plane methods and
-//! provably NONE of the audit-chain authority `busbar_api::Store` also holds, and `PlaneStoreView`
+//! provably NONE of the audit-chain authority `busbar_contract::records::RecordStore` also holds, and `PlaneStoreView`
 //! forwards to the real backend.
 
 use super::super::store::{PlaneStore, PlaneStoreView};
-use busbar_api::{PlaneDisposition, PlaneRecord, PlaneSelector, StoreResult};
+use busbar_contract::records::{PlaneDisposition, PlaneRecord, PlaneSelector, RecordStoreResult};
 use std::sync::Arc;
 
 /// A throwaway opaque body for the `demotion` kind — this seam names no plane record type, so the
@@ -27,21 +27,21 @@ struct DemoRow {
 // of the 1.6.0 store genericization, over the `PlaneRecord` envelope.
 #[allow(clippy::type_complexity)]
 fn plane_method_set_is_exactly_the_plane_methods() {
-    let _: fn(&dyn PlaneStore, &PlaneRecord) -> StoreResult<()> =
+    let _: fn(&dyn PlaneStore, &PlaneRecord) -> RecordStoreResult<()> =
         <dyn PlaneStore>::upsert_plane_record;
-    let _: fn(&dyn PlaneStore, &str, &str) -> StoreResult<Option<Vec<u8>>> =
+    let _: fn(&dyn PlaneStore, &str, &str) -> RecordStoreResult<Option<Vec<u8>>> =
         <dyn PlaneStore>::get_plane_record;
-    let _: fn(&dyn PlaneStore, &PlaneRecord) -> StoreResult<()> =
+    let _: fn(&dyn PlaneStore, &PlaneRecord) -> RecordStoreResult<()> =
         <dyn PlaneStore>::append_plane_record;
-    let _: fn(&dyn PlaneStore, &str, &PlaneSelector) -> StoreResult<Vec<Vec<u8>>> =
+    let _: fn(&dyn PlaneStore, &str, &PlaneSelector) -> RecordStoreResult<Vec<Vec<u8>>> =
         <dyn PlaneStore>::list_plane_records;
-    let _: fn(&dyn PlaneStore, &str) -> StoreResult<Vec<String>> =
+    let _: fn(&dyn PlaneStore, &str) -> RecordStoreResult<Vec<String>> =
         <dyn PlaneStore>::list_plane_record_parents;
-    let _: fn(&dyn PlaneStore, &str, u64) -> StoreResult<u64> =
+    let _: fn(&dyn PlaneStore, &str, u64) -> RecordStoreResult<u64> =
         <dyn PlaneStore>::purge_plane_records_before;
-    let _: fn(&dyn PlaneStore, &str, &str) -> StoreResult<()> =
+    let _: fn(&dyn PlaneStore, &str, &str) -> RecordStoreResult<()> =
         <dyn PlaneStore>::delete_plane_record;
-    let _: fn(&dyn PlaneStore, &str, &str, u64, u64) -> StoreResult<bool> =
+    let _: fn(&dyn PlaneStore, &str, &str, u64, u64) -> RecordStoreResult<bool> =
         <dyn PlaneStore>::redeem_plane_token;
 }
 
@@ -56,7 +56,7 @@ fn plane_method_set_is_exactly_the_plane_methods() {
 // is what proves the fallback — not a real audit method — is the one that resolved.
 struct Sentinel;
 trait AuditChainAbsent {
-    fn append_audit(&self, _entry: &busbar_api::AuditRecord) -> Sentinel {
+    fn append_audit(&self, _entry: &busbar_contract::records::AuditRecord) -> Sentinel {
         Sentinel
     }
     fn list_audit(&self) -> Sentinel {
@@ -70,7 +70,7 @@ impl<T: ?Sized> AuditChainAbsent for T {}
 
 #[allow(clippy::let_unit_value)]
 fn plane_store_reaches_no_audit_method(s: &dyn PlaneStore) {
-    let rec = busbar_api::AuditRecord {
+    let rec = busbar_contract::records::AuditRecord {
         seq: 0,
         ts: 0,
         action: String::new(),
@@ -107,38 +107,51 @@ struct RecordingStore {
     redemptions: std::sync::atomic::AtomicUsize,
 }
 
-impl busbar_api::Store for RecordingStore {
-    fn put_key(&self, _key: &busbar_api::VirtualKey) -> StoreResult<()> {
+impl busbar_contract::records::RecordStore for RecordingStore {
+    fn put_key(&self, _key: &busbar_contract::records::VirtualKey) -> RecordStoreResult<()> {
         Ok(())
     }
-    fn get_key(&self, _id: &str) -> StoreResult<Option<busbar_api::VirtualKey>> {
+    fn get_key(
+        &self,
+        _id: &str,
+    ) -> RecordStoreResult<Option<busbar_contract::records::VirtualKey>> {
         Ok(None)
     }
-    fn list_keys(&self) -> StoreResult<Vec<busbar_api::VirtualKey>> {
+    fn list_keys(&self) -> RecordStoreResult<Vec<busbar_contract::records::VirtualKey>> {
         Ok(Vec::new())
     }
-    fn delete_key(&self, _id: &str) -> StoreResult<()> {
+    fn delete_key(&self, _id: &str) -> RecordStoreResult<()> {
         Ok(())
     }
-    fn get_usage(&self, _bucket: &str, _win: u64) -> StoreResult<busbar_api::UsageLedger> {
-        Ok(busbar_api::UsageLedger::default())
+    fn get_usage(
+        &self,
+        _bucket: &str,
+        _win: u64,
+    ) -> RecordStoreResult<busbar_contract::records::UsageLedger> {
+        Ok(busbar_contract::records::UsageLedger::default())
     }
     fn put_usage(
         &self,
         _bucket: &str,
         _win: u64,
-        _ledger: &busbar_api::UsageLedger,
-    ) -> StoreResult<()> {
+        _ledger: &busbar_contract::records::UsageLedger,
+    ) -> RecordStoreResult<()> {
         Ok(())
     }
-    fn add_metering(&self, _delta: &busbar_api::MeteringDelta) -> StoreResult<()> {
+    fn add_metering(
+        &self,
+        _delta: &busbar_contract::records::MeteringDelta,
+    ) -> RecordStoreResult<()> {
         Ok(())
     }
-    fn list_metering(&self, _bucket: u64) -> StoreResult<Vec<busbar_api::MeteringRow>> {
+    fn list_metering(
+        &self,
+        _bucket: u64,
+    ) -> RecordStoreResult<Vec<busbar_contract::records::MeteringRow>> {
         Ok(Vec::new())
     }
     // The neutral plane verbs the forwarding test observes.
-    fn upsert_plane_record(&self, record: &PlaneRecord) -> StoreResult<()> {
+    fn upsert_plane_record(&self, record: &PlaneRecord) -> RecordStoreResult<()> {
         if record.kind == crate::plane::store::KIND_DEMOTION {
             self.demotions
                 .lock()
@@ -151,7 +164,7 @@ impl busbar_api::Store for RecordingStore {
         &self,
         kind: &str,
         selector: &PlaneSelector,
-    ) -> StoreResult<Vec<Vec<u8>>> {
+    ) -> RecordStoreResult<Vec<Vec<u8>>> {
         match (kind, selector) {
             (crate::plane::store::KIND_DEMOTION, PlaneSelector::All) => self
                 .demotions
@@ -169,7 +182,7 @@ impl busbar_api::Store for RecordingStore {
         _token: &str,
         _expires_at: u64,
         _now: u64,
-    ) -> StoreResult<bool> {
+    ) -> RecordStoreResult<bool> {
         // First call fresh, later calls spent — proving the SAME inner instance is reached.
         let n = self
             .redemptions

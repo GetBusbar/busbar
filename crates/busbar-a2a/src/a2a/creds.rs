@@ -58,7 +58,7 @@
 //!
 //! ## The record holds a HANDLE, never the secret
 //!
-//! [`OutboundCredential`] carries a [`busbar_api::SecretRef`] — the module plus its settings —
+//! [`OutboundCredential`] carries a [`busbar_contract::secret_ref::SecretRef`] — the module plus its settings —
 //! and the secret is resolved at delegation time. It is never in the registration record, never in
 //! the Agent Card, and never in a debug rendering: [`Lease`] has a hand-written `Debug` for exactly
 //! the reason `VirtualKey` and `CredentialSecret` do.
@@ -71,9 +71,9 @@
 // against a real registration.
 #![cfg_attr(not(test), allow(dead_code))]
 
-use busbar_api::VirtualKey;
+use busbar_contract::records::VirtualKey;
 
-use busbar_api::SecretRef;
+use busbar_contract::secret_ref::SecretRef;
 use busbar_kernel::egress_auth::gate::{EgressRefusal, EgressSubject, Requirement};
 
 /// WHICH OF THIS PLANE'S GRANTS a refusal is about. ONE variant, because this plane requires one
@@ -392,7 +392,7 @@ impl Lease {
 pub(crate) fn mint(
     grant: &EgressGrant<'_>,
     registration: &super::registry::AgentRegistration,
-    resolver: &dyn busbar_api::SecretResolve,
+    resolver: &dyn busbar_contract::secret::SecretResolve,
     now_ms: u64,
 ) -> Result<Lease, LeaseError> {
     if registration.agent_id != grant.agent_id() {
@@ -420,7 +420,7 @@ pub(crate) fn mint(
 pub(crate) fn mint_from(
     grant: &EgressGrant<'_>,
     cred: &OutboundCredential,
-    resolver: &dyn busbar_api::SecretResolve,
+    resolver: &dyn busbar_contract::secret::SecretResolve,
     now_ms: u64,
 ) -> Result<Lease, LeaseError> {
     let agent_id = grant.agent_id();

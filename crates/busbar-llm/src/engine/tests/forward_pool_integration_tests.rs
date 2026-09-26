@@ -1127,7 +1127,7 @@ async fn test_governance_budget_over_quota() {
         .put_usage(
             "group:bgrp@total",
             0,
-            &busbar_api::UsageLedger {
+            &busbar_contract::records::UsageLedger {
                 requests: 250,
                 billable_requests: 250,
                 models: vec![],
@@ -1248,7 +1248,7 @@ async fn over_budget_router() -> (std::net::SocketAddr, tokio::task::JoinHandle<
         .put_usage(
             "group:bgrpm@total",
             0,
-            &busbar_api::UsageLedger {
+            &busbar_contract::records::UsageLedger {
                 requests: 250,
                 billable_requests: 250,
                 models: vec![],
@@ -2261,7 +2261,7 @@ async fn test_section6_passthrough_401_no_trip_vs_token_mode() {
         .pool("default", &[(0, 1)])
         // 1.5.3: the passthrough EGRESS posture is the `pools:`-level
         // `upstream_credentials:`, independent of the (open) front-door chain.
-        .upstream_creds(busbar_api::UpstreamCreds::Passthrough)
+        .upstream_creds(busbar_contract::config::UpstreamCreds::Passthrough)
         .build();
 
     // Scenario A response: pushed immediately before the forward() that consumes it.
@@ -2432,7 +2432,7 @@ async fn test_passthrough_forwards_caller_token() {
         .pool("default", &[(0, 1)])
         // 1.5.3: the passthrough EGRESS posture is the `pools:`-level
         // `upstream_credentials:`, independent of the (open) front-door chain.
-        .upstream_creds(busbar_api::UpstreamCreds::Passthrough)
+        .upstream_creds(busbar_contract::config::UpstreamCreds::Passthrough)
         .build();
     let (_host, _rt) = crate::engine::test_host_rt(&app);
 
@@ -3490,7 +3490,7 @@ mod disposition_matrix_tests {
                 busbar_kernel::config::providers::ProviderCfg {
                     protocol: "anthropic".into(),
                     base_url: "https://api.example.com".into(),
-                    api_key: busbar_api::SecretRef::env("API_KEY"),
+                    api_key: busbar_contract::secret_ref::SecretRef::env("API_KEY"),
                     health: None,
                     error_map,
                     path: None,
@@ -3519,7 +3519,7 @@ mod disposition_matrix_tests {
                 tool_pools: Default::default(),
                 agent_pools: Default::default(),
                 plane_sections: Default::default(),
-                upstream_credentials: busbar_api::UpstreamCreds::Own,
+                upstream_credentials: busbar_contract::config::UpstreamCreds::Own,
                 listen: "0.0.0.0:8080".into(),
                 public_url: None,
                 tls: None,
@@ -4992,12 +4992,12 @@ async fn test_openai_ingress_same_protocol_passthrough() {
     // Call openai_ingress handler directly
     let response = crate::native_ingress::operation_ingress_inner(
         &host,
-        &busbar_api::PlaneRequestCtx::default(),
+        &busbar_contract::records::PlaneRequestCtx::default(),
         None,
         &HeaderMap::new(),
         body_bytes,
         "openai",
-        busbar_api::operation::Operation::CHAT,
+        busbar_contract::operation::OpVerb::CHAT,
         None,
     )
     .await;
@@ -5059,12 +5059,12 @@ async fn test_openai_ingress_missing_model() {
 
     let response = crate::native_ingress::operation_ingress_inner(
         &host,
-        &busbar_api::PlaneRequestCtx::default(),
+        &busbar_contract::records::PlaneRequestCtx::default(),
         None,
         &HeaderMap::new(),
         body_bytes,
         "openai",
-        busbar_api::operation::Operation::CHAT,
+        busbar_contract::operation::OpVerb::CHAT,
         None,
     )
     .await;
@@ -5100,8 +5100,8 @@ async fn test_adhoc_rejects_unconfigured_provider_model() {
     let resp = ingress::adhoc(
         busbar_kernel::state::CurrentApp(app.clone()),
         axum::extract::Path(("evil.example.com".to_string(), "../secret".to_string())),
-        axum::extract::Extension(busbar_api::PlaneRequestCtx::default()),
-        axum::extract::Extension(busbar_api::CallerToken::default()),
+        axum::extract::Extension(busbar_contract::records::PlaneRequestCtx::default()),
+        axum::extract::Extension(busbar_contract::auth::CallerToken::default()),
         axum::http::HeaderMap::new(),
         body.clone(),
     )
@@ -5116,8 +5116,8 @@ async fn test_adhoc_rejects_unconfigured_provider_model() {
     let resp2 = ingress::adhoc(
         busbar_kernel::state::CurrentApp(app),
         axum::extract::Path(("wrong-provider".to_string(), "test-model".to_string())),
-        axum::extract::Extension(busbar_api::PlaneRequestCtx::default()),
-        axum::extract::Extension(busbar_api::CallerToken::default()),
+        axum::extract::Extension(busbar_contract::records::PlaneRequestCtx::default()),
+        axum::extract::Extension(busbar_contract::auth::CallerToken::default()),
         axum::http::HeaderMap::new(),
         body,
     )
@@ -5148,12 +5148,12 @@ async fn test_openai_ingress_unknown_model() {
 
     let response = crate::native_ingress::operation_ingress_inner(
         &host,
-        &busbar_api::PlaneRequestCtx::default(),
+        &busbar_contract::records::PlaneRequestCtx::default(),
         None,
         &HeaderMap::new(),
         body_bytes,
         "openai",
-        busbar_api::operation::Operation::CHAT,
+        busbar_contract::operation::OpVerb::CHAT,
         None,
     )
     .await;
@@ -5293,12 +5293,12 @@ async fn test_openai_ingress_single_model_anthropic_response_translated() {
     let body = json!({"model": "glm-4.5", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 15});
     let resp = crate::native_ingress::operation_ingress_inner(
         &host,
-        &busbar_api::PlaneRequestCtx::default(),
+        &busbar_contract::records::PlaneRequestCtx::default(),
         None,
         &axum::http::HeaderMap::new(),
         Bytes::from(body.to_string()),
         "openai",
-        busbar_api::operation::Operation::CHAT,
+        busbar_contract::operation::OpVerb::CHAT,
         None,
     )
     .await;
@@ -5353,12 +5353,12 @@ async fn forwarded_openai_to_anthropic(
 
     let resp = crate::native_ingress::operation_ingress_inner(
         &host,
-        &busbar_api::PlaneRequestCtx::default(),
+        &busbar_contract::records::PlaneRequestCtx::default(),
         None,
         &axum::http::HeaderMap::new(),
         Bytes::from(request_body.to_string()),
         "openai",
-        busbar_api::operation::Operation::CHAT,
+        busbar_contract::operation::OpVerb::CHAT,
         None,
     )
     .await;

@@ -383,7 +383,7 @@ planner:
     assert_eq!(cfg.all_agent_hooks, vec!["a".to_string(), "b".to_string()]);
     assert_eq!(
         cfg.all_agent_upstream_credentials,
-        Some(busbar_api::UpstreamCreds::Own)
+        Some(busbar_contract::config::UpstreamCreds::Own)
     );
     assert_eq!(cfg.agents.len(), 1, "the knobs are not agents");
 }
@@ -565,9 +565,9 @@ fn an_entry_round_trips_through_its_document_form() {
         recovery_backoff: Some("1h".to_string()),
         protocol_version: Some("1.0".to_string()),
         allow_private: true,
-        upstream_credentials: Some(busbar_api::UpstreamCreds::Own),
+        upstream_credentials: Some(busbar_contract::config::UpstreamCreds::Own),
         upstream_credential: Some(crate::a2a::creds::OutboundCredential {
-            secret: busbar_api::SecretRef::env("VENDOR_TOKEN"),
+            secret: busbar_contract::secret_ref::SecretRef::env("VENDOR_TOKEN"),
             placement: crate::a2a::creds::CredentialPlacement::Header("x-api-key".to_string()),
             lease_ttl_ms: 60_000,
         }),
@@ -576,8 +576,8 @@ fn an_entry_round_trips_through_its_document_form() {
         // material: a `client_identity:` an admin PATCH silently dropped would leave a registration
         // unable to complete a handshake it completed a moment earlier.
         client_identity: Some(crate::a2a::config::ClientIdentityCfg {
-            cert: busbar_api::SecretRef::env("BUSBAR_CLIENT_CERT"),
-            key: busbar_api::SecretRef::env("BUSBAR_CLIENT_KEY"),
+            cert: busbar_contract::secret_ref::SecretRef::env("BUSBAR_CLIENT_CERT"),
+            key: busbar_contract::secret_ref::SecretRef::env("BUSBAR_CLIENT_KEY"),
         }),
         hooks: vec!["dispatch-order".to_string()],
     };

@@ -38,10 +38,22 @@ fn reported_tiers_are_priced() {
         ..Default::default()
     };
     let usage = tier_usage(&tu);
-    assert_eq!(unit(&usage, busbar_api::UNIT_INPUT), Some(100));
-    assert_eq!(unit(&usage, busbar_api::UNIT_OUTPUT), Some(40));
-    assert_eq!(unit(&usage, busbar_api::UNIT_CACHE_READ), Some(30));
-    assert_eq!(unit(&usage, busbar_api::UNIT_CACHE_WRITE), Some(20));
+    assert_eq!(
+        unit(&usage, busbar_contract::records::UNIT_INPUT),
+        Some(100)
+    );
+    assert_eq!(
+        unit(&usage, busbar_contract::records::UNIT_OUTPUT),
+        Some(40)
+    );
+    assert_eq!(
+        unit(&usage, busbar_contract::records::UNIT_CACHE_READ),
+        Some(30)
+    );
+    assert_eq!(
+        unit(&usage, busbar_contract::records::UNIT_CACHE_WRITE),
+        Some(20)
+    );
 }
 
 /// A cache tier the provider genuinely never reported (`None`, per `billed_opt`'s absent/null
@@ -59,8 +71,14 @@ fn absent_cache_tiers_are_omitted_not_billed() {
         ..Default::default()
     };
     let usage = tier_usage(&tu);
-    assert_eq!(unit(&usage, busbar_api::UNIT_CACHE_READ), None);
-    assert_eq!(unit(&usage, busbar_api::UNIT_CACHE_WRITE), None);
+    assert_eq!(
+        unit(&usage, busbar_contract::records::UNIT_CACHE_READ),
+        None
+    );
+    assert_eq!(
+        unit(&usage, busbar_contract::records::UNIT_CACHE_WRITE),
+        None
+    );
     // input/output are unconditional tiers (not `Option`), so a genuine zero on them is a real
     // reported zero (e.g. an embeddings response), not an absence — and is likewise omitted by the
     // no-zero-entry sparse contract.
@@ -70,8 +88,8 @@ fn absent_cache_tiers_are_omitted_not_billed() {
         ..Default::default()
     };
     let usage = tier_usage(&tu_zero_output);
-    assert_eq!(unit(&usage, busbar_api::UNIT_OUTPUT), None);
-    assert_eq!(unit(&usage, busbar_api::UNIT_INPUT), Some(5));
+    assert_eq!(unit(&usage, busbar_contract::records::UNIT_OUTPUT), None);
+    assert_eq!(unit(&usage, busbar_contract::records::UNIT_INPUT), Some(5));
 }
 
 /// An explicit reported zero (`Some(0)`) and a legitimately-absent tier (`None`) price IDENTICALLY —
@@ -162,5 +180,8 @@ fn unreadable_top_level_cache_count_refuses_before_reaching_tier_usage() {
         .expect("a readable cache_read_input_tokens must read, not refuse");
     let tu = ir.usage.to_token_usage();
     let usage = tier_usage(&tu);
-    assert_eq!(unit(&usage, busbar_api::UNIT_CACHE_READ), Some(1000));
+    assert_eq!(
+        unit(&usage, busbar_contract::records::UNIT_CACHE_READ),
+        Some(1000)
+    );
 }

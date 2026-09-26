@@ -866,10 +866,10 @@ impl LlmNode {
 /// from the billable count the report carries, which is what keeps one configured fee to one place.
 /// The four reserved classes, in the canonical order.
 const RESERVED_CLASSES: [&str; 4] = [
-    busbar_api::UNIT_INPUT,
-    busbar_api::UNIT_OUTPUT,
-    busbar_api::UNIT_CACHE_READ,
-    busbar_api::UNIT_CACHE_WRITE,
+    busbar_contract::records::UNIT_INPUT,
+    busbar_contract::records::UNIT_OUTPUT,
+    busbar_contract::records::UNIT_CACHE_READ,
+    busbar_contract::records::UNIT_CACHE_WRITE,
 ];
 
 fn usage_record(
@@ -2071,7 +2071,7 @@ async fn body_arrival(proto: &'static str, a: ArrivalRequest) -> Response {
     };
     let arrival = WalkArrival {
         host: Arc::clone(&payload.host),
-        gov: busbar_api::PlaneRequestCtx {
+        gov: busbar_contract::records::PlaneRequestCtx {
             key: payload.gov.key.clone(),
         },
         proto,
@@ -2155,7 +2155,7 @@ async fn path_arrival(
     };
     let arrival = WalkArrival {
         host: Arc::clone(&payload.host),
-        gov: busbar_api::PlaneRequestCtx {
+        gov: busbar_contract::records::PlaneRequestCtx {
             key: payload.gov.key.clone(),
         },
         proto,
@@ -2319,9 +2319,9 @@ pub static BODY_INGRESS: &[(&str, busbar_kernel::ingress::arrival::BodyIngress)]
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn native_run_via_loop(
     host: &Arc<dyn busbar_kernel::plane_host::EngineHost>,
-    gov: &busbar_api::PlaneRequestCtx,
+    gov: &busbar_contract::records::PlaneRequestCtx,
     proto: &'static str,
-    operation: busbar_api::operation::Operation,
+    operation: busbar_contract::operation::OpVerb,
     model: &str,
     headers: &axum::http::HeaderMap,
     body: axum::body::Bytes,
@@ -2332,7 +2332,7 @@ pub(crate) async fn native_run_via_loop(
     // resolved-op args `run()` receives.
     let arrival = WalkArrival {
         host: Arc::clone(host),
-        gov: busbar_api::PlaneRequestCtx {
+        gov: busbar_contract::records::PlaneRequestCtx {
             key: gov.key.clone(),
         },
         proto,

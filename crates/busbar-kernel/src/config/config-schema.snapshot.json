@@ -101,7 +101,7 @@
         },
         "upstream_credentials": {
           "optional": true,
-          "type": "busbar_api::UpstreamCreds"
+          "type": "busbar_contract::config::UpstreamCreds"
         },
         "url": {
           "optional": false,
@@ -332,11 +332,11 @@
       "fields": {
         "cert": {
           "optional": false,
-          "type": "busbar_api::SecretRef"
+          "type": "busbar_contract::secret_ref::SecretRef"
         },
         "key": {
           "optional": false,
-          "type": "busbar_api::SecretRef"
+          "type": "busbar_contract::secret_ref::SecretRef"
         }
       },
       "kind": "struct",
@@ -753,7 +753,7 @@
         },
         "signals": {
           "optional": true,
-          "type": "Vec<busbar_api::Signal>"
+          "type": "Vec<busbar_contract::signal::Signal>"
         },
         "timeout_ms": {
           "optional": true,
@@ -1065,7 +1065,7 @@
         },
         "upstream_credentials": {
           "optional": true,
-          "type": "busbar_api::UpstreamCreds"
+          "type": "busbar_contract::config::UpstreamCreds"
         },
         "url": {
           "optional": true,
@@ -1848,7 +1848,7 @@
         },
         "upstream_credentials": {
           "optional": true,
-          "type": "busbar_api::UpstreamCreds"
+          "type": "busbar_contract::config::UpstreamCreds"
         },
         "weights": {
           "optional": true,
@@ -2274,7 +2274,7 @@
       "fields": {
         "subject_token": {
           "optional": false,
-          "type": "busbar_api::SecretRef"
+          "type": "busbar_contract::secret_ref::SecretRef"
         },
         "subject_token_type": {
           "optional": true,

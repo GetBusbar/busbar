@@ -154,8 +154,8 @@ pub(crate) const MAX_RESOURCE_SUB_URI_BYTES: usize = 2048;
 /// THE SESSION IDENTITY, resolved once at boot and frozen. Field-for-field what the HTTP auth
 /// middleware inserts as request extensions.
 pub(crate) struct SessionIdentity {
-    pub(crate) principal: busbar_api::AuthPrincipal,
-    pub(crate) gov: busbar_api::PlaneRequestCtx,
+    pub(crate) principal: busbar_contract::auth::AuthPrincipal,
+    pub(crate) gov: busbar_contract::records::PlaneRequestCtx,
 }
 
 /// Resolve the session identity from the boot credential — the SAME admission the HTTP door runs,
@@ -222,7 +222,7 @@ pub(crate) async fn session_identity(
             }
             Ok(SessionIdentity { principal, gov })
         }
-        Err(busbar_api::IdentityRefusal::Denied) => Err(if credential.is_none() {
+        Err(busbar_contract::auth::IdentityRefusal::Denied) => Err(if credential.is_none() {
             format!(
                 "this deployment's `auth.chain` is configured, so an unauthenticated stdio \
                  session is refused exactly as an unauthenticated POST is. Set {ENV_CREDENTIAL} \
@@ -231,7 +231,7 @@ pub(crate) async fn session_identity(
         } else {
             format!("the credential in {ENV_CREDENTIAL} was refused by the auth chain.")
         }),
-        Err(busbar_api::IdentityRefusal::NoGrant) => Err(format!(
+        Err(busbar_contract::auth::IdentityRefusal::NoGrant) => Err(format!(
             "the credential in {ENV_CREDENTIAL} authenticated, but its roles earned no \
              enforcement key under `role_bindings`, and an ungoverned admission would widen its \
              access. The same request over HTTP answers `insufficient_scope`."
@@ -460,8 +460,8 @@ struct Session {
     /// `plane_slot_live` re-reads the CURRENT snapshot — so a config swap between frames is seen. The
     /// closure closes over the transport's live handle core-side, so this plane names no core handle.
     factory: busbar_kernel::plane_host::LiveHostFactory,
-    principal: busbar_api::AuthPrincipal,
-    gov: busbar_api::PlaneRequestCtx,
+    principal: busbar_contract::auth::AuthPrincipal,
+    gov: busbar_contract::records::PlaneRequestCtx,
     /// THE WRITE-AND-CALL HANDLE onto the one channel, handed to this session by the neutral pump
     /// with the FIRST frame it dispatches ([`DuplexPlane::handle`]) and cached here so the standing
     /// watchers — which predate any frame — can emit server-originated notifications too. The pump

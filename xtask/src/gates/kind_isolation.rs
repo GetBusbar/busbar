@@ -9315,10 +9315,10 @@ mod plant_tests {
             );
         }
 
-        let red = deps_over(the_wall_plant(&["busbar-api"]));
+        let red = deps_over(the_wall_plant(&["busbar-plugin"]));
         assert_red_naming(
             &red,
-            &["busbar-hooks-planted -> busbar-api", "hooks -> api"],
+            &["busbar-hooks-planted -> busbar-plugin", "hooks -> plugin-abi"],
         );
         assert!(
             !red.detail

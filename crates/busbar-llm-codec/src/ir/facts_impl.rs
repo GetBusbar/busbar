@@ -6,15 +6,15 @@
 //! `Slot` stay in `busbar_substrate_values::ir::facts`; this impl is for the moved `crate::ir::IrRequest`.
 
 use super::{IrBlock, IrRequest, IrRole};
-use busbar_api::operation::Operation;
+use busbar_contract::operation::OpVerb;
 use busbar_substrate_values::ir::facts::{
     ContentItem, IrFacts, Shape, Slot, LABEL_JSON, LABEL_REASONING, OPAQUE_CONTENT_MARKER,
 };
 use std::borrow::Cow;
 
 impl IrFacts for IrRequest {
-    fn verb(&self) -> Operation {
-        Operation::CHAT
+    fn verb(&self) -> OpVerb {
+        OpVerb::CHAT
     }
 
     fn wants_stream(&self) -> bool {

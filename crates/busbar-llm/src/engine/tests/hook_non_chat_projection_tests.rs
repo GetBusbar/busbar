@@ -12,7 +12,7 @@
 //! `busbar-mcp`'s `codec::tests::subscribe_body_projects_its_target`.)
 
 use super::*;
-use busbar_api::operation::Operation;
+use busbar_contract::operation::OpVerb;
 
 /// The exact strings a `prompt: ro` gate is shown for this body, flattened across turns.
 fn gate_view(facts: &HookFacts) -> String {
@@ -26,7 +26,7 @@ fn gate_view(facts: &HookFacts) -> String {
 
 /// Read a JSON-object body through the operation-general seam (the `body`/`content_type` args are
 /// unused for an object body — the value reader is taken).
-fn seam(v: &Value, proto: &str, op: Operation) -> HookFacts {
+fn seam(v: &Value, proto: &str, op: OpVerb) -> HookFacts {
     read_hook_facts(v, &[], APPLICATION_JSON, proto, Some(op))
         .unwrap_or_else(|_| panic!("the {proto} {op:?} reader refused this body"))
 }
@@ -35,7 +35,7 @@ fn seam(v: &Value, proto: &str, op: Operation) -> HookFacts {
 fn embeddings_body_is_no_longer_gate_blind() {
     crate::testkit::install_test_seams();
     let v = serde_json::json!({"model": "text-embedding-3-large", "input": "SCREEN-THIS-INPUT"});
-    let f = seam(&v, "openai", Operation::EMBEDDINGS);
+    let f = seam(&v, "openai", OpVerb::EMBEDDINGS);
     assert!(
         f.shape().text_chars > 0,
         "embeddings request must not project empty"
@@ -47,7 +47,7 @@ fn embeddings_body_is_no_longer_gate_blind() {
 fn image_body_is_no_longer_gate_blind() {
     crate::testkit::install_test_seams();
     let v = serde_json::json!({"model": "gpt-image-1", "prompt": "SCREEN-THIS-PROMPT"});
-    let f = seam(&v, "openai", Operation::IMAGE);
+    let f = seam(&v, "openai", OpVerb::IMAGE);
     assert!(gate_view(&f).contains("SCREEN-THIS-PROMPT"));
 }
 
@@ -59,7 +59,7 @@ fn speech_body_projects_input_and_instructions() {
     let v: serde_json::Value =
         serde_json::from_str(include_str!("../../../tests/fixtures/speech_request.json"))
             .expect("the speech request fixture is JSON");
-    let f = seam(&v, "openai", Operation::SPEECH);
+    let f = seam(&v, "openai", OpVerb::SPEECH);
     let view = gate_view(&f);
     assert!(view.contains("SPEAK-THIS"));
     assert!(
@@ -78,7 +78,7 @@ fn moderation_body_projects_text_and_marks_image_url_opaque() {
             {"type": "image_url", "image_url": {"url": "https://x.test/y.png"}}
         ]
     });
-    let f = seam(&v, "openai", Operation::MODERATION);
+    let f = seam(&v, "openai", OpVerb::MODERATION);
     let view = gate_view(&f);
     assert!(view.contains("SCREEN-THIS-TEXT"));
     // The ImageUrl is present-but-unscreenable, shown as the marker — not empty, not leaked.
@@ -94,7 +94,7 @@ fn rerank_body_projects_query_and_documents() {
         "query": "THE-QUERY",
         "documents": ["DOC-ONE", "DOC-TWO"]
     });
-    let f = seam(&v, "cohere", Operation::RERANK);
+    let f = seam(&v, "cohere", OpVerb::RERANK);
     let view = gate_view(&f);
     assert!(view.contains("THE-QUERY") && view.contains("DOC-ONE") && view.contains("DOC-TWO"));
 }
@@ -121,7 +121,7 @@ fn transcription_prompt_is_seen_through_the_byte_seam() {
         body.as_bytes(),
         &ct,
         "openai",
-        Some(Operation::TRANSCRIPTION),
+        Some(OpVerb::TRANSCRIPTION),
     )
     .expect("the transcription byte reader accepts this multipart body");
     assert!(
@@ -148,7 +148,7 @@ fn absent_semantics_hold_for_opless_and_bodyless() {
             &[],
             APPLICATION_JSON,
             "not-a-protocol",
-            Some(Operation::EMBEDDINGS)
+            Some(OpVerb::EMBEDDINGS)
         )
         .unwrap(),
         HookFacts::Absent

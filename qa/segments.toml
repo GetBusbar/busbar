@@ -392,7 +392,7 @@ status = "active"
 tier   = "fast"
 # THE SECRET-VALUE-TYPE DEBT METER (scripts/secret-hygiene-gate.sh) — the enforcement half of the
 # secret-hygiene design (docs/design/1.6.0-secret-hygiene.md). Check 1: a known-secret field declared
-# as a BARE String/&str/Vec<u8> instead of busbar_api::Redacted<T> (a value that could leak via a
+# as a BARE String/&str/Vec<u8> instead of busbar_contract::Redacted<T> (a value that could leak via a
 # derived Debug/Serialize). Check 2: a `.expose_secret()` on the SAME statement as a log/audit/metric
 # sink (the plaintext un-redacted straight into a tracing/println/audit/metric line). RUNS REPORT-ONLY
 # for now (SECRET_GATE_REPORT_ONLY=1, the script default): it PRINTS the current debt (count + offending

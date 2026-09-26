@@ -43,7 +43,7 @@ fn test_gemini_registered_in_builtins() {
         canonical_uri: "/v1beta/models/m:generateContent",
         body: b"{}",
         timestamp_epoch: 1_752_000_000,
-        upstream_creds: busbar_api::UpstreamCreds::Own,
+        upstream_creds: busbar_contract::config::UpstreamCreds::Own,
     };
     let headers = build("k", &ctx);
     let named: Vec<(&str, &str)> = headers

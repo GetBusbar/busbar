@@ -11,7 +11,7 @@
 
 use std::sync::Arc;
 
-use busbar_api::VirtualKey;
+use busbar_contract::records::VirtualKey;
 
 // Glob, so a name only a plane consumer or a test uses (e.g. `reason`, `Ask`, `Standing`, `Lapsed`)
 // never reads as an unused import when that consumer is compiled out. The standing-permission types
@@ -409,7 +409,7 @@ pub fn validate_request<A: PinnedArtifact>(ask: &Ask<'_, A>) -> Result<(), Refus
 // ── THE STANDING-PERMISSION PRIMITIVE (D3, relocated from busbar-core) ────────────────────────────
 //
 // A long-lived response re-asks its principal per frame rather than carrying a resolved `Arc<VirtualKey>`
-// into a `'static` future. The struct and its refusal are pure — they name only `busbar_api::VirtualKey`
+// into a `'static` future. The struct and its refusal are pure — they name only `busbar_contract::records::VirtualKey`
 // (already imported), this module's `Refusal`, and std — so they live in the substrate; the ONE thing
 // that names a core type, the governance re-resolution, is threaded through the [`GovResolve`] trait
 // (implemented core-side over `GovState`), so a plane holds a `Standing` and re-asks it through the
@@ -431,7 +431,7 @@ pub trait GovResolve {
     fn resolve_bound(
         &self,
         _module: &str,
-        _principal: &busbar_api::Principal,
+        _principal: &busbar_contract::auth::Principal,
     ) -> Option<std::sync::Arc<VirtualKey>> {
         None
     }
@@ -447,7 +447,7 @@ enum Admitted {
     /// principal itself is not re-checkable here and stays bounded by the lifetime.
     Bound {
         module: String,
-        principal: busbar_api::Principal,
+        principal: busbar_contract::auth::Principal,
     },
 }
 

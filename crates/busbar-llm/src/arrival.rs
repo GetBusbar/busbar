@@ -84,7 +84,7 @@ pub struct PathModelFacts {
     /// The model the URL named, percent-decoded exactly once.
     pub model: String,
     /// The operation this dialect resolved off its own endpoint.
-    pub operation: busbar_api::operation::Operation,
+    pub operation: busbar_contract::operation::OpVerb,
     /// Whether the URL asked for a streamed answer.
     pub stream: bool,
     /// A streaming request that is NOT `alt=sse` and must be framed as a JSON array.
@@ -118,7 +118,7 @@ pub enum PathArrivalFacts {
     /// the ordinary body-model forward with the URL's model as its routing hint.
     BodyModel {
         /// The operation the dialect resolved off the body.
-        operation: busbar_api::operation::Operation,
+        operation: busbar_contract::operation::OpVerb,
         /// The model the URL named.
         model_hint: String,
     },
@@ -522,7 +522,7 @@ async fn bedrock_converse(
 async fn bedrock_invoke(
     ctx: ArrivalCtx,
     model_id: String,
-    operation: busbar_api::operation::Operation,
+    operation: busbar_contract::operation::OpVerb,
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {

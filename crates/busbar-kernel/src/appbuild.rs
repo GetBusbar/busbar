@@ -826,7 +826,7 @@ pub fn build_app_from_config(
             path: provider_cfg.path.clone(),
             path_base: provider_cfg.path_base.clone(),
             upstream_model: ld.upstream_model.clone(),
-            api_key: busbar_api::Redacted::new(api_key),
+            api_key: busbar_contract::redacted::Redacted::new(api_key),
             auth_style: auth_style_of(provider_cfg.auth),
             scope: provider_cfg.scope.clone(),
             token_url: provider_cfg.token_url.clone(),
@@ -1131,17 +1131,17 @@ pub fn build_app_from_config(
             });
             // FAIL-CLOSED: a declared ref that no longer resolves ABORTS the apply. The alternative
             // — carry on serving with the old credential — is exactly the defect being fixed.
-            let admin_token: Option<Option<busbar_api::Redacted<String>>> = if declares_admin_tokens
-            {
-                // Declared with no token ref resolves to `None`: the admin API is credential-less
-                // BY CONFIGURATION, so fail closed and disable it rather than keep the old secret.
-                Some(
-                    resolve_admin_token(auth, &secret_resolver)
-                        .map_err(|e| format!("{e} (nothing was changed)"))?,
-                )
-            } else {
-                None
-            };
+            let admin_token: Option<Option<busbar_contract::redacted::Redacted<String>>> =
+                if declares_admin_tokens {
+                    // Declared with no token ref resolves to `None`: the admin API is credential-less
+                    // BY CONFIGURATION, so fail closed and disable it rather than keep the old secret.
+                    Some(
+                        resolve_admin_token(auth, &secret_resolver)
+                            .map_err(|e| format!("{e} (nothing was changed)"))?,
+                    )
+                } else {
+                    None
+                };
             let signer = match auth.and_then(|a| a.signing_key.as_ref()) {
                 Some(_) => Some(resolve_signing_key(auth, &secret_resolver)?),
                 None => None,
@@ -1208,7 +1208,7 @@ pub fn build_app_from_config(
                 .map_err(|e| format!("store '{}' settings: {e}", g.module))?,
         };
         let cfg_json = serde_json::Value::Object(resolved).to_string();
-        let store: Arc<dyn governance::Store> = Arc::from(
+        let store: Arc<dyn governance::RecordStore> = Arc::from(
             plugin_registry
                 .open_store(&g.module, &cfg_json)
                 .map_err(|e| format!("store '{}' plugin load failed: {e}", g.module))?,
@@ -1216,7 +1216,7 @@ pub fn build_app_from_config(
         // The operator ADMIN credential: the `admin-tokens` chain entry's `token:` secret ref.
         // FAIL-CLOSED: a configured-but-unresolvable admin token refuses boot (a silently-absent
         // token would lock the admin API while the operator believes it is guarded).
-        let admin_token: Option<busbar_api::Redacted<String>> =
+        let admin_token: Option<busbar_contract::redacted::Redacted<String>> =
             resolve_admin_token(cfg.auth.as_ref(), &secret_resolver)?;
         // The KEY-SIGNING key: resolve `auth.signing_key` (a secret ref) to 32 ed25519 secret
         // bytes. ABSENT => no signer (1.5.1: busbar no longer auto-generates one; config_validate

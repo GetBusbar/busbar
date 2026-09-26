@@ -116,7 +116,7 @@ fn sentinel_session<'a>(
     })
 }
 
-fn req(gov: &busbar_api::PlaneRequestCtx) -> GauntletRequest<'_> {
+fn req(gov: &busbar_contract::records::PlaneRequestCtx) -> GauntletRequest<'_> {
     GauntletRequest {
         gov,
         destination: "some.tool",
@@ -137,7 +137,7 @@ async fn split(resp: Response) -> (StatusCode, axum::http::HeaderMap, axum::body
 
 #[tokio::test]
 async fn kernel_rider_matches_substrate_gauntlet_on_proceed() {
-    let gov = busbar_api::PlaneRequestCtx::default();
+    let gov = busbar_contract::records::PlaneRequestCtx::default();
 
     let substrate = run_gauntlet(req(&gov), FixedPlane::boxed(200, br#"{"ok":true}"#)).await;
     let kernel =
@@ -152,7 +152,7 @@ async fn kernel_rider_matches_substrate_gauntlet_on_proceed() {
 
 #[tokio::test]
 async fn kernel_rider_matches_substrate_gauntlet_on_refuse() {
-    let gov = busbar_api::PlaneRequestCtx::default();
+    let gov = busbar_contract::records::PlaneRequestCtx::default();
 
     let substrate = run_gauntlet(req(&gov), Box::new(RefusePlane)).await;
     let kernel = run_gauntlet_via_kernel(req(&gov), Box::new(RefusePlane)).await;
@@ -169,7 +169,7 @@ async fn kernel_rider_matches_substrate_gauntlet_on_refuse() {
 
 #[tokio::test]
 async fn kernel_session_admit_matches_substrate_open_unit_on_proceed() {
-    let gov = busbar_api::PlaneRequestCtx::default();
+    let gov = busbar_contract::records::PlaneRequestCtx::default();
 
     let substrate = run_gauntlet_session(req(&gov), FixedPlane::boxed(200, b"ignored"))
         .expect("substrate admits on proceed");
@@ -185,7 +185,7 @@ async fn kernel_session_admit_matches_substrate_open_unit_on_proceed() {
 
 #[tokio::test]
 async fn kernel_session_admit_matches_substrate_open_unit_on_refuse() {
-    let gov = busbar_api::PlaneRequestCtx::default();
+    let gov = busbar_contract::records::PlaneRequestCtx::default();
 
     let substrate = run_gauntlet_session(req(&gov), Box::new(RefusePlane))
         .expect_err("substrate refuses the session before any charge");
@@ -213,7 +213,7 @@ async fn kernel_session_admit_matches_substrate_open_unit_on_refuse() {
 #[tokio::test]
 async fn host_selection_seam_unset_key_routes_to_substrate() {
     // A plane whose key has NO runner registered rides the substrate loop (its `drive` runs).
-    let gov = busbar_api::PlaneRequestCtx::default();
+    let gov = busbar_contract::records::PlaneRequestCtx::default();
     let resp = run_gauntlet(
         req(&gov),
         Box::new(KeyedPlane {
@@ -233,7 +233,7 @@ async fn host_selection_seam_unset_key_routes_to_substrate() {
 #[tokio::test]
 async fn host_selection_seam_routes_one_shot_to_registered_runner_when_set() {
     register_gauntlet_runner("kappa-test-oneshot", sentinel_one_shot);
-    let gov = busbar_api::PlaneRequestCtx::default();
+    let gov = busbar_contract::records::PlaneRequestCtx::default();
     let resp = run_gauntlet(
         req(&gov),
         Box::new(KeyedPlane {
@@ -257,7 +257,7 @@ async fn host_selection_seam_routes_one_shot_to_registered_runner_when_set() {
 fn host_selection_seam_unset_session_key_routes_to_substrate() {
     // No session runner registered for this key → the inline fallback admits (correlation from req),
     // byte-identical to the deleted substrate `admit_open`.
-    let gov = busbar_api::PlaneRequestCtx::default();
+    let gov = busbar_contract::records::PlaneRequestCtx::default();
     let admitted = run_gauntlet_session(
         req(&gov),
         Box::new(KeyedPlane {
@@ -424,7 +424,7 @@ fn no_root_prose_calls_the_registered_kernel_runner_dormant() {
 #[test]
 fn host_selection_seam_routes_session_to_registered_runner_when_set() {
     register_session_runner("kappa-test-session", sentinel_session);
-    let gov = busbar_api::PlaneRequestCtx::default();
+    let gov = busbar_contract::records::PlaneRequestCtx::default();
     let admitted = run_gauntlet_session(
         req(&gov),
         Box::new(KeyedPlane {

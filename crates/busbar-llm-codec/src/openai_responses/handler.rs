@@ -4,7 +4,7 @@
 //! OpenAI Responses `RequestHandler`. Chat-only (the `/v1/responses` conversational API); non-chat
 //! operations stay `None` = no-handler 404. Chat dispatches through the same registry as every op.
 
-use busbar_api::operation::Operation;
+use busbar_contract::operation::OpVerb;
 use busbar_substrate_values::handlers::{OperationHandler, RequestHandler};
 use busbar_substrate_values::wire::EgressCtx;
 
@@ -20,20 +20,20 @@ static CHAT: super::super::chat_handle::ChatOperation =
 
 /// THE RESPONSES API'S ROW OF THE SUPPORT MATRIX — one verb; every other verb is the standard
 /// no-handler 404.
-static CELLS: &[busbar_substrate_values::handlers::Cell] = &[(Operation::CHAT, &CHAT)];
+static CELLS: &[busbar_substrate_values::handlers::Cell] = &[(OpVerb::CHAT, &CHAT)];
 
 impl RequestHandler for ResponsesRequestHandler {
     fn protocol_name(&self) -> &'static str {
         "responses"
     }
-    fn operation_handler(&self, op: Operation) -> Option<&dyn OperationHandler> {
+    fn operation_handler(&self, op: OpVerb) -> Option<&dyn OperationHandler> {
         busbar_substrate_values::handlers::cell_of(CELLS, op)
     }
     fn upstream_path(&self, _ctx: &EgressCtx) -> String {
         PATH_RESPONSES.into()
     }
-    fn resolve_operation(&self, path: &str, _body: &[u8]) -> Option<Operation> {
-        path.ends_with(PATH_RESPONSES).then_some(Operation::CHAT)
+    fn resolve_operation(&self, path: &str, _body: &[u8]) -> Option<OpVerb> {
+        path.ends_with(PATH_RESPONSES).then_some(OpVerb::CHAT)
     }
 }
 

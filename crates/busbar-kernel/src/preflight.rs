@@ -42,7 +42,7 @@ pub fn fleet_data_dir() -> Option<std::path::PathBuf> {
     (!path.as_os_str().is_empty()).then_some(path)
 }
 
-type StoreOpen = fn(&str) -> Result<Box<dyn governance::Store>, String>;
+type StoreOpen = fn(&str) -> Result<Box<dyn governance::RecordStore>, String>;
 /// A linked in-process STORE's entry: `(name, ephemeral, open)` — the name `governance.store`
 /// selects it by, whether what it holds is lost on restart, and its open.
 pub type LinkedStore = (&'static str, bool, StoreOpen);
@@ -99,7 +99,9 @@ pub(crate) fn builtin_ranking(name: &str) -> Option<busbar_plugin_loader::regist
 
 /// The build's own secret module `module` names on the secret axis — a linked `kind: secret` row,
 /// opened in process — or `None` when `module` is a plugin the directory must supply.
-pub(crate) fn builtin_secret(module: &str) -> Option<Box<dyn busbar_api::SecretModule>> {
+pub(crate) fn builtin_secret(
+    module: &str,
+) -> Option<Box<dyn busbar_contract::secret::SecretModule>> {
     linked().ok()?.open_secret(module, "{}").ok()
 }
 
@@ -527,7 +529,7 @@ pub fn plugins_preflight(
 pub(crate) fn resolve_admin_token(
     auth: Option<&config::AuthCfg>,
     resolver: &config::secret::SecretResolver,
-) -> Result<Option<busbar_api::Redacted<String>>, String> {
+) -> Result<Option<busbar_contract::redacted::Redacted<String>>, String> {
     let Some(r) = auth.and_then(|a| a.admin_token_ref()) else {
         return Ok(None);
     };
@@ -543,7 +545,7 @@ pub(crate) fn resolve_admin_token(
                 .to_string(),
         );
     }
-    Ok(Some(busbar_api::Redacted::new(token)))
+    Ok(Some(busbar_contract::redacted::Redacted::new(token)))
 }
 
 /// Parse resolved bytes into a 32-byte ed25519 secret: accept RAW 32 bytes or 64 hex chars. Shared

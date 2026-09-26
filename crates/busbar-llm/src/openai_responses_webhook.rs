@@ -166,7 +166,7 @@ fn decode_secret(secret: &str) -> Result<Vec<u8>, WebhookReject> {
 /// key is `secret` with its `whsec_` prefix stripped and the remainder base64-decoded. Returns
 /// [`WebhookReject::SignatureMismatch`] when no `v1` token matches (forged/tampered/wrong-secret, or
 /// a header with no `v1` token), and [`WebhookReject::MalformedSecret`] on a bad secret. The
-/// constant-time compare of the two base64 strings uses the neutral `busbar_api::constant_time_eq`.
+/// constant-time compare of the two base64 strings uses the neutral `busbar_contract::redacted::constant_time_eq`.
 pub fn verify_signature(
     secret: &str,
     webhook_id: &str,
@@ -195,7 +195,8 @@ pub fn verify_signature(
         let Some((version, sig)) = token.split_once(',') else {
             continue;
         };
-        if version == SIG_VERSION && busbar_api::constant_time_eq(sig, &expected_b64) {
+        if version == SIG_VERSION && busbar_contract::redacted::constant_time_eq(sig, &expected_b64)
+        {
             return Ok(());
         }
     }

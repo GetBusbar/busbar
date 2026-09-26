@@ -9,7 +9,7 @@
 //! which proves the audit chain spans a stream nobody wrote by writing one and chaining it.
 //! [`a_protocol_nobody_wrote_costs_a_declaration_and_nothing_else`] is the same claim, one axis over.
 
-use busbar_api::operation::Operation;
+use busbar_contract::operation::OpVerb;
 use busbar_substrate_values::handlers::{
     CodecError, IngressReject, OperationHandler, RequestHandler,
 };
@@ -122,7 +122,7 @@ fn the_declared_verbs_are_the_verbs_the_handler_serves() {
         // ANY declaration serves (`declared_verbs()` folds them at boot) — so this sweep cannot
         // silently stop covering a verb that was added, and a handler quietly serving a verb some
         // OTHER protocol declared is caught the same as one serving its own undeclared verb.
-        let mut candidates: Vec<Operation> = Operation::ALL
+        let mut candidates: Vec<OpVerb> = OpVerb::ALL
             .iter()
             .chain(busbar_substrate_values::proto::declared_verbs())
             .copied()
@@ -257,7 +257,7 @@ const TELEX_DECL: ProtocolDecl = ProtocolDecl {
     // A protocol with no cross-dialect codec — like MCP, and for the same reason: its IR is its own.
     codec: None,
     handler: Some(&TelexHandler),
-    verbs: &[Operation::SUBSCRIBE],
+    verbs: &[OpVerb::SUBSCRIBE],
     head_keys: &["dest"],
     streaming_content_type: None,
     array_stream_shim_key: None,
@@ -303,11 +303,11 @@ impl RequestHandler for TelexHandler {
     fn protocol_name(&self) -> &'static str {
         "telex"
     }
-    fn operation_handler(&self, op: Operation) -> Option<&dyn OperationHandler> {
-        (op == Operation::SUBSCRIBE).then_some(&TelexSubscribe as &dyn OperationHandler)
+    fn operation_handler(&self, op: OpVerb) -> Option<&dyn OperationHandler> {
+        (op == OpVerb::SUBSCRIBE).then_some(&TelexSubscribe as &dyn OperationHandler)
     }
-    fn resolve_operation(&self, path: &str, _body: &[u8]) -> Option<Operation> {
-        (path == "/telex/directory").then_some(Operation::SUBSCRIBE)
+    fn resolve_operation(&self, path: &str, _body: &[u8]) -> Option<OpVerb> {
+        (path == "/telex/directory").then_some(OpVerb::SUBSCRIBE)
     }
     fn upstream_path(&self, _ctx: &EgressCtx) -> String {
         "/telex/directory".to_string()
@@ -356,16 +356,16 @@ struct TelexRespHandle(SubscribeResp);
 impl busbar_substrate_values::ir::handle::sealed::Sealed for TelexReqHandle {}
 impl busbar_substrate_values::ir::handle::sealed::Sealed for TelexRespHandle {}
 impl busbar_substrate_values::ir::handle::IrHandle for TelexReqHandle {
-    fn verb(&self) -> Operation {
-        Operation::SUBSCRIBE
+    fn verb(&self) -> OpVerb {
+        OpVerb::SUBSCRIBE
     }
     fn write_egress_request_bytes(&mut self, _egress_proto: &str, _model: &str) -> SlabBytes {
         SlabBytes::from(format!("TO {}", self.0.target))
     }
 }
 impl busbar_substrate_values::ir::handle::IrHandle for TelexRespHandle {
-    fn verb(&self) -> Operation {
-        Operation::SUBSCRIBE
+    fn verb(&self) -> OpVerb {
+        OpVerb::SUBSCRIBE
     }
     fn write_ingress_response(
         &self,

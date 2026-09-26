@@ -86,8 +86,8 @@ pub struct EmbeddingsReq {
 /// `input_type`/`task_type`/`truncate`/`dimensions` are enum/numeric ROLES, not caller free-text,
 /// and stay out.
 impl busbar_substrate_values::ir::facts::IrFacts for EmbeddingsReq {
-    fn verb(&self) -> busbar_api::operation::Operation {
-        busbar_api::operation::Operation::EMBEDDINGS
+    fn verb(&self) -> busbar_contract::operation::OpVerb {
+        busbar_contract::operation::OpVerb::EMBEDDINGS
     }
 
     fn wants_stream(&self) -> bool {

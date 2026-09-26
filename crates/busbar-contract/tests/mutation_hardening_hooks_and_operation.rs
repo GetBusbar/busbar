@@ -1,19 +1,21 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! MUTATION-HARDENING: `crates/api/src/hooks.rs` and `crates/api/src/operation.rs`.
+//! MUTATION-HARDENING: `crates/busbar-contract/src/hooks.rs` and
+//! `crates/busbar-contract/src/operation.rs` (moved here from `busbar-api`'s own suite when that crate
+//! retired; both modules had already moved to the contract).
 //!
-//! Neither file has ANY `#[cfg(test)] mod tests` today (unlike every other module in this crate),
+//! Neither file had ANY `#[cfg(test)] mod tests` when this suite was written,
 //! so `RoutingDecision::from_ranked`'s real logic (dedup, unknown-idx filtering, empty→Abstain
-//! coercion) and every `OpShape`/`Operation` const-fn (`may_stream`, `as_str`, `shape`, `name`) were
-//! completely unexercised. Integration test (crates/api/tests/, auto-discovered by Cargo,
+//! coercion) and every `OpShape`/`OpVerb` const-fn (`may_stream`, `as_str`, `shape`, `name`) were
+//! completely unexercised. Integration test (auto-discovered by Cargo,
 //! public-surface only) — no `mod` line needs adding anywhere.
 
-use busbar_api::operation::{OpShape, Operation};
-use busbar_api::{
+use busbar_contract::hooks::{
     CallerIdentity, HookStatus, PolicyError, PolicyResult, PromptProjection, RoutingContext,
     RoutingDecision, RoutingPolicy, RoutingRequest,
 };
+use busbar_contract::operation::{OpShape, OpVerb};
 use std::collections::HashSet;
 
 /// A minimal, single-poll async executor: every default `RoutingPolicy` method under test here
@@ -135,13 +137,13 @@ fn op_shape_all_has_exactly_six_entries() {
 #[test]
 fn operation_invoke_class_verbs_are_all_invoke_shape_with_their_published_name() {
     let cases = [
-        (Operation::CHAT, "chat"),
-        (Operation::EMBEDDINGS, "embeddings"),
-        (Operation::MODERATION, "moderation"),
-        (Operation::IMAGE, "image"),
-        (Operation::TRANSCRIPTION, "transcription"),
-        (Operation::SPEECH, "speech"),
-        (Operation::RERANK, "rerank"),
+        (OpVerb::CHAT, "chat"),
+        (OpVerb::EMBEDDINGS, "embeddings"),
+        (OpVerb::MODERATION, "moderation"),
+        (OpVerb::IMAGE, "image"),
+        (OpVerb::TRANSCRIPTION, "transcription"),
+        (OpVerb::SPEECH, "speech"),
+        (OpVerb::RERANK, "rerank"),
     ];
     for (op, name) in cases {
         assert_eq!(op.shape(), OpShape::Invoke, "{name} must be Invoke-shaped");
@@ -152,12 +154,12 @@ fn operation_invoke_class_verbs_are_all_invoke_shape_with_their_published_name()
 #[test]
 fn operation_protocol_surface_verbs_carry_the_shapes_own_word() {
     let cases = [
-        (Operation::INVOKE, OpShape::Invoke, "invoke"),
-        (Operation::CATALOGUE, OpShape::Catalogue, "catalogue"),
-        (Operation::FETCH, OpShape::Fetch, "fetch"),
-        (Operation::TASK, OpShape::Task, "task"),
-        (Operation::SUBSCRIBE, OpShape::Subscribe, "subscribe"),
-        (Operation::CONTROL, OpShape::Control, "control"),
+        (OpVerb::INVOKE, OpShape::Invoke, "invoke"),
+        (OpVerb::CATALOGUE, OpShape::Catalogue, "catalogue"),
+        (OpVerb::FETCH, OpShape::Fetch, "fetch"),
+        (OpVerb::TASK, OpShape::Task, "task"),
+        (OpVerb::SUBSCRIBE, OpShape::Subscribe, "subscribe"),
+        (OpVerb::CONTROL, OpShape::Control, "control"),
     ];
     for (op, shape, name) in cases {
         assert_eq!(op.shape(), shape);
@@ -168,14 +170,14 @@ fn operation_protocol_surface_verbs_carry_the_shapes_own_word() {
 #[test]
 fn operation_all_lists_exactly_the_six_protocol_surface_verbs_in_order() {
     assert_eq!(
-        Operation::ALL,
+        OpVerb::ALL,
         &[
-            Operation::INVOKE,
-            Operation::CATALOGUE,
-            Operation::FETCH,
-            Operation::TASK,
-            Operation::SUBSCRIBE,
-            Operation::CONTROL,
+            OpVerb::INVOKE,
+            OpVerb::CATALOGUE,
+            OpVerb::FETCH,
+            OpVerb::TASK,
+            OpVerb::SUBSCRIBE,
+            OpVerb::CONTROL,
         ]
     );
 }
@@ -186,9 +188,9 @@ fn operation_all_lists_exactly_the_six_protocol_surface_verbs_in_order() {
 /// case) fails.
 #[test]
 fn operation_all_excludes_the_invoke_class_verbs() {
-    assert!(!Operation::ALL.contains(&Operation::CHAT));
-    assert!(!Operation::ALL.contains(&Operation::EMBEDDINGS));
-    assert_eq!(Operation::ALL.len(), 6);
+    assert!(!OpVerb::ALL.contains(&OpVerb::CHAT));
+    assert!(!OpVerb::ALL.contains(&OpVerb::EMBEDDINGS));
+    assert_eq!(OpVerb::ALL.len(), 6);
 }
 
 // ── `hooks.rs`'s redacting `Debug` impls ─────────────────────────────────────────────────────────
@@ -252,7 +254,7 @@ impl RoutingPolicy for MinimalPolicy {
     async fn decide(
         &self,
         _req: &RoutingRequest<'_>,
-        _candidates: &[busbar_api::Candidate<'_>],
+        _candidates: &[busbar_contract::hooks::Candidate<'_>],
         _ctx: &RoutingContext<'_>,
         _budget: std::time::Duration,
     ) -> PolicyResult {

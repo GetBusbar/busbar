@@ -69,15 +69,18 @@ async fn spawn_client_secrets_provider(seen: Arc<Mutex<Option<String>>>) -> std:
 /// A stand-in for the deployment's secret resolver: it answers one reference with one credential and
 /// refuses everything else, so the test can tell "resolved through the seam" from "guessed".
 struct OneSecretResolver {
-    expect: busbar_api::SecretRef,
+    expect: busbar_contract::secret_ref::SecretRef,
     value: String,
 }
 
-impl busbar_api::SecretResolve for OneSecretResolver {
-    fn resolve(&self, secret: &busbar_api::SecretRef) -> Result<Vec<u8>, String> {
+impl busbar_contract::secret::SecretResolve for OneSecretResolver {
+    fn resolve(&self, secret: &busbar_contract::secret_ref::SecretRef) -> Result<Vec<u8>, String> {
         self.resolve_string(secret).map(String::into_bytes)
     }
-    fn resolve_string(&self, secret: &busbar_api::SecretRef) -> Result<String, String> {
+    fn resolve_string(
+        &self,
+        secret: &busbar_contract::secret_ref::SecretRef,
+    ) -> Result<String, String> {
         if secret == &self.expect {
             Ok(self.value.clone())
         } else {
@@ -147,7 +150,7 @@ async fn a_composed_provider_credential_makes_the_mint_pass_serve_the_browser_to
 
 #[test]
 fn the_composition_root_composes_the_provider_through_the_deployments_secret_resolver() {
-    let reference = busbar_api::SecretRef::env("REALTIME_PROVIDER_KEY");
+    let reference = busbar_contract::secret_ref::SecretRef::env("REALTIME_PROVIDER_KEY");
     let resolver = OneSecretResolver {
         expect: reference.clone(),
         value: PROVIDER_KEY.to_string(),
@@ -155,7 +158,7 @@ fn the_composition_root_composes_the_provider_through_the_deployments_secret_res
 
     // A reference this deployment does NOT declare fails closed with the resolver's own message, and
     // composes nothing — an unresolvable credential must never become an empty one.
-    let unknown = busbar_api::SecretRef::env("NOT_DECLARED_HERE");
+    let unknown = busbar_contract::secret_ref::SecretRef::env("NOT_DECLARED_HERE");
     assert!(
         compose_provider("https://api.example.com", &unknown, &resolver).is_err(),
         "an unresolvable reference composes nothing"

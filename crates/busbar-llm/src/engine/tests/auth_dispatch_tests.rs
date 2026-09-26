@@ -9,7 +9,7 @@
 //! binary. The pure-auth (401/verification) tests that never reach dispatch stay in core.
 
 use axum::http::header::AUTHORIZATION;
-use busbar_api::ScopeRef;
+use busbar_contract::records::ScopeRef;
 use busbar_kernel::auth::AuthMiddleware;
 use busbar_substrate_values::sigv4::{
     format_amz_time, sha256_hex, sign_v4, uri_encode_path, X_AMZ_CONTENT_SHA256, X_AMZ_DATE,
@@ -879,7 +879,7 @@ async fn test_governance_inert_without_admin_token_open_relay_admits() {
         )
         .pool("pa", &[(0, 1)])
         // Empty chain = open relay (the old `mode: none`).
-        .upstream_creds(busbar_api::UpstreamCreds::Own)
+        .upstream_creds(busbar_contract::config::UpstreamCreds::Own)
         .governance_kit(gov)
         .build();
 
@@ -1035,7 +1035,7 @@ async fn test_inert_governance_persisted_key_is_not_enforced_static_chain_wins()
     crate::testkit::install_test_seams();
     use crate::test_support::engine_kit::EngineTestKit as _;
     use crate::test_support::{LaneSpec, MockResponse, MockServer, MockServerState, TestApp};
-    use busbar_api::VirtualKey;
+    use busbar_contract::records::VirtualKey;
     use serde_json::json;
     use std::sync::Arc;
 

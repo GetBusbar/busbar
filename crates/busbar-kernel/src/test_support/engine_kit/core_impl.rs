@@ -14,7 +14,7 @@ use super::{
     TestAppKit,
 };
 use crate::test_support::TestApp;
-use busbar_api::{AuditRecord, MeteringRow, Store, VirtualKey};
+use busbar_contract::records::{AuditRecord, MeteringRow, RecordStore, VirtualKey};
 use busbar_kernel::governance::signing::TokenSigner;
 use busbar_kernel::governance::NewKeySpec;
 use busbar_kernel::plane::calllog::CallRecorded;
@@ -51,7 +51,7 @@ impl EngineTestKit for CoreEngineKit {
 
     fn governance(
         &self,
-        store: Arc<dyn Store>,
+        store: Arc<dyn RecordStore>,
         admin_token: Option<String>,
         signer: Option<TokenSigner>,
     ) -> Result<Arc<dyn GovKit>, String> {
@@ -60,7 +60,7 @@ impl EngineTestKit for CoreEngineKit {
             .map_err(|e| e.to_string())
     }
 
-    fn scratch_store(&self) -> Arc<dyn Store> {
+    fn scratch_store(&self) -> Arc<dyn RecordStore> {
         Arc::new(crate::governance::MemoryStore::new())
     }
 
@@ -163,7 +163,7 @@ impl EngineTestKit for CoreEngineKit {
         crate::test_support::plugin_store::durable_cfg(tag)
     }
 
-    fn open_store_plugin(&self, cfg: &str) -> Arc<dyn Store> {
+    fn open_store_plugin(&self, cfg: &str) -> Arc<dyn RecordStore> {
         crate::test_support::plugin_store::open_plugin(cfg)
     }
 }
@@ -229,7 +229,7 @@ impl GovKit for crate::governance::GovState {
     fn gov_resolve(&self) -> &dyn busbar_kernel::trust::validate::GovResolve {
         self
     }
-    fn store(&self) -> Arc<dyn Store> {
+    fn store(&self) -> Arc<dyn RecordStore> {
         crate::governance::GovState::store(self)
     }
     fn flush_metering(&self) -> usize {
@@ -341,7 +341,7 @@ impl TestAppKit for TestApp {
             model, protocol, base_url,
         ));
     }
-    fn set_durable_store(&mut self, store: Arc<dyn Store>) {
+    fn set_durable_store(&mut self, store: Arc<dyn RecordStore>) {
         *self = std::mem::take(self).durable_store(store);
     }
     fn build(self: Box<Self>) -> Arc<dyn EngineApp> {

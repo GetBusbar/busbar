@@ -59,7 +59,7 @@ openapi-schema = []
 # closure while the values lived beside it. Naming the values crate instead drops the engine from
 # `busbar-plane-llm`'s closure outright. Nothing here may take a `busbar-substrate` edge back.
 busbar-substrate-values = { path = "../busbar-substrate-values", default-features = false }
-busbar-api = { path = "../api" }
+busbar-contract = { path = "../busbar-contract" }
 # Debug-only per-method micro-timing (DEFAULT OFF, zero cost) on the heavy translate cells.
 busbar-timing = { path = "../busbar-timing" }
 # HTTP VOCABULARY ONLY — `StatusCode`, `HeaderMap`, `HeaderName`, `HeaderValue`. This is the crate

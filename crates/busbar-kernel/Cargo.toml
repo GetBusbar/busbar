@@ -36,7 +36,6 @@ test-linked = ["busbar-llm", "busbar-mcp", "busbar-a2a"]
 test-fixtures = ["hook=busbar-hook-test-plugin", "store=busbar-store-example-plugin"]
 
 [dependencies]
-busbar-api = { path = "../api" }
 # ── ABSORBED from the pre-1.6.0 busbar-kernel crate (W4.a #19/#37) ────────────────────────────────
 # The chunk-chaining bump allocator behind `scratch::ScratchPad` (#41). The closed JSON span
 # grammar the kernel loop's `grammar`/`teller` modules name used to be its own dependency here
@@ -75,6 +74,9 @@ busbar-kernel-egress = { path = "../busbar-kernel-egress" }
 # edge is acyclic, it is kernel -> kernel (an intra-tier edge ARCHITECTURE_ALLOWED grants), and it
 # is already in this crate's compile closure via `busbar-plugin-loader`.
 busbar-kernel-ledger = { path = "../busbar-kernel-ledger" }
+# The one durable whole-file publish (`durable`), re-exported at `busbar_kernel::durable` for the
+# overlay, the plugin install path and the admin verbs.
+busbar-kernel-wal = { path = "../busbar-kernel-wal" }
 # THE AMENDMENT JOURNAL (item 404): the hook seam and the export dispatch record every content read
 # as an access amendment, and the correction a root admin makes to a recorded count is an adjustment
 # on the same chain. The audit unit depends only on `busbar-contract` and its digest/signature

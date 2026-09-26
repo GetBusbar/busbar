@@ -450,7 +450,7 @@ pub struct HookCfg {
     // `service::redact_settings_bags` first.
     pub settings: serde_json::Map<String, serde_json::Value>,
     /// The "decision observability" DECLARED-SIGNAL surface: the typed
-    /// [`busbar_api::Signal`] catalog entries this hook wants computed + projected onto its own
+    /// [`busbar_contract::signal::Signal`] catalog entries this hook wants computed + projected onto its own
     /// wire payload. Default empty (no signal beyond the always-on core fields) — the zero-cost
     /// default this whole design protects. Parsed via `Signal`'s own `#[serde(rename_all =
     /// "snake_case")]` derive, so an unrecognized name is a BOOT-TIME config error (this struct is
@@ -462,7 +462,7 @@ pub struct HookCfg {
     /// compute fn — declaring a signal here is necessary AND sufficient for it to start being
     /// computed + projected; nothing else (a code change, a recompile) is required.
     #[serde(default)]
-    pub signals: Vec<busbar_api::Signal>,
+    pub signals: Vec<busbar_contract::signal::Signal>,
     /// Fire on EVERY request — inline sugar for adding this name to `global_hooks:`. Default false.
     #[serde(default)]
     pub global: bool,

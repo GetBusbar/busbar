@@ -5,7 +5,7 @@ use super::*;
 // keyword segment (it parses a bare `Ident`/`Path`, and `crate` is not one), so the constant is
 // imported here and referenced unqualified at each instrument site instead.
 use axum::http::HeaderName;
-use busbar_api::VirtualKey;
+use busbar_contract::records::VirtualKey;
 use busbar_kernel::observability::HOTPATH_LEVEL;
 // The single neutral translate entrypoint (G6 step 4): the non-stream cross-protocol response arm
 // routes its read→prepare_for_ingress→write core through `TranslateCodec::translate_response`.
@@ -466,7 +466,7 @@ fn fire_global_taps(
     body: &Value,
     raw_body: &[u8],
     content_type: &str,
-    operation: busbar_api::operation::Operation,
+    operation: busbar_contract::operation::OpVerb,
     pool_name: &str,
     ingress_protocol: &str,
     wants_stream: bool,
@@ -481,7 +481,7 @@ fn fire_global_taps(
     }
     // SELECTION: this tap fires for THIS caller iff its `groups:` scope admits the caller.
     let fires = |groups: &[String]| host.caller_in_hook_groups(caller_group, groups);
-    let ctx = busbar_api::RoutingContext {
+    let ctx = busbar_contract::hooks::RoutingContext {
         pool: pool_name,
         budget_remaining: None,
         // Taps observe request shape; the budget-chain projection is a routing-policy signal
@@ -1027,7 +1027,7 @@ async fn run_rewrite_pass(
     // this plane's `PoolRuntime` (they cannot cross the `build_runtime` downcast). Byte-identical.
     let pool_rewrites: &[(
         std::time::Duration,
-        std::sync::Arc<dyn busbar_api::RoutingPolicy>,
+        std::sync::Arc<dyn busbar_contract::hooks::RoutingPolicy>,
     )] = host.pool_rewrites(pool_name);
     if !host.rewrite_hooks().is_empty() || !pool_rewrites.is_empty() {
         if let Some(lazy) = v.as_mut() {
@@ -1920,7 +1920,7 @@ async fn dispatch_hop(
     client_has_stream_options: bool,
     gemini_json_array: bool,
     caller_token: Option<&str>,
-    upstream_creds: busbar_api::UpstreamCreds,
+    upstream_creds: busbar_contract::config::UpstreamCreds,
     resolved_gov_key: Option<&Arc<VirtualKey>>,
     request_ctx: &RequestCtx,
     breaker_cfg: &Arc<busbar_kernel::store::BreakerCfg>,
@@ -2025,7 +2025,7 @@ async fn run_hop(
     client_has_stream_options: bool,
     gemini_json_array: bool,
     caller_token: Option<&str>,
-    upstream_creds: busbar_api::UpstreamCreds,
+    upstream_creds: busbar_contract::config::UpstreamCreds,
     resolved_gov_key: Option<&Arc<VirtualKey>>,
     request_ctx: &mut RequestCtx,
     breaker_cfg: &Arc<busbar_kernel::store::BreakerCfg>,

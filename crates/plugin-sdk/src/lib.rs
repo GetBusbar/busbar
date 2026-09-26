@@ -3,7 +3,7 @@
 
 //! SDK for writing a busbar **store plugin** in Rust.
 //!
-//! Writing a plugin is: implement [`busbar_api::Store`] for your backend, write a constructor
+//! Writing a plugin is: implement [`busbar_contract::records::RecordStore`] for your backend, write a constructor
 //! `fn(&str) -> Result<Box<dyn Store>, String>` (the `&str` is the JSON config the operator set),
 //! call [`export_store_plugin!`] with it, and build the crate as a `cdylib`. The `cdylib` then
 //! exports the six `extern "C-unwind"` symbols the engine's loader resolves (`busbar_abi`,
@@ -15,7 +15,7 @@
 //!
 //! ```ignore
 //! use busbar_plugin_sdk::export_store_plugin;
-//! fn open(cfg: &str) -> Result<Box<dyn busbar_api::Store>, String> {
+//! fn open(cfg: &str) -> Result<Box<dyn busbar_contract::records::RecordStore>, String> {
 //!     Ok(Box::new(MyStore::new(cfg)?))
 //! }
 //! export_store_plugin!(open);
@@ -25,7 +25,7 @@
 //! `MyStore` directly — the C ABI is only the *dynamic* delivery path. That is how a build can bake
 //! a plugin in (e.g. Postgres compiled straight into a custom binary) without any `cfg` sprawl.
 
-use busbar_api::{Store, StoreError};
+use busbar_contract::records::{RecordStore, RecordStoreError};
 use busbar_plugin::cold::{StoreRequest, StoreResponse, ABI_VERSION};
 use std::os::raw::c_void;
 
@@ -36,11 +36,11 @@ pub use boundary::BoundaryOutcome;
 // depending on `busbar-api` directly. `export_store_plugin!` does NOT use this alias (it expands
 // to `store_dispatch`/`StoreHandle`, never `StoreTrait`) — this is frozen SDK surface kept for
 // callers outside this repo, not for anything internal to the macro.
-pub use busbar_api::Store as StoreTrait;
+pub use busbar_contract::records::RecordStore as StoreTrait;
 
 /// The "decision observability" signal catalog: a plugin author references
 /// `busbar_plugin_sdk::Signal::CandidateBreakerState` (etc.) at compile time to declare which
-/// catalog entries their hook wants computed + projected — see `busbar_api::Signal`'s doc comment
+/// catalog entries their hook wants computed + projected — see `busbar_contract::signal::Signal`'s doc comment
 /// for the full catalog and the append-only/non_exhaustive contract.
 pub use busbar_plugin::cold::{Signal, SignalBag, SignalValue};
 
@@ -57,7 +57,7 @@ pub use busbar_plugin::cold::ColdEntry;
 
 /// The handle type behind the opaque `*mut c_void` for a store plugin (a boxed trait object). Named at
 /// the module level so the `export_plugin!` expansion can pass it to `close_boundary::<$ty>`.
-pub type StoreHandle = Box<dyn Store>;
+pub type StoreHandle = Box<dyn RecordStore>;
 
 /// The store handle behind the opaque `*mut c_void` that crosses the ABI: a boxed trait object.
 type BoxedStore = StoreHandle;
@@ -78,7 +78,10 @@ pub fn transport_version() -> u32 {
 
 /// Run one [`StoreRequest`] against a `Store`. The single match that maps the wire enum to the trait
 /// — shared by the C `call` glue and directly unit-testable without any FFI.
-pub fn dispatch(store: &dyn Store, req: StoreRequest) -> Result<StoreResponse, StoreError> {
+pub fn dispatch(
+    store: &dyn RecordStore,
+    req: StoreRequest,
+) -> Result<StoreResponse, RecordStoreError> {
     use StoreRequest as Q;
     use StoreResponse as R;
     Ok(match req {
@@ -161,7 +164,7 @@ pub fn dispatch(store: &dyn Store, req: StoreRequest) -> Result<StoreResponse, S
         // durable-plane surface now (the fourteen protocol-named arms are deleted, `ABI_VERSION` was
         // raised to 3 in 1.6.0 for that, then to 4 in 1.7.0 when the plane-record types relocated;
         // see `busbar_plugin::cold::ABI_VERSION`). Upsert and append reconstitute a
-        // [`busbar_api::PlaneRecord`] from the request and
+        // [`busbar_contract::records::PlaneRecord`] from the request and
         // NOTHING else, which is why the write verbs carry the whole typed sidecar: `ts` and
         // `disposition` are the two columns a retention sweep reads and the two it cannot recover
         // from an opaque body, so a wire that dropped them would hand every backend behind this ABI
@@ -180,7 +183,7 @@ pub fn dispatch(store: &dyn Store, req: StoreRequest) -> Result<StoreResponse, S
             disposition,
             body,
         } => {
-            store.upsert_plane_record(&busbar_api::PlaneRecord {
+            store.upsert_plane_record(&busbar_contract::records::PlaneRecord {
                 kind,
                 id,
                 parent: None,
@@ -201,7 +204,7 @@ pub fn dispatch(store: &dyn Store, req: StoreRequest) -> Result<StoreResponse, S
             disposition,
             body,
         } => {
-            store.append_plane_record(&busbar_api::PlaneRecord {
+            store.append_plane_record(&busbar_contract::records::PlaneRecord {
                 kind,
                 id,
                 parent: Some(parent),
@@ -272,23 +275,23 @@ pub unsafe fn store_dispatch(handle: *mut c_void, bytes: &[u8]) -> BoundaryOutco
 // (`Box<dyn AuthModule>`) and the identity-only auth wire. A denied credential is a SUCCESSFUL call
 // (`Reject`/`Pass` ride the OK payload); only a malformed request / encode failure is a protocol error.
 
-/// The auth handle behind the opaque `*mut c_void`: a boxed [`busbar_api::AuthPlugin`] — an auth
-/// module that is BOTH a verifier ([`busbar_api::AuthModule`]) and a login provider
-/// ([`busbar_api::LoginModule`], fail-closed by default for verify-only modules). Named at the module
+/// The auth handle behind the opaque `*mut c_void`: a boxed [`busbar_contract::auth::AuthPlugin`] — an auth
+/// module that is BOTH a verifier ([`busbar_contract::auth::AuthModule`]) and a login provider
+/// ([`busbar_contract::auth::LoginModule`], fail-closed by default for verify-only modules). Named at the module
 /// level so the `export_plugin!` expansion can pass it to `close_boundary::<$ty>`.
-pub type AuthHandle = Box<dyn busbar_api::AuthPlugin>;
+pub type AuthHandle = Box<dyn busbar_contract::auth::AuthPlugin>;
 
 /// Re-export the auth wire and the two auth faces so an auth author (and the `dispatch_compiled_in`
 /// twin `export_auth_plugin!` emits) names `busbar_plugin_sdk::AuthRequest` (etc.) without a direct
 /// `busbar-plugin` dependency, mirroring the hook/export re-export path.
-pub use busbar_api::{AuthModule, AuthPlugin};
+pub use busbar_contract::auth::{AuthModule, AuthPlugin};
 pub use busbar_plugin::cold::auth::{AuthRequest, AuthResponse};
 
-/// The auth handle behind the opaque `*mut c_void`: a boxed [`busbar_api::AuthPlugin`].
+/// The auth handle behind the opaque `*mut c_void`: a boxed [`busbar_contract::auth::AuthPlugin`].
 type BoxedAuth = AuthHandle;
 
-/// Fail-closed login adapter: wraps a verify-only [`busbar_api::AuthModule`] as a full
-/// [`busbar_api::AuthPlugin`] by delegating the verify methods and taking [`busbar_api::LoginModule`]'s
+/// Fail-closed login adapter: wraps a verify-only [`busbar_contract::auth::AuthModule`] as a full
+/// [`busbar_contract::auth::AuthPlugin`] by delegating the verify methods and taking [`busbar_contract::auth::LoginModule`]'s
 /// default (Reject) login behavior. This is what lets `export_auth_plugin!` keep accepting a
 /// `fn(&str) -> Result<Box<dyn AuthModule>, String>` ctor UNCHANGED while the exported handle is the
 /// unified `Box<dyn AuthPlugin>`.
@@ -297,27 +300,27 @@ type BoxedAuth = AuthHandle;
 /// compiled-in twin `export_auth_plugin!` emits BORROWS the one its caller opened (`&`) — one adapter,
 /// so the two doors cannot adapt a verify-only module differently.
 struct VerifyOnlyAuth<M>(M);
-impl<'a, M: std::ops::Deref<Target = dyn busbar_api::AuthModule + 'a> + Send + Sync>
-    busbar_api::AuthModule for VerifyOnlyAuth<M>
+impl<'a, M: std::ops::Deref<Target = dyn busbar_contract::auth::AuthModule + 'a> + Send + Sync>
+    busbar_contract::auth::AuthModule for VerifyOnlyAuth<M>
 {
     fn name(&self) -> &'static str {
         self.0.name()
     }
-    fn authenticate(&self, candidate: Option<&str>) -> busbar_api::AuthOutcome {
+    fn authenticate(&self, candidate: Option<&str>) -> busbar_contract::auth::AuthVerdict {
         self.0.authenticate(candidate)
     }
     fn cacheable(&self) -> bool {
         self.0.cacheable()
     }
 }
-impl<'a, M: std::ops::Deref<Target = dyn busbar_api::AuthModule + 'a> + Send + Sync>
-    busbar_api::LoginModule for VerifyOnlyAuth<M>
+impl<'a, M: std::ops::Deref<Target = dyn busbar_contract::auth::AuthModule + 'a> + Send + Sync>
+    busbar_contract::auth::LoginModule for VerifyOnlyAuth<M>
 {
 }
 
 /// Wrap a verify-only auth module into the unified [`AuthHandle`]. Used by the `export_auth_plugin!`
 /// expansion; also the boundary for future login-capable plugins (which would box directly).
-pub fn adapt_auth_handle(module: Box<dyn busbar_api::AuthModule>) -> AuthHandle {
+pub fn adapt_auth_handle(module: Box<dyn busbar_contract::auth::AuthModule>) -> AuthHandle {
     Box::new(VerifyOnlyAuth(module))
 }
 
@@ -334,7 +337,7 @@ pub fn auth_abi_version() -> u32 {
 /// maps the wire enum to the trait, unit-testable without FFI. An empty `credential` (no usable
 /// credential presented) is passed to `authenticate(None)`.
 pub fn dispatch_auth(
-    module: &dyn busbar_api::AuthPlugin,
+    module: &dyn busbar_contract::auth::AuthPlugin,
     req: busbar_plugin::cold::auth::AuthRequest,
 ) -> busbar_plugin::cold::auth::AuthResponse {
     use busbar_plugin::cold::auth::{AuthRequest, AuthResponse};
@@ -374,7 +377,7 @@ pub fn dispatch_auth(
 /// back-channel of its own to reach. Shipped at auth payload schema v3 ([`auth_abi_version`]); the
 /// loader keeps the v1 floor and reads a bare (pre-envelope) answer exactly as before.
 pub fn dispatch_auth_enveloped(
-    module: &dyn busbar_api::AuthPlugin,
+    module: &dyn busbar_contract::auth::AuthPlugin,
     req: busbar_plugin::cold::auth::AuthRequest,
 ) -> Envelope<busbar_plugin::cold::auth::AuthResponse> {
     Envelope::bare(dispatch_auth(module, req))
@@ -385,7 +388,7 @@ pub fn dispatch_auth_enveloped(
 /// `export_auth_plugin!` emits runs, so the compiled-in door cannot adapt the module differently.
 #[doc(hidden)]
 pub fn dispatch_verify_only_enveloped(
-    module: &dyn busbar_api::AuthModule,
+    module: &dyn busbar_contract::auth::AuthModule,
     req: busbar_plugin::cold::auth::AuthRequest,
 ) -> Envelope<busbar_plugin::cold::auth::AuthResponse> {
     dispatch_auth_enveloped(&VerifyOnlyAuth(module), req)
@@ -413,7 +416,7 @@ pub unsafe fn auth_dispatch(handle: *mut c_void, bytes: &[u8]) -> BoundaryOutcom
 }
 
 /// Emit an `auth`-kind cdylib plugin from `$ctor` (a
-/// `fn(&str) -> Result<Box<dyn busbar_api::AuthModule>, String>`). Expands through
+/// `fn(&str) -> Result<Box<dyn busbar_contract::auth::AuthModule>, String>`). Expands through
 /// [`export_plugin!`], stamping `busbar_plugin_kind() == "auth"` + the six neutral symbols.
 /// The host log bridge — how a plugin's diagnostics reach the operator.
 ///
@@ -624,17 +627,17 @@ macro_rules! export_auth_plugin {
 }
 
 /// Emit an `auth`-kind cdylib plugin from `$ctor` (a
-/// `fn(&str) -> Result<Box<dyn busbar_api::AuthPlugin>, String>`) — a LOGIN-CAPABLE module that
-/// implements BOTH [`busbar_api::AuthModule`] (verify) AND [`busbar_api::LoginModule`]
+/// `fn(&str) -> Result<Box<dyn busbar_contract::auth::AuthPlugin>, String>`) — a LOGIN-CAPABLE module that
+/// implements BOTH [`busbar_contract::auth::AuthModule`] (verify) AND [`busbar_contract::auth::LoginModule`]
 /// (BeginLogin/CompleteLogin).
 ///
 /// This is the sibling of [`export_auth_plugin!`] for a plugin that also drives the hosted browser
 /// login flow (e.g. `auth-oidc`). The crucial difference: `export_auth_plugin!` routes its ctor
-/// through the verify-only `VerifyOnlyAuth` adapter, which takes [`busbar_api::LoginModule`]'s
+/// through the verify-only `VerifyOnlyAuth` adapter, which takes [`busbar_contract::auth::LoginModule`]'s
 /// fail-closed default — so a login-capable plugin exported through it would have its login
 /// capability MASKED (every BeginLogin/CompleteLogin would return `Reject`). `export_login_plugin!`
 /// boxes the ctor's `Box<dyn AuthPlugin>` DIRECTLY (no adapter), so [`auth_dispatch`] sees the real
-/// [`busbar_api::LoginModule`] impl and the login arms work.
+/// [`busbar_contract::auth::LoginModule`] impl and the login arms work.
 ///
 /// Both macros stamp `busbar_plugin_kind() == "auth"` and the same six neutral symbols, so the
 /// plugin loader treats a login plugin exactly like any other auth plugin (its `abi_version >= 2`
@@ -672,11 +675,11 @@ macro_rules! export_login_plugin {
 // panic-catching impl style, its own handle type (`Box<dyn SecretModule>`) and its own tiny
 // request enum.
 
-/// The secret handle behind the opaque `*mut c_void`: a boxed [`busbar_api::SecretModule`]. Named at
+/// The secret handle behind the opaque `*mut c_void`: a boxed [`busbar_contract::secret::SecretModule`]. Named at
 /// the module level so the `export_plugin!` expansion can pass it to `close_boundary::<$ty>`.
-pub type SecretHandle = Box<dyn busbar_api::SecretModule>;
+pub type SecretHandle = Box<dyn busbar_contract::secret::SecretModule>;
 
-/// The secret handle behind the opaque `*mut c_void`: a boxed [`busbar_api::SecretModule`].
+/// The secret handle behind the opaque `*mut c_void`: a boxed [`busbar_contract::secret::SecretModule`].
 type BoxedSecret = SecretHandle;
 
 /// Return the SECRET ABI version this SDK builds against (`busbar_secret_abi_version`). See
@@ -688,9 +691,9 @@ pub fn secret_abi_version() -> u32 {
 /// Run one [`busbar_plugin::cold::SecretRequest`] against a secret module - the single match that
 /// maps the wire enum to the trait, unit-testable without FFI.
 pub fn dispatch_secret(
-    module: &dyn busbar_api::SecretModule,
+    module: &dyn busbar_contract::secret::SecretModule,
     req: busbar_plugin::cold::SecretRequest,
-) -> Result<busbar_plugin::cold::SecretResponse, busbar_api::SecretError> {
+) -> Result<busbar_plugin::cold::SecretResponse, busbar_contract::secret::SecretModuleError> {
     match req {
         // `deadline_ms` is advisory — nothing at THIS layer enforces it — but it is handed to the
         // module, which is the only party that could act on it. The old comment described a seam
@@ -1699,7 +1702,7 @@ macro_rules! export_plugin {
 }
 
 /// Emit a `secret`-kind cdylib plugin from `$ctor` (a
-/// `fn(&str) -> Result<Box<dyn busbar_api::SecretModule>, String>`). Expands through
+/// `fn(&str) -> Result<Box<dyn busbar_contract::secret::SecretModule>, String>`). Expands through
 /// [`export_plugin!`], stamping `busbar_plugin_kind() == "secret"` + the six neutral symbols.
 #[macro_export]
 macro_rules! export_secret_plugin {

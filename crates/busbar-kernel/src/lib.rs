@@ -214,10 +214,10 @@ pub mod diagnostics;
 // `busbar-unit-<step>` crate in ANY order by editing one line here. Pure additive/dormant re-export
 // of already-`pub` modules — no code moves, the shipped path is byte-untouched. See the module.
 pub mod drain;
-// The durable-write choke point moved to the shared `busbar-api` crate so the plugin-loader
-// (plugins.fetch cache write) can route through the SAME primitive. Re-exported here so every
-// existing `crate::durable::*` call site in this binary resolves unchanged.
-pub use busbar_api::durable;
+// The durable-write choke point lives in `busbar-kernel-wal` (the durable medium) so the plugin-loader
+// (plugins.fetch cache write), which this crate links, can route through the SAME primitive.
+// Re-exported here so every existing `crate::durable::*` call site in this binary resolves unchanged.
+pub use busbar_kernel_wal::durable;
 // The host-owned outbound surface: the neutral SSRF-pinned client (re-exported wholesale from
 // busbar-substrate) plus the host-mediated `seam` adapter that drives egress through the
 // `plane_host` FFI vtable, gated behind the neutral `egress-seam` capability feature rather than
@@ -253,14 +253,14 @@ pub mod metrics;
 pub mod net_guard;
 pub mod oauth_as;
 pub mod observability;
-// `operation` is the neutral operation vocabulary (`Operation`, `OpShape`), re-exported wholesale
-// from `busbar-api` so `crate::operation::Operation` and `busbar_kernel::operation::*` are unchanged
+// `operation` is the neutral operation vocabulary (`OpVerb`, `OpShape`), re-exported wholesale
+// from `busbar-contract` so `crate::operation::OpVerb` and `busbar_kernel::operation::*` resolve
 // for every existing user. THE ONE GAUNTLET (`run`, the single canonical resolved-operation entry
 // every arrival converges on) RELOCATED with the extracted engine plane into its own crate; core
 // reaches it only through the neutral body-arrival seam, so this is now a plain re-export of the
 // neutral vocabulary.
 pub mod operation {
-    pub use busbar_api::operation::*;
+    pub use busbar_contract::operation::*;
 }
 
 #[cfg(test)]
@@ -298,7 +298,8 @@ pub mod session;
 /// admin HTTP API.
 pub(crate) mod taxonomy;
 // wt2/neutral-utils: the hand-rolled SigV4 signer relocated DOWN to busbar-substrate (neutral crypto,
-// verifies via `busbar_api::constant_time_eq`). Core re-exports it so `crate::sigv4::…` is unchanged.
+// verifies via `busbar_contract::redacted::constant_time_eq`). Core re-exports it so
+// `crate::sigv4::…` is unchanged.
 pub use busbar_substrate_values::sigv4;
 pub mod state;
 pub mod store;

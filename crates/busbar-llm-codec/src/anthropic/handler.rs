@@ -5,7 +5,7 @@
 //! its non-chat operations stay `None` = no-handler 404. Chat dispatches through the same registry as
 //! every other operation.
 
-use busbar_api::operation::Operation;
+use busbar_contract::operation::OpVerb;
 use busbar_substrate_values::handlers::{OperationHandler, RequestHandler};
 use busbar_substrate_values::wire::EgressCtx;
 
@@ -23,13 +23,13 @@ static CHAT: super::super::chat_handle::ChatOperation =
 /// 404, and it is the SAME answer for the LLM verbs Anthropic lacks and for the protocol-surface
 /// verbs that are MCP's and A2A's rather than a special case: a protocol that does not speak a verb
 /// has no cell, so the pair is unrepresentable rather than refused at runtime.
-static CELLS: &[busbar_substrate_values::handlers::Cell] = &[(Operation::CHAT, &CHAT)];
+static CELLS: &[busbar_substrate_values::handlers::Cell] = &[(OpVerb::CHAT, &CHAT)];
 
 impl RequestHandler for AnthropicRequestHandler {
     fn protocol_name(&self) -> &'static str {
         "anthropic"
     }
-    fn operation_handler(&self, op: Operation) -> Option<&dyn OperationHandler> {
+    fn operation_handler(&self, op: OpVerb) -> Option<&dyn OperationHandler> {
         busbar_substrate_values::handlers::cell_of(CELLS, op)
     }
     fn upstream_path(&self, ctx: &EgressCtx) -> String {
@@ -49,8 +49,8 @@ impl RequestHandler for AnthropicRequestHandler {
             None => PATH_MESSAGES.into(),
         }
     }
-    fn resolve_operation(&self, path: &str, _body: &[u8]) -> Option<Operation> {
-        path.ends_with(PATH_MESSAGES).then_some(Operation::CHAT)
+    fn resolve_operation(&self, path: &str, _body: &[u8]) -> Option<OpVerb> {
+        path.ends_with(PATH_MESSAGES).then_some(OpVerb::CHAT)
     }
 }
 

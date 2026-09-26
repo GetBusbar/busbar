@@ -38,7 +38,7 @@ use std::collections::BTreeMap;
 
 // Re-exported so `use super::*;` in this module's tests (which construct a `ScopeRef` directly,
 // matching what the pre-move `groups.rs` imported for the same purpose) keeps resolving.
-pub use busbar_api::ScopeRef;
+pub use busbar_contract::records::ScopeRef;
 
 /// Validate the whole `groups:` tree: parents exist, acyclic, and every `pool:`
 /// qualifier on a limit (own `limits` and `child_default.limits` alike) names a pool that exists.

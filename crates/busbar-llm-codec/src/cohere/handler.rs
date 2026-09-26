@@ -6,7 +6,7 @@
 use crate::ir::embeddings::{
     EmbInput, EmbeddingItem, EmbeddingsReq, EmbeddingsResp, EncFmt, VectorData,
 };
-use busbar_api::operation::Operation;
+use busbar_contract::operation::OpVerb;
 use busbar_substrate_values::handlers::{
     CodecError, IngressReject, OperationHandler, RequestHandler,
 };
@@ -33,23 +33,23 @@ static RERANK: CohereRerank = CohereRerank;
 /// it is the standard no-handler 404: Cohere has no moderation/image/audio surface, and the
 /// protocol-surface verbs are MCP's and A2A's.
 static CELLS: &[busbar_substrate_values::handlers::Cell] = &[
-    (Operation::CHAT, &CHAT),
-    (Operation::EMBEDDINGS, &EMB),
-    (Operation::RERANK, &RERANK),
+    (OpVerb::CHAT, &CHAT),
+    (OpVerb::EMBEDDINGS, &EMB),
+    (OpVerb::RERANK, &RERANK),
 ];
 
 /// The egress half of the path constants above; `resolve_operation` reads the same ones inbound.
-static PATHS: &[(Operation, &str)] = &[
-    (Operation::CHAT, PATH_CHAT),
-    (Operation::RERANK, PATH_RERANK),
-    (Operation::EMBEDDINGS, PATH_EMBED),
+static PATHS: &[(OpVerb, &str)] = &[
+    (OpVerb::CHAT, PATH_CHAT),
+    (OpVerb::RERANK, PATH_RERANK),
+    (OpVerb::EMBEDDINGS, PATH_EMBED),
 ];
 
 impl RequestHandler for CohereRequestHandler {
     fn protocol_name(&self) -> &'static str {
         "cohere"
     }
-    fn operation_handler(&self, op: Operation) -> Option<&dyn OperationHandler> {
+    fn operation_handler(&self, op: OpVerb) -> Option<&dyn OperationHandler> {
         busbar_substrate_values::handlers::cell_of(CELLS, op)
     }
     fn upstream_path(&self, ctx: &EgressCtx) -> String {
@@ -59,13 +59,13 @@ impl RequestHandler for CohereRequestHandler {
             .unwrap_or(PATH_EMBED)
             .into()
     }
-    fn resolve_operation(&self, path: &str, _body: &[u8]) -> Option<Operation> {
+    fn resolve_operation(&self, path: &str, _body: &[u8]) -> Option<OpVerb> {
         if path.ends_with(PATH_CHAT) {
-            Some(Operation::CHAT)
+            Some(OpVerb::CHAT)
         } else if path.ends_with(PATH_EMBED) {
-            Some(Operation::EMBEDDINGS)
+            Some(OpVerb::EMBEDDINGS)
         } else if path.ends_with(PATH_RERANK) {
-            Some(Operation::RERANK)
+            Some(OpVerb::RERANK)
         } else {
             None
         }

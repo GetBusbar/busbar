@@ -86,8 +86,8 @@ pub struct ImageReq {
 /// opacity): each `input_images` entry and the `mask`. The geometry / quality / sampling / provenance
 /// knobs are enum/numeric roles, not caller free-text, and stay out.
 impl busbar_substrate_values::ir::facts::IrFacts for ImageReq {
-    fn verb(&self) -> busbar_api::operation::Operation {
-        busbar_api::operation::Operation::IMAGE
+    fn verb(&self) -> busbar_contract::operation::OpVerb {
+        busbar_contract::operation::OpVerb::IMAGE
     }
 
     fn wants_stream(&self) -> bool {

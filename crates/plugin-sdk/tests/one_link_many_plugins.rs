@@ -19,14 +19,14 @@ use busbar_plugin::cold::STATUS_PROTOCOL;
 use busbar_plugin_sdk::__door;
 
 mod first {
-    fn open(_cfg: &str) -> Result<Box<dyn busbar_api::Store>, String> {
+    fn open(_cfg: &str) -> Result<Box<dyn busbar_contract::records::RecordStore>, String> {
         Err("first plugin refuses".into())
     }
     busbar_plugin_sdk::export_store_plugin!(open);
 }
 
 mod second {
-    fn open(_cfg: &str) -> Result<Box<dyn busbar_api::Store>, String> {
+    fn open(_cfg: &str) -> Result<Box<dyn busbar_contract::records::RecordStore>, String> {
         Err("second plugin refuses".into())
     }
     busbar_plugin_sdk::export_store_plugin!(open);

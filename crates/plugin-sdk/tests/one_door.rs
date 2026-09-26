@@ -11,7 +11,7 @@
 use busbar_plugin::cold::STATUS_ERR;
 use busbar_plugin_sdk::__door;
 
-fn open(_cfg: &str) -> Result<Box<dyn busbar_api::Store>, String> {
+fn open(_cfg: &str) -> Result<Box<dyn busbar_contract::records::RecordStore>, String> {
     Err("the one plugin refuses".into())
 }
 busbar_plugin_sdk::export_store_plugin!(open);

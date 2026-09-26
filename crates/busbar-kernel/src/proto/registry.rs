@@ -150,7 +150,7 @@ pub fn residual_default_protocol() -> Option<&'static str> {
 
 #[cfg(test)]
 #[cfg_attr(not(any(test, feature = "test-support")), allow(dead_code))]
-pub fn declared_verbs() -> &'static [crate::operation::Operation] {
+pub fn declared_verbs() -> &'static [crate::operation::OpVerb] {
     busbar_substrate_values::proto::set_test_builtins(builtin_decls);
     busbar_substrate_values::proto::declared_verbs()
 }

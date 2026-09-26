@@ -201,7 +201,8 @@ fn classify_error(
 ) -> AttemptOutcome {
     let (host, rt, i, pool) = (hop.host, hop.rt, hop.lane, hop.pool_cell);
     // A passthrough 401/403 is the CALLER's key failing, not busbar's: no breaker penalty, relay.
-    let is_passthrough_40x = hop.upstream_creds == busbar_api::UpstreamCreds::Passthrough
+    let is_passthrough_40x = hop.upstream_creds
+        == busbar_contract::config::UpstreamCreds::Passthrough
         && (status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN);
     if is_passthrough_40x {
         // Nothing records an outcome here, so the still-armed probe guard releases any won

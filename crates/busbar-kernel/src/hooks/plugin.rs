@@ -70,7 +70,7 @@ pub(crate) fn projectors() -> Arc<HookProjectors> {
         // the caller's `on_error` disposes of (the `normalize` twin above does the same).
         transform_outcome: Box::new(|v| match serde_json::from_value::<wire::HookResponse>(v) {
             Ok(parsed) => wire::transform_outcome(parsed),
-            Err(e) => busbar_api::TransformOutcome::Failed {
+            Err(e) => busbar_contract::hooks::TransformOutcome::Failed {
                 message: format!("hook transform reply failed to parse: {e}"),
             },
         }),

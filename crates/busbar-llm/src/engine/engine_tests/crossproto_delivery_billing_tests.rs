@@ -27,7 +27,7 @@ fn fixture() -> (
     Arc<crate::test_support::BuiltApp>,
     Arc<dyn GovKit>,
     Arc<dyn CostKit>,
-    busbar_api::VirtualKey,
+    busbar_contract::records::VirtualKey,
 ) {
     crate::testkit::install_test_seams();
     let store = crate::test_support::engine_kit::CORE_ENGINE_KIT.scratch_store();
@@ -244,7 +244,7 @@ async fn ingress_unsupported_404_does_not_charge() {
     let out = drive(
         busbar_substrate_values::handlers::op_for(
             "openai",
-            busbar_api::operation::Operation::EMBEDDINGS,
+            busbar_contract::operation::OpVerb::EMBEDDINGS,
             busbar_substrate_values::transport::Transport::Http,
         )
         .expect("openai serves embeddings"),
@@ -283,7 +283,7 @@ async fn untranslatable_500_does_not_charge() {
     let out = drive(
         busbar_substrate_values::handlers::op_for(
             "openai",
-            busbar_api::operation::Operation::SPEECH,
+            busbar_contract::operation::OpVerb::SPEECH,
             busbar_substrate_values::transport::Transport::Http,
         )
         .expect("openai serves speech"),

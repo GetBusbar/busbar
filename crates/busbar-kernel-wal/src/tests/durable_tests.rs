@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Tests for `crates/api/src/durable.rs`.
+//! Tests for `crates/busbar-kernel-wal/src/durable.rs`.
 
 use super::{
     create_dir_all, fault_arm, fault_parent_fsynced, fault_parents_fsynced, fault_reset,

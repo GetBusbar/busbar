@@ -34,7 +34,7 @@ fn path_base_reshapes_the_gemini_url_for_vertex() {
     let h = GeminiRequestHandler;
     let model = "gemini-2.0-flash";
     let ctx = |path_base| EgressCtx {
-        operation: Operation::CHAT,
+        operation: OpVerb::CHAT,
         model,
         stream: false,
         path_base,
@@ -54,7 +54,7 @@ fn path_base_reshapes_the_gemini_url_for_vertex() {
     // Embeddings keep their verb on the overridden base too.
     assert_eq!(
             h.upstream_path(&EgressCtx {
-                operation: Operation::EMBEDDINGS,
+                operation: OpVerb::EMBEDDINGS,
                 model,
                 stream: false,
                 path_base: Some(vbase),
@@ -163,7 +163,7 @@ fn resolve_operation_audio_out_is_speech() {
     .unwrap();
     assert_eq!(
         h.resolve_operation("/v1beta/models/gemini-x:generateContent", &body),
-        Some(Operation::SPEECH),
+        Some(OpVerb::SPEECH),
     );
 }
 
@@ -179,7 +179,7 @@ fn resolve_operation_audio_in_is_transcription() {
     let h = GeminiRequestHandler;
     assert_eq!(
         h.resolve_operation("/v1beta/models/gemini-x:generateContent", &body),
-        Some(Operation::TRANSCRIPTION),
+        Some(OpVerb::TRANSCRIPTION),
     );
 }
 
@@ -201,7 +201,7 @@ fn resolve_operation_multiple_markers_prefers_speech_over_transcription() {
     let h = GeminiRequestHandler;
     assert_eq!(
         h.resolve_operation("/v1beta/models/gemini-x:generateContent", &body),
-        Some(Operation::SPEECH),
+        Some(OpVerb::SPEECH),
     );
 }
 
@@ -216,7 +216,7 @@ fn resolve_operation_no_markers_at_all_is_chat() {
             "/v1beta/models/gemini-x:generateContent",
             b"not json at all"
         ),
-        Some(Operation::CHAT),
+        Some(OpVerb::CHAT),
     );
 }
 
@@ -230,7 +230,7 @@ fn resolve_operation_plain_text_is_chat() {
     let h = GeminiRequestHandler;
     assert_eq!(
         h.resolve_operation("/v1beta/models/gemini-x:generateContent", &body),
-        Some(Operation::CHAT),
+        Some(OpVerb::CHAT),
     );
 }
 

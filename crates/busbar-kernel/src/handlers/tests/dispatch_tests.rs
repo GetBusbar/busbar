@@ -13,15 +13,12 @@ fn a_non_chat_operation_failure_reaches_the_breaker_with_a_status_attributed() {
     // Found by what makes it the subject — codec-less and serving Invoke — not by its name.
     let codecless = crate::proto::registry::builtin_decls()
         .iter()
-        .find(|d| d.codec.is_none() && d.verbs.contains(&Operation::INVOKE))
+        .find(|d| d.codec.is_none() && d.verbs.contains(&OpVerb::INVOKE))
         .map(|d| d.name)
         .expect("the test binary ships a codec-less protocol that serves Invoke");
-    let cell = crate::handlers::op_for(
-        codecless,
-        Operation::INVOKE,
-        crate::transport::Transport::Http,
-    )
-    .unwrap_or_else(|| panic!("the ({codecless}, Invoke) cell is registered"));
+    let cell =
+        crate::handlers::op_for(codecless, OpVerb::INVOKE, crate::transport::Transport::Http)
+            .unwrap_or_else(|| panic!("the ({codecless}, Invoke) cell is registered"));
 
     let raw = cell.extract_error(503, br#"{"jsonrpc":"2.0","error":{"code":-32000}}"#);
 
@@ -52,20 +49,20 @@ fn a_non_chat_operation_failure_reaches_the_breaker_with_a_status_attributed() {
 fn every_cell_of_the_six_protocols_reports_its_protocol_vocabulary() {
     /// Every variant, listed once — the same written-out sweep `operation.rs`'s tests use, so a new
     /// operation is not silently skipped by this matrix.
-    const ALL_OPERATIONS: [Operation; 13] = [
-        Operation::CHAT,
-        Operation::EMBEDDINGS,
-        Operation::MODERATION,
-        Operation::IMAGE,
-        Operation::TRANSCRIPTION,
-        Operation::SPEECH,
-        Operation::RERANK,
-        Operation::INVOKE,
-        Operation::CATALOGUE,
-        Operation::FETCH,
-        Operation::TASK,
-        Operation::SUBSCRIBE,
-        Operation::CONTROL,
+    const ALL_OPERATIONS: [OpVerb; 13] = [
+        OpVerb::CHAT,
+        OpVerb::EMBEDDINGS,
+        OpVerb::MODERATION,
+        OpVerb::IMAGE,
+        OpVerb::TRANSCRIPTION,
+        OpVerb::SPEECH,
+        OpVerb::RERANK,
+        OpVerb::INVOKE,
+        OpVerb::CATALOGUE,
+        OpVerb::FETCH,
+        OpVerb::TASK,
+        OpVerb::SUBSCRIBE,
+        OpVerb::CONTROL,
     ];
     // Real envelopes from each family, plus the two shapes that exercise the readers' edges: a body
     // that is not JSON at all, and one whose prose alone signals context length.

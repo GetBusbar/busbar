@@ -18,7 +18,7 @@
 mod gate_tests;
 
 // ==== merged from busbar-substrate (W4.b P2 engine drain) ====
-use busbar_api::VirtualKey;
+use busbar_contract::records::VirtualKey;
 
 /// ONE GRANT THAT MUST PASS: which check this is, the scope KIND it is asked under, and the VALUE
 /// looked up in the caller's grant list.

@@ -124,7 +124,7 @@ impl SamplingSpend {
 /// over less than the upstream sent is an answer to a question nobody asked.
 pub(crate) async fn satisfy_upstream_ask(
     host: &std::sync::Arc<dyn busbar_kernel::plane_host::EngineHost>,
-    gov: &busbar_api::PlaneRequestCtx,
+    gov: &busbar_contract::records::PlaneRequestCtx,
     ask: &super::inputreq::Ask,
     server: &str,
     cfg: Option<&super::config::SamplingCfg>,
@@ -384,7 +384,7 @@ fn oversized_prompt(cfg: &super::config::SamplingCfg, server: &str) -> String {
 /// `CreateMessageResult`.
 async fn complete(
     host: &std::sync::Arc<dyn busbar_kernel::plane_host::EngineHost>,
-    gov: &busbar_api::PlaneRequestCtx,
+    gov: &busbar_contract::records::PlaneRequestCtx,
     cfg: &super::config::SamplingCfg,
     body: serde_json::Value,
 ) -> Result<serde_json::Value, String> {

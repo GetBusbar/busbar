@@ -47,8 +47,11 @@ fn target_ref(value: &[u8], scope_kind: u32) -> TargetRef {
     }
 }
 
-fn scoped_key(id: &str, scopes: Option<Vec<busbar_api::ScopeRef>>) -> busbar_api::VirtualKey {
-    busbar_api::VirtualKey {
+fn scoped_key(
+    id: &str,
+    scopes: Option<Vec<busbar_contract::records::ScopeRef>>,
+) -> busbar_contract::records::VirtualKey {
+    busbar_contract::records::VirtualKey {
         id: id.to_string(),
         generation_hash: String::new(),
         name: "test".to_string(),
@@ -65,8 +68,8 @@ fn scoped_key(id: &str, scopes: Option<Vec<busbar_api::ScopeRef>>) -> busbar_api
 }
 
 /// An app whose governance holds `key`, built so `lookup_by_sub` resolves it from the loaded cache.
-fn app_with_key(key: &busbar_api::VirtualKey) -> Arc<busbar_kernel::state::App> {
-    use busbar_api::Store;
+fn app_with_key(key: &busbar_contract::records::VirtualKey) -> Arc<busbar_kernel::state::App> {
+    use busbar_contract::records::RecordStore;
     let store = Arc::new(MemoryStore::new());
     store.put_key(key).expect("memory store accepts the key");
     let gov = Arc::new(GovState::new(store, None).expect("gov constructs"));
@@ -107,7 +110,7 @@ fn entitlement_check_a_plane_kind_grant_does_not_cover_a_pool() {
         );
         let key = scoped_key(
             "k-1",
-            Some(vec![busbar_api::ScopeRef {
+            Some(vec![busbar_contract::records::ScopeRef {
                 kind: kind.to_string(),
                 value: "fast".to_string(),
             }]),

@@ -13,7 +13,7 @@
 //! through `busbar_kernel::egress_auth::resolve` exactly as a lane is — so the path proven is the
 //! path a lane takes once a dialect declares its scheme.
 
-use busbar_api::UpstreamCreds;
+use busbar_contract::config::UpstreamCreds;
 use busbar_substrate_values::proto::{
     CredentialFamily, CredentialHeader, EgressScheme, ProtocolDecl, SigningContext,
 };

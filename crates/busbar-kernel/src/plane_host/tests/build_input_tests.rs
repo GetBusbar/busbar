@@ -15,7 +15,7 @@ fn lane(api_key: &str) -> LaneInput {
         path: None,
         path_base: None,
         upstream_model: None,
-        api_key: busbar_api::Redacted::new(api_key.to_string()),
+        api_key: busbar_contract::redacted::Redacted::new(api_key.to_string()),
         auth_style: AuthStyleInput::Default,
         scope: None,
         token_url: None,

@@ -10,7 +10,7 @@ fn a_signing_ctx() -> busbar_substrate_values::proto::SigningContext<'static> {
         canonical_uri: "/",
         body: b"{}",
         timestamp_epoch: 1_752_000_000,
-        upstream_creds: busbar_api::UpstreamCreds::Own,
+        upstream_creds: busbar_contract::config::UpstreamCreds::Own,
     }
 }
 

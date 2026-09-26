@@ -891,12 +891,12 @@ pub mod calllog;
 // here; core re-exports it from `busbar_kernel::plane::observe` so its middleware reads the same type.
 
 // The plane store seam's narrowing adapter: the `PlaneStore` trait a plane persists through and the
-// `PlaneStoreView` that narrows a real `busbar_api::Store` to it. Both name only `busbar_api` leaf
+// `PlaneStoreView` that narrows a real `busbar_contract::records::RecordStore` to it. Both name only `busbar_contract` leaf
 // types, so they live here; core re-exports them from `busbar_kernel::plane::store`.
 
 // Phase-C config-seam: the NEUTRAL config-seam CONTRACTS a plane's config section is read through
 // (`PlaneCfg`/`PlaneEndpointCfg`/`ContainerGateInputs`) and the parse-time bare-hook-reference rule
-// (`refuse_cross_plane_reference`). They name only `busbar_api::SecretRef` + `serde_json`/`std`, so
+// (`refuse_cross_plane_reference`). They name only `busbar_contract::secret_ref::SecretRef` + `serde_json`/`std`, so
 // they live here; core re-exports them. The registry-coupled READER half (`split_section`,
 // `config_sections`, the reserved-key literal) stays core.
 

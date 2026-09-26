@@ -18,7 +18,7 @@
 //! with its inbound-auth field and its DECLARED egress scheme ([`EgressScheme`]); the registry and
 //! the dialect-specific helpers are not shapes and stay there.
 
-use crate::operation::Operation;
+use crate::operation::OpVerb;
 
 // ── THE CANONICAL error-`type` VOCABULARY. The forward layer's error-KIND bank below, the admin
 //    API's not-found/invalid-request types and every dialect writer alias these, so each shared
@@ -524,10 +524,10 @@ pub struct ProtocolDecl {
     /// in the tree today has one.
     pub handler: Option<&'static dyn crate::codec::RequestHandler>,
 
-    /// THE VERBS this protocol serves — one [`Operation`] (`Verb { op, name }`
+    /// THE VERBS this protocol serves — one [`OpVerb`] (`Verb { op, name }`
     /// pair) per operation its handler answers. Bounded at load and enumerable at boot (never
     /// request-derived), which is what makes their names safe as metric labels.
-    pub verbs: &'static [Operation],
+    pub verbs: &'static [OpVerb],
 
     /// TOP-LEVEL body keys the pre-materialized path may point-read, DOM-free. The registry unions
     /// these with [`Self::array_stream_shim_key`] once, at boot.

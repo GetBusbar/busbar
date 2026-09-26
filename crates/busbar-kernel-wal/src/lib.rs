@@ -72,6 +72,13 @@
 #![deny(rustdoc::broken_intra_doc_links)]
 
 pub mod backend;
+// The ONE durable whole-file publish (temp, fsync, rename, fsync the holding directory) every
+// durable file write outside the log goes through. It is a sibling of the log's own medium, not a
+// log: it frames nothing and sequences nothing, it replaces one file atomically. It lives beside the
+// log because both are the part of the system that makes bytes survive a power loss, and the loader
+// the kernel links must reach it, which the kernel crate itself cannot offer. Moved here verbatim
+// when `busbar-api` retired.
+pub mod durable;
 pub mod journal;
 pub mod record;
 pub mod recover;

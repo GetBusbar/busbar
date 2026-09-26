@@ -564,15 +564,15 @@ struct CaptureTap {
 }
 
 #[async_trait::async_trait]
-impl busbar_api::RoutingPolicy for CaptureTap {
+impl busbar_contract::hooks::RoutingPolicy for CaptureTap {
     async fn decide(
         &self,
-        _req: &busbar_api::RoutingRequest<'_>,
-        _cands: &[busbar_api::Candidate<'_>],
-        _ctx: &busbar_api::RoutingContext<'_>,
+        _req: &busbar_contract::hooks::RoutingRequest<'_>,
+        _cands: &[busbar_contract::hooks::Candidate<'_>],
+        _ctx: &busbar_contract::hooks::RoutingContext<'_>,
         _budget: std::time::Duration,
-    ) -> busbar_api::PolicyResult {
-        Ok(busbar_api::RoutingDecision::Abstain)
+    ) -> busbar_contract::hooks::PolicyResult {
+        Ok(busbar_contract::hooks::RoutingDecision::Abstain)
     }
     fn name(&self) -> &'static str {
         "route-step-capture-tap"
@@ -607,7 +607,7 @@ async fn completion_tap_fires_once_on_the_walk_and_never_on_a_pre_forward_refusa
             fired: std::sync::atomic::AtomicUsize::new(0),
             last: std::sync::Mutex::new(None),
         });
-        let policy: Arc<dyn busbar_api::RoutingPolicy> = cap.clone();
+        let policy: Arc<dyn busbar_contract::hooks::RoutingPolicy> = cap.clone();
         let mut app = TestApp::new()
             .lane(
                 LaneSpec::new("m", proto, &server.base_url())

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE INVOKE IR data — the `Operation::INVOKE` request/response pair.
+//! THE INVOKE IR data — the `OpVerb::INVOKE` request/response pair.
 //!
 //! Named `ToolCall` through 1.5. `Invoke` is the same shape — a caller names a target, hands it
 //! arguments, and gets content or an error back — under a name that does not belong to one protocol:
@@ -19,7 +19,7 @@
 //! `busbar-substrate-values::ir::invoke`, which re-exports it under its historical path.
 
 use super::SourceScopedExtra;
-use crate::operation::Operation;
+use crate::operation::OpVerb;
 use serde_json::Value;
 
 /// A CALL TO ONE NAMED TARGET. The request half of the `Invoke` operation.
@@ -77,8 +77,8 @@ pub struct InvokeResp {
 /// ordinary conversation content is a consumer that trusts them like conversation content. There is
 /// one invocation per request, so the turn index it is attributed to is `0`.
 impl crate::ir::facts::IrFacts for InvokeReq {
-    fn verb(&self) -> Operation {
-        Operation::INVOKE
+    fn verb(&self) -> OpVerb {
+        OpVerb::INVOKE
     }
 
     /// An invocation is one exchange. The streaming question belongs to the operations that can

@@ -80,7 +80,7 @@
 use serde::Deserialize;
 
 // Phase-C config-seam: the NEUTRAL config-seam contracts moved to `busbar_kernel::plane::config`
-// (they name only `busbar_api::SecretRef` + `serde_json`/`std`). Core re-exports them so its own call
+// (they name only `busbar_contract::secret_ref::SecretRef` + `serde_json`/`std`). Core re-exports them so its own call
 // sites — and every `crate::plane::config::{PlaneCfg, PlaneEndpointCfg, ContainerGateInputs,
 // refuse_cross_plane_reference}` reach in `config/mod.rs`, a plane crate's own config module,
 // `registry.rs` — are unchanged. The neutral section-map split (`split_section`, its `Section`, the
@@ -485,7 +485,7 @@ pub trait PlaneCfg: std::any::Any + Send + Sync + std::fmt::Debug {
     /// where the path is the operator-facing dotted location `--validate` prints in an error. The
     /// path is fully qualified from the top-level section down (`tools.<name>.env.<var>`), so a
     /// caller can concatenate the planes' answers with no per-plane prefixing of its own.
-    fn secret_refs(&self) -> Vec<(String, &busbar_api::SecretRef)>;
+    fn secret_refs(&self) -> Vec<(String, &busbar_contract::secret_ref::SecretRef)>;
 
     /// Is `name` a REGISTRATION in this section (a `tools:` server / an `agents:` agent)? The
     /// membership check the config resolver and the admin write path consult without naming the
@@ -789,7 +789,7 @@ pub fn attach_list(section: &[String], own: &[String]) -> Vec<String> {
 // without naming core: the ONE registry coupling — the `PlaneDecl` lookup that turned a plane key
 // into the section/noun WORDS — is lifted OUT into a param pair the caller supplies (a plane passes
 // its own `PLANE_DECLARATION.config_section` / `subject_noun` consts), so this half names only `serde` +
-// `indexmap` + `busbar_api::UpstreamCreds` and no registry. Core wraps it with the lookup for its own
+// `indexmap` + `busbar_contract::config::UpstreamCreds` and no registry. Core wraps it with the lookup for its own
 // callers (`config::split_section(deserializer, plane_key, validate)`), so those are unchanged.
 
 /// THE TWO WORDS RESERVED AT EVERY PLANE SECTION'S TOP LEVEL: the all-plane `hooks:` attach list and
@@ -810,7 +810,7 @@ pub struct Section<T> {
     /// The reserved `<section>.hooks:` all-plane attach list. LIST ⇒ ADDITIVE.
     pub hooks: Vec<String>,
     /// The reserved `<section>.upstream_credentials:` all-plane default. SCALAR ⇒ OVERRIDE.
-    pub upstream_credentials: Option<busbar_api::UpstreamCreds>,
+    pub upstream_credentials: Option<busbar_contract::config::UpstreamCreds>,
     /// The registrations — every key that is not one of [`RESERVED_SECTION_KEYS`].
     pub entries: indexmap::IndexMap<String, T>,
 }
@@ -871,12 +871,14 @@ where
     // bytes, and different bytes are what an operator's log alert notices.
     let upstream_credentials = match raw.shift_remove("upstream_credentials") {
         None => None,
-        Some(v) => Some(busbar_api::UpstreamCreds::deserialize(v).map_err(|e| {
-            D::Error::custom(format!(
-                "the reserved `{section}.upstream_credentials:` all-{section} default must be \
+        Some(v) => Some(
+            busbar_contract::config::UpstreamCreds::deserialize(v).map_err(|e| {
+                D::Error::custom(format!(
+                    "the reserved `{section}.upstream_credentials:` all-{section} default must be \
                  `own` or `passthrough`: {e}"
-            ))
-        })?),
+                ))
+            })?,
+        ),
     };
 
     let mut entries = indexmap::IndexMap::new();

@@ -16,7 +16,7 @@
 //! hard seal. In-tree the two are equivalent: nothing outside the workspace names `Sealed`.
 //!
 //! **NAMES ONLY NEUTRAL TYPES.** Every method here is spelled in the neutral surface —
-//! `Operation`, `IrFacts`, `Billing`, `EgressPrep`, `EgressWire`, `TranslatedResponse`, `SlabBytes`
+//! `OpVerb`, `IrFacts`, `Billing`, `EgressPrep`, `EgressWire`, `TranslatedResponse`, `SlabBytes`
 //! — and NONE of the concrete chat IR (the chat request/response/block types) that lives in the
 //! dialect crate implementing it. That is the whole point: the engine that holds a `Box<dyn IrHandle>` can drive
 //! translation/billing/preparation without the concrete IR existing in core at all.
@@ -28,7 +28,7 @@ pub mod handle_impl {
     use crate::codec::{EgressWire, TranslatedResponse};
     use crate::ir::egress_prep::EgressPrep;
     use crate::ir::facts::IrFacts;
-    use crate::operation::Operation;
+    use crate::operation::OpVerb;
 
     /// The type-erased request/response an `OperationHandler` yields, now that the `IrReq`/`IrResp`
     /// hub enums have dissolved (G6 A4b). Every method names a neutral, contract-resident type; the
@@ -44,7 +44,7 @@ pub mod handle_impl {
     /// dialect, so no downcast is needed.
     pub trait IrHandle: sealed::Sealed + Send {
         /// The semantic operation this handle carries — the closed registry vocabulary / metric label.
-        fn verb(&self) -> Operation;
+        fn verb(&self) -> OpVerb;
 
         /// Did the caller ask to stream? (request-side; response handles keep the `false` default.)
         fn wants_stream(&self) -> bool {

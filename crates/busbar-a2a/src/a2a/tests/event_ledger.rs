@@ -22,7 +22,7 @@ use std::sync::Mutex;
 
 use crate::record::{KIND_TASK, KIND_TASK_EVENT};
 use crate::{TaskEventRow, TaskRow};
-use busbar_api::StoreResult;
+use busbar_contract::records::RecordStoreResult;
 
 /// Holds task rows and chained task events for the life of one test process.
 #[derive(Default)]
@@ -53,20 +53,23 @@ impl EventLedger {
     }
 }
 
-impl busbar_api::Store for EventLedger {
-    fn put_key(&self, _key: &busbar_api::VirtualKey) -> StoreResult<()> {
+impl busbar_contract::records::RecordStore for EventLedger {
+    fn put_key(&self, _key: &busbar_contract::records::VirtualKey) -> RecordStoreResult<()> {
         Ok(())
     }
 
-    fn get_key(&self, _id: &str) -> StoreResult<Option<busbar_api::VirtualKey>> {
+    fn get_key(
+        &self,
+        _id: &str,
+    ) -> RecordStoreResult<Option<busbar_contract::records::VirtualKey>> {
         Ok(None)
     }
 
-    fn list_keys(&self) -> StoreResult<Vec<busbar_api::VirtualKey>> {
+    fn list_keys(&self) -> RecordStoreResult<Vec<busbar_contract::records::VirtualKey>> {
         Ok(Vec::new())
     }
 
-    fn delete_key(&self, _id: &str) -> StoreResult<()> {
+    fn delete_key(&self, _id: &str) -> RecordStoreResult<()> {
         Ok(())
     }
 
@@ -74,28 +77,37 @@ impl busbar_api::Store for EventLedger {
         &self,
         _bucket_id: &str,
         _window_start: u64,
-    ) -> StoreResult<busbar_api::UsageLedger> {
-        Ok(busbar_api::UsageLedger::default())
+    ) -> RecordStoreResult<busbar_contract::records::UsageLedger> {
+        Ok(busbar_contract::records::UsageLedger::default())
     }
 
     fn put_usage(
         &self,
         _bucket_id: &str,
         _window_start: u64,
-        _ledger: &busbar_api::UsageLedger,
-    ) -> StoreResult<()> {
+        _ledger: &busbar_contract::records::UsageLedger,
+    ) -> RecordStoreResult<()> {
         Ok(())
     }
 
-    fn add_metering(&self, _delta: &busbar_api::MeteringDelta) -> StoreResult<()> {
+    fn add_metering(
+        &self,
+        _delta: &busbar_contract::records::MeteringDelta,
+    ) -> RecordStoreResult<()> {
         Ok(())
     }
 
-    fn list_metering(&self, _bucket: u64) -> StoreResult<Vec<busbar_api::MeteringRow>> {
+    fn list_metering(
+        &self,
+        _bucket: u64,
+    ) -> RecordStoreResult<Vec<busbar_contract::records::MeteringRow>> {
         Ok(Vec::new())
     }
 
-    fn upsert_plane_record(&self, record: &busbar_api::PlaneRecord) -> StoreResult<()> {
+    fn upsert_plane_record(
+        &self,
+        record: &busbar_contract::records::PlaneRecord,
+    ) -> RecordStoreResult<()> {
         if record.kind == KIND_TASK {
             self.tasks
                 .lock()
@@ -105,7 +117,7 @@ impl busbar_api::Store for EventLedger {
         Ok(())
     }
 
-    fn get_plane_record(&self, kind: &str, id: &str) -> StoreResult<Option<Vec<u8>>> {
+    fn get_plane_record(&self, kind: &str, id: &str) -> RecordStoreResult<Option<Vec<u8>>> {
         if kind == KIND_TASK {
             return self
                 .tasks
@@ -118,7 +130,10 @@ impl busbar_api::Store for EventLedger {
         Ok(None)
     }
 
-    fn append_plane_record(&self, record: &busbar_api::PlaneRecord) -> StoreResult<()> {
+    fn append_plane_record(
+        &self,
+        record: &busbar_contract::records::PlaneRecord,
+    ) -> RecordStoreResult<()> {
         if record.kind == KIND_TASK_EVENT {
             let task_id = record.parent.clone().unwrap_or_else(|| record.id.clone());
             self.events
@@ -132,17 +147,17 @@ impl busbar_api::Store for EventLedger {
     fn list_plane_records(
         &self,
         kind: &str,
-        selector: &busbar_api::PlaneSelector,
-    ) -> StoreResult<Vec<Vec<u8>>> {
+        selector: &busbar_contract::records::PlaneSelector,
+    ) -> RecordStoreResult<Vec<Vec<u8>>> {
         match (kind, selector) {
-            (KIND_TASK, busbar_api::PlaneSelector::All) => self
+            (KIND_TASK, busbar_contract::records::PlaneSelector::All) => self
                 .tasks
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .values()
                 .map(|r| r.to_plane_record().map(|rec| rec.body))
                 .collect(),
-            (KIND_TASK_EVENT, busbar_api::PlaneSelector::Parent(p)) => Ok(self
+            (KIND_TASK_EVENT, busbar_contract::records::PlaneSelector::Parent(p)) => Ok(self
                 .events
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())

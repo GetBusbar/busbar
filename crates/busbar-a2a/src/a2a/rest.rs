@@ -173,8 +173,8 @@ fn json_scalar(raw: &str) -> Value {
 /// the answer.
 async fn compose_and_invoke(
     engine_host: std::sync::Arc<dyn busbar_kernel::plane_host::EngineHost>,
-    gov: busbar_api::PlaneRequestCtx,
-    principal: busbar_api::AuthPrincipal,
+    gov: busbar_contract::records::PlaneRequestCtx,
+    principal: busbar_contract::auth::AuthPrincipal,
     wire: Wire,
     method: &str,
     params: Value,
@@ -325,10 +325,14 @@ fn reframe_frames(buf: &[u8]) -> Vec<u8> {
 /// `principal` here leaves `ctx.body`/`ctx.path_params`/`ctx.uri` for the caller to read.
 fn rest_key_ctx(
     _engine: std::sync::Arc<dyn std::any::Any + Send + Sync>,
-    gov: Option<busbar_api::PlaneRequestCtx>,
-    principal: Option<busbar_api::AuthPrincipal>,
+    gov: Option<busbar_contract::records::PlaneRequestCtx>,
+    principal: Option<busbar_contract::auth::AuthPrincipal>,
     headers: &axum::http::HeaderMap,
-) -> (busbar_api::PlaneRequestCtx, busbar_api::AuthPrincipal, Wire) {
+) -> (
+    busbar_contract::records::PlaneRequestCtx,
+    busbar_contract::auth::AuthPrincipal,
+    Wire,
+) {
     // The engine handle is no longer named here: the shared sequence closes its own request out
     // through the neutral `ctx.host` seam, so this key-ctx neither loads the app nor asserts the
     // handle's concrete type — the plane names no host application-state type on this path.

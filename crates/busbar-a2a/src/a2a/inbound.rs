@@ -43,7 +43,7 @@
 //! What stays here is the AUTHENTICATION layer, the registration lookup, and the RENDERING — the
 //! statuses and the words this plane answers with. The decision is core's.
 
-use busbar_api::VirtualKey;
+use busbar_contract::records::VirtualKey;
 
 use busbar_kernel::trust::TrustState;
 

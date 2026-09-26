@@ -11,7 +11,7 @@
 //! candidate tap that never arrives was seated after it.
 use super::auth_dispatch_tests::PresentCredential as _;
 use crate::test_support::{LaneSpec, TestApp};
-use busbar_api::{
+use busbar_contract::hooks::{
     Candidate, PolicyResult, RewriteReply, RoutingContext, RoutingDecision, RoutingPolicy,
     RoutingRequest, TransformOutcome,
 };
@@ -148,7 +148,7 @@ async fn rig(reject_at_gate: bool) -> (Rig, Arc<dyn Fn() -> Ledger + Send + Sync
     }
     let server = crate::test_support::MockServer::new(state).await;
 
-    let store: Arc<dyn busbar_api::Store> =
+    let store: Arc<dyn busbar_contract::records::RecordStore> =
         crate::test_support::engine_kit::CORE_ENGINE_KIT.scratch_store();
     let signer = busbar_kernel::governance::signing::TokenSigner::from_secret_bytes(
         &[7u8; 32],

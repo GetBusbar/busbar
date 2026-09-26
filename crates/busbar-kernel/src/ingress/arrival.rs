@@ -54,7 +54,7 @@ impl ArrivalCtx {
 /// (an `Arc<App>` + `GovCtx` + caller token), which forced the extracted LLM plane to name a core type to
 /// downcast it — the last structural backwards reach on the request path. Pivoted here so the payload is
 /// spelled in the NEUTRAL substrate: it carries the minted `Arc<dyn EngineHost>` (not the `Arc<App>` it
-/// was minted over), the public [`busbar_api::PlaneRequestCtx`] governance context, and the caller's
+/// was minted over), the public [`busbar_contract::records::PlaneRequestCtx`] governance context, and the caller's
 /// bearer token flattened to a neutral scalar. Core mints the host at each construction site
 /// (`engine_host(&app)`); every downstream reader reaches the engine through the host seam, naming no
 /// core type.
@@ -62,8 +62,8 @@ pub struct ArrivalPayload {
     /// The neutral engine host, minted core-side over the live `App` — the seam every reader (core's
     /// `ArrivalHost` impl and the LLM plane's ingress) drives instead of naming `Arc<App>`.
     pub host: Arc<dyn crate::plane_host::EngineHost>,
-    /// The resolved per-request governance context (public `busbar_api` type).
-    pub gov: busbar_api::PlaneRequestCtx,
+    /// The resolved per-request governance context (public `busbar_contract` type).
+    pub gov: busbar_contract::records::PlaneRequestCtx,
     /// The caller's resolved bearer token (for passthrough forwarding), flattened to a neutral scalar.
     pub caller_token: Option<String>,
 }

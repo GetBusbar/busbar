@@ -1000,7 +1000,7 @@ fn the_boot_book_ships_its_opening_to_the_configured_store() {
     use busbar_plugin_loader::store_adapter::StoreAdapter;
 
     let dir = BookDir::new("ships");
-    let store: std::sync::Arc<dyn busbar_api::Store> =
+    let store: std::sync::Arc<dyn busbar_contract::records::RecordStore> =
         std::sync::Arc::new(busbar_kernel::governance::MemoryStore::new());
     let adapter = StoreAdapter::native(store);
     let mig = empty_opening_plan();
@@ -1058,7 +1058,7 @@ fn no_configured_directory_still_opens_nothing_and_writes_nothing() {
 
     // A directory the node was never told about. Nothing may appear in it.
     let unnamed = BookDir::new("unnamed");
-    let store: std::sync::Arc<dyn busbar_api::Store> =
+    let store: std::sync::Arc<dyn busbar_contract::records::RecordStore> =
         std::sync::Arc::new(busbar_kernel::governance::MemoryStore::new());
     let adapter = StoreAdapter::native(store);
     let token = root::kernel::new_kernel().durability_token();

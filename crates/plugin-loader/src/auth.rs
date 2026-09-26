@@ -1,14 +1,14 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The AUTH seam of the kind-neutral loader: [`DynAuth`], a [`busbar_api::AuthModule`] backed by a
+//! The AUTH seam of the kind-neutral loader: [`DynAuth`], a [`busbar_contract::auth::AuthModule`] backed by a
 //! dynamically-loaded plugin whose kind was bound to `auth` at load. Its verdict carries only an
-//! identity-only [`busbar_plugin::cold::auth::Identity`] (→ [`busbar_api::Principal`]); a misbehaving
+//! identity-only [`busbar_plugin::cold::auth::Identity`] (→ [`busbar_contract::auth::Principal`]); a misbehaving
 //! plugin is FAIL-CLOSED (rejected, never admitted).
 
 use crate::RawPlugin;
-use busbar_api::{
-    AuthModule, AuthOutcome, AuthPlugin, BeginLogin, CompleteLogin, LoginKind, LoginModule,
+use busbar_contract::auth::{
+    AuthModule, AuthPlugin, AuthVerdict, BeginLogin, CompleteLogin, LoginKind, LoginModule,
     LoginOutcome, Principal,
 };
 use busbar_plugin::cold::{
@@ -36,7 +36,7 @@ impl AuthModule for DynAuth {
         self.name
     }
 
-    fn authenticate(&self, candidate: Option<&str>) -> AuthOutcome {
+    fn authenticate(&self, candidate: Option<&str>) -> AuthVerdict {
         let req = AuthRequest::Authenticate {
             credential: candidate.unwrap_or("").to_string(),
         };
@@ -45,17 +45,17 @@ impl AuthModule for DynAuth {
                 // A clean verdict: clear the fault latch so a future fault re-warns.
                 self.auth_fault_warned
                     .store(false, std::sync::atomic::Ordering::Relaxed);
-                AuthOutcome::Identify(Principal::from(id))
+                AuthVerdict::Identify(Principal::from(id))
             }
             Ok(AuthResponse::Reject) => {
                 self.auth_fault_warned
                     .store(false, std::sync::atomic::Ordering::Relaxed);
-                AuthOutcome::Reject
+                AuthVerdict::Reject
             }
             Ok(AuthResponse::Pass) => {
                 self.auth_fault_warned
                     .store(false, std::sync::atomic::Ordering::Relaxed);
-                AuthOutcome::Pass
+                AuthVerdict::Pass
             }
             // A wrong-variant response, or a transport/module error, is FAIL-CLOSED: a misbehaving
             // plugin must never admit a caller. `Reject` (not `Pass`) — a credential may have been
@@ -77,7 +77,7 @@ impl AuthModule for DynAuth {
                         "auth plugin still returning an unexpected response variant ({other:?}); rejecting"
                     );
                 }
-                AuthOutcome::Reject
+                AuthVerdict::Reject
             }
             Err(e) => {
                 if !self
@@ -88,7 +88,7 @@ impl AuthModule for DynAuth {
                 } else {
                     tracing::debug!(module = self.name, error = %e, "auth plugin call still failing; rejecting");
                 }
-                AuthOutcome::Reject
+                AuthVerdict::Reject
             }
         }
     }

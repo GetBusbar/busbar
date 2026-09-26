@@ -5,7 +5,7 @@
 use super::*;
 use crate::engine::WeightedLane;
 use crate::test_support::{LaneSpec, TestApp};
-use busbar_api::{
+use busbar_contract::hooks::{
     Candidate, PolicyResult, RoutingContext, RoutingDecision, RoutingPolicy, RoutingRequest,
 };
 use busbar_kernel::hooks::{ResolvedPolicy, REQUIRED_HOOK_UNAVAILABLE_STATUS};
@@ -117,7 +117,7 @@ async fn run(
         crate::engine::APPLICATION_JSON,
         "p",
         "anthropic",
-        busbar_api::operation::Operation::CHAT,
+        busbar_contract::operation::OpVerb::CHAT,
         false,
         None,
         None,
@@ -614,15 +614,15 @@ struct CaptureTap {
 }
 
 #[async_trait::async_trait]
-impl busbar_api::RoutingPolicy for CaptureTap {
+impl busbar_contract::hooks::RoutingPolicy for CaptureTap {
     async fn decide(
         &self,
-        _req: &busbar_api::RoutingRequest<'_>,
-        _cands: &[busbar_api::Candidate<'_>],
-        _ctx: &busbar_api::RoutingContext<'_>,
+        _req: &busbar_contract::hooks::RoutingRequest<'_>,
+        _cands: &[busbar_contract::hooks::Candidate<'_>],
+        _ctx: &busbar_contract::hooks::RoutingContext<'_>,
         _budget: std::time::Duration,
-    ) -> busbar_api::PolicyResult {
-        Ok(busbar_api::RoutingDecision::Abstain)
+    ) -> busbar_contract::hooks::PolicyResult {
+        Ok(busbar_contract::hooks::RoutingDecision::Abstain)
     }
     fn name(&self) -> &'static str {
         "capture-tap"
@@ -637,7 +637,7 @@ async fn webhook_tap() -> (Arc<CaptureTap>, busbar_kernel::hooks::TapEntry) {
     let cap = Arc::new(CaptureTap {
         last: std::sync::Mutex::new(None),
     });
-    let policy: Arc<dyn busbar_api::RoutingPolicy> = cap.clone();
+    let policy: Arc<dyn busbar_contract::hooks::RoutingPolicy> = cap.clone();
     (
         cap,
         (
@@ -733,7 +733,7 @@ async fn substrate_fire_stage_taps_honors_group_scope_via_host_seam() {
     };
     // A tap SCOPED to `engineering`.
     let scoped_tap = |cap: &Arc<CaptureTap>| -> Vec<busbar_kernel::hooks::TapEntry> {
-        let policy: Arc<dyn busbar_api::RoutingPolicy> = cap.clone();
+        let policy: Arc<dyn busbar_contract::hooks::RoutingPolicy> = cap.clone();
         vec![(
             std::time::Duration::from_millis(500),
             false,
@@ -989,7 +989,7 @@ impl RoutingPolicy for RewritingGate {
         _ctx: &RoutingContext<'_>,
         _budget: std::time::Duration,
     ) -> PolicyResult {
-        Ok(busbar_api::RoutingDecision::Abstain)
+        Ok(busbar_contract::hooks::RoutingDecision::Abstain)
     }
     fn name(&self) -> &'static str {
         "rewriter"
@@ -998,8 +998,8 @@ impl RoutingPolicy for RewritingGate {
         &self,
         _req: &RoutingRequest<'_>,
         _budget: std::time::Duration,
-    ) -> busbar_api::TransformOutcome {
-        busbar_api::TransformOutcome::Rewrite(busbar_api::RewriteReply {
+    ) -> busbar_contract::hooks::TransformOutcome {
+        busbar_contract::hooks::TransformOutcome::Rewrite(busbar_contract::hooks::RewriteReply {
             messages: vec![serde_json::json!({"role": "user", "content": self.0})],
             tools: vec![],
         })
@@ -1731,7 +1731,7 @@ async fn send_user_projects_governance_key_identity() {
         crate::engine::APPLICATION_JSON,
         "p",
         "anthropic",
-        busbar_api::operation::Operation::CHAT,
+        busbar_contract::operation::OpVerb::CHAT,
         false,
         Some(&secret),
         None,
@@ -1784,7 +1784,7 @@ async fn send_user_falls_back_to_synthesized_group_key_identity() {
     }];
     // A synthesized principal key exactly as the auth layer builds one for a group/SSO caller:
     // id/name carry the principal, generation_hash is a non-secret marker never inserted into by_hash.
-    let synth = std::sync::Arc::new(busbar_api::VirtualKey {
+    let synth = std::sync::Arc::new(busbar_contract::records::VirtualKey {
         id: "eng-oncall".to_string(),
         generation_hash: "principal:eng-oncall".to_string(),
         name: "eng-oncall".to_string(),
@@ -1812,7 +1812,7 @@ async fn send_user_falls_back_to_synthesized_group_key_identity() {
         crate::engine::APPLICATION_JSON,
         "p",
         "anthropic",
-        busbar_api::operation::Operation::CHAT,
+        busbar_contract::operation::OpVerb::CHAT,
         false,
         Some("sso-jwt-not-a-vkey-secret"),
         Some(&synth),
@@ -1895,7 +1895,7 @@ async fn send_user_prefers_resolved_key_over_disabled_legacy_lookup() {
     // The key auth ACTUALLY installed for this request: NOT the disabled `by_hash` hit, a
     // different synthesized principal key (exactly what a fallthrough from `Some(key) if
     // key.enabled` produces for a disabled-key caller re-admitted via a group binding).
-    let synth = std::sync::Arc::new(busbar_api::VirtualKey {
+    let synth = std::sync::Arc::new(busbar_contract::records::VirtualKey {
         id: "synthesized-principal".to_string(),
         generation_hash: "principal:synthesized-principal".to_string(),
         name: "synthesized-principal".to_string(),
@@ -1922,7 +1922,7 @@ async fn send_user_prefers_resolved_key_over_disabled_legacy_lookup() {
         crate::engine::APPLICATION_JSON,
         "p",
         "anthropic",
-        busbar_api::operation::Operation::CHAT,
+        busbar_contract::operation::OpVerb::CHAT,
         false,
         Some(&secret), // the RAW token, which DOES hash-match the disabled key in `by_hash`
         Some(&synth),
@@ -1971,7 +1971,7 @@ async fn forward_with_pool_keyed_threads_group_key_to_pool_policy() {
         .pool_runtime("p", rt)
         .build();
     let (_host, _rt) = crate::engine::test_host_rt(&app);
-    let synth = std::sync::Arc::new(busbar_api::VirtualKey {
+    let synth = std::sync::Arc::new(busbar_contract::records::VirtualKey {
         id: "eng-oncall".to_string(),
         generation_hash: "principal:eng-oncall".to_string(),
         name: "eng-oncall".to_string(),

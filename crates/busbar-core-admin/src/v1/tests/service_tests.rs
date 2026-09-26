@@ -1507,7 +1507,7 @@ fn build_without_group_not_found() {
 /// (re-bind or delete the keys first) rather than silently orphaning them.
 #[test]
 fn build_without_group_conflict_when_keys_still_bound() {
-    use busbar_api::Store as _;
+    use busbar_contract::records::RecordStore as _;
     use busbar_kernel::governance::{GovState, MemoryStore};
     let store = std::sync::Arc::new(MemoryStore::new());
     store
@@ -1563,7 +1563,7 @@ fn usage_group_cfg() -> GroupCfg {
         metric,
         amount,
         per: Some(per),
-        scope: pool.map(busbar_api::ScopeRef::pool),
+        scope: pool.map(busbar_contract::records::ScopeRef::pool),
         on_exhaust: None,
         downgrade_to: None,
     };
@@ -1620,7 +1620,7 @@ fn usage_key(group: &str) -> VirtualKey {
 fn input_toks(n: u64) -> std::collections::BTreeMap<String, u64> {
     let mut m = std::collections::BTreeMap::new();
     if n != 0 {
-        m.insert(busbar_api::UNIT_INPUT.to_string(), n);
+        m.insert(busbar_contract::records::UNIT_INPUT.to_string(), n);
     }
     m
 }
@@ -1780,39 +1780,46 @@ async fn get_group_usage_governance_off_zero_usage_caps_projected() {
 struct FailingMeteringStore {
     inner: MemoryStore,
 }
-impl busbar_api::Store for FailingMeteringStore {
-    fn put_key(&self, key: &VirtualKey) -> busbar_api::StoreResult<()> {
+impl busbar_contract::records::RecordStore for FailingMeteringStore {
+    fn put_key(&self, key: &VirtualKey) -> busbar_contract::records::RecordStoreResult<()> {
         self.inner.put_key(key)
     }
-    fn get_key(&self, id: &str) -> busbar_api::StoreResult<Option<VirtualKey>> {
+    fn get_key(&self, id: &str) -> busbar_contract::records::RecordStoreResult<Option<VirtualKey>> {
         self.inner.get_key(id)
     }
-    fn list_keys(&self) -> busbar_api::StoreResult<Vec<VirtualKey>> {
+    fn list_keys(&self) -> busbar_contract::records::RecordStoreResult<Vec<VirtualKey>> {
         self.inner.list_keys()
     }
-    fn delete_key(&self, id: &str) -> busbar_api::StoreResult<()> {
+    fn delete_key(&self, id: &str) -> busbar_contract::records::RecordStoreResult<()> {
         self.inner.delete_key(id)
     }
     fn get_usage(
         &self,
         bucket_id: &str,
         window_start: u64,
-    ) -> busbar_api::StoreResult<busbar_api::UsageLedger> {
+    ) -> busbar_contract::records::RecordStoreResult<busbar_contract::records::UsageLedger> {
         self.inner.get_usage(bucket_id, window_start)
     }
     fn put_usage(
         &self,
         bucket_id: &str,
         window_start: u64,
-        ledger: &busbar_api::UsageLedger,
-    ) -> busbar_api::StoreResult<()> {
+        ledger: &busbar_contract::records::UsageLedger,
+    ) -> busbar_contract::records::RecordStoreResult<()> {
         self.inner.put_usage(bucket_id, window_start, ledger)
     }
-    fn add_metering(&self, delta: &busbar_api::MeteringDelta) -> busbar_api::StoreResult<()> {
+    fn add_metering(
+        &self,
+        delta: &busbar_contract::records::MeteringDelta,
+    ) -> busbar_contract::records::RecordStoreResult<()> {
         self.inner.add_metering(delta)
     }
-    fn list_metering(&self, _bucket: u64) -> busbar_api::StoreResult<Vec<busbar_api::MeteringRow>> {
-        Err(busbar_api::StoreError(
+    fn list_metering(
+        &self,
+        _bucket: u64,
+    ) -> busbar_contract::records::RecordStoreResult<Vec<busbar_contract::records::MeteringRow>>
+    {
+        Err(busbar_contract::records::RecordStoreError(
             "simulated metering store outage".to_string(),
         ))
     }
@@ -2284,14 +2291,14 @@ fn hook_derived_fields_follow_the_registry() {
     // A hook that exercises BOTH derived scalars at once: a content grant and a signal declaration.
     let mut declaring = hook(HookKind::Tap, true);
     declaring.prompt = PromptAccess::Ro;
-    declaring.signals = vec![busbar_api::Signal::CandidateBreakerState];
+    declaring.signals = vec![busbar_contract::signal::Signal::CandidateBreakerState];
 
     let registered = build_with_hook(&app, "declarer", declaring.clone()).expect("registers");
     assert_hook_derived(&registered, "after build_with_hook (POST/PUT /hooks)");
     assert!(
         registered
             .requested_signals
-            .wants(busbar_api::Signal::CandidateBreakerState),
+            .wants(busbar_contract::signal::Signal::CandidateBreakerState),
         "registering a hook that declares `candidate.breaker_state` must open the compute gate for \
          the very next request"
     );
@@ -2462,9 +2469,9 @@ mod dated_rate_card_history {
     pub(super) fn gov_with_rows(rows: &[(u64, u64)]) -> Arc<GovState> {
         let store = Arc::new(MemoryStore::new());
         for (bucket, priced_from_ms) in rows {
-            busbar_api::Store::add_metering(
+            busbar_contract::records::RecordStore::add_metering(
                 store.as_ref(),
-                &busbar_api::MeteringDelta {
+                &busbar_contract::records::MeteringDelta {
                     usage_units: Default::default(),
                     key_id: KEY.to_string(),
                     bucket: *bucket,
@@ -2863,9 +2870,9 @@ mod dated_rate_card_history {
         const ADJUSTED_KEY: &str = "vk_adjust_404";
         let (bucket, _, _) = windows();
         let store = Arc::new(MemoryStore::new());
-        busbar_api::Store::add_metering(
+        busbar_contract::records::RecordStore::add_metering(
             store.as_ref(),
-            &busbar_api::MeteringDelta {
+            &busbar_contract::records::MeteringDelta {
                 key_id: ADJUSTED_KEY.to_string(),
                 bucket,
                 model: LANE.to_string(),
@@ -2890,7 +2897,10 @@ mod dated_rate_card_history {
         assert_eq!((before.tokens_input, before.spend_micros), (1_000, 2_500));
 
         let count = |n: i128| busbar_contract::count::Count::from_integer(n).expect("whole");
-        let was = ClassCounts::from([(busbar_api::UNIT_INPUT.to_string(), count(1_000))]);
+        let was = ClassCounts::from([(
+            busbar_contract::records::UNIT_INPUT.to_string(),
+            count(1_000),
+        )]);
         let correct = |principal: &'static str, amends: &'static str| {
             correct_counts(
                 busbar_contract::authz::Scope::Full,
@@ -2900,7 +2910,10 @@ mod dated_rate_card_history {
                     principal: Some(principal),
                     lane: LANE,
                     card_epoch_ms: bucket * 1_000 + 5,
-                    now: ClassCounts::from([(busbar_api::UNIT_INPUT.to_string(), count(800))]),
+                    now: ClassCounts::from([(
+                        busbar_contract::records::UNIT_INPUT.to_string(),
+                        count(800),
+                    )]),
                     authorised_by: "admin",
                     reason: "a retried request was metered twice",
                     pool: None,
@@ -3295,9 +3308,9 @@ mod one_recorded_usage_every_surface {
     fn metering(bucket: u64, edit_ms: u64) -> Arc<busbar_kernel::governance::GovState> {
         let store = Arc::new(busbar_kernel::governance::MemoryStore::new());
         for priced_from_ms in [0, edit_ms] {
-            busbar_api::Store::add_metering(
+            busbar_contract::records::RecordStore::add_metering(
                 store.as_ref(),
-                &busbar_api::MeteringDelta {
+                &busbar_contract::records::MeteringDelta {
                     usage_units: Default::default(),
                     key_id: KEY.to_string(),
                     bucket,
@@ -3330,7 +3343,7 @@ mod one_recorded_usage_every_surface {
             models: vec![busbar_contract::records::ModelTokens {
                 model: LANE.to_string(),
                 usage_units: std::collections::BTreeMap::from([(
-                    busbar_api::UNIT_INPUT.to_string(),
+                    busbar_contract::records::UNIT_INPUT.to_string(),
                     TOKENS * 2,
                 )]),
             }],
@@ -3351,7 +3364,8 @@ mod one_recorded_usage_every_surface {
         [bucket.saturating_mul(1_000), edit_ms]
             .into_iter()
             .map(|arrived_ms| {
-                LedgerEntry::new(LANE, arrived_ms).with_whole(busbar_api::UNIT_INPUT, TOKENS)
+                LedgerEntry::new(LANE, arrived_ms)
+                    .with_whole(busbar_contract::records::UNIT_INPUT, TOKENS)
             })
             .collect()
     }
@@ -3421,7 +3435,7 @@ mod one_recorded_usage_every_surface {
                 [(
                     LANE,
                     &std::collections::BTreeMap::from([(
-                        busbar_api::UNIT_INPUT.to_string(),
+                        busbar_contract::records::UNIT_INPUT.to_string(),
                         TOKENS * 2,
                     )]),
                 )]
@@ -3436,7 +3450,7 @@ mod one_recorded_usage_every_surface {
                 [(
                     LANE,
                     &std::collections::BTreeMap::from([(
-                        busbar_api::UNIT_INPUT.to_string(),
+                        busbar_contract::records::UNIT_INPUT.to_string(),
                         TOKENS * 2,
                     )]),
                 )]
@@ -3613,7 +3627,7 @@ fn every_scripts_path_cited_in_v1_exists() {
 /// said 19, and 20 where a fee-less plane's book said 0.
 mod plane_fees_on_admin_usage {
     use super::*;
-    use busbar_api::Store as _;
+    use busbar_contract::records::RecordStore as _;
     use busbar_kernel::plane::registry::{PlaneDecl, PlaneDeclaration, TestRegistryIsolation};
     use busbar_kernel_ledger::cost::{PlaneFees, PLANE_LANE_SEP};
 

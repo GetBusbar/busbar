@@ -33,7 +33,7 @@
 //! A plane's durable task substrate settled this same problem — "make a stateful thing survive a
 //! restart without breaking every already-signed store plugin" — and this is that shape:
 //!
-//! - the [`busbar_api::Store`] methods are DEFAULTED, so a plugin built before they existed keeps
+//! - the [`busbar_contract::records::RecordStore`] methods are DEFAULTED, so a plugin built before they existed keeps
 //!   compiling and simply provides no durability;
 //! - the defaults ACCEPT AND KEEP NOTHING, which makes a write's return value worthless as evidence:
 //!   the engine learns whether a deployment is durable by READING BACK, never from an `Ok(())`;
@@ -111,7 +111,7 @@
 use std::sync::Arc;
 
 use crate::plane::store::{decode, PlaneStore, KIND_CALL};
-use busbar_api::{PlaneSelector, StoreError, StoreResult};
+use busbar_contract::records::{PlaneSelector, RecordStoreError, RecordStoreResult};
 
 use crate::audit::journal::NeutralBody;
 use crate::audit::{verify_chain, ChainBreak, Framing};
@@ -173,7 +173,7 @@ pub fn register_call_stream(app: &Arc<crate::state::App>) {
 pub fn restore_from_store_over(
     app: &Arc<crate::state::App>,
     store: &dyn PlaneStore,
-) -> StoreResult<Restored> {
+) -> RecordStoreResult<Restored> {
     crate::plane_host::with_dispatch_scope(app, |host, _| CALLS.restore_from_store(host, store))
 }
 
@@ -297,30 +297,30 @@ fn call_suffix(
 #[allow(dead_code)]
 fn parse_call_suffix(
     content: &[u8],
-) -> StoreResult<(u64, String, String, String, String, String, u64)> {
-    fn take<'a>(content: &'a [u8], off: &mut usize) -> StoreResult<&'a [u8]> {
+) -> RecordStoreResult<(u64, String, String, String, String, String, u64)> {
+    fn take<'a>(content: &'a [u8], off: &mut usize) -> RecordStoreResult<&'a [u8]> {
         if *off + 8 > content.len() {
-            return Err(StoreError(
+            return Err(RecordStoreError(
                 "truncated call suffix length prefix".to_string(),
             ));
         }
         let len = u64::from_be_bytes(content[*off..*off + 8].try_into().unwrap()) as usize;
         *off += 8;
         if *off + len > content.len() {
-            return Err(StoreError("truncated call suffix field".to_string()));
+            return Err(RecordStoreError("truncated call suffix field".to_string()));
         }
         let s = &content[*off..*off + len];
         *off += len;
         Ok(s)
     }
-    fn take_num(content: &[u8], off: &mut usize) -> StoreResult<u64> {
+    fn take_num(content: &[u8], off: &mut usize) -> RecordStoreResult<u64> {
         let b = take(content, off)?;
         let arr: [u8; 8] = b
             .try_into()
-            .map_err(|_| StoreError("call suffix num field is not 8 bytes".to_string()))?;
+            .map_err(|_| RecordStoreError("call suffix num field is not 8 bytes".to_string()))?;
         Ok(u64::from_be_bytes(arr))
     }
-    fn take_text(content: &[u8], off: &mut usize) -> StoreResult<String> {
+    fn take_text(content: &[u8], off: &mut usize) -> RecordStoreResult<String> {
         Ok(String::from_utf8_lossy(take(content, off)?).into_owned())
     }
     let mut off = 0usize;
@@ -351,7 +351,7 @@ fn parse_call_suffix(
 /// stream. (There is no legacy typed-body path to grandfather: the typed serde call format was a
 /// 1.6.0-internal shape that never shipped in a released store, no `KIND_CALL` migration exists, and
 /// the neutral body is the only shape this decode ever sees.)
-fn reframe_call(scope: &str, body: &[u8]) -> StoreResult<PlaneJournalRecord> {
+fn reframe_call(scope: &str, body: &[u8]) -> RecordStoreResult<PlaneJournalRecord> {
     let nb = decode::<NeutralBody>(body)?;
     Ok(PlaneJournalRecord::from_parts(
         scope.to_string(),
@@ -372,7 +372,10 @@ fn reframe_call(scope: &str, body: &[u8]) -> StoreResult<PlaneJournalRecord> {
 /// caller (the store parent), never read from a neutral body. Core names no plane record type; a
 /// plane crate reconstructs its typed call record from this where it wants one.
 #[allow(dead_code)]
-pub(crate) fn call_record_from_body(principal: &str, body: &[u8]) -> StoreResult<CallRecorded> {
+pub(crate) fn call_record_from_body(
+    principal: &str,
+    body: &[u8],
+) -> RecordStoreResult<CallRecorded> {
     let nb = decode::<NeutralBody>(body)?;
     let (ts, server, tool, outcome, reason, tool_digest, pin_generation) =
         parse_call_suffix(&nb.content)?;
@@ -401,7 +404,7 @@ pub(crate) fn call_record_from_body(principal: &str, body: &[u8]) -> StoreResult
 /// parent — so they do not round-trip through it.
 #[cfg(any(test, feature = "test-support"))]
 #[allow(dead_code)] // used by the calllog durability/tamper battery; unused in a bare test-support build
-pub(crate) fn call_record_to_journal_body(rec: &CallRecorded) -> StoreResult<Vec<u8>> {
+pub(crate) fn call_record_to_journal_body(rec: &CallRecorded) -> RecordStoreResult<Vec<u8>> {
     let content = call_suffix(
         rec.ts,
         &rec.server,
@@ -484,7 +487,7 @@ pub(crate) enum CallLogError {
     /// The durable write failed. SURFACED rather than swallowed: an evidence record that is not
     /// durable is one a restart will lose, and the caller has to be able to decide whether that is
     /// acceptable for the call it is recording.
-    Store(busbar_api::StoreError),
+    Store(busbar_contract::records::RecordStoreError),
 }
 
 impl std::fmt::Display for CallLogError {
@@ -574,7 +577,7 @@ impl PlaneCallLog {
         &self,
         host: HostCtx,
         store: &dyn PlaneStore,
-    ) -> StoreResult<Restored> {
+    ) -> RecordStoreResult<Restored> {
         let principals = store.list_plane_record_parents(KIND_CALL)?;
         let mut out = Restored::default();
         for principal in &principals {
@@ -665,7 +668,7 @@ impl PlaneCallLog {
         host: HostCtx,
         principal: &str,
         bodies: &[Vec<u8>],
-    ) -> StoreResult<Option<ChainBreak>> {
+    ) -> RecordStoreResult<Option<ChainBreak>> {
         let packed = pack_bodies(bodies);
         let hdr = crate::plane_host::journal::seed_scoped_via_seam(
             host,
@@ -673,14 +676,16 @@ impl PlaneCallLog {
             principal,
             &packed,
         )
-        .map_err(|()| StoreError("per-call chain seed failed at the durable seam".to_string()))?;
+        .map_err(|()| {
+            RecordStoreError("per-call chain seed failed at the durable seam".to_string())
+        })?;
         if hdr.broke == 0 {
             return Ok(None);
         }
         let records: Vec<PlaneJournalRecord> = bodies
             .iter()
             .map(|b| reframe_call(principal, b))
-            .collect::<StoreResult<_>>()?;
+            .collect::<RecordStoreResult<_>>()?;
         Ok(verify_chain(&records).err())
     }
 
@@ -731,10 +736,10 @@ impl PlaneCallLog {
         &self,
         principal: &str,
         input: CallInput,
-        append: impl FnOnce(&[u8]) -> StoreResult<(u64, String, String)>,
+        append: impl FnOnce(&[u8]) -> RecordStoreResult<(u64, String, String)>,
     ) -> Result<CallRecorded, CallLogError> {
         if self.unresumable_lock().contains(principal) {
-            return Err(CallLogError::Store(StoreError(
+            return Err(CallLogError::Store(RecordStoreError(
                 "this principal's stored per-call tail did not decode at restore, so its chain \
                  position is unknown; the append is refused rather than forking the durable log"
                     .to_string(),
@@ -806,7 +811,7 @@ impl PlaneCallLog {
         &self,
         store: &dyn PlaneStore,
         principal: &str,
-    ) -> StoreResult<Vec<CallRecorded>> {
+    ) -> RecordStoreResult<Vec<CallRecorded>> {
         store
             .list_plane_records(KIND_CALL, &PlaneSelector::Parent(principal.to_string()))?
             .iter()
@@ -828,7 +833,7 @@ impl PlaneCallLog {
         &self,
         store: &dyn PlaneStore,
         principal: &str,
-    ) -> StoreResult<Result<usize, ChainBreak>> {
+    ) -> RecordStoreResult<Result<usize, ChainBreak>> {
         // Reads the store directly and reframes locally — the operator-facing verify wants the rich
         // break and the record count, neither of which the neutral seam header carries. Touches no
         // chain position, so it needs no host.
@@ -836,7 +841,7 @@ impl PlaneCallLog {
             .list_plane_records(KIND_CALL, &PlaneSelector::Parent(principal.to_string()))?
             .iter()
             .map(|b| reframe_call(principal, b))
-            .collect::<StoreResult<_>>()?;
+            .collect::<RecordStoreResult<_>>()?;
         match verify_chain(&records) {
             Ok(()) => Ok(Ok(records.len())),
             Err(brk) => Ok(Err(brk)),
@@ -855,9 +860,9 @@ impl PlaneCallLog {
     /// so nothing purges it. The mechanism is here and the POLICY is absent, which means a durable
     /// deployment's call log grows without bound until an operator prunes it themselves.
     #[allow(dead_code)]
-    pub(crate) fn compact(&self, host: HostCtx, before: u64) -> StoreResult<u64> {
+    pub(crate) fn compact(&self, host: HostCtx, before: u64) -> RecordStoreResult<u64> {
         crate::plane_host::journal::compact_via_seam(host, self.kind_id, before).map_err(|()| {
-            StoreError("per-call log compaction failed at the durable seam".to_string())
+            RecordStoreError("per-call log compaction failed at the durable seam".to_string())
         })
     }
 }
@@ -979,7 +984,7 @@ impl CallTestHarness {
     /// Fresh isolated harness over `store` (the chain sink, via registration against an app whose
     /// governance wraps it). A "restart" is just a second `over` the SAME store — the chain persists
     /// in the store, so the fresh log reads it back through its own rehydrate.
-    pub(crate) fn over(store: Arc<dyn busbar_api::Store>) -> Self {
+    pub(crate) fn over(store: Arc<dyn busbar_contract::records::RecordStore>) -> Self {
         let kind_id = fresh_test_kind_id();
         let gov =
             Arc::new(crate::governance::GovState::new(store, None).expect("gov store constructs"));
@@ -1005,10 +1010,10 @@ impl CallTestHarness {
     ) -> Result<CallRecorded, CallLogError> {
         self.host(|host| self.log.record(host, principal, input))
     }
-    pub(crate) fn restore_from_store(&self, store: &dyn PlaneStore) -> StoreResult<Restored> {
+    pub(crate) fn restore_from_store(&self, store: &dyn PlaneStore) -> RecordStoreResult<Restored> {
         self.host(|host| self.log.restore_from_store(host, store))
     }
-    pub(crate) fn compact(&self, before: u64) -> StoreResult<u64> {
+    pub(crate) fn compact(&self, before: u64) -> RecordStoreResult<u64> {
         self.host(|host| self.log.compact(host, before))
     }
     pub fn next_seq(&self, principal: &str) -> u64 {
@@ -1021,14 +1026,14 @@ impl CallTestHarness {
         &self,
         store: &dyn PlaneStore,
         principal: &str,
-    ) -> StoreResult<Vec<CallRecorded>> {
+    ) -> RecordStoreResult<Vec<CallRecorded>> {
         self.log.read_back(store, principal)
     }
     pub(crate) fn verify_principal_chain(
         &self,
         store: &dyn PlaneStore,
         principal: &str,
-    ) -> StoreResult<Result<usize, ChainBreak>> {
+    ) -> RecordStoreResult<Result<usize, ChainBreak>> {
         self.log.verify_principal_chain(store, principal)
     }
 }

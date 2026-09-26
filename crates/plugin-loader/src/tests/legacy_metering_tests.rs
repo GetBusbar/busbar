@@ -12,7 +12,7 @@
 
 use super::*;
 use crate::{DynStore, RawPlugin};
-use busbar_api::Store as _;
+use busbar_contract::records::RecordStore as _;
 use std::collections::BTreeMap;
 use std::os::raw::c_void;
 use std::sync::Mutex;

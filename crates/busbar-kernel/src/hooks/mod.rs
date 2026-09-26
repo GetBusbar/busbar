@@ -52,7 +52,7 @@ pub mod wire;
 // `PolicyError`/`PolicyResult` are re-exported for the `#[cfg(test)]` hook-seam tests (which
 // implement `RoutingPolicy` against the engine's types); allow the unused-in-non-test warning.
 #[allow(unused_imports)]
-pub use busbar_api::{
+pub use busbar_contract::hooks::{
     CallerIdentity, Candidate, PolicyError, PolicyResult, PromptProjection, RoutingContext,
     RoutingDecision, RoutingPolicy, RoutingRequest,
 };
@@ -60,7 +60,7 @@ pub use busbar_api::{
 // `SignalBag` are re-exported here for the same reason the hook contract types above are: engine-
 // internal paths reference them as `crate::hooks::Signal` etc.
 #[allow(unused_imports)]
-pub use busbar_api::{Signal, SignalBag, SignalValue};
+pub use busbar_contract::signal::{Signal, SignalBag, SignalValue};
 
 // The per-generation, config-derived UNION of every hook's declared [`Signal`] set — a dense
 // bitmask ("which catalog entries does ANYTHING configured on this generation want"), consulted
@@ -133,11 +133,11 @@ pub struct HookEnv {
     /// The secret resolver used to turn any SecretRef-typed hook setting (e.g. a `licenseKey`) into
     /// its raw value BEFORE the settings cross the ABI at open/configure (ADR-0010). Shared with the
     /// store/auth open paths; the same fail-closed resolver. Held behind the NEUTRAL
-    /// [`busbar_api::SecretResolve`] trait — not the engine's concrete `config::secret::SecretResolver`
+    /// [`busbar_contract::secret::SecretResolve`] trait — not the engine's concrete `config::secret::SecretResolver`
     /// — so `hooks` no longer names a `busbar-core::config` type (DECISION #19: busbar-core dissolves).
     /// The concrete resolver impls the trait (same crate), so the wiring hands the identical instance;
     /// only the static type at this boundary is narrowed (DECISION #9: byte-identity, behavior identical).
-    pub secret_resolver: std::sync::Arc<dyn busbar_api::SecretResolve>,
+    pub secret_resolver: std::sync::Arc<dyn busbar_contract::secret::SecretResolve>,
     /// Names of hooks that have already emitted the loud [`hook_inert_gate_banner`] THIS build. A
     /// gate named in several pools' `hooks:` lists (and/or `global_hooks`) resolves once per
     /// reference — `resolve_pool_rewrites` runs once per pool, `resolve_rewrite_hooks` once for
@@ -155,7 +155,7 @@ impl HookEnv {
     /// environment.
     pub fn new(
         registry: std::sync::Arc<busbar_plugin_loader::PluginRegistry>,
-        secret_resolver: std::sync::Arc<dyn busbar_api::SecretResolve>,
+        secret_resolver: std::sync::Arc<dyn busbar_contract::secret::SecretResolve>,
     ) -> Self {
         HookEnv {
             registry,
@@ -435,7 +435,7 @@ pub fn resolve_pool_rewrites(
 
 /// THE `on_error` DECORATOR for the READ-WRITE (transform) seat: wraps a resolved `prompt: rw`
 /// transport with the hook's configured `on_error` and maps a call that FAILED
-/// ([`TransformOutcome::Failed`](busbar_api::TransformOutcome::Failed)) to that disposition —
+/// ([`TransformOutcome::Failed`](busbar_contract::hooks::TransformOutcome::Failed)) to that disposition —
 /// `reject` refuses the unit, anything else proceeds with the ORIGINAL body.
 ///
 /// A DECORATOR rather than a branch at each firing site: the rewrite chain fires from four places
@@ -478,9 +478,9 @@ impl RoutingPolicy for RewriteOnError {
         &self,
         req: &RoutingRequest<'_>,
         budget: std::time::Duration,
-    ) -> busbar_api::TransformOutcome {
+    ) -> busbar_contract::hooks::TransformOutcome {
         match self.inner.transform(req, budget).await {
-            busbar_api::TransformOutcome::Failed { message } => {
+            busbar_contract::hooks::TransformOutcome::Failed { message } => {
                 if busbar_kernel::hooks::failed_call_refuses(&self.on_error) {
                     tracing::warn!(
                         hook = self.inner.name(),
@@ -491,7 +491,7 @@ impl RoutingPolicy for RewriteOnError {
                     // The hook's own words go to the OPERATOR's log, never into the refusal: what
                     // reaches the client is the shared, content-free body, the same one the
                     // read-only seat renders for the same condition.
-                    busbar_api::TransformOutcome::Reject {
+                    busbar_contract::hooks::TransformOutcome::Reject {
                         status: busbar_kernel::hooks::REQUIRED_HOOK_UNAVAILABLE_STATUS,
                         message: busbar_kernel::hooks::REQUIRED_HOOK_UNAVAILABLE_MESSAGE
                             .to_string(),
@@ -500,7 +500,7 @@ impl RoutingPolicy for RewriteOnError {
                     // Not load-bearing: the request proceeds with the ORIGINAL body. The failure is
                     // carried on rather than swallowed, so the firing site still logs it as the
                     // failure it is — this decorator decides the DISPOSITION, not the diagnostics.
-                    busbar_api::TransformOutcome::Failed { message }
+                    busbar_contract::hooks::TransformOutcome::Failed { message }
                 }
             }
             other => other,
@@ -523,7 +523,10 @@ impl RoutingPolicy for RewriteOnError {
         self.inner.describe(budget).await
     }
 
-    async fn status(&self, budget: std::time::Duration) -> Option<busbar_api::HookStatus> {
+    async fn status(
+        &self,
+        budget: std::time::Duration,
+    ) -> Option<busbar_contract::hooks::HookStatus> {
         self.inner.status(budget).await
     }
 
@@ -1311,7 +1314,7 @@ pub async fn fetch_status(
     hook: &crate::config::HookCfg,
     settings_version: u64,
     env: &HookEnv,
-) -> Option<busbar_api::HookStatus> {
+) -> Option<busbar_contract::hooks::HookStatus> {
     let (transport, _resolved) =
         gate_transport_offloaded(name, hook, env, settings_version).await?;
     transport
@@ -1686,7 +1689,7 @@ mod tests;
 /// the tap only for a caller in that scope (empty = every caller).
 ///
 /// Relocated here off `busbar_kernel::hooks::TapEntry` (App-retype WEDGE 2d): a purely-neutral tuple —
-/// [`Duration`](std::time::Duration), `bool`, the [`RoutingPolicy`](busbar_api::RoutingPolicy) trait
+/// [`Duration`](std::time::Duration), `bool`, the [`RoutingPolicy`](busbar_contract::hooks::RoutingPolicy) trait
 /// object (busbar-api), `Vec<String>` — so the engine's tap-facet host seams
 /// (`EngineHost::tap_hooks*`) can name it without reaching back into core. Core re-exports this alias
 /// so `busbar_kernel::hooks::TapEntry` is unchanged (a transparent alias, identical by structure).

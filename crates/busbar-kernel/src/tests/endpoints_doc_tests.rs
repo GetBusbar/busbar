@@ -12,7 +12,7 @@
 //! is that the prose cannot drift back to the fail-open reading, and that the primitive the prose now
 //! cites still reads the list the way the prose says.
 
-use busbar_api::VirtualKey;
+use busbar_contract::records::VirtualKey;
 
 #[test]
 fn an_explicit_empty_scope_list_sees_no_pool() {

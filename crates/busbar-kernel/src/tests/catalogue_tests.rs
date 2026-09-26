@@ -26,7 +26,7 @@ use super::*;
 use std::cell::Cell;
 use std::collections::BTreeMap;
 
-use busbar_api::{ScopeRef, VirtualKey};
+use busbar_contract::records::{ScopeRef, VirtualKey};
 
 use crate::trust::validate::{Generations, Grant, Refusal};
 

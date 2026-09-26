@@ -14,7 +14,7 @@
 //! CANNOT serialize an authorization decision — the type it must produce has no place to put one.
 //!
 //! `Identity.groups` is the frozen WIRE name for the caller's asserted memberships; it maps to the
-//! engine's [`busbar_api::Principal::roles`] (the field the auth chain consumes and resolves through
+//! engine's [`busbar_contract::auth::Principal::roles`] (the field the auth chain consumes and resolves through
 //! `auth.role_bindings`). The wire name stays `groups` (the operator-facing membership vocabulary).
 //!
 //! ## What crosses the boundary
@@ -26,17 +26,18 @@
 //! chain module). `Reject`/`Pass` are control-flow, not policy; the ONLY shape carrying data OUT is
 //! the identity-only [`Identity`].
 
-use busbar_api::{
-    AuthOutcome, BeginLogin, CompleteLogin, FieldKind as EngineFieldKind,
+use busbar_contract::auth::{
+    AuthVerdict, BeginLogin, CompleteLogin, FieldKind as EngineFieldKind,
     LoginField as EngineLoginField, LoginForm as EngineLoginForm, LoginHop, LoginHttpResponse,
-    LoginKind as EngineLoginKind, LoginOutcome, Principal, Redacted,
+    LoginKind as EngineLoginKind, LoginOutcome, Principal,
 };
+use busbar_contract::redacted::Redacted;
 use serde::{Deserialize, Serialize};
 
 /// The identity-only success payload an auth plugin returns: WHO the caller is, and nothing about
 /// what they may do. `#[serde(deny_unknown_fields)]` rejects any extra key a plugin tries to smuggle
 /// (a policy/scope field), so the identity-only guarantee is structural. Converts to/from the
-/// engine's [`busbar_api::Principal`] (the seam the auth chain consumes; `groups` ↔ `roles`).
+/// engine's [`busbar_contract::auth::Principal`] (the seam the auth chain consumes; `groups` ↔ `roles`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Identity {
@@ -77,7 +78,7 @@ impl From<Identity> for Principal {
     }
 }
 
-/// An auth operation, serialized as the `call` request payload. Mirrors the `busbar_api::AuthModule`
+/// An auth operation, serialized as the `call` request payload. Mirrors the `busbar_contract::auth::AuthModule`
 /// trait; the variant is the op-code.
 #[derive(Debug, Serialize, Deserialize)]
 pub enum AuthRequest {
@@ -136,7 +137,7 @@ pub struct BeginLoginRequest {
 //
 // NO derived `Debug` either — see the hand-written impl below. Every credential-bearing field is
 // redacted there, so this type crossing the ONE documented plaintext boundary does not also re-open
-// the LOG channel `busbar_api::Redacted` closes on the engine side.
+// the LOG channel `busbar_contract::redacted::Redacted` closes on the engine side.
 #[derive(Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct CompleteLoginRequest {
     /// OAuth authorization code returned to the callback.
@@ -152,7 +153,7 @@ pub struct CompleteLoginRequest {
     /// declared in its [`LoginForm`]. This is THE single, deliberate, documented plaintext
     /// credential-delivery boundary: the values must reach the plugin that verifies them (an LDAP
     /// bind, …), so they cross as plain `String` here (the engine holds them
-    /// [`busbar_api::Redacted`] on its side of the seam and converts via `expose_secret` only for
+    /// [`busbar_contract::redacted::Redacted`] on its side of the seam and converts via `expose_secret` only for
     /// this call). Absent for the OAuth-code shape.
     #[serde(default)]
     pub submitted: Vec<(String, String)>,
@@ -170,7 +171,7 @@ pub struct CompleteLoginRequest {
 /// bridge, which renders every field with `{:?}`, and a derived `Debug` would print the submitted
 /// password, the OAuth authorization `code`, the PKCE `code_verifier`, and the token endpoint's
 /// response body (the access/id tokens) verbatim into the operator's log. The engine side holds all
-/// of these in [`busbar_api::Redacted`] for exactly this reason; this impl keeps the guarantee on
+/// of these in [`busbar_contract::redacted::Redacted`] for exactly this reason; this impl keeps the guarantee on
 /// the wire side of the seam.
 ///
 /// What SURVIVES is the non-secret context a failed login is diagnosed from: the `redirect_uri`,
@@ -269,7 +270,7 @@ impl HttpResponse {
 
 // ── credential-flow wire types (auth ABI v2, 1.5.2) ─────────────────────────────────────────────
 
-/// Wire mirror of [`busbar_api::LoginKind`] — the pure method classification the chooser reads at
+/// Wire mirror of [`busbar_contract::auth::LoginKind`] — the pure method classification the chooser reads at
 /// load (via [`AuthRequest::LoginKind`]) to decide redirect-button vs credential-form, WITHOUT
 /// calling `begin_login` (no PKCE side effects).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -295,7 +296,7 @@ impl From<LoginKind> for EngineLoginKind {
     }
 }
 
-/// Wire mirror of [`busbar_api::FieldKind`].
+/// Wire mirror of [`busbar_contract::auth::FieldKind`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum FieldKind {
     Text,
@@ -319,7 +320,7 @@ impl From<FieldKind> for EngineFieldKind {
     }
 }
 
-/// Wire mirror of [`busbar_api::LoginField`] — one declared credential field.
+/// Wire mirror of [`busbar_contract::auth::LoginField`] — one declared credential field.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct LoginField {
@@ -350,7 +351,7 @@ impl From<LoginField> for EngineLoginField {
     }
 }
 
-/// Wire mirror of [`busbar_api::LoginForm`] — the declarative form spec a credential method returns
+/// Wire mirror of [`busbar_contract::auth::LoginForm`] — the declarative form spec a credential method returns
 /// from `begin_login` for the core to render.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -403,13 +404,13 @@ pub enum AuthResponse {
 }
 
 impl AuthResponse {
-    /// Build the `authenticate` response from an engine [`AuthOutcome`]. The identity-only `Identify`
+    /// Build the `authenticate` response from an engine [`AuthVerdict`]. The identity-only `Identify`
     /// projects to [`AuthResponse::Identity`]; the control-flow verdicts map straight across.
-    pub fn from_outcome(outcome: AuthOutcome) -> Self {
+    pub fn from_outcome(outcome: AuthVerdict) -> Self {
         match outcome {
-            AuthOutcome::Identify(p) => AuthResponse::Identity(p.into()),
-            AuthOutcome::Reject => AuthResponse::Reject,
-            AuthOutcome::Pass => AuthResponse::Pass,
+            AuthVerdict::Identify(p) => AuthResponse::Identity(p.into()),
+            AuthVerdict::Reject => AuthResponse::Reject,
+            AuthVerdict::Pass => AuthResponse::Pass,
         }
     }
 

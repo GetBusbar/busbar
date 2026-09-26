@@ -17,8 +17,8 @@ use crate::testkit::fixture_host::FixtureHost;
 use busbar_plane_streaming::session::TurnCounters;
 use std::sync::Arc;
 
-fn caller() -> busbar_api::VirtualKey {
-    busbar_api::VirtualKey {
+fn caller() -> busbar_contract::records::VirtualKey {
+    busbar_contract::records::VirtualKey {
         id: "vk-budget".to_string(),
         ..Default::default()
     }

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! MUTATION-HARDENING: `busbar_api::Store` contract TOTALITY.
+//! MUTATION-HARDENING: `busbar_contract::records::RecordStore` contract TOTALITY.
 //!
 //! Every `Store` method's DEFAULT body carries real logic (an error, an empty list, a no-op, a
 //! sequential compose), and none of it was exercised anywhere in the crate before this file: a
@@ -11,18 +11,19 @@
 //! `Ok(())`, or `Ok(Vec::new())` to `Ok(vec![...])`, or dropping a step out of a sequential
 //! default, produces no compile error and no existing test failure without this file.
 //!
-//! This is an INTEGRATION test (crates/api/tests/, auto-discovered by Cargo — the crate's existing
+//! This is an INTEGRATION test (auto-discovered by Cargo — the crate's existing
 //! convention of `#[cfg(test)] #[path = "tests/x.rs"] mod tests;` inline unit tests is left
 //! untouched; no `mod` line needs to be added anywhere for this file to run). It exercises only the
-//! crate's public surface (`busbar_api::*`), same as any out-of-tree Store-plugin author would.
+//! crate's public surface (`busbar_contract::records::*`), same as any out-of-tree Store-plugin
+//! author would. Moved here from `busbar-api`'s own suite when that crate retired.
 //!
 //! `Bare` implements ONLY the eight REQUIRED `Store` methods — every other method here is exercised
 //! at its DEFAULT, unmodified body.
 
-use busbar_api::{
+use busbar_contract::records::{
     AuditRecord, CredentialMeta, CredentialSecret, MeteringDelta, MeteringRow, PlaneDisposition,
-    PlaneRecord, PlaneRequestCtx, PlaneSelector, SecretForm, Store, StoreError, StoreResult,
-    UsageLedger, VirtualKey,
+    PlaneRecord, PlaneRequestCtx, PlaneSelector, RecordStore, RecordStoreError, RecordStoreResult,
+    SecretForm, UsageLedger, VirtualKey,
 };
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
@@ -37,22 +38,22 @@ struct Bare {
     keys: Mutex<Vec<VirtualKey>>,
 }
 
-impl Store for Bare {
-    fn put_key(&self, key: &VirtualKey) -> StoreResult<()> {
+impl RecordStore for Bare {
+    fn put_key(&self, key: &VirtualKey) -> RecordStoreResult<()> {
         self.put_key_calls.fetch_add(1, Ordering::SeqCst);
         self.keys.lock().unwrap().push(key.clone());
         Ok(())
     }
-    fn get_key(&self, _id: &str) -> StoreResult<Option<VirtualKey>> {
+    fn get_key(&self, _id: &str) -> RecordStoreResult<Option<VirtualKey>> {
         Ok(None)
     }
-    fn list_keys(&self) -> StoreResult<Vec<VirtualKey>> {
+    fn list_keys(&self) -> RecordStoreResult<Vec<VirtualKey>> {
         Ok(Vec::new())
     }
-    fn delete_key(&self, _id: &str) -> StoreResult<()> {
+    fn delete_key(&self, _id: &str) -> RecordStoreResult<()> {
         Ok(())
     }
-    fn get_usage(&self, _bucket_id: &str, _window_start: u64) -> StoreResult<UsageLedger> {
+    fn get_usage(&self, _bucket_id: &str, _window_start: u64) -> RecordStoreResult<UsageLedger> {
         Ok(UsageLedger::default())
     }
     fn put_usage(
@@ -60,13 +61,13 @@ impl Store for Bare {
         _bucket_id: &str,
         _window_start: u64,
         _ledger: &UsageLedger,
-    ) -> StoreResult<()> {
+    ) -> RecordStoreResult<()> {
         Ok(())
     }
-    fn add_metering(&self, _delta: &MeteringDelta) -> StoreResult<()> {
+    fn add_metering(&self, _delta: &MeteringDelta) -> RecordStoreResult<()> {
         Ok(())
     }
-    fn list_metering(&self, _bucket: u64) -> StoreResult<Vec<MeteringRow>> {
+    fn list_metering(&self, _bucket: u64) -> RecordStoreResult<Vec<MeteringRow>> {
         Ok(Vec::new())
     }
 }
@@ -266,10 +267,10 @@ fn put_key_with_credential_default_calls_put_key_then_surfaces_the_credential_er
 
 #[test]
 fn store_error_from_string_and_str_preserve_the_message() {
-    let from_string: StoreError = "disk full".to_string().into();
+    let from_string: RecordStoreError = "disk full".to_string().into();
     assert_eq!(from_string.to_string(), "store error: disk full");
 
-    let from_str: StoreError = "disk full".into();
+    let from_str: RecordStoreError = "disk full".into();
     assert_eq!(from_str.to_string(), "store error: disk full");
 }
 

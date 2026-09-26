@@ -652,7 +652,7 @@ pub struct Registry {
     /// brought with them (the seven LLM words today). Deleting a protocol deletes its verbs from
     /// this list with it.
     #[cfg_attr(not(any(test, feature = "test-support")), allow(dead_code))]
-    declared_verbs: &'static [busbar_api::operation::Operation],
+    declared_verbs: &'static [busbar_contract::operation::OpVerb],
 }
 
 impl Registry {
@@ -668,7 +668,7 @@ impl Registry {
         // Declaration order, deduped BY VALUE (not sorted): the verb vocabulary is operator-visible
         // the same way the protocol list is, so it keeps the deterministic order the declarations
         // state rather than an alphabetical one nobody declared.
-        let mut declared_verbs: Vec<busbar_api::operation::Operation> = Vec::new();
+        let mut declared_verbs: Vec<busbar_contract::operation::OpVerb> = Vec::new();
         for d in &decls {
             head_keys.extend_from_slice(d.head_keys);
             head_keys.extend(d.array_stream_shim_key);
@@ -760,7 +760,7 @@ impl Registry {
 
     /// Every verb any declared protocol serves, in declaration order, deduped. See the field doc.
     #[cfg_attr(not(any(test, feature = "test-support")), allow(dead_code))]
-    pub fn declared_verbs(&self) -> &'static [busbar_api::operation::Operation] {
+    pub fn declared_verbs(&self) -> &'static [busbar_contract::operation::OpVerb] {
         self.declared_verbs
     }
 }
@@ -768,7 +768,7 @@ impl Registry {
 /// THE VERBS THE REGISTERED PROTOCOLS DECLARE — the declared half of the operation vocabulary
 /// (`Operation::ALL`, the six shape verbs, is the core-owned half).
 #[cfg_attr(not(any(test, feature = "test-support")), allow(dead_code))]
-pub fn declared_verbs() -> &'static [busbar_api::operation::Operation] {
+pub fn declared_verbs() -> &'static [busbar_contract::operation::OpVerb] {
     registry().declared_verbs()
 }
 

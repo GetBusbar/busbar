@@ -25,21 +25,21 @@
 use crate::plane::quarantine::{DemotionRecord, DemotionRow};
 use crate::plane::store::{decode, KIND_DEMOTION};
 use crate::test_support::plugin_store::{durable_cfg, open_plugin};
-use busbar_api::{PlaneSelector, Store, StoreResult};
+use busbar_contract::records::{PlaneSelector, RecordStore, RecordStoreResult};
 
 /// TEST-ONLY named-vocabulary demotion-store extension — the demotion twin of the call-log test-ext,
 /// kept beside the battery that uses it now that the neutral `StoreNamedTestExt` is gone. It reads the
 /// `demotion` stream through the generic `PlaneRecord` ABI, decoding each opaque body into the neutral
 /// [`DemotionRow`] the seam persists.
-trait DemotionStoreTestExt: Store {
-    fn list_demotions(&self) -> StoreResult<Vec<DemotionRow>> {
+trait DemotionStoreTestExt: RecordStore {
+    fn list_demotions(&self) -> RecordStoreResult<Vec<DemotionRow>> {
         self.list_plane_records(KIND_DEMOTION, &PlaneSelector::All)?
             .iter()
             .map(|b| decode(b))
             .collect()
     }
 }
-impl<T: Store + ?Sized> DemotionStoreTestExt for T {}
+impl<T: RecordStore + ?Sized> DemotionStoreTestExt for T {}
 
 /// A `DemotionRecord` with a freshly `dlopen`ed handle on `cfg`.
 fn node(cfg: &str) -> DemotionRecord {

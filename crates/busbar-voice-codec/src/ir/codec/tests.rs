@@ -1014,12 +1014,18 @@ fn cached_input_tokens_are_not_billed_twice() {
     // The BILLING fold is where the subset is netted out.
     let billed = u.to_billing_usage();
     assert_eq!(
-        billed.usage_units.get(busbar_api::UNIT_INPUT).copied(),
+        billed
+            .usage_units
+            .get(busbar_contract::records::UNIT_INPUT)
+            .copied(),
         Some(200),
         "input bills the UNCACHED remainder (1000 - 800), not the full input figure"
     );
     assert_eq!(
-        billed.usage_units.get(busbar_api::UNIT_CACHE_READ).copied(),
+        billed
+            .usage_units
+            .get(busbar_contract::records::UNIT_CACHE_READ)
+            .copied(),
         Some(800),
         "the cached subset bills once, on the cache-read lane"
     );
@@ -1113,12 +1119,18 @@ fn usage_falls_back_to_stated_totals_when_the_modality_breakdown_is_absent() {
     // The lane the billing fold sums onto is what actually decides the invoice.
     let billed = u.to_billing_usage();
     assert_eq!(
-        billed.usage_units.get(busbar_api::UNIT_INPUT).copied(),
+        billed
+            .usage_units
+            .get(busbar_contract::records::UNIT_INPUT)
+            .copied(),
         Some(stated_in),
         "the input lane bills the stated total, never zero"
     );
     assert_eq!(
-        billed.usage_units.get(busbar_api::UNIT_OUTPUT).copied(),
+        billed
+            .usage_units
+            .get(busbar_contract::records::UNIT_OUTPUT)
+            .copied(),
         Some(stated_out),
         "the output lane bills the stated total, never zero"
     );

@@ -114,7 +114,7 @@ fn standin(rec: &Arc<Mutex<Vec<MeterRow>>>) -> Box<dyn GauntletPlane> {
     })
 }
 
-fn req(gov: &busbar_api::PlaneRequestCtx) -> GauntletRequest<'_> {
+fn req(gov: &busbar_contract::records::PlaneRequestCtx) -> GauntletRequest<'_> {
     GauntletRequest {
         gov,
         // The plane's drive reads its target off the plane, not the request — this label is unused
@@ -137,7 +137,7 @@ async fn split(resp: Response) -> (StatusCode, axum::http::HeaderMap, axum::body
 
 #[tokio::test]
 async fn per_call_metering_plane_matches_substrate_gauntlet_byte_and_meter() {
-    let gov = busbar_api::PlaneRequestCtx::default();
+    let gov = busbar_contract::records::PlaneRequestCtx::default();
 
     let leg_legacy_rec = Arc::new(Mutex::new(Vec::new()));
     let leg_loop_rec = Arc::new(Mutex::new(Vec::new()));

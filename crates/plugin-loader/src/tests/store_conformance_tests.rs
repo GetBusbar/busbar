@@ -12,11 +12,11 @@
 //! the name.
 
 use super::both_ways::{both_doors, statement};
-use busbar_api::{ScopeRef, Store, VirtualKey};
+use busbar_contract::records::{RecordStore, ScopeRef, VirtualKey};
 
 /// The script: put a key carrying a pool grant, read it back, list every key — the transcript is
 /// what the host was handed, serialized as the engine would persist or serve it.
-fn script(store: &dyn Store) -> String {
+fn script(store: &dyn RecordStore) -> String {
     let key = VirtualKey {
         id: "vk_both_ways".into(),
         generation_hash: "binding:vk_both_ways:1".into(),
@@ -79,7 +79,7 @@ fn a_linked_and_a_dropped_in_store_register_byte_identical_rows() {
 #[test]
 fn the_linked_door_refuses_what_the_structural_gate_refuses() {
     use crate::{LinkedPlugin, PluginRegistry};
-    fn ram(_: &str) -> Result<Box<dyn Store>, String> {
+    fn ram(_: &str) -> Result<Box<dyn RecordStore>, String> {
         Err("never opened".into())
     }
     let refused = |row: LinkedPlugin| match PluginRegistry::empty().link(vec![row]) {

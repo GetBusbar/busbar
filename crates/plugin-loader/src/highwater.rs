@@ -207,7 +207,7 @@ impl HighWaterMarks {
     /// Persist the marks, if this store has a data dir. A no-op (and `Ok`) when memory-only —
     /// PB-13: a deployment with no `data_dir` writes no data-dir files.
     ///
-    /// Routed through the ONE durable-write primitive (`busbar_api::durable::write_with`), which
+    /// Routed through the ONE durable-write primitive (`busbar_kernel_wal::durable::write_with`), which
     /// owns the temp naming, the contents fsync, the atomic rename and the parent fsync. That
     /// matters here for a specific reason: a TRUNCATED floor is a silently disarmed security
     /// control, so a crash mid-write must leave the previous floor intact rather than a shorter one.
@@ -223,10 +223,10 @@ impl HighWaterMarks {
         let mut body = serde_json::to_vec_pretty(&self.marks)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
         body.push(b'\n');
-        busbar_api::durable::write_with(
+        busbar_kernel_wal::durable::write_with(
             path,
             &body,
-            busbar_api::durable::DurableOpts {
+            busbar_kernel_wal::durable::DurableOpts {
                 mode: Some(0o600),
                 exclusive: false,
             },

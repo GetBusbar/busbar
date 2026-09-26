@@ -9,7 +9,7 @@ use std::sync::Arc;
 #[test]
 fn apply_rewrite_to_body_swaps_messages_and_is_fail_safe() {
     crate::testkit::install_test_seams();
-    use busbar_api::RewriteReply;
+    use busbar_contract::hooks::RewriteReply;
 
     // Chat-shaped body → messages replaced, tool injected (appended to existing tools).
     let mut v = serde_json::json!({
@@ -56,7 +56,7 @@ fn apply_rewrite_to_body_swaps_messages_and_is_fail_safe() {
 #[test]
 fn apply_rewrite_renders_per_dialect() {
     crate::testkit::install_test_seams();
-    use busbar_api::RewriteReply;
+    use busbar_contract::hooks::RewriteReply;
     let rw = RewriteReply {
         messages: vec![
             serde_json::json!({"role": "user", "content": "compressed"}),
@@ -102,7 +102,7 @@ fn apply_rewrite_renders_per_dialect() {
 #[test]
 fn gemini_rewrite_role_round_trips_model_and_assistant() {
     crate::testkit::install_test_seams();
-    use busbar_api::RewriteReply;
+    use busbar_contract::hooks::RewriteReply;
 
     // Projection canonicalizes the gemini-native `model` role to `assistant`.
     let g_body = serde_json::json!({
@@ -116,7 +116,7 @@ fn gemini_rewrite_role_round_trips_model_and_assistant() {
         &[],
         super::APPLICATION_JSON,
         "gemini",
-        Some(busbar_api::operation::Operation::CHAT),
+        Some(busbar_contract::operation::OpVerb::CHAT),
     )
     .expect("the gemini reader accepts this body");
     let p = f.prompt();
@@ -160,8 +160,8 @@ fn gemini_rewrite_role_round_trips_model_and_assistant() {
 #[tokio::test]
 async fn apply_global_rewrites_chains_in_order() {
     crate::testkit::install_test_seams();
-    use busbar_api::RewriteReply;
-    use busbar_api::{
+    use busbar_contract::hooks::RewriteReply;
+    use busbar_contract::hooks::{
         Candidate, PolicyResult, RoutingContext, RoutingDecision, RoutingPolicy, RoutingRequest,
     };
 
@@ -185,8 +185,8 @@ async fn apply_global_rewrites_chains_in_order() {
             &self,
             _req: &RoutingRequest<'_>,
             _budget: std::time::Duration,
-        ) -> busbar_api::TransformOutcome {
-            busbar_api::TransformOutcome::Rewrite(RewriteReply {
+        ) -> busbar_contract::hooks::TransformOutcome {
+            busbar_contract::hooks::TransformOutcome::Rewrite(RewriteReply {
                 messages: vec![serde_json::json!({"role": "user", "content": self.0})],
                 tools: vec![],
             })
@@ -211,7 +211,7 @@ async fn apply_global_rewrites_chains_in_order() {
         &mut v,
         "pool",
         "anthropic",
-        busbar_api::operation::Operation::CHAT,
+        busbar_contract::operation::OpVerb::CHAT,
         false,
         1,
     )

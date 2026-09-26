@@ -106,7 +106,7 @@ impl busbar_kernel::plane::config::PlaneCfg for StreamsCfg {
     /// The voice plane's `streams:` section carries NO secret reference — the exhaustive destructure
     /// (no `..`) is kept anyway so a future secret-bearing field fails to compile until someone
     /// decides, HERE, whether it is a secret, exactly as `AgentsCfg`/`ToolsCfg` do.
-    fn secret_refs(&self) -> Vec<(String, &busbar_api::SecretRef)> {
+    fn secret_refs(&self) -> Vec<(String, &busbar_contract::secret_ref::SecretRef)> {
         let StreamsCfg {
             session: _,
             session_max_secs: _,

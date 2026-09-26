@@ -10,8 +10,8 @@ fn no_cell_lookup() {
     let h = OpenAiRequestHandler;
     // OpenAI serves every operation (chat now via its OperationHandler too). The no-handler 404 is exercised on a
     // protocol that lacks an op — e.g. anthropic embeddings — in the OperationHandlers registry tests.
-    assert!(h.operation_handler(Operation::MODERATION).is_some());
-    assert!(h.operation_handler(Operation::CHAT).is_some());
+    assert!(h.operation_handler(OpVerb::MODERATION).is_some());
+    assert!(h.operation_handler(OpVerb::CHAT).is_some());
 }
 
 #[test]
@@ -590,7 +590,7 @@ fn openai_images_edit_request_is_rejected_as_unsupported_sub_op() {
     assert_eq!(
         err,
         IngressReject::UnsupportedSubOp {
-            op: Operation::IMAGE,
+            op: OpVerb::IMAGE,
             model: "dall-e-2".into(),
         }
     );

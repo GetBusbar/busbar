@@ -21,9 +21,9 @@
 use super::store_adapter_tests::cached_published_store_tarball;
 use super::*;
 use crate::store_adapter::{LegacyReadPlan, StoreAdapter, BILLABLE_REQUESTS_CLASS};
-use busbar_api::{
-    AuditRecord, MeteringDelta, MeteringRow, ModelTokens, Store as AbiStore, StoreError,
-    StoreResult, UsageLedger, VirtualKey,
+use busbar_contract::records::{
+    AuditRecord, MeteringDelta, MeteringRow, ModelTokens, RecordStore as AbiStore,
+    RecordStoreError, RecordStoreResult, UsageLedger, VirtualKey,
 };
 use busbar_kernel_ledger::migration::{
     meter_pool_scope, migrate, LegacyFamily, MigrationRecords, Outcome, OPENING_CHECKPOINT_SEQ,
@@ -104,12 +104,12 @@ impl SeededRows {
 }
 
 impl AbiStore for SeededRows {
-    fn put_key(&self, _key: &VirtualKey) -> StoreResult<()> {
+    fn put_key(&self, _key: &VirtualKey) -> RecordStoreResult<()> {
         self.note("put_key");
         panic!("the migration must never write a key row");
     }
 
-    fn get_key(&self, id: &str) -> StoreResult<Option<VirtualKey>> {
+    fn get_key(&self, id: &str) -> RecordStoreResult<Option<VirtualKey>> {
         self.note(format!("get_key {id}"));
         Ok(self
             .keys
@@ -120,17 +120,17 @@ impl AbiStore for SeededRows {
             .cloned())
     }
 
-    fn list_keys(&self) -> StoreResult<Vec<VirtualKey>> {
+    fn list_keys(&self) -> RecordStoreResult<Vec<VirtualKey>> {
         self.note("list_keys");
         Ok(self.keys.lock().unwrap_or_else(|p| p.into_inner()).clone())
     }
 
-    fn delete_key(&self, _id: &str) -> StoreResult<()> {
+    fn delete_key(&self, _id: &str) -> RecordStoreResult<()> {
         self.note("delete_key");
         panic!("the migration must never delete a key row");
     }
 
-    fn get_usage(&self, bucket_id: &str, window_start: u64) -> StoreResult<UsageLedger> {
+    fn get_usage(&self, bucket_id: &str, window_start: u64) -> RecordStoreResult<UsageLedger> {
         self.note(format!("get_usage {bucket_id}@{window_start}"));
         Ok(self
             .usage
@@ -142,17 +142,17 @@ impl AbiStore for SeededRows {
             .unwrap_or_default())
     }
 
-    fn put_usage(&self, _b: &str, _w: u64, _l: &UsageLedger) -> StoreResult<()> {
+    fn put_usage(&self, _b: &str, _w: u64, _l: &UsageLedger) -> RecordStoreResult<()> {
         self.note("put_usage");
         panic!("the migration must never write a usage row: no write-read-back probe");
     }
 
-    fn add_metering(&self, _delta: &MeteringDelta) -> StoreResult<()> {
+    fn add_metering(&self, _delta: &MeteringDelta) -> RecordStoreResult<()> {
         self.note("add_metering");
         panic!("the migration must never write a metering row");
     }
 
-    fn list_metering(&self, bucket: u64) -> StoreResult<Vec<MeteringRow>> {
+    fn list_metering(&self, bucket: u64) -> RecordStoreResult<Vec<MeteringRow>> {
         self.note(format!("list_metering {bucket}"));
         Ok(self
             .metering
@@ -164,12 +164,12 @@ impl AbiStore for SeededRows {
             .collect())
     }
 
-    fn list_audit(&self) -> StoreResult<Vec<AuditRecord>> {
+    fn list_audit(&self) -> RecordStoreResult<Vec<AuditRecord>> {
         self.note("list_audit");
         Ok(self.audit.lock().unwrap_or_else(|p| p.into_inner()).clone())
     }
 
-    fn append_audit(&self, _entry: &AuditRecord) -> StoreResult<()> {
+    fn append_audit(&self, _entry: &AuditRecord) -> RecordStoreResult<()> {
         self.note("append_audit");
         panic!("the migration must never append an audit record");
     }
@@ -196,32 +196,38 @@ impl SaysNothing {
 }
 
 impl AbiStore for SaysNothing {
-    fn put_key(&self, _key: &VirtualKey) -> StoreResult<()> {
+    fn put_key(&self, _key: &VirtualKey) -> RecordStoreResult<()> {
         panic!("write");
     }
-    fn get_key(&self, _id: &str) -> StoreResult<Option<VirtualKey>> {
+    fn get_key(&self, _id: &str) -> RecordStoreResult<Option<VirtualKey>> {
         Ok(None)
     }
-    fn list_keys(&self) -> StoreResult<Vec<VirtualKey>> {
+    fn list_keys(&self) -> RecordStoreResult<Vec<VirtualKey>> {
         self.note("list_keys");
-        Err(StoreError("this store does not know that".to_string()))
+        Err(RecordStoreError(
+            "this store does not know that".to_string(),
+        ))
     }
-    fn delete_key(&self, _id: &str) -> StoreResult<()> {
+    fn delete_key(&self, _id: &str) -> RecordStoreResult<()> {
         panic!("write");
     }
-    fn get_usage(&self, _b: &str, _w: u64) -> StoreResult<UsageLedger> {
+    fn get_usage(&self, _b: &str, _w: u64) -> RecordStoreResult<UsageLedger> {
         self.note("get_usage");
-        Err(StoreError("this store does not know that".to_string()))
+        Err(RecordStoreError(
+            "this store does not know that".to_string(),
+        ))
     }
-    fn put_usage(&self, _b: &str, _w: u64, _l: &UsageLedger) -> StoreResult<()> {
+    fn put_usage(&self, _b: &str, _w: u64, _l: &UsageLedger) -> RecordStoreResult<()> {
         panic!("write");
     }
-    fn add_metering(&self, _d: &MeteringDelta) -> StoreResult<()> {
+    fn add_metering(&self, _d: &MeteringDelta) -> RecordStoreResult<()> {
         panic!("write");
     }
-    fn list_metering(&self, _bucket: u64) -> StoreResult<Vec<MeteringRow>> {
+    fn list_metering(&self, _bucket: u64) -> RecordStoreResult<Vec<MeteringRow>> {
         self.note("list_metering");
-        Err(StoreError("this store does not know that".to_string()))
+        Err(RecordStoreError(
+            "this store does not know that".to_string(),
+        ))
     }
 }
 
@@ -234,32 +240,32 @@ impl AbiStore for SaysNothing {
 struct EveryBucketHoldsTheSame;
 
 impl AbiStore for EveryBucketHoldsTheSame {
-    fn put_key(&self, _key: &VirtualKey) -> StoreResult<()> {
+    fn put_key(&self, _key: &VirtualKey) -> RecordStoreResult<()> {
         panic!("write");
     }
-    fn get_key(&self, _id: &str) -> StoreResult<Option<VirtualKey>> {
+    fn get_key(&self, _id: &str) -> RecordStoreResult<Option<VirtualKey>> {
         Ok(None)
     }
-    fn list_keys(&self) -> StoreResult<Vec<VirtualKey>> {
+    fn list_keys(&self) -> RecordStoreResult<Vec<VirtualKey>> {
         Ok(Vec::new())
     }
-    fn delete_key(&self, _id: &str) -> StoreResult<()> {
+    fn delete_key(&self, _id: &str) -> RecordStoreResult<()> {
         panic!("write");
     }
-    fn get_usage(&self, _b: &str, _w: u64) -> StoreResult<UsageLedger> {
+    fn get_usage(&self, _b: &str, _w: u64) -> RecordStoreResult<UsageLedger> {
         Ok(UsageLedger {
             requests: 2,
             billable_requests: 1,
             models: vec![model("gpt-4", &[("input", 10)])],
         })
     }
-    fn put_usage(&self, _b: &str, _w: u64, _l: &UsageLedger) -> StoreResult<()> {
+    fn put_usage(&self, _b: &str, _w: u64, _l: &UsageLedger) -> RecordStoreResult<()> {
         panic!("write");
     }
-    fn add_metering(&self, _d: &MeteringDelta) -> StoreResult<()> {
+    fn add_metering(&self, _d: &MeteringDelta) -> RecordStoreResult<()> {
         panic!("write");
     }
-    fn list_metering(&self, _bucket: u64) -> StoreResult<Vec<MeteringRow>> {
+    fn list_metering(&self, _bucket: u64) -> RecordStoreResult<Vec<MeteringRow>> {
         Ok(Vec::new())
     }
 }
@@ -731,37 +737,37 @@ fn the_window_and_metering_views_of_one_consumption_do_not_fold() {
 struct ReadOnly(Arc<dyn AbiStore>);
 
 impl AbiStore for ReadOnly {
-    fn put_key(&self, _key: &VirtualKey) -> StoreResult<()> {
+    fn put_key(&self, _key: &VirtualKey) -> RecordStoreResult<()> {
         panic!("the migration must never write a key row");
     }
-    fn get_key(&self, id: &str) -> StoreResult<Option<VirtualKey>> {
+    fn get_key(&self, id: &str) -> RecordStoreResult<Option<VirtualKey>> {
         self.0.get_key(id)
     }
-    fn list_keys(&self) -> StoreResult<Vec<VirtualKey>> {
+    fn list_keys(&self) -> RecordStoreResult<Vec<VirtualKey>> {
         self.0.list_keys()
     }
-    fn delete_key(&self, _id: &str) -> StoreResult<()> {
+    fn delete_key(&self, _id: &str) -> RecordStoreResult<()> {
         panic!("the migration must never delete a key row");
     }
-    fn get_usage(&self, bucket_id: &str, window_start: u64) -> StoreResult<UsageLedger> {
+    fn get_usage(&self, bucket_id: &str, window_start: u64) -> RecordStoreResult<UsageLedger> {
         self.0.get_usage(bucket_id, window_start)
     }
-    fn put_usage(&self, _b: &str, _w: u64, _l: &UsageLedger) -> StoreResult<()> {
+    fn put_usage(&self, _b: &str, _w: u64, _l: &UsageLedger) -> RecordStoreResult<()> {
         panic!("the migration must never write a usage row");
     }
-    fn add_metering(&self, _delta: &MeteringDelta) -> StoreResult<()> {
+    fn add_metering(&self, _delta: &MeteringDelta) -> RecordStoreResult<()> {
         panic!("the migration must never write a metering row");
     }
-    fn list_metering(&self, bucket: u64) -> StoreResult<Vec<MeteringRow>> {
+    fn list_metering(&self, bucket: u64) -> RecordStoreResult<Vec<MeteringRow>> {
         self.0.list_metering(bucket)
     }
-    fn list_audit(&self) -> StoreResult<Vec<AuditRecord>> {
+    fn list_audit(&self) -> RecordStoreResult<Vec<AuditRecord>> {
         self.0.list_audit()
     }
-    fn list_audit_tail(&self, limit: u64) -> StoreResult<Vec<AuditRecord>> {
+    fn list_audit_tail(&self, limit: u64) -> RecordStoreResult<Vec<AuditRecord>> {
         self.0.list_audit_tail(limit)
     }
-    fn append_audit(&self, _entry: &AuditRecord) -> StoreResult<()> {
+    fn append_audit(&self, _entry: &AuditRecord) -> RecordStoreResult<()> {
         panic!("the migration must never append an audit record");
     }
 }

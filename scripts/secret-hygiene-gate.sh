@@ -6,7 +6,7 @@
 #
 # WHY THIS EXISTS (docs/design/1.6.0-secret-hygiene.md):
 #   busbar's secret-hygiene guarantee is a TYPE guarantee: a value that is a secret is `Redacted<T>`
-#   (busbar_api::Redacted — Debug/Display = [REDACTED], no Serialize, zeroize-on-drop), never a bare
+#   (busbar_contract::Redacted — Debug/Display = [REDACTED], no Serialize, zeroize-on-drop), never a bare
 #   `String`/`&str`/`Vec<u8>`. Its safe-to-log IDENTITY is `SecretRef`/a plain id, never the value.
 #   Two ways that guarantee regresses, both caught here:
 #     Check 1 — a known-secret field declared as a BARE string type instead of `Redacted<T>`, so a
@@ -958,7 +958,7 @@ RED
   cat >"$tmp/c1_green.rs" <<'GREEN'
 // api_key: String  <- a comment naming the bad shape must be ignored
 pub struct LaneConfig {
-    pub api_key: busbar_api::Redacted<String>,
+    pub api_key: busbar_contract::Redacted<String>,
     pub base_url: String,
 }
 impl LaneConfig {
@@ -1476,7 +1476,7 @@ run_report() {
   note "Check 3 (secret interpolated into a message a caller receives): $n3"
 
   if [ "$n1" -gt 0 ]; then
-    hdr "Check 1 — bare secret fields (convert to busbar_api::Redacted<T>)"
+    hdr "Check 1 — bare secret fields (convert to busbar_contract::Redacted<T>)"
     awk -F'\t' '{printf "  %-20s %s\n", $1, $2}' "$tmp/c1"
   fi
   if [ "$n2" -gt 0 ]; then
@@ -1518,7 +1518,7 @@ case "${1:-}" in
     fi
     if [ "$report_only" = "0" ]; then
       red "secret-hygiene gate: FAIL — $REPORT_TOTAL secret-hygiene violation(s) (see report above)"
-      note "Wrap each secret VALUE in busbar_api::Redacted<T>; log a SecretRef/id, never .expose_secret() output."
+      note "Wrap each secret VALUE in busbar_contract::Redacted<T>; log a SecretRef/id, never .expose_secret() output."
       note "For a Check-3 hit: REDACT AT THE FORMAT SITE. Do not delete the diagnostic — an error that"
       note "no longer says which setting was wrong is a worse error than one that says too much."
       exit 1

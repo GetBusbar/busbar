@@ -48,7 +48,7 @@ use crate::mcp::client::verb::UpstreamVerb;
 use crate::mcp::test_engine::*;
 use crate::mcp::upstream::{authorise_verb, Authorised, SetupRefusal};
 use crate::testkit::TestAppMcpExt;
-use busbar_api::VirtualKey;
+use busbar_contract::records::VirtualKey;
 use busbar_kernel::trust::validate::Generations;
 use std::collections::BTreeSet;
 

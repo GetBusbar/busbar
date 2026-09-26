@@ -179,7 +179,7 @@ pub struct LinkedPlugin {
 }
 
 /// What a [`LinkedEntry::Ranking`] row opens: the routing policy one of its spellings ranks by.
-pub type RankingPolicy = std::sync::Arc<dyn busbar_api::RoutingPolicy>;
+pub type RankingPolicy = std::sync::Arc<dyn busbar_contract::hooks::RoutingPolicy>;
 
 /// A linked plugin's boundary.
 #[derive(Clone, Copy)]
@@ -190,9 +190,9 @@ pub enum LinkedEntry {
     /// default a build ships. `open_store` calls it with the row's configuration, where it would
     /// otherwise run the image load; everything before that (the row, its registration, name and
     /// alias resolution, the kind check) is the axis every other row takes.
-    Store(fn(&str) -> Result<Box<dyn busbar_api::Store>, String>),
+    Store(fn(&str) -> Result<Box<dyn busbar_contract::records::RecordStore>, String>),
     /// A BUILT-IN secret module (`env`, `file`): the row's own name is the reference
-    /// [`busbar_api::resolve_builtin`] resolves, in process. `open_secret` opens it where it would
+    /// [`crate::builtin_secret::resolve_builtin`] resolves, in process. `open_secret` opens it where it would
     /// otherwise run the image load, on the same axis as [`LinkedEntry::Store`].
     BuiltinSecret,
     /// The BUILT-IN ranking hooks: ONE `kind: hook` row whose frozen config spellings (`least_busy`,
@@ -218,7 +218,7 @@ impl LinkedPlugin {
     /// A built-in STORE named `name` (its own alias), at this binary's store payload schema.
     pub fn store(
         name: &str,
-        open: fn(&str) -> Result<Box<dyn busbar_api::Store>, String>,
+        open: fn(&str) -> Result<Box<dyn busbar_contract::records::RecordStore>, String>,
         ephemeral: bool,
     ) -> Self {
         let (kind, abi) = (
@@ -292,18 +292,21 @@ impl LinkedPlugin {
 }
 
 /// An opened [`LinkedEntry::BuiltinSecret`] row: a reference to it resolves as
-/// [`busbar_api::resolve_builtin`] resolves a reference to the row's name — the failure text is the
+/// [`crate::builtin_secret::resolve_builtin`] resolves a reference to the row's name — the failure text is the
 /// built-in's own, carried as the error's message.
 struct BuiltinSecret(String);
 
-impl busbar_api::SecretModule for BuiltinSecret {
+impl busbar_contract::secret::SecretModule for BuiltinSecret {
     fn resolve(
         &self,
         settings: &serde_json::Map<String, serde_json::Value>,
-    ) -> busbar_api::SecretResult<Vec<u8>> {
+    ) -> busbar_contract::secret::SecretResult<Vec<u8>> {
         let (module, settings) = (self.0.clone(), settings.clone());
-        busbar_api::resolve_builtin(&busbar_api::SecretRef { module, settings })
-            .map_err(busbar_api::SecretError::internal)
+        crate::builtin_secret::resolve_builtin(&busbar_contract::secret_ref::SecretRef {
+            module,
+            settings,
+        })
+        .map_err(busbar_contract::secret::SecretModuleError::internal)
     }
 }
 
@@ -510,7 +513,7 @@ impl PluginRegistry {
         &self,
         name_or_alias: &str,
         cfg_json: &str,
-    ) -> Result<Box<dyn busbar_api::Store>, String> {
+    ) -> Result<Box<dyn busbar_contract::records::RecordStore>, String> {
         let p = self.resolve_kind(name_or_alias, "store", "back the governance store")?;
         if let Some(LinkedEntry::Store(open)) = p.entry {
             return open(cfg_json);
@@ -534,12 +537,12 @@ impl PluginRegistry {
         &self,
         name_or_alias: &str,
         cfg_json: &str,
-    ) -> Result<Box<dyn busbar_api::AuthModule>, String> {
+    ) -> Result<Box<dyn busbar_contract::auth::AuthModule>, String> {
         let p = self.resolve_kind(name_or_alias, "auth", "serve as an auth module")?;
         crate::auth::load_auth_image(p.image(), cfg_json, &p.manifest.name, &p.manifest.kind)
     }
 
-    /// Open an AUTH plugin as the unified [`busbar_api::AuthPlugin`] handle (verify + LOGIN) —
+    /// Open an AUTH plugin as the unified [`busbar_contract::auth::AuthPlugin`] handle (verify + LOGIN) —
     /// identical trust/load pipeline as [`Self::open_auth`], but the returned box KEEPS the
     /// `LoginModule` capability the hosted browser-login flow (`auth.methods`, 1.5.2) drives. Also
     /// returns the resolved plugin's manifest `abi_version` so the caller can gate v2-only login
@@ -548,7 +551,7 @@ impl PluginRegistry {
         &self,
         name_or_alias: &str,
         cfg_json: &str,
-    ) -> Result<(Box<dyn busbar_api::AuthPlugin>, u32), String> {
+    ) -> Result<(Box<dyn busbar_contract::auth::AuthPlugin>, u32), String> {
         let p = self.resolve_kind(name_or_alias, "auth", "serve as a login module")?;
         let abi_version = p.manifest.abi_version;
         let module =
@@ -568,7 +571,7 @@ impl PluginRegistry {
         cfg_json: &str,
         name: &str,
         projectors: std::sync::Arc<crate::hook::HookProjectors>,
-    ) -> Result<std::sync::Arc<dyn busbar_api::RoutingPolicy>, String> {
+    ) -> Result<std::sync::Arc<dyn busbar_contract::hooks::RoutingPolicy>, String> {
         let p = self.resolve_kind(name_or_alias, "hook", "serve as a routing hook")?;
         crate::hook::load_hook_image(
             p.image(),
@@ -606,7 +609,7 @@ impl PluginRegistry {
         &self,
         name_or_alias: &str,
         cfg_json: &str,
-    ) -> Result<Box<dyn busbar_api::SecretModule>, String> {
+    ) -> Result<Box<dyn busbar_contract::secret::SecretModule>, String> {
         let p = self.resolve_kind(name_or_alias, "secret", "resolve config secrets")?;
         if let Some(LinkedEntry::BuiltinSecret) = p.entry {
             return Ok(Box::new(BuiltinSecret(p.manifest.name.clone())));

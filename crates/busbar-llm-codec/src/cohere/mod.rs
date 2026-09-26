@@ -79,9 +79,9 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
     },
     handler: Some(&handler::CohereRequestHandler),
     verbs: &[
-        busbar_api::operation::Operation::CHAT,
-        busbar_api::operation::Operation::EMBEDDINGS,
-        busbar_api::operation::Operation::RERANK,
+        busbar_contract::operation::OpVerb::CHAT,
+        busbar_contract::operation::OpVerb::EMBEDDINGS,
+        busbar_contract::operation::OpVerb::RERANK,
     ],
     head_keys: super::proto_codec::LLM_CHAT_HEAD_KEYS,
     streaming_content_type: Some(busbar_substrate_values::proxy::TEXT_EVENT_STREAM),

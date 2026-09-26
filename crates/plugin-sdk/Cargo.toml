@@ -20,7 +20,7 @@ license = "Apache-2.0"
 # are otherwise discarded: the cdylib links its own dispatcher and nothing joins it to the host's.
 tracing = { workspace = true }
 tracing-core = { workspace = true }
-busbar-api = { path = "../api" }
+busbar-contract = { path = "../busbar-contract" }
 busbar-plugin = { path = "../busbar-plugin" }
 serde_json = { workspace = true }
 

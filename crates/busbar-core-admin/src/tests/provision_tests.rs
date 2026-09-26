@@ -19,50 +19,71 @@ use busbar_kernel::state::AppHandle;
 /// config half (which never touches the store) commits normally. Everything else delegates.
 struct RefusesKeyWrites(MemoryStore);
 
-impl busbar_api::Store for RefusesKeyWrites {
-    fn put_key(&self, _key: &busbar_api::VirtualKey) -> busbar_api::StoreResult<()> {
-        Err(busbar_api::StoreError("key write unavailable".into()))
+impl busbar_contract::records::RecordStore for RefusesKeyWrites {
+    fn put_key(
+        &self,
+        _key: &busbar_contract::records::VirtualKey,
+    ) -> busbar_contract::records::RecordStoreResult<()> {
+        Err(busbar_contract::records::RecordStoreError(
+            "key write unavailable".into(),
+        ))
     }
     fn put_key_with_credential(
         &self,
-        _key: &busbar_api::VirtualKey,
-        _secret: &busbar_api::CredentialSecret,
-    ) -> busbar_api::StoreResult<()> {
-        Err(busbar_api::StoreError("key write unavailable".into()))
+        _key: &busbar_contract::records::VirtualKey,
+        _secret: &busbar_contract::records::CredentialSecret,
+    ) -> busbar_contract::records::RecordStoreResult<()> {
+        Err(busbar_contract::records::RecordStoreError(
+            "key write unavailable".into(),
+        ))
     }
-    fn get_key(&self, id: &str) -> busbar_api::StoreResult<Option<busbar_api::VirtualKey>> {
+    fn get_key(
+        &self,
+        id: &str,
+    ) -> busbar_contract::records::RecordStoreResult<Option<busbar_contract::records::VirtualKey>>
+    {
         self.0.get_key(id)
     }
-    fn list_keys(&self) -> busbar_api::StoreResult<Vec<busbar_api::VirtualKey>> {
+    fn list_keys(
+        &self,
+    ) -> busbar_contract::records::RecordStoreResult<Vec<busbar_contract::records::VirtualKey>>
+    {
         self.0.list_keys()
     }
-    fn delete_key(&self, id: &str) -> busbar_api::StoreResult<()> {
+    fn delete_key(&self, id: &str) -> busbar_contract::records::RecordStoreResult<()> {
         self.0.delete_key(id)
     }
     fn get_usage(
         &self,
         bucket_id: &str,
         window_start: u64,
-    ) -> busbar_api::StoreResult<busbar_api::UsageLedger> {
+    ) -> busbar_contract::records::RecordStoreResult<busbar_contract::records::UsageLedger> {
         self.0.get_usage(bucket_id, window_start)
     }
     fn put_usage(
         &self,
         bucket_id: &str,
         window_start: u64,
-        ledger: &busbar_api::UsageLedger,
-    ) -> busbar_api::StoreResult<()> {
+        ledger: &busbar_contract::records::UsageLedger,
+    ) -> busbar_contract::records::RecordStoreResult<()> {
         self.0.put_usage(bucket_id, window_start, ledger)
     }
-    fn add_metering(&self, delta: &busbar_api::MeteringDelta) -> busbar_api::StoreResult<()> {
+    fn add_metering(
+        &self,
+        delta: &busbar_contract::records::MeteringDelta,
+    ) -> busbar_contract::records::RecordStoreResult<()> {
         self.0.add_metering(delta)
     }
-    fn list_metering(&self, bucket: u64) -> busbar_api::StoreResult<Vec<busbar_api::MeteringRow>> {
+    fn list_metering(
+        &self,
+        bucket: u64,
+    ) -> busbar_contract::records::RecordStoreResult<Vec<busbar_contract::records::MeteringRow>>
+    {
         self.0.list_metering(bucket)
     }
 }
 
-fn gov(store: Arc<dyn busbar_kernel::governance::Store>) -> Arc<GovState> {
+fn gov(store: Arc<dyn busbar_kernel::governance::RecordStore>) -> Arc<GovState> {
     Arc::new(
         GovState::new_with_signer(
             store,
@@ -280,8 +301,9 @@ async fn auto_provision_stops_at_the_group_ceiling() {
     // A refused mint records `key.create`/rejected against `key:-` — a resource EVERY refused mint
     // in the binary shares, so this filters to rows written by THIS test's principal. Without that
     // a concurrent test's refusal satisfies the assertion and it passes with the fix reverted.
-    let ceiling_actor =
-        busbar_kernel::auth::AuthPrincipal(Some(busbar_api::Principal::from_id(CEILING_ACTOR)));
+    let ceiling_actor = busbar_kernel::auth::AuthPrincipal(Some(
+        busbar_contract::auth::Principal::from_id(CEILING_ACTOR),
+    ));
     let rejected_before = ceiling_refusal_rows();
     let status = mint_as(&handle, ceiling_actor, "k2", "user:bob", "team").await;
     assert_eq!(

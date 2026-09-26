@@ -55,22 +55,22 @@ pub const DUMMY_SECRET: &str = "AWS4-DUMMY-SECRET-FOR-CONSTANT-TIME-REJECT-PATH"
 // The UPSTREAM-credential mode (`upstream_credentials:`) now lives in the neutral contracts crate
 // so a plane names it without reaching into busbar-core; re-exported here so every
 // crate::auth::UpstreamCreds caller is unchanged.
-pub use busbar_api::UpstreamCreds;
+pub use busbar_contract::config::UpstreamCreds;
 
-// The caller's bearer token carrier now lives beside [`busbar_api::AuthPrincipal`] — the other
+// The caller's bearer token carrier now lives beside [`busbar_contract::auth::AuthPrincipal`] — the other
 // request-extension carrier the auth middleware inserts — because it has NOTHING of the engine in
 // it: a `Option<String>` newtype and a redacting `Debug`. A plane's test that builds a request
 // extension map needs to name it, and naming it used to be a reach into `busbar_kernel::auth`.
 // Re-exported here BY IDENTITY so every `crate::auth::CallerToken` caller is unchanged.
-pub use busbar_api::CallerToken;
+pub use busbar_contract::auth::CallerToken;
 
-// The auth CONTRACT — [`Principal`], [`AuthOutcome`], the [`AuthModule`] trait, and the
+// The auth CONTRACT — [`Principal`], [`AuthVerdict`], the [`AuthModule`] trait, and the
 // constant-time credential primitives — lives in the `busbar-api` crate (the one crate both the
 // engine and every plugin build against). Re-exported here so engine-internal paths are unchanged.
-pub use busbar_api::{AuthModule, AuthOutcome, Principal};
+pub use busbar_contract::auth::{AuthModule, AuthVerdict, Principal};
 
 /// The whole CHAIN's verdict for one request: admitted-with-identity, admitted-anonymously (the
-/// empty-chain open front door), or denied. Distinct from the per-module [`AuthOutcome`] so the
+/// empty-chain open front door), or denied. Distinct from the per-module [`AuthVerdict`] so the
 /// middleware can attach the principal (or its absence) to the request.
 ///
 /// NOT `Eq`: the engine-only `resolved` `VirtualKey` is `PartialEq` but not `Eq` (its `Debug` is a
@@ -91,7 +91,7 @@ pub enum ChainVerdict {
         /// verifier and the ingress-protocol AWS SigV4 request-signing pre-step), which authenticate
         /// a busbar-MINTED credential
         /// and can therefore hand back the enforced [`VirtualKey`]. ALWAYS `None` for a plugin
-        /// module: the plugin ABI ([`AuthOutcome`]) can only `Identify(Principal)` — it can never
+        /// module: the plugin ABI ([`AuthVerdict`]) can only `Identify(Principal)` — it can never
         /// construct a `VirtualKey`. When `Some`, enforcement rides it directly and the role-binding
         /// synth is skipped (`resolved.or_else(synth)`). This field is never plugin-facing.
         resolved: Option<std::sync::Arc<crate::governance::VirtualKey>>,
@@ -450,17 +450,17 @@ impl AuthMiddleware {
                 Some(hit) => hit,
                 None => {
                     let o = module.authenticate(candidate);
-                    if cache_here.is_some() && matches!(o, AuthOutcome::Pass) {
+                    if cache_here.is_some() && matches!(o, AuthVerdict::Pass) {
                         pending_pass.push(provider.as_str());
                     }
                     o
                 }
             };
             match outcome {
-                AuthOutcome::Identify(principal) => {
+                AuthVerdict::Identify(principal) => {
                     if let (Some(c), Some(cred), Some(g)) = (cache, candidate, cache_gen) {
                         for name in &pending_pass {
-                            c.put(name, cred, &AuthOutcome::Pass, now, g);
+                            c.put(name, cred, &AuthVerdict::Pass, now, g);
                         }
                         // Only a MISS commits, exactly like the buffered `Pass`es above. A HIT
                         // re-`put` here would reset this row's `expires_at` on every request, so a
@@ -474,7 +474,7 @@ impl AuthMiddleware {
                             c.put(
                                 provider,
                                 cred,
-                                &AuthOutcome::Identify(principal.clone()),
+                                &AuthVerdict::Identify(principal.clone()),
                                 now,
                                 g,
                             );
@@ -490,13 +490,13 @@ impl AuthMiddleware {
                         resolved: None,
                     };
                 }
-                AuthOutcome::Reject => return ChainVerdict::Denied,
-                AuthOutcome::Pass => {}
+                AuthVerdict::Reject => return ChainVerdict::Denied,
+                AuthVerdict::Pass => {}
             }
         }
         // The built-in `keys` ENGINE ARM — a sibling to the boxed plugin modules above, run AFTER
         // them (a plugin that positively identified already returned). It is NOT a `Box<dyn
-        // AuthModule>` on purpose: the module ABI ([`AuthOutcome`]) can only `Identify(Principal)`,
+        // AuthModule>` on purpose: the module ABI ([`AuthVerdict`]) can only `Identify(Principal)`,
         // never hand back a resolved `VirtualKey`, so vkey resolution lives here where it can.
         // CACHE-EXEMPT: the arm never consults or writes the `CredentialCache` (revocation today is
         // per-request `verify_token` + a short denylist sync; caching a vkey verdict would widen the
@@ -634,7 +634,7 @@ impl AuthMiddleware {
     /// `busbar-api` contract crate (plugins compare with the SAME primitive). Kept as an associated
     /// fn so engine call sites are unchanged.
     pub fn constant_time_eq(a: &str, b: &str) -> bool {
-        busbar_api::constant_time_eq(a, b)
+        busbar_contract::redacted::constant_time_eq(a, b)
     }
 
     /// Extract the token from an `Authorization: Bearer <token>` header (scheme match is
@@ -872,7 +872,7 @@ fn extract_admin_header_token(req: &Request<Body>) -> Option<String> {
 /// core; re-exported here so every in-core call site (`crate::auth::AuthPrincipal`) is unchanged.
 /// Its `actor_id()` accessor and tuple field were promoted from `pub` to `pub` in the move —
 /// the type is now cross-crate, but it still never carries the credential.
-pub use busbar_api::AuthPrincipal;
+pub use busbar_contract::auth::AuthPrincipal;
 
 /// TEST-ONLY data-plane module (see the `test-groups-module` chain arm): credential `grp:<g>`
 /// identifies as `test:<g>` carrying exactly that group; anything else defers (`Pass`).
@@ -884,14 +884,14 @@ impl AuthModule for TestGroupsModule {
     fn name(&self) -> &'static str {
         "test-groups-module"
     }
-    fn authenticate(&self, candidate: Option<&str>) -> AuthOutcome {
+    fn authenticate(&self, candidate: Option<&str>) -> AuthVerdict {
         match candidate.and_then(|t| t.strip_prefix("grp:")) {
             Some(group) => {
                 let mut p = Principal::from_id(format!("test:{group}"));
                 p.roles = vec![group.to_string()];
-                AuthOutcome::Identify(p)
+                AuthVerdict::Identify(p)
             }
-            None => AuthOutcome::Pass,
+            None => AuthVerdict::Pass,
         }
     }
 }
@@ -915,14 +915,14 @@ impl AuthModule for TestIdpModule {
     fn name(&self) -> &'static str {
         "test-idp-module"
     }
-    fn authenticate(&self, candidate: Option<&str>) -> AuthOutcome {
+    fn authenticate(&self, candidate: Option<&str>) -> AuthVerdict {
         match candidate.filter(|c| !c.is_empty()) {
             Some(_) => {
                 let mut p = Principal::from_id("idp:subject".to_string());
                 p.roles = vec![TEST_IDP_ROLE.to_string()];
-                AuthOutcome::Identify(p)
+                AuthVerdict::Identify(p)
             }
-            None => AuthOutcome::Pass,
+            None => AuthVerdict::Pass,
         }
     }
 }
@@ -978,7 +978,7 @@ fn run_admin_chain(
         if let Some(cred) = composite.as_deref().filter(|_| cacheable) {
             if let Some(outcome) = app.credential_cache.get(name, cred, now) {
                 match outcome {
-                    AuthOutcome::Identify(principal) => {
+                    AuthVerdict::Identify(principal) => {
                         let cap = module_admin_scope_cap(app, name);
                         return (
                             ChainVerdict::Identified {
@@ -989,8 +989,8 @@ fn run_admin_chain(
                             cap,
                         );
                     }
-                    AuthOutcome::Reject => return (ChainVerdict::Denied, None),
-                    AuthOutcome::Pass => continue,
+                    AuthVerdict::Reject => return (ChainVerdict::Denied, None),
+                    AuthVerdict::Pass => continue,
                 }
             }
         }
@@ -1013,10 +1013,10 @@ fn run_admin_chain(
                 Some(group) => {
                     let mut p = Principal::from_id(format!("test:{group}"));
                     p.roles = vec![group.to_string()];
-                    AuthOutcome::Identify(p)
+                    AuthVerdict::Identify(p)
                 }
                 // Not my credential shape — defer to the next module (the PAM contract).
-                None => AuthOutcome::Pass,
+                None => AuthVerdict::Pass,
             },
             // Any other name is an EXTERNAL `kind: auth` admin plugin, resolved at load into
             // `app.admin_modules` (keyed by config name — the same `name` this loop iterates).
@@ -1031,17 +1031,17 @@ fn run_admin_chain(
                         "admin_auth names a module with no resolved plugin; skipping (boot resolves \
                          every non-builtin admin module, fail-closed)"
                     );
-                    AuthOutcome::Pass
+                    AuthVerdict::Pass
                 }
             },
         };
         // A `Pass` is only BUFFERED here. `Reject` is never cached at all (`auth_cache::put` drops
         // it) and short-circuits below, so the only outcome that commits anything is `Identify`.
-        if cacheable && composite.is_some() && matches!(outcome, AuthOutcome::Pass) {
+        if cacheable && composite.is_some() && matches!(outcome, AuthVerdict::Pass) {
             pending_pass.push(name.as_str());
         }
         match outcome {
-            AuthOutcome::Identify(principal) => {
+            AuthVerdict::Identify(principal) => {
                 // The buffered `Pass`es are real work already done by modules this chain ran, and
                 // the chain HAS identified — so they commit here, beside this module's own verdict,
                 // exactly as the data plane's walk commits its own.
@@ -1050,7 +1050,7 @@ fn run_admin_chain(
                         app.credential_cache.put(
                             buffered,
                             cred,
-                            &AuthOutcome::Pass,
+                            &AuthVerdict::Pass,
                             now,
                             cache_gen,
                         );
@@ -1059,7 +1059,7 @@ fn run_admin_chain(
                         app.credential_cache.put(
                             name,
                             cred,
-                            &AuthOutcome::Identify(principal.clone()),
+                            &AuthVerdict::Identify(principal.clone()),
                             now,
                             cache_gen,
                         );
@@ -1078,8 +1078,8 @@ fn run_admin_chain(
                     cap,
                 );
             }
-            AuthOutcome::Reject => return (ChainVerdict::Denied, None),
-            AuthOutcome::Pass => {}
+            AuthVerdict::Reject => return (ChainVerdict::Denied, None),
+            AuthVerdict::Pass => {}
         }
     }
     (ChainVerdict::Denied, None)
@@ -1841,7 +1841,7 @@ pub(crate) async fn auth_middleware(
 // IdentityRefusal (WHY a chain verdict did not resolve to an admitted identity) now lives in the
 // neutral contracts crate so a plane names it without reaching into busbar-core; re-exported here so
 // every crate::auth::IdentityRefusal caller is unchanged.
-pub use busbar_api::IdentityRefusal;
+pub use busbar_contract::auth::IdentityRefusal;
 
 /// WHO A CHAIN VERDICT MAKES YOU on the data plane — the one resolution of verdict →
 /// (principal, governance context), shared by the HTTP auth middleware and the stdio serve mode's
@@ -2027,7 +2027,7 @@ fn verify_sigv4_ingress_credential(
         );
         return Err(());
     }
-    let actual_body_hash = busbar_api::sha256_hex(body);
+    let actual_body_hash = busbar_contract::redacted::sha256_hex(body);
     if !AuthMiddleware::constant_time_eq(&actual_body_hash, &payload_hash.to_ascii_lowercase()) {
         tracing::debug!(
             "inbound SigV4 rejected: request body does not match signed x-amz-content-sha256"

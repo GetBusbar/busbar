@@ -20,7 +20,7 @@ use crate::ir::handle::sealed::Sealed;
 use crate::ir::handle::IrHandle;
 use crate::ir::invoke::{InvokeReq, InvokeResp};
 use crate::ir::subscribe::{SubscribeReq, SubscribeResp};
-use crate::operation::Operation;
+use crate::operation::OpVerb;
 use std::sync::Arc;
 
 /// The request payload is held behind an `Arc` because `facts()` must hand back an OWNED
@@ -39,8 +39,8 @@ impl Sealed for SubscribeReqHandle {}
 impl Sealed for SubscribeRespHandle {}
 
 impl IrHandle for InvokeReqHandle {
-    fn verb(&self) -> Operation {
-        Operation::INVOKE
+    fn verb(&self) -> OpVerb {
+        OpVerb::INVOKE
     }
     fn facts(&self) -> Box<dyn IrFacts + Send + Sync> {
         Box::new(Arc::clone(&self.0))
@@ -48,8 +48,8 @@ impl IrHandle for InvokeReqHandle {
 }
 
 impl IrHandle for InvokeRespHandle {
-    fn verb(&self) -> Operation {
-        Operation::INVOKE
+    fn verb(&self) -> OpVerb {
+        OpVerb::INVOKE
     }
     fn billing(&self) -> Option<Billing> {
         Some(Billing::Flat)
@@ -57,8 +57,8 @@ impl IrHandle for InvokeRespHandle {
 }
 
 impl IrHandle for SubscribeReqHandle {
-    fn verb(&self) -> Operation {
-        Operation::SUBSCRIBE
+    fn verb(&self) -> OpVerb {
+        OpVerb::SUBSCRIBE
     }
     fn facts(&self) -> Box<dyn IrFacts + Send + Sync> {
         Box::new(Arc::clone(&self.0))
@@ -66,8 +66,8 @@ impl IrHandle for SubscribeReqHandle {
 }
 
 impl IrHandle for SubscribeRespHandle {
-    fn verb(&self) -> Operation {
-        Operation::SUBSCRIBE
+    fn verb(&self) -> OpVerb {
+        OpVerb::SUBSCRIBE
     }
     fn billing(&self) -> Option<Billing> {
         Some(Billing::Flat)

@@ -157,6 +157,7 @@ pub fn create_dir_all(path: &Path) -> io::Result<()> {
     Ok(())
 }
 
+/// Atomically + durably publish `bytes` to `path` with `opts` (the contract is on [`write`]).
 pub fn write_with(path: &Path, bytes: &[u8], opts: DurableOpts) -> io::Result<()> {
     use std::io::Write as _;
     use std::sync::atomic::{AtomicU64, Ordering};

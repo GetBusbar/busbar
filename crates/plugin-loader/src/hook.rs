@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The HOOK seam of the kind-neutral loader: [`DlopenPolicy`], a [`busbar_api::RoutingPolicy`] backed
+//! The HOOK seam of the kind-neutral loader: [`DlopenPolicy`], a [`busbar_contract::hooks::RoutingPolicy`] backed
 //! by a dynamically-loaded plugin whose kind was bound to `hook` at load. It translates each async
 //! trait method (`decide`/`transform`/`notify`/`configure`/`describe`/`status`) into a `busbar_call`
 //! with the matching op envelope ([`busbar_plugin::cold::hook`]).
@@ -23,7 +23,7 @@
 //! retired socket/webhook seam and this dlopen seam provably identical.
 
 use crate::RawPlugin;
-use busbar_api::{
+use busbar_contract::hooks::{
     Candidate, HookStatus, PolicyError, PolicyResult, RoutingContext, RoutingPolicy,
     RoutingRequest, TransformOutcome,
 };

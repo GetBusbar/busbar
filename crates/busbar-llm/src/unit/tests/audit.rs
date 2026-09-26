@@ -25,7 +25,7 @@ fn tokens() -> (KernelSeal, Pass<Audit>) {
 /// The terminal's context for one leg.
 fn ctx<'a>(
     host: &'a Arc<dyn EngineHost>,
-    gov: &'a busbar_api::PlaneRequestCtx,
+    gov: &'a busbar_contract::records::PlaneRequestCtx,
     destination: &'a str,
     at: u64,
 ) -> AuditCtx<'a> {
@@ -46,7 +46,7 @@ fn governed(
     names: [&str; 2],
 ) -> (
     Arc<crate::test_support::BuiltApp>,
-    [busbar_api::VirtualKey; 2],
+    [busbar_contract::records::VirtualKey; 2],
 ) {
     let store = crate::test_support::engine_kit::CORE_ENGINE_KIT.scratch_store();
     let signer = busbar_kernel::governance::signing::TokenSigner::from_secret_bytes(
@@ -136,7 +136,7 @@ async fn audit_matches_the_live_admitted_terminal_and_posts_once() {
     let (host, _rt) = crate::engine::test_host_rt(&app);
     let at = busbar_kernel::store::now();
 
-    let live_gov = busbar_api::PlaneRequestCtx {
+    let live_gov = busbar_contract::records::PlaneRequestCtx {
         key: Some(Arc::new(keys[0].clone())),
     };
     let live = host.finish_admitted(
@@ -149,7 +149,7 @@ async fn audit_matches_the_live_admitted_terminal_and_posts_once() {
         true,
     );
 
-    let unit_gov = busbar_api::PlaneRequestCtx {
+    let unit_gov = busbar_contract::records::PlaneRequestCtx {
         key: Some(Arc::new(keys[1].clone())),
     };
     let (seal, token) = tokens();
@@ -198,7 +198,7 @@ async fn audit_refused_matches_the_live_rejected_terminal_and_posts_once() {
         )
     };
 
-    let live_gov = busbar_api::PlaneRequestCtx {
+    let live_gov = busbar_contract::records::PlaneRequestCtx {
         key: Some(Arc::new(keys[0].clone())),
     };
     let live = host.finish_rejected(
@@ -210,7 +210,7 @@ async fn audit_refused_matches_the_live_rejected_terminal_and_posts_once() {
         refusal(),
     );
 
-    let unit_gov = busbar_api::PlaneRequestCtx {
+    let unit_gov = busbar_contract::records::PlaneRequestCtx {
         key: Some(Arc::new(keys[1].clone())),
     };
     let (_seal, token) = tokens();
@@ -244,7 +244,7 @@ async fn the_two_doors_post_different_evidence_for_the_same_bytes() {
     let (host, _rt) = crate::engine::test_host_rt(&app);
     let at = busbar_kernel::store::now();
 
-    let admitted_gov = busbar_api::PlaneRequestCtx {
+    let admitted_gov = busbar_contract::records::PlaneRequestCtx {
         key: Some(Arc::new(keys[0].clone())),
     };
     let (_seal, token) = tokens();
@@ -254,7 +254,7 @@ async fn the_two_doors_post_different_evidence_for_the_same_bytes() {
         Served::of((StatusCode::NOT_FOUND, "no such model").into_response()),
         true,
     );
-    let refused_gov = busbar_api::PlaneRequestCtx {
+    let refused_gov = busbar_contract::records::PlaneRequestCtx {
         key: Some(Arc::new(keys[1].clone())),
     };
     let _ = audit_refused(
@@ -282,7 +282,7 @@ async fn the_chains_this_step_writes_verify() {
     let (app, keys) = governed([&unique("verify-a"), &unique("verify-b")]);
     let (host, _rt) = crate::engine::test_host_rt(&app);
     let at = busbar_kernel::store::now();
-    let gov = busbar_api::PlaneRequestCtx {
+    let gov = busbar_contract::records::PlaneRequestCtx {
         key: Some(Arc::new(keys[0].clone())),
     };
     let (_seal, token) = tokens();
@@ -294,7 +294,7 @@ async fn the_chains_this_step_writes_verify() {
             true,
         );
     }
-    let refused = busbar_api::PlaneRequestCtx {
+    let refused = busbar_contract::records::PlaneRequestCtx {
         key: Some(Arc::new(keys[1].clone())),
     };
     let _ = audit_refused(
@@ -323,7 +323,7 @@ async fn the_refused_door_labels_a_configured_pool_with_its_own_name() {
     let (host, _rt) = crate::engine::test_host_rt(&app);
     let at = busbar_kernel::store::now();
 
-    let live_gov = busbar_api::PlaneRequestCtx {
+    let live_gov = busbar_contract::records::PlaneRequestCtx {
         key: Some(Arc::new(keys[0].clone())),
     };
     let _ = host.finish_rejected(
@@ -335,7 +335,7 @@ async fn the_refused_door_labels_a_configured_pool_with_its_own_name() {
         (StatusCode::FORBIDDEN, "not permitted").into_response(),
     );
 
-    let unit_gov = busbar_api::PlaneRequestCtx {
+    let unit_gov = busbar_contract::records::PlaneRequestCtx {
         key: Some(Arc::new(keys[1].clone())),
     };
     let (_seal, token) = tokens();
@@ -373,7 +373,7 @@ async fn the_sealed_end_is_the_taps_where_there_is_one_and_the_status_where_ther
     let (app, keys) = governed([&unique("finish-a"), &unique("finish-b")]);
     let (host, _rt) = crate::engine::test_host_rt(&app);
     let at = busbar_kernel::store::now();
-    let gov = busbar_api::PlaneRequestCtx {
+    let gov = busbar_contract::records::PlaneRequestCtx {
         key: Some(Arc::new(keys[0].clone())),
     };
     let (seal, token) = tokens();

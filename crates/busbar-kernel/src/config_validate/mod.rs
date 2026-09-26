@@ -1565,7 +1565,7 @@ fn validate_cost_model(cfg: &RootCfg, errors: &mut Vec<String>) {
             for class in r
                 .units
                 .keys()
-                .filter(|c| busbar_api::RESERVED_UNITS.contains(&c.as_str()))
+                .filter(|c| busbar_contract::records::RESERVED_UNITS.contains(&c.as_str()))
             {
                 errors.push(format!(
                     "{path}.units.{class} names a reserved class; price it with {class}_utok"
@@ -1642,7 +1642,7 @@ fn validate_cost_model(cfg: &RootCfg, errors: &mut Vec<String>) {
                 .collect();
             let entry = on.iter().any(|(k, _)| !split_plane_lane(k).1.is_empty());
             let unset = |c: &&str| {
-                !(entry && busbar_api::RESERVED_UNITS.contains(c)
+                !(entry && busbar_contract::records::RESERVED_UNITS.contains(c)
                     || on.iter().any(|(_, r)| r.units.contains_key(*c)))
             };
             let declared = d.billable_classes.iter().map(|c| c.class);

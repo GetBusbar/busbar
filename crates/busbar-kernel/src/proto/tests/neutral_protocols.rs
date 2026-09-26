@@ -12,7 +12,7 @@
 //! claiming the `/model/` residual path. THE ORDER IS FIXED: tests read these rows by position.
 
 use axum::http::{header::AUTHORIZATION, HeaderName, HeaderValue, StatusCode};
-use busbar_api::operation::Operation;
+use busbar_contract::operation::OpVerb;
 use busbar_substrate_values::breaker::{CanonicalSignal, RawUpstreamError};
 use busbar_substrate_values::handlers::{
     CodecError, IngressReject, OperationHandler, RequestHandler,
@@ -94,18 +94,18 @@ impl OperationHandler for Cell {
 }
 
 /// A row's request handler: its name, and a cell for each verb it declares.
-struct Handler(&'static str, &'static [Operation]);
+struct Handler(&'static str, &'static [OpVerb]);
 
 impl RequestHandler for Handler {
     fn protocol_name(&self) -> &'static str {
         self.0
     }
-    fn operation_handler(&self, op: Operation) -> Option<&dyn OperationHandler> {
+    fn operation_handler(&self, op: OpVerb) -> Option<&dyn OperationHandler> {
         self.1
             .contains(&op)
             .then_some(&Cell as &dyn OperationHandler)
     }
-    fn resolve_operation(&self, _path: &str, _body: &[u8]) -> Option<Operation> {
+    fn resolve_operation(&self, _path: &str, _body: &[u8]) -> Option<OpVerb> {
         None
     }
     fn upstream_path(&self, _ctx: &EgressCtx) -> String {
@@ -139,17 +139,17 @@ fn claims_model_prefix(path: &str) -> Option<ClaimStrength> {
     path.starts_with("/model/").then_some(ClaimStrength(1))
 }
 
-const FAMILY: &[Operation] = &[
-    Operation::CHAT,
-    Operation::EMBEDDINGS,
-    Operation::MODERATION,
-    Operation::IMAGE,
-    Operation::TRANSCRIPTION,
-    Operation::SPEECH,
-    Operation::RERANK,
+const FAMILY: &[OpVerb] = &[
+    OpVerb::CHAT,
+    OpVerb::EMBEDDINGS,
+    OpVerb::MODERATION,
+    OpVerb::IMAGE,
+    OpVerb::TRANSCRIPTION,
+    OpVerb::SPEECH,
+    OpVerb::RERANK,
 ];
-const CHAT: &[Operation] = &[Operation::CHAT];
-const INVOKE: &[Operation] = &[Operation::INVOKE];
+const CHAT: &[OpVerb] = &[OpVerb::CHAT];
+const INVOKE: &[OpVerb] = &[OpVerb::INVOKE];
 
 /// A codec row: the passthrough codec, a handler serving `verbs`.
 const fn codec_row(name: &'static str, handler: &'static Handler) -> ProtocolDecl {

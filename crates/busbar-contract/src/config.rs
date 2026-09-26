@@ -88,7 +88,7 @@ pub fn neg1() -> i64 {
 /// transitive source denylist bans outright. The type itself needs none of that: two unit variants
 /// and two serde derives. It moved here verbatim — same name, same variants, same order, same serde
 /// attributes, so no config key and no wire byte changed — and `busbar-api` re-exports it at its
-/// historical `busbar_api::UpstreamCreds` path so every kernel-side caller keeps compiling
+/// historical `crate::config::UpstreamCreds` path so every kernel-side caller keeps compiling
 /// unchanged, exactly as `busbar-kernel` re-exports [`ModelCfg`]. The value this buys is measured,
 /// not asserted: `cargo xtask gate denylist` names the offending path in full.
 /// The UPSTREAM-credential mode (`upstream_credentials:`) — whose credential reaches the provider.

@@ -233,7 +233,7 @@ pub(crate) fn build_runtime(
             authority,
             #[cfg(feature = "teller-waist")]
             lane_id,
-            api_key: busbar_api::Redacted::new(api_key),
+            api_key: busbar_contract::redacted::Redacted::new(api_key),
             protocol,
             credential,
             max: li.max_concurrent,

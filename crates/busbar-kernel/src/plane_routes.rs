@@ -99,9 +99,9 @@ pub struct PlaneReqCtx {
     pub caller_principal: Option<String>,
     /// The middleware-resolved governance request context (the caller's virtual key), or `None` on a
     /// `RouteAuth::None` route where the middleware bypassed the chain and attached nothing.
-    pub gov: Option<busbar_api::PlaneRequestCtx>,
+    pub gov: Option<busbar_contract::records::PlaneRequestCtx>,
     /// The middleware-resolved auth principal, or `None` on a `RouteAuth::None` route.
-    pub principal: Option<busbar_api::AuthPrincipal>,
+    pub principal: Option<busbar_contract::auth::AuthPrincipal>,
     /// The live engine handle, type-erased. The core adapter erases the router's `Arc<AppHandle>`
     /// state here; a plane still coupled to the engine downcasts it (a transitional reach that the
     /// per-subsystem App-sever removes), but the SEAM names no core type.

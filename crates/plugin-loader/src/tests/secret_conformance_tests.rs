@@ -12,7 +12,7 @@
 //! the name.
 
 use super::both_ways::{both_doors, statement};
-use busbar_api::SecretModule;
+use busbar_contract::secret::SecretModule;
 
 /// The script: resolve a configured key, an unconfigured one and a reference with no `key`.
 fn script(module: &dyn SecretModule) -> String {

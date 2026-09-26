@@ -177,7 +177,7 @@ pub(crate) type ClientIdentities = BTreeMap<String, busbar_kernel::egress::engin
 ///
 /// The PEM bytes come through [`busbar_kernel::tls::read_pem`] — the same function busbar's own inbound
 /// listener loads its cert and key with — so there is exactly one place in the tree that turns a
-/// [`busbar_api::SecretRef`] into TLS PEM, and it is the one that already knows not to log what it
+/// [`busbar_contract::secret_ref::SecretRef`] into TLS PEM, and it is the one that already knows not to log what it
 /// read. The cert and the key are concatenated because that is the single buffer the engine's
 /// `ClientIdentity::from_pem` takes (`reqwest::Identity::from_pem` parity, pinned by the R4
 /// corpus); the pairing is checked at the handshake, by the TLS stack, rather than by a second
@@ -188,7 +188,7 @@ pub(crate) type ClientIdentities = BTreeMap<String, busbar_kernel::egress::engin
 /// state reads to an operator as working.
 pub(crate) fn resolve_client_identities(
     cfg: &super::config::AgentsCfg,
-    resolver: &dyn busbar_api::SecretResolve,
+    resolver: &dyn busbar_contract::secret::SecretResolve,
 ) -> Result<ClientIdentities, String> {
     let mut out = ClientIdentities::new();
     for (name, def) in &cfg.agents {

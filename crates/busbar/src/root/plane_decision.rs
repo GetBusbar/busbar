@@ -258,7 +258,7 @@ impl busbar_kernel::plane::config::PlaneCfg for DecisionsCfg {
     /// anti-omission force `ToolsCfg`/`AgentsCfg`/`StreamsCfg` carry. `models.<m>.provider` is a
     /// NAME into `providers:`, and the credential lives on the provider entry, which core's own walk
     /// already enumerates; `upstream_credentials` is a two-variant mode, not a secret.
-    fn secret_refs(&self) -> Vec<(String, &busbar_api::SecretRef)> {
+    fn secret_refs(&self) -> Vec<(String, &busbar_contract::secret_ref::SecretRef)> {
         let DecisionsSection {
             models: _,
             hooks: _,

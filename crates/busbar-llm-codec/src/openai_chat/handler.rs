@@ -5,7 +5,7 @@
 //! both directions, nothing else: moderation, embeddings, images, audio, and chat each get one.
 
 use crate::ir::moderation::{ModerationInput, ModerationReq, ModerationResp, ModerationResult};
-use busbar_api::operation::Operation;
+use busbar_contract::operation::OpVerb;
 use busbar_substrate_values::handlers::{
     CodecError, IngressReject, OperationHandler, RequestHandler,
 };
@@ -43,30 +43,30 @@ static SPEECH: OpenAiSpeech = OpenAiSpeech;
 /// OpenAI ships no rerank surface, and the protocol-surface verbs are MCP's and A2A's, so the pair
 /// is unrepresentable rather than refused at runtime.
 static CELLS: &[busbar_substrate_values::handlers::Cell] = &[
-    (Operation::CHAT, &CHAT),
-    (Operation::MODERATION, &MODERATION),
-    (Operation::EMBEDDINGS, &EMBEDDINGS),
-    (Operation::IMAGE, &IMAGE),
-    (Operation::TRANSCRIPTION, &TRANSCRIPTION),
-    (Operation::SPEECH, &SPEECH),
+    (OpVerb::CHAT, &CHAT),
+    (OpVerb::MODERATION, &MODERATION),
+    (OpVerb::EMBEDDINGS, &EMBEDDINGS),
+    (OpVerb::IMAGE, &IMAGE),
+    (OpVerb::TRANSCRIPTION, &TRANSCRIPTION),
+    (OpVerb::SPEECH, &SPEECH),
 ];
 
 /// The egress half of the path constants above; `resolve_operation` reads the same constants on the
 /// ingress side, so the two directions cannot drift.
-static PATHS: &[(Operation, &str)] = &[
-    (Operation::CHAT, PATH_CHAT_COMPLETIONS),
-    (Operation::EMBEDDINGS, PATH_EMBEDDINGS),
-    (Operation::MODERATION, PATH_MODERATIONS),
-    (Operation::IMAGE, PATH_IMAGES_GENERATIONS),
-    (Operation::TRANSCRIPTION, PATH_AUDIO_TRANSCRIPTIONS),
-    (Operation::SPEECH, PATH_AUDIO_SPEECH),
+static PATHS: &[(OpVerb, &str)] = &[
+    (OpVerb::CHAT, PATH_CHAT_COMPLETIONS),
+    (OpVerb::EMBEDDINGS, PATH_EMBEDDINGS),
+    (OpVerb::MODERATION, PATH_MODERATIONS),
+    (OpVerb::IMAGE, PATH_IMAGES_GENERATIONS),
+    (OpVerb::TRANSCRIPTION, PATH_AUDIO_TRANSCRIPTIONS),
+    (OpVerb::SPEECH, PATH_AUDIO_SPEECH),
 ];
 
 impl RequestHandler for OpenAiRequestHandler {
     fn protocol_name(&self) -> &'static str {
         "openai"
     }
-    fn operation_handler(&self, op: Operation) -> Option<&dyn OperationHandler> {
+    fn operation_handler(&self, op: OpVerb) -> Option<&dyn OperationHandler> {
         busbar_substrate_values::handlers::cell_of(CELLS, op)
     }
     fn upstream_path(&self, ctx: &EgressCtx) -> String {
@@ -76,22 +76,22 @@ impl RequestHandler for OpenAiRequestHandler {
             .unwrap_or(PATH_RERANK)
             .into()
     }
-    fn resolve_operation(&self, path: &str, _body: &[u8]) -> Option<Operation> {
+    fn resolve_operation(&self, path: &str, _body: &[u8]) -> Option<OpVerb> {
         // OpenAI names the operation in the path — the body is never needed.
         if path.ends_with(PATH_CHAT_COMPLETIONS) {
-            Some(Operation::CHAT)
+            Some(OpVerb::CHAT)
         } else if path.ends_with(PATH_EMBEDDINGS) {
-            Some(Operation::EMBEDDINGS)
+            Some(OpVerb::EMBEDDINGS)
         } else if path.ends_with(PATH_MODERATIONS) {
-            Some(Operation::MODERATION)
+            Some(OpVerb::MODERATION)
         } else if path.contains("/v1/images/") {
-            Some(Operation::IMAGE)
+            Some(OpVerb::IMAGE)
         } else if path.ends_with(PATH_AUDIO_TRANSCRIPTIONS)
             || path.ends_with("/v1/audio/translations")
         {
-            Some(Operation::TRANSCRIPTION)
+            Some(OpVerb::TRANSCRIPTION)
         } else if path.ends_with(PATH_AUDIO_SPEECH) {
-            Some(Operation::SPEECH)
+            Some(OpVerb::SPEECH)
         } else {
             None
         }
@@ -1352,7 +1352,7 @@ pub fn read_image_request(
     // unsupported today — the second 404 site, not a missing route.
     if wire.get("image").is_some() {
         return Err(IngressReject::UnsupportedSubOp {
-            op: Operation::IMAGE,
+            op: OpVerb::IMAGE,
             model,
         });
     }

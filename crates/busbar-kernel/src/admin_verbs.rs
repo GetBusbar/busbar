@@ -148,7 +148,7 @@ pub struct AdminReqCtx {
     /// The middleware-resolved auth principal (always present on an admin route; `None` only on the
     /// impossible open path). A self-auditing verb (`approve`) records with it; the `Audited` shim
     /// audits with it.
-    pub principal: Option<busbar_api::AuthPrincipal>,
+    pub principal: Option<busbar_contract::auth::AuthPrincipal>,
 }
 
 /// WHAT A VERB HANDLER ANSWERS WITH, and how the core shim frames it. The variants encode both the wire
@@ -263,7 +263,7 @@ pub trait PlaneAdminEnvelope: Send + Sync {
         verb: &'static str,
         name: &str,
         outcome: &'static str,
-        principal: &busbar_api::AuthPrincipal,
+        principal: &busbar_contract::auth::AuthPrincipal,
     );
 }
 

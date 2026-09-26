@@ -98,10 +98,10 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
     },
     handler: Some(&handler::BedrockRequestHandler),
     verbs: &[
-        busbar_api::operation::Operation::CHAT,
-        busbar_api::operation::Operation::EMBEDDINGS,
-        busbar_api::operation::Operation::IMAGE,
-        busbar_api::operation::Operation::RERANK,
+        busbar_contract::operation::OpVerb::CHAT,
+        busbar_contract::operation::OpVerb::EMBEDDINGS,
+        busbar_contract::operation::OpVerb::IMAGE,
+        busbar_contract::operation::OpVerb::RERANK,
     ],
     head_keys: super::proto_codec::LLM_CHAT_HEAD_KEYS,
     // Bedrock ingress expects a BINARY eventstream body, not SSE: mislabeling it breaks the SDK.

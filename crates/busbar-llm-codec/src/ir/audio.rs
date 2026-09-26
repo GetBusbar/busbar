@@ -74,8 +74,8 @@ pub struct TranscriptionReq {
 /// `&Value` path) → [`busbar_substrate_values::ir::facts::ContentItem::Text`]. `source_language`/
 /// `target_language`/`response_format` are enum roles, not content.
 impl busbar_substrate_values::ir::facts::IrFacts for TranscriptionReq {
-    fn verb(&self) -> busbar_api::operation::Operation {
-        busbar_api::operation::Operation::TRANSCRIPTION
+    fn verb(&self) -> busbar_contract::operation::OpVerb {
+        busbar_contract::operation::OpVerb::TRANSCRIPTION
     }
 
     fn wants_stream(&self) -> bool {
@@ -185,8 +185,8 @@ impl SpeechReq {
 /// writers), and each multi-speaker NAME. The speaker VOICE and `response_format`/`speed` are
 /// provider knobs (voice ids, format enums), not caller free-text, and stay out.
 impl busbar_substrate_values::ir::facts::IrFacts for SpeechReq {
-    fn verb(&self) -> busbar_api::operation::Operation {
-        busbar_api::operation::Operation::SPEECH
+    fn verb(&self) -> busbar_contract::operation::OpVerb {
+        busbar_contract::operation::OpVerb::SPEECH
     }
 
     fn wants_stream(&self) -> bool {

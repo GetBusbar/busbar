@@ -134,7 +134,7 @@ fn unique(prefix: &str) -> String {
 /// One deployment: a governed key, a one-lane pool, and a scripted upstream.
 struct Rig {
     app: Arc<busbar_kernel::state::App>,
-    key: Arc<busbar_api::VirtualKey>,
+    key: Arc<busbar_contract::records::VirtualKey>,
     /// The BEARER the deployment's own door will resolve back to [`Rig::key`]. Minted rather
     /// than synthesized, so a fixture that presents it is presenting the thing a client sends.
     token: String,
@@ -207,12 +207,12 @@ async fn rig_with_billing(fixture: Fixture, billed: bool) -> Rig {
 
     let store = Arc::new(busbar_kernel::governance::MemoryStore::new());
     if let Some(requests) = fixture.seeded_group_requests() {
-        use busbar_api::Store as _;
+        use busbar_contract::records::RecordStore as _;
         store
             .put_usage(
                 &format!("group:{group}@total"),
                 0,
-                &busbar_api::UsageLedger {
+                &busbar_contract::records::UsageLedger {
                     requests,
                     billable_requests: requests,
                     models: vec![],
@@ -293,8 +293,8 @@ async fn rig_with_billing(fixture: Fixture, billed: bool) -> Rig {
 }
 
 impl Rig {
-    fn gov(&self) -> busbar_api::PlaneRequestCtx {
-        busbar_api::PlaneRequestCtx {
+    fn gov(&self) -> busbar_contract::records::PlaneRequestCtx {
+        busbar_contract::records::PlaneRequestCtx {
             key: Some(self.key.clone()),
         }
     }
@@ -502,7 +502,7 @@ async fn observe(rig: &Rig, resp: Response) -> Observed {
     fields.push(("ledger_tokens", derived.tokens.to_string()));
     fields.push(("ledger_spend_cents", derived.spend_cents.to_string()));
     gov.flush_metering();
-    let mut rows: Vec<busbar_api::MeteringRow> = gov
+    let mut rows: Vec<busbar_contract::records::MeteringRow> = gov
         .metering_for(busbar_kernel::governance::metering_bucket(rig.charged_at))
         .expect("metering read")
         .into_iter()
@@ -558,7 +558,7 @@ async fn leg_legacy(fixture: Fixture) -> Observed {
         json_headers(),
         fixture.body(),
         PROTO,
-        busbar_api::operation::Operation::CHAT,
+        busbar_contract::operation::OpVerb::CHAT,
         None,
     )
     .await;
@@ -594,7 +594,7 @@ async fn drive(rig: &Rig, fixture: Fixture) -> Response {
         host: rig.host(),
         gov: rig.gov(),
         proto: PROTO,
-        operation: busbar_api::operation::Operation::CHAT,
+        operation: busbar_contract::operation::OpVerb::CHAT,
         caller_token: None,
         headers: json_headers(),
         body: fixture.body(),
@@ -754,7 +754,7 @@ async fn a_unit_arriving_at_a_window_boundary_bills_in_the_window_it_arrived_in(
         host: rig.host(),
         gov: rig.gov(),
         proto: PROTO,
-        operation: busbar_api::operation::Operation::CHAT,
+        operation: busbar_contract::operation::OpVerb::CHAT,
         caller_token: None,
         headers: json_headers(),
         body: Fixture::BufferedOk.body(),
@@ -851,7 +851,7 @@ fn report_of(output: u64) -> LateReport {
     LateReport {
         usage: busbar_substrate_values::billing::Usage {
             usage_units: std::collections::BTreeMap::from([(
-                busbar_api::UNIT_OUTPUT.to_string(),
+                busbar_contract::records::UNIT_OUTPUT.to_string(),
                 output,
             )]),
         },
@@ -1150,7 +1150,7 @@ async fn drive_to_end<'n>(
     rig: &Rig,
     node: &'n Node,
     fixture: Fixture,
-    gov: busbar_api::PlaneRequestCtx,
+    gov: busbar_contract::records::PlaneRequestCtx,
     seats: &'n [&'n (dyn approve::VetoSeat + Sync)],
 ) -> Ended {
     drive_keeping_the_unit(rig, node, fixture, gov, seats)
@@ -1167,14 +1167,14 @@ async fn drive_keeping_the_unit<'n>(
     rig: &Rig,
     node: &'n Node,
     fixture: Fixture,
-    gov: busbar_api::PlaneRequestCtx,
+    gov: busbar_contract::records::PlaneRequestCtx,
     seats: &'n [&'n (dyn approve::VetoSeat + Sync)],
 ) -> (NodeUnit<'n>, Ended) {
     let arrival = WalkArrival {
         host: rig.host(),
         gov,
         proto: PROTO,
-        operation: busbar_api::operation::Operation::CHAT,
+        operation: busbar_contract::operation::OpVerb::CHAT,
         caller_token: None,
         headers: json_headers(),
         body: fixture.body(),
@@ -1422,7 +1422,7 @@ async fn one_unit_leaves_exactly_one_link_on_the_chain() {
             json_headers(),
             fixture.body(),
             PROTO,
-            busbar_api::operation::Operation::CHAT,
+            busbar_contract::operation::OpVerb::CHAT,
             None,
         )
         .await;
@@ -1497,7 +1497,7 @@ fn path_facts(proto: &'static str, fixture: Fixture) -> PathFacts {
     let model = fixture.model().to_string();
     let stream = fixture.streamed();
     PathFacts {
-        operation: busbar_api::operation::Operation::CHAT,
+        operation: busbar_contract::operation::OpVerb::CHAT,
         stream,
         // `/v1beta/models/{model}:streamGenerateContent` with no `?alt=sse` is the JSON-array
         // framing; bedrock has no such framing at all.
@@ -1694,7 +1694,7 @@ async fn an_empty_url_model_ends_where_the_shipped_path_model_entry_point_ends_i
                 host: rig.host(),
                 gov: rig.gov(),
                 proto,
-                operation: busbar_api::operation::Operation::CHAT,
+                operation: busbar_contract::operation::OpVerb::CHAT,
                 caller_token: None,
                 headers: json_headers(),
                 body: path_body(proto),
@@ -1748,7 +1748,7 @@ async fn the_url_facts_ride_the_unit_and_not_the_thread() {
         host: rig.host(),
         gov: rig.gov(),
         proto: GEMINI,
-        operation: busbar_api::operation::Operation::CHAT,
+        operation: busbar_contract::operation::OpVerb::CHAT,
         caller_token: None,
         headers: json_headers(),
         body: path_body(GEMINI),
@@ -1897,14 +1897,14 @@ fn dialect_body(proto: &str, shape: Decoded) -> Bytes {
 /// A VERB THIS DIALECT DECLARES NO HANDLER FOR, found by ASKING the registry rather than by
 /// guessing: the first of the family's seven the dialect does not answer. `None` for a dialect
 /// that answers all seven, which is a dialect this shape has nothing to say about.
-fn unsupported_verb(proto: &str) -> Option<busbar_api::operation::Operation> {
+fn unsupported_verb(proto: &str) -> Option<busbar_contract::operation::OpVerb> {
     [
-        busbar_api::operation::Operation::EMBEDDINGS,
-        busbar_api::operation::Operation::MODERATION,
-        busbar_api::operation::Operation::IMAGE,
-        busbar_api::operation::Operation::TRANSCRIPTION,
-        busbar_api::operation::Operation::SPEECH,
-        busbar_api::operation::Operation::RERANK,
+        busbar_contract::operation::OpVerb::EMBEDDINGS,
+        busbar_contract::operation::OpVerb::MODERATION,
+        busbar_contract::operation::OpVerb::IMAGE,
+        busbar_contract::operation::OpVerb::TRANSCRIPTION,
+        busbar_contract::operation::OpVerb::SPEECH,
+        busbar_contract::operation::OpVerb::RERANK,
     ]
     .into_iter()
     .find(|op| decode::handler_for(proto, *op).is_err())
@@ -1913,7 +1913,7 @@ fn unsupported_verb(proto: &str) -> Option<busbar_api::operation::Operation> {
 /// LEG 1 — the shipped body-model entry point, for any dialect and any verb.
 async fn leg_legacy_decode(
     proto: &'static str,
-    operation: busbar_api::operation::Operation,
+    operation: busbar_contract::operation::OpVerb,
     body: Bytes,
 ) -> Observed {
     let rig = rig(Fixture::BufferedOk).await;
@@ -1939,7 +1939,7 @@ async fn leg_legacy_decode(
 /// LEG 2 — the same dialect and the same verb through the kernel's loop.
 async fn leg_loop_decode(
     proto: &'static str,
-    operation: busbar_api::operation::Operation,
+    operation: busbar_contract::operation::OpVerb,
     body: Bytes,
 ) -> Observed {
     let rig = rig(Fixture::BufferedOk).await;
@@ -1983,7 +1983,7 @@ async fn the_loop_decodes_every_dialect_the_way_the_shipped_plane_decodes_it() {
         for shape in [Decoded::Named, Decoded::NoModel, Decoded::Malformed] {
             let label = format!("{proto}/{shape:?}");
             let body = dialect_body(proto, shape);
-            let op = busbar_api::operation::Operation::CHAT;
+            let op = busbar_contract::operation::OpVerb::CHAT;
             let legacy = leg_legacy_decode(proto, op, body.clone()).await;
             let looped = leg_loop_decode(proto, op, body).await;
             compare(&label, &legacy, &looped, &mut failures);
@@ -2094,7 +2094,10 @@ impl Credential {
 /// THE DOOR, asked exactly as a transport asks it: the deployment's configured auth chain plus
 /// the one verdict resolution the HTTP middleware runs, over this rig's live governance state.
 /// No audience is expected, because the data-plane boundary expects none.
-async fn admit(rig: &Rig, cred: Credential) -> Result<busbar_api::PlaneRequestCtx, String> {
+async fn admit(
+    rig: &Rig,
+    cred: Credential,
+) -> Result<busbar_contract::records::PlaneRequestCtx, String> {
     rig.host()
         .identity_admit(Some(cred.present(rig)), String::new(), String::new())
         .await
@@ -2107,7 +2110,10 @@ async fn admit(rig: &Rig, cred: Credential) -> Result<busbar_api::PlaneRequestCt
 /// on, and the posting the exit path hands back carries it. Nothing else on this plane reads
 /// that answer — the walk keeps its own context for the money and the record — so this is the
 /// one observation that is about step 2 and about nothing else.
-async fn principal_the_loop_settled_on(rig: &Rig, gov: busbar_api::PlaneRequestCtx) -> String {
+async fn principal_the_loop_settled_on(
+    rig: &Rig,
+    gov: busbar_contract::records::PlaneRequestCtx,
+) -> String {
     let node = Node::new();
     let ended = drive_to_end(rig, &node, Fixture::BufferedOk, gov, NATIVE_SEATS).await;
     let Ended::Settled { end, .. } = ended else {
@@ -2121,7 +2127,7 @@ async fn principal_the_loop_settled_on(rig: &Rig, gov: busbar_api::PlaneRequestC
 }
 
 /// LEG 1 — the shipped entry point, driven with a context the DOOR produced.
-async fn leg_legacy_as(rig: &Rig, gov: busbar_api::PlaneRequestCtx) -> Observed {
+async fn leg_legacy_as(rig: &Rig, gov: busbar_contract::records::PlaneRequestCtx) -> Observed {
     let ctx = busbar_kernel::ingress::arrival::ArrivalCtx::new(ArrivalPayload {
         host: rig.host(),
         gov,
@@ -2132,7 +2138,7 @@ async fn leg_legacy_as(rig: &Rig, gov: busbar_api::PlaneRequestCtx) -> Observed 
         json_headers(),
         Fixture::BufferedOk.body(),
         PROTO,
-        busbar_api::operation::Operation::CHAT,
+        busbar_contract::operation::OpVerb::CHAT,
         None,
     )
     .await;
@@ -2140,13 +2146,13 @@ async fn leg_legacy_as(rig: &Rig, gov: busbar_api::PlaneRequestCtx) -> Observed 
 }
 
 /// LEG 2 — the loop, driven with the same context the door produced.
-async fn leg_loop_as(rig: &Rig, gov: busbar_api::PlaneRequestCtx) -> Observed {
+async fn leg_loop_as(rig: &Rig, gov: busbar_contract::records::PlaneRequestCtx) -> Observed {
     let node = Node::new();
     let arrival = WalkArrival {
         host: rig.host(),
         gov,
         proto: PROTO,
-        operation: busbar_api::operation::Operation::CHAT,
+        operation: busbar_contract::operation::OpVerb::CHAT,
         caller_token: None,
         headers: json_headers(),
         body: Fixture::BufferedOk.body(),
@@ -2264,8 +2270,10 @@ async fn the_loop_attributes_the_identity_the_door_resolved_and_invents_none() {
                 // is invent one: driven with the context the middleware leaves when it binds no
                 // key, both legs attribute the anonymous actor and leave the refused key's
                 // chain empty.
-                let open = busbar_api::PlaneRequestCtx { key: None };
-                let anonymous = busbar_api::AuthPrincipal(None).actor_id().to_string();
+                let open = busbar_contract::records::PlaneRequestCtx { key: None };
+                let anonymous = busbar_contract::auth::AuthPrincipal(None)
+                    .actor_id()
+                    .to_string();
                 if authenticate::principal_id(&open).as_str() != anonymous {
                     failures.push(format!(
                         "{cred:?}: an unbound request is not attributed to the anonymous actor"
@@ -2342,7 +2350,7 @@ async fn leg_loop_seated(rig: &Rig, seats: &[&(dyn approve::VetoSeat + Sync)]) -
         host: rig.host(),
         gov: rig.gov(),
         proto: PROTO,
-        operation: busbar_api::operation::Operation::CHAT,
+        operation: busbar_contract::operation::OpVerb::CHAT,
         caller_token: None,
         headers: json_headers(),
         body: Fixture::BufferedOk.body(),
@@ -2481,7 +2489,7 @@ async fn drive_counting(rig: &Rig, fixture: Fixture) -> (Response, Option<u64>) 
         host: rig.host(),
         gov: rig.gov(),
         proto: PROTO,
-        operation: busbar_api::operation::Operation::CHAT,
+        operation: busbar_contract::operation::OpVerb::CHAT,
         caller_token: None,
         headers: json_headers(),
         body: fixture.body(),
@@ -2644,7 +2652,7 @@ async fn leg_native_run(fixture: Fixture) -> Observed {
         json_headers(),
         fixture.body(),
         PROTO,
-        busbar_api::operation::Operation::CHAT,
+        busbar_contract::operation::OpVerb::CHAT,
         None,
     )
     .await;
@@ -2671,7 +2679,7 @@ async fn leg_native_run_via_loop(fixture: Fixture) -> Observed {
         &host,
         &rig.gov(),
         PROTO,
-        busbar_api::operation::Operation::CHAT,
+        busbar_contract::operation::OpVerb::CHAT,
         fixture.model(),
         &json_headers(),
         fixture.body(),
@@ -2921,10 +2929,10 @@ fn fee_history_of(
 fn split_report(input: u64, output: u64, fee_count: u32) -> LateReport {
     let mut units = std::collections::BTreeMap::new();
     if input != 0 {
-        units.insert(busbar_api::UNIT_INPUT.to_string(), input);
+        units.insert(busbar_contract::records::UNIT_INPUT.to_string(), input);
     }
     if output != 0 {
-        units.insert(busbar_api::UNIT_OUTPUT.to_string(), output);
+        units.insert(busbar_contract::records::UNIT_OUTPUT.to_string(), output);
     }
     LateReport {
         usage: busbar_substrate_values::billing::Usage { usage_units: units },
@@ -2954,10 +2962,10 @@ fn invoice_micros(
     let (_, card) = view.card_at(at).expect("a card covers every instant");
     let unit = |k: &str| report.usage.usage_units.get(k).copied().unwrap_or(0);
     let row = busbar_kernel::admin::v1::contract::UsageBreakdown {
-        tokens_input: unit(busbar_api::UNIT_INPUT),
-        tokens_output: unit(busbar_api::UNIT_OUTPUT),
-        tokens_cache_read: unit(busbar_api::UNIT_CACHE_READ),
-        tokens_cache_creation: unit(busbar_api::UNIT_CACHE_WRITE),
+        tokens_input: unit(busbar_contract::records::UNIT_INPUT),
+        tokens_output: unit(busbar_contract::records::UNIT_OUTPUT),
+        tokens_cache_read: unit(busbar_contract::records::UNIT_CACHE_READ),
+        tokens_cache_creation: unit(busbar_contract::records::UNIT_CACHE_WRITE),
         requests: u64::from(report.fee_count),
         spend_micros: 0,
     };
@@ -3142,8 +3150,14 @@ fn cache_silent_history() -> crate::root::kernel::PinnedHistory {
     use busbar_kernel_ledger::cost::{History, HistorySeq, LaneClass, RateCard};
     let card = RateCard::from_micro_rates(
         [
-            (LaneClass::new("lane", busbar_api::UNIT_INPUT), 3.0),
-            (LaneClass::new("lane", busbar_api::UNIT_OUTPUT), 16.0),
+            (
+                LaneClass::new("lane", busbar_contract::records::UNIT_INPUT),
+                3.0,
+            ),
+            (
+                LaneClass::new("lane", busbar_contract::records::UNIT_OUTPUT),
+                16.0,
+            ),
         ],
         0,
     );
@@ -3170,10 +3184,10 @@ fn an_unpriced_class_on_a_present_card_keeps_its_counts_row_and_the_read_refuses
     let token = kernel.usage_token();
     let history = cache_silent_history();
     let mut report = split_report(1_000, 250, 1);
-    report
-        .usage
-        .usage_units
-        .insert(busbar_api::UNIT_CACHE_READ.to_string(), 10_000_000);
+    report.usage.usage_units.insert(
+        busbar_contract::records::UNIT_CACHE_READ.to_string(),
+        10_000_000,
+    );
     let at = Arrived::at(4_000, 7);
 
     // THE ROW: the counts, whole — not zeroed, not dropped, not trimmed to the priced classes.
@@ -3186,9 +3200,9 @@ fn an_unpriced_class_on_a_present_card_keeps_its_counts_row_and_the_read_refuses
     assert_eq!(
         counts,
         std::collections::BTreeMap::from([
-            (busbar_api::UNIT_INPUT, 1_000),
-            (busbar_api::UNIT_OUTPUT, 250),
-            (busbar_api::UNIT_CACHE_READ, 10_000_000),
+            (busbar_contract::records::UNIT_INPUT, 1_000),
+            (busbar_contract::records::UNIT_OUTPUT, 250),
+            (busbar_contract::records::UNIT_CACHE_READ, 10_000_000),
         ]),
         "the posting lost or zeroed a count the unit reported"
     );
@@ -3199,7 +3213,7 @@ fn an_unpriced_class_on_a_present_card_keeps_its_counts_row_and_the_read_refuses
         matches!(
             priced,
             Err(busbar_kernel_ledger::cost::Unpriceable::ClassUnpriced { ref class, .. })
-                if class == busbar_api::UNIT_CACHE_READ
+                if class == busbar_contract::records::UNIT_CACHE_READ
         ),
         "settlement priced a class the present card is silent about: {priced:?}"
     );
@@ -3542,8 +3556,14 @@ fn rerank_history_on(
     use busbar_kernel_ledger::cost::{History, HistorySeq, LaneClass, RateCard};
     let card = RateCard::from_micro_rates(
         [
-            (LaneClass::new(lane, busbar_api::UNIT_INPUT), 3.0),
-            (LaneClass::new(lane, busbar_api::UNIT_OUTPUT), 16.0),
+            (
+                LaneClass::new(lane, busbar_contract::records::UNIT_INPUT),
+                3.0,
+            ),
+            (
+                LaneClass::new(lane, busbar_contract::records::UNIT_OUTPUT),
+                16.0,
+            ),
         ],
         fee,
     )
@@ -3579,10 +3599,10 @@ fn an_unpriced_class_on_a_present_card_leaves_a_durable_counts_row_and_the_read_
     use crate::root::durability::PostingKind;
     let history = cache_silent_history();
     let mut report = split_report(1_000, 250, 1);
-    report
-        .usage
-        .usage_units
-        .insert(busbar_api::UNIT_CACHE_READ.to_string(), 10_000_000);
+    report.usage.usage_units.insert(
+        busbar_contract::records::UNIT_CACHE_READ.to_string(),
+        10_000_000,
+    );
     let at = Arrived::at(4_000, 7);
     let node = late_post(&history, at, "vk_refused", &report);
 
@@ -3594,9 +3614,12 @@ fn an_unpriced_class_on_a_present_card_leaves_a_durable_counts_row_and_the_read_
     assert_eq!(
         counts.classes,
         std::collections::BTreeMap::from([
-            (busbar_api::UNIT_INPUT.to_string(), 1_000),
-            (busbar_api::UNIT_OUTPUT.to_string(), 250),
-            (busbar_api::UNIT_CACHE_READ.to_string(), 10_000_000),
+            (busbar_contract::records::UNIT_INPUT.to_string(), 1_000),
+            (busbar_contract::records::UNIT_OUTPUT.to_string(), 250),
+            (
+                busbar_contract::records::UNIT_CACHE_READ.to_string(),
+                10_000_000
+            ),
         ]),
         "every count, whole — not zeroed, not trimmed to the priced classes"
     );
@@ -3863,7 +3886,7 @@ async fn a_served_rerank_puts_identical_search_units_on_both_books() {
         .cost(cost)
         .build();
     let key = Arc::new(key);
-    let gov_ctx = busbar_api::PlaneRequestCtx {
+    let gov_ctx = busbar_contract::records::PlaneRequestCtx {
         key: Some(Arc::clone(&key)),
     };
 
@@ -3878,12 +3901,12 @@ async fn a_served_rerank_puts_identical_search_units_on_both_books() {
         host: busbar_kernel::plane_host::engine_host(&app),
         gov: gov_ctx.clone(),
         proto: BEDROCK,
-        operation: busbar_api::operation::Operation::RERANK,
+        operation: busbar_contract::operation::OpVerb::RERANK,
         caller_token: None,
         headers: json_headers(),
         body: Bytes::from_static(br#"{"query":"which is fastest","documents":["a","b","c"]}"#),
         path: Some(PathFacts {
-            operation: busbar_api::operation::Operation::RERANK,
+            operation: busbar_contract::operation::OpVerb::RERANK,
             stream: false,
             gemini_json_array: false,
             model_not_found_message: None,

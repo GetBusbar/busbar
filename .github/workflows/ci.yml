@@ -1675,7 +1675,7 @@ jobs:
         run: python3 scripts/public-hygiene-lint.py --root .
 
       # SECRET-VALUE-TYPE HYGIENE (scripts/secret-hygiene-gate.sh, docs/design/1.6.0-secret-hygiene.md):
-      # a known-secret field declared as a bare String/&str/Vec<u8> instead of busbar_api::Redacted<T>
+      # a known-secret field declared as a bare String/&str/Vec<u8> instead of busbar_contract::Redacted<T>
       # (leakable through a derived Debug/Serialize), and an `.expose_secret()` on the same statement
       # as a log/audit/metric sink.
       #
@@ -1922,7 +1922,7 @@ jobs:
   # THE DELETION-TEST BUILD MATRIX — the enforcement gate (weak form).
   #
   # THE DELETION TEST: for each plane P, with busbar-<P> absent the NEUTRAL crates —
-  # busbar-kernel, busbar-substrate-values, busbar-api — must still COMPILE (and the binary boots serving no P
+  # busbar-kernel, busbar-substrate-values, busbar-contract — must still COMPILE (and the binary boots serving no P
   # protocol). This job is the WEAK form of that test, expressed at the neutral-crate level and made a
   # PERMANENT, ASSERTED property: build ONLY the three neutral crates with one plane's feature OFF (the
   # other planes kept ON), and with ALL planes off. It is the compile-only complement to the
@@ -1997,7 +1997,7 @@ jobs:
         # applies `--features` to the packages that declare it (busbar-kernel, which absorbed both
         # busbar-core at 673ecdaaa and busbar-substrate's engine at 5fa320208 and is where the
         # plane-<P> features are declared today); busbar-substrate-values (the substrate's pure value
-        # leaves) and busbar-api carry no plane features and are simply built neutral alongside. The
+        # leaves) and busbar-contract carry no plane features and are simply built neutral alongside. The
         # crate NAMES here are the deletion test's subject: while they read `busbar-core`/
         # `busbar-substrate` after the absorptions, this job could not have gone green at all.
         # A red here means a neutral crate still needs the removed plane crate to compile — a
@@ -2007,10 +2007,10 @@ jobs:
           set -euo pipefail
           FEATS="${{ matrix.features }}"
           if [ -n "$FEATS" ]; then
-            cargo build -p busbar-kernel -p busbar-substrate-values -p busbar-api \
+            cargo build -p busbar-kernel -p busbar-substrate-values -p busbar-contract \
               --no-default-features --features "$FEATS" --locked --verbose
           else
-            cargo build -p busbar-kernel -p busbar-substrate-values -p busbar-api \
+            cargo build -p busbar-kernel -p busbar-substrate-values -p busbar-contract \
               --no-default-features --locked --verbose
           fi
       - name: Latchkey Fast Cache (cargo registry + target, save)

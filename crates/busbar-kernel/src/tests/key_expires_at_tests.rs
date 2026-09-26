@@ -11,7 +11,7 @@
 //! that becomes the design, this test is the one that has to change, on purpose.
 
 use crate::governance::signing::{TokenSigner, DEFAULT_KID};
-use crate::governance::{GovState, MemoryStore, NewKeySpec, Store};
+use crate::governance::{GovState, MemoryStore, NewKeySpec, RecordStore};
 use std::sync::Arc;
 
 /// A fixed "now" so the token `exp` and the key row's `expires_at` are unambiguous.

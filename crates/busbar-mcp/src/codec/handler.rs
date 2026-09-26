@@ -43,7 +43,7 @@
 //! vocabulary is in `lib.rs` so that the channel, when it is mounted, frames the same bytes these
 //! cells already read — not so that the surface can be claimed before it exists.
 
-use busbar_api::operation::Operation;
+use busbar_contract::operation::OpVerb;
 use busbar_substrate_values::handlers::{Cell, OperationHandler, RequestHandler};
 
 use super::invoke::InvokeOperation;
@@ -80,17 +80,14 @@ static SUBSCRIBE: SubscribeOperation = SubscribeOperation;
 ///
 /// **AND THIS IS THE DELETION TEST.** Deleting MCP the protocol deletes this table and its two
 /// codecs; no core type names a single MCP verb, because the verbs are values in this file.
-static CELLS: &[Cell] = &[
-    (Operation::INVOKE, &INVOKE),
-    (Operation::SUBSCRIBE, &SUBSCRIBE),
-];
+static CELLS: &[Cell] = &[(OpVerb::INVOKE, &INVOKE), (OpVerb::SUBSCRIBE, &SUBSCRIBE)];
 
 impl RequestHandler for McpRequestHandler {
     fn protocol_name(&self) -> &'static str {
         "mcp"
     }
 
-    fn operation_handler(&self, op: Operation) -> Option<&dyn OperationHandler> {
+    fn operation_handler(&self, op: OpVerb) -> Option<&dyn OperationHandler> {
         busbar_substrate_values::handlers::cell_of(CELLS, op)
     }
 
@@ -105,15 +102,15 @@ impl RequestHandler for McpRequestHandler {
     /// `404`. It is deliberately NOT a JSON-RPC error from here: this function answers "which
     /// operation is this", and a body that names no operation busbar serves has not yet reached the
     /// point where a protocol-shaped refusal would be meaningful.
-    fn resolve_operation(&self, path: &str, body: &[u8]) -> Option<Operation> {
+    fn resolve_operation(&self, path: &str, body: &[u8]) -> Option<OpVerb> {
         if !path.ends_with(PATH_MCP) {
             return None;
         }
         match top_level_method(body)?.as_ref() {
-            METHOD_TOOLS_CALL => Some(Operation::INVOKE),
+            METHOD_TOOLS_CALL => Some(OpVerb::INVOKE),
             // BOTH DIRECTIONS OF ONE REGISTRATION ARE ONE OPERATION. The codec reads the intent
             // back off the method name; the engine never learns there were two names.
-            METHOD_RESOURCES_SUBSCRIBE | METHOD_RESOURCES_UNSUBSCRIBE => Some(Operation::SUBSCRIBE),
+            METHOD_RESOURCES_SUBSCRIBE | METHOD_RESOURCES_UNSUBSCRIBE => Some(OpVerb::SUBSCRIBE),
             _ => None,
         }
     }

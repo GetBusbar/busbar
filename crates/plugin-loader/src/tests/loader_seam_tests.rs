@@ -6,7 +6,7 @@
 //! measurably cannot — catch.
 
 use crate::{kind_from_ptr, DynSecret, RawPlugin, MAX_PLUGIN_KIND_LEN};
-use busbar_api::SecretModule as _;
+use busbar_contract::secret::SecretModule as _;
 use std::os::raw::c_void;
 use std::sync::Mutex;
 

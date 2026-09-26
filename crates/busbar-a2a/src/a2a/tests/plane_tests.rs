@@ -61,7 +61,7 @@ fn a_section_carrying_only_the_reserved_keys_is_still_no_plane() {
     // plane an operator never asked for.
     let cfg = AgentsCfg {
         all_agent_hooks: vec!["audit".to_string()],
-        all_agent_upstream_credentials: Some(busbar_api::UpstreamCreds::Own),
+        all_agent_upstream_credentials: Some(busbar_contract::config::UpstreamCreds::Own),
         agents: Default::default(),
     };
     assert!(A2aPlane::from_config(&cfg, None).is_none());
@@ -376,13 +376,13 @@ fn the_durable_handle_engine_and_its_rows_survive_erase_into_a_core_box_dyn_any_
                         terminal: false,
                         cursor: 0,
                     },
-                    row_record: busbar_api::PlaneRecord {
+                    row_record: busbar_contract::records::PlaneRecord {
                         kind: "witness".to_string(),
                         id: row.id.clone(),
                         parent: None,
                         seq: 0,
                         ts: 1,
-                        disposition: busbar_api::PlaneDisposition::Active,
+                        disposition: busbar_contract::records::PlaneDisposition::Active,
                         body: row.body.clone().into_bytes(),
                     },
                     // Chainless: this witness is about type survival, not the provenance chain.

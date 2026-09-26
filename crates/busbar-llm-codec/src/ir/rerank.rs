@@ -29,8 +29,8 @@ pub struct RerankReq {
 /// [`busbar_substrate_values::ir::facts::ContentItem::Text`] for a screening gate. `top_n`/`max_tokens_per_doc` are
 /// numeric knobs, not content.
 impl busbar_substrate_values::ir::facts::IrFacts for RerankReq {
-    fn verb(&self) -> busbar_api::operation::Operation {
-        busbar_api::operation::Operation::RERANK
+    fn verb(&self) -> busbar_contract::operation::OpVerb {
+        busbar_contract::operation::OpVerb::RERANK
     }
 
     fn wants_stream(&self) -> bool {

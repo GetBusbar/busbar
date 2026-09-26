@@ -99,7 +99,7 @@ pub(crate) struct GateSubject<'a> {
     pub(crate) request_id: u64,
     /// The caller's resolved governance key, for the `user: ro` identity projection. `None` when
     /// governance is disabled or the plane resolved no key.
-    pub(crate) key: Option<&'a busbar_api::VirtualKey>,
+    pub(crate) key: Option<&'a busbar_contract::records::VirtualKey>,
     /// Incremental scan: when `Some`, screen only the content pieces this session has not already had
     /// cleared for each hook (the session-substrate tenant, design G5). `None` = screen the full
     /// projection every time — the default, byte-identical to pre-incremental behaviour.

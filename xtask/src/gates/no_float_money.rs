@@ -504,7 +504,7 @@ pub const COUNT_READ_ROOTS: &[CountRoot] = &[
     },
     CountRoot {
         area: "the loader and the store seam",
-        homes: &["crates/plugin-loader/src", "crates/api/src"],
+        homes: &["crates/plugin-loader/src"],
         floor: 18,
     },
     CountRoot {

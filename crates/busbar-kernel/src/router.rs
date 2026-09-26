@@ -532,8 +532,8 @@ fn mount_plane_route(
         >,
               raw_params: axum::extract::RawPathParams,
               uri: axum::http::Uri,
-              gov: Option<axum::extract::Extension<busbar_api::PlaneRequestCtx>>,
-              principal: Option<axum::extract::Extension<busbar_api::AuthPrincipal>>,
+              gov: Option<axum::extract::Extension<busbar_contract::records::PlaneRequestCtx>>,
+              principal: Option<axum::extract::Extension<busbar_contract::auth::AuthPrincipal>>,
               headers: axum::http::HeaderMap,
               body: axum::body::Bytes| {
             let handler = handler.clone();
@@ -622,8 +622,12 @@ fn mount_ws_arrivals(
             >,
                   raw_params: axum::extract::RawPathParams,
                   uri: axum::http::Uri,
-                  gov: Option<axum::extract::Extension<busbar_api::PlaneRequestCtx>>,
-                  principal: Option<axum::extract::Extension<busbar_api::AuthPrincipal>>,
+                  gov: Option<
+                axum::extract::Extension<busbar_contract::records::PlaneRequestCtx>,
+            >,
+                  principal: Option<
+                axum::extract::Extension<busbar_contract::auth::AuthPrincipal>,
+            >,
                   headers: axum::http::HeaderMap| {
                 let accept = accept.clone();
                 let slot = slot.clone();

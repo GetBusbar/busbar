@@ -30,7 +30,7 @@
 
 use super::both_ways::{auth_fixture as fixture, both_doors, cdylib, statement};
 use super::*;
-use busbar_api::{AuthModule, AuthPlugin};
+use busbar_contract::auth::{AuthModule, AuthPlugin};
 use busbar_plugin::cold::auth::{AuthRequest, AuthResponse, BeginLoginRequest};
 use busbar_plugin::cold::observe::Envelope;
 

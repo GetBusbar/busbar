@@ -223,7 +223,7 @@ pub(crate) async fn translate_response_cross_protocol(
                 eh,
                 ingress_op.is_some(),
                 rv,
-                op.operation == busbar_api::operation::Operation::CHAT,
+                op.operation == busbar_contract::operation::OpVerb::CHAT,
                 pool,
                 breaker_cfg,
                 &usage_sink,

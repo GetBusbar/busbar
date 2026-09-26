@@ -66,13 +66,13 @@ pub const BINDING_MARKER_PREFIX: &str = "binding:";
 /// and so the deterministic subject id derives under a stable, non-attacker-chosen prefix.
 pub const SELF_KEY_GROUP_PREFIX: &str = "user:";
 
-/// The [`busbar_api::VirtualKey::binding_mode`] recorded on a SELF-SERVE (personal) key: it is the
+/// The [`busbar_contract::records::VirtualKey::binding_mode`] recorded on a SELF-SERVE (personal) key: it is the
 /// PERSONAL user-bound token (records the IdP subject for attribution, short-lived). Matches the
 /// `auth.policy` `BindingMode::UserBound` wire spelling (`"user-bound"`). App/service tokens minted
 /// through the admin API carry a different (or absent) mode.
 pub const SELF_KEY_BINDING_MODE: &str = "user-bound";
 
-/// The [`busbar_api::VirtualKey::binding_mode`] recorded on an ADMIN-minted APP/service token: it is
+/// The [`busbar_contract::records::VirtualKey::binding_mode`] recorded on an ADMIN-minted APP/service token: it is
 /// TIME-BOUND (bounded by its `exp`, no IdP-subject tie), the app-token lifecycle that deliberately
 /// OUTLIVES its minter (review H2/H3). Matches the `auth.policy` `BindingMode::TimeBound` wire
 /// spelling (`"time-bound"`). Named `_APP` to contrast the self-serve personal `user-bound` key.
@@ -276,7 +276,7 @@ impl BudgetCell {
 /// an LLM's `input`). The one predicate every token total in this module reads.
 pub fn is_token_class(class: &str) -> bool {
     use crate::plane::registry::{plane_decls, TOKEN_FAMILY};
-    busbar_api::RESERVED_UNITS.contains(&class)
+    busbar_contract::records::RESERVED_UNITS.contains(&class)
         || plane_decls().iter().any(|d| {
             (d.billable_classes.iter()).any(|c| c.family == TOKEN_FAMILY && c.class == class)
         })
@@ -512,7 +512,7 @@ impl<V> Sharded<V> {
 /// shape, so this is the only key index needed — bearer auth is never represented in
 /// `by_credential`, see that field's doc). `by_credential` is the ROW-LOOKED-UP credential index
 /// (today: SigV4 only) for inbound resolution on the SigV4-credential verify hot path, generalized from the
-/// old AWS-specific `by_access_key_id`/`AwsKeyEntry` — see [`busbar_api::CredentialMeta`]'s doc for
+/// old AWS-specific `by_access_key_id`/`AwsKeyEntry` — see [`busbar_contract::records::CredentialMeta`]'s doc for
 /// why a kind belongs here at all. Both are rebuilt by `refresh` from the SAME store snapshot, so a
 /// disabled/deleted/re-minted key or revoked credential is reflected in both — visible to readers
 /// atomically (the one lock guarantees no reader sees a half-applied swap).
@@ -544,7 +544,7 @@ pub type CredentialIndex = HashMap<(String, String), (Arc<VirtualKey>, Credentia
 /// (always `Some` in a running engine — governance is always constructed; `None` only in tests that
 /// omit it) — NOT a process-global, so tests stay isolated.
 pub struct GovState {
-    store: Arc<dyn Store>,
+    store: Arc<dyn RecordStore>,
     /// Both auth-path caches under ONE lock so `refresh` swaps them atomically — a reader can never
     /// observe a new `by_hash` against a stale `by_access_key_id`. See `GovCaches`.
     caches: RwLock<GovCaches>,
@@ -711,14 +711,14 @@ pub async fn mint_self_offloaded(
     allowed_pools: Option<Vec<String>>,
     exp: u64,
     now: u64,
-) -> StoreResult<(VirtualKey, String)> {
+) -> RecordStoreResult<(VirtualKey, String)> {
     tokio::task::spawn_blocking(move || match op {
         SelfMintOp::Issue => gov.issue_self(&user_sub, allowed_pools, exp, now),
         SelfMintOp::Refresh => gov.refresh_self(&user_sub, allowed_pools, exp, now),
     })
     .await
     .unwrap_or_else(|e| {
-        Err(StoreError(format!(
+        Err(RecordStoreError(format!(
             "self-serve mint task failed to join: {e}"
         )))
     })
@@ -888,8 +888,11 @@ fn synthesize_key(
             .name
             .clone()
             .unwrap_or_else(|| principal.id.clone()),
-        allowed_scopes: allowed_pools
-            .map(|list| list.into_iter().map(busbar_api::ScopeRef::pool).collect()),
+        allowed_scopes: allowed_pools.map(|list| {
+            list.into_iter()
+                .map(busbar_contract::records::ScopeRef::pool)
+                .collect()
+        }),
         enabled: true,
         created_at: 0,
         group,
@@ -907,14 +910,14 @@ fn synthesize_key(
 /// so an extracted plane crate names it without a path back to core; re-exported here so every
 /// in-core call site (`governance::PlaneRequestCtx`, and the [`GovCtx`] alias) is unchanged.
 ///
-/// The re-export is `pub`: the canonical public spelling is `busbar_api::PlaneRequestCtx`,
+/// The re-export is `pub`: the canonical public spelling is `busbar_contract::records::PlaneRequestCtx`,
 /// and a caller outside this crate names it there. Nothing outside busbar-core reaches this path.
-pub use busbar_api::PlaneRequestCtx;
+pub use busbar_contract::records::PlaneRequestCtx;
 
 /// The name core uses internally for the resolved governance context. Core owns the governance
-/// concept and keeps its own spelling; a plane names [`busbar_api::PlaneRequestCtx`] instead so an
+/// concept and keeps its own spelling; a plane names [`busbar_contract::records::PlaneRequestCtx`] instead so an
 /// extracted plane carries no core-private governance type.
-pub type GovCtx = busbar_api::PlaneRequestCtx;
+pub type GovCtx = busbar_contract::records::PlaneRequestCtx;
 
 /// Generate a virtual-key secret from 32 bytes of the OS CSPRNG (portable across Unix/Windows via
 /// getrandom). 256 bits — parity with the AWS secret access key beside it, raised from the old 128-bit
@@ -1069,22 +1072,22 @@ fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
 
 // `Store` and `VirtualKey` were re-exported `pub` for extracted-plane in-test store doubles and a
 // relocated plane's credential lowering. Neither reaches this path any
-// more — every caller outside busbar-core names `busbar_api::{Store, VirtualKey}` directly — so the
+// more — every caller outside busbar-core names `busbar_contract::records::{RecordStore, VirtualKey}` directly — so the
 // two join the crate-internal list below rather than standing as a second public name for one type.
-pub use busbar_api::{
-    CredentialMeta, CredentialSecret, MeteringDelta, MeteringRow, SecretForm, Store, StoreError,
-    StoreResult, UsageDelta, VirtualKey,
+pub use busbar_contract::records::{
+    CredentialMeta, CredentialSecret, MeteringDelta, MeteringRow, RecordStore, RecordStoreError,
+    RecordStoreResult, SecretForm, UsageDelta, VirtualKey,
 };
 // The full-ledger record is consumed only by TEST assertions (production reads go through the
 // derived views); scoping the re-export keeps the release build warning-free.
 #[cfg(test)]
-pub use busbar_api::UsageLedger;
-// `ScopeRef` is constructed directly via `busbar_api::ScopeRef` on every production call site
+pub use busbar_contract::records::UsageLedger;
+// `ScopeRef` is constructed directly via `busbar_contract::records::ScopeRef` on every production call site
 // (cost.rs, config/groups.rs, governance/state.rs); this re-export exists only so test code that
 // does `use super::*` from within `governance::tests` can name it unqualified, same reasoning as
 // `UsageLedger` above.
 #[cfg(test)]
-pub use busbar_api::ScopeRef;
+pub use busbar_contract::records::ScopeRef;
 /// The lane qualifier a non-llm plane keys its budget rows with, so the view resolves THAT plane's
 /// card (#42/#47) — keying, not pricing: the plane names its own lane, the ledger crate prices it.
 pub use busbar_kernel_ledger::cost::PLANE_LANE_SEP;
@@ -1106,7 +1109,7 @@ pub struct MeterCounts {
     pub tokens_cache_read: u64,
     pub tokens_cache_write: u64,
     /// The ledgered classes the token columns do not hold, by class — the budget book's own counts
-    /// (see `busbar_api::MeteringDelta::usage_units`).
+    /// (see `busbar_contract::records::MeteringDelta::usage_units`).
     pub usage_units: std::collections::BTreeMap<String, u64>,
 }
 
@@ -1323,11 +1326,11 @@ impl PendingMetering {
 // extension trait (the contract crate stays dependency-light). The SQLite backend lives in its own
 // plugin crate (`busbar-store-sqlite`); the engine only names the `Store` contract + the re-exported type.
 trait IntoStoreResult<T> {
-    fn store(self) -> StoreResult<T>;
+    fn store(self) -> RecordStoreResult<T>;
 }
 impl<T> IntoStoreResult<T> for Result<T, getrandom::Error> {
-    fn store(self) -> StoreResult<T> {
-        self.map_err(|e| StoreError(format!("OS CSPRNG (getrandom) unavailable: {e}")))
+    fn store(self) -> RecordStoreResult<T> {
+        self.map_err(|e| RecordStoreError(format!("OS CSPRNG (getrandom) unavailable: {e}")))
     }
 }
 
@@ -1446,12 +1449,12 @@ pub struct NewKeySpec {
     /// Optional mint-time labels echoed onto metrics (never interpreted by enforcement).
     pub labels: std::collections::BTreeMap<String, String>,
     /// PROVENANCE (1.6.0): the principal that minted this key, recorded on
-    /// [`busbar_api::VirtualKey::minted_by`]. `Some` for an APP/service token minted through the
+    /// [`busbar_contract::records::VirtualKey::minted_by`]. `Some` for an APP/service token minted through the
     /// admin API by a (possibly delegated) admin — the token OUTLIVES its minter (review H2/H3), and
     /// this enables "list tokens minted-by X" re-attestation + mint-ceiling accounting. `None` leaves
     /// the field unset (byte-identical to a pre-1.6.0 mint).
     pub minted_by: Option<String>,
-    /// The BINDING MODE (1.6.0, wire spelling) recorded on [`busbar_api::VirtualKey::binding_mode`].
+    /// The BINDING MODE (1.6.0, wire spelling) recorded on [`busbar_contract::records::VirtualKey::binding_mode`].
     /// `Some("time-bound")` for an admin-minted app/service token (bounded by `exp`, no IdP tie);
     /// `None` leaves it unset.
     pub binding_mode: Option<String>,

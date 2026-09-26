@@ -76,7 +76,7 @@ impl GovState {
         seed: &[u8; 32],
         user_sub: &str,
         from: u64,
-    ) -> StoreResult<(String, u64)> {
+    ) -> RecordStoreResult<(String, u64)> {
         const MAX_PROBES: u32 = 64;
         let mut stride = 0u64;
         for _ in 0..MAX_PROBES {
@@ -95,7 +95,7 @@ impl GovState {
                 stride.saturating_mul(2)
             };
         }
-        Err(StoreError(format!(
+        Err(RecordStoreError(format!(
             "self-serve binding: {MAX_PROBES} probes from epoch {from} all landed on tombstoned \
              rows; refusing to reissue a deleted key id"
         )))
@@ -111,7 +111,7 @@ impl GovState {
     ///   arrives here at epoch 0 — the same epoch, therefore the same id, therefore the tombstoned
     ///   row. Writing over it would silently undo the admin's deletion and revive every token
     ///   minted before it. This is the live instance of the resurrection hazard
-    ///   [`busbar_api::Store::put_key`] now refuses at the row, and skipping is what makes the
+    ///   [`busbar_contract::records::RecordStore::put_key`] now refuses at the row, and skipping is what makes the
     ///   refusal a correct outcome here rather than a dead end.
     /// - [`GovState::refresh_self`]'s documented rollback tombstones the just-written binding so
     ///   the client keeps its working token and can retry. The retry re-derives that very id, so
@@ -127,7 +127,7 @@ impl GovState {
         epoch: u64,
         exp: u64,
         now: u64,
-    ) -> StoreResult<(VirtualKey, String)> {
+    ) -> RecordStoreResult<(VirtualKey, String)> {
         let seed = material.signer.secret_bytes();
         let (id, epoch) = self.first_free_self_epoch(&seed, user_sub, epoch)?;
         let generation = epoch.to_string();
@@ -136,8 +136,11 @@ impl GovState {
             generation_hash: binding_marker(&id, &generation),
             name: format!("self-serve key ({user_sub})"),
             // Intent carried intact: None = all pools; Some([]) = none.
-            allowed_scopes: allowed_pools
-                .map(|list| list.into_iter().map(busbar_api::ScopeRef::pool).collect()),
+            allowed_scopes: allowed_pools.map(|list| {
+                list.into_iter()
+                    .map(busbar_contract::records::ScopeRef::pool)
+                    .collect()
+            }),
             enabled: true,
             created_at: now,
             group: Some(format!("{SELF_KEY_GROUP_PREFIX}{user_sub}")),
@@ -171,9 +174,9 @@ impl GovState {
         allowed_pools: Option<Vec<String>>,
         exp: u64,
         now: u64,
-    ) -> StoreResult<(VirtualKey, String)> {
+    ) -> RecordStoreResult<(VirtualKey, String)> {
         let Some(material) = self.signing_material() else {
-            return Err(StoreError(
+            return Err(RecordStoreError(
                 "signed-token minting is unavailable: no signing key is configured".to_string(),
             ));
         };
@@ -187,7 +190,7 @@ impl GovState {
                 // The pools the caller resolved THIS login (from the possibly-changed binding).
                 let new_scopes = allowed_pools.clone().map(|list| {
                     list.into_iter()
-                        .map(busbar_api::ScopeRef::pool)
+                        .map(busbar_contract::records::ScopeRef::pool)
                         .collect::<Vec<_>>()
                 });
                 if new_scopes != existing.allowed_scopes {
@@ -237,9 +240,9 @@ impl GovState {
         allowed_pools: Option<Vec<String>>,
         exp: u64,
         now: u64,
-    ) -> StoreResult<(VirtualKey, String)> {
+    ) -> RecordStoreResult<(VirtualKey, String)> {
         let Some(material) = self.signing_material() else {
-            return Err(StoreError(
+            return Err(RecordStoreError(
                 "signed-token minting is unavailable: no signing key is configured".to_string(),
             ));
         };
@@ -270,7 +273,7 @@ impl GovState {
                     // in-memory cache) so a failed refresh leaves EXACTLY the old binding valid: the
                     // client keeps its working token and can retry the refresh.
                     return Err(match self.delete_key(&out.0.id) {
-                        Ok(()) => StoreError(format!(
+                        Ok(()) => RecordStoreError(format!(
                             "self-serve refresh for '{user_sub}' failed to tombstone the prior \
                              binding '{old}' ({delete_err}); rolled back the newly-minted binding \
                              '{}' so the prior token remains the sole valid credential — retry the \
@@ -291,7 +294,7 @@ impl GovState {
                                  failed to roll back the newly-written one — subject may now have \
                                  TWO live bindings; manual store inspection required"
                             );
-                            StoreError(format!(
+                            RecordStoreError(format!(
                                 "self-serve refresh for '{user_sub}' left an INCONSISTENT store \
                                  state: the prior binding '{old}' could not be tombstoned \
                                  ({delete_err}) and the rollback of the new binding '{}' also failed \
@@ -328,7 +331,7 @@ impl GovState {
                          so its token stops verifying immediately"
                     );
                     self.evict_key_from_caches(&old);
-                    return Err(StoreError(format!(
+                    return Err(RecordStoreError(format!(
                         "self-serve refresh for '{user_sub}' rotated the store successfully (the \
                          prior binding '{old}' is tombstoned, the new binding '{}' is live) but \
                          the cache reconcile failed ({refresh_err}); the prior binding was evicted \

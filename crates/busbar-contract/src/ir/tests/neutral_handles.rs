@@ -31,7 +31,7 @@ fn invoke_facts_share_the_request_rather_than_cloning_it() {
         arguments_ptr,
         "the arguments Value must not have been cloned"
     );
-    assert_eq!(facts.verb(), Operation::INVOKE);
+    assert_eq!(facts.verb(), OpVerb::INVOKE);
     drop(facts);
     assert_eq!(Arc::strong_count(&req), before, "the share is released");
 }

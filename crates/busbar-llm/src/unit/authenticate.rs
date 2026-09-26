@@ -6,7 +6,7 @@
 //! On this plane, today, that question is already answered by the time any plane code runs. The
 //! HTTP auth middleware runs the configured chain and resolves the one verdict
 //! (`busbar_kernel::auth::resolve_data_plane_identity`) before the request reaches a handler; what it
-//! leaves behind is a [`busbar_api::PlaneRequestCtx`] carrying the resolved `Arc<VirtualKey>`, and
+//! leaves behind is a [`busbar_contract::records::PlaneRequestCtx`] carrying the resolved `Arc<VirtualKey>`, and
 //! that context is the only thing the LLM ingress is handed about identity
 //! (`native_ingress::operation_ingress_inner`'s `gov` parameter, and everything it threads on).
 //!
@@ -39,11 +39,11 @@ use busbar_contract::caps::{Authenticate, Authenticated, Decision, Pass, Princip
 /// The actor id an unkeyed request is attributed to.
 ///
 /// READ, never restated: it is what the live attribution accessor answers for the same absence
-/// (`busbar_api::AuthPrincipal::actor_id` on a principal-less request), so the plane and the audit
+/// (`busbar_contract::auth::AuthPrincipal::actor_id` on a principal-less request), so the plane and the audit
 /// row cannot come to different spellings of the anonymous caller. Spelling the word here instead
 /// would be a second source for one fact.
 fn anonymous_actor_id() -> &'static str {
-    busbar_api::AuthPrincipal(None).actor_id()
+    busbar_contract::auth::AuthPrincipal(None).actor_id()
 }
 
 /// Who this unit's caller is, read off the auth middleware's outcome.
@@ -54,7 +54,7 @@ fn anonymous_actor_id() -> &'static str {
 /// no handshake unit, so the challenge arm is unreachable from here rather than unimplemented.
 pub fn authenticate(
     token: &Pass<Authenticate>,
-    gov: &busbar_api::PlaneRequestCtx,
+    gov: &busbar_contract::records::PlaneRequestCtx,
 ) -> Decision<Authenticate> {
     Decision::proceed(token, Authenticated::Principal(principal_id(gov)))
 }
@@ -67,7 +67,7 @@ pub fn authenticate(
 /// Separated from [`authenticate`] so the mapping can be checked against the live read directly,
 /// without a token in hand.
 #[must_use]
-pub fn principal_id(gov: &busbar_api::PlaneRequestCtx) -> PrincipalId {
+pub fn principal_id(gov: &busbar_contract::records::PlaneRequestCtx) -> PrincipalId {
     match gov.key() {
         Some(key) => PrincipalId::new(key.id.as_str()),
         None => PrincipalId::new(anonymous_actor_id()),

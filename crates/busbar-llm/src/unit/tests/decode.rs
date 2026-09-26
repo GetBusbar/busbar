@@ -251,7 +251,7 @@ fn the_ladder_floor_catches_every_shape_of_no_model() {
     registered();
     let proto = busbar_kernel::proto::residual_default_protocol().expect("a chat dialect");
     assert_eq!(
-        decode_path_model(proto, Operation::CHAT, "")
+        decode_path_model(proto, OpVerb::CHAT, "")
             .expect("an empty URL model is resolution's answer to give, not this step's")
             .model,
         "",
@@ -269,8 +269,8 @@ fn every_registered_dialect_resolves_the_live_paths_handler() {
     registered();
     for proto in busbar_kernel::proto::known_protocols().iter().copied() {
         let live = busbar_substrate_values::handlers::request_handler(proto)
-            .and_then(|rh| rh.operation_handler(Operation::CHAT));
-        let step = handler_for(proto, Operation::CHAT).ok();
+            .and_then(|rh| rh.operation_handler(OpVerb::CHAT));
+        let step = handler_for(proto, OpVerb::CHAT).ok();
         match (live, step) {
             (Some(live), Some(step)) => assert!(
                 std::ptr::eq(
@@ -285,8 +285,8 @@ fn every_registered_dialect_resolves_the_live_paths_handler() {
         // The chained path-model spelling resolves the same handler as the two-step one; only
         // the sentence on a miss differs.
         assert_eq!(
-            handler_for(proto, Operation::CHAT).is_ok(),
-            handler_for_path_model(proto, Operation::CHAT).is_ok(),
+            handler_for(proto, OpVerb::CHAT).is_ok(),
+            handler_for_path_model(proto, OpVerb::CHAT).is_ok(),
             "{proto}: the two spellings disagree about whether chat exists"
         );
     }
@@ -300,14 +300,14 @@ async fn the_two_handler_misses_carry_the_live_arms_distinct_bytes() {
     for proto in busbar_kernel::proto::known_protocols().iter().copied() {
         // An unregistered protocol name: the body-model path's first lookup.
         assert_eq!(
-            handler_for("no-such-protocol", Operation::CHAT)
+            handler_for("no-such-protocol", OpVerb::CHAT)
                 .map(|_| ())
                 .expect_err("must refuse"),
             DecodeRefusal::UnknownProtocol
         );
         // The path-model spelling has only the one sentence for both misses.
         assert_eq!(
-            handler_for_path_model("no-such-protocol", Operation::CHAT)
+            handler_for_path_model("no-such-protocol", OpVerb::CHAT)
                 .map(|_| ())
                 .expect_err("must refuse"),
             DecodeRefusal::UnsupportedOperation
@@ -395,7 +395,7 @@ fn the_body_entry_point_answers_the_handler_miss_before_the_parse_miss() {
     let malformed = Bytes::from_static(b"{ not json");
     // Both halves refuse on their own.
     assert_eq!(
-        handler_for("no-such-protocol", Operation::CHAT)
+        handler_for("no-such-protocol", OpVerb::CHAT)
             .map(|_| ())
             .expect_err("must refuse"),
         DecodeRefusal::UnknownProtocol
@@ -406,7 +406,7 @@ fn the_body_entry_point_answers_the_handler_miss_before_the_parse_miss() {
     );
     // The live order is handler-first, so the 404 is the answer. Composed the other way it
     // would be a 400, and that is the diff this test exists to make loud.
-    let live_order = handler_for("no-such-protocol", Operation::CHAT)
+    let live_order = handler_for("no-such-protocol", OpVerb::CHAT)
         .map(|_| ())
         .map_err(|r| (r.status(), r.message()));
     assert_eq!(
@@ -540,7 +540,7 @@ fn the_whole_step_resolves_both_facts_for_a_recorded_request() {
     let mut model = String::new();
     let facts = decode_body(
         proto,
-        Operation::CHAT,
+        OpVerb::CHAT,
         &arrival.content_type,
         &arrival.body,
         arrival.parsed.as_ref(),
@@ -550,6 +550,6 @@ fn the_whole_step_resolves_both_facts_for_a_recorded_request() {
     .unwrap_or_else(|r| panic!("{name} refused at decode: {r:?}"));
     assert!(!facts.model.is_empty());
     // The path-model spelling, handed the same model, lands on the same handler.
-    let path = decode_path_model(proto, Operation::CHAT, facts.model).expect("accepted");
+    let path = decode_path_model(proto, OpVerb::CHAT, facts.model).expect("accepted");
     assert_eq!(path.model, facts.model);
 }

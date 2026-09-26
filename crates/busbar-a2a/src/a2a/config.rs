@@ -37,7 +37,7 @@
 //!
 //! [`ClientIdentityCfg`] is a SIBLING of `pin:`, not a field inside it, because the two describe
 //! opposite ends of the same handshake and only one of them is a trust root. Its `cert:` and `key:`
-//! are ordinary [`busbar_api::SecretRef`]s — the same spelling `tls.cert:` uses for busbar's
+//! are ordinary [`busbar_contract::secret_ref::SecretRef`]s — the same spelling `tls.cert:` uses for busbar's
 //! INBOUND identity — so key material is referenced and never written here, and it resolves through
 //! the one resolver every other secret in the config goes through.
 //!
@@ -157,7 +157,7 @@ impl PinMechanism {
 ///
 /// ## The two fields are SECRET REFERENCES, exactly as `tls:` spells them
 ///
-/// `cert:` and `key:` are [`busbar_api::SecretRef`]s — `{module, settings}` with the `env` / `file`
+/// `cert:` and `key:` are [`busbar_contract::secret_ref::SecretRef`]s — `{module, settings}` with the `env` / `file`
 /// sugar — which is the CLEAN-CONFIG rule the whole config surface already obeys and the same
 /// spelling `tls.cert:` / `tls.key:` use for busbar's INBOUND identity. There is deliberately no way
 /// to write PEM bytes here: a private key inlined in config is a private key in every config dump,
@@ -171,9 +171,9 @@ pub struct ClientIdentityCfg {
     /// PEM certificate chain busbar presents, leaf first. Public material, still a reference:
     /// operators keep a chain and its key in the same place, and splitting the spelling would be an
     /// invitation to inline the other one.
-    pub(crate) cert: busbar_api::SecretRef,
+    pub(crate) cert: busbar_contract::secret_ref::SecretRef,
     /// PEM private key for `cert:` — PKCS#8, PKCS#1 or SEC1. NEVER the key itself.
-    pub(crate) key: busbar_api::SecretRef,
+    pub(crate) key: busbar_contract::secret_ref::SecretRef,
 }
 
 /// `agents.<name>.pin` — the out-of-band operator-supplied trust root.
@@ -258,7 +258,7 @@ pub struct AgentDefCfg {
     /// plane so the vocabulary is learned once; a plane that cannot honor a VALUE says so rather
     /// than accepting it and doing something else.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub upstream_credentials: Option<busbar_api::UpstreamCreds>,
+    pub upstream_credentials: Option<busbar_contract::config::UpstreamCreds>,
     /// The LEASED outbound credential busbar presents to this agent: a secret-store handle
     /// plus its lease policy. Never the secret, never the caller's.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -282,7 +282,7 @@ pub struct AgentsCfg {
     /// own `hooks:` are appended to this, deduped by name.
     pub(crate) all_agent_hooks: Vec<String>,
     /// The ALL-AGENTS `upstream_credentials:` default. SCALAR ⇒ OVERRIDE.
-    pub(crate) all_agent_upstream_credentials: Option<busbar_api::UpstreamCreds>,
+    pub(crate) all_agent_upstream_credentials: Option<busbar_contract::config::UpstreamCreds>,
     /// The registrations. Insertion-ordered, so catalogue construction and every operator-facing
     /// listing are deterministic rather than hash-ordered.
     pub agents: indexmap::IndexMap<String, AgentDefCfg>,
@@ -309,7 +309,8 @@ impl<'de> Deserialize<'de> for AgentsCfg {
         // about this plane's VALUES: `passthrough` is meaningless to an agent busbar fronts. It is
         // checked at the section level as well as per entry because a section default applies to
         // agents that never spell the key — precisely the set an entry-level check cannot see.
-        if section.upstream_credentials == Some(busbar_api::UpstreamCreds::Passthrough) {
+        if section.upstream_credentials == Some(busbar_contract::config::UpstreamCreds::Passthrough)
+        {
             return Err(serde::de::Error::custom(REFUSE_PASSTHROUGH_SECTION));
         }
 
@@ -327,12 +328,12 @@ impl busbar_kernel::plane::config::PlaneCfg for AgentsCfg {
     /// (`agents.<name>.client_identity.cert` / `.key`). Moved here VERBATIM from the core
     /// `config_validate::secret_refs` walk so the exhaustive destructure that forces a
     /// secret/not-secret decision on every new field lives beside the fields it guards.
-    fn secret_refs(&self) -> Vec<(String, &busbar_api::SecretRef)> {
+    fn secret_refs(&self) -> Vec<(String, &busbar_contract::secret_ref::SecretRef)> {
         // EXHAUSTIVE, no `..`, at both levels: adding a field to `AgentsCfg`, `AgentDefCfg`,
         // `OutboundCredential` or `ClientIdentityCfg` fails to build with `E0027 pattern does not
         // mention field` until somebody decides, here, whether it carries a secret. That force used to
         // live in `config_validate::secret_refs`; it moved with the sweep.
-        let mut refs: Vec<(String, &busbar_api::SecretRef)> = Vec::new();
+        let mut refs: Vec<(String, &busbar_contract::secret_ref::SecretRef)> = Vec::new();
         let AgentsCfg {
             // The all-agents attach list and credential MODE carry no reference: a hook name is a bare
             // name into the top-level `hooks:` map, and the mode is a `Copy` selector.
@@ -510,7 +511,7 @@ pub fn validate_agent(name: &str, def: &AgentDefCfg) -> Result<(), String> {
     // credential upstream", and a busbar key handed to a third-party vendor is a working busbar
     // credential belonging to somebody else. Refused at parse, on this plane only, because the
     // word is reserved on every plane and only the VALUE is inapplicable here.
-    if def.upstream_credentials == Some(busbar_api::UpstreamCreds::Passthrough) {
+    if def.upstream_credentials == Some(busbar_contract::config::UpstreamCreds::Passthrough) {
         return Err(format!("{at}: {REFUSE_PASSTHROUGH_SECTION}"));
     }
     if let Some(cred) = def.upstream_credential.as_ref() {

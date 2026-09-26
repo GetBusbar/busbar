@@ -17,7 +17,7 @@ use crate::test_support::{build_once, cfg_with_provider_api_key};
 fn a_rebuild_carries_the_probe_schedule() {
     crate::testkit::install_test_seams();
     busbar_kernel::metrics::init();
-    let no_lane_cfg = || cfg_with_provider_api_key(busbar_api::SecretRef::none());
+    let no_lane_cfg = || cfg_with_provider_api_key(busbar_contract::secret_ref::SecretRef::none());
     let one_lane_cfg = || {
         let mut cfg = no_lane_cfg();
         cfg.models.insert(
@@ -68,7 +68,7 @@ fn a_rebuild_carries_the_probe_schedule() {
 fn a_changed_upstream_timeout_rebuilds_the_client_an_unrelated_apply_reuses_it() {
     crate::testkit::install_test_seams();
     busbar_kernel::metrics::init();
-    let cfg = || cfg_with_provider_api_key(busbar_api::SecretRef::none());
+    let cfg = || cfg_with_provider_api_key(busbar_contract::secret_ref::SecretRef::none());
 
     // Reuse half: an apply with an identical client-affecting settings snapshot carries the warm
     // pool forward (same shard-set Arc).

@@ -464,7 +464,9 @@ pub(super) fn agent_cfg(url: &str, with_credential: bool) -> crate::a2a::config:
         allow_private: false,
         upstream_credentials: None,
         upstream_credential: with_credential.then(|| crate::a2a::creds::OutboundCredential {
-            secret: busbar_api::SecretRef::file(secret_file().to_string_lossy().to_string()),
+            secret: busbar_contract::secret_ref::SecretRef::file(
+                secret_file().to_string_lossy().to_string(),
+            ),
             placement: crate::a2a::creds::CredentialPlacement::AuthorizationHeader,
             lease_ttl_ms: 600_000,
         }),
@@ -477,7 +479,7 @@ pub(super) fn agent_cfg(url: &str, with_credential: bool) -> crate::a2a::config:
 /// ATTACH A DURABLE TASK-EVENT SINK FOR THE DURATION OF ONE TEST, and hold the lock that keeps two
 /// of these from interleaving on the process-wide registry. The caller drops the guard when done.
 ///
-/// Every chain claim in this suite has to read the events BACK, and `busbar_api::Store`'s task
+/// Every chain claim in this suite has to read the events BACK, and `busbar_contract::records::RecordStore`'s task
 /// methods are defaulted to accept-and-keep-nothing — the shipped memory store this harness
 /// configures answers every read with an empty list. A test that read `h.gov.store()` therefore got
 /// an empty answer on every run, and any `if events.is_empty() { return; }` around the assertion
@@ -730,7 +732,7 @@ async fn harness_core(
     use busbar_kernel::governance::NewKeySpec;
     engine().metrics_init();
 
-    let store: Arc<dyn busbar_api::Store> = engine().scratch_store();
+    let store: Arc<dyn busbar_contract::records::RecordStore> = engine().scratch_store();
     // Two handles on the SAME key material: one inside the governance registry (which consumes it)
     // and one for the test to mint the caller's audience-bound token with, so the verifier busbar
     // runs is verifying a token this test really minted.
@@ -768,7 +770,7 @@ async fn harness_core(
     scoped.allowed_scopes = Some(
         granted
             .iter()
-            .map(|a| busbar_api::ScopeRef {
+            .map(|a| busbar_contract::records::ScopeRef {
                 kind: crate::a2a::inbound::SCOPE_KIND_AGENT.to_string(),
                 value: (*a).to_string(),
             })

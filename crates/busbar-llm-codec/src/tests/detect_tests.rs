@@ -11,7 +11,7 @@
 //! move changed no routing. (The registry the test sees is core's `test-support` built-in table,
 //! whose netted dialect rows carry these very predicates.)
 
-use busbar_api::operation::Operation;
+use busbar_contract::operation::OpVerb;
 use busbar_kernel::proto::{detect_protocol, residual_dialect_for_path};
 use busbar_substrate_values::handlers::request_handler;
 use http::{HeaderMap, HeaderValue};
@@ -45,84 +45,72 @@ fn resolver_table() {
     type ResolverCase = (
         &'static str,
         &'static [(&'static str, &'static str)],
-        Option<(&'static str, Operation)>,
+        Option<(&'static str, OpVerb)>,
     );
     let cases: &[ResolverCase] = &[
-        (
-            "/v1/chat/completions",
-            &[],
-            Some(("openai", Operation::CHAT)),
-        ),
-        (
-            "/v1/embeddings",
-            &[],
-            Some(("openai", Operation::EMBEDDINGS)),
-        ),
-        (
-            "/v1/moderations",
-            &[],
-            Some(("openai", Operation::MODERATION)),
-        ),
+        ("/v1/chat/completions", &[], Some(("openai", OpVerb::CHAT))),
+        ("/v1/embeddings", &[], Some(("openai", OpVerb::EMBEDDINGS))),
+        ("/v1/moderations", &[], Some(("openai", OpVerb::MODERATION))),
         (
             "/v1/images/generations",
             &[],
-            Some(("openai", Operation::IMAGE)),
+            Some(("openai", OpVerb::IMAGE)),
         ),
         (
             "/v1/audio/transcriptions",
             &[],
-            Some(("openai", Operation::TRANSCRIPTION)),
+            Some(("openai", OpVerb::TRANSCRIPTION)),
         ),
         (
             "/v1/audio/translations",
             &[],
-            Some(("openai", Operation::TRANSCRIPTION)),
+            Some(("openai", OpVerb::TRANSCRIPTION)),
         ),
-        ("/v1/audio/speech", &[], Some(("openai", Operation::SPEECH))),
-        ("/v2/chat", &[], Some(("cohere", Operation::CHAT))),
-        ("/v2/embed", &[], Some(("cohere", Operation::EMBEDDINGS))),
-        ("/v2/rerank", &[], Some(("cohere", Operation::RERANK))),
-        ("/v1/responses", &[], Some(("responses", Operation::CHAT))),
+        ("/v1/audio/speech", &[], Some(("openai", OpVerb::SPEECH))),
+        ("/v2/chat", &[], Some(("cohere", OpVerb::CHAT))),
+        ("/v2/embed", &[], Some(("cohere", OpVerb::EMBEDDINGS))),
+        ("/v2/rerank", &[], Some(("cohere", OpVerb::RERANK))),
+        ("/v1/responses", &[], Some(("responses", OpVerb::CHAT))),
         // anthropic ingress: mandatory header wins even though path is model-prefixed
         (
             "/claude-3/v1/messages",
             &[("anthropic-version", "2023-06-01")],
-            Some(("anthropic", Operation::CHAT)),
+            Some(("anthropic", OpVerb::CHAT)),
         ),
         // anthropic via x-api-key alone (curl user, no version header)
         (
             "/v1/messages",
             &[("x-api-key", "sk-ant-xxx")],
-            Some(("anthropic", Operation::CHAT)),
+            Some(("anthropic", OpVerb::CHAT)),
         ),
         // anthropic via anthropic-beta alone
         (
             "/v1/messages",
             &[("anthropic-beta", "prompt-caching-2024-07-31")],
-            Some(("anthropic", Operation::CHAT)),
+            Some(("anthropic", OpVerb::CHAT)),
         ),
         // gemini via header
         (
             "/v1beta/models/x:generateContent",
             &[("x-goog-api-key", "k")],
-            Some(("gemini", Operation::CHAT)),
+            Some(("gemini", OpVerb::CHAT)),
         ),
         // gemini via path verb (no header)
         (
             "/v1beta/models/x:embedContent",
             &[],
-            Some(("gemini", Operation::EMBEDDINGS)),
+            Some(("gemini", OpVerb::EMBEDDINGS)),
         ),
         (
             "/v1beta/models/x:predict",
             &[],
-            Some(("gemini", Operation::IMAGE)),
+            Some(("gemini", OpVerb::IMAGE)),
         ),
         // bedrock via SigV4 auth; InvokeModel op comes from the BODY (see body cases below)
         (
             "/model/m/converse",
             &[("authorization", "AWS4-HMAC-SHA256 Credential=x")],
-            Some(("bedrock", Operation::CHAT)),
+            Some(("bedrock", OpVerb::CHAT)),
         ),
         // non-operation paths → None
         ("/v1/models", &[], None),
@@ -138,20 +126,20 @@ fn resolver_table() {
     }
 
     // BODY-disambiguated cases (the RequestHandler needs more than the path):
-    let body_cases: &[(&str, &[u8], (&str, Operation))] = &[
-            ("/model/m/invoke", br#"{"inputText":"hi"}"#, ("bedrock", Operation::EMBEDDINGS)),
+    let body_cases: &[(&str, &[u8], (&str, OpVerb))] = &[
+            ("/model/m/invoke", br#"{"inputText":"hi"}"#, ("bedrock", OpVerb::EMBEDDINGS)),
             ("/model/m/invoke", br#"{"taskType":"TEXT_IMAGE","textToImageParams":{"text":"x"}}"#,
-             ("bedrock", Operation::IMAGE)),
+             ("bedrock", OpVerb::IMAGE)),
             ("/v1beta/models/x:generateContent",
              br#"{"contents":[{"parts":[{"inline_data":{"mime_type":"audio/wav","data":"AA=="}}]}]}"#,
-             ("gemini", Operation::TRANSCRIPTION)),
+             ("gemini", OpVerb::TRANSCRIPTION)),
             ("/v1beta/models/x:generateContent",
              br#"{"contents":[{"parts":[{"text":"hi"}]}],"generationConfig":{"responseModalities":["AUDIO"]}}"#,
-             ("gemini", Operation::SPEECH)),
+             ("gemini", OpVerb::SPEECH)),
             // an inline IMAGE part is multimodal CHAT, not audio
             ("/v1beta/models/x:generateContent",
              br#"{"contents":[{"parts":[{"inline_data":{"mime_type":"image/png","data":"AA=="}}]}]}"#,
-             ("gemini", Operation::CHAT)),
+             ("gemini", OpVerb::CHAT)),
         ];
     for (path, body, (want_proto, want_op)) in body_cases {
         let proto = detect_protocol(path, &hm(&[])).expect(path);

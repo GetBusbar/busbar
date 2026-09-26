@@ -7,7 +7,7 @@ use crate::ir::audio::{SpeechResp, TranscriptionResp};
 use crate::ir::embeddings::{
     EmbInput, EmbeddingItem, EmbeddingsReq, EmbeddingsResp, EncFmt, VectorData,
 };
-use busbar_api::operation::Operation;
+use busbar_contract::operation::OpVerb;
 use busbar_substrate_values::handlers::{
     CodecError, IngressReject, OperationHandler, RequestHandler,
 };
@@ -30,26 +30,26 @@ static SPEECH: GeminiSpeech = GeminiSpeech;
 /// GEMINI'S ROW OF THE SUPPORT MATRIX — the verbs this protocol speaks, as data. A verb absent from
 /// it is the standard no-handler 404: Gemini has no moderation/rerank surface.
 static CELLS: &[busbar_substrate_values::handlers::Cell] = &[
-    (Operation::CHAT, &CHAT),
-    (Operation::EMBEDDINGS, &EMB),
-    (Operation::IMAGE, &IMG),
-    (Operation::TRANSCRIPTION, &TRANSCRIPTION),
-    (Operation::SPEECH, &SPEECH),
+    (OpVerb::CHAT, &CHAT),
+    (OpVerb::EMBEDDINGS, &EMB),
+    (OpVerb::IMAGE, &IMG),
+    (OpVerb::TRANSCRIPTION, &TRANSCRIPTION),
+    (OpVerb::SPEECH, &SPEECH),
 ];
 
 /// The `:verb` suffix each verb's egress URL ends in — this protocol's own vocabulary, keyed by
 /// this protocol's own verb constants. The three that ride `generateContent` are absent because
 /// that is the fallback below; the two stream-aware ones are decided there too.
-static ACTIONS: &[(Operation, &str)] = &[
-    (Operation::EMBEDDINGS, "embedContent"),
-    (Operation::IMAGE, "predict"),
+static ACTIONS: &[(OpVerb, &str)] = &[
+    (OpVerb::EMBEDDINGS, "embedContent"),
+    (OpVerb::IMAGE, "predict"),
 ];
 
 impl RequestHandler for GeminiRequestHandler {
     fn protocol_name(&self) -> &'static str {
         "gemini"
     }
-    fn operation_handler(&self, op: Operation) -> Option<&dyn OperationHandler> {
+    fn operation_handler(&self, op: OpVerb) -> Option<&dyn OperationHandler> {
         busbar_substrate_values::handlers::cell_of(CELLS, op)
     }
     fn upstream_path(&self, ctx: &EgressCtx) -> String {
@@ -72,16 +72,16 @@ impl RequestHandler for GeminiRequestHandler {
         };
         format!("{base}/{m}:{action}")
     }
-    fn resolve_operation(&self, path: &str, body: &[u8]) -> Option<Operation> {
+    fn resolve_operation(&self, path: &str, body: &[u8]) -> Option<OpVerb> {
         // Gemini multiplexes: the ACTION names embeddings/image; `generateContent` serves chat AND
         // audio, split by BODY — `responseModalities:["AUDIO"]` ⇒ speech, an `inline_data` part with
         // an audio mime ⇒ transcription, an inline IMAGE part is multimodal CHAT. The byte-scan is a
         // cheap pre-filter so plain chat never pays the JSON parse.
         if path.contains(":embedContent") || path.contains(":batchEmbedContents") {
-            return Some(Operation::EMBEDDINGS);
+            return Some(OpVerb::EMBEDDINGS);
         }
         if path.contains(":predict") {
-            return Some(Operation::IMAGE);
+            return Some(OpVerb::IMAGE);
         }
         if !(path.contains(":generateContent") || path.contains(":streamGenerateContent")) {
             return None;
@@ -109,7 +109,7 @@ impl RequestHandler for GeminiRequestHandler {
                     .and_then(Value::as_array)
                     .is_some_and(|m| m.iter().any(|x| x.as_str() == Some("AUDIO")));
                 if audio_out {
-                    return Some(Operation::SPEECH);
+                    return Some(OpVerb::SPEECH);
                 }
                 let audio_in = v
                     .pointer("/contents/0/parts")
@@ -124,11 +124,11 @@ impl RequestHandler for GeminiRequestHandler {
                         })
                     });
                 if audio_in {
-                    return Some(Operation::TRANSCRIPTION);
+                    return Some(OpVerb::TRANSCRIPTION);
                 }
             }
         }
-        Some(Operation::CHAT)
+        Some(OpVerb::CHAT)
     }
     fn path_model(&self, path: &str) -> Option<String> {
         // `/{v1,v1beta}/models/{model}:{action}` — model is the last segment up to the LAST colon.

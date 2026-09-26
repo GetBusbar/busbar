@@ -18,9 +18,10 @@
 //! a path) so the bytes that were hash/signature-checked are byte-for-byte the bytes loaded — closing
 //! the time-of-check/time-of-use gap a `verify(path)` + `dlopen(path)` pair would leave open.
 
-use busbar_api::{
+use busbar_contract::records::{
     AuditRecord, CredentialMeta, CredentialSecret, MeteringDelta, MeteringRow, PlaneRecord,
-    PlaneSelector, Store, StoreError, StoreResult, UsageDelta, UsageLedger, VirtualKey,
+    PlaneSelector, RecordStore, RecordStoreError, RecordStoreResult, UsageDelta, UsageLedger,
+    VirtualKey,
 };
 use busbar_plugin::cold::{
     kind as abi_kind, symbol, CallFn, CloseFn, FreeFn, PluginKindFn, StoreRequest, StoreResponse,
@@ -32,6 +33,8 @@ use std::os::raw::c_void;
 use std::path::Path;
 
 pub mod auth;
+// The two BUILT-IN secret modules (`env`, `file`) the registry's built-in secret rows resolve through.
+pub mod builtin_secret;
 pub mod export;
 pub mod fetch;
 mod ffi_thread;
@@ -982,8 +985,9 @@ impl DynStore {
     /// Serialize a request, ship it across the kind-neutral C ABI, decode the response. A THIN wrapper
     /// over [`Self::call_raw_status`] (there is ONE transport path; a status-blind variant can't be
     /// accidentally used): it just discards the semantic kind and surfaces the message as a `StoreError`.
-    fn call_raw(&self, req: StoreRequest) -> StoreResult<StoreResponse> {
-        self.call_raw_status(req).map_err(|e| StoreError(e.message))
+    fn call_raw(&self, req: StoreRequest) -> RecordStoreResult<StoreResponse> {
+        self.call_raw_status(req)
+            .map_err(|e| RecordStoreError(e.message))
     }
 
     /// The status-preserving transport primitive: on failure returns a [`TransportError`] whose
@@ -1003,10 +1007,10 @@ impl DynStore {
     fn call_legacy_usage(
         &self,
         req: legacy_usage::LegacyStoreRequest,
-    ) -> StoreResult<legacy_usage::LegacyStoreResponse> {
+    ) -> RecordStoreResult<legacy_usage::LegacyStoreResponse> {
         self.raw
             .transport_call_status::<_, legacy_usage::LegacyStoreResponse>(&req)
-            .map_err(|e| StoreError(e.message))
+            .map_err(|e| RecordStoreError(e.message))
     }
 
     /// Say ONCE that this store has no column for some unit names, so the drop is never silent and
@@ -1042,13 +1046,13 @@ impl DynStore {
     fn call_with_legacy_default<T>(
         &self,
         req: StoreRequest,
-        extract: impl FnOnce(StoreResponse) -> StoreResult<T>,
-        on_unsupported: impl FnOnce() -> StoreResult<T>,
-    ) -> StoreResult<T> {
+        extract: impl FnOnce(StoreResponse) -> RecordStoreResult<T>,
+        on_unsupported: impl FnOnce() -> RecordStoreResult<T>,
+    ) -> RecordStoreResult<T> {
         match self.call_raw_status(req) {
             Ok(resp) => extract(resp),
             Err(e) if e.is_unsupported() => on_unsupported(),
-            Err(e) => Err(StoreError(e.message)),
+            Err(e) => Err(RecordStoreError(e.message)),
         }
     }
 }
@@ -1076,54 +1080,54 @@ fn open_err_is_readable(err_is_null: bool, err_len: usize) -> bool {
 }
 
 /// The plugin returned a response variant that doesn't match the request — a contract violation.
-fn unexpected(resp: StoreResponse) -> StoreError {
-    StoreError(format!("plugin returned an unexpected response: {resp:?}"))
+fn unexpected(resp: StoreResponse) -> RecordStoreError {
+    RecordStoreError(format!("plugin returned an unexpected response: {resp:?}"))
 }
 
-impl Store for DynStore {
-    fn put_key(&self, key: &VirtualKey) -> StoreResult<()> {
+impl RecordStore for DynStore {
+    fn put_key(&self, key: &VirtualKey) -> RecordStoreResult<()> {
         match self.call_raw(StoreRequest::PutKey(key.clone()))? {
             StoreResponse::Unit => Ok(()),
             other => Err(unexpected(other)),
         }
     }
 
-    fn get_key(&self, id: &str) -> StoreResult<Option<VirtualKey>> {
+    fn get_key(&self, id: &str) -> RecordStoreResult<Option<VirtualKey>> {
         match self.call_raw(StoreRequest::GetKey(id.to_string()))? {
             StoreResponse::Key(k) => Ok(k),
             other => Err(unexpected(other)),
         }
     }
 
-    fn list_keys(&self) -> StoreResult<Vec<VirtualKey>> {
+    fn list_keys(&self) -> RecordStoreResult<Vec<VirtualKey>> {
         match self.call_raw(StoreRequest::ListKeys)? {
             StoreResponse::Keys(k) => Ok(k),
             other => Err(unexpected(other)),
         }
     }
 
-    fn delete_key(&self, id: &str) -> StoreResult<()> {
+    fn delete_key(&self, id: &str) -> RecordStoreResult<()> {
         match self.call_raw(StoreRequest::DeleteKey(id.to_string()))? {
             StoreResponse::Unit => Ok(()),
             other => Err(unexpected(other)),
         }
     }
 
-    fn scrub_key(&self, id: &str) -> StoreResult<()> {
+    fn scrub_key(&self, id: &str) -> RecordStoreResult<()> {
         match self.call_raw(StoreRequest::ScrubKey(id.to_string()))? {
             StoreResponse::Unit => Ok(()),
             other => Err(unexpected(other)),
         }
     }
 
-    fn list_keys_since(&self, since: u64) -> StoreResult<Vec<VirtualKey>> {
+    fn list_keys_since(&self, since: u64) -> RecordStoreResult<Vec<VirtualKey>> {
         match self.call_raw(StoreRequest::ListKeysSince(since))? {
             StoreResponse::Keys(k) => Ok(k),
             other => Err(unexpected(other)),
         }
     }
 
-    fn get_usage(&self, bucket_id: &str, window_start: u64) -> StoreResult<UsageLedger> {
+    fn get_usage(&self, bucket_id: &str, window_start: u64) -> RecordStoreResult<UsageLedger> {
         if self.legacy_usage_wire() {
             // The REQUEST side of `GetUsage` never changed shape, only the ledger coming back, so
             // the current request rides the wire and only the response is decoded at the older
@@ -1136,12 +1140,12 @@ impl Store for DynStore {
             return match self
                 .raw
                 .transport_call_status::<_, legacy_usage::LegacyStoreResponse>(&req)
-                .map_err(|e| StoreError(e.message))?
+                .map_err(|e| RecordStoreError(e.message))?
             {
                 legacy_usage::LegacyStoreResponse::Usage(l) => {
                     Ok(legacy_usage::ledger_from_legacy(l))
                 }
-                legacy_usage::LegacyStoreResponse::Unit => Err(StoreError(
+                legacy_usage::LegacyStoreResponse::Unit => Err(RecordStoreError(
                     "plugin returned an unexpected response: Unit".to_string(),
                 )),
             };
@@ -1160,7 +1164,7 @@ impl Store for DynStore {
         bucket_id: &str,
         window_start: u64,
         ledger: &UsageLedger,
-    ) -> StoreResult<()> {
+    ) -> RecordStoreResult<()> {
         if self.legacy_usage_wire() {
             let (legacy, dropped) = legacy_usage::ledger_to_legacy(ledger);
             self.note_dropped_units(&dropped);
@@ -1170,7 +1174,7 @@ impl Store for DynStore {
                 ledger: legacy,
             })? {
                 legacy_usage::LegacyStoreResponse::Unit => Ok(()),
-                legacy_usage::LegacyStoreResponse::Usage(_) => Err(StoreError(
+                legacy_usage::LegacyStoreResponse::Usage(_) => Err(RecordStoreError(
                     "plugin returned an unexpected response: Usage".to_string(),
                 )),
             };
@@ -1185,7 +1189,12 @@ impl Store for DynStore {
         }
     }
 
-    fn add_usage(&self, bucket_id: &str, window_start: u64, delta: &UsageDelta) -> StoreResult<()> {
+    fn add_usage(
+        &self,
+        bucket_id: &str,
+        window_start: u64,
+        delta: &UsageDelta,
+    ) -> RecordStoreResult<()> {
         // `AddUsage` is part of the base wire (every plugin at this ABI knows it - there is no
         // "older SDK never learned this variant" fallback), so an error here is a REAL store error
         // and propagates: silently degrading the fleet-additive accumulate to a read-modify-write
@@ -1203,7 +1212,7 @@ impl Store for DynStore {
                 delta: legacy,
             })? {
                 legacy_usage::LegacyStoreResponse::Unit => Ok(()),
-                legacy_usage::LegacyStoreResponse::Usage(_) => Err(StoreError(
+                legacy_usage::LegacyStoreResponse::Usage(_) => Err(RecordStoreError(
                     "plugin returned an unexpected response: Usage".to_string(),
                 )),
             };
@@ -1218,7 +1227,7 @@ impl Store for DynStore {
         }
     }
 
-    fn add_metering(&self, delta: &MeteringDelta) -> StoreResult<()> {
+    fn add_metering(&self, delta: &MeteringDelta) -> RecordStoreResult<()> {
         // THE MONEY PATH's second half on a published 1.5.x store: `priced_from_ms` is part of the
         // accrual key and that store has no column for it, so it would merge a rate-card-split day
         // back into one row. Carry the era in a column it keys on (see `legacy_usage`).
@@ -1242,7 +1251,7 @@ impl Store for DynStore {
         }
     }
 
-    fn list_metering(&self, bucket: u64) -> StoreResult<Vec<MeteringRow>> {
+    fn list_metering(&self, bucket: u64) -> RecordStoreResult<Vec<MeteringRow>> {
         match self.call_raw(StoreRequest::ListMetering(bucket))? {
             StoreResponse::Metering(m)
                 if legacy_usage::needs_legacy_metering_wire(self.abi_version) =>
@@ -1256,21 +1265,21 @@ impl Store for DynStore {
         }
     }
 
-    fn purge_windows_before(&self, before: u64) -> StoreResult<u64> {
+    fn purge_windows_before(&self, before: u64) -> RecordStoreResult<u64> {
         match self.call_raw(StoreRequest::PurgeWindowsBefore(before))? {
             StoreResponse::Purged(n) => Ok(n),
             other => Err(unexpected(other)),
         }
     }
 
-    fn purge_metering_before(&self, bucket: &str) -> StoreResult<u64> {
+    fn purge_metering_before(&self, bucket: &str) -> RecordStoreResult<u64> {
         match self.call_raw(StoreRequest::PurgeMeteringBefore(bucket.to_string()))? {
             StoreResponse::Purged(n) => Ok(n),
             other => Err(unexpected(other)),
         }
     }
 
-    fn put_credential(&self, secret: &CredentialSecret) -> StoreResult<()> {
+    fn put_credential(&self, secret: &CredentialSecret) -> RecordStoreResult<()> {
         match self.call_raw(StoreRequest::PutCredential(secret.clone()))? {
             StoreResponse::Unit => Ok(()),
             other => Err(unexpected(other)),
@@ -1281,7 +1290,7 @@ impl Store for DynStore {
         &self,
         key: &VirtualKey,
         secret: &CredentialSecret,
-    ) -> StoreResult<()> {
+    ) -> RecordStoreResult<()> {
         match self.call_raw(StoreRequest::PutKeyWithCredential {
             key: key.clone(),
             secret: secret.clone(),
@@ -1291,7 +1300,7 @@ impl Store for DynStore {
         }
     }
 
-    fn list_credentials(&self, key_id: &str) -> StoreResult<Vec<CredentialMeta>> {
+    fn list_credentials(&self, key_id: &str) -> RecordStoreResult<Vec<CredentialMeta>> {
         match self.call_raw(StoreRequest::ListCredentials(key_id.to_string()))? {
             StoreResponse::Credentials(c) => Ok(c),
             other => Err(unexpected(other)),
@@ -1302,7 +1311,7 @@ impl Store for DynStore {
         &self,
         kind: &str,
         public_id: &str,
-    ) -> StoreResult<Option<CredentialSecret>> {
+    ) -> RecordStoreResult<Option<CredentialSecret>> {
         match self.call_raw(StoreRequest::LookupCredentialSecret {
             kind: kind.to_string(),
             public_id: public_id.to_string(),
@@ -1312,7 +1321,7 @@ impl Store for DynStore {
         }
     }
 
-    fn revoke_credential(&self, id: &str, reason: &str) -> StoreResult<()> {
+    fn revoke_credential(&self, id: &str, reason: &str) -> RecordStoreResult<()> {
         match self.call_raw(StoreRequest::RevokeCredential {
             id: id.to_string(),
             reason: reason.to_string(),
@@ -1322,14 +1331,14 @@ impl Store for DynStore {
         }
     }
 
-    fn list_credentials_since(&self, since: u64) -> StoreResult<Vec<CredentialSecret>> {
+    fn list_credentials_since(&self, since: u64) -> RecordStoreResult<Vec<CredentialSecret>> {
         match self.call_raw(StoreRequest::ListCredentialsSince(since))? {
             StoreResponse::CredentialSecrets(c) => Ok(c),
             other => Err(unexpected(other)),
         }
     }
 
-    fn append_audit(&self, entry: &AuditRecord) -> StoreResult<()> {
+    fn append_audit(&self, entry: &AuditRecord) -> RecordStoreResult<()> {
         // A store predating this request variant means "this store has no durable audit". Audit
         // write-through is best-effort (the RAM ring still holds the entry), so for THAT case ONLY the
         // choke point returns `Ok(())` silently; every other failure propagates.
@@ -1343,7 +1352,7 @@ impl Store for DynStore {
         )
     }
 
-    fn list_audit(&self) -> StoreResult<Vec<AuditRecord>> {
+    fn list_audit(&self) -> RecordStoreResult<Vec<AuditRecord>> {
         // Routed through the same choke point as its three siblings. This op used the status-BLIND
         // `call_raw`, so a store predating the durable-audit variant failed the whole restore instead
         // of reporting "no durable audit" — the mirror image of the `append_audit` asymmetry.
@@ -1357,7 +1366,7 @@ impl Store for DynStore {
         )
     }
 
-    fn list_audit_tail(&self, limit: u64) -> StoreResult<Vec<AuditRecord>> {
+    fn list_audit_tail(&self, limit: u64) -> RecordStoreResult<Vec<AuditRecord>> {
         // A store predating this variant falls back to the trait default (`list_audit` +
         // tail-truncation) so restore still works: it just materializes the full list once before
         // truncating rather than bounding at the source. The fallback re-issues `list_audit`, which is
@@ -1380,7 +1389,7 @@ impl Store for DynStore {
         )
     }
 
-    fn add_denylist(&self, sub: &str, reason: &str) -> StoreResult<()> {
+    fn add_denylist(&self, sub: &str, reason: &str) -> RecordStoreResult<()> {
         match self.call_raw(StoreRequest::AddDenylist {
             sub: sub.to_string(),
             reason: reason.to_string(),
@@ -1390,7 +1399,7 @@ impl Store for DynStore {
         }
     }
 
-    fn list_denylist(&self) -> StoreResult<Vec<String>> {
+    fn list_denylist(&self) -> RecordStoreResult<Vec<String>> {
         // Revocation fail-open closure. A store that cannot DECODE the `ListDenylist` request
         // variant hydrates an empty denylist rather than failing boot. Every OTHER failure — a real
         // backend error, a caught PANIC, a caller-protocol violation, an unexpected response variant —
@@ -1428,7 +1437,7 @@ impl Store for DynStore {
     // is unrecoverable there, and `ts`/`disposition` are precisely what a retention sweep reads. The
     // read/purge/delete verbs send only what they route on; they reconstitute no envelope.
 
-    fn upsert_plane_record(&self, record: &PlaneRecord) -> StoreResult<()> {
+    fn upsert_plane_record(&self, record: &PlaneRecord) -> RecordStoreResult<()> {
         self.call_with_legacy_default(
             StoreRequest::UpsertPlaneRecord {
                 kind: record.kind.clone(),
@@ -1445,7 +1454,7 @@ impl Store for DynStore {
         )
     }
 
-    fn get_plane_record(&self, kind: &str, id: &str) -> StoreResult<Option<Vec<u8>>> {
+    fn get_plane_record(&self, kind: &str, id: &str) -> RecordStoreResult<Option<Vec<u8>>> {
         self.call_with_legacy_default(
             StoreRequest::GetPlaneRecord {
                 kind: kind.to_string(),
@@ -1459,7 +1468,7 @@ impl Store for DynStore {
         )
     }
 
-    fn append_plane_record(&self, record: &PlaneRecord) -> StoreResult<()> {
+    fn append_plane_record(&self, record: &PlaneRecord) -> RecordStoreResult<()> {
         self.call_with_legacy_default(
             StoreRequest::AppendPlaneRecord {
                 kind: record.kind.clone(),
@@ -1482,7 +1491,7 @@ impl Store for DynStore {
         &self,
         kind: &str,
         selector: &PlaneSelector,
-    ) -> StoreResult<Vec<Vec<u8>>> {
+    ) -> RecordStoreResult<Vec<Vec<u8>>> {
         self.call_with_legacy_default(
             StoreRequest::ListPlaneRecords {
                 kind: kind.to_string(),
@@ -1496,7 +1505,7 @@ impl Store for DynStore {
         )
     }
 
-    fn list_plane_record_parents(&self, kind: &str) -> StoreResult<Vec<String>> {
+    fn list_plane_record_parents(&self, kind: &str) -> RecordStoreResult<Vec<String>> {
         self.call_with_legacy_default(
             StoreRequest::ListPlaneRecordParents {
                 kind: kind.to_string(),
@@ -1509,7 +1518,7 @@ impl Store for DynStore {
         )
     }
 
-    fn purge_plane_records_before(&self, kind: &str, before: u64) -> StoreResult<u64> {
+    fn purge_plane_records_before(&self, kind: &str, before: u64) -> RecordStoreResult<u64> {
         self.call_with_legacy_default(
             StoreRequest::PurgePlaneRecordsBefore {
                 kind: kind.to_string(),
@@ -1523,7 +1532,7 @@ impl Store for DynStore {
         )
     }
 
-    fn delete_plane_record(&self, kind: &str, id: &str) -> StoreResult<()> {
+    fn delete_plane_record(&self, kind: &str, id: &str) -> RecordStoreResult<()> {
         self.call_with_legacy_default(
             StoreRequest::DeletePlaneRecord {
                 kind: kind.to_string(),
@@ -1543,7 +1552,7 @@ impl Store for DynStore {
         token: &str,
         expires_at: u64,
         now: u64,
-    ) -> StoreResult<bool> {
+    ) -> RecordStoreResult<bool> {
         // DELIBERATELY NOT `call_with_legacy_default`: this is the ONE neutral verb whose safe
         // default is FAIL-CLOSED, not fail-open. The others (`list_denylist`, the audit tail, the
         // plane-record reads) tolerate an old plugin by returning an empty/`Ok` default; anti-replay
@@ -1569,13 +1578,13 @@ impl Store for DynStore {
                      whether a token was already spent must not be read as saying it was not. \
                      Upgrade the store plugin to a build that persists the single-use token ledger."
                 );
-                Err(StoreError(
+                Err(RecordStoreError(
                     "store plugin does not support redeem_plane_token (single-use anti-replay); \
                      refusing to fail open"
                         .to_string(),
                 ))
             }
-            Err(e) => Err(StoreError(e.message)),
+            Err(e) => Err(RecordStoreError(e.message)),
         }
     }
 
@@ -1585,7 +1594,7 @@ impl Store for DynStore {
         token: &str,
         expires_at: u64,
         now: u64,
-    ) -> StoreResult<bool> {
+    ) -> RecordStoreResult<bool> {
         // FAIL-CLOSED for the same reason `redeem_plane_token` above is, and it is worth saying
         // separately because the question is the opposite one. That verb asks "has nobody spent this
         // yet"; this one asks "is this capability still live". A store too OLD to answer must not be
@@ -1608,13 +1617,13 @@ impl Store for DynStore {
                      a token is still live must not be read as saying it is. Upgrade the store plugin \
                      to a build that persists the plane-record disposition."
                 );
-                Err(StoreError(
+                Err(RecordStoreError(
                     "store plugin does not support plane_token_live (multi-use capability check); \
                      refusing to fail open"
                         .to_string(),
                 ))
             }
-            Err(e) => Err(StoreError(e.message)),
+            Err(e) => Err(RecordStoreError(e.message)),
         }
     }
 }
@@ -1629,17 +1638,17 @@ impl std::fmt::Debug for DynStore {
 
 // ── SECRET plugins (`kind: secret`) ─────────────────────────────────────────────────────────────
 
-/// A [`busbar_api::SecretModule`] loaded from a dynamic library over the kind-neutral ABI. Wraps a
+/// A [`busbar_contract::secret::SecretModule`] loaded from a dynamic library over the kind-neutral ABI. Wraps a
 /// [`RawPlugin`] whose kind was bound to `secret` at load.
 pub struct DynSecret {
     raw: RawPlugin,
 }
 
-impl busbar_api::SecretModule for DynSecret {
+impl busbar_contract::secret::SecretModule for DynSecret {
     fn resolve(
         &self,
         settings: &serde_json::Map<String, serde_json::Value>,
-    ) -> busbar_api::SecretResult<Vec<u8>> {
+    ) -> busbar_contract::secret::SecretResult<Vec<u8>> {
         self.resolve_with_deadline(settings, None)
     }
 
@@ -1650,7 +1659,7 @@ impl busbar_api::SecretModule for DynSecret {
         &self,
         settings: &serde_json::Map<String, serde_json::Value>,
         deadline_ms: Option<u64>,
-    ) -> busbar_api::SecretResult<Vec<u8>> {
+    ) -> busbar_contract::secret::SecretResult<Vec<u8>> {
         let req = busbar_plugin::cold::SecretRequest::Resolve {
             settings: settings.clone(),
             deadline_ms,
@@ -1658,12 +1667,12 @@ impl busbar_api::SecretModule for DynSecret {
         match self
             .raw
             .transport_call::<_, busbar_plugin::cold::SecretResponse>(&req)
-            .map_err(busbar_api::SecretError::internal)?
+            .map_err(busbar_contract::secret::SecretModuleError::internal)?
         {
             busbar_plugin::cold::SecretResponse::Bytes(b) => Ok(b),
-            busbar_plugin::cold::SecretResponse::Error { kind, message } => {
-                Err(busbar_api::SecretError::new(kind, message))
-            }
+            busbar_plugin::cold::SecretResponse::Error { kind, message } => Err(
+                busbar_contract::secret::SecretModuleError::new(kind, message),
+            ),
         }
     }
 }
@@ -1684,7 +1693,7 @@ pub fn load_secret_from_bytes(
     cfg_json: &str,
     display: &str,
     manifest_kind: &str,
-) -> Result<Box<dyn busbar_api::SecretModule>, String> {
+) -> Result<Box<dyn busbar_contract::secret::SecretModule>, String> {
     load_secret_image(Image::Bytes(bytes), cfg_json, display, manifest_kind)
 }
 
@@ -1694,7 +1703,7 @@ pub fn load_secret_image(
     cfg_json: &str,
     display: &str,
     manifest_kind: &str,
-) -> Result<Box<dyn busbar_api::SecretModule>, String> {
+) -> Result<Box<dyn busbar_contract::secret::SecretModule>, String> {
     let raw = load_image(image, cfg_json, display, abi_kind::SECRET, manifest_kind)?;
     Ok(Box::new(DynSecret { raw }))
 }
@@ -1706,7 +1715,7 @@ pub fn load_secret_image(
 /// `Box<dyn Store>` or a human-readable error naming the failure.
 #[cold] // boot/admin-only — keeps hot text dense (never inlined into a warm path)
 #[inline(never)]
-pub fn load_store(lib_path: &Path, cfg_json: &str) -> Result<Box<dyn Store>, String> {
+pub fn load_store(lib_path: &Path, cfg_json: &str) -> Result<Box<dyn RecordStore>, String> {
     let display = lib_path.display().to_string();
     // SAFETY: loading an operator-placed library is inherently trusted (its init code runs), exactly
     // like the SQLite this replaces was trusted when compiled in. The path comes from config/the
@@ -1756,7 +1765,7 @@ pub fn load_store_from_bytes(
     cfg_json: &str,
     display: &str,
     manifest_kind: &str,
-) -> Result<Box<dyn Store>, String> {
+) -> Result<Box<dyn RecordStore>, String> {
     load_store_from_bytes_at_abi(
         bytes,
         cfg_json,
@@ -1775,7 +1784,7 @@ pub fn load_store_from_bytes_at_abi(
     display: &str,
     manifest_kind: &str,
     abi_version: u32,
-) -> Result<Box<dyn Store>, String> {
+) -> Result<Box<dyn RecordStore>, String> {
     load_dyn_store_from_bytes_at_abi(bytes, cfg_json, display, manifest_kind, abi_version)
         .map(|s| Box::new(s) as _)
 }
@@ -1824,7 +1833,7 @@ pub fn load_store_image(
     display: &str,
     manifest_kind: &str,
     abi_version: u32,
-) -> Result<Box<dyn Store>, String> {
+) -> Result<Box<dyn RecordStore>, String> {
     load_dyn_store_image(image, cfg_json, display, manifest_kind, abi_version)
         .map(|s| Box::new(s) as _)
 }

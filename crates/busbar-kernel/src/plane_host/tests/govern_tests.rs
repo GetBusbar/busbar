@@ -77,10 +77,10 @@ fn billing_on_cost() -> crate::cost::CostModel {
     crate::cost::CostModel::resolve_parts(Some(&card), 1, &std::collections::BTreeMap::new())
 }
 
-/// The minimal [`VirtualKey`](busbar_api::VirtualKey) `try_admit`/`chain_for` read — `id` + `group`
+/// The minimal [`VirtualKey`](busbar_contract::records::VirtualKey) `try_admit`/`chain_for` read — `id` + `group`
 /// — so a direct `try_admit` and the host `govern_admit_reason` drive the identical chain.
-fn test_key(id: &str, group: Option<&str>) -> busbar_api::VirtualKey {
-    busbar_api::VirtualKey {
+fn test_key(id: &str, group: Option<&str>) -> busbar_contract::records::VirtualKey {
+    busbar_contract::records::VirtualKey {
         generation_hash: String::new(),
         name: id.to_string(),
         id: id.to_string(),
@@ -115,7 +115,7 @@ fn admit_over_facts_matches_try_admit() {
     let cost = group_cost("team", 5); // 5c cap, 1c/request → 5 requests fit
     let now = busbar_kernel::store::now_ms() / 1_000;
     // The real key the plane would resolve: `chain_for` reads only `id` + `group`.
-    let key = busbar_api::VirtualKey {
+    let key = busbar_contract::records::VirtualKey {
         generation_hash: String::new(),
         name: "k".to_string(),
         id: "vk_faithful_admit".to_string(),

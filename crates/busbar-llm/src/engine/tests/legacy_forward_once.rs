@@ -202,8 +202,10 @@ pub(super) async fn forward_once(
         // lane penalty), matching the documented passthrough contract. No-op in canonical
         // keyless passthrough (lane.api_key already empty); only changes the misconfigured
         // passthrough+configured-key case.
-        busbar_api::UpstreamCreds::Passthrough => caller_token.unwrap_or(""),
-        busbar_api::UpstreamCreds::Own => EngineTables::new(rt).lanes()[i].api_key.expose_secret(),
+        busbar_contract::config::UpstreamCreds::Passthrough => caller_token.unwrap_or(""),
+        busbar_contract::config::UpstreamCreds::Own => {
+            EngineTables::new(rt).lanes()[i].api_key.expose_secret()
+        }
     };
 
     // per-request auth (SigV4 for Bedrock; static otherwise). The (operation × stream) egress
@@ -235,7 +237,7 @@ pub(super) async fn forward_once(
         &EngineTables::new(rt).lanes()[i].prebuilt_auth,
         EngineTables::new(rt).pool_upstream_creds(pool),
     ) {
-        (Some(pre), busbar_api::UpstreamCreds::Own) => pre.clone(),
+        (Some(pre), busbar_contract::config::UpstreamCreds::Own) => pre.clone(),
         _ => convert_headers(lane_auth_headers(
             &EngineTables::new(rt).lanes()[i],
             key,

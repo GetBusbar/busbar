@@ -291,9 +291,6 @@ pub fn sources(cx: &Ctx) -> Result<Vec<String>, String> {
         // merged into `busbar-contract` (DECISIONS #83, fold F1) VERBATIM: same type name, same
         // hand-written `Deserialize`. Its name at the baseline is in [`MOVED_SOURCES`].
         "crates/busbar-contract/src/secret_ref.rs".to_string(),
-        // `UpstreamCreds` — the `upstream_credentials:` value grammar — moved to the neutral
-        // contracts crate in the plane extraction, exactly as `SecretRef` did to `secret-ref`.
-        "crates/api/src/auth.rs".to_string(),
         // `ModelCfg` — the `models:` map's per-entry value grammar, shared by `pools.models.<name>`
         // (the LLM plane) and `decisions.models.<name>` (DECISIONS #47) — moved out of the engine to
         // `busbar-contract` (DECISIONS #38/#40: the one contract/ABI crate a plugin crate's whole

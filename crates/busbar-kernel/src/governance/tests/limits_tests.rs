@@ -243,10 +243,10 @@ fn toks_tiers(
 ) -> std::collections::BTreeMap<String, u64> {
     let mut m = std::collections::BTreeMap::new();
     for (k, v) in [
-        (busbar_api::UNIT_INPUT, input),
-        (busbar_api::UNIT_OUTPUT, output),
-        (busbar_api::UNIT_CACHE_READ, cache_read),
-        (busbar_api::UNIT_CACHE_WRITE, cache_write),
+        (busbar_contract::records::UNIT_INPUT, input),
+        (busbar_contract::records::UNIT_OUTPUT, output),
+        (busbar_contract::records::UNIT_CACHE_READ, cache_read),
+        (busbar_contract::records::UNIT_CACHE_WRITE, cache_write),
     ] {
         if v != 0 {
             m.insert(k.to_string(), v);
@@ -1319,8 +1319,8 @@ fn tokens_cap_counts_every_token_family_class_a_plane_declares() {
 #[test]
 fn an_adjust_moves_the_key_group_and_metrics_reads_of_the_budget_book() {
     use crate::audit::amend::{correct_counts, ClassCounts, CountCorrection};
-    use busbar_api::UNIT_INPUT;
     use busbar_contract::authz::Scope;
+    use busbar_contract::records::UNIT_INPUT;
     use busbar_kernel_ledger::cost::whole;
     let g = gov();
     let day = limit(LimitMetric::Budget, 100_000, Some(LimitWindow::Day));
@@ -1368,7 +1368,7 @@ fn q64_two_pools(
     group: &'static str,
 ) -> (GovState, CostModel, VirtualKey, u64, impl Fn(Option<&str>)) {
     use crate::audit::amend::{correct_counts, ClassCounts, CountCorrection};
-    use busbar_api::UNIT_INPUT;
+    use busbar_contract::records::UNIT_INPUT;
     use busbar_kernel_ledger::cost::whole;
     let g = gov();
     let limits = vec![
@@ -1421,7 +1421,7 @@ fn q64_read(
             .unwrap()
             .spend_cents;
         let gauge = g.bucket_model_tokens(cm, &id, "day", now);
-        (spend, gauge[0].1[busbar_api::UNIT_INPUT])
+        (spend, gauge[0].1[busbar_contract::records::UNIT_INPUT])
     };
     [
         (key.spend_cents, key.tokens),

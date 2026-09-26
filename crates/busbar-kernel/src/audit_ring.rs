@@ -138,7 +138,7 @@ impl ChainedRecord for AuditEntry {
     };
     /// PIPE-SEPARATED: [`AUDIT_SCHEME_PIPE`]'s framing, and what an absent [`AuditEntry::scheme`] tag
     /// means — every entry already on disk, implicitly or explicitly, and the formula
-    /// `busbar_api::AuditRecord`'s own doc publishes. NOT what a fresh entry seals under any longer;
+    /// `busbar_contract::records::AuditRecord`'s own doc publishes. NOT what a fresh entry seals under any longer;
     /// see `framing` below for the framing that actually governs a given instance's digest.
     const FRAMING: Framing = Framing::PipeSeparated;
 
@@ -201,7 +201,7 @@ impl ChainedRecord for AuditEntry {
     }
 
     /// `sha256(prev_hash | seq | ts | action | resource | outcome | principal)` — the formula
-    /// `busbar_api::AuditRecord` publishes, fed field by field instead of being formatted here.
+    /// `busbar_contract::records::AuditRecord` publishes, fed field by field instead of being formatted here.
     /// Note there is no scope field: this chain has exactly one scope, so nothing distinguishes it.
     fn digest_fields(&self, d: &mut Digest) {
         d.text(&self.prev_hash)

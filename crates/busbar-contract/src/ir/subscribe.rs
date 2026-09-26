@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE SUBSCRIBE IR data — the `Operation::SUBSCRIBE` request/response pair.
+//! THE SUBSCRIBE IR data — the `OpVerb::SUBSCRIBE` request/response pair.
 //!
 //! A caller names a thing and asks to start — or to stop — being told when it changes. That is the
 //! whole operation, and it is two directions of ONE shape: the name is the same name, the answer is
@@ -18,7 +18,7 @@
 //! `busbar-substrate-values::ir::subscribe`, which re-exports it under its historical path.
 
 use super::SourceScopedExtra;
-use crate::operation::Operation;
+use crate::operation::OpVerb;
 use serde_json::Value;
 
 /// WHICH WAY THE REGISTRATION MOVES. Not a boolean: `subscribe: false` reads as "this is not a
@@ -64,8 +64,8 @@ pub struct SubscribeResp {
 /// `wants_stream` is `false`: registering is answered once with an acknowledgement — the events that
 /// follow are a separate channel, not an incremental rendering of this request.
 impl crate::ir::facts::IrFacts for SubscribeReq {
-    fn verb(&self) -> Operation {
-        Operation::SUBSCRIBE
+    fn verb(&self) -> OpVerb {
+        OpVerb::SUBSCRIBE
     }
 
     fn wants_stream(&self) -> bool {

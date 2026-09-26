@@ -41,7 +41,7 @@ use busbar_plugin_loader::{HotStatusClass as StatusClass, ServedPlane};
 
 /// A provider composition step, captured off the resolved configuration before the app is built and
 /// run once the deployment's secret resolver exists.
-pub type Compose = Box<dyn FnOnce(&dyn busbar_api::SecretResolve)>;
+pub type Compose = Box<dyn FnOnce(&dyn busbar_contract::secret::SecretResolve)>;
 
 /// The stdio serve mode: frames on stdin/stdout instead of a listener; resolves to the exit code.
 pub type StdioServe =

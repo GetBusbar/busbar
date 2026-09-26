@@ -69,7 +69,7 @@ thread_local! {
 /// the neutral [`PlaneInFlight`] table under `key`, which the outer handler reads back after the loop.
 struct GauntletKernelUnit<'p> {
     plane: std::sync::Mutex<Option<Box<dyn GauntletPlane + 'p>>>,
-    gov: &'p busbar_api::PlaneRequestCtx,
+    gov: &'p busbar_contract::records::PlaneRequestCtx,
     destination: &'p str,
     correlation_id: u64,
     charged_at: u64,
@@ -299,7 +299,7 @@ impl RouteAwait for GauntletKernelUnit<'_> {
 /// Derive the caller's principal from the resolved gov, exactly as the sibling planes do: the
 /// virtual key's id when governed, the anonymous actor otherwise. Only the (posted-nothing) record
 /// reads it, so the exact string does not touch the response bytes.
-fn principal_of(gov: &busbar_api::PlaneRequestCtx) -> PrincipalId {
+fn principal_of(gov: &busbar_contract::records::PlaneRequestCtx) -> PrincipalId {
     match gov.key() {
         Some(key) => PrincipalId::new(key.id.as_str()),
         None => PrincipalId::new("anonymous"),

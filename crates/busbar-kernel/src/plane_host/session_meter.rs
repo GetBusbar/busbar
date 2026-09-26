@@ -25,7 +25,7 @@
 
 use super::{EngineHost, MeterPin};
 use crate::billing::Usage;
-use busbar_api::VirtualKey;
+use busbar_contract::records::VirtualKey;
 use std::sync::Arc;
 
 /// What a reported turn means for the carrier. The plane never learns why a session must close.

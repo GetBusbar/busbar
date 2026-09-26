@@ -44,7 +44,7 @@
 //! builds compile these same sources back in as `handlers::mcp` (via `extern crate self as
 //! busbar_kernel`), so the pre-extraction fixture surface keeps proving what it always proved without
 //! core's PRODUCTION build knowing this dialect exists. That is why every core reference in these
-//! files is spelled through the neutral crates (`busbar_substrate_values::` / `busbar_api::`) and every self
+//! files is spelled through the neutral crates (`busbar_substrate_values::` / `busbar_contract::`) and every self
 //! reference is relative.
 
 pub mod handler;
@@ -64,8 +64,8 @@ pub const DECL: busbar_substrate_values::proto::ProtocolDecl =
     busbar_substrate_values::proto::ProtocolDecl {
         handler: Some(&handler::McpRequestHandler),
         verbs: &[
-            busbar_api::operation::Operation::INVOKE,
-            busbar_api::operation::Operation::SUBSCRIBE,
+            busbar_contract::operation::OpVerb::INVOKE,
+            busbar_contract::operation::OpVerb::SUBSCRIBE,
         ],
         // EVERY OTHER FIELD IS THE NEUTRAL ROW (`ProtocolDecl::named`), stated once beside the struct
         // rather than copied here — and each one is exactly what MCP means:

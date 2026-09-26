@@ -200,7 +200,7 @@ pub(crate) fn classify_setting(value: &serde_json::Value) -> SettingShape<'_> {
 /// or a silently-empty value. `field` names the settings key in the error (never the secret value).
 pub(crate) fn resolve_settings(
     settings: &serde_json::Map<String, serde_json::Value>,
-    resolver: &dyn busbar_api::SecretResolve,
+    resolver: &dyn busbar_contract::secret::SecretResolve,
 ) -> Result<serde_json::Map<String, serde_json::Value>, String> {
     let mut out = serde_json::Map::with_capacity(settings.len());
     for (field, value) in settings {
@@ -252,11 +252,11 @@ pub(crate) fn resolve_settings(
     Ok(out)
 }
 
-/// The NEUTRAL secret-resolver SEAM: `SecretResolver` implements `busbar_api::SecretResolve` by
+/// The NEUTRAL secret-resolver SEAM: `SecretResolver` implements `busbar_contract::secret::SecretResolve` by
 /// delegating to its own `pub(crate)` resolution (allowed — same crate), so `&SecretResolver` is
-/// usable as `&dyn busbar_api::SecretResolve`. An extracted plane names the trait, never this
+/// usable as `&dyn busbar_contract::secret::SecretResolve`. An extracted plane names the trait, never this
 /// engine-specific struct. The methods forward verbatim; the error is already a neutral `String`.
-impl busbar_api::SecretResolve for SecretResolver {
+impl busbar_contract::secret::SecretResolve for SecretResolver {
     fn resolve(&self, secret: &SecretRef) -> Result<Vec<u8>, String> {
         SecretResolver::resolve(self, secret)
     }
@@ -271,8 +271,8 @@ impl busbar_api::SecretResolve for SecretResolver {
 /// `std::env`/`std::fs` + `busbar_contract::SecretRef`, with no engine coupling, so a plane crate
 /// can resolve a built-in ref without reaching into `busbar`. Re-exported so every in-crate call
 /// site (the [`SecretResolver`] built-in fallback below) is unchanged.
-pub(crate) use busbar_api::resolve_builtin;
-pub use busbar_api::resolve_builtin_string;
+pub(crate) use busbar_plugin_loader::builtin_secret::resolve_builtin;
+pub use busbar_plugin_loader::builtin_secret::resolve_builtin_string;
 
 #[cfg(test)]
 #[path = "tests/secret_tests.rs"]

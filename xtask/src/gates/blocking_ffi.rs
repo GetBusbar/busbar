@@ -45,7 +45,7 @@
 //! ONE CARVE-OUT, and it is a shape no plugin call can wear: a method call whose first argument is
 //! a freshly minted capability token is the KERNEL's sealed step seam, not a plugin handle. See
 //! [`opens_with_capability_token`] for why `busbar_kernel::teller::Units::authenticate` and
-//! `busbar_api::AuthModule::authenticate` share a spelling and nothing else.
+//! `busbar_contract::auth::AuthModule::authenticate` share a spelling and nothing else.
 //!
 //! Imprecise about strings and comments in the same way the shell was: a brace inside a string
 //! literal can shift the depth. That is a false-POSITIVE risk — a spurious flag someone must look
@@ -227,7 +227,7 @@ fn bare_call(line: &str, name: &str) -> bool {
 ///
 /// WHY THIS IS NOT A HOLE. Every seam in [`seams`] is a call into a DLOPENED PLUGIN, and every one
 /// of those is reached through a plugin handle whose method takes plugin arguments —
-/// `busbar_api::AuthModule::authenticate` takes `Option<&str>`, the presented credential, and
+/// `busbar_contract::auth::AuthModule::authenticate` takes `Option<&str>`, the presented credential, and
 /// nothing else. `busbar_kernel::teller::Units` is a DIFFERENT trait that happens to spell one of
 /// its steps `authenticate`, and the kernel calls it as `units.authenticate(&UnitToken::<
 /// Authenticate>::mint(seal), ctx)`. A `UnitToken` is a capability the kernel mints against its own

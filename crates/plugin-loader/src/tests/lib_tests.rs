@@ -557,7 +557,7 @@ fn load_store_from_bytes_loads_the_given_bytes() {
         id: "vk_b".into(),
         generation_hash: "h".into(),
         name: "b".into(),
-        allowed_scopes: Some(vec![busbar_api::ScopeRef::pool("p")]),
+        allowed_scopes: Some(vec![busbar_contract::records::ScopeRef::pool("p")]),
         enabled: true,
         created_at: 1,
         group: None,
@@ -731,11 +731,11 @@ fn hot_swap_old_and_new_coexist_then_old_unmaps_new_keeps_serving() {
     if let Some(p) = &old_path {
         assert!(p.is_file(), "OLD's staged backing must exist while alive");
     }
-    let key = busbar_api::VirtualKey {
+    let key = busbar_contract::records::VirtualKey {
         id: "vk_old".into(),
         generation_hash: "h".into(),
         name: "old".into(),
-        allowed_scopes: Some(vec![busbar_api::ScopeRef::pool("p")]),
+        allowed_scopes: Some(vec![busbar_contract::records::ScopeRef::pool("p")]),
         enabled: true,
         created_at: 1,
         group: None,
@@ -791,11 +791,11 @@ fn hot_swap_old_and_new_coexist_then_old_unmaps_new_keeps_serving() {
     }
 
     // The NEW instance keeps serving with no restart — its library was untouched by the old drop.
-    new.put_key(&busbar_api::VirtualKey {
+    new.put_key(&busbar_contract::records::VirtualKey {
         id: "vk_new".into(),
         generation_hash: "h".into(),
         name: "new".into(),
-        allowed_scopes: Some(vec![busbar_api::ScopeRef::pool("p")]),
+        allowed_scopes: Some(vec![busbar_contract::records::ScopeRef::pool("p")]),
         enabled: true,
         created_at: 2,
         group: None,
@@ -1574,7 +1574,7 @@ fn load_and_exercise_export_plugin() {
 /// in-tree workspace member that `cargo test --workspace` always builds, so its absence means a
 /// broken pipeline — and a silent skip here would restore exactly the situation this test exists to
 /// end: a green run that proved nothing about durability.
-use busbar_api::PlaneDisposition;
+use busbar_contract::records::PlaneDisposition;
 
 // ── the loader test speaks LOCAL STAND-IN rows; the ABI speaks NEUTRAL kind-tagged plane records ──
 //
@@ -1682,17 +1682,25 @@ fn call_record(c: &SampleCall) -> PlaneRecord {
     }
 }
 
-fn n_get_task(s: &dyn busbar_api::Store, id: &str) -> StoreResult<Option<SampleTask>> {
+fn n_get_task(
+    s: &dyn busbar_contract::records::RecordStore,
+    id: &str,
+) -> RecordStoreResult<Option<SampleTask>> {
     Ok(s.get_plane_record("task", id)?
         .map(|b| serde_json::from_slice(&b).unwrap()))
 }
-fn n_list_tasks(s: &dyn busbar_api::Store) -> StoreResult<Vec<SampleTask>> {
+fn n_list_tasks(
+    s: &dyn busbar_contract::records::RecordStore,
+) -> RecordStoreResult<Vec<SampleTask>> {
     Ok(s.list_plane_records("task", &PlaneSelector::All)?
         .iter()
         .map(|b| serde_json::from_slice(b).unwrap())
         .collect())
 }
-fn n_list_task_events(s: &dyn busbar_api::Store, id: &str) -> StoreResult<Vec<SampleEvent>> {
+fn n_list_task_events(
+    s: &dyn busbar_contract::records::RecordStore,
+    id: &str,
+) -> RecordStoreResult<Vec<SampleEvent>> {
     Ok(
         s.list_plane_records("task_event", &PlaneSelector::Parent(id.into()))?
             .iter()
@@ -1700,7 +1708,10 @@ fn n_list_task_events(s: &dyn busbar_api::Store, id: &str) -> StoreResult<Vec<Sa
             .collect(),
     )
 }
-fn n_list_calls(s: &dyn busbar_api::Store, p: &str) -> StoreResult<Vec<SampleCall>> {
+fn n_list_calls(
+    s: &dyn busbar_contract::records::RecordStore,
+    p: &str,
+) -> RecordStoreResult<Vec<SampleCall>> {
     Ok(
         s.list_plane_records("call", &PlaneSelector::Parent(p.into()))?
             .iter()
@@ -1708,7 +1719,9 @@ fn n_list_calls(s: &dyn busbar_api::Store, p: &str) -> StoreResult<Vec<SampleCal
             .collect(),
     )
 }
-fn n_list_call_principals(s: &dyn busbar_api::Store) -> StoreResult<Vec<String>> {
+fn n_list_call_principals(
+    s: &dyn busbar_contract::records::RecordStore,
+) -> RecordStoreResult<Vec<String>> {
     s.list_plane_record_parents("call")
 }
 
@@ -1960,8 +1973,8 @@ fn every_store_trait_method_has_an_abi_variant_and_a_dynstore_override() {
 
     // The Store trait relocated to `busbar-kernel-ledger` (de-collided to `RecordStore`) under #35
     // (W3.a) and on to `busbar-contract` under #83/#84 — the record SHAPES are contract, the
-    // ledger's SEMANTICS are not, and a plugin may name only the former; `busbar-api` re-exports it
-    // as `Store`. The completeness gate reads the trait at its real home.
+    // ledger's SEMANTICS are not, and a plugin may name only the former. The completeness gate reads
+    // the trait at its real home.
     let trait_src = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/../busbar-contract/src/records.rs"
@@ -1973,7 +1986,7 @@ fn every_store_trait_method_has_an_abi_variant_and_a_dynstore_override() {
     let loader_src = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/lib.rs"));
 
     // The trait's methods: `fn <name>` at exactly four spaces of indent, after
-    // `pub trait RecordStore` (the #35-de-collided name; api re-exports it as `Store`).
+    // `pub trait RecordStore` (the #35-de-collided name).
     let trait_body = trait_src
         .split_once("pub trait RecordStore")
         .expect("the RecordStore trait")
@@ -2020,8 +2033,8 @@ fn every_store_trait_method_has_an_abi_variant_and_a_dynstore_override() {
 
     // `DynStore`'s overrides.
     let dynstore_body = loader_src
-        .split_once("impl Store for DynStore {")
-        .expect("impl Store for DynStore")
+        .split_once("impl RecordStore for DynStore {")
+        .expect("impl RecordStore for DynStore")
         .1;
     let overrides: Vec<&str> = dynstore_body
         .lines()
@@ -2092,7 +2105,7 @@ fn dyn_example_store_with_fake_call_at_abi(abi_version: u32) -> Option<DynStore>
 /// Run `op` against a store whose seam returns `(status, body)`, once per shape.
 fn under_old_plugin_shapes<T: std::fmt::Debug + PartialEq>(
     store: &DynStore,
-    op: impl Fn(&DynStore) -> StoreResult<T>,
+    op: impl Fn(&DynStore) -> RecordStoreResult<T>,
     expected: T,
     what: &str,
 ) {

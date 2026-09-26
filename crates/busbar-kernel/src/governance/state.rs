@@ -1,5 +1,5 @@
 use super::*;
-use busbar_api::{UNIT_CACHE_READ, UNIT_CACHE_WRITE, UNIT_INPUT, UNIT_OUTPUT};
+use busbar_contract::records::{UNIT_CACHE_READ, UNIT_CACHE_WRITE, UNIT_INPUT, UNIT_OUTPUT};
 use busbar_kernel_ledger::cost::{plane_fee_lane, split_plane_lane, Money, PER_REQUEST};
 use std::collections::{BTreeMap, BTreeSet};
 // The wall clock, by name: the admission path reads it and never reaches a store handle for it.
@@ -35,7 +35,10 @@ impl GovState {
     /// `test`); the gate below says the same thing in the surface instead of in an attribute, so a
     /// future production caller is a build error rather than a silently-revived door.
     #[cfg(any(test, feature = "test-support"))]
-    pub fn new(store: Arc<dyn Store>, admin_token: Option<String>) -> StoreResult<Self> {
+    pub fn new(
+        store: Arc<dyn RecordStore>,
+        admin_token: Option<String>,
+    ) -> RecordStoreResult<Self> {
         Self::new_with_signer(store, admin_token, None)
     }
 
@@ -46,10 +49,10 @@ impl GovState {
     /// the revocation denylist set from the store so a restart resumes with every revoked subject
     /// still denied.
     pub fn new_with_signer(
-        store: Arc<dyn Store>,
+        store: Arc<dyn RecordStore>,
         admin_token: Option<String>,
         signer: Option<crate::governance::signing::TokenSigner>,
-    ) -> StoreResult<Self> {
+    ) -> RecordStoreResult<Self> {
         let by_id = Self::load(store.as_ref())?;
         let by_credential =
             Self::load_by_credential(store.as_ref(), &by_id, busbar_kernel::store::now())?;
@@ -75,7 +78,7 @@ impl GovState {
             admin_token_hash: RwLock::new(
                 admin_token
                     .as_ref()
-                    .map(|t| busbar_api::sha256_hex(t.as_bytes())),
+                    .map(|t| busbar_contract::redacted::sha256_hex(t.as_bytes())),
             ),
             budget: Sharded::new(),
             pending_metering: PendingMetering::new(),
@@ -180,7 +183,7 @@ impl GovState {
     /// in-memory set so the next verify rejects it immediately. Idempotent. A store-write failure
     /// is propagated (a revoke that did not durably persist must FAIL LOUD, never report success -
     /// a "revoked" token still valid after a restart is a security hole).
-    pub fn revoke(&self, sub: &str, reason: &str) -> StoreResult<()> {
+    pub fn revoke(&self, sub: &str, reason: &str) -> RecordStoreResult<()> {
         // THE FAN-OUT FIX (1.5.0 generic-credentials redesign): revoking a key used to be
         // denylist-only, which blocks the SIGNED-TOKEN plane (verify_token consults the denylist)
         // but does NOTHING to a row-looked-up credential like SigV4 — a revoked key's AWS
@@ -271,9 +274,9 @@ impl GovState {
         spec: NewKeySpec,
         exp: u64,
         now: u64,
-    ) -> StoreResult<(VirtualKey, String)> {
+    ) -> RecordStoreResult<(VirtualKey, String)> {
         let Some(material) = self.signing_material() else {
-            return Err(StoreError(
+            return Err(RecordStoreError(
                 "signed-token minting is unavailable: no signing key is configured".to_string(),
             ));
         };
@@ -282,7 +285,8 @@ impl GovState {
         // handle, so there is no id/hash prefix-collision hazard - but keep the `vk_` bucket
         // namespace so ledger/rate buckets stay consistent with the enforcement machinery.
         let mut raw = [0u8; 16];
-        getrandom::fill(&mut raw).map_err(|e| StoreError(format!("CSPRNG unavailable: {e}")))?;
+        getrandom::fill(&mut raw)
+            .map_err(|e| RecordStoreError(format!("CSPRNG unavailable: {e}")))?;
         let id = format!("{VK_ID_PREFIX}{}", hex::encode(raw));
         let generation = generate_binding_generation().store()?;
         let binding = VirtualKey {
@@ -295,9 +299,11 @@ impl GovState {
             generation_hash: binding_marker(&id, &generation),
             name: spec.name,
             // Intent carried intact from the mint body: None = all pools; Some([]) = none.
-            allowed_scopes: spec
-                .allowed_pools
-                .map(|list| list.into_iter().map(busbar_api::ScopeRef::pool).collect()),
+            allowed_scopes: spec.allowed_pools.map(|list| {
+                list.into_iter()
+                    .map(busbar_contract::records::ScopeRef::pool)
+                    .collect()
+            }),
             enabled: true,
             created_at: now,
             group: spec.group,
@@ -326,29 +332,32 @@ impl GovState {
         spec: NewKeySpec,
         exp: u64,
         now: u64,
-    ) -> StoreResult<(VirtualKey, String, String, String)> {
+    ) -> RecordStoreResult<(VirtualKey, String, String, String)> {
         let Some(material) = self.signing_material() else {
-            return Err(StoreError(
+            return Err(RecordStoreError(
                 "signed-token minting is unavailable: no signing key is configured".to_string(),
             ));
         };
         let mut raw = [0u8; 16];
-        getrandom::fill(&mut raw).map_err(|e| StoreError(format!("CSPRNG unavailable: {e}")))?;
+        getrandom::fill(&mut raw)
+            .map_err(|e| RecordStoreError(format!("CSPRNG unavailable: {e}")))?;
         let id = format!("{VK_ID_PREFIX}{}", hex::encode(raw));
         let generation = generate_binding_generation().store()?;
         let access_key_id = generate_aws_access_key_id().store()?;
         let secret_access_key = generate_aws_secret_access_key().store()?;
         let mut cred_raw = [0u8; 16];
         getrandom::fill(&mut cred_raw)
-            .map_err(|e| StoreError(format!("CSPRNG unavailable: {e}")))?;
+            .map_err(|e| RecordStoreError(format!("CSPRNG unavailable: {e}")))?;
         let cred_id = format!("cred_{}", hex::encode(cred_raw));
         let binding = VirtualKey {
             id: id.clone(),
             generation_hash: binding_marker(&id, &generation),
             name: spec.name,
-            allowed_scopes: spec
-                .allowed_pools
-                .map(|list| list.into_iter().map(busbar_api::ScopeRef::pool).collect()),
+            allowed_scopes: spec.allowed_pools.map(|list| {
+                list.into_iter()
+                    .map(busbar_contract::records::ScopeRef::pool)
+                    .collect()
+            }),
             enabled: true,
             created_at: now,
             group: spec.group,
@@ -538,7 +547,8 @@ impl GovState {
             .iter()
             .filter(|(class, n)| {
                 **n != 0
-                    && !(plane.is_empty() && busbar_api::RESERVED_UNITS.contains(&class.as_str()))
+                    && !(plane.is_empty()
+                        && busbar_contract::records::RESERVED_UNITS.contains(&class.as_str()))
             })
             .map(|(class, n)| (class.clone(), *n))
             .collect();
@@ -734,7 +744,7 @@ impl GovState {
     /// Every metering row for `bucket` (a [`metering_bucket`] day start) — the raw material of the
     /// usage read's by-model / by-key aggregations. Synchronous store read; admin-plane callers run
     /// it via `spawn_blocking`.
-    pub fn metering_for(&self, bucket: u64) -> StoreResult<Vec<MeteringRow>> {
+    pub fn metering_for(&self, bucket: u64) -> RecordStoreResult<Vec<MeteringRow>> {
         self.store.list_metering(bucket)
     }
 
@@ -844,7 +854,7 @@ impl GovState {
     /// digest used to be frozen at construction and `GovState` is reused across applies, so it never
     /// did. Only the digest is retained; the plaintext is dropped here.
     pub fn set_admin_token(&self, token: Option<&str>) {
-        let hash = token.map(|t| busbar_api::sha256_hex(t.as_bytes()));
+        let hash = token.map(|t| busbar_contract::redacted::sha256_hex(t.as_bytes()));
         *self
             .admin_token_hash
             .write()
@@ -876,11 +886,15 @@ impl GovState {
     /// No production path mints through here (the admin handler goes through `mint_signed`); the
     /// compiler already agreed via `allow(dead_code)`. The gate says it in the surface instead.
     #[cfg(any(test, feature = "test-support"))]
-    pub fn create_key(&self, spec: NewKeySpec, now: u64) -> StoreResult<(VirtualKey, String)> {
+    pub fn create_key(
+        &self,
+        spec: NewKeySpec,
+        now: u64,
+    ) -> RecordStoreResult<(VirtualKey, String)> {
         // `?` converts a getrandom failure into a StoreError (see `From<getrandom::Error>`), so the
         // admin handler returns a 500 via its existing error_response path instead of panicking.
         let secret = generate_secret().store()?;
-        let hash = busbar_api::sha256_hex(secret.as_bytes());
+        let hash = busbar_contract::redacted::sha256_hex(secret.as_bytes());
         // `id` is a 64-bit prefix of the 256-bit secret hash, while `generation_hash` is the full hash with
         // a UNIQUE constraint. Two distinct secrets sharing the same 64-bit prefix would produce the
         // same `id` but different `generation_hash`; since `put_key` UPSERTs on the PRIMARY KEY `id`, the
@@ -896,9 +910,11 @@ impl GovState {
             id,
             generation_hash: hash,
             name: spec.name,
-            allowed_scopes: spec
-                .allowed_pools
-                .map(|list| list.into_iter().map(busbar_api::ScopeRef::pool).collect()),
+            allowed_scopes: spec.allowed_pools.map(|list| {
+                list.into_iter()
+                    .map(busbar_contract::records::ScopeRef::pool)
+                    .collect()
+            }),
             enabled: true,
             created_at: now,
             group: spec.group,
@@ -937,26 +953,28 @@ impl GovState {
         &self,
         spec: NewKeySpec,
         now: u64,
-    ) -> StoreResult<(VirtualKey, String, String, String)> {
+    ) -> RecordStoreResult<(VirtualKey, String, String, String)> {
         // `?` converts any getrandom failure into a StoreError (see `From<getrandom::Error>`), so the
         // admin handler returns a 500 via its existing error_response path instead of panicking.
         let secret = generate_secret().store()?;
-        let hash = busbar_api::sha256_hex(secret.as_bytes());
+        let hash = busbar_contract::redacted::sha256_hex(secret.as_bytes());
         let id = format!("{VK_ID_PREFIX}{}", &hash[..VK_ID_HASH_PREFIX_LEN]);
         self.ensure_id_free_for_hash(&id, &hash)?;
         let access_key_id = generate_aws_access_key_id().store()?;
         let secret_access_key = generate_aws_secret_access_key().store()?;
         let mut cred_raw = [0u8; 16];
         getrandom::fill(&mut cred_raw)
-            .map_err(|e| StoreError(format!("CSPRNG unavailable: {e}")))?;
+            .map_err(|e| RecordStoreError(format!("CSPRNG unavailable: {e}")))?;
         let cred_id = format!("cred_{}", hex::encode(cred_raw));
         let key = VirtualKey {
             id: id.clone(),
             generation_hash: hash,
             name: spec.name,
-            allowed_scopes: spec
-                .allowed_pools
-                .map(|list| list.into_iter().map(busbar_api::ScopeRef::pool).collect()),
+            allowed_scopes: spec.allowed_pools.map(|list| {
+                list.into_iter()
+                    .map(busbar_contract::records::ScopeRef::pool)
+                    .collect()
+            }),
             enabled: true,
             created_at: now,
             group: spec.group,
@@ -999,10 +1017,10 @@ impl GovState {
     /// (rather than let `put_key` overwrite an unrelated key's row). An `id` that is free, or that
     /// already holds the SAME `generation_hash` (an idempotent re-mint of the identical secret), is allowed.
     #[cfg_attr(not(test), allow(dead_code))]
-    pub fn ensure_id_free_for_hash(&self, id: &str, hash: &str) -> StoreResult<()> {
+    pub fn ensure_id_free_for_hash(&self, id: &str, hash: &str) -> RecordStoreResult<()> {
         if let Some(existing) = self.store.get_key(id)? {
             if existing.generation_hash != hash {
-                return Err(StoreError(format!(
+                return Err(RecordStoreError(format!(
                     "virtual-key id collision: derived id '{id}' already belongs to a different key; \
                      retry to mint with fresh entropy (this is a ~2^-64 birthday event)"
                 )));
@@ -1012,7 +1030,7 @@ impl GovState {
     }
 
     /// All virtual keys (metadata; callers must strip `generation_hash` before returning).
-    pub fn all_keys(&self) -> StoreResult<Vec<VirtualKey>> {
+    pub fn all_keys(&self) -> RecordStoreResult<Vec<VirtualKey>> {
         self.store.list_keys()
     }
 
@@ -1030,7 +1048,7 @@ impl GovState {
     /// what actually stops the credential resolving. Then report a refresh failure as
     /// DEGRADED-BUT-APPLIED ([`REVOCATION_DURABLE_MARKER`]), never as a bare error implying nothing
     /// happened. Same discipline `refresh_self` already applies to its tombstone path.
-    pub fn delete_key(&self, id: &str) -> StoreResult<()> {
+    pub fn delete_key(&self, id: &str) -> RecordStoreResult<()> {
         self.store.delete_key(id)?;
         // The targeted eviction FIRST and unconditionally: this is the step that stops the
         // credential resolving, and it must happen whether or not the full reconcile succeeds.
@@ -1052,7 +1070,7 @@ impl GovState {
                  the in-memory caches (it no longer authenticates), but the full cache reconcile \
                  failed; other cache entries may be stale until the next successful refresh"
             );
-            return Err(StoreError(format!(
+            return Err(RecordStoreError(format!(
                 "{REVOCATION_DURABLE_MARKER}: key '{id}' IS revoked — the tombstone is committed in \
                  the store and the credential was evicted from the in-memory cache, so it no longer \
                  authenticates. Only the full cache reconcile failed ({refresh_err}); OTHER cache \
@@ -1147,7 +1165,7 @@ impl GovState {
     ///
     /// FAIL-CLOSED: rotating a signed-token binding with no signer configured is an error rather
     /// than a silent fallback to the legacy secret.
-    pub fn rotate_key(&self, id: &str, exp: u64) -> StoreResult<Option<RotatedCredential>> {
+    pub fn rotate_key(&self, id: &str, exp: u64) -> RecordStoreResult<Option<RotatedCredential>> {
         let Some(mut key) = self.store.get_key(id)? else {
             return Ok(None);
         };
@@ -1158,7 +1176,7 @@ impl GovState {
             return Ok(None);
         }
         let Some(material) = self.signing_material() else {
-            return Err(StoreError(
+            return Err(RecordStoreError(
                 "cannot rotate a signed-token key: no signing key is configured (rotation \
                  re-mints the token)"
                     .to_string(),
@@ -1184,7 +1202,7 @@ impl GovState {
                  is dead) and the key was evicted from the in-memory caches, but the full cache \
                  reconcile failed, so the freshly-minted token could not be returned"
             );
-            return Err(StoreError(format!(
+            return Err(RecordStoreError(format!(
                 "{ROTATION_DURABLE_MARKER}: key '{id}' WAS rotated — the new generation is \
                  committed in the store, so the PREVIOUS credential is permanently dead and was \
                  evicted from the in-memory cache. Only the cache reconcile failed \
@@ -1208,7 +1226,7 @@ impl GovState {
         id: &str,
         enabled: Option<bool>,
         group: Option<Option<String>>,
-    ) -> StoreResult<Option<VirtualKey>> {
+    ) -> RecordStoreResult<Option<VirtualKey>> {
         let Some(mut key) = self.store.get_key(id)? else {
             return Ok(None);
         };
@@ -1247,7 +1265,11 @@ impl GovState {
     /// budget to zero - a transient store blip at boot would let a maxed-out key spend its whole cap
     /// again. Propagate any store error so boot fails loudly (the supervisor restarts) rather than
     /// resuming with an unenforced ledger. Returns `Ok(())` only when every bucket hydrated cleanly.
-    pub fn hydrate_budgets(&self, cost: &crate::cost::CostModel, now: u64) -> StoreResult<()> {
+    pub fn hydrate_budgets(
+        &self,
+        cost: &crate::cost::CostModel,
+        now: u64,
+    ) -> RecordStoreResult<()> {
         let keys = self.store.list_keys()?;
         let key_buckets = keys.iter().map(|k| (k.id.as_str(), super::WINDOW_TOTAL));
         let group_buckets = cost
@@ -1313,7 +1335,7 @@ impl GovState {
         cost: &crate::cost::CostModel,
         id: &str,
         now: u64,
-    ) -> StoreResult<Option<DerivedUsage>> {
+    ) -> RecordStoreResult<Option<DerivedUsage>> {
         match self.store.get_key(id)? {
             Some(_) => Ok(Some(self.derived_bucket_usage(
                 cost,
@@ -1340,7 +1362,7 @@ impl GovState {
         budget_period: &str,
         include_request_fee: bool,
         now: u64,
-    ) -> StoreResult<DerivedUsage> {
+    ) -> RecordStoreResult<DerivedUsage> {
         self.derived_bucket_usage_priced(cost, bucket_id, budget_period, include_request_fee, now)?
             .map_err(|e| money_refusal(bucket_id, &e))
     }
@@ -1356,7 +1378,7 @@ impl GovState {
         budget_period: &str,
         include_request_fee: bool,
         now: u64,
-    ) -> StoreResult<Result<DerivedUsage, busbar_kernel_ledger::cost::MoneyError>> {
+    ) -> RecordStoreResult<Result<DerivedUsage, busbar_kernel_ledger::cost::MoneyError>> {
         let window = budget_window(budget_period, now);
         let live = (self.budget.read(bucket_id).get(bucket_id))
             .filter(|c| c.window_start == window)
@@ -1406,7 +1428,7 @@ impl GovState {
         cost: &crate::cost::CostModel,
         (bucket_id, period, window): (&str, &str, u64),
         segments: &mut Vec<ModelCell>,
-    ) -> StoreResult<Result<(), busbar_kernel_ledger::cost::MoneyError>> {
+    ) -> RecordStoreResult<Result<(), busbar_kernel_ledger::cost::MoneyError>> {
         use crate::audit::amend::{node_corrections, AmendBody, Subject};
         for amendment in node_corrections() {
             let AmendBody::Adjust(adj) = &amendment.body else {
@@ -1494,7 +1516,7 @@ impl GovState {
         cost: &crate::cost::CostModel,
         key: &VirtualKey,
         now: u64,
-    ) -> Vec<busbar_api::BudgetBucketState> {
+    ) -> Vec<busbar_contract::hooks::BudgetBucketState> {
         let chain = match cost.chain_for(key) {
             Ok(c) => c,
             Err(_) => return Vec::new(),
@@ -1527,7 +1549,7 @@ impl GovState {
                 ),
                 Err(_) => (i64::MAX, Some(0)),
             };
-            out.push(busbar_api::BudgetBucketState {
+            out.push(busbar_contract::hooks::BudgetBucketState {
                 bucket_id: bucket.bucket_id.to_string(),
                 budget_group: bucket.group_name.map(String::from),
                 pool: bucket.scope.map(|s| s.value.clone()),
@@ -1991,12 +2013,12 @@ impl GovState {
                     let d = keys.map(|k| (k.clone(), at(&m.cur, k) - at(&m.flushed, k)));
                     (&*m.model, d.collect())
                 });
-                let models: Vec<busbar_api::ModelTokensDelta> =
+                let models: Vec<busbar_contract::records::ModelTokensDelta> =
                     busbar_kernel_ledger::usage::by_lane(deltas, i64::saturating_add)
                         .into_iter()
                         .map(|(model, mut usage_units)| {
                             usage_units.retain(|_, v| *v != 0);
-                            busbar_api::ModelTokensDelta { model, usage_units }
+                            busbar_contract::records::ModelTokensDelta { model, usage_units }
                         })
                         .filter(|d| !d.usage_units.is_empty())
                         .collect();
@@ -2090,7 +2112,7 @@ impl GovState {
     /// once, at load/refresh time, is what makes a deleted key's outstanding tokens stop
     /// authenticating: `verify_token` never sees the row at all, rather than seeing it and having
     /// to remember to check `deleted_at` on every lookup.
-    pub fn load(store: &dyn Store) -> StoreResult<HashMap<String, Arc<VirtualKey>>> {
+    pub fn load(store: &dyn RecordStore) -> RecordStoreResult<HashMap<String, Arc<VirtualKey>>> {
         // Wrap each key in `Arc` at load time so the per-request `lookup_by_sub` on the hot path is
         // a refcount bump, not a deep clone; the values are immutable until the next `refresh` swap.
         Ok(store
@@ -2109,10 +2131,10 @@ impl GovState {
     /// authenticate, so it has no business occupying a cache slot. `(kind, public_id)` is
     /// `UNIQUE` at the store layer, so entries are unique.
     pub fn load_by_credential(
-        store: &dyn Store,
+        store: &dyn RecordStore,
         by_id: &HashMap<String, Arc<VirtualKey>>,
         now: u64,
-    ) -> StoreResult<super::CredentialIndex> {
+    ) -> RecordStoreResult<super::CredentialIndex> {
         let mut map = HashMap::new();
         for cred in store.list_credentials_since(0)? {
             if !cred.meta.is_live(now) {
@@ -2148,7 +2170,7 @@ impl GovState {
 
     /// Direct handle to the backing store — for tests that seed/inspect persistence AND for the boot
     /// audit wiring (the durable audit sink + restore read the configured governance store).
-    pub fn store(&self) -> Arc<dyn Store> {
+    pub fn store(&self) -> Arc<dyn RecordStore> {
         self.store.clone()
     }
 
@@ -2160,7 +2182,7 @@ impl GovState {
     /// `pub`: every caller is inside this crate -- `revoke`/`create_key`/`update_key`/
     /// `delete_key`/`rotate_key` below, and this crate's own tests. Nothing outside busbar-core
     /// names it, so the cache-reload door is not part of the engine's public surface.
-    pub fn refresh(&self) -> StoreResult<()> {
+    pub fn refresh(&self) -> RecordStoreResult<()> {
         // Serialize the whole load→swap so a slow refresh can't clobber a newer one's cache with
         // strictly-older store state (lost-update guard; see `refresh_lock`). A later refresh's
         // `load` cannot begin until an earlier refresh has swapped, so its snapshot is never older.
@@ -2208,15 +2230,15 @@ fn still_enforces_a_cap(cost: &crate::cost::CostModel, bucket_id: &str) -> bool 
 /// error channel (#42: *"a cost request FAILS if billing-on & unpriced"*). The read fails loudly
 /// rather than answering a figure nobody priced; the refusal is named in the text, which every
 /// caller already logs under its own diagnostic code.
-fn money_refusal(bucket_id: &str, e: &busbar_kernel_ledger::cost::MoneyError) -> StoreError {
-    StoreError(format!(
+fn money_refusal(bucket_id: &str, e: &busbar_kernel_ledger::cost::MoneyError) -> RecordStoreError {
+    RecordStoreError(format!(
         "the spend of bucket `{bucket_id}` cannot be priced: {e}"
     ))
 }
 
 /// The durable ledger's per-model rows as undated segments (the row carries no era).
-fn durable_segments(rows: Vec<busbar_api::ModelTokens>) -> Vec<ModelCell> {
-    let segment = |m: busbar_api::ModelTokens| ModelCell {
+fn durable_segments(rows: Vec<busbar_contract::records::ModelTokens>) -> Vec<ModelCell> {
+    let segment = |m: busbar_contract::records::ModelTokens| ModelCell {
         model: std::sync::Arc::from(m.model),
         era: 0,
         cur: m.usage_units,

@@ -371,13 +371,13 @@ pub fn merged_boot_plane_decls(
             .position(|k| *k == d.key)
             .unwrap_or(canonical.len())
     });
-    // REGISTER EACH PLANE'S SCOPE KINDS with the neutral `busbar_api` scope-kind wire registry, so a
+    // REGISTER EACH PLANE'S SCOPE KINDS with the neutral `busbar_contract` scope-kind wire registry, so a
     // `VirtualKey` grant of a plane's kind (`mcp_server`, …) serializes to its `allowed_{kind}s` wire
     // field instead of failing the write. The kind strings are DATA off each `PlaneDecl.scope_kinds`
     // — core names no plane vocabulary here. Idempotent, so re-folding under the test surface is safe.
     for d in &decls {
         for kind in d.scope_kinds {
-            busbar_api::register_scope_kind(kind);
+            busbar_contract::records::register_scope_kind(kind);
         }
     }
     // PLANE-OWNED-CONFIG DUP-CLAIM GUARD (1.6.0 config-seam, stage 1). Refuse the boot if two planes
@@ -522,7 +522,7 @@ pub fn plane_key_index(key: &str) -> u8 {
 /// plane's kind token. `None` (fail-closed) for an index past the registered kinds.
 ///
 /// The index is a bijection over the DISTINCT kinds, base first: a plane that also declares the
-/// neutral base kind (one plane grants over `"pool"`, which `busbar_api` already treats as the
+/// neutral base kind (one plane grants over `"pool"`, which `busbar_contract` already treats as the
 /// unconditional `BUILTIN_POOL_KIND`) must NOT re-count it. Without this dedup the base `"pool"` and
 /// that plane's own `"pool"` declaration would occupy indices 0 AND 1, shifting every later plane's
 /// kind up by one so a `pool` grant would wrongly resolve a different plane's scope kind (entitlement

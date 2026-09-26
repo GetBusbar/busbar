@@ -9,7 +9,7 @@
 # LEVELS (per dialect)
 #   1. STATIC   — core's sources never name a protocol crate: the underscore crate-name grep over
 #                 the NEUTRAL CORE ROOTS (crates/busbar-kernel/src, crates/busbar-substrate-values/src,
-#                 crates/api/src — the same three `xtask/src/planes.rs::neutral_src_roots()` scans) is
+#                 crates/busbar-contract/src — the same roots `xtask/src/planes.rs::neutral_src_roots()` scans) is
 #                 exactly zero (core-split exit criterion 7). Checked ONCE, up front — it is a
 #                 property of the whole tree, not any one dialect. NOTE THE ROOTS ARE A TABLE AND
 #                 EACH IS PROVED PRESENT FIRST: see `CORE_SRC_ROOTS` / `require_scan_dir` below.
@@ -133,7 +133,7 @@ GATE_TARGET_ROOT="${CARGO_TARGET_DIR:-target}"
 CORE_SRC_ROOTS=(
   "crates/busbar-kernel/src"           # the engine — `busbar-core` was absorbed INTO it (W4.a)
   "crates/busbar-substrate-values/src" # the neutral value leaves `busbar-substrate` left behind
-  "crates/api/src"                     # the neutral ABI crate
+  "crates/busbar-contract/src"         # the neutral ABI crate (the former `crates/api` retired into it)
 )
 # CORE PROPER — the direct successor of the historical `crates/busbar-core/src`, and what the
 # path-pinned structural legs (level 1b, mcp-a) hang off.

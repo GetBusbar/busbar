@@ -20,7 +20,7 @@
 use crate::mcp::client::egress::ExchangeRequest;
 use crate::mcp::client::pool::McpConnectionPool;
 use crate::mcp::client::ssrf::SsrfPolicy;
-use busbar_api::Redacted;
+use busbar_contract::redacted::Redacted;
 use std::time::Duration;
 
 /// A fake RFC 8693 token endpoint that answers every POST with exactly `body`, over a real socket.

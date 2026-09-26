@@ -391,7 +391,7 @@
       "plane": "llm",
       "state": "proven",
       "test": "crates/busbar-llm/src/engine/tests/reqlog_dispatch_tests.rs::every_model_request_lands_on_the_presenting_keys_hash_chain_dispatch_and_refusal_alike",
-      "note": "closed by proxy/reqlog.rs -- a RECORD TYPE and nothing else, appended at the plane's one terminal (ingress::finish_inner) through the ONE mechanism in crate::audit. Scoped per principal like the MCP call log. The test drives a real request through build_router over a real socket and reads the chain back; deleting the append fails it and leaves the other 4,540 tests green. HONEST LIMIT: busbar_api::Store carries no model-request method, so this stream is a bounded in-memory window and a restart loses it -- adding durability is a plugin-ABI change fanned out to four store repos and is deliberately not made here. Nothing may call it durable until that method exists.",
+      "note": "closed by proxy/reqlog.rs -- a RECORD TYPE and nothing else, appended at the plane's one terminal (ingress::finish_inner) through the ONE mechanism in crate::audit. Scoped per principal like the MCP call log. The test drives a real request through build_router over a real socket and reads the chain back; deleting the append fails it and leaves the other 4,540 tests green. HONEST LIMIT: busbar_contract::records::RecordStore carries no model-request method, so this stream is a bounded in-memory window and a restart loses it -- adding durability is a plugin-ABI change fanned out to four store repos and is deliberately not made here. Nothing may call it durable until that method exists.",
       "root": {
         "state": "proven",
         "leg": "root-llm",

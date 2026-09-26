@@ -9,9 +9,8 @@
 # MCP the plane are the same protocol, so they end up behind the same on/off switch rather than two.
 #
 # `busbar-kernel = { default-features = false }` mirrors `busbar-llm`: the feature decisions belong to
-# the composition root, not to a plugin. `busbar-api` is named ahead of the code that needs it, per
-# 1.6.0's owner ruling R-E, which plans this crate to depend on `busbar-api` the way
-# `busbar-auth-admin-tokens` and `busbar-hooks-ranking` do today.
+# the composition root, not to a plugin. The plugin contracts it names are `busbar-contract`'s (the
+# former `busbar-api` retired into it).
 [package]
 name = "busbar-mcp"
 version = "1.6.0"
@@ -57,8 +56,6 @@ busbar-kernel = { path = "../busbar-kernel", default-features = false, features 
 # the two operation cells in `src/codec/`, which name the kernel's handler matrix and therefore
 # could not follow the dialect into a pure kind. There is no `busbar-mcp-codec` any more (#39).
 busbar-plane-mcp = { path = "../busbar-plane-mcp" }
-# The plugin contracts crate, named ahead of use per owner ruling R-E (see header).
-busbar-api = { path = "../api" }
 busbar-substrate-values = { path = "../busbar-substrate-values" }
 busbar-contract = { path = "../busbar-contract" }
 # The specification authors' own crate, pinned narrow (see busbar-kernel/Cargo.toml's rationale): the

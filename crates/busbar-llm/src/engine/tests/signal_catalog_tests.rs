@@ -1,5 +1,5 @@
 //! Tests for the "decision observability" signal catalog substrate:
-//! `busbar_api::Signal`/`SignalValue`/`SignalBag`, the `RequestedSignals` declared-signal gate
+//! `busbar_contract::signal::Signal`/`SignalValue`/`SignalBag`, the `RequestedSignals` declared-signal gate
 //! (`busbar_kernel::hooks::requested_signals`/`RequestedSignals::wants`), and the two health signals
 //! wired into `decide_policy_order`'s candidate loop (`CandidateBreakerState`/`CandidateErrorRate`).
 //! Proves: a declared signal is computed + projected; an undeclared signal is absent AND never
@@ -11,27 +11,27 @@
 use super::*;
 use crate::engine::WeightedLane;
 use crate::test_support::{LaneSpec, TestApp};
-use busbar_api::{Candidate, PolicyResult, RoutingContext, RoutingPolicy};
-use busbar_api::{Signal, SignalValue};
+use busbar_contract::hooks::{Candidate, PolicyResult, RoutingContext, RoutingPolicy};
+use busbar_contract::signal::{Signal, SignalValue};
 use busbar_kernel::hooks::ResolvedPolicy;
 use std::sync::Mutex as StdMutex;
 
 /// A no-op policy that just records the candidate projections it was handed, then Abstains.
 struct CapturingCandidatesPolicy {
-    seen: std::sync::Arc<StdMutex<Option<Vec<busbar_api::SignalBag>>>>,
+    seen: std::sync::Arc<StdMutex<Option<Vec<busbar_contract::signal::SignalBag>>>>,
 }
 
 #[async_trait::async_trait]
 impl RoutingPolicy for CapturingCandidatesPolicy {
     async fn decide(
         &self,
-        _req: &busbar_api::RoutingRequest<'_>,
+        _req: &busbar_contract::hooks::RoutingRequest<'_>,
         candidates: &[Candidate<'_>],
         _ctx: &RoutingContext<'_>,
         _budget: std::time::Duration,
     ) -> PolicyResult {
         *self.seen.lock().unwrap() = Some(candidates.iter().map(|c| c.signals.clone()).collect());
-        Ok(busbar_api::RoutingDecision::Abstain)
+        Ok(busbar_contract::hooks::RoutingDecision::Abstain)
     }
     fn name(&self) -> &'static str {
         "capture-candidates"
@@ -64,7 +64,7 @@ fn declaring_hook(signals: Vec<Signal>) -> busbar_kernel::config::hooks::HookCfg
 
 /// Build a one-lane TestApp (optionally with a `signals:`-declaring hook registered) and run
 /// `decide_policy_order` once, returning the per-candidate signal bags the policy observed.
-async fn run_with_declared(signals: Vec<Signal>) -> Vec<busbar_api::SignalBag> {
+async fn run_with_declared(signals: Vec<Signal>) -> Vec<busbar_contract::signal::SignalBag> {
     let mut builder = TestApp::new()
         .lane(LaneSpec::new(
             "m0",
@@ -85,7 +85,7 @@ async fn run_with_declared(signals: Vec<Signal>) -> Vec<busbar_api::SignalBag> {
 /// hand in any already-built snapshot rather than only the one the `TestApp` fixture produces.
 async fn run_decide<A: busbar_kernel::test_support::BuiltAppSeam + ?Sized>(
     app: &std::sync::Arc<A>,
-) -> Vec<busbar_api::SignalBag> {
+) -> Vec<busbar_contract::signal::SignalBag> {
     let (host, rt) = crate::engine::test_host_rt(app);
     let seen = std::sync::Arc::new(StdMutex::new(None));
     let resolved = ResolvedPolicy::Policy {
@@ -116,7 +116,7 @@ async fn run_decide<A: busbar_kernel::test_support::BuiltAppSeam + ?Sized>(
         crate::engine::APPLICATION_JSON,
         "p",
         "anthropic",
-        busbar_api::operation::Operation::CHAT,
+        busbar_contract::operation::OpVerb::CHAT,
         false,
         None,
         None,
@@ -237,7 +237,7 @@ async fn breaker_state_projects_open_after_a_trip() {
         crate::engine::APPLICATION_JSON,
         "p",
         "anthropic",
-        busbar_api::operation::Operation::CHAT,
+        busbar_contract::operation::OpVerb::CHAT,
         false,
         None,
         None,
@@ -307,7 +307,7 @@ async fn error_rate_projects_the_outcome_window_fraction() {
         crate::engine::APPLICATION_JSON,
         "p",
         "anthropic",
-        busbar_api::operation::Operation::CHAT,
+        busbar_contract::operation::OpVerb::CHAT,
         false,
         None,
         None,

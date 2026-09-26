@@ -20,7 +20,7 @@ fn ctx() -> SigningContext<'static> {
         canonical_uri: "/x",
         body: b"{}",
         timestamp_epoch: 0,
-        upstream_creds: busbar_api::UpstreamCreds::Own,
+        upstream_creds: busbar_contract::config::UpstreamCreds::Own,
     }
 }
 

@@ -5,7 +5,7 @@
 //! fails if two of them ever collapse into one, or if a gate's body is served for a policy's fault.
 use super::forward_with_pool;
 use crate::test_support::{LaneSpec, TestApp};
-use busbar_api::{
+use busbar_contract::hooks::{
     Candidate, PolicyResult, RoutingContext, RoutingDecision, RoutingPolicy, RoutingRequest,
 };
 use busbar_kernel::hooks::ResolvedPolicy;

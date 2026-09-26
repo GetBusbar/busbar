@@ -116,7 +116,7 @@ async fn exchanging_deployment(server: &str, behaviour: Behaviour) -> (Peer, Arc
 }
 
 /// The caller's grant on `server`'s `read` tool — exactly the pair a served call needs.
-fn granted(server: &str) -> busbar_api::PlaneRequestCtx {
+fn granted(server: &str) -> busbar_contract::records::PlaneRequestCtx {
     gov_with_scopes(&[
         ("mcp_server", server),
         ("mcp_tool", &format!("{server}_read")),
@@ -126,7 +126,7 @@ fn granted(server: &str) -> busbar_api::PlaneRequestCtx {
 /// `tools/call` of `server`'s `read` tool as `actor`, at the handler the ingress dispatches to.
 async fn read_as(
     app: &Arc<dyn EngineApp>,
-    gov: &busbar_api::PlaneRequestCtx,
+    gov: &busbar_contract::records::PlaneRequestCtx,
     actor: &str,
     server: &str,
 ) -> (u16, serde_json::Value) {
@@ -146,8 +146,8 @@ fn governed(
     group: Option<&str>,
 ) -> (
     Arc<dyn GovKit>,
-    busbar_api::VirtualKey,
-    busbar_api::PlaneRequestCtx,
+    busbar_contract::records::VirtualKey,
+    busbar_contract::records::PlaneRequestCtx,
 ) {
     let gov_state = engine()
         .governance(engine().scratch_store(), Some("admintok".to_string()), None)
@@ -161,7 +161,7 @@ fn governed(
         .put_key(&key)
         .expect("the key's group binding");
     gov_state.refresh().expect("the registry re-reads it");
-    let gov = busbar_api::PlaneRequestCtx {
+    let gov = busbar_contract::records::PlaneRequestCtx {
         key: Some(Arc::new(key.clone())),
     };
     (gov_state, key, gov)
@@ -173,8 +173,8 @@ struct Billed {
     peer: Peer,
     app: Arc<dyn EngineApp>,
     gov_state: Arc<dyn GovKit>,
-    key: busbar_api::VirtualKey,
-    gov: busbar_api::PlaneRequestCtx,
+    key: busbar_contract::records::VirtualKey,
+    gov: busbar_contract::records::PlaneRequestCtx,
 }
 
 /// A BILLED deployment under a real governance registry, serving `server` at a recording peer.
@@ -209,7 +209,7 @@ fn requests_charged_to(b: &Billed) -> u64 {
 
 /// The admission count `key`'s own ledger in `gov_state` holds, read through the pricing function
 /// with a billed card (the count is what is read, not a price).
-fn charged(gov_state: &Arc<dyn GovKit>, key: &busbar_api::VirtualKey) -> u64 {
+fn charged(gov_state: &Arc<dyn GovKit>, key: &busbar_contract::records::VirtualKey) -> u64 {
     // The node's cost model with a `rate_card:` present (no entries needed: the plane accrues a pure
     // request count) and a flat fee of 1 — the shape the deployment itself was billed with.
     let cost = engine().cost_parts(
@@ -225,7 +225,7 @@ fn charged(gov_state: &Arc<dyn GovKit>, key: &busbar_api::VirtualKey) -> u64 {
 }
 
 /// The admin-audit rows naming `resource` written after `after`.
-fn audited_after(after: u64, resource: &str) -> Vec<busbar_api::AuditRecord> {
+fn audited_after(after: u64, resource: &str) -> Vec<busbar_contract::records::AuditRecord> {
     engine()
         .audit_entries()
         .into_iter()

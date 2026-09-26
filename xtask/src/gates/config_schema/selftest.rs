@@ -366,7 +366,7 @@ pub fn run<'a>(gate: &'a dyn Gate, cx: &'a Ctx) -> Report<'a> {
     ));
 
     let mut ov = Overlay::new();
-    ov.remove("crates/api/src/auth.rs");
+    ov.remove("crates/busbar-contract/src/config.rs");
     report.push(prove_rows_red(
         cx,
         gate,

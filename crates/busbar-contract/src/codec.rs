@@ -17,7 +17,7 @@
 use crate::billing::TokenUsage;
 use crate::bounded::SlabBytes;
 use crate::ir::handle::IrHandle;
-use crate::operation::Operation;
+use crate::operation::OpVerb;
 use serde_json::Value;
 
 /// A serialized wire body plus the content-type the OperationHandler chose for it. The engine relays both without
@@ -94,7 +94,7 @@ pub enum TranslatedResponse {
 /// signature does not. Routing populates it from the lane and applies any `lane.path` override itself.
 pub struct EgressCtx<'a> {
     /// Which operation's endpoint to render — the template selector.
-    pub operation: Operation,
+    pub operation: OpVerb,
     /// The resolved wire model id (routing calls `Lane::wire_model()`), for protocols that carry the
     /// model in the URL path rather than the body.
     pub model: &'a str,
@@ -114,7 +114,7 @@ pub struct EgressCtx<'a> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum IngressReject {
     BadRequest(String),
-    UnsupportedSubOp { op: Operation, model: String },
+    UnsupportedSubOp { op: OpVerb, model: String },
 }
 
 /// An upstream response body this OperationHandler could not decode into its operation's IR.
@@ -153,18 +153,18 @@ pub fn report_usage_tap_decode_failure(ingress_protocol: &str, error: &CodecErro
 /// every `RequestHandler`, which meant a verb was a variant of a CORE enum and adding one was a
 /// compile error in every protocol — including the six that will never speak it. That gate was the
 /// right mechanism pointed at the wrong tag: what a protocol must not be able to duck is a decision
-/// about the SHAPE of an exchange (`Operation`'s `OpShape`, still closed, still exhaustively
+/// about the SHAPE of an exchange (`OpVerb`'s `OpShape`, still closed, still exhaustively
 /// matched, still with no catch-all anywhere), not a decision about another family's method names.
 ///
 /// A protocol's vocabulary now lives beside its codecs, so deleting a protocol deletes its verbs
 /// with it and no core type mentions them — which is the deletion test the plugin seam is measured
 /// by. A verb absent from a row is the no-handler 404, exactly as an arm returning `None` was.
-pub type Cell = (Operation, &'static dyn OperationHandler);
+pub type Cell = (OpVerb, &'static dyn OperationHandler);
 
 /// THE ROW LOOKUP every [`RequestHandler::operation_handler`] is — stated once so there are not
 /// seven copies of a linear scan. Rows are single-digit in length, so this is a handful of pointer
 /// comparisons and is not worth a map.
-pub fn cell_of(cells: &'static [Cell], op: Operation) -> Option<&'static dyn OperationHandler> {
+pub fn cell_of(cells: &'static [Cell], op: OpVerb) -> Option<&'static dyn OperationHandler> {
     cells
         .iter()
         .find(|(candidate, _)| *candidate == op)
@@ -174,7 +174,7 @@ pub fn cell_of(cells: &'static [Cell], op: Operation) -> Option<&'static dyn Ope
 /// THE (verb → upstream path) LOOKUP, for the protocols whose egress paths are constants rather
 /// than templates. Same table shape, same reason it is data: `resolve_operation` reads these very
 /// constants on the ingress side, so the two directions cannot drift.
-pub fn path_of(paths: &'static [(Operation, &'static str)], op: Operation) -> Option<&'static str> {
+pub fn path_of(paths: &'static [(OpVerb, &'static str)], op: OpVerb) -> Option<&'static str> {
     paths
         .iter()
         .find(|(candidate, _)| *candidate == op)
@@ -317,14 +317,14 @@ pub trait RequestHandler: Send + Sync {
 
     /// This protocol's row of the support matrix. `None` ⇒ the protocol does not serve the operation
     /// ⇒ the no-handler 404. The OperationHandler, when present, is a pure codec.
-    fn operation_handler(&self, op: Operation) -> Option<&dyn OperationHandler>;
+    fn operation_handler(&self, op: OpVerb) -> Option<&dyn OperationHandler>;
 
     /// WHICH operation this request asks for — the RequestHandler knows its protocol and reads the
     /// path (and, where the protocol multiplexes one endpoint, the body: one generate endpoint may
     /// serve chat AND audio, one invoke endpoint embeddings AND images) and says "this is
     /// audio, this is chat". The Router only picks the protocol; THIS decides the operation.
     /// `None` ⇒ the path is not an operation this protocol serves.
-    fn resolve_operation(&self, path: &str, body: &[u8]) -> Option<Operation>;
+    fn resolve_operation(&self, path: &str, body: &[u8]) -> Option<OpVerb>;
 
     /// The model named in the PATH, for path-model dialects (`models/{m}:action`,
     /// `/model/{m}/...`). `None` (the default) for body-model dialects — the dispatch then reads the

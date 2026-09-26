@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The `Operation` axis — busbar's semantic operation vocabulary, in TWO parts.
+//! The `OpVerb` axis — busbar's semantic operation vocabulary, in TWO parts.
 //!
 //! ```text
-//! Operation::Verb { op: OpShape, name: &'static str }
+//! OpVerb::Verb { op: OpShape, name: &'static str }
 //!                   ^^^^^^^^^^^   ^^^^^^^^^^^^^^^^^^
 //!                   THE SHAPE      THE WORD ON THE WIRE
 //!                   core's         data a protocol supplies
@@ -17,14 +17,14 @@
 //!
 //! ## WHY THE SPLIT, AND WHAT WENT WRONG WITHOUT IT
 //!
-//! `Operation` was thirteen flat variants: seven named for LLM endpoints (`Chat`, `Embeddings`,
-//! `Moderation`, `Image`, `Transcription`, `Speech`, `Rerank`) and six named for shapes (`Invoke`
-//! … `Control`). The six were already the product of this same collapse — one variant per MCP/A2A
-//! METHOD would have been ~20 arms at every exhaustive match — but the seven were never put
-//! through it, because when they were written there was only one protocol family and its endpoint
-//! names and its shapes were indistinguishable.
+//! `OpVerb` (then spelled `Operation`) was thirteen flat variants: seven named for LLM endpoints
+//! (`Chat`, `Embeddings`, `Moderation`, `Image`, `Transcription`, `Speech`, `Rerank`) and six named
+//! for shapes (`Invoke` … `Control`). The six were already the product of this same collapse — one
+//! variant per MCP/A2A METHOD would have been ~20 arms at every exhaustive match — but the seven
+//! were never put through it, because when they were written there was only one protocol family and
+//! its endpoint names and its shapes were indistinguishable.
 //!
-//! They are distinguishable now, and the difference is the whole of the plugin seam. `Operation` is
+//! They are distinguishable now, and the difference is the whole of the plugin seam. `OpVerb` is
 //! the vocabulary the plugin ABI carries across a `dlopen` boundary. A verb named for one family's
 //! endpoint, sitting in a core enum, means a plugin author adding a protocol must edit a CORE type
 //! to name their own methods — which is precisely the coupling the seam exists to remove, and it
@@ -70,9 +70,9 @@
 //!
 //! ## `name` IS A METRIC LABEL, SO ITS VALUES ARE CLOSED
 //!
-//! [`Operation::name`] is the tracing/metrics `op` field and the `paths:` config key. An unbounded
-//! caller-supplied string reaching it is a cardinality explosion. Nothing constructs an `Operation`
-//! from the wire: the entire set of values that exist is [`Operation::ALL`] (the six shape verbs
+//! [`OpVerb::name`] is the tracing/metrics `op` field and the `paths:` config key. An unbounded
+//! caller-supplied string reaching it is a cardinality explosion. Nothing constructs an `OpVerb`
+//! from the wire: the entire set of values that exist is [`OpVerb::ALL`] (the six shape verbs
 //! the core owns) plus `proto::registry::declared_verbs()` (the verbs the registered protocols
 //! declare, folded at boot from `ProtocolDecl::verbs` — the seven LLM words arrive this way).
 //! Every one of them is an associated `const` — here for the shapes, in `operation.rs` still for
@@ -82,7 +82,7 @@
 //! constants are the constructors.
 
 /// THE SHAPE OF AN EXCHANGE — the closed tag the agnostic core is allowed to know about, and the
-/// half of [`Operation`] that survives a `dlopen` boundary as a discriminant rather than as a word.
+/// half of [`OpVerb`] that survives a `dlopen` boundary as a discriminant rather than as a word.
 ///
 /// Closed set — adding one is a compile error at every exhaustive match (the removability/symmetry
 /// gate, now pointed at the thing that is genuinely core). There is no catch-all arm anywhere in the
@@ -185,11 +185,14 @@ impl OpShape {
 
 /// ONE SEMANTIC OPERATION — a [`OpShape`] plus the word the wire calls it.
 ///
+/// Spelled `OpVerb` (it was `Operation` while it lived in `busbar-api`) because the transport
+/// surface's per-binding record is `transport::Operation`, and one crate names one thing once.
+///
 /// The `Verb` variant is the only variant and that is the point: the core's decisions are taken on
 /// `op`, which is closed, and the word is carried through untouched. A protocol that adds a method
 /// adds a `const` in ITS OWN module; it does not touch this enum.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum Operation {
+pub enum OpVerb {
     Verb {
         /// The shape the pipeline decides on.
         op: OpShape,
@@ -199,33 +202,33 @@ pub enum Operation {
     },
 }
 
-impl Operation {
+impl OpVerb {
     // ── THE LLM FAMILY'S SEVEN VERBS. All one shape (`Invoke`): name a model, hand it arguments,
     //    get content or an error back. They keep their published names to the letter, because those
     //    names are the metrics label and the `paths:` config key and a rename is a broken dashboard.
-    pub const CHAT: Operation = Operation::named_invoke("chat");
-    pub const EMBEDDINGS: Operation = Operation::named_invoke("embeddings");
-    pub const MODERATION: Operation = Operation::named_invoke("moderation");
-    pub const IMAGE: Operation = Operation::named_invoke("image");
-    pub const TRANSCRIPTION: Operation = Operation::named_invoke("transcription");
-    pub const SPEECH: Operation = Operation::named_invoke("speech");
-    pub const RERANK: Operation = Operation::named_invoke("rerank");
+    pub const CHAT: OpVerb = OpVerb::named_invoke("chat");
+    pub const EMBEDDINGS: OpVerb = OpVerb::named_invoke("embeddings");
+    pub const MODERATION: OpVerb = OpVerb::named_invoke("moderation");
+    pub const IMAGE: OpVerb = OpVerb::named_invoke("image");
+    pub const TRANSCRIPTION: OpVerb = OpVerb::named_invoke("transcription");
+    pub const SPEECH: OpVerb = OpVerb::named_invoke("speech");
+    pub const RERANK: OpVerb = OpVerb::named_invoke("rerank");
 
     // ── THE PROTOCOL SURFACE'S SIX. One verb per shape today, carrying the shape's own word: MCP
     //    and A2A both address these through their own method names, which the protocol's
     //    `resolve_operation` maps onto these constants. When a cell needs to distinguish two verbs
     //    of one shape (`tools/list` from `prompts/list`), it adds a constant beside these with the
     //    SAME `op` and its own `name` — an addition in the protocol's vocabulary, not in the core's.
-    pub const INVOKE: Operation = Operation::of(OpShape::Invoke);
+    pub const INVOKE: OpVerb = OpVerb::of(OpShape::Invoke);
     #[cfg_attr(not(test), allow(dead_code))]
-    pub const CATALOGUE: Operation = Operation::of(OpShape::Catalogue);
+    pub const CATALOGUE: OpVerb = OpVerb::of(OpShape::Catalogue);
     #[cfg_attr(not(test), allow(dead_code))]
-    pub const FETCH: Operation = Operation::of(OpShape::Fetch);
+    pub const FETCH: OpVerb = OpVerb::of(OpShape::Fetch);
     #[cfg_attr(not(test), allow(dead_code))]
-    pub const TASK: Operation = Operation::of(OpShape::Task);
-    pub const SUBSCRIBE: Operation = Operation::of(OpShape::Subscribe);
+    pub const TASK: OpVerb = OpVerb::of(OpShape::Task);
+    pub const SUBSCRIBE: OpVerb = OpVerb::of(OpShape::Subscribe);
     #[cfg_attr(not(test), allow(dead_code))]
-    pub const CONTROL: Operation = Operation::of(OpShape::Control);
+    pub const CONTROL: OpVerb = OpVerb::of(OpShape::Control);
 
     /// EVERY OPERATION THE CORE ITSELF OWNS — the six protocol-surface verbs, one per shape. This
     /// used to also list the seven LLM verbs, which made it a core table naming one family's
@@ -235,32 +238,32 @@ impl Operation {
     /// protocol DECLARATIONS instead (`proto::registry::declared_verbs()`, folded at boot from
     /// `ProtocolDecl::verbs`), so a protocol's verbs leave when the protocol does. The closed
     /// metric-label surface the header promises is `ALL ∪ declared_verbs()`: both halves are
-    /// `&'static` consts fixed at load, and nothing constructs an `Operation` from the wire.
+    /// `&'static` consts fixed at load, and nothing constructs an `OpVerb` from the wire.
     #[cfg_attr(not(test), allow(dead_code))]
-    pub const ALL: &'static [Operation] = &[
-        Operation::INVOKE,
-        Operation::CATALOGUE,
-        Operation::FETCH,
-        Operation::TASK,
-        Operation::SUBSCRIBE,
-        Operation::CONTROL,
+    pub const ALL: &'static [OpVerb] = &[
+        OpVerb::INVOKE,
+        OpVerb::CATALOGUE,
+        OpVerb::FETCH,
+        OpVerb::TASK,
+        OpVerb::SUBSCRIBE,
+        OpVerb::CONTROL,
     ];
 
     /// A NAMED `Invoke` verb: one shape, an explicit wire word. Private, `const`, and the only way
     /// the family's several words are spelled — so "are they really all one shape?" is answered by the
     /// constructor rather than by several arms that could drift. (The LLM family's seven verbs — chat,
     /// embeddings, … — are all built here; the constructor names no protocol.)
-    const fn named_invoke(name: &'static str) -> Operation {
-        Operation::Verb {
+    const fn named_invoke(name: &'static str) -> OpVerb {
+        OpVerb::Verb {
             op: OpShape::Invoke,
             name,
         }
     }
 
     /// The verb a shape carries when the shape's own word is the name. Private for the same reason
-    /// [`Self::named_invoke`] is: constructing an `Operation` is this module's business.
-    const fn of(op: OpShape) -> Operation {
-        Operation::Verb {
+    /// [`Self::named_invoke`] is: constructing an `OpVerb` is this module's business.
+    const fn of(op: OpShape) -> OpVerb {
+        OpVerb::Verb {
             op,
             name: op.as_str(),
         }
@@ -269,7 +272,7 @@ impl Operation {
     /// The shape the core decides on.
     pub const fn shape(self) -> OpShape {
         match self {
-            Operation::Verb { op, .. } => op,
+            OpVerb::Verb { op, .. } => op,
         }
     }
 
@@ -286,7 +289,7 @@ impl Operation {
     /// and the field's only possible values are the constants above.
     pub const fn name(self) -> &'static str {
         match self {
-            Operation::Verb { name, .. } => name,
+            OpVerb::Verb { name, .. } => name,
         }
     }
 }

@@ -24,7 +24,7 @@
 //! (`scope kind 'mcp_server' has no registered wire field`), so the `expect` below panics.
 
 use super::both_ways::store_fixture;
-use busbar_api::{ScopeRef, Store, VirtualKey};
+use busbar_contract::records::{RecordStore, ScopeRef, VirtualKey};
 
 /// Two scope kinds a plane registers at boot, read from `tests/fixtures/plane_scope_kinds.txt` (data,
 /// not code: the loader names no plane).
@@ -73,13 +73,13 @@ fn key_with_plane_grants() -> VirtualKey {
 /// test registers them in ITS process — which is the linked arm's process, and is NOT the dropped-in
 /// plugin's registry. That asymmetry is the defect under test.
 fn register_like_boot() {
-    busbar_api::register_scope_kind(plane_kind("server"));
-    busbar_api::register_scope_kind(plane_kind("tool"));
+    busbar_contract::records::register_scope_kind(plane_kind("server"));
+    busbar_contract::records::register_scope_kind(plane_kind("tool"));
 }
 
 /// Run the script against one store and return what the HOST was handed, as wire bytes:
 /// `(get_key, list_keys)`, each serialized in the host exactly as the engine would persist/serve it.
-fn round_trip(store: &dyn Store, arm: &str) -> (Vec<u8>, Vec<u8>) {
+fn round_trip(store: &dyn RecordStore, arm: &str) -> (Vec<u8>, Vec<u8>) {
     let key = key_with_plane_grants();
     store
         .put_key(&key)

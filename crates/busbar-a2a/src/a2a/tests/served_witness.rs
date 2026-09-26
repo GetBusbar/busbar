@@ -111,7 +111,7 @@ async fn post_raw(h: &Harness, body: &str, bearer: Option<&str>) -> (u16, serde_
 
 /// The admission count `key`'s own ledger holds, through the one pricing function (a billed card, no
 /// flat fee of its own — the count is what is read, not a price).
-fn requests_charged_to(h: &Harness, key: &busbar_api::VirtualKey) -> u64 {
+fn requests_charged_to(h: &Harness, key: &busbar_contract::records::VirtualKey) -> u64 {
     let cost = crate::testkit::engine_boot::engine().cost_parts(
         Some(&std::collections::BTreeMap::new()),
         1,
@@ -125,7 +125,7 @@ fn requests_charged_to(h: &Harness, key: &busbar_api::VirtualKey) -> u64 {
 }
 
 /// The caller's key in a harness's own governance registry (the one key it minted).
-fn caller_of(h: &Harness) -> busbar_api::VirtualKey {
+fn caller_of(h: &Harness) -> busbar_contract::records::VirtualKey {
     h.gov
         .all_keys()
         .expect("the keys read back")

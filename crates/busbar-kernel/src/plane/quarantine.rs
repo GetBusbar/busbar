@@ -41,7 +41,7 @@
 //!
 //! ## What a deployment with no durable store gets
 //!
-//! Exactly what it had. [`busbar_api::Store`]'s methods here are defaulted to accept-and-keep-
+//! Exactly what it had. [`busbar_contract::records::RecordStore`]'s methods here are defaulted to accept-and-keep-
 //! nothing, so with no sink attached — or with a backend that implements none of them, which is the
 //! same thing from here — the write is discarded and the boot read is empty. The quarantine is then
 //! process-local and bounded by one sweep interval, which is the pre-existing behaviour. As
@@ -49,7 +49,7 @@
 //! out what its backend kept by READING IT BACK at boot.
 
 use crate::plane::store::{decode, encode, PlaneStore, KIND_DEMOTION};
-use busbar_api::{PlaneDisposition, PlaneRecord, PlaneSelector, StoreResult};
+use busbar_contract::records::{PlaneDisposition, PlaneRecord, PlaneSelector, RecordStoreResult};
 use std::sync::{Arc, Mutex};
 
 /// The CORE-NEUTRAL demotion row — the pure durable fact the quarantine mechanism keeps. It names no
@@ -69,7 +69,7 @@ pub struct DemotionRow {
 impl DemotionRow {
     /// Serialize this row into the opaque `demotion` [`PlaneRecord`] envelope, keyed by its server.
     /// Demotions are never purged by age, so the disposition is immaterial and left `Active`.
-    fn to_plane_record(&self) -> StoreResult<PlaneRecord> {
+    fn to_plane_record(&self) -> RecordStoreResult<PlaneRecord> {
         Ok(PlaneRecord {
             kind: KIND_DEMOTION.to_string(),
             id: self.server.clone(),

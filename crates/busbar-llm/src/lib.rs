@@ -175,7 +175,7 @@ pub mod test_support {
     pub const CHAT: busbar_substrate_values::handlers::Op =
         busbar_substrate_values::handlers::frame(
             busbar_substrate_values::transport::Transport::Http,
-            busbar_api::operation::Operation::CHAT,
+            busbar_contract::operation::OpVerb::CHAT,
             &crate::chat_handle::ChatOperation("openai"),
         );
 }
@@ -245,19 +245,19 @@ pub const PLANE_DECLARATION: busbar_contract::plane::PlaneDeclaration =
         // must configure all five (Q29/Q35).
         billable_classes: &[
             BillableClass {
-                class: busbar_api::UNIT_INPUT,
+                class: busbar_contract::records::UNIT_INPUT,
                 family: TOKEN_FAMILY,
             },
             BillableClass {
-                class: busbar_api::UNIT_OUTPUT,
+                class: busbar_contract::records::UNIT_OUTPUT,
                 family: TOKEN_FAMILY,
             },
             BillableClass {
-                class: busbar_api::UNIT_CACHE_READ,
+                class: busbar_contract::records::UNIT_CACHE_READ,
                 family: TOKEN_FAMILY,
             },
             BillableClass {
-                class: busbar_api::UNIT_CACHE_WRITE,
+                class: busbar_contract::records::UNIT_CACHE_WRITE,
                 family: TOKEN_FAMILY,
             },
             BillableClass {

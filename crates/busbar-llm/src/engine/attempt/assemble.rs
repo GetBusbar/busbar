@@ -46,8 +46,8 @@ pub(super) async fn build(
     // (a security boundary: borrowing it would let an unauthenticated caller spend on the operator's
     // upstream account). The provider then returns its own 401/403, attributed to the caller.
     let key = match hop.upstream_creds {
-        busbar_api::UpstreamCreds::Passthrough => hop.caller_token.unwrap_or(""),
-        busbar_api::UpstreamCreds::Own => hop.lane_row().api_key.expose_secret(),
+        busbar_contract::config::UpstreamCreds::Passthrough => hop.caller_token.unwrap_or(""),
+        busbar_contract::config::UpstreamCreds::Own => hop.lane_row().api_key.expose_secret(),
     };
 
     // The (operation × stream) egress target — wire URL and SigV4 canonical URI — precomputed at
@@ -73,7 +73,7 @@ pub(super) async fn build(
     // buffer copy, byte-identical to the live build). Passthrough carries the caller's key and a
     // non-constant credential (OAuth / SigV4) reads the request, so both build live.
     let egress_auth = match (&hop.lane_row().prebuilt_auth, hop.upstream_creds) {
-        (Some(pre), busbar_api::UpstreamCreds::Own) => pre.clone(),
+        (Some(pre), busbar_contract::config::UpstreamCreds::Own) => pre.clone(),
         _ => convert_headers(busbar_timing::scope("egress_lane_auth", || {
             lane_auth_headers(hop.lane_row(), key, &signing_ctx)
         })),

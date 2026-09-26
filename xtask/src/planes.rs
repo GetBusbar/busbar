@@ -137,7 +137,6 @@ pub fn neutral_src_roots() -> Vec<String> {
         "crates/busbar-contract/src",
         "crates/busbar-plugin/src",
         "crates/busbar-substrate-values/src",
-        "crates/api/src",
         // THE LOADER AND THE SDK — the TCB crates ARCHITECTURE.md excuses by name from the plugin
         // KINDS, which is not the same as excusing them from neutrality: the loader dlopens every
         // kind and the SDK is what an author writes against.

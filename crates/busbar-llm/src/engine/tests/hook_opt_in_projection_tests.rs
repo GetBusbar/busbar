@@ -24,7 +24,7 @@ fn facts(v: &Value, proto: &str) -> HookFacts {
         &[],
         APPLICATION_JSON,
         proto,
-        Some(busbar_api::operation::Operation::CHAT),
+        Some(busbar_contract::operation::OpVerb::CHAT),
     ) {
         Ok(f) => f,
         Err(HookIrRejected) => {
@@ -149,7 +149,7 @@ fn prompt_projection_keeps_empty_entries_aligned() {
         &[],
         APPLICATION_JSON,
         "openai",
-        Some(busbar_api::operation::Operation::CHAT)
+        Some(busbar_contract::operation::OpVerb::CHAT)
     )
     .is_err());
 }
@@ -752,7 +752,7 @@ fn apply_rewrite_to_body_echoes_redacted_marker_as_visible_text() {
     }
 
     // A hook that echoes exactly what it was projected (the common "pass through" rewrite shape).
-    let rewrite = busbar_api::RewriteReply {
+    let rewrite = busbar_contract::hooks::RewriteReply {
         messages: vec![serde_json::json!({
             "role": "assistant",
             "content": OPAQUE_CONTENT_MARKER,

@@ -299,7 +299,7 @@ fn record_key_refusal(who: KeyAudit<'_>) {
 /// column/table names, or paths from the store backend) is logged server-side via `tracing::error!`;
 /// the HTTP body carries only a generic message so internal storage details are never disclosed to
 /// the client (even an authenticated admin). `op` names the operation for log correlation.
-fn internal_error(op: &str, e: &busbar_kernel::governance::StoreError) -> Response {
+fn internal_error(op: &str, e: &busbar_kernel::governance::RecordStoreError) -> Response {
     diag_error!(ADMIN_STORE_OPERATION_FAILED, operation = op, error = %e, "admin store operation failed");
     busbar_kernel::admin::v1::json::err_json(&AdminError::Internal)
 }
@@ -578,7 +578,7 @@ fn check_key_cap(
     cap: usize,
     group: Option<&str>,
     exclude_id: Option<&str>,
-) -> busbar_kernel::governance::StoreResult<Option<(String, usize)>> {
+) -> busbar_kernel::governance::RecordStoreResult<Option<(String, usize)>> {
     if cap == 0 {
         return Ok(None); // unlimited
     }
@@ -954,7 +954,7 @@ pub(crate) async fn create_key(
                 );
             }
             let _existence_guard = EXISTENCE_GATE.lock().unwrap_or_else(|e| e.into_inner());
-            let minted = (|| -> busbar_kernel::governance::StoreResult<MintOutcome> {
+            let minted = (|| -> busbar_kernel::governance::RecordStoreResult<MintOutcome> {
                 if let Some((group, n)) = check_key_cap(&gov, cap, cap_group.as_deref(), None)? {
                     return Ok(MintOutcome::AtCap { group, n, cap });
                 }
@@ -1229,7 +1229,7 @@ pub(crate) async fn update_key(
         let cap = current.max_keys_per_principal;
         Ok(txn.store_write(move || {
             let _existence_guard = EXISTENCE_GATE.lock().unwrap_or_else(|e| e.into_inner());
-            let outcome = (|| -> busbar_kernel::governance::StoreResult<UpdateOutcome> {
+            let outcome = (|| -> busbar_kernel::governance::RecordStoreResult<UpdateOutcome> {
                 // ONE read of the pre-image, inside the gate: it answers If-Match staleness,
                 // existence, AND the cap guard below, so the three cannot disagree about which
                 // record they are talking about.
@@ -1420,7 +1420,7 @@ pub(crate) async fn list_keys(
         // `state` is derived HERE, on the blocking pool, where `gov` — and therefore
         // `gov.is_revoked` — is in scope; the outer match below is past the `.await` and has no
         // `gov` of its own (it was moved into this closure).
-        Ok::<_, busbar_kernel::governance::StoreError>(
+        Ok::<_, busbar_kernel::governance::RecordStoreError>(
             keys.into_iter()
                 .map(|k| {
                     let state = key_state(&k, &gov);
@@ -1658,8 +1658,8 @@ pub(crate) async fn revoke_key(
     let id_for_task = id.clone();
     // The subject must name an existing binding (a revoke for a nonexistent key is a 404, not a
     // silent denylist entry for a typo'd id). Then denylist it durably.
-    let res =
-        tokio::task::spawn_blocking(move || -> busbar_kernel::governance::StoreResult<bool> {
+    let res = tokio::task::spawn_blocking(
+        move || -> busbar_kernel::governance::RecordStoreResult<bool> {
             // Hold EXISTENCE_GATE across the existence check and the denylist write, matching
             // update_key/rotate_key/delete_key. Without it, a concurrent `delete_key` can dispose of the
             // key in the window between this check-then-act, producing a phantom `key.revoke APPLIED`
@@ -1672,8 +1672,9 @@ pub(crate) async fn revoke_key(
             }
             gov.revoke(&id_for_task, "revoked via admin API")?;
             Ok(true)
-        })
-        .await;
+        },
+    )
+    .await;
     match res {
         Ok(Ok(true)) => {
             audit::AUDIT.record_by("key.revoke", &resource, audit::OUTCOME_APPLIED, &actor);
@@ -1821,7 +1822,7 @@ pub(crate) async fn key_usage(
         // tombstoned key reads as absent here, same as an unknown id, so DELETE stays a real
         // removal from every reader's point of view.
         let Some(key) = key.filter(|k| k.deleted_at.is_none()) else {
-            return Ok::<_, busbar_kernel::governance::StoreError>(None);
+            return Ok::<_, busbar_kernel::governance::RecordStoreError>(None);
         };
         // DERIVED at read time: spend_cents = ledger x CURRENT rate card (+ fee x requests) - a
         // rate-card correction changes this number on the very next read (tokens are the truth).
@@ -1834,7 +1835,7 @@ pub(crate) async fn key_usage(
             true,
             now,
         )?;
-        Ok::<_, busbar_kernel::governance::StoreError>(Some((usage, Some(key))))
+        Ok::<_, busbar_kernel::governance::RecordStoreError>(Some((usage, Some(key))))
     })
     .await;
     match res {

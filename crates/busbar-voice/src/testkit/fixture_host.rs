@@ -33,7 +33,8 @@
 //! no identity chain, no completion pipeline). It is a test double: a leg the fixture does not model
 //! answers its documented empty value rather than pretending to be the engine.
 
-use busbar_api::{AuthPrincipal, IdentityRefusal, PlaneRequestCtx, VirtualKey};
+use busbar_contract::auth::{AuthPrincipal, IdentityRefusal};
+use busbar_contract::records::{PlaneRequestCtx, VirtualKey};
 use busbar_kernel::billing::{TokenUsage, Usage};
 use busbar_kernel::breaker::{CanonicalSignal, Disposition};
 use busbar_kernel::hooks::{RequestedSignals, ResolvedPolicy, TapEntry};
@@ -104,7 +105,7 @@ struct Inner {
     slots: BTreeMap<String, Arc<dyn std::any::Any + Send + Sync>>,
     audit: Vec<FixtureAuditEntry>,
     /// The budget chain `budget_state` answers for every key — empty (uncapped) unless a test sets one.
-    budget: Vec<busbar_api::BudgetBucketState>,
+    budget: Vec<busbar_contract::hooks::BudgetBucketState>,
     /// A count cap `budget_state` answers as one bucket, remaining the cap less the key's counts.
     count_cap: Option<i64>,
     /// Every count `meter_ledger` landed, per key, per `(lane, class)`.
@@ -162,13 +163,13 @@ impl FixtureHost {
 
     /// Answer `chain` as every key's budget chain.
     #[must_use]
-    pub fn with_budget_chain(self, chain: Vec<busbar_api::BudgetBucketState>) -> Self {
+    pub fn with_budget_chain(self, chain: Vec<busbar_contract::hooks::BudgetBucketState>) -> Self {
         self.set_budget_chain(chain);
         self
     }
 
     /// Replace the budget chain every key reads, mid-test — the view a live session's next turn meets.
-    pub fn set_budget_chain(&self, chain: Vec<busbar_api::BudgetBucketState>) {
+    pub fn set_budget_chain(&self, chain: Vec<busbar_contract::hooks::BudgetBucketState>) {
         self.lock().budget = chain;
     }
 
@@ -449,11 +450,14 @@ impl MountHost for FixtureHost {
 /// A resolver with no secrets behind it: every reference fails closed.
 struct NoSecrets;
 
-impl busbar_api::SecretResolve for NoSecrets {
-    fn resolve(&self, _secret: &busbar_api::SecretRef) -> Result<Vec<u8>, String> {
+impl busbar_contract::secret::SecretResolve for NoSecrets {
+    fn resolve(&self, _secret: &busbar_contract::secret_ref::SecretRef) -> Result<Vec<u8>, String> {
         Err("the fixture host resolves no secrets".to_string())
     }
-    fn resolve_string(&self, _secret: &busbar_api::SecretRef) -> Result<String, String> {
+    fn resolve_string(
+        &self,
+        _secret: &busbar_contract::secret_ref::SecretRef,
+    ) -> Result<String, String> {
         Err("the fixture host resolves no secrets".to_string())
     }
 }
@@ -468,7 +472,7 @@ impl RegistryHost for FixtureHost {
     fn plane_slot_live(&self, key: &str) -> Option<Arc<dyn std::any::Any + Send + Sync>> {
         self.plane_slot(key)
     }
-    fn secret_resolver(&self) -> Arc<dyn busbar_api::SecretResolve> {
+    fn secret_resolver(&self) -> Arc<dyn busbar_contract::secret::SecretResolve> {
         Arc::new(NoSecrets)
     }
     fn subkey_sign(&self, _signing_input: &[u8]) -> Option<[u8; 64]> {
@@ -486,10 +490,18 @@ impl HookConfigHost for FixtureHost {
     fn pool_rewrites(
         &self,
         _pool: &str,
-    ) -> &[(std::time::Duration, Arc<dyn busbar_api::RoutingPolicy>)] {
+    ) -> &[(
+        std::time::Duration,
+        Arc<dyn busbar_contract::hooks::RoutingPolicy>,
+    )] {
         &[]
     }
-    fn rewrite_hooks(&self) -> &[(std::time::Duration, Arc<dyn busbar_api::RoutingPolicy>)] {
+    fn rewrite_hooks(
+        &self,
+    ) -> &[(
+        std::time::Duration,
+        Arc<dyn busbar_contract::hooks::RoutingPolicy>,
+    )] {
         &[]
     }
     fn any_content_hook(&self) -> bool {
@@ -542,14 +554,14 @@ impl BudgetHost for FixtureHost {
         _pin: &MeterPin,
         key: &VirtualKey,
         _now: u64,
-    ) -> Vec<busbar_api::BudgetBucketState> {
+    ) -> Vec<busbar_contract::hooks::BudgetBucketState> {
         let inner = self.lock();
         let Some(cap) = inner.count_cap else {
             return inner.budget.clone();
         };
         let counted = inner.ledger.get(&key.id).map_or(0, |u| u.tokens);
         let counted = i64::try_from(counted).unwrap_or(i64::MAX);
-        vec![busbar_api::BudgetBucketState {
+        vec![busbar_contract::hooks::BudgetBucketState {
             bucket_id: key.id.clone(),
             budget_group: None,
             pool: None,

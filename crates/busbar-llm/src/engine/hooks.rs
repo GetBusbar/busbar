@@ -51,7 +51,7 @@ pub(crate) enum PolicyOutcome {
 /// re-framing, leaves the body untouched and returns `false` — never a corrupted request.
 pub(crate) fn apply_rewrite_to_body(
     v: &mut Value,
-    rewrite: &busbar_api::RewriteReply,
+    rewrite: &busbar_contract::hooks::RewriteReply,
     ingress_protocol: &str,
 ) -> bool {
     if rewrite.messages.is_empty() {
@@ -131,7 +131,7 @@ pub(crate) fn read_hook_facts(
     body: &[u8],
     content_type: &str,
     ingress_protocol: &str,
-    operation: Option<busbar_api::operation::Operation>,
+    operation: Option<busbar_contract::operation::OpVerb>,
 ) -> Result<HookFacts, HookIrRejected> {
     // The op-less pre-routing site (auth's completion-tap capture, `operation == None`) never
     // resolved an operation, so there is nothing to read and nothing to reject — the zeroed shape,
@@ -204,11 +204,11 @@ impl HookFacts {
     /// instructions on the dialects that carry the system prompt inside the turns array. A turn that
     /// yields no items still yields an entry with empty text: a screening hook must never see fewer
     /// turns than the provider does.
-    pub(crate) fn prompt(&self) -> busbar_api::PromptProjection<'_> {
+    pub(crate) fn prompt(&self) -> busbar_contract::hooks::PromptProjection<'_> {
         use busbar_substrate_values::ir::facts::{ContentItem, Slot};
         use std::borrow::Cow;
         let HookFacts::Facts(ir) = self else {
-            return busbar_api::PromptProjection {
+            return busbar_contract::hooks::PromptProjection {
                 system: None,
                 messages: Vec::new(),
             };
@@ -242,7 +242,7 @@ impl HookFacts {
                 }
             }
         }
-        busbar_api::PromptProjection {
+        busbar_contract::hooks::PromptProjection {
             system: join_pieces(system).filter(|s| !s.is_empty()),
             messages: turns
                 .into_iter()
@@ -289,8 +289,8 @@ fn join_pieces(mut pieces: Vec<std::borrow::Cow<'_, str>>) -> Option<std::borrow
 /// allowed to look like an empty request. `busbar_hook_content_truncated_total` counts it, so the
 /// default ceiling can be chosen by a metric rather than by a guess.
 pub(crate) fn enforce_content_cap(
-    prompt: Option<busbar_api::PromptProjection<'_>>,
-) -> Option<busbar_api::PromptProjection<'_>> {
+    prompt: Option<busbar_contract::hooks::PromptProjection<'_>>,
+) -> Option<busbar_contract::hooks::PromptProjection<'_>> {
     let p = prompt?;
     let cap = busbar_kernel::proxy::hook_content_max_bytes();
     if cap == 0 {
@@ -314,7 +314,7 @@ pub(crate) fn enforce_content_cap(
         "hook content projection exceeded limits.hook_content_max_bytes; the content is OMITTED \
          whole (never truncated mid-value) and the hook is sent an empty content projection"
     );
-    Some(busbar_api::PromptProjection {
+    Some(busbar_contract::hooks::PromptProjection {
         system: None,
         messages: Vec::new(),
     })
@@ -331,9 +331,9 @@ pub(crate) fn build_rewrite_request<'a>(
     wants_stream: bool,
     with_prompt: bool,
     request_id: u64,
-) -> busbar_api::RoutingRequest<'a> {
+) -> busbar_contract::hooks::RoutingRequest<'a> {
     let shape = facts.shape();
-    busbar_api::RoutingRequest {
+    busbar_contract::hooks::RoutingRequest {
         request_id,
         pool: pool_name,
         ingress_protocol,
@@ -374,12 +374,12 @@ pub(crate) async fn apply_global_rewrites(
     host: &dyn EngineHost,
     rewrite_hooks: &[(
         std::time::Duration,
-        std::sync::Arc<dyn busbar_api::RoutingPolicy>,
+        std::sync::Arc<dyn busbar_contract::hooks::RoutingPolicy>,
     )],
     v: &mut Value,
     pool_name: &str,
     ingress_protocol: &str,
-    operation: busbar_api::operation::Operation,
+    operation: busbar_contract::operation::OpVerb,
     wants_stream: bool,
     request_id: u64,
 ) -> Result<bool, (u16, String)> {
@@ -419,21 +419,21 @@ pub(crate) async fn apply_global_rewrites(
         let outcome = hook.transform(&req, *timeout).await;
         drop(req); // end the immutable borrow of `v` before mutating it
         match outcome {
-            busbar_api::TransformOutcome::Rewrite(rw) => {
+            busbar_contract::hooks::TransformOutcome::Rewrite(rw) => {
                 applied |= apply_rewrite_to_body(v, &rw, ingress_protocol);
             }
-            busbar_api::TransformOutcome::Reject { status, message } => {
+            busbar_contract::hooks::TransformOutcome::Reject { status, message } => {
                 // Already status-clamped + message-sanitized at the wire seam.
                 return Err((status, message));
             }
-            busbar_api::TransformOutcome::Abstain => {}
+            busbar_contract::hooks::TransformOutcome::Abstain => {}
             // The hook could not answer. Reaching this arm IS the PROCEED disposition: a failed
             // call to a hook the operator declared load-bearing (`on_error: reject`) was turned
             // into a `Reject` by the resolver's decorator and returned above, before any firing
             // site saw it. What is left here is the hook whose disposition says to carry on —
             // logged, so a rewrite gate that is down leaves an operator-visible signal instead of
             // looking exactly like a compressor with nothing to change.
-            busbar_api::TransformOutcome::Failed { message } => {
+            busbar_contract::hooks::TransformOutcome::Failed { message } => {
                 tracing::warn!(
                     hook = hook.name(),
                     pool = pool_name,
@@ -521,15 +521,15 @@ pub(crate) async fn decide_policy_order(
     content_type: &str,
     pool_name: &str,
     ingress_protocol: &str,
-    operation: busbar_api::operation::Operation,
+    operation: busbar_contract::operation::OpVerb,
     wants_stream: bool,
     caller_token: Option<&str>,
-    resolved_gov_key: Option<&std::sync::Arc<busbar_api::VirtualKey>>,
+    resolved_gov_key: Option<&std::sync::Arc<busbar_contract::records::VirtualKey>>,
 ) -> PolicyOutcome {
     // The hook CONTRACT projection types are api-owned; the resolved-policy carrier is neutral
     // substrate. Named at their canonical homes (the reverse-edge rule) rather than through the
     // core `hooks` re-export.
-    use busbar_api::{Candidate, RoutingContext, RoutingDecision, RoutingRequest};
+    use busbar_contract::hooks::{Candidate, RoutingContext, RoutingDecision, RoutingRequest};
     use busbar_kernel::hooks::ResolvedPolicy;
 
     // A weighted/default pool resolves to `None` at config load (no policy object is constructed), so
@@ -622,7 +622,7 @@ pub(crate) async fn decide_policy_order(
     // id/name (from the resolved record, NEVER the token) plus the request's end-user field,
     // normalized by the reader from whichever field its dialect spells it in.
     let identity = if send_user {
-        Some(busbar_api::CallerIdentity {
+        Some(busbar_contract::hooks::CallerIdentity {
             key_id: gov_key.as_ref().map(|k| k.id.clone()),
             key_name: gov_key.as_ref().map(|k| k.name.clone()),
             user: facts.end_user(),
@@ -678,14 +678,14 @@ pub(crate) async fn decide_policy_order(
         .map(|wl| {
             let lane = &EngineTables::new(rt).lanes()[wl.idx];
             let meta = member_meta.and_then(|m| m.get(&wl.idx));
-            let mut signals = busbar_api::SignalBag::new();
+            let mut signals = busbar_contract::signal::SignalBag::new();
             if !requested.is_empty() {
                 // Both are PURE projections of state the breaker FSM already maintains on every
                 // request/outcome regardless of declaration (see `LaneRuntime::
                 // breaker_state_snapshot_in`/`error_rate_in`'s doc comments) — the gate below is
                 // the compute-the-sliver check: the read runs ONLY when
                 // declared, never call-then-discard.
-                if requested.wants(busbar_api::Signal::CandidateBreakerState) {
+                if requested.wants(busbar_contract::signal::Signal::CandidateBreakerState) {
                     let label = match host
                         .lane_store()
                         .breaker_state_snapshot_in(pool_name, wl.idx)
@@ -695,15 +695,17 @@ pub(crate) async fn decide_policy_order(
                         busbar_kernel::store::BreakerState::HalfOpen => "half_open",
                     };
                     signals.push(
-                        busbar_api::Signal::CandidateBreakerState,
-                        busbar_api::SignalValue::Str(std::borrow::Cow::Borrowed(label)),
+                        busbar_contract::signal::Signal::CandidateBreakerState,
+                        busbar_contract::signal::SignalValue::Str(std::borrow::Cow::Borrowed(
+                            label,
+                        )),
                     );
                 }
-                if requested.wants(busbar_api::Signal::CandidateErrorRate) {
+                if requested.wants(busbar_contract::signal::Signal::CandidateErrorRate) {
                     if let Some(rate) = host.lane_store().error_rate_in(pool_name, wl.idx, now_ts) {
                         signals.push(
-                            busbar_api::Signal::CandidateErrorRate,
-                            busbar_api::SignalValue::F64(rate),
+                            busbar_contract::signal::Signal::CandidateErrorRate,
+                            busbar_contract::signal::SignalValue::F64(rate),
                         );
                     }
                 }
@@ -732,10 +734,11 @@ pub(crate) async fn decide_policy_order(
     // routing-policy pool; the zero-cost default path never runs this fn), so its allocation stays
     // off the default hot path. Busbar exposes the READ surface only; downshifting to a cheaper
     // model on it is the hook's policy, never core's.
-    let budget_chain: Vec<busbar_api::BudgetBucketState> = match (pin.as_ref(), gov_key.as_ref()) {
-        (Some(pin), Some(key)) => host.budget_state(pin, key, now()),
-        _ => Vec::new(),
-    };
+    let budget_chain: Vec<busbar_contract::hooks::BudgetBucketState> =
+        match (pin.as_ref(), gov_key.as_ref()) {
+            (Some(pin), Some(key)) => host.budget_state(pin, key, now()),
+            _ => Vec::new(),
+        };
     let ctx = RoutingContext {
         pool: pool_name,
         // Lane-health-shaped budget signal (legacy v1 field): still not fed - the per-request
@@ -852,9 +855,9 @@ pub(crate) async fn decide_policy_order(
 pub(crate) async fn run_on_error_chain(
     chain: &[busbar_kernel::hooks::FallbackHook],
     terminal: &busbar_kernel::config::PolicyOnError,
-    req: &busbar_api::RoutingRequest<'_>,
-    candidates: &[busbar_api::Candidate<'_>],
-    ctx: &busbar_api::RoutingContext<'_>,
+    req: &busbar_contract::hooks::RoutingRequest<'_>,
+    candidates: &[busbar_contract::hooks::Candidate<'_>],
+    ctx: &busbar_contract::hooks::RoutingContext<'_>,
     failed_policy_name: &'static str,
     pool_name: &str,
     // Leaves the access amendment for a fallback handed the prompt: `(hook name, identity handed)`.
@@ -864,7 +867,7 @@ pub(crate) async fn run_on_error_chain(
         // Re-project per the FALLBACK's grants: it may see at most what the primary projection
         // built AND its own grants allow (never over-shares; a fallback with a grant the primary
         // lacked gets shape-only — the projection was never built).
-        let fb_req = busbar_api::RoutingRequest {
+        let fb_req = busbar_contract::hooks::RoutingRequest {
             prompt: if fb.send_prompt {
                 req.prompt.clone()
             } else {
@@ -950,12 +953,12 @@ pub(crate) async fn run_on_error_chain(
 /// and every on_error fallback, so a fallback's reject/restrict/order carries the same clamping,
 /// sanitizing, and normalization guarantees as a primary's.
 pub(crate) fn map_decision(
-    decision: busbar_api::RoutingDecision,
+    decision: busbar_contract::hooks::RoutingDecision,
     policy_name: &'static str,
-    candidates: &[busbar_api::Candidate<'_>],
+    candidates: &[busbar_contract::hooks::Candidate<'_>],
     on_empty: &busbar_kernel::config::PolicyOnError,
 ) -> PolicyOutcome {
-    use busbar_api::RoutingDecision;
+    use busbar_contract::hooks::RoutingDecision;
 
     match decision {
         RoutingDecision::Prefer(order) => {
@@ -1013,7 +1016,7 @@ pub(crate) fn map_decision(
 /// set to fall back over, the rewrite seat has a body to leave alone.
 pub(crate) fn coerce_on_error(
     on_error: &busbar_kernel::config::PolicyOnError,
-    candidates: &[busbar_api::Candidate<'_>],
+    candidates: &[busbar_contract::hooks::Candidate<'_>],
     policy_name: &'static str,
 ) -> PolicyOutcome {
     use busbar_kernel::config::PolicyOnError;
@@ -1055,7 +1058,7 @@ pub(crate) fn capture_stage_shape<'a>(
     content_type: &str,
     pool: &'a str,
     ingress_protocol: &'a str,
-    operation: Option<busbar_api::operation::Operation>,
+    operation: Option<busbar_contract::operation::OpVerb>,
     stream: bool,
     request_id: u64,
 ) -> StageShape<'a> {

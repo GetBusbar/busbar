@@ -12,14 +12,14 @@ use super::*;
 #[test]
 fn operation_handler_serves_chat_only() {
     let h = AnthropicRequestHandler;
-    assert!(h.operation_handler(Operation::CHAT).is_some());
+    assert!(h.operation_handler(OpVerb::CHAT).is_some());
     for op in [
-        Operation::EMBEDDINGS,
-        Operation::MODERATION,
-        Operation::IMAGE,
-        Operation::TRANSCRIPTION,
-        Operation::SPEECH,
-        Operation::RERANK,
+        OpVerb::EMBEDDINGS,
+        OpVerb::MODERATION,
+        OpVerb::IMAGE,
+        OpVerb::TRANSCRIPTION,
+        OpVerb::SPEECH,
+        OpVerb::RERANK,
     ] {
         assert!(
             h.operation_handler(op).is_none(),
@@ -35,14 +35,11 @@ fn operation_handler_serves_chat_only() {
 #[test]
 fn resolve_operation_matches_the_messages_path_only() {
     let h = AnthropicRequestHandler;
-    assert_eq!(
-        h.resolve_operation("/v1/messages", b""),
-        Some(Operation::CHAT)
-    );
+    assert_eq!(h.resolve_operation("/v1/messages", b""), Some(OpVerb::CHAT));
     // A mounted-prefix path still matches via `ends_with`.
     assert_eq!(
         h.resolve_operation("/proxy/upstream/v1/messages", b""),
-        Some(Operation::CHAT)
+        Some(OpVerb::CHAT)
     );
     // Unrelated / sibling paths (including near-misses and the Vertex egress shape, which is
     // never what ingress sees) must NOT resolve.
@@ -67,7 +64,7 @@ fn path_base_uses_vertex_rawpredict_with_model_in_url() {
     let h = AnthropicRequestHandler;
     let model = "claude-3-5-sonnet";
     let ctx = |stream, path_base| EgressCtx {
-        operation: Operation::CHAT,
+        operation: OpVerb::CHAT,
         model,
         stream,
         path_base,
