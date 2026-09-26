@@ -838,7 +838,7 @@ fn conflicts(loadable: &[LoadablePlugin]) -> Vec<Conflict> {
             errors.push(Conflict {
                 message: format!(
                     "plugin name conflict: '{}' is claimed by both {} and {} - remove one \
-                     (\"you can't use valkey and a third-party valkey\")",
+                     (\"you can't use valkey and a third-party valkey\")", // noun-neutrality: frozen-literal pinned-by=crates/plugin-loader/tests/fixtures/conflict_messages.txt 1.5.5 operator boot and --validate refusal text, asserted byte for byte by registry_tests.rs
                     p.manifest.name, prev.file, p.file
                 ),
                 files: vec![prev.file.clone(), p.file.clone()],

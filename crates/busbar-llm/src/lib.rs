@@ -344,6 +344,9 @@ pub mod linked {
     pub use crate::{BODY_INGRESS, PATH_INGRESS};
     /// The plane axis: the contract declaration, joined kernel-side to the behaviour table.
     pub use crate::{PLANE_DECLARATION, PLANE_HOOKS};
+    /// The CLI-help axis: this plane's rows of `busbar --help`, as declared data — `("tagline",
+    /// text)` is the one-line description the help opens with.
+    pub const CLI_HELP: &[(&str, &str)] = &[("tagline", busbar_plane_llm::meta::HELP_TAGLINE)];
     /// The claims axis: the pure plane the composition root's boot seal registers, and the claims it
     /// declares.
     pub const PLANE: busbar_plane_llm::LlmPlane = busbar_plane_llm::LlmPlane::EMPTY;

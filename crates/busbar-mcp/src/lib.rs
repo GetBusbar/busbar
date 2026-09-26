@@ -107,6 +107,9 @@ pub mod linked {
     pub use crate::mcp::serve_stdio_boxed as stdio_serve;
     /// The diagnostics axis.
     pub use crate::DIAGNOSTICS;
+    /// The CLI-help axis: this plane's rows of `busbar --help`, as declared data — `("flag", lines)`
+    /// is a row of the `Flags:` block whose first word is the flag the binary accepts.
+    pub const CLI_HELP: &[(&str, &str)] = &[("flag", busbar_plane_mcp::meta::HELP_FLAGS)];
     /// The claims axis: the pure plane the composition root's boot seal registers, and the claims it
     /// declares.
     pub const PLANE: busbar_plane_mcp::McpPlane = busbar_plane_mcp::McpPlane::EMPTY;

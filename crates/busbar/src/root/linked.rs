@@ -47,6 +47,12 @@ pub type Compose = Box<dyn FnOnce(&dyn busbar_api::SecretResolve)>;
 pub type StdioServe =
     fn(LiveHostFactory) -> std::pin::Pin<Box<dyn std::future::Future<Output = i32>>>;
 
+/// One row a plane declares for `busbar --help`: `(slot, text)`. Slot `"tagline"` is the one-line
+/// description the help opens with; slot `"flag"` is a row of the `Flags:` block, whose first word is
+/// a flag the binary accepts. A plane compiled out contributes no row, so its lines leave the help
+/// with it, the same way its config section is refused.
+pub type CliHelpRow = (&'static str, &'static str);
+
 /// EVERY LINKED ENTRY'S ITEMS, one table per registration axis, in manifest order.
 pub struct Linked {
     /// The plane axis: each entry's contract declaration joined kernel-side to its hooks.
@@ -76,6 +82,8 @@ pub struct Linked {
     pub compose: &'static [fn(&busbar_kernel::config::RootCfg) -> Option<Compose>],
     /// The stdio serve mode (see [`StdioServe`]).
     pub stdio_serve: &'static [StdioServe],
+    /// The CLI-help axis: each linked plane's rows of `busbar --help` (see [`CliHelpRow`]).
+    pub cli_help: &'static [&'static [CliHelpRow]],
     /// The export axis: each linked export sink's statement and boundary (see [`LinkedExport`]).
     pub exports: &'static [LinkedExport],
     /// The kernel-loop axes (#28): the declaration key of each plane `gauntlet_install::install()`

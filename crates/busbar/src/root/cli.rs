@@ -40,6 +40,101 @@ use busbar_kernel::{
 
 use crate::{build_info_line, safe_mode_requested};
 
+/// The part of `busbar --help` the root owns, before the linked planes' `Flags:` rows.
+const HELP_HEAD: &str = "
+
+USAGE:
+    busbar [-c <path>] [--providers <path>]
+                        run the gateway (configured via environment + YAML; the two optional flags
+                        point busbar at its config.yaml / providers.yaml — see CONFIG INPUTS below)
+    busbar --help       print this help
+    busbar --version    print the version (and the build-provenance stamp)
+    busbar --build-info print the build-provenance stamp alone (profile / opt-level / lto /
+                        debug-assertions / pgo / target / target-cpu) — how this binary was built,
+                        for correlating a perf number to a build and for CI's build-parity gate
+    busbar --validate   parse + validate config.yaml/providers.yaml AND every plugin manifest
+                        (structure, signature/trust, conflicts, abi, version floors) and exit
+                        (0 = valid, 1 = errors); no server, no network, no state, no dlopen —
+                        safe in CI and before a reload; a clean --validate means boot succeeds
+    busbar --list-plugins
+                        manifest-only inventory of the plugins dir (name/alias/kind/version,
+                        signature verdict, load status + exact reason); never loads plugin code
+    busbar --migrate-config <old-config.yaml>
+                        mechanically convert a 1.4.x config to the 1.5.0 shape: prints the new
+                        YAML to stdout (with TODO/WARNING comments where a human must decide)
+                        and a change summary to stderr; ZERO side effects, nothing is written
+    busbar --generate-signing-key
+                        mint a fresh ed25519 signing key (64 hex chars) to stdout with a paste-
+                        ready auth.signing_key snippet on stderr; ZERO side effects, nothing is
+                        written — you place it in config.yaml (or wire it as a shared secret)
+    busbar --print-metadata-blocklist
+                        print the effective cloud-metadata SSRF denylist and exit
+
+CONFIG INPUTS:
+    -c, --config <path> path to config.yaml. Precedence: this flag > BUSBAR_CONFIG env >
+                        /etc/busbar/config.yaml (default). Accepts `-c <path>`, `--config <path>`,
+                        and `--config=<path>`.
+    --providers <path>  path to providers.yaml. Precedence: this flag > `providers_file:` in
+                        config.yaml > providers.yaml next to the resolved config.yaml (default).
+                        Accepts `--providers <path>` and `--providers=<path>`.
+
+ENVIRONMENT:
+    BUSBAR_CONFIG       path to config.yaml     (default: /etc/busbar/config.yaml; overridden by
+                        -c/--config)
+    BUSBAR_PROVIDERS    path to providers.yaml  (DEPRECATED — set `providers_file:` in config.yaml;
+                        default: providers.yaml next to the resolved config.yaml)
+    RUST_LOG            log level: error|warn|info|debug|trace  (default: info)
+
+Flags:
+    --safe-mode         boot on base config.yaml alone (quarantine the persisted overlay)
+";
+
+/// The part of `busbar --help` the root owns, after the linked planes' `Flags:` rows.
+const HELP_TAIL: &str = "
+ENDPOINTS (once running, listen address from config.yaml `listen`):
+    POST /<model>/v1/messages              Anthropic-format ingress (single model)
+    POST /<pool>/v1/messages               route to a configured pool
+    POST /<provider>/<model>/v1/messages   ad-hoc direct route
+    POST /v1/chat/completions              OpenAI-format ingress
+    POST /v2/chat                          Cohere-format ingress
+    POST /v1/responses                     Responses-API ingress
+    POST /v1/models/<model>:<action>       Gemini-format ingress (stable v1)
+    POST /v1beta/models/<model>:<action>   Gemini-format ingress
+    POST /model/<modelId>/converse         Bedrock Converse ingress
+    POST /model/<modelId>/converse-stream  Bedrock Converse streaming ingress
+    GET  /v1/models  /v1beta/models        list models (answers in the caller's dialect)
+    GET  /stats  /healthz  /metrics
+
+Docs: https://getbusbar.com   ·   Source: https://github.com/GetBusbar/busbar\n";
+
+/// `busbar --help`, assembled from the root's own text and the rows each linked plane declares
+/// (#47/#49: a plane owns its operator-facing text; the root names no plane). A plane compiled out
+/// contributes no row: its tagline and its `Flags:` rows leave with it.
+pub(crate) fn render_help(ver: &str, planes: &[&[super::linked::CliHelpRow]]) -> String {
+    let rows = || planes.iter().flat_map(|rows| rows.iter());
+    let mut out = format!("busbar {ver}");
+    if let Some((_, tagline)) = rows().find(|(slot, _)| *slot == "tagline") {
+        out.push_str(" — ");
+        out.push_str(tagline);
+    }
+    out.push_str(HELP_HEAD);
+    for (_, lines) in rows().filter(|(slot, _)| *slot == "flag") {
+        out.push_str(lines);
+        out.push('\n');
+    }
+    out.push_str(HELP_TAIL);
+    out
+}
+
+/// Whether `arg` is a flag a linked plane declares — the first word of one of its `Flags:` rows.
+pub(crate) fn is_plane_flag(planes: &[&[super::linked::CliHelpRow]], arg: &str) -> bool {
+    planes
+        .iter()
+        .flat_map(|rows| rows.iter())
+        .filter(|(slot, _)| *slot == "flag")
+        .any(|(_, lines)| lines.split_whitespace().next() == Some(arg))
+}
+
 /// Handle CLI flags before any environment or file access, so they work without a configured
 /// deployment. Returns `Some(exit_code)` when the process should exit (after printing), `None` to
 /// proceed to normal startup. busbar takes no positional arguments and is configured via
@@ -116,82 +211,16 @@ pub(crate) fn handle_cli_flags() -> Option<i32> {
         // The STDIO SERVE MODE is not an exit-and-print flag: it proceeds to the ordinary boot and
         // is read again inside `run()`, where it swaps the two TCP listeners for the process's own
         // stdin/stdout. Recognised here so it is not refused as an unknown argument.
-        Some("--mcp-stdio") => None, // noun-neutrality: frozen-literal pinned-by=crates/busbar/tests/mcp_stdio_serve.rs operator CLI flag (CHANGELOG 1.6.0)
+        // A flag a linked plane declares (its `Flags:` row) is not an exit-and-print flag either.
+        Some(arg) if is_plane_flag(crate::LINKED.cli_help, arg) => None,
         Some("--validate") => Some(validate_config_command()),
         Some("--generate-signing-key") => Some(generate_signing_key_command()),
         Some("--list-plugins") => Some(list_plugins_command()),
         Some("--migrate-config") => Some(migrate_config_command(args.next())),
         Some("--help" | "-h") => {
-            println!(
-                "busbar {ver} — native-protocol LLM gateway
-
-USAGE:
-    busbar [-c <path>] [--providers <path>]
-                        run the gateway (configured via environment + YAML; the two optional flags
-                        point busbar at its config.yaml / providers.yaml — see CONFIG INPUTS below)
-    busbar --help       print this help
-    busbar --version    print the version (and the build-provenance stamp)
-    busbar --build-info print the build-provenance stamp alone (profile / opt-level / lto /
-                        debug-assertions / pgo / target / target-cpu) — how this binary was built,
-                        for correlating a perf number to a build and for CI's build-parity gate
-    busbar --validate   parse + validate config.yaml/providers.yaml AND every plugin manifest
-                        (structure, signature/trust, conflicts, abi, version floors) and exit
-                        (0 = valid, 1 = errors); no server, no network, no state, no dlopen —
-                        safe in CI and before a reload; a clean --validate means boot succeeds
-    busbar --list-plugins
-                        manifest-only inventory of the plugins dir (name/alias/kind/version,
-                        signature verdict, load status + exact reason); never loads plugin code
-    busbar --migrate-config <old-config.yaml>
-                        mechanically convert a 1.4.x config to the 1.5.0 shape: prints the new
-                        YAML to stdout (with TODO/WARNING comments where a human must decide)
-                        and a change summary to stderr; ZERO side effects, nothing is written
-    busbar --generate-signing-key
-                        mint a fresh ed25519 signing key (64 hex chars) to stdout with a paste-
-                        ready auth.signing_key snippet on stderr; ZERO side effects, nothing is
-                        written — you place it in config.yaml (or wire it as a shared secret)
-    busbar --print-metadata-blocklist
-                        print the effective cloud-metadata SSRF denylist and exit
-
-CONFIG INPUTS:
-    -c, --config <path> path to config.yaml. Precedence: this flag > BUSBAR_CONFIG env >
-                        /etc/busbar/config.yaml (default). Accepts `-c <path>`, `--config <path>`,
-                        and `--config=<path>`.
-    --providers <path>  path to providers.yaml. Precedence: this flag > `providers_file:` in
-                        config.yaml > providers.yaml next to the resolved config.yaml (default).
-                        Accepts `--providers <path>` and `--providers=<path>`.
-
-ENVIRONMENT:
-    BUSBAR_CONFIG       path to config.yaml     (default: /etc/busbar/config.yaml; overridden by
-                        -c/--config)
-    BUSBAR_PROVIDERS    path to providers.yaml  (DEPRECATED — set `providers_file:` in config.yaml;
-                        default: providers.yaml next to the resolved config.yaml)
-    RUST_LOG            log level: error|warn|info|debug|trace  (default: info)
-
-Flags:
-    --safe-mode         boot on base config.yaml alone (quarantine the persisted overlay)
-    --mcp-stdio         serve the MCP plane on THIS PROCESS's stdin/stdout (newline-delimited
-                        JSON-RPC) instead of binding any listener — for an MCP host that runs
-                        busbar as a child process. Requires the `mcp:` block; on a deployment with
-                        a configured `auth.chain`, BUSBAR_MCP_STDIO_CREDENTIAL must carry a
-                        credential the chain admits (audience-bound to mcp.canonical_uri), and the
-                        whole session runs as that key — budgets, audit and hooks apply
-
-ENDPOINTS (once running, listen address from config.yaml `listen`):
-    POST /<model>/v1/messages              Anthropic-format ingress (single model)
-    POST /<pool>/v1/messages               route to a configured pool
-    POST /<provider>/<model>/v1/messages   ad-hoc direct route
-    POST /v1/chat/completions              OpenAI-format ingress
-    POST /v2/chat                          Cohere-format ingress
-    POST /v1/responses                     Responses-API ingress
-    POST /v1/models/<model>:<action>       Gemini-format ingress (stable v1)
-    POST /v1beta/models/<model>:<action>   Gemini-format ingress
-    POST /model/<modelId>/converse         Bedrock Converse ingress
-    POST /model/<modelId>/converse-stream  Bedrock Converse streaming ingress
-    GET  /v1/models  /v1beta/models        list models (answers in the caller's dialect)
-    GET  /stats  /healthz  /metrics
-
-Docs: https://getbusbar.com   ·   Source: https://github.com/GetBusbar/busbar",
-                ver = env!("CARGO_PKG_VERSION")
+            print!(
+                "{}",
+                render_help(env!("CARGO_PKG_VERSION"), crate::LINKED.cli_help)
             );
             Some(0)
         }
@@ -651,3 +680,7 @@ pub(crate) fn signing_key_command_output(hex: &str) -> (String, String) {
         .to_string();
     (secret_line, guidance)
 }
+
+#[cfg(test)]
+#[path = "tests/cli.rs"]
+mod tests;

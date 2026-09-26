@@ -135,6 +135,22 @@ const CONFIG_SCHEMA: &str = r#"{
   "required": ["canonical_uri"]
 }"#;
 
+/// The command-line flag that serves this plane on the process's own stdin/stdout instead of a
+/// listener. Operator-facing and frozen (1.6.0 CHANGELOG, `busbar --help`); the plane owns the
+/// spelling (#47/#49) and the composition root reads it from here.
+pub const STDIO_SERVE_FLAG: &str = "--mcp-stdio";
+
+/// This plane's lines in the `Flags:` block of `busbar --help`, byte for byte as the binary has
+/// always printed them (shadow-oracle cells `cli__--help` / `cli__-h`). It opens with
+/// [`STDIO_SERVE_FLAG`] and carries no trailing newline; the root splices it in place.
+pub const HELP_FLAGS: &str =
+    "    --mcp-stdio         serve the MCP plane on THIS PROCESS's stdin/stdout (newline-delimited
+                        JSON-RPC) instead of binding any listener — for an MCP host that runs
+                        busbar as a child process. Requires the `mcp:` block; on a deployment with
+                        a configured `auth.chain`, BUSBAR_MCP_STDIO_CREDENTIAL must carry a
+                        credential the chain admits (audience-bound to mcp.canonical_uri), and the
+                        whole session runs as that key — budgets, audit and hooks apply";
+
 impl PlaneMeta for McpPlane {
     const KEY: &'static str = "mcp";
     const CLAIMS: &'static [busbar_contract::grammar::Claim] = claims::CLAIMS;

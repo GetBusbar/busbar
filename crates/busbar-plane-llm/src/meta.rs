@@ -204,6 +204,11 @@ const CONFIG_SCHEMA: &str = r#"{
   }
 }"#;
 
+/// The one-line description `busbar --help` opens with (`busbar <version> — <this>`), byte for byte
+/// as the binary has always printed it (shadow-oracle cells `cli__--help` / `cli__-h`). It names
+/// this plane, so this plane owns it (#47/#49) and the composition root reads it from here.
+pub const HELP_TAGLINE: &str = "native-protocol LLM gateway";
+
 impl PlaneMeta for LlmPlane {
     const KEY: &'static str = "llm";
     const CLAIMS: &'static [busbar_contract::grammar::Claim] = claims::CLAIMS;

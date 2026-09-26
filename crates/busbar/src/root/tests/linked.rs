@@ -47,6 +47,7 @@ pub(super) fn linked(
         on_host: &[],
         compose: &[],
         stdio_serve: &[],
+        cli_help: &[],
         exports: &[],
         gauntlet_one_shot: &[],
         gauntlet_session: &[],

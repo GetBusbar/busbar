@@ -348,8 +348,8 @@ transport-stdio = "busbar-transport-stdio"
 # `claims`: the pure plane the boot seal registers (`PLANE`) and the claims it declares (`CLAIMS`).
 # `transport`: a wire's `KEY`, `COMPOSES_OVER` and `build(lower, &TransportSettings)`.
 [package.metadata.busbar.linked-axes]
-proto-llm = "plane claims protocols path-ingress body-ingress protocol-seams on-host gauntlet-one-shot"
-plane-mcp = "plane claims protocols diagnostics egress stdio-serve gauntlet-one-shot"
+proto-llm = "plane claims protocols path-ingress body-ingress protocol-seams on-host cli-help gauntlet-one-shot"
+plane-mcp = "plane claims protocols diagnostics egress stdio-serve cli-help gauntlet-one-shot"
 plane-a2a = "plane claims diagnostics egress plane-sections admin-envelope gauntlet-one-shot"
 plane-voice = "plane claims diagnostics ws-arrivals compose gauntlet-session"
 plane-decision = "plane claims"
