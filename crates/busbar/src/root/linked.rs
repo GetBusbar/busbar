@@ -50,8 +50,9 @@ pub type StdioServe =
 
 /// One row a plane declares for `busbar --help`: `(slot, text)`. Slot `"tagline"` is the one-line
 /// description the help opens with; slot `"flag"` is a row of the `Flags:` block, whose first word is
-/// a flag the binary accepts. A plane compiled out contributes no row, so its lines leave the help
-/// with it, the same way its config section is refused.
+/// a flag the binary accepts; slot `"endpoint"` is a row of the `ENDPOINTS` block. A plane compiled
+/// out contributes no row, so its lines leave the help with it, the same way its config section is
+/// refused.
 pub type CliHelpRow = (&'static str, &'static str);
 
 /// EVERY LINKED ENTRY'S ITEMS, one table per registration axis, in manifest order.

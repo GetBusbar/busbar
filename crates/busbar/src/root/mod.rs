@@ -13,9 +13,13 @@
 //! - [`kernel`] — the authority. `Kernel::new()` takes the seal, `Registration::new()` opens the
 //!   interner, and `ProductionUnits` is the one implementor of the kernel's `Units` trait in the
 //!   whole tree. Every token a unit is lent is minted from the kernel, for the length of one call.
-//! - [`registry`] — the boot seal. Seven transports registered bottom-up and five planes registered
-//!   over them, then `check_claims`, `precedence_order` and `check_composition` answered before any
-//!   listener is bound. A cross-plane claim overlap is a boot refusal, not a runtime surprise.
+//! - [`linked`] — the one registration path: every linked entry the manifest names, folded into the
+//!   kernel's registration seams axis by axis. The root names no plugin; `build.rs` turns the
+//!   manifest's `linked` tables into the [`linked::Linked`] tables this module reads.
+//! - [`registry`] — the boot seal. The linked transports registered bottom-up and the linked planes'
+//!   claims over them, then `check_claims`, `precedence_order` and `check_composition` answered
+//!   before any listener is bound. It names no transport and no plane: both come from the linked
+//!   tables. A cross-plane claim overlap is a boot refusal, not a runtime surprise.
 //! - [`durability`] — the WAL branch, the ledger's dual write and the audit unit's two streams.
 //!   Without a configured data directory nothing is probed, nothing is opened and no file appears:
 //!   constructing an on-disk journal *is* the decision to write to a disk.
@@ -35,6 +39,14 @@
 //!   `src/main.rs` and nothing else; a module at `src/cli.rs` would be in no scope at all.
 //! - [`units_admin`] — the admin plane's twelve steps, and the one seam an admin operation's body
 //!   is reached through. The root drives the loop; the operation's own logic stays where it lives.
+//! - the node — the root's half of a unit a plane's arrival hands it: the kernel, the in-flight
+//!   table, the one Route seam its leg is driven through and the book its money settles onto. The
+//!   unit itself is the plane's; the module is the one the manifest's `root-units` table names.
+//! - [`gauntlet_install`] and [`gauntlet_kernel`] — the kernel-loop runner every plane's gauntlet
+//!   rides (DECISIONS #28), and its install under each linked plane's capability key.
+//! - [`auth_bindings`], [`ledger_identity`], [`migration`], [`otlp`] — the authenticate unit's three
+//!   handed-in seams, the reconciliation identity against the previous release's rows, the first
+//!   boot after an upgrade, and the span exporter.
 //!
 //! ## The order
 //!

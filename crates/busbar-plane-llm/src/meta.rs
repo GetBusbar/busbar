@@ -56,8 +56,7 @@ const BYTES_PER_TOKEN: u32 = 4;
 /// count emitted under a class no card can name — silently unpriced, or a boot refusal under
 /// #77(5), and in neither case anything that points at the line that misspelled it. Declaring the
 /// class here and RE-SPELLING it at the emit site is two strings that agree today; a const is one
-/// value the compiler checks. The sibling planes (`busbar-plane-a2a`, `-mcp`, `-streaming`) all
-/// carry theirs this way.
+/// value the compiler checks. Every sibling plane carries its classes this way.
 pub const CLASS_TOKENS_IN: MeterClassId = MeterClassId::new("tokens_in");
 /// See [`CLASS_TOKENS_IN`].
 pub const CLASS_TOKENS_OUT: MeterClassId = MeterClassId::new("tokens_out");
@@ -208,6 +207,28 @@ const CONFIG_SCHEMA: &str = r#"{
 /// as the binary has always printed it (shadow-oracle cells `cli__--help` / `cli__-h`). It names
 /// this plane, so this plane owns it (#47/#49) and the composition root reads it from here.
 pub const HELP_TAGLINE: &str = "native-protocol LLM gateway";
+
+/// This plane's lines in the `ENDPOINTS` block of `busbar --help` — the doors its dialects answer
+/// on — byte for byte as the binary has always printed them (shadow-oracle cells `cli__--help` /
+/// `cli__-h`). They name this plane's dialects, so this plane owns them (#47/#49); no trailing
+/// newline, the root splices them between two lines it owns.
+pub const HELP_ENDPOINTS: &str =
+    "    POST /<model>/v1/messages              Anthropic-format ingress (single model)
+    POST /<pool>/v1/messages               route to a configured pool
+    POST /<provider>/<model>/v1/messages   ad-hoc direct route
+    POST /v1/chat/completions              OpenAI-format ingress
+    POST /v2/chat                          Cohere-format ingress
+    POST /v1/responses                     Responses-API ingress
+    POST /v1/models/<model>:<action>       Gemini-format ingress (stable v1)
+    POST /v1beta/models/<model>:<action>   Gemini-format ingress
+    POST /model/<modelId>/converse         Bedrock Converse ingress
+    POST /model/<modelId>/converse-stream  Bedrock Converse streaming ingress
+    GET  /v1/models  /v1beta/models        list models (answers in the caller's dialect)";
+
+/// This plane's rows of `busbar --help`, as the composition root's CLI-help axis reads them:
+/// `("tagline", …)` the one-line description the help opens with, `("endpoint", …)` its rows of the
+/// `ENDPOINTS` block.
+pub const CLI_HELP: &[(&str, &str)] = &[("tagline", HELP_TAGLINE), ("endpoint", HELP_ENDPOINTS)];
 
 /// The operation class this plane serves ONE LEVEL DOWN, to another plane's unit that names only the
 /// class it needs, and the display name a refusal naming this plane reads — byte for byte the word

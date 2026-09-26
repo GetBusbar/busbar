@@ -89,27 +89,20 @@ Flags:
     --safe-mode         boot on base config.yaml alone (quarantine the persisted overlay)
 ";
 
-/// The part of `busbar --help` the root owns, after the linked planes' `Flags:` rows.
-const HELP_TAIL: &str = "
+/// The part of `busbar --help` the root owns, after the linked planes' `Flags:` rows and before
+/// their `ENDPOINTS` rows.
+const HELP_ENDPOINTS_HEAD: &str = "
 ENDPOINTS (once running, listen address from config.yaml `listen`):
-    POST /<model>/v1/messages              Anthropic-format ingress (single model)
-    POST /<pool>/v1/messages               route to a configured pool
-    POST /<provider>/<model>/v1/messages   ad-hoc direct route
-    POST /v1/chat/completions              OpenAI-format ingress
-    POST /v2/chat                          Cohere-format ingress
-    POST /v1/responses                     Responses-API ingress
-    POST /v1/models/<model>:<action>       Gemini-format ingress (stable v1)
-    POST /v1beta/models/<model>:<action>   Gemini-format ingress
-    POST /model/<modelId>/converse         Bedrock Converse ingress
-    POST /model/<modelId>/converse-stream  Bedrock Converse streaming ingress
-    GET  /v1/models  /v1beta/models        list models (answers in the caller's dialect)
-    GET  /stats  /healthz  /metrics
+";
+
+/// The part of `busbar --help` the root owns, after the linked planes' `ENDPOINTS` rows.
+const HELP_TAIL: &str = "    GET  /stats  /healthz  /metrics
 
 Docs: https://getbusbar.com   ·   Source: https://github.com/GetBusbar/busbar\n";
 
 /// `busbar --help`, assembled from the root's own text and the rows each linked plane declares
 /// (#47/#49: a plane owns its operator-facing text; the root names no plane). A plane compiled out
-/// contributes no row: its tagline and its `Flags:` rows leave with it.
+/// contributes no row: its tagline, its `Flags:` rows and its `ENDPOINTS` rows leave with it.
 pub(crate) fn render_help(ver: &str, planes: &[&[super::linked::CliHelpRow]]) -> String {
     let rows = || planes.iter().flat_map(|rows| rows.iter());
     let mut out = format!("busbar {ver}");
@@ -119,6 +112,11 @@ pub(crate) fn render_help(ver: &str, planes: &[&[super::linked::CliHelpRow]]) ->
     }
     out.push_str(HELP_HEAD);
     for (_, lines) in rows().filter(|(slot, _)| *slot == "flag") {
+        out.push_str(lines);
+        out.push('\n');
+    }
+    out.push_str(HELP_ENDPOINTS_HEAD);
+    for (_, lines) in rows().filter(|(slot, _)| *slot == "endpoint") {
         out.push_str(lines);
         out.push('\n');
     }
