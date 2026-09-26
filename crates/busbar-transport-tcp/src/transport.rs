@@ -3,7 +3,6 @@
 
 //! The [`busbar_contract::Transport`] implementation.
 
-use std::net::SocketAddr;
 use std::pin::Pin;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -20,8 +19,7 @@ use busbar_contract::{
     TransportMeta,
 };
 use futures::Stream;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::{TcpListener, TcpStream};
+use tokio::io::AsyncReadExt;
 use tokio_util::compat::TokioAsyncReadCompatExt;
 
 use crate::{deliver_refusal, TcpListenerHandle, TcpTransport};
@@ -45,36 +43,13 @@ impl Transport for TcpTransport {
         _keys: &'a busbar_contract::TransportKeyHandle,
     ) -> Fut<'a, Listener> {
         Box::pin(async move {
-            let bind = cfg.bind().unwrap_or("127.0.0.1:0");
-            let listener = TcpListener::bind(bind)
-                .await
-                .map_err(|_| TransportError::AddressRefused)?;
-            let addr = listener
-                .local_addr()
-                .map_err(|_| TransportError::AddressRefused)?
-                .to_string();
-            self.listeners
-                .lock()
-                .expect("listener registry poisoned")
-                .insert(addr.clone(), Arc::new(listener));
+            let addr = self.listen_on(cfg.bind().unwrap_or("127.0.0.1:0")).await?;
             Ok(Listener::new(Arc::new(TcpListenerHandle { addr })))
         })
     }
 
     fn accept<'a>(&'a self, l: &'a Listener) -> Fut<'a, Conn> {
-        Box::pin(async move {
-            let addr = l.local_addr();
-            let listener = self
-                .listeners
-                .lock()
-                .expect("listener registry poisoned")
-                .get(&addr)
-                .cloned()
-                .ok_or(TransportError::Closed)?;
-            let (stream, peer) = listener.accept().await.map_err(|e| Self::map_io_err(&e))?;
-            self.register(stream, peer)
-                .map_err(|e| Self::map_io_err(&e))
-        })
+        Box::pin(async move { self.accept_on(&l.local_addr()).await })
     }
 
     fn dial<'a>(
@@ -89,21 +64,7 @@ impl Transport for TcpTransport {
                 }
                 _ => return Err(TransportError::AddressRefused),
             };
-            let addr: SocketAddr = authority
-                .parse()
-                .map_err(|_| TransportError::AddressRefused)?;
-            // Bounded: a `connect` to an upstream that never answers the SYN would otherwise pin
-            // this task and the half-open socket for the OS's own multi-minute retransmit window.
-            // A budget that elapses is a `Timeout`, the same fact the io layer reports when it is
-            // the one that gives up first — the caller reads one outcome for "the upstream did not
-            // answer in time" however that verdict was reached.
-            let stream =
-                match tokio::time::timeout(self.dial_timeout, TcpStream::connect(addr)).await {
-                    Ok(result) => result.map_err(|e| Self::map_io_err(&e))?,
-                    Err(_) => return Err(TransportError::Timeout),
-                };
-            self.register(stream, addr)
-                .map_err(|e| Self::map_io_err(&e))
+            self.dial_authority(authority).await
         })
     }
 
@@ -192,21 +153,7 @@ impl Transport for TcpTransport {
         bytes: ScratchBytes<'a>,
     ) -> Fut<'a, usize> {
         Box::pin(async move {
-            let inner = self.inner(conn.id()).ok_or(TransportError::Closed)?;
-            let mut guard = inner.write.lock().await;
-            // Raced against the connection's close: a peer that stops reading fills the send buffer
-            // and would block `write_all` until it drains — which, for a peer that never reads, is
-            // never. `close` must be able to interrupt that, or the connection it means to shed
-            // leaks instead. The happy-path bytes are unchanged: this is the caller's own write when
-            // it wins the race.
-            let write = async {
-                guard
-                    .write_all(bytes.as_slice())
-                    .await
-                    .map_err(|e| Self::map_io_err(&e))?;
-                guard.flush().await.map_err(|e| Self::map_io_err(&e))
-            };
-            Self::raced_write(&inner, write).await?;
+            self.send(conn.id(), bytes.as_slice()).await?;
             Ok(bytes.len())
         })
     }

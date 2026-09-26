@@ -1,10 +1,11 @@
 //! The transport kind: how bytes move.
 //!
 //! A transport cannot name a plane and cannot name a unit. It yields and writes frames, inbound
-//! and outbound, and it knows no protocol and no principal. Transports are in-tree only and never
-//! dynamically loaded: they are inside the trusted computing base, and the controls on them are
-//! review, the source denylist, and the frame-honesty tests that turn red for a transport whose
-//! reported byte counts inflate or deflate against what actually moved.
+//! and outbound, and it knows no protocol and no principal. A transport is a swappable kind (#3):
+//! compiled in, or dropped in over the HOT lane's `#[repr(C)]` transport decl and admitted by the same
+//! signed-load pipeline as every plugin. The controls on one are that admission, review, the source
+//! denylist, and the frame-honesty tests that turn red for a transport whose reported byte counts
+//! inflate or deflate against what actually moved.
 
 // The transport-facing vocabulary, folded in from the former `busbar-contract-transport` crate
 // (DECISIONS #38): a KIND is a match-arm, not a crate, so the transport half lives here as one

@@ -7,10 +7,16 @@ rust-version = "1.97"
 description = "The tcp transport: a byte stream, the base every session transport composes over."
 license = "Apache-2.0"
 
-# DEPENDENCY POLICY. A transport is in-tree only and never dynamically loaded, so it sits inside
-# the trusted computing base and is reviewed rather than manifest-gated. It still names only
-# `busbar-contract` plus the async runtime and stream plumbing it actually needs: no plane, no
-# kernel crate, no capability crate.
+[lib]
+# rlib: the linked door (a build that links this crate hands the loader `hot::TRANSPORT_DECL`) and
+# the tests. cdylib: the dropped-in door — the same decl, exported as `busbar_transport_decl` for the
+# loader to `dlopen` (#3: a transport is swappable, compiled in OR dropped in, over the HOT lane).
+crate-type = ["rlib", "cdylib"]
+
+# DEPENDENCY POLICY. A transport is a plugin (#3), so its closure is `busbar-contract` plus the async
+# runtime and stream plumbing it actually needs: no plane, no kernel crate, no capability crate, and
+# not the crate that defines the HOT lane either — `src/hot.rs` restates the published layout it
+# implements (#84: a layout, not a crate).
 [dependencies]
 tokio-util = { workspace = true }
 busbar-contract = { path = "../busbar-contract" }
