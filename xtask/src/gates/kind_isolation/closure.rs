@@ -304,7 +304,9 @@ fn banned_set(name: &str) -> &'static str {
     let (kind, remainder, _) = resolve_kind(name);
     match refine(kind, &remainder) {
         Some("kernel") => "THE KERNEL",
-        Some("core") => "a `core-*` crate",
+        // #40(a) names the core-side crates `core-*`; since the core kind's members were seated as
+        // the cleanliness tier (BUSBAR-1.6.0.md:3780), that set is the cleanliness kind.
+        Some(super::CLEANLINESS) => "a `core-*` crate",
         Some("secret") => "a secret implementation",
         Some(k) if PLUGIN_KINDS.contains(&k) => "another plugin",
         Some(k) => match k {

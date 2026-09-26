@@ -643,8 +643,9 @@ pub fn selftest<'a>(
     use super::ROW_MATRIX;
     use crate::gates::{prove_rows_green, prove_rows_red};
 
-    // THE CORE CRATE THE PLANTS LAND IN. `busbar-core-connsec` is a `core` crate — neutral, and
-    // with no `[[instance]]` row today, so each plant is a cell that was ZERO and is not.
+    // THE CORE-SIDE CRATE THE PLANTS LAND IN. `busbar-core-connsec` is a `cleanliness` crate —
+    // `Family::Neutral`, and with no `[[instance]]` row today, so each plant is a cell that was ZERO
+    // and is not.
     const CORE: &str = "crates/busbar-core-connsec";
     const CORE_NAME: &str = "busbar-core-connsec";
 
