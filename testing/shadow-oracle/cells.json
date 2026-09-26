@@ -7553,7 +7553,7 @@
         "auth": "admin",
         "listener": "admin"
       },
-      "why": "Read-only new verb, never dual-controlled. This build binds NO EFFECT to the verb: an admitted call answers 404 not_found. Baseline: [404]. 1.6.0-additive: the "
+      "why": "Read-only new verb, never dual-controlled. Bound since d70824d11 (owner answer Q71(2)): answers a served plane's declaration for ?plane=<key>; this cell names n"
     },
     {
       "id": "admin.ops|GetPlaneFacts|unauth",
@@ -7971,7 +7971,7 @@
         "auth": "admin",
         "listener": "admin"
       },
-      "why": "Read-only new verb, never dual-controlled. This build binds NO EFFECT to the verb: an admitted call answers 404 not_found. Baseline: [404]. 1.6.0-additive: the "
+      "why": "Read-only new verb, never dual-controlled. Bound since d70824d11 (owner answer Q71(2)): an admitted call answers 200 with the node's ledger verification (checkp"
     },
     {
       "id": "admin.ops|GetVerify|unauth",
@@ -9043,7 +9043,7 @@
         "auth": "admin",
         "listener": "admin"
       },
-      "why": "Irreducible: under the baseline recorder config the fleet's operator key is unset, so the operator gate refuses it 403 forbidden before any effect. This build b"
+      "why": "Irreducible: under the baseline recorder config the fleet's operator key is unset, so the operator gate refuses it 403 forbidden before any effect. Bound since "
     },
     {
       "id": "admin.ops|PostCommitUpgrade|unauth",
@@ -10196,7 +10196,7 @@
         "auth": "admin",
         "listener": "admin"
       },
-      "why": "Not irreducible. This build binds NO EFFECT to the verb: an admitted call answers 404 not_found. Body not read. Baseline: [404]. 1.6.0-additive: the published 1"
+      "why": "Not irreducible. Bound since d70824d11 (owner answer Q71(2)): upserts one record of a served plane, only under a record kind that plane declares (aae5c08f2), wi"
     },
     {
       "id": "admin.ops|PostPlaneRecordWrite|unauth",
