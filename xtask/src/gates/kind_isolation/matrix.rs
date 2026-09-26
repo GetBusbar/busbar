@@ -1810,6 +1810,38 @@ fn ledger_with(cx: &Ctx, from: &str, to: &str) -> Result<crate::ctx::Overlay, St
     Ok(plant(cx, LEDGER, &text.replacen(from, to, 1)))
 }
 
+/// THE FIXTURE CRATE ([`instances::FIXTURE_CRATE`]) with `files` under its `src/`, and a `[[cell]]`
+/// row for `fixture × kind` at `count` appended to the ledger. `inherited` plants the base's copy
+/// of the ledger with the row in it as well, so the row pre-dates the branch and `minted-row` has
+/// nothing to say about it; without it the row is one this branch wrote.
+fn fixture_cell(
+    cx: &Ctx,
+    kind: &str,
+    count: &str,
+    files: &[(&str, &str)],
+    inherited: bool,
+) -> crate::ctx::Overlay {
+    let mut ov = instances::fixture_crate();
+    for (name, body) in files {
+        ov.set(
+            format!("{}/src/{name}", instances::FIXTURE_DIR),
+            (*body).to_string(),
+        );
+    }
+    let ledger = format!(
+        "{}\n\n[[cell]]\n{}\n",
+        cx.read(LEDGER).unwrap_or_default().trim_end(),
+        cell_row(instances::FIXTURE_CRATE, kind, count)
+    );
+    if inherited {
+        if let Some(sha) = super::debt_free::pinned_base(cx) {
+            ov.set_command(format!("git-show:{sha}:{LEDGER}"), ledger.clone());
+        }
+    }
+    ov.set(LEDGER, ledger);
+    ov
+}
+
 /// [`prove_rows_red`](crate::gates::prove_rows_red) over a one-substitution plant into the real
 /// ledger, with the substitution given as the `(anchor, replacement)` the caller worked out.
 fn plant_ledger<'a>(
@@ -1936,26 +1968,24 @@ pub fn selftest<'a>(
     // hand-written rows (a `[[cell]]`, an `[[edge]]` and a `[[disagreement]]` whose note the author
     // composed themselves) made the whole gate green.
     //
-    // The plant is a `[[cell]]` for a crate × kind that measures zero, so `dead-cell` fires too and
-    // the naming assertion is what separates the two claims: the row is refused for being NEW,
-    // before anything asks what it covers.
+    // The plant is the fixture crate naming one transport, and a `[[cell]]` row for that cell at
+    // EXACTLY its measurement: nothing about the row is wrong except that it is new, so the refusal
+    // the case asserts is the one it is about.
     report.push(prove_rows_red(
         cx,
         gate,
         "a `[[cell]]` row this branch minted is a 0 -> N raise, not a first measurement",
         &[ROW_MATRIX],
-        plant(
+        fixture_cell(
             cx,
-            LEDGER,
-            &format!(
-                "{}\n\n[[cell]]\n{}\n",
-                cx.read(LEDGER).unwrap_or_default().trim_end(),
-                cell_row("busbar-store-memory", "transport", "1")
-            ),
+            "transport",
+            "1",
+            &[("wire.rs", "pub const WIRE: &str = \"tcp\";\n")],
+            false,
         ),
         &[
             "minted-row",
-            "busbar-store-memory \u{d7} transport",
+            &format!("{} \u{d7} transport", instances::FIXTURE_CRATE),
             "this branch MINTED it",
         ],
     ));
