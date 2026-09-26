@@ -11,15 +11,12 @@
 //! out-param only on `Ok`); this module owns the translation from the borrowed `#[repr(C)]` POD to
 //! the real core primitive and back.
 //!
-//! ## What is faithful today, and what is Phase 2
+//! ## Whose identity
 //!
 //! The hot PODs the plane hands back ([`Facts`], [`Usage`], [`AuthQuery`]) carry the SHAPE of a
-//! request but not yet the resolved core identity (the real [`VirtualKey`](busbar_contract::records::VirtualKey),
-//! the `(key_id, model, provider)` metering attribution, the credential-store lookup). So each fn
-//! here drives the real primitive as far as is cleanly additive — the budget gate, the RAII grant,
-//! the `try_admit` chain engine, the `CostBreakdown` "parts add up" invariant, the write-behind
-//! metering accrual, the `AuthPrincipal` — and marks the identity-resolution wiring with a clear
-//! `// Phase 2:` note. Nothing here is called by the engine yet (the module is ADDITIVE).
+//! request, never who it is for: admission and billing resolve the caller from the handle the HOST
+//! minted ([`HostState`]'s caller, stamped from the auth middleware's context — DEC-SERVE G1/G1b),
+//! so an identity word a plane writes into a POD tail is never read as a key.
 
 use super::HostState;
 use crate::governance::{AdmitGrant, LimitBlocked};
@@ -42,6 +39,14 @@ const DEFAULT_AUTH_TTL_SECS: u64 = 300;
 /// attribution from the request. Kept explicit (not `""`) so a stray row is legible in the store.
 const MODEL_UNATTRIBUTED: &str = "plane:unattributed";
 const PROVIDER_UNATTRIBUTED: &str = "plane:unattributed";
+
+/// THE SYNTHETIC ADMISSION KEY (DEC-SERVE G1b): the ungrouped key a mint with NO caller admits as —
+/// `plane:tenant:<Facts.tenant_id>`. Never a key a plane named: a `Facts` identity tail is not read.
+pub(super) const SYNTH_TENANT_KEY: &str = "plane:tenant:";
+
+/// THE SYNTHETIC BILLING KEY (DEC-SERVE G1b): the key a mint with NO caller bills —
+/// `plane:admission:<Usage.admission>`. Never a key a plane named: a `Usage` key id is not read.
+pub(super) const SYNTH_ADMISSION_KEY: &str = "plane:admission:";
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 // govern_admit — REAL admission over `crate::governance`, RAII grant registered in the arena.
@@ -88,15 +93,19 @@ fn grant_for_blocked(state: &HostState, facts: &Facts) -> Result<AdmitGrant, Lim
         return Ok(AdmitGrant::default());
     };
     let pool = borrowed_str(facts.pool_name_ptr, facts.pool_name_len);
-    // Resolve the caller's admission identity from the `Facts` tail: `try_admit`/`chain_for` read
-    // ONLY the key's `id` (its attribution `total` bucket) and its `group` (the enforcement chain up
-    // the parent tree), so a `VirtualKey` reconstructed from just those two fields drives the SAME
-    // chain the in-process budget plane enforces (proven by `admit_over_facts_matches_try_admit`).
-    // When the tail is absent (an older sender, or a caller with no resolved identity) fall back to
-    // the ungrouped key synthesized from the tenant id — the pre-enrichment behaviour.
-    let key = resolved_key(facts).unwrap_or_else(|| synth_key(facts.tenant_id));
+    // WHO IS ADMITTED (DEC-SERVE G1b, #65/#40): the caller the minter stamped from the auth context —
+    // its real key, whose `id` + `group` are all `try_admit`/`chain_for` read — never an identity
+    // the plane wrote in the `Facts` tail. No caller: the named synthetic ungrouped key.
+    let synth;
+    let key = match &state.caller {
+        Some(caller) => caller.key(),
+        None => {
+            synth = virtual_key(format!("{SYNTH_TENANT_KEY}{}", facts.tenant_id), None);
+            &synth
+        }
+    };
     let now = busbar_kernel::store::now_ms() / 1_000;
-    gov.try_admit(state.app.cost.as_ref(), &key, &pool, now)
+    gov.try_admit(state.app.cost.as_ref(), key, &pool, now)
 }
 
 /// A blocked admission carried out of [`admit_reason`]: the RENDERED reason (the exact
@@ -144,36 +153,6 @@ pub(super) fn admit_reason(state: &HostState, facts: &Facts) -> Result<(), GovBl
             })
         }
     }
-}
-
-/// Reconstruct the caller's [`VirtualKey`](busbar_contract::records::VirtualKey) from the [`Facts`] identity tail,
-/// or `None` when the tail is absent (an older sender, per the sized-struct guard) or carries no key
-/// id. Only the fields `try_admit`/`chain_for` actually read are populated — `id` (the attribution
-/// bucket) and `group` (the enforcement chain) — so the reconstructed key drives the identical chain
-/// resolution; every other field is an inert default `chain_for` never consults.
-fn resolved_key(facts: &Facts) -> Option<busbar_contract::records::VirtualKey> {
-    let id_ptr = read_sized_field!(facts, facts.size, Facts, identity_id_ptr)?;
-    let id_len = read_sized_field!(facts, facts.size, Facts, identity_id_len)?;
-    let id = borrowed_str(id_ptr, id_len);
-    if id.is_empty() {
-        return None; // no resolved identity → the synth fallback (pre-enrichment behaviour).
-    }
-    // The group is optional even when an id is present: a null/empty range is an UNGROUPED key (an
-    // unlimited 1-bucket chain), exactly as `key.group == None` resolves in `chain_for`.
-    let group = match (
-        read_sized_field!(facts, facts.size, Facts, group_ptr),
-        read_sized_field!(facts, facts.size, Facts, group_len),
-    ) {
-        (Some(ptr), Some(len)) if !ptr.is_null() && len != 0 => Some(borrowed_str(ptr, len)),
-        _ => None,
-    };
-    Some(virtual_key(id, group))
-}
-
-/// A minimal ungrouped [`VirtualKey`](busbar_contract::records::VirtualKey) synthesized from a tenant id — the
-/// fallback when the [`Facts`] identity tail is absent (see [`grant_for`]).
-fn synth_key(tenant_id: u64) -> busbar_contract::records::VirtualKey {
-    virtual_key(format!("plane:tenant:{tenant_id}"), None)
 }
 
 /// Build the minimal [`VirtualKey`](busbar_contract::records::VirtualKey) `chain_for` reads: `id` + `group`. Every
@@ -226,11 +205,9 @@ pub(super) fn charge(state: &HostState, usage: &Usage) -> MeterOutcome {
     if CostBreakdown::new(amount, components).is_err() {
         return MeterOutcome::Rejected;
     }
-    // Accrue into the real write-behind metering time-series when governance is enabled. When the
-    // `Usage` attribution tail is present the row is recorded against the EXACT `(key_id, model,
-    // provider)` the in-process meter would (proven by `charge_over_usage_matches_record_metering`);
-    // when it is absent the row falls back to the synthetic attribution derived from the admission id,
-    // the pre-enrichment behaviour.
+    // Accrue into the real write-behind metering time-series when governance is enabled, against the
+    // minted caller's key and the tail's `(model, provider)` — the EXACT row the in-process meter
+    // records (proven by `charge_over_usage_matches_record_metering`).
     // THE LEDGER WRITE IS UNCONDITIONAL (DECISION #43, owner ruling 2026-09-22: "planes always
     // ledger"). The plane's counts are appended whether or not a `rate_card:` is configured: the card
     // decides only whether a READ can turn counts into money (#42 — billing off means the money VIEW
@@ -238,50 +215,47 @@ pub(super) fn charge(state: &HostState, usage: &Usage) -> MeterOutcome {
     // money, which #43/#71/#77(3) rule out. (This used to be `if state.app.cost.pricing_enabled()`,
     // which left a billing-off deployment with no record of what its planes did.)
     if let Some(gov) = state.app.governance.as_ref() {
-        let tail = resolved_attribution(usage);
-        // WHO PAYS (DEC-SERVE G1, #65/#40). A PLANE mint carries the caller the auth middleware
-        // resolved, and that caller is the ONLY key billed: whatever key id the plane wrote in its
-        // `Usage` tail is ignored (a plane that forges one bills its real caller, never the victim).
-        // Only the host's own mints (`caller: None`, a `Usage` the kernel composed) read the tail's
-        // key, and there a tail with no key id is no attribution at all (the pre-enrichment rule).
-        let (billed, tail) = match &state.caller {
-            Some(caller) => (caller.key().cloned(), tail),
+        // WHO PAYS (DEC-SERVE G1/G1b, #65/#40): the caller the minter stamped from the auth context
+        // is the ONLY key billed — the `Usage` tail's key id is never read as a key, so a plane that
+        // forges one bills its real caller, never the victim. No caller: the named synthetic key.
+        let synth;
+        let key = match &state.caller {
+            Some(caller) => caller.key(),
             None => {
-                let tail = tail.filter(|(k, _, _)| !k.is_empty());
-                let key = tail.as_ref().map(|(k, _, _)| virtual_key(k.clone(), None));
-                (key, tail)
+                synth = virtual_key(format!("{SYNTH_ADMISSION_KEY}{}", usage.admission.0), None);
+                &synth
             }
         };
-        // The synthetic fallback: no caller and no tail key bills the admission-derived key.
-        let key = billed
-            .unwrap_or_else(|| virtual_key(format!("plane:admission:{}", usage.admission.0), None));
-        let (model, provider) = match tail.as_ref() {
-            Some((_, m, p)) => (m.as_str(), p.as_str()),
-            None => (MODEL_UNATTRIBUTED, PROVIDER_UNATTRIBUTED),
-        };
+        let (model, provider) = resolved_attribution(usage).unwrap_or_else(|| {
+            (
+                MODEL_UNATTRIBUTED.to_string(),
+                PROVIDER_UNATTRIBUTED.to_string(),
+            )
+        });
         let token_usage = token_usage_for(component, usage.amount);
         let now = busbar_kernel::store::now_ms() / 1_000;
-        gov.record_metering(&key.id, model, provider, token_usage.as_ref(), now);
+        gov.record_metering(&key.id, &model, &provider, token_usage.as_ref(), now);
         // ITEM 123 (#71): the keyed-unit tail — every class the plane counted, reserved and open —
         // lands in the enforcement ledger VERBATIM for the attributed key; the card prices it.
         // SAFETY: `usage` is the live POD this slot was handed; the decode reads the tail only
         // when the sender's advertised `size` proves it was written.
         let units = unsafe { busbar_plugin::hot::decode_usage_units(usage) };
         if !units.is_empty() {
-            gov.record_usage(&state.app.cost, &key, "", model, &units, now);
+            gov.record_usage(&state.app.cost, key, "", &model, &units, now);
         }
     }
     MeterOutcome::Charged
 }
 
-/// Read the metering attribution `(key_id, model, provider)` off the [`Usage`] tail, or `None` when
-/// the tail is absent (an older sender, per the sized-struct guard); the key id may read empty. The
-/// three words are exactly `record_metering`'s `(key_id, model, provider)` — so a present tail records
-/// the identical row the in-process meter does.
-fn resolved_attribution(usage: &Usage) -> Option<(String, String, String)> {
+/// Read the `(model, provider)` words off the [`Usage`] attribution tail, or `None` when the tail is
+/// absent (an older sender, per the sized-struct guard) or names no key — the pre-enrichment row. The
+/// tail's key id is read only as that presence marker, NEVER as the key billed (DEC-SERVE G1b).
+fn resolved_attribution(usage: &Usage) -> Option<(String, String)> {
     let key_ptr = read_sized_field!(usage, usage.size, Usage, key_id_ptr)?;
     let key_len = read_sized_field!(usage, usage.size, Usage, key_id_len)?;
-    let key_id = borrowed_str(key_ptr, key_len);
+    if key_ptr.is_null() || key_len == 0 {
+        return None;
+    }
     let model = match (
         read_sized_field!(usage, usage.size, Usage, model_ptr),
         read_sized_field!(usage, usage.size, Usage, model_len),
@@ -296,7 +270,7 @@ fn resolved_attribution(usage: &Usage) -> Option<(String, String, String)> {
         (Some(ptr), Some(len)) => borrowed_str(ptr, len),
         _ => String::new(),
     };
-    Some((key_id, model, provider))
+    Some((model, provider))
 }
 
 /// Project a [`Usage`] onto a [`TokenUsage`](crate::billing::TokenUsage) — the shape metering

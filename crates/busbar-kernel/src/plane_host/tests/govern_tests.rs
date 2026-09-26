@@ -103,6 +103,21 @@ fn gov() -> Arc<crate::governance::GovState> {
     )
 }
 
+/// Run `f` over a host handle minted FOR `key` — the middleware-resolved caller carried into the
+/// mint (DEC-SERVE G1b), exactly as a linked plane's `EngineHost` seams and the HOT door mint it.
+fn with_caller<R>(
+    app: &crate::state::App,
+    key: &busbar_contract::records::VirtualKey,
+    f: impl FnOnce(busbar_plugin::hot::host::HostCtx, &busbar_plugin::hot::host::PlaneHostVtable) -> R,
+) -> R {
+    let ctx = busbar_contract::records::PlaneRequestCtx {
+        key: Some(Arc::new(key.clone())),
+    };
+    let dest = crate::plane_host::egress::OperatorDestinations::default();
+    let scope = crate::plane_host::DispatchScope::new();
+    crate::plane_host::with_plane_door("test-plane", Some(&ctx), &dest, app, &scope, f)
+}
+
 /// THE GOVERN FAITHFULNESS PROOF: driving `govern_admit` over a [`Facts`] carrying the caller's
 /// REAL `(key_id, group)` admits against the EXACT SAME budget bucket the plane's own
 /// `try_admit(&real_key, pool)` charges — the govern analogue of the breaker's
@@ -136,12 +151,12 @@ fn admit_over_facts_matches_try_admit() {
             "the real key admits under the cap"
         );
     }
-    // HOST: admit through the vtable over a Facts carrying the SAME (id, group). Exactly 2 fit.
+    // HOST: admit through the vtable on a mint carrying the SAME caller. Exactly 2 fit.
     let app = crate::test_support::TestApp::new()
         .governance(Arc::clone(&gov))
         .cost(group_cost("team", 5))
         .build();
-    let admitted = with_dispatch_scope(&app, |host, vt| {
+    let admitted = with_caller(&app, &key, |host, vt| {
         let mut n = 0;
         for _ in 0..4 {
             let facts = Facts::with_attribution(
@@ -166,23 +181,59 @@ fn admit_over_facts_matches_try_admit() {
     );
 }
 
-/// A [`Facts`] WITHOUT the identity tail (`Facts::new`) still admits against the synthesized
-/// ungrouped key — the pre-enrichment fallback is unchanged, so the enrichment is behavior-additive.
+/// DEC-SERVE G1b, THE NAMED SYNTHETIC ADMISSION PATH: a plane mint with NO caller
+/// (`with_borrowed_host_as`) admits as `SYNTH_TENANT_KEY` + the tenant id — an ungrouped key whose
+/// unlimited 1-bucket chain admits — and NEVER as the key its `Facts` tail names. RED arm: reading
+/// the tail resolves `vk_victim` in the unknown group `ghost`, which refuses (MissingGroup).
 #[test]
-fn admit_without_identity_falls_back_to_synth() {
+fn a_mint_with_no_caller_admits_the_named_synthetic_key_never_the_tail() {
+    assert_eq!(crate::plane_host::govern::SYNTH_TENANT_KEY, "plane:tenant:");
     let gov = gov();
     let app = crate::test_support::TestApp::new()
         .governance(gov)
         .cost(group_cost("team", 1))
         .build();
-    with_dispatch_scope(&app, |host, vt| {
-        // No attribution → synth ungrouped key → the unlimited 1-bucket chain admits.
-        let facts = Facts::new(1, 1_000, 42, 0, 0, b"pool-x");
+    let scope = crate::plane_host::DispatchScope::new();
+    crate::plane_host::with_borrowed_host_as("hot", &app, &scope, |host, vt| {
+        let facts =
+            Facts::with_attribution(1, 1_000, 42, 0, 0, b"pool-x", b"vk_victim", Some(b"ghost"));
         assert_eq!(
             (vt.govern_admit.unwrap())(host, &*facts as *const Facts),
-            Decision::Admit
+            Decision::Admit,
+            "the synthetic ungrouped key admits; the tail's ghost-grouped key is never resolved"
         );
     });
+}
+
+/// DEC-SERVE G1b (#65/#40): a HOT plane naming ANOTHER key in its `Facts` identity tail is admitted
+/// against the REAL caller's budget chain. The caller sits in `team` (1c cap at 1c/request → one
+/// request fits); the plane names the ungrouped, unlimited `vk_victim`. RED arm: admission from the
+/// tail admits both requests.
+#[test]
+fn a_forged_facts_identity_is_admitted_against_the_real_callers_chain() {
+    let gov = gov();
+    let app = crate::test_support::TestApp::new()
+        .governance(gov)
+        .cost(group_cost("team", 1))
+        .build();
+    let decisions = with_caller(
+        &app,
+        &test_key("vk_real_caller", Some("team")),
+        |host, vt| {
+            (0..2)
+                .map(|_| {
+                    let facts =
+                        Facts::with_attribution(0, 0, 0, 0, 0, b"pool-x", b"vk_victim", None);
+                    (vt.govern_admit.unwrap())(host, &*facts as *const Facts)
+                })
+                .collect::<Vec<_>>()
+        },
+    );
+    assert_eq!(
+        decisions,
+        vec![Decision::Admit, Decision::Deny],
+        "the real caller's 1-request chain decides, not the key the plane named"
+    );
 }
 
 /// THE GOVERN-REFUSAL FAITHFULNESS PROOF (the govern analogue of the breaker's
@@ -221,7 +272,7 @@ fn govern_admit_reason_reason_bytes_match_direct_try_admit() {
             .governance(Arc::clone(&gov))
             .cost(make_cost())
             .build();
-        with_dispatch_scope(&app, |host, vt| {
+        with_caller(&app, &key, |host, vt| {
             let facts = Facts::with_attribution(
                 0,
                 0,
@@ -278,8 +329,8 @@ fn govern_admit_reason_admits_and_registers_grant() {
         .governance(gov)
         .cost(group_cost("team", 5))
         .build();
-    with_dispatch_scope(&app, |host, vt| {
-        let facts = Facts::with_attribution(0, 0, 0, 0, 0, b"pool-x", b"vk_ok", Some(b"team"));
+    with_caller(&app, &test_key("vk_ok", Some("team")), |host, vt| {
+        let facts = Facts::new(0, 0, 0, 0, 0, b"pool-x");
         let mut buf = [0u8; 64];
         let mut out = MaybeUninit::<GovRefusal>::uninit();
         let decision = (vt.govern_admit_reason.unwrap())(
@@ -298,7 +349,7 @@ fn govern_admit_reason_admits_and_registers_grant() {
         );
         // SAFETY: live HostState from `with_dispatch_scope`.
         let state: &crate::plane_host::HostState = unsafe { crate::plane_host::recover(host) }
-            .expect("host generation still live inside with_dispatch_scope");
+            .expect("host generation still live inside the mint");
         assert_eq!(
             state.scope.registered(),
             1,
@@ -326,12 +377,12 @@ fn charge_over_usage_matches_record_metering() {
         }),
         now,
     );
-    // HOST: charge a Usage carrying the SAME (key_id, model, provider).
+    // HOST: charge a Usage carrying the SAME (model, provider) on a mint for the SAME caller.
     let app = crate::test_support::TestApp::new()
         .governance(Arc::clone(&gov))
         .cost(billing_on_cost())
         .build();
-    with_dispatch_scope(&app, |host, vt| {
+    with_caller(&app, &test_key("vk_faithful_meter", None), |host, vt| {
         let usage = Usage::with_attribution(
             UsageComponent::Tokens,
             100,
@@ -435,7 +486,7 @@ fn billing_off_charge_still_appends_the_counts_to_the_ledger() {
         .governance(Arc::clone(&gov))
         .cost(cost)
         .build();
-    with_dispatch_scope(&app, |host, vt| {
+    with_caller(&app, &test_key("vk_billing_off", None), |host, vt| {
         let usage = Usage::with_attribution(
             UsageComponent::Tokens,
             42,
@@ -482,7 +533,7 @@ fn charge_decodes_the_keyed_unit_tail_into_the_ledger() {
         "search_units".to_string(),
         7u64,
     )]));
-    with_dispatch_scope(&app, |host, vt| {
+    with_caller(&app, &test_key("vk_units", None), |host, vt| {
         let usage = Usage::with_units(
             UsageComponent::Queries,
             0,
@@ -505,8 +556,9 @@ fn charge_decodes_the_keyed_unit_tail_into_the_ledger() {
     assert_eq!(read.spend_cents, 1, "7 × 0.2 cents = 1.4, truncated once");
 }
 
-/// Charge `units` of `search_units` through a HOT plane's door (`with_plane_door`) whose `Usage` tail
-/// names `tail_key`, for the middleware-resolved `caller`; return the spend each key's bucket reads.
+/// Charge 7 `search_units` through a plane mint whose `Usage` tail names `tail_key` — for the
+/// middleware-resolved `caller` (`with_plane_door`), or with none (`with_borrowed_host_as`); return
+/// the spend each key in `read` reads.
 fn door_charge(caller: Option<&str>, tail_key: &[u8], read: &[&str]) -> Vec<i64> {
     let card: std::collections::BTreeMap<String, crate::config::RateEntryCfg> =
         serde_yaml::from_str("rerank: { units: { search_units: 2000 } }\n").expect("parses");
@@ -521,12 +573,8 @@ fn door_charge(caller: Option<&str>, tail_key: &[u8], read: &[&str]) -> Vec<i64>
         "search_units".to_string(),
         7u64,
     )]));
-    let ctx = caller.map(|id| busbar_contract::records::PlaneRequestCtx {
-        key: Some(Arc::new(test_key(id, None))),
-    });
-    let dest = crate::plane_host::egress::OperatorDestinations::default();
     let scope = crate::plane_host::DispatchScope::new();
-    crate::plane_host::with_plane_door("hot", ctx.as_ref(), &dest, &app, &scope, |host, vt| {
+    let charge = |host, vt: &busbar_plugin::hot::host::PlaneHostVtable| {
         let usage = Usage::with_units(
             UsageComponent::Queries,
             0,
@@ -541,7 +589,11 @@ fn door_charge(caller: Option<&str>, tail_key: &[u8], read: &[&str]) -> Vec<i64>
             (vt.meter_charge.unwrap())(host, &*usage as *const Usage),
             MeterOutcome::Charged
         );
-    });
+    };
+    match caller {
+        Some(id) => with_caller(&app, &test_key(id, None), charge),
+        None => crate::plane_host::with_borrowed_host_as("hot", &app, &scope, charge),
+    }
     let now = busbar_kernel::store::now_ms() / 1_000;
     read.iter()
         .map(|id| {
@@ -570,11 +622,14 @@ fn a_forged_usage_key_id_is_billed_to_the_real_caller() {
     );
 }
 
-/// DEC-SERVE G1 on an OPEN route (no caller resolved): the plane's tail key is still ignored — the
-/// charge lands on the synthetic admission-derived key, never on the key the plane named.
+/// DEC-SERVE G1b, THE NAMED SYNTHETIC BILLING PATH: a plane mint with NO caller
+/// (`with_borrowed_host_as`) bills `SYNTH_ADMISSION_KEY` + the admission id, never the key the
+/// plane's `Usage` tail named.
 #[test]
 fn a_door_with_no_caller_never_bills_the_tail_key() {
-    let spend = door_charge(None, b"vk_victim", &["plane:admission:5", "vk_victim"]);
+    let synth = format!("{}5", crate::plane_host::govern::SYNTH_ADMISSION_KEY);
+    assert_eq!(synth, "plane:admission:5");
+    let spend = door_charge(None, b"vk_victim", &[&synth, "vk_victim"]);
     assert_eq!(
         spend,
         vec![1, 0],
