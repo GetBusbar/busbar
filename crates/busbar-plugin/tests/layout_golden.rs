@@ -15,7 +15,9 @@ use busbar_plugin::hot::decl::{
     BuildCtx, DeclBillableClass, DeclMetricFamily, DeclServedOpClass, DeclStr, PlaneDecl,
 };
 use busbar_plugin::hot::host::PlaneHostVtable;
-use busbar_plugin::hot::transport::{TransportDecl, WireConfig, WireLower, WireSettings};
+use busbar_plugin::hot::transport::{
+    TransportDecl, WireConfig, WireLower, WireSettings, WireWaker,
+};
 use busbar_plugin::hot::workitem::{EmitHandle, InboundHandle, WorkItem};
 use busbar_plugin::hot::*;
 use busbar_plugin::AbiPreamble;
@@ -599,7 +601,7 @@ fn compute_layout() -> String {
             admission,
             metric_families_ptr,
             metric_families_len,
-            // The served operation classes (minor 27).
+            // The served operation classes (minor 28).
             served_op_classes_ptr,
             served_op_classes_len
         ]
@@ -635,7 +637,16 @@ fn compute_layout() -> String {
             close,
             // The linked row's SESSION (minor 26).
             session,
-            _reserved
+            _reserved,
+            // The POLL shape (minor 28): `poll_read`/`poll_write` and `poll_flush`/`poll_close` are
+            // same-width, same-shape pairs — a swap is invisible to everything but this.
+            init,
+            connect,
+            poll_accept,
+            poll_read,
+            poll_write,
+            poll_flush,
+            poll_close
         ]
     );
     record!(
@@ -659,6 +670,8 @@ fn compute_layout() -> String {
         [size, version, role, _reserved, slot, handle]
     );
     record!(s, WireLower, [decl, state]);
+    // The host's waker handle (minor 28).
+    record!(s, WireWaker, [size, version, wake]);
 
     s
 }

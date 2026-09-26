@@ -15,7 +15,9 @@
 //!   served over it answers the bytes the LINKED build answers — both builds are held to one pinned
 //!   exchange (`fixtures/transport_dropped_in_exchange.txt`, the `date` value masked). RED ARM, in
 //!   the same test: the same build with the tarball removed refuses to boot — the layers above the
-//!   wire compose over nothing — so the bytes could only have crossed the dropped-in wire.
+//!   wire compose over nothing — so the bytes could only have crossed the dropped-in wire. And the
+//!   door has the linked door's THREAD-PER-CORE shape (ruling K8c): every data worker listens
+//!   through the wire, one listener each on the one address.
 //! * In a build that DOES link it (the default), the same tarball is refused at boot exactly as a
 //!   second linked row with that key would be: two transport plugins declaring one key. And the
 //!   linked build, with nothing dropped in, serves the pinned exchange.
@@ -29,6 +31,13 @@ use std::process::{Child, Command, Output};
 use std::time::{Duration, Instant};
 
 include!(concat!(env!("OUT_DIR"), "/linked_transports.rs"));
+
+/// The data workers each build runs: more than one, so the per-core fan-out is observable.
+const WORKERS: usize = 2;
+
+/// The line the data door writes, per worker, once the wire under it has bound that worker's
+/// listener (`root::transports::serve_door`, DEBUG).
+const THROUGH_THE_WIRE: &str = "data door listening through the transport under it";
 
 /// The one request both builds answer, and the exchange they answer it with.
 const REQUEST: &str = "GET /v1/models HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n";
@@ -120,6 +129,8 @@ fn write_configs(dir: &Path, data_port: u16, admin_port: u16) {
         format!(
             r#"listen: "127.0.0.1:{data_port}"
 admin_listen: "127.0.0.1:{admin_port}"
+advanced:
+  worker_threads: {WORKERS}
 admin_require_mtls: false
 auth:
   chain: []
@@ -146,7 +157,9 @@ fn busbar(dir: &Path) -> Command {
     cmd.env("BUSBAR_CONFIG", dir.join("config.yaml"))
         .env("BUSBAR_PROVIDERS", dir.join("providers.yaml"))
         .env("MOCK_KEY", "x")
-        .env("RUST_LOG", "warn");
+        // A bare level word (the node's stderr filter reads no directives): DEBUG, for the door's
+        // per-worker line (`THROUGH_THE_WIRE`).
+        .env("RUST_LOG", "debug");
     cmd
 }
 
@@ -159,10 +172,11 @@ impl Drop for Reap {
     }
 }
 
-/// Boot, and answer the one request once the data door is up: the raw exchange, `date` masked, and
+/// Boot, and answer the one request once the data door is up: the raw exchange, `date` masked,
 /// whether the listener on the door is the KERNEL'S OWN (see [`kernel_socket`]), asked while the node
-/// still serves.
-fn serve_once(dir: &Path, data_port: u16) -> (String, bool) {
+/// still serves, and how many data workers listen THROUGH THE WIRE under the door (read off the
+/// node's log once `expect_through` of them have — or its deadline passes).
+fn serve_once(dir: &Path, data_port: u16, expect_through: usize) -> (String, bool, usize) {
     let log = std::fs::File::create(dir.join("out.log")).unwrap();
     let mut child = Reap(
         busbar(dir)
@@ -180,17 +194,30 @@ fn serve_once(dir: &Path, data_port: u16) -> (String, bool) {
             );
         }
         if let Some(raw) = exchange(data_port) {
-            return (masked(&raw), kernel_socket(data_port));
+            let kernel = kernel_socket(data_port);
+            let settle = Instant::now() + Duration::from_secs(10);
+            let through = loop {
+                let n = std::fs::read_to_string(dir.join("out.log"))
+                    .unwrap_or_default()
+                    .lines()
+                    .filter(|l| l.contains(THROUGH_THE_WIRE))
+                    .count();
+                if n >= expect_through || Instant::now() > settle {
+                    break n;
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            };
+            return (masked(&raw), kernel, through);
         }
         assert!(Instant::now() < deadline, "the data door never answered");
         std::thread::sleep(Duration::from_millis(50));
     }
 }
 
-/// WHO OWNS THE DOOR'S SOCKET. The kernel's data listeners bind with SO_REUSEPORT (one per data
-/// worker on one address); a socket a dropped-in wire bound is its own plain bind. So a second
-/// SO_REUSEPORT socket on the port binds beside the kernel's and is refused beside the wire's — the
-/// witness that a request crossed the dropped-in wire, not a kernel socket that happened to answer.
+/// THE KERNEL'S OWN DOOR. The kernel's data listeners bind with SO_REUSEPORT (one per data worker on
+/// one address), so a second SO_REUSEPORT socket on the port binds beside them. (A dropped-in wire's
+/// listeners are SO_REUSEPORT too since airlock minor 28 — the same per-core fan-out — so for that
+/// door the witness is the wire's own per-worker line, [`THROUGH_THE_WIRE`].)
 fn kernel_socket(port: u16) -> bool {
     use socket2::{Domain, Socket, Type};
     let addr: std::net::SocketAddr = ([127, 0, 0, 1], port).into();
@@ -249,12 +276,13 @@ fn a_dropped_in_transport_registers_through_the_one_fold_and_serves() {
 
     if linked {
         // THE LINKED BUILD SERVES THE PINNED EXCHANGE over its own wire.
-        let (served, kernel) = serve_once(&dir, data_port);
+        let (served, kernel, through) = serve_once(&dir, data_port, 0);
         assert_eq!(served, pinned(), "the linked build's exchange");
         assert!(
             kernel,
             "the linked build's data door is the kernel's own socket"
         );
+        assert_eq!(through, 0, "no data worker listens through a wire");
         // RED: the same wire dropped in on a key this build links is refused at boot, as a second
         // linked row with that key is — two transport plugins declaring one key.
         drop_in(&dir, &lib);
@@ -278,15 +306,17 @@ fn a_dropped_in_transport_registers_through_the_one_fold_and_serves() {
         // THE DROPPED-IN WIRE SERVES: the one request, over the wire in `plugins/`, answers the
         // exchange the linked build answers, byte for byte but the clock.
         drop_in(&dir, &lib);
-        let (served, kernel) = serve_once(&dir, data_port);
+        let (served, _, through) = serve_once(&dir, data_port, WORKERS);
         assert_eq!(
             served,
             pinned(),
             "the dropped-in build's exchange is the linked build's"
         );
-        assert!(
-            !kernel,
-            "the request crossed the dropped-in wire's own socket, not a kernel listener"
+        // Every data worker's listener is the WIRE's (none is the kernel's: a worker listens through
+        // the wire or binds the kernel socket, never both) — the thread-per-core door, per core.
+        assert_eq!(
+            through, WORKERS,
+            "each of the {WORKERS} data workers listens through the dropped-in wire"
         );
     }
     let _ = std::fs::remove_dir_all(&dir);

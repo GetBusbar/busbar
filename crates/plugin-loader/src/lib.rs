@@ -110,8 +110,8 @@ pub use registry::{
 };
 pub use stage::sweep_dead_staging;
 pub use transport::{
-    link_transport, load_transport, load_transport_from_bytes, wire_settings, BuiltTransport,
-    DynTransport,
+    host_wake, link_transport, load_transport, load_transport_from_bytes, wire_settings,
+    BuiltTransport, DynTransport, WakeToken, WirePoll, HOST_WAKER,
 };
 pub use transport_adapter::WireTransport;
 

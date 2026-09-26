@@ -119,7 +119,8 @@ impl PlaneDispatch for DrivenOnce {
 /// connection it accepts is served by the kernel's own hardened loop over the connection's detached
 /// byte stream (`busbar_kernel::tls::serve_wire`), secured by `security` where the listener has a
 /// `tls:` block. The same router, the same body bounds, the same drain on `shutdown` as the
-/// kernel's socket listener — only who owns the socket differs.
+/// kernel's socket listener — only who owns the socket differs. Every data worker calls this, so the
+/// wire binds one listener per worker on `bind`: the per-core fan-out a linked wire's door has.
 ///
 /// # Errors
 ///
@@ -133,6 +134,11 @@ pub async fn serve_door(
 ) -> Result<(), busbar_contract::transport::wire::TransportError> {
     let keys = busbar_contract::TransportKeyHandle::keyless();
     let listener = wire.listen(&Bind(bind), &keys).await?;
+    tracing::debug!(
+        listen = %listener.local_addr(),
+        transport = wire.key(),
+        "data door listening through the transport under it"
+    );
     busbar_kernel::tls::serve_wire(wire, listener, router, security, shutdown).await;
     Ok(())
 }

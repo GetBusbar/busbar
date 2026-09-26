@@ -2057,9 +2057,9 @@ jobs:
     # plus one set of crate test binaries; `check`'s own workspace clippy+build+test is ~13 min warm
     # and ~40 cold, and a row is a strict subset of that work. 45 leaves cold-cache headroom.
     timeout-minutes: 60
-    # FULL TIER ONLY. Thirteen legs: eight a near-full workspace recompile under a distinct feature
-    # closure, five (the single-plane rows) one root-package build with its defaults off — a
-    # promotion check, not a per-commit one. Skipped on pushes to non-promotion branches
+    # FULL TIER ONLY. Fourteen legs: eight a near-full workspace recompile under a distinct feature
+    # closure, six (the single-plane rows and the dropped-in transport row) one root-package build
+    # with its defaults off — a promotion check, not a per-commit one. Skipped on pushes to non-promotion branches
     # (integration/**); runs on every pull request, on dev/qa/main, and on workflow_dispatch. `dev`
     # is train-write-only (DECISIONS #67), so skipping only integration/** costs ~the same as a
     # qa-only guard while keeping this job COUNTED and enforced in ci-umbrella. See the tier note at
@@ -2161,6 +2161,19 @@ jobs:
           - name: single plane decision
             features: busbar/plane-decision
             tests: -p busbar --tests --no-default-features
+            scope: package
+          # THE DROPPED-IN TRANSPORT DOOR (#3 OWNER-LOCKED, #30; ruling K8b residue / K8c): the root
+          # binary with every default feature EXCEPT `transport-tcp`, so the build links no `tcp` row
+          # and the wire serves only when its cdylib is dropped into `plugins/`. The one test that
+          # boots it both ways — no tarball: refused at boot (layers compose over nothing); tarball:
+          # serves the linked build's pinned exchange through the dropped-in wire, one listener per
+          # data worker. `-p busbar-plugin-loader` is on the line for its dev-edge to the wire with
+          # `dropped-in` on: that is what builds the wire's cdylib beside the binary, which the test
+          # finds by kind and refuses to skip without under CI. `check` runs the same test with the
+          # default (linked) row only.
+          - name: dropped-in tcp transport
+            features: busbar/auth-admin-tokens,busbar/hooks-ranking,busbar/proto-llm,busbar/plane-mcp,busbar/plane-a2a,busbar/plane-voice,busbar/plane-decision,busbar/export-file,busbar/export-webhook,busbar/export-prometheus,busbar/root-admin,busbar/root-llm
+            tests: -p busbar-plugin-loader -p busbar --no-default-features --test transport_dropped_in_serves
             scope: package
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7

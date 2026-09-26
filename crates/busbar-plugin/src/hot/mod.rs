@@ -85,7 +85,7 @@ pub use decl::{BuildCtx, DeclBillableClass, DeclStr, IngressCarrier, OpaqueHandl
 pub use host::PlaneHostVtable;
 pub use pod::*;
 pub use transport::{
-    RawWireOutcome, TransportDecl, WireConfig, WireLower, WireOutcome, WireSettings,
-    TRANSPORT_DECL_MINOR,
+    RawWireOutcome, TransportDecl, WireConfig, WireLower, WireOutcome, WireSettings, WireWaker,
+    NO_WAKER, TRANSPORT_DECL_MINOR,
 };
 pub use workitem::{EmitHandle, EmitKind, InboundHandle, InboundKind, WorkItem};

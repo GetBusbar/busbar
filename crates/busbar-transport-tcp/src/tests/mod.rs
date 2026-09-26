@@ -888,3 +888,31 @@ async fn a_read_error_deregisters_the_connection() {
         "a read error deregisters the connection instead of leaking the registry entry"
     );
 }
+
+/// THE HOT DOOR'S LISTENER FAN-OUT (airlock minor 28; ruling K8c: the dropped-in door gets the
+/// linked door's thread-per-core model): the host listens once per acceptor on ONE address, so the
+/// door's bind is shareable on unix — a second listener binds the address the first one bound, and a
+/// connection to it is accepted by one of the two. RED against the minor-27 door, whose `listen` was
+/// the trait's exclusive bind (a second bind on the address is `EADDRINUSE`).
+#[cfg(unix)]
+#[tokio::test]
+async fn the_hot_doors_listener_binds_once_per_acceptor_on_one_address() {
+    let (first, addr) = TcpTransport::bind_shared("127.0.0.1:0").expect("first acceptor");
+    let (second, again) = TcpTransport::bind_shared(&addr).expect("second acceptor, same address");
+    assert_eq!(addr, again);
+    let _peer = tokio::net::TcpStream::connect(&addr).await.unwrap();
+    let taken = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        tokio::select! {
+            a = first.accept() => a,
+            b = second.accept() => b,
+        }
+    })
+    .await
+    .expect("one acceptor takes the connection");
+    assert!(taken.is_ok(), "{taken:?}");
+    // An address that is not one is refused before any socket exists.
+    assert_eq!(
+        TcpTransport::bind_shared("not an address").err(),
+        Some(TransportError::AddressRefused)
+    );
+}

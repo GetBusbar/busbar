@@ -1260,11 +1260,11 @@ fn serve_thread_per_core(
     secret_resolver: Arc<busbar_kernel::config::secret::SecretResolver>,
     shutdown_tx: &tokio::sync::broadcast::Sender<()>,
     worker_shutdown: tokio::sync::watch::Receiver<bool>,
-    // The wire under the data door when it came in dropped in (`BootRegistry::dropped_door`): it
-    // owns the ONE listener on `addr`, so one worker serves it.
+    // The wire under the data door when it came in dropped in (`BootRegistry::dropped_door`): the
+    // same `n` workers serve it, each through its OWN listener the wire binds on `addr` — the
+    // per-core fan-out the kernel's SO_REUSEPORT listeners give a linked wire (ruling K8c).
     door: Option<Arc<dyn busbar_contract::Transport>>,
 ) -> Vec<std::thread::JoinHandle<()>> {
-    let n = if door.is_some() { 1 } else { n };
     // Distinct cores to pin the n workers to, when the platform exposes them. Fewer ids than
     // workers (or none) just means the tail runs unpinned — advisory, never a boot failure.
     // Validate the TLS material ONCE, here on the control thread, before any worker exists: every
@@ -1337,7 +1337,7 @@ fn serve_thread_per_core(
                         die(format!("failed to build per-core data runtime {i}: {e}"))
                     });
                 rt.block_on(async move {
-                    // A dropped-in wire under the door binds its own listener.
+                    // A dropped-in wire under the door binds this worker's listener itself.
                     let listener = door.is_none().then(|| {
                         let std_listener = bind_reuseport_listener(&listen).unwrap_or_else(|e| {
                             die(format!(
@@ -1447,13 +1447,17 @@ async fn serve_data(
         busbar_core_connsec::prepare(label, Some(tls), &secret_resolver, true)
             .unwrap_or_else(|e| die(e.to_string()))
     });
-    // The same one line per listener `serve_listener` writes.
+    // The same line per worker `serve_listener` writes: INFO once, DEBUG for every other worker.
     match (log_at_info, &tls_cfg) {
-        (false, _) => {}
+        (false, None) => tracing::debug!(listen = %label, "busbar listening"),
         (true, None) => tracing::info!(listen = %label, "busbar listening"),
-        (true, Some(tls)) => {
+        (log_at_info, Some(tls)) => {
             let mtls = tls.client_ca.is_some();
-            tracing::info!(listen = %label, mtls, "busbar listening (TLS)");
+            if log_at_info {
+                tracing::info!(listen = %label, mtls, "busbar listening (TLS)");
+            } else {
+                tracing::debug!(listen = %label, mtls, "busbar listening (TLS)");
+            }
         }
     }
     if let Err(e) = root::transports::serve_door(wire, label, router, security, shutdown).await {

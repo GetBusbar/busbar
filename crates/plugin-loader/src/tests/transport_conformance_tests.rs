@@ -17,15 +17,62 @@
 //! and each must equal the bytes the script sent: the bytes on the wire are identical whichever door
 //! the transport came in by, and identical to what was asked for.
 //!
-//! THE RED ARM, kept: [`a_divergent_wire_is_seen_by_the_fold`] runs the fold over a decl whose `write`
-//! slot alters one byte and requires the fold to DIFFER — the comparison above is one that can fail.
+//! The script drives the POLL slots (airlock minor 28) the way a host reactor does: register the
+//! task's waker with a [`WakeToken`], poll with its id, park on `Pending` until the wire wakes it.
+//!
+//! THE RED ARM, kept: [`a_divergent_wire_is_seen_by_the_fold`] runs the fold over a decl whose
+//! `poll_write` slot alters one byte and requires the fold to DIFFER — the comparison above is one
+//! that can fail.
 
 use super::*;
 use crate::both_ways::{cdylib, dropped, statement, transport_fixture, HOT_FIXTURES};
 use crate::sign::{validate_structure, HookNeeds, Manifest};
 use busbar_plugin::hot::transport::{RawWireOutcome, WireOutcome, WireSettings};
+use std::future::Future;
 use std::io::{Read, Write};
 use std::net::{Shutdown, TcpListener, TcpStream};
+use std::task::{Context, Wake};
+
+/// Wakes the thread that parked on a poll.
+struct Unpark(std::thread::Thread);
+
+impl Wake for Unpark {
+    fn wake(self: Arc<Self>) {
+        self.0.unpark();
+    }
+}
+
+/// Drive one future on this thread, parking between polls.
+fn block_on<F: Future>(f: F) -> F::Output {
+    let waker = Waker::from(Arc::new(Unpark(std::thread::current())));
+    let mut cx = Context::from_waker(&waker);
+    let mut f = std::pin::pin!(f);
+    loop {
+        if let Poll::Ready(v) = f.as_mut().poll(&mut cx) {
+            return v;
+        }
+        std::thread::park();
+    }
+}
+
+/// Poll one slot to its answer the way a host reactor does: register, poll with the token, park on
+/// `Pending` until the wire wakes the token.
+fn wait<T>(mut slot: impl FnMut(u64) -> WirePoll<T>) -> Result<T, WireOutcome> {
+    let token = WakeToken::new();
+    block_on(std::future::poll_fn(|cx| {
+        token.register(cx.waker());
+        slot(token.id())
+    }))
+}
+
+/// Offer every one of `bytes` to `conn`, then flush.
+fn write_all(built: &BuiltTransport<'_>, conn: u64, bytes: &[u8]) -> Result<(), WireOutcome> {
+    let mut at = 0;
+    while at < bytes.len() {
+        at += wait(|t| built.poll_write(conn, t, &bytes[at..]))?;
+    }
+    wait(|t| built.poll_flush(conn, t))
+}
 
 /// The fixture's decl, as the host's type: the address its `busbar_transport_decl` returns.
 fn linked_decl() -> *const TransportDecl {
@@ -79,7 +126,7 @@ fn drain(built: &BuiltTransport<'_>, conn: u64, chunk: usize) -> Vec<u8> {
     let mut all = Vec::new();
     let mut buf = vec![0_u8; chunk];
     loop {
-        match built.read(conn, &mut buf) {
+        match wait(|t| built.poll_read(conn, t, &mut buf)) {
             Ok(0) => return all,
             Ok(n) => all.extend_from_slice(&buf[..n]),
             Err(e) => panic!("read failed mid-stream: {e:?}"),
@@ -98,9 +145,11 @@ struct Fold {
     /// Listened: what the transport read from the peer, and what the peer received back.
     accept_read: Vec<u8>,
     accept_peer_saw: Vec<u8>,
-    /// What an unknown connection answers on write and close.
+    /// What an unknown connection answers on write and close, and what a dial to a port nobody
+    /// listens on answers once it settles.
     unknown_write: WireOutcome,
     unknown_close: WireOutcome,
+    refused_dial: WireOutcome,
 }
 
 const SENT: (u8, usize) = (7, 40_000);
@@ -121,12 +170,10 @@ fn fold(t: &DynTransport) -> Fold {
         s.shutdown(Shutdown::Write).unwrap();
         got
     });
-    let conn = built.dial(&authority, None).expect("dial");
-    built
-        .write(conn, &payload(SENT.0, SENT.1))
-        .expect("write the request");
+    let conn = built.connect(&authority, None).expect("connect");
+    write_all(&built, conn, &payload(SENT.0, SENT.1)).expect("write the request");
     let dial_read_back = drain(&built, conn, 1000);
-    built.close(conn).expect("close");
+    wait(|t| built.poll_close(conn, t)).expect("close");
     let dial_peer_saw = far.join().unwrap();
 
     // ── listen, take a plain peer's bytes to their end, answer, close ──
@@ -139,14 +186,22 @@ fn fold(t: &DynTransport) -> Fold {
         s.read_to_end(&mut back).unwrap();
         back
     });
-    let (conn, peer_addr) = built.accept(listener).expect("accept");
+    let (conn, peer_addr) = wait(|t| built.poll_accept(listener, t)).expect("accept");
     assert!(peer_addr.starts_with("127.0.0.1:"), "{peer_addr}");
     let accept_read = drain(&built, conn, 777);
-    built
-        .write(conn, &payload(REPLY.0 ^ 0xff, REPLY.1))
-        .expect("write the answer");
-    built.close(conn).expect("close");
+    write_all(&built, conn, &payload(REPLY.0 ^ 0xff, REPLY.1)).expect("write the answer");
+    wait(|t| built.poll_close(conn, t)).expect("close");
     let accept_peer_saw = near.join().unwrap();
+
+    // ── a dial nobody answers is refused when its opening settles ──
+    let closed = TcpListener::bind("127.0.0.1:0").unwrap();
+    let nobody = closed.local_addr().unwrap().to_string();
+    drop(closed);
+    let conn = built
+        .connect(&nobody, None)
+        .expect("connect answers at once");
+    let refused_dial = wait(|t| built.poll_flush(conn, t)).unwrap_err();
+    built.close_now(conn);
 
     Fold {
         key: t.key().to_string(),
@@ -155,10 +210,10 @@ fn fold(t: &DynTransport) -> Fold {
         dial_read_back,
         accept_read,
         accept_peer_saw,
-        unknown_write: built.write(u64::MAX, b"x").unwrap_err(),
-        unknown_close: built
-            .close(u64::MAX)
+        unknown_write: wait(|t| built.poll_write(u64::MAX, t, b"x")).unwrap_err(),
+        unknown_close: wait(|t| built.poll_close(u64::MAX, t))
             .map_or_else(|e| e, |()| WireOutcome::Ok),
+        refused_dial,
     }
 }
 
@@ -173,6 +228,7 @@ fn expected(key: &str, composes_over: &[&str]) -> Fold {
         accept_peer_saw: payload(REPLY.0 ^ 0xff, REPLY.1),
         unknown_write: WireOutcome::Closed,
         unknown_close: WireOutcome::Ok,
+        refused_dial: WireOutcome::Refused,
     }
 }
 
@@ -222,25 +278,27 @@ fn both_doors_put_the_same_bytes_on_the_wire() {
 
 // ── THE RED ARM ─────────────────────────────────────────────────────────────────────────────────
 
-/// The fixture's real `write`, for the altering slot below to forward to.
-static REAL_WRITE: std::sync::OnceLock<busbar_plugin::hot::transport::WireWriteFn> =
+/// The fixture's real `poll_write`, for the altering slot below to forward to.
+static REAL_WRITE: std::sync::OnceLock<busbar_plugin::hot::transport::WirePollWriteFn> =
     std::sync::OnceLock::new();
 
-/// A `write` slot that flips the first byte of every write, then writes through the real slot.
+/// A `poll_write` slot that flips the first byte of every offer, then writes through the real slot.
 extern "C-unwind" fn altering_write(
     state: *mut std::os::raw::c_void,
     conn: u64,
+    token: u64,
     buf: *const u8,
     len: usize,
+    out_written: *mut usize,
 ) -> RawWireOutcome {
     let real = REAL_WRITE.get().expect("the real write is recorded");
     if buf.is_null() || len == 0 {
-        return real(state, conn, buf, len);
+        return real(state, conn, token, buf, len, out_written);
     }
     // SAFETY: the host's live `len`-byte range for this call.
     let mut bytes = unsafe { std::slice::from_raw_parts(buf, len) }.to_vec();
     bytes[0] ^= 0x01;
-    real(state, conn, bytes.as_ptr(), bytes.len())
+    real(state, conn, token, bytes.as_ptr(), bytes.len(), out_written)
 }
 
 /// A copy of the fixture's decl, to alter one field of.
@@ -250,15 +308,15 @@ fn decl_copy() -> TransportDecl {
     unsafe { core::ptr::read(linked_decl()) }
 }
 
-/// THE RED ARM, kept: a transport whose `write` alters one byte folds DIFFERENTLY, on exactly the
-/// legs that write — so the equality the witness asserts is one a wrong wire fails.
+/// THE RED ARM, kept: a transport whose `poll_write` alters one byte folds DIFFERENTLY, on exactly
+/// the legs that write — so the equality the witness asserts is one a wrong wire fails.
 #[test]
 fn a_divergent_wire_is_seen_by_the_fold() {
-    // SAFETY: the fixture's decl is live; its `write` slot is set.
-    let real = unsafe { (*linked_decl()).write }.expect("the fixture writes");
+    // SAFETY: the fixture's decl is live; its `poll_write` slot is set.
+    let real = unsafe { (*linked_decl()).poll_write }.expect("the fixture writes");
     let _ = REAL_WRITE.set(real);
     let mut altered = decl_copy();
-    altered.write = Some(altering_write);
+    altered.poll_write = Some(altering_write);
     // SAFETY: `altered` is a copy of a valid decl that outlives `divergent` (both live to the end of
     // this test), and every range it borrows is the fixture's `'static` data.
     let divergent = unsafe { link_transport(&altered, "altered-wire") }.unwrap();
@@ -324,8 +382,9 @@ fn a_transport_manifest_is_admitted_on_the_airlock_axis() {
 }
 
 /// The admission refuses a decl it cannot trust, on either door: null, a foreign preamble, a minor
-/// that predates the transport decl, a size that does not reach its own slots and declaration, a
-/// size past this build's, a session flag that is neither 0 nor 1, and a keyless row.
+/// that predates the poll-shaped transport decl (minor 27, the last blocking one, included), a size
+/// that does not reach its own slots and declaration, a size past this build's, a filled RETIRED
+/// blocking slot, a session flag that is neither 0 nor 1, and a keyless row.
 #[test]
 fn the_admission_refuses_a_decl_it_cannot_trust() {
     // SAFETY (every `link_transport` below): null is refused before any read; each other decl is
@@ -344,11 +403,28 @@ fn the_admission_refuses_a_decl_it_cannot_trust() {
     refuse(|d| d.abi.abi_major += 1, "MajorMismatch");
     refuse(
         |d| d.abi.abi_minor = busbar_plugin::hot::TRANSPORT_DECL_MINOR - 1,
-        "before the transport decl existed",
+        "before the transport decl this build admits",
     );
+    refuse(|d| d.abi.abi_minor = 27, "the blocking slots are retired");
     refuse(
         |d| d.size = core::mem::offset_of!(TransportDecl, session) as u32,
         "does not reach its own slots and declaration",
+    );
+    refuse(
+        |d| d.size = core::mem::offset_of!(TransportDecl, poll_close) as u32,
+        "does not reach its own slots and declaration",
+    );
+    refuse(
+        |d| d.build = Some(retired_build),
+        "blocking `build` slot, retired",
+    );
+    refuse(
+        |d| d.read = Some(retired_read),
+        "blocking `read` slot, retired",
+    );
+    refuse(
+        |d| d.close = Some(retired_close),
+        "blocking `close` slot, retired",
     );
     refuse(
         |d| d.size = core::mem::offset_of!(TransportDecl, close) as u32,
@@ -364,6 +440,26 @@ fn the_admission_refuses_a_decl_it_cannot_trust() {
         },
         "cannot back",
     );
+}
+
+extern "C-unwind" fn retired_build(
+    _: *const busbar_plugin::hot::transport::WireLower,
+    _: *const WireSettings,
+    _: *mut MaybeUninit<OpaqueHandle>,
+) -> RawWireOutcome {
+    RawWireOutcome::of(WireOutcome::Fault)
+}
+extern "C-unwind" fn retired_read(
+    _: *mut std::os::raw::c_void,
+    _: u64,
+    _: *mut u8,
+    _: usize,
+    _: *mut usize,
+) -> RawWireOutcome {
+    RawWireOutcome::of(WireOutcome::Fault)
+}
+extern "C-unwind" fn retired_close(_: *mut std::os::raw::c_void, _: u64) -> RawWireOutcome {
+    RawWireOutcome::of(WireOutcome::Fault)
 }
 
 /// A LAYOUT, NOT A CRATE (#84): the fixture restates the published layout instead of linking the
@@ -396,7 +492,14 @@ fn the_fixture_restates_the_host_layout() {
         read,
         write,
         close,
-        session
+        session,
+        init,
+        connect,
+        poll_accept,
+        poll_read,
+        poll_write,
+        poll_flush,
+        poll_close
     );
     assert_eq!(
         core::mem::size_of::<Restated>(),
@@ -437,13 +540,47 @@ fn the_fixture_restates_the_host_layout() {
             WireOutcome::HandoffMismatch,
         ),
         (layout::outcome::FAULT, WireOutcome::Fault),
+        (layout::outcome::PENDING, WireOutcome::Pending),
     ] {
         assert_eq!(RawWireOutcome(byte).outcome(), outcome);
     }
+    assert_eq!(layout::NO_WAKER, busbar_plugin::hot::NO_WAKER);
+    use busbar_plugin::hot::transport::WireWaker as HostWaker;
+    use layout::WireWaker as RestatedWaker;
+    for (restated, host) in [
+        (
+            core::mem::offset_of!(RestatedWaker, size),
+            core::mem::offset_of!(HostWaker, size),
+        ),
+        (
+            core::mem::offset_of!(RestatedWaker, version),
+            core::mem::offset_of!(HostWaker, version),
+        ),
+        (
+            core::mem::offset_of!(RestatedWaker, wake),
+            core::mem::offset_of!(HostWaker, wake),
+        ),
+        (
+            core::mem::size_of::<RestatedWaker>(),
+            core::mem::size_of::<HostWaker>(),
+        ),
+    ] {
+        assert_eq!(restated, host);
+    }
+    // Every slot this airlock retired is empty in the fixture: it speaks the poll shape only.
+    let d = &transport_fixture::hot::TRANSPORT_DECL;
+    assert!(
+        d.build.is_none()
+            && d.accept.is_none()
+            && d.dial.is_none()
+            && d.read.is_none()
+            && d.write.is_none()
+            && d.close.is_none()
+    );
 }
 
-/// THE HOT-LANE BUDGET (#30: < 1 µs per dispatch), measured on the dropped-in door: one crossing
-/// into the dlopened image and back — the sized slot read, the guarded indirect call, the
+/// THE HOT-LANE BUDGET (#30: < 1 µs per dispatch), measured on the dropped-in door: one poll-slot
+/// crossing into the dlopened image and back — the sized slot read, the guarded indirect call, the
 /// transport's own handle lookup — timed against the budget at the median and the 99th percentile.
 /// Ignored by default (a timing claim belongs to an optimised build on a quiet machine); run with
 /// `cargo test --release -p busbar-plugin-loader transport -- --ignored --nocapture`.
@@ -457,7 +594,9 @@ fn a_hot_lane_crossing_is_under_a_microsecond() {
     let mut samples: Vec<u128> = (0..20_000)
         .map(|_| {
             let t = std::time::Instant::now();
-            let _ = std::hint::black_box(built.close(std::hint::black_box(u64::MAX)));
+            let _ = std::hint::black_box(
+                built.poll_close(std::hint::black_box(u64::MAX), busbar_plugin::hot::NO_WAKER),
+            );
             t.elapsed().as_nanos()
         })
         .collect();

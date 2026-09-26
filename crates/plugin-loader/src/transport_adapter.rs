@@ -15,30 +15,30 @@
 //! routing policy. It is not the composition root's (def 1: "decides nothing a library could
 //! decide"), and not the contract's (def 13: shapes only — this is runtime machinery).
 //!
-//! # The bridge, and what it costs
+//! # The bridge, and what it costs (#30)
 //!
-//! The HOT decl's byte slots BLOCK until their operation completes (the transport owns its own I/O
-//! driver), and the host's trait is asynchronous. So every slot call a trait method makes runs on the
-//! host runtime's blocking pool (`spawn_blocking`) and the method awaits it: a host request thread is
-//! never parked on a plugin's socket. The ABI crossing itself is the HOT-lane budget (#30); the
-//! handoff to the blocking pool is the price of a blocking slot shape, and
-//! `tests::the_adapters_added_latency_per_crossing_is_measured` measures both.
+//! None. The HOT decl's slots are POLL-shaped (airlock minor 28): each answers Ready | Pending |
+//! Error at once, so every trait method drives them INLINE from the host's reactor, on the task that
+//! awaits it — no thread handoff, no blocking pool. A slot that answers Pending keeps the task's
+//! [`WakeToken`] and wakes it through the host's waker handle when the operation may progress; the
+//! task polls the slot again. Each connection holds two tokens (its reading and its writing, which
+//! run on different tasks at once) and each listener one. The added latency per crossing — the
+//! waker registration, the guarded indirect call and the answer's decode — is measured by
+//! `tests::the_adapters_added_latency_per_crossing_is_measured` against the HOT-lane budget.
 //!
-//! One exception: `accept` runs on a thread of its own rather than the blocking pool. A listener
-//! with no one connecting parks its `accept` indefinitely, and a runtime waits for its blocking pool
-//! to drain when it drops — a parked accept there would hold a graceful stop open forever.
+//! Nothing is left behind when a caller stops waiting: a dropped `accept` or `read` simply is not
+//! polled again, and a dial dropped before its connection opened closes it.
 //!
 //! # What the ABI does not carry
 //!
-//! The decl carries `listen` / `accept` / `dial` / `read` / `write` / `close` over opaque handles and
-//! nothing else, so this adapter answers the trait's remaining methods as a byte stream answers them:
-//! the envelope of an outbound message is its body, an adoption from another layer is a
+//! The decl carries `listen` / `connect` and the poll slots over opaque handles and nothing else, so
+//! this adapter answers the trait's remaining methods as a byte stream answers them: the envelope of
+//! an outbound message is its body, an adoption from another layer is a
 //! [`TransportError::HandoffMismatch`], and a key handle is not presented (a transport that needs
 //! configuration is handed the kernel-built [`busbar_plugin::hot::transport::WireConfig`], which no
 //! caller of this adapter mints yet).
 
 use std::collections::HashMap;
-use std::future::Future;
 use std::io;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
@@ -54,11 +54,11 @@ use busbar_contract::{
     StreamId, TransportConfigView, TransportKeyHandle, VerifiedDestination,
 };
 use busbar_plugin::hot::transport::WireOutcome;
-use tokio::task::JoinHandle;
 
-use crate::transport::{wire_settings, BuiltTransport, DynTransport};
+use crate::transport::{wire_settings, BuiltTransport, DynTransport, WakeToken, WirePoll};
 
-/// How many bytes one `read` slot call may fill: the buffer every read on a connection reuses.
+/// How many bytes one `poll_read` may fill for the frame pump: the buffer every read on a
+/// connection's pump reuses.
 pub const READ_CHUNK_BYTES: usize = 16 * 1024;
 
 /// A HOT-lane transport, built, presented as the host's [`Transport`].
@@ -66,7 +66,7 @@ pub struct WireTransport {
     hosted: Arc<Hosted>,
 }
 
-/// The built wire and what the adapter keeps beside it. Shared with the blocking calls in flight.
+/// The built wire and what the adapter keeps beside it. Shared with the futures and streams in flight.
 struct Hosted {
     built: BuiltTransport<'static>,
     key: &'static str,
@@ -75,10 +75,18 @@ struct Hosted {
     lower: Option<(&'static str, Arc<Hosted>)>,
     /// The stack as an arrival reports it, bottom layer first.
     chain: Vec<&'static str>,
-    /// The wire's listener handle for each address it bound.
-    listeners: Mutex<HashMap<String, u64>>,
-    /// The peer of every live connection this adapter handed out and has not closed or detached.
-    conns: Mutex<HashMap<u64, String>>,
+    /// Each listener this adapter handed out (by its node-local identity): the wire's listener
+    /// handle, and the token its accepts wait on.
+    listeners: Mutex<HashMap<u64, (u64, Arc<WakeToken>)>>,
+    /// Every live connection this adapter handed out and has not closed or detached.
+    conns: Mutex<HashMap<u64, Arc<Tokens>>>,
+}
+
+/// One connection's two waits: its reading and its writing run on different tasks at once.
+#[derive(Default)]
+struct Tokens {
+    read: WakeToken,
+    write: WakeToken,
 }
 
 impl std::fmt::Debug for WireTransport {
@@ -106,22 +114,39 @@ fn refusal(outcome: WireOutcome) -> TransportError {
         WireOutcome::Backpressure => TransportError::Backpressure,
         WireOutcome::Framing => TransportError::Framing,
         WireOutcome::HandoffMismatch => TransportError::HandoffMismatch,
-        WireOutcome::Ok | WireOutcome::Closed | WireOutcome::Unsupported | WireOutcome::Fault => {
-            TransportError::Closed
-        }
+        WireOutcome::Ok
+        | WireOutcome::Closed
+        | WireOutcome::Unsupported
+        | WireOutcome::Fault
+        | WireOutcome::Pending => TransportError::Closed,
     }
 }
 
-/// Run one slot call on the blocking pool and await it (module docs, "The bridge").
-async fn off<T: Send + 'static>(
-    hosted: &Arc<Hosted>,
-    call: impl FnOnce(&BuiltTransport<'static>) -> Result<T, WireOutcome> + Send + 'static,
+/// ONE CROSSING, awaited: register the task with `token`, poll the slot with it, and park until the
+/// wire wakes the token (module docs, "The bridge").
+async fn polled<T>(
+    token: &WakeToken,
+    mut slot: impl FnMut(u64) -> WirePoll<T>,
 ) -> Result<T, TransportError> {
-    let hosted = Arc::clone(hosted);
-    tokio::task::spawn_blocking(move || call(&hosted.built))
-        .await
-        .map_err(|_| TransportError::Closed)?
-        .map_err(refusal)
+    std::future::poll_fn(|cx| {
+        token.register(cx.waker());
+        slot(token.id()).map_err(refusal)
+    })
+    .await
+}
+
+/// Offer every one of `bytes` to `conn`, then flush them onto the wire.
+async fn write_all(
+    built: &BuiltTransport<'static>,
+    conn: u64,
+    token: &WakeToken,
+    bytes: &[u8],
+) -> Result<(), TransportError> {
+    let mut at = 0;
+    while at < bytes.len() {
+        at += polled(token, |t| built.poll_write(conn, t, &bytes[at..])).await?;
+    }
+    polled(token, |t| built.poll_flush(conn, t)).await
 }
 
 impl WireTransport {
@@ -131,7 +156,7 @@ impl WireTransport {
     ///
     /// # Errors
     ///
-    /// The wire's `build` slot refused, or is absent.
+    /// The wire's `init` slot refused, or is absent.
     pub fn build(
         wire: &'static DynTransport,
         lower: Option<&WireTransport>,
@@ -163,29 +188,30 @@ impl WireTransport {
 }
 
 impl Hosted {
-    /// Hand out a connection the wire minted, remembering its peer.
+    /// Hand out a connection the wire minted, with its two tokens.
     fn conn(&self, id: u64, peer: String) -> Conn {
         self.conns
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(id, peer.clone());
+            .insert(id, Arc::new(Tokens::default()));
         Conn::new(Arc::new(WireConn { id, peer }))
     }
 
-    /// Forget a connection; `true` if it was live here.
-    fn forget(&self, id: u64) -> bool {
+    /// Forget a connection, answering its tokens if it was live here.
+    fn forget(&self, id: u64) -> Option<Arc<Tokens>> {
         self.conns
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .remove(&id)
-            .is_some()
     }
 
-    fn live(&self, id: u64) -> bool {
+    /// A live connection's tokens.
+    fn tokens(&self, id: u64) -> Option<Arc<Tokens>> {
         self.conns
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .contains_key(&id)
+            .get(&id)
+            .cloned()
     }
 }
 
@@ -212,6 +238,21 @@ struct WireListener {
 impl ListenerHandle for WireListener {
     fn local_addr(&self) -> String {
         self.addr.clone()
+    }
+}
+
+/// Closes a connection a dial began unless the dial handed it out: a dial dropped before its
+/// connection opened leaves nothing open in the wire.
+struct Opening<'a> {
+    built: &'a BuiltTransport<'static>,
+    conn: Option<u64>,
+}
+
+impl Drop for Opening<'_> {
+    fn drop(&mut self) {
+        if let Some(conn) = self.conn {
+            self.built.close_now(conn);
+        }
     }
 }
 
@@ -248,43 +289,32 @@ impl Transport for WireTransport {
         // The wire answers an absent bind itself: the adapter decides no address.
         let bind = cfg.bind().unwrap_or_default().to_string();
         Box::pin(async move {
-            let (id, addr) = off(&self.hosted, move |b| b.listen(&bind, None)).await?;
+            // `listen` answers at once: a bind waits on no peer.
+            let (id, addr) = self.hosted.built.listen(&bind, None).map_err(refusal)?;
+            let listener = Listener::new(Arc::new(WireListener { addr }));
             self.hosted
                 .listeners
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .insert(addr.clone(), id);
-            Ok(Listener::new(Arc::new(WireListener { addr })))
+                .insert(listener.id(), (id, Arc::new(WakeToken::new())));
+            Ok(listener)
         })
     }
 
     fn accept<'a>(&'a self, l: &'a Listener) -> Fut<'a, Conn> {
         Box::pin(async move {
-            let listener = self
+            let (listener, token) = self
                 .hosted
                 .listeners
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .get(&l.local_addr())
-                .copied()
+                .get(&l.id())
+                .cloned()
                 .ok_or(TransportError::Closed)?;
-            // A thread of its own, not the blocking pool (module docs).
-            let (tx, rx) = tokio::sync::oneshot::channel();
-            let hosted = Arc::clone(&self.hosted);
-            std::thread::Builder::new()
-                .name("busbar-wire-accept".into())
-                .spawn(move || {
-                    // Nobody is waiting any more (the accept was dropped): the connection it took
-                    // is closed rather than left open in the wire with no owner.
-                    if let Err(Ok((id, _))) = tx.send(hosted.built.accept(listener)) {
-                        let _ = hosted.built.close(id);
-                    }
-                })
-                .map_err(|_| TransportError::Closed)?;
-            let (id, peer) = rx
-                .await
-                .map_err(|_| TransportError::Closed)?
-                .map_err(refusal)?;
+            let built = &self.hosted.built;
+            // The connection is handed out in the same poll that took it: an accept dropped while
+            // pending took nothing.
+            let (id, peer) = polled(&token, |t| built.poll_accept(listener, t)).await?;
             Ok(self.hosted.conn(id, peer))
         })
     }
@@ -302,47 +332,49 @@ impl Transport for WireTransport {
                     .to_string(),
                 _ => return Err(TransportError::AddressRefused),
             };
-            let peer = authority.clone();
-            let id = off(&self.hosted, move |b| b.dial(&authority, None)).await?;
-            Ok(self.hosted.conn(id, peer))
+            let built = &self.hosted.built;
+            let id = built.connect(&authority, None).map_err(refusal)?;
+            let mut opening = Opening {
+                built,
+                conn: Some(id),
+            };
+            // The dial's refusal (or its opening) is what the connection's first flush answers.
+            polled(&WakeToken::new(), |t| built.poll_flush(id, t)).await?;
+            opening.conn = None;
+            Ok(self.hosted.conn(id, authority))
         })
     }
 
     fn frames(&self, conn: Conn) -> busbar_contract::transport::FrameStream {
-        let state = (Arc::clone(&self.hosted), conn.id(), false);
+        let state = (
+            Arc::clone(&self.hosted),
+            conn.id(),
+            vec![0_u8; READ_CHUNK_BYTES],
+            false,
+        );
         Box::pin(futures::stream::unfold(
             state,
-            |(hosted, id, ended)| async move {
-                if ended || !hosted.live(id) {
-                    return None;
-                }
-                let read = off(&hosted, move |b| {
-                    let mut buf = vec![0_u8; READ_CHUNK_BYTES];
-                    b.read(id, &mut buf).map(|n| {
-                        buf.truncate(n);
-                        buf
-                    })
-                })
-                .await;
+            |(hosted, id, mut buf, ended)| async move {
+                let tokens = if ended { None } else { hosted.tokens(id) }?;
+                let read = polled(&tokens.read, |t| hosted.built.poll_read(id, t, &mut buf)).await;
                 match read {
-                    Ok(bytes) if bytes.is_empty() => None,
-                    Ok(bytes) => {
-                        let n = bytes.len() as u64;
+                    Ok(0) => None,
+                    Ok(n) => {
                         let frame = Frame {
                             direction: Direction::Inbound,
                             stream: StreamId(0),
-                            bytes: SlabBytes::new(Arc::<[u8]>::from(bytes)),
+                            bytes: SlabBytes::new(Arc::<[u8]>::from(&buf[..n])),
                             meta: FrameMeta {
-                                bytes: n,
+                                bytes: n as u64,
                                 transport_units: None,
                                 status: None,
                                 status_code: None,
                                 retry_after_secs: None,
                             },
                         };
-                        Some((Ok((StreamId(0), frame)), (hosted, id, false)))
+                        Some((Ok((StreamId(0), frame)), (hosted, id, buf, false)))
                     }
-                    Err(e) => Some((Err(e), (hosted, id, true))),
+                    Err(e) => Some((Err(e), (hosted, id, buf, true))),
                 }
             },
         ))
@@ -354,16 +386,13 @@ impl Transport for WireTransport {
         _stream: StreamId,
         bytes: ScratchBytes<'a>,
     ) -> Fut<'a, usize> {
-        // Copied out of the arena, which is reset as soon as the write is queued (the trait's own
-        // rule), onto the blocking call that puts it on the wire.
-        let owned = bytes.as_slice().to_vec();
-        let (id, len) = (conn.id(), owned.len());
+        let id = conn.id();
         Box::pin(async move {
-            if !self.hosted.live(id) {
-                return Err(TransportError::Closed);
-            }
-            off(&self.hosted, move |b| b.write(id, &owned)).await?;
-            Ok(len)
+            let tokens = self.hosted.tokens(id).ok_or(TransportError::Closed)?;
+            // Straight from the arena: the write is driven inline, so the bytes are on the wire (or
+            // refused) before the arena can be reset.
+            write_all(&self.hosted.built, id, &tokens.write, bytes.as_slice()).await?;
+            Ok(bytes.len())
         })
     }
 
@@ -389,16 +418,19 @@ impl Transport for WireTransport {
         Box::pin(async { Err(TransportError::HandoffMismatch) })
     }
 
-    /// The connection's bytes as a stream of their own, driven through the same slots: this adapter
-    /// forgets the connection, and the stream closes it when it is dropped.
+    /// The connection's bytes as a stream of their own, driven through the same poll slots: this
+    /// adapter forgets the connection, and the stream closes it when it is closed or dropped.
     fn detach(&self, conn: &Conn) -> Option<RawStream> {
-        if !self.hosted.forget(conn.id()) {
-            return None;
-        }
+        let tokens = self.hosted.forget(conn.id())?;
         Some(RawStream::new(
             self.hosted.key,
             conn.peer(),
-            Box::new(WireIo::new(Arc::clone(&self.hosted), conn.id())),
+            Box::new(WireIo {
+                hosted: Arc::clone(&self.hosted),
+                id: conn.id(),
+                tokens,
+                closed: false,
+            }),
         ))
     }
 
@@ -407,8 +439,8 @@ impl Transport for WireTransport {
     }
 
     fn close(&self, conn: Conn, _reason: CloseReason) {
-        if self.hosted.forget(conn.id()) {
-            let _ = self.hosted.built.close(conn.id());
+        if self.hosted.forget(conn.id()).is_some() {
+            self.hosted.built.close_now(conn.id());
         }
     }
 
@@ -419,70 +451,25 @@ impl Transport for WireTransport {
         _refusal: &'a Refusal,
         bytes: ScratchBytes<'a>,
     ) -> Fut<'a, ()> {
-        let owned = bytes.as_slice().to_vec();
         Box::pin(async move {
             let id = conn.id();
-            if !self.hosted.forget(id) {
-                return Err(TransportError::Closed);
-            }
+            let tokens = self.hosted.forget(id).ok_or(TransportError::Closed)?;
+            let built = &self.hosted.built;
             // A refusal finalises the connection on every path out, delivered or not.
-            off(&self.hosted, move |b| {
-                let delivered = b.write(id, &owned);
-                let _ = b.close(id);
-                delivered
-            })
-            .await
+            let delivered = write_all(built, id, &tokens.write, bytes.as_slice()).await;
+            built.close_now(id);
+            delivered
         })
     }
 }
 
-/// A read slot's answer handed back from the blocking pool: its buffer and what it read.
-type ReadDone = (Vec<u8>, Result<usize, WireOutcome>);
-
-/// A detached connection's bytes: `read` and `write` on the blocking pool, `close` when dropped.
+/// A detached connection's bytes: every poll is the wire's own poll slot, inline; `close` when
+/// closed or dropped.
 struct WireIo {
     hosted: Arc<Hosted>,
     id: u64,
-    /// The read in flight, handing back its buffer and what it read.
-    reading: Option<JoinHandle<ReadDone>>,
-    /// The last read's bytes not yet handed out: `buf[at..len]`.
-    buf: Vec<u8>,
-    at: usize,
-    len: usize,
-    eof: bool,
-    /// The write in flight; its error surfaces at the next write or flush.
-    writing: Option<JoinHandle<Result<(), WireOutcome>>>,
+    tokens: Arc<Tokens>,
     closed: bool,
-}
-
-impl WireIo {
-    fn new(hosted: Arc<Hosted>, id: u64) -> Self {
-        Self {
-            hosted,
-            id,
-            reading: None,
-            buf: vec![0_u8; READ_CHUNK_BYTES],
-            at: 0,
-            len: 0,
-            eof: false,
-            writing: None,
-            closed: false,
-        }
-    }
-
-    /// Settle the write in flight, if any.
-    fn poll_written(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        let Some(writing) = self.writing.as_mut() else {
-            return Poll::Ready(Ok(()));
-        };
-        let done = std::task::ready!(Pin::new(writing).poll(cx));
-        self.writing = None;
-        Poll::Ready(match done {
-            Ok(Ok(())) => Ok(()),
-            Ok(Err(outcome)) => Err(wire_io_error(outcome)),
-            Err(_) => Err(io::ErrorKind::BrokenPipe.into()),
-        })
-    }
 }
 
 /// A slot's refusal as the I/O error a byte stream reports.
@@ -496,82 +483,73 @@ fn wire_io_error(outcome: WireOutcome) -> io::Error {
     io::Error::new(kind, format!("transport slot answered {outcome:?}"))
 }
 
+impl WireIo {
+    /// One poll of one slot with `token`, as a byte stream's answer.
+    fn poll_slot<T>(
+        token: &WakeToken,
+        cx: &mut Context<'_>,
+        slot: impl FnOnce(u64) -> WirePoll<T>,
+    ) -> Poll<io::Result<T>> {
+        token.register(cx.waker());
+        slot(token.id()).map_err(wire_io_error)
+    }
+}
+
 impl futures::io::AsyncRead for WireIo {
     fn poll_read(
-        mut self: Pin<&mut Self>,
+        self: Pin<&mut Self>,
         cx: &mut Context<'_>,
         out: &mut [u8],
     ) -> Poll<io::Result<usize>> {
-        let this = &mut *self;
-        loop {
-            if this.at < this.len {
-                let n = out.len().min(this.len - this.at);
-                out[..n].copy_from_slice(&this.buf[this.at..this.at + n]);
-                this.at += n;
-                return Poll::Ready(Ok(n));
-            }
-            if this.eof || this.closed {
-                return Poll::Ready(Ok(0));
-            }
-            let reading = match this.reading.as_mut() {
-                Some(reading) => reading,
-                None => {
-                    let (hosted, id) = (Arc::clone(&this.hosted), this.id);
-                    let mut buf = std::mem::take(&mut this.buf);
-                    this.reading.insert(tokio::task::spawn_blocking(move || {
-                        let read = hosted.built.read(id, &mut buf);
-                        (buf, read)
-                    }))
-                }
-            };
-            let done = std::task::ready!(Pin::new(reading).poll(cx));
-            this.reading = None;
-            let (buf, read) = done.map_err(|_| io::Error::from(io::ErrorKind::BrokenPipe))?;
-            this.buf = buf;
-            match read {
-                Ok(0) => this.eof = true,
-                Ok(n) => (this.at, this.len) = (0, n),
-                Err(outcome) => return Poll::Ready(Err(wire_io_error(outcome))),
-            }
+        if self.closed || out.is_empty() {
+            return Poll::Ready(Ok(0));
         }
+        let (built, id) = (&self.hosted.built, self.id);
+        Self::poll_slot(&self.tokens.read, cx, |t| built.poll_read(id, t, out))
     }
 }
 
 impl futures::io::AsyncWrite for WireIo {
     fn poll_write(
-        mut self: Pin<&mut Self>,
+        self: Pin<&mut Self>,
         cx: &mut Context<'_>,
         bytes: &[u8],
     ) -> Poll<io::Result<usize>> {
-        std::task::ready!(self.poll_written(cx))?;
         if self.closed {
             return Poll::Ready(Err(io::ErrorKind::BrokenPipe.into()));
         }
-        let (hosted, id, owned) = (Arc::clone(&self.hosted), self.id, bytes.to_vec());
-        self.writing = Some(tokio::task::spawn_blocking(move || {
-            hosted.built.write(id, &owned)
-        }));
-        Poll::Ready(Ok(bytes.len()))
+        if bytes.is_empty() {
+            return Poll::Ready(Ok(0));
+        }
+        let (built, id) = (&self.hosted.built, self.id);
+        Self::poll_slot(&self.tokens.write, cx, |t| built.poll_write(id, t, bytes))
     }
 
-    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        self.poll_written(cx)
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        if self.closed {
+            return Poll::Ready(Ok(()));
+        }
+        let (built, id) = (&self.hosted.built, self.id);
+        Self::poll_slot(&self.tokens.write, cx, |t| built.poll_flush(id, t))
     }
 
     fn poll_close(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        std::task::ready!(self.poll_written(cx))?;
-        if !std::mem::replace(&mut self.closed, true) {
-            let _ = self.hosted.built.close(self.id);
+        if self.closed {
+            return Poll::Ready(Ok(()));
         }
+        std::task::ready!(self.as_mut().poll_flush(cx))?;
+        let (built, id) = (&self.hosted.built, self.id);
+        std::task::ready!(Self::poll_slot(&self.tokens.write, cx, |t| built.poll_close(id, t)))?;
+        self.closed = true;
         Poll::Ready(Ok(()))
     }
 }
 
 impl Drop for WireIo {
     fn drop(&mut self) {
-        // Closing ends a read parked on the connection, so nothing is left on the blocking pool.
+        // Closing wakes a read parked on the connection, and nothing waits on it any more.
         if !self.closed {
-            let _ = self.hosted.built.close(self.id);
+            self.hosted.built.close_now(self.id);
         }
     }
 }

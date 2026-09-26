@@ -16,8 +16,17 @@
 //! A [`DynTransport`] is the row the composition root folds: [`DynTransport::key`],
 //! [`DynTransport::composes_over`] and [`DynTransport::build`] — the three things a linked transport
 //! row carries (`KEY`, `COMPOSES_OVER`, `build(lower, &TransportSettings)`; [`wire_settings`] is that
-//! same `TransportSettings` as the decl's `build` takes it). [`BuiltTransport`] then moves bytes over
-//! the built state.
+//! same `TransportSettings` as the decl's `init` takes it). [`BuiltTransport`] then moves bytes over
+//! the built state, through the POLL slots (airlock minor 28).
+//!
+//! # The poll slots and the host's waker
+//!
+//! No slot blocks: each answers Ready(n) | Pending | Error at once ([`WirePoll`]). A slot that answers
+//! Pending keeps the call's TOKEN and wakes it through the host's waker handle, [`HOST_WAKER`] — the
+//! `#[repr(C)]` [`WireWaker`] every built transport is handed at `init`. A token is minted by a
+//! [`WakeToken`]: a number the host resolves in its own table ([`host_wake`]) to the task waiting on
+//! it, so the transport holds no pointer into the host (#40(c)), and a token woken after its
+//! [`WakeToken`] dropped resolves to nothing.
 //!
 //! # The image stays mapped
 //!
@@ -26,21 +35,24 @@
 //! transport's own I/O driver may arm thread-locals on those threads. A library whose code a
 //! thread-local destructor still points into must not be unmapped under that thread, so a loaded
 //! transport's image is mapped for the life of the process: dropping a [`DynTransport`] frees nothing
-//! of the image. Build-time crossings (`build` and the state's `free`) run confined, as a plane's do.
+//! of the image. Build-time crossings (`init` and the state's `free`) run confined, as a plane's do.
 
 use crate::stage;
 use busbar_contract::transport::TransportSettings;
 use busbar_plugin::hot::decl::{DeclStr, OpaqueHandle};
 use busbar_plugin::hot::transport::{
-    RawWireOutcome, TransportDecl, WireAcceptFn, WireBuildFn, WireCloseFn, WireConfig, WireDialFn,
-    WireListenFn, WireLower, WireOutcome, WireReadFn, WireSettings, WireWriteFn,
-    TRANSPORT_DECL_MINOR,
+    RawWireOutcome, TransportDecl, WireConfig, WireConnectFn, WireInitFn, WireListenFn, WireLower,
+    WireOutcome, WirePollAcceptFn, WirePollCloseFn, WirePollFlushFn, WirePollReadFn,
+    WirePollWriteFn, WireSettings, WireWaker, NO_WAKER, TRANSPORT_DECL_MINOR,
 };
 use busbar_plugin::hot::TransportDeclFn;
 use busbar_plugin::{check_preamble, AbiPreamble};
 use core::mem::MaybeUninit;
+use futures::task::AtomicWaker;
 use libloading::Library;
 use std::path::Path;
+use std::sync::{Arc, Mutex};
+use std::task::{Poll, Waker};
 
 /// Cap on the transport key and each composes-over entry (plugin-attested lengths, capped before
 /// any slice is formed — the same discipline as a plane's vocabulary).
@@ -51,6 +63,113 @@ const MAX_COMPOSES_OVER: usize = 64;
 
 /// Cap on an address or peer string a slot writes back (a socket address is tens of bytes).
 const MAX_ADDR_LEN: usize = 1024;
+
+/// What a poll slot answered: `Ready(Ok(n))`, `Pending`, or `Ready(Err(outcome))`.
+pub type WirePoll<T> = Poll<Result<T, WireOutcome>>;
+
+// ── the host's waker handle ─────────────────────────────────────────────────────────────────────
+
+/// THE HOST'S WAKER HANDLE, handed to every transport's `init`: one function, [`host_wake`].
+pub static HOST_WAKER: WireWaker = WireWaker {
+    size: core::mem::size_of::<WireWaker>() as u32,
+    version: busbar_plugin::ABI_MINOR,
+    wake: Some(host_wake),
+};
+
+/// The table a token resolves in: slot `i` holds its generation and, while a [`WakeToken`] holds it,
+/// the waker cell of the task waiting on it. Token = `generation << 32 | (i + 1)`, so no live token
+/// is [`NO_WAKER`] and a slot reused after its token dropped answers a stale token with nothing.
+struct Wakers {
+    slots: Vec<(u32, Option<Arc<AtomicWaker>>)>,
+    free: Vec<usize>,
+}
+
+static WAKERS: Mutex<Wakers> = Mutex::new(Wakers {
+    slots: Vec::new(),
+    free: Vec::new(),
+});
+
+fn wakers() -> std::sync::MutexGuard<'static, Wakers> {
+    WAKERS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// THE ONE FUNCTION a transport calls: wake the task `token` names, if it still waits. Any thread,
+/// any time; a stale or unknown token is ignored. Never unwinds.
+pub extern "C-unwind" fn host_wake(token: u64) {
+    let (generation, index) = ((token >> 32) as u32, (token & 0xffff_ffff) as usize);
+    let Some(index) = index.checked_sub(1) else {
+        return;
+    };
+    let cell = match wakers().slots.get(index) {
+        Some((held, Some(cell))) if *held == generation => Arc::clone(cell),
+        _ => return,
+    };
+    cell.wake();
+}
+
+/// One host task's registration for the poll slots: the token it hands them and the waker they
+/// wake through it. Register the task's waker, then poll with [`Self::id`]; dropping it retires the
+/// token.
+pub struct WakeToken {
+    id: u64,
+    cell: Arc<AtomicWaker>,
+}
+
+impl WakeToken {
+    /// Mint a token.
+    #[must_use]
+    pub fn new() -> Self {
+        let cell = Arc::new(AtomicWaker::new());
+        let mut table = wakers();
+        let index = match table.free.pop() {
+            Some(index) => index,
+            None => {
+                table.slots.push((0, None));
+                table.slots.len() - 1
+            }
+        };
+        let slot = &mut table.slots[index];
+        slot.0 = slot.0.wrapping_add(1);
+        slot.1 = Some(Arc::clone(&cell));
+        let id = u64::from(slot.0) << 32 | (index as u64 + 1);
+        Self { id, cell }
+    }
+
+    /// The token a poll slot is handed.
+    #[must_use]
+    pub fn id(&self) -> u64 {
+        self.id
+    }
+
+    /// The task to wake when a slot polled with this token may progress. Register BEFORE the poll,
+    /// so a wake that lands between the two is not lost.
+    pub fn register(&self, waker: &Waker) {
+        self.cell.register(waker);
+    }
+}
+
+impl Default for WakeToken {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Drop for WakeToken {
+    fn drop(&mut self) {
+        let index = (self.id & 0xffff_ffff) as usize - 1;
+        let mut table = wakers();
+        table.slots[index].1 = None;
+        table.free.push(index);
+    }
+}
+
+impl std::fmt::Debug for WakeToken {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("WakeToken").field(&self.id).finish()
+    }
+}
 
 /// A transport admitted over the HOT-tier ABI: its declared row, owned, and its decl, read through
 /// the sized guard. Holds the mapped library (when it came in dropped in) for the life of the
@@ -145,44 +264,48 @@ impl DynTransport {
         self.decl
     }
 
-    fn slot_build(&self) -> Option<WireBuildFn> {
-        busbar_plugin::read_sized_field!(self.decl, self.honoured_size, TransportDecl, build)
+    fn slot_init(&self) -> Option<WireInitFn> {
+        busbar_plugin::read_sized_field!(self.decl, self.honoured_size, TransportDecl, init)
             .flatten()
     }
     fn slot_listen(&self) -> Option<WireListenFn> {
         busbar_plugin::read_sized_field!(self.decl, self.honoured_size, TransportDecl, listen)
             .flatten()
     }
-    fn slot_accept(&self) -> Option<WireAcceptFn> {
-        busbar_plugin::read_sized_field!(self.decl, self.honoured_size, TransportDecl, accept)
+    fn slot_connect(&self) -> Option<WireConnectFn> {
+        busbar_plugin::read_sized_field!(self.decl, self.honoured_size, TransportDecl, connect)
             .flatten()
     }
-    fn slot_dial(&self) -> Option<WireDialFn> {
-        busbar_plugin::read_sized_field!(self.decl, self.honoured_size, TransportDecl, dial)
+    fn slot_poll_accept(&self) -> Option<WirePollAcceptFn> {
+        busbar_plugin::read_sized_field!(self.decl, self.honoured_size, TransportDecl, poll_accept)
             .flatten()
     }
-    fn slot_read(&self) -> Option<WireReadFn> {
-        busbar_plugin::read_sized_field!(self.decl, self.honoured_size, TransportDecl, read)
+    fn slot_poll_read(&self) -> Option<WirePollReadFn> {
+        busbar_plugin::read_sized_field!(self.decl, self.honoured_size, TransportDecl, poll_read)
             .flatten()
     }
-    fn slot_write(&self) -> Option<WireWriteFn> {
-        busbar_plugin::read_sized_field!(self.decl, self.honoured_size, TransportDecl, write)
+    fn slot_poll_write(&self) -> Option<WirePollWriteFn> {
+        busbar_plugin::read_sized_field!(self.decl, self.honoured_size, TransportDecl, poll_write)
             .flatten()
     }
-    fn slot_close(&self) -> Option<WireCloseFn> {
-        busbar_plugin::read_sized_field!(self.decl, self.honoured_size, TransportDecl, close)
+    fn slot_poll_flush(&self) -> Option<WirePollFlushFn> {
+        busbar_plugin::read_sized_field!(self.decl, self.honoured_size, TransportDecl, poll_flush)
+            .flatten()
+    }
+    fn slot_poll_close(&self) -> Option<WirePollCloseFn> {
+        busbar_plugin::read_sized_field!(self.decl, self.honoured_size, TransportDecl, poll_close)
             .flatten()
     }
 
     /// BUILD the transport over `lower` (the built layer under it, `None` = it opens its own socket)
-    /// from `settings` — the linked row's `build(lower, settings)`, over the ABI. Confined: a
-    /// per-build crossing.
+    /// from `settings` — the linked row's `build(lower, settings)`, over the ABI's `init`, which is
+    /// handed the host's waker handle ([`HOST_WAKER`]). Confined: a per-build crossing.
     pub fn build<'t>(
         &'t self,
         lower: Option<&BuiltTransport<'_>>,
         settings: &WireSettings,
     ) -> Result<BuiltTransport<'t>, WireOutcome> {
-        let f = self.slot_build().ok_or(WireOutcome::Unsupported)?;
+        let f = self.slot_init().ok_or(WireOutcome::Unsupported)?;
         let lower = lower.map(|l| WireLower {
             decl: l.wire.decl,
             state: l.state.ptr,
@@ -193,8 +316,9 @@ impl DynTransport {
         let mut out = MaybeUninit::<OpaqueHandle>::uninit();
         let out_ptr: *mut MaybeUninit<OpaqueHandle> = &mut out;
         let settings_ptr: *const WireSettings = settings;
-        let status = crate::ffi_guard_confined(&self.path, "transport_build", || {
-            f(lower_ptr, settings_ptr, out_ptr)
+        let waker: *const WireWaker = &HOST_WAKER;
+        let status = crate::ffi_guard_confined(&self.path, "transport_init", || {
+            f(lower_ptr, settings_ptr, waker, out_ptr)
         })
         .map_err(|_| WireOutcome::Fault)?
         .outcome();
@@ -210,16 +334,17 @@ impl DynTransport {
     }
 }
 
-/// One built transport: the state its `build` produced, freed through its own `free` on drop, and
-/// borrow-bound to the [`DynTransport`] whose slots drive it. Every byte-moving method BLOCKS until
-/// the operation completes (the transport owns its I/O driver): call it off a request thread.
+/// One built transport: the state its `init` produced, freed through its own `free` on drop, and
+/// borrow-bound to the [`DynTransport`] whose slots drive it. No method blocks: `listen` and
+/// `connect` answer at once, and the `poll_*` methods answer Ready | Pending | Error — call them
+/// inline from the host's reactor, each with the [`WakeToken`] id of the task that will poll again.
 pub struct BuiltTransport<'t> {
     wire: &'t DynTransport,
     state: OpaqueHandle,
 }
 
 // SAFETY: the state is the transport's own, and the HOT-lane call discipline
-// (`busbar_plugin::hot::transport`) has the host drive the slots off its request threads — from any
+// (`busbar_plugin::hot::transport`) has the host poll the slots from its request threads — from any
 // thread, several at once — so a transport synchronises its own built state. The host never reads
 // through the state pointer; it only hands it back to the slots and, once, to `free`.
 unsafe impl Send for BuiltTransport<'_> {}
@@ -248,11 +373,24 @@ impl Drop for BuiltTransport<'_> {
     }
 }
 
-/// A slot's answer as a `Result`.
+/// A slot's answer as a `Result`. A `Pending` from a slot that answers at once is a fault.
 fn answered(r: Result<RawWireOutcome, String>) -> Result<(), WireOutcome> {
     match r.map_err(|_| WireOutcome::Fault)?.outcome() {
         WireOutcome::Ok => Ok(()),
+        WireOutcome::Pending => Err(WireOutcome::Fault),
         other => Err(other),
+    }
+}
+
+/// A poll slot's answer: `Ok` is ready with `value()`, `Pending` is pending, anything else refused.
+fn poll_answered<T>(
+    r: Result<RawWireOutcome, String>,
+    value: impl FnOnce() -> Result<T, WireOutcome>,
+) -> WirePoll<T> {
+    match r.map_or(WireOutcome::Fault, RawWireOutcome::outcome) {
+        WireOutcome::Ok => Poll::Ready(value()),
+        WireOutcome::Pending => Poll::Pending,
+        other => Poll::Ready(Err(other)),
     }
 }
 
@@ -301,74 +439,126 @@ impl<'t> BuiltTransport<'t> {
         Ok((listener, written(&addr, addr_len)?))
     }
 
-    /// Take the next connection off `listener`. Answers the connection handle and the peer.
-    pub fn accept(&self, listener: u64) -> Result<(u64, String), WireOutcome> {
-        let f = self.wire.slot_accept().ok_or(WireOutcome::Unsupported)?;
-        let mut peer = [0_u8; MAX_ADDR_LEN];
-        let (mut peer_len, mut conn) = (0_usize, 0_u64);
+    /// BEGIN dialing `authority` (already admitted by the host), presenting `config` if the dialing
+    /// end needs one. Answers the connection handle at once; the connection is open once
+    /// [`Self::poll_flush`] answers ready.
+    pub fn connect(
+        &self,
+        authority: &str,
+        config: Option<&WireConfig>,
+    ) -> Result<u64, WireOutcome> {
+        let f = self.wire.slot_connect().ok_or(WireOutcome::Unsupported)?;
+        let config = config.map_or(core::ptr::null(), |c| c as *const WireConfig);
+        let mut conn = 0_u64;
         answered(crate::ffi_guard(
             &self.wire.path,
-            "transport_accept",
+            "transport_connect",
             || {
                 f(
                     self.state.ptr,
-                    listener,
-                    peer.as_mut_ptr(),
-                    peer.len(),
-                    &mut peer_len,
+                    authority.as_ptr(),
+                    authority.len(),
+                    config,
                     &mut conn,
                 )
             },
         ))?;
-        Ok((conn, written(&peer, peer_len)?))
-    }
-
-    /// Dial `authority` (already admitted by the host), presenting `config` if the dialing end
-    /// needs one. Answers the connection handle.
-    pub fn dial(&self, authority: &str, config: Option<&WireConfig>) -> Result<u64, WireOutcome> {
-        let f = self.wire.slot_dial().ok_or(WireOutcome::Unsupported)?;
-        let config = config.map_or(core::ptr::null(), |c| c as *const WireConfig);
-        let mut conn = 0_u64;
-        answered(crate::ffi_guard(&self.wire.path, "transport_dial", || {
-            f(
-                self.state.ptr,
-                authority.as_ptr(),
-                authority.len(),
-                config,
-                &mut conn,
-            )
-        }))?;
         Ok(conn)
     }
 
-    /// Read the next bytes of `conn` into `buf`; `Ok(0)` is the clean end of the stream. A slot that
-    /// claims more bytes than `buf` holds is a fault, never trusted.
-    pub fn read(&self, conn: u64, buf: &mut [u8]) -> Result<usize, WireOutcome> {
-        let f = self.wire.slot_read().ok_or(WireOutcome::Unsupported)?;
+    /// POLL `listener` for its next connection: the connection handle and the peer.
+    pub fn poll_accept(&self, listener: u64, token: u64) -> WirePoll<(u64, String)> {
+        let Some(f) = self.wire.slot_poll_accept() else {
+            return Poll::Ready(Err(WireOutcome::Unsupported));
+        };
+        let mut peer = [0_u8; MAX_ADDR_LEN];
+        let (mut peer_len, mut conn) = (0_usize, 0_u64);
+        let r = crate::ffi_guard(&self.wire.path, "transport_poll_accept", || {
+            f(
+                self.state.ptr,
+                listener,
+                token,
+                peer.as_mut_ptr(),
+                peer.len(),
+                &mut peer_len,
+                &mut conn,
+            )
+        });
+        poll_answered(r, || Ok((conn, written(&peer, peer_len)?)))
+    }
+
+    /// POLL the next bytes of `conn` into `buf` (non-empty); `Ready(Ok(0))` is the clean end of the
+    /// stream. A slot that claims more bytes than `buf` holds is a fault, never trusted.
+    pub fn poll_read(&self, conn: u64, token: u64, buf: &mut [u8]) -> WirePoll<usize> {
+        let Some(f) = self.wire.slot_poll_read() else {
+            return Poll::Ready(Err(WireOutcome::Unsupported));
+        };
+        let (cap, mut n) = (buf.len(), 0_usize);
+        let r = crate::ffi_guard(&self.wire.path, "transport_poll_read", || {
+            f(self.state.ptr, conn, token, buf.as_mut_ptr(), cap, &mut n)
+        });
+        poll_answered(r, || {
+            if n > cap {
+                Err(WireOutcome::Fault)
+            } else {
+                Ok(n)
+            }
+        })
+    }
+
+    /// POLL some of `bytes` onto `conn`: how many the transport took. A slot that claims more than it
+    /// was offered, or none of a non-empty offer, is a fault.
+    pub fn poll_write(&self, conn: u64, token: u64, bytes: &[u8]) -> WirePoll<usize> {
+        let Some(f) = self.wire.slot_poll_write() else {
+            return Poll::Ready(Err(WireOutcome::Unsupported));
+        };
         let mut n = 0_usize;
-        answered(crate::ffi_guard(&self.wire.path, "transport_read", || {
-            f(self.state.ptr, conn, buf.as_mut_ptr(), buf.len(), &mut n)
-        }))?;
-        if n > buf.len() {
-            return Err(WireOutcome::Fault);
-        }
-        Ok(n)
+        let r = crate::ffi_guard(&self.wire.path, "transport_poll_write", || {
+            f(
+                self.state.ptr,
+                conn,
+                token,
+                bytes.as_ptr(),
+                bytes.len(),
+                &mut n,
+            )
+        });
+        poll_answered(r, || {
+            if n > bytes.len() || (n == 0 && !bytes.is_empty()) {
+                Err(WireOutcome::Fault)
+            } else {
+                Ok(n)
+            }
+        })
     }
 
-    /// Write every one of `bytes` to `conn`.
-    pub fn write(&self, conn: u64, bytes: &[u8]) -> Result<(), WireOutcome> {
-        let f = self.wire.slot_write().ok_or(WireOutcome::Unsupported)?;
-        answered(crate::ffi_guard(&self.wire.path, "transport_write", || {
-            f(self.state.ptr, conn, bytes.as_ptr(), bytes.len())
-        }))
+    /// POLL `conn`'s taken bytes — and, for a connection [`Self::connect`] began, its opening — onto
+    /// the wire.
+    pub fn poll_flush(&self, conn: u64, token: u64) -> WirePoll<()> {
+        let Some(f) = self.wire.slot_poll_flush() else {
+            return Poll::Ready(Err(WireOutcome::Unsupported));
+        };
+        let r = crate::ffi_guard(&self.wire.path, "transport_poll_flush", || {
+            f(self.state.ptr, conn, token)
+        });
+        poll_answered(r, || Ok(()))
     }
 
-    /// Close `conn` (idempotent).
-    pub fn close(&self, conn: u64) -> Result<(), WireOutcome> {
-        let f = self.wire.slot_close().ok_or(WireOutcome::Unsupported)?;
-        answered(crate::ffi_guard(&self.wire.path, "transport_close", || {
-            f(self.state.ptr, conn)
-        }))
+    /// POLL `conn` closed (idempotent). Polled with [`NO_WAKER`], the transport closes it whether or
+    /// not anyone polls again.
+    pub fn poll_close(&self, conn: u64, token: u64) -> WirePoll<()> {
+        let Some(f) = self.wire.slot_poll_close() else {
+            return Poll::Ready(Err(WireOutcome::Unsupported));
+        };
+        let r = crate::ffi_guard(&self.wire.path, "transport_poll_close", || {
+            f(self.state.ptr, conn, token)
+        });
+        poll_answered(r, || Ok(()))
+    }
+
+    /// Close `conn` with nobody waiting: [`Self::poll_close`] with [`NO_WAKER`], its answer dropped.
+    pub fn close_now(&self, conn: u64) {
+        let _ = self.poll_close(conn, NO_WAKER);
     }
 }
 
@@ -474,13 +664,14 @@ fn assemble(
     })?;
     if abi.abi_minor < TRANSPORT_DECL_MINOR {
         return Err(format!(
-            "transport '{display}' was built at airlock minor {}, before the transport decl \
-             existed (minor {TRANSPORT_DECL_MINOR})",
+            "transport '{display}' was built at airlock minor {}, before the transport decl this \
+             build admits (minor {TRANSPORT_DECL_MINOR}: the poll slots; the blocking slots are \
+             retired) — rebuild it against this ABI",
             abi.abi_minor
         ));
     }
-    let whole =
-        (core::mem::offset_of!(TransportDecl, session) + core::mem::size_of::<u32>()) as u32;
+    let whole = (core::mem::offset_of!(TransportDecl, poll_close)
+        + core::mem::size_of::<Option<WirePollCloseFn>>()) as u32;
     if advertised < whole {
         return Err(format!(
             "transport '{display}' decl attests size {advertised}, below the {whole}-byte decl — \
@@ -495,6 +686,43 @@ fn assemble(
         ));
     }
     let size = advertised;
+    // THE RETIRED BLOCKING SLOTS (minor 28): a decl that still fills one was written for a host that
+    // parks a thread per call; this host never calls them, and will not admit a decl expecting it to.
+    // SAFETY: `size` reaches past every one of them (checked above), so each field is in the decl.
+    let retired = unsafe {
+        [
+            (
+                "build",
+                core::ptr::read_unaligned(core::ptr::addr_of!((*decl).build)).is_some(),
+            ),
+            (
+                "accept",
+                core::ptr::read_unaligned(core::ptr::addr_of!((*decl).accept)).is_some(),
+            ),
+            (
+                "dial",
+                core::ptr::read_unaligned(core::ptr::addr_of!((*decl).dial)).is_some(),
+            ),
+            (
+                "read",
+                core::ptr::read_unaligned(core::ptr::addr_of!((*decl).read)).is_some(),
+            ),
+            (
+                "write",
+                core::ptr::read_unaligned(core::ptr::addr_of!((*decl).write)).is_some(),
+            ),
+            (
+                "close",
+                core::ptr::read_unaligned(core::ptr::addr_of!((*decl).close)).is_some(),
+            ),
+        ]
+    };
+    if let Some((slot, _)) = retired.iter().find(|(_, filled)| *filled) {
+        return Err(format!(
+            "transport '{display}' fills the blocking `{slot}` slot, retired at airlock minor \
+             {TRANSPORT_DECL_MINOR} — a transport speaks the poll slots"
+        ));
+    }
     let field = |what: &str| format!("transport '{display}' decl does not reach its `{what}`");
     let key = decl_str(
         busbar_plugin::read_sized_field!(decl, size, TransportDecl, key)
