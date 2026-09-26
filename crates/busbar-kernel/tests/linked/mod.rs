@@ -21,7 +21,9 @@
 #![allow(dead_code)]
 
 use busbar_kernel::plane::registry::{plane_decls, PlaneDecl};
-use busbar_kernel::test_support::seam::{register_test_plane_seam, test_plane_seams};
+use busbar_kernel::test_support::seam::{
+    register_test_plane_seam, test_plane_seams, TestPlaneSeam,
+};
 
 include!(concat!(env!("OUT_DIR"), "/test_linked.rs"));
 
@@ -91,4 +93,14 @@ pub fn door_section(decl: &PlaneDecl) -> &'static str {
         .first()
         .copied()
         .unwrap_or(decl.config_section)
+}
+
+/// `decl`'s own test-seam entry — what its test kit exports for a cross-plane test to drive it by
+/// (its served-call framer, its carried verify-gate reader), found by the key it declares.
+pub fn seam(decl: &PlaneDecl) -> &'static TestPlaneSeam {
+    install();
+    test_plane_seams()
+        .into_iter()
+        .find(|s| s.name == decl.key)
+        .unwrap_or_else(|| panic!("the `{}` plane registered no test seam", decl.key))
 }

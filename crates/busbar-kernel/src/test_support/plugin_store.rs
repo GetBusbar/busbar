@@ -119,24 +119,19 @@ fn profile_args(profile: &str) -> Vec<String> {
 }
 
 fn build_command(profile: &str) -> String {
-    let extra = profile_args(profile).join(" ");
-    if extra.is_empty() {
-        "cargo build -p busbar-store-example-plugin".into()
-    } else {
-        format!("cargo build {extra} -p busbar-store-example-plugin")
-    }
+    let mut words = vec!["cargo".to_string(), "build".to_string()];
+    words.extend(profile_args(profile));
+    words.extend(["-p".to_string(), "busbar-store-example-plugin".to_string()]);
+    words.join(" ")
 }
 
 /// The first watched source modified after `built`, if any. Returns the file so a message can name
 /// it — "something is stale" sends a reader hunting; naming the file does not.
 fn newer_source_than(built: std::time::SystemTime) -> Option<PathBuf> {
     let crates = workspace_root().join("crates");
-    for crate_dir in WATCHED_CRATES {
-        if let Some(newer) = newest_source_under(&crates.join(crate_dir), built) {
-            return Some(newer);
-        }
-    }
-    None
+    WATCHED_CRATES
+        .iter()
+        .find_map(|crate_dir| newest_source_under(&crates.join(crate_dir), built))
 }
 
 fn resolve_cdylib() -> PathBuf {
@@ -147,10 +142,8 @@ fn resolve_cdylib() -> PathBuf {
     //    one and nothing watched has moved since. This is the CI path and it builds nothing.
     let prebuilt = profile_dir.join(&name);
     let prebuilt_age = std::fs::metadata(&prebuilt).and_then(|m| m.modified()).ok();
-    if let Some(built) = prebuilt_age {
-        if newer_source_than(built).is_none() {
-            return prebuilt;
-        }
+    if prebuilt_age.is_some_and(|built| newer_source_than(built).is_none()) {
+        return prebuilt;
     }
 
     if std::env::var_os("BUSBAR_NO_FIXTURE_BUILD").is_some() {

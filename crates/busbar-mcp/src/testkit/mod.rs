@@ -291,12 +291,52 @@ pub fn prefresh_mcp_sightings(slots: &dyn busbar_kernel::plane_host::PlaneSlots)
 
 /// THIS PLANE'S LINKED-TEST-SEAM ENTRY — what a test binary that links this crate without naming it
 /// registers into the kernel's test-seam registry and loops: the cross-plane install
-/// plus the default-runtime seed, and the trust verbs' error-surface driver.
+/// plus the default-runtime seed, the trust verbs' error-surface driver, and the framer a
+/// cross-plane test drives this plane's served front door with.
 pub const TEST_SEAM: TestPlaneSeam = TestPlaneSeam {
     name: SCRATCH_KEY,
     install: install_linked_test_seams,
     error_surface_driver: ERROR_SURFACE_DRIVER,
+    served_call: Some(frame_served_call),
+    verify_gate: None,
 };
+
+/// THIS PLANE'S SERVED-CALL FRAMER — the headers and the JSON-RPC body the front door requires for
+/// ONE call of `method`: the per-request `params._meta` (the protocol revision, and client
+/// capabilities declaring every ask this plane can send, so no operator-configured round is filtered
+/// away) and the mirrored routing headers the envelope check compares against the body. Built from
+/// the envelope's own wire words, never a second spelling of them.
+fn frame_served_call(
+    method: &str,
+    mut params: serde_json::Value,
+) -> (axum::http::HeaderMap, serde_json::Value) {
+    use crate::mcp::envelope::{
+        name_source_of, H_MCP_METHOD, H_MCP_NAME, H_PROTOCOL_VERSION, META_CLIENT_CAPABILITIES,
+        META_PROTOCOL_VERSION, PROTOCOL_VERSION,
+    };
+    use axum::http::{HeaderName, HeaderValue};
+    let mut meta = serde_json::Map::new();
+    meta.insert(META_PROTOCOL_VERSION.into(), PROTOCOL_VERSION.into());
+    meta.insert(
+        META_CLIENT_CAPABILITIES.into(),
+        serde_json::json!({ "sampling": {}, "elicitation": {}, "roots": { "listChanged": true } }),
+    );
+    params["_meta"] = serde_json::Value::Object(meta);
+    let mut headers = axum::http::HeaderMap::new();
+    let mut mirror = |name: &'static str, value: &str| {
+        headers.insert(
+            HeaderName::from_static(name),
+            HeaderValue::from_str(value).expect("a served-call header value is visible ASCII"),
+        );
+    };
+    mirror(H_PROTOCOL_VERSION, PROTOCOL_VERSION);
+    mirror(H_MCP_METHOD, method);
+    if let Some(target) = name_source_of(method).and_then(|k| params.get(k)?.as_str()) {
+        mirror(H_MCP_NAME, target);
+    }
+    let body = serde_json::json!({ "jsonrpc": "2.0", "id": 1, "method": method, "params": params });
+    (headers, body)
+}
 
 /// THIS PLANE'S SERVED-LEG WITNESSES — `(capability key, [(loop step or core capability, witness)])`.
 ///

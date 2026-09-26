@@ -49,6 +49,8 @@ pub const TEST_SEAM: TestPlaneSeam = TestPlaneSeam {
     name: "llm",
     install: install_test_seams,
     error_surface_driver: None,
+    served_call: None,
+    verify_gate: None,
 };
 
 /// This plane's registry row, assembled kernel-side from its contract declaration

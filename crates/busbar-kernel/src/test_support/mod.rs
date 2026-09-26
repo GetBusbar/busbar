@@ -1316,7 +1316,7 @@ impl TestApp {
         self
     }
 
-    /// Give the built App the DURABLE HOME the MCP trust state writes through to, exactly as boot
+    /// Give the built App the DURABLE HOME a plane's trust state writes through to, exactly as boot
     /// attaches the configured governance store: the demotion record's sink, the shared
     /// spent-approval ledger, and the boot replay of any demotion the store already holds.
     ///
@@ -1326,7 +1326,7 @@ impl TestApp {
     /// `busbar-store-example-plugin` cdylib in its durable mode, loaded over the plugin C ABI (see
     /// [`super::plugin_store`]). A deployment that configures no store simply never calls this, and
     /// gets the process-local behaviour both properties had before.
-    pub fn mcp_durable_store(mut self, store: std::sync::Arc<dyn busbar_api::Store>) -> Self {
+    pub fn durable_store(mut self, store: std::sync::Arc<dyn busbar_api::Store>) -> Self {
         self.plane_durable_store = Some(store);
         self
     }

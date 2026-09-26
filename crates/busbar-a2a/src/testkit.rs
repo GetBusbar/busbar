@@ -231,12 +231,17 @@ pub const SERVED: (&str, &[(&str, crate::a2a::relay::served_witness::Witness)]) 
 );
 
 /// THIS PLANE'S LINKED-TEST-SEAM ENTRY — what a test binary that links this crate without naming it
-/// registers into the kernel's test-seam registry and loops: the cross-plane install
-/// and the trust verbs' error-surface driver.
+/// registers into the kernel's test-seam registry and loops: the cross-plane install, the trust
+/// verbs' error-surface driver and the carried verify-gate reader.
 pub const TEST_SEAM: TestPlaneSeam = TestPlaneSeam {
     name: SCRATCH_KEY,
     install: install_test_seams,
     error_surface_driver: ERROR_SURFACE_DRIVER,
+    served_call: None,
+    // The verify-on-call gate this plane's runtime object carries across a config apply, read off
+    // the plane's own slot — so a cross-plane test observes the carried gate without naming the
+    // plane's runtime type.
+    verify_gate: Some(|slots| crate::a2a::runtime_off_slots(slots).map(A2aPlane::verify_arc)),
 };
 
 #[cfg(feature = "auth-admin-tokens")]

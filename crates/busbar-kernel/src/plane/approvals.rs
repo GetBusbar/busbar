@@ -232,9 +232,9 @@ mod askstate_tests;
 
 // ONE APPROVAL, REDEEMED ONCE — across a restart and across a fleet. MOVED to
 // `tests/spentledger_cross_plane.rs` (the A6/HostCtx dev-dependency-cycle cleanup): it crosses the
-// real plugin ABI into a real durable store and is judged through the REAL `busbar_mcp::mcp::
-// callerask::decide`, which only type-checks with ONE `busbar_kernel` in the graph — an
-// integration-test target, never this `#[cfg(test)]` unit module. See that file's header.
+// real plugin ABI into a real durable store and is judged through a linked plane's SERVED front
+// door, which only type-checks with ONE `busbar_kernel` in the graph — an integration-test target,
+// never this `#[cfg(test)]` unit module. See that file's header.
 
 // ==== merged from busbar-substrate (W4.b P2 engine drain) ====
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;

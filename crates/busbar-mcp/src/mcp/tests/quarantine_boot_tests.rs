@@ -82,7 +82,7 @@ fn boot(
         .mcp(&mcp_cfg())
         .mcp_server("fs", cfg)
         .with_mcp_sightings(sightings);
-    // Keep a second handle to the same durable store for the boot REPLAY below — `mcp_durable_store`
+    // Keep a second handle to the same durable store for the boot REPLAY below — `durable_store`
     // consumes one for the core-owned write-through sinks (spent-ledger + demotion record).
     let replay_store = store.clone();
     if let Some(store) = store {
