@@ -912,7 +912,9 @@ unit_crate_glob = "busbar-unit-*"
 # 2c9eddecf), and the glob `busbar-unit-*` now matches exactly ONE crate,
 # `busbar-unit-transport-key`, at 268 lines. The ceiling had 14,155 lines of slack — room for the
 # whole unit family to come back without a single row going red. Pinned at the measurement.
-unit_total_ceiling = 268
+# RATCHETED DOWN 268 -> 2, AT THE MEASUREMENT: the transport-key fold (F14 1/2) moved the
+# provisioning kernel-side into busbar-kernel-identity, and `busbar-unit-transport-key` now counts 2.
+unit_total_ceiling = 2
 # `verbs_crate` / `verbs_ceiling` ARE STRUCK (P1A-con, 1.6.0 Phase 1). They budgeted
 # `busbar-unit-verbs` as a sub-ceiling of the unit union. OWNER-LOCKED DECISION #36 moved verb
 # execution OUT of the unit set ("EXITS from the unit set: `verbs` -> `busbar-core-admin`"):
@@ -2108,14 +2110,16 @@ scope_globs = ["crates/busbar/src/root/*.rs", "crates/busbar/src/main.rs"]
 # TODAY's measurement on the committed tree (HEAD b091b4e83). Downward only from here.
 # RATCHETED DOWN 15 -> 10, AT THE MEASUREMENT (K2f): eefc65fd7 deleted root/units_voice.rs, the last
 # root file naming `busbar_voice::` (5 distinct symbols), so the busbar_voice figure below is 0.
-ceiling = 10
+# RATCHETED DOWN 10 -> 0, AT THE MEASUREMENT: the llm unit became the plane's only arrival path (K2h)
+# and the root names no `busbar_llm::` engine path any more, so every prefix below measures 0.
+ceiling = 0
 
 [rules.legacy-reach.prefixes.busbar_llm]
 prefix = "busbar_llm::"
 # The plane's own unit modules are where the rebuilt steps live; they are not legacy engine reach.
 exclude = ["busbar_llm::unit"]
 because = "the llm engine's non-unit paths: arrival parsing, proto codecs, the stream translator"
-figure = 10
+figure = 0
 
 [rules.legacy-reach.prefixes.busbar_mcp]
 prefix = "busbar_mcp::"
