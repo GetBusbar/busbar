@@ -2308,12 +2308,16 @@ plane_crates = 4
 #     exactly the way a ceiling naming no row is red. NOTHING STOPS BEING COUNTED by striking them:
 #     there was no glob under either key for the count to have been reading.
 #
-# ── RE-PINNED 2026-09-25: `transport` 7 -> 5 ─────────────────────────────────────────────────────
+# ── RE-PINNED 2026-09-25: `transport` 7 -> 5, `secret` 2 -> 1 ────────────────────────────────────────────────
 #
 #   * `transport` 7 -> 5. The transport fold: `busbar-transport-grpc` folded into
 #     `busbar-transport-http` as its `grpc` module and `busbar-transport-sse` as its `sse` module,
 #     and both directories were deleted. `crates/busbar-transport-*`
 #     now matches exactly five: http, stdio, tcp, tls and ws.
+#
+#   * `secret` 2 -> 1. The secret-reference fold: `crates/secret-ref` merged into `busbar-contract`
+#     as its `secret_ref` module (the contract has one secret reference type), and its directory was
+#     deleted. `crates/secret-*` now matches exactly one: `crates/secret-example-plugin`.
 #
 # THE BASE COMPARISON STILL REPORTS THE THREE DECREMENTS (plugin_kinds.plane 6->5,
 # plugin_kinds.unit 14->1, plugin_kinds.pure_auth 2->0), AND THAT IS THIS ROW WORKING RATHER THAN
@@ -2329,7 +2333,7 @@ plane = 5
 unit = 1
 hook = 2
 auth = 2
-secret = 2
+secret = 1
 store = 2
 export = 1
 transport = 5
