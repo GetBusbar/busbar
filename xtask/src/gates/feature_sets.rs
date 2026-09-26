@@ -832,10 +832,13 @@ fn plants(cx: &Ctx) -> Vec<Plant> {
         ov
     });
 
-    // THE MATRIX THAT EMPTIED OUT, with every feature it built moved to a declaration so that ONLY
-    // the floor can go red. A floor proven alongside its neighbours is a floor that could be
-    // deleted with the self-test still green.
-    let empty_matrix = workflow.as_ref().map(|t| emptied_matrix(t));
+    // THE MATRIX THAT EMPTIED OUT, with every NON-DEFAULT feature it built moved to a declaration
+    // so that ONLY the floor can go red. A floor proven alongside its neighbours is a floor that
+    // could be deleted with the self-test still green. A row may also name default-on features (a
+    // single-plane row keeps the defaults a bootable node needs); a declaration of one of those is
+    // itself refused as needing no exemption, so they are not moved.
+    let nd = load_crates(cx).map(|c| non_default(&c)).unwrap_or_default();
+    let empty_matrix = workflow.as_ref().map(|t| emptied_matrix(t, &nd));
 
     // A WORKSPACE WITH NOTHING IN IT. The root manifest still parses and still names a member; that
     // member simply declares no features, so the coverage check is vacuously true and only the
@@ -997,7 +1000,7 @@ fn without_declarations(text: &str) -> String {
 
 /// Strip every `features:` line out of the `feature-sets` job and re-declare what it built, so the
 /// matrix floor is the only rule that can move.
-fn emptied_matrix(text: &str) -> Overlay {
+fn emptied_matrix(text: &str, non_default: &BTreeSet<String>) -> Overlay {
     let mut out: Vec<String> = Vec::new();
     let mut decls: Vec<String> = Vec::new();
     let mut in_job = false;
@@ -1007,7 +1010,9 @@ fn emptied_matrix(text: &str) -> Overlay {
         }
         if in_job {
             if let Some(v) = raw.trim().strip_prefix("features:") {
-                for f in split_features(v.trim().trim_matches(['"', '\''])) {
+                for f in split_features(v.trim().trim_matches(['"', '\'']))
+                    .filter(|f| non_default.contains(*f))
+                {
                     decls.push(format!(
                         "  {DECL} {f}{SEP}check{SEP}the matrix row that named it was removed by \
                          this planted fixture"
