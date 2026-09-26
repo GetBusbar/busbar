@@ -2103,19 +2103,39 @@ pub fn selftest<'a>(
         &["busbar-kernel", "store"],
     ));
 
-    // A HIT THAT IS ONLY A COMMENT. Nothing is stripped: a plane named in a doc comment of the
-    // kernel is the kernel's reader being taught a plane.
+    // A HIT THAT IS ONLY A COMMENT. Nothing is stripped: a plane named in a doc comment of a
+    // kernel crate is the kernel's reader being taught a plane.
+    //
+    // THE CELL IS THE FIXTURE'S OWN. The case used to plant into `busbar-kernel` and read the live
+    // `busbar-kernel × plane` ceiling, which sits above its measurement on the tree it runs over —
+    // so three more hits left it STALE SLACK and the case could never say RAISED. The fixture
+    // crate names one plane in code, its row (carried by the base's ledger too) records exactly
+    // that one, and the control below is green; the comment is the only thing the red case adds.
+    let comment_fixture = |comment: bool| {
+        let mut files = vec![("wiring.rs", "pub const PLANE: &str = \"llm\";\n")];
+        if comment {
+            files.push(("leak.rs", "// mcp and a2a come through here too.\n"));
+        }
+        fixture_cell(cx, "plane", "1", &files, true)
+    };
+    report.push(prove_rows_green(
+        cx,
+        gate,
+        "a kernel crate's plane cell at its recorded ceiling is green (the comment case's control)",
+        &[ROW_MATRIX],
+        comment_fixture(false),
+    ));
     report.push(prove_rows_red(
         cx,
         gate,
         "a plane named in nothing but a comment inside the kernel",
         &[ROW_MATRIX],
-        plant(
-            cx,
-            "crates/busbar-kernel/src/leak.rs",
-            "// mcp, a2a and llm all come through here.\n",
-        ),
-        &["ratchet", "busbar-kernel × plane", "RAISED"],
+        comment_fixture(true),
+        &[
+            "ratchet",
+            &format!("{} \u{d7} plane", instances::FIXTURE_CRATE),
+            "RAISED",
+        ],
     ));
 
     // THE TWO SCANNERS DISAGREEING. `gRPC` reads whole to the window scanner and splits at its own
