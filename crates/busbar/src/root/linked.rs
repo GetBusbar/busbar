@@ -81,6 +81,40 @@ pub struct Linked {
     /// flips onto the unified loop's ONE-SHOT runner, and of each it flips onto the SESSION runner.
     pub gauntlet_one_shot: &'static [&'static str],
     pub gauntlet_session: &'static [&'static str],
+    /// The transport axis (#3, #30): each linked wire's key, declared layers and build, in manifest
+    /// order — the boot seal folds them bottom-up (see `crate::root::registry`).
+    pub transports: &'static [LinkedTransport],
+    /// Each linked plane's pure plane, as the boot seal registers it, and the claims it declares.
+    pub claims: &'static [LinkedClaims],
+}
+
+/// One linked wire, as its crate's entry states it: the registry key, the layers it declares it can
+/// be built over, and its build — handed the layer the root built beneath it, where one is, and the
+/// deployment's transport settings.
+#[derive(Clone, Copy)]
+pub struct LinkedTransport {
+    /// The wire's registry key.
+    pub key: &'static str,
+    /// The layers it declares, in the order it would take one.
+    pub composes_over: &'static [&'static str],
+    /// Build the wire over `lower`.
+    pub build: BuildTransport,
+}
+
+/// A wire's build: handed the layer built beneath it, where one is, and the deployment's settings.
+pub type BuildTransport = fn(
+    Option<Arc<dyn busbar_contract::Transport>>,
+    &busbar_contract::transport::TransportSettings,
+) -> Arc<dyn busbar_contract::Transport>;
+
+/// One linked plane's contribution to the boot seal: the pure plane registered under its own key,
+/// and the claims that plane declares.
+#[derive(Clone, Copy)]
+pub struct LinkedClaims {
+    /// The pure plane, as the seal's registry holds it.
+    pub plane: fn() -> Arc<dyn busbar_contract::Plugin>,
+    /// The bytes it claims.
+    pub claims: &'static [busbar_contract::grammar::Claim],
 }
 
 /// A linked EXPORT sink's entry (K9b): `(name, alias, declares, boundary)` — what its signed tarball

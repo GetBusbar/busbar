@@ -36,6 +36,38 @@ mod transport;
 pub use conn::StaticConfig;
 pub use transport::{WsTransport, MESSAGE_MAX_BYTES_KEY};
 
+/// THE TRANSPORT AXIS ENTRY (#3, #30): what the composition root folds for this wire — its key, the
+/// layers it declares, and how it is built. The root names none of them.
+pub mod linked {
+    use std::sync::Arc;
+
+    use busbar_contract::transport::{Transport, TransportMeta, TransportSettings};
+
+    use crate::WsTransport;
+
+    /// The row's registry key.
+    pub const KEY: &str = <WsTransport as TransportMeta>::KEY;
+    /// The layers this wire declares it can be built over.
+    pub const COMPOSES_OVER: &[&str] = <WsTransport as TransportMeta>::COMPOSES_OVER;
+
+    /// Built over `lower` — never over nothing, which yields a transport that refuses every
+    /// connection — with the deployment's body cap as its message ceiling: a message is assembled
+    /// from frames before anything above the transport sees it, so the ceiling is stated at the
+    /// handshake or not at all. With no lower layer the boot check has already refused the stack.
+    #[must_use]
+    pub fn build(
+        lower: Option<Arc<dyn Transport>>,
+        settings: &TransportSettings,
+    ) -> Arc<dyn Transport> {
+        Arc::new(match lower {
+            Some(lower) => {
+                WsTransport::over_with_max_message_bytes(lower, settings.request_body_max_bytes)
+            }
+            None => WsTransport::new(),
+        })
+    }
+}
+
 #[cfg(test)]
 #[path = "tests/battery.rs"]
 mod battery;

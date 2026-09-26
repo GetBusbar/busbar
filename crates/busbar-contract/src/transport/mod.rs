@@ -64,7 +64,8 @@ pub type FrameStream =
 /// author does not; they are named here so that `busbar_contract::transport` still means what it
 /// meant to the composition root that wires the registry.
 pub use registry::{
-    check_composition, facts, status_ns, CompositionError, Registered, TRANSPORT_ABI,
+    check_composition, facts, status_ns, CompositionError, Registered, TransportSettings,
+    DEFAULT_REQUEST_BODY_MAX_BYTES, DEFAULT_REQUEST_TIMEOUT_SECS, TRANSPORT_ABI,
 };
 
 /// A plane's SERVED SURFACE as data — the operations, how each is addressed on each binding, how it

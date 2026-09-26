@@ -400,7 +400,7 @@ fn the_boot_seal_runs_the_label_bank_check_and_a_drift_refuses_the_boot() {
     assert!(line.contains("transient_upstream") && line.contains("transient-upstream"));
 
     assert!(
-        crate::root::registry::seal(Default::default()).is_ok(),
+        crate::root::registry::seal(&crate::LINKED, Default::default()).is_ok(),
         "today's banks agree, so the seal still passes"
     );
 }

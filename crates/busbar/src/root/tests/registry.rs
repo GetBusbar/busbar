@@ -6,6 +6,30 @@ use super::*;
 use busbar_contract::grammar::{Claim, Selector};
 use busbar_kernel::registry::{check_claims, claims_overlap, ConflictReason, PluginKind};
 
+/// Every linked plane's claims and the core plane's, as the boot seal pairs them.
+fn linked_claims() -> Vec<PlaneClaim> {
+    plane_claims(crate::LINKED.claims)
+}
+
+/// The linked transports folded bottom-up, as the boot seal folds them.
+fn linked_fold() -> Vec<Built> {
+    compose(crate::LINKED.transports, &TransportSettings::default()).expect("the stack composes")
+}
+
+/// Every linked transport as the composition check reads it.
+fn linked_rows() -> Vec<Registered> {
+    linked_fold().into_iter().map(|(row, _)| row).collect()
+}
+
+/// The registry the seal fills: the folded transports, then every linked plane and the core one.
+fn linked_registry() -> Registry {
+    let transports: Vec<Arc<dyn Transport>> = linked_fold().into_iter().map(|(_, t)| t).collect();
+    register_all(&transports, crate::LINKED.claims).expect("nothing collides on a key")
+}
+
+/// The shipped transport fold (`<wire key> <composed over, or ->` rows, in build order), as data.
+const TRANSPORT_FOLD: &str = include_str!("fixtures/transport_fold.txt");
+
 /// The sealed walk over the fifty declared claims, most specific first. The decision plane's two
 /// exact paths (item 251) sit among the other exact paths, ahead of every pattern that could also
 /// describe them.
@@ -49,15 +73,15 @@ const DECISION: bool = cfg!(feature = "plane-decision");
 /// says they are. This is the half of the seal that does not depend on the claims.
 #[test]
 fn seven_transports_and_five_planes_register() {
-    let transports = compose_transports(ClientSettings::default());
-    let registry = register_all(&transports).expect("nothing collides on a key");
+    let registry = linked_registry();
     assert_eq!(
         registry.count(PluginKind::Transport),
         if session_linked() { 7 } else { 6 }
     );
+    // Every linked plane and the core one: a plane this build does not link registers nothing.
     assert_eq!(
         registry.count(PluginKind::Plane),
-        4 + usize::from(session_linked()) + usize::from(DECISION)
+        crate::LINKED.claims.len() + 1
     );
     for key in ["tcp", "tls", "http", "sse", "grpc", "stdio"] {
         assert!(
@@ -68,7 +92,7 @@ fn seven_transports_and_five_planes_register() {
     // Every plane that claims bytes is registered, and nothing else is: the claimed keys are
     // read off the planes' own declarations, so this names none of them. With the per-plane claim
     // counts pinned in `fixtures/claims_per_plane.txt`, the registered set is pinned key by key.
-    let mut claimed: Vec<&str> = plane_claims().iter().map(|c| c.plane).collect();
+    let mut claimed: Vec<&str> = linked_claims().iter().map(|c| c.plane).collect();
     claimed.sort_unstable();
     claimed.dedup();
     for key in &claimed {
@@ -90,7 +114,7 @@ fn seven_transports_and_five_planes_register() {
         registry
             .resolve(
                 PluginKind::Plane,
-                <busbar_plane_decision::DecisionPlane as PlaneMeta>::KEY
+                <busbar_plane_decision::DecisionPlane as busbar_contract::plane::PlaneMeta>::KEY
             )
             .is_some(),
         "the decision plane is linked and not registered"
@@ -114,7 +138,7 @@ fn seven_transports_and_five_planes_register() {
 #[cfg(linked_every_plane)]
 #[test]
 fn the_planes_declare_fifty_claims() {
-    let claims = plane_claims();
+    let claims = linked_claims();
     let count = |plane: &str| claims.iter().filter(|c| c.plane == plane).count();
     // One `<plane key> <claims>` row per plane, pinned as fixture DATA so this source names none.
     let pinned: Vec<(String, usize)> = fixture_rows(CLAIMS_PER_PLANE)
@@ -135,7 +159,7 @@ fn the_planes_declare_fifty_claims() {
     }
     // The decision plane's key is its crate's own, so it is also asserted by that name.
     assert_eq!(
-        count(<busbar_plane_decision::DecisionPlane as PlaneMeta>::KEY),
+        count(<busbar_plane_decision::DecisionPlane as busbar_contract::plane::PlaneMeta>::KEY),
         2
     );
     assert_eq!(
@@ -164,7 +188,7 @@ fn the_planes_declare_fifty_claims() {
 fn one_hundred_and_sixty_four_cross_plane_pairs_overlap() {
     use busbar_kernel::grammar::family;
 
-    let claims = plane_claims();
+    let claims = linked_claims();
     let mut cross_family = 0usize;
     let mut same_family = 0usize;
     for (i, left) in claims.iter().enumerate() {
@@ -209,7 +233,7 @@ fn every_remaining_path_overlap_is_a_shape_and_not_a_gap() {
     use busbar_contract::grammar::PathSeg;
     use busbar_kernel::grammar::family;
 
-    let claims = plane_claims();
+    let claims = linked_claims();
     let (mut tail, mut variable, mut fragments) = (0usize, 0usize, 0usize);
     let ends_in_tail = |s: &Selector| matches!(s, Selector::PathPattern(p) if matches!(p.last(), Some(PathSeg::Tail)));
     let has_variable = |s: &Selector| matches!(s, Selector::PathPattern(p) if p.iter().any(|g| matches!(g, PathSeg::Var)));
@@ -253,7 +277,7 @@ fn every_remaining_path_overlap_is_a_shape_and_not_a_gap() {
 #[cfg(linked_every_plane)]
 #[test]
 fn every_cross_plane_overlap_is_resolved_by_precedence_and_none_refuses() {
-    let claims = plane_claims();
+    let claims = linked_claims();
     let sealed = seal_claims(&claims);
 
     assert_eq!(sealed.resolved.len(), 164);
@@ -294,7 +318,7 @@ fn every_cross_plane_overlap_is_resolved_by_precedence_and_none_refuses() {
 #[cfg(linked_every_plane)]
 #[test]
 fn the_sealed_order_of_the_fifty_claims_is_pinned() {
-    let claims = plane_claims();
+    let claims = linked_claims();
     let sealed = seal_claims(&claims);
     let walk: Vec<String> = sealed
         .order
@@ -314,7 +338,7 @@ fn the_sealed_order_of_the_fifty_claims_is_pinned() {
 /// request.
 #[test]
 fn a_planted_equal_precedence_collision_refuses_at_boot() {
-    let admin = plane_claims()
+    let admin = linked_claims()
         .into_iter()
         .find(|c| c.plane == "admin")
         .expect("the admin plane claims one path");
@@ -335,7 +359,7 @@ fn a_planted_equal_precedence_collision_refuses_at_boot() {
 /// swallows it, so the order decides, the pair is recorded, and the boot goes on.
 #[test]
 fn a_planted_overlap_at_different_precedence_resolves_rather_than_refusing() {
-    let admin = plane_claims()
+    let admin = linked_claims()
         .into_iter()
         .find(|c| c.plane == "admin")
         .expect("the admin plane claims one path");
@@ -398,7 +422,7 @@ fn claims_with_disjoint_scheme_sets_do_not_collide() {
 /// no claim is dropped from the walk and none is tried twice.
 #[test]
 fn the_precedence_order_is_a_permutation_of_every_claim() {
-    let claims = plane_claims();
+    let claims = linked_claims();
     let mut seen = seal_claims(&claims).order;
     seen.sort_unstable();
     assert_eq!(seen, (0..claims.len()).collect::<Vec<_>>());
@@ -410,7 +434,7 @@ fn the_precedence_order_is_a_permutation_of_every_claim() {
 fn the_precedence_order_is_most_specific_first() {
     use busbar_kernel::grammar::specificity;
 
-    let claims = plane_claims();
+    let claims = linked_claims();
     let order = seal_claims(&claims).order;
     for pair in order.windows(2) {
         let earlier = specificity(&claims[pair[0]].claim.selector);
@@ -424,7 +448,7 @@ fn the_precedence_order_is_most_specific_first() {
 /// named in the message an operator reads.
 #[test]
 fn the_one_answer_form_names_both_planes() {
-    let admin = plane_claims()
+    let admin = linked_claims()
         .into_iter()
         .find(|c| c.plane == "admin")
         .expect("the admin plane claims one path");
@@ -444,7 +468,7 @@ fn the_one_answer_form_names_both_planes() {
 /// specific route. Only the cross-plane case is a refusal.
 #[test]
 fn a_planes_own_claims_may_overlap() {
-    let claims = plane_claims();
+    let claims = linked_claims();
     let admin = claims
         .iter()
         .find(|c| c.plane == "admin")
@@ -459,7 +483,7 @@ fn a_planes_own_claims_may_overlap() {
 /// the composition half of the seal, and it passes today.
 #[test]
 fn the_shipped_transport_stack_composes() {
-    let rows = registered_rows();
+    let rows = linked_rows();
     assert!(check_composition(&rows).is_ok());
     let composed_over = |key: &str| {
         rows.iter()
@@ -480,20 +504,20 @@ fn the_shipped_transport_stack_composes() {
 /// declare describes a node nobody is running, and the check says so.
 #[test]
 fn an_undeclared_composition_refuses_at_boot() {
-    let mut rows = registered_rows();
-    let stdio = rows
+    let mut rows = linked_rows();
+    let used = rows[0].key;
+    let own = rows
         .iter_mut()
-        .find(|r| r.key == StdioTransport::KEY)
-        .expect("stdio is registered");
-    stdio.composed_over = Some(TcpTransport::KEY);
+        .rev()
+        .find(|r| r.composes_over.is_empty())
+        .expect("a wire that declares no layer");
+    let transport = own.key;
+    own.composed_over = Some(used);
 
-    let err = check_composition(&rows).expect_err("stdio composes over nothing");
+    let err = check_composition(&rows).expect_err("the wire composes over nothing");
     assert_eq!(
         err,
-        CompositionError::UndeclaredComposition {
-            transport: "stdio",
-            used: "tcp",
-        }
+        CompositionError::UndeclaredComposition { transport, used }
     );
 }
 
@@ -520,9 +544,8 @@ fn an_unregistered_layer_refuses_at_boot() {
 /// every key it produces is a key the registry actually resolves.
 #[test]
 fn every_claimed_plane_key_is_a_registered_plane() {
-    let transports = compose_transports(ClientSettings::default());
-    let registry = register_all(&transports).expect("nothing collides on a key");
-    for claim in &plane_claims() {
+    let registry = linked_registry();
+    for claim in &linked_claims() {
         assert!(
             registry.resolve(PluginKind::Plane, claim.plane).is_some(),
             "claim names plane `{}`, which is not registered",
@@ -547,7 +570,7 @@ fn every_claimed_plane_key_is_a_registered_plane() {
 fn a_claim_on_a_transport_with_no_crate_refuses_at_boot() {
     // Planted on a REAL registered plane (the first that claims anything), so the refusal is about
     // the transport and nothing else.
-    let plane = plane_claims()
+    let plane = linked_claims()
         .first()
         .expect("the shipped planes claim bytes")
         .plane;
@@ -561,7 +584,7 @@ fn a_claim_on_a_transport_with_no_crate_refuses_at_boot() {
             idempotency: None,
         },
     }];
-    let refusal = check_claim_transports(&telephony, &registered_rows())
+    let refusal = check_claim_transports(&telephony, &linked_rows())
         .expect_err("`twilio-media` has no crate");
     assert!(matches!(
         refusal,
@@ -581,77 +604,152 @@ fn a_claim_on_a_transport_with_no_crate_refuses_at_boot() {
 #[cfg(linked_every_plane)]
 #[test]
 fn the_seal_answers_now_that_every_claim_names_a_registered_transport() {
-    let sealed = seal(ClientSettings::default()).expect("every claim names a live transport");
+    let sealed = seal(&crate::LINKED, TransportSettings::default())
+        .expect("every claim names a live transport");
     assert_eq!(sealed.claims.len(), 50);
     assert_eq!(sealed.precedence.len(), 50);
 }
 
-/// The operator's request-body cap reaches every mounted plane's transport.
+/// The operator's request-body cap reaches every linked transport.
 ///
 /// A deployment that writes `limits.request_body_max_bytes: 1024` is asking for a node that
 /// buffers a kilobyte, and it has to mean it on every plane at once — the door's inbound limit
-/// and the transport's accumulation ceiling are the same number, so a plane served over a
-/// transport built from a `Default` would take a body the door refused. The seal composes ONE
-/// http instance from the settings it is handed and every http-carrying transport is over that
-/// instance, so the cap is checked at the instance and the claim walk is what says no plane sits
-/// anywhere else.
+/// and a transport's accumulation ceiling are the same number, so a wire built from a `Default`
+/// would take a body the door refused. The fold hands every row's build the ONE settings value it
+/// was given, and the capped composition still seals.
 #[test]
 fn the_operators_body_cap_reaches_every_mounted_planes_transport() {
     const CAP: usize = 1024;
+    static SEEN: std::sync::Mutex<Vec<usize>> = std::sync::Mutex::new(Vec::new());
+    fn recording(
+        _: Option<Arc<dyn Transport>>,
+        settings: &TransportSettings,
+    ) -> Arc<dyn Transport> {
+        SEEN.lock()
+            .expect("seen")
+            .push(settings.request_body_max_bytes);
+        let own = crate::LINKED
+            .transports
+            .iter()
+            .find(|r| r.composes_over.is_empty());
+        (own.expect("a wire that opens its own socket").build)(None, settings)
+    }
     let limits = busbar_kernel::config::limits::LimitsResolved {
         request_body_max_bytes: CAP,
         ..busbar_kernel::config::limits::LimitsResolved::default()
     };
-    let sealed = crate::root::registry::seal(crate::root::policy::client_settings(&limits))
-        .expect("every claim names a live transport");
-
+    let rows: Vec<LinkedTransport> = crate::LINKED
+        .transports
+        .iter()
+        .map(|row| LinkedTransport {
+            build: recording,
+            ..*row
+        })
+        .collect();
+    compose(&rows, &crate::root::policy::client_settings(&limits)).expect("the stack composes");
     assert_eq!(
-        sealed.transports.http.max_body_bytes(),
-        CAP,
-        "the http transport must carry the operator's cap, not the crate's default"
+        *SEEN.lock().expect("seen"),
+        vec![CAP; rows.len()],
+        "every linked wire is built from the operator's cap"
     );
 
-    for claim in &sealed.claims {
-        let key = claim.claim.transport;
-        let row = sealed
-            .registered
-            .iter()
-            .find(|r| r.key == key)
-            .unwrap_or_else(|| {
-                panic!(
-                    "claim of plane `{}` names unregistered `{key}`",
-                    claim.plane
-                )
-            });
-        let over_the_capped_instance =
-            key == HttpTransport::KEY || row.composed_over == Some(HttpTransport::KEY);
-        assert!(
-            over_the_capped_instance || key == StdioTransport::KEY,
-            "plane `{}` claims bytes on transport `{key}`, which neither is the capped http \
-             instance nor is composed over it",
-            claim.plane
-        );
+    seal(
+        &crate::LINKED,
+        crate::root::policy::client_settings(&limits),
+    )
+    .expect("the capped composition seals");
+}
+
+/// THE FOLD IS BOTTOM-UP, AND `COMPOSES_OVER` IS THE COMPOSITION ORDER. The shipped rows build in
+/// the order they register — every wire after every layer it declares — and each composed wire is
+/// built over the first layer it declares: `sse`, `ws` and `grpc` over `http`, the four that open
+/// their own socket or streams over nothing. The same rows handed over in the reverse order build
+/// the same stack, because the order is the declarations' and not the table's.
+#[test]
+fn the_fold_builds_bottom_up_in_composes_over_order() {
+    let rows = linked_rows();
+    let linked: Vec<&str> = crate::LINKED.transports.iter().map(|r| r.key).collect();
+    let shipped: Vec<(&str, Option<&str>)> = TRANSPORT_FOLD
+        .lines()
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .filter_map(|l| l.split_once(' '))
+        .map(|(key, over)| (key, (over != "-").then_some(over)))
+        .filter(|(key, _)| linked.contains(key))
+        .collect();
+    let built: Vec<(&str, Option<&str>)> = rows.iter().map(|r| (r.key, r.composed_over)).collect();
+    assert_eq!(built, shipped, "the fold's order or a wire's layer moved");
+    for row in &rows {
+        if let Some(over) = row.composed_over {
+            let first = row.composes_over.iter().find(|l| linked.contains(l));
+            assert_eq!(
+                first,
+                Some(&over),
+                "`{}` not over its first linked layer",
+                row.key
+            );
+        }
     }
 
-    // The other direction: a deployment that set nothing is where it always was.
-    let unset = crate::root::registry::seal(crate::root::policy::client_settings(
-        &busbar_kernel::config::limits::LimitsResolved::default(),
-    ))
-    .expect("every claim names a live transport");
-    assert_eq!(
-        unset.transports.http.max_body_bytes(),
-        ClientSettings::default().request_body_max_bytes
-    );
+    let mut reversed = crate::LINKED.transports.to_vec();
+    reversed.reverse();
+    let refolded: Vec<Registered> = compose(&reversed, &TransportSettings::default())
+        .expect("the reversed table composes")
+        .into_iter()
+        .map(|(row, _)| row)
+        .collect();
+    for (i, row) in refolded.iter().enumerate() {
+        for layer in row.composes_over {
+            if linked.contains(layer) {
+                assert!(
+                    refolded[..i].iter().any(|r| r.key == *layer),
+                    "`{}` was built before its layer `{layer}`",
+                    row.key
+                );
+            }
+        }
+        let same = rows.iter().find(|r| r.key == row.key).expect("same rows");
+        assert_eq!(row.composed_over, same.composed_over, "`{}` moved", row.key);
+    }
+    assert!(check_composition(&refolded).is_ok());
+}
+
+/// Two rows that declare each other as their layer have no bottom: the fold refuses, naming one.
+#[test]
+fn transports_layered_over_each_other_refuse_at_boot() {
+    let own = *crate::LINKED
+        .transports
+        .iter()
+        .find(|r| r.composes_over.is_empty())
+        .expect("a wire that opens its own socket");
+    let rows = [
+        LinkedTransport {
+            key: "upper",
+            composes_over: &["lower"],
+            ..own
+        },
+        LinkedTransport {
+            key: "lower",
+            composes_over: &["upper"],
+            ..own
+        },
+    ];
+    let refusal = compose(&rows, &TransportSettings::default())
+        .err()
+        .expect("no order builds either");
+    assert!(matches!(
+        refusal,
+        BootRefusal::Uncomposable { transport: "upper" }
+    ));
+    assert!(refusal.to_string().contains("`upper`"));
 }
 
 /// And the same check over every declared claim, voice included now that its telephony row is
 /// gone: nothing anywhere names a transport the root did not register.
 #[test]
 fn every_planes_claims_name_a_registered_transport() {
-    let registered = registered_rows();
-    let transports = compose_transports(ClientSettings::default());
-    let registry = register_all(&transports).expect("nothing collides on a key");
-    for claim in plane_claims().iter() {
+    let registered = linked_rows();
+    let registry = linked_registry();
+    for claim in linked_claims().iter() {
         assert!(
             registered.iter().any(|r| r.key == claim.claim.transport),
             "claim of plane `{}` names transport `{}`, which is not registered",
@@ -681,7 +779,7 @@ fn every_planes_claims_name_a_registered_transport() {
 fn the_boot_path_seals_the_composition_in_every_build() {
     let main = include_str!("../../main.rs");
     let run = &main[main.find("async fn run(").expect("the boot's run()")..];
-    let call = "root::registry::seal_or_exit(root::policy::client_settings(&cfg.limits));";
+    let call = "root::registry::seal_or_exit(&LINKED, root::policy::client_settings(&cfg.limits));";
     let sealed = run.find(call).expect("run() seals the composition");
     let units = run
         .find("ROOT_UNITS.iter().filter_map(|u| u.on_config)")

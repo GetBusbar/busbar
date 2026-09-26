@@ -249,3 +249,66 @@ unit-b = "beta"
         assert!(refused.is_err(), "must be refused:\n{broken}");
     }
 }
+
+/// THE TRANSPORT AND CLAIMS AXES, and the rows no feature can drop. A row whose crate is a required
+/// dependency is linked in every build and its key only names the row; two rows may share a crate,
+/// each naming its own entry; a `transport` row fills `transports` with the entry's `KEY`,
+/// `COMPOSES_OVER` and `build`; a `claims` row fills `claims` with its `PLANE` and `CLAIMS`. A row
+/// on an OPTIONAL crate still needs its feature, and `claims` off the plane axis is refused.
+#[test]
+fn the_generator_folds_the_transport_and_claims_axes() {
+    let manifest = r#"
+[dependencies]
+busbar-wire = { path = "../busbar-wire" }
+busbar-plane-host = { path = "../busbar-plane-host", optional = true }
+
+[features]
+host = ["dep:busbar-plane-host"]
+
+[package.metadata.busbar.linked]
+host = "busbar-plane-host"
+wire-low = "busbar-wire"
+wire-high = "busbar-wire"
+
+[package.metadata.busbar.linked-axes]
+host = "plane claims"
+wire-low = "transport"
+wire-high = "transport"
+
+[package.metadata.busbar.linked-entry]
+wire-high = "busbar_wire::linked::high"
+
+[package.metadata.busbar.root-units]
+host = "unit"
+"#;
+    let (out, _) = linked_source(manifest, &|f: &str| f == "host");
+    assert_eq!(
+        out.matches("extern crate busbar_wire as _;").count(),
+        1,
+        "two rows on one crate link it once: {out}"
+    );
+    assert!(out.contains("key: busbar_wire::linked::KEY, composes_over: busbar_wire::linked::COMPOSES_OVER, build: busbar_wire::linked::build }"), "{out}");
+    assert!(out.contains("key: busbar_wire::linked::high::KEY"), "{out}");
+    assert!(out.contains("::std::sync::Arc::new(busbar_plane_host::linked::PLANE), claims: busbar_plane_host::linked::CLAIMS"), "{out}");
+
+    let (off, _) = linked_source(manifest, &|_: &str| false);
+    assert!(
+        off.contains("busbar_wire::linked::KEY"),
+        "a required crate's row is always linked: {off}"
+    );
+    assert!(
+        !off.contains("busbar_plane_host"),
+        "an optional crate's row follows its feature: {off}"
+    );
+
+    for broken in [
+        manifest.replace(
+            "wire-low = \"busbar-wire\"",
+            "wire-low = \"busbar-plane-host\"",
+        ),
+        manifest.replace("host = \"plane claims\"", "host = \"claims\""),
+    ] {
+        let refused = std::panic::catch_unwind(|| linked_source(&broken, &|f: &str| f == "host"));
+        assert!(refused.is_err(), "must be refused:\n{broken}");
+    }
+}

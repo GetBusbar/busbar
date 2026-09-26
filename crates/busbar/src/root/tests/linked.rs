@@ -47,6 +47,8 @@ fn linked(planes: &'static [PlaneDecl], hot_planes: &'static [&'static HotPlaneD
         exports: &[],
         gauntlet_one_shot: &[],
         gauntlet_session: &[],
+        transports: &[],
+        claims: &[],
     }
 }
 

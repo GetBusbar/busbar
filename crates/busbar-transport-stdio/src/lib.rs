@@ -45,6 +45,27 @@ mod transport;
 pub use conn::StaticConfig;
 pub use transport::StdioTransport;
 
+/// THE TRANSPORT AXIS ENTRY (#3, #30): what the composition root folds for this wire — its key, the
+/// layers it declares, and how it is built. The root names none of them.
+pub mod linked {
+    use std::sync::Arc;
+
+    use busbar_contract::transport::{Transport, TransportMeta, TransportSettings};
+
+    use crate::StdioTransport;
+
+    /// The row's registry key.
+    pub const KEY: &str = <StdioTransport as TransportMeta>::KEY;
+    /// The layers this wire declares it can be built over.
+    pub const COMPOSES_OVER: &[&str] = <StdioTransport as TransportMeta>::COMPOSES_OVER;
+
+    /// It opens its own streams, so it takes no lower layer and reads no setting.
+    #[must_use]
+    pub fn build(_: Option<Arc<dyn Transport>>, _: &TransportSettings) -> Arc<dyn Transport> {
+        Arc::new(StdioTransport::new())
+    }
+}
+
 #[cfg(test)]
 #[path = "tests/battery.rs"]
 mod battery;

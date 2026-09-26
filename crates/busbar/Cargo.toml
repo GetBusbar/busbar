@@ -98,7 +98,7 @@ busbar-contract = { path = "../busbar-contract" }
 # root and by nothing else on this path: a plane may not hold a store and a unit may not know a
 # schema, so the mapping from one to the other belongs to the composition and lives in `src/root/`.
 busbar-api = { path = "../api" }
-# The eight kernel workflow crates (#36), plus the two units still standing (verbs, transport-key).
+# The eight kernel workflow crates (#36).
 busbar-kernel-identity = { path = "../busbar-kernel-identity", features = ["sha256"] }
 busbar-kernel-scope = { path = "../busbar-kernel-scope" }
 busbar-kernel-budget = { path = "../busbar-kernel-budget" }
@@ -107,13 +107,9 @@ busbar-kernel-egress = { path = "../busbar-kernel-egress" }
 busbar-kernel-breaker = { path = "../busbar-kernel-breaker" }
 busbar-kernel-wal = { path = "../busbar-kernel-wal" }
 busbar-kernel-audit = { path = "../busbar-kernel-audit" }
-busbar-unit-transport-key = { path = "../busbar-unit-transport-key" }
-# The five planes. The root is the only thing that knows both a plane's type (and therefore its
-# `PlaneMeta` associated constants, which a `dyn Plugin` cannot read) and its registry key, so the
-# root is what pairs them into the claim slice the boot check reads.
-busbar-plane-llm = { path = "../busbar-plane-llm" }
-busbar-plane-mcp = { path = "../busbar-plane-mcp" }
-busbar-plane-a2a = { path = "../busbar-plane-a2a" }
+# The pure planes reach the boot seal through their host's linked entry (`PLANE` + `CLAIMS` on the
+# `claims` axis), so the root names none of them. The streaming plane's edge stays for the root's own
+# streaming unit, which builds its node over the pure plane.
 busbar-plane-streaming = { path = "../busbar-plane-streaming" }
 # THE DECISION PLANE (jev), #48's fifth — and the one plane crate that is BOTH halves at once. Its
 # four siblings above are PURE planes whose registry declaration is carried by a separate impure
@@ -140,9 +136,9 @@ busbar-export-webhook = { path = "../busbar-export-webhook", optional = true }
 # `exports` axis (K9d) — the same row a signed tarball of it registers when dropped in. The host
 # keeps the recorder and serves `/metrics`; this sink renders the recorder's snapshot.
 busbar-export-prometheus = { path = "../busbar-export-prometheus", optional = true }
-# The seven transports. Composition is an edge that does not exist as a Cargo dependency — a
-# transport may not name the layer beneath it — so the root supplies each composing transport its
-# lower layer as a constructor argument, which is why every one of them is named here.
+# The transports. Composition is an edge that does not exist as a Cargo dependency — a transport may
+# not name the layer beneath it — so the root hands each wire's build the layer it built below it.
+# Which wires a build links is the `transport` rows of the linked table below; the source names none.
 busbar-transport-tcp = { path = "../busbar-transport-tcp" }
 busbar-transport-tls = { path = "../busbar-transport-tls" }
 busbar-transport-http = { path = "../busbar-transport-http" }
@@ -152,10 +148,6 @@ busbar-transport-http = { path = "../busbar-transport-http" }
 # exact leak `cargo xtask gate duplex-ws-default-edge` exists to catch. `plane-voice` carries the edge.
 busbar-transport-ws = { path = "../busbar-transport-ws", optional = true }
 busbar-transport-stdio = { path = "../busbar-transport-stdio" }
-# Named directly because provisioning a listener means handing the transport-key unit a resolved
-# `rustls` config: the root builds the dial-side trust store, and the deployment's trust roots are
-# its own statement rather than a unit's.
-rustls = { workspace = true }
 # The root's card is SWAPPED by a live config apply and PINNED by every unit that prices against it,
 # which is one atomic store against many lock-free readers — the same shape, and the same crate, the
 # engine already swaps its config snapshot with.
@@ -235,7 +227,10 @@ plane-a2a = ["dep:busbar-a2a", "busbar-kernel/plane-a2a", "busbar-core-admin/pla
 # reference, so the strong-form deletion gate (scripts/plane-delete-test.sh) strips it with the same
 # rule it strips `busbar-voice?/openapi-schema`, leaving voice byte-for-byte removable. Compiling the
 # runtime here gives the `build_runtime` body; the skeleton build leaves `build_runtime: None`.
-plane-voice = ["dep:busbar-voice", "dep:busbar-transport-ws", "busbar-voice?/runtime", "busbar-kernel/plane-voice"]
+plane-voice = ["dep:busbar-voice", "transport-ws", "busbar-voice?/runtime", "busbar-kernel/plane-voice"]
+# THE WS WIRE, the one optional transport: the voice plane's edge and nothing else's, so `plane-voice`
+# carries it and `--no-default-features` drops the crate edge and its linked row together.
+transport-ws = ["dep:busbar-transport-ws"]
 # THE DECISION PLANE (jev), #48's fifth, DEFAULT ON. The analogue of `plane-a2a` above: one switch
 # for the plane and the crate edge that carries it, never two. It forwards to NO kernel feature, and
 # that is the whole difference between this plane and its four siblings — `busbar-kernel` holds no
@@ -356,6 +351,16 @@ plane-decision = "busbar-plane-decision"
 export-file = "busbar-export-file"
 export-webhook = "busbar-export-webhook"
 export-prometheus = "busbar-export-prometheus"
+# THE TRANSPORT AXIS (#3, #30): the wires this build links, one row each, folded bottom-up by the boot
+# seal. A row whose crate is a required dependency is linked in every build (its key names the row);
+# `ws` rides its optional edge. Rows share a crate where one crate carries several wires.
+transport-tcp = "busbar-transport-tcp"
+transport-tls = "busbar-transport-tls"
+transport-http = "busbar-transport-http"
+transport-sse = "busbar-transport-http"
+transport-ws = "busbar-transport-ws"
+transport-grpc = "busbar-transport-http"
+transport-stdio = "busbar-transport-stdio"
 
 # What each linked feature's crate registers (keyed by the feature, as the linked row is), axis by axis: `plane` (PLANE_DECLARATION + PLANE_HOOKS, joined
 # kernel-side), `protocols`, `path-ingress`, `body-ingress`, `protocol-seams`, `diagnostics`,
@@ -363,21 +368,33 @@ export-prometheus = "busbar-export-prometheus"
 # module — and the root-bound seams it drives: `egress`, `plane-sections`, `admin-envelope`.
 # `gauntlet-one-shot` / `gauntlet-session`: the plane rides the unified kernel loop (#28) —
 # `gauntlet_install::install()` flips its `PLANE_DECLARATION.key` onto the one-shot or session runner.
+# `claims`: the pure plane the boot seal registers (`PLANE`) and the claims it declares (`CLAIMS`).
+# `transport`: a wire's `KEY`, `COMPOSES_OVER` and `build(lower, &TransportSettings)`.
 [package.metadata.busbar.linked-axes]
-proto-llm = "plane protocols path-ingress body-ingress protocol-seams on-host gauntlet-one-shot"
-plane-mcp = "plane protocols diagnostics egress stdio-serve gauntlet-one-shot"
-plane-a2a = "plane diagnostics egress plane-sections admin-envelope gauntlet-one-shot"
-plane-voice = "plane diagnostics ws-arrivals compose gauntlet-session"
-plane-decision = "plane"
+proto-llm = "plane claims protocols path-ingress body-ingress protocol-seams on-host gauntlet-one-shot"
+plane-mcp = "plane claims protocols diagnostics egress stdio-serve gauntlet-one-shot"
+plane-a2a = "plane claims diagnostics egress plane-sections admin-envelope gauntlet-one-shot"
+plane-voice = "plane claims diagnostics ws-arrivals compose gauntlet-session"
+plane-decision = "plane claims"
 export-file = "exports"
 export-webhook = "exports"
 export-prometheus = "exports"
+transport-tcp = "transport"
+transport-tls = "transport"
+transport-http = "transport"
+transport-sse = "transport"
+transport-ws = "transport"
+transport-grpc = "transport"
+transport-stdio = "transport"
 
 # A linked crate whose entry module is not `<crate>::linked`: the decision plane is a PURE plane
 # crate whose manifest names `busbar-contract` and nothing else (#40), so its kernel-typed hooks are
 # written in the composition root and its entry module is that root module.
 [package.metadata.busbar.linked-entry]
 busbar-plane-decision = "crate::root::plane_decision"
+# One crate, several wires: each row past the crate's own `linked` names its entry.
+transport-sse = "busbar_transport_http::linked::sse"
+transport-grpc = "busbar_transport_http::linked::grpc"
 
 # The root's own unit modules (the kernel-loop halves of planes that still live in the root), each
 # compiled under its cargo feature and exporting a `ROOT_UNIT` (`root::linked::RootUnit`). Order is
@@ -447,9 +464,6 @@ tower = { workspace = true, features = ["util"] }
 busbar-export-example-plugin = { path = "../export-example-plugin" }
 # tests/cli_validate.rs builds signed plugin tarball fixtures.
 hex = { workspace = true }
-# `root/transports.rs` provisions a listener against a real self-signed pair rather than a fixture
-# shaped to fit: the point of that test is that the material actually parses.
-rcgen = { workspace = true }
 # THE ADDED-LATENCY INSTRUMENT (`benches/hook_path.rs`) — black-box, boots the shipped binary.
 criterion = { workspace = true }
 # tests/ws_composed_battery.rs (the `ws` transport battery's cross-transport composition cells,

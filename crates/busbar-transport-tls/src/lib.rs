@@ -551,5 +551,26 @@ where
         .map_err(|e| TlsTransport::map_session_err(&e))
 }
 
+/// THE TRANSPORT AXIS ENTRY (#3, #30): what the composition root folds for this wire — its key, the
+/// layers it declares, and how it is built. The root names none of them.
+pub mod linked {
+    use std::sync::Arc;
+
+    use busbar_contract::transport::{Transport, TransportMeta, TransportSettings};
+
+    use crate::TlsTransport;
+
+    /// The row's registry key.
+    pub const KEY: &str = <TlsTransport as TransportMeta>::KEY;
+    /// The layers this wire declares it can be built over.
+    pub const COMPOSES_OVER: &[&str] = <TlsTransport as TransportMeta>::COMPOSES_OVER;
+
+    /// It opens its own socket, so it takes no lower layer and reads no setting.
+    #[must_use]
+    pub fn build(_: Option<Arc<dyn Transport>>, _: &TransportSettings) -> Arc<dyn Transport> {
+        Arc::new(TlsTransport::new())
+    }
+}
+
 #[cfg(test)]
 mod tests;

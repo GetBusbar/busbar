@@ -113,73 +113,78 @@ pub use raw::{RawMessage, RawStartLine};
 /// against — the same "scanned prefix, at most the cursor cap" shape `MAX_CURSOR_BYTES` names.
 pub const READ_CHUNK_BYTES: usize = busbar_contract::MAX_CURSOR_BYTES;
 
-/// The client-affecting settings this transport's egress client is built from — the same fields
-/// `busbar-core`'s `UpstreamClientSettings` carries, named here so this crate never has to depend
-/// on `busbar-core` to read them.
-#[derive(Clone, Copy, Debug)]
-pub struct ClientSettings {
-    /// Per-host idle keep-alive socket budget.
-    pub pool_max_idle_per_host: usize,
-    /// Idle keep-alive lifetime, in seconds.
-    pub pool_idle_timeout_secs: u64,
-    /// Pin the egress client to HTTP/1.1.
-    pub upstream_http1_only: bool,
-    /// Force cleartext HTTP/2 prior-knowledge.
-    pub upstream_h2_prior_knowledge: bool,
-    /// The largest body this transport will accumulate, in bytes, on either side.
-    ///
-    /// This is the operator's `limits.request_body_max_bytes`, not a constant of this crate's own:
-    /// the same knob the served door's inbound body limit and the egress translate cap are built
-    /// from. Feeding all three from one value is what makes it impossible for the transport to
-    /// accept a body the door refused, or refuse one the door accepted. The default here is the
-    /// same historical 32 MiB the config layer falls back to when no limit is installed.
-    pub request_body_max_bytes: usize,
-    /// The largest RESPONSE body this transport will carry for one exchange, in bytes.
-    ///
-    /// The request cap above is the operator's own, shared with the served door. A response body
-    /// has no such layer above it: the door's inbound limit does not reach what an upstream answers
-    /// with, and the response arrives as a stream that declares no total. So the cap is held
-    /// against the bytes that actually arrive, and an upstream — or anything wearing one's address
-    /// — that answers past it ends the frame stream instead of growing this node's heap. Defaults
-    /// to the same value as the request cap.
-    pub response_body_max_bytes: usize,
-    /// The ceiling on one egress exchange's `client.request().await` — from the moment the request
-    /// leaves to the moment the response HEAD is in hand, in seconds.
-    ///
-    /// This is the operator's own `limits.upstream_request_timeout_secs`, carried here rather than
-    /// read off a constant of this crate's own — the same reason `request_body_max_bytes` is a
-    /// field and not a literal: a deployment that raised the knob for long generations must have
-    /// this wait raised with it, not silently re-capped at whatever this crate shipped with.
-    /// `connect_timeout` and the HTTP/2 keepalive bounds stay hardcoded beside it, because neither
-    /// of those is a knob 1.5.5 exposed either — only the request-level ceiling was. Only TCP
-    /// connect and HTTP/2 keepalive bounded `client.request()` before this field existed; an
-    /// HTTP/1.1 upstream that accepted the connection and then never answered could hold it open
-    /// forever. Defaults to the same historical value the config layer resolves the knob to when
-    /// unset.
-    pub request_timeout_secs: u64,
-}
+/// The client-affecting settings this transport's egress client is built from — the contract's
+/// [`TransportSettings`](busbar_contract::transport::TransportSettings), the one shape the
+/// composition root resolves off the deployment's `limits:` and hands every transport's build. Named
+/// here too so this crate's own callers read the name they always did.
+pub use busbar_contract::transport::TransportSettings as ClientSettings;
+pub use busbar_contract::transport::{
+    DEFAULT_REQUEST_BODY_MAX_BYTES, DEFAULT_REQUEST_TIMEOUT_SECS,
+};
 
-/// The uninstalled-config fallback for [`ClientSettings::request_body_max_bytes`] — the same
-/// historical value the config layer resolves `limits.request_body_max_bytes` to when no operator
-/// limit is installed, named here so the two never drift apart silently.
-pub const DEFAULT_REQUEST_BODY_MAX_BYTES: usize = 32 * 1024 * 1024;
+/// THE TRANSPORT AXIS ENTRY (#3, #30): what the composition root folds for each wire this crate
+/// carries — its key, the layers it declares, and how it is built. The root names none of them.
+pub mod linked {
+    use std::sync::Arc;
 
-/// The uninstalled-config fallback for [`ClientSettings::request_timeout_secs`] — the same
-/// historical value the config layer resolves `limits.upstream_request_timeout_secs` to when no
-/// operator limit is installed (and the byte-identical ceiling 1.5.5's own engine anchored this
-/// exact wait with), named here so the two never drift apart silently.
-pub const DEFAULT_REQUEST_TIMEOUT_SECS: u64 = 300;
+    use busbar_contract::transport::{Transport, TransportMeta, TransportSettings};
 
-impl Default for ClientSettings {
-    fn default() -> Self {
-        Self {
-            pool_max_idle_per_host: 32,
-            pool_idle_timeout_secs: 4,
-            upstream_http1_only: false,
-            upstream_h2_prior_knowledge: false,
-            request_body_max_bytes: DEFAULT_REQUEST_BODY_MAX_BYTES,
-            response_body_max_bytes: DEFAULT_REQUEST_BODY_MAX_BYTES,
-            request_timeout_secs: DEFAULT_REQUEST_TIMEOUT_SECS,
+    use crate::HttpTransport;
+
+    /// The `http` row's registry key.
+    pub const KEY: &str = <HttpTransport as TransportMeta>::KEY;
+    /// The layers `http` declares it can be built over.
+    pub const COMPOSES_OVER: &[&str] = <HttpTransport as TransportMeta>::COMPOSES_OVER;
+
+    /// `http` opens its own socket, so it takes no lower layer; it holds the deployment's settings.
+    #[must_use]
+    pub fn build(
+        _: Option<Arc<dyn Transport>>,
+        settings: &TransportSettings,
+    ) -> Arc<dyn Transport> {
+        Arc::new(HttpTransport::new(*settings))
+    }
+
+    /// The `sse` row: an HTTP response body, composed over the `http` the root built below it.
+    pub mod sse {
+        use super::{Arc, HttpTransport, Transport, TransportMeta, TransportSettings};
+        use crate::sse::SseTransport;
+
+        /// The `sse` row's registry key.
+        pub const KEY: &str = <SseTransport as TransportMeta>::KEY;
+        /// The layers `sse` declares it can be built over.
+        pub const COMPOSES_OVER: &[&str] = <SseTransport as TransportMeta>::COMPOSES_OVER;
+
+        /// Built over `lower`; with none (a composition the boot check refuses, `http` unlinked) it
+        /// is built over an `http` of its own from the same settings.
+        #[must_use]
+        pub fn build(
+            lower: Option<Arc<dyn Transport>>,
+            settings: &TransportSettings,
+        ) -> Arc<dyn Transport> {
+            let lower = lower.unwrap_or_else(|| Arc::new(HttpTransport::new(*settings)));
+            Arc::new(SseTransport::over(lower))
+        }
+    }
+
+    /// The `grpc` row: HTTP/2 framing, composed over the `http` the root built below it.
+    pub mod grpc {
+        use super::{Arc, Transport, TransportMeta, TransportSettings};
+        use crate::grpc::GrpcTransport;
+
+        /// The `grpc` row's registry key.
+        pub const KEY: &str = <GrpcTransport as TransportMeta>::KEY;
+        /// The layers `grpc` declares it can be built over.
+        pub const COMPOSES_OVER: &[&str] = <GrpcTransport as TransportMeta>::COMPOSES_OVER;
+
+        /// Built over `lower` — never over nothing, which yields a transport that refuses every
+        /// connection; with no lower layer the boot check has already refused the composition.
+        #[must_use]
+        pub fn build(
+            lower: Option<Arc<dyn Transport>>,
+            _: &TransportSettings,
+        ) -> Arc<dyn Transport> {
+            Arc::new(lower.map_or_else(GrpcTransport::new, GrpcTransport::over))
         }
     }
 }

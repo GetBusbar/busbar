@@ -343,6 +343,12 @@ pub mod linked {
     pub use crate::{BODY_INGRESS, PATH_INGRESS};
     /// The plane axis: the contract declaration, joined kernel-side to the behaviour table.
     pub use crate::{PLANE_DECLARATION, PLANE_HOOKS};
+    /// The claims axis: the pure plane the composition root's boot seal registers, and the claims it
+    /// declares.
+    pub const PLANE: busbar_plane_llm::LlmPlane = busbar_plane_llm::LlmPlane::EMPTY;
+    /// The bytes that plane claims.
+    pub const CLAIMS: &[busbar_contract::grammar::Claim] =
+        <busbar_plane_llm::LlmPlane as busbar_contract::plane::PlaneMeta>::CLAIMS;
 
     /// THE PROTOCOL-AXIS SEAMS, installed beside the declarations: the resolved-completion
     /// synthesizer — the single re-entry the MCP sampling path drives a synthesized chat completion

@@ -780,7 +780,7 @@ async fn run(data_workers: usize) {
     // same `request_body_max_bytes` the line above hands the served door, so a plane's transport and
     // the door in front of it cannot disagree about which bodies exist. Every build runs it, whatever
     // planes it links; a composition that does not seal exits 2 here, and success writes nothing.
-    root::registry::seal_or_exit(root::policy::client_settings(&cfg.limits));
+    root::registry::seal_or_exit(&LINKED, root::policy::client_settings(&cfg.limits));
     // THE ROOT UNITS' CONFIGURATION STEP, in the same slot: the card repricer is installed BEFORE the
     // first app build below, so the boot's own rate resolution is the history's OPENING ENTRY and
     // nothing has to read the configuration twice. From there each resolution APPENDS an entry dated

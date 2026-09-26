@@ -91,4 +91,10 @@ pub mod linked {
     pub use crate::DIAGNOSTICS;
     /// The plane axis: the contract declaration, joined kernel-side to the behaviour table.
     pub use crate::{PLANE_DECLARATION, PLANE_HOOKS};
+    /// The claims axis: the pure plane the composition root's boot seal registers, and the claims it
+    /// declares.
+    pub const PLANE: busbar_plane_a2a::A2aPlane = busbar_plane_a2a::A2aPlane::EMPTY;
+    /// The bytes that plane claims.
+    pub const CLAIMS: &[busbar_contract::grammar::Claim] =
+        <busbar_plane_a2a::A2aPlane as busbar_contract::plane::PlaneMeta>::CLAIMS;
 }
