@@ -98,7 +98,13 @@ pub const ABI_MAJOR: u32 = 2;
 /// `hot::BuildCtx` gains the deployment's public URL, and `hot::WorkItem` gains the dispatch's own
 /// host vtable + `HostCtx` and a reply buffer — so the host mounts, admits and drives a plane over
 /// the ABI exactly as it does a linked one. All append-only.
-pub const ABI_MINOR: u32 = 23;
+///
+/// 23→24 (1.6.0, K8; #3 OWNER-LOCKED, #30, #40): a TRANSPORT is droppable. `hot::TransportDecl` is
+/// new — the linked transport row (its key, the layers it composes over, `build(lower, settings)`)
+/// as declared data plus `listen`/`accept`/`dial`/`read`/`write`/`close` slots over opaque handles,
+/// with configuration crossing only as the opaque `hot::WireConfig`. A new struct, so append-only:
+/// no existing offset moves, and every earlier-minor plane keeps loading.
+pub const ABI_MINOR: u32 = 24;
 
 /// The FROZEN-FOR-ALL-TIME ABI header. This exact layout — `magic` at offset 0, `abi_major` at 8,
 /// `abi_minor` at 12 — is a permanent contract: it may NEVER be reordered, resized, extended, or
