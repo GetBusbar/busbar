@@ -16,5 +16,5 @@ impl busbar_kernel::teller::Units for LlmUnit {
 }
 
 #[cfg(test)]
-#[path = "tests/units_llm.rs"]
+#[path = "tests/plane_node.rs"]
 mod tests;

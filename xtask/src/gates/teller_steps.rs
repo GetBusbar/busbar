@@ -679,7 +679,8 @@ pub fn default_features(text: &str) -> Result<BTreeSet<String>, String> {
 /// The root legs the binary SHIPS: every leg whose feature is on the manifest's `default` line. A
 /// leg's feature is its `feature` member when it names one — the mcp, a2a and voice legs are the
 /// kernel-loop rider those planes are served through, gated by the feature that links the plane (`plane-mcp`,
-/// `plane-a2a`, `plane-voice`) — and otherwise the leg's own name (`root-llm`, `root-admin`).
+/// `plane-a2a`, `plane-voice`), and the llm leg is the root's node, compiled with the plane that rides
+/// the `node` axis (`proto-llm`) — and otherwise the leg's own name (`root-admin`).
 pub fn shipped_legs(m: &Matrix, default: &BTreeSet<String>) -> BTreeSet<String> {
     let legs = m.root_legs();
     legs.as_object()
@@ -823,9 +824,10 @@ pub fn root_line(m: &Matrix) -> String {
 // -------------------------------------------------------------------------------------------
 
 /// The features that compile the five root legs, which the `--root-legs` arm builds the binary crate
-/// with: each `root-*` leg's own feature, and for the mcp, a2a and voice legs (the kernel-loop rider
-/// those planes are served through) the feature that links the plane.
-const ROOT_FEATURES: &str = "root-admin,plane-mcp,plane-a2a,plane-voice,root-llm";
+/// with: the admin leg's own feature, for the mcp, a2a and voice legs (the kernel-loop rider those
+/// planes are served through) the feature that links the plane, and for the llm leg the feature that
+/// links the plane riding the `node` axis, which compiles the root's node (`root/plane_node.rs`).
+const ROOT_FEATURES: &str = "root-admin,plane-mcp,plane-a2a,plane-voice,proto-llm";
 
 const ARM_USAGE: &str = "\
 usage:
@@ -1009,8 +1011,8 @@ fn run_root_legs(cx: &Ctx) -> i32 {
         .filter_map(|l| l.strip_suffix(": test"))
         .collect();
 
-    // `crates/busbar/src/root/units_llm.rs::the_fn` is the ledger's spelling; libtest's is
-    // `root::units_llm::tests::the_fn`. Deriving one from the other rather than storing both is
+    // `crates/busbar/src/root/plane_node.rs::the_fn` is the ledger's spelling; libtest's is
+    // `root::plane_node::tests::the_fn`. Deriving one from the other rather than storing both is
     // what keeps the two from drifting apart.
     //
     // The structure lint moved each inline `#[cfg(test)] mod tests` body out to its own file, wired
@@ -1368,7 +1370,7 @@ impl Gate for TellerStepsGate {
                         "meter",
                         "test",
                         Json::Str(format!(
-                            "{ROOT_DIR}tests/units_llm.rs::a_fn_that_was_renamed_away"
+                            "{ROOT_DIR}tests/plane_node.rs::a_fn_that_was_renamed_away"
                         )),
                     );
                 }),

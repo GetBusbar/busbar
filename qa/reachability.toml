@@ -118,8 +118,7 @@
 #                                     dormant in its own doc; `vocabulary.rs` does the OPPOSITE and
 #                                     reads as live infrastructure. The gate believes neither doc.
 #
-# `llm` is the one plane that passes all three of its rows: `LlmUnit` is built at
-# crates/busbar/src/root/units_llm.rs:498, inside `LlmNode::answer_arriving_at` (which returns a
-# `Response`, so it is a CALLER of the constructor and not the constructor), and that function is
-# reached from `fn main()` through `PATH_INGRESS`/`BODY_INGRESS` → the ingress installers →
-# `body_arrival`/`path_arrival` → `answer`.
+# `llm` passes all three of its rows. Its units are the plane's own, handed to the root's plane-free
+# node (crates/busbar/src/root/plane_node.rs, formerly `units_llm.rs`; K2i), which `fn main()`
+# reaches through the generated `ROOT_UNITS` table (the manifest's `root-units` row) and the
+# linked table's `node` axis.

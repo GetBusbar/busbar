@@ -112,8 +112,9 @@ on disk:
 
 - `crates/busbar/src/root/units_voice.rs` — `VoiceUnit` is built at its own constructor (:1172) and in
   52 test sites, nowhere else. The governed-call table beside it is LIVE and defective (R4; K2f).
-- `crates/busbar/src/root/units_llm.rs` is still LIVE: `LlmUnit` is built from `fn main()` through its
-  `ROOT_UNIT`'s ingress tables. K2h.
+- `crates/busbar/src/root/plane_node.rs` (formerly `root/units_llm.rs`) is LIVE and names no plane:
+  the node a plane's units are handed to on the `node` axis, reached from `fn main()` through its
+  `ROOT_UNIT`. K2h, K2i.
 
 Its two siblings are gone (K2c DEAD-UNITS), each after the port-check this document asks for
 ("fixes are ported before deletion", recorded in full in f26156c5c: no fix was missing from the

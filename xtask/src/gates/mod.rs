@@ -178,7 +178,7 @@ pub const REPORT_ONLY: &[Posture] = &[
               money faults in a module whose unit's only construction site in the crate is under \
               `#[cfg(test)]`. A gate that did not red there would not work. It also reds on four \
               more nobody had written down (units_voice, units_mcp, money_book, vocabulary) and \
-              PASSES units_llm, which is live. It is a release-time claim — \
+              PASSES the llm plane, which is live. It is a release-time claim — \
               scripts/verify-1.6.0-done.sh runs it, full_gate's own excuse table is where that is \
               written down and checked — and every row it is red about is printed in full on every \
               run, so a red that is not counted here is never a red that was not mentioned. DELETE \

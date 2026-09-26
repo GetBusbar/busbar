@@ -2178,7 +2178,7 @@ jobs:
           # finds by kind and refuses to skip without under CI. `check` runs the same test with the
           # default (linked) row only.
           - name: dropped-in tcp transport
-            features: busbar/auth-admin-tokens,busbar/hooks-ranking,busbar/proto-llm,busbar/plane-mcp,busbar/plane-a2a,busbar/plane-voice,busbar/plane-decision,busbar/export-file,busbar/export-webhook,busbar/export-prometheus,busbar/root-admin,busbar/root-llm
+            features: busbar/auth-admin-tokens,busbar/hooks-ranking,busbar/proto-llm,busbar/plane-mcp,busbar/plane-a2a,busbar/plane-voice,busbar/plane-decision,busbar/export-file,busbar/export-webhook,busbar/export-prometheus,busbar/root-admin
             tests: -p busbar-plugin-loader -p busbar --no-default-features --test transport_dropped_in_serves
             scope: package
     steps:
@@ -3756,9 +3756,10 @@ jobs:
   #   2. --check     every GATING plane x step cell in qa/teller-steps.json names a real scenario and
   #      not "none". This reads the JSON.
   #   3. --root-legs the part that reads nothing and PROVES something: it builds the binary crate with
-  #      all five root legs on (root-admin,plane-mcp,plane-a2a,plane-voice,root-llm -- the mcp, a2a
+  #      all five root legs on (root-admin,plane-mcp,plane-a2a,plane-voice,proto-llm -- the mcp, a2a
   #      and voice legs are the kernel-loop rider those planes are served through, gated by the
-  #      feature that links the plane) and EXECUTES every named root-leg cell. A matrix can only be verified
+  #      feature that links the plane, and the llm leg is the root's node, compiled with the plane
+  #      that rides the `node` axis) and EXECUTES every named root-leg cell. A matrix can only be verified
   #      against cells that run; verified against itself it is a spreadsheet.
   # All three were run by scripts/verify-1.6.0-done.sh alone — the release-time DONE claim — so a cell
   # that stopped executing would have stayed invisible until a release was being cut. Wired here so it

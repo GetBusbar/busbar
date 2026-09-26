@@ -548,7 +548,7 @@ pub const REGISTRY_NOT_IN_CI: &[(&str, &str, Excuse)] = &[
          leg could have caught them. The gate reds on that module and on four more nobody had \
          written down — `units_voice.rs` (48 construction sites, every one a test), `units_mcp.rs` \
          (1 884 lines declaring no `impl Units for` at all), `money_book.rs` and `vocabulary.rs` \
-         (reached by no chain from main) — and PASSES `units_llm.rs`, which is live. That \
+         (reached by no chain from main) — and PASSES the llm plane, which is live. That \
          separation is its red-before-green proof. Every unreached path either gets switched onto \
          the serving path or gets a written `[[dormant]]` row in qa/reachability.toml, and a \
          declaration whose subject is reached again is STALE and reds. A release-time DONE question \

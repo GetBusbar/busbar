@@ -31,7 +31,7 @@
     "",
     "THE ROOT COLUMN (`root_legs` + every cell's `root`). The `test` above is the LEGACY path: the",
     "capability proven where the plane crate serves it. Every plane now also runs through the",
-    "composition root -- root-llm / root-admin behind their features, root-mcp / root-a2a on the",
+    "composition root -- root-llm (the root's node, behind proto-llm) / root-admin behind their features, root-mcp / root-a2a on the",
     "kernel-loop rider every linked one-shot plane is served through, root-voice on its session rider -- and a",
     "capability that holds on the legacy path and is unwitnessed over the loop is a second, silent",
     "half of the same question. So each cell carries a SECOND verdict, over its plane's root leg:",
@@ -76,7 +76,7 @@
   },
   "root_legs": {
     "root-llm": {
-      "file": "crates/busbar/src/root/tests/units_llm.rs",
+      "file": "crates/busbar/src/root/tests/plane_node.rs",
       "columns": [
         "llm"
       ],
@@ -395,7 +395,7 @@
       "root": {
         "state": "proven",
         "leg": "root-llm",
-        "test": "crates/busbar/src/root/tests/units_llm.rs::one_unit_leaves_exactly_one_link_on_the_chain"
+        "test": "crates/busbar/src/root/tests/plane_node.rs::one_unit_leaves_exactly_one_link_on_the_chain"
       }
     },
     {
@@ -453,7 +453,7 @@
       "root": {
         "state": "proven",
         "leg": "root-llm",
-        "test": "crates/busbar/src/root/tests/units_llm.rs::the_loop_leaves_the_money_where_the_shipped_plane_leaves_it"
+        "test": "crates/busbar/src/root/tests/plane_node.rs::the_loop_leaves_the_money_where_the_shipped_plane_leaves_it"
       }
     },
     {
@@ -509,7 +509,7 @@
       "root": {
         "state": "proven",
         "leg": "root-llm",
-        "test": "crates/busbar/src/root/tests/units_llm.rs::every_fixture_reaches_the_end_it_names"
+        "test": "crates/busbar/src/root/tests/plane_node.rs::every_fixture_reaches_the_end_it_names"
       }
     },
     {
@@ -782,7 +782,7 @@
       "root": {
         "state": "proven",
         "leg": "root-llm",
-        "test": "crates/busbar/src/root/tests/units_llm.rs::the_switched_table_names_every_dialect_the_plane_names"
+        "test": "crates/busbar/src/root/tests/plane_node.rs::the_switched_table_names_every_dialect_the_plane_names"
       }
     },
     {

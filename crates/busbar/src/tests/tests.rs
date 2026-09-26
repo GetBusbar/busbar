@@ -482,7 +482,10 @@ fn every_diagnostic_code_is_unique_across_the_neutral_and_plane_catalogues() {
 // A PLANE-GATED MODULE IS NAMED ONLY FROM CODE UNDER THE SAME GATE
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 
-/// The features a `#[cfg(feature = "…")]` attribute names, or nothing if it is not a `cfg` gate.
+/// The gates a `#[cfg(…)]` attribute names — each `feature = "…"`, and each generated linked-axis
+/// cfg (`linked_axis_<axis>`, set by `build.rs` when a linked plane rides that axis, which is how a
+/// root module that exists for an axis rather than for one plane is gated) — or nothing if it is not
+/// a `cfg` gate.
 ///
 /// `cfg_attr` is deliberately NOT a gate: it decorates code that compiles either way, so a feature
 /// named inside one says nothing about whether the line it sits over is compiled.
@@ -498,6 +501,16 @@ fn cfg_gate_features(attr: &str) -> Vec<String> {
         let Some(end) = rest.find('"') else { break };
         out.push(rest[..end].to_string());
         rest = &rest[end..];
+    }
+    const AXIS: &str = "linked_axis_";
+    let mut rest = attr;
+    while let Some(at) = rest.find(AXIS) {
+        let tail = &rest[at..];
+        let end = tail
+            .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+            .unwrap_or(tail.len());
+        out.push(tail[..end].to_string());
+        rest = &tail[end..];
     }
     out
 }
@@ -623,7 +636,8 @@ fn source_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
 
 /// A ROOT MODULE GATED ON A PLANE'S FEATURE IS NAMED ONLY FROM CODE UNDER THE SAME FEATURE.
 ///
-/// The point of gating `units_<plane>` on `root-<plane>` is that the plane is DELETABLE: a build
+/// The point of gating a plane's root module on the plane's switch (its feature, or the linked-axis
+/// cfg the plane's row sets — the node on `linked_axis_node`) is that the plane is DELETABLE: a build
 /// without the feature must still compile, boot and serve the remaining planes. One unconditional
 /// call into a gated module takes that away, and takes it away SILENTLY — every default build is
 /// green, and only the deletion gates, which are not what a change is usually run against, go red.
@@ -641,7 +655,7 @@ fn a_plane_gated_module_is_named_only_from_code_under_the_same_feature() {
     let root_mod = std::fs::read_to_string(src.join("root/mod.rs"))
         .expect("the composition root's own module file is where the gates are declared");
 
-    // (module name, the single feature its declaration is gated on).
+    // (module name, the single gate — a feature or a linked-axis cfg — its declaration carries).
     let mut gated: Vec<(String, String)> = Vec::new();
     let lines: Vec<&str> = root_mod.lines().collect();
     for (i, line) in lines.iter().enumerate() {

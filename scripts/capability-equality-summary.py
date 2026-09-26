@@ -40,9 +40,10 @@ LEDGER = "qa/capability-equality.json"
 STATES = {"proven", "missing", "not-applicable"}
 ROOT_STATES = {"proven", "none", "not-applicable"}
 # The five legs the composition root carries, and the one cargo invocation that turns them all on:
-# each `root-*` leg's own feature, and for the mcp, a2a and voice legs (the kernel-loop rider those
-# planes are served through) the feature that links the plane.
-ROOT_FEATURES = "root-admin,plane-mcp,plane-a2a,plane-voice,root-llm"
+# the admin leg's own feature, for the mcp, a2a and voice legs (the kernel-loop rider those planes are
+# served through) the feature that links the plane, and for the llm leg the feature that links the
+# plane riding the `node` axis, which compiles the root's node (`root/plane_node.rs`).
+ROOT_FEATURES = "root-admin,plane-mcp,plane-a2a,plane-voice,proto-llm"
 
 
 def load(path):
@@ -210,7 +211,7 @@ def root_cells(doc):
 
 
 def libtest_path(file, fn):
-    """`crates/busbar/src/root/units_llm.rs::the_x` -> `root::units_llm::tests::the_x`, the name the
+    """`crates/busbar/src/root/plane_node.rs::the_x` -> `root::plane_node::tests::the_x`, the name the
     binary's own test harness knows it by. Derived rather than pinned, then CHECKED against the
     harness's own --list below, so a module that moved is a refusal and not a silent miss.
 

@@ -7,7 +7,7 @@
 //!
 //! NO BUILD INSTALLS IT. The plane's arrivals ([`crate::PATH_INGRESS`], [`crate::BODY_INGRESS`]) are
 //! the loop's, and the composition root's `proto-llm` turns the loop on whenever it links this plane
-//! (ARCHITECT R7(b): the `root-llm`-off build path is dropped). What is left is the witness a test
+//! (ARCHITECT R7(b): the node-off build path is dropped). What is left is the witness a test
 //! reads the loop against — the leg the root's loop tests compare field for field, on the same
 //! fixtures — and the ingress a test binary that links this plane WITHOUT a composition root is
 //! seeded with ([`super::install_test_seams`]): it has no node to hand a unit to, so it keeps the

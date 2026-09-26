@@ -4,7 +4,7 @@
 //! THE LLM PLANE'S TELLER STEPS — one file per step, and LIVE: every request on this plane is a
 //! unit ([`node`](crate::unit::node)) the composition root's node drives through the kernel's loop over these files.
 //! There is no other path for an arrival to take — the shell the steps replaced survives only as
-//! the test kit's witness leg (ARCHITECT R7(b): the `root-llm`-off build path is dropped).
+//! the test kit's witness leg (ARCHITECT R7(b): the node-off build path is dropped).
 //!
 //! WHAT A STEP FILE IS. Each one holds the body of exactly one of the loop's steps for this plane,
 //! typed the way the loop's step seam types it: a step is handed `&Pass<S>` for its OWN step

@@ -22,5 +22,5 @@ pub fn answer() -> u64 {
 }
 
 #[cfg(test)]
-#[path = "tests/units_llm.rs"]
+#[path = "tests/plane_node.rs"]
 mod tests;

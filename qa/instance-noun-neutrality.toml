@@ -48,30 +48,6 @@ category = "cross-plugin"
 wave = "cross-plugin cleanup — broker law #8 (plugins never name each other)"
 
 [[leak]]
-noun = "llm"
-kind = "plane"
-file = "crates/busbar/src/root/mod.rs"
-count = 2
-category = "composition-root"
-wave = "keystone / composition-root — register_planes both-ways self-registration"
-
-[[leak]]
-noun = "llm"
-kind = "plane"
-file = "crates/busbar/src/root/tests/units_llm.rs"
-count = 8
-category = "composition-root"
-wave = "keystone / composition-root — register_planes both-ways self-registration"
-
-[[leak]]
-noun = "llm"
-kind = "plane"
-file = "crates/busbar/src/root/units_llm.rs"
-count = 1
-category = "composition-root"
-wave = "keystone / composition-root — register_planes both-ways self-registration"
-
-[[leak]]
 noun = "mcp"
 kind = "plane"
 file = "crates/busbar-kernel/src/test_support/mod.rs"

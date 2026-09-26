@@ -5,8 +5,9 @@
 //!
 //! The four rows this module joins hold the line for the WIRES: `:vocab` proves a transport never
 //! says `a2a`, and a plane never says `hyper`. What none of them measured is the COMPOSITION ROOT.
-//! `crates/busbar/src/root/**` hand-wires one file per plane — `units_llm.rs`, `units_mcp.rs`,
-//! `units_a2a.rs`, `units_voice.rs` — and every one of them slipped past CI, because nothing
+//! `crates/busbar/src/root/**` hand-wired one file per plane — `units_llm.rs` (now the plane-free
+//! node, `plane_node.rs`), `units_mcp.rs`, `units_a2a.rs`, `units_voice.rs` — and every one of them
+//! slipped past CI, because nothing
 //! counted it. A gate that measures the wires and not the place the wires are joined is a gate that
 //! reports the tidy half of the tree.
 //!
@@ -216,8 +217,8 @@ fn alias_of(a: &str, b: &str) -> bool {
 ///   are domain words the whole tree shares rather than a kind's private vocabulary. Counting them
 ///   would report the Teller loop talking about money as the cost unit leaking into the ledger
 ///   unit. The plane and transport families ARE instance vocabularies — that is what the split is
-///   about — so their bare ids count everywhere, which is how `root/units_llm.rs` and
-///   `root-voice-serve` are caught.
+///   about — so their bare ids count everywhere, which is how the root's hand-wired
+///   plane files and `root-voice-serve` were caught.
 ///
 /// A plane contributes its aliases too, because `streaming`, `voice` and `streams` are one instance
 /// (`PLANE_ALIASES`).
@@ -1522,7 +1523,7 @@ pub fn rule_matrix(cx: &Ctx, crates: &[CrateInfo], reg: &super::KindRegistry, sh
             };
             // THE FILES THE NUMBER IS MADE OF, HEAVIEST FIRST, named in the row itself. A ratchet
             // finding that says only "2881 vs 2891" sends the reader to `--report`; one that says
-            // `root/units_llm.rs` hands them the file. The whole list is in `--report`.
+            // `root/plane_node.rs` hands them the file. The whole list is in `--report`.
             let mut per_file: BTreeMap<&str, usize> = BTreeMap::new();
             for h in &cell.hits {
                 let mut f = h.split('\t');

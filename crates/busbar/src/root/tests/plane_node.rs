@@ -1,4 +1,4 @@
-//! Tests for the node (`units_llm.rs`). Lifted out of the implementation file so its line count
+//! Tests for the node (`plane_node.rs`). Lifted out of the implementation file so its line count
 //! measures implementation and nothing else; still a direct child module, so `use super::*`
 //! reaches the private items it always did.
 //!
@@ -11,7 +11,9 @@
 use super::*;
 
 use busbar_kernel::ingress::arrival::ArrivalPayload;
-use busbar_llm::{proto_codec, testkit as plane};
+// The plane the node is handed, as the manifest's linked table names it (the `node` axis).
+include!(concat!(env!("OUT_DIR"), "/node_plane.rs"));
+use self::node_plane::{proto_codec, testkit as plane};
 
 use axum::body::Bytes;
 use axum::http::HeaderMap;
@@ -190,7 +192,7 @@ async fn rig_with_billing(fixture: Fixture, billed: bool) -> Rig {
     }
     let server = MockServer::new(Arc::clone(&state)).await;
 
-    let group = unique("root-llm");
+    let group = unique("root-node");
     let mut groups = std::collections::BTreeMap::new();
     if fixture.seeded_group_requests().is_some() {
         groups.insert(
@@ -249,10 +251,10 @@ async fn rig_with_billing(fixture: Fixture, billed: bool) -> Rig {
         ..Default::default()
     };
     let (key, token) = gov
-        .mint_signed(spec("root-llm"), LIVE_EXP, MINTED_AT)
+        .mint_signed(spec("root-node"), LIVE_EXP, MINTED_AT)
         .expect("mint the deployment's key");
     let (_, expired_token) = gov
-        .mint_signed(spec("root-llm-expired"), DEAD_EXP, MINTED_AT)
+        .mint_signed(spec("root-node-expired"), DEAD_EXP, MINTED_AT)
         .expect("mint the expired key");
     // DECISION #42: billing is on exactly when a `rate_card:` is present. A BILLED rig prices the
     // one lane model `m0` (so the metering row + ledger run); the default rig configures no card (the
@@ -687,7 +689,7 @@ fn two_units_of_one_second_are_ordered_by_the_monotonic_stamp() {
     // live exit arm now takes, and what a second exit arm settling behind the first takes too.
     let book = std::sync::Arc::new(std::sync::Mutex::new(durability));
     let seam = crate::root::durability::SharedBook::over(std::sync::Arc::clone(&book));
-    let who = PrincipalId::new("acct:llm");
+    let who = PrincipalId::new("acct:node");
     for arrived in [Arrived::at(EPOCH * 1_000, 7), Arrived::at(EPOCH * 1_000, 8)] {
         let ledger_token =
             busbar_contract::caps::Grant::<busbar_contract::caps::WriteMoney>::mint(&seal);
@@ -1084,7 +1086,7 @@ async fn the_exit_arm_puts_the_loops_posting_on_the_journal() {
     // Settle THROUGH the money-book seam, over the shared book — the pass-through the live exit arm
     // now takes. The posting it lands and the record it replays are the exit arm's own bytes.
     let book = std::sync::Arc::new(std::sync::Mutex::new(durability));
-    let who = PrincipalId::new("acct:llm");
+    let who = PrincipalId::new("acct:node");
     let settled = settle(
         &crate::root::durability::SharedBook::over(std::sync::Arc::clone(&book)),
         &who,
@@ -1474,9 +1476,59 @@ async fn one_unit_leaves_exactly_one_link_on_the_chain() {
 
 // ── THE TWO SURFACES WHOSE MODEL IS IN THE URL ─────────────────────────────────────────────
 
-/// The two dialects that keep their model in the path.
-const GEMINI: &str = proto_codec::PROTO_GEMINI;
-const BEDROCK: &str = proto_codec::PROTO_BEDROCK;
+/// THE DIALECT FIXTURE (`fixtures/plane_node_dialects.json`): each dialect's native request body
+/// and the facts its URL carries, as DATA (ARCHITECT F-T). The dialects are the plane's; this file
+/// reads them and names none, and every name the fixture spells is resolved against the linked
+/// table the root installs, so a row for a dialect the plane no longer declares fails here.
+static DIALECTS: LazyLock<serde_json::Value> = LazyLock::new(|| {
+    serde_json::from_str(include_str!("fixtures/plane_node_dialects.json"))
+        .expect("the dialect fixture is JSON")
+});
+
+/// The dialects that keep their model in the path, read off the linked table the root installs —
+/// never retyped, so a dialect added to the table and not the fixture cannot pass here.
+fn path_dialects() -> Vec<&'static str> {
+    crate::LINKED
+        .path_ingress
+        .iter()
+        .flat_map(|table| table.iter().map(|(name, _)| *name))
+        .collect()
+}
+
+/// A dialect the fixture names, in the linked table's own `'static` spelling.
+fn linked_dialect(name: &str) -> &'static str {
+    path_dialects()
+        .into_iter()
+        .chain(body_dialects())
+        .find(|d| *d == name)
+        .unwrap_or_else(|| panic!("the fixture names `{name}`, which no linked table declares"))
+}
+
+/// The fixture's row for one URL-model dialect.
+fn path_row(proto: &str) -> &'static serde_json::Value {
+    DIALECTS["path_model"]
+        .as_array()
+        .expect("the fixture's `path_model` is a list")
+        .iter()
+        .find(|row| row["dialect"] == proto)
+        .unwrap_or_else(|| panic!("the fixture has no `path_model` row for `{proto}`"))
+}
+
+/// The dialect's own miss copy for a URL that named `model`, or `None` where the dialect answers
+/// with the neutral sentence.
+fn miss_copy(proto: &str, model: &str) -> Option<String> {
+    path_row(proto)["model_not_found"]
+        .as_str()
+        .map(|copy| copy.replace("{model}", model))
+}
+
+/// The status the door's over-budget turn-away answers in this URL-model dialect.
+fn over_budget_status(proto: &str) -> String {
+    path_row(proto)["over_budget_status"]
+        .as_str()
+        .expect("every `path_model` row names its over-budget status")
+        .to_string()
+}
 
 /// The four ends a URL-model fixture reaches. Malformed and the pool ACL are the body surface's
 /// fixtures and are exercised there; what these four pin is the surface that was OFF the loop —
@@ -1491,12 +1543,8 @@ const PATH_CASES: [Fixture; 4] = [
 /// THE NATIVE REQUEST BODY each dialect's client sends. The model is NOT in it — that is the whole
 /// point of the surface — so one body per dialect serves every fixture.
 fn path_body(proto: &str) -> Bytes {
-    let v = if proto == GEMINI {
-        serde_json::json!({"contents": [{"role": "user", "parts": [{"text": "hi"}]}]})
-    } else {
-        serde_json::json!({"messages": [{"role": "user", "content": [{"text": "hi"}]}]})
-    };
-    Bytes::from(serde_json::to_vec(&v).expect("the fixture body serializes"))
+    let v = &path_row(proto)["body"];
+    Bytes::from(serde_json::to_vec(v).expect("the fixture body serializes"))
 }
 
 /// The URL's facts, as the carry names them.
@@ -1514,17 +1562,15 @@ fn path_facts(proto: &'static str, fixture: Fixture) -> PathFacts {
     PathFacts {
         operation: busbar_contract::operation::OpVerb::CHAT,
         stream,
-        // `/v1beta/models/{model}:streamGenerateContent` with no `?alt=sse` is the JSON-array
-        // framing; bedrock has no such framing at all.
-        gemini_json_array: proto == GEMINI && stream,
-        // The gemini surface echoes its own versioned not-found copy; bedrock uses the neutral
-        // sentence. The api version is the one the fixture's `/v1beta/...` URL carries.
-        model_not_found_message: (proto == GEMINI).then(|| {
-            format!(
-                "models/{model} is not found for API version v1beta, \
-                 or is not supported for the task you are trying to perform."
-            )
-        }),
+        // A streamed request on a dialect whose URL takes the JSON-array framing is framed that
+        // way; the other has no such framing at all.
+        gemini_json_array: path_row(proto)["json_array_when_streamed"]
+            .as_bool()
+            .expect("every `path_model` row says whether it frames a stream as a JSON array")
+            && stream,
+        // One dialect echoes its own versioned not-found copy; the other uses the neutral
+        // sentence. The api version is the one the fixture's URL carries.
+        model_not_found_message: miss_copy(proto, &model),
         model,
     }
 }
@@ -1581,7 +1627,7 @@ async fn leg_loop_path(fixture: Fixture, proto: &'static str) -> Observed {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_loop_matches_the_shipped_path_model_entry_point() {
     let mut failures: Vec<String> = Vec::new();
-    for proto in [GEMINI, BEDROCK] {
+    for proto in path_dialects() {
         for fixture in PATH_CASES {
             let legacy = leg_legacy_path(fixture, proto).await;
             let looped = leg_loop_path(fixture, proto).await;
@@ -1607,7 +1653,7 @@ async fn the_loop_matches_the_shipped_path_model_entry_point() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn every_url_model_fixture_reaches_the_end_it_names() {
     let mut seen: Vec<(&str, Fixture, String)> = Vec::new();
-    for proto in [GEMINI, BEDROCK] {
+    for proto in path_dialects() {
         for fixture in PATH_CASES {
             let observed = leg_loop_path(fixture, proto).await;
             let status = observed
@@ -1619,7 +1665,7 @@ async fn every_url_model_fixture_reaches_the_end_it_names() {
             seen.push((proto, fixture, status));
         }
     }
-    let want: Vec<(&str, Fixture, String)> = [GEMINI, BEDROCK]
+    let want: Vec<(&str, Fixture, String)> = path_dialects()
         .into_iter()
         .flat_map(|proto| {
             [
@@ -1627,15 +1673,11 @@ async fn every_url_model_fixture_reaches_the_end_it_names() {
                 (proto, Fixture::StreamedOk, "200".to_string()),
                 // Refused AFTER the door, so it is charged and audited as an admitted unit.
                 (proto, Fixture::UnknownModel, "404".to_string()),
-                // The door's own turn-away, in each dialect's own status vocabulary: gemini
-                // answers a throttle as a throttle, bedrock's envelope carries it as a client
+                // The door's own turn-away, in each dialect's own status vocabulary: one
+                // answers a throttle as a throttle, the other's envelope carries it as a client
                 // error. Both are the shipped entry point's answer, read off it rather than
                 // assumed — the leg above proves the two legs agree.
-                (
-                    proto,
-                    Fixture::OverBudget,
-                    if proto == BEDROCK { "400" } else { "429" }.to_string(),
-                ),
+                (proto, Fixture::OverBudget, over_budget_status(proto)),
             ]
         })
         .collect();
@@ -1668,16 +1710,12 @@ async fn an_empty_url_model_ends_where_the_shipped_path_model_entry_point_ends_i
     fn nameless(proto: &'static str) -> PathFacts {
         let mut facts = path_facts(proto, Fixture::UnknownModel);
         facts.model = String::new();
-        facts.model_not_found_message = (proto == GEMINI).then(|| {
-            "models/ is not found for API version v1beta, or is not supported for the task \
-             you are trying to perform."
-                .to_string()
-        });
+        facts.model_not_found_message = miss_copy(proto, "");
         facts
     }
 
     let mut failures: Vec<String> = Vec::new();
-    for proto in [GEMINI, BEDROCK] {
+    for proto in path_dialects() {
         let shipped = {
             let rig = rig(Fixture::UnknownModel).await;
             let ctx = busbar_kernel::ingress::arrival::ArrivalCtx::new(ArrivalPayload {
@@ -1763,15 +1801,20 @@ fn the_switched_path_table_names_every_dialect_the_plane_names() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_url_facts_ride_the_unit_and_not_the_thread() {
     let rig = rig(Fixture::BufferedOk).await;
-    let facts = path_facts(GEMINI, Fixture::BufferedOk);
+    // A URL-model dialect that carries its own miss copy, so both halves of the carry are asked.
+    let proto = path_dialects()
+        .into_iter()
+        .find(|d| miss_copy(d, "").is_some())
+        .expect("a URL-model dialect keeps its own miss copy");
+    let facts = path_facts(proto, Fixture::BufferedOk);
     let base = |path| plane::WalkArrival {
         host: rig.host(),
         gov: rig.gov(),
-        proto: GEMINI,
+        proto,
         operation: busbar_contract::operation::OpVerb::CHAT,
         caller_token: None,
         headers: json_headers(),
-        body: path_body(GEMINI),
+        body: path_body(proto),
         path,
     };
     let carried = plane::url_facts(base(Some(facts)));
@@ -1896,20 +1939,10 @@ fn dialect_body(proto: &str, shape: Decoded) -> Bytes {
     if shape == Decoded::Malformed {
         return Bytes::from_static(b"{not json");
     }
-    let mut v = if proto == proto_codec::PROTO_ANTHROPIC {
-        serde_json::json!({"max_tokens": 16,
-                           "messages": [{"role": "user", "content": "hi"}]})
-    } else if proto == GEMINI {
-        serde_json::json!({"contents": [{"role": "user", "parts": [{"text": "hi"}]}]})
-    } else if proto == BEDROCK {
-        serde_json::json!({"messages": [{"role": "user", "content": [{"text": "hi"}]}]})
-    } else if proto == proto_codec::PROTO_RESPONSES {
-        serde_json::json!({"input": "hi"})
-    } else if proto == proto_codec::PROTO_COHERE {
-        serde_json::json!({"message": "hi"})
-    } else {
-        serde_json::json!({"messages": [{"role": "user", "content": "hi"}]})
-    };
+    let mut v = DIALECTS["body_model"]
+        .get(proto)
+        .unwrap_or_else(|| panic!("the fixture has no `body_model` body for `{proto}`"))
+        .clone();
     // The ladder's rung 3 — and its absence, which is the whole of the `NoModel` shape.
     if shape != Decoded::NoModel {
         v["model"] = serde_json::Value::String(POOL.to_string());
@@ -2879,8 +2912,8 @@ async fn both_legs_price_against_the_same_root_card_pin() {
 ///
 /// This stamp used to be a hardcoded `0`, and `0` is not a neutral placeholder: it is
 /// `HistorySeq::OPENING`, a REAL entry number. So every posting this plane made claimed the opening
-/// card had priced it — and `units_llm` is the one `units_*` module that is live on the serving
-/// path, so this was a confident wrong answer on shipped traffic, which is worse than none.
+/// card had priced it — and the node (`plane_node`) is the root unit module that is live on the
+/// serving path, so this was a confident wrong answer on shipped traffic, which is worse than none.
 ///
 /// THE CANARY IS THE POINT. Three dated entries over one history and three arrivals, one in each
 /// window. Two of the three expected values are NON-ZERO, so the pre-fix code — which answered `0`
@@ -2892,7 +2925,7 @@ async fn both_legs_price_against_the_same_root_card_pin() {
 /// opening entry and reports it forever. The `_at_seconds` assertion below is that hazard made
 /// visible — it is the bug wearing a different hat, and it would pass a "reads a history" review.
 #[test]
-fn the_llm_provenance_stamp_names_the_card_in_force_when_the_unit_arrived() {
+fn the_node_provenance_stamp_names_the_card_in_force_when_the_unit_arrived() {
     // Dated on the MILLISECOND scale the history is written on. The first is effective from instant
     // zero however it is dated — one entry has to cover every instant, or an early arrival falls in
     // a hole and is reported as OPENING for a different reason.
@@ -3946,8 +3979,11 @@ async fn a_served_rerank_puts_identical_search_units_on_both_books() {
     let app = TestApp::new()
         .keys_chain()
         .lane(
-            LaneSpec::new(RERANK_LANE, proto_codec::PROTO_COHERE, &server.base_url())
-                .provider("cohere"),
+            LaneSpec::new(RERANK_LANE, proto_codec::PROTO_COHERE, &server.base_url()).provider(
+                DIALECTS["rerank"]["provider"]
+                    .as_str()
+                    .expect("the fixture names the rerank lane's provider"),
+            ),
         )
         .pool(RERANK_POOL, &[(0, 1)])
         .governance(Arc::clone(&gov))
@@ -3968,7 +4004,11 @@ async fn a_served_rerank_puts_identical_search_units_on_both_books() {
     let arrival = plane::WalkArrival {
         host: busbar_kernel::plane_host::engine_host(&app),
         gov: gov_ctx.clone(),
-        proto: BEDROCK,
+        proto: linked_dialect(
+            DIALECTS["rerank"]["path_dialect"]
+                .as_str()
+                .expect("the fixture names the rerank unit's dialect"),
+        ),
         operation: busbar_contract::operation::OpVerb::RERANK,
         caller_token: None,
         headers: json_headers(),
@@ -4124,7 +4164,7 @@ fn binding_the_node_to_the_book_journals_every_card_applied_after_it() {
         );
     }
     let dir = std::env::temp_dir().join(format!(
-        "busbar-llm-book-cards-{}-{:?}",
+        "busbar-node-book-cards-{}-{:?}",
         std::process::id(),
         std::thread::current().id()
     ));

@@ -232,7 +232,6 @@ Covering leg is the FIRST leg that compiles the feature; several are compiled by
 | `busbar/plane-voice` | default | `check` — the workspace default build | — |
 | `busbar/proto-llm` | default | `check` — the workspace default build | — |
 | `busbar/root-admin` | default | `check` — the workspace default build | — |
-| `busbar/root-llm` | default | `check` — the workspace default build | — |
 | `busbar/test-harness` | non-default | `feature-sets` (this change) | NO |
 | `busbar-a2a/auth-admin-tokens` | non-default | `check` — `--all-targets` dev-dep unification | yes (incidental) |
 | `busbar-a2a/openapi-schema` | non-default | `openapi-schema` | yes |

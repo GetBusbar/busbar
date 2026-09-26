@@ -4752,7 +4752,7 @@ fn the_derived_figure_equals_the_settled_balance_while_the_history_has_not_moved
     let view = Arc::new(PricedLedger::over(vec![line.clone()]));
     view.history.apply(a_card_at(2.5, 3), 1_000);
 
-    // What the node WOULD HAVE SETTLED for this line — `units_llm::priced_posting`'s own lookup,
+    // What the node WOULD HAVE SETTLED for this line — `plane_node::priced_posting`'s own lookup,
     // spelled here against the same history and the same arrival instant.
     let pinned = view.history.pin().expect("the fixture has a history");
     let settled_nanos = busbar_kernel_ledger::price_line(&line, &pinned.view(), line.tier_bp)

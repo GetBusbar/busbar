@@ -1600,5 +1600,5 @@ fn bind_node_book(
 /// Each fixture builds TWO deployments — own registry, own scripted upstream, own governance store —
 /// so the two legs' counters are compared rather than summed.
 #[cfg(test)]
-#[path = "tests/units_llm.rs"]
+#[path = "tests/plane_node.rs"]
 mod tests;

@@ -525,8 +525,9 @@ tier   = "fast"
 # the matrix is verified against executed cells and not against its own JSON. Both were run only by
 # verify-1.6.0-done.sh — the DONE claim, not the per-push gate — so a cell that stopped running
 # would have been invisible until release. `--root-legs` builds the binary crate with
-# root-admin,plane-mcp,plane-a2a,plane-voice,root-llm (the mcp, a2a and voice legs are the kernel-loop
-# rider those planes are served through, gated by the feature that links the plane), which is why it is the
+# root-admin,plane-mcp,plane-a2a,plane-voice,proto-llm (the mcp, a2a and voice legs are the kernel-loop
+# rider those planes are served through, gated by the feature that links the plane; the llm leg is the
+# root's node, compiled with the plane that rides the `node` axis), which is why it is the
 # slowest row in this manifest; it is worth it, because it is the only one that proves the cells
 # execute. `--root-legs-gating` is the fourth arm and it now RUNS here: a leg's feature on the
 # manifest's own `default` line is the shipped path for its plane, so a gating step no cell drives over that leg

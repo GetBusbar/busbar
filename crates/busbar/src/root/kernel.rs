@@ -604,9 +604,9 @@ pub static ROOT_CARD: LazyLock<RootHistory> = LazyLock::new(RootHistory::default
 /// THE ROOT'S, NOT A PLANE'S. The card this builds is the one every plane's exit prices against —
 /// the holder above is the process's, reached by mcp, a2a, voice and admin exactly as it is by llm —
 /// so the relay belongs beside the holder and the repricer rather than in one plane's unit file. It
-/// lived in `units_llm` while llm was the only leg switched over, and a plane's unit file is
-/// compiled out with its plane: any build without that plane's feature lost the root's ability to
-/// price a card at all. The deletability of a plane is the whole point of the feature, so the thing
+/// lived in the node's file (now `plane_node`) while llm was the only leg switched over, and a
+/// plane's unit file is compiled out with its plane: any build without that plane's feature lost the
+/// root's ability to price a card at all. The deletability of a plane is the whole point of the feature, so the thing
 /// that must survive every deletion lives on the ungated side of the seam.
 ///
 /// A deployment with no `rate_card:` builds an ABSENT card rather than no card at all, and the

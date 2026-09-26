@@ -42,8 +42,8 @@
 //!
 //! ## The ROOT LEG column — the same matrix, judged a second time over the loop
 //!
-//! Every plane now also runs through the composition root — `root-llm` / `root-admin` behind their
-//! features, `root-mcp` / `root-a2a` / `root-voice` on the kernel-loop rider those planes are served
+//! Every plane now also runs through the composition root — `root-llm` (the node, behind
+//! `proto-llm`) / `root-admin` behind their features, `root-mcp` / `root-a2a` / `root-voice` on the kernel-loop rider those planes are served
 //! through (`root/gauntlet_kernel.rs`, the voice leg on its session rider, gated by `plane-mcp` /
 //! `plane-a2a` / `plane-voice`, the features that link them). A capability proven where the plane crate serves it and
 //! unwitnessed where the root drives it is the same silent half-answer this file exists to refuse,
@@ -61,8 +61,8 @@
 //!   capability × plane cell held on one. Booting proves the binary starts; it does not prove a
 //!   cell.
 //! * The evidence for a leg lives in the binary crate's own `#[cfg(test)] mod tests` inside
-//!   `src/root/units_*.rs`, compiled only when that leg's feature is on. Cargo features reach an
-//!   integration test target too, so a `#[cfg(all(feature = "root-llm", …))]` test here runs in
+//!   `src/root/` leg file, compiled only when that leg's feature is on. Cargo features reach an
+//!   integration test target too, so a `#[cfg(all(feature = "proto-llm", …))]` test here runs in
 //!   EXACTLY the build where the legs exist — and is absent, rather than lying, in a build where
 //!   they do not.
 //!
@@ -772,7 +772,7 @@ fn every_cell_carries_a_root_leg_verdict_and_every_root_proof_exists() {
 /// The Teller-path half of this gate used to be cfg-gated on all five `root-*` features AT ONCE.
 /// That conjunction is the wrong shape for the switch-over it is supposed to judge: the planes are
 /// moved onto the composition root ONE AT A TIME, so the ordinary build has SOME legs on — and under
-/// any such build (including the default one, and including `--features root-llm`)
+/// any such build (including the default one, and including a single-leg build)
 /// the whole Teller-path check simply did not exist. A gate that is absent reports a green that
 /// asked nothing, which is the exact failure mode the rest of this file is built to refuse.
 ///

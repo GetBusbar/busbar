@@ -322,7 +322,7 @@ fn the_tier_is_a_single_divide_not_a_sum_of_per_line_floors() {
 /// asserted that it should.
 ///
 /// The row below it is why that mattered rather than being a curiosity at an unreachable input.
-/// `tier_bp` is `STANDARD_TIER_BP` on EVERY production path in this tree (`units_llm.rs` pins it
+/// `tier_bp` is `STANDARD_TIER_BP` on EVERY production path in this tree (`plane_node.rs` pins it
 /// on the posting, `policy.rs` pins it on the group, and both defaults resolve to it), so ×1 is
 /// the only tier the arithmetic is ever actually asked for — and ×1 at the ceiling was returning
 /// `34028236692093846346337460743176821` in place of
@@ -448,7 +448,7 @@ fn the_estimated_mark_travels_onto_the_posting() {
 /// **BYTE-NEUTRALITY AT THE ONLY TIER THIS TREE EVER ASKS FOR.**
 ///
 /// `tier_bp` is [`STANDARD_TIER_BP`] on every production path: the live LLM posting pins it
-/// (`crates/busbar/src/root/units_llm.rs`, `Posting::from_usage(.., STANDARD_TIER_BP, ..)`), the
+/// (`crates/busbar/src/root/plane_node.rs`, `Posting::from_usage(.., STANDARD_TIER_BP, ..)`), the
 /// group runtime pins it (`crates/busbar/src/root/policy.rs`), a `LedgerEntry` defaults to it, and
 /// the recompute archive's `tier_bp` defaults to it. No operator configuration key sets a
 /// basis-point multiplier at all — `config/pools.rs`'s `tier` is a routing LABEL (`"large"`), not a

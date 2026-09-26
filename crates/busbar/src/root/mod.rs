@@ -83,13 +83,15 @@ pub mod migration;
 pub mod otlp;
 #[cfg(feature = "plane-decision")]
 pub mod plane_decision;
+// The node a plane's units run through: compiled when a linked plane rides the `node` axis, read
+// off the same manifest table the root folds (the generated `linked_axis_node` cfg).
+#[cfg(linked_axis_node)]
+pub mod plane_node;
 pub mod policy;
 pub mod registry;
 pub mod transports;
 #[cfg(feature = "root-admin")]
 pub mod units_admin;
-#[cfg(feature = "root-llm")]
-pub mod units_llm;
 
 // The per-call metering shadow on the plane-neutral kernel bridge: a plane whose one flat charge
 // fires inside `drive` rides `gauntlet_kernel::run_gauntlet_via_kernel` byte- and money-identically

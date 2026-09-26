@@ -280,16 +280,16 @@ drop_member() {
 }
 
 # neutralise_bin — (c): drop the dep line; strip the `dep:busbar-<P>` token from its feature; strip any
-# `busbar-<P>/…` feature reference wherever it appears (e.g. openapi-schema, root-llm) — those become
+# `busbar-<P>/…` feature reference wherever it appears (e.g. openapi-schema) — those become
 # manifest-load ERRORS the moment the optional dep is gone, so they must go too; drop the plane feature
 # from `default` so a default bin build is coherent.
 #
 # BOTH SPELLINGS of that reference, and the second one is why this note exists. Cargo writes an
 # optional dependency's feature as `busbar-<P>?/<feature>` when the reference must not ENABLE the
-# dep, and as `busbar-<P>/<feature>` when it may — and the bin uses the second form for `root-llm`
-# (`busbar-llm/teller-waist`). A pattern that matched only the `?` form left that one behind, and the
-# scratch's manifest then failed to LOAD ("feature `root-llm` includes `busbar-llm/teller-waist`, but
-# `busbar-llm` is not a dependency"), which aborts before a single line is compiled — so all three
+# dep, and as `busbar-<P>/<feature>` when it may — and the bin once used the second form for its
+# node switch (`busbar-llm/teller-waist`). A pattern that matched only the `?` form left that one
+# behind, and the scratch's manifest then failed to LOAD ("feature … includes `busbar-llm/teller-waist`,
+# but `busbar-llm` is not a dependency"), which aborts before a single line is compiled — so all three
 # legs reported the llm plane as still coupled when what they had measured was the removal's own
 # manifest hygiene.
 #
@@ -359,7 +359,7 @@ neutralise_bin() {
     }
     { line = $0 }
     line ~ deppat { next }                      # (c1) delete the optional dependency line entirely
-    { gsub(optpat, "", line) }                  # (c2) strip busbar-<P>[?]/… refs (openapi-schema, root-llm, …)
+    { gsub(optpat, "", line) }                  # (c2) strip busbar-<P>[?]/… refs (openapi-schema, …)
     line ~ featpat { gsub(deptok, "", line) }   # (c3) strip dep:busbar-<P> from its own feature
     # (c4) drop the removed plane feature AND every feature forwarding to it from `default`
     line ~ /^default[[:space:]]*=[[:space:]]*\[/ {
