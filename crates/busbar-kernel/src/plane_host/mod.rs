@@ -85,6 +85,29 @@ pub struct HostState<'a> {
     /// slots that REQUIRE an attributable emitter refuse a `None`. Use
     /// [`with_borrowed_host_as`] to mint a handle that carries one.
     pub emitter: Option<&'static str>,
+    /// WHOSE request a plane's dispatch runs for (DEC-SERVE G1, DECISIONS #65/#40): the caller the
+    /// auth middleware resolved, stamped by the minter from that context — never a word the plane
+    /// wrote. `Some` on every PLANE mint ([`with_plane_door`], [`with_borrowed_host_as`]), and then
+    /// `meter_charge` bills THIS caller and ignores any key id in the plane's `Usage` tail; `None`
+    /// only on the host's own mints, where the kernel composed the `Usage` itself.
+    caller: Option<HostCaller>,
+    /// The operator's destinations for the plane this handle was minted for (DEC-SERVE G3): the only
+    /// source of the privilege scope the `egress_open` slot judges a hop against. `None` ⇒ scope `0`.
+    destinations: Option<&'a egress::OperatorDestinations>,
+}
+
+/// The middleware-resolved caller behind a plane mint (DEC-SERVE G1): an OPAQUE, kernel-only handle.
+/// It has no public constructor — the only way one comes to exist is [`with_plane_door`] lifting it
+/// off the auth context the middleware attached — so neither a plane nor a crate outside the kernel
+/// can hand the host a caller of its choosing (#65). `None` inside: an unauthenticated route, which
+/// bills the synthetic admission-derived attribution, never the plane's tail.
+pub(crate) struct HostCaller(Option<Arc<busbar_contract::records::VirtualKey>>);
+
+impl HostCaller {
+    /// The resolved key this dispatch is billed to, if the request carried one.
+    pub(crate) fn key(&self) -> Option<&busbar_contract::records::VirtualKey> {
+        self.0.as_deref()
+    }
 }
 
 /// Recover core's [`HostState`] from the opaque [`HostCtx`] the plane handed back — or refuse it.
@@ -160,7 +183,7 @@ pub fn with_borrowed_host<R>(
     f: impl FnOnce(HostCtx, &PlaneHostVtable) -> R,
 ) -> R {
     // A host-internal mint: nobody's plane. See `HostState::emitter`.
-    mint(None, app, scope, f)
+    mint(None, None, None, app, scope, f)
 }
 
 /// Run `f` with a [`HostCtx`] ATTRIBUTED to `plane` — the mint site a real plane dispatch uses.
@@ -172,14 +195,33 @@ pub fn with_borrowed_host<R>(
 /// attribution unforgeable rather than merely present.
 ///
 /// The mint a plane dispatched over the C ABI rides: every host call the plane makes back during the
-/// dispatch is recovered, and attributed, as that plane's.
+/// dispatch is recovered, and attributed, as that plane's. It resolves no caller, so its metering
+/// bills the synthetic admission key, never the plane's tail — [`with_plane_door`] carries one.
 pub fn with_borrowed_host_as<R>(
     plane: &'static str,
     app: &App,
     scope: &DispatchScope,
     f: impl FnOnce(HostCtx, &PlaneHostVtable) -> R,
 ) -> R {
-    mint(Some(plane), app, scope, f)
+    let caller = Some(HostCaller(None));
+    mint(Some(plane), caller, None, app, scope, f)
+}
+
+/// THE HOT DOOR'S MINT (DEC-SERVE G1 + G3): [`with_borrowed_host_as`], plus the two facts only the
+/// host knows about this request — the `caller` the auth middleware resolved (the request's
+/// [`PlaneRequestCtx`](busbar_contract::records::PlaneRequestCtx), `None` on an open route), which
+/// `meter_charge` bills; and the operator's `destinations` for `plane`, which `egress_open` derives a
+/// hop's privilege scope from. Neither is a word the plane can supply.
+pub fn with_plane_door<R>(
+    plane: &'static str,
+    caller: Option<&busbar_contract::records::PlaneRequestCtx>,
+    destinations: &egress::OperatorDestinations,
+    app: &App,
+    scope: &DispatchScope,
+    f: impl FnOnce(HostCtx, &PlaneHostVtable) -> R,
+) -> R {
+    let caller = HostCaller(caller.and_then(|g| g.key.clone()));
+    mint(Some(plane), Some(caller), Some(destinations), app, scope, f)
 }
 
 /// THE ONE MINT: run `f` with a [`HostCtx`] over a [`HostState`] of `app` + `scope` (attributed to
@@ -190,6 +232,8 @@ pub fn with_borrowed_host_as<R>(
 /// site — borrowed, attributed, async, Send, durable — is this function.
 fn mint<R>(
     emitter: Option<&'static str>,
+    caller: Option<HostCaller>,
+    destinations: Option<&egress::OperatorDestinations>,
     app: &App,
     scope: &DispatchScope,
     f: impl FnOnce(HostCtx, &PlaneHostVtable) -> R,
@@ -198,6 +242,8 @@ fn mint<R>(
         app,
         scope,
         emitter,
+        caller,
+        destinations,
     };
     let vtable = build_plane_host_vtable();
     let generation = HostGeneration::open();
@@ -1684,6 +1730,8 @@ impl<'a> HostDispatch<'a> {
             app: self.app,
             scope: &self.scope,
             emitter: None,
+            caller: None,
+            destinations: None,
         }
     }
 
@@ -1693,7 +1741,7 @@ impl<'a> HostDispatch<'a> {
     /// fresh [`HostGeneration`] opens for exactly this call and drops when it returns, so a `HostCtx`
     /// that escapes `f` anyway is refused (its generation is no longer live) rather than dereferenced.
     pub fn with_host<R>(&self, f: impl FnOnce(HostCtx, &PlaneHostVtable) -> R) -> R {
-        mint(None, self.app, &self.scope, f)
+        mint(None, None, None, self.app, &self.scope, f)
     }
 }
 
@@ -1742,6 +1790,8 @@ impl SendHostDispatch {
             app: &self.app,
             scope: &self.scope,
             emitter: None,
+            caller: None,
+            destinations: None,
         }
     }
 
@@ -1751,7 +1801,7 @@ impl SendHostDispatch {
     /// [`new`](Self::new) would mint a stamp that is never live on the thread that checks it) and
     /// drops when this call returns.
     pub fn with_host<R>(&self, f: impl FnOnce(HostCtx, &PlaneHostVtable) -> R) -> R {
-        mint(None, &self.app, &self.scope, f)
+        mint(None, None, None, &self.app, &self.scope, f)
     }
 }
 
@@ -1817,6 +1867,8 @@ impl DurableHostDispatch {
             app: &self.app,
             scope: self.durable.arena(),
             emitter: None,
+            caller: None,
+            destinations: None,
         }
     }
 
@@ -1824,7 +1876,7 @@ impl DurableHostDispatch {
     /// fresh [`HostGeneration`] opens for exactly this call (on this thread) and drops when it
     /// returns, so a `HostCtx` from a prior/foreign call is refused rather than dereferenced.
     pub fn with_host<R>(&self, f: impl FnOnce(HostCtx, &PlaneHostVtable) -> R) -> R {
-        mint(None, &self.app, self.durable.arena(), f)
+        mint(None, None, None, &self.app, self.durable.arena(), f)
     }
 }
 

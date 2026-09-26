@@ -47,8 +47,8 @@
 //! `Pending` collapses into a BLOCKING per-chunk `recv`: each [`egress_poll`] returns the next
 //! network chunk or EOF, so a crossing happens per NETWORK CHUNK — never per token.
 
-use super::recover;
 use super::scope::{DispatchScope, EgressFaultDetail};
+use super::{recover, HostState};
 use busbar_plugin::hot::host::HostCtx;
 use busbar_plugin::hot::pod::EgressFault;
 use busbar_plugin::hot::pod::POD_VERSION;
@@ -518,11 +518,11 @@ pub(crate) extern "C-unwind" fn egress_open(
         };
         match kind {
             // FFI-F2: the plane's POD `allowlist_scope` carries NO authority over this untrusted seam —
-            // a plugin plane may not self-grant private/plaintext egress. The host authors that
-            // decision, and no operator config wires a per-plane egress scope over the FFI seam today,
-            // so the effective scope is `0` (default-deny): a plane asking for a private/loopback or
-            // plaintext hop is REFUSED by the guard. Public HTTPS (which needs no privilege) still opens.
-            EgressKind::OneShot => open_http(state.scope, d, 0, out),
+            // a plugin plane may not self-grant private/plaintext egress. The HOST derives the scope
+            // (DEC-SERVE G3) from the operator's destinations for this plane: a hop to one of them
+            // gets the scope an operator-configured upstream gets; a plane-chosen URL gets `0`
+            // (default-deny: public HTTPS only, a private/loopback or plaintext hop is REFUSED).
+            EgressKind::OneShot => open_http(state.scope, d, host_scope(state, d), out),
             // Phase 2: a governed RAW duplex byte channel. It SHARES the subprocess pipe shape
             // (`pipe_read`/`pipe_write` keyed by a `PipeId`); only the channel differs — a pinned
             // socket rather than a child's stdio. The governance path is identical (resolve-then-pin,
@@ -536,6 +536,83 @@ pub(crate) extern "C-unwind" fn egress_open(
         }
     }))
     .unwrap_or(StatusClass::Fault)
+}
+
+/// THE OPERATOR'S DESTINATIONS FOR ONE PLANE (DEC-SERVE G3): the origin (scheme, host, port) of every
+/// `http(s)://` URL the operator wrote in the plane's own config section. No new config key — a URL
+/// in the section the operator configured IS an operator-configured destination, exactly as a
+/// provider's `base_url` is for the linked planes. Built by the host from the section it holds; the
+/// plane never writes it.
+#[derive(Debug, Default, Clone)]
+pub struct OperatorDestinations(Vec<(bool, String, u16)>);
+
+impl OperatorDestinations {
+    /// Collect every URL-valued string anywhere in `section` (the plane's operator section).
+    #[must_use]
+    pub fn of_section(section: &serde_yaml::Value) -> Self {
+        fn walk(v: &serde_yaml::Value, out: &mut Vec<(bool, String, u16)>) {
+            match v {
+                serde_yaml::Value::String(s) => {
+                    if let Ok((https, host, port, _)) = crate::net_guard::split_url(s.trim()) {
+                        out.push((https, host.to_ascii_lowercase(), port));
+                    }
+                }
+                serde_yaml::Value::Sequence(seq) => seq.iter().for_each(|v| walk(v, out)),
+                serde_yaml::Value::Mapping(map) => map.values().for_each(|v| walk(v, out)),
+                serde_yaml::Value::Tagged(t) => walk(&t.value, out),
+                _ => {}
+            }
+        }
+        let mut out = Vec::new();
+        walk(section, &mut out);
+        OperatorDestinations(out)
+    }
+
+    /// The scope a hop to `(https, host, port)` is judged against — THE RULE the linked planes'
+    /// operator-configured upstreams get (a provider `base_url`, `config_validate`): private and
+    /// loopback addressing admitted, plaintext `http://` only to a private/loopback host, and
+    /// cloud-metadata refused whatever the scope (the guard). A hop to no operator destination: `0`.
+    /// A plane-PINNED address is plane-chosen, so it is admitted as private only when the operator's
+    /// host is itself private/loopback.
+    fn scope_for(&self, https: bool, host: &str, port: u16, pinned: bool) -> u32 {
+        let host = host.to_ascii_lowercase();
+        if !self
+            .0
+            .iter()
+            .any(|(s, h, p)| *s == https && *h == host && *p == port)
+        {
+            return 0;
+        }
+        let local = crate::net_guard::host_is_private_or_loopback(&host);
+        match (https, local) {
+            (_, true) => SCOPE_ALLOW_PRIVATE | SCOPE_ALLOW_PLAINTEXT,
+            (true, false) if !pinned => SCOPE_ALLOW_PRIVATE,
+            _ => 0,
+        }
+    }
+}
+
+/// The HOST-authored scope for the FFI `egress_open` (DEC-SERVE G3): the target's scope under the
+/// operator's destinations for the minting plane, `0` when the handle carries none.
+fn host_scope(state: &HostState, d: &EgressDesc) -> u32 {
+    let Some(dest) = state.destinations else {
+        return 0;
+    };
+    if d.target_ptr.is_null() {
+        return 0;
+    }
+    // SAFETY: `(target_ptr, target_len)` is a live borrowed range for the call (ABI discipline).
+    let bytes = unsafe { std::slice::from_raw_parts(d.target_ptr, d.target_len) };
+    let Ok(Ok((https, host, port, _))) =
+        std::str::from_utf8(bytes).map(crate::net_guard::split_url)
+    else {
+        return 0;
+    };
+    let pinned = matches!(
+        read_sized_field!(d, d.size, EgressDesc, resolved_addr_kind),
+        Some(4 | 6)
+    );
+    dest.scope_for(https, &host, port, pinned)
 }
 
 /// The HTTP open: resolve-then-pin (or honor the plane's already-judged pin — Design A), connect over

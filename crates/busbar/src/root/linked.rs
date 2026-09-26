@@ -453,6 +453,8 @@ struct HotSlot {
     claims: Vec<(RouteMethod, String, &'static str)>,
     /// The audience it binds, if it binds one.
     admission: Option<PlaneAdmission>,
+    /// The operator's destinations in its section — what its egress may reach (DEC-SERVE G3).
+    destinations: busbar_kernel::plane_host::egress::OperatorDestinations,
 }
 
 /// BUILD a HOT-lane plane's slot for this generation, over the ABI. The kernel hands a plane whose
@@ -526,6 +528,7 @@ fn hot_slot(
         served,
         claims,
         admission,
+        destinations: busbar_kernel::plane_host::egress::OperatorDestinations::of_section(section),
     })
 }
 
@@ -565,10 +568,12 @@ fn hot_routes(slot: &dyn std::any::Any) -> Vec<PlaneRouteSpec> {
 }
 
 /// DRIVE ONE REQUEST THROUGH A HOT-LANE PLANE: the request body is the work item's finite inbound
-/// buffer, dispatched through the plane's `dispatch` slot inside the kernel's attributed host mint
-/// (`with_borrowed_host_as`, under the plane's registry key, over this request's engine snapshot and
-/// a fresh arena) — so every host call the plane makes back is recovered, governed, metered and
-/// journalled as this plane's. The plane's reply is the response body; its status class is the
+/// buffer, dispatched through the plane's `dispatch` slot inside the kernel's plane-door mint
+/// (`with_plane_door`, under the plane's registry key, over this request's engine snapshot and a
+/// fresh arena) — so every host call the plane makes back is recovered, governed, metered and
+/// journalled as this plane's, billed to the caller the auth middleware resolved (`ctx.gov`, never a
+/// key id the plane writes; DEC-SERVE G1), and its egress judged against the operator's destinations
+/// in its section (DEC-SERVE G3). The plane's reply is the response body; its status class is the
 /// response status (`Ok` 200, `Refused` 403, `Gone` 410, `Unsupported` 501, anything else 500).
 fn hot_dispatch(ctx: &PlaneReqCtx) -> PlaneResponse {
     let slot = ctx.slot.downcast_ref::<HotSlot>();
@@ -578,9 +583,14 @@ fn hot_dispatch(ctx: &PlaneReqCtx) -> PlaneResponse {
             let app = handle.load();
             let scope = busbar_kernel::plane_host::DispatchScope::new();
             let key = slot.served.plane().name();
-            busbar_kernel::plane_host::with_borrowed_host_as(key, &app, &scope, |host_ctx, vt| {
-                slot.served.dispatch(vt, host_ctx, &ctx.body)
-            })
+            busbar_kernel::plane_host::with_plane_door(
+                key,
+                ctx.gov.as_ref(),
+                &slot.destinations,
+                &app,
+                &scope,
+                |host, vt| slot.served.dispatch(vt, host, &ctx.body),
+            )
         }
         _ => (StatusClass::Fault, Vec::new()),
     };
