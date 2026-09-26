@@ -54,12 +54,11 @@ fn image_body_is_no_longer_gate_blind() {
 #[test]
 fn speech_body_projects_input_and_instructions() {
     crate::testkit::install_test_seams();
-    let v = serde_json::json!({
-        "model": "gpt-4o-mini-tts",
-        "input": "SPEAK-THIS",
-        "voice": "alloy",
-        "instructions": "STYLE-INSTRUCTIONS"
-    });
+    // The OpenAI `/v1/audio/speech` request body as a client sends it — golden input data, kept in
+    // a fixture so the dialect's own field names are data rather than code.
+    let v: serde_json::Value =
+        serde_json::from_str(include_str!("../../../tests/fixtures/speech_request.json"))
+            .expect("the speech request fixture is JSON");
     let f = seam(&v, "openai", Operation::SPEECH);
     let view = gate_view(&f);
     assert!(view.contains("SPEAK-THIS"));
