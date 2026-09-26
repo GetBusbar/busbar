@@ -227,19 +227,15 @@ busbar-voice = ["busbar-voice-codec"]
 # DID NOT MOVE: both still read 9289. The next #83/#84 merge into busbar-contract declares its own
 # re-arm here, once.
 
-# ── THE CONTRACT CEILING PAIR, RE-ARMED AFTER THE PLANE RECORD KINDS ────────────────────────────
-
-[gate.ceiling_raises."gate.surface_ceilings.contract_caps"]
-file    = "qa/construction.toml"
-from    = 9289
-to      = 9294
-because = "OWNER RULING Q68(3) (docs/design/1.6.0-QUESTIONS.md), ARCHITECT RULING (b) on UC-VERBS: contract_caps re-arms at the MEASURED value after each contract change, each in its own commit. This is the re-arm for aae5c08f2: a plane declares the plane-record kinds it keeps (PlaneDeclaration.record_kinds and declares_record_kind), so the administrative plane_record_write verb (owner answer Q71(2)) writes only a kind the named plane declares, +5 code lines. Measured by cargo xtask loc busbar-contract --ref: 9289 at aae5c08f2^, 9294 at aae5c08f2."
-
-[gate.ceiling_raises."rules.loc-ceilings.caps_contract_ceiling"]
-file    = "qa/construction.toml"
-from    = 9289
-to      = 9294
-because = "OWNER RULING Q68(3) (docs/design/1.6.0-QUESTIONS.md), ARCHITECT RULING (b) on UC-VERBS: contract_caps re-arms at the MEASURED value after each contract change, each in its own commit. This is the re-arm for aae5c08f2: a plane declares the plane-record kinds it keeps (PlaneDeclaration.record_kinds and declares_record_kind), so the administrative plane_record_write verb (owner answer Q71(2)) writes only a kind the named plane declares, +5 code lines. Measured by cargo xtask loc busbar-contract --ref: 9289 at aae5c08f2^, 9294 at aae5c08f2."
+# ── THE CONTRACT CEILING PAIR, RE-ARMED AFTER THE PLANE RECORD KINDS — EXPIRED AND STRUCK ────────
+#
+# The pair declared `gate.surface_ceilings.contract_caps` and
+# `rules.loc-ceilings.caps_contract_ceiling` 9289 -> 9294 (OWNER RULING Q68(3), ARCHITECT RULING (b)
+# on UC-VERBS): the re-arm at the measured value after a plane began declaring the plane-record
+# kinds it keeps (PlaneDeclaration.record_kinds and declares_record_kind, +5). Its commit reached the
+# base, so `ceiling-rose` reported both as "a declared raise 9289 -> 9294 that is not a raise at the
+# base" and asked for exactly this strike. THE CEILINGS THEMSELVES DID NOT MOVE: both still read
+# 9294. The next #83/#84 merge into busbar-contract declares its own re-arm here, once.
 
 # ── THE KERNEL CEILING'S OWNER-APPROVED RAISE — EXPIRED AND STRUCK ─────────────────────────────
 #
