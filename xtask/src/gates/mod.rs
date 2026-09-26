@@ -350,11 +350,6 @@ pub const CONSTRUCTION_STANDING_REDS: &[&str] = &[
     // crates/busbar-core-admin/src/v1/service.rs, outside the reviewed homes — an admin read that
     // prices on its own path (the BUDGET row: the enforcement path is not the invoice path).
     "one-pricing-site",
-    // `no-test-doubles-in-production:doubles`: 7 reviewed doubles in the shipped binary against a
-    // ratchet of 5 — the voice governed-call node in crates/busbar/src/main.rs, built with
-    // `NullShipper`, `RecordingRows`, `without_directory(` and `Pricer::flat(` (a zero rate card
-    // where the deployment's card belongs).
-    "no-test-doubles-in-production:doubles",
     // `token-sealed` and its three named mints: the Teller's tokens, `KernelSeal::acquire_for_kernel(`,
     // the arrival-hold mint and `SecretOnce::mint(` are spelled outside their one home crate (266,
     // 136, 49 and 5 sites). Item 317: the one deliberate cross-crate hole in the capability model is

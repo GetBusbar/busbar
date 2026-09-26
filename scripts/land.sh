@@ -232,7 +232,6 @@ manifest-allowlist:busbar-transport-ws
 one-pick-site
 plane-no-money
 one-pricing-site
-no-test-doubles-in-production:doubles
 token-sealed
 token-sealed:admit-token-mint
 token-sealed:kernel-seal
