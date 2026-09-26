@@ -85,3 +85,14 @@ fn the_hook_registry_and_the_hook_env_each_carry_their_own_doc() {
         "hook_env's doc opens by describing the registry: {env}"
     );
 }
+
+/// Item 562: `App` carries no client-settings snapshot. The warm-pool reuse decision it was the
+/// input to moved IN-PLANE with the client build (busbar-llm `build_runtime` compares its own
+/// `ClientSettingsInput`), so a core copy is a value written on every build and read by nothing —
+/// and a rule wired through it ("rebuild so a changed timeout takes effect") would be wired through
+/// a value nothing consults.
+#[test]
+fn app_carries_no_client_settings_nothing_reads() {
+    assert!(!STATE_SRC.contains("pub client_settings:"));
+    assert!(!STATE_SRC.contains("pub struct UpstreamClientSettings"));
+}
