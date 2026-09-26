@@ -245,19 +245,19 @@ from    = 50846
 to      = 51167
 because = "OWNER RULING Q70 (docs/design/1.6.0-QUESTIONS.md, OWNER ANSWERS 2026-09-25): busbar-timing folds into busbar-kernel as the feature-gated `timing` module, and the kernel ceiling is re-armed at the measured value in the fold commit. Q70 authorizes exactly the moved lines. busbar-timing measured code 318 (cargo xtask loc --ref 49d676057 busbar-timing). The kernel gains three seam lines: `pub mod timing;`, `pub use crate::timeit;`, and the `#[allow(unsafe_code)]` the crate-wide deny needs on the atexit call. That is +321. The loc-ceilings:kernel row measures 50773 at 49d676057 and 51094 with the fold. The ceiling moves by exactly those 321 lines, 50846 -> 51167. K2g's reserved <= 73 lines, which the 50846 figure holds open by ARCHITECT ruling on R-KERNEL, stay reserved and are not spent by this fold."
 
-# ── THE CONTRACT CEILING PAIR, RE-ARMED AFTER THE EGRESS STATIC HEADERS (SD-3b) ──────────────────
+# ── THE CONTRACT CEILING PAIR, RE-ARMED AFTER THE EGRESS STATIC HEADERS AND THE TESTKIT (SD-3b) ─────
 
 [gate.ceiling_raises."gate.surface_ceilings.contract_caps"]
 file    = "qa/construction.toml"
 from    = 9294
-to      = 9296
-because = "OWNER RULING Q68(3) (docs/design/1.6.0-QUESTIONS.md), ARCHITECT SD-3 queue (1): contract_caps re-arms at the MEASURED value after each contract change, each in its own commit. This is the re-arm for SD-3b (1): the egress declaration gains its append-only static_headers field (ProtocolDecl.static_headers and its neutral row in ProtocolDecl::named), so a dialect declares the non-credential headers the kernel writes after its credential, +2 code lines. Measured by cargo xtask loc busbar-contract --ref: 9294 before the SD-3b static-headers commit, 9296 at it."
+to      = 9463
+because = "OWNER RULING Q68(3) (docs/design/1.6.0-QUESTIONS.md), ARCHITECT SD-3 queue (1): contract_caps re-arms at the MEASURED value after each contract change, each in its own commit. This is the re-arm for SD-3b (1): the egress declaration gains its append-only static_headers field (ProtocolDecl.static_headers and its neutral row in ProtocolDecl::named), so a dialect declares the non-credential headers the kernel writes after its credential, +2 code lines. Measured by cargo xtask loc busbar-contract --ref: 9294 before the SD-3b static-headers commit, 9296 at it. RE-ARMED AGAIN 9296 -> 9463 in its own commit for ARCHITECT SD-3 queue (4) / O8 as re-ruled: busbar_contract::testkit ships always compiled (the in-memory log double WarnCapture, the codec's copy deleted), +167 code lines; measured 9296 before the SD-3b testkit commit, 9463 at it."
 
 [gate.ceiling_raises."rules.loc-ceilings.caps_contract_ceiling"]
 file    = "qa/construction.toml"
 from    = 9294
-to      = 9296
-because = "OWNER RULING Q68(3) (docs/design/1.6.0-QUESTIONS.md), ARCHITECT SD-3 queue (1): contract_caps re-arms at the MEASURED value after each contract change, each in its own commit. This is the re-arm for SD-3b (1): the egress declaration gains its append-only static_headers field (ProtocolDecl.static_headers and its neutral row in ProtocolDecl::named), so a dialect declares the non-credential headers the kernel writes after its credential, +2 code lines. Measured by cargo xtask loc busbar-contract --ref: 9294 before the SD-3b static-headers commit, 9296 at it."
+to      = 9463
+because = "OWNER RULING Q68(3) (docs/design/1.6.0-QUESTIONS.md), ARCHITECT SD-3 queue (1): contract_caps re-arms at the MEASURED value after each contract change, each in its own commit. This is the re-arm for SD-3b (1): the egress declaration gains its append-only static_headers field (ProtocolDecl.static_headers and its neutral row in ProtocolDecl::named), so a dialect declares the non-credential headers the kernel writes after its credential, +2 code lines. Measured by cargo xtask loc busbar-contract --ref: 9294 before the SD-3b static-headers commit, 9296 at it. RE-ARMED AGAIN 9296 -> 9463 in its own commit for ARCHITECT SD-3 queue (4) / O8 as re-ruled: busbar_contract::testkit ships always compiled (the in-memory log double WarnCapture, the codec's copy deleted), +167 code lines; measured 9296 before the SD-3b testkit commit, 9463 at it."
 
 # ── THE KERNEL CEILING'S OWNER-APPROVED RAISE — EXPIRED AND STRUCK ─────────────────────────────
 #
@@ -380,7 +380,9 @@ because = "ARCHITECT ruling on the kernel budget (R-KERNEL, sd-extra.txt; K2-0 u
 # measure.
 # RE-ARMED 9294 -> 9296, AT THE MEASUREMENT (OWNER RULING Q68(3); ARCHITECT SD-3 queue (1)), in its
 # own commit after SD-3b's egress static headers (+2); the live declaration above carries the measure.
-contract_caps = 9296
+# RE-ARMED 9296 -> 9463, AT THE MEASUREMENT (OWNER RULING Q68(3); ARCHITECT SD-3 queue (4)), in its
+# own commit after SD-3b's always-compiled contract testkit (+167); same live declaration.
+contract_caps = 9463
 # REPOINTED, and the repoint is what makes this row a gate again. It named the CRATE
 # `busbar-grammar`, which #40 folded into `busbar-contract` and deleted — so it summed nothing,
 # measured nothing and passed, which is this file's own "zero is not clean" failure sitting inside
@@ -970,7 +972,8 @@ contract_crate = "busbar-contract"
 # RE-ARMED 9251 -> 9289 with its pair (OWNER RULING Q68(3); SD-3 (1/3) codec host-service seams, +38).
 # RE-ARMED 9289 -> 9294 with its pair (OWNER RULING Q68(3); the plane record kinds aae5c08f2, +5).
 # RE-ARMED 9294 -> 9296 with its pair (OWNER RULING Q68(3); SD-3b egress static headers, +2).
-caps_contract_ceiling = 9296
+# RE-ARMED 9296 -> 9463 with its pair (OWNER RULING Q68(3); SD-3b contract testkit, +167).
+caps_contract_ceiling = 9463
 unit_crate_glob = "busbar-unit-*"
 # RE-KEYED on cherry-pick onto 143db6db6: this commit's own delta is -53 (two units stopped
 # declaring their own copies), measured against whatever unit_total_ceiling read when the line was
