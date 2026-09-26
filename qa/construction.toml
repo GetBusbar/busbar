@@ -835,7 +835,7 @@ kernel_crate = "busbar-kernel"
 # budget-book read fix). Pinned at the measurement, no slack. It RATCHETS DOWN when item 142's
 # breaker fold lands (store/in_memory/breaker.rs, ~580 code lines), which takes the kernel back
 # under 51439; that commit lowers this figure to what it then measures.
-# ── LOWERED 51742 -> 51049 by `--write` on the committed fold (ddadb26bb): the in-memory store's
+# ── LOWERED 51742 -> 51049 by `--write` on the committed breaker fold: the in-memory store's
 # state machine left the kernel for busbar-kernel-breaker. Downward only.
 kernel_ceiling = 51049
 # `caps_crate = "busbar-caps"` WAS HERE AND IS STRUCK, 2026-09-22. The crate was folded into
