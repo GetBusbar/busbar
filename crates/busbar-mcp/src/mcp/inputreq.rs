@@ -191,12 +191,28 @@ impl std::fmt::Display for Refusal {
                 server,
                 round,
                 reason,
-            } => write!(
-                f,
-                "round {round} of this dispatch to MCP server `{server}` was refused by your \
-                 budget: {reason}. A tool call is charged on the same budget plane as an LLM \
-                 request, so a runaway loop stops when the budget stops it."
-            ),
+            } => {
+                write!(
+                    f,
+                    "round {round} of this dispatch to MCP server `{server}` was refused by your \
+                     budget: {reason}. "
+                )?;
+                // The plane a tool call's budget is shared with is named by its DECLARED display
+                // name, resolved by the class it serves; a deployment with no such plane has
+                // nothing to compare the charge to.
+                match super::sampling::completion_server() {
+                    Some(peer) => write!(
+                        f,
+                        "A tool call is charged on the same budget plane as an {} request, so a \
+                         runaway loop stops when the budget stops it.",
+                        peer.name
+                    ),
+                    None => f.write_str(
+                        "A tool call is charged on your budget, so a runaway loop stops when the \
+                         budget stops it.",
+                    ),
+                }
+            }
         }
     }
 }

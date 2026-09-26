@@ -55,6 +55,7 @@
 //! neighbours) — every one of them is a COUNT or a RANGE, never a price: what it is worth is the
 //! money plane's business.
 
+use busbar_kernel::plane_host::EngineHost;
 use std::collections::HashMap;
 use std::sync::Mutex;
 
@@ -123,7 +124,7 @@ impl SamplingSpend {
 /// audio block in the ask is refused rather than silently dropped, because a completion computed
 /// over less than the upstream sent is an answer to a question nobody asked.
 pub(crate) async fn satisfy_upstream_ask(
-    host: &std::sync::Arc<dyn busbar_kernel::plane_host::EngineHost>,
+    host: &std::sync::Arc<dyn EngineHost>,
     gov: &busbar_contract::records::PlaneRequestCtx,
     ask: &super::inputreq::Ask,
     server: &str,
@@ -383,11 +384,17 @@ fn oversized_prompt(cfg: &super::config::SamplingCfg, server: &str) -> String {
 /// DRIVE one completion through the governed pipeline and shape the answer as the protocol's
 /// `CreateMessageResult`.
 async fn complete(
-    host: &std::sync::Arc<dyn busbar_kernel::plane_host::EngineHost>,
+    host: &std::sync::Arc<dyn EngineHost>,
     gov: &busbar_contract::records::PlaneRequestCtx,
     cfg: &super::config::SamplingCfg,
     body: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
+    // THE SERVING PLANE, resolved by OPERATION CLASS through the host: a deployment where no linked
+    // or dropped-in plane declares the class refuses here, with the words it has always refused in
+    // when no plane was there to drive the completion.
+    if completion_server().is_none() {
+        return Err(NO_COMPLETION_SERVER.to_string());
+    }
     let bytes = axum::body::Bytes::from(serde_json::to_vec(&body).map_err(|e| e.to_string())?);
     // THE ONE PATHWAY, reached through the neutral host seam: the completion rides the same resolved
     // ingress pipeline (`operation_resolved` with the residual-default chat handler the host resolves)
@@ -442,6 +449,23 @@ async fn complete(
     }))
 }
 
+/// THE PLANE THAT ANSWERS A SAMPLING ASK — the registered plane (linked or dropped in, both reach
+/// the host's registry as one declaration) that declares it serves the operation class a sampling
+/// ask completes as, with its DECLARED display name. Resolved by class, so this plane spells none
+/// (#47/#49); `None` when no registered plane serves the class.
+pub(crate) fn completion_server() -> Option<busbar_contract::plane::ServedOpClass> {
+    let decls = busbar_kernel::plane::registry::plane_decls();
+    busbar_contract::plane::plane_serving(
+        busbar_plane_mcp::meta::SAMPLING_OP,
+        decls.iter().map(|d| &d.declaration),
+    )
+    .map(|(_, served)| served)
+}
+
+/// The refusal a sampling ask gets when no registered plane serves its class — byte for byte what
+/// the host's completion seam answers when no plane installed one.
+pub(crate) const NO_COMPLETION_SERVER: &str = "no default chat protocol is installed";
+
 /// The cap on one completion's response body. Generous — a completion is text the operator's own
 /// `max_tokens` already bounds — and present because a read with no bound is a promise about a
 /// body this function did not write.
@@ -454,6 +478,10 @@ mod sampling_spend_tests;
 #[cfg(all(test, feature = "test-support"))]
 #[path = "tests/sampling_bounds_tests.rs"]
 mod sampling_bounds_tests;
+
+#[cfg(all(test, feature = "test-support"))]
+#[path = "tests/sampling_server_tests.rs"]
+mod sampling_server_tests;
 
 // The SATISFIER's battery hangs on `super::upstream` rather than here, exactly as the roots
 // satisfier's does: its witness is the fake upstream peer plus a recording fake provider, and the

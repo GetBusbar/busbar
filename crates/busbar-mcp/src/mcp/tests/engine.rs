@@ -14,14 +14,14 @@
 use busbar_kernel::plane_host::EngineHost;
 pub(crate) use busbar_kernel::test_support::engine_kit::{
     EngineApp, EngineHandle, EngineTestKit, GovKit, HookEnvHandle, HookNeed, TestAppKit,
-    TestAppKitExt,
+    TestAppKitExt, CORE_ENGINE_KIT,
 };
 use std::sync::Arc;
 
 /// The engine's test kit. Binding it here — and nowhere else — is what lets the rest of this tree
 /// stay neutral: swap the engine and this one function changes.
 pub(crate) fn engine() -> &'static dyn EngineTestKit {
-    &busbar_kernel::test_support::engine_kit::CORE_ENGINE_KIT
+    &CORE_ENGINE_KIT
 }
 
 /// A fresh test-App builder — the fluent chain a test drives `.mcp(&cfg).mcp_server(..).build()` on.

@@ -80,11 +80,13 @@ pub enum DestinationFacts {
         /// Which verb.
         verb: &'static str,
     },
-    /// Another plane, one level down.
+    /// Another plane, one level down — whichever registered plane declares it serves `op`.
+    ///
+    /// The requesting plane names the CLASS it needs and never the plane: a plane names no other
+    /// plane (#47/#49). The host resolves the class to the plane that declares it in
+    /// [`crate::plane::PlaneDeclaration::served_op_classes`] ([`crate::plane::plane_serving`]).
     NestedPlane {
-        /// Which plane.
-        plane: &'static str,
-        /// Which of its operation classes.
+        /// The operation class the unit needs served.
         op: OpClassId,
     },
     /// Priced session time, raised by the node's clock.

@@ -6,22 +6,21 @@ use super::{finish_of, member_of, refusal_render, sampling_destination, Codec};
 use busbar_contract::dest::DestinationFacts;
 use busbar_contract::unit::{AbortBy, FailureReason, RefusalReason, Step, UnitEnd};
 
-/// The nested destination a sampling request reaches is the declared pair, and it is the SAME
-/// value on both steps -- `verify` seals it and `route` dials it out of one expression, so a
-/// change to either constant moves both or neither.
+/// The nested destination a sampling request reaches is the declared operation CLASS, and it is
+/// the SAME value on both steps -- `verify` seals it and `route` dials it out of one expression, so
+/// a change to the constant moves both or neither. It names a class and no plane (#47/#49): which
+/// plane answers is the host's resolution over what registered planes declare they serve.
 #[test]
 fn verify_and_route_reach_one_declared_sampling_destination() {
     assert_eq!(
         sampling_destination(),
         DestinationFacts::NestedPlane {
-            plane: crate::meta::SAMPLING_PLANE,
             op: crate::meta::SAMPLING_OP,
         }
     );
-    let DestinationFacts::NestedPlane { plane, op } = sampling_destination() else {
+    let DestinationFacts::NestedPlane { op } = sampling_destination() else {
         panic!("a sampling request is answered by another plane, not by anything else");
     };
-    assert_eq!(plane, "llm");
     assert_eq!(op.as_str(), "chat");
 }
 

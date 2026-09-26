@@ -37,7 +37,6 @@ fn every_destination_kind_decides_whether_it_carries_the_fee() {
     };
     let kernel_verb = DestinationFacts::KernelVerb { verb: "health" };
     let nested = DestinationFacts::NestedPlane {
-        plane: "model",
         op: OpClassId::new("chat"),
     };
     let accrual = DestinationFacts::SessionAccrual { lane: lane() };
@@ -144,7 +143,6 @@ fn walking_down_a_transport_stack_carries_the_seal_and_widens_nothing() {
         },
         DestinationFacts::KernelVerb { verb: "health" },
         DestinationFacts::NestedPlane {
-            plane: "model",
             op: OpClassId::new("chat"),
         },
         DestinationFacts::SessionAccrual { lane: lane() },
