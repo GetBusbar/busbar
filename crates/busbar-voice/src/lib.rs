@@ -375,10 +375,10 @@ pub const PLANE_HOOKS: PlaneHooks = PlaneHooks {
     build_runtime: VOICE_BUILD_RUNTIME,
     viewer: None,
     retain_verify_gates: None,
-    // config-seam: the empty `streams:` default, so an ABSENT section decodes byte-identically to
-    // `StreamsCfg::default()` (mirror of `a2a_default_section` / `mcp_default_section`). Without
-    // it the neutral `StreamsSection::default()` newtype would fall back to a raw capture, not the
-    // typed default.
+    // config-seam: the empty `streams:` default — the plane's own statement that an ABSENT section
+    // is byte-identically `StreamsCfg::default()` (mirror of `a2a_default_section` /
+    // `mcp_default_section`). The kernel's declared-section carrier holds no entry for an absent
+    // section; this hook is what that absence means to the plane.
     default_section: Some(config::streams_default_section),
     resolve_provider: None,
 };
