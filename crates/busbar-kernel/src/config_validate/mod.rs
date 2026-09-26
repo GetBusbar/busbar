@@ -1724,11 +1724,11 @@ fn validate_cost_model(cfg: &RootCfg, errors: &mut Vec<String>) {
     // plugin subsystem (checked with the registry in `plugins_preflight`, the shared boot path).
     if let Some(store) = &cfg.store {
         if store.module.trim().is_empty() {
-            errors.push(
+            errors.push(format!(
                 "store.module must be non-empty; use `memory` (the compiled-in RAM store) or a \
-                 store plugin name/alias (sqlite | postgres | valkey | <third-party>)"
-                    .to_string(),
-            );
+                 store plugin name/alias ({} | <third-party>)",
+                crate::config::migrate::legacy_store_text("module_examples")
+            ));
         }
     }
 

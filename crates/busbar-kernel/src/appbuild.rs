@@ -146,7 +146,7 @@ pub fn stateful_plane_ephemeral_store_warn(
     if store_is_memory && (tools_stateful || agents_stateful) {
         Some(
             "Stateful plane task state will NOT survive a restart — in-flight tasks will break on the next \
-             request. Configure a durable store (sqlite/postgres).",
+             request. Configure a durable store plugin.",
         )
     } else {
         None
