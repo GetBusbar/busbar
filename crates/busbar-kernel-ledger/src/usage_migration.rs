@@ -2,8 +2,11 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE ONE-SHOT USAGE-LEDGER MIGRATION (1.6.0 M1b): fold the pre-M1b scalar `TierTokens` rows onto
-//! the name-keyed [`ModelTokens::usage_units`] ledger, gated by a BACKEND-INTERNAL
-//! usage-ledger schema version ([`USAGE_SCHEMA_V2`]).
+//! the name-keyed [`ModelTokens::usage_units`] ledger, gated by a BACKEND-INTERNAL usage-ledger
+//! schema version ([`USAGE_SCHEMA_V2`]).
+//!
+//! [`ModelTokens::usage_units`]: busbar_contract::records::ModelTokens::usage_units
+//! [`ModelTokens`]: busbar_contract::records::ModelTokens
 //!
 //! WHERE THE GATE LIVES. The schema version is a durable-backend concern, exactly like the existing
 //! `SCHEMA_VERSION 5→6` billable-requests backfill each backend runs in its own `migrate()` (see the
@@ -30,7 +33,8 @@
 //! `tokens` field on disk, so [`UsageLedgerV1`] deserializes it with `tokens` defaulted to all-zero
 //! (`#[serde(default)]`), and folding a zero tier ADDS 0 — the re-fold is the identity. So a crash +
 //! reboot can neither double-count nor lose a budget total: the folded ledger is byte-identical to a
-//! clean single run. That equality is a HARD gate, proven by [`tests`].
+//! clean single run. That equality is a HARD gate, proven by this module's tests
+//! (`tests/usage_migration_tests.rs`).
 //!
 //! The V1 structs are read ONLY here (never in the serving path); the pricer/ledger/flush all speak
 //! the name-keyed map exclusively.
