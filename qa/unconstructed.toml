@@ -232,16 +232,13 @@ switch    = "STRIKE THIS ROW in the commit that calls journal_checkpoint on a re
 # `plugin-abi-keyed-units` STRUCK 2026-09-24 by owner ruling: the host decodes keyed units on the
 # real metering path (plane_host/govern.rs decode_usage_units), so the capability has a consumer.
 
-# MONEY — the late-accrual mechanism is back to being an assertion.
-[[capability]]
-id        = "hold-late-accrual-parent-exit"
-built     = "crates/busbar-contract/src/caps/hold.rs"
-symbol    = "convert_at_parent_exit"
-construct = [".convert_at_parent_exit("]
-scope     = ["crates"]
-why       = "Its own doc calls this what makes the late-accrual exposure a mechanism rather than an assertion. The sibling after_terminal IS live in the llm unit path; the parent-exit conversion has no production caller, so a child can still post late with no reservation behind it."
-unshipped = true
-switch    = "STRIKE THIS ROW in the commit that converts a child hold at parent exit on the real path. MONEY: PARKED-OWNER — an owner signs, not an agent."
+# MONEY — `hold-late-accrual-parent-exit` STRUCK 2026-09-26 (UC-HOLD, owner ruling Q71(4)): the
+# loop's one terminal (`crates/busbar-kernel/src/teller.rs` → `at_parent_exit`) converts a child's
+# accrual to its own hold when the parent's cell is already taken at the child's end — sized by the
+# door (`Units::at_parent_exit`; the budget door's `AdmissionUnit::at_parent_exit` draws it against
+# the slice and refuses on the budget block where the slice cannot back it) and swapped into the
+# child's cell, so the exit settles it against a reservation instead of posting it late against
+# nothing. A refused child ends `Failed(Admit, OverBudget)` and its accrual still posts, late.
 
 # MONEY — `rate-card-multi-currency` STRUCK 2026-09-25 (UC-STRIKE, #66 OWNER-LOCKED + spec Q4 "no
 # currency"): the mutators `RateCard::set_rate`/`set_fee` had no production caller and are DELETED —

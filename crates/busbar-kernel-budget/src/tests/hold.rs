@@ -509,3 +509,131 @@ fn a_ready_parent_takes_the_accrual_and_reports_nothing() {
     assert_eq!(parent.accrued(), 700, "the child's spend landed on it");
     settle(parent, &seal);
 }
+
+// ── a parent that exits while its child still runs (owner ruling Q71(4)) ───────────────────────
+
+/// Admit a child against a still-open parent through the door, then let the parent exit. Hands
+/// back the child's outstanding accrual, the unit that admitted it, and the chain it was judged on.
+fn child_outliving_its_parent<'r>(
+    d: &'r Door<InMemoryCells>,
+    p: &'r Pricer,
+    parent: &'r HoldCell,
+    c: &BucketChain,
+    now: u64,
+) -> (
+    busbar_contract::caps::HoldAccrual,
+    AdmissionUnit<'r, InMemoryCells>,
+) {
+    let seal = KernelSeal::acquire_for_kernel();
+    let admit: Grant<Admittance> = Grant::<Admittance>::mint(&seal);
+    let who = PrincipalId::new("vk_par");
+    let mut unit = AdmissionUnit::new(d, p, "", now).with_parent(parent);
+    let accrual = match unit
+        .admit(
+            &estimate(100, 7, 0),
+            &who,
+            c,
+            &admit,
+            &Pass::<Admit>::mint(&seal),
+        )
+        .into_result(&seal)
+        .expect("the door admits the child")
+    {
+        busbar_contract::caps::Admission::Accrual(accrual) => accrual,
+        other => panic!("the child spends against its open parent, got {other:?}"),
+    };
+    let taken = parent
+        .take(&Grant::<Exit>::mint(&seal))
+        .expect("the parent exits while the child still runs");
+    settle(taken, &seal);
+    (accrual, unit)
+}
+
+/// A PARENT THAT EXITS UNDER A RUNNING CHILD LEAVES THE CHILD HOLDING ITS OWN RESERVATION.
+///
+/// The accrual was spent against the parent's hold, and that hold has gone. The child's accrual
+/// converts to a hold of the child's own, sized at what the child pushed and drawn against the
+/// principal's slice, so what the child spends from here is bounded by a reservation instead of
+/// posting late against nothing.
+#[test]
+fn a_child_whose_parent_exits_converts_its_accrual_to_its_own_hold() {
+    let seal = KernelSeal::acquire_for_kernel();
+    let admit: Grant<Admittance> = Grant::<Admittance>::mint(&seal);
+    let d = door();
+    let p = no_card(10);
+    let t = table(&[(
+        "g",
+        group_cfg(None, true, vec![limit(LimitMetric::Budget, 30, Some(DAY))]),
+    )]);
+    let c = chain(&t, "vk_par", Some("g"));
+    let parent = admitted_cell(&PrincipalId::new("vk_par"), &seal, &admit);
+    let now = 1_700_000_000;
+    let (accrual, mut unit) = child_outliving_its_parent(&d, &p, &parent, &c, now);
+    assert_eq!(accrual.amount(), 700, "100 units at 7 nano-units each");
+    // The child's admission charged one fee: 10 of 30 cents spent, 20 left to draw against.
+    let sized = unit
+        .at_parent_exit(&accrual, &c)
+        .expect("20 cents of headroom backs a 700 nano-unit hold");
+    assert_eq!(sized, 700);
+    let hold = accrual.convert_at_parent_exit(sized, &admit);
+    assert_eq!(hold.principal().as_str(), "vk_par");
+    assert_eq!(
+        hold.reserved(),
+        700,
+        "the child now holds its own reservation"
+    );
+    assert_eq!(unit.blocked(), None);
+    settle(hold, &seal);
+}
+
+/// A CONVERTED HOLD THE SLICE CANNOT BACK IS REFUSED ON THE BUDGET — THE DOOR'S OWN BUDGET BLOCK.
+///
+/// The one refusal this conversion adds (owner-accepted, Q71(4)). It is the budget family and
+/// nothing new: the blocked bucket is exactly the one the door itself names when that bucket's
+/// budget stops the next request, so it renders through the same text ("You have exceeded your
+/// current quota (group 'g' budget per day exhausted). …") and the same over-budget code.
+#[test]
+fn a_converted_hold_the_slice_cannot_back_is_refused_on_the_budget() {
+    let seal = KernelSeal::acquire_for_kernel();
+    let admit: Grant<Admittance> = Grant::<Admittance>::mint(&seal);
+    let d = door();
+    let p = no_card(10);
+    let t = table(&[(
+        "g",
+        group_cfg(None, true, vec![limit(LimitMetric::Budget, 20, Some(DAY))]),
+    )]);
+    let c = chain(&t, "vk_par", Some("g"));
+    let parent = admitted_cell(&PrincipalId::new("vk_par"), &seal, &admit);
+    let now = 1_700_000_000;
+    let (accrual, mut unit) = child_outliving_its_parent(&d, &p, &parent, &c, now);
+    // A sibling spends the slice to its cap: 20 of 20 cents, nothing left to back the child.
+    drop(d.try_admit(&p, &c, "", now).expect("spend 10, +10 <= 20"));
+    let refusal = unit
+        .at_parent_exit(&accrual, &c)
+        .expect_err("a slice at its cap cannot back the child's own hold");
+    assert_eq!(
+        refusal.reason(),
+        busbar_contract::caps::ReasonCode::OverBudget
+    );
+    let door_says = d
+        .try_admit(&p, &c, "", now)
+        .expect_err("the door blocks the next request on the same bucket");
+    let retry = crate::window_end(DAY, now).expect("a day window rolls") - now;
+    let expected = Blocked::Limit {
+        group: "g".to_string(),
+        metric: Metric::Budget,
+        window: Some(DAY),
+        pool: None,
+        downgrade_to: None,
+        retry_after: Some(retry),
+    };
+    assert_eq!(door_says, expected);
+    assert_eq!(unit.blocked(), Some(&expected));
+    assert_eq!(Metric::Budget.as_str(), "budget");
+    assert_eq!(refusal.retry_after_secs(), u32::try_from(retry).ok());
+    // Refused, the accrual is still spend that happened: it posts late, never vanishes.
+    let _ = busbar_contract::caps::Posted::settle_late(
+        accrual,
+        &busbar_contract::caps::Grant::<busbar_contract::caps::WriteMoney>::mint(&seal),
+    );
+}

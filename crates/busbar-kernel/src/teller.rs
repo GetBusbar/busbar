@@ -63,10 +63,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use busbar_contract::caps::{
     Abort, AdminVerb, Admission, Admit, Admittance, Approve, Arrival, Audit, Authenticate,
     Authenticated, CallId, Canary, Consumption, Decision, Decode, Dial, DurabilityLost,
-    DurableWrite, Encode, Exit, Grant, Hold, HoldAccrual, HoldCell, KernelSeal, KeyHandle, Meter,
-    MeterClassId, Origin, OriginKind, Outcome, Pass, Posted, PostingFlags, PrincipalId,
-    QuantitySource, ReasonCode, Refusal, Route, SessionId, Sign, StepName, UnitEnd, UnitKey, Usage,
-    UsageLine, VerifiedDestination, Verify, WriteMoney,
+    DurableWrite, Encode, Exit, Grant, Hold, HoldAccrual, HoldCell, HoldCellState, KernelSeal,
+    KeyHandle, Meter, MeterClassId, Origin, OriginKind, Outcome, Pass, Posted, PostingFlags,
+    PrincipalId, QuantitySource, ReasonCode, Refusal, Route, SessionId, Sign, StepName, UnitEnd,
+    UnitKey, Usage, UsageLine, VerifiedDestination, Verify, WriteMoney,
 };
 
 use crate::registry::Generation;
@@ -616,6 +616,22 @@ pub trait Units {
 
     /// What the unit's evidence looks like once it has run. Read by the settlement table.
     fn evidence(&self, ctx: &UnitCtx) -> Evidence;
+
+    /// A child's parent exited while the child still ran: size the hold its accrual converts to,
+    /// or refuse it on the budget (owner ruling Q71(4)).
+    ///
+    /// The default is a door with no slice to draw against: the hold is sized at what the child
+    /// pushed and nothing refuses. A door that keeps the principal's slice draws the hold against
+    /// it and refuses a child the slice cannot back, with the budget block it renders for any
+    /// other unit (`busbar_kernel_budget::AdmissionUnit::at_parent_exit`).
+    fn at_parent_exit(
+        &self,
+        _admit: &Grant<Admittance>,
+        _ctx: &UnitCtx,
+        accrual: &HoldAccrual,
+    ) -> Result<u64, Refusal> {
+        Ok(accrual.amount())
+    }
 }
 
 /// The Route step, as the loop AWAITS it.
@@ -1135,6 +1151,41 @@ enum Settling {
     Parent(HoldAccrual),
     /// A hold the [`exit`] path settles, and whether the unit reached the door.
     Exit(bool),
+    /// A child's accrual converted to its own hold when its parent exited under it (Q71(4)): the
+    /// hold is in the child's cell and the [`exit`] path settles it, with no slot and no fee.
+    Converted,
+}
+
+/// THE PARENT EXITED WHILE THE CHILD RAN (owner ruling Q71(4)): the child's accrual converts to a
+/// hold of its own, swapped into the child's cell where its arrival hold sat, so its spend settles
+/// against a reservation instead of posting late against nothing. The door sizes the hold or
+/// refuses it on the budget; a refused child ends refused at the door's step and its accrual still
+/// posts, late — the spend happened. A parent still open here is the ordinary child, untouched.
+fn at_parent_exit<U: Units>(
+    seal: &KernelSeal,
+    units: &U,
+    ctx: &UnitCtx,
+    run: &Run<'_>,
+    outcome: Outcome,
+    accrual: HoldAccrual,
+) -> (Outcome, Settling) {
+    let admit = Grant::<Admittance>::mint(seal);
+    match units.at_parent_exit(&admit, ctx, &accrual) {
+        Err(refusal) => (
+            Outcome::Failed(refusal.step().unwrap_or(StepName::Admit), refusal.reason()),
+            Settling::Parent(accrual),
+        ),
+        Ok(sized) => {
+            let own = accrual.convert_at_parent_exit(sized, &admit);
+            match run.cell.admit(own, &admit) {
+                Ok(arrival) => drop_arrival(arrival),
+                // The sweep emptied the child's cell first and has settled it; the exit finds it
+                // empty and does nothing, which is the one settlement a unit gets.
+                Err(rejected) => drop_arrival(rejected.hold),
+            }
+            (outcome, Settling::Converted)
+        }
+    }
 }
 
 /// THE UNIT THE CALLER WENT AWAY FROM.
@@ -1222,6 +1273,17 @@ fn terminal<U: Units>(
     settling: Settling,
 ) -> Ended {
     let seal = &kernel.seal;
+    // Resolved BEFORE the end is sealed, because a refusal here is the end the audit records.
+    let (outcome, settling) = match settling {
+        Settling::Parent(accrual)
+            if run
+                .parent
+                .is_some_and(|p| p.state() == HoldCellState::Taken) =>
+        {
+            at_parent_exit(seal, units, ctx, &run, outcome, accrual)
+        }
+        other => (outcome, other),
+    };
     let _sealed = units
         .audit(&Pass::<Audit>::mint(seal), ctx, &outcome)
         .into_result(seal);
@@ -1232,6 +1294,16 @@ fn terminal<U: Units>(
         Settling::Exit(reached_admitted) => {
             exit(kernel, units, ctx, run, outcome, reached_admitted)
         }
+        // The child settles its own hold like any unit, but it drew no request slot and posts no
+        // fee: the unit that drew both is the parent it was spending against.
+        Settling::Converted => match exit(kernel, units, ctx, run, outcome, false) {
+            Ended::Settled { end, .. } => Ended::Settled {
+                end,
+                requests: 0,
+                fee: 0,
+            },
+            ended => ended,
+        },
         Settling::Parent(accrual) => {
             // The child opened no reservation of its own, but the table minted it an arrival hold
             // like every other unit, and that hold is in a cell the sweep also has a key to.
