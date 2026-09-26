@@ -216,19 +216,19 @@ busbar-voice = ["busbar-voice-codec"]
 # base" and asked for exactly this strike. THE CEILINGS THEMSELVES DID NOT MOVE: both still read
 # 7418. The next #83/#84 merge into busbar-contract declares its own re-arm here, once.
 
-# ── THE CONTRACT CEILING PAIR, RE-ARMED AT THE MEASURE AFTER THE SD-1 SHAPES MERGE ───────────────
+# ── THE CONTRACT CEILING PAIR, RE-ARMED AT THE MEASURE AFTER THE TRANSPORT-SETTINGS SHAPE MERGE ────
 
 [gate.ceiling_raises."gate.surface_ceilings.contract_caps"]
 file    = "qa/construction.toml"
-from    = 8424
-to      = 8532
-because = "OWNER RULING Q68(3) (docs/design/1.6.0-QUESTIONS.md): contract_caps re-arms at the MEASURED value after each owner-locked #83/#84 merge commit into busbar-contract, each in its own commit. This is the re-arm for 4152c1b6b, K2f (ARCHITECT ruling R10: AwaitingReplies/NotWaiting move to the contract as SHAPES, #83): busbar-kernel/src/reply.rs, the AwaitReply leg's waiting table, moved verbatim to busbar-contract/src/reply.rs so the streaming plane holds its node's governed-call table without a busbar_kernel:: reach. Measured by cargo xtask loc busbar-contract --ref: 8424 at 4152c1b6b^, 8532 at 4152c1b6b; the +108 is that module (107 code lines) and its `pub mod` line in lib.rs; busbar-kernel falls 50746 -> 50639 by the same move. The 8148 -> 8424 declaration this replaces (fold F1, 4c5a8a3dd) is at the base and expired."
+from    = 8532
+to      = 8558
+because = "OWNER RULING Q68(3) (docs/design/1.6.0-QUESTIONS.md): contract_caps re-arms at the MEASURED value after each owner-locked #83/#84 merge commit into busbar-contract, each in its own commit. This is the re-arm for 0ba019cd8, K2e TRANSPORT-AXIS (2) (#83: ClientSettings becomes a contract SHAPE): busbar_contract::transport::TransportSettings with its Default and the two uninstalled-config fallbacks, moved out of busbar-transport-http, which re-exports it under its old name. Measured by cargo xtask loc busbar-contract --ref: 8532 at 0ba019cd8^, 8558 at 0ba019cd8; the +26 is that shape and its re-export line, nothing else. The 8424 -> 8532 declaration this replaces (K2f, 4152c1b6b) is at the base and expired."
 
 [gate.ceiling_raises."rules.loc-ceilings.caps_contract_ceiling"]
 file    = "qa/construction.toml"
-from    = 8424
-to      = 8532
-because = "OWNER RULING Q68(3) (docs/design/1.6.0-QUESTIONS.md): contract_caps re-arms at the MEASURED value after each owner-locked #83/#84 merge commit into busbar-contract, each in its own commit. This is the re-arm for 4152c1b6b, K2f (ARCHITECT ruling R10: AwaitingReplies/NotWaiting move to the contract as SHAPES, #83): busbar-kernel/src/reply.rs, the AwaitReply leg's waiting table, moved verbatim to busbar-contract/src/reply.rs so the streaming plane holds its node's governed-call table without a busbar_kernel:: reach. Measured by cargo xtask loc busbar-contract --ref: 8424 at 4152c1b6b^, 8532 at 4152c1b6b; the +108 is that module (107 code lines) and its `pub mod` line in lib.rs; busbar-kernel falls 50746 -> 50639 by the same move. The 8148 -> 8424 declaration this replaces (fold F1, 4c5a8a3dd) is at the base and expired."
+from    = 8532
+to      = 8558
+because = "OWNER RULING Q68(3) (docs/design/1.6.0-QUESTIONS.md): contract_caps re-arms at the MEASURED value after each owner-locked #83/#84 merge commit into busbar-contract, each in its own commit. This is the re-arm for 0ba019cd8, K2e TRANSPORT-AXIS (2) (#83: ClientSettings becomes a contract SHAPE): busbar_contract::transport::TransportSettings with its Default and the two uninstalled-config fallbacks, moved out of busbar-transport-http, which re-exports it under its old name. Measured by cargo xtask loc busbar-contract --ref: 8532 at 0ba019cd8^, 8558 at 0ba019cd8; the +26 is that shape and its re-export line, nothing else. The 8424 -> 8532 declaration this replaces (K2f, 4152c1b6b) is at the base and expired."
 
 # ── THE KERNEL CEILING'S OWNER-APPROVED RAISE — EXPIRED AND STRUCK ─────────────────────────────
 #
@@ -322,7 +322,7 @@ because = "OWNER RULING Q68(3) (docs/design/1.6.0-QUESTIONS.md): contract_caps r
 # RE-ARMED 8424 -> 8532, AT THE MEASUREMENT (OWNER RULING Q68(3); ARCHITECT ruling R10), in its own
 # commit after 4152c1b6b moved the kernel's reply-leg waiting table into the contract as a shape under
 # #83. The +108 is that module; the declared raise above carries the before/after measure.
-contract_caps = 8532
+contract_caps = 8558
 # REPOINTED, and the repoint is what makes this row a gate again. It named the CRATE
 # `busbar-grammar`, which #40 folded into `busbar-contract` and deleted — so it summed nothing,
 # measured nothing and passed, which is this file's own "zero is not clean" failure sitting inside
@@ -882,7 +882,7 @@ contract_crate = "busbar-contract"
 # RE-ARMED 7414 -> 8148 with its pair (OWNER RULING Q68(3); the SD-1 shapes merge, 4db9c5349).
 # RE-ARMED 8148 -> 8424 with its pair (OWNER RULING Q68(3); fold F1, the secret-ref merge, 4c5a8a3dd).
 # RE-ARMED 8424 -> 8532 with its pair (OWNER RULING Q68(3); the reply-table shape move, 4152c1b6b).
-caps_contract_ceiling = 8532
+caps_contract_ceiling = 8558
 unit_crate_glob = "busbar-unit-*"
 # RE-KEYED on cherry-pick onto 143db6db6: this commit's own delta is -53 (two units stopped
 # declaring their own copies), measured against whatever unit_total_ceiling read when the line was
