@@ -623,6 +623,20 @@ moves. See [Protocols and translation](docs/protocols.md#spec-fidelity) and
   on an Anthropic or Bedrock upstream instead of sending `{type: disabled}`); the shipped catalog sets
   them for GPT-5.1 / GPT-5.2 and for Claude Opus 5.5 / Fable 5. See
   [Lane capabilities](docs/providers.md#lane-capabilities). **Migration:** none.
+- 1.6.0 Added: `GET /api/v1/admin/audit/keys` publishes the node's ed25519 public verifying key.
+  The key set was empty before this release, because nothing was signed. With `data_dir` set, the
+  keyset is minted at the first boot and kept in a `0600` file under `data_dir`, so the published
+  key survives a restart. Without `data_dir`, a new key is minted at each boot, and a signature made
+  under a previous boot cannot be re-verified. **Migration:** none; back up `data_dir` with the rest
+  of the node's state.
+- 1.6.0 Added: audit records and ledger checkpoints carry an ed25519 signature made by the node at seal time.
+  The signature is verifiable against the key served at `GET /api/v1/admin/audit/keys`. Signing proves
+  the node sealed the record. It does not prove the chain was never rewritten by someone holding
+  the key; that takes a head recorded off the node. **Migration:** none; every 1.5.5 audit field is
+  unchanged.
+- 1.6.0 Added: `GET /api/v1/admin/ledger/checkpoints` lists sealed checkpoints, sealed every 10,000 journal records or every 60 seconds with a change, whichever comes first.
+  The read serves the latest 1,024 seals, oldest first; the journal keeps every seal. A node that
+  has not reached either threshold serves an empty list. **Migration:** none.
 - **Two 64-bit ARM Linux builds, and the default one got faster.** The default arm64 artifacts
   (the `busbar-aarch64-unknown-linux-gnu.tar.gz` download and the multi-arch image's `linux/arm64`
   entry) now target ARMv8.1+, using the CPU's native atomic instructions instead of the baseline's
