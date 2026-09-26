@@ -504,3 +504,80 @@ fn charge_decodes_the_keyed_unit_tail_into_the_ledger() {
         .expect("the key bucket prices");
     assert_eq!(read.spend_cents, 1, "7 × 0.2 cents = 1.4, truncated once");
 }
+
+/// Charge `units` of `search_units` through a HOT plane's door (`with_plane_door`) whose `Usage` tail
+/// names `tail_key`, for the middleware-resolved `caller`; return the spend each key's bucket reads.
+fn door_charge(caller: Option<&str>, tail_key: &[u8], read: &[&str]) -> Vec<i64> {
+    let card: std::collections::BTreeMap<String, crate::config::RateEntryCfg> =
+        serde_yaml::from_str("rerank: { units: { search_units: 2000 } }\n").expect("parses");
+    let cost =
+        crate::cost::CostModel::resolve_parts(Some(&card), 1, &std::collections::BTreeMap::new());
+    let gov = gov();
+    let app = crate::test_support::TestApp::new()
+        .governance(Arc::clone(&gov))
+        .cost(cost)
+        .build();
+    let units = busbar_plugin::hot::pack_usage_units(&std::collections::BTreeMap::from([(
+        "search_units".to_string(),
+        7u64,
+    )]));
+    let ctx = caller.map(|id| busbar_contract::records::PlaneRequestCtx {
+        key: Some(Arc::new(test_key(id, None))),
+    });
+    let dest = crate::plane_host::egress::OperatorDestinations::default();
+    let scope = crate::plane_host::DispatchScope::new();
+    crate::plane_host::with_plane_door("hot", ctx.as_ref(), &dest, &app, &scope, |host, vt| {
+        let usage = Usage::with_units(
+            UsageComponent::Queries,
+            0,
+            0,
+            AdmissionId(5),
+            tail_key,
+            b"rerank",
+            b"plane:hot",
+            &units,
+        );
+        assert_eq!(
+            (vt.meter_charge.unwrap())(host, &*usage as *const Usage),
+            MeterOutcome::Charged
+        );
+    });
+    let now = busbar_kernel::store::now_ms() / 1_000;
+    read.iter()
+        .map(|id| {
+            gov.derived_bucket_usage(&app.cost, id, "total", false, now)
+                .expect("the bucket prices")
+                .spend_cents
+        })
+        .collect()
+}
+
+/// DEC-SERVE G1 (#65/#40 zero trust): a HOT plane that writes a FORGED key id into its `Usage` tail
+/// is billed to the caller the auth middleware resolved — the forged key's budget never moves, the
+/// real caller's does (7 × 0.2 cents = 1.4, truncated once to 1). RED arm: attribution read from the
+/// tail bills `vk_victim` 1 and the caller 0.
+#[test]
+fn a_forged_usage_key_id_is_billed_to_the_real_caller() {
+    let spend = door_charge(
+        Some("vk_real_caller"),
+        b"vk_victim",
+        &["vk_real_caller", "vk_victim"],
+    );
+    assert_eq!(
+        spend,
+        vec![1, 0],
+        "billed to the real caller, never the tail's key"
+    );
+}
+
+/// DEC-SERVE G1 on an OPEN route (no caller resolved): the plane's tail key is still ignored — the
+/// charge lands on the synthetic admission-derived key, never on the key the plane named.
+#[test]
+fn a_door_with_no_caller_never_bills_the_tail_key() {
+    let spend = door_charge(None, b"vk_victim", &["plane:admission:5", "vk_victim"]);
+    assert_eq!(
+        spend,
+        vec![1, 0],
+        "the synthetic key pays; the named key does not"
+    );
+}

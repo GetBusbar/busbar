@@ -238,44 +238,50 @@ pub(super) fn charge(state: &HostState, usage: &Usage) -> MeterOutcome {
     // money, which #43/#71/#77(3) rule out. (This used to be `if state.app.cost.pricing_enabled()`,
     // which left a billing-off deployment with no record of what its planes did.)
     if let Some(gov) = state.app.governance.as_ref() {
-        let attribution = resolved_attribution(usage);
-        // The synthetic fallback key id, materialized here so it outlives the borrow below.
-        let synth_key_id = format!("plane:admission:{}", usage.admission.0);
-        let (key_id, model, provider) = match attribution.as_ref() {
-            Some((k, m, p)) => (k.as_str(), m.as_str(), p.as_str()),
-            None => (
-                synth_key_id.as_str(),
-                MODEL_UNATTRIBUTED,
-                PROVIDER_UNATTRIBUTED,
-            ),
+        let tail = resolved_attribution(usage);
+        // WHO PAYS (DEC-SERVE G1, #65/#40). A PLANE mint carries the caller the auth middleware
+        // resolved, and that caller is the ONLY key billed: whatever key id the plane wrote in its
+        // `Usage` tail is ignored (a plane that forges one bills its real caller, never the victim).
+        // Only the host's own mints (`caller: None`, a `Usage` the kernel composed) read the tail's
+        // key, and there a tail with no key id is no attribution at all (the pre-enrichment rule).
+        let (billed, tail) = match &state.caller {
+            Some(caller) => (caller.key().cloned(), tail),
+            None => {
+                let tail = tail.filter(|(k, _, _)| !k.is_empty());
+                let key = tail.as_ref().map(|(k, _, _)| virtual_key(k.clone(), None));
+                (key, tail)
+            }
+        };
+        // The synthetic fallback: no caller and no tail key bills the admission-derived key.
+        let key = billed
+            .unwrap_or_else(|| virtual_key(format!("plane:admission:{}", usage.admission.0), None));
+        let (model, provider) = match tail.as_ref() {
+            Some((_, m, p)) => (m.as_str(), p.as_str()),
+            None => (MODEL_UNATTRIBUTED, PROVIDER_UNATTRIBUTED),
         };
         let token_usage = token_usage_for(component, usage.amount);
         let now = busbar_kernel::store::now_ms() / 1_000;
-        gov.record_metering(key_id, model, provider, token_usage.as_ref(), now);
+        gov.record_metering(&key.id, model, provider, token_usage.as_ref(), now);
         // ITEM 123 (#71): the keyed-unit tail — every class the plane counted, reserved and open —
         // lands in the enforcement ledger VERBATIM for the attributed key; the card prices it.
         // SAFETY: `usage` is the live POD this slot was handed; the decode reads the tail only
         // when the sender's advertised `size` proves it was written.
         let units = unsafe { busbar_plugin::hot::decode_usage_units(usage) };
         if !units.is_empty() {
-            let key = virtual_key(key_id.to_string(), None);
             gov.record_usage(&state.app.cost, &key, "", model, &units, now);
         }
     }
     MeterOutcome::Charged
 }
 
-/// Resolve the metering attribution `(key_id, model, provider)` from the [`Usage`] tail, or `None`
-/// when the tail is absent (an older sender, per the sized-struct guard) or carries no key id. The
+/// Read the metering attribution `(key_id, model, provider)` off the [`Usage`] tail, or `None` when
+/// the tail is absent (an older sender, per the sized-struct guard); the key id may read empty. The
 /// three words are exactly `record_metering`'s `(key_id, model, provider)` — so a present tail records
 /// the identical row the in-process meter does.
 fn resolved_attribution(usage: &Usage) -> Option<(String, String, String)> {
     let key_ptr = read_sized_field!(usage, usage.size, Usage, key_id_ptr)?;
     let key_len = read_sized_field!(usage, usage.size, Usage, key_id_len)?;
     let key_id = borrowed_str(key_ptr, key_len);
-    if key_id.is_empty() {
-        return None; // no resolved attribution → the synthetic fallback (pre-enrichment behaviour).
-    }
     let model = match (
         read_sized_field!(usage, usage.size, Usage, model_ptr),
         read_sized_field!(usage, usage.size, Usage, model_len),
