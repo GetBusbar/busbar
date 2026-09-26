@@ -80,7 +80,9 @@ pub fn findings(row: &Row) -> Vec<(Key, i64, bool)> {
             .or_else(|| number_after(&rest, "scored count is the higher, "))
             .or_else(|| number_before(&rest, " time(s)"))
             .unwrap_or(1);
-        let drains = tag.starts_with("dead-") || rest.contains("STALE SLACK");
+        let drains = tag.starts_with("dead-")
+            || tag.starts_with("rule-granted-")
+            || rest.contains("STALE SLACK");
         out.push((format!("{}\t{tag}\t{subject}", row.id), figure, drains));
     }
     out

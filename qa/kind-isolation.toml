@@ -587,11 +587,6 @@ count = "5"
 
 [[cell]]
 crate = "busbar"
-kind = "contract"
-count = "471"
-
-[[cell]]
-crate = "busbar"
 kind = "hooks"
 count = "5"
 
@@ -697,11 +692,6 @@ count = "1"
 
 [[cell]]
 crate = "busbar-kernel"
-kind = "contract"
-count = "103"
-
-[[cell]]
-crate = "busbar-kernel"
 kind = "plane"
 count = "2049"
 
@@ -712,18 +702,8 @@ count = "4"
 
 [[cell]]
 crate = "busbar-kernel-audit"
-kind = "contract"
-count = "37"
-
-[[cell]]
-crate = "busbar-kernel-audit"
 kind = "plane"
 count = "6"
-
-[[cell]]
-crate = "busbar-kernel-breaker"
-kind = "contract"
-count = "14"
 
 [[cell]]
 crate = "busbar-kernel-breaker"
@@ -737,11 +717,6 @@ count = "225"
 
 [[cell]]
 crate = "busbar-kernel-budget"
-kind = "contract"
-count = "48"
-
-[[cell]]
-crate = "busbar-kernel-budget"
 kind = "kernel"
 count = "14"
 
@@ -749,11 +724,6 @@ count = "14"
 crate = "busbar-kernel-budget"
 kind = "transport"
 count = "2"
-
-[[cell]]
-crate = "busbar-kernel-egress"
-kind = "contract"
-count = "210"
 
 [[cell]]
 crate = "busbar-kernel-egress"
@@ -772,11 +742,6 @@ count = "104"
 
 [[cell]]
 crate = "busbar-kernel-identity"
-kind = "contract"
-count = "14"
-
-[[cell]]
-crate = "busbar-kernel-identity"
 kind = "plane"
 count = "2"
 
@@ -787,28 +752,13 @@ count = "4"
 
 [[cell]]
 crate = "busbar-kernel-ledger"
-kind = "contract"
-count = "33"
-
-[[cell]]
-crate = "busbar-kernel-ledger"
 kind = "kernel"
-count = "6"
-
-[[cell]]
-crate = "busbar-kernel-scope"
-kind = "contract"
 count = "6"
 
 [[cell]]
 crate = "busbar-kernel-scope"
 kind = "transport"
 count = "6"
-
-[[cell]]
-crate = "busbar-kernel-wal"
-kind = "contract"
-count = "36"
 
 [[cell]]
 crate = "busbar-llm"
@@ -1045,11 +995,6 @@ count = "1"
 
 [[cell]]
 crate = "busbar-substrate-values"
-kind = "contract"
-count = "16"
-
-[[cell]]
-crate = "busbar-substrate-values"
 kind = "plane"
 count = "152"
 
@@ -1112,11 +1057,6 @@ count = "2"
 crate = "busbar-transport-ws"
 kind = "transport"
 count = "71"
-
-[[cell]]
-crate = "busbar-unit-transport-key"
-kind = "contract"
-count = "10"
 
 [[cell]]
 crate = "busbar-unit-transport-key"

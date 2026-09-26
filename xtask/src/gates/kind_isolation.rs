@@ -659,6 +659,25 @@ pub(super) fn is_the_wall(from: &str, to: &str) -> bool {
     to == CONTRACT_KIND && truths::PLUGIN_KINDS.contains(&from)
 }
 
+/// THE CORE TIERS THAT NAME THE CONTRACT BY DESIGN. #83/#83a make `busbar-contract` the shared
+/// SHAPES crate: names move INTO it, and every tier that is not a plugin names it on purpose. The
+/// root, the kernel tier, the cleanliness surfaces, the unit crates and the substrate each carry a
+/// granted `-> contract` class, and their contract vocabulary is not a coupling this gate ratchets.
+/// The retiring legacy engines and the plugin tooling are NOT here: their contract naming is still
+/// measured, cell by cell, until they drain.
+const CONTRACT_TIERS: &[&str] = &["root", "kernel", CLEANLINESS, "unit", "substrate"];
+
+/// Is `from -> to` the contract edge a crate of kind `from` carries BY DESIGN, so its vocabulary
+/// column is not measured: the #40 wall for a plugin kind ([`is_the_wall`]), or a core tier's
+/// granted contract class (#83/#83a). The contract reaching anything else, and a plugin reaching
+/// anything past the contract, are never this.
+pub(super) fn names_contract_by_design(from: &str, to: &str) -> bool {
+    is_the_wall(from, to)
+        || (to == CONTRACT_KIND
+            && CONTRACT_TIERS.contains(&from)
+            && ARCHITECTURE_ALLOWED.contains(&(from, to)))
+}
+
 /// THE TRUSTED COMPUTING BASE: the loader and the plugin tooling, which `ARCHITECTURE.md` 1.4 says
 /// in its own words are NOT kinds. Their edges are neither granted nor refused by the kind rules,
 /// because the kind rules are not about them — so they carry their own verdict, they are still
@@ -6150,7 +6169,7 @@ impl Gate for KindIsolationGate {
                 "a negative `[[cell]]` count is refused at load — it is not a ceiling, it is the \
                  absence of one",
                 &[ROW_DEPS],
-                matrix::cell_subst(cx, "busbar", "contract", "-1"),
+                matrix::cell_subst(cx, "busbar-llm", "contract", "-1"),
                 &[
                     "bad-count",
                     "is negative",
@@ -9491,6 +9510,50 @@ mod plant_tests {
             assert!(
                 !is_the_wall(neutral, CONTRACT_KIND),
                 "`{neutral}` is not a plugin kind; its contract edge is an ordinary ledger row"
+            );
+        }
+    }
+
+    /// THE CORE TIERS NAME THE CONTRACT BY DESIGN (#83/#83a), and nothing wider follows from it:
+    /// every tier's contract class is granted and unmeasured, while a plugin reaching past the
+    /// contract, a legacy engine's or the plugin tooling's contract naming, and the contract
+    /// reaching any other crate are all still judged.
+    #[test]
+    fn the_core_tiers_name_the_contract_by_design_and_nothing_wider() {
+        for tier in CONTRACT_TIERS {
+            assert!(
+                ARCHITECTURE_ALLOWED.contains(&(tier, CONTRACT_KIND)),
+                "`{tier} -> contract` must be a granted class"
+            );
+            assert!(names_contract_by_design(tier, CONTRACT_KIND), "{tier}");
+            assert!(
+                !names_contract_by_design(tier, "plane"),
+                "{tier} -> plane is measured"
+            );
+        }
+        for k in truths::PLUGIN_KINDS {
+            assert!(names_contract_by_design(k, CONTRACT_KIND), "{k}: the wall");
+            assert!(
+                !names_contract_by_design(k, "kernel"),
+                "{k} -> kernel is past the wall"
+            );
+        }
+        for measured in ["legacy", "plugin-tooling"] {
+            assert!(
+                !names_contract_by_design(measured, CONTRACT_KIND),
+                "{measured}"
+            );
+        }
+        for (from, to) in ARCHITECTURE_ALLOWED {
+            assert_ne!(
+                *from, CONTRACT_KIND,
+                "the contract depends on nothing of busbar's; `contract -> {to}` is granted"
+            );
+        }
+        for other in ["kernel", "root", "plane", CLEANLINESS] {
+            assert!(
+                !names_contract_by_design(CONTRACT_KIND, other),
+                "contract -> {other}"
             );
         }
     }

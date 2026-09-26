@@ -566,7 +566,11 @@ fn measure(cx: &Ctx, crates: &[CrateInfo]) -> Result<Measured, String> {
             // `busbar-contract` the one crate a plugin may name, so a plugin naming it on every
             // `use` line is the wall standing, not a coupling to ratchet ([`super::is_the_wall`]).
             // Every other kind's column is still counted in that crate.
-            if c.kind.is_some_and(|k| super::is_the_wall(k, kind)) {
+            // The core tiers' contract column is not measured either (#83/#83a): see
+            // [`super::names_contract_by_design`].
+            if c.kind
+                .is_some_and(|k| super::names_contract_by_design(k, kind))
+            {
                 continue;
             }
             for n in needles_for(words, c) {
@@ -1568,12 +1572,12 @@ pub fn rule_matrix(cx: &Ctx, crates: &[CrateInfo], reg: &super::KindRegistry, sh
         // for a plugin kind (see [`measure`]), so the row is an exception to a rule that excepts
         // nothing, and it says so rather than reading as a coupling that drained.
         let src = kind_of.get(krate.as_str()).copied().unwrap_or("?");
-        if super::is_the_wall(src, kind) {
+        if super::names_contract_by_design(src, kind) {
             offenders.push(format!(
-                "rule-granted-cell\t{krate} \u{d7} {kind}\t#40(a) grants every plugin kind the \
-                 contract's vocabulary as the RULE, so a {src} crate's contract column is not \
-                 measured and a `[[cell]]` row for it is an exception to a rule that excepts \
-                 nothing. Strike it."
+                "rule-granted-cell\t{krate} \u{d7} {kind}\t#40(a) (a plugin kind) and #83/#83a (a \
+                 core tier) grant the contract's vocabulary as the RULE, so a {src} crate's \
+                 contract column is not measured and a `[[cell]]` row for it is an exception to a \
+                 rule that excepts nothing. Strike it."
             ));
             continue;
         }
@@ -1600,7 +1604,7 @@ pub fn rule_matrix(cx: &Ctx, crates: &[CrateInfo], reg: &super::KindRegistry, sh
         }
     }
     for (src, dst) in listed.edges.keys() {
-        if super::is_the_wall(src, dst) {
+        if super::names_contract_by_design(src, dst) {
             offenders.push(format!(
                 "rule-granted-edge\t{src} -> {dst}\t#40(a) grants every plugin kind the contract's \
                  vocabulary as the RULE; an `[[edge]]` class for it is an exception to a rule that \
