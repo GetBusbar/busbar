@@ -227,6 +227,20 @@ busbar-voice = ["busbar-voice-codec"]
 # DID NOT MOVE: both still read 9289. The next #83/#84 merge into busbar-contract declares its own
 # re-arm here, once.
 
+# ── THE CONTRACT CEILING PAIR, RE-ARMED AFTER THE PLANE RECORD KINDS (aae5c08f2) ─────────────────
+
+[gate.ceiling_raises."gate.surface_ceilings.contract_caps"]
+file    = "qa/construction.toml"
+from    = 9289
+to      = 9294
+because = "OWNER RULING Q68(3) (docs/design/1.6.0-QUESTIONS.md), ARCHITECT RULING (b) on UC-VERBS: contract_caps re-arms at the MEASURED value after each contract change, each in its own commit. This is the re-arm for aae5c08f2: a plane declares the plane-record kinds it keeps (PlaneDeclaration.record_kinds and declares_record_kind), so the administrative plane_record_write verb (owner answer Q71(2)) writes only a kind the named plane declares, +5 code lines. Measured by cargo xtask loc busbar-contract --ref: 9289 at aae5c08f2^, 9294 at aae5c08f2."
+
+[gate.ceiling_raises."rules.loc-ceilings.caps_contract_ceiling"]
+file    = "qa/construction.toml"
+from    = 9289
+to      = 9294
+because = "OWNER RULING Q68(3) (docs/design/1.6.0-QUESTIONS.md), ARCHITECT RULING (b) on UC-VERBS: contract_caps re-arms at the MEASURED value after each contract change, each in its own commit. This is the re-arm for aae5c08f2: a plane declares the plane-record kinds it keeps (PlaneDeclaration.record_kinds and declares_record_kind), so the administrative plane_record_write verb (owner answer Q71(2)) writes only a kind the named plane declares, +5 code lines. Measured by cargo xtask loc busbar-contract --ref: 9289 at aae5c08f2^, 9294 at aae5c08f2."
+
 # ── THE KERNEL CEILING'S OWNER-APPROVED RAISE — EXPIRED AND STRUCK ─────────────────────────────
 #
 # The entry declared `rules.loc-ceilings.kernel_ceiling` 51439 -> 51799: the owner approved the
@@ -333,7 +347,10 @@ busbar-voice = ["busbar-voice-codec"]
 # RE-ARMED 9251 -> 9289, AT THE MEASUREMENT (OWNER RULING Q68(3)), in its own commit after SD-3 (1/3)
 # 52ed6199f (the codec host-service seams and the `http` re-export, +38); the live declaration above
 # carries the measure.
-contract_caps = 9289
+# RE-ARMED 9289 -> 9294, AT THE MEASUREMENT (OWNER RULING Q68(3); ARCHITECT RULING (b) on UC-VERBS), in
+# its own commit after aae5c08f2 (the plane record kinds, +5); the live declaration above carries the
+# measure.
+contract_caps = 9294
 # REPOINTED, and the repoint is what makes this row a gate again. It named the CRATE
 # `busbar-grammar`, which #40 folded into `busbar-contract` and deleted — so it summed nothing,
 # measured nothing and passed, which is this file's own "zero is not clean" failure sitting inside
@@ -899,7 +916,8 @@ contract_crate = "busbar-contract"
 # RE-ARMED 9189 -> 9218 with its pair (OWNER RULING Q68(3); XPLANE ruling (S), +29).
 # RE-ARMED 9218 -> 9251 with its pair (OWNER RULING Q68(3); fold F4 follow-up, +33).
 # RE-ARMED 9251 -> 9289 with its pair (OWNER RULING Q68(3); SD-3 (1/3) codec host-service seams, +38).
-caps_contract_ceiling = 9289
+# RE-ARMED 9289 -> 9294 with its pair (OWNER RULING Q68(3); the plane record kinds aae5c08f2, +5).
+caps_contract_ceiling = 9294
 unit_crate_glob = "busbar-unit-*"
 # RE-KEYED on cherry-pick onto 143db6db6: this commit's own delta is -53 (two units stopped
 # declaring their own copies), measured against whatever unit_total_ceiling read when the line was
