@@ -317,11 +317,18 @@ fn no_abort_the_shipped_kernel_can_raise_carries_a_money_reason() {
 /// `NoDestination`, three `DecodeFailed`, three `ScopeDenied`, one each of `OverBudget`,
 /// `DurabilityUnavailable`, `Revoked` and `MeterDisputed`, and the one carried
 /// `refusal.kind.reason()` (pinned below until then). The `OverBudget` was a door refusal on a unit
-/// no request reached; the served admission refuses over-budget itself. The population is
-/// seventy-seven since; the floor is re-armed there. A population that falls because code was DELETED
+/// no request reached; the served admission refuses over-budget itself. The population was
+/// seventy-seven since. K2f then deleted `root/units_voice.rs` — the pre-unification voice unit
+/// bindings (`VoiceUnit`), built only at their own constructor and in their tests; the streaming
+/// plane is served through the kernel-loop session rider and meters each turn on the kernel's
+/// session account (Q21b) — taking its ten sites with it: two `NoDestination`, two `OverBudget`, two
+/// `ScopeDenied`, one `DeadlineExceeded`, one `ScratchExhausted`, and the two carried `reason` /
+/// `refusal.reason()` (pinned below until then). The `OverBudget` pair were door refusals on units
+/// no session reached; the served open refuses a dry key itself. The population is sixty-seven
+/// since; the floor is re-armed there. A population that falls because code was DELETED
 /// re-arms this floor in the same commit as the deletion, naming the sites; a population that falls
 /// with no deletion is the scanner regression this floor exists to catch.
-const MIN_REFUSAL_SITES: usize = 77;
+const MIN_REFUSAL_SITES: usize = 67;
 
 /// THE SITES WHOSE REASON IS CARRIED, NOT WRITTEN — pinned, file by file, at today's measurement.
 ///

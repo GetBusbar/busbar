@@ -38,8 +38,13 @@
 //! ledger seam, into the kernel's accrual. So that plane's row asks the SERVED leg the same question
 //! ([`every_billing_plane_the_rider_serves_ledgers_its_declared_class_on_the_served_path`]): the
 //! plane's ledger step must reach the host's ledger seam under the class the plane declares, the
-//! served path must call that step, and the host's seam must reach the kernel's accrual. Every
-//! billing plane answers on exactly one of the two paths — none is dropped by moving between them.
+//! served path must call that step, and the host's seam must reach the kernel's accrual.
+//!
+//! A SESSION plane the rider opens (its session runner carries the open, never a turn) meters each
+//! turn on the kernel's SESSION ACCOUNT (OWNER RULING Q21b): the plane reports a turn's raw counts per
+//! declared class to the account, and the account ledgers them through the same host seam
+//! ([`every_billing_session_plane_ledgers_each_turn_on_the_kernels_session_account`]). Every billing
+//! plane answers on exactly one of the three paths — none is dropped by moving between them.
 
 //! ## What this gate reads, and what it deliberately does not
 //!
@@ -453,11 +458,16 @@ fn every_billing_plane_the_rider_serves_ledgers_its_declared_class_on_the_served
             .iter()
             .filter(|l| l.plane() == *plane)
             .count();
+        let session = billing_plane_session_legs()
+            .iter()
+            .filter(|l| l.plane == *plane)
+            .count();
         assert_eq!(
-            on_root + served,
+            on_root + served + session,
             1,
-            "billing plane `{plane}` must be answered by exactly one row — a Teller root leg or a \
-             served leg — and is answered by {on_root} root and {served} served rows"
+            "billing plane `{plane}` must be answered by exactly one row — a Teller root leg, a \
+             served leg or a session leg — and is answered by {on_root} root, {served} served and \
+             {session} session rows"
         );
     }
 
@@ -573,6 +583,222 @@ fn selftest_the_served_leg_judgement_fires() {
         found.iter().any(|o| o.contains("NO production")),
         "{found:?}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// THE SESSION LEG (a session plane the rider opens, metered per turn on the kernel's session account).
+//
+// The rider carries a session's OPEN and nothing after it; each turn of the served session is the
+// plane's, and OWNER RULING Q21b puts its money on the kernel's session account: the plane reports
+// the turn's raw counts per declared class, and the account ledgers them through the host's ledger
+// seam. So the row asks the same questions in those terms: does the plane's turn step report to the
+// session account, are the counts it reports the plane's declared classes, does the served session
+// call that step, and does the account itself reach the host's ledger seam.
+// ---------------------------------------------------------------------------
+
+/// A billing plane whose served sessions are metered per turn on the kernel's session account.
+struct SessionLeg {
+    /// The billing plane's crate directory under `crates/`.
+    plane: &'static str,
+    /// `<crate>/<file>` — where the plane's turn step lives.
+    step_at: &'static str,
+    /// The turn step's name: the scan finds `fn <name>(`, and the served session's `.<name>(` calls.
+    step: &'static str,
+    /// `<crate>/<file>` — where the plane's declared classes for a turn are read.
+    classes_at: &'static str,
+    /// The function that reads them: its body names `meta::<class>`, and the step's file calls it.
+    classes: &'static str,
+    /// A declared class constant that function must name.
+    class: &'static str,
+}
+
+/// Every billing plane metered on the kernel's session account.
+fn billing_plane_session_legs() -> &'static [SessionLeg] {
+    static LEGS: std::sync::OnceLock<Vec<SessionLeg>> = std::sync::OnceLock::new();
+    LEGS.get_or_init(|| {
+        billing_rows()
+            .iter()
+            .filter(|r| r[1] == "session")
+            .map(|r| SessionLeg {
+                plane: r[0],
+                step_at: r[2],
+                step: r[3],
+                classes_at: r[4],
+                classes: r[5],
+                class: r[6],
+            })
+            .collect()
+    })
+}
+
+/// The call a plane's turn step reports to the kernel's session account through.
+const SESSION_ACCOUNT_CALL: &str = "account.report_turn(";
+/// Where the kernel's session account lives, relative to `crates/`, and the step of it that must
+/// reach the host's ledger seam.
+const SESSION_ACCOUNT_FILE: &str = "busbar-kernel/src/plane_host/session_meter.rs";
+const SESSION_ACCOUNT_STEP: &str = "fn report_turn(";
+
+/// What is wrong with one session leg, or nothing: the plane's step lines, the lines of the file
+/// its classes are read in, and the plane crate's production lines OUTSIDE the step's file.
+fn session_leg_offences(
+    leg: &SessionLeg,
+    step_lines: &[common::Line],
+    class_lines: &[common::Line],
+    elsewhere: &[common::Line],
+) -> Vec<String> {
+    let (plane, step) = (leg.plane, format!("fn {}(", leg.step));
+    let mut out = Vec::new();
+    match common::item_body(step_lines, &step) {
+        None => out.push(format!(
+            "{plane}: {} has NO production `{step}` — a served session's turn reaches no ledger",
+            leg.step_at
+        )),
+        Some(body) if !body.iter().any(|l| l.code.contains(SESSION_ACCOUNT_CALL)) => {
+            out.push(format!(
+                "{plane}: `{step}` in {} does not report to the kernel's session account \
+                 ({SESSION_ACCOUNT_CALL}) — the served session's turns are ledgered nowhere",
+                leg.step_at
+            ))
+        }
+        Some(_) => {}
+    }
+    let classes_call = format!("{}(", leg.classes);
+    if !step_lines
+        .iter()
+        .any(|l| l.code.contains(&classes_call) && !l.code.contains(&format!("fn {classes_call}")))
+    {
+        out.push(format!(
+            "{plane}: {} never calls `{classes_call}` — what the turn reports is not the plane's \
+             declared classes",
+            leg.step_at
+        ));
+    }
+    let class = format!("meta::{}", leg.class);
+    match common::item_body(class_lines, &format!("fn {classes_call}")) {
+        Some(body) if body.iter().any(|l| l.code.contains(&class)) => {}
+        _ => out.push(format!(
+            "{plane}: `fn {classes_call}` in {} does not count under the plane's declared class \
+             ({class}) — a count under an undeclared class is one no card, cap or usage row can name",
+            leg.classes_at
+        )),
+    }
+    let call = format!(".{}(", leg.step);
+    if !elsewhere.iter().any(|l| l.code.contains(&call)) {
+        out.push(format!(
+            "{plane}: nothing in the plane's served session calls `{call}` — the turn step exists and \
+             no turn reaches it"
+        ));
+    }
+    out
+}
+
+#[test]
+fn every_billing_session_plane_ledgers_each_turn_on_the_kernels_session_account() {
+    let root = crates_root();
+    let mut offenders: Vec<String> = Vec::new();
+
+    let account_lines = common::production_lines(&root.join(SESSION_ACCOUNT_FILE));
+    match common::item_body(&account_lines, SESSION_ACCOUNT_STEP) {
+        Some(body) if body.iter().any(|l| l.code.contains(SERVED_LEDGER_SEAM)) => {}
+        _ => offenders.push(format!(
+            "{SESSION_ACCOUNT_FILE}: the kernel session account's `{SESSION_ACCOUNT_STEP}` does not \
+             reach the host ledger seam ({SERVED_LEDGER_SEAM}) — every session plane ledgers into \
+             nothing"
+        )),
+    }
+
+    for leg in billing_plane_session_legs() {
+        let step_path = root.join(leg.step_at);
+        let class_path = root.join(leg.classes_at);
+        for path in [&step_path, &class_path] {
+            assert!(
+                path.is_file(),
+                "billing plane `{}` names {}, which does not exist — this gate is scanning the \
+                 wrong tree",
+                leg.plane,
+                path.display()
+            );
+        }
+        let step_lines = common::production_lines(&step_path);
+        assert!(
+            !step_lines.is_empty(),
+            "session leg {} classified to zero production lines — a scan that reads nothing \
+             passes everything",
+            step_path.display()
+        );
+        let class_lines = common::production_lines(&class_path);
+        let mut files = Vec::new();
+        common::production_rs_files(&root.join(leg.plane).join("src"), &mut files);
+        let elsewhere: Vec<common::Line> = files
+            .iter()
+            .filter(|p| **p != step_path)
+            .flat_map(|p| common::production_lines(p))
+            .collect();
+        let found = session_leg_offences(leg, &step_lines, &class_lines, &elsewhere);
+        if found.is_empty() {
+            println!(
+                "  {:<13} {:<20} session account ledger seam reached",
+                leg.plane, leg.step
+            );
+        }
+        offenders.extend(found);
+    }
+
+    assert!(
+        offenders.is_empty(),
+        "a billing session plane does NOT ledger each turn's declared classes on the kernel's \
+         session account — the rider carries the open and nothing after it, so the plane's turn step \
+         is the ONLY place a served session's spend reaches the principal's ledger:\n{}",
+        offenders.join("\n")
+    );
+}
+
+/// The session-leg judgement FIRES, on synthetic source: a step that stopped reporting to the
+/// account, a class read that names an undeclared class, and a step no turn calls are each named.
+#[test]
+fn selftest_the_session_leg_judgement_fires() {
+    let leg = SessionLeg {
+        plane: "busbar-demo",
+        step_at: "busbar-demo/src/metering.rs",
+        step: "report_turn",
+        classes_at: "busbar-plane-demo/src/session.rs",
+        classes: "class_counts",
+        class: "CLASS_DEMO",
+    };
+    let prod = |src: &str| -> Vec<common::Line> {
+        common::classify(src, false)
+            .into_iter()
+            .filter(|l| !l.intest)
+            .collect()
+    };
+    let step =
+        "fn report_turn(&self) {\n    self.account.report_turn(&counts(class_counts(u)));\n}\n";
+    let classes = "fn class_counts(u: U) -> V {\n    vec![(meta::CLASS_DEMO, u.n)]\n}\n";
+    let caller = "fn settle(&self) {\n    metering.report_turn();\n}\n";
+    let judge =
+        |s: &str, c: &str, e: &str| session_leg_offences(&leg, &prod(s), &prod(c), &prod(e));
+    assert!(judge(step, classes, caller).is_empty());
+    let found = judge(
+        &step.replace("self.account.report_turn(", "drop("),
+        classes,
+        caller,
+    );
+    assert!(
+        found.iter().any(|o| o.contains("session account")),
+        "{found:?}"
+    );
+    let found = judge(step, &classes.replace("CLASS_DEMO", "CLASS_OTHER"), caller);
+    assert!(
+        found.iter().any(|o| o.contains("declared class")),
+        "{found:?}"
+    );
+    let found = judge(step, classes, "fn settle(&self) {}\n");
+    assert!(
+        found.iter().any(|o| o.contains("no turn reaches it")),
+        "{found:?}"
+    );
+    let found = judge(&step.replace("class_counts(u)", "u"), classes, caller);
+    assert!(found.iter().any(|o| o.contains("never calls")), "{found:?}");
 }
 
 // ---------------------------------------------------------------------------

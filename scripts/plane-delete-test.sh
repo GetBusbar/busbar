@@ -199,9 +199,9 @@ command -v cargo >/dev/null 2>&1 || { echo "plane-delete-test: cargo not found" 
 # a `dep:busbar-voice` optional dependency and the `plane-voice` bin feature, whose forwards to the
 # plane crate are `dep:busbar-voice`, `busbar-voice?/runtime` and `busbar-voice?/openapi-schema` — all
 # three stripped by neutralise_bin. Its bin_feature is `plane-voice`; its neutral_keep is the full
-# default plane set (removing voice touches neither mcp nor a2a). Because `root-voice` also ships in
-# `default` and FORWARDS to `plane-voice`, the bin's default build is coherent without the crate only
-# once both come out — which is what neutralise_bin's forwarding closure is for.
+# default plane set (removing voice touches neither mcp nor a2a). A feature that FORWARDS to
+# `plane-voice` would leave the bin's default build incoherent without the crate until it came out
+# too — which is what neutralise_bin's forwarding closure is for.
 bin_feature() { case "$1" in llm) echo proto-llm ;; mcp) echo plane-mcp ;; a2a) echo plane-a2a ;; voice) echo plane-voice ;; esac; }
 neutral_keep() {
   case "$1" in

@@ -33,9 +33,6 @@
 //!   plus the config/providers path scanners the serving half reads through the SAME rule.
 //!   It sits under the root because the binary crate's audit scopes are `src/root` and
 //!   `src/main.rs` and nothing else; a module at `src/cli.rs` would be in no scope at all.
-//! - [`units_voice`] — one plane, switched over: a live voice session as a sequence of ordinary
-//!   units. The handshake that opens it, the per-frame turns the pump dispatches, the hold that is
-//!   the session's metering lease, and four seams to the half of the plane that owns sockets.
 //! - [`units_admin`] — the admin plane's twelve steps, and the one seam an admin operation's body
 //!   is reached through. The root drives the loop; the operation's own logic stays where it lives.
 //!
@@ -81,8 +78,6 @@ pub mod transports;
 pub mod units_admin;
 #[cfg(feature = "root-llm")]
 pub mod units_llm;
-#[cfg(feature = "root-voice")]
-pub mod units_voice;
 
 // The per-call metering shadow on the plane-neutral kernel bridge: a plane whose one flat charge
 // fires inside `drive` rides `gauntlet_kernel::run_gauntlet_via_kernel` byte- and money-identically
