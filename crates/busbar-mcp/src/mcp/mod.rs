@@ -115,7 +115,10 @@
 //! tool description rather than the upstream's — applied to the field where it matters most.
 
 use busbar_contract::plane::{BillableClass, PER_REQUEST};
-use busbar_kernel::{plane::registry::PlaneHooks, plane_host::LiveHostFactory};
+use busbar_kernel::{
+    diagnostics::PLANE_CALLLOG_ROW_UNREADABLE, plane::registry::PlaneHooks,
+    plane_host::LiveHostFactory,
+};
 
 /// THE MCP PLANE'S VOCABULARY DECLARATION, beside the code it describes. Folded into
 /// `plane::registry::BUILTIN_PLANE_DECLS`; every field replaces one arm of a `Plane::Mcp` `match`.
@@ -598,7 +601,7 @@ pub(crate) fn mcp_hydrate(
             // is zero (a scope whose rows were ALL undecodable), so the aggregate is never invisible.
             if r.unreadable > 0 {
                 busbar_contract::diag_warn!(
-                    busbar_kernel::diagnostics::PLANE_CALLLOG_ROW_UNREADABLE,
+                    PLANE_CALLLOG_ROW_UNREADABLE,
                     rows = r.unreadable,
                     "persisted MCP per-call records could not be decoded on restore and were SKIPPED; \
                      they were most likely written by a different engine version or the store is corrupt"

@@ -32,7 +32,7 @@
 //! primitive for exactly this and is reused rather than re-hand-rolled, so the cap, the truncation
 //! signal and the transport-error signal are the same three the rest of the engine reports.
 
-use busbar_kernel::egress::seam;
+use busbar_kernel::{egress::seam, proxy::ReadEnd, store::now_ms};
 
 use super::jsonrpc::OutboundRequest;
 use super::wire::{McpWire, TransportError, TransportResponse, WireLeg};
@@ -173,14 +173,14 @@ impl HttpTransport {
             .unwrap_or(false);
         let raw = buffered.body;
         match buffered.end {
-            busbar_kernel::proxy::ReadEnd::Complete => {}
-            busbar_kernel::proxy::ReadEnd::Truncated => {
+            ReadEnd::Complete => {}
+            ReadEnd::Truncated => {
                 return Err(TransportError::Io(format!(
                     "upstream response exceeded the {cap}-byte cap; a truncated JSON-RPC response \
                      is not parsed"
                 )))
             }
-            busbar_kernel::proxy::ReadEnd::TransportError => {
+            ReadEnd::TransportError => {
                 return Err(TransportError::Io(
                     "upstream connection failed mid-response; a partial JSON-RPC response is not \
                      parsed"
@@ -325,10 +325,7 @@ pub(crate) fn read_server_frames(leg: &WireLeg<'_>, raw: &[u8]) -> Vec<super::pe
                 // records the SERVER'S NAME and the authoritative `tools/list` is re-fetched and
                 // re-hashed by the sweep exactly as a scheduled refresh would do it.
                 NotificationEffect::BringRefreshForward => {
-                    let accepted = leg
-                        .pool
-                        .triggers
-                        .signal(leg.server, busbar_kernel::store::now_ms());
+                    let accepted = leg.pool.triggers.signal(leg.server, now_ms());
                     tracing::debug!(
                         server = %leg.server,
                         notification = ?n,
@@ -340,10 +337,7 @@ pub(crate) fn read_server_frames(leg: &WireLeg<'_>, raw: &[u8]) -> Vec<super::pe
                 // read — the announced uri, recorded for the server-leg relay and believed
                 // nowhere. See `super::pool::ResourceUpdates` for the bounds.
                 NotificationEffect::RelayResourceUpdate => {
-                    let accepted = leg
-                        .pool
-                        .triggers
-                        .signal(leg.server, busbar_kernel::store::now_ms());
+                    let accepted = leg.pool.triggers.signal(leg.server, now_ms());
                     if let Some(uri) = frame.pointer("/params/uri").and_then(|u| u.as_str()) {
                         leg.pool.updates.record(leg.server, uri);
                     }

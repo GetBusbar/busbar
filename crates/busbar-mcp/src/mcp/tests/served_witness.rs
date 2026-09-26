@@ -41,6 +41,24 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 
+/// THE HOST WALL CLOCK, in whole seconds, read through the contract's host service
+/// (`busbar_contract::codec::wall_clock_now`) — the one clock a plane reads. These witnesses stand in
+/// for the host, so the service is armed with the host's own system-clock reading first (first
+/// install wins: a process whose real host already armed it keeps the host's clock).
+pub(crate) fn host_now() -> u64 {
+    busbar_contract::codec::install_wall_clock(system_clock_secs);
+    busbar_contract::codec::wall_clock_now().unwrap_or_else(system_clock_secs)
+}
+
+/// Whole seconds since the Unix epoch — the reading the host installs into the wall-clock service.
+fn system_clock_secs() -> u64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
+
 /// One served-leg witness: drive the served path, assert, and return the number of units the
 /// served path must have carried into this plane's `drive`.
 pub type Witness = fn() -> Pin<Box<dyn Future<Output = u64>>>;
@@ -153,7 +171,7 @@ fn governed(
         .governance(engine().scratch_store(), Some("admintok".to_string()), None)
         .expect("a governance registry");
     let (mut key, _secret) = gov_state
-        .create_key(Default::default(), busbar_kernel::store::now())
+        .create_key(Default::default(), host_now())
         .expect("a key");
     key.group = group.map(str::to_string);
     gov_state
@@ -219,7 +237,7 @@ fn charged(gov_state: &Arc<dyn GovKit>, key: &busbar_contract::records::VirtualK
     );
     gov_state.flush_budgets();
     gov_state
-        .usage_for(&*cost, &key.id, busbar_kernel::store::now())
+        .usage_for(&*cost, &key.id, host_now())
         .expect("the key's usage reads back")
         .map_or(0, |u| u.requests)
 }
@@ -645,7 +663,7 @@ async fn a_served_call_is_charged_to_the_presenting_key() -> u64 {
     let billed = billed_deployment(S).await;
     let (bystander, _secret) = billed
         .gov_state
-        .create_key(Default::default(), busbar_kernel::store::now())
+        .create_key(Default::default(), host_now())
         .expect("a second key");
     let (status, body) = read_as(&billed.app, &billed.gov, "served-budget", S).await;
     assert_eq!(status, 200, "{body}");

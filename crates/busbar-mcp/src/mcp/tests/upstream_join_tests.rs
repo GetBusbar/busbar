@@ -686,7 +686,7 @@ async fn a_pools_card_does_not_price_mcp_tool_calls_they_are_ledgered_and_nothin
     }
     assert_eq!(peer.mcp_hits(), 5);
 
-    let now = busbar_kernel::store::now();
+    let now = super::served_witness::host_now();
     let read = gov
         .derived_bucket_usage(&*cost, "group:g@day", "day", true, now)
         .expect("the group's usage read is NOT refused: the MCP rows price at 0");
@@ -817,7 +817,7 @@ async fn a_tools_card_prices_tool_calls_and_a_budget_cap_trips_on_mcp() {
             "call {n} is under the cap: {status} {body}"
         );
     }
-    let now = busbar_kernel::store::now();
+    let now = super::served_witness::host_now();
     let read = gov
         .derived_bucket_usage(&*cost, "group:g@day", "day", true, now)
         .expect("a priced MCP class reads");
@@ -866,7 +866,7 @@ async fn a_present_tools_card_silent_about_a_tool_refuses() {
             "group:g@day",
             "day",
             true,
-            busbar_kernel::store::now()
+            super::served_witness::host_now()
         )
         .is_err(),
         "the usage read refuses rather than reading 0"
@@ -901,7 +901,7 @@ async fn an_pools_card_entry_named_like_a_tool_never_prices_it() {
             "group:g@day",
             "day",
             true,
-            busbar_kernel::store::now(),
+            super::served_witness::host_now(),
         )
         .expect("reads");
     assert_eq!(
@@ -936,7 +936,7 @@ async fn the_pools_fee_is_never_charged_on_an_mcp_call() {
             "call {n}: the MCP plane has no fees, so it bills none: {status} {body}"
         );
     }
-    let now = busbar_kernel::store::now();
+    let now = super::served_witness::host_now();
     let read = gov
         .derived_bucket_usage(&*cost, "group:g@day", "day", true, now)
         .expect("the group reads");
@@ -993,7 +993,7 @@ async fn tools_fees_per_request_boots_and_charges_and_per_session_refuses() {
     let cost =
         CostModel::resolve_parts(None, 5, &groups).with_plane_fees(&resolved(fees).plane_fees);
     let priced: std::sync::Arc<dyn CostKit> = std::sync::Arc::new(cost);
-    let now = busbar_kernel::store::now();
+    let now = super::served_witness::host_now();
     let read = gov
         .derived_bucket_usage(&*priced, "group:g@day", "day", true, now)
         .expect("the group reads");

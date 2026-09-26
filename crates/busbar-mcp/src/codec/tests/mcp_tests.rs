@@ -645,8 +645,11 @@ fn the_declaration_registers_under_the_planes_key() {
 /// content into the prompt projection keeps its own tests there.
 #[test]
 fn subscribe_body_projects_its_target() {
-    use busbar_kernel::handlers::TranslateCodec as _;
-    busbar_kernel::proto::register_test_protocol(&crate::PROTO_DECL);
+    use busbar_kernel::{
+        handlers::{request_handler, TranslateCodec as _},
+        proto::register_test_protocol,
+    };
+    register_test_protocol(&crate::PROTO_DECL);
     let v = serde_json::json!({
         "jsonrpc": "2.0",
         "id": 1,
@@ -654,7 +657,7 @@ fn subscribe_body_projects_its_target() {
         "params": {"uri": "mcp://resource/SECRET-TARGET"}
     });
     // The same resolution the hook seam makes: the registered protocol's handler for the operation.
-    let handler = busbar_kernel::handlers::request_handler(crate::PROTO_DECL.name)
+    let handler = request_handler(crate::PROTO_DECL.name)
         .and_then(|rh| rh.operation_handler(OpVerb::SUBSCRIBE))
         .expect("the registered protocol serves SUBSCRIBE");
     let facts = handler
