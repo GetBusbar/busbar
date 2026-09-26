@@ -1760,6 +1760,7 @@ const DEAD_EDGE_FIXTURE: &str = "xtask/fixtures/kind-isolation-root/dead_edge_ro
 
 /// Where the hand-wired root is planted: inside the composition root, where the drained
 /// `root/units_*.rs` files lived.
+// qa-names: crates/busbar/src/root/units_hand_wired.rs -- xtask/src/gates/kind_isolation/matrix.rs -- a PLANT TARGET, not a scan root: the case writes the fixture to this path in its own overlay, so the path is absent from the tree by design, and this declaration reds the day a real file lands there
 const HAND_WIRED_ROOT_PLANT: &str = "crates/busbar/src/root/units_hand_wired.rs";
 
 /// A one-file plant under `dir`, without disturbing anything else in the tree.
