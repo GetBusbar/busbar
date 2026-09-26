@@ -216,19 +216,16 @@ busbar-voice = ["busbar-voice-codec"]
 # base" and asked for exactly this strike. THE CEILINGS THEMSELVES DID NOT MOVE: both still read
 # 7418. The next #83/#84 merge into busbar-contract declares its own re-arm here, once.
 
-# ── THE CONTRACT CEILING PAIR, RE-ARMED AT THE MEASURE AFTER FOLD F4 AND XPLANE ─────────────────
-
-[gate.ceiling_raises."gate.surface_ceilings.contract_caps"]
-file    = "qa/construction.toml"
-from    = 9251
-to      = 9289
-because = "OWNER RULING Q68(3) (docs/design/1.6.0-QUESTIONS.md), ARCHITECT O2/S2-b: contract_caps re-arms at the MEASURED value after each owner-locked #83 merge into busbar-contract, each in its own commit. This is the re-arm for SD-3 (1/3) 52ed6199f of the #83a substrate-values split: the four host-installed seams a codec reaches through busbar_contract::codec (UsageTapFaultLatch, TranslateCapReader with TRANSLATE_BODY_MAX_BYTES_DEFAULT, EntropySource, WallClock, each an install fn and a reader beside SD-2b's usage-tap fault reporter) and the contract's `pub use http` header-vocabulary re-export. Measured by cargo xtask loc busbar-contract --ref: 9251 at 52ed6199f^, 9289 at 52ed6199f (+38); SD-3 (2/3) and (3/3) change no contract line (9289 at both). The 9218 -> 9251 declaration it replaces (fold F4 follow-up 94180ed04) is at the base and expired."
-
-[gate.ceiling_raises."rules.loc-ceilings.caps_contract_ceiling"]
-file    = "qa/construction.toml"
-from    = 9251
-to      = 9289
-because = "OWNER RULING Q68(3) (docs/design/1.6.0-QUESTIONS.md), ARCHITECT O2/S2-b: contract_caps re-arms at the MEASURED value after each owner-locked #83 merge into busbar-contract, each in its own commit. This is the re-arm for SD-3 (1/3) 52ed6199f of the #83a substrate-values split: the four host-installed seams a codec reaches through busbar_contract::codec (UsageTapFaultLatch, TranslateCapReader with TRANSLATE_BODY_MAX_BYTES_DEFAULT, EntropySource, WallClock, each an install fn and a reader beside SD-2b's usage-tap fault reporter) and the contract's `pub use http` header-vocabulary re-export. Measured by cargo xtask loc busbar-contract --ref: 9251 at 52ed6199f^, 9289 at 52ed6199f (+38); SD-3 (2/3) and (3/3) change no contract line (9289 at both). The 9218 -> 9251 declaration it replaces (fold F4 follow-up 94180ed04) is at the base and expired."
+# ── THE CONTRACT CEILING PAIR, RE-ARMED AFTER SD-3 (1/3) — EXPIRED AND STRUCK ─────────────────
+#
+# The pair declared `gate.surface_ceilings.contract_caps` and
+# `rules.loc-ceilings.caps_contract_ceiling` 9251 -> 9289 (OWNER RULING Q68(3), ARCHITECT O2/S2-b):
+# the re-arm at the measured value after SD-3 (1/3) moved the codec host services into
+# busbar_contract::codec. Its commit reached the base, so `ceiling-rose` reported both as "a
+# declared raise 9251 -> 9289 that is not a raise at the base" and asked for exactly this strike,
+# as it did for the 7414 -> 7418 and 9184 -> 9218 declarations before it. THE CEILINGS THEMSELVES
+# DID NOT MOVE: both still read 9289. The next #83/#84 merge into busbar-contract declares its own
+# re-arm here, once.
 
 # ── THE KERNEL CEILING'S OWNER-APPROVED RAISE — EXPIRED AND STRUCK ─────────────────────────────
 #
