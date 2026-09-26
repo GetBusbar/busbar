@@ -34,7 +34,9 @@
 //! host decodes with a checked conversion (an out-of-range byte reads as [`WireOutcome::Fault`],
 //! never as an invalid enum). Out-params are written only on `Ok`. A slot BLOCKS until its operation
 //! completes — the transport owns its own I/O driver — so a host drives the byte-moving slots off its
-//! request threads. The per-call cost of the crossing itself is the HOT-lane budget (#30, < 1 µs).
+//! request threads: from any thread, and several at once on one built state (a `read` parked on one
+//! thread while a `write` runs on another), so a transport synchronises its own state. The per-call
+//! cost of the crossing itself is the HOT-lane budget (#30, < 1 µs).
 
 use super::decl::{DeclStr, OpaqueHandle};
 use crate::AbiPreamble;

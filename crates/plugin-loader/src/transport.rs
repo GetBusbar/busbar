@@ -58,8 +58,8 @@ const MAX_ADDR_LEN: usize = 1024;
 pub struct DynTransport {
     decl: *const TransportDecl,
     honoured_size: u32,
-    key: String,
-    composes_over: Vec<String>,
+    key: &'static str,
+    composes_over: Vec<&'static str>,
     session: bool,
     path: String,
     _lib: Option<Library>,
@@ -119,15 +119,17 @@ pub fn wire_settings(settings: &TransportSettings) -> WireSettings {
 }
 
 impl DynTransport {
-    /// The transport's registry key.
+    /// The transport's registry key, borrowed from the image that declared it (mapped for the life
+    /// of the process, see the module docs).
     #[must_use]
-    pub fn key(&self) -> &str {
-        &self.key
+    pub fn key(&self) -> &'static str {
+        self.key
     }
 
-    /// The keys of the layers this transport declares it can be built over, in declared order.
+    /// The keys of the layers this transport declares it can be built over, in declared order, each
+    /// borrowed from the image that declared it.
     #[must_use]
-    pub fn composes_over(&self) -> &[String] {
+    pub fn composes_over(&self) -> &[&'static str] {
         &self.composes_over
     }
 
@@ -216,6 +218,14 @@ pub struct BuiltTransport<'t> {
     state: OpaqueHandle,
 }
 
+// SAFETY: the state is the transport's own, and the HOT-lane call discipline
+// (`busbar_plugin::hot::transport`) has the host drive the slots off its request threads — from any
+// thread, several at once — so a transport synchronises its own built state. The host never reads
+// through the state pointer; it only hands it back to the slots and, once, to `free`.
+unsafe impl Send for BuiltTransport<'_> {}
+// SAFETY: see the `Send` impl above.
+unsafe impl Sync for BuiltTransport<'_> {}
+
 impl std::fmt::Debug for BuiltTransport<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("BuiltTransport")
@@ -254,10 +264,10 @@ fn written(buf: &[u8], len: usize) -> Result<String, WireOutcome> {
         .map_err(|_| WireOutcome::Fault)
 }
 
-impl BuiltTransport<'_> {
-    /// The transport this was built from.
+impl<'t> BuiltTransport<'t> {
+    /// The transport this was built from, for as long as it lives.
     #[must_use]
-    pub fn transport(&self) -> &DynTransport {
+    pub fn transport(&self) -> &'t DynTransport {
         self.wire
     }
 
@@ -535,8 +545,10 @@ fn assemble(
     })
 }
 
-/// One borrowed range as an owned string (`None` for NULL), capped before the slice is formed.
-fn decl_str(d: DeclStr, display: &str) -> Result<Option<String>, String> {
+/// One borrowed range as a string of the image (`None` for NULL), capped before the slice is formed
+/// and checked UTF-8. `'static` because the image is: a linked decl's ranges are the binary's own
+/// `'static` data, and a loaded image is never unmapped (module docs, [`PINNED`]).
+fn decl_str(d: DeclStr, display: &str) -> Result<Option<&'static str>, String> {
     if d.ptr.is_null() {
         return Ok(None);
     }
@@ -547,10 +559,12 @@ fn decl_str(d: DeclStr, display: &str) -> Result<Option<String>, String> {
             d.len
         ));
     }
-    // SAFETY: a non-null range addresses `len` (bounded above) live, immutable bytes of the image.
-    let bytes = unsafe { std::slice::from_raw_parts(d.ptr, d.len) };
+    // SAFETY: a non-null range addresses `len` (bounded above) immutable bytes of the image, which
+    // stays mapped for the life of the process (a linked decl's are `'static`; a loaded image is
+    // pinned, never unmapped).
+    let bytes: &'static [u8] = unsafe { std::slice::from_raw_parts(d.ptr, d.len) };
     std::str::from_utf8(bytes)
-        .map(|s| Some(s.to_string()))
+        .map(Some)
         .map_err(|_| format!("transport '{display}' declares a string that is not UTF-8"))
 }
 

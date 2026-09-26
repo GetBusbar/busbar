@@ -52,6 +52,7 @@ mod stage;
 pub mod store_adapter;
 pub mod tarball;
 pub mod transport;
+pub mod transport_adapter;
 
 pub use auth::DynAuth;
 /// Re-export the HTTP-endpoint wire types (plugin route registration + dispatch) so the engine
@@ -109,6 +110,7 @@ pub use transport::{
     link_transport, load_transport, load_transport_from_bytes, wire_settings, BuiltTransport,
     DynTransport,
 };
+pub use transport_adapter::WireTransport;
 
 /// INTERN a plugin name into a stable `&'static str`, reusing one allocation per unique name.
 ///

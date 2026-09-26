@@ -150,7 +150,7 @@ fn fold(t: &DynTransport) -> Fold {
 
     Fold {
         key: t.key().to_string(),
-        composes_over: t.composes_over().to_vec(),
+        composes_over: t.composes_over().iter().map(ToString::to_string).collect(),
         dial_peer_saw,
         dial_read_back,
         accept_read,
@@ -163,10 +163,10 @@ fn fold(t: &DynTransport) -> Fold {
 }
 
 /// What the script sent, byte for byte, on each leg.
-fn expected(key: &str, composes_over: &[String]) -> Fold {
+fn expected(key: &str, composes_over: &[&str]) -> Fold {
     Fold {
         key: key.to_string(),
-        composes_over: composes_over.to_vec(),
+        composes_over: composes_over.iter().map(ToString::to_string).collect(),
         dial_peer_saw: payload(SENT.0, SENT.1),
         dial_read_back: payload(REPLY.0, REPLY.1),
         accept_read: payload(SENT.0 ^ 0xff, SENT.1),

@@ -59,6 +59,10 @@ libloading = { workspace = true }
 # — no runtime is started in this crate.
 async-trait = { workspace = true }
 tokio = { workspace = true, features = ["rt", "time", "sync"] }
+# The transport adapter (`transport_adapter`): a HOT-lane transport presented as the host's async
+# `busbar_contract::Transport`, whose frame pump is a `futures::Stream` and whose detached stream is
+# `futures::io` — the traits the contract already names (#83: the adapter is loading machinery).
+futures = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 # Structured logging for the auth seam's fail-closed rejections (a misbehaving auth plugin is logged,
@@ -118,6 +122,9 @@ busbar-hook-test-plugin = { path = "../hook-test-plugin" }
 # `dropped-in`: the cdylib's door symbols are compiled only under it (a build that links the wire
 # beside SDK-built plugins must not carry a second `busbar_abi`), and this proof needs that cdylib.
 busbar-transport-tcp = { path = "../busbar-transport-tcp", features = ["dropped-in"] }
+# The transport adapter's witness (`transport_adapter_tests`) dials through the trait, which takes a
+# sealed destination: the contract's blessed test seal (#65), as the wire crates' own batteries use.
+busbar-contract = { path = "../busbar-contract", features = ["test-seal"] }
 
 [target.'cfg(unix)'.dependencies]
 # memfd_create (Linux zero-disk loads) + kill(pid, 0) liveness for the dead-pid staging sweep.
