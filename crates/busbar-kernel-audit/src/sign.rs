@@ -47,6 +47,15 @@ use zeroize::Zeroize as _;
 /// assumed.
 pub const SIGNATURE_DOMAIN: &str = "busbar.audit.record.v1";
 
+/// The domain a LEDGER CHECKPOINT signature is for — the second use of the one audit key.
+///
+/// Q71(3), owner 2026-09-25: 1.6.0 seals ledger checkpoints with ONE keyset shared with the #82
+/// audit signing (docs/design/BUSBAR-1.6.0.md #82). One key, two domains: a checkpoint signature is
+/// minted over this domain and a record signature over [`SIGNATURE_DOMAIN`], so neither can be
+/// lifted onto the other even though the same key made both and the same [`AuditKeySet`] checks
+/// both. Published contract, like its sibling.
+pub const CHECKPOINT_SIGNATURE_DOMAIN: &str = "busbar.ledger.checkpoint.v1";
+
 /// The signature algorithm, named in the key set so a verifier never has to infer it from a length.
 pub const SIGNATURE_ALGORITHM: &str = "ed25519";
 
@@ -69,6 +78,21 @@ const KEY_ID_BYTES: usize = 8;
 pub fn signing_preimage(digest_hex: &str) -> Vec<u8> {
     let mut preimage = Vec::with_capacity(SIGNATURE_DOMAIN.len() + 1 + digest_hex.len());
     preimage.extend_from_slice(SIGNATURE_DOMAIN.as_bytes());
+    preimage.push(0);
+    preimage.extend_from_slice(digest_hex.as_bytes());
+    preimage
+}
+
+/// The exact bytes a checkpoint signature is computed over.
+///
+/// PUBLISHED CONTRACT: [`CHECKPOINT_SIGNATURE_DOMAIN`] in ASCII, one `0x00` byte, then the SHA-256
+/// of the checkpoint's signed body as 64 lowercase hexadecimal characters — the same shape as
+/// [`signing_preimage`], under the checkpoint's own domain.
+#[must_use]
+pub fn checkpoint_preimage(body: &[u8]) -> Vec<u8> {
+    let digest_hex = crate::legacy::sha256_hex(body);
+    let mut preimage = Vec::with_capacity(CHECKPOINT_SIGNATURE_DOMAIN.len() + 1 + digest_hex.len());
+    preimage.extend_from_slice(CHECKPOINT_SIGNATURE_DOMAIN.as_bytes());
     preimage.push(0);
     preimage.extend_from_slice(digest_hex.as_bytes());
     preimage
@@ -256,6 +280,19 @@ impl AuditSigningKey {
     }
 }
 
+impl AuditSigningKey {
+    /// Sign one ledger checkpoint's body: 64 raw ed25519 signature bytes over
+    /// [`checkpoint_preimage`]. The same key that signs the audit chain, under the checkpoint's
+    /// own domain (Q71(3), #82).
+    #[must_use]
+    pub fn sign_checkpoint_body(&self, body: &[u8]) -> Vec<u8> {
+        self.inner
+            .sign(&checkpoint_preimage(body))
+            .to_bytes()
+            .to_vec()
+    }
+}
+
 /// The public half of a signing key, as a verifier holds it.
 ///
 /// A thin wrapper rather than a bare `VerifyingKey` so that the identifier is computed once, by the
@@ -361,6 +398,34 @@ impl AuditKeySet {
     #[must_use]
     pub fn keys(&self) -> &[AuditVerifyingKey] {
         &self.keys
+    }
+
+    /// Check one ledger checkpoint's signature against EVERY key in the set.
+    ///
+    /// Every key, because a checkpoint carries no key identifier and a node that rotated has sealed
+    /// checkpoints under more than one key; keys are only ever added, so a checkpoint any of them
+    /// signed stays verifiable. Through `verify_strict`, as the record check is.
+    ///
+    /// # Errors
+    ///
+    /// [`KeyError::MalformedSignature`] when the bytes are not 64 long, and
+    /// [`KeyError::BadSignature`] when no key in the set verifies them over this body — which is
+    /// also the answer for an empty set: nothing here can vouch for it.
+    pub fn verify_checkpoint_body(&self, body: &[u8], signature: &[u8]) -> Result<(), KeyError> {
+        let raw: [u8; 64] = signature
+            .try_into()
+            .map_err(|_| KeyError::MalformedSignature)?;
+        let signature = ed25519_dalek::Signature::from_bytes(&raw);
+        let preimage = checkpoint_preimage(body);
+        if self
+            .keys
+            .iter()
+            .any(|k| k.inner.verify_strict(&preimage, &signature).is_ok())
+        {
+            Ok(())
+        } else {
+            Err(KeyError::BadSignature)
+        }
     }
 
     /// Whether the set holds nothing.
