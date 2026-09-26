@@ -954,13 +954,16 @@ pub fn register_seams() {
 }
 
 /// THE EGRESS CARRIER (K9a S5): how the host carries an outbound HTTP request a plugin sink asks it
-/// to make — the sink never dials. The request meets the host's webhook URL policy first (https
-/// only; loopback, link-local, private, CGNAT and cloud-metadata targets refused), then rides the
-/// host's egress engine on the pooled open-web posture the request-log webhook has always POSTed
-/// over (webpki trust, system DNS, the boot environment's proxy tunnel), under the request's own
-/// deadline over the exchange up to the response head. Headers are set in order, a later one
-/// replacing an earlier of the same name; one that is not a valid header is left off. The answer's
-/// status is read back; its body is not read.
+/// to make — the sink never dials. The request meets the URL policy the sink was GRANTED first
+/// (K9e-2): the open web — the webhook URL policy: https only; loopback, link-local, private, CGNAT
+/// and cloud-metadata targets refused — or, for a first-party sink that declared it, the collector
+/// policy (`root::otlp::collector_policy`: https, or plaintext http to a loopback collector only;
+/// link-local, private, CGNAT and cloud-metadata refused). It then rides the host's egress engine on
+/// the pooled open-web posture the request-log webhook has always POSTed over (webpki trust, system
+/// DNS, the boot environment's proxy tunnel), under the request's own deadline over the exchange up
+/// to the response head. Headers are set in order, a later one replacing an earlier of the same
+/// name; one that is not a valid header is left off. The body is the sink's octets, text or binary.
+/// The answer's status is read back; its body is not read.
 pub struct HostEgressCarrier;
 
 /// The carrier's one client, built on the first request it carries.
@@ -968,12 +971,13 @@ static CARRIER_CLIENT: std::sync::OnceLock<busbar_kernel::proxy::EgressClient> =
     std::sync::OnceLock::new();
 
 impl HostEgressCarrier {
-    /// The request as the hop sends it — after the URL policy — and its deadline; or the refusal.
+    /// The request as the hop sends it — after `policy` — and its deadline; or the refusal.
     fn prepare(
+        policy: busbar_plugin_loader::EgressPolicy,
         request: &busbar_plugin_loader::HttpRequest,
+        body: &[u8],
     ) -> Result<(CarriedRequest, tokio::time::Instant), busbar_plugin_loader::HostResult> {
-        use busbar_plugin_loader::EgressCarrier as _;
-        if let Err(refusal) = HostEgressCarrier.admit(&request.url) {
+        if let Err(refusal) = judge(policy, &request.url, false) {
             return Err(carried_failure("refused", refusal));
         }
         let (Ok(uri), Ok(method)) = (
@@ -994,7 +998,7 @@ impl HostEgressCarrier {
                 headers.insert(n, v);
             }
         }
-        let body = axum::body::Bytes::from(request.body.clone());
+        let body = axum::body::Bytes::copy_from_slice(body);
         let deadline =
             tokio::time::Instant::now() + std::time::Duration::from_millis(request.timeout_ms);
         Ok(((method, uri, headers, body), deadline))
@@ -1028,6 +1032,23 @@ impl HostEgressCarrier {
     }
 }
 
+/// `policy`'s verdict on `url`: the open web's (the webhook URL policy), or the collector's —
+/// `resolve` adds the collector guard's resolution half, which a sink's start-time admission asks.
+fn judge(
+    policy: busbar_plugin_loader::EgressPolicy,
+    url: &str,
+    resolve: bool,
+) -> Result<(), String> {
+    match policy {
+        busbar_plugin_loader::EgressPolicy::OpenWeb => {
+            busbar_kernel::observability::validate_webhook_url(Some(url.to_string())).map(|_| ())
+        }
+        busbar_plugin_loader::EgressPolicy::Collector => {
+            crate::root::otlp::collector_policy(url, resolve)
+        }
+    }
+}
+
 /// A request the carrier sends: method, target, headers, body.
 type CarriedRequest = (
     axum::http::Method,
@@ -1050,7 +1071,39 @@ impl busbar_plugin_loader::EgressCarrier for HostEgressCarrier {
         &self,
         request: &busbar_plugin_loader::HttpRequest,
     ) -> busbar_plugin_loader::HostResult {
-        let (req, deadline) = match HostEgressCarrier::prepare(request) {
+        let open_web = busbar_plugin_loader::EgressPolicy::OpenWeb;
+        self.carry_under(open_web, request, request.body.as_bytes())
+    }
+
+    /// The same hop, awaited by the delivery's task: no thread waits on the far end.
+    fn carry_async(
+        &'static self,
+        request: busbar_plugin_loader::HttpRequest,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = busbar_plugin_loader::HostResult> + Send>>
+    {
+        let body = request.body.clone().into_bytes();
+        self.carry_under_async(busbar_plugin_loader::EgressPolicy::OpenWeb, request, body)
+    }
+
+    fn admit(&self, url: &str) -> Result<(), String> {
+        self.admit_under(busbar_plugin_loader::EgressPolicy::OpenWeb, url)
+    }
+
+    fn admit_under(
+        &self,
+        policy: busbar_plugin_loader::EgressPolicy,
+        url: &str,
+    ) -> Result<(), String> {
+        judge(policy, url, true)
+    }
+
+    fn carry_under(
+        &self,
+        policy: busbar_plugin_loader::EgressPolicy,
+        request: &busbar_plugin_loader::HttpRequest,
+        body: &[u8],
+    ) -> busbar_plugin_loader::HostResult {
+        let (req, deadline) = match HostEgressCarrier::prepare(policy, request, body) {
             Ok(prepared) => prepared,
             Err(refused) => return refused,
         };
@@ -1060,22 +1113,19 @@ impl busbar_plugin_loader::EgressCarrier for HostEgressCarrier {
         runtime.block_on(HostEgressCarrier::send(req, deadline))
     }
 
-    /// The same hop, awaited by the delivery's task: no thread waits on the far end.
-    fn carry_async(
+    fn carry_under_async(
         &'static self,
+        policy: busbar_plugin_loader::EgressPolicy,
         request: busbar_plugin_loader::HttpRequest,
+        body: Vec<u8>,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = busbar_plugin_loader::HostResult> + Send>>
     {
         Box::pin(async move {
-            match HostEgressCarrier::prepare(&request) {
+            match HostEgressCarrier::prepare(policy, &request, &body) {
                 Ok((req, deadline)) => HostEgressCarrier::send(req, deadline).await,
                 Err(refused) => refused,
             }
         })
-    }
-
-    fn admit(&self, url: &str) -> Result<(), String> {
-        busbar_kernel::observability::validate_webhook_url(Some(url.to_string())).map(|_| ())
     }
 }
 

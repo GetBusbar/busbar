@@ -632,7 +632,8 @@ impl PluginRegistry {
         let (name, declares) = (&p.manifest.name, &p.manifest.declares);
         crate::observe::grant_series(name, p.first_party(), &declares.metrics)?;
         crate::export::load_export_image(p.image(), cfg_json, name, &p.manifest.kind)?
-            .with_destinations(&declares.destinations, cfg_json)
+            .with_destinations(&declares.destinations, cfg_json)?
+            .with_egress(p.first_party(), declares.egress)
     }
 
     /// Open a PLANE resolved by name or alias: verifies the resolved plugin's `kind` is `plane`, then

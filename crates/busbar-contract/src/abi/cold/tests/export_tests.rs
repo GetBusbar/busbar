@@ -180,7 +180,7 @@ fn export_abi_version_is_three() {
 /// loader gates on stays put — pinned so a seam cannot land without saying so.
 #[test]
 fn export_abi_minor_counts_the_host_seams() {
-    assert_eq!((EXPORT_ABI_VERSION, EXPORT_ABI_MINOR), (3, 9));
+    assert_eq!((EXPORT_ABI_VERSION, EXPORT_ABI_MINOR), (3, 10));
 }
 
 /// S1's declaration wire: `{"name": …, "type": …}`, the same `type` token a reported metric carries.
@@ -513,5 +513,30 @@ fn the_start_check_and_admit_wire_is_pinned() {
     assert_eq!(
         serde_json::to_string(&admit).unwrap(),
         r#"{"op":"admit","url":"https://x/"}"#
+    );
+}
+
+/// K9e-2's binary carrier wire (export ABI minor 10): `{"op":"http_binary",…}` — the same request
+/// shape as `http`, its `body` the octets as lowercase hex.
+#[test]
+fn the_binary_egress_carrier_wire_is_pinned() {
+    let asked = HostOp::HttpBinary(HttpRequest {
+        method: "POST".into(),
+        url: "http://127.0.0.1:4318/v1/traces".into(),
+        headers: vec![("content-type".into(), "application/x-protobuf".into())],
+        body: "0a00ff80".into(),
+        timeout_ms: 10_000,
+    });
+    let wire = serde_json::to_value(&asked).expect("encode");
+    assert_eq!(
+        wire,
+        serde_json::json!({"op": "http_binary", "method": "POST",
+            "url": "http://127.0.0.1:4318/v1/traces",
+            "headers": [["content-type", "application/x-protobuf"]], "body": "0a00ff80",
+            "timeout_ms": 10000})
+    );
+    assert_eq!(
+        serde_json::from_value::<HostOp>(wire).expect("decode"),
+        asked
     );
 }

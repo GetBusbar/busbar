@@ -213,12 +213,52 @@ pub struct Declares {
     /// the plugin's host ops name the key, never a path.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub destinations: Vec<String>,
+    /// The EGRESS POLICY the host applies to every request the plugin asks it to admit or carry
+    /// (K9e-2, export ABI minor 10) — see [`EgressPolicy`]. Granted to a first-party plugin only
+    /// when it is not the default; the default is left off the wire, so every manifest packed
+    /// before the field existed keeps its canonical bytes.
+    #[serde(skip_serializing_if = "EgressPolicy::is_default")]
+    pub egress: EgressPolicy,
+}
+
+/// The EGRESS POLICY the host applies to every request a sink asks it to admit or carry (K9e-2,
+/// export ABI minor 10). A sink's manifest DECLARES one (`declares.egress`); absent, it is
+/// [`EgressPolicy::OpenWeb`]. The host grants any other policy to a FIRST-PARTY sink only, and the
+/// policy's rules are the host's — a sink names which, never what they are.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum EgressPolicy {
+    /// The open web (the request-log webhook's policy): `https://` only; loopback, link-local,
+    /// private, CGNAT and cloud-metadata targets refused.
+    #[default]
+    OpenWeb,
+    /// A telemetry COLLECTOR (the span exporter's policy): `https://`, or plaintext `http://` to a
+    /// loopback collector only; link-local, private, CGNAT and cloud-metadata targets refused.
+    Collector,
+}
+
+impl EgressPolicy {
+    /// The policy's manifest spelling (`open-web` | `collector`).
+    pub const fn as_token(self) -> &'static str {
+        match self {
+            EgressPolicy::OpenWeb => "open-web",
+            EgressPolicy::Collector => "collector",
+        }
+    }
+
+    /// Whether this is the default policy — what a manifest that declares none states.
+    pub fn is_default(&self) -> bool {
+        *self == EgressPolicy::OpenWeb
+    }
 }
 
 impl Declares {
     /// Nothing declared — the section is left off the wire (and out of the signed bytes).
     pub fn is_empty(&self) -> bool {
-        self.metrics.is_empty() && self.diagnostics.is_empty() && self.destinations.is_empty()
+        self.metrics.is_empty()
+            && self.diagnostics.is_empty()
+            && self.destinations.is_empty()
+            && self.egress.is_default()
     }
 }
 

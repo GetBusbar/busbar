@@ -897,6 +897,127 @@ fn the_egress_carrier_refuses_what_the_host_policy_refuses() {
     );
 }
 
+/// **K9e-2 — THE COLLECTOR POLICY, AND OCTETS ON THE WIRE.** Under the collector policy a sink may
+/// declare, the host's carrier takes a BINARY body to a plaintext loopback collector — the listener
+/// receives exactly the octets and headers the sink asked for — while refusing, with the OTLP
+/// endpoint guard's own words and nothing dialled, a plaintext remote collector, a private address
+/// and cloud metadata. RED ARM: the same loopback request under the open web (the webhook policy
+/// every undeclared sink gets) is refused and never reaches the listener.
+#[cfg(linked_egress)]
+#[tokio::test(flavor = "multi_thread")]
+async fn the_collector_policy_carries_octets_to_a_loopback_collector_and_nothing_else() {
+    use busbar_plugin_loader::{EgressCarrier as _, EgressPolicy, HostResult, HttpRequest};
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let port = listener.local_addr().expect("addr").port();
+    let (seen_tx, mut seen) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
+    tokio::spawn(async move {
+        while let Ok((mut conn, _)) = listener.accept().await {
+            let seen_tx = seen_tx.clone();
+            tokio::spawn(async move {
+                let mut raw = Vec::new();
+                let mut buf = [0u8; 4096];
+                loop {
+                    let n = conn.read(&mut buf).await.unwrap_or(0);
+                    if n == 0 {
+                        return;
+                    }
+                    raw.extend_from_slice(&buf[..n]);
+                    let Some(end) = raw.windows(4).position(|w| w == b"\r\n\r\n") else {
+                        continue;
+                    };
+                    let head = String::from_utf8_lossy(&raw[..end]).to_ascii_lowercase();
+                    let length: usize = head
+                        .lines()
+                        .find_map(|l| l.strip_prefix("content-length:"))
+                        .and_then(|v| v.trim().parse().ok())
+                        .unwrap_or(0);
+                    if raw.len() >= end + 4 + length {
+                        let _ = seen_tx.send(raw.clone());
+                        let _ = conn
+                            .write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 0\r\n\r\n")
+                            .await;
+                        return;
+                    }
+                }
+            });
+        }
+    });
+    let collector = format!("http://127.0.0.1:{port}/v1/traces");
+    let octets = vec![0x0a, 0x00, 0xff, 0x80, 0x0d, 0x0a];
+    let request = |url: &str| HttpRequest {
+        method: "POST".into(),
+        url: url.into(),
+        headers: vec![("content-type".into(), "application/x-protobuf".into())],
+        body: String::new(),
+        timeout_ms: 5000,
+    };
+    let carried = HostEgressCarrier
+        .carry_under_async(EgressPolicy::Collector, request(&collector), octets.clone())
+        .await;
+    assert!(
+        matches!(carried, HostResult::Http(ref r) if r.status == 200),
+        "{carried:?}"
+    );
+    let raw = seen
+        .recv()
+        .await
+        .expect("the collector received the request");
+    let end = raw
+        .windows(4)
+        .position(|w| w == b"\r\n\r\n")
+        .expect("a head")
+        + 4;
+    let head = String::from_utf8_lossy(&raw[..end]).to_ascii_lowercase();
+    assert!(head.starts_with("post /v1/traces http/1.1\r\n"), "{head}");
+    assert!(
+        head.contains("content-type: application/x-protobuf\r\n"),
+        "{head}"
+    );
+    assert_eq!(&raw[end..], &octets[..], "the octets arrive exactly");
+    assert_eq!(
+        HostEgressCarrier.admit_under(EgressPolicy::Collector, "http://localhost:4318/v1/traces"),
+        Ok(())
+    );
+
+    for url in [
+        "http://collector.example/v1/traces",
+        "https://10.0.0.1/v1/traces",
+        "https://169.254.169.254/latest",
+    ] {
+        let guard = crate::root::otlp::collector_policy(url, false);
+        assert!(guard.is_err(), "{url}");
+        let answer = HostEgressCarrier
+            .carry_under_async(EgressPolicy::Collector, request(url), octets.clone())
+            .await;
+        match answer {
+            HostResult::Failed { step, error, .. } => {
+                assert_eq!((step.as_str(), Err(error)), ("refused", guard), "{url}")
+            }
+            other => panic!("{url} was carried: {other:?}"),
+        }
+    }
+
+    // RED ARM: the loopback collector under the open web is refused, and nothing arrives.
+    let open_web = HostEgressCarrier
+        .carry_under_async(EgressPolicy::OpenWeb, request(&collector), octets)
+        .await;
+    let guard = busbar_kernel::observability::validate_webhook_url(Some(collector.clone()));
+    match open_web {
+        HostResult::Failed { step, error, .. } => {
+            assert_eq!((step.as_str(), Err(error)), ("refused", guard.map(|_| ())))
+        }
+        other => panic!("the open web carried a loopback request: {other:?}"),
+    }
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    assert!(
+        seen.try_recv().is_err(),
+        "a refused request reached the collector"
+    );
+}
+
 /// K5d (DECISIONS #2 rule (1), #40) — THE DEFAULT STORE AND THE RANKING HOOKS ARE ROWS OF THE ROOT'S
 /// LINKED TABLES. The kernel names neither; `main` hands the `stores`/`hooks` tables to the kernel's
 /// cold-kind axis (`preflight::install_linked_rows`), which registers them through

@@ -73,6 +73,7 @@ pub use busbar_contract::abi::cold::export::{HostResult, HttpRequest, HttpRespon
 /// A cold plugin's LINKED boundary (`BUSBAR_COLD_ENTRY`), named for the composition root's linked
 /// tables, which hand it to [`LinkedPlugin::boundary`].
 pub use busbar_contract::abi::cold::ColdEntry;
+pub use sign::EgressPolicy;
 
 impl LinkedPlugin {
     /// A FIRST-PARTY cold plugin a build links: `name` aliased `alias`, of `kind`, at the newest

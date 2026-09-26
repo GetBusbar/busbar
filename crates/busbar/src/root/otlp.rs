@@ -201,6 +201,15 @@ fn validate_otlp_endpoint(endpoint: Option<&str>) -> Result<Option<String>, Stri
     let Some(e) = endpoint else {
         return Ok(None);
     };
+    collector_policy(e, true).map(|()| Some(e.to_string()))
+}
+
+/// THE COLLECTOR EGRESS POLICY (`EgressPolicy::Collector`, K9e-2) — the OTLP exporter's endpoint
+/// guard, applied to `e` by the host's egress carrier for a sink that declared it: `Err` in the
+/// guard's own words when the target is refused. `resolve` adds the resolution half (the
+/// admission a sink asks for when it starts); a carried request is judged on its text, as 1.5.x
+/// judged the endpoint once at boot and let TLS hold the rest (see [`otlp_resolves_to_internal`]).
+pub(crate) fn collector_policy(e: &str, resolve: bool) -> Result<(), String> {
     // Case-INSENSITIVE scheme check (see `scheme_is`): `HTTP://localhost:4318` / `HTTPS://...` are
     // valid per RFC 3986 and would be wrongly rejected by a literal lowercase `starts_with`.
     if !(scheme_is(e, SCHEME_HTTPS) || scheme_is(e, SCHEME_HTTP)) {
@@ -230,7 +239,10 @@ fn validate_otlp_endpoint(endpoint: Option<&str>) -> Result<Option<String>, Stri
     // Safe to do here: this runs from `init_logging` on the RUNTIME boot path only. `--validate`
     // documents that it performs no network I/O and reaches the OTLP endpoint through
     // `config_validate`'s own pure textual guard, which is deliberately left alone.
-    if let Some(offender) = otlp_resolves_to_internal(&parsed) {
+    if let Some(offender) = resolve
+        .then(|| otlp_resolves_to_internal(&parsed))
+        .flatten()
+    {
         return Err(format!(
             "observability.otlp_endpoint resolves to the internal address {offender} (SSRF guard; \
              loopback/localhost collectors are allowed); got '{}'",
@@ -250,7 +262,7 @@ fn validate_otlp_endpoint(endpoint: Option<&str>) -> Result<Option<String>, Stri
             mask_userinfo(e)
         ));
     }
-    Ok(Some(e.to_string()))
+    Ok(())
 }
 
 /// The first resolved address of `url`'s host that is internal, if any — the resolve half of the
