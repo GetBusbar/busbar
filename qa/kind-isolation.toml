@@ -761,7 +761,7 @@ drain = "delete the transport name from the unit crate: a unit reaches transport
 [[cell]]
 crate = "busbar"
 kind = "api"
-count = "146"
+count = "96"
 
 [[cell]]
 crate = "busbar"
@@ -771,7 +771,7 @@ count = "26"
 [[cell]]
 crate = "busbar"
 kind = "cleanliness"
-count = "57"
+count = "7"
 
 [[cell]]
 crate = "busbar"
@@ -781,7 +781,7 @@ count = "5"
 [[cell]]
 crate = "busbar"
 kind = "contract"
-count = "544"
+count = "471"
 
 [[cell]]
 crate = "busbar"
@@ -801,7 +801,7 @@ count = "981"
 [[cell]]
 crate = "busbar"
 kind = "plane"
-count = "1942"
+count = "1413"
 
 [[cell]]
 crate = "busbar"
@@ -811,7 +811,7 @@ count = "28"
 [[cell]]
 crate = "busbar"
 kind = "store"
-count = "6"
+count = "5"
 
 [[cell]]
 crate = "busbar"
@@ -821,7 +821,7 @@ count = "11"
 [[cell]]
 crate = "busbar"
 kind = "transport"
-count = "949"
+count = "780"
 
 [[cell]]
 crate = "busbar-a2a"
@@ -841,12 +841,12 @@ count = "4"
 [[cell]]
 crate = "busbar-a2a"
 kind = "legacy"
-count = "11"
+count = "8"
 
 [[cell]]
 crate = "busbar-a2a"
 kind = "plane"
-count = "3177"
+count = "3156"
 
 [[cell]]
 crate = "busbar-a2a"
@@ -856,7 +856,7 @@ count = "6"
 [[cell]]
 crate = "busbar-a2a"
 kind = "store"
-count = "51"
+count = "11"
 
 [[cell]]
 crate = "busbar-a2a"
@@ -871,12 +871,12 @@ count = "2"
 [[cell]]
 crate = "busbar-api"
 kind = "plane"
-count = "84"
+count = "17"
 
 [[cell]]
 crate = "busbar-api"
 kind = "transport"
-count = "9"
+count = "2"
 
 [[cell]]
 crate = "busbar-auth-static-plugin"
@@ -941,7 +941,7 @@ count = "103"
 [[cell]]
 crate = "busbar-kernel"
 kind = "plane"
-count = "3047"
+count = "2049"
 
 [[cell]]
 crate = "busbar-kernel"
@@ -961,7 +961,7 @@ count = "6"
 [[cell]]
 crate = "busbar-kernel-breaker"
 kind = "contract"
-count = "15"
+count = "14"
 
 [[cell]]
 crate = "busbar-kernel-breaker"
@@ -971,7 +971,7 @@ count = "2"
 [[cell]]
 crate = "busbar-kernel-breaker"
 kind = "transport"
-count = "232"
+count = "225"
 
 [[cell]]
 crate = "busbar-kernel-budget"
@@ -1026,7 +1026,7 @@ count = "4"
 [[cell]]
 crate = "busbar-kernel-ledger"
 kind = "contract"
-count = "37"
+count = "33"
 
 [[cell]]
 crate = "busbar-kernel-ledger"
@@ -1136,12 +1136,12 @@ count = "3877"
 [[cell]]
 crate = "busbar-mcp"
 kind = "plugin-tooling"
-count = "6"
+count = "4"
 
 [[cell]]
 crate = "busbar-mcp"
 kind = "store"
-count = "57"
+count = "8"
 
 [[cell]]
 crate = "busbar-mcp"
@@ -1176,12 +1176,12 @@ count = "5"
 [[cell]]
 crate = "busbar-plane-a2a"
 kind = "plane"
-count = "90"
+count = "26"
 
 [[cell]]
 crate = "busbar-plane-a2a"
 kind = "transport"
-count = "110"
+count = "103"
 
 [[cell]]
 crate = "busbar-plane-llm"
@@ -1206,7 +1206,7 @@ count = "10"
 [[cell]]
 crate = "busbar-plane-mcp"
 kind = "plane"
-count = "49"
+count = "13"
 
 [[cell]]
 crate = "busbar-plane-mcp"
@@ -1226,7 +1226,7 @@ count = "53"
 [[cell]]
 crate = "busbar-plane-streaming"
 kind = "transport"
-count = "132"
+count = "61"
 
 [[cell]]
 crate = "busbar-plugin"
@@ -1291,12 +1291,12 @@ count = "55"
 [[cell]]
 crate = "busbar-plugin-loader"
 kind = "plugin-tooling"
-count = "23"
+count = "10"
 
 [[cell]]
 crate = "busbar-plugin-loader"
 kind = "secret"
-count = "19"
+count = "18"
 
 [[cell]]
 crate = "busbar-plugin-loader"
@@ -1355,7 +1355,7 @@ count = "26"
 [[cell]]
 crate = "busbar-store-example-plugin"
 kind = "plugin-tooling"
-count = "11"
+count = "3"
 
 [[cell]]
 crate = "busbar-store-example-plugin"
@@ -1375,7 +1375,7 @@ count = "1"
 [[cell]]
 crate = "busbar-substrate-values"
 kind = "api"
-count = "31"
+count = "18"
 
 [[cell]]
 crate = "busbar-substrate-values"
@@ -1390,7 +1390,7 @@ count = "16"
 [[cell]]
 crate = "busbar-substrate-values"
 kind = "plane"
-count = "157"
+count = "152"
 
 [[cell]]
 crate = "busbar-substrate-values"
@@ -1400,7 +1400,7 @@ count = "4"
 [[cell]]
 crate = "busbar-substrate-values"
 kind = "transport"
-count = "251"
+count = "227"
 
 [[cell]]
 crate = "busbar-timing"
@@ -1415,12 +1415,12 @@ count = "1"
 [[cell]]
 crate = "busbar-transport-http"
 kind = "plane"
-count = "109"
+count = "84"
 
 [[cell]]
 crate = "busbar-transport-http"
 kind = "transport"
-count = "392"
+count = "152"
 
 [[cell]]
 crate = "busbar-transport-stdio"
@@ -1465,7 +1465,7 @@ count = "2"
 [[cell]]
 crate = "busbar-transport-ws"
 kind = "transport"
-count = "165"
+count = "71"
 
 [[cell]]
 crate = "busbar-unit-transport-key"
@@ -1505,7 +1505,7 @@ count = "1"
 [[cell]]
 crate = "busbar-voice"
 kind = "transport"
-count = "287"
+count = "143"
 
 [[cell]]
 crate = "busbar-voice-codec"
@@ -3226,7 +3226,7 @@ count = "43"
 [[instance]]
 crate = "busbar-core-admin"
 kind = "store"
-count = "15"
+count = "12"
 
 [[instance]]
 crate = "busbar-kernel"
@@ -3251,7 +3251,7 @@ count = "49"
 [[instance]]
 crate = "busbar-kernel"
 kind = "store"
-count = "30"
+count = "7"
 
 [[instance]]
 crate = "busbar-kernel-audit"
