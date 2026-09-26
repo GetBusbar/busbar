@@ -16,8 +16,8 @@
 //!
 //! 1. the closed verb table (`admin_codec::verbs::table`): every `(method, path)` the node's
 //!    administrative mount walks through the kernel loop, which is how the 66 legacy operations and
-//!    the 1.6.0 kernel verbs whose effect is bound are answered (the other eight are declared and
-//!    NOT served — [`unbound_declared_operations`]; the five the owner removed from 1.6.0 are not
+//!    the 1.6.0 kernel verbs whose effect is bound are answered (the other four are declared and
+//!    NOT served — [`unbound_declared_operations`]; the nine the owner removed from 1.6.0 are not
 //!    declared at all — [`REMOVED_OPERATIONS`]);
 //! 2. every named-definition section (`NamedMapSection::sections`), five operations each, which the
 //!    router mounts in one loop — including each plane-owned section;
@@ -80,17 +80,22 @@ fn unbound_declared_operations() -> BTreeSet<Op> {
         .collect()
 }
 
-/// THE FIVE OPERATIONS THE OWNER REMOVED FROM 1.6.0 (2026-09-08: `set_operator_key`, `set_escrow`,
-/// `set_dual_control`, `export_keyset`, `approve`). They are not verbs, so the table has no row for
+/// THE NINE OPERATIONS THE OWNER REMOVED FROM 1.6.0 (2026-09-08: `set_operator_key`, `set_escrow`,
+/// `set_dual_control`, `export_keyset`, `approve`; #77(9), owner answer Q71(1):
+/// `set_overdraft_ceiling`, `set_dispute_max_age`, `resolve_dispute`, `resolve_slice`). They are not verbs, so the table has no row for
 /// them and the node answers each with the unmounted `404` — exactly what it answered while they
 /// were declared-but-unbound, and the published 1.5.5 answer for a path it never had. Each keeps
 /// its admin corpus entry and cells, which are what show that answer did not move.
-const REMOVED_OPERATIONS: [(&str, &str); 5] = [
+const REMOVED_OPERATIONS: [(&str, &str); 9] = [
     ("POST", "/api/v1/admin/operator-key"),
     ("POST", "/api/v1/admin/escrow"),
     ("POST", "/api/v1/admin/dual-control"),
     ("POST", "/api/v1/admin/export-keyset"),
     ("POST", "/api/v1/admin/approve"),
+    ("POST", "/api/v1/admin/overdraft-ceiling"),
+    ("POST", "/api/v1/admin/dispute-max-age"),
+    ("POST", "/api/v1/admin/disputes/resolve"),
+    ("POST", "/api/v1/admin/slices/resolve"),
 ];
 
 /// The removed operations as [`Op`]s.
@@ -319,8 +324,8 @@ async fn admin_corpus_reconciles_with_the_served_router() {
     let unbound = unbound_declared_operations();
     assert_eq!(
         unbound.len(),
-        8,
-        "the eight money-governance verbs with no effect bound: {unbound:?}"
+        4,
+        "the four money-governance verbs with no effect bound: {unbound:?}"
     );
     let removed = removed_operations();
     let removed_but_present: Vec<&Op> = removed

@@ -182,15 +182,13 @@ pub const KNOWN_UNSHIPPED: &[&str] = &[
     // `rate-card-multi-currency` STRUCK 2026-09-25 (#66, spec Q4): `set_rate`/`set_fee` deleted.
     // The 1.6.0 admin verbs with no effect bound: not served (architect ruling 2026-09-24);
     // binding each strikes its row. Five STRUCK 2026-09-25 (owner ruling 2026-09-08: set_operator_key,
-    // set_escrow, set_dual_control, export_keyset, approve left 1.6.0 and are deleted).
+    // set_escrow, set_dual_control, export_keyset, approve left 1.6.0 and are deleted). Four more
+    // STRUCK 2026-09-26 (#77(9), owner answer Q71(1): set_overdraft_ceiling, set_dispute_max_age,
+    // resolve_dispute, resolve_slice are deleted).
     "admin-verb-verify-effect",
     "admin-verb-plane-facts-effect",
     "admin-verb-plane-record-write-effect",
-    "admin-verb-set-overdraft-ceiling-effect",
-    "admin-verb-set-dispute-max-age-effect",
     "admin-verb-commit-upgrade-effect",
-    "admin-verb-resolve-dispute-effect",
-    "admin-verb-resolve-slice-effect",
 ];
 
 /// The per-capability row id.

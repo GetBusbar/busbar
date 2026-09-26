@@ -649,38 +649,40 @@ async fn every_root_only_mutating_verb_seals_one_durable_row_and_a_read_seals_no
     }
 }
 
-/// The eight 1.6.0 verbs this build binds NO EFFECT to, as `(method, path)` — measured, not
+/// The four 1.6.0 verbs this build binds NO EFFECT to, as `(method, path)` — measured, not
 /// assumed: each resolved in the table, walked every gate, sealed a `rejected` row and then reached
 /// a surface with no handler for it, which answered `404`.
 #[cfg(feature = "root-admin")]
-const THE_UNBOUND_VERBS: [(&str, &str); 8] = [
+const THE_UNBOUND_VERBS: [(&str, &str); 4] = [
     ("GET", "/api/v1/admin/verify"),
     ("GET", "/api/v1/admin/plane-facts"),
     ("POST", "/api/v1/admin/plane-record-write"),
-    ("POST", "/api/v1/admin/overdraft-ceiling"),
-    ("POST", "/api/v1/admin/dispute-max-age"),
     ("POST", "/api/v1/admin/commit-upgrade"),
-    ("POST", "/api/v1/admin/disputes/resolve"),
-    ("POST", "/api/v1/admin/slices/resolve"),
 ];
 
-/// The five verbs the owner removed from 1.6.0 on 2026-09-08 (`set_operator_key`, `set_escrow`,
-/// `set_dual_control`, `export_keyset`, `approve`), as `(method, path)`. They are no longer in the
+/// The nine verbs the owner removed from 1.6.0 — on 2026-09-08 (`set_operator_key`, `set_escrow`,
+/// `set_dual_control`, `export_keyset`, `approve`) and by #77(9), owner answer Q71(1)
+/// (`set_overdraft_ceiling`, `set_dispute_max_age`, `resolve_dispute`, `resolve_slice`) — as
+/// `(method, path)`. They are no longer in the
 /// table at all; while they were, they were unbound and answered the unmounted `404`. Removing them
 /// must not move that answer by a byte.
 #[cfg(feature = "root-admin")]
-const THE_REMOVED_VERBS: [(&str, &str); 5] = [
+const THE_REMOVED_VERBS: [(&str, &str); 9] = [
     ("POST", "/api/v1/admin/operator-key"),
     ("POST", "/api/v1/admin/escrow"),
     ("POST", "/api/v1/admin/dual-control"),
     ("POST", "/api/v1/admin/export-keyset"),
     ("POST", "/api/v1/admin/approve"),
+    ("POST", "/api/v1/admin/overdraft-ceiling"),
+    ("POST", "/api/v1/admin/dispute-max-age"),
+    ("POST", "/api/v1/admin/disputes/resolve"),
+    ("POST", "/api/v1/admin/slices/resolve"),
 ];
 
 /// AN ADMIN VERB WHOSE EFFECT IS NOT BOUND IS NOT SERVED (architect ruling 2026-09-24).
 ///
 /// Under a sealed operator key and a full-scope operator — the posture in which every gate admits —
-/// each of the eight (and each of the five the owner removed, which the table no longer names)
+/// each of the four (and each of the nine the owner removed, which the table no longer names)
 /// answers EXACTLY what an unmounted path answers (`404 not_found` /
 /// `resource not found`, byte for byte, which is also the published 1.5.5 answer for every one of
 /// these paths) and seals NO audit row. It used to be walked through the gates, sealed a `rejected`

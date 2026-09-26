@@ -17,12 +17,7 @@ fn every_irreducible_new_verb_is_refused_under_unset() {
     for verb in NEW_VERBS {
         let result = check_operator_gate(*verb, OperatorState::Unset);
         match verb {
-            KernelVerb::PlaneFacts
-            | KernelVerb::PlaneRecordWrite
-            | KernelVerb::SetOverdraftCeiling
-            | KernelVerb::SetDisputeMaxAge
-            | KernelVerb::ResolveSlice
-            | KernelVerb::Verify => {
+            KernelVerb::PlaneFacts | KernelVerb::PlaneRecordWrite | KernelVerb::Verify => {
                 // Not in the irreducible set: the operator gate never applies to these.
                 assert!(
                     result.is_ok(),

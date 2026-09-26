@@ -724,7 +724,7 @@ fn a_new_verb_admitted_by_posture_reaches_governance() {
     };
     let out = verbs
         .execute(
-            KernelVerb::SetOverdraftCeiling,
+            KernelVerb::PlaneRecordWrite,
             &admin,
             "alice",
             VerbScope::Full,
@@ -750,7 +750,7 @@ fn a_new_verb_with_no_resolved_posture_is_refused_rather_than_panicking() {
     let admin = admin();
     let err = verbs
         .execute(
-            KernelVerb::SetOverdraftCeiling,
+            KernelVerb::PlaneRecordWrite,
             &admin,
             "alice",
             // The scope is granted, so `admit` passes and the posture branch is genuinely reached.
@@ -1117,7 +1117,7 @@ fn a_governance_store_failure_refuses_with_store_error_on_every_call() {
     let verbs = make_verbs(FakeGovernance::new().failing_with(GovernanceError::Store));
     let err = verbs
         .execute(
-            KernelVerb::SetOverdraftCeiling,
+            KernelVerb::PlaneRecordWrite,
             &admin,
             "alice",
             VerbScope::Full,

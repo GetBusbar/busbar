@@ -253,7 +253,9 @@ switch    = "STRIKE THIS ROW in the commit that converts a child hold at parent 
 # section 4.7 + admin-new-verbs-contract.md): `admin-verb-{set-operator-key,set-escrow,
 # set-dual-control,export-keyset,approve}-effect`. Those five left 1.6.0: their `KernelVerb`
 # variants, `NEW_VERBS` entries, table rows and posture code are DELETED, and their paths answer the
-# unmounted 404 exactly as they did while unbound. Eight remain below.
+# unmounted 404 exactly as they did while unbound. FOUR MORE STRUCK 2026-09-26 (UC-VERBS, #77(9),
+# owner answer Q71(1)): `admin-verb-{set-overdraft-ceiling,set-dispute-max-age,resolve-dispute,
+# resolve-slice}-effect`, deleted the same way. Four remain below.
 #
 # Each resolves in the closed verb table (`crates/busbar-core-admin/src/admin_codec/verbs.rs`) and
 # has NO effect behind it: measured 2026-09-24, every one walked the scope, operator and dual-control
@@ -297,25 +299,7 @@ why       = "`POST /api/v1/admin/plane-record-write` is declared in the closed v
 unshipped = true
 switch    = "STRIKE THIS ROW in the commit that binds the effect: a production call to plane_record_write_effect( reached from the composition root's execute_new_verb, and an effect_bound arm for KernelVerb naming this verb, so the mount serves it and the generated document describes it."
 
-[[capability]]
-id        = "admin-verb-set-overdraft-ceiling-effect"
-built     = "crates/busbar-core-admin/src/verb.rs"
-symbol    = "effect_bound"
-construct = ["set_overdraft_ceiling_effect("]
-scope     = ["crates"]
-why       = "`POST /api/v1/admin/overdraft-ceiling` is declared in the closed verb table but no effect is bound to it, so an operator cannot set a bucket's overdraft ceiling; the node does not serve the path (unmounted 404, no audit row) and the document does not describe it."
-unshipped = true
-switch    = "STRIKE THIS ROW in the commit that binds the effect: a production call to set_overdraft_ceiling_effect( reached from the composition root's execute_new_verb, and an effect_bound arm for KernelVerb naming this verb, so the mount serves it and the generated document describes it."
 
-[[capability]]
-id        = "admin-verb-set-dispute-max-age-effect"
-built     = "crates/busbar-core-admin/src/verb.rs"
-symbol    = "effect_bound"
-construct = ["set_dispute_max_age_effect("]
-scope     = ["crates"]
-why       = "`POST /api/v1/admin/dispute-max-age` is declared in the closed verb table but no effect is bound to it, so an operator cannot set dispute_max_age; the node does not serve the path (unmounted 404, no audit row) and the document does not describe it."
-unshipped = true
-switch    = "STRIKE THIS ROW in the commit that binds the effect: a production call to set_dispute_max_age_effect( reached from the composition root's execute_new_verb, and an effect_bound arm for KernelVerb naming this verb, so the mount serves it and the generated document describes it."
 
 [[capability]]
 id        = "admin-verb-commit-upgrade-effect"
@@ -327,22 +311,4 @@ why       = "`POST /api/v1/admin/commit-upgrade` is declared in the closed verb 
 unshipped = true
 switch    = "STRIKE THIS ROW in the commit that binds the effect: a production call to commit_upgrade_effect( reached from the composition root's execute_new_verb, and an effect_bound arm for KernelVerb naming this verb, so the mount serves it and the generated document describes it."
 
-[[capability]]
-id        = "admin-verb-resolve-dispute-effect"
-built     = "crates/busbar-core-admin/src/verb.rs"
-symbol    = "effect_bound"
-construct = ["resolve_dispute_effect("]
-scope     = ["crates"]
-why       = "`POST /api/v1/admin/disputes/resolve` is declared in the closed verb table but no effect is bound to it, so an operator cannot resolve an open dispute; the node does not serve the path (unmounted 404, no audit row) and the document does not describe it."
-unshipped = true
-switch    = "STRIKE THIS ROW in the commit that binds the effect: a production call to resolve_dispute_effect( reached from the composition root's execute_new_verb, and an effect_bound arm for KernelVerb naming this verb, so the mount serves it and the generated document describes it."
 
-[[capability]]
-id        = "admin-verb-resolve-slice-effect"
-built     = "crates/busbar-core-admin/src/verb.rs"
-symbol    = "effect_bound"
-construct = ["resolve_slice_effect("]
-scope     = ["crates"]
-why       = "`POST /api/v1/admin/slices/resolve` is declared in the closed verb table but no effect is bound to it, so an operator cannot resolve a slice-level dispute; the node does not serve the path (unmounted 404, no audit row) and the document does not describe it."
-unshipped = true
-switch    = "STRIKE THIS ROW in the commit that binds the effect: a production call to resolve_slice_effect( reached from the composition root's execute_new_verb, and an effect_bound arm for KernelVerb naming this verb, so the mount serves it and the generated document describes it."
