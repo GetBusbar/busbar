@@ -37,9 +37,6 @@ path = "src/lib.rs"
 # #83a SD-3: this crate's test surface is dev-only — its test registration reaches the host through
 # its OWN dev-dependency on the kernel — so no dependent build of this crate names the host.
 test-support = []
-# Declared for `busbar-llm`, which forwards its own `timing` flag here. EMPTY since #83a SD-3 (owner
-# ruling O9): the plane drops the per-method micro-timing instrumentation, so the flag arms nothing.
-timing = []
 # The CI-only OpenAPI schema derive. DECLARED but EMPTY: this crate carries no `schemars` derive and
 # no `#[cfg(feature = "openapi-schema")]` site of its own. The feature stays declared because
 # `busbar-llm` names it.

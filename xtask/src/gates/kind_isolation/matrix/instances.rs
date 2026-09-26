@@ -753,7 +753,7 @@ pub fn selftest<'a>(
     // export` ceiling, a cell whose ceiling sits BELOW its count on this tree (54 vs 79, RAISED —
     // owner question Q77): ceiling + 1 is still below the count, so the planted run could only say
     // RAISED again and never STALE SLACK — a proof that could not be had (item 89). The fixture
-    // here is a cell the live tree does not have: `busbar-timing` names the store instance
+    // here is a cell the live tree does not have: `busbar-kernel-scope` names the store instance
     // `memory` once, in a file of its own, and the ledger gains an `[[instance]]` row for exactly
     // that cell. At `count = "1"` the row equals its measurement and the row is GREEN (the control
     // below); at `count = "2"` the ceiling sits one above the count, which is the stale slack this
@@ -761,13 +761,13 @@ pub fn selftest<'a>(
     let slack_fixture = |count: &str| {
         let mut ov = super::plant(
             cx,
-            "crates/busbar-timing/src/planted_slack.rs",
+            "crates/busbar-kernel-scope/src/planted_slack.rs",
             "pub const S: &str = \"memory\";\n",
         );
         ov.set(
             super::LEDGER,
             format!(
-                "{}\n\n[[instance]]\ncrate = \"busbar-timing\"\nkind = \"store\"\ncount = \"{count}\"\n",
+                "{}\n\n[[instance]]\ncrate = \"busbar-kernel-scope\"\nkind = \"store\"\ncount = \"{count}\"\n",
                 cx.read(super::LEDGER).unwrap_or_default().trim_end()
             ),
         );
@@ -788,7 +788,7 @@ pub fn selftest<'a>(
         slack_fixture("2"),
         &[
             "instance-ratchet",
-            "busbar-timing \u{d7} store",
+            "busbar-kernel-scope \u{d7} store",
             "ceiling 2 vs measured 1",
             "STALE SLACK",
         ],
@@ -803,11 +803,11 @@ pub fn selftest<'a>(
             cx,
             super::LEDGER,
             &format!(
-                "{}\n\n[[instance]]\ncrate = \"busbar-timing\"\nkind = \"store\"\ncount = \"1\"\n",
+                "{}\n\n[[instance]]\ncrate = \"busbar-kernel-scope\"\nkind = \"store\"\ncount = \"1\"\n",
                 text.trim_end()
             ),
         ),
-        &["dead-instance", "busbar-timing \u{d7} store"],
+        &["dead-instance", "busbar-kernel-scope \u{d7} store"],
     ));
     report.push(prove_rows_red(
         cx,

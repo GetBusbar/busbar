@@ -104,7 +104,7 @@ pub const CARGO_LOCAL: &[&str] = &[
     "cargo test -p busbar --test migration_corpus --locked -- --nocapture",
     "cargo test -p busbar-voice --features runtime,test-support -p busbar-voice-codec --features runtime --locked",
     "cargo test -p busbar-llm --locked --lib unit::",
-    "cargo test -p busbar-timing --features timing --locked",
+    "cargo test -p busbar-kernel --features timing --lib --test timing_smoke --locked -- timing:: smoke_records",
     "cargo build -p xtask --locked",
     "cargo xtask gate kind-isolation --selftest",
     "cargo xtask gate kind-isolation",

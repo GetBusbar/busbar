@@ -5,7 +5,6 @@ members = [
     "crates/busbar-core-connsec",
     "crates/busbar-core-admin",
     "crates/busbar-oauth2",
-    "crates/busbar-timing",
     "crates/busbar-llm",
     "crates/busbar-llm-codec",
     "crates/busbar-mcp",

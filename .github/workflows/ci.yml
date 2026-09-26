@@ -1240,7 +1240,8 @@ jobs:
             exit 1
           fi
 
-      # `busbar-timing`'s real implementation lives entirely behind its `timing` feature, which is
+      # `busbar_kernel::timing`'s real implementation (the former busbar-timing crate, folded into the
+      # kernel by OWNER Q70) lives entirely behind the kernel's `timing` feature, which is
       # OFF by default and therefore OFF under `cargo test --workspace`. So the only suite that
       # exercises the registry, the thread accounting and the runtime gate was never compiled by any
       # step in this workflow: the default build collects only the zero-cost-when-off proof, prints
@@ -1256,8 +1257,8 @@ jobs:
         run: |
           set -uo pipefail
           rc=0
-          cargo test -p busbar-timing --features timing \
-                     --locked --verbose 2>&1 | tee "$RUNNER_TEMP/timing-test.log" || rc=${PIPESTATUS[0]}
+          cargo test -p busbar-kernel --features timing --lib --test timing_smoke \
+                     --locked --verbose -- timing:: smoke_records 2>&1 | tee "$RUNNER_TEMP/timing-test.log" || rc=${PIPESTATUS[0]}
           total=$(grep -oE 'test result: (ok|FAILED)\. [0-9]+ passed' "$RUNNER_TEMP/timing-test.log" \
                   | grep -oE '[0-9]+ passed' | grep -oE '[0-9]+' \
                   | awk '{s+=$1} END {print s+0}')
@@ -2077,8 +2078,8 @@ jobs:
             features: busbar/test-harness
             tests: -p busbar
           - name: timing
-            features: busbar-kernel/timing,busbar-llm/timing,busbar-llm-codec/timing
-            tests: -p busbar-kernel -p busbar-llm -p busbar-llm-codec -p busbar-timing
+            features: busbar-kernel/timing
+            tests: -p busbar-kernel
           - name: llm webhook-receiver
             features: busbar-llm/webhook-receiver
             tests: -p busbar-llm
@@ -2520,7 +2521,6 @@ jobs:
   # feature-covered: busbar-llm-codec/openapi-schema -- openapi-schema -- pulled by the forward from busbar-llm in that job's build
   # feature-covered: busbar-mcp/openapi-schema -- openapi-schema -- pulled by the forward from busbar-kernel in that job's build
   # feature-covered: busbar-voice/openapi-schema -- openapi-schema -- pulled by the forward from busbar with the feature on
-  # feature-covered: busbar-timing/timing -- check -- the Timing implementation tests step names -p busbar-timing --features timing
   # feature-covered: busbar-voice/test-support -- check -- the Voice runtime tests step names --features runtime,test-support
   # feature-covered: busbar-voice/runtime -- check -- the Voice runtime tests step names it, and the root default reaches it
   # feature-covered: busbar-voice-codec/runtime -- check -- the Voice runtime tests step names -p busbar-voice-codec --features runtime

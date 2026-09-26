@@ -315,6 +315,9 @@ pub mod detached;
 pub mod plane_routes;
 pub mod rate_apply;
 pub mod telemetry;
+// Debug-only, feature-gated per-method micro-timing (`timeit!`), folded in from the former
+// `busbar-timing` crate (OWNER Q70). Default OFF: every entry point is a zero-sized no-op.
+pub mod timing;
 // `testkit` IS GONE (1.6.0 Locked Decision #33: "there is NO testkit ... the kernel tests no
 // plugin"). What it held has gone two ways: the three concrete doubles a PLUGIN drove (the in-memory
 // engine-host, the loopback HTTP provider, the metrics capture) moved DOWN to the plane crates that

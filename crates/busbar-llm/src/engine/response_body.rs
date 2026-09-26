@@ -339,7 +339,6 @@ where
         budget_spent: bool,
         tap: TapCell,
     ) -> Self {
-        let _t = busbar_timing::timeit!("rb_first_byte_body_new");
         // Resolve the ingress protocol ONCE: it supplies both the binary-eventstream flag AND the
         // interned `&'static` name we store (no per-response allocation for the name). An unknown
         // ingress protocol falls back to the registry's RESIDUAL DEFAULT dialect — the exact default

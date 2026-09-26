@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Tests for `crates/busbar-timing/src/lib.rs` (feature-on registry, module `imp`).
+//! Tests for `crates/busbar-kernel/src/timing/mod.rs` (feature-on registry, module `imp`).
 
 use super::*;
 

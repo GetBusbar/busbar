@@ -35,11 +35,6 @@ pub(super) async fn build(
     drop(_xlate);
 
     let _cbuild = busbar_kernel::profile::start(busbar_kernel::profile::Stage::ClientBuild);
-    let _t = busbar_timing::timeit!("egress_client_build");
-    // MEASUREMENT ONLY (busbar-timing, additive): `egress_assemble` sub-scopes everything below
-    // that is NOT the network send — credential select, path/URI build, auth-header build (itself
-    // sub-timed as `egress_sigv4`), and request construction.
-    let _asm = busbar_timing::timeit!("egress_assemble");
 
     // Mode-aware key selection: passthrough uses the caller's token, own-mode the lane's api_key.
     // Passthrough with NO caller credential sends an EMPTY credential — never the operator's key
@@ -74,9 +69,7 @@ pub(super) async fn build(
     // non-constant credential (OAuth / SigV4) reads the request, so both build live.
     let egress_auth = match (&hop.lane_row().prebuilt_auth, hop.upstream_creds) {
         (Some(pre), busbar_contract::config::UpstreamCreds::Own) => pre.clone(),
-        _ => convert_headers(busbar_timing::scope("egress_lane_auth", || {
-            lane_auth_headers(hop.lane_row(), key, &signing_ctx)
-        })),
+        _ => convert_headers(lane_auth_headers(hop.lane_row(), key, &signing_ctx)),
     };
     drop(_cb_auth);
 

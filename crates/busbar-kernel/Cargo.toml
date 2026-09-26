@@ -99,10 +99,9 @@ busbar-kernel-identity = { path = "../busbar-kernel-identity" }
 # typical pool has a handful of members, so the candidate view, the SWRR scratch and the tried-set
 # live on the stack instead of costing three heap allocations per pick. Workspace-pinned.
 smallvec = { workspace = true }
-# Debug-only per-method micro-timing. DEFAULT OFF: with `busbar-timing`'s `timing` feature disabled
-# (the shipped default) every `timeit!` call site below compiles to `()` — zero cost. Turn it on for
-# a profiling build with `--features busbar-timing/timing`. Method timers nest inside `profile.rs`.
-busbar-timing = { path = "../busbar-timing" }
+# The folded `timing` module (former busbar-timing, OWNER Q70) calls `atexit(3)` for its process-exit
+# dump, and only under the non-default `timing` feature. The default build does not link it.
+libc = { workspace = true, optional = true }
 # The HOT-lane plugin/plane ABI (`busbar_plugin::hot`): the `#[repr(C)] PlaneHostVtable` and its POD
 # types. Consumed HOST-side by `src/plane_host` — the construction point + lifecycle arena the Phase-2
 # capability fan-out fills in. Additive: nothing in the engine calls the plane seam yet.
@@ -303,12 +302,12 @@ loom-model = ["dep:loom"]
 # so the relocated test-only `governance::signing::TokenSigner::mint_for_audience` is likewise
 # revealed to a dependent test binary.
 test-support = ["busbar-substrate-values/test-support", "dep:rmcp", "dep:reqwest", "dep:rcgen", "dep:fixture-store", "dep:fixture-hook"]
-# Passthrough to `busbar-timing`'s debug-only per-method micro-timing. DEFAULT OFF: with this off,
-# `busbar_timing::timeit!` expands to `()` and the RAII guards it produces are zero-sized no-ops, so
-# the `drop(_guard)` calls that end a timed span are compiled in ONLY under this feature (dropping a
-# `()` is a no-op the `dropping_copy_types` lint rightly rejects). Enabling it forwards to
-# `busbar-timing/timing`, making those guards real `Timer`s whose `Drop` records the elapsed span.
-timing = ["busbar-timing/timing"]
+# The debug-only per-method micro-timing in `src/timing` (folded from busbar-timing, OWNER Q70).
+# DEFAULT OFF: with this off, `timeit!` expands to `()` and the RAII guards it produces are
+# zero-sized no-ops, so the `drop(_guard)` calls that end a timed span are compiled in ONLY under this
+# feature (dropping a `()` is a no-op the `dropping_copy_types` lint rightly rejects). Enabling it
+# makes those guards real `Timer`s whose `Drop` records the elapsed span.
+timing = ["dep:libc"]
 
 [dev-dependencies]
 # THE PLANE CRATES, pulled in `test-support` so busbar-core's OWN cross-plane integration tests

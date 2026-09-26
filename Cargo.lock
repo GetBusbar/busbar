@@ -618,7 +618,6 @@ dependencies = [
  "busbar-store-example-plugin",
  "busbar-store-memory",
  "busbar-substrate-values",
- "busbar-timing",
  "bytes",
  "crc32fast",
  "criterion",
@@ -636,6 +635,7 @@ dependencies = [
  "hyper-rustls",
  "hyper-util",
  "indexmap",
+ "libc",
  "loom",
  "metrics",
  "metrics-exporter-prometheus",
@@ -756,7 +756,6 @@ dependencies = [
  "busbar-llm-codec",
  "busbar-plane-llm",
  "busbar-plugin",
- "busbar-timing",
  "bytes",
  "crc32fast",
  "futures",
@@ -990,7 +989,6 @@ version = "1.6.0"
 dependencies = [
  "busbar-contract",
  "busbar-plugin",
- "busbar-timing",
  "bytes",
  "crc32fast",
  "futures",
@@ -1007,13 +1005,6 @@ dependencies = [
  "sonic-rs",
  "tracing",
  "tracing-subscriber",
-]
-
-[[package]]
-name = "busbar-timing"
-version = "1.6.0"
-dependencies = [
- "libc",
 ]
 
 [[package]]

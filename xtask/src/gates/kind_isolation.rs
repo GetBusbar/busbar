@@ -67,7 +67,7 @@
 //!
 //! The owner's scheme (2026-09-07) is `busbar-<kind>-<name>`: SEGMENT TWO IS THE KIND. The tree is
 //! not renamed yet, so the kinds whose crates predate it — `busbar-caps`, `busbar-kernel`,
-//! `busbar-contract`, `busbar-grammar`, `busbar-timing`,
+//! `busbar-contract`, `busbar-grammar`,
 //! the `*-codec` halves and the `busbar-plugin-*` tooling — reach their kind through
 //! the EXPLICIT TABLE below rather than through segment two. That table is the whole of the
 //! exception: a name that is neither in it nor `busbar-<kind>-…` for a kind IN it is refused, in
@@ -233,7 +233,7 @@ struct KindDef {
 
 /// THE KIND TABLE. The SEVEN plugin kinds (DECISIONS #3: store, secret, auth, hook, export, plane,
 /// transport), the infra crate families that are NOT plugin kinds (unit, kernel, contract,
-/// substrate, api, timing, the plugin-abi/plugin-tooling TCB, the `core` neutral spine and
+/// substrate, api, the plugin-abi/plugin-tooling TCB, the `core` neutral spine and
 /// the `cleanliness` compiled-in surfaces), the composition root, and the retiring legacy crates.
 ///
 /// `control` and `dialect` are NOT kinds (DECISIONS #4/#5): a dialect is a thing INSIDE a plane
@@ -345,11 +345,8 @@ static KINDS: &[KindDef] = &[
     },
     // There is no `api` kind: `busbar-api` retired in fold F4 — its last pieces went to
     // the homes their definitions name — so the row matched no crate and scored `dead-kind`.
-    KindDef {
-        kind: "timing",
-        family: Family::Neutral,
-        matchers: &["=busbar-timing"],
-    },
+    // There is no `timing` kind: busbar-timing folded into busbar-kernel as its feature-gated
+    // `timing` module (OWNER Q70), so its lines are the kernel's and the row would name no crate.
     KindDef {
         kind: "plugin-abi",
         family: Family::Neutral,
@@ -446,10 +443,10 @@ const PENDING_EDGES: &[(&str, &str)] = &[
     //
     // `(core, caps)` and `(core, grammar)` are struck: neither `caps` nor `grammar` is a kind (both
     // crates folded into `busbar-contract`, W2.c and #40), so they granted nothing (`dead-grant`).
+    // `(core, timing)` is struck the same way: busbar-timing folded into busbar-kernel (OWNER Q70).
     ("core", "contract"),
     ("core", "kernel"),
     ("core", "substrate"),
-    ("core", "timing"),
 ];
 
 /// The retiring 1.5.x crates, named so the ratchet can check they still exist.
@@ -6569,18 +6566,20 @@ impl Gate for KindIsolationGate {
 
         // A KIND NOBODY INSTANTIATES IS A DEAD ROW IN THE TABLE.
         //
-        // THE SUBJECT IS `timing`, AND IT USED TO BE `grammar`, WHICH PROVED NOTHING. The plant was
+        // THE SUBJECT IS `contract` (after `timing`), AND IT USED TO BE `grammar`, WHICH PROVED
+        // NOTHING. The plant was
         // `Overlay::remove("crates/busbar-grammar/Cargo.toml")` — a path that has not been in this
         // tree for as long as the case has existed, so it removed nothing — against a row that is
         // STANDING RED naming `dead-kind KINDS \`grammar\``, the exact two tokens the case
         // asserts. A no-op plant, a red that predates it, and a green case: the rule could have
         // been deleted outright with this case still passing. `prove_red` refuses both halves now.
         //
-        // `timing` is the kind to plant because its matcher is `=busbar-timing`, one crate and no
-        // other, so removing that manifest takes the whole kind out of `live` — which is what the
+        // `contract` is the kind to plant because its matcher is `=busbar-contract`, one crate and
+        // no other, so removing that manifest takes the whole kind out of `live` — which is what the
         // rule reads. A kind with a prefix matcher would need every crate of it removed at once.
+        // (It was `timing`, `=busbar-timing`, until OWNER Q70 folded that crate into the kernel.)
         let mut ov = Overlay::new();
-        ov.remove("crates/busbar-timing/Cargo.toml");
+        ov.remove("crates/busbar-contract/Cargo.toml");
         hold_census_floor(&mut ov, 1);
         report.push(prove_rows_red(
             cx,
@@ -6588,7 +6587,7 @@ impl Gate for KindIsolationGate {
             "a kind in the table that no crate is any more",
             &[ROW_REGISTRY],
             ov,
-            &["dead-kind", "timing"],
+            &["dead-kind", "contract"],
         ));
 
         // THE PENDING-KIND RATCHET: a crate of a pending kind retires the pending entry. `secret`

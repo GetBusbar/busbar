@@ -25,9 +25,9 @@
 //! # API
 //!
 //! ```ignore
-//! let _t = busbar_timing::timeit!("govern_admit"); // RAII: records elapsed on drop
-//! busbar_timing::record("hand_rolled", elapsed_ns); // manual
-//! let out = busbar_timing::scope("expensive", || compute()); // fn form
+//! let _t = busbar_kernel::timing::timeit!("govern_admit"); // RAII: records elapsed on drop
+//! busbar_kernel::timing::record("hand_rolled", elapsed_ns); // manual
+//! let out = busbar_kernel::timing::scope("expensive", || compute()); // fn form
 //! ```
 //!
 //! # Report scopes
@@ -68,29 +68,29 @@ mod imp {
         Timer
     }
 
-    /// Feature-OFF [`crate::record`]: no-op.
+    /// Feature-OFF [`crate::timing::record`]: no-op.
     #[inline(always)]
     pub fn record(_name: &'static str, _nanos: u64) {}
 
-    /// Feature-OFF [`crate::scope`]: runs `f` with zero timing overhead.
+    /// Feature-OFF [`crate::timing::scope`]: runs `f` with zero timing overhead.
     #[inline(always)]
     pub fn scope<T>(_name: &'static str, f: impl FnOnce() -> T) -> T {
         f()
     }
 
-    /// Feature-OFF [`crate::dump`]: no-op.
+    /// Feature-OFF [`crate::timing::dump`]: no-op.
     #[inline(always)]
     pub fn dump() {}
 
-    /// Feature-OFF [`crate::dump_scoped`]: no-op.
+    /// Feature-OFF [`crate::timing::dump_scoped`]: no-op.
     #[inline(always)]
     pub fn dump_scoped() {}
 
-    /// Feature-OFF [`crate::reset`]: no-op.
+    /// Feature-OFF [`crate::timing::reset`]: no-op.
     #[inline(always)]
     pub fn reset() {}
 
-    /// Feature-OFF [`crate::enabled`]: always `false`.
+    /// Feature-OFF [`crate::timing::enabled`]: always `false`.
     #[inline(always)]
     pub fn enabled() -> bool {
         false
@@ -113,11 +113,13 @@ macro_rules! timeit {
 #[macro_export]
 macro_rules! timeit {
     ($name:expr) => {
-        $crate::timer($name)
+        $crate::timing::timer($name)
     };
 }
 
 pub use imp::{dump, dump_scoped, enabled, record, reset, scope, timer, Timer};
+// `#[macro_export]` places `timeit!` at the crate root; this makes it `busbar_kernel::timing::timeit!` too.
+pub use crate::timeit;
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 // FEATURE ON: the real registry.
@@ -391,6 +393,7 @@ mod imp {
         {
             // SAFETY: `atexit` stores a plain `extern "C"` fn pointer that takes no args and returns
             // nothing; `timing_atexit` matches that ABI and only reads process-global state.
+            #[allow(unsafe_code)]
             unsafe {
                 libc::atexit(timing_atexit);
             }
@@ -578,7 +581,9 @@ mod imp {
     #[path = "tests/imp_tests.rs"]
     mod tests;
 
+    // Test-only: the cell sets and clears `BUSBAR_TIMING`, and env mutation is `unsafe` in 2024.
     #[cfg(test)]
+    #[allow(unsafe_code)]
     #[path = "tests/mutation_hardening_tests.rs"]
     mod mutation_hardening_tests;
 }

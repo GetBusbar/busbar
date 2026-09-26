@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Mutation-hardening tests for `crates/busbar-timing/src/lib.rs` (feature-on registry, module
+//! Mutation-hardening tests for `crates/busbar-kernel/src/timing/mod.rs` (feature-on registry, module
 //! `imp`). Added to close gaps `tests/imp_tests.rs` did not catch: the cached-disabled gate
 //! branch, the install-once `atexit` latch, and `bucket_floor`'s own arithmetic (previously only
 //! ever checked against ANOTHER call to itself).

@@ -37,11 +37,6 @@ path = "src/lib.rs"
 # and friends): this plane has NO production dependency on busbar-core, so there is nothing of core's
 # to forward. The G6 A4b leaf-op read/write free fns are `#[cfg(any(test, feature = "test-support"))]`.
 test-support = ["busbar-kernel/test-support", "busbar-llm-codec/test-support"]
-# Passthrough to `busbar-timing`'s debug-only per-method micro-timing (DEFAULT OFF), mirroring
-# `busbar-core`'s `timing` feature: the relocated engine's `#[cfg(feature = "timing")]` profiling
-# guards (in `engine/pipeline.rs`) resolve against this, so the flag exists in lock-step with the
-# `busbar-timing/timing` it forwards. Off ⇒ those guards are zero-sized no-ops.
-timing = ["busbar-timing/timing", "busbar-llm-codec/timing"]
 # The CI-only OpenAPI schema derive, mirroring `busbar-mcp`: the LLM `PLANE_DECL`'s `openapi_schemas`
 # field is `#[cfg(feature = "openapi-schema")]` on `busbar_substrate::plane::registry::PlaneDecl`, so
 # this feature must resolve that `#[cfg]` in lock-step with the struct definition. FORWARDS straight
@@ -84,10 +79,6 @@ busbar-llm-codec = { path = "../busbar-llm-codec" }
 # THE PURE PLANE this plugin hosts: its entry hands the composition root's boot seal the plane and
 # the claims it declares, so the root names neither (the edge `busbar-mcp` -> `busbar-plane-mcp` has).
 busbar-plane-llm = { path = "../busbar-plane-llm" }
-# Debug-only per-method micro-timing (DEFAULT OFF, zero cost). Instruments the per-dialect
-# reader/writer translate entry points (bedrock/cohere — the heavy cells). Enable the registry via
-# `--features busbar-timing/timing`.
-busbar-timing = { path = "../busbar-timing" }
 axum = { workspace = true }
 bytes = { workspace = true }
 serde = { workspace = true }

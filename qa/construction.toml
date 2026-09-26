@@ -237,6 +237,14 @@ busbar-voice = ["busbar-voice-codec"]
 # base" and asked for exactly this strike. THE CEILINGS THEMSELVES DID NOT MOVE: both still read
 # 9294. The next #83/#84 merge into busbar-contract declares its own re-arm here, once.
 
+# ── THE KERNEL CEILING, RE-ARMED AT THE MEASURE BY THE busbar-timing FOLD (OWNER RULING Q70) ────
+
+[gate.ceiling_raises."rules.loc-ceilings.kernel_ceiling"]
+file    = "qa/construction.toml"
+from    = 50846
+to      = 51167
+because = "OWNER RULING Q70 (docs/design/1.6.0-QUESTIONS.md, OWNER ANSWERS 2026-09-25): busbar-timing folds into busbar-kernel as the feature-gated `timing` module, and the kernel ceiling is re-armed at the measured value in the fold commit. Q70 authorizes exactly the moved lines. busbar-timing measured code 318 (cargo xtask loc --ref 49d676057 busbar-timing). The kernel gains three seam lines: `pub mod timing;`, `pub use crate::timeit;`, and the `#[allow(unsafe_code)]` the crate-wide deny needs on the atexit call. That is +321. The loc-ceilings:kernel row measures 50773 at 49d676057 and 51094 with the fold. The ceiling moves by exactly those 321 lines, 50846 -> 51167. K2g's reserved <= 73 lines, which the 50846 figure holds open by ARCHITECT ruling on R-KERNEL, stay reserved and are not spent by this fold."
+
 # ── THE KERNEL CEILING'S OWNER-APPROVED RAISE — EXPIRED AND STRUCK ─────────────────────────────
 #
 # The entry declared `rules.loc-ceilings.kernel_ceiling` 51439 -> 51799: the owner approved the
@@ -884,7 +892,16 @@ kernel_crate = "busbar-kernel"
 # The 73 above the measurement are a NAMED reservation,
 # [gate.ceiling_reservations."rules.loc-ceilings.kernel_ceiling"] above, which ceiling-slack
 # subtracts before it judges slack, so any gap beyond them is still RED.
-kernel_ceiling = 50846
+# ── RE-ARMED BY THE MEASURED FOLD, OWNER RULING Q70 (docs/design/1.6.0-QUESTIONS.md, OWNER ANSWERS
+# 2026-09-25): busbar-timing folds into busbar-kernel as the feature-gated `timing` module and "the
+# kernel ceiling [is] re-armed at measured in the fold commit". Q70 authorizes exactly the moved
+# lines: busbar-timing's code 318 (`cargo xtask loc --ref 49d676057 busbar-timing`), landing in
+# `src/timing/mod.rs`, plus three seam lines (`pub mod timing;`, `pub use crate::timeit;`, and the
+# `#[allow(unsafe_code)]` the kernel's crate-wide `deny` needs on the atexit call) = +321. This
+# row's own measure (`cargo xtask gate construction`) reads 50773 at 49d676057 and 51094 with the
+# fold. 50846 + 321 = 51167: the fold's measured lines exactly, with K2g's <= 73 named reservation
+# still held open. Declared in `[gate.ceiling_raises]` above.
+kernel_ceiling = 51167
 # `caps_crate = "busbar-caps"` WAS HERE AND IS STRUCK, 2026-09-22. The crate was folded into
 # busbar-contract by 2c9eddecf ("W2.c: fold busbar-caps into busbar-contract"); its types live at
 # `crates/busbar-contract/src/caps/`, whose own module header says "Folded from the former
@@ -1661,8 +1678,9 @@ because = "aborting skips every exit path at once; the node drains instead"
 symbol = "AssertUnwindSafe"
 confined_to = "kernel/src/teller"
 # The Teller loop's ONE home in this tree: the kernel's own teller.rs. The second site is
-# busbar-timing's atexit diagnostic dump: a debug-only (`feature = "timing"`) profiling crate that
-# holds no unit, so its catch_unwind cannot smuggle a hold across — a distinct, provably-safe use.
+# busbar_kernel::timing's atexit diagnostic dump (the former busbar-timing crate, folded by OWNER
+# Q70): a debug-only (`feature = "timing"`) profiling module that holds no unit, so its catch_unwind
+# cannot smuggle a hold across — a distinct, provably-safe use.
 #
 # STRUCK 2026-09-22: `crates/busbar-substrate/src/teller`. GONE, NOT MOVED, and the distinction is
 # the whole point — there is no successor to repoint at. The list described "the Teller loop's TWO
@@ -1674,8 +1692,8 @@ confined_to = "kernel/src/teller"
 # loop that SURVIVED, and it is already on this list in its own right. Repointing the struck entry
 # at it would be inventing coverage for a scope that no longer exists; the substrate teller's
 # AssertUnwindSafe went away with its code. The remaining paths already confine the live loop.
-confined_to_paths = ["crates/busbar-kernel/src/teller.rs", "crates/busbar-timing/src/lib.rs", "crates/busbar-contract/src/caps/fixtures/lint_rules.rs"]
-because = "it is what lets a hold cross a catch_unwind; the loop needs it in exactly one place (plus busbar-timing's holdless atexit dump)"
+confined_to_paths = ["crates/busbar-kernel/src/teller.rs", "crates/busbar-kernel/src/timing/mod.rs", "crates/busbar-contract/src/caps/fixtures/lint_rules.rs"]
+because = "it is what lets a hold cross a catch_unwind; the loop needs it in exactly one place (plus busbar_kernel::timing's holdless atexit dump)"
 
 [rules.hold-escapes.symbols.join-abort]
 symbol = "JoinHandle::abort"

@@ -147,7 +147,6 @@ pub fn neutral_src_roots() -> Vec<String> {
         "crates/busbar-core-admin/src",
         "crates/busbar-core-connsec/src",
         "crates/busbar-oauth2/src",
-        "crates/busbar-timing/src",
         "crates/busbar-unit-transport-key/src",
     ]
     .into_iter()

@@ -76,7 +76,6 @@ pub mod store {
     /// Get current time in seconds since epoch. The shared wall clock both core and the plane crates
     /// read (the plane via the `clock_now` host seam long-term; this is the single implementation).
     pub fn now() -> u64 {
-        let _t = busbar_timing::timeit!("store_now");
         use std::time::{SystemTime, UNIX_EPOCH};
         SystemTime::now()
             .duration_since(UNIX_EPOCH)

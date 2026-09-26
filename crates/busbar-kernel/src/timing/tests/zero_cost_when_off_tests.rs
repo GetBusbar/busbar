@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Tests for `crates/busbar-timing/src/lib.rs` (feature-off zero-cost proof).
+//! Tests for `crates/busbar-kernel/src/timing/mod.rs` (feature-off zero-cost proof).
 
 //! Method: this test crate is built in the DEFAULT (feature-off) configuration. The proof has
 //! two legs, both machine-checked here:

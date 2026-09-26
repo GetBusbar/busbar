@@ -40,9 +40,9 @@ seven below are what the union did not contain.
 | feature | what is behind it |
 | --- | --- |
 | `busbar/test-harness` | `crates/busbar/src/root/harness.rs` — the fixture surface a DEPENDENCY build (not a `cfg(test)` build) reaches. `#[cfg(any(test, feature = "test-harness"))]`, so the workspace test build compiles it under `test` and the FEATURE arm was never once exercised. |
-| `busbar-core/timing` | forwards `busbar-timing/timing`. The forward itself is the thing that can rot: a rename in `busbar-timing` makes this line invalid and nothing reads it. |
-| `busbar-llm/timing` | same, plus `busbar-llm-codec/timing`. |
-| `busbar-llm-codec/timing` | same. |
+| `busbar-core/timing` | forwarded `busbar-timing/timing`. The forward itself was the thing that could rot. (OWNER Q70: busbar-timing is now the feature-gated `busbar_kernel::timing` module and `busbar-kernel/timing` is the feature itself, so there is no forward left.) |
+| `busbar-llm/timing` | same, plus `busbar-llm-codec/timing`. (Deleted with the OWNER Q70 fold: the plane drops its timers, as Q70 and owner ruling O9 record.) |
+| `busbar-llm-codec/timing` | same. (Deleted: SD-3, owner ruling O9, dropped the codec's timers and left the flag empty; the empty flag goes with the OWNER Q70 fold.) |
 | `busbar-llm/auth-admin-tokens` | `crates/busbar-llm/src/engine/tests/forward_pool_integration_tests.rs:1788` — an admin-token path in the forward-pool suite, compiled by nothing. |
 | `busbar-llm/webhook-receiver` | `crates/busbar-llm/src/openai_responses_webhook.rs` — a LIVE HTTP route mount (`build_routes`, the `PLANE_DECL.routes` contribution) plus `crates/busbar-llm/src/lib.rs:241`. This is shipped product code behind an off-by-default flag, and it was not compiled anywhere. |
 | `busbar-mcp-codec/test-support` | `subscribe.rs`, `invoke.rs`, `sanitize.rs`, `outputschema.rs` — `#[cfg(any(test, feature = "test-support"))]`. Same shape as `busbar/test-harness`: the `test` arm is compiled, the `feature` arm is not, and the two are not the same build. |
@@ -78,7 +78,7 @@ the build anyone ships.
 | row | features | tests |
 | --- | --- | --- |
 | `root-test-harness` | `busbar/test-harness` | `-p busbar` |
-| `timing` | `busbar-core/timing,busbar-llm/timing,busbar-llm-codec/timing` | `-p busbar-core -p busbar-llm -p busbar-llm-codec -p busbar-timing` |
+| `timing` | `busbar-kernel/timing` | `-p busbar-kernel` |
 | `llm-auth-admin-tokens` | `busbar-llm/auth-admin-tokens` | `-p busbar-llm` |
 | `llm-webhook-receiver` | `busbar-llm/webhook-receiver` | `-p busbar-llm` |
 | `mcp-codec-test-support` | `busbar-mcp-codec/test-support` | `-p busbar-mcp-codec` |
@@ -279,7 +279,7 @@ Covering leg is the FIRST leg that compiles the feature; several are compiled by
 | `busbar-substrate-values/relay` | non-default | `check` — reached from a workspace default | yes |
 | `busbar-substrate-values/runtime` | non-default | `check` — reached from a workspace default | yes |
 | `busbar-substrate-values/test-support` | non-default | `check` — `--all-targets` dev-dep unification | yes (incidental) |
-| `busbar-timing/timing` | non-default | `check` step "Timing implementation tests" | yes |
+| `busbar-kernel/timing` | non-default | `check` step "Timing implementation tests" (was `busbar-timing/timing`, OWNER Q70) | yes |
 | `busbar-unit-auth/sha256` | non-default | `check` — reached from a workspace default | yes |
 | `busbar-voice/openapi-schema` | non-default | `openapi-schema` | yes |
 | `busbar-voice/runtime` | non-default | `check` — reached from a workspace default | yes |
