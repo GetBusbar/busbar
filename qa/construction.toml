@@ -865,7 +865,10 @@ kernel_crate = "busbar-kernel"
 # under 51439; that commit lowers this figure to what it then measures.
 # ── LOWERED 51742 -> 51049 by `--write` on the committed breaker fold: the in-memory store's
 # state machine left the kernel for busbar-kernel-breaker. Downward only.
-kernel_ceiling = 51049
+# ── LOWERED 51049 -> 50846: the measurement (50773) plus the one kernel reservation a ruling holds
+# open, K2g's <= 73 lines. Every other change nets <= 0 on the kernel. SD-8 and the timing fold
+# re-arm by their own measured figures, each in its own commit, as the kernel rulings require.
+kernel_ceiling = 50846
 # `caps_crate = "busbar-caps"` WAS HERE AND IS STRUCK, 2026-09-22. The crate was folded into
 # busbar-contract by 2c9eddecf ("W2.c: fold busbar-caps into busbar-contract"); its types live at
 # `crates/busbar-contract/src/caps/`, whose own module header says "Folded from the former
