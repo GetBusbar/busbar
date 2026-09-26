@@ -83,6 +83,64 @@ pub trait CheckpointSecret {
     fn sign(&self, body: &[u8]) -> Result<Signature, SignError>;
 }
 
+/// Checks a checkpoint signature. Implemented over the deployment's ONE keyset — the audit key set
+/// #82 publishes (Q71(3)) — by whatever holds it; the ledger holds no key and no cryptographic
+/// opinion, so the answer is the verifier's words, carried into [`SealRefusal::BadSignature`].
+pub trait CheckpointVerifier {
+    /// Whether `signature` is a signature over `body` by a key this verifier trusts.
+    ///
+    /// # Errors
+    ///
+    /// Why it is not, in the verifier's own words.
+    fn verify(&self, body: &[u8], signature: &Signature) -> Result<(), String>;
+}
+
+/// Why a sealed checkpoint does not verify. Three different events, three different answers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SealRefusal {
+    /// The figures do not hash to the stored digest: edited after sealing.
+    Edited {
+        /// Which checkpoint.
+        checkpoint_seq: u64,
+    },
+    /// Sealed with no signature, so no key can vouch for it.
+    Unsigned {
+        /// Which checkpoint.
+        checkpoint_seq: u64,
+    },
+    /// The signature does not verify against the keyset.
+    BadSignature {
+        /// Which checkpoint.
+        checkpoint_seq: u64,
+        /// The verifier's reason.
+        why: String,
+    },
+}
+
+impl std::fmt::Display for SealRefusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SealRefusal::Edited { checkpoint_seq } => write!(
+                f,
+                "checkpoint {checkpoint_seq} does not hash to its own figures — it was EDITED after it was sealed"
+            ),
+            SealRefusal::Unsigned { checkpoint_seq } => write!(
+                f,
+                "checkpoint {checkpoint_seq} carries no signature — no key in the keyset can vouch for it"
+            ),
+            SealRefusal::BadSignature {
+                checkpoint_seq,
+                why,
+            } => write!(
+                f,
+                "checkpoint {checkpoint_seq}'s signature does not verify against the keyset: {why}"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for SealRefusal {}
+
 /// Why a checkpoint could not be anchored.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AnchorError {
@@ -297,6 +355,31 @@ impl Checkpoint {
     /// checkpoint whose figures were edited after it was sealed.
     pub fn body_hash_verifies(&self) -> bool {
         self.body_digest() == self.body_hash
+    }
+
+    /// VERIFY THE SEAL: the figures hash to the stored digest, and the signature over the signed
+    /// body verifies against the keyset (Q71(3): the #82 audit keyset, one keyset).
+    ///
+    /// The digest first, because a signature checked over a body nobody re-derived from the figures
+    /// is a signature over bytes, not over a checkpoint.
+    ///
+    /// # Errors
+    ///
+    /// [`SealRefusal`] naming which of the three it was.
+    pub fn verify_seal(&self, keys: &dyn CheckpointVerifier) -> Result<(), SealRefusal> {
+        let checkpoint_seq = self.checkpoint_seq;
+        if !self.body_hash_verifies() {
+            return Err(SealRefusal::Edited { checkpoint_seq });
+        }
+        let signature = self
+            .signature
+            .as_ref()
+            .ok_or(SealRefusal::Unsigned { checkpoint_seq })?;
+        keys.verify(&self.signed_body(), signature)
+            .map_err(|why| SealRefusal::BadSignature {
+                checkpoint_seq,
+                why,
+            })
     }
 
     /// The digest of [`Checkpoint::signed_body`] — the one place a checkpoint body is hashed, for

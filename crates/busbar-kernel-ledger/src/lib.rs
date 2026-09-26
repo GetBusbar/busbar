@@ -93,7 +93,7 @@ pub mod verify;
 
 pub use checkpoint::{
     AnchorError, AnchorState, AnchoredHead, ChainHead, Checkpoint, CheckpointAnchor,
-    CheckpointSecret, SelfAttestingAnchor, SignError, Signature,
+    CheckpointSecret, CheckpointVerifier, SealRefusal, SelfAttestingAnchor, SignError, Signature,
 };
 pub use identity::{
     attribution_holds, closed_window_is_settled, holds, residual, ClosedWindowMoved, Imbalance,
