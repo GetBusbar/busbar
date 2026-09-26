@@ -682,7 +682,7 @@ fn the_three_seams_share_one_shim() {
 /// The published sqlite store tarball, fetched by pinned digest into the oracle cache by
 /// `testing/shadow-oracle/fetch-plugin.sh`. `None` when the cache is cold — the script downloads on
 /// demand and a unit test must not, so this reads the cache the oracle already fills.
-pub(super) fn cached_published_sqlite_tarball() -> Option<std::path::PathBuf> {
+pub(super) fn cached_published_store_tarball() -> Option<std::path::PathBuf> {
     let asset_triple = match (std::env::consts::OS, std::env::consts::ARCH) {
         ("macos", "aarch64") => "aarch64-apple-darwin",
         ("macos", "x86_64") => "x86_64-apple-darwin",
@@ -694,7 +694,11 @@ pub(super) fn cached_published_sqlite_tarball() -> Option<std::path::PathBuf> {
         Some(dir) => std::path::PathBuf::from(dir),
         None => std::path::PathBuf::from(std::env::var_os("HOME")?).join(".cache/busbar-oracle"),
     };
-    let versions = std::fs::read_dir(root.join("plugins/store-sqlite")).ok()?;
+    let versions = std::fs::read_dir(
+        root.join("plugins")
+            .join(crate::tests::artifact("published_store_plugin_id")),
+    )
+    .ok()?;
     versions
         .flatten()
         .filter_map(|tag| {
@@ -720,10 +724,11 @@ pub(super) fn cached_published_sqlite_tarball() -> Option<std::path::PathBuf> {
 /// adapter are about one binary.
 #[test]
 fn a_round_trip_through_the_published_store() {
-    let Some(tarball_path) = cached_published_sqlite_tarball() else {
+    let Some(tarball_path) = cached_published_store_tarball() else {
+        let id = crate::tests::artifact("published_store_plugin_id");
         eprintln!(
-            "skip: no published store-sqlite tarball in the oracle cache (run \
-             `testing/shadow-oracle/fetch-plugin.sh store-sqlite`)"
+            "skip: no published {id} tarball in the oracle cache (run \
+             `testing/shadow-oracle/fetch-plugin.sh {id}`)"
         );
         return;
     };

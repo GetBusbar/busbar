@@ -372,6 +372,16 @@ fn name_and_alias_vs_name_conflicts_are_hard_errors() {
         errs.iter().any(|e| e.contains("name conflict")),
         "got {errs:?}"
     );
+    // The refusal reads byte for byte as 1.5.5's (the golden text is fixture data).
+    let golden = include_str!("../../tests/fixtures/conflict_messages.txt")
+        .lines()
+        .find(|l| l.starts_with("plugin name conflict: "))
+        .expect("the fixture carries the name-conflict line");
+    let mut want = golden.to_string();
+    for fill in ["busbar-store-gamma-plugin", "a.tar.gz", "b.tar.gz"] {
+        want = want.replacen("{}", fill, 1);
+    }
+    assert!(errs.contains(&want), "want {want:?}, got {errs:?}");
     let _ = std::fs::remove_dir_all(&dir);
 
     // Alias colliding with another plugin's canonical name.

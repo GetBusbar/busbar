@@ -1,0 +1,5 @@
+# The loader's name-conflict refusal, byte for byte as 1.5.5 printed it at boot and in --validate
+# (docs/design/inventory/1.5.5-plugins-stores.md, "Duplicate canonical name"). Golden input data for
+# registry_tests.rs, and the pin for registry.rs's frozen format string. The
+# three `{}` are the plugin name and the two tarball files, in that order.
+plugin name conflict: '{}' is claimed by both {} and {} - remove one ("you can't use valkey and a third-party valkey")

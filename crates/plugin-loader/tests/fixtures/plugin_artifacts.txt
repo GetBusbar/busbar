@@ -1,0 +1,19 @@
+# Golden input data for busbar-plugin-loader's own tests: the REAL on-disk names of the plugin
+# artifacts the dlopen-seam tests locate. Each value must equal what that artifact's own build (or
+# the oracle's fetch script) produces, or the test points at a file that does not exist. The loader
+# names no instance; the tests read these names here, as data. One `key = value` per line; `#`
+# starts a comment.
+
+# The sibling `GetBusbar/<checkout>` repo whose release cdylib is the preferred kind:store fixture.
+sibling_store_checkout = store-sqlite
+sibling_store_plugin = store-sqlite-plugin
+sibling_store_cdylib = busbar_store_sqlite_plugin
+
+# The oracle cache's directory for the published store tarball (testing/shadow-oracle/fetch-plugin.sh
+# <plugin-id> fills `plugins/<plugin-id>`).
+published_store_plugin_id = store-sqlite
+
+# The in-tree hermetic example cdylibs (crates/*-example-plugin), by their crate identifier.
+store_example_cdylib = busbar_store_example_plugin
+secret_example_cdylib = busbar_secret_example_plugin
+export_example_cdylib = busbar_export_example_plugin

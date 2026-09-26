@@ -5,6 +5,24 @@
 
 use super::*;
 
+/// The golden artifact names this crate's tests locate on disk, read from
+/// `tests/fixtures/plugin_artifacts.txt` (data, not code: the loader names no plugin instance).
+const PLUGIN_ARTIFACTS: &str = include_str!("../../tests/fixtures/plugin_artifacts.txt");
+
+/// One artifact name from [`PLUGIN_ARTIFACTS`], by key. Panics on a missing key: a fixture that
+/// lost a row must fail the test that needed it, never hand it an empty name.
+pub(crate) fn artifact(key: &str) -> &'static str {
+    PLUGIN_ARTIFACTS
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .find_map(|l| {
+            let (k, v) = l.split_once('=')?;
+            (k.trim() == key).then(|| v.trim())
+        })
+        .unwrap_or_else(|| panic!("tests/fixtures/plugin_artifacts.txt has no `{key}` row"))
+}
+
 /// The REAL `kind: store` cdylib the loader-MECHANISM tests below dlopen (TOCTOU-safe loading,
 /// hot-swap coexistence, staged-file lifecycle, denylist-fallback classification — never
 /// store-specific behaviour). Two real plugins can serve, in this order:
@@ -31,8 +49,9 @@ use super::*;
 pub(crate) fn store_fixture_plugin_path() -> Option<std::path::PathBuf> {
     let sibling = {
         let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR")); // .../busbar/crates/plugin-loader
-        let sibling_root = manifest_dir.join("../../../store-sqlite"); // sibling of this repo
-        let name = plugin_library_filename("busbar_store_sqlite_plugin");
+        let sibling_root =
+            manifest_dir.join(format!("../../../{}", artifact("sibling_store_checkout"))); // sibling of this repo
+        let name = plugin_library_filename(artifact("sibling_store_cdylib"));
         let candidate = sibling_root.join("target/release").join(&name);
         candidate.exists().then_some(candidate)
     };
@@ -57,22 +76,23 @@ fn resolve_store_fixture(
         return Ok(sibling);
     }
     if ci && dev_gate {
-        return Err(
-            "the store-sqlite-plugin cdylib is not built from the ../store-sqlite sibling \
+        return Err(format!(
+            "the {} cdylib is not built from the ../{} sibling \
              checkout under qa-gate.yml's loader job (DEV_GATE): refusing to silently degrade the \
-             kind:store dlopen seam's coverage to the in-tree example plugin"
-                .to_string(),
-        );
+             kind:store dlopen seam's coverage to the in-tree example plugin",
+            artifact("sibling_store_plugin"),
+            artifact("sibling_store_checkout"),
+        ));
     }
     match in_tree() {
         Some(p) => Ok(Some(p)),
-        None if ci => Err(
-            "no kind:store cdylib under CI: neither the ../store-sqlite sibling nor \
+        None if ci => Err(format!(
+            "no kind:store cdylib under CI: neither the ../{} sibling nor \
              the in-tree store-example-plugin (which `cargo test --workspace` in ci.yml \
              builds) is present. Refusing to silently skip loader-mechanism coverage of the \
-             kind:store dlopen seam."
-                .to_string(),
-        ),
+             kind:store dlopen seam.",
+            artifact("sibling_store_checkout"),
+        )),
         None => Ok(None),
     }
 }
@@ -81,9 +101,10 @@ fn resolve_store_fixture(
 #[test]
 fn the_store_fixture_hard_fails_where_its_doc_says() {
     let sib = || {
-        Some(std::path::PathBuf::from(
-            "/sibling/libbusbar_store_sqlite_plugin.so",
-        ))
+        Some(std::path::PathBuf::from(format!(
+            "/sibling/lib{}.so",
+            artifact("sibling_store_cdylib")
+        )))
     };
     let ex = || {
         Some(std::path::PathBuf::from(
@@ -571,7 +592,7 @@ fn on_disk_swap_after_verify_does_not_change_what_loads() {
     // Attacker swaps the file at `path` for junk AFTER we verified — a classic TOCTOU swap.
     let dir = std::env::temp_dir().join(format!("busbar-toctou-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
-    let victim = dir.join(plugin_library_filename("busbar_store_sqlite_plugin"));
+    let victim = dir.join(plugin_library_filename(artifact("sibling_store_cdylib")));
     std::fs::write(&victim, &verified).unwrap();
     // Confirm loading the victim PATH would pick up whatever is on disk...
     std::fs::write(&victim, b"\x7fELF hostile junk, not a plugin").unwrap();
@@ -1397,7 +1418,7 @@ fn hermetic_secret_plugin_path() -> Option<std::path::PathBuf> {
     let candidate = (|| {
         let exe = std::env::current_exe().ok()?;
         let profile_dir = exe.parent()?.parent()?;
-        let name = plugin_library_filename("busbar_secret_example_plugin");
+        let name = plugin_library_filename(artifact("secret_example_cdylib"));
         let uplifted = profile_dir.join(&name);
         let raw = profile_dir.join("deps").join(&name);
         [uplifted, raw]
@@ -1472,7 +1493,7 @@ fn hermetic_export_plugin_path() -> Option<std::path::PathBuf> {
     let candidate = (|| {
         let exe = std::env::current_exe().ok()?;
         let profile_dir = exe.parent()?.parent()?;
-        let name = plugin_library_filename("busbar_export_example_plugin");
+        let name = plugin_library_filename(artifact("export_example_cdylib"));
         let uplifted = profile_dir.join(&name);
         let raw = profile_dir.join("deps").join(&name);
         [uplifted, raw]
@@ -1710,7 +1731,7 @@ fn store_example_plugin_path() -> Option<std::path::PathBuf> {
 fn store_example_candidate() -> Option<std::path::PathBuf> {
     let exe = std::env::current_exe().ok()?;
     let profile_dir = exe.parent()?.parent()?;
-    let name = plugin_library_filename("busbar_store_example_plugin");
+    let name = plugin_library_filename(artifact("store_example_cdylib"));
     let uplifted = profile_dir.join(&name);
     let raw = profile_dir.join("deps").join(&name);
     [uplifted, raw]
