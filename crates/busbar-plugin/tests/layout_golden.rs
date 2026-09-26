@@ -626,7 +626,10 @@ fn compute_layout() -> String {
             dial,
             read,
             write,
-            close
+            close,
+            // The linked row's SESSION (minor 26).
+            session,
+            _reserved
         ]
     );
     record!(

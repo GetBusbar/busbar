@@ -12,8 +12,8 @@
 //! transport. This decl carries exactly that row, as data and one slot, so a dropped-in transport and
 //! a linked one reach the root as the same row:
 //!
-//! * [`TransportDecl::key`] and the [`TransportDecl::composes_over_ptr`] list are DECLARED DATA,
-//!   borrowed from the image and read once at load;
+//! * [`TransportDecl::key`], the [`TransportDecl::composes_over_ptr`] list and
+//!   [`TransportDecl::session`] are DECLARED DATA, borrowed from the image and read once at load;
 //! * [`TransportDecl::build`] takes the built LOWER layer (a [`WireLower`]: the lower transport's own
 //!   decl plus its built state, NULL = no lower layer) and the deployment's [`WireSettings`], and
 //!   yields the built transport as an [`OpaqueHandle`] the host stores and never downcasts;
@@ -41,9 +41,10 @@ use crate::AbiPreamble;
 use core::mem::MaybeUninit;
 use std::os::raw::c_void;
 
-/// The first airlock minor at which a [`TransportDecl`] exists. A transport's manifest
-/// `abi_version` is an airlock minor in `[TRANSPORT_DECL_MINOR, ABI_MINOR]`.
-pub const TRANSPORT_DECL_MINOR: u32 = 24;
+/// The first airlock minor at which a [`TransportDecl`] states the whole linked row (minor 26: the
+/// `session` fact joined it; the minor-24 decl never shipped). A transport's manifest `abi_version`
+/// is an airlock minor in `[TRANSPORT_DECL_MINOR, ABI_MINOR]`.
+pub const TRANSPORT_DECL_MINOR: u32 = 26;
 
 /// What a transport slot answers. The discriminants `1..=10` are the transport kind's own failure
 /// vocabulary, in the order the contract's transport error spells it, so the host maps one to the
@@ -274,6 +275,12 @@ pub struct TransportDecl {
     pub write: Option<WireWriteFn>,
     /// Close a connection.
     pub close: Option<WireCloseFn>,
+    // ── appended at minor 26 ──
+    /// `1` when this transport carries sessions, `0` when it does not — the linked row's `SESSION`.
+    /// Any other value is refused at load.
+    pub session: u32,
+    /// Alignment padding.
+    pub _reserved: u32,
 }
 
 // SAFETY: the same lifetime contract as `PlaneDecl`'s: every raw pointer here (the key, the

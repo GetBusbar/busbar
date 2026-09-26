@@ -60,6 +60,7 @@ pub struct DynTransport {
     honoured_size: u32,
     key: String,
     composes_over: Vec<String>,
+    session: bool,
     path: String,
     _lib: Option<Library>,
     _backing: Option<stage::Staged>,
@@ -128,6 +129,12 @@ impl DynTransport {
     #[must_use]
     pub fn composes_over(&self) -> &[String] {
         &self.composes_over
+    }
+
+    /// Whether this transport carries sessions (the linked row's `SESSION`).
+    #[must_use]
+    pub fn session(&self) -> bool {
+        self.session
     }
 
     /// The decl this transport was admitted with — what an upper layer's [`WireLower`] names.
@@ -462,12 +469,12 @@ fn assemble(
             abi.abi_minor
         ));
     }
-    let whole = (core::mem::offset_of!(TransportDecl, close)
-        + core::mem::size_of::<Option<WireCloseFn>>()) as u32;
+    let whole =
+        (core::mem::offset_of!(TransportDecl, session) + core::mem::size_of::<u32>()) as u32;
     if advertised < whole {
         return Err(format!(
             "transport '{display}' decl attests size {advertised}, below the {whole}-byte decl — \
-             it does not reach its own slots"
+             it does not reach its own slots and declaration"
         ));
     }
     let ours = core::mem::size_of::<TransportDecl>() as u32;
@@ -505,11 +512,23 @@ fn assemble(
                 .ok_or_else(|| format!("transport '{display}' states a null composes-over entry"))
         })
         .collect::<Result<Vec<_>, _>>()?;
+    let session = match busbar_plugin::read_sized_field!(decl, size, TransportDecl, session)
+        .ok_or_else(|| field("session"))?
+    {
+        0 => false,
+        1 => true,
+        other => {
+            return Err(format!(
+                "transport '{display}' declares session flag {other}; a transport declares 0 or 1"
+            ))
+        }
+    };
     Ok(DynTransport {
         decl,
         honoured_size: size,
         key,
         composes_over,
+        session,
         path: display,
         _lib: lib,
         _backing: backing,

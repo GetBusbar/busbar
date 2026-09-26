@@ -18,8 +18,9 @@
 //!
 //! # What the slots are
 //!
-//! [`TRANSPORT_DECL`]'s row IS the linked row ([`crate::linked`]): its key and the layers it composes
-//! over are [`crate::linked::KEY`] and [`crate::linked::COMPOSES_OVER`], and `build` constructs the
+//! [`TRANSPORT_DECL`]'s row IS the linked row ([`crate::linked`]): its key, the layers it composes
+//! over and whether it carries sessions are [`crate::linked::KEY`], [`crate::linked::COMPOSES_OVER`]
+//! and [`crate::linked::SESSION`], and `build` constructs the
 //! transport exactly as [`crate::linked::build`] does (this wire takes no lower layer and reads no
 //! setting). Its slots
 //! are one-line bridges onto the SAME async helpers the [`Transport`](busbar_contract::Transport)
@@ -54,8 +55,8 @@ pub mod layout {
     pub const ABI_MAGIC: u64 = u64::from_le_bytes(*b"BUSPLANE");
     /// The airlock major this decl is laid out for.
     pub const ABI_MAJOR: u32 = 2;
-    /// The airlock minor this decl is laid out at (the first minor with a transport decl).
-    pub const ABI_MINOR: u32 = 24;
+    /// The airlock minor this decl is laid out at (the first minor with a whole transport decl).
+    pub const ABI_MINOR: u32 = 26;
     /// The shared library handshake `busbar_abi` answers.
     pub const HANDSHAKE_VERSION: u32 = 1;
 
@@ -211,6 +212,10 @@ pub mod layout {
         pub write: Option<WriteFn>,
         /// Close.
         pub close: Option<CloseFn>,
+        /// `1` = carries sessions.
+        pub session: u32,
+        /// Padding.
+        pub _reserved: u32,
     }
 
     // SAFETY: every pointer in the decl addresses this image's own `'static` read-only data.
@@ -260,6 +265,8 @@ pub static TRANSPORT_DECL: TransportDecl = TransportDecl {
     read: Some(read),
     write: Some(write),
     close: Some(close),
+    session: crate::linked::SESSION as u32,
+    _reserved: 0,
 };
 
 /// The dropped-in door's three symbols. In a module of their own, so a build that links this crate

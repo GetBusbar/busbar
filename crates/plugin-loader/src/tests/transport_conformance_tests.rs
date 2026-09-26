@@ -188,11 +188,13 @@ fn a_linked_and_a_dropped_in_transport_are_one_row() {
         linked.composes_over(),
         transport_fixture::linked::COMPOSES_OVER
     );
+    assert_eq!(linked.session(), transport_fixture::linked::SESSION);
     let Some(dropped) = dropped_in("transport-row") else {
         return;
     };
     assert_eq!(dropped.key(), linked.key());
     assert_eq!(dropped.composes_over(), linked.composes_over());
+    assert_eq!(dropped.session(), linked.session());
     // Two images, two decls: the dropped-in one is not the linked one read twice.
     assert_ne!(dropped.decl(), linked.decl());
 }
@@ -322,8 +324,8 @@ fn a_transport_manifest_is_admitted_on_the_airlock_axis() {
 }
 
 /// The admission refuses a decl it cannot trust, on either door: null, a foreign preamble, a minor
-/// that predates the transport decl, a size that does not reach its own slots, a size past this
-/// build's, and a keyless row.
+/// that predates the transport decl, a size that does not reach its own slots and declaration, a
+/// size past this build's, a session flag that is neither 0 nor 1, and a keyless row.
 #[test]
 fn the_admission_refuses_a_decl_it_cannot_trust() {
     // SAFETY (every `link_transport` below): null is refused before any read; each other decl is
@@ -345,9 +347,14 @@ fn the_admission_refuses_a_decl_it_cannot_trust() {
         "before the transport decl existed",
     );
     refuse(
-        |d| d.size = core::mem::offset_of!(TransportDecl, close) as u32,
-        "does not reach its own slots",
+        |d| d.size = core::mem::offset_of!(TransportDecl, session) as u32,
+        "does not reach its own slots and declaration",
     );
+    refuse(
+        |d| d.size = core::mem::offset_of!(TransportDecl, close) as u32,
+        "does not reach its own slots and declaration",
+    );
+    refuse(|d| d.session = 2, "declares session flag 2");
     refuse(|d| d.size += 8, "exceeding this build's own");
     refuse(|d| d.key = DeclStr::NONE, "declares no key");
     refuse(
@@ -388,7 +395,8 @@ fn the_fixture_restates_the_host_layout() {
         dial,
         read,
         write,
-        close
+        close,
+        session
     );
     assert_eq!(
         core::mem::size_of::<Restated>(),
