@@ -109,12 +109,15 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 
 use axum::Router;
-use busbar_contract::transport::wire::{ConnectionSecurity, RawIo};
+use busbar_contract::transport::wire::{
+    CloseReason, ConnectionSecurity, Listener, RawIo, TransportError,
+};
+use busbar_contract::transport::Transport;
 use bytes::Buf;
 use http_body::{Body, Frame, SizeHint};
 use hyper_util::rt::{TokioExecutor, TokioIo};
 use hyper_util::server::conn::auto::Builder as ConnBuilder;
-use hyper_util::server::graceful::GracefulShutdown;
+use hyper_util::server::graceful::{GracefulShutdown, Watcher};
 use hyper_util::service::TowerToHyperService;
 use tokio::net::TcpListener;
 use tokio_util::compat::{FuturesAsyncReadCompatExt, TokioAsyncReadCompatExt};
@@ -373,13 +376,32 @@ pub async fn serve(
     router: Router,
     security: Arc<dyn ConnectionSecurity>,
     shutdown: impl std::future::Future<Output = ()> + Send + 'static,
+    balancer: Option<ConnBalancer>,
+) -> io::Result<()> {
+    let served = Served::new(router, Some(security));
+    accept_loop(listener, shutdown, balancer, served).await
+}
+
+/// THE ONE ACCEPT LOOP both socket listeners run ([`serve`] and [`serve_plain`]): accept until
+/// `shutdown`, place each connection (see [`ConnBalancer`]) and serve it under the graceful watcher,
+/// then serve the late hand-offs and drain in-flight connections.
+async fn accept_loop(
+    listener: TcpListener,
+    shutdown: impl std::future::Future<Output = ()> + Send + 'static,
     mut balancer: Option<ConnBalancer>,
+    served: Served,
 ) -> io::Result<()> {
     let graceful = GracefulShutdown::new();
-    let conn_builder = Arc::new(hardened_conn_builder());
-
     let mut shutdown = std::pin::pin!(shutdown);
     let mut backoff = AcceptBackoff::new();
+    // Each served connection releases its placement count (if it holds one) when it ends.
+    let spawn = |stream, peer, guard: Option<ConnCountGuard>| {
+        let conn = served.clone().tcp(stream, peer, graceful.watcher());
+        tokio::spawn(async move {
+            conn.await;
+            drop(guard);
+        });
+    };
 
     loop {
         // Placement (see `ConnBalancer`): a locally-ACCEPTED connection may be handed to the
@@ -415,19 +437,10 @@ pub async fn serve(
                 }
                 // An accept error must not kill the loop; `absorb` decides whether it is a
                 // per-connection transient (retry now) or persistent exhaustion (back off).
-                Err(e) => { backoff.absorb("tls", &e).await; continue; }
+                Err(e) => { backoff.absorb(served.scheme, &e).await; continue; }
             },
         };
-
-        let security = security.clone();
-        let router = router.clone();
-        let conn_builder = conn_builder.clone();
-        let watcher = graceful.watcher();
-
-        tokio::spawn(async move {
-            serve_one(security, conn_builder, watcher, stream, peer, router).await;
-            drop(guard);
-        });
+        spawn(stream, peer, guard);
     }
 
     // Drain any hand-offs already in the channel (sent before every worker saw the shutdown):
@@ -440,14 +453,7 @@ pub async fn serve(
             let Ok(stream) = tokio::net::TcpStream::from_std(std_stream) else {
                 continue;
             };
-            let security = security.clone();
-            let router = router.clone();
-            let conn_builder = conn_builder.clone();
-            let watcher = graceful.watcher();
-            tokio::spawn(async move {
-                serve_one(security, conn_builder, watcher, stream, peer, router).await;
-                drop(guard);
-            });
+            spawn(stream, peer, Some(guard));
         }
     }
 
@@ -455,6 +461,46 @@ pub async fn serve(
     // their requests finish or their clients hang up).
     graceful.shutdown().await;
     Ok(())
+}
+
+/// Serve `router` over the connections a TRANSPORT accepts on `listener`, each detached to its byte
+/// stream, until `shutdown` resolves or the wire closes the listener, then drain: the listener the
+/// host serves when the wire under its data door came in over the plugin ABI rather than being this
+/// process's own socket (#3). `security` wraps each stream as [`serve`] does; `None` serves it plain.
+/// Every connection gets the same hardened builder and body bounds the two socket loops give
+/// theirs, and an accept error is absorbed as theirs are.
+pub async fn serve_wire(
+    wire: Arc<dyn Transport>,
+    listener: Listener,
+    router: Router,
+    security: Option<Arc<dyn ConnectionSecurity>>,
+    shutdown: impl std::future::Future<Output = ()> + Send + 'static,
+) {
+    let (graceful, served) = (GracefulShutdown::new(), Served::new(router, security));
+    let (mut shutdown, mut backoff) = (std::pin::pin!(shutdown), AcceptBackoff::new());
+    loop {
+        let conn = tokio::select! {
+            biased;
+            () = &mut shutdown => break,
+            accepted = wire.accept(&listener) => match accepted {
+                Ok(conn) => { backoff.reset(); conn }
+                // The wire closed its listener: nothing more arrives.
+                Err(TransportError::Closed) => break,
+                Err(e) => {
+                    backoff.absorb("wire", &io::Error::other(format!("{e:?}"))).await;
+                    continue;
+                }
+            },
+        };
+        match wire.detach(&conn) {
+            Some(stream) => {
+                let (peer, io) = (stream.peer().to_string(), stream.into_io());
+                tokio::spawn(served.clone().raw(io, peer, graceful.watcher()));
+            }
+            None => wire.close(conn, CloseReason::Normal),
+        }
+    }
+    graceful.shutdown().await;
 }
 
 /// An inbound-body wrapper that bounds the wall-clock time a request body may occupy a connection,
@@ -675,142 +721,95 @@ pub async fn serve_plain(
     listener: TcpListener,
     router: Router,
     shutdown: impl std::future::Future<Output = ()> + Send + 'static,
-    mut balancer: Option<ConnBalancer>,
+    balancer: Option<ConnBalancer>,
 ) -> io::Result<()> {
-    let graceful = GracefulShutdown::new();
-    let conn_builder = Arc::new(hardened_conn_builder());
-    let mut shutdown = std::pin::pin!(shutdown);
-    let mut backoff = AcceptBackoff::new();
+    accept_loop(listener, shutdown, balancer, Served::new(router, None)).await
+}
 
-    loop {
-        // Placement mirrors `serve` exactly — see `ConnBalancer`.
-        let (stream, peer, guard) = tokio::select! {
-            biased;
-            () = &mut shutdown => break,
-            handed = async { balancer.as_mut().expect("guarded by if").rx.recv().await },
-                if balancer.is_some() =>
-            {
-                let Some((std_stream, peer)) = handed else { continue };
-                // Adopt the sender's increment BEFORE the fallible re-adopt — see `serve` for why
-                // (a `from_std` failure otherwise strands the count and skews the balancer).
-                let guard = balancer.as_ref().map(|b| b.adopt());
-                let Ok(stream) = tokio::net::TcpStream::from_std(std_stream) else { continue };
-                (stream, peer, guard)
-            }
-            accepted = listener.accept() => match accepted {
-                Ok((stream, peer)) => {
-                    backoff.reset();
-                    match balancer.as_ref() {
-                        Some(b) => match b.try_hand_off(stream, peer) {
-                            None => continue,
-                            Some((stream, peer)) => (stream, peer, Some(b.place_local())),
-                        },
-                        None => (stream, peer, None),
+/// What one listener serves every connection with: the hardened builder (see
+/// `hardened_conn_builder`), the router, and the connection-security wrap (`None` = plain).
+#[derive(Clone)]
+struct Served {
+    builder: Arc<ConnBuilder<TokioExecutor>>,
+    router: Router,
+    security: Option<Arc<dyn ConnectionSecurity>>,
+    /// The scheme a log line names.
+    scheme: &'static str,
+}
+
+impl Served {
+    fn new(router: Router, security: Option<Arc<dyn ConnectionSecurity>>) -> Self {
+        let builder = Arc::new(hardened_conn_builder());
+        let scheme = if security.is_some() { "tls" } else { "http" };
+        Self {
+            builder,
+            router,
+            security,
+            scheme,
+        }
+    }
+
+    /// Serve a single accepted TCP connection: as it arrived on a plain listener (the stream itself,
+    /// no compat layer), through the wrap on a TLS one. Any failure is contained to this connection.
+    async fn tcp(self, stream: tokio::net::TcpStream, peer: SocketAddr, watcher: Watcher) {
+        // TCP_NODELAY parity with axum::serve (which sets it by default on accepted streams).
+        if let Err(e) = stream.set_nodelay(true) {
+            tracing::debug!(error = %e, %peer, "{}: set_nodelay failed; continuing", self.scheme);
+        }
+        if self.security.is_none() {
+            return self.io(stream, peer, watcher).await;
+        }
+        let raw: Box<dyn RawIo> = Box::new(TokioAsyncReadCompatExt::compat(stream));
+        self.raw(raw, peer, watcher).await;
+    }
+
+    /// Handshake + serve a single accepted connection's byte stream. Any failure is contained to
+    /// this connection.
+    ///
+    /// `security` is the opaque connection-security wrap `serve`'s caller was handed by
+    /// `busbar-core-connsec` (DECISIONS #40): this calls `wrap` on the raw accepted stream and
+    /// nothing else — it names no rustls type, no cert, no key byte. The `RawIo`/tokio-io compat
+    /// bridge on either side of `wrap` is the same seam `busbar-transport-tls` uses to cross the
+    /// same futures-io/tokio-io boundary. No wrap serves the stream as it arrived.
+    async fn raw(self, raw: Box<dyn RawIo>, peer: impl std::fmt::Display + Send, watcher: Watcher) {
+        // Bound the handshake (see `handshake_timeout()`): on elapse the `wrap` future is dropped,
+        // which closes the half-open connection and frees the task + FDs. Cancel-safe.
+        let wrapped = match &self.security {
+            None => raw,
+            Some(security) => {
+                match tokio::time::timeout(handshake_timeout(), security.wrap(raw)).await {
+                    Ok(Ok(s)) => s,
+                    // Handshake failure (bad/missing client cert under mTLS, protocol mismatch,
+                    // client gone). Debug-level and dropped — never escalated. NEVER logs key/cert
+                    // bytes.
+                    Ok(Err(e)) => {
+                        tracing::debug!(error = %e, %peer, "tls: handshake failed; dropping connection");
+                        return;
+                    }
+                    Err(_) => {
+                        tracing::debug!(%peer, "tls: handshake timed out; dropping connection");
+                        return;
                     }
                 }
-                Err(e) => { backoff.absorb("http", &e).await; continue; }
-            },
+            }
         };
-
-        let router = router.clone();
-        let conn_builder = conn_builder.clone();
-        let watcher = graceful.watcher();
-
-        tokio::spawn(async move {
-            serve_one_plain(conn_builder, watcher, stream, peer, router).await;
-            drop(guard);
-        });
+        self.io(FuturesAsyncReadCompatExt::compat(wrapped), peer, watcher)
+            .await;
     }
 
-    // Drain late hand-offs (mirrors `serve`).
-    if let Some(mut b) = balancer.take() {
-        while let Ok((std_stream, peer)) = b.rx.try_recv() {
-            // Adopt the sender's increment BEFORE `from_std` (see the accept loop): a conversion
-            // failure here must release the count via the dropped guard, not `continue` past it.
-            let guard = b.adopt();
-            let Ok(stream) = tokio::net::TcpStream::from_std(std_stream) else {
-                continue;
-            };
-            let router = router.clone();
-            let conn_builder = conn_builder.clone();
-            let watcher = graceful.watcher();
-            tokio::spawn(async move {
-                serve_one_plain(conn_builder, watcher, stream, peer, router).await;
-                drop(guard);
-            });
+    /// Serve one connection's (already secured) bytes. Any failure is contained to it.
+    async fn io<I>(self, io: I, peer: impl std::fmt::Display, watcher: Watcher)
+    where
+        I: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+    {
+        let service = BodyTimeoutService::new(self.router, body_read_timeout());
+        let conn = self
+            .builder
+            .serve_connection_with_upgrades(TokioIo::new(io), service);
+        if let Err(e) = watcher.watch(conn).await {
+            // Per-connection serving error (client reset, malformed request framing). Contained.
+            tracing::debug!(error = %e, %peer, "{}: connection error", self.scheme);
         }
-    }
-
-    graceful.shutdown().await;
-    Ok(())
-}
-
-/// Serve a single accepted plain-TCP connection. Any failure is contained to this connection.
-async fn serve_one_plain(
-    conn_builder: Arc<ConnBuilder<TokioExecutor>>,
-    watcher: hyper_util::server::graceful::Watcher,
-    stream: tokio::net::TcpStream,
-    peer: SocketAddr,
-    router: Router,
-) {
-    // TCP_NODELAY parity with axum::serve (which sets it by default on accepted streams).
-    if let Err(e) = stream.set_nodelay(true) {
-        tracing::debug!(error = %e, %peer, "http: set_nodelay failed; continuing");
-    }
-    let service = BodyTimeoutService::new(router, body_read_timeout());
-    let io = TokioIo::new(stream);
-    let conn = conn_builder.serve_connection_with_upgrades(io, service);
-    let conn = watcher.watch(conn);
-    if let Err(e) = conn.await {
-        tracing::debug!(error = %e, %peer, "http: connection error");
-    }
-}
-
-/// Handshake + serve a single accepted TCP connection. Any failure is contained to this connection.
-///
-/// `security` is the opaque connection-security wrap `serve`'s caller was handed by
-/// `busbar-core-connsec` (DECISIONS #40): this function calls `wrap` on the raw accepted stream
-/// and nothing else — it names no rustls type, no cert, no key byte. The `RawIo`/tokio-io compat
-/// bridge on either side of `wrap` is the same seam `busbar-transport-tls` uses to cross the same
-/// futures-io/tokio-io boundary.
-async fn serve_one(
-    security: Arc<dyn ConnectionSecurity>,
-    conn_builder: Arc<ConnBuilder<TokioExecutor>>,
-    watcher: hyper_util::server::graceful::Watcher,
-    stream: tokio::net::TcpStream,
-    peer: SocketAddr,
-    router: Router,
-) {
-    // TCP_NODELAY parity with axum::serve (which sets it by default on accepted streams).
-    if let Err(e) = stream.set_nodelay(true) {
-        tracing::debug!(error = %e, %peer, "tls: set_nodelay failed; continuing");
-    }
-
-    let raw: Box<dyn RawIo> = Box::new(TokioAsyncReadCompatExt::compat(stream));
-    // Bound the handshake (see `handshake_timeout()`): on elapse the `wrap` future is dropped, which
-    // closes the half-open connection and frees the task + FDs. Cancel-safe — no state escapes.
-    let wrapped = match tokio::time::timeout(handshake_timeout(), security.wrap(raw)).await {
-        Ok(Ok(s)) => s,
-        Ok(Err(e)) => {
-            // Handshake failure (bad/missing client cert under mTLS, protocol mismatch, client gone).
-            // Debug-level and dropped — never escalated. NEVER logs key/cert bytes.
-            tracing::debug!(error = %e, %peer, "tls: handshake failed; dropping connection");
-            return;
-        }
-        Err(_) => {
-            tracing::debug!(%peer, "tls: handshake timed out; dropping connection");
-            return;
-        }
-    };
-
-    let service = BodyTimeoutService::new(router, body_read_timeout());
-    let io = TokioIo::new(FuturesAsyncReadCompatExt::compat(wrapped));
-    let conn = conn_builder.serve_connection_with_upgrades(io, service);
-    let conn = watcher.watch(conn);
-
-    if let Err(e) = conn.await {
-        // Per-connection serving error (client reset, malformed request framing). Contained here.
-        tracing::debug!(error = %e, %peer, "tls: connection error");
     }
 }
 
