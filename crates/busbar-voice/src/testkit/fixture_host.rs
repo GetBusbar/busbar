@@ -284,9 +284,24 @@ impl FixtureHost {
         entry.requests = entry.requests.saturating_add(1);
     }
 
+    /// The host wall clock, read through the contract's host service
+    /// (`busbar_contract::codec::wall_clock_now`) — the one clock a plane reads. This fixture stands
+    /// in for the host, so it arms that service with its own system-clock reader first (first install
+    /// wins: a process whose real host already armed it keeps the host's clock).
     fn now() -> u64 {
-        busbar_kernel::store::now()
+        busbar_contract::codec::install_wall_clock(system_clock_secs);
+        busbar_contract::codec::wall_clock_now().unwrap_or_else(system_clock_secs)
     }
+}
+
+/// The fixture host's system clock: whole seconds since the Unix epoch — the reading the real host
+/// installs into the contract's wall-clock service.
+fn system_clock_secs() -> u64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
 }
 
 // ── The breaker slice: one in-memory cell per (pool, lane) ─────────────────────────────────────────
@@ -376,8 +391,10 @@ impl ClockHost for FixtureHost {
     fn clock_now_secs(&self) -> u64 {
         Self::now()
     }
+    /// The same host wall clock in milliseconds. The contract's service reads whole seconds, so this
+    /// is that reading scaled; no voice seam reads this fixture's millisecond clock.
     fn clock_now_ms(&self) -> u64 {
-        busbar_kernel::store::now_ms()
+        Self::now().saturating_mul(1000)
     }
 }
 
