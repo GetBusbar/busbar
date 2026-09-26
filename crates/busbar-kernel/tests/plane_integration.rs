@@ -468,7 +468,7 @@ mod metrics_scrape {
     /// The test's NAME is pinned by `qa/capability-equality.json`, which cites it; the body names
     /// no plane.
     #[tokio::test]
-    async fn mcp_and_a2a_traffic_appear_on_a_real_metrics_scrape() {
+    async fn mounted_plane_traffic_appears_on_a_real_metrics_scrape() {
         busbar_kernel::metrics::init();
         linked::install();
         let sections = format!("{}{AGENTS_YAML}", door_section_yaml("gateway.example.com"));

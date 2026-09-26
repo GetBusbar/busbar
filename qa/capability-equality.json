@@ -558,7 +558,7 @@
       "capability": "metrics",
       "plane": "llm",
       "state": "proven",
-      "test": "crates/busbar-kernel/tests/plane_integration.rs::mcp_and_a2a_traffic_appear_on_a_real_metrics_scrape",
+      "test": "crates/busbar-kernel/tests/plane_integration.rs::mounted_plane_traffic_appears_on_a_real_metrics_scrape",
       "note": "despite its name the test drives all three planes and asserts the llm, mcp and a2a series labels on one real scrape.",
       "root": {
         "state": "none",
@@ -582,7 +582,7 @@
       "capability": "metrics",
       "plane": "mcp-server",
       "state": "proven",
-      "test": "crates/busbar-kernel/tests/plane_integration.rs::mcp_and_a2a_traffic_appear_on_a_real_metrics_scrape",
+      "test": "crates/busbar-kernel/tests/plane_integration.rs::mounted_plane_traffic_appears_on_a_real_metrics_scrape",
       "root": {
         "state": "proven",
         "leg": "root-mcp",
@@ -605,7 +605,7 @@
       "capability": "metrics",
       "plane": "a2a-server",
       "state": "proven",
-      "test": "crates/busbar-kernel/tests/plane_integration.rs::mcp_and_a2a_traffic_appear_on_a_real_metrics_scrape",
+      "test": "crates/busbar-kernel/tests/plane_integration.rs::mounted_plane_traffic_appears_on_a_real_metrics_scrape",
       "root": {
         "state": "proven",
         "leg": "root-a2a",
