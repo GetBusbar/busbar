@@ -47,9 +47,7 @@ use serde::Deserialize;
 use super::DeployCfg;
 // Every carrier is lifted through the config seam's plane-NEUTRAL spellings, so this generic lift
 // machinery names no concrete plane (DECISIONS #1).
-use crate::plane::config::{
-    AgentsSection, DecisionsSection, EndpointSection, StreamsSection, ToolsSection,
-};
+use crate::plane::config::{AgentsSection, DeclaredSections, EndpointSection, ToolsSection};
 use crate::plane::registry::{PlaneDeclaration, CORE_OWNED_CONCRETE_SECTIONS};
 
 /// HOW `cargo xtask gate config-schema` ties a carrier to its key. The gate reads this from source:
@@ -62,12 +60,14 @@ enum Declared {
     /// The one section a plane declares BESIDE its declaring section
     /// (`PlaneDeclaration::owned_config_sections`): its endpoint door, read off the declarations.
     Door,
+    /// A MAP carrier: every declaring section a plane owns the grammar of, keyed by that section.
+    Any,
 }
 
 /// One lifted key's parse-and-bank step: deserialize the key's value into `Target`, then bank it
 /// into the [`Lifted`] buffer. Adding a carrier is implementing this trait for the new carrier type
 /// and adding one [`Dest`] arm (and one field to [`Lifted`]) — never widening a value enum.
-trait LiftableSection: for<'de> Deserialize<'de> {
+trait LiftableSection {
     /// How the config-schema gate ties this carrier to its key.
     const KEY: Declared = Declared::ByField;
 
@@ -101,15 +101,10 @@ impl LiftableSection for AgentsSection {
     }
 }
 
-impl LiftableSection for StreamsSection {
+impl LiftableSection for DeclaredSections {
+    const KEY: Declared = Declared::Any;
     fn bank(self, into: &mut Lifted) {
-        into.streams = Some(self);
-    }
-}
-
-impl LiftableSection for DecisionsSection {
-    fn bank(self, into: &mut Lifted) {
-        into.decisions = Some(self);
+        into.declared.0.extend(self.0);
     }
 }
 
@@ -144,9 +139,9 @@ enum Dest {
     OauthAs,
     Tools,
     Agents,
-    Streams,
-    Decisions,
-    /// A declaring section no named carrier holds: carried RAW, for its plane to read over the ABI.
+    /// A declaring section its plane owns the grammar of: parsed by that plane into the map carrier.
+    Declared,
+    /// A declaring section no carrier holds: carried RAW, for its plane to read over the ABI.
     Raw,
     AuthPolicy,
 }
@@ -155,9 +150,9 @@ impl Dest {
     /// The carrier `key` lands in when `decl` declares it, or `None` (no carrier: left unlifted). A
     /// section declared BESIDE the declaring one is the endpoint door of the plane that owns it; a
     /// declaring section lands in the carrier for that section — the named ones by their section,
-    /// the generic singular one by [`DecisionsSection::section`], and any other in the generic RAW
-    /// carrier ([`DeployCfg::plane_raw`]) — so every registered plane's declaring section is lifted,
-    /// whichever door the plane came in by.
+    /// one its plane owns the grammar of in the map carrier ([`DeclaredSections::holds`]), and any
+    /// other in the generic RAW carrier ([`DeployCfg::plane_raw`]) — so every registered plane's
+    /// declaring section is lifted, whichever door the plane came in by.
     fn for_declared(decl: &PlaneDeclaration, key: &'static str) -> Option<Dest> {
         if key != decl.config_section {
             // The carrier that states itself the door takes it, for the plane that owns that door.
@@ -167,12 +162,11 @@ impl Dest {
         [
             (ToolsSection::SECTION, Dest::Tools),
             (AgentsSection::SECTION, Dest::Agents),
-            (StreamsSection::SECTION, Dest::Streams),
         ]
         .into_iter()
         .find(|(s, _)| *s == key)
         .map(|(_, d)| d)
-        .or((DecisionsSection::section() == Some(key)).then_some(Dest::Decisions))
+        .or(DeclaredSections::holds(decl).then_some(Dest::Declared))
         .or(Some(Dest::Raw))
     }
 }
@@ -207,8 +201,7 @@ pub(crate) struct Lifted {
     oauth_as: Option<Option<crate::oauth_as::config::OauthAsCfg>>,
     tools: Option<ToolsSection>,
     agents: Option<AgentsSection>,
-    streams: Option<StreamsSection>,
-    decisions: Option<DecisionsSection>,
+    declared: DeclaredSections,
     auth_policy: Option<crate::config::AuthPolicyCfg>,
     plane_rate_cards: super::PlaneRateCards,
     plane_fees: super::PlaneFeesMap,
@@ -222,6 +215,7 @@ impl Lifted {
         deploy.plane_rate_cards = self.plane_rate_cards;
         deploy.plane_fees = self.plane_fees;
         deploy.plane_raw = self.plane_raw;
+        deploy.declared = self.declared;
         if let Some(v) = self.endpoint {
             deploy.endpoint = v;
         }
@@ -233,12 +227,6 @@ impl Lifted {
         }
         if let Some(v) = self.agents {
             deploy.agents = v;
-        }
-        if let Some(v) = self.streams {
-            deploy.streams = v;
-        }
-        if let Some(v) = self.decisions {
-            deploy.decisions = v;
         }
         if let Some(v) = self.auth_policy {
             // A policy block without an `auth:` block cannot happen: `policy:` is lifted from
@@ -274,8 +262,12 @@ impl<'de> DeserializeSeed<'de> for LiftedSeed<'_> {
             }
             Dest::Tools => lift_plane::<ToolsSection, D>(key, de, lifted)?,
             Dest::Agents => lift_plane::<AgentsSection, D>(key, de, lifted)?,
-            Dest::Streams => lift_plane::<StreamsSection, D>(key, de, lifted)?,
-            Dest::Decisions => lift_plane::<DecisionsSection, D>(key, de, lifted)?,
+            Dest::Declared => {
+                let section = plane_remainder::<D>(key, de, lifted)?;
+                DeclaredSections::parse(key, section)
+                    .map_err(D::Error::custom)?
+                    .bank(lifted);
+            }
             Dest::Raw => {
                 let section = plane_remainder::<D>(key, de, lifted)?;
                 lifted.plane_raw.insert(key, section);
@@ -299,7 +291,7 @@ const PLANE_CARD_KEYS: [&str; 2] = ["rate_card", "fees"];
 /// Lift a plane section: strip its core-owned sub-keys (see [`plane_remainder`]), then parse the
 /// REMAINDER through the section's own carrier exactly as before — the plane's parse error reaches
 /// the operator through the same `custom` channel it always did.
-fn lift_plane<'de, S: LiftableSection, D: Deserializer<'de>>(
+fn lift_plane<'de, S: LiftableSection + for<'a> Deserialize<'a>, D: Deserializer<'de>>(
     section_key: &'static str,
     de: D,
     lifted: &mut Lifted,

@@ -308,88 +308,31 @@ impl<'de> serde::Deserialize<'de> for AgentsSection {
     }
 }
 
-/// THE `streams:` SECTION as it lands in `DeployCfg`, type-erased behind [`PlaneCfg`] — the neutral
-/// seam the owning plane's own config type deserializes through, so `DeployCfg` names no plane-local
-/// type. Absent ⇒ the plane's `Default` (the empty `streams:`).
-///
-/// `streams` is a SINGULAR typed section (one posture per deployment), NOT a named-definition map, so
-/// it is keyed by the bare `"streams"` config-section literal rather than a `NamedMapSection` index —
-/// the generic seam resolves the owning plane's decl by that config section. The plane compiled out
-/// (the default build) captures it RAW and refuses a present section at `resolve`, exactly as
-/// `tools:`/`agents:` are.
-#[derive(Debug)]
-pub struct StreamsSection(pub Box<dyn PlaneCfg>);
+/// THE DECLARED SECTIONS as they land in `DeployCfg`: every declaring section a REGISTERED plane
+/// OWNS the grammar of (`PlaneDeclaration::owned_config_sections` lists its own `config_section`),
+/// keyed by that section and type-erased behind [`PlaneCfg`] — the one map carrier, so `DeployCfg`
+/// names no plane section and no plane-local type (#47/#49). Each entry is parsed by its plane's own
+/// `parse_section` hook; an absent section has no entry. `busbar-kernel` has no dependency on any
+/// plane crate (#40), which is why the plane's typed section is reached only through this seam.
+#[derive(Debug, Default)]
+pub struct DeclaredSections(pub std::collections::BTreeMap<&'static str, Box<dyn PlaneCfg>>);
 
-impl StreamsSection {
-    /// The declaring section this carrier holds — the one place the kernel spells it.
-    pub(crate) const SECTION: &'static str = "streams";
-}
-impl Default for StreamsSection {
-    fn default() -> Self {
-        StreamsSection(default_plane_section(Self::SECTION))
+impl DeclaredSections {
+    /// True when `decl`'s declaring section lands here: the plane owns its own declaring section's
+    /// grammar and no named carrier (`tools:`/`agents:`) holds it.
+    pub(crate) fn holds(decl: &crate::plane::registry::PlaneDeclaration) -> bool {
+        let named = [ToolsSection::SECTION, AgentsSection::SECTION];
+        decl.owned_config_sections.contains(&decl.config_section)
+            && !named.contains(&decl.config_section)
     }
-}
-impl<'de> serde::Deserialize<'de> for StreamsSection {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        deserialize_plane_section(Self::SECTION, deserializer).map(StreamsSection)
-    }
-}
 
-/// THE `decisions:` SECTION as it lands in `DeployCfg`, type-erased behind [`PlaneCfg`] — the
-/// neutral seam the owning plane's own config type deserializes through, so `DeployCfg` names no
-/// plane-local type. Absent ⇒ the plane's `Default` (the empty `decisions:`).
-///
-/// THE FIFTH SECTION (DECISIONS #47/#48, `docs/design/BUSBAR-1.6.0.md:373`/`:374`): the decision
-/// plane's declaring noun, beside `pools:`, `tools:`, `agents:` and `streams:`. It is written HERE,
-/// as a neutral boxed carrier, and NOT as `busbar_plane_decision::config::DecisionsSection`, for
-/// the reason #40's dep wall states: `busbar-kernel` has no dependency on any plane crate and must
-/// not gain one, so the plane's own typed section cannot be named from a kernel struct. It lowers
-/// through this seam at `parse_section` exactly as the four above it do.
-///
-/// KEYED BY NO LITERAL (#49): the section this carrier holds is READ OFF THE REGISTRY
-/// ([`DecisionsSection::section`]) — the declaring section of the registered plane that OWNS its own
-/// declaring section's grammar (`PlaneDeclaration::owned_config_sections`) and that no named carrier
-/// (`tools:`/`agents:`/`streams:`) or core holds. It is deliberately NOT a named-definition-map
-/// section — joining that frozen array would mount admin routes and move a second golden.
-#[derive(Debug)]
-pub struct DecisionsSection(pub Box<dyn PlaneCfg>);
-
-impl DecisionsSection {
-    /// The section this carrier holds, or `None` when no registered plane declares one — in which
-    /// case nothing lifts into it and the carrier stays at its raw empty default.
-    pub(crate) fn section() -> Option<&'static str> {
-        let named = [
-            ToolsSection::SECTION,
-            AgentsSection::SECTION,
-            StreamsSection::SECTION,
-        ];
-        crate::plane::registry::plane_decls()
-            .iter()
-            .map(|d| &d.declaration)
-            .find(|d| {
-                d.owned_config_sections.contains(&d.config_section)
-                    && !named.contains(&d.config_section)
-                    && !crate::plane::registry::CORE_OWNED_CONCRETE_SECTIONS
-                        .contains(&d.config_section)
-            })
-            .map(|d| d.config_section)
-    }
-}
-impl Default for DecisionsSection {
-    fn default() -> Self {
-        DecisionsSection(default_plane_section(Self::section().unwrap_or_default()))
-    }
-}
-impl<'de> serde::Deserialize<'de> for DecisionsSection {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        deserialize_plane_section(Self::section().unwrap_or_default(), deserializer)
-            .map(DecisionsSection)
+    /// Parse one declared section through its plane's `parse_section` hook, as a one-entry carrier.
+    pub(crate) fn parse(
+        section: &'static str,
+        value: serde_yaml::Value,
+    ) -> Result<Self, serde_yaml::Error> {
+        let cfg = deserialize_plane_section(section, value)?;
+        Ok(DeclaredSections([(section, cfg)].into_iter().collect()))
     }
 }
 

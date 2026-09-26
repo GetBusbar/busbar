@@ -823,8 +823,8 @@ pub const RETIRED_OBSERVABILITY_KEYS: &[(&str, &str)] = &[
 
 /// The 1.5.3 store-plugin RENAME: every retired spelling of the first-party Valkey store
 /// plugin, as a `store.module:` VALUE. The plugin was renamed wholesale — repo, crate, artifact,
-/// manifest `name` (now [`RENAMED_STORE_MANIFEST_NAME_1_5_3`]) and config `alias` (now
-/// [`RENAMED_STORE_MODULE_1_5_3`]) — so NONE of these resolve against the renamed artifact's manifest.
+/// manifest `name` and config `alias` (the `renamed_*` rows of `data/legacy_store_modules.toml`, read
+/// by [`migrate::legacy_store_text`]) — so NONE of these resolve against the renamed manifest.
 ///
 /// Unlike the other retirement tables this one is keyed on a VALUE, not a field name, so serde never
 /// sees it: `store.module` is a plain `String` and any spelling parses. The loud-fail therefore has
@@ -833,20 +833,6 @@ pub const RETIRED_OBSERVABILITY_KEYS: &[(&str, &str)] = &[
 /// the loader's generic "does not match any plugin", which names neither the rename nor the fix.
 pub const RETIRED_STORE_MODULES_1_5_3: &[&str] =
     &["redis", "busbar-store-redis", "busbar-store-redis-plugin"];
-
-/// The config ALIAS the renamed first-party Valkey store plugin answers to (`store.module: valkey`).
-pub const RENAMED_STORE_MODULE_1_5_3: &str = "valkey";
-
-/// The renamed plugin's canonical MANIFEST NAME — what `busbar-plugin-pack --name` stamps and what a
-/// `plugins.min_versions` / `plugin_versions` anti-downgrade floor must be keyed by. It is the plugin
-/// CRATE name (`…-plugin`), which is how that repo's release workflow packs it.
-pub const RENAMED_STORE_MANIFEST_NAME_1_5_3: &str = "busbar-store-valkey-plugin";
-
-/// The renamed plugin's release-ASSET stem: the published tarball is
-/// `busbar-store-valkey-<ver>-<target>.tar.gz` (the WORKSPACE name, without the `-plugin` suffix the
-/// cdylib crate and the manifest carry). Two different strings on purpose — see that repo's
-/// `release.yml`, which passes `--name busbar-store-valkey-plugin --out busbar-store-valkey-…`.
-pub const RENAMED_STORE_ASSET_STEM_1_5_3: &str = "busbar-store-valkey";
 
 // The `providers:` / `models:` config SHAPES — the catalog definition, the operator deployment, the
 // resolved provider the runtime reads, the active-health block and the per-model entry — are plain

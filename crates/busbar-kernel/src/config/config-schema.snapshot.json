@@ -418,7 +418,7 @@
         },
         "decisions": {
           "optional": true,
-          "type": "DecisionsSection"
+          "type": "DeclaredSections"
         },
         "export": {
           "optional": true,
@@ -506,7 +506,7 @@
         },
         "streams": {
           "optional": true,
-          "type": "StreamsSection"
+          "type": "DeclaredSections"
         },
         "tls": {
           "optional": true,

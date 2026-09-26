@@ -51,8 +51,7 @@ pub(crate) fn base_deploy() -> DeployCfg {
     DeployCfg {
         tools: Default::default(),
         agents: Default::default(),
-        streams: Default::default(),
-        decisions: Default::default(),
+        declared: Default::default(),
         listen: DEFAULT_LISTEN_ADDR.into(),
         // Left at its type default (unset).
         endpoint: Default::default(),
@@ -3947,7 +3946,7 @@ fn test_auth_policy_rejects_bad_input_at_parse() {
 const NEUTRAL_SECTION: &str = "neutral_section";
 
 /// A NEUTRAL plane that DECLARES AND OWNS a singular section of its own ([`NEUTRAL_SECTION`]) — the
-/// generic singular carrier `plane::config::DecisionsSection` holds it — all hooks stubbed, so the
+/// map carrier `plane::config::DeclaredSections` holds it — all hooks stubbed, so the
 /// pre-pass, which lifts only the sections a REGISTERED plane declares, lifts it. With no
 /// `parse_section` hook the value is captured raw.
 static NEUTRAL_SECTION_PLANE: crate::plane::registry::PlaneDecl =
@@ -3995,7 +3994,11 @@ fn test_decisions_section_parses() {
     // The second half, because "the document parsed" is ALSO true of a key read and thrown away:
     // the lifted value must be BANKED onto the carrier (`PlaneCfg` is already in scope).
     assert!(
-        deploy.decisions.0.is_present(),
+        deploy
+            .declared
+            .0
+            .get(section)
+            .is_some_and(|c| c.is_present()),
         "the lifted `decisions:` value must land on its carrier, not be dropped on the floor"
     );
 
@@ -4005,16 +4008,56 @@ fn test_decisions_section_parses() {
         crate::config::deploy_from_yaml_str("providers: {}\nmodels: {}\npools: {}\n")
             .expect("a document with no `decisions:` section still parses");
     assert!(
-        !bare.decisions.0.is_present(),
+        bare.declared.0.is_empty(),
         "an omitted `decisions:` section leaves the carrier at its Default"
     );
+}
+
+/// A SECOND neutral plane that declares and owns its own section, beside [`NEUTRAL_SECTION_PLANE`].
+static SECOND_SECTION_PLANE: crate::plane::registry::PlaneDecl =
+    crate::plane::registry::PlaneDecl {
+        declaration: crate::plane::registry::PlaneDeclaration {
+            key: "neutral-test-second",
+            config_section: "second_section",
+            owned_config_sections: &["second_section"],
+            ..NEUTRAL_SECTION_PLANE.declaration
+        },
+        ..NEUTRAL_SECTION_PLANE
+    };
+
+/// THE ONE MAP CARRIER (#47/#49): EVERY section a registered plane declares and owns lands in
+/// `DeployCfg::declared` under its own key — not one singular slot the first such plane takes, with
+/// the rest falling through to the raw carrier (which would hand them to their plane's `build` as an
+/// endpoint resource and count `{}` as written). Each is a declared plane section for LAW 7 at resolve.
+#[test]
+fn every_owned_declaring_section_lands_in_the_one_map_carrier() {
+    let _registry = busbar_kernel::plane::registry::TestRegistryIsolation::seeded(&[
+        crate::test_support::neutral_fallback_plane(),
+        &NEUTRAL_SECTION_PLANE,
+        &SECOND_SECTION_PLANE,
+    ]);
+    let deploy: DeployCfg = crate::config::deploy_from_yaml_str(
+        "neutral_section:\n  a: 1\nsecond_section:\n  b: 2\n\
+         providers: {}\nmodels: {}\npools: {}\n",
+    )
+    .expect("two owned sections parse");
+    let keys: Vec<&str> = deploy.declared.0.keys().copied().collect();
+    assert_eq!(keys, ["neutral_section", "second_section"]);
+    assert!(deploy.plane_raw.is_empty(), "{:?}", deploy.plane_raw);
+    let root = crate::config::resolve(&deploy, &Default::default()).expect("resolves");
+    for section in keys {
+        assert!(
+            root.plane_sections.contains(section),
+            "{section} must be a configured plane section"
+        );
+    }
 }
 
 /// The top-level section [`RAW_SECTION_PLANE`] declares — and does NOT own the grammar of.
 const RAW_SECTION: &str = "raw_section";
 
 /// A NEUTRAL plane declaring [`RAW_SECTION`] with no carrier of its own: not a named one, not the
-/// generic singular one (it owns no grammar), not core's — the shape of a plane that states itself
+/// map one (it owns no grammar), not core's — the shape of a plane that states itself
 /// over the C ABI, whose section only it can read.
 static RAW_SECTION_PLANE: crate::plane::registry::PlaneDecl = crate::plane::registry::PlaneDecl {
     declaration: crate::plane::registry::PlaneDeclaration {
