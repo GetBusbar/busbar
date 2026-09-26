@@ -963,7 +963,12 @@ patterns = ["teller.rs"]
 # mis-pin: a no-headroom ceiling exists precisely so the next line that grows the loop is the line
 # that has to justify itself. Re-measure (`cargo xtask loc --per-file busbar-kernel`) before reading
 # either number as current, and use `--write` to re-pin rather than editing by hand.
-ceiling = 659
+# ── LOWERED 659 -> 604, the measurement (`cargo xtask loc --per-file busbar-kernel`). The settlement
+# table (`settle_amount`, `fee_count`, `requests_drawn`, `requests_settled`, `Evidence`,
+# `FeeEvidence`, `KERNEL_ACCRUAL_CLASS`) moved verbatim into `busbar-kernel/src/settlement.rs`,
+# re-exported from `teller` under every old path; its 96 code lines still spend `kernel_ceiling`.
+# That took the row from 695 (RED against 659) to 604. Downward only.
+ceiling = 604
 
 [rules.loc-ceilings.kernel_files.pump]
 label = "pump/scheduler"
