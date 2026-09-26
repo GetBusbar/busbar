@@ -9000,8 +9000,9 @@ fn the_wall_plant(extra: &[&str]) -> Overlay {
     ov.set("crates/busbar-hooks-planted/Cargo.toml", body);
     ov.set(
         "crates/busbar-hooks-planted/src/lib.rs",
-        "//! A hooks plugin written against busbar_contract alone.\n\
-         pub use busbar_contract::Plugin;\n",
+        // One physical line: the segregation scan blanks a literal line by line, so a string
+        // continued onto a line that begins `pub use busbar_...` reads there as an import.
+        "//! A hooks plugin written against busbar_contract alone.\npub use busbar_contract::Plugin;\n",
     );
     ov
 }
