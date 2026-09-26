@@ -110,6 +110,12 @@ busbar-secret-example-plugin = { path = "../secret-example-plugin" }
 busbar-auth-static-plugin = { path = "../auth-static-plugin" }
 # The `kind: hook` BOTH-WAYS fixture, on the same terms (`hook_conformance_tests`).
 busbar-hook-test-plugin = { path = "../hook-test-plugin" }
+# The `kind: transport` BOTH-WAYS fixture (#3, OWNER-LOCKED: a transport is swappable, compiled in
+# OR dropped in): a real shipped wire built `["rlib", "cdylib"]`. `transport_conformance_tests` admits
+# its `rlib`'s decl through `link_transport` (the linked door) and `dlopen`s its `cdylib` through
+# `load_transport` (the dropped-in door), and requires the two rows and the bytes each puts on a real
+# socket to be identical. Reached by KIND through `[package.metadata.busbar.both-ways]` below.
+busbar-transport-tcp = { path = "../busbar-transport-tcp" }
 
 [target.'cfg(unix)'.dependencies]
 # memfd_create (Linux zero-disk loads) + kill(pid, 0) liveness for the dead-pid staging sweep.
@@ -134,3 +140,7 @@ secret = "busbar-secret-example-plugin"
 export = "busbar-export-example-plugin"
 auth = "busbar-auth-static-plugin"
 hook = "busbar-hook-test-plugin"
+# A HOT kind's fixture: its linked door is its `#[repr(C)]` decl, not a cold entry, so `build.rs`
+# emits only its crate alias and its cdylib name for this row. It is also the one wire crate this
+# crate may take a (dev) edge on — kind-isolation's transport-registration rule reads this row.
+transport = "busbar-transport-tcp"

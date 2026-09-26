@@ -941,6 +941,7 @@ dependencies = [
  "busbar-plugin-example-plane",
  "busbar-secret-example-plugin",
  "busbar-store-example-plugin",
+ "busbar-transport-tcp",
  "ed25519-dalek",
  "flate2",
  "getrandom 0.3.4",

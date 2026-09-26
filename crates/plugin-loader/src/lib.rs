@@ -51,6 +51,7 @@ pub mod sign;
 mod stage;
 pub mod store_adapter;
 pub mod tarball;
+pub mod transport;
 
 pub use auth::DynAuth;
 /// Re-export the HTTP-endpoint wire types (plugin route registration + dispatch) so the engine
@@ -104,6 +105,10 @@ pub use registry::{
     LinkedPlugin, LoadablePlugin, PluginRegistry, SkippedPlugin,
 };
 pub use stage::sweep_dead_staging;
+pub use transport::{
+    link_transport, load_transport, load_transport_from_bytes, wire_settings, BuiltTransport,
+    DynTransport,
+};
 
 /// INTERN a plugin name into a stable `&'static str`, reusing one allocation per unique name.
 ///
@@ -1894,8 +1899,7 @@ fn validate_mapped(lib: &Library, display: &str) -> Result<u32, String> {
     let plugin_kind = read_plugin_kind(lib, &display)?;
     if supported_abi(&plugin_kind).is_empty() {
         return Err(format!(
-            "plugin '{display}' declares unsupported kind '{plugin_kind}'{}",
-            registry::kind_refusal_note(&plugin_kind)
+            "plugin '{display}' declares unsupported kind '{plugin_kind}'"
         ));
     }
     // Confirm the operational symbols resolve too, so a half-built library is caught here rather than

@@ -89,24 +89,16 @@ pub fn supported_abi(kind: &str) -> &'static [u32] {
         // at 1 (the first minor a plane ABI could target) so an older-minor plane still validates and
         // its real forward-compat gate is the airlock `check_preamble` at load. `[1, ABI_MINOR]`.
         "plane" => &[1, busbar_plugin::ABI_MINOR],
-        // No arm for `transport`, deliberately: the contract names seven kinds, and a transport is
-        // in-tree only (compiled into the binary, never dynamically loaded). A dropped-in
-        // `kind: transport` tarball is refused, and [`kind_refusal_note`] says why.
+        // A `kind: transport` plugin is a wire delivered as a `cdylib` and driven over the HOT-tier
+        // `#[repr(C)]` `TransportDecl` (`busbar_plugin::hot::transport`) — #3 (OWNER-LOCKED) makes
+        // every kind swappable, compiled in OR dropped in, and #30 puts transport on the HOT lane
+        // beside plane. Its payload axis is the AIRLOCK MINOR, as a plane's is, floored at the first
+        // minor that has a transport decl: an older minor has no transport surface to speak.
+        "transport" => &[
+            busbar_plugin::hot::TRANSPORT_DECL_MINOR,
+            busbar_plugin::ABI_MINOR,
+        ],
         _ => &[],
-    }
-}
-
-/// The explanation a refusal appends for a kind this binary will not load, so an operator who drops
-/// in a `kind: transport` tarball is told the kind is compiled-in only rather than merely that it is
-/// not in a list. Empty for every other kind.
-#[must_use]
-pub fn kind_refusal_note(kind: &str) -> &'static str {
-    match kind {
-        "transport" => {
-            " — transports are in-tree only: a transport is compiled into the busbar binary and is \
-             never loaded from the plugins folder"
-        }
-        _ => "",
     }
 }
 
@@ -651,6 +643,30 @@ impl PluginRegistry {
         crate::plane::load_plane_from_bytes(&p.lib_bytes, &p.manifest.name, &p.manifest.kind)
     }
 
+    /// Open a TRANSPORT resolved by name or alias: verifies the resolved plugin's `kind` is
+    /// `transport`, then loads the VERIFIED bytes over the HOT-tier ABI and admits its
+    /// [`TransportDecl`](busbar_plugin::hot::TransportDecl) through the SAME admission a linked
+    /// transport takes ([`crate::link_transport`]), returning the [`crate::DynTransport`] row the
+    /// composition root folds. FAIL-CLOSED on any resolution/kind/load failure.
+    pub fn open_transport(&self, name_or_alias: &str) -> Result<crate::DynTransport, String> {
+        let p = self.resolve_kind(name_or_alias, "transport", "carry bytes as a transport")?;
+        crate::transport::load_transport_from_bytes(
+            &p.lib_bytes,
+            &p.manifest.name,
+            &p.manifest.kind,
+        )
+    }
+
+    /// Open EVERY loadable transport, in scan (filename) order, through [`Self::open_transport`].
+    /// The first that will not load fails the whole set, naming it.
+    pub fn open_transports(&self) -> Result<Vec<crate::DynTransport>, String> {
+        self.loadable()
+            .iter()
+            .filter(|p| p.manifest.kind == busbar_plugin::cold::kind::TRANSPORT)
+            .map(|p| self.open_transport(&p.manifest.name))
+            .collect()
+    }
+
     /// Open EVERY loadable plane, in scan (filename) order, through [`Self::open_plane`] — the planes
     /// a dropped-in plugins directory contributes to the plane axis. The first that will not load
     /// fails the whole set, naming it: a trusted plane that cannot be admitted is not skipped.
@@ -995,7 +1011,3 @@ pub fn inventory(dir: &Path, policy: &TrustPolicy) -> Vec<InventoryEntry> {
 #[cfg(test)]
 #[path = "tests/registry_tests.rs"]
 mod tests;
-
-#[cfg(test)]
-#[path = "tests/kind_refusal_tests.rs"]
-mod kind_refusal_tests;
