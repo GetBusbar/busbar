@@ -7,8 +7,7 @@
 //! `media_type.rsplit('/')` produced `format:"mpeg"` for `audio/mpeg`, which the API 400-rejects.
 
 use super::*;
-use crate::warn_capture::WarnCapture;
-use tracing_subscriber::layer::SubscriberExt as _;
+use busbar_contract::testkit::WarnCapture;
 
 fn audio_req(media_type: &str) -> crate::ir::IrRequest {
     crate::ir::IrRequest {
@@ -68,7 +67,7 @@ fn unsupported_audio_mime_dropped_with_warn_not_invalid_format() {
     // `audio/ogg` has no `{wav, mp3}` representation, so no input_audio part is emitted (emitting
     // `format:"ogg"` would 400) and the drop is observable.
     let cap = WarnCapture::default();
-    let subscriber = tracing_subscriber::registry().with(cap.clone());
+    let subscriber = cap.clone();
     let out = tracing::subscriber::with_default(subscriber, || {
         openai_writer().write_request(&audio_req("audio/ogg"))
     });

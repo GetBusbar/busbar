@@ -91,8 +91,7 @@ fn per_model_then_global_then_4096() {
 #[test]
 fn cache_control_breakpoints_clamped_to_four_on_anthropic_egress() {
     use crate::ir::{CacheControl, CacheKind, IrBlock, IrMessage, IrRole};
-    use crate::warn_capture::WarnCapture;
-    use tracing_subscriber::layer::SubscriberExt as _;
+    use busbar_contract::testkit::WarnCapture;
 
     let bp = || {
         Some(CacheControl {
@@ -173,7 +172,7 @@ fn cache_control_breakpoints_clamped_to_four_on_anthropic_egress() {
     // seam) and now emits at `diag_debug!` (BUSBAR-7081), so capture at DEBUG to preserve the
     // cap/dropped-count content coverage rather than assert on a level the diagnostic no longer uses.
     let cap = WarnCapture::capturing_debug();
-    let subscriber = tracing_subscriber::registry().with(cap.clone());
+    let subscriber = cap.clone();
     let mut req = ir;
     tracing::subscriber::with_default(subscriber, || {
         crate::chat_handle::chat_prepare_for_egress(&mut req, &prep)

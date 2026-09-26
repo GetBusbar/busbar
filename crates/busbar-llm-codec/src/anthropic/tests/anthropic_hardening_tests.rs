@@ -2858,7 +2858,7 @@ fn test_anthropic_streaming_safety_stop_reason_maps_to_refusal() {
 // ---- Fidelity items (Anthropic egress): sampling-param OMIT, response_format-drop
 // warn, and native thinking-block round-trip with signature. ----
 
-use crate::warn_capture::WarnCapture;
+use busbar_contract::testkit::WarnCapture;
 
 /// SAMPLING: Anthropic's Messages API does NOT support `frequency_penalty`,
 /// `presence_penalty`, `seed`, or `n`. A cross-protocol IR carrying every one of them (e.g. read
@@ -3170,8 +3170,6 @@ fn write_request_carries_json_tool_result_block_as_text() {
 /// gated on the directive's presence, so a request that never carried one is silent.
 #[test]
 fn write_request_no_response_format_warning_when_absent() {
-    use tracing_subscriber::layer::SubscriberExt as _;
-
     let req = crate::ir::IrRequest {
         messages: vec![crate::ir::IrMessage {
             role: crate::ir::IrRole::User,
@@ -3187,7 +3185,7 @@ fn write_request_no_response_format_warning_when_absent() {
     };
 
     let cap = WarnCapture::default();
-    let subscriber = tracing_subscriber::registry().with(cap.clone());
+    let subscriber = cap.clone();
     let _ =
         tracing::subscriber::with_default(subscriber, || anthropic_writer().write_request(&req));
 

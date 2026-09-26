@@ -178,11 +178,6 @@ pub fn decl_of(name: &str) -> Option<&'static busbar_contract::protocol::Protoco
     DECLS.iter().copied().find(|d| d.name == name)
 }
 
-/// The warn-capture layer this crate's tests assert coded diagnostics through.
-#[cfg(test)]
-#[path = "tests/warn_capture.rs"]
-pub(crate) mod warn_capture;
-
 /// THIS CRATE'S TEST HOST (#83a SD-3: the test registration and the classifier are dev-only): the
 /// host services a composition root arms behind the contract seams, armed for this crate's test
 /// binary by the test itself, so the codec's tests prove the codec's own seam and never reach the

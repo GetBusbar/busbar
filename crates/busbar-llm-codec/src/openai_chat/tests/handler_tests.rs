@@ -121,15 +121,14 @@ fn embeddings_base64_encoding_format_survives_to_openai_egress() {
 
 #[test]
 fn embeddings_write_request_warns_on_dropped_non_text_input() {
-    use crate::warn_capture::WarnCapture;
-    use tracing_subscriber::layer::SubscriberExt as _;
+    use busbar_contract::testkit::WarnCapture;
 
     let ir = crate::ir::embeddings::EmbeddingsReq {
         input: crate::ir::embeddings::EmbInput::Tokens(vec![vec![1, 2, 3]]),
         ..Default::default()
     };
     let cap = WarnCapture::default();
-    let subscriber = tracing_subscriber::registry().with(cap.clone());
+    let subscriber = cap.clone();
     let out = tracing::subscriber::with_default(subscriber, || {
         super::super::super::leaf_codec::embeddings_write_request("openai", &ir)
     });

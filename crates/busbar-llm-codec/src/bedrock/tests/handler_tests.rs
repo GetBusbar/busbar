@@ -83,15 +83,14 @@ fn embeddings_read_request_captures_input_text() {
 #[test]
 fn embeddings_write_request_warns_on_dropped_non_text_input() {
     use crate::ir::embeddings::EmbeddingsReq;
-    use crate::warn_capture::WarnCapture;
-    use tracing_subscriber::layer::SubscriberExt as _;
+    use busbar_contract::testkit::WarnCapture;
 
     let req = EmbeddingsReq {
         input: EmbInput::Tokens(vec![vec![1, 2, 3]]),
         ..Default::default()
     };
     let cap = WarnCapture::default();
-    let subscriber = tracing_subscriber::registry().with(cap.clone());
+    let subscriber = cap.clone();
     let out = tracing::subscriber::with_default(subscriber, || {
         super::super::super::leaf_codec::embeddings_write_request("bedrock", &req)
     });

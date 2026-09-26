@@ -475,6 +475,7 @@ dependencies = [
  "serde_yaml_ng",
  "sha2 0.11.0",
  "smallvec",
+ "tracing",
  "zeroize",
 ]
 
@@ -795,7 +796,6 @@ dependencies = [
  "serde_json",
  "sonic-rs",
  "tracing",
- "tracing-subscriber",
 ]
 
 [[package]]

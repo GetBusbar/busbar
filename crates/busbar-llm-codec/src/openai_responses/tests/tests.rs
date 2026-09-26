@@ -6,8 +6,7 @@ use super::*;
 /// disappeared block. It must now degrade to an empty placeholder AND warn, naming the type.
 #[test]
 fn responses_input_file_degrades_with_warn_not_silent_drop() {
-    use crate::warn_capture::WarnCapture;
-    use tracing_subscriber::layer::SubscriberExt as _;
+    use busbar_contract::testkit::WarnCapture;
 
     let body = serde_json::json!({
         "input": [{
@@ -22,7 +21,7 @@ fn responses_input_file_degrades_with_warn_not_silent_drop() {
     });
 
     let cap = WarnCapture::default();
-    let subscriber = tracing_subscriber::registry().with(cap.clone());
+    let subscriber = cap.clone();
     let ir = tracing::subscriber::with_default(subscriber, || {
         ResponsesReader.read_request(&body).expect("read_request")
     });
@@ -54,7 +53,7 @@ fn responses_input_file_degrades_with_warn_not_silent_drop() {
     );
 
     let cap2 = WarnCapture::default();
-    let sub2 = tracing_subscriber::registry().with(cap2.clone());
+    let sub2 = cap2.clone();
     let ir2 = tracing::subscriber::with_default(sub2, || {
         ResponsesReader
             .read_request(&serde_json::json!({
@@ -5991,10 +5990,9 @@ fn reasoning_input_item_round_trips_through_request() {
     // flake. Holding the capture fixture's reentrant gate for the duration of this read serialises
     // the two tests, so neither ordering can produce it.
     let ir = {
-        use crate::warn_capture::WarnCapture;
-        use tracing_subscriber::layer::SubscriberExt as _;
+        use busbar_contract::testkit::WarnCapture;
         let cap = WarnCapture::default();
-        let subscriber = tracing_subscriber::registry().with(cap.clone());
+        let subscriber = cap.clone();
         tracing::subscriber::with_default(subscriber, || {
             let reader = ResponsesReader;
             reader.read_request(&body).expect("read_request")
@@ -7467,8 +7465,7 @@ fn cross_protocol_egress_into_responses_emits_content_part_bracket() {
 /// semantics. The BEFORE-any-turn case must NOT warn (that is the ordinary, non-surprising shape).
 #[test]
 fn mid_conversation_developer_item_is_flagged() {
-    use crate::warn_capture::WarnCapture;
-    use tracing_subscriber::layer::SubscriberExt as _;
+    use busbar_contract::testkit::WarnCapture;
 
     let body = serde_json::json!({
         "input": [
@@ -7480,7 +7477,7 @@ fn mid_conversation_developer_item_is_flagged() {
     });
 
     let cap = WarnCapture::default();
-    let subscriber = tracing_subscriber::registry().with(cap.clone());
+    let subscriber = cap.clone();
     let ir = tracing::subscriber::with_default(subscriber, || {
         ResponsesReader.read_request(&body).expect("read_request")
     });
@@ -7506,8 +7503,7 @@ fn mid_conversation_developer_item_is_flagged() {
 /// the ordinary shape and must NOT warn.
 #[test]
 fn leading_developer_item_does_not_warn() {
-    use crate::warn_capture::WarnCapture;
-    use tracing_subscriber::layer::SubscriberExt as _;
+    use busbar_contract::testkit::WarnCapture;
 
     let body = serde_json::json!({
         "input": [
@@ -7517,7 +7513,7 @@ fn leading_developer_item_does_not_warn() {
     });
 
     let cap = WarnCapture::default();
-    let subscriber = tracing_subscriber::registry().with(cap.clone());
+    let subscriber = cap.clone();
     let _ir = tracing::subscriber::with_default(subscriber, || {
         ResponsesReader.read_request(&body).expect("read_request")
     });

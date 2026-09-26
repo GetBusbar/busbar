@@ -65,10 +65,10 @@ tracing = { workspace = true }
 
 [dev-dependencies]
 # The tests reach only this crate and the contract (#83a SD-3): the host services a composition
-# root arms behind the contract seams are armed by the tests themselves (`tests/test_host.rs`), and
+# root arms behind the contract seams are armed by the tests themselves (`tests/test_host.rs`), a
+# diagnostic is asserted through the contract's own log double (`busbar_contract::testkit`), and
 # the proofs that hold this plane's copies to the host's live in shared fixtures under
 # `testing/plane-copies/`, which the host's suites read too.
 serde_json = { workspace = true }
-tracing-subscriber = { workspace = true }
 # The test host's entropy source (the same OS CSPRNG the host arms), for this crate's tests only.
 getrandom = { workspace = true }

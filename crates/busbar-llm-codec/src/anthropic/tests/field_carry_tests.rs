@@ -537,8 +537,7 @@ fn anthropic_stream_ping_same_proto_carry() {
 // a `dropped_egress_controls` entry — not silently as before (the writer never referenced them).
 #[test]
 fn anthropic_drops_penalties_seed_n_observably() {
-    use crate::warn_capture::WarnCapture;
-    use tracing_subscriber::layer::SubscriberExt as _;
+    use busbar_contract::testkit::WarnCapture;
 
     let ir = crate::ir::IrRequest {
         frequency_penalty: Some(0.5),
@@ -549,7 +548,7 @@ fn anthropic_drops_penalties_seed_n_observably() {
     };
 
     let cap = WarnCapture::default();
-    let sub = tracing_subscriber::registry().with(cap.clone());
+    let sub = cap.clone();
     let out = tracing::subscriber::with_default(sub, || anthropic_writer().write_request(&ir));
 
     // None of the four leaks onto the Anthropic wire.

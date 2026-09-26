@@ -20,9 +20,8 @@
 //!   drop-with-warn.
 
 use super::*;
-use crate::warn_capture::WarnCapture;
+use busbar_contract::testkit::WarnCapture;
 use serde_json::json;
-use tracing_subscriber::layer::SubscriberExt as _;
 
 /// Read a Cohere request body → IR → write it back on the Cohere wire.
 fn request_roundtrip(body: serde_json::Value) -> serde_json::Value {
@@ -374,7 +373,7 @@ fn cohere_response_logprobs_drop_is_warned() {
     });
 
     let cap = WarnCapture::default();
-    let subscriber = tracing_subscriber::registry().with(cap.clone());
+    let subscriber = cap.clone();
     let (ir, out) = tracing::subscriber::with_default(subscriber, || {
         let ir = CohereReader
             .read_response(&body)

@@ -64,6 +64,13 @@ license = "Apache-2.0"
 # media carriers) came RE-EXPRESSED over this crate's own `SlabBytes` (#83a SD-2b): that buffer type
 # stays banned from this surface (`tests/bounded_limits.rs`), so `bytes` is still not a dependency
 # here, and the host adopts a slab as its own buffer without copying at its transport boundary.
+#
+# `tracing` arrived with the contract's always-compiled `testkit` (#83a O8, ARCHITECT SD-3 queue
+# (4)): the in-memory log double a plugin's own tests assert its diagnostics through is a `tracing`
+# subscriber, and every plugin already names `tracing` (the diagnostic emit macros expand to it). It
+# resolves to `tracing-core`, `pin-project-lite`, `once_cell` and a compile-time attribute macro;
+# none opens anything or reaches `libc`. The subscriber is written against `tracing`'s own trait, so
+# `tracing-subscriber` is NOT a dependency here.
 [dependencies]
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -75,6 +82,7 @@ sha2 = { workspace = true }
 hex = { workspace = true }
 http = { workspace = true }
 memchr = { workspace = true }
+tracing = { workspace = true }
 
 # Tests only. The ABI types that seal into the policy journal are serialised by something, and a
 # test that asserts what a serialisation does NOT contain has to run a real serializer over it.

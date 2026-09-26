@@ -1524,8 +1524,7 @@ fn read_request_preserves_sampling_params_in_extra() {
 /// even OpenAI->OpenAI same-lane.
 #[test]
 fn unknown_reasoning_effort_survives_in_extra() {
-    use crate::warn_capture::WarnCapture;
-    use tracing_subscriber::layer::SubscriberExt as _;
+    use busbar_contract::testkit::WarnCapture;
 
     let body = serde_json::json!({
         "model": "gpt-5",
@@ -1534,7 +1533,7 @@ fn unknown_reasoning_effort_survives_in_extra() {
     });
 
     let cap = WarnCapture::default();
-    let subscriber = tracing_subscriber::registry().with(cap.clone());
+    let subscriber = cap.clone();
     let ir = tracing::subscriber::with_default(subscriber, || {
         OpenAiReader.read_request(&body).expect("parses")
     });
@@ -5375,8 +5374,7 @@ fn write_response_omits_annotations_when_there_are_no_citations() {
 /// adding e.g. `"original"`) is dropped, and that drop warns rather than vanishing.
 #[test]
 fn image_detail_is_carried_and_only_an_unknown_word_warns() {
-    use crate::warn_capture::WarnCapture;
-    use tracing_subscriber::layer::SubscriberExt as _;
+    use busbar_contract::testkit::WarnCapture;
 
     let body = |detail: &str| {
         serde_json::json!({
@@ -5391,7 +5389,7 @@ fn image_detail_is_carried_and_only_an_unknown_word_warns() {
         })
     };
     let cap = WarnCapture::default();
-    let subscriber = tracing_subscriber::registry().with(cap.clone());
+    let subscriber = cap.clone();
     let ir = tracing::subscriber::with_default(subscriber, || {
         OpenAiReader.read_request(&body("high")).expect("parses")
     });
@@ -5414,7 +5412,7 @@ fn image_detail_is_carried_and_only_an_unknown_word_warns() {
     );
 
     let cap2 = WarnCapture::default();
-    let subscriber2 = tracing_subscriber::registry().with(cap2.clone());
+    let subscriber2 = cap2.clone();
     let _ir2 = tracing::subscriber::with_default(subscriber2, || {
         OpenAiReader
             .read_request(&body("original"))
@@ -5645,8 +5643,7 @@ fn response_blank_tool_call_id_is_synthesized() {
 // response has no thinking output field. That drop must be OBSERVABLE (a `warn!`), not silent.
 #[test]
 fn openai_write_drops_thinking_observably() {
-    use crate::warn_capture::WarnCapture;
-    use tracing_subscriber::layer::SubscriberExt as _;
+    use busbar_contract::testkit::WarnCapture;
 
     let resp = crate::ir::IrResponse {
         role: IrRole::Assistant,
@@ -5681,7 +5678,7 @@ fn openai_write_drops_thinking_observably() {
     };
 
     let cap = WarnCapture::default();
-    let sub = tracing_subscriber::registry().with(cap.clone());
+    let sub = cap.clone();
     let out = tracing::subscriber::with_default(sub, || openai_writer().write_response(&resp));
 
     // The reasoning text never leaks into the completion content, and the drop warned.
@@ -5730,8 +5727,7 @@ fn response_object_tool_arguments_preserved() {
 // dropped — but OBSERVABLY (a `warn!`), not silently.
 #[test]
 fn response_array_content_image_drop_warns() {
-    use crate::warn_capture::WarnCapture;
-    use tracing_subscriber::layer::SubscriberExt as _;
+    use busbar_contract::testkit::WarnCapture;
 
     let body = serde_json::json!({
         "id": "chatcmpl-x", "object": OBJ_COMPLETION, "created": 1u64, "model": "gpt-4o",
@@ -5746,7 +5742,7 @@ fn response_array_content_image_drop_warns() {
         "usage": {"prompt_tokens": 1, "completion_tokens": 1}
     });
     let cap = WarnCapture::default();
-    let sub = tracing_subscriber::registry().with(cap.clone());
+    let sub = cap.clone();
     let ir = tracing::subscriber::with_default(sub, || {
         OpenAiReader.read_response(&body).expect("read_response")
     });

@@ -126,15 +126,14 @@ fn embeddings_write_request_preserves_multiple_encoding_types_in_order() {
 #[test]
 fn embeddings_write_request_warns_on_dropped_non_text_input() {
     use crate::ir::embeddings::EmbeddingsReq;
-    use crate::warn_capture::WarnCapture;
-    use tracing_subscriber::layer::SubscriberExt as _;
+    use busbar_contract::testkit::WarnCapture;
 
     let ir = EmbeddingsReq {
         input: EmbInput::Images(vec!["data:image/png;base64,AA==".into()]),
         ..Default::default()
     };
     let cap = WarnCapture::default();
-    let subscriber = tracing_subscriber::registry().with(cap.clone());
+    let subscriber = cap.clone();
     let out = tracing::subscriber::with_default(subscriber, || {
         super::super::super::leaf_codec::embeddings_write_request("cohere", &ir)
     });

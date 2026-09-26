@@ -7,8 +7,7 @@
 //! attachment (e.g. an Anthropic→Cohere hop) has no slot and is deliberately, observably dropped.
 
 use super::*;
-use crate::warn_capture::WarnCapture;
-use tracing_subscriber::layer::SubscriberExt as _;
+use busbar_contract::testkit::WarnCapture;
 
 #[test]
 fn anthropic_to_cohere_document_media_warns_not_silent() {
@@ -39,7 +38,7 @@ fn anthropic_to_cohere_document_media_warns_not_silent() {
     };
 
     let cap = WarnCapture::default();
-    let subscriber = tracing_subscriber::registry().with(cap.clone());
+    let subscriber = cap.clone();
     let out = tracing::subscriber::with_default(subscriber, || {
         let w = CohereWriter;
         w.write_request(&ir)

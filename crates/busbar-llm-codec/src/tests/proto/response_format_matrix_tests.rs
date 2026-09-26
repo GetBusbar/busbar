@@ -169,8 +169,7 @@ fn req_with_tool_choice_no_tools() -> crate::ir::IrRequest {
 /// shape; Bedrock is a REGRESSION PROOF (it already guarded before this fix).
 #[test]
 fn tool_choice_without_tools_is_omitted_on_every_writer() {
-    use crate::warn_capture::WarnCapture;
-    use tracing_subscriber::layer::SubscriberExt as _;
+    use busbar_contract::testkit::WarnCapture;
 
     let req = req_with_tool_choice_no_tools();
     let cohere_writer = CohereWriter;
@@ -182,7 +181,7 @@ fn tool_choice_without_tools_is_omitted_on_every_writer() {
     // satisfied the check for all six — so each runs under its own subscriber.
     let run = |f: &dyn Fn() -> serde_json::Value| -> (serde_json::Value, WarnCapture) {
         let cap = WarnCapture::default();
-        let subscriber = tracing_subscriber::registry().with(cap.clone());
+        let subscriber = cap.clone();
         let value = tracing::subscriber::with_default(subscriber, f);
         (value, cap)
     };
@@ -332,8 +331,7 @@ fn stop_sequences_clamped_per_vendor_cap() {
 /// NOT warn (the negative half is a regression proof for the false-positive risk).
 #[test]
 fn parallel_tool_calls_discarded_on_gemini_cohere_bedrock_warns() {
-    use crate::warn_capture::WarnCapture;
-    use tracing_subscriber::layer::SubscriberExt as _;
+    use busbar_contract::testkit::WarnCapture;
 
     let req = |parallel: Option<bool>| crate::ir::IrRequest {
         messages: vec![crate::ir::IrMessage {
@@ -351,7 +349,7 @@ fn parallel_tool_calls_discarded_on_gemini_cohere_bedrock_warns() {
 
     // Positive half: Some(_) must warn on all three.
     let cap = WarnCapture::default();
-    let subscriber = tracing_subscriber::registry().with(cap.clone());
+    let subscriber = cap.clone();
     let with_flag = req(Some(true));
     let gemini_writer = GeminiWriter;
     let cohere_writer = CohereWriter;
@@ -380,7 +378,7 @@ fn parallel_tool_calls_discarded_on_gemini_cohere_bedrock_warns() {
     // Negative half (REGRESSION PROOF): None must NOT warn — this is what makes the positive half
     // a real signal instead of firing on every request regardless of content.
     let cap2 = WarnCapture::default();
-    let subscriber2 = tracing_subscriber::registry().with(cap2.clone());
+    let subscriber2 = cap2.clone();
     let without_flag = req(None);
     tracing::subscriber::with_default(subscriber2, || {
         gemini_writer.write_request(&without_flag);

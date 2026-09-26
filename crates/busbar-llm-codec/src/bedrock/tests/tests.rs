@@ -5354,8 +5354,7 @@ fn test_bedrock_tool_choice_specific_tool() {
 /// least diagnosable.
 #[test]
 fn bedrock_specific_tool_choice_warns_it_is_claude_only() {
-    use crate::warn_capture::WarnCapture;
-    use tracing_subscriber::layer::SubscriberExt as _;
+    use busbar_contract::testkit::WarnCapture;
 
     let req = tool_choice_req(Some(crate::ir::IrToolChoice::Tool {
         name: "get_weather".to_string(),
@@ -5363,7 +5362,7 @@ fn bedrock_specific_tool_choice_warns_it_is_claude_only() {
     let writer = BedrockWriter;
 
     let cap = WarnCapture::default();
-    let subscriber = tracing_subscriber::registry().with(cap.clone());
+    let subscriber = cap.clone();
     let out = tracing::subscriber::with_default(subscriber, || writer.write_request(&req));
 
     // Behavior unchanged (regression half): the directive is still emitted.

@@ -10,8 +10,7 @@
 //! documented drop+warn+test (per the owner ruling: ZERO waivers), never silently and never waived.
 
 use super::*;
-use crate::warn_capture::WarnCapture;
-use tracing_subscriber::layer::SubscriberExt as _;
+use busbar_contract::testkit::WarnCapture;
 
 // ─────────────────────────────────────── helpers ───────────────────────────────────────
 
@@ -109,7 +108,7 @@ fn text_block(text: &str) -> crate::ir::IrBlock {
 /// Run `f` with a warn-capturing subscriber and return whatever it produced plus the capture.
 fn with_warns<T>(f: impl FnOnce() -> T) -> (T, WarnCapture) {
     let cap = WarnCapture::default();
-    let sub = tracing_subscriber::registry().with(cap.clone());
+    let sub = cap.clone();
     let out = tracing::subscriber::with_default(sub, f);
     (out, cap)
 }

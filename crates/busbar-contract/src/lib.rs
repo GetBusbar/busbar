@@ -83,6 +83,7 @@ pub mod signal;
 pub mod slice;
 pub mod spans;
 pub mod surface;
+pub mod testkit;
 pub mod transport;
 pub mod unit;
 pub mod upstream;
