@@ -11,7 +11,7 @@
 use super::*;
 use crate::config::{resolve_export, ExportDefCfg, ExportDefs};
 
-use crate::test_support::export_axis::install_export_axis as installed_axis;
+use crate::export::scrape::tests::installed_axis;
 
 fn def(module: &str) -> ExportDefCfg {
     serde_json::from_value(serde_json::json!({ "module": module })).expect("a minimal definition")

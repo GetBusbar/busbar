@@ -175,7 +175,8 @@ fn no_ledger_series_and_no_keyset_lines_without_data_dir() {
     // not when every worker (and the process-wide metrics recorder behind them) is warm: the kernel
     // can hand an early connection to a worker whose accept loop is live before the recorder install
     // (a background thread's one-time clock calibration, started at config load) has completed.
-    // `crate::export::prometheus`'s contract is that such a scrape is REFUSED (non-`200`, retriable),
+    // The host scrape's contract (`busbar_kernel::export::scrape`) is that such a scrape is REFUSED
+    // (non-`200`, retriable),
     // never a `200` with an empty body — so unlike the pre-fix version of this test, we do not need
     // to retry PAST an untrustworthy early response to reach a trustworthy one: any `200` this test
     // sees is required to already be the full exposition, and a scrape that lands on a cold worker

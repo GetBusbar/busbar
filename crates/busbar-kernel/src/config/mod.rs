@@ -1764,8 +1764,8 @@ pub use busbar_kernel::config::sections::{
 // Moved to `busbar_kernel::config::sections`; re-exported at their historical `config::` path.
 pub use busbar_kernel::config::sections::{
     rate_entry_per_mtok, ConfigMgmtCfg, ExportDefCfg, ExportDefs, OverlayBackend, OverlayCfg,
-    RateEntryCfg, EXPORT_MODULES, EXPORT_MODULE_OTLP, EXPORT_MODULE_PROMETHEUS,
-    EXPORT_MODULE_REQUEST_LOG_FILE, EXPORT_MODULE_REQUEST_LOG_WEBHOOK,
+    RateEntryCfg, EXPORT_MODULES, EXPORT_MODULE_OTLP, EXPORT_MODULE_REQUEST_LOG_FILE,
+    EXPORT_MODULE_REQUEST_LOG_WEBHOOK,
 };
 
 /// The serde default for `per_request_fee:` - 0 (no flat per-request charge; token spend derives
@@ -1779,19 +1779,20 @@ fn default_per_request_fee() -> i64 {
 /// on-disk shape is [`ExportDefs`]).
 ///
 /// Note the asymmetry, which is deliberate and load-bearing: the two LOG sinks are `Vec`s (multiple
-/// named instances are the whole point of the named map), while `prometheus` and `otlp` are at most
-/// ONE each — `prometheus` owns the single well-known `/metrics` route and `otlp` installs the one
-/// process-global tracer subscriber, so a second instance could not do anything except silently lose.
-/// A second instance of either is therefore a loud boot error, never a silent no-op.
+/// named instances are the whole point of the named map), while the scrape sink and `otlp` are at
+/// most ONE each — the scrape sink owns the single well-known `/metrics` route and `otlp` installs the
+/// one process-global tracer subscriber, so a second instance could not do anything except silently
+/// lose. A second instance of either module is therefore a loud boot error, never a silent no-op.
 ///
 /// Each sink's settings carry that instance's resolved [`crate::export::projection::Projection`] —
 /// the streams + fields THAT sink is granted. Core builds every payload TO that projection, so an
 /// ungranted field is never serialized and never crosses the ABI.
 #[derive(Debug, Clone, Default)]
 pub struct ExportCfg {
-    /// The `prometheus` instance's settings, if one is configured. `None` ⇒ no recorder installed,
+    /// The RECORDER's settings, read off the SCRAPE SINK's instance (see
+    /// [`PluginExportSettings::scrape`]), if one is configured. `None` ⇒ no recorder installed,
     /// `/metrics` not mounted, every emit site a true no-op (the zero-config default).
-    pub prometheus: Option<PrometheusSettings>,
+    pub recorder: Option<PrometheusSettings>,
     /// The `otlp` instance's settings, if one is configured. `None` ⇒ no tracer/span export.
     pub otlp: Option<OtlpSettings>,
     /// Every instance whose `module:` names an export module registered on the EXPORT AXIS
@@ -1812,6 +1813,10 @@ pub struct PluginExportSettings {
     /// The instance's definition.
     pub def: ExportDefCfg,
     pub(crate) projection: crate::export::projection::Projection,
+    /// THE SCRAPE SINK: this instance's sink carries the `metrics` stream and the instance
+    /// subscribes to it — the host serves the well-known `/metrics` (it holds the recorder) and has
+    /// this sink render the recorder's snapshot (`crate::export::scrape`). At most one instance.
+    pub(crate) scrape: bool,
 }
 
 impl ExportCfg {
@@ -1822,10 +1827,9 @@ impl ExportCfg {
     /// `export::request_log_configured()` boolean — one mechanism, not two.
     pub(crate) fn projection_union(&self) -> crate::export::projection::ProjectionUnion {
         crate::export::projection::ProjectionUnion::of(
-            self.prometheus
+            self.otlp
                 .iter()
                 .map(|s| &s.projection)
-                .chain(self.otlp.iter().map(|s| &s.projection))
                 .chain(self.plugins.iter().map(|s| &s.projection)),
         )
     }
@@ -1840,7 +1844,7 @@ impl ExportCfg {
 impl From<&ExportCfg> for busbar_kernel::config::limits::ExportLimits {
     fn from(export: &ExportCfg) -> Self {
         let key_gauge_limit = export
-            .prometheus
+            .recorder
             .as_ref()
             .map_or_else(default_key_gauge_limit, |p| p.key_gauge_limit);
         Self { key_gauge_limit }
@@ -1848,7 +1852,9 @@ impl From<&ExportCfg> for busbar_kernel::config::limits::ExportLimits {
 }
 
 /// `settings:` of an `export.<name>.module: prometheus` instance — relocated from the retired
-/// `observability.metrics` block.
+/// `observability.metrics` block. They are the RECORDER's settings (the host holds the recorder):
+/// the sink validates them as it validates its instance, and the host reads them off the scrape
+/// sink's instance ([`ExportCfg::recorder`]).
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct PrometheusSettings {
@@ -1858,13 +1864,6 @@ pub struct PrometheusSettings {
     pub buffer_seconds: u64,
     #[serde(default = "default_key_gauge_limit")]
     pub key_gauge_limit: usize,
-    /// THIS INSTANCE'S RESOLVED PROJECTION — the streams + fields this sink is granted, from its
-    /// `streams:` / `fields:` keys (see `crate::export::projection`). NOT an operator key: it is
-    /// `#[serde(skip)]` so the `settings:` bag stays exactly what the operator wrote, and it is
-    /// filled in by [`resolve_export`]. It rides here so the delivery path can build this sink's
-    /// payload TO ITS PROJECTION without a second lookup keyed on instance name.
-    #[serde(skip)]
-    pub(crate) projection: crate::export::projection::Projection,
 }
 
 /// `settings:` of an `export.<name>.module: otlp` instance — the new home of the DELETED
@@ -1894,8 +1893,9 @@ pub struct OtlpSettings {
 ///   the four built-ins (never a silently-ignored sink);
 /// - a bad/typo'd key inside `settings:` is a boot error (each settings struct is
 ///   `deny_unknown_fields`, so the opaque bag is only opaque to the OUTER layer);
-/// - a SECOND `prometheus` or `otlp` instance is a boot error (see [`ExportCfg`] — those two are
-///   process-singleton by construction and a second one could only lose silently);
+/// - a SECOND instance of the scrape sink's module, or of `otlp`, is a boot error (see
+///   [`ExportCfg`] — those two are process-singleton by construction and a second one could only
+///   lose silently);
 /// - the instance's PROJECTION (`streams:` / `fields:` / `durable:`) is resolved + validated by
 ///   [`crate::export::projection::resolve_projection`], which is where the HARD RULE lives: a stream
 ///   with no producer in this release, a stream the module cannot carry, a `fields:` list that omits
@@ -1904,7 +1904,6 @@ pub struct OtlpSettings {
 pub fn resolve_export(defs: &ExportDefs, errors: &mut Vec<String>) -> ExportCfg {
     let mut out = ExportCfg::default();
     // The instance name that already claimed each singleton module, for the "named twice" diagnostic.
-    let mut prometheus_owner: Option<&str> = None;
     let mut otlp_owner: Option<&str> = None;
 
     for (name, def) in defs {
@@ -1918,10 +1917,11 @@ pub fn resolve_export(defs: &ExportDefs, errors: &mut Vec<String>) -> ExportCfg 
             .is_none()
             .then(|| crate::export::plugin::probe(name, module, &settings))
             .flatten();
+        let declared = axis.as_ref().and_then(|(streams, _)| streams.as_deref());
         let projection = crate::export::projection::resolve_projection(
             name,
             module,
-            built_in.or(axis.as_ref().and_then(|(streams, _)| streams.as_deref())),
+            built_in.or(declared),
             def.streams.as_deref(),
             def.fields.as_deref(),
             def.durable,
@@ -1946,19 +1946,7 @@ pub fn resolve_export(defs: &ExportDefs, errors: &mut Vec<String>) -> ExportCfg 
                 }
             };
         }
-        match def.module.trim() {
-            EXPORT_MODULE_PROMETHEUS => {
-                if let Some(owner) = prometheus_owner {
-                    errors.push(format!(
-                        "export.{name}: a second `module: prometheus` instance (already defined as \
-                         '{owner}'). Prometheus serves the ONE well-known /metrics route, so a \
-                         second instance could only be silently ignored — keep a single instance."
-                    ));
-                    continue;
-                }
-                prometheus_owner = Some(name);
-                out.prometheus = typed!(PrometheusSettings);
-            }
+        match module {
             EXPORT_MODULE_OTLP => {
                 if let Some(owner) = otlp_owner {
                     errors.push(format!(
@@ -1972,12 +1960,32 @@ pub fn resolve_export(defs: &ExportDefs, errors: &mut Vec<String>) -> ExportCfg 
                 out.otlp = typed!(OtlpSettings);
             }
             // THE EXPORT AXIS: a module some compiled-in or dropped-in export plugin registered.
-            _ if axis.is_some() => {
+            // An instance subscribed to `metrics` whose sink carries it is the SCRAPE SINK —
+            // once: a second instance of that module could only be silently ignored.
+            other if axis.is_some() => {
+                let metrics = busbar_plugin_loader::ExportStream::Metrics;
+                let carries = declared.is_some_and(|d| d.contains(&metrics));
+                let scrape = carries && projection.wants_stream(metrics);
+                let taken = out.plugins.iter().find(|p| p.scrape && scrape);
+                if let Some(owner) = taken.filter(|p| p.def.module.trim() == other) {
+                    errors.push(format!(
+                        "export.{name}: a second `module: {other}` instance (already defined as \
+                         '{}'). Prometheus serves the ONE well-known /metrics route, so a \
+                         second instance could only be silently ignored — keep a single instance.",
+                        owner.name
+                    ));
+                    continue;
+                }
+                let scrape = scrape && taken.is_none();
+                if scrape {
+                    out.recorder = serde_json::from_value(settings).ok();
+                }
                 errors.extend(axis.into_iter().flat_map(|(_, problems)| problems));
                 out.plugins.push(PluginExportSettings {
                     name: name.clone(),
                     def: def.clone(),
                     projection,
+                    scrape,
                 })
             }
             other => errors.push(format!(
@@ -2141,24 +2149,8 @@ pub fn resolve(
     // bad settings, and duplicate singleton instances land in `errors` here.
     let export = resolve_export(&deploy.export, &mut errors);
 
-    // A prometheus instance with `buffer_seconds: 0` would ask busbar to retain observations for no
-    // time at all: the rolling window is empty at every scrape, so `/metrics` renders quantiles over
-    // nothing while the hot path still pays the full recording cost — opted-in metrics that report
-    // nothing. Omitting the instance is how collection is turned OFF; `0` is not that, so it fails
-    // boot loudly rather than silently producing an inert collector.
-    if export
-        .prometheus
-        .as_ref()
-        .is_some_and(|p| p.buffer_seconds == 0)
-    {
-        errors.push(
-            "the `module: prometheus` export instance sets settings.buffer_seconds: 0, which \
-             retains no observations — every scrape would report empty quantiles while still paying \
-             the recording cost. Name a positive retention window in seconds, or remove the \
-             instance to turn metrics off"
-                .to_string(),
-        );
-    }
+    // (A scrape sink's zero retention window — recording at full cost, reporting nothing — is its
+    // own settings refusal, raised by the sink while `resolve_export` validates it.)
     let mut resolved_providers: HashMap<String, ProviderCfg> = HashMap::new();
 
     // THE PLANE HOOK (1.6.0 pools stage-B): the per-provider catalog/deployment MERGE is the LLM

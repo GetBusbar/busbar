@@ -70,11 +70,12 @@ pub use busbar_plugin::cold::export::{HostResult, HttpRequest, HttpResponse};
 pub use busbar_plugin::cold::ColdEntry;
 
 impl LinkedPlugin {
-    /// A FIRST-PARTY cold plugin a build links: `name` (its own alias) of `kind`, at the newest
+    /// A FIRST-PARTY cold plugin a build links: `name` aliased `alias`, of `kind`, at the newest
     /// payload schema this loader speaks for the kind, published by busbar — the manifest its release
     /// tarball states — over `entry`, the boundary its `cdylib` exports under the frozen symbols.
-    pub fn first_party(kind: &str, name: &str, entry: &'static ColdEntry) -> Self {
+    pub fn first_party(kind: &str, name: &str, alias: &str, entry: &'static ColdEntry) -> Self {
         let mut row = LinkedPlugin::store(name, |_| Err(String::new()), false);
+        row.manifest.alias = alias.into();
         row.manifest.kind = kind.into();
         row.manifest.abi_version = supported_abi(kind).iter().copied().max().unwrap_or(0);
         row.entry = LinkedEntry::Boundary(entry);

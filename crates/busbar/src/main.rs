@@ -669,7 +669,7 @@ async fn run(data_workers: usize) {
     let resolved_export = config::resolve_export(&deploy.export, &mut Vec::new());
     metrics::configure(
         resolved_export
-            .prometheus
+            .recorder
             .as_ref()
             .map(|p| Duration::from_secs(p.buffer_seconds)),
     );

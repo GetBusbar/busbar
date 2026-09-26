@@ -747,21 +747,14 @@ impl LaneSpec {
     }
 }
 
-/// The plugin route table a test `App` carries: the built-in `prometheus` exporter's `GET /metrics`
-/// route when the recorder is installed (`metrics::init()`), else empty. Mirrors production, where the
-/// route is built from `export.prometheus` presence — here the recorder handle is the stand-in switch
-/// (the harness has no `export:` config surface).
+/// The plugin route table a test `App` carries: the host's scrape route `GET /metrics` when the
+/// recorder is installed (`metrics::init()`), else empty. Mirrors production, where the route is the
+/// scrape sink's — here the recorder handle is the stand-in switch (the harness has no `export:`
+/// config surface) and nothing renders but the recorder itself.
 fn test_plugin_route_table() -> crate::plugin_routes::PluginRouteTable {
     if crate::metrics::recorder_installed() {
-        let cfg = crate::config::ExportCfg {
-            prometheus: Some(crate::config::PrometheusSettings {
-                projection: Default::default(),
-                buffer_seconds: 60,
-                key_gauge_limit: crate::config::default_key_gauge_limit(),
-            }),
-            ..Default::default()
-        };
-        crate::plugin_routes::build_route_table(crate::export::route_decls(&cfg))
+        let decl = crate::export::scrape::decl("metrics", None);
+        crate::plugin_routes::build_route_table(vec![decl])
             .unwrap_or_else(|_| crate::plugin_routes::PluginRouteTable::empty())
     } else {
         crate::plugin_routes::PluginRouteTable::empty()

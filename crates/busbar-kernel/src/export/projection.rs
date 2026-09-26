@@ -52,7 +52,7 @@ use serde_json::Value;
 /// What produces each entry TODAY (open these before changing this list — the rule is only worth
 /// what the citations are worth):
 /// - `metrics` — the recorder + emit sites in `crate::metrics`, rendered by
-///   `crate::export::prometheus`.
+///   the scrape sink through `crate::export::scrape`.
 /// - `logs` — [`crate::export::build_request_log`], from the request-finish path
 ///   (`crate::ingress::finish_inner`). PARTIAL: it produces a subset of the stream's documented
 ///   default fields (see [`produced_fields`]).
@@ -128,13 +128,12 @@ pub(crate) fn produced_fields(stream: ExportStream) -> &'static [ExportField] {
 
 /// The streams a built-in `export:` MODULE can carry.
 ///
-/// Checked so that `module: prometheus` + `streams: [logs]` is a LOUD error instead of a sink that
+/// Checked so that `module: otlp` + `streams: [logs]` is a LOUD error instead of a sink that
 /// validates and receives nothing: the module is the transport, the projection is what rides it, and
 /// a projection the transport cannot carry is a configuration mistake, not an empty subscription.
 /// `None` for a module this build does not know (the unknown-module diagnostic owns that case).
 pub(crate) fn module_streams(module: &str) -> Option<&'static [ExportStream]> {
     match module {
-        crate::config::EXPORT_MODULE_PROMETHEUS => Some(&[ExportStream::Metrics]),
         crate::config::EXPORT_MODULE_OTLP => Some(&[ExportStream::Traces]),
         _ => None,
     }

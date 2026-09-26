@@ -136,6 +136,10 @@ busbar-export-file = { path = "../busbar-export-file", optional = true }
 # THE REQUEST-LOG WEBHOOK SINK (`module: request-log-webhook`), a first-party EXPORT plugin linked
 # through the `exports` axis (K9c) — the same row a signed tarball of it registers when dropped in.
 busbar-export-webhook = { path = "../busbar-export-webhook", optional = true }
+# THE PROMETHEUS EXPORT SINK (`module: prometheus`), a first-party EXPORT plugin linked through the
+# `exports` axis (K9d) — the same row a signed tarball of it registers when dropped in. The host
+# keeps the recorder and serves `/metrics`; this sink renders the recorder's snapshot.
+busbar-export-prometheus = { path = "../busbar-export-prometheus", optional = true }
 # The seven transports. Composition is an edge that does not exist as a Cargo dependency — a
 # transport may not name the layer beneath it — so the root supplies each composing transport its
 # lower layer as a constructor argument, which is why every one of them is named here.
@@ -205,7 +209,7 @@ tikv-jemallocator = { workspace = true, features = ["disable_initial_exec_tls"] 
 # SAME default set the monolithic crate had; `root-admin`, `root-voice` and `root-llm` are the
 # additions, and all three are paths rather than surfaces — the operations, their bytes and their
 # features are unchanged.
-default = ["auth-admin-tokens", "hooks-ranking", "proto-llm", "plane-mcp", "plane-a2a", "plane-voice", "plane-decision", "export-file", "export-webhook", "root-admin", "root-voice", "root-llm"]
+default = ["auth-admin-tokens", "hooks-ranking", "proto-llm", "plane-mcp", "plane-a2a", "plane-voice", "plane-decision", "export-file", "export-webhook", "export-prometheus", "root-admin", "root-voice", "root-llm"]
 # A protocol crate: the dependency edge plus its registration line in main.rs. Dropping the
 # feature is the deletion test's level-1 build. There is no per-DIALECT feature and there must not
 # be one — "LLM coverage or not" is the choice this seam offers, and a `proto-gemini` knob would be
@@ -255,6 +259,10 @@ export-file = ["dep:busbar-export-file"]
 # THE REQUEST-LOG WEBHOOK SINK, DEFAULT ON: the `busbar-export-webhook` crate on the export axis.
 # Off, the module resolves only when a signed tarball of the sink is dropped into `plugins/`.
 export-webhook = ["dep:busbar-export-webhook"]
+# THE PROMETHEUS EXPORT SINK, DEFAULT ON: the `busbar-export-prometheus` crate on the export axis —
+# the exposition 1.5.5 shipped built in. Off, the module resolves only when a signed tarball of the
+# sink is dropped into `plugins/`.
+export-prometheus = ["dep:busbar-export-prometheus"]
 # THE VOICE PLANE, SERVED THROUGH THE COMPOSITION ROOT rather than through the previous release's
 # path, DEFAULT ON. `main()` seals the composition and mounts the voice plane's units at boot.
 # Default-off was the ordering, not the destination — the root is BUILT before any plane is SWITCHED
@@ -347,6 +355,7 @@ plane-voice = "busbar-voice"
 plane-decision = "busbar-plane-decision"
 export-file = "busbar-export-file"
 export-webhook = "busbar-export-webhook"
+export-prometheus = "busbar-export-prometheus"
 
 # What each linked feature's crate registers (keyed by the feature, as the linked row is), axis by axis: `plane` (PLANE_DECLARATION + PLANE_HOOKS, joined
 # kernel-side), `protocols`, `path-ingress`, `body-ingress`, `protocol-seams`, `diagnostics`,
@@ -362,6 +371,7 @@ plane-voice = "plane diagnostics ws-arrivals compose gauntlet-session"
 plane-decision = "plane"
 export-file = "exports"
 export-webhook = "exports"
+export-prometheus = "exports"
 
 # A linked crate whose entry module is not `<crate>::linked`: the decision plane is a PURE plane
 # crate whose manifest names `busbar-contract` and nothing else (#40), so its kernel-typed hooks are

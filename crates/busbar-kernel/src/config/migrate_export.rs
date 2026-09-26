@@ -39,7 +39,8 @@ pub(crate) const EXPORT_TYPE_KEY_TO_INSTANCE_NAME: &[(&str, &str, &str)] = &[
 
 /// The streams each 1.5.x export module carried — a FROZEN fact about the documents this pass
 /// rewrites, for the modules the kernel no longer serves itself (a first-party sink on the export
-/// axis now carries them, and declares the same streams: `request-log-file` → `logs`, K9b).
+/// axis now carries them, and declares the same streams: `request-log-file` → `logs`, K9b;
+/// `request-log-webhook` → `logs`, K9c; `prometheus` → `metrics`, K9d).
 const RELEASED_MODULE_STREAMS: &[(&str, &[busbar_plugin_loader::ExportStream])] = &[
     (
         "request-log-file",
@@ -50,6 +51,7 @@ const RELEASED_MODULE_STREAMS: &[(&str, &[busbar_plugin_loader::ExportStream])] 
         "request-log-webhook",
         &[busbar_plugin_loader::ExportStream::Logs],
     ),
+    ("prometheus", &[busbar_plugin_loader::ExportStream::Metrics]),
 ];
 
 /// Ensure `root.export` exists as a mapping, returning a handle to splice an instance into.

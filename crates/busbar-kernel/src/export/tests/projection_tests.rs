@@ -16,7 +16,7 @@ use busbar_plugin_loader::{ExportField, ExportStream};
 
 /// Build a one-instance `export:` map and resolve it, returning the accumulated errors.
 fn resolve_errs(yaml: &str) -> Vec<String> {
-    crate::test_support::export_axis::install_export_axis();
+    crate::export::scrape::tests::installed_axis();
     let defs: ExportDefs = serde_yaml::from_str(yaml).expect("fixture parses");
     let mut errors = Vec::new();
     let _ = crate::config::resolve_export(&defs, &mut errors);

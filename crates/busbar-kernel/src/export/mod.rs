@@ -11,10 +11,11 @@
 //! scrape-time gauge derivation live in [`crate::metrics`]; the request-log projection is still built
 //! in the request-finish path. These modules move only the DISTRIBUTION:
 //!
-//! - [`prometheus`] — PULL. Serves `/metrics` via the endpoint-registration `handle_http` path (the
-//!   well-known-`/metrics` exception), rendering the recorder registry. When `export.prometheus` is
-//!   present the recorder is installed (collection on) and a `GET /metrics` plugin route is
-//!   registered; absent ⇒ no recorder, `/metrics` unmounted, every emit site a true no-op.
+//! - [`scrape`] — PULL. The host's scrape of the well-known `/metrics`: the export-axis instance
+//!   subscribed to `metrics` whose sink carries it (the SCRAPE SINK,
+//!   [`crate::config::PluginExportSettings`]) is handed the recorder's snapshot and renders the
+//!   exposition. With a scrape sink configured the recorder is installed (collection on) and the
+//!   route registered; without one ⇒ no recorder, `/metrics` unmounted, every emit site a true no-op.
 //!
 //! Every other module — `request-log-file` and `request-log-webhook` among them — is a row of the
 //! EXPORT AXIS ([`plugin`]). A row subscribed to `traces` is fed by [`traces`], the kernel's record
@@ -22,7 +23,7 @@
 
 pub mod plugin;
 pub(crate) mod projection;
-pub mod prometheus;
+pub(crate) mod scrape;
 pub mod traces;
 
 use crate::config::ExportCfg;
@@ -32,14 +33,14 @@ use busbar_plugin_loader::{ExportField, ExportStream};
 use serde_json::Value;
 use std::sync::Arc;
 
-/// The live plugin-route declarations the built-in exporters contribute — today just the
-/// `prometheus` exporter's `GET /metrics`. Built at App construction from the resolved `export:` block
+/// The live plugin-route declarations the `export:` block contributes — the host's scrape route and
+/// every opened export-axis sink's own. Built at App construction from the resolved `export:` block
 /// and folded into the [`crate::plugin_routes::PluginRouteTable`] on the App snapshot.
 ///
 /// **A config apply UNMOUNTS but cannot MOUNT.** The two directions are not symmetric, and an earlier
 /// version of this comment claimed they were:
 ///
-/// - **Removing** `export.prometheus` takes effect immediately. The path stays registered on the
+/// - **Removing** the scrape sink's instance takes effect immediately. The path stays registered on the
 ///   router, but [`crate::plugin_routes::plugin_route_dispatch`] resolves the owner from the CURRENT
 ///   snapshot on every request, finds nothing, and 404s. No rebuild needed.
 /// - **Adding** it does NOT take effect until restart. Each declared PATH is registered on the axum
@@ -56,8 +57,8 @@ use std::sync::Arc;
 /// for the route itself — genuinely hot-mounting one is a router rebuild, not done here — but it is no
 /// longer a SILENT one.
 pub(crate) fn route_decls(cfg: &ExportCfg) -> Vec<RouteDecl> {
-    let built_in = prometheus::route_decl(cfg).into_iter();
-    built_in.chain(plugin::route_decls(cfg)).collect()
+    let scraped = scrape::route_decl(cfg).into_iter();
+    scraped.chain(plugin::route_decls(cfg)).collect()
 }
 
 /// Whether the kernel serves `module` itself — a module an export-axis row may not spell, since

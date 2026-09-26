@@ -1893,6 +1893,7 @@ fn test_limits_resolved_default_matches_from_sections_defaults() {
 /// The former `governance:` tuning knobs now live under `advanced:`.
 #[test]
 fn test_limits_set_value_overrides_default() {
+    crate::export::scrape::tests::installed_axis();
     let yaml = r#"
 listen: "0.0.0.0:8080"
 providers:
@@ -3608,8 +3609,8 @@ fn secrets_block_stays_module_keyed_by_design() {
 /// unrepresentable and this test could not be written at all.
 #[test]
 fn export_named_map_allows_two_instances_of_one_module() {
-    // Two instances of one module on the export axis (the webhook sink is such a module).
-    crate::test_support::export_axis::install_export_axis();
+    // Two instances of one module on the export axis (the webhook and scrape sinks are such modules).
+    crate::export::scrape::tests::installed_axis();
     let defs: crate::config::ExportDefs = serde_yaml::from_str(
         "req-log:  { module: k9-tail, settings: { url: \"https://logs.example.com/a\" } }\n\
          req-siem: { module: k9-tail, settings: { url: \"https://siem.internal/b\", delivery_timeout_secs: 9 } }\n",

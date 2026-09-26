@@ -661,10 +661,7 @@ fn an_export_row_spelling_a_built_in_module_is_refused() {
         let _ = std::fs::remove_dir_all(&dir);
         registry
     };
-    for (tag, name, alias) in [
-        ("name", "prometheus", "k9-prom"),
-        ("alias", "k9-traces", "otlp"),
-    ] {
+    for (tag, name, alias) in [("name", "otlp", "k9-otlp"), ("alias", "k9-traces", "otlp")] {
         assert_eq!(
             shadowed_export(&registry_of(tag, name, alias)),
             Err(format!(

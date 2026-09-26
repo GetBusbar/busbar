@@ -146,30 +146,40 @@ impl DynExport {
     }
 }
 
-impl crate::PluginRegistry {
-    /// THE SCRAPE SINK QUESTION, asked while the host validates its configuration (K9d): does the
-    /// sink `module` names carry the `metrics` stream and claim a route at `path` — the well-known
-    /// exposition path the host serves by snapshotting its recorder and having that sink render?
-    /// The claimed route, as the sink declared it; `None` for a module that is not a `kind: export`
-    /// row, a sink that will not open here (its open refuses the boot naming the instance), or one
-    /// that claims no such route.
-    pub fn scrape_route(
-        &self,
-        module: &str,
-        path: &str,
-        settings: &serde_json::Value,
-    ) -> Option<busbar_plugin::cold::endpoint::Route> {
-        let p = self
-            .resolve(module)
-            .filter(|p| p.manifest.kind == busbar_plugin::cold::kind::EXPORT)?;
-        let cfg = settings.to_string();
-        let sink =
-            crate::load_export_image(p.image(), &cfg, &p.manifest.name, &p.manifest.kind).ok()?;
-        let metrics = sink
-            .streams()
-            .contains(&busbar_plugin::cold::export::ExportStream::Metrics);
-        let claimed = sink.routes().iter().find(|r| r.path == path).cloned();
-        claimed.filter(|_| metrics)
+/// THE HOST'S SCRAPE ANSWER (K9d): `own` — the recorder's text exposition, `content_type` its
+/// type — rendered by `sink` from its snapshot, as a `200`. With no sink, or one that cannot render
+/// (text the snapshot cannot place, a sink predating the op or failing to answer — each logged),
+/// the answer is `own` itself, the bytes the snapshot would have been read from: a scrape never goes
+/// dark because a renderer did. No `own` (the recorder is not installed yet, or its install failed)
+/// is REFUSED — `503`, `Retry-After: 1` — never answered `200` with nothing: "not ready, retry" and
+/// "nothing to say" must be distinguishable on the wire.
+pub fn exposition(
+    sink: Option<&DynExport>,
+    own: Option<String>,
+    content_type: &str,
+) -> busbar_plugin::cold::endpoint::EndpointResponse {
+    use busbar_plugin::cold::endpoint::EndpointResponse;
+    let Some(own) = own else {
+        let headers = vec![("retry-after".to_string(), "1".to_string())];
+        return EndpointResponse {
+            status: 503,
+            headers,
+            body: Vec::new(),
+        };
+    };
+    let rendered = sink.and_then(|sink| {
+        let families = snapshot(&own)
+            .map_err(|e| tracing::warn!(error = %e, "the recorder's exposition did not snapshot"))
+            .ok()?;
+        sink.scrape(families)
+            .map_err(|e| tracing::warn!(error = %e, "the scrape sink did not render"))
+            .ok()
+    });
+    let (content_type, body) = rendered.unwrap_or_else(|| (content_type.to_string(), own));
+    EndpointResponse {
+        status: 200,
+        headers: vec![("content-type".to_string(), content_type)],
+        body: body.into_bytes(),
     }
 }
 

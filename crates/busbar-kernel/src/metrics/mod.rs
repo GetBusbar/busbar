@@ -502,11 +502,11 @@ fn emit_lane_gauges(
 }
 
 // `GET /metrics` (the Prometheus text exposition) is no longer served by a core route here: 1.5.3
-// lifted the DISTRIBUTION half out to the built-in `prometheus` EXPORTER
-// ([`crate::export::prometheus`]), which serves it via the plugin HTTP endpoint registration
-// (`handle_http`) and renders the SAME registry through [`render`] after refreshing the scrape-time
-// gauges via [`refresh_scrape_gauges`]. COLLECTION (this recorder + the emit sites + the gauge
-// derivation) stays core.
+// lifted the DISTRIBUTION half out to the `prometheus` exporter, and 1.6.0 made it an export sink
+// on the export axis. The host's scrape ([`crate::export::scrape`]) refreshes the scrape-time
+// gauges via [`refresh_scrape_gauges`], snapshots the SAME registry through [`render`], and serves
+// what that sink renders. COLLECTION (this recorder + the emit sites + the gauge derivation) stays
+// core.
 
 #[cfg(test)]
 #[path = "../tests/metrics_tests.rs"]

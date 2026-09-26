@@ -168,7 +168,8 @@ fn a_linked_and_a_dropped_in_export_sink_are_one_sink() {
     );
     // The scenario below is a DESTINATION sink's (it writes and rotates a file the host opened for
     // it); a linked sink that declares no destination — the webhook sink, which has the host carry
-    // its requests instead — is proved both ways by its own test (`export_webhook_conformance`).
+    // its requests instead, and the scrape sink, which the host asks to render its snapshot — is
+    // proved both ways by its own test (`export_webhook_conformance`, `scrape_tests`).
     let with_destinations =
         |r: &busbar_plugin_loader::LinkedPlugin| !r.manifest.declares.destinations.is_empty();
     for row in rows.into_iter().filter(with_destinations) {

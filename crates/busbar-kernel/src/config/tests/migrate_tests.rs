@@ -1129,6 +1129,7 @@ pools: {}
 /// document had no `export:` block — these `dig` lookups return `None` on the pre-migration tree.
 #[test]
 fn migrate_observability_export_rewrites_old_to_new() {
+    crate::export::scrape::tests::installed_axis();
     crate::test_support::register_neutral_test_plane();
     let raw = r#"
 observability:
@@ -1221,7 +1222,7 @@ pools: {}
     let export = crate::config::resolve_export(&built_ins(&deploy.export), &mut errs);
     assert!(errs.is_empty(), "{errs:?}");
     assert_eq!(webhooks(&deploy.export), 1);
-    assert!(export.prometheus.is_some() && export.otlp.is_some());
+    assert!(export.recorder.is_some() && export.otlp.is_some());
 
     // IDEMPOTENT: re-migrating the already-new document moves nothing more, and the TREE is stable.
     let (out2, doc2) = migrate_to_value(&migrated_yaml);
@@ -1468,6 +1469,7 @@ fn golden_migrate_observability_block_folds_into_an_otlp_export_instance() {
 /// nothing to detect and no named map to converge on.
 #[test]
 fn golden_migrate_type_keyed_export_becomes_a_named_map() {
+    crate::export::scrape::tests::installed_axis();
     crate::test_support::register_neutral_test_plane();
     let raw = "export:\n\
                \x20 prometheus: { settings: { buffer_seconds: 60 } }\n\
@@ -1509,7 +1511,7 @@ fn golden_migrate_type_keyed_export_becomes_a_named_map() {
     let export = crate::config::resolve_export(&built_ins(&deploy.export), &mut errs);
     assert!(errs.is_empty(), "{errs:?}");
     assert_eq!(webhooks(&deploy.export), 2);
-    assert!(export.prometheus.is_some());
+    assert!(export.recorder.is_some());
 }
 
 /// GOLDEN — inline `auth.chain:`/`auth.admin_auth:` entries and the `auth.methods:` block all
@@ -2306,7 +2308,7 @@ fn a_wrong_shaped_store_block_is_never_taken_and_discarded() {
 #[test]
 fn migrate_export_adds_the_explicit_streams_projection() {
     // `request-log-file` is a row of the export axis (K9b), as a linked build's is.
-    crate::test_support::export_axis::install_export_axis();
+    crate::export::scrape::tests::installed_axis();
     let raw = "\
 export:
   metrics:

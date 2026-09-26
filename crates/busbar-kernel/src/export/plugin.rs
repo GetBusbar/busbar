@@ -46,9 +46,10 @@ pub fn install(registry: &'static PluginRegistry) {
 
 /// What the axis says of `module` for instance `name` (what `resolve_export` asks of a module that
 /// is not a built-in): `None` when no `kind: export` row names it; else the streams its sink
-/// declares (unknown when it will not open here) — the projection is resolved against them at configuration time, as a built-in's is —
-/// and the sink's own VALIDATION of the instance's `settings` (K9a S2), reported verbatim, so a
-/// plugin sink's settings errors surface at the same moment and in the same words a built-in's do.
+/// declares (none when it will not open here) — the projection is resolved against them at
+/// configuration time, as a built-in's is — and the sink's own VALIDATION of the instance's
+/// `settings` (K9a S2), reported verbatim, so a plugin sink's settings errors surface at the same
+/// moment and in the same words a built-in's do.
 pub(crate) fn probe(
     name: &str,
     module: &str,
@@ -222,6 +223,11 @@ pub fn start() {
             let _ = s.admission.set(Admission::of(&s.module, stated));
         }
     }
+}
+
+/// The sink opened at boot for the instance `name`, if one was.
+pub(crate) fn opened(name: &str) -> Option<Arc<DynExport>> {
+    sinks().find(|s| s.name == name).map(|s| s.sink.clone())
 }
 
 /// Ask every opened sink for its `status`, folded by the loader into this process's recorder —

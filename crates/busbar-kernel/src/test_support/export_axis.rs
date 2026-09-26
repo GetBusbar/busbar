@@ -63,15 +63,22 @@ static AXIS: std::sync::OnceLock<PluginRegistry> = std::sync::OnceLock::new();
 /// bytes are not a library, so each sink validates nothing and opens nothing — enough for the
 /// configuration layer, which is all a kernel test drives.
 pub fn install_export_axis() {
+    install_export_axis_with(Vec::new());
+}
+
+/// [`install_export_axis`], with `linked` registered ahead of the neutral rows through the linked
+/// door — for a test binary that links a sink of its own. The first install holds.
+pub fn install_export_axis_with(linked: Vec<busbar_plugin_loader::LinkedPlugin>) {
     let registry = AXIS.get_or_init(|| {
-        registry_of(
-            "installed",
-            &[
-                ("k9-axis-sink", "k9-tail"),
-                ("k9b-log-file", "request-log-file"),
-                ("k9c-webhook", "request-log-webhook"),
-            ],
-        )
+        let rows = [
+            ("k9-axis-sink", "k9-tail"),
+            ("k9b-log-file", "request-log-file"),
+            ("k9c-webhook", "request-log-webhook"),
+        ];
+        let scanned = registry_of("installed", &rows);
+        scanned
+            .link(linked)
+            .expect("the linked door admits the rows")
     });
     crate::export::plugin::install(registry);
 }

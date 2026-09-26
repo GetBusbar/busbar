@@ -872,3 +872,7 @@ mod export_tests;
 #[cfg(test)]
 #[path = "tests/export_webhook_conformance.rs"]
 mod export_webhook_conformance;
+
+#[cfg(test)]
+#[path = "tests/linked_scrape.rs"]
+mod scrape_tests;

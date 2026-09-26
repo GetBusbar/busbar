@@ -29,16 +29,15 @@ impl EngineTestKitPlus for CoreEngineKit {
     }
 
     fn scrape_exposition(&self) -> (u16, String) {
-        use crate::plugin_routes::PluginHttpDispatch;
-        let resp = crate::export::prometheus::PrometheusExport.handle_http(
-            &busbar_plugin_loader::EndpointRequest {
+        let resp = crate::export::scrape::decl("metrics", None)
+            .dispatch
+            .handle_http(&busbar_plugin_loader::EndpointRequest {
                 method: "GET".into(),
                 path: "/metrics".into(),
                 query: String::new(),
                 headers: vec![],
                 body: vec![],
-            },
-        );
+            });
         (
             resp.status,
             String::from_utf8(resp.body).expect("the exposition is UTF-8"),

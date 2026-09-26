@@ -100,6 +100,9 @@ busbar-llm = { path = "../busbar-llm", features = ["test-support"] }
 busbar-mcp = { path = "../busbar-mcp", features = ["test-support", "auth-admin-tokens"] }
 busbar-a2a = { path = "../busbar-a2a", features = ["test-support", "auth-admin-tokens"] }
 busbar-store-memory = { path = "../store-memory" }
+# The export axis the named-map tests resolve `module: prometheus` against: the scrape sink LINKED
+# into the test binary, as the composition root links it into the shipped one.
+busbar-export-prometheus = { path = "../busbar-export-prometheus" }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "time", "sync", "io-util", "test-util"] }
 axum = { workspace = true, features = ["http1"] }
 reqwest = { workspace = true, features = ["json"] }

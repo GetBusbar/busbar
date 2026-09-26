@@ -4,11 +4,11 @@
 //! THE PROMETHEUS EXPORT SINK — `export.<name>.module: prometheus`.
 //!
 //! A PULL sink over the COLD export ABI. The host keeps what only the host can own: the recorder
-//! every emit site writes, its scrape-time gauges, and the well-known `/metrics` route's dispatch.
-//! This sink owns what an exposition IS: it declares the `metrics` stream and the `GET /metrics`
-//! route, it validates the settings an operator writes for it, and on every scrape the host hands it
-//! the recorder's snapshot (`ExportRequest::Scrape`, export ABI minor 6) and serves the text it
-//! renders back.
+//! every emit site writes, its scrape-time gauges, and the well-known `/metrics` route it serves.
+//! This sink owns what an exposition IS: it carries the `metrics` stream (the instance subscribed
+//! to it is the one the host's scrape asks to render), it validates the settings an operator writes
+//! for it, and on every scrape the host hands it the recorder's snapshot (`ExportRequest::Scrape`,
+//! export ABI minor 6) and serves the text it renders back.
 //!
 //! One crate, two doors (DECISIONS #2 rule (1)): the `rlib` is linked into the shipped binary
 //! through the composition root's linked tables ([`linked::EXPORT`]), the `cdylib` can be packed
@@ -18,16 +18,19 @@
 #![deny(unsafe_code)]
 
 use busbar_plugin_sdk::{
-    render_exposition, ExportHandler, ExportStream, MetricFamily, Route, RouteAuth, RouteMethod,
-    TEXT_EXPOSITION,
+    render_exposition, ExportHandler, ExportStream, MetricFamily, TEXT_EXPOSITION,
 };
 
-/// The module name an `export:` instance names this sink by — its name and its alias on either
-/// door, as 1.5.5 spelled the built-in.
-pub const NAME: &str = "prometheus";
+/// The row's canonical name.
+pub const NAME: &str = "busbar-export-prometheus";
 
-/// The well-known scrape path external tooling expects at a fixed place.
-pub const SCRAPE_PATH: &str = "/metrics";
+/// The `module:` an operator writes — the name 1.5.5 spelled the built-in by — the row's alias on
+/// either door.
+pub const ALIAS: &str = "prometheus";
+
+/// What this sink DECLARES to the host (the manifest's `declares` section): nothing — it reports
+/// no series and raises no code of its own, and it has no destination.
+pub const DECLARES: &str = "{}";
 
 /// The `settings:` an operator writes for this sink — the same shape, field for field, the
 /// configuration grammar has frozen for it since 1.5.3, so a refusal reads exactly as it always has.
@@ -36,14 +39,20 @@ pub const SCRAPE_PATH: &str = "/metrics";
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct PrometheusSettings {
-    /// REQUIRED: the retention window of the rolling quantile summary, in seconds.
-    #[allow(dead_code)]
+    /// REQUIRED: the retention window of the rolling quantile summary, in seconds — positive.
     buffer_seconds: u64,
     /// The bound on per-key scrape-time gauges.
     #[serde(default)]
     #[allow(dead_code)]
     key_gauge_limit: usize,
 }
+
+/// The zero-retention refusal, word for word as the configuration has always reported it.
+const ZERO_RETENTION: &str =
+    "the `module: prometheus` export instance sets settings.buffer_seconds: 0, \
+     which retains no observations — every scrape would report empty quantiles while still paying \
+     the recording cost. Name a positive retention window in seconds, or remove the instance to \
+     turn metrics off";
 
 /// The sink. It holds nothing: every scrape carries the whole snapshot it renders.
 struct Prometheus;
@@ -54,20 +63,15 @@ impl ExportHandler for Prometheus {
         vec![ExportStream::Metrics]
     }
 
-    /// `GET /metrics`, behind the data plane's key — the route 1.5.5 served there.
-    fn routes(&self) -> Vec<Route> {
-        vec![Route {
-            path: SCRAPE_PATH.to_string(),
-            method: RouteMethod::Get,
-            auth: RouteAuth::Key,
-        }]
-    }
-
-    /// The settings refusal, as one complete line: `export.<instance>.settings: <why>`.
+    /// The settings refusal, as one complete line in the configuration's own words: a malformed
+    /// bag is `export.<instance>.settings: <why>`; a zero retention window asks the recorder to keep
+    /// nothing while still paying to record it, which is refused rather than served inert (omitting
+    /// the instance is how collection is turned off).
     fn validate(&self, instance: &str, settings: &serde_json::Value) -> Vec<String> {
         match serde_json::from_value::<PrometheusSettings>(settings.clone()) {
-            Ok(_) => Vec::new(),
             Err(e) => vec![format!("export.{instance}.settings: {e}")],
+            Ok(s) if s.buffer_seconds == 0 => vec![ZERO_RETENTION.to_string()],
+            Ok(_) => Vec::new(),
         }
     }
 
@@ -88,9 +92,14 @@ busbar_plugin_sdk::export_export_plugin!(open);
 
 /// THE LINKED DOOR's entry — what the composition root's linked tables name for this crate.
 pub mod linked {
-    /// The module name, and the boundary a linked build hands the loader in place of a library.
-    pub const EXPORT: (&str, &busbar_plugin_sdk::ColdEntry) =
-        (super::NAME, &super::BUSBAR_COLD_ENTRY);
+    /// `(name, alias, declares, boundary)` — the row's statement and the boundary the one cold load
+    /// runs over, exactly what the dropped-in tarball states and exports.
+    pub const EXPORT: (&str, &str, &str, &busbar_plugin_sdk::ColdEntry) = (
+        super::NAME,
+        super::ALIAS,
+        super::DECLARES,
+        &super::BUSBAR_COLD_ENTRY,
+    );
 }
 
 #[cfg(test)]

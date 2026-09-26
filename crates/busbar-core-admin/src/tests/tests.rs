@@ -10203,8 +10203,9 @@ async fn test_admin_v1_overlay_reset_requires_full_scope() {
 /// not, while the docs listed the four-value set as COMPLETE.
 #[tokio::test]
 async fn test_admin_v1_overlay_reset_named_map_section_reverts_to_base() {
-    // `request-log-file` is a row of the export axis (K9b), as a linked build's is.
-    busbar_kernel::test_support::export_axis::install_export_axis();
+    // `request-log-file` (K9b) and `prometheus` (K9d) are rows of the export axis, as a linked
+    // build's are.
+    linked_export_axis();
     let (dir, overlay, addr, handle) = named_map_app("resetnamedmap", false).await;
     let client = reqwest::Client::new();
     let admin = |r: reqwest::RequestBuilder| {
@@ -13914,6 +13915,18 @@ async fn limit_zero_does_not_produce_a_self_referential_cursor() {
 // tables: a behavior that held for one section and not the other would mean the generic path had
 // quietly forked.
 
+/// THE EXPORT AXIS these tests resolve an `export:` block against — once, as the composition root
+/// installs it: the scrape sink (`module: prometheus`) LINKED through the one admission.
+fn linked_export_axis() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        let (name, alias, _, entry) = busbar_export_prometheus::linked::EXPORT;
+        busbar_kernel::test_support::export_axis::install_export_axis_with(vec![
+            busbar_plugin_loader::LinkedPlugin::first_party("export", name, alias, entry),
+        ]);
+    });
+}
+
 /// Write the on-disk base config the named-map tests rebuild against: one model/pool plus a BASE
 /// entry in each named map (the base-protection target).
 ///
@@ -13929,6 +13942,7 @@ fn write_named_map_fixture(
     reference_corp_ad: bool,
     base_export: bool,
 ) -> (std::path::PathBuf, std::path::PathBuf, std::path::PathBuf) {
+    linked_export_axis();
     static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let dir = std::env::temp_dir().join(format!(
         "busbar-namedmap-{}-{}-{}",
@@ -14040,6 +14054,7 @@ async fn named_map_app_opts(
     std::net::SocketAddr,
     tokio::task::JoinHandle<()>,
 ) {
+    linked_export_axis();
     busbar_kernel::metrics::init();
     let (dir, config_path, providers_path) =
         write_named_map_fixture(tag, reference_corp_ad, base_export);
@@ -14149,8 +14164,9 @@ async fn named_map_app_opts(
 /// `/export` omits them entirely — the one-view-per-pattern contract.
 #[tokio::test]
 async fn test_admin_v1_named_maps_list_get_and_put_round_trip() {
-    // `request-log-file` is a row of the export axis (K9b), as a linked build's is.
-    busbar_kernel::test_support::export_axis::install_export_axis();
+    // `request-log-file` (K9b) and `prometheus` (K9d) are rows of the export axis, as a linked
+    // build's are.
+    linked_export_axis();
     let (dir, overlay, addr, handle) = named_map_app("roundtrip", false).await;
     let client = reqwest::Client::new();
     let admin = |r: reqwest::RequestBuilder| {
@@ -14358,6 +14374,7 @@ async fn test_admin_v1_named_map_reads_project_settings_keys_never_values() {
 /// mutation speaks. Driven on both sections, since they share one guard.
 #[tokio::test]
 async fn test_admin_v1_named_map_put_honors_expected_version() {
+    linked_export_axis();
     let (dir, _overlay, addr, handle) = named_map_app("ifmatch", false).await;
     let client = reqwest::Client::new();
     let admin = |r: reqwest::RequestBuilder| {
@@ -14404,6 +14421,7 @@ async fn test_admin_v1_named_map_put_honors_expected_version() {
 /// never from the body, so no definition a caller sends can talk its way past it.
 #[tokio::test]
 async fn test_admin_v1_named_map_rejects_an_under_scoped_caller() {
+    linked_export_axis();
     busbar_kernel::metrics::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
@@ -14655,8 +14673,7 @@ async fn test_admin_v1_identity_provider_refuses_raising_max_admin_scope() {
 /// silent because removing genuinely does take effect live.
 #[tokio::test]
 async fn test_admin_v1_export_put_that_adds_a_route_reports_restart_required() {
-    // `request-log-file` is a row of the export axis (K9b), as a linked build's is.
-    busbar_kernel::test_support::export_axis::install_export_axis();
+    linked_export_axis();
     // `base_export: false` ⇒ booted with NO exporter, so `/metrics` was never mounted.
     let (dir, _overlay, addr, handle) = named_map_app_opts("bootfrozen", false, false).await;
     let client = reqwest::Client::new();
@@ -14926,8 +14943,9 @@ async fn test_admin_v1_identity_provider_rejects_an_unknown_module() {
 /// dangling case.
 #[tokio::test]
 async fn test_admin_v1_identity_provider_delete_rejects_a_dangling_reference() {
-    // `request-log-file` is a row of the export axis (K9b), as a linked build's is.
-    busbar_kernel::test_support::export_axis::install_export_axis();
+    // `request-log-file` (K9b) and `prometheus` (K9d) are rows of the export axis, as a linked
+    // build's are.
+    linked_export_axis();
     let (dir, _overlay, addr, handle) = named_map_app("dangling", true).await;
     let client = reqwest::Client::new();
     let admin = |r: reqwest::RequestBuilder| {
@@ -15023,6 +15041,7 @@ async fn test_admin_v1_identity_provider_delete_rejects_a_dangling_reference() {
 /// whole App), and a driver that walked the whole table on one fixture would measure the rate
 /// limiter instead of the handlers. A fresh fixture carries a fresh limiter.
 async fn drive_named_map_errors() {
+    linked_export_axis();
     let big_settings = {
         let mut m = serde_json::Map::new();
         m.insert("blob".into(), serde_json::json!("x".repeat(70_000)));
@@ -15420,8 +15439,7 @@ async fn named_map_error_surface_answers_its_declared_taxonomy() {
 /// every subsequent read — two paths disagreeing about the one frozen 1.5.3 grammar.
 #[tokio::test]
 async fn test_admin_v1_named_map_put_rejects_what_the_file_parser_rejects() {
-    // `request-log-file` is a row of the export axis (K9b), as a linked build's is.
-    busbar_kernel::test_support::export_axis::install_export_axis();
+    linked_export_axis();
     let (dir, overlay, addr, handle) = named_map_app("typedparse", false).await;
     let client = reqwest::Client::new();
     let admin = |r: reqwest::RequestBuilder| {
@@ -15508,6 +15526,7 @@ async fn test_admin_v1_named_map_put_rejects_what_the_file_parser_rejects() {
 /// never auto-deleted, never rewritten.
 #[tokio::test]
 async fn test_admin_v1_named_map_read_flags_an_unparseable_overlay_entry() {
+    linked_export_axis();
     let (dir, overlay, addr, handle) = named_map_app("unparseable", false).await;
     let client = reqwest::Client::new();
     let admin = |r: reqwest::RequestBuilder| r.header("x-admin-token", "admintok");
