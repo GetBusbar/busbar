@@ -952,8 +952,8 @@ pub unsafe fn hook_dispatch(handle: *mut c_void, bytes: &[u8]) -> BoundaryOutcom
 /// Re-export the export wire types so a plugin author names `busbar_plugin_sdk::ExportStream` (etc.)
 /// without a direct `busbar-plugin` dependency, mirroring the hook/auth re-export path.
 pub use busbar_plugin::cold::export::{
-    ExportField, ExportRequest, ExportResponse, ExportStream, HostOp, HostResult, HttpRequest,
-    HttpResponse, MetricFamily, MetricSample, Rotation, RotationFault,
+    CheckPhase, ExportField, ExportRequest, ExportResponse, ExportStream, HostOp, HostResult,
+    HttpRequest, HttpResponse, MetricFamily, MetricSample, Rotation, RotationFault,
 };
 
 /// The Prometheus text exposition's content type — what [`ExportHandler::render`] answers by
@@ -1125,9 +1125,10 @@ pub trait ExportHandler: Send + Sync {
     }
 
     /// The checks across every instance of this sink's module, `(name, settings)` in configuration
-    /// order, run while the host validates its configuration after its limits (export ABI minor
-    /// 8): every problem as one complete line, reported verbatim. Default: none.
-    fn check(&self, _instances: &[(String, serde_json::Value)]) -> Vec<String> {
+    /// order, run while the host validates its configuration — at `phase`: among its operational
+    /// limits' checks, or after them (export ABI minors 8, 9): every problem as one complete line,
+    /// reported verbatim. Default: none.
+    fn check(&self, _phase: CheckPhase, _instances: &[(String, serde_json::Value)]) -> Vec<String> {
         Vec::new()
     }
 }
@@ -1198,7 +1199,9 @@ pub fn dispatch_export(handler: &dyn ExportHandler, req: ExportRequest) -> Expor
             ExportResponse::Validated(handler.validate(&instance, &settings))
         }
         ExportRequest::Start => host_step(handler.start()),
-        ExportRequest::Check { instances } => ExportResponse::Validated(handler.check(&instances)),
+        ExportRequest::Check { instances, phase } => {
+            ExportResponse::Validated(handler.check(phase, &instances))
+        }
     }
 }
 

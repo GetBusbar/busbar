@@ -975,8 +975,8 @@ fn a_sink_starts_and_checks_the_same_through_either_door() {
         format!(
             "{:?} {:?} {:?}",
             sink.start(),
-            sink.check(&instances),
-            registry.check_export("k9c-sink", &instances)
+            sink.check(crate::CheckPhase::Instances, &instances),
+            registry.check_export("k9c-sink", crate::CheckPhase::Limits, &instances)
         )
     };
     let Some([linked, dropped]) = super::both_ways::both_doors(manifest, transcript, String::clone)
@@ -1016,5 +1016,8 @@ fn a_sink_starts_and_checks_the_same_through_either_door() {
     let mut sink = registry.open_export("k9c-older", "{}").expect("opens");
     sink.raw.call = unsupported_call;
     assert_eq!(sink.start(), Ok(None));
-    assert_eq!(sink.check(&[]), Ok(Vec::new()));
+    assert_eq!(
+        sink.check(crate::CheckPhase::Instances, &[]),
+        Ok(Vec::new())
+    );
 }

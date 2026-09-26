@@ -31,7 +31,7 @@
 #![deny(unsafe_code)]
 
 use busbar_plugin_sdk::{
-    DiagLevel, ExportHandler, ExportStream, HostOp, HostResult, HostStep, HttpRequest,
+    CheckPhase, DiagLevel, ExportHandler, ExportStream, HostOp, HostResult, HostStep, HttpRequest,
     Observations, PluginDiagnostic,
 };
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -103,8 +103,8 @@ impl ExportHandler for Webhook {
         }
     }
 
-    fn check(&self, instances: &[(String, serde_json::Value)]) -> Vec<String> {
-        check(instances)
+    fn check(&self, phase: CheckPhase, instances: &[(String, serde_json::Value)]) -> Vec<String> {
+        check(phase, instances)
     }
 
     fn start(&self) -> HostStep {
@@ -196,16 +196,21 @@ fn stopped() -> HostStep {
     }
 }
 
-/// The checks the configuration's VALIDATION runs across every webhook instance, in order: the
-/// in-flight bound — one bound over the instances, the largest configured (64 with none), so a
-/// generous instance is never refused for a stingy sibling — then each instance's delivery
-/// deadline, numbered by its position among them.
-pub fn check(instances: &[(String, serde_json::Value)]) -> Vec<String> {
+/// The checks the configuration's VALIDATION runs across every webhook instance, each at the point
+/// of the validation it has always run at: AMONG the operational limits' checks
+/// ([`CheckPhase::Limits`]) the in-flight bound — one bound over the instances, the largest
+/// configured (64 with none), so a generous instance is never refused for a stingy sibling; AFTER
+/// them ([`CheckPhase::Instances`]) each instance's delivery deadline, numbered by its position.
+pub fn check(phase: CheckPhase, instances: &[(String, serde_json::Value)]) -> Vec<String> {
     let parsed: Vec<Settings> = instances
         .iter()
         .filter_map(|(_, s)| serde_json::from_value(s.clone()).ok())
         .collect();
     let mut errors = Vec::new();
+    if phase == CheckPhase::Instances {
+        instance_checks(&parsed, &mut errors);
+        return errors;
+    }
     let bound = parsed
         .iter()
         .map(|w| w.max_inflight_deliveries)
@@ -225,6 +230,11 @@ pub fn check(instances: &[(String, serde_json::Value)]) -> Vec<String> {
              it panics at build time instead of failing validation)"
         ));
     }
+    errors
+}
+
+/// Each instance's delivery deadline, numbered by its position among the instances.
+fn instance_checks(parsed: &[Settings], errors: &mut Vec<String>) {
     for (i, w) in parsed.iter().enumerate() {
         if w.delivery_timeout_secs > MAX_DURATION_SECS {
             errors.push(format!(
@@ -244,7 +254,6 @@ pub fn check(instances: &[(String, serde_json::Value)]) -> Vec<String> {
             ));
         }
     }
-    errors
 }
 
 /// `url` with any userinfo (`scheme://user:pass@host/…`) replaced by `***`, safe for a log line;

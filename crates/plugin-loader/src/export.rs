@@ -153,9 +153,14 @@ impl DynExport {
 
     /// Ask the sink's checks across `instances` of its module (export ABI minor 8): the lines it
     /// reports, verbatim. A sink built before the op has nothing to report.
-    pub fn check(&self, instances: &[(String, serde_json::Value)]) -> Result<Vec<String>, String> {
+    pub fn check(
+        &self,
+        phase: busbar_plugin::cold::export::CheckPhase,
+        instances: &[(String, serde_json::Value)],
+    ) -> Result<Vec<String>, String> {
         let req = ExportRequest::Check {
             instances: instances.to_vec(),
+            phase,
         };
         match self
             .raw
@@ -337,6 +342,7 @@ impl crate::PluginRegistry {
     pub fn check_export(
         &self,
         module: &str,
+        phase: busbar_plugin::cold::export::CheckPhase,
         instances: &[(String, serde_json::Value)],
     ) -> Option<Vec<String>> {
         let p = self
@@ -350,7 +356,7 @@ impl crate::PluginRegistry {
             return Some(Vec::new());
         };
         Some(
-            sink.check(instances)
+            sink.check(phase, instances)
                 .unwrap_or_else(|e| vec![format!("export `module: {module}`: {e}")]),
         )
     }

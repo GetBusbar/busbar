@@ -63,7 +63,7 @@ pub use export::{load_export_from_bytes, load_export_image, DynExport};
 // The export PROJECTION vocabulary (the frozen `streams:` / `fields:` word-space). Re-exported for
 // the same reason the endpoint types above are: the engine names these through the loader
 // rather than taking a second, direct dependency on the ABI crate.
-pub use busbar_plugin::cold::export::{ExportField, ExportStream};
+pub use busbar_plugin::cold::export::{CheckPhase, ExportField, ExportStream};
 pub use busbar_plugin::cold::export::{HostResult, HttpRequest, HttpResponse};
 /// A cold plugin's LINKED boundary (`BUSBAR_COLD_ENTRY`), named for the composition root's linked
 /// tables, which hand it to [`LinkedPlugin::boundary`].

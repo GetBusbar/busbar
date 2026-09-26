@@ -12,6 +12,7 @@ use crate::plane::registry::plane_decl_for;
 use busbar_kernel_ledger::cost::{
     flat_card_present, split_plane_lane, PER_REQUEST, PER_SESSION, PLANE_LANE_SEP,
 };
+use busbar_plugin_loader::CheckPhase;
 
 /// Maximum byte-length of an `affinity.header_name`. HTTP header field-names must be ASCII; an
 /// over-long name is rejected at boot so a bad value cannot silently disable affinity at header
@@ -1224,12 +1225,13 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
     // gateway rather than tune it; reject loudly at boot. Deliberately permissive — only the few
     // values where 0/absurd is a foot-gun are constrained (e.g. `max_inbound_concurrent` accepts ANY
     // usize incl. 0, the explicit unlimited posture — the DEFAULT is 8192, not 0).
-    validate_limits(&cfg.limits, &mut errors);
-
-    // The export-axis sinks' own checks across their instances (export ABI minor 8) — e.g. a
-    // webhook sink's per-instance delivery deadline and its in-flight bound — in this phase, after
-    // the limits, as the built-in sinks' were.
-    crate::export::plugin::check(&cfg.export, &mut errors);
+    // The export-axis sinks' own checks join at the points they always ran at: a bound the sinks'
+    // instances share (a webhook sink's in-flight bound) AMONG the limits' checks, each instance's
+    // own (a webhook's delivery deadline) after them.
+    use crate::export::plugin::check;
+    let sinks = &mut |e: &mut Vec<String>| check(&cfg.export, CheckPhase::Limits, e);
+    validate_limits_with(&cfg.limits, &mut errors, sinks);
+    check(&cfg.export, CheckPhase::Instances, &mut errors);
 
     // A model maps to ONE lane, so its `context_max` must be single-valued across every pool that
     // names it. `build_app_from_config` (boot) rejects a genuine conflict — mirror that here so a
@@ -1270,7 +1272,18 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
 /// Range-check the resolved operational limits. Pushes a message per violation (collect-all, like the
 /// rest of `validate`). The bounds are intentionally loose: each default is the production working
 /// value, so we only reject values that would make a subsystem non-functional.
+#[cfg(test)]
 fn validate_limits(limits: &crate::config::LimitsResolved, errors: &mut Vec<String>) {
+    validate_limits_with(limits, errors, &mut |_| {});
+}
+
+/// [`validate_limits`], with `sinks` adding the export sinks' limit-phase lines where the
+/// in-flight bound's check has always sat (after the timeouts, before the Retry-After ceiling).
+fn validate_limits_with(
+    limits: &crate::config::LimitsResolved,
+    errors: &mut Vec<String>,
+    sinks: &mut dyn FnMut(&mut Vec<String>),
+) {
     use crate::config::{REQUEST_BODY_MAX_BYTES_CEIL, REQUEST_BODY_MAX_BYTES_FLOOR};
 
     validate_limit_ceilings(limits, errors);
@@ -1296,6 +1309,7 @@ fn validate_limits(limits: &crate::config::LimitsResolved, errors: &mut Vec<Stri
                 .to_string(),
         );
     }
+    sinks(errors);
     // The honored-Retry-After ceiling and hard-down cooldown must be >= 1s to be meaningful.
     if limits.max_honored_retry_after_secs < 1 {
         errors.push(

@@ -153,6 +153,7 @@ fn transcript(registry: &PluginRegistry) -> Value {
         registry.validate_export(ALIAS, "w", &json!({"url": "https://a/", "x": 1})),
         registry.check_export(
             ALIAS,
+            busbar_plugin_loader::CheckPhase::Instances,
             &[(
                 "w".into(),
                 json!({"url": "https://a/", "delivery_timeout_secs": 0}),

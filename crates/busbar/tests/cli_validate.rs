@@ -1591,3 +1591,38 @@ fn validate_refuses_the_decision_protocol_when_no_decisions_section_is_configure
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// A CONFIG FAILING SEVERAL LIMITS AT ONCE READS AS IT ALWAYS DID (1.5.5): the request-log webhook
+/// sink's in-flight bound is refused AMONG the operational limits — after the timeouts, before the
+/// Retry-After ceiling — and its delivery deadline after them, though both are the sink's own
+/// checks now. The whole refusal is pinned line for line; RED: the sink's lines answered in one
+/// place (all after the limits) reorder the second and third lines.
+#[cfg(all(feature = "export-webhook", linked_axis_body_ingress))]
+#[test]
+fn validate_orders_a_webhook_sinks_refusals_among_the_limits_as_before() {
+    let dir = fixture_dir("webhook-order");
+    write_configs(
+        &dir,
+        "limits:\n  upstream_request_timeout_secs: 0\n  max_honored_retry_after_secs: 0\n\
+         export:\n  hook: { module: request-log-webhook, settings: { url: \"https://siem.example/in\", \
+         max_inflight_deliveries: 0, delivery_timeout_secs: 0 } }\n",
+    );
+    let (code, _stdout, stderr) = run_busbar(&dir, &["--validate"]);
+    assert_ne!(code, 0, "{stderr}");
+    let refusal: Vec<&str> = stderr
+        .lines()
+        .skip_while(|l| !l.contains("config validation failed:"))
+        .skip(1)
+        .take_while(|l| l.starts_with("  - "))
+        .collect();
+    assert_eq!(
+        refusal,
+        [
+            "  - limits.upstream_request_timeout_secs must be >= 1 (0 would time out every upstream call instantly)",
+            "  - export.request-log-webhook.settings.max_inflight_deliveries must be >= 1 (a 0-permit semaphore admits nothing, silently dropping every webhook delivery)",
+            "  - limits.max_honored_retry_after_secs must be >= 1 (a 0 ceiling would clamp every honored Retry-After to 0)",
+            "  - the `module: request-log-webhook` export instance targeting 'https://siem.example/in' (#0) sets settings.delivery_timeout_secs: 0, which would abort every delivery — it must be >= 1",
+        ],
+        "{stderr}"
+    );
+}

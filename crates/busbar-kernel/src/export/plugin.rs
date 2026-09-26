@@ -25,7 +25,7 @@ use super::PayloadCache;
 use crate::config::ExportCfg;
 use crate::limits::admission::AdmissionGate;
 use crate::plugin_routes::{PluginHttpDispatch, RouteDecl, RouteKind};
-use busbar_plugin_loader::PluginRegistry;
+use busbar_plugin_loader::{CheckPhase, PluginRegistry};
 use busbar_plugin_loader::{DynExport, EndpointRequest, EndpointResponse, ExportStream};
 use serde_json::Value;
 use std::sync::{Arc, OnceLock};
@@ -58,9 +58,9 @@ pub(crate) fn probe(
 }
 
 /// The sinks' own checks across every instance of each axis module `cfg` configures, in
-/// configuration order (export ABI minor 8) — run while the configuration is validated, after its
-/// limits; each line joins `errors` verbatim.
-pub(crate) fn check(cfg: &ExportCfg, errors: &mut Vec<String>) {
+/// configuration order (export ABI minors 8, 9) — run while the configuration is validated, at
+/// `phase` (among its limits' checks, or after them); each line joins `errors` verbatim.
+pub(crate) fn check(cfg: &ExportCfg, phase: CheckPhase, errors: &mut Vec<String>) {
     let Some(axis) = AXIS.get() else {
         return;
     };
@@ -77,7 +77,10 @@ pub(crate) fn check(cfg: &ExportCfg, errors: &mut Vec<String>) {
             .filter(|q| q.def.module.trim() == module)
             .map(|q| (q.name.clone(), Value::Object(q.def.settings.clone())))
             .collect();
-        errors.extend(axis.check_export(module, &instances).unwrap_or_default());
+        errors.extend(
+            axis.check_export(module, phase, &instances)
+                .unwrap_or_default(),
+        );
     }
 }
 

@@ -55,7 +55,12 @@ fn a_settings_shape_refusal_is_the_compiled_in_sinks_line() {
 /// instances (the largest), then each instance's deadline by its position.
 #[test]
 fn the_validation_phase_checks_are_the_compiled_in_sinks_lines() {
-    let one = |v: serde_json::Value| check(&[("w".to_string(), v)]);
+    let one = |v: serde_json::Value| {
+        let instances = [("w".to_string(), v)];
+        let mut lines = check(CheckPhase::Limits, &instances);
+        lines.extend(check(CheckPhase::Instances, &instances));
+        lines
+    };
     assert_eq!(
         one(json!({"url": "https://a/", "max_inflight_deliveries": 0})),
         vec![
@@ -92,7 +97,7 @@ fn the_validation_phase_checks_are_the_compiled_in_sinks_lines() {
         )]
     );
     // A stingy sibling is not refused beside a generous one: the bound is the largest.
-    let two = check(&[
+    let two_instances = [
         (
             "a".into(),
             json!({"url": "https://a/", "max_inflight_deliveries": 0}),
@@ -101,10 +106,22 @@ fn the_validation_phase_checks_are_the_compiled_in_sinks_lines() {
             "b".into(),
             json!({"url": "https://b/", "max_inflight_deliveries": 8, "delivery_timeout_secs": 0}),
         ),
-    ]);
+    ];
+    let mut two = check(CheckPhase::Limits, &two_instances);
+    two.extend(check(CheckPhase::Instances, &two_instances));
     assert_eq!(two.len(), 1, "{two:?}");
     assert!(two[0].contains("'https://b/' (#1)"), "{two:?}");
-    assert!(check(&[]).is_empty());
+    assert!(check(CheckPhase::Limits, &[]).is_empty());
+    // Each phase answers only its own lines: the deadline is not a limit, the bound not an
+    // instance's own.
+    let both = [(
+        "w".to_string(),
+        json!({"url": "https://a/", "max_inflight_deliveries": 0, "delivery_timeout_secs": 0}),
+    )];
+    assert_eq!(check(CheckPhase::Limits, &both).len(), 1);
+    assert!(check(CheckPhase::Limits, &both)[0].contains("max_inflight_deliveries"));
+    assert_eq!(check(CheckPhase::Instances, &both).len(), 1);
+    assert!(check(CheckPhase::Instances, &both)[0].contains("delivery_timeout_secs"));
 }
 
 /// A delivery asks the host to POST the compact JSON line with `content-type: application/json`
