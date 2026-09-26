@@ -73,10 +73,11 @@ license = "Apache-2.0"
 # `tracing-subscriber` is NOT a dependency here.
 #
 # `tracing-core` arrived with the author-side SDK (DECISIONS #84: `busbar-plugin-sdk` and this crate
-# share one definition, "the plugin contract", so they merged; the SDK is `abi::sdk`). It is the
-# SDK's host-log bridge (`abi::sdk::hostlog`): a `cdylib` carries its own copy of `tracing-core`, so a
-# plugin's own `tracing` events reach no host subscriber unless forwarded through the host's log
-# sink. It resolves to `once_cell`/`valuable` and reaches nothing else; it was already in the closure
+# share one definition, "the plugin contract", so they merged; the SDK is `abi::sdk`). It is
+# re-exported for the forwarder `export_plugin!` GENERATES into a plugin image (the contract itself
+# installs no dispatcher, ARCHITECT F6 queue (4)): a `cdylib` carries its own copy of `tracing-core`,
+# so a plugin's own `tracing` events reach no host subscriber unless forwarded through the host's
+# log sink. It resolves to `once_cell`/`valuable` and reaches nothing else; it was already in the closure
 # of every plugin written against the SDK, so the merge moves it rather than adding it.
 [dependencies]
 serde = { workspace = true }
