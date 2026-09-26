@@ -14,7 +14,8 @@
 //! earlier spelling and was DELETED into `busbar-plane-streaming` at `fbead1a31`, #18/#83.)
 //!
 //! So the codecs live here, naming only the plugin contract (`busbar-contract`, for the base64 media
-//! transcode, the billing carrier and its reserved unit names) plus serde and `bytes`. `busbar-voice` depends on this crate and re-exports every module that moved under
+//! transcode, the billing carrier and its reserved unit names) plus serde and `bytes`.
+//! `busbar-voice` depends on this crate and re-exports every module that moved under
 //! its old path, so `busbar_voice::ir::…` and `busbar_voice::topology::twilio::…` resolve exactly
 //! what they always did. The split is a MOVE: no item changed shape crossing it.
 

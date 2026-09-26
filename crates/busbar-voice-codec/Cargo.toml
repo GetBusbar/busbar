@@ -42,8 +42,8 @@ path = "src/lib.rs"
 # projects onto (`records::UNIT_*`). All three are SHAPES and live in the contract. A leaf.
 #
 # A plane is a PURE kind whose ENTIRE transitive closure is scanned, so this crate takes no host
-# edge — no `busbar-substrate-values`, no `busbar-substrate`, no `busbar-kernel` — and a dependency
-# on one of them is a regression, not a convenience.
+# edge: the contract is the whole of its busbar closure, and a dependency on any host crate is a
+# regression, not a convenience.
 busbar-contract = { path = "../busbar-contract" }
 # The plane's OWN media-frame carrier: `IrAudioFrame.media` is opaque `bytes::Bytes`.
 bytes = { workspace = true }

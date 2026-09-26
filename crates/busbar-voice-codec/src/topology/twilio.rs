@@ -7,7 +7,7 @@
 //! `start`, `mark`, `dtmf`, `stop` — the whole set Twilio sends TO the socket, because an event
 //! this codec does not model is a decode REFUSAL to everything downstream) plus per-frame `media`
 //! events whose `payload` is base64 8 kHz µ-law. The
-//! generic `busbar_voice::topology::telephony::TelephonyProxy` bridge already carries raw `Vec<u8>` on its
+//! generic telephony bridge (`TelephonyProxy`, in the runtime half) already carries raw `Vec<u8>` on its
 //! `client_in`/`client_out` halves, so the only carrier-specific work is this thin, stateless codec
 //! that:
 //!
