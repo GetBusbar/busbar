@@ -1153,6 +1153,33 @@ fn ceiling_ratchet_cases<'a>(
         ),
     }
 
+    // ── A DECLARATION WHOSE RAISE HAS LANDED IS EXPIRED, NOT RED ────────────────────────────────
+    //
+    // The base is the commit before the tip, so the commit after a re-arm finds its declaration
+    // already carried by the base. GREEN: the tree and the base both read the subject ceiling at
+    // `v`, and a declaration `v-1 -> v` sits beside it; the row passes and names the declaration as
+    // expired. The RED counterparts are the cases above: an undeclared rise, and a declaration
+    // whose ceiling never moved (`stale_declaration`, whose `to` matches neither base nor tree).
+    if let Some((table, key, v)) = subject.as_ref() {
+        let mut ov = on(base);
+        ov.set(
+            CEILINGS,
+            format!(
+                "{text}\n[gate.ceiling_raises.\"{table}.{key}\"]\nfrom = {}\nto = {v}\n\
+                 because = \"planted by the self-test: the declaration of a raise its own commit \
+                 landed, which the base now carries, so it has expired and is struck at leisure\"\n",
+                v - 1
+            ),
+        );
+        r.push(prove_rows_green(
+            real,
+            gate,
+            "a declared raise whose base already carries its number has landed: expired, not red",
+            &[ceilings::ROW_ROSE],
+            ov,
+        ));
+    }
+
     if !stale_carried {
         let mut ov = on(base);
         ov.set(CEILINGS, stale_declaration);

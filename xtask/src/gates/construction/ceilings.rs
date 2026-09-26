@@ -754,6 +754,11 @@ pub fn ceiling_rose(cx: &Ctx) -> Vec<CRow> {
     let mut allowed: Vec<String> = Vec::new();
     let mut unreadable: Vec<String> = Vec::new();
     let mut used: BTreeSet<String> = BTreeSet::new();
+    // Every compared number's base value, keyed `<file>:<path>`, so a declaration that describes no
+    // rise on this branch can be told apart: one whose raise the base already carries has LANDED,
+    // and one that matches neither the base nor the tree never described a real edit.
+    let mut at_base: BTreeMap<String, i64> = BTreeMap::new();
+    let mut expired: Vec<String> = Vec::new();
     for file in [CEILINGS, KIND_CEILINGS] {
         let now = match cx.read(file) {
             Ok(t) => t,
@@ -780,6 +785,7 @@ pub fn ceiling_rose(cx: &Ctx) -> Vec<CRow> {
             }
         };
         for (path, before) in &was {
+            at_base.insert(format!("{file}:{path}"), *before);
             let Some(after) = now.get(path) else { continue };
             if after <= before {
                 continue;
@@ -813,8 +819,20 @@ pub fn ceiling_rose(cx: &Ctx) -> Vec<CRow> {
     // A DECLARATION THAT DESCRIBES NO RAISE ON THIS BRANCH IS A WAIVER THAT OUTLIVED WHAT IT
     // EXCUSED, and that is how this mechanism cannot silt up: the entry is struck by the commit
     // after the one that needed it, or the row says so.
+    //
+    // EXCEPT ONE THAT HAS LANDED. The base is the commit before the tip, so a raise declared in its
+    // own commit is carried by the base from the very next commit on, and every later tip used to go
+    // RED on it until somebody landed the strike. A declaration whose `to` IS the base's value
+    // describes a raise already in history: it passes, and is named so it can be struck at leisure.
+    // One whose ceiling never moved, or whose `to` matches neither the base nor the tree, stays RED.
     for (key, r) in &declared {
-        if !used.contains(key) {
+        if !used.contains(key) && at_base.get(key) == Some(&r.to) {
+            expired.push(format!(
+                "{key}: the declared raise {} -> {} is already carried by the base (landed); \
+                 strike it at leisure",
+                r.from, r.to
+            ));
+        } else if !used.contains(key) {
             risen.push(format!(
                 "{key}: a declared raise {} -> {} that is not a raise at the base {}. Either the                  commit that needed it has landed — strike the entry — or it names a ceiling that                  never moved.",
                 r.from,
@@ -826,13 +844,23 @@ pub fn ceiling_rose(cx: &Ctx) -> Vec<CRow> {
 
     let short = base.short();
     let ok = risen.is_empty() && unreadable.is_empty();
+    let landed = if expired.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "; {} expired declaration(s): {}",
+            expired.len(),
+            expired.join("; ")
+        )
+    };
     let detail = if ok && allowed.is_empty() {
         format!(
-            "no ceiling in {CEILINGS} or {KIND_CEILINGS} is higher than it is at the base {short}"
+            "no ceiling in {CEILINGS} or {KIND_CEILINGS} is higher than it is at the base \
+             {short}{landed}"
         )
     } else if ok {
         format!(
-            "no undeclared ceiling is higher than it is at the base {short}; {} declared raise(s):              {}",
+            "no undeclared ceiling is higher than it is at the base {short}; {} declared raise(s):              {}{landed}",
             allowed.len(),
             allowed.join("; ")
         )
