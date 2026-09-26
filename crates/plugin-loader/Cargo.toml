@@ -115,7 +115,9 @@ busbar-hook-test-plugin = { path = "../hook-test-plugin" }
 # its `rlib`'s decl through `link_transport` (the linked door) and `dlopen`s its `cdylib` through
 # `load_transport` (the dropped-in door), and requires the two rows and the bytes each puts on a real
 # socket to be identical. Reached by KIND through `[package.metadata.busbar.both-ways]` below.
-busbar-transport-tcp = { path = "../busbar-transport-tcp" }
+# `dropped-in`: the cdylib's door symbols are compiled only under it (a build that links the wire
+# beside SDK-built plugins must not carry a second `busbar_abi`), and this proof needs that cdylib.
+busbar-transport-tcp = { path = "../busbar-transport-tcp", features = ["dropped-in"] }
 
 [target.'cfg(unix)'.dependencies]
 # memfd_create (Linux zero-disk loads) + kill(pid, 0) liveness for the dead-pid staging sweep.

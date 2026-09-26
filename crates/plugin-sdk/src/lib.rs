@@ -5,9 +5,10 @@
 //!
 //! Writing a plugin is: implement [`busbar_api::Store`] for your backend, write a constructor
 //! `fn(&str) -> Result<Box<dyn Store>, String>` (the `&str` is the JSON config the operator set),
-//! call [`export_store_plugin!`] with it, and build the crate as a `cdylib`. The macro emits the
-//! six `extern "C-unwind"` symbols the engine's loader resolves (`busbar_abi`, `busbar_plugin_kind`,
-//! `busbar_open`, `busbar_call`, `busbar_free`, `busbar_close`); every one routes through the single
+//! call [`export_store_plugin!`] with it, and build the crate as a `cdylib`. The `cdylib` then
+//! exports the six `extern "C-unwind"` symbols the engine's loader resolves (`busbar_abi`,
+//! `busbar_plugin_kind`, `busbar_open`, `busbar_call`, `busbar_free`, `busbar_close` — defined once,
+//! in this SDK, answering through the plugin the macro registers); every one routes through the single
 //! export-boundary choke point in [`boundary`] (null-out-guard-before-alloc, mandatory `catch_unwind`,
 //! and a total status map), so no per-symbol code can get an FFI-boundary invariant wrong. The author
 //! supplies only a ctor + a per-kind [`dispatch`] returning a [`BoundaryOutcome`].
@@ -1282,6 +1283,282 @@ macro_rules! export_hook_plugin {
     };
 }
 
+// ── THE DROPPED-IN DOOR'S FROZEN SYMBOLS, DEFINED ONCE ─────────────────────────────────────────────
+// Every frozen name the loader looks up in a plugin `cdylib` (`busbar_abi`, `busbar_plugin_kind`,
+// `busbar_set_log_sink`, `busbar_open`, `busbar_call`, `busbar_free`, `busbar_close`,
+// `busbar_plane_decl`) is defined HERE, in this crate, exactly once. A plugin crate's `export_*!`
+// macro defines none of them: it registers its image's ONE door ([`__door::Door`]) and these symbols
+// answer through it.
+//
+// WHY NOT ONE SET PER PLUGIN CRATE. A first-party plugin is `crate-type = ["cdylib", "rlib"]`: one
+// source, both doors (DECISIONS #2 rule (1)). The `rlib` half is what a composition root LINKS — and
+// one rustc invocation emits both halves, so whatever `#[no_mangle]` symbol the crate defines is in
+// the linked `rlib` too. Two such plugins linked into one binary are two strong definitions of
+// `busbar_abi`. Whether that links depended on how many codegen units the crate was split into (a
+// separate unit left out of the link by the archive rules): under the release profile
+// (`codegen-units = 1`, `lto = "fat"`) rustc's fat LTO links every module of every crate into one
+// LLVM module and refuses the second definition ("Linking globals named 'busbar_abi': symbol
+// multiply defined!" → "failed to load bitcode of module"), and a non-LTO single-unit link is a
+// duplicate-symbol link. Defined once here, a binary holds exactly one of each, however many plugins
+// it links; a `cdylib` holds exactly one too, and rustc exports it from the `cdylib` because
+// `#[no_mangle]` makes it a C-level exported symbol of an upstream crate.
+//
+// HOW THE SYMBOL FINDS ITS PLUGIN. The plugin's macro emits a load-time constructor (an entry in the
+// platform's initializer table: `.init_array`, `__mod_init_func`, `.CRT$XCU`) that registers the
+// image's door before the loader can look anything up (`dlopen` runs initializers before it
+// returns). In a `cdylib` exactly one door registers. In a binary that links several plugins several
+// register, and the symbols then answer as no plugin (a null kind, a protocol status) — nothing in a
+// binary looks them up; the linked door is `BUSBAR_COLD_ENTRY` / the plane's decl, never these.
+#[doc(hidden)]
+pub mod __door {
+    use busbar_plugin::cold::{ColdEntry, LogSinkFn, STATUS_PROTOCOL};
+    use busbar_plugin::hot::PlaneDecl;
+    use std::ffi::c_void;
+    use std::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
+
+    /// What one plugin image is, as its dropped-in door answers for it.
+    pub enum Door {
+        /// A cold-lane kind (store/secret/auth/hook/export): the same entry its linked door hands
+        /// the loader.
+        Cold(&'static ColdEntry),
+        /// A plane: the same decl its linked door hands the registry.
+        Plane(&'static PlaneDecl),
+    }
+
+    /// How many doors registered in this image, and the last one. The symbols answer only when
+    /// exactly one did.
+    static REGISTERED: AtomicUsize = AtomicUsize::new(0);
+    static DOOR: AtomicPtr<Door> = AtomicPtr::new(std::ptr::null_mut());
+
+    /// Register this image's door. Called only by the load-time constructor `__register_door!`
+    /// emits.
+    pub fn register(door: &'static Door) {
+        DOOR.store(door as *const Door as *mut Door, Ordering::Release);
+        REGISTERED.fetch_add(1, Ordering::AcqRel);
+    }
+
+    /// The image's door, when exactly one registered.
+    pub fn the_door() -> Option<&'static Door> {
+        if REGISTERED.load(Ordering::Acquire) != 1 {
+            return None;
+        }
+        // SAFETY: `DOOR` is only ever stored by `register`, from a `&'static Door`.
+        unsafe { DOOR.load(Ordering::Acquire).as_ref() }
+    }
+
+    fn cold() -> Option<&'static ColdEntry> {
+        match the_door() {
+            Some(Door::Cold(entry)) => Some(entry),
+            _ => None,
+        }
+    }
+
+    /// `busbar_abi` — the frozen TRANSPORT handshake, shared by every kind.
+    #[no_mangle]
+    pub extern "C-unwind" fn busbar_abi() -> u32 {
+        crate::transport_version()
+    }
+
+    /// `busbar_plugin_kind` — a `'static` NUL-terminated string owned by this library; null when the
+    /// image registered no single door (the loader refuses a null kind).
+    #[no_mangle]
+    pub extern "C-unwind" fn busbar_plugin_kind() -> *const u8 {
+        match the_door() {
+            // SAFETY: the entry's `kind` is the boundary function the plugin's macro emitted.
+            Some(Door::Cold(entry)) => unsafe { (entry.kind)() },
+            Some(Door::Plane(_)) => c"plane".as_ptr().cast(),
+            None => std::ptr::null(),
+        }
+    }
+
+    /// `busbar_set_log_sink`.
+    ///
+    /// # Safety
+    /// Called at most once by the busbar loader, immediately after a successful `busbar_open` and
+    /// before any `busbar_call`, with a sink that stays callable for this plugin's life.
+    ///
+    /// OPTIONAL on both sides: a host that never calls it leaves the plugin logging to stderr, and a
+    /// host that looks it up on an older plugin simply does not find it. That is what keeps this
+    /// additive rather than a transport bump. A plane image installs nothing (it never took a sink).
+    #[no_mangle]
+    pub unsafe extern "C-unwind" fn busbar_set_log_sink(
+        sink: LogSinkFn,
+        ctx: *mut c_void,
+        max_level: u32,
+    ) {
+        if cold().is_some() {
+            unsafe { crate::hostlog::install(sink, ctx, max_level) };
+        }
+    }
+
+    /// `busbar_open`.
+    ///
+    /// # Safety
+    /// Called only by the busbar loader with ABI-valid pointers; answers through the registered
+    /// entry's boundary (`boundary::open_boundary`).
+    #[no_mangle]
+    pub unsafe extern "C-unwind" fn busbar_open(
+        cfg: *const u8,
+        cfg_len: usize,
+        out_handle: *mut *mut c_void,
+        out_err: *mut *mut u8,
+        out_err_len: *mut usize,
+    ) -> i32 {
+        match cold() {
+            Some(entry) => unsafe { (entry.open)(cfg, cfg_len, out_handle, out_err, out_err_len) },
+            None => STATUS_PROTOCOL,
+        }
+    }
+
+    /// `busbar_call`.
+    ///
+    /// # Safety
+    /// Called only by the busbar loader with a live handle and ABI-valid pointers; answers through
+    /// the registered entry's boundary (`boundary::call_boundary`).
+    #[no_mangle]
+    pub unsafe extern "C-unwind" fn busbar_call(
+        handle: *mut c_void,
+        req: *const u8,
+        req_len: usize,
+        out: *mut *mut u8,
+        out_len: *mut usize,
+    ) -> i32 {
+        match cold() {
+            Some(entry) => unsafe { (entry.call)(handle, req, req_len, out, out_len) },
+            None => STATUS_PROTOCOL,
+        }
+    }
+
+    /// `busbar_free`.
+    ///
+    /// # Safety
+    /// Called only by the busbar loader with a buffer this plugin returned.
+    #[no_mangle]
+    pub unsafe extern "C-unwind" fn busbar_free(ptr: *mut u8, len: usize) {
+        if let Some(entry) = cold() {
+            unsafe { (entry.free)(ptr, len) }
+        }
+    }
+
+    /// `busbar_close`.
+    ///
+    /// # Safety
+    /// Called only by the busbar loader with a live handle, once.
+    #[no_mangle]
+    pub unsafe extern "C-unwind" fn busbar_close(handle: *mut c_void) {
+        if let Some(entry) = cold() {
+            unsafe { (entry.close)(handle) }
+        }
+    }
+
+    /// `busbar_plane_decl` — the plane's `'static` decl; null for an image that is not a plane.
+    ///
+    /// # Safety
+    /// The returned pointer is to a `'static` [`PlaneDecl`] owned by this library, whose bytes and
+    /// vocabulary ranges live for the whole life of the loaded image. The loader NEVER frees it.
+    #[no_mangle]
+    pub unsafe extern "C-unwind" fn busbar_plane_decl() -> *const PlaneDecl {
+        match the_door() {
+            Some(Door::Plane(decl)) => *decl,
+            _ => std::ptr::null(),
+        }
+    }
+
+    /// Every frozen symbol above, referenced from a `#[used]` static in each plugin image so the
+    /// linker keeps them in the `cdylib` whichever codegen unit of this crate they landed in.
+    #[allow(dead_code)]
+    pub struct Symbols {
+        abi: extern "C-unwind" fn() -> u32,
+        kind: extern "C-unwind" fn() -> *const u8,
+        set_log_sink: unsafe extern "C-unwind" fn(LogSinkFn, *mut c_void, u32),
+        open: unsafe extern "C-unwind" fn(
+            *const u8,
+            usize,
+            *mut *mut c_void,
+            *mut *mut u8,
+            *mut usize,
+        ) -> i32,
+        call: unsafe extern "C-unwind" fn(
+            *mut c_void,
+            *const u8,
+            usize,
+            *mut *mut u8,
+            *mut usize,
+        ) -> i32,
+        free: unsafe extern "C-unwind" fn(*mut u8, usize),
+        close: unsafe extern "C-unwind" fn(*mut c_void),
+        plane_decl: unsafe extern "C-unwind" fn() -> *const PlaneDecl,
+    }
+
+    /// The one [`Symbols`] table.
+    pub static SYMBOLS: Symbols = Symbols {
+        abi: busbar_abi,
+        kind: busbar_plugin_kind,
+        set_log_sink: busbar_set_log_sink,
+        open: busbar_open,
+        call: busbar_call,
+        free: busbar_free,
+        close: busbar_close,
+        plane_decl: busbar_plane_decl,
+    };
+}
+
+/// Register a plugin image's ONE door (`$door`, a `__door::Door`) with a load-time constructor, and
+/// keep the SDK's frozen symbols in the image. Emitted by `export_plugin!` and `export_plane!`;
+/// never called by hand.
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __register_door {
+    ($door:expr) => {
+        /// This image's door (see `busbar_plugin_sdk::__door`).
+        #[doc(hidden)]
+        pub static __BUSBAR_DOOR: $crate::__door::Door = $door;
+
+        const _: () = {
+            extern "C" fn __busbar_register_door() {
+                $crate::__door::register(&__BUSBAR_DOOR)
+            }
+
+            #[cfg(not(any(
+                target_vendor = "apple",
+                target_os = "windows",
+                target_os = "linux",
+                target_os = "android",
+                target_os = "freebsd",
+                target_os = "netbsd",
+                target_os = "openbsd",
+                target_os = "dragonfly",
+                target_os = "illumos",
+                target_os = "solaris",
+            )))]
+            compile_error!(
+                "busbar plugin: no load-time initializer section is known for this target"
+            );
+
+            #[used]
+            #[cfg_attr(target_vendor = "apple", link_section = "__DATA,__mod_init_func")]
+            #[cfg_attr(target_os = "windows", link_section = ".CRT$XCU")]
+            #[cfg_attr(
+                any(
+                    target_os = "linux",
+                    target_os = "android",
+                    target_os = "freebsd",
+                    target_os = "netbsd",
+                    target_os = "openbsd",
+                    target_os = "dragonfly",
+                    target_os = "illumos",
+                    target_os = "solaris",
+                ),
+                link_section = ".init_array"
+            )]
+            static __BUSBAR_DOOR_INIT: extern "C" fn() = __busbar_register_door;
+
+            #[used]
+            static __BUSBAR_DOOR_SYMBOLS: &$crate::__door::Symbols = &$crate::__door::SYMBOLS;
+        };
+    };
+}
+
 /// The ONE macro that stamps a plugin's KIND and emits the SIX kind-neutral `extern "C-unwind"`
 /// symbols (`busbar_abi`, `busbar_plugin_kind`, `busbar_open`, `busbar_call`, `busbar_free`,
 /// `busbar_close`), hard-wiring EVERY symbol through the [`boundary`] choke point. The per-kind
@@ -1292,9 +1569,10 @@ macro_rules! export_hook_plugin {
 /// `catch_unwind`, the total status mapping, and the drop-on-null handle publish are supplied by
 /// `boundary::open_boundary`/`call_boundary`/`close_boundary`/`free_boundary`. There is NO seam on which
 /// an author can get a boundary facet wrong: `$dispatch` returns a [`BoundaryOutcome`] that cannot name
-/// a raw pointer or a status integer, and these SIX symbols are the ONLY `#[no_mangle]` exports.
-/// Beside them it emits `BUSBAR_COLD_ENTRY`, the same boundary for a host that LINKS the plugin
-/// (DECISIONS #2 rule (1): compiled in or dropped in, one contract, one loading path).
+/// a raw pointer or a status integer. The macro defines no `#[no_mangle]` symbol itself: it emits
+/// `BUSBAR_COLD_ENTRY`, the boundary a host that LINKS the plugin is handed, and registers that same
+/// entry as the image's door, through which the SDK's ONE set of frozen symbols (`__door`) answers
+/// in the `cdylib` (DECISIONS #2 rule (1): compiled in or dropped in, one contract, one loading path).
 ///
 /// - `$kind` — a `&'static str` kind (`"store"` | `"secret"` | `"auth"` | `"hook"`).
 /// - `$dispatch` — the per-kind SDK `dispatch` adapter (`store_dispatch`/`auth_dispatch`/…).
@@ -1304,11 +1582,12 @@ macro_rules! export_hook_plugin {
 macro_rules! export_plugin {
     (kind = $kind:expr, dispatch = $dispatch:path, ctor = $ctor:path, handle = $handle:ty $(,)?) => {
         // THE BOUNDARY, ONCE. Each function below is the body of one exported symbol, under a
-        // mangled name. The `#[no_mangle]` exports (in `__busbar_exports`) are one-line calls into
-        // these, and `BUSBAR_COLD_ENTRY` references them: the dropped-in door (`dlsym` on the
-        // `cdylib`) and the linked door (the `rlib`'s entry) reach the SAME code. The exports live in
-        // a module of their own so that linking the entry does not also pull them in — two plugins
-        // linked into one binary would otherwise both define `busbar_call`.
+        // mangled name, and `BUSBAR_COLD_ENTRY` references them. The linked door (the `rlib`'s entry)
+        // hands the loader that entry; the dropped-in door registers the SAME entry as this image's
+        // door (`__register_door!`), and the frozen `#[no_mangle]` symbols — defined ONCE, in this
+        // SDK (`__door`) — answer through it. So the `dlsym` on the `cdylib` and the linked entry
+        // reach the SAME code, and no plugin crate defines a frozen symbol of its own: two plugins
+        // linked into one binary cannot both define `busbar_call`.
 
         /// `busbar_abi` — the frozen TRANSPORT handshake.
         #[doc(hidden)]
@@ -1321,24 +1600,6 @@ macro_rules! export_plugin {
         pub extern "C-unwind" fn __busbar_cold_kind() -> *const u8 {
             const KIND_NUL: &str = concat!($kind, "\0");
             KIND_NUL.as_ptr()
-        }
-
-        /// `busbar_set_log_sink`.
-        ///
-        /// # Safety
-        /// Called at most once by the busbar loader, immediately after a successful `busbar_open`
-        /// and before any `busbar_call`, with a sink that stays callable for this plugin's life.
-        ///
-        /// OPTIONAL on both sides: a host that never calls it leaves the plugin logging to stderr,
-        /// and a host that looks it up on an older plugin simply does not find it. That is what
-        /// keeps this additive rather than a transport bump.
-        #[doc(hidden)]
-        pub unsafe extern "C-unwind" fn __busbar_cold_set_log_sink(
-            sink: $crate::__abi::LogSinkFn,
-            ctx: *mut ::std::ffi::c_void,
-            max_level: u32,
-        ) {
-            unsafe { $crate::hostlog::install(sink, ctx, max_level) };
         }
 
         /// `busbar_open`.
@@ -1431,80 +1692,9 @@ macro_rules! export_plugin {
             close: __busbar_cold_close,
         };
 
-        /// The dropped-in door: the six (+ the optional log-sink) `#[no_mangle]` symbols the loader
-        /// looks up in the `cdylib`, each the boundary above under its frozen name.
-        #[doc(hidden)]
-        pub mod __busbar_exports {
-            /// # Safety
-            /// Read only by the busbar loader as the frozen TRANSPORT handshake.
-            ///
-            /// `extern "C-unwind"` (matches [`busbar_plugin::cold::AbiFn`]): a panic that unwinds out
-            /// of this symbol propagates as a DEFINED forced unwind the engine's `catch_unwind` can
-            /// catch, rather than an immediate abort at this frame (which plain `extern "C"` would
-            /// force).
-            #[no_mangle]
-            pub extern "C-unwind" fn busbar_abi() -> u32 {
-                super::__busbar_cold_abi()
-            }
-
-            /// # Safety
-            /// The returned pointer is to a `'static` NUL-terminated string owned by this library.
-            #[no_mangle]
-            pub extern "C-unwind" fn busbar_plugin_kind() -> *const u8 {
-                super::__busbar_cold_kind()
-            }
-
-            /// # Safety
-            /// See `__busbar_cold_set_log_sink`.
-            #[no_mangle]
-            pub unsafe extern "C-unwind" fn busbar_set_log_sink(
-                sink: $crate::__abi::LogSinkFn,
-                ctx: *mut ::std::ffi::c_void,
-                max_level: u32,
-            ) {
-                unsafe { super::__busbar_cold_set_log_sink(sink, ctx, max_level) }
-            }
-
-            /// # Safety
-            /// See `__busbar_cold_open`.
-            #[no_mangle]
-            pub unsafe extern "C-unwind" fn busbar_open(
-                cfg: *const u8,
-                cfg_len: usize,
-                out_handle: *mut *mut ::core::ffi::c_void,
-                out_err: *mut *mut u8,
-                out_err_len: *mut usize,
-            ) -> i32 {
-                unsafe { super::__busbar_cold_open(cfg, cfg_len, out_handle, out_err, out_err_len) }
-            }
-
-            /// # Safety
-            /// See `__busbar_cold_call`.
-            #[no_mangle]
-            pub unsafe extern "C-unwind" fn busbar_call(
-                handle: *mut ::core::ffi::c_void,
-                req: *const u8,
-                req_len: usize,
-                out: *mut *mut u8,
-                out_len: *mut usize,
-            ) -> i32 {
-                unsafe { super::__busbar_cold_call(handle, req, req_len, out, out_len) }
-            }
-
-            /// # Safety
-            /// See `__busbar_cold_free`.
-            #[no_mangle]
-            pub unsafe extern "C-unwind" fn busbar_free(ptr: *mut u8, len: usize) {
-                unsafe { super::__busbar_cold_free(ptr, len) }
-            }
-
-            /// # Safety
-            /// See `__busbar_cold_close`.
-            #[no_mangle]
-            pub unsafe extern "C-unwind" fn busbar_close(handle: *mut ::core::ffi::c_void) {
-                unsafe { super::__busbar_cold_close(handle) }
-            }
-        }
+        // The dropped-in door: this image's ONE registration. The frozen symbols the loader looks
+        // up in the `cdylib` are the SDK's (`__door`), and they answer through this entry.
+        $crate::__register_door!($crate::__door::Door::Cold(&BUSBAR_COLD_ENTRY));
     };
 }
 
@@ -1571,7 +1761,8 @@ pub mod __plane_abi {
 }
 
 /// Emit a `plane`-kind cdylib from `$decl` (a `'static busbar_plugin_sdk::plane::PlaneDecl`, e.g. a
-/// `pub static PLANE_DECL: PlaneDecl = …`). Stamps the SHARED transport handshake `busbar_abi()`,
+/// `pub static PLANE_DECL: PlaneDecl = …`). Registers `$decl` as the image's door, so the SDK's
+/// frozen symbols (`__door`) answer the SHARED transport handshake `busbar_abi()`,
 /// `busbar_plugin_kind() == "plane"`, and the ONE hot-lane entrypoint `busbar_plane_decl()` returning
 /// a pointer to `$decl`. The SAME `$decl` `static` is usable STATICALLY (compiled-in) — depend on the
 /// crate as a normal `lib` and hand `&PLANE_DECL` to the registry — so a plane is both-ways by
@@ -1583,29 +1774,11 @@ pub mod __plane_abi {
 #[macro_export]
 macro_rules! export_plane {
     ($decl:path) => {
-        /// # Safety
-        /// Read only by the busbar loader as the frozen TRANSPORT handshake (shared with cold kinds).
-        #[no_mangle]
-        pub extern "C-unwind" fn busbar_abi() -> u32 {
-            $crate::transport_version()
-        }
-
-        /// # Safety
-        /// The returned pointer is to a `'static` NUL-terminated string owned by this library.
-        #[no_mangle]
-        pub extern "C-unwind" fn busbar_plugin_kind() -> *const u8 {
-            const KIND_NUL: &str = "plane\0";
-            KIND_NUL.as_ptr()
-        }
-
-        /// # Safety
-        /// The returned pointer is to a `'static` [`PlaneDecl`] owned by this library, whose bytes and
-        /// vocabulary ranges live for the whole life of the loaded image. The loader NEVER frees it.
-        #[no_mangle]
-        pub unsafe extern "C-unwind" fn busbar_plane_decl() -> *const $crate::__plane_abi::PlaneDecl
-        {
-            ::core::ptr::addr_of!($decl)
-        }
+        // The dropped-in door: this image's ONE registration. `busbar_abi`, `busbar_plugin_kind()
+        // == "plane"` and `busbar_plane_decl` are the SDK's frozen symbols (`__door`), answering
+        // through `$decl` — so a plane crate linked into a binary beside any other plugin defines no
+        // symbol of its own that could collide.
+        $crate::__register_door!($crate::__door::Door::Plane(&$decl));
     };
 }
 

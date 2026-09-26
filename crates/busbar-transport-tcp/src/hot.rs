@@ -3,9 +3,10 @@
 
 //! THE HOT-LANE DOOR (#3, #30, #40, #84): this transport as a `#[repr(C)]` decl, so it is swappable
 //! compiled in OR dropped in. [`TRANSPORT_DECL`] is the one decl both doors hand the host: a build
-//! that links this crate passes its address to the loader's `link_transport`; the `cdylib` exports it
-//! as `busbar_transport_decl` (with `busbar_abi` and `busbar_plugin_kind`) for the loader's
-//! `load_transport`. The same slots run whichever door the host came in by.
+//! that links this crate passes its address to the loader's `link_transport`; the `cdylib` built with
+//! the `dropped-in` feature exports it as `busbar_transport_decl` (with `busbar_abi` and
+//! `busbar_plugin_kind`) for the loader's `load_transport`. The same slots run whichever door the host
+//! came in by.
 //!
 //! # A layout, not a crate (#84, #40(a))
 //!
@@ -269,9 +270,12 @@ pub static TRANSPORT_DECL: TransportDecl = TransportDecl {
     _reserved: 0,
 };
 
-/// The dropped-in door's three symbols. In a module of their own, so a build that links this crate
-/// and takes [`TRANSPORT_DECL`] does not also take a second definition of the shared handshake
-/// symbols another linked plugin exports.
+/// The dropped-in door's three symbols, compiled only into the dropped-in build (feature
+/// `dropped-in`). A build that links this crate takes [`TRANSPORT_DECL`] and never these: rustc emits
+/// the `rlib` and the `cdylib` from one set of objects, so a symbol compiled here is in the linked
+/// `rlib` too, where it is a second definition of the shared handshake the SDK defines for every
+/// SDK-built plugin — a refused link under the release profile's fat LTO.
+#[cfg(feature = "dropped-in")]
 pub mod exports {
     /// The shared library handshake.
     #[no_mangle]
