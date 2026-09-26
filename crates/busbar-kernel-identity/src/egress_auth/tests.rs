@@ -4,7 +4,9 @@
 use super::*;
 use busbar_contract::caps::{Dial, Grant, KernelSeal, LaneId};
 
-fn token() -> Grant<Sign> {
+/// The unit's `Sign` token, minted once here for every suite in this module tree (the declared
+/// scheme's suite borrows it rather than spelling a second mint).
+pub(super) fn token() -> Grant<Sign> {
     Grant::<Sign>::mint(&KernelSeal::acquire_for_kernel())
 }
 

@@ -6,12 +6,9 @@
 //! host.
 
 use super::*;
-use busbar_contract::caps::KernelSeal;
 use busbar_contract::protocol::CredentialFamily;
 
-fn token() -> Grant<Sign> {
-    Grant::<Sign>::mint(&KernelSeal::acquire_for_kernel())
-}
+use crate::egress_auth::tests::token;
 
 fn ctx(creds: UpstreamCreds) -> SigningContext<'static> {
     SigningContext {
