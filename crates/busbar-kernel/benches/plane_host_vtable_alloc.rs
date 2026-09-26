@@ -26,7 +26,7 @@
 //! # THE PENDING-RIDER DEPENDENCY
 //!
 //! Like the perf instrument, this measures the vtable's own construction — the `#[repr(C)]` subject
-//! `crates/busbar-plugin/tests/layout_golden.rs` pins — because [`PlaneHostVtable`] has no
+//! `crates/busbar-contract/tests/layout_golden.rs` pins — because [`PlaneHostVtable`] has no
 //! production rider yet (the keystone loop-unification in `crates/busbar/src/root/kernel.rs` +
 //! `main.rs`, reserved for the keystone wave). When the rider lands, the batch binds to the
 //! production crossing unchanged: an allocation-free POD call is allocation-free wherever it is made.
@@ -40,9 +40,9 @@
 //! `cargo xtask gate hot-path-alloc` enforces that this instrument keeps making the alloc-budget claim; this
 //! file is what measures it.
 
-use busbar_plugin::hot::host::{GovernAdmitFn, HostCtx, PlaneHostVtable};
-use busbar_plugin::hot::pod::{Decision, Facts};
-use busbar_plugin::AbiPreamble;
+use busbar_contract::abi::hot::host::{GovernAdmitFn, HostCtx, PlaneHostVtable};
+use busbar_contract::abi::hot::pod::{Decision, Facts};
+use busbar_contract::abi::AbiPreamble;
 use criterion::{criterion_group, criterion_main, Criterion};
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::hint::black_box;

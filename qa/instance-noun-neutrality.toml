@@ -56,14 +56,6 @@ category = "cross-plugin"
 wave = "cross-plugin cleanup — broker law #8 (plugins never name each other)"
 
 [[leak]]
-noun = "memory"
-kind = "store"
-file = "crates/plugin-sdk/src/tests/lib_tests.rs"
-count = 1
-category = "core"
-wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
-
-[[leak]]
 noun = "sqlite"
 kind = "store"
 file = "crates/plugin-loader/src/tests/store_adapter_migration_tests.rs"

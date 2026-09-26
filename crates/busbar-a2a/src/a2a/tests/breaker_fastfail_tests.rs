@@ -127,7 +127,7 @@ fn a_call<'a>(
         breakers: Some(crate::a2a::relay::RelayBreaker::degenerate("planner")),
         host: Some(host),
         host_scope: Some(scope),
-        admission: busbar_plugin::hot::AdmissionId::NONE,
+        admission: busbar_contract::abi::hot::AdmissionId::NONE,
         bytes: None,
     }
 }

@@ -53,6 +53,8 @@ busbar-substrate-values = { path = "../busbar-substrate-values" }
 # consumer (router, the chain-verification module, config, config_validate) never has to name
 # "admin" to check a scope.
 busbar-contract = { path = "../busbar-contract" }
+# (The HOT-lane plugin/plane ABI the kernel hosts — the `#[repr(C)] PlaneHostVtable` and its POD types
+# — is `busbar_contract::abi::hot` since the #84 merge; consumed HOST-side by `src/plane_host`.)
 # THE ONE NETWORK JUDGE (#36: "the upstream leg — walk + swrr weighting + pre-dial guard; trust
 # folded in"). `busbar_kernel_egress::trust::net` is the single definition of the SSRF/metadata
 # guard — the metadata name list, the address predicates, the WHATWG host extraction, the
@@ -102,10 +104,6 @@ smallvec = { workspace = true }
 # The folded `timing` module (former busbar-timing, OWNER Q70) calls `atexit(3)` for its process-exit
 # dump, and only under the non-default `timing` feature. The default build does not link it.
 libc = { workspace = true, optional = true }
-# The HOT-lane plugin/plane ABI (`busbar_plugin::hot`): the `#[repr(C)] PlaneHostVtable` and its POD
-# types. Consumed HOST-side by `src/plane_host` — the construction point + lifecycle arena the Phase-2
-# capability fan-out fills in. Additive: nothing in the engine calls the plane seam yet.
-busbar-plugin = { path = "../busbar-plugin" }
 busbar-plugin-loader = { path = "../plugin-loader" }
 busbar-auth-admin-tokens = { path = "../auth-admin-tokens", optional = true }
 # THE STAND-IN LINKED ROWS (test-only edges): the composition root links the build's default store

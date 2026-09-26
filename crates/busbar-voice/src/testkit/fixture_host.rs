@@ -33,6 +33,7 @@
 //! no identity chain, no completion pipeline). It is a test double: a leg the fixture does not model
 //! answers its documented empty value rather than pretending to be the engine.
 
+use busbar_contract::abi::hot::{AdmissionId, Signal};
 use busbar_contract::auth::{AuthPrincipal, IdentityRefusal};
 use busbar_contract::records::{PlaneRequestCtx, VirtualKey};
 use busbar_kernel::billing::{TokenUsage, Usage};
@@ -49,7 +50,6 @@ use busbar_kernel::plane_host::{
 use busbar_kernel::store::{BreakerState, HealthState, LaneRuntime, Unavailable};
 use busbar_kernel::trust::validate::{Lapsed, Standing};
 use busbar_kernel::trust::TrustState;
-use busbar_plugin::hot::{AdmissionId, Signal};
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -328,7 +328,7 @@ impl BreakerHost for FixtureHost {
         scope: &DispatchScope,
         admission: AdmissionId,
         signal: &Signal,
-    ) -> busbar_plugin::hot::StatusClass {
+    ) -> busbar_contract::abi::hot::StatusClass {
         scope
             .settle_admission(admission, signal)
             .unwrap_or(signal.class.class())
@@ -560,7 +560,7 @@ impl BudgetHost for FixtureHost {
         &self,
         _scope: &DispatchScope,
         _caller: &PlaneRequestCtx,
-        _usage: &busbar_plugin::hot::Usage,
+        _usage: &busbar_contract::abi::hot::Usage,
     ) {
     }
     fn rate_headroom(

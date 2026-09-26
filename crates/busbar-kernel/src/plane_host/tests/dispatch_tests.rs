@@ -5,7 +5,7 @@
 
 use super::*;
 use crate::plane_host::{with_dispatch_scope, DurableScope};
-use busbar_plugin::hot::POD_VERSION;
+use busbar_contract::abi::hot::POD_VERSION;
 use std::sync::Arc;
 
 // The durable-scope type is named by this family but exercised only through the process-lifetime

@@ -126,7 +126,7 @@ its replies in the observability envelope; `auth` accepts `1..=3` — it was bum
 the additive browser-login primitives — and `hook` accepts `1..=2`), `secret` at `1`, `export` is at `2` (1.5.3
 expanded the stream vocabulary and dropped `audit`, so a v1 sink is not accepted), and `store` accepts
 the range `2..=4`. The loader enforces a supported-version RANGE per kind, so a plugin built against an
-outdated (or too-new) ABI is refused at load rather than mis-called. See `busbar-plugin-abi` for the
+outdated (or too-new) ABI is refused at load rather than mis-called. See `busbar_contract::abi::cold` for the
 authoritative versions.
 
 **Store plugins and 1.6.0.** Every published 1.5.5 store plugin (`busbar-store-sqlite`, `-postgres`,
@@ -175,8 +175,7 @@ implementation), adapt the JSON config Busbar passes at open, and let the SDK em
 //   [lib]
 //   crate-type = ["cdylib"]
 //   [dependencies]
-//   busbar-contract = { .. }
-//   busbar-plugin-sdk = { .. }
+//   busbar-contract = { .. }   # the plugin contract: shapes, ABI and export macros (#84)
 //   serde_json = "1"
 
 use busbar_contract::records::RecordStore;
@@ -188,7 +187,7 @@ fn open(cfg: &str) -> Result<Box<dyn RecordStore>, String> {
     Ok(Box::new(MyStore::connect(url)?))
 }
 
-busbar_plugin_sdk::export_store_plugin!(open);
+busbar_contract::abi::sdk::export_store_plugin!(open);
 ```
 
 `export_store_plugin!` emits the six kind-neutral extern-C symbols of the plugin ABI (`busbar_abi`,
@@ -196,7 +195,7 @@ busbar_plugin_sdk::export_store_plugin!(open);
 operation rides one `busbar_call` symbol as a
 JSON-serialized `StoreRequest`/`StoreResponse` pair, so the symbol set never grows as the trait
 does, and a plugin can equally be written in C, Go, or Zig against the same contract
-(`busbar-plugin-abi` is the source of truth). The store sits off the request hot path
+(`busbar_contract::abi::cold` is the source of truth). The store sits off the request hot path
 (write-behind), so JSON serialization never touches request latency.
 
 Build per target:
@@ -225,7 +224,7 @@ overlay. Only the reference is persisted. An unresolvable reference is a fatal b
 error naming the reference.
 
 ```rust
-// crate-type = ["cdylib"]; deps: busbar-contract, busbar-plugin-sdk, serde_json
+// crate-type = ["cdylib"]; deps: busbar-contract, serde_json
 use busbar_contract::secret::{SecretModule, SecretModuleError, SecretResult};
 
 struct MyVault { /* connection state built once at `open` */ }
@@ -243,7 +242,7 @@ fn open(cfg: &str) -> Result<Box<dyn SecretModule>, String> {
     // JSON, and distinct from the per-REFERENCE `settings` `resolve` receives above.
     Ok(Box::new(MyVault::connect(cfg)?))
 }
-busbar_plugin_sdk::export_secret_plugin!(open);
+busbar_contract::abi::sdk::export_secret_plugin!(open);
 ```
 
 A complete, real reference implementation is the HashiCorp Vault plugin
@@ -304,7 +303,7 @@ in the data-plane **`auth.chain`**: name it there and the engine resolves it aga
 directory, loads it, and boxes it into the chain.
 
 ```rust
-// crate-type = ["cdylib"]; deps: busbar-contract, busbar-plugin-sdk, serde_json
+// crate-type = ["cdylib"]; deps: busbar-contract, serde_json
 use busbar_contract::auth::{AuthModule, AuthVerdict, Principal};
 
 struct MyIdp { /* … */ }
@@ -327,7 +326,7 @@ fn open(cfg: &str) -> Result<Box<dyn AuthModule>, String> {
     // `cfg` is the chain entry's own `settings:` map, passed through verbatim as JSON.
     Ok(Box::new(MyIdp::from_config(cfg)?))
 }
-busbar_plugin_sdk::export_auth_plugin!(open);
+busbar_contract::abi::sdk::export_auth_plugin!(open);
 ```
 
 An identity provider returns **identity only**: who the caller is (`id` + `roles`). Policy (which
@@ -452,8 +451,8 @@ compressor just `transform`); the rest degrade to the safe abstain/no-op replies
 treats as fail-open. The SDK emits the ABI glue:
 
 ```rust
-// crate-type = ["cdylib"]; deps: busbar-plugin-sdk, serde_json
-use busbar_plugin_sdk::HookHandler;
+// crate-type = ["cdylib"]; deps: busbar-contract, serde_json
+use busbar_contract::abi::sdk::HookHandler;
 
 struct MyGate { /* … */ }
 impl HookHandler for MyGate {
@@ -473,7 +472,7 @@ fn open(cfg: &str) -> Result<Box<dyn HookHandler>, String> {
     // `cfg` is the hook instance's own `settings:` map, passed through verbatim as JSON.
     Ok(Box::new(MyGate::from_config(cfg)?))
 }
-busbar_plugin_sdk::export_hook_plugin!(open);
+busbar_contract::abi::sdk::export_hook_plugin!(open);
 ```
 
 `export_hook_plugin!` emits the six extern-C hybrid ABI symbols. Every op rides the one `busbar_call`

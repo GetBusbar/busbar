@@ -165,7 +165,7 @@ fn issue_originated(
             // No breaker cell here, so no admit to re-home and no host seam to thread.
             host: None,
             host_scope: None,
-            admission: busbar_plugin::hot::AdmissionId::NONE,
+            admission: busbar_contract::abi::hot::AdmissionId::NONE,
             // busbar's own housekeeping hop: no caller asked for it, so no caller's `bytes` class is
             // billed for it (see `relay::HopBytes`).
             bytes: None,

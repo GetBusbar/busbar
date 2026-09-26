@@ -233,8 +233,9 @@ struct KindDef {
 
 /// THE KIND TABLE. The SEVEN plugin kinds (DECISIONS #3: store, secret, auth, hook, export, plane,
 /// transport), the infra crate families that are NOT plugin kinds (unit, kernel, contract,
-/// substrate, api, the plugin-abi/plugin-tooling TCB and the `cleanliness` compiled-in surfaces),
-/// the composition root, and the retiring legacy crates.
+/// substrate, api, the plugin-tooling TCB (the plugin ABI itself is `busbar-contract`'s `abi` module
+/// since the #84 merge) and the `cleanliness` compiled-in surfaces), the composition root, and the
+/// retiring legacy crates.
 ///
 /// `control` and `dialect` are NOT kinds (DECISIONS #4/#5): a dialect is a thing INSIDE a plane
 /// (llm 6, mcp 1, a2a 1, streaming N) with no crate of its own, and admin/oauth2/connsec are
@@ -338,11 +339,6 @@ static KINDS: &[KindDef] = &[
     // the homes their definitions name — so the row matched no crate and scored `dead-kind`.
     // There is no `timing` kind: busbar-timing folded into busbar-kernel as its feature-gated
     // `timing` module (OWNER Q70), so its lines are the kernel's and the row would name no crate.
-    KindDef {
-        kind: "plugin-abi",
-        family: Family::Neutral,
-        matchers: &["=busbar-plugin"],
-    },
     KindDef {
         kind: "plugin-tooling",
         family: Family::Neutral,
@@ -673,7 +669,6 @@ const ARCHITECTURE_TCB: &[(&str, &str)] = &[
     // `busbar-contract` (formerly `busbar-caps`, W2.c).
     ("plugin-tooling", "contract"),
     ("plugin-tooling", "kernel"),
-    ("plugin-tooling", "plugin-abi"),
     ("plugin-tooling", "plugin-tooling"),
     ("plugin-tooling", "secret"),
     ("plugin-tooling", "unit"),
@@ -3724,7 +3719,7 @@ fn plugin_kind_keys(text: &str) -> Vec<String> {
 /// Segment}` acknowledged at-least-once with an `Ack` — and has nothing to do with telemetry
 /// export. It also has ZERO implementors anywhere in the tree, including its own crate's tests, so
 /// deriving the name pointed this rule at a trait no loadable plugin could ever satisfy while the
-/// trait a loadable export MUST implement (`busbar_plugin_sdk::ExportHandler`: `streams` /
+/// trait a loadable export MUST implement (`busbar_contract::abi::sdk::ExportHandler`: `streams` /
 /// `deliver` / `routes` / `handle_http` / `drain_observations`, behind the six C symbols, the signed
 /// manifest and the loader's `[2, 3]` window) went unchecked.
 ///
@@ -6230,21 +6225,20 @@ impl Gate for KindIsolationGate {
             // them down is that the owner can rule by reading this file. A pending row whose
             // question is gone has stopped asking, and an unruled edge that has stopped asking is
             // an edge that passes by being unreadable.
+            //
+            // RE-TARGETED at the #84 merge: its subject was the live pending
+            // `busbar-substrate-values -> busbar-plugin` question, and that edge left the tree with
+            // `busbar-plugin` — the last pending row went with it. So the plant now MAKES the unruled
+            // row a case needs: a live, granted edge (`busbar-kernel -> busbar-contract`) re-marked
+            // `owner-ruling-pending` with no `[[question]]` asking about it — exactly the row this
+            // rule refuses, planted over a row no fold retires.
             report.push(plant_registry(
                 cx,
                 subject,
                 "an unruled edge whose question was struck out has stopped asking",
                 &[ROW_DEPS],
-                Ok((
-                    "from     = \"busbar-substrate-values\"\nto       = \"busbar-plugin\"\n"
-                        .to_string(),
-                    "from     = \"busbar-substrate-values\"\nto       = \"busbar-plugin-struck\"\n"
-                        .to_string(),
-                )),
-                &[
-                    "unasked-question",
-                    "busbar-substrate-values -> busbar-plugin",
-                ],
+                pending_subst(cx, "busbar-kernel", "busbar-contract"),
+                &["unasked-question", "busbar-kernel -> busbar-contract"],
             ));
 
             // TWO ROWS FOR ONE EDGE. Two numbers for one measurement, and the one a reader believes
@@ -6318,7 +6312,7 @@ impl Gate for KindIsolationGate {
             // unlisted `[[dep]]`, `[[cell]]` and `[[edge]]` the day `busbar-hooks-ranking` was
             // repointed at the contract, for doing exactly what the wall asks. GREEN on the shipped
             // graph, the test graph and the vocabulary matrix alike, with a source file that names
-            // the contract the way every plugin does. And the same crate reaching `busbar-plugin` is
+            // the contract the way every plugin does. And the same crate reaching `busbar-kernel` is
             // RED: the wall is one crate wide, not "the contract plus whatever else".
             report.push(prove_rows_green(
                 cx,
@@ -6331,13 +6325,10 @@ impl Gate for KindIsolationGate {
             report.push(prove_rows_red(
                 cx,
                 subject,
-                "a plugin-kind crate reaching busbar-plugin reaches past the #40 wall",
+                "a plugin-kind crate reaching busbar-kernel reaches past the #40 wall",
                 &[ROW_DEPS],
-                the_wall_plant(&["busbar-plugin"]),
-                &[
-                    "busbar-hooks-planted -> busbar-plugin",
-                    "hooks -> plugin-abi",
-                ],
+                the_wall_plant(&["busbar-kernel"]),
+                &["busbar-hooks-planted -> busbar-kernel", "hooks -> kernel"],
             ));
 
             // THE ROOT LINKS A PLUGIN, AND THAT IS ROSTER DEFINITION 1, NOT A COUPLING. The
@@ -9010,6 +9001,17 @@ fn verdict_subst(cx: &Ctx, from: &str, to: &str) -> Result<(String, String), Str
     ))
 }
 
+/// That row, with its `verdict` flipped from `allowed` to `owner-ruling-pending` — an unruled row
+/// with no `[[question]]` asking about it, planted over a granted edge that no fold retires, with
+/// the count read off the file rather than copied into the fixture.
+fn pending_subst(cx: &Ctx, from: &str, to: &str) -> Result<(String, String), String> {
+    let anchor = dep_anchor(cx, from, to)?;
+    Ok((
+        format!("{anchor}\nverdict = \"allowed\""),
+        format!("{anchor}\nverdict = \"owner-ruling-pending\""),
+    ))
+}
+
 /// THE `from`/`to` PAIR OF THE FIRST `[[transitional]]` ROW, exactly as the ledger spells it.
 ///
 /// Two lines rather than one because `to = "…"` is not unique in a file that also carries an
@@ -9475,10 +9477,7 @@ mod plant_tests {
                 verdict_for(&(k.to_string(), CONTRACT_KIND.to_string())),
                 "allowed"
             );
-            assert!(
-                !is_the_wall(k, "plugin-abi"),
-                "{k} -> plugin-abi is past the wall"
-            );
+            assert!(!is_the_wall(k, "unit"), "{k} -> unit is past the wall");
             assert!(!is_the_wall(k, "kernel"), "{k} -> kernel is past the wall");
         }
         for neutral in [
@@ -9498,7 +9497,7 @@ mod plant_tests {
 
     /// Asked of the rule directly, finding by finding, so no standing debt on the real tree can
     /// answer it: the planted crate on the wall draws NO finding on either half of the graph, and
-    /// the same crate reaching busbar-plugin draws one that names the plugin-abi edge.
+    /// the same crate reaching busbar-kernel draws one that names the kernel edge.
     #[test]
     fn a_plugin_crate_on_the_wall_draws_no_finding_and_one_past_it_is_red() {
         let green = the_wall_plant(&[]);
@@ -9521,13 +9520,10 @@ mod plant_tests {
             );
         }
 
-        let red = deps_over(the_wall_plant(&["busbar-plugin"]));
+        let red = deps_over(the_wall_plant(&["busbar-kernel"]));
         assert_red_naming(
             &red,
-            &[
-                "busbar-hooks-planted -> busbar-plugin",
-                "hooks -> plugin-abi",
-            ],
+            &["busbar-hooks-planted -> busbar-kernel", "hooks -> kernel"],
         );
         assert!(
             !red.detail

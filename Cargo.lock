@@ -415,7 +415,6 @@ dependencies = [
  "busbar-core-admin",
  "busbar-kernel",
  "busbar-plane-a2a",
- "busbar-plugin",
  "busbar-plugin-loader",
  "bytes",
  "ed25519-dalek",
@@ -457,7 +456,6 @@ name = "busbar-auth-static-plugin"
 version = "1.5.0"
 dependencies = [
  "busbar-contract",
- "busbar-plugin-sdk",
  "serde",
  "serde_json",
 ]
@@ -478,6 +476,7 @@ dependencies = [
  "sha2 0.11.0",
  "smallvec",
  "tracing",
+ "tracing-core",
  "zeroize",
 ]
 
@@ -533,7 +532,7 @@ dependencies = [
 name = "busbar-export-example-plugin"
 version = "1.5.0"
 dependencies = [
- "busbar-plugin-sdk",
+ "busbar-contract",
  "serde_json",
 ]
 
@@ -597,7 +596,7 @@ dependencies = [
 name = "busbar-hook-test-plugin"
 version = "1.5.0"
 dependencies = [
- "busbar-plugin-sdk",
+ "busbar-contract",
  "serde",
  "serde_json",
  "tracing",
@@ -634,7 +633,6 @@ dependencies = [
  "busbar-kernel-wal",
  "busbar-llm",
  "busbar-mcp",
- "busbar-plugin",
  "busbar-plugin-loader",
  "busbar-store-example-plugin",
  "busbar-store-memory",
@@ -777,7 +775,6 @@ dependencies = [
  "busbar-kernel",
  "busbar-llm-codec",
  "busbar-plane-llm",
- "busbar-plugin",
  "bytes",
  "crc32fast",
  "futures",
@@ -830,7 +827,6 @@ dependencies = [
  "busbar-kernel",
  "busbar-llm",
  "busbar-plane-mcp",
- "busbar-plugin",
  "busbar-plugin-loader",
  "bytes",
  "futures",
@@ -925,20 +921,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "busbar-plugin"
-version = "1.5.0"
-dependencies = [
- "busbar-contract",
- "serde",
- "serde_json",
-]
-
-[[package]]
 name = "busbar-plugin-example-plane"
 version = "1.6.0"
 dependencies = [
- "busbar-plugin",
- "busbar-plugin-sdk",
+ "busbar-contract",
 ]
 
 [[package]]
@@ -952,7 +938,6 @@ dependencies = [
  "busbar-hook-test-plugin",
  "busbar-kernel-ledger",
  "busbar-kernel-wal",
- "busbar-plugin",
  "busbar-plugin-example-plane",
  "busbar-store-example-plugin",
  "busbar-transport-tcp",
@@ -977,11 +962,6 @@ name = "busbar-plugin-sdk"
 version = "1.5.0"
 dependencies = [
  "busbar-contract",
- "busbar-plugin",
- "busbar-store-memory",
- "serde_json",
- "tracing",
- "tracing-core",
 ]
 
 [[package]]
@@ -989,7 +969,6 @@ name = "busbar-store-example-plugin"
 version = "1.5.0"
 dependencies = [
  "busbar-contract",
- "busbar-plugin-sdk",
  "libc",
  "serde",
  "serde_json",
@@ -1009,7 +988,6 @@ name = "busbar-substrate-values"
 version = "1.6.0"
 dependencies = [
  "busbar-contract",
- "busbar-plugin",
  "bytes",
  "crc32fast",
  "futures",
@@ -1117,7 +1095,6 @@ dependencies = [
  "busbar-contract",
  "busbar-kernel",
  "busbar-plane-streaming",
- "busbar-plugin",
  "busbar-voice-codec",
  "bytes",
  "futures",

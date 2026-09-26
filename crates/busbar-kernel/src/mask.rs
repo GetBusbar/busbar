@@ -209,7 +209,7 @@ pub struct CredentialSlab {
 }
 
 /// `Debug` REDACTS `buf` and only `buf` — the same shape as
-/// `busbar_plugin::cold::auth::CompleteLoginRequest`'s hand-written impl, so the codebase has ONE
+/// `busbar_contract::abi::cold::auth::CompleteLoginRequest`'s hand-written impl, so the codebase has ONE
 /// redaction idiom rather than two. What survives is the non-secret shape: how many bytes are
 /// currently held and the slab's fixed capacity — useful for diagnosing a `CredentialBudget` refusal
 /// without ever printing the credential that triggered it.

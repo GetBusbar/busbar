@@ -1,9 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
 # NAMED `busbar-plugin-example-*` (the plugin-tooling / TCB family), NOT `busbar-plane-*`: this is a
-# TEST FIXTURE that exercises the plugin ABI + SDK + loader, so it belongs beside `busbar-plugin-sdk`
-# and `busbar-plugin-loader` in the trusted-computing-base kind, whose edges to the plugin-abi
-# (`busbar-plugin`) and plugin-tooling (`busbar-plugin-sdk`) crates are architecture-allowed
-# (`xtask kind-isolation`'s `ARCHITECTURE_TCB`). A `busbar-plane-*` name would classify it as a
+# TEST FIXTURE that exercises the plugin ABI + SDK + loader, so it belongs beside `busbar-plugin-loader`
+# in the trusted-computing-base kind, whose edges are architecture-allowed (`xtask kind-isolation`'s
+# `ARCHITECTURE_TCB`). The ABI and the SDK it exercises are `busbar-contract`'s `abi` module (#84). A `busbar-plane-*` name would classify it as a
 # first-class PROTOCOL PLANE instance, which may name only the contract and whose instance word would
 # be forbidden vocabulary everywhere else — the wrong kind for an ABI fixture.
 [package]
@@ -12,7 +11,7 @@ version = "1.6.0"
 publish = false            # internal TEST-support cdylib; never goes to crates.io
 edition = "2021"
 rust-version = "1.97"
-description = "A hermetic trivial kind:plane plugin cdylib exporting a real busbar_plugin::hot::PlaneDecl over the HOT-tier ABI. The in-tree both-ways (compiled-in vs dropped-in) coverage for kind:plane, and the copy-me template a plane author exports through busbar_plugin_sdk::export_plane!."
+description = "A hermetic trivial kind:plane plugin cdylib exporting a real busbar_contract::abi::hot::PlaneDecl over the HOT-tier ABI. The in-tree both-ways (compiled-in vs dropped-in) coverage for kind:plane, and the copy-me template a plane author exports through busbar_contract::abi::sdk::export_plane!."
 license = "Apache-2.0"
 
 [lib]
@@ -23,8 +22,7 @@ license = "Apache-2.0"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-# The HOT-tier plane ABI types (PlaneDecl, BuildCtx, WorkItem, RawStatus, …). A plane author authors a
-# real PlaneDecl against this crate; the SDK below only emits the boundary symbols.
-busbar-plugin = { path = "../busbar-plugin" }
-# The plane export macro (`export_plane!`) + the `plane` re-export module — the copy-me surface.
-busbar-plugin-sdk = { path = "../plugin-sdk" }
+# The HOT-tier plane ABI types (PlaneDecl, BuildCtx, WorkItem, RawStatus, …, `abi::hot`) and the plane
+# export macro (`export_plane!`, `abi::sdk`) — the copy-me surface. A plane author authors a real
+# PlaneDecl against this crate; the macro only registers it as the image's door.
+busbar-contract = { path = "../busbar-contract" }

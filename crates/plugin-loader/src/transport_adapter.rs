@@ -35,7 +35,7 @@
 //! this adapter answers the trait's remaining methods as a byte stream answers them: the envelope of
 //! an outbound message is its body, an adoption from another layer is a
 //! [`TransportError::HandoffMismatch`], and a key handle is not presented (a transport that needs
-//! configuration is handed the kernel-built [`busbar_plugin::hot::transport::WireConfig`], which no
+//! configuration is handed the kernel-built [`busbar_contract::abi::hot::transport::WireConfig`], which no
 //! caller of this adapter mints yet).
 
 use std::collections::HashMap;
@@ -44,6 +44,7 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 
+use busbar_contract::abi::hot::transport::WireOutcome;
 use busbar_contract::transport::wire::{
     ArrivalRecord, CloseReason, Conn, ConnHandle, Direction, Encode, FrameMeta, Listener,
     ListenerHandle, RawStream, TransportError,
@@ -53,7 +54,6 @@ use busbar_contract::{
     DestinationFacts, Frame, Fut, Kind, PlaneAlloc, Plugin, Refusal, ScratchBytes, SlabBytes,
     StreamId, TransportConfigView, TransportKeyHandle, VerifiedDestination,
 };
-use busbar_plugin::hot::transport::WireOutcome;
 
 use crate::transport::{wire_settings, BuiltTransport, DynTransport, WakeToken, WirePoll};
 

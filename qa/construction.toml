@@ -915,7 +915,10 @@ kernel_crate = "busbar-kernel"
 # still held open. Its `[gate.ceiling_raises]` declaration reached the base and is struck.
 # ── 51167 -> 51162: the kernel measures 51089 after SD-3b's egress-declaration change, and
 # 51089 + K2g's 73 named lines = 51162. Downward only.
-kernel_ceiling = 51161
+# ── 51161 -> 51160: the kernel measures 51087 after the #84 merge re-pointed its plugin-ABI imports
+# at busbar_contract::abi (one import tree collapsed), and 51087 + K2g's 73 named lines = 51160.
+# Downward only.
+kernel_ceiling = 51160
 # `caps_crate = "busbar-caps"` WAS HERE AND IS STRUCK, 2026-09-22. The crate was folded into
 # busbar-contract by 2c9eddecf ("W2.c: fold busbar-caps into busbar-contract"); its types live at
 # `crates/busbar-contract/src/caps/`, whose own module header says "Folded from the former
@@ -1125,12 +1128,13 @@ edge is not a shipped edge, and it is scored on `kind-isolation:test-deps` inste
 consulted when present to widen the same check to transitive path/workspace deps, and skipped \
 (noted, not failed) when cargo is unavailable, keeping this gate cargo-optional."""
 # Every dependency a plugin-kind crate may name beyond busbar-contract, with the review recorded in
-# the commit that added it: busbar-api / busbar-plugin-sdk are the 1.5.5-era loader ABI every
-# example plugin still bridges through until it moves onto busbar-contract; busbar-grammar is the
+# the commit that added it: busbar-api is the 1.5.5-era loader ABI every example plugin bridged
+# through until it moved onto busbar-contract (busbar-plugin-sdk, the other half of that bridge, is
+# struck: it merged INTO busbar-contract, #84, so a plugin names the contract alone); busbar-grammar is the
 # closed JSON span grammar the contract itself is written on and re-exports as `spans`, so naming it
 # directly is naming a piece of the contract rather than reaching past it; the rest are ordinary
 # third-party crates.
-reviewed_allowlist = ["busbar-api", "busbar-plugin-sdk", "serde", "serde_json", "tracing", "async-trait", "bytes", "sonic-rs", "busbar-llm-codec", "busbar-voice-codec", "busbar-grammar"]
+reviewed_allowlist = ["busbar-api", "serde", "serde_json", "tracing", "async-trait", "bytes", "sonic-rs", "busbar-llm-codec", "busbar-voice-codec", "busbar-grammar"]
 # busbar-llm-codec: the pure codec half of the split llm crate (no I/O in its closure); the plane adapts it.
 # Per-crate additions beyond the global list above, each a one-line review.
 [rules.manifest-allowlist.reviewed_extra]
@@ -1633,7 +1637,7 @@ known_sites = [
   "crates/busbar-substrate-values/src/proto.rs",
   "crates/busbar-transport-ws/src/transport.rs",
   "crates/plugin-loader/src/",
-  "crates/plugin-sdk/src/boundary.rs",
+  "crates/busbar-contract/src/abi/sdk/boundary.rs",
   "crates/plane-example/src/",
   # REVIEWED 2026-09-25 (item 141): a first-party plugin's diagnostic written as the host's own
   # line needs a tracing callsite and field names that are 'static by tracing's type; `site` makes

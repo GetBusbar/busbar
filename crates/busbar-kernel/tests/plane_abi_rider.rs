@@ -40,15 +40,15 @@
 
 #![allow(clippy::items_after_statements)]
 
-use busbar_kernel::plane_host::with_dispatch_scope;
-use busbar_kernel::test_support::TestApp;
-use busbar_plugin::hot::host::{
+use busbar_contract::abi::hot::host::{
     ClockNowFn, CostReserveFn, CostSettleFn, GovernAdmitFn, HostCtx, MeterChargeFn, PlaneHostVtable,
 };
-use busbar_plugin::hot::pod::{
+use busbar_contract::abi::hot::pod::{
     CostLeaseId, CostSettleOut, Decision, Facts, MeterOutcome, StatusClass, Usage,
 };
-use busbar_plugin::hot::{EmitHandle, InboundHandle, WorkItem};
+use busbar_contract::abi::hot::{EmitHandle, InboundHandle, WorkItem};
+use busbar_kernel::plane_host::with_dispatch_scope;
+use busbar_kernel::test_support::TestApp;
 use busbar_plugin_loader::DynPlane;
 use core::mem::MaybeUninit;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -653,7 +653,7 @@ fn registry_open_plane_yields_a_plane_that_rides_the_real_host_vtable() {
         kind: "plane".into(),
         version: "1.6.0".into(),
         publisher: "busbar".into(),
-        abi_version: busbar_plugin::ABI_MINOR,
+        abi_version: busbar_contract::abi::ABI_MINOR,
         sha256: String::new(),
         signature: String::new(),
         description: String::new(),

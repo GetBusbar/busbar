@@ -289,7 +289,7 @@ impl StoreAdapter {
     /// [`StoreAdapter::new`] for a store built against the CURRENT payload schema — the in-tree
     /// memory store, which is what a config that names no store gets.
     pub fn native(store: Arc<dyn AbiStore>) -> Self {
-        StoreAdapter::new(store, busbar_plugin::cold::ABI_VERSION)
+        StoreAdapter::new(store, busbar_contract::abi::cold::ABI_VERSION)
     }
 
     /// The loaded store itself, for the published operations: keys, usage, metering, audit, and the

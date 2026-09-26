@@ -1575,7 +1575,7 @@ fn no_deferral_reports_the_unwaived_markers_and_the_stale_waiver_together() {
     assert!(
         unwaived
             .detail
-            .contains("crates/busbar-plugin/src/hot/host.rs:"),
+            .contains("crates/busbar-contract/src/abi/hot/host.rs:"),
         "the over-count arm names the markers nobody waived: {}",
         unwaived.detail
     );

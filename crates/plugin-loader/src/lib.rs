@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! Runtime loading of a durable-store backend from a **dynamic library** (`.so`/`.dll`/`.dylib`) over
-//! the busbar store C ABI ([`busbar_plugin::cold`]).
+//! the busbar store C ABI ([`busbar_contract::abi::cold`]).
 //!
 //! This is the engine side of "drop a plugin in the folder and it works": [`load_store`] opens a
 //! library with `libloading` (portable `dlopen`/`LoadLibrary`), checks the ABI-version handshake,
@@ -18,15 +18,15 @@
 //! a path) so the bytes that were hash/signature-checked are byte-for-byte the bytes loaded — closing
 //! the time-of-check/time-of-use gap a `verify(path)` + `dlopen(path)` pair would leave open.
 
+use busbar_contract::abi::cold::{
+    kind as abi_kind, symbol, CallFn, CloseFn, FreeFn, PluginKindFn, StoreRequest, StoreResponse,
+    MAX_PLUGIN_RESPONSE_LEN, STATUS_ERR, STATUS_OK, STATUS_PANIC, STATUS_PROTOCOL,
+    STATUS_UNSUPPORTED, TRANSPORT_VERSION,
+};
 use busbar_contract::records::{
     AuditRecord, CredentialMeta, CredentialSecret, MeteringDelta, MeteringRow, PlaneRecord,
     PlaneSelector, RecordStore, RecordStoreError, RecordStoreResult, UsageDelta, UsageLedger,
     VirtualKey,
-};
-use busbar_plugin::cold::{
-    kind as abi_kind, symbol, CallFn, CloseFn, FreeFn, PluginKindFn, StoreRequest, StoreResponse,
-    MAX_PLUGIN_RESPONSE_LEN, STATUS_ERR, STATUS_OK, STATUS_PANIC, STATUS_PROTOCOL,
-    STATUS_UNSUPPORTED, TRANSPORT_VERSION,
 };
 use libloading::Library;
 use std::os::raw::c_void;
@@ -61,18 +61,18 @@ pub use auth::DynAuth;
 /// Re-export the HTTP-endpoint wire types (plugin route registration + dispatch) so the engine
 /// (`crates/busbar`) names `busbar_plugin_loader::{Route, RouteAuth, ...}` without a direct
 /// `busbar-plugin` dependency — mirroring how it already reaches the loader's typed seams.
-pub use busbar_plugin::cold::endpoint::{
+pub use busbar_contract::abi::cold::endpoint::{
     EndpointRequest, EndpointResponse, Route, RouteAuth, RouteMethod,
 };
 pub use export::{load_export_from_bytes, load_export_image, DynExport};
 // The export PROJECTION vocabulary (the frozen `streams:` / `fields:` word-space). Re-exported for
 // the same reason the endpoint types above are: the engine names these through the loader
 // rather than taking a second, direct dependency on the ABI crate.
-pub use busbar_plugin::cold::export::{CheckPhase, ExportField, ExportStream};
-pub use busbar_plugin::cold::export::{HostResult, HttpRequest, HttpResponse};
+pub use busbar_contract::abi::cold::export::{CheckPhase, ExportField, ExportStream};
+pub use busbar_contract::abi::cold::export::{HostResult, HttpRequest, HttpResponse};
 /// A cold plugin's LINKED boundary (`BUSBAR_COLD_ENTRY`), named for the composition root's linked
 /// tables, which hand it to [`LinkedPlugin::boundary`].
-pub use busbar_plugin::cold::ColdEntry;
+pub use busbar_contract::abi::cold::ColdEntry;
 
 impl LinkedPlugin {
     /// A FIRST-PARTY cold plugin a build links: `name` aliased `alias`, of `kind`, at the newest
@@ -88,15 +88,15 @@ impl LinkedPlugin {
     }
 }
 /// The borrowed-string range of that decl's declaration tail, re-exported beside it.
-pub use busbar_plugin::hot::DeclStr as HotDeclStr;
+pub use busbar_contract::abi::hot::DeclStr as HotDeclStr;
 /// The HOT-lane plane declaration, re-exported for the reason the endpoint types above are: the
 /// composition root names the decl a linked plane exports through the loader, not a second edge.
-pub use busbar_plugin::hot::PlaneDecl as HotPlaneDecl;
+pub use busbar_contract::abi::hot::PlaneDecl as HotPlaneDecl;
 /// The HOT-lane host vtable, re-exported for the same reason: the composition root keeps the table a
 /// served plane is built against, and names its type through the loader.
-pub use busbar_plugin::hot::PlaneHostVtable as HotHostVtable;
+pub use busbar_contract::abi::hot::PlaneHostVtable as HotHostVtable;
 /// The status class a served plane's dispatch answers with, re-exported beside the vtable.
-pub use busbar_plugin::hot::StatusClass as HotStatusClass;
+pub use busbar_contract::abi::hot::StatusClass as HotStatusClass;
 pub use fetch::{fetch_plugins, FetchOutcome, FetchSpec};
 pub use highwater::{HighWaterMarks, HIGH_WATER_FILE};
 pub use hook::DlopenPolicy;
@@ -221,7 +221,7 @@ fn ffi_guard_confined<R>(path: &str, op: &str, f: impl FnOnce() -> R) -> Result<
 /// Call the plugin's `busbar_free` on `(ptr, len)` under a panic guard. A panicking `free` is logged
 /// and swallowed (the buffer is leaked rather than aborting the engine) — free runs on the request hot
 /// path and on error/cleanup paths where an abort would be the worst possible outcome.
-fn free_guarded(free: busbar_plugin::cold::FreeFn, path: &str, ptr: *mut u8, len: usize) {
+fn free_guarded(free: busbar_contract::abi::cold::FreeFn, path: &str, ptr: *mut u8, len: usize) {
     if ptr.is_null() {
         return;
     }
@@ -241,7 +241,7 @@ fn free_guarded(free: busbar_plugin::cold::FreeFn, path: &str, ptr: *mut u8, len
 /// A null handle is left alone: there is nothing to close, and handing `close` a null is asking a
 /// plugin to free something it never allocated.
 fn reclaim_failed_open(
-    close: busbar_plugin::cold::CloseFn,
+    close: busbar_contract::abi::cold::CloseFn,
     path: &str,
     handle: *mut c_void,
 ) -> bool {
@@ -274,7 +274,7 @@ struct RawPlugin {
     /// Held so the ONE generic wire call can tell the host's observer which kind reported, WITHOUT
     /// the plugin ever sending it: a kind on the wire would be a kind a plugin could claim, and
     /// [`crate::observe::PluginObserver`] applies per-kind policy. `&'static str` because it is
-    /// always one of `busbar_plugin::cold::kind`'s constants.
+    /// always one of `busbar_contract::abi::cold::kind`'s constants.
     kind: &'static str,
     /// Which response shape THIS plugin speaks — see [`response_shape`] and
     /// [`RawPlugin::decode_response`]. Latched on the first successful decode and never revisited.
@@ -412,7 +412,7 @@ impl RawPlugin {
             // back would mean a plugin that answered an envelope once and something else later, and
             // reading that as "the old shape" would hide a genuinely broken peer.
             response_shape::ENVELOPE => {
-                let envelope: busbar_plugin::cold::observe::Envelope<Resp> =
+                let envelope: busbar_contract::abi::cold::observe::Envelope<Resp> =
                     serde_json::from_slice(bytes).map_err(decode_err)?;
                 observe::fold(&self.path, self.kind, &envelope);
                 Ok(envelope.result)
@@ -425,8 +425,9 @@ impl RawPlugin {
             // current SDK is the case an operator is far more likely to be debugging and the bare
             // arm's "unknown variant `result`" would send them the wrong way.
             _ => {
-                match serde_json::from_slice::<busbar_plugin::cold::observe::Envelope<Resp>>(bytes)
-                {
+                match serde_json::from_slice::<busbar_contract::abi::cold::observe::Envelope<Resp>>(
+                    bytes,
+                ) {
                     Ok(envelope) => {
                         self.shape.store(response_shape::ENVELOPE, Relaxed);
                         observe::fold(&self.path, self.kind, &envelope);
@@ -694,7 +695,7 @@ fn wire_up(
     // its handshake fails the load CLOSED instead of aborting the engine during boot/reload.
     let transport = {
         let f = match (lib, entry) {
-            (Some(lib), _) => *unsafe { lib.get::<busbar_plugin::cold::AbiFn>(symbol::ABI) }
+            (Some(lib), _) => *unsafe { lib.get::<busbar_contract::abi::cold::AbiFn>(symbol::ABI) }
                 .map_err(|_| {
                     format!("'{display}' is not a busbar plugin (no busbar_abi symbol)")
                 })?,
@@ -734,7 +735,7 @@ fn wire_up(
         (None, None) => unreachable!("refused at the handshake"),
         (Some(lib), _) => unsafe {
             let open = *lib
-                .get::<busbar_plugin::cold::OpenFn>(symbol::OPEN)
+                .get::<busbar_contract::abi::cold::OpenFn>(symbol::OPEN)
                 .map_err(|e| format!("plugin '{display}' missing busbar_open: {e}"))?;
             let call = *lib
                 .get::<CallFn>(symbol::CALL)
@@ -767,7 +768,7 @@ fn wire_up(
     // precisely those lines.
     let set_sink = match (lib, entry) {
         (Some(lib), _) => unsafe {
-            lib.get::<busbar_plugin::cold::SetLogSinkFn>(symbol::SET_LOG_SINK)
+            lib.get::<busbar_contract::abi::cold::SetLogSinkFn>(symbol::SET_LOG_SINK)
                 .ok()
                 .map(|f| *f)
         },
@@ -909,7 +910,7 @@ fn kind_from_fn(f: PluginKindFn, display: &str) -> Result<String, String> {
 /// record — it caps the SCAN instead. Every kind is a short closed-set identifier (`store`,
 /// `secret`, ...); a pointer with no NUL inside this many bytes is not a kind, and is refused rather
 /// than walked until some zero byte or an unmapped page turns up (the hand-written
-/// `kind::EXPORT.as_ptr()` trap `busbar_plugin::cold` warns about).
+/// `kind::EXPORT.as_ptr()` trap `busbar_contract::abi::cold` warns about).
 const MAX_PLUGIN_KIND_LEN: usize = 32;
 
 /// Read a plugin kind string from `ptr`, scanning at most [`MAX_PLUGIN_KIND_LEN`] + 1 bytes for its
@@ -1660,17 +1661,17 @@ impl busbar_contract::secret::SecretModule for DynSecret {
         settings: &serde_json::Map<String, serde_json::Value>,
         deadline_ms: Option<u64>,
     ) -> busbar_contract::secret::SecretResult<Vec<u8>> {
-        let req = busbar_plugin::cold::SecretRequest::Resolve {
+        let req = busbar_contract::abi::cold::SecretRequest::Resolve {
             settings: settings.clone(),
             deadline_ms,
         };
         match self
             .raw
-            .transport_call::<_, busbar_plugin::cold::SecretResponse>(&req)
+            .transport_call::<_, busbar_contract::abi::cold::SecretResponse>(&req)
             .map_err(busbar_contract::secret::SecretModuleError::internal)?
         {
-            busbar_plugin::cold::SecretResponse::Bytes(b) => Ok(b),
-            busbar_plugin::cold::SecretResponse::Error { kind, message } => Err(
+            busbar_contract::abi::cold::SecretResponse::Bytes(b) => Ok(b),
+            busbar_contract::abi::cold::SecretResponse::Error { kind, message } => Err(
                 busbar_contract::secret::SecretModuleError::new(kind, message),
             ),
         }
@@ -1735,7 +1736,7 @@ pub fn load_store(lib_path: &Path, cfg_json: &str) -> Result<Box<dyn RecordStore
     )?;
     Ok(Box::new(DynStore::new(
         raw,
-        busbar_plugin::cold::ABI_VERSION,
+        busbar_contract::abi::cold::ABI_VERSION,
     )))
 }
 
@@ -1771,7 +1772,7 @@ pub fn load_store_from_bytes(
         cfg_json,
         display,
         manifest_kind,
-        busbar_plugin::cold::ABI_VERSION,
+        busbar_contract::abi::cold::ABI_VERSION,
     )
 }
 
@@ -1804,7 +1805,7 @@ fn load_dyn_store_from_bytes(
         cfg_json,
         display,
         manifest_kind,
-        busbar_plugin::cold::ABI_VERSION,
+        busbar_contract::abi::cold::ABI_VERSION,
     )
 }
 
@@ -1897,7 +1898,7 @@ pub fn validate_plugin(lib_path: &Path) -> Result<u32, String> {
 fn validate_mapped(lib: &Library, display: &str) -> Result<u32, String> {
     let display = display.to_string();
     let transport = {
-        let f = unsafe { lib.get::<busbar_plugin::cold::AbiFn>(symbol::ABI) }
+        let f = unsafe { lib.get::<busbar_contract::abi::cold::AbiFn>(symbol::ABI) }
             .map_err(|_| format!("'{display}' is not a busbar plugin (no busbar_abi symbol)"))?;
         ffi_guard_confined(&display, "abi", || unsafe { (*f)() })?
     };
@@ -1916,7 +1917,7 @@ fn validate_mapped(lib: &Library, display: &str) -> Result<u32, String> {
     // Confirm the operational symbols resolve too, so a half-built library is caught here rather than
     // at first use.
     unsafe {
-        lib.get::<busbar_plugin::cold::OpenFn>(symbol::OPEN)
+        lib.get::<busbar_contract::abi::cold::OpenFn>(symbol::OPEN)
             .map_err(|e| format!("plugin '{display}' missing busbar_open: {e}"))?;
         lib.get::<CallFn>(symbol::CALL)
             .map_err(|e| format!("plugin '{display}' missing busbar_call: {e}"))?;

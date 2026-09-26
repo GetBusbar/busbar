@@ -19,8 +19,8 @@
 //! bare `u64` handle. A refusal stashes nothing and names [`IdentityId::NONE`].
 
 use super::recover;
-use busbar_plugin::hot::host::HostCtx;
-use busbar_plugin::hot::{
+use busbar_contract::abi::hot::host::HostCtx;
+use busbar_contract::abi::hot::{
     IdentityAdmitted, IdentityId, IdentityOutcome, IdentityQuery, StatusClass, POD_VERSION,
 };
 use std::collections::HashMap;
@@ -156,7 +156,7 @@ pub(crate) extern "C-unwind" fn identity_admit(
         };
         // SAFETY: `out` is a writable, aligned `MaybeUninit<IdentityAdmitted>` for the call (ABI); the
         // write publishes on the Ok path, tolerating a null slot.
-        unsafe { busbar_plugin::write_out(out, admitted) };
+        unsafe { busbar_contract::abi::write_out(out, admitted) };
         StatusClass::Ok
     }))
     .unwrap_or(StatusClass::Fault) // caught panic → the distinct fault class, never `Ok`.

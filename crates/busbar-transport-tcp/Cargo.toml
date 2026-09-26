@@ -18,14 +18,13 @@ crate-type = ["rlib", "cdylib"]
 # not the crate that defines the HOT lane either — `src/hot.rs` restates the published layout it
 # implements (#84: a layout, not a crate).
 [features]
-# THE DROPPED-IN DOOR'S SYMBOLS (`hot::exports`: `busbar_abi`, `busbar_plugin_kind`,
-# `busbar_transport_decl`), OFF in every build that links this crate. One rustc invocation emits the
-# `rlib` and the `cdylib` from the same objects, so a `#[no_mangle]` symbol defined here is in the
-# linked `rlib` too — and the composition root links this crate beside the SDK-built plugins, whose
-# `busbar_abi` / `busbar_plugin_kind` the SDK defines. Two strong definitions of one name are a
-# refused link under the release profile's fat LTO ("Linking globals named 'busbar_abi': symbol
-# multiply defined!" → "failed to load bitcode of module busbar_transport_tcp"). The dropped-in
-# artifact is built on its own: `cargo build -p busbar-transport-tcp --release --features dropped-in`.
+# THE DROPPED-IN DOOR (`hot::exports`): this crate's decl registered as its image's one door through
+# the contract's SHARED door (`busbar_contract::export_transport!`, the #84 merge). The frozen symbols
+# (`busbar_abi`, `busbar_plugin_kind`, `busbar_transport_decl`) are defined ONCE, in the contract, so
+# this crate defines none and a link holding it beside the other plugins holds one definition of each
+# (the fat-LTO "symbol multiply defined" refusal the per-crate symbols caused). OFF in a build that
+# links this crate (the linked door is `hot::TRANSPORT_DECL`); the dropped-in artifact is built on its
+# own: `cargo build -p busbar-transport-tcp --release --features dropped-in`.
 dropped-in = []
 
 [dependencies]

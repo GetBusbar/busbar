@@ -43,7 +43,7 @@
 
 use super::both_ways::export_fixture;
 use super::*;
-use busbar_plugin::cold::export::{ExportRequest, ExportResponse};
+use busbar_contract::abi::cold::export::{ExportRequest, ExportResponse};
 
 /// The two arms are compared on `(kind, metrics, diagnostics)`.
 ///
@@ -104,7 +104,11 @@ fn run_compiled_in() {
     let handler = export_fixture::open("{}").expect("compiled-in ctor");
     for req in script() {
         let envelope = export_fixture::dispatch_compiled_in(handler.as_ref(), req);
-        crate::observe::fold(COMPILED_IN, busbar_plugin::cold::kind::EXPORT, &envelope);
+        crate::observe::fold(
+            COMPILED_IN,
+            busbar_contract::abi::cold::kind::EXPORT,
+            &envelope,
+        );
     }
 }
 
@@ -120,7 +124,7 @@ fn run_dropped_in() -> Option<()> {
         &bytes,
         "{}",
         DROPPED_IN,
-        busbar_plugin::cold::kind::EXPORT,
+        busbar_contract::abi::cold::kind::EXPORT,
     )
     .expect("load the export example plugin over the ABI");
     // `load_export_from_bytes` ALREADY ran `streams` and `routes` at load, so the script below is
@@ -229,7 +233,7 @@ fn the_reported_observations_are_the_ones_the_sink_produced() {
     let folds = compared(COMPILED_IN, crate::observe::testing::folds());
     assert_eq!(folds.len(), 2, "folds: {folds:?}");
     for (kind, metrics, diagnostics) in &folds {
-        assert_eq!(kind, busbar_plugin::cold::kind::EXPORT);
+        assert_eq!(kind, busbar_contract::abi::cold::kind::EXPORT);
         assert!(diagnostics.is_empty());
         assert_eq!(metrics.len(), 1);
         assert_eq!(metrics[0]["name"], "example_export_deliveries_total");
@@ -256,7 +260,7 @@ fn a_linked_and_a_dropped_in_export_sink_register_one_row_and_fold_the_same() {
         "export",
         "export-fixture",
         "the-sink",
-        busbar_plugin::cold::export::EXPORT_ABI_VERSION,
+        busbar_contract::abi::cold::export::EXPORT_ABI_VERSION,
     );
     let _guard = crate::observe::testing::exclusive();
     let transcript = |sink: &crate::export::DynExport| {
@@ -319,7 +323,9 @@ static PRE_ENVELOPE_PLUGIN_LOCAL: std::sync::Mutex<Vec<serde_json::Value>> =
 /// The pre-envelope build's op-dispatch: the SAME constructor's handler, reached through the SAME
 /// op-dispatch, set by the RED arm before its first call.
 type PreEnvelopeDispatch = Box<
-    dyn Fn(ExportRequest) -> busbar_plugin::cold::observe::Envelope<ExportResponse> + Send + Sync,
+    dyn Fn(ExportRequest) -> busbar_contract::abi::cold::observe::Envelope<ExportResponse>
+        + Send
+        + Sync,
 >;
 static PRE_ENVELOPE_DISPATCH: std::sync::Mutex<Option<PreEnvelopeDispatch>> =
     std::sync::Mutex::new(None);
@@ -407,8 +413,8 @@ fn the_pre_envelope_path_loses_a_dropped_in_plugins_counters() {
         lib,
         "{}",
         PRE_ENVELOPE.to_string(),
-        busbar_plugin::cold::kind::EXPORT,
-        busbar_plugin::cold::kind::EXPORT,
+        busbar_contract::abi::cold::kind::EXPORT,
+        busbar_contract::abi::cold::kind::EXPORT,
         Some(staged),
     )
     .expect("wire up the export example plugin");
@@ -524,14 +530,14 @@ const S1_HOST_SERIES: &str = "busbar_s1_host_owned_total";
 /// and a first-party claim on a series the host emits refuses the open naming it.
 #[test]
 fn a_first_party_series_is_granted_through_either_door_and_to_nobody_else() {
-    use busbar_plugin::cold::observe::SeriesDecl;
+    use busbar_contract::abi::cold::observe::SeriesDecl;
     crate::observe::install_host_series(|name| name == S1_HOST_SERIES);
     let declaring = |name: &str, series: &str| {
         let mut m = super::both_ways::statement(
             "export",
             name,
             &format!("{name}-alias"),
-            busbar_plugin::cold::export::EXPORT_ABI_VERSION,
+            busbar_contract::abi::cold::export::EXPORT_ABI_VERSION,
         );
         m.declares.metrics = vec![SeriesDecl::new(series, "counter")];
         m
@@ -612,7 +618,7 @@ fn a_sink_validates_its_settings_the_same_through_either_door() {
         "export",
         "s2-fixture",
         "s2-sink",
-        busbar_plugin::cold::export::EXPORT_ABI_VERSION,
+        busbar_contract::abi::cold::export::EXPORT_ABI_VERSION,
     );
     let refused = serde_json::json!({ "series": 7 });
     let transcript = |registry: &PluginRegistry| {
@@ -669,7 +675,7 @@ unsafe extern "C-unwind" fn unsupported_call(
 /// first-party, which the root refuses.
 #[test]
 fn a_declared_diagnostic_is_stated_and_raised_the_same_through_either_door() {
-    use busbar_plugin::cold::observe::DiagnosticDecl;
+    use busbar_contract::abi::cold::observe::DiagnosticDecl;
     let decl = DiagnosticDecl {
         code: 6990,
         slug: "s3-example-batches-delivered".into(),
@@ -684,7 +690,7 @@ fn a_declared_diagnostic_is_stated_and_raised_the_same_through_either_door() {
             "export",
             name,
             name,
-            busbar_plugin::cold::export::EXPORT_ABI_VERSION,
+            busbar_contract::abi::cold::export::EXPORT_ABI_VERSION,
         );
         m.declares.diagnostics = vec![decl.clone()];
         m
@@ -748,7 +754,7 @@ fn a_sink_writes_its_declared_destination_through_the_host_the_same_through_eith
             "export",
             name,
             name,
-            busbar_plugin::cold::export::EXPORT_ABI_VERSION,
+            busbar_contract::abi::cold::export::EXPORT_ABI_VERSION,
         );
         if declared {
             m.declares.destinations = vec!["path".into()];
@@ -818,14 +824,14 @@ fn a_sink_writes_its_declared_destination_through_the_host_the_same_through_eith
 /// The egress this test binary installs: it records every request it is asked to carry and answers
 /// `204`, and its POLICY refuses any URL on `refused.example` before anything is sent — the shape of
 /// the host's own carrier (URL policy first, then the hop).
-struct RecordingCarrier(std::sync::Mutex<Vec<busbar_plugin::cold::export::HttpRequest>>);
+struct RecordingCarrier(std::sync::Mutex<Vec<busbar_contract::abi::cold::export::HttpRequest>>);
 
 impl crate::EgressCarrier for RecordingCarrier {
     fn carry(
         &self,
-        request: &busbar_plugin::cold::export::HttpRequest,
-    ) -> busbar_plugin::cold::export::HostResult {
-        use busbar_plugin::cold::export::{HostResult, HttpResponse};
+        request: &busbar_contract::abi::cold::export::HttpRequest,
+    ) -> busbar_contract::abi::cold::export::HostResult {
+        use busbar_contract::abi::cold::export::{HostResult, HttpResponse};
         if request.url.contains("stall.example") {
             // Held until released, holding the calling thread (the blocking hop).
             STALLED.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -857,9 +863,11 @@ impl crate::EgressCarrier for RecordingCarrier {
 
     fn carry_async(
         &'static self,
-        request: busbar_plugin::cold::export::HttpRequest,
+        request: busbar_contract::abi::cold::export::HttpRequest,
     ) -> std::pin::Pin<
-        Box<dyn std::future::Future<Output = busbar_plugin::cold::export::HostResult> + Send>,
+        Box<
+            dyn std::future::Future<Output = busbar_contract::abi::cold::export::HostResult> + Send,
+        >,
     > {
         Box::pin(async move {
             if !request.url.contains("stall.example") {
@@ -871,8 +879,8 @@ impl crate::EgressCarrier for RecordingCarrier {
                 tokio::time::sleep(std::time::Duration::from_millis(5)).await;
             }
             STALLED.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
-            busbar_plugin::cold::export::HostResult::Http(
-                busbar_plugin::cold::export::HttpResponse {
+            busbar_contract::abi::cold::export::HostResult::Http(
+                busbar_contract::abi::cold::export::HttpResponse {
                     status: 204,
                     body: String::new(),
                 },
@@ -906,7 +914,7 @@ fn a_sinks_outbound_request_is_carried_by_the_host_the_same_through_either_door(
         "export",
         "s5-fixture",
         "s5-fixture",
-        busbar_plugin::cold::export::EXPORT_ABI_VERSION,
+        busbar_contract::abi::cold::export::EXPORT_ABI_VERSION,
     );
     let _guard = crate::observe::testing::exclusive();
     let run = |registry: &PluginRegistry, url: &str| {
@@ -965,7 +973,7 @@ fn a_sink_renders_the_recorder_snapshot_byte_identically_through_either_door() {
         "export",
         "s6-fixture",
         "s6-fixture",
-        busbar_plugin::cold::export::EXPORT_ABI_VERSION,
+        busbar_contract::abi::cold::export::EXPORT_ABI_VERSION,
     );
     let render = |registry: &PluginRegistry| {
         let sink = registry.open_export("s6-fixture", "{}").expect("opens");
@@ -1010,7 +1018,7 @@ fn a_sink_starts_and_checks_the_same_through_either_door() {
         "export",
         "k9c-fixture",
         "k9c-sink",
-        busbar_plugin::cold::export::EXPORT_ABI_VERSION,
+        busbar_contract::abi::cold::export::EXPORT_ABI_VERSION,
     );
     let transcript = |registry: &PluginRegistry| {
         let sink = registry.open_export("k9c-sink", "{}").expect("opens");
@@ -1031,7 +1039,7 @@ fn a_sink_starts_and_checks_the_same_through_either_door() {
     assert_eq!(linked, dropped, "both doors start and check the same");
 
     // The admit op: the policy's verdict, nothing carried.
-    use busbar_plugin::cold::export::{HostOp, HostResult};
+    use busbar_contract::abi::cold::export::{HostOp, HostResult};
     let none = crate::host::Destinations::default();
     CARRIER.0.lock().unwrap_or_else(|e| e.into_inner()).clear();
     let ok = none.perform(&HostOp::Admit {
@@ -1078,7 +1086,7 @@ fn a_sinks_deliveries_in_flight_reach_its_admission_bound_past_the_blocking_pool
         "export",
         "k9c-bound",
         "k9c-bound",
-        busbar_plugin::cold::export::EXPORT_ABI_VERSION,
+        busbar_contract::abi::cold::export::EXPORT_ABI_VERSION,
     );
     let registry = super::both_ways::linked(manifest, super::both_ways::fixture("export").1);
     let settings = serde_json::json!({ "url": "https://stall.example/in" }).to_string();

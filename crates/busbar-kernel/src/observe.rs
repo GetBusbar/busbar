@@ -268,7 +268,7 @@ impl PluginObserver for KernelPluginObserver {
         // silencing them here would not preserve any frozen behaviour, it would only drop the one
         // banner the host promises to look up and emit. They are folded for every kind, first.
         fold_diagnostics(plugin, diagnostics);
-        if kind == busbar_plugin::cold::kind::HOOK {
+        if kind == busbar_contract::abi::cold::kind::HOOK {
             return;
         }
         fold_metrics(plugin, metrics);
@@ -278,7 +278,7 @@ impl PluginObserver for KernelPluginObserver {
 /// Validate, bound and emit one call's metrics into the process recorder.
 ///
 /// A COUNTER is folded as a DELTA (`increment`), not as a level (`absolute`). That is the contract
-/// `busbar_plugin_sdk::ExportHandler::drain_observations` states — a drain hands over what happened
+/// `busbar_contract::abi::sdk::ExportHandler::drain_observations` states — a drain hands over what happened
 /// since the last drain — and it is what makes the two builds of one plugin agree: a compiled-in
 /// build and a dropped-in build both report increments, so the exposition is the sum of the same
 /// events either way. Reading a counter as a level instead would make the last drain win and lose
@@ -393,9 +393,9 @@ fn fold_diagnostics(plugin: &str, raw: &[serde_json::Value]) {
     for entry in raw.iter().take(MAX_PLUGIN_DIAGNOSTICS) {
         // Parsed per ENTRY, so one malformed diagnostic costs that diagnostic and not the batch —
         // the same fail-open discipline `parse_status_metrics` applies to a metric entry.
-        let Ok(d) =
-            serde_json::from_value::<busbar_plugin::cold::observe::PluginDiagnostic>(entry.clone())
-        else {
+        let Ok(d) = serde_json::from_value::<busbar_contract::abi::cold::observe::PluginDiagnostic>(
+            entry.clone(),
+        ) else {
             continue;
         };
         let Some(diag) = resolve_code(&d.code) else {
@@ -440,16 +440,16 @@ fn fold_diagnostics(plugin: &str, raw: &[serde_json::Value]) {
         // `BenignRecurring` condition at `error` and page somebody at 3am.
         let banner = diag.banner();
         match level {
-            busbar_plugin::cold::observe::DiagLevel::Error => {
+            busbar_contract::abi::cold::observe::DiagLevel::Error => {
                 tracing::error!(diag = %banner, plugin = %plugin, fields = %fields, "{message}")
             }
-            busbar_plugin::cold::observe::DiagLevel::Warn => {
+            busbar_contract::abi::cold::observe::DiagLevel::Warn => {
                 tracing::warn!(diag = %banner, plugin = %plugin, fields = %fields, "{message}")
             }
-            busbar_plugin::cold::observe::DiagLevel::Info => {
+            busbar_contract::abi::cold::observe::DiagLevel::Info => {
                 tracing::info!(diag = %banner, plugin = %plugin, fields = %fields, "{message}")
             }
-            busbar_plugin::cold::observe::DiagLevel::Debug => {
+            busbar_contract::abi::cold::observe::DiagLevel::Debug => {
                 tracing::debug!(diag = %banner, plugin = %plugin, fields = %fields, "{message}")
             }
         }
@@ -480,8 +480,8 @@ fn resolve_code(code: &str) -> Option<&'static crate::diagnostics::Diagnostic> {
 /// an operator. The level is a plugin's OPINION about its own severity, and an opinion that could
 /// raise the catalogue's own classification would let a plugin page an operator by asserting it.
 /// The `tracing` level of a plugin diagnostic's (clamped) level.
-fn tracing_level(level: busbar_plugin::cold::observe::DiagLevel) -> tracing::Level {
-    use busbar_plugin::cold::observe::DiagLevel;
+fn tracing_level(level: busbar_contract::abi::cold::observe::DiagLevel) -> tracing::Level {
+    use busbar_contract::abi::cold::observe::DiagLevel;
     match level {
         DiagLevel::Error => tracing::Level::ERROR,
         DiagLevel::Warn => tracing::Level::WARN,
@@ -491,11 +491,11 @@ fn tracing_level(level: busbar_plugin::cold::observe::DiagLevel) -> tracing::Lev
 }
 
 fn clamp_level(
-    claimed: busbar_plugin::cold::observe::DiagLevel,
+    claimed: busbar_contract::abi::cold::observe::DiagLevel,
     severity: crate::diagnostics::Severity,
-) -> busbar_plugin::cold::observe::DiagLevel {
+) -> busbar_contract::abi::cold::observe::DiagLevel {
     use crate::diagnostics::Severity;
-    use busbar_plugin::cold::observe::DiagLevel;
+    use busbar_contract::abi::cold::observe::DiagLevel;
     match severity {
         Severity::BenignRecurring => DiagLevel::Debug,
         Severity::Actionable | Severity::Fatal => claimed,

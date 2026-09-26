@@ -235,7 +235,7 @@ pub(crate) struct ReqwestTransport {
     /// production — the platform's roots are the roots.
     extra_roots: Vec<rustls_pki_types::CertificateDer<'static>>,
     /// THE OPAQUE host-side trust-anchor ref (`0` = platform roots only). Registered ONCE, when the
-    /// transport is built, and carried on every per-hop [`EgressDesc`](busbar_plugin::hot::EgressDesc);
+    /// transport is built, and carried on every per-hop [`EgressDesc`](busbar_contract::abi::hot::EgressDesc);
     /// the host resolves it to the parsed roots — the certificate bytes never cross the seam.
     trust_anchor_ref: u64,
     /// THE OPAQUE host-side client-identity ref (`0` = present none), for the ONE agent this transport

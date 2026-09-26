@@ -54,8 +54,7 @@ busbar-plane-a2a = { path = "../busbar-plane-a2a" }
 # The plane's own runtime surface — the same workspace pins core takes, for the plane code that moved
 # here whole: the transports (tokio, reqwest, futures, tonic/tonic-types/prost + a2a-pb for the gRPC
 # binding, tower), the config codecs (serde, serde_yaml, indexmap), the trust crypto (sha2, hex,
-# base64, ed25519-dalek, hmac) and the plugin ABI (busbar-plugin, async-trait) the plane's host reaches.
-busbar-plugin = { path = "../busbar-plugin" }
+# base64, ed25519-dalek, hmac) and the plugin ABI (busbar-contract's `abi`, async-trait) the plane's host reaches.
 busbar-plugin-loader = { path = "../plugin-loader" }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "time", "sync", "signal", "io-util", "io-std", "process"] }
 # `http` under its own name (Method/header vocabulary the engine-era transport speaks); the

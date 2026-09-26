@@ -16,7 +16,9 @@
 //! be a scrape that silently differs.
 
 use crate::DynExport;
-use busbar_plugin::cold::export::{ExportRequest, ExportResponse, MetricFamily, MetricSample};
+use busbar_contract::abi::cold::export::{
+    ExportRequest, ExportResponse, MetricFamily, MetricSample,
+};
 
 /// Read a text exposition into the recorder snapshot's families, in order.
 pub fn snapshot(exposition: &str) -> Result<Vec<MetricFamily>, String> {
@@ -157,8 +159,8 @@ pub fn exposition(
     sink: Option<&DynExport>,
     own: Option<String>,
     content_type: &str,
-) -> busbar_plugin::cold::endpoint::EndpointResponse {
-    use busbar_plugin::cold::endpoint::EndpointResponse;
+) -> busbar_contract::abi::cold::endpoint::EndpointResponse {
+    use busbar_contract::abi::cold::endpoint::EndpointResponse;
     let Some(own) = own else {
         let headers = vec![("retry-after".to_string(), "1".to_string())];
         return EndpointResponse {

@@ -21,10 +21,10 @@
 use super::HostState;
 use crate::governance::{AdmitGrant, LimitBlocked};
 use crate::plane::cost::{CostAmount, CostBreakdown, CostComponent};
-use busbar_plugin::hot::{
+use busbar_contract::abi::hot::{
     AuthQuery, AuthResolved, Decision, Facts, MeterOutcome, Usage, UsageComponent, POD_VERSION,
 };
-use busbar_plugin::read_sized_field;
+use busbar_contract::abi::read_sized_field;
 
 /// Nanodollars per micro-currency unit — the projection from a [`Usage`]'s `unit_cost_micros` money
 /// scalar into the engine's nanodollar ledger unit ([`CostAmount`]). Mirrors `cost::NANOS_PER_MICRO`
@@ -239,7 +239,7 @@ pub(super) fn charge(state: &HostState, usage: &Usage) -> MeterOutcome {
         // lands in the enforcement ledger VERBATIM for the attributed key; the card prices it.
         // SAFETY: `usage` is the live POD this slot was handed; the decode reads the tail only
         // when the sender's advertised `size` proves it was written.
-        let units = unsafe { busbar_plugin::hot::decode_usage_units(usage) };
+        let units = unsafe { busbar_contract::abi::hot::decode_usage_units(usage) };
         if !units.is_empty() {
             gov.record_usage(&state.app.cost, key, "", &model, &units, now);
         }

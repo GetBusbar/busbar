@@ -2615,11 +2615,11 @@ fn charge_round(
     // `record_metering(&key.id, namespaced, Plane::Mcp.key(), None, ..)`: `model` carries the
     // namespaced tool and `provider` the plane, so an existing cost dashboard groups MCP traffic
     // without knowing what MCP is. Fire-and-forget, exactly as the direct call was.
-    let usage = busbar_plugin::hot::Usage::with_attribution(
-        busbar_plugin::hot::UsageComponent::Queries,
+    let usage = busbar_contract::abi::hot::Usage::with_attribution(
+        busbar_contract::abi::hot::UsageComponent::Queries,
         0,
         0,
-        busbar_plugin::hot::AdmissionId::NONE,
+        busbar_contract::abi::hot::AdmissionId::NONE,
         key.id.as_bytes(),
         namespaced.as_bytes(),
         "mcp".as_bytes(),

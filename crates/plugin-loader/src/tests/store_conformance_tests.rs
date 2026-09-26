@@ -44,7 +44,7 @@ fn a_linked_and_a_dropped_in_store_register_byte_identical_rows() {
         "store",
         "store-fixture",
         "the-store",
-        busbar_plugin::cold::ABI_VERSION,
+        busbar_contract::abi::cold::ABI_VERSION,
     );
     let Some([linked, dropped]) = both_doors(
         manifest,

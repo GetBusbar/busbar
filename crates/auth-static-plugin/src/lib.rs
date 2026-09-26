@@ -126,7 +126,7 @@ pub fn open(cfg: &str) -> Result<Box<dyn AuthModule>, String> {
     }))
 }
 
-busbar_plugin_sdk::export_auth_plugin!(open);
+busbar_contract::abi::sdk::export_auth_plugin!(open);
 
 #[cfg(test)]
 #[path = "tests/lib_tests.rs"]

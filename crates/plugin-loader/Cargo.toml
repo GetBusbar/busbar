@@ -27,7 +27,6 @@ path = "src/pack.rs"
 required-features = ["pack"]
 
 [dependencies]
-busbar-plugin = { path = "../busbar-plugin" }
 # The three unit-side store seams the composition root binds to one loaded store (`store_adapter`).
 # None of the three crates may name a store, so the adapter that implements all three lives on this
 # side of the seam — where the loaded plugin and its declared payload schema already are. All three

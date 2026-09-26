@@ -155,7 +155,7 @@ impl HttpTransport {
             // url-free flattened chain this transport built by hand — `without_url()` then the source
             // chain — so the operator line is byte-identical.
             match f.class {
-                busbar_plugin::hot::EgressFailClass::Connect => {
+                busbar_contract::abi::hot::EgressFailClass::Connect => {
                     TransportError::Unreachable(f.cause)
                 }
                 _ => TransportError::Io(f.cause),

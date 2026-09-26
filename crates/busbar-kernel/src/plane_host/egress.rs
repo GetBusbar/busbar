@@ -49,13 +49,13 @@
 
 use super::scope::{DispatchScope, EgressFaultDetail};
 use super::{recover, HostState};
-use busbar_plugin::hot::host::HostCtx;
-use busbar_plugin::hot::pod::EgressFault;
-use busbar_plugin::hot::pod::POD_VERSION;
-use busbar_plugin::hot::{
+use busbar_contract::abi::hot::host::HostCtx;
+use busbar_contract::abi::hot::pod::EgressFault;
+use busbar_contract::abi::hot::pod::POD_VERSION;
+use busbar_contract::abi::hot::{
     EgressDesc, EgressFailClass, EgressHead, EgressId, EgressKind, EgressOpen, PipeId, StatusClass,
 };
-use busbar_plugin::read_sized_field;
+use busbar_contract::abi::read_sized_field;
 use std::collections::HashMap;
 use std::collections::VecDeque;
 use std::mem::MaybeUninit;
@@ -1273,7 +1273,7 @@ unsafe fn egress_fault_body(
         url_len: url_bytes.len() as u32,
     };
     // SAFETY: `out`, when non-null, is a writable/aligned `MaybeUninit<EgressFault>` for the call.
-    unsafe { busbar_plugin::write_out(out, fault) };
+    unsafe { busbar_contract::abi::write_out(out, fault) };
     StatusClass::Ok
 }
 

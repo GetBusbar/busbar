@@ -60,7 +60,7 @@ pub struct Linked {
     /// The plane axis: each entry's contract declaration joined kernel-side to its hooks.
     pub planes: &'static [PlaneDecl],
     /// The plane axis, HOT lane: each linked plane that exports a `#[repr(C)]` plane declaration
-    /// (`busbar_plugin::hot::PlaneDecl`) instead of Rust hooks — admitted and adapted exactly as the
+    /// (`busbar_contract::abi::hot::PlaneDecl`) instead of Rust hooks — admitted and adapted exactly as the
     /// same plane dropped into `plugins/` is (see [`register_planes`]).
     pub hot_planes: &'static [&'static HotPlaneDecl],
     /// Protocol declarations, appended to the installed protocol set in this order.

@@ -2443,25 +2443,25 @@ pub fn selftest<'a>(
     // The honest fixture for "this row covers nothing" is a tree in which the thing it covered is
     // GONE, and a crate leaves the measurement the way it leaves the census: its manifest goes.
 
-    // A `[[cell]]` ROW WHOSE CRATE IS NOT THERE. `busbar-auth-static-plugin` carries live cells;
-    // every one of them measures nothing the moment the crate stops being one.
+    // A `[[cell]]` ROW WHOSE CRATE IS NOT THERE. `busbar-kernel-scope` carries live cells; every
+    // one of them measures nothing the moment the crate stops being one.
     //
-    // RE-TARGETED: the subject was `busbar-auth-admin-tokens × api`, and that row went dead on the
-    // real tree when the crate's last `busbar-api` name moved to the contract — so its red became
-    // standing debt the debt-free base subtracts, and the case came back green. `busbar-auth-static-plugin × plugin-tooling` is a live row (the SDK edge
-    // stays until F6), and removing the crate's manifest kills it exactly as it did the old one.
+    // RE-TARGETED TWICE. The subject was `busbar-auth-admin-tokens × api`, and that row went dead
+    // on the real tree when the crate's last `busbar-api` name moved to the contract; then
+    // `busbar-auth-static-plugin × plugin-tooling`, which went dead when the SDK merged into the
+    // contract (#84) and the plugin stopped naming `busbar-plugin-sdk`. Each time its red became
+    // standing debt the debt-free base subtracts and the case came back green. A kernel workflow
+    // crate's cell is not a fixture's and not an edge a fold retires: removing the crate's manifest
+    // kills it exactly as it did the old ones.
     let mut ov = crate::ctx::Overlay::new();
-    ov.remove("crates/auth-static-plugin/Cargo.toml");
+    ov.remove("crates/busbar-kernel-scope/Cargo.toml");
     report.push(prove_rows_red(
         cx,
         gate,
         "a `[[cell]]` row whose cell measures nothing is a dead allowance, not a tight one",
         &[ROW_MATRIX],
         ov,
-        &[
-            "dead-cell",
-            "busbar-auth-static-plugin \u{d7} plugin-tooling",
-        ],
+        &["dead-cell", "busbar-kernel-scope \u{d7} transport"],
     ));
 
     // A `[[disagreement]]` ROW WHOSE TWO SCANNERS HAVE NOTHING LEFT TO DISAGREE ABOUT. The note is

@@ -7,7 +7,7 @@
 //! and a record of which thread each crossing ran on.
 
 use super::*;
-use busbar_plugin::hot::decl::OpaqueHandle;
+use busbar_contract::abi::hot::decl::OpaqueHandle;
 use core::mem::MaybeUninit;
 use std::os::raw::c_void;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -126,7 +126,7 @@ fn decl() -> PlaneDecl {
     PlaneDecl {
         abi: AbiPreamble::CURRENT,
         size: core::mem::size_of::<PlaneDecl>() as u32,
-        version: busbar_plugin::ABI_MINOR,
+        version: busbar_contract::abi::ABI_MINOR,
         name_ptr: NAME.as_ptr(),
         name_len: NAME.len(),
         section_key_ptr: NAME.as_ptr(),
@@ -232,8 +232,8 @@ fn the_declaration_tail_reads_back_as_stated() {
 
 /// The label keys and families of [`the_metric_family_tail_reads_back_as_stated`].
 static FAMILY_KEYS: [DeclStr; 2] = [DeclStr::new("unit"), DeclStr::new("outcome")];
-static FAMILIES: [busbar_plugin::hot::decl::DeclMetricFamily; 1] =
-    [busbar_plugin::hot::decl::DeclMetricFamily {
+static FAMILIES: [busbar_contract::abi::hot::decl::DeclMetricFamily; 1] =
+    [busbar_contract::abi::hot::decl::DeclMetricFamily {
         name: DeclStr::new("memplane_units_total"),
         kind: DeclStr::new("counter"),
         label_keys_ptr: FAMILY_KEYS.as_ptr(),
@@ -268,8 +268,8 @@ fn the_metric_family_tail_reads_back_as_stated() {
 }
 
 /// The served operation classes of [`the_served_op_class_tail_reads_back_as_stated`].
-static SERVED: [busbar_plugin::hot::decl::DeclServedOpClass; 1] =
-    [busbar_plugin::hot::decl::DeclServedOpClass {
+static SERVED: [busbar_contract::abi::hot::decl::DeclServedOpClass; 1] =
+    [busbar_contract::abi::hot::decl::DeclServedOpClass {
         op: DeclStr::new("summarize"),
         name: DeclStr::new("Memplane"),
     }];

@@ -262,14 +262,14 @@ pub type WsAcceptFn = Arc<dyn Fn(WsArrival) -> WsAcceptFuture + Send + Sync>;
 /// `CoreRouteTable` (identical shape to `PlaneRouteSpec::auth`, so the auth middleware enforces it
 /// BEFORE the accept fn), the neutral accept fn, and the plane's registry `slot_key` so the core mount
 /// resolves the live per-generation slot to carry on each [`WsArrival`] (exactly as the non-WS adapter
-/// resolves it from `plane_slots`). Names only `axum`, `busbar_contract`, `busbar_plugin` and this crate —
+/// resolves it from `plane_slots`). Names only `axum`, `busbar_contract` and this crate —
 /// no plane token, so adding a duplex plane is a new-crate-only diff.
 #[derive(Clone)]
 pub struct WsArrivalSpec {
     /// The exact axum path pattern this WS-accept route is mounted at.
     pub path: String,
     /// The admission bar the core auth middleware enforces BEFORE the accept fn runs.
-    pub auth: busbar_plugin::cold::endpoint::RouteAuth,
+    pub auth: busbar_contract::abi::cold::endpoint::RouteAuth,
     /// The plane's registry decl key — the core mount looks the live runtime slot up under it and,
     /// when absent (the plane is unconfigured this generation), mounts nothing, exactly as the non-WS
     /// route loop skips a plane with no slot.

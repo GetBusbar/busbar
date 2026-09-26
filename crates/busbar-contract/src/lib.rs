@@ -6,7 +6,14 @@
 //! permutation, which track deployment-time configuration whose size is not fixed by this crate).
 //! See `docs/design/contract-notes.md` for the full rationale.
 
-#![forbid(unsafe_code)]
+// UNSAFE POLICY (the DECISIONS #84 merge). Denied crate-wide, and allowed in exactly ONE module: `abi`,
+// the plugin C ABI folded in from the former `busbar-plugin` and `busbar-plugin-sdk` crates. That module
+// is the FFI boundary itself — the `#[repr(C)]` declarations a `'static` must be `Sync` to hold, the
+// sized-struct reads over a peer's pointer, the export boundary, and the ONE set of frozen
+// `#[no_mangle]` door symbols (defined once, here, so two plugins linked into one image never define
+// them twice). Every other module stays unsafe-free: `tests/feature_invariance.rs` pins that the
+// `allow` below is the only one, and that no `unsafe` token appears outside `src/abi/`.
+#![deny(unsafe_code)]
 #![deny(missing_docs)]
 #![deny(missing_debug_implementations)]
 
@@ -22,6 +29,16 @@
 #[allow(missing_docs)]
 pub mod auth;
 pub mod authz;
+// THE PLUGIN ABI AND ITS AUTHOR-SIDE SDK (DECISIONS #84: the SDK and the contract share one definition,
+// "the plugin contract", so they MERGE; #83: contract = shapes). `abi` is the former `busbar-plugin`
+// (the shared airlock root, the COLD JSON lane `abi::cold`, the HOT `#[repr(C)]` lane `abi::hot`) and
+// `abi::sdk` is the former `busbar-plugin-sdk` (the export macros, the one export boundary, the one
+// dropped-in door). Module-path-only moves: every item keeps its name, and every `#[repr(C)]` layout is
+// unchanged (`tests/layout_golden.rs`). `#[allow(missing_docs, missing_debug_implementations)]`
+// travels with them for the reason it travels with `records`; `unsafe_code` is allowed here and
+// nowhere else (the unsafe policy above).
+#[allow(unsafe_code, missing_docs, missing_debug_implementations)]
+pub mod abi;
 // THE SUBSTRATE-VALUES SHAPES (DECISIONS #83: contract = shapes; #83a, SD-1): `billing`, `codec`,
 // `ir`, `protocol` (and `diagnostic`, below) are module-path-only moves out of `busbar-substrate-values`, which re-exports
 // every item under its historical path until the split retires it (and the two upstream signal shapes

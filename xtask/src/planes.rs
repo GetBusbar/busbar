@@ -134,14 +134,14 @@ pub fn neutral_src_roots() -> Vec<String> {
         // THE ABI AND CONTRACT SURFACES. `busbar-contract` is the crate the census's demonstration
         // was about: it is what a plugin author compiles against, so a protocol noun in it is a
         // protocol noun in the published ABI.
+        // (The plugin ABI and its SDK, the former `busbar-plugin` / `busbar-plugin-sdk`, are
+        // `busbar-contract/src/abi` since the #84 merge, so this root covers them.)
         "crates/busbar-contract/src",
-        "crates/busbar-plugin/src",
         "crates/busbar-substrate-values/src",
         // THE LOADER AND THE SDK — the TCB crates ARCHITECTURE.md excuses by name from the plugin
         // KINDS, which is not the same as excusing them from neutrality: the loader dlopens every
         // kind and the SDK is what an author writes against.
         "crates/plugin-loader/src",
-        "crates/plugin-sdk/src",
         // THE COMPILED-IN CLEANLINESS CRATES (DECISIONS #4/#5: admin and oauth2 are not a `control`
         // kind) and the remaining neutral leaves.
         "crates/busbar-core-admin/src",

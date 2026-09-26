@@ -2,9 +2,9 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! A **hermetic trivial `kind: plane` plugin** — a `cdylib` exporting a real
-//! [`busbar_plugin::hot::PlaneDecl`] over the HOT-tier ABI. It is the in-tree both-ways coverage for
+//! [`busbar_contract::abi::hot::PlaneDecl`] over the HOT-tier ABI. It is the in-tree both-ways coverage for
 //! the `kind: plane` seam (the ABI-fixture analogue of the other in-tree example plugin fixtures), and
-//! the copy-me template a plane author exports through [`busbar_plugin_sdk::export_plane!`].
+//! the copy-me template a plane author exports through [`busbar_contract::abi::sdk::export_plane!`].
 //!
 //! ## STANDALONE ON PURPOSE
 //!
@@ -17,7 +17,7 @@
 //!
 //! This plane is deliberately trivial in what it *computes* and deliberately NOT trivial in what it
 //! *crosses*: every dispatch makes SIX real inbound calls back through the
-//! [`PlaneHostVtable`](busbar_plugin::hot::PlaneHostVtable) — the one its work item carries (minted
+//! [`PlaneHostVtable`](busbar_contract::abi::hot::PlaneHostVtable) — the one its work item carries (minted
 //! for that dispatch), or, from an older host, the one it was handed at `build` — and a seventh at
 //! `start`. It is the tree's proof that the plane ABI is crossed in both directions by a real
 //! dropped-in artifact rather than exercised host-to-itself.
@@ -26,7 +26,7 @@
 //! or a denied decision makes [`dispatch`] answer [`StatusClass::Refused`] — so a host that does not
 //! actually grant the capability cannot get an `Ok` out of this plane. That is what makes a test over
 //! this fixture able to FAIL when the seam is not really crossed: handing it
-//! [`PlaneHostVtable::EMPTY`](busbar_plugin::hot::PlaneHostVtable::EMPTY) refuses, and nulling ONE
+//! [`PlaneHostVtable::EMPTY`](busbar_contract::abi::hot::PlaneHostVtable::EMPTY) refuses, and nulling ONE
 //! slot of an otherwise-real host refuses naming that slot. A plane that merely *mentioned* the
 //! vtable would pass either way, which is the failure mode this fixture exists to make impossible.
 //!
@@ -70,22 +70,22 @@
 //!
 //! [`PLANE_DECL`] is a `pub static`, so the SAME decl is usable STATICALLY (a build depends on this
 //! crate as a normal `lib` and hands `&PLANE_DECL` to a registry) OR DROPPED-IN (the `cdylib` the
-//! [`export_plane!`](busbar_plugin_sdk::export_plane) symbols deliver, loaded by
+//! [`export_plane!`](busbar_contract::abi::sdk::export_plane) symbols deliver, loaded by
 //! `busbar_plugin_loader::load_plane`). The drop-in conformance test loads it BOTH ways and asserts
 //! the two decls are byte-identical at the vocabulary/carrier/preamble surface — the plane's both-ways
 //! proof over the ABI.
 
-use busbar_plugin::hot::decl::{
+use busbar_contract::abi::hot::decl::{
     BuildCtx, DeclBillableClass, DeclMetricFamily, DeclServedOpClass, DeclStr, IngressCarrier,
     OpaqueHandle,
 };
-use busbar_plugin::hot::host::{HostCtx, PlaneHostVtable};
-use busbar_plugin::hot::pod::{
+use busbar_contract::abi::hot::host::{HostCtx, PlaneHostVtable};
+use busbar_contract::abi::hot::pod::{
     AdmissionId, CostLeaseId, CostSettleOut, Decision, Facts, Framing, FramingDesc, MeterOutcome,
     OpaqueState, RawFraming, RawStatus, StatusClass, Usage, UsageComponent, POD_VERSION,
 };
-use busbar_plugin::hot::{PlaneDecl, WorkItem};
-use busbar_plugin::{host_slot, write_out, AbiPreamble};
+use busbar_contract::abi::hot::{PlaneDecl, WorkItem};
+use busbar_contract::abi::{host_slot, write_out, AbiPreamble};
 use core::mem::MaybeUninit;
 use core::sync::atomic::{AtomicU64, Ordering};
 use std::os::raw::c_void;
@@ -169,7 +169,7 @@ struct ParsedConfig;
 ///
 /// It holds the INBOUND CAPABILITY SEAM the host handed over at `build` — the
 /// [`PlaneHostVtable`] pointer, the honoured size
-/// [`PlaneHostVtable::check`](busbar_plugin::hot::PlaneHostVtable::check) attested for it, and the
+/// [`PlaneHostVtable::check`](busbar_contract::abi::hot::PlaneHostVtable::check) attested for it, and the
 /// opaque [`HostCtx`] every host call threads back — plus the counters that prove the crossings
 /// happened. Stashing the seam at `build` and calling it at `start`/`dispatch` is exactly what a real
 /// plane does; it is also what makes "did the vtable actually get crossed?" a question this fixture's
@@ -249,7 +249,7 @@ extern "C-unwind" fn config_validate(
 ///
 /// THIS IS THE PLANE'S HALF OF THE AIRLOCK. The loader checked the plane's `PlaneDecl` preamble
 /// before it called anything here; this is the symmetric check in the other direction — the plane
-/// [`check`](busbar_plugin::hot::PlaneHostVtable::check)s the HOST's table before it will hold a
+/// [`check`](busbar_contract::abi::hot::PlaneHostVtable::check)s the HOST's table before it will hold a
 /// pointer it later CALLS THROUGH. A null host, a host whose magic/MAJOR does not match this build,
 /// or a host whose attested size is under the frozen header or over this build's struct is
 /// [`StatusClass::Refused`] — the plane does not build at all. Fail-closed both ways is the contract:
@@ -271,18 +271,22 @@ extern "C-unwind" fn build(
             unsafe { core::ptr::read_unaligned(core::ptr::addr_of!((*ctx).size)) };
         // SAFETY (both reads): `field_present` inside the macro proves the attested size reaches
         // through each field before it is projected; see `read_sized_field!`'s own contract.
-        let host = busbar_plugin::read_sized_field!(ctx, advertised, BuildCtx, host);
-        let host_ctx = busbar_plugin::read_sized_field!(ctx, advertised, BuildCtx, host_ctx);
+        let host = busbar_contract::abi::read_sized_field!(ctx, advertised, BuildCtx, host);
+        let host_ctx = busbar_contract::abi::read_sized_field!(ctx, advertised, BuildCtx, host_ctx);
         let (Some(host), Some(host_ctx)) = (host, host_ctx) else {
             // A ctx too short to carry the capability seam cannot build a plane that rides it.
             return StatusClass::Refused;
         };
         // The borrowed ranges are live for this call only, so each is COPIED out. The section is the
         // config range; the public URL is the minor-23 tail, absent from an older host's ctx.
-        let config_ptr = busbar_plugin::read_sized_field!(ctx, advertised, BuildCtx, config_ptr);
-        let config_len = busbar_plugin::read_sized_field!(ctx, advertised, BuildCtx, config_len);
-        let url_ptr = busbar_plugin::read_sized_field!(ctx, advertised, BuildCtx, public_url_ptr);
-        let url_len = busbar_plugin::read_sized_field!(ctx, advertised, BuildCtx, public_url_len);
+        let config_ptr =
+            busbar_contract::abi::read_sized_field!(ctx, advertised, BuildCtx, config_ptr);
+        let config_len =
+            busbar_contract::abi::read_sized_field!(ctx, advertised, BuildCtx, config_len);
+        let url_ptr =
+            busbar_contract::abi::read_sized_field!(ctx, advertised, BuildCtx, public_url_ptr);
+        let url_len =
+            busbar_contract::abi::read_sized_field!(ctx, advertised, BuildCtx, public_url_len);
         let section = borrowed(
             config_ptr.unwrap_or(core::ptr::null()),
             config_len.unwrap_or(0),
@@ -389,8 +393,8 @@ extern "C-unwind" fn dispatch(state: *mut c_void, work: *const WorkItem) -> RawS
         // none, and the plane rides the seam it was handed at build.
         let advertised = w.size;
         let (host, host_size, ctx) = match (
-            busbar_plugin::read_sized_field!(work, advertised, WorkItem, host),
-            busbar_plugin::read_sized_field!(work, advertised, WorkItem, host_ctx),
+            busbar_contract::abi::read_sized_field!(work, advertised, WorkItem, host),
+            busbar_contract::abi::read_sized_field!(work, advertised, WorkItem, host_ctx),
         ) {
             (Some(host), Some(ctx)) if !host.is_null() => {
                 // SAFETY: a non-null work-item host addresses a live `PlaneHostVtable` for the call.
@@ -503,9 +507,12 @@ extern "C-unwind" fn dispatch(state: *mut c_void, work: *const WorkItem) -> RawS
 
         // ── 7. REPLY — when the work item carries a reply channel (minor 23): the section this plane
         //    was built with and the raw count it metered, as one JSON object. ────────────────────────
-        let reply_ptr = busbar_plugin::read_sized_field!(work, advertised, WorkItem, reply_ptr);
-        let reply_cap = busbar_plugin::read_sized_field!(work, advertised, WorkItem, reply_cap);
-        let written = busbar_plugin::read_sized_field!(work, advertised, WorkItem, reply_written);
+        let reply_ptr =
+            busbar_contract::abi::read_sized_field!(work, advertised, WorkItem, reply_ptr);
+        let reply_cap =
+            busbar_contract::abi::read_sized_field!(work, advertised, WorkItem, reply_cap);
+        let written =
+            busbar_contract::abi::read_sized_field!(work, advertised, WorkItem, reply_written);
         if let (Some(buf), Some(cap), Some(written)) = (reply_ptr, reply_cap, written) {
             if !buf.is_null() && !written.is_null() {
                 let section = if st.section.is_empty() {
@@ -612,13 +619,13 @@ extern "C-unwind" fn admission(
 }
 
 /// THE decl: the example plane's `#[repr(C)]` HOT-tier vtable. A `pub static` so it is BOTH the
-/// compiled-in reference (linked as an `rlib`) AND, via [`export_plane!`](busbar_plugin_sdk::export_plane)
+/// compiled-in reference (linked as an `rlib`) AND, via [`export_plane!`](busbar_contract::abi::sdk::export_plane)
 /// below, the dropped-in `cdylib` entrypoint's payload. Provides the request/response carrier; leaves
 /// `admin_routes`/`openapi` `None` (the example contributes no admin/OpenAPI surface).
 pub static PLANE_DECL: PlaneDecl = PlaneDecl {
     abi: AbiPreamble::CURRENT,
     size: core::mem::size_of::<PlaneDecl>() as u32,
-    version: busbar_plugin::ABI_MINOR,
+    version: busbar_contract::abi::ABI_MINOR,
     name_ptr: NAME.as_ptr(),
     name_len: NAME.len(),
     section_key_ptr: SECTION_KEY.as_ptr(),
@@ -663,4 +670,4 @@ pub static PLANE_DECL: PlaneDecl = PlaneDecl {
 
 // Emit the `cdylib` boundary symbols (`busbar_abi`, `busbar_plugin_kind() == "plane"`,
 // `busbar_plane_decl()`), delivering `PLANE_DECL` as the dropped-in entrypoint's payload.
-busbar_plugin_sdk::export_plane!(PLANE_DECL);
+busbar_contract::abi::sdk::export_plane!(PLANE_DECL);

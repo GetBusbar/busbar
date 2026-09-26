@@ -27,11 +27,11 @@
 use super::both_ways::{both_doors, cdylib, hook_fixture as fixture, statement};
 use super::*;
 use crate::hook::HookProjectors;
+use busbar_contract::abi::cold::hook::{ConfigureBody, HookReply, HookRequest};
+use busbar_contract::abi::cold::observe::Envelope;
 use busbar_contract::hooks::{
     Candidate, RoutingContext, RoutingDecision, RoutingPolicy, RoutingRequest, TransformOutcome,
 };
-use busbar_plugin::cold::hook::{ConfigureBody, HookReply, HookRequest};
-use busbar_plugin::cold::observe::Envelope;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -235,8 +235,8 @@ fn wired(display: &str) -> Option<RawPlugin> {
             lib,
             CFG,
             display.to_string(),
-            busbar_plugin::cold::kind::HOOK,
-            busbar_plugin::cold::kind::HOOK,
+            busbar_contract::abi::cold::kind::HOOK,
+            busbar_contract::abi::cold::kind::HOOK,
             Some(staged),
         )
         .expect("wire up the hook fixture"),
@@ -441,7 +441,7 @@ fn a_linked_and_a_dropped_in_hook_register_byte_identical_rows() {
         "hook",
         "hook-fixture",
         "the-hook",
-        busbar_plugin::cold::hook::HOOK_ABI_VERSION,
+        busbar_contract::abi::cold::hook::HOOK_ABI_VERSION,
     );
     let Some([linked, dropped]) = both_doors(
         manifest,

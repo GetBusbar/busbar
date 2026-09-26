@@ -5,8 +5,8 @@
 
 use super::*;
 use crate::plane_host::{recover, with_dispatch_scope, DispatchScope, HostState};
-use busbar_plugin::hot::host::{HostCtx, PlaneHostVtable};
-use busbar_plugin::hot::Key;
+use busbar_contract::abi::hot::host::{HostCtx, PlaneHostVtable};
+use busbar_contract::abi::hot::Key;
 
 /// Drive the trust slots through the REAL recovery path over a live `App` from the test-support
 /// builder, exactly as the sibling `plane_host` tests do.

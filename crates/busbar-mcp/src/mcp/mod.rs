@@ -728,10 +728,10 @@ pub(crate) fn mcp_admin_routes(
     _slot: &dyn std::any::Any,
 ) -> Vec<busbar_kernel::admin_verbs::AdminRouteSpec> {
     use crate::mcp::admin_view::McpServers;
+    use busbar_contract::abi::cold::endpoint::RouteMethod;
     use busbar_kernel::admin_verbs::{
         connect_reply, AdminReplyFuture, AdminReqCtx, AdminRouteSpec, AdminScope, AdminVerbKind,
     };
-    use busbar_plugin::cold::endpoint::RouteMethod;
     vec![
         // `connect` is the SHARED audited verb: resolve, look, and the core adapter records the
         // applied/rejected row. `Full` scope (a POST that reaches the network and can quarantine).

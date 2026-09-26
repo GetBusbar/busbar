@@ -78,7 +78,7 @@ unsafe extern "C-unwind" fn secret_call(
         *out_len = boxed.len();
         *out = Box::into_raw(boxed) as *mut u8;
     }
-    busbar_plugin::cold::STATUS_OK
+    busbar_contract::abi::cold::STATUS_OK
 }
 
 unsafe extern "C-unwind" fn secret_free(ptr: *mut u8, len: usize) {
@@ -98,7 +98,7 @@ fn fake_secret() -> DynSecret {
             free: secret_free,
             close: secret_close,
             path: "fake-secret".to_string(),
-            kind: busbar_plugin::cold::kind::SECRET,
+            kind: busbar_contract::abi::cold::kind::SECRET,
             shape: std::sync::atomic::AtomicU8::new(0),
             _lib: None,
             _backing: None,

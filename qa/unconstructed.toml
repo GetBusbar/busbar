@@ -65,7 +65,7 @@
 # `extern "C"` fn installed into a vtable slot and called across the ABI, its `construct` needle must
 # be the INSTALLATION, not the call: `metrics_emit: Some(` rather than `metrics_emit(`. Such a
 # function is called by nobody BY NAME, so a call-shaped needle yields a FALSE RED — this exact case
-# (`crates/busbar-plugin/src/hot/host.rs:958`) came up in the 2026-09-22 sweep and would have been
+# (`crates/busbar-contract/src/abi/hot/host.rs:958`) came up in the 2026-09-22 sweep and would have been
 # answered by deleting live code. The installation IS the construction decision; scan for that.
 #
 # THE LIMIT, STATED SO NOBODY READS MORE INTO A GREEN ROW THAN IS THERE. This gate proves a

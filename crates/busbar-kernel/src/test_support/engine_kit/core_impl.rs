@@ -387,7 +387,7 @@ impl EngineApp for crate::state::App {
         &self,
         url: &str,
         allow_private: bool,
-    ) -> Result<(), (busbar_plugin::hot::GuardClass, String)> {
+    ) -> Result<(), (busbar_contract::abi::hot::GuardClass, String)> {
         match crate::plane_host::guard_url_over(self, url, allow_private) {
             crate::plane_host::GuardOutcome::Allow => Ok(()),
             crate::plane_host::GuardOutcome::Deny { class, reason } => Err((class, reason)),

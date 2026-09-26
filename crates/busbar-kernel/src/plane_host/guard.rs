@@ -36,8 +36,8 @@ use crate::config_validate::{
 };
 use crate::net_guard::is_alternate_ipv4_encoding;
 use crate::state::App;
-use busbar_plugin::hot::host::HostCtx;
-use busbar_plugin::hot::{GuardClass, GuardVerdict, StatusClass};
+use busbar_contract::abi::hot::host::HostCtx;
+use busbar_contract::abi::hot::{GuardClass, GuardVerdict, StatusClass};
 use core::mem::MaybeUninit;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 
@@ -95,7 +95,7 @@ pub(crate) extern "C-unwind" fn guard_url(
         let reason_len = unsafe { write_reason(reason_buf, reason_cap, reason.as_bytes()) };
         let out_pod = GuardVerdict {
             size: core::mem::size_of::<GuardVerdict>() as u32,
-            version: busbar_plugin::hot::POD_VERSION,
+            version: busbar_contract::abi::hot::POD_VERSION,
             _reserved: 0,
             verdict,
             class: class as u8,
@@ -104,7 +104,7 @@ pub(crate) extern "C-unwind" fn guard_url(
         };
         // SAFETY: `out` is a writable, aligned `MaybeUninit<GuardVerdict>` slot (or null, tolerated);
         // the write publishes only on the Ok path (init-only-on-Ok).
-        unsafe { busbar_plugin::write_out(out, out_pod) };
+        unsafe { busbar_contract::abi::write_out(out, out_pod) };
         StatusClass::Ok
     }))
     .unwrap_or(StatusClass::Fault) // caught panic → the distinct fault class, never `Ok`.

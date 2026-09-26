@@ -283,14 +283,14 @@ pub(crate) struct RelayCall<'a> {
     /// the pooled WALK admit (pre-admitted upstream, its id in [`admission`](Self::admission)) and the
     /// un-pooled [`prepare`] admit (through [`host`](Self::host)) register their settle-capable
     /// probe hold into — so [`record_hop_outcome`] settles through it by a host
-    /// [`AdmissionId`](busbar_plugin::hot::AdmissionId) in the same scope (the CLUSTER-1 inversion).
+    /// [`AdmissionId`](busbar_contract::abi::hot::AdmissionId) in the same scope (the CLUSTER-1 inversion).
     /// `None` only where no scoped seam is wired.
     pub(crate) host_scope: Option<&'a busbar_kernel::plane_host::DispatchScope>,
     /// THE HOST ADMISSION ID FOR A PRE-ADMITTED (pooled WALK) HOP — the id the walk's probe hold was
     /// registered under in [`host_scope`](Self::host_scope) before this call was built.
-    /// [`AdmissionId::NONE`](busbar_plugin::hot::AdmissionId::NONE) for an un-pooled hop (whose id
+    /// [`AdmissionId::NONE`](busbar_contract::abi::hot::AdmissionId::NONE) for an un-pooled hop (whose id
     /// [`prepare`] mints directly through the host `breaker_admit` seam) and in the originate direction.
-    pub(crate) admission: busbar_plugin::hot::AdmissionId,
+    pub(crate) admission: busbar_contract::abi::hot::AdmissionId,
     /// WHERE THIS HOP COUNTS THE PAYLOAD BYTES IT MOVED — the tally the ingress bills the hop's
     /// `bytes` class from (see [`HopBytes`]). `None` counts nothing: busbar's own housekeeping hops
     /// (`super::originate`) have no caller whose budget they could bill.
@@ -1464,7 +1464,7 @@ fn outbound_of(body: &[u8]) -> (String, serde_json::Value) {
 /// (see docs/circuit-breaker.md's two-stage pipeline), Stage 2 being the one core `breaker::classify`
 /// inside `PlaneBreakers::record_signal`. `refusal: None` is a hop that produced an answer.
 ///
-/// The `settle` [`AdmissionId`](busbar_plugin::hot::AdmissionId) is the shared-scope handle this hop's
+/// The `settle` [`AdmissionId`](busbar_contract::abi::hot::AdmissionId) is the shared-scope handle this hop's
 /// outcome is FOLDED THROUGH (CLUSTER-1 breaker inversion): when a [`host_scope`](RelayCall::host_scope)
 /// owns this hop's probe, the classified outcome is settled through it over `settle` — the same arena
 /// the walk-admit registered into. Without a shared scope (originate / unit tests that admit directly)
@@ -1485,7 +1485,7 @@ fn outbound_of(body: &[u8]) -> (String, serde_json::Value) {
 ///   shared scope this means the probe is left UNSETTLED so the scope's drop releases it.
 fn record_hop_outcome(
     call: &RelayCall<'_>,
-    settle: busbar_plugin::hot::AdmissionId,
+    settle: busbar_contract::abi::hot::AdmissionId,
     refusal: Option<&RelayRefusal>,
 ) {
     let Some(target) = call.breakers.as_ref() else {
@@ -1589,7 +1589,7 @@ fn prepare<'a>(
     seam: &dyn RelaySeam,
     is_stream: bool,
     now_ms: u64,
-    admit_id: &mut busbar_plugin::hot::AdmissionId,
+    admit_id: &mut busbar_contract::abi::hot::AdmissionId,
 ) -> Result<(url::Url, PinnedTarget, OutboundRelayRequest), RelayRefusal> {
     // ── THE GUARD. One resolution, every answered address judged, one pinned address out. It is
     //    `busbar_kernel::net_guard`'s, reached through the card fetch's hop door, so a relayed submission
@@ -1746,7 +1746,7 @@ fn relay_once(
     call: &RelayCall<'_>,
     seam: &dyn RelaySeam,
     now_ms: u64,
-    admit_id: &mut busbar_plugin::hot::AdmissionId,
+    admit_id: &mut busbar_contract::abi::hot::AdmissionId,
 ) -> Result<RelayReply, RelayRefusal> {
     let (url, pin, request) = prepare(call, seam, false, now_ms, admit_id)?;
 
@@ -2211,7 +2211,7 @@ fn relay_stream_once(
     matched_skill: Option<&str>,
     now_ms: u64,
     sink: &mut (dyn FnMut(RelayEvent) -> ChunkFlow + Send),
-    admit_id: &mut busbar_plugin::hot::AdmissionId,
+    admit_id: &mut busbar_contract::abi::hot::AdmissionId,
 ) -> Result<RelayStream, RelayRefusal> {
     let (url, pin, request) = prepare(call, seam, true, now_ms, admit_id)?;
     let cap = call.policy.max_body_bytes;

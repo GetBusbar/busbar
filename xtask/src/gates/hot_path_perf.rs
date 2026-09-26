@@ -41,10 +41,10 @@
 //! `xtask/tests/hot_path_gates.rs`'s `--ignored` executing tests, not on every push.
 //!
 //! THE PENDING-RIDER DEPENDENCY. `PlaneHostVtable`
-//! (`crates/busbar-plugin/src/hot/host.rs`) has NO production caller yet — the keystone
+//! (`crates/busbar-contract/src/abi/hot/host.rs`) has NO production caller yet — the keystone
 //! loop-unification (`crates/busbar/src/root/kernel.rs` + `main.rs`, reserved for the keystone wave)
 //! has not landed. So the instrument this gate guards is ARMED against the vtable's own construction
-//! (the `#[repr(C)]` subject `crates/busbar-plugin/tests/layout_golden.rs` pins), and binds to the
+//! (the `#[repr(C)]` subject `crates/busbar-contract/tests/layout_golden.rs` pins), and binds to the
 //! production crossing unchanged when the rider lands: the measured slot is the same fn pointer
 //! either way. This gate is GREEN now and stays green across that transition.
 
@@ -76,7 +76,7 @@ const CLAIMS: &[Claim] = &[
     Claim {
         row: ROW_SUBJECT,
         clauses: &[
-            "use busbar_plugin::hot::host::{",
+            "use busbar_contract::abi::hot::host::{",
             "PlaneHostVtable",
             "bench_function(\"HOT_PATH_DIRECT_CALL\"",
             "bench_function(\"HOT_PATH_VTABLE_CALL\"",

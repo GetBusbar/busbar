@@ -278,12 +278,125 @@ fn test_seal_over_another_item_is_red() {
     );
 }
 
-/// The crate carries the two lint gates the design requires of it.
+/// The crate carries the two lint gates the design requires of it: `unsafe` is denied crate-wide
+/// and undocumented items are denied.
+///
+/// UNSAFE POLICY after the #84 merge. The plugin C ABI and its SDK folded in as ONE module,
+/// `abi`, and that module IS the FFI boundary: `#[repr(C)]` declarations a `'static` must be `Sync`
+/// to hold, sized-struct reads over a peer's pointer, the export boundary, and the one set of frozen
+/// `#[no_mangle]` door symbols (defined once so two plugins linked into one image never define them
+/// twice). A crate-level `forbid` cannot be lifted for one module, so the crate DENIES `unsafe_code`
+/// and exactly ONE `#[allow(unsafe_code)]` exists — on `pub mod abi;` — and no `unsafe` token appears
+/// in any source file outside `src/abi/`. Every module that was unsafe-free under `forbid` is still
+/// unsafe-free, now by this scan plus the crate-level `deny`.
 #[test]
-fn the_crate_forbids_unsafe_and_undocumented_items() {
+fn the_crate_denies_unsafe_outside_the_abi_and_undocumented_items() {
     let lib = std::fs::read_to_string(src_dir().join("lib.rs")).expect("the root is readable");
-    assert!(lib.contains("#![forbid(unsafe_code)]"));
+    assert!(lib.contains("#![deny(unsafe_code)]"));
     assert!(lib.contains("#![deny(missing_docs)]"));
+    let findings = unsafe_findings(&src_files());
+    assert!(findings.is_empty(), "{findings:?}");
+}
+
+/// Every breach of the unsafe policy in `(path relative to src/, text)`: an `allow(unsafe_code)`
+/// anywhere but over `pub mod abi;` in `lib.rs`, more than one such allow, an `unsafe` token outside
+/// `abi/`, or a crate-level `allow`/`warn` that would re-open the whole crate.
+fn unsafe_findings(files: &[(String, String)]) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut allows = 0;
+    for (rel, text) in files {
+        let lines: Vec<&str> = text.lines().collect();
+        for (n, raw) in lines.iter().enumerate() {
+            let line = raw.trim_start();
+            if line.starts_with("//") {
+                continue;
+            }
+            if line.starts_with("#![")
+                && line.contains("unsafe_code")
+                && !line.starts_with("#![deny(unsafe_code)]")
+                && !line.starts_with("#![forbid(unsafe_code)]")
+            {
+                out.push(format!(
+                    "{rel}:{}: a crate- or module-level unsafe_code attribute other than deny or forbid",
+                    n + 1
+                ));
+            }
+            if line.starts_with("#[") && line.contains("allow(") && line.contains("unsafe_code") {
+                allows += 1;
+                let item = lines[n + 1..]
+                    .iter()
+                    .map(|l| l.trim())
+                    .find(|l| !l.starts_with("#[") && !l.starts_with("//"))
+                    .unwrap_or_default();
+                if !(rel == "lib.rs" && item == "pub mod abi;") {
+                    out.push(format!("{rel}:{}: allow(unsafe_code) over `{item}`", n + 1));
+                }
+            }
+            if !rel.starts_with("abi/") && has_unsafe_token(line) {
+                out.push(format!("{rel}:{}: unsafe outside the abi module", n + 1));
+            }
+        }
+    }
+    if allows > 1 {
+        out.push(format!(
+            "{allows} allow(unsafe_code) attributes; exactly one is permitted"
+        ));
+    }
+    out
+}
+
+/// True when `line` holds the `unsafe` keyword as a whole word (not inside `unsafe_code`).
+fn has_unsafe_token(line: &str) -> bool {
+    let bytes = line.as_bytes();
+    let mut from = 0;
+    while let Some(at) = line[from..].find("unsafe") {
+        let start = from + at;
+        let end = start + "unsafe".len();
+        let before =
+            start == 0 || !(bytes[start - 1].is_ascii_alphanumeric() || bytes[start - 1] == b'_');
+        let after =
+            end == bytes.len() || !(bytes[end].is_ascii_alphanumeric() || bytes[end] == b'_');
+        if before && after {
+            return true;
+        }
+        from = end;
+    }
+    false
+}
+
+/// RED: the unsafe policy refuses an `unsafe` block outside `abi/`, a second allow, an allow over any
+/// other module, and a crate-level re-opening; the one sanctioned allow and `abi/` unsafe pass.
+#[test]
+fn an_unsafe_site_outside_the_abi_is_red() {
+    let plant = |rel: &str, text: &str| unsafe_findings(&[(rel.to_string(), text.to_string())]);
+    assert!(plant(
+        "lib.rs",
+        "#![deny(unsafe_code)]\n#[allow(unsafe_code)]\npub mod abi;\n"
+    )
+    .is_empty());
+    assert!(plant("abi/hot/decl.rs", "unsafe impl Sync for PlaneDecl {}\n").is_empty());
+    assert!(plant(
+        "dest.rs",
+        "// an unsafe word in a comment\n#[deny(unsafe_code)]\nfn f() {}\n"
+    )
+    .is_empty());
+    assert_eq!(plant("dest.rs", "fn f() { unsafe { g() } }\n").len(), 1);
+    assert_eq!(
+        plant("lib.rs", "#[allow(unsafe_code)]\npub mod dest;\n").len(),
+        1
+    );
+    assert_eq!(plant("lib.rs", "#![allow(unsafe_code)]\n").len(), 1);
+    let two = unsafe_findings(&[
+        (
+            "lib.rs".to_string(),
+            "#[allow(unsafe_code)]\npub mod abi;\n".to_string(),
+        ),
+        (
+            "abi/mod.rs".to_string(),
+            "#[allow(unsafe_code)]\nmod inner;\n".to_string(),
+        ),
+    ]);
+    assert_eq!(two.len(), 2, "{two:?}");
 }
 
 /// The crates that sit BELOW the contract, and may therefore be named by it.
@@ -330,37 +443,93 @@ fn the_contract_stands_alone() {
 }
 
 /// The source names no crate a plugin manifest may not name.
+///
+/// A crate is NAMED in code as a path (`busbar_kernel::x`) or in a `use`/`extern crate`. The frozen
+/// C symbol names the plugin ABI carries (`busbar_plane_decl`, `busbar_transport_decl` — the names a
+/// loader `dlsym`s, #84: a published layout) share a prefix with two crate families but are not
+/// paths, so the scan reads the whole identifier and asks whether it is used as one.
 #[test]
 fn the_source_names_no_kernel_side_crate() {
-    let forbidden = [
-        "busbar_contract::caps",
-        "busbar_kernel",
-        "busbar_unit",
-        "busbar_plane",
-        "busbar_transport",
-        "busbar_substrate",
-        "busbar_kernel",
-    ];
     let mut offenders = Vec::new();
     walk(&src_dir(), &mut |path, text| {
-        for name in forbidden {
-            // A mention inside a doc comment is a reference by name, which the design allows;
-            // a use of the identifier in code is not.
-            for (n, line) in text.lines().enumerate() {
-                let trimmed = line.trim_start();
-                if trimmed.starts_with("//") || trimmed.starts_with("//!") {
-                    continue;
-                }
-                if line.contains(name) {
-                    offenders.push(format!("{}:{}: {name}", path.display(), n + 1));
-                }
-            }
+        for hit in kernel_side_names(text) {
+            offenders.push(format!("{}:{hit}", path.display()));
         }
     });
     assert!(
         offenders.is_empty(),
         "the contract names kernel-side crates in code: {offenders:?}"
     );
+}
+
+/// Every `line: name` in `text` where code names a kernel-side crate.
+fn kernel_side_names(text: &str) -> Vec<String> {
+    const FORBIDDEN: [&str; 6] = [
+        "busbar_contract::caps",
+        "busbar_kernel",
+        "busbar_unit",
+        "busbar_plane",
+        "busbar_transport",
+        "busbar_substrate",
+    ];
+    let mut out = Vec::new();
+    for (n, line) in text.lines().enumerate() {
+        let trimmed = line.trim_start();
+        // A mention inside a doc comment is a reference by name, which the design allows; a use of
+        // the identifier in code is not.
+        if trimmed.starts_with("//") {
+            continue;
+        }
+        let names_crates = trimmed.starts_with("use ")
+            || trimmed.starts_with("pub use ")
+            || trimmed.starts_with("extern crate ");
+        for name in FORBIDDEN {
+            let mut from = 0;
+            while let Some(at) = line[from..].find(name) {
+                let start = from + at;
+                // The whole identifier this occurrence begins.
+                let end = start
+                    + line[start..]
+                        .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == ':'))
+                        .unwrap_or(line.len() - start);
+                let ident = &line[start..end];
+                if name.contains("::") || ident.contains("::") || names_crates {
+                    out.push(format!("{}: {name}", n + 1));
+                    break;
+                }
+                from = end.max(start + 1);
+            }
+        }
+    }
+    out
+}
+
+/// RED: a path into a kernel-side crate, a `use` of one, and the literal capability path are named;
+/// the frozen door symbol names the ABI publishes are not.
+#[test]
+fn a_kernel_side_crate_path_is_red() {
+    assert_eq!(
+        kernel_side_names("let x = busbar_kernel::run();\n").len(),
+        1
+    );
+    assert_eq!(
+        kernel_side_names("    busbar_plane_planted::decl()\n").len(),
+        1
+    );
+    assert_eq!(
+        kernel_side_names("use busbar_transport_planted;\n").len(),
+        1
+    );
+    assert_eq!(
+        kernel_side_names("use busbar_contract::caps::Pass;\n").len(),
+        1
+    );
+    assert!(kernel_side_names("pub const D: &[u8] = b\"busbar_plane_decl\\0\";\n").is_empty());
+    assert!(
+        kernel_side_names("pub unsafe extern \"C-unwind\" fn busbar_transport_decl() {}\n")
+            .is_empty()
+    );
+    assert!(kernel_side_names("// busbar_kernel::run in a comment\n").is_empty());
 }
 
 /// The doc comments cite the design in words, not in section numbers or binding identifiers.

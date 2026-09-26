@@ -741,11 +741,11 @@ fn meter_request(
     let billed_key_id = caller.key().map_or("", |k| k.id.as_str());
     // The `UsageGuard` holds borrowed attribution pointers (`!Send`), so it is built AND consumed
     // inside this call — it never crosses an `.await` and the request future stays `Send`.
-    let usage = busbar_plugin::hot::Usage::with_attribution(
-        busbar_plugin::hot::UsageComponent::Queries,
+    let usage = busbar_contract::abi::hot::Usage::with_attribution(
+        busbar_contract::abi::hot::UsageComponent::Queries,
         0,
         0,
-        busbar_plugin::hot::AdmissionId::NONE,
+        busbar_contract::abi::hot::AdmissionId::NONE,
         billed_key_id.as_bytes(),
         resource.as_bytes(),
         "a2a".as_bytes(),
@@ -2407,7 +2407,7 @@ struct HopContext {
     /// probe hold was registered under in the one `hop_scope` scope before the hop was built, threaded
     /// onto the blocking relay's `RelayCall`. `AdmissionId::NONE` for an un-pooled/pinned hop (whose
     /// probe `prepare` admits and re-homes itself into the shared host scope).
-    walk_admission_id: busbar_plugin::hot::AdmissionId,
+    walk_admission_id: busbar_contract::abi::hot::AdmissionId,
     now: u64,
     now_ms: u64,
     rpc_id: serde_json::Value,

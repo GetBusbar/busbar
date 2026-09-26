@@ -21,7 +21,6 @@ crate-type = ["cdylib", "rlib"]
 # The records contract (`RecordStore` and its row shapes) — the one face a `kind: store` plugin is
 # written against (#40). Persistence is this crate's own I/O (`durable_write` in lib.rs).
 busbar-contract = { path = "../busbar-contract" }
-busbar-plugin-sdk = { path = "../plugin-sdk" }
 # NO SIBLING INSTANCE. This crate is the copy-me template for `kind: store`, so it names no other
 # store — its in-process backend is its own (`src/ram.rs`). See PLUGIN-TREE.md §4.
 serde = { workspace = true }

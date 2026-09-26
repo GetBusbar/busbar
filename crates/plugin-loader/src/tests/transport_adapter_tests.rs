@@ -22,10 +22,10 @@
 use super::*;
 use crate::both_ways::{cdylib, dropped, statement, transport_fixture, HOT_FIXTURES};
 use crate::transport::link_transport;
+use busbar_contract::abi::hot::transport::{RawWireOutcome, TransportDecl, NO_WAKER};
 use busbar_contract::plugin::TestKernelSeal;
 use busbar_contract::transport::dest::UpstreamAddress;
 use busbar_contract::{ConfigView, LaneId};
-use busbar_plugin::hot::transport::{RawWireOutcome, TransportDecl, NO_WAKER};
 use futures::{AsyncReadExt, AsyncWriteExt, StreamExt};
 use std::io::{Read, Write};
 use std::net::{Shutdown, TcpListener, TcpStream};
@@ -76,7 +76,7 @@ fn dropped_row() -> Option<&'static DynTransport> {
             .find(|(kind, _)| *kind == "transport")
             .map(|&(_, krate)| krate)?;
         let lib = std::fs::read(cdylib(krate)?).expect("read the transport cdylib");
-        let manifest = statement("transport", "wire", "wire", busbar_plugin::ABI_MINOR);
+        let manifest = statement("transport", "wire", "wire", busbar_contract::abi::ABI_MINOR);
         Some(
             dropped("transport-adapter", manifest, &lib)
                 .open_transport("wire")

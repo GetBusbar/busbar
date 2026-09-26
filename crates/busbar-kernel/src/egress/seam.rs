@@ -34,7 +34,7 @@
 
 #![cfg_attr(not(test), allow(dead_code))]
 
-use busbar_plugin::hot::{EgressDesc, EgressKind, StatusClass, POD_VERSION};
+use busbar_contract::abi::hot::{EgressDesc, EgressKind, StatusClass, POD_VERSION};
 
 use crate::plane_host::egress::{
     drive_close, drive_open, drive_poll, scope_bits, OpenOutcome, OpenedHead,
@@ -113,7 +113,7 @@ fn build_desc<'a>(spec: &'a HopSpec<'a>, packed_headers: &'a [u8]) -> EgressDesc
     EgressDesc {
         size: std::mem::size_of::<EgressDesc>() as u32,
         version: POD_VERSION,
-        kind: busbar_plugin::hot::RawEgressKind::of(EgressKind::OneShot),
+        kind: busbar_contract::abi::hot::RawEgressKind::of(EgressKind::OneShot),
         _reserved: 0,
         allowlist_scope: scope_bits(spec.allow_private, spec.allow_plaintext),
         _reserved2: 0,
@@ -156,7 +156,7 @@ const READ_CHUNK: usize = 64 * 1024;
 /// holds at most `cap` bytes, byte-identical to `read_capped`'s prefix.
 fn read_capped_over(
     scope: &DispatchScope,
-    id: busbar_plugin::hot::EgressId,
+    id: busbar_contract::abi::hot::EgressId,
     cap: usize,
 ) -> (Vec<u8>, ReadEnd) {
     let mut body: Vec<u8> = Vec::new();
@@ -239,7 +239,7 @@ pub enum StreamOutcome {
     /// the caller [`pump`]s.
     Streaming {
         head: super::StreamHead,
-        id: busbar_plugin::hot::EgressId,
+        id: busbar_contract::abi::hot::EgressId,
     },
 }
 
@@ -279,7 +279,7 @@ pub fn stream_head(
         drive_close(head.id);
         if matches!(end, ReadEnd::TransportError) {
             return Err(EgressFaultInfo {
-                class: busbar_plugin::hot::EgressFailClass::Io,
+                class: busbar_contract::abi::hot::EgressFailClass::Io,
                 status: head.status,
                 cause: "the connection failed mid-body".to_string(),
                 url: spec.url.to_string(),
@@ -316,7 +316,7 @@ pub enum PumpEnd {
 #[cfg(feature = "egress-stream")]
 pub fn pump(
     scope: &DispatchScope,
-    id: busbar_plugin::hot::EgressId,
+    id: busbar_contract::abi::hot::EgressId,
     on_chunk: &mut (dyn FnMut(&[u8]) -> super::ChunkFlow + Send),
 ) -> PumpEnd {
     let mut scratch = vec![0u8; READ_CHUNK];
@@ -431,7 +431,7 @@ pub struct Buffered {
 #[cfg(any(feature = "dispatch", feature = "relay"))]
 #[derive(Debug)]
 pub struct EgressFaultInfo {
-    pub class: busbar_plugin::hot::EgressFailClass,
+    pub class: busbar_contract::abi::hot::EgressFailClass,
     pub status: u16,
     pub cause: String,
     pub url: String,
@@ -540,7 +540,7 @@ impl PinnedHop<'_> {
 #[cfg(any(feature = "dispatch", feature = "relay"))]
 fn no_backend_fault(url: &str) -> EgressFaultInfo {
     EgressFaultInfo {
-        class: busbar_plugin::hot::EgressFailClass::Fault,
+        class: busbar_contract::abi::hot::EgressFailClass::Fault,
         status: 0,
         cause: "no governed egress backend is installed for this build".to_string(),
         url: url.to_string(),

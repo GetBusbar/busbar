@@ -5,7 +5,7 @@
 //! [`busbar_kernel::plane_host::scope`], re-exported here so in-core call sites are unchanged.
 //!
 //! The scope types ([`DispatchScope`], [`DurableScope`], [`SessionScope`] and their supporting
-//! `SettleAdmission` / `EgressFaultDetail` vocabulary) name only [`busbar_plugin::hot`] + `std`, so
+//! `SettleAdmission` / `EgressFaultDetail` vocabulary) name only [`busbar_contract::abi::hot`] + `std`, so
 //! they are neutral and now live in the substrate. This module re-exports them unchanged, so every
 //! in-core call site (`plane_host`'s own veneers, `a2a`) and the host `HostState` that materializes
 //! over a `DispatchScope` are untouched — the move is a pure relocation, not a code change.
@@ -15,10 +15,10 @@ use crate::plane::handle_engine::{
     ChainPosition, DurableHandleEngine, HandleDenied, HandleEngineError, MutateError, Mutation,
     ScopedMutateError, SubmitRecord, SweepBounds,
 };
-use busbar_contract::records::RecordStoreError;
-use busbar_plugin::hot::{
+use busbar_contract::abi::hot::{
     AdmissionId, EgressFailClass, EgressId, PipeId, Signal, StatusClass, VerifyLease,
 };
+use busbar_contract::records::RecordStoreError;
 use std::any::Any;
 use std::sync::{Arc, Mutex};
 

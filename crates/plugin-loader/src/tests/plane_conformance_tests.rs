@@ -32,10 +32,12 @@
 //! the two sides of that seam, on purpose.
 
 use crate::sign::{sha256_hex, sign, Manifest, SigningKey, TrustPolicy};
-use busbar_plugin::hot::host::HostCtx;
-use busbar_plugin::hot::pod::StatusClass;
-use busbar_plugin::hot::{EmitHandle, InboundHandle, IngressCarrier, PlaneHostVtable, WorkItem};
-use busbar_plugin::AbiPreamble;
+use busbar_contract::abi::hot::host::HostCtx;
+use busbar_contract::abi::hot::pod::StatusClass;
+use busbar_contract::abi::hot::{
+    EmitHandle, InboundHandle, IngressCarrier, PlaneHostVtable, WorkItem,
+};
+use busbar_contract::abi::AbiPreamble;
 use busbar_plugin_example_plane::PLANE_DECL as COMPILED_IN;
 
 /// Locate the REAL `busbar-plane-example` cdylib built into this workspace's target dir (uplifted or
@@ -93,8 +95,8 @@ fn vocab(ptr: *const u8, len: usize) -> String {
 // zero and red these tests, which is the property that makes them worth running.
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 mod test_host {
-    use busbar_plugin::hot::host::{HostCtx, PlaneHostVtable};
-    use busbar_plugin::hot::pod::{
+    use busbar_contract::abi::hot::host::{HostCtx, PlaneHostVtable};
+    use busbar_contract::abi::hot::pod::{
         CostLeaseId, CostSettleOut, Decision, Facts, FramingDesc, MeterOutcome, Seq, StatusClass,
         Usage, POD_VERSION,
     };
@@ -196,7 +198,7 @@ mod test_host {
         LAST_MONEY_NANOS.store(seen, Ordering::SeqCst);
         // SAFETY: `out` is a writable, aligned `MaybeUninit<CostLeaseId>` for the call (or null,
         // tolerated); published ONLY on the Ok path (init-only-on-Ok).
-        unsafe { busbar_plugin::write_out(out, CostLeaseId(LEASE)) };
+        unsafe { busbar_contract::abi::write_out(out, CostLeaseId(LEASE)) };
         StatusClass::Ok
     }
 
@@ -215,7 +217,7 @@ mod test_host {
         LAST_MONEY_NANOS.fetch_add(settle_nanos, Ordering::SeqCst);
         // SAFETY: as `cost_reserve` above.
         unsafe {
-            busbar_plugin::write_out(
+            busbar_contract::abi::write_out(
                 out,
                 CostSettleOut {
                     size: core::mem::size_of::<CostSettleOut>() as u32,
@@ -369,7 +371,7 @@ fn example_plane_loads_identically_compiled_in_and_dropped_in() {
 /// The compiled-in `PLANE_DECL`'s declaration tail, decoded straight off the static (NOT through the
 /// loader), for the both-ways comparison above.
 fn compiled_in_declaration() -> crate::HotDeclaration {
-    use busbar_plugin::hot::DeclStr;
+    use busbar_contract::abi::hot::DeclStr;
     let text = |d: DeclStr| (!d.ptr.is_null()).then(|| vocab(d.ptr, d.len));
     let list = |ptr: *const DeclStr, len: usize| -> Vec<String> {
         // SAFETY: the static's lists point at this build's own `'static` arrays of `len` entries.
@@ -616,7 +618,7 @@ fn dropped_in_example_plane_refuses_a_host_whose_abi_major_does_not_match() {
     let _guard = test_host::reset();
     let mut foreign = test_host::vtable();
     foreign.abi = AbiPreamble {
-        abi_major: busbar_plugin::ABI_MAJOR + 1,
+        abi_major: busbar_contract::abi::ABI_MAJOR + 1,
         ..AbiPreamble::CURRENT
     };
     // SAFETY: `foreign` is a live, correctly-sized table; only its declared MAJOR is wrong.
@@ -631,7 +633,7 @@ fn dropped_in_example_plane_refuses_a_host_whose_abi_major_does_not_match() {
     // reason MAJOR is the refusal axis and MINOR is not.
     let mut older_minor = test_host::vtable();
     older_minor.abi = AbiPreamble {
-        abi_minor: busbar_plugin::ABI_MINOR.saturating_sub(1),
+        abi_minor: busbar_contract::abi::ABI_MINOR.saturating_sub(1),
         ..AbiPreamble::CURRENT
     };
     // SAFETY: as above.
@@ -649,15 +651,15 @@ fn dropped_in_example_plane_refuses_a_host_whose_abi_major_does_not_match() {
 /// address space. Exercises `read_vocab` directly with the hostile short-buffer/huge-length shape.
 #[test]
 fn oversize_plane_vocab_length_is_refused_not_over_read() {
-    use busbar_plugin::hot::PlaneDecl;
-    use busbar_plugin::AbiPreamble;
+    use busbar_contract::abi::hot::PlaneDecl;
+    use busbar_contract::abi::AbiPreamble;
 
     // A one-byte real buffer paired with a length past the cap — the hostile shape a lying decl uses.
     let small = b"x";
     let decl = PlaneDecl {
         abi: AbiPreamble::CURRENT,
         size: core::mem::size_of::<PlaneDecl>() as u32,
-        version: busbar_plugin::ABI_MINOR,
+        version: busbar_contract::abi::ABI_MINOR,
         name_ptr: small.as_ptr(),
         name_len: super::MAX_PLANE_VOCAB_LEN + 1,
         section_key_ptr: core::ptr::null(),
@@ -677,7 +679,8 @@ fn oversize_plane_vocab_length_is_refused_not_over_read() {
         dispatch: None,
         ..PlaneDecl::STUB
     };
-    let honoured = busbar_plugin::honoured_size(decl.size, core::mem::size_of::<PlaneDecl>());
+    let honoured =
+        busbar_contract::abi::honoured_size(decl.size, core::mem::size_of::<PlaneDecl>());
     let decl_ptr: *const PlaneDecl = &decl;
     let err = super::read_vocab(decl_ptr, honoured, super::Vocab::Name, "hostile")
         .expect_err("an oversize vocabulary length must be refused, never sliced");
@@ -715,7 +718,7 @@ fn plane_manifest(name: &str, alias: &str, publisher: &str) -> Manifest {
         kind: "plane".into(),
         version: "1.6.0".into(),
         publisher: publisher.into(),
-        abi_version: busbar_plugin::ABI_MINOR,
+        abi_version: busbar_contract::abi::ABI_MINOR,
         sha256: String::new(),
         signature: String::new(),
         description: String::new(),
@@ -930,7 +933,7 @@ fn open_plane_refuses_non_plane_kind() {
     let dir = plane_tmpdir("kind-gate");
     let mut m = plane_manifest("busbar-store-gamma-plugin", "gamma", "busbar");
     m.kind = "store".into();
-    m.abi_version = busbar_plugin::cold::ABI_VERSION; // store-admissible so the KIND gate is what fires
+    m.abi_version = busbar_contract::abi::cold::ABI_VERSION; // store-admissible so the KIND gate is what fires
     let m = sign(&release, m, b"store lib");
     write_plane_tarball(&dir, "store.tar.gz", &m, b"store lib");
 
@@ -948,7 +951,7 @@ fn open_plane_refuses_non_plane_kind() {
 #[test]
 fn plane_supported_abi_covers_the_airlock_minor() {
     let range = crate::registry::supported_abi("plane");
-    assert_eq!(range, &[1, busbar_plugin::ABI_MINOR]);
+    assert_eq!(range, &[1, busbar_contract::abi::ABI_MINOR]);
     // The five cold kinds still resolve; an unknown kind is still empty.
     assert!(!crate::registry::supported_abi("store").is_empty());
     assert!(crate::registry::supported_abi("nonsense").is_empty());
@@ -976,10 +979,10 @@ fn open_plane_refuses_an_artifact_whose_decl_preamble_carries_a_foreign_abi_majo
 
     // The frozen preamble, exactly as this build stamps it: magic ‖ MAJOR ‖ MINOR, little-endian.
     let mut needle = Vec::with_capacity(16);
-    needle.extend_from_slice(&busbar_plugin::ABI_MAGIC.to_le_bytes());
-    needle.extend_from_slice(&busbar_plugin::ABI_MAJOR.to_le_bytes());
-    needle.extend_from_slice(&busbar_plugin::ABI_MINOR.to_le_bytes());
-    let foreign_major = (busbar_plugin::ABI_MAJOR + 1).to_le_bytes();
+    needle.extend_from_slice(&busbar_contract::abi::ABI_MAGIC.to_le_bytes());
+    needle.extend_from_slice(&busbar_contract::abi::ABI_MAJOR.to_le_bytes());
+    needle.extend_from_slice(&busbar_contract::abi::ABI_MINOR.to_le_bytes());
+    let foreign_major = (busbar_contract::abi::ABI_MAJOR + 1).to_le_bytes();
 
     // Rewrite EVERY stamped preamble in the image: the plane may hold more than one (its decl's, and
     // whatever its linked ABI crate stamped), and a plugin built against a foreign major would carry

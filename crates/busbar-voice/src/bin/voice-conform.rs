@@ -1900,18 +1900,18 @@ impl busbar_kernel::plane_host::BreakerHost for AlwaysAdmitBreakerHost {
         scope: &busbar_kernel::plane_host::DispatchScope,
         _pool: &[u8],
         _lane: u32,
-    ) -> Result<busbar_plugin::hot::AdmissionId, busbar_kernel::store::Unavailable> {
+    ) -> Result<busbar_contract::abi::hot::AdmissionId, busbar_kernel::store::Unavailable> {
         Ok(scope.register_admission(Box::new(())))
     }
     fn breaker_settle(
         &self,
         scope: &busbar_kernel::plane_host::DispatchScope,
-        admission: busbar_plugin::hot::AdmissionId,
-        signal: &busbar_plugin::hot::Signal,
-    ) -> busbar_plugin::hot::StatusClass {
+        admission: busbar_contract::abi::hot::AdmissionId,
+        signal: &busbar_contract::abi::hot::Signal,
+    ) -> busbar_contract::abi::hot::StatusClass {
         scope
             .settle_admission(admission, signal)
-            .unwrap_or(busbar_plugin::hot::StatusClass::Refused)
+            .unwrap_or(busbar_contract::abi::hot::StatusClass::Refused)
     }
     fn breaker_record_success(&self, _pool: &str, _lane: usize) {}
     fn breaker_record_signal(

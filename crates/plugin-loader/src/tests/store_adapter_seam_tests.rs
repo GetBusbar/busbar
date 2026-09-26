@@ -55,7 +55,10 @@ impl AbiStore for AuditTail {
 
 /// An adapter over a store whose audit tail answers `tail`.
 fn adapter_over_tail(tail: Result<Vec<AuditRecord>, String>) -> StoreAdapter {
-    StoreAdapter::new(Arc::new(AuditTail(tail)), busbar_plugin::cold::ABI_VERSION)
+    StoreAdapter::new(
+        Arc::new(AuditTail(tail)),
+        busbar_contract::abi::cold::ABI_VERSION,
+    )
 }
 
 /// One audit row, at a named sequence number.

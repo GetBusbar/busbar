@@ -88,7 +88,7 @@
 //! * **A construction reached only through MACRO EXPANSION is invisible to it** — that direction is
 //!   a FALSE RED, which someone reads and answers, rather than a false green.
 //! * **SO IS A CAPABILITY REACHED THROUGH A FUNCTION POINTER, A VTABLE SLOT OR FFI**, and this one
-//!   bit a real sweep: `metrics_emit` (`crates/busbar-plugin/src/hot/host.rs:1146`,
+//!   bit a real sweep: `metrics_emit` (`crates/busbar-contract/src/abi/hot/host.rs:1146`,
 //!   `crates/busbar-kernel/src/plane_host/vtable.rs:234`) is an `extern "C-unwind" fn` INSTALLED
 //!   into a slot (`metrics_emit: Some(stub::metrics_emit)`, `host.rs:958`) and invoked by a plugin
 //!   across the ABI. It is called by nobody BY NAME, so a call-shaped scan reports zero callers and

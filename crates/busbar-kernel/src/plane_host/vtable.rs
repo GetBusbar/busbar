@@ -8,7 +8,7 @@
 //! `govern_admit`) live here; the rest forward into their capability modules ([`super::breaker`],
 //! [`super::govern`], [`super::trust`], [`super::journal`], [`super::egress`], [`super::dispatch`]).
 //!
-//! ## Boundary discipline (reused from `plugin-sdk/boundary.rs`)
+//! ## Boundary discipline (reused from `busbar-contract/src/abi/sdk/boundary.rs`)
 //!
 //! Every wired fn:
 //! 1. recovers its [`HostState`](super::HostState) from the opaque [`HostCtx`] FIRST (the recovery
@@ -19,12 +19,12 @@
 //! 3. translates POD ↔ primitive by pointer, writing any out-param only on the `Ok` path.
 
 use super::{recover, trust};
-use busbar_plugin::hot::host::{HostCtx, PlaneHostVtable};
-use busbar_plugin::hot::{
+use busbar_contract::abi::hot::host::{HostCtx, PlaneHostVtable};
+use busbar_contract::abi::hot::{
     AuthQuery, AuthResolved, Decision, DeclStr, Facts, GovRefusal, MeterOutcome, MetricSample,
     StatusClass, Usage,
 };
-use busbar_plugin::AbiPreamble;
+use busbar_contract::abi::AbiPreamble;
 use core::mem::MaybeUninit;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 
@@ -37,7 +37,7 @@ pub fn build_plane_host_vtable() -> PlaneHostVtable {
     PlaneHostVtable {
         abi: AbiPreamble::CURRENT,
         size: core::mem::size_of::<PlaneHostVtable>() as u32,
-        version: busbar_plugin::ABI_MINOR,
+        version: busbar_contract::abi::ABI_MINOR,
 
         // ── WIRED proof-of-life (real primitives) ──────────────────────────────────────────────
         govern_admit: Some(govern_admit),
@@ -398,13 +398,13 @@ unsafe fn write_gov_refusal(
 ) {
     let refusal = GovRefusal {
         size: core::mem::size_of::<GovRefusal>() as u32,
-        version: busbar_plugin::hot::POD_VERSION,
+        version: busbar_contract::abi::hot::POD_VERSION,
         _reserved: 0,
         retry_after_secs,
         reason_len,
     };
     // SAFETY: `out` is a writable, aligned MaybeUninit slot (or null, which `write_out` tolerates).
-    unsafe { busbar_plugin::write_out(out, refusal) };
+    unsafe { busbar_contract::abi::write_out(out, refusal) };
 }
 
 /// WIRED `govern_admit_reason` — [`govern_admit`] WITH REFUSAL FIDELITY. Identical admit behaviour
@@ -509,7 +509,7 @@ extern "C-unwind" fn auth_resolve(
             Some(resolved) => {
                 // SAFETY: `out` is a writable, aligned `MaybeUninit<AuthResolved>` for the call; the
                 // write publishes ONLY on the Ok path (init-only-on-Ok), tolerating a null slot.
-                unsafe { busbar_plugin::write_out(out, resolved) };
+                unsafe { busbar_contract::abi::write_out(out, resolved) };
                 StatusClass::Ok
             }
             None => StatusClass::Refused, // nothing to resolve → out-param left uninitialized.

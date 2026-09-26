@@ -131,12 +131,12 @@ plane_src_roots() {   # echo "crates/busbar-<k>/src crates/busbar-<k>-codec/src 
 #
 # THIS LINE WAS THREE ROOTS WHILE THE TWIN WAS TWENTY-ONE, and that test was red on it: the Rust
 # side enrolled the kernel's decomposed crates, the money path (busbar-kernel-ledger), the ABI and
-# contract surfaces (busbar-contract, busbar-plugin), the loader/SDK and the compiled-in cleanliness
+# contract surfaces (busbar-contract, which holds the plugin ABI since #84), the loader/SDK and the compiled-in cleanliness
 # crates, and this line did not follow. Both shell meters that source it (plane-grep-gate.sh,
 # plane-noun-gate.sh) therefore scanned 220 of 427 neutral files and printed 0 for needles that are
 # not 0 -- the ZERO those meters document as the signal to arm their hard gates. The list below is
 # the twin's, same order, one line (the pinning test parses this exact line).
-NEUTRAL_ROOTS_LIST="crates/busbar-kernel/src crates/busbar-kernel-audit/src crates/busbar-kernel-breaker/src crates/busbar-kernel-budget/src crates/busbar-kernel-egress/src crates/busbar-kernel-identity/src crates/busbar-kernel-ledger/src crates/busbar-kernel-scope/src crates/busbar-kernel-wal/src crates/busbar-contract/src crates/busbar-plugin/src crates/busbar-substrate-values/src crates/plugin-loader/src crates/plugin-sdk/src crates/busbar-core-admin/src crates/busbar-core-connsec/src crates/busbar-oauth2/src crates/busbar-unit-transport-key/src"
+NEUTRAL_ROOTS_LIST="crates/busbar-kernel/src crates/busbar-kernel-audit/src crates/busbar-kernel-breaker/src crates/busbar-kernel-budget/src crates/busbar-kernel-egress/src crates/busbar-kernel-identity/src crates/busbar-kernel-ledger/src crates/busbar-kernel-scope/src crates/busbar-kernel-wal/src crates/busbar-contract/src crates/busbar-substrate-values/src crates/plugin-loader/src crates/busbar-core-admin/src crates/busbar-core-connsec/src crates/busbar-oauth2/src crates/busbar-unit-transport-key/src"
 
 neutral_src_roots() { printf '%s' "$NEUTRAL_ROOTS_LIST"; }
 

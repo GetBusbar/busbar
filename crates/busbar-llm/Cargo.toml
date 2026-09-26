@@ -47,13 +47,13 @@ openapi-schema = ["busbar-kernel/openapi-schema", "busbar-llm-codec/openapi-sche
 # T3 — inbound OpenAI Responses async/background WEBHOOK RECEIVER, LIVE HTTP-ROUTE MOUNT. DEFAULT OFF.
 # The parse+verify+surface HANDLER (`openai_responses::webhook`) compiles and is tested
 # UNCONDITIONALLY; only MOUNTING it as a live `/v1/llm/webhooks/openai` route is gated here, because
-# (a) it needs the `busbar-plugin` route-enum vocabulary and (b) it flips the fallback plane's
+# (a) it needs the route-enum vocabulary (`busbar_contract::abi`, always linked) and (b) it flips the fallback plane's
 # `PLANE_DECL.routes` from `None` to `Some(..)`. Gating keeps the money-path fallback plane's default
 # boot byte-identical. The signing secret is read from `BUSBAR_LLM_WEBHOOK_SECRET`; with it unset the
 # feature mounts NOTHING (never an unauthenticated endpoint). The operator-facing secret-config seam
 # (a `webhooks:` config section + a dispatch slot on the fallback plane) is the reported deferred
 # remainder — see `openai_responses/webhook.rs`.
-webhook-receiver = ["dep:busbar-plugin"]
+webhook-receiver = []
 
 [dependencies]
 # NO `busbar-core` HERE, ON PURPOSE. A plane is a plugin on the plane ABI: the ONLY surface between
@@ -111,9 +111,6 @@ hex = { workspace = true }
 hmac = { workspace = true }
 sha2 = { workspace = true }
 base64 = { workspace = true }
-# The route-mount enums (`RouteMethod`/`RouteAuth`) for the OFF-by-default live webhook HTTP route.
-# Optional so the default dependency graph is unchanged; enabled only by `webhook-receiver`.
-busbar-plugin = { path = "../busbar-plugin", optional = true }
 # The capability vocabulary the step files are typed in, and the other half of the plugin-visible
 # pair: the meter class direction the Meter step's usage lines carry lives in the contract and
 # nowhere else.

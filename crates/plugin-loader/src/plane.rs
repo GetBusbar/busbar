@@ -2,12 +2,12 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! Runtime loading of a protocol **PLANE** from a `cdylib` over the busbar HOT-tier ABI
-//! ([`busbar_plugin::hot`]) — the plane analogue of [`load_store`](crate::load_store).
+//! ([`busbar_contract::abi::hot`]) — the plane analogue of [`load_store`](crate::load_store).
 //!
 //! A plane cdylib rides the EXACT same tarball / signed-manifest / trust discovery pipeline as the
 //! five cold kinds (it exports `busbar_abi` at [`TRANSPORT_VERSION`] and `busbar_plugin_kind() ==
 //! "plane"`), but it does NOT speak the six-symbol JSON `call` wire. Instead it exports ONE extra
-//! hot-lane symbol, [`busbar_plugin::hot::symbol::PLANE_DECL`] (`busbar_plane_decl`), returning a
+//! hot-lane symbol, [`busbar_contract::abi::hot::symbol::PLANE_DECL`] (`busbar_plane_decl`), returning a
 //! pointer to its `#[repr(C)]` [`PlaneDecl`] vtable. [`load_plane`]/[`load_plane_from_bytes`] map the
 //! library, run the transport + kind + AIRLOCK-preamble handshake, materialise the plane's borrowed
 //! vocabulary into owned strings, and hand back a [`DynPlane`] the composition root drives exactly as
@@ -36,18 +36,18 @@
 //! admits and serves through (minor 23) — one path over the HOT-lane vtable, whichever door.
 
 use crate::stage;
-use busbar_plugin::hot::decl::{
+use busbar_contract::abi::hot::decl::{
     AdminRoutesFn, AdmissionFn, BuildFn, ClaimsFn, ConfigValidateFn, DeclMetricFamily,
     DeclServedOpClass, DispatchFn, HydrateFn, OpenApiFn, StartFn,
 };
-use busbar_plugin::hot::host::HostCtx;
-use busbar_plugin::hot::pod::{OpaqueState, RawStatus, StatusClass, POD_VERSION};
-use busbar_plugin::hot::workitem::{EmitHandle, EmitKind, InboundHandle};
-use busbar_plugin::hot::{
+use busbar_contract::abi::hot::host::HostCtx;
+use busbar_contract::abi::hot::pod::{OpaqueState, RawStatus, StatusClass, POD_VERSION};
+use busbar_contract::abi::hot::workitem::{EmitHandle, EmitKind, InboundHandle};
+use busbar_contract::abi::hot::{
     BuildCtx, DeclBillableClass, DeclStr, IngressCarrier, PlaneDecl, PlaneDeclFn, PlaneHostVtable,
     WorkItem,
 };
-use busbar_plugin::{check_preamble, AbiPreamble};
+use busbar_contract::abi::{check_preamble, AbiPreamble};
 use core::mem::MaybeUninit;
 use libloading::Library;
 use std::path::Path;
@@ -208,36 +208,49 @@ impl DynPlane {
     //    older-minor plane that never had the slot, or one that left it `None`). The decl-side
     //    analogue of `host_slot!` — `read_sized_field!` yields `Option<Option<fn>>`, flattened. ──
     fn slot_config_validate(&self) -> Option<ConfigValidateFn> {
-        busbar_plugin::read_sized_field!(self.decl, self.honoured_size, PlaneDecl, config_validate)
-            .flatten()
+        busbar_contract::abi::read_sized_field!(
+            self.decl,
+            self.honoured_size,
+            PlaneDecl,
+            config_validate
+        )
+        .flatten()
     }
     fn slot_build(&self) -> Option<BuildFn> {
-        busbar_plugin::read_sized_field!(self.decl, self.honoured_size, PlaneDecl, build).flatten()
+        busbar_contract::abi::read_sized_field!(self.decl, self.honoured_size, PlaneDecl, build)
+            .flatten()
     }
     fn slot_hydrate(&self) -> Option<HydrateFn> {
-        busbar_plugin::read_sized_field!(self.decl, self.honoured_size, PlaneDecl, hydrate)
+        busbar_contract::abi::read_sized_field!(self.decl, self.honoured_size, PlaneDecl, hydrate)
             .flatten()
     }
     fn slot_start(&self) -> Option<StartFn> {
-        busbar_plugin::read_sized_field!(self.decl, self.honoured_size, PlaneDecl, start).flatten()
+        busbar_contract::abi::read_sized_field!(self.decl, self.honoured_size, PlaneDecl, start)
+            .flatten()
     }
     fn slot_dispatch(&self) -> Option<DispatchFn> {
-        busbar_plugin::read_sized_field!(self.decl, self.honoured_size, PlaneDecl, dispatch)
+        busbar_contract::abi::read_sized_field!(self.decl, self.honoured_size, PlaneDecl, dispatch)
             .flatten()
     }
     fn slot_admin_routes(&self) -> Option<AdminRoutesFn> {
-        busbar_plugin::read_sized_field!(self.decl, self.honoured_size, PlaneDecl, admin_routes)
-            .flatten()
+        busbar_contract::abi::read_sized_field!(
+            self.decl,
+            self.honoured_size,
+            PlaneDecl,
+            admin_routes
+        )
+        .flatten()
     }
     fn slot_openapi(&self) -> Option<OpenApiFn> {
-        busbar_plugin::read_sized_field!(self.decl, self.honoured_size, PlaneDecl, openapi)
+        busbar_contract::abi::read_sized_field!(self.decl, self.honoured_size, PlaneDecl, openapi)
             .flatten()
     }
     fn slot_claims(&self) -> Option<ClaimsFn> {
-        busbar_plugin::read_sized_field!(self.decl, self.honoured_size, PlaneDecl, claims).flatten()
+        busbar_contract::abi::read_sized_field!(self.decl, self.honoured_size, PlaneDecl, claims)
+            .flatten()
     }
     fn slot_admission(&self) -> Option<AdmissionFn> {
-        busbar_plugin::read_sized_field!(self.decl, self.honoured_size, PlaneDecl, admission)
+        busbar_contract::abi::read_sized_field!(self.decl, self.honoured_size, PlaneDecl, admission)
             .flatten()
     }
 
@@ -771,7 +784,7 @@ pub fn load_plane(lib_path: &Path) -> Result<DynPlane, String> {
     // compiled-in plane. The path comes from config/the plugins dir, never the request path.
     let lib = crate::dlopen_on_worker(lib_path.as_os_str())
         .map_err(|e| format!("failed to load plane '{display}': {e}"))?;
-    wire_up_plane(lib, display, busbar_plugin::cold::kind::PLANE, None)
+    wire_up_plane(lib, display, busbar_contract::abi::cold::kind::PLANE, None)
 }
 
 /// Resolve + validate a mapped plane library against the frozen contract (transport handshake, kind
@@ -785,20 +798,22 @@ fn wire_up_plane(
 ) -> Result<DynPlane, String> {
     // ── 1. Transport handshake FIRST (shared with the cold kinds). ──
     let transport = {
-        let f = unsafe { lib.get::<busbar_plugin::cold::AbiFn>(busbar_plugin::cold::symbol::ABI) }
-            .map_err(|_| format!("'{display}' is not a busbar plugin (no busbar_abi symbol)"))?;
+        let f = unsafe {
+            lib.get::<busbar_contract::abi::cold::AbiFn>(busbar_contract::abi::cold::symbol::ABI)
+        }
+        .map_err(|_| format!("'{display}' is not a busbar plugin (no busbar_abi symbol)"))?;
         crate::ffi_guard_confined(&display, "abi", || unsafe { (*f)() })?
     };
-    if transport != busbar_plugin::cold::TRANSPORT_VERSION {
+    if transport != busbar_contract::abi::cold::TRANSPORT_VERSION {
         return Err(format!(
             "plane '{display}' targets transport ABI v{transport}, engine speaks v{}",
-            busbar_plugin::cold::TRANSPORT_VERSION
+            busbar_contract::abi::cold::TRANSPORT_VERSION
         ));
     }
 
     // ── 2. Kind bound at load — exported kind must be `plane` AND equal the signed manifest kind. ──
     let exported_kind = crate::read_plugin_kind(&lib, &display)?;
-    if exported_kind != busbar_plugin::cold::kind::PLANE {
+    if exported_kind != busbar_contract::abi::cold::kind::PLANE {
         return Err(format!(
             "plane '{display}' exports kind '{exported_kind}', not 'plane'"
         ));
@@ -812,7 +827,7 @@ fn wire_up_plane(
 
     // ── 3. Resolve the ONE hot-lane entrypoint and read the decl pointer (guarded). ──
     let decl_ptr = {
-        let f = unsafe { lib.get::<PlaneDeclFn>(busbar_plugin::hot::symbol::PLANE_DECL) }
+        let f = unsafe { lib.get::<PlaneDeclFn>(busbar_contract::abi::hot::symbol::PLANE_DECL) }
             .map_err(|_| format!("plane '{display}' missing busbar_plane_decl symbol"))?;
         crate::ffi_guard_confined(&display, "plane_decl", || unsafe { (*f)() })?
     };
@@ -889,9 +904,13 @@ fn assemble(
     let section_key = read_vocab(decl_ptr, honoured_size, Vocab::SectionKey, &display)?;
     let scope = read_vocab(decl_ptr, honoured_size, Vocab::Scope, &display)?;
     let label = read_vocab(decl_ptr, honoured_size, Vocab::Label, &display)?;
-    let provided_carriers =
-        busbar_plugin::read_sized_field!(decl_ptr, honoured_size, PlaneDecl, provided_carriers)
-            .unwrap_or(0);
+    let provided_carriers = busbar_contract::abi::read_sized_field!(
+        decl_ptr,
+        honoured_size,
+        PlaneDecl,
+        provided_carriers
+    )
+    .unwrap_or(0);
     let declaration = read_declaration(decl_ptr, honoured_size, &display)?;
     // `scope` is the plane's primary grant kind: it leads `scope_kinds`, and a plane with no scope
     // grants none — so the two statements cannot disagree about what admits the plane's traffic.
@@ -956,20 +975,22 @@ fn read_vocab(
 ) -> Result<String, String> {
     let (ptr, len) = match which {
         Vocab::Name => (
-            busbar_plugin::read_sized_field!(decl, size, PlaneDecl, name_ptr).flatten_ptr(),
-            busbar_plugin::read_sized_field!(decl, size, PlaneDecl, name_len).unwrap_or(0),
+            busbar_contract::abi::read_sized_field!(decl, size, PlaneDecl, name_ptr).flatten_ptr(),
+            busbar_contract::abi::read_sized_field!(decl, size, PlaneDecl, name_len).unwrap_or(0),
         ),
         Vocab::SectionKey => (
-            busbar_plugin::read_sized_field!(decl, size, PlaneDecl, section_key_ptr).flatten_ptr(),
-            busbar_plugin::read_sized_field!(decl, size, PlaneDecl, section_key_len).unwrap_or(0),
+            busbar_contract::abi::read_sized_field!(decl, size, PlaneDecl, section_key_ptr)
+                .flatten_ptr(),
+            busbar_contract::abi::read_sized_field!(decl, size, PlaneDecl, section_key_len)
+                .unwrap_or(0),
         ),
         Vocab::Scope => (
-            busbar_plugin::read_sized_field!(decl, size, PlaneDecl, scope_ptr).flatten_ptr(),
-            busbar_plugin::read_sized_field!(decl, size, PlaneDecl, scope_len).unwrap_or(0),
+            busbar_contract::abi::read_sized_field!(decl, size, PlaneDecl, scope_ptr).flatten_ptr(),
+            busbar_contract::abi::read_sized_field!(decl, size, PlaneDecl, scope_len).unwrap_or(0),
         ),
         Vocab::Label => (
-            busbar_plugin::read_sized_field!(decl, size, PlaneDecl, label_ptr).flatten_ptr(),
-            busbar_plugin::read_sized_field!(decl, size, PlaneDecl, label_len).unwrap_or(0),
+            busbar_contract::abi::read_sized_field!(decl, size, PlaneDecl, label_ptr).flatten_ptr(),
+            busbar_contract::abi::read_sized_field!(decl, size, PlaneDecl, label_len).unwrap_or(0),
         ),
     };
     if ptr.is_null() || len == 0 {
@@ -1003,13 +1024,15 @@ const MAX_PLANE_DECL_ENTRIES: usize = 1024;
 /// that does not reach the end of the tail, so an absent field is a refusal here too, never a default.
 macro_rules! tail_field {
     ($decl:expr, $size:expr, $field:ident, $display:expr) => {
-        busbar_plugin::read_sized_field!($decl, $size, PlaneDecl, $field).ok_or_else(|| {
-            format!(
-                "plane '{}' decl does not reach its `{}` declaration field",
-                $display,
-                stringify!($field)
-            )
-        })?
+        busbar_contract::abi::read_sized_field!($decl, $size, PlaneDecl, $field).ok_or_else(
+            || {
+                format!(
+                    "plane '{}' decl does not reach its `{}` declaration field",
+                    $display,
+                    stringify!($field)
+                )
+            },
+        )?
     };
 }
 
@@ -1090,8 +1113,8 @@ fn read_record_kinds(
     size: u32,
     display: &str,
 ) -> Result<Vec<String>, String> {
-    let ptr = busbar_plugin::read_sized_field!(decl, size, PlaneDecl, record_kinds_ptr);
-    let len = busbar_plugin::read_sized_field!(decl, size, PlaneDecl, record_kinds_len);
+    let ptr = busbar_contract::abi::read_sized_field!(decl, size, PlaneDecl, record_kinds_ptr);
+    let len = busbar_contract::abi::read_sized_field!(decl, size, PlaneDecl, record_kinds_len);
     let (Some(ptr), Some(len)) = (ptr, len) else {
         return Ok(Vec::new());
     };
@@ -1110,8 +1133,8 @@ fn read_served_op_classes(
     size: u32,
     display: &str,
 ) -> Result<Vec<(String, String)>, String> {
-    let ptr = busbar_plugin::read_sized_field!(decl, size, PlaneDecl, served_op_classes_ptr);
-    let len = busbar_plugin::read_sized_field!(decl, size, PlaneDecl, served_op_classes_len);
+    let ptr = busbar_contract::abi::read_sized_field!(decl, size, PlaneDecl, served_op_classes_ptr);
+    let len = busbar_contract::abi::read_sized_field!(decl, size, PlaneDecl, served_op_classes_len);
     let (Some(ptr), Some(len)) = (ptr, len) else {
         return Ok(Vec::new());
     };
@@ -1136,8 +1159,8 @@ fn read_metric_families(
     size: u32,
     display: &str,
 ) -> Result<Vec<HotMetricFamily>, String> {
-    let ptr = busbar_plugin::read_sized_field!(decl, size, PlaneDecl, metric_families_ptr);
-    let len = busbar_plugin::read_sized_field!(decl, size, PlaneDecl, metric_families_len);
+    let ptr = busbar_contract::abi::read_sized_field!(decl, size, PlaneDecl, metric_families_ptr);
+    let len = busbar_contract::abi::read_sized_field!(decl, size, PlaneDecl, metric_families_len);
     let (Some(ptr), Some(len)) = (ptr, len) else {
         return Ok(Vec::new());
     };

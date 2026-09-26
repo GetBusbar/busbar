@@ -242,10 +242,10 @@ tier   = "live-mock"
 #
 # RE-LANDED (was OWED): `plane-abi-spike`'s asserted twin,
 # `the_vtable_hop_stays_under_the_budget_and_the_pod_paths_still_do_not_allocate`, is back — now
-# against the PRODUCTION vtable/POD types (`crates/busbar-plugin/src/hot/host.rs`,
-# `crates/busbar-plugin/src/hot/pod.rs`), not a spike copy of them. It asserts the vtable-hop
+# against the PRODUCTION vtable/POD types (`crates/busbar-contract/src/abi/hot/host.rs`,
+# `crates/busbar-contract/src/abi/hot/pod.rs`), not a spike copy of them. It asserts the vtable-hop
 # fn-pointer wall-clock budget and the no-allocation property of the POD host-call paths, using this
-# crate's own per-thread `CountingAlloc` (`crates/busbar-plugin/src/lib.rs`, `#[cfg(test)]`-only —
+# crate's own per-thread `CountingAlloc` (`crates/busbar-contract/src/abi/mod.rs`, `#[cfg(test)]`-only —
 # the same idiom as `busbar-llm`'s `CountingJemalloc` alloc gates). `--ignored` because it measures
 # wall clock and a per-thread allocation count, both only meaningful alone; `--test-threads=1` for
 # the same reason. `--release` because the budget it checks (1000ns/call) is calibrated against an
@@ -267,7 +267,7 @@ tier   = "live-mock"
 # qa cadence. Measured cost: ~4 minutes cold build (criterion + release profile) + ~160s combined run
 # time for the three `--ignored` legs, comfortably inside qa-gate.yml's `slow` job's existing 180-
 # minute timeout (.github/workflows/qa-gate.yml, owned by another slot) — no timeout raise needed.
-run    = "cargo bench --workspace --no-run && cargo test --release -p busbar-plugin --lib -- --ignored --test-threads=1 the_vtable_hop_stays_under_the_budget_and_the_pod_paths_still_do_not_allocate && cargo test -p xtask --test hot_path_gates -- --ignored --test-threads=1"
+run    = "cargo bench --workspace --no-run && cargo test --release -p busbar-contract --lib -- --ignored --test-threads=1 the_vtable_hop_stays_under_the_budget_and_the_pod_paths_still_do_not_allocate && cargo test -p xtask --test hot_path_gates -- --ignored --test-threads=1"
 
 [[segment]]
 id     = "core-data-plane"

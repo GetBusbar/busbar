@@ -4,7 +4,7 @@
 //! Tests for `crates/busbar-core/src/plane_host/govern.rs`.
 
 use crate::plane_host::with_dispatch_scope;
-use busbar_plugin::hot::{
+use busbar_contract::abi::hot::{
     AdmissionId, Decision, Facts, GovRefusal, MeterOutcome, Usage, UsageComponent,
 };
 use core::mem::MaybeUninit;
@@ -108,7 +108,10 @@ fn gov() -> Arc<crate::governance::GovState> {
 fn with_caller<R>(
     app: &crate::state::App,
     key: &busbar_contract::records::VirtualKey,
-    f: impl FnOnce(busbar_plugin::hot::host::HostCtx, &busbar_plugin::hot::host::PlaneHostVtable) -> R,
+    f: impl FnOnce(
+        busbar_contract::abi::hot::host::HostCtx,
+        &busbar_contract::abi::hot::host::PlaneHostVtable,
+    ) -> R,
 ) -> R {
     let ctx = busbar_contract::records::PlaneRequestCtx {
         key: Some(Arc::new(key.clone())),
@@ -529,7 +532,7 @@ fn charge_decodes_the_keyed_unit_tail_into_the_ledger() {
         .governance(Arc::clone(&gov))
         .cost(cost)
         .build();
-    let units = busbar_plugin::hot::pack_usage_units(&std::collections::BTreeMap::from([(
+    let units = busbar_contract::abi::hot::pack_usage_units(&std::collections::BTreeMap::from([(
         "search_units".to_string(),
         7u64,
     )]));
@@ -569,12 +572,12 @@ fn door_charge(caller: Option<&str>, tail_key: &[u8], read: &[&str]) -> Vec<i64>
         .governance(Arc::clone(&gov))
         .cost(cost)
         .build();
-    let units = busbar_plugin::hot::pack_usage_units(&std::collections::BTreeMap::from([(
+    let units = busbar_contract::abi::hot::pack_usage_units(&std::collections::BTreeMap::from([(
         "search_units".to_string(),
         7u64,
     )]));
     let scope = crate::plane_host::DispatchScope::new();
-    let charge = |host, vt: &busbar_plugin::hot::host::PlaneHostVtable| {
+    let charge = |host, vt: &busbar_contract::abi::hot::host::PlaneHostVtable| {
         let usage = Usage::with_units(
             UsageComponent::Queries,
             0,
