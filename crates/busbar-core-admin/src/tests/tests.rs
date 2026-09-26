@@ -5,7 +5,11 @@ use std::sync::Arc;
 
 /// The OpenAPI 3 Operation Object's status-keyed field, spelled once. It is the OpenAPI
 /// specification's own key, not a busbar or instance word.
-const OAS_OPERATION_STATUSES: &str = "responses"; // plane-purity: frozen-wire OpenAPI 3 Operation Object field name, fixed by the OpenAPI specification
+///
+/// Read from `tests/fixtures/openapi_operation_statuses_key.txt`: the key is the specification's
+/// text, so it is golden input data the test loads, not a literal spelled here.
+const OAS_OPERATION_STATUSES: &str =
+    include_str!("../../tests/fixtures/openapi_operation_statuses_key.txt").trim_ascii();
 
 /// Build a `GovState` that CAN mint 1.5.0 signed-token keys: it carries a deterministic
 /// `TokenSigner` (fixed key bytes + the default kid) so `POST /keys` issues a `bbk_` token instead
