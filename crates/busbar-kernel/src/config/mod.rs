@@ -1813,8 +1813,8 @@ pub struct PluginExportSettings {
     /// The instance's definition.
     pub def: ExportDefCfg,
     pub(crate) projection: crate::export::projection::Projection,
-    /// THE SCRAPE SINK: this instance's sink carries the `metrics` stream and the instance
-    /// subscribes to it — the host serves the well-known `/metrics` (it holds the recorder) and has
+    /// THE SCRAPE SINK: this instance's sink is granted first-party (linked, or signed by the release
+    /// key), carries the `metrics` stream, and the instance subscribes to it — the host serves the well-known `/metrics` (it holds the recorder) and has
     /// this sink render the recorder's snapshot (`crate::export::scrape`). At most one instance.
     pub(crate) scrape: bool,
 }
@@ -1960,12 +1960,15 @@ pub fn resolve_export(defs: &ExportDefs, errors: &mut Vec<String>) -> ExportCfg 
                 out.otlp = typed!(OtlpSettings);
             }
             // THE EXPORT AXIS: a module some compiled-in or dropped-in export plugin registered.
-            // An instance subscribed to `metrics` whose sink carries it is the SCRAPE SINK —
-            // once: a second instance of that module could only be silently ignored.
+            // An instance subscribed to `metrics` whose sink carries it and is granted FIRST-PARTY
+            // is the SCRAPE SINK — once: a second instance of that module could only be silently
+            // ignored. A third party may subscribe to `metrics`; it never renders busbar's own
+            // `/metrics` (#65).
             other if axis.is_some() => {
                 let metrics = busbar_plugin_loader::ExportStream::Metrics;
                 let carries = declared.is_some_and(|d| d.contains(&metrics));
-                let scrape = carries && projection.wants_stream(metrics);
+                let first_party = crate::export::plugin::first_party(other);
+                let scrape = carries && first_party && projection.wants_stream(metrics);
                 let taken = out.plugins.iter().find(|p| p.scrape && scrape);
                 if let Some(owner) = taken.filter(|p| p.def.module.trim() == other) {
                     errors.push(format!(

@@ -58,6 +58,13 @@ pub(crate) fn probe(
     AXIS.get()?.probe_export(module, name, cfg)
 }
 
+/// Whether `module` names a row the host grants FIRST-PARTY — linked, or dropped in signed by the
+/// release key: the only kind of sink busbar's own `/metrics` is rendered by (#65).
+pub(crate) fn first_party(module: &str) -> bool {
+    let row = AXIS.get().and_then(|axis| axis.resolve(module));
+    row.is_some_and(|p| p.first_party())
+}
+
 /// The sinks' own checks across every instance of each axis module `cfg` configures, in
 /// configuration order (export ABI minors 8, 9) — run while the configuration is validated, at
 /// `phase` (among its limits' checks, or after them); each line joins `errors` verbatim.
