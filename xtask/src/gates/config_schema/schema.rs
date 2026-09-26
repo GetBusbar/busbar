@@ -657,10 +657,16 @@ fn norm_type(t: &str) -> (String, bool) {
 /// string lists) and every section a plane DECLARES ([`super::declared`]; the kernel spells none,
 /// #49) — and, per carrier TYPE, the key that type is lifted from
 /// (`impl LiftableSection for T { const KEY … = <literal> | LIFTED_*KEYS[n] | Declared::Door; }`).
-/// A carrier that declares no key is matched by its field's own name.
+/// A carrier that declares no key is matched by its field's own name. A MAP carrier
+/// (`Declared::Any`) carries every declaring section a plane owns ([`super::declared`]'s `owned`)
+/// that no one-key carrier holds.
 struct Lift {
     keys: BTreeSet<String>,
     carriers: BTreeMap<String, String>,
+    /// The map carrier types (`const KEY … = Declared::Any`).
+    any: BTreeSet<String>,
+    /// The sections a map carrier holds: the owned declaring sections no one-key carrier names.
+    owned: BTreeSet<String>,
 }
 
 impl Lift {
@@ -678,8 +684,15 @@ impl Lift {
             }
         }
         let mut carriers: BTreeMap<String, String> = BTreeMap::new();
+        let mut any: BTreeSet<String> = BTreeSet::new();
         for (path, src) in sources {
             for (ty, expr) in scan::lift_carriers(src) {
+                // `[path::]Any` — a map carrier: it carries no one key, so it joins no one-key tie.
+                let head = expr.trim().split('(').next().unwrap_or_default();
+                if matches!(head.rsplit("::").next().map(str::trim), Some("Any")) {
+                    any.insert(ty);
+                    continue;
+                }
                 // An expression this reader cannot resolve to a literal is left unrecorded: the
                 // carrier then matches by its field's own name, exactly as an undeclared one does,
                 // and a key it failed to carry is still an orphan below — never a silent pass.
@@ -696,7 +709,18 @@ impl Lift {
                 }
             }
         }
-        Ok(Lift { keys, carriers })
+        let owned = declared
+            .owned
+            .iter()
+            .filter(|k| !carriers.values().any(|v| v == *k))
+            .cloned()
+            .collect();
+        Ok(Lift {
+            keys,
+            carriers,
+            any,
+            owned,
+        })
     }
 
     /// The wire key a carrier field of type `ty` is lifted from, when the pre-pass declares one.
@@ -786,6 +810,18 @@ fn parse_struct(
             // carrier is the field `endpoint`), and the fingerprint records the KEY — what an
             // operator writes — never the Rust ident.
             let (inner, _) = norm_type(&ty);
+            // A MAP carrier is grammar under every section it holds, each recorded as the key an
+            // operator writes; a one-key carrier or field of the same struct keeps its own entry.
+            let bare = inner.rsplit("::").next().unwrap_or(&inner).trim();
+            if lifted.any.contains(bare) {
+                for key in &lifted.owned {
+                    if !fields.contains_key(key) {
+                        fields.insert(key.clone(), field_value(&inner, true));
+                        carried.insert(key.clone());
+                    }
+                }
+                continue;
+            }
             let key = lifted.key_of(&inner).unwrap_or(serde_name);
             if lifted.keys.contains(&key) {
                 fields.insert(key.clone(), field_value(&inner, true));

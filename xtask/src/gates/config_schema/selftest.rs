@@ -475,6 +475,49 @@ pub fn run<'a>(gate: &'a dyn Gate, cx: &'a Ctx) -> Report<'a> {
         &["One carrier type carries one key"],
     ));
 
+    // THE MAP CARRIER (`Declared::Any`): a plane that OWNS its declaring section is carried by the
+    // pre-pass's one map carrier, never by a carrier named for it. Both arms plant the same owning
+    // plane and take the tree's own map carrier away, so each is measured from the same baseline:
+    // with no map carrier the owned section is an orphan (RED); with a fixture map carrier it is
+    // grammar (GREEN). A plane that does NOT own its declaring section stays an orphan either way
+    // (the "no struct carries" case above).
+    let prepass = "crates/busbar-kernel/src/config/prepass.rs";
+    let no_tree_map_carrier = |ov: &mut Overlay| {
+        ov.set(
+            prepass,
+            cx.read(prepass)
+                .unwrap_or_default()
+                .replace("= Declared::Any;", "= Declared::ByField;"),
+        );
+    };
+    let mut ov = Overlay::new();
+    ov.set(plane_fixture, declaration("\"zz_owned\"", "\"zz_owned\""));
+    no_tree_map_carrier(&mut ov);
+    report.push(prove_rows_red(
+        cx,
+        gate,
+        "an OWNED declaring section with no map carrier is REFUSED (orphan)",
+        &[ROW_TRACKED_SOURCES],
+        ov,
+        &["no struct in the tracked"],
+    ));
+    let mut ov = Overlay::new();
+    ov.set(plane_fixture, declaration("\"zz_owned\"", "\"zz_owned\""));
+    no_tree_map_carrier(&mut ov);
+    ov.set(
+        "crates/busbar-kernel/src/config/zz_map_carrier_fixture.rs",
+        "#[derive(serde::Deserialize)]\npub struct ZzMapHost {\n    #[serde(skip)]\n    \
+         pub all: ZzMapCarrier,\n}\nimpl LiftableSection for ZzMapCarrier {\n    \
+         const KEY: Declared = Declared::Any;\n    fn bank(self, _: &mut Lifted) {}\n}\n",
+    );
+    report.push(prove_rows_green(
+        cx,
+        gate,
+        "an OWNED declaring section a map carrier holds is grammar, not an orphan",
+        &[ROW_TRACKED_SOURCES],
+        ov,
+    ));
+
     // THE LIFT KEYS ARE READ FROM THE DECLARATIONS, not from a list the kernel keeps: the plane that
     // owns the endpoint door stops declaring it, and the door leaves the rendered grammar.
     let door_home = "crates/busbar-mcp/src/mcp/mod.rs";
