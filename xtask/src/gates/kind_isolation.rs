@@ -663,9 +663,19 @@ pub(super) fn is_the_wall(from: &str, to: &str) -> bool {
 /// SHAPES crate: names move INTO it, and every tier that is not a plugin names it on purpose. The
 /// root, the kernel tier, the cleanliness surfaces, the unit crates and the substrate each carry a
 /// granted `-> contract` class, and their contract vocabulary is not a coupling this gate ratchets.
-/// The retiring legacy engines and the plugin tooling are NOT here: their contract naming is still
-/// measured, cell by cell, until they drain.
-const CONTRACT_TIERS: &[&str] = &["root", "kernel", CLEANLINESS, "unit", "substrate"];
+/// The plugin tooling (the loader and the rest of the trusted computing base) is here too: after the
+/// plugin ABI and SDK merged into the contract (#84), the loader names the ABI in the one crate
+/// where the ABI lives, and its contract class is the TCB's own ([`ARCHITECTURE_TCB`]). The retiring
+/// legacy engines are NOT here: their contract naming is still measured, cell by cell, until they
+/// drain.
+const CONTRACT_TIERS: &[&str] = &[
+    "root",
+    "kernel",
+    CLEANLINESS,
+    "unit",
+    "substrate",
+    "plugin-tooling",
+];
 
 /// Is `from -> to` the contract edge a crate of kind `from` carries BY DESIGN, so its vocabulary
 /// column is not measured: the #40 wall for a plugin kind ([`is_the_wall`]), or a core tier's
@@ -675,7 +685,8 @@ pub(super) fn names_contract_by_design(from: &str, to: &str) -> bool {
     is_the_wall(from, to)
         || (to == CONTRACT_KIND
             && CONTRACT_TIERS.contains(&from)
-            && ARCHITECTURE_ALLOWED.contains(&(from, to)))
+            && (ARCHITECTURE_ALLOWED.contains(&(from, to))
+                || ARCHITECTURE_TCB.contains(&(from, to))))
 }
 
 /// THE TRUSTED COMPUTING BASE: the loader and the plugin tooling, which `ARCHITECTURE.md` 1.4 says
@@ -9522,7 +9533,8 @@ mod plant_tests {
     fn the_core_tiers_name_the_contract_by_design_and_nothing_wider() {
         for tier in CONTRACT_TIERS {
             assert!(
-                ARCHITECTURE_ALLOWED.contains(&(tier, CONTRACT_KIND)),
+                ARCHITECTURE_ALLOWED.contains(&(tier, CONTRACT_KIND))
+                    || ARCHITECTURE_TCB.contains(&(tier, CONTRACT_KIND)),
                 "`{tier} -> contract` must be a granted class"
             );
             assert!(names_contract_by_design(tier, CONTRACT_KIND), "{tier}");
@@ -9538,12 +9550,14 @@ mod plant_tests {
                 "{k} -> kernel is past the wall"
             );
         }
-        for measured in ["legacy", "plugin-tooling"] {
-            assert!(
-                !names_contract_by_design(measured, CONTRACT_KIND),
-                "{measured}"
-            );
-        }
+        assert!(
+            !names_contract_by_design("legacy", CONTRACT_KIND),
+            "a legacy engine's contract naming is still measured"
+        );
+        assert!(
+            !names_contract_by_design("plugin-tooling", "kernel"),
+            "the plugin tooling reaching past the contract is still judged"
+        );
         for (from, to) in ARCHITECTURE_ALLOWED {
             assert_ne!(
                 *from, CONTRACT_KIND,
