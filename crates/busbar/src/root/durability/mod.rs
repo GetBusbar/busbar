@@ -129,6 +129,10 @@ pub use amend::bind_amendments;
 mod seal;
 pub use seal::{keyset_of, Cadence, ChainSecret, KeySetVerifier, CHECKPOINT_TICK_SECS};
 
+/// How many sealed checkpoints a node holds in memory: the latest 1,024, oldest evicted first
+/// (architect ruling 2026-09-26, "checkpoint retention"). The journal holds every one.
+pub const CHECKPOINT_RING: usize = 1_024;
+
 /// What the root reads out of configuration to decide the durability shape.
 ///
 /// One field, because there is one decision. Its absence is the previous release's shape and its
@@ -159,6 +163,12 @@ pub struct Durability {
     /// Appended by [`Durability::journal_checkpoint`] and by nothing else, and only after the
     /// journal has taken the record: a seal this node kept but never got onto the chain would be a
     /// figure with no position, which is the one thing the journal exists to prevent.
+    ///
+    /// A BOUNDED RING of the latest [`CHECKPOINT_RING`] seals (architect ruling 2026-09-26,
+    /// "checkpoint retention"): at the cadence's busiest a node seals every 10,000 records, so an
+    /// unbounded list is memory that grows for the life of the process. The journal is the durable
+    /// record of every seal; the audit chain's head history (#82(d)) is kept forever on its own.
+    /// The checkpoints read serves this ring.
     pub checkpoints: Vec<Checkpoint>,
     /// WHICH BOOT OF THIS JOURNAL this process is: one more than the highest any record on the
     /// chain was written under, and 1 on a chain that holds none.
@@ -317,6 +327,9 @@ impl Durability {
             Entry::new(RecordClass::Checkpoint, checkpoint_body(checkpoint)).at(checkpoint.wall, 0);
         let ack = self.journal.append(token, at, &[entry])?;
         self.checkpoints.push(checkpoint.clone());
+        // The ring: the oldest seal goes once the latest CHECKPOINT_RING are held.
+        let over = self.checkpoints.len().saturating_sub(CHECKPOINT_RING);
+        self.checkpoints.drain(..over);
         Ok(ack)
     }
 

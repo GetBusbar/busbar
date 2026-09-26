@@ -261,3 +261,46 @@ fn checkpoint_numbering_continues_across_a_restart() {
     let _ = std::fs::remove_dir_all(&dir);
     assert_eq!(next, 3);
 }
+
+/// THE RING (architect ruling 2026-09-26, "checkpoint retention"): the node holds the latest 1,024
+/// seals; the 1,025th evicts the OLDEST, and every seal is still on the journal.
+#[test]
+fn the_checkpoint_ring_holds_the_latest_1024_and_evicts_the_oldest_at_1025() {
+    use super::super::CHECKPOINT_RING;
+    assert_eq!(CHECKPOINT_RING, 1_024);
+    let token = token();
+    let mut durability = memory_node();
+    for n in 0..1_024u64 {
+        durability
+            .seal_checkpoint(&token, StepName::Meter, NOW + n)
+            .expect("the seal goes down");
+    }
+    assert_eq!(
+        durability.checkpoints.len(),
+        1_024,
+        "1,024 seals are all held"
+    );
+    assert_eq!(durability.checkpoints[0].checkpoint_seq, 1);
+
+    durability
+        .seal_checkpoint(&token, StepName::Meter, NOW + 1_024)
+        .expect("the 1,025th seal goes down");
+    assert_eq!(
+        durability.checkpoints.len(),
+        1_024,
+        "the 1,025th seal must evict one: the ring is bounded"
+    );
+    assert_eq!(
+        durability.checkpoints[0].checkpoint_seq, 2,
+        "the OLDEST seal (checkpoint 1) is the one evicted"
+    );
+    assert_eq!(
+        durability.checkpoints[1_023].checkpoint_seq, 1_025,
+        "the newest seal is held"
+    );
+    assert_eq!(
+        durability.journal.next_seq(),
+        1_026,
+        "the journal is the durable record: it took every seal, the evicted one included"
+    );
+}
