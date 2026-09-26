@@ -330,9 +330,9 @@ fn a_dry_chain_refuses_the_open() {
         FixtureHost::new()
             .governed()
             .with_budget_chain(vec![busbar_api::BudgetBucketState {
-                bucket_id: "group:g@day#llm".to_string(),
+                bucket_id: "group:g@day#other-pool".to_string(),
                 budget_group: Some("g".to_string()),
-                pool: Some("llm".to_string()),
+                pool: Some("other-pool".to_string()),
                 spend_micros_at_current_rate: 1,
                 remaining_micros: Some(0),
                 window_start: 0,

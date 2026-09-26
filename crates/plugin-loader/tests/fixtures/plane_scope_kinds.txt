@@ -1,0 +1,6 @@
+# Golden input data for store_scope_kind_conformance_tests: two scope kinds a PLANE registers at boot
+# — the engine's vocabulary, which a dropped-in store's own copy of the registry never holds. The
+# loader names no plane; the test reads the kinds here, as data. One `key = value` per line; `#`
+# starts a comment.
+server = mcp_server
+tool = mcp_tool

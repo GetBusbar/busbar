@@ -743,10 +743,8 @@ fn a_plane_gated_module_is_named_only_from_code_under_the_same_feature() {
 
 /// A scratch directory that removes itself, so a failing assertion never leaves a tree behind and
 /// two runs of the same test never read each other's journal.
-#[cfg(any(feature = "root-admin", feature = "root-llm"))]
 struct BookDir(std::path::PathBuf);
 
-#[cfg(any(feature = "root-admin", feature = "root-llm"))]
 impl BookDir {
     fn new(tag: &str) -> Self {
         let path = std::env::temp_dir().join(format!(
@@ -776,7 +774,6 @@ impl BookDir {
     }
 }
 
-#[cfg(any(feature = "root-admin", feature = "root-llm"))]
 impl Drop for BookDir {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.0);
@@ -786,7 +783,6 @@ impl Drop for BookDir {
 /// The migration config a seam test opens over: a plan naming nothing, so an empty deployment seals
 /// a ZERO opening rather than refusing, and the two facts under test are proved without seeding rows
 /// the seal would then have to read back.
-#[cfg(any(feature = "root-admin", feature = "root-llm"))]
 fn empty_opening_plan() -> root::migration::MigrationConfig {
     root::migration::MigrationConfig {
         node: 0,
@@ -815,7 +811,6 @@ fn empty_opening_plan() -> root::migration::MigrationConfig {
 ///     proof. The marker is the FIRST record on the chain; a settlement made afterwards lands
 ///     STRICTLY AFTER it. An opening sealed after traffic has begun is worse than useless, because
 ///     it looks authoritative while measuring from the wrong point.
-#[cfg(any(feature = "root-admin", feature = "root-llm"))]
 #[test]
 fn the_boot_path_opens_the_configured_directory_and_seals_before_it_settles() {
     use busbar_kernel_ledger::totals::{BucketId, BucketScope, CapDimension, TotalsKey};
@@ -824,8 +819,11 @@ fn the_boot_path_opens_the_configured_directory_and_seals_before_it_settles() {
     // ORDER-INDEPENDENCE, not decoration. `cfg_with_provider_api_key` names the registry's
     // residual-default dialect, and in a test binary the protocol set is installed by whichever
     // test installs it first — so without this the test passes in a full run and fails run alone.
-    // The same call `root/tests/units_llm.rs` makes, for the same reason.
-    busbar_llm::testkit::install_test_seams();
+    // Every linked protocol declaration goes into the test registry, read off the linked table
+    // the root registers from.
+    for decls in crate::LINKED.protocols {
+        busbar_kernel::proto::register_test_protocols(decls);
+    }
     busbar_kernel::metrics::init();
     let dir = BookDir::new("real-path");
     assert!(
@@ -996,7 +994,6 @@ fn the_boot_path_opens_the_configured_directory_and_seals_before_it_settles() {
 ///
 /// The adapter is the real one over the real in-tree memory store: the store a config naming none
 /// resolves to at boot. Not a recording double.
-#[cfg(any(feature = "root-admin", feature = "root-llm"))]
 #[test]
 fn the_boot_book_ships_its_opening_to_the_configured_store() {
     use busbar_kernel_wal::RecordClass;
@@ -1055,7 +1052,6 @@ fn the_boot_book_ships_its_opening_to_the_configured_store() {
 ///
 /// The seal and the shipping still happen — those are the store's business, not the disk's — so
 /// this also pins that the two decisions are independent: no directory does not mean no opening.
-#[cfg(any(feature = "root-admin", feature = "root-llm"))]
 #[test]
 fn no_configured_directory_still_opens_nothing_and_writes_nothing() {
     use busbar_plugin_loader::store_adapter::StoreAdapter;
