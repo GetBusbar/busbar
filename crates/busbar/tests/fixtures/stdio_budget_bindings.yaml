@@ -1,0 +1,22 @@
+  role_bindings:
+    statauth:
+      tester: { group: tiny }
+groups:
+  tiny:
+    limits:
+      - { requests: 2, per: hour }
+tools:
+  ws:
+    url: "http://127.0.0.1:9/mcp"
+    allow_private: true
+    pin: { mechanism: cert_spki, key: "sha256/UNUSED=" }
+    prompts_allow:
+      greet:
+        description: "a greeting"
+        template: "Hello from the operator."
+        ask_caller:
+          - confirm:
+              method: elicitation/create
+              params:
+                message: "Render the greeting?"
+                requestedSchema: { type: object, properties: { ok: { type: boolean } } }

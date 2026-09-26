@@ -40,8 +40,23 @@ use std::process::{Child, Command, Stdio};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
+/// The stdio serve mode's operator surface, as DATA (`tests/fixtures/stdio_serve.txt`).
+fn surface(key: &str) -> &'static str {
+    include_str!("fixtures/stdio_serve.txt")
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .find_map(|l| {
+            let (k, v) = l.split_once('=')?;
+            (k.trim() == key).then(|| v.trim())
+        })
+        .unwrap_or_else(|| panic!("tests/fixtures/stdio_serve.txt has no `{key}` row"))
+}
+
 /// The audience every credential in this battery is bound to — the deployment's canonical URI.
-const CANONICAL: &str = "http://127.0.0.1:18080/mcp";
+fn canonical() -> &'static str {
+    surface("canonical_uri")
+}
 
 fn fixture_dir(tag: &str) -> PathBuf {
     let d = std::env::temp_dir().join(format!(
@@ -205,10 +220,9 @@ providers:
 models:
   test-model:
     provider: mock
-mcp:
-  canonical_uri: "{CANONICAL}"
-  authorization_servers: ["https://login.example.com"]
-{extra}"#
+{section}{extra}"#,
+            section = include_str!("fixtures/stdio_plane_section.yaml")
+                .replace("{canonical}", canonical()),
         ),
     )
     .unwrap();
@@ -248,7 +262,7 @@ struct StdioChild {
 
 fn spawn(dir: &Path, credential: Option<&str>) -> StdioChild {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_busbar"));
-    cmd.arg("--mcp-stdio")
+    cmd.arg(surface("serve_flag"))
         .env("MOCK_KEY", "test-key-value")
         .env(
             "BUSBAR_SIGNING_KEY",
@@ -256,12 +270,12 @@ fn spawn(dir: &Path, credential: Option<&str>) -> StdioChild {
         )
         .env("BUSBAR_CONFIG", dir.join("config.yaml"))
         .env("BUSBAR_PROVIDERS", dir.join("providers.yaml"))
-        .env_remove("BUSBAR_MCP_STDIO_CREDENTIAL")
+        .env_remove(surface("credential_env"))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     if let Some(c) = credential {
-        cmd.env("BUSBAR_MCP_STDIO_CREDENTIAL", c);
+        cmd.env(surface("credential_env"), c);
     }
     let mut child = cmd.spawn().expect("spawn busbar in its stdio serve mode");
     let stdin = child.stdin.take();
@@ -382,14 +396,14 @@ fn a_governed_deployment_refuses_an_uncredentialed_stdio_session() {
     if !install_static_auth_plugin(&dir) {
         return;
     }
-    let token = jwt_with_aud(CANONICAL);
+    let token = jwt_with_aud(canonical());
     write_configs(&dir, &governed_config(&dir, &token, ""));
     let mut child = spawn(&dir, None);
     let code = wait_bounded(&mut child.child, Duration::from_secs(120));
     assert_ne!(code, 0, "a governed deployment must not serve unattributed");
     let stderr = child.stderr_so_far();
     assert!(
-        stderr.contains("BUSBAR_MCP_STDIO_CREDENTIAL"),
+        stderr.contains(surface("credential_env")),
         "the refusal names the remedy: {stderr}"
     );
     assert!(
@@ -407,9 +421,9 @@ fn a_governed_deployment_refuses_a_wrong_audience_credential() {
     if !install_static_auth_plugin(&dir) {
         return;
     }
-    let token = jwt_with_aud(CANONICAL);
+    let token = jwt_with_aud(canonical());
     write_configs(&dir, &governed_config(&dir, &token, ""));
-    let wrong = jwt_with_aud("https://some-other-resource.example.com/mcp");
+    let wrong = jwt_with_aud(surface("wrong_audience_uri"));
     let mut child = spawn(&dir, Some(&wrong));
     let code = wait_bounded(&mut child.child, Duration::from_secs(120));
     assert_ne!(code, 0);
@@ -431,35 +445,13 @@ fn a_budgeted_stdio_session_serves_within_budget_and_refuses_over_it() {
     if !install_static_auth_plugin(&dir) {
         return;
     }
-    let token = jwt_with_aud(CANONICAL);
+    let token = jwt_with_aud(canonical());
     write_configs(
         &dir,
         &governed_config(
             &dir,
             &token,
-            r#"  role_bindings:
-    statauth:
-      tester: { group: tiny }
-groups:
-  tiny:
-    limits:
-      - { requests: 2, per: hour }
-tools:
-  ws:
-    url: "http://127.0.0.1:9/mcp"
-    allow_private: true
-    pin: { mechanism: cert_spki, key: "sha256/UNUSED=" }
-    prompts_allow:
-      greet:
-        description: "a greeting"
-        template: "Hello from the operator."
-        ask_caller:
-          - confirm:
-              method: elicitation/create
-              params:
-                message: "Render the greeting?"
-                requestedSchema: { type: object, properties: { ok: { type: boolean } } }
-"#,
+            include_str!("fixtures/stdio_budget_bindings.yaml"),
         ),
     );
     let mut child = spawn(&dir, Some(&token));
@@ -539,7 +531,7 @@ fn a_roleless_admitted_credential_is_refused_without_serving_a_frame() {
     if !install_static_auth_plugin(&dir) {
         return;
     }
-    let token = jwt_with_aud(CANONICAL);
+    let token = jwt_with_aud(canonical());
     write_configs(&dir, &governed_config(&dir, &token, ""));
     let mut child = spawn(&dir, Some(&token));
     let code = wait_bounded(&mut child.child, Duration::from_secs(120));
@@ -572,7 +564,7 @@ fn a_bound_session_serves_and_eof_with_a_live_subscription_exits_promptly() {
     if !install_static_auth_plugin(&dir) {
         return;
     }
-    let token = jwt_with_aud(CANONICAL);
+    let token = jwt_with_aud(canonical());
     write_configs(
         &dir,
         &governed_config(

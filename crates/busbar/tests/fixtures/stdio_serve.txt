@@ -1,0 +1,9 @@
+# THE STDIO SERVE MODE'S OPERATOR SURFACE (mcp_stdio_serve.rs) — golden input data, one
+# `key = value` per line (`#` starts a comment). The flag and the environment variable are the
+# operator-facing spellings the binary documents in `--help`; the URIs are the deployment's
+# canonical resource (the audience every credential in the battery is bound to), a resource that is
+# NOT it, and the upstream registration's url.
+serve_flag = --mcp-stdio
+credential_env = BUSBAR_MCP_STDIO_CREDENTIAL
+canonical_uri = http://127.0.0.1:18080/mcp
+wrong_audience_uri = https://some-other-resource.example.com/mcp

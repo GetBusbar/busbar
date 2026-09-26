@@ -60,6 +60,24 @@ fn free_port() -> u16 {
     l.local_addr().unwrap().port()
 }
 
+/// The door's own plane section, as DATA (`tests/fixtures/front_door_plane_section.yaml`), with the
+/// two listener ports filled in. Its first line is the section key the refusal must name.
+const PLANE_SECTION: &str = include_str!("fixtures/front_door_plane_section.yaml");
+
+fn plane_section(data_port: u16, admin_port: u16) -> String {
+    PLANE_SECTION
+        .replace("{data_port}", &data_port.to_string())
+        .replace("{admin_port}", &admin_port.to_string())
+}
+
+/// The section key the door's plane is configured under — the fixture's first line, `<key>:`.
+fn section_key() -> &'static str {
+    PLANE_SECTION
+        .lines()
+        .next()
+        .expect("the plane-section fixture is not empty")
+}
+
 /// The smallest config that makes a deployment an MCP server, with `auth_block` spliced in
 /// verbatim. Everything absent is absent on purpose: no providers, no models, no pools — the MCP
 /// plane needs none of them, and a fixture that also carried an LLM fleet could fail for a reason
@@ -76,11 +94,8 @@ providers: {{}}
 models: {{}}
 pools: {{}}
 {auth_block}
-mcp:
-  canonical_uri: "http://127.0.0.1:{data_port}/mcp"
-  authorization_servers:
-    - "http://127.0.0.1:{admin_port}"
-"#
+{section}"#,
+            section = plane_section(data_port, admin_port),
         ),
     )
     .unwrap();
@@ -130,7 +145,7 @@ fn busbar(cfg: &Path, args: &[&str]) -> Command {
 /// dev-mode posture.
 fn assert_names_both_keys(where_: &str, text: &str) {
     assert!(
-        text.contains("mcp:"),
+        text.contains(section_key()),
         "{where_} must name the door's own config key; got:\n{text}"
     );
     assert!(

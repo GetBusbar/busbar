@@ -1,0 +1,8 @@
+# THE PLANE DOORS (law7_served_surface.rs): the data-listener paths a plane serves once its section
+# is configured, and that a 1.5.5 config must leave to the fallback catch-all. One door per line:
+#   <path> <when>   where <when> is `both` (probed unconfigured AND configured) or `unconfigured`
+#                   (probed on the 1.5.5 config only). Order is probe order.
+/v1/realtime both
+/v1/realtime/gemini unconfigured
+/mcp both
+/a2a both

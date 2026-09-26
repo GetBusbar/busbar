@@ -38,16 +38,26 @@ const PLANE_ADMIN_PATHS: &[(&str, &str)] = &[
 
 /// The plane sections a configured deployment adds (plus `public_url`, which a 1.5.5 config may
 /// already carry and which on its own must configure nothing).
-const PLANE_SECTIONS: &str = r#"mcp:
-  canonical_uri: "http://127.0.0.1:{data_port}/mcp"
-  authorization_servers: ["http://127.0.0.1:{admin_port}"]
-tools:
-  t1: { url: "https://t.example/rpc", pin: { mechanism: unpinned } }
-agents:
-  a1: { url: "https://a.example/card", pin: { mechanism: unpinned } }
-streams:
-  context_window_tokens: 16384
-"#;
+const PLANE_SECTIONS: &str = include_str!("fixtures/law7_plane_sections.yaml");
+
+/// The plane doors, as DATA (`tests/fixtures/law7_plane_doors.txt`): `(path, probed configured)`.
+fn plane_doors() -> Vec<(&'static str, bool)> {
+    let rows: Vec<(&'static str, bool)> = include_str!("fixtures/law7_plane_doors.txt")
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .map(|l| {
+            let (path, when) = l.split_once(' ').expect("`<path> <when>`");
+            match when.trim() {
+                "both" => (path, true),
+                "unconfigured" => (path, false),
+                other => panic!("law7_plane_doors.txt: unknown <when> `{other}`"),
+            }
+        })
+        .collect();
+    assert_eq!(rows.len(), 4, "the plane-door fixture lost or gained a row");
+    rows
+}
 
 struct Booted {
     child: Child,
@@ -230,7 +240,7 @@ fn a_1_5_5_config_serves_the_1_5_5_surface_and_each_configured_plane_serves_its_
         "the overlay-section list must not name an unconfigured plane's section: {body}"
     );
     assert_eq!(admin(&b, "DELETE", "/overlay/tools").0, 400);
-    for door in ["/v1/realtime", "/v1/realtime/gemini", "/mcp", "/a2a"] {
+    for (door, _) in plane_doors() {
         let (_, body) = request(&b.data, "POST", door, None);
         assert!(
             !is_plane_door(&body),
@@ -256,7 +266,10 @@ fn a_1_5_5_config_serves_the_1_5_5_surface_and_each_configured_plane_serves_its_
         body.contains("`tools`") && body.contains("`agents`"),
         "a configured plane's section is an overlay section: {body}"
     );
-    for door in ["/v1/realtime", "/mcp", "/a2a"] {
+    for door in plane_doors()
+        .into_iter()
+        .filter_map(|(door, configured)| configured.then_some(door))
+    {
         let (status, body) = request(&b.data, "POST", door, None);
         assert!(
             status == 401 && is_plane_door(&body),
@@ -329,7 +342,7 @@ fn a_1_5_5_config_boot_prints_nothing_from_an_unconfigured_plane() {
         out.contains("TLS configuration error for '") && !out.contains(PLANE_LINE),
         "a 1.5.5 config must print no plane line on BOOT-181:\n{out}"
     );
-    let out = boot_181_output("streams:\n  context_window_tokens: 16384\n");
+    let out = boot_181_output(include_str!("fixtures/law7_streams_section.yaml"));
     assert!(
         out.contains(PLANE_LINE),
         "with `streams:` configured the plane root's provisioning runs:\n{out}"
