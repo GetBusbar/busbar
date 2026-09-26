@@ -17,8 +17,7 @@
 //! message — and the audit step is the one place in this directory that turns a named refusal into
 //! bytes. That is the rule that keeps every terminal on this plane on one path.
 //!
-//! NO GATE. The files compile in every build of this crate: the `teller-waist` feature that once
-//! kept them dark is an inert name now, kept only because the tree's CI still spells it.
+//! NO GATE. The files compile in every build of this crate; no feature keeps them dark.
 
 /// Step 4 — the charge: the admission door, then the hold and the meter half it opens.
 pub mod admit;

@@ -275,12 +275,7 @@ export-prometheus = ["dep:busbar-export-prometheus"]
 # to this node and the build that answered them through the shell instead is dropped (ARCHITECT
 # R7(b)). The name stays a feature because the root-units table and the tree's gates key the node's
 # module by it.
-#
-# The plane-crate edge is written `busbar-llm?/…`, the same optional form `plane-voice` uses for
-# `busbar-voice?/runtime`: it says nothing when the crate is not there, so `git rm -r crates/busbar-llm`
-# leaves a manifest cargo still loads. The flag it names is inert now (the step files compile in every
-# build of the plane); it is spelled because the tree's CI still names it.
-root-llm = ["proto-llm", "busbar-llm?/teller-waist"]
+root-llm = ["proto-llm"]
 # THE ROOT-DRIVEN ADMIN SURFACE (composition-root step C1 / switch-over S1). DEFAULT ON: it was held
 # off until the oracle's admin family was green on it, and it is. The switch is what makes an admin
 # request travel through the kernel's loop instead of reaching its handler directly; the 234 owed

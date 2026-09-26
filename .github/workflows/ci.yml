@@ -1274,15 +1274,13 @@ jobs:
             exit 1
           fi
 
-      # THE LLM PLANE'S TELLER-STEP SUITE — the whole of `crates/busbar-llm/src/unit/` sits behind
-      # `#![cfg(feature = "teller-waist")]`, a flag no other step in this workflow turns on. So the
-      # workspace `cargo test` above compiles that directory to nothing and reports a green over a
-      # suite it never built: the step files, the walk carry and the flip's own rehearsal were all
-      # dark. This step is the one place the flag is up. It is exactly the voice step's situation one
-      # plane over, and it gets the same collected-count floor for the same reason — a suite that
-      # stops being collected still prints `test result: ok` and exits 0, so the count is what proves
-      # it ran rather than compiled away.
-      - name: LLM teller-step tests (the `teller-waist`-gated step suite `cargo test --workspace` never runs)
+      # THE LLM PLANE'S TELLER-STEP SUITE, BY NAME, WITH A COLLECTED-COUNT FLOOR. The step files in
+      # `crates/busbar-llm/src/unit/` once sat behind a feature no other step turned on, so the
+      # workspace run compiled them to nothing and reported green over a suite it never built. They
+      # compile in every build now and the feature is gone. This step keeps the suite's floor: a
+      # suite that stops being collected still prints `test result: ok` and exits 0, so the count is
+      # what proves it ran rather than compiled away.
+      - name: LLM teller-step tests (the plane's unit step suite, run by name against its floor)
         env:
           LLM_UNIT_MIN_TESTS: "70"
         # Same pipefail + explicit `0 failed` discipline as the voice and timing steps above. This
@@ -1292,7 +1290,7 @@ jobs:
         run: |
           set -uo pipefail
           rc=0
-          cargo test -p busbar-llm --features teller-waist --locked --lib unit:: 2>&1 | tee "$RUNNER_TEMP/llm-unit-test.log" || rc=${PIPESTATUS[0]}
+          cargo test -p busbar-llm --locked --lib unit:: 2>&1 | tee "$RUNNER_TEMP/llm-unit-test.log" || rc=${PIPESTATUS[0]}
           total=$(grep -oE 'test result: (ok|FAILED)\. [0-9]+ passed' "$RUNNER_TEMP/llm-unit-test.log" \
                   | grep -oE '[0-9]+ passed' | grep -oE '[0-9]+' \
                   | awk '{s+=$1} END {print s+0}')
@@ -2524,7 +2522,6 @@ jobs:
   # feature-covered: busbar-mcp/openapi-schema -- openapi-schema -- pulled by the forward from busbar-kernel in that job's build
   # feature-covered: busbar-voice/openapi-schema -- openapi-schema -- pulled by the forward from busbar with the feature on
   # feature-covered: busbar-timing/timing -- check -- the Timing implementation tests step names -p busbar-timing --features timing
-  # feature-covered: busbar-llm/teller-waist -- check -- the LLM teller-step tests step names it, and the root default reaches it
   # feature-covered: busbar-voice/test-support -- check -- the Voice runtime tests step names --features runtime,test-support
   # feature-covered: busbar-voice/runtime -- check -- the Voice runtime tests step names it, and the root default reaches it
   # feature-covered: busbar-voice-codec/runtime -- check -- the Voice runtime tests step names -p busbar-voice-codec --features runtime

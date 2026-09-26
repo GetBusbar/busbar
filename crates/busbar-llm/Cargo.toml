@@ -59,11 +59,6 @@ openapi-schema = ["busbar-kernel/openapi-schema", "busbar-llm-codec/openapi-sche
 # (a `webhooks:` config section + a dispatch slot on the fallback plane) is the reported deferred
 # remainder — see `openai_responses/webhook.rs`.
 webhook-receiver = ["dep:busbar-plugin"]
-# THE TELLER WAIST — an INERT name. The `src/unit/` step files and the unit over them are this
-# plane's only arrival path and compile in every build (ARCHITECT R7(b): the build that left them
-# dark, and answered arrivals through the shell instead, is dropped). The name stays because the
-# tree's CI and the composition root's `root-llm` forward still spell it; it turns nothing on.
-teller-waist = []
 
 [dependencies]
 # NO `busbar-core` HERE, ON PURPOSE. A plane is a plugin on the plane ABI: the ONLY surface between
