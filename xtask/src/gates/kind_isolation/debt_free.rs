@@ -27,10 +27,20 @@
 //!   cannot be satisfied by debt that happens to contain its word.
 //!
 //! The real tree's debt stays RED on `cargo xtask gate kind-isolation`. Only the proofs moved.
+//!
+//! THE BASE IS PINNED, TOO. Two of the rules this subject runs (`:deps`' new-forbidden-edge and
+//! `:matrix`'s minted-row) compare the tree against the merge-base, and a checkout that cannot
+//! establish one (a detached worktree with no `XTASK_CEILING_BASE`) makes both rules answer
+//! `no-base` and nothing else. That finding is standing debt, so it was taken out of view, and a
+//! plant those rules must refuse came back GREEN or red for the wrong reason: the proof depended on
+//! how the battery's checkout was made. Every run here is measured against `HEAD`, read once per
+//! repository root, so a plant is exactly what the battery introduced on every checkout, and a
+//! case can plant that base's own files (`git-show:<sha>:<path>`) through [`pinned_base`].
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::ctx::Ctx;
+use crate::gates::construction::ceilings::BASE_PIN_KEY;
 use crate::gates::{Gate, Report};
 use crate::ledger::{Row, Status, Verdict};
 
@@ -128,17 +138,53 @@ pub(super) fn without_debt(row: Row, debt: &Debt) -> Row {
     Row::fail(row.id, row.title, detail)
 }
 
+/// THE BASE EVERY DEBT-FREE RUN IS MEASURED AGAINST: the commit `HEAD` names, read ONCE per
+/// repository root and then fixed, so a battery on a checkout other writers commit onto does not
+/// see its base move between the case that planted against it and the case that reads it. `None`
+/// only when `HEAD` itself cannot be read, and then the runs fall back to the live derivation.
+pub(super) fn pinned_base(cx: &Ctx) -> Option<String> {
+    type Pins = std::sync::Mutex<BTreeMap<std::path::PathBuf, Option<String>>>;
+    static PINS: std::sync::OnceLock<Pins> = std::sync::OnceLock::new();
+    let pins = PINS.get_or_init(|| std::sync::Mutex::new(BTreeMap::new()));
+    let mut guard = pins.lock().unwrap_or_else(|e| e.into_inner());
+    guard
+        .entry(cx.root().to_path_buf())
+        .or_insert_with(|| {
+            cx.git(&["rev-parse", "HEAD"])
+                .ok()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+        })
+        .clone()
+}
+
+/// `cx` with the base pinned to `sha`, unless its overlay already pins one of its own.
+fn pinned(cx: &Ctx, sha: Option<&str>) -> Ctx {
+    let Some(sha) = sha else {
+        return cx.clone();
+    };
+    if cx.overlay_command(BASE_PIN_KEY).is_some() {
+        return cx.clone();
+    }
+    let mut ov = cx.overlay().cloned().unwrap_or_default();
+    ov.set_command(BASE_PIN_KEY, sha);
+    cx.with_overlay(ov)
+}
+
 /// THE SHIPPED GATE WITH TODAY'S DEBT OUT OF VIEW. See the module header.
 pub(super) struct DebtFree {
     pub(super) inner: super::KindIsolationGate,
     pub(super) debt: Debt,
+    /// The base every run is pinned to — see [`pinned_base`].
+    pub(super) base: Option<String>,
 }
 
 impl DebtFree {
-    /// Measure the debt of `inner` over the unplanted `cx`, and wrap it.
+    /// Measure the debt of `inner` over the unplanted `cx`, against the pinned base, and wrap it.
     pub(super) fn measure(inner: super::KindIsolationGate, cx: &Ctx) -> DebtFree {
-        let debt = debt_of(&inner.run(cx));
-        DebtFree { inner, debt }
+        let base = pinned_base(cx);
+        let debt = debt_of(&inner.run(&pinned(cx, base.as_deref())));
+        DebtFree { inner, debt, base }
     }
 }
 
@@ -167,7 +213,7 @@ impl Gate for DebtFree {
     }
 
     fn run(&self, cx: &Ctx) -> Verdict {
-        let v = self.inner.run(cx);
+        let v = self.inner.run(&pinned(cx, self.base.as_deref()));
         Verdict::of(
             v.rows
                 .into_iter()

@@ -612,6 +612,26 @@ fn one_name_per_axis(cx: &crate::ctx::Ctx) -> Result<Vec<(&'static str, String)>
     Ok(out)
 }
 
+/// THE STALE-SLACK FIXTURE'S CRATE: a neutral `kernel`-kind crate that exists only in the overlay,
+/// so the instance cases measure a cell no live crate owns and no fold can take away.
+// qa-names: crates/busbar-kernel-planted -- xtask/src/gates/kind_isolation/matrix/instances.rs -- an overlay-only fixture crate the instance and cell cases plant whole (manifest and sources); it is absent from the tree on purpose, so no live crate or fold decides what those cases measure
+pub(super) const FIXTURE_DIR: &str = "crates/busbar-kernel-planted";
+pub(super) const FIXTURE_CRATE: &str = "busbar-kernel-planted";
+
+/// [`FIXTURE_CRATE`]'s manifest and an empty library root, and nothing else.
+pub(super) fn fixture_crate() -> crate::ctx::Overlay {
+    let mut ov = crate::ctx::Overlay::new();
+    ov.set(
+        format!("{FIXTURE_DIR}/Cargo.toml"),
+        format!("[package]\nname = \"{FIXTURE_CRATE}\"\nversion = \"0.0.0\"\n"),
+    );
+    ov.set(
+        format!("{FIXTURE_DIR}/src/lib.rs"),
+        "//! Fixture.\n".to_string(),
+    );
+    ov
+}
+
 /// THE RED PROOFS THE FIVE AXES OWE (item 118): a planted store/secret/auth/hook/export instance
 /// name in core turns `:matrix` RED, on both registrations.
 pub fn selftest<'a>(
@@ -749,28 +769,37 @@ pub fn selftest<'a>(
 
     // THE RATCHET IS EXACT BOTH WAYS, and a ceiling for an axis nothing measures is refused at load.
     //
-    // THE STALE-SLACK CASE BUILDS ITS OWN ROW. It used to add 1 to the live `busbar-kernel ×
-    // export` ceiling, a cell whose ceiling sits BELOW its count on this tree (54 vs 79, RAISED —
-    // owner question Q77): ceiling + 1 is still below the count, so the planted run could only say
-    // RAISED again and never STALE SLACK — a proof that could not be had (item 89). The fixture
-    // here is a cell the live tree does not have: `busbar-kernel-scope` names the store instance
-    // `memory` once, in a file of its own, and the ledger gains an `[[instance]]` row for exactly
-    // that cell. At `count = "1"` the row equals its measurement and the row is GREEN (the control
-    // below); at `count = "2"` the ceiling sits one above the count, which is the stale slack this
-    // case exists to prove the ratchet refuses. Only the number differs between the two plants.
+    // THE STALE-SLACK CASE BUILDS ITS OWN ROW, ON A CRATE IT BUILDS. It used to add 1 to the live
+    // `busbar-kernel × export` ceiling, a cell whose ceiling sits BELOW its count on this tree (54
+    // vs 79, RAISED — owner question Q77): ceiling + 1 is still below the count, so the planted run
+    // could only say RAISED again and never STALE SLACK — a proof that could not be had (item 89).
+    // Its later fixtures were live crates' cells (`busbar-timing` until that crate folded into
+    // the kernel, then `busbar-kernel-scope`), and a live crate is one a fold can take away. So
+    // the fixture is now wholly the battery's: [`FIXTURE_CRATE`], a neutral kernel-kind crate that
+    // exists only in the overlay, names the store instance `memory` once, and the ledger gains an
+    // `[[instance]]` row for exactly that cell. At `count = "1"` the row equals its measurement and
+    // the row is GREEN (the control below); at `count = "2"` the ceiling sits one above the count,
+    // which is the stale slack this case exists to prove the ratchet refuses. Only the number
+    // differs between the two plants.
+    //
+    // THE ROW PRE-DATES THE BRANCH IN BOTH, because the base's copy of the ledger is planted with
+    // it. A row that is in no copy of the ledger at the merge-base is `minted-row` whatever its
+    // count, so without that the control could never be green and the red case would be red for
+    // two reasons at once; with it, the count is the only thing either case is about.
     let slack_fixture = |count: &str| {
-        let mut ov = super::plant(
-            cx,
-            "crates/busbar-kernel-scope/src/planted_slack.rs",
-            "pub const S: &str = \"memory\";\n",
-        );
+        let mut ov = fixture_crate();
         ov.set(
-            super::LEDGER,
-            format!(
-                "{}\n\n[[instance]]\ncrate = \"busbar-kernel-scope\"\nkind = \"store\"\ncount = \"{count}\"\n",
-                cx.read(super::LEDGER).unwrap_or_default().trim_end()
-            ),
+            format!("{FIXTURE_DIR}/src/planted_slack.rs"),
+            "pub const S: &str = \"memory\";\n".to_string(),
         );
+        let ledger = format!(
+            "{}\n\n[[instance]]\ncrate = \"{FIXTURE_CRATE}\"\nkind = \"store\"\ncount = \"{count}\"\n",
+            cx.read(super::LEDGER).unwrap_or_default().trim_end()
+        );
+        if let Some(sha) = super::super::debt_free::pinned_base(cx) {
+            ov.set_command(format!("git-show:{sha}:{}", super::LEDGER), ledger.clone());
+        }
+        ov.set(super::LEDGER, ledger);
         ov
     };
     report.push(prove_rows_green(
@@ -788,26 +817,27 @@ pub fn selftest<'a>(
         slack_fixture("2"),
         &[
             "instance-ratchet",
-            "busbar-kernel-scope \u{d7} store",
+            &format!("{FIXTURE_CRATE} \u{d7} store"),
             "ceiling 2 vs measured 1",
             "STALE SLACK",
         ],
     ));
     let text = cx.read(super::LEDGER).unwrap_or_default();
+    let mut dead = fixture_crate();
+    dead.set(
+        super::LEDGER,
+        format!(
+            "{}\n\n[[instance]]\ncrate = \"{FIXTURE_CRATE}\"\nkind = \"store\"\ncount = \"1\"\n",
+            text.trim_end()
+        ),
+    );
     report.push(prove_rows_red(
         cx,
         gate,
         "an [[instance]] row over a cell that measures zero is a dead allowance",
         &[ROW_MATRIX],
-        super::plant(
-            cx,
-            super::LEDGER,
-            &format!(
-                "{}\n\n[[instance]]\ncrate = \"busbar-kernel-scope\"\nkind = \"store\"\ncount = \"1\"\n",
-                text.trim_end()
-            ),
-        ),
-        &["dead-instance", "busbar-kernel-scope \u{d7} store"],
+        dead,
+        &["dead-instance", &format!("{FIXTURE_CRATE} \u{d7} store")],
     ));
     report.push(prove_rows_red(
         cx,
