@@ -15,8 +15,8 @@
  },
  "counts": {
   "bindings": 104,
-  "mapped": 104,
-  "unproven": 0,
+  "mapped": 103,
+  "unproven": 1,
   "unmapped": 0,
   "gap": 0,
   "checks_by_kind": {
@@ -24,7 +24,7 @@
    "lint": 5,
    "oracle-cell": 65,
    "oracle-family": 5,
-   "test": 454
+   "test": 446
   }
  },
  "owner_decisions": {
@@ -3114,7 +3114,7 @@
    "surface": "egress auth wire behaviour",
    "binding": "the 7 schemes as wire bytes: `api-key` / `x-goog-api-key` header names; the Anthropic five-way key-prefix disambiguation incl. the mode-blind arm emitting BOTH `x-api-key` and `Authorization`; `anthropic-version` always appended; SigV4's SignedHeaders set, double-encoded canonical URI, `us-east-1` fallback, `access:secret[:session]` split; `jwt-bearer` / `oauth-client-credentials` fail closed to `NoCredential`; the header is omitted on an unencodable credential",
    "inventory": "dialects; auth-secrets",
-   "status": "mapped",
+   "status": "unproven",
    "checks": [
     {
      "kind": "test",
@@ -3125,8 +3125,15 @@
     },
     {
      "kind": "test",
-     "ref": "auth_headers_api_key_emits_only_x_api_key",
-     "proves": "api-key emits x-api-key with anthropic-version",
+     "ref": "egress_scheme_is_the_declared_credential_family_table",
+     "proves": "an api key is presented as x-api-key, from the declared credential-family table",
+     "source": "curated",
+     "status": "mapped"
+    },
+    {
+     "kind": "test",
+     "ref": "a_declared_static_header_follows_the_credential_verbatim",
+     "proves": "anthropic-version follows the credential verbatim",
      "source": "curated",
      "status": "mapped"
     },
@@ -3139,15 +3146,15 @@
     },
     {
      "kind": "test",
-     "ref": "classify_credential_covers_each_family",
-     "proves": "the anthropic key-prefix disambiguation",
+     "ref": "the_family_table_decides_first_and_the_mode_decides_the_rest",
+     "proves": "the key-prefix disambiguation: the family table decides first",
      "source": "curated",
      "status": "mapped"
     },
     {
      "kind": "test",
-     "ref": "auth_headers_oauth_token_emits_only_authorization_bearer",
-     "proves": "an oauth token emits only Authorization",
+     "ref": "a_static_scheme_presents_the_header_its_table_names",
+     "proves": "an oauth token is presented only as Authorization: Bearer",
      "source": "curated",
      "status": "mapped"
     },
@@ -3167,14 +3174,14 @@
     },
     {
      "kind": "test",
-     "ref": "test_bedrock_sigv4_misconfigured_key_no_signature",
+     "ref": "a_misconfigured_or_unsendable_signing_credential_signs_nothing",
      "proves": "a misconfigured key signs nothing",
      "source": "curated",
      "status": "mapped"
     }
    ],
-   "verdict": "PASS",
-   "verdict_detail": "test:test_auth_headers_valid_key_emits_x_goog_api_key, test:auth_headers_api_key_emits_only_x_api_key, test:auth_headers_unrecognized_credential_emits_both_headers, test:classify_credential_covers_each_family, test:auth_headers_oauth_token_emits_only_authorization_bearer, test:test_bedrock_sigv4_sign_request_structure, test:test_bedrock_sigv4_session_token, test:test_bedrock_sigv4_misconfigured_key_no_signature"
+   "verdict": "FAIL",
+   "verdict_detail": "partly proven; a referenced check settles nothing: test:auth_headers_unrecognized_credential_emits_both_headers"
   },
   {
    "id": "PB-66",
@@ -4379,8 +4386,8 @@
     },
     {
      "kind": "test",
-     "ref": "sign_request_resolves_ambiguous_credential_to_single_header_by_mode",
-     "proves": "passthrough vs own picks one header",
+     "ref": "the_family_table_decides_first_and_the_mode_decides_the_rest",
+     "proves": "passthrough vs own picks one header for a credential in no family",
      "source": "curated",
      "status": "mapped"
     },
@@ -4400,7 +4407,7 @@
     }
    ],
    "verdict": "PASS",
-   "verdict_detail": "test:test_passthrough_forwards_caller_token, test:sign_request_resolves_ambiguous_credential_to_single_header_by_mode, test:override_present_runs_full_lookup, test:golden_migrate_auth_upstream_credentials_moves_to_pools"
+   "verdict_detail": "test:test_passthrough_forwards_caller_token, test:the_family_table_decides_first_and_the_mode_decides_the_rest, test:override_present_runs_full_lookup, test:golden_migrate_auth_upstream_credentials_moves_to_pools"
   },
   {
    "id": "PB-95",

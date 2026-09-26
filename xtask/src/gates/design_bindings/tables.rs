@@ -370,13 +370,14 @@ pub static SEED: &[(&str, &[SeededCheck])] = &[
     ]),
     ("PB-65", &[
         ("test", "test_auth_headers_valid_key_emits_x_goog_api_key", "the x-goog-api-key header name"),
-        ("test", "auth_headers_api_key_emits_only_x_api_key", "api-key emits x-api-key with anthropic-version"),
+        ("test", "egress_scheme_is_the_declared_credential_family_table", "an api key is presented as x-api-key, from the declared credential-family table"),
+        ("test", "a_declared_static_header_follows_the_credential_verbatim", "anthropic-version follows the credential verbatim"),
         ("test", "auth_headers_unrecognized_credential_emits_both_headers", "the mode-blind arm emits both headers"),
-        ("test", "classify_credential_covers_each_family", "the anthropic key-prefix disambiguation"),
-        ("test", "auth_headers_oauth_token_emits_only_authorization_bearer", "an oauth token emits only Authorization"),
+        ("test", "the_family_table_decides_first_and_the_mode_decides_the_rest", "the key-prefix disambiguation: the family table decides first"),
+        ("test", "a_static_scheme_presents_the_header_its_table_names", "an oauth token is presented only as Authorization: Bearer"),
         ("test", "test_bedrock_sigv4_sign_request_structure", "the SigV4 SignedHeaders line"),
         ("test", "test_bedrock_sigv4_session_token", "the access:secret:session split"),
-        ("test", "test_bedrock_sigv4_misconfigured_key_no_signature", "a misconfigured key signs nothing"),
+        ("test", "a_misconfigured_or_unsendable_signing_credential_signs_nothing", "a misconfigured key signs nothing"),
     ]),
     ("PB-66", &[
         ("test", "non_allowlisted_client_header_is_not_forwarded", "a non-allowlisted client header never reaches the upstream"),
@@ -515,7 +516,7 @@ pub static SEED: &[(&str, &[SeededCheck])] = &[
     ]),
     ("PB-94", &[
         ("test", "test_passthrough_forwards_caller_token", "passthrough sends the caller token"),
-        ("test", "sign_request_resolves_ambiguous_credential_to_single_header_by_mode", "passthrough vs own picks one header"),
+        ("test", "the_family_table_decides_first_and_the_mode_decides_the_rest", "passthrough vs own picks one header for a credential in no family"),
         ("test", "override_present_runs_full_lookup", "a pool scalar replaces the section default"),
         ("test", "golden_migrate_auth_upstream_credentials_moves_to_pools", "the 1.5.5 key lands under pools"),
     ]),

@@ -17,10 +17,10 @@ The three words are not interchangeable:
 ## Summary
 
 - bindings: **104**  (PB-0 master rule + 103 table rows)
-- mapped (proven): **104**
-- unproven (cited, but nothing compared): **0**
+- mapped (proven): **103**
+- unproven (cited, but nothing compared): **1**
 - unmapped (named gap): **0**
-- checks by kind (mapped bindings only): gate 13, lint 5, oracle-cell 65, oracle-family 5, test 454
+- checks by kind (mapped bindings only): gate 13, lint 5, oracle-cell 65, oracle-family 5, test 446
 
 ## Bindings
 
@@ -91,7 +91,7 @@ The three words are not interchangeable:
 | PB-62 | admin scope derivation | mapped | PASS |  | test: `crates/busbar-kernel/src/admin/v1/contract/tests/tests.rs::required_scope_matrix`<br>test: `required_scope_mutations_are_full`<br>test: `openapi_paths_annotate_required_scope` |
 | PB-63 | plugin reload / rollback mechanics | mapped | PASS |  | test: `admin_token_secret_ref_re_resolves_on_apply`<br>test: `plugin_reload_reports_an_unrebuildable_disk_config`<br>test: `kind_restart_default_matches_binding_lifecycle` |
 | PB-64 | token-minting egress auth | mapped | PASS |  | test: `next_refresh_never_sleeps_past_a_live_token_expiry`<br>test: `headers_for_emits_nothing_before_first_mint`<br>test: `is_ready_false_before_first_mint_true_after`<br>test: `cached_token_new_omits_header_for_bytes_invalid_in_a_header_value`<br>test: `headers_for_reflects_prebuilt_header_after_a_refresh`<br>test: `token_response_tolerates_expires_in_as_number_string_or_absent` |
-| PB-65 | egress auth wire behaviour | mapped | PASS |  | test: `test_auth_headers_valid_key_emits_x_goog_api_key`<br>test: `auth_headers_api_key_emits_only_x_api_key`<br>test: `auth_headers_unrecognized_credential_emits_both_headers`<br>test: `classify_credential_covers_each_family`<br>test: `auth_headers_oauth_token_emits_only_authorization_bearer`<br>test: `test_bedrock_sigv4_sign_request_structure`<br>test: `test_bedrock_sigv4_session_token`<br>test: `test_bedrock_sigv4_misconfigured_key_no_signature` |
+| PB-65 | egress auth wire behaviour | unproven | FAIL | partly proven; a referenced check settles nothing: test:auth_headers_unrecognized_credential_emits_both_headers | test: `test_auth_headers_valid_key_emits_x_goog_api_key`<br>test: `egress_scheme_is_the_declared_credential_family_table`<br>test: `a_declared_static_header_follows_the_credential_verbatim`<br>test: `auth_headers_unrecognized_credential_emits_both_headers`<br>test: `the_family_table_decides_first_and_the_mode_decides_the_rest`<br>test: `a_static_scheme_presents_the_header_its_table_names`<br>test: `test_bedrock_sigv4_sign_request_structure`<br>test: `test_bedrock_sigv4_session_token`<br>test: `a_misconfigured_or_unsendable_signing_credential_signs_nothing` |
 | PB-66 | request and response headers | mapped | PASS |  | test: `non_allowlisted_client_header_is_not_forwarded`<br>test: `test_egress_accept_matches_native_sdk`<br>test: `test_egress_ua_versions_are_pinned_and_present`<br>test: `test_ingress_stream_content_type_by_protocol`<br>test: `test_bedrock_ingress_success_carries_amzn_request_id`<br>test: `test_forward_once_bedrock_error_relays_amzn_headers`<br>test: `test_anthropic_ingress_success_carries_request_id_header`<br>test: `test_anthropic_same_proto_error_relays_upstream_request_id_verbatim_once`<br>test: `test_synth_anthropic_request_id_is_well_formed` |
 | PB-67 | per-dialect error mapping | mapped | PASS |  | test: `test_cross_protocol_error_kind_mapping`<br>test: `test_shape_cross_protocol_error_auth_kinds`<br>test: `test_ingress_error_bedrock_amzn_headers`<br>test: `test_vendor_auth_failure_message_is_plausible_per_proto`<br>test: `test_bedrock_ingress_wrong_token_is_403_native_envelope`<br>test: `error_kind_to_bedrock_type_covers_ingress_emitted_kinds`<br>test: `test_openai_classify`<br>test: `write_error_kind_vocabulary_mapping` |
 | PB-68 | network guard | mapped | PASS |  | test: `test_ssrf_blocks_metadata_denylist_by_default`<br>test: `test_ssrf_blocked_returns_exact_host_string`<br>test: `test_reject_cidr_metadata_entries`<br>test: `test_global_allow_overrides_blocked_metadata_hosts`<br>test: `test_allow_all_metadata_beats_nonempty_blocked_list`<br>test: `test_ssrf_allows_private_and_loopback_by_default`<br>test: `test_validate_rejects_non_https_base_url`<br>test: `test_validate_token_url_ssrf_and_scheme`<br>test: `crates/busbar-kernel/src/tests/net_guard_tests.rs::the_shared_internal_predicate_covers_every_range_any_plane_ever_checked` |
@@ -120,7 +120,7 @@ The three words are not interchangeable:
 | PB-91 | fee basis | mapped | PASS |  | oracle-cell: `route.failover\|fo\|primary-cut-body`<br>test: `crates/busbar-kernel/src/governance/tests/limits_tests.rs::refund_returns_the_fee_but_never_the_requests_limit_slot`<br>test: `test_finish_refunds_flat_fee_on_non_2xx_keeps_on_2xx`<br>gate: `xtask/src/gates/construction.rs` |
 | PB-92 | `VirtualKey.expires_at` | mapped | PASS |  | test: `a_key_row_whose_expires_at_is_in_the_past_still_verifies` |
 | PB-93 | 1.6.0-only store ops on an ABI-2 store | mapped | PASS |  | oracle-cell: `plugins.store-persist\|store-mysql`<br>oracle-cell: `plugins.store-persist\|store-postgres`<br>oracle-cell: `plugins.store-persist\|store-sqlite`<br>oracle-cell: `plugins.store-persist\|store-valkey`<br>test: `unsupported_alone_opens_the_inert_default_on_every_defaulting_verb`<br>test: `a_real_answer_passes_through_untouched` |
-| PB-94 | upstream credential mode | mapped | PASS |  | test: `test_passthrough_forwards_caller_token`<br>test: `sign_request_resolves_ambiguous_credential_to_single_header_by_mode`<br>test: `override_present_runs_full_lookup`<br>test: `golden_migrate_auth_upstream_credentials_moves_to_pools` |
+| PB-94 | upstream credential mode | mapped | PASS |  | test: `test_passthrough_forwards_caller_token`<br>test: `the_family_table_decides_first_and_the_mode_decides_the_rest`<br>test: `override_present_runs_full_lookup`<br>test: `golden_migrate_auth_upstream_credentials_moves_to_pools` |
 | PB-95 | migrated tap stages | mapped | PASS |  | test: `attempt_tap_carries_attempt_story`<br>test: `route_tap_reports_surviving_candidates` |
 | PB-96 | streaming byte layout (the terminal-usage settle guarantee) | mapped | PASS |  | test: `test_translate_anthropic_egress_to_openai_ingress`<br>test: `test_translate_openai_egress_to_anthropic_ingress`<br>test: `bedrock_stream_framing_emits_one_metadata_delta_then_guards_duplicate`<br>test: `test_translate_openai_include_usage_egress_to_bedrock_ingress_single_metadata`<br>test: `test_duplicate_terminal_message_delta_after_stop_is_dropped`<br>test: `test_tool_id_remap_is_a_stable_reversible_bijection`<br>test: `cohere_tool_ids_pass_through_verbatim_no_decode`<br>test: `strip_same_proto_usage_fires_without_object_field` |
 | PB-97 | pristine request bytes | mapped | PASS |  | test: `head_pristine_matches_translate_output`<br>test: `non_object_body_is_head_pristine`<br>test: `pristine_same_proto_is_byte_identical_body_model`<br>test: `pristine_same_proto_is_byte_identical_url_model`<br>test: `claude_on_vertex_drops_model_and_injects_anthropic_version`<br>test: `invalidator_3_model_rewrite_forces_non_pristine`<br>test: `invalidator_4_same_proto_model_shim_strip_forces_non_pristine` |
@@ -130,6 +130,14 @@ The three words are not interchangeable:
 | PB-101 | inbound auth details | mapped | PASS |  | test: `test_verify_sigv4_ingress_credential_unsigned_payload_rejected`<br>test: `test_verify_sigv4_ingress_credential_body_matches_signed_hash_admits`<br>test: `test_verify_sigv4_ingress_credential_tampered_body_rejected`<br>test: `test_verify_inbound_sigv4_unknown_key_dummy_secret_is_signature_mismatch`<br>test: `throughput_floor_trips_on_a_dribble_the_inter_frame_timer_cannot_catch`<br>test: `a_fast_large_upload_is_not_killed_by_the_throughput_floor`<br>test: `total_deadline_trips_on_a_body_that_stays_above_the_floor_forever`<br>test: `body_read_timeout_trips_on_stalled_body`<br>test: `mtls_valid_client_cert_gets_200`<br>test: `mtls_rejects_bad_client_then_serves_valid` |
 | PB-102 | alarms and the disputes report | mapped | PASS |  | test: `a_1_5_5_request_lifecycle_emits_no_alarm_or_dispute_event_or_metric` |
 | PB-103 | the dated rate-card history, and the `/usage` read path that does not consult it | mapped | PASS |  | oracle-cell: `billing\|rate-card\|history-mid-window`<br>oracle-cell: `config\|rate-card\|append-not-replace`<br>oracle-cell: `ledger\|amend\|adjusting-entries`<br>oracle-cell: `ledger\|amend\|refused-unsigned`<br>oracle-cell: `ledger\|currency\|minor-unit-rounding`<br>oracle-cell: `ledger\|currency\|native`<br>oracle-cell: `ledger\|rate-history\|as-of` |
+
+## The unproven bindings: cited, but nothing was compared
+
+Each of these names one or more checks and is still proof of nothing. A binding here is
+red under `cargo xtask gate design-bindings`; it is fixed by making the citation real,
+or it is demoted to a named gap. It is never waived.
+
+- **PB-65** (egress auth wire behaviour): partly proven; a referenced check settles nothing: test:auth_headers_unrecognized_credential_emits_both_headers
 
 ## Findings: bindings in conflict with the tree
 
