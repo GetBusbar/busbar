@@ -1,0 +1,13 @@
+# WHETHER EACH SHIPPED WIRE CARRIES A SESSION — `<wire key> <session | ->`, one row per wire of the
+# shipped fold (src/root/tests/fixtures/transport_fold.txt). Read by tests/body_chunk_bounds.rs, which
+# holds every linked wire's `SESSION` (its linked entry's export) to this row, and drives the frame
+# ceiling on the `-` rows: a wire that carries no session is handed no session slot, so the run of
+# "not yet" answers the ceiling counts does not exist on it. A wire that gains or loses a session has
+# to say so here.
+tcp session
+tls session
+http -
+sse -
+ws session
+grpc session
+stdio session

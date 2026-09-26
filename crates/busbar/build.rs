@@ -152,7 +152,7 @@ fn main() {
     std::fs::write(out, linked_planes_source(&manifest, &enabled)).expect("write linked_planes.rs");
 
     // THE LINKED WIRES FOR THE INTEGRATION TESTS (tests only include it): each linked transport row's
-    // entry (`KEY`, `COMPOSES_OVER`, `build`), the rows this build leaves unlinked, and the same
+    // entry (`KEY`, `COMPOSES_OVER`, `SESSION`, `build`), the rows this build leaves unlinked, and the same
     // bottom-up fold the boot seal runs — so a test addresses a wire by the key its row declares and
     // builds it over the layers the root would, without naming a transport crate.
     let (wires, wires_off) = linked_transports_source(&manifest, &enabled);
@@ -275,7 +275,7 @@ fn linked_transports_source(manifest: &str, enabled: &dyn Fn(&str) -> bool) -> (
             .unwrap_or_else(|| format!("{}::linked", ident(&krate)));
         rows.push_str(&format!(
             "    LinkedWire {{ key: ::{entry}::KEY, composes_over: ::{entry}::COMPOSES_OVER, \
-             build: ::{entry}::build }},\n"
+             session: ::{entry}::SESSION, build: ::{entry}::build }},\n"
         ));
     }
     let source = format!(
@@ -284,11 +284,13 @@ fn linked_transports_source(manifest: &str, enabled: &dyn Fn(&str) -> bool) -> (
          pub(crate) type Wire = ::std::sync::Arc<dyn ::busbar_contract::Transport>;\n\
          /// A wire's build: handed the layer built beneath it, where one is, and the settings.\n\
          pub(crate) type BuildWire = fn(Option<Wire>, &::busbar_contract::transport::TransportSettings) -> Wire;\n\
-         /// One linked wire: its registry key, the layers it declares, and its build.\n\
+         /// One linked wire: its registry key, the layers it declares, whether it carries a session,\n\
+         /// and its build.\n\
          #[allow(dead_code)]\n\
          pub(crate) struct LinkedWire {{\n    \
              pub(crate) key: &'static str,\n    \
              pub(crate) composes_over: &'static [&'static str],\n    \
+             pub(crate) session: bool,\n    \
              pub(crate) build: BuildWire,\n\
          }}\n\
          /// Every wire this build links, in manifest order.\n\

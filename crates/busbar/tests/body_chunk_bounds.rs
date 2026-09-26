@@ -11,16 +11,18 @@
 //!
 //! The claim has two halves and this file drives both against the SHIPPED path:
 //!
-//!   1. On `http` and `sse` the frame ceiling is not merely un-hit, it is UNREACHABLE. Both
-//!      transports declare `SESSION = false`, so the pump is handed no session slot, and the run of
-//!      "not yet" answers is a property of a session slot: with none, `ask_again` is false whatever
-//!      the count. Driven here well past the ceiling on both transports.
+//!   1. On the two one-shot wires the frame ceiling is not merely un-hit, it is UNREACHABLE. Both
+//!      declare `SESSION = false`, so the pump is handed no session slot, and the run of "not yet"
+//!      answers is a property of a session slot: with none, `ask_again` is false whatever the count.
+//!      Driven here well past the ceiling on both. The wires are read off the linked transport
+//!      table (build.rs `$OUT_DIR/linked_transports.rs`: each linked row's `KEY` and `SESSION`), and
+//!      every wire's `SESSION` is held to the shipped table (`tests/fixtures/transport_sessions.txt`),
+//!      so this file names no transport.
 //!   2. What DOES bound the body is the operator's `limits.request_body_max_bytes`, counted in
 //!      actual bytes against the node's spill budget, and it refuses at the same byte however the
 //!      bytes were split -- one chunk, or many thousands more chunks than the frame ceiling.
 
 use busbar_contract::caps::ReasonCode;
-use busbar_contract::transport::TransportMeta;
 use busbar_kernel::config::limits::{
     DEFAULT_REQUEST_BODY_MAX_BYTES, REQUEST_BODY_MAX_BYTES_CEIL, REQUEST_BODY_MAX_BYTES_FLOOR,
 };
@@ -29,8 +31,11 @@ use busbar_kernel::inflight::InFlight;
 use busbar_kernel::pump::{
     BodySpool, Direction, Dispatch, Scheduler, Shape, SpillBudget, StreamId, MAX_NEEDMORE_FRAMES,
 };
-use busbar_transport_http::sse::SseTransport;
-use busbar_transport_http::HttpTransport;
+
+include!(concat!(env!("OUT_DIR"), "/linked_transports.rs"));
+
+/// Whether each shipped wire carries a session: `<wire key> <session | ->`.
+const TRANSPORT_SESSIONS: &str = include_str!("fixtures/transport_sessions.txt");
 
 /// The knob the binding names, at the values it names them.
 #[test]
@@ -48,38 +53,56 @@ fn the_body_cap_is_the_operators_and_its_default_and_ceiling_are_the_documented_
     const { assert!(REQUEST_BODY_MAX_BYTES_FLOOR < DEFAULT_REQUEST_BODY_MAX_BYTES) };
 }
 
-/// Neither shipped one-shot transport carries a session, so neither can reach the frame ceiling.
+/// Neither shipped one-shot wire carries a session, so neither can reach the frame ceiling.
 ///
 /// This is the structural half. `Scheduler::ask_again` keeps the run of consecutive "not yet"
-/// answers ON THE SESSION SLOT; a transport that declares `SESSION = false` is dispatched with
-/// `None` and the run does not exist to be counted. The assertion is on the shipped transports'
-/// own declarations, so a transport that grows a session tomorrow turns this red rather than
+/// answers ON THE SESSION SLOT; a wire that declares `SESSION = false` is dispatched with `None` and
+/// the run does not exist to be counted. The assertion is on the linked wires' own declarations,
+/// read off the linked table, so a wire that grows a session tomorrow turns this red rather than
 /// silently acquiring a cap on its bodies.
 #[test]
 fn the_frame_ceiling_is_unreachable_on_the_two_transports_that_carry_no_session() {
-    // A compile-time assertion, because the fact is a compile-time one: a transport that grows a
-    // session tomorrow does not fail this run, it fails the build.
-    const {
-        assert!(
-            !<HttpTransport as TransportMeta>::SESSION,
-            "http carries no session"
-        )
-    };
-    const {
-        assert!(
-            !<SseTransport as TransportMeta>::SESSION,
-            "sse carries no session"
-        )
-    };
+    let shipped: Vec<(&str, bool)> = TRANSPORT_SESSIONS
+        .lines()
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .map(|l| l.split_once(' ').expect("a `<wire> <session | ->` row"))
+        .map(|(key, session)| (key, session != "-"))
+        .collect();
+    assert_eq!(
+        LINKED_TRANSPORTS.len() + LINKED_TRANSPORTS_OFF,
+        shipped.len(),
+        "the linked transport table and the shipped session rows disagree on how many wires there are"
+    );
+    for row in LINKED_TRANSPORTS {
+        let (_, session) = shipped
+            .iter()
+            .find(|(key, _)| *key == row.key)
+            .unwrap_or_else(|| panic!("`{}` is linked but has no shipped session row", row.key));
+        assert_eq!(
+            row.session, *session,
+            "`{}` declares SESSION = {}, the shipped table says {session}",
+            row.key, row.session
+        );
+    }
+    let one_shot: Vec<&str> = LINKED_TRANSPORTS
+        .iter()
+        .filter(|row| !row.session)
+        .map(|row| row.key)
+        .collect();
+    // Both one-shot wires of the shipped table are linked in every build (their rows ride required
+    // edges), so the two are always here to drive.
+    assert_eq!(
+        one_shot.len(),
+        shipped.iter().filter(|(_, session)| !session).count(),
+        "a one-shot wire of the shipped table is not linked"
+    );
+    assert_eq!(one_shot.len(), 2, "the two wires that carry no session");
 
     let table = InFlight::new(8);
     let scheduler = Scheduler::default();
 
     // Four times the ceiling, on the stream each transport would use, with no session in hand.
-    for transport in [
-        <HttpTransport as TransportMeta>::KEY,
-        <SseTransport as TransportMeta>::KEY,
-    ] {
+    for transport in one_shot {
         for frame in 0..(MAX_NEEDMORE_FRAMES * 4) {
             let verdict = scheduler.dispatch(
                 None,
