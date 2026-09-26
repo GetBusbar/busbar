@@ -1427,7 +1427,6 @@ deny_kinds = ["transport", "abi", "loader", "store", "export"]
 # name below; a new crate NOT on this list is held to the rule immediately.
 known_missing_forbid = [
   "hook-test-plugin", "hooks-ranking", "auth-static-plugin", "auth-admin-tokens",
-  "secret-example-plugin",
 ]
 known_missing_deny = [ "plugin-loader",
   "store-memory", "store-example-plugin", "export-example-plugin",
@@ -2341,6 +2340,14 @@ plane_crates = 4
 #     as its `secret_ref` module (the contract has one secret reference type), and its directory was
 #     deleted. `crates/secret-*` now matches exactly one: `crates/secret-example-plugin`.
 #
+# ── RE-PINNED 2026-09-26: `secret` 1 -> 0 ───────────────────────────────────────────────────────────────────
+#
+#   * `secret` 1 -> 0. The fixture deletion (owner, docs/design/1.6.0-QUESTIONS.md "FIXTURES":
+#     "these are trash … real plugins are the examples"): `crates/secret-example-plugin` was
+#     deleted, and the secret kind is proven by the real plugin repo GetBusbar/hashicorp-vault
+#     (crates/plugin-loader/src/tests/plugin_proof_tests.rs, ci.yml `plugin-proofs`).
+#     `crates/secret-*` now matches no directory: the kind's documented zero in this repo.
+#
 # THE BASE COMPARISON STILL REPORTS THE THREE DECREMENTS (plugin_kinds.plane 6->5,
 # plugin_kinds.unit 14->1, plugin_kinds.pure_auth 2->0), AND THAT IS THIS ROW WORKING RATHER THAN
 # FAILING. `[gate.census]` reds a floor that went DOWN versus the base commit precisely because it
@@ -2355,7 +2362,7 @@ plane = 5
 unit = 1
 hook = 2
 auth = 2
-secret = 1
+secret = 0
 store = 2
 export = 1
 transport = 5

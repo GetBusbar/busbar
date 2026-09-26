@@ -423,9 +423,15 @@ const PLANE_ALIASES: &[(&str, &str, &str)] = &[
 /// dead-kind rule skips these — and the ratchet runs the other way: the day a crate of one of them
 /// exists, the entry must be struck, or a kind would be both pending and live.
 ///
-/// Empty: `dialect` was the only pending kind and it is not a kind at all (DECISIONS #4). Every
-/// kind in the table now has, or is the neutral spine for, at least one crate in the tree.
-const PENDING_KINDS: &[(&str, &str)] = &[];
+/// `dialect` was a pending kind and it is not a kind at all (DECISIONS #4). `secret` is pending
+/// because its instances live OUTSIDE this repo: the owner deleted the in-tree fixture ("FIXTURES",
+/// docs/design/1.6.0-QUESTIONS.md) and the kind is proven by the real plugin repo.
+const PENDING_KINDS: &[(&str, &str)] = &[(
+    "secret",
+    "every plugin lives in its own repo (owner, 1.6.0-QUESTIONS.md \"PLUGIN HOME\"); the in-tree \
+     secret fixture is deleted (\"FIXTURES\") and the kind is proven by GetBusbar/hashicorp-vault \
+     through crates/plugin-loader/src/tests/plugin_proof_tests.rs (ci.yml `plugin-proofs`)",
+)];
 
 /// Edge classes the TARGET scheme has and the tree does not yet. They are allowed without being
 /// scored as dead — a class that cannot exist until the rename lands cannot be a stale allowance.
@@ -6585,8 +6591,23 @@ impl Gate for KindIsolationGate {
             &["dead-kind", "timing"],
         ));
 
-        // The pending-kind ratchet had exactly one subject, `dialect`, and a dialect is not a kind
-        // (DECISIONS #4). PENDING_KINDS is empty now, so there is no pending kind to plant as arrived.
+        // THE PENDING-KIND RATCHET: a crate of a pending kind retires the pending entry. `secret`
+        // is pending (its instances live in their own repos), so a planted `busbar-secret-*`
+        // manifest makes the kind live while the entry still says pending — the one state the
+        // ratchet exists to refuse.
+        let mut ov = Overlay::new();
+        ov.set(
+            "crates/busbar-secret-planted/Cargo.toml",
+            "[package]\nname = \"busbar-secret-planted\"\nversion = \"0.0.0\"\n",
+        );
+        report.push(prove_rows_red(
+            cx,
+            subject,
+            "a pending kind that now has a crate",
+            &[ROW_REGISTRY],
+            ov,
+            &["kind-arrived", "secret"],
+        ));
 
         // THE RENAME ALIAS EXPIRES WITH THE CRATE IT TRANSLATES.
         //

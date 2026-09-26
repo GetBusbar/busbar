@@ -656,7 +656,7 @@ prove_tree() {
       # The plugin batteries refuse to skip when their cdylib is absent, so the example plugins are
       # built before any test leg; a green here must mean the ABI-crossing cells actually ran.
       local plog="$here/target/land-plugins-$stamp.log"
-      if ! (cd "$here" && cargo build -p busbar-hook-test-plugin -p busbar-auth-static-plugin -p busbar-store-example-plugin -p busbar-export-example-plugin -p busbar-secret-example-plugin >"$plog" 2>&1); then
+      if ! (cd "$here" && cargo build -p busbar-hook-test-plugin -p busbar-auth-static-plugin -p busbar-store-example-plugin -p busbar-export-example-plugin >"$plog" 2>&1); then
         grep -E '^error' "$plog" | head -5 >&2
         echo "land.sh: RED — example plugin cdylibs did not build (log: $plog)" >&2; return 1
       fi

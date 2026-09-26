@@ -100,11 +100,10 @@ busbar-export-example-plugin = { path = "../export-example-plugin" }
 # requires the two to round-trip a plane scope grant (`mcp_tool`) identically — a dropped-in store's
 # copy of the scope-kind registry is never populated by the engine's boot registration.
 busbar-store-example-plugin = { path = "../store-example-plugin" }
-# The `kind: secret` BOTH-WAYS fixture, on the same terms: `secret_conformance_tests` links its
-# `rlib`'s `BUSBAR_COLD_ENTRY` (the linked door) and signs its `cdylib` into a temp `plugins/` (the
-# dropped-in door), and requires the two registry rows and what the two opened modules resolve to be
-# byte-identical (DECISIONS #2 rule (1)).
-busbar-secret-example-plugin = { path = "../secret-example-plugin" }
+# NO `kind: secret` fixture: the in-tree secret fixture is deleted (owner, 1.6.0-QUESTIONS.md
+# "FIXTURES": "real plugins are the examples"). The secret kind is proven by the REAL plugin repo
+# (GetBusbar/hashicorp-vault) — `plugin_proof_tests` dlopens its built cdylib from
+# `BUSBAR_PLUGIN_PROOF_DIR`, run by ci.yml's `plugin-proofs` job.
 # The `kind: auth` BOTH-WAYS fixture — #2's auth witness, step (4) (OWNER-LOCKED): its `rlib` gives the
 # test the COMPILED-IN module (its `pub fn open`, driven through the `dispatch_compiled_in` twin
 # `export_auth_plugin!` emits) and its `BUSBAR_COLD_ENTRY` (the linked door); its `cdylib` is the
@@ -129,14 +128,14 @@ busbar-contract = { path = "../busbar-contract", features = ["test-seal"] }
 # memfd_create (Linux zero-disk loads) + kill(pid, 0) liveness for the dead-pid staging sweep.
 libc = { workspace = true }
 
-# NOTE: the end-to-end tests load real plugin cdylibs (busbar-secret-example-plugin and
-# busbar-store-sqlite-plugin — the latter built from a sibling ../store-sqlite checkout, since
-# store-sqlite is fully extracted and no longer lives in this workspace), but a cdylib crate cannot
-# be a Rust dependency (no rlib to link). The tests instead locate the artifact on disk — under
-# `cargo test --workspace` every in-tree member cdylib is present, and the kind:store fixture falls
-# back to the in-tree busbar-store-example-plugin when the sqlite sibling is not built; under CI a
-# missing fixture is a hard failure, never a skip. The sibling-built one is required only under
-# qa-gate.yml's `loader` leg (see store_fixture_plugin_path()'s doc comment in src/lib.rs).
+# NOTE: the end-to-end tests load real plugin cdylibs (e.g. busbar-store-sqlite-plugin, built from a
+# sibling ../store-sqlite checkout, since store-sqlite is fully extracted and no longer lives in this
+# workspace), but a cdylib crate cannot be a Rust dependency (no rlib to link). The tests instead
+# locate the artifact on disk — under `cargo test --workspace` every in-tree member cdylib is
+# present, and the kind:store fixture falls back to the in-tree busbar-store-example-plugin when the
+# sqlite sibling is not built; under CI a missing fixture is a hard failure, never a skip. The
+# sibling-built one is required only under qa-gate.yml's `loader` leg (see
+# store_fixture_plugin_path()'s doc comment in src/lib.rs).
 
 # THE BOTH-WAYS FIXTURES: <cold kind> = "<fixture crate>". `build.rs` turns these rows into the table
 # `src/tests/both_ways.rs` includes, so each conformance test reaches its kind's fixture by KIND and no
@@ -144,7 +143,6 @@ libc = { workspace = true }
 # needs its `rlib`, the dropped-in door its `cdylib`.
 [package.metadata.busbar.both-ways]
 store = "busbar-store-example-plugin"
-secret = "busbar-secret-example-plugin"
 export = "busbar-export-example-plugin"
 auth = "busbar-auth-static-plugin"
 hook = "busbar-hook-test-plugin"

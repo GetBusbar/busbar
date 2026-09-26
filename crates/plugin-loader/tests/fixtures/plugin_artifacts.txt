@@ -15,5 +15,18 @@ published_store_plugin_id = store-sqlite
 
 # The in-tree hermetic example cdylibs (crates/*-example-plugin), by their crate identifier.
 store_example_cdylib = busbar_store_example_plugin
-secret_example_cdylib = busbar_secret_example_plugin
 export_example_cdylib = busbar_export_example_plugin
+
+# The REAL plugin repos that prove the secret and auth kinds (`src/tests/plugin_proof_tests.rs`;
+# ci.yml `plugin-proofs` builds them into BUSBAR_PLUGIN_PROOF_DIR). The cdylib names are what those
+# repos' own builds produce; the rest is what each plugin's own code answers.
+proof_secret_cdylib = busbar_hashicorp_vault_plugin
+proof_secret_config = {"addr": "https://127.0.0.1:9", "token": "busbar-proof", "timeout_secs": 2}
+proof_secret_reference = kv/data/proof#field
+proof_secret_resolve_error = request to Vault (https://127.0.0.1:9/v1/kv/data/proof) failed
+proof_secret_refusal = hashicorp-vault plugin requires config (addr, token); none provided
+proof_auth_cdylib = busbar_auth_github_plugin
+proof_auth_redirect_uri = https://busbar.example/auth/token
+proof_auth_config = {"client_id": "Iv1.busbar-proof"}
+proof_auth_authorize_prefix = https://github.com/login/oauth/authorize?response_type=code&client_id=Iv1.busbar-proof&redirect_uri=https%3A%2F%2Fbusbar.example%2Fauth%2Ftoken&scope=
+proof_auth_refusal = github plugin requires config (client_id); none provided

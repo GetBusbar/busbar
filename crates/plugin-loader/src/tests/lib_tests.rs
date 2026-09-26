@@ -1404,89 +1404,9 @@ fn transport_error_classification() {
     assert!(m.contains("libstore.so") && m.contains("-1"), "{m}");
 }
 
-/// `kind: secret` is the one plugin kind with no other over-the-ABI test coverage. Locate the
-/// hermetic `busbar-secret-example-plugin` cdylib, mirroring `store_fixture_plugin_path` above — CI
-/// (`cargo test --workspace`) always builds it, so a missing cdylib there is a hard failure, not
-/// a silent skip.
-/// Checks BOTH the "uplifted" `<profile_dir>/<name>` copy and the raw `<profile_dir>/deps/<name>`
-/// compiler output — a SCOPED `cargo test -p busbar-plugin-loader` (what qa-gate.yml's `loader`
-/// job runs) does not uplift the cdylib to the top-level profile dir, only to `target/deps`,
-/// so checking only `profile_dir` silently found nothing even though the cdylib really was
-/// built. Same fix already applied to `store_fixture_plugin_path` above and `hook_plugin_path`
-/// in `hook.rs`.
-fn hermetic_secret_plugin_path() -> Option<std::path::PathBuf> {
-    let candidate = (|| {
-        let exe = std::env::current_exe().ok()?;
-        let profile_dir = exe.parent()?.parent()?;
-        let name = plugin_library_filename(artifact("secret_example_cdylib"));
-        let uplifted = profile_dir.join(&name);
-        let raw = profile_dir.join("deps").join(&name);
-        [uplifted, raw]
-            .into_iter()
-            .filter_map(|p| {
-                std::fs::metadata(&p)
-                    .and_then(|m| m.modified())
-                    .ok()
-                    .map(|mtime| (p, mtime))
-            })
-            .max_by_key(|(_, mtime)| *mtime)
-            .map(|(p, _)| p)
-    })();
-    if candidate.is_none() && std::env::var_os("CI").is_some() {
-        panic!(
-            "the secret example plugin cdylib is not built under CI: `cargo test --workspace` \
-                 must build the in-tree secret-example-plugin (checked both the uplifted target dir \
-                 and target/deps). Refusing to silently skip the only over-the-ABI coverage of the \
-                 DynSecret dlopen seam."
-        );
-    }
-    candidate
-}
-
-/// End-to-end: load the REAL secret-example-plugin cdylib over the C ABI and exercise
-/// `SecretModule::resolve` through the `DynSecret` wrapper — a hit, a miss (fail-closed, never an
-/// empty `Ok`), and a reference whose `settings` carries no `key` at all.
-#[test]
-fn load_and_exercise_secret_plugin() {
-    let Some(path) = hermetic_secret_plugin_path() else {
-        eprintln!("skip: secret example plugin cdylib not built (run under --workspace)");
-        return;
-    };
-    let bytes = std::fs::read(&path).expect("read secret example plugin cdylib");
-    let module = load_secret_from_bytes(
-        &bytes,
-        r#"{"map": {"db-password": "hunter2"}}"#,
-        "secret-example",
-        "secret",
-    )
-    .expect("load secret example plugin over the ABI");
-
-    let mut settings = serde_json::Map::new();
-    settings.insert(
-        "key".to_string(),
-        serde_json::Value::String("db-password".into()),
-    );
-    let bytes = module.resolve(&settings).expect("known key resolves");
-    assert_eq!(bytes, b"hunter2");
-
-    let mut miss = serde_json::Map::new();
-    miss.insert(
-        "key".to_string(),
-        serde_json::Value::String("no-such-key".into()),
-    );
-    assert!(
-        module.resolve(&miss).is_err(),
-        "an unknown key must fail closed, never resolve empty"
-    );
-
-    assert!(
-        module.resolve(&serde_json::Map::new()).is_err(),
-        "settings with no `key` field must fail closed"
-    );
-}
-
-/// Locate the hermetic `busbar-export-example-plugin` cdylib, mirroring
-/// `hermetic_secret_plugin_path` above (see its doc for the uplifted-vs-`deps` rationale). CI
+/// Locate the hermetic `busbar-export-example-plugin` cdylib, checking BOTH the uplifted
+/// `<profile_dir>/<name>` copy and the raw `<profile_dir>/deps/<name>` compiler output (a SCOPED
+/// `cargo test -p busbar-plugin-loader` uplifts only to `target/deps`). CI
 /// (`cargo test --workspace`) always builds it, so a missing cdylib there is a hard failure, not a
 /// silent skip — it is the only over-the-ABI coverage of the `DynExport` dlopen seam.
 fn hermetic_export_plugin_path() -> Option<std::path::PathBuf> {
@@ -1566,7 +1486,7 @@ fn load_and_exercise_export_plugin() {
 // time, because they never cross the ABI.
 
 /// Locate the hermetic in-tree `busbar-store-example-plugin` cdylib. Mirrors
-/// `hermetic_secret_plugin_path`/`hermetic_export_plugin_path`, including checking BOTH the uplifted
+/// `hermetic_export_plugin_path`, including checking BOTH the uplifted
 /// `<profile_dir>/<name>` copy and the raw `<profile_dir>/deps/<name>` compiler output (a scoped
 /// `cargo test -p busbar-plugin-loader` only produces the latter).
 ///

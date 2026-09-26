@@ -242,13 +242,6 @@ drain = "delete the plugin-tooling name from the export crate: a export reaches 
 
 [[edge]]
 from = "export"
-to = "secret"
-cite = "none. ARCHITECTURE.md 1.1 — three blind axes, one small kernel: a crate of kind export has no clause that lets it name secret vocabulary. Every hit is a coupling to delete."
-why = "crates of kind export naming secret vocabulary: secret package names in any spelling, the kind-qualified id (secret-<id>), and — where secret is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
-drain = "delete the secret name from the export crate: a export reaches secret through the contract face it is written against, never by naming it. Every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
-
-[[edge]]
-from = "export"
 to = "store"
 cite = "none. ARCHITECTURE.md 1.1 — three blind axes, one small kernel: a crate of kind export has no clause that lets it name store vocabulary. Every hit is a coupling to delete."
 why = "crates of kind export naming store vocabulary: store package names in any spelling, the kind-qualified id (store-<id>), and — where store is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
@@ -459,13 +452,6 @@ drain = "delete the plugin-tooling name from the plugin-tooling crate: a plugin-
 
 [[edge]]
 from = "plugin-tooling"
-to = "secret"
-cite = "none by clause. The loader, packer, signer and SDK are the tools that BUILD plugins, so a secret name in them is a tool naming its subject; ARCHITECTURE.md 7 keeps them a kind of their own for exactly that reason, and the number says how much of the subject leaked into the tool."
-why = "crates of kind plugin-tooling naming secret vocabulary: secret package names in any spelling, the kind-qualified id (secret-<id>), and — where secret is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
-drain = "delete the secret name from the plugin-tooling crate: a plugin-tooling reaches secret through the contract face it is written against, never by naming it. Every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
-
-[[edge]]
-from = "plugin-tooling"
 to = "store"
 cite = "none by clause. The loader, packer, signer and SDK are the tools that BUILD plugins, so a store name in them is a tool naming its subject; ARCHITECTURE.md 7 keeps them a kind of their own for exactly that reason, and the number says how much of the subject leaked into the tool."
 why = "crates of kind plugin-tooling naming store vocabulary: store package names in any spelling, the kind-qualified id (store-<id>), and — where store is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
@@ -549,20 +535,6 @@ why = "crates of kind root naming transport vocabulary: transport package names 
 drain = "delete the per-transport wiring from crates/busbar/src/root/** and crates/busbar/src/main.rs: the root mounts a declared surface read off the registry, so each hit goes on the commit that moves the declaration into the transport itself."
 
 [[edge]]
-from = "secret"
-to = "hooks"
-cite = "none. ARCHITECTURE.md 1.1 — three blind axes, one small kernel: a crate of kind secret has no clause that lets it name hooks vocabulary. Every hit is a coupling to delete."
-why = "crates of kind secret naming hooks vocabulary: hooks package names in any spelling, the kind-qualified id (hooks-<id>), and — where hooks is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
-drain = "delete the hooks name from the secret crate: a secret reaches hooks through the contract face it is written against, never by naming it. Every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
-
-[[edge]]
-from = "secret"
-to = "plugin-tooling"
-cite = "none. ARCHITECTURE.md 1.1 — three blind axes, one small kernel: a crate of kind secret has no clause that lets it name plugin-tooling vocabulary. Every hit is a coupling to delete."
-why = "crates of kind secret naming plugin-tooling vocabulary: plugin-tooling package names in any spelling, the kind-qualified id (plugin-tooling-<id>), and — where plugin-tooling is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
-drain = "delete the plugin-tooling name from the secret crate: a secret reaches plugin-tooling through the contract face it is written against, never by naming it. Every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
-
-[[edge]]
 from = "store"
 to = "plane"
 cite = "none. ARCHITECTURE.md 1.1 — three blind axes, one small kernel: a crate of kind store has no clause that lets it name plane vocabulary. Every hit is a coupling to delete."
@@ -575,13 +547,6 @@ to = "plugin-tooling"
 cite = "none. ARCHITECTURE.md 1.1 — three blind axes, one small kernel: a crate of kind store has no clause that lets it name plugin-tooling vocabulary. Every hit is a coupling to delete."
 why = "crates of kind store naming plugin-tooling vocabulary: plugin-tooling package names in any spelling, the kind-qualified id (plugin-tooling-<id>), and — where plugin-tooling is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
 drain = "delete the plugin-tooling name from the store crate: a store reaches plugin-tooling through the contract face it is written against, never by naming it. Every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
-
-[[edge]]
-from = "store"
-to = "secret"
-cite = "none. ARCHITECTURE.md 1.1 — three blind axes, one small kernel: a crate of kind store has no clause that lets it name secret vocabulary. Every hit is a coupling to delete."
-why = "crates of kind store naming secret vocabulary: secret package names in any spelling, the kind-qualified id (secret-<id>), and — where secret is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
-drain = "delete the secret name from the store crate: a store reaches secret through the contract face it is written against, never by naming it. Every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
 
 [[edge]]
 from = "store"
@@ -808,11 +773,6 @@ count = "3"
 crate = "busbar-export-example-plugin"
 kind = "plugin-tooling"
 count = "3"
-
-[[cell]]
-crate = "busbar-export-example-plugin"
-kind = "secret"
-count = "2"
 
 [[cell]]
 crate = "busbar-export-example-plugin"
@@ -1161,11 +1121,6 @@ count = "10"
 
 [[cell]]
 crate = "busbar-plugin-loader"
-kind = "secret"
-count = "18"
-
-[[cell]]
-crate = "busbar-plugin-loader"
 kind = "store"
 count = "67"
 
@@ -1194,16 +1149,6 @@ count = "22"
 
 
 [[cell]]
-crate = "busbar-secret-example-plugin"
-kind = "hooks"
-count = "1"
-
-[[cell]]
-crate = "busbar-secret-example-plugin"
-kind = "plugin-tooling"
-count = "3"
-
-[[cell]]
 crate = "busbar-store-example-plugin"
 kind = "plane"
 count = "26"
@@ -1211,11 +1156,6 @@ count = "26"
 [[cell]]
 crate = "busbar-store-example-plugin"
 kind = "plugin-tooling"
-count = "3"
-
-[[cell]]
-crate = "busbar-store-example-plugin"
-kind = "secret"
 count = "3"
 
 [[cell]]
@@ -1902,16 +1842,6 @@ drain   = "none while #2 (OWNER-LOCKED) names this edge as the witness's step (4
 
 [[dep]]
 from    = "busbar-plugin-loader"
-to      = "busbar-secret-example-plugin"
-half    = "test"
-count   = "1"
-verdict = "tcb"
-cite    = "BUSBAR-1.6.0.md #2 (OWNER-LOCKED), THE COST OF A REAL AUTH WITNESS steps (4) and (5): the both-ways witness of a kind is a path dev-dependency from crates/plugin-loader/Cargo.toml on the kind's [\"cdylib\", \"rlib\"] fixture (step 4) and a conformance test in crates/plugin-loader/src/tests/ that links the rlib and dlopens the cdylib (step 5). The precedent is the export fixture: #2 names busbar-plugin-loader -> busbar-export-example-plugin, a test edge of exactly this shape, as the enforcing witness, and the architect's K5-residue ruling (2026-09-25) applies that admission to every kind's fixture. `plugin-tooling -> secret` is a trusted-computing-base class (ARCHITECTURE.md 1.4 \"`loader` and `abi` are TCB crates, not kinds.\"), so the verdict is `tcb`."
-why     = "busbar-plugin-loader names busbar-secret-example-plugin: declared dev in the test graph so secret_conformance_tests can link the COMPILED-IN `secret` fixture (its rlib) and compare it against the same crate's DROPPED-IN cdylib, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
-drain   = "none while #2 (OWNER-LOCKED) names this edge as the witness's step (4): deleting it deletes the `secret` kind's both-ways proof. The row holds the number, so a second declaration is still a landing that has to say why."
-
-[[dep]]
-from    = "busbar-plugin-loader"
 to      = "busbar-plugin"
 half    = "shipped"
 count   = "1"
@@ -1929,16 +1859,6 @@ verdict = "tcb"
 cite    = "ARCHITECTURE.md 1.4 \"`loader` and `abi` are TCB crates, not kinds.\" Not a kind edge; inside the trusted computing base."
 why     = "busbar-plugin-sdk names busbar-plugin: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
 drain   = "none while the loader and the plugin tooling are outside the kind system (ARCHITECTURE.md 1.4: they are not kinds). The drain is the ruling that gives them one; until it lands this row holds the number."
-
-[[dep]]
-from    = "busbar-secret-example-plugin"
-to      = "busbar-plugin-sdk"
-half    = "shipped"
-count   = "1"
-verdict = "not-allowed"
-cite    = "ARCHITECTURE.md 1.2 manifest allow-list: busbar-contract (+busbar-grammar) and reviewed third-party. busbar-api / the loader are not on it."
-why     = "busbar-secret-example-plugin names busbar-plugin-sdk: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
-drain   = "delete the busbar-plugin-sdk dependency from busbar-secret-example-plugin's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
 
 [[dep]]
 from    = "busbar-store-example-plugin"

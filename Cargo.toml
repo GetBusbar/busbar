@@ -38,7 +38,6 @@ members = [
     "crates/auth-admin-tokens",
     "crates/auth-static-plugin",
     "crates/hook-test-plugin",
-    "crates/secret-example-plugin",
     "crates/store-example-plugin",
     "crates/export-example-plugin",
     "crates/busbar-export-prometheus",

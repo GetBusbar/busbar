@@ -246,10 +246,12 @@ fn open(cfg: &str) -> Result<Box<dyn SecretModule>, String> {
 busbar_plugin_sdk::export_secret_plugin!(open);
 ```
 
-A complete, compiling reference implementation (a fixed in-memory map, no network) lives at
-`crates/secret-example-plugin` and is exercised end-to-end over the real C ABI by
-`busbar-plugin-loader`'s `load_and_exercise_secret_example_plugin` test. This doc example is kept
-honest against it, not written once and left to drift.
+A complete, real reference implementation is the HashiCorp Vault plugin
+([GetBusbar/hashicorp-vault](https://github.com/GetBusbar/hashicorp-vault)): the Vault KV v2 client
+crate beside its thin ABI adapter crate. busbar's CI builds it against this tree and loads its
+`cdylib` through the dropped-in door (`busbar-plugin-loader`'s `plugin_proof_tests`, the
+`plugin-proofs` job), so this doc example is kept honest against a real plugin, not written once and
+left to drift.
 
 Reference it from any secret field, for example a provider credential pulled from a vault:
 

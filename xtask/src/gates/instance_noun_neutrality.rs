@@ -172,8 +172,10 @@ const GCP_GENERIC_MENTION_FILES: &[&str] = &[
     "crates/busbar-substrate-values/src/diagnostics/mod.rs",
 ];
 
-// ── SECRET / HOOK / EXPORT (self-contained example/test plugins; matched on crate identity) ────
-const FAM_SECRET: &[&str] = &["secret-example-plugin"];
+// ── HOOK / EXPORT (self-contained example/test plugins; matched on crate identity) ─────────────
+// The SECRET kind has no crate in this tree: its in-tree fixture was deleted (owner, "FIXTURES":
+// "real plugins are the examples") and it is proven by the real plugin repo GetBusbar/hashicorp-vault,
+// so its noun below is censused like the stores — an empty family, every hit a leak.
 const FAM_HOOK: &[&str] = &["hook-test-plugin"];
 const FAM_EXPORT: &[&str] = &["export-example-plugin"];
 // The two store-kind crates that DO exist in this tree, and the one in-tree hook plugin (item 197).
@@ -406,13 +408,14 @@ const NOUNS: &[Noun] = &[
         section: None,
     },
     // Secret / hook / export — bare `secret`/`hook`/`export` are core subsystems (secret-ref,
-    // busbar-core-hooks, export verbs), so the ENFORCEABLE instance token is the example/test
-    // plugin's own crate identifier. Zero false positives; reds only if core names the plugin.
+    // busbar-core-hooks, export verbs), so the ENFORCEABLE instance token is the plugin's own crate
+    // identifier. Zero false positives; reds only if core names the plugin. The secret kind's
+    // instance is the real plugin repo's crate (`busbar-hashicorp-vault`), which has no crate here.
     Noun {
-        key: "secret",
+        key: "vault",
         kind: "secret",
-        family: FAM_SECRET,
-        tokens: &["secret_example_plugin"],
+        family: FAM_NONE,
+        tokens: &["hashicorp_vault"],
         camel: &[],
         section: None,
     },

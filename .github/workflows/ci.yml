@@ -2216,7 +2216,6 @@ jobs:
             -p busbar-store-example-plugin \
             -p busbar-hook-test-plugin \
             -p busbar-auth-static-plugin \
-            -p busbar-secret-example-plugin \
             -p busbar-export-example-plugin \
             -p busbar-plugin-example-plane
       - name: Tests — ${{ matrix.name }}
@@ -2647,6 +2646,60 @@ jobs:
         run: scripts/txn-fence.sh
       - name: Loom model of the swap invariant
         run: scripts/loom.sh
+
+  # PLUGIN PROOFS — THE SECRET AND AUTH KINDS, PROVEN BY THE REAL PLUGIN REPOS. The owner deleted
+  # the in-tree secret and auth fixtures ("these are trash … real plugins are the examples",
+  # docs/design/1.6.0-QUESTIONS.md "FIXTURES"); the proofs of those two kinds are
+  # GetBusbar/hashicorp-vault (secret) and GetBusbar/auth-github (auth). Both repos name busbar by the
+  # sibling path `../../busbar/crates/…` from each crate dir, so they are checked out beside THIS
+  # checkout (`busbar/`, `hashicorp-vault/`, `auth-github/` under one workspace) and build against
+  # the tree under test, not against the rev their `.busbar-ref` pins. Their cdylibs land in one
+  # target dir, and `busbar-plugin-loader`'s `plugin_proof_tests` (`#[ignore]`d locally) dlopens each
+  # through the dropped-in door: the kind handshake, one real operation, and the RED arms (the same
+  # bytes signed as the other kind refused naming both kinds; an empty config refused in the
+  # plugin's own words). Unlocked on purpose: the plugin repos' lockfiles pin THEIR resolution, and
+  # this job's question is whether they build against this tree.
+  plugin-proofs:
+    name: plugin proofs · secret + auth by the real plugin repos
+    runs-on: latchkey-large
+    needs: [preflight]
+
+    # BOUNDED — see "EVERY JOB IS BOUNDED" at the top of this file. NEW JOB, no run history yet:
+    # two small plugin workspaces and one loader test binary, cold. Re-measure to p95 x1.5 once
+    # ten green runs exist.
+    timeout-minutes: 30
+    env:
+      CARGO_TARGET_DIR: ${{ github.workspace }}/plugin-proofs-target
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          path: busbar
+      - name: Checkout the real secret plugin (GetBusbar/hashicorp-vault)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: GetBusbar/hashicorp-vault
+          ref: dev
+          path: hashicorp-vault
+      - name: Checkout the real auth plugin (GetBusbar/auth-github)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: GetBusbar/auth-github
+          ref: dev
+          path: auth-github
+      - uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
+      - name: Build the secret plugin's cdylib against this checkout
+        working-directory: hashicorp-vault
+        # package-selector: busbar-hashicorp-vault-plugin -- .github/workflows/ci.yml -- GetBusbar/hashicorp-vault is a sibling checkout; `working-directory: hashicorp-vault` resolves this selector against that workspace, never against this one
+        run: cargo build -p busbar-hashicorp-vault-plugin
+      - name: Build the auth plugin's cdylib against this checkout
+        working-directory: auth-github
+        # package-selector: busbar-auth-github-plugin -- .github/workflows/ci.yml -- GetBusbar/auth-github is a sibling checkout; `working-directory: auth-github` resolves this selector against that workspace, never against this one
+        run: cargo build -p busbar-auth-github-plugin
+      - name: Dlopen both through the dropped-in door (plugin_proof_tests)
+        working-directory: busbar
+        env:
+          BUSBAR_PLUGIN_PROOF_DIR: ${{ github.workspace }}/plugin-proofs-target/debug
+        run: cargo test --locked -p busbar-plugin-loader --lib plugin_proof_tests -- --ignored
 
   # TIMING GATE: the ignored hot-path latency test, in release mode. Its bounds are deliberately
   # generous (25ms p50 / 250ms p99 through the full in-process router+mock round trip) so runner
@@ -4098,6 +4151,12 @@ jobs:
       - construction-gate
       - content-debt-gates
       - gate-all
+      - plugin-proofs
+    # report-only: plugin-proofs -- the secret and auth kinds' proofs by the REAL plugin repos
+    #   (GetBusbar/hashicorp-vault, GetBusbar/auth-github). RED until both repos build against this
+    #   tree: their Cargo.toml still names `../../busbar/crates/api`, and busbar-api retired at
+    #   7cbf9b133 (fold F4). The umbrella waits for it and prints its result, and counts it the day
+    #   the two repos are ported to busbar-contract and this job is green.
     # report-only: content-debt-gates -- unconstructed, map-proof and sweep-coverage are RED ON HEAD on
     #   content that item 6b (Phase 5) drains, self-test and verdict both, and none has a
     #   gates::REPORT_ONLY posture to score against. The job runs them plainly and goes red; the
@@ -4133,6 +4192,8 @@ jobs:
       CONTENT_DEBT_GATES_RESULT: ${{ needs.content-debt-gates.result }}
       # Report-only: printed, never counted. Flip condition is on the gate-all job.
       GATE_ALL_RESULT: ${{ needs.gate-all.result }}
+      # Report-only: printed, never counted. Flip condition is on the plugin-proofs job.
+      PLUGIN_PROOFS_RESULT: ${{ needs.plugin-proofs.result }}
       # 'true' on any run where the full tier is expected to execute: every event except a push,
       # plus pushes to the three promotion branches. Mirrors the `if:` on the full-tier jobs above,
       # so "expected to run" and "required to have run" cannot drift apart.
@@ -4205,6 +4266,7 @@ jobs:
           printf '  %-24s %s\n' "construction-gate" "posture verdict=${CONSTRUCTION_VERDICT:-unset} (job result ${CONSTRUCTION_RESULT:-unset}; SCORED)"
           printf '  %-24s %s\n' "content-debt-gates" "job result ${CONTENT_DEBT_GATES_RESULT:-unset} (REPORT-ONLY until item 6b drains it; NOT COUNTED)"
           printf '  %-24s %s\n' "gate-all" "job result ${GATE_ALL_RESULT:-unset} (REPORT-ONLY until gate --all is green on HEAD; NOT COUNTED)"
+          printf '  %-24s %s\n' "plugin-proofs" "job result ${PLUGIN_PROOFS_RESULT:-unset} (REPORT-ONLY until the real plugin repos build against this tree; NOT COUNTED)"
           if [ "$fails" -ne 0 ]; then
             echo "::error::ci umbrella: RED — ${fails} required job(s) did not pass on this ref."
             echo "::error::A skipped, failed, or cancelled required job is NOT a pass. DO NOT PROMOTE."

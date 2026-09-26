@@ -202,12 +202,12 @@ cmd_fast() {
 # The consumers, and why each is here:
 #   -p busbar -p busbar-plugin-loader --features busbar-plugin-loader/pack           release-check.sh's Phase 0, verbatim. It
 #                                                   hard-asserts both binaries exist.
-#   -p busbar-hook-test-plugin                      in-tree dev-fixture cdylibs plugin-loader's
-#   -p busbar-secret-example-plugin                 tests dlopen. Neither is a Cargo dependency of
-#                                                   busbar-plugin-loader (they are only ever loaded
+#   -p busbar-hook-test-plugin                      the in-tree dev-fixture cdylib plugin-loader's
+#                                                   tests dlopen. It is not a Cargo dependency of
+#                                                   busbar-plugin-loader (it is only ever loaded
 #                                                   at runtime via dlopen from inside a test), so no
-#                                                   scoped loader test builds them on its own; both
-#                                                   crates hard-panic under CI if they are missing.
+#                                                   scoped loader test builds it on its own; the
+#                                                   tests hard-panic under CI if it is missing.
 #   test -p busbar-plugin-loader --no-run           the loader job's test binaries, linked here so
 #                                                   that job only has to RUN them.
 #   -p busbar-store-example-plugin                  the `plane-plugin-suites` segment's own two

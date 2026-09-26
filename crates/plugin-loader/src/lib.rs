@@ -2071,10 +2071,12 @@ mod both_ways;
 #[path = "tests/store_conformance_tests.rs"]
 mod store_conformance_tests;
 
-/// `kind: secret` through both doors: one row, one module.
+/// `kind: secret` and `kind: auth` proven by the REAL plugin repos (GetBusbar/hashicorp-vault,
+/// GetBusbar/auth-github): their built cdylibs, dlopened from `BUSBAR_PLUGIN_PROOF_DIR` (ci.yml's
+/// `plugin-proofs` job). `#[ignore]`d without that directory.
 #[cfg(test)]
-#[path = "tests/secret_conformance_tests.rs"]
-mod secret_conformance_tests;
+#[path = "tests/plugin_proof_tests.rs"]
+mod plugin_proof_tests;
 
 /// `kind: auth` through both doors — the auth kind's first both-ways witness (#2, steps (1)-(5)): the
 /// compiled-in twin and the `cdylib`'s `busbar_call` put one wire, and the linked and dropped-in rows
