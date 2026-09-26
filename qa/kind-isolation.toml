@@ -1522,6 +1522,42 @@ crate = "busbar-voice-codec"
 kind = "substrate"
 count = "15"
 
+# L5-INTERIM, ruling-backed (K9b; decisions.md "L5 kind-isolation rows to add at regen"), armed at today's measurement.
+[[cell]]
+crate = "busbar-export-file"
+kind = "plane"
+count = "2"
+
+# L5-INTERIM, ruling-backed (K9b; decisions.md "L5 kind-isolation rows to add at regen"), armed at today's measurement.
+[[cell]]
+crate = "busbar-export-file"
+kind = "plugin-tooling"
+count = "10"
+
+# L5-INTERIM, ruling-backed (K9b same shape; decisions.md "L5 kind-isolation rows to add at regen"), armed at today's measurement.
+[[cell]]
+crate = "busbar-export-webhook"
+kind = "plane"
+count = "1"
+
+# L5-INTERIM, ruling-backed (K9b same shape; decisions.md "L5 kind-isolation rows to add at regen"), armed at today's measurement.
+[[cell]]
+crate = "busbar-export-webhook"
+kind = "plugin-tooling"
+count = "9"
+
+# L5-INTERIM, ruling-backed (K9b same shape / K9d; decisions.md "L5 kind-isolation rows to add at regen"), armed at today's measurement.
+[[cell]]
+crate = "busbar-export-prometheus"
+kind = "plane"
+count = "2"
+
+# L5-INTERIM, ruling-backed (K9b same shape / K9d; decisions.md "L5 kind-isolation rows to add at regen"), armed at today's measurement.
+[[cell]]
+crate = "busbar-export-prometheus"
+kind = "plugin-tooling"
+count = "5"
+
 [[disagreement]]
 crate = "busbar"
 kind = "plane"
@@ -3013,6 +3049,116 @@ verdict = "allowed"
 cite    = "ARCHITECTURE.md — kernel workflow crates form the loop; #36 group structure permits intra-tier edges (ARCHITECTURE_ALLOWED kernel -> kernel). The folded cost module's rate-conversion test cross-checks the budget crate's RateNanos."
 why     = "busbar-kernel-ledger names busbar-kernel-budget: declared dev in the test graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions."
 drain   = "none: ARCHITECTURE.md grants the kernel -> kernel class. What this row holds is the NUMBER."
+
+[[dep]]
+from    = "busbar"
+to      = "busbar-export-file"
+half    = "shipped"
+count   = "1"
+verdict = "not-allowed"
+cite    = "ARCHITECT 2026-09-25, K9b follow-ups (decisions.md, L5 intake): \"L5 kind-isolation rows to add at regen: [[dep]] busbar->busbar-export-file, busbar-export-file->busbar-plugin-sdk; [[cell]] busbar-export-file x plane=2, x plugin-tooling=10. Same shape for busbar-export-webhook/-prometheus/-otlp.\"; owner ruling 2026-09-18 in BUSBAR-1.6.0.md #3: the four built-in sinks become real both-ways export plugins (item 141). `root -> export` is in neither ARCHITECTURE_ALLOWED nor ARCHITECTURE_TCB, so the verdict is the one the architecture implies; the row records the edge the ruling orders, it does not grant a class."
+why     = "busbar names busbar-export-file: declared normal in the shipped graph, optional (feature export-file), so the composition root links the file sink as a row of the export axis, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none while the composition root links the built-in sinks (#3 owner ruling 2026-09-18). The row holds the number, so a second declaration is still a landing that has to say why."
+
+[[dep]]
+from    = "busbar-export-file"
+to      = "busbar-plugin-sdk"
+half    = "shipped"
+count   = "1"
+verdict = "not-allowed"
+cite    = "ARCHITECT 2026-09-25, K9b follow-ups (decisions.md, L5 intake): \"L5 kind-isolation rows to add at regen: [[dep]] busbar->busbar-export-file, busbar-export-file->busbar-plugin-sdk; [[cell]] busbar-export-file x plane=2, x plugin-tooling=10. Same shape for busbar-export-webhook/-prometheus/-otlp.\"; owner ruling 2026-09-18 in BUSBAR-1.6.0.md #3: the four built-in sinks become real both-ways export plugins (item 141). `export -> plugin-tooling` is in neither ARCHITECTURE_ALLOWED nor ARCHITECTURE_TCB, so the verdict is the one the architecture implies; the row records the edge the ruling orders, it does not grant a class."
+why     = "busbar-export-file names busbar-plugin-sdk: declared normal in the shipped graph — the sink is written against the plugin SDK, its one busbar dependency (#84), 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "folds into busbar-contract with the #84 merge (plugin-sdk -> contract): the edge becomes export -> contract, which #40(a) grants as the rule."
+
+[[dep]]
+from    = "busbar"
+to      = "busbar-export-webhook"
+half    = "shipped"
+count   = "1"
+verdict = "not-allowed"
+cite    = "ARCHITECT 2026-09-25, K9b follow-ups (decisions.md, L5 intake): \"L5 kind-isolation rows to add at regen: [[dep]] busbar->busbar-export-file, busbar-export-file->busbar-plugin-sdk; [[cell]] busbar-export-file x plane=2, x plugin-tooling=10. Same shape for busbar-export-webhook/-prometheus/-otlp.\"; owner ruling 2026-09-18 in BUSBAR-1.6.0.md #3: the four built-in sinks become real both-ways export plugins (item 141). `root -> export` is in neither ARCHITECTURE_ALLOWED nor ARCHITECTURE_TCB, so the verdict is the one the architecture implies; the row records the edge the ruling orders, it does not grant a class."
+why     = "busbar names busbar-export-webhook: declared normal in the shipped graph, optional (feature export-webhook), so the composition root links the webhook sink as a row of the export axis, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none while the composition root links the built-in sinks (#3 owner ruling 2026-09-18). The row holds the number, so a second declaration is still a landing that has to say why."
+
+[[dep]]
+from    = "busbar-export-webhook"
+to      = "busbar-plugin-sdk"
+half    = "shipped"
+count   = "1"
+verdict = "not-allowed"
+cite    = "ARCHITECT 2026-09-25, K9b follow-ups (decisions.md, L5 intake): \"L5 kind-isolation rows to add at regen: [[dep]] busbar->busbar-export-file, busbar-export-file->busbar-plugin-sdk; [[cell]] busbar-export-file x plane=2, x plugin-tooling=10. Same shape for busbar-export-webhook/-prometheus/-otlp.\"; owner ruling 2026-09-18 in BUSBAR-1.6.0.md #3: the four built-in sinks become real both-ways export plugins (item 141). `export -> plugin-tooling` is in neither ARCHITECTURE_ALLOWED nor ARCHITECTURE_TCB, so the verdict is the one the architecture implies; the row records the edge the ruling orders, it does not grant a class."
+why     = "busbar-export-webhook names busbar-plugin-sdk: declared normal in the shipped graph — the sink is written against the plugin SDK, its one busbar dependency (#84), 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "folds into busbar-contract with the #84 merge (plugin-sdk -> contract): the edge becomes export -> contract, which #40(a) grants as the rule."
+
+[[dep]]
+from    = "busbar"
+to      = "busbar-export-prometheus"
+half    = "shipped"
+count   = "1"
+verdict = "not-allowed"
+cite    = "ARCHITECT 2026-09-25, K9b follow-ups (decisions.md, L5 intake): \"L5 kind-isolation rows to add at regen: [[dep]] busbar->busbar-export-file, busbar-export-file->busbar-plugin-sdk; [[cell]] busbar-export-file x plane=2, x plugin-tooling=10. Same shape for busbar-export-webhook/-prometheus/-otlp.\"; ARCHITECT 2026-09-25, K9d L5 rows (decisions.md, L5 intake): \"busbar->busbar-export-prometheus; kernel/core-admin->export-prometheus (test edges); matrix cells for the new crate.\"; owner ruling 2026-09-18 in BUSBAR-1.6.0.md #3: the four built-in sinks become real both-ways export plugins (item 141). `root -> export` is in neither ARCHITECTURE_ALLOWED nor ARCHITECTURE_TCB, so the verdict is the one the architecture implies; the row records the edge the ruling orders, it does not grant a class."
+why     = "busbar names busbar-export-prometheus: declared normal in the shipped graph, optional (feature export-prometheus), so the composition root links the prometheus sink as a row of the export axis, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none while the composition root links the built-in sinks (#3 owner ruling 2026-09-18). The row holds the number, so a second declaration is still a landing that has to say why."
+
+[[dep]]
+from    = "busbar-export-prometheus"
+to      = "busbar-plugin-sdk"
+half    = "shipped"
+count   = "1"
+verdict = "not-allowed"
+cite    = "ARCHITECT 2026-09-25, K9b follow-ups (decisions.md, L5 intake): \"L5 kind-isolation rows to add at regen: [[dep]] busbar->busbar-export-file, busbar-export-file->busbar-plugin-sdk; [[cell]] busbar-export-file x plane=2, x plugin-tooling=10. Same shape for busbar-export-webhook/-prometheus/-otlp.\"; ARCHITECT 2026-09-25, K9d L5 rows (decisions.md, L5 intake): \"busbar->busbar-export-prometheus; kernel/core-admin->export-prometheus (test edges); matrix cells for the new crate.\"; owner ruling 2026-09-18 in BUSBAR-1.6.0.md #3: the four built-in sinks become real both-ways export plugins (item 141). `export -> plugin-tooling` is in neither ARCHITECTURE_ALLOWED nor ARCHITECTURE_TCB, so the verdict is the one the architecture implies; the row records the edge the ruling orders, it does not grant a class."
+why     = "busbar-export-prometheus names busbar-plugin-sdk: declared normal in the shipped graph — the sink is written against the plugin SDK, its one busbar dependency (#84), 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "folds into busbar-contract with the #84 merge (plugin-sdk -> contract): the edge becomes export -> contract, which #40(a) grants as the rule."
+
+[[dep]]
+from    = "busbar-kernel"
+to      = "busbar-export-prometheus"
+half    = "test"
+count   = "1"
+verdict = "not-allowed"
+cite    = "ARCHITECT 2026-09-25, K9d L5 rows (decisions.md, L5 intake): \"busbar->busbar-export-prometheus; kernel/core-admin->export-prometheus (test edges); matrix cells for the new crate.\"; owner ruling 2026-09-18 in BUSBAR-1.6.0.md #3: the four built-in sinks become real both-ways export plugins (item 141). `kernel -> export` is in neither ARCHITECTURE_ALLOWED nor ARCHITECTURE_TCB, so the verdict is the one the architecture implies; the row records the edge the ruling orders, it does not grant a class."
+why     = "busbar-kernel names busbar-export-prometheus: declared dev in the test graph so its tests render /metrics through the linked prometheus sink, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "delete the dev-dependency once the tests reach the sink through the linked export table rather than by crate name."
+
+[[dep]]
+from    = "busbar-core-admin"
+to      = "busbar-export-prometheus"
+half    = "test"
+count   = "1"
+verdict = "not-allowed"
+cite    = "ARCHITECT 2026-09-25, K9d L5 rows (decisions.md, L5 intake): \"busbar->busbar-export-prometheus; kernel/core-admin->export-prometheus (test edges); matrix cells for the new crate.\"; owner ruling 2026-09-18 in BUSBAR-1.6.0.md #3: the four built-in sinks become real both-ways export plugins (item 141). `core -> export` is in neither ARCHITECTURE_ALLOWED nor ARCHITECTURE_TCB, so the verdict is the one the architecture implies; the row records the edge the ruling orders, it does not grant a class."
+why     = "busbar-core-admin names busbar-export-prometheus: declared dev in the test graph so its tests render /metrics through the linked prometheus sink, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "delete the dev-dependency once the tests reach the sink through the linked export table rather than by crate name."
+
+[[dep]]
+from    = "busbar"
+to      = "busbar-plugin-example-plane"
+half    = "test"
+count   = "1"
+verdict = "allowed"
+cite    = "ARCHITECT 2026-09-25 (K4 residue, decisions.md, L5 intake): \"busbar -> busbar-plugin-example-plane test edge [[dep]] row\"; ARCHITECTURE.md 1.1 / ARCHITECTURE.md 3.1 — the composition root is the one thing that names all three axes (`root -> plugin-tooling` is granted)."
+why     = "busbar names busbar-plugin-example-plane: declared dev in the test graph so the root's tests load the example plane plugin through the plugin path, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none: ARCHITECTURE.md grants this class. What this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
+
+[[dep]]
+from    = "busbar-plugin-loader"
+to      = "busbar-store-example-plugin"
+half    = "test"
+count   = "1"
+verdict = "not-allowed"
+cite    = "BUSBAR-1.6.0.md #2 (OWNER-LOCKED), THE COST OF A REAL AUTH WITNESS steps (4) and (5): the both-ways witness of a kind is a path dev-dependency from crates/plugin-loader/Cargo.toml on the kind's fixture (step 4) and a conformance test in crates/plugin-loader/src/tests/ that links the rlib and dlopens the cdylib (step 5). ARCHITECT 2026-09-25 (K5 residue, decisions.md): \"the export precedent's admission applies to every kind's fixture\"; the fixture is the crate plugin-loader's own [package.metadata.busbar.both-ways] names for `store`. `plugin-tooling -> store` is in neither ARCHITECTURE_ALLOWED nor ARCHITECTURE_TCB, so the verdict is the one the architecture implies; the row records the edge the ruling orders, it does not grant a class."
+why     = "busbar-plugin-loader names busbar-store-example-plugin: declared dev in the test graph so the store conformance tests can link the COMPILED-IN `store` fixture (its rlib) and compare it against the same crate's DROPPED-IN cdylib, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none while #2 (OWNER-LOCKED) names this edge as the witness's step (4): deleting it deletes the `store` kind's both-ways proof. The row holds the number, so a second declaration is still a landing that has to say why."
+
+[[dep]]
+from    = "busbar-plugin-loader"
+to      = "busbar-export-example-plugin"
+half    = "test"
+count   = "1"
+verdict = "not-allowed"
+cite    = "BUSBAR-1.6.0.md #2 (OWNER-LOCKED), THE COST OF A REAL AUTH WITNESS steps (4) and (5): the both-ways witness of a kind is a path dev-dependency from crates/plugin-loader/Cargo.toml on the kind's fixture (step 4) and a conformance test in crates/plugin-loader/src/tests/ that links the rlib and dlopens the cdylib (step 5). ARCHITECT 2026-09-25 (K5 residue, decisions.md): \"the export precedent's admission applies to every kind's fixture\"; the fixture is the crate plugin-loader's own [package.metadata.busbar.both-ways] names for `export`. `plugin-tooling -> export` is in neither ARCHITECTURE_ALLOWED nor ARCHITECTURE_TCB, so the verdict is the one the architecture implies; the row records the edge the ruling orders, it does not grant a class."
+why     = "busbar-plugin-loader names busbar-export-example-plugin: declared dev in the test graph so the export conformance tests can link the COMPILED-IN `export` fixture (its rlib) and compare it against the same crate's DROPPED-IN cdylib, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none while #2 (OWNER-LOCKED) names this edge as the witness's step (4): deleting it deletes the `export` kind's both-ways proof. The row holds the number, so a second declaration is still a landing that has to say why."
 
 [[edge]]
 from = "kernel"
