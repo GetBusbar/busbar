@@ -33,6 +33,9 @@ hmac = { workspace = true }
 # node's TLS credential and builds the `rustls` config a TLS transport receives as an opaque
 # `TransportConfigHandle`. The workspace pin is `ring`-only, the one crypto backend in the tree.
 rustls = { workspace = true }
+# The OAuth token response's tolerant `expires_in` parse (`egress_auth::deserialize_expires_in`) is a
+# serde deserializer. A leaf already in this crate's closure through `busbar-contract`.
+serde = { workspace = true }
 
 [features]
 # A production `CredentialDigest` (1.5.5's hex SHA-256) for callers who would rather take the

@@ -87,6 +87,12 @@ busbar-kernel-audit = { path = "../busbar-kernel-audit" }
 # carried three races the unit had already fixed. The unit depends only on `busbar-contract`, so the
 # edge is acyclic and kernel -> kernel, exactly as the ledger and audit edges above.
 busbar-kernel-breaker = { path = "../busbar-kernel-breaker" }
+# THE EGRESS-AUTH UNIT (DECISIONS #40(b), #83a SD-2b): a protocol's DECLARED egress scheme is
+# presented by `busbar_kernel_identity::egress_auth` under a `Grant<Sign>` the teller mints, so the
+# credential is written onto the request kernel-side and never passes through a plane. The unit
+# depends only on `busbar-contract`, so the edge is acyclic and kernel -> kernel, exactly as the
+# ledger, audit and breaker edges above.
+busbar-kernel-identity = { path = "../busbar-kernel-identity" }
 # Inline-capacity vectors for the per-request lane-selection working set (`proxy::select`): a
 # typical pool has a handful of members, so the candidate view, the SWRR scratch and the tried-set
 # live on the stack instead of costing three heap allocations per pick. Workspace-pinned.

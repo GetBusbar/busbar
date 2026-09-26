@@ -139,3 +139,38 @@ fn api_key_override_prebuilds_for_every_protocol() {
         );
     }
 }
+
+/// The operator's `auth: api-key` override is a DECLARED static header scheme presented by the
+/// egress-auth unit under the teller's `Grant<Sign>` (#83a SD-2b): for every key a config system can
+/// hand it, in either credential mode, it writes exactly the bytes the shared header builder wrote,
+/// and a key that is not a legal header value still sends no header at all.
+#[test]
+fn the_api_key_override_presents_the_shared_builders_bytes() {
+    const KEYS: &[&str] = &[
+        "sk-test-123",
+        "",
+        " leading",
+        "sk\tkey",
+        "klucz-\u{142}-\u{e9}",
+        "sk\r\ninjected",
+        "sk\u{0}key",
+        "sk\u{7f}key",
+    ];
+    let cred = resolve("any-protocol", Some(crate::config::ProviderAuth::ApiKey));
+    for &key in KEYS {
+        for upstream_creds in [
+            busbar_api::UpstreamCreds::Own,
+            busbar_api::UpstreamCreds::Passthrough,
+        ] {
+            let c = SigningContext {
+                upstream_creds,
+                ..ctx(b"{}", 1_756_000_000, "/v1/x")
+            };
+            assert_eq!(
+                cred.headers_for(key, &c),
+                busbar_substrate_values::proto::api_key_auth_headers("api-key", key),
+                "key {key:?}, mode {upstream_creds:?}"
+            );
+        }
+    }
+}

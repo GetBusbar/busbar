@@ -610,6 +610,7 @@ dependencies = [
  "busbar-kernel-audit",
  "busbar-kernel-breaker",
  "busbar-kernel-egress",
+ "busbar-kernel-identity",
  "busbar-kernel-ledger",
  "busbar-llm",
  "busbar-mcp",
@@ -715,6 +716,7 @@ dependencies = [
  "hmac",
  "rcgen",
  "rustls",
+ "serde",
  "sha2 0.11.0",
 ]
 

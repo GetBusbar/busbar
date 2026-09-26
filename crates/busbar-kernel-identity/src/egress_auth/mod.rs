@@ -19,6 +19,9 @@
 //! - [`bearer_auth_headers`] and [`api_key_auth_headers`] — the two static credential header
 //!   builders, whose one legality rule ([`is_legal_header_value`]) `decorate` applies too, so a slot
 //!   substituted here and a header built here are the same bytes.
+//! - [`present`] and [`presentation`] — a protocol's DECLARED egress scheme (a credential-family
+//!   table, or a signature whose region is a declared function of the host), read and decorated
+//!   here under the kernel's `Grant<Sign>`.
 //! - [`sigv4`] — the signer itself, verified against AWS's published worked example.
 //! - [`substitute`] — applies a decoration's [`SecretSlot`]s to an envelope exactly once each.
 //! - [`lane_cross_check`] — the post-decoration re-check: the envelope must still equal the
@@ -36,7 +39,12 @@
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
 
+mod declared;
 pub mod sigv4;
+mod token_response;
+
+pub use declared::{present, presentation};
+pub use token_response::{default_expires_in, deserialize_expires_in};
 
 use busbar_contract::caps::{AuthDecoration, Grant, SecretSlot, Sign, VerifiedDestination};
 
