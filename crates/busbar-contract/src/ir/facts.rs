@@ -38,7 +38,7 @@
 //! hook sidecars is a real disclosure decision that deserves its own unit and its own CHANGELOG line.
 //! The turn itself is never lost — see the empty-turn rule the concrete walk keeps.
 
-use crate::operation::Operation;
+use crate::operation::OpVerb;
 use serde_json::Value;
 use std::borrow::Cow;
 
@@ -418,7 +418,7 @@ pub trait IrFacts {
     /// The semantic operation — the same closed vocabulary the metrics label and the `paths:` config
     /// key use, so a consumer that switches on it is switching on something already enumerated.
     #[cfg_attr(not(test), allow(dead_code))]
-    fn verb(&self) -> Operation;
+    fn verb(&self) -> OpVerb;
 
     /// Did the caller ask to stream?
     fn wants_stream(&self) -> bool;
@@ -443,7 +443,7 @@ pub trait IrFacts {
 /// handle can hold an `Arc` and hand out a REFCOUNT BUMP instead, and the request payload is
 /// serialized/allocated exactly once for the life of the request.
 impl<T: IrFacts + ?Sized> IrFacts for std::sync::Arc<T> {
-    fn verb(&self) -> Operation {
+    fn verb(&self) -> OpVerb {
         (**self).verb()
     }
     fn wants_stream(&self) -> bool {
@@ -460,14 +460,14 @@ impl<T: IrFacts + ?Sized> IrFacts for std::sync::Arc<T> {
     }
 }
 
-/// The empty projection over a bare [`Operation`] — the [`IrFacts`] a RESPONSE-side `IrHandle`
+/// The empty projection over a bare [`OpVerb`] — the [`IrFacts`] a RESPONSE-side `IrHandle`
 /// returns from its `facts()` default. It is never actually read (facts are a request-side seam:
 /// `read_facts` runs only on the ingress request handle), so it answers with the operation it holds
 /// and nothing else. Naming it here keeps the response handles from having to carry a real projection.
-pub struct NeutralFacts(pub Operation);
+pub struct NeutralFacts(pub OpVerb);
 
 impl IrFacts for NeutralFacts {
-    fn verb(&self) -> Operation {
+    fn verb(&self) -> OpVerb {
         self.0
     }
     fn wants_stream(&self) -> bool {

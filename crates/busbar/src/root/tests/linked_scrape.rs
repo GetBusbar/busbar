@@ -26,8 +26,9 @@ use busbar_plugin_loader::{DynExport, LoadablePlugin, PluginRegistry};
 const SETTINGS: &str = r#"{"buffer_seconds":60}"#;
 
 /// The linked table's scrape sink: the registry the boot installs with no plugins directory, and
-/// the name of the row whose sink carries the `metrics` stream.
-fn linked_scrape_sink() -> (PluginRegistry, String) {
+/// the name of the row whose sink carries the `metrics` stream — `None` when this build links no
+/// such sink (a `--no-default-features` or single-plane build links no export crate at all).
+fn linked_scrape_sink() -> Option<(PluginRegistry, String)> {
     let rows = linked_exports(crate::LINKED.exports).expect("the linked export sinks state rows");
     let axis = PluginRegistry::empty()
         .link(rows)
@@ -40,11 +41,8 @@ fn linked_scrape_sink() -> (PluginRegistry, String) {
         })
     };
     let names = axis.linked().iter().map(|p| p.manifest.name.clone());
-    let name = names
-        .into_iter()
-        .find(scrapes)
-        .expect("the build links a sink that carries the metrics stream");
-    (axis, name)
+    let name = names.into_iter().find(scrapes)?;
+    Some((axis, name))
 }
 
 /// The `cdylib` in this target dir (uplifted or under `deps`, newest first) that loads as an export
@@ -178,7 +176,12 @@ fn conform(a: &PluginRegistry, b: &PluginRegistry, name: &str, own: &str) -> Res
 /// the same comparison.
 #[test]
 fn a_linked_and_a_dropped_in_scrape_sink_are_one_row_and_render_the_same_bytes() {
-    let (linked, name) = linked_scrape_sink();
+    // Whether THIS build links a scrape sink is the linked table's answer, not a feature name: a
+    // build that links none (no export crate, or none carrying the `metrics` stream) has nothing
+    // to compare and builds nothing to drop in.
+    let Some((linked, name)) = linked_scrape_sink() else {
+        return;
+    };
     let probe = linked
         .open_export(&name, SETTINGS)
         .expect("the linked sink opens");

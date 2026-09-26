@@ -114,7 +114,23 @@ pub const ABI_MAJOR: u32 = 2;
 /// 25→26 (1.6.0, K8 / K3c intake): `hot::TransportDecl` appends `session` (the linked row's
 /// `SESSION`), so a dropped-in transport declares whether it carries sessions exactly as a linked one
 /// does. Append-only at the decl's tail; the loader admits a transport decl only from minor 26.
-pub const ABI_MINOR: u32 = 26;
+///
+/// 26→27 (1.6.0, XPLANE; ARCHITECT RULING (S); #2 rule (2), #47/#49): `hot::PlaneDecl` appends the
+/// `served_op_classes` tail (each `hot::decl::DeclServedOpClass` an operation class and the plane's
+/// display name), so a dropped-in plane serves a nested destination — which names a class, never a
+/// plane — exactly as a linked one does. A decl ending before the tail serves none. Append-only.
+///
+/// 27→28 (1.6.0, K8c; ARCHITECT "K8b residue", #30, #40(c)): the transport decl's POLL shape. The
+/// blocking byte slots cost a thread handoff per crossing (bridge p50 4.25 µs / p99 19 µs, over the
+/// HOT-lane budget), so `hot::TransportDecl` appends `init` (build, handed the host's `#[repr(C)]`
+/// `hot::transport::WireWaker` handle), `connect` (a dial that answers at once) and the five POLL slots
+/// `poll_accept` / `poll_read` / `poll_write` / `poll_flush` / `poll_close`, each answering
+/// Ready(n) | Pending | Error (`hot::transport::WireOutcome::Pending` is the appended outcome `13`).
+/// The host drives them inline from its reactor. The blocking `build` / `accept` / `dial` / `read` /
+/// `write` / `close` are RETIRED in this minor — no shipped wire needs them: their fields keep their
+/// offsets, a minor-28 decl leaves them `None`, and the loader refuses a transport built before minor
+/// 28 (manifest and decl alike) and a decl that fills a retired slot. Append-only everywhere else.
+pub const ABI_MINOR: u32 = 28;
 
 /// The FROZEN-FOR-ALL-TIME ABI header. This exact layout — `magic` at offset 0, `abi_major` at 8,
 /// `abi_minor` at 12 — is a permanent contract: it may NEVER be reordered, resized, extended, or

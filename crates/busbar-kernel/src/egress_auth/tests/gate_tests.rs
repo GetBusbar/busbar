@@ -85,12 +85,12 @@ fn a_queue() -> QueueEgress {
 }
 
 /// A key with an EXPLICIT scope list: what is not listed is not granted.
-fn key_with(id: &str, scopes: &[(&str, &str)]) -> busbar_api::VirtualKey {
+fn key_with(id: &str, scopes: &[(&str, &str)]) -> busbar_contract::records::VirtualKey {
     let mut k = wildcard_key(id);
     k.allowed_scopes = Some(
         scopes
             .iter()
-            .map(|(kind, value)| busbar_api::ScopeRef {
+            .map(|(kind, value)| busbar_contract::records::ScopeRef {
                 kind: (*kind).to_string(),
                 value: (*value).to_string(),
             })
@@ -100,8 +100,8 @@ fn key_with(id: &str, scopes: &[(&str, &str)]) -> busbar_api::VirtualKey {
 }
 
 /// A key with NO scope restriction — `allowed_scopes: None`, the frozen 1.5.3 wildcard.
-fn wildcard_key(id: &str) -> busbar_api::VirtualKey {
-    busbar_api::VirtualKey {
+fn wildcard_key(id: &str) -> busbar_contract::records::VirtualKey {
+    busbar_contract::records::VirtualKey {
         id: id.to_string(),
         generation_hash: String::new(),
         name: id.to_string(),
@@ -118,7 +118,7 @@ fn wildcard_key(id: &str) -> busbar_api::VirtualKey {
 }
 
 /// A caller granted all three of the queue plane's scopes and nothing else.
-fn a_fully_granted_caller() -> busbar_api::VirtualKey {
+fn a_fully_granted_caller() -> busbar_contract::records::VirtualKey {
     key_with(
         "k-queue",
         &[
@@ -219,16 +219,16 @@ fn a_key_that_is_not_live_is_refused_before_any_grant_is_looked_at() {
     for (what, mutate) in [
         (
             "disabled",
-            Box::new(|k: &mut busbar_api::VirtualKey| k.enabled = false)
-                as Box<dyn Fn(&mut busbar_api::VirtualKey)>,
+            Box::new(|k: &mut busbar_contract::records::VirtualKey| k.enabled = false)
+                as Box<dyn Fn(&mut busbar_contract::records::VirtualKey)>,
         ),
         (
             "tombstoned",
-            Box::new(|k: &mut busbar_api::VirtualKey| k.deleted_at = Some(1)),
+            Box::new(|k: &mut busbar_contract::records::VirtualKey| k.deleted_at = Some(1)),
         ),
         (
             "expired",
-            Box::new(|k: &mut busbar_api::VirtualKey| k.expires_at = Some(500)),
+            Box::new(|k: &mut busbar_contract::records::VirtualKey| k.expires_at = Some(500)),
         ),
     ] {
         let mut key = wildcard_key("k-dead");
@@ -330,7 +330,7 @@ fn a_caller_holding_nothing_is_refused_on_the_first_requirement() {
 /// THE FROZEN 1.5.3 SEMANTICS, re-asserted at the one site where reading them the other way would be
 /// an authority grant: an OMITTED scope list is a wildcard, an EXPLICIT EMPTY one is the empty set.
 ///
-/// Pinned here rather than trusted from `busbar_api`, because this gate is where a "hardening" edit
+/// Pinned here rather than trusted from `busbar_contract`, because this gate is where a "hardening" edit
 /// that read a wildcard as the empty set would break every small deployment, and where an edit that
 /// read the empty list as "all" would hand out every credential busbar holds.
 #[test]

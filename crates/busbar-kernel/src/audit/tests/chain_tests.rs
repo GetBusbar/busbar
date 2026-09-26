@@ -17,7 +17,7 @@
 //!    four tampers with NO new mechanism: no chain, no digest, no verifier, no error type.
 //!
 //! 3. **THE DIGESTS OF THE THREE REAL STREAMS DID NOT MOVE.** The three record types were already
-//!    hash-chained on disk before this unification, and `busbar_api`'s store contract publishes
+//!    hash-chained on disk before this unification, and `busbar_contract`'s store contract publishes
 //!    their formulas. A digest that changed would make every existing deployment's chain fail to
 //!    verify at the next boot — that is, report its own history as TAMPERED. The three golden
 //!    vectors below recompute each formula independently, the old way, and require the new
@@ -444,7 +444,7 @@ fn the_length_prefixed_call_digest_is_unchanged_by_the_unification() {
     lp(&mut buf, &pin_generation.to_be_bytes());
     assert_eq!(
         digest(&rec),
-        busbar_api::sha256_hex(&buf),
+        busbar_contract::redacted::sha256_hex(&buf),
         "a length-prefixed per-call digest that moved would report every deployment's persisted chain as tampered"
     );
 }
@@ -481,13 +481,13 @@ fn the_pipe_separated_task_event_digest_is_unchanged_by_the_unification() {
     );
     assert_eq!(
         digest(&rec),
-        busbar_api::sha256_hex(canonical.as_bytes()),
+        busbar_contract::redacted::sha256_hex(canonical.as_bytes()),
         "a pipe-separated task-event digest that moved would report every persisted chain as tampered"
     );
 }
 
 /// A SCHEME-1 admin audit digest is byte-for-byte what `admin/audit.rs` computed before the
-/// unification, and byte-for-byte the formula `busbar_api::AuditRecord` publishes — the shape a
+/// unification, and byte-for-byte the formula `busbar_contract::records::AuditRecord` publishes — the shape a
 /// record read back off a store (or, before the scheme tag existed, every record) carries. `seal`
 /// mints scheme 2 on a fresh entry (see the paired test right after this one); this forces scheme 1
 /// back on and reseals, reproducing exactly what an already-persisted entry's digest is.
@@ -519,7 +519,7 @@ fn a_scheme_one_admin_audit_digest_is_unchanged_by_the_unification() {
     );
     assert_eq!(
         entry.hash,
-        busbar_api::sha256_hex(canonical.as_bytes()),
+        busbar_contract::redacted::sha256_hex(canonical.as_bytes()),
         "a scheme-1 admin audit digest that moved would report every persisted chain as tampered"
     );
     assert_eq!(

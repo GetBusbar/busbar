@@ -26,9 +26,9 @@
 //! ## It IS in the config-schema tracked set
 //!
 //! Exactly like `tools:`/`agents:`, this file is fingerprinted by `cargo xtask gate config-schema` (it is a
-//! `SOURCES` entry). Both the neutral `StreamsSection` FIELD on `DeployCfg` AND this per-key grammar —
-//! the three plane-imposed session ceilings — are covered by the additive-only gate, so a deployment's
-//! live-voice CEILINGS cannot be retyped or removed without the gate flagging it.
+//! `SOURCES` entry). Both the `streams` key of `DeployCfg`'s neutral declared-section carrier AND this
+//! per-key grammar — the three plane-imposed session ceilings — are covered by the additive-only gate,
+//! so a deployment's live-voice CEILINGS cannot be retyped or removed without the gate flagging it.
 
 use crate::ir::config::SessionConfig;
 use crate::ir::control::IrVad;
@@ -106,7 +106,7 @@ impl busbar_kernel::plane::config::PlaneCfg for StreamsCfg {
     /// The voice plane's `streams:` section carries NO secret reference — the exhaustive destructure
     /// (no `..`) is kept anyway so a future secret-bearing field fails to compile until someone
     /// decides, HERE, whether it is a secret, exactly as `AgentsCfg`/`ToolsCfg` do.
-    fn secret_refs(&self) -> Vec<(String, &busbar_api::SecretRef)> {
+    fn secret_refs(&self) -> Vec<(String, &busbar_contract::secret_ref::SecretRef)> {
         let StreamsCfg {
             session: _,
             session_max_secs: _,

@@ -204,7 +204,7 @@ pub(super) struct Admitted {
 /// admitted path by the size of a response nobody on it will ever carry.
 fn admit(
     host: &Arc<dyn EngineHost>,
-    key: &busbar_api::VirtualKey,
+    key: &busbar_contract::records::VirtualKey,
     agent_id: &str,
     shape: &super::registry::TaskShape,
     now_secs: u64,
@@ -313,7 +313,7 @@ fn admit(
 /// has an unambiguous address for it, `POST /a2a/agents/{id}`, which the refusal names.
 fn select(
     host: &Arc<dyn EngineHost>,
-    key: &busbar_api::VirtualKey,
+    key: &busbar_contract::records::VirtualKey,
     shape: &super::registry::TaskShape,
 ) -> Result<String, Box<Response>> {
     let Some(plane) = crate::a2a::runtime_arc_of(host) else {
@@ -826,7 +826,7 @@ use Target::{FromCatalogue, Named};
 /// on the ONE shared path, making all three planes siblings.
 struct A2aInvokePlane {
     engine_host: Arc<dyn EngineHost>,
-    principal: busbar_api::AuthPrincipal,
+    principal: busbar_contract::auth::AuthPrincipal,
     target: Target,
     wire: Wire,
     body: axum::body::Bytes,
@@ -887,8 +887,8 @@ impl busbar_kernel::plane_host::GauntletPlane for A2aInvokePlane {
 #[allow(clippy::too_many_arguments)] // plumbing: each arg is an independent request input
 pub(super) async fn invoke(
     engine_host: Arc<dyn EngineHost>,
-    gov: busbar_api::PlaneRequestCtx,
-    principal: busbar_api::AuthPrincipal,
+    gov: busbar_contract::records::PlaneRequestCtx,
+    principal: busbar_contract::auth::AuthPrincipal,
     target: Target,
     wire: Wire,
     transport: busbar_substrate_values::transport::Transport,
@@ -945,8 +945,8 @@ pub(super) async fn invoke(
 /// will one day be missing from the thirteenth.
 async fn invoke_inner(
     engine_host: Arc<dyn EngineHost>,
-    gov: busbar_api::PlaneRequestCtx,
-    principal: busbar_api::AuthPrincipal,
+    gov: busbar_contract::records::PlaneRequestCtx,
+    principal: busbar_contract::auth::AuthPrincipal,
     target: Target,
     wire: Wire,
     body: axum::body::Bytes,
@@ -1149,8 +1149,8 @@ pub(super) fn tap_join_verdict(
 #[allow(clippy::too_many_arguments)]
 async fn admitted(
     engine_host: Arc<dyn EngineHost>,
-    gov: busbar_api::PlaneRequestCtx,
-    principal: busbar_api::AuthPrincipal,
+    gov: busbar_contract::records::PlaneRequestCtx,
+    principal: busbar_contract::auth::AuthPrincipal,
     target: Target,
     a2a_version: &'static str,
     // `mut` because a `prompt: rw` rewrite hook may edit the submission `params` in place (see the
@@ -2433,7 +2433,7 @@ struct HopContext {
 struct HopCharge {
     billed_key_id: String,
     /// The key whose budget chain the hop's `bytes` are ledgered on — the one `billed_key_id` names.
-    key: Arc<busbar_api::VirtualKey>,
+    key: Arc<busbar_contract::records::VirtualKey>,
     resource: String,
     actor: String,
 }
@@ -2497,7 +2497,7 @@ impl HopCharge {
 /// writes is the same `agent:<id>` the usage rows already name.
 fn ledger_hop_bytes(
     engine_host: &dyn EngineHost,
-    key: &busbar_api::VirtualKey,
+    key: &busbar_contract::records::VirtualKey,
     resource: &str,
     bytes: u64,
 ) {

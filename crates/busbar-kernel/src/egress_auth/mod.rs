@@ -319,7 +319,7 @@ pub fn prebuild_auth(
         canonical_uri: "",
         body: &[],
         timestamp_epoch: 0,
-        upstream_creds: busbar_api::UpstreamCreds::Own,
+        upstream_creds: busbar_contract::config::UpstreamCreds::Own,
     };
     Some(crate::proto::convert_headers(
         credential.headers_for(api_key, &ctx),

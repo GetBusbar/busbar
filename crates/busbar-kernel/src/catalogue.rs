@@ -17,7 +17,7 @@
 mod catalogue_tests;
 
 // ==== merged from busbar-substrate (W4.b P2 engine drain) ====
-use busbar_api::VirtualKey;
+use busbar_contract::records::VirtualKey;
 
 use crate::trust::validate::{Generations, Grant};
 

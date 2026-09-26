@@ -9,7 +9,7 @@
 use super::handler::McpRequestHandler;
 use super::invoke::InvokeOperation;
 use super::*;
-use busbar_api::operation::Operation;
+use busbar_contract::operation::OpVerb;
 use busbar_substrate_values::handlers::{OperationHandler, RequestHandler};
 use busbar_substrate_values::ir::invoke::InvokeResp;
 use busbar_substrate_values::ir::subscribe::SubscribeIntent;
@@ -244,20 +244,20 @@ fn structured_content_is_omitted_when_the_tool_produced_none() {
 #[test]
 fn mcp_serves_invoke_and_subscribe_and_refuses_every_other_operation() {
     let h = McpRequestHandler;
-    assert!(h.operation_handler(Operation::INVOKE).is_some());
-    assert!(h.operation_handler(Operation::SUBSCRIBE).is_some());
+    assert!(h.operation_handler(OpVerb::INVOKE).is_some());
+    assert!(h.operation_handler(OpVerb::SUBSCRIBE).is_some());
     for op in [
-        Operation::CHAT,
-        Operation::EMBEDDINGS,
-        Operation::MODERATION,
-        Operation::IMAGE,
-        Operation::TRANSCRIPTION,
-        Operation::SPEECH,
-        Operation::RERANK,
-        Operation::CATALOGUE,
-        Operation::FETCH,
-        Operation::TASK,
-        Operation::CONTROL,
+        OpVerb::CHAT,
+        OpVerb::EMBEDDINGS,
+        OpVerb::MODERATION,
+        OpVerb::IMAGE,
+        OpVerb::TRANSCRIPTION,
+        OpVerb::SPEECH,
+        OpVerb::RERANK,
+        OpVerb::CATALOGUE,
+        OpVerb::FETCH,
+        OpVerb::TASK,
+        OpVerb::CONTROL,
     ] {
         assert!(
             h.operation_handler(op).is_none(),
@@ -274,7 +274,7 @@ fn mcp_serves_invoke_and_subscribe_and_refuses_every_other_operation() {
 fn the_operation_is_resolved_from_the_body_method() {
     let h = McpRequestHandler;
     let body = call_wire(serde_json::json!({ "name": "t" }));
-    assert_eq!(h.resolve_operation("/mcp", &body), Some(Operation::INVOKE));
+    assert_eq!(h.resolve_operation("/mcp", &body), Some(OpVerb::INVOKE));
     assert_eq!(
         h.resolve_operation("/v1/chat/completions", &body),
         None,
@@ -331,7 +331,7 @@ fn the_method_is_read_from_the_top_level_member_alone() {
         "method": "tools/call"
     }))
     .expect("fixture");
-    assert_eq!(h.resolve_operation("/mcp", &large), Some(Operation::INVOKE));
+    assert_eq!(h.resolve_operation("/mcp", &large), Some(OpVerb::INVOKE));
 
     // A body that is a JSON ARRAY, or a `method` that is not a string, names no operation.
     assert_eq!(
@@ -349,7 +349,7 @@ fn the_method_is_read_from_the_top_level_member_alone() {
     // wire name is the DECODED string, not the bytes that carried it.
     assert_eq!(
         h.resolve_operation("/mcp", br#"{"method":"tools\/call"}"#),
-        Some(Operation::INVOKE)
+        Some(OpVerb::INVOKE)
     );
 }
 
@@ -379,7 +379,7 @@ fn resolving_the_operation_builds_no_document() {
     .expect("fixture");
 
     let (op, routing_bytes) = allocated_by(|| h.resolve_operation("/mcp", &body));
-    assert_eq!(op, Some(Operation::INVOKE));
+    assert_eq!(op, Some(OpVerb::INVOKE));
     assert_eq!(
         routing_bytes,
         0,
@@ -511,7 +511,7 @@ fn the_subscription_verbs_resolve_to_the_subscription_operation() {
         let body = subscription_wire(method, serde_json::json!({ "uri": "u" }));
         assert_eq!(
             h.resolve_operation("/mcp", &body),
-            Some(Operation::SUBSCRIBE),
+            Some(OpVerb::SUBSCRIBE),
             "{method} names the subscription operation"
         );
     }
@@ -655,7 +655,7 @@ fn subscribe_body_projects_its_target() {
     });
     // The same resolution the hook seam makes: the registered protocol's handler for the operation.
     let handler = busbar_substrate_values::handlers::request_handler(crate::PROTO_DECL.name)
-        .and_then(|rh| rh.operation_handler(Operation::SUBSCRIBE))
+        .and_then(|rh| rh.operation_handler(OpVerb::SUBSCRIBE))
         .expect("the registered protocol serves SUBSCRIBE");
     let facts = handler
         .read_facts_value(&v)

@@ -743,10 +743,8 @@ fn a_plane_gated_module_is_named_only_from_code_under_the_same_feature() {
 
 /// A scratch directory that removes itself, so a failing assertion never leaves a tree behind and
 /// two runs of the same test never read each other's journal.
-#[cfg(any(feature = "root-admin", feature = "root-llm"))]
 struct BookDir(std::path::PathBuf);
 
-#[cfg(any(feature = "root-admin", feature = "root-llm"))]
 impl BookDir {
     fn new(tag: &str) -> Self {
         let path = std::env::temp_dir().join(format!(
@@ -776,7 +774,6 @@ impl BookDir {
     }
 }
 
-#[cfg(any(feature = "root-admin", feature = "root-llm"))]
 impl Drop for BookDir {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.0);
@@ -786,7 +783,6 @@ impl Drop for BookDir {
 /// The migration config a seam test opens over: a plan naming nothing, so an empty deployment seals
 /// a ZERO opening rather than refusing, and the two facts under test are proved without seeding rows
 /// the seal would then have to read back.
-#[cfg(any(feature = "root-admin", feature = "root-llm"))]
 fn empty_opening_plan() -> root::migration::MigrationConfig {
     root::migration::MigrationConfig {
         node: 0,
@@ -815,7 +811,12 @@ fn empty_opening_plan() -> root::migration::MigrationConfig {
 ///     proof. The marker is the FIRST record on the chain; a settlement made afterwards lands
 ///     STRICTLY AFTER it. An opening sealed after traffic has begun is worse than useless, because
 ///     it looks authoritative while measuring from the wrong point.
-#[cfg(any(feature = "root-admin", feature = "root-llm"))]
+// A PROVIDER NEEDS A WIRE CODEC. `cfg_with_provider_api_key` configures one provider on the
+// registry's residual-default dialect, and a build that links no protocol (a single-plane build of a
+// plane with no body-ingress codec) has none to name: the fixture refuses, and which test happened to
+// register a dialect first decided the verdict. Gated on the linked axis that carries the codecs, as
+// the root's other provider-configuring cells are.
+#[cfg(linked_axis_body_ingress)]
 #[test]
 fn the_boot_path_opens_the_configured_directory_and_seals_before_it_settles() {
     use busbar_kernel_ledger::totals::{BucketId, BucketScope, CapDimension, TotalsKey};
@@ -824,8 +825,11 @@ fn the_boot_path_opens_the_configured_directory_and_seals_before_it_settles() {
     // ORDER-INDEPENDENCE, not decoration. `cfg_with_provider_api_key` names the registry's
     // residual-default dialect, and in a test binary the protocol set is installed by whichever
     // test installs it first — so without this the test passes in a full run and fails run alone.
-    // The same call `root/tests/units_llm.rs` makes, for the same reason.
-    busbar_llm::testkit::install_test_seams();
+    // Every linked protocol declaration goes into the test registry, read off the linked table
+    // the root registers from.
+    for decls in crate::LINKED.protocols {
+        busbar_kernel::proto::register_test_protocols(decls);
+    }
     busbar_kernel::metrics::init();
     let dir = BookDir::new("real-path");
     assert!(
@@ -996,14 +1000,13 @@ fn the_boot_path_opens_the_configured_directory_and_seals_before_it_settles() {
 ///
 /// The adapter is the real one over the real in-tree memory store: the store a config naming none
 /// resolves to at boot. Not a recording double.
-#[cfg(any(feature = "root-admin", feature = "root-llm"))]
 #[test]
 fn the_boot_book_ships_its_opening_to_the_configured_store() {
     use busbar_kernel_wal::RecordClass;
     use busbar_plugin_loader::store_adapter::StoreAdapter;
 
     let dir = BookDir::new("ships");
-    let store: std::sync::Arc<dyn busbar_api::Store> =
+    let store: std::sync::Arc<dyn busbar_contract::records::RecordStore> =
         std::sync::Arc::new(busbar_kernel::governance::MemoryStore::new());
     let adapter = StoreAdapter::native(store);
     let mig = empty_opening_plan();
@@ -1055,14 +1058,13 @@ fn the_boot_book_ships_its_opening_to_the_configured_store() {
 ///
 /// The seal and the shipping still happen — those are the store's business, not the disk's — so
 /// this also pins that the two decisions are independent: no directory does not mean no opening.
-#[cfg(any(feature = "root-admin", feature = "root-llm"))]
 #[test]
 fn no_configured_directory_still_opens_nothing_and_writes_nothing() {
     use busbar_plugin_loader::store_adapter::StoreAdapter;
 
     // A directory the node was never told about. Nothing may appear in it.
     let unnamed = BookDir::new("unnamed");
-    let store: std::sync::Arc<dyn busbar_api::Store> =
+    let store: std::sync::Arc<dyn busbar_contract::records::RecordStore> =
         std::sync::Arc::new(busbar_kernel::governance::MemoryStore::new());
     let adapter = StoreAdapter::native(store);
     let token = root::kernel::new_kernel().durability_token();
@@ -1106,7 +1108,10 @@ fn main_rs_doc_claims_match_the_code_beside_them() {
 
     // 244: the A2A plane IS registered — its crate is a linked row and `register_planes` registers
     // every linked entry — so its doc may not say otherwise.
-    assert!(MANIFEST.contains("plane-a2a = \"busbar-a2a\""));
+    // The manifest's linked row for the plane the old doc said was not pushed — manifest data, kept
+    // in a fixture so this test names no plane.
+    const PUSHED_ROW: &str = include_str!("../../tests/fixtures/pushed_plane_linked_row.txt");
+    assert!(MANIFEST.contains(PUSHED_ROW.trim_end()));
     let register_planes = &MAIN[MAIN
         .find("\nfn register_planes() {")
         .expect("register_planes")..];
@@ -1114,7 +1119,7 @@ fn main_rs_doc_claims_match_the_code_beside_them() {
     assert!(register_planes.contains("root::linked::register_planes(&LINKED, "));
     assert!(
         !MAIN.contains("is not pushed here yet"),
-        "register_planes' doc says A2A is not pushed, and the function registers it"
+        "register_planes' doc says a plane is not pushed, and the function registers every linked plane"
     );
 
     // 247: `main()` calls into `root::`, so the `mod root;` doc may not say nothing does.
@@ -1146,6 +1151,6 @@ fn main_rs_doc_claims_match_the_code_beside_them() {
     assert!(MAIN.contains("ROOT_UNITS.iter().filter_map(|u| u.on_book)"));
     assert!(
         !MAIN.contains("Every plane's exit arm settles onto it"),
-        "the boot book's doc claims every plane settles onto it; only the LLM arm is bound here"
+        "the boot book's doc claims every plane settles onto it; only one root unit's arm is bound here"
     );
 }

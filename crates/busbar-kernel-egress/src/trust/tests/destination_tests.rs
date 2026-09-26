@@ -205,7 +205,6 @@ pub(crate) mod kinds {
 
     pub(crate) fn nested_plane() -> DestinationFacts {
         DestinationFacts::NestedPlane {
-            plane: "child",
             op: busbar_contract::OpClassId::new("call"),
         }
     }

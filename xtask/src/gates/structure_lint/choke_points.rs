@@ -147,15 +147,15 @@ pub fn table(a: &Addresses) -> Vec<ChokeRow> {
         ChokeRow {
             id: "A-persistence".into(),
             tag: "DURABLE-BYPASS".into(),
-            owner: "crates/api/src/durable.rs (durable::write / write_with; AppHandle::commit_and_swap)".into(),
-            class_test: "crates/api/src/tests/durable_tests.rs::fault_matrix_returns_err_untouched_target_no_temp_leak".into(),
+            owner: "crates/busbar-kernel-wal/src/durable.rs (durable::write / write_with; AppHandle::commit_and_swap)".into(),
+            class_test: "crates/busbar-kernel-wal/src/tests/durable_tests.rs::fault_matrix_returns_err_untouched_target_no_temp_leak".into(),
             remedy: "route through crate::durable::write".into(),
             rules: vec![
                 BanRule::new(
                     r"fs::rename\(",
                     "hand-rolled rename-to-publish",
                     &[
-                        "crates/api/src/durable.rs".into(),
+                        "crates/busbar-kernel-wal/src/durable.rs".into(),
                         "crates/plugin-loader/src/host.rs".into(),
                     ],
                 )
@@ -164,7 +164,7 @@ pub fn table(a: &Addresses) -> Vec<ChokeRow> {
                     "sync_[ad]",
                     "hand-rolled fsync durability (sync_all/sync_data)",
                     &[
-                        "crates/api/src/durable.rs".into(),
+                        "crates/busbar-kernel-wal/src/durable.rs".into(),
                         "crates/busbar-kernel-wal/src/backend.rs".into(),
                         "crates/plugin-loader/src/host.rs".into(),
                     ],
@@ -174,7 +174,7 @@ pub fn table(a: &Addresses) -> Vec<ChokeRow> {
                     r"fs::create_dir_all\(",
                     "directory creation that leaves the new entry non-durable",
                     &[
-                        "crates/api/src/durable.rs".into(),
+                        "crates/busbar-kernel-wal/src/durable.rs".into(),
                         format!("{core}/test_support/mod.rs"),
                         format!("{core}/test_support/export_axis.rs"),
                         "crates/busbar-kernel-wal/src/backend.rs".into(),

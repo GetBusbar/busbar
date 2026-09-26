@@ -9,7 +9,7 @@
 //!   tag (49 paths, 34 read-only / 32 full) — see [`LEGACY_VERBS`], and the conformance test in
 //!   `tests/table_matches_openapi.rs` that fails the build if this list and the committed fixture
 //!   ever disagree, by even one operation or one scope;
-//! - one of the **13 new 1.6.0 verbs** named in the architecture document — see [`NEW_VERBS`];
+//! - one of the **9 new 1.6.0 verbs** named in the architecture document — see [`NEW_VERBS`];
 //! - one of the **five 1.6.0 ledger views** — see [`LEDGER_VERBS`]. These are reads of what the
 //!   ledger already holds, so they are the one group of 1.6.0 additions that is `ReadOnly` rather
 //!   than `Full`, and the only group that is never posture-gated: reading a figure changes nothing,
@@ -131,7 +131,7 @@ macro_rules! legacy_row {
 
 /// The closed kernel-verb table.
 ///
-/// Three groups, in the order the module doc names them: 66 legacy verbs, 13 new verbs, then the
+/// Three groups, in the order the module doc names them: 66 legacy verbs, 9 new verbs, then the
 /// named non-admin surfaces. `#[non_exhaustive]` is deliberately NOT used — the whole point of a
 /// closed table is that a `match` on this enum fails to compile the day a new operation is added
 /// without updating this file, and a wildcard arm would silently swallow that.
@@ -282,7 +282,7 @@ pub enum KernelVerb {
     /// `POST /api/v1/admin/signing-key/rotate`
     PostSigningKeyRotate,
 
-    // ---- 1.6.0 new verbs (17) ----
+    // ---- 1.6.0 new verbs (9) ----
     /// Verify a claim/signature outside the normal request path.
     Verify,
     /// Read plane facts (a plane's own declared facts surface).
@@ -296,16 +296,8 @@ pub enum KernelVerb {
     StoreRestore,
     /// Reseal the epoch floor after a chain break/restore (irreducible; off-node CLI also exists).
     ResealEpochFloor,
-    /// Set a bucket's overdraft ceiling.
-    SetOverdraftCeiling,
-    /// Set `dispute_max_age`.
-    SetDisputeMaxAge,
     /// Commit the schema/version upgrade (irreducible).
     CommitUpgrade,
-    /// Resolve an open dispute (irreducible above `adjust_threshold`).
-    ResolveDispute,
-    /// Resolve a slice-level dispute.
-    ResolveSlice,
     /// Manually adjust a ledger figure (irreducible above `adjust_threshold`).
     Adjust,
     /// `POST /api/v1/admin/ledger/amend-rate-history` — append a signed, back-dated correction to
@@ -672,11 +664,12 @@ pub const LEGACY_VERBS: &[LegacyVerbRow] = &[
     ),
 ];
 
-/// The 13 new 1.6.0 verbs: the twelve money-governance verbs, plus `amend_rate_history` — the
+/// The 9 new 1.6.0 verbs: the eight money-governance verbs, plus `amend_rate_history` — the
 /// signed, back-dated rate-card correction the dated-history design adds to the irreducible set.
 /// `set_operator_key`, `set_escrow`, `set_dual_control`, `export_keyset` and `approve` left 1.6.0
-/// by the owner's 2026-09-08 ruling (ARCHITECTURE section 4.7): they are not verbs, and their paths are
-/// the unmounted `404`.
+/// by the owner's 2026-09-08 ruling (ARCHITECTURE section 4.7), and `set_overdraft_ceiling`,
+/// `set_dispute_max_age`, `resolve_dispute` and `resolve_slice` by #77(9) (owner answer Q71(1)):
+/// they are not verbs, and their paths are the unmounted `404`.
 pub const NEW_VERBS: &[KernelVerb] = &[
     KernelVerb::Verify,
     KernelVerb::PlaneFacts,
@@ -684,11 +677,7 @@ pub const NEW_VERBS: &[KernelVerb] = &[
     KernelVerb::ChainBreak,
     KernelVerb::StoreRestore,
     KernelVerb::ResealEpochFloor,
-    KernelVerb::SetOverdraftCeiling,
-    KernelVerb::SetDisputeMaxAge,
     KernelVerb::CommitUpgrade,
-    KernelVerb::ResolveDispute,
-    KernelVerb::ResolveSlice,
     KernelVerb::Adjust,
     KernelVerb::AmendRateHistory,
 ];
@@ -790,9 +779,9 @@ pub const NAMED_SURFACES: &[KernelVerb] = &[
 ];
 
 /// The irreducible set, required in both dual-control postures (architecture doc: "Irreducible
-/// set, required in both postures"). `Adjust` and `ResolveDispute` are irreducible only ABOVE
+/// set, required in both postures"). `Adjust` is irreducible only ABOVE
 /// `adjust_threshold` — that quantity is not decidable from the verb alone, so callers that need
-/// the threshold-gated form check it themselves (see [`crate::posture`]); they are still listed
+/// the threshold-gated form check it themselves (see [`crate::posture`]); it is still listed
 /// here so the closed set names every verb the document calls irreducible, with the caveat carried
 /// in this doc comment rather than silently dropped.
 pub const IRREDUCIBLE_VERBS: &[KernelVerb] = &[
@@ -801,7 +790,6 @@ pub const IRREDUCIBLE_VERBS: &[KernelVerb] = &[
     KernelVerb::CommitUpgrade,
     KernelVerb::ResealEpochFloor,
     KernelVerb::Adjust,
-    KernelVerb::ResolveDispute,
     // `amend_rate_history` rewrites what the past cost, so D38 seals it irreducible.
     KernelVerb::AmendRateHistory,
 ];
@@ -832,18 +820,14 @@ pub const IRREDUCIBLE_VERBS: &[KernelVerb] = &[
 #[must_use]
 pub const fn verb_name(verb: KernelVerb) -> Option<&'static str> {
     Some(match verb {
-        // The 13 money-governance verbs.
+        // The 9 money-governance verbs.
         KernelVerb::Verify => "verify",
         KernelVerb::PlaneFacts => "plane_facts",
         KernelVerb::PlaneRecordWrite => "plane_record_write",
         KernelVerb::ChainBreak => "chain_break",
         KernelVerb::StoreRestore => "store_restore",
         KernelVerb::ResealEpochFloor => "reseal_epoch_floor",
-        KernelVerb::SetOverdraftCeiling => "set_overdraft_ceiling",
-        KernelVerb::SetDisputeMaxAge => "set_dispute_max_age",
         KernelVerb::CommitUpgrade => "commit_upgrade",
-        KernelVerb::ResolveDispute => "resolve_dispute",
-        KernelVerb::ResolveSlice => "resolve_slice",
         KernelVerb::Adjust => "adjust",
         KernelVerb::AmendRateHistory => "amend_rate_history",
         // The 5 ledger views.

@@ -1076,12 +1076,18 @@ fn usage_falls_back_to_stated_totals_when_the_modality_breakdown_is_absent() {
     );
     let billed = u.to_billing_usage();
     assert_eq!(
-        billed.usage_units.get(busbar_api::UNIT_INPUT).copied(),
+        billed
+            .usage_units
+            .get(busbar_contract::records::UNIT_INPUT)
+            .copied(),
         Some(95),
         "a turn with no modality breakdown still bills its stated input tokens"
     );
     assert_eq!(
-        billed.usage_units.get(busbar_api::UNIT_OUTPUT).copied(),
+        billed
+            .usage_units
+            .get(busbar_contract::records::UNIT_OUTPUT)
+            .copied(),
         Some(50),
         "a turn with no modality breakdown still bills its stated output tokens"
     );
@@ -1117,12 +1123,18 @@ fn cached_content_tokens_are_not_billed_twice() {
     assert_eq!(u.cached, 800);
     let billed = u.to_billing_usage();
     assert_eq!(
-        billed.usage_units.get(busbar_api::UNIT_INPUT).copied(),
+        billed
+            .usage_units
+            .get(busbar_contract::records::UNIT_INPUT)
+            .copied(),
         Some(200),
         "input bills the UNCACHED remainder of the prompt (1000 - 800)"
     );
     assert_eq!(
-        billed.usage_units.get(busbar_api::UNIT_CACHE_READ).copied(),
+        billed
+            .usage_units
+            .get(busbar_contract::records::UNIT_CACHE_READ)
+            .copied(),
         Some(800),
         "the cached subset bills once, on the cache-read lane"
     );

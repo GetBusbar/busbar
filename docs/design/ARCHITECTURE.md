@@ -50,8 +50,9 @@ them). Each axis is blind to the other two; only the kernel composes them.
   never dynamically loaded**, inside the trusted computing base; the controls are review, the source
   denylist and the frame-honesty meta-tests (inflating and deflating).
 - A **plane** names a transport only as a claim and never holds a connection; it names no unit and no
-  other plane (a `NestedPlane` destination carries a key the plane's **claim config** declares, exactly
-  as lanes are); it returns **facts and locators** — never an amount, a decision, a credential, a price, a
+  other plane (a `NestedPlane { op }` destination names the operation CLASS the unit needs served,
+  never a plane: each plane declares the classes it serves in its `served_op_classes`, and the host
+  resolves the class to the one registered plane that declares it — BUSBAR-1.6.0.md #2, #47, #49); it returns **facts and locators** — never an amount, a decision, a credential, a price, a
   scheme outside its claim; it may name a **lane** only from the config-declared set for its claimed
   upstream (the trust unit re-derives it against the allow-list, which bounds the damage; the lane
   cross-check detects inconsistency between the plane's two legs and the kernel-sealed destination lane, and a uniformly lying plane is
@@ -471,7 +472,9 @@ Drain | Superseded { by }) | TimedOut(step)`, constructed only by the exit path,
   Node Tick: lease heartbeat; policy/revocation tail;
   sweep (`TaskLost`, `Stalled`); checkpoint one-shot units older than one tick; election;
   reconciliation; dispute aging; independent recompute (§4.2); peer-drain observation.
-- **Nested units**: `NestedPlane(plane_key, op)` opens a child — own key, own hold (the parent's
+- **Nested units**: `NestedPlane { op }` opens a child on whichever registered plane declares the
+  op class in its `served_op_classes` (the host resolves the class; the requesting plane never names
+  the serving plane — BUSBAR-1.6.0.md #2, #47, #49) — own key, own hold (the parent's
   estimate excludes nested cost), own audit, sharing the parent's cancellation scope; the parent's Route
   blocks on the child's `UnitEnd` (bound: child max duration); separate bounded pool; `max_nest_depth`;
   boot cycle check.
@@ -726,7 +729,7 @@ every settlement references a prior hold.
 ```
 DestinationFacts    = { kind: Upstream { transport, host, lane } | SessionUpstream { upstream: UpstreamIdx (returned by `open_upstream`; in range for this session; ≤ `MAX_SESSION_UPSTREAMS` = 8, inside the session budget), stream: Option<StreamId>, lane: LaneId (copied from the paired upstream at `open_upstream`; a session that dialed nothing carries the card's `*` row for `SessionAccrual` only — it has no provider units by definition) }
                               | Client { selector, mode: Deliver | AwaitReply { correlation, deadline } } | KernelVerb { verb }
-                              | NestedPlane { plane, op } | SessionAccrual { lane } | PlaneRecord { schema, op } | Peer { node, selector } | Upgrade { to } }
+                              | NestedPlane { op } | SessionAccrual { lane } | PlaneRecord { schema, op } | Peer { node, selector } | Upgrade { to } }
 Permitted kinds by origin: Client → all except Peer (reached only through `sessions_for`) and SessionAccrual (Tick only); Provider → Client(session), SessionUpstream, NestedPlane, PlaneRecord;
                            Arrival → none (Unit 0 is a Client unit; an Arrival subject is a refusal only); Bootstrap → KernelVerb { bootstrap } only; Handshake → Upgrade, Client { Deliver }; Tick → none (a Tick unit is zero-priced; its hold-sizing max over ∅ is 0 and the lane cross-check does not run), except `SessionAccrual { lane: the session's Unit-0 `Upstream` lane, or the card's `*` row for `session_seconds` when Unit 0 dialed nothing (a session that dialed nothing has no provider units by definition) }` when a `session_seconds` class is declared; Nested → Upstream, SessionUpstream, NestedPlane (depth < max_nest_depth), PlaneRecord, Client { Deliver }; Delivery → Client { Deliver }, Peer, and Upstream (a scatter to N upstreams is N `Delivery` children with per-recipient holds from the sender's chain, so the 8-leg bound per unit never limits fan-out) (neither may reach KernelVerb or SessionAccrual).
 VerifiedDestination = sealed after the trust unit's rule per kind:
@@ -737,7 +740,7 @@ VerifiedDestination = sealed after the trust unit's rule per kind:
                     policy admits delivery from the sender's principal; AwaitReply deadline ≤ turn_max_duration
     KernelVerb      the principal holds the verb's admin scope (always checked — satisfied for `Principal::Anonymous` when `admin_auth: []`, 1.5.5's open-admin posture, PB-36; the data-listener verbs `/healthz`, `/stats`, `/metrics`, `/metrics/hooks` carry a kernel-granted scope and 1.5.5's own auth rule, PB-43); posture rules of §4.7; read_* are pinned at
                     0 and never refused for budget or breaker
-    NestedPlane     the child plane is registered · depth < max_nest_depth · the op class is permitted for the principal
+    NestedPlane     a registered plane declares `op` in its served_op_classes (the host resolves the class to that plane; #2/#47/#49) · depth < max_nest_depth · the op class is permitted for the principal
     PlaneRecord     the schema is declared by the calling plane · the op is within the schema's declared ops · size ≤ cap
     Peer            the node holds a live lease at the current epoch · never from a claim
     Upgrade         `to` ∈ UPGRADES_TO of the current top transport · at most one upgrade in flight per connection
@@ -1182,7 +1185,7 @@ A plane is CLAIMED only when its config block is present: a 1.5.5 config claims 
 | `mcp` | mcp (JSON-RPC) | http, sse, stdio | JSON-RPC request; sampling as provider `OneShot`; outbound sessions | tool_calls, bytes | tool catalogue, approvals, settings | |
 | `a2a` | a2a | http, grpc | task ops; push events as provider units | bytes | tasks, push configs, pins | |
 | `admin` | busbar admin v1 | http | one kernel verb = one unit (codec only; `busbar-core-admin` executes) | count | — | mints via `SecretOnce` |
-| `streams` (was `voice`; its config section is already `streams:` — the unrelated 1.5.5-frozen `export.<n>.streams` key is a different field and never moves) | openai-realtime, gemini-live, twilio-media-streams, one-shot transcribe/tts | ws, webrtc, twilio-media, http | a turn; tool calls as provider `OneShot` requests (`Client(AwaitReply)` or `NestedPlane(mcp)`, result as a `SessionUpstream` leg); interrupt fact; pacing fact; one-shot transcribe/TTS | audio_tokens_in/out (`Locator`), text_tokens_in/text_tokens_out (`Locator`), cached_tokens, audio_seconds_in (`TransportUnits` on twilio and webrtc; cross-checked by `KernelElapsedMono`; `Locator` on ws), tool_calls | — | OpenAI Realtime ingress/egress; Gemini Live egress; μ-law↔PCM16 in `encode_ingress_frame`; **raw SIP out of scope** (owner decision); only the FIRST decoded IR event per wire frame is acted on; uplink audio is ASSUMED PCM16 for the `audio_seconds_in` estimate; model-emitted text in a duplex turn prices under `text_tokens_out` — an OUTPUT class, never the input one — because §4.5 clause 2 makes the class a money question and emitted text is output, not input; the `webrtc` leg and the one-shot transcribe/TTS wire shape are §9.3 Phase 0.5 work, not Phase 0 |
+| `streams` (was `voice`; its config section is already `streams:` — the unrelated 1.5.5-frozen `export.<n>.streams` key is a different field and never moves) | openai-realtime, gemini-live, twilio-media-streams, one-shot transcribe/tts | ws, webrtc, twilio-media, http | a turn; tool calls as provider `OneShot` requests (`Client(AwaitReply)` or `NestedPlane { op }` on a tool-call class the host resolves to the plane that serves it, result as a `SessionUpstream` leg); interrupt fact; pacing fact; one-shot transcribe/TTS | audio_tokens_in/out (`Locator`), text_tokens_in/text_tokens_out (`Locator`), cached_tokens, audio_seconds_in (`TransportUnits` on twilio and webrtc; cross-checked by `KernelElapsedMono`; `Locator` on ws), tool_calls | — | OpenAI Realtime ingress/egress; Gemini Live egress; μ-law↔PCM16 in `encode_ingress_frame`; **raw SIP out of scope** (owner decision); only the FIRST decoded IR event per wire frame is acted on; uplink audio is ASSUMED PCM16 for the `audio_seconds_in` estimate; model-emitted text in a duplex turn prices under `text_tokens_out` — an OUTPUT class, never the input one — because §4.5 clause 2 makes the class a money question and emitted text is output, not input; the `webrtc` leg and the one-shot transcribe/TTS wire shape are §9.3 Phase 0.5 work, not Phase 0 |
 | `blob` (acid test) | s3-style multipart | http | streaming multipart as an open unit | bytes_in/out, objects (`PlaneCount`, no same-unit companion → `estimated` under the implausibility bound) | — | |
 | `msg` (acid test) | line-delimited pub/sub | stdio | one message; fan-out across two nodes (aggregate + `peer`, by locator when oversize) | messages, bytes, recipients | subscriptions | |
 | `smtp` (acid test) | smtp, esmtp | tcp-line | one message; SMTP AUTH inbound as a challenge-response Handshake unit; STARTTLS as a Handshake unit inbound and an `Upgrade` leg upstream; AUTH to the MX via `Handshake` decoration | messages, bytes, recipients | — | |

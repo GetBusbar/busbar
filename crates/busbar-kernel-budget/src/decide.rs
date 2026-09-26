@@ -477,11 +477,25 @@ impl<S: CellStore> Door<S> {
         pool: &str,
         now: u64,
     ) -> Option<i64> {
+        self.tightest_budget(pricer, chain, pool, now)
+            .map(|(left, _)| left)
+    }
+
+    /// [`Door::budget_headroom_cents`], with the bucket that answers it: the tightest spend cap in
+    /// play and what it has left, in whole cents. The bucket is what a refusal on that figure names,
+    /// so a caller that has to refuse on it renders the same budget block the door itself renders.
+    pub fn tightest_budget<'c>(
+        &self,
+        pricer: &Pricer,
+        chain: &'c BucketChain,
+        pool: &str,
+        now: u64,
+    ) -> Option<(i64, &'c ChainBucket)> {
         let buckets: Vec<&ChainBucket> = chain.pool_filtered(pool);
         let ids: Vec<&str> = buckets.iter().map(|b| b.bucket_id.as_str()).collect();
         let cells = self.cells.lock(&ids);
-        let mut tightest: Option<i64> = None;
-        for bucket in buckets.iter() {
+        let mut tightest: Option<(i64, &'c ChainBucket)> = None;
+        for bucket in buckets {
             let Some(cap) = bucket.budget_cap else {
                 continue;
             };
@@ -497,7 +511,10 @@ impl<S: CellStore> Door<S> {
                 Ok(derived) => cap.saturating_sub(derived).max(0),
                 Err(_) => 0,
             };
-            tightest = Some(tightest.map_or(left, |t: i64| t.min(left)));
+            // The first bucket in chain order answers a tie, as the door's own check does.
+            if tightest.is_none_or(|(t, _)| left < t) {
+                tightest = Some((left, bucket));
+            }
         }
         tightest
     }

@@ -5,7 +5,7 @@
 
 use super::*;
 use boundary::{call_boundary, close_boundary, free_boundary, open_boundary, BoundaryOutcome};
-use busbar_api::VirtualKey;
+use busbar_contract::records::VirtualKey;
 use busbar_plugin::cold::{STATUS_ERR, STATUS_OK, STATUS_PROTOCOL, STATUS_UNSUPPORTED};
 use busbar_store_memory::MemoryStore;
 use std::os::raw::c_void;
@@ -100,14 +100,16 @@ unsafe fn hook_close_impl(handle: *mut c_void) {
 
 /// A test secret module: settings.name in, "resolved:<name>" bytes out; missing name errors.
 struct EchoSecret;
-impl busbar_api::SecretModule for EchoSecret {
+impl busbar_contract::secret::SecretModule for EchoSecret {
     fn resolve(
         &self,
         settings: &serde_json::Map<String, serde_json::Value>,
-    ) -> busbar_api::SecretResult<Vec<u8>> {
+    ) -> busbar_contract::secret::SecretResult<Vec<u8>> {
         match settings.get("name").and_then(|v| v.as_str()) {
             Some(n) => Ok(format!("resolved:{n}").into_bytes()),
-            None => Err(busbar_api::SecretError::invalid("settings.name required")),
+            None => Err(busbar_contract::secret::SecretModuleError::invalid(
+                "settings.name required",
+            )),
         }
     }
 }
@@ -116,11 +118,11 @@ impl busbar_api::SecretModule for EchoSecret {
 /// field survives the dispatch instead of being dropped there.
 #[derive(Default)]
 struct RecordingSecret(std::sync::Mutex<Option<Option<u64>>>);
-impl busbar_api::SecretModule for RecordingSecret {
+impl busbar_contract::secret::SecretModule for RecordingSecret {
     fn resolve(
         &self,
         _settings: &serde_json::Map<String, serde_json::Value>,
-    ) -> busbar_api::SecretResult<Vec<u8>> {
+    ) -> busbar_contract::secret::SecretResult<Vec<u8>> {
         Ok(b"no-deadline".to_vec())
     }
 
@@ -128,7 +130,7 @@ impl busbar_api::SecretModule for RecordingSecret {
         &self,
         _settings: &serde_json::Map<String, serde_json::Value>,
         deadline_ms: Option<u64>,
-    ) -> busbar_api::SecretResult<Vec<u8>> {
+    ) -> busbar_contract::secret::SecretResult<Vec<u8>> {
         *self.0.lock().unwrap() = Some(deadline_ms);
         Ok(b"observed".to_vec())
     }
@@ -199,7 +201,7 @@ fn secret_dispatch_resolves_and_fails_closed() {
         },
     )
     .unwrap_err();
-    assert_eq!(err.kind, busbar_api::SecretErrorKind::Invalid);
+    assert_eq!(err.kind, busbar_contract::secret::SecretErrorKind::Invalid);
     assert!(err.message.contains("settings.name required"));
 }
 
@@ -261,7 +263,7 @@ fn secret_ffi_roundtrip_open_call_close() {
         free_impl(out, out_len);
         match resp {
             busbar_plugin::cold::SecretResponse::Error { kind, message } => {
-                assert_eq!(kind, busbar_api::SecretErrorKind::Invalid);
+                assert_eq!(kind, busbar_contract::secret::SecretErrorKind::Invalid);
                 assert!(message.contains("settings.name required"), "got {message}");
             }
             other => panic!("expected Error, got {other:?}"),
@@ -769,7 +771,7 @@ fn outbuf_commit_null_out_drops_without_leaking_or_writing() {
 /// the ADDITIVE variants are wired end-to-end without breaking the existing dispatch.
 #[test]
 fn dispatch_handles_audit_variants() {
-    use busbar_api::AuditRecord;
+    use busbar_contract::records::AuditRecord;
     let store = MemoryStore::new();
     let rec = AuditRecord {
         seq: 1,
@@ -806,7 +808,7 @@ fn dispatch_handles_audit_variants() {
 /// `Unit` and the read that follows it finds the row, a purge and a redeem answer their counts.
 #[test]
 fn dispatch_handles_neutral_plane_variants() {
-    use busbar_api::{PlaneDisposition, PlaneRecord, PlaneSelector};
+    use busbar_contract::records::{PlaneDisposition, PlaneRecord, PlaneSelector};
 
     let store = MemoryStore::new();
 
@@ -960,8 +962,8 @@ fn auth_abi_version_is_three() {
 
 // ── ABI v2 login dispatch (SDK server side) ────────────────────────────────────────────────
 
-use busbar_api::{
-    AuthModule, AuthOutcome, BeginLogin, CompleteLogin, LoginHop, LoginModule, LoginOutcome,
+use busbar_contract::auth::{
+    AuthModule, AuthVerdict, BeginLogin, CompleteLogin, LoginHop, LoginModule, LoginOutcome,
     Principal,
 };
 use busbar_plugin::cold::auth::{
@@ -974,8 +976,8 @@ impl AuthModule for VerifyOnly {
     fn name(&self) -> &'static str {
         "verify-only"
     }
-    fn authenticate(&self, _c: Option<&str>) -> AuthOutcome {
-        AuthOutcome::Pass
+    fn authenticate(&self, _c: Option<&str>) -> AuthVerdict {
+        AuthVerdict::Pass
     }
 }
 impl LoginModule for VerifyOnly {}
@@ -986,8 +988,8 @@ impl AuthModule for LoginMod {
     fn name(&self) -> &'static str {
         "login-mod"
     }
-    fn authenticate(&self, _c: Option<&str>) -> AuthOutcome {
-        AuthOutcome::Pass
+    fn authenticate(&self, _c: Option<&str>) -> AuthVerdict {
+        AuthVerdict::Pass
     }
 }
 impl LoginModule for LoginMod {
@@ -1113,51 +1115,63 @@ fn verify_only_module_defaults_begin_login_reject() {
 /// [`dispatch`] reconstituted from the wire. Every non-plane method is a stub: nothing here reads them.
 #[derive(Default)]
 struct RecordingStore {
-    written: std::sync::Mutex<Vec<busbar_api::PlaneRecord>>,
+    written: std::sync::Mutex<Vec<busbar_contract::records::PlaneRecord>>,
 }
 
-impl busbar_api::Store for RecordingStore {
-    fn put_key(&self, _key: &VirtualKey) -> Result<(), StoreError> {
+impl busbar_contract::records::RecordStore for RecordingStore {
+    fn put_key(&self, _key: &VirtualKey) -> Result<(), RecordStoreError> {
         Ok(())
     }
-    fn get_key(&self, _id: &str) -> Result<Option<VirtualKey>, StoreError> {
+    fn get_key(&self, _id: &str) -> Result<Option<VirtualKey>, RecordStoreError> {
         Ok(None)
     }
-    fn list_keys(&self) -> Result<Vec<VirtualKey>, StoreError> {
+    fn list_keys(&self) -> Result<Vec<VirtualKey>, RecordStoreError> {
         Ok(Vec::new())
     }
-    fn delete_key(&self, _id: &str) -> Result<(), StoreError> {
+    fn delete_key(&self, _id: &str) -> Result<(), RecordStoreError> {
         Ok(())
     }
     fn get_usage(
         &self,
         _bucket: &str,
         _window: u64,
-    ) -> Result<busbar_api::UsageLedger, StoreError> {
-        Ok(busbar_api::UsageLedger::default())
+    ) -> Result<busbar_contract::records::UsageLedger, RecordStoreError> {
+        Ok(busbar_contract::records::UsageLedger::default())
     }
     fn put_usage(
         &self,
         _bucket: &str,
         _window: u64,
-        _ledger: &busbar_api::UsageLedger,
-    ) -> Result<(), StoreError> {
+        _ledger: &busbar_contract::records::UsageLedger,
+    ) -> Result<(), RecordStoreError> {
         Ok(())
     }
-    fn add_metering(&self, _delta: &busbar_api::MeteringDelta) -> Result<(), StoreError> {
+    fn add_metering(
+        &self,
+        _delta: &busbar_contract::records::MeteringDelta,
+    ) -> Result<(), RecordStoreError> {
         Ok(())
     }
-    fn list_metering(&self, _bucket: u64) -> Result<Vec<busbar_api::MeteringRow>, StoreError> {
+    fn list_metering(
+        &self,
+        _bucket: u64,
+    ) -> Result<Vec<busbar_contract::records::MeteringRow>, RecordStoreError> {
         Ok(Vec::new())
     }
-    fn upsert_plane_record(&self, record: &busbar_api::PlaneRecord) -> Result<(), StoreError> {
+    fn upsert_plane_record(
+        &self,
+        record: &busbar_contract::records::PlaneRecord,
+    ) -> Result<(), RecordStoreError> {
         self.written
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .push(record.clone());
         Ok(())
     }
-    fn append_plane_record(&self, record: &busbar_api::PlaneRecord) -> Result<(), StoreError> {
+    fn append_plane_record(
+        &self,
+        record: &busbar_contract::records::PlaneRecord,
+    ) -> Result<(), RecordStoreError> {
         self.written
             .lock()
             .unwrap_or_else(|p| p.into_inner())
@@ -1168,7 +1182,7 @@ impl busbar_api::Store for RecordingStore {
 
 /// Decode `json` as a request and dispatch it against a recording store, returning the ONE envelope
 /// the store was handed — i.e. exactly what a plugin behind the ABI would persist.
-fn envelope_from_wire(json: serde_json::Value) -> busbar_api::PlaneRecord {
+fn envelope_from_wire(json: serde_json::Value) -> busbar_contract::records::PlaneRecord {
     let store = RecordingStore::default();
     let req: StoreRequest =
         serde_json::from_slice(&serde_json::to_vec(&json).unwrap()).expect("request decodes");
@@ -1216,7 +1230,7 @@ fn upserted_plane_record_keeps_its_disposition_across_the_wire() {
     assert_eq!(rec.ts, 2_000, "the upsert wire must carry `ts`");
     assert_eq!(
         rec.disposition,
-        busbar_api::PlaneDisposition::Terminal,
+        busbar_contract::records::PlaneDisposition::Terminal,
         "the upsert wire must carry `disposition`"
     );
 }
@@ -1230,12 +1244,18 @@ fn a_sidecar_less_request_still_decodes_at_the_neutral_defaults() {
         "UpsertPlaneRecord": { "kind": "task", "id": "task-abc", "body": [1] }
     }));
     assert_eq!(rec.ts, 0);
-    assert_eq!(rec.disposition, busbar_api::PlaneDisposition::Active);
+    assert_eq!(
+        rec.disposition,
+        busbar_contract::records::PlaneDisposition::Active
+    );
 
     let rec = envelope_from_wire(serde_json::json!({
         "AppendPlaneRecord": { "kind": "call", "parent": "p", "seq": 1, "body": [1] }
     }));
     assert_eq!(rec.ts, 0);
-    assert_eq!(rec.disposition, busbar_api::PlaneDisposition::Active);
+    assert_eq!(
+        rec.disposition,
+        busbar_contract::records::PlaneDisposition::Active
+    );
     assert_eq!(rec.id, "", "no id on the wire is an empty child id");
 }

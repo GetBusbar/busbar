@@ -275,8 +275,10 @@ impl busbar_kernel_identity::module::AuthModule for AdminTokens {
         let Some(candidate) = candidate else {
             return AuthOutcome::Pass;
         };
-        if busbar_api::constant_time_eq(&busbar_api::sha256_hex(candidate.as_bytes()), &configured)
-        {
+        if busbar_contract::redacted::constant_time_eq(
+            &busbar_contract::redacted::sha256_hex(candidate.as_bytes()),
+            &configured,
+        ) {
             AuthOutcome::Identify(busbar_kernel_identity::principal::Principal::from_id(
                 ADMIN_PRINCIPAL_ID,
             ))

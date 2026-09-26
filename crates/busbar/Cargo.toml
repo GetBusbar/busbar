@@ -93,11 +93,6 @@ busbar-plugin-loader = { path = "../plugin-loader" }
 # provisioning have somewhere to live that is not a unit and not a plane.
 busbar-kernel = { path = "../busbar-kernel", default-features = false }
 busbar-contract = { path = "../busbar-contract" }
-# THE PUBLISHED STORE PROTOCOL. A plane's durable records reach the node through record legs on its
-# route plan, and the eight kind-tagged operations those legs run are declared here. Named by the
-# root and by nothing else on this path: a plane may not hold a store and a unit may not know a
-# schema, so the mapping from one to the other belongs to the composition and lives in `src/root/`.
-busbar-api = { path = "../api" }
 # The eight kernel workflow crates (#36).
 busbar-kernel-identity = { path = "../busbar-kernel-identity", features = ["sha256"] }
 busbar-kernel-scope = { path = "../busbar-kernel-scope" }
@@ -126,6 +121,12 @@ busbar-plane-streaming = { path = "../busbar-plane-streaming" }
 # composition root writes it, in `src/root/plane_decision.rs`, which is the one place entitled to
 # name a kernel type and a plane in the same file.
 busbar-plane-decision = { path = "../busbar-plane-decision", optional = true }
+# THE DEFAULT STORE (`governance.store: memory`), linked in every build through the `stores` axis —
+# the same row a dropped-in store takes, opened in process. The kernel names no store.
+busbar-store-memory = { path = "../store-memory" }
+# THE RANKING HOOKS (`cheapest`/`fastest`/`least_busy`/`usage`), linked through the `hooks` axis
+# under `hooks-ranking` — one row, the strategy spellings its aliases. The kernel names no hook.
+busbar-hooks-ranking = { path = "../hooks-ranking", optional = true }
 # THE REQUEST-LOG FILE SINK (`module: request-log-file`), a first-party EXPORT plugin linked through
 # the `exports` axis (K9b) — the same row a signed tarball of it registers when dropped in.
 busbar-export-file = { path = "../busbar-export-file", optional = true }
@@ -201,12 +202,16 @@ tikv-jemallocator = { workspace = true, features = ["disable_initial_exec_tls"] 
 # SAME default set the monolithic crate had; `root-admin` and `root-llm` are the additions, and
 # both are paths rather than surfaces — the operations, their bytes and their
 # features are unchanged.
-default = ["auth-admin-tokens", "hooks-ranking", "proto-llm", "plane-mcp", "plane-a2a", "plane-voice", "plane-decision", "export-file", "export-webhook", "export-prometheus", "root-admin", "root-llm"]
+default = ["auth-admin-tokens", "hooks-ranking", "proto-llm", "plane-mcp", "plane-a2a", "plane-voice", "plane-decision", "export-file", "export-webhook", "export-prometheus", "root-admin", "root-llm", "transport-tcp"]
 # A protocol crate: the dependency edge plus its registration line in main.rs. Dropping the
 # feature is the deletion test's level-1 build. There is no per-DIALECT feature and there must not
 # be one — "LLM coverage or not" is the choice this seam offers, and a `proto-gemini` knob would be
 # a second, finer answer to a question the owner ruling already settled.
-proto-llm = ["dep:busbar-llm", "busbar-kernel/plane-llm"]
+# ONE switch for the plane and the node its units run through: linking the plane turns `root-llm` on
+# (and `root-llm` turns the plane on), because the plane's arrivals hand every unit to the root's node
+# and there is no other path an arrival can take (ARCHITECT R7(b): the build that served them through
+# the shell instead is dropped).
+proto-llm = ["dep:busbar-llm", "busbar-kernel/plane-llm", "root-llm"]
 # THE MCP PROTOCOL, carried by `busbar-mcp`: the dependency edge plus the `busbar_mcp::PROTO_DECL`
 # registration line in main.rs. ONE switch for MCP the protocol codec today and MCP the plane once
 # it folds in — never two — so it keeps the plane-kind name `plane-mcp` rather than a `proto-mcp`
@@ -231,6 +236,12 @@ plane-voice = ["dep:busbar-voice", "transport-ws", "busbar-voice?/runtime", "bus
 # THE WS WIRE, the one optional transport: the voice plane's edge and nothing else's, so `plane-voice`
 # carries it and `--no-default-features` drops the crate edge and its linked row together.
 transport-ws = ["dep:busbar-transport-ws"]
+# THE TCP WIRE'S LINKED ROW, DEFAULT ON (#3: a transport is swappable, compiled in OR dropped in). Off,
+# the build links no `tcp` row and the wire is served only when its tarball is dropped into
+# `plugins/`: the boot seal folds it in the same pass as the linked rows, and the data door accepts
+# through it (`root::registry::BootRegistry::dropped_door`). The crate edge stays — the row is what
+# the switch gates, as `export-file`'s is.
+transport-tcp = []
 # THE DECISION PLANE (jev), #48's fifth, DEFAULT ON. The analogue of `plane-a2a` above: one switch
 # for the plane and the crate edge that carries it, never two. It forwards to NO kernel feature, and
 # that is the whole difference between this plane and its four siblings — `busbar-kernel` holds no
@@ -258,28 +269,13 @@ export-webhook = ["dep:busbar-export-webhook"]
 # the exposition 1.5.5 shipped built in. Off, the module resolves only when a signed tarball of the
 # sink is dropped into `plugins/`.
 export-prometheus = ["dep:busbar-export-prometheus"]
-# THE LLM PLANE THROUGH THE COMPOSITION ROOT, DEFAULT ON: the loop over the nine step files instead
-# of the shell over the engine. Same six dialects under the same six names. Default-off was the
-# ordering, not the destination — the root is BUILT before any plane is SWITCHED onto it — and the
-# ordering is done: the leg was proved byte-identical on and off over the request-path families
-# first, and then the whole owed golden was re-run with it on and moved no cell — every money class
-# byte-identical, the llm, billing, route-failover and admin families at zero. That last measurement
-# is the one the default was waiting for, because the LLM plane is the one leg the golden records in
-# bulk: every dialect, every money class, every refusal shape.
-#
-# It carries no config key, no environment variable and no boot line. A deployment cannot turn it on
-# by editing a config file and cannot tell from the logs which way it was built, which is what keeps
-# the neutrality cells answering the same on both legs. The leg stays switchable — off, the binary
-# is the shell over the engine again and nothing else changes.
-#
-# The plane-crate edge is written `busbar-llm?/…`, the same optional form `plane-voice` uses for
-# `busbar-voice?/runtime`: it turns the feature on when the crate is there, and says nothing when it
-# is not. `busbar-llm/teller-waist` (no `?`) would have re-declared the optional dependency, so the
-# line outlived the crate — `git rm -r crates/busbar-llm` left `root-llm` naming a dependency that no
-# longer exists and cargo refused to load the manifest before compiling a line. It costs nothing on
-# the built binary: `proto-llm` in the same list is what pulls the crate in, so the feature is on
-# whenever `root-llm` is.
-root-llm = ["proto-llm", "busbar-llm?/teller-waist"]
+# THE NODE THE LLM PLANE'S UNITS RUN THROUGH (`src/root/units_llm.rs`): the kernel's loop over the
+# plane's step files, the in-flight table, the Route seam and the money book behind them. It is the
+# same switch as `proto-llm` — each turns the other on — because the plane's arrivals hand every unit
+# to this node and the build that answered them through the shell instead is dropped (ARCHITECT
+# R7(b)). The name stays a feature because the root-units table and the tree's gates key the node's
+# module by it.
+root-llm = ["proto-llm"]
 # THE ROOT-DRIVEN ADMIN SURFACE (composition-root step C1 / switch-over S1). DEFAULT ON: it was held
 # off until the oracle's admin family was green on it, and it is. The switch is what makes an admin
 # request travel through the kernel's loop instead of reaching its handler directly; the 234 owed
@@ -300,7 +296,7 @@ root-admin = ["dep:tower"]
 # release build, which is why the surface ceilings do not count it.
 test-harness = []
 auth-admin-tokens = ["busbar-kernel/auth-admin-tokens", "busbar-core-admin/auth-admin-tokens"]
-hooks-ranking = ["busbar-kernel/hooks-ranking", "busbar-core-admin/hooks-ranking"]
+hooks-ranking = ["dep:busbar-hooks-ranking", "busbar-kernel/hooks-ranking", "busbar-core-admin/hooks-ranking"]
 openapi-schema = ["busbar-kernel/openapi-schema", "busbar-core-admin/openapi-schema", "busbar-llm?/openapi-schema", "busbar-mcp?/openapi-schema", "busbar-a2a?/openapi-schema", "busbar-voice?/openapi-schema"]
 loom-model = ["busbar-kernel/loom-model"]
 
@@ -328,6 +324,10 @@ plane-decision = "busbar-plane-decision"
 export-file = "busbar-export-file"
 export-webhook = "busbar-export-webhook"
 export-prometheus = "busbar-export-prometheus"
+# THE COLD-KIND AXIS's in-process rows: the default store (a required dependency: every build links
+# it) and the ranking hooks (under their feature).
+store-memory = "busbar-store-memory"
+hooks-ranking = "busbar-hooks-ranking"
 # THE TRANSPORT AXIS (#3, #30): the wires this build links, one row each, folded bottom-up by the boot
 # seal. A row whose crate is a required dependency is linked in every build (its key names the row);
 # `ws` rides its optional edge. Rows share a crate where one crate carries several wires.
@@ -346,16 +346,20 @@ transport-stdio = "busbar-transport-stdio"
 # `gauntlet-one-shot` / `gauntlet-session`: the plane rides the unified kernel loop (#28) —
 # `gauntlet_install::install()` flips its `PLANE_DECLARATION.key` onto the one-shot or session runner.
 # `claims`: the pure plane the boot seal registers (`PLANE`) and the claims it declares (`CLAIMS`).
+# `node`: the entry's `install_node`, handed the node a root unit drives the entry's units through.
 # `transport`: a wire's `KEY`, `COMPOSES_OVER` and `build(lower, &TransportSettings)`.
+# `stores` / `hooks`: an in-process store's `STORE` and a ranking row's `HOOK` (`root::linked`).
 [package.metadata.busbar.linked-axes]
-proto-llm = "plane claims protocols path-ingress body-ingress protocol-seams on-host gauntlet-one-shot"
-plane-mcp = "plane claims protocols diagnostics egress stdio-serve gauntlet-one-shot"
+proto-llm = "plane claims protocols path-ingress body-ingress protocol-seams on-host cli-help node gauntlet-one-shot"
+plane-mcp = "plane claims protocols diagnostics egress stdio-serve cli-help gauntlet-one-shot"
 plane-a2a = "plane claims diagnostics egress plane-sections admin-envelope gauntlet-one-shot"
 plane-voice = "plane claims diagnostics ws-arrivals compose gauntlet-session"
 plane-decision = "plane claims"
 export-file = "exports"
 export-webhook = "exports"
 export-prometheus = "exports"
+store-memory = "stores"
+hooks-ranking = "hooks"
 transport-tcp = "transport"
 transport-tls = "transport"
 transport-http = "transport"

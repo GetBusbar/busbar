@@ -2,12 +2,14 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE A2A PLANE'S OWN DURABLE RECORD TYPES — relocated here from `busbar-api` (1.7.0 plane
-//! extraction). The neutral `busbar_api::Store` contract speaks ONLY the opaque
-//! `busbar_api::PlaneRecord` envelope; a plane owns its concrete row schema and serializes it into
+//! extraction). The neutral `busbar_contract::records::RecordStore` contract speaks ONLY the opaque
+//! `busbar_contract::records::PlaneRecord` envelope; a plane owns its concrete row schema and serializes it into
 //! (and back out of) that envelope's opaque `body` with `serde_json` — byte-for-byte the same the
 //! store plugins persist it with. The neutral crates name none of these types.
 
-use busbar_api::{PlaneDisposition, PlaneRecord, PlaneSelector, StoreError, StoreResult};
+use busbar_contract::records::{
+    PlaneDisposition, PlaneRecord, PlaneSelector, RecordStoreError, RecordStoreResult,
+};
 
 // THE TWO KIND STRINGS ARE THE PLANE'S, AND ARE READ FROM IT. A record kind is the name the plane
 // declares its schema under (`busbar_plane_a2a::records::SCHEMA_TASK`), so it is named once, there,
@@ -76,7 +78,7 @@ impl TaskRow {
     /// axis retention compares against) and `disposition` is `Terminal` exactly when the task's state
     /// is final, so `purge_plane_records_before` can honor the terminal-only contract from the typed
     /// sidecar without decoding the body.
-    pub fn to_plane_record(&self) -> StoreResult<PlaneRecord> {
+    pub fn to_plane_record(&self) -> RecordStoreResult<PlaneRecord> {
         let disposition = if TERMINAL_TASK_STATES.contains(&self.state.as_str()) {
             PlaneDisposition::Terminal
         } else {
@@ -94,7 +96,7 @@ impl TaskRow {
     }
 
     /// Reconstruct a task from an opaque `task` body — the inverse of [`Self::to_plane_record`].
-    pub fn from_body(body: &[u8]) -> StoreResult<Self> {
+    pub fn from_body(body: &[u8]) -> RecordStoreResult<Self> {
         decode(body)
     }
 }
@@ -139,7 +141,7 @@ pub struct TaskEventRow {
 impl TaskEventRow {
     /// Serialize this event into the opaque `task_event` [`PlaneRecord`] envelope, hung off its task
     /// via `parent` and ordered by the event's own `seq`.
-    pub fn to_plane_record(&self) -> StoreResult<PlaneRecord> {
+    pub fn to_plane_record(&self) -> RecordStoreResult<PlaneRecord> {
         Ok(PlaneRecord {
             kind: KIND_TASK_EVENT.to_string(),
             id: self.task_id.clone(),
@@ -158,19 +160,19 @@ impl TaskEventRow {
 
     /// Reconstruct an event from an opaque `task_event` body — the inverse of
     /// [`Self::to_plane_record`].
-    pub fn from_body(body: &[u8]) -> StoreResult<Self> {
+    pub fn from_body(body: &[u8]) -> RecordStoreResult<Self> {
         decode(body)
     }
 }
 
 /// Serialize a typed plane row into an opaque `PlaneRecord::body`. `serde_json`.
-fn encode<T: serde::Serialize>(row: &T) -> StoreResult<Vec<u8>> {
-    serde_json::to_vec(row).map_err(|e| StoreError(format!("plane body encode: {e}")))
+fn encode<T: serde::Serialize>(row: &T) -> RecordStoreResult<Vec<u8>> {
+    serde_json::to_vec(row).map_err(|e| RecordStoreError(format!("plane body encode: {e}")))
 }
 
 /// Decode an opaque `PlaneRecord::body` back into its typed plane row — the inverse of [`encode`].
-fn decode<T: serde::de::DeserializeOwned>(body: &[u8]) -> StoreResult<T> {
-    serde_json::from_slice(body).map_err(|e| StoreError(format!("plane body decode: {e}")))
+fn decode<T: serde::de::DeserializeOwned>(body: &[u8]) -> RecordStoreResult<T> {
+    serde_json::from_slice(body).map_err(|e| RecordStoreError(format!("plane body decode: {e}")))
 }
 
 #[cfg(test)]

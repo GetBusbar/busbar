@@ -10,7 +10,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use busbar_api::SecretRef;
+use busbar_contract::secret_ref::SecretRef;
 
 /// One entry in the top-level `identity-providers:` NAMED-DEFINITION map (1.5.3). The map
 /// KEY is the provider INSTANCE name — the bare name `auth.chain:`, `auth.admin_auth:` and

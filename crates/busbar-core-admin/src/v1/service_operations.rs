@@ -1391,7 +1391,7 @@ impl AdminService {
             Vec<busbar_kernel::governance::MeteringRow>,
             std::collections::HashMap<String, String>,
         );
-        type UsageFetchError = (&'static str, busbar_kernel::governance::StoreError);
+        type UsageFetchError = (&'static str, busbar_kernel::governance::RecordStoreError);
         let joined = tokio::task::spawn_blocking(move || -> Result<Fetched, UsageFetchError> {
             let rows = gov
                 .metering_for(bucket)
@@ -1479,10 +1479,14 @@ impl AdminService {
                     &eras,
                 ) {
                     let column = match class.as_str() {
-                        busbar_api::UNIT_INPUT => &mut row_view.tokens_input,
-                        busbar_api::UNIT_OUTPUT => &mut row_view.tokens_output,
-                        busbar_api::UNIT_CACHE_READ => &mut row_view.tokens_cache_read,
-                        busbar_api::UNIT_CACHE_WRITE => &mut row_view.tokens_cache_creation,
+                        busbar_contract::records::UNIT_INPUT => &mut row_view.tokens_input,
+                        busbar_contract::records::UNIT_OUTPUT => &mut row_view.tokens_output,
+                        busbar_contract::records::UNIT_CACHE_READ => {
+                            &mut row_view.tokens_cache_read
+                        }
+                        busbar_contract::records::UNIT_CACHE_WRITE => {
+                            &mut row_view.tokens_cache_creation
+                        }
                         _ => corrected_classes.to_mut().entry(class).or_insert(0),
                     };
                     *column = corrected_column(*column, delta).ok_or(AdminError::Internal)?;

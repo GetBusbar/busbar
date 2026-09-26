@@ -98,7 +98,7 @@ const SESSION_SCOPE_KIND: &str = "session";
 /// store's wildcard and is granted every kind, exactly as it is on every other plane; a key that
 /// carries a list must have this entry in it.
 #[must_use]
-pub fn session_scope_allowed(key: &busbar_api::VirtualKey) -> bool {
+pub fn session_scope_allowed(key: &busbar_contract::records::VirtualKey) -> bool {
     key.scope_allowed(SESSION_SCOPE_KIND, FRONT_DOOR_POOL)
 }
 
@@ -161,8 +161,8 @@ pub fn install_provider(base_url: impl Into<String>, api_key: impl Into<String>)
 /// than dialing with an empty credential. `Ok(false)` means an endpoint was already composed.
 pub fn compose_provider(
     base_url: impl Into<String>,
-    api_key: &busbar_api::SecretRef,
-    resolver: &dyn busbar_api::SecretResolve,
+    api_key: &busbar_contract::secret_ref::SecretRef,
+    resolver: &dyn busbar_contract::secret::SecretResolve,
 ) -> Result<bool, String> {
     let resolved = resolver.resolve_string(api_key)?;
     Ok(install_provider(base_url, resolved))
@@ -219,8 +219,8 @@ pub fn install_gemini_provider(base_url: impl Into<String>, api_key: impl Into<S
 /// closed (composes nothing) on an unresolvable reference.
 pub fn compose_gemini_provider(
     base_url: impl Into<String>,
-    api_key: &busbar_api::SecretRef,
-    resolver: &dyn busbar_api::SecretResolve,
+    api_key: &busbar_contract::secret_ref::SecretRef,
+    resolver: &dyn busbar_contract::secret::SecretResolve,
 ) -> Result<bool, String> {
     let resolved = resolver.resolve_string(api_key)?;
     Ok(install_gemini_provider(base_url, resolved))
@@ -228,7 +228,7 @@ pub fn compose_gemini_provider(
 
 /// A provider composition step: captured off the resolved configuration, run once the deployment's
 /// secret resolver exists (the root's `compose` axis shape).
-pub type Compose = Box<dyn FnOnce(&dyn busbar_api::SecretResolve)>;
+pub type Compose = Box<dyn FnOnce(&dyn busbar_contract::secret::SecretResolve)>;
 
 /// THE PLANE'S PROVIDER, COMPOSED FROM THE DEPLOYMENT'S ORDINARY CATALOG — this plane's `compose` entry
 /// hook ([`crate::linked`]). The `streams:` grammar carries no credential field, so the realtime
@@ -706,7 +706,7 @@ pub(crate) struct GovernedOpen<'a> {
     pub call_id: String,
     /// The resolved presenting virtual key (audience-checked key chain), or `None` ungoverned. The
     /// hook gate reads its `(id, name)`; the Meter step lands each turn's usage on this key's ledger.
-    pub vkey: Option<busbar_api::VirtualKey>,
+    pub vkey: Option<busbar_contract::records::VirtualKey>,
     pub body: Bytes,
     pub headers: axum::http::HeaderMap,
     pub now: u64,

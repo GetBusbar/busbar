@@ -11,12 +11,14 @@
 //!
 //! Moved here, module-path-only, from `busbar-api` (DECISIONS #83/#84; the per-kind trait is the
 //! contract's, #35(a)). The error is [`SecretModuleError`] here because [`crate::kinds::SecretError`]
-//! is a different type (#35 de-collision); `busbar-api` re-exports it as `SecretError`, and its
-//! `Debug` keeps that label so every rendering is byte-identical. The BUILT-IN resolution
+//! is a different type (#35 de-collision); its `Debug` keeps the historical `SecretError` label so
+//! every rendering is byte-identical. The BUILT-IN resolution
 //! (`resolve_builtin`, the `env`/`file` readers) did not come: it reads the environment and the
-//! filesystem, which is machinery, not a shape (#83(b)). Nor did the `SecretResolve` seam: it takes
-//! the config secret reference, whose own crate merges into this one only with the fold that
-//! deletes it (a shim re-exporting from here would be a new plugin-tooling -> contract edge).
+//! filesystem, which is machinery, not a shape (#83(b)); it went to the plugin loader, which opens
+//! those two built-in rows. The [`SecretResolve`] seam followed the config secret reference it takes
+//! into this crate once that reference merged here, when `busbar-api` retired.
+
+use crate::secret_ref::SecretRef;
 
 /// The result type every [`SecretModule`] call returns.
 pub type SecretResult<T> = Result<T, SecretModuleError>;
@@ -74,7 +76,7 @@ impl SecretModuleError {
     }
 }
 
-// MANUAL `Debug`, byte-identical to the derive this type carried as `busbar_api::SecretError`: the
+// MANUAL `Debug`, byte-identical to the derive this type carried as `crate::secret::SecretModuleError`: the
 // rename is a module-path de-collision (#35), and a `{:?}` in a log line must not change with it.
 impl std::fmt::Debug for SecretModuleError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -138,4 +140,23 @@ pub trait SecretModule: Send + Sync + 'static {
         let _ = deadline_ms;
         self.resolve(settings)
     }
+}
+
+/// The NEUTRAL secret-resolver SEAM an extracted plane names instead of the engine's concrete
+/// `SecretResolver`. A plane only needs to turn a [`SecretRef`] into bytes or a UTF-8 string;
+/// naming this trait — not the core struct — keeps the plane free of an engine dependency. The
+/// engine's `SecretResolver` implements it (delegating to its own resolution), and `EngineHost`
+/// hands the plane an `Arc<dyn SecretResolve>` snapshot.
+///
+/// FAIL-CLOSED, exactly as the underlying resolver: an unknown module, an unset source, or an empty
+/// value is an `Err(String)`, never an empty secret. The error is a neutral `String` — a plane never
+/// sees an engine-only error type across this seam.
+pub trait SecretResolve: Send + Sync {
+    /// Resolve a reference to raw bytes (fail-closed). Some consumers — a raw-file loader, for
+    /// instance — need the untrimmed bytes rather than a string.
+    fn resolve(&self, secret: &SecretRef) -> Result<Vec<u8>, String>;
+
+    /// Resolve a reference to a UTF-8 STRING (trailing newline trimmed; fail-closed on non-UTF-8 or
+    /// empty). Some consumers — a credential-minting path, for instance — need the string form.
+    fn resolve_string(&self, secret: &SecretRef) -> Result<String, String>;
 }

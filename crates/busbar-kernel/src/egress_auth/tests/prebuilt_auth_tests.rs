@@ -28,7 +28,7 @@ fn ctx<'a>(body: &'a [u8], ts: u64, canonical: &'a str) -> SigningContext<'a> {
         canonical_uri: canonical,
         body,
         timestamp_epoch: ts,
-        upstream_creds: busbar_api::UpstreamCreds::Own,
+        upstream_creds: busbar_contract::config::UpstreamCreds::Own,
     }
 }
 
@@ -159,8 +159,8 @@ fn the_api_key_override_presents_the_shared_builders_bytes() {
     let cred = resolve("any-protocol", Some(crate::config::ProviderAuth::ApiKey));
     for &key in KEYS {
         for upstream_creds in [
-            busbar_api::UpstreamCreds::Own,
-            busbar_api::UpstreamCreds::Passthrough,
+            busbar_contract::config::UpstreamCreds::Own,
+            busbar_contract::config::UpstreamCreds::Passthrough,
         ] {
             let c = SigningContext {
                 upstream_creds,

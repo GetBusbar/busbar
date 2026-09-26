@@ -76,17 +76,20 @@ struct Client {
 
 impl Client {
     /// Boot a session over duplex pipes, as the given identity.
-    fn open(app: Arc<dyn EngineApp>, gov: busbar_api::PlaneRequestCtx) -> Self {
+    fn open(app: Arc<dyn EngineApp>, gov: busbar_contract::records::PlaneRequestCtx) -> Self {
         let handle = app_handle(app);
         Self::open_on(handle, gov)
     }
 
     /// The same, on a caller-held handle — for the tests that swap a second `App` mid-session.
-    fn open_on(handle: Arc<dyn EngineHandle>, gov: busbar_api::PlaneRequestCtx) -> Self {
+    fn open_on(
+        handle: Arc<dyn EngineHandle>,
+        gov: busbar_contract::records::PlaneRequestCtx,
+    ) -> Self {
         let (stdin_client, stdin_server) = tokio::io::duplex(1 << 16);
         let (stdout_server, stdout_client) = tokio::io::duplex(1 << 16);
         let identity = SessionIdentity {
-            principal: busbar_api::AuthPrincipal(None),
+            principal: busbar_contract::auth::AuthPrincipal(None),
             gov,
         };
         let factory = handle.live_host_factory();
@@ -202,7 +205,7 @@ async fn plain_deployment() -> (Peer, Arc<dyn EngineApp>) {
 #[tokio::test]
 async fn the_http_method_table_serves_the_stdio_channel_unchanged() {
     let (peer, app) = plain_deployment().await;
-    let mut client = Client::open(app, busbar_api::PlaneRequestCtx::default());
+    let mut client = Client::open(app, busbar_contract::records::PlaneRequestCtx::default());
 
     client
         .send(&frame(1, "server/discover", serde_json::json!({})))
@@ -275,7 +278,7 @@ async fn the_http_method_table_serves_the_stdio_channel_unchanged() {
 #[tokio::test]
 async fn initialize_negotiates_the_one_revision_and_eof_ends_the_session() {
     let (_peer, app) = plain_deployment().await;
-    let mut client = Client::open(app, busbar_api::PlaneRequestCtx::default());
+    let mut client = Client::open(app, busbar_contract::records::PlaneRequestCtx::default());
 
     // A LEGACY-era opening: no `_meta` at all, exactly what an installed stdio client sends first.
     client
@@ -316,7 +319,7 @@ async fn initialize_negotiates_the_one_revision_and_eof_ends_the_session() {
 #[tokio::test]
 async fn logging_set_level_makes_the_sessions_records_ride_the_channel() {
     let (_peer, app) = plain_deployment().await;
-    let mut client = Client::open(app, busbar_api::PlaneRequestCtx::default());
+    let mut client = Client::open(app, busbar_contract::records::PlaneRequestCtx::default());
 
     // BEFORE: no level anywhere, a single response line and nothing else.
     client
@@ -682,7 +685,7 @@ async fn a_budgeted_key_is_refused_over_budget_through_the_stdio_binding() {
         .governance(gov_state)
         .groups_tree(groups)
         .build();
-    let gov = busbar_api::PlaneRequestCtx {
+    let gov = busbar_contract::records::PlaneRequestCtx {
         key: Some(Arc::new(key)),
     };
     let mut client = Client::open(app, gov);
@@ -738,7 +741,10 @@ async fn a_budgeted_key_is_refused_over_budget_through_the_stdio_binding() {
 async fn subscriptions_and_resource_watches_ride_the_channel() {
     let (_peer, app) = plain_deployment().await;
     let handle = app_handle(app);
-    let mut client = Client::open_on(handle.clone(), busbar_api::PlaneRequestCtx::default());
+    let mut client = Client::open_on(
+        handle.clone(),
+        busbar_contract::records::PlaneRequestCtx::default(),
+    );
 
     client
         .send(&frame(
@@ -987,7 +993,10 @@ async fn an_out_of_band_elicitation_response_redeems_the_pending_ask() {
 async fn the_resource_subscription_set_is_refused_past_its_ceiling() {
     let (_peer, app) = plain_deployment().await;
     let handle = app_handle(app);
-    let mut client = Client::open_on(handle.clone(), busbar_api::PlaneRequestCtx::default());
+    let mut client = Client::open_on(
+        handle.clone(),
+        busbar_contract::records::PlaneRequestCtx::default(),
+    );
     // Fill exactly to the ceiling: every one of these is accepted.
     for i in 0..crate::mcp::stdio_serve::MAX_RESOURCE_SUBS {
         client
@@ -1040,7 +1049,10 @@ async fn the_resource_subscription_set_is_refused_past_its_ceiling() {
 async fn an_oversized_subscription_uri_is_refused() {
     let (_peer, app) = plain_deployment().await;
     let handle = app_handle(app);
-    let mut client = Client::open_on(handle.clone(), busbar_api::PlaneRequestCtx::default());
+    let mut client = Client::open_on(
+        handle.clone(),
+        busbar_contract::records::PlaneRequestCtx::default(),
+    );
     let uri = "u".repeat(crate::mcp::stdio_serve::MAX_RESOURCE_SUB_URI_BYTES + 1);
     client
         .send(&frame(
@@ -1096,7 +1108,10 @@ async fn the_background_set_forgets_the_tasks_that_already_ended() {
 async fn unsubscribe_stops_the_resource_updates() {
     let (_peer, app) = plain_deployment().await;
     let handle = app_handle(app);
-    let mut client = Client::open_on(handle.clone(), busbar_api::PlaneRequestCtx::default());
+    let mut client = Client::open_on(
+        handle.clone(),
+        busbar_contract::records::PlaneRequestCtx::default(),
+    );
     let uri = format!("ws_{RESOURCE_URI}");
     client
         .send(&frame(
@@ -1185,7 +1200,7 @@ async fn an_early_closed_subscription_is_announced_with_cancelled() {
         .governance(gov_state.clone())
         .build();
     let sub_key = Arc::new(key);
-    let gov = busbar_api::PlaneRequestCtx {
+    let gov = busbar_contract::records::PlaneRequestCtx {
         key: Some(sub_key.clone()),
     };
     let mut client = Client::open(app, gov);
@@ -1235,7 +1250,7 @@ async fn a_tasks_transition_is_pushed_over_the_channel() {
     // principal, watched off a real task-result envelope, transitioned through the registry's own
     // verb. The tasks METHODS' behaviour is `tasks_tests.rs`' subject, not re-proven here.
     let (_peer, app) = plain_deployment().await;
-    let mut client = Client::open(app, busbar_api::PlaneRequestCtx::default());
+    let mut client = Client::open(app, busbar_contract::records::PlaneRequestCtx::default());
     // The seam instrument below pushes through the session's cached channel handle; pump one frame
     // so the pump has handed the session that handle.
     client.prime().await;
@@ -1271,7 +1286,7 @@ async fn a_tasks_transition_is_pushed_over_the_channel() {
 #[tokio::test]
 async fn an_idle_subscriptions_keepalive_becomes_a_server_ping() {
     let (_peer, app) = plain_deployment().await;
-    let mut client = Client::open(app, busbar_api::PlaneRequestCtx::default());
+    let mut client = Client::open(app, busbar_contract::records::PlaneRequestCtx::default());
     // `deliver` below is driven directly at the seam; pump one frame so the session holds its
     // channel handle before the stream unwinds through it.
     client.prime().await;
@@ -1330,7 +1345,7 @@ async fn an_idle_subscriptions_keepalive_becomes_a_server_ping() {
 #[tokio::test]
 async fn a_buffered_body_that_cannot_be_read_answers_an_error_frame_not_silence() {
     let (_peer, app) = plain_deployment().await;
-    let mut client = Client::open(app, busbar_api::PlaneRequestCtx::default());
+    let mut client = Client::open(app, busbar_contract::records::PlaneRequestCtx::default());
     // `deliver` is driven directly at the seam; pump one frame so the session holds its channel
     // handle before it must answer through it.
     client.prime().await;

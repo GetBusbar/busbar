@@ -18,9 +18,9 @@ use std::sync::Arc;
 #[derive(Debug)]
 struct ClientCreds {
     client_id: String,
-    /// The confidential-client secret, held [`busbar_api::Redacted`] so it never leaks via `Debug`
+    /// The confidential-client secret, held [`busbar_contract::redacted::Redacted`] so it never leaks via `Debug`
     /// (this struct derives it) and zeroizes on drop. Exposed only into the token-endpoint POST body.
-    client_secret: busbar_api::Redacted<String>,
+    client_secret: busbar_contract::redacted::Redacted<String>,
     token_url: String,
     scope: String,
     http: crate::egress::engine::EngineClient,
@@ -40,7 +40,7 @@ pub fn build(
     validate_token_url(token_url, ssrf)?;
     let creds = Arc::new(ClientCreds {
         client_id: client_id.to_string(),
-        client_secret: busbar_api::Redacted::new(client_secret.to_string()),
+        client_secret: busbar_contract::redacted::Redacted::new(client_secret.to_string()),
         token_url: token_url.to_string(),
         scope: scope.to_string(),
         http: super::minter_client()?,

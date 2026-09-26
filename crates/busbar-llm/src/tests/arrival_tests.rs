@@ -135,7 +135,7 @@ impl ArrivalHost for ParseHost {
 }
 
 fn parse_host() -> (Arc<dyn ArrivalHost>, ArrivalCtx) {
-    busbar_llm_codec::ensure_test_protocols_registered();
+    busbar_kernel::proto::register_test_protocols(busbar_llm_codec::DECLS);
     (Arc::new(ParseHost), ArrivalCtx::new(()))
 }
 
@@ -177,7 +177,7 @@ fn the_gemini_parse_reads_its_own_url_space() {
     // Buffered: the model, no stream, no framing shim, and gemini's own versioned miss copy.
     let f = facts(read("/v1beta/models/p:generateContent", ""));
     assert_eq!(f.model, "p");
-    assert_eq!(f.operation, busbar_api::operation::Operation::CHAT);
+    assert_eq!(f.operation, busbar_contract::operation::OpVerb::CHAT);
     assert!(!f.stream);
     assert!(!f.gemini_json_array);
     assert_eq!(
@@ -240,7 +240,7 @@ fn the_bedrock_parse_reads_its_own_url_space() {
 
     let f = facts(read("/model/p/converse"));
     assert_eq!(f.model, "p");
-    assert_eq!(f.operation, busbar_api::operation::Operation::CHAT);
+    assert_eq!(f.operation, busbar_contract::operation::OpVerb::CHAT);
     assert!(!f.stream);
     // Bedrock has no array framing and no copy of its own: the neutral sentence is its sentence.
     assert!(!f.gemini_json_array);
@@ -282,7 +282,6 @@ fn the_bedrock_parse_reads_its_own_url_space() {
 ///
 /// Gated with the step files themselves: with the waist compiled out there are no steps to drive, and
 /// the parse above is still the parse.
-#[cfg(feature = "teller-waist")]
 #[test]
 fn the_url_facts_drive_the_two_steps_to_the_live_paths_answer() {
     let (host, ctx) = parse_host();

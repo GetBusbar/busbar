@@ -14,12 +14,13 @@ use crate::ir::embeddings::{EmbeddingsReq, EmbeddingsResp};
 use crate::ir::image::{ImageReq, ImageResp};
 use crate::ir::moderation::{ModerationReq, ModerationResp};
 use crate::ir::rerank::{RerankReq, RerankResp};
-use busbar_api::operation::Operation;
-use busbar_substrate_values::billing::Billing;
-use busbar_substrate_values::ir::facts::IrFacts;
-use busbar_substrate_values::ir::handle::sealed::Sealed;
-use busbar_substrate_values::ir::handle::IrHandle;
-use busbar_substrate_values::wire::{EgressWire, SlabBytes, TranslatedResponse};
+use busbar_contract::billing::Billing;
+use busbar_contract::codec::{EgressWire, TranslatedResponse};
+use busbar_contract::ir::facts::IrFacts;
+use busbar_contract::ir::handle::sealed::Sealed;
+use busbar_contract::ir::handle::IrHandle;
+use busbar_contract::operation::OpVerb;
+use busbar_contract::SlabBytes;
 use bytes::Bytes;
 use serde_json::Value;
 
@@ -35,8 +36,8 @@ impl Sealed for EmbeddingsReqHandle {}
 impl Sealed for EmbeddingsRespHandle {}
 
 impl IrHandle for EmbeddingsReqHandle {
-    fn verb(&self) -> Operation {
-        Operation::EMBEDDINGS
+    fn verb(&self) -> OpVerb {
+        OpVerb::EMBEDDINGS
     }
     fn wants_stream(&self) -> bool {
         false
@@ -70,8 +71,8 @@ impl IrHandle for EmbeddingsReqHandle {
 }
 
 impl IrHandle for EmbeddingsRespHandle {
-    fn verb(&self) -> Operation {
-        Operation::EMBEDDINGS
+    fn verb(&self) -> OpVerb {
+        OpVerb::EMBEDDINGS
     }
     fn billing(&self) -> Option<Billing> {
         self.0.billing()
@@ -108,8 +109,8 @@ impl Sealed for ImageReqHandle {}
 impl Sealed for ImageRespHandle {}
 
 impl IrHandle for ImageReqHandle {
-    fn verb(&self) -> Operation {
-        Operation::IMAGE
+    fn verb(&self) -> OpVerb {
+        OpVerb::IMAGE
     }
     fn wants_stream(&self) -> bool {
         false
@@ -143,8 +144,8 @@ impl IrHandle for ImageReqHandle {
 }
 
 impl IrHandle for ImageRespHandle {
-    fn verb(&self) -> Operation {
-        Operation::IMAGE
+    fn verb(&self) -> OpVerb {
+        OpVerb::IMAGE
     }
     fn billing(&self) -> Option<Billing> {
         self.0.billing()
@@ -181,8 +182,8 @@ impl Sealed for RerankReqHandle {}
 impl Sealed for RerankRespHandle {}
 
 impl IrHandle for RerankReqHandle {
-    fn verb(&self) -> Operation {
-        Operation::RERANK
+    fn verb(&self) -> OpVerb {
+        OpVerb::RERANK
     }
     fn wants_stream(&self) -> bool {
         false
@@ -216,8 +217,8 @@ impl IrHandle for RerankReqHandle {
 }
 
 impl IrHandle for RerankRespHandle {
-    fn verb(&self) -> Operation {
-        Operation::RERANK
+    fn verb(&self) -> OpVerb {
+        OpVerb::RERANK
     }
     fn billing(&self) -> Option<Billing> {
         self.0.billing()
@@ -254,8 +255,8 @@ impl Sealed for ModerationReqHandle {}
 impl Sealed for ModerationRespHandle {}
 
 impl IrHandle for ModerationReqHandle {
-    fn verb(&self) -> Operation {
-        Operation::MODERATION
+    fn verb(&self) -> OpVerb {
+        OpVerb::MODERATION
     }
     fn wants_stream(&self) -> bool {
         false
@@ -289,8 +290,8 @@ impl IrHandle for ModerationReqHandle {
 }
 
 impl IrHandle for ModerationRespHandle {
-    fn verb(&self) -> Operation {
-        Operation::MODERATION
+    fn verb(&self) -> OpVerb {
+        OpVerb::MODERATION
     }
     fn billing(&self) -> Option<Billing> {
         Some(Billing::Flat)
@@ -327,8 +328,8 @@ impl Sealed for TranscriptionReqHandle {}
 impl Sealed for TranscriptionRespHandle {}
 
 impl IrHandle for TranscriptionReqHandle {
-    fn verb(&self) -> Operation {
-        Operation::TRANSCRIPTION
+    fn verb(&self) -> OpVerb {
+        OpVerb::TRANSCRIPTION
     }
     fn wants_stream(&self) -> bool {
         self.0.stream
@@ -362,8 +363,8 @@ impl IrHandle for TranscriptionReqHandle {
 }
 
 impl IrHandle for TranscriptionRespHandle {
-    fn verb(&self) -> Operation {
-        Operation::TRANSCRIPTION
+    fn verb(&self) -> OpVerb {
+        OpVerb::TRANSCRIPTION
     }
     fn billing(&self) -> Option<Billing> {
         self.0.billing()
@@ -400,8 +401,8 @@ impl Sealed for SpeechReqHandle {}
 impl Sealed for SpeechRespHandle {}
 
 impl IrHandle for SpeechReqHandle {
-    fn verb(&self) -> Operation {
-        Operation::SPEECH
+    fn verb(&self) -> OpVerb {
+        OpVerb::SPEECH
     }
     fn wants_stream(&self) -> bool {
         self.0.stream
@@ -440,8 +441,8 @@ impl IrHandle for SpeechReqHandle {
 }
 
 impl IrHandle for SpeechRespHandle {
-    fn verb(&self) -> Operation {
-        Operation::SPEECH
+    fn verb(&self) -> OpVerb {
+        OpVerb::SPEECH
     }
     fn billing(&self) -> Option<Billing> {
         self.0.billing()

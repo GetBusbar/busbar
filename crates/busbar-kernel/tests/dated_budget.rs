@@ -23,7 +23,7 @@
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
-use busbar_api::{Store, VirtualKey};
+use busbar_contract::records::{RecordStore, VirtualKey};
 use busbar_kernel::cost::CostModel;
 use busbar_kernel::governance::{GovState, LimitBlocked, MemoryStore};
 use busbar_kernel::rate_apply::{install_rate_epoch, RateEpoch};
@@ -94,7 +94,7 @@ fn a_card_edit_mid_window_prices_every_budget_read_and_the_gate_at_the_card_in_f
     )))));
     install_rate_epoch(holder);
 
-    let store: Arc<dyn Store> = Arc::new(MemoryStore::new());
+    let store: Arc<dyn RecordStore> = Arc::new(MemoryStore::new());
     let key = VirtualKey {
         id: "vk_dated".to_string(),
         generation_hash: "hash-dated".to_string(),

@@ -10,7 +10,7 @@
 
 use super::translate_request_cross_protocol;
 use crate::test_support::{LaneSpec, TestApp};
-use busbar_api::operation::Operation;
+use busbar_contract::operation::OpVerb;
 use serde_json::json;
 
 fn http() -> busbar_substrate_values::transport::Transport {
@@ -199,7 +199,7 @@ fn multi_input_embeddings_to_gemini_embeds_first_not_rejected() {
             "http://unused.local",
         ))
         .build();
-    let op = busbar_substrate_values::handlers::op_for("openai", Operation::EMBEDDINGS, http())
+    let op = busbar_substrate_values::handlers::op_for("openai", OpVerb::EMBEDDINGS, http())
         .expect("openai serves embeddings");
     let body = json!({
         "model": "text-embedding-3-small",
@@ -241,7 +241,7 @@ fn single_input_embeddings_to_gemini_is_allowed() {
             "http://unused.local",
         ))
         .build();
-    let op = busbar_substrate_values::handlers::op_for("openai", Operation::EMBEDDINGS, http())
+    let op = busbar_substrate_values::handlers::op_for("openai", OpVerb::EMBEDDINGS, http())
         .expect("openai serves embeddings");
     let body = json!({ "model": "text-embedding-3-small", "input": ["alpha"] });
     let hop_bytes = bytes::Bytes::from(busbar_substrate_values::json::to_vec(&body).unwrap());

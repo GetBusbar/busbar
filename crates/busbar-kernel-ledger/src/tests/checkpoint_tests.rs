@@ -8,8 +8,8 @@ use std::collections::BTreeMap;
 use crate::cost::HistorySeq;
 
 use crate::checkpoint::{
-    AnchorError, ChainHead, Checkpoint, CheckpointAnchor, CheckpointSecret, SelfAttestingAnchor,
-    SignError, Signature,
+    AnchorError, ChainHead, Checkpoint, CheckpointAnchor, CheckpointSecret, CheckpointVerifier,
+    SealRefusal, SelfAttestingAnchor, SignError, Signature,
 };
 use crate::settle::Ledger;
 use crate::totals::{Totals, TotalsKey, WindowStart};
@@ -564,4 +564,82 @@ fn the_seal_and_the_verify_share_one_preimage_and_one_digest() {
     };
     assert_eq!(calls("encode_body("), 1, "one encoder call: signed_body");
     assert_eq!(calls("digest::sha256("), 1, "one digest call: body_digest");
+}
+
+// ── THE SEAL VERIFIES AGAINST A KEYSET (Q71(3), #82) ────────────────────────────────────────────
+//
+// The ledger holds no key: the keyset is the audit unit's, and the one that signs and checks real
+// checkpoints is busbar_kernel_audit::AuditKeySet (its own tests prove the ed25519 half). Here the
+// verifier accepts exactly what `StampSigner` minted, so every refusal below is the LEDGER's
+// judgement — which of the three things went wrong — and not the cryptography's.
+struct StampKeys;
+
+impl CheckpointVerifier for StampKeys {
+    fn verify(&self, body: &[u8], signature: &Signature) -> Result<(), String> {
+        if signature.bytes() == crate::digest::sha256(body) {
+            Ok(())
+        } else {
+            Err("the signature does not verify against this key".into())
+        }
+    }
+}
+
+#[test]
+fn a_sealed_checkpoint_verifies_its_seal_against_the_keyset() {
+    let checkpoint = seal(&book_with_a_settlement(), 1);
+    assert_eq!(checkpoint.verify_seal(&StampKeys), Ok(()));
+}
+
+#[test]
+fn a_tampered_checkpoint_refuses_its_seal_as_edited() {
+    let mut checkpoint = seal(&book_with_a_settlement(), 3);
+    checkpoint
+        .totals
+        .get_mut(&(key("b"), 1 as WindowStart))
+        .unwrap()
+        .settled += 1;
+    let refused = checkpoint.verify_seal(&StampKeys).unwrap_err();
+    assert_eq!(refused, SealRefusal::Edited { checkpoint_seq: 3 });
+    assert_eq!(
+        refused.to_string(),
+        "checkpoint 3 does not hash to its own figures — it was EDITED after it was sealed"
+    );
+}
+
+#[test]
+fn a_tampered_checkpoint_with_a_recomputed_digest_refuses_on_the_signature() {
+    // The editor who also recomputes the stored digest: only the signature can catch that.
+    let mut checkpoint = seal(&book_with_a_settlement(), 4);
+    checkpoint
+        .totals
+        .get_mut(&(key("b"), 1 as WindowStart))
+        .unwrap()
+        .settled += 1;
+    checkpoint.body_hash = crate::digest::sha256(&checkpoint.signed_body());
+    assert!(checkpoint.body_hash_verifies());
+    let refused = checkpoint.verify_seal(&StampKeys).unwrap_err();
+    assert_eq!(
+        refused.to_string(),
+        "checkpoint 4's signature does not verify against the keyset: the signature does not verify against this key"
+    );
+}
+
+#[test]
+fn an_unsigned_checkpoint_refuses_its_seal_as_unsigned() {
+    let checkpoint = Checkpoint::seal(
+        5,
+        1,
+        10,
+        Vec::new(),
+        book_with_a_settlement().book().snapshot(),
+        0,
+        0,
+        None,
+    )
+    .unwrap();
+    let refused = checkpoint.verify_seal(&StampKeys).unwrap_err();
+    assert_eq!(
+        refused.to_string(),
+        "checkpoint 5 carries no signature — no key in the keyset can vouch for it"
+    );
 }

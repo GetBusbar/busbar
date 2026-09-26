@@ -587,7 +587,9 @@ async fn a_shortened_interval_takes_effect_on_the_inherited_schedule() {
     // The smallest config with ONE active-health lane pointed at the mock: the sole provider gets the
     // mock's base URL and an active health block at `interval`, and one model routes to it.
     let make_cfg = |interval: u64| {
-        let mut c = crate::test_support::cfg_with_provider_api_key(busbar_api::SecretRef::none());
+        let mut c = crate::test_support::cfg_with_provider_api_key(
+            busbar_contract::secret_ref::SecretRef::none(),
+        );
         let p = c.providers.get_mut("acme").expect("the sole provider");
         p.base_url = server.base_url();
         p.health = Some(HealthCfg {

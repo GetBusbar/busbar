@@ -119,9 +119,11 @@ pub fn build_egress_targets(
     path_base: Option<&str>,
     wire_model: &str,
     base_url: &str,
-) -> Result<std::collections::HashMap<(busbar_api::operation::Operation, bool), EgressTarget>, String>
-{
-    use busbar_api::operation::Operation;
+) -> Result<
+    std::collections::HashMap<(busbar_contract::operation::OpVerb, bool), EgressTarget>,
+    String,
+> {
+    use busbar_contract::operation::OpVerb;
     let mut out = std::collections::HashMap::new();
     let Some(rh) = busbar_substrate_values::handlers::request_handler(protocol) else {
         return Ok(out);
@@ -131,18 +133,18 @@ pub fn build_egress_targets(
     // before a protocol's own `ProtocolDecl::verbs` are folded in below. Deduped against
     // `Operation::ALL` and the registered declarations' verbs, so a protocol that declares any of them
     // takes exactly one entry.
-    let family_ops: [Operation; 7] = [
-        Operation::CHAT,
-        Operation::EMBEDDINGS,
-        Operation::MODERATION,
-        Operation::IMAGE,
-        Operation::TRANSCRIPTION,
-        Operation::SPEECH,
-        Operation::RERANK,
+    let family_ops: [OpVerb; 7] = [
+        OpVerb::CHAT,
+        OpVerb::EMBEDDINGS,
+        OpVerb::MODERATION,
+        OpVerb::IMAGE,
+        OpVerb::TRANSCRIPTION,
+        OpVerb::SPEECH,
+        OpVerb::RERANK,
     ];
     let ops = family_ops
         .iter()
-        .chain(Operation::ALL.iter())
+        .chain(OpVerb::ALL.iter())
         .chain(busbar_kernel::proto::declared_verbs().iter());
     for &op in ops {
         for stream in [false, true] {

@@ -116,6 +116,7 @@ pub const NEUTRAL_FALLBACK: crate::plane::registry::PlaneDecl = crate::plane::re
         billable_classes: &[],
         fee_units: &[],
         metric_families: &[],
+        served_op_classes: &[],
     },
     wire_format_names: || &[],
     claims: |_| Vec::new(),

@@ -50,7 +50,7 @@
 //! write still fails loud.
 
 use crate::diagnostics::{diag_warn, REVOCATION_RESYNC_FAILED, REVOCATION_RESYNC_OUTSTANDING};
-use busbar_api::Store;
+use busbar_contract::records::RecordStore;
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
@@ -61,7 +61,7 @@ use super::REVOCATION_SYNC_TTL_SECS;
 /// Held behind an `Arc` by `GovState` so a refresh can be handed to the blocking pool.
 pub(crate) struct RevocationSync {
     /// The durable store the denylist is a CACHE of.
-    store: Arc<dyn Store>,
+    store: Arc<dyn RecordStore>,
     /// Revoked subject ids. Read on the auth hot path; written by a local revoke and by a refresh.
     set: RwLock<HashSet<String>>,
     /// Unix-seconds epoch of the last SUCCESSFUL store read. Advanced only when a read returns.
@@ -78,7 +78,11 @@ pub(crate) struct RevocationSync {
 
 impl RevocationSync {
     /// A denylist seeded with the boot-time hydration (`initial`), stamped fresh at `now`.
-    pub(crate) fn new(store: Arc<dyn Store>, initial: HashSet<String>, now: u64) -> Arc<Self> {
+    pub(crate) fn new(
+        store: Arc<dyn RecordStore>,
+        initial: HashSet<String>,
+        now: u64,
+    ) -> Arc<Self> {
         Arc::new(Self {
             store,
             set: RwLock::new(initial),

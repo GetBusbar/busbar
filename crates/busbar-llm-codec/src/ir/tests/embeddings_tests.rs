@@ -46,8 +46,8 @@ fn billing_maps_token_usage_or_none() {
 
 // ── IrFacts projection (close-non-chat-gate-blindness) ───────────────────────────────────────────
 
-use busbar_api::operation::Operation;
-use busbar_substrate_values::ir::facts::{ContentItem, IrFacts, OPAQUE_CONTENT_MARKER};
+use busbar_contract::ir::facts::{ContentItem, IrFacts, OPAQUE_CONTENT_MARKER};
+use busbar_contract::operation::OpVerb;
 
 /// Every `ContentItem`'s screenable text, in order — the exact strings a `prompt: ro` gate is shown.
 fn screened(items: &[ContentItem<'_>]) -> Vec<String> {
@@ -65,7 +65,7 @@ fn embeddings_projects_input_strings_and_title_as_screenable_text() {
         title: Some("doc title".into()),
         ..Default::default()
     };
-    assert_eq!(IrFacts::verb(&req), Operation::EMBEDDINGS);
+    assert_eq!(IrFacts::verb(&req), OpVerb::EMBEDDINGS);
     assert!(!IrFacts::wants_stream(&req));
     // input strings AND the Gemini retrieval title are all screenable.
     assert_eq!(

@@ -15,7 +15,7 @@ use crate::plane::handle_engine::{
     ChainPosition, DurableHandleEngine, HandleDenied, HandleEngineError, MutateError, Mutation,
     ScopedMutateError, SubmitRecord, SweepBounds,
 };
-use busbar_api::StoreError;
+use busbar_contract::records::RecordStoreError;
 use busbar_plugin::hot::{
     AdmissionId, EgressFailClass, EgressId, PipeId, Signal, StatusClass, VerifyLease,
 };
@@ -452,9 +452,9 @@ impl SessionScope {
         report_fail: R,
     ) -> Result<Arc<dyn Any + Send + Sync>, HandleEngineError>
     where
-        P: FnOnce(&ChainPosition) -> Result<SubmitRecord, StoreError>,
+        P: FnOnce(&ChainPosition) -> Result<SubmitRecord, RecordStoreError>,
         A: Fn(&str, &(dyn Any + Send + Sync), &ChainPosition, u64) -> Option<Mutation>,
-        R: Fn(&str, &StoreError),
+        R: Fn(&str, &RecordStoreError),
     {
         self.engine.submit(now, bounds, plan, abandon, report_fail)
     }

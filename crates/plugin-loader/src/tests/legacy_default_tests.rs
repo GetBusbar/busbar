@@ -32,7 +32,7 @@ fn record(kind: &str, id: &str) -> PlaneRecord {
         parent: Some("parent-1".to_string()),
         seq: 7,
         ts: 1_700_000_000,
-        disposition: busbar_api::PlaneDisposition::Active,
+        disposition: busbar_contract::records::PlaneDisposition::Active,
         body: b"{\"opaque\":true}".to_vec(),
     }
 }
@@ -93,8 +93,8 @@ fn run<T>(
     store: &DynStore,
     status: i32,
     body: &'static [u8],
-    op: impl FnOnce(&DynStore) -> StoreResult<T>,
-) -> StoreResult<T> {
+    op: impl FnOnce(&DynStore) -> RecordStoreResult<T>,
+) -> RecordStoreResult<T> {
     answer(status, body);
     op(store)
 }

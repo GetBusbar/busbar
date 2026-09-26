@@ -212,6 +212,8 @@ fn register_protocols() {
 /// lands in its own slot regardless of the table's order. Then the two unconditional seams, then
 /// every root unit's seal.
 fn register_planes() {
+    // The linked store and hook rows onto the kernel's cold-kind axis, before anything resolves one.
+    busbar_kernel::preflight::install_linked_rows(LINKED.stores, LINKED.hooks);
     // The configured `plugins.dir`, scanned once: its planes join the plane axis here and its export
     // modules the export axis just below — the same entries a linked plugin registers through.
     let dropped = root::linked::dropped_from_config(&LINKED);
@@ -780,7 +782,10 @@ async fn run(data_workers: usize) {
     // same `request_body_max_bytes` the line above hands the served door, so a plane's transport and
     // the door in front of it cannot disagree about which bodies exist. Every build runs it, whatever
     // planes it links; a composition that does not seal exits 2 here, and success writes nothing.
-    root::registry::seal_or_exit(&LINKED, root::policy::client_settings(&cfg.limits));
+    // The rows are the linked wires and the ones dropped into `plugins.dir`, folded in one pass; the
+    // sealed registry names the wire under the data door when that wire came in dropped in.
+    let boot = root::registry::seal_or_exit(&LINKED, root::policy::client_settings(&cfg.limits));
+    let door = boot.dropped_door();
     // THE ROOT UNITS' CONFIGURATION STEP, in the same slot: the card repricer is installed BEFORE the
     // first app build below, so the boot's own rate resolution is the history's OPENING ENTRY and
     // nothing has to read the configuration twice. From there each resolution APPENDS an entry dated
@@ -1140,6 +1145,7 @@ async fn run(data_workers: usize) {
             tls_secret_resolver.clone(),
             &shutdown_tx,
             worker_shutdown_rx,
+            door,
         );
         let admin_listener = bind_listener(&admin_listen).await;
         serve_listener(
@@ -1167,11 +1173,15 @@ async fn run(data_workers: usize) {
     #[cfg(not(unix))]
     {
         let _ = data_workers; // sized the runtime in main(); no per-worker listeners here
-        let data_listener = bind_listener(&listen).await;
+        let data_listener = match door {
+            None => Some(bind_listener(&listen).await),
+            Some(_) => None,
+        };
         let admin_listener = bind_listener(&admin_listen).await;
         tokio::join!(
-            serve_listener(
+            serve_data(
                 data_listener,
+                door,
                 data_router,
                 tls_cfg,
                 tls_secret_resolver.clone(),
@@ -1241,6 +1251,7 @@ async fn recv_shutdown(mut rx: tokio::sync::broadcast::Receiver<()>) {
 /// handles; the caller awaits shutdown (the broadcast fans out to every per-worker `recv_shutdown`)
 /// and then joins them. Unix-only (SO_REUSEPORT); see the call site.
 #[cfg(unix)]
+#[allow(clippy::too_many_arguments)] // the seven it had, plus the wire under the door.
 fn serve_thread_per_core(
     n: usize,
     addr: String,
@@ -1249,6 +1260,10 @@ fn serve_thread_per_core(
     secret_resolver: Arc<busbar_kernel::config::secret::SecretResolver>,
     shutdown_tx: &tokio::sync::broadcast::Sender<()>,
     worker_shutdown: tokio::sync::watch::Receiver<bool>,
+    // The wire under the data door when it came in dropped in (`BootRegistry::dropped_door`): the
+    // same `n` workers serve it, each through its OWN listener the wire binds on `addr` — the
+    // per-core fan-out the kernel's SO_REUSEPORT listeners give a linked wire (ruling K8c).
+    door: Option<Arc<dyn busbar_contract::Transport>>,
 ) -> Vec<std::thread::JoinHandle<()>> {
     // Distinct cores to pin the n workers to, when the platform exposes them. Fewer ids than
     // workers (or none) just means the tail runs unpinned — advisory, never a boot failure.
@@ -1292,6 +1307,7 @@ fn serve_thread_per_core(
         let shutdown_rx = shutdown_tx.subscribe();
         let worker_shutdown = worker_shutdown.clone();
         let balancer = balancers[i].take();
+        let door = door.clone();
         let spawned = std::thread::Builder::new()
             .name(format!("busbar-core-{i}"))
             .spawn(move || {
@@ -1321,21 +1337,24 @@ fn serve_thread_per_core(
                         die(format!("failed to build per-core data runtime {i}: {e}"))
                     });
                 rt.block_on(async move {
-                    let std_listener = bind_reuseport_listener(&listen).unwrap_or_else(|e| {
-                        die(format!(
-                            "cannot bind SO_REUSEPORT data listener on '{listen}' (per-core runtime \
-                             {i}): {e}"
-                        ))
-                    });
-                    let listener =
+                    // A dropped-in wire under the door binds this worker's listener itself.
+                    let listener = door.is_none().then(|| {
+                        let std_listener = bind_reuseport_listener(&listen).unwrap_or_else(|e| {
+                            die(format!(
+                                "cannot bind SO_REUSEPORT data listener on '{listen}' (per-core \
+                                 runtime {i}): {e}"
+                            ))
+                        });
                         tokio::net::TcpListener::from_std(std_listener).unwrap_or_else(|e| {
                             die(format!(
                                 "cannot adopt SO_REUSEPORT data listener on '{listen}' (per-core \
                                  runtime {i}): {e}"
                             ))
-                        });
-                    serve_listener(
+                        })
+                    });
+                    serve_data(
                         listener,
+                        door,
                         router,
                         tls,
                         resolver,
@@ -1392,6 +1411,60 @@ fn bind_reuseport_listener(addr: &str) -> std::io::Result<std::net::TcpListener>
     // listeners accept as readily as the single multi-thread listener did.
     socket.listen(1024)?;
     Ok(socket.into())
+}
+
+/// Serve the DATA door: over `listener` (the kernel's own socket) as [`serve_listener`] does, or —
+/// when the wire under the door came in dropped in (`door`) — through that wire, which binds `label`
+/// itself (`root::transports::serve_door`). Same router, same TLS posture, same drain.
+#[allow(clippy::too_many_arguments)] // `serve_listener`'s eight, plus the door.
+async fn serve_data(
+    listener: Option<tokio::net::TcpListener>,
+    door: Option<Arc<dyn busbar_contract::Transport>>,
+    router: Router,
+    tls_cfg: Option<busbar_kernel::config::sections::TlsCfg>,
+    secret_resolver: Arc<busbar_kernel::config::secret::SecretResolver>,
+    label: &str,
+    shutdown: impl std::future::Future<Output = ()> + Send + 'static,
+    balancer: Option<tls::ConnBalancer>,
+    log_at_info: bool,
+) {
+    let Some(wire) = door else {
+        let listener = listener.expect("a door with no dropped-in wire has the kernel's listener");
+        return serve_listener(
+            listener,
+            router,
+            tls_cfg,
+            secret_resolver,
+            label,
+            shutdown,
+            balancer,
+            log_at_info,
+        )
+        .await;
+    };
+    // blocking-ffi-lint: allow — BOOT, once, before this door accepts (see `serve_listener`).
+    let security = tls_cfg.as_ref().map(|tls| {
+        busbar_core_connsec::prepare(label, Some(tls), &secret_resolver, true)
+            .unwrap_or_else(|e| die(e.to_string()))
+    });
+    // The same line per worker `serve_listener` writes: INFO once, DEBUG for every other worker.
+    match (log_at_info, &tls_cfg) {
+        (false, None) => tracing::debug!(listen = %label, "busbar listening"),
+        (true, None) => tracing::info!(listen = %label, "busbar listening"),
+        (log_at_info, Some(tls)) => {
+            let mtls = tls.client_ca.is_some();
+            if log_at_info {
+                tracing::info!(listen = %label, mtls, "busbar listening (TLS)");
+            } else {
+                tracing::debug!(listen = %label, mtls, "busbar listening (TLS)");
+            }
+        }
+    }
+    if let Err(e) = root::transports::serve_door(wire, label, router, security, shutdown).await {
+        die(format!(
+            "cannot listen on '{label}' through the transport under it: {e:?}"
+        ));
+    }
 }
 
 /// Serve one listener (data OR admin plane) to graceful shutdown. Picks plain-HTTP vs native TLS/mTLS

@@ -12,7 +12,7 @@ use crate::mcp::client::egress::{
     plan_credential, CredentialPlan, ExchangeCfg, UpstreamCredential,
 };
 use crate::mcp::client::support::{key_wildcard, sid, tkey};
-use busbar_api::Redacted;
+use busbar_contract::redacted::Redacted;
 
 fn exchange_for(resource: &str) -> UpstreamCredential {
     UpstreamCredential::Exchange(ExchangeCfg {

@@ -300,16 +300,16 @@ fn token_exchange_and_http_response_roundtrip() {
 fn from_outcome_maps_verdicts() {
     let mut p = Principal::from_id("oidc:bob");
     p.roles = vec!["g".into()];
-    match AuthResponse::from_outcome(AuthOutcome::Identify(p)) {
+    match AuthResponse::from_outcome(AuthVerdict::Identify(p)) {
         AuthResponse::Identity(i) => assert_eq!(i.sub, "oidc:bob"),
         other => panic!("{other:?}"),
     }
     assert!(matches!(
-        AuthResponse::from_outcome(AuthOutcome::Reject),
+        AuthResponse::from_outcome(AuthVerdict::Reject),
         AuthResponse::Reject
     ));
     assert!(matches!(
-        AuthResponse::from_outcome(AuthOutcome::Pass),
+        AuthResponse::from_outcome(AuthVerdict::Pass),
         AuthResponse::Pass
     ));
 }

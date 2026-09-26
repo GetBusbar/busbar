@@ -13,10 +13,10 @@
 //! The harness replays the same step list the production seams run:
 //!   * REQUEST  (`translate_request_cross_protocol`, JSON branch): parse → anthropic
 //!     `read_request` → `IrReq::prepare_for_egress` → openai `write_request` →
-//!     `strip_router_shim_keys` → `rewrite_model_if_needed` → `busbar_substrate_values::json::to_vec`.
+//!     `strip_router_shim_keys` → `rewrite_model_if_needed` → `crate::json::to_vec`.
 //!   * RESPONSE (proxy engine buffered cross-protocol branch): parse → openai `read_response` →
 //!     `IrResp::prepare_for_ingress` → anthropic `write_response` → `inject_response_metrics` →
-//!     `busbar_substrate_values::json::to_vec`.
+//!     `crate::json::to_vec`.
 //!
 //! The one nondeterministic output field — the anthropic writer's synthesized `id`
 //! (`msg_01<24 base62>`) on the response side — is shape-asserted and then NORMALIZED to a fixed
@@ -70,13 +70,12 @@ fn check_golden(name: &str, actual: &[u8]) {
 fn translate_request_a2o(body: &str) -> Vec<u8> {
     let anthropic = crate::proto_codec::protocol_for("anthropic").expect("anthropic protocol");
     let openai = crate::proto_codec::protocol_for("openai").expect("openai protocol");
-    let v: serde_json::Value =
-        busbar_substrate_values::json::parse(body.as_bytes()).expect("valid corpus JSON");
+    let v: serde_json::Value = crate::json::parse(body.as_bytes()).expect("valid corpus JSON");
     let ir = anthropic.reader().read_request(&v).expect("reads");
     let mut req = ir;
     crate::chat_handle::chat_prepare_for_egress(
         &mut req,
-        &busbar_substrate_values::ir::egress_prep::EgressPrep {
+        &busbar_contract::ir::egress_prep::EgressPrep {
             thought_signature_fill: false,
             ingress_protocol: "anthropic",
             egress_requires_max_tokens: openai.decl().is_some_and(|d| d.requires_max_tokens),
@@ -95,7 +94,7 @@ fn translate_request_a2o(body: &str) -> Vec<u8> {
     openai
         .writer()
         .rewrite_model_if_needed(&mut out, LANE_MODEL);
-    busbar_substrate_values::json::to_vec(&out).expect("serializes")
+    crate::json::to_vec(&out).expect("serializes")
 }
 
 /// The production RESPONSE translate steps for the openai→anthropic lane, byte-for-byte, with the
@@ -103,8 +102,7 @@ fn translate_request_a2o(body: &str) -> Vec<u8> {
 fn translate_response_o2a(body: &str) -> Vec<u8> {
     let anthropic = crate::proto_codec::protocol_for("anthropic").expect("anthropic protocol");
     let openai = crate::proto_codec::protocol_for("openai").expect("openai protocol");
-    let v: serde_json::Value =
-        busbar_substrate_values::json::parse(body.as_bytes()).expect("valid corpus JSON");
+    let v: serde_json::Value = crate::json::parse(body.as_bytes()).expect("valid corpus JSON");
     let ir = openai.reader().read_response(&v).expect("reads");
     let mut resp = ir;
     crate::chat_handle::chat_prepare_for_ingress(&mut resp, "anthropic", FIXED_NOW);
@@ -128,7 +126,7 @@ fn translate_response_o2a(body: &str) -> Vec<u8> {
         "synthesized anthropic id must keep the native msg_01<24 base62> shape, got {id:?}"
     );
     obj.insert("id".to_string(), serde_json::json!(FIXED_ID));
-    busbar_substrate_values::json::to_vec(&out).expect("serializes")
+    crate::json::to_vec(&out).expect("serializes")
 }
 
 /// Corpus of representative anthropic REQUEST bodies (the ingress dialect): plain chat, multi-turn

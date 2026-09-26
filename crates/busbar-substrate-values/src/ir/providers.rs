@@ -22,7 +22,7 @@ use std::collections::HashMap;
 
 use serde::Deserialize;
 
-use busbar_api::SecretRef;
+use busbar_contract::secret_ref::SecretRef;
 
 use super::lane_caps::{MaxOutputKeyCfg, ModelCapabilities};
 

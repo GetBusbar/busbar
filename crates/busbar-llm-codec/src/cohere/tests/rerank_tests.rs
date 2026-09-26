@@ -26,7 +26,7 @@ fn cohere_request_reaches_bedrock() {
     let rh = CohereRequestHandler;
     assert_eq!(
         rh.resolve_operation("/v2/rerank", b"{}"),
-        Some(Operation::RERANK)
+        Some(OpVerb::RERANK)
     );
     let ir = super::super::super::leaf_codec::rerank_read_request(
         "cohere",
@@ -52,7 +52,7 @@ fn bedrock_request_and_response_round_trip() {
     .unwrap();
     assert_eq!(
         bh.resolve_operation("/model/cohere.rerank-v3-5:0/invoke", &body),
-        Some(Operation::RERANK)
+        Some(OpVerb::RERANK)
     );
     let ir =
         super::super::super::leaf_codec::rerank_read_request("bedrock", &body, "application/json")
@@ -126,7 +126,7 @@ fn embeddings_write_request_preserves_multiple_encoding_types_in_order() {
 #[test]
 fn embeddings_write_request_warns_on_dropped_non_text_input() {
     use crate::ir::embeddings::EmbeddingsReq;
-    use busbar_substrate_values::testkit::warn_capture::WarnCapture;
+    use busbar_kernel::test_support::warn_capture::WarnCapture;
     use tracing_subscriber::layer::SubscriberExt as _;
 
     let ir = EmbeddingsReq {
@@ -360,9 +360,9 @@ fn no_rerank_handler_on_the_other_four() {
     // here so the test does not depend on another test having filled it first.
     crate::ensure_test_protocols_registered();
     for proto in ["openai", "anthropic", "gemini", "responses"] {
-        let rh = busbar_substrate_values::handlers::request_handler(proto).expect(proto);
+        let rh = busbar_kernel::handlers::request_handler(proto).expect(proto);
         assert!(
-            rh.operation_handler(Operation::RERANK).is_none(),
+            rh.operation_handler(OpVerb::RERANK).is_none(),
             "{proto} must have no rerank handler"
         );
     }

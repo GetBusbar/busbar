@@ -8,7 +8,7 @@
 use super::*;
 use crate::config::groups::{GroupCfg, LimitCfg, LimitMetric, LimitWindow};
 use crate::config::RateEntryCfg;
-use busbar_api::{VirtualKey, RESERVED_UNITS};
+use busbar_contract::records::{VirtualKey, RESERVED_UNITS};
 use std::collections::BTreeMap;
 
 fn card(entries: &[(&str, f64, f64)]) -> BTreeMap<String, RateEntryCfg> {
@@ -649,10 +649,10 @@ fn rate_nanos_from_cfg_clamps_a_non_finite_positive_rate_to_zero_not_max() {
 /// of the four, so these delegation guards keep asking exactly what they asked.
 fn reserved_rate(rate: &RateNanos, unit: &str) -> u64 {
     match unit {
-        busbar_api::UNIT_INPUT => rate.input,
-        busbar_api::UNIT_OUTPUT => rate.output,
-        busbar_api::UNIT_CACHE_READ => rate.cache_read,
-        busbar_api::UNIT_CACHE_WRITE => rate.cache_write,
+        busbar_contract::records::UNIT_INPUT => rate.input,
+        busbar_contract::records::UNIT_OUTPUT => rate.output,
+        busbar_contract::records::UNIT_CACHE_READ => rate.cache_read,
+        busbar_contract::records::UNIT_CACHE_WRITE => rate.cache_write,
         other => panic!("`{other}` is not a reserved class"),
     }
 }

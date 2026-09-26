@@ -434,7 +434,6 @@ fn refusal_render(reason: RefusalReason) -> (i64, &'static str) {
 /// same pair are two things that can drift; one expression cannot.
 const fn sampling_destination() -> DestinationFacts {
     DestinationFacts::NestedPlane {
-        plane: meta::SAMPLING_PLANE,
         op: meta::SAMPLING_OP,
     }
 }

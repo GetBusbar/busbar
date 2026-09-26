@@ -4,7 +4,7 @@
 //! Tests for `crates/busbar-core/src/admin/mod.rs`.
 
 use super::internal_error;
-use busbar_kernel::governance::StoreError;
+use busbar_kernel::governance::RecordStoreError;
 
 /// `internal_error` must project `AdminError::Internal` onto the real error envelope — a 500
 /// with the frozen `{"error":{"code":"internal",...}}` body — never `Response::default()`
@@ -12,7 +12,7 @@ use busbar_kernel::governance::StoreError;
 /// success to the client).
 #[tokio::test]
 async fn projects_a_500_internal_error_envelope() {
-    let resp = internal_error("test_op", &StoreError("boom".to_string()));
+    let resp = internal_error("test_op", &RecordStoreError("boom".to_string()));
     assert_eq!(
         resp.status(),
         axum::http::StatusCode::INTERNAL_SERVER_ERROR,

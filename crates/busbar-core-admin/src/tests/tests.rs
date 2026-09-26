@@ -17,7 +17,7 @@ const OAS_OPERATION_STATUSES: &str =
 /// HTTP) builds its gov through this so the signer is always present; a read-only test could stay on
 /// `GovState::new`, but giving them all a signer keeps the fixtures uniform and future-proof.
 fn gov_with_signer(
-    store: Arc<dyn busbar_kernel::governance::Store>,
+    store: Arc<dyn busbar_kernel::governance::RecordStore>,
     admin_token: Option<String>,
 ) -> Arc<GovState> {
     Arc::new(
@@ -783,8 +783,8 @@ async fn drive_unpriced_usage_reads() -> Vec<(String, u16, serde_json::Value)> {
     let mut in_team = minted.clone();
     in_team.group = Some("team".to_string());
     let units = std::collections::BTreeMap::from([
-        (busbar_api::UNIT_INPUT.to_string(), 700u64),
-        (busbar_api::UNIT_OUTPUT.to_string(), 200u64),
+        (busbar_contract::records::UNIT_INPUT.to_string(), 700u64),
+        (busbar_contract::records::UNIT_OUTPUT.to_string(), 200u64),
     ]);
     gov.record_usage(&cost, &in_team, "", "m", &units, now);
     let usage = busbar_kernel::billing::TokenUsage {
@@ -2151,14 +2151,17 @@ async fn test_admin_v1_idempotency_reservation_frees_on_failure() {
 /// turns that into a bounded, legible failure instead of a hung suite. Nothing in a passing run ever
 /// waits on it.
 struct GatedKeyStore {
-    inner: Arc<dyn busbar_kernel::governance::Store>,
+    inner: Arc<dyn busbar_kernel::governance::RecordStore>,
     entered: tokio::sync::mpsc::Sender<()>,
     release: std::sync::Mutex<Option<std::sync::mpsc::Receiver<()>>>,
     landed: tokio::sync::mpsc::Sender<()>,
     fired: std::sync::atomic::AtomicBool,
 }
-impl busbar_kernel::governance::Store for GatedKeyStore {
-    fn put_key(&self, key: &busbar_api::VirtualKey) -> busbar_kernel::governance::StoreResult<()> {
+impl busbar_kernel::governance::RecordStore for GatedKeyStore {
+    fn put_key(
+        &self,
+        key: &busbar_contract::records::VirtualKey,
+    ) -> busbar_kernel::governance::RecordStoreResult<()> {
         if self.fired.swap(true, std::sync::atomic::Ordering::SeqCst) {
             return self.inner.put_key(key);
         }
@@ -2179,40 +2182,45 @@ impl busbar_kernel::governance::Store for GatedKeyStore {
     fn get_key(
         &self,
         id: &str,
-    ) -> busbar_kernel::governance::StoreResult<Option<busbar_api::VirtualKey>> {
+    ) -> busbar_kernel::governance::RecordStoreResult<Option<busbar_contract::records::VirtualKey>>
+    {
         self.inner.get_key(id)
     }
-    fn list_keys(&self) -> busbar_kernel::governance::StoreResult<Vec<busbar_api::VirtualKey>> {
+    fn list_keys(
+        &self,
+    ) -> busbar_kernel::governance::RecordStoreResult<Vec<busbar_contract::records::VirtualKey>>
+    {
         self.inner.list_keys()
     }
-    fn delete_key(&self, id: &str) -> busbar_kernel::governance::StoreResult<()> {
+    fn delete_key(&self, id: &str) -> busbar_kernel::governance::RecordStoreResult<()> {
         self.inner.delete_key(id)
     }
     fn get_usage(
         &self,
         bucket_id: &str,
         window_start: u64,
-    ) -> busbar_kernel::governance::StoreResult<busbar_api::UsageLedger> {
+    ) -> busbar_kernel::governance::RecordStoreResult<busbar_contract::records::UsageLedger> {
         self.inner.get_usage(bucket_id, window_start)
     }
     fn put_usage(
         &self,
         bucket_id: &str,
         window_start: u64,
-        ledger: &busbar_api::UsageLedger,
-    ) -> busbar_kernel::governance::StoreResult<()> {
+        ledger: &busbar_contract::records::UsageLedger,
+    ) -> busbar_kernel::governance::RecordStoreResult<()> {
         self.inner.put_usage(bucket_id, window_start, ledger)
     }
     fn add_metering(
         &self,
         delta: &busbar_kernel::governance::MeteringDelta,
-    ) -> busbar_kernel::governance::StoreResult<()> {
+    ) -> busbar_kernel::governance::RecordStoreResult<()> {
         self.inner.add_metering(delta)
     }
     fn list_metering(
         &self,
         bucket: u64,
-    ) -> busbar_kernel::governance::StoreResult<Vec<busbar_kernel::governance::MeteringRow>> {
+    ) -> busbar_kernel::governance::RecordStoreResult<Vec<busbar_kernel::governance::MeteringRow>>
+    {
         self.inner.list_metering(bucket)
     }
 }
@@ -2222,13 +2230,16 @@ impl busbar_kernel::governance::Store for GatedKeyStore {
 /// a rotate's, but not the mint's that precedes it) so a concurrent request can be landed
 /// deterministically inside the slowed call's window.
 struct SlowNthPutKeyStore {
-    inner: Arc<dyn busbar_kernel::governance::Store>,
+    inner: Arc<dyn busbar_kernel::governance::RecordStore>,
     delay: std::time::Duration,
     calls: std::sync::atomic::AtomicUsize,
     slow_on_call: usize,
 }
-impl busbar_kernel::governance::Store for SlowNthPutKeyStore {
-    fn put_key(&self, key: &busbar_api::VirtualKey) -> busbar_kernel::governance::StoreResult<()> {
+impl busbar_kernel::governance::RecordStore for SlowNthPutKeyStore {
+    fn put_key(
+        &self,
+        key: &busbar_contract::records::VirtualKey,
+    ) -> busbar_kernel::governance::RecordStoreResult<()> {
         let n = self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         if n == self.slow_on_call {
             std::thread::sleep(self.delay);
@@ -2238,40 +2249,45 @@ impl busbar_kernel::governance::Store for SlowNthPutKeyStore {
     fn get_key(
         &self,
         id: &str,
-    ) -> busbar_kernel::governance::StoreResult<Option<busbar_api::VirtualKey>> {
+    ) -> busbar_kernel::governance::RecordStoreResult<Option<busbar_contract::records::VirtualKey>>
+    {
         self.inner.get_key(id)
     }
-    fn list_keys(&self) -> busbar_kernel::governance::StoreResult<Vec<busbar_api::VirtualKey>> {
+    fn list_keys(
+        &self,
+    ) -> busbar_kernel::governance::RecordStoreResult<Vec<busbar_contract::records::VirtualKey>>
+    {
         self.inner.list_keys()
     }
-    fn delete_key(&self, id: &str) -> busbar_kernel::governance::StoreResult<()> {
+    fn delete_key(&self, id: &str) -> busbar_kernel::governance::RecordStoreResult<()> {
         self.inner.delete_key(id)
     }
     fn get_usage(
         &self,
         bucket_id: &str,
         window_start: u64,
-    ) -> busbar_kernel::governance::StoreResult<busbar_api::UsageLedger> {
+    ) -> busbar_kernel::governance::RecordStoreResult<busbar_contract::records::UsageLedger> {
         self.inner.get_usage(bucket_id, window_start)
     }
     fn put_usage(
         &self,
         bucket_id: &str,
         window_start: u64,
-        ledger: &busbar_api::UsageLedger,
-    ) -> busbar_kernel::governance::StoreResult<()> {
+        ledger: &busbar_contract::records::UsageLedger,
+    ) -> busbar_kernel::governance::RecordStoreResult<()> {
         self.inner.put_usage(bucket_id, window_start, ledger)
     }
     fn add_metering(
         &self,
         delta: &busbar_kernel::governance::MeteringDelta,
-    ) -> busbar_kernel::governance::StoreResult<()> {
+    ) -> busbar_kernel::governance::RecordStoreResult<()> {
         self.inner.add_metering(delta)
     }
     fn list_metering(
         &self,
         bucket: u64,
-    ) -> busbar_kernel::governance::StoreResult<Vec<busbar_kernel::governance::MeteringRow>> {
+    ) -> busbar_kernel::governance::RecordStoreResult<Vec<busbar_kernel::governance::MeteringRow>>
+    {
         self.inner.list_metering(bucket)
     }
 }
@@ -2297,7 +2313,7 @@ async fn an_idempotency_key_survives_a_client_disconnect_mid_mint() {
     let (entered_tx, mut entered_rx) = tokio::sync::mpsc::channel::<()>(1);
     let (landed_tx, mut landed_rx) = tokio::sync::mpsc::channel::<()>(1);
     let (release_tx, release_rx) = std::sync::mpsc::sync_channel::<()>(1);
-    let gated_store: Arc<dyn busbar_kernel::governance::Store> = Arc::new(GatedKeyStore {
+    let gated_store: Arc<dyn busbar_kernel::governance::RecordStore> = Arc::new(GatedKeyStore {
         inner,
         entered: entered_tx,
         release: std::sync::Mutex::new(Some(release_rx)),
@@ -2640,12 +2656,13 @@ async fn test_admin_v1_rotate_idempotency_in_flight_is_not_replayed_as_complete(
     // Slow the SECOND `put_key` call (the rotate's write) so a concurrent second request lands
     // while the first rotation is still in flight; the mint's own `put_key` (the first call) stays
     // fast so key creation itself isn't delayed.
-    let slow_store: Arc<dyn busbar_kernel::governance::Store> = Arc::new(SlowNthPutKeyStore {
-        inner,
-        delay: std::time::Duration::from_millis(500),
-        calls: std::sync::atomic::AtomicUsize::new(0),
-        slow_on_call: 1,
-    });
+    let slow_store: Arc<dyn busbar_kernel::governance::RecordStore> =
+        Arc::new(SlowNthPutKeyStore {
+            inner,
+            delay: std::time::Duration::from_millis(500),
+            calls: std::sync::atomic::AtomicUsize::new(0),
+            slow_on_call: 1,
+        });
     let gov = gov_with_signer(slow_store, Some("admintok".to_string()));
     let app = crate::new_test_app().governance(gov).build();
     let router = crate::build_router(app);
@@ -6245,57 +6262,69 @@ impl CountingStore {
             .store(0, std::sync::atomic::Ordering::SeqCst);
     }
 }
-impl busbar_kernel::governance::Store for CountingStore {
-    fn put_key(&self, key: &busbar_api::VirtualKey) -> busbar_kernel::governance::StoreResult<()> {
+impl busbar_kernel::governance::RecordStore for CountingStore {
+    fn put_key(
+        &self,
+        key: &busbar_contract::records::VirtualKey,
+    ) -> busbar_kernel::governance::RecordStoreResult<()> {
         self.inner.put_key(key)
     }
     fn get_key(
         &self,
         id: &str,
-    ) -> busbar_kernel::governance::StoreResult<Option<busbar_api::VirtualKey>> {
+    ) -> busbar_kernel::governance::RecordStoreResult<Option<busbar_contract::records::VirtualKey>>
+    {
         self.get_key_calls
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         self.inner.get_key(id)
     }
-    fn list_keys(&self) -> busbar_kernel::governance::StoreResult<Vec<busbar_api::VirtualKey>> {
+    fn list_keys(
+        &self,
+    ) -> busbar_kernel::governance::RecordStoreResult<Vec<busbar_contract::records::VirtualKey>>
+    {
         self.list_keys_calls
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         self.inner.list_keys()
     }
-    fn delete_key(&self, id: &str) -> busbar_kernel::governance::StoreResult<()> {
+    fn delete_key(&self, id: &str) -> busbar_kernel::governance::RecordStoreResult<()> {
         self.inner.delete_key(id)
     }
     fn get_usage(
         &self,
         bucket_id: &str,
         window_start: u64,
-    ) -> busbar_kernel::governance::StoreResult<busbar_api::UsageLedger> {
+    ) -> busbar_kernel::governance::RecordStoreResult<busbar_contract::records::UsageLedger> {
         self.inner.get_usage(bucket_id, window_start)
     }
     fn put_usage(
         &self,
         bucket_id: &str,
         window_start: u64,
-        ledger: &busbar_api::UsageLedger,
-    ) -> busbar_kernel::governance::StoreResult<()> {
+        ledger: &busbar_contract::records::UsageLedger,
+    ) -> busbar_kernel::governance::RecordStoreResult<()> {
         self.inner.put_usage(bucket_id, window_start, ledger)
     }
     fn add_metering(
         &self,
         delta: &busbar_kernel::governance::MeteringDelta,
-    ) -> busbar_kernel::governance::StoreResult<()> {
+    ) -> busbar_kernel::governance::RecordStoreResult<()> {
         self.inner.add_metering(delta)
     }
     fn list_metering(
         &self,
         bucket: u64,
-    ) -> busbar_kernel::governance::StoreResult<Vec<busbar_kernel::governance::MeteringRow>> {
+    ) -> busbar_kernel::governance::RecordStoreResult<Vec<busbar_kernel::governance::MeteringRow>>
+    {
         self.inner.list_metering(bucket)
     }
-    fn add_denylist(&self, sub: &str, reason: &str) -> busbar_kernel::governance::StoreResult<()> {
+    fn add_denylist(
+        &self,
+        sub: &str,
+        reason: &str,
+    ) -> busbar_kernel::governance::RecordStoreResult<()> {
         self.inner.add_denylist(sub, reason)
     }
-    fn list_denylist(&self) -> busbar_kernel::governance::StoreResult<Vec<String>> {
+    fn list_denylist(&self) -> busbar_kernel::governance::RecordStoreResult<Vec<String>> {
         self.inner.list_denylist()
     }
 }
@@ -6708,11 +6737,11 @@ struct BarrierStore {
     release: std::sync::Mutex<std::sync::mpsc::Receiver<()>>,
 }
 
-impl busbar_kernel::governance::Store for BarrierStore {
+impl busbar_kernel::governance::RecordStore for BarrierStore {
     fn put_key(
         &self,
         key: &busbar_kernel::governance::VirtualKey,
-    ) -> busbar_kernel::governance::StoreResult<()> {
+    ) -> busbar_kernel::governance::RecordStoreResult<()> {
         // Disarm atomically so only the first put after arming pauses (and never the setup put).
         if self.armed.swap(false, std::sync::atomic::Ordering::SeqCst) {
             let _ = self.entered.send(());
@@ -6724,51 +6753,58 @@ impl busbar_kernel::governance::Store for BarrierStore {
     fn get_key(
         &self,
         id: &str,
-    ) -> busbar_kernel::governance::StoreResult<Option<busbar_kernel::governance::VirtualKey>> {
+    ) -> busbar_kernel::governance::RecordStoreResult<Option<busbar_kernel::governance::VirtualKey>>
+    {
         self.inner.get_key(id)
     }
     fn list_keys(
         &self,
-    ) -> busbar_kernel::governance::StoreResult<Vec<busbar_kernel::governance::VirtualKey>> {
+    ) -> busbar_kernel::governance::RecordStoreResult<Vec<busbar_kernel::governance::VirtualKey>>
+    {
         self.inner.list_keys()
     }
-    fn delete_key(&self, id: &str) -> busbar_kernel::governance::StoreResult<()> {
+    fn delete_key(&self, id: &str) -> busbar_kernel::governance::RecordStoreResult<()> {
         self.inner.delete_key(id)
     }
     fn get_usage(
         &self,
         bucket_id: &str,
         window_start: u64,
-    ) -> busbar_kernel::governance::StoreResult<busbar_api::UsageLedger> {
+    ) -> busbar_kernel::governance::RecordStoreResult<busbar_contract::records::UsageLedger> {
         self.inner.get_usage(bucket_id, window_start)
     }
     fn put_usage(
         &self,
         bucket_id: &str,
         window_start: u64,
-        ledger: &busbar_api::UsageLedger,
-    ) -> busbar_kernel::governance::StoreResult<()> {
+        ledger: &busbar_contract::records::UsageLedger,
+    ) -> busbar_kernel::governance::RecordStoreResult<()> {
         self.inner.put_usage(bucket_id, window_start, ledger)
     }
     fn add_metering(
         &self,
         delta: &busbar_kernel::governance::MeteringDelta,
-    ) -> busbar_kernel::governance::StoreResult<()> {
+    ) -> busbar_kernel::governance::RecordStoreResult<()> {
         self.inner.add_metering(delta)
     }
     fn list_metering(
         &self,
         bucket: u64,
-    ) -> busbar_kernel::governance::StoreResult<Vec<busbar_kernel::governance::MeteringRow>> {
+    ) -> busbar_kernel::governance::RecordStoreResult<Vec<busbar_kernel::governance::MeteringRow>>
+    {
         self.inner.list_metering(bucket)
     }
     // Forward the denylist (1.5.0): DELETE revokes-then-deletes, so a store double that did not
     // forward add_denylist would make revoke error and abort the delete (the default trait no-op
     // errors) - breaking the resurrection-race tests. Forward to the inner MemoryStore.
-    fn add_denylist(&self, sub: &str, reason: &str) -> busbar_kernel::governance::StoreResult<()> {
+    fn add_denylist(
+        &self,
+        sub: &str,
+        reason: &str,
+    ) -> busbar_kernel::governance::RecordStoreResult<()> {
         self.inner.add_denylist(sub, reason)
     }
-    fn list_denylist(&self) -> busbar_kernel::governance::StoreResult<Vec<String>> {
+    fn list_denylist(&self) -> busbar_kernel::governance::RecordStoreResult<Vec<String>> {
         self.inner.list_denylist()
     }
 }
@@ -11686,7 +11722,7 @@ const KEYS_ERROR_GOLDEN: &str = concat!(
 async fn serve_keys_fixture(
     fixture: KeysFixture,
 ) -> (std::net::SocketAddr, tokio::task::JoinHandle<()>, String) {
-    let store: Arc<dyn busbar_kernel::governance::Store> = Arc::new(MemoryStore::new());
+    let store: Arc<dyn busbar_kernel::governance::RecordStore> = Arc::new(MemoryStore::new());
     let app = match fixture {
         KeysFixture::Signing => {
             let gov = gov_with_signer(store, Some("admintok".to_string()));

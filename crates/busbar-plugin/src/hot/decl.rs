@@ -216,6 +216,24 @@ unsafe impl Send for DeclMetricFamily {}
 // SAFETY: see the `Send` impl above.
 unsafe impl Sync for DeclMetricFamily {}
 
+/// One operation class a plane serves one level down and the display name a refusal naming the
+/// plane reads — borrowed in a list by [`PlaneDecl::served_op_classes_ptr`]. The host answers a
+/// nested destination (which names only a class) with the plane that declares the class here.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct DeclServedOpClass {
+    /// The operation class served.
+    pub op: DeclStr,
+    /// The plane's display name.
+    pub name: DeclStr,
+}
+
+// SAFETY: the same borrowed-range contract as `DeclStr`: both strings point into the plugin image's
+// read-only bytes for its whole life. A plane holds these in `static`s.
+unsafe impl Send for DeclServedOpClass {}
+// SAFETY: see the `Send` impl above.
+unsafe impl Sync for DeclServedOpClass {}
+
 /// The `#[repr(C)]` surface a plane exports for core to drive. Leads with the FROZEN [`AbiPreamble`]
 /// and a sized/versioned header; carries the plane's vocabulary (borrowed name/section-key/scope/
 /// label), the set of ingress carriers it provides, the fn-pointer slots, and — as its tail — the
@@ -324,6 +342,13 @@ pub struct PlaneDecl {
     pub metric_families_ptr: *const DeclMetricFamily,
     /// Number of entries in the metric-families list.
     pub metric_families_len: usize,
+
+    // ── THE OPERATION CLASSES THE PLANE SERVES ONE LEVEL DOWN (appended at minor 27). A decl that
+    //    ends before this tail serves none. ──
+    /// Borrowed list of the operation classes this plane serves to another plane's nested unit.
+    pub served_op_classes_ptr: *const DeclServedOpClass,
+    /// Number of entries in the served-op-classes list.
+    pub served_op_classes_len: usize,
 }
 
 // SAFETY: `PlaneDecl` holds `AbiPreamble` scalars, `Option<extern "C-unwind" fn>` slots — and,
@@ -391,6 +416,8 @@ impl PlaneDecl {
         admission: Some(stub::admission),
         metric_families_ptr: core::ptr::null(),
         metric_families_len: 0,
+        served_op_classes_ptr: core::ptr::null(),
+        served_op_classes_len: 0,
     };
 }
 

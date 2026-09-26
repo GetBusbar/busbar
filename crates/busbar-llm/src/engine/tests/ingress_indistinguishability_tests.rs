@@ -1613,7 +1613,7 @@ async fn test_passthrough_no_caller_token_selects_empty_not_lane_key() {
     // 1.5.3: the credential MODE moved off `auth:` onto the `pools:` section, so the
     // open-front-door chain and the passthrough egress posture are now set independently.
     let app = TestApp::new()
-        .upstream_creds(busbar_api::UpstreamCreds::Passthrough)
+        .upstream_creds(busbar_contract::config::UpstreamCreds::Passthrough)
         .lane(
             LaneSpec::new(
                 "glm-4.5",
@@ -2517,7 +2517,7 @@ async fn test_anthropic_same_proto_passthrough_401_relays_request_id_verbatim_on
     // 1.5.3: the credential MODE moved off `auth:` onto the `pools:` section, so the
     // open-front-door chain and the passthrough egress posture are now set independently.
     let app = TestApp::new()
-        .upstream_creds(busbar_api::UpstreamCreds::Passthrough)
+        .upstream_creds(busbar_contract::config::UpstreamCreds::Passthrough)
         .lane(
             LaneSpec::new(
                 "claude-3",

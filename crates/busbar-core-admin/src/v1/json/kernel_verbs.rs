@@ -3,8 +3,8 @@
 
 //! THE 1.6.0 KERNEL VERBS, IN THE ONE DOCUMENT.
 //!
-//! The closed verb table (`admin_codec::verbs`) declares 26 operations 1.6.0 adds to the
-//! administrative surface: the 13 money-governance verbs ([`NEW_VERBS`]), the five ledger views
+//! The closed verb table (`admin_codec::verbs`) declares 17 operations 1.6.0 adds to the
+//! administrative surface: the 9 money-governance verbs ([`NEW_VERBS`]), the five ledger views
 //! ([`LEDGER_VERBS`]) and the three audit-chain reads ([`AUDIT_VERBS`]). The router in this crate
 //! mounts none of them. The node's administrative mount walks every row the table declares whose
 //! effect is bound through the kernel loop, and it is the composition root's route step that answers them — the ledger and
@@ -18,7 +18,7 @@
 //! verb's contract below is what the root's code does — its request shape, its success body and
 //! the statuses its refusals map to (`units_admin::answer_for`) — never what a design once intended.
 //!
-//! THIRTEEN OF THE EIGHTEEN MONEY-GOVERNANCE VERBS HAVE NO EFFECT BOUND IN THIS BUILD
+//! FOUR OF THE NINE MONEY-GOVERNANCE VERBS HAVE NO EFFECT BOUND IN THIS BUILD
 //! (`crate::verb::effect_bound`). They are not served — the node's mount hands them to the
 //! surface's own fallback, which answers the unmounted `404` — so this document does not describe
 //! them either: [`operations`] asks the same one question the mount asks.

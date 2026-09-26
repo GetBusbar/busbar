@@ -504,7 +504,7 @@ pub const COUNT_READ_ROOTS: &[CountRoot] = &[
     },
     CountRoot {
         area: "the loader and the store seam",
-        homes: &["crates/plugin-loader/src", "crates/api/src"],
+        homes: &["crates/plugin-loader/src"],
         floor: 18,
     },
     CountRoot {
@@ -709,7 +709,6 @@ pub const ALLOWED_COUNT_READS: &[Allow] = &[
 /// hits in the contract's `records.rs`). Nothing this list used to see is unseen now.
 const PERSISTED_RECORD_HOMES: &[&str] = &[
     "crates/busbar-contract/src/records.rs",
-    "crates/api/src/usage_migration.rs",
     "crates/plugin-loader/src/legacy_usage.rs",
 ];
 

@@ -26,14 +26,14 @@ use crate::diagnostics::{diag_debug, SELF_SUBJECT_UNSAFE};
 use crate::governance::GovState;
 
 /// One issued self-serve key. The `secret` is the full busbar token (shown to the caller once); it is
-/// held as [`Redacted`](busbar_api::Redacted) so the struct's derived `Debug` cannot leak a LIVE
+/// held as [`Redacted`](busbar_contract::redacted::Redacted) so the struct's derived `Debug` cannot leak a LIVE
 /// bearer token into a log/`tracing`/panic line — the value escapes only through the explicit
 /// `.expose_secret()` audit points (the once-shown mint response). `key_id` is its stable subject id
 /// (`vk_...`) and IS the safe-to-log identity; `group` the `user:<sub>` budget bucket, `exp` the
 /// Unix-secs expiry.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct IssuedKey {
-    pub(crate) secret: busbar_api::Redacted<String>,
+    pub(crate) secret: busbar_contract::redacted::Redacted<String>,
     pub(crate) key_id: String,
     pub(crate) group: String,
     pub(crate) exp: u64,
@@ -143,7 +143,7 @@ impl SelfServeKeys for DeterministicEd25519Keys {
         .await
         .map_err(|e| e.to_string())?;
         Ok(IssuedKey {
-            secret: busbar_api::Redacted::new(token),
+            secret: busbar_contract::redacted::Redacted::new(token),
             key_id: binding.id,
             group: binding.group.unwrap_or_default(),
             exp,
@@ -170,7 +170,7 @@ impl SelfServeKeys for DeterministicEd25519Keys {
         .await
         .map_err(|e| e.to_string())?;
         Ok(IssuedKey {
-            secret: busbar_api::Redacted::new(token),
+            secret: busbar_contract::redacted::Redacted::new(token),
             key_id: binding.id,
             group: binding.group.unwrap_or_default(),
             exp,

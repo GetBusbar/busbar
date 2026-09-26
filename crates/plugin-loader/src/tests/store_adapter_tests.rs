@@ -814,34 +814,55 @@ fn a_round_trip_through_the_published_store() {
 #[derive(Default)]
 struct NoRows;
 
-impl busbar_api::Store for NoRows {
-    fn put_key(&self, _key: &busbar_api::VirtualKey) -> busbar_api::StoreResult<()> {
+impl busbar_contract::records::RecordStore for NoRows {
+    fn put_key(
+        &self,
+        _key: &busbar_contract::records::VirtualKey,
+    ) -> busbar_contract::records::RecordStoreResult<()> {
         Ok(())
     }
-    fn get_key(&self, _id: &str) -> busbar_api::StoreResult<Option<busbar_api::VirtualKey>> {
+    fn get_key(
+        &self,
+        _id: &str,
+    ) -> busbar_contract::records::RecordStoreResult<Option<busbar_contract::records::VirtualKey>>
+    {
         Ok(None)
     }
-    fn list_keys(&self) -> busbar_api::StoreResult<Vec<busbar_api::VirtualKey>> {
+    fn list_keys(
+        &self,
+    ) -> busbar_contract::records::RecordStoreResult<Vec<busbar_contract::records::VirtualKey>>
+    {
         Ok(Vec::new())
     }
-    fn delete_key(&self, _id: &str) -> busbar_api::StoreResult<()> {
+    fn delete_key(&self, _id: &str) -> busbar_contract::records::RecordStoreResult<()> {
         Ok(())
     }
-    fn get_usage(&self, _b: &str, _w: u64) -> busbar_api::StoreResult<busbar_api::UsageLedger> {
-        Ok(busbar_api::UsageLedger::default())
+    fn get_usage(
+        &self,
+        _b: &str,
+        _w: u64,
+    ) -> busbar_contract::records::RecordStoreResult<busbar_contract::records::UsageLedger> {
+        Ok(busbar_contract::records::UsageLedger::default())
     }
     fn put_usage(
         &self,
         _b: &str,
         _w: u64,
-        _l: &busbar_api::UsageLedger,
-    ) -> busbar_api::StoreResult<()> {
+        _l: &busbar_contract::records::UsageLedger,
+    ) -> busbar_contract::records::RecordStoreResult<()> {
         Ok(())
     }
-    fn add_metering(&self, _d: &busbar_api::MeteringDelta) -> busbar_api::StoreResult<()> {
+    fn add_metering(
+        &self,
+        _d: &busbar_contract::records::MeteringDelta,
+    ) -> busbar_contract::records::RecordStoreResult<()> {
         Ok(())
     }
-    fn list_metering(&self, _b: u64) -> busbar_api::StoreResult<Vec<busbar_api::MeteringRow>> {
+    fn list_metering(
+        &self,
+        _b: u64,
+    ) -> busbar_contract::records::RecordStoreResult<Vec<busbar_contract::records::MeteringRow>>
+    {
         Ok(Vec::new())
     }
 }

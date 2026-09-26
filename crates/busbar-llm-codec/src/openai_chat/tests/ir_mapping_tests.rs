@@ -19,7 +19,7 @@ fn xreq(ingress: &'static str, egress: &str, body: &Value) -> Value {
         .expect("ingress body reads");
     crate::chat_handle::chat_prepare_for_egress(
         &mut req,
-        &busbar_substrate_values::ir::egress_prep::EgressPrep {
+        &busbar_contract::ir::egress_prep::EgressPrep {
             thought_signature_fill: false,
             ingress_protocol: ingress,
             egress_requires_max_tokens: egress_p.decl().is_some_and(|d| d.requires_max_tokens),

@@ -97,6 +97,7 @@ pub const PLANE_DECLARATION: busbar_contract::plane::PlaneDeclaration =
         // opens no session account, so `agents.fees.per_session` would charge nothing — refused.
         fee_units: &[PER_REQUEST],
         metric_families: &[],
+        served_op_classes: &[],
     };
 
 /// THE PLANE'S BEHAVIOUR — every hook the kernel runs for it, handed over BESIDE

@@ -23,11 +23,34 @@
 
 use serde_yaml::{Mapping, Value};
 
+/// The 1.5.x store-module text this migration and its refusals print, read from the ONE data table
+/// `data/legacy_store_modules.toml` (ruling F-D): frozen text naming store backends no crate in this
+/// tree declares, each row citing the v1.5.5 line it is verbatim from. Among them `gov14_db_path`,
 /// 1.4.x's real default `governance.db_path` (`DEFAULT_GOVERNANCE_DB` in the retired v1.4.1
-/// schema) -- what an operator's SQLite governance database is really at when they never set
-/// `db_path` explicitly. Migration must reproduce this exact default, not a 1.5.0-side one, so a
-/// config that omitted `db_path` still finds its real, existing database file after migration.
-const DEFAULT_GOVERNANCE_DB_1_4: &str = "busbar-governance.db";
+/// schema): migration reproduces that exact default, so a config that omitted `db_path` still finds
+/// its real, existing database file after migration. A key the table lacks is a build defect.
+pub fn legacy_store_text(key: &str) -> &'static str {
+    let table = include_str!("../../data/legacy_store_modules.toml");
+    let rows = table.lines().filter_map(|l| l.strip_prefix(key));
+    let mut values = rows.filter_map(|r| r.strip_prefix(" = \"")?.strip_suffix('"'));
+    values.next().expect("a legacy_store_modules.toml row")
+}
+
+/// The 1.5.3 store-plugin RENAME: is `module` a retired `store.module:` spelling of the first-party
+/// store plugin (the `retired_modules` row)? The plugin was renamed wholesale — repo, crate, artifact,
+/// manifest `name` and config `alias` (the `renamed_*` rows) — so NONE of these resolve against the
+/// renamed manifest.
+///
+/// Unlike the other retirement tables this one is keyed on a VALUE, not a field name, so serde never
+/// sees it: `store.module` is a plain `String` and any spelling parses. The loud-fail therefore has
+/// to come from `detect_legacy_markers` (which this row drives, together with
+/// `migrate_store_module`'s mechanical rewrite, so the two cannot drift) — without it the operator
+/// gets the loader's generic "does not match any plugin", which names neither the rename nor the fix.
+pub fn is_retired_store_module(module: &str) -> bool {
+    legacy_store_text("retired_modules")
+        .split(' ')
+        .any(|m| m == module)
+}
 
 /// The named boot error for a detected 1.x config. Every marker is listed so the operator
 /// sees the full scope before running the migrator.
@@ -257,19 +280,20 @@ pub(crate) fn detect_legacy_markers(doc: &Value) -> Vec<String> {
     // asked for simply does not exist and boot dies on the loader's generic "does not match any
     // plugin", which names neither the rename nor the fix. Caught HERE instead, with the named
     // marker + the migrate breadcrumb. Driven by the SHARED
-    // `crate::config::RETIRED_STORE_MODULES_1_5_3` table so this marker and `migrate_store_module`'s
+    // `is_retired_store_module` row so this marker and `migrate_store_module`'s
     // rewrite cannot drift over WHICH spellings are retired.
     if let Some(store) = get(root, "store").and_then(|v| v.as_mapping().cloned()) {
         if let Some(module) = get(&store, "module").and_then(|v| v.as_str().map(str::to_string)) {
-            if crate::config::RETIRED_STORE_MODULES_1_5_3.contains(&module.as_str()) {
+            if is_retired_store_module(&module) {
                 markers.push(format!(
                     "`store.module: {module}` (RENAMED 1.5.3 → `{}`; the first-party store plugin \
-                     is Valkey — artifact `{}-<ver>-<target>.tar.gz`, manifest name `{}`. The old \
+                     is {} — artifact `{}-<ver>-<target>.tar.gz`, manifest name `{}`. The old \
                      name/alias resolve against NOTHING, so this would fail at boot with a generic \
                      unresolved-plugin error; run `busbar --migrate-config`)",
-                    crate::config::RENAMED_STORE_MODULE_1_5_3,
-                    crate::config::RENAMED_STORE_ASSET_STEM_1_5_3,
-                    crate::config::RENAMED_STORE_MANIFEST_NAME_1_5_3,
+                    legacy_store_text("renamed_module"),
+                    legacy_store_text("renamed_display"),
+                    legacy_store_text("renamed_asset_stem"),
+                    legacy_store_text("renamed_manifest_name"),
                 ));
             }
         }
@@ -902,33 +926,31 @@ fn migrate_governance(root: &mut Mapping, changes: &mut Vec<String>, todos: &mut
     // returned early if absent) with 1.4.x's real, always-SQLite semantics is what must drive this.
     let stray_module = take(&mut gov, "store").and_then(|v| v.as_str().map(str::to_string));
     let db_path = take(&mut gov, "db_path").and_then(|v| v.as_str().map(str::to_string));
-    let module = stray_module.unwrap_or_else(|| "sqlite".to_string());
+    let module = stray_module.unwrap_or_else(|| legacy_store_text("gov14_module").into());
     {
         let mut store = Mapping::new();
         store.insert("module".into(), module.clone().into());
         let mut settings = Mapping::new();
         match (module.as_str(), db_path) {
             ("memory", _) => {}
-            ("sqlite", Some(p)) => {
-                settings.insert("db_path".into(), p.into());
-            }
             // No explicit db_path: 1.4.x's real default was "busbar-governance.db", not memory.
-            ("sqlite", None) => {
-                settings.insert("db_path".into(), DEFAULT_GOVERNANCE_DB_1_4.into());
+            (m, p) if m == legacy_store_text("gov14_module") => {
+                let p = p.unwrap_or_else(|| legacy_store_text("gov14_db_path").into());
+                settings.insert("db_path".into(), p.into());
             }
             (_, Some(p)) => {
                 settings.insert("url".into(), p.into());
             }
             (_, None) => {}
         }
-        if let Some(busy) = take(&mut gov, "sqlite_busy_timeout_ms") {
+        if let Some(busy) = take(&mut gov, legacy_store_text("gov14_busy_timeout_key")) {
             settings.insert("busy_timeout_ms".into(), busy);
         }
         if !settings.is_empty() {
             store.insert("settings".into(), Value::Mapping(settings));
         }
         root.insert("store".into(), Value::Mapping(store));
-        changes.push("governance.db_path -> store: { module: sqlite, settings: { db_path } } (1.4.x's only durable backend was SQLite)".into());
+        changes.push(legacy_store_text("gov14_change").into());
     }
 
     if let Some(card) = take(&mut gov, "rate_card") {
@@ -2226,7 +2248,7 @@ fn migrate_pools_upstream_credentials(root: &mut Mapping, changes: &mut Vec<Stri
 /// its current alias. The plugin was renamed WHOLESALE (repo, crate, artifact, manifest
 /// `name`, config `alias`), so `redis` / `busbar-store-redis` / `busbar-store-redis-plugin` match
 /// nothing in the renamed artifact's manifest and the store the operator asked for is simply gone.
-/// Driven by the SHARED [`crate::config::RETIRED_STORE_MODULES_1_5_3`] table, so this rewrite and
+/// Driven by the SHARED [`is_retired_store_module`] row, so this rewrite and
 /// [`detect_legacy_markers`]'s loud-fail cannot disagree about which spellings are retired.
 ///
 /// The `settings:` bag rides through VERBATIM. The connection URL's `redis://` / `rediss://` scheme
@@ -2248,25 +2270,21 @@ fn migrate_store_module(root: &mut Mapping, changes: &mut Vec<String>, todos: &m
         Taken::Got(m) => m,
         Taken::Absent | Taken::Malformed => return,
     };
-    let retired = store
-        .get(Value::from("module"))
-        .and_then(|v| v.as_str())
-        .filter(|m| crate::config::RETIRED_STORE_MODULES_1_5_3.contains(m))
-        .map(str::to_string);
-    if let Some(old) = retired {
-        store.insert(
-            "module".into(),
-            Value::from(crate::config::RENAMED_STORE_MODULE_1_5_3),
-        );
+    let module = store.get("module").and_then(Value::as_str);
+    let retired = module.filter(|m| is_retired_store_module(m));
+    if let Some(old) = retired.map(str::to_string) {
+        let renamed = legacy_store_text("renamed_module");
+        store.insert("module".into(), renamed.into());
         changes.push(format!(
             "store.module: {old} -> {} (the first-party store plugin for this backend was RENAMED \
              in 1.5.3: artifact `{}-<ver>-<target>.tar.gz`, manifest name `{}`. Install the \
              renamed tarball — the old one no longer answers to any name in this config. Your \
-             `settings.url` is UNCHANGED: `redis://` is the driver's own URL scheme, not a busbar \
+             `settings.url` is UNCHANGED: `{}://` is the driver's own URL scheme, not a busbar \
              name.)",
-            crate::config::RENAMED_STORE_MODULE_1_5_3,
-            crate::config::RENAMED_STORE_ASSET_STEM_1_5_3,
-            crate::config::RENAMED_STORE_MANIFEST_NAME_1_5_3,
+            legacy_store_text("renamed_module"),
+            legacy_store_text("renamed_asset_stem"),
+            legacy_store_text("renamed_manifest_name"),
+            legacy_store_text("retired_url_scheme"),
         ));
     }
     // Unconditional: `take_mapping` already REMOVED the block above, so every path out of this

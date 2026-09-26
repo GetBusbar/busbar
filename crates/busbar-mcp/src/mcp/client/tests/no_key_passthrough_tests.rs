@@ -27,7 +27,7 @@ use crate::mcp::client::egress::{
 };
 use crate::mcp::client::jsonrpc::{tools_call, tools_list, OutboundRequest};
 use crate::mcp::client::support::{key_wildcard, sid, tkey};
-use busbar_api::Redacted;
+use busbar_contract::redacted::Redacted;
 
 /// The caller's busbar key. Distinctive enough that a substring match cannot be a coincidence.
 const BUSBAR_KEY: &str = "bb-sk-CALLER-BUSBAR-KEY-MUST-NEVER-LEAVE-1234567890";

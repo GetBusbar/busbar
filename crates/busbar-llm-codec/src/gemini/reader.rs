@@ -12,10 +12,7 @@ impl ProtocolReader for GeminiReader {
         Some(map_gemini_finish_reason(token))
     }
 
-    fn recover_truncated_usage(
-        &self,
-        tail: &[u8],
-    ) -> Option<busbar_substrate_values::billing::TokenUsage> {
+    fn recover_truncated_usage(&self, tail: &[u8]) -> Option<busbar_contract::billing::TokenUsage> {
         let v = super::super::usage_tail::isolate_tail_usage_object(tail, b"\"usageMetadata\"")?;
         // Every count that reaches the bill is read through `billed`/`billed_opt`: an unreadable
         // one yields NO recovered usage, never a zero one (#42), and the caller then bills its
@@ -67,10 +64,10 @@ impl ProtocolReader for GeminiReader {
         &self,
         status: StatusCode,
         body: &[u8],
-    ) -> busbar_substrate_values::breaker::RawUpstreamError {
+    ) -> busbar_contract::upstream::RawUpstreamError {
         // Parse the body once; both `provider_code` and `structured_type` are derived from the
         // same parsed value to avoid deserializing the JSON twice on every error response.
-        let json = busbar_substrate_values::json::parse::<serde_json::Value>(body).ok();
+        let json = crate::json::parse::<serde_json::Value>(body).ok();
         let error_obj = json
             .as_ref()
             .and_then(|j| j.get("error"))
@@ -136,7 +133,7 @@ impl ProtocolReader for GeminiReader {
                     || (lower.contains("exceeds the maximum")
                         && (lower.contains("token") || lower.contains("context")))
                 {
-                    Some(busbar_substrate_values::proxy::PROVIDER_CODE_CONTEXT_LENGTH.to_string())
+                    Some(busbar_contract::protocol::PROVIDER_CODE_CONTEXT_LENGTH.to_string())
                 } else {
                     provider_code
                 }
@@ -229,7 +226,7 @@ impl ProtocolReader for GeminiReader {
             }
         };
 
-        busbar_substrate_values::breaker::RawUpstreamError {
+        busbar_contract::upstream::RawUpstreamError {
             http_status,
             provider_code,
             structured_type,
@@ -249,7 +246,7 @@ impl ProtocolReader for GeminiReader {
             return CanonicalSignal {
                 class: StatusClass::ContextLength,
                 provider_signal: Some(
-                    busbar_substrate_values::proxy::PROVIDER_CODE_CONTEXT_LENGTH.to_string(),
+                    busbar_contract::protocol::PROVIDER_CODE_CONTEXT_LENGTH.to_string(),
                 ),
                 retry_after: None,
             };
@@ -301,7 +298,7 @@ impl ProtocolReader for GeminiReader {
     fn read_request(&self, body: &serde_json::Value) -> Result<crate::ir::IrRequest, IrError> {
         let obj = body.as_object().ok_or(IrError {
             class: StatusClass::ClientError,
-            provider_signal: Some(busbar_substrate_values::proto::SIGNAL_IR_PARSE.to_string()),
+            provider_signal: Some(busbar_contract::protocol::SIGNAL_IR_PARSE.to_string()),
             retry_after: None,
         })?;
 
@@ -341,7 +338,7 @@ impl ProtocolReader for GeminiReader {
             // strict openai_chat/cohere readers). ABSENT `contents` stays lenient.
             let contents_arr = contents_val.as_array().ok_or(IrError {
                 class: StatusClass::ClientError,
-                provider_signal: Some(busbar_substrate_values::proto::SIGNAL_IR_PARSE.to_string()),
+                provider_signal: Some(busbar_contract::protocol::SIGNAL_IR_PARSE.to_string()),
                 retry_after: None,
             })?;
             for (turn, content_val) in contents_arr.iter().enumerate() {
@@ -359,7 +356,7 @@ impl ProtocolReader for GeminiReader {
                         return Err(IrError {
                             class: StatusClass::ClientError,
                             provider_signal: Some(
-                                busbar_substrate_values::proto::SIGNAL_IR_PARSE.to_string(),
+                                busbar_contract::protocol::SIGNAL_IR_PARSE.to_string(),
                             ),
                             retry_after: None,
                         })
@@ -377,7 +374,7 @@ impl ProtocolReader for GeminiReader {
                         return Err(IrError {
                             class: StatusClass::ClientError,
                             provider_signal: Some(
-                                busbar_substrate_values::proto::SIGNAL_IR_PARSE.to_string(),
+                                busbar_contract::protocol::SIGNAL_IR_PARSE.to_string(),
                             ),
                             retry_after: None,
                         });
@@ -487,9 +484,8 @@ impl ProtocolReader for GeminiReader {
                                 .cloned()
                                 .unwrap_or(serde_json::Value::Null);
                             // Convert response to string representation for content
-                            let response_text =
-                                busbar_substrate_values::json::to_string(&response_val)
-                                    .unwrap_or_else(|_| "unknown".to_string());
+                            let response_text = crate::json::to_string(&response_val)
+                                .unwrap_or_else(|_| "unknown".to_string());
                             // The result's `tool_use_id` is the id of the call it answers, so a
                             // foreign backend pairs the two (GEM-01): the response's own native `id`
                             // when present (GEM-08), else the positional pairing `GeminiCallLedger`
@@ -811,9 +807,7 @@ impl ProtocolReader for GeminiReader {
     ) -> Vec<IrStreamEvent> {
         let mut out: Vec<IrStreamEvent> = Vec::new();
 
-        if data.as_str() == Some(busbar_substrate_values::proto::SSE_DONE_SENTINEL)
-            || !data.is_object()
-        {
+        if data.as_str() == Some(crate::dialect::SSE_DONE_SENTINEL) || !data.is_object() {
             return out;
         }
 
@@ -840,13 +834,11 @@ impl ProtocolReader for GeminiReader {
                 .and_then(|m| m.as_str())
                 .map(String::from)
                 .or_else(|| status_str.map(String::from));
-            out.push(IrStreamEvent::Error(
-                busbar_substrate_values::proto::IrError {
-                    class,
-                    provider_signal: message,
-                    retry_after: None,
-                },
-            ));
+            out.push(IrStreamEvent::Error(busbar_contract::protocol::IrError {
+                class,
+                provider_signal: message,
+                retry_after: None,
+            }));
             return out;
         }
 
@@ -1200,8 +1192,8 @@ impl ProtocolReader for GeminiReader {
                                     // the `thoughtSignature` Gemini needs on that next turn. Do not
                                     // "fix" this as a gap without re-reading that control flow.
                                     // Emit the whole args as InputJsonDelta (Gemini doesn't stream functionCall)
-                                    let args_str = busbar_substrate_values::json::to_string(&args)
-                                        .unwrap_or_default();
+                                    let args_str =
+                                        crate::json::to_string(&args).unwrap_or_default();
                                     out.push(IrStreamEvent::BlockDelta {
                                         index: ir_idx,
                                         delta: crate::ir::IrDelta::InputJsonDelta(args_str),
@@ -1395,7 +1387,7 @@ impl ProtocolReader for GeminiReader {
                         // Gemini gives no code or message beside the finish token, so classify it
                         // as a TRANSIENT server fault: the lane recovers via cooldown rather than
                         // being permanently penalized.
-                        class: busbar_substrate_values::breaker::StatusClass::ServerError,
+                        class: busbar_contract::upstream::StatusClass::ServerError,
                         provider_signal: Some(finish_reason_val.to_string()),
                         retry_after: None,
                     }));
@@ -1418,7 +1410,7 @@ impl ProtocolReader for GeminiReader {
     fn read_response(&self, body: &serde_json::Value) -> Result<crate::ir::IrResponse, IrError> {
         let obj = body.as_object().ok_or(IrError {
             class: StatusClass::ClientError,
-            provider_signal: Some(busbar_substrate_values::proto::SIGNAL_IR_PARSE.to_string()),
+            provider_signal: Some(busbar_contract::protocol::SIGNAL_IR_PARSE.to_string()),
             retry_after: None,
         })?;
 
@@ -1464,19 +1456,19 @@ impl ProtocolReader for GeminiReader {
         // Parse candidates array - must have at least one
         let candidates_val = obj.get("candidates").ok_or(IrError {
             class: StatusClass::ClientError,
-            provider_signal: Some(busbar_substrate_values::proto::SIGNAL_IR_PARSE.to_string()),
+            provider_signal: Some(busbar_contract::protocol::SIGNAL_IR_PARSE.to_string()),
             retry_after: None,
         })?;
         let candidates = candidates_val.as_array().ok_or(IrError {
             class: StatusClass::ClientError,
-            provider_signal: Some(busbar_substrate_values::proto::SIGNAL_IR_PARSE.to_string()),
+            provider_signal: Some(busbar_contract::protocol::SIGNAL_IR_PARSE.to_string()),
             retry_after: None,
         })?;
 
         if candidates.is_empty() {
             return Err(IrError {
                 class: StatusClass::ClientError,
-                provider_signal: Some(busbar_substrate_values::proto::SIGNAL_IR_PARSE.to_string()),
+                provider_signal: Some(busbar_contract::protocol::SIGNAL_IR_PARSE.to_string()),
                 retry_after: None,
             });
         }

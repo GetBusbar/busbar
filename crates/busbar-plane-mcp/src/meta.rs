@@ -59,16 +59,15 @@ pub const CLASS_TOOL_CALLS: MeterClassId = MeterClassId::new("tool_calls");
 /// The class key the bytes an exchange moved are counted under.
 pub const CLASS_BYTES: MeterClassId = MeterClassId::new("bytes");
 
-/// The plane a sampling request is answered by, one level down.
+/// The operation class a sampling request is answered as, one level down.
 ///
+/// A CLASS, never a plane: this plane names no other plane (#47/#49). The host answers the nested
+/// destination with whichever registered plane declares it serves this class
+/// (`busbar_contract::plane::plane_serving`), and a deployment where none does refuses the ask.
 /// Declared here, once, and not read from configuration: a nested destination is what the VERIFY
 /// step seals and what the ROUTE step then dials, and the two must be the same destination or the
 /// unit routes somewhere it was never verified for. Naming it in one constant is what makes them
 /// the same by construction rather than by two authors agreeing.
-pub const SAMPLING_PLANE: &str = "llm";
-
-/// The operation class a sampling request is answered as on [`SAMPLING_PLANE`]. Half of the same
-/// pair, for the same reason.
 pub const SAMPLING_OP: OpClassId = OpClassId::new("chat");
 
 /// The read-only verb that lists the registered servers.
@@ -134,6 +133,22 @@ const CONFIG_SCHEMA: &str = r#"{
   },
   "required": ["canonical_uri"]
 }"#;
+
+/// The command-line flag that serves this plane on the process's own stdin/stdout instead of a
+/// listener. Operator-facing and frozen (1.6.0 CHANGELOG, `busbar --help`); the plane owns the
+/// spelling (#47/#49) and the composition root reads it from here.
+pub const STDIO_SERVE_FLAG: &str = "--mcp-stdio";
+
+/// This plane's lines in the `Flags:` block of `busbar --help`, byte for byte as the binary has
+/// always printed them (shadow-oracle cells `cli__--help` / `cli__-h`). It opens with
+/// [`STDIO_SERVE_FLAG`] and carries no trailing newline; the root splices it in place.
+pub const HELP_FLAGS: &str =
+    "    --mcp-stdio         serve the MCP plane on THIS PROCESS's stdin/stdout (newline-delimited
+                        JSON-RPC) instead of binding any listener — for an MCP host that runs
+                        busbar as a child process. Requires the `mcp:` block; on a deployment with
+                        a configured `auth.chain`, BUSBAR_MCP_STDIO_CREDENTIAL must carry a
+                        credential the chain admits (audience-bound to mcp.canonical_uri), and the
+                        whole session runs as that key — budgets, audit and hooks apply";
 
 impl PlaneMeta for McpPlane {
     const KEY: &'static str = "mcp";

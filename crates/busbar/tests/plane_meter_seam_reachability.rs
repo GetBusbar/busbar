@@ -185,18 +185,22 @@ fn every_billing_plane_reaches_the_core_meter_seam_in_production() {
 // onto the root. So: every billing plane's leg must reach the ONE usage seam on its Meter step.
 // ---------------------------------------------------------------------------
 
-/// Billing plane crate -> the composition root's leg file that runs it through the Teller loop.
-/// Admin is deliberately absent: `root-admin` answers to ZERO ledger columns in
-/// `qa/capability-equality.json` (an admin request is unpriced), so it is owed no Meter reach and a
-/// row here would be a claim the ledger contradicts.
-fn billing_plane_root_legs() -> &'static [(&'static str, &'static str)] {
-    static LEGS: std::sync::OnceLock<Vec<(&'static str, &'static str)>> =
-        std::sync::OnceLock::new();
+/// Billing plane crate -> the file whose `Units` impl runs it through the Teller loop, as a path under
+/// `crates/`: a `root` row names a leg file under `crates/busbar/src/root/`, and a `unit` row names
+/// the plane's OWN unit file — the `Units` impl its linked entry hands the root's node (the node
+/// drives it; the steps are the plane's). Admin is deliberately absent: `root-admin` answers to ZERO
+/// ledger columns in `qa/capability-equality.json` (an admin request is unpriced), so it is owed no
+/// Meter reach and a row here would be a claim the ledger contradicts.
+fn billing_plane_root_legs() -> &'static [(&'static str, String)] {
+    static LEGS: std::sync::OnceLock<Vec<(&'static str, String)>> = std::sync::OnceLock::new();
     LEGS.get_or_init(|| {
         billing_rows()
             .iter()
-            .filter(|r| r[1] == "root")
-            .map(|r| (r[0], r[2]))
+            .filter_map(|r| match r[1] {
+                "root" => Some((r[0], format!("busbar/src/root/{}", r[2]))),
+                "unit" => Some((r[0], r[2].to_string())),
+                _ => None,
+            })
             .collect()
     })
 }
@@ -251,11 +255,10 @@ fn usage_seam_reaches_in_plane_meter_step(crate_dir: &Path) -> Option<usize> {
 #[test]
 fn every_billing_plane_reaches_the_usage_seam_on_its_teller_meter_step() {
     let root = crates_root();
-    let leg_dir = root.join("busbar").join("src").join("root");
     let mut offenders: Vec<String> = Vec::new();
 
     for (plane, leg) in billing_plane_root_legs() {
-        let leg_path = leg_dir.join(leg);
+        let leg_path = root.join(leg);
         assert!(
             leg_path.is_file(),
             "billing plane `{plane}` names root leg {} , which does not exist — this gate is \

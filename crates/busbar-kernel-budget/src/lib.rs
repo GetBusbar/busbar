@@ -39,6 +39,10 @@
 //! conservative estimate is invisible to a caller, and the reason the door needs no exception in
 //! the parity corpus.
 //!
+//! One owner-ruled exception (Q71(4)): a child whose parent exits while it still runs converts its
+//! accrual to a hold of its own, and that hold is drawn against the slice — so a slice that cannot
+//! back it refuses the child on the budget ([`AdmissionUnit::at_parent_exit`]).
+//!
 //! ## What is deliberately node-local
 //!
 //! The cells are hydrated once at boot and never re-read on the request path. Two nodes sharing a
@@ -246,16 +250,9 @@ impl<'r, S: CellStore> AdmissionUnit<'r, S> {
     /// blocks or refuses.
     #[must_use]
     pub fn headroom_nanos(&self, chain: &BucketChain) -> u64 {
-        match self
-            .door
+        self.door
             .budget_headroom_cents(self.pricer, chain, self.pool, self.now)
-        {
-            None => u64::MAX,
-            Some(cents) => {
-                let cents = u128::try_from(cents.max(0)).unwrap_or(0);
-                u64::try_from(cents.saturating_mul(price::NANOS_PER_CENT)).unwrap_or(u64::MAX)
-            }
-        }
+            .map_or(u64::MAX, cents_to_nanos)
     }
 
     /// Spend against the unit's hold, growing the reservation out of the slice where the slice has
@@ -269,6 +266,47 @@ impl<'r, S: CellStore> AdmissionUnit<'r, S> {
         amount: u64,
     ) -> busbar_contract::caps::Spend {
         hold.spend(amount, self.headroom_nanos(chain))
+    }
+
+    /// Size the hold a child's accrual converts to when its parent exits while it still runs, and
+    /// draw it against the principal's slice — or refuse (owner ruling Q71(4)).
+    ///
+    /// The accrual was spent against a reservation that has gone with the parent, so it becomes a
+    /// hold of the child's own ([`busbar_contract::caps::HoldAccrual::convert_at_parent_exit`]),
+    /// sized at what the child pushed. That hold is drawn synchronously: where the tightest spend
+    /// cap in play has less left than the size, the child is refused on that bucket's budget, with
+    /// the same [`Blocked`] the door's own budget block carries — so it renders through the one
+    /// budget refusal family ("You have exceeded your current quota (group '…' budget per …
+    /// exhausted)…"), and [`AdmissionUnit::blocked`] names the bucket. A chain with no spend cap
+    /// has nothing to refuse on, and the child converts. The refusal is never a downgrade: the
+    /// child is already running on the pool it was admitted through.
+    pub fn at_parent_exit(
+        &mut self,
+        accrual: &busbar_contract::caps::HoldAccrual,
+        chain: &BucketChain,
+    ) -> Result<u64, Refusal> {
+        let sized = accrual.amount();
+        let Some((left, bucket)) =
+            self.door
+                .tightest_budget(self.pricer, chain, self.pool, self.now)
+        else {
+            return Ok(sized);
+        };
+        if sized <= cents_to_nanos(left) {
+            return Ok(sized);
+        }
+        let blocked = Blocked::Limit {
+            group: bucket.group_name.clone().unwrap_or_default(),
+            metric: Metric::Budget,
+            window: Some(bucket.window),
+            pool: bucket.scope.clone(),
+            downgrade_to: None,
+            retry_after: window_end(bucket.window, self.now)
+                .map(|end| end.saturating_sub(self.now).max(1)),
+        };
+        let refusal = refusal_for(&blocked);
+        self.blocked = Some(blocked);
+        Err(refusal)
     }
 
     /// Refund the fee for a request that produced no usable result. The request slot stays
@@ -343,6 +381,12 @@ impl<S: CellStore> Admission for AdmissionUnit<'_, S> {
             }
         }
     }
+}
+
+/// Whole cents of headroom as nano-units; a negative figure is no headroom at all.
+fn cents_to_nanos(cents: i64) -> u64 {
+    let cents = u128::try_from(cents.max(0)).unwrap_or(0);
+    u64::try_from(cents.saturating_mul(price::NANOS_PER_CENT)).unwrap_or(u64::MAX)
 }
 
 /// Turn a blocking bucket into the closed refusal the journal records.

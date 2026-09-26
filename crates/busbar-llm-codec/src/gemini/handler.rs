@@ -7,13 +7,12 @@ use crate::ir::audio::{SpeechResp, TranscriptionResp};
 use crate::ir::embeddings::{
     EmbInput, EmbeddingItem, EmbeddingsReq, EmbeddingsResp, EncFmt, VectorData,
 };
-use busbar_api::operation::Operation;
-use busbar_substrate_values::handlers::{
-    CodecError, IngressReject, OperationHandler, RequestHandler,
-};
-use busbar_substrate_values::ir::handle::IrHandle;
-use busbar_substrate_values::media::{base64_encode, MediaBlob, MediaPayload};
-use busbar_substrate_values::wire::{EgressCtx, SlabBytes, WireBody};
+use busbar_contract::codec::{CodecError, IngressReject, OperationHandler, RequestHandler};
+use busbar_contract::codec::{EgressCtx, WireBody};
+use busbar_contract::ir::handle::IrHandle;
+use busbar_contract::media::{base64_encode, MediaBlob, MediaPayload};
+use busbar_contract::operation::OpVerb;
+use busbar_contract::SlabBytes;
 use bytes::Bytes;
 use serde_json::{json, Value};
 
@@ -29,28 +28,28 @@ static SPEECH: GeminiSpeech = GeminiSpeech;
 
 /// GEMINI'S ROW OF THE SUPPORT MATRIX — the verbs this protocol speaks, as data. A verb absent from
 /// it is the standard no-handler 404: Gemini has no moderation/rerank surface.
-static CELLS: &[busbar_substrate_values::handlers::Cell] = &[
-    (Operation::CHAT, &CHAT),
-    (Operation::EMBEDDINGS, &EMB),
-    (Operation::IMAGE, &IMG),
-    (Operation::TRANSCRIPTION, &TRANSCRIPTION),
-    (Operation::SPEECH, &SPEECH),
+static CELLS: &[busbar_contract::codec::Cell] = &[
+    (OpVerb::CHAT, &CHAT),
+    (OpVerb::EMBEDDINGS, &EMB),
+    (OpVerb::IMAGE, &IMG),
+    (OpVerb::TRANSCRIPTION, &TRANSCRIPTION),
+    (OpVerb::SPEECH, &SPEECH),
 ];
 
 /// The `:verb` suffix each verb's egress URL ends in — this protocol's own vocabulary, keyed by
 /// this protocol's own verb constants. The three that ride `generateContent` are absent because
 /// that is the fallback below; the two stream-aware ones are decided there too.
-static ACTIONS: &[(Operation, &str)] = &[
-    (Operation::EMBEDDINGS, "embedContent"),
-    (Operation::IMAGE, "predict"),
+static ACTIONS: &[(OpVerb, &str)] = &[
+    (OpVerb::EMBEDDINGS, "embedContent"),
+    (OpVerb::IMAGE, "predict"),
 ];
 
 impl RequestHandler for GeminiRequestHandler {
     fn protocol_name(&self) -> &'static str {
         "gemini"
     }
-    fn operation_handler(&self, op: Operation) -> Option<&dyn OperationHandler> {
-        busbar_substrate_values::handlers::cell_of(CELLS, op)
+    fn operation_handler(&self, op: OpVerb) -> Option<&dyn OperationHandler> {
+        busbar_contract::codec::cell_of(CELLS, op)
     }
     fn upstream_path(&self, ctx: &EgressCtx) -> String {
         let m = ctx.model;
@@ -58,7 +57,7 @@ impl RequestHandler for GeminiRequestHandler {
         // override it via `path_base` (e.g. Vertex AI's `/v1/projects/{p}/locations/{l}/publishers/
         // google/models`). The `:verb` suffix and streaming selection are unchanged.
         let base = ctx.path_base.unwrap_or("/v1beta/models");
-        if let Some(action) = busbar_substrate_values::handlers::path_of(ACTIONS, ctx.operation) {
+        if let Some(action) = busbar_contract::codec::path_of(ACTIONS, ctx.operation) {
             return format!("{base}/{m}:{action}");
         }
         // Chat + audio understanding/TTS all ride generateContent (stream-aware). So does every
@@ -72,16 +71,16 @@ impl RequestHandler for GeminiRequestHandler {
         };
         format!("{base}/{m}:{action}")
     }
-    fn resolve_operation(&self, path: &str, body: &[u8]) -> Option<Operation> {
+    fn resolve_operation(&self, path: &str, body: &[u8]) -> Option<OpVerb> {
         // Gemini multiplexes: the ACTION names embeddings/image; `generateContent` serves chat AND
         // audio, split by BODY — `responseModalities:["AUDIO"]` ⇒ speech, an `inline_data` part with
         // an audio mime ⇒ transcription, an inline IMAGE part is multimodal CHAT. The byte-scan is a
         // cheap pre-filter so plain chat never pays the JSON parse.
         if path.contains(":embedContent") || path.contains(":batchEmbedContents") {
-            return Some(Operation::EMBEDDINGS);
+            return Some(OpVerb::EMBEDDINGS);
         }
         if path.contains(":predict") {
-            return Some(Operation::IMAGE);
+            return Some(OpVerb::IMAGE);
         }
         if !(path.contains(":generateContent") || path.contains(":streamGenerateContent")) {
             return None;
@@ -109,7 +108,7 @@ impl RequestHandler for GeminiRequestHandler {
                     .and_then(Value::as_array)
                     .is_some_and(|m| m.iter().any(|x| x.as_str() == Some("AUDIO")));
                 if audio_out {
-                    return Some(Operation::SPEECH);
+                    return Some(OpVerb::SPEECH);
                 }
                 let audio_in = v
                     .pointer("/contents/0/parts")
@@ -124,11 +123,11 @@ impl RequestHandler for GeminiRequestHandler {
                         })
                     });
                 if audio_in {
-                    return Some(Operation::TRANSCRIPTION);
+                    return Some(OpVerb::TRANSCRIPTION);
                 }
             }
         }
-        Some(Operation::CHAT)
+        Some(OpVerb::CHAT)
     }
     fn path_model(&self, path: &str) -> Option<String> {
         // `/{v1,v1beta}/models/{model}:{action}` — model is the last segment up to the LAST colon.
@@ -149,7 +148,7 @@ impl OperationHandler for GeminiTranscription {
         &self,
         status: u16,
         body: &[u8],
-    ) -> busbar_substrate_values::breaker::RawUpstreamError {
+    ) -> busbar_contract::upstream::RawUpstreamError {
         super::super::proto_codec::protocol_error("gemini", status, body)
     }
     /// gemini `generateContent`-with-audio wire → IR (gemini as INGRESS): `inline_data` part is the
@@ -229,7 +228,7 @@ pub fn write_transcription_response(r: &crate::ir::audio::TranscriptionResp) -> 
         }],
     });
     match &r.usage {
-        Some(busbar_substrate_values::billing::Billing::Tokens(t)) => {
+        Some(busbar_contract::billing::Billing::Tokens(t)) => {
             body["usageMetadata"] = json!({
                 "promptTokenCount": t.input,
                 "candidatesTokenCount": t.output,
@@ -241,10 +240,10 @@ pub fn write_transcription_response(r: &crate::ir::audio::TranscriptionResp) -> 
         // would fabricate tokens and corrupt downstream token pricing. Instead carry the exact
         // seconds through under an explicit duration field so the billable quantity is not dropped
         // on an openai->gemini transcription hop (the closest faithful representation).
-        Some(busbar_substrate_values::billing::Billing::Duration { seconds }) => {
+        Some(busbar_contract::billing::Billing::Duration { seconds }) => {
             // The one render boundary — byte-identical to what this wrote before the quantity
             // became exact (see `billing::duration_seconds_to_wire`).
-            let seconds = busbar_substrate_values::billing::duration_seconds_to_wire(*seconds);
+            let seconds = busbar_contract::billing::duration_seconds_to_wire(*seconds);
             body["usageMetadata"] = json!({ "audioDurationSeconds": seconds });
         }
         _ => {}
@@ -265,7 +264,7 @@ impl OperationHandler for GeminiSpeech {
         &self,
         status: u16,
         body: &[u8],
-    ) -> busbar_substrate_values::breaker::RawUpstreamError {
+    ) -> busbar_contract::upstream::RawUpstreamError {
         super::super::proto_codec::protocol_error("gemini", status, body)
     }
     /// gemini TTS wire → IR (gemini as INGRESS): text part is the input; voice from speechConfig.
@@ -356,7 +355,7 @@ impl OperationHandler for GeminiImage {
         &self,
         status: u16,
         body: &[u8],
-    ) -> busbar_substrate_values::breaker::RawUpstreamError {
+    ) -> busbar_contract::upstream::RawUpstreamError {
         super::super::proto_codec::protocol_error("gemini", status, body)
     }
     // Buffer the same-protocol non-stream 2xx body so the default `extract_usage` can read the
@@ -460,7 +459,7 @@ impl OperationHandler for GeminiEmbeddings {
         &self,
         status: u16,
         body: &[u8],
-    ) -> busbar_substrate_values::breaker::RawUpstreamError {
+    ) -> busbar_contract::upstream::RawUpstreamError {
         super::super::proto_codec::protocol_error("gemini", status, body)
     }
     // Token-metered: buffer the same-protocol non-stream 2xx body so the default
@@ -578,7 +577,7 @@ pub fn read_transcription_request(
                     .and_then(Value::as_str)
                     .unwrap_or_default()
                     .to_string();
-                if busbar_substrate_values::media::base64_decode(&data).is_none() {
+                if busbar_contract::media::base64_decode(&data).is_none() {
                     return Err(IngressReject::BadRequest(
                         "inline_data.data is not valid base64".into(),
                     ));
@@ -649,7 +648,7 @@ pub fn read_transcription_response(
     let usage = v
         .get("usageMetadata")
         .map(
-            |u| -> Result<busbar_substrate_values::billing::Billing, CodecError> {
+            |u| -> Result<busbar_contract::billing::Billing, CodecError> {
                 // The transcription writer emits `audioDurationSeconds` (not a token count) when the
                 // source billing was whisper-1's `Billing::Duration` (an openai->gemini hop). Reading it
                 // back as Duration preserves the billable seconds; forcing Tokens{0,0} — as the old
@@ -660,7 +659,7 @@ pub fn read_transcription_response(
                 // exactness no later conversion can give back. `u.get(..)` would hand back a `Value`
                 // whose number is already a double, so the read goes to the ORIGINAL BYTES by pointer.
                 if u.get("audioDurationSeconds").is_some() {
-                    let seconds = busbar_substrate_values::billing::Count::read_at(
+                    let seconds = busbar_contract::Count::read_at(
                         wire,
                         "/usageMetadata/audioDurationSeconds",
                     )
@@ -668,14 +667,14 @@ pub fn read_transcription_response(
                     .ok_or_else(|| {
                         CodecError::Malformed("audioDurationSeconds: located then lost".to_string())
                     })?;
-                    return Ok(busbar_substrate_values::billing::Billing::Duration { seconds });
+                    return Ok(busbar_contract::billing::Billing::Duration { seconds });
                 }
                 // BILLED COUNTS: absent is zero, UNREADABLE IS A REFUSAL (#81/#42). The old
                 // `.unwrap_or(0)` wrote "no work happened" for a count the provider really sent and
                 // this build could not read, and every money view over that row was then faithfully
                 // wrong with nothing to show for it.
-                Ok(busbar_substrate_values::billing::Billing::Tokens(
-                    busbar_substrate_values::billing::TokenUsage {
+                Ok(busbar_contract::billing::Billing::Tokens(
+                    busbar_contract::billing::TokenUsage {
                         input: crate::usage_count::billed_count(u, "promptTokenCount")
                             .map_err(|e| CodecError::Malformed(e.to_string()))?,
                         output: crate::usage_count::billed_count(u, "candidatesTokenCount")
@@ -780,7 +779,7 @@ pub fn read_speech_response(wire: &[u8]) -> Result<crate::ir::audio::SpeechResp,
             .to_string();
         let pcm = mime
             .contains("pcm")
-            .then_some(busbar_substrate_values::media::PcmParams {
+            .then_some(busbar_contract::media::PcmParams {
                 sample_rate: 24000,
                 channels: 1,
                 bit_depth: 16,
@@ -789,7 +788,7 @@ pub fn read_speech_response(wire: &[u8]) -> Result<crate::ir::audio::SpeechResp,
         // loud here (CodecError) rather than reach the egress writer, where a decode failure
         // would silently become an empty 200 audio body. This is the response-side twin of
         // the ingress inline_data validation.
-        if busbar_substrate_values::media::base64_decode(data).is_none() {
+        if busbar_contract::media::base64_decode(data).is_none() {
             return Err(CodecError::Malformed(
                 "gemini speech inlineData.data is not valid base64".into(),
             ));
@@ -801,7 +800,7 @@ pub fn read_speech_response(wire: &[u8]) -> Result<crate::ir::audio::SpeechResp,
                 pcm,
             }),
             // Mark the synthesis billable so `billing()` is not `None` (see the raw-body arm).
-            usage: Some(busbar_substrate_values::billing::Billing::Flat),
+            usage: Some(busbar_contract::billing::Billing::Flat),
             ..Default::default()
         });
     }
@@ -817,7 +816,7 @@ pub fn read_speech_response(wire: &[u8]) -> Result<crate::ir::audio::SpeechResp,
         // `None` and the request was billed nothing. The true per-character unit needs the request
         // `input` and is resolved at the request seam by `crate::ir::audio::SpeechReq::billing`;
         // this `Flat` marker only records that a request was delivered.
-        usage: Some(busbar_substrate_values::billing::Billing::Flat),
+        usage: Some(busbar_contract::billing::Billing::Flat),
         ..Default::default()
     })
 }
@@ -873,12 +872,12 @@ pub fn read_image_request(
 pub fn read_image_response(wire: &[u8]) -> Result<crate::ir::image::ImageResp, CodecError> {
     let v: Value =
         serde_json::from_slice(wire).map_err(|e| CodecError::Malformed(e.to_string()))?;
-    let images: Vec<busbar_substrate_values::media::ImageOutput> = v
+    let images: Vec<busbar_contract::media::ImageOutput> = v
         .get("predictions")
         .and_then(Value::as_array)
         .map(|arr| {
             arr.iter()
-                .map(|p| busbar_substrate_values::media::ImageOutput {
+                .map(|p| busbar_contract::media::ImageOutput {
                     b64: p
                         .get("bytesBase64Encoded")
                         .and_then(Value::as_str)
@@ -900,10 +899,10 @@ pub fn read_image_response(wire: &[u8]) -> Result<crate::ir::image::ImageResp, C
     let usage = v
         .get("usageMetadata")
         .map(
-            |u| -> Result<busbar_substrate_values::billing::TokenUsage, CodecError> {
+            |u| -> Result<busbar_contract::billing::TokenUsage, CodecError> {
                 // BILLED COUNTS: absent is zero, UNREADABLE IS A REFUSAL (#81/#42) — see
                 // `usage_count::billed_count`.
-                Ok(busbar_substrate_values::billing::TokenUsage {
+                Ok(busbar_contract::billing::TokenUsage {
                     input: crate::usage_count::billed_count(u, "promptTokenCount")
                         .map_err(|e| CodecError::Malformed(e.to_string()))?,
                     output: crate::usage_count::billed_count(u, "candidatesTokenCount")
@@ -1006,7 +1005,7 @@ pub fn read_embeddings_response(
     // count REFUSES rather than reading as "no usage reported".
     let usage = crate::usage_count::billed_count_opt(v.get("usageMetadata"), "promptTokenCount")
         .map_err(|e| CodecError::Malformed(e.to_string()))?
-        .map(|n| busbar_substrate_values::billing::TokenUsage {
+        .map(|n| busbar_contract::billing::TokenUsage {
             input: n,
             ..Default::default()
         });

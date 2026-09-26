@@ -19,8 +19,8 @@ use busbar_kernel::plane::handle_engine::DurableHandleEngine;
 use busbar_kernel::plane_host::EngineHost;
 use std::sync::Arc;
 
-fn key() -> busbar_api::VirtualKey {
-    busbar_api::VirtualKey {
+fn key() -> busbar_contract::records::VirtualKey {
+    busbar_contract::records::VirtualKey {
         id: "vk-voice-session".to_string(),
         name: "voice-session".to_string(),
         ..Default::default()

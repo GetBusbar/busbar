@@ -19,7 +19,7 @@
 mod linked;
 
 use axum::{extract::Extension, http::HeaderMap};
-use busbar_api::{ScopeRef, VirtualKey};
+use busbar_contract::records::{ScopeRef, VirtualKey};
 use busbar_kernel::endpoints::{list_models, list_models_v1beta, stats};
 use busbar_kernel::governance::GovCtx;
 use busbar_kernel::state::{App, CurrentApp};

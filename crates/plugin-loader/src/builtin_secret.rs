@@ -3,13 +3,15 @@
 
 //! BUILT-IN secret resolution: the `env` and `file` modules.
 //!
-//! The SECRET-MODULE contract itself — [`SecretModule`](busbar_contract::secret::SecretModule) and
-//! its error taxonomy — LEFT THIS CRATE for
-//! `busbar_contract::secret` (DECISIONS #83/#84; #35(a)) and is re-exported from `lib.rs` under its
-//! original names (`SecretError` aliases `busbar_contract::secret::SecretModuleError`, de-collided
-//! from `busbar_contract::kinds::SecretError`, #35). What stays here is the machinery — reading the
-//! environment and the filesystem is not a shape (#83(b)) — and the neutral [`SecretResolve`] seam,
-//! which takes the config [`SecretRef`] and moves with it when the fold merges that crate.
+//! The SECRET-MODULE contract itself — [`SecretModule`](busbar_contract::secret::SecretModule), its
+//! error taxonomy and the neutral [`SecretResolve`](busbar_contract::secret::SecretResolve) seam — is
+//! the contract's (`busbar_contract::secret`, DECISIONS #83/#84; #35(a)). What lives here is the
+//! machinery — reading the environment and the filesystem is not a shape (#83(b)) — and it lives in
+//! the loader because the loader is what opens the two built-in secret rows
+//! ([`crate::registry::LinkedEntry::BuiltinSecret`]): a reference naming `env` or `file` resolves
+//! through [`resolve_builtin`] in process, where any other module goes through the image load. Moved
+//! here verbatim when `busbar-api` retired; the engine's `SecretResolver` falls back to these
+//! built-ins by these exact names.
 
 use busbar_contract::secret_ref::{SecretRef, SECRET_MODULE_ENV, SECRET_MODULE_FILE};
 
@@ -187,25 +189,6 @@ fn self_file_path_checked(secret: &SecretRef) -> Result<Option<String>, String> 
                 .to_string(),
         ),
     }
-}
-
-/// The NEUTRAL secret-resolver SEAM an extracted plane names instead of the engine's concrete
-/// `SecretResolver`. A plane only needs to turn a [`SecretRef`] into bytes or a UTF-8 string;
-/// naming this trait — not the core struct — keeps the plane free of an engine dependency. The
-/// engine's `SecretResolver` implements it (delegating to its own resolution), and `EngineHost`
-/// hands the plane an `Arc<dyn SecretResolve>` snapshot.
-///
-/// FAIL-CLOSED, exactly as the underlying resolver: an unknown module, an unset source, or an empty
-/// value is an `Err(String)`, never an empty secret. The error is a neutral `String` — a plane never
-/// sees an engine-only error type across this seam.
-pub trait SecretResolve: Send + Sync {
-    /// Resolve a reference to raw bytes (fail-closed). Some consumers — a raw-file loader, for
-    /// instance — need the untrimmed bytes rather than a string.
-    fn resolve(&self, secret: &SecretRef) -> Result<Vec<u8>, String>;
-
-    /// Resolve a reference to a UTF-8 STRING (trailing newline trimmed; fail-closed on non-UTF-8 or
-    /// empty). Some consumers — a credential-minting path, for instance — need the string form.
-    fn resolve_string(&self, secret: &SecretRef) -> Result<String, String>;
 }
 
 /// Resolve a secret reference to a UTF-8 STRING (trailing newline trimmed - the universal

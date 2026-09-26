@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Unit coverage for [`busbar_substrate_values::ir::facts`] — the properties the projection owes, asserted against IR
+//! Unit coverage for [`busbar_contract::ir::facts`] — the properties the projection owes, asserted against IR
 //! values built by hand so that a failure here names the projection and never a reader.
 //!
 //! The CROSS-implementation coverage (this projection versus the raw-body one it replaces, over a
@@ -369,7 +369,7 @@ fn the_shape_signals_come_from_the_normalized_ir() {
     assert!(!r.shape().has_tools);
     assert!(r.wants_stream());
     assert_eq!(r.end_user(), Some("alice"));
-    assert_eq!(r.verb(), Operation::CHAT);
+    assert_eq!(r.verb(), OpVerb::CHAT);
     assert_eq!(
         r.content(),
         project(&r),

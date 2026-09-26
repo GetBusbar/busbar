@@ -219,7 +219,7 @@ fn openapi_operations_carry_stable_operation_ids() {
     // 94 = those 81 + the 13 of the 26 operations the 1.6.0 closed verb table adds whose effect is
     // bound (5 money-governance verbs, 5 ledger views, 3 audit-chain reads), which the node's
     // administrative loop answers and which the one document describes (items 45/46: no side-car
-    // document). The other 13 declare no bound effect and are not served, so not described.
+    // document). The other 4 declare no bound effect and are not served, so not described.
     assert_eq!(checked, 94, "expected exactly 94 admin operations");
     // Spot-check the exact naming scheme against a few representative paths.
     assert_eq!(

@@ -41,6 +41,7 @@
 //! registry of its own — and shows the two builds diverging. A test that only ever passes cannot tell you what
 //! it is protecting you from.
 
+use super::both_ways::export_fixture;
 use super::*;
 use busbar_plugin::cold::export::{ExportRequest, ExportResponse};
 
@@ -100,9 +101,9 @@ fn script() -> Vec<ExportRequest> {
 /// host needs no edge to the author machinery to run this: the entry point a plugin offers is the
 /// plugin's to publish, on both doors.
 fn run_compiled_in() {
-    let handler = busbar_export_example_plugin::open("{}").expect("compiled-in ctor");
+    let handler = export_fixture::open("{}").expect("compiled-in ctor");
     for req in script() {
-        let envelope = busbar_export_example_plugin::dispatch_compiled_in(handler.as_ref(), req);
+        let envelope = export_fixture::dispatch_compiled_in(handler.as_ref(), req);
         crate::observe::fold(COMPILED_IN, busbar_plugin::cold::kind::EXPORT, &envelope);
     }
 }
@@ -154,7 +155,7 @@ fn example_cdylib() -> Option<std::path::PathBuf> {
     let candidate = (|| {
         let exe = std::env::current_exe().ok()?;
         let profile_dir = exe.parent()?.parent()?;
-        let name = crate::plugin_library_filename("busbar_export_example_plugin");
+        let name = crate::plugin_library_filename(super::both_ways::fixture("export").0);
         [
             profile_dir.join(&name),
             profile_dir.join("deps").join(&name),
@@ -172,8 +173,9 @@ fn example_cdylib() -> Option<std::path::PathBuf> {
     if candidate.is_none() && std::env::var_os("CI").is_some() {
         panic!(
             "the export example plugin cdylib is not built under CI: `cargo test --workspace` must \
-             build busbar_export_example_plugin. Refusing to silently skip design decision #11's \
-             compiled-in vs dropped-in equivalence."
+             build {}. Refusing to silently skip design decision #11's compiled-in vs dropped-in \
+             equivalence.",
+            super::both_ways::fixture("export").0
         );
     }
     candidate
@@ -410,11 +412,11 @@ fn the_pre_envelope_path_loses_a_dropped_in_plugins_counters() {
         Some(staged),
     )
     .expect("wire up the export example plugin");
-    let handler = busbar_export_example_plugin::open("{}").expect("the same constructor");
+    let handler = export_fixture::open("{}").expect("the same constructor");
     *PRE_ENVELOPE_DISPATCH
         .lock()
         .unwrap_or_else(|p| p.into_inner()) = Some(Box::new(move |req| {
-        busbar_export_example_plugin::dispatch_compiled_in(handler.as_ref(), req)
+        export_fixture::dispatch_compiled_in(handler.as_ref(), req)
     }));
     PRE_ENVELOPE_PLUGIN_LOCAL
         .lock()

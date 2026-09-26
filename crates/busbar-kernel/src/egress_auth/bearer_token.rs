@@ -36,9 +36,9 @@ const MIN_SLEEP_SECS: u64 = 30;
 
 /// A minted access token and the wall-clock epoch second it expires at.
 pub(crate) struct CachedToken {
-    /// The minted bearer, held [`busbar_api::Redacted`] so it never leaks via `Debug`/logs and
+    /// The minted bearer, held [`busbar_contract::redacted::Redacted`] so it never leaks via `Debug`/logs and
     /// zeroizes on drop. The pre-built `header` below carries the same bytes for the hot path.
-    pub(crate) token: busbar_api::Redacted<String>,
+    pub(crate) token: busbar_contract::redacted::Redacted<String>,
     pub(crate) expires_at: u64,
     /// The `Authorization: Bearer <token>` header value, pre-built ONCE here (at mint time) rather
     /// than on every `headers_for` call — `headers_for` runs inline on the egress hot path for every
@@ -69,7 +69,7 @@ impl CachedToken {
             }
         };
         Self {
-            token: busbar_api::Redacted::new(token),
+            token: busbar_contract::redacted::Redacted::new(token),
             expires_at,
             header,
         }

@@ -897,6 +897,20 @@ impl Store for MemoryStore {
     }
 }
 
+/// THE LINKED ENTRY (DECISIONS #2 rule (1)): what a build that links this store registers onto the
+/// cold-kind axis — the same row a dropped-in store takes, opened in process. `STORE` is
+/// `(name, ephemeral, open)`: the name `governance.store` selects it by, its statement that what it
+/// holds is lost on restart, and the open handed the row's configuration (this backend reads none).
+pub mod linked {
+    use super::MemoryStore;
+
+    /// An in-process store row's open.
+    pub type Open = fn(&str) -> Result<Box<dyn busbar_contract::records::RecordStore>, String>;
+
+    /// `(name, ephemeral, open)`.
+    pub const STORE: (&str, bool, Open) = ("memory", true, |_| Ok(Box::new(MemoryStore::new())));
+}
+
 #[cfg(test)]
 #[path = "tests/lib_tests.rs"]
 mod tests;

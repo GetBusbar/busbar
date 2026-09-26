@@ -103,7 +103,7 @@ pub trait EngineTablesView {
     /// upstream-credentials render) consult after the plane's runtime relocated out of core. A pure
     /// projection of the plane runtime's `upstream_credentials` field; the empty view returns the
     /// type's default, byte-identical to the always-present-but-empty zero-plane runtime.
-    fn upstream_creds(&self) -> busbar_api::UpstreamCreds;
+    fn upstream_creds(&self) -> busbar_contract::config::UpstreamCreds;
 }
 
 /// THE ZERO-PLANE EMPTY VIEW: a core/substrate-resident [`EngineTablesView`] with zero pools and zero
@@ -145,7 +145,7 @@ impl EngineTablesView for EmptyEngineTablesView {
     fn on_exhausted_fallback(&self, _pool: &str) -> Option<String> {
         None
     }
-    fn upstream_creds(&self) -> busbar_api::UpstreamCreds {
-        busbar_api::UpstreamCreds::default()
+    fn upstream_creds(&self) -> busbar_contract::config::UpstreamCreds {
+        busbar_contract::config::UpstreamCreds::default()
     }
 }

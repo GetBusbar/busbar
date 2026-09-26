@@ -29,7 +29,7 @@ fn genuine_lowercase_busbar_id_still_decodes() {
 }
 
 // An UPPERCASE-hex tail can only come from a client-authored id (`native_for` never emits it).
-// `hex::decode` alone would accept it and mangle the id; the lowercase-hex guard must reject it
+// `crate::hex::decode` alone would accept it and mangle the id; the lowercase-hex guard must reject it
 // (decode => None) so the id passes through VERBATIM. `43616C6C` is the uppercase hex of "Call"
 // (valid UTF-8), which is exactly the collision that would be mis-detected without the guard.
 #[test]

@@ -52,7 +52,7 @@
 //! The artifact must then be prebuilt, and a missing or stale one fails loudly naming the EXACT
 //! command — profile included, derived from where this test binary is actually running.
 
-use busbar_api::Store;
+use busbar_contract::records::RecordStore;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 
@@ -276,7 +276,7 @@ pub fn durable_cfg(tag: &str) -> (PathBuf, String) {
 
 /// Open the plugin over the ABI. Each call is a fresh `dlopen` + `busbar_open` — a restart, or a
 /// second node of a fleet, depending on what the caller is asking about.
-pub fn open_plugin(cfg: &str) -> Arc<dyn Store> {
+pub fn open_plugin(cfg: &str) -> Arc<dyn RecordStore> {
     let path = example_store_cdylib();
     Arc::from(
         busbar_plugin_loader::load_store(&path, cfg)

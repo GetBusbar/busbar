@@ -930,7 +930,7 @@ pub struct McpServerDefCfg {
     /// uniform across planes regardless, so the key is reserved at the section level and an
     /// entry-level value overrides it (SCALAR ⇒ OVERRIDE).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) upstream_credentials: Option<busbar_api::UpstreamCreds>,
+    pub(crate) upstream_credentials: Option<busbar_contract::config::UpstreamCreds>,
     /// Hooks attached to THIS server, by bare name from the top-level `hooks:` map. ADDS to the
     /// section-level `tools.hooks:` list (LIST ⇒ ADDITIVE).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -957,14 +957,14 @@ pub(crate) struct TokenExchangeCfg {
     /// BUSBAR'S OWN token — the SUBJECT of the exchange, never the caller's. A `SecretRef` rather
     /// than an inline string so the value follows the same resolution path (`env` / `file` / a
     /// trusted secret plugin) every other credential on this engine does.
-    pub(crate) subject_token: busbar_api::SecretRef,
+    pub(crate) subject_token: busbar_contract::secret_ref::SecretRef,
     /// RFC 8693 §2.1 `subject_token_type`. Defaulted to an access token, which is what busbar's own
     /// ambient credential is.
     #[serde(default = "default_subject_token_type")]
     pub(crate) subject_token_type: String,
 }
 
-/// `Eq` is asserted rather than derived because [`busbar_api::SecretRef`] derives only
+/// `Eq` is asserted rather than derived because [`busbar_contract::secret_ref::SecretRef`] derives only
 /// `PartialEq`. The relation is still a true equivalence — every field compares structurally and
 /// none of them is a float — and the snapshot types this is embedded in (`ToolsCfg`, `ServerEntry`,
 /// `Catalogue`) require `Eq` so a config apply can be compared for a no-op.
@@ -1050,10 +1050,10 @@ pub(crate) enum ChildEnvValue {
     /// reason: a spawn happens on the dispatch path, which holds no plugin host handle. A
     /// `kind: secret` PLUGIN module here fails the spawn with a named refusal rather than silently
     /// handing the child an empty variable.
-    Secret(busbar_api::SecretRef),
+    Secret(busbar_contract::secret_ref::SecretRef),
 }
 
-/// `Eq` is asserted rather than derived because [`busbar_api::SecretRef`] derives only
+/// `Eq` is asserted rather than derived because [`busbar_contract::secret_ref::SecretRef`] derives only
 /// `PartialEq`. The relation is still a true equivalence — a `String` and a module name plus opaque
 /// JSON settings, none of them a float — and the snapshot types this rides in must be comparable so
 /// a config apply can be recognised as a no-op.
@@ -1066,7 +1066,7 @@ pub struct ToolsCfg {
     /// The ALL-MCP attach list (the reserved `tools.hooks:` key). LIST ⇒ ADDITIVE.
     pub(crate) all_server_hooks: Vec<String>,
     /// The ALL-MCP `upstream_credentials:` default. SCALAR ⇒ OVERRIDE.
-    pub(crate) all_server_upstream_credentials: Option<busbar_api::UpstreamCreds>,
+    pub(crate) all_server_upstream_credentials: Option<busbar_contract::config::UpstreamCreds>,
     /// The registrations. Insertion-ordered, so catalogue construction and every operator-facing
     /// listing are deterministic rather than hash-ordered.
     pub servers: indexmap::IndexMap<String, McpServerDefCfg>,
@@ -1104,7 +1104,7 @@ impl ToolsCfg {
     pub(crate) fn effective_upstream_credentials(
         &self,
         server: &str,
-    ) -> Option<busbar_api::UpstreamCreds> {
+    ) -> Option<busbar_contract::config::UpstreamCreds> {
         self.servers
             .get(server)
             .and_then(|d| d.upstream_credentials)
@@ -1145,11 +1145,11 @@ impl busbar_kernel::plane::config::PlaneCfg for ToolsCfg {
     /// `tools.<name>.env.<var>` a stdio child is handed. Moved here VERBATIM from the core
     /// `config_validate::secret_refs` walk so the exhaustive destructure that forces a
     /// secret/not-secret decision on every new field lives beside the fields it guards.
-    fn secret_refs(&self) -> Vec<(String, &busbar_api::SecretRef)> {
+    fn secret_refs(&self) -> Vec<(String, &busbar_contract::secret_ref::SecretRef)> {
         // EXHAUSTIVE, no `..`: adding a field to `McpServerDefCfg` / `TokenExchangeCfg` fails to build
         // with `E0027 pattern does not mention field` until somebody decides, here, whether it carries
         // a secret. That force used to live in `config_validate::secret_refs`; it moved with the sweep.
-        let mut refs: Vec<(String, &busbar_api::SecretRef)> = Vec::new();
+        let mut refs: Vec<(String, &busbar_contract::secret_ref::SecretRef)> = Vec::new();
         for (name, server) in &self.servers {
             let McpServerDefCfg {
                 token_exchange,
@@ -1761,7 +1761,7 @@ pub fn validate_server(name: &str, def: &McpServerDefCfg) -> Result<(), String> 
         // question, and silently preferring either is how a deputy is created.
         if matches!(
             def.upstream_credentials,
-            Some(busbar_api::UpstreamCreds::Passthrough)
+            Some(busbar_contract::config::UpstreamCreds::Passthrough)
         ) {
             return Err(format!(
                 "{at}: `token_exchange:` mints BUSBAR's own down-scoped credential, and \

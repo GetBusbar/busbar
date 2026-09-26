@@ -11,7 +11,7 @@
 
 mod linked;
 
-use busbar_kernel::operation::Operation;
+use busbar_kernel::operation::OpVerb;
 
 /// Register the real roster in the process registry — idempotent (first-wins).
 fn register_planes() {
@@ -37,7 +37,7 @@ fn no_verb_name_carries_a_plane_key_or_a_protocol_name() {
             .iter()
             .map(|d| d.name),
     );
-    let verbs: Vec<Operation> = Operation::ALL
+    let verbs: Vec<OpVerb> = OpVerb::ALL
         .iter()
         .copied()
         .chain(
@@ -47,7 +47,7 @@ fn no_verb_name_carries_a_plane_key_or_a_protocol_name() {
         )
         .collect();
     assert!(
-        verbs.len() > Operation::ALL.len(),
+        verbs.len() > OpVerb::ALL.len(),
         "the declared verbs folded in: {} verbs",
         verbs.len()
     );

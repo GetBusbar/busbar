@@ -30,7 +30,7 @@ use axum::response::{Html, IntoResponse, Response};
 use base64::Engine as _;
 use indexmap::IndexMap;
 
-use busbar_api::{
+use busbar_contract::auth::{
     AuthPlugin, BeginLogin, CompleteLogin, LoginHttpResponse, LoginOutcome, Principal,
 };
 
@@ -67,10 +67,10 @@ const B64: base64::engine::general_purpose::GeneralPurpose =
 /// logged, never rendered; injected ONLY into a token-exchange hop's `secret_form_field`.
 pub(crate) struct LoginMethod {
     pub(crate) module: Box<dyn AuthPlugin>,
-    /// The resolved confidential-client secret, held [`busbar_api::Redacted`] so it never leaks via
+    /// The resolved confidential-client secret, held [`busbar_contract::redacted::Redacted`] so it never leaks via
     /// `Debug`/logs and zeroizes on drop. CORE-ONLY: exposed only into a token-exchange hop's
     /// `secret_form_field`, never serialized to the plugin, never rendered.
-    pub(crate) client_secret: Option<busbar_api::Redacted<String>>,
+    pub(crate) client_secret: Option<busbar_contract::redacted::Redacted<String>>,
     /// `true` ⇒ this method has a `browser_login` block and renders a button (and accepts `begin`).
     pub(crate) has_button: bool,
     /// The OIDC issuer from the method's opaque settings, used only to infer a button icon/label.
@@ -78,7 +78,7 @@ pub(crate) struct LoginMethod {
     /// The plugin's pure redirect-vs-credential classification, resolved ONCE at build (a
     /// side-effect-free `login_kind` call). Read by `credential_submit` to gate the credential POST to
     /// `Credential` methods only (a redirect method never completes via the form POST).
-    pub(crate) login_kind: busbar_api::LoginKind,
+    pub(crate) login_kind: busbar_contract::auth::LoginKind,
     /// The set of hosts (lowercased) a token-exchange/userinfo hop may target, derived CORE-SIDE from
     /// this method's OPERATOR config (the `issuer` + any absolute-URL settings values like
     /// `api_base`/`token_base`/`authorize_base`). A module-described hop to any host NOT in this set is
@@ -290,7 +290,7 @@ impl LoginMethods {
                                     "identity-providers.{name} browser_login.client_secret: {e}"
                                 )
                             })?;
-                            Some(busbar_api::Redacted::new(secret))
+                            Some(busbar_contract::redacted::Redacted::new(secret))
                         }
                         None => None,
                     };
@@ -494,7 +494,7 @@ async fn callback(
     // in constant time (the state is anti-CSRF secret material minted per login).
     let state_ok = state
         .as_deref()
-        .map(|s| busbar_api::constant_time_eq(s, &cookie.state))
+        .map(|s| busbar_contract::redacted::constant_time_eq(s, &cookie.state))
         .unwrap_or(false);
     if !state_ok {
         return clear_and(security_check_failed());
@@ -569,7 +569,8 @@ async fn callback(
                 if let Some(id_token) = extract_id_token(&body) {
                     match id_token_nonce(&id_token) {
                         // Constant-time compare (the nonce is per-login secret material).
-                        Some(n) if busbar_api::constant_time_eq(&n, &cookie.nonce) => {}
+                        Some(n)
+                            if busbar_contract::redacted::constant_time_eq(&n, &cookie.nonce) => {}
                         _ => {
                             return clear_and(security_check_failed());
                         }
@@ -669,7 +670,7 @@ async fn issue_and_render(
 
 /// `credential_submit`: complete a CREDENTIAL-flow login. Called by the POST `/auth/token` handler
 /// (`exchange`) when a login cookie is present. Validates CSRF (`__state` vs the cookie), builds
-/// [`CompleteLogin`] from the submitted field values (each [`busbar_api::Redacted`]), runs the
+/// [`CompleteLogin`] from the submitted field values (each [`busbar_contract::redacted::Redacted`]), runs the
 /// module's `complete_login` (the plugin verifies the credential itself, e.g. an LDAP bind), and — on
 /// `Identify` — issues through the SAME `issue_and_render` seam. Redirect methods never reach here.
 pub(crate) async fn credential_submit(
@@ -691,7 +692,7 @@ pub(crate) async fn credential_submit(
         .find(|(k, _)| k == FORM_STATE_FIELD)
         .map(|(_, v)| v.as_str())
         .unwrap_or("");
-    if !busbar_api::constant_time_eq(submitted_state, &cookie.state) {
+    if !busbar_contract::redacted::constant_time_eq(submitted_state, &cookie.state) {
         return clear_and(security_check_failed());
     }
     let Some(m) = app
@@ -708,7 +709,7 @@ pub(crate) async fn credential_submit(
         ));
     };
     // Only a Credential method may complete via the form POST.
-    if m.login_kind != busbar_api::LoginKind::Credential {
+    if m.login_kind != busbar_contract::auth::LoginKind::Credential {
         return clear_and(error_page(
             StatusCode::BAD_REQUEST,
             "Sign-in unavailable",
@@ -716,10 +717,10 @@ pub(crate) async fn credential_submit(
         ));
     }
     // Build the submitted map (every field EXCEPT the CSRF token), Redacted the moment it is held.
-    let submitted: Vec<(String, busbar_api::Redacted<String>)> = form
+    let submitted: Vec<(String, busbar_contract::redacted::Redacted<String>)> = form
         .into_iter()
         .filter(|(k, _)| k != FORM_STATE_FIELD)
-        .map(|(k, v)| (k, busbar_api::Redacted::new(v)))
+        .map(|(k, v)| (k, busbar_contract::redacted::Redacted::new(v)))
         .collect();
     let cl = CompleteLogin {
         submitted,
@@ -852,15 +853,15 @@ const FORBIDDEN_HOP_HEADERS: [&str; 3] = ["host", "content-length", "transfer-en
 /// confidential-client) method REQUIRES it; a Credential (LDAP/AD-bind) method must NOT set one (it
 /// has no confidential-client secret to hold). Pure, so it is unit-tested without a plugin registry.
 pub(crate) fn validate_browser_login_secret(
-    login_kind: busbar_api::LoginKind,
+    login_kind: busbar_contract::auth::LoginKind,
     has_secret: bool,
 ) -> Result<(), &'static str> {
     match (login_kind, has_secret) {
-        (busbar_api::LoginKind::Redirect, false) => Err(
+        (busbar_contract::auth::LoginKind::Redirect, false) => Err(
             "a redirect (OAuth) login method requires browser_login.client_secret (it is a \
              confidential client)",
         ),
-        (busbar_api::LoginKind::Credential, true) => Err(
+        (busbar_contract::auth::LoginKind::Credential, true) => Err(
             "a credential login method must not set browser_login.client_secret (it has no \
              confidential-client secret to hold)",
         ),
@@ -955,7 +956,7 @@ fn sanitize_hop_header(
 /// SANITIZED (CR/LF/NUL + hop-control headers rejected).
 async fn execute_hop(
     http: &crate::proxy::EgressClient,
-    hop: &busbar_api::LoginHop,
+    hop: &busbar_contract::auth::LoginHop,
     client_secret: Option<&str>,
     allowed: &std::collections::HashSet<String>,
     timeout: Duration,
@@ -1279,7 +1280,7 @@ fn render_chooser(buttons: &[(String, ProviderBrand)], base_url: &str) -> String
 /// core renders WHATEVER fields the plugin declared, not a hardcoded username/password.
 fn render_login_form(
     method: &str,
-    form: &busbar_api::LoginForm,
+    form: &busbar_contract::auth::LoginForm,
     state: &str,
     base_url: &str,
     refresh: bool,
@@ -1293,8 +1294,8 @@ fn render_login_form(
     let mut fields = String::new();
     for f in &form.fields {
         let input_type = match f.kind {
-            busbar_api::FieldKind::Password => "password",
-            busbar_api::FieldKind::Text => "text",
+            busbar_contract::auth::FieldKind::Password => "password",
+            busbar_contract::auth::FieldKind::Text => "text",
         };
         let required = if f.required { " required" } else { "" };
         fields.push_str(&format!(

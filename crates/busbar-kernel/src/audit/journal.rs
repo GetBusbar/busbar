@@ -62,7 +62,9 @@ use indexmap::IndexMap;
 
 use crate::audit::{verify_chain, Chain, ChainBreak, ChainedRecord};
 use crate::plane::store::{decode, encode, PlaneStore};
-use busbar_api::{PlaneDisposition, PlaneRecord, PlaneSelector, StoreError, StoreResult};
+use busbar_contract::records::{
+    PlaneDisposition, PlaneRecord, PlaneSelector, RecordStoreError, RecordStoreResult,
+};
 
 /// A RECORD A JOURNAL CAN PERSIST. A plane's chained record type implements this to say TWO things
 /// the generic journal cannot know: which neutral store `kind` its rows are tagged with, and how one
@@ -79,7 +81,7 @@ pub(crate) trait JournalRecord: ChainedRecord + Clone + serde::de::DeserializeOw
     /// Build the neutral durable envelope for one sealed record — the exact bytes and sidecar columns
     /// the store persists. Delegates to the plane's own `*_record` helper, so the journal never
     /// encodes a plane row itself.
-    fn to_plane_record(&self) -> StoreResult<PlaneRecord>;
+    fn to_plane_record(&self) -> RecordStoreResult<PlaneRecord>;
 }
 
 /// Why a journal write could not be made durable. ONE variant today: the durable append failed. It is
@@ -88,7 +90,7 @@ pub(crate) trait JournalRecord: ChainedRecord + Clone + serde::de::DeserializeOw
 #[derive(Debug)]
 pub(crate) enum JournalError {
     /// The durable write failed.
-    Store(StoreError),
+    Store(RecordStoreError),
 }
 
 impl std::fmt::Display for JournalError {
@@ -271,7 +273,7 @@ impl<R: ChainedRecord> Journal<R> {
         let records: Vec<R> = bodies
             .iter()
             .map(|body| decode(body))
-            .collect::<StoreResult<_>>()
+            .collect::<RecordStoreResult<_>>()
             .map_err(JournalError::Store)?;
         // A break here is TAMPER EVIDENCE surfaced at RUNTIME: this scope was evicted from the LRU and
         // its persisted tail, read back to resume, no longer verifies. Resume from the tail regardless,
@@ -296,7 +298,7 @@ impl<R: ChainedRecord> Journal<R> {
     /// This is the ONLY place durability is learned. A write's `Ok(())` proves nothing (the store
     /// trait default accepts and keeps nothing), so the engine finds out what its backend actually
     /// kept by reading it back.
-    pub(crate) fn restore_from_store(&self, store: &dyn PlaneStore) -> StoreResult<Restored>
+    pub(crate) fn restore_from_store(&self, store: &dyn PlaneStore) -> RecordStoreResult<Restored>
     where
         R: JournalRecord,
     {
@@ -308,7 +310,7 @@ impl<R: ChainedRecord> Journal<R> {
                 .list_plane_records(R::KIND, &PlaneSelector::Parent(scope.clone()))?
                 .iter()
                 .map(|body| decode(body))
-                .collect::<StoreResult<_>>()?;
+                .collect::<RecordStoreResult<_>>()?;
             if records.is_empty() {
                 out.empty_scopes.push(scope.clone());
                 Self::commit_position(
@@ -413,7 +415,7 @@ impl<R: ChainedRecord> Journal<R> {
     /// `NeutralRecord`, not a `JournalRecord`), so this typed twin has no caller until a typed stream
     /// wants it. Kept as the typed mirror of `compact_scoped`, alongside the other typed-path methods.
     #[allow(dead_code)]
-    pub(crate) fn compact(&self, before: u64) -> StoreResult<u64>
+    pub(crate) fn compact(&self, before: u64) -> RecordStoreResult<u64>
     where
         R: JournalRecord,
     {
@@ -464,7 +466,7 @@ pub(crate) trait NeutralRecord: ChainedRecord + Clone {
 /// this journal's own [`NeutralBody`] OR a legacy serde row from before the cleave — the callback owns
 /// which, so core never decodes a plane type. Boxed as a trait object so the neutral methods take one
 /// uniform argument regardless of the closure's captures (the per-scope framing/digests_scope).
-pub(crate) type Reframe<'a, R> = dyn Fn(&str, &[u8]) -> StoreResult<R> + 'a;
+pub(crate) type Reframe<'a, R> = dyn Fn(&str, &[u8]) -> RecordStoreResult<R> + 'a;
 
 impl<R: NeutralRecord> Journal<R> {
     /// Resolve a NOT-cached scope's position on the neutral path (the [`Journal::resume_missing`]
@@ -492,7 +494,7 @@ impl<R: NeutralRecord> Journal<R> {
         let records: Vec<R> = bodies
             .iter()
             .map(|body| reframe(scope, body))
-            .collect::<StoreResult<_>>()
+            .collect::<RecordStoreResult<_>>()
             .map_err(JournalError::Store)?;
         // A break here is TAMPER EVIDENCE surfaced at RUNTIME (the neutral-path twin of
         // `resume_missing`): the evicted scope's persisted tail no longer verifies when read back.
@@ -574,7 +576,7 @@ impl<R: NeutralRecord> Journal<R> {
         kind: &str,
         store: &dyn PlaneStore,
         reframe: &Reframe<'_, R>,
-    ) -> StoreResult<Restored> {
+    ) -> RecordStoreResult<Restored> {
         let scopes = store.list_plane_record_parents(kind)?;
         let mut out = Restored::default();
         let mut positions = self.positions();
@@ -646,7 +648,7 @@ impl<R: NeutralRecord> Journal<R> {
         scope: &str,
         store: &dyn PlaneStore,
         reframe: &Reframe<'_, R>,
-    ) -> StoreResult<Vec<R>> {
+    ) -> RecordStoreResult<Vec<R>> {
         store
             .list_plane_records(kind, &PlaneSelector::Parent(scope.to_string()))?
             .iter()
@@ -662,7 +664,7 @@ impl<R: NeutralRecord> Journal<R> {
         scope: &str,
         store: &dyn PlaneStore,
         reframe: &Reframe<'_, R>,
-    ) -> StoreResult<Option<ChainBreak>> {
+    ) -> RecordStoreResult<Option<ChainBreak>> {
         let records = self.read_scoped(kind, scope, store, reframe)?;
         Ok(verify_chain(&records).err())
     }
@@ -670,7 +672,7 @@ impl<R: NeutralRecord> Journal<R> {
     /// RETENTION on the neutral path (the [`Journal::compact`] analogue): ask the sink to drop `kind`
     /// records older than `before`. Positions are NOT reset, exactly as the typed path — reopening a
     /// scope at seq 1 after a purge would collide with a sequence the store may still hold.
-    pub(crate) fn compact_scoped(&self, kind: &str, before: u64) -> StoreResult<u64> {
+    pub(crate) fn compact_scoped(&self, kind: &str, before: u64) -> RecordStoreResult<u64> {
         match self.sink() {
             Some(store) => store.purge_plane_records_before(kind, before),
             None => Ok(0),

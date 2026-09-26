@@ -54,7 +54,7 @@
 
 use axum::body::Bytes;
 use axum::http::StatusCode;
-use busbar_api::operation::Operation;
+use busbar_contract::operation::OpVerb;
 use busbar_kernel::proxy::{KIND_INVALID_REQUEST, KIND_NOT_FOUND};
 use busbar_substrate_values::handlers::OperationHandler;
 
@@ -189,7 +189,7 @@ pub fn model_from<'a>(
 /// this operation are different facts, and the live path tells the client which one it hit.
 pub fn handler_for(
     proto: &str,
-    operation: Operation,
+    operation: OpVerb,
 ) -> Result<&'static dyn OperationHandler, DecodeRefusal> {
     let rh = busbar_substrate_values::handlers::request_handler(proto)
         .ok_or(DecodeRefusal::UnknownProtocol)?;
@@ -205,7 +205,7 @@ pub fn handler_for(
 /// change with its own registered row, not a tidy-up here.
 pub fn handler_for_path_model(
     proto: &str,
-    operation: Operation,
+    operation: OpVerb,
 ) -> Result<&'static dyn OperationHandler, DecodeRefusal> {
     busbar_substrate_values::handlers::request_handler(proto)
         .and_then(|rh| rh.operation_handler(operation))
@@ -219,7 +219,7 @@ pub fn handler_for_path_model(
 /// tests that want the whole step in one call.
 pub fn decode_body<'a>(
     proto: &str,
-    operation: Operation,
+    operation: OpVerb,
     content_type: &str,
     body: &Bytes,
     parsed: Option<&LazyBody>,
@@ -250,7 +250,7 @@ pub fn decode_body<'a>(
 /// the node has ever given it.
 pub fn decode_path_model<'a>(
     proto: &str,
-    operation: Operation,
+    operation: OpVerb,
     model: &'a str,
 ) -> Result<DecodeFacts<'a>, DecodeRefusal> {
     let op_handler = handler_for_path_model(proto, operation)?;

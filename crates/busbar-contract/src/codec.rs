@@ -17,7 +17,7 @@
 use crate::billing::TokenUsage;
 use crate::bounded::SlabBytes;
 use crate::ir::handle::IrHandle;
-use crate::operation::Operation;
+use crate::operation::OpVerb;
 use serde_json::Value;
 
 /// A serialized wire body plus the content-type the OperationHandler chose for it. The engine relays both without
@@ -94,7 +94,7 @@ pub enum TranslatedResponse {
 /// signature does not. Routing populates it from the lane and applies any `lane.path` override itself.
 pub struct EgressCtx<'a> {
     /// Which operation's endpoint to render — the template selector.
-    pub operation: Operation,
+    pub operation: OpVerb,
     /// The resolved wire model id (routing calls `Lane::wire_model()`), for protocols that carry the
     /// model in the URL path rather than the body.
     pub model: &'a str,
@@ -114,7 +114,7 @@ pub struct EgressCtx<'a> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum IngressReject {
     BadRequest(String),
-    UnsupportedSubOp { op: Operation, model: String },
+    UnsupportedSubOp { op: OpVerb, model: String },
 }
 
 /// An upstream response body this OperationHandler could not decode into its operation's IR.
@@ -147,24 +147,111 @@ pub fn report_usage_tap_decode_failure(ingress_protocol: &str, error: &CodecErro
     }
 }
 
+/// The host's USAGE-TAP FAULT LATCH: counts one usage-tap fault of `reason` for `ingress_protocol`
+/// (a per-request volume signal) and answers `true` only the FIRST time the host sees that
+/// `(protocol, reason)`, so a codec that raises its own coded diagnostic for the fault warns once and
+/// logs at debug after. [`UsageTapFaultReporter`] is this latch plus the one decode-failure line a
+/// cell's default tap prints; a codec whose tap reads a body in more than one way reports each way's
+/// reason through the latch and prints its own line. Counting is the host's, not the codec's.
+pub type UsageTapFaultLatch = fn(ingress_protocol: &str, reason: &'static str) -> bool;
+
+static USAGE_TAP_FAULT_LATCH: std::sync::OnceLock<UsageTapFaultLatch> = std::sync::OnceLock::new();
+
+/// Install the host's [`UsageTapFaultLatch`]. First install wins, exactly as
+/// [`install_usage_tap_fault_reporter`], and the host installs both in the same place.
+pub fn install_usage_tap_fault_latch(latch: UsageTapFaultLatch) {
+    let _ = USAGE_TAP_FAULT_LATCH.set(latch);
+}
+
+/// Count one usage-tap fault through the installed host latch and answer whether this is the first
+/// of its `(protocol, reason)`. In a process whose host installed none (a bare codec test) nothing is
+/// counted and the answer is `false`, so the caller logs at debug.
+pub fn usage_tap_fault_should_warn(ingress_protocol: &str, reason: &'static str) -> bool {
+    USAGE_TAP_FAULT_LATCH
+        .get()
+        .is_some_and(|latch| latch(ingress_protocol, reason))
+}
+
+/// The host's TRANSLATE-BODY CAP READER: the operator's per-response translation cap, in bytes, as
+/// the host holds it NOW (an operator may reload it live). A codec that bounds what it buffers while
+/// translating a response reads the cap through here at each use, so its bound and the host's never
+/// diverge.
+pub type TranslateCapReader = fn() -> usize;
+
+static TRANSLATE_CAP_READER: std::sync::OnceLock<TranslateCapReader> = std::sync::OnceLock::new();
+
+/// The cap a process whose host installed no reader bounds translation at: 32 MiB, the host's own
+/// default for an unconfigured `limits.request_body_max_bytes`.
+pub const TRANSLATE_BODY_MAX_BYTES_DEFAULT: usize = 32 * 1024 * 1024;
+
+/// Install the host's [`TranslateCapReader`]. First install wins.
+pub fn install_translate_cap_reader(reader: TranslateCapReader) {
+    let _ = TRANSLATE_CAP_READER.set(reader);
+}
+
+/// The per-response translation cap the host holds now, or
+/// [`TRANSLATE_BODY_MAX_BYTES_DEFAULT`] when no host installed a reader.
+pub fn max_translate_body_bytes() -> usize {
+    TRANSLATE_CAP_READER
+        .get()
+        .map_or(TRANSLATE_BODY_MAX_BYTES_DEFAULT, |read| read())
+}
+
+/// The host's ENTROPY SOURCE: fills the buffer with fresh bytes from the host's CSPRNG and answers
+/// `true`, or answers `false` when the host has none to give (the buffer's contents are then
+/// unspecified). A codec that mints a random wire identifier draws through here instead of reading an
+/// OS generator itself, so the draw is the host's.
+pub type EntropySource = fn(&mut [u8]) -> bool;
+
+static ENTROPY_SOURCE: std::sync::OnceLock<EntropySource> = std::sync::OnceLock::new();
+
+/// Install the host's [`EntropySource`]. First install wins.
+pub fn install_entropy_source(source: EntropySource) {
+    let _ = ENTROPY_SOURCE.set(source);
+}
+
+/// Fill `out` from the installed host entropy source. `false` when no host installed one, or when
+/// the host's source failed: the caller takes its own entropy-unavailable branch.
+pub fn fill_entropy(out: &mut [u8]) -> bool {
+    ENTROPY_SOURCE.get().is_some_and(|fill| fill(out))
+}
+
+/// The host's WALL CLOCK: whole seconds since the Unix epoch, as the host reads it. A codec that must
+/// stamp a creation time the answer it is writing does not carry reads it here, so the reading is the
+/// host's and the codec reads no clock of its own.
+pub type WallClock = fn() -> u64;
+
+static WALL_CLOCK: std::sync::OnceLock<WallClock> = std::sync::OnceLock::new();
+
+/// Install the host's [`WallClock`]. First install wins.
+pub fn install_wall_clock(clock: WallClock) {
+    let _ = WALL_CLOCK.set(clock);
+}
+
+/// The host's wall-clock reading, or `None` in a process whose host installed no clock (the caller
+/// then writes what its dialect writes for an unstamped time).
+pub fn wall_clock_now() -> Option<u64> {
+    WALL_CLOCK.get().map(|now| now())
+}
+
 /// ONE ROW OF A PROTOCOL'S SUPPORT MATRIX — a verb the protocol speaks and the codec that speaks it.
 ///
 /// **THE ROW IS DATA, AND THAT IS THE CHANGE 1.6.0 MADE.** It used to be a `match` arm per verb in
 /// every `RequestHandler`, which meant a verb was a variant of a CORE enum and adding one was a
 /// compile error in every protocol — including the six that will never speak it. That gate was the
 /// right mechanism pointed at the wrong tag: what a protocol must not be able to duck is a decision
-/// about the SHAPE of an exchange (`Operation`'s `OpShape`, still closed, still exhaustively
+/// about the SHAPE of an exchange (`OpVerb`'s `OpShape`, still closed, still exhaustively
 /// matched, still with no catch-all anywhere), not a decision about another family's method names.
 ///
 /// A protocol's vocabulary now lives beside its codecs, so deleting a protocol deletes its verbs
 /// with it and no core type mentions them — which is the deletion test the plugin seam is measured
 /// by. A verb absent from a row is the no-handler 404, exactly as an arm returning `None` was.
-pub type Cell = (Operation, &'static dyn OperationHandler);
+pub type Cell = (OpVerb, &'static dyn OperationHandler);
 
 /// THE ROW LOOKUP every [`RequestHandler::operation_handler`] is — stated once so there are not
 /// seven copies of a linear scan. Rows are single-digit in length, so this is a handful of pointer
 /// comparisons and is not worth a map.
-pub fn cell_of(cells: &'static [Cell], op: Operation) -> Option<&'static dyn OperationHandler> {
+pub fn cell_of(cells: &'static [Cell], op: OpVerb) -> Option<&'static dyn OperationHandler> {
     cells
         .iter()
         .find(|(candidate, _)| *candidate == op)
@@ -174,7 +261,7 @@ pub fn cell_of(cells: &'static [Cell], op: Operation) -> Option<&'static dyn Ope
 /// THE (verb → upstream path) LOOKUP, for the protocols whose egress paths are constants rather
 /// than templates. Same table shape, same reason it is data: `resolve_operation` reads these very
 /// constants on the ingress side, so the two directions cannot drift.
-pub fn path_of(paths: &'static [(Operation, &'static str)], op: Operation) -> Option<&'static str> {
+pub fn path_of(paths: &'static [(OpVerb, &'static str)], op: OpVerb) -> Option<&'static str> {
     paths
         .iter()
         .find(|(candidate, _)| *candidate == op)
@@ -317,14 +404,14 @@ pub trait RequestHandler: Send + Sync {
 
     /// This protocol's row of the support matrix. `None` ⇒ the protocol does not serve the operation
     /// ⇒ the no-handler 404. The OperationHandler, when present, is a pure codec.
-    fn operation_handler(&self, op: Operation) -> Option<&dyn OperationHandler>;
+    fn operation_handler(&self, op: OpVerb) -> Option<&dyn OperationHandler>;
 
     /// WHICH operation this request asks for — the RequestHandler knows its protocol and reads the
     /// path (and, where the protocol multiplexes one endpoint, the body: one generate endpoint may
     /// serve chat AND audio, one invoke endpoint embeddings AND images) and says "this is
     /// audio, this is chat". The Router only picks the protocol; THIS decides the operation.
     /// `None` ⇒ the path is not an operation this protocol serves.
-    fn resolve_operation(&self, path: &str, body: &[u8]) -> Option<Operation>;
+    fn resolve_operation(&self, path: &str, body: &[u8]) -> Option<OpVerb>;
 
     /// The model named in the PATH, for path-model dialects (`models/{m}:action`,
     /// `/model/{m}/...`). `None` (the default) for body-model dialects — the dispatch then reads the

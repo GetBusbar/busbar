@@ -10,7 +10,7 @@
 //! anti-enumeration contract is carried up from the engine unchanged; this module only stamps the
 //! session's `(owner, id)` into the row and drives open → bump → close.
 
-use busbar_api::{PlaneDisposition, PlaneRecord, StoreResult};
+use busbar_contract::records::{PlaneDisposition, PlaneRecord, RecordStoreResult};
 use busbar_kernel::plane::handle_engine::{
     ChainPosition, DurableHandleEngine, HandleEngineError, HandleMeta, Mutation, RehydrateCounts,
     RehydrateOutcome, ScopedMutateError, SealedEvent, SubmitRecord, SweepBounds,
@@ -256,7 +256,7 @@ impl SessionHandle {
 pub fn rehydrate_sessions(
     engine: &DurableHandleEngine,
     store: &dyn PlaneStore,
-) -> StoreResult<RehydrateCounts> {
+) -> RecordStoreResult<RehydrateCounts> {
     engine.rehydrate(store, VOICE_SESSION_KIND, |_store, body| {
         // Decode the row the durable body IS; an undecodable body is counted unreadable, never fatal.
         match serde_json::from_slice::<VoiceSessionRow>(body) {

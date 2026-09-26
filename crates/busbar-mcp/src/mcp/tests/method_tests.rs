@@ -130,8 +130,8 @@ fn two_server_app() -> Arc<dyn EngineApp> {
 
 /// A `PlaneRequestCtx` holding a key whose `allowed_scopes` is exactly `pairs` — the shape the store persists
 /// as `allowed_mcp_servers` / `allowed_mcp_tools`.
-fn gov_with_scopes(pairs: &[(&str, &str)]) -> busbar_api::PlaneRequestCtx {
-    let key = busbar_api::VirtualKey {
+fn gov_with_scopes(pairs: &[(&str, &str)]) -> busbar_contract::records::PlaneRequestCtx {
+    let key = busbar_contract::records::VirtualKey {
         id: "k-test".to_string(),
         name: "test".to_string(),
         generation_hash: String::new(),
@@ -139,7 +139,7 @@ fn gov_with_scopes(pairs: &[(&str, &str)]) -> busbar_api::PlaneRequestCtx {
         allowed_scopes: Some(
             pairs
                 .iter()
-                .map(|(k, v)| busbar_api::ScopeRef {
+                .map(|(k, v)| busbar_contract::records::ScopeRef {
                     kind: (*k).to_string(),
                     value: (*v).to_string(),
                 })
@@ -153,7 +153,7 @@ fn gov_with_scopes(pairs: &[(&str, &str)]) -> busbar_api::PlaneRequestCtx {
         revision: 0,
         ..Default::default()
     };
-    busbar_api::PlaneRequestCtx {
+    busbar_contract::records::PlaneRequestCtx {
         key: Some(Arc::new(key)),
     }
 }
@@ -161,7 +161,7 @@ fn gov_with_scopes(pairs: &[(&str, &str)]) -> busbar_api::PlaneRequestCtx {
 /// Call one method and return `(status, body)`.
 async fn call(
     app: &Arc<dyn EngineApp>,
-    gov: &busbar_api::PlaneRequestCtx,
+    gov: &busbar_contract::records::PlaneRequestCtx,
     method: &str,
     params: serde_json::Value,
 ) -> (u16, serde_json::Value) {
@@ -434,7 +434,7 @@ async fn a_deployment_without_governance_serves_its_whole_catalogue() {
     let app = two_server_app();
     let (_, body) = call(
         &app,
-        &busbar_api::PlaneRequestCtx::default(),
+        &busbar_contract::records::PlaneRequestCtx::default(),
         "tools/list",
         serde_json::json!({}),
     )
@@ -570,7 +570,7 @@ async fn a_tool_call_is_charged_metered_and_audited_on_the_ordinary_budget_plane
         .cost(engine().cost_parts(Some(&billed_card), 1, &billed_groups))
         .governance(gov_state.clone())
         .build();
-    let gov = busbar_api::PlaneRequestCtx {
+    let gov = busbar_contract::records::PlaneRequestCtx {
         key: Some(Arc::new(key.clone())),
     };
 
@@ -782,7 +782,7 @@ async fn a_minted_ask_the_caller_cannot_answer_is_32021_and_400() {
 /// present or future, can ever write to.
 async fn call_as_actor(
     app: &Arc<dyn EngineApp>,
-    gov: &busbar_api::PlaneRequestCtx,
+    gov: &busbar_contract::records::PlaneRequestCtx,
     actor: &str,
     params: serde_json::Value,
 ) -> (u16, serde_json::Value) {

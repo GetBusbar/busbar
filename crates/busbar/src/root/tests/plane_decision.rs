@@ -174,14 +174,17 @@ fn a_valid_decisions_block_lands_as_the_plane_s_own_typed_section() {
     ))
     .expect("a valid `decisions:` block must parse");
 
-    let section = deploy
-        .decisions
+    let carried = deploy
+        .declared
         .0
+        .get(CONFIG_SECTION)
+        .expect("`decisions:` must land on the declared-section carrier");
+    let section = carried
         .as_any()
         .downcast_ref::<super::DecisionsCfg>()
         .expect(
-            "`decisions:` must land as the plane's own typed section, not as an untyped raw capture",
-        );
+        "`decisions:` must land as the plane's own typed section, not as an untyped raw capture",
+    );
     let model = section
         .0
         .models
@@ -189,26 +192,30 @@ fn a_valid_decisions_block_lands_as_the_plane_s_own_typed_section() {
         .expect("the operator's model entry must survive the lowering");
     assert_eq!(model.provider, "typesafe");
     assert_eq!(model.upstream_model.as_deref(), Some("judge-1.13.0"));
-    assert!(deploy.decisions.0.is_present());
+    assert!(carried.is_present());
 }
 
-/// THE `default_section` HALF. Without it an ABSENT `decisions:` falls back to the neutral raw
-/// default, so the carrier's type would depend on whether the operator wrote the block — and the
-/// downcast above would hold for a configured deployment and fail for an unconfigured one.
+/// THE ABSENT HALF. An ABSENT `decisions:` lands nothing on the declared-section carrier (so it
+/// declares no plane, LAW 7), and the plane's own `default_section` is its empty typed section.
 #[test]
 fn an_absent_decisions_block_defaults_to_the_plane_s_own_empty_section() {
     let _reg = decisions_registered();
     let deploy = busbar_kernel::config::deploy_from_yaml_str(&doc(""))
         .expect("a document with no `decisions:` section still parses");
-    let section = deploy
-        .decisions
-        .0
+    assert!(
+        !deploy.declared.0.contains_key(CONFIG_SECTION),
+        "an absent section is not a section the operator wrote"
+    );
+    let default = (PLANE_HOOKS
+        .default_section
+        .expect("the plane defaults its section"))();
+    let section = default
         .as_any()
         .downcast_ref::<super::DecisionsCfg>()
-        .expect("an ABSENT `decisions:` must default to the plane's own empty section");
+        .expect("the plane's default must be its own empty section");
     assert!(section.0.models.is_empty());
     assert!(
-        !deploy.decisions.0.is_present(),
+        !default.is_present(),
         "an empty section is not a section the operator wrote"
     );
 }

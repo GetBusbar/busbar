@@ -74,7 +74,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use crate::plane::store::PlaneStore;
-use busbar_api::{PlaneRecord, PlaneSelector, StoreError, StoreResult};
+use busbar_contract::records::{PlaneRecord, PlaneSelector, RecordStoreError, RecordStoreResult};
 
 /// The NEUTRAL projection of a plane row the engine reads to run its mechanics WITHOUT decoding the
 /// plane's opaque body: who the handle belongs to (the anti-enumeration scope key), when it last
@@ -236,7 +236,7 @@ pub enum MutateError {
     /// The plane refused the transition — carried as its already-rendered message.
     Rejected(String),
     /// A durable encode/build failed.
-    Store(StoreError),
+    Store(RecordStoreError),
 }
 
 /// What went wrong servicing an engine operation.
@@ -247,7 +247,7 @@ pub enum HandleEngineError {
     /// The plane's mutation planner refused the move.
     Rejected(String),
     /// A durable write failed.
-    Store(StoreError),
+    Store(RecordStoreError),
 }
 
 impl std::fmt::Display for HandleEngineError {
@@ -276,7 +276,7 @@ pub enum ScopedMutateError {
     /// reachable once ownership is proven.
     Rejected(String),
     /// A durable write failed. Only reachable once ownership is proven.
-    Store(StoreError),
+    Store(RecordStoreError),
 }
 
 impl std::fmt::Display for ScopedMutateError {
@@ -452,7 +452,7 @@ impl DurableHandleEngine {
     }
 
     /// Upsert one durable row record (no-op with no sink).
-    fn upsert_record(&self, record: &PlaneRecord) -> StoreResult<()> {
+    fn upsert_record(&self, record: &PlaneRecord) -> RecordStoreResult<()> {
         if let Some(store) = self.sink() {
             store.upsert_plane_record(record)?;
         }
@@ -460,7 +460,7 @@ impl DurableHandleEngine {
     }
 
     /// Append one durable event record (no-op with no sink).
-    fn append_record(&self, record: &PlaneRecord) -> StoreResult<()> {
+    fn append_record(&self, record: &PlaneRecord) -> RecordStoreResult<()> {
         if let Some(store) = self.sink() {
             store.append_plane_record(record)?;
         }
@@ -470,7 +470,7 @@ impl DurableHandleEngine {
     /// Delete one durable row (no-op with no sink). The COMPENSATION half of `submit`: the row is
     /// deleted only when the write that was supposed to follow it did not land, so no handle the
     /// caller was ever told about is reachable from here.
-    fn delete_record(&self, kind: &str, id: &str) -> StoreResult<()> {
+    fn delete_record(&self, kind: &str, id: &str) -> RecordStoreResult<()> {
         if let Some(store) = self.sink() {
             store.delete_plane_record(kind, id)?;
         }
@@ -518,7 +518,7 @@ impl DurableHandleEngine {
         id: &str,
         slot: &mut HandleSlot,
         m: Mutation,
-    ) -> StoreResult<()> {
+    ) -> RecordStoreResult<()> {
         if let Some(rec) = &m.row_record {
             self.upsert_record(rec)?;
         }
@@ -529,7 +529,7 @@ impl DurableHandleEngine {
                     match &slot.row_record {
                         Some(prev) => {
                             if let Err(undo) = self.upsert_record(prev) {
-                                return Err(StoreError(format!(
+                                return Err(RecordStoreError(format!(
                                     "{e}; the row write that preceded it could NOT be rolled back \
                                      ({undo}), so the durable row for `{id}` is ahead of the live \
                                      handle"
@@ -621,7 +621,7 @@ impl DurableHandleEngine {
     pub fn sweep_now<A, R>(&self, now: u64, bounds: SweepBounds, abandon: A, report_fail: R) -> bool
     where
         A: Fn(&str, &(dyn Any + Send + Sync), &ChainPosition, u64) -> Option<Mutation>,
-        R: Fn(&str, &StoreError),
+        R: Fn(&str, &RecordStoreError),
     {
         if !self.claim_sweep(now) {
             return false;
@@ -652,9 +652,9 @@ impl DurableHandleEngine {
         report_fail: R,
     ) -> Result<Arc<dyn Any + Send + Sync>, HandleEngineError>
     where
-        P: FnOnce(&ChainPosition) -> Result<SubmitRecord, StoreError>,
+        P: FnOnce(&ChainPosition) -> Result<SubmitRecord, RecordStoreError>,
         A: Fn(&str, &(dyn Any + Send + Sync), &ChainPosition, u64) -> Option<Mutation>,
-        R: Fn(&str, &StoreError),
+        R: Fn(&str, &RecordStoreError),
     {
         let genesis = ChainPosition::genesis();
         let sr = plan(&genesis).map_err(HandleEngineError::Store)?;
@@ -820,7 +820,7 @@ impl DurableHandleEngine {
     fn sweep<A, R>(&self, now: u64, bounds: SweepBounds, abandon: &A, report_fail: &R)
     where
         A: Fn(&str, &(dyn Any + Send + Sync), &ChainPosition, u64) -> Option<Mutation>,
-        R: Fn(&str, &StoreError),
+        R: Fn(&str, &RecordStoreError),
     {
         // Rule (0), phase one: the ACTIVE entries aged past `abandon_secs` are a prefix of the index.
         // The outer lock is held for the shard clones only — no slot is read here, because phase two
@@ -993,9 +993,9 @@ impl DurableHandleEngine {
         store: &dyn PlaneStore,
         kind: &str,
         mut classify: F,
-    ) -> StoreResult<RehydrateCounts>
+    ) -> RecordStoreResult<RehydrateCounts>
     where
-        F: FnMut(&dyn PlaneStore, &[u8]) -> StoreResult<RehydrateOutcome>,
+        F: FnMut(&dyn PlaneStore, &[u8]) -> RecordStoreResult<RehydrateOutcome>,
     {
         let bodies = store.list_plane_records(kind, &PlaneSelector::All)?;
         let mut out = RehydrateCounts::default();
@@ -1111,7 +1111,7 @@ impl DurableHandleEngine {
 
     /// COMPACT: ask the sink to purge terminal `kind` rows older than `before`, and drop any matching
     /// terminal working-set entries. Returns how many durable rows went.
-    pub fn compact(&self, before: u64, kind: &str) -> StoreResult<u64> {
+    pub fn compact(&self, before: u64, kind: &str) -> RecordStoreResult<u64> {
         let removed = match self.sink() {
             Some(store) => store.purge_plane_records_before(kind, before)?,
             None => 0,

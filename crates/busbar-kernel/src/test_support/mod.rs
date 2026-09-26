@@ -685,7 +685,7 @@ impl LaneSpec {
             path: self.path.clone(),
             path_base: self.path_base.clone(),
             upstream_model: self.upstream_model.clone(),
-            api_key: busbar_api::Redacted::new(self.api_key.clone()),
+            api_key: busbar_contract::redacted::Redacted::new(self.api_key.clone()),
             auth_style,
             scope: None,
             token_url: None,
@@ -833,7 +833,7 @@ pub struct TestApp {
     oauth_as: Option<std::sync::Arc<dyn std::any::Any + Send + Sync>>,
     /// LAW 7: the configured plane sections. `None` (default) = every linked plane counts configured.
     plane_sections: Option<std::collections::BTreeSet<&'static str>>,
-    plane_durable_store: Option<std::sync::Arc<dyn busbar_api::Store>>,
+    plane_durable_store: Option<std::sync::Arc<dyn busbar_contract::records::RecordStore>>,
     role_bindings: Option<crate::config::RoleBindings>,
     /// The resolved token-mint policy (`auth.policy:`) for the built App. `None` (default) = the empty
     /// policy (no caps). Set by tests that exercise `MintPolicy` enforcement at the mint site.
@@ -1319,7 +1319,10 @@ impl TestApp {
     /// `busbar-store-example-plugin` cdylib in its durable mode, loaded over the plugin C ABI (see
     /// [`super::plugin_store`]). A deployment that configures no store simply never calls this, and
     /// gets the process-local behaviour both properties had before.
-    pub fn durable_store(mut self, store: std::sync::Arc<dyn busbar_api::Store>) -> Self {
+    pub fn durable_store(
+        mut self,
+        store: std::sync::Arc<dyn busbar_contract::records::RecordStore>,
+    ) -> Self {
         self.plane_durable_store = Some(store);
         self
     }
@@ -1330,7 +1333,7 @@ impl TestApp {
     pub fn login_method(
         mut self,
         name: &str,
-        module: Box<dyn busbar_api::AuthPlugin>,
+        module: Box<dyn busbar_contract::auth::AuthPlugin>,
         client_secret: Option<String>,
         issuer: Option<String>,
         has_button: bool,
@@ -1349,7 +1352,7 @@ impl TestApp {
             name.to_string(),
             crate::auth::token::LoginMethod {
                 module,
-                client_secret: client_secret.map(busbar_api::Redacted::new),
+                client_secret: client_secret.map(busbar_contract::redacted::Redacted::new),
                 has_button,
                 issuer,
                 login_kind,

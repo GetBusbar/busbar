@@ -48,7 +48,6 @@ busbar-contract = { path = "../busbar-contract" }
 # is where the money view is supposed to live (#43: pricing is CORE functionality).
 busbar-kernel-ledger = { path = "../busbar-kernel-ledger" }
 busbar-plugin-loader = { path = "../plugin-loader" }
-busbar-api = { path = "../api" }
 axum = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

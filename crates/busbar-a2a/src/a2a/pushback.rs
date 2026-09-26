@@ -62,7 +62,7 @@
 //! minting a busbar credential for every fronted backend so it could call one webhook would be a
 //! far larger grant than the one thing this endpoint does. So the route declares no middleware auth
 //! and the handler authenticates the request ITSELF, against the token, in constant time, through
-//! `busbar_api::constant_time_eq` — the one constant-time primitive in the tree. A request with no
+//! `busbar_contract::redacted::constant_time_eq` — the one constant-time primitive in the tree. A request with no
 //! token, an unparseable token, a token whose MAC does not verify, or a token naming a task busbar
 //! does not hold is a `401` that says nothing about which of those it was.
 
@@ -157,7 +157,7 @@ fn task_of(presented: &str) -> Option<String> {
     }
     // THE ONE CONSTANT-TIME PRIMITIVE. A byte-at-a-time comparison here is a MAC oracle: the
     // attacker controls the value and can measure the answer.
-    if !busbar_api::constant_time_eq(&mac_of(secret, task_id), presented_mac) {
+    if !busbar_contract::redacted::constant_time_eq(&mac_of(secret, task_id), presented_mac) {
         return None;
     }
     Some(task_id.to_string())

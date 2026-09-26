@@ -20,7 +20,7 @@ fn deny() -> super::super::MetadataSsrfPolicy<'static> {
 fn client_secret_is_redacted_in_debug() {
     let creds = ClientCreds {
         client_id: "id".to_string(),
-        client_secret: busbar_api::Redacted::new("super-secret-value".to_string()),
+        client_secret: busbar_contract::redacted::Redacted::new("super-secret-value".to_string()),
         token_url: "https://t".to_string(),
         scope: "s".to_string(),
         http: super::super::minter_client().unwrap(),
@@ -143,7 +143,7 @@ async fn mint_rejects_a_response_body_over_the_cap() {
 
     let creds = ClientCreds {
         client_id: "id".to_string(),
-        client_secret: busbar_api::Redacted::new("secret".to_string()),
+        client_secret: busbar_contract::redacted::Redacted::new("secret".to_string()),
         token_url: format!("http://{}", server.addr),
         scope: "s".to_string(),
         http: super::super::minter_client().unwrap(),

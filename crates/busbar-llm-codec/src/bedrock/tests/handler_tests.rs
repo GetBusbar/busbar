@@ -13,7 +13,7 @@ fn invoke_rerank_not_misclassified_by_inputtext_substring() {
     let body = br#"{"query":"how does inputText work?","documents":["textToImageParams too"]}"#;
     assert_eq!(
         h.resolve_operation("/model/cohere.rerank-v3-5:0/invoke", body),
-        Some(Operation::RERANK),
+        Some(OpVerb::RERANK),
     );
     // Real Titan embeddings (top-level inputText key) still resolves to Embeddings.
     assert_eq!(
@@ -21,7 +21,7 @@ fn invoke_rerank_not_misclassified_by_inputtext_substring() {
             "/model/amazon.titan-embed-text-v2:0/invoke",
             br#"{"inputText":"hello"}"#,
         ),
-        Some(Operation::EMBEDDINGS),
+        Some(OpVerb::EMBEDDINGS),
     );
     // Real Titan image (top-level textToImageParams key) still resolves to Image.
     assert_eq!(
@@ -29,12 +29,12 @@ fn invoke_rerank_not_misclassified_by_inputtext_substring() {
             "/model/amazon.titan-image-generator-v1/invoke",
             br#"{"textToImageParams":{"text":"a cat"}}"#,
         ),
-        Some(Operation::IMAGE),
+        Some(OpVerb::IMAGE),
     );
     // Converse remains chat.
     assert_eq!(
         h.resolve_operation("/model/anthropic.claude/converse", b"{}"),
-        Some(Operation::CHAT),
+        Some(OpVerb::CHAT),
     );
 }
 
@@ -60,7 +60,7 @@ fn image_response_bills_per_image() {
     let wire = br#"{"images":["AAAA","BBBB","CCCC"]}"#;
     let resp = super::read_image_response(wire).unwrap();
     match resp.billing() {
-        Some(busbar_substrate_values::billing::Billing::Images { count, .. }) => {
+        Some(busbar_contract::billing::Billing::Images { count, .. }) => {
             assert_eq!(count, 3)
         }
         other => panic!("Titan per-image response must bill Images, got {other:?}"),
@@ -83,7 +83,7 @@ fn embeddings_read_request_captures_input_text() {
 #[test]
 fn embeddings_write_request_warns_on_dropped_non_text_input() {
     use crate::ir::embeddings::EmbeddingsReq;
-    use busbar_substrate_values::testkit::warn_capture::WarnCapture;
+    use busbar_kernel::test_support::warn_capture::WarnCapture;
     use tracing_subscriber::layer::SubscriberExt as _;
 
     let req = EmbeddingsReq {
@@ -199,12 +199,12 @@ fn converse_resolves_to_chat_unconditionally() {
     ] {
         assert_eq!(
             h.resolve_operation("/model/anthropic.claude-3/converse", body),
-            Some(Operation::CHAT),
+            Some(OpVerb::CHAT),
             "converse must resolve to CHAT regardless of body"
         );
         assert_eq!(
             h.resolve_operation("/model/anthropic.claude-3/converse-stream", body),
-            Some(Operation::CHAT),
+            Some(OpVerb::CHAT),
             "converse-stream must resolve to CHAT regardless of body"
         );
     }

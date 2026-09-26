@@ -9,7 +9,9 @@ use crate::ctx::{Ctx, Overlay};
 use crate::gates::{execute, Case, Expect, Report};
 use crate::ledger::Status;
 
-use super::{row_id, InstanceNounNeutralityGate, BASELINE, ROW_FROZEN_LITERAL, ROW_PRAGMA_CEILING};
+use super::{
+    row_id, InstanceNounNeutralityGate, BASELINE, ROW_FROZEN_LITERAL, ROW_PRAGMA_CEILING, ROW_WRITE,
+};
 
 // qa-names: crates/busbar-core/src/lib.rs -- xtask/src/gates/instance_noun_neutrality/cases.rs -- an overlay-only fixture file every case plants a neutral body into; the crate is absent from the tree on purpose, so the only noun the scan meets is the planted one
 const CORE: &str = "crates/busbar-core/src/lib.rs";
@@ -307,27 +309,145 @@ pub(super) fn push(
             },
         );
     }
+    // THE VOCABULARY IS NOT A LOOPHOLE (Q76 RED arm): a NON-vocabulary auth instance noun beside the
+    // protocol words still counts. The clean core names only `sigv4`/`bearer`; the planted core
+    // adds the `gcp` auth instance and its row reds, naming the file.
+    let vocab_only = "pub fn sigv4_verify() {}\npub fn bearer_token() {}\n";
+    red(
+        "a non-vocabulary auth instance noun beside the protocol vocabulary still reds its row",
+        &row_id("gcp"),
+        CORE,
+        ov(&[(CORE, vocab_only)]),
+        ov(&[(CORE, &format!("{vocab_only}pub fn gcp_sign() {{}}\n"))]),
+    );
     // THE GENERIC VOCABULARY STAYS GREEN: the adjective, tonic's API, an export sink's indented
-    // `streams:` list, and the RFC 6750/8705/7469 auth-scheme words (no longer instance nouns).
-    let generic = "pub fn serve(streaming: bool) -> bool { streaming }\n\
+    // `streams:` list, and the PROTOCOL VOCABULARY (Q1: RFC 6750/8705/7469 `bearer`/`mtls`/`spki`;
+    // Q76: AWS's `sigv4` signing scheme) — each word planted as a snake identifier, a CamelCase
+    // type and a literal, so no noun may ever be keyed on one of them again.
+    let mut generic = "pub fn serve(streaming: bool) -> bool { streaming }\n\
                    pub const NON: &str = \"a non-streaming body; stream: true\";\n\
                    pub fn body(_b: tonic::Streaming<u8>) {}\n\
                    pub fn call(grpc: &mut Grpc) { grpc.streaming(h, r); }\n\
                    pub const EXPORT: &str = \"export:\\n  s:\\n    streams: [logs]\\n\";\n\
                    pub const SINK: &str = \"module: webhook\\nstreams: [logs]\\n\";\n\
-                   pub const AUTH: &str = \"Authorization: Bearer abc\";\n\
-                   pub fn bearer_token() {}\npub fn mtls_bind() {}\npub fn spki_pin() {}\n";
+                   pub const AUTH: &str = \"Authorization: Bearer abc\";\n"
+        .to_string();
+    for w in super::PROTOCOL_VOCABULARY {
+        let camel = format!("{}{}", w[..1].to_ascii_uppercase(), &w[1..]);
+        generic.push_str(&format!(
+            "pub fn {w}_verify() {{}}\npub struct {camel}Scheme;\n\
+             pub const {up}: &str = \"{w}\";\n",
+            up = w.to_ascii_uppercase(),
+        ));
+    }
     let mut all_nouns: Vec<String> = super::NOUNS.iter().map(|n| row_id(n.key)).collect();
     all_nouns.push(streaming.clone());
     report.push(Case {
-        name: "generic streaming/bearer/mTLS/SPKI vocabulary in a core file names no instance"
-            .to_string(),
+        name:
+            "generic streaming/bearer/mTLS/SPKI/SigV4 vocabulary in a core file names no instance"
+                .to_string(),
         covers: vec![streaming],
         expected: Expect::Green,
         got: stays_green(gate, cx, fix, &all_nouns, {
             let mut o = Overlay::new();
-            o.set(CORE, generic.to_string());
+            o.set(CORE, generic);
             o
         }),
     });
+    // NO NOUN IS KEYED ON A VOCABULARY WORD: re-adding `sigv4` (or any of the four) as a noun token
+    // would census protocol vocabulary as an instance again.
+    let keyed: Vec<String> = super::NOUNS
+        .iter()
+        .flat_map(|n| n.tokens.iter().map(move |t| (n.key, *t)))
+        .filter(|(_, t)| super::PROTOCOL_VOCABULARY.contains(t))
+        .map(|(k, t)| format!("noun `{k}` is keyed on protocol vocabulary `{t}`"))
+        .collect();
+    report.push(Case {
+        name: "no census noun is keyed on a protocol-vocabulary word".to_string(),
+        covers: vec![row_id("gcp")],
+        expected: Expect::Green,
+        got: if keyed.is_empty() {
+            Expect::Green
+        } else {
+            Expect::Red { naming: keyed }
+        },
+    });
+}
+
+/// THE WRITE ARM'S REFUSALS, each a GREEN->RED transition of `instance-noun-neutrality:write` over
+/// the fixture. The clean overlay's ledger already equals the measurement, so the green arm writes
+/// nothing; the planted overlay makes a row RISE or a leak NEW, which must be refused — never
+/// written — while any row that fell is still lowered.
+pub(super) fn push_write(cx: &Ctx, fix: &str, report: &mut Report<'_>) {
+    let gate = InstanceNounNeutralityGate::write();
+    let one = "pub fn mcp_door() {}\n";
+    let ledger = |extra: &str| {
+        format!(
+            "[[leak]]\nnoun = \"mcp\"\nkind = \"plane\"\nfile = \"{CORE}\"\ncount = 1\n\
+             category = \"core\"\nwave = \"w\"\n\n{extra}"
+        )
+    };
+    let case = |name: &str, naming: &[&str], clean: Overlay, planted: Overlay| Case {
+        name: name.to_string(),
+        covers: vec![ROW_WRITE.to_string()],
+        expected: Expect::Red {
+            naming: naming.iter().map(|n| (*n).to_string()).collect(),
+        },
+        got: transition(&gate, cx, fix, ROW_WRITE, clean, planted),
+    };
+    let at = |core: &str, baseline: &str| ov(&[(CORE, core), (BASELINE, baseline)]);
+
+    // A RISING LEAK PLUS --write IS REFUSED: the row is not raised to the census.
+    report.push(case(
+        "--write refuses when a baselined leak RISES above its row",
+        &["would RISE 1 -> 2", "is NEVER written"],
+        at(one, &ledger("")),
+        at("pub fn mcp_door() {}\npub fn mcp_seat() {}\n", &ledger("")),
+    ));
+    // A NEW LEAK PLUS --write IS REFUSED: the ledger does not learn a coupling nobody read.
+    report.push(case(
+        "--write refuses when a live leak has no ledger row",
+        &[
+            "a2a@crates/busbar-core/src/lib.rs would be ADDED at 1",
+            "is NEVER written",
+        ],
+        at(one, &ledger("")),
+        at("pub fn mcp_door() {}\npub fn a2a_door() {}\n", &ledger("")),
+    ));
+    // AN ALLOW THAT CITES NO OWNER LICENSES NOTHING: the same rise, with an unowned allow, is
+    // still refused, naming the allow.
+    let unowned = "[[allow_rise]]\nnoun = \"mcp\"\nfile = \"crates/busbar-core/src/lib.rs\"\n\
+                   count = 2\nowner = \"me\"\nreason = \"r\"\n";
+    report.push(case(
+        "--write refuses a rise whose [[allow_rise]] cites no owner ruling",
+        &["cites no owner ruling", "is NEVER written"],
+        at(one, &ledger("")),
+        at(
+            "pub fn mcp_door() {}\npub fn mcp_seat() {}\n",
+            &ledger(unowned),
+        ),
+    )); // A MIXED TREE: one row RISES and another FELL. The fall is lowered, the rise is refused and
+        // left at its committed count, and the arm still exits RED — a lowering never carries a rise
+        // in, and a rise never holds a lowering hostage.
+    let two = |mcp: usize, a2a: usize| {
+        format!(
+            "[[leak]]\nnoun = \"a2a\"\nkind = \"plane\"\nfile = \"{CORE}\"\ncount = {a2a}\n\
+             category = \"core\"\nwave = \"w\"\n\n\
+             [[leak]]\nnoun = \"mcp\"\nkind = \"plane\"\nfile = \"{CORE}\"\ncount = {mcp}\n\
+             category = \"core\"\nwave = \"w\"\n\n"
+        )
+    };
+    report.push(case(
+        "--write on a mixed tree lowers the row that fell and refuses the row that rose",
+        &[
+            "mcp@crates/busbar-core/src/lib.rs would RISE 1 -> 2",
+            "Lowered: a2a@crates/busbar-core/src/lib.rs 2 -> 1",
+            "is NEVER written",
+        ],
+        at("pub fn mcp_door() {}\npub fn a2a_door() {}\n", &two(1, 1)),
+        at(
+            "pub fn mcp_door() {}\npub fn mcp_seat() {}\npub fn a2a_door() {}\n",
+            &two(1, 2),
+        ),
+    ));
 }

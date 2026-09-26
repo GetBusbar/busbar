@@ -82,7 +82,7 @@ fn balanced_object_after(buf: &[u8], mut i: usize) -> Option<&[u8]> {
 pub fn isolate_tail_usage_object(tail: &[u8], key: &[u8]) -> Option<serde_json::Value> {
     let key_pos = find_last(tail, key)?;
     let obj = balanced_object_after(tail, key_pos + key.len())?;
-    busbar_substrate_values::json::parse(obj).ok()
+    crate::json::parse(obj).ok()
 }
 
 /// The longest string value [`first_string_value_after`] reads. A stop-reason token is a short enum

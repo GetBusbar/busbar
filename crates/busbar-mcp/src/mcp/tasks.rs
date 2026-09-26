@@ -926,7 +926,7 @@ async fn dispatch(task: Arc<McpTask>, runner: Runner) {
         let entry = live_rt.catalogue.server(&server_id);
         let roots = entry.map(|s| s.roots.clone()).unwrap_or_default();
         let sampling = entry.and_then(|s| s.sampling.clone());
-        let gov = busbar_api::PlaneRequestCtx {
+        let gov = busbar_contract::records::PlaneRequestCtx {
             key: Some(runner.authorised.caller.clone()),
         };
         let server = server_id.clone();

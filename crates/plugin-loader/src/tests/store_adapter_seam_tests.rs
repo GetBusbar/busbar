@@ -4,9 +4,9 @@
 //! What the migration's head read does with a store that will not answer.
 
 use super::*;
-use busbar_api::{
-    AuditRecord, MeteringDelta, MeteringRow, Store as AbiStore, StoreError, StoreResult,
-    UsageLedger, VirtualKey,
+use busbar_contract::records::{
+    AuditRecord, MeteringDelta, MeteringRow, RecordStore as AbiStore, RecordStoreError,
+    RecordStoreResult, UsageLedger, VirtualKey,
 };
 
 /// A store that answers the audit tail however the test says and holds nothing else.
@@ -19,32 +19,37 @@ use busbar_api::{
 struct AuditTail(Result<Vec<AuditRecord>, String>);
 
 impl AbiStore for AuditTail {
-    fn put_key(&self, _key: &VirtualKey) -> StoreResult<()> {
+    fn put_key(&self, _key: &VirtualKey) -> RecordStoreResult<()> {
         Ok(())
     }
-    fn get_key(&self, _id: &str) -> StoreResult<Option<VirtualKey>> {
+    fn get_key(&self, _id: &str) -> RecordStoreResult<Option<VirtualKey>> {
         Ok(None)
     }
-    fn list_keys(&self) -> StoreResult<Vec<VirtualKey>> {
+    fn list_keys(&self) -> RecordStoreResult<Vec<VirtualKey>> {
         Ok(Vec::new())
     }
-    fn delete_key(&self, _id: &str) -> StoreResult<()> {
+    fn delete_key(&self, _id: &str) -> RecordStoreResult<()> {
         Ok(())
     }
-    fn get_usage(&self, _bucket_id: &str, _window_start: u64) -> StoreResult<UsageLedger> {
+    fn get_usage(&self, _bucket_id: &str, _window_start: u64) -> RecordStoreResult<UsageLedger> {
         Ok(UsageLedger::default())
     }
-    fn add_metering(&self, _delta: &MeteringDelta) -> StoreResult<()> {
+    fn add_metering(&self, _delta: &MeteringDelta) -> RecordStoreResult<()> {
         Ok(())
     }
-    fn list_metering(&self, _bucket: u64) -> StoreResult<Vec<MeteringRow>> {
+    fn list_metering(&self, _bucket: u64) -> RecordStoreResult<Vec<MeteringRow>> {
         Ok(Vec::new())
     }
-    fn put_usage(&self, _bucket_id: &str, _window_start: u64, _l: &UsageLedger) -> StoreResult<()> {
+    fn put_usage(
+        &self,
+        _bucket_id: &str,
+        _window_start: u64,
+        _l: &UsageLedger,
+    ) -> RecordStoreResult<()> {
         Ok(())
     }
-    fn list_audit_tail(&self, _limit: u64) -> StoreResult<Vec<AuditRecord>> {
-        self.0.clone().map_err(StoreError)
+    fn list_audit_tail(&self, _limit: u64) -> RecordStoreResult<Vec<AuditRecord>> {
+        self.0.clone().map_err(RecordStoreError)
     }
 }
 

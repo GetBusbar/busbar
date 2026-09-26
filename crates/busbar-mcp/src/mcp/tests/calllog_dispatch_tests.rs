@@ -45,7 +45,7 @@ use super::upstream_support::{
 use crate::mcp::test_engine::*;
 use crate::record::{McpCallRecord, KIND_CALL};
 use crate::testkit::TestAppMcpExt;
-use busbar_api::{PlaneSelector, Store};
+use busbar_contract::records::{PlaneSelector, RecordStore};
 use busbar_contract::vocab::{OUTCOME_DISPATCHED, OUTCOME_REFUSED, REASON_UPSTREAM_FAILED};
 use busbar_kernel::plane::calllog::CallRecorded;
 use std::path::PathBuf;
@@ -55,7 +55,7 @@ use std::sync::Arc;
 /// `Store::list_mcp_calls` method was deleted in the record relocation) and decode each opaque neutral
 /// journal body into the plane's own [`McpCallRecord`], oldest-first — the plane owns its record's
 /// framing, so the decode lives on the plane.
-fn list_mcp_calls(store: &Arc<dyn Store>, principal: &str) -> Vec<McpCallRecord> {
+fn list_mcp_calls(store: &Arc<dyn RecordStore>, principal: &str) -> Vec<McpCallRecord> {
     store
         .list_plane_records(KIND_CALL, &PlaneSelector::Parent(principal.to_string()))
         .expect("list the call chain over the generic plane-record ABI")
@@ -68,7 +68,7 @@ fn list_mcp_calls(store: &Arc<dyn Store>, principal: &str) -> Vec<McpCallRecord>
 
 /// The principals with a persisted `call` chain — the boot rehydrate's enumeration, read through the
 /// generic parent-listing ABI (the typed `Store::list_mcp_call_principals` was deleted with the rest).
-fn list_mcp_call_principals(store: &Arc<dyn Store>) -> Vec<String> {
+fn list_mcp_call_principals(store: &Arc<dyn RecordStore>) -> Vec<String> {
     store
         .list_plane_record_parents(KIND_CALL)
         .expect("enumerate call-chain principals over the generic plane-record ABI")
@@ -127,7 +127,7 @@ fn durable_cfg(tag: &str) -> (PathBuf, String) {
 }
 
 /// Open the plugin over the ABI. Each call is a fresh `dlopen` + `busbar_open`, i.e. a restart.
-fn open_plugin(cfg: &str) -> Arc<dyn Store> {
+fn open_plugin(cfg: &str) -> Arc<dyn RecordStore> {
     engine().open_store_plugin(cfg)
 }
 

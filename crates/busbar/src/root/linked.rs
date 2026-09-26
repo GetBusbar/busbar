@@ -29,7 +29,8 @@
 
 use std::sync::Arc;
 
-use busbar_contract::plane::MetricFamily;
+use busbar_contract::ids::OpClassId;
+use busbar_contract::plane::{MetricFamily, ServedOpClass};
 use busbar_kernel::ingress::arrival::{BodyIngressEntry, PathIngressEntry};
 use busbar_kernel::plane::registry::PlaneDecl;
 use busbar_kernel::plane::registry::{BillableClass, BuildCtx, PlaneDeclaration, PlaneHooks};
@@ -41,11 +42,18 @@ use busbar_plugin_loader::{HotStatusClass as StatusClass, ServedPlane};
 
 /// A provider composition step, captured off the resolved configuration before the app is built and
 /// run once the deployment's secret resolver exists.
-pub type Compose = Box<dyn FnOnce(&dyn busbar_api::SecretResolve)>;
+pub type Compose = Box<dyn FnOnce(&dyn busbar_contract::secret::SecretResolve)>;
 
 /// The stdio serve mode: frames on stdin/stdout instead of a listener; resolves to the exit code.
 pub type StdioServe =
     fn(LiveHostFactory) -> std::pin::Pin<Box<dyn std::future::Future<Output = i32>>>;
+
+/// One row a plane declares for `busbar --help`: `(slot, text)`. Slot `"tagline"` is the one-line
+/// description the help opens with; slot `"flag"` is a row of the `Flags:` block, whose first word is
+/// a flag the binary accepts; slot `"endpoint"` is a row of the `ENDPOINTS` block. A plane compiled
+/// out contributes no row, so its lines leave the help with it, the same way its config section is
+/// refused.
+pub type CliHelpRow = (&'static str, &'static str);
 
 /// EVERY LINKED ENTRY'S ITEMS, one table per registration axis, in manifest order.
 pub struct Linked {
@@ -76,8 +84,14 @@ pub struct Linked {
     pub compose: &'static [fn(&busbar_kernel::config::RootCfg) -> Option<Compose>],
     /// The stdio serve mode (see [`StdioServe`]).
     pub stdio_serve: &'static [StdioServe],
+    /// The CLI-help axis: each linked plane's rows of `busbar --help` (see [`CliHelpRow`]).
+    pub cli_help: &'static [&'static [CliHelpRow]],
     /// The export axis: each linked export sink's statement and boundary (see [`LinkedExport`]).
     pub exports: &'static [LinkedExport],
+    /// The store axis: each linked in-process store's `(name, ephemeral, open)`.
+    pub stores: &'static [busbar_kernel::preflight::LinkedStore],
+    /// The hook axis: each linked ranking row's `(name, aliases, open)`.
+    pub hooks: &'static [busbar_kernel::preflight::LinkedHook],
     /// The kernel-loop axes (#28): the declaration key of each plane `gauntlet_install::install()`
     /// flips onto the unified loop's ONE-SHOT runner, and of each it flips onto the SESSION runner.
     pub gauntlet_one_shot: &'static [&'static str],
@@ -87,6 +101,51 @@ pub struct Linked {
     pub transports: &'static [LinkedTransport],
     /// Each linked plane's pure plane, as the boot seal registers it, and the claims it declares.
     pub claims: &'static [LinkedClaims],
+    /// The node axis: each entry whose arrivals hand their units to a node, handed the node a root
+    /// unit drives them through (see [`node`]).
+    pub node: &'static [fn(node::Drive)],
+}
+
+/// THE NODE AXIS — what crosses between a plane whose arrivals hand their units to a node and the
+/// node that drives them through the kernel's loop. Plain values in the loop's own vocabulary, so
+/// neither side names the other: an arrival hands the node whose unit it is, its operation class, the
+/// dialect a node-side refusal is written in, and a build; the node lends the build its lane
+/// resolver, the loop's meter and the unit's pinned arrival epoch, and gets back the unit's steps,
+/// its awaited Route leg and its finish — the terminal's bytes and the reading of what they consumed,
+/// taken once their body has drained. The reading is a report, never an amount.
+pub mod node {
+    use std::future::Future;
+    use std::pin::Pin;
+    use std::sync::Arc;
+
+    use axum::response::Response;
+    use busbar_contract::caps::{OpClassId, PrincipalId};
+    use busbar_kernel::teller::{AccrualMeter, RouteAwait, Units};
+
+    /// A configured lane name to the interned lane the priced axis is written in, or `None` where
+    /// the image's vocabulary cannot hold the name.
+    pub type Resolve = Arc<dyn Fn(&str) -> Option<busbar_contract::LaneId> + Send + Sync>;
+    /// What the node lends a build: its lane resolver, the loop's meter, the pinned arrival epoch.
+    pub type Lent = (Resolve, Arc<AccrualMeter>, u64);
+    /// What a unit consumed, read after its body drained: every class, the billable count, the
+    /// serving lane's config name.
+    pub type Reported = (busbar_substrate_values::billing::Usage, u32, String);
+    /// The late reading, taken once, when the body is done with.
+    pub type Late = Box<dyn FnOnce() -> Option<Reported> + Send>;
+    /// A unit's finish: the bytes its terminal posted, and the late reading of what they consumed.
+    pub type Finish = Box<dyn FnOnce() -> (Option<Response>, Option<Late>) + Send>;
+    /// A built unit: its steps, its awaited Route leg (the same unit), and its finish.
+    pub type Built = (
+        Arc<dyn Units + Send + Sync>,
+        Arc<dyn RouteAwait + Send + Sync>,
+        Finish,
+    );
+    /// The build the node runs once it holds the values it lends.
+    pub type Build = Box<dyn FnOnce(Lent) -> Built + Send>;
+    /// One arrival, handed to the node.
+    pub type Handed = (PrincipalId, OpClassId, &'static str, Build);
+    /// The node: takes a handed unit, drives it through the loop, answers with its terminal's bytes.
+    pub type Drive = fn(Handed) -> Pin<Box<dyn Future<Output = Response> + Send>>;
 }
 
 /// One linked wire, as its crate's entry states it: the registry key, the layers it declares it can
@@ -175,10 +234,8 @@ pub struct RootUnit {
     /// The boot-time self-check of what this unit composes. `Err` carries the refusal as the operator
     /// reads it after `busbar: `; the process exits 2 before any listener binds.
     pub seal: Option<fn() -> Result<(), String>>,
-    /// Path-model arrivals that REPLACE the linked plugins' own arrivals of the same protocol name.
-    pub path_ingress: &'static [PathIngressEntry],
-    /// Body-model arrivals that replace the linked plugins' own of the same protocol name.
-    pub body_ingress: &'static [BodyIngressEntry],
+    /// The node this unit drives the node axis's units through, handed to every entry on that axis.
+    pub drive: Option<node::Drive>,
     /// Runs once the deployment's limits are resolved, before the app is built.
     pub on_config: Option<fn(&busbar_kernel::config::limits::LimitsResolved)>,
     /// TRUE for a unit that settles onto the node's book: the book is opened for it.
@@ -197,8 +254,9 @@ pub struct BookCtx<'a> {
     pub app: &'a busbar_kernel::state::App,
 }
 
-/// THE PROTOCOL AXIS: every entry's declarations and its path- and body-model arrivals (a root unit's
-/// arrival of the same name standing in for the plugin's), then each entry's protocol-axis seams.
+/// THE PROTOCOL AXIS: every entry's declarations and its path- and body-model arrivals, then each
+/// entry's protocol-axis seams — and the node axis, which those arrivals hand their units to: every
+/// entry on it is handed the node a root unit drives it through.
 pub fn register_protocols(linked: &Linked, units: &[&RootUnit]) {
     let installed: Vec<&'static busbar_kernel::proto::ProtocolDecl> = linked
         .protocols
@@ -208,30 +266,23 @@ pub fn register_protocols(linked: &Linked, units: &[&RootUnit]) {
     let path_ingress: Vec<PathIngressEntry> = linked
         .path_ingress
         .iter()
-        .flat_map(|arrivals| arrivals.iter())
-        .map(|&arrival| replaced(arrival, units.iter().map(|u| u.path_ingress)))
+        .flat_map(|arrivals| arrivals.iter().copied())
         .collect();
     busbar_kernel::proto::install_protocols_with_path_ingress(installed, path_ingress);
     let body_ingress: Vec<BodyIngressEntry> = linked
         .body_ingress
         .iter()
-        .flat_map(|arrivals| arrivals.iter())
-        .map(|&arrival| replaced(arrival, units.iter().map(|u| u.body_ingress)))
+        .flat_map(|arrivals| arrivals.iter().copied())
         .collect();
     busbar_kernel::ingress::arrival::install_body_ingress(body_ingress);
     for install in linked.protocol_seams {
         install();
     }
-}
-
-/// `arrival`, or the first stand-in of the same protocol name the root's units carry.
-fn replaced<F: Copy + 'static>(
-    arrival: (&'static str, F),
-    mut stand_ins: impl Iterator<Item = &'static [(&'static str, F)]>,
-) -> (&'static str, F) {
-    stand_ins
-        .find_map(|table| table.iter().find(|(name, _)| *name == arrival.0).copied())
-        .unwrap_or(arrival)
+    for drive in units.iter().filter_map(|u| u.drive) {
+        for install in linked.node {
+            install(drive);
+        }
+    }
 }
 
 /// THE PLANE AXIS: every entry's registry row and every HOT-lane plane's — linked or dropped in —
@@ -273,6 +324,7 @@ pub fn plane_rows(
     let rows: Vec<&'static PlaneDecl> = linked.planes.iter().chain(hot_rows).collect();
     let declared: Vec<&PlaneDeclaration> = rows.iter().map(|d| &d.declaration).collect();
     busbar_contract::plane::check_metric_families(&declared, PLANE_CARRIED_SERIES)?;
+    busbar_contract::plane::check_served_op_classes(&declared)?;
     Ok(rows)
 }
 
@@ -363,6 +415,15 @@ pub fn hot_plane_row(plane: &'static DynPlane) -> Result<PlaneDecl, String> {
             })
             .collect::<Vec<_>>()
             .leak(),
+        served_op_classes: stated
+            .served_op_classes
+            .iter()
+            .map(|(op, name)| ServedOpClass {
+                op: OpClassId::new(op),
+                name,
+            })
+            .collect::<Vec<_>>()
+            .leak(),
     };
     HOT_PLANES
         .lock()
@@ -392,6 +453,8 @@ struct HotSlot {
     claims: Vec<(RouteMethod, String, &'static str)>,
     /// The audience it binds, if it binds one.
     admission: Option<PlaneAdmission>,
+    /// The operator's destinations in its section — what its egress may reach (DEC-SERVE G3).
+    destinations: busbar_kernel::plane_host::egress::OperatorDestinations,
 }
 
 /// BUILD a HOT-lane plane's slot for this generation, over the ABI. The kernel hands a plane whose
@@ -465,6 +528,7 @@ fn hot_slot(
         served,
         claims,
         admission,
+        destinations: busbar_kernel::plane_host::egress::OperatorDestinations::of_section(section),
     })
 }
 
@@ -504,10 +568,12 @@ fn hot_routes(slot: &dyn std::any::Any) -> Vec<PlaneRouteSpec> {
 }
 
 /// DRIVE ONE REQUEST THROUGH A HOT-LANE PLANE: the request body is the work item's finite inbound
-/// buffer, dispatched through the plane's `dispatch` slot inside the kernel's attributed host mint
-/// (`with_borrowed_host_as`, under the plane's registry key, over this request's engine snapshot and
-/// a fresh arena) — so every host call the plane makes back is recovered, governed, metered and
-/// journalled as this plane's. The plane's reply is the response body; its status class is the
+/// buffer, dispatched through the plane's `dispatch` slot inside the kernel's plane-door mint
+/// (`with_plane_door`, under the plane's registry key, over this request's engine snapshot and a
+/// fresh arena) — so every host call the plane makes back is recovered, governed, metered and
+/// journalled as this plane's, billed to the caller the auth middleware resolved (`ctx.gov`, never a
+/// key id the plane writes; DEC-SERVE G1), and its egress judged against the operator's destinations
+/// in its section (DEC-SERVE G3). The plane's reply is the response body; its status class is the
 /// response status (`Ok` 200, `Refused` 403, `Gone` 410, `Unsupported` 501, anything else 500).
 fn hot_dispatch(ctx: &PlaneReqCtx) -> PlaneResponse {
     let slot = ctx.slot.downcast_ref::<HotSlot>();
@@ -517,9 +583,14 @@ fn hot_dispatch(ctx: &PlaneReqCtx) -> PlaneResponse {
             let app = handle.load();
             let scope = busbar_kernel::plane_host::DispatchScope::new();
             let key = slot.served.plane().name();
-            busbar_kernel::plane_host::with_borrowed_host_as(key, &app, &scope, |host_ctx, vt| {
-                slot.served.dispatch(vt, host_ctx, &ctx.body)
-            })
+            busbar_kernel::plane_host::with_plane_door(
+                key,
+                ctx.gov.as_ref(),
+                &slot.destinations,
+                &app,
+                &scope,
+                |host, vt| slot.served.dispatch(vt, host, &ctx.body),
+            )
         }
         _ => (StatusClass::Fault, Vec::new()),
     };
@@ -654,6 +725,25 @@ pub fn dropped_planes_of(dropped: Option<&busbar_plugin_loader::PluginRegistry>)
             eprintln!("busbar: {refusal}");
             std::process::exit(2);
         })
+}
+
+/// THE TRANSPORTS DROPPED INTO THE CONFIGURED `plugins.dir` (the registry [`dropped_from_config`]
+/// scanned): every `kind: transport` plugin it admitted, loaded over the HOT-tier ABI ONCE and held
+/// for the process, so the boot seal folds them beside the linked wires
+/// (`crate::root::registry::compose`) and a wire the data door serves through lives as long as the
+/// door. A trusted transport that will not LOAD refuses the boot, as a linked plane's would.
+pub fn dropped_transports() -> &'static [busbar_plugin_loader::DynTransport] {
+    static WIRES: std::sync::OnceLock<Vec<busbar_plugin_loader::DynTransport>> =
+        std::sync::OnceLock::new();
+    WIRES.get_or_init(|| {
+        REGISTRY
+            .get()
+            .map_or(Ok(Vec::new()), |registry| registry.open_transports())
+            .unwrap_or_else(|refusal| {
+                eprintln!("busbar: {refusal}");
+                std::process::exit(2);
+            })
+    })
 }
 
 /// THE EXPORT AXIS: the registry an `export:` instance's `module:` resolves against — every

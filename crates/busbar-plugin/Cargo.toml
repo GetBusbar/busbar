@@ -29,8 +29,8 @@ license = "Apache-2.0"
 
 # The COLD lane serializes JSON and names `busbar-api` types; the HOT lane is pure `core`/`std`
 # repr(C) layout and inherits nothing. The whole crate's external surface is therefore the cold
-# lane's: `busbar-api` + serde.
+# lane's: `busbar-contract` + serde.
 [dependencies]
-busbar-api = { path = "../api" }
+busbar-contract = { path = "../busbar-contract" }
 serde = { workspace = true }
 serde_json = { workspace = true }

@@ -43,7 +43,7 @@
 //! failing is the tripwire working.
 
 use crate::plane::store::{decode, PlaneStore, KIND_AUDIT, KIND_CALL};
-use busbar_api::{AuditRecord, PlaneRecord, PlaneSelector, StoreResult};
+use busbar_contract::records::{AuditRecord, PlaneRecord, PlaneSelector, RecordStoreResult};
 
 /// The one field this golden reads back off a frozen `call`-stream body — the tail digest. Decoded
 /// through a NEUTRAL local shape (matching the on-disk field name) so this core test names no plane
@@ -103,20 +103,20 @@ impl FrozenStore {
 }
 
 impl PlaneStore for FrozenStore {
-    fn upsert_plane_record(&self, _record: &PlaneRecord) -> StoreResult<()> {
+    fn upsert_plane_record(&self, _record: &PlaneRecord) -> RecordStoreResult<()> {
         Ok(())
     }
-    fn get_plane_record(&self, _kind: &str, _id: &str) -> StoreResult<Option<Vec<u8>>> {
+    fn get_plane_record(&self, _kind: &str, _id: &str) -> RecordStoreResult<Option<Vec<u8>>> {
         Ok(None)
     }
-    fn append_plane_record(&self, _record: &PlaneRecord) -> StoreResult<()> {
+    fn append_plane_record(&self, _record: &PlaneRecord) -> RecordStoreResult<()> {
         Ok(())
     }
     fn list_plane_records(
         &self,
         kind: &str,
         selector: &PlaneSelector,
-    ) -> StoreResult<Vec<Vec<u8>>> {
+    ) -> RecordStoreResult<Vec<Vec<u8>>> {
         let parent = match selector {
             PlaneSelector::All => None,
             PlaneSelector::Parent(p) => Some(p.clone()),
@@ -127,7 +127,7 @@ impl PlaneStore for FrozenStore {
             .cloned()
             .unwrap_or_default())
     }
-    fn list_plane_record_parents(&self, kind: &str) -> StoreResult<Vec<String>> {
+    fn list_plane_record_parents(&self, kind: &str) -> RecordStoreResult<Vec<String>> {
         let mut parents: Vec<String> = self
             .rows
             .keys()
@@ -138,10 +138,10 @@ impl PlaneStore for FrozenStore {
         parents.dedup();
         Ok(parents)
     }
-    fn purge_plane_records_before(&self, _kind: &str, _before: u64) -> StoreResult<u64> {
+    fn purge_plane_records_before(&self, _kind: &str, _before: u64) -> RecordStoreResult<u64> {
         Ok(0)
     }
-    fn delete_plane_record(&self, _kind: &str, _id: &str) -> StoreResult<()> {
+    fn delete_plane_record(&self, _kind: &str, _id: &str) -> RecordStoreResult<()> {
         Ok(())
     }
     fn redeem_plane_token(
@@ -150,7 +150,7 @@ impl PlaneStore for FrozenStore {
         _token: &str,
         _expires_at: u64,
         _now: u64,
-    ) -> StoreResult<bool> {
+    ) -> RecordStoreResult<bool> {
         Ok(true)
     }
     /// The multi-use capability check. `false` — the fail-closed direction the neutral trait
@@ -161,7 +161,7 @@ impl PlaneStore for FrozenStore {
         _token: &str,
         _expires_at: u64,
         _now: u64,
-    ) -> StoreResult<bool> {
+    ) -> RecordStoreResult<bool> {
         Ok(false)
     }
 }

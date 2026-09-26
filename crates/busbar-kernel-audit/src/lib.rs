@@ -103,8 +103,8 @@ pub use record::{
     HookApplied, OpClassId, OutcomeFacts, QuantitySource, Subject, Usage, UsageLine, What,
 };
 pub use sign::{
-    AuditKeySet, AuditSigningKey, AuditVerifyingKey, KeyError, SIGNATURE_ALGORITHM,
-    SIGNATURE_DOMAIN,
+    checkpoint_preimage, AuditKeySet, AuditSigningKey, AuditVerifyingKey, KeyError,
+    CHECKPOINT_SIGNATURE_DOMAIN, SIGNATURE_ALGORITHM, SIGNATURE_DOMAIN,
 };
 
 #[cfg(test)]

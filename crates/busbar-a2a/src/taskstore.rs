@@ -41,7 +41,7 @@ use std::sync::Arc;
 
 use crate::record::{DIGEST_VERSION_LEN_PREFIXED, KIND_TASK, KIND_TASK_EVENT};
 use crate::{TaskEventRow, TaskRow};
-use busbar_api::{PlaneSelector, StoreError, StoreResult};
+use busbar_contract::records::{PlaneSelector, RecordStoreError, RecordStoreResult};
 use busbar_kernel::plane::handle_engine::{
     ChainPosition, DurableHandleEngine, HandleEngineError, HandleMeta, MutateError, Mutation,
     RehydrateOutcome, SealedEvent, SubmitRecord, SweepBounds,
@@ -106,7 +106,7 @@ fn digest_event_v1(
     let input = format!(
         "{prev_hash}|{task_id}|{seq}|{ts}|{kind}|{context_id}|{principal}|{agent_id}|{state}"
     );
-    busbar_api::sha256_hex(input.as_bytes())
+    busbar_contract::redacted::sha256_hex(input.as_bytes())
 }
 
 /// FRAMING V2 — the INJECTIVE length-prefixed encoding: a fixed domain tag, then each STRING field as
@@ -142,7 +142,7 @@ fn digest_event_v2(
     push_str(&mut buf, principal);
     push_str(&mut buf, agent_id);
     push_str(&mut buf, state);
-    busbar_api::sha256_hex(&buf)
+    busbar_contract::redacted::sha256_hex(&buf)
 }
 
 /// The digest of an already-built event row, from its own fields AND its stored framing version — the
@@ -338,7 +338,7 @@ pub enum TaskStoreError {
     /// The A2A codec refused the row or the move — carried as its already-rendered message.
     Domain(String),
     /// The durable write failed.
-    Store(StoreError),
+    Store(RecordStoreError),
 }
 
 impl std::fmt::Display for TaskStoreError {
@@ -384,7 +384,7 @@ fn seal_task_event(
     pos: &ChainPosition,
     task_id: &str,
     ev: &EventInput,
-) -> StoreResult<SealedEvent> {
+) -> RecordStoreResult<SealedEvent> {
     let seq = pos.next_seq;
     // Every NEW event is sealed under the injective framing v2; v1 is only ever read, never written.
     let digest_version = DIGEST_VERSION_LEN_PREFIXED;
@@ -459,7 +459,7 @@ fn plan_abandon(
 /// Report an abandon that could not be durably recorded: the task stays active and the next sweep
 /// retries. Warned at most once (the durable sink is down; a per-task log would flood). Handed to the
 /// engine's sweep as its neutral failure reporter.
-fn report_abandon_fail(id: &str, e: &StoreError) {
+fn report_abandon_fail(id: &str, e: &RecordStoreError) {
     static ABANDON_UNRECORDED_WARNED: std::sync::atomic::AtomicBool =
         std::sync::atomic::AtomicBool::new(false);
     if !ABANDON_UNRECORDED_WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
@@ -543,7 +543,7 @@ impl TaskRegistry {
         &self,
         store: &dyn PlaneStore,
         readable: impl Fn(&TaskRow) -> Result<(), String>,
-    ) -> StoreResult<Rehydrated> {
+    ) -> RecordStoreResult<Rehydrated> {
         let mut chain_breaks: Vec<ChainBreak> = Vec::new();
         let counts = self.engine.rehydrate(store, KIND_TASK, |store, body| {
             // Decode per-row: a single row this build cannot parse is COUNTED as unreadable and
@@ -909,7 +909,7 @@ impl TaskRegistry {
 
     /// RETENTION: ask the store to drop terminal task rows older than `before`, and drop any matching
     /// working-set entries. Returns how many durable rows went.
-    pub fn compact(&self, before: u64) -> StoreResult<u64> {
+    pub fn compact(&self, before: u64) -> RecordStoreResult<u64> {
         self.engine.compact(before, KIND_TASK)
     }
 
@@ -938,12 +938,12 @@ impl TaskRegistry {
         &self,
         store: &dyn PlaneStore,
         task_id: &str,
-    ) -> StoreResult<Result<usize, ChainBreak>> {
+    ) -> RecordStoreResult<Result<usize, ChainBreak>> {
         let events: Vec<TaskEventRow> = store
             .list_plane_records(KIND_TASK_EVENT, &PlaneSelector::Parent(task_id.to_string()))?
             .iter()
             .map(|b| TaskEventRow::from_body(b))
-            .collect::<StoreResult<_>>()?;
+            .collect::<RecordStoreResult<_>>()?;
         match verify_chain(&events) {
             Ok(()) => Ok(Ok(events.len())),
             Err(brk) => Ok(Err(brk)),
@@ -962,7 +962,7 @@ pub struct TaskTestHarness {
 #[cfg(any(test, feature = "test-support"))]
 impl TaskTestHarness {
     /// Fresh isolated harness over `store` (the durable sink).
-    pub fn over(store: Arc<dyn busbar_api::Store>) -> Self {
+    pub fn over(store: Arc<dyn busbar_contract::records::RecordStore>) -> Self {
         let reg = TaskRegistry::new();
         reg.set_sink(busbar_kernel::plane::store::PlaneStoreView::narrow(store));
         Self { reg }
@@ -970,7 +970,7 @@ impl TaskTestHarness {
 
     /// Re-open a harness over `store` — a RESTART: the durable store is unchanged and a new registry
     /// (empty working set) is returned for the rehydrate to fill.
-    pub fn restart(store: Arc<dyn busbar_api::Store>) -> Self {
+    pub fn restart(store: Arc<dyn busbar_contract::records::RecordStore>) -> Self {
         Self::over(store)
     }
 }
@@ -984,28 +984,28 @@ impl TaskTestHarness {
 /// over this blanket impl, while a bare `dyn Store` resolves here.
 #[cfg(any(test, feature = "test-support"))]
 #[allow(dead_code)] // a complete named-vocabulary surface; not every method is exercised by every suite
-pub trait TaskStoreTestExt: busbar_api::Store {
-    fn put_task(&self, task: &TaskRow) -> StoreResult<()> {
+pub trait TaskStoreTestExt: busbar_contract::records::RecordStore {
+    fn put_task(&self, task: &TaskRow) -> RecordStoreResult<()> {
         self.upsert_plane_record(&task.to_plane_record()?)
     }
-    fn get_task(&self, task_id: &str) -> StoreResult<Option<TaskRow>> {
+    fn get_task(&self, task_id: &str) -> RecordStoreResult<Option<TaskRow>> {
         self.get_plane_record(KIND_TASK, task_id)?
             .map(|b| TaskRow::from_body(&b))
             .transpose()
     }
-    fn list_tasks(&self) -> StoreResult<Vec<TaskRow>> {
+    fn list_tasks(&self) -> RecordStoreResult<Vec<TaskRow>> {
         self.list_plane_records(KIND_TASK, &PlaneSelector::All)?
             .iter()
             .map(|b| TaskRow::from_body(b))
             .collect()
     }
-    fn purge_tasks_before(&self, before: u64) -> StoreResult<u64> {
+    fn purge_tasks_before(&self, before: u64) -> RecordStoreResult<u64> {
         self.purge_plane_records_before(KIND_TASK, before)
     }
-    fn append_task_event(&self, event: &TaskEventRow) -> StoreResult<()> {
+    fn append_task_event(&self, event: &TaskEventRow) -> RecordStoreResult<()> {
         self.append_plane_record(&event.to_plane_record()?)
     }
-    fn list_task_events(&self, task_id: &str) -> StoreResult<Vec<TaskEventRow>> {
+    fn list_task_events(&self, task_id: &str) -> RecordStoreResult<Vec<TaskEventRow>> {
         self.list_plane_records(KIND_TASK_EVENT, &TaskEventRow::parent_selector(task_id))?
             .iter()
             .map(|b| TaskEventRow::from_body(b))
@@ -1014,7 +1014,7 @@ pub trait TaskStoreTestExt: busbar_api::Store {
 }
 
 #[cfg(any(test, feature = "test-support"))]
-impl<T: busbar_api::Store + ?Sized> TaskStoreTestExt for T {}
+impl<T: busbar_contract::records::RecordStore + ?Sized> TaskStoreTestExt for T {}
 
 /// THE READ-BACK HALF, shared by every battery that asserts on this chain — the durable-sink test
 /// double, relocated here with the task subsystem so the batteries that attach it to the process-wide

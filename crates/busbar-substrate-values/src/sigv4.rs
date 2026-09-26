@@ -38,7 +38,7 @@ pub const X_AMZ_SECURITY_TOKEN: &str = "x-amz-security-token";
 
 /// Lowercase hex SHA-256 of `data` — re-exported from the `busbar-api` contract crate (plugins
 /// hash credentials under the SAME digest facility).
-pub use busbar_api::sha256_hex;
+pub use busbar_contract::redacted::sha256_hex;
 
 /// HMAC-SHA256 of `data` under `key`. `Hmac::new_from_slice` is infallible for HMAC — the spec
 /// accepts a key of ANY length — so the `Err` arm is unreachable. We still avoid `expect()`/panic
@@ -425,7 +425,7 @@ pub struct InboundRequest<'a> {
 ///      the recomputed SignedHeaders string to the client's claimed one.
 ///
 /// Returns `Ok(())` only when every check passes. The comparison uses
-/// `busbar_api::constant_time_eq` (the single constant-time primitive the engine and plugins share)
+/// `busbar_contract::redacted::constant_time_eq` (the single constant-time primitive the engine and plugins share)
 /// so a partial match cannot be recovered by timing. The caller MUST invoke this even for an UNKNOWN AccessKeyId
 /// (with a dummy secret) so the unknown-key and bad-signature paths are timing/response
 /// indistinguishable (no AccessKeyId-enumeration oracle).
@@ -510,8 +510,11 @@ pub fn verify_inbound_sigv4(
     // reconstruction would diverge from theirs. Run BOTH compares unconditionally (no `&&`
     // short-circuit) and fold with bitwise-OR-of-inverses so the work — and thus the timing — does not
     // depend on WHICH check failed; only the final all-pass boolean is observable.
-    let headers_ok = busbar_api::constant_time_eq(&computed_signed_headers, &parsed.signed_headers);
-    let sig_ok = busbar_api::constant_time_eq(&computed_sig, &parsed.signature);
+    let headers_ok = busbar_contract::redacted::constant_time_eq(
+        &computed_signed_headers,
+        &parsed.signed_headers,
+    );
+    let sig_ok = busbar_contract::redacted::constant_time_eq(&computed_sig, &parsed.signature);
     if std::hint::black_box(u8::from(headers_ok) & u8::from(sig_ok)) == 1 {
         Ok(())
     } else {

@@ -6,12 +6,11 @@
 use crate::ir::embeddings::{
     EmbInput, EmbeddingItem, EmbeddingsReq, EmbeddingsResp, EncFmt, VectorData,
 };
-use busbar_api::operation::Operation;
-use busbar_substrate_values::handlers::{
-    CodecError, IngressReject, OperationHandler, RequestHandler,
-};
-use busbar_substrate_values::ir::handle::IrHandle;
-use busbar_substrate_values::wire::{EgressCtx, SlabBytes, WireBody};
+use busbar_contract::codec::{CodecError, IngressReject, OperationHandler, RequestHandler};
+use busbar_contract::codec::{EgressCtx, WireBody};
+use busbar_contract::ir::handle::IrHandle;
+use busbar_contract::operation::OpVerb;
+use busbar_contract::SlabBytes;
 use bytes::Bytes;
 use serde_json::{json, Value};
 
@@ -26,11 +25,11 @@ static RERANK: BedrockRerank = BedrockRerank;
 
 /// BEDROCK'S ROW OF THE SUPPORT MATRIX — the verbs this protocol speaks, as data. A verb absent
 /// from it is a genuine gap → the standard no-handler 404.
-static CELLS: &[busbar_substrate_values::handlers::Cell] = &[
-    (Operation::CHAT, &CHAT),
-    (Operation::EMBEDDINGS, &EMB),
-    (Operation::IMAGE, &IMG),
-    (Operation::RERANK, &RERANK),
+static CELLS: &[busbar_contract::codec::Cell] = &[
+    (OpVerb::CHAT, &CHAT),
+    (OpVerb::EMBEDDINGS, &EMB),
+    (OpVerb::IMAGE, &IMG),
+    (OpVerb::RERANK, &RERANK),
 ];
 
 /// Billable usage for a complete same-protocol (Bedrock -> Bedrock) non-stream 2xx body, keyed by
@@ -52,7 +51,7 @@ static CELLS: &[busbar_substrate_values::handlers::Cell] = &[
 pub fn same_protocol_usage(
     body: &[u8],
     parsed: Option<&Value>,
-) -> Option<busbar_substrate_values::billing::TokenUsage> {
+) -> Option<busbar_contract::billing::TokenUsage> {
     let has = |k: &str| parsed.is_some_and(|v| v.get(k).is_some());
     if has("output") || has("stopReason") {
         CHAT.extract_usage("bedrock", body)
@@ -74,7 +73,7 @@ pub fn same_protocol_usage(
 pub fn same_protocol_open_billing(
     body: &[u8],
     parsed: Option<&Value>,
-) -> Option<busbar_substrate_values::billing::Billing> {
+) -> Option<busbar_contract::billing::Billing> {
     if !parsed.is_some_and(|v| v.get("results").is_some()) {
         return None;
     }
@@ -93,14 +92,14 @@ impl RequestHandler for BedrockRequestHandler {
     fn protocol_name(&self) -> &'static str {
         "bedrock"
     }
-    fn operation_handler(&self, op: Operation) -> Option<&dyn OperationHandler> {
-        busbar_substrate_values::handlers::cell_of(CELLS, op)
+    fn operation_handler(&self, op: OpVerb) -> Option<&dyn OperationHandler> {
+        busbar_contract::codec::cell_of(CELLS, op)
     }
     fn upstream_path(&self, ctx: &EgressCtx) -> String {
         // Chat uses the Converse API (stream-aware); everything else rides InvokeModel. The
         // discriminator is this protocol's OWN verb constant, compared against this protocol's OWN
         // table — not a core enum's variant, which is the point of the 1.6.0 split.
-        if ctx.operation == Operation::CHAT {
+        if ctx.operation == OpVerb::CHAT {
             let verb = if ctx.stream {
                 "converse-stream"
             } else {
@@ -113,11 +112,11 @@ impl RequestHandler for BedrockRequestHandler {
         // must return a `String`. That is the pre-1.6.0 answer, verbatim.
         format!("/model/{}/invoke", ctx.model)
     }
-    fn resolve_operation(&self, path: &str, body: &[u8]) -> Option<Operation> {
+    fn resolve_operation(&self, path: &str, body: &[u8]) -> Option<OpVerb> {
         // Converse is chat; InvokeModel multiplexes — the BODY names the op (Titan image vs Titan
         // embeddings). Unknown invoke bodies resolve to None (a clean 400 at the route layer).
         if path.ends_with("/converse") || path.ends_with("/converse-stream") {
-            return Some(Operation::CHAT);
+            return Some(OpVerb::CHAT);
         }
         if path.ends_with("/invoke") {
             // Anchor every scan to the QUOTED JSON key (`"key"`), not the bare token: an unanchored
@@ -128,13 +127,13 @@ impl RequestHandler for BedrockRequestHandler {
             // Rerank models (cohere.rerank-*, amazon.rerank-*) take {query, documents} — no
             // other InvokeModel body carries both keys.
             if has(b"\"query\"") && has(b"\"documents\"") {
-                return Some(Operation::RERANK);
+                return Some(OpVerb::RERANK);
             }
             if has(b"\"textToImageParams\"") {
-                return Some(Operation::IMAGE);
+                return Some(OpVerb::IMAGE);
             }
             if has(b"\"inputText\"") {
-                return Some(Operation::EMBEDDINGS);
+                return Some(OpVerb::EMBEDDINGS);
             }
         }
         None
@@ -157,7 +156,7 @@ impl OperationHandler for BedrockImage {
         &self,
         status: u16,
         body: &[u8],
-    ) -> busbar_substrate_values::breaker::RawUpstreamError {
+    ) -> busbar_contract::upstream::RawUpstreamError {
         super::super::proto_codec::protocol_error("bedrock", status, body)
     }
     // Buffer the same-protocol non-stream 2xx body so the default `extract_usage` runs the op's own
@@ -240,7 +239,7 @@ impl OperationHandler for BedrockEmbeddings {
         &self,
         status: u16,
         body: &[u8],
-    ) -> busbar_substrate_values::breaker::RawUpstreamError {
+    ) -> busbar_contract::upstream::RawUpstreamError {
         super::super::proto_codec::protocol_error("bedrock", status, body)
     }
     // Token-metered: buffer the same-protocol non-stream 2xx body so the default
@@ -341,7 +340,7 @@ impl OperationHandler for BedrockRerank {
         &self,
         status: u16,
         body: &[u8],
-    ) -> busbar_substrate_values::breaker::RawUpstreamError {
+    ) -> busbar_contract::upstream::RawUpstreamError {
         super::super::proto_codec::protocol_error("bedrock", status, body)
     }
     fn read_request(
@@ -473,13 +472,13 @@ pub fn read_image_request(
 pub fn read_image_response(wire: &[u8]) -> Result<crate::ir::image::ImageResp, CodecError> {
     let v: Value =
         serde_json::from_slice(wire).map_err(|e| CodecError::Malformed(e.to_string()))?;
-    let images: Vec<busbar_substrate_values::media::ImageOutput> = v
+    let images: Vec<busbar_contract::media::ImageOutput> = v
         .get("images")
         .and_then(Value::as_array)
         .map(|arr| {
             arr.iter()
                 .filter_map(|b| b.as_str())
-                .map(|b| busbar_substrate_values::media::ImageOutput {
+                .map(|b| busbar_contract::media::ImageOutput {
                     b64: Some(b.to_string()),
                     ..Default::default()
                 })
@@ -551,7 +550,7 @@ pub fn read_embeddings_response(
     // count REFUSES rather than reading as "no usage reported".
     let usage = crate::usage_count::billed_count_opt(Some(&v), "inputTextTokenCount")
         .map_err(|e| CodecError::Malformed(e.to_string()))?
-        .map(|n| busbar_substrate_values::billing::TokenUsage {
+        .map(|n| busbar_contract::billing::TokenUsage {
             input: n,
             ..Default::default()
         });

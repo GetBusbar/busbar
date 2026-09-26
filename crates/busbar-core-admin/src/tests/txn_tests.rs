@@ -50,59 +50,77 @@ impl SlowStore {
     }
 }
 
-impl busbar_api::Store for SlowStore {
-    fn put_key(&self, key: &busbar_api::VirtualKey) -> busbar_api::StoreResult<()> {
+impl busbar_contract::records::RecordStore for SlowStore {
+    fn put_key(
+        &self,
+        key: &busbar_contract::records::VirtualKey,
+    ) -> busbar_contract::records::RecordStoreResult<()> {
         self.inner.put_key(key)
     }
-    fn get_key(&self, id: &str) -> busbar_api::StoreResult<Option<busbar_api::VirtualKey>> {
+    fn get_key(
+        &self,
+        id: &str,
+    ) -> busbar_contract::records::RecordStoreResult<Option<busbar_contract::records::VirtualKey>>
+    {
         self.inner.get_key(id)
     }
-    fn list_keys(&self) -> busbar_api::StoreResult<Vec<busbar_api::VirtualKey>> {
+    fn list_keys(
+        &self,
+    ) -> busbar_contract::records::RecordStoreResult<Vec<busbar_contract::records::VirtualKey>>
+    {
         self.reads.fetch_add(1, Ordering::SeqCst);
         std::thread::sleep(self.delay);
         self.inner.list_keys()
     }
-    fn delete_key(&self, id: &str) -> busbar_api::StoreResult<()> {
+    fn delete_key(&self, id: &str) -> busbar_contract::records::RecordStoreResult<()> {
         self.inner.delete_key(id)
     }
     fn get_usage(
         &self,
         bucket_id: &str,
         window_start: u64,
-    ) -> busbar_api::StoreResult<busbar_api::UsageLedger> {
+    ) -> busbar_contract::records::RecordStoreResult<busbar_contract::records::UsageLedger> {
         self.inner.get_usage(bucket_id, window_start)
     }
     fn put_usage(
         &self,
         bucket_id: &str,
         window_start: u64,
-        ledger: &busbar_api::UsageLedger,
-    ) -> busbar_api::StoreResult<()> {
+        ledger: &busbar_contract::records::UsageLedger,
+    ) -> busbar_contract::records::RecordStoreResult<()> {
         self.inner.put_usage(bucket_id, window_start, ledger)
     }
-    fn add_metering(&self, delta: &busbar_api::MeteringDelta) -> busbar_api::StoreResult<()> {
+    fn add_metering(
+        &self,
+        delta: &busbar_contract::records::MeteringDelta,
+    ) -> busbar_contract::records::RecordStoreResult<()> {
         self.inner.add_metering(delta)
     }
-    fn list_metering(&self, bucket: u64) -> busbar_api::StoreResult<Vec<busbar_api::MeteringRow>> {
+    fn list_metering(
+        &self,
+        bucket: u64,
+    ) -> busbar_contract::records::RecordStoreResult<Vec<busbar_contract::records::MeteringRow>>
+    {
         self.inner.list_metering(bucket)
     }
     fn put_key_with_credential(
         &self,
-        key: &busbar_api::VirtualKey,
-        secret: &busbar_api::CredentialSecret,
-    ) -> busbar_api::StoreResult<()> {
+        key: &busbar_contract::records::VirtualKey,
+        secret: &busbar_contract::records::CredentialSecret,
+    ) -> busbar_contract::records::RecordStoreResult<()> {
         self.inner.put_key_with_credential(key, secret)
     }
     fn list_credentials(
         &self,
         key_id: &str,
-    ) -> busbar_api::StoreResult<Vec<busbar_api::CredentialMeta>> {
+    ) -> busbar_contract::records::RecordStoreResult<Vec<busbar_contract::records::CredentialMeta>>
+    {
         self.inner.list_credentials(key_id)
     }
 }
 
 /// Governance with a deterministic token signer, so `POST /keys` actually mints.
-fn gov(store: Arc<dyn busbar_kernel::governance::Store>) -> Arc<GovState> {
+fn gov(store: Arc<dyn busbar_kernel::governance::RecordStore>) -> Arc<GovState> {
     Arc::new(
         GovState::new_with_signer(
             store,

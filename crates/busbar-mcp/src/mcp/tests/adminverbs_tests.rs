@@ -120,7 +120,7 @@ async fn serve_passthrough(peer: &Peer) -> (std::net::SocketAddr, tokio::task::J
         peer,
         &[("read", Some(approved_hash("read", DESCRIPTION, schema())))],
     );
-    cfg.upstream_credentials = Some(busbar_api::UpstreamCreds::Passthrough);
+    cfg.upstream_credentials = Some(busbar_contract::config::UpstreamCreds::Passthrough);
     let app = test_app()
         .governance(gov)
         .mcp(&mcp_cfg())

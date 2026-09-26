@@ -214,6 +214,23 @@ case "$sub" in
       *) shift;;
     esac; done
     [ -n "$BIN" ] && [ -n "$OUT" ] || { echo "oracle record: need --bin and --out" >&2; exit 2; }
+    # A BOUND BAND NAMES ITS HOLDER. The recorder refuses a band something already listens on, but
+    # it names only the ports, and the usual holder is a busbar a previous recording leaked. Until
+    # that process is found, every later recording on the band is refused or, if it got past the
+    # check, answered by the stale node instead of the candidate. So an explicitly chosen band is
+    # checked here first, and the refusal names each listener's pid and command line. An unset port
+    # is left to the recorder, which picks a free band itself.
+    busy=""
+    for port in ${ORACLE_LISTEN_PORT:-} ${ORACLE_ADMIN_PORT:-} ${ORACLE_MOCK_PORT:-}; do
+      for pid in $(lsof -nP -t -iTCP:"$port" -sTCP:LISTEN 2>/dev/null | sort -u); do
+        busy="${busy}  port $port: pid $pid ($(ps -o command= -p "$pid" 2>/dev/null | cut -c1-160))
+"
+      done
+    done
+    if [ -n "$busy" ]; then
+      printf 'oracle record: the recording band is already bound, so nothing is recorded:\n%sStop the stale process (kill <pid>) or choose a free ORACLE_LISTEN_PORT/ORACLE_ADMIN_PORT/ORACLE_MOCK_PORT.\n' "$busy" >&2
+      exit 2
+    fi
     # --out IS HONOURED, BY BEING PASSED. This used to send only --work-dir and let the recorder
     # write <work>/candidate, then PRINT that the --out basename "is honored as that dir". It was
     # not: measured, `--out /tmp/x/money` wrote the recording to /tmp/x/candidate, left /tmp/x/money

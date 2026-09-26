@@ -678,7 +678,7 @@ fn a_committed_invoke_rewrite_installs_any_json_object_verbatim() {
     // the one it does. `persona` stands in for any string-typed field of a plane's typed config
     // (the doc above names the concrete one); core never learns which plane's type it is.
     let mut args = serde_json::json!({ "instructions": "locked by the plane", "persona": "alloy" });
-    let rw = busbar_api::RewriteReply {
+    let rw = busbar_contract::hooks::RewriteReply {
         messages: vec![serde_json::json!({ "role": "user", "content": { "persona": 7 } })],
         tools: Vec::new(),
     };
@@ -766,12 +766,12 @@ struct AbstainingRewrite;
 impl crate::hooks::RoutingPolicy for AbstainingRewrite {
     async fn decide(
         &self,
-        _req: &busbar_api::RoutingRequest<'_>,
-        _candidates: &[busbar_api::Candidate<'_>],
-        _ctx: &busbar_api::RoutingContext<'_>,
+        _req: &busbar_contract::hooks::RoutingRequest<'_>,
+        _candidates: &[busbar_contract::hooks::Candidate<'_>],
+        _ctx: &busbar_contract::hooks::RoutingContext<'_>,
         _budget: std::time::Duration,
-    ) -> busbar_api::PolicyResult {
-        Ok(busbar_api::RoutingDecision::Abstain)
+    ) -> busbar_contract::hooks::PolicyResult {
+        Ok(busbar_contract::hooks::RoutingDecision::Abstain)
     }
     fn name(&self) -> &'static str {
         "abstaining-rewrite"

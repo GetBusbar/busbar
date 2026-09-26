@@ -17,7 +17,7 @@ use crate::proto_codec::{
     PROTO_ANTHROPIC, PROTO_BEDROCK, PROTO_COHERE, PROTO_GEMINI, PROTO_OPENAI, PROTO_RESPONSES,
 };
 use crate::test_support::engine_kit::EngineTestKit as _;
-use busbar_api::operation::Operation;
+use busbar_contract::operation::OpVerb;
 use busbar_substrate_values::handlers::request_handler;
 use std::collections::HashMap;
 
@@ -40,7 +40,7 @@ fn registry_resolves_openai_and_its_moderation_handler() {
     install_llm_registrations();
     let h = request_handler(PROTO_OPENAI).expect("the shipped protocol's handler is registered");
     assert_eq!(h.protocol_name(), PROTO_OPENAI);
-    assert!(h.operation_handler(Operation::MODERATION).is_some());
+    assert!(h.operation_handler(OpVerb::MODERATION).is_some());
     assert!(
         request_handler("zzz-unknown").is_none(),
         "unknown protocol → None"
@@ -62,7 +62,7 @@ fn every_protocol_serves_chat_via_its_request_handler() {
     ] {
         let h = request_handler(proto).expect("protocol registered");
         assert!(
-            h.operation_handler(Operation::CHAT).is_some(),
+            h.operation_handler(OpVerb::CHAT).is_some(),
             "{proto} must serve chat via operation_handler(Chat)"
         );
     }
@@ -77,7 +77,7 @@ fn chat_declares_its_capabilities() {
     // HTTP — rather than a hand-built const over the plugin's handler type.
     let chat = busbar_substrate_values::handlers::op_for(
         crate::proto_codec::PROTO_OPENAI,
-        Operation::CHAT,
+        OpVerb::CHAT,
         busbar_substrate_values::transport::Transport::Http,
     )
     .expect("the shipped protocol serves chat");

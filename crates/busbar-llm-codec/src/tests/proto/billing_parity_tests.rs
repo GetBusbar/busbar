@@ -8,8 +8,8 @@
 //! {same-proto, cross-proto} path — so it names the codec vocabulary a neutral crate's tests must
 //! not, and lives beside the types it exercises. Every assertion is BYTE-IDENTICAL to the
 //! pre-relocation suite; only the paths were repointed (`crate::proto::{StreamTranslate,
-//! protocol_for,SSE_DONE_FRAME}` → the `super::*` prelude, `crate::eventstream`/`crate::json` →
-//! their `busbar_substrate_values::` home).
+//! protocol_for,SSE_DONE_FRAME}` → the `super::*` prelude; `crate::eventstream`/`crate::json` are
+//! this plane's own modules again since #83a SD-3).
 
 use super::*;
 
@@ -40,7 +40,7 @@ fn cross_proto_usage(ingress: &str, egress: &str, frames: &[&[u8]]) -> (u64, u64
 /// the body is relayed verbatim, billing reads `ir.usage`) and return the billed (input, output).
 fn nonstream_usage(proto: &str, body: &[u8]) -> (u64, u64) {
     let p = protocol_for(proto).expect("known proto");
-    let v: serde_json::Value = busbar_substrate_values::json::parse(body).expect("json body");
+    let v: serde_json::Value = crate::json::parse(body).expect("json body");
     let ir = p.reader().read_response(&v).expect("read_response");
     (ir.usage.input_tokens, ir.usage.output_tokens)
 }
@@ -116,7 +116,7 @@ fn stream_same_proto_cohere() {
 fn stream_same_proto_bedrock_binary_eventstream() {
     // Bedrock binary eventstream same-proto: the A-tap reads the IR decoded from the binary frames.
     // Prior byte-scanner numbers: (31, 12).
-    use busbar_substrate_values::eventstream::encode_frame;
+    use crate::eventstream::encode_frame;
     let mut start = Vec::new();
     start.extend(encode_frame("messageStart", br#"{"role":"assistant"}"#));
     let mut stop = Vec::new();
@@ -218,13 +218,13 @@ fn nonstream_same_proto_all_protocols() {
 /// growing a SECOND projection that rebuilds `TokenUsage` from the RAW totals.
 #[test]
 fn buffered_billing_and_stream_tap_agree_on_cohere_billed_units() {
-    use busbar_substrate_values::billing::Billing;
-    use busbar_substrate_values::ir::handle::IrHandle;
+    use busbar_contract::billing::Billing;
+    use busbar_contract::ir::handle::IrHandle;
 
     // billed_units (120/50) deliberately DIFFER from the raw tokens bucket (100/40) — the only
     // shape that can tell the two projections apart.
     let body = br#"{"id":"c1","finish_reason":"COMPLETE","message":{"role":"assistant","content":[{"type":"text","text":"hi"}]},"usage":{"billed_units":{"input_tokens":120,"output_tokens":50},"tokens":{"input_tokens":100,"output_tokens":40}}}"#;
-    let v: serde_json::Value = busbar_substrate_values::json::parse(body).expect("json body");
+    let v: serde_json::Value = crate::json::parse(body).expect("json body");
     let ir = protocol_for("cohere")
         .expect("known proto")
         .reader()

@@ -48,7 +48,7 @@ fn the_locked_section_shape_parses_into_the_values_it_declares() {
     // SCALAR ⇒ OVERRIDE.
     assert_eq!(
         cfg.effective_upstream_credentials("filesystem"),
-        Some(busbar_api::UpstreamCreds::Own)
+        Some(busbar_contract::config::UpstreamCreds::Own)
     );
 }
 

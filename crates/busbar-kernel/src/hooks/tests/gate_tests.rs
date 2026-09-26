@@ -283,8 +283,8 @@ fn tool_call() -> InvokeReq {
     }
 }
 
-fn key() -> busbar_api::VirtualKey {
-    busbar_api::VirtualKey {
+fn key() -> busbar_contract::records::VirtualKey {
+    busbar_contract::records::VirtualKey {
         id: "k-1".to_string(),
         name: "reporting".to_string(),
         generation_hash: String::new(),
@@ -502,8 +502,8 @@ async fn no_attached_gate_builds_no_projection() {
         walks: std::sync::atomic::AtomicUsize,
     }
     impl crate::ir::facts::IrFacts for Counting {
-        fn verb(&self) -> crate::operation::Operation {
-            crate::operation::Operation::INVOKE
+        fn verb(&self) -> crate::operation::OpVerb {
+            crate::operation::OpVerb::INVOKE
         }
         fn wants_stream(&self) -> bool {
             false

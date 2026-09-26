@@ -56,7 +56,7 @@ async fn stream_without_usage_frame_bills_zero_on_every_dialect() {
 
         // A governed key on a fresh in-memory registry, so the ledger and the metering series
         // start empty for this dialect.
-        let store: Arc<dyn busbar_api::Store> =
+        let store: Arc<dyn busbar_contract::records::RecordStore> =
             crate::test_support::engine_kit::CORE_ENGINE_KIT.scratch_store();
         let gov_kit = crate::test_support::engine_kit::CORE_ENGINE_KIT
             .governance(store, None, None)

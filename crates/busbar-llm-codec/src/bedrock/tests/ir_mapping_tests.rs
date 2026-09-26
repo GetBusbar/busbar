@@ -17,7 +17,7 @@ fn xreq(ingress: &'static str, egress: &str, body: &Value) -> Value {
     let mut req = ingress_p.reader().read_request(body).expect("read_request");
     crate::chat_handle::chat_prepare_for_egress(
         &mut req,
-        &busbar_substrate_values::ir::egress_prep::EgressPrep {
+        &busbar_contract::ir::egress_prep::EgressPrep {
             thought_signature_fill: false,
             ingress_protocol: ingress,
             egress_requires_max_tokens: egress_p.decl().is_some_and(|d| d.requires_max_tokens),
@@ -48,7 +48,7 @@ fn xresp(upstream: &str, client: &'static str, body: &Value) -> Value {
 fn xstream_from_bedrock(client: &str, frames: &[(&str, Value)]) -> String {
     let mut bytes = Vec::new();
     for (et, payload) in frames {
-        bytes.extend(busbar_substrate_values::eventstream::encode_frame(
+        bytes.extend(crate::eventstream::encode_frame(
             et,
             payload.to_string().as_bytes(),
         ));
@@ -233,19 +233,17 @@ fn bed03_text_document_source_becomes_a_text_plain_document() {
         vec![
             crate::ir::IrImageSource::Base64 {
                 media_type: "text/plain".into(),
-                data: busbar_substrate_values::media::base64_encode(b"plain text doc"),
+                data: busbar_contract::media::base64_encode(b"plain text doc"),
             },
             crate::ir::IrImageSource::Base64 {
                 media_type: "text/markdown".into(),
-                data: busbar_substrate_values::media::base64_encode(b"a\nb"),
+                data: busbar_contract::media::base64_encode(b"a\nb"),
             },
         ]
     );
     let g = xreq("bedrock", "gemini", &body).to_string();
     assert!(
-        g.contains(&busbar_substrate_values::media::base64_encode(
-            b"plain text doc"
-        )),
+        g.contains(&busbar_contract::media::base64_encode(b"plain text doc")),
         "{g}"
     );
 }
@@ -413,7 +411,7 @@ fn bed12_synthesized_stream_carries_citations() {
         .expect("read");
     let es = bedrock_response_to_eventstream(&ir, Some(1));
     let mut buf = es.clone();
-    let frames = busbar_substrate_values::eventstream::drain_frames(&mut buf);
+    let frames = crate::eventstream::drain_frames(&mut buf);
     let citation: Vec<Value> = frames
         .iter()
         .filter(|(et, _)| et == "contentBlockDelta")

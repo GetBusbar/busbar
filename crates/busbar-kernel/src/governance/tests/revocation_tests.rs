@@ -5,8 +5,8 @@
 
 use super::*;
 use crate::governance::MemoryStore;
-use busbar_api::{
-    AuditRecord, MeteringDelta, MeteringRow, StoreResult, UsageDelta, UsageLedger, VirtualKey,
+use busbar_contract::records::{
+    AuditRecord, MeteringDelta, MeteringRow, RecordStoreResult, UsageDelta, UsageLedger, VirtualKey,
 };
 use std::sync::atomic::AtomicUsize;
 use std::sync::mpsc;
@@ -24,8 +24,8 @@ struct HungDenylistStore {
     /// How many reads have been started — the bound check.
     entries: Arc<AtomicUsize>,
 }
-impl Store for HungDenylistStore {
-    fn list_denylist(&self) -> StoreResult<Vec<String>> {
+impl RecordStore for HungDenylistStore {
+    fn list_denylist(&self) -> RecordStoreResult<Vec<String>> {
         self.entries.fetch_add(1, Ordering::SeqCst);
         let _ = self.entered.send(());
         // Park forever. A test thread parked here is the whole point; the runtime is dropped at
@@ -34,37 +34,37 @@ impl Store for HungDenylistStore {
             std::thread::sleep(Duration::from_secs(3600));
         }
     }
-    fn put_key(&self, k: &VirtualKey) -> StoreResult<()> {
+    fn put_key(&self, k: &VirtualKey) -> RecordStoreResult<()> {
         self.inner.put_key(k)
     }
-    fn get_key(&self, id: &str) -> StoreResult<Option<VirtualKey>> {
+    fn get_key(&self, id: &str) -> RecordStoreResult<Option<VirtualKey>> {
         self.inner.get_key(id)
     }
-    fn list_keys(&self) -> StoreResult<Vec<VirtualKey>> {
+    fn list_keys(&self) -> RecordStoreResult<Vec<VirtualKey>> {
         self.inner.list_keys()
     }
-    fn delete_key(&self, id: &str) -> StoreResult<()> {
+    fn delete_key(&self, id: &str) -> RecordStoreResult<()> {
         self.inner.delete_key(id)
     }
-    fn get_usage(&self, id: &str, w: u64) -> StoreResult<UsageLedger> {
+    fn get_usage(&self, id: &str, w: u64) -> RecordStoreResult<UsageLedger> {
         self.inner.get_usage(id, w)
     }
-    fn put_usage(&self, id: &str, w: u64, l: &UsageLedger) -> StoreResult<()> {
+    fn put_usage(&self, id: &str, w: u64, l: &UsageLedger) -> RecordStoreResult<()> {
         self.inner.put_usage(id, w, l)
     }
-    fn add_usage(&self, id: &str, w: u64, d: &UsageDelta) -> StoreResult<()> {
+    fn add_usage(&self, id: &str, w: u64, d: &UsageDelta) -> RecordStoreResult<()> {
         self.inner.add_usage(id, w, d)
     }
-    fn add_metering(&self, d: &MeteringDelta) -> StoreResult<()> {
+    fn add_metering(&self, d: &MeteringDelta) -> RecordStoreResult<()> {
         self.inner.add_metering(d)
     }
-    fn list_metering(&self, b: u64) -> StoreResult<Vec<MeteringRow>> {
+    fn list_metering(&self, b: u64) -> RecordStoreResult<Vec<MeteringRow>> {
         self.inner.list_metering(b)
     }
-    fn append_audit(&self, e: &AuditRecord) -> StoreResult<()> {
+    fn append_audit(&self, e: &AuditRecord) -> RecordStoreResult<()> {
         self.inner.append_audit(e)
     }
-    fn list_audit(&self) -> StoreResult<Vec<AuditRecord>> {
+    fn list_audit(&self) -> RecordStoreResult<Vec<AuditRecord>> {
         self.inner.list_audit()
     }
 }
@@ -74,42 +74,44 @@ struct BrokenDenylistStore {
     inner: MemoryStore,
     calls: Arc<AtomicUsize>,
 }
-impl Store for BrokenDenylistStore {
-    fn list_denylist(&self) -> StoreResult<Vec<String>> {
+impl RecordStore for BrokenDenylistStore {
+    fn list_denylist(&self) -> RecordStoreResult<Vec<String>> {
         self.calls.fetch_add(1, Ordering::SeqCst);
-        Err(busbar_api::StoreError("connection refused".into()))
+        Err(busbar_contract::records::RecordStoreError(
+            "connection refused".into(),
+        ))
     }
-    fn put_key(&self, k: &VirtualKey) -> StoreResult<()> {
+    fn put_key(&self, k: &VirtualKey) -> RecordStoreResult<()> {
         self.inner.put_key(k)
     }
-    fn get_key(&self, id: &str) -> StoreResult<Option<VirtualKey>> {
+    fn get_key(&self, id: &str) -> RecordStoreResult<Option<VirtualKey>> {
         self.inner.get_key(id)
     }
-    fn list_keys(&self) -> StoreResult<Vec<VirtualKey>> {
+    fn list_keys(&self) -> RecordStoreResult<Vec<VirtualKey>> {
         self.inner.list_keys()
     }
-    fn delete_key(&self, id: &str) -> StoreResult<()> {
+    fn delete_key(&self, id: &str) -> RecordStoreResult<()> {
         self.inner.delete_key(id)
     }
-    fn get_usage(&self, id: &str, w: u64) -> StoreResult<UsageLedger> {
+    fn get_usage(&self, id: &str, w: u64) -> RecordStoreResult<UsageLedger> {
         self.inner.get_usage(id, w)
     }
-    fn put_usage(&self, id: &str, w: u64, l: &UsageLedger) -> StoreResult<()> {
+    fn put_usage(&self, id: &str, w: u64, l: &UsageLedger) -> RecordStoreResult<()> {
         self.inner.put_usage(id, w, l)
     }
-    fn add_usage(&self, id: &str, w: u64, d: &UsageDelta) -> StoreResult<()> {
+    fn add_usage(&self, id: &str, w: u64, d: &UsageDelta) -> RecordStoreResult<()> {
         self.inner.add_usage(id, w, d)
     }
-    fn add_metering(&self, d: &MeteringDelta) -> StoreResult<()> {
+    fn add_metering(&self, d: &MeteringDelta) -> RecordStoreResult<()> {
         self.inner.add_metering(d)
     }
-    fn list_metering(&self, b: u64) -> StoreResult<Vec<MeteringRow>> {
+    fn list_metering(&self, b: u64) -> RecordStoreResult<Vec<MeteringRow>> {
         self.inner.list_metering(b)
     }
-    fn append_audit(&self, e: &AuditRecord) -> StoreResult<()> {
+    fn append_audit(&self, e: &AuditRecord) -> RecordStoreResult<()> {
         self.inner.append_audit(e)
     }
-    fn list_audit(&self) -> StoreResult<Vec<AuditRecord>> {
+    fn list_audit(&self) -> RecordStoreResult<Vec<AuditRecord>> {
         self.inner.list_audit()
     }
 }

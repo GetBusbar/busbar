@@ -18,9 +18,10 @@
 
 mod linked;
 
-use busbar_api::{UsageLedger, VirtualKey};
+use busbar_contract::records::{UsageLedger, VirtualKey};
 use busbar_kernel::governance::{
-    GovState, MemoryStore, MeteringDelta, MeteringRow, Store, StoreError, StoreResult,
+    GovState, MemoryStore, MeteringDelta, MeteringRow, RecordStore, RecordStoreError,
+    RecordStoreResult,
 };
 use busbar_kernel::metrics::{
     init, refresh_scrape_gauges, render, LANE_AVAILABLE, LANE_AVAILABLE_PERMITS, LANE_INFLIGHT,
@@ -272,27 +273,27 @@ struct ScrapeTimeBrokenKeyListStore {
     inner: MemoryStore,
     calls: std::sync::atomic::AtomicUsize,
 }
-impl Store for ScrapeTimeBrokenKeyListStore {
-    fn list_keys(&self) -> StoreResult<Vec<VirtualKey>> {
+impl RecordStore for ScrapeTimeBrokenKeyListStore {
+    fn list_keys(&self) -> RecordStoreResult<Vec<VirtualKey>> {
         let n = self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         if n == 0 {
             self.inner.list_keys()
         } else {
-            Err(StoreError(
+            Err(RecordStoreError(
                 "governance store unavailable (simulated scrape-time outage)".into(),
             ))
         }
     }
-    fn put_key(&self, key: &VirtualKey) -> StoreResult<()> {
+    fn put_key(&self, key: &VirtualKey) -> RecordStoreResult<()> {
         self.inner.put_key(key)
     }
-    fn get_key(&self, id: &str) -> StoreResult<Option<VirtualKey>> {
+    fn get_key(&self, id: &str) -> RecordStoreResult<Option<VirtualKey>> {
         self.inner.get_key(id)
     }
-    fn delete_key(&self, id: &str) -> StoreResult<()> {
+    fn delete_key(&self, id: &str) -> RecordStoreResult<()> {
         self.inner.delete_key(id)
     }
-    fn get_usage(&self, bucket_id: &str, window_start: u64) -> StoreResult<UsageLedger> {
+    fn get_usage(&self, bucket_id: &str, window_start: u64) -> RecordStoreResult<UsageLedger> {
         self.inner.get_usage(bucket_id, window_start)
     }
     fn put_usage(
@@ -300,13 +301,13 @@ impl Store for ScrapeTimeBrokenKeyListStore {
         bucket_id: &str,
         window_start: u64,
         ledger: &UsageLedger,
-    ) -> StoreResult<()> {
+    ) -> RecordStoreResult<()> {
         self.inner.put_usage(bucket_id, window_start, ledger)
     }
-    fn add_metering(&self, delta: &MeteringDelta) -> StoreResult<()> {
+    fn add_metering(&self, delta: &MeteringDelta) -> RecordStoreResult<()> {
         self.inner.add_metering(delta)
     }
-    fn list_metering(&self, bucket: u64) -> StoreResult<Vec<MeteringRow>> {
+    fn list_metering(&self, bucket: u64) -> RecordStoreResult<Vec<MeteringRow>> {
         self.inner.list_metering(bucket)
     }
 }

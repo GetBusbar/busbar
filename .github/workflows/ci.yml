@@ -1274,15 +1274,13 @@ jobs:
             exit 1
           fi
 
-      # THE LLM PLANE'S TELLER-STEP SUITE — the whole of `crates/busbar-llm/src/unit/` sits behind
-      # `#![cfg(feature = "teller-waist")]`, a flag no other step in this workflow turns on. So the
-      # workspace `cargo test` above compiles that directory to nothing and reports a green over a
-      # suite it never built: the step files, the walk carry and the flip's own rehearsal were all
-      # dark. This step is the one place the flag is up. It is exactly the voice step's situation one
-      # plane over, and it gets the same collected-count floor for the same reason — a suite that
-      # stops being collected still prints `test result: ok` and exits 0, so the count is what proves
-      # it ran rather than compiled away.
-      - name: LLM teller-step tests (the `teller-waist`-gated step suite `cargo test --workspace` never runs)
+      # THE LLM PLANE'S TELLER-STEP SUITE, BY NAME, WITH A COLLECTED-COUNT FLOOR. The step files in
+      # `crates/busbar-llm/src/unit/` once sat behind a feature no other step turned on, so the
+      # workspace run compiled them to nothing and reported green over a suite it never built. They
+      # compile in every build now and the feature is gone. This step keeps the suite's floor: a
+      # suite that stops being collected still prints `test result: ok` and exits 0, so the count is
+      # what proves it ran rather than compiled away.
+      - name: LLM teller-step tests (the plane's unit step suite, run by name against its floor)
         env:
           LLM_UNIT_MIN_TESTS: "70"
         # Same pipefail + explicit `0 failed` discipline as the voice and timing steps above. This
@@ -1292,7 +1290,7 @@ jobs:
         run: |
           set -uo pipefail
           rc=0
-          cargo test -p busbar-llm --features teller-waist --locked --lib unit:: 2>&1 | tee "$RUNNER_TEMP/llm-unit-test.log" || rc=${PIPESTATUS[0]}
+          cargo test -p busbar-llm --locked --lib unit:: 2>&1 | tee "$RUNNER_TEMP/llm-unit-test.log" || rc=${PIPESTATUS[0]}
           total=$(grep -oE 'test result: (ok|FAILED)\. [0-9]+ passed' "$RUNNER_TEMP/llm-unit-test.log" \
                   | grep -oE '[0-9]+ passed' | grep -oE '[0-9]+' \
                   | awk '{s+=$1} END {print s+0}')
@@ -1675,7 +1673,7 @@ jobs:
         run: python3 scripts/public-hygiene-lint.py --root .
 
       # SECRET-VALUE-TYPE HYGIENE (scripts/secret-hygiene-gate.sh, docs/design/1.6.0-secret-hygiene.md):
-      # a known-secret field declared as a bare String/&str/Vec<u8> instead of busbar_api::Redacted<T>
+      # a known-secret field declared as a bare String/&str/Vec<u8> instead of busbar_contract::Redacted<T>
       # (leakable through a derived Debug/Serialize), and an `.expose_secret()` on the same statement
       # as a log/audit/metric sink.
       #
@@ -1922,7 +1920,7 @@ jobs:
   # THE DELETION-TEST BUILD MATRIX — the enforcement gate (weak form).
   #
   # THE DELETION TEST: for each plane P, with busbar-<P> absent the NEUTRAL crates —
-  # busbar-kernel, busbar-substrate-values, busbar-api — must still COMPILE (and the binary boots serving no P
+  # busbar-kernel, busbar-substrate-values, busbar-contract — must still COMPILE (and the binary boots serving no P
   # protocol). This job is the WEAK form of that test, expressed at the neutral-crate level and made a
   # PERMANENT, ASSERTED property: build ONLY the three neutral crates with one plane's feature OFF (the
   # other planes kept ON), and with ALL planes off. It is the compile-only complement to the
@@ -1997,7 +1995,7 @@ jobs:
         # applies `--features` to the packages that declare it (busbar-kernel, which absorbed both
         # busbar-core at 673ecdaaa and busbar-substrate's engine at 5fa320208 and is where the
         # plane-<P> features are declared today); busbar-substrate-values (the substrate's pure value
-        # leaves) and busbar-api carry no plane features and are simply built neutral alongside. The
+        # leaves) and busbar-contract carry no plane features and are simply built neutral alongside. The
         # crate NAMES here are the deletion test's subject: while they read `busbar-core`/
         # `busbar-substrate` after the absorptions, this job could not have gone green at all.
         # A red here means a neutral crate still needs the removed plane crate to compile — a
@@ -2007,10 +2005,10 @@ jobs:
           set -euo pipefail
           FEATS="${{ matrix.features }}"
           if [ -n "$FEATS" ]; then
-            cargo build -p busbar-kernel -p busbar-substrate-values -p busbar-api \
+            cargo build -p busbar-kernel -p busbar-substrate-values -p busbar-contract \
               --no-default-features --features "$FEATS" --locked --verbose
           else
-            cargo build -p busbar-kernel -p busbar-substrate-values -p busbar-api \
+            cargo build -p busbar-kernel -p busbar-substrate-values -p busbar-contract \
               --no-default-features --locked --verbose
           fi
       - name: Latchkey Fast Cache (cargo registry + target, save)
@@ -2057,9 +2055,9 @@ jobs:
     # plus one set of crate test binaries; `check`'s own workspace clippy+build+test is ~13 min warm
     # and ~40 cold, and a row is a strict subset of that work. 45 leaves cold-cache headroom.
     timeout-minutes: 60
-    # FULL TIER ONLY. Thirteen legs: eight a near-full workspace recompile under a distinct feature
-    # closure, five (the single-plane rows) one root-package build with its defaults off — a
-    # promotion check, not a per-commit one. Skipped on pushes to non-promotion branches
+    # FULL TIER ONLY. Fourteen legs: eight a near-full workspace recompile under a distinct feature
+    # closure, six (the single-plane rows and the dropped-in transport row) one root-package build
+    # with its defaults off — a promotion check, not a per-commit one. Skipped on pushes to non-promotion branches
     # (integration/**); runs on every pull request, on dev/qa/main, and on workflow_dispatch. `dev`
     # is train-write-only (DECISIONS #67), so skipping only integration/** costs ~the same as a
     # qa-only guard while keeping this job COUNTED and enforced in ci-umbrella. See the tier note at
@@ -2142,25 +2140,46 @@ jobs:
           # the package (`--tests`): the binary's own suite and the integration suites under
           # crates/busbar/tests, all of which read the build's linked roster, so a cell that needs a
           # plane, a provider codec or the admin surface is gated on what the build links.
+          # EVERY SINGLE-PLANE ROW ALSO KEEPS THE DEFAULT NON-PLANE FEATURES: `busbar/transport-tcp`
+          # and the three default export sinks (`busbar/export-prometheus`, `-file`, `-webhook`).
+          # These rows vary PLANES, not wires or sinks. The tcp wire is the floor of a bootable node:
+          # a build without it boots only with a dropped-in tcp, and without one it refuses at the
+          # seal ("transport `tls` composes over `tcp`, which no registered transport provides"). A
+          # row without the sinks refuses every config naming one as an unknown exporter. Either
+          # way, the suites would test a refusal instead of the behaviour they are written for.
+          # The no-tcp build is its own row below.
           - name: single plane llm
-            features: busbar/proto-llm
+            features: busbar/proto-llm,busbar/transport-tcp,busbar/export-prometheus,busbar/export-file,busbar/export-webhook
             tests: -p busbar --tests --no-default-features
             scope: package
           - name: single plane mcp
-            features: busbar/plane-mcp
+            features: busbar/plane-mcp,busbar/transport-tcp,busbar/export-prometheus,busbar/export-file,busbar/export-webhook
             tests: -p busbar --tests --no-default-features
             scope: package
           - name: single plane a2a
-            features: busbar/plane-a2a
+            features: busbar/plane-a2a,busbar/transport-tcp,busbar/export-prometheus,busbar/export-file,busbar/export-webhook
             tests: -p busbar --tests --no-default-features
             scope: package
           - name: single plane voice
-            features: busbar/plane-voice
+            features: busbar/plane-voice,busbar/transport-tcp,busbar/export-prometheus,busbar/export-file,busbar/export-webhook
             tests: -p busbar --tests --no-default-features
             scope: package
           - name: single plane decision
-            features: busbar/plane-decision
+            features: busbar/plane-decision,busbar/transport-tcp,busbar/export-prometheus,busbar/export-file,busbar/export-webhook
             tests: -p busbar --tests --no-default-features
+            scope: package
+          # THE DROPPED-IN TRANSPORT DOOR (#3 OWNER-LOCKED, #30; ruling K8b residue / K8c): the root
+          # binary with every default feature EXCEPT `transport-tcp`, so the build links no `tcp` row
+          # and the wire serves only when its cdylib is dropped into `plugins/`. The one test that
+          # boots it both ways — no tarball: refused at boot (layers compose over nothing); tarball:
+          # serves the linked build's pinned exchange through the dropped-in wire, one listener per
+          # data worker. `-p busbar-plugin-loader` is on the line for its dev-edge to the wire with
+          # `dropped-in` on: that is what builds the wire's cdylib beside the binary, which the test
+          # finds by kind and refuses to skip without under CI. `check` runs the same test with the
+          # default (linked) row only.
+          - name: dropped-in tcp transport
+            features: busbar/auth-admin-tokens,busbar/hooks-ranking,busbar/proto-llm,busbar/plane-mcp,busbar/plane-a2a,busbar/plane-voice,busbar/plane-decision,busbar/export-file,busbar/export-webhook,busbar/export-prometheus,busbar/root-admin,busbar/root-llm
+            tests: -p busbar-plugin-loader -p busbar --no-default-features --test transport_dropped_in_serves
             scope: package
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -2312,6 +2331,21 @@ jobs:
           path: target/release/busbar
           if-no-files-found: error
           retention-days: 7
+      # THE DROPPED-IN TCP TRANSPORT, IN ITS OWN INVOCATION. Its `#[no_mangle]` door (`busbar_abi`,
+      # `busbar_plugin_kind`, `busbar_transport_decl`) is compiled only under `--features dropped-in`:
+      # rustc emits a crate's `rlib` and `cdylib` from one set of objects, so a door compiled into the
+      # crate the binary links is a second definition of the handshake the plugin SDK defines once,
+      # and the release profile's fat LTO refuses the link above ("Linking globals named 'busbar_abi':
+      # symbol multiply defined!"). The SDK-built plugins' `cdylib`s come out of the build above with
+      # their door; this is the one artifact built separately, and it must still carry its three.
+      - name: Build the tcp transport's dropped-in artifact (feature dropped-in, its own invocation)
+        run: |
+          set -euo pipefail
+          cargo build -p busbar-transport-tcp --release --locked --features dropped-in
+          lib=target/release/libbusbar_transport_tcp.so
+          for sym in busbar_abi busbar_plugin_kind busbar_transport_decl; do
+            nm -D --defined-only "$lib" | grep -qw "$sym" || { echo "::error::$lib does not export $sym"; exit 1; }
+          done
       - name: Latchkey Fast Cache (cargo registry + target, save)
         uses: latchkey-dev/cache-action@d0dd21912a57c7435649c77f689b68d348d8a662 # v1
         with:
@@ -2488,7 +2522,6 @@ jobs:
   # feature-covered: busbar-mcp/openapi-schema -- openapi-schema -- pulled by the forward from busbar-kernel in that job's build
   # feature-covered: busbar-voice/openapi-schema -- openapi-schema -- pulled by the forward from busbar with the feature on
   # feature-covered: busbar-timing/timing -- check -- the Timing implementation tests step names -p busbar-timing --features timing
-  # feature-covered: busbar-llm/teller-waist -- check -- the LLM teller-step tests step names it, and the root default reaches it
   # feature-covered: busbar-voice/test-support -- check -- the Voice runtime tests step names --features runtime,test-support
   # feature-covered: busbar-voice/runtime -- check -- the Voice runtime tests step names it, and the root default reaches it
   # feature-covered: busbar-voice-codec/runtime -- check -- the Voice runtime tests step names -p busbar-voice-codec --features runtime
@@ -2509,6 +2542,7 @@ jobs:
   # feature-covered: busbar-core-admin/openapi-schema -- openapi-schema -- the job clippies and tests -p busbar-core-admin with the feature named
   # feature-covered: busbar-contract/dispatch -- check -- reached from busbar-substrate-values/dispatch in the workspace default build (transport axis folded into busbar-contract, DECISIONS #38)
   # feature-covered: busbar-contract/runtime -- check -- reached from busbar-substrate-values/runtime in the workspace default build (transport axis folded into busbar-contract, DECISIONS #38)
+  # feature-covered: busbar-transport-tcp/dropped-in -- build-release -- the tcp transport's dropped-in artifact is built in its own invocation after the canonical binary, and its three door symbols are asserted
 
   # THE MECHANICAL DEFINITION OF "PLUGIN". Anything busbar calls a plugin must be 100% a plugin: make
   # it downloadable-only tomorrow, ship it uninstalled, and CORE MUST STILL WORK. If core stops

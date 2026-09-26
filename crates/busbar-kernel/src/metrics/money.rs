@@ -147,10 +147,16 @@ pub(super) fn refresh_money_gauges(app: &App, now: u64) {
             {
                 let tier_v = |u: &str| tokens.get(u).copied().unwrap_or(0);
                 for (tier, v) in [
-                    ("input", tier_v(busbar_api::UNIT_INPUT)),
-                    ("output", tier_v(busbar_api::UNIT_OUTPUT)),
-                    ("cache_read", tier_v(busbar_api::UNIT_CACHE_READ)),
-                    ("cache_write", tier_v(busbar_api::UNIT_CACHE_WRITE)),
+                    ("input", tier_v(busbar_contract::records::UNIT_INPUT)),
+                    ("output", tier_v(busbar_contract::records::UNIT_OUTPUT)),
+                    (
+                        "cache_read",
+                        tier_v(busbar_contract::records::UNIT_CACHE_READ),
+                    ),
+                    (
+                        "cache_write",
+                        tier_v(busbar_contract::records::UNIT_CACHE_WRITE),
+                    ),
                 ] {
                     let mut labels: Vec<metrics::Label> =
                         vec![metrics::Label::new("bucket", key.id.clone())];
@@ -213,10 +219,16 @@ pub(super) fn refresh_money_gauges(app: &App, now: u64) {
                 {
                     let tier_v = |u: &str| tokens.get(u).copied().unwrap_or(0);
                     for (tier, v) in [
-                        ("input", tier_v(busbar_api::UNIT_INPUT)),
-                        ("output", tier_v(busbar_api::UNIT_OUTPUT)),
-                        ("cache_read", tier_v(busbar_api::UNIT_CACHE_READ)),
-                        ("cache_write", tier_v(busbar_api::UNIT_CACHE_WRITE)),
+                        ("input", tier_v(busbar_contract::records::UNIT_INPUT)),
+                        ("output", tier_v(busbar_contract::records::UNIT_OUTPUT)),
+                        (
+                            "cache_read",
+                            tier_v(busbar_contract::records::UNIT_CACHE_READ),
+                        ),
+                        (
+                            "cache_write",
+                            tier_v(busbar_contract::records::UNIT_CACHE_WRITE),
+                        ),
                     ] {
                         set_gauge(
                             metrics::gauge!(

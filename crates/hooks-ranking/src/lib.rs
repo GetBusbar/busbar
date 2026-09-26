@@ -254,6 +254,29 @@ pub fn native_policy(name: &str) -> Option<std::sync::Arc<dyn RoutingPolicy>> {
     }
 }
 
+/// THE LINKED ENTRY (DECISIONS #2 rule (1)): what a build that links the ranking hooks registers onto
+/// the hook axis — ONE row, the frozen strategy spellings its aliases (`weighted` is the engine's
+/// inline floor, never a row). `HOOK` is `(name, aliases, open)`; `open` is handed the spelling a
+/// reference used.
+pub mod linked {
+    use super::*;
+
+    /// A ranking row's open: the policy one of its spellings ranks by.
+    pub type Open = fn(&str) -> Option<std::sync::Arc<dyn RoutingPolicy>>;
+
+    /// `(name, aliases, open)`.
+    pub const HOOK: (&str, &[&str], Open) = (
+        "hooks-ranking",
+        &[
+            POLICY_NAME_CHEAPEST,
+            POLICY_NAME_FASTEST,
+            POLICY_NAME_LEAST_BUSY,
+            POLICY_NAME_USAGE,
+        ],
+        native_policy,
+    );
+}
+
 #[cfg(test)]
 #[path = "tests/lib_tests.rs"]
 mod tests;

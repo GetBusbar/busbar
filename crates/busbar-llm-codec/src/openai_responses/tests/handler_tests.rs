@@ -12,14 +12,14 @@ use super::*;
 #[test]
 fn operation_handler_serves_chat_only() {
     let h = ResponsesRequestHandler;
-    assert!(h.operation_handler(Operation::CHAT).is_some());
+    assert!(h.operation_handler(OpVerb::CHAT).is_some());
     for op in [
-        Operation::EMBEDDINGS,
-        Operation::MODERATION,
-        Operation::IMAGE,
-        Operation::TRANSCRIPTION,
-        Operation::SPEECH,
-        Operation::RERANK,
+        OpVerb::EMBEDDINGS,
+        OpVerb::MODERATION,
+        OpVerb::IMAGE,
+        OpVerb::TRANSCRIPTION,
+        OpVerb::SPEECH,
+        OpVerb::RERANK,
     ] {
         assert!(
             h.operation_handler(op).is_none(),
@@ -34,7 +34,7 @@ fn operation_handler_serves_chat_only() {
 fn upstream_path_is_the_real_responses_endpoint() {
     let h = ResponsesRequestHandler;
     let ctx = EgressCtx {
-        operation: Operation::CHAT,
+        operation: OpVerb::CHAT,
         model: "gpt-4.1",
         stream: false,
         path_base: None,
@@ -57,12 +57,12 @@ fn resolve_operation_matches_the_responses_path_only() {
     let h = ResponsesRequestHandler;
     assert_eq!(
         h.resolve_operation("/v1/responses", b""),
-        Some(Operation::CHAT)
+        Some(OpVerb::CHAT)
     );
     // A mounted-prefix path still matches via `ends_with`.
     assert_eq!(
         h.resolve_operation("/proxy/upstream/v1/responses", b""),
-        Some(Operation::CHAT)
+        Some(OpVerb::CHAT)
     );
     // Unrelated / sibling paths (including near-misses) must NOT resolve.
     for path in [

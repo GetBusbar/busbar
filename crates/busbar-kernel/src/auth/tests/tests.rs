@@ -1,5 +1,5 @@
 use super::*;
-use busbar_api::ScopeRef;
+use busbar_contract::records::ScopeRef;
 
 /// Helper: a `RoleBindingCfg` from optional pool list / group / admin scope.
 fn binding(
@@ -814,9 +814,9 @@ impl crate::auth::AuthModule for SleepingAdminModule {
     fn name(&self) -> &'static str {
         "slow-oidc"
     }
-    fn authenticate(&self, _candidate: Option<&str>) -> crate::auth::AuthOutcome {
+    fn authenticate(&self, _candidate: Option<&str>) -> crate::auth::AuthVerdict {
         std::thread::sleep(self.0);
-        crate::auth::AuthOutcome::Pass
+        crate::auth::AuthVerdict::Pass
     }
 }
 
@@ -828,8 +828,8 @@ impl crate::auth::AuthModule for RolelessAdminModule {
     fn name(&self) -> &'static str {
         "ext-admin"
     }
-    fn authenticate(&self, _candidate: Option<&str>) -> crate::auth::AuthOutcome {
-        crate::auth::AuthOutcome::Identify(Principal::from_id("admin"))
+    fn authenticate(&self, _candidate: Option<&str>) -> crate::auth::AuthVerdict {
+        crate::auth::AuthVerdict::Identify(Principal::from_id("admin"))
     }
 }
 
@@ -1194,7 +1194,7 @@ async fn test_audience_bound_token_is_rejected_on_the_data_plane() {
 /// would call `gov.lookup("")`, match this enabled key, and be admitted unauthenticated.
 #[tokio::test]
 async fn test_governance_rejects_empty_token_even_if_empty_secret_key_exists() {
-    use crate::governance::{GovState, MemoryStore, ScopeRef, Store, VirtualKey};
+    use crate::governance::{GovState, MemoryStore, RecordStore, ScopeRef, VirtualKey};
     use crate::test_support::{LaneSpec, MockServer, MockServerState, TestApp};
     use serde_json::json;
     use std::sync::Arc;

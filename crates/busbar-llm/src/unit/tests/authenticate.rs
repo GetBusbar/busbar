@@ -7,20 +7,20 @@ use busbar_contract::caps::{KernelSeal, StepName};
 
 /// A key row carrying only what this step reads. Every other field is what the store's own
 /// default row carries, so the fixture cannot drift from the shape the middleware resolves.
-fn key(id: &str) -> std::sync::Arc<busbar_api::VirtualKey> {
-    std::sync::Arc::new(busbar_api::VirtualKey {
+fn key(id: &str) -> std::sync::Arc<busbar_contract::records::VirtualKey> {
+    std::sync::Arc::new(busbar_contract::records::VirtualKey {
         id: id.to_string(),
         enabled: true,
         ..Default::default()
     })
 }
 
-fn governed(id: &str) -> busbar_api::PlaneRequestCtx {
-    busbar_api::PlaneRequestCtx { key: Some(key(id)) }
+fn governed(id: &str) -> busbar_contract::records::PlaneRequestCtx {
+    busbar_contract::records::PlaneRequestCtx { key: Some(key(id)) }
 }
 
-fn ungoverned() -> busbar_api::PlaneRequestCtx {
-    busbar_api::PlaneRequestCtx { key: None }
+fn ungoverned() -> busbar_contract::records::PlaneRequestCtx {
+    busbar_contract::records::PlaneRequestCtx { key: None }
 }
 
 /// IDENTITY — the keys arm. The live path attributes a governed request to the resolved key's
@@ -50,7 +50,9 @@ fn the_open_arm_names_the_same_anonymous_actor_the_live_attribution_names() {
     let seal = KernelSeal::acquire_for_kernel();
     let gov = ungoverned();
 
-    let live = busbar_api::AuthPrincipal(None).actor_id().to_string();
+    let live = busbar_contract::auth::AuthPrincipal(None)
+        .actor_id()
+        .to_string();
     let stepped = super::authenticate(&Pass::<Authenticate>::mint(&seal), &gov)
         .into_result(&seal)
         .expect("the plane's authenticate step never refuses");

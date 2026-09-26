@@ -47,11 +47,11 @@ pub struct WalkArrival {
     /// The neutral engine host, minted core-side over the live snapshot.
     pub host: Arc<dyn EngineHost>,
     /// This request's governance context — the resolved key, or none.
-    pub gov: busbar_api::PlaneRequestCtx,
+    pub gov: busbar_contract::records::PlaneRequestCtx,
     /// The ingress dialect.
     pub proto: &'static str,
     /// The operation the dialect resolved off its own endpoint.
-    pub operation: busbar_api::operation::Operation,
+    pub operation: busbar_contract::operation::OpVerb,
     /// The caller's bearer token, for passthrough forwarding.
     pub caller_token: Option<String>,
     /// The request headers, as they arrived.
@@ -160,9 +160,9 @@ pub struct LateReport {
 pub struct Walk {
     host: Arc<dyn EngineHost>,
     rt: Arc<crate::engine::NativeRuntime>,
-    gov: busbar_api::PlaneRequestCtx,
+    gov: busbar_contract::records::PlaneRequestCtx,
     proto: &'static str,
-    operation: busbar_api::operation::Operation,
+    operation: busbar_contract::operation::OpVerb,
     caller_token: Option<String>,
     headers: HeaderMap,
     body: Bytes,
@@ -239,7 +239,7 @@ impl Walk {
 
     /// This request's governance context.
     #[must_use]
-    pub fn gov(&self) -> &busbar_api::PlaneRequestCtx {
+    pub fn gov(&self) -> &busbar_contract::records::PlaneRequestCtx {
         &self.gov
     }
 
@@ -251,7 +251,7 @@ impl Walk {
 
     /// The operation the dialect resolved.
     #[must_use]
-    pub fn operation(&self) -> busbar_api::operation::Operation {
+    pub fn operation(&self) -> busbar_contract::operation::OpVerb {
         self.operation
     }
 

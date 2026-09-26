@@ -23,7 +23,7 @@ use crate::mount::open_governed;
 use crate::runtime::scope::rehydrate_sessions;
 use crate::runtime::{EchoToolExecutor, SessionHandle, VoiceRuntime};
 use crate::topology::telephony::{begin_telephony, g711_config};
-use busbar_api::{PlaneRecord, PlaneSelector, StoreResult};
+use busbar_contract::records::{PlaneRecord, PlaneSelector, RecordStoreResult};
 use busbar_kernel::plane::handle_engine::DurableHandleEngine;
 use busbar_kernel::plane::registry::{BuildCtx, CardIssuer, PlaneBootCtx, RestoredSummary};
 use busbar_kernel::plane::store::PlaneStore;
@@ -43,7 +43,7 @@ struct MemStore {
 }
 
 impl PlaneStore for MemStore {
-    fn upsert_plane_record(&self, record: &PlaneRecord) -> StoreResult<()> {
+    fn upsert_plane_record(&self, record: &PlaneRecord) -> RecordStoreResult<()> {
         let mut rows = self.rows.lock().unwrap();
         if let Some(existing) = rows.iter_mut().find(|r| r.id == record.id) {
             *existing = record.clone();
@@ -52,7 +52,7 @@ impl PlaneStore for MemStore {
         }
         Ok(())
     }
-    fn get_plane_record(&self, _kind: &str, id: &str) -> StoreResult<Option<Vec<u8>>> {
+    fn get_plane_record(&self, _kind: &str, id: &str) -> RecordStoreResult<Option<Vec<u8>>> {
         Ok(self
             .rows
             .lock()
@@ -61,14 +61,14 @@ impl PlaneStore for MemStore {
             .find(|r| r.id == id)
             .map(|r| r.body.clone()))
     }
-    fn append_plane_record(&self, _record: &PlaneRecord) -> StoreResult<()> {
+    fn append_plane_record(&self, _record: &PlaneRecord) -> RecordStoreResult<()> {
         Ok(())
     }
     fn list_plane_records(
         &self,
         _kind: &str,
         selector: &PlaneSelector,
-    ) -> StoreResult<Vec<Vec<u8>>> {
+    ) -> RecordStoreResult<Vec<Vec<u8>>> {
         match selector {
             PlaneSelector::All => Ok(self
                 .rows
@@ -80,13 +80,13 @@ impl PlaneStore for MemStore {
             PlaneSelector::Parent(_) => Ok(Vec::new()),
         }
     }
-    fn list_plane_record_parents(&self, _kind: &str) -> StoreResult<Vec<String>> {
+    fn list_plane_record_parents(&self, _kind: &str) -> RecordStoreResult<Vec<String>> {
         Ok(Vec::new())
     }
-    fn purge_plane_records_before(&self, _kind: &str, _before: u64) -> StoreResult<u64> {
+    fn purge_plane_records_before(&self, _kind: &str, _before: u64) -> RecordStoreResult<u64> {
         Ok(0)
     }
-    fn delete_plane_record(&self, _kind: &str, _id: &str) -> StoreResult<()> {
+    fn delete_plane_record(&self, _kind: &str, _id: &str) -> RecordStoreResult<()> {
         Ok(())
     }
     fn redeem_plane_token(
@@ -95,7 +95,7 @@ impl PlaneStore for MemStore {
         _token: &str,
         _expires_at: u64,
         _now: u64,
-    ) -> StoreResult<bool> {
+    ) -> RecordStoreResult<bool> {
         Ok(true)
     }
     /// The multi-use capability check. `false` — the fail-closed direction the neutral trait
@@ -106,7 +106,7 @@ impl PlaneStore for MemStore {
         _token: &str,
         _expires_at: u64,
         _now: u64,
-    ) -> StoreResult<bool> {
+    ) -> RecordStoreResult<bool> {
         Ok(false)
     }
 }

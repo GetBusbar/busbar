@@ -27,7 +27,6 @@ path = "src/pack.rs"
 required-features = ["pack"]
 
 [dependencies]
-busbar-api = { path = "../api" }
 busbar-plugin = { path = "../busbar-plugin" }
 # The three unit-side store seams the composition root binds to one loaded store (`store_adapter`).
 # None of the three crates may name a store, so the adapter that implements all three lives on this
@@ -53,12 +52,16 @@ ed25519-dalek = { workspace = true }
 sha2 = { workspace = true }
 hex = { workspace = true }
 libloading = { workspace = true }
-# The kind:hook seam: `DlopenPolicy` implements the async `busbar_api::RoutingPolicy` trait, running
+# The kind:hook seam: `DlopenPolicy` implements the async `busbar_contract::hooks::RoutingPolicy` trait, running
 # the blocking `busbar_call` on `spawn_blocking` (a hook gate can be CPU-heavy). `async-trait` matches
 # the engine's; `tokio` is `rt`/`time`/`sync` only (spawn_blocking, timeout, the hook-call semaphore)
 # — no runtime is started in this crate.
 async-trait = { workspace = true }
 tokio = { workspace = true, features = ["rt", "time", "sync"] }
+# The transport adapter (`transport_adapter`): a HOT-lane transport presented as the host's async
+# `busbar_contract::Transport`, whose frame pump is a `futures::Stream` and whose detached stream is
+# `futures::io` — the traits the contract already names (#83: the adapter is loading machinery).
+futures = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 # Structured logging for the auth seam's fail-closed rejections (a misbehaving auth plugin is logged,
@@ -115,7 +118,12 @@ busbar-hook-test-plugin = { path = "../hook-test-plugin" }
 # its `rlib`'s decl through `link_transport` (the linked door) and `dlopen`s its `cdylib` through
 # `load_transport` (the dropped-in door), and requires the two rows and the bytes each puts on a real
 # socket to be identical. Reached by KIND through `[package.metadata.busbar.both-ways]` below.
-busbar-transport-tcp = { path = "../busbar-transport-tcp" }
+# `dropped-in`: the cdylib's door symbols are compiled only under it (a build that links the wire
+# beside SDK-built plugins must not carry a second `busbar_abi`), and this proof needs that cdylib.
+busbar-transport-tcp = { path = "../busbar-transport-tcp", features = ["dropped-in"] }
+# The transport adapter's witness (`transport_adapter_tests`) dials through the trait, which takes a
+# sealed destination: the contract's blessed test seal (#65), as the wire crates' own batteries use.
+busbar-contract = { path = "../busbar-contract", features = ["test-seal"] }
 
 [target.'cfg(unix)'.dependencies]
 # memfd_create (Linux zero-disk loads) + kill(pid, 0) liveness for the dead-pid staging sweep.

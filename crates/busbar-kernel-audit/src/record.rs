@@ -387,6 +387,14 @@ impl AuditChain {
         self.signer.as_ref().map(|k| k.public_key_hex())
     }
 
+    /// Sign one ledger checkpoint's body with THIS chain's key — the one keyset (Q71(3), #82).
+    ///
+    /// `None` on a node that seals unsigned: its checkpoints are sealed unsigned too, which is the
+    /// truth about them, and no second key is ever looked for.
+    pub fn sign_checkpoint_body(&self, body: &[u8]) -> Option<Vec<u8>> {
+        self.signer.as_ref().map(|k| k.sign_checkpoint_body(body))
+    }
+
     /// The anchors this node has published, kept forever. See [`crate::heads`].
     pub fn heads(&self) -> &crate::heads::HeadHistory {
         &self.heads

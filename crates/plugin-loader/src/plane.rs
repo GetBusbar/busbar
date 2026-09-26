@@ -37,8 +37,8 @@
 
 use crate::stage;
 use busbar_plugin::hot::decl::{
-    AdminRoutesFn, AdmissionFn, BuildFn, ClaimsFn, ConfigValidateFn, DeclMetricFamily, DispatchFn,
-    HydrateFn, OpenApiFn, StartFn,
+    AdminRoutesFn, AdmissionFn, BuildFn, ClaimsFn, ConfigValidateFn, DeclMetricFamily,
+    DeclServedOpClass, DispatchFn, HydrateFn, OpenApiFn, StartFn,
 };
 use busbar_plugin::hot::host::HostCtx;
 use busbar_plugin::hot::pod::{OpaqueState, RawStatus, StatusClass, POD_VERSION};
@@ -147,6 +147,9 @@ pub struct HotDeclaration {
     /// The metric families the plane adds to through the host's `counter_add` (the minor-25 tail;
     /// empty for a decl that ends before it).
     pub metric_families: Vec<HotMetricFamily>,
+    /// The operation classes the plane serves one level down, each `(class, display name)` (the
+    /// minor-27 tail; empty for a decl that ends before it).
+    pub served_op_classes: Vec<(String, String)>,
 }
 
 /// One metric family a HOT-lane plane declares, read off its decl into owned values.
@@ -1072,7 +1075,34 @@ fn read_declaration(
             "fee unit",
         )?,
         metric_families: read_metric_families(decl, size, display)?,
+        served_op_classes: read_served_op_classes(decl, size, display)?,
     })
+}
+
+/// The decl's served-operation-class tail (minor 27). A decl that ends before it serves no class —
+/// an append-only absence: the plane states none, so no nested destination resolves to it.
+fn read_served_op_classes(
+    decl: *const PlaneDecl,
+    size: u32,
+    display: &str,
+) -> Result<Vec<(String, String)>, String> {
+    let ptr = busbar_plugin::read_sized_field!(decl, size, PlaneDecl, served_op_classes_ptr);
+    let len = busbar_plugin::read_sized_field!(decl, size, PlaneDecl, served_op_classes_len);
+    let (Some(ptr), Some(len)) = (ptr, len) else {
+        return Ok(Vec::new());
+    };
+    let stated = |d: DeclStr, what: &str| {
+        decl_str(d, display)?.ok_or_else(|| format!("plane '{display}' states no {what}"))
+    };
+    decl_list(ptr, len, "served operation class", display)?
+        .into_iter()
+        .map(|c: DeclServedOpClass| {
+            Ok((
+                stated(c.op, "served operation class")?,
+                stated(c.name, "served operation class display name")?,
+            ))
+        })
+        .collect()
 }
 
 /// The decl's metric-family tail (minor 25). A decl that ends before it declares no family — an

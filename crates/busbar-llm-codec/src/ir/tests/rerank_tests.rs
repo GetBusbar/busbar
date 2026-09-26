@@ -33,8 +33,8 @@ fn rerank_resp_billing_counts_search_units_as_an_open_class() {
 
 // ── IrFacts projection (close-non-chat-gate-blindness) ───────────────────────────────────────────
 
-use busbar_api::operation::Operation;
-use busbar_substrate_values::ir::facts::{ContentItem, IrFacts};
+use busbar_contract::ir::facts::{ContentItem, IrFacts};
+use busbar_contract::operation::OpVerb;
 
 #[test]
 fn rerank_projects_query_and_every_document() {
@@ -44,7 +44,7 @@ fn rerank_projects_query_and_every_document() {
         documents: vec!["doc one".into(), "doc two".into()],
         ..Default::default()
     };
-    assert_eq!(IrFacts::verb(&req), Operation::RERANK);
+    assert_eq!(IrFacts::verb(&req), OpVerb::RERANK);
     assert!(!IrFacts::wants_stream(&req));
     let screened: Vec<String> = req
         .content()

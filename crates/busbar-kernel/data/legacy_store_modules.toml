@@ -1,0 +1,36 @@
+# The 1.5.x store-module text the config migration and its refusals print (ARCHITECT RULING F-D,
+# "N-KERNEL residue"): frozen operator-visible text naming store backends no crate in this tree
+# declares, so no store declaration can own it. One `key = "value"` row per line, read by
+# `busbar_kernel::config::migrate::legacy_store_text` through include_str!. Every row cites the
+# v1.5.5 tag line it is verbatim from (`git show v1.5.5:<path>`); a value never changes.
+
+# 1.5.3 store-plugin rename: the retired `store.module:` spellings, space-separated.
+# v1.5.5:crates/busbar/src/config/mod.rs:1057 (RETIRED_STORE_MODULES_1_5_3)
+retired_modules = "redis busbar-store-redis busbar-store-redis-plugin"
+# The retired backend's own driver URL scheme, which the rewrite leaves untouched.
+# v1.5.5:crates/busbar/src/config/migrate.rs:2075
+retired_url_scheme = "redis"
+# v1.5.5:crates/busbar/src/config/mod.rs:1061 (STORE_MODULE_VALKEY)
+renamed_module = "valkey"
+# The renamed plugin's canonical MANIFEST NAME: what `busbar-plugin-pack --name` stamps and what a
+# `plugins.min_versions` / `plugin_versions` anti-downgrade floor is keyed by (the plugin CRATE name).
+# v1.5.5:crates/busbar/src/config/mod.rs:1066 (STORE_MODULE_VALKEY_NAME)
+renamed_manifest_name = "busbar-store-valkey-plugin"
+# The renamed plugin's release-ASSET stem: the WORKSPACE name, without the `-plugin` suffix the
+# cdylib crate and the manifest carry. Two different strings on purpose.
+# v1.5.5:crates/busbar/src/config/mod.rs:1072 (STORE_MODULE_VALKEY_ASSET_STEM)
+renamed_asset_stem = "busbar-store-valkey"
+# v1.5.5:crates/busbar/src/config/migrate.rs:267 (the legacy marker's "is Valkey — artifact")
+renamed_display = "Valkey"
+
+# 1.4.x governance database. v1.5.5:crates/busbar/src/config/migrate.rs:817, :824, :828
+gov14_module = "sqlite"
+# v1.5.5:crates/busbar/src/config/migrate.rs:30 (DEFAULT_GOVERNANCE_DB_1_4)
+gov14_db_path = "busbar-governance.db"
+# v1.5.5:crates/busbar/src/config/migrate.rs:836
+gov14_busy_timeout_key = "sqlite_busy_timeout_ms"
+# v1.5.5:crates/busbar/src/config/migrate.rs:843
+gov14_change = "governance.db_path -> store: { module: sqlite, settings: { db_path } } (1.4.x's only durable backend was SQLite)"
+
+# v1.5.5:crates/busbar/src/config_validate/mod.rs:1656 (the empty `store.module` refusal)
+module_examples = "sqlite | postgres | valkey"

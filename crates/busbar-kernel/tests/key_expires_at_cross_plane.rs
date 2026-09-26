@@ -16,7 +16,7 @@
 mod linked;
 
 use busbar_kernel::governance::signing::{TokenSigner, DEFAULT_KID};
-use busbar_kernel::governance::{GovState, MemoryStore, NewKeySpec, Store};
+use busbar_kernel::governance::{GovState, MemoryStore, NewKeySpec, RecordStore};
 use busbar_kernel::test_support::{LaneSpec, MockResponse, MockServer, MockServerState, TestApp};
 use std::sync::Arc;
 

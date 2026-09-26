@@ -308,7 +308,7 @@ fn translate_request(ingress: &'static str, egress: &str, body: &Value) -> Value
     let mut req = ingress_p.reader().read_request(body).expect("read_request");
     crate::chat_handle::chat_prepare_for_egress(
         &mut req,
-        &busbar_substrate_values::ir::egress_prep::EgressPrep {
+        &busbar_contract::ir::egress_prep::EgressPrep {
             thought_signature_fill: false,
             ingress_protocol: ingress,
             egress_requires_max_tokens: egress_p.decl().is_some_and(|d| d.requires_max_tokens),
@@ -785,7 +785,7 @@ fn coh04_request_user_document_part_is_carried() {
         parts[1]["inlineData"],
         json!({
             "mimeType": "text/plain",
-            "data": busbar_substrate_values::media::base64_encode(b"doc text")
+            "data": busbar_contract::media::base64_encode(b"doc text")
         }),
         "COH-04: {out}"
     );
@@ -835,7 +835,7 @@ fn coh17_citations_without_a_text_part_still_reach_the_client() {
 /// top-level `documents`; a PDF still has no Cohere form and is dropped.
 #[test]
 fn coh18_text_document_lifts_into_cohere_documents() {
-    let data = busbar_substrate_values::media::base64_encode(b"the doc");
+    let data = busbar_contract::media::base64_encode(b"the doc");
     let body = json!({
         "model": "gpt",
         "messages": [{"role": "user", "content": [

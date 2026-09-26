@@ -16,7 +16,7 @@
 //! had to be threaded through.
 
 use super::*;
-use busbar_api::TransformOutcome;
+use busbar_contract::hooks::TransformOutcome;
 
 /// The fixture reports it could not answer. The outcome must be `Failed` carrying the hook's own
 /// message, NOT an abstain.

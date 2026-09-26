@@ -2261,12 +2261,12 @@ fn migrate_store_module_retired_1_5_3_spellings_to_the_renamed_alias() {
     // IDEMPOTENT: a config already on the new alias is untouched and un-flagged.
     let already = format!(
         "store:\n  module: {}\nproviders: {{}}\nmodels: {{}}\npools: {{}}\n",
-        crate::config::RENAMED_STORE_MODULE_1_5_3
+        crate::config::migrate::legacy_store_text("renamed_module")
     );
     let (out, doc) = migrate_to_value(&already);
     assert_eq!(
         dig(&doc, &["store", "module"]).and_then(|v| v.as_str()),
-        Some(crate::config::RENAMED_STORE_MODULE_1_5_3)
+        Some(crate::config::migrate::legacy_store_text("renamed_module"))
     );
     assert!(
         !out.changes.iter().any(|c| c.contains("store.module")),
@@ -2674,4 +2674,32 @@ fn built_ins(defs: &crate::config::ExportDefs) -> crate::config::ExportDefs {
         .filter(|(_, d)| d.module.trim() != crate::config::EXPORT_MODULE_REQUEST_LOG_WEBHOOK)
         .map(|(k, v)| (k.clone(), v.clone()))
         .collect()
+}
+
+/// RULING F-D (N-DATA): the frozen 1.5.x store-module text lives in ONE data table. Every row of it
+/// cites the v1.5.5 tag line it is verbatim from (a `# … v1.5.5:crates/…` comment above the row),
+/// and every row resolves through the one reader the migration and its refusals call.
+#[test]
+fn legacy_store_table_rows_cite_v1_5_5_and_resolve() {
+    let table = include_str!("../../../data/legacy_store_modules.toml");
+    let (mut cited, mut rows) = (false, 0);
+    for line in table.lines() {
+        if line.starts_with('#') {
+            cited |= line.contains("v1.5.5:crates/");
+            continue;
+        }
+        let Some((key, value)) = line.split_once(" = ") else {
+            continue;
+        };
+        assert!(cited, "row `{key}` carries no v1.5.5 citation above it");
+        assert_eq!(
+            format!("\"{}\"", crate::config::migrate::legacy_store_text(key)),
+            value
+        );
+        (cited, rows) = (false, rows + 1);
+    }
+    assert_eq!(
+        rows, 11,
+        "the table's row count moved; every row is frozen 1.5.5 text"
+    );
 }

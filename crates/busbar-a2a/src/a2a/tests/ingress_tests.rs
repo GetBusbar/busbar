@@ -156,7 +156,7 @@ async fn an_anonymous_caller_is_refused_and_told_where_to_get_a_token() {
     // The refusal owes a machine-readable challenge naming this plane's metadata document. Without
     // it a conforming client has no entrance: it knows it was refused and not where to go.
     engine().metrics_init();
-    let store: std::sync::Arc<dyn busbar_api::Store> = engine().scratch_store();
+    let store: std::sync::Arc<dyn busbar_contract::records::RecordStore> = engine().scratch_store();
     let gov = engine()
         .governance(
             store,

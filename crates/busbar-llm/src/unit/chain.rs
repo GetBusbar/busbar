@@ -16,7 +16,7 @@
 //! For each fixture it runs two legs against two SEPARATE deployments — own registry, own scripted
 //! upstream, own governance store — and compares what a client and an operator can see:
 //!
-//! - LEGACY: `native_ingress::operation_ingress_inner`, the shipped entry point, which is arrival,
+//! - LEGACY: `testkit::shell::operation_ingress_inner`, the shipped entry point, which is arrival,
 //!   decode, the gauntlet's verify, `NativePlane::drive`'s door, the one engine and the finish tail.
 //! - CHAINED: the step files, called one after another, each fed only from the previous one's
 //!   output and from the tokens the kernel would have minted.

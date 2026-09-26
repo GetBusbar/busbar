@@ -186,7 +186,7 @@ fn an_unreadable_image_count_refuses_instead_of_billing_zero() {
     let resp =
         crate::gemini::handler::read_image_response(ok).expect("a float-spelled count reads");
     match resp.billing() {
-        Some(busbar_substrate_values::billing::Billing::Tokens(t)) => {
+        Some(busbar_contract::billing::Billing::Tokens(t)) => {
             assert_eq!(t.input, 27);
             assert_eq!(t.output, 5);
         }
@@ -215,7 +215,7 @@ fn an_absent_count_still_reads_as_zero_and_no_usage_object_still_reads() {
     let resp = crate::gemini::handler::read_transcription_response(wire)
         .expect("absent candidatesTokenCount reads");
     match resp.billing() {
-        Some(busbar_substrate_values::billing::Billing::Tokens(t)) => {
+        Some(busbar_contract::billing::Billing::Tokens(t)) => {
             assert_eq!(t.input, 27);
             assert_eq!(t.output, 0, "an absent count is zero, exactly as before");
         }

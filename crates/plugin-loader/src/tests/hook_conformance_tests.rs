@@ -27,7 +27,7 @@
 use super::both_ways::{both_doors, cdylib, hook_fixture as fixture, statement};
 use super::*;
 use crate::hook::HookProjectors;
-use busbar_api::{
+use busbar_contract::hooks::{
     Candidate, RoutingContext, RoutingDecision, RoutingPolicy, RoutingRequest, TransformOutcome,
 };
 use busbar_plugin::cold::hook::{ConfigureBody, HookReply, HookRequest};
@@ -89,7 +89,7 @@ fn projectors() -> Arc<HookProjectors> {
                 .and_then(|m| m.as_array())
             {
                 Some(msgs) if !msgs.is_empty() => {
-                    TransformOutcome::Rewrite(busbar_api::RewriteReply {
+                    TransformOutcome::Rewrite(busbar_contract::hooks::RewriteReply {
                         messages: msgs.clone(),
                         tools: Vec::new(),
                     })
@@ -116,7 +116,7 @@ fn request(text: &str) -> RoutingRequest<'static> {
         system_chars: 0,
         max_tokens: None,
         stream: false,
-        prompt: Some(busbar_api::PromptProjection {
+        prompt: Some(busbar_contract::hooks::PromptProjection {
             system: None,
             messages: vec![("user".into(), text.to_string().into())],
         }),

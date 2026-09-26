@@ -246,7 +246,7 @@ fn card_and_group_cost(
 fn tt(n: u64) -> std::collections::BTreeMap<String, u64> {
     let mut m = std::collections::BTreeMap::new();
     if n != 0 {
-        m.insert(busbar_api::UNIT_INPUT.to_string(), n);
+        m.insert(busbar_contract::records::UNIT_INPUT.to_string(), n);
     }
     m
 }
@@ -632,7 +632,7 @@ fn test_credential_generators_contract() {
 fn test_aws_credential_persists_across_reload() {
     // A credential minted in one GovState must be visible to a fresh GovState over the same store
     // (durable + rebuilt into the AccessKeyId index at construction).
-    let store: Arc<dyn Store> = Arc::new(MemoryStore::new());
+    let store: Arc<dyn RecordStore> = Arc::new(MemoryStore::new());
     let akid = {
         let gov = GovState::new(store.clone(), None).unwrap();
         let (_k, _b, akid, _s) = gov
@@ -739,9 +739,9 @@ fn test_refresh_updates_both_indices_atomically() {
 
 #[test]
 fn test_aws_credential_debug_redacts_secret() {
-    // The symmetric SigV4 secret must NEVER appear in Debug output. `busbar_api::CredentialSecret`
+    // The symmetric SigV4 secret must NEVER appear in Debug output. `busbar_contract::records::CredentialSecret`
     // is the generalized successor to the old AWS-specific `AwsCredential`/`AwsKeyEntry` pair (its
-    // own redaction test lives in `busbar_api::store::tests::debug_redacts_secret_equivalents`) —
+    // own redaction test lives in `busbar_contract::records::tests::debug_redacts_secret_equivalents`) —
     // this regression stays at the governance-crate level too since it's the type actually flowing
     // through `create_key_with_aws`/`mint_signed_with_aws`.
     let cred = CredentialSecret {
@@ -1053,34 +1053,58 @@ fn test_metering_accumulator_is_bounded_and_lossless_under_sustained_store_outag
     struct MeteringDownStore {
         inner: MemoryStore,
     }
-    impl busbar_api::Store for MeteringDownStore {
-        fn put_key(&self, k: &busbar_api::VirtualKey) -> busbar_api::StoreResult<()> {
+    impl busbar_contract::records::RecordStore for MeteringDownStore {
+        fn put_key(
+            &self,
+            k: &busbar_contract::records::VirtualKey,
+        ) -> busbar_contract::records::RecordStoreResult<()> {
             self.inner.put_key(k)
         }
-        fn get_key(&self, id: &str) -> busbar_api::StoreResult<Option<busbar_api::VirtualKey>> {
+        fn get_key(
+            &self,
+            id: &str,
+        ) -> busbar_contract::records::RecordStoreResult<Option<busbar_contract::records::VirtualKey>>
+        {
             self.inner.get_key(id)
         }
-        fn list_keys(&self) -> busbar_api::StoreResult<Vec<busbar_api::VirtualKey>> {
+        fn list_keys(
+            &self,
+        ) -> busbar_contract::records::RecordStoreResult<Vec<busbar_contract::records::VirtualKey>>
+        {
             self.inner.list_keys()
         }
-        fn delete_key(&self, id: &str) -> busbar_api::StoreResult<()> {
+        fn delete_key(&self, id: &str) -> busbar_contract::records::RecordStoreResult<()> {
             self.inner.delete_key(id)
         }
-        fn get_usage(&self, id: &str, w: u64) -> busbar_api::StoreResult<busbar_api::UsageLedger> {
+        fn get_usage(
+            &self,
+            id: &str,
+            w: u64,
+        ) -> busbar_contract::records::RecordStoreResult<busbar_contract::records::UsageLedger>
+        {
             self.inner.get_usage(id, w)
         }
         fn put_usage(
             &self,
             id: &str,
             w: u64,
-            l: &busbar_api::UsageLedger,
-        ) -> busbar_api::StoreResult<()> {
+            l: &busbar_contract::records::UsageLedger,
+        ) -> busbar_contract::records::RecordStoreResult<()> {
             self.inner.put_usage(id, w, l)
         }
-        fn add_metering(&self, _d: &busbar_api::MeteringDelta) -> busbar_api::StoreResult<()> {
-            Err(busbar_api::StoreError("metering store down".into()))
+        fn add_metering(
+            &self,
+            _d: &busbar_contract::records::MeteringDelta,
+        ) -> busbar_contract::records::RecordStoreResult<()> {
+            Err(busbar_contract::records::RecordStoreError(
+                "metering store down".into(),
+            ))
         }
-        fn list_metering(&self, b: u64) -> busbar_api::StoreResult<Vec<busbar_api::MeteringRow>> {
+        fn list_metering(
+            &self,
+            b: u64,
+        ) -> busbar_contract::records::RecordStoreResult<Vec<busbar_contract::records::MeteringRow>>
+        {
             self.inner.list_metering(b)
         }
     }
@@ -1310,51 +1334,81 @@ fn test_failed_flush_retries_the_unacked_delta() {
         inner: MemoryStore,
         healthy: std::sync::atomic::AtomicBool,
     }
-    impl busbar_api::Store for FlakyStore {
-        fn put_key(&self, k: &busbar_api::VirtualKey) -> busbar_api::StoreResult<()> {
+    impl busbar_contract::records::RecordStore for FlakyStore {
+        fn put_key(
+            &self,
+            k: &busbar_contract::records::VirtualKey,
+        ) -> busbar_contract::records::RecordStoreResult<()> {
             self.inner.put_key(k)
         }
-        fn get_key(&self, id: &str) -> busbar_api::StoreResult<Option<busbar_api::VirtualKey>> {
+        fn get_key(
+            &self,
+            id: &str,
+        ) -> busbar_contract::records::RecordStoreResult<Option<busbar_contract::records::VirtualKey>>
+        {
             self.inner.get_key(id)
         }
-        fn list_keys(&self) -> busbar_api::StoreResult<Vec<busbar_api::VirtualKey>> {
+        fn list_keys(
+            &self,
+        ) -> busbar_contract::records::RecordStoreResult<Vec<busbar_contract::records::VirtualKey>>
+        {
             self.inner.list_keys()
         }
-        fn delete_key(&self, id: &str) -> busbar_api::StoreResult<()> {
+        fn delete_key(&self, id: &str) -> busbar_contract::records::RecordStoreResult<()> {
             self.inner.delete_key(id)
         }
-        fn get_usage(&self, id: &str, w: u64) -> busbar_api::StoreResult<busbar_api::UsageLedger> {
+        fn get_usage(
+            &self,
+            id: &str,
+            w: u64,
+        ) -> busbar_contract::records::RecordStoreResult<busbar_contract::records::UsageLedger>
+        {
             self.inner.get_usage(id, w)
         }
         fn put_usage(
             &self,
             id: &str,
             w: u64,
-            l: &busbar_api::UsageLedger,
-        ) -> busbar_api::StoreResult<()> {
+            l: &busbar_contract::records::UsageLedger,
+        ) -> busbar_contract::records::RecordStoreResult<()> {
             self.inner.put_usage(id, w, l)
         }
         fn add_usage(
             &self,
             id: &str,
             w: u64,
-            d: &busbar_api::UsageDelta,
-        ) -> busbar_api::StoreResult<()> {
+            d: &busbar_contract::records::UsageDelta,
+        ) -> busbar_contract::records::RecordStoreResult<()> {
             if !self.healthy.load(std::sync::atomic::Ordering::Relaxed) {
-                return Err(busbar_api::StoreError("store down".into()));
+                return Err(busbar_contract::records::RecordStoreError(
+                    "store down".into(),
+                ));
             }
             self.inner.add_usage(id, w, d)
         }
-        fn add_metering(&self, d: &busbar_api::MeteringDelta) -> busbar_api::StoreResult<()> {
+        fn add_metering(
+            &self,
+            d: &busbar_contract::records::MeteringDelta,
+        ) -> busbar_contract::records::RecordStoreResult<()> {
             self.inner.add_metering(d)
         }
-        fn list_metering(&self, b: u64) -> busbar_api::StoreResult<Vec<busbar_api::MeteringRow>> {
+        fn list_metering(
+            &self,
+            b: u64,
+        ) -> busbar_contract::records::RecordStoreResult<Vec<busbar_contract::records::MeteringRow>>
+        {
             self.inner.list_metering(b)
         }
-        fn append_audit(&self, e: &busbar_api::AuditRecord) -> busbar_api::StoreResult<()> {
+        fn append_audit(
+            &self,
+            e: &busbar_contract::records::AuditRecord,
+        ) -> busbar_contract::records::RecordStoreResult<()> {
             self.inner.append_audit(e)
         }
-        fn list_audit(&self) -> busbar_api::StoreResult<Vec<busbar_api::AuditRecord>> {
+        fn list_audit(
+            &self,
+        ) -> busbar_contract::records::RecordStoreResult<Vec<busbar_contract::records::AuditRecord>>
+        {
             self.inner.list_audit()
         }
     }
@@ -2137,20 +2191,20 @@ struct RecordingBarrierStore {
     writes: std::sync::Mutex<Vec<i64>>,
 }
 
-impl Store for RecordingBarrierStore {
-    fn put_key(&self, key: &VirtualKey) -> StoreResult<()> {
+impl RecordStore for RecordingBarrierStore {
+    fn put_key(&self, key: &VirtualKey) -> RecordStoreResult<()> {
         self.inner.put_key(key)
     }
-    fn get_key(&self, id: &str) -> StoreResult<Option<VirtualKey>> {
+    fn get_key(&self, id: &str) -> RecordStoreResult<Option<VirtualKey>> {
         self.inner.get_key(id)
     }
-    fn list_keys(&self) -> StoreResult<Vec<VirtualKey>> {
+    fn list_keys(&self) -> RecordStoreResult<Vec<VirtualKey>> {
         self.inner.list_keys()
     }
-    fn delete_key(&self, id: &str) -> StoreResult<()> {
+    fn delete_key(&self, id: &str) -> RecordStoreResult<()> {
         self.inner.delete_key(id)
     }
-    fn get_usage(&self, bucket_id: &str, window_start: u64) -> StoreResult<UsageLedger> {
+    fn get_usage(&self, bucket_id: &str, window_start: u64) -> RecordStoreResult<UsageLedger> {
         self.inner.get_usage(bucket_id, window_start)
     }
     fn put_usage(
@@ -2158,10 +2212,15 @@ impl Store for RecordingBarrierStore {
         bucket_id: &str,
         window_start: u64,
         ledger: &UsageLedger,
-    ) -> StoreResult<()> {
+    ) -> RecordStoreResult<()> {
         self.inner.put_usage(bucket_id, window_start, ledger)
     }
-    fn add_usage(&self, bucket_id: &str, window_start: u64, delta: &UsageDelta) -> StoreResult<()> {
+    fn add_usage(
+        &self,
+        bucket_id: &str,
+        window_start: u64,
+        delta: &UsageDelta,
+    ) -> RecordStoreResult<()> {
         // The FIRST flush's add_usage signals it has entered, then blocks until the test releases
         // it - pinning that flush "in flight" so the test can attempt an overlapping flush.
         if self
@@ -2176,10 +2235,10 @@ impl Store for RecordingBarrierStore {
         self.writes.lock().unwrap().push(delta.requests);
         r
     }
-    fn add_metering(&self, delta: &MeteringDelta) -> StoreResult<()> {
+    fn add_metering(&self, delta: &MeteringDelta) -> RecordStoreResult<()> {
         self.inner.add_metering(delta)
     }
-    fn list_metering(&self, bucket: u64) -> StoreResult<Vec<MeteringRow>> {
+    fn list_metering(&self, bucket: u64) -> RecordStoreResult<Vec<MeteringRow>> {
         self.inner.list_metering(bucket)
     }
 }
@@ -2261,20 +2320,20 @@ struct BlockingDenylistStore {
     release: std::sync::Mutex<std::sync::mpsc::Receiver<()>>,
 }
 
-impl Store for BlockingDenylistStore {
-    fn put_key(&self, key: &VirtualKey) -> StoreResult<()> {
+impl RecordStore for BlockingDenylistStore {
+    fn put_key(&self, key: &VirtualKey) -> RecordStoreResult<()> {
         self.inner.put_key(key)
     }
-    fn get_key(&self, id: &str) -> StoreResult<Option<VirtualKey>> {
+    fn get_key(&self, id: &str) -> RecordStoreResult<Option<VirtualKey>> {
         self.inner.get_key(id)
     }
-    fn list_keys(&self) -> StoreResult<Vec<VirtualKey>> {
+    fn list_keys(&self) -> RecordStoreResult<Vec<VirtualKey>> {
         self.inner.list_keys()
     }
-    fn delete_key(&self, id: &str) -> StoreResult<()> {
+    fn delete_key(&self, id: &str) -> RecordStoreResult<()> {
         self.inner.delete_key(id)
     }
-    fn get_usage(&self, bucket_id: &str, window_start: u64) -> StoreResult<UsageLedger> {
+    fn get_usage(&self, bucket_id: &str, window_start: u64) -> RecordStoreResult<UsageLedger> {
         self.inner.get_usage(bucket_id, window_start)
     }
     fn put_usage(
@@ -2282,23 +2341,23 @@ impl Store for BlockingDenylistStore {
         bucket_id: &str,
         window_start: u64,
         ledger: &UsageLedger,
-    ) -> StoreResult<()> {
+    ) -> RecordStoreResult<()> {
         self.inner.put_usage(bucket_id, window_start, ledger)
     }
-    fn add_metering(&self, delta: &MeteringDelta) -> StoreResult<()> {
+    fn add_metering(&self, delta: &MeteringDelta) -> RecordStoreResult<()> {
         self.inner.add_metering(delta)
     }
-    fn list_metering(&self, bucket: u64) -> StoreResult<Vec<MeteringRow>> {
+    fn list_metering(&self, bucket: u64) -> RecordStoreResult<Vec<MeteringRow>> {
         self.inner.list_metering(bucket)
     }
-    fn add_denylist(&self, sub: &str, reason: &str) -> StoreResult<()> {
+    fn add_denylist(&self, sub: &str, reason: &str) -> RecordStoreResult<()> {
         // Signal the test that `revoke()` has reached this call (i.e. is inside the region that
         // must now be lock-protected), then block until the test releases it.
         let _ = self.entered.send(());
         let _ = self.release.lock().unwrap().recv();
         self.inner.add_denylist(sub, reason)
     }
-    fn list_denylist(&self) -> StoreResult<Vec<String>> {
+    fn list_denylist(&self) -> RecordStoreResult<Vec<String>> {
         self.inner.list_denylist()
     }
 }
@@ -2605,7 +2664,7 @@ fn test_missing_group_fails_closed() {
 /// so chain enforcement resumes from the persisted group accrual, not zero.
 #[test]
 fn test_hydrate_budgets_restores_group_buckets() {
-    let store: Arc<dyn Store> = Arc::new(MemoryStore::new());
+    let store: Arc<dyn RecordStore> = Arc::new(MemoryStore::new());
     let card = || card_and_group_cost("m", 100.0, &[("team", 25, "total", None)]);
     let mut k = sample_key("vk_h", "h_h");
     k.group = Some("team".to_string());
@@ -2641,35 +2700,41 @@ fn test_hydrate_budgets_restores_group_buckets() {
 #[test]
 #[allow(clippy::field_reassign_with_default)]
 fn test_hydrate_budgets_propagates_store_error() {
-    use busbar_api::{StoreError, StoreResult, UsageLedger, VirtualKey};
+    use busbar_contract::records::{RecordStoreError, RecordStoreResult, UsageLedger, VirtualKey};
 
     /// A store that delegates to an inner MemoryStore but FAILS `get_usage` (simulating a boot blip).
     struct FailGetUsage {
         inner: MemoryStore,
     }
-    impl Store for FailGetUsage {
-        fn put_key(&self, k: &VirtualKey) -> StoreResult<()> {
+    impl RecordStore for FailGetUsage {
+        fn put_key(&self, k: &VirtualKey) -> RecordStoreResult<()> {
             self.inner.put_key(k)
         }
-        fn get_key(&self, id: &str) -> StoreResult<Option<VirtualKey>> {
+        fn get_key(&self, id: &str) -> RecordStoreResult<Option<VirtualKey>> {
             self.inner.get_key(id)
         }
-        fn list_keys(&self) -> StoreResult<Vec<VirtualKey>> {
+        fn list_keys(&self) -> RecordStoreResult<Vec<VirtualKey>> {
             self.inner.list_keys()
         }
-        fn delete_key(&self, id: &str) -> StoreResult<()> {
+        fn delete_key(&self, id: &str) -> RecordStoreResult<()> {
             self.inner.delete_key(id)
         }
-        fn get_usage(&self, _bucket_id: &str, _window: u64) -> StoreResult<UsageLedger> {
-            Err(StoreError("simulated store blip on get_usage".into()))
+        fn get_usage(&self, _bucket_id: &str, _window: u64) -> RecordStoreResult<UsageLedger> {
+            Err(RecordStoreError("simulated store blip on get_usage".into()))
         }
-        fn put_usage(&self, b: &str, w: u64, l: &UsageLedger) -> StoreResult<()> {
+        fn put_usage(&self, b: &str, w: u64, l: &UsageLedger) -> RecordStoreResult<()> {
             self.inner.put_usage(b, w, l)
         }
-        fn add_metering(&self, d: &busbar_api::MeteringDelta) -> StoreResult<()> {
+        fn add_metering(
+            &self,
+            d: &busbar_contract::records::MeteringDelta,
+        ) -> RecordStoreResult<()> {
             self.inner.add_metering(d)
         }
-        fn list_metering(&self, bucket: u64) -> StoreResult<Vec<busbar_api::MeteringRow>> {
+        fn list_metering(
+            &self,
+            bucket: u64,
+        ) -> RecordStoreResult<Vec<busbar_contract::records::MeteringRow>> {
             self.inner.list_metering(bucket)
         }
     }
@@ -2677,7 +2742,7 @@ fn test_hydrate_budgets_propagates_store_error() {
     let inner = MemoryStore::new();
     let k = sample_key("vk_m9", "m9_h");
     inner.put_key(&k).unwrap();
-    let store: Arc<dyn Store> = Arc::new(FailGetUsage { inner });
+    let store: Arc<dyn RecordStore> = Arc::new(FailGetUsage { inner });
     // The key must have a non-empty ledger so hydration actually reaches get_usage.
     store
         .put_usage(
@@ -2713,7 +2778,7 @@ fn test_hydrate_budgets_propagates_store_error() {
 /// without ever tripping one of those panics.
 #[test]
 fn hydrate_budgets_never_writes_a_read_only_store_boots_like_a_writable_one() {
-    use busbar_api::{MeteringDelta, StoreResult, UsageLedger, VirtualKey};
+    use busbar_contract::records::{MeteringDelta, RecordStoreResult, UsageLedger, VirtualKey};
 
     /// Every READ delegates to the shared `inner` store; every WRITE panics — a read-only replica /
     /// grant-restricted DB fixture. If boot hydration ever grows a write, this test goes from green
@@ -2721,29 +2786,32 @@ fn hydrate_budgets_never_writes_a_read_only_store_boots_like_a_writable_one() {
     struct ReadOnlyStore {
         inner: Arc<MemoryStore>,
     }
-    impl Store for ReadOnlyStore {
-        fn put_key(&self, _key: &VirtualKey) -> StoreResult<()> {
+    impl RecordStore for ReadOnlyStore {
+        fn put_key(&self, _key: &VirtualKey) -> RecordStoreResult<()> {
             panic!("boot hydration must never write a key row");
         }
-        fn get_key(&self, id: &str) -> StoreResult<Option<VirtualKey>> {
+        fn get_key(&self, id: &str) -> RecordStoreResult<Option<VirtualKey>> {
             self.inner.get_key(id)
         }
-        fn list_keys(&self) -> StoreResult<Vec<VirtualKey>> {
+        fn list_keys(&self) -> RecordStoreResult<Vec<VirtualKey>> {
             self.inner.list_keys()
         }
-        fn delete_key(&self, _id: &str) -> StoreResult<()> {
+        fn delete_key(&self, _id: &str) -> RecordStoreResult<()> {
             panic!("boot hydration must never delete a key row");
         }
-        fn get_usage(&self, bucket_id: &str, window: u64) -> StoreResult<UsageLedger> {
+        fn get_usage(&self, bucket_id: &str, window: u64) -> RecordStoreResult<UsageLedger> {
             self.inner.get_usage(bucket_id, window)
         }
-        fn put_usage(&self, _b: &str, _w: u64, _l: &UsageLedger) -> StoreResult<()> {
+        fn put_usage(&self, _b: &str, _w: u64, _l: &UsageLedger) -> RecordStoreResult<()> {
             panic!("boot hydration must never write a usage row (no write-read-back probe)");
         }
-        fn add_metering(&self, _delta: &MeteringDelta) -> StoreResult<()> {
+        fn add_metering(&self, _delta: &MeteringDelta) -> RecordStoreResult<()> {
             panic!("boot hydration must never write a metering row");
         }
-        fn list_metering(&self, bucket: u64) -> StoreResult<Vec<busbar_api::MeteringRow>> {
+        fn list_metering(
+            &self,
+            bucket: u64,
+        ) -> RecordStoreResult<Vec<busbar_contract::records::MeteringRow>> {
             self.inner.list_metering(bucket)
         }
     }
@@ -2752,7 +2820,7 @@ fn hydrate_budgets_never_writes_a_read_only_store_boots_like_a_writable_one() {
     let mem = Arc::new(MemoryStore::new());
     let mut k = sample_key("vk_ro", "ro_h");
     k.group = Some("team".to_string());
-    let writable: Arc<dyn Store> = mem.clone();
+    let writable: Arc<dyn RecordStore> = mem.clone();
     writable.put_key(&k).unwrap();
     let at = 1_700_000_000u64;
     {
@@ -2764,7 +2832,7 @@ fn hydrate_budgets_never_writes_a_read_only_store_boots_like_a_writable_one() {
     }
 
     // Re-open the SAME durable rows, this time only through the read-only wrapper.
-    let ro: Arc<dyn Store> = Arc::new(ReadOnlyStore { inner: mem });
+    let ro: Arc<dyn RecordStore> = Arc::new(ReadOnlyStore { inner: mem });
     let gov2 = GovState::new(ro, None).unwrap();
     gov2.hydrate_budgets(&card(), at)
         .expect("hydrate_budgets must succeed against a read-only store: it never writes");
@@ -2796,7 +2864,7 @@ fn hydrate_budgets_never_writes_a_read_only_store_boots_like_a_writable_one() {
 /// re-seeded to 7 — the opposite of what the old (buggy) behavior asserted.
 #[test]
 fn test_hydrate_budgets_trusts_billable_requests_even_when_it_looks_like_a_refunded_window() {
-    let store: Arc<dyn Store> = Arc::new(MemoryStore::new());
+    let store: Arc<dyn RecordStore> = Arc::new(MemoryStore::new());
     let k = sample_key("vk_refunded", "refunded_h");
     store.put_key(&k).unwrap();
     // Shaped exactly like "7 requests admitted, all 7 refunded" (a real, legitimate state) — NOT
@@ -2828,7 +2896,7 @@ fn test_hydrate_budgets_trusts_billable_requests_even_when_it_looks_like_a_refun
     );
 
     // A normal, non-zero billable_requests row is also trusted verbatim, unchanged from before.
-    let store2: Arc<dyn Store> = Arc::new(MemoryStore::new());
+    let store2: Arc<dyn RecordStore> = Arc::new(MemoryStore::new());
     let k2 = sample_key("vk_split", "split_h");
     store2.put_key(&k2).unwrap();
     store2
@@ -3107,7 +3175,7 @@ mod signed_token {
         // store in a real fleet; here we re-put the binding so lookup_by_sub resolves).
         let store_b = Arc::new(MemoryStore::new());
         {
-            use busbar_api::Store;
+            use busbar_contract::records::RecordStore;
             store_b.put_key(&binding).unwrap();
         }
         let key_b_same = TokenSigner::from_secret_bytes(&[1u8; 32], DEFAULT_KID);
@@ -3204,7 +3272,7 @@ mod signed_token {
     /// admit forever.
     #[test]
     fn peer_revoke_written_to_the_store_is_honoured_within_the_window() {
-        use crate::governance::{Store, REVOCATION_SYNC_TTL_SECS};
+        use crate::governance::{RecordStore, REVOCATION_SYNC_TTL_SECS};
         let store = Arc::new(MemoryStore::new());
         let signer = TokenSigner::from_secret_bytes(&[9u8; 32], DEFAULT_KID);
         let g = Arc::new(
@@ -3427,7 +3495,7 @@ fn test_hydrated_cells_survive_the_first_sweep() {
         .add_usage(
             "restored",
             0,
-            &busbar_api::UsageDelta {
+            &busbar_contract::records::UsageDelta {
                 requests: 42,
                 billable_requests: 42,
                 models: Vec::new(),
@@ -3497,26 +3565,26 @@ mod metering_fanout {
         }
     }
 
-    impl Store for CountingStore {
-        fn put_key(&self, k: &VirtualKey) -> StoreResult<()> {
+    impl RecordStore for CountingStore {
+        fn put_key(&self, k: &VirtualKey) -> RecordStoreResult<()> {
             self.inner.put_key(k)
         }
-        fn get_key(&self, id: &str) -> StoreResult<Option<VirtualKey>> {
+        fn get_key(&self, id: &str) -> RecordStoreResult<Option<VirtualKey>> {
             self.inner.get_key(id)
         }
-        fn list_keys(&self) -> StoreResult<Vec<VirtualKey>> {
+        fn list_keys(&self) -> RecordStoreResult<Vec<VirtualKey>> {
             self.inner.list_keys()
         }
-        fn delete_key(&self, id: &str) -> StoreResult<()> {
+        fn delete_key(&self, id: &str) -> RecordStoreResult<()> {
             self.inner.delete_key(id)
         }
-        fn get_usage(&self, id: &str, w: u64) -> StoreResult<UsageLedger> {
+        fn get_usage(&self, id: &str, w: u64) -> RecordStoreResult<UsageLedger> {
             self.inner.get_usage(id, w)
         }
-        fn put_usage(&self, id: &str, w: u64, l: &UsageLedger) -> StoreResult<()> {
+        fn put_usage(&self, id: &str, w: u64, l: &UsageLedger) -> RecordStoreResult<()> {
             self.inner.put_usage(id, w, l)
         }
-        fn add_metering(&self, d: &MeteringDelta) -> StoreResult<()> {
+        fn add_metering(&self, d: &MeteringDelta) -> RecordStoreResult<()> {
             self.total_calls.fetch_add(1, Ordering::SeqCst);
             let now_in = self.in_flight.fetch_add(1, Ordering::SeqCst) + 1;
             self.high_water.fetch_max(now_in, Ordering::SeqCst);
@@ -3534,13 +3602,13 @@ mod metering_fanout {
                     .compare_exchange(cur, cur - 1, Ordering::SeqCst, Ordering::SeqCst)
                     .is_ok()
                 {
-                    break Err(StoreError("scripted failure".into()));
+                    break Err(RecordStoreError("scripted failure".into()));
                 }
             };
             self.in_flight.fetch_sub(1, Ordering::SeqCst);
             result
         }
-        fn list_metering(&self, bucket: u64) -> StoreResult<Vec<MeteringRow>> {
+        fn list_metering(&self, bucket: u64) -> RecordStoreResult<Vec<MeteringRow>> {
             self.inner.list_metering(bucket)
         }
     }
@@ -3693,36 +3761,36 @@ impl FailDeleteStore {
     }
 }
 
-impl Store for FailDeleteStore {
-    fn put_key(&self, k: &VirtualKey) -> StoreResult<()> {
+impl RecordStore for FailDeleteStore {
+    fn put_key(&self, k: &VirtualKey) -> RecordStoreResult<()> {
         self.inner.put_key(k)
     }
-    fn get_key(&self, id: &str) -> StoreResult<Option<VirtualKey>> {
+    fn get_key(&self, id: &str) -> RecordStoreResult<Option<VirtualKey>> {
         self.inner.get_key(id)
     }
-    fn list_keys(&self) -> StoreResult<Vec<VirtualKey>> {
+    fn list_keys(&self) -> RecordStoreResult<Vec<VirtualKey>> {
         self.inner.list_keys()
     }
-    fn delete_key(&self, id: &str) -> StoreResult<()> {
+    fn delete_key(&self, id: &str) -> RecordStoreResult<()> {
         if self
             .fail_next_delete
             .compare_exchange(true, false, Ordering::SeqCst, Ordering::SeqCst)
             .is_ok()
         {
-            return Err(StoreError("store down: delete_key".into()));
+            return Err(RecordStoreError("store down: delete_key".into()));
         }
         self.inner.delete_key(id)
     }
-    fn get_usage(&self, id: &str, w: u64) -> StoreResult<UsageLedger> {
+    fn get_usage(&self, id: &str, w: u64) -> RecordStoreResult<UsageLedger> {
         self.inner.get_usage(id, w)
     }
-    fn put_usage(&self, id: &str, w: u64, l: &UsageLedger) -> StoreResult<()> {
+    fn put_usage(&self, id: &str, w: u64, l: &UsageLedger) -> RecordStoreResult<()> {
         self.inner.put_usage(id, w, l)
     }
-    fn add_metering(&self, d: &MeteringDelta) -> StoreResult<()> {
+    fn add_metering(&self, d: &MeteringDelta) -> RecordStoreResult<()> {
         self.inner.add_metering(d)
     }
-    fn list_metering(&self, bucket: u64) -> StoreResult<Vec<MeteringRow>> {
+    fn list_metering(&self, bucket: u64) -> RecordStoreResult<Vec<MeteringRow>> {
         self.inner.list_metering(bucket)
     }
 }
@@ -3885,24 +3953,24 @@ impl FailListKeysAfterDeleteStore {
     }
 }
 
-impl Store for FailListKeysAfterDeleteStore {
-    fn put_key(&self, k: &VirtualKey) -> StoreResult<()> {
+impl RecordStore for FailListKeysAfterDeleteStore {
+    fn put_key(&self, k: &VirtualKey) -> RecordStoreResult<()> {
         self.inner.put_key(k)
     }
-    fn get_key(&self, id: &str) -> StoreResult<Option<VirtualKey>> {
+    fn get_key(&self, id: &str) -> RecordStoreResult<Option<VirtualKey>> {
         self.inner.get_key(id)
     }
-    fn list_keys(&self) -> StoreResult<Vec<VirtualKey>> {
+    fn list_keys(&self) -> RecordStoreResult<Vec<VirtualKey>> {
         if self
             .fail_next_list_keys
             .compare_exchange(true, false, Ordering::SeqCst, Ordering::SeqCst)
             .is_ok()
         {
-            return Err(StoreError("store down: list_keys".into()));
+            return Err(RecordStoreError("store down: list_keys".into()));
         }
         self.inner.list_keys()
     }
-    fn delete_key(&self, id: &str) -> StoreResult<()> {
+    fn delete_key(&self, id: &str) -> RecordStoreResult<()> {
         let r = self.inner.delete_key(id);
         if r.is_ok() {
             // Arm: the tombstone landed in the store — the very next cache-reconcile `refresh()`
@@ -3911,16 +3979,16 @@ impl Store for FailListKeysAfterDeleteStore {
         }
         r
     }
-    fn get_usage(&self, id: &str, w: u64) -> StoreResult<UsageLedger> {
+    fn get_usage(&self, id: &str, w: u64) -> RecordStoreResult<UsageLedger> {
         self.inner.get_usage(id, w)
     }
-    fn put_usage(&self, id: &str, w: u64, l: &UsageLedger) -> StoreResult<()> {
+    fn put_usage(&self, id: &str, w: u64, l: &UsageLedger) -> RecordStoreResult<()> {
         self.inner.put_usage(id, w, l)
     }
-    fn add_metering(&self, d: &MeteringDelta) -> StoreResult<()> {
+    fn add_metering(&self, d: &MeteringDelta) -> RecordStoreResult<()> {
         self.inner.add_metering(d)
     }
-    fn list_metering(&self, bucket: u64) -> StoreResult<Vec<MeteringRow>> {
+    fn list_metering(&self, bucket: u64) -> RecordStoreResult<Vec<MeteringRow>> {
         self.inner.list_metering(bucket)
     }
 }
@@ -4017,29 +4085,29 @@ struct PanicOnPutKeyStore {
     inner: MemoryStore,
 }
 
-impl Store for PanicOnPutKeyStore {
-    fn put_key(&self, _k: &VirtualKey) -> StoreResult<()> {
+impl RecordStore for PanicOnPutKeyStore {
+    fn put_key(&self, _k: &VirtualKey) -> RecordStoreResult<()> {
         panic!("intentional panic inside put_key, for the JoinError-mapping test");
     }
-    fn get_key(&self, id: &str) -> StoreResult<Option<VirtualKey>> {
+    fn get_key(&self, id: &str) -> RecordStoreResult<Option<VirtualKey>> {
         self.inner.get_key(id)
     }
-    fn list_keys(&self) -> StoreResult<Vec<VirtualKey>> {
+    fn list_keys(&self) -> RecordStoreResult<Vec<VirtualKey>> {
         self.inner.list_keys()
     }
-    fn delete_key(&self, id: &str) -> StoreResult<()> {
+    fn delete_key(&self, id: &str) -> RecordStoreResult<()> {
         self.inner.delete_key(id)
     }
-    fn get_usage(&self, id: &str, w: u64) -> StoreResult<UsageLedger> {
+    fn get_usage(&self, id: &str, w: u64) -> RecordStoreResult<UsageLedger> {
         self.inner.get_usage(id, w)
     }
-    fn put_usage(&self, id: &str, w: u64, l: &UsageLedger) -> StoreResult<()> {
+    fn put_usage(&self, id: &str, w: u64, l: &UsageLedger) -> RecordStoreResult<()> {
         self.inner.put_usage(id, w, l)
     }
-    fn add_metering(&self, d: &MeteringDelta) -> StoreResult<()> {
+    fn add_metering(&self, d: &MeteringDelta) -> RecordStoreResult<()> {
         self.inner.add_metering(d)
     }
-    fn list_metering(&self, bucket: u64) -> StoreResult<Vec<MeteringRow>> {
+    fn list_metering(&self, bucket: u64) -> RecordStoreResult<Vec<MeteringRow>> {
         self.inner.list_metering(bucket)
     }
 }
@@ -4098,23 +4166,23 @@ impl RefreshBlipStore {
     }
 }
 
-impl Store for RefreshBlipStore {
-    fn put_key(&self, key: &VirtualKey) -> StoreResult<()> {
+impl RecordStore for RefreshBlipStore {
+    fn put_key(&self, key: &VirtualKey) -> RecordStoreResult<()> {
         self.inner.put_key(key)
     }
-    fn get_key(&self, id: &str) -> StoreResult<Option<VirtualKey>> {
+    fn get_key(&self, id: &str) -> RecordStoreResult<Option<VirtualKey>> {
         self.inner.get_key(id)
     }
-    fn list_keys(&self) -> StoreResult<Vec<VirtualKey>> {
+    fn list_keys(&self) -> RecordStoreResult<Vec<VirtualKey>> {
         if self.fail_list.load(std::sync::atomic::Ordering::SeqCst) {
-            return Err(StoreError("transient store blip".to_string()));
+            return Err(RecordStoreError("transient store blip".to_string()));
         }
         self.inner.list_keys()
     }
-    fn delete_key(&self, id: &str) -> StoreResult<()> {
+    fn delete_key(&self, id: &str) -> RecordStoreResult<()> {
         self.inner.delete_key(id)
     }
-    fn get_usage(&self, bucket_id: &str, window_start: u64) -> StoreResult<UsageLedger> {
+    fn get_usage(&self, bucket_id: &str, window_start: u64) -> RecordStoreResult<UsageLedger> {
         self.inner.get_usage(bucket_id, window_start)
     }
     fn put_usage(
@@ -4122,13 +4190,19 @@ impl Store for RefreshBlipStore {
         bucket_id: &str,
         window_start: u64,
         ledger: &UsageLedger,
-    ) -> StoreResult<()> {
+    ) -> RecordStoreResult<()> {
         self.inner.put_usage(bucket_id, window_start, ledger)
     }
-    fn add_metering(&self, delta: &busbar_api::MeteringDelta) -> StoreResult<()> {
+    fn add_metering(
+        &self,
+        delta: &busbar_contract::records::MeteringDelta,
+    ) -> RecordStoreResult<()> {
         self.inner.add_metering(delta)
     }
-    fn list_metering(&self, since: u64) -> StoreResult<Vec<busbar_api::MeteringRow>> {
+    fn list_metering(
+        &self,
+        since: u64,
+    ) -> RecordStoreResult<Vec<busbar_contract::records::MeteringRow>> {
         self.inner.list_metering(since)
     }
 }
@@ -4823,7 +4897,9 @@ fn an_admin_rotate_then_a_pools_change_does_not_fork_the_binding() {
     // And the pools change actually took effect, so this is not passing by doing nothing.
     assert_eq!(
         enabled[0].allowed_scopes,
-        Some(vec![busbar_api::ScopeRef::pool("poolA".to_string())]),
+        Some(vec![busbar_contract::records::ScopeRef::pool(
+            "poolA".to_string()
+        )]),
         "the changed pools must be persisted on the surviving binding"
     );
 }
@@ -4840,38 +4916,57 @@ struct MeteringFailStore {
     inner: MemoryStore,
 }
 
-impl Store for MeteringFailStore {
-    fn put_key(&self, key: &busbar_api::VirtualKey) -> busbar_api::StoreResult<()> {
+impl RecordStore for MeteringFailStore {
+    fn put_key(
+        &self,
+        key: &busbar_contract::records::VirtualKey,
+    ) -> busbar_contract::records::RecordStoreResult<()> {
         self.inner.put_key(key)
     }
-    fn get_key(&self, id: &str) -> busbar_api::StoreResult<Option<busbar_api::VirtualKey>> {
+    fn get_key(
+        &self,
+        id: &str,
+    ) -> busbar_contract::records::RecordStoreResult<Option<busbar_contract::records::VirtualKey>>
+    {
         self.inner.get_key(id)
     }
-    fn list_keys(&self) -> busbar_api::StoreResult<Vec<busbar_api::VirtualKey>> {
+    fn list_keys(
+        &self,
+    ) -> busbar_contract::records::RecordStoreResult<Vec<busbar_contract::records::VirtualKey>>
+    {
         self.inner.list_keys()
     }
-    fn delete_key(&self, id: &str) -> busbar_api::StoreResult<()> {
+    fn delete_key(&self, id: &str) -> busbar_contract::records::RecordStoreResult<()> {
         self.inner.delete_key(id)
     }
     fn get_usage(
         &self,
         bucket_id: &str,
         window_start: u64,
-    ) -> busbar_api::StoreResult<busbar_api::UsageLedger> {
+    ) -> busbar_contract::records::RecordStoreResult<busbar_contract::records::UsageLedger> {
         self.inner.get_usage(bucket_id, window_start)
     }
     fn put_usage(
         &self,
         bucket_id: &str,
         window_start: u64,
-        ledger: &busbar_api::UsageLedger,
-    ) -> busbar_api::StoreResult<()> {
+        ledger: &busbar_contract::records::UsageLedger,
+    ) -> busbar_contract::records::RecordStoreResult<()> {
         self.inner.put_usage(bucket_id, window_start, ledger)
     }
-    fn add_metering(&self, _delta: &busbar_api::MeteringDelta) -> busbar_api::StoreResult<()> {
-        Err(busbar_api::StoreError("metering store unavailable".into()))
+    fn add_metering(
+        &self,
+        _delta: &busbar_contract::records::MeteringDelta,
+    ) -> busbar_contract::records::RecordStoreResult<()> {
+        Err(busbar_contract::records::RecordStoreError(
+            "metering store unavailable".into(),
+        ))
     }
-    fn list_metering(&self, bucket: u64) -> busbar_api::StoreResult<Vec<busbar_api::MeteringRow>> {
+    fn list_metering(
+        &self,
+        bucket: u64,
+    ) -> busbar_contract::records::RecordStoreResult<Vec<busbar_contract::records::MeteringRow>>
+    {
         self.inner.list_metering(bucket)
     }
 }
@@ -4881,7 +4976,7 @@ fn flush_metering_failure_warns_once_per_tick_not_per_key() {
     use crate::test_support::warn_capture::WarnCapture;
     use tracing_subscriber::layer::SubscriberExt as _;
 
-    let store: Arc<dyn Store> = Arc::new(MeteringFailStore {
+    let store: Arc<dyn RecordStore> = Arc::new(MeteringFailStore {
         inner: MemoryStore::new(),
     });
     let gov = GovState::new(store, None).unwrap();
@@ -5466,7 +5561,7 @@ fn a_planes_session_fee_charges_one_per_session() {
 /// `record_metering` carries them in the token columns; carrying them twice would double-bill).
 #[test]
 fn the_metering_row_carries_every_class_the_budget_book_holds() {
-    use busbar_api::Store as _;
+    use busbar_contract::records::RecordStore as _;
     use busbar_kernel_ledger::cost::{plane_fee_lane, PER_SESSION};
     let (store, gov, k) = team_gov();
     let cost = plane_fee_cost(1_000);
@@ -5659,7 +5754,7 @@ fn a_role_bound_standing_follows_the_live_bindings_and_lapses_when_the_binding_g
     let now = ask(&rb).expect("still bound").expect("governed");
     assert_eq!(
         now.allowed_scopes,
-        Some(vec![busbar_api::ScopeRef::pool("p2")])
+        Some(vec![busbar_contract::records::ScopeRef::pool("p2")])
     );
     assert_eq!(now.group.as_deref(), Some("finance"));
 

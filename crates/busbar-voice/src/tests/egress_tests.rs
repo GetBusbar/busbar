@@ -10,7 +10,7 @@
 //! credential at all and the decl could not state that the dial carries busbar's own authority.
 
 use crate::DECLS;
-use busbar_api::UpstreamCreds;
+use busbar_contract::config::UpstreamCreds;
 use busbar_kernel::proto::SigningContext;
 
 #[test]

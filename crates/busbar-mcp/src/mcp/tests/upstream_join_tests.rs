@@ -625,7 +625,7 @@ fn per_day(
 }
 
 /// The caller: a key in group `g`, granted the one tool.
-fn budgeted_key(id: &str, server: &str) -> busbar_api::VirtualKey {
+fn budgeted_key(id: &str, server: &str) -> busbar_contract::records::VirtualKey {
     let tool = format!("{server}_read");
     let mut key = super::upstream_support::key_with_scopes(
         id,
@@ -637,10 +637,10 @@ fn budgeted_key(id: &str, server: &str) -> busbar_api::VirtualKey {
 
 async fn read_once(
     app: &std::sync::Arc<dyn EngineApp>,
-    key: &busbar_api::VirtualKey,
+    key: &busbar_contract::records::VirtualKey,
     server: &str,
 ) -> (u16, serde_json::Value) {
-    let g = busbar_api::PlaneRequestCtx {
+    let g = busbar_contract::records::PlaneRequestCtx {
         key: Some(std::sync::Arc::new(key.clone())),
     };
     call(

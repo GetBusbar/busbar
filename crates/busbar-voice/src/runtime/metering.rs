@@ -29,7 +29,7 @@ use std::sync::Arc;
 /// anything to.
 pub struct TurnMeter {
     host: Arc<dyn EngineHost>,
-    key: busbar_api::VirtualKey,
+    key: busbar_contract::records::VirtualKey,
     pool: &'static str,
     provider: &'static str,
 }
@@ -39,7 +39,7 @@ impl TurnMeter {
     #[must_use]
     pub fn new(
         host: Arc<dyn EngineHost>,
-        key: busbar_api::VirtualKey,
+        key: busbar_contract::records::VirtualKey,
         pool: &'static str,
         provider: &'static str,
     ) -> Self {

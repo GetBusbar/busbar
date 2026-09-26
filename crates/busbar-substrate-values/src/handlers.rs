@@ -24,7 +24,7 @@ use crate::diagnostics::USAGE_TAP_DECODE_FAILED;
 use crate::ir::egress_prep::EgressPrep;
 use crate::ir::facts::IrFacts;
 use crate::wire::{EgressWire, TranslatedResponse};
-use busbar_api::operation::Operation;
+use busbar_contract::operation::OpVerb;
 use serde_json::Value;
 
 /// A same-protocol 2xx response body the usage tap could not decode into token usage, so the request
@@ -342,7 +342,7 @@ pub fn request_handler(protocol: &str) -> Option<&'static dyn RequestHandler> {
 /// naming one of those either.
 #[derive(Clone, Copy)]
 pub struct OpDispatch {
-    pub operation: Operation,
+    pub operation: OpVerb,
     /// The channel this exchange rides. A VALUE, like `operation`: the engine labels with it and hands
     /// it on, and never compares or matches it (that would be a transport-identity branch).
     pub(crate) transport: crate::transport::Transport,
@@ -357,7 +357,7 @@ pub type Op = OpDispatch;
 /// how a codec's bytes reach and leave a peer, never what those bytes say.
 pub const fn frame(
     transport: crate::transport::Transport,
-    operation: Operation,
+    operation: OpVerb,
     op_handler: &'static dyn OperationHandler,
 ) -> OpDispatch {
     OpDispatch {
@@ -417,7 +417,7 @@ impl OpDispatch {
 /// would be a capability the declaration did not name.
 pub fn op_for(
     protocol: &str,
-    operation: Operation,
+    operation: OpVerb,
     transport: crate::transport::Transport,
 ) -> Option<Op> {
     let decl = crate::proto::decl_for(protocol)?;
@@ -436,7 +436,7 @@ pub fn op_for(
 /// The TRANSPORT is the caller's to state — which channel an exchange arrived on is a fact about the
 /// arrival, and a protocol has no opinion about it — so it is a parameter.
 pub fn chat(protocol: &str, transport: crate::transport::Transport) -> Op {
-    op_for(protocol, Operation::CHAT, transport).unwrap_or_else(|| {
+    op_for(protocol, OpVerb::CHAT, transport).unwrap_or_else(|| {
         // Unreachable in any shipped configuration: a chat plugin always registers the residual chat
         // protocol and its siblings, and the sole production caller asks for that residual name. The
         // diagnostic names the registry's residual-default protocol rather than a hard-coded dialect,

@@ -9,7 +9,7 @@
 //! read back nothing at all.
 
 use super::{FixtureHost, LedgerUsage};
-use busbar_api::{PlaneRequestCtx, VirtualKey};
+use busbar_contract::records::{PlaneRequestCtx, VirtualKey};
 use busbar_kernel::plane_host::AdmissionHost;
 use std::sync::Arc;
 

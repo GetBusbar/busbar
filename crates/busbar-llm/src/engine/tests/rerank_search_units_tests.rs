@@ -151,7 +151,7 @@ async fn same_protocol_rerank_books(protocol: &'static str, body: &str) -> TwoBo
     let (host, rt) = crate::engine::test_host_rt(&app);
     let op = busbar_substrate_values::handlers::op_for(
         protocol,
-        busbar_api::operation::Operation::RERANK,
+        busbar_contract::operation::OpVerb::RERANK,
         busbar_substrate_values::transport::Transport::Http,
     )
     .expect("the protocol serves rerank");

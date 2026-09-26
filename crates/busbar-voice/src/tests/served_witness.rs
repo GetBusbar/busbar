@@ -121,8 +121,8 @@ fn hosted(host: &Arc<FixtureHost>) -> VoiceRuntime {
 }
 
 /// A caller whose key holds no scope list — granted every kind, a voice session included.
-fn caller(id: &str) -> busbar_api::VirtualKey {
-    busbar_api::VirtualKey {
+fn caller(id: &str) -> busbar_contract::records::VirtualKey {
+    busbar_contract::records::VirtualKey {
         id: id.to_string(),
         name: id.to_string(),
         ..Default::default()
@@ -134,7 +134,7 @@ fn served_open<'a>(
     rt: &'a VoiceRuntime,
     host: &Arc<FixtureHost>,
     call_id: &str,
-    vkey: Option<busbar_api::VirtualKey>,
+    vkey: Option<busbar_contract::records::VirtualKey>,
 ) -> GovernedOpen<'a> {
     GovernedOpen {
         rt,
@@ -157,7 +157,7 @@ fn open_session(
     rt: &VoiceRuntime,
     host: &Arc<FixtureHost>,
     call_id: &str,
-    key: Option<&busbar_api::VirtualKey>,
+    key: Option<&busbar_contract::records::VirtualKey>,
 ) -> (
     Arc<SessionCore<OpenAiRealtimeCodec>>,
     crate::runtime::SessionHandle,
@@ -319,8 +319,8 @@ async fn the_destination_the_gate_judged_is_the_one_metered() -> u64 {
 async fn a_key_granted_no_session_never_reaches_the_gate() -> u64 {
     let host = Arc::new(FixtureHost::new());
     let rt = hosted(&host);
-    let ungranted = busbar_api::VirtualKey {
-        allowed_scopes: Some(vec![busbar_api::ScopeRef::pool("fast")]),
+    let ungranted = busbar_contract::records::VirtualKey {
+        allowed_scopes: Some(vec![busbar_contract::records::ScopeRef::pool("fast")]),
         ..caller("vk-no-session")
     };
     let refused = open_governed(served_open(&rt, &host, "call-approve-no", Some(ungranted))).await;
@@ -331,8 +331,8 @@ async fn a_key_granted_no_session_never_reaches_the_gate() -> u64 {
     );
     assert!(host.audit_log().is_empty(), "and nothing was opened for it");
 
-    let granted = busbar_api::VirtualKey {
-        allowed_scopes: Some(vec![busbar_api::ScopeRef {
+    let granted = busbar_contract::records::VirtualKey {
+        allowed_scopes: Some(vec![busbar_contract::records::ScopeRef {
             kind: "session".to_string(),
             value: VOICE_POOL.to_string(),
         }]),

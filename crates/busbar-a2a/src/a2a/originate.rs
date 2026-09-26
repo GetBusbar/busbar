@@ -58,7 +58,7 @@ fn originate(
     engine_host: &dyn busbar_kernel::plane_host::EngineHost,
     plane: &Arc<super::plane::A2aPlane>,
     admitted: &Admitted,
-    key: &busbar_api::VirtualKey,
+    key: &busbar_contract::records::VirtualKey,
     a2a_version: &'static str,
     now: u64,
 ) -> Option<Originated> {
@@ -192,7 +192,7 @@ const ORIGINATED_RPC_ID: &str = "busbar-originated";
 pub(super) async fn mirror_push_config(
     engine_host: &Arc<dyn busbar_kernel::plane_host::EngineHost>,
     admitted: &Admitted,
-    key: &busbar_api::VirtualKey,
+    key: &busbar_contract::records::VirtualKey,
     method: &'static str,
     task: &super::task::Task,
     a2a_version: &'static str,
@@ -320,7 +320,7 @@ pub(super) async fn mirror_push_config(
 pub(super) async fn refresh_listed_tasks(
     engine_host: &Arc<dyn busbar_kernel::plane_host::EngineHost>,
     admitted: &Admitted,
-    key: &busbar_api::VirtualKey,
+    key: &busbar_contract::records::VirtualKey,
     principal: &str,
     a2a_version: &'static str,
     now: u64,

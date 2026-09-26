@@ -284,7 +284,7 @@ pub struct Metered {
     /// The metering row this response accrued — one request for the serving model, with the token
     /// split preserved. `None` when there was no key or no serving lane to attribute it to, which
     /// is the only case in which nothing is metered at all.
-    pub row: Option<busbar_api::MeteringRow>,
+    pub row: Option<busbar_contract::records::MeteringRow>,
     /// Whether the flat per-request fee posts: 1 on a delivered 2xx from an upstream leg, 0
     /// otherwise. Decided here, from the client-facing status, and never reversed later.
     pub fee_count: u32,
@@ -327,10 +327,11 @@ pub type MeterStep =
 /// Named from the neutral reserved-unit spellings rather than any dialect's wire field, because the
 /// readers already normalize every dialect onto them: input is UNCACHED input, and the two cache
 /// tiers are ADDITIVE, so the four partition what the response consumed on every provider.
-const CLASS_INPUT: MeterClassId = MeterClassId::new(busbar_api::UNIT_INPUT);
-const CLASS_OUTPUT: MeterClassId = MeterClassId::new(busbar_api::UNIT_OUTPUT);
-const CLASS_CACHE_READ: MeterClassId = MeterClassId::new(busbar_api::UNIT_CACHE_READ);
-const CLASS_CACHE_WRITE: MeterClassId = MeterClassId::new(busbar_api::UNIT_CACHE_WRITE);
+const CLASS_INPUT: MeterClassId = MeterClassId::new(busbar_contract::records::UNIT_INPUT);
+const CLASS_OUTPUT: MeterClassId = MeterClassId::new(busbar_contract::records::UNIT_OUTPUT);
+const CLASS_CACHE_READ: MeterClassId = MeterClassId::new(busbar_contract::records::UNIT_CACHE_READ);
+const CLASS_CACHE_WRITE: MeterClassId =
+    MeterClassId::new(busbar_contract::records::UNIT_CACHE_WRITE);
 
 /// Step 6. Fold what the legs reported, post the counts, and say what the posting is made against.
 ///
@@ -470,8 +471,8 @@ fn metering_row(
     sink: &crate::engine::UsageSink,
     lane: &crate::engine::Lane,
     usage: Option<&busbar_substrate_values::billing::TokenUsage>,
-) -> busbar_api::MeteringRow {
-    busbar_api::MeteringRow {
+) -> busbar_contract::records::MeteringRow {
+    busbar_contract::records::MeteringRow {
         usage_units: Default::default(),
         key_id: sink.key.id.clone(),
         model: lane.model.clone(),

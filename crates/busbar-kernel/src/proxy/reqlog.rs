@@ -53,7 +53,7 @@
 //! are made). Dispatches and refusals alike: a governance refusal is evidence, and it is the half a
 //! log that only records successes cannot provide.
 //!
-//! NOT WRITTEN — durability. `busbar_api::Store` carries no per-request method for this stream, and
+//! NOT WRITTEN — durability. `busbar_contract::records::RecordStore` carries no per-request method for this stream, and
 //! adding one is a plugin-ABI change fanned out to four external store repositories; it is
 //! deliberately not made here. So this chain is a bounded IN-MEMORY window and A RESTART LOSES IT.
 //! That is the same floor `a2a::pushdeliver`'s pin map and `calllog` under `store: memory` are
@@ -149,7 +149,7 @@ pub(crate) struct RequestInput {
     pub(crate) status: u16,
 }
 
-/// ONE REQUEST ON THIS PLANE, as evidence. Lives in core rather than in `busbar_api` precisely
+/// ONE REQUEST ON THIS PLANE, as evidence. Lives in core rather than in `busbar_contract` precisely
 /// because it is NOT persisted (see the header): a type in the plugin ABI that no store method takes
 /// would be an invitation to believe a durable path exists.
 #[derive(Debug, Clone, PartialEq, Eq)]

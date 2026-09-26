@@ -15,7 +15,7 @@ fn xreq_lane(ingress: &'static str, body: &Value, model: &str, caps: LaneCaps) -
     let mut req = ingress_p.reader().read_request(body).expect("read_request");
     crate::chat_handle::chat_prepare_for_egress(
         &mut req,
-        &busbar_substrate_values::ir::egress_prep::EgressPrep {
+        &busbar_contract::ir::egress_prep::EgressPrep {
             thought_signature_fill: false,
             ingress_protocol: ingress,
             egress_requires_max_tokens: false,
@@ -107,7 +107,7 @@ fn bed10_context_window_detail_rides_the_message_stop_frame() {
         ..Default::default()
     };
     let mut bytes = bedrock_response_to_eventstream(&ir, Some(1));
-    let frames = busbar_substrate_values::eventstream::drain_frames(&mut bytes);
+    let frames = crate::eventstream::drain_frames(&mut bytes);
     let stop = frames
         .iter()
         .find(|(t, _)| t == "messageStop")

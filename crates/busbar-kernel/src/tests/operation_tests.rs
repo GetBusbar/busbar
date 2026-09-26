@@ -12,22 +12,22 @@ use crate::operation::*;
 /// **THE THIRTEEN NAMES ARE THE 1.5-ERA METRIC LABEL SET, UNCHANGED.** Collapsing thirteen flat
 /// variants onto six shapes must not re-base a single metric series, and this table is where that
 /// is asserted rather than assumed.
-const ALL: [(Operation, OpShape, &str); 13] = [
+const ALL: [(OpVerb, OpShape, &str); 13] = [
     // The LLM family: seven words, ONE shape. Name a model, hand it arguments, get content back.
-    (Operation::CHAT, OpShape::Invoke, "chat"),
-    (Operation::EMBEDDINGS, OpShape::Invoke, "embeddings"),
-    (Operation::MODERATION, OpShape::Invoke, "moderation"),
-    (Operation::IMAGE, OpShape::Invoke, "image"),
-    (Operation::TRANSCRIPTION, OpShape::Invoke, "transcription"),
-    (Operation::SPEECH, OpShape::Invoke, "speech"),
-    (Operation::RERANK, OpShape::Invoke, "rerank"),
+    (OpVerb::CHAT, OpShape::Invoke, "chat"),
+    (OpVerb::EMBEDDINGS, OpShape::Invoke, "embeddings"),
+    (OpVerb::MODERATION, OpShape::Invoke, "moderation"),
+    (OpVerb::IMAGE, OpShape::Invoke, "image"),
+    (OpVerb::TRANSCRIPTION, OpShape::Invoke, "transcription"),
+    (OpVerb::SPEECH, OpShape::Invoke, "speech"),
+    (OpVerb::RERANK, OpShape::Invoke, "rerank"),
     // The protocol surface: one verb per shape today, carrying the shape's own word.
-    (Operation::INVOKE, OpShape::Invoke, "invoke"),
-    (Operation::CATALOGUE, OpShape::Catalogue, "catalogue"),
-    (Operation::FETCH, OpShape::Fetch, "fetch"),
-    (Operation::TASK, OpShape::Task, "task"),
-    (Operation::SUBSCRIBE, OpShape::Subscribe, "subscribe"),
-    (Operation::CONTROL, OpShape::Control, "control"),
+    (OpVerb::INVOKE, OpShape::Invoke, "invoke"),
+    (OpVerb::CATALOGUE, OpShape::Catalogue, "catalogue"),
+    (OpVerb::FETCH, OpShape::Fetch, "fetch"),
+    (OpVerb::TASK, OpShape::Task, "task"),
+    (OpVerb::SUBSCRIBE, OpShape::Subscribe, "subscribe"),
+    (OpVerb::CONTROL, OpShape::Control, "control"),
 ];
 
 #[test]
@@ -38,7 +38,7 @@ fn names_are_stable_and_distinct() {
     sorted.sort_unstable();
     sorted.dedup();
     assert_eq!(sorted.len(), names.len(), "operation names must be unique");
-    assert_eq!(Operation::CHAT.name(), "chat");
+    assert_eq!(OpVerb::CHAT.name(), "chat");
 }
 
 /// THE NAMES ARE AN OPERATOR-VISIBLE CONTRACT — the metrics label and the `paths:` config key — so
@@ -67,13 +67,13 @@ fn every_verb_is_pinned_to_its_shape() {
 /// which `the_metric_label_surface_is_exactly_these_thirteen` below pins as the other half.
 #[test]
 fn all_holds_every_core_owned_verb_and_nothing_else() {
-    let listed: Vec<Operation> = ALL
+    let listed: Vec<OpVerb> = ALL
         .iter()
         .filter(|(_, _, n)| OpShape::ALL.iter().any(|s| s.as_str() == *n))
         .map(|(o, _, _)| *o)
         .collect();
     assert_eq!(
-        Operation::ALL,
+        OpVerb::ALL,
         listed.as_slice(),
         "`Operation::ALL` and this file's shape-verb rows must be the same list in the same order"
     );
@@ -92,7 +92,7 @@ fn all_holds_every_core_owned_verb_and_nothing_else() {
 /// words were a core table.
 #[test]
 fn the_metric_label_surface_is_exactly_these_thirteen() {
-    let mut labels: Vec<&str> = Operation::ALL
+    let mut labels: Vec<&str> = OpVerb::ALL
         .iter()
         .chain(crate::proto::registry::declared_verbs())
         .map(|o| o.name())
@@ -204,7 +204,7 @@ fn only_the_invoke_shape_may_stream() {
 fn the_named_invoke_family_is_one_shape_with_seven_distinct_words() {
     let family: Vec<&str> = ALL
         .iter()
-        .filter(|(op, _, _)| *op != Operation::INVOKE && op.shape() == OpShape::Invoke)
+        .filter(|(op, _, _)| *op != OpVerb::INVOKE && op.shape() == OpShape::Invoke)
         .map(|(_, _, n)| *n)
         .collect();
     assert_eq!(family.len(), 7, "seven named verbs, all `Invoke`-shaped");

@@ -5,7 +5,7 @@
 
 use super::*;
 use crate::ir::facts::{ContentItem, IrFacts};
-use crate::operation::Operation;
+use crate::operation::OpVerb;
 
 /// A subscription target: an opaque resource URI the IR carries verbatim.
 const TARGET: &str = "resource://inbox";
@@ -17,7 +17,7 @@ fn subscribe_projects_target_name_and_never_streams() {
         target: TARGET.into(),
         extra: Default::default(),
     };
-    assert_eq!(IrFacts::verb(&req), Operation::SUBSCRIBE);
+    assert_eq!(IrFacts::verb(&req), OpVerb::SUBSCRIBE);
     // Registering is answered once — it is NOT a stream.
     assert!(!IrFacts::wants_stream(&req));
     let items = req.content();

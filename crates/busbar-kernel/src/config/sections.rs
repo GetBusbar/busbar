@@ -10,7 +10,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use busbar_api::SecretRef;
+use busbar_contract::secret_ref::SecretRef;
 
 use super::limits::{DEFAULT_RATE_SWEEP_INTERVAL, DEFAULT_USAGE_FLUSH_INTERVAL_MS};
 

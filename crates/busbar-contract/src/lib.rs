@@ -90,6 +90,12 @@ pub mod verb_store;
 pub mod vocab;
 pub mod wire;
 
+/// THE HEADER VOCABULARY the protocol-seam shapes name (`HeaderMap`, `HeaderName`, `HeaderValue`,
+/// `StatusCode`), re-exported so a plane reaches the very types the contract's signatures use through
+/// the contract alone (#83a O10: header vocabulary is spec-accepted here) rather than naming the crate
+/// as a second dependency of its own.
+pub use http;
+
 /// Milliseconds on the kernel's monotonic clock.
 ///
 /// The kernel never reads a wall clock: every deadline, every tick interval and every lease

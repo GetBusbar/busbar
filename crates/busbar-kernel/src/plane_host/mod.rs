@@ -85,6 +85,29 @@ pub struct HostState<'a> {
     /// slots that REQUIRE an attributable emitter refuse a `None`. Use
     /// [`with_borrowed_host_as`] to mint a handle that carries one.
     pub emitter: Option<&'static str>,
+    /// WHOSE request a plane's dispatch runs for (DEC-SERVE G1, DECISIONS #65/#40): the caller the
+    /// auth middleware resolved, stamped by the minter from that context — never a word the plane
+    /// wrote. `Some` on every PLANE mint ([`with_plane_door`], [`with_borrowed_host_as`]), and then
+    /// `meter_charge` bills THIS caller and ignores any key id in the plane's `Usage` tail; `None`
+    /// only on the host's own mints, where the kernel composed the `Usage` itself.
+    caller: Option<HostCaller>,
+    /// The operator's destinations for the plane this handle was minted for (DEC-SERVE G3): the only
+    /// source of the privilege scope the `egress_open` slot judges a hop against. `None` ⇒ scope `0`.
+    destinations: Option<&'a egress::OperatorDestinations>,
+}
+
+/// The middleware-resolved caller behind a plane mint (DEC-SERVE G1): an OPAQUE, kernel-only handle.
+/// It has no public constructor — the only way one comes to exist is [`with_plane_door`] lifting it
+/// off the auth context the middleware attached — so neither a plane nor a crate outside the kernel
+/// can hand the host a caller of its choosing (#65). `None` inside: an unauthenticated route, which
+/// bills the synthetic admission-derived attribution, never the plane's tail.
+pub(crate) struct HostCaller(Option<Arc<busbar_contract::records::VirtualKey>>);
+
+impl HostCaller {
+    /// The resolved key this dispatch is billed to, if the request carried one.
+    pub(crate) fn key(&self) -> Option<&busbar_contract::records::VirtualKey> {
+        self.0.as_deref()
+    }
 }
 
 /// Recover core's [`HostState`] from the opaque [`HostCtx`] the plane handed back — or refuse it.
@@ -160,7 +183,7 @@ pub fn with_borrowed_host<R>(
     f: impl FnOnce(HostCtx, &PlaneHostVtable) -> R,
 ) -> R {
     // A host-internal mint: nobody's plane. See `HostState::emitter`.
-    mint(None, app, scope, f)
+    mint(None, None, None, app, scope, f)
 }
 
 /// Run `f` with a [`HostCtx`] ATTRIBUTED to `plane` — the mint site a real plane dispatch uses.
@@ -172,14 +195,33 @@ pub fn with_borrowed_host<R>(
 /// attribution unforgeable rather than merely present.
 ///
 /// The mint a plane dispatched over the C ABI rides: every host call the plane makes back during the
-/// dispatch is recovered, and attributed, as that plane's.
+/// dispatch is recovered, and attributed, as that plane's. It resolves no caller, so its metering
+/// bills the synthetic admission key, never the plane's tail — [`with_plane_door`] carries one.
 pub fn with_borrowed_host_as<R>(
     plane: &'static str,
     app: &App,
     scope: &DispatchScope,
     f: impl FnOnce(HostCtx, &PlaneHostVtable) -> R,
 ) -> R {
-    mint(Some(plane), app, scope, f)
+    let caller = Some(HostCaller(None));
+    mint(Some(plane), caller, None, app, scope, f)
+}
+
+/// THE HOT DOOR'S MINT (DEC-SERVE G1 + G3): [`with_borrowed_host_as`], plus the two facts only the
+/// host knows about this request — the `caller` the auth middleware resolved (the request's
+/// [`PlaneRequestCtx`](busbar_contract::records::PlaneRequestCtx), `None` on an open route), which
+/// `meter_charge` bills; and the operator's `destinations` for `plane`, which `egress_open` derives a
+/// hop's privilege scope from. Neither is a word the plane can supply.
+pub fn with_plane_door<R>(
+    plane: &'static str,
+    caller: Option<&busbar_contract::records::PlaneRequestCtx>,
+    destinations: &egress::OperatorDestinations,
+    app: &App,
+    scope: &DispatchScope,
+    f: impl FnOnce(HostCtx, &PlaneHostVtable) -> R,
+) -> R {
+    let caller = HostCaller(caller.and_then(|g| g.key.clone()));
+    mint(Some(plane), Some(caller), Some(destinations), app, scope, f)
 }
 
 /// THE ONE MINT: run `f` with a [`HostCtx`] over a [`HostState`] of `app` + `scope` (attributed to
@@ -190,6 +232,8 @@ pub fn with_borrowed_host_as<R>(
 /// site — borrowed, attributed, async, Send, durable — is this function.
 fn mint<R>(
     emitter: Option<&'static str>,
+    caller: Option<HostCaller>,
+    destinations: Option<&egress::OperatorDestinations>,
     app: &App,
     scope: &DispatchScope,
     f: impl FnOnce(HostCtx, &PlaneHostVtable) -> R,
@@ -198,6 +242,8 @@ fn mint<R>(
         app,
         scope,
         emitter,
+        caller,
+        destinations,
     };
     let vtable = build_plane_host_vtable();
     let generation = HostGeneration::open();
@@ -407,7 +453,6 @@ pub fn clock_now_ms_over(app: &App) -> u64 {
 /// bytes — so governance attribution and metering are unchanged. The async future stays `Send`: it
 /// only `.await`s the native core async fn; no `HostCtx` is minted here, and any minted inside
 /// `operation_resolved`'s own frames is consumed there, never crossing this `.await`.
-#[allow(dead_code)]
 pub async fn synthesize_completion_over(
     app: Arc<App>,
     gov: &crate::governance::PlaneRequestCtx,
@@ -738,9 +783,9 @@ impl busbar_kernel::plane_host::RegistryHost for EngineHostImpl {
         }
     }
 
-    fn secret_resolver(&self) -> Arc<dyn busbar_api::SecretResolve> {
+    fn secret_resolver(&self) -> Arc<dyn busbar_contract::secret::SecretResolve> {
         // Pure snapshot read: hand the plane the live `Arc<SecretResolver>` behind the neutral
-        // `busbar_api::SecretResolve` seam. The concrete resolver impls the trait (same crate), so the
+        // `busbar_contract::secret::SecretResolve` seam. The concrete resolver impls the trait (same crate), so the
         // clone coerces to the trait object — no wrapping, the SAME resolver (built-ins + any wired
         // `kind: secret` plugin), fail-closed exactly as core resolution.
         self.app.secret_resolver.clone()
@@ -771,12 +816,20 @@ impl busbar_kernel::plane_host::HookConfigHost for EngineHostImpl {
     fn pool_rewrites(
         &self,
         pool: &str,
-    ) -> &[(std::time::Duration, Arc<dyn busbar_api::RoutingPolicy>)] {
+    ) -> &[(
+        std::time::Duration,
+        Arc<dyn busbar_contract::hooks::RoutingPolicy>,
+    )] {
         // `App::pool_rewrites` already returns the neutral api tuple slice; byte-identical borrow.
         self.app.pool_rewrites(pool)
     }
 
-    fn rewrite_hooks(&self) -> &[(std::time::Duration, Arc<dyn busbar_api::RoutingPolicy>)] {
+    fn rewrite_hooks(
+        &self,
+    ) -> &[(
+        std::time::Duration,
+        Arc<dyn busbar_contract::hooks::RoutingPolicy>,
+    )] {
         &self.app.rewrite_hooks
     }
 
@@ -837,7 +890,7 @@ impl busbar_kernel::plane_host::BudgetHost for EngineHostImpl {
     fn rate_headroom(
         &self,
         pin: &busbar_kernel::plane_host::MeterPin,
-        key: &busbar_api::VirtualKey,
+        key: &busbar_contract::records::VirtualKey,
         pool: Option<&str>,
         now: u64,
     ) -> Option<f64> {
@@ -851,9 +904,9 @@ impl busbar_kernel::plane_host::BudgetHost for EngineHostImpl {
     fn budget_state(
         &self,
         pin: &busbar_kernel::plane_host::MeterPin,
-        key: &busbar_api::VirtualKey,
+        key: &busbar_contract::records::VirtualKey,
         now: u64,
-    ) -> Vec<busbar_api::BudgetBucketState> {
+    ) -> Vec<busbar_contract::hooks::BudgetBucketState> {
         pin_models(pin).map_or_else(Vec::new, |(g, c)| g.budget_state(&c, key, now))
     }
 
@@ -881,7 +934,7 @@ impl busbar_kernel::plane_host::BudgetHost for EngineHostImpl {
     fn meter_ledger(
         &self,
         pin: &busbar_kernel::plane_host::MeterPin,
-        key: &busbar_api::VirtualKey,
+        key: &busbar_contract::records::VirtualKey,
         pool: &str,
         model: &str,
         usage: &busbar_substrate_values::billing::Usage,
@@ -958,7 +1011,7 @@ impl busbar_kernel::plane_host::IdentityHost for EngineHostImpl {
     }
 
     #[cfg(any(test, feature = "test-support"))]
-    fn verify_token_test(&self, token: &str) -> Option<Arc<busbar_api::VirtualKey>> {
+    fn verify_token_test(&self, token: &str) -> Option<Arc<busbar_contract::records::VirtualKey>> {
         self.app
             .governance
             .as_ref()
@@ -980,8 +1033,13 @@ impl busbar_kernel::plane_host::IdentityHost for EngineHostImpl {
         token: Option<String>,
         audience: String,
         resource: String,
-    ) -> Result<(busbar_api::AuthPrincipal, busbar_api::PlaneRequestCtx), busbar_api::IdentityRefusal>
-    {
+    ) -> Result<
+        (
+            busbar_contract::auth::AuthPrincipal,
+            busbar_contract::records::PlaneRequestCtx,
+        ),
+        busbar_contract::auth::IdentityRefusal,
+    > {
         // The veneer already spawns a blocking closure that mints + consumes the `HostCtx` on a
         // blocking thread; this only awaits the join, so no `HostCtx` crosses the `.await` and the
         // future stays `Send`.
@@ -993,7 +1051,10 @@ impl busbar_kernel::plane_host::IdentityHost for EngineHostImpl {
         standing: &busbar_kernel::trust::validate::Standing,
         live_gen: u64,
         now: u64,
-    ) -> Result<Option<Arc<busbar_api::VirtualKey>>, busbar_kernel::trust::validate::Lapsed> {
+    ) -> Result<
+        Option<Arc<busbar_contract::records::VirtualKey>>,
+        busbar_kernel::trust::validate::Lapsed,
+    > {
         // Inject the host's live `GovState` AND the live `role_bindings` through the `GovResolve` seam
         // so the plane holds only the `Standing`. The bindings are per-snapshot (rebuilt on every
         // config apply), so they are read off the CURRENT snapshot when the host retains the live
@@ -1077,7 +1138,7 @@ impl busbar_kernel::plane_host::AdmissionHost for EngineHostImpl {
 
     fn destination_guard(
         &self,
-        gov: &busbar_api::PlaneRequestCtx,
+        gov: &busbar_contract::records::PlaneRequestCtx,
         proto: &'static str,
         pool: &str,
         started: std::time::Instant,
@@ -1088,7 +1149,7 @@ impl busbar_kernel::plane_host::AdmissionHost for EngineHostImpl {
 
     fn admission_door(
         &self,
-        gov: &busbar_api::PlaneRequestCtx,
+        gov: &busbar_contract::records::PlaneRequestCtx,
         proto: &'static str,
         pool: &str,
         started: std::time::Instant,
@@ -1119,7 +1180,7 @@ impl busbar_kernel::plane_host::AdmissionHost for EngineHostImpl {
 
     fn admission_check(
         &self,
-        gov: &busbar_api::PlaneRequestCtx,
+        gov: &busbar_contract::records::PlaneRequestCtx,
         proto: &'static str,
         pool: &str,
         charged_at: u64,
@@ -1150,7 +1211,7 @@ impl busbar_kernel::plane_host::AdmissionHost for EngineHostImpl {
 
     fn finish_admitted(
         &self,
-        gov: &busbar_api::PlaneRequestCtx,
+        gov: &busbar_contract::records::PlaneRequestCtx,
         ingress_protocol: &str,
         pool: &str,
         started: std::time::Instant,
@@ -1172,7 +1233,7 @@ impl busbar_kernel::plane_host::AdmissionHost for EngineHostImpl {
 
     fn finish_rejected(
         &self,
-        gov: &busbar_api::PlaneRequestCtx,
+        gov: &busbar_contract::records::PlaneRequestCtx,
         ingress_protocol: &str,
         pool: &str,
         started: std::time::Instant,
@@ -1205,7 +1266,7 @@ impl busbar_kernel::plane_host::AdmissionHost for EngineHostImpl {
 impl busbar_kernel::plane_host::CompletionHost for EngineHostImpl {
     async fn synthesize_completion(
         &self,
-        gov: &busbar_api::PlaneRequestCtx,
+        gov: &busbar_contract::records::PlaneRequestCtx,
         model: &str,
         body: bytes::Bytes,
         max_body_bytes: usize,
@@ -1450,10 +1511,10 @@ pub fn transform_over_over(
         let outcome = rt.block_on(hook.transform(&req, *timeout));
         drop(req); // end the immutable borrow of `facts` before the next iteration reuses `arguments`
         match outcome {
-            busbar_api::TransformOutcome::Rewrite(rw) => {
+            busbar_contract::hooks::TransformOutcome::Rewrite(rw) => {
                 applied |= apply_rewrite_to_invoke_args(&mut arguments, &rw);
             }
-            busbar_api::TransformOutcome::Reject { status, message } => {
+            busbar_contract::hooks::TransformOutcome::Reject { status, message } => {
                 // Already status-clamped + message-sanitized at the wire seam.
                 return TransformVerdict::Reject {
                     status,
@@ -1461,11 +1522,11 @@ pub fn transform_over_over(
                     hook: hook.name().to_string(),
                 };
             }
-            busbar_api::TransformOutcome::Abstain => {}
+            busbar_contract::hooks::TransformOutcome::Abstain => {}
             // The hook could not answer, and its disposition says to carry on — a load-bearing
             // hook's failed call arrived as `Reject` above, applied by the resolver's decorator
             // before it reached this (or any other) firing site. Logged, never silent.
-            busbar_api::TransformOutcome::Failed { message } => {
+            busbar_contract::hooks::TransformOutcome::Failed { message } => {
                 tracing::warn!(
                     hook = hook.name(),
                     error = %message,
@@ -1500,7 +1561,7 @@ fn build_invoke_rewrite_request<'a>(
     facts: &'a dyn busbar_substrate_values::ir::facts::IrFacts,
     ingress_protocol: &'a str,
     request_id: u64,
-) -> busbar_api::RoutingRequest<'a> {
+) -> busbar_contract::hooks::RoutingRequest<'a> {
     use busbar_substrate_values::ir::facts::Slot;
     use std::borrow::Cow;
     let shape = facts.shape();
@@ -1519,8 +1580,9 @@ fn build_invoke_rewrite_request<'a>(
     } else {
         Some(Cow::Owned(system_pieces.join("\n")))
     };
-    let prompt = enforce_invoke_content_cap(busbar_api::PromptProjection { system, messages });
-    busbar_api::RoutingRequest {
+    let prompt =
+        enforce_invoke_content_cap(busbar_contract::hooks::PromptProjection { system, messages });
+    busbar_contract::hooks::RoutingRequest {
         request_id,
         // A rewrite over a plane payload has no LLM routing pool; the wire omits it for the rewrite
         // projection (RESERVED field, no reader), so the empty label is neutral.
@@ -1544,8 +1606,8 @@ fn build_invoke_rewrite_request<'a>(
 /// call — the same rule the LLM seam's `enforce_content_cap` applies: over-cap content is OMITTED
 /// WHOLE (the hook is sent an empty projection), never truncated mid-value.
 fn enforce_invoke_content_cap(
-    p: busbar_api::PromptProjection<'_>,
-) -> busbar_api::PromptProjection<'_> {
+    p: busbar_contract::hooks::PromptProjection<'_>,
+) -> busbar_contract::hooks::PromptProjection<'_> {
     let cap = busbar_kernel::proxy::hook_content_max_bytes();
     if cap == 0 {
         // Explicitly UNLIMITED — the operator turned the ceiling off (`0 = unlimited`), exactly as the
@@ -1562,7 +1624,7 @@ fn enforce_invoke_content_cap(
         return p;
     }
     metrics::counter!(busbar_kernel::metrics::HOOK_CONTENT_TRUNCATED_TOTAL).increment(1);
-    busbar_api::PromptProjection {
+    busbar_contract::hooks::PromptProjection {
         system: None,
         messages: Vec::new(),
     }
@@ -1584,7 +1646,7 @@ fn enforce_invoke_content_cap(
 /// non-object) leaves `arguments` UNTOUCHED and returns `false` — never a corrupted call.
 fn apply_rewrite_to_invoke_args(
     args: &mut serde_json::Value,
-    rw: &busbar_api::RewriteReply,
+    rw: &busbar_contract::hooks::RewriteReply,
 ) -> bool {
     let mut new_args: Option<serde_json::Value> = None;
     for msg in &rw.messages {
@@ -1668,6 +1730,8 @@ impl<'a> HostDispatch<'a> {
             app: self.app,
             scope: &self.scope,
             emitter: None,
+            caller: None,
+            destinations: None,
         }
     }
 
@@ -1677,7 +1741,7 @@ impl<'a> HostDispatch<'a> {
     /// fresh [`HostGeneration`] opens for exactly this call and drops when it returns, so a `HostCtx`
     /// that escapes `f` anyway is refused (its generation is no longer live) rather than dereferenced.
     pub fn with_host<R>(&self, f: impl FnOnce(HostCtx, &PlaneHostVtable) -> R) -> R {
-        mint(None, self.app, &self.scope, f)
+        mint(None, None, None, self.app, &self.scope, f)
     }
 }
 
@@ -1726,6 +1790,8 @@ impl SendHostDispatch {
             app: &self.app,
             scope: &self.scope,
             emitter: None,
+            caller: None,
+            destinations: None,
         }
     }
 
@@ -1735,7 +1801,7 @@ impl SendHostDispatch {
     /// [`new`](Self::new) would mint a stamp that is never live on the thread that checks it) and
     /// drops when this call returns.
     pub fn with_host<R>(&self, f: impl FnOnce(HostCtx, &PlaneHostVtable) -> R) -> R {
-        mint(None, &self.app, &self.scope, f)
+        mint(None, None, None, &self.app, &self.scope, f)
     }
 }
 
@@ -1801,6 +1867,8 @@ impl DurableHostDispatch {
             app: &self.app,
             scope: self.durable.arena(),
             emitter: None,
+            caller: None,
+            destinations: None,
         }
     }
 
@@ -1808,7 +1876,7 @@ impl DurableHostDispatch {
     /// fresh [`HostGeneration`] opens for exactly this call (on this thread) and drops when it
     /// returns, so a `HostCtx` from a prior/foreign call is refused rather than dereferenced.
     pub fn with_host<R>(&self, f: impl FnOnce(HostCtx, &PlaneHostVtable) -> R) -> R {
-        mint(None, &self.app, self.durable.arena(), f)
+        mint(None, None, None, &self.app, self.durable.arena(), f)
     }
 }
 
@@ -1855,7 +1923,8 @@ pub use crate::plane_host::engine_view::{
 use crate::store::Unavailable;
 use crate::trust::validate::{Lapsed, Standing};
 use crate::trust::TrustState;
-use busbar_api::{AuthPrincipal, IdentityRefusal, PlaneRequestCtx, VirtualKey};
+use busbar_contract::auth::{AuthPrincipal, IdentityRefusal};
+use busbar_contract::records::{PlaneRequestCtx, VirtualKey};
 use busbar_plugin::hot::{AdmissionId, Signal, StatusClass};
 
 /// The outcome of a refusal-fidelity admit driven over the host `govern_admit_reason` seam.
@@ -1965,7 +2034,7 @@ pub struct HostCompletion {
 /// lives in the plane's own [`GauntletPlane`] value, NEVER here — so this names no plane type.
 pub struct GauntletRequest<'a> {
     /// Stage 1 — the resolved caller identity/scope, threaded from the auth layer that ran upstream.
-    pub gov: &'a busbar_api::PlaneRequestCtx,
+    pub gov: &'a busbar_contract::records::PlaneRequestCtx,
     /// The destination key the pre-admission `verify_destination` judges — a model for the LLM plane,
     /// a tool/server for the MCP plane. Opaque to the shared sequence; each plane spells its meaning.
     pub destination: &'a str,
@@ -2718,12 +2787,12 @@ pub trait RegistryHost: Send + Sync {
     /// without a live handle). A pure map read, no `HostCtx`.
     fn plane_slot_live(&self, key: &str) -> Option<Arc<dyn std::any::Any + Send + Sync>>;
 
-    /// The deployment's NEUTRAL secret resolver, behind the `busbar_api::SecretResolve` seam, so a
+    /// The deployment's NEUTRAL secret resolver, behind the `busbar_contract::secret::SecretResolve` seam, so a
     /// plane mints a delegation credential (and loads its outbound TLS PEM) WITHOUT naming the
     /// engine's concrete `SecretResolver`. A pure snapshot read of `App::secret_resolver`, no
     /// `HostCtx`; the returned `Arc<dyn SecretResolve>` shares the live resolver (built-ins plus any
     /// wired `kind: secret` plugin), fail-closed exactly as core resolution.
-    fn secret_resolver(&self) -> Arc<dyn busbar_api::SecretResolve>;
+    fn secret_resolver(&self) -> Arc<dyn busbar_contract::secret::SecretResolve>;
 
     /// Sign a plane-framed agent-card signing input, returning the 64-byte Ed25519 signature (None
     /// when this deployment holds no card-signing key). The card subkey is derived and held HOST-side;
@@ -2758,13 +2827,13 @@ pub trait HookConfigHost: Send + Sync {
     /// This pool's resolved REWRITE chain `(timeout, policy)` — the phase-1 transform hooks fired for
     /// requests routed to `pool`, empty (the default) ⇒ no pool rewrites. Byte-identical to
     /// `busbar_kernel::state::App::pool_rewrites(pool)`; a pure keyed map read, no `HostCtx`. The tuple is
-    /// purely neutral (`Duration`, the [`RoutingPolicy`](busbar_api::RoutingPolicy) trait object — api).
+    /// purely neutral (`Duration`, the [`RoutingPolicy`](busbar_contract::hooks::RoutingPolicy) trait object — api).
     fn pool_rewrites(
         &self,
         pool: &str,
     ) -> &[(
         std::time::Duration,
-        std::sync::Arc<dyn busbar_api::RoutingPolicy>,
+        std::sync::Arc<dyn busbar_contract::hooks::RoutingPolicy>,
     )];
 
     /// The GLOBAL (all-pools) rewrite chain `(timeout, policy)` fired in the phase-1 transform pass
@@ -2774,7 +2843,7 @@ pub trait HookConfigHost: Send + Sync {
         &self,
     ) -> &[(
         std::time::Duration,
-        std::sync::Arc<dyn busbar_api::RoutingPolicy>,
+        std::sync::Arc<dyn busbar_contract::hooks::RoutingPolicy>,
     )];
 
     /// Whether ANY registered hook holds a prompt-CONTENT grant (`prompt: ro`/`rw`) this generation —
@@ -2855,11 +2924,11 @@ pub trait BudgetHost: Send + Sync {
     /// chain, `None` when unconstrained) — the host-driven form of
     /// `gov.rate_headroom(&app.cost, key, pool, now)` over the governance state and card `pin` carries
     /// (a pure observation, no cell mutation). No `HostCtx`. `key` is the already-neutral
-    /// [`VirtualKey`](busbar_api::VirtualKey) (api).
+    /// [`VirtualKey`](busbar_contract::records::VirtualKey) (api).
     fn rate_headroom(
         &self,
         pin: &MeterPin,
-        key: &busbar_api::VirtualKey,
+        key: &busbar_contract::records::VirtualKey,
         pool: Option<&str>,
         now: u64,
     ) -> Option<f64>;
@@ -2867,14 +2936,14 @@ pub trait BudgetHost: Send + Sync {
     /// The HOOK-seam budget projection for `key`: `{bucket_id, spend_at_current_rate, remaining, window}`
     /// per chain bucket, derived fresh from the token ledger × the card `pin` carries — the host-driven
     /// form of `gov.budget_state(&app.cost, key, now)`. Returns the neutral
-    /// [`BudgetBucketState`](busbar_api::BudgetBucketState) vec (empty when the key has no chain). No
+    /// [`BudgetBucketState`](busbar_contract::hooks::BudgetBucketState) vec (empty when the key has no chain). No
     /// `HostCtx`.
     fn budget_state(
         &self,
         pin: &MeterPin,
-        key: &busbar_api::VirtualKey,
+        key: &busbar_contract::records::VirtualKey,
         now: u64,
-    ) -> Vec<busbar_api::BudgetBucketState>;
+    ) -> Vec<busbar_contract::hooks::BudgetBucketState>;
 
     /// Mint the OPAQUE [`GovHandle`] for this deployment's governance state — `Some` iff governance is
     /// configured. One `Arc` bump, no `HostCtx`. Byte-identical to cloning `App::governance`.
@@ -2901,7 +2970,7 @@ pub trait BudgetHost: Send + Sync {
     fn meter_ledger(
         &self,
         pin: &MeterPin,
-        key: &busbar_api::VirtualKey,
+        key: &busbar_contract::records::VirtualKey,
         pool: &str,
         model: &str,
         usage: &crate::billing::Usage,
@@ -2955,7 +3024,7 @@ pub trait IdentityHost: Send + Sync {
     /// other crate's dev-deps. A default lets an implementor compile either way; a host that actually
     /// verifies tokens overrides it (item 115).
     #[cfg(any(test, feature = "test-support"))]
-    fn verify_token_test(&self, token: &str) -> Option<Arc<busbar_api::VirtualKey>> {
+    fn verify_token_test(&self, token: &str) -> Option<Arc<busbar_contract::records::VirtualKey>> {
         let _ = token;
         None
     }
@@ -3184,7 +3253,7 @@ pub trait CompletionHost: Send + Sync {
     /// bounds the response body read.
     async fn synthesize_completion(
         &self,
-        gov: &busbar_api::PlaneRequestCtx,
+        gov: &busbar_contract::records::PlaneRequestCtx,
         model: &str,
         body: bytes::Bytes,
         max_body_bytes: usize,

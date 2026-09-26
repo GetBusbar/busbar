@@ -333,7 +333,7 @@ pub(crate) async fn probe_lane(host: &dyn EngineHost, i: usize, timeout: Duratio
         timestamp_epoch: now(),
         // Active health probes use busbar's own configured lane key (never a forwarded caller
         // token), so the native API-key shape (Token mode) is correct here.
-        upstream_creds: busbar_api::UpstreamCreds::Own,
+        upstream_creds: busbar_contract::config::UpstreamCreds::Own,
     };
     let auth = crate::engine::lane_auth_headers(lane, lane.api_key.expose_secret(), &signing_ctx);
 

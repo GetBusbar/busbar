@@ -1,5 +1,5 @@
 use super::*;
-use http::StatusCode;
+use busbar_contract::http::StatusCode;
 
 /// The cached streaming-CT set aggregated from the writer vtable must be exactly the SSE +
 /// AWS-event-stream pair the per-request sweep produced — the `OnceLock` only memoizes it.
@@ -161,7 +161,7 @@ fn synth_anthropic_request_id_msd_is_uniform() {
         let bytes = token.as_bytes();
         for &msd in &[bytes[0], bytes[12]] {
             total += 1;
-            if busbar_substrate_values::proto::BASE62_ALPHABET[..29].contains(&msd) {
+            if crate::dialect::BASE62_ALPHABET[..29].contains(&msd) {
                 low += 1;
             }
         }
@@ -239,7 +239,7 @@ fn test_requires_max_tokens_per_protocol() {
         ("cohere", false),
     ] {
         assert_eq!(
-            busbar_substrate_values::proto::decl_for(name).is_some_and(|d| d.requires_max_tokens),
+            busbar_kernel::proto::decl_for(name).is_some_and(|d| d.requires_max_tokens),
             want,
             "{name}: requires_max_tokens mismatch"
         );
@@ -573,10 +573,10 @@ fn test_cache_control_preserved() {
 fn cache_breakpoints_gated_by_lane_capability_on_bedrock() {
     let anthropic = crate::proto_codec::protocol_for("anthropic").unwrap();
     let bedrock = crate::proto_codec::protocol_for("bedrock").unwrap();
-    assert!(busbar_substrate_values::proto::decl_for("bedrock")
-        .is_some_and(|d| d.cache_markers_model_gated));
-    assert!(busbar_substrate_values::proto::decl_for("anthropic")
-        .is_some_and(|d| !d.cache_markers_model_gated));
+    assert!(busbar_kernel::proto::decl_for("bedrock").is_some_and(|d| d.cache_markers_model_gated));
+    assert!(
+        busbar_kernel::proto::decl_for("anthropic").is_some_and(|d| !d.cache_markers_model_gated)
+    );
 
     let body = serde_json::json!({
         "model": "claude", "max_tokens": 64,
@@ -588,7 +588,7 @@ fn cache_breakpoints_gated_by_lane_capability_on_bedrock() {
                    "cache_control": {"type": "ephemeral"}}]
     });
 
-    let prep = |allowed: bool| busbar_substrate_values::ir::egress_prep::EgressPrep {
+    let prep = |allowed: bool| busbar_contract::ir::egress_prep::EgressPrep {
         thought_signature_fill: false,
         ingress_protocol: "anthropic",
         egress_requires_max_tokens: false,
@@ -800,8 +800,8 @@ fn test_irerror_bridge() {
 
     // Billing is a hard, non-retryable failure for the breaker.
     assert_eq!(
-        busbar_substrate_values::breaker::classify(&ir_error),
-        busbar_substrate_values::breaker::Disposition::HardDown
+        busbar_kernel::breaker::classify(&ir_error),
+        busbar_contract::upstream::Disposition::HardDown
     );
 }
 
@@ -1486,11 +1486,11 @@ fn write_sse_frame_pins_both_framings_byte_for_byte() {
     let data = serde_json::json!({"a": 1});
 
     let mut out = Vec::new();
-    busbar_substrate_values::proto::write_sse_frame(&mut out, "x", &data);
+    crate::dialect::write_sse_frame(&mut out, "x", &data);
     assert_eq!(out, b"event: x\ndata: {\"a\":1}\n\n");
 
     let mut out = Vec::new();
-    busbar_substrate_values::proto::write_sse_frame(&mut out, "", &data);
+    crate::dialect::write_sse_frame(&mut out, "", &data);
     assert_eq!(out, b"data: {\"a\":1}\n\n");
 }
 
@@ -2569,8 +2569,8 @@ mod ir_property_tests {
     #[test]
     fn test_openai_write_response_event_error() {
         let writer = OpenAiWriter;
-        let err = busbar_substrate_values::proto::IrError {
-            class: busbar_substrate_values::breaker::StatusClass::ClientError,
+        let err = busbar_contract::protocol::IrError {
+            class: busbar_contract::upstream::StatusClass::ClientError,
             provider_signal: Some("boom".to_string()),
             retry_after: None,
         };
@@ -2595,7 +2595,7 @@ mod ir_property_tests {
     // Re-parse both sides and assert JSON equality with `usage` gone, plus assert the raw output has no
     // top-level `usage` key. Parsing both proves the splice stayed well-formed.
     fn assert_stripped_ok(input: &str) -> String {
-        let out = busbar_substrate_values::proto::strip_top_level_usage_member(input)
+        let out = crate::dialect::strip_top_level_usage_member(input)
             .unwrap_or_else(|| panic!("expected a byte-level strip for: {input}"));
         let parsed: serde_json::Value = serde_json::from_str(&out)
             .unwrap_or_else(|e| panic!("stripped output invalid: {e}: {out}"));
@@ -2665,7 +2665,7 @@ mod ir_property_tests {
         let input =
             r#"{"id":"x","choices":[{"delta":{"content":"the json \"usage\":null tell"}}]}"#;
         assert!(
-            busbar_substrate_values::proto::strip_top_level_usage_member(input).is_none(),
+            crate::dialect::strip_top_level_usage_member(input).is_none(),
             "must not match `usage` inside a string value"
         );
     }
@@ -2690,7 +2690,7 @@ mod ir_property_tests {
         // and with no TOP-LEVEL usage it returns None.
         let input = r#"{"id":"x","meta":{"usage":null},"choices":[]}"#;
         assert!(
-            busbar_substrate_values::proto::strip_top_level_usage_member(input).is_none(),
+            crate::dialect::strip_top_level_usage_member(input).is_none(),
             "nested usage must not be treated as the top-level member"
         );
     }
@@ -2699,6 +2699,6 @@ mod ir_property_tests {
     fn strip_usage_no_usage_key_returns_none() {
         // A content chunk with no `usage` key at all - nothing to do.
         let input = r#"{"id":"x","choices":[{"delta":{"content":"hi"}}]}"#;
-        assert!(busbar_substrate_values::proto::strip_top_level_usage_member(input).is_none());
+        assert!(crate::dialect::strip_top_level_usage_member(input).is_none());
     }
 }

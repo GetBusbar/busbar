@@ -1,10 +1,7 @@
 use super::*;
 
 impl ProtocolReader for BedrockReader {
-    fn recover_truncated_usage(
-        &self,
-        tail: &[u8],
-    ) -> Option<busbar_substrate_values::billing::TokenUsage> {
+    fn recover_truncated_usage(&self, tail: &[u8]) -> Option<busbar_contract::billing::TokenUsage> {
         let v = super::super::usage_tail::isolate_tail_usage_object(tail, b"\"usage\"")?;
         // An unreadable billed count yields NO recovered usage, never a zero one (#42): the caller
         // then bills its conservative floor estimate for the truncated body instead of $0.
@@ -32,30 +29,29 @@ impl ProtocolReader for BedrockReader {
         &self,
         status: StatusCode,
         body: &[u8],
-    ) -> busbar_substrate_values::breaker::RawUpstreamError {
+    ) -> busbar_contract::upstream::RawUpstreamError {
         // Parse the body once. Bedrock error responses carry the human-readable
         // text in `message` and the machine-readable error type in `__type`
         // (e.g. `ValidationException`, `ThrottlingException`). The structured
         // type is what the breaker's error_map keys on for fine-grained routing,
         // so it must come from `__type`, not from `message`.
-        let (provider_code, structured_type) =
-            match busbar_substrate_values::json::parse::<serde_json::Value>(body) {
-                Ok(json) => {
-                    let provider_code = json
-                        .get("message")
-                        .and_then(|m| m.as_str())
-                        .map(String::from);
-                    // AWS may also serialise the type as `__type` containing a
-                    // shape ARN suffix (e.g. `com.amazon...#ThrottlingException`);
-                    // keep only the trailing type token in that case.
-                    let structured_type = json
-                        .get("__type")
-                        .and_then(|t| t.as_str())
-                        .map(|t| t.rsplit(['#', '/']).next().unwrap_or(t).to_string());
-                    (provider_code, structured_type)
-                }
-                Err(_) => (None, None),
-            };
+        let (provider_code, structured_type) = match crate::json::parse::<serde_json::Value>(body) {
+            Ok(json) => {
+                let provider_code = json
+                    .get("message")
+                    .and_then(|m| m.as_str())
+                    .map(String::from);
+                // AWS may also serialise the type as `__type` containing a
+                // shape ARN suffix (e.g. `com.amazon...#ThrottlingException`);
+                // keep only the trailing type token in that case.
+                let structured_type = json
+                    .get("__type")
+                    .and_then(|t| t.as_str())
+                    .map(|t| t.rsplit(['#', '/']).next().unwrap_or(t).to_string());
+                (provider_code, structured_type)
+            }
+            Err(_) => (None, None),
+        };
 
         // Bedrock has no distinct context-length error CODE: an oversized request comes back as a
         // generic `ValidationException` whose human-readable `message` carries the signal (e.g.
@@ -82,7 +78,7 @@ impl ProtocolReader for BedrockReader {
                 || (lower.contains("exceeds the maximum")
                     && (lower.contains("token") || lower.contains("context")))
             {
-                Some(busbar_substrate_values::proxy::PROVIDER_CODE_CONTEXT_LENGTH.to_string())
+                Some(busbar_contract::protocol::PROVIDER_CODE_CONTEXT_LENGTH.to_string())
             } else {
                 provider_code
             }
@@ -90,7 +86,7 @@ impl ProtocolReader for BedrockReader {
             provider_code
         };
 
-        busbar_substrate_values::breaker::RawUpstreamError {
+        busbar_contract::upstream::RawUpstreamError {
             http_status: status.as_u16(),
             provider_code,
             structured_type,
@@ -120,7 +116,7 @@ impl ProtocolReader for BedrockReader {
             return CanonicalSignal {
                 class: StatusClass::ContextLength,
                 provider_signal: Some(
-                    busbar_substrate_values::proxy::PROVIDER_CODE_CONTEXT_LENGTH.to_string(),
+                    busbar_contract::protocol::PROVIDER_CODE_CONTEXT_LENGTH.to_string(),
                 ),
                 retry_after: None,
             };
@@ -166,10 +162,9 @@ impl ProtocolReader for BedrockReader {
     }
 
     fn read_request(&self, body: &serde_json::Value) -> Result<crate::ir::IrRequest, IrError> {
-        let _t = busbar_timing::timeit!("bedrock_read_request");
         let obj = body.as_object().ok_or(IrError {
             class: StatusClass::ClientError,
-            provider_signal: Some(busbar_substrate_values::proto::SIGNAL_IR_PARSE.to_string()),
+            provider_signal: Some(busbar_contract::protocol::SIGNAL_IR_PARSE.to_string()),
             retry_after: None,
         })?;
 
@@ -295,7 +290,7 @@ impl ProtocolReader for BedrockReader {
             // strict openai_chat/cohere readers). ABSENT `messages` stays lenient.
             let msgs_arr = messages_val.as_array().ok_or(IrError {
                 class: StatusClass::ClientError,
-                provider_signal: Some(busbar_substrate_values::proto::SIGNAL_IR_PARSE.to_string()),
+                provider_signal: Some(busbar_contract::protocol::SIGNAL_IR_PARSE.to_string()),
                 retry_after: None,
             })?;
             for (msg_idx, msg_val) in msgs_arr.iter().enumerate() {
@@ -308,7 +303,7 @@ impl ProtocolReader for BedrockReader {
                         return Err(IrError {
                             class: StatusClass::ClientError,
                             provider_signal: Some(
-                                busbar_substrate_values::proto::SIGNAL_IR_PARSE.to_string(),
+                                busbar_contract::protocol::SIGNAL_IR_PARSE.to_string(),
                             ),
                             retry_after: None,
                         })
@@ -325,7 +320,7 @@ impl ProtocolReader for BedrockReader {
                         return Err(IrError {
                             class: StatusClass::ClientError,
                             provider_signal: Some(
-                                busbar_substrate_values::proto::SIGNAL_IR_PARSE.to_string(),
+                                busbar_contract::protocol::SIGNAL_IR_PARSE.to_string(),
                             ),
                             retry_after: None,
                         });
@@ -352,7 +347,7 @@ impl ProtocolReader for BedrockReader {
                                 .ok_or(IrError {
                                     class: StatusClass::ClientError,
                                     provider_signal: Some(
-                                        busbar_substrate_values::proto::SIGNAL_IR_PARSE.to_string(),
+                                        busbar_contract::protocol::SIGNAL_IR_PARSE.to_string(),
                                     ),
                                     retry_after: None,
                                 })?
@@ -1312,13 +1307,11 @@ impl ProtocolReader for BedrockReader {
                         StatusClass::ServerError
                     }
                 };
-                out.push(IrStreamEvent::Error(
-                    busbar_substrate_values::proto::IrError {
-                        class,
-                        provider_signal: message.or_else(|| Some(exc.to_string())),
-                        retry_after: None,
-                    },
-                ));
+                out.push(IrStreamEvent::Error(busbar_contract::protocol::IrError {
+                    class,
+                    provider_signal: message.or_else(|| Some(exc.to_string())),
+                    retry_after: None,
+                }));
             }
 
             // Any other (or absent) event type is a no-op. This is NOT a disposition/breaker match:
@@ -1332,10 +1325,9 @@ impl ProtocolReader for BedrockReader {
     }
 
     fn read_response(&self, body: &serde_json::Value) -> Result<crate::ir::IrResponse, IrError> {
-        let _t = busbar_timing::timeit!("bedrock_read_response");
         let obj = body.as_object().ok_or(IrError {
             class: StatusClass::ClientError,
-            provider_signal: Some(busbar_substrate_values::proto::SIGNAL_IR_PARSE.to_string()),
+            provider_signal: Some(busbar_contract::protocol::SIGNAL_IR_PARSE.to_string()),
             retry_after: None,
         })?;
 
@@ -1367,13 +1359,13 @@ impl ProtocolReader for BedrockReader {
 
         let output_val = obj.get("output").ok_or(IrError {
             class: StatusClass::ClientError,
-            provider_signal: Some(busbar_substrate_values::proto::SIGNAL_IR_PARSE.to_string()),
+            provider_signal: Some(busbar_contract::protocol::SIGNAL_IR_PARSE.to_string()),
             retry_after: None,
         })?;
 
         let message_val = output_val.get("message").ok_or(IrError {
             class: StatusClass::ClientError,
-            provider_signal: Some(busbar_substrate_values::proto::SIGNAL_IR_PARSE.to_string()),
+            provider_signal: Some(busbar_contract::protocol::SIGNAL_IR_PARSE.to_string()),
             retry_after: None,
         })?;
 
@@ -1569,7 +1561,7 @@ fn refuse_unreadable_count(unreadable: crate::usage_count::UnreadableCount) -> I
     );
     IrError {
         class: StatusClass::ClientError,
-        provider_signal: Some(busbar_substrate_values::proto::SIGNAL_IR_PARSE.into()),
+        provider_signal: Some(busbar_contract::protocol::SIGNAL_IR_PARSE.into()),
         retry_after: None,
     }
 }

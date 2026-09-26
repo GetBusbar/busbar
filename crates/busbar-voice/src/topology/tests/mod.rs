@@ -43,7 +43,7 @@ fn runtime() -> VoiceRuntime {
 fn meter_capped(cap: i64) -> TurnMeter {
     TurnMeter::new(
         Arc::new(FixtureHost::new().governed().with_count_cap(cap)),
-        busbar_api::VirtualKey {
+        busbar_contract::records::VirtualKey {
             id: "vk".to_string(),
             ..Default::default()
         },
@@ -390,7 +390,7 @@ async fn a_pinned_core_holds_nothing_open() {
     let host = Arc::new(FixtureHost::new().governed());
     let meter = TurnMeter::new(
         Arc::clone(&host) as Arc<dyn busbar_kernel::plane_host::EngineHost>,
-        busbar_api::VirtualKey {
+        busbar_contract::records::VirtualKey {
             id: "vk-pin".to_string(),
             ..Default::default()
         },

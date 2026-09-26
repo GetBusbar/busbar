@@ -143,6 +143,7 @@ pub const PLANE_DECLARATION: busbar_contract::plane::PlaneDeclaration =
         // `decisions.fees` figure would charge nothing — refused at boot.
         fee_units: &[],
         metric_families: &[],
+        served_op_classes: &[],
     };
 
 /// The claims axis: the pure plane the boot seal registers, and the two exact-path claims it declares
@@ -214,8 +215,7 @@ pub const PLANE_HOOKS: busbar_kernel::plane::registry::PlaneHooks =
 /// THE DECISION PLANE'S ROOT UNIT: the read-back seal, and nothing else.
 pub const ROOT_UNIT: crate::root::linked::RootUnit = crate::root::linked::RootUnit {
     seal: Some(installed_under_its_own_key),
-    path_ingress: &[],
-    body_ingress: &[],
+    drive: None,
     on_config: None,
     opens_book: false,
     on_book: None,
@@ -258,7 +258,7 @@ impl busbar_kernel::plane::config::PlaneCfg for DecisionsCfg {
     /// anti-omission force `ToolsCfg`/`AgentsCfg`/`StreamsCfg` carry. `models.<m>.provider` is a
     /// NAME into `providers:`, and the credential lives on the provider entry, which core's own walk
     /// already enumerates; `upstream_credentials` is a two-variant mode, not a secret.
-    fn secret_refs(&self) -> Vec<(String, &busbar_api::SecretRef)> {
+    fn secret_refs(&self) -> Vec<(String, &busbar_contract::secret_ref::SecretRef)> {
         let DecisionsSection {
             models: _,
             hooks: _,
@@ -331,7 +331,7 @@ impl busbar_kernel::plane::config::PlaneCfg for DecisionsCfg {
     /// the LLM plane — which interprets whatever dialect its provider resolves to — this plane
     /// interprets exactly one and fails closed on every other.
     fn known_dialects(&self) -> Option<&'static [&'static str]> {
-        Some(&[busbar_plane_decision::config::JEV_PROTOCOL])
+        Some(&[busbar_plane_decision::config::PROTOCOL])
     }
 
     /// True when the operator wrote CONTENT — anything other than the plane's own empty section.

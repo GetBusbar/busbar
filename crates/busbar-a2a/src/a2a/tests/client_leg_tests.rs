@@ -1162,7 +1162,7 @@ async fn a_list_with_no_open_task_of_this_callers_makes_no_hop() {
 /// global sink: a sibling test dispatching through `TASKS` at the same time writes rows for ITS
 /// task ids, and they cannot enter this test's assertions.
 struct ChainSink {
-    inner: std::sync::Arc<dyn busbar_api::Store>,
+    inner: std::sync::Arc<dyn busbar_contract::records::RecordStore>,
     /// `(task_id, body)` — the OPAQUE stored task-event bodies a durable backend holds (the neutral
     /// `{seq,prev_hash,hash,content}` the P5-C9 seam persists), kept verbatim and reconstructed to a
     /// typed view on read via the plane store's `task_event_row_from_body`.
@@ -1178,42 +1178,62 @@ impl ChainSink {
     }
 }
 
-impl busbar_api::Store for ChainSink {
-    fn put_key(&self, key: &busbar_api::VirtualKey) -> busbar_api::StoreResult<()> {
+impl busbar_contract::records::RecordStore for ChainSink {
+    fn put_key(
+        &self,
+        key: &busbar_contract::records::VirtualKey,
+    ) -> busbar_contract::records::RecordStoreResult<()> {
         self.inner.put_key(key)
     }
-    fn get_key(&self, id: &str) -> busbar_api::StoreResult<Option<busbar_api::VirtualKey>> {
+    fn get_key(
+        &self,
+        id: &str,
+    ) -> busbar_contract::records::RecordStoreResult<Option<busbar_contract::records::VirtualKey>>
+    {
         self.inner.get_key(id)
     }
-    fn list_keys(&self) -> busbar_api::StoreResult<Vec<busbar_api::VirtualKey>> {
+    fn list_keys(
+        &self,
+    ) -> busbar_contract::records::RecordStoreResult<Vec<busbar_contract::records::VirtualKey>>
+    {
         self.inner.list_keys()
     }
-    fn delete_key(&self, id: &str) -> busbar_api::StoreResult<()> {
+    fn delete_key(&self, id: &str) -> busbar_contract::records::RecordStoreResult<()> {
         self.inner.delete_key(id)
     }
     fn get_usage(
         &self,
         bucket_id: &str,
         window_start: u64,
-    ) -> busbar_api::StoreResult<busbar_api::UsageLedger> {
+    ) -> busbar_contract::records::RecordStoreResult<busbar_contract::records::UsageLedger> {
         self.inner.get_usage(bucket_id, window_start)
     }
     fn put_usage(
         &self,
         bucket_id: &str,
         window_start: u64,
-        ledger: &busbar_api::UsageLedger,
-    ) -> busbar_api::StoreResult<()> {
+        ledger: &busbar_contract::records::UsageLedger,
+    ) -> busbar_contract::records::RecordStoreResult<()> {
         self.inner.put_usage(bucket_id, window_start, ledger)
     }
-    fn add_metering(&self, delta: &busbar_api::MeteringDelta) -> busbar_api::StoreResult<()> {
+    fn add_metering(
+        &self,
+        delta: &busbar_contract::records::MeteringDelta,
+    ) -> busbar_contract::records::RecordStoreResult<()> {
         self.inner.add_metering(delta)
     }
-    fn list_metering(&self, bucket: u64) -> busbar_api::StoreResult<Vec<busbar_api::MeteringRow>> {
+    fn list_metering(
+        &self,
+        bucket: u64,
+    ) -> busbar_contract::records::RecordStoreResult<Vec<busbar_contract::records::MeteringRow>>
+    {
         self.inner.list_metering(bucket)
     }
     // ── The neutral kind-tagged verbs, delegating to the named task-event methods above ──────────
-    fn append_plane_record(&self, record: &busbar_api::PlaneRecord) -> busbar_api::StoreResult<()> {
+    fn append_plane_record(
+        &self,
+        record: &busbar_contract::records::PlaneRecord,
+    ) -> busbar_contract::records::RecordStoreResult<()> {
         match record.kind.as_str() {
             crate::record::KIND_TASK_EVENT => {
                 let task_id = record.parent.clone().unwrap_or_else(|| record.id.clone());
@@ -1229,10 +1249,13 @@ impl busbar_api::Store for ChainSink {
     fn list_plane_records(
         &self,
         kind: &str,
-        selector: &busbar_api::PlaneSelector,
-    ) -> busbar_api::StoreResult<Vec<Vec<u8>>> {
+        selector: &busbar_contract::records::PlaneSelector,
+    ) -> busbar_contract::records::RecordStoreResult<Vec<Vec<u8>>> {
         match (kind, selector) {
-            (crate::record::KIND_TASK_EVENT, busbar_api::PlaneSelector::Parent(p)) => Ok(self
+            (
+                crate::record::KIND_TASK_EVENT,
+                busbar_contract::records::PlaneSelector::Parent(p),
+            ) => Ok(self
                 .events
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
@@ -1246,7 +1269,10 @@ impl busbar_api::Store for ChainSink {
 }
 
 impl ChainSink {
-    fn list_task_events(&self, task_id: &str) -> busbar_api::StoreResult<Vec<crate::TaskEventRow>> {
+    fn list_task_events(
+        &self,
+        task_id: &str,
+    ) -> busbar_contract::records::RecordStoreResult<Vec<crate::TaskEventRow>> {
         self.events
             .lock()
             .unwrap_or_else(|e| e.into_inner())

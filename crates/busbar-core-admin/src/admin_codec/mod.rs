@@ -4,10 +4,9 @@
 //! ## What this module is
 //!
 //! The closed table of 66 operations the 1.5.5 admin API tag defines (mechanically extracted into
-//! `generated::verb_table_1_5_5`, 49 paths, 34 read-only and 32 full) plus the 13 additional 1.6.0
+//! `generated::verb_table_1_5_5`, 49 paths, 34 read-only and 32 full) plus the 9 additional 1.6.0
 //! money-governance verbs the design names by name (`verify`, `plane_facts`, `plane_record_write`,
-//! `chain_break`, `store_restore`, `reseal_epoch_floor`, `set_overdraft_ceiling`,
-//! `set_dispute_max_age`, `commit_upgrade`, `resolve_dispute`, `resolve_slice`, `adjust`,
+//! `chain_break`, `store_restore`, `reseal_epoch_floor`, `commit_upgrade`, `adjust`,
 //! `amend_rate_history`), the 5 1.6.0
 //! ledger views (the read-only `/api/v1/admin/ledger/*` surface) and the 3 1.6.0 audit-chain reads
 //! (the read-only `/api/v1/admin/audit/{head,range,keys}` surface an outside verifier pulls the

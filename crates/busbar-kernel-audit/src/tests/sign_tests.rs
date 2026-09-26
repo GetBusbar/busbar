@@ -977,3 +977,89 @@ fn the_worked_examples_preimage_is_the_length_the_spec_quotes() {
         .sum();
     assert_eq!(framed, 468);
 }
+
+// ── ONE KEYSET, TWO DOMAINS: ledger checkpoints are signed by the audit key (Q71(3), #82) ──────────
+
+/// A checkpoint-shaped body. The audit crate never parses one — it signs the bytes the ledger hands
+/// it — so any bytes stand in for the ledger's `Checkpoint::signed_body`.
+const CHECKPOINT_BODY: &[u8] = b"checkpoint 1: bucket b, window 1, settled 450";
+
+#[test]
+fn a_checkpoint_signed_by_the_audit_chain_verifies_with_the_audit_keyset() {
+    let chain = AuditChain::new().signing_with(signer());
+    let signature = chain
+        .sign_checkpoint_body(CHECKPOINT_BODY)
+        .expect("a chain given a key signs checkpoints with it");
+    // The SAME set the audit key-set read publishes: the public half of the chain's own key.
+    let mut keys = AuditKeySet::new();
+    keys.insert(
+        AuditVerifyingKey::from_hex(&chain.public_key_hex().unwrap()).expect("a real public key"),
+    );
+    assert_eq!(
+        keys.verify_checkpoint_body(CHECKPOINT_BODY, &signature),
+        Ok(())
+    );
+}
+
+#[test]
+fn a_tampered_checkpoint_body_refuses_with_the_bad_signature_text() {
+    let chain = AuditChain::new().signing_with(signer());
+    let signature = chain.sign_checkpoint_body(CHECKPOINT_BODY).unwrap();
+    let mut keys = AuditKeySet::new();
+    keys.insert_signer(&signer());
+    let tampered = b"checkpoint 1: bucket b, window 1, settled 451";
+    let refused = keys
+        .verify_checkpoint_body(tampered, &signature)
+        .expect_err("an edited body must not verify");
+    assert_eq!(refused, KeyError::BadSignature);
+    assert_eq!(
+        refused.to_string(),
+        "the signature does not verify against this key"
+    );
+}
+
+#[test]
+fn a_checkpoint_signature_and_a_record_signature_cannot_stand_in_for_each_other() {
+    let key = signer();
+    let digest_hex = crate::legacy::sha256_hex(CHECKPOINT_BODY);
+    let mut keys = AuditKeySet::new();
+    keys.insert_signer(&key);
+    // A record signature over the checkpoint body's digest does not verify as a checkpoint.
+    let record_sig = key.sign_digest(&digest_hex);
+    let raw: Vec<u8> = (0..record_sig.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&record_sig[i..i + 2], 16).unwrap())
+        .collect();
+    assert_eq!(
+        keys.verify_checkpoint_body(CHECKPOINT_BODY, &raw),
+        Err(KeyError::BadSignature)
+    );
+    // And a checkpoint signature does not verify as a record signature over that digest.
+    let checkpoint_sig: String = key
+        .sign_checkpoint_body(CHECKPOINT_BODY)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    let public = AuditVerifyingKey::from_hex(&key.public_key_hex()).unwrap();
+    assert_eq!(
+        public.verify_digest(&digest_hex, &checkpoint_sig),
+        Err(KeyError::BadSignature)
+    );
+}
+
+#[test]
+fn a_chain_with_no_key_seals_checkpoints_unsigned_and_a_short_signature_is_malformed() {
+    assert_eq!(
+        AuditChain::new().sign_checkpoint_body(CHECKPOINT_BODY),
+        None
+    );
+    let mut keys = AuditKeySet::new();
+    keys.insert_signer(&signer());
+    let refused = keys
+        .verify_checkpoint_body(CHECKPOINT_BODY, &[0u8; 10])
+        .unwrap_err();
+    assert_eq!(
+        refused.to_string(),
+        "the signature is not 128 lowercase hexadecimal characters"
+    );
+}

@@ -32,7 +32,6 @@ members = [
     "crates/busbar-plane-streaming",
     "crates/busbar-plane-decision",
     "crates/busbar-unit-transport-key",
-    "crates/api",
     "crates/busbar-plugin",
     "crates/plugin-sdk",
     "crates/plugin-loader",

@@ -823,3 +823,81 @@ fn planted_blocked_targets_are_refused_at_the_egress_chokepoint() {
         println!("plane_host::egress_open          REFUSED  {target}");
     }
 }
+
+/// Open `desc` through the FFI `egress_open` slot on a HOT plane's door whose operator section is
+/// `section`; `Ok(body)` drained to EOF, or `Err(cause)` — the refusal the guard stashed.
+fn door_open(section: &str, desc: &EgressDesc) -> Result<Vec<u8>, String> {
+    let section: serde_yaml::Value = serde_yaml::from_str(section).expect("section parses");
+    let dest = OperatorDestinations::of_section(&section);
+    let app = crate::test_support::TestApp::new().build();
+    let scope = DispatchScope::new();
+    crate::plane_host::with_plane_door("hot", None, &dest, &app, &scope, |host, vt| {
+        let mut out = std::mem::MaybeUninit::<EgressOpen>::uninit();
+        match (vt.egress_open.unwrap())(host, desc as *const EgressDesc, &mut out) {
+            StatusClass::Ok => {
+                // SAFETY: Ok ⇒ initialized.
+                let id = unsafe { out.assume_init() }.id;
+                let body = drain(vt, host, id);
+                (vt.egress_close.unwrap())(host, id);
+                Ok(body)
+            }
+            _ => Err(read_fault(vt, host).expect("a refusal was stashed").1),
+        }
+    })
+}
+
+/// DEC-SERVE G3: a loopback plaintext upstream the OPERATOR configured in the plane's section is
+/// reachable through the FFI `egress_open` — the host derives the scope from the operator's
+/// destination (the provider-`base_url` rule), whatever the plane's POD says (here: nothing).
+#[test]
+fn an_operator_configured_loopback_upstream_is_reachable_through_the_ffi_egress() {
+    let port = spawn_mock(b"operator upstream");
+    let url = format!("http://127.0.0.1:{port}/v1/items");
+    let mut desc = http_desc(url.as_bytes());
+    desc.allowlist_scope = 0;
+    let section = format!("upstream:\n  base_url: http://127.0.0.1:{port}\n");
+    assert_eq!(
+        door_open(&section, &desc).as_deref(),
+        Ok(&b"operator upstream"[..])
+    );
+}
+
+/// DEC-SERVE G3 RED arm: the SAME URL, NOT operator-configured (the section names another origin),
+/// is a plane-chosen URL — public-https-only — so the hop is REFUSED with the guard's SSRF refusal,
+/// even though the plane's POD asserts every privilege bit.
+#[test]
+fn the_same_url_not_operator_configured_is_refused_with_the_ssrf_refusal() {
+    let port = spawn_mock(b"operator upstream");
+    let url = format!("http://127.0.0.1:{port}/v1/items");
+    let desc = http_desc(url.as_bytes()); // asserts ALLOW_PRIVATE | ALLOW_PLAINTEXT
+    let section = "upstream:\n  base_url: https://api.example.com\n";
+    assert_eq!(
+        door_open(section, &desc),
+        Err(format!(
+            "`{url}` uses plaintext `http` to a host that is not private; a document fetched over \
+             plaintext can be rewritten in flight"
+        ))
+    );
+}
+
+/// DEC-SERVE G3's rule, the provider-`base_url` one: plaintext only to a private/loopback operator
+/// host (a public `http://` destination gets no scope); a public `https://` destination admits
+/// private addressing on resolution but not on a plane-PINNED address; anything else gets `0`.
+#[test]
+fn operator_destination_scope_follows_the_upstream_rule() {
+    let section: serde_yaml::Value = serde_yaml::from_str(
+        "a: https://api.example.com\nb: [http://plain.example.com, http://localhost:8080/x]\n",
+    )
+    .expect("parses");
+    let dest = OperatorDestinations::of_section(&section);
+    let local = SCOPE_ALLOW_PRIVATE | SCOPE_ALLOW_PLAINTEXT;
+    assert_eq!(
+        dest.scope_for(true, "API.example.com", 443, false),
+        SCOPE_ALLOW_PRIVATE
+    );
+    assert_eq!(dest.scope_for(true, "api.example.com", 443, true), 0);
+    assert_eq!(dest.scope_for(false, "plain.example.com", 80, false), 0);
+    assert_eq!(dest.scope_for(false, "localhost", 8080, true), local);
+    assert_eq!(dest.scope_for(false, "localhost", 8081, false), 0);
+    assert_eq!(dest.scope_for(true, "evil.example.com", 443, false), 0);
+}

@@ -37,6 +37,9 @@ pub struct Declarations {
     pub sections: BTreeSet<String>,
     /// The subset declared BESIDE a plane's own declaring section — its endpoint door.
     pub doors: BTreeSet<String>,
+    /// The subset that is a plane's declaring section AND listed in its own owned sections: a plane
+    /// that parses its own grammar, carried by the pre-pass's map carrier (`Declared::Any`).
+    pub owned: BTreeSet<String>,
 }
 
 fn stripped(text: &str) -> String {
@@ -293,6 +296,9 @@ pub fn read(cx: &Ctx) -> Result<Declarations, String> {
             for e in owned {
                 let section = resolve(&e, path, &consts)?;
                 let door = section != declaring;
+                if !door && !core_owned.contains(&section) {
+                    out.owned.insert(section.clone());
+                }
                 declared.push((section, door));
             }
             for (section, door) in declared {

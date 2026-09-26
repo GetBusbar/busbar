@@ -27,13 +27,14 @@ use std::io;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use std::task::{Context, Poll};
 use std::time::Duration;
 
 use busbar_contract::transport::wire::Conn;
 use busbar_contract::transport::wire::ConnHandle;
 use busbar_contract::transport::wire::ListenerHandle;
 use busbar_contract::transport::wire::TransportError;
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, ReadBuf};
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Mutex as AsyncMutex;
@@ -181,10 +182,20 @@ impl TcpTransport {
     }
 
     fn register(&self, stream: TcpStream, peer: SocketAddr) -> io::Result<Conn> {
+        self.register_as(self.next_conn_id(), stream, peer)
+    }
+
+    /// A connection identity no connection of this transport holds — for a connection whose handle
+    /// is handed out before its socket exists (the HOT door's `connect`, which answers at once).
+    fn next_conn_id(&self) -> u64 {
+        self.next_id.fetch_add(1, Ordering::Relaxed)
+    }
+
+    /// [`Self::register`], under an identity [`Self::next_conn_id`] already minted.
+    fn register_as(&self, id: u64, stream: TcpStream, peer: SocketAddr) -> io::Result<Conn> {
         stream.set_nodelay(true)?;
         let local_port = stream.local_addr()?.port();
         let (read, write) = stream.into_split();
-        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let inner = Arc::new(Inner {
             peer,
             local_port,
@@ -241,6 +252,24 @@ impl TcpTransport {
     /// Dial an admitted `authority` (`host:port`). What `dial` does once the destination has been
     /// read down to its authority, for either door.
     async fn dial_authority(&self, authority: &str) -> Result<Conn, TransportError> {
+        let (stream, addr) = self.dialing(authority)?.await?;
+        self.register(stream, addr)
+            .map_err(|e| Self::map_io_err(&e))
+    }
+
+    /// The dial of an admitted `authority`, as a future that borrows nothing — what `dial` awaits,
+    /// for either door (the HOT door's `connect` holds it and polls it to completion). An authority
+    /// that is not a socket address is refused here, before any socket exists. Built inside the
+    /// runtime whose clock bounds it.
+    fn dialing(
+        &self,
+        authority: &str,
+    ) -> Result<
+        impl std::future::Future<Output = Result<(TcpStream, SocketAddr), TransportError>>
+            + Send
+            + 'static,
+        TransportError,
+    > {
         let addr: SocketAddr = authority
             .parse()
             .map_err(|_| TransportError::AddressRefused)?;
@@ -249,12 +278,133 @@ impl TcpTransport {
         // A budget that elapses is a `Timeout`, the same fact the io layer reports when it is
         // the one that gives up first — the caller reads one outcome for "the upstream did not
         // answer in time" however that verdict was reached.
-        let stream = match tokio::time::timeout(self.dial_timeout, TcpStream::connect(addr)).await {
-            Ok(result) => result.map_err(|e| Self::map_io_err(&e))?,
-            Err(_) => return Err(TransportError::Timeout),
+        let connect = tokio::time::timeout(self.dial_timeout, TcpStream::connect(addr));
+        Ok(async move {
+            match connect.await {
+                Ok(result) => result
+                    .map(|stream| (stream, addr))
+                    .map_err(|e| Self::map_io_err(&e)),
+                Err(_) => Err(TransportError::Timeout),
+            }
+        })
+    }
+
+    /// Bind a listener the host may bind once per ACCEPTOR on one address — its per-core fan-out,
+    /// every acceptor its own listener, the kernel spreading the connections between them — so on
+    /// unix it is SO_REUSEPORT, as the host's own per-core data listeners are. Answers the listener
+    /// and the address it actually bound. What the HOT door's `listen` does; it answers at once, so it
+    /// resolves `bind` without waiting on a resolver, and runs inside the runtime the listener
+    /// registers with.
+    fn bind_shared(bind: &str) -> Result<(TcpListener, String), TransportError> {
+        use std::net::ToSocketAddrs;
+        let addr = bind
+            .to_socket_addrs()
+            .ok()
+            .and_then(|mut a| a.next())
+            .ok_or(TransportError::AddressRefused)?;
+        let socket = if addr.is_ipv6() {
+            tokio::net::TcpSocket::new_v6()
+        } else {
+            tokio::net::TcpSocket::new_v4()
+        }
+        .map_err(|_| TransportError::AddressRefused)?;
+        #[cfg(unix)]
+        {
+            socket
+                .set_reuseaddr(true)
+                .and_then(|()| socket.set_reuseport(true))
+                .map_err(|_| TransportError::AddressRefused)?;
+        }
+        socket
+            .bind(addr)
+            .map_err(|_| TransportError::AddressRefused)?;
+        // The host's own per-core listeners' backlog, and tokio's default for a plain bind.
+        let listener = socket
+            .listen(1024)
+            .map_err(|_| TransportError::AddressRefused)?;
+        let bound = listener
+            .local_addr()
+            .map_err(|_| TransportError::AddressRefused)?
+            .to_string();
+        Ok((listener, bound))
+    }
+
+    /// POLL the next bytes of connection `id` into `buf`: what the HOT door's `poll_read` does. The
+    /// frame pump's rules, poll-shaped: a finalised connection reads as its end; a read error ends
+    /// the connection and deregisters it the way `close` does; an unknown one is `Closed`.
+    fn poll_read_into(
+        &self,
+        id: u64,
+        cx: &mut Context<'_>,
+        buf: &mut [u8],
+    ) -> Poll<Result<usize, TransportError>> {
+        let Some(inner) = self.inner(id) else {
+            return Poll::Ready(Err(TransportError::Closed));
         };
-        self.register(stream, addr)
-            .map_err(|e| Self::map_io_err(&e))
+        if inner.closed.load(Ordering::Acquire) {
+            return Poll::Ready(Ok(0));
+        }
+        // One reader at a time is the frame pump's own rule; a second poller waits its turn.
+        let Ok(mut side) = inner.read.try_lock() else {
+            cx.waker().wake_by_ref();
+            return Poll::Pending;
+        };
+        let mut filled = ReadBuf::new(buf);
+        match std::pin::Pin::new(&mut side.half).poll_read(cx, &mut filled) {
+            Poll::Pending => Poll::Pending,
+            Poll::Ready(Ok(())) => Poll::Ready(Ok(filled.filled().len())),
+            Poll::Ready(Err(e)) => {
+                drop(side);
+                // A read error is the connection's end, not just this read's (the frame pump's
+                // rule: an RST flood must not leak one registry entry per reset).
+                if let Some(removed) = self
+                    .conns
+                    .lock()
+                    .expect("conn registry poisoned")
+                    .remove(&id)
+                {
+                    removed.finalise();
+                }
+                Poll::Ready(Err(Self::map_io_err(&e)))
+            }
+        }
+    }
+
+    /// POLL some of `bytes` onto connection `id`: what the HOT door's `poll_write` does. A finalised
+    /// or unknown connection is `Closed` — the write path's close race, poll-shaped.
+    fn poll_write_on(
+        &self,
+        id: u64,
+        cx: &mut Context<'_>,
+        bytes: &[u8],
+    ) -> Poll<Result<usize, TransportError>> {
+        self.poll_writer(id, cx, |half, cx| {
+            std::pin::Pin::new(half).poll_write(cx, bytes)
+        })
+    }
+
+    /// POLL connection `id`'s written bytes onto the wire: what the HOT door's `poll_flush` does.
+    fn poll_flush_on(&self, id: u64, cx: &mut Context<'_>) -> Poll<Result<(), TransportError>> {
+        self.poll_writer(id, cx, |half, cx| std::pin::Pin::new(half).poll_flush(cx))
+    }
+
+    fn poll_writer<T>(
+        &self,
+        id: u64,
+        cx: &mut Context<'_>,
+        op: impl FnOnce(&mut OwnedWriteHalf, &mut Context<'_>) -> Poll<io::Result<T>>,
+    ) -> Poll<Result<T, TransportError>> {
+        let Some(inner) = self.inner(id) else {
+            return Poll::Ready(Err(TransportError::Closed));
+        };
+        if inner.closed.load(Ordering::Acquire) {
+            return Poll::Ready(Err(TransportError::Closed));
+        }
+        let Ok(mut half) = inner.write.try_lock() else {
+            cx.waker().wake_by_ref();
+            return Poll::Pending;
+        };
+        op(&mut half, cx).map_err(|e| Self::map_io_err(&e))
     }
 
     /// Put every one of `bytes` on connection `id`. What `write` does, for either door.

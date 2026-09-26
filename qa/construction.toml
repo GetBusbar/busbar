@@ -216,19 +216,19 @@ busbar-voice = ["busbar-voice-codec"]
 # base" and asked for exactly this strike. THE CEILINGS THEMSELVES DID NOT MOVE: both still read
 # 7418. The next #83/#84 merge into busbar-contract declares its own re-arm here, once.
 
-# ── THE CONTRACT CEILING PAIR, RE-ARMED AT THE MEASURE AFTER THE METRIC-FAMILY SHAPE MERGE ────────
+# ── THE CONTRACT CEILING PAIR, RE-ARMED AT THE MEASURE AFTER FOLD F4 AND XPLANE ─────────────────
 
 [gate.ceiling_raises."gate.surface_ceilings.contract_caps"]
 file    = "qa/construction.toml"
-from    = 8558
-to      = 8619
-because = "OWNER RULING Q68(3) (docs/design/1.6.0-QUESTIONS.md): contract_caps re-arms at the MEASURED value after each owner-locked merge commit into busbar-contract, each in its own commit. This is the re-arm for the MET-1 METRICS SEAM commit (ARCHITECT RULING S2-c): PlaneDeclaration.metric_families, the MetricFamily shape, the COUNTER / RESERVED_METRIC_PREFIX / MAX_FAMILY_LABELS constants and the pure check_metric_families guard. Measured by cargo xtask loc busbar-contract --ref: 8558 at its parent, 8619 at that commit; the +61 is that field, shape and guard, nothing else. The 8532 -> 8558 declaration this replaces (K2e, the TransportSettings shape) is at the base and expired. The crate measures more after the later SD-2b #83a moves (the protocol declaration, the codec cells, the R-BYTES carriers); their re-arm is theirs and is not taken here."
+from    = 9218
+to      = 9251
+because = "OWNER RULING Q68(3) (docs/design/1.6.0-QUESTIONS.md), ARCHITECT O2: contract_caps re-arms at the MEASURED value after each owner-locked #83 merge into busbar-contract, each in its own commit. This is the re-arm for the fold F4 follow-up 94180ed04 (ARCHITECT ruling on F4 queue item 3, #83(d)): the V1 usage-ledger fold (fold_v1_ledger, fold_v1_model, fold_unit) moved verbatim from busbar-kernel-ledger into busbar_contract::records beside the frozen V1 shapes, +33 code lines. Measured by cargo xtask loc busbar-contract --ref: 9218 at 94180ed04^, 9251 at 94180ed04. The live declaration is re-pointed to describe this raise; the 9184 -> 9218 declaration it replaces is at the base and expired."
 
 [gate.ceiling_raises."rules.loc-ceilings.caps_contract_ceiling"]
 file    = "qa/construction.toml"
-from    = 8558
-to      = 8619
-because = "OWNER RULING Q68(3) (docs/design/1.6.0-QUESTIONS.md): contract_caps re-arms at the MEASURED value after each owner-locked merge commit into busbar-contract, each in its own commit. This is the re-arm for the MET-1 METRICS SEAM commit (ARCHITECT RULING S2-c): PlaneDeclaration.metric_families, the MetricFamily shape, the COUNTER / RESERVED_METRIC_PREFIX / MAX_FAMILY_LABELS constants and the pure check_metric_families guard. Measured by cargo xtask loc busbar-contract --ref: 8558 at its parent, 8619 at that commit; the +61 is that field, shape and guard, nothing else. The 8532 -> 8558 declaration this replaces (K2e, the TransportSettings shape) is at the base and expired. The crate measures more after the later SD-2b #83a moves (the protocol declaration, the codec cells, the R-BYTES carriers); their re-arm is theirs and is not taken here."
+from    = 9218
+to      = 9251
+because = "OWNER RULING Q68(3) (docs/design/1.6.0-QUESTIONS.md), ARCHITECT O2: contract_caps re-arms at the MEASURED value after each owner-locked #83 merge into busbar-contract, each in its own commit. This is the re-arm for the fold F4 follow-up 94180ed04 (ARCHITECT ruling on F4 queue item 3, #83(d)): the V1 usage-ledger fold (fold_v1_ledger, fold_v1_model, fold_unit) moved verbatim from busbar-kernel-ledger into busbar_contract::records beside the frozen V1 shapes, +33 code lines. Measured by cargo xtask loc busbar-contract --ref: 9218 at 94180ed04^, 9251 at 94180ed04. The live declaration is re-pointed to describe this raise; the 9184 -> 9218 declaration it replaces is at the base and expired."
 
 # ── THE KERNEL CEILING'S OWNER-APPROVED RAISE — EXPIRED AND STRUCK ─────────────────────────────
 #
@@ -324,7 +324,16 @@ because = "OWNER RULING Q68(3) (docs/design/1.6.0-QUESTIONS.md): contract_caps r
 # #83. The +108 is that module; the declared raise above carries the before/after measure.
 # RE-ARMED 8558 -> 8619, AT THE MEASUREMENT (OWNER RULING Q68(3)), in its own commit after the MET-1 seam
 # added the declared metric-family shape and guard (S2-c). The declared raise above carries the measure.
-contract_caps = 8619
+# RE-ARMED 8619 -> 9184, AT THE MEASUREMENT (OWNER RULING Q68(3)), in its own commit after SD-2b's
+# three #83a moves (+537: the R-BYTES carriers, the codec cells, the protocol declaration) and fold
+# F4's records.rs (+28). The declared raise above carries the per-commit measure.
+# RE-ARMED 9184 -> 9189, AT THE MEASUREMENT (OWNER RULING Q68(3)), in its own commit after fold F4 (2/3)
+# 7cbf9b133 (the SecretResolve seam, +5); the live declaration above carries the measure.
+# RE-ARMED 9189 -> 9218, AT THE MEASUREMENT (OWNER RULING Q68(3); ARCHITECT RULING (S)), in its own
+# commit after XPLANE's served-operation-class shape (6537443e2, +30; 3c772d601, -1).
+# RE-ARMED 9218 -> 9251, AT THE MEASUREMENT (OWNER RULING Q68(3)), in its own commit after the fold F4
+# follow-up 94180ed04 (the V1 usage-ledger fold, +33); the live declaration above carries the measure.
+contract_caps = 9251
 # REPOINTED, and the repoint is what makes this row a gate again. It named the CRATE
 # `busbar-grammar`, which #40 folded into `busbar-contract` and deleted — so it summed nothing,
 # measured nothing and passed, which is this file's own "zero is not clean" failure sitting inside
@@ -885,7 +894,11 @@ contract_crate = "busbar-contract"
 # RE-ARMED 8148 -> 8424 with its pair (OWNER RULING Q68(3); fold F1, the secret-ref merge, 4c5a8a3dd).
 # RE-ARMED 8424 -> 8532 with its pair (OWNER RULING Q68(3); the reply-table shape move, 4152c1b6b).
 # RE-ARMED 8558 -> 8619 with its pair (OWNER RULING Q68(3); the MET-1 metric-family shape).
-caps_contract_ceiling = 8619
+# RE-ARMED 8619 -> 9184 with its pair (OWNER RULING Q68(3); SD-2b's #83a moves +537, fold F4 +28).
+# RE-ARMED 9184 -> 9189 with its pair (OWNER RULING Q68(3); fold F4 2/3, +5).
+# RE-ARMED 9189 -> 9218 with its pair (OWNER RULING Q68(3); XPLANE ruling (S), +29).
+# RE-ARMED 9218 -> 9251 with its pair (OWNER RULING Q68(3); fold F4 follow-up, +33).
+caps_contract_ceiling = 9251
 unit_crate_glob = "busbar-unit-*"
 # RE-KEYED on cherry-pick onto 143db6db6: this commit's own delta is -53 (two units stopped
 # declaring their own copies), measured against whatever unit_total_ceiling read when the line was
@@ -2308,6 +2321,17 @@ plane_crates = 4
 #     exactly the way a ceiling naming no row is red. NOTHING STOPS BEING COUNTED by striking them:
 #     there was no glob under either key for the count to have been reading.
 #
+# ── RE-PINNED 2026-09-25: `transport` 7 -> 5, `secret` 2 -> 1 ────────────────────────────────────────────────
+#
+#   * `transport` 7 -> 5. The transport fold: `busbar-transport-grpc` folded into
+#     `busbar-transport-http` as its `grpc` module and `busbar-transport-sse` as its `sse` module,
+#     and both directories were deleted. `crates/busbar-transport-*`
+#     now matches exactly five: http, stdio, tcp, tls and ws.
+#
+#   * `secret` 2 -> 1. The secret-reference fold: `crates/secret-ref` merged into `busbar-contract`
+#     as its `secret_ref` module (the contract has one secret reference type), and its directory was
+#     deleted. `crates/secret-*` now matches exactly one: `crates/secret-example-plugin`.
+#
 # THE BASE COMPARISON STILL REPORTS THE THREE DECREMENTS (plugin_kinds.plane 6->5,
 # plugin_kinds.unit 14->1, plugin_kinds.pure_auth 2->0), AND THAT IS THIS ROW WORKING RATHER THAN
 # FAILING. `[gate.census]` reds a floor that went DOWN versus the base commit precisely because it
@@ -2322,10 +2346,10 @@ plane = 5
 unit = 1
 hook = 2
 auth = 2
-secret = 2
+secret = 1
 store = 2
 export = 1
-transport = 7
+transport = 5
 loader = 1
 abi = 1
 

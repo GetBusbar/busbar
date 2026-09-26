@@ -384,10 +384,16 @@ pub fn corrected_column(recorded: u64, delta_micros: i128) -> Option<u64> {
 /// DOES carry is always one the card names.
 fn row_counts(b: &UsageBreakdown) -> impl Iterator<Item = (&'static str, u64)> + '_ {
     [
-        (busbar_api::UNIT_INPUT, b.tokens_input),
-        (busbar_api::UNIT_OUTPUT, b.tokens_output),
-        (busbar_api::UNIT_CACHE_READ, b.tokens_cache_read),
-        (busbar_api::UNIT_CACHE_WRITE, b.tokens_cache_creation),
+        (busbar_contract::records::UNIT_INPUT, b.tokens_input),
+        (busbar_contract::records::UNIT_OUTPUT, b.tokens_output),
+        (
+            busbar_contract::records::UNIT_CACHE_READ,
+            b.tokens_cache_read,
+        ),
+        (
+            busbar_contract::records::UNIT_CACHE_WRITE,
+            b.tokens_cache_creation,
+        ),
     ]
     .into_iter()
     .filter(|(_, quantity)| *quantity != 0)

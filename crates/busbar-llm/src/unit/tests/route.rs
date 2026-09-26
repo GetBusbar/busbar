@@ -564,15 +564,15 @@ struct CaptureTap {
 }
 
 #[async_trait::async_trait]
-impl busbar_api::RoutingPolicy for CaptureTap {
+impl busbar_contract::hooks::RoutingPolicy for CaptureTap {
     async fn decide(
         &self,
-        _req: &busbar_api::RoutingRequest<'_>,
-        _cands: &[busbar_api::Candidate<'_>],
-        _ctx: &busbar_api::RoutingContext<'_>,
+        _req: &busbar_contract::hooks::RoutingRequest<'_>,
+        _cands: &[busbar_contract::hooks::Candidate<'_>],
+        _ctx: &busbar_contract::hooks::RoutingContext<'_>,
         _budget: std::time::Duration,
-    ) -> busbar_api::PolicyResult {
-        Ok(busbar_api::RoutingDecision::Abstain)
+    ) -> busbar_contract::hooks::PolicyResult {
+        Ok(busbar_contract::hooks::RoutingDecision::Abstain)
     }
     fn name(&self) -> &'static str {
         "route-step-capture-tap"
@@ -607,7 +607,7 @@ async fn completion_tap_fires_once_on_the_walk_and_never_on_a_pre_forward_refusa
             fired: std::sync::atomic::AtomicUsize::new(0),
             last: std::sync::Mutex::new(None),
         });
-        let policy: Arc<dyn busbar_api::RoutingPolicy> = cap.clone();
+        let policy: Arc<dyn busbar_contract::hooks::RoutingPolicy> = cap.clone();
         let mut app = TestApp::new()
             .lane(
                 LaneSpec::new("m", proto, &server.base_url())
@@ -811,8 +811,8 @@ fn naming_the_legs_over_a_pool_interns_nothing_and_allocates_only_the_plan() {
 
 /// NO STEP FILE CALLS ITSELF DARK, AND NONE SILENCES DEAD CODE FILE-WIDE (item 368).
 ///
-/// These steps are LIVE: the default build's `root-llm` turns `teller-waist` on and
-/// `busbar/src/root/units_llm.rs` drives every one of them on every LLM request. A step file that
+/// These steps are LIVE: every LLM request is a unit (`unit/node.rs`) the composition root's node
+/// drives through every one of them. A step file that
 /// says "BUILT DARK ... no production caller" under a file-scoped `#![allow(dead_code)]` tells a
 /// reviewer to skip the money path and tells the compiler to stop saying what is genuinely unused —
 /// so neither may come back. A test-only item is `#[cfg(test)]`, not an allow.

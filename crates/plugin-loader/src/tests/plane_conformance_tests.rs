@@ -363,6 +363,7 @@ fn example_plane_loads_identically_compiled_in_and_dropped_in() {
         .metric_families
         .iter()
         .any(|f| f.label_keys.len() > 1));
+    assert!(!stated.served_op_classes.is_empty());
 }
 
 /// The compiled-in `PLANE_DECL`'s declaration tail, decoded straight off the static (NOT through the
@@ -410,6 +411,13 @@ fn compiled_in_declaration() -> crate::HotDeclaration {
             kind: vocab(f.kind.ptr, f.kind.len),
             label_keys: list(f.label_keys_ptr, f.label_keys_len),
         })
+        .collect(),
+        // SAFETY: as `list`.
+        served_op_classes: unsafe {
+            std::slice::from_raw_parts(d.served_op_classes_ptr, d.served_op_classes_len)
+        }
+        .iter()
+        .map(|c| (vocab(c.op.ptr, c.op.len), vocab(c.name.ptr, c.name.len)))
         .collect(),
     }
 }

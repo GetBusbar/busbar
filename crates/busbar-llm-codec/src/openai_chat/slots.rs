@@ -257,7 +257,7 @@ fn write_modalities(mods: &[IrModality], has_audio_member: bool) -> Option<serde
                 tracing::warn!(
                     modality = m.as_str(),
                     "dropping an output modality on OpenAI Chat egress: Chat produces image output \
-                     never, and audio output only with its own `audio` voice/format member, which \
+                     never, and audio output only beside its own `audio` request member, which \
                      does not cross dialects"
                 );
             }

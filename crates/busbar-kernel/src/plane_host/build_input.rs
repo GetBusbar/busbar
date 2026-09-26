@@ -15,7 +15,7 @@
 //! distinct from the `cfg(test)` core under test). A `busbar_kernel::` type erased to `&dyn Any` in one
 //! and downcast in the other carries a DIFFERENT `TypeId`, so the downcast silently returns `None` —
 //! the dual-compile hazard. This carrier therefore holds NO `busbar_kernel::` type: only owned `String`s,
-//! numbers, `bool`s, `Vec`/`HashMap` of those, and the neutral `busbar_api::UpstreamCreds`. It lives in
+//! numbers, `bool`s, `Vec`/`HashMap` of those, and the neutral `busbar_contract::config::UpstreamCreds`. It lives in
 //! `busbar-substrate` (compiled ONCE for the whole workspace) so its own `TypeId` is stable across the
 //! dual compile, and so a zero-plane binary that `git-rm`'d `busbar-llm` (the `plane-delete-test --all`
 //! posture) still compiles `appbuild` — which populates this — without naming the plane crate.
@@ -24,7 +24,7 @@
 //!
 //! Pre-RESOLVED secrets and the rate-card-derived costs ARE carried (fidelity: the plane cannot
 //! re-resolve a secret ref — it has no `SecretResolver` — nor re-price without the rate card). A
-//! resolved secret is carried in `busbar_api::Redacted`, never as a bare `String`: this carrier is
+//! resolved secret is carried in `busbar_contract::redacted::Redacted`, never as a bare `String`: this carrier is
 //! formatted on the build path, so the wrapper is what keeps the credential out of a trace line.
 //! Pool-hook ROUTING POLICIES are NOT: their resolved value is the core-owned
 //! `busbar_kernel::hooks::ResolvedPolicy` (an `Arc<dyn RoutingPolicy>` over a dlopen plugin), which
@@ -97,13 +97,13 @@ pub struct LaneInput {
     /// Optional upstream model-name override (the wire model), else the config key.
     pub upstream_model: Option<String>,
     /// The PRE-RESOLVED provider credential — the resolved secret, carried because the plane cannot
-    /// re-resolve a secret ref (it has no `SecretResolver`). Held in the SAME `busbar_api::Redacted`
+    /// re-resolve a secret ref (it has no `SecretResolver`). Held in the SAME `busbar_contract::redacted::Redacted`
     /// wrapper the `Lane` it feeds holds it in, for the whole of its life here rather than only after
     /// it lands: a bare `String` on a carrier that a build trace, a panic message or an error `{:?}`
     /// can reach is the plaintext in a log, and the wrapper is what makes that structurally impossible
     /// (it prints `[REDACTED]`, does not serialize, and zeroizes on drop). Read through
     /// `expose_secret` at the one place the credential is actually built.
-    pub api_key: busbar_api::Redacted<String>,
+    pub api_key: busbar_contract::redacted::Redacted<String>,
     /// The provider's auth-style override (neutral).
     pub auth_style: AuthStyleInput,
     /// OAuth scope (`auth: oauth-client-credentials` / an override for `jwt-bearer`).
@@ -276,7 +276,7 @@ pub struct PoolInput {
     /// The pool's `on_exhausted:` policy.
     pub on_exhausted: OnExhaustedInput,
     /// The pool's own `upstream_credentials:` override (`None` ⇒ inherit the all-pools default).
-    pub upstream_credentials: Option<busbar_api::UpstreamCreds>,
+    pub upstream_credentials: Option<busbar_contract::config::UpstreamCreds>,
     /// The pool's resolved `breaker:` override (`None` ⇒ ADR-0002 defaults).
     pub breaker: Option<BreakerInput>,
 }
@@ -313,7 +313,7 @@ pub struct PlaneBuildInput {
     /// Every pool.
     pub pools: Vec<PoolInput>,
     /// The ALL-POOLS upstream-credential default (`pools.upstream_credentials:`).
-    pub upstream_credentials: busbar_api::UpstreamCreds,
+    pub upstream_credentials: busbar_contract::config::UpstreamCreds,
     /// The global metadata-SSRF allow list (`security.allow_metadata_hosts`).
     pub allow_metadata_hosts: Vec<String>,
     /// The nuclear metadata-guard disable (`security.allow_all_metadata`).

@@ -36,7 +36,6 @@ test-linked = ["busbar-llm", "busbar-mcp", "busbar-a2a"]
 test-fixtures = ["hook=busbar-hook-test-plugin", "store=busbar-store-example-plugin"]
 
 [dependencies]
-busbar-api = { path = "../api" }
 # ── ABSORBED from the pre-1.6.0 busbar-kernel crate (W4.a #19/#37) ────────────────────────────────
 # The chunk-chaining bump allocator behind `scratch::ScratchPad` (#41). The closed JSON span
 # grammar the kernel loop's `grammar`/`teller` modules name used to be its own dependency here
@@ -75,6 +74,9 @@ busbar-kernel-egress = { path = "../busbar-kernel-egress" }
 # edge is acyclic, it is kernel -> kernel (an intra-tier edge ARCHITECTURE_ALLOWED grants), and it
 # is already in this crate's compile closure via `busbar-plugin-loader`.
 busbar-kernel-ledger = { path = "../busbar-kernel-ledger" }
+# The one durable whole-file publish (`durable`), re-exported at `busbar_kernel::durable` for the
+# overlay, the plugin install path and the admin verbs.
+busbar-kernel-wal = { path = "../busbar-kernel-wal" }
 # THE AMENDMENT JOURNAL (item 404): the hook seam and the export dispatch record every content read
 # as an access amendment, and the correction a root admin makes to a recorded count is an adjustment
 # on the same chain. The audit unit depends only on `busbar-contract` and its digest/signature
@@ -101,14 +103,19 @@ smallvec = { workspace = true }
 # (the shipped default) every `timeit!` call site below compiles to `()` — zero cost. Turn it on for
 # a profiling build with `--features busbar-timing/timing`. Method timers nest inside `profile.rs`.
 busbar-timing = { path = "../busbar-timing" }
-busbar-store-memory = { path = "../store-memory" }
 # The HOT-lane plugin/plane ABI (`busbar_plugin::hot`): the `#[repr(C)] PlaneHostVtable` and its POD
 # types. Consumed HOST-side by `src/plane_host` — the construction point + lifecycle arena the Phase-2
 # capability fan-out fills in. Additive: nothing in the engine calls the plane seam yet.
 busbar-plugin = { path = "../busbar-plugin" }
 busbar-plugin-loader = { path = "../plugin-loader" }
 busbar-auth-admin-tokens = { path = "../auth-admin-tokens", optional = true }
-busbar-hooks-ranking = { path = "../hooks-ranking", optional = true }
+# THE STAND-IN LINKED ROWS (test-only edges): the composition root links the build's default store
+# and ranking hooks onto the cold-kind axis (`preflight::install_linked_rows`); a test build has no
+# root, so these fixtures stand in, under `test-support` (which the dev-dependency cycle through the
+# plane crates turns on for this crate's own tests). Renamed to the role they play: no source here
+# names the plugin.
+fixture-store = { package = "busbar-store-memory", path = "../store-memory", optional = true }
+fixture-hook = { package = "busbar-hooks-ranking", path = "../hooks-ranking", optional = true }
 axum = { workspace = true }
 tower = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "time", "sync", "signal", "io-util", "io-std", "process"] }
@@ -195,7 +202,9 @@ rcgen = { workspace = true, optional = true }
 # protocol-extraction step's job; this split is what makes it possible. Do not "fix" it here.
 default = ["auth-admin-tokens", "hooks-ranking", "plane-llm", "plane-mcp", "plane-a2a"]
 auth-admin-tokens = ["dep:busbar-auth-admin-tokens"]
-hooks-ranking = ["dep:busbar-hooks-ranking"]
+# The build links the ranking hooks: the composition root registers their row (it owns the crate
+# edge); here it only decides whether a test build's stand-in rows carry that row.
+hooks-ranking = []
 # THE MCP PLANE, in-core today (`src/mcp`), behind the SAME switch the binary already uses for MCP
 # the protocol codec (`busbar-mcp`): one plane-kind name for MCP-the-protocol and MCP-the-plane,
 # never two. Default-on — the shipped engine speaks MCP. With it OFF, `src/mcp` is compiled out and
@@ -293,7 +302,7 @@ loom-model = ["dep:loom"]
 # the bin enables it from its [dev-dependencies] edge only. Forwards to substrate's matching feature
 # so the relocated test-only `governance::signing::TokenSigner::mint_for_audience` is likewise
 # revealed to a dependent test binary.
-test-support = ["busbar-substrate-values/test-support", "dep:rmcp", "dep:reqwest", "dep:rcgen"]
+test-support = ["busbar-substrate-values/test-support", "dep:rmcp", "dep:reqwest", "dep:rcgen", "dep:fixture-store", "dep:fixture-hook"]
 # Passthrough to `busbar-timing`'s debug-only per-method micro-timing. DEFAULT OFF: with this off,
 # `busbar_timing::timeit!` expands to `()` and the RAII guards it produces are zero-sized no-ops, so
 # the `drop(_guard)` calls that end a timed span are compiled in ONLY under this feature (dropping a

@@ -103,7 +103,7 @@ pub struct AxisException {
 pub fn table(a: &Addresses) -> Vec<AxisRow> {
     let mut op_allowed = vec![
         // The `Operation` axis's own home: moved module-path-only out of `busbar-api` into the contract
-        // (DECISIONS #83/#84); `busbar_api::operation` is a re-export of it.
+        // (DECISIONS #83/#84); `busbar_contract::operation` is a re-export of it.
         "crates/busbar-contract/src/operation.rs".to_string(),
         format!("{}/proto/", a.core),
         format!("{}/handlers/", a.core),

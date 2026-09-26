@@ -49,7 +49,9 @@
 //! the perf-budget claims above; this file is what actually measures them.
 
 use busbar_plugin::hot::host::{ClockNowFn, HostCtx, PlaneHostVtable};
-use busbar_plugin::hot::transport::{RawWireOutcome, TransportDecl, WireCloseFn, WireOutcome};
+use busbar_plugin::hot::transport::{
+    RawWireOutcome, TransportDecl, WireOutcome, WirePollCloseFn, NO_WAKER,
+};
 use busbar_plugin::AbiPreamble;
 use criterion::{criterion_group, criterion_main, Criterion};
 use std::hint::black_box;
@@ -152,46 +154,59 @@ fn assert_hot_path_delta_under_budget() {
     );
 }
 
-/// A transport slot in the HOT-lane shape: a by-value connection handle in, one outcome byte out.
-/// The body is as trivial as the clock's, for the same reason — the crossing is what is measured.
-extern "C-unwind" fn wire_close(_state: *mut std::os::raw::c_void, conn: u64) -> RawWireOutcome {
-    RawWireOutcome((conn & 1) as u8)
+/// A transport slot in the HOT-lane POLL shape (airlock minor 28): a by-value connection handle and
+/// the waiting task's token in, one outcome byte out — `Ok` (ready) or `Pending`. The body is as
+/// trivial as the clock's, for the same reason — the crossing is what is measured.
+extern "C-unwind" fn wire_poll_close(
+    _state: *mut std::os::raw::c_void,
+    conn: u64,
+    token: u64,
+) -> RawWireOutcome {
+    RawWireOutcome(((conn ^ token) & 1) as u8 * WireOutcome::Pending as u8)
 }
 
-/// A [`TransportDecl`] as a loader admits it: preamble, attested size, and the `close` slot armed
-/// (every other slot `None`, the all-zero niche, as [`armed_vtable`] builds the host table).
+/// A [`TransportDecl`] as a loader admits it: preamble, attested size, and the `poll_close` slot
+/// armed (every other slot `None`, the all-zero niche, as [`armed_vtable`] builds the host table).
 fn armed_transport_decl() -> TransportDecl {
     // SAFETY: every field of `TransportDecl` is valid all-zero — integers, null pointers, and
     // `Option<extern "C-unwind" fn>` slots whose `None` is the null niche.
     let mut decl: TransportDecl = unsafe { std::mem::MaybeUninit::zeroed().assume_init() };
     decl.abi = AbiPreamble::CURRENT;
     decl.size = std::mem::size_of::<TransportDecl>() as u32;
-    decl.close = Some(wire_close as WireCloseFn);
+    decl.poll_close = Some(wire_poll_close as WirePollCloseFn);
     decl
 }
 
 /// THE TRANSPORT CELL (#30: plane AND transport are the HOT kinds, and both owe `< 1µs`): the same
-/// delta budget, over the crossing a loaded transport's every byte-moving call makes — the slot read
-/// through the sized-struct guard (the attested size bounds it, exactly as the loader reads it) and
-/// the indirect call — against the same slot body called directly.
+/// delta budget, over the crossing a loaded transport's every byte-moving POLL makes (airlock minor
+/// 28: the host polls inline, no thread handoff) — the slot read through the sized-struct guard (the
+/// attested size bounds it, exactly as the loader reads it), the indirect call and the decode of its
+/// Ready | Pending answer — against the same slot body called directly.
 fn assert_transport_hot_path_delta_under_budget() {
     let decl = armed_transport_decl();
     let decl_ptr: *const TransportDecl = &decl;
     let state = std::ptr::null_mut();
 
     let (direct_p50, direct_p99) = percentiles(|| {
-        black_box(wire_close(black_box(state), black_box(3)));
+        black_box(wire_poll_close(
+            black_box(state),
+            black_box(3),
+            black_box(NO_WAKER),
+        ));
     });
     let (slot_p50, slot_p99) = percentiles(|| {
         let f = busbar_plugin::read_sized_field!(
             black_box(decl_ptr),
             black_box(decl.size),
             TransportDecl,
-            close
+            poll_close
         )
         .flatten()
-        .expect("close slot is armed");
-        black_box(f(black_box(state), black_box(3)).outcome() == WireOutcome::Refused);
+        .expect("poll_close slot is armed");
+        black_box(
+            f(black_box(state), black_box(3), black_box(NO_WAKER)).outcome()
+                == WireOutcome::Pending,
+        );
     });
 
     let transport_p50_delta_nanos = slot_p50.saturating_sub(direct_p50);
@@ -262,7 +277,13 @@ fn hot_path(c: &mut Criterion) {
     let decl = armed_transport_decl();
     let decl_ptr: *const TransportDecl = &decl;
     c.bench_function("TRANSPORT_DIRECT_CALL", |b| {
-        b.iter(|| black_box(wire_close(black_box(std::ptr::null_mut()), black_box(3))));
+        b.iter(|| {
+            black_box(wire_poll_close(
+                black_box(std::ptr::null_mut()),
+                black_box(3),
+                black_box(NO_WAKER),
+            ))
+        });
     });
     c.bench_function("TRANSPORT_DECL_CALL", |b| {
         b.iter(|| {
@@ -270,11 +291,15 @@ fn hot_path(c: &mut Criterion) {
                 black_box(decl_ptr),
                 black_box(decl.size),
                 TransportDecl,
-                close
+                poll_close
             )
             .flatten()
-            .expect("close slot is armed");
-            black_box(f(black_box(std::ptr::null_mut()), black_box(3)))
+            .expect("poll_close slot is armed");
+            black_box(f(
+                black_box(std::ptr::null_mut()),
+                black_box(3),
+                black_box(NO_WAKER),
+            ))
         });
     });
 

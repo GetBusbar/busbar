@@ -105,7 +105,7 @@ impl AnthropicWriter {
 /// load.
 pub fn anthropic_auth_headers(
     key: &str,
-    creds: Option<busbar_api::UpstreamCreds>,
+    creds: Option<busbar_contract::config::UpstreamCreds>,
 ) -> Vec<(HeaderName, HeaderValue)> {
     // Build a credential header pair, OMITTING it (returning None) when the value carries bytes
     // invalid for an HTTP header value. Never logs the key bytes — only the header name and the fact
@@ -136,12 +136,7 @@ pub fn anthropic_auth_headers(
     // passthrough/static fallbacks keep the raw closures below, preserving their byte-for-byte
     // round-trip contract — a forwarded caller token must reach the upstream exactly as presented.
     let x_api_key_trimmed = || safe(HDR_X_API_KEY, key.trim_start().to_string());
-    let authorization = || {
-        safe(
-            busbar_substrate_values::proto::HDR_AUTHORIZATION,
-            format!("Bearer {key}"),
-        )
-    };
+    let authorization = || safe(crate::dialect::HDR_AUTHORIZATION, format!("Bearer {key}"));
     let version = (
         HeaderName::from_static(HDR_ANTHROPIC_VERSION),
         HeaderValue::from_static(ANTHROPIC_API_VERSION),
@@ -165,8 +160,10 @@ pub fn anthropic_auth_headers(
         // Unrecognized shape: the mode resolves it to a single native header on the wire path;
         // the mode-blind primitive falls back to both so neither path silently drops.
         AnthropicCredScheme::Ambiguous => match creds {
-            Some(busbar_api::UpstreamCreds::Passthrough) => assemble(vec![authorization()]),
-            Some(busbar_api::UpstreamCreds::Own) => assemble(vec![x_api_key()]),
+            Some(busbar_contract::config::UpstreamCreds::Passthrough) => {
+                assemble(vec![authorization()])
+            }
+            Some(busbar_contract::config::UpstreamCreds::Own) => assemble(vec![x_api_key()]),
             None => assemble(vec![x_api_key(), authorization()]),
         },
     }

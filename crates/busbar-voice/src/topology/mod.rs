@@ -306,7 +306,7 @@ where
         .as_ref()
         .and_then(|c| c.model.clone())
         .unwrap_or_default();
-    let gov = busbar_api::PlaneRequestCtx::default();
+    let gov = busbar_contract::records::PlaneRequestCtx::default();
     let gauntlet_req = GauntletRequest {
         gov: &gov,
         destination: &destination,

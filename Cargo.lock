@@ -335,7 +335,6 @@ dependencies = [
  "axum",
  "base64 0.23.1",
  "busbar-a2a",
- "busbar-api",
  "busbar-contract",
  "busbar-core-admin",
  "busbar-core-connsec",
@@ -343,6 +342,7 @@ dependencies = [
  "busbar-export-file",
  "busbar-export-prometheus",
  "busbar-export-webhook",
+ "busbar-hooks-ranking",
  "busbar-kernel",
  "busbar-kernel-audit",
  "busbar-kernel-breaker",
@@ -360,6 +360,7 @@ dependencies = [
  "busbar-plugin-example-plane",
  "busbar-plugin-loader",
  "busbar-store-example-plugin",
+ "busbar-store-memory",
  "busbar-substrate-values",
  "busbar-transport-http",
  "busbar-transport-stdio",
@@ -406,7 +407,6 @@ dependencies = [
  "async-trait",
  "axum",
  "base64 0.23.1",
- "busbar-api",
  "busbar-contract",
  "busbar-core-admin",
  "busbar-kernel",
@@ -440,16 +440,6 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "url",
-]
-
-[[package]]
-name = "busbar-api"
-version = "1.6.0"
-dependencies = [
- "async-trait",
- "busbar-contract",
- "serde",
- "serde_json",
 ]
 
 [[package]]
@@ -494,7 +484,6 @@ dependencies = [
  "axum",
  "base64 0.23.1",
  "busbar-a2a",
- "busbar-api",
  "busbar-contract",
  "busbar-export-prometheus",
  "busbar-kernel",
@@ -602,7 +591,6 @@ dependencies = [
  "base64 0.23.1",
  "bumpalo",
  "busbar-a2a",
- "busbar-api",
  "busbar-auth-admin-tokens",
  "busbar-contract",
  "busbar-export-prometheus",
@@ -612,6 +600,7 @@ dependencies = [
  "busbar-kernel-egress",
  "busbar-kernel-identity",
  "busbar-kernel-ledger",
+ "busbar-kernel-wal",
  "busbar-llm",
  "busbar-mcp",
  "busbar-plugin",
@@ -726,6 +715,7 @@ version = "1.6.0"
 dependencies = [
  "busbar-contract",
  "busbar-kernel-budget",
+ "serde_json",
  "sha2 0.11.0",
 ]
 
@@ -751,7 +741,6 @@ dependencies = [
  "async-trait",
  "axum",
  "base64 0.23.1",
- "busbar-api",
  "busbar-contract",
  "busbar-kernel",
  "busbar-llm-codec",
@@ -790,16 +779,14 @@ dependencies = [
 name = "busbar-llm-codec"
 version = "1.6.0"
 dependencies = [
- "busbar-api",
+ "busbar-contract",
  "busbar-kernel",
  "busbar-mcp",
- "busbar-substrate-values",
- "busbar-timing",
  "bytes",
- "getrandom 0.3.4",
- "hex",
- "http",
+ "metrics",
+ "serde",
  "serde_json",
+ "sonic-rs",
  "tracing",
  "tracing-subscriber",
 ]
@@ -811,7 +798,6 @@ dependencies = [
  "async-trait",
  "axum",
  "base64 0.23.1",
- "busbar-api",
  "busbar-contract",
  "busbar-core-admin",
  "busbar-kernel",
@@ -916,7 +902,7 @@ dependencies = [
 name = "busbar-plugin"
 version = "1.5.0"
 dependencies = [
- "busbar-api",
+ "busbar-contract",
  "serde",
  "serde_json",
 ]
@@ -934,7 +920,6 @@ name = "busbar-plugin-loader"
 version = "1.5.0"
 dependencies = [
  "async-trait",
- "busbar-api",
  "busbar-auth-static-plugin",
  "busbar-contract",
  "busbar-export-example-plugin",
@@ -948,6 +933,7 @@ dependencies = [
  "busbar-transport-tcp",
  "ed25519-dalek",
  "flate2",
+ "futures",
  "getrandom 0.3.4",
  "hex",
  "jsonschema",
@@ -965,7 +951,7 @@ dependencies = [
 name = "busbar-plugin-sdk"
 version = "1.5.0"
 dependencies = [
- "busbar-api",
+ "busbar-contract",
  "busbar-plugin",
  "busbar-store-memory",
  "serde_json",
@@ -1007,13 +993,13 @@ dependencies = [
 name = "busbar-substrate-values"
 version = "1.6.0"
 dependencies = [
- "busbar-api",
  "busbar-contract",
  "busbar-plugin",
  "busbar-timing",
  "bytes",
  "crc32fast",
  "futures",
+ "getrandom 0.3.4",
  "hex",
  "hmac",
  "http",
@@ -1121,7 +1107,6 @@ version = "1.6.0"
 dependencies = [
  "async-trait",
  "axum",
- "busbar-api",
  "busbar-contract",
  "busbar-kernel",
  "busbar-plane-streaming",
@@ -1147,7 +1132,7 @@ dependencies = [
 name = "busbar-voice-codec"
 version = "1.6.0"
 dependencies = [
- "busbar-api",
+ "busbar-contract",
  "busbar-substrate-values",
  "bytes",
  "serde",

@@ -1619,7 +1619,7 @@ async fn dlopen_decide_reject_from_opt_in_prompt() {
 #[tokio::test]
 async fn dlopen_transform_rewrite_and_reject() {
     let _dlopen_body = DLOPEN_BODY_LOCK.lock().await;
-    use busbar_api::TransformOutcome;
+    use busbar_contract::hooks::TransformOutcome;
     let Some(env) = test_env() else {
         eprintln!("skip: hook cdylib not built (run under --workspace)");
         return;
@@ -1689,7 +1689,7 @@ async fn dlopen_notify_is_fire_and_forget() {
     // The seam is still live and correct after both taps — a fire-and-forget call must never
     // poison or close the handle it rode.
     match policy.transform(&dreq("hello"), budget).await {
-        busbar_api::TransformOutcome::Rewrite(rw) => assert_eq!(rw.messages.len(), 1),
+        busbar_contract::hooks::TransformOutcome::Rewrite(rw) => assert_eq!(rw.messages.len(), 1),
         other => panic!("seam unusable after notify: expected Rewrite, got {other:?}"),
     }
 }
@@ -2603,7 +2603,7 @@ fn resolve_rewrite_pair(
 #[tokio::test]
 async fn rewrite_call_failure_takes_the_configured_disposition() {
     let _dlopen_body = DLOPEN_BODY_LOCK.lock().await;
-    use busbar_api::TransformOutcome;
+    use busbar_contract::hooks::TransformOutcome;
     let Some(env) = test_env() else {
         eprintln!("skip: hook cdylib not built (run under --workspace)");
         return;

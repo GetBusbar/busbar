@@ -25,7 +25,7 @@
 //! two: as a WORD (case-insensitive, with `_` as a boundary, so `mcp_codec` and `handle_mcp` both
 //! hit but `rustls` does not hit `tls` and `assess` does not hit `sse`), and as a CamelCase segment
 //! (`McpTransport`, `SdpOffer`). Nouns whose bare 2–3 char form is hopelessly ambiguous are matched
-//! ONLY on an unambiguous identifier (`sigv4`, never bare `aws`; the example/test plugins on their
+//! ONLY on an unambiguous identifier (never bare `aws`; the example/test plugins on their
 //! full crate identifier), never on a raw substring. The result is a census of REAL couplings.
 //!
 //! ## THE BASELINE IS A BURNDOWN LEDGER, NOT AN EXCUSE
@@ -51,10 +51,12 @@
 //! ledger, so it can only fall. See the `exempt` module. `:frozen-literal` reds a refused marker;
 //! `:pragma-ceiling` reds a count that moved off its ceiling in either direction.
 //!
-//! Regenerate the baseline from the live census with
-//! `XTASK_INSN_EMIT_BASELINE=1 cargo xtask gate instance-noun-neutrality 2>qa/instance-noun-neutrality.toml`
-//! then review every row by hand — the emitter derives category and wave mechanically; a human
-//! confirms the reason.
+//! Move the ledger DOWN with `cargo xtask gate instance-noun-neutrality --write`: it lowers every
+//! row that fell and strikes every row that drained, and it REFUSES WHOLESALE — nothing written —
+//! if any row would be added or would rise, unless the ledger carries an owner-cited
+//! `[[allow_rise]]` for exactly that row (see the `write` module). A baseline never absorbs a rise.
+//! The older `XTASK_INSN_EMIT_BASELINE=1` emitter prints the same derivation (and, on a refusal, the
+//! committed ledger unchanged), so neither door can raise a row.
 
 use std::collections::BTreeMap;
 
@@ -65,6 +67,9 @@ use crate::scan::strip_comment_line;
 
 mod cases;
 mod exempt;
+mod write;
+
+pub use write::ROW_WRITE;
 
 pub const BASELINE: &str = "qa/instance-noun-neutrality.toml";
 const CROSS_ROW: &str = "instance-noun-neutrality";
@@ -155,12 +160,12 @@ const FAM_AUTH: &[&str] = &["auth-static-plugin", "auth-admin-tokens", "busbar-o
 /// `busbar-substrate-values`'s boot diagnostic warning that the metadata-SSRF guard covers
 /// `"169.254.169.254, the GCP/Azure metadata hosts"` — never the name of a concrete `gcp`
 /// auth-scheme plugin instance. This is exactly the vocabulary problem the header note above
-/// already excludes bare `aws` for ("broad infra... left to its precise scheme spelling `sigv4`");
+/// already excludes bare `aws` for (broad infra, never an instance spelling);
 /// `gcp` was never given the same treatment even though no code anywhere in this tree defines a
 /// `"gcp"` scheme constant for either file to be leaking (checked: `auth-static-plugin`,
 /// `auth-admin-tokens`, `busbar-oauth2` name nothing spelled `gcp`). Excluded by exact file, not by
 /// loosening the token or dropping the noun — a real `gcp` auth scheme, when one lands, will get its
-/// own unambiguous scheme spelling the way `sigv4` stands in for `aws` today, and that spelling
+/// own unambiguous scheme spelling (a plugin crate identifier), and that spelling
 /// (not bare `gcp`) is what should be tracked.
 const GCP_GENERIC_MENTION_FILES: &[&str] = &[
     "crates/busbar-a2a/src/a2a/tests/fetch_tests.rs",
@@ -176,6 +181,11 @@ const FAM_EXPORT: &[&str] = &["export-example-plugin"];
 const FAM_STORE_MEMORY: &[&str] = &["store-memory"];
 const FAM_STORE_EXAMPLE: &[&str] = &["store-example-plugin"];
 const FAM_HOOKS_RANKING: &[&str] = &["hooks-ranking"];
+
+/// PROTOCOL VOCABULARY (owner rulings Q1, 2026-09-23 and Q76, 2026-09-25): wire/auth scheme words
+/// every auth instance speaks, so they name no instance and are NEVER a noun token. The selftest
+/// plants each into a core file and requires every census row to stay green.
+const PROTOCOL_VOCABULARY: &[&str] = &["bearer", "spki", "mtls", "sigv4"];
 
 const NOUNS: &[Noun] = &[
     // Planes.
@@ -375,26 +385,18 @@ const NOUNS: &[Noun] = &[
         camel: &[],
         section: None,
     },
-    // Auth schemes — matched on the unambiguous scheme name only. `aws` (broad infra) is left to
-    // its precise scheme spelling `sigv4`.
+    // Auth schemes — matched on the unambiguous scheme name only.
     //
-    // `bearer`, `mtls` and `spki` ARE NOT HERE, AND THAT IS A RULING, NOT AN OMISSION. They are
-    // standards, not plugin instances: `Bearer` is the RFC 6750 HTTP authentication scheme every
-    // OAuth 2.0 client and server speaks, mutual TLS is the RFC 8705 client-certificate binding, and
-    // an SPKI pin is the RFC 7469 public-key fingerprint. An auth plugin INSTANCE is a crate
-    // (`auth-static-plugin`, an `auth-github`); a word every one of them speaks names none of them.
-    // BUSBAR-1.6.0.md "Owner rulings — 2026-09-23", Q1: "Auth vocabulary (`bearer`, `spki`, `mtls`)
-    // is protocol vocabulary, not an instance noun … The neutrality gate exempts the three."
-    // Censused, `bearer` alone hit 135 files and the three together 248. `sigv4` stays (same
-    // ruling): it is AWS's scheme, and an AWS-signing plugin is the instance it spells.
-    Noun {
-        key: "sigv4",
-        kind: "auth",
-        family: FAM_AUTH,
-        tokens: &["sigv4"],
-        camel: &[],
-        section: None,
-    },
+    // `bearer`, `mtls`, `spki` AND `sigv4` ARE NOT HERE, AND THAT IS A RULING, NOT AN OMISSION.
+    // They are standards, not plugin instances: `Bearer` is the RFC 6750 HTTP authentication scheme
+    // every OAuth 2.0 client and server speaks, mutual TLS is the RFC 8705 client-certificate
+    // binding, an SPKI pin is the RFC 7469 public-key fingerprint, and SigV4 is AWS's published
+    // request-signing wire scheme. An auth plugin INSTANCE is a crate (`auth-static-plugin`, an
+    // `auth-github`); a word every one of them speaks names none of them. BUSBAR-1.6.0.md "Owner
+    // rulings — 2026-09-23", Q1: "Auth vocabulary (`bearer`, `spki`, `mtls`) is protocol
+    // vocabulary, not an instance noun … The neutrality gate exempts the three." 1.6.0-QUESTIONS.md
+    // OWNER ANSWERS 2026-09-25, Q76: "SigV4 is PROTOCOL VOCABULARY (joins bearer/spki/mtls; the gate
+    // stops counting it)." The words are listed in [`PROTOCOL_VOCABULARY`]; no noun may match one.
     Noun {
         key: "gcp",
         kind: "auth",
@@ -831,35 +833,6 @@ fn undocumented_leaks(leaks: &[Leak], baseline: &[BaselineRow]) -> Vec<String> {
     out
 }
 
-/// The baseline TOML for the current census — mechanical category/wave, one `[[leak]]` per pair.
-fn emit_baseline(leaks: &[Leak], ceiling: usize) -> String {
-    let mut out = String::new();
-    out.push_str(
-        "# instance-noun-neutrality burndown ledger — AUTO-DERIVED, HUMAN-REVIEWED.\n\
-         # One row per (instance noun, offending file) outside the noun's own crate family.\n\
-         # The gate is RED while any row stands; it goes GREEN when this file is empty.\n\
-         # Regenerate: XTASK_INSN_EMIT_BASELINE=1 cargo xtask gate instance-noun-neutrality \
-         2>qa/instance-noun-neutrality.toml\n\n",
-    );
-    // The pragma ceilings are carried, never raised: a regeneration writes the LOWER of the
-    // recorded ceiling and the live count, so re-running the emitter cannot arm a new exemption.
-    out.push_str(&format!(
-        "# Reviewed `noun-neutrality: frozen-literal` pragmas. May only fall.\n\
-         [pragma_ceiling]\n{} = {ceiling}\n\n",
-        exempt::CEILING_KEY
-    ));
-    for l in leaks {
-        out.push_str("[[leak]]\n");
-        out.push_str(&format!("noun = \"{}\"\n", l.noun));
-        out.push_str(&format!("kind = \"{}\"\n", l.kind));
-        out.push_str(&format!("file = \"{}\"\n", l.file));
-        out.push_str(&format!("count = {}\n", l.count));
-        out.push_str(&format!("category = \"{}\"\n", l.category));
-        out.push_str(&format!("wave = \"{}\"\n\n", l.wave.replace('"', "'")));
-    }
-    out
-}
-
 /// The validity row: every marker honoured, or the refused ones named with every reason.
 fn pragma_row(pragmas: &[exempt::Pragma]) -> Row {
     let refused: Vec<String> = pragmas
@@ -933,14 +906,42 @@ fn ceiling_row(ceiling: &Result<usize, String>, live: usize) -> Row {
     }
 }
 
-pub struct InstanceNounNeutralityGate;
+/// The gate, and its `--write` construction. The write arm is a SEPARATE construction rather than
+/// a flag read off the context inside `run`, so `owed` — which the reconciliation is written
+/// against — can say what this run emits: one row, the ledger edit's own.
+pub struct InstanceNounNeutralityGate {
+    write: bool,
+}
+
+impl InstanceNounNeutralityGate {
+    /// The judging gate.
+    pub fn check() -> InstanceNounNeutralityGate {
+        InstanceNounNeutralityGate { write: false }
+    }
+
+    /// `--write`: lower and strike ledger rows to the measurement; a row that would be added or
+    /// would rise without an owner-cited `[[allow_rise]]` is refused — left as committed, named,
+    /// and the arm exits nonzero (see the `write` module).
+    pub fn write() -> InstanceNounNeutralityGate {
+        InstanceNounNeutralityGate { write: true }
+    }
+}
 
 impl Gate for InstanceNounNeutralityGate {
     fn name(&self) -> &'static str {
         "instance-noun-neutrality"
     }
 
+    /// `write` DOES NOT SHOW IN THE NAME and it changes both the owed set and the verdict, so the
+    /// baseline cache must be told about it or one arm would be handed the other's clean run.
+    fn baseline_key(&self) -> Option<String> {
+        Some(format!("{}:write={}", self.name(), self.write))
+    }
+
     fn owed(&self) -> Vec<String> {
+        if self.write {
+            return vec![ROW_WRITE.to_string()];
+        }
         let mut ids: Vec<String> = NOUNS.iter().map(|n| row_id(n.key)).collect();
         ids.push(ROW_SCAN_FLOOR.to_string());
         ids.push(ROW_UNDOCUMENTED.to_string());
@@ -952,6 +953,9 @@ impl Gate for InstanceNounNeutralityGate {
     }
 
     fn run(&self, cx: &Ctx) -> Verdict {
+        if self.write {
+            return Verdict::of(vec![write::rule_write(cx)]);
+        }
         let census = match census(cx) {
             Ok(c) => c,
             Err(e) => {
@@ -986,11 +990,13 @@ impl Gate for InstanceNounNeutralityGate {
         } = census;
         let ceiling = exempt::ceiling(cx.read(BASELINE).ok().as_deref());
 
-        // The baseline-regeneration affordance: print the census as TOML and keep going, so the
-        // ordinary verdict still prints too.
+        // The baseline-regeneration affordance: print the ledger `--write` would write and keep
+        // going, so the ordinary verdict still prints too. It is the SAME derivation as `--write`
+        // (see the `write` module), so it can only lower a row or strike one: a row that would be
+        // added or would rise is left as committed, and the `:undocumented` row below names it.
         if std::env::var("XTASK_INSN_EMIT_BASELINE").as_deref() == Ok("1") {
-            let carried = ceiling.clone().unwrap_or(0).min(pragmas.len());
-            eprint!("{}", emit_baseline(&leaks, carried));
+            let committed = cx.read(BASELINE).unwrap_or_default();
+            eprint!("{}", write::derive(&committed, &leaks, pragmas.len()).text);
         }
 
         let (baseline, malformed) = baseline_keys(cx);
@@ -1136,6 +1142,15 @@ impl Gate for InstanceNounNeutralityGate {
 
     fn selftest<'a>(&'a self, cx: &'a Ctx) -> Report<'a> {
         let mut report = Report::new();
+
+        // THE WRITE ARM PROVES ITS REFUSALS, which are exactly the paths that write nothing (a
+        // battery that let the lowering path edit the ledger it is proving would make itself pass;
+        // the lowering is proved by the `write` module's unit tests instead). The same cases run in
+        // the judging battery, so a CI that never passes `--write` still proves the arm refuses.
+        cases::push_write(cx, "xtask/fixtures/instance-noun", &mut report);
+        if self.write {
+            return report;
+        }
 
         // THE SELF-TEST RUNS OVER TINY FIXTURE TREES, NOT THE 660k-LINE REPO. A census gate that
         // planted into the real workspace and re-scanned it per case measured 168 751 work units —

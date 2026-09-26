@@ -4,23 +4,23 @@
 //! Bedrock Converse protocol reader/writer implementation.
 
 use crate::ir::IrStreamEvent;
-#[cfg(test)]
-use busbar_substrate_values::breaker::CanonicalSignal;
-use busbar_substrate_values::breaker::StatusClass;
-use busbar_substrate_values::proto::*;
-use busbar_substrate_values::proto::{
+use busbar_contract::http::{HeaderName, HeaderValue, StatusCode};
+use busbar_contract::protocol::*;
+use busbar_contract::protocol::{
     ERR_TYPE_AUTHENTICATION, ERR_TYPE_INSUFFICIENT_QUOTA, ERR_TYPE_INVALID_REQUEST,
     ERR_TYPE_NOT_FOUND, ERR_TYPE_PERMISSION, ERR_TYPE_RATE_LIMIT,
 };
-use http::{HeaderName, HeaderValue, StatusCode};
+#[cfg(test)]
+use busbar_contract::upstream::CanonicalSignal;
+use busbar_contract::upstream::StatusClass;
 // G6 A4b: the wire-codec surface (ProtocolReader/Writer/Protocol/StreamFraming/ToolIdRemap/
 // protocol_for) relocated to this plugin's `proto_codec`; reach it RELATIVELY so it resolves both
 // standalone (crate::proto_codec) and netted into core (core::proto::proto_codec).
 #[allow(unused_imports)]
-// used standalone; redundant with busbar_substrate_values::proto::* when netted into core
+// used standalone; redundant with the `busbar_contract::protocol::*` glob when netted into core
 use super::proto_codec::*;
 // See the anthropic dialect for the rationale: an explicit import of the codec surface so it binds to
-// THIS crate's own `proto_codec` rather than the ambiguous `busbar_substrate_values::proto::*` re-export.
+// THIS crate's own `proto_codec` rather than the `busbar_contract::protocol::*` glob.
 #[allow(unused_imports)]
 use super::proto_codec::{Protocol, ProtocolReader, ProtocolWriter, StreamFraming};
 
@@ -44,10 +44,10 @@ pub fn protocol() -> Protocol {
 /// unambiguous regardless of path), then the `/converse` path (rung 12) and the `/model/{id}/invoke`
 /// path (rung 13). Lower strength binds tighter — the shared ladder positions.
 fn claims(
-    h: &http::HeaderMap,
+    h: &busbar_contract::http::HeaderMap,
     path: &str,
-) -> Option<busbar_substrate_values::proto::ClaimStrength> {
-    use busbar_substrate_values::proto::ClaimStrength;
+) -> Option<busbar_contract::protocol::ClaimStrength> {
+    use busbar_contract::protocol::ClaimStrength;
     if h.get("authorization")
         .and_then(|v| v.to_str().ok())
         .is_some_and(|a| a.starts_with("AWS4-HMAC-SHA256"))
@@ -66,11 +66,11 @@ fn claims(
 /// BEDROCK'S RESIDUAL DETECTION — its arm of the headerless `residual_dialect_for_path` ladder: a
 /// `/model/{id}/converse[-stream]` path names Bedrock (rung 30). The `/converse`-suffix requirement
 /// is load-bearing: a non-Converse `/model/…` path must NOT wear a Bedrock envelope.
-fn residual_claims(path: &str) -> Option<busbar_substrate_values::proto::ClaimStrength> {
+fn residual_claims(path: &str) -> Option<busbar_contract::protocol::ClaimStrength> {
     if path.starts_with("/model/")
         && (path.ends_with("/converse") || path.ends_with("/converse-stream"))
     {
-        return Some(busbar_substrate_values::proto::ClaimStrength(30));
+        return Some(busbar_contract::protocol::ClaimStrength(30));
     }
     None
 }
@@ -98,10 +98,10 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
     },
     handler: Some(&handler::BedrockRequestHandler),
     verbs: &[
-        busbar_api::operation::Operation::CHAT,
-        busbar_api::operation::Operation::EMBEDDINGS,
-        busbar_api::operation::Operation::IMAGE,
-        busbar_api::operation::Operation::RERANK,
+        busbar_contract::operation::OpVerb::CHAT,
+        busbar_contract::operation::OpVerb::EMBEDDINGS,
+        busbar_contract::operation::OpVerb::IMAGE,
+        busbar_contract::operation::OpVerb::RERANK,
     ],
     head_keys: super::proto_codec::LLM_CHAT_HEAD_KEYS,
     // Bedrock ingress expects a BINARY eventstream body, not SSE: mislabeling it breaks the SDK.
@@ -110,15 +110,20 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
     // `tooluse_…` is Bedrock's documented native tool-call id shape.
     native_tool_id_prefix: Some("tooluse_"),
     ingress_auth: IngressAuth::SigV4,
-    // SIGV4 IS THIS DIALECT'S OWN EGRESS SCHEME AND IT TRAVELS WITH THE DIALECT. `egress_auth::
-    // resolve` used to hold a `"bedrock" => SigV4` arm whose body called back into
-    // `proto::bedrock::sigv4_sign_headers` — an agnostic layer naming a dialect for a credential
-    // shape only that dialect uses. That arm is gone; the signer is DECLARED here, exactly as the
-    // field doc describes, and the auth layer wraps whatever the declaration hands it. AWS SigV4 is
-    // not a shared scheme the way bearer/api-key are — Bedrock is the only protocol that signs.
-    egress_auth_headers: Some(writer::sigv4_sign_headers),
+    // SIGV4 IS THIS DIALECT'S OWN EGRESS SCHEME AND IT TRAVELS WITH THE DIALECT — as DECLARED DATA
+    // (#83a S2-a, O7, #40(b)): the service it signs for, the region as a pure function of the
+    // endpoint host (with the `us-east-1` fallback), and the content type the signature covers. The
+    // kernel's egress-auth unit holds the lane credential (`ACCESS:SECRET[:SESSION]`) and signs
+    // under a teller-minted grant, so the secret never passes through this plane. Never
+    // lane-constant: every signature covers the body, the time and the path.
+    egress_auth_headers: None,
     egress_auth_lane_constant: false,
-    egress_scheme: None,
+    egress_scheme: Some(EgressScheme::SigV4 {
+        service: "bedrock",
+        region_of_host: declared_sigv4_region,
+        default_region: "us-east-1",
+        content_type: busbar_contract::protocol::APPLICATION_JSON,
+    }),
     // THE MODEL IS IN THE URL (`/model/{model_id}/converse`, `/converse-stream`, `/invoke`): this
     // dialect registers its arrival (`busbar_kernel::ingress::bedrock_arrival`) through
     // `busbar_llm::PATH_INGRESS`, folded into the core side-table by the composition root.
@@ -132,7 +137,7 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
     frame_after_message_start: None,
     reshapes_body_at_path_base: false,
     max_cache_control_breakpoints: None,
-    quota_exceeded_status: http::StatusCode::BAD_REQUEST,
+    quota_exceeded_status: busbar_contract::http::StatusCode::BAD_REQUEST,
     ingress_is_eventstream: true,
     emits_sse_done_terminator: false,
     max_citations_per_delta: Some(1),
@@ -140,7 +145,7 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
     // `test_egress_ua_versions_are_pinned_and_present` guards drift.
     egress_user_agent: "Boto3/1.35.0 md/Botocore#1.35.0",
     has_model_in_url: true,
-    auth_failure_status_and_kind: (http::StatusCode::FORBIDDEN, "auth"),
+    auth_failure_status_and_kind: (busbar_contract::http::StatusCode::FORBIDDEN, "auth"),
     ingress_relays_amzn_headers: true,
     ingress_relayed_response_header_names: &[HDR_AMZN_REQUEST_ID, HDR_AMZN_ERROR_TYPE],
     auth_failure_message: "",
@@ -185,11 +190,11 @@ const APPLICATION_VND_AMAZON_EVENTSTREAM: &str = "application/vnd.amazon.eventst
 
 /// The Bedrock-side spelling of the "overloaded" error type that AWS's own error responses carry
 /// in their `__type` field (`ServiceUnavailableException` maps back to this on a round-trip).
-/// Distinguished from `busbar_substrate_values::proxy::KIND_OVERLOADED` ("overloaded"), which is busbar's own
+/// Distinguished from `busbar_contract::protocol::KIND_OVERLOADED` ("overloaded"), which is busbar's own
 /// internal kind vocabulary. Both map to `ServiceUnavailableException` via
 /// `error_kind_to_bedrock_type`; named here so the match arm is a const pattern rather than a
 /// bare literal.
-const ERR_TYPE_OVERLOADED: &str = busbar_substrate_values::proto::ERR_TYPE_OVERLOADED;
+const ERR_TYPE_OVERLOADED: &str = busbar_contract::protocol::ERR_TYPE_OVERLOADED;
 
 /// Map busbar's generic error `kind` vocabulary to the AWS Bedrock Converse exception name carried
 /// in `__type`. AWS's Converse error model is a fixed, closed set of exception shapes
@@ -210,17 +215,17 @@ pub fn error_kind_to_bedrock_type(kind: &str) -> &'static str {
             "AccessDeniedException"
         }
         "not_found" | ERR_TYPE_NOT_FOUND | "model_not_found" => "ResourceNotFoundException",
-        busbar_substrate_values::proxy::KIND_TIMEOUT | "model_timeout" => "ModelTimeoutException",
-        busbar_substrate_values::proxy::KIND_OVERLOADED
+        busbar_contract::protocol::KIND_TIMEOUT | "model_timeout" => "ModelTimeoutException",
+        busbar_contract::protocol::KIND_OVERLOADED
         | ERR_TYPE_OVERLOADED
         | "service_unavailable"
         | "unavailable" => EXC_SERVICE_UNAVAILABLE,
         "quota_exceeded" | "service_quota_exceeded" | ERR_TYPE_INSUFFICIENT_QUOTA => {
             "ServiceQuotaExceededException"
         }
-        busbar_substrate_values::proxy::KIND_API_ERROR
+        busbar_contract::protocol::KIND_API_ERROR
         | "internal_error"
-        | busbar_substrate_values::proxy::KIND_SERVER_ERROR => EXC_INTERNAL_SERVER,
+        | busbar_contract::protocol::KIND_SERVER_ERROR => EXC_INTERNAL_SERVER,
         // No native Bedrock counterpart: fall back to the generic client-error exception so the
         // wire `__type` is still a real AWS exception name a native SDK can decode.
         _ => EXC_VALIDATION,
@@ -246,7 +251,7 @@ pub fn synth_amzn_request_id() -> Option<String> {
     buf[6] = (buf[6] & 0x0f) | 0x40;
     buf[8] = (buf[8] & 0x3f) | 0x80;
     // One allocation for the 32-char lowercase hex string (was 17+ via per-byte `format!`).
-    let s = hex::encode(buf);
+    let s = crate::hex::encode(buf);
     Some(format!(
         "{}-{}-{}-{}-{}",
         &s[0..8],
@@ -266,7 +271,7 @@ pub fn synth_amzn_request_id() -> Option<String> {
 /// ingress_error`, `ingress`, and `auth.rs` reach it through that vtable (not by name), so they
 /// cannot drift on which headers a Bedrock error must carry. Best-effort: if entropy or header
 /// encoding fails we skip that header rather than panic — this runs on the request path.
-fn attach_bedrock_error_headers(headers: &mut http::HeaderMap, kind: &str) {
+fn attach_bedrock_error_headers(headers: &mut busbar_contract::http::HeaderMap, kind: &str) {
     if let Some(id) = synth_amzn_request_id() {
         if let Ok(hv) = HeaderValue::from_str(&id) {
             headers.insert(HeaderName::from_static(HDR_AMZN_REQUEST_ID), hv);
@@ -306,7 +311,7 @@ fn attach_bedrock_error_headers(headers: &mut http::HeaderMap, kind: &str) {
 /// `write_response_event` Error arm (also a stream-output context) so both stay consistent. The
 /// message prefers the upstream's `provider_signal`, falling back to the exception name.
 fn bedrock_stream_exception_for(
-    err: &busbar_substrate_values::proto::IrError,
+    err: &busbar_contract::protocol::IrError,
 ) -> (&'static str, String) {
     let exception_name = match err.class {
         StatusClass::RateLimit => EXC_THROTTLING,
@@ -632,7 +637,7 @@ fn bedrock_media_block(
         // reference no foreign writer can re-emit.
         None if bedrock_document_text(source).is_some() => crate::ir::IrImageSource::Base64 {
             media_type: bedrock_text_media_type(format),
-            data: busbar_substrate_values::media::base64_encode(
+            data: busbar_contract::media::base64_encode(
                 bedrock_document_text(source).unwrap_or_default().as_bytes(),
             ),
         },
@@ -1076,6 +1081,17 @@ fn merge_marker_entries(
     out
 }
 
+/// The DECLARED SigV4 region of an upstream `host` ([`EgressScheme::SigV4`]'s `region_of_host`):
+/// [`derive_sigv4_region`], with the operator warning the signer has always given when a host names
+/// no region and the scope falls back to the declared `us-east-1`. Read once per signature.
+fn declared_sigv4_region(host: &str) -> Option<&str> {
+    let region = derive_sigv4_region(host);
+    if region.is_none() {
+        tracing::warn!(host = %host, "could not derive AWS region from Bedrock endpoint host; defaulting SigV4 scope to us-east-1 (set a bedrock-runtime[-fips].<region>.amazonaws.com host)");
+    }
+    region
+}
+
 /// Derive the AWS region for SigV4 scope from a Bedrock endpoint host.
 ///
 /// AWS resolves the signing region from the endpoint, not from a single hard-coded prefix. A naive
@@ -1097,7 +1113,7 @@ fn merge_marker_entries(
 /// `None`. The caller logs a `tracing::warn!` and falls back to
 /// `us-east-1` for `None`, so a mis-derived region is no longer silent. Pure string parsing on a
 /// `&str` — no panic, no allocation of the host.
-fn derive_sigv4_region(host: &str) -> Option<&str> {
+pub(crate) fn derive_sigv4_region(host: &str) -> Option<&str> {
     // An AWS region token: one or more alphabetic dash-parts followed by a final numeric part.
     //   3-part canonical:  us-east-1, ap-southeast-2, eu-central-1, ca-central-1
     //   4-part partitions: us-gov-west-1, us-gov-east-1 (GovCloud), us-iso-east-1, us-isob-east-1
@@ -1885,11 +1901,8 @@ pub fn bedrock_response_to_eventstream(
             if event_type == ET_METADATA {
                 ensure_metrics(&mut payload, elapsed_ms);
             }
-            if let Ok(bytes) = busbar_substrate_values::json::to_vec(&payload) {
-                out.extend_from_slice(&busbar_substrate_values::eventstream::encode_frame(
-                    &event_type,
-                    &bytes,
-                ));
+            if let Ok(bytes) = crate::json::to_vec(&payload) {
+                out.extend_from_slice(&crate::eventstream::encode_frame(&event_type, &bytes));
             }
         }
     };
@@ -2138,7 +2151,7 @@ pub fn complete_converse_body(
         // Present but unusable: replace it. Splicing would leave two `metrics` keys.
         let mut fixed = parsed.clone();
         ensure_metrics(&mut fixed, Some(latency_ms));
-        return busbar_substrate_values::json::to_vec(&fixed).ok();
+        return crate::json::to_vec(&fixed).ok();
     }
     // The last significant byte must be the object's closing brace (the parse above guarantees a
     // top-level object, so this only guards against trailing garbage a lenient parser accepted).
@@ -2180,9 +2193,9 @@ pub struct BedrockConverseBodyTranslator {
     /// Set once the body outgrew `cap`: everything is relayed as it arrives and `buf` holds only
     /// the most recent `cap` bytes.
     passthrough: bool,
-    usage: Option<busbar_substrate_values::billing::TokenUsage>,
+    usage: Option<busbar_contract::billing::TokenUsage>,
     /// The non-token billing the body reported (a rerank's search units, item 134).
-    open_billing: Option<busbar_substrate_values::billing::Billing>,
+    open_billing: Option<busbar_contract::billing::Billing>,
 }
 
 impl Default for BedrockConverseBodyTranslator {
@@ -2220,7 +2233,7 @@ impl BedrockConverseBodyTranslator {
     }
 }
 
-impl busbar_substrate_values::proto::StreamTranslator for BedrockConverseBodyTranslator {
+impl busbar_contract::protocol::StreamTranslator for BedrockConverseBodyTranslator {
     fn feed(&mut self, chunk: &[u8]) -> Vec<u8> {
         self.buf.extend_from_slice(chunk);
         if self.passthrough {
@@ -2250,7 +2263,7 @@ impl busbar_substrate_values::proto::StreamTranslator for BedrockConverseBodyTra
                 .reader()
                 .recover_truncated_usage(&body)
                 .or_else(|| {
-                    Some(busbar_substrate_values::billing::TokenUsage {
+                    Some(busbar_contract::billing::TokenUsage {
                         output: (tail_len / crate::wire_shim::TRUNCATED_TAIL_BYTES_PER_TOKEN)
                             .max(1),
                         ..Default::default()
@@ -2258,7 +2271,7 @@ impl busbar_substrate_values::proto::StreamTranslator for BedrockConverseBodyTra
                 });
             return Vec::new();
         }
-        let parsed = busbar_substrate_values::json::parse::<serde_json::Value>(&body).ok();
+        let parsed = crate::json::parse::<serde_json::Value>(&body).ok();
         self.usage = handler::same_protocol_usage(&body, parsed.as_ref());
         self.open_billing = handler::same_protocol_open_billing(&body, parsed.as_ref());
         match parsed {
@@ -2269,11 +2282,11 @@ impl busbar_substrate_values::proto::StreamTranslator for BedrockConverseBodyTra
         }
     }
 
-    fn usage(&self) -> Option<busbar_substrate_values::billing::TokenUsage> {
+    fn usage(&self) -> Option<busbar_contract::billing::TokenUsage> {
         self.usage.clone()
     }
 
-    fn open_billing(&self) -> Option<busbar_substrate_values::billing::Billing> {
+    fn open_billing(&self) -> Option<busbar_contract::billing::Billing> {
         self.open_billing.clone()
     }
 

@@ -26,36 +26,36 @@ use super::super::calllog::{
 // plane re-export.
 use crate::audit::ChainBreakKind;
 use crate::plane::store::KIND_CALL;
-use busbar_api::{PlaneSelector, Store, StoreResult};
+use busbar_contract::records::{PlaneSelector, RecordStore, RecordStoreResult};
 use std::sync::Arc;
 
 /// TEST-ONLY named-vocabulary call-log store extension — the per-call twin of the A2A task test-ext,
 /// kept beside the battery that uses it now that the neutral `StoreNamedTestExt` is gone. It reads and
 /// writes the `call` stream through the generic `PlaneRecord` ABI, decoding each opaque neutral journal
 /// body into the neutral [`CallRecorded`] the seam persists.
-trait CallStoreTestExt: Store {
-    fn append_call(&self, rec: &CallRecorded) -> StoreResult<()> {
-        self.append_plane_record(&busbar_api::PlaneRecord {
+trait CallStoreTestExt: RecordStore {
+    fn append_call(&self, rec: &CallRecorded) -> RecordStoreResult<()> {
+        self.append_plane_record(&busbar_contract::records::PlaneRecord {
             kind: KIND_CALL.to_string(),
             id: rec.principal.clone(),
             parent: Some(rec.principal.clone()),
             seq: rec.seq,
             ts: rec.ts,
-            disposition: busbar_api::PlaneDisposition::Active,
+            disposition: busbar_contract::records::PlaneDisposition::Active,
             body: call_record_to_journal_body(rec)?,
         })
     }
-    fn list_calls(&self, principal: &str) -> StoreResult<Vec<CallRecorded>> {
+    fn list_calls(&self, principal: &str) -> RecordStoreResult<Vec<CallRecorded>> {
         self.list_plane_records(KIND_CALL, &PlaneSelector::Parent(principal.to_string()))?
             .iter()
             .map(|b| call_record_from_body(principal, b))
             .collect()
     }
-    fn list_call_principals(&self) -> StoreResult<Vec<String>> {
+    fn list_call_principals(&self) -> RecordStoreResult<Vec<String>> {
         self.list_plane_record_parents(KIND_CALL)
     }
 }
-impl<T: Store + ?Sized> CallStoreTestExt for T {}
+impl<T: RecordStore + ?Sized> CallStoreTestExt for T {}
 
 // ── the two stores these tests are held against ──────────────────────────────────────────────
 
@@ -144,43 +144,63 @@ impl DurableCallStore {
     }
 }
 
-impl Store for DurableCallStore {
-    fn put_key(&self, key: &busbar_api::VirtualKey) -> busbar_api::StoreResult<()> {
+impl RecordStore for DurableCallStore {
+    fn put_key(
+        &self,
+        key: &busbar_contract::records::VirtualKey,
+    ) -> busbar_contract::records::RecordStoreResult<()> {
         self.inner.put_key(key)
     }
-    fn get_key(&self, id: &str) -> busbar_api::StoreResult<Option<busbar_api::VirtualKey>> {
+    fn get_key(
+        &self,
+        id: &str,
+    ) -> busbar_contract::records::RecordStoreResult<Option<busbar_contract::records::VirtualKey>>
+    {
         self.inner.get_key(id)
     }
-    fn list_keys(&self) -> busbar_api::StoreResult<Vec<busbar_api::VirtualKey>> {
+    fn list_keys(
+        &self,
+    ) -> busbar_contract::records::RecordStoreResult<Vec<busbar_contract::records::VirtualKey>>
+    {
         self.inner.list_keys()
     }
-    fn delete_key(&self, id: &str) -> busbar_api::StoreResult<()> {
+    fn delete_key(&self, id: &str) -> busbar_contract::records::RecordStoreResult<()> {
         self.inner.delete_key(id)
     }
     fn get_usage(
         &self,
         bucket_id: &str,
         window_start: u64,
-    ) -> busbar_api::StoreResult<busbar_api::UsageLedger> {
+    ) -> busbar_contract::records::RecordStoreResult<busbar_contract::records::UsageLedger> {
         self.inner.get_usage(bucket_id, window_start)
     }
     fn put_usage(
         &self,
         bucket_id: &str,
         window_start: u64,
-        ledger: &busbar_api::UsageLedger,
-    ) -> busbar_api::StoreResult<()> {
+        ledger: &busbar_contract::records::UsageLedger,
+    ) -> busbar_contract::records::RecordStoreResult<()> {
         self.inner.put_usage(bucket_id, window_start, ledger)
     }
-    fn add_metering(&self, delta: &busbar_api::MeteringDelta) -> busbar_api::StoreResult<()> {
+    fn add_metering(
+        &self,
+        delta: &busbar_contract::records::MeteringDelta,
+    ) -> busbar_contract::records::RecordStoreResult<()> {
         self.inner.add_metering(delta)
     }
-    fn list_metering(&self, bucket: u64) -> busbar_api::StoreResult<Vec<busbar_api::MeteringRow>> {
+    fn list_metering(
+        &self,
+        bucket: u64,
+    ) -> busbar_contract::records::RecordStoreResult<Vec<busbar_contract::records::MeteringRow>>
+    {
         self.inner.list_metering(bucket)
     }
 
     // ── The neutral kind-tagged verbs — the durable half this double actually keeps ──────────────
-    fn append_plane_record(&self, record: &busbar_api::PlaneRecord) -> busbar_api::StoreResult<()> {
+    fn append_plane_record(
+        &self,
+        record: &busbar_contract::records::PlaneRecord,
+    ) -> busbar_contract::records::RecordStoreResult<()> {
         match record.kind.as_str() {
             crate::plane::store::KIND_CALL => self.append_event_body(record),
             _ => Ok(()),
@@ -189,10 +209,13 @@ impl Store for DurableCallStore {
     fn list_plane_records(
         &self,
         kind: &str,
-        selector: &busbar_api::PlaneSelector,
-    ) -> busbar_api::StoreResult<Vec<Vec<u8>>> {
+        selector: &busbar_contract::records::PlaneSelector,
+    ) -> busbar_contract::records::RecordStoreResult<Vec<Vec<u8>>> {
         match (kind, selector) {
-            (crate::plane::store::KIND_CALL, busbar_api::PlaneSelector::Parent(p)) => {
+            (
+                crate::plane::store::KIND_CALL,
+                busbar_contract::records::PlaneSelector::Parent(p),
+            ) => {
                 // The stored BODIES verbatim, in `(principal, seq)` order — exactly what a durable
                 // backend returns; the caller (log or test ext) reframes/decodes them.
                 Ok(self
@@ -207,7 +230,10 @@ impl Store for DurableCallStore {
             _ => Ok(Vec::new()),
         }
     }
-    fn list_plane_record_parents(&self, kind: &str) -> busbar_api::StoreResult<Vec<String>> {
+    fn list_plane_record_parents(
+        &self,
+        kind: &str,
+    ) -> busbar_contract::records::RecordStoreResult<Vec<String>> {
         match kind {
             crate::plane::store::KIND_CALL => {
                 let calls = self.calls.lock().unwrap();
@@ -218,7 +244,11 @@ impl Store for DurableCallStore {
             _ => Ok(Vec::new()),
         }
     }
-    fn purge_plane_records_before(&self, kind: &str, before: u64) -> busbar_api::StoreResult<u64> {
+    fn purge_plane_records_before(
+        &self,
+        kind: &str,
+        before: u64,
+    ) -> busbar_contract::records::RecordStoreResult<u64> {
         match kind {
             crate::plane::store::KIND_CALL => {
                 let mut calls = self.calls.lock().unwrap();
@@ -248,9 +278,12 @@ impl DurableCallStore {
     /// RECONSTRUCTED chained record (ignoring `request_id`, the join key the neutral body drops), so a
     /// legitimate retry — the same call, whether it arrives as a neutral or a legacy body — succeeds,
     /// and a DIFFERENT record on an occupied `(principal, seq)` is a forked log and errors.
-    fn append_event_body(&self, record: &busbar_api::PlaneRecord) -> busbar_api::StoreResult<()> {
+    fn append_event_body(
+        &self,
+        record: &busbar_contract::records::PlaneRecord,
+    ) -> busbar_contract::records::RecordStoreResult<()> {
         if let Some(why) = self.fail_appends.lock().unwrap().as_ref() {
-            return Err(busbar_api::StoreError(why.clone()));
+            return Err(busbar_contract::records::RecordStoreError(why.clone()));
         }
         let principal = record.parent.clone().unwrap_or_else(|| record.id.clone());
         let slot = (principal.clone(), record.seq);
@@ -265,7 +298,7 @@ impl DurableCallStore {
                 } else {
                     // Two DIFFERENT records claiming one chain position: a forked or tampered log,
                     // and the single most important thing this store can tell an operator.
-                    Err(busbar_api::StoreError(format!(
+                    Err(busbar_contract::records::RecordStoreError(format!(
                         "call log fork: a DIFFERENT record already occupies ({}, {})",
                         principal, record.seq
                     )))
@@ -325,38 +358,55 @@ impl RamDefaultStore {
     }
 }
 
-impl Store for RamDefaultStore {
-    fn put_key(&self, key: &busbar_api::VirtualKey) -> busbar_api::StoreResult<()> {
+impl RecordStore for RamDefaultStore {
+    fn put_key(
+        &self,
+        key: &busbar_contract::records::VirtualKey,
+    ) -> busbar_contract::records::RecordStoreResult<()> {
         self.inner.put_key(key)
     }
-    fn get_key(&self, id: &str) -> busbar_api::StoreResult<Option<busbar_api::VirtualKey>> {
+    fn get_key(
+        &self,
+        id: &str,
+    ) -> busbar_contract::records::RecordStoreResult<Option<busbar_contract::records::VirtualKey>>
+    {
         self.inner.get_key(id)
     }
-    fn list_keys(&self) -> busbar_api::StoreResult<Vec<busbar_api::VirtualKey>> {
+    fn list_keys(
+        &self,
+    ) -> busbar_contract::records::RecordStoreResult<Vec<busbar_contract::records::VirtualKey>>
+    {
         self.inner.list_keys()
     }
-    fn delete_key(&self, id: &str) -> busbar_api::StoreResult<()> {
+    fn delete_key(&self, id: &str) -> busbar_contract::records::RecordStoreResult<()> {
         self.inner.delete_key(id)
     }
     fn get_usage(
         &self,
         bucket_id: &str,
         window_start: u64,
-    ) -> busbar_api::StoreResult<busbar_api::UsageLedger> {
+    ) -> busbar_contract::records::RecordStoreResult<busbar_contract::records::UsageLedger> {
         self.inner.get_usage(bucket_id, window_start)
     }
     fn put_usage(
         &self,
         bucket_id: &str,
         window_start: u64,
-        ledger: &busbar_api::UsageLedger,
-    ) -> busbar_api::StoreResult<()> {
+        ledger: &busbar_contract::records::UsageLedger,
+    ) -> busbar_contract::records::RecordStoreResult<()> {
         self.inner.put_usage(bucket_id, window_start, ledger)
     }
-    fn add_metering(&self, delta: &busbar_api::MeteringDelta) -> busbar_api::StoreResult<()> {
+    fn add_metering(
+        &self,
+        delta: &busbar_contract::records::MeteringDelta,
+    ) -> busbar_contract::records::RecordStoreResult<()> {
         self.inner.add_metering(delta)
     }
-    fn list_metering(&self, bucket: u64) -> busbar_api::StoreResult<Vec<busbar_api::MeteringRow>> {
+    fn list_metering(
+        &self,
+        bucket: u64,
+    ) -> busbar_contract::records::RecordStoreResult<Vec<busbar_contract::records::MeteringRow>>
+    {
         self.inner.list_metering(bucket)
     }
 }
@@ -393,7 +443,7 @@ fn refused(ts: u64, tool: &str, reason: &str) -> CallInput {
 
 /// Write three calls through a log attached to `store`, then DROP the log. Returns what was written,
 /// so the read-back can be compared against it field by field.
-fn write_then_drop(store: &Arc<dyn Store>) -> Vec<CallRecorded> {
+fn write_then_drop(store: &Arc<dyn RecordStore>) -> Vec<CallRecorded> {
     let log = CallTestHarness::over(store.clone());
     let a = log
         .record(P, dispatched(1000, "fs_read", "sha256:aaa", 7))
@@ -457,7 +507,7 @@ fn assert_same_record(got: &CallRecorded, want: &CallRecorded, at: &str) {
 #[test]
 fn a_durable_store_returns_every_record_field_for_field_across_a_restart() {
     let backing = Arc::new(DurableCallStore::new());
-    let store: Arc<dyn Store> = backing.clone();
+    let store: Arc<dyn RecordStore> = backing.clone();
     let written = write_then_drop(&store);
 
     // Process 2: nothing carried over.
@@ -528,7 +578,7 @@ fn an_undecodable_record_is_skipped_and_counted_not_fatal_to_the_rest() {
     use tracing_subscriber::layer::SubscriberExt as _;
 
     let backing = Arc::new(DurableCallStore::new());
-    let store: Arc<dyn Store> = backing.clone();
+    let store: Arc<dyn RecordStore> = backing.clone();
     let written = write_then_drop(&store);
     assert_eq!(written.len(), 3, "three records were written");
 
@@ -595,7 +645,7 @@ fn an_undecodable_record_is_skipped_and_counted_not_fatal_to_the_rest() {
 #[test]
 fn a_principal_whose_every_row_is_undecodable_is_refused_not_reopened_at_seq_one() {
     let backing = Arc::new(DurableCallStore::new());
-    let store: Arc<dyn Store> = backing.clone();
+    let store: Arc<dyn RecordStore> = backing.clone();
     write_then_drop(&store);
     for seq in 1..=3 {
         backing.poison_row(P, seq);
@@ -627,7 +677,7 @@ fn an_undecodable_record_fires_the_row_unreadable_diagnostic_at_error() {
     use tracing_subscriber::layer::SubscriberExt as _;
 
     let backing = Arc::new(DurableCallStore::new());
-    let store: Arc<dyn Store> = backing.clone();
+    let store: Arc<dyn RecordStore> = backing.clone();
     write_then_drop(&store);
     backing.poison_row(P, 3);
 
@@ -664,7 +714,7 @@ fn an_undecodable_record_fires_the_row_unreadable_diagnostic_at_error() {
 /// reading its own RAM back.
 #[test]
 fn the_ram_default_accepts_every_write_and_keeps_nothing_and_says_so() {
-    let store: Arc<dyn Store> = Arc::new(RamDefaultStore::new());
+    let store: Arc<dyn RecordStore> = Arc::new(RamDefaultStore::new());
 
     // Every write SUCCEEDS. This is the trap the durability claim has to survive: an `Ok(())` from
     // the default means only "the backend did not object".
@@ -704,7 +754,7 @@ fn the_ram_default_accepts_every_write_and_keeps_nothing_and_says_so() {
 #[test]
 fn a_failed_durable_write_leaves_the_sequence_where_it_was() {
     let backing = Arc::new(DurableCallStore::new());
-    let store: Arc<dyn Store> = backing.clone();
+    let store: Arc<dyn RecordStore> = backing.clone();
     let log = CallTestHarness::over(store.clone());
 
     log.record(P, dispatched(1000, "fs_read", "sha256:aaa", 7))
@@ -749,7 +799,7 @@ fn a_failed_durable_write_leaves_the_sequence_where_it_was() {
 #[test]
 fn editing_a_persisted_row_is_reported_as_a_digest_mismatch_at_its_position() {
     let backing = Arc::new(DurableCallStore::new());
-    let store: Arc<dyn Store> = backing.clone();
+    let store: Arc<dyn RecordStore> = backing.clone();
     write_then_drop(&store);
 
     let log = PlaneCallLog::new();
@@ -796,7 +846,7 @@ fn editing_a_persisted_row_is_reported_as_a_digest_mismatch_at_its_position() {
 #[test]
 fn removing_a_persisted_row_is_reported_as_a_sequence_break() {
     let backing = Arc::new(DurableCallStore::new());
-    let store: Arc<dyn Store> = backing.clone();
+    let store: Arc<dyn RecordStore> = backing.clone();
     write_then_drop(&store);
     backing.drop_row(P, 2);
 
@@ -826,7 +876,7 @@ fn removing_a_persisted_row_is_reported_as_a_sequence_break() {
 #[test]
 fn rewriting_only_a_persisted_rows_link_is_reported_as_a_link_mismatch() {
     let backing = Arc::new(DurableCallStore::new());
-    let store: Arc<dyn Store> = backing.clone();
+    let store: Arc<dyn RecordStore> = backing.clone();
     let written = write_then_drop(&store);
 
     // Re-point record 3 at record 1, and RECOMPUTE its digest so the row is self-consistent. Only
@@ -844,7 +894,7 @@ fn rewriting_only_a_persisted_rows_link_is_reported_as_a_link_mismatch() {
     // its own store keeps this isolated from the chain under test.
     let rebuilt = {
         let repair_backing = Arc::new(DurableCallStore::new());
-        let repair_store: Arc<dyn Store> = repair_backing.clone();
+        let repair_store: Arc<dyn RecordStore> = repair_backing.clone();
         let repair = CallTestHarness::over(repair_store);
         let first = repair
             .record(P, dispatched(1000, "fs_read", "sha256:aaa", 7))
@@ -899,7 +949,7 @@ fn rewriting_only_a_persisted_rows_link_is_reported_as_a_link_mismatch() {
 #[test]
 fn a_foreign_principals_record_in_a_chain_is_its_own_break_kind() {
     let backing = Arc::new(DurableCallStore::new());
-    let store: Arc<dyn Store> = backing.clone();
+    let store: Arc<dyn RecordStore> = backing.clone();
     write_then_drop(&store);
 
     // The chain SCOPE is the store PARENT, not a field of the persisted body (the neutral seam carries
@@ -930,7 +980,7 @@ fn a_foreign_principals_record_in_a_chain_is_its_own_break_kind() {
 #[test]
 fn a_boot_chain_break_is_reported_while_the_rows_are_still_restored() {
     let backing = Arc::new(DurableCallStore::new());
-    let store: Arc<dyn Store> = backing.clone();
+    let store: Arc<dyn RecordStore> = backing.clone();
     let written = write_then_drop(&store);
     backing.tamper(P, 2, |row| row.tool = "fs_exfiltrate".to_string());
 
@@ -982,7 +1032,7 @@ fn an_enumerated_principal_with_no_rows_is_reported_as_an_empty_chain() {
     // there is nothing to count and nothing to report. Without this, the assertion below would not
     // distinguish "counted the empty chain" from "counted every principal".
     let backing = Arc::new(DurableCallStore::new());
-    let store: Arc<dyn Store> = backing.clone();
+    let store: Arc<dyn RecordStore> = backing.clone();
     write_then_drop(&store);
     for seq in 1..=3 {
         backing.drop_row(P, seq);
@@ -1001,7 +1051,7 @@ fn an_enumerated_principal_with_no_rows_is_reported_as_an_empty_chain() {
         "nothing enumerated means nothing to count"
     );
 
-    let store2: Arc<dyn Store> = Arc::new(NamesOnePrincipalWithNoRows);
+    let store2: Arc<dyn RecordStore> = Arc::new(NamesOnePrincipalWithNoRows);
     let log2 = CallTestHarness::over(Arc::new(RamDefaultStore::new()));
     let restored = log2
         .restore_from_store(crate::plane::store::PlaneStoreView::narrow(store2.clone()).as_ref())
@@ -1023,41 +1073,61 @@ fn an_enumerated_principal_with_no_rows_is_reported_as_an_empty_chain() {
 /// shape, which no honest backend should produce and which is exactly why it is counted.
 struct NamesOnePrincipalWithNoRows;
 
-impl Store for NamesOnePrincipalWithNoRows {
-    fn put_key(&self, _key: &busbar_api::VirtualKey) -> busbar_api::StoreResult<()> {
+impl RecordStore for NamesOnePrincipalWithNoRows {
+    fn put_key(
+        &self,
+        _key: &busbar_contract::records::VirtualKey,
+    ) -> busbar_contract::records::RecordStoreResult<()> {
         Ok(())
     }
-    fn get_key(&self, _id: &str) -> busbar_api::StoreResult<Option<busbar_api::VirtualKey>> {
+    fn get_key(
+        &self,
+        _id: &str,
+    ) -> busbar_contract::records::RecordStoreResult<Option<busbar_contract::records::VirtualKey>>
+    {
         Ok(None)
     }
-    fn list_keys(&self) -> busbar_api::StoreResult<Vec<busbar_api::VirtualKey>> {
+    fn list_keys(
+        &self,
+    ) -> busbar_contract::records::RecordStoreResult<Vec<busbar_contract::records::VirtualKey>>
+    {
         Ok(Vec::new())
     }
-    fn delete_key(&self, _id: &str) -> busbar_api::StoreResult<()> {
+    fn delete_key(&self, _id: &str) -> busbar_contract::records::RecordStoreResult<()> {
         Ok(())
     }
     fn get_usage(
         &self,
         _bucket_id: &str,
         _window_start: u64,
-    ) -> busbar_api::StoreResult<busbar_api::UsageLedger> {
-        Ok(busbar_api::UsageLedger::default())
+    ) -> busbar_contract::records::RecordStoreResult<busbar_contract::records::UsageLedger> {
+        Ok(busbar_contract::records::UsageLedger::default())
     }
     fn put_usage(
         &self,
         _bucket_id: &str,
         _window_start: u64,
-        _ledger: &busbar_api::UsageLedger,
-    ) -> busbar_api::StoreResult<()> {
+        _ledger: &busbar_contract::records::UsageLedger,
+    ) -> busbar_contract::records::RecordStoreResult<()> {
         Ok(())
     }
-    fn add_metering(&self, _delta: &busbar_api::MeteringDelta) -> busbar_api::StoreResult<()> {
+    fn add_metering(
+        &self,
+        _delta: &busbar_contract::records::MeteringDelta,
+    ) -> busbar_contract::records::RecordStoreResult<()> {
         Ok(())
     }
-    fn list_metering(&self, _bucket: u64) -> busbar_api::StoreResult<Vec<busbar_api::MeteringRow>> {
+    fn list_metering(
+        &self,
+        _bucket: u64,
+    ) -> busbar_contract::records::RecordStoreResult<Vec<busbar_contract::records::MeteringRow>>
+    {
         Ok(Vec::new())
     }
-    fn list_plane_record_parents(&self, kind: &str) -> busbar_api::StoreResult<Vec<String>> {
+    fn list_plane_record_parents(
+        &self,
+        kind: &str,
+    ) -> busbar_contract::records::RecordStoreResult<Vec<String>> {
         match kind {
             crate::plane::store::KIND_CALL => self.list_call_principals(),
             _ => Ok(Vec::new()),
@@ -1066,7 +1136,7 @@ impl Store for NamesOnePrincipalWithNoRows {
 }
 
 impl NamesOnePrincipalWithNoRows {
-    fn list_call_principals(&self) -> busbar_api::StoreResult<Vec<String>> {
+    fn list_call_principals(&self) -> busbar_contract::records::RecordStoreResult<Vec<String>> {
         Ok(vec![P.to_string()])
     }
 }
@@ -1085,7 +1155,7 @@ impl NamesOnePrincipalWithNoRows {
 fn the_digest_covers_every_chained_field_and_deliberately_excludes_the_request_id() {
     let base = {
         let backing = Arc::new(DurableCallStore::new());
-        let store: Arc<dyn Store> = backing.clone();
+        let store: Arc<dyn RecordStore> = backing.clone();
         let log = CallTestHarness::over(store.clone());
         log.record(P, dispatched(1000, "fs_read", "sha256:aaa", 7))
             .expect("the base record mints through the seam")
@@ -1112,7 +1182,7 @@ fn the_digest_covers_every_chained_field_and_deliberately_excludes_the_request_i
     // same bytes and still verifies.
     fn perturbation_breaks(edit: impl FnOnce(&mut CallRecorded)) -> bool {
         let backing = Arc::new(DurableCallStore::new());
-        let store: Arc<dyn Store> = backing.clone();
+        let store: Arc<dyn RecordStore> = backing.clone();
         let log = CallTestHarness::over(store.clone());
         log.record(P, dispatched(1000, "fs_read", "sha256:aaa", 7))
             .expect("records");
@@ -1205,7 +1275,7 @@ fn field_boundaries_cannot_be_forged_by_moving_text_across_them() {
     // seq), each minted through its own seam-backed store.
     let mint = |server: &str, tool: &str| {
         let backing = Arc::new(DurableCallStore::new());
-        let store: Arc<dyn Store> = backing.clone();
+        let store: Arc<dyn RecordStore> = backing.clone();
         let log = CallTestHarness::over(store);
         log.record(
             P,
@@ -1240,7 +1310,7 @@ fn field_boundaries_cannot_be_forged_by_moving_text_across_them() {
 #[test]
 fn an_occupied_chain_position_takes_the_retry_and_refuses_the_fork() {
     let backing = Arc::new(DurableCallStore::new());
-    let store: Arc<dyn Store> = backing.clone();
+    let store: Arc<dyn RecordStore> = backing.clone();
     let log = CallTestHarness::over(store.clone());
     let first = log
         .record(P, dispatched(1000, "fs_read", "sha256:aaa", 7))
@@ -1263,7 +1333,7 @@ fn an_occupied_chain_position_takes_the_retry_and_refuses_the_fork() {
 #[test]
 fn retention_purges_rows_without_rewinding_the_chain() {
     let backing = Arc::new(DurableCallStore::new());
-    let store: Arc<dyn Store> = backing.clone();
+    let store: Arc<dyn RecordStore> = backing.clone();
     let log = CallTestHarness::over(store.clone());
     log.record(P, dispatched(1000, "fs_read", "sha256:aaa", 7))
         .expect("records");
@@ -1372,7 +1442,7 @@ fn the_chain_position_map_stays_bounded_across_many_distinct_principals() {
 fn an_evicted_principal_resumes_from_the_store_instead_of_forking_its_chain() {
     use super::super::calllog::MAX_TRACKED_PRINCIPALS;
     let backing = Arc::new(DurableCallStore::new());
-    let store: Arc<dyn Store> = backing.clone();
+    let store: Arc<dyn RecordStore> = backing.clone();
     let log = CallTestHarness::over(store.clone());
 
     // P makes two calls, then goes cold. It sits at the FRONT of the LRU (recorded first, never
@@ -1442,7 +1512,7 @@ fn an_evicted_principal_resumes_from_the_store_instead_of_forking_its_chain() {
 fn an_evicted_principal_whose_readback_fails_is_surfaced_not_forked() {
     use super::super::calllog::MAX_TRACKED_PRINCIPALS;
     let backing = Arc::new(DurableCallStore::new());
-    let store: Arc<dyn Store> = backing.clone();
+    let store: Arc<dyn RecordStore> = backing.clone();
     let log = CallTestHarness::over(store.clone());
 
     log.record(P, dispatched(1000, "fs_read", "sha256:aaa", 7))

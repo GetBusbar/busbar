@@ -15,7 +15,7 @@ fn through_seam(body: &Value) -> Value {
     let mut req = super::OpenAiReader.read_request(body).expect("body reads");
     crate::chat_handle::chat_prepare_for_egress(
         &mut req,
-        &busbar_substrate_values::ir::egress_prep::EgressPrep {
+        &busbar_contract::ir::egress_prep::EgressPrep {
             thought_signature_fill: false,
             ingress_protocol: "responses",
             egress_requires_max_tokens: false,
@@ -221,9 +221,12 @@ fn ir03_05_06_07_request_scalars_cross() {
 /// cross-protocol `audio` ask would 400 without a voice), so through the seam only `text` remains.
 #[test]
 fn ir19_modalities_cross() {
+    // The caller's Chat `modalities` + `audio` members as a client sends them — golden input data,
+    // kept in a fixture so the dialect's own `audio` member fields are data rather than code.
+    let members: Value = serde_json::from_str(include_str!("fixtures/chat_audio_member.json"))
+        .expect("the audio member fixture is JSON");
     let ir = super::OpenAiReader
-        .read_request(&chat_body(json!({"modalities": ["text", "audio"],
-                                        "audio": {"voice": "alloy", "format": "wav"}})))
+        .read_request(&chat_body(members))
         .expect("reads");
     assert_eq!(
         ir.output_modalities,

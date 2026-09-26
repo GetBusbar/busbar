@@ -630,7 +630,7 @@ fn test_bedrock_to_bedrock_stream_roundtrips_stop_and_metadata() {
     raw.extend(t.finish());
 
     let mut buf = raw.clone();
-    let frames = busbar_substrate_values::eventstream::drain_frames(&mut buf);
+    let frames = crate::eventstream::drain_frames(&mut buf);
     assert!(
         buf.is_empty(),
         "all frames decode cleanly; {} left",
@@ -724,7 +724,7 @@ fn test_bedrock_ingress_ir_usage_carries_real_tokens() {
     );
     // The frames decode as real AWS eventstream frames (proving they are binary-framed, not SSE).
     let mut buf = binary_out.clone();
-    let frames = busbar_substrate_values::eventstream::drain_frames(&mut buf);
+    let frames = crate::eventstream::drain_frames(&mut buf);
     assert!(
         frames.iter().any(|(et, _)| et == "metadata"),
         "binary output contains the eventstream metadata frame"
@@ -739,7 +739,7 @@ fn test_bedrock_ingress_ir_usage_carries_real_tokens() {
 /// must NOT warn (regression proof: `extra` is never cleared on that path).
 #[test]
 fn gemini_cached_content_warns_naming_truncation_and_billing() {
-    use busbar_substrate_values::testkit::warn_capture::WarnCapture;
+    use busbar_kernel::test_support::warn_capture::WarnCapture;
     use tracing_subscriber::layer::SubscriberExt as _;
 
     let body = serde_json::json!({
@@ -753,7 +753,7 @@ fn gemini_cached_content_warns_naming_truncation_and_billing() {
         "cachedContent must ride extra (unmodeled key)"
     );
 
-    let prep = busbar_substrate_values::ir::egress_prep::EgressPrep {
+    let prep = busbar_contract::ir::egress_prep::EgressPrep {
         thought_signature_fill: false,
         ingress_protocol: "gemini",
         egress_requires_max_tokens: false,

@@ -6,7 +6,7 @@
 //! tests-in-their-own-file convention.
 
 use super::*;
-use busbar_api::{PlaneRecord, PlaneSelector, StoreResult};
+use busbar_contract::records::{PlaneRecord, PlaneSelector, RecordStoreResult};
 
 // The LEGACY v1 (pipe-join) GENESIS event and its successor, frozen — typed `TaskEventRow` JSON
 // bodies EXACTLY as a pre-fix deployment persisted them: no `digest_version` field, so serde
@@ -28,16 +28,20 @@ const A2A_V2_TAIL_HASH: &str = "c77eb9be8b1da1f46888ba29c137914b17c91ec0303c61bd
 /// A read-only store returning exactly the one working task and its two frozen events.
 struct FrozenStore;
 impl PlaneStore for FrozenStore {
-    fn upsert_plane_record(&self, _r: &PlaneRecord) -> StoreResult<()> {
+    fn upsert_plane_record(&self, _r: &PlaneRecord) -> RecordStoreResult<()> {
         Ok(())
     }
-    fn get_plane_record(&self, _k: &str, _i: &str) -> StoreResult<Option<Vec<u8>>> {
+    fn get_plane_record(&self, _k: &str, _i: &str) -> RecordStoreResult<Option<Vec<u8>>> {
         Ok(None)
     }
-    fn append_plane_record(&self, _r: &PlaneRecord) -> StoreResult<()> {
+    fn append_plane_record(&self, _r: &PlaneRecord) -> RecordStoreResult<()> {
         Ok(())
     }
-    fn list_plane_records(&self, kind: &str, sel: &PlaneSelector) -> StoreResult<Vec<Vec<u8>>> {
+    fn list_plane_records(
+        &self,
+        kind: &str,
+        sel: &PlaneSelector,
+    ) -> RecordStoreResult<Vec<Vec<u8>>> {
         Ok(match (kind, sel) {
             (KIND_TASK, PlaneSelector::All) => {
                 let row = TaskRow {
@@ -60,19 +64,19 @@ impl PlaneStore for FrozenStore {
             _ => Vec::new(),
         })
     }
-    fn list_plane_record_parents(&self, _k: &str) -> StoreResult<Vec<String>> {
+    fn list_plane_record_parents(&self, _k: &str) -> RecordStoreResult<Vec<String>> {
         Ok(Vec::new())
     }
-    fn purge_plane_records_before(&self, _k: &str, _b: u64) -> StoreResult<u64> {
+    fn purge_plane_records_before(&self, _k: &str, _b: u64) -> RecordStoreResult<u64> {
         Ok(0)
     }
-    fn delete_plane_record(&self, _k: &str, _i: &str) -> StoreResult<()> {
+    fn delete_plane_record(&self, _k: &str, _i: &str) -> RecordStoreResult<()> {
         Ok(())
     }
-    fn redeem_plane_token(&self, _k: &str, _t: &str, _e: u64, _n: u64) -> StoreResult<bool> {
+    fn redeem_plane_token(&self, _k: &str, _t: &str, _e: u64, _n: u64) -> RecordStoreResult<bool> {
         Ok(false)
     }
-    fn plane_token_live(&self, _k: &str, _t: &str, _e: u64, _n: u64) -> StoreResult<bool> {
+    fn plane_token_live(&self, _k: &str, _t: &str, _e: u64, _n: u64) -> RecordStoreResult<bool> {
         Ok(false)
     }
 }
@@ -209,16 +213,20 @@ fn a_boot_restore_of_the_frozen_chain_reports_no_tamper() {
 /// tolerance fix a single decode `Err` `?`-aborted the entire rehydrate.
 struct PartlyUnreadableStore;
 impl PlaneStore for PartlyUnreadableStore {
-    fn upsert_plane_record(&self, _r: &PlaneRecord) -> StoreResult<()> {
+    fn upsert_plane_record(&self, _r: &PlaneRecord) -> RecordStoreResult<()> {
         Ok(())
     }
-    fn get_plane_record(&self, _k: &str, _i: &str) -> StoreResult<Option<Vec<u8>>> {
+    fn get_plane_record(&self, _k: &str, _i: &str) -> RecordStoreResult<Option<Vec<u8>>> {
         Ok(None)
     }
-    fn append_plane_record(&self, _r: &PlaneRecord) -> StoreResult<()> {
+    fn append_plane_record(&self, _r: &PlaneRecord) -> RecordStoreResult<()> {
         Ok(())
     }
-    fn list_plane_records(&self, kind: &str, sel: &PlaneSelector) -> StoreResult<Vec<Vec<u8>>> {
+    fn list_plane_records(
+        &self,
+        kind: &str,
+        sel: &PlaneSelector,
+    ) -> RecordStoreResult<Vec<Vec<u8>>> {
         Ok(match (kind, sel) {
             (KIND_TASK, PlaneSelector::All) => {
                 let good = TaskRow {
@@ -247,19 +255,19 @@ impl PlaneStore for PartlyUnreadableStore {
             _ => Vec::new(),
         })
     }
-    fn list_plane_record_parents(&self, _k: &str) -> StoreResult<Vec<String>> {
+    fn list_plane_record_parents(&self, _k: &str) -> RecordStoreResult<Vec<String>> {
         Ok(Vec::new())
     }
-    fn purge_plane_records_before(&self, _k: &str, _b: u64) -> StoreResult<u64> {
+    fn purge_plane_records_before(&self, _k: &str, _b: u64) -> RecordStoreResult<u64> {
         Ok(0)
     }
-    fn delete_plane_record(&self, _k: &str, _i: &str) -> StoreResult<()> {
+    fn delete_plane_record(&self, _k: &str, _i: &str) -> RecordStoreResult<()> {
         Ok(())
     }
-    fn redeem_plane_token(&self, _k: &str, _t: &str, _e: u64, _n: u64) -> StoreResult<bool> {
+    fn redeem_plane_token(&self, _k: &str, _t: &str, _e: u64, _n: u64) -> RecordStoreResult<bool> {
         Ok(false)
     }
-    fn plane_token_live(&self, _k: &str, _t: &str, _e: u64, _n: u64) -> StoreResult<bool> {
+    fn plane_token_live(&self, _k: &str, _t: &str, _e: u64, _n: u64) -> RecordStoreResult<bool> {
         Ok(false)
     }
 }

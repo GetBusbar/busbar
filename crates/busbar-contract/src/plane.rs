@@ -382,6 +382,54 @@ pub struct PlaneDeclaration {
     /// family in the reserved `busbar_` namespace only when it is one the host lets a plane carry
     /// (see [`check_metric_families`]). `&[]` for a plane that emits none.
     pub metric_families: &'static [MetricFamily],
+    /// The operation classes this plane serves ONE LEVEL DOWN — to another plane's unit that states
+    /// only the class it needs ([`crate::dest::DestinationFacts::NestedPlane`]) — each with the name
+    /// the plane is called by where a refusal names it. The host answers a nested destination with
+    /// the plane that declares the class here ([`plane_serving`]); at most one plane declares a class
+    /// ([`check_served_op_classes`]). `&[]` for a plane no other plane reaches.
+    pub served_op_classes: &'static [ServedOpClass],
+}
+
+/// One operation class a plane serves one level down, and the plane's DECLARED display name — the
+/// words a refusal that names the class's server reads, so the requesting plane spells no plane.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ServedOpClass {
+    /// The operation class served.
+    pub op: OpClassId,
+    /// The display name the serving plane is called by in operator- and caller-visible text.
+    pub name: &'static str,
+}
+
+/// THE HOST'S ANSWER to a nested destination: the registered plane that declares it serves `op`,
+/// as its key and its declared row. `None` when no registered plane declares the class — linked or
+/// dropped in, both reach the host as one declaration — and a requesting plane refuses then.
+pub fn plane_serving<'a>(
+    op: OpClassId,
+    decls: impl IntoIterator<Item = &'a PlaneDeclaration>,
+) -> Option<(&'static str, ServedOpClass)> {
+    decls.into_iter().find_map(|d| {
+        let served = d.served_op_classes.iter().find(|s| s.op == op)?;
+        Some((d.key, *served))
+    })
+}
+
+/// THE ONE-SERVER GUARD over a set of declarations' [`PlaneDeclaration::served_op_classes`]: `Ok(())`
+/// when no operation class is declared by two planes (or twice by one), else the first refusal.
+/// A class two planes serve would make the answer to a nested destination a matter of fold order.
+pub fn check_served_op_classes(decls: &[&PlaneDeclaration]) -> Result<(), String> {
+    let mut seen: std::collections::BTreeMap<OpClassId, &str> = std::collections::BTreeMap::new();
+    for decl in decls {
+        for s in decl.served_op_classes {
+            if let Some(other) = seen.insert(s.op, decl.key) {
+                return Err(format!(
+                    "plane `{}` declares it serves operation class `{}`, which plane `{other}` \
+                     serves too: a nested destination names a class, and one class has one server",
+                    decl.key, s.op
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// One metric family a plane declares it emits: its series name, its kind and its label keys, in
@@ -538,3 +586,7 @@ pub fn check_owned_config_claims(
 #[cfg(test)]
 #[path = "tests/metric_family_tests.rs"]
 mod metric_family_tests;
+
+#[cfg(test)]
+#[path = "tests/served_op_class_tests.rs"]
+mod served_op_class_tests;

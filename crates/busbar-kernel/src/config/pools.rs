@@ -20,7 +20,7 @@ pub struct PoolCfg {
     /// the `pools:`-level default. Moved here (out of the retired `auth.upstream_credentials:`) in
     /// 1.5.3: whose credential reaches the upstream is a routing property of the pool, not of the
     /// inbound auth chain.
-    pub upstream_credentials: Option<busbar_api::UpstreamCreds>,
+    pub upstream_credentials: Option<busbar_contract::config::UpstreamCreds>,
     /// Per-pool breaker settings (resolved into `store::BreakerCfg` at startup; drives trip
     /// thresholds and cooldown backoff for this pool's lanes).
     pub breaker: Option<BreakerCfg>,
@@ -121,7 +121,7 @@ impl<'de> Deserialize<'de> for PoolCfg {
             hooks: Option<Vec<String>>,
             /// Per-pool override of the all-pools `pools.upstream_credentials:` default.
             #[serde(default)]
-            upstream_credentials: Option<busbar_api::UpstreamCreds>,
+            upstream_credentials: Option<busbar_contract::config::UpstreamCreds>,
             /// NEUTRAL 1.6.0 routing knobs. See [`PoolCfg`].
             #[serde(default)]
             weights: std::collections::BTreeMap<String, u32>,

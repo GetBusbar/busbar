@@ -107,11 +107,24 @@ both ends:
 
 | row | features | clippy and tests |
 | --- | --- | --- |
-| `single plane llm` | `busbar/proto-llm` | `-p busbar --tests --no-default-features` |
-| `single plane mcp` | `busbar/plane-mcp` | `-p busbar --tests --no-default-features` |
-| `single plane a2a` | `busbar/plane-a2a` | `-p busbar --tests --no-default-features` |
-| `single plane voice` | `busbar/plane-voice` | `-p busbar --tests --no-default-features` |
-| `single plane decision` | `busbar/plane-decision` | `-p busbar --tests --no-default-features` |
+| `single plane llm` | `busbar/proto-llm,busbar/transport-tcp,busbar/export-prometheus,busbar/export-file,busbar/export-webhook` | `-p busbar --tests --no-default-features` |
+| `single plane mcp` | `busbar/plane-mcp,busbar/transport-tcp,busbar/export-prometheus,busbar/export-file,busbar/export-webhook` | `-p busbar --tests --no-default-features` |
+| `single plane a2a` | `busbar/plane-a2a,busbar/transport-tcp,busbar/export-prometheus,busbar/export-file,busbar/export-webhook` | `-p busbar --tests --no-default-features` |
+| `single plane voice` | `busbar/plane-voice,busbar/transport-tcp,busbar/export-prometheus,busbar/export-file,busbar/export-webhook` | `-p busbar --tests --no-default-features` |
+| `single plane decision` | `busbar/plane-decision,busbar/transport-tcp,busbar/export-prometheus,busbar/export-file,busbar/export-webhook` | `-p busbar --tests --no-default-features` |
+
+Every single-plane row also turns on `busbar/transport-tcp`. The rows vary planes, not wires, and
+the tcp wire is the floor of a bootable node. A build without `transport-tcp` boots only with a
+dropped-in tcp; without one it refuses at the seal ("transport `tls` composes over `tcp`, which no
+registered transport provides"). The integration suites that spawn the binary therefore need the
+wire linked to test anything past that refusal. The no-tcp boot itself, with and without the
+dropped-in wire, is tested by `crates/busbar/tests/transport_dropped_in_serves.rs`.
+
+The same holds for the default export sinks: every single-plane row also turns on
+`busbar/export-prometheus`, `busbar/export-file` and `busbar/export-webhook`. They are default-on and
+are not planes. Without them, a build refuses any config naming one of their modules as an unknown
+exporter. The suites that configure `module: prometheus` would then test that refusal, not the
+behaviour they are written for.
 
 A row with `scope: package` runs its clippy step over its `tests:` selectors (plus `--all-targets`)
 instead of `--workspace`: `--no-default-features` over the workspace would be a different build of

@@ -11,7 +11,7 @@ A plugin is a plugin: store, secret, auth, and hook plugins share ONE artifact f
 loader, and ONE inventory (`busbar --list-plugins`). The manifest `kind` field is the only
 discriminator; it selects which C ABI the cdylib exports and which engine subsystem consumes it.
 The engine itself never sees any of this machinery. It receives a `dyn Store` (or a `dyn SecretModule` /
-`dyn AuthModule` / `dyn HookHandler`) trait object through the `busbar-api` contract, exactly as if
+`dyn AuthModule` / `dyn HookHandler`) trait object through the `busbar-contract` contract, exactly as if
 the backend had been compiled in. The engine cannot tell a dynamic plugin from a built-in, and the
 crate boundaries enforce it: all plugin discovery, unpacking, verification, and loading lives in
 the `plugin-*` crates, and the engine crate keeps `#![forbid(unsafe_code)]` with every FFI
@@ -167,7 +167,7 @@ read it, and referencing a plugin store (`store.module: valkey`) fails boot with
 ## Building a store plugin
 
 The kind-specific sections below carry the auth, secret, and hook build examples. A store plugin in
-Rust is small. Implement the `busbar_api::Store` trait (or wrap an existing
+Rust is small. Implement the `busbar_contract::records::RecordStore` trait (or wrap an existing
 implementation), adapt the JSON config Busbar passes at open, and let the SDK emit the C glue:
 
 ```rust
@@ -175,13 +175,13 @@ implementation), adapt the JSON config Busbar passes at open, and let the SDK em
 //   [lib]
 //   crate-type = ["cdylib"]
 //   [dependencies]
-//   busbar-api = { .. }
+//   busbar-contract = { .. }
 //   busbar-plugin-sdk = { .. }
 //   serde_json = "1"
 
-use busbar_api::Store;
+use busbar_contract::records::RecordStore;
 
-fn open(cfg: &str) -> Result<Box<dyn Store>, String> {
+fn open(cfg: &str) -> Result<Box<dyn RecordStore>, String> {
     // `cfg` is the store's own `settings` map, passed through verbatim as JSON.
     let v: serde_json::Value = serde_json::from_str(cfg).map_err(|e| e.to_string())?;
     let url = v.get("url").and_then(|x| x.as_str()).ok_or("missing url")?;
@@ -215,7 +215,7 @@ form, `{ module: <secret-plugin>, settings: {...} }`, so a reference resolves fr
 secrets backend (a vault, a cloud secret manager) through the same signed-plugin trust pipeline.
 This is the plugin you reach for when key material must never sit in an env var or an on-disk file.
 
-A secret plugin implements `busbar_api::SecretModule` (`resolve(&self, settings: &Map<String,
+A secret plugin implements `busbar_contract::secret::SecretModule` (`resolve(&self, settings: &Map<String,
 Value>) -> SecretResult<Vec<u8>>`). Note it is `settings`, not a single `key`. `resolve` is
 STATELESS per call: one module instance serves every reference naming it, each carrying its own
 `settings` map (the `{ module: vault, settings: {...} }` shape above), not a value baked in at
@@ -225,16 +225,16 @@ overlay. Only the reference is persisted. An unresolvable reference is a fatal b
 error naming the reference.
 
 ```rust
-// crate-type = ["cdylib"]; deps: busbar-api, busbar-plugin-sdk, serde_json
-use busbar_api::{SecretError, SecretModule, SecretResult};
+// crate-type = ["cdylib"]; deps: busbar-contract, busbar-plugin-sdk, serde_json
+use busbar_contract::secret::{SecretModule, SecretModuleError, SecretResult};
 
 struct MyVault { /* connection state built once at `open` */ }
 
 impl SecretModule for MyVault {
     fn resolve(&self, settings: &serde_json::Map<String, serde_json::Value>) -> SecretResult<Vec<u8>> {
         let path = settings.get("path").and_then(|v| v.as_str())
-            .ok_or_else(|| SecretError("missing `path` in secret reference settings".to_string()))?;
-        self.fetch(path).map_err(|e| SecretError(e.to_string()))
+            .ok_or_else(|| SecretModuleError::invalid("missing `path` in secret reference settings"))?;
+        self.fetch(path).map_err(|e| SecretModuleError::internal(e.to_string()))
     }
 }
 
@@ -295,27 +295,27 @@ surface as a distinct, specific error, never collapsed into a generic failure.
 ## Auth plugins (`kind: auth`)
 
 A `kind: auth` plugin is a first-class **identity provider**: it implements the same
-`busbar_api::AuthModule` trait the built-in modules do (`name()` + `authenticate()` returning
+`busbar_contract::auth::AuthModule` trait the built-in modules do (`name()` + `authenticate()` returning
 `Identify(principal)` / `Reject` / `Pass`), and the engine loads it **in-process** at boot over the
 signed hybrid ABI, exactly like a store or secret plugin, same trust posture, same loader. It runs
 in the data-plane **`auth.chain`**: name it there and the engine resolves it against the plugins
 directory, loads it, and boxes it into the chain.
 
 ```rust
-// crate-type = ["cdylib"]; deps: busbar-api, busbar-plugin-sdk, serde_json
-use busbar_api::{AuthModule, AuthOutcome, Principal};
+// crate-type = ["cdylib"]; deps: busbar-contract, busbar-plugin-sdk, serde_json
+use busbar_contract::auth::{AuthModule, AuthVerdict, Principal};
 
 struct MyIdp { /* … */ }
 impl AuthModule for MyIdp {
     fn name(&self) -> &'static str { "myidp" }             // the RUNTIME module identity
-    fn authenticate(&self, candidate: Option<&str>) -> AuthOutcome {
+    fn authenticate(&self, candidate: Option<&str>) -> AuthVerdict {
         match verify(candidate) {
             Some((id, groups)) => {
                 let mut p = Principal::from_id(id);
                 p.roles = groups;                            // roles/groups the IdP asserts
-                AuthOutcome::Identify(p)
+                AuthVerdict::Identify(p)
             }
-            None => AuthOutcome::Pass,                        // not my credential, so defer
+            None => AuthVerdict::Pass,                        // not my credential, so defer
         }
     }
     fn cacheable(&self) -> bool { true }                     // per-call I/O ⇒ opt into the cred cache

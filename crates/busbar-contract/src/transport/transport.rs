@@ -25,7 +25,7 @@
 //!
 //! ## WHY IT IS A TOP-LEVEL MODULE, BESIDE `operation.rs`
 //!
-//! An axis of the matrix is not owned by any cell of it. `Operation` sits at `operation.rs` for the
+//! An axis of the matrix is not owned by any cell of it. `OpVerb` sits at `operation.rs` for the
 //! same reason, and the two files should be read as a pair: both are coarse, closed tags whose whole
 //! value is that adding a variant is a compile error at every site that must now decide something.
 //! Putting `Transport` under `proto/` would make it a protocol's property (it is not — that is the
@@ -237,9 +237,10 @@ impl Transport {
         Transport::WebSocket,
     ];
 
-    /// Stable identifier — a bounded metric/tracing label, exactly like [`Operation::name`]. It is
-    /// the label that says WHICH LEG a request arrived on, which is what makes a per-transport
-    /// conformance number readable from busbar's own telemetry now that a second transport is armed.
+    /// Stable identifier — a bounded metric/tracing label, exactly like
+    /// [`OpVerb::name`](crate::operation::OpVerb::name). It is the label that says WHICH LEG a
+    /// request arrived on, which is what makes a per-transport conformance number readable from
+    /// busbar's own telemetry now that a second transport is armed.
     ///
     /// The three A2A legs answer their PLANE'S wire-format names, read from the same three constants
     /// `Plane::A2a.wire_format_names()` is built from, rather than from strings spelled again here.

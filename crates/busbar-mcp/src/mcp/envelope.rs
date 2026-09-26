@@ -356,8 +356,8 @@ pub(crate) async fn rpc(ctx: busbar_kernel::plane_routes::PlaneReqCtx) -> Respon
 #[allow(clippy::too_many_arguments)]
 pub(in crate::mcp) async fn rpc_dispatch(
     engine_host: &std::sync::Arc<dyn busbar_kernel::plane_host::EngineHost>,
-    gov: &busbar_api::PlaneRequestCtx,
-    principal: &busbar_api::AuthPrincipal,
+    gov: &busbar_contract::records::PlaneRequestCtx,
+    principal: &busbar_contract::auth::AuthPrincipal,
     headers: &HeaderMap,
     value: serde_json::Value,
     id: serde_json::Value,

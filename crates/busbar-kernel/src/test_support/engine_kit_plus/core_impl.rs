@@ -13,7 +13,7 @@
 use super::{AppBuilder, EngineAppPlus, EngineTestKitPlus, NamedMapSectionFacts, TestAppKitPlus};
 use crate::test_support::engine_kit::CoreEngineKit;
 use crate::test_support::TestApp;
-use busbar_api::SecretResolve;
+use busbar_contract::secret::SecretResolve;
 use busbar_kernel::plane::PlaneAdmission;
 use busbar_plugin::cold::endpoint::RouteAuth;
 use std::sync::Arc;

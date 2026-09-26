@@ -17,6 +17,17 @@ crate-type = ["rlib", "cdylib"]
 # runtime and stream plumbing it actually needs: no plane, no kernel crate, no capability crate, and
 # not the crate that defines the HOT lane either — `src/hot.rs` restates the published layout it
 # implements (#84: a layout, not a crate).
+[features]
+# THE DROPPED-IN DOOR'S SYMBOLS (`hot::exports`: `busbar_abi`, `busbar_plugin_kind`,
+# `busbar_transport_decl`), OFF in every build that links this crate. One rustc invocation emits the
+# `rlib` and the `cdylib` from the same objects, so a `#[no_mangle]` symbol defined here is in the
+# linked `rlib` too — and the composition root links this crate beside the SDK-built plugins, whose
+# `busbar_abi` / `busbar_plugin_kind` the SDK defines. Two strong definitions of one name are a
+# refused link under the release profile's fat LTO ("Linking globals named 'busbar_abi': symbol
+# multiply defined!" → "failed to load bitcode of module busbar_transport_tcp"). The dropped-in
+# artifact is built on its own: `cargo build -p busbar-transport-tcp --release --features dropped-in`.
+dropped-in = []
+
 [dependencies]
 tokio-util = { workspace = true }
 busbar-contract = { path = "../busbar-contract" }

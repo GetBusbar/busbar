@@ -148,9 +148,9 @@ pub fn fetch_plugins(
             }
         }
 
-        // Durable write via the single owner (busbar_api::durable): temp -> fsync -> atomic rename ->
+        // Durable write via the single owner (busbar_kernel_wal::durable): temp -> fsync -> atomic rename ->
         // parent fsync; no partial or wrong file ever appears at the target.
-        match busbar_api::durable::write(&dir.join(&spec.filename), &bytes)
+        match busbar_kernel_wal::durable::write(&dir.join(&spec.filename), &bytes)
             .map_err(|e| e.to_string())
         {
             Ok(()) => outcomes.push(FetchOutcome::Fetched {

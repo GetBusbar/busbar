@@ -13,15 +13,14 @@
 //! crate's own; core nets it at its root). Byte-identical to the pre-move definitions — path prefixes
 //! only.
 
-use http::StatusCode;
-// The protocol registry runtime relocated DOWN to `busbar_substrate_values::proto` (the reverse-edge rule):
-// this crate resolves `decl_for` / `ProtocolDecl` through the neutral ABI, not back into `busbar-core`.
+use busbar_contract::http::StatusCode;
+// A dialect fact this crate looks up by name is read off the plane's OWN declaration table
+// (`crate::decl_of`, Law 5); the declaration shape itself is the contract's.
 /// A lane's request-shape capabilities, handed to [`ProtocolWriter::write_request_for_lane`].
-pub use busbar_substrate_values::ir::egress_prep::{LaneCaps, MaxOutputKey};
-use busbar_substrate_values::proto as registry;
-use busbar_substrate_values::proto::{ArrayStreamFramer, DialectCodec, IrError};
+pub use busbar_contract::ir::egress_prep::{LaneCaps, MaxOutputKey};
+use busbar_contract::protocol::{ArrayStreamFramer, DialectCodec, IrError};
 
-// The six dialect NAMES, plane-local (no longer `busbar_substrate_values::proto::PROTO_*` — that was a backwards
+// The six dialect NAMES, plane-local (no longer the host's `proto::PROTO_*` — that was a backwards
 // reach into core). File-local `const`s so a bare `PROTO_ANTHROPIC` resolves identically in BOTH
 // compile shapes (this plugin standalone, and `#[path]`-netted into `core::proto`), and reads as a
 // const pattern in the `protocol_for` match below. The values are the interned dialect names.
@@ -33,15 +32,15 @@ pub const PROTO_COHERE: &str = "cohere";
 pub const PROTO_RESPONSES: &str = "responses";
 
 use crate::ir::IrStreamEvent;
-#[cfg(any(test, feature = "test-support"))]
-use busbar_substrate_values::breaker::CanonicalSignal;
+#[cfg(test)]
+use busbar_contract::upstream::CanonicalSignal;
 
 /// THE TOP-LEVEL body keys the six LLM chat dialects point-read on the pre-materialized path: `model`
 /// (ingress model resolution + the pristine model-rewrite check), `stream` (chat's `wants_stream`),
 /// `stream_options` (the OpenAI streaming-usage opt-in, read without forcing a DOM) and `system`
 /// (chat's body affinity key). Declared ONCE here and referenced by all six `ProtocolDecl`s rather
 /// than spelled six times: they are one shared fact about the chat body shape. RELOCATED out of
-/// `busbar_substrate_values::proto::LLM_HEAD_KEYS` — this is LLM vocabulary and belongs to the LLM plugin; core
+/// the host's `proto::LLM_HEAD_KEYS` — this is LLM vocabulary and belongs to the LLM plugin; core
 /// unions whatever `head_keys` each registered decl declares and names none. Reached by the dialects
 /// as a bare name through their `use super::proto_codec::*` (which resolves in both compile shapes).
 pub const LLM_CHAT_HEAD_KEYS: &[&str] = &["model", "stream", "stream_options", "system"];
@@ -68,25 +67,19 @@ pub trait ProtocolReader: Send + Sync {
         &self,
         status: StatusCode,
         body: &[u8],
-    ) -> busbar_substrate_values::breaker::RawUpstreamError;
+    ) -> busbar_contract::upstream::RawUpstreamError;
 
     /// Classify a response into a canonical signal in one call (convenience over
     /// `extract_error` + `normalize_raw_error`). The release path runs those two stages explicitly
     /// (so it can apply the lane's `error_map`); this all-in-one form has no production caller and
     /// exists solely to back the per-protocol classification unit tests, so it is compiled only
-    /// under test builds (`test`, and `test-support` so an extracted dialect crate's own test
-    /// build — whose busbar-core dependency is not itself under `cfg(test)` — sees the same trait
-    /// member its classification tests drive) and kept out of the 1.0 binary.
-    /// DEFAULT provided (the two release-path stages with an empty `error_map`) so a dialect
-    /// whose own `classify` override is test-gated still satisfies the trait when it is compiled
-    /// as a production dependency inside a build where core's `test-support` feature happens to be
-    /// unified on.
-    #[cfg(any(test, feature = "test-support"))]
+    /// into this crate's own test build (#83a SD-3: dev-only — the operator `error_map` classifier it
+    /// runs is the host's, reached through [`crate::test_host`]) and kept out of every shipped and
+    /// dependent build. DEFAULT provided (the two release-path stages with an
+    /// empty `error_map`) for a dialect that does not override it.
+    #[cfg(test)]
     fn classify(&self, status: StatusCode, body: &[u8]) -> CanonicalSignal {
-        busbar_substrate_values::breaker::normalize_raw_error(
-            &self.extract_error(status, body),
-            &std::collections::HashMap::new(),
-        )
+        crate::test_host::classify_with_no_error_map(&self.extract_error(status, body))
     }
 
     /// Read an IR request from wire JSON.
@@ -96,13 +89,13 @@ pub trait ProtocolReader: Send + Sync {
     /// slice is NOT a well-formed document (its opening structure — or a string it cut through — is
     /// gone), so the normal full-document parse reliably fails on it; instead isolate the
     /// self-contained trailing `usage` object and map THIS dialect's fields onto the neutral
-    /// [`busbar_substrate_values::billing::TokenUsage`]. Returns `None` for a dialect/tail without a recognizable usage
+    /// [`busbar_contract::billing::TokenUsage`]. Returns `None` for a dialect/tail without a recognizable usage
     /// object (the caller treats that as "bill zero, counted+warned"). Defaulted to `None` so a
     /// non-LLM dialect need not implement it.
     fn recover_truncated_usage(
         &self,
         _tail: &[u8],
-    ) -> Option<busbar_substrate_values::billing::TokenUsage> {
+    ) -> Option<busbar_contract::billing::TokenUsage> {
         None
     }
 
@@ -208,9 +201,9 @@ pub trait ProtocolWriter: Send + Sync {
     }
 
     // Outbound auth moved OFF the protocol writer (protocol is post-auth): a lane's credential is
-    // resolved by `busbar_substrate_values::egress_auth` and called via `lane.credential.headers_for`. Per-scheme logic
-    // lives in `pub(crate)` free fns (`bearer_auth_headers`, `anthropic::anthropic_auth_headers`,
-    // `bedrock::sigv4_sign_headers`).
+    // presented by the host's egress-auth unit under the scheme each dialect DECLARES
+    // (`ProtocolDecl::egress_scheme`, #83a S2-a); the one dialect still carrying a builder declares
+    // it (`anthropic::anthropic_auth_headers`).
 
     /// Rewrites the model field in the request body, returning whether the body actually CHANGED.
     ///
@@ -401,7 +394,7 @@ pub trait ProtocolWriter: Send + Sync {
     /// `response` object the SDK's stream decoder locates via `event.response`, NOT the top-level
     /// `{"error":...}` HTTP body), so a native SDK on a stream must receive THIS shape.
     ///
-    /// This is the NEUTRAL seam for [`busbar_substrate_values::proxy::wire`]'s mid-stream error framer: core frames the
+    /// This is the NEUTRAL seam for the host proxy's `wire` mid-stream error framer: core frames the
     /// returned pair without naming any concrete stream-event type, so the concrete `IrStreamEvent`
     /// need not exist in core at all. Every SSE-framed writer overrides this to reproduce, byte for
     /// byte, what its `write_response_event` produces for an error event.
@@ -455,7 +448,7 @@ pub trait ProtocolWriter: Send + Sync {
     /// branching on the protocol name, so the main/degraded/auth/route error paths cannot drift.
     fn attach_error_response_headers(
         &self,
-        _headers: &mut http::HeaderMap,
+        _headers: &mut busbar_contract::http::HeaderMap,
         _kind: &str,
         _envelope: &serde_json::Value,
     ) {
@@ -509,7 +502,7 @@ pub trait ProtocolWriter: Send + Sync {
     /// whenever one is installed.
     fn same_protocol_buffered_response_translator(
         &self,
-    ) -> Option<Box<dyn busbar_substrate_values::proto::StreamTranslator>> {
+    ) -> Option<Box<dyn busbar_contract::protocol::StreamTranslator>> {
         None
     }
 
@@ -546,7 +539,7 @@ pub trait ProtocolWriter: Send + Sync {
     fn probe_body(&self, model: &str) -> Vec<u8> {
         let mut body = self.probe_request();
         let _ = self.rewrite_model_if_needed(&mut body, model);
-        busbar_substrate_values::json::to_vec(&body).unwrap_or_default()
+        crate::json::to_vec(&body).unwrap_or_default()
     }
 
     /// Build the per-stream framing state for THIS protocol as an INGRESS (client-facing) writer.
@@ -829,10 +822,10 @@ impl Protocol {
         R: ProtocolReader + 'static,
         W: ProtocolWriter + 'static,
     {
-        // Every `Protocol::<dialect>()` fixture constructor funnels through here; ensure this plugin's
-        // declarations are in the shared test registry before its reader/writer resolve any fact
-        // through `decl_for` (see `crate::ensure_test_protocols_registered`). Once-guarded, prod-free.
-        #[cfg(any(test, feature = "test-support"))]
+        // Every `Protocol::<dialect>()` fixture constructor funnels through here; in this crate's own
+        // test build, register the plane with the host test seam first, so a fixture sees the host
+        // services a shipped binary has (see `crate::ensure_test_protocols_registered`). Once-guarded.
+        #[cfg(test)]
         crate::ensure_test_protocols_registered();
         Self {
             name,
@@ -857,10 +850,11 @@ impl Protocol {
 
     /// This protocol's DECLARATION — the promoted constant facts (`ProtocolDecl`) core now reads by
     /// FIELD rather than through the writer vtable (G6 step A1). Always `Some` for a registered codec
-    /// protocol (every `Protocol` resolves from a declaration); the `Option` mirrors [`decl_for`]'s
-    /// signature so a caller holding a `Protocol` reads a fact exactly as a by-name caller does.
-    pub fn decl(&self) -> Option<&'static registry::ProtocolDecl> {
-        registry::registry().decl(self.name)
+    /// protocol (every `Protocol` resolves from a declaration); the `Option` mirrors
+    /// [`crate::decl_of`]'s signature so a caller holding a `Protocol` reads a fact exactly as a
+    /// by-name caller does.
+    pub fn decl(&self) -> Option<&'static busbar_contract::protocol::ProtocolDecl> {
+        crate::decl_of(self.name)
     }
 
     /// Returns the reader for this protocol.
@@ -935,7 +929,7 @@ impl Protocol {
 
 /// BUILD this protocol's wire CODEC, by name — a `Protocol` INSTANCE, for the paths that translate.
 ///
-/// The name resolution is the registry's ([`registry::decl_for`], which allocates nothing); what
+/// The name resolution reads the plane's own table ([`crate::decl_of`], which allocates nothing); what
 /// still allocates here, and must, is the codec itself: a fresh instance is REQUIRED per resolution
 /// because `GeminiWriter`, `CohereWriter` and `ResponsesWriter` carry per-STREAM mutable state
 /// (`Mutex<Vec<…>>`, `AtomicU64`) and must not be shared across concurrent requests. Callers that
@@ -949,10 +943,10 @@ impl Protocol {
 ///
 /// `None` for a name no protocol declares, and for a protocol that declares no codec (MCP).
 pub fn protocol_for(name: &str) -> Option<Protocol> {
-    // The codec-resolution entry both the fixture suites and `StreamTranslate::new` reach first;
-    // ensure this plugin's declarations are in the shared test registry so the resolved reader/writer
-    // find their protocol facts (see `crate::ensure_test_protocols_registered`). Once-guarded, prod-free.
-    #[cfg(any(test, feature = "test-support"))]
+    // The codec-resolution entry both the fixture suites and `StreamTranslate::new` reach first; in
+    // this crate's own test build, register the plane with the host test seam first (see
+    // `crate::ensure_test_protocols_registered`). Once-guarded.
+    #[cfg(test)]
     crate::ensure_test_protocols_registered();
     // Post-A4b the `ProtocolDecl.codec` field is the NEUTRAL `DialectCodec` factory (core names no
     // `Protocol`), so the name→codec map lives here in the plugin that owns the six dialects. A fresh
@@ -1059,13 +1053,13 @@ pub fn protocol_error(
     name: &str,
     status: u16,
     body: &[u8],
-) -> busbar_substrate_values::breaker::RawUpstreamError {
+) -> busbar_contract::upstream::RawUpstreamError {
     match protocol_for(name) {
         Some(p) => p.reader().extract_error(
             StatusCode::from_u16(status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
             body,
         ),
-        None => busbar_substrate_values::breaker::RawUpstreamError::from_status(status),
+        None => busbar_contract::upstream::RawUpstreamError::from_status(status),
     }
 }
 
@@ -1095,10 +1089,7 @@ impl DialectCodec for DialectRef {
         })
         .unwrap_or(false)
     }
-    fn recover_truncated_usage(
-        &self,
-        tail: &[u8],
-    ) -> Option<busbar_substrate_values::billing::TokenUsage> {
+    fn recover_truncated_usage(&self, tail: &[u8]) -> Option<busbar_contract::billing::TokenUsage> {
         with_reader(self.0, |r| r.recover_truncated_usage(tail)).flatten()
     }
     fn ingress_response_request_id(
@@ -1130,7 +1121,7 @@ impl DialectCodec for DialectRef {
     }
     fn attach_error_response_headers(
         &self,
-        headers: &mut http::HeaderMap,
+        headers: &mut busbar_contract::http::HeaderMap,
         kind: &str,
         envelope: &serde_json::Value,
     ) {
@@ -1142,14 +1133,14 @@ impl DialectCodec for DialectRef {
         &self,
         status: u16,
         body: &[u8],
-    ) -> busbar_substrate_values::breaker::RawUpstreamError {
+    ) -> busbar_contract::upstream::RawUpstreamError {
         with_reader(self.0, |r| {
             r.extract_error(
                 StatusCode::from_u16(status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
                 body,
             )
         })
-        .unwrap_or_else(|| busbar_substrate_values::breaker::RawUpstreamError::from_status(status))
+        .unwrap_or_else(|| busbar_contract::upstream::RawUpstreamError::from_status(status))
     }
     fn make_array_stream_framer(&self) -> Option<Box<dyn ArrayStreamFramer>> {
         with_writer(self.0, |w| w.make_array_stream_framer()).flatten()
@@ -1172,14 +1163,7 @@ impl DialectCodec for DialectRef {
 /// correct no-op. DECLARED by each protocol; this was the last `match` on a protocol name left in
 /// `proto/mod.rs` after `protocol_for` became a lookup.
 pub fn native_tool_id_prefix(protocol_name: &str) -> Option<&'static str> {
-    // The tool-id remap reads this straight off the registry; ensure this plugin's declarations are
-    // registered so a test that drives a remap without first constructing a `Protocol` still resolves
-    // the prefix (see `crate::ensure_test_protocols_registered`). Once-guarded, prod-free.
-    #[cfg(any(test, feature = "test-support"))]
-    crate::ensure_test_protocols_registered();
-    registry::registry()
-        .decl(protocol_name)
-        .and_then(|d| d.native_tool_id_prefix)
+    crate::decl_of(protocol_name).and_then(|d| d.native_tool_id_prefix)
 }
 
 /// Marker segment embedded in a busbar-minted tool id so the reverse (request) translation can tell a
@@ -1236,7 +1220,10 @@ impl ToolIdRemap {
         if let Some(existing) = self.map.get(egress_id) {
             return existing.clone();
         }
-        let native = format!("{prefix}{TOOL_ID_REMAP_MARKER}{}", hex::encode(egress_id));
+        let native = format!(
+            "{prefix}{TOOL_ID_REMAP_MARKER}{}",
+            crate::hex::encode(egress_id)
+        );
         // Bounded retention. The encode above is a pure, deterministic function of
         // (ingress prefix, egress id), so the map is a memo, NOT a correctness crutch: past the cap
         // the SAME native id is returned, just not remembered, and `decode_native_tool_id` still
@@ -1320,7 +1307,7 @@ pub fn decode_native_tool_id(ingress_protocol: &str, id: &str) -> Option<String>
         return None;
     }
     // A valid busbar id has an even-length lowercase-hex tail; reject anything else so a genuine
-    // client id that merely happens to start with `<prefix>bb1` is not mangled. `hex::decode` itself
+    // client id that merely happens to start with `<prefix>bb1` is not mangled. `crate::hex::decode` itself
     // accepts UPPERCASE hex, but `native_for` only ever emits lowercase, so an uppercase (or mixed)
     // tail can only come from a client-authored id — guard it out BEFORE decoding, else a client id
     // of shape `<prefix>bb1<even-UPPERCASE-hex>` that happens to decode to valid UTF-8 would be
@@ -1331,7 +1318,7 @@ pub fn decode_native_tool_id(ingress_protocol: &str, id: &str) -> Option<String>
     {
         return None;
     }
-    let bytes = hex::decode(hexpart).ok()?;
+    let bytes = crate::hex::decode(hexpart)?;
     String::from_utf8(bytes).ok()
 }
 

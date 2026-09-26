@@ -281,7 +281,7 @@ pub(crate) fn reframe_bridge(
     hash_cap: usize,
     suffix_buf: *mut u8,
     suffix_cap: usize,
-    native: impl FnOnce(&str, &[u8]) -> busbar_api::StoreResult<PlaneJournalRecord>,
+    native: impl FnOnce(&str, &[u8]) -> busbar_contract::records::RecordStoreResult<PlaneJournalRecord>,
 ) -> StatusClass {
     if out.is_null() {
         return StatusClass::Refused;
@@ -379,7 +379,7 @@ fn call_reframe(
     framing: Framing,
     scope: &str,
     body: &[u8],
-) -> busbar_api::StoreResult<PlaneJournalRecord> {
+) -> busbar_contract::records::RecordStoreResult<PlaneJournalRecord> {
     let mut prev = vec![0u8; 128];
     let mut hash = vec![0u8; 128];
     let mut suffix = vec![0u8; 512];
@@ -424,7 +424,7 @@ fn call_reframe(
                     || (o.hash_len > hash.len())
                     || (o.suffix_len > suffix.len());
                 if !grew {
-                    return Err(busbar_api::StoreError(
+                    return Err(busbar_contract::records::RecordStoreError(
                         "journal reframe refused without a larger-buffer request".to_string(),
                     ));
                 }
@@ -439,7 +439,7 @@ fn call_reframe(
                 }
             }
             other => {
-                return Err(busbar_api::StoreError(format!(
+                return Err(busbar_contract::records::RecordStoreError(format!(
                     "journal reframe failed: {other:?}"
                 )))
             }
@@ -530,21 +530,21 @@ pub(crate) fn journal_append_scoped_full(
     kind_id: u32,
     scope: &str,
     content: &[u8],
-) -> Result<(u64, String, String), busbar_api::StoreError> {
+) -> Result<(u64, String, String), busbar_contract::records::RecordStoreError> {
     catch_unwind(AssertUnwindSafe(|| {
         // SAFETY: recovery invariant (see `super::recover`).
         let Some(_state) = (unsafe { recover(host) }) else {
-            return Err(busbar_api::StoreError(
+            return Err(busbar_contract::records::RecordStoreError(
                 "host handle is stale (its dispatch generation is no longer live)".to_string(),
             ));
         };
         let Some(h) = stream_handle(kind_id) else {
-            return Err(busbar_api::StoreError(
+            return Err(busbar_contract::records::RecordStoreError(
                 "journal stream is not registered".to_string(),
             ));
         };
         if scope.is_empty() {
-            return Err(busbar_api::StoreError(
+            return Err(busbar_contract::records::RecordStoreError(
                 "journal scope must be a non-empty key".to_string(),
             ));
         }
@@ -565,7 +565,7 @@ pub(crate) fn journal_append_scoped_full(
         }
     }))
     .unwrap_or_else(|_| {
-        Err(busbar_api::StoreError(
+        Err(busbar_contract::records::RecordStoreError(
             "journal append panicked".to_string(),
         ))
     })
@@ -584,15 +584,15 @@ pub(crate) fn journal_append_scoped_full_hostless(
     kind_id: u32,
     scope: &str,
     content: &[u8],
-) -> Result<(u64, String, String), busbar_api::StoreError> {
+) -> Result<(u64, String, String), busbar_contract::records::RecordStoreError> {
     catch_unwind(AssertUnwindSafe(|| {
         let Some(h) = stream_handle(kind_id) else {
-            return Err(busbar_api::StoreError(
+            return Err(busbar_contract::records::RecordStoreError(
                 "journal stream is not registered".to_string(),
             ));
         };
         if scope.is_empty() {
-            return Err(busbar_api::StoreError(
+            return Err(busbar_contract::records::RecordStoreError(
                 "journal scope must be a non-empty key".to_string(),
             ));
         }
@@ -617,7 +617,7 @@ pub(crate) fn journal_append_scoped_full_hostless(
         }
     }))
     .unwrap_or_else(|_| {
-        Err(busbar_api::StoreError(
+        Err(busbar_contract::records::RecordStoreError(
             "journal append panicked".to_string(),
         ))
     })

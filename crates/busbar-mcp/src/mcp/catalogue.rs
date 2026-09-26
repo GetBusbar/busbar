@@ -354,7 +354,7 @@ pub(crate) struct UpstreamPosture {
     /// Whether this upstream may live on a private / loopback address. Fail-closed default.
     pub(crate) allow_private: bool,
     /// `own` (busbar's own credential) or `passthrough` (the caller's). Absent ⇒ `own`.
-    pub(crate) credentials: Option<busbar_api::UpstreamCreds>,
+    pub(crate) credentials: Option<busbar_contract::config::UpstreamCreds>,
     /// The RFC 8693 exchange, if the operator configured one. Absent ⇒ no credential is sent.
     pub(crate) token_exchange: Option<super::config::TokenExchangeCfg>,
     /// The RFC 8707 resource indicator — `tools.<server>.aud`. The exchanged token is bound to it.
@@ -812,7 +812,7 @@ impl Catalogue {
     /// under, and the pair is what [`Catalogue::revalidate`] is handed later.
     pub(crate) fn resolve(
         &self,
-        principal: Option<&busbar_api::VirtualKey>,
+        principal: Option<&busbar_contract::records::VirtualKey>,
         live: LiveSightings<'_>,
         namespaced_name: &str,
         generation: busbar_kernel::trust::validate::Generations,
@@ -926,7 +926,7 @@ impl Catalogue {
     /// rather than on the next one.
     pub(crate) fn revalidate(
         &self,
-        principal: Option<&busbar_api::VirtualKey>,
+        principal: Option<&busbar_contract::records::VirtualKey>,
         sightings: LiveSightings<'_>,
         selected: &ToolEntry,
         selected_generation: u64,
@@ -962,7 +962,7 @@ impl Catalogue {
 impl Catalogue {
     pub(crate) fn resolve_now(
         &self,
-        principal: Option<&busbar_api::VirtualKey>,
+        principal: Option<&busbar_contract::records::VirtualKey>,
         live: LiveSightings<'_>,
         namespaced_name: &str,
     ) -> Result<&ToolEntry, DispatchRefusal> {
@@ -977,7 +977,7 @@ impl Catalogue {
 
     pub(crate) fn revalidate_now(
         &self,
-        principal: Option<&busbar_api::VirtualKey>,
+        principal: Option<&busbar_contract::records::VirtualKey>,
         sightings: LiveSightings<'_>,
         selected: &ToolEntry,
         selected_generation: u64,
