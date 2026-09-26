@@ -626,7 +626,7 @@ plane_probe_body() {
 # the SUBJECT boot must not carry. Space-separated; empty for a plane the fixture does not configure.
 # This is the same fail-closed pairing the product enforces at resolve: the section exists only while
 # the plane that owns it is compiled in.
-plane_config_sections() { case "$1" in mcp) echo "mcp" ;; a2a) echo "agents" ;; *) echo "" ;; esac; }
+plane_config_sections() { case "$1" in mcp) echo "mcp" ;; a2a) echo "agents" ;; voice) echo "streams" ;; *) echo "" ;; esac; }
 # section_omitted <section> <omit-list> → 0 when <section> is in the space-separated <omit-list>.
 section_omitted() { case " ${2:-} " in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
 
@@ -681,6 +681,11 @@ write_boot_config() {
     open)
       section_omitted agents "$omit" || \
         printf 'agents:\n  probe:\n    url: https://remote-agent.example.com/a2a\n    pin:\n      mechanism: unpinned\n' >>"$f"
+      # THE STREAMING PLANE'S OWN SECTION. Under Law 7 a plane with no config section mounts
+      # nothing, so without `streams:` the control boot never mounted the realtime routes and the
+      # voice probe read 404 with the plane compiled in: a positive control that could not pass.
+      section_omitted streams "$omit" || \
+        printf 'streams:\n  context_window_tokens: 16384\n' >>"$f"
       ;;
   esac
 }
