@@ -270,6 +270,27 @@ pub fn compose_from_config(cfg: &RootCfg) -> Option<Compose> {
     }))
 }
 
+/// THIS PLANE'S `compose` ENTRY ([`crate::linked`]): compose the node's open-call table onto the
+/// served door, then capture the provider off the deployment's catalog ([`compose_from_config`]).
+///
+/// The table is the plane's own ([`crate::governed`]): nothing configuration decides is in it — it is
+/// empty at boot and its whole contents are what the sessions this node serves have opened since —
+/// so it is composed here, on the boot slot every linked plane's compose step runs in, before any
+/// listener binds. From then on every session the served door opens is a governed one.
+pub fn compose_plane(cfg: &RootCfg) -> Option<Compose> {
+    compose_node_calls();
+    compose_from_config(cfg)
+}
+
+/// COMPOSE the node's open-call table onto the served door: one [`crate::governed::OpenToolCalls`]
+/// behind the port the session runtime reaches it through. Set once — a second compose is a no-op
+/// rather than a silent swap of the table live sessions are already keyed into.
+pub fn compose_node_calls() -> bool {
+    install_governed_calls(Arc::new(crate::governed::NodeCalls::new(Arc::new(
+        crate::governed::OpenToolCalls::new(),
+    ))))
+}
+
 /// The composed Gemini Live provider endpoint, or `None` when the composition root composed none.
 pub(crate) fn composed_gemini_provider() -> Option<&'static ProviderEndpoint> {
     COMPOSED_PROVIDER_GEMINI.get()
@@ -289,19 +310,17 @@ pub fn composed_gemini_provider_base_url() -> Option<&'static str> {
 
 // ── THE NODE'S OPEN-CALL TABLE, AS A SERVED SESSION REACHES IT ───────────────────────────────────
 //
-// The runtime declares the port (`crate::runtime::GovernedCalls`) and a composition root implements
-// it over its own node. Between the two there was nothing: the port existed, an implementor existed,
-// and no served session was ever handed one — so the whole tool-moat wait was reachable from a test
-// and from nowhere on a socket. This is the missing half, and it is composed exactly the way this
-// plane's provider credentials are: set-once, process-wide, written by the root after its own
-// configuration resolves and read by every session opened thereafter.
+// The runtime declares the port (`crate::runtime::GovernedCalls`) and the node's table implements it
+// (`crate::governed`). Between the two, this is what hands a served session the table: composed
+// exactly the way this plane's provider credentials are — set-once, process-wide, written at boot by
+// this plane's own `compose` step ([`compose_plane`]) and read by every session opened thereafter.
 
 /// THE COMPOSED OPEN-CALL TABLE — the node's own, as the served path is allowed to see it.
 ///
 /// SET-ONCE, first writer wins, exactly like [`COMPOSED_PROVIDER`]: a second compose is a no-op
 /// rather than a silent swap of the table one half of this node's live sessions are already keyed
-/// into. `None` is a deployment with no composition root behind it (the plane mounted without the
-/// root's own switch), and that deployment keeps the pre-1.6.0 behaviour exactly.
+/// into. `None` is a node whose compose step never ran (a harness that mounts the plane's routes
+/// alone): every tool call is served in-process there, exactly as before the governed wait existed.
 static COMPOSED_GOVERNED_CALLS: std::sync::OnceLock<Arc<dyn crate::runtime::GovernedCalls>> =
     std::sync::OnceLock::new();
 
@@ -313,11 +332,10 @@ static COMPOSED_GOVERNED_CALLS: std::sync::OnceLock<Arc<dyn crate::runtime::Gove
 /// which a counter is and a hash of a client-supplied `call_id` is not.
 static NEXT_SERVED_SESSION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
-/// COMPOSE the node's open-call table — the composition root's one write of the governed-call port.
+/// COMPOSE a table behind the served door — the one write of the governed-call port.
 ///
 /// Returns `false` when a table was already composed (the first write stands). Nothing here learns
-/// what is behind the port: the root holds the node, the units and the deadlines, and what crosses is
-/// the two questions [`crate::runtime::GovernedCalls`] declares.
+/// what is behind the port: what crosses is what [`crate::runtime::GovernedCalls`] declares.
 pub fn install_governed_calls(calls: Arc<dyn crate::runtime::GovernedCalls>) -> bool {
     COMPOSED_GOVERNED_CALLS.set(calls).is_ok()
 }

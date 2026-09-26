@@ -241,6 +241,8 @@ where
         drop(carrier);
         // A turn the call ended in the middle of was served all the same: its counts are ledgered now.
         core.settle_open_turn();
+        // And every call it still had open is over with it.
+        core.forget_governed_calls();
         drop(core);
         let _ = up_drain.await;
         let _ = down_drain.await;

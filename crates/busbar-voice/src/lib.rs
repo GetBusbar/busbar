@@ -69,9 +69,7 @@ pub use diagnostics::DIAGNOSTICS;
 pub mod linked {
     /// The WS-accept axis and the provider-composition axis.
     #[cfg(feature = "runtime")]
-    pub use crate::mount::{
-        compose_from_config as compose, install_arrivals as install_ws_arrivals,
-    };
+    pub use crate::mount::{compose_plane as compose, install_arrivals as install_ws_arrivals};
     /// The diagnostics axis.
     pub use crate::DIAGNOSTICS;
     /// The plane axis: the contract declaration, joined kernel-side to the behaviour table.
@@ -85,6 +83,11 @@ pub mod linked {
 // default (HARD RULE 4), not because the code is incomplete.
 #[cfg(feature = "runtime")]
 pub mod runtime;
+
+/// THE NODE'S OPEN-CALL TABLE — the client-served tool calls this node's sessions are waiting on,
+/// and the port the session runtime reaches it through; composed by this plane's own `compose` step.
+#[cfg(feature = "runtime")]
+pub mod governed;
 #[cfg(feature = "runtime")]
 pub mod topology;
 

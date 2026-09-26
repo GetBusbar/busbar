@@ -490,6 +490,15 @@ where
         }
     }
 
+    /// **The session is over, so is every call it had open.** Tell the node's table, once, so the
+    /// waits a conversation that has ended can no longer answer leave it now rather than at their
+    /// deadlines. Nothing to tell on an ungoverned session.
+    pub fn forget_governed_calls(&self) {
+        if let Some(g) = &self.governed {
+            g.calls.closed(g.session);
+        }
+    }
+
     /// **The session is over.** A turn still open when the carrier ends — the caller hung up, a
     /// barge-in was never answered, the ceiling cut it — was served all the same: its counts go to
     /// the ledger with the session rather than with nobody.
@@ -571,6 +580,7 @@ pub async fn serve_to_teardown<C, F, N>(
 {
     serve_with_sweep(Arc::clone(&core), pump).await;
     core.settle_open_turn();
+    core.forget_governed_calls();
     handle.finish(now());
 }
 
