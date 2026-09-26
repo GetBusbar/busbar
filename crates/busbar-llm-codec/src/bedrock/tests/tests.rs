@@ -50,77 +50,52 @@ fn synth_response_id() -> String {
 
 #[test]
 fn test_bedrock_sigv4_sign_request_structure() {
-    // SigV4 header assembly + scope/region derivation. (The signing crypto itself is
-    // verified against AWS's published vector in sigv4::tests.)
-    let canonical = busbar_kernel::sigv4::uri_encode_path("/model/anthropic.claude:0/converse");
-    let ctx = busbar_contract::protocol::SigningContext {
-        host: "bedrock-runtime.us-east-1.amazonaws.com",
-        canonical_uri: &canonical,
-        body: br#"{"messages":[]}"#,
-        timestamp_epoch: 1_440_938_160, // 20150830T123600Z
-        upstream_creds: busbar_contract::config::UpstreamCreds::Own,
+    // #83a S2-a: the dialect DECLARES its SigV4 scheme and the host signs under it — service
+    // `bedrock`, a `POST` over `application/json`, the region derived from the endpoint host. The
+    // signed bytes (the `AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/20150830/us-east-1/bedrock/
+    // aws4_request` scope, the signed header set, `x-amz-date`, no security token without one) are
+    // pinned in the host's suite over the shared fixture `testing/plane-copies/declared-credentials.json`.
+    let Some(busbar_contract::protocol::EgressScheme::SigV4 {
+        service,
+        region_of_host,
+        default_region,
+        content_type,
+    }) = super::DECL.egress_scheme
+    else {
+        panic!("the signing dialect declares a SigV4 scheme");
     };
-    let headers = crate::presented_auth_headers("bedrock", "AKIDEXAMPLE:SECRETKEY", &ctx);
-
-    let get = |name: &str| {
-        headers
-            .iter()
-            .find(|(k, _)| k.as_str() == name)
-            .map(|(_, v)| v.to_str().unwrap().to_string())
-    };
-    let auth = get("authorization").expect("authorization header");
-    assert!(
-        auth.starts_with(
-            // golden wire-contract literal (kept bare on purpose)
-            "AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/20150830/us-east-1/bedrock/aws4_request, "
-        ),
-        "scope/region derived from host; got: {auth}"
+    assert_eq!(service, "bedrock");
+    assert_eq!(content_type, "application/json");
+    assert_eq!(default_region, "us-east-1");
+    assert_eq!(
+        region_of_host("bedrock-runtime.us-east-1.amazonaws.com"),
+        Some("us-east-1"),
+        "scope/region derived from host"
     );
-    // golden wire-contract literal (kept bare on purpose)
-    assert!(auth.contains("SignedHeaders=content-type;host;x-amz-content-sha256;x-amz-date"));
-    assert!(auth.contains("Signature="));
-    assert_eq!(get("x-amz-date").as_deref(), Some("20150830T123600Z")); // golden wire-contract literal (kept bare on purpose)
-    assert!(get("x-amz-content-sha256").is_some()); // golden wire-contract literal (kept bare on purpose)
-                                                    // No session token configured → no security-token header.
-    assert!(get("x-amz-security-token").is_none()); // golden wire-contract literal (kept bare on purpose)
+    assert!(
+        super::DECL.egress_auth_headers.is_none(),
+        "the plane holds no signer"
+    );
 }
 
 #[test]
 fn test_bedrock_sigv4_session_token() {
-    let ctx = busbar_contract::protocol::SigningContext {
-        host: "bedrock-runtime.eu-west-1.amazonaws.com",
-        canonical_uri: "/model/m/converse",
-        body: b"{}",
-        timestamp_epoch: 1_440_938_160,
-        upstream_creds: busbar_contract::config::UpstreamCreds::Own,
+    // The session token is carried and signed by the host (pinned in its suite); the region the
+    // signature is scoped to is this dialect's declared answer for the host.
+    let Some(busbar_contract::protocol::EgressScheme::SigV4 {
+        service,
+        region_of_host,
+        default_region,
+        content_type,
+    }) = super::DECL.egress_scheme
+    else {
+        panic!("the signing dialect declares a SigV4 scheme");
     };
-    let headers = crate::presented_auth_headers("bedrock", "AKID:SECRET:SESSIONTOKEN", &ctx);
-    let tok = headers
-        .iter()
-        .find(|(k, _)| k.as_str() == "x-amz-security-token") // golden wire-contract literal (kept bare on purpose)
-        .map(|(_, v)| v.to_str().unwrap().to_string());
-    assert_eq!(tok.as_deref(), Some("SESSIONTOKEN"));
-    // region parsed from the eu-west-1 host + token in the signed set.
-    let auth = headers
-        .iter()
-        .find(|(k, _)| k.as_str() == "authorization")
-        .map(|(_, v)| v.to_str().unwrap().to_string())
-        .unwrap();
-    assert!(auth.contains("/eu-west-1/bedrock/aws4_request")); // golden wire-contract literal (kept bare on purpose)
-    assert!(auth.contains("x-amz-security-token")); // golden wire-contract literal (kept bare on purpose)
-}
-
-#[test]
-fn test_bedrock_sigv4_misconfigured_key_no_signature() {
-    // A key without ACCESS:SECRET shape yields no headers (AWS will 403 → surfaced as auth).
-    let ctx = busbar_contract::protocol::SigningContext {
-        host: "bedrock-runtime.us-east-1.amazonaws.com",
-        canonical_uri: "/model/m/converse",
-        body: b"{}",
-        timestamp_epoch: 1_440_938_160,
-        upstream_creds: busbar_contract::config::UpstreamCreds::Own,
-    };
-    assert!(crate::presented_auth_headers("bedrock", "not-a-valid-key", &ctx).is_empty());
+    let _ = (service, default_region, content_type);
+    assert_eq!(
+        region_of_host("bedrock-runtime.eu-west-1.amazonaws.com"),
+        Some("eu-west-1")
+    );
 }
 
 fn bedrock_rich_fixture() -> serde_json::Value {
@@ -695,43 +670,6 @@ fn test_write_response_event() {
 }
 
 // --- 1.0 hardening regression tests --------------------------------------------------------
-
-/// Regression: a malformed lane credential (access key id containing a control char that
-/// `HeaderValue::from_str` rejects) must NOT panic the request-handling task. It takes the
-/// same graceful path as a structurally-misconfigured key: an empty header set, so the
-/// request goes out unsigned and AWS surfaces a 403 auth error instead of aborting the task.
-#[test]
-fn test_bedrock_sigv4_control_char_in_access_key_no_panic() {
-    let ctx = busbar_contract::protocol::SigningContext {
-        host: "bedrock-runtime.us-east-1.amazonaws.com",
-        canonical_uri: "/model/m/converse",
-        body: b"{}",
-        timestamp_epoch: 1_440_938_160,
-        upstream_creds: busbar_contract::config::UpstreamCreds::Own,
-    };
-    // CR/LF embedded in the access key id → invalid Authorization header value
-    // (HeaderValue::from_str rejects ASCII control chars, including CR/LF). This is the
-    // header-injection / misconfiguration vector this guards.
-    let headers = crate::presented_auth_headers("bedrock", "AKID\r\nINJECT:SECRET", &ctx);
-    assert!(
-        headers.is_empty(),
-        "control-char access key must yield no headers (graceful), not panic; got: {headers:?}"
-    );
-
-    // A bare NUL / control byte is likewise rejected gracefully rather than panicking.
-    let headers2 = crate::presented_auth_headers("bedrock", "AKID\u{0001}X:SECRET", &ctx);
-    assert!(
-        headers2.is_empty(),
-        "control-char access key must yield no headers; got: {headers2:?}"
-    );
-
-    // Sanity: a well-formed key still produces the full signed header set.
-    let ok = crate::presented_auth_headers("bedrock", "AKIDEXAMPLE:SECRETKEY", &ctx);
-    assert!(
-        ok.iter().any(|(k, _)| k.as_str() == "authorization"),
-        "valid key still signs"
-    );
-}
 
 /// Regression: `extract_error` must read the machine-readable error type from the AWS `__type`
 /// field (used by the breaker's error_map for fine-grained routing), keeping the
@@ -1874,56 +1812,6 @@ fn test_stream_unrecognized_start_does_not_open_text() {
             }
         )),
         "an empty `start: {{}}` must still open a Text block; got {evs2:?}"
-    );
-}
-
-/// A session (STS) token containing a byte `HeaderValue` rejects (control
-/// char / >= 0x80) must NOT produce a request signed over `x-amz-security-token` with the header
-/// absent (which AWS rejects with SignatureDoesNotMatch). The signed set and the wire set are
-/// gated by the same up-front validation, so an un-encodable token bails to the graceful
-/// empty-header path (unsigned request → AWS 403 as auth) — no panic, no divergence.
-#[test]
-fn test_bedrock_sigv4_unencodable_session_token_bails_gracefully() {
-    let ctx = busbar_contract::protocol::SigningContext {
-        host: "bedrock-runtime.us-east-1.amazonaws.com",
-        canonical_uri: "/model/m/converse",
-        body: b"{}",
-        timestamp_epoch: 1_440_938_160,
-        upstream_creds: busbar_contract::config::UpstreamCreds::Own,
-    };
-    // Session token with an embedded control char → un-encodable HeaderValue.
-    let headers = crate::presented_auth_headers("bedrock", "AKID:SECRET:TOK\r\nEN", &ctx);
-    assert!(
-        headers.is_empty(),
-        "un-encodable session token must yield no headers (graceful), not a signed-but-absent \
-             token header; got {headers:?}"
-    );
-    // A bare control byte (e.g. NUL / U+0001) likewise bails — `HeaderValue::from_str` rejects
-    // ASCII control characters, the same vector as the misconfigured access-key path.
-    let headers2 = crate::presented_auth_headers("bedrock", "AKID:SECRET:TOK\u{0001}EN", &ctx);
-    assert!(
-        headers2.is_empty(),
-        "control-byte token must bail; got {headers2:?}"
-    );
-
-    // Sanity: a clean token still signs AND emits the token header, and the signed set commits
-    // to it (so the two never diverge in the success case either).
-    let ok = crate::presented_auth_headers("bedrock", "AKID:SECRET:CLEANTOKEN", &ctx);
-    let auth = ok
-        .iter()
-        .find(|(k, _)| k.as_str() == "authorization")
-        .map(|(_, v)| v.to_str().unwrap().to_string())
-        .expect("authorization header");
-    assert!(
-        auth.contains("x-amz-security-token"), // golden wire-contract literal (kept bare on purpose)
-        "clean token must be in the signed header set"
-    );
-    assert!(
-        ok.iter().any(
-            |(k, v)| k.as_str() == "x-amz-security-token" // golden wire-contract literal (kept bare on purpose)
-                && v.to_str().unwrap() == "CLEANTOKEN"
-        ),
-        "clean token must be emitted on the wire; got {ok:?}"
     );
 }
 
@@ -3252,26 +3140,28 @@ fn test_derive_sigv4_region_shapes() {
 /// here we assert the derived scope region in the Authorization header.
 #[test]
 fn test_bedrock_sigv4_fips_host_derives_correct_region() {
-    let ctx = busbar_contract::protocol::SigningContext {
-        host: "bedrock-runtime-fips.eu-west-1.amazonaws.com",
-        canonical_uri: "/model/m/converse",
-        body: b"{}",
-        timestamp_epoch: 1_440_938_160,
-        upstream_creds: busbar_contract::config::UpstreamCreds::Own,
+    // A FIPS host in a non-us-east-1 region signs for THAT region's scope: the declared region
+    // function answers it, so the host never falls back to the default.
+    let Some(busbar_contract::protocol::EgressScheme::SigV4 {
+        service,
+        region_of_host,
+        default_region,
+        content_type,
+    }) = super::DECL.egress_scheme
+    else {
+        panic!("the signing dialect declares a SigV4 scheme");
     };
-    let headers = crate::presented_auth_headers("bedrock", "AKID:SECRET", &ctx);
-    let auth = headers
-        .iter()
-        .find(|(k, _)| k.as_str() == "authorization")
-        .map(|(_, v)| v.to_str().unwrap().to_string())
-        .expect("authorization header");
-    assert!(
-        auth.contains("/eu-west-1/bedrock/aws4_request"), // golden wire-contract literal (kept bare on purpose)
-        "FIPS host must derive eu-west-1 scope, not the us-east-1 default; got: {auth}"
+    let _ = (service, content_type);
+    let region = region_of_host("bedrock-runtime-fips.eu-west-1.amazonaws.com");
+    assert_eq!(
+        region,
+        Some("eu-west-1"),
+        "FIPS host must derive eu-west-1 scope"
     );
-    assert!(
-        !auth.contains("/us-east-1/"),
-        "must NOT silently fall back to us-east-1 for a derivable FIPS host; got: {auth}"
+    assert_ne!(
+        region,
+        Some(default_region),
+        "must NOT fall back to the us-east-1 default"
     );
 }
 
@@ -3280,23 +3170,20 @@ fn test_bedrock_sigv4_fips_host_derives_correct_region() {
 /// operator-visible signal, asserted indirectly via the resulting scope.
 #[test]
 fn test_bedrock_sigv4_undecodable_host_falls_back_to_us_east_1() {
-    let ctx = busbar_contract::protocol::SigningContext {
-        host: "my-cname-front.example.com",
-        canonical_uri: "/model/m/converse",
-        body: b"{}",
-        timestamp_epoch: 1_440_938_160,
-        upstream_creds: busbar_contract::config::UpstreamCreds::Own,
+    // A non-derivable host names no region, so the host signs for the declared `us-east-1`
+    // default (signing still proceeds); the operator WARN comes from the declared region function.
+    let Some(busbar_contract::protocol::EgressScheme::SigV4 {
+        service,
+        region_of_host,
+        default_region,
+        content_type,
+    }) = super::DECL.egress_scheme
+    else {
+        panic!("the signing dialect declares a SigV4 scheme");
     };
-    let headers = crate::presented_auth_headers("bedrock", "AKID:SECRET", &ctx);
-    let auth = headers
-        .iter()
-        .find(|(k, _)| k.as_str() == "authorization")
-        .map(|(_, v)| v.to_str().unwrap().to_string())
-        .expect("authorization header");
-    assert!(
-        auth.contains("/us-east-1/bedrock/aws4_request"), // golden wire-contract literal (kept bare on purpose)
-        "non-derivable host falls back to the us-east-1 default scope; got: {auth}"
-    );
+    let _ = (service, content_type);
+    assert_eq!(region_of_host("my-cname-front.example.com"), None);
+    assert_eq!(default_region, "us-east-1");
 }
 
 /// A `metadata` frame that lacks a `usage` key
@@ -5467,7 +5354,7 @@ fn test_bedrock_tool_choice_specific_tool() {
 /// least diagnosable.
 #[test]
 fn bedrock_specific_tool_choice_warns_it_is_claude_only() {
-    use busbar_kernel::test_support::warn_capture::WarnCapture;
+    use crate::warn_capture::WarnCapture;
     use tracing_subscriber::layer::SubscriberExt as _;
 
     let req = tool_choice_req(Some(crate::ir::IrToolChoice::Tool {

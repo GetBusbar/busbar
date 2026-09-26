@@ -1524,7 +1524,7 @@ fn read_request_preserves_sampling_params_in_extra() {
 /// even OpenAI->OpenAI same-lane.
 #[test]
 fn unknown_reasoning_effort_survives_in_extra() {
-    use busbar_kernel::test_support::warn_capture::WarnCapture;
+    use crate::warn_capture::WarnCapture;
     use tracing_subscriber::layer::SubscriberExt as _;
 
     let body = serde_json::json!({
@@ -3947,44 +3947,56 @@ fn max_tokens_above_u32_max_is_rejected_not_truncated() {
 // --- auth_headers: invalid credential bytes fall back to an empty value without panic, and a
 //     valid key produces the expected single `authorization: Bearer` header.
 
-fn header_value(
-    headers: &[(
-        busbar_contract::http::HeaderName,
-        busbar_contract::http::HeaderValue,
-    )],
-    name: &str,
-) -> Option<String> {
-    headers
-        .iter()
-        .find(|(n, _)| n.as_str() == name)
-        .map(|(_, v)| v.to_str().unwrap_or_default().to_string())
-}
-
 #[test]
 fn auth_headers_valid_key_emits_bearer_authorization() {
-    let headers =
-        crate::presented_auth_headers("openai", "sk-openai-good-key", &crate::test_signing_ctx());
+    // #83a S2-a: the dialect DECLARES its credential scheme and the host presents it — a plain
+    // `authorization: Bearer <key>` for every credential and mode. The bytes the host writes for a
+    // valid key, and the omission of a key whose bytes no header value may carry, are pinned in the
+    // host's suite over the shared fixture `testing/plane-copies/declared-credentials.json`.
+    let Some(busbar_contract::protocol::EgressScheme::Static {
+        families,
+        own,
+        passthrough,
+    }) = crate::openai_chat::DECL.egress_scheme
+    else {
+        panic!("openai declares a static credential scheme");
+    };
+    assert!(families.is_empty());
+    assert_eq!(own, busbar_contract::protocol::CredentialHeader::Bearer);
     assert_eq!(
-        header_value(&headers, "authorization").as_deref(),
-        Some("Bearer sk-openai-good-key")
+        passthrough,
+        busbar_contract::protocol::CredentialHeader::Bearer
     );
-    assert_eq!(headers.len(), 1, "openai auth emits a single header");
+    assert!(
+        crate::openai_chat::DECL.egress_auth_headers.is_none(),
+        "no credential passes through the plane"
+    );
 }
 
 #[test]
 fn auth_headers_invalid_key_omits_header_no_panic() {
-    // A key whose bytes are invalid for an HTTP header value (an embedded newline). The writer
-    // must not panic; under the warn+OMIT policy (`proto::bearer_auth_headers`) it now OMITS the
-    // header entirely (empty Vec) rather than emitting an empty `authorization` value — the empty
-    // value was both a syntactically invalid header and a fingerprinting tell. A warn line (not
-    // asserted here) tells the operator the lane credential bytes are invalid.
-    let headers =
-        crate::presented_auth_headers("openai", "sk-openai-bad\nkey", &crate::test_signing_ctx());
-    assert!(
-        header_value(&headers, "authorization").is_none(),
-        "invalid key must OMIT the authorization header, not emit an empty value"
+    // #83a S2-a: the dialect DECLARES its credential scheme and the host presents it — a plain
+    // `authorization: Bearer <key>` for every credential and mode. The bytes the host writes for a
+    // valid key, and the omission of a key whose bytes no header value may carry, are pinned in the
+    // host's suite over the shared fixture `testing/plane-copies/declared-credentials.json`.
+    let Some(busbar_contract::protocol::EgressScheme::Static {
+        families,
+        own,
+        passthrough,
+    }) = crate::openai_chat::DECL.egress_scheme
+    else {
+        panic!("openai declares a static credential scheme");
+    };
+    assert!(families.is_empty());
+    assert_eq!(own, busbar_contract::protocol::CredentialHeader::Bearer);
+    assert_eq!(
+        passthrough,
+        busbar_contract::protocol::CredentialHeader::Bearer
     );
-    assert!(headers.is_empty(), "no headers emitted on a bad key");
+    assert!(
+        crate::openai_chat::DECL.egress_auth_headers.is_none(),
+        "no credential passes through the plane"
+    );
 }
 
 // --- tool_choice is a first-class IR control; it must round-trip, not degrade to auto ---
@@ -5363,7 +5375,7 @@ fn write_response_omits_annotations_when_there_are_no_citations() {
 /// adding e.g. `"original"`) is dropped, and that drop warns rather than vanishing.
 #[test]
 fn image_detail_is_carried_and_only_an_unknown_word_warns() {
-    use busbar_kernel::test_support::warn_capture::WarnCapture;
+    use crate::warn_capture::WarnCapture;
     use tracing_subscriber::layer::SubscriberExt as _;
 
     let body = |detail: &str| {
@@ -5633,7 +5645,7 @@ fn response_blank_tool_call_id_is_synthesized() {
 // response has no thinking output field. That drop must be OBSERVABLE (a `warn!`), not silent.
 #[test]
 fn openai_write_drops_thinking_observably() {
-    use busbar_kernel::test_support::warn_capture::WarnCapture;
+    use crate::warn_capture::WarnCapture;
     use tracing_subscriber::layer::SubscriberExt as _;
 
     let resp = crate::ir::IrResponse {
@@ -5718,7 +5730,7 @@ fn response_object_tool_arguments_preserved() {
 // dropped — but OBSERVABLY (a `warn!`), not silently.
 #[test]
 fn response_array_content_image_drop_warns() {
-    use busbar_kernel::test_support::warn_capture::WarnCapture;
+    use crate::warn_capture::WarnCapture;
     use tracing_subscriber::layer::SubscriberExt as _;
 
     let body = serde_json::json!({

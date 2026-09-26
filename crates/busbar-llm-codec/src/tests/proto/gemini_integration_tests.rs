@@ -33,25 +33,20 @@ fn test_gemini_registered_in_builtins() {
     // asserts the helper echoes its argument: the header name was the test's input, and the Gemini
     // protocol was never consulted. If Gemini regressed to `Authorization: Bearer`, every upstream
     // call 401s and that form stayed green.
-    crate::ensure_test_protocols_registered();
-    // Since #83a S2-a the declaration states the scheme as data and the host presents it.
+    // Since #83a S2-a the declaration states the scheme as DATA and the host presents it: the raw
+    // key in `x-goog-api-key` for every mode, no Bearer (the host's presented bytes are pinned in its
+    // suite over `testing/plane-copies/declared-credentials.json`).
     let decl = decl_for("gemini").expect("gemini declares itself");
-    assert!(decl.egress_scheme.is_some());
-    let ctx = busbar_contract::protocol::SigningContext {
-        host: "generativelanguage.googleapis.com",
-        canonical_uri: "/v1beta/models/m:generateContent",
-        body: b"{}",
-        timestamp_epoch: 1_752_000_000,
-        upstream_creds: busbar_contract::config::UpstreamCreds::Own,
+    let raw = busbar_contract::protocol::CredentialHeader::Raw {
+        header: "x-goog-api-key",
+        trim_start: false,
     };
-    let headers = crate::presented_auth_headers("gemini", "k", &ctx);
-    let named: Vec<(&str, &str)> = headers
-        .iter()
-        .map(|(n, v)| (n.as_str(), v.to_str().expect("ascii header value")))
-        .collect();
-    assert_eq!(
-        named,
-        vec![("x-goog-api-key", "k")],
-        "gemini's declared egress auth is the raw key in x-goog-api-key — no Bearer, no extra headers"
+    assert!(
+        matches!(
+            decl.egress_scheme,
+            Some(busbar_contract::protocol::EgressScheme::Static { families: [], own, passthrough })
+                if own == raw && passthrough == raw
+        ),
+        "gemini's declared egress auth is the raw key in x-goog-api-key — no Bearer"
     );
 }

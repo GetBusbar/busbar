@@ -1,333 +1,87 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE DECLARED-SCHEME DIFFERENTIAL (#83a SD-2b, SD-3; O7, S2-a): every dialect's egress credential,
-//! stated as DECLARED DATA — a credential-family table, or a SigV4 signature whose region is a pure
-//! function of the host — and presented by the kernel's egress-auth unit under a teller-minted
-//! `Grant<Sign>`, writes byte-for-byte the credential headers the dialect's own builder wrote, in the
-//! same order, for every key, credential mode and request the vectors below cover. Non-credential
-//! static headers a builder also emits (a version header) are not auth and stay in the dialect
-//! writer, so they are set aside before the comparison.
+//! THE DECLARED EGRESS SCHEMES, AS THIS PLANE DECLARES THEM (#83a SD-2b, SD-3; O7, S2-a). Five of
+//! the six dialects state their egress credential as DECLARED DATA — a credential-family table, or a
+//! SigV4 signature whose region is a pure function of the host — and carry no builder, so the lane
+//! key is presented by the host's egress-auth unit and never passes through this plane. The sixth
+//! still declares a builder, because that builder also writes a non-credential version header no
+//! declaration field carries yet.
 //!
-//! Since SD-3 five of the six dialects DECLARE their scheme on their real declaration and carry no
-//! builder, so each is presented exactly as its lanes are and compared against the builder it
-//! replaced, kept here verbatim as the REFERENCE (the shared bearer and custom-header builders are
-//! still live host-side; the dialect's own SigV4 signer is reproduced below). The sixth still
-//! declares a builder, because its builder also writes a non-credential version header no
-//! declaration field carries yet; its scheme is proven here on a declared twin against that builder.
+//! The codec proves its own seam here and reaches no host: every declaration's scheme data, the
+//! signing dialect's host-to-region answers and the remaining builder's credential headers are held
+//! to the shared fixture `testing/plane-copies/declared-credentials.json` — the headers each
+//! dialect's own builder wrote, per credential, mode and request. The host's suite holds its
+//! egress-auth unit to the same file: presented under schemes carrying exactly this data, it writes
+//! exactly those headers. Together the two suites are the byte-identity proof of the switch.
 
 use busbar_contract::config::UpstreamCreds;
-use busbar_contract::protocol::{
-    CredentialFamily, CredentialHeader, EgressAuthHeaders, EgressScheme, ProtocolDecl,
-    SigningContext,
-};
+use busbar_contract::protocol::{CredentialHeader, EgressScheme, ProtocolDecl, SigningContext};
 
-/// Hosts the signing dialect derives a region for, plus one it derives none for (the declaration's
-/// default then applies).
-const SIGNING_HOSTS: &[&str] = &[
-    "bedrock-runtime.us-west-2.amazonaws.com",
-    "bedrock-runtime-fips.eu-central-1.amazonaws.com",
-    "upstream.internal",
-];
-
-const ANTHROPIC_FAMILIES: &[CredentialFamily] = &[
-    CredentialFamily {
-        prefix: "sk-ant-api",
-        presented_as: CredentialHeader::Raw {
-            header: "x-api-key",
-            trim_start: true,
-        },
-    },
-    CredentialFamily {
-        prefix: "sk-ant-oat",
-        presented_as: CredentialHeader::Bearer,
-    },
-];
-
-static TWIN_ANTHROPIC: ProtocolDecl = ProtocolDecl {
-    egress_scheme: Some(EgressScheme::Static {
-        families: ANTHROPIC_FAMILIES,
-        own: CredentialHeader::Raw {
-            header: "x-api-key",
-            trim_start: false,
-        },
-        passthrough: CredentialHeader::Bearer,
-    }),
-    ..ProtocolDecl::named("declared-twin-anthropic")
-};
-
-/// The builder each declared dialect used to carry, as the reference its presentation must match.
-fn reference_openai(
-    key: &str,
-    _ctx: &SigningContext,
-) -> Vec<(
-    busbar_contract::http::HeaderName,
-    busbar_contract::http::HeaderValue,
-)> {
-    busbar_kernel::proto::bearer_auth_headers("openai", key)
-}
-fn reference_responses(
-    key: &str,
-    _ctx: &SigningContext,
-) -> Vec<(
-    busbar_contract::http::HeaderName,
-    busbar_contract::http::HeaderValue,
-)> {
-    busbar_kernel::proto::bearer_auth_headers("responses", key)
-}
-fn reference_cohere(
-    key: &str,
-    _ctx: &SigningContext,
-) -> Vec<(
-    busbar_contract::http::HeaderName,
-    busbar_contract::http::HeaderValue,
-)> {
-    busbar_kernel::proto::bearer_auth_headers("cohere", key)
-}
-fn reference_gemini(
-    key: &str,
-    _ctx: &SigningContext,
-) -> Vec<(
-    busbar_contract::http::HeaderName,
-    busbar_contract::http::HeaderValue,
-)> {
-    busbar_kernel::proto::api_key_auth_headers("x-goog-api-key", key)
-}
-
-/// The signing dialect's own SigV4 builder, as it stood when the dialect declared it (verbatim but
-/// for paths): the `ACCESS:SECRET[:SESSION]` lane key, the region from the host (default
-/// `us-east-1`), service `bedrock`, a `POST` over the JSON content type, the host and the body.
-fn reference_bedrock_signer(
-    key: &str,
-    ctx: &SigningContext,
-) -> Vec<(
-    busbar_contract::http::HeaderName,
-    busbar_contract::http::HeaderValue,
-)> {
-    let mut parts = key.splitn(3, ':');
-    let (access, secret, token) = match (parts.next(), parts.next(), parts.next()) {
-        (Some(a), Some(s), tok) if !a.is_empty() && !s.is_empty() => (a, s, tok),
-        _ => return vec![],
-    };
-    let region = match crate::bedrock::derive_sigv4_region(ctx.host) {
-        Some(r) => r,
-        None => {
-            tracing::warn!(host = %ctx.host, "could not derive AWS region from Bedrock endpoint host; defaulting SigV4 scope to us-east-1 (set a bedrock-runtime[-fips].<region>.amazonaws.com host)");
-            "us-east-1"
-        }
-    };
-    let service = "bedrock";
-    let (amzdate, datestamp) = busbar_kernel::sigv4::format_amz_time(ctx.timestamp_epoch);
-    let payload_hash = busbar_kernel::sigv4::sha256_hex(ctx.body);
-    let token_header = match token {
-        Some(t) => match busbar_contract::http::HeaderValue::from_str(t) {
-            Ok(v) => Some(v),
-            Err(_) => {
-                tracing::warn!("Bedrock lane session token contains a byte rejected by HeaderValue; skipping signing to avoid a signed-but-absent x-amz-security-token header.");
-                return vec![];
-            }
-        },
-        None => None,
-    };
-    let mut signed = vec![
-        (
-            "content-type".to_string(),
-            busbar_kernel::proxy::APPLICATION_JSON.to_string(),
-        ),
-        ("host".to_string(), ctx.host.to_string()),
-        (
-            busbar_kernel::sigv4::X_AMZ_CONTENT_SHA256.to_string(),
-            payload_hash.clone(),
-        ),
-        (
-            busbar_kernel::sigv4::X_AMZ_DATE.to_string(),
-            amzdate.clone(),
-        ),
-    ];
-    if let Some(t) = token {
-        signed.push((
-            busbar_kernel::sigv4::X_AMZ_SECURITY_TOKEN.to_string(),
-            t.to_string(),
-        ));
-    }
-    let (signature, signed_headers) = busbar_kernel::sigv4::sign_v4(
-        secret,
-        region,
-        service,
-        "POST",
-        ctx.canonical_uri,
-        "",
-        &signed,
-        &payload_hash,
-        &amzdate,
-        &datestamp,
+fn fixture() -> serde_json::Value {
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../testing/plane-copies/declared-credentials.json"
     );
-    let authorization = {
-        use busbar_kernel::sigv4::{SIGV4_ALGORITHM, SIGV4_TERMINATION};
-        format!(
-            "{SIGV4_ALGORITHM} Credential={access}/{datestamp}/{region}/{service}/{SIGV4_TERMINATION}, SignedHeaders={signed_headers}, Signature={signature}"
-        )
-    };
-    let (Ok(authorization_val), Ok(amzdate_val), Ok(payload_hash_val)) = (
-        busbar_contract::http::HeaderValue::from_str(&authorization),
-        busbar_contract::http::HeaderValue::from_str(&amzdate),
-        busbar_contract::http::HeaderValue::from_str(&payload_hash),
-    ) else {
-        return vec![];
-    };
-    let mut out = vec![
-        (
-            busbar_contract::http::HeaderName::from_static(busbar_kernel::proto::HDR_AUTHORIZATION),
-            authorization_val,
-        ),
-        (
-            busbar_contract::http::HeaderName::from_static(busbar_kernel::sigv4::X_AMZ_DATE),
-            amzdate_val,
-        ),
-        (
-            busbar_contract::http::HeaderName::from_static(
-                busbar_kernel::sigv4::X_AMZ_CONTENT_SHA256,
-            ),
-            payload_hash_val,
-        ),
-    ];
-    if let Some(v) = token_header {
-        out.push((
-            busbar_contract::http::HeaderName::from_static(
-                busbar_kernel::sigv4::X_AMZ_SECURITY_TOKEN,
-            ),
-            v,
-        ));
-    }
-    out
+    serde_json::from_str(&std::fs::read_to_string(path).expect("fixture readable"))
+        .expect("fixture is JSON")
 }
 
-/// One comparison: the declaration presented, the builder it must reproduce, whether that builder was
-/// lane-constant, and the non-credential headers that builder also wrote.
-struct Case {
-    presented: &'static ProtocolDecl,
-    reference: EgressAuthHeaders,
-    lane_constant: bool,
-    not_auth: &'static [&'static str],
-}
-
-fn cases() -> [Case; 6] {
-    [
-        Case {
-            presented: &crate::openai_chat::DECL,
-            reference: reference_openai,
-            lane_constant: true,
-            not_auth: &[],
-        },
-        Case {
-            presented: &crate::openai_responses::DECL,
-            reference: reference_responses,
-            lane_constant: true,
-            not_auth: &[],
-        },
-        Case {
-            presented: &crate::cohere::DECL,
-            reference: reference_cohere,
-            lane_constant: true,
-            not_auth: &[],
-        },
-        Case {
-            presented: &crate::gemini::DECL,
-            reference: reference_gemini,
-            lane_constant: true,
-            not_auth: &[],
-        },
-        Case {
-            presented: &TWIN_ANTHROPIC,
-            reference: crate::anthropic::DECL
-                .egress_auth_headers
-                .expect("the anthropic dialect still declares its builder"),
-            lane_constant: crate::anthropic::DECL.egress_auth_lane_constant,
-            not_auth: &["anthropic-version"],
-        },
-        Case {
-            presented: &crate::bedrock::DECL,
-            reference: reference_bedrock_signer,
-            lane_constant: false,
-            not_auth: &[],
-        },
-    ]
-}
-
-/// Static keys: every credential family, the leading-whitespace case the family table trims, and the
-/// bytes a header value may and may not carry.
-const STATIC_KEYS: &[&str] = &[
-    "sk-test-123",
-    "sk-ant-api03-abc",
-    "  sk-ant-api03-abc",
-    "sk-ant-oat01-abc",
-    " sk-ant-oat01-abc",
-    "opaque-caller-token",
-    "",
-    "sk\tkey",
-    "klucz-\u{142}-\u{e9}",
-    "sk\r\ninjected",
-    "sk\u{0}key",
-    "sk\u{7f}key",
-];
-
-/// Signing credentials: plain, with a session token (colons kept), and every refusal.
-const SIGNING_KEYS: &[&str] = &[
-    "AKIDEXAMPLE:wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY",
-    "AKID:SECRET:TOKEN:with:colons",
-    "AKID:SECRET:",
-    "AKID:SECRET:bad\ntoken",
-    "AKID",
-    ":SECRET",
-    "",
-];
-
-fn contexts(host: &'static str) -> Vec<SigningContext<'static>> {
-    let mut out = Vec::new();
-    for upstream_creds in [UpstreamCreds::Own, UpstreamCreds::Passthrough] {
-        for (canonical_uri, body, timestamp_epoch) in [
-            (
-                "/model/m/converse",
-                &br#"{"messages":[]}"#[..],
-                1_756_000_000,
-            ),
-            ("/model/vendor.m%3A0/invoke", &b""[..], 0),
-        ] {
-            out.push(SigningContext {
-                host,
-                canonical_uri,
-                body,
-                timestamp_epoch,
-                upstream_creds,
-            });
+fn presentation(h: &CredentialHeader) -> serde_json::Value {
+    match h {
+        CredentialHeader::Bearer => serde_json::json!({"bearer": true}),
+        CredentialHeader::Raw { header, trim_start } => {
+            serde_json::json!({"header": header, "trim_start": trim_start})
         }
     }
-    out
 }
 
-fn as_pairs(
-    headers: Vec<(
-        busbar_contract::http::HeaderName,
-        busbar_contract::http::HeaderValue,
-    )>,
-) -> Vec<(String, Vec<u8>)> {
-    headers
-        .into_iter()
-        .map(|(k, v)| (k.as_str().to_string(), v.as_bytes().to_vec()))
-        .collect()
+/// A declared scheme's DATA, in the fixture's spelling (the region function is compared by its
+/// answers, below).
+fn describe(scheme: &EgressScheme) -> serde_json::Value {
+    match scheme {
+        EgressScheme::Static {
+            families,
+            own,
+            passthrough,
+        } => serde_json::json!({
+            "kind": "static",
+            "families": families
+                .iter()
+                .map(|f| serde_json::json!({"prefix": f.prefix, "presented_as": presentation(&f.presented_as)}))
+                .collect::<Vec<_>>(),
+            "own": presentation(own),
+            "passthrough": presentation(passthrough),
+        }),
+        EgressScheme::SigV4 {
+            service,
+            default_region,
+            content_type,
+            ..
+        } => serde_json::json!({
+            "kind": "sigv4",
+            "service": service,
+            "default_region": default_region,
+            "content_type": content_type,
+        }),
+    }
 }
 
-/// Every dialect in this plane's declaration table states its egress credential — a declared scheme,
-/// or (the one dialect whose builder also writes a version header) a builder with a declared twin —
-/// and every one of them is compared below, so a dialect added without either fails this suite
-/// instead of passing it by omission.
+const DECLARED: [&ProtocolDecl; 5] = [
+    &crate::openai_chat::DECL,
+    &crate::openai_responses::DECL,
+    &crate::cohere::DECL,
+    &crate::gemini::DECL,
+    &crate::bedrock::DECL,
+];
+
+/// Every dialect in this plane's declaration table states its egress credential — a declared
+/// scheme, or (the one dialect whose builder also writes a version header) a builder — and the
+/// fixture carries a scheme for every one of them, so a dialect added without either fails this
+/// suite instead of passing it by omission.
 #[test]
 fn every_dialect_declaring_a_credential_builder_has_a_declared_twin() {
-    let compared: Vec<&str> = cases()
-        .iter()
-        .map(|c| c.presented.name)
-        .chain(["anthropic"])
-        .collect();
+    let doc = fixture();
     for decl in crate::DECLS {
         assert!(
             decl.egress_scheme.is_some() || decl.egress_auth_headers.is_some(),
@@ -335,76 +89,95 @@ fn every_dialect_declaring_a_credential_builder_has_a_declared_twin() {
             decl.name
         );
         assert!(
-            compared.contains(&decl.name),
-            "{} has no declared-scheme comparison",
+            doc["schemes"].get(decl.name).is_some(),
+            "{} has no declared scheme in the shared fixture",
             decl.name
         );
     }
 }
 
 /// #83a S2-a: the five dialects whose credential is auth and nothing else DECLARE their scheme and
-/// carry no builder, so no credential ever passes through this plane on their lanes.
+/// carry no builder, so no credential ever passes through this plane on their lanes — and the scheme
+/// each declares is exactly the data the host's suite presents.
 #[test]
 fn the_declared_dialects_carry_a_scheme_and_no_builder() {
-    for decl in [
-        &crate::openai_chat::DECL,
-        &crate::openai_responses::DECL,
-        &crate::cohere::DECL,
-        &crate::gemini::DECL,
-        &crate::bedrock::DECL,
-    ] {
-        assert!(
-            decl.egress_scheme.is_some(),
-            "{} declares no scheme",
-            decl.name
-        );
+    let doc = fixture();
+    for decl in DECLARED {
+        let scheme = decl
+            .egress_scheme
+            .unwrap_or_else(|| panic!("{} declares no scheme", decl.name));
         assert!(
             decl.egress_auth_headers.is_none(),
             "{} still carries a credential builder",
             decl.name
         );
+        assert!(!decl.egress_auth_lane_constant, "{}", decl.name);
+        assert_eq!(
+            describe(&scheme),
+            doc["schemes"][decl.name],
+            "{}: the declared scheme differs from the shared fixture",
+            decl.name
+        );
     }
 }
 
-/// THE DIFFERENTIAL: the kernel presenting each declaration writes exactly the credential headers
-/// the builder it replaced writes, and agrees with it on whether the credential is lane-constant.
+/// The signing dialect's region is a declared pure function of the host: it answers every host in the
+/// fixture as recorded, and a host that names no region leaves the declared `us-east-1` default.
 #[test]
-fn each_declared_scheme_presents_what_its_dialect_builder_writes() {
-    crate::ensure_test_protocols_registered();
-    busbar_kernel::proto::register_test_protocols(&[&TWIN_ANTHROPIC]);
-    let mut compared = 0usize;
-    for case in cases() {
-        let presenter = busbar_kernel::egress_auth::resolve(case.presented.name, None);
+fn the_declared_region_answers_every_fixture_host() {
+    let Some(EgressScheme::SigV4 { region_of_host, .. }) = crate::bedrock::DECL.egress_scheme
+    else {
+        panic!("the signing dialect declares a SigV4 scheme");
+    };
+    for r in fixture()["regions"].as_array().expect("regions") {
+        let host = r["host"].as_str().expect("host");
         assert_eq!(
-            presenter.is_lane_constant(),
-            case.lane_constant,
-            "{}: the declared scheme and the builder disagree on lane-constancy",
-            case.presented.name
+            region_of_host(host),
+            r["region"].as_str(),
+            "region of {host}"
         );
-        let signing = matches!(
-            case.presented.egress_scheme,
-            Some(EgressScheme::SigV4 { .. })
-        );
-        let (keys, hosts) = if signing {
-            (SIGNING_KEYS, SIGNING_HOSTS)
-        } else {
-            (STATIC_KEYS, &["upstream.internal"][..])
-        };
-        for &host in hosts {
-            for ctx in contexts(host) {
-                for &key in keys {
-                    let mut expected = as_pairs((case.reference)(key, &ctx));
-                    expected.retain(|(k, _)| !case.not_auth.contains(&k.as_str()));
-                    let presented = as_pairs(presenter.headers_for(key, &ctx));
-                    assert_eq!(
-                        presented, expected,
-                        "{}: key {key:?}, host {host}, mode {:?}, uri {}",
-                        case.presented.name, ctx.upstream_creds, ctx.canonical_uri
-                    );
-                    compared += 1;
-                }
-            }
+    }
+}
+
+/// THE REMAINING BUILDER: the dialect that still declares one writes, beside its version header,
+/// exactly the credential headers the fixture records for it — the headers the host presents for its
+/// declared twin.
+#[test]
+fn the_remaining_builder_writes_the_fixture_credential_headers() {
+    let builder = crate::anthropic::DECL
+        .egress_auth_headers
+        .expect("the anthropic dialect still declares its builder");
+    let hex = |v: &serde_json::Value| crate::hex::decode(v.as_str().expect("hex")).expect("hex");
+    let mut compared = 0usize;
+    for row in fixture()["rows"].as_array().expect("rows") {
+        if row["dialect"] != "anthropic" {
+            continue;
         }
+        let key = String::from_utf8(hex(&row["key_hex"])).expect("utf-8 key");
+        let body = hex(&row["body_hex"]);
+        let ctx = SigningContext {
+            host: row["host"].as_str().expect("host"),
+            canonical_uri: row["canonical_uri"].as_str().expect("uri"),
+            body: &body,
+            timestamp_epoch: row["timestamp_epoch"].as_u64().expect("ts"),
+            upstream_creds: if row["mode"] == "own" {
+                UpstreamCreds::Own
+            } else {
+                UpstreamCreds::Passthrough
+            },
+        };
+        let written: Vec<serde_json::Value> = builder(&key, &ctx)
+            .into_iter()
+            .filter(|(k, _)| k.as_str() != "anthropic-version")
+            .map(|(k, v)| serde_json::json!([k.as_str(), crate::hex::encode(v.as_bytes())]))
+            .collect();
+        assert_eq!(
+            serde_json::Value::Array(written),
+            row["headers"],
+            "key {key:?}, mode {}",
+            row["mode"]
+        );
+        compared += 1;
     }
     assert!(compared > 0);
 }

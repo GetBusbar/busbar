@@ -2,7 +2,6 @@ use super::*;
 use crate::dialect::PROVIDER_SIGNAL_CONTEXT_LENGTH;
 use busbar_contract::http::StatusCode;
 use busbar_contract::upstream::Disposition;
-use busbar_kernel::breaker::classify;
 
 #[test]
 fn test_classify_context_length_both_protocols() {
@@ -47,5 +46,5 @@ fn test_context_length_disposition() {
         provider_signal: Some(PROVIDER_SIGNAL_CONTEXT_LENGTH.to_string()),
         retry_after: None,
     };
-    assert_eq!(classify(&sig), Disposition::ContextLength);
+    assert_eq!(sig.class.disposition(), Disposition::ContextLength);
 }

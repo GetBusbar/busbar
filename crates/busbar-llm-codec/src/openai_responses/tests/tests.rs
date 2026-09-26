@@ -6,7 +6,7 @@ use super::*;
 /// disappeared block. It must now degrade to an empty placeholder AND warn, naming the type.
 #[test]
 fn responses_input_file_degrades_with_warn_not_silent_drop() {
-    use busbar_kernel::test_support::warn_capture::WarnCapture;
+    use crate::warn_capture::WarnCapture;
     use tracing_subscriber::layer::SubscriberExt as _;
 
     let body = serde_json::json!({
@@ -508,11 +508,28 @@ fn test_temperature_fidelity() {
 
 #[test]
 fn test_auth_headers() {
-    let headers = crate::presented_auth_headers("responses", "sk-test", &crate::test_signing_ctx());
-
-    assert_eq!(headers.len(), 1);
-    assert_eq!(headers[0].0.as_str(), "authorization");
-    assert_eq!(headers[0].1.to_str().unwrap(), "Bearer sk-test");
+    // #83a S2-a: the dialect DECLARES its credential scheme and the host presents it — a plain
+    // `authorization: Bearer <key>` for every credential and mode. The bytes the host writes for a
+    // valid key, and the omission of a key whose bytes no header value may carry, are pinned in the
+    // host's suite over the shared fixture `testing/plane-copies/declared-credentials.json`.
+    let Some(busbar_contract::protocol::EgressScheme::Static {
+        families,
+        own,
+        passthrough,
+    }) = crate::openai_responses::DECL.egress_scheme
+    else {
+        panic!("responses declares a static credential scheme");
+    };
+    assert!(families.is_empty());
+    assert_eq!(own, busbar_contract::protocol::CredentialHeader::Bearer);
+    assert_eq!(
+        passthrough,
+        busbar_contract::protocol::CredentialHeader::Bearer
+    );
+    assert!(
+        crate::openai_responses::DECL.egress_auth_headers.is_none(),
+        "no credential passes through the plane"
+    );
 }
 
 /// Warn+OMIT policy (`proto::bearer_auth_headers`): a key with bytes invalid for an HTTP header
@@ -520,11 +537,27 @@ fn test_auth_headers() {
 /// `authorization` value (a syntactically invalid header AND a fingerprinting tell). No panic.
 #[test]
 fn auth_headers_invalid_key_omits_header_no_panic() {
-    let headers =
-        crate::presented_auth_headers("responses", "sk-bad\nkey", &crate::test_signing_ctx());
+    // #83a S2-a: the dialect DECLARES its credential scheme and the host presents it — a plain
+    // `authorization: Bearer <key>` for every credential and mode. The bytes the host writes for a
+    // valid key, and the omission of a key whose bytes no header value may carry, are pinned in the
+    // host's suite over the shared fixture `testing/plane-copies/declared-credentials.json`.
+    let Some(busbar_contract::protocol::EgressScheme::Static {
+        families,
+        own,
+        passthrough,
+    }) = crate::openai_responses::DECL.egress_scheme
+    else {
+        panic!("responses declares a static credential scheme");
+    };
+    assert!(families.is_empty());
+    assert_eq!(own, busbar_contract::protocol::CredentialHeader::Bearer);
+    assert_eq!(
+        passthrough,
+        busbar_contract::protocol::CredentialHeader::Bearer
+    );
     assert!(
-        headers.is_empty(),
-        "an invalid key must omit the auth header, not emit an empty value"
+        crate::openai_responses::DECL.egress_auth_headers.is_none(),
+        "no credential passes through the plane"
     );
 }
 
@@ -5958,7 +5991,7 @@ fn reasoning_input_item_round_trips_through_request() {
     // flake. Holding the capture fixture's reentrant gate for the duration of this read serialises
     // the two tests, so neither ordering can produce it.
     let ir = {
-        use busbar_kernel::test_support::warn_capture::WarnCapture;
+        use crate::warn_capture::WarnCapture;
         use tracing_subscriber::layer::SubscriberExt as _;
         let cap = WarnCapture::default();
         let subscriber = tracing_subscriber::registry().with(cap.clone());
@@ -7434,7 +7467,7 @@ fn cross_protocol_egress_into_responses_emits_content_part_bracket() {
 /// semantics. The BEFORE-any-turn case must NOT warn (that is the ordinary, non-surprising shape).
 #[test]
 fn mid_conversation_developer_item_is_flagged() {
-    use busbar_kernel::test_support::warn_capture::WarnCapture;
+    use crate::warn_capture::WarnCapture;
     use tracing_subscriber::layer::SubscriberExt as _;
 
     let body = serde_json::json!({
@@ -7473,7 +7506,7 @@ fn mid_conversation_developer_item_is_flagged() {
 /// the ordinary shape and must NOT warn.
 #[test]
 fn leading_developer_item_does_not_warn() {
-    use busbar_kernel::test_support::warn_capture::WarnCapture;
+    use crate::warn_capture::WarnCapture;
     use tracing_subscriber::layer::SubscriberExt as _;
 
     let body = serde_json::json!({

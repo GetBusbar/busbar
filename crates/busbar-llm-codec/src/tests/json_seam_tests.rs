@@ -31,89 +31,73 @@ fn accepts_realistic_depth_and_counts_correctly() {
     assert!(exceeds_max_depth(over.as_bytes(), MAX_JSON_DEPTH));
 }
 
-/// The shared fixture set: nesting at, just under and just past the floor, in arrays, objects and a
-/// mix; bracket and brace text inside strings (which is not depth), escaped quotes that must not end
-/// a string early, an unterminated string, and a pathological depth.
-fn fixtures() -> Vec<String> {
-    let arrays = |n: usize| format!("{}{}", "[".repeat(n), "]".repeat(n));
-    let objects = |n: usize| format!("{}1{}", r#"{"k":"#.repeat(n), "}".repeat(n));
-    let mixed = |n: usize| {
-        let open: String = (0..n)
-            .map(|i| if i % 2 == 0 { "[" } else { r#"{"k":"# })
-            .collect();
-        let close: String = (0..n)
-            .rev()
-            .map(|i| if i % 2 == 0 { "]" } else { "}" })
-            .collect();
-        format!("{open}1{close}")
-    };
-    let mut out = Vec::new();
-    for n in [1, 2, 64, 127, 128, 129, 130, 256, 10_000] {
-        out.push(arrays(n));
-        out.push(objects(n));
-        out.push(mixed(n));
-    }
-    out.push(format!(r#"{{"s":"{}"}}"#, "[".repeat(500)));
-    out.push(format!(r#"{{"s":"\"{}\""}}"#, "{".repeat(500)));
-    out.push(format!(r#"["\\",{}{}]"#, "[".repeat(128), "]".repeat(128)));
-    out.push(format!(r#"["\"{}"#, "[".repeat(200)));
-    out.push(r#"{"model":"m","messages":[{"role":"user","content":"hi"}]}"#.to_string());
-    out.push(String::new());
-    out.push("not json".to_string());
-    out
+/// The shared fixture `testing/plane-copies/json-depth.json`: the floor, and nesting at, under and
+/// past it in arrays, objects and a mix, plus bracket text inside strings, escaped quotes, an
+/// unterminated string and non-JSON. The host's own suite holds its copy of the seam to the same file.
+fn fixture() -> serde_json::Value {
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../testing/plane-copies/json-depth.json"
+    );
+    serde_json::from_str(&std::fs::read_to_string(path).expect("fixture readable"))
+        .expect("fixture is JSON")
 }
 
-/// THE O6 DRIFT GUARD: the plane's copy of the seam and the host's copy agree on the floor (128) and
-/// on the verdict of every fixture — accepted or refused, through both the byte and the `str` entry.
+/// One fixture case's body.
+fn body(case: &serde_json::Value) -> String {
+    if let Some(raw) = case["raw"].as_str() {
+        return raw.to_string();
+    }
+    let n = case["depth"].as_u64().expect("depth") as usize;
+    match case["shape"].as_str().expect("shape") {
+        "arrays" => format!("{}{}", "[".repeat(n), "]".repeat(n)),
+        "objects" => format!("{}1{}", r#"{"k":"#.repeat(n), "}".repeat(n)),
+        _ => {
+            let open: String = (0..n)
+                .map(|i| if i % 2 == 0 { "[" } else { r#"{"k":"# })
+                .collect();
+            let close: String = (0..n)
+                .rev()
+                .map(|i| if i % 2 == 0 { "]" } else { "}" })
+                .collect();
+            format!("{open}1{close}")
+        }
+    }
+}
+
+/// THE O6 DRIFT GUARD: this copy of the seam holds the shared floor and answers every shared case
+/// exactly as recorded — accepted or refused, through both the byte and the `str` entry — so it and
+/// the host's copy cannot disagree without one of the two suites failing.
 #[test]
-fn the_plane_seam_and_the_host_seam_agree_on_the_floor_and_every_verdict() {
+fn the_plane_seam_holds_the_shared_floor_and_every_shared_verdict() {
     // A document 128 deep is ACCEPTED, and building it (and dropping it) recurses once per level; a
     // debug build's frames are large, so the comparison runs on a thread with room for that.
     std::thread::Builder::new()
         .stack_size(64 * 1024 * 1024)
-        .spawn(compare_the_two_seams)
-        .expect("spawn the comparison thread")
+        .spawn(check_the_shared_fixture)
+        .expect("spawn the check thread")
         .join()
-        .expect("the comparison held");
+        .expect("the check held");
 }
 
-fn compare_the_two_seams() {
-    assert_eq!(MAX_JSON_DEPTH, 128, "the plane's depth floor moved");
-    // The floor, read off the host's verdicts: 128 deep is accepted, 129 deep is refused.
-    let at = format!("{}{}", "[".repeat(128), "]".repeat(128));
-    let past = format!("{}{}", "[".repeat(129), "]".repeat(129));
-    assert!(busbar_kernel::json::parse::<serde_json::Value>(at.as_bytes()).is_ok());
-    assert!(busbar_kernel::json::parse::<serde_json::Value>(past.as_bytes()).is_err());
-    for fixture in fixtures() {
-        let plane = parse::<serde_json::Value>(fixture.as_bytes());
-        let host = busbar_kernel::json::parse::<serde_json::Value>(fixture.as_bytes());
+fn check_the_shared_fixture() {
+    let doc = fixture();
+    assert_eq!(
+        doc["max_json_depth"], MAX_JSON_DEPTH as u64,
+        "the depth floor moved"
+    );
+    for case in doc["cases"].as_array().expect("cases") {
+        let text = body(case);
+        let accepted = case["accepted"].as_bool().expect("verdict");
         assert_eq!(
-            plane.is_ok(),
-            host.is_ok(),
-            "byte verdict differs on {:.80}",
-            fixture
+            parse::<serde_json::Value>(text.as_bytes()).is_ok(),
+            accepted,
+            "byte verdict on {case}"
         );
-        let plane_str = parse_str::<serde_json::Value>(&fixture);
-        let host_str = busbar_kernel::json::parse_str::<serde_json::Value>(&fixture);
         assert_eq!(
-            plane_str.is_ok(),
-            host_str.is_ok(),
-            "str verdict differs on {:.80}",
-            fixture
+            parse_str::<serde_json::Value>(&text).is_ok(),
+            accepted,
+            "str verdict on {case}"
         );
-        // The documents themselves, and what each seam serializes them back to, for the fixtures
-        // shallow enough to compare on a test thread's stack (a debug-build serializer recurses).
-        if exceeds_max_depth(fixture.as_bytes(), 16) {
-            continue;
-        }
-        if let (Ok(plane), Ok(host)) = (plane, host) {
-            assert_eq!(plane, host, "document differs on {:.80}", fixture);
-            assert_eq!(
-                to_vec(&plane).ok(),
-                busbar_kernel::json::to_vec(&host).ok(),
-                "serialized bytes differ on {:.80}",
-                fixture
-            );
-        }
     }
 }

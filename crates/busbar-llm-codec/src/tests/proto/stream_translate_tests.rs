@@ -2,18 +2,6 @@ use super::*;
 use crate::ir::{IrBlockMeta, IrStreamEvent};
 use busbar_contract::http::StatusCode;
 
-/// A signing context for the declaration-owned egress-auth builders. Only the Bedrock SigV4 builder
-/// reads any of these fields; the key-header builders ignore them entirely.
-fn a_signing_ctx() -> busbar_contract::protocol::SigningContext<'static> {
-    busbar_contract::protocol::SigningContext {
-        host: "example.invalid",
-        canonical_uri: "/",
-        body: b"{}",
-        timestamp_epoch: 1_752_000_000,
-        upstream_creds: busbar_contract::config::UpstreamCreds::Own,
-    }
-}
-
 /// STRUCTURAL ROUND-TRIP MATRIX (the test class that would have caught the cohere object-shape
 /// and openai usage bugs): for EVERY protocol, writing a canonical IR stream through that
 /// protocol's WRITER and reading the frames back through its OWN READER must preserve the streamed
@@ -4493,15 +4481,17 @@ fn test_gemini_protocol_resolves() {
     // asserting that name comes back asserts the helper echoes its argument — the header name was
     // the test's input and the Gemini protocol was never consulted, so a regression to
     // `Authorization: Bearer` (every upstream call 401s) stayed green.
-    // Since #83a S2-a the declaration states the scheme as data and the host presents it.
-    assert!(decl_for("gemini")
-        .expect("gemini declares itself")
-        .egress_scheme
-        .is_some());
-    let headers = crate::presented_auth_headers("gemini", "test-key", &a_signing_ctx());
-    assert_eq!(headers.len(), 1);
-    assert_eq!(headers[0].0.as_str(), "x-goog-api-key");
-    assert_eq!(headers[0].1.to_str().unwrap(), "test-key");
+    // Since #83a S2-a the declaration states the scheme as DATA — the raw key in `x-goog-api-key`
+    // for every mode — and the host presents it (bytes pinned in the host's suite).
+    let raw = busbar_contract::protocol::CredentialHeader::Raw {
+        header: "x-goog-api-key",
+        trim_start: false,
+    };
+    assert!(matches!(
+        decl_for("gemini").expect("gemini declares itself").egress_scheme,
+        Some(busbar_contract::protocol::EgressScheme::Static { families: [], own, passthrough })
+            if own == raw && passthrough == raw
+    ));
 
     // Verify error handling methods
     let status_code = StatusCode::TOO_MANY_REQUESTS;
@@ -4540,15 +4530,14 @@ fn test_bedrock_and_responses_register() {
     // argument only for a diagnostic string and returns `authorization: Bearer {key}`
     // unconditionally, so the old form asserted a constant and never consulted the protocol: if
     // Responses stopped emitting an auth header, or switched to `api-key`, it stayed green.
-    // Since #83a S2-a the declaration states the scheme as data and the host presents it.
-    assert!(decl_for("responses")
-        .expect("responses declares itself")
-        .egress_scheme
-        .is_some());
-    let r_headers = crate::presented_auth_headers("responses", "sk-test", &a_signing_ctx());
-    assert_eq!(r_headers.len(), 1);
-    assert_eq!(r_headers[0].0.as_str(), "authorization");
-    assert_eq!(r_headers[0].1.to_str().unwrap(), "Bearer sk-test");
+    // Since #83a S2-a the declaration states the scheme as DATA — `authorization: Bearer <key>` for
+    // every mode — and the host presents it (bytes pinned in the host's suite).
+    let bearer = busbar_contract::protocol::CredentialHeader::Bearer;
+    assert!(matches!(
+        decl_for("responses").expect("responses declares itself").egress_scheme,
+        Some(busbar_contract::protocol::EgressScheme::Static { families: [], own, passthrough })
+            if own == bearer && passthrough == bearer
+    ));
 
     // Gemini selects the streaming vs non-streaming endpoint by request intent.
     let gemini = Protocol::gemini();

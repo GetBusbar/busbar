@@ -67,18 +67,11 @@ bytes = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
-# The host, for this crate's own tests only: the test registration seam (which also arms the host
-# services a shipped binary's composition root arms), the drift guards that hold this plane's copies
-# of the JSON seam, the event-stream codec, the dialect helpers and its coded diagnostics to the
-# host's, the egress-auth unit a dialect's declared credential scheme is asserted through, and the
-# warn-capture layer the tests assert coded diagnostics through. A dev edge only, so no shipped
-# target links the host.
-busbar-kernel = { path = "../busbar-kernel", features = ["test-support"] }
+# The tests reach only this crate and the contract (#83a SD-3): the host services a composition
+# root arms behind the contract seams are armed by the tests themselves (`tests/test_host.rs`), and
+# the proofs that hold this plane's copies to the host's live in shared fixtures under
+# `testing/plane-copies/`, which the host's suites read too.
 serde_json = { workspace = true }
 tracing-subscriber = { workspace = true }
-# The usage-tap count pin records the host's counter through a local `metrics` recorder.
-metrics = { workspace = true }
-# ONE relocated registry test asserts the registry's handling of a codec-LESS registered protocol
-# using the real MCP declaration (`busbar_mcp::PROTO_DECL`). A dev-dep back-edge; not linked into any
-# shipped target.
-busbar-mcp = { path = "../busbar-mcp" }
+# The test host's entropy source (the same OS CSPRNG the host arms), for this crate's tests only.
+getrandom = { workspace = true }

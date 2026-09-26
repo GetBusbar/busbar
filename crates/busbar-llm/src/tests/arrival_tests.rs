@@ -135,7 +135,7 @@ impl ArrivalHost for ParseHost {
 }
 
 fn parse_host() -> (Arc<dyn ArrivalHost>, ArrivalCtx) {
-    busbar_kernel::proto::register_test_protocols(busbar_llm_codec::DECLS);
+    crate::testkit::install_test_seams();
     (Arc::new(ParseHost), ArrivalCtx::new(()))
 }
 

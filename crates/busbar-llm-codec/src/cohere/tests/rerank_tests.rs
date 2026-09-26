@@ -126,7 +126,7 @@ fn embeddings_write_request_preserves_multiple_encoding_types_in_order() {
 #[test]
 fn embeddings_write_request_warns_on_dropped_non_text_input() {
     use crate::ir::embeddings::EmbeddingsReq;
-    use busbar_kernel::test_support::warn_capture::WarnCapture;
+    use crate::warn_capture::WarnCapture;
     use tracing_subscriber::layer::SubscriberExt as _;
 
     let ir = EmbeddingsReq {
@@ -356,11 +356,9 @@ fn oversized_top_n_drops_to_none_not_wrapped() {
 /// ingress and egress alike (the deletion-switch symmetry).
 #[test]
 fn no_rerank_handler_on_the_other_four() {
-    // `request_handler` reads the shared protocol registry; install this plugin's declarations
-    // here so the test does not depend on another test having filled it first.
-    crate::ensure_test_protocols_registered();
+    // Each dialect's cell, read off this plane's own declaration.
     for proto in ["openai", "anthropic", "gemini", "responses"] {
-        let rh = busbar_kernel::handlers::request_handler(proto).expect(proto);
+        let rh = crate::decl_of(proto).and_then(|d| d.handler).expect(proto);
         assert!(
             rh.operation_handler(OpVerb::RERANK).is_none(),
             "{proto} must have no rerank handler"

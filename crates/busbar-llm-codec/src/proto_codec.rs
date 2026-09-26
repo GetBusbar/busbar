@@ -79,7 +79,7 @@ pub trait ProtocolReader: Send + Sync {
     /// empty `error_map`) for a dialect that does not override it.
     #[cfg(test)]
     fn classify(&self, status: StatusCode, body: &[u8]) -> CanonicalSignal {
-        crate::test_host::classify_with_no_error_map(&self.extract_error(status, body))
+        crate::test_host::classified(&self.extract_error(status, body))
     }
 
     /// Read an IR request from wire JSON.

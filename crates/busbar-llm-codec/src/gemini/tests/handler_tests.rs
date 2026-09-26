@@ -441,7 +441,7 @@ fn embeddings_write_response_emits_the_float_vector() {
 
 #[test]
 fn embeddings_write_request_warns_on_dropped_non_text_input() {
-    use busbar_kernel::test_support::warn_capture::WarnCapture;
+    use crate::warn_capture::WarnCapture;
     use tracing_subscriber::layer::SubscriberExt as _;
 
     let ir = crate::ir::embeddings::EmbeddingsReq {

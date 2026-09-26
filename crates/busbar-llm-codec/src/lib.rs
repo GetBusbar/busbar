@@ -178,18 +178,20 @@ pub fn decl_of(name: &str) -> Option<&'static busbar_contract::protocol::Protoco
     DECLS.iter().copied().find(|d| d.name == name)
 }
 
-/// THIS CRATE'S TEST HOST (#83a SD-3: the test-support registration and the classifier are
-/// dev-only). Everything a test reaches in the host — the test registration seam, the egress-auth
-/// unit a declared credential scheme is presented by, the operator `error_map` classifier — is
-/// reached through here, over this crate's dev-dependency on the kernel; no shipped or dependent
-/// build of this crate names the host.
+/// The warn-capture layer this crate's tests assert coded diagnostics through.
+#[cfg(test)]
+#[path = "tests/warn_capture.rs"]
+pub(crate) mod warn_capture;
+
+/// THIS CRATE'S TEST HOST (#83a SD-3: the test registration and the classifier are dev-only): the
+/// host services a composition root arms behind the contract seams, armed for this crate's test
+/// binary by the test itself, so the codec's tests prove the codec's own seam and never reach the
+/// host crate.
 #[cfg(test)]
 #[path = "tests/test_host.rs"]
 pub(crate) mod test_host;
 #[cfg(test)]
-pub(crate) use test_host::{
-    ensure_test_protocols_registered, presented_auth_headers, test_signing_ctx,
-};
+pub(crate) use test_host::ensure_test_protocols_registered;
 
 /// EVERY DIALECT THIS PLUGIN DECLARES, in the order an operator sees.
 ///
@@ -217,12 +219,6 @@ pub static DECLS: &[&busbar_contract::protocol::ProtocolDecl] = &[
     &openai_responses::DECL,
     &cohere::DECL,
 ];
-
-/// THE DETECTION TESTS: they exercise the generic detection fold through THIS plugin's registered
-/// `claims` / `residual_claims` predicates.
-#[cfg(test)]
-#[path = "tests/detect_tests.rs"]
-mod detect_tests;
 
 #[cfg(test)]
 #[path = "tests/write_error_frame_tests.rs"]

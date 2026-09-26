@@ -739,7 +739,7 @@ fn test_bedrock_ingress_ir_usage_carries_real_tokens() {
 /// must NOT warn (regression proof: `extra` is never cleared on that path).
 #[test]
 fn gemini_cached_content_warns_naming_truncation_and_billing() {
-    use busbar_kernel::test_support::warn_capture::WarnCapture;
+    use crate::warn_capture::WarnCapture;
     use tracing_subscriber::layer::SubscriberExt as _;
 
     let body = serde_json::json!({

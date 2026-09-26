@@ -1236,8 +1236,7 @@ fn test_extract_error_bad_api_key_classifies_as_auth_harddown() {
         "bad-key 400 must synthesize the canonical auth provider_code"
     );
     // Normalize against an EMPTY error_map → must still land on Auth → HardDown.
-    let empty_map = std::collections::HashMap::new();
-    let sig = busbar_kernel::breaker::normalize_raw_error(&raw, &empty_map);
+    let sig = crate::test_host::classified(&raw);
     assert!(
         matches!(sig.class, StatusClass::Auth),
         "bad Gemini key must classify as Auth, got {:?}",
@@ -1245,7 +1244,7 @@ fn test_extract_error_bad_api_key_classifies_as_auth_harddown() {
     );
     assert!(
         matches!(
-            busbar_kernel::breaker::classify(&sig),
+            sig.class.disposition(),
             busbar_contract::upstream::Disposition::HardDown
         ),
         "a dead credential must HardDown the lane so it parks and fails over"
@@ -1261,8 +1260,7 @@ fn test_extract_error_bad_api_key_permission_denied_is_auth() {
     let raw = reader.extract_error(StatusCode::FORBIDDEN, body);
     assert_eq!(raw.http_status, 401);
     assert_eq!(raw.provider_code.as_deref(), Some("auth"));
-    let empty_map = std::collections::HashMap::new();
-    let sig = busbar_kernel::breaker::normalize_raw_error(&raw, &empty_map);
+    let sig = crate::test_host::classified(&raw);
     assert!(matches!(sig.class, StatusClass::Auth));
 }
 
@@ -1292,8 +1290,7 @@ fn test_extract_error_echoed_api_key_invalid_token_does_not_park_the_lane() {
         Some("auth"),
         "a field-validation 400 must not synthesize the auth provider_code"
     );
-    let empty_map = std::collections::HashMap::new();
-    let sig = busbar_kernel::breaker::normalize_raw_error(&raw, &empty_map);
+    let sig = crate::test_host::classified(&raw);
     assert!(
         !matches!(sig.class, StatusClass::Auth),
         "a lane-healthy client error must not classify as Auth, got {:?}",
@@ -1301,7 +1298,7 @@ fn test_extract_error_echoed_api_key_invalid_token_does_not_park_the_lane() {
     );
     assert!(
         !matches!(
-            busbar_kernel::breaker::classify(&sig),
+            sig.class.disposition(),
             busbar_contract::upstream::Disposition::HardDown
         ),
         "no caller-supplied string may park a destination for every tenant sharing it"
@@ -1327,8 +1324,7 @@ fn test_extract_error_generic_invalid_argument_stays_client_fault() {
         Some("400"),
         "a generic INVALID_ARGUMENT must keep its bare status code, not become auth"
     );
-    let empty_map = std::collections::HashMap::new();
-    let sig = busbar_kernel::breaker::normalize_raw_error(&raw, &empty_map);
+    let sig = crate::test_host::classified(&raw);
     assert!(
         matches!(sig.class, StatusClass::ClientError),
         "a generic validation 400 must stay ClientError, got {:?}",
@@ -1336,7 +1332,7 @@ fn test_extract_error_generic_invalid_argument_stays_client_fault() {
     );
     assert!(
         matches!(
-            busbar_kernel::breaker::classify(&sig),
+            sig.class.disposition(),
             busbar_contract::upstream::Disposition::ClientFault
         ),
         "a generic validation 400 must stay a no-penalty ClientFault"
@@ -1820,8 +1816,7 @@ fn test_extract_error_invalid_word_near_api_key_stays_client_fault() {
         Some("400"),
         "the bare status code must be preserved, not synthesized to auth"
     );
-    let empty_map = std::collections::HashMap::new();
-    let sig = busbar_kernel::breaker::normalize_raw_error(&raw, &empty_map);
+    let sig = crate::test_host::classified(&raw);
     assert!(
         matches!(sig.class, StatusClass::ClientError),
         "must stay ClientError, got {:?}",
@@ -1829,7 +1824,7 @@ fn test_extract_error_invalid_word_near_api_key_stays_client_fault() {
     );
     assert!(
         matches!(
-            busbar_kernel::breaker::classify(&sig),
+            sig.class.disposition(),
             busbar_contract::upstream::Disposition::ClientFault
         ),
         "must stay a no-penalty ClientFault"
@@ -3935,11 +3930,29 @@ fn test_stream_open_tools_under_cap_records_all() {
 /// A well-formed credential yields exactly one `x-goog-api-key` header carrying the verbatim key.
 #[test]
 fn test_auth_headers_valid_key_emits_x_goog_api_key() {
-    let headers =
-        crate::presented_auth_headers("gemini", "AIzaSyValidKey123", &crate::test_signing_ctx());
-    assert_eq!(headers.len(), 1, "one auth header for a valid key");
-    assert_eq!(headers[0].0.as_str(), "x-goog-api-key");
-    assert_eq!(headers[0].1.to_str().ok(), Some("AIzaSyValidKey123"));
+    // #83a S2-a: the dialect DECLARES its credential scheme and the host presents it — the raw key
+    // in the custom `x-goog-api-key` header for every credential and mode, no Bearer. The bytes the host writes
+    // for a valid key, and the omission of a key whose bytes no header value may carry, are pinned in
+    // the host's suite over the shared fixture `testing/plane-copies/declared-credentials.json`.
+    let raw = busbar_contract::protocol::CredentialHeader::Raw {
+        header: "x-goog-api-key",
+        trim_start: false,
+    };
+    let Some(busbar_contract::protocol::EgressScheme::Static {
+        families,
+        own,
+        passthrough,
+    }) = crate::gemini::DECL.egress_scheme
+    else {
+        panic!("gemini declares a static credential scheme");
+    };
+    assert!(families.is_empty());
+    assert_eq!(own, raw);
+    assert_eq!(passthrough, raw);
+    assert!(
+        crate::gemini::DECL.egress_auth_headers.is_none(),
+        "no credential passes through the plane"
+    );
 }
 
 /// Security regression: a credential whose bytes are invalid for an HTTP header value
@@ -3949,11 +3962,28 @@ fn test_auth_headers_valid_key_emits_x_goog_api_key() {
 /// empty-header behavior lacked.
 #[test]
 fn test_auth_headers_invalid_key_omits_header_no_empty_value() {
-    let headers = crate::presented_auth_headers("gemini", "bad\nkey", &crate::test_signing_ctx());
+    // #83a S2-a: the dialect DECLARES its credential scheme and the host presents it — the raw key
+    // in the custom `x-goog-api-key` header for every credential and mode, no Bearer. The bytes the host writes
+    // for a valid key, and the omission of a key whose bytes no header value may carry, are pinned in
+    // the host's suite over the shared fixture `testing/plane-copies/declared-credentials.json`.
+    let raw = busbar_contract::protocol::CredentialHeader::Raw {
+        header: "x-goog-api-key",
+        trim_start: false,
+    };
+    let Some(busbar_contract::protocol::EgressScheme::Static {
+        families,
+        own,
+        passthrough,
+    }) = crate::gemini::DECL.egress_scheme
+    else {
+        panic!("gemini declares a static credential scheme");
+    };
+    assert!(families.is_empty());
+    assert_eq!(own, raw);
+    assert_eq!(passthrough, raw);
     assert!(
-        headers.is_empty(),
-        "an invalid-byte credential must omit the auth header, not emit an empty value: \
-             {headers:?}"
+        crate::gemini::DECL.egress_auth_headers.is_none(),
+        "no credential passes through the plane"
     );
 }
 
@@ -3961,11 +3991,28 @@ fn test_auth_headers_invalid_key_omits_header_no_empty_value() {
 /// the control-character class of header-invalid byte the validation guards against.
 #[test]
 fn test_auth_headers_control_byte_key_omits_header() {
-    let headers =
-        crate::presented_auth_headers("gemini", "key\u{0000}bad", &crate::test_signing_ctx());
+    // #83a S2-a: the dialect DECLARES its credential scheme and the host presents it — the raw key
+    // in the custom `x-goog-api-key` header for every credential and mode, no Bearer. The bytes the host writes
+    // for a valid key, and the omission of a key whose bytes no header value may carry, are pinned in
+    // the host's suite over the shared fixture `testing/plane-copies/declared-credentials.json`.
+    let raw = busbar_contract::protocol::CredentialHeader::Raw {
+        header: "x-goog-api-key",
+        trim_start: false,
+    };
+    let Some(busbar_contract::protocol::EgressScheme::Static {
+        families,
+        own,
+        passthrough,
+    }) = crate::gemini::DECL.egress_scheme
+    else {
+        panic!("gemini declares a static credential scheme");
+    };
+    assert!(families.is_empty());
+    assert_eq!(own, raw);
+    assert_eq!(passthrough, raw);
     assert!(
-        headers.is_empty(),
-        "a control-byte credential must omit the auth header: {headers:?}"
+        crate::gemini::DECL.egress_auth_headers.is_none(),
+        "no credential passes through the plane"
     );
 }
 

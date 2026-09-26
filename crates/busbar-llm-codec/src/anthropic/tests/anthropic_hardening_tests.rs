@@ -438,8 +438,7 @@ fn extract_error_429_with_token_body_not_reclassified_to_context_length() {
         "a 429 body mentioning tokens must NOT be overridden to the context-length code"
     );
     // End-to-end: the breaker normalizes it to RateLimit, not ContextLength.
-    let empty_map = std::collections::HashMap::new();
-    let signal = busbar_kernel::breaker::normalize_raw_error(&raw, &empty_map);
+    let signal = crate::test_host::classified(&raw);
     assert_eq!(
         signal.class,
         StatusClass::RateLimit,
@@ -460,8 +459,7 @@ fn extract_error_400_context_length_still_synthesized_under_gate() {
         Some("context_length_exceeded"),
         "a genuine 400 oversized-prompt body must still synthesize the context-length code"
     );
-    let empty_map = std::collections::HashMap::new();
-    let signal = busbar_kernel::breaker::normalize_raw_error(&raw, &empty_map);
+    let signal = crate::test_host::classified(&raw);
     assert_eq!(signal.class, StatusClass::ContextLength);
 }
 
@@ -978,7 +976,7 @@ fn stream_error_overloaded_is_transient_not_client_fault() {
         retry_after: None,
     };
     assert_eq!(
-        busbar_kernel::breaker::classify(&sig),
+        sig.class.disposition(),
         busbar_contract::upstream::Disposition::TransientUpstream,
         "a mid-stream overloaded_error is a transient upstream fault, not a client fault"
     );
@@ -996,7 +994,7 @@ fn stream_error_rate_limit_is_rate_limit_class() {
         retry_after: None,
     };
     assert_eq!(
-        busbar_kernel::breaker::classify(&sig),
+        sig.class.disposition(),
         busbar_contract::upstream::Disposition::TransientUpstream
     );
 }
@@ -1013,7 +1011,7 @@ fn stream_error_api_error_is_server_error_class() {
         retry_after: None,
     };
     assert_eq!(
-        busbar_kernel::breaker::classify(&sig),
+        sig.class.disposition(),
         busbar_contract::upstream::Disposition::TransientUpstream
     );
 }
@@ -1038,7 +1036,7 @@ fn stream_error_authentication_is_auth_hard_down() {
         retry_after: None,
     };
     assert_eq!(
-        busbar_kernel::breaker::classify(&sig),
+        sig.class.disposition(),
         busbar_contract::upstream::Disposition::HardDown,
         "a mid-stream authentication_error must hard-down the lane, not record nothing"
     );
@@ -1064,7 +1062,7 @@ fn stream_error_billing_is_billing_hard_down() {
         retry_after: None,
     };
     assert_eq!(
-        busbar_kernel::breaker::classify(&sig),
+        sig.class.disposition(),
         busbar_contract::upstream::Disposition::HardDown
     );
 }
@@ -1081,7 +1079,7 @@ fn stream_error_invalid_request_stays_client_error() {
         retry_after: None,
     };
     assert_eq!(
-        busbar_kernel::breaker::classify(&sig),
+        sig.class.disposition(),
         busbar_contract::upstream::Disposition::ClientFault,
         "a genuine client-fault error type must still classify as ClientFault"
     );
@@ -3087,7 +3085,7 @@ fn test_anthropic_streaming_safety_stop_reason_maps_to_refusal() {
 // ---- Fidelity items (Anthropic egress): sampling-param OMIT, response_format-drop
 // warn, and native thinking-block round-trip with signature. ----
 
-use busbar_kernel::test_support::warn_capture::WarnCapture;
+use crate::warn_capture::WarnCapture;
 
 /// SAMPLING: Anthropic's Messages API does NOT support `frequency_penalty`,
 /// `presence_penalty`, `seed`, or `n`. A cross-protocol IR carrying every one of them (e.g. read
