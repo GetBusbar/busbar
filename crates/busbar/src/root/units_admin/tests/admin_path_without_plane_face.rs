@@ -929,6 +929,7 @@ const A_SERVED_PLANE: busbar_contract::plane::PlaneDeclaration =
         }],
         fee_units: &[busbar_contract::plane::PER_REQUEST],
         metric_families: &[],
+        record_kinds: &["note"],
         served_op_classes: &[],
     };
 
@@ -1106,6 +1107,7 @@ async fn the_four_q71_verbs_are_served_and_refuse_by_name() {
         serde_json::json!([{"class": "calls", "family": "count"}])
     );
     assert_eq!(facts["fee_units"], serde_json::json!(["per_request"]));
+    assert_eq!(facts["record_kinds"], serde_json::json!(["note"]));
     assert_eq!(
         over_as(&node, "GET", "/api/v1/admin/plane-facts?plane=nope", "", op).await,
         (
@@ -1180,6 +1182,22 @@ async fn the_four_q71_verbs_are_served_and_refuse_by_name() {
         (
             404,
             r#"{"error":{"code":"not_found","message":"plane `nope` not found"}}"#.to_string()
+        )
+    );
+    // ARCHITECT RULING (b): a kind the named plane does not declare is refused by name.
+    assert_eq!(
+        over_as(
+            &node,
+            "POST",
+            "/api/v1/admin/plane-record-write",
+            r#"{"plane":"example","kind":"task","id":"t-1","body":{}}"#,
+            op
+        )
+        .await,
+        (
+            403,
+            r#"{"error":{"code":"forbidden","message":"plane `example` may not write record kind `task`"}}"#
+                .to_string()
         )
     );
     assert_eq!(

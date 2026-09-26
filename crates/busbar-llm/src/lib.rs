@@ -271,6 +271,7 @@ pub const PLANE_DECLARATION: busbar_contract::plane::PlaneDeclaration =
         metric_families: &[],
         // The chat class, served one level down: another plane's nested unit names the class and the
         // host resolves it here, so the requesting plane spells no plane.
+        record_kinds: &[],
         served_op_classes: busbar_plane_llm::meta::SERVED_OP_CLASSES,
     };
 

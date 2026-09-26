@@ -130,7 +130,13 @@ pub const ABI_MAJOR: u32 = 2;
 /// `write` / `close` are RETIRED in this minor — no shipped wire needs them: their fields keep their
 /// offsets, a minor-28 decl leaves them `None`, and the loader refuses a transport built before minor
 /// 28 (manifest and decl alike) and a decl that fills a retired slot. Append-only everywhere else.
-pub const ABI_MINOR: u32 = 28;
+///
+/// 28→29 (1.6.0, UC-VERBS; owner answer Q71(2), ARCHITECT RULING (b)): `hot::PlaneDecl` appends the
+/// `record_kinds` tail (a borrowed list of `hot::decl::DeclStr`), so a dropped-in plane declares the
+/// plane-record kinds it keeps exactly as a linked one does, and the administrative
+/// `plane_record_write` verb writes only a kind the named plane declares. A decl ending before the
+/// tail keeps none. Append-only.
+pub const ABI_MINOR: u32 = 29;
 
 /// The FROZEN-FOR-ALL-TIME ABI header. This exact layout — `magic` at offset 0, `abi_major` at 8,
 /// `abi_minor` at 12 — is a permanent contract: it may NEVER be reordered, resized, extended, or

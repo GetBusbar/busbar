@@ -22,6 +22,7 @@ static SERVING: PlaneDecl = PlaneDecl {
     declaration: PlaneDeclaration {
         key: "neutral-completion-server",
         fallback: false,
+        record_kinds: &[],
         served_op_classes: &[ServedOpClass {
             op: SAMPLING_OP,
             name: "AI",
@@ -36,6 +37,7 @@ static SERVING_OTHER: PlaneDecl = PlaneDecl {
     declaration: PlaneDeclaration {
         key: "neutral-completion-server",
         fallback: false,
+        record_kinds: &[],
         served_op_classes: &[ServedOpClass {
             op: busbar_contract::ids::OpClassId::new("embeddings"),
             name: "AI",

@@ -419,6 +419,7 @@ fn compiled_in_declaration() -> crate::HotDeclaration {
         .iter()
         .map(|c| (vocab(c.op.ptr, c.op.len), vocab(c.name.ptr, c.name.len)))
         .collect(),
+        record_kinds: list(d.record_kinds_ptr, d.record_kinds_len),
     }
 }
 

@@ -176,6 +176,7 @@ pub(crate) fn plane_facts_effect(
             .iter()
             .map(|s| serde_json::json!({"op": s.op.as_str(), "name": s.name}))
             .collect::<Vec<_>>(),
+        "record_kinds": decl.record_kinds,
     }))
 }
 
@@ -236,11 +237,20 @@ pub(crate) fn plane_record_write_effect(
             ));
         }
     };
-    if planes(plane).is_none() {
+    let Some(decl) = planes(plane) else {
         return Ok(refused(
             404,
             "not_found",
             &format!("plane `{plane}` not found"),
+        ));
+    };
+    // The plane's own declaration is the verdict (ARCHITECT RULING (b)): a record lands only under
+    // a kind the named plane declares it keeps, never under another plane's kind or one nobody reads.
+    if !busbar_contract::plane::declares_record_kind(&decl, kind) {
+        return Ok(refused(
+            403,
+            "forbidden",
+            &format!("plane `{plane}` may not write record kind `{kind}`"),
         ));
     }
     let sink = sink.ok_or(GovernanceError::Store)?;

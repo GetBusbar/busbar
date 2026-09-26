@@ -349,6 +349,13 @@ pub struct PlaneDecl {
     pub served_op_classes_ptr: *const DeclServedOpClass,
     /// Number of entries in the served-op-classes list.
     pub served_op_classes_len: usize,
+
+    // ── THE PLANE-RECORD KINDS THE PLANE KEEPS (appended at minor 29). A decl that ends before this
+    //    tail keeps none. ──
+    /// Borrowed list of the plane-record kinds this plane writes on the store's plane-record seam.
+    pub record_kinds_ptr: *const DeclStr,
+    /// Number of entries in the record-kinds list.
+    pub record_kinds_len: usize,
 }
 
 // SAFETY: `PlaneDecl` holds `AbiPreamble` scalars, `Option<extern "C-unwind" fn>` slots — and,
@@ -418,6 +425,8 @@ impl PlaneDecl {
         metric_families_len: 0,
         served_op_classes_ptr: core::ptr::null(),
         served_op_classes_len: 0,
+        record_kinds_ptr: core::ptr::null(),
+        record_kinds_len: 0,
     };
 }
 

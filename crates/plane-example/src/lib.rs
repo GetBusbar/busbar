@@ -141,6 +141,9 @@ static SERVED_OP_CLASSES: [DeclServedOpClass; 1] = [DeclServedOpClass {
     name: DeclStr::new("Example Plane"),
 }];
 
+/// The plane-record kind this plane keeps, so the both-doors proof compares a non-empty row.
+static RECORD_KINDS: [DeclStr; 1] = [DeclStr::new("example_record")];
+
 /// THE PATH THIS PLANE ANSWERS ON, the method it takes and the wire format it speaks — what its
 /// `claims` slot states once it is built with a public URL to be admitted under.
 const CLAIM_METHOD: &str = "POST";
@@ -654,6 +657,8 @@ pub static PLANE_DECL: PlaneDecl = PlaneDecl {
     metric_families_len: METRIC_FAMILIES.len(),
     served_op_classes_ptr: SERVED_OP_CLASSES.as_ptr(),
     served_op_classes_len: SERVED_OP_CLASSES.len(),
+    record_kinds_ptr: RECORD_KINDS.as_ptr(),
+    record_kinds_len: RECORD_KINDS.len(),
 };
 
 // Emit the `cdylib` boundary symbols (`busbar_abi`, `busbar_plugin_kind() == "plane"`,

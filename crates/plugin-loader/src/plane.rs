@@ -150,6 +150,9 @@ pub struct HotDeclaration {
     /// The operation classes the plane serves one level down, each `(class, display name)` (the
     /// minor-27 tail; empty for a decl that ends before it).
     pub served_op_classes: Vec<(String, String)>,
+    /// The plane-record kinds the plane keeps (the minor-29 tail; empty for a decl that ends
+    /// before it).
+    pub record_kinds: Vec<String>,
 }
 
 /// One metric family a HOT-lane plane declares, read off its decl into owned values.
@@ -1076,7 +1079,28 @@ fn read_declaration(
         )?,
         metric_families: read_metric_families(decl, size, display)?,
         served_op_classes: read_served_op_classes(decl, size, display)?,
+        record_kinds: read_record_kinds(decl, size, display)?,
     })
+}
+
+/// The decl's plane-record-kind tail (minor 29). A decl that ends before it keeps no kind — an
+/// append-only absence: the plane states none, so no administrative write lands under it.
+fn read_record_kinds(
+    decl: *const PlaneDecl,
+    size: u32,
+    display: &str,
+) -> Result<Vec<String>, String> {
+    let ptr = busbar_plugin::read_sized_field!(decl, size, PlaneDecl, record_kinds_ptr);
+    let len = busbar_plugin::read_sized_field!(decl, size, PlaneDecl, record_kinds_len);
+    let (Some(ptr), Some(len)) = (ptr, len) else {
+        return Ok(Vec::new());
+    };
+    decl_list(ptr, len, "record kind", display)?
+        .into_iter()
+        .map(|d: DeclStr| {
+            decl_str(d, display)?.ok_or_else(|| format!("plane '{display}' states no record kind"))
+        })
+        .collect()
 }
 
 /// The decl's served-operation-class tail (minor 27). A decl that ends before it serves no class —

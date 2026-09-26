@@ -405,6 +405,7 @@ pub fn hot_plane_row(plane: &'static DynPlane) -> Result<PlaneDecl, String> {
             .collect::<Vec<_>>()
             .leak(),
         fee_units: list(&stated.fee_units),
+        record_kinds: list(&stated.record_kinds),
         metric_families: stated
             .metric_families
             .iter()

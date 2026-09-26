@@ -186,6 +186,7 @@ fn a_plane_declaring_an_unlisted_first_party_family_is_refused_a_row() {
                 billable_classes: &[],
                 fee_units: &[],
                 metric_families: families,
+                record_kinds: &[],
                 served_op_classes: &[],
             };
             let native: &'static [PlaneDecl] = Box::leak(Box::new([PlaneDecl::assemble(

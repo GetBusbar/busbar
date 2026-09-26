@@ -222,6 +222,7 @@ fn the_declaration_tail_reads_back_as_stated() {
             fee_units: Vec::new(),
             metric_families: Vec::new(),
             served_op_classes: Vec::new(),
+            record_kinds: Vec::new(),
         }
     );
     let mut d = decl();
@@ -293,6 +294,32 @@ fn the_served_op_class_tail_reads_back_as_stated() {
         .is_empty());
     d.size = core::mem::size_of::<PlaneDecl>() as u32;
     d.served_op_classes_ptr = core::ptr::null();
+    assert!(plane_over(&d).is_err(), "a stated count behind a null list");
+}
+
+/// The record kinds of [`the_record_kind_tail_reads_back_as_stated`].
+static KINDS: [DeclStr; 2] = [DeclStr::new("note"), DeclStr::new("note_event")];
+
+/// Minor 29: the plane-record kinds a decl keeps read back as stated; a decl that ends before the
+/// tail (an older minor) keeps none, so no administrative write lands under it.
+#[test]
+fn the_record_kind_tail_reads_back_as_stated() {
+    let _s = serial();
+    let mut d = decl();
+    d.record_kinds_ptr = KINDS.as_ptr();
+    d.record_kinds_len = KINDS.len();
+    assert_eq!(
+        plane_over(&d).unwrap().declaration().record_kinds,
+        vec!["note".to_string(), "note_event".to_string()]
+    );
+    d.size = core::mem::offset_of!(PlaneDecl, record_kinds_ptr) as u32;
+    assert!(plane_over(&d)
+        .unwrap()
+        .declaration()
+        .record_kinds
+        .is_empty());
+    d.size = core::mem::size_of::<PlaneDecl>() as u32;
+    d.record_kinds_ptr = core::ptr::null();
     assert!(plane_over(&d).is_err(), "a stated count behind a null list");
 }
 

@@ -507,6 +507,8 @@ pub(crate) struct PlaneFactsView {
     fee_units: Vec<String>,
     metric_families: Vec<PlaneFactsMetric>,
     served_op_classes: Vec<PlaneFactsServed>,
+    /// The plane-record kinds the plane keeps; `POST /plane-record-write` writes only these.
+    record_kinds: Vec<String>,
 }
 
 /// One billable class a plane ledgers.
@@ -815,8 +817,10 @@ fn doc_for(
         KernelVerb::PlaneRecordWrite => VerbDoc {
             summary: "Upsert one record of a plane this node serves",
             description: "Upserted by `(kind, id)` through the plane-facing store the planes \
-                          persist through. `body` is stored as its JSON bytes and never decoded by \
-                          the store; `terminal` is the retention disposition."
+                          persist through, and only for a `kind` the named plane declares in its \
+                          `record_kinds` (`GET /plane-facts` lists them). `body` is stored as its \
+                          JSON bytes and never decoded by the store; `terminal` is the retention \
+                          disposition."
                 .to_string(),
             success: Success::Json(
                 schema_of(gen.subschema_for::<PlaneRecordWriteView>()),
@@ -834,7 +838,16 @@ fn doc_for(
                          {BODY_UNREADABLE}"
                     ),
                 ),
-                gated_403(),
+                {
+                    let (status, gated) = gated_403();
+                    (
+                        status,
+                        format!(
+                            "{gated}, or ``plane `<key>` may not write record kind `<kind>` `` — the \
+                             named plane does not declare the kind in its `record_kinds`"
+                        ),
+                    )
+                },
                 (
                     "404",
                     "`not_found`: ``plane `<key>` not found``".to_string(),

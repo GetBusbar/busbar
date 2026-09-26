@@ -27,6 +27,7 @@ fn decl(key: &'static str, served: &'static [ServedOpClass]) -> PlaneDeclaration
         billable_classes: &[],
         fee_units: &[],
         metric_families: &[],
+        record_kinds: &[],
         served_op_classes: served,
     }
 }
@@ -79,5 +80,25 @@ fn one_class_has_one_server() {
     assert!(
         refused.contains("`gamma`") && refused.contains("`beta`") && refused.contains("summarize"),
         "the refusal names both planes and the class: {refused}"
+    );
+}
+
+/// ARCHITECT RULING (b): a plane keeps exactly the record kinds it declares — the verdict the
+/// administrative `plane_record_write` verb takes before it writes.
+#[test]
+fn a_plane_declares_the_record_kinds_it_keeps_and_no_other() {
+    let keeps = PlaneDeclaration {
+        record_kinds: &["task", "task_event"],
+        ..decl("keeper", &[])
+    };
+    assert!(declares_record_kind(&keeps, "task"));
+    assert!(declares_record_kind(&keeps, "task_event"));
+    assert!(
+        !declares_record_kind(&keeps, "call"),
+        "another plane's kind"
+    );
+    assert!(
+        !declares_record_kind(&decl("none", &[]), "task"),
+        "a plane that keeps none"
     );
 }

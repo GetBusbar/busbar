@@ -327,6 +327,7 @@ pub const PLANE_DECLARATION: busbar_contract::plane::PlaneDeclaration =
         // passes per-request admission, so `streams.fees.per_request` would charge nothing — refused.
         fee_units: &[PER_SESSION],
         metric_families: &[],
+        record_kinds: &[],
         served_op_classes: &[],
     };
 

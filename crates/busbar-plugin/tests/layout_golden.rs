@@ -603,7 +603,10 @@ fn compute_layout() -> String {
             metric_families_len,
             // The served operation classes (minor 28).
             served_op_classes_ptr,
-            served_op_classes_len
+            served_op_classes_len,
+            // The plane-record kinds (minor 29).
+            record_kinds_ptr,
+            record_kinds_len
         ]
     );
     record!(s, DeclStr, [ptr, len]);
