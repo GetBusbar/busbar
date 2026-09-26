@@ -32,10 +32,13 @@ path = "src/lib.rs"
 [dependencies]
 busbar-contract = { path = "../busbar-contract" }
 sha2 = { workspace = true }
-# NO `serde`. The money-path durable record SHAPES left for the contract crate's `records` module
-# under DECISIONS #83/#84, and they were the ONLY serde in this crate — the ledger arithmetic itself
-# writes no bytes. The book states what money MEANS; it does not define what money LOOKS LIKE on a
-# disk, and it is no longer in a plugin author's compile closure because it does not.
+# `serde`, for ONE type: an open meter class's configured rate (`cost::UnitRate`, #83a O1 — the
+# rate-card representation lives with the card). Its exact-decimal `Deserialize` and its two-form
+# `Serialize` are written by hand (no derive, no float): the config text a rate is read from. The
+# money-path durable record SHAPES left for the contract crate's `records` module under DECISIONS
+# #83/#84, so no durable record is serialized here — the book states what money MEANS; it does not
+# define what money LOOKS LIKE on a disk.
+serde = { workspace = true }
 
 [dev-dependencies]
 # The `usage_migration` suite parses a raw pre-M1b JSON row through the frozen shapes, exactly as a

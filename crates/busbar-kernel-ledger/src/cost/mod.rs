@@ -7,8 +7,10 @@
 //! The money arithmetic: a dated rate-card history, the quantities a posting stores, and the lookup
 //! that turns the two into a price.
 //!
-//! Everything here is a pure function over integers. No clock, no store, no config parser and no
-//! plane appears in this crate, so an auditor can re-derive an invoice from the source by hand.
+//! Everything here is a pure function over integers. No clock, no store and no plane appears in
+//! this crate, and the one configured value it reads — an open meter class's rate, [`UnitRate`] — is
+//! read exactly, by integer arithmetic over its digits, so an auditor can re-derive an invoice from
+//! the source by hand.
 //!
 //! # The three layers
 //!
@@ -69,6 +71,7 @@ mod history;
 mod posting;
 mod project;
 mod rate;
+mod unit_rate;
 mod view;
 
 /// The exact count type the one function prices — re-exported so a caller driving a
@@ -86,6 +89,7 @@ pub use rate::{
     RateCard, TierRates, CLASS_CACHE_READ, CLASS_CACHE_WRITE, CLASS_INPUT, CLASS_OUTPUT,
     PER_REQUEST, PER_SESSION,
 };
+pub use unit_rate::UnitRate;
 pub use view::{
     nanos_of_exact, price as price_ledger, price_exact, price_in_view, whole, LedgerEntry, Money,
     MoneyError, Tally, EXACT_SCALE, MONEY_SCALE, PLANE_LANE_SEP,
