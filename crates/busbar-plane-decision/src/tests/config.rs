@@ -33,11 +33,7 @@ fn a_good_decisions_config_passes_clean() {
 fn refuses_a_model_naming_an_undefined_provider() {
     let json = r#"{"models":{"jev":{"provider":"ghost"}}}"#;
     let section: DecisionsSection = serde_json::from_str(json).expect("valid shape parses");
-    let errors = validate_cross_refs(
-        &section,
-        &providers(&[("typesafe", PROTOCOL)]),
-        &hooks(&[]),
-    );
+    let errors = validate_cross_refs(&section, &providers(&[("typesafe", PROTOCOL)]), &hooks(&[]));
     assert_eq!(errors.len(), 1, "{errors:?}");
     assert!(
         errors[0].contains("decisions.models.jev.provider"),
