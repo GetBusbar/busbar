@@ -9437,7 +9437,10 @@ mod plant_tests {
                 e.class.1.as_str()
             })
             .collect();
-        for k in ["hooks", "store", "export", "transport", "plane"] {
+        // `export` is not here: the export sinks left this repository for their own (pulled as
+        // pinned git dependencies), so the census, which reads this tree's crates, holds none of
+        // them and the root links no in-tree export crate.
+        for k in ["hooks", "store", "transport", "plane"] {
             assert!(
                 linked.contains(k),
                 "the root no longer links a `{k}` crate — the census is not the tree this test \
