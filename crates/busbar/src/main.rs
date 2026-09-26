@@ -473,7 +473,8 @@ fn main() {
 /// has begun is worse than no opening at all, because it looks authoritative.
 ///
 /// It returns the wired stack, the rows a view reads them back from, and what the migration did.
-/// `secret: None` seals an unsigned opening, which the ledger unit accepts.
+/// The opening is signed with the audit chain's own key (Q71(3): one keyset); a chain given no key
+/// seals it unsigned, which the ledger unit accepts.
 ///
 /// # Errors
 ///
@@ -518,9 +519,12 @@ fn compose_boot_book(
         );
     }
     let migration = {
-        let mut records =
-            durability.migration_records(token, busbar_contract::caps::StepName::Meter);
-        root::migration::run(adapter, &mut records, mig, now, None)
+        let (mut records, signer) =
+            durability.migration_records_signed(token, busbar_contract::caps::StepName::Meter);
+        let signer = signer
+            .as_ref()
+            .map(|s| s as &dyn busbar_kernel_ledger::checkpoint::CheckpointSecret);
+        root::migration::run(adapter, &mut records, mig, now, signer)
             .map_err(|e| format!("the boot ledger could not seal its opening balances: {e}"))?
     };
     Ok((durability, rows, migration))
@@ -947,6 +951,33 @@ async fn run(data_workers: usize) {
     // neither opens nothing.
     let book = (cfg!(feature = "root-admin") || ROOT_UNITS.iter().any(|u| u.opens_book))
         .then(|| open_boot_book(&app_handle.load()));
+
+    // THE CHECKPOINT CADENCE (OWNER Q71(3); ARCHITECTURE.md §4.7): armed on the one book once its
+    // opening is sealed, so every serving append checks the entry half and this tick checks the
+    // interval half — whichever comes first. The tick runs for the process lifetime; each pass
+    // holds the book's lock only for the check (and the seal, when one is due).
+    if let Some(book) = &book {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs());
+        book.durability
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .arm_checkpoints(now);
+        let durability = Arc::clone(&book.durability);
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(std::time::Duration::from_secs(
+                root::durability::CHECKPOINT_TICK_SECS,
+            ));
+            loop {
+                tick.tick().await;
+                durability
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .seal_on_cadence();
+            }
+        });
+    }
 
     // THE ROOT UNITS' BOOK STEP, once the book is open and before either listener binds: the
     // root-driven exit arm is bound to the book, so a posting the loop hands back has somewhere to go.

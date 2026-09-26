@@ -169,3 +169,55 @@ fn a_deployment_with_nothing_behind_it_still_seals() {
     assert!(opening.checkpoint.totals.is_empty());
     assert!(opening.checkpoint.body_hash_verifies());
 }
+
+/// THE OPENING IS SIGNED WITH THE CHAIN'S OWN KEY (OWNER Q71(3): one keyset, #82): the signer the
+/// boot hands the migration is the audit chain's, so the opening verifies against the audit keyset;
+/// a chain given no key offers no signer and the opening goes down unsigned rather than failing.
+#[test]
+fn the_opening_is_signed_with_the_audit_chains_own_key() {
+    use crate::root::durability::{build_for_node, keyset_of, DurabilityConfig, KeySetVerifier};
+    use busbar_contract::caps::{DurableWrite, Grant, KernelSeal, StepName};
+    use busbar_kernel_ledger::checkpoint::CheckpointSecret;
+    use busbar_kernel_wal::NullShipper;
+
+    let token = Grant::<DurableWrite>::mint(&KernelSeal::acquire_for_kernel());
+    let open = |keyed: bool| {
+        let mut durability = build_for_node(
+            &DurabilityConfig { data_dir: None },
+            1,
+            Box::new(NullShipper::new()),
+            Box::new(busbar_kernel_ledger::legacy::RecordingRows::new()),
+        )
+        .expect("a memory-buffered journal cannot fail to open");
+        if keyed {
+            durability.record = busbar_kernel_audit::AuditChain::new()
+                .signing_with(busbar_kernel_audit::AuditSigningKey::from_seed(&[5u8; 32]));
+        }
+        let outcome = {
+            let (mut records, signer) =
+                durability.migration_records_signed(&token, StepName::Meter);
+            let signer = signer.as_ref().map(|s| s as &dyn CheckpointSecret);
+            seal_opening(&rows(), &mut records, &cfg(), 1_700_000_000, signer).expect("seals")
+        };
+        let Outcome::Sealed(opening) = outcome else {
+            panic!("a first boot seals its opening");
+        };
+        (opening.checkpoint, keyset_of(&durability.record))
+    };
+
+    let (signed, keys) = open(true);
+    assert!(
+        signed.signature.is_some(),
+        "the chain's key signed the opening"
+    );
+    assert_eq!(signed.verify_seal(&KeySetVerifier::new(keys)), Ok(()));
+
+    let (unsigned, keys) = open(false);
+    assert_eq!(
+        unsigned
+            .verify_seal(&KeySetVerifier::new(keys))
+            .expect_err("unsigned")
+            .to_string(),
+        "checkpoint 0 carries no signature — no key in the keyset can vouch for it"
+    );
+}

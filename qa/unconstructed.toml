@@ -164,27 +164,11 @@ switch    = "STRIKE THIS ROW in the same commit that gives the composition root 
 # RateNanos constructor, superseded by `Pricer::from_card` (the ledger's one card). The stub second
 # node's `Pricer::flat(0)` stays with item 245; if that door ever needs a card, it is `from_card`.
 
-# LEDGER — no node ever seals a checkpoint, so the checkpoints read is empty everywhere.
-[[capability]]
-id        = "ledger-checkpoint-seal"
-built     = "crates/busbar-kernel-ledger/src/checkpoint.rs"
-symbol    = "seal_as_of"
-construct = [".seal_as_of(", "::seal_as_of("]
-scope     = ["crates"]
-why       = "GET /api/v1/admin/ledger/checkpoints returns an empty list on every production node because nothing ever seals one. #79's premise that a window sealed into a signed checkpoint cannot be rewritten is vacuously true while no window is ever sealed."
-unshipped = true
-switch    = "STRIKE THIS ROW in the commit that gives the composition root a caller for the checkpoint sealer — it lands with the journal_checkpoint row below, which is the writer half of the same seam."
-
-# LEDGER — the writer that would push a sealed checkpoint onto the node has no caller.
-[[capability]]
-id        = "ledger-checkpoint-journal"
-built     = "crates/busbar/src/root/durability/mod.rs"
-symbol    = "journal_checkpoint"
-construct = [".journal_checkpoint("]
-scope     = ["crates"]
-why       = "Durability is built with checkpoints: Vec::new() and the one function that would push onto that vector is called by nothing, so the checkpoint list is not merely empty at boot — there is no code path on any node that can ever add to it."
-unshipped = true
-switch    = "STRIKE THIS ROW in the commit that calls journal_checkpoint on a real schedule or seam, together with ledger-checkpoint-seal."
+# LEDGER — `ledger-checkpoint-seal` and `ledger-checkpoint-journal` STRUCK 2026-09-26 (SEAL-ROOT;
+# OWNER Q71(3), spec #82 one keyset; ARCHITECTURE.md §4.7 cadence, architect ruling 2026-09-26: fixed
+# constants 10,000 entries / 60 s): the root's sealer (crates/busbar/src/root/durability/seal.rs)
+# calls Checkpoint::seal_as_of and Durability::journal_checkpoint on that cadence, signing with the
+# audit chain's own key, and GET /api/v1/admin/ledger/checkpoints serves each seal and its verify_seal.
 
 # LEDGER — `ledger-adjusting-entries` STRUCK 2026-09-25 (UC-STRIKE; #77(2) "no adjusting lines",
 # #77(3) "price is NEVER stored", #79, Q36/Q9): `adjusting_entries`, `Repricing` and

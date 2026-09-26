@@ -161,8 +161,9 @@ pub const KNOWN_UNSHIPPED: &[&str] = &[
     // from the two live `limits.*` keys.
     // `budget-pricer-card` STRUCK 2026-09-25 (#43/item 104): `Pricer::with_card` deleted,
     // superseded by `Pricer::from_card`.
-    "ledger-checkpoint-seal",
-    "ledger-checkpoint-journal",
+    // `ledger-checkpoint-seal` / `ledger-checkpoint-journal` STRUCK 2026-09-26 (SEAL-ROOT; owner
+    // Q71(3)): the root's sealer calls `Checkpoint::seal_as_of` and `journal_checkpoint` on the
+    // fixed cadence (10,000 entries / 60 s), signed with the audit chain's key.
     // `ledger-adjusting-entries` STRUCK 2026-09-25 (#77(2)(3), Q36/Q9): the adjusting-entry code
     // is deleted; an amendment reprices as a view.
     // `money-one-function-view` STRUCK 2026-09-24 (owner ruling Q12/Q25c; item 421).

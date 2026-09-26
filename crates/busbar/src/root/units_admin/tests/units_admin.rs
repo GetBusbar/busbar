@@ -2764,6 +2764,72 @@ fn the_seal_and_the_marker_this_node_made_are_the_ones_it_serves() {
     );
 }
 
+/// THE CHECKPOINTS READ RENDERS THE SEAL'S VERIFICATION (OWNER Q71(3): one keyset, #82): a
+/// checkpoint the node's own chain key signed verifies against the node's audit keyset, and each
+/// refusal is served in its own words — an EDITED seal and an UNSIGNED one.
+#[cfg(feature = "root-admin")]
+#[test]
+fn the_checkpoints_read_serves_whether_each_seal_verifies_against_the_audit_keyset() {
+    let units = crate::root::kernel::ProductionUnits::admin_only(Arc::new(AnsweringDispatch));
+    let seal = busbar_contract::caps::KernelSeal::acquire_for_kernel();
+    let token = busbar_contract::caps::Grant::<busbar_contract::caps::DurableWrite>::mint(&seal);
+    {
+        let mut durability = units.durability.lock().expect("durability lock");
+        durability.record = busbar_kernel_audit::AuditChain::new()
+            .signing_with(busbar_kernel_audit::AuditSigningKey::from_seed(&[7u8; 32]));
+        let signed = durability
+            .seal_checkpoint(
+                &token,
+                busbar_contract::caps::StepName::Meter,
+                1_700_000_100,
+            )
+            .expect("the node seals and signs");
+        // The same seal with a figure edited after it was made, and one nobody signed.
+        let mut edited = signed.clone();
+        edited.checkpoint_seq = 2;
+        let unsigned = busbar_kernel_ledger::checkpoint::Checkpoint::seal(
+            3,
+            0,
+            1_700_000_200,
+            Vec::new(),
+            std::collections::BTreeMap::new(),
+            0,
+            0,
+            None,
+        )
+        .expect("an unsigned seal cannot fail");
+        durability.checkpoints.push(edited);
+        durability.checkpoints.push(unsigned);
+    }
+
+    let node = AdminNode::new(crate::root::kernel::new_kernel(), units);
+    let served: serde_json::Value = serde_json::from_slice(
+        &node
+            .answer(a_ledger_request("/api/v1/admin/ledger/checkpoints"))
+            .body,
+    )
+    .expect("valid JSON");
+    let sealed = served["checkpoints"].as_array().expect("checkpoints");
+    assert_eq!(sealed.len(), 3);
+
+    assert_eq!(sealed[0]["signed"], true);
+    assert_eq!(sealed[0]["seal_verifies"], true);
+    assert_eq!(sealed[0]["seal_refusal"], serde_json::Value::Null);
+
+    assert_eq!(sealed[1]["seal_verifies"], false);
+    assert_eq!(
+        sealed[1]["seal_refusal"],
+        "checkpoint 2 does not hash to its own figures — it was EDITED after it was sealed"
+    );
+
+    assert_eq!(sealed[2]["signed"], false);
+    assert_eq!(sealed[2]["seal_verifies"], false);
+    assert_eq!(
+        sealed[2]["seal_refusal"],
+        "checkpoint 3 carries no signature — no key in the keyset can vouch for it"
+    );
+}
+
 /// A caller the node will not authenticate gets from a ledger view exactly what it gets from
 /// the legacy read that touches the same money — byte for byte, including the status.
 ///

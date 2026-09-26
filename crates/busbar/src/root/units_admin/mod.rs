@@ -306,6 +306,12 @@ pub trait LedgerView: Send + Sync {
     /// The sealed checkpoints, oldest first.
     fn checkpoints(&self) -> Vec<busbar_kernel_ledger::checkpoint::Checkpoint>;
 
+    /// The keyset a checkpoint's seal is verified against — the audit chain's own (Q71(3): one
+    /// keyset, #82). Empty by default: a view bound to no chain vouches for no signature.
+    fn checkpoint_keys(&self) -> busbar_kernel_audit::AuditKeySet {
+        busbar_kernel_audit::AuditKeySet::new()
+    }
+
     /// The marker the first boot after the upgrade sealed, if this deployment has migrated.
     fn migration_marker(&self) -> Option<busbar_kernel_ledger::migration::MigrationMarker>;
 
@@ -633,6 +639,10 @@ impl LedgerView for NodeLedger {
         self.lock().checkpoints.clone()
     }
 
+    fn checkpoint_keys(&self) -> busbar_kernel_audit::AuditKeySet {
+        crate::root::durability::keyset_of(&self.lock().record)
+    }
+
     fn migration_marker(&self) -> Option<busbar_kernel_ledger::migration::MigrationMarker> {
         self.lock().migration_marker()
     }
@@ -844,18 +854,12 @@ impl AuditView for NodeAudit {
     }
 
     fn keys(&self) -> busbar_kernel_audit::AuditKeySet {
-        let mut keys = busbar_kernel_audit::AuditKeySet::new();
         // The public half of the key this chain signs with, where it was given one. A node that was
         // given none answers with an EMPTY set, and that is the truth about it: nothing it sealed
         // carries a signature, so there is no key with which to check one. What the set must never
-        // do is carry a key the node does not sign with.
-        let hex = self.lock().record.public_key_hex();
-        if let Some(hex) = hex {
-            if let Ok(key) = busbar_kernel_audit::AuditVerifyingKey::from_hex(&hex) {
-                keys.insert(key);
-            }
-        }
-        keys
+        // do is carry a key the node does not sign with. The checkpoints read verifies against the
+        // same set (Q71(3): one keyset).
+        crate::root::durability::keyset_of(&self.lock().record)
     }
 }
 
@@ -1893,7 +1897,11 @@ fn render_ledger_view(
                 .map_err(refused)?
                 .into_bytes()
         }
-        KernelVerb::GetLedgerCheckpoints => render_checkpoints(&view.checkpoints()).into_bytes(),
+        KernelVerb::GetLedgerCheckpoints => render_checkpoints(
+            &view.checkpoints(),
+            &crate::root::durability::KeySetVerifier::new(view.checkpoint_keys()),
+        )
+        .into_bytes(),
         KernelVerb::GetLedgerReconciliation => {
             // As the totals arm above: a refused row is off the ledger side of the identity too,
             // since `NodeLedger::rows_of` walks the same settled cells.
@@ -2129,7 +2137,14 @@ fn render_totals(
 /// `body_hash_verifies` is served beside the hash rather than instead of it. The hash is what an
 /// auditor re-derives independently; the boolean is this node's own answer for the same question,
 /// and serving both is what lets the two be compared rather than trusted.
-fn render_checkpoints(checkpoints: &[busbar_kernel_ledger::checkpoint::Checkpoint]) -> String {
+///
+/// `seal_verifies` is [`busbar_kernel_ledger::checkpoint::Checkpoint::verify_seal`] against the
+/// audit keyset (Q71(3): one keyset), and `seal_refusal` is its refusal in its own words — EDITED,
+/// UNSIGNED or a signature the keyset rejects — or `null` when the seal verifies.
+fn render_checkpoints(
+    checkpoints: &[busbar_kernel_ledger::checkpoint::Checkpoint],
+    keys: &dyn busbar_kernel_ledger::checkpoint::CheckpointVerifier,
+) -> String {
     let mut out = String::from("{\"checkpoints\":[");
     for (i, cp) in checkpoints.iter().enumerate() {
         if i > 0 {
@@ -2162,6 +2177,13 @@ fn render_checkpoints(checkpoints: &[busbar_kernel_ledger::checkpoint::Checkpoin
         } else {
             "false"
         });
+        match cp.verify_seal(keys) {
+            Ok(()) => out.push_str(",\"seal_verifies\":true,\"seal_refusal\":null"),
+            Err(refusal) => {
+                out.push_str(",\"seal_verifies\":false,\"seal_refusal\":");
+                json_string(&refusal.to_string(), &mut out);
+            }
+        }
         out.push_str(",\"heads\":[");
         for (j, head) in cp.heads.iter().enumerate() {
             if j > 0 {
