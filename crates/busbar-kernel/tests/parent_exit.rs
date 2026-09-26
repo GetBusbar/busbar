@@ -138,12 +138,7 @@ impl Units for ParentExitsMidRoute<'_> {
     fn evidence(&self, ctx: &UnitCtx) -> Evidence {
         self.child.evidence(ctx)
     }
-    fn at_parent_exit(
-        &self,
-        _admit: &Grant<Admittance>,
-        _ctx: &UnitCtx,
-        accrual: &HoldAccrual,
-    ) -> Result<u64, Refusal> {
+    fn at_parent_exit(&self, _ctx: &UnitCtx, accrual: &HoldAccrual) -> Result<u64, Refusal> {
         match self.door_backs {
             None => Ok(accrual.amount()),
             Some(reason) => Err(Refusal::new(reason)),

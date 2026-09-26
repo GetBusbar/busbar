@@ -624,12 +624,7 @@ pub trait Units {
     /// pushed and nothing refuses. A door that keeps the principal's slice draws the hold against
     /// it and refuses a child the slice cannot back, with the budget block it renders for any
     /// other unit (`busbar_kernel_budget::AdmissionUnit::at_parent_exit`).
-    fn at_parent_exit(
-        &self,
-        _admit: &Grant<Admittance>,
-        _ctx: &UnitCtx,
-        accrual: &HoldAccrual,
-    ) -> Result<u64, Refusal> {
+    fn at_parent_exit(&self, _ctx: &UnitCtx, accrual: &HoldAccrual) -> Result<u64, Refusal> {
         Ok(accrual.amount())
     }
 }
@@ -1156,38 +1151,6 @@ enum Settling {
     Converted,
 }
 
-/// THE PARENT EXITED WHILE THE CHILD RAN (owner ruling Q71(4)): the child's accrual converts to a
-/// hold of its own, swapped into the child's cell where its arrival hold sat, so its spend settles
-/// against a reservation instead of posting late against nothing. The door sizes the hold or
-/// refuses it on the budget; a refused child ends refused at the door's step and its accrual still
-/// posts, late — the spend happened. A parent still open here is the ordinary child, untouched.
-fn at_parent_exit<U: Units>(
-    seal: &KernelSeal,
-    units: &U,
-    ctx: &UnitCtx,
-    run: &Run<'_>,
-    outcome: Outcome,
-    accrual: HoldAccrual,
-) -> (Outcome, Settling) {
-    let admit = Grant::<Admittance>::mint(seal);
-    match units.at_parent_exit(&admit, ctx, &accrual) {
-        Err(refusal) => (
-            Outcome::Failed(refusal.step().unwrap_or(StepName::Admit), refusal.reason()),
-            Settling::Parent(accrual),
-        ),
-        Ok(sized) => {
-            let own = accrual.convert_at_parent_exit(sized, &admit);
-            match run.cell.admit(own, &admit) {
-                Ok(arrival) => drop_arrival(arrival),
-                // The sweep emptied the child's cell first and has settled it; the exit finds it
-                // empty and does nothing, which is the one settlement a unit gets.
-                Err(rejected) => drop_arrival(rejected.hold),
-            }
-            (outcome, Settling::Converted)
-        }
-    }
-}
-
 /// THE UNIT THE CALLER WENT AWAY FROM.
 ///
 /// The loop awaits in exactly one place, so a client that disconnects mid-request drops the loop's
@@ -1273,15 +1236,32 @@ fn terminal<U: Units>(
     settling: Settling,
 ) -> Ended {
     let seal = &kernel.seal;
-    // Resolved BEFORE the end is sealed, because a refusal here is the end the audit records.
+    // THE PARENT EXITED WHILE THE CHILD RAN (owner ruling Q71(4)). Resolved BEFORE the end is
+    // sealed, because a refusal here is the end the audit records. The child's accrual converts to a
+    // hold of its own, sized by the door and swapped into the child's cell where its arrival hold
+    // sat, so the exit settles its spend against a reservation instead of posting it late against
+    // nothing. A door that cannot back the hold refuses it on the budget; the child then ends
+    // refused and its accrual still posts, late — the spend happened. A hold the cell will not take
+    // (the sweep emptied it first, and has settled it) is dropped; the exit then finds nothing.
+    let parent_gone = run
+        .parent
+        .is_some_and(|p| p.state() == HoldCellState::Taken);
     let (outcome, settling) = match settling {
-        Settling::Parent(accrual)
-            if run
-                .parent
-                .is_some_and(|p| p.state() == HoldCellState::Taken) =>
-        {
-            at_parent_exit(seal, units, ctx, &run, outcome, accrual)
-        }
+        Settling::Parent(accrual) if parent_gone => match units.at_parent_exit(ctx, &accrual) {
+            Err(no) => {
+                let step = no.step().unwrap_or(StepName::Admit);
+                (
+                    Outcome::Failed(step, no.reason()),
+                    Settling::Parent(accrual),
+                )
+            }
+            Ok(sized) => {
+                let admit = Grant::<Admittance>::mint(seal);
+                let own = accrual.convert_at_parent_exit(sized, &admit);
+                drop_arrival(run.cell.admit(own, &admit).unwrap_or_else(|lost| lost.hold));
+                (outcome, Settling::Converted)
+            }
+        },
         other => (outcome, other),
     };
     let _sealed = units
