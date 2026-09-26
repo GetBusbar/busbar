@@ -7553,7 +7553,7 @@
         "auth": "admin",
         "listener": "admin"
       },
-      "why": "Read-only new verb, never dual-controlled. Bound since d70824d11 (owner answer Q71(2)): answers a served plane's declaration for ?plane=<key>; this cell names n"
+      "why": "Read-only new verb, never dual-controlled. Bound in 1.6.0 (owner answer Q71(2)): answers a served plane's declaration for ?plane=<key>; this cell names no plane"
     },
     {
       "id": "admin.ops|GetPlaneFacts|unauth",
@@ -7971,7 +7971,7 @@
         "auth": "admin",
         "listener": "admin"
       },
-      "why": "Read-only new verb, never dual-controlled. Bound since d70824d11 (owner answer Q71(2)): an admitted call answers 200 with the node's ledger verification (checkp"
+      "why": "Read-only new verb, never dual-controlled. Bound in 1.6.0 (owner answer Q71(2)): an admitted call answers 200 with the node's ledger verification (checkpoints, "
     },
     {
       "id": "admin.ops|GetVerify|unauth",
@@ -9043,7 +9043,7 @@
         "auth": "admin",
         "listener": "admin"
       },
-      "why": "Irreducible: under the baseline recorder config the fleet's operator key is unset, so the operator gate refuses it 403 forbidden before any effect. Bound since "
+      "why": "Irreducible: under the baseline recorder config the fleet's operator key is unset, so the operator gate refuses it 403 forbidden before any effect. Bound in 1.6"
     },
     {
       "id": "admin.ops|PostCommitUpgrade|unauth",
@@ -10196,7 +10196,7 @@
         "auth": "admin",
         "listener": "admin"
       },
-      "why": "Not irreducible. Bound since d70824d11 (owner answer Q71(2)): upserts one record of a served plane, only under a record kind that plane declares (aae5c08f2), wi"
+      "why": "Not irreducible. Bound in 1.6.0 (owner answer Q71(2)): upserts one record of a served plane, only under a record kind that plane declares, with Idempotency-Key "
     },
     {
       "id": "admin.ops|PostPlaneRecordWrite|unauth",
