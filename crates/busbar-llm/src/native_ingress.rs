@@ -5,8 +5,12 @@
 //!
 //! Pool/model resolution + governance admission + the-one-engine forward every LLM arrival runs once
 //! its model is known. It reads the LLM routing tables (now in `crate::engine`) so it lives in the
-//! plane; it calls DOWN into core for the neutral accounting -- the allowed plane->core edge. The two
-//! entry points downcast the opaque `ArrivalCtx` to core's `ArrivalPayload`.
+//! plane; it calls DOWN into core for the neutral accounting -- the allowed plane->core edge. Its
+//! production entry is the resolved-completion re-entry ([`synthesize_completion`](crate::native_ingress::synthesize_completion)), which downcasts
+//! the opaque `ArrivalCtx` to core's `ArrivalPayload`; every body- and path-model arrival is a unit
+//! the composition root's node drives over the step files (`crate::unit::node`). The shell's two
+//! arrival entry points that used to funnel here survive only as the test kit's witness leg
+//! (`crate::testkit::shell`).
 
 use std::sync::Arc;
 use std::time::Instant;
@@ -14,7 +18,6 @@ use std::time::Instant;
 use axum::body::Bytes;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
-use serde_json::Value;
 
 use busbar_kernel::ingress::arrival::ArrivalCtx;
 // The neutral host seam — the plane holds an `Arc<dyn EngineHost>` (carried on the arrival) and reaches
@@ -25,7 +28,7 @@ use crate::engine::{native_runtime_arc, EngineTables, NativeRuntime, WeightedLan
 // The two door pass-throughs, named one level up (see `unit/mod.rs`) rather than by the audit step's
 // own module path — the kind-isolation matrix counts that path as this plane growing its coupling to
 // the teller steps. These forward verbatim to the host's terminal doors.
-use crate::unit::{finish_admitted_via_audit, finish_rejected_via_audit};
+use crate::unit::finish_admitted_via_audit;
 
 /// The first occurrence of `needle` in `hay`.
 fn find_sub(hay: &[u8], needle: &[u8]) -> Option<usize> {
@@ -209,147 +212,6 @@ pub(crate) fn multipart_model(content_type: &str, body: &[u8]) -> Option<String>
         at = body_at + body_len + 2;
     }
     found.filter(|m| !m.is_empty())
-}
-#[allow(clippy::too_many_arguments)]
-pub(crate) async fn operation_ingress_inner(
-    host: &Arc<dyn EngineHost>,
-    gov: &busbar_contract::records::PlaneRequestCtx,
-    caller_token: Option<&str>,
-    headers: &HeaderMap,
-    body: Bytes,
-    proto: &'static str,
-    operation: busbar_contract::operation::OpVerb,
-    model_hint: Option<String>,
-) -> Response {
-    let started = Instant::now();
-    // C10 (state/store port): the header-arrival epoch is read off the HOST's clock port
-    // (`ClockHost::clock_now_secs`, inherited through `EngineHost`) rather than the ambient free
-    // function. Value-identical — the wired `clock_now` slot is `store::now_ms()` scaled to nanos and
-    // divided back down, i.e. the same `SystemTime` epoch seconds `store::now()` returns — so the
-    // money path (`charged_at`) is byte-identical; the plane now takes its clock from the port.
-    let charged_at = host.clock_now_secs();
-    // App-retype WEDGE 3: the pre-routing finish/label/guard capabilities route through the `host`
-    // threaded in (the arrival's `Arc<dyn EngineHost>`), so this plane names no core ingress module.
-
-    let Some(rh) = busbar_substrate_values::handlers::request_handler(proto) else {
-        return finish_rejected_via_audit(
-            host,
-            gov,
-            proto,
-            crate::engine::POOL_LABEL_UNRESOLVED,
-            started,
-            charged_at,
-            busbar_kernel::proxy::ingress_error(
-                proto,
-                StatusCode::NOT_FOUND,
-                crate::engine::KIND_NOT_FOUND,
-                "This protocol does not support that operation.",
-            ),
-        );
-    };
-    let Some(op_handler) = rh.operation_handler(operation) else {
-        return finish_rejected_via_audit(
-            host,
-            gov,
-            proto,
-            crate::engine::POOL_LABEL_UNRESOLVED,
-            started,
-            charged_at,
-            busbar_kernel::proxy::ingress_error(
-                proto,
-                StatusCode::NOT_FOUND,
-                crate::engine::KIND_NOT_FOUND,
-                crate::engine::DETAIL_ENDPOINT_UNSUPPORTED_OPERATION,
-            ),
-        );
-    };
-
-    let ct = headers
-        .get(axum::http::header::CONTENT_TYPE)
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("");
-    // VALIDATE ONCE, before model extraction, so a malformed JSON body gets the parse 400 (below),
-    // never a misleading missing-model 400. `LazyBody::parse` preserves the exact malformed-body
-    // reject set of the old eager `parse::<Value>` (same depth guard, same parser, full-body scan)
-    // but builds NO DOM — only the top-level head projection the passthrough path reads. The full
-    // `Value` tree is materialized downstream ONLY on the paths that need it (cross-protocol
-    // translation, hooks, taps, gates, failover hops 2+).
-    let parsed_v: Option<crate::engine::LazyBody> = if ct.starts_with("application/json")
-        || ct.is_empty()
-    {
-        match crate::engine::LazyBody::parse(&body) {
-            Ok(v) => Some(v),
-            Err(_) => {
-                tracing::debug!(detail = %busbar_substrate_values::json::parse_err_log(body.len()), "request body JSON parse failed");
-                return finish_rejected_via_audit(
-                    host,
-                    gov,
-                    proto,
-                    crate::engine::POOL_LABEL_UNRESOLVED,
-                    started,
-                    charged_at,
-                    busbar_kernel::proxy::ingress_error(
-                        proto,
-                        StatusCode::BAD_REQUEST,
-                        crate::engine::KIND_INVALID_REQUEST,
-                        "We could not parse the JSON body of your request.",
-                    ),
-                );
-            }
-        }
-    } else {
-        None
-    };
-    let model = if let Some(m) = model_hint {
-        Some(m)
-    } else if ct.starts_with("multipart/") {
-        multipart_model(ct, &body)
-    } else {
-        // `model` is a captured head key: this point read never materializes the DOM and returns
-        // exactly what the full `Value` returned (missing / non-string / non-object body -> None).
-        parsed_v.as_ref().and_then(|v| {
-            v.probe()
-                .get("model")
-                .and_then(|m| m.as_str())
-                .map(str::to_string)
-        })
-    };
-    let model = match model {
-        Some(m) if !m.is_empty() => m,
-        _ => {
-            return finish_rejected_via_audit(
-                host,
-                gov,
-                proto,
-                crate::engine::POOL_LABEL_UNRESOLVED,
-                started,
-                charged_at,
-                busbar_kernel::proxy::ingress_error(
-                    proto,
-                    StatusCode::BAD_REQUEST,
-                    crate::engine::KIND_INVALID_REQUEST,
-                    "Missing required parameter: 'model'.",
-                ),
-            );
-        }
-    };
-
-    operation_resolved(
-        host,
-        gov,
-        proto,
-        operation,
-        op_handler,
-        &model,
-        headers,
-        body,
-        parsed_v,
-        caller_token,
-        started,
-        charged_at,
-        None,
-    )
-    .await
 }
 /// THE NATIVE (LLM) PLANE — the pool/engine routing that lives in-core today (the path an LLM arrival
 /// takes), now expressed as a sibling on the NEUTRAL gauntlet seam
@@ -695,172 +557,7 @@ pub(crate) fn affinity_header_for<'a>(rt: &'a Arc<NativeRuntime>, pool: &str) ->
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-async fn ingress_path_model_inner(
-    host: &Arc<dyn EngineHost>,
-    gov: &busbar_contract::records::PlaneRequestCtx,
-    caller_token: Option<&str>,
-    headers: &HeaderMap,
-    body: Bytes,
-    model: &str,
-    operation: busbar_contract::operation::OpVerb,
-    stream: bool,
-    gemini_json_array: bool,
-    proto: &'static str,
-    model_not_found_message: Option<&str>,
-) -> Response {
-    let started = Instant::now();
-    // Header-arrival epoch pinned once and reused for both the per-request and token fees (#29).
-    // C10: read off the host's clock port (`ClockHost::clock_now_secs`), value-identical to the
-    // ambient `store::now()` it replaces.
-    let charged_at = host.clock_now_secs();
-    // App-retype WEDGE 3: the pre-routing finish seam routes through the threaded `host` (the body-model
-    // twin does the same).
-    let mut v: Value = match busbar_substrate_values::json::parse(&body) {
-        Ok(v) => v,
-        Err(_) => {
-            // Log a SANITIZED note for operators (just the byte length), never the parser's raw error:
-            // with sonic-rs it embeds a fragment of the malformed body, which can contain secrets/PII.
-            // The client gets only the generic, vendor-plausible message.
-            tracing::debug!(detail = %busbar_substrate_values::json::parse_err_log(body.len()), "request body JSON parse failed");
-            // Pre-routing failure (model never resolved): route through `finish_rejected` with the
-            // bounded `"unresolved"` label so the malformed-body request is still counted in REQUESTS_TOTAL /
-            // REQUEST_DURATION_SECONDS and fires the request-log webhook, mirroring the model-miss
-            // path. A raw early-return made it invisible to Prometheus and the webhook.
-            return finish_rejected_via_audit(
-                host,
-                gov,
-                proto,
-                crate::engine::POOL_LABEL_UNRESOLVED,
-                started,
-                charged_at,
-                busbar_kernel::proxy::ingress_error(
-                    proto,
-                    StatusCode::BAD_REQUEST,
-                    crate::engine::KIND_INVALID_REQUEST,
-                    "We could not parse the JSON body of your request.",
-                ),
-            );
-        }
-    };
-
-    // Inject model+stream so the shared resolution/forward plumbing (which reads both from the
-    // body) works for protocols whose native wire carries them in the URL instead. A native client
-    // body is always a JSON object; if it is not, return a protocol-shaped 400 rather than panic.
-    match v.as_object_mut() {
-        Some(obj) => {
-            obj.insert("model".to_string(), Value::String(model.to_string()));
-            obj.insert("stream".to_string(), Value::Bool(stream));
-            // Signal a non-`alt=sse` streaming request so the response is framed as a JSON array
-            // rather than SSE (only Gemini's writer carries such a key today). The marker key is
-            // resolved through the writer vtable by protocol NAME — ingress names no protocol
-            // submodule, so "delete proto/gemini → app is gemini-free" holds. The shim is stripped
-            // before the upstream call (`proxy::strip_router_shim_keys`); cross-protocol egress
-            // drops it via the IR.
-            if gemini_json_array {
-                if let Some(shim_key) = busbar_kernel::proto::array_stream_shim_key_for(proto) {
-                    obj.insert(shim_key.to_string(), Value::Bool(true));
-                }
-            }
-        }
-        None => {
-            // Pre-routing failure (body is not a JSON object → model never resolved): route through
-            // `finish_rejected` with the bounded `"unresolved"` label so it is observable in metrics +
-            // the webhook, not a silent early-return — and never charged, so nothing to refund.
-            return finish_rejected_via_audit(
-                host,
-                gov,
-                proto,
-                crate::engine::POOL_LABEL_UNRESOLVED,
-                started,
-                charged_at,
-                busbar_kernel::proxy::ingress_error(
-                    proto,
-                    StatusCode::BAD_REQUEST,
-                    crate::engine::KIND_INVALID_REQUEST,
-                    "Request body must be a JSON object.",
-                ),
-            );
-        }
-    }
-
-    // Re-serializing a `serde_json::Value` we just parsed (with only `String`/`Bool` keys spliced
-    // in) cannot fail in practice — `to_vec` on an in-memory `Value` has no fallible component. The
-    // `Err` arm is kept as a non-panicking, protocol-shaped guard (never `unwrap`) so the request
-    // path stays panic-free even if a future change introduces a non-serializable injected value;
-    // it is effectively unreachable today, hence not exercised by a dedicated test.
-    let injected: Bytes = match busbar_substrate_values::json::to_vec(&v) {
-        Ok(b) => b.into(),
-        Err(_e) => {
-            // Same leak class as the parse arms above: the JSON library's error Display is a
-            // busbar-internal tell (on the parse side it embeds raw body fragments), so we never echo
-            // it — a bare operator breadcrumb only, consistent with the `parse_err_log` policy used at
-            // every deserialize site. (Serialization errors don't carry body bytes today, but aligning
-            // here closes the latent leak class if that ever changes.)
-            tracing::debug!("injected request body re-serialization failed");
-            // Pre-routing failure (model never reached resolution): route through `finish_rejected`
-            // with the bounded `"unresolved"` label so it is observable in metrics + the webhook. This
-            // arm is effectively unreachable today (see the comment above), but keeping it on
-            // `finish_rejected` preserves the observability invariant for every pre-routing exit.
-            return finish_rejected_via_audit(
-                host,
-                gov,
-                proto,
-                crate::engine::POOL_LABEL_UNRESOLVED,
-                started,
-                charged_at,
-                busbar_kernel::proxy::ingress_error(
-                    proto,
-                    StatusCode::BAD_REQUEST,
-                    crate::engine::KIND_INVALID_REQUEST,
-                    "The request body could not be processed.",
-                ),
-            );
-        }
-    };
-
-    // UNIVERSAL: the caller (that protocol's routing arm) already resolved WHICH operation this is
-    // (`RequestHandler::resolve_operation`); look its handler up through the registry — identical
-    // for every protocol and operation. This arm's only per-protocol work was the URL parsing above.
-    let Some(op_handler) = busbar_substrate_values::handlers::request_handler(proto)
-        .and_then(|rh| rh.operation_handler(operation))
-    else {
-        return finish_rejected_via_audit(
-            host,
-            gov,
-            proto,
-            crate::engine::POOL_LABEL_UNRESOLVED,
-            started,
-            charged_at,
-            busbar_kernel::proxy::ingress_error(
-                proto,
-                StatusCode::NOT_FOUND,
-                crate::engine::KIND_NOT_FOUND,
-                crate::engine::DETAIL_ENDPOINT_UNSUPPORTED_OPERATION,
-            ),
-        );
-    };
-    operation_resolved(
-        host,
-        gov,
-        proto,
-        operation,
-        op_handler,
-        model,
-        headers,
-        injected,
-        // Path-model ingress already parsed (and shim-injected into) the body — carry the DOM
-        // eagerly; the engine's pristine head check reads it directly and behaves as before.
-        Some(crate::engine::LazyBody::from_value(v)),
-        caller_token,
-        started,
-        charged_at,
-        model_not_found_message,
-    )
-    .await
-}
-
-fn payload(ctx: &ArrivalCtx) -> &busbar_kernel::ingress::arrival::ArrivalPayload {
+pub(crate) fn payload(ctx: &ArrivalCtx) -> &busbar_kernel::ingress::arrival::ArrivalPayload {
     ctx.downcast_ref::<busbar_kernel::ingress::arrival::ArrivalPayload>()
         .expect("ArrivalCtx must carry the neutral ArrivalPayload -- a wiring bug otherwise")
 }
@@ -938,59 +635,6 @@ pub fn synthesize_completion(
         )
         .await
     })
-}
-
-/// BODY-MODEL UNIVERSAL INGRESS -- every operation whose model rides IN THE BODY.
-pub async fn operation_ingress(
-    ctx: &ArrivalCtx,
-    headers: HeaderMap,
-    body: Bytes,
-    proto: &'static str,
-    operation: busbar_contract::operation::OpVerb,
-    model_hint: Option<String>,
-) -> Response {
-    let p = payload(ctx);
-    operation_ingress_inner(
-        &p.host,
-        &p.gov,
-        p.caller_token.as_deref(),
-        &headers,
-        body,
-        proto,
-        operation,
-        model_hint,
-    )
-    .await
-}
-
-/// PATH-MODEL UNIVERSAL INGRESS -- gemini/bedrock keep their model in the URL.
-#[allow(clippy::too_many_arguments)]
-pub async fn ingress_path_model(
-    ctx: &ArrivalCtx,
-    headers: HeaderMap,
-    body: Bytes,
-    model: String,
-    operation: busbar_contract::operation::OpVerb,
-    stream: bool,
-    gemini_json_array: bool,
-    proto: &'static str,
-    model_not_found_message: Option<String>,
-) -> Response {
-    let p = payload(ctx);
-    ingress_path_model_inner(
-        &p.host,
-        &p.gov,
-        p.caller_token.as_deref(),
-        &headers,
-        body,
-        &model,
-        operation,
-        stream,
-        gemini_json_array,
-        proto,
-        model_not_found_message.as_deref(),
-    )
-    .await
 }
 
 #[cfg(test)]

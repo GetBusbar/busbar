@@ -28,12 +28,10 @@ pub(crate) struct Lane {
     /// Carried under the same flag as the step that reads it. The interner is the contract crate's,
     /// the contract crate is the teller waist's, and a build with the waist down has no planning
     /// path to seat a name for — so the row grows two words exactly where the two words are read.
-    #[cfg(feature = "teller-waist")]
     pub(crate) authority: &'static str,
     /// THE LANE NAME THIS LANE ROUTES UNDER, as the node's interned `&'static str` — `model` seated
     /// through the same registration, at the same moment, for the same reason. This is the string a
     /// `busbar_contract::caps::LaneId` is built over on the planning path.
-    #[cfg(feature = "teller-waist")]
     pub(crate) lane_id: &'static str,
     /// The SigV4 signed-`host` header value, derived ONCE at boot from `base_url` (scheme + userinfo
     /// stripped, authority only — see `proxy::host_from_base`). Precomputed so the request path borrows

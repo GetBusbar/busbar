@@ -100,6 +100,51 @@ pub struct Linked {
     pub transports: &'static [LinkedTransport],
     /// Each linked plane's pure plane, as the boot seal registers it, and the claims it declares.
     pub claims: &'static [LinkedClaims],
+    /// The node axis: each entry whose arrivals hand their units to a node, handed the node a root
+    /// unit drives them through (see [`node`]).
+    pub node: &'static [fn(node::Drive)],
+}
+
+/// THE NODE AXIS — what crosses between a plane whose arrivals hand their units to a node and the
+/// node that drives them through the kernel's loop. Plain values in the loop's own vocabulary, so
+/// neither side names the other: an arrival hands the node whose unit it is, its operation class, the
+/// dialect a node-side refusal is written in, and a build; the node lends the build its lane
+/// resolver, the loop's meter and the unit's pinned arrival epoch, and gets back the unit's steps,
+/// its awaited Route leg and its finish — the terminal's bytes and the reading of what they consumed,
+/// taken once their body has drained. The reading is a report, never an amount.
+pub mod node {
+    use std::future::Future;
+    use std::pin::Pin;
+    use std::sync::Arc;
+
+    use axum::response::Response;
+    use busbar_contract::caps::{OpClassId, PrincipalId};
+    use busbar_kernel::teller::{AccrualMeter, RouteAwait, Units};
+
+    /// A configured lane name to the interned lane the priced axis is written in, or `None` where
+    /// the image's vocabulary cannot hold the name.
+    pub type Resolve = Arc<dyn Fn(&str) -> Option<busbar_contract::LaneId> + Send + Sync>;
+    /// What the node lends a build: its lane resolver, the loop's meter, the pinned arrival epoch.
+    pub type Lent = (Resolve, Arc<AccrualMeter>, u64);
+    /// What a unit consumed, read after its body drained: every class, the billable count, the
+    /// serving lane's config name.
+    pub type Reported = (busbar_substrate_values::billing::Usage, u32, String);
+    /// The late reading, taken once, when the body is done with.
+    pub type Late = Box<dyn FnOnce() -> Option<Reported> + Send>;
+    /// A unit's finish: the bytes its terminal posted, and the late reading of what they consumed.
+    pub type Finish = Box<dyn FnOnce() -> (Option<Response>, Option<Late>) + Send>;
+    /// A built unit: its steps, its awaited Route leg (the same unit), and its finish.
+    pub type Built = (
+        Arc<dyn Units + Send + Sync>,
+        Arc<dyn RouteAwait + Send + Sync>,
+        Finish,
+    );
+    /// The build the node runs once it holds the values it lends.
+    pub type Build = Box<dyn FnOnce(Lent) -> Built + Send>;
+    /// One arrival, handed to the node.
+    pub type Handed = (PrincipalId, OpClassId, &'static str, Build);
+    /// The node: takes a handed unit, drives it through the loop, answers with its terminal's bytes.
+    pub type Drive = fn(Handed) -> Pin<Box<dyn Future<Output = Response> + Send>>;
 }
 
 /// One linked wire, as its crate's entry states it: the registry key, the layers it declares it can
@@ -188,10 +233,8 @@ pub struct RootUnit {
     /// The boot-time self-check of what this unit composes. `Err` carries the refusal as the operator
     /// reads it after `busbar: `; the process exits 2 before any listener binds.
     pub seal: Option<fn() -> Result<(), String>>,
-    /// Path-model arrivals that REPLACE the linked plugins' own arrivals of the same protocol name.
-    pub path_ingress: &'static [PathIngressEntry],
-    /// Body-model arrivals that replace the linked plugins' own of the same protocol name.
-    pub body_ingress: &'static [BodyIngressEntry],
+    /// The node this unit drives the node axis's units through, handed to every entry on that axis.
+    pub drive: Option<node::Drive>,
     /// Runs once the deployment's limits are resolved, before the app is built.
     pub on_config: Option<fn(&busbar_kernel::config::limits::LimitsResolved)>,
     /// TRUE for a unit that settles onto the node's book: the book is opened for it.
@@ -210,8 +253,9 @@ pub struct BookCtx<'a> {
     pub app: &'a busbar_kernel::state::App,
 }
 
-/// THE PROTOCOL AXIS: every entry's declarations and its path- and body-model arrivals (a root unit's
-/// arrival of the same name standing in for the plugin's), then each entry's protocol-axis seams.
+/// THE PROTOCOL AXIS: every entry's declarations and its path- and body-model arrivals, then each
+/// entry's protocol-axis seams — and the node axis, which those arrivals hand their units to: every
+/// entry on it is handed the node a root unit drives it through.
 pub fn register_protocols(linked: &Linked, units: &[&RootUnit]) {
     let installed: Vec<&'static busbar_kernel::proto::ProtocolDecl> = linked
         .protocols
@@ -221,30 +265,23 @@ pub fn register_protocols(linked: &Linked, units: &[&RootUnit]) {
     let path_ingress: Vec<PathIngressEntry> = linked
         .path_ingress
         .iter()
-        .flat_map(|arrivals| arrivals.iter())
-        .map(|&arrival| replaced(arrival, units.iter().map(|u| u.path_ingress)))
+        .flat_map(|arrivals| arrivals.iter().copied())
         .collect();
     busbar_kernel::proto::install_protocols_with_path_ingress(installed, path_ingress);
     let body_ingress: Vec<BodyIngressEntry> = linked
         .body_ingress
         .iter()
-        .flat_map(|arrivals| arrivals.iter())
-        .map(|&arrival| replaced(arrival, units.iter().map(|u| u.body_ingress)))
+        .flat_map(|arrivals| arrivals.iter().copied())
         .collect();
     busbar_kernel::ingress::arrival::install_body_ingress(body_ingress);
     for install in linked.protocol_seams {
         install();
     }
-}
-
-/// `arrival`, or the first stand-in of the same protocol name the root's units carry.
-fn replaced<F: Copy + 'static>(
-    arrival: (&'static str, F),
-    mut stand_ins: impl Iterator<Item = &'static [(&'static str, F)]>,
-) -> (&'static str, F) {
-    stand_ins
-        .find_map(|table| table.iter().find(|(name, _)| *name == arrival.0).copied())
-        .unwrap_or(arrival)
+    for drive in units.iter().filter_map(|u| u.drive) {
+        for install in linked.node {
+            install(drive);
+        }
+    }
 }
 
 /// THE PLANE AXIS: every entry's registry row and every HOT-lane plane's — linked or dropped in —

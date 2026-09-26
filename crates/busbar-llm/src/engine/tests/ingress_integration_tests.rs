@@ -5,8 +5,9 @@
 use super::auth_dispatch_tests::PresentCredential as _;
 use crate::engine::AppEngineExt as _;
 use crate::engine::WeightedLane;
-use crate::native_ingress::{affinity_header_for, operation_ingress_inner};
+use crate::native_ingress::affinity_header_for;
 use crate::test_support::BuiltApp as App;
+use crate::testkit::shell::operation_ingress_inner;
 use axum::body::Bytes;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::Response;

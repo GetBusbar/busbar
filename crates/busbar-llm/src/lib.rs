@@ -134,24 +134,21 @@ pub mod engine;
 /// is ingress, not codec — it stays on this side of the split.
 pub mod openai_responses_webhook;
 
-/// THE PATH-MODEL DIALECT ARRIVALS (gemini/bedrock URL-model ingress), RELOCATED here from
-/// `busbar-core` — the last piece of core→plane entanglement. They parse their own model out of the
-/// URL and reach the core request pipeline through the neutral
-/// [`busbar_kernel::ingress::arrival::ArrivalHost`] seam, so this crate names no core
-/// item. Registered via [`PATH_INGRESS`].
+/// THE PATH-MODEL DIALECT PARSES (gemini/bedrock URL-model), RELOCATED here from `busbar-core` —
+/// the last piece of core→plane entanglement. Each parses its own model out of the URL through the
+/// neutral [`busbar_kernel::ingress::arrival::ArrivalHost`] seam, so this crate names no core item;
+/// the loop's path arrivals ([`PATH_INGRESS`]) drive them.
 pub mod arrival;
 
 /// THE NATIVE-PLANE UNIVERSAL INGRESS (pool/model resolution + governance admission + the-one-engine
 /// forward), RELOCATED here from `busbar-core` — it reads the LLM routing tables so it lives in the
-/// plane and calls DOWN into core's neutral accounting. The two dialect arrival families
-/// ([`arrival`]) converge on its [`native_ingress::operation_ingress`] / [`native_ingress::
-/// ingress_path_model`] entry points.
+/// plane and calls DOWN into core's neutral accounting. Its production entry is the
+/// resolved-completion re-entry ([`native_ingress::synthesize_completion`]); every body- and
+/// path-model arrival is a unit the composition root's node drives ([`unit`](crate::unit)).
 pub mod native_ingress;
 
-/// THE TELLER STEP FILES (1.6.0 wave C), one file per step, written dark. The whole directory is
-/// gated by the inner `#![cfg(feature = "teller-waist")]` on its own `mod.rs`, so this declaration
-/// is unconditional and the flag is stated exactly once, next to the files it governs. With the flag
-/// down this resolves to nothing at all.
+/// THE TELLER STEP FILES (1.6.0 wave C), one file per step, and the unit over them that every body-
+/// and path-model arrival hands the composition root's node.
 pub mod unit;
 
 /// THE MONEY-PATH TEST FIXTURE, re-exported from core's now-plane-agnostic `test_support` (money-path
@@ -341,6 +338,9 @@ pub use crate::engine::health::spawn_probers;
 pub mod linked {
     /// The engine-host axis: the health probers every generation's host re-anchors.
     pub use crate::spawn_probers as on_host;
+    /// The node axis: the composition root's node, installed before any listener binds — the loop
+    /// every arrival below hands its unit to.
+    pub use crate::unit::node::install_node;
     /// The protocol axis: the six dialects, in the order an operator sees.
     pub use crate::DECLS as PROTOCOLS;
     /// The path- and body-model arrivals, by dialect name.
@@ -368,63 +368,62 @@ pub mod linked {
     }
 }
 
-/// THE PATH-MODEL ARRIVALS THIS PLUGIN REGISTERS, protocol-name-keyed.
+/// THE PATH-MODEL ARRIVALS THIS PLUGIN REGISTERS, protocol-name-keyed — ON THE LOOP.
 ///
 /// When `ProtocolDecl` relocated to `busbar-substrate` (Batch C-6) its `path_ingress` field could not
-/// travel — it named the core-only `Arrival` — so a path-model dialect now registers its arrival
-/// through this SIDE-TABLE instead of on its declaration. The composition root
-/// (`crates/busbar/src/main.rs::register_protocols`) hands this slice to
-/// core's `proto::registry::install_protocols_with_path_ingress` ALONGSIDE [`DECLS`], which
-/// asserts at boot that every `has_model_in_url` declaration here (gemini, bedrock) has an arrival —
-/// so a dialect that grows a URL model but forgets its arrival is a loud boot panic, not a silent
+/// travel — it named the core-only `Arrival` — so a path-model dialect registers its arrival through
+/// this SIDE-TABLE instead of on its declaration. The composition root hands it to
+/// core's `proto::registry::install_protocols_with_path_ingress` ALONGSIDE [`DECLS`], which asserts at
+/// boot that every `has_model_in_url` declaration here (gemini, bedrock) has an arrival — so a
+/// dialect that grows a URL model but forgets its arrival is a loud boot panic, not a silent
 /// fall-through. Only the two URL-model dialects appear; the four body-model dialects resolve their
-/// operation off the body and register nothing. The arrival fns live in THIS crate
-/// ([`crate::arrival::{gemini_arrival, bedrock_arrival}`]) and reach the core pipeline through the
-/// neutral `ArrivalHost` seam — no reference into core; this states the NAME→fn pairing.
+/// operation off the body and register nothing here.
+///
+/// Each arrival runs the dialect's own URL parse ([`arrival`]) and hands the unit it describes to the
+/// node the composition root installed (`linked::install_node`): every request on this surface runs
+/// through the kernel's loop over the step files. There is no other build of this surface — the
+/// shell these replaced survives only as the test kit's witness leg.
 pub static PATH_INGRESS: &[(&str, busbar_kernel::ingress::arrival::PathIngress)] = &[
     (
         crate::proto_codec::PROTO_GEMINI,
-        crate::arrival::gemini_arrival,
+        crate::unit::node::gemini_path_arrival,
     ),
     (
         crate::proto_codec::PROTO_BEDROCK,
-        crate::arrival::bedrock_arrival,
+        crate::unit::node::bedrock_path_arrival,
     ),
 ];
 
-/// THE BODY-MODEL DIALECT ARRIVALS — the body-axis twin of [`PATH_INGRESS`]. The convenience surfaces
-/// (`named`/`adhoc` `/v1/messages`) and the generic body-model dispatch arm resolve a dialect's
-/// universal ingress by NAME through `busbar_kernel::ingress::arrival::body_ingress_for`; this slice
-/// states each dialect's NAME→arrival pairing. The composition root
-/// (`crates/busbar/src/main.rs::register_protocols`) hands it to
-/// `busbar_kernel::ingress::arrival::install_body_ingress`; the test-kit seeds it through
-/// `set_test_body_ingress`. Every dialect appears (each routes its body-model traffic through the ONE
-/// engine); the URL-model pair (gemini/bedrock) also carry a body entry for the dispatch arm's
-/// symmetry, even though their primary surface is [`PATH_INGRESS`].
+/// THE BODY-MODEL DIALECT ARRIVALS — the body-axis twin of [`PATH_INGRESS`], and on the loop the same
+/// way. The convenience surfaces (`named`/`adhoc` `/v1/messages`) and the generic body-model dispatch
+/// arm resolve a dialect's arrival by NAME through `busbar_kernel::ingress::arrival::body_ingress_for`;
+/// this slice states each dialect's NAME→arrival pairing. Every dialect appears; the URL-model pair
+/// (gemini/bedrock) also carry a body entry for the dispatch arm's symmetry, even though their primary
+/// surface is [`PATH_INGRESS`].
 pub static BODY_INGRESS: &[(&str, busbar_kernel::ingress::arrival::BodyIngress)] = &[
     (
         crate::proto_codec::PROTO_ANTHROPIC,
-        crate::arrival::anthropic_body_arrival,
+        crate::unit::node::anthropic_body_arrival,
     ),
     (
         crate::proto_codec::PROTO_OPENAI,
-        crate::arrival::openai_body_arrival,
+        crate::unit::node::openai_body_arrival,
     ),
     (
         crate::proto_codec::PROTO_GEMINI,
-        crate::arrival::gemini_body_arrival,
+        crate::unit::node::gemini_body_arrival,
     ),
     (
         crate::proto_codec::PROTO_BEDROCK,
-        crate::arrival::bedrock_body_arrival,
+        crate::unit::node::bedrock_body_arrival,
     ),
     (
         crate::proto_codec::PROTO_RESPONSES,
-        crate::arrival::responses_body_arrival,
+        crate::unit::node::responses_body_arrival,
     ),
     (
         crate::proto_codec::PROTO_COHERE,
-        crate::arrival::cohere_body_arrival,
+        crate::unit::node::cohere_body_arrival,
     ),
 ];
 

@@ -811,8 +811,8 @@ fn naming_the_legs_over_a_pool_interns_nothing_and_allocates_only_the_plan() {
 
 /// NO STEP FILE CALLS ITSELF DARK, AND NONE SILENCES DEAD CODE FILE-WIDE (item 368).
 ///
-/// These steps are LIVE: the default build's `root-llm` turns `teller-waist` on and
-/// `busbar/src/root/units_llm.rs` drives every one of them on every LLM request. A step file that
+/// These steps are LIVE: every LLM request is a unit (`unit/node.rs`) the composition root's node
+/// drives through every one of them. A step file that
 /// says "BUILT DARK ... no production caller" under a file-scoped `#![allow(dead_code)]` tells a
 /// reviewer to skip the money path and tells the compiler to stop saying what is genuinely unused —
 /// so neither may come back. A test-only item is `#[cfg(test)]`, not an allow.

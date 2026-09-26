@@ -1,40 +1,35 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE PATH-MODEL DIALECT ARRIVALS — Gemini and Bedrock keep their model in the URL, so each parses
-//! ITS OWN model out of the path (its statement about its own URL space) and then runs the SAME
-//! resolution + forward every dialect runs. RELOCATED here from `busbar-core` (it named the dialects
-//! and was the last piece of core→plane entanglement): the arrivals now live in the dialect crate and
-//! reach the `App`/`GovCtx`/`CallerToken`-bound core pipeline through the neutral
-//! [`busbar_kernel::ingress::arrival::ArrivalHost`] seam, crossing those core handles as the opaque
-//! [`ArrivalCtx`] and the neutral `Operation`/`Response`/`HeaderMap`/`Bytes` directly. So this crate
-//! names no core item and core names no dialect — byte-identical to the arms these replaced.
+//! THE PATH-MODEL DIALECT PARSES — Gemini and Bedrock keep their model in the URL, so each parses
+//! ITS OWN model out of the path (its statement about its own URL space) before any step runs.
+//! RELOCATED here from `busbar-core` (it named the dialects and was the last piece of core→plane
+//! entanglement): the parses live in the dialect crate and read the request through the neutral
+//! [`busbar_kernel::ingress::arrival::ArrivalHost`] seam, crossing core's handles as the opaque
+//! [`ArrivalCtx`] and the neutral `Operation`/`Response`/`Bytes` directly. So this crate names no
+//! core item and core names no dialect.
 //!
-//! The composition root registers these two through [`crate::PATH_INGRESS`] beside [`crate::DECLS`].
+//! What a parse answers with is a VALUE ([`PathArrivalFacts`](crate::arrival::PathArrivalFacts)); the arrivals that drive it — and
+//! hand the unit it describes to the node — are the loop's (`crate::unit::node`), registered through
+//! [`crate::PATH_INGRESS`] beside [`crate::DECLS`].
 
-use std::future::Future;
-use std::pin::Pin;
 use std::sync::Arc;
-use std::time::Instant;
 
 use axum::body::Bytes;
-use axum::http::{HeaderMap, StatusCode, Uri};
+use axum::http::{StatusCode, Uri};
 use axum::response::Response;
-use busbar_kernel::ingress::arrival::{Arrival, ArrivalCtx, ArrivalHost};
-use busbar_kernel::proxy::POOL_LABEL_UNRESOLVED;
+use busbar_kernel::ingress::arrival::{ArrivalCtx, ArrivalHost};
 use busbar_substrate_values::handlers::RequestHandler;
 
 use crate::proto_codec::{PROTO_BEDROCK, PROTO_GEMINI};
-// The terminal's neutral half, named one level up (see `unit/mod.rs`) rather than by the audit
-// step's own module path — the kind-isolation matrix counts that path as the plane growing its
-// coupling to the teller steps, and a pre-routing refusal is this dialect's own to name.
-use crate::unit::{finish_rejected_via_audit_arrival, render_refusal, RefusalOutcome};
-
-type Fut = Pin<Box<dyn Future<Output = Response> + Send>>;
+// The refusal a parse NAMES, one level up (see `unit/mod.rs`) rather than by the audit step's own
+// module path — the kind-isolation matrix counts that path as the plane growing its coupling to the
+// teller steps, and a pre-routing refusal is this dialect's own to name.
+use crate::unit::RefusalOutcome;
 
 /// The dialect's own installed `RequestHandler`, resolved through the neutral protocol registry (the
 /// byte-identical equivalent of core's old `handlers::request_handler(proto)`).
-fn request_handler(proto: &str) -> Option<&'static dyn RequestHandler> {
+pub(crate) fn request_handler(proto: &str) -> Option<&'static dyn RequestHandler> {
     busbar_kernel::proto::registry()
         .decl(proto)
         .and_then(|d| d.handler)
@@ -131,7 +126,7 @@ pub enum PathArrivalFacts {
     /// A NAMED pre-routing refusal — a malformed path, an unsupported action, a body that resolves to
     /// no operation. It is not bytes yet: the envelope dialect it is shaped in, and the dialect-neutral
     /// outcome (status, kind word, sentence). The consumer renders it at the audit terminal
-    /// ([`render_refusal`]) and posts it through the rejected door — the one place
+    /// (`render_refusal`) and posts it through the rejected door — the one place
     /// a named refusal on this plane becomes bytes. This is the shape the pre-routing `finish_rejected`
     /// sites used to build inline; naming it here and posting it at the terminal is what keeps the door
     /// call off this file.
@@ -143,86 +138,10 @@ pub enum PathArrivalFacts {
     },
 }
 
-/// GEMINI'S PATH-MODEL ARRIVAL, as it is DECLARED on `crate::gemini::DECL` / registered via
-/// [`crate::PATH_INGRESS`]. Percent-decode the tail that axum's `{*rest}` wildcard decoded before the
-/// route collapse, and hand it to this dialect's own ingress.
-pub fn gemini_arrival(a: Arrival) -> Fut {
-    let rest = gemini_rest(&a.host, &a.path);
-    Box::pin(gemini_ingress(
-        a.host, a.ctx, rest, a.uri, a.headers, a.body,
-    ))
-}
-
 /// The tail axum's `{*rest}` wildcard carried, percent-decoded once. Split out so the two drivers of
 /// this surface decode it the same way rather than each spelling the split.
 pub fn gemini_rest(host: &Arc<dyn ArrivalHost>, path: &str) -> String {
     host.percent_decode(path.split("/models/").nth(1).unwrap_or(""))
-}
-
-#[tracing::instrument(level = "debug", name = "gemini_ingress", skip_all)]
-async fn gemini_ingress(
-    host: Arc<dyn ArrivalHost>,
-    ctx: ArrivalCtx,
-    rest: String,
-    uri: Uri,
-    headers: HeaderMap,
-    body: Bytes,
-) -> Response {
-    // Captured BEFORE the path-parse guards so a malformed-path / unsupported-action rejection (which
-    // never reaches the path-model core, where `started` is otherwise taken) is still counted through
-    // `finish_rejected` — the same pre-routing observability invariant the body/path cores enforce.
-    let started = Instant::now();
-    let charged_at = busbar_kernel::store::now();
-    let facts = match gemini_path_parse(&host, &ctx, &rest, &uri, &body) {
-        PathArrivalFacts::PathModel(facts) => facts,
-        // A pre-rendered fallback 404 (a different terminal): return its bytes unchanged.
-        PathArrivalFacts::Refused(resp) => return resp,
-        // A NAMED pre-routing refusal: render it at the audit terminal and post it through the
-        // rejected door — the same not-charged finish, and the same bytes, the inline site produced,
-        // now spelled at the one place the door is called.
-        PathArrivalFacts::RefusedNeutral {
-            envelope_proto,
-            outcome,
-        } => {
-            return finish_rejected_via_audit_arrival(
-                &host,
-                &ctx,
-                envelope_proto,
-                POOL_LABEL_UNRESOLVED,
-                started,
-                charged_at,
-                render_refusal(envelope_proto, &outcome),
-            )
-        }
-        // Gemini's parse never leaves the operation to the body: every action it answers is named in
-        // the URL. Answered rather than unreachable-panicked, because an arm that cannot be taken
-        // still has to say something if it is.
-        PathArrivalFacts::BodyModel { .. } => {
-            return host.fallback_not_found(
-                &ctx,
-                uri.path(),
-                StatusCode::NOT_FOUND,
-                host.err_type_not_found(),
-                "the requested resource was not found",
-            )
-        }
-    };
-    crate::native_ingress::ingress_path_model(
-        &ctx,
-        headers,
-        body,
-        facts.model,
-        facts.operation,
-        facts.stream,
-        facts.gemini_json_array,
-        PROTO_GEMINI,
-        // The native Gemini model-not-found body, SHAPED BY THE PARSE — this dialect owns its own
-        // not-found vocabulary (versioned with the path-derived api_version, no OpenAI "does not
-        // exist" copy) and core uses it verbatim on a model miss. Core names no dialect; the shaping
-        // lives with the dialect.
-        facts.model_not_found_message,
-    )
-    .await
 }
 
 /// GEMINI'S URL PARSE, as a value.
@@ -355,51 +274,6 @@ pub fn gemini_path_parse(
 
 // ── BEDROCK ─────────────────────────────────────────────────────────────────────────────────────
 
-/// BEDROCK'S PATH-MODEL ARRIVAL, as it is DECLARED on `crate::bedrock::DECL`. Three shapes under one
-/// model path — `converse`, `converse-stream` and `invoke` — plus the native 404 for anything else.
-pub fn bedrock_arrival(a: Arrival) -> Fut {
-    let Arrival {
-        host,
-        ctx,
-        path,
-        model_hint: _,
-        uri,
-        headers,
-        body,
-    } = a;
-    // Pre-routing accounting, mirroring the gemini arrival: a pre-charge exit must flow through
-    // `finish_rejected` so it stays visible to Prometheus/the webhook, and the epoch it is finished
-    // against is pinned before the parse rather than after it.
-    let started = Instant::now();
-    let charged_at = busbar_kernel::store::now();
-    match bedrock_path_parse(&host, &ctx, &path, &uri, &body) {
-        PathArrivalFacts::PathModel(facts) => Box::pin(bedrock_converse(ctx, facts, headers, body)),
-        PathArrivalFacts::BodyModel {
-            operation,
-            model_hint,
-        } => Box::pin(bedrock_invoke(ctx, model_hint, operation, headers, body)),
-        // A pre-rendered fallback 404 (a different terminal): return its bytes unchanged.
-        PathArrivalFacts::Refused(resp) => Box::pin(async move { resp }),
-        // A NAMED pre-routing refusal: render it at the audit terminal and post it through the
-        // rejected door — byte- and accounting-identical to the inline finish the site once spelled.
-        PathArrivalFacts::RefusedNeutral {
-            envelope_proto,
-            outcome,
-        } => {
-            let resp = finish_rejected_via_audit_arrival(
-                &host,
-                &ctx,
-                envelope_proto,
-                POOL_LABEL_UNRESOLVED,
-                started,
-                charged_at,
-                render_refusal(envelope_proto, &outcome),
-            );
-            Box::pin(async move { resp })
-        }
-    }
-}
-
 /// THE MODEL BEDROCK'S URL NAMED. axum's Path extractor percent-decoded `{model_id}` before the route
 /// collapse; match it.
 pub fn bedrock_path_model(host: &Arc<dyn ArrivalHost>, path: &str) -> String {
@@ -490,115 +364,6 @@ pub fn bedrock_path_parse(
         host.err_type_not_found(),
         "the requested resource was not found",
     ))
-}
-
-/// Both Bedrock converse routes: the path-model core with the route-selected stream intent. The
-/// `modelId` segment arrives ALREADY percent-decoded by axum, so it is used verbatim (decoding twice
-/// corrupts ids whose first decode yields a literal `%XX`).
-#[tracing::instrument(level = "debug", name = "bedrock_converse", skip_all)]
-async fn bedrock_converse(
-    ctx: ArrivalCtx,
-    facts: PathModelFacts,
-    headers: HeaderMap,
-    body: Bytes,
-) -> Response {
-    crate::native_ingress::ingress_path_model(
-        &ctx,
-        headers,
-        body,
-        facts.model,
-        facts.operation,
-        facts.stream,
-        facts.gemini_json_array,
-        PROTO_BEDROCK,
-        facts.model_not_found_message,
-    )
-    .await
-}
-
-/// POST /model/{model_id}/invoke — the ordinary body-model forward with the URL's model as its
-/// routing hint.
-#[tracing::instrument(level = "debug", name = "bedrock_invoke", skip_all)]
-async fn bedrock_invoke(
-    ctx: ArrivalCtx,
-    model_id: String,
-    operation: busbar_contract::operation::OpVerb,
-    headers: HeaderMap,
-    body: Bytes,
-) -> Response {
-    crate::native_ingress::operation_ingress(
-        &ctx,
-        headers,
-        body,
-        PROTO_BEDROCK,
-        operation,
-        Some(model_id),
-    )
-    .await
-}
-
-// ── BODY-MODEL DIALECT ARRIVALS ─────────────────────────────────────────────────────────────────
-// The four body-model dialects (anthropic/openai/cohere/responses) — and the body variants of the
-// URL-model pair — keep the model IN THE BODY: the convenience surfaces (`named`/`adhoc` `/v1/messages`)
-// and the generic `protocol_dispatch` body-model arm resolve them by protocol name through
-// `busbar_kernel::ingress::arrival::body_ingress_for(proto)`. This SIDE-TABLE is the body-axis twin
-// of [`crate::PATH_INGRESS`]: it maps each dialect NAME to a `BodyIngress` fn that resolves the
-// operation off the endpoint (its own `RequestHandler::resolve_operation`) and runs the universal
-// [`crate::native_ingress::operation_ingress`] forward. Registered by the composition root
-// (`register_protocols` → `install_body_ingress`) and by the test-kit ([`crate::testkit::install_test_seams`]
-// → `set_test_body_ingress`), the byte-identical successor to the pre-relocation in-core body arrival.
-
-/// Shared body-model arrival: resolve the operation for `proto` off the endpoint, then run the one
-/// engine. A path the dialect names NO operation for is not a request at all: it gets the plain
-/// path-shaped 404 the catch-all uses and is never accounted (1.5.5 did exactly this; the
-/// dialect-shaped "does not support that operation" reject is reserved for a RESOLVED operation
-/// the dialect holds no handler for, inside `operation_ingress`).
-async fn body_arrival(proto: &'static str, a: Arrival) -> Response {
-    let Arrival {
-        host,
-        ctx,
-        path,
-        model_hint,
-        uri,
-        headers,
-        body,
-    } = a;
-    let Some(operation) =
-        request_handler(proto).and_then(|rh| rh.resolve_operation(uri.path(), &body))
-    else {
-        return host.fallback_not_found(
-            &ctx,
-            &path,
-            StatusCode::NOT_FOUND,
-            host.err_type_not_found(),
-            "the requested resource was not found",
-        );
-    };
-    // `model_hint` carries the busbar convenience surfaces' PATH-borne routing name (`named`/`adhoc`);
-    // `None` for a dialect-native body-model arrival, where the model rides the body.
-    crate::native_ingress::operation_ingress(&ctx, headers, body, proto, operation, model_hint)
-        .await
-}
-
-/// Generate one `BodyIngress` fn-pointer target per dialect (a bare `fn(Arrival) -> Fut`, since the
-/// registry seam is a fn pointer that cannot capture the protocol name).
-macro_rules! body_arrivals {
-    ($(($name:ident, $proto:expr)),+ $(,)?) => {
-        $(
-            pub fn $name(a: Arrival) -> Fut {
-                Box::pin(body_arrival($proto, a))
-            }
-        )+
-    };
-}
-
-body_arrivals! {
-    (anthropic_body_arrival, crate::proto_codec::PROTO_ANTHROPIC),
-    (openai_body_arrival, crate::proto_codec::PROTO_OPENAI),
-    (gemini_body_arrival, crate::proto_codec::PROTO_GEMINI),
-    (bedrock_body_arrival, crate::proto_codec::PROTO_BEDROCK),
-    (responses_body_arrival, crate::proto_codec::PROTO_RESPONSES),
-    (cohere_body_arrival, crate::proto_codec::PROTO_COHERE),
 }
 
 #[cfg(test)]

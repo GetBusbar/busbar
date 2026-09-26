@@ -104,8 +104,7 @@ pub(crate) use busbar_kernel::egress::engine::{
 // flattened engine namespace so the moved classification/error-envelope call sites keep naming them at
 // their historical short paths (`crate::engine::{KIND_*, DISPOSITION_TRANSIENT, APPLICATION_JSON, …}`).
 pub(crate) use busbar_kernel::proxy::{
-    APPLICATION_JSON, EGRESS_UA_DEFAULT, POOL_LABEL_UNRESOLVED, PROVIDER_CODE_CONTEXT_LENGTH,
-    TEXT_EVENT_STREAM,
+    APPLICATION_JSON, EGRESS_UA_DEFAULT, PROVIDER_CODE_CONTEXT_LENGTH, TEXT_EVENT_STREAM,
 };
 #[cfg_attr(not(test), allow(unused_imports))]
 pub(crate) use busbar_kernel::proxy::{
@@ -113,7 +112,7 @@ pub(crate) use busbar_kernel::proxy::{
     DISPOSITION_TRANSIENT, ERR_DEGRADED_NON2XX, ERR_NET_CONNECT, ERR_NET_TIMEOUT,
     ERR_NET_TRANSPORT, KIND_API_ERROR, KIND_AUTHENTICATION, KIND_INSUFFICIENT_QUOTA,
     KIND_INVALID_REQUEST, KIND_NOT_FOUND, KIND_OVERLOADED, KIND_PERMISSION, KIND_RATE_LIMIT,
-    KIND_TIMEOUT,
+    KIND_TIMEOUT, POOL_LABEL_UNRESOLVED,
 };
 // The NEUTRAL hook-content ceiling knob + the egress-client builder now live in the neutral substrate
 // (`busbar_kernel::proxy`) — re-exported into the flattened engine namespace so the relocated tests

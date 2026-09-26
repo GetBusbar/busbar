@@ -132,7 +132,6 @@ pub(crate) fn build_runtime(
     // registered, and interns a name the root has not reached yet at most once for the image. What
     // it buys is that the lane table is seated with its static names at BUILD time, off the request
     // path, and therefore before this generation can be published.
-    #[cfg(feature = "teller-waist")]
     let mut registration = busbar_contract::Registration::new();
 
     // ── lanes (one per model, in the carrier's deterministic sorted order — `lanes[i]` IS lane `i`) ──
@@ -209,7 +208,6 @@ pub(crate) fn build_runtime(
         // operator configured. The only way to reach it is a vocabulary that is closed or past
         // `MAX_VOCABULARY`, both of which the contract calls a defect of the image rather than a
         // shape of configuration — so it is surfaced, not absorbed.
-        #[cfg(feature = "teller-waist")]
         let authority = registration.key(&base_url).unwrap_or_else(|| {
             panic!(
                 "lane '{}' names dial target '{base_url}', which this image's vocabulary cannot \
@@ -217,7 +215,6 @@ pub(crate) fn build_runtime(
                 li.model
             )
         });
-        #[cfg(feature = "teller-waist")]
         let lane_id = registration.key(&li.model).unwrap_or_else(|| {
             panic!(
                 "lane '{}' cannot be named — this image's vocabulary is closed, or past capacity",
@@ -229,9 +226,7 @@ pub(crate) fn build_runtime(
             provider: li.provider.clone(),
             signing_host,
             base_url,
-            #[cfg(feature = "teller-waist")]
             authority,
-            #[cfg(feature = "teller-waist")]
             lane_id,
             api_key: busbar_contract::redacted::Redacted::new(api_key),
             protocol,

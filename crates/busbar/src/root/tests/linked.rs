@@ -55,6 +55,7 @@ pub(super) fn linked(
         gauntlet_session: &[],
         transports: &[],
         claims: &[],
+        node: &[],
     }
 }
 

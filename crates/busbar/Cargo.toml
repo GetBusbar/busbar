@@ -207,7 +207,11 @@ default = ["auth-admin-tokens", "hooks-ranking", "proto-llm", "plane-mcp", "plan
 # feature is the deletion test's level-1 build. There is no per-DIALECT feature and there must not
 # be one — "LLM coverage or not" is the choice this seam offers, and a `proto-gemini` knob would be
 # a second, finer answer to a question the owner ruling already settled.
-proto-llm = ["dep:busbar-llm", "busbar-kernel/plane-llm"]
+# ONE switch for the plane and the node its units run through: linking the plane turns `root-llm` on
+# (and `root-llm` turns the plane on), because the plane's arrivals hand every unit to the root's node
+# and there is no other path an arrival can take (ARCHITECT R7(b): the build that served them through
+# the shell instead is dropped).
+proto-llm = ["dep:busbar-llm", "busbar-kernel/plane-llm", "root-llm"]
 # THE MCP PROTOCOL, carried by `busbar-mcp`: the dependency edge plus the `busbar_mcp::PROTO_DECL`
 # registration line in main.rs. ONE switch for MCP the protocol codec today and MCP the plane once
 # it folds in — never two — so it keeps the plane-kind name `plane-mcp` rather than a `proto-mcp`
@@ -265,27 +269,17 @@ export-webhook = ["dep:busbar-export-webhook"]
 # the exposition 1.5.5 shipped built in. Off, the module resolves only when a signed tarball of the
 # sink is dropped into `plugins/`.
 export-prometheus = ["dep:busbar-export-prometheus"]
-# THE LLM PLANE THROUGH THE COMPOSITION ROOT, DEFAULT ON: the loop over the nine step files instead
-# of the shell over the engine. Same six dialects under the same six names. Default-off was the
-# ordering, not the destination — the root is BUILT before any plane is SWITCHED onto it — and the
-# ordering is done: the leg was proved byte-identical on and off over the request-path families
-# first, and then the whole owed golden was re-run with it on and moved no cell — every money class
-# byte-identical, the llm, billing, route-failover and admin families at zero. That last measurement
-# is the one the default was waiting for, because the LLM plane is the one leg the golden records in
-# bulk: every dialect, every money class, every refusal shape.
-#
-# It carries no config key, no environment variable and no boot line. A deployment cannot turn it on
-# by editing a config file and cannot tell from the logs which way it was built, which is what keeps
-# the neutrality cells answering the same on both legs. The leg stays switchable — off, the binary
-# is the shell over the engine again and nothing else changes.
+# THE NODE THE LLM PLANE'S UNITS RUN THROUGH (`src/root/units_llm.rs`): the kernel's loop over the
+# plane's step files, the in-flight table, the Route seam and the money book behind them. It is the
+# same switch as `proto-llm` — each turns the other on — because the plane's arrivals hand every unit
+# to this node and the build that answered them through the shell instead is dropped (ARCHITECT
+# R7(b)). The name stays a feature because the root-units table and the tree's gates key the node's
+# module by it.
 #
 # The plane-crate edge is written `busbar-llm?/…`, the same optional form `plane-voice` uses for
-# `busbar-voice?/runtime`: it turns the feature on when the crate is there, and says nothing when it
-# is not. `busbar-llm/teller-waist` (no `?`) would have re-declared the optional dependency, so the
-# line outlived the crate — `git rm -r crates/busbar-llm` left `root-llm` naming a dependency that no
-# longer exists and cargo refused to load the manifest before compiling a line. It costs nothing on
-# the built binary: `proto-llm` in the same list is what pulls the crate in, so the feature is on
-# whenever `root-llm` is.
+# `busbar-voice?/runtime`: it says nothing when the crate is not there, so `git rm -r crates/busbar-llm`
+# leaves a manifest cargo still loads. The flag it names is inert now (the step files compile in every
+# build of the plane); it is spelled because the tree's CI still names it.
 root-llm = ["proto-llm", "busbar-llm?/teller-waist"]
 # THE ROOT-DRIVEN ADMIN SURFACE (composition-root step C1 / switch-over S1). DEFAULT ON: it was held
 # off until the oracle's admin family was green on it, and it is. The switch is what makes an admin
@@ -357,10 +351,11 @@ transport-stdio = "busbar-transport-stdio"
 # `gauntlet-one-shot` / `gauntlet-session`: the plane rides the unified kernel loop (#28) —
 # `gauntlet_install::install()` flips its `PLANE_DECLARATION.key` onto the one-shot or session runner.
 # `claims`: the pure plane the boot seal registers (`PLANE`) and the claims it declares (`CLAIMS`).
+# `node`: the entry's `install_node`, handed the node a root unit drives the entry's units through.
 # `transport`: a wire's `KEY`, `COMPOSES_OVER` and `build(lower, &TransportSettings)`.
 # `stores` / `hooks`: an in-process store's `STORE` and a ranking row's `HOOK` (`root::linked`).
 [package.metadata.busbar.linked-axes]
-proto-llm = "plane claims protocols path-ingress body-ingress protocol-seams on-host cli-help gauntlet-one-shot"
+proto-llm = "plane claims protocols path-ingress body-ingress protocol-seams on-host cli-help node gauntlet-one-shot"
 plane-mcp = "plane claims protocols diagnostics egress stdio-serve cli-help gauntlet-one-shot"
 plane-a2a = "plane claims diagnostics egress plane-sections admin-envelope gauntlet-one-shot"
 plane-voice = "plane claims diagnostics ws-arrivals compose gauntlet-session"

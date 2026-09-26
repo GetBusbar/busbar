@@ -37,13 +37,6 @@ path = "src/lib.rs"
 # and friends): this plane has NO production dependency on busbar-core, so there is nothing of core's
 # to forward. The G6 A4b leaf-op read/write free fns are `#[cfg(any(test, feature = "test-support"))]`.
 test-support = ["busbar-kernel/test-support", "busbar-llm-codec/test-support"]
-# THE TELLER WAIST, written dark. DEFAULT OFF, and it stays off until the whole step set is wired and
-# the owed golden is clean on both legs. With it off `src/unit/` compiles to nothing (the module root
-# carries an inner `cfg`), so the default dependency graph, the default build and every default-feature
-# test are byte-for-byte what they were; with it on the per-step files and their identity tests come in
-# beside the live `native_ingress` path rather than in place of it. Both paths always compile and are
-# always unit-tested — the flag only ever chooses which fn-pointer tables a composition root installs,
-# never a config key, an env var or a boot line.
 # Passthrough to `busbar-timing`'s debug-only per-method micro-timing (DEFAULT OFF), mirroring
 # `busbar-core`'s `timing` feature: the relocated engine's `#[cfg(feature = "timing")]` profiling
 # guards (in `engine/pipeline.rs`) resolve against this, so the flag exists in lock-step with the
@@ -66,18 +59,10 @@ openapi-schema = ["busbar-kernel/openapi-schema", "busbar-llm-codec/openapi-sche
 # (a `webhooks:` config section + a dispatch slot on the fallback plane) is the reported deferred
 # remainder — see `openai_responses/webhook.rs`.
 webhook-receiver = ["dep:busbar-plugin"]
-# THE TELLER WAIST — the `src/unit/` step files, ONE FILE PER TELLER STEP, written dark. DEFAULT OFF,
-# and off is byte-identical to not having them: `src/unit/mod.rs` carries the inner
-# `#![cfg(feature = "teller-waist")]`, so with the flag down the whole directory compiles to nothing
-# and the dependency below is not linked at all. The legacy `native_ingress` path is untouched either
-# way; the two coexist until the composition root flips the matrix leg.
-#
-# It carries `busbar-caps` — the capability vocabulary the loop's step seam is written in
-# (`UnitToken<S>`, `Decision<S>`, `Refusal`, `ReasonCode`, the step markers, and the facts each step
-# hands the next). `busbar-caps` + `busbar-contract` is the PLUGIN-VISIBLE pair, so naming it is the
-# plane ABI rather than a reach into the kernel. `busbar-kernel` is deliberately NOT named here: the
-# type that implements the loop's step seam lives in the composition root, and these files are the
-# per-step bodies it delegates to.
+# THE TELLER WAIST — an INERT name. The `src/unit/` step files and the unit over them are this
+# plane's only arrival path and compile in every build (ARCHITECT R7(b): the build that left them
+# dark, and answered arrivals through the shell instead, is dropped). The name stays because the
+# tree's CI and the composition root's `root-llm` forward still spell it; it turns nothing on.
 teller-waist = []
 
 [dependencies]
@@ -144,10 +129,9 @@ base64 = { workspace = true }
 # The route-mount enums (`RouteMethod`/`RouteAuth`) for the OFF-by-default live webhook HTTP route.
 # Optional so the default dependency graph is unchanged; enabled only by `webhook-receiver`.
 busbar-plugin = { path = "../busbar-plugin", optional = true }
-# The capability vocabulary the `teller-waist` step files are typed in (see the feature above).
-# Optional so the default dependency graph — and therefore the default build — is unchanged.
-# The other half of the plugin-visible pair: the meter class direction the Meter step's usage lines
-# carry lives in the contract and nowhere else. Optional, and enabled only by `teller-waist`.
+# The capability vocabulary the step files are typed in, and the other half of the plugin-visible
+# pair: the meter class direction the Meter step's usage lines carry lives in the contract and
+# nowhere else.
 busbar-contract = { path = "../busbar-contract" }
 
 [dev-dependencies]

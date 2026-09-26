@@ -525,7 +525,7 @@ async fn observe(rig: &Rig, resp: Response) -> Observed {
 async fn leg_legacy(fixture: Fixture) -> Observed {
     let rig = rig(fixture).await;
     let (host, _rt) = crate::engine::test_host_rt(&rig.app);
-    let resp = crate::native_ingress::operation_ingress_inner(
+    let resp = crate::testkit::shell::operation_ingress_inner(
         &host,
         &rig.gov(),
         None,

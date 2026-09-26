@@ -8,7 +8,7 @@
 //! (`busbar_kernel::auth::resolve_data_plane_identity`) before the request reaches a handler; what it
 //! leaves behind is a [`busbar_contract::records::PlaneRequestCtx`] carrying the resolved `Arc<VirtualKey>`, and
 //! that context is the only thing the LLM ingress is handed about identity
-//! (`native_ingress::operation_ingress_inner`'s `gov` parameter, and everything it threads on).
+//! (`testkit::shell::operation_ingress_inner`'s `gov` parameter, and everything it threads on).
 //!
 //! So this step is a READ, not a decision, and saying so plainly is the point of the file. The
 //! three shapes the middleware can leave are the three arms below:

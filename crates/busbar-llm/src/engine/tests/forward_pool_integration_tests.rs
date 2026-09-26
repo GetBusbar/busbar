@@ -4990,7 +4990,7 @@ async fn test_openai_ingress_same_protocol_passthrough() {
     let body_bytes = Bytes::from(serde_json::to_vec(&req_body).unwrap());
 
     // Call openai_ingress handler directly
-    let response = crate::native_ingress::operation_ingress_inner(
+    let response = crate::testkit::shell::operation_ingress_inner(
         &host,
         &busbar_contract::records::PlaneRequestCtx::default(),
         None,
@@ -5057,7 +5057,7 @@ async fn test_openai_ingress_missing_model() {
     });
     let body_bytes = Bytes::from(serde_json::to_vec(&req_body).unwrap());
 
-    let response = crate::native_ingress::operation_ingress_inner(
+    let response = crate::testkit::shell::operation_ingress_inner(
         &host,
         &busbar_contract::records::PlaneRequestCtx::default(),
         None,
@@ -5146,7 +5146,7 @@ async fn test_openai_ingress_unknown_model() {
     });
     let body_bytes = Bytes::from(serde_json::to_vec(&req_body).unwrap());
 
-    let response = crate::native_ingress::operation_ingress_inner(
+    let response = crate::testkit::shell::operation_ingress_inner(
         &host,
         &busbar_contract::records::PlaneRequestCtx::default(),
         None,
@@ -5291,7 +5291,7 @@ async fn test_openai_ingress_single_model_anthropic_response_translated() {
     let (host, _rt) = crate::engine::test_host_rt(&app);
 
     let body = json!({"model": "glm-4.5", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 15});
-    let resp = crate::native_ingress::operation_ingress_inner(
+    let resp = crate::testkit::shell::operation_ingress_inner(
         &host,
         &busbar_contract::records::PlaneRequestCtx::default(),
         None,
@@ -5351,7 +5351,7 @@ async fn forwarded_openai_to_anthropic(
     let app = TestApp::new().lane(spec).build();
     let (host, _rt) = crate::engine::test_host_rt(&app);
 
-    let resp = crate::native_ingress::operation_ingress_inner(
+    let resp = crate::testkit::shell::operation_ingress_inner(
         &host,
         &busbar_contract::records::PlaneRequestCtx::default(),
         None,

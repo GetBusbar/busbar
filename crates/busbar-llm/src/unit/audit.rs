@@ -58,10 +58,8 @@ use axum::response::Response;
 // Imported (rather than named at each site) so this file spells the api-crate path once: the
 // kind-isolation matrix counts each spelling as this crate naming that kind, and the door
 // pass-throughs would otherwise repeat it per signature.
-#[cfg(feature = "teller-waist")]
 use busbar_contract::caps::{step::Audit, AuditFacts, Decision, OpClassId, Pass};
 use busbar_contract::records::PlaneRequestCtx;
-#[cfg(feature = "teller-waist")]
 use busbar_contract::FinishClass;
 use busbar_kernel::plane_host::EngineHost;
 
@@ -201,17 +199,13 @@ pub fn render_refusal(proto: &str, refusal: &RefusalOutcome) -> Response {
 //
 // The plane's two terminal doors are `EngineHost::finish_admitted` / `EngineHost::finish_rejected`,
 // and the construction gate counts a call to either one ANYWHERE in this crate but this file. The
-// step-typed terminal above ([`audit`] / [`audit_refused`]) is the loop's caller; the LEGACY
-// `native_ingress` path — which compiles with `teller-waist` DOWN and which downstream test builds
-// still drive — reaches the same doors through these thin forwards instead. Each is a pure,
-// argument-for-argument forward: the bytes, the record, the refund decision and the metric are the
-// host's, exactly as a direct call produced them. They are the reason the doors can be spelled once,
-// here, without the legacy path being deleted or gated behind the waist.
+// step-typed terminal above ([`audit`] / [`audit_refused`]) is the loop's caller; the
+// resolved-completion re-entry in `native_ingress` and the test kit's witness leg reach the same
+// doors through these thin forwards instead. Each is a pure, argument-for-argument forward: the
+// bytes, the record, the refund decision and the metric are the host's, exactly as a direct call
+// produced them. They are the reason the doors can be spelled once, here.
 //
-// UNCONDITIONAL, unlike the step machinery below: the legacy callers exist in every build, so their
-// door seam must too. They name only the neutral host seam, `PlaneRequestCtx`, an `Instant` and a
-// `Response` — nothing from the `teller-waist`-only capability crates — so compiling them with the
-// flag down leaves the dependency graph unchanged.
+// They name only the neutral host seam, `PlaneRequestCtx`, an `Instant` and a `Response`.
 
 /// FORWARD to the ADMITTED door — the post-admission finish, verbatim.
 #[allow(clippy::too_many_arguments)]
@@ -268,7 +262,6 @@ pub fn finish_rejected_via_audit_arrival(
 /// the only field either door reads differently, and it does not: both bound it through
 /// [`EngineHost::pool_label`], so an unconfigured name can never open a metric series on either
 /// path, and a CONFIGURED one is recorded under its own name on both.
-#[cfg(feature = "teller-waist")]
 pub struct AuditCtx<'a> {
     /// The neutral host seam the terminal is reached through.
     pub host: &'a Arc<dyn EngineHost>,
@@ -293,7 +286,6 @@ pub struct AuditCtx<'a> {
 /// [`Audited::decision`] is exactly what the kernel's `Units::audit` returns. The response rides
 /// beside it because this step is the only one in the plane that has one to give, and the loop —
 /// not this step — is what hands it back to the transport.
-#[cfg(feature = "teller-waist")]
 pub struct Audited {
     /// The sealed step-7 answer: what the plane says this unit was, and how it says it ended.
     pub decision: Decision<Audit>,
@@ -302,7 +294,6 @@ pub struct Audited {
     pub response: Served,
 }
 
-#[cfg(feature = "teller-waist")]
 impl Audited {
     /// The step's answer on its own, which is what the loop takes.
     pub fn into_decision(self) -> Decision<Audit> {
@@ -316,7 +307,6 @@ impl Audited {
 /// plane is a plugin on the neutral ABI and does not depend on the kernel. So the context is the
 /// plane's and the provisional end is the response itself, while the token and the sealed answer
 /// are the kernel's own vocabulary, named at `busbar-caps` where a plugin may name it.
-#[cfg(feature = "teller-waist")]
 pub type AuditStep = for<'a> fn(&Pass<Audit>, &AuditCtx<'a>, Served, bool) -> Audited;
 
 /// How the plane says a unit ended.
@@ -337,7 +327,6 @@ pub type AuditStep = for<'a> fn(&Pass<Audit>, &AuditCtx<'a>, Served, bool) -> Au
 /// [`FinishClass::TurnComplete`] is never answered here. It names one turn of a duplex exchange
 /// whose session continues, and no dialect this plane speaks has one: a completion's end is the
 /// unit's end.
-#[cfg(feature = "teller-waist")]
 fn finish_of(resp: &Response) -> FinishClass {
     if let Some(finish) = resp
         .extensions()
@@ -368,7 +357,6 @@ fn finish_of(resp: &Response) -> FinishClass {
 /// `charged` is the door's own answer, carried through Route unchanged: an admission that
 /// fail-opened without charging must not refund, because the refund is a decrement of a shared
 /// window and there is nothing of this unit's in it.
-#[cfg(feature = "teller-waist")]
 pub fn audit(unit_token: &Pass<Audit>, ctx: &AuditCtx<'_>, resp: Served, charged: bool) -> Audited {
     let facts = AuditFacts {
         op_class: ctx.op_class,
@@ -397,7 +385,6 @@ pub fn audit(unit_token: &Pass<Audit>, ctx: &AuditCtx<'_>, resp: Served, charged
 /// bytes agreed and the record did not. A caller that genuinely has no destination yet — a refusal
 /// taken before the model was ever read — passes [`busbar_kernel::proxy::POOL_LABEL_UNRESOLVED`], which
 /// the bound maps to itself because no deployment may configure a pool by that name.
-#[cfg(feature = "teller-waist")]
 pub fn audit_refused(unit_token: &Pass<Audit>, ctx: &AuditCtx<'_>, resp: Served) -> Audited {
     // A refusal is never a completion, whatever status it wears.
     let facts = AuditFacts {
@@ -423,6 +410,6 @@ pub fn audit_refused(unit_token: &Pass<Audit>, ctx: &AuditCtx<'_>, resp: Served)
 /// told apart in a process-wide log — through the live door and through the step, and compares the
 /// response the client is given and the record the operator can read back: same protocol, same pool
 /// label, same outcome, same status, and EXACTLY ONE link per unit on each chain.
-#[cfg(all(test, feature = "teller-waist"))]
+#[cfg(test)]
 #[path = "tests/audit.rs"]
 mod tests;

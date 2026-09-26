@@ -282,7 +282,6 @@ fn the_bedrock_parse_reads_its_own_url_space() {
 ///
 /// Gated with the step files themselves: with the waist compiled out there are no steps to drive, and
 /// the parse above is still the parse.
-#[cfg(feature = "teller-waist")]
 #[test]
 fn the_url_facts_drive_the_two_steps_to_the_live_paths_answer() {
     let (host, ctx) = parse_host();

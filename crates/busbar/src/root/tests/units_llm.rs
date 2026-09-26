@@ -1,11 +1,17 @@
-//! Tests for `units_llm.rs`. Lifted out of the implementation file so its line count
-//! measures implementation and nothing else; still a direct child module, so `use
-//! super::*` reaches the private items it always did.
+//! Tests for the node (`units_llm.rs`). Lifted out of the implementation file so its line count
+//! measures implementation and nothing else; still a direct child module, so `use super::*`
+//! reaches the private items it always did.
+//!
+//! The plane is reached the way the node reaches it: a unit is HANDED to the node exactly as the
+//! plane's arrivals hand it (`plane::handed`), and the shell those arrivals replaced is read as the
+//! witness leg (`plane::shell`) — through the plane's test kit, which is the one door a test that
+//! drives units on nodes of its own has onto the plane. The tables the root installs are read off the
+//! linked table (`crate::LINKED`).
 
 use super::*;
-// The node and its unit under neutral names: this file is about what the composition root does
-// with them, and the plane is the module these tests sit in.
-use super::{LlmNode as Node, LlmUnit as NodeUnit};
+
+use busbar_kernel::ingress::arrival::ArrivalPayload;
+use busbar_llm::{proto_codec, testkit as plane};
 
 use axum::body::Bytes;
 use axum::http::HeaderMap;
@@ -14,7 +20,7 @@ use busbar_kernel::test_support::{LaneSpec, MockResponse, MockServer, MockServer
 
 /// The one dialect these fixtures speak. Same-protocol openai→openai, so a divergence is about
 /// the PATH rather than about a translation.
-const PROTO: &str = busbar_llm::proto_codec::PROTO_OPENAI;
+const PROTO: &str = proto_codec::PROTO_OPENAI;
 const POOL: &str = "p";
 const LANE: &str = "m0";
 /// One cent, so that derived spend in cents reads as the billable count.
@@ -175,7 +181,7 @@ async fn rig_billed(fixture: Fixture) -> Rig {
 }
 
 async fn rig_with_billing(fixture: Fixture, billed: bool) -> Rig {
-    busbar_llm::testkit::install_test_seams();
+    plane::install_test_seams();
     busbar_kernel::metrics::init();
 
     let state = Arc::new(MockServerState::new());
@@ -553,7 +559,7 @@ async fn leg_legacy(fixture: Fixture) -> Observed {
         gov: rig.gov(),
         caller_token: None,
     });
-    let resp = busbar_llm::native_ingress::operation_ingress(
+    let resp = plane::shell::operation_ingress(
         &ctx,
         json_headers(),
         fixture.body(),
@@ -590,7 +596,7 @@ async fn leg_loop_billed(fixture: Fixture) -> Observed {
 /// One request, through the real loop, awaited on this task — exactly as the mount drives it.
 async fn drive(rig: &Rig, fixture: Fixture) -> Response {
     let node = Node::new();
-    let arrival = WalkArrival {
+    let arrival = plane::WalkArrival {
         host: rig.host(),
         gov: rig.gov(),
         proto: PROTO,
@@ -600,7 +606,7 @@ async fn drive(rig: &Rig, fixture: Fixture) -> Response {
         body: fixture.body(),
         path: None,
     };
-    node.answer(arrival, None).await
+    node.answer(plane::handed(arrival, None)).await
 }
 
 /// **One arrival is one reading, and both figures come out of it.**
@@ -750,7 +756,7 @@ async fn a_unit_arriving_at_a_window_boundary_bills_in_the_window_it_arrived_in(
     );
 
     let node = Node::new();
-    let arrival = WalkArrival {
+    let arrival = plane::WalkArrival {
         host: rig.host(),
         gov: rig.gov(),
         proto: PROTO,
@@ -761,7 +767,7 @@ async fn a_unit_arriving_at_a_window_boundary_bills_in_the_window_it_arrived_in(
         path: None,
     };
     let resp = node
-        .answer_arriving_at(arrival, None, NATIVE_SEATS, arrived)
+        .answer_arriving_at(plane::handed(arrival, None), arrived)
         .await;
     // Drain the body: this plane's money lands when the tap fills, which is on the drain.
     let _ = axum::body::to_bytes(resp.into_body(), usize::MAX).await;
@@ -847,8 +853,8 @@ fn history_of(entries: &[(u64, f64)]) -> crate::root::kernel::PinnedHistory {
 }
 
 /// A report of `output` tokens on the lane the histories above price.
-fn report_of(output: u64) -> LateReport {
-    LateReport {
+fn report_of(output: u64) -> Report {
+    Report {
         usage: busbar_substrate_values::billing::Usage {
             usage_units: std::collections::BTreeMap::from([(
                 busbar_contract::records::UNIT_OUTPUT.to_string(),
@@ -857,7 +863,6 @@ fn report_of(output: u64) -> LateReport {
         },
         fee_count: 0,
         lane: "lane".to_string(),
-        provider: "provider".to_string(),
     }
 }
 
@@ -1049,7 +1054,14 @@ fn the_cached_price_rides_the_posting_and_is_never_read_back_for_money() {
 async fn the_exit_arm_puts_the_loops_posting_on_the_journal() {
     let rig = rig(Fixture::BufferedOk).await;
     let node = Node::new();
-    let ended = drive_to_end(&rig, &node, Fixture::BufferedOk, rig.gov(), NATIVE_SEATS).await;
+    let ended = drive_to_end(
+        &rig,
+        &node,
+        Fixture::BufferedOk,
+        rig.gov(),
+        plane::native_seats(),
+    )
+    .await;
     rig.server.shutdown().await;
 
     let Ended::Settled { end, .. } = ended else {
@@ -1109,8 +1121,14 @@ async fn the_exit_arm_puts_the_loops_posting_on_the_journal() {
 async fn a_provider_origin_unit_posts_no_flat_fee() {
     let rig = rig(Fixture::BufferedOk).await;
     let node = Node::new();
-    let (unit, _ended) =
-        drive_keeping_the_unit(&rig, &node, Fixture::BufferedOk, rig.gov(), NATIVE_SEATS).await;
+    let (unit, _ended) = drive_keeping_the_unit(
+        &rig,
+        &node,
+        Fixture::BufferedOk,
+        rig.gov(),
+        plane::native_seats(),
+    )
+    .await;
     rig.server.shutdown().await;
 
     let fee = |origin| {
@@ -1138,7 +1156,7 @@ async fn a_provider_origin_unit_posts_no_flat_fee() {
 
 /// One request, driven through the real loop, answering with the END rather than the bytes.
 ///
-/// The same drive [`LlmNode::answer`] performs — the same table, the same slot, the same
+/// The same drive [`Node::answer`] performs — the same table, the same slot, the same
 /// `run_unit_async` — kept apart only because the entry point answers a client and this answers
 /// the exit arm's proof.
 ///
@@ -1146,12 +1164,12 @@ async fn a_provider_origin_unit_posts_no_flat_fee() {
 /// authenticate step ANSWERS is only visible on this side of the loop: the hold the door opens
 /// is opened for the principal that step settled on, and the posting the exit hands back names
 /// it. A drive that always used the rig's key could not tell the step's answer from the walk's.
-async fn drive_to_end<'n>(
+async fn drive_to_end(
     rig: &Rig,
-    node: &'n Node,
+    node: &Node,
     fixture: Fixture,
     gov: busbar_contract::records::PlaneRequestCtx,
-    seats: &'n [&'n (dyn approve::VetoSeat + Sync)],
+    seats: &'static [&'static (dyn plane::VetoSeat + Sync)],
 ) -> Ended {
     drive_keeping_the_unit(rig, node, fixture, gov, seats)
         .await
@@ -1161,16 +1179,17 @@ async fn drive_to_end<'n>(
 /// The same drive, handing the UNIT back beside the end it sealed.
 ///
 /// A unit's evidence is a reading OF the unit, so a test that asks what this plane would settle
-/// has to hold the thing that ran rather than a copy of its answer. Everything below is the
-/// drive above; the only difference is what is returned.
-async fn drive_keeping_the_unit<'n>(
+/// has to hold the thing that ran rather than a copy of its answer. The unit is the one the plane
+/// hands the node; everything below is the node's drive, and the only difference is what is
+/// returned.
+async fn drive_keeping_the_unit(
     rig: &Rig,
-    node: &'n Node,
+    node: &Node,
     fixture: Fixture,
     gov: busbar_contract::records::PlaneRequestCtx,
-    seats: &'n [&'n (dyn approve::VetoSeat + Sync)],
-) -> (NodeUnit<'n>, Ended) {
-    let arrival = WalkArrival {
+    seats: &'static [&'static (dyn plane::VetoSeat + Sync)],
+) -> (Arc<dyn Units + Send + Sync>, Ended) {
+    let arrival = plane::WalkArrival {
         host: rig.host(),
         gov,
         proto: PROTO,
@@ -1180,25 +1199,12 @@ async fn drive_keeping_the_unit<'n>(
         body: fixture.body(),
         path: None,
     };
+    let (principal, op_class, _proto, build) = plane::handed_seated(arrival, None, seats);
     let key = UnitKey::new(node.next_key.fetch_add(1, Ordering::Relaxed));
-    let principal = authenticate::principal_id(&arrival.gov);
     let meter = Arc::new(AccrualMeter::new());
-    let unit = NodeUnit {
-        node,
-        seats,
-        meter: Arc::clone(&meter),
-        op_class: OpClassId::new(arrival.operation.name()),
-        model_hint: None,
-        started: Instant::now(),
-        charged_at: EPOCH,
-        history: crate::root::kernel::ROOT_CARD.pin(),
-        arrived: Arrived::at(EPOCH * 1_000, 0),
-        principal: principal.clone(),
-        deferred: Mutex::new(None),
-        model: Mutex::new(String::new()),
-        walk: Walk::open(arrival),
-    };
-    let hold = busbar_kernel::inflight::arrival_hold(&node.kernel, &node.door, principal);
+    let (units, route, _finish) = build((node.resolver(), Arc::clone(&meter), EPOCH));
+    let history = crate::root::kernel::ROOT_CARD.pin();
+    let hold = busbar_kernel::inflight::arrival_hold(&node.kernel, &node.door, principal.clone());
     let slot = node
         .inflight
         .insert(busbar_kernel::inflight::Enter {
@@ -1219,9 +1225,18 @@ async fn drive_keeping_the_unit<'n>(
         admin_listener: false,
         kernel_verb_only: false,
     };
+    let driven = Driven {
+        node,
+        units: &*units,
+        route: &*route,
+        op_class,
+        principal: &principal,
+        arrived: Arrived::at(EPOCH * 1_000, 0),
+        history: history.as_ref(),
+    };
     let ended = busbar_kernel::teller::run_unit_async(
         &node.kernel,
-        &unit,
+        &driven,
         &ctx,
         busbar_kernel::teller::Run {
             cell: slot.cell(),
@@ -1231,11 +1246,11 @@ async fn drive_keeping_the_unit<'n>(
             canary: &node.canary,
             meter: &meter,
         },
-        &unit,
+        &driven,
     )
     .await;
     node.inflight.remove(key);
-    (unit, ended)
+    (units, ended)
 }
 
 /// THE SWITCH. Same fixture in, same bytes and same counters out — through the shipped entry
@@ -1417,7 +1432,7 @@ async fn one_unit_leaves_exactly_one_link_on_the_chain() {
             gov: shipped_rig.gov(),
             caller_token: None,
         });
-        let resp = busbar_llm::native_ingress::operation_ingress(
+        let resp = plane::shell::operation_ingress(
             &ctx,
             json_headers(),
             fixture.body(),
@@ -1460,8 +1475,8 @@ async fn one_unit_leaves_exactly_one_link_on_the_chain() {
 // ── THE TWO SURFACES WHOSE MODEL IS IN THE URL ─────────────────────────────────────────────
 
 /// The two dialects that keep their model in the path.
-const GEMINI: &str = busbar_llm::proto_codec::PROTO_GEMINI;
-const BEDROCK: &str = busbar_llm::proto_codec::PROTO_BEDROCK;
+const GEMINI: &str = proto_codec::PROTO_GEMINI;
+const BEDROCK: &str = proto_codec::PROTO_BEDROCK;
 
 /// The four ends a URL-model fixture reaches. Malformed and the pool ACL are the body surface's
 /// fixtures and are exercised there; what these four pin is the surface that was OFF the loop —
@@ -1485,12 +1500,12 @@ fn path_body(proto: &str) -> Bytes {
 }
 
 /// The URL's facts, as the carry names them.
-type PathFacts = busbar_llm::arrival::PathModelFacts;
+type PathFacts = plane::PathModelFacts;
 
 /// WHAT THE URL SAYS, for the URL each fixture is sent to.
 ///
 /// Spelled here rather than parsed, because the parse is the DIALECT'S and is pinned beside it —
-/// `busbar_llm`'s own tests drive the real `gemini_path_parse` / `bedrock_path_parse` over these
+/// the plane's own tests drive the real `gemini_path_parse` / `bedrock_path_parse` over these
 /// exact URLs and assert these exact facts. What this file is responsible for is what the loop
 /// does with them.
 fn path_facts(proto: &'static str, fixture: Fixture) -> PathFacts {
@@ -1523,7 +1538,7 @@ async fn leg_legacy_path(fixture: Fixture, proto: &'static str) -> Observed {
         caller_token: None,
     });
     let facts = path_facts(proto, fixture);
-    let resp = busbar_llm::native_ingress::ingress_path_model(
+    let resp = plane::shell::ingress_path_model(
         &ctx,
         json_headers(),
         path_body(proto),
@@ -1545,7 +1560,7 @@ async fn leg_loop_path(fixture: Fixture, proto: &'static str) -> Observed {
     let rig = rig(fixture).await;
     let node = Node::new();
     let facts = path_facts(proto, fixture);
-    let arrival = WalkArrival {
+    let arrival = plane::WalkArrival {
         host: rig.host(),
         gov: rig.gov(),
         proto,
@@ -1555,7 +1570,7 @@ async fn leg_loop_path(fixture: Fixture, proto: &'static str) -> Observed {
         body: path_body(proto),
         path: Some(facts),
     };
-    let resp = node.answer(arrival, None).await;
+    let resp = node.answer(plane::handed(arrival, None)).await;
     let observed = observe(&rig, resp).await;
     rig.server.shutdown().await;
     observed
@@ -1671,7 +1686,7 @@ async fn an_empty_url_model_ends_where_the_shipped_path_model_entry_point_ends_i
                 caller_token: None,
             });
             let facts = nameless(proto);
-            let resp = busbar_llm::native_ingress::ingress_path_model(
+            let resp = plane::shell::ingress_path_model(
                 &ctx,
                 json_headers(),
                 path_body(proto),
@@ -1690,7 +1705,7 @@ async fn an_empty_url_model_ends_where_the_shipped_path_model_entry_point_ends_i
         let looped = {
             let rig = rig(Fixture::UnknownModel).await;
             let node = Node::new();
-            let arrival = WalkArrival {
+            let arrival = plane::WalkArrival {
                 host: rig.host(),
                 gov: rig.gov(),
                 proto,
@@ -1700,7 +1715,7 @@ async fn an_empty_url_model_ends_where_the_shipped_path_model_entry_point_ends_i
                 body: path_body(proto),
                 path: Some(nameless(proto)),
             };
-            let resp = node.answer(arrival, None).await;
+            let resp = node.answer(plane::handed(arrival, None)).await;
             let observed = observe(&rig, resp).await;
             rig.server.shutdown().await;
             observed
@@ -1722,14 +1737,19 @@ async fn an_empty_url_model_ends_where_the_shipped_path_model_entry_point_ends_i
     );
 }
 
-/// THE PATH TABLE IS THE PLANE'S PATH TABLE. Same dialects, same names, same order — the
-/// path-axis twin of the body-table comparison below, and for the same reason: a dialect missing
-/// from the replacement resolves no arrival and the surface 404s, which is a deletion wearing a
-/// routing bug's clothes.
+/// THE PATH TABLE THE ROOT INSTALLS NAMES EVERY DIALECT THE SHELL DID. Same dialects, same names,
+/// same order — the path-axis twin of the body-table comparison below, and for the same reason: a
+/// dialect missing from the loop's table resolves no arrival and the surface 404s, which is a
+/// deletion wearing a routing bug's clothes. The loop's table is read off the linked table the root
+/// installs from, never off the plane by name.
 #[test]
 fn the_switched_path_table_names_every_dialect_the_plane_names() {
-    let shipped: Vec<&str> = busbar_llm::PATH_INGRESS.iter().map(|(n, _)| *n).collect();
-    let switched: Vec<&str> = PATH_INGRESS.iter().map(|(n, _)| *n).collect();
+    let shipped: Vec<&str> = plane::shell::PATH_INGRESS.iter().map(|(n, _)| *n).collect();
+    let switched: Vec<&str> = crate::LINKED
+        .path_ingress
+        .iter()
+        .flat_map(|table| table.iter().map(|(n, _)| *n))
+        .collect();
     assert_eq!(switched, shipped);
 }
 
@@ -1744,7 +1764,7 @@ fn the_switched_path_table_names_every_dialect_the_plane_names() {
 async fn the_url_facts_ride_the_unit_and_not_the_thread() {
     let rig = rig(Fixture::BufferedOk).await;
     let facts = path_facts(GEMINI, Fixture::BufferedOk);
-    let base = |path| WalkArrival {
+    let base = |path| plane::WalkArrival {
         host: rig.host(),
         gov: rig.gov(),
         proto: GEMINI,
@@ -1754,35 +1774,34 @@ async fn the_url_facts_ride_the_unit_and_not_the_thread() {
         body: path_body(GEMINI),
         path,
     };
-    let carried = Walk::open(base(Some(facts)));
+    let carried = plane::url_facts(base(Some(facts)));
     assert_eq!(
-        carried.with_path(|f| f.model.clone()).as_deref(),
+        carried.as_ref().map(|(model, _)| model.as_str()),
         Some(POOL),
         "a path-model unit reads what its own URL said"
     );
     assert!(
-        carried
-            .with_path(|f| f.model_not_found_message.clone())
-            .flatten()
-            .is_some(),
+        carried.and_then(|(_, miss_copy)| miss_copy).is_some(),
         "and the dialect's own miss copy is one of the facts it carries"
     );
     assert!(
-        Walk::open(base(None)).with_path(|_| ()).is_none(),
+        plane::url_facts(base(None)).is_none(),
         "a body-model unit carries no URL fact at all"
     );
     rig.server.shutdown().await;
 }
 
-/// THE TABLE IS THE PLANE'S TABLE. Same dialects, same names, same order.
+/// THE TABLE THE ROOT INSTALLS NAMES EVERY DIALECT THE SHELL DID. Same dialects, same names, same
+/// order.
 ///
-/// The switch replaces one arrival table with another, and a dialect missing from the
-/// replacement does not fail loudly — it resolves no arrival and the surface 404s, which is a
-/// deletion wearing a routing bug's clothes. So the two tables are compared as data.
+/// The switch replaced one arrival table with another, and a dialect missing from the replacement
+/// does not fail loudly — it resolves no arrival and the surface 404s, which is a deletion wearing a
+/// routing bug's clothes. So the loop's table, as the linked table carries it to the root, and the
+/// shell's are compared as data.
 #[test]
 fn the_switched_table_names_every_dialect_the_plane_names() {
-    let shipped: Vec<&str> = busbar_llm::BODY_INGRESS.iter().map(|(n, _)| *n).collect();
-    let switched: Vec<&str> = BODY_INGRESS.iter().map(|(n, _)| *n).collect();
+    let shipped: Vec<&str> = plane::shell::BODY_INGRESS.iter().map(|(n, _)| *n).collect();
+    let switched: Vec<&str> = body_dialects();
     assert_eq!(switched, shipped);
 }
 
@@ -1847,7 +1866,11 @@ fn a_lane_name_reaches_the_interner_once_however_often_it_is_resolved() {
 /// The six dialects whose model rides the body. The same six the mount installs, read off the
 /// table rather than retyped, so a dialect added to one and not the other cannot pass here.
 fn body_dialects() -> Vec<&'static str> {
-    BODY_INGRESS.iter().map(|(name, _)| *name).collect()
+    crate::LINKED
+        .body_ingress
+        .iter()
+        .flat_map(|table| table.iter().map(|(name, _)| *name))
+        .collect()
 }
 
 /// The four shapes step 1 is asked about.
@@ -1873,16 +1896,16 @@ fn dialect_body(proto: &str, shape: Decoded) -> Bytes {
     if shape == Decoded::Malformed {
         return Bytes::from_static(b"{not json");
     }
-    let mut v = if proto == busbar_llm::proto_codec::PROTO_ANTHROPIC {
+    let mut v = if proto == proto_codec::PROTO_ANTHROPIC {
         serde_json::json!({"max_tokens": 16,
                            "messages": [{"role": "user", "content": "hi"}]})
     } else if proto == GEMINI {
         serde_json::json!({"contents": [{"role": "user", "parts": [{"text": "hi"}]}]})
     } else if proto == BEDROCK {
         serde_json::json!({"messages": [{"role": "user", "content": [{"text": "hi"}]}]})
-    } else if proto == busbar_llm::proto_codec::PROTO_RESPONSES {
+    } else if proto == proto_codec::PROTO_RESPONSES {
         serde_json::json!({"input": "hi"})
-    } else if proto == busbar_llm::proto_codec::PROTO_COHERE {
+    } else if proto == proto_codec::PROTO_COHERE {
         serde_json::json!({"message": "hi"})
     } else {
         serde_json::json!({"messages": [{"role": "user", "content": "hi"}]})
@@ -1907,7 +1930,7 @@ fn unsupported_verb(proto: &str) -> Option<busbar_contract::operation::OpVerb> {
         busbar_contract::operation::OpVerb::RERANK,
     ]
     .into_iter()
-    .find(|op| decode::handler_for(proto, *op).is_err())
+    .find(|op| plane::declines(proto, *op))
 }
 
 /// LEG 1 — the shipped body-model entry point, for any dialect and any verb.
@@ -1922,15 +1945,8 @@ async fn leg_legacy_decode(
         gov: rig.gov(),
         caller_token: None,
     });
-    let resp = busbar_llm::native_ingress::operation_ingress(
-        &ctx,
-        json_headers(),
-        body,
-        proto,
-        operation,
-        None,
-    )
-    .await;
+    let resp =
+        plane::shell::operation_ingress(&ctx, json_headers(), body, proto, operation, None).await;
     let observed = observe(&rig, resp).await;
     rig.server.shutdown().await;
     observed
@@ -1944,7 +1960,7 @@ async fn leg_loop_decode(
 ) -> Observed {
     let rig = rig(Fixture::BufferedOk).await;
     let node = Node::new();
-    let arrival = WalkArrival {
+    let arrival = plane::WalkArrival {
         host: rig.host(),
         gov: rig.gov(),
         proto,
@@ -1954,7 +1970,7 @@ async fn leg_loop_decode(
         body,
         path: None,
     };
-    let resp = node.answer(arrival, None).await;
+    let resp = node.answer(plane::handed(arrival, None)).await;
     let observed = observe(&rig, resp).await;
     rig.server.shutdown().await;
     observed
@@ -2003,9 +2019,7 @@ async fn the_loop_decodes_every_dialect_the_way_the_shipped_plane_decodes_it() {
                     }
                 }
                 Decoded::NoModel => {
-                    if status != "400"
-                        || !answered.contains(decode::DecodeRefusal::MissingModel.message())
-                    {
+                    if status != "400" || !answered.contains(plane::missing_model_sentence()) {
                         failures.push(format!(
                             "{label}: the ladder's own refusal is not what the client read \
                              (status={status}) {answered}"
@@ -2040,9 +2054,7 @@ async fn the_loop_decodes_every_dialect_the_way_the_shipped_plane_decodes_it() {
             compare(&label, &legacy, &looped, &mut failures);
             let status = field(&looped, "status");
             let answered = field(&looped, "body");
-            if status != "404"
-                || !answered.contains(decode::DecodeRefusal::UnsupportedOperation.message())
-            {
+            if status != "404" || !answered.contains(plane::unsupported_operation_sentence()) {
                 failures.push(format!(
                     "{label}: the endpoint's own 404 is not what the client read \
                      (status={status}) {answered}"
@@ -2115,7 +2127,7 @@ async fn principal_the_loop_settled_on(
     gov: busbar_contract::records::PlaneRequestCtx,
 ) -> String {
     let node = Node::new();
-    let ended = drive_to_end(rig, &node, Fixture::BufferedOk, gov, NATIVE_SEATS).await;
+    let ended = drive_to_end(rig, &node, Fixture::BufferedOk, gov, plane::native_seats()).await;
     let Ended::Settled { end, .. } = ended else {
         panic!("the exit path settles a delivered unit");
     };
@@ -2133,7 +2145,7 @@ async fn leg_legacy_as(rig: &Rig, gov: busbar_contract::records::PlaneRequestCtx
         gov,
         caller_token: None,
     });
-    let resp = busbar_llm::native_ingress::operation_ingress(
+    let resp = plane::shell::operation_ingress(
         &ctx,
         json_headers(),
         Fixture::BufferedOk.body(),
@@ -2148,7 +2160,7 @@ async fn leg_legacy_as(rig: &Rig, gov: busbar_contract::records::PlaneRequestCtx
 /// LEG 2 — the loop, driven with the same context the door produced.
 async fn leg_loop_as(rig: &Rig, gov: busbar_contract::records::PlaneRequestCtx) -> Observed {
     let node = Node::new();
-    let arrival = WalkArrival {
+    let arrival = plane::WalkArrival {
         host: rig.host(),
         gov,
         proto: PROTO,
@@ -2158,7 +2170,7 @@ async fn leg_loop_as(rig: &Rig, gov: busbar_contract::records::PlaneRequestCtx) 
         body: Fixture::BufferedOk.body(),
         path: None,
     };
-    let resp = node.answer(arrival, None).await;
+    let resp = node.answer(plane::handed(arrival, None)).await;
     observe(rig, resp).await
 }
 
@@ -2274,7 +2286,21 @@ async fn the_loop_attributes_the_identity_the_door_resolved_and_invents_none() {
                 let anonymous = busbar_contract::auth::AuthPrincipal(None)
                     .actor_id()
                     .to_string();
-                if authenticate::principal_id(&open).as_str() != anonymous {
+                // Whose unit the plane says it is, as its arrivals hand it to the node.
+                let (unbound, ..) = plane::handed(
+                    plane::WalkArrival {
+                        host: loop_rig.host(),
+                        gov: open.clone(),
+                        proto: PROTO,
+                        operation: busbar_contract::operation::OpVerb::CHAT,
+                        caller_token: None,
+                        headers: json_headers(),
+                        body: Fixture::BufferedOk.body(),
+                        path: None,
+                    },
+                    None,
+                );
+                if unbound.as_str() != anonymous {
                     failures.push(format!(
                         "{cred:?}: an unbound request is not attributed to the anonymous actor"
                     ));
@@ -2325,7 +2351,7 @@ async fn the_loop_attributes_the_identity_the_door_resolved_and_invents_none() {
 /// A seated gate that stops every unit, and records that it was asked. The recording is what
 /// makes "the loop consulted the seat" a fact rather than an inference from the refusal.
 struct StopsEverything(std::sync::atomic::AtomicBool);
-impl approve::VetoSeat for StopsEverything {
+impl plane::VetoSeat for StopsEverything {
     fn vetoes(&self, _p: &PrincipalId, _d: &[VerifiedDestination]) -> bool {
         self.0.store(true, Ordering::SeqCst);
         true
@@ -2335,7 +2361,7 @@ impl approve::VetoSeat for StopsEverything {
 /// A seated gate that stops nothing, and records that it was asked. Without this the pass-through
 /// half of the cell would be satisfied by a seat list the loop never reached at all.
 struct StopsNothing(std::sync::atomic::AtomicBool);
-impl approve::VetoSeat for StopsNothing {
+impl plane::VetoSeat for StopsNothing {
     fn vetoes(&self, _p: &PrincipalId, _d: &[VerifiedDestination]) -> bool {
         self.0.store(true, Ordering::SeqCst);
         false
@@ -2344,9 +2370,12 @@ impl approve::VetoSeat for StopsNothing {
 
 /// One request through the real loop with a named seat list, exactly as the mount drives it with
 /// its own.
-async fn leg_loop_seated(rig: &Rig, seats: &[&(dyn approve::VetoSeat + Sync)]) -> Observed {
+async fn leg_loop_seated(
+    rig: &Rig,
+    seats: &'static [&'static (dyn plane::VetoSeat + Sync)],
+) -> Observed {
     let node = Node::new();
-    let arrival = WalkArrival {
+    let arrival = plane::WalkArrival {
         host: rig.host(),
         gov: rig.gov(),
         proto: PROTO,
@@ -2356,7 +2385,9 @@ async fn leg_loop_seated(rig: &Rig, seats: &[&(dyn approve::VetoSeat + Sync)]) -
         body: Fixture::BufferedOk.body(),
         path: None,
     };
-    let resp = node.answer_with(arrival, None, seats).await;
+    let resp = node
+        .answer(plane::handed_seated(arrival, None, seats))
+        .await;
     observe(rig, resp).await
 }
 
@@ -2367,7 +2398,7 @@ async fn leg_loop_seated(rig: &Rig, seats: &[&(dyn approve::VetoSeat + Sync)]) -
 /// half, and the seat is the 1.6.0-native one: a gate that may stop a unit BEFORE the door and
 /// may do nothing else.
 ///
-/// The MIGRATED hooks are not seated here and this cell says so first: [`NATIVE_SEATS`] is the
+/// The MIGRATED hooks are not seated here and this cell says so first: `plane::native_seats()` is the
 /// list the mount installs, it is empty, and that emptiness is why a unit over the loop is
 /// unit-for-unit what the shipped path answers. Seating the migrated hooks would move a veto
 /// from after a charge to before one, which changes what is billed.
@@ -2387,7 +2418,7 @@ async fn a_seated_gate_stops_the_unit_before_the_door_and_an_empty_seat_list_cha
     use std::sync::atomic::AtomicBool;
 
     assert!(
-        NATIVE_SEATS.is_empty(),
+        plane::native_seats().is_empty(),
         "the mount seats a native gate: the migrated hooks fire AFTER the door on the live \
          path, and a veto moved in front of a charge changes what is billed"
     );
@@ -2402,14 +2433,15 @@ async fn a_seated_gate_stops_the_unit_before_the_door_and_an_empty_seat_list_cha
 
     // NOTHING SEATED: the mount's own list, which is the whole of today's behaviour.
     let bare_rig = rig(Fixture::BufferedOk).await;
-    let bare = leg_loop_seated(&bare_rig, NATIVE_SEATS).await;
+    let bare = leg_loop_seated(&bare_rig, plane::native_seats()).await;
     compare("no seat", &shipped, &bare, &mut failures);
     bare_rig.server.shutdown().await;
 
     // A SEAT THAT DOES NOT VETO: consulted, and the unit goes on to the same end.
-    let passing = StopsNothing(AtomicBool::new(false));
+    // Seated for the length of the process, as a mount's seats are: a seat is configuration.
+    let passing: &'static StopsNothing = Box::leak(Box::new(StopsNothing(AtomicBool::new(false))));
     let passing_rig = rig(Fixture::BufferedOk).await;
-    let passed = leg_loop_seated(&passing_rig, &[&passing]).await;
+    let passed = leg_loop_seated(&passing_rig, Box::leak(Box::new([passing as _]))).await;
     compare(
         "a seat that does not veto",
         &shipped,
@@ -2426,9 +2458,10 @@ async fn a_seated_gate_stops_the_unit_before_the_door_and_an_empty_seat_list_cha
     passing_rig.server.shutdown().await;
 
     // A SEAT THAT VETOES: the unit stops at Approve.
-    let stopping = StopsEverything(AtomicBool::new(false));
+    let stopping: &'static StopsEverything =
+        Box::leak(Box::new(StopsEverything(AtomicBool::new(false))));
     let veto_rig = rig(Fixture::BufferedOk).await;
-    let stopped = leg_loop_seated(&veto_rig, &[&stopping]).await;
+    let stopped = leg_loop_seated(&veto_rig, Box::leak(Box::new([stopping as _]))).await;
     assert!(
         stopping.0.load(Ordering::SeqCst),
         "the vetoing gate was never asked"
@@ -2485,7 +2518,7 @@ async fn a_seated_gate_stops_the_unit_before_the_door_and_an_empty_seat_list_cha
 /// running total the order of the tests could change.
 async fn drive_counting(rig: &Rig, fixture: Fixture) -> (Response, Option<u64>) {
     let node = Node::new();
-    let arrival = WalkArrival {
+    let arrival = plane::WalkArrival {
         host: rig.host(),
         gov: rig.gov(),
         proto: PROTO,
@@ -2495,7 +2528,7 @@ async fn drive_counting(rig: &Rig, fixture: Fixture) -> (Response, Option<u64>) 
         body: fixture.body(),
         path: None,
     };
-    let response = node.answer(arrival, None).await;
+    let response = node.answer(plane::handed(arrival, None)).await;
     (response, node.driven())
 }
 
@@ -2647,7 +2680,7 @@ async fn leg_native_run(fixture: Fixture) -> Observed {
         gov: rig.gov(),
         caller_token: None,
     });
-    let resp = busbar_llm::native_ingress::operation_ingress(
+    let resp = plane::shell::operation_ingress(
         &ctx,
         json_headers(),
         fixture.body(),
@@ -2659,6 +2692,48 @@ async fn leg_native_run(fixture: Fixture) -> Observed {
     let observed = observe(&rig, resp).await;
     rig.server.shutdown().await;
     observed
+}
+
+/// THE KERNEL-LOOP DRIVE OF THE RESOLVED-OP ENTRY, beside the shell's money authority.
+///
+/// The shell's resolved-op funnel (`native_ingress::run`, reached through its `operation_ingress`
+/// door) builds a `NativePlane`/`GauntletRequest` and settles per-token billing through
+/// `busbar_kernel::plane_host::run_gauntlet`, late-accruing against the admission-pinned `ROOT_CARD`
+/// snapshot; it stays the MCP-sampling re-entry's (`synthesize_completion`). This is that SAME
+/// resolved-op arrival as a unit handed to the process's ONE node — `answer_arriving_at` →
+/// `busbar_kernel::teller::run_unit_async`, settling onto the same Durability money-book the
+/// composition root binds via [`bind_book`]. The resolved `model` is carried as the unit's routing
+/// hint, exactly as `run()` carries its resolved `model`; `path: None`, because a resolved-op
+/// arrival's model rides its body.
+#[allow(clippy::too_many_arguments)]
+async fn native_run_via_loop(
+    host: &Arc<dyn busbar_kernel::plane_host::EngineHost>,
+    gov: &busbar_contract::records::PlaneRequestCtx,
+    proto: &'static str,
+    operation: busbar_contract::operation::OpVerb,
+    model: &str,
+    headers: &HeaderMap,
+    body: Bytes,
+    arrived: Arrived,
+) -> Response {
+    let arrival = plane::WalkArrival {
+        host: Arc::clone(host),
+        gov: busbar_contract::records::PlaneRequestCtx {
+            key: gov.key.clone(),
+        },
+        proto,
+        operation,
+        caller_token: None,
+        headers: headers.clone(),
+        body,
+        path: None,
+    };
+    // The process's ONE node, the arrival instant HANDED IN so the shadow can pin the same window
+    // the legacy leg is charged in — and the mount's own Approve seats, empty on every deployment,
+    // so the Approve step is the no-op the shell has no equivalent step for.
+    super::NODE
+        .answer_arriving_at(plane::handed(arrival, Some(model.to_string())), arrived)
+        .await
 }
 
 /// LEG 2 — the DORMANT kernel-loop sibling `native_run_via_loop`, driven at the SAME funnel with the
@@ -2683,7 +2758,6 @@ async fn leg_native_run_via_loop(fixture: Fixture) -> Observed {
         fixture.model(),
         &json_headers(),
         fixture.body(),
-        None,
         arrived,
     )
     .await;
@@ -2926,7 +3000,7 @@ fn fee_history_of(
 }
 
 /// A late report of `input`/`output` tokens and `fee_count` billable requests on `"lane"`.
-fn split_report(input: u64, output: u64, fee_count: u32) -> LateReport {
+fn split_report(input: u64, output: u64, fee_count: u32) -> Report {
     let mut units = std::collections::BTreeMap::new();
     if input != 0 {
         units.insert(busbar_contract::records::UNIT_INPUT.to_string(), input);
@@ -2934,11 +3008,10 @@ fn split_report(input: u64, output: u64, fee_count: u32) -> LateReport {
     if output != 0 {
         units.insert(busbar_contract::records::UNIT_OUTPUT.to_string(), output);
     }
-    LateReport {
+    Report {
         usage: busbar_substrate_values::billing::Usage { usage_units: units },
         fee_count,
         lane: "lane".to_string(),
-        provider: "provider".to_string(),
     }
 }
 
@@ -2950,7 +3023,7 @@ fn split_report(input: u64, output: u64, fee_count: u32) -> LateReport {
 fn invoice_micros(
     history: &crate::root::kernel::PinnedHistory,
     arrived_ms: u64,
-    report: &LateReport,
+    report: &Report,
 ) -> i64 {
     use busbar_core_admin::v1::service::read_path_money as invoice;
     let view = history.view();
@@ -3041,7 +3114,7 @@ fn the_second_book_agrees_with_the_invoice_cell_by_cell_and_a_divergence_is_red(
     );
     let billing_off = fee_history_of(&[(0, 0.0, 0.0, 1)], false);
 
-    let cells: [(&str, &crate::root::kernel::PinnedHistory, u64, LateReport); 7] = [
+    let cells: [(&str, &crate::root::kernel::PinnedHistory, u64, Report); 7] = [
         (
             "boot card, before A",
             &billed,
@@ -3406,7 +3479,7 @@ fn late_post(
     history: &crate::root::kernel::PinnedHistory,
     at: Arrived,
     principal: &str,
-    report: &LateReport,
+    report: &Report,
 ) -> crate::root::durability::NodeBook {
     // The book prices its chain against the same history the arm priced the unit against.
     let pinned = history.clone();
@@ -3451,7 +3524,7 @@ fn second_book_rows(
 /// THE GOVERNANCE LEDGER'S ROW for one unit — the invoice's facts: the class map the tap ledgers
 /// VERBATIM (`meter_ledger`; for a rerank `record_resp_usage` ledgers `{search_units: n}`), the
 /// serving lane, and the billable count the fee is charged on.
-fn governance_row(report: &LateReport) -> crate::root::durability::UnitCounts {
+fn governance_row(report: &Report) -> crate::root::durability::UnitCounts {
     crate::root::durability::UnitCounts {
         lane: report.lane.clone(),
         fee_count: u64::from(report.fee_count),
@@ -3575,14 +3648,13 @@ fn rerank_history_on(
 }
 
 /// A rerank's drained report: `units` search units and one billable request, no tokens.
-fn rerank_report(units: u64) -> LateReport {
-    LateReport {
+fn rerank_report(units: u64) -> Report {
+    Report {
         usage: busbar_substrate_values::billing::Usage {
             usage_units: std::collections::BTreeMap::from([(SEARCH_UNITS.to_string(), units)]),
         },
         fee_count: 1,
         lane: "lane".to_string(),
-        provider: "provider".to_string(),
     }
 }
 
@@ -3832,7 +3904,7 @@ const RERANK_UNITS: u64 = 50;
 /// book's row held no `search_units` and priced the fee alone, while the governance ledger held 50.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_served_rerank_puts_identical_search_units_on_both_books() {
-    busbar_llm::testkit::install_test_seams();
+    plane::install_test_seams();
     busbar_kernel::metrics::init();
 
     let state = Arc::new(MockServerState::new());
@@ -3874,12 +3946,8 @@ async fn a_served_rerank_puts_identical_search_units_on_both_books() {
     let app = TestApp::new()
         .keys_chain()
         .lane(
-            LaneSpec::new(
-                RERANK_LANE,
-                busbar_llm::proto_codec::PROTO_COHERE,
-                &server.base_url(),
-            )
-            .provider("cohere"),
+            LaneSpec::new(RERANK_LANE, proto_codec::PROTO_COHERE, &server.base_url())
+                .provider("cohere"),
         )
         .pool(RERANK_POOL, &[(0, 1)])
         .governance(Arc::clone(&gov))
@@ -3897,7 +3965,7 @@ async fn a_served_rerank_puts_identical_search_units_on_both_books() {
     let book = crate::root::durability::node_book_over(Box::new(move || Some(pinned.clone())));
     node.bind_book(Arc::clone(&book.durability));
 
-    let arrival = WalkArrival {
+    let arrival = plane::WalkArrival {
         host: busbar_kernel::plane_host::engine_host(&app),
         gov: gov_ctx.clone(),
         proto: BEDROCK,
@@ -3915,25 +3983,10 @@ async fn a_served_rerank_puts_identical_search_units_on_both_books() {
     };
     let arrived = Arrived::at(EPOCH * 1_000, 0);
     let key_n = UnitKey::new(node.next_key.fetch_add(1, Ordering::Relaxed));
-    let principal = authenticate::principal_id(&arrival.gov);
+    // THE UNIT, as the plane's path arrival hands it to the node.
+    let (principal, op_class, _proto, build) = plane::handed(arrival, None);
     let meter = Arc::new(AccrualMeter::new());
-    let unit = NodeUnit {
-        node: &node,
-        seats: NATIVE_SEATS,
-        meter: Arc::clone(&meter),
-        op_class: OpClassId::new(arrival.operation.name()),
-        model_hint: None,
-        started: Instant::now(),
-        charged_at: EPOCH,
-        // THE PIN the node's own drive takes off `ROOT_CARD` at admission, handed in: the process
-        // holder is empty in a test, and the late arm posts nothing without a pinned history.
-        history: Some(history.clone()),
-        arrived,
-        principal: principal.clone(),
-        deferred: Mutex::new(None),
-        model: Mutex::new(String::new()),
-        walk: Walk::open(arrival),
-    };
+    let (units, route, finish) = build((node.resolver(), Arc::clone(&meter), EPOCH));
     let hold = busbar_kernel::inflight::arrival_hold(&node.kernel, &node.door, principal.clone());
     let slot = node
         .inflight
@@ -3955,9 +4008,20 @@ async fn a_served_rerank_puts_identical_search_units_on_both_books() {
         admin_listener: false,
         kernel_verb_only: false,
     };
+    // THE PIN the node's own drive takes off `ROOT_CARD` at admission, handed in: the process
+    // holder is empty in a test, and the late arm posts nothing without a pinned history.
+    let driven = Driven {
+        node: &node,
+        units: &*units,
+        route: &*route,
+        op_class,
+        principal: &principal,
+        arrived,
+        history: Some(&history),
+    };
     let _ended = busbar_kernel::teller::run_unit_async(
         &node.kernel,
-        &unit,
+        &driven,
         &ctx,
         busbar_kernel::teller::Run {
             cell: slot.cell(),
@@ -3967,20 +4031,17 @@ async fn a_served_rerank_puts_identical_search_units_on_both_books() {
             canary: &node.canary,
             meter: &meter,
         },
-        &unit,
+        &driven,
     )
     .await;
     node.inflight.remove(key_n);
     // THE NODE'S OWN TAIL, as `answer_arriving_at` runs it: the terminal's bytes, wrapped by the
     // late arm, drained the way a client drains them.
-    let walk = unit.walk;
-    let response = walk
-        .take_terminal()
-        .map(audit::Served::into_response)
-        .expect("the served unit posted its terminal");
+    let (response, late) = finish();
+    let response = response.expect("the served unit posted its terminal");
     assert_eq!(response.status(), StatusCode::OK, "the rerank was served");
     let response =
-        node.attach_late_accrual(response, walk, &principal, arrived, Some(history.clone()));
+        node.attach_late_accrual(response, late, &principal, arrived, Some(history.clone()));
     let _body = axum::body::to_bytes(response.into_body(), usize::MAX)
         .await
         .expect("the served body drains");
@@ -4111,4 +4172,132 @@ fn binding_the_node_to_the_book_journals_every_card_applied_after_it() {
     );
     drop(book);
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+// ---------------------------------------------------------------------------------------------
+// THE NODE AXIS (ARCHITECT R7): the linked arrivals hand their units to the node the root installs
+// ---------------------------------------------------------------------------------------------
+
+/// A pipeline stand-in for the one arrival below, which never reaches a rejection: the request is a
+/// well-formed chat body on the dialect's own endpoint, so the only answers it could need are the
+/// shaping ones, and they delegate to the same renderer core's host delegates to.
+struct ServedHost;
+
+impl busbar_kernel::ingress::arrival::ArrivalHost for ServedHost {
+    fn finish_rejected(
+        &self,
+        _ctx: &busbar_kernel::ingress::arrival::ArrivalCtx,
+        _proto: &str,
+        _pool: &str,
+        _started: std::time::Instant,
+        _charged_at: u64,
+        resp: Response,
+    ) -> Response {
+        resp
+    }
+
+    fn ingress_error(
+        &self,
+        proto: &str,
+        status: StatusCode,
+        kind: &str,
+        message: &str,
+    ) -> Response {
+        busbar_kernel::proxy::ingress_error(proto, status, kind, message)
+    }
+
+    fn envelope_dialect(
+        &self,
+        _ctx: &busbar_kernel::ingress::arrival::ArrivalCtx,
+        _path: &str,
+    ) -> &'static str {
+        PROTO
+    }
+
+    fn fallback_not_found(
+        &self,
+        _ctx: &busbar_kernel::ingress::arrival::ArrivalCtx,
+        _path: &str,
+        status: StatusCode,
+        err_type: &str,
+        message: &str,
+    ) -> Response {
+        busbar_kernel::proxy::ingress_error(PROTO, status, err_type, message)
+    }
+
+    fn percent_decode(&self, s: &str) -> String {
+        s.to_string()
+    }
+
+    fn kind_not_found(&self) -> &'static str {
+        busbar_kernel::proxy::KIND_NOT_FOUND
+    }
+
+    fn kind_invalid_request(&self) -> &'static str {
+        busbar_kernel::proxy::KIND_INVALID_REQUEST
+    }
+
+    fn err_type_not_found(&self) -> &'static str {
+        busbar_kernel::proxy::KIND_NOT_FOUND
+    }
+}
+
+/// **THE ARRIVALS THE ROOT INSTALLS DRIVE THEIR UNITS THROUGH THE NODE IT HANDS THEM** (ARCHITECT
+/// R7(a)+(b)).
+///
+/// The plane's linked arrivals are the loop's and nothing else: there is no build in which they answer
+/// through the shell, so an arrival whose plane was never handed a node has no path to serve on. What
+/// the boot does on the linked table's `node` axis (`register_protocols`) is done here — every entry
+/// on the axis is handed the node the root unit drives — and then one ordinary request is sent to the
+/// dialect's arrival exactly as the linked table carries it to the root. It is served: the answer is
+/// the upstream's 200, and the upstream was dialled, which only a unit that ran its Route step through
+/// a node can do. An entry never handed a node answers the node's overload refusal and dials nothing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_linked_arrivals_hand_their_units_to_the_node_the_root_installs() {
+    let rig = rig(Fixture::BufferedOk).await;
+    assert!(
+        !crate::LINKED.node.is_empty(),
+        "no linked entry is on the node axis, so no arrival is ever handed a node"
+    );
+    let node = super::ROOT_UNIT
+        .drive
+        .expect("the node's root unit carries the node the axis is handed");
+    for install in crate::LINKED.node {
+        install(node);
+    }
+    let arrive = crate::LINKED
+        .body_ingress
+        .iter()
+        .flat_map(|table| table.iter())
+        .find(|(name, _)| *name == PROTO)
+        .map(|(_, arrival)| *arrival)
+        .expect("the linked table carries this dialect's arrival");
+    let resp = arrive(busbar_kernel::ingress::arrival::Arrival {
+        host: Arc::new(ServedHost),
+        ctx: busbar_kernel::ingress::arrival::ArrivalCtx::new(ArrivalPayload {
+            host: rig.host(),
+            gov: rig.gov(),
+            caller_token: None,
+        }),
+        path: "/v1/chat/completions".to_string(),
+        model_hint: None,
+        uri: "/v1/chat/completions"
+            .parse()
+            .expect("the endpoint is a URI"),
+        headers: json_headers(),
+        body: Fixture::BufferedOk.body(),
+    })
+    .await;
+    let observed = observe(&rig, resp).await;
+    assert_eq!(
+        field(&observed, "status"),
+        "200",
+        "the linked arrival did not serve through the node: {}",
+        field(&observed, "body")
+    );
+    assert!(
+        rig.upstream.get_last_request_path().is_some(),
+        "the unit never reached the upstream, so no node drove its Route step"
+    );
+    rig.server.shutdown().await;
 }
