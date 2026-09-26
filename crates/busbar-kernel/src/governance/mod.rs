@@ -1331,10 +1331,10 @@ impl<T> IntoStoreResult<T> for Result<T, getrandom::Error> {
     }
 }
 
-// The RAM store is the always-on DEFAULT governance backend (and the universal test double). The
-// SQLite backend is no longer compiled in — it is a dynamic-library plugin loaded at boot (see
-// crate::main's store selection + busbar-plugin-loader).
-pub use busbar_store_memory::MemoryStore;
+// The universal test double: the build's default store, which the composition root links onto the
+// store axis (the kernel names no store); a test build links it as its store fixture.
+#[cfg(any(test, feature = "test-support"))]
+pub use fixture_store::MemoryStore;
 
 /// The write-behind flusher: on a fixed cadence (and once more on graceful shutdown) pushes the
 /// dirty in-memory budget cells and the accumulated `pending_metering` rows to the durable store off

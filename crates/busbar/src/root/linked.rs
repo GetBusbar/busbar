@@ -86,6 +86,10 @@ pub struct Linked {
     pub cli_help: &'static [&'static [CliHelpRow]],
     /// The export axis: each linked export sink's statement and boundary (see [`LinkedExport`]).
     pub exports: &'static [LinkedExport],
+    /// The store axis: each linked in-process store's `(name, ephemeral, open)`.
+    pub stores: &'static [busbar_kernel::preflight::LinkedStore],
+    /// The hook axis: each linked ranking row's `(name, aliases, open)`.
+    pub hooks: &'static [busbar_kernel::preflight::LinkedHook],
     /// The kernel-loop axes (#28): the declaration key of each plane `gauntlet_install::install()`
     /// flips onto the unified loop's ONE-SHOT runner, and of each it flips onto the SESSION runner.
     pub gauntlet_one_shot: &'static [&'static str],

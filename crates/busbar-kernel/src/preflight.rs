@@ -42,32 +42,53 @@ pub fn fleet_data_dir() -> Option<std::path::PathBuf> {
     (!path.as_os_str().is_empty()).then_some(path)
 }
 
-/// The rows this build LINKS onto the cold-kind axis, ahead of the plugins directory's: its
-/// in-process default store, which states itself ephemeral, its built-in secret modules, and (when
-/// compiled in) its ranking hooks — one row, the frozen strategy spellings its aliases.
-/// Registered through `PluginRegistry::link`, the admission a dropped-in plugin's row takes
-/// (DECISIONS #2 rule (1)).
-fn linked_rows() -> Vec<busbar_plugin_loader::LinkedPlugin> {
-    let memory = |_: &str| -> Result<Box<dyn governance::Store>, String> {
-        Ok(Box::new(governance::MemoryStore::new()))
-    };
-    let name = config::GOVERNANCE_STORE_MEMORY;
-    vec![
-        busbar_plugin_loader::LinkedPlugin::store(name, memory, true),
-        busbar_plugin_loader::LinkedPlugin::builtin_secret(config::secret::SECRET_MODULE_ENV),
-        busbar_plugin_loader::LinkedPlugin::builtin_secret(config::secret::SECRET_MODULE_FILE),
+type StoreOpen = fn(&str) -> Result<Box<dyn governance::Store>, String>;
+/// A linked in-process STORE's entry: `(name, ephemeral, open)` — the name `governance.store`
+/// selects it by, whether what it holds is lost on restart, and its open.
+pub type LinkedStore = (&'static str, bool, StoreOpen);
+type HookOpen = fn(&str) -> Option<busbar_plugin_loader::registry::RankingPolicy>;
+/// A linked RANKING hook's entry: `(name, aliases, open)` — one row, its frozen strategy spellings
+/// the aliases, `open` handed the spelling a reference used.
+pub type LinkedHook = (&'static str, &'static [&'static str], HookOpen);
+use busbar_plugin_loader::LinkedPlugin;
+
+/// A test build has no root: its store and ranking fixtures stand in for the root's entries.
+#[cfg(any(test, feature = "test-support"))]
+const STAND_IN: (&[LinkedStore], &[LinkedHook]) = (
+    &[fixture_store::linked::STORE],
+    &[
         #[cfg(feature = "hooks-ranking")]
-        busbar_plugin_loader::LinkedPlugin::ranking(
-            "hooks-ranking",
-            &[
-                config::STRATEGY_CHEAPEST,
-                config::STRATEGY_FASTEST,
-                config::STRATEGY_LEAST_BUSY,
-                config::STRATEGY_USAGE,
-            ],
-            busbar_hooks_ranking::native_policy,
-        ),
-    ]
+        fixture_hook::linked::HOOK,
+    ],
+);
+
+/// The composition root's linked store and hook entries (the build's in-process default store and,
+/// when compiled in, its ranking hooks), installed once before the first resolution.
+static ROOT_ROWS: std::sync::OnceLock<(&[LinkedStore], &[LinkedHook])> = std::sync::OnceLock::new();
+
+/// THE ROOT'S DOOR onto the cold-kind axis: its linked tables' `stores` and `hooks` entries (the
+/// first install stands). The kernel names none of the plugins it registers (#2 rule (1), #40).
+pub fn install_linked_rows(stores: &'static [LinkedStore], hooks: &'static [LinkedHook]) {
+    let _ = ROOT_ROWS.set((stores, hooks));
+}
+
+/// The rows this build LINKS onto the cold-kind axis, ahead of the plugins directory's: the root's
+/// stores, the kernel's own secret modules, the root's hooks — a test build (no root) stands its
+/// fixture entries in. Registered through `PluginRegistry::link`, the admission a dropped-in row
+/// takes (DECISIONS #2 rule (1)).
+fn linked_rows() -> Vec<LinkedPlugin> {
+    #[cfg(any(test, feature = "test-support"))]
+    let _ = ROOT_ROWS.set(STAND_IN);
+    let (stores, hooks) = ROOT_ROWS.get().copied().unwrap_or_default();
+    let store = |&(name, ephemeral, open): &LinkedStore| LinkedPlugin::store(name, open, ephemeral);
+    let hook = |&(name, aliases, open): &LinkedHook| LinkedPlugin::ranking(name, aliases, open);
+    let own = [
+        config::secret::SECRET_MODULE_ENV,
+        config::secret::SECRET_MODULE_FILE,
+    ];
+    let secrets = own.map(LinkedPlugin::builtin_secret);
+    let rows = stores.iter().map(store).chain(secrets);
+    rows.chain(hooks.iter().map(hook)).collect()
 }
 
 /// The built-in ranking strategy `name` spells on the hook axis — its linked row opened with that

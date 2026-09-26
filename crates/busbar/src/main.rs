@@ -212,6 +212,8 @@ fn register_protocols() {
 /// lands in its own slot regardless of the table's order. Then the two unconditional seams, then
 /// every root unit's seal.
 fn register_planes() {
+    // The linked store and hook rows onto the kernel's cold-kind axis, before anything resolves one.
+    busbar_kernel::preflight::install_linked_rows(LINKED.stores, LINKED.hooks);
     // The configured `plugins.dir`, scanned once: its planes join the plane axis here and its export
     // modules the export axis just below — the same entries a linked plugin registers through.
     let dropped = root::linked::dropped_from_config(&LINKED);

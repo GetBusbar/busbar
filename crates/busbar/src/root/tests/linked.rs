@@ -49,6 +49,8 @@ pub(super) fn linked(
         stdio_serve: &[],
         cli_help: &[],
         exports: &[],
+        stores: &[],
+        hooks: &[],
         gauntlet_one_shot: &[],
         gauntlet_session: &[],
         transports: &[],
@@ -879,4 +881,46 @@ fn the_egress_carrier_refuses_what_the_host_policy_refuses() {
         HostEgressCarrier.admit("https://collector.example/v1"),
         Ok(())
     );
+}
+
+/// K5d (DECISIONS #2 rule (1), #40) — THE DEFAULT STORE AND THE RANKING HOOKS ARE ROWS OF THE ROOT'S
+/// LINKED TABLES. The kernel names neither; `main` hands the `stores`/`hooks` tables to the kernel's
+/// cold-kind axis (`preflight::install_linked_rows`), which registers them through
+/// `PluginRegistry::link` like any dropped-in row: the default `governance.store` name is an
+/// ephemeral in-process store that opens, and each built-in strategy spelling is an alias of the one
+/// hook row, opening the policy of that name.
+///
+/// RED by deleting the `store-memory` / `hooks-ranking` rows of `[package.metadata.busbar.linked]`:
+/// the tables carry no default store (and no ranking row) to hand the kernel.
+#[test]
+fn the_default_store_and_ranking_hooks_are_rows_of_the_linked_tables() {
+    let default = busbar_kernel::config::GOVERNANCE_STORE_MEMORY;
+    let stores: Vec<_> = crate::LINKED.stores.iter().map(|s| (s.0, s.1)).collect();
+    assert_eq!(
+        stores,
+        [(default, true)],
+        "one linked store: the ephemeral default"
+    );
+    (crate::LINKED.stores[0].2)("{}").expect("the default store opens");
+    let strategies = [
+        busbar_kernel::config::STRATEGY_CHEAPEST,
+        busbar_kernel::config::STRATEGY_FASTEST,
+        busbar_kernel::config::STRATEGY_LEAST_BUSY,
+        busbar_kernel::config::STRATEGY_USAGE,
+    ];
+    let hooks: Vec<_> = crate::LINKED.hooks.iter().map(|h| h.1).collect();
+    let want: &[&[&str]] = if cfg!(linked_axis_hooks) {
+        &[&strategies]
+    } else {
+        &[]
+    };
+    assert_eq!(
+        hooks, want,
+        "the ranking row answers to every strategy spelling"
+    );
+    for (_, aliases, open) in crate::LINKED.hooks {
+        for spelling in *aliases {
+            assert_eq!(open(spelling).map(|p| p.name()), Some(*spelling));
+        }
+    }
 }

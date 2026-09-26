@@ -126,6 +126,12 @@ busbar-plane-streaming = { path = "../busbar-plane-streaming" }
 # composition root writes it, in `src/root/plane_decision.rs`, which is the one place entitled to
 # name a kernel type and a plane in the same file.
 busbar-plane-decision = { path = "../busbar-plane-decision", optional = true }
+# THE DEFAULT STORE (`governance.store: memory`), linked in every build through the `stores` axis —
+# the same row a dropped-in store takes, opened in process. The kernel names no store.
+busbar-store-memory = { path = "../store-memory" }
+# THE RANKING HOOKS (`cheapest`/`fastest`/`least_busy`/`usage`), linked through the `hooks` axis
+# under `hooks-ranking` — one row, the strategy spellings its aliases. The kernel names no hook.
+busbar-hooks-ranking = { path = "../hooks-ranking", optional = true }
 # THE REQUEST-LOG FILE SINK (`module: request-log-file`), a first-party EXPORT plugin linked through
 # the `exports` axis (K9b) — the same row a signed tarball of it registers when dropped in.
 busbar-export-file = { path = "../busbar-export-file", optional = true }
@@ -306,7 +312,7 @@ root-admin = ["dep:tower"]
 # release build, which is why the surface ceilings do not count it.
 test-harness = []
 auth-admin-tokens = ["busbar-kernel/auth-admin-tokens", "busbar-core-admin/auth-admin-tokens"]
-hooks-ranking = ["busbar-kernel/hooks-ranking", "busbar-core-admin/hooks-ranking"]
+hooks-ranking = ["dep:busbar-hooks-ranking", "busbar-kernel/hooks-ranking", "busbar-core-admin/hooks-ranking"]
 openapi-schema = ["busbar-kernel/openapi-schema", "busbar-core-admin/openapi-schema", "busbar-llm?/openapi-schema", "busbar-mcp?/openapi-schema", "busbar-a2a?/openapi-schema", "busbar-voice?/openapi-schema"]
 loom-model = ["busbar-kernel/loom-model"]
 
@@ -334,6 +340,10 @@ plane-decision = "busbar-plane-decision"
 export-file = "busbar-export-file"
 export-webhook = "busbar-export-webhook"
 export-prometheus = "busbar-export-prometheus"
+# THE COLD-KIND AXIS's in-process rows: the default store (a required dependency: every build links
+# it) and the ranking hooks (under their feature).
+store-memory = "busbar-store-memory"
+hooks-ranking = "busbar-hooks-ranking"
 # THE TRANSPORT AXIS (#3, #30): the wires this build links, one row each, folded bottom-up by the boot
 # seal. A row whose crate is a required dependency is linked in every build (its key names the row);
 # `ws` rides its optional edge. Rows share a crate where one crate carries several wires.
@@ -353,6 +363,7 @@ transport-stdio = "busbar-transport-stdio"
 # `gauntlet_install::install()` flips its `PLANE_DECLARATION.key` onto the one-shot or session runner.
 # `claims`: the pure plane the boot seal registers (`PLANE`) and the claims it declares (`CLAIMS`).
 # `transport`: a wire's `KEY`, `COMPOSES_OVER` and `build(lower, &TransportSettings)`.
+# `stores` / `hooks`: an in-process store's `STORE` and a ranking row's `HOOK` (`root::linked`).
 [package.metadata.busbar.linked-axes]
 proto-llm = "plane claims protocols path-ingress body-ingress protocol-seams on-host cli-help gauntlet-one-shot"
 plane-mcp = "plane claims protocols diagnostics egress stdio-serve cli-help gauntlet-one-shot"
@@ -362,6 +373,8 @@ plane-decision = "plane claims"
 export-file = "exports"
 export-webhook = "exports"
 export-prometheus = "exports"
+store-memory = "stores"
+hooks-ranking = "hooks"
 transport-tcp = "transport"
 transport-tls = "transport"
 transport-http = "transport"

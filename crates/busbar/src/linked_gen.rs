@@ -41,6 +41,8 @@ pub(crate) const AXES: &[(&str, &str, &str)] = &[
     ("stdio-serve", "stdio_serve", "stdio_serve"),
     ("cli-help", "cli_help", "CLI_HELP"),
     ("exports", "exports", "EXPORT"),
+    ("stores", "stores", "STORE"),
+    ("hooks", "hooks", "HOOK"),
     // The unified kernel loop (#28): the key a plane is flipped onto its one-shot or session runner
     // under — its declaration's key, so these two rows ride on `plane` (refused without it).
     (
