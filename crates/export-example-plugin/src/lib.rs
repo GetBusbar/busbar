@@ -2,15 +2,15 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! A **hermetic trivial `kind: export` plugin** — a `cdylib` exporting the export C ABI. It declares
-//! it carries the [`ExportStream::Metrics`] and [`ExportStream::Logs`] streams, COUNTS every delivered
-//! batch, and drops it. It is the in-tree ABI-crossing coverage for the `kind: export` seam, the
-//! export-seam analogue of `busbar-secret-example-plugin` (secret) and
+//! it carries the [`ExportStream::Metrics`], [`ExportStream::Logs`] and [`ExportStream::Traces`]
+//! streams, COUNTS every delivered batch, and drops it. It is the in-tree ABI-crossing coverage for
+//! the `kind: export` seam, the export-seam analogue of `busbar-secret-example-plugin` (secret) and
 //! `busbar-hook-test-plugin` (hook) — a real, loadable, signable export plugin for the `DynExport`
 //! dlopen seam to round-trip through.
 //!
-//! It does NO real telemetry export: `streams()` reports `[Metrics, Logs]` and `deliver()` drops the batch
-//! after counting it. Config JSON is ignored (this sink has no configurable shape), mirroring
-//! `busbar-store-example-plugin`'s config-less posture.
+//! It does NO real telemetry export: `streams()` reports `[Metrics, Logs, Traces]` and `deliver()`
+//! drops the batch after counting it. Config JSON is ignored (this sink has no configurable shape),
+//! mirroring `busbar-store-example-plugin`'s config-less posture.
 
 use busbar_plugin_sdk::{
     ExportHandler, ExportStream, HostOp, HostResult, HostStep, HttpRequest, Observations,
@@ -65,11 +65,18 @@ const HOST_FAILURES_TOTAL: &str = "example_export_host_failures_total";
 const POSTED_TOTAL: &str = "example_export_posts_total";
 
 impl ExportHandler for ExampleExport {
-    /// `metrics` and `logs`: `logs` because it is the stream the host PUSHES today (the request-log
-    /// line), so an `export:` instance naming this plugin is actually handed batches — which is what
-    /// the composition root's "a dropped-in export plugin serves" test observes.
+    /// `metrics`, `logs` and `traces`: `logs` because it is the stream the host PUSHES per request
+    /// (the request-log line), so an `export:` instance naming this plugin is actually handed
+    /// batches — which is what the composition root's "a dropped-in export plugin serves" test
+    /// observes; `traces` because the kernel's traces producer (K9a S7) pushes a record per closed
+    /// span, so an instance subscribing to it is handed those — the witness that the producer's
+    /// records reach a sink over the ABI.
     fn streams(&self) -> Vec<ExportStream> {
-        vec![ExportStream::Metrics, ExportStream::Logs]
+        vec![
+            ExportStream::Metrics,
+            ExportStream::Logs,
+            ExportStream::Traces,
+        ]
     }
 
     /// Count the batch and drop it — this sink ships nothing anywhere.

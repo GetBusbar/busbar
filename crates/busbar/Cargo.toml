@@ -431,6 +431,10 @@ busbar-plugin-example-plane = { path = "../plane-example" }
 # normal-edge `tower` above is `root-admin`'s own and optional, so a build without `root-admin` (every
 # single-plane build) would not compile the test; the test's edge is its own, unconditional here.
 tower = { workspace = true, features = ["util"] }
+# The `traces` stream's both-doors proof (`tests/traces_stream_both_doors.rs`, K9a S7): the export
+# `["cdylib", "rlib"]` fixture, its `rlib`'s boundary registered through the LINKED door and its
+# `cdylib` dropped in, both fed the kernel's traces producer.
+busbar-export-example-plugin = { path = "../export-example-plugin" }
 # tests/cli_validate.rs builds signed plugin tarball fixtures.
 hex = { workspace = true }
 # `root/transports.rs` provisions a listener against a real self-signed pair rather than a fixture

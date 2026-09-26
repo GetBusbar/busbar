@@ -5,7 +5,7 @@ version = "1.5.0"
 publish = false            # internal TEST-support cdylib; never goes to crates.io
 edition = "2021"
 rust-version = "1.97"
-description = "A hermetic trivial kind:export plugin cdylib: declares it carries the metrics and logs streams, counts every delivered batch and drops it. The first in-tree over-the-ABI coverage of the DynExport dlopen seam, mirroring busbar-secret-example-plugin's role for kind:secret."
+description = "A hermetic trivial kind:export plugin cdylib: declares it carries the metrics, logs and traces streams, counts every delivered batch and drops it. The first in-tree over-the-ABI coverage of the DynExport dlopen seam, mirroring busbar-secret-example-plugin's role for kind:secret."
 license = "Apache-2.0"
 
 [lib]

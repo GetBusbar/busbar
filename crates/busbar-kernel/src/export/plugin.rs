@@ -36,7 +36,7 @@ const MAX_INFLIGHT_PLUGIN_DELIVERIES: usize = 64;
 
 /// The export axis: the registry the composition root installed, once, before the configuration
 /// is resolved. Absent (no plugins directory, nothing linked) ⇒ only the built-ins resolve.
-static AXIS: OnceLock<&'static PluginRegistry> = OnceLock::new();
+pub(super) static AXIS: OnceLock<&'static PluginRegistry> = OnceLock::new();
 
 /// Install the export axis — the composition root's one write, before the configuration is
 /// resolved. The first install holds.
@@ -82,11 +82,11 @@ pub(crate) fn check(cfg: &ExportCfg, errors: &mut Vec<String>) {
 }
 
 /// One opened plugin sink.
-struct PluginSink {
+pub(super) struct PluginSink {
     name: String,
     module: String,
     sink: Arc<DynExport>,
-    projection: Projection,
+    pub(super) projection: Projection,
     /// Its admission, as it stated it when started ([`start`]).
     admission: OnceLock<Admission>,
 }
@@ -131,7 +131,7 @@ impl PluginSink {
 /// The opened sinks, set once at boot by [`open`].
 static SINKS: OnceLock<Vec<PluginSink>> = OnceLock::new();
 
-fn sinks() -> impl Iterator<Item = &'static PluginSink> {
+pub(super) fn sinks() -> impl Iterator<Item = &'static PluginSink> {
     SINKS.get().into_iter().flatten()
 }
 
@@ -174,15 +174,23 @@ pub fn open(cfg: &ExportCfg) -> Result<(), String> {
         return Err(errors.join("\n  - "));
     }
     let _ = SINKS.set(opened);
+    // What a span CALLSITE's interest is depends on which sinks exist (`super::traces::layer`).
+    tracing::callsite::rebuild_interest_cache();
     Ok(())
 }
 
 /// Hand the request-log line to every opened sink subscribed to `logs`, built to that sink's own
-/// projection, off the request path. A sink at its in-flight bound sheds the line (counted on its
-/// gate); a sink that errors is logged. Neither reaches the request.
+/// projection, off the request path.
 pub(crate) fn deliver_logs(cache: &mut PayloadCache<'_>) {
-    let subscribed = |s: &&PluginSink| s.projection.wants_stream(ExportStream::Logs);
-    for s in sinks().filter(subscribed) {
+    let op = cache.facts.ingress_protocol;
+    deliver(ExportStream::Logs, op, |projection| cache.get(projection));
+}
+
+/// Hand `stream`'s payload — built by `f` to each sink's own projection — to every opened, live
+/// sink subscribed to it. A sink at its in-flight bound sheds it (counted on its gate and on its
+/// declared shed counter); a sink that errors is logged. Neither reaches the caller.
+pub(super) fn deliver(stream: ExportStream, op: &str, mut f: impl FnMut(Projection) -> Arc<Value>) {
+    for s in sinks().filter(|s| s.projection.wants_stream(stream)) {
         let admission = s.admission();
         if !admission.live {
             continue;
@@ -191,9 +199,9 @@ pub(crate) fn deliver_logs(cache: &mut PayloadCache<'_>) {
             s.sink.shed();
             continue;
         };
-        let payload = cache.get(s.projection);
-        crate::audit::amend::export_read(&s.module, cache.facts.ingress_protocol, &payload);
-        s.sink.deliver_detached(ExportStream::Logs, payload, permit);
+        let payload = f(s.projection);
+        crate::audit::amend::export_read(&s.module, op, &payload);
+        s.sink.deliver_detached(stream, payload, permit);
     }
 }
 

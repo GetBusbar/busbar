@@ -96,6 +96,16 @@ fn free_port() -> u16 {
 /// The export `cdylib` packed as an UNSIGNED `kind: export` tarball (the config below opts into
 /// unsigned plugins, as the CLI fixtures do).
 fn write_tarball(dir: &Path, lib: &[u8]) {
+    write_tarball_declaring(dir, lib, &[]);
+}
+
+/// [`write_tarball`] with the manifest declaring `destinations` (K9a S4): the settings keys the host
+/// opens a destination for.
+fn write_tarball_declaring(dir: &Path, lib: &[u8], destinations: &[&str]) {
+    let declares = busbar_plugin_loader::sign::Declares {
+        destinations: destinations.iter().map(|d| d.to_string()).collect(),
+        ..Default::default()
+    };
     let m = busbar_plugin_loader::sign::Manifest {
         name: PLUGIN.into(),
         alias: PLUGIN.into(),
@@ -115,7 +125,7 @@ fn write_tarball(dir: &Path, lib: &[u8]) {
         settings_schema: None,
         schema_derived: false,
         host: None,
-        declares: Default::default(),
+        declares,
     };
     let bytes = busbar_plugin_loader::tarball::package(&m, "lib.so", lib).unwrap();
     std::fs::write(dir.join("plugins").join("dropped-sink.tar.gz"), bytes).unwrap();
@@ -330,5 +340,155 @@ fn validate_reports_a_dropped_in_sinks_settings_errors_in_its_own_words() {
         "stderr:\n{}",
         String::from_utf8_lossy(&accepted.stderr)
     );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// K9a S7 (BUSBAR-1.6.0 18b(d)), end to end over the real binary: **a dropped-in sink subscribed
+/// to `traces` is handed the request's spans.** The kernel's traces producer turns each closed span
+/// into a `traces` record built to the sink's projection; the sink has the host append each record
+/// to its declared destination. A request that reaches the upstream hop closes its `forward` span,
+/// and that span's record — its ids, name, timing and the stream's own fields — is on disk.
+///
+/// RED ARM, in the same test: the same sink as a second instance subscribed to `logs` only is handed
+/// the request's log line and no span. RED against the tree before the producer: the `traces`
+/// destination is never written.
+#[test]
+fn a_dropped_in_sink_subscribed_to_traces_is_handed_the_request_spans() {
+    let Some(lib) = export_cdylib() else {
+        eprintln!("skip: no in-tree export plugin cdylib is built (run under --workspace)");
+        return;
+    };
+    let dir = fixture_dir();
+    write_tarball_declaring(&dir, &lib, &["path"]);
+    let (spans, lines) = (dir.join("spans.jsonl"), dir.join("lines.jsonl"));
+    let (data_port, admin_port) = (free_port(), free_port());
+    std::fs::write(
+        dir.join("providers.yaml"),
+        "mock:\n  protocol: anthropic\n  base_url: \"http://127.0.0.1:9\"\n  api_key_env: MOCK_KEY\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("config.yaml"),
+        format!(
+            r#"listen: "127.0.0.1:{data_port}"
+admin_listen: "127.0.0.1:{admin_port}"
+admin_require_mtls: false
+auth:
+  chain: []
+plugins:
+  enabled: true
+  dir: '{plugins}'
+  trust:
+    allow_unsigned: true
+export:
+  metrics: {{ module: prometheus, settings: {{ buffer_seconds: 60 }} }}
+  spans: {{ module: {PLUGIN}, streams: [traces], settings: {{ path: '{spans}' }} }}
+  lines: {{ module: {PLUGIN}, streams: [logs], settings: {{ path: '{lines}' }} }}
+providers:
+  mock:
+    api_key: {{ env: MOCK_KEY }}
+models:
+  test-model:
+    provider: mock
+"#,
+            plugins = dir.join("plugins").display(),
+            spans = spans.display(),
+            lines = lines.display(),
+        ),
+    )
+    .unwrap();
+
+    let log = std::fs::File::create(dir.join("out.log")).unwrap();
+    let mut child = Reap(
+        Command::new(env!("CARGO_BIN_EXE_busbar"))
+            .env("BUSBAR_CONFIG", dir.join("config.yaml"))
+            .env("BUSBAR_PROVIDERS", dir.join("providers.yaml"))
+            .env("MOCK_KEY", "x")
+            .env("RUST_LOG", "warn")
+            .stdout(log.try_clone().unwrap())
+            .stderr(log)
+            .spawn()
+            .expect("spawn busbar"),
+    );
+    // A generous boot bound: this test shares the machine with whatever else the suite runs.
+    let deadline = Instant::now() + Duration::from_secs(60);
+    loop {
+        if let Some(status) = child.0.try_wait().expect("try_wait") {
+            panic!(
+                "busbar refused to boot with a traces subscription (status {status:?}); log:\n{}",
+                log_of(&dir)
+            );
+        }
+        if matches!(scrape(data_port), Some((200, _))) {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "/metrics never answered 200; log:\n{}",
+            log_of(&dir)
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+
+    // A request for a configured model: it reaches the upstream hop (which refuses the connection),
+    // so its `forward` span opens and closes.
+    let body =
+        r#"{"model":"test-model","max_tokens":1,"messages":[{"role":"user","content":"hi"}]}"#;
+    let request = format!(
+        "POST /v1/messages HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\n\
+         Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    exchange(data_port, &request).expect("the request is answered");
+
+    let read = |p: &Path| -> Vec<serde_json::Value> {
+        std::fs::read_to_string(p)
+            .unwrap_or_default()
+            .lines()
+            .map(|l| serde_json::from_str(l).expect("a JSON line"))
+            .collect()
+    };
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let records = loop {
+        let records = read(&spans);
+        if records.iter().any(|r| r["name"] == "forward") && !read(&lines).is_empty() {
+            break records;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the request's `forward` span never reached the traces sink: {records:?}; log:\n{}",
+            log_of(&dir)
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    for record in &records {
+        for field in ["trace_id", "span_id", "name"] {
+            assert!(record[field].is_string(), "`{field}` missing: {record}");
+        }
+        assert!(
+            record["start"].is_u64() && record["duration_us"].is_u64(),
+            "{record}"
+        );
+        assert!(
+            record.get("outcome").is_none(),
+            "a logs field on a span: {record}"
+        );
+    }
+    let forward = records.iter().find(|r| r["name"] == "forward").unwrap();
+    assert!(
+        forward["pool"].is_string() && forward["ingress"].is_string(),
+        "{forward}"
+    );
+
+    // RED ARM: the `logs`-only instance of the same sink was handed its line and no span.
+    let logged = read(&lines);
+    assert!(
+        logged
+            .iter()
+            .all(|l| l.get("trace_id").is_none() && l.get("span_id").is_none()),
+        "a sink not subscribed to `traces` was handed spans: {logged:?}"
+    );
+
+    drop(child);
     let _ = std::fs::remove_dir_all(&dir);
 }

@@ -21,11 +21,15 @@ fn open_accepts_malformed_json_config_since_none_is_read() {
 }
 
 #[test]
-fn the_sink_declares_exactly_the_metrics_and_logs_streams() {
+fn the_sink_declares_exactly_the_metrics_logs_and_traces_streams() {
     let sink = open("").unwrap();
     assert_eq!(
         sink.streams(),
-        vec![ExportStream::Metrics, ExportStream::Logs]
+        vec![
+            ExportStream::Metrics,
+            ExportStream::Logs,
+            ExportStream::Traces
+        ]
     );
 }
 

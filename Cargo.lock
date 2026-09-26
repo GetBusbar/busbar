@@ -339,6 +339,7 @@ dependencies = [
  "busbar-contract",
  "busbar-core-admin",
  "busbar-core-connsec",
+ "busbar-export-example-plugin",
  "busbar-export-file",
  "busbar-export-webhook",
  "busbar-kernel",

@@ -1512,8 +1512,15 @@ fn load_and_exercise_export_plugin() {
     let sink = export::load_export_from_bytes(&bytes, "{}", "export-example", "export")
         .expect("load export example plugin over the ABI");
 
-    // Streams was queried once at load and reports exactly [Metrics, Logs].
-    assert_eq!(sink.streams(), &[ExportStream::Metrics, ExportStream::Logs]);
+    // Streams was queried once at load and reports exactly [Metrics, Logs, Traces].
+    assert_eq!(
+        sink.streams(),
+        &[
+            ExportStream::Metrics,
+            ExportStream::Logs,
+            ExportStream::Traces
+        ]
+    );
 
     // A delivery for the declared stream acks Delivered (Ok).
     sink.deliver(

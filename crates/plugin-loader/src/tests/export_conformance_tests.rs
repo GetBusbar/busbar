@@ -132,7 +132,12 @@ fn run_dropped_in() -> Option<()> {
                 sink.deliver(stream, &payload).expect("deliver");
             }
             ExportRequest::Streams => {
-                assert_eq!(sink.streams(), &[ExportStream::Metrics, ExportStream::Logs]);
+                let declared = [
+                    ExportStream::Metrics,
+                    ExportStream::Logs,
+                    ExportStream::Traces,
+                ];
+                assert_eq!(sink.streams(), &declared);
             }
             _ => unreachable!("the script only uses deliver + streams"),
         }
@@ -426,7 +431,12 @@ fn the_pre_envelope_path_loses_a_dropped_in_plugins_counters() {
                 assert!(matches!(req, ExportRequest::Deliver { .. }), "{req:?}")
             }
             ExportResponse::Streams(s) => {
-                assert_eq!(s, vec![ExportStream::Metrics, ExportStream::Logs])
+                let declared = [
+                    ExportStream::Metrics,
+                    ExportStream::Logs,
+                    ExportStream::Traces,
+                ];
+                assert_eq!(s, declared)
             }
             other => panic!("unexpected response {other:?}"),
         }

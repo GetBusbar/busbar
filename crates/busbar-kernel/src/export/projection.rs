@@ -57,7 +57,8 @@ use serde_json::Value;
 ///   (`crate::ingress::finish_inner`). PARTIAL: it produces a subset of the stream's documented
 ///   default fields (see [`produced_fields`]).
 /// - `traces` — the OpenTelemetry span pipeline (`crate::observability`), exported by the `otlp`
-///   module.
+///   module; and, for an export-axis sink subscribed to it, the kernel's traces producer
+///   (`crate::export::traces`, K9a S7), which builds one record per closed span.
 /// - `events` — the hash-chained admin records in `crate::audit_ring` (`busbar_api::AuditRecord`:
 ///   `seq`/`ts`/`action`/`resource`/`outcome`/`principal`/`prev_hash`/`hash`). PARTIAL: admin
 ///   mutations only; config applies, plugin loads/refusals, boot and shutdown are a later unit.
@@ -98,9 +99,11 @@ pub(crate) fn produced_fields(stream: ExportStream) -> &'static [ExportField] {
         // of the stream's documented default set (correlation_id, model_requested, model_served,
         // provider, status) is the producer unit that follows this one.
         ExportStream::Logs => &[F::Ts, F::IngressProtocol, F::Pool, F::Outcome, F::LatencyMs],
-        // Spans are emitted by the tracing/OTLP layer, NOT built as records by core, so core has no
-        // per-field projection to apply to them. An operator asking to project trace FIELDS is
-        // asking for something this release cannot do — loudly, not silently.
+        // Spans reach the `otlp` module through the tracing/OTLP layer, not as records, so there is
+        // no per-field projection to apply to them; an operator asking to project trace FIELDS
+        // is refused, loudly, in the words this release has always used. (A sink on the export
+        // axis is GRANTED the stream's documented set — see `resolve_projection` — which the
+        // traces producer, K9a S7, fills.)
         ExportStream::Traces => &[],
         // `busbar_api::AuditRecord`, mapped onto the stream's field names: seq → seq, ts → ts,
         // prev_hash → prev_hash, action → kind, principal → actor, resource → resource,
@@ -432,9 +435,17 @@ pub(crate) fn resolve_projection(
     let granted: Vec<ExportField> = match fields {
         // No override ⇒ the default projection: every subscribed stream's documented default field
         // set, intersected with what this release actually produces.
+        //
+        // `traces` is granted its WHOLE documented set, which the kernel's traces producer (K9a S7,
+        // `crate::export::traces`) fills from the span. `produced_fields(traces)` stays empty on
+        // purpose: it is what a `fields:` override may name, and its refusals keep their words.
         None => subscribed
             .iter()
-            .flat_map(|s| produced_fields(*s).iter().copied())
+            .flat_map(|s| match s {
+                ExportStream::Traces => s.default_fields(),
+                other => produced_fields(*other),
+            })
+            .copied()
             .collect(),
         Some(list) => resolve_fields_override(name, list, &subscribed, errors),
     };

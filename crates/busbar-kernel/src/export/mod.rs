@@ -17,11 +17,13 @@
 //!   registered; absent ⇒ no recorder, `/metrics` unmounted, every emit site a true no-op.
 //!
 //! Every other module — `request-log-file` and `request-log-webhook` among them — is a row of the
-//! EXPORT AXIS ([`plugin`]).
+//! EXPORT AXIS ([`plugin`]). A row subscribed to `traces` is fed by [`traces`], the kernel's record
+//! producer for that stream (K9a S7): one record per closed span, built to the sink's projection.
 
 pub mod plugin;
 pub(crate) mod projection;
 pub mod prometheus;
+pub mod traces;
 
 use crate::config::ExportCfg;
 use crate::export::projection::ProjectedRecord;

@@ -337,7 +337,8 @@ pub type ExporterBase = tracing_subscriber::layer::Layered<
 
 /// Install the process-wide `tracing` subscriber once at startup: always a stderr `fmt` layer
 /// (level from `RUST_LOG`, default `info`) so spans/warnings are visible out of the box, plus the
-/// composition root's span exporter when one is configured.
+/// composition root's span exporter when one is configured, plus the `traces` record producer
+/// ([`crate::export::traces`]).
 ///
 /// `stdout_reserved`: set by a caller whose transport uses this process's own stdout as its wire
 /// channel — the framed protocol on stdout forbids any byte that is not one of its own messages —
@@ -370,6 +371,7 @@ where
     let initialized = tracing_subscriber::registry()
         .with(fmt_layer)
         .with(span_exporter.map(|layer| layer.with_filter(otlp_filter)))
+        .with(crate::export::traces::layer(otlp_filter))
         .try_init()
         .is_ok();
     if !initialized {
