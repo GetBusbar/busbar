@@ -84,13 +84,24 @@
 //! the fold hands every wire the layer it built beneath it, and why the registered rows record what
 //! each was actually built over.
 //!
-//! ## The fold, bottom-up
+//! ## The fold, bottom-up — both doors, one pass
 //!
-//! A wire is built once every layer it declares that this build links is built, in manifest order
+//! The rows are the linked wires (`LINKED.transports`, manifest order) followed by the wires
+//! DROPPED INTO `plugins.dir` (scan order), each admitted over the HOT-tier ABI by the loader and
+//! presented as a `Transport` by its adapter (`busbar_plugin_loader::WireTransport`) — #2 rule (1):
+//! one contract, one loading path; #3: a transport is swappable, compiled in OR dropped in. The
+//! fold does not ask which door a row came in by, except to build it.
+//!
+//! A wire is built once every layer it declares that this build carries is built, in row order
 //! otherwise — so a layer always exists before anything that names it — and is handed the first of
-//! its declared layers that was built (`COMPOSES_OVER` order is the composition order). Its
-//! registered row records the layer it answers it was composed over, and `check_composition` holds
-//! that against the declaration.
+//! its declared layers that was built (`COMPOSES_OVER` order is the composition order). A dropped-in
+//! wire is handed that layer when it is itself a dropped-in wire: the ABI carries a lower layer as
+//! its decl and built state, which a linked Rust wire does not have, so over a linked layer it is
+//! built over nothing and says so. Its registered row records the layer it answers it was composed
+//! over, and `check_composition` holds that against the declaration.
+//!
+//! A dropped-in wire claiming a key a linked wire already holds is refused by the registry exactly
+//! as a second linked row with that key would be: two plugins of one kind declaring one key.
 
 use std::sync::Arc;
 
@@ -98,6 +109,7 @@ use busbar_contract::transport::TransportSettings;
 use busbar_contract::{check_composition, CompositionError, Plugin, Registered, Transport};
 use busbar_core_admin::admin_codec::AdminPlane;
 use busbar_kernel::registry::{seal_claims, ClaimConflict, PlaneClaim, Registry, ResolvedOverlap};
+use busbar_plugin_loader::{DynTransport, WireTransport};
 
 use crate::root::linked::{Linked, LinkedClaims, LinkedTransport};
 
@@ -127,6 +139,13 @@ pub enum BootRefusal {
         /// The transport it claimed on.
         transport: &'static str,
     },
+    /// A wire dropped into `plugins.dir` would not build.
+    DroppedBuild {
+        /// The wire's key.
+        transport: &'static str,
+        /// What its `build` answered.
+        outcome: String,
+    },
     /// The registry itself refused an entry.
     Registry(busbar_kernel::registry::RegistryError),
     /// The breaker and egress units' hand-kept metric label banks disagree on a label both carry,
@@ -147,6 +166,10 @@ impl std::fmt::Display for BootRefusal {
             Self::UnregisteredClaimTransport { plane, transport } => write!(
                 f,
                 "plane `{plane}` claims on transport `{transport}`, which no crate provides"
+            ),
+            Self::DroppedBuild { transport, outcome } => write!(
+                f,
+                "dropped-in transport `{transport}` refused to build ({outcome})"
             ),
             Self::Registry(err) => write!(f, "{err:?}"),
             Self::LabelDrift(drift) => write!(f, "{drift}"),
@@ -174,6 +197,43 @@ pub struct BootRegistry {
     pub registered: Vec<Registered>,
     /// The built transports, index for index with `registered`.
     pub transports: Vec<Arc<dyn Transport>>,
+    /// The keys of the rows that came in DROPPED IN rather than linked.
+    pub dropped: Vec<&'static str>,
+}
+
+impl BootRegistry {
+    /// THE WIRE UNDER THE DATA DOOR, WHEN IT CAME IN DROPPED IN.
+    ///
+    /// The data door speaks the claims' transports, and each rests on the byte stream its
+    /// declaration composes over: from a claimed wire, follow the first declared layer this
+    /// composition registered (`COMPOSES_OVER` order is the composition order, as the fold reads it)
+    /// down to a wire that declares none registered. When that bottom wire is a dropped-in row, the
+    /// data listener accepts through it (`crate::root::transports::serve_door`), because this
+    /// process then has no socket of its own for those bytes; when it is linked, the listener is the
+    /// kernel's own, as it has always been. `None` when no claim rests on a dropped-in wire.
+    #[must_use]
+    pub fn dropped_door(&self) -> Option<Arc<dyn Transport>> {
+        let at = |key: &str| self.registered.iter().position(|r| r.key == key);
+        let bottom = |claimed: &str| {
+            let mut here = at(claimed)?;
+            for _ in 0..self.registered.len() {
+                let lower = self.registered[here]
+                    .composes_over
+                    .iter()
+                    .find_map(|l| at(l));
+                here = match lower {
+                    Some(lower) => lower,
+                    None => return Some(here),
+                };
+            }
+            None
+        };
+        self.claims
+            .iter()
+            .filter_map(|c| bottom(c.claim.transport))
+            .find(|&at| self.dropped.contains(&self.registered[at].key))
+            .map(|at| Arc::clone(&self.transports[at]))
+    }
 }
 
 /// The core plane every build carries: the admin surface, registered after the linked planes.
@@ -204,50 +264,95 @@ pub fn plane_claims(planes: &[LinkedClaims]) -> Vec<PlaneClaim> {
 /// One folded wire: its row as the composition check reads it, and the built transport.
 pub type Built = (Registered, Arc<dyn Transport>);
 
-/// FOLD THE LINKED TRANSPORTS, BOTTOM-UP.
+/// One row of the transport axis, whichever door it came in by.
+#[derive(Clone, Copy)]
+enum Row<'r> {
+    /// A wire this build links.
+    Linked(&'r LinkedTransport),
+    /// A wire dropped into `plugins.dir`, admitted over the HOT-tier ABI.
+    Dropped(&'static DynTransport),
+}
+
+impl Row<'_> {
+    fn key(self) -> &'static str {
+        match self {
+            Row::Linked(row) => row.key,
+            Row::Dropped(wire) => wire.key(),
+        }
+    }
+
+    fn composes_over(self) -> &'static [&'static str] {
+        match self {
+            Row::Linked(row) => row.composes_over,
+            Row::Dropped(wire) => wire.composes_over(),
+        }
+    }
+}
+
+/// FOLD THE TRANSPORTS, BOTTOM-UP, BOTH DOORS IN ONE PASS.
 ///
-/// Each round builds the first row, in manifest order, whose every declared layer this build links
-/// is already built, and hands it the first of its declared layers that was — so a layer always
-/// exists before anything that names it. The registered row records the layer the built wire
-/// answers it was composed over, which `check_composition` holds against its declaration.
+/// The rows are `linked` then `dropped` (module docs). Each round builds the first row whose every
+/// declared layer this composition carries is already built, and hands it the first of its
+/// declared layers that was — so a layer always exists before anything that names it. The
+/// registered row records the layer the built wire answers it was composed over, which
+/// `check_composition` holds against its declaration.
 ///
 /// # Errors
 ///
-/// Rows declare layers over each other and none can be built first.
+/// Rows declare layers over each other and none can be built first, or a dropped-in wire refused
+/// to build.
 pub fn compose(
-    rows: &[LinkedTransport],
+    linked: &[LinkedTransport],
+    dropped: &'static [DynTransport],
     settings: &TransportSettings,
 ) -> Result<Vec<Built>, BootRefusal> {
-    let mut built: Vec<Built> = Vec::with_capacity(rows.len());
-    let mut pending: Vec<&LinkedTransport> = rows.iter().collect();
-    let is_built = |built: &[Built], key: &str| built.iter().any(|(r, _)| r.key == key);
+    let rows: Vec<Row<'_>> = linked
+        .iter()
+        .map(Row::Linked)
+        .chain(dropped.iter().map(Row::Dropped))
+        .collect();
+    // Index for index with `built`: the adapter, where the row came in dropped in.
+    let mut built: Vec<(Built, Option<Arc<WireTransport>>)> = Vec::with_capacity(rows.len());
+    let mut pending: Vec<Row<'_>> = rows.clone();
+    let at = |built: &[(Built, _)], key: &str| built.iter().position(|((r, _), _)| r.key == key);
     while !pending.is_empty() {
         let ready = pending.iter().position(|row| {
-            row.composes_over
+            row.composes_over()
                 .iter()
-                .all(|layer| is_built(&built, layer) || !rows.iter().any(|r| r.key == *layer))
+                .all(|layer| at(&built, layer).is_some() || !rows.iter().any(|r| r.key() == *layer))
         });
-        let Some(at) = ready else {
+        let Some(ready) = ready else {
             return Err(BootRefusal::Uncomposable {
-                transport: pending[0].key,
+                transport: pending[0].key(),
             });
         };
-        let row = pending.remove(at);
-        let lower = row.composes_over.iter().find_map(|layer| {
-            built
-                .iter()
-                .find(|(r, _)| r.key == *layer)
-                .map(|(_, t)| Arc::clone(t))
-        });
-        let transport = (row.build)(lower, settings);
+        let row = pending.remove(ready);
+        let lower = row.composes_over().iter().find_map(|l| at(&built, l));
+        let (transport, adapter): (Arc<dyn Transport>, _) = match row {
+            Row::Linked(row) => {
+                let lower = lower.map(|i| Arc::clone(&built[i].0 .1));
+                ((row.build)(lower, settings), None)
+            }
+            Row::Dropped(wire) => {
+                let lower = lower.and_then(|i| built[i].1.as_deref());
+                let adapter = WireTransport::build(wire, lower, settings).map_err(|outcome| {
+                    BootRefusal::DroppedBuild {
+                        transport: wire.key(),
+                        outcome: format!("{outcome:?}"),
+                    }
+                })?;
+                let adapter = Arc::new(adapter);
+                (Arc::clone(&adapter) as Arc<dyn Transport>, Some(adapter))
+            }
+        };
         let registered = Registered {
-            key: row.key,
-            composes_over: row.composes_over,
+            key: row.key(),
+            composes_over: row.composes_over(),
             composed_over: transport.composed_over(),
         };
-        built.push((registered, transport));
+        built.push(((registered, transport), adapter));
     }
-    Ok(built)
+    Ok(built.into_iter().map(|(built, _)| built).collect())
 }
 
 /// Register every axis and answer both boot checks.
@@ -260,9 +365,15 @@ pub fn compose(
 ///
 /// Two planes claim bytes that could both match; a transport declares a layer nobody registered or
 /// was built over one it does not declare; or the registry refused an entry.
-pub fn seal(linked: &Linked, settings: TransportSettings) -> Result<BootRegistry, BootRefusal> {
+pub fn seal(
+    linked: &Linked,
+    dropped: &'static [DynTransport],
+    settings: TransportSettings,
+) -> Result<BootRegistry, BootRefusal> {
     let (registered, transports): (Vec<Registered>, Vec<Arc<dyn Transport>>) =
-        compose(linked.transports, &settings)?.into_iter().unzip();
+        compose(linked.transports, dropped, &settings)?
+            .into_iter()
+            .unzip();
     let registry = register_all(&transports, linked.claims)?;
 
     let claims = plane_claims(linked.claims);
@@ -290,6 +401,7 @@ pub fn seal(linked: &Linked, settings: TransportSettings) -> Result<BootRegistry
         resolved: sealed.resolved,
         registered,
         transports,
+        dropped: dropped.iter().map(DynTransport::key).collect(),
     })
 }
 
@@ -297,15 +409,18 @@ pub fn seal(linked: &Linked, settings: TransportSettings) -> Result<BootRegistry
 ///
 /// Run from `run()` once the deployment's limits are resolved and before any listener binds, in
 /// every build: the transports it composes carry the operator's `limits.request_body_max_bytes`,
-/// so it reads the configuration the served door reads. A composition that does not seal is a node
-/// that must not bind a listener, so the refusal goes to standard error and the process exits 2 —
-/// not a warning and not a log line, because a node that refused to boot has no boot to log.
-/// Nothing is written on the success path.
-pub fn seal_or_exit(linked: &Linked, settings: TransportSettings) {
-    if let Err(refusal) = seal(linked, settings) {
+/// so it reads the configuration the served door reads. The rows are the linked wires and the ones
+/// dropped into the configured `plugins.dir` (`crate::root::linked::dropped_transports`). A
+/// composition that does not seal is a node that must not bind a listener, so the refusal goes to
+/// standard error and the process exits 2 — not a warning and not a log line, because a node that
+/// refused to boot has no boot to log. Nothing is written on the success path; the sealed registry
+/// is handed back for the listeners to serve from.
+pub fn seal_or_exit(linked: &Linked, settings: TransportSettings) -> BootRegistry {
+    let dropped = crate::root::linked::dropped_transports();
+    seal(linked, dropped, settings).unwrap_or_else(|refusal| {
         eprintln!("busbar: the composition root did not seal: {refusal}");
         std::process::exit(2);
-    }
+    })
 }
 
 /// Every claim names a transport the root actually registered.

@@ -201,7 +201,7 @@ tikv-jemallocator = { workspace = true, features = ["disable_initial_exec_tls"] 
 # SAME default set the monolithic crate had; `root-admin` and `root-llm` are the additions, and
 # both are paths rather than surfaces — the operations, their bytes and their
 # features are unchanged.
-default = ["auth-admin-tokens", "hooks-ranking", "proto-llm", "plane-mcp", "plane-a2a", "plane-voice", "plane-decision", "export-file", "export-webhook", "export-prometheus", "root-admin", "root-llm"]
+default = ["auth-admin-tokens", "hooks-ranking", "proto-llm", "plane-mcp", "plane-a2a", "plane-voice", "plane-decision", "export-file", "export-webhook", "export-prometheus", "root-admin", "root-llm", "transport-tcp"]
 # A protocol crate: the dependency edge plus its registration line in main.rs. Dropping the
 # feature is the deletion test's level-1 build. There is no per-DIALECT feature and there must not
 # be one — "LLM coverage or not" is the choice this seam offers, and a `proto-gemini` knob would be
@@ -231,6 +231,12 @@ plane-voice = ["dep:busbar-voice", "transport-ws", "busbar-voice?/runtime", "bus
 # THE WS WIRE, the one optional transport: the voice plane's edge and nothing else's, so `plane-voice`
 # carries it and `--no-default-features` drops the crate edge and its linked row together.
 transport-ws = ["dep:busbar-transport-ws"]
+# THE TCP WIRE'S LINKED ROW, DEFAULT ON (#3: a transport is swappable, compiled in OR dropped in). Off,
+# the build links no `tcp` row and the wire is served only when its tarball is dropped into
+# `plugins/`: the boot seal folds it in the same pass as the linked rows, and the data door accepts
+# through it (`root::registry::BootRegistry::dropped_door`). The crate edge stays — the row is what
+# the switch gates, as `export-file`'s is.
+transport-tcp = []
 # THE DECISION PLANE (jev), #48's fifth, DEFAULT ON. The analogue of `plane-a2a` above: one switch
 # for the plane and the crate edge that carries it, never two. It forwards to NO kernel feature, and
 # that is the whole difference between this plane and its four siblings — `busbar-kernel` holds no

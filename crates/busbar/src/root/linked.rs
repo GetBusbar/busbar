@@ -664,6 +664,25 @@ pub fn dropped_planes_of(dropped: Option<&busbar_plugin_loader::PluginRegistry>)
         })
 }
 
+/// THE TRANSPORTS DROPPED INTO THE CONFIGURED `plugins.dir` (the registry [`dropped_from_config`]
+/// scanned): every `kind: transport` plugin it admitted, loaded over the HOT-tier ABI ONCE and held
+/// for the process, so the boot seal folds them beside the linked wires
+/// (`crate::root::registry::compose`) and a wire the data door serves through lives as long as the
+/// door. A trusted transport that will not LOAD refuses the boot, as a linked plane's would.
+pub fn dropped_transports() -> &'static [busbar_plugin_loader::DynTransport] {
+    static WIRES: std::sync::OnceLock<Vec<busbar_plugin_loader::DynTransport>> =
+        std::sync::OnceLock::new();
+    WIRES.get_or_init(|| {
+        REGISTRY
+            .get()
+            .map_or(Ok(Vec::new()), |registry| registry.open_transports())
+            .unwrap_or_else(|refusal| {
+                eprintln!("busbar: {refusal}");
+                std::process::exit(2);
+            })
+    })
+}
+
 /// THE EXPORT AXIS: the registry an `export:` instance's `module:` resolves against — every
 /// `kind: export` row the plugin registry's one registration admitted, dropped in here (and, as a
 /// linked export crate lands, linked through `PluginRegistry::link`, the same admission) — installed

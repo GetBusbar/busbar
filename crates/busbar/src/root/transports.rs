@@ -112,6 +112,52 @@ impl PlaneDispatch for DrivenOnce {
     }
 }
 
+// ── the data door on a dropped-in wire ───────────────────────────────────────────────────────────
+
+/// SERVE THE DATA DOOR THROUGH THE WIRE UNDER IT, when that wire came in DROPPED IN
+/// (`crate::root::registry::BootRegistry::dropped_door`): the wire binds `bind` itself and every
+/// connection it accepts is served by the kernel's own hardened loop over the connection's detached
+/// byte stream (`busbar_kernel::tls::serve_wire`), secured by `security` where the listener has a
+/// `tls:` block. The same router, the same body bounds, the same drain on `shutdown` as the
+/// kernel's socket listener — only who owns the socket differs.
+///
+/// # Errors
+///
+/// The wire would not bind `bind`.
+pub async fn serve_door(
+    wire: std::sync::Arc<dyn busbar_contract::Transport>,
+    bind: &str,
+    router: axum::Router,
+    security: Option<std::sync::Arc<dyn busbar_contract::transport::wire::ConnectionSecurity>>,
+    shutdown: impl std::future::Future<Output = ()> + Send + 'static,
+) -> Result<(), busbar_contract::transport::wire::TransportError> {
+    let keys = busbar_contract::TransportKeyHandle::keyless();
+    let listener = wire.listen(&Bind(bind), &keys).await?;
+    busbar_kernel::tls::serve_wire(wire, listener, router, security, shutdown).await;
+    Ok(())
+}
+
+/// The data door's address, as the configuration a wire's `listen` reads.
+struct Bind<'a>(&'a str);
+
+impl busbar_contract::ConfigView for Bind<'_> {
+    fn get_str(&self, _: &str) -> Option<&str> {
+        None
+    }
+    fn get_int(&self, _: &str) -> Option<i64> {
+        None
+    }
+    fn get_bool(&self, _: &str) -> Option<bool> {
+        None
+    }
+}
+
+impl busbar_contract::TransportConfigView for Bind<'_> {
+    fn bind(&self) -> Option<&str> {
+        Some(self.0)
+    }
+}
+
 #[cfg(test)]
 #[path = "tests/transports.rs"]
 mod tests;

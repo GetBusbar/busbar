@@ -1,0 +1,7 @@
+HTTP/1.1 200 OK
+content-type: application/json
+content-length: 95
+connection: close
+date: <masked>
+
+{"data":[{"created":0,"id":"test-model","object":"model","owned_by":"busbar"}],"object":"list"}
