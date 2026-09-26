@@ -630,9 +630,24 @@ const ARCHITECTURE_ALLOWED: &[(&str, &str)] = &[
     // plane's codec — a plane may path-dep ITS OWN codec and nothing else.
     ("plane", "codec"),
     // The composition root is the one thing that names all three axes — that is what a root IS.
+    //
+    // ROOT -> EVERY PLUGIN KIND IT LINKS IS ONE GRANTED CLASS, not a list that grew kind by kind.
+    // Roster definition 1 (ARCHITECTURE.md 1.1): the composition root is "the only place that names
+    // which crates exist and wires them at boot" — naming a plugin crate and folding it onto its
+    // axis IS the root's job, so the edge is the architecture, not debt (ARCHITECT ruling
+    // 2026-09-25 "K5d residue"). `plane`, `store` and `transport` were granted as the first crate
+    // of each landed; `export` (the built-in sinks, #3 / item 141) and `hooks` (the ranking hooks
+    // K5d moved onto the root's linked tables) were left out, so the root doing its job was scored
+    // `not-allowed` and the K5d edge `new-forbidden-edge`. `auth` and `secret` are absent because
+    // the root links no crate of either kind; a grant with no edge under it is a sentence about a
+    // tree that does not exist. `the_root_is_granted_every_plugin_kind_it_links` measures the
+    // root's shipped edges and refuses a plugin kind the root links without a grant here. The
+    // grant is the ROOT's: a non-root crate reaching a plugin crate is still refused (selftest).
     ("root", "api"),
     ("root", "cleanliness"),
     ("root", "contract"),
+    ("root", "export"),
+    ("root", "hooks"),
     ("root", "kernel"),
     ("root", "legacy"),
     ("root", "plane"),
@@ -6349,6 +6364,60 @@ impl Gate for KindIsolationGate {
                 the_wall_plant(&["busbar-api"]),
                 &["busbar-hooks-planted -> busbar-api", "hooks -> api"],
             ));
+
+            // THE ROOT LINKS A PLUGIN, AND THAT IS ROSTER DEFINITION 1, NOT A COUPLING. The
+            // composition root is "the only place that names which crates exist and wires them at
+            // boot" (ARCHITECT 2026-09-25 "K5d residue"), so `root -> <plugin kind>` is a granted
+            // class: K5d moved the ranking hooks onto the root's linked tables and the edge was
+            // scored `new-forbidden-edge`, the root doing its job. A fresh hooks plugin (the #40
+            // wall plant) linked by `busbar`, with the `[[dep]]` row every granted edge still owes,
+            // is GREEN on `:deps` — no forbidden-edge, no unsupported verdict.
+            let mut ov = the_wall_plant(&[]);
+            ov.set(
+                "crates/busbar/Cargo.toml",
+                manifest_plus(
+                    cx,
+                    "crates/busbar/Cargo.toml",
+                    "[dependencies.busbar-hooks-planted]\npath = \"../busbar-hooks-planted\"\n",
+                ),
+            );
+            ov.set(
+                REGISTRY_FILE,
+                planted_dep_row(cx, "busbar", "busbar-hooks-planted"),
+            );
+            report.push(prove_rows_green(
+                cx,
+                subject,
+                "the composition root linking a plugin-kind crate is a granted class (roster def 1)",
+                &[ROW_DEPS],
+                ov,
+            ));
+
+            // …AND THE GRANT IS THE ROOT'S ALONE. A NON-root crate naming a plugin crate, with a
+            // row that borrows the root's citation and says `allowed`, is still refused: the class
+            // `kernel -> hooks` is granted nowhere, so the row's verdict is unsupported and the
+            // edge is new. Roster def 1 names ONE place that wires plugins; a second is a fusion.
+            let mut ov = manifest_plant(
+                "crates/busbar-kernel-planted",
+                "busbar-kernel-planted",
+                &["busbar-hooks-ranking"],
+            );
+            ov.set(
+                REGISTRY_FILE,
+                planted_dep_row(cx, "busbar-kernel-planted", "busbar-hooks-ranking"),
+            );
+            report.push(prove_rows_red(
+                cx,
+                subject,
+                "a non-root crate reaching a plugin crate is refused whatever its row claims",
+                &[ROW_DEPS],
+                ov,
+                &[
+                    "unsupported-verdict",
+                    "busbar-kernel-planted -> busbar-hooks-ranking",
+                    "kernel -> hooks",
+                ],
+            ));
         }
 
         // THE MANIFEST-SPELLING CASES READ THE LEDGER TOO — every one asks for the finding a
@@ -8962,6 +9031,19 @@ fn manifest_plant(dir: &str, name: &str, deps: &[&str]) -> Overlay {
     ov
 }
 
+/// The real ledger with one shipped `[[dep]]` row APPENDED for `from -> to`, `count = "1"`, claiming
+/// `allowed` on roster definition 1 — the row a root-linked plugin owes, and the row a non-root crate
+/// may not borrow.
+fn planted_dep_row(cx: &Ctx, from: &str, to: &str) -> String {
+    format!(
+        "{}\n\n[[dep]]\nfrom    = \"{from}\"\nto      = \"{to}\"\nhalf    = \"shipped\"\ncount   = \
+         \"1\"\nverdict = \"allowed\"\ncite    = \"roster def 1: the composition root is the only \
+         place that names which crates exist and wires them at boot\"\nwhy     = \"planted by the \
+         self-test\"\ndrain   = \"none: the root links the plugin\"\n",
+        cx.read(REGISTRY_FILE).unwrap_or_default().trim_end()
+    )
+}
+
 /// THE SELFTEST PLANTS, HELD TO THEIR OWN RULES DIRECTLY.
 ///
 /// A `prove_rows_red` case over a row that is RED on the real tree is `Impossible` by construction
@@ -9254,6 +9336,52 @@ mod plant_tests {
         );
     }
 
+    // ── roster def 1: root -> every plugin kind it links is granted, and only the root (KI-ROOT) ──
+
+    /// Every shipped edge the composition root has onto a plugin-kind crate is a granted class, and
+    /// no kind but the root is granted a plugin kind (the #40 wall's `-> contract` is the other way
+    /// round). A plugin kind the root starts linking without a grant turns this red here, before
+    /// the ledger is asked.
+    #[test]
+    fn the_root_is_granted_every_plugin_kind_it_links() {
+        let cx = ws();
+        let (crates, _) = crates_of(&cx);
+        let edges = measure_edges(&crates, Half::Shipped);
+        let linked: BTreeSet<&str> = edges
+            .iter()
+            .filter(|e| e.class.0 == "root" && truths::PLUGIN_KINDS.contains(&e.class.1.as_str()))
+            .map(|e| {
+                assert_eq!(
+                    verdict_for(&e.class),
+                    "allowed",
+                    "{} -> {} is the composition root linking a `{}` plugin (roster def 1) and \
+                     ARCHITECTURE_ALLOWED does not grant `root -> {}`",
+                    e.from,
+                    e.to,
+                    e.class.1,
+                    e.class.1
+                );
+                e.class.1.as_str()
+            })
+            .collect();
+        for k in ["hooks", "store", "export", "transport", "plane"] {
+            assert!(
+                linked.contains(k),
+                "the root no longer links a `{k}` crate — the census is not the tree this test \
+                 was written against"
+            );
+        }
+        for (from, to) in ARCHITECTURE_ALLOWED {
+            if truths::PLUGIN_KINDS.contains(to) {
+                assert_eq!(
+                    *from, "root",
+                    "`({from}, {to})` grants a non-root kind a plugin kind: roster def 1 names ONE \
+                     place that wires plugins"
+                );
+            }
+        }
+    }
+
     // ── the #40 wall: every plugin kind -> busbar-contract is the rule (SHA-KI) ──────────────────
 
     /// The class table grants the wall for EVERY plugin kind, and the rule the edge and matrix
@@ -9318,7 +9446,10 @@ mod plant_tests {
         let red = deps_over(the_wall_plant(&["busbar-plugin"]));
         assert_red_naming(
             &red,
-            &["busbar-hooks-planted -> busbar-plugin", "hooks -> plugin-abi"],
+            &[
+                "busbar-hooks-planted -> busbar-plugin",
+                "hooks -> plugin-abi",
+            ],
         );
         assert!(
             !red.detail
