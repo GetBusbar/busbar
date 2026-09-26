@@ -2085,7 +2085,9 @@ scope_globs = ["crates/busbar/src/root/*.rs", "crates/busbar/src/main.rs"]
 # deleted crate; busbar_substrate's root reach was already fully retired). 17 (busbar_llm,
 # unchanged) + 5 + 3 + 12 = 37, the same root reach, now counted instead of a false zero. Pinned at
 # TODAY's measurement on the committed tree (HEAD b091b4e83). Downward only from here.
-ceiling = 15
+# RATCHETED DOWN 15 -> 10, AT THE MEASUREMENT (K2f): eefc65fd7 deleted root/units_voice.rs, the last
+# root file naming `busbar_voice::` (5 distinct symbols), so the busbar_voice figure below is 0.
+ceiling = 10
 
 [rules.legacy-reach.prefixes.busbar_llm]
 prefix = "busbar_llm::"
@@ -2110,7 +2112,8 @@ figure = 0
 prefix = "busbar_voice::"
 exclude = []
 because = "item 381 (Q11/Q32): the retiring voice engine, the root still names by prefix"
-figure = 5
+# RATCHETED DOWN 5 -> 0, AT THE MEASUREMENT (K2f, eefc65fd7: root/units_voice.rs deleted).
+figure = 0
 
 # ── 31. no-test-doubles-in-production ────────────────────────────────────────────────────────────
 [rules.no-test-doubles-in-production]
@@ -2136,7 +2139,8 @@ forbidden = [
   "without_directory(",
 ]
 max_unlisted = 0
-max_doubles = 5
+# RATCHETED DOWN 5 -> 3, AT THE MEASUREMENT (K2f): the three main.rs `RecordingRows` sites remain.
+max_doubles = 3
 
 # THE REVIEWED SITES. `verdict = "real"` means the review found this to be the shipped node's own
 # value at this composition — a null shipper on a node with no `peers:`, a memory-buffered book on a
@@ -2147,18 +2151,9 @@ max_doubles = 5
 # unit that composes the node) when the composition root stopped naming plugin crates. A path
 # re-point, not a new review: the symbols, verdicts and reasons are unchanged and the doubles count
 # is the same seven (the main.rs `RecordingRows` row stays for the two left in `compose_boot_book`).
-[rules.no-test-doubles-in-production.known_sites.voice-calls-shipper]
-file = "crates/busbar/src/root/units_voice.rs"
-symbol = "NullShipper"
-verdict = "double"
-because = "the voice governed-call node's journal, built in the default binary from no deployment value at all"
-
-[rules.no-test-doubles-in-production.known_sites.voice-calls-rows]
-file = "crates/busbar/src/root/units_voice.rs"
-symbol = "RecordingRows"
-verdict = "double"
-because = "the same node's rows: a recorder nothing reads, beside the node book the process already opened"
-
+# K2f (eefc65fd7): those five sites were deleted with root/units_voice.rs — the voice node they built
+# is gone and the plane composes its governed-call table (no pricer, chain, journal or bindings) in
+# its own crate — so their five rows are struck; the main.rs row stays.
 # The main.rs half of the row above, kept: before K1 one `RecordingRows` row for main.rs covered the
 # voice node's rows AND the two in `compose_boot_book`; the node's moved, the boot book's did not.
 [rules.no-test-doubles-in-production.known_sites.voice-calls-rows-boot-book]
@@ -2166,24 +2161,6 @@ file = "crates/busbar/src/main.rs"
 symbol = "RecordingRows"
 verdict = "double"
 because = "the same node's rows: a recorder nothing reads, beside the node book the process already opened"
-
-[rules.no-test-doubles-in-production.known_sites.voice-calls-pricer]
-file = "crates/busbar/src/root/units_voice.rs"
-symbol = "Pricer::flat("
-verdict = "double"
-because = "a zero rate card in the shipped binary, where the deployment's own card is what a priced node needs"
-
-[rules.no-test-doubles-in-production.known_sites.voice-calls-chain]
-file = "crates/busbar/src/root/units_voice.rs"
-symbol = "AuthChain::new(Vec::new()"
-verdict = "double"
-because = "an empty chain in the shipped binary, not the door the deployment configured"
-
-[rules.no-test-doubles-in-production.known_sites.voice-calls-bindings]
-file = "crates/busbar/src/root/units_voice.rs"
-symbol = "without_directory("
-verdict = "double"
-because = "the same node's unbound key authorities, where the sealed root has the governance directory"
 
 [rules.no-test-doubles-in-production.known_sites.bindings-constructor]
 file = "crates/busbar/src/root/auth_bindings.rs"
