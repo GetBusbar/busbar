@@ -20,7 +20,7 @@
 
 use super::relay_harness::{backend_ok, call, call_agent, envelope, harness_gated, Gates, Outcome};
 use crate::testkit::engine_boot::engine;
-use busbar_kernel::test_support::engine_kit::HookNeed;
+use busbar_kernel::{plane_host::TransformVerdict, test_support::engine_kit::HookNeed};
 
 /// A `prompt: rw` REWRITE gate on the hermetic test cdylib, as the `hooks:` document an operator
 /// writes (the engine parses it with its own grammar at build). `raw_transform_reply` drives its
@@ -399,8 +399,7 @@ async fn a_hook_that_panics_is_the_seams_own_failed_verdict_never_a_join_failure
 /// blocking task, never a constructed stand-in.
 #[tokio::test]
 async fn a_rewrite_leg_that_did_not_join_refuses_the_submission_and_is_never_silent() {
-    use busbar_kernel::plane_host::TransformVerdict;
-    use busbar_kernel::test_support::warn_capture::WarnCapture;
+    use crate::testkit::WarnCapture;
     use tracing_subscriber::layer::SubscriberExt as _;
 
     // A REAL `JoinError`: exactly the value the tap leg receives when its blocking task panics.

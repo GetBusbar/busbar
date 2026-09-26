@@ -92,7 +92,7 @@ use std::net::IpAddr;
 use super::creds::{Lease, LeaseError};
 use super::fetch::{FetchPolicy, FetchRefusal, HttpResponse, Resolver};
 use super::task::TaskState;
-use busbar_kernel::net_guard::PinnedTarget;
+use busbar_kernel::{breaker::normalize_raw_error, net_guard::PinnedTarget};
 
 /// The HTTP round trip the relay makes, as a seam.
 ///
@@ -1556,12 +1556,10 @@ fn classify_hop(refusal: Option<&RelayRefusal>) -> HopOutcome {
                 retry_after: None,
             })
         }
-        Some(RelayRefusal::Status { status, .. }) => {
-            HopOutcome::Failure(busbar_kernel::breaker::normalize_raw_error(
-                &busbar_contract::upstream::RawUpstreamError::from_status(*status),
-                &std::collections::HashMap::new(),
-            ))
-        }
+        Some(RelayRefusal::Status { status, .. }) => HopOutcome::Failure(normalize_raw_error(
+            &busbar_contract::upstream::RawUpstreamError::from_status(*status),
+            &std::collections::HashMap::new(),
+        )),
         Some(
             RelayRefusal::BodyTooLarge { .. }
             | RelayRefusal::NotJson { .. }

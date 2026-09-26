@@ -119,7 +119,7 @@ fn requests_charged_to(h: &Harness, key: &busbar_contract::records::VirtualKey) 
     );
     h.gov.flush_budgets();
     h.gov
-        .usage_for(&*cost, &key.id, busbar_kernel::store::now())
+        .usage_for(&*cost, &key.id, crate::host_now())
         .expect("the key's usage reads back")
         .map_or(0, |u| u.requests)
 }
@@ -407,7 +407,7 @@ async fn a_served_hop_is_charged_to_the_presenting_key() -> u64 {
     let h = harness_billed(Outcome::Answers(200, backend_ok()), false).await;
     let (bystander, _secret) = h
         .gov
-        .create_key(Default::default(), busbar_kernel::store::now())
+        .create_key(Default::default(), crate::host_now())
         .expect("a second key");
     let (status, body) = call(&h).await;
     assert_eq!(status, 200, "{body}");

@@ -14,8 +14,14 @@
 
 use crate::a2a::config::{AgentDefCfg, AgentsCfg};
 use crate::a2a::plane::A2aPlane;
-use busbar_kernel::test_support::{
+// `pub(crate)` so the host's warn-capture layer is named ONCE for the plane's test batteries (the
+// SSE reader's coded-drop test, the relay's resume-cursor and rewrite-leg tests) as
+// `crate::testkit::WarnCapture`.
+// Only the plane's own test binary reads that name, so a library build does not.
+#[cfg_attr(not(test), allow(unused_imports))]
+pub(crate) use busbar_kernel::test_support::{
     seam::{ErrorSurfaceDriver, TestPlaneSeam},
+    warn_capture::WarnCapture,
     TestAppSeam, TestAppSeamExt,
 };
 use std::sync::Arc;

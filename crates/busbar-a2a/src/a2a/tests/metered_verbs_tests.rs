@@ -31,9 +31,7 @@ async fn a2a_rows(h: &Harness) -> Vec<busbar_contract::records::MeteringRow> {
     h.gov.flush_metering();
     h.gov
         .store()
-        .list_metering(busbar_kernel::governance::metering_bucket(
-            busbar_kernel::store::now(),
-        ))
+        .list_metering(busbar_kernel::governance::metering_bucket(crate::host_now()))
         .expect("metering reads back")
         .into_iter()
         .filter(|r| r.provider == "a2a")

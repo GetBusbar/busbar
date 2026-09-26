@@ -14,7 +14,7 @@ use super::*;
 #[cfg(feature = "test-support")]
 #[test]
 fn test_non_utf8_frame_drop_carries_diag_code() {
-    use busbar_kernel::test_support::warn_capture::WarnCapture;
+    use crate::testkit::WarnCapture;
     use tracing_subscriber::layer::SubscriberExt as _;
 
     let cap = WarnCapture::default();

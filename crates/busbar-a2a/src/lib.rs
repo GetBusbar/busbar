@@ -47,6 +47,23 @@ pub mod diagnostics;
 /// events out, for the relay's streaming legs, with the one coded diagnostic it prints.
 pub(crate) mod sse;
 
+/// THE HOST WALL CLOCK, whole seconds since the Unix epoch, read through the contract's host
+/// service (`busbar_contract::codec::wall_clock_now`) — the one clock a plane reads. The composition
+/// root arms that service with the host's clock at boot; a process that armed none (a unit-test
+/// binary) reads the system clock the host would have installed, so the reading is the same either way.
+pub(crate) fn host_now() -> u64 {
+    busbar_contract::codec::wall_clock_now().unwrap_or_else(system_clock_secs)
+}
+
+/// The system clock the host installs: whole seconds since the Unix epoch.
+fn system_clock_secs() -> u64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
+
 /// THE DURABLE RECORD VOCABULARY. The row STRUCTS are this crate's: they name the store seam, which a pure kind may not. Their two KIND strings are the plane's schema ids and are read from there.
 ///
 /// The task and task-event row shapes moved to the pure half of this plugin — split out so

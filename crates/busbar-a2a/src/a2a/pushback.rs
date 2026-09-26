@@ -430,7 +430,7 @@ pub(crate) async fn push_notification(ctx: busbar_kernel::plane_routes::PlaneReq
     //
     // AFTER the MAC, deliberately. The token has already been proven to have been minted by this
     // process, so this is not a scan an anonymous caller can drive.
-    crate::taskstore::TASKS.sweep_now(busbar_kernel::store::now());
+    crate::taskstore::TASKS.sweep_now(crate::host_now());
 
     if body.len() > MAX_PUSH_BODY {
         return refused(
