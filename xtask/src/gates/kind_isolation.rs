@@ -6214,15 +6214,27 @@ impl Gate for KindIsolationGate {
             // A ROW THAT GRANTED ITSELF AN EDGE THE ARCHITECTURE WITHHOLDS. `allowed` is a READING
             // of ARCHITECTURE.md, not an opinion a ledger row is entitled to hold — otherwise the
             // ledger IS the architecture and the ratchet loosens by editing one word.
-            report.push(plant_registry(
+            //
+            // THE EDGE IS THE FIXTURE'S OWN. The case used to flip the verdict of a live row, and
+            // the day that row's edge left the tree the flipped row scored nothing (a row whose
+            // edge is gone is judged dead, not on its verdict) and the case went green. The plant
+            // is now a hooks plugin on the #40 wall reaching `busbar-kernel`, plus the row that
+            // calls it `allowed`: the class `hooks -> kernel` is granted nowhere, whatever the
+            // live ledger holds.
+            let mut ov = the_wall_plant(&["busbar-kernel"]);
+            ov.set(
+                REGISTRY_FILE,
+                planted_dep_row(cx, "busbar-hooks-planted", "busbar-kernel"),
+            );
+            report.push(prove_rows_red(
                 cx,
                 subject,
                 "a ledger row cannot grant itself an edge the architecture withholds",
                 &[ROW_DEPS],
-                verdict_subst(cx, "busbar-transport-tls", "busbar-unit-transport-key"),
+                ov,
                 &[
                     "unsupported-verdict",
-                    "busbar-transport-tls -> busbar-unit-transport-key",
+                    "busbar-hooks-planted -> busbar-kernel",
                     "cannot grant an edge the architecture withholds",
                 ],
             ));
