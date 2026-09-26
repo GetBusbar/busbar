@@ -359,6 +359,87 @@ fn normalize(s: &str) -> String {
     }
 }
 
+/// Blank the per-run values in a response body, whatever its framing.
+///
+/// A bedrock stream is binary event-stream framing, not text: its `metadata` frame carries a
+/// wall-clock `metrics.latencyMs`, and every frame ends in a CRC over its own bytes. Read as one
+/// lossy string, [`normalize`] can neither parse nor blank it, so two legs whose streams took 0 ms
+/// and 1 ms compared as different bodies under load. Each frame is decoded here instead: its
+/// headers are kept byte for byte, its JSON payload goes through [`normalize`], and the two CRCs,
+/// which only restate the bytes compared beside them, are dropped. Anything that is not a clean
+/// run of frames is compared exactly as before.
+fn normalize_body(body: &[u8]) -> String {
+    match event_stream_frames(body) {
+        Some(frames) => frames
+            .into_iter()
+            .map(|(headers, payload)| {
+                format!(
+                    "{}|{}",
+                    String::from_utf8_lossy(headers),
+                    normalize(&String::from_utf8_lossy(payload))
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n"),
+        None => normalize(&String::from_utf8_lossy(body)),
+    }
+}
+
+/// Split an event-stream body into `(headers, payload)` per frame. Each frame is a 12-byte
+/// prelude (total length, headers length, prelude CRC; big-endian u32s), the headers, the
+/// payload and a 4-byte message CRC. `None` unless the whole body is one or more such frames.
+fn event_stream_frames(mut body: &[u8]) -> Option<Vec<(&[u8], &[u8])>> {
+    let be = |b: &[u8]| u32::from_be_bytes([b[0], b[1], b[2], b[3]]) as usize;
+    let mut frames = Vec::new();
+    while !body.is_empty() {
+        if body.len() < 16 {
+            return None;
+        }
+        let (total, headers_len) = (be(&body[0..4]), be(&body[4..8]));
+        if total < 16 + headers_len || total > body.len() {
+            return None;
+        }
+        frames.push((
+            &body[12..12 + headers_len],
+            &body[12 + headers_len..total - 4],
+        ));
+        body = &body[total..];
+    }
+    (!frames.is_empty()).then_some(frames)
+}
+
+/// The event-stream normalizer blanks the clock and nothing else: two streams that differ only in
+/// `metrics.latencyMs` (and so in their CRCs) compare equal, and two that differ in a delta's text
+/// still diverge.
+#[test]
+fn event_stream_bodies_compare_without_their_clock() {
+    fn frame(payload: &str) -> Vec<u8> {
+        let headers = b":event-type metadata";
+        let total = 12 + headers.len() + payload.len() + 4;
+        let mut out = Vec::new();
+        out.extend_from_slice(&(total as u32).to_be_bytes());
+        out.extend_from_slice(&(headers.len() as u32).to_be_bytes());
+        out.extend_from_slice(&[0xAA; 4]);
+        out.extend_from_slice(headers);
+        out.extend_from_slice(payload.as_bytes());
+        out.extend_from_slice(&(payload.len() as u32).to_be_bytes());
+        out
+    }
+    let stream = |ms: u32, text: &str| {
+        let mut body = frame(&format!(r#"{{"delta":{{"text":"{text}"}}}}"#));
+        body.extend(frame(&format!(r#"{{"metrics":{{"latencyMs":{ms}}}}}"#)));
+        body
+    };
+    assert_eq!(
+        normalize_body(&stream(0, "hello")),
+        normalize_body(&stream(137, "hello"))
+    );
+    assert_ne!(
+        normalize_body(&stream(0, "hello")),
+        normalize_body(&stream(0, "hellp"))
+    );
+}
+
 /// One field of what a leg left behind, by name. Absent reads as empty rather than panicking,
 /// so a comparison that named a field nobody observes fails on the VALUE rather than on the
 /// lookup — a missing field is a divergence, not a test bug.
@@ -402,10 +483,7 @@ async fn observe(rig: &Rig, resp: Response) -> Observed {
     let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
         .await
         .unwrap_or_default();
-    fields.push((
-        "body",
-        normalize(&String::from_utf8_lossy(&body)).replace(&rig.group, "<group>"),
-    ));
+    fields.push(("body", normalize_body(&body).replace(&rig.group, "<group>")));
 
     // The body wrapper records the stream's outcome on drop; give it a tick before the reads.
     tokio::task::yield_now().await;
