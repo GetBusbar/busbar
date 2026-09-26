@@ -824,6 +824,18 @@ impl crate::EgressCarrier for RecordingCarrier {
         request: &busbar_plugin::cold::export::HttpRequest,
     ) -> busbar_plugin::cold::export::HostResult {
         use busbar_plugin::cold::export::{HostResult, HttpResponse};
+        if request.url.contains("stall.example") {
+            // Held until released, holding the calling thread (the blocking hop).
+            STALLED.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            while !RELEASED.load(std::sync::atomic::Ordering::SeqCst) {
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            STALLED.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+            return HostResult::Http(HttpResponse {
+                status: 204,
+                body: String::new(),
+            });
+        }
         if request.url.contains("refused.example") {
             return HostResult::Failed {
                 step: "refused".into(),
@@ -841,6 +853,31 @@ impl crate::EgressCarrier for RecordingCarrier {
         })
     }
 
+    fn carry_async(
+        &'static self,
+        request: busbar_plugin::cold::export::HttpRequest,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = busbar_plugin::cold::export::HostResult> + Send>,
+    > {
+        Box::pin(async move {
+            if !request.url.contains("stall.example") {
+                return self.carry(&request);
+            }
+            // Held until released, AWAITED: no thread waits on the far end.
+            STALLED.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            while !RELEASED.load(std::sync::atomic::Ordering::SeqCst) {
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+            STALLED.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+            busbar_plugin::cold::export::HostResult::Http(
+                busbar_plugin::cold::export::HttpResponse {
+                    status: 204,
+                    body: String::new(),
+                },
+            )
+        })
+    }
+
     fn admit(&self, url: &str) -> Result<(), String> {
         match url.contains("refused.example") {
             true => Err("the host's egress policy refuses this target".into()),
@@ -850,6 +887,10 @@ impl crate::EgressCarrier for RecordingCarrier {
 }
 
 static CARRIER: RecordingCarrier = RecordingCarrier(std::sync::Mutex::new(Vec::new()));
+
+/// Requests to `stall.example` the carrier is holding right now, and the switch that lets them go.
+static STALLED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+static RELEASED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// **K9a S5 — THE EGRESS CARRIER, BOTH WAYS.** The export fixture registered through the LINKED
 /// door and the DROPPED-IN door, opened with a `url`: each delivery has the HOST carry the POST
@@ -1020,4 +1061,59 @@ fn a_sink_starts_and_checks_the_same_through_either_door() {
         sink.check(crate::CheckPhase::Instances, &[]),
         Ok(Vec::new())
     );
+}
+
+/// **K9c — A SINK'S DELIVERIES IN FLIGHT ARE BOUNDED BY ITS ADMISSION ALONE.** At an in-flight bound
+/// of 600 — above the runtime's 512 blocking threads — 600 deliveries are in flight at once, each
+/// awaiting the far end on the host's egress, and the 601st is shed at the gate: the effective
+/// concurrency is the configured bound, as the 1.5.5 webhook's async deliveries were. (RED: a
+/// delivery that holds a blocking thread while the far end answers plateaus at 512.)
+#[test]
+fn a_sinks_deliveries_in_flight_reach_its_admission_bound_past_the_blocking_pool() {
+    const BOUND: usize = 600;
+    crate::install_egress_carrier(&CARRIER);
+    let manifest = super::both_ways::statement(
+        "export",
+        "k9c-bound",
+        "k9c-bound",
+        busbar_plugin::cold::export::EXPORT_ABI_VERSION,
+    );
+    let registry = super::both_ways::linked(manifest, super::both_ways::fixture("export").1);
+    let settings = serde_json::json!({ "url": "https://stall.example/in" }).to_string();
+    let sink = std::sync::Arc::new(registry.open_export("k9c-bound", &settings).expect("opens"));
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(4)
+        .enable_all()
+        .build()
+        .expect("a runtime");
+    let (in_flight, shed) = runtime.block_on(async {
+        let gate = std::sync::Arc::new(tokio::sync::Semaphore::new(BOUND));
+        let mut shed = 0;
+        for n in 0..=BOUND {
+            match gate.clone().try_acquire_owned() {
+                Ok(permit) => sink.deliver_detached(
+                    ExportStream::Logs,
+                    std::sync::Arc::new(serde_json::json!({ "n": n })),
+                    permit,
+                ),
+                Err(_) => shed += 1,
+            }
+        }
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(60);
+        let stalled = || STALLED.load(std::sync::atomic::Ordering::SeqCst);
+        while stalled() < BOUND && tokio::time::Instant::now() < deadline {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        // Held a moment longer: nothing beyond the bound joins.
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        let in_flight = stalled();
+        RELEASED.store(true, std::sync::atomic::Ordering::SeqCst);
+        let _ = gate.acquire_many(BOUND as u32).await;
+        (in_flight, shed)
+    });
+    assert_eq!(
+        in_flight, BOUND,
+        "every admitted delivery is in flight at once"
+    );
+    assert_eq!(shed, 1, "the delivery past the bound is shed");
 }

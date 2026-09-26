@@ -378,8 +378,9 @@ impl DynExport {
     }
 
     /// Hand one batch across the ABI OFF the calling thread — the host's delivery, which must never
-    /// touch the request that produced it. `hold` is released when the call returns (the caller's
-    /// in-flight permit); a sink that errors is logged (the error names it) and the batch is dropped.
+    /// touch the request that produced it — as an ASYNC TASK: `hold` (the caller's in-flight permit)
+    /// is released when the delivery ends, and that permit is the only bound on how many are in
+    /// flight. A sink that errors is logged (the error names it) and the batch is dropped.
     pub fn deliver_detached(
         self: &std::sync::Arc<Self>,
         stream: ExportStream,
@@ -387,12 +388,67 @@ impl DynExport {
         hold: impl Send + 'static,
     ) {
         let sink = self.clone();
-        tokio::task::spawn_blocking(move || {
+        tokio::spawn(async move {
             let _hold = hold;
-            if let Err(e) = sink.deliver(stream, &payload) {
+            if let Err(e) = sink.deliver_async(stream, payload).await {
                 tracing::warn!(error = %e, "export plugin delivery failed; this batch was dropped");
             }
         });
+    }
+
+    /// [`DynExport::deliver`] as a task: each boundary call (the sink answers, or asks the host to
+    /// act) runs on the blocking pool for as long as the call takes, and an outbound request the
+    /// sink asks for is AWAITED on the host's egress ([`crate::host::carry_async`]) — no thread is
+    /// held while a far end answers, so a thread pool never bounds the deliveries in flight.
+    async fn deliver_async(
+        self: std::sync::Arc<Self>,
+        stream: ExportStream,
+        payload: std::sync::Arc<serde_json::Value>,
+    ) -> Result<(), String> {
+        let payload = (*payload).clone();
+        let mut req = ExportRequest::Deliver { stream, payload };
+        for _ in 0..=MAX_HOST_ROUNDS {
+            let sink = self.clone();
+            let call = move || {
+                sink.raw
+                    .transport_call::<ExportRequest, ExportResponse>(&req)
+            };
+            let answer = tokio::task::spawn_blocking(call).await;
+            match answer.map_err(|e| e.to_string())?? {
+                ExportResponse::Delivered => return Ok(()),
+                ExportResponse::Host { token, ops } => {
+                    let mut results = Vec::with_capacity(ops.len());
+                    for op in ops {
+                        results.push(self.clone().perform_async(op).await);
+                    }
+                    req = ExportRequest::Resume { token, results };
+                }
+                other => return Err(self.unexpected("deliver", &other)),
+            }
+        }
+        Err(format!(
+            "export plugin '{}' asked the host to act more than {MAX_HOST_ROUNDS} times for one \
+             deliver",
+            self.raw.path
+        ))
+    }
+
+    /// Perform one host op for a delivery task: an outbound request awaited on the host's egress,
+    /// any other act (a destination's file) on the blocking pool.
+    async fn perform_async(
+        self: std::sync::Arc<Self>,
+        op: busbar_plugin::cold::export::HostOp,
+    ) -> busbar_plugin::cold::export::HostResult {
+        use busbar_plugin::cold::export::{HostOp, HostResult};
+        if let HostOp::Http(request) = op {
+            return crate::host::carry_async(request).await;
+        }
+        let acted = tokio::task::spawn_blocking(move || self.perform(&op)).await;
+        acted.unwrap_or_else(|e| HostResult::Failed {
+            step: "request".to_string(),
+            error: e.to_string(),
+            rotation: None,
+        })
     }
 }
 

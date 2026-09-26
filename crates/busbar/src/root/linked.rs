@@ -787,25 +787,23 @@ pub struct HostEgressCarrier;
 static CARRIER_CLIENT: std::sync::OnceLock<busbar_kernel::proxy::EgressClient> =
     std::sync::OnceLock::new();
 
-impl busbar_plugin_loader::EgressCarrier for HostEgressCarrier {
-    fn carry(
-        &self,
+impl HostEgressCarrier {
+    /// The request as the hop sends it — after the URL policy — and its deadline; or the refusal.
+    fn prepare(
         request: &busbar_plugin_loader::HttpRequest,
-    ) -> busbar_plugin_loader::HostResult {
-        use busbar_plugin_loader::{HostResult, HttpResponse};
-        let failed = |step: &str, error: String| HostResult::Failed {
-            step: step.to_string(),
-            error,
-            rotation: None,
-        };
-        if let Err(refusal) = self.admit(&request.url) {
-            return failed("refused", refusal);
+    ) -> Result<(CarriedRequest, tokio::time::Instant), busbar_plugin_loader::HostResult> {
+        use busbar_plugin_loader::EgressCarrier as _;
+        if let Err(refusal) = HostEgressCarrier.admit(&request.url) {
+            return Err(carried_failure("refused", refusal));
         }
         let (Ok(uri), Ok(method)) = (
             request.url.parse::<axum::http::Uri>(),
             axum::http::Method::from_bytes(request.method.as_bytes()),
         ) else {
-            return failed("request", "target URL does not parse".to_string());
+            return Err(carried_failure(
+                "request",
+                "target URL does not parse".to_string(),
+            ));
         };
         let mut headers = axum::http::HeaderMap::new();
         for (name, value) in &request.headers {
@@ -817,6 +815,16 @@ impl busbar_plugin_loader::EgressCarrier for HostEgressCarrier {
             }
         }
         let body = axum::body::Bytes::from(request.body.clone());
+        let deadline =
+            tokio::time::Instant::now() + std::time::Duration::from_millis(request.timeout_ms);
+        Ok(((method, uri, headers, body), deadline))
+    }
+
+    /// Send a prepared request on the carrier's one client, under its deadline.
+    async fn send(
+        (method, uri, headers, body): CarriedRequest,
+        deadline: tokio::time::Instant,
+    ) -> busbar_plugin_loader::HostResult {
         let req = busbar_kernel::egress::engine::request(method, uri, headers, body);
         let client = CARRIER_CLIENT.get_or_init(|| {
             busbar_kernel::proxy::build_egress_client(
@@ -828,21 +836,62 @@ impl busbar_plugin_loader::EgressCarrier for HostEgressCarrier {
                 ),
             )
         });
-        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
-            return failed("refused", "this host carries no plugin egress".to_string());
-        };
-        let deadline =
-            tokio::time::Instant::now() + std::time::Duration::from_millis(request.timeout_ms);
-        let sent = runtime.block_on(busbar_kernel::egress::engine::send_bounded(
-            client, req, deadline,
-        ));
-        match sent {
-            Ok(answer) => HostResult::Http(HttpResponse {
-                status: answer.status().as_u16(),
-                body: String::new(),
-            }),
-            Err(e) => failed("request", e.into_cause()),
+        match busbar_kernel::egress::engine::send_bounded(client, req, deadline).await {
+            Ok(answer) => {
+                busbar_plugin_loader::HostResult::Http(busbar_plugin_loader::HttpResponse {
+                    status: answer.status().as_u16(),
+                    body: String::new(),
+                })
+            }
+            Err(e) => carried_failure("request", e.into_cause()),
         }
+    }
+}
+
+/// A request the carrier sends: method, target, headers, body.
+type CarriedRequest = (
+    axum::http::Method,
+    axum::http::Uri,
+    axum::http::HeaderMap,
+    axum::body::Bytes,
+);
+
+/// A carried request's failure at `step`.
+fn carried_failure(step: &str, error: String) -> busbar_plugin_loader::HostResult {
+    busbar_plugin_loader::HostResult::Failed {
+        step: step.to_string(),
+        error,
+        rotation: None,
+    }
+}
+
+impl busbar_plugin_loader::EgressCarrier for HostEgressCarrier {
+    fn carry(
+        &self,
+        request: &busbar_plugin_loader::HttpRequest,
+    ) -> busbar_plugin_loader::HostResult {
+        let (req, deadline) = match HostEgressCarrier::prepare(request) {
+            Ok(prepared) => prepared,
+            Err(refused) => return refused,
+        };
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+            return carried_failure("refused", "this host carries no plugin egress".to_string());
+        };
+        runtime.block_on(HostEgressCarrier::send(req, deadline))
+    }
+
+    /// The same hop, awaited by the delivery's task: no thread waits on the far end.
+    fn carry_async(
+        &'static self,
+        request: busbar_plugin_loader::HttpRequest,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = busbar_plugin_loader::HostResult> + Send>>
+    {
+        Box::pin(async move {
+            match HostEgressCarrier::prepare(&request) {
+                Ok((req, deadline)) => HostEgressCarrier::send(req, deadline).await,
+                Err(refused) => refused,
+            }
+        })
     }
 
     fn admit(&self, url: &str) -> Result<(), String> {

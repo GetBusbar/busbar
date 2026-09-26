@@ -116,6 +116,20 @@ pub trait EgressCarrier: Send + Sync {
     /// Whether the host's egress policy would carry a request to `url` (K9c): `Err` in the
     /// policy's own words when it would not. Nothing is sent.
     fn admit(&self, url: &str) -> Result<(), String>;
+
+    /// [`carry`](Self::carry), AWAITED by the delivery's task rather than holding a thread while
+    /// the far end answers — so the requests a sink has in flight are bounded by its admission
+    /// alone, never by a thread pool. Default: `carry` on the blocking pool (a carrier with no
+    /// asynchronous hop of its own).
+    fn carry_async(
+        &'static self,
+        request: HttpRequest,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = HostResult> + Send>> {
+        Box::pin(async move {
+            let carried = tokio::task::spawn_blocking(move || self.carry(&request)).await;
+            carried.unwrap_or_else(|e| failed("request", e, None))
+        })
+    }
 }
 
 static CARRIER: std::sync::OnceLock<&'static dyn EgressCarrier> = std::sync::OnceLock::new();
@@ -130,6 +144,15 @@ pub fn install_egress_carrier(carrier: &'static dyn EgressCarrier) -> bool {
 fn carry(request: &HttpRequest) -> HostResult {
     match CARRIER.get() {
         Some(carrier) => carrier.carry(request),
+        None => failed("refused", "this host carries no plugin egress", None),
+    }
+}
+
+/// Carry one sink request through the installed carrier, awaited (see
+/// [`EgressCarrier::carry_async`]); with none installed, refuse it.
+pub(crate) async fn carry_async(request: HttpRequest) -> HostResult {
+    match CARRIER.get() {
+        Some(carrier) => carrier.carry_async(request).await,
         None => failed("refused", "this host carries no plugin egress", None),
     }
 }
