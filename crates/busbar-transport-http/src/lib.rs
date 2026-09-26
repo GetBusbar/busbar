@@ -135,6 +135,8 @@ pub mod linked {
     pub const KEY: &str = <HttpTransport as TransportMeta>::KEY;
     /// The layers `http` declares it can be built over.
     pub const COMPOSES_OVER: &[&str] = <HttpTransport as TransportMeta>::COMPOSES_OVER;
+    /// Whether this wire carries sessions.
+    pub const SESSION: bool = <HttpTransport as TransportMeta>::SESSION;
 
     /// `http` opens its own socket, so it takes no lower layer; it holds the deployment's settings.
     #[must_use]
@@ -154,6 +156,8 @@ pub mod linked {
         pub const KEY: &str = <SseTransport as TransportMeta>::KEY;
         /// The layers `sse` declares it can be built over.
         pub const COMPOSES_OVER: &[&str] = <SseTransport as TransportMeta>::COMPOSES_OVER;
+        /// Whether this wire carries sessions.
+        pub const SESSION: bool = <SseTransport as TransportMeta>::SESSION;
 
         /// Built over `lower`; with none (a composition the boot check refuses, `http` unlinked) it
         /// is built over an `http` of its own from the same settings.
@@ -176,6 +180,8 @@ pub mod linked {
         pub const KEY: &str = <GrpcTransport as TransportMeta>::KEY;
         /// The layers `grpc` declares it can be built over.
         pub const COMPOSES_OVER: &[&str] = <GrpcTransport as TransportMeta>::COMPOSES_OVER;
+        /// Whether this wire carries sessions.
+        pub const SESSION: bool = <GrpcTransport as TransportMeta>::SESSION;
 
         /// Built over `lower` — never over nothing, which yields a transport that refuses every
         /// connection; with no lower layer the boot check has already refused the composition.

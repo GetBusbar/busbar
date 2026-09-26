@@ -49,6 +49,8 @@ pub mod linked {
     pub const KEY: &str = <WsTransport as TransportMeta>::KEY;
     /// The layers this wire declares it can be built over.
     pub const COMPOSES_OVER: &[&str] = <WsTransport as TransportMeta>::COMPOSES_OVER;
+    /// Whether this wire carries sessions.
+    pub const SESSION: bool = <WsTransport as TransportMeta>::SESSION;
 
     /// Built over `lower` — never over nothing, which yields a transport that refuses every
     /// connection — with the deployment's body cap as its message ceiling: a message is assembled

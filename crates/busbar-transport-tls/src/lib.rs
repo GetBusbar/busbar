@@ -564,6 +564,8 @@ pub mod linked {
     pub const KEY: &str = <TlsTransport as TransportMeta>::KEY;
     /// The layers this wire declares it can be built over.
     pub const COMPOSES_OVER: &[&str] = <TlsTransport as TransportMeta>::COMPOSES_OVER;
+    /// Whether this wire carries sessions.
+    pub const SESSION: bool = <TlsTransport as TransportMeta>::SESSION;
 
     /// It opens its own socket, so it takes no lower layer and reads no setting.
     #[must_use]
