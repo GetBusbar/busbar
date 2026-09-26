@@ -912,8 +912,10 @@ kernel_crate = "busbar-kernel"
 # `#[allow(unsafe_code)]` the kernel's crate-wide `deny` needs on the atexit call) = +321. This
 # row's own measure (`cargo xtask gate construction`) reads 50773 at 49d676057 and 51094 with the
 # fold. 50846 + 321 = 51167: the fold's measured lines exactly, with K2g's <= 73 named reservation
-# still held open. Declared in `[gate.ceiling_raises]` above.
-kernel_ceiling = 51167
+# still held open. Its `[gate.ceiling_raises]` declaration reached the base and is struck.
+# ── 51167 -> 51162: the kernel measures 51089 after SD-3b's egress-declaration change, and
+# 51089 + K2g's 73 named lines = 51162. Downward only.
+kernel_ceiling = 51162
 # `caps_crate = "busbar-caps"` WAS HERE AND IS STRUCK, 2026-09-22. The crate was folded into
 # busbar-contract by 2c9eddecf ("W2.c: fold busbar-caps into busbar-contract"); its types live at
 # `crates/busbar-contract/src/caps/`, whose own module header says "Folded from the former
