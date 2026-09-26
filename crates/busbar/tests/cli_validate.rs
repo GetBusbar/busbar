@@ -1597,9 +1597,21 @@ fn validate_refuses_the_decision_protocol_when_no_decisions_section_is_configure
 /// Retry-After ceiling — and its delivery deadline after them, though both are the sink's own
 /// checks now. The whole refusal is pinned line for line; RED: the sink's lines answered in one
 /// place (all after the limits) reorder the second and third lines.
-#[cfg(all(feature = "export-webhook", linked_axis_body_ingress))]
+#[cfg(linked_axis_body_ingress)]
 #[test]
 fn validate_orders_a_webhook_sinks_refusals_among_the_limits_as_before() {
+    // Whether this binary links the webhook sink is the binary's own answer — a module on no export
+    // axis is refused as an unknown exporter — never a feature name. A build without it has no
+    // refusal of the sink's to order.
+    let probe = fixture_dir("webhook-order-probe");
+    write_configs(
+        &probe,
+        "export:\n  hook: { module: request-log-webhook, settings: { url: \"https://siem.example/in\" } }\n",
+    );
+    let (_, _, probed) = run_busbar(&probe, &["--validate"]);
+    if probed.contains("unknown exporter 'request-log-webhook'") {
+        return;
+    }
     let dir = fixture_dir("webhook-order");
     write_configs(
         &dir,

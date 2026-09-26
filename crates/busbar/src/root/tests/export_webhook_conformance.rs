@@ -72,8 +72,12 @@ impl busbar_plugin_loader::observe::PluginObserver for Observer {
 fn installed() -> std::sync::MutexGuard<'static, ()> {
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {
-        busbar_plugin_loader::install_egress_carrier(&Carrier);
-        busbar_plugin_loader::observe::install_plugin_observer(&Observer);
+        // Both are first-install-wins process globals: if another test in this binary had installed
+        // its own, every assertion below would read somebody else's record — refuse that loudly.
+        assert!(busbar_plugin_loader::install_egress_carrier(&Carrier));
+        assert!(busbar_plugin_loader::observe::install_plugin_observer(
+            &Observer
+        ));
     });
     SERIAL.lock().unwrap_or_else(|e| e.into_inner())
 }
@@ -137,6 +141,34 @@ fn dropped_door(tag: &str, mut manifest: Manifest, lib: &[u8]) -> PluginRegistry
     registry
 }
 
+/// What the host folded for `plugin` since the record was cleared — only its own entries: the
+/// observer is process-wide, and any other test in this binary that opens a sink folds into it
+/// concurrently (the cause of this test's 1-in-11 failure under the full parallel suite).
+fn folded_for(plugin: &str) -> Vec<Value> {
+    let folded = FOLDED.lock().unwrap();
+    folded
+        .iter()
+        .filter(|f| f["plugin"] == plugin)
+        .cloned()
+        .collect()
+}
+
+/// The requests the carrier was asked to make to this test's own targets (see [`folded_for`]).
+fn carried_here() -> Vec<Value> {
+    let targets = [
+        "//siem.example/",
+        "@siem.example/",
+        "//hooks.internal.example/",
+    ];
+    let carried = CARRIED.lock().unwrap();
+    let ours = |r: &&Value| {
+        targets
+            .iter()
+            .any(|t| r["url"].as_str().unwrap_or("").contains(t))
+    };
+    carried.iter().filter(ours).cloned().collect()
+}
+
 /// One script against the `request-log-webhook` row of `registry`: everything the host saw.
 fn transcript(registry: &PluginRegistry) -> Value {
     CARRIED.lock().unwrap().clear();
@@ -182,8 +214,8 @@ fn transcript(registry: &PluginRegistry) -> Value {
         "validated": format!("{validated:?}"),
         "started": format!("{started:?}"),
         "streams": format!("{:?}", live.streams()),
-        "carried": *CARRIED.lock().unwrap(),
-        "folded": *FOLDED.lock().unwrap(),
+        "carried": carried_here(),
+        "folded": folded_for(live.name()),
     })
 }
 
@@ -193,6 +225,17 @@ fn transcript(registry: &PluginRegistry) -> Value {
 fn the_linked_and_the_dropped_in_webhook_sink_are_one_plugin() {
     let _guard = installed();
     let linked = linked_door();
+    // Whether THIS build links the webhook sink is the linked table's answer, not a feature name: a
+    // build that does not link it has no such row, and the module is on no axis — nothing to
+    // compare, and nothing is built to drop in.
+    if linked.resolve(ALIAS).is_none() {
+        assert!(crate::LINKED
+            .exports
+            .iter()
+            .all(|&(_, alias, ..)| alias != ALIAS));
+        assert!(linked.validate_export(ALIAS, "w", &json!({})).is_none());
+        return;
+    }
     let Some(lib) = cdylib() else {
         return;
     };
@@ -249,14 +292,12 @@ fn the_linked_and_the_dropped_in_webhook_sink_are_one_plugin() {
         .expect("opens");
     FOLDED.lock().unwrap().clear();
     sink.shed();
+    let folded = folded_for(sink.name());
     assert!(
-        FOLDED
-            .lock()
-            .unwrap()
+        folded
             .iter()
             .all(|f| f["metrics"].as_array().is_none_or(Vec::is_empty)),
-        "an undeclared shed counter must not be granted: {:?}",
-        FOLDED.lock().unwrap()
+        "an undeclared shed counter must not be granted: {folded:?}"
     );
 
     // RED ARM 2: without the linked row the module is not on the axis.
