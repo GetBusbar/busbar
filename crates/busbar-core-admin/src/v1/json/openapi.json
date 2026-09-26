@@ -3175,6 +3175,13 @@
             "description": "The plane's registry key.",
             "type": "string"
           },
+          "record_kinds": {
+            "description": "The plane-record kinds the plane keeps; `POST /plane-record-write` writes only these.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
           "scope_kinds": {
             "items": {
               "type": "string"
@@ -3203,7 +3210,8 @@
           "billable_classes",
           "fee_units",
           "metric_families",
-          "served_op_classes"
+          "served_op_classes",
+          "record_kinds"
         ],
         "type": "object"
       },
@@ -5719,7 +5727,7 @@
     },
     "/api/v1/admin/commit-upgrade": {
       "post": {
-        "description": "The body names the release; one this node does not run is refused and seals nothing. The committed release is sealed on the node journal before the answer names its position and chain hash.",
+        "description": "The body names the release; one this node does not run is refused and seals nothing. The committed release is sealed on the node journal before the answer names its position and chain hash. Honors an `Idempotency-Key` header (per-principal, ~10min replay): a retry with the same key and body answers the first commit and seals nothing again.",
         "operationId": "PostCommitUpgrade",
         "requestBody": {
           "content": {
@@ -5780,7 +5788,7 @@
                 }
               }
             },
-            "description": "`conflict`: ``this node runs `<release>`; it cannot commit `<version>` ``"
+            "description": "`conflict`: ``this node runs `<release>`; it cannot commit `<version>` ``, `this Idempotency-Key was already used with a different request body`, or `a request with this Idempotency-Key is already in flight`"
           },
           "503": {
             "content": {
@@ -11335,7 +11343,7 @@
     },
     "/api/v1/admin/plane-record-write": {
       "post": {
-        "description": "Upserted by `(kind, id)` through the plane-facing store the planes persist through. `body` is stored as its JSON bytes and never decoded by the store; `terminal` is the retention disposition.",
+        "description": "Upserted by `(kind, id)` through the plane-facing store the planes persist through, and only for a `kind` the named plane declares in its `record_kinds` (`GET /plane-facts` lists them). `body` is stored as its JSON bytes and never decoded by the store; `terminal` is the retention disposition. Honors an `Idempotency-Key` header (per-principal, ~10min replay): a retry with the same key and body answers the first answer.",
         "operationId": "PostPlaneRecordWrite",
         "requestBody": {
           "content": {
@@ -11386,7 +11394,7 @@
                 }
               }
             },
-            "description": "`forbidden`: the credential does not hold `full` (the message names the scope), the fleet's operator key is not set, dual control holds the mutation for an approval, the verb's per-principal rate class is exhausted, or an idempotent retry is still in flight"
+            "description": "`forbidden`: the credential does not hold `full` (the message names the scope), the fleet's operator key is not set, dual control holds the mutation for an approval, the verb's per-principal rate class is exhausted, or an idempotent retry is still in flight, or ``plane `<key>` may not write record kind `<kind>` `` — the named plane does not declare the kind in its `record_kinds`"
           },
           "404": {
             "content": {
@@ -11397,6 +11405,16 @@
               }
             },
             "description": "`not_found`: ``plane `<key>` not found``"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "`conflict`: `this Idempotency-Key was already used with a different request body`, or `a request with this Idempotency-Key is already in flight`"
           },
           "503": {
             "content": {
