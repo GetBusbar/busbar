@@ -1120,7 +1120,6 @@ name = "busbar-voice-codec"
 version = "1.6.0"
 dependencies = [
  "busbar-contract",
- "busbar-substrate-values",
  "bytes",
  "serde",
  "serde_json",

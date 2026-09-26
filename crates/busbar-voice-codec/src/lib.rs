@@ -13,15 +13,14 @@
 //! `tokio-tungstenite` and a socket-capable `tokio` in it. (`busbar-plane-voice` was that adapter's
 //! earlier spelling and was DELETED into `busbar-plane-streaming` at `fbead1a31`, #18/#83.)
 //!
-//! So the codecs live here, naming only the pure half of the neutral ABI
-//! (`busbar-substrate-values`, for the base64 media transcode and the billing carrier) plus serde
-//! and `bytes`. `busbar-voice` depends on this crate and re-exports every module that moved under
+//! So the codecs live here, naming only the plugin contract (`busbar-contract`, for the base64 media
+//! transcode, the billing carrier and its reserved unit names) plus serde and `bytes`. `busbar-voice` depends on this crate and re-exports every module that moved under
 //! its old path, so `busbar_voice::ir::…` and `busbar_voice::topology::twilio::…` resolve exactly
 //! what they always did. The split is a MOVE: no item changed shape crossing it.
 
 /// THE REGISTRY KEY THE VOICE (STREAMING) PLANE IS KNOWN BY — the string the composition root flips
 /// onto the unified kernel loop's session admit
-/// ([`busbar_kernel::plane_host::register_session_runner`]) and the same string the voice session
+/// (`busbar_kernel::plane_host::register_session_runner`) and the same string the voice session
 /// gauntlet reports from its `GauntletPlane::capability_key`.
 ///
 /// Named ONCE, here, on the pure side of the split, because the plane's `capability_key` and the

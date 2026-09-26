@@ -36,17 +36,14 @@ name = "busbar_voice_codec"
 path = "src/lib.rs"
 
 [dependencies]
-# The NEUTRAL ABI, PURE HALF, NAMED DIRECTLY: the base64 media transcode the wire dialects frame
-# their audio through, and the name-keyed billing carrier the duplex usage projects into.
+# The plugin CONTRACT, and the ONLY busbar crate this one names (#83/#83a, SD-4): the base64 media
+# transcode the wire dialects frame their audio through (`media::base64_*`), the name-keyed billing
+# carrier the duplex usage projects into (`billing::Usage`) and the reserved billing unit names it
+# projects onto (`records::UNIT_*`). All three are SHAPES and live in the contract. A leaf.
 #
-# `busbar-substrate-values` and NOT `busbar-substrate`: the parent crate also carries the egress
-# engine (hyper, hyper-util, hyper-rustls, reqwest, a socket-capable tokio), and a plane is a PURE
-# kind whose ENTIRE transitive closure is scanned — with one whole-workspace metadata resolve
-# unifying features, so no gate could have kept the engine out of this crate's closure while the
-# values lived beside it. Nothing here may take a `busbar-substrate` edge back.
-busbar-substrate-values = { path = "../busbar-substrate-values", default-features = false }
-# The plugin CONTRACTS: the four reserved billing unit names the duplex usage projects itself onto.
-# A leaf.
+# A plane is a PURE kind whose ENTIRE transitive closure is scanned, so this crate takes no host
+# edge — no `busbar-substrate-values`, no `busbar-substrate`, no `busbar-kernel` — and a dependency
+# on one of them is a regression, not a convenience.
 busbar-contract = { path = "../busbar-contract" }
 # The plane's OWN media-frame carrier: `IrAudioFrame.media` is opaque `bytes::Bytes`.
 bytes = { workspace = true }

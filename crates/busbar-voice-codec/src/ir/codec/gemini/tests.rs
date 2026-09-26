@@ -24,7 +24,7 @@ fn as_value(w: &WireEvent) -> Value {
 }
 
 fn b64(bytes: &[u8]) -> String {
-    busbar_substrate_values::media::base64_encode(bytes)
+    busbar_contract::media::base64_encode(bytes)
 }
 
 /// Frame one client→server event, insisting the dialect HAS a verb for it. The uplink writer drops the

@@ -22,7 +22,7 @@ fn as_value(w: &WireEvent) -> Value {
 }
 
 fn b64(bytes: &[u8]) -> String {
-    busbar_substrate_values::media::base64_encode(bytes)
+    busbar_contract::media::base64_encode(bytes)
 }
 
 /// Frame one client→server event, insisting the dialect HAS a verb for it. The uplink writer may drop
@@ -644,7 +644,7 @@ fn usage_totals_saturate_rather_than_wrap() {
 
 /// AUDIO THAT DOES NOT DECODE IS NOT SILENCE.
 ///
-/// `base64_decode` returns `Option` deliberately — the substrate's own comment calls it the
+/// `base64_decode` returns `Option` deliberately — the contract's own comment calls it the
 /// fail-loud contract. Turning a `None` into an empty frame relays and meters a zero-length audio
 /// frame that is indistinguishable from a caller saying nothing, which is the one thing a voice
 /// plane must not confuse. No frame is the honest answer, exactly as the Twilio arm in this crate

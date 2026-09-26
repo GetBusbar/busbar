@@ -7,7 +7,7 @@
 //! `start`, `mark`, `dtmf`, `stop` — the whole set Twilio sends TO the socket, because an event
 //! this codec does not model is a decode REFUSAL to everything downstream) plus per-frame `media`
 //! events whose `payload` is base64 8 kHz µ-law. The
-//! generic [`crate::topology::telephony::TelephonyProxy`] bridge already carries raw `Vec<u8>` on its
+//! generic `busbar_voice::topology::telephony::TelephonyProxy` bridge already carries raw `Vec<u8>` on its
 //! `client_in`/`client_out` halves, so the only carrier-specific work is this thin, stateless codec
 //! that:
 //!
@@ -25,10 +25,10 @@ use serde::Serialize;
 
 // The crate's ONE base64 implementation. This module used to carry its own copy, justified as
 // keeping the envelope free of a new dependency — a justification the crate split retired:
-// `busbar-substrate-values` is already an unconditional dependency and `ir/codec` already decodes
+// the contract's `media` codec is already an unconditional dependency and `ir/codec` already decodes
 // audio through it. Two implementations of one wire primitive in one crate is a drift hazard with
 // nothing bought for it, and this is the primitive that turns bytes on a phone call into audio.
-use busbar_substrate_values::media::{base64_decode, base64_encode};
+use busbar_contract::media::{base64_decode, base64_encode};
 
 /// Twilio's negotiated µ-law encoding string on the `start` event's media format.
 pub const TWILIO_MULAW_ENCODING: &str = "audio/x-mulaw";
