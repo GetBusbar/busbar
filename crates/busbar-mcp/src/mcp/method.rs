@@ -2014,7 +2014,7 @@ async fn tools_call(
             // a result that says it is unfinished is not a finished result, and handing the caller a
             // silently-truncated one would be answering a question nobody asked.
             if let Some(field) = upstream_ask_field(&value) {
-                busbar_substrate_values::diag_error!(
+                busbar_contract::diag_error!(
                     crate::diagnostics::MCP_ASK_RECOGNISER_MISSED,
                     tool = %selected.namespaced,
                     field,
@@ -2060,7 +2060,7 @@ async fn tools_call(
             if let Some(schema) = &selected.output_schema {
                 if let Some(structured) = value.get("structuredContent") {
                     if let Err(why) = super::outputschema::check(structured, schema) {
-                        busbar_substrate_values::diag_debug!(
+                        busbar_contract::diag_debug!(
                             crate::diagnostics::MCP_OUTPUT_SCHEMA_VIOLATION,
                             tool = %selected.namespaced,
                             why = %why,
@@ -2109,7 +2109,7 @@ async fn tools_call(
                 busbar_contract::vocab::OUTCOME_REJECTED,
                 ctx.actor,
             );
-            busbar_substrate_values::diag_debug!(
+            busbar_contract::diag_debug!(
                 crate::diagnostics::MCP_TOOLCALL_REFUSED,
                 tool = %selected.namespaced,
                 reason = refusal.audit_reason(),
@@ -2160,7 +2160,7 @@ async fn tools_call(
                 busbar_contract::vocab::OUTCOME_REJECTED,
                 ctx.actor,
             );
-            busbar_substrate_values::diag_debug!(
+            busbar_contract::diag_debug!(
                 crate::diagnostics::MCP_TOOLCALL_UPSTREAM_FAILED,
                 tool = %selected.namespaced,
                 reason = %reason,
@@ -2591,8 +2591,8 @@ fn charge_round(
     // ADMIT through the host `govern_admit_reason` seam (CLUSTER-4). The grant `try_admit` yields is
     // registered in `scope`'s dispatch arena (the request-wide arena the breaker admission already
     // rides, threaded through `Ctx::scope`), so it releases exactly when that arena reclaims — the
-    // lifetime the caller-held `Vec<AdmitGrant>` had. The `Facts` carry this caller's REAL
-    // `(key.id, key.group)`, so the host reconstructs the SAME enforcement chain
+    // lifetime the caller-held `Vec<AdmitGrant>` had. The mint carries this request's resolved
+    // `ctx.gov` (DEC-SERVE G1b), so the host admits the SAME enforcement chain
     // `try_admit(&ctx.app.cost, key, namespaced)` walks (`namespaced` is the pool); `tokens`/
     // `budget_remaining` are 0 so the POD gate is a no-op and the chain is the sole decider. On a
     // BLOCKED limit the host renders the SAME `format!("{blocked:?}")` bytes the in-place
@@ -2601,33 +2601,30 @@ fn charge_round(
     // to the MCP plane — `tools.fees`, never the pools plane's fee (#47) — and reads the pool
     // predicate off the unqualified tool.
     let pool = plane_qualified(namespaced);
-    if let busbar_kernel::plane_host::GovAdmit::Blocked { reason, .. } =
-        ctx.host.govern_admit_reason(
-            scope,
-            pool.as_bytes(),
-            key.id.as_bytes(),
-            key.group.as_deref().map(str::as_bytes),
-        )
+    if let busbar_kernel::plane_host::GovAdmit::Blocked { reason, .. } = ctx
+        .host
+        .govern_admit_reason(scope, ctx.gov, pool.as_bytes())
     {
         // Byte-identical to the in-place `Err(format!("{blocked:?}"))` the flip replaced.
         return Err(reason);
     }
     // ONE METERED, ATTRIBUTED EVENT PER ROUND, through the host `meter_charge` seam (CLUSTER-4). A
-    // pure request meter with no token split (component `Queries` → `None`), so the recorded
-    // `(key_id, model, provider)` row is byte-identical to the in-place
+    // pure request meter with no token split (component `Queries` → `None`), billed to `ctx.gov`'s
+    // key (carried into the mint, G1b), so the recorded `(key_id, model, provider)` row is
+    // byte-identical to the in-place
     // `record_metering(&key.id, namespaced, Plane::Mcp.key(), None, ..)`: `model` carries the
     // namespaced tool and `provider` the plane, so an existing cost dashboard groups MCP traffic
     // without knowing what MCP is. Fire-and-forget, exactly as the direct call was.
-    let usage = busbar_plugin::hot::Usage::with_attribution(
-        busbar_plugin::hot::UsageComponent::Queries,
+    let usage = busbar_contract::abi::hot::Usage::with_attribution(
+        busbar_contract::abi::hot::UsageComponent::Queries,
         0,
         0,
-        busbar_plugin::hot::AdmissionId::NONE,
+        busbar_contract::abi::hot::AdmissionId::NONE,
         key.id.as_bytes(),
         namespaced.as_bytes(),
         "mcp".as_bytes(),
     );
-    ctx.host.meter_charge(scope, &usage);
+    ctx.host.meter_charge(scope, ctx.gov, &usage);
     tracing::debug!(
         capability = %namespaced,
         round = rec.round,
@@ -2663,7 +2660,7 @@ pub(super) fn ledger_tool_call(
     let (Some(pin), Some(key)) = (host.meter_pin(), key) else {
         return;
     };
-    let usage = busbar_substrate_values::billing::Usage {
+    let usage = busbar_contract::billing::Usage {
         usage_units: std::collections::BTreeMap::from([(
             busbar_plane_mcp::meta::CLASS_TOOL_CALLS
                 .as_str()
@@ -2711,7 +2708,7 @@ fn refuse_setup(
     // lands in the server's own log, never on the wire. For a `Credential` refusal this `detail`
     // is the only place the secret's source (which env var / file) still appears; see
     // `SetupRefusal::client_message`'s doc for why the wire rendering below must redact it.
-    busbar_substrate_values::diag_debug!(
+    busbar_contract::diag_debug!(
         crate::diagnostics::MCP_TOOLCALL_REFUSED_PRE_UPSTREAM,
         tool = %namespaced,
         reason = denied.audit_reason(),
@@ -3031,7 +3028,7 @@ fn refuse_ask(
         busbar_contract::vocab::OUTCOME_REJECTED,
         ctx.actor,
     );
-    busbar_substrate_values::diag_debug!(
+    busbar_contract::diag_debug!(
         crate::diagnostics::MCP_CALLER_ASK_REFUSED,
         capability = %resource,
         reason = refusal.audit_reason(),

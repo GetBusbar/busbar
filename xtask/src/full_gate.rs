@@ -104,10 +104,10 @@ pub const CARGO_LOCAL: &[&str] = &[
     "cargo test -p busbar --test migration_corpus --locked -- --nocapture",
     "cargo test -p busbar-voice --features runtime,test-support -p busbar-voice-codec --features runtime --locked",
     "cargo test -p busbar-llm --locked --lib unit::",
-    "cargo test -p busbar-timing --features timing --locked",
+    "cargo test -p busbar-kernel --features timing --lib --test timing_smoke --locked -- timing:: smoke_records",
     "cargo build -p xtask --locked",
     "cargo xtask gate kind-isolation --selftest",
-    "cargo xtask gate kind-isolation",
+    "cargo xtask gate kind-isolation --posture",
     "cargo xtask gate kernel-token-wire-purity --selftest",
     "cargo xtask gate kernel-token-wire-purity",
     "cargo xtask gate money-invariants --selftest",
@@ -158,7 +158,7 @@ pub const CARGO_LOCAL: &[&str] = &[
     // The feature-sets job's plugin cdylibs. `busbar-plugin-example-plane` joined the list in
     // ci.yml at 4e39e1a11 (the kind:plane rider `plane_abi_rider.rs` dlopens) and the local copy
     // was never moved with it, so the CI line went unclassified. One list, both places.
-    "cargo build --locked -p busbar-store-example-plugin -p busbar-hook-test-plugin -p busbar-auth-static-plugin -p busbar-secret-example-plugin -p busbar-export-example-plugin -p busbar-plugin-example-plane",
+    "cargo build --locked -p busbar-store-example-plugin -p busbar-hook-test-plugin -p busbar-auth-static-plugin -p busbar-export-example-plugin -p busbar-plugin-example-plane",
     "cargo xtask gate feature-sets --selftest",
     "cargo xtask gate feature-sets",
     "cargo xtask gate field-inventory --selftest",
@@ -201,6 +201,9 @@ pub const CARGO_CI_ONLY: &[(&str, &str)] = &[
     ("cargo clippy --workspace --all-targets -- -D warnings", "the WINDOWS job's clippy. It exists to catch the platform-gated code no local run compiles at all -- a #[cfg(unix)] item whose #[cfg(windows)] twin was never written is a warning THERE and nowhere here. A macOS/Linux clippy cannot substitute: it takes the other arm of every cfg. Approximated locally with 'cargo xwin clippy --target x86_64-pc-windows-msvc', which type-checks the Windows arms without a Windows host but still executes nothing."),
     ("cargo test --release --locked timing_gate -- --ignored", "a RELEASE-profile wall-clock gate on a dedicated runner. A debug tree with a compiler and a browser competing for the CPU measures the laptop, not the engine; run it directly when touching the timing path."),
     ("cargo build -p busbar --release --locked", "the RELEASE-profile build that feeds build-provenance-gate.sh (it asserts the shipped binary's optimized posture). The local build mirror is the debug 'cargo build --locked --bin busbar' above; a release build here would re-measure the laptop, not prove anything the debug build does not."),
+    ("cargo build -p busbar-hashicorp-vault-plugin", "the plugin-proofs job's build of the SECRET kind's real plugin, GetBusbar/hashicorp-vault, checked out BESIDE this tree (its crates name busbar by the sibling path ../../busbar/crates/...). Its working directory is that sibling repo, which a local run of this tree does not have."),
+    ("cargo build -p busbar-auth-github-plugin", "the plugin-proofs job's build of the AUTH kind's real plugin, GetBusbar/auth-github, checked out beside this tree the same way; same reason."),
+    ("cargo test --locked -p busbar-plugin-loader --lib plugin_proof_tests -- --ignored", "the plugin-proofs job's dlopen of the two sibling-built cdylibs through the dropped-in door. The tests are #[ignore]d here because the artifacts they load exist only after the two sibling builds above, in that job's target dir (BUSBAR_PLUGIN_PROOF_DIR)."),
     ("cargo build -p busbar-transport-tcp --release --locked --features dropped-in", "the build-release job's second invocation: the tcp transport's DROPPED-IN artifact, whose `#[no_mangle]` door is compiled only under `dropped-in` so the fat-LTO release link above sees the handshake symbols once. It exists to feed the `nm -D` check that the `.so` exports its three door symbols -- an ELF release artifact on the Linux runner. The same reason as the release build above: a local release build would re-measure the laptop, and `nm -D` reads the Linux runner's ELF artifact."),
     ("cargo build -p busbar-kernel -p busbar-substrate-values -p busbar-contract --no-default-features --features \"$FEATS\" --locked", "the plane-DELETION matrix build. $FEATS is '${{ matrix.features }}', which expands per kept-plane combination -- a CI matrix construct with no single local form, and the literal string is not a runnable command. It is mirrored locally by the delete-test gate (PLANE-DELETE group), which compiles the neutral crates with a plane removed."),
     ("cargo build -p busbar-kernel -p busbar-substrate-values -p busbar-contract --no-default-features --locked", "the same plane-DELETION matrix build's EMPTY-features arm (every plane removed). Same matrix job, same local mirror in the delete-test gate; listed separately because the step branches on $FEATS and both arms are real invocations."),
@@ -548,7 +551,7 @@ pub const REGISTRY_NOT_IN_CI: &[(&str, &str, Excuse)] = &[
          leg could have caught them. The gate reds on that module and on four more nobody had \
          written down — `units_voice.rs` (48 construction sites, every one a test), `units_mcp.rs` \
          (1 884 lines declaring no `impl Units for` at all), `money_book.rs` and `vocabulary.rs` \
-         (reached by no chain from main) — and PASSES `units_llm.rs`, which is live. That \
+         (reached by no chain from main) — and PASSES the llm plane, which is live. That \
          separation is its red-before-green proof. Every unreached path either gets switched onto \
          the serving path or gets a written `[[dormant]]` row in qa/reachability.toml, and a \
          declaration whose subject is reached again is STALE and reds. A release-time DONE question \

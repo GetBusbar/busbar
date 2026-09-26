@@ -56,17 +56,11 @@ use busbar_contract::records::RecordStore;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 
-/// The crates whose sources decide what the cdylib DOES across the ABI: the plugin itself, the SDK
-/// it is written against, the ABI header both sides compile to, the crate that declares the `Store`
-/// trait it implements, and the contract types that trait is spelled in. A change to any of them can
-/// move the artifact's behaviour, and the four-method defect lived in the third.
-const WATCHED_CRATES: &[&str] = &[
-    "store-example-plugin",
-    "plugin-sdk",
-    "busbar-plugin",
-    "api",
-    "busbar-contract",
-];
+/// The crates whose sources decide what the cdylib DOES across the ABI: the plugin itself, and the
+/// contract it is written against — which holds the SDK, the ABI header both sides compile to
+/// (`abi`, merged in by #84), the `Store` trait it implements and the types that trait is spelled in.
+/// A change to either can move the artifact's behaviour; the four-method defect lived in the ABI.
+const WATCHED_CRATES: &[&str] = &["store-example-plugin", "api", "busbar-contract"];
 
 /// The cdylib path, resolved (and built if needed) exactly ONCE per test process. The batteries run
 /// in parallel; without this they would each invoke cargo and serialise on cargo's own lock.

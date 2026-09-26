@@ -1,9 +1,9 @@
 pub mod gauntlet_install;
 pub mod gauntlet_kernel;
 pub mod plane_decision;
+pub mod plane_node;
 pub mod registry;
 pub mod units_a2a;
 pub mod units_decision;
-pub mod units_llm;
 pub mod units_mcp;
 pub mod units_voice;

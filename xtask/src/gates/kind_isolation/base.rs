@@ -81,9 +81,23 @@ fn cache() -> &'static Cache {
 /// Keyed by the root as well as the commit because a self-test may re-root a whole `Ctx` at a
 /// fixture tree, and answering that run out of the real repository's cache would be answering a
 /// different question than the one the case asked.
+///
+/// And by the base LEDGER when an overlay plants one (`git-show:<commit>:qa/kind-isolation.toml`):
+/// a self-test that states "this row pre-dates the branch" plants the base's copy of the file, and
+/// answering it out of an unplanted reading of the same commit — or leaving its planted copy in the
+/// cache for the next case — would be answering a different question than the one asked.
 pub fn read(cx: &Ctx) -> Result<std::sync::Arc<Base>, String> {
     let commit = base_ref(cx)?.sha;
-    let key = format!("{}\u{0}{commit}", cx.root().display());
+    let planted_ledger = cx
+        .overlay_command(&format!("git-show:{commit}:{REGISTRY_FILE}"))
+        .map(|text| {
+            use std::hash::{Hash, Hasher};
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            text.hash(&mut h);
+            format!("{:016x}", h.finish())
+        })
+        .unwrap_or_default();
+    let key = format!("{}\u{0}{commit}\u{0}{planted_ledger}", cx.root().display());
     if let Some(hit) = cache().lock().ok().and_then(|m| m.get(&key).cloned()) {
         return hit;
     }

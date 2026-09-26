@@ -13,7 +13,7 @@
 /// audio/text as labeled opaque components core never interprets.
 ///
 /// A plain token-class tally, folded (5→4 reserved keys, see [`Self::to_billing_usage`]) onto the
-/// neutral [`busbar_substrate_values::billing::Usage`] the host prices via the D2 lease's `price_usage`
+/// neutral [`busbar_contract::billing::Usage`] the host prices via the D2 lease's `price_usage`
 /// (`runtime::metering::MeteringPort::price_usage`) and settled through `cost_settle`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct IrDuplexUsage {
@@ -30,9 +30,9 @@ pub struct IrDuplexUsage {
 }
 
 impl IrDuplexUsage {
-    /// FOLD this turn's five token classes onto the neutral [`busbar_substrate_values::billing::Usage`] the
+    /// FOLD this turn's five token classes onto the neutral [`busbar_contract::billing::Usage`] the
     /// host prices — the 5→4 reserved-key map the plane hands
-    /// [`MeteringHost::price_usage`](busbar_substrate_values::plane_host::MeteringHost::price_usage). Audio and
+    /// `MeteringHost::price_usage` (the host's pricer). Audio and
     /// text collapse onto the SAME reserved lane by direction (a session prices audio vs text as separate
     /// rate-card MODEL lanes, never separate unit keys), so NO new unit/label/constant is introduced —
     /// only the four EXISTING reserved keys ([`busbar_contract::records::UNIT_INPUT`]/`UNIT_OUTPUT`/`UNIT_CACHE_READ`):
@@ -58,7 +58,7 @@ impl IrDuplexUsage {
     /// The subtraction saturates too: a provider that over-reports `cached` floors the input lane at
     /// zero rather than wrapping to a colossal charge.
     #[must_use]
-    pub fn to_billing_usage(&self) -> busbar_substrate_values::billing::Usage {
+    pub fn to_billing_usage(&self) -> busbar_contract::billing::Usage {
         let mut usage_units = std::collections::BTreeMap::new();
         let input = self
             .audio_in
@@ -77,7 +77,7 @@ impl IrDuplexUsage {
                 self.cached,
             );
         }
-        busbar_substrate_values::billing::Usage { usage_units }
+        busbar_contract::billing::Usage { usage_units }
     }
 }
 

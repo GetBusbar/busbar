@@ -60,6 +60,7 @@ pub mod segregation;
 pub mod service_images;
 pub mod settings_leak;
 pub mod ship_ready;
+pub mod standing_snapshot;
 pub mod structure_lint;
 pub mod sweep_coverage;
 pub mod teller_steps;
@@ -178,7 +179,7 @@ pub const REPORT_ONLY: &[Posture] = &[
               money faults in a module whose unit's only construction site in the crate is under \
               `#[cfg(test)]`. A gate that did not red there would not work. It also reds on four \
               more nobody had written down (units_voice, units_mcp, money_book, vocabulary) and \
-              PASSES units_llm, which is live. It is a release-time claim — \
+              PASSES the llm plane, which is live. It is a release-time claim — \
               scripts/verify-1.6.0-done.sh runs it, full_gate's own excuse table is where that is \
               written down and checked — and every row it is red about is printed in full on every \
               run, so a red that is not counted here is never a red that was not mentioned. DELETE \
@@ -255,7 +256,10 @@ pub const REPORT_ONLY: &[Posture] = &[
               `axis:purity` (4 places the agnostic core asks an axis its identity) and \
               `census:count` (3 shared words with a second spelling). DRAIN: Phase 4, when the \
               plane owners dedupe or sign ledger rows; strike each name from \
-              STRUCTURE_LINT_STANDING_REDS in the commit that turns its row green. Every OTHER row \
+              STRUCTURE_LINT_STANDING_REDS in the commit that turns its row green. (A fifth, \
+              `choke-point:bypass` — tcp's hand-rolled door exports — drained when the SDK merged \
+              into the contract and tcp took the contract's one door; its line is struck.) \
+              Every OTHER row \
               of this gate is scored like any gate's, so a new red anywhere else reds `--all` and \
               the blocking `--posture` step in ci.yml alike, and a listed row that goes green \
               without its strike is STALE and reds them too. \
@@ -287,6 +291,25 @@ pub const REPORT_ONLY: &[Posture] = &[
                 "\"ship-ready\"",
             ),
         ]),
+    },
+    Posture {
+        name: "kind-isolation",
+        why: "RED on the Phase 4 drain debt and on nothing new. `:deps`, `:test-deps`, `:closure` \
+              and `:matrix` carry the measured coupling the Phase 4 kind-isolation drain removes \
+              (their rises await owner questions Q77/Q77a). They are excused FINDING BY FINDING: \
+              every finding they carry must be in qa/kind-isolation.standing.txt at or below its \
+              recorded figure. A new edge, cell or rise reds the posture, and every other row \
+              blocks exactly as it always did. The snapshot only shrinks: `--posture \
+              --write-standing` strikes and lowers and never adds.",
+        excuse: Excused::Snapshot(standing_snapshot::SnapshotReds {
+            rows: &[
+                "kind-isolation:deps",
+                "kind-isolation:test-deps",
+                "kind-isolation:closure",
+                "kind-isolation:matrix",
+            ],
+            file: "qa/kind-isolation.standing.txt",
+        }),
     },
 ];
 
@@ -350,11 +373,6 @@ pub const CONSTRUCTION_STANDING_REDS: &[&str] = &[
     // crates/busbar-core-admin/src/v1/service.rs, outside the reviewed homes — an admin read that
     // prices on its own path (the BUDGET row: the enforcement path is not the invoice path).
     "one-pricing-site",
-    // `no-test-doubles-in-production:doubles`: 7 reviewed doubles in the shipped binary against a
-    // ratchet of 5 — the voice governed-call node in crates/busbar/src/main.rs, built with
-    // `NullShipper`, `RecordingRows`, `without_directory(` and `Pricer::flat(` (a zero rate card
-    // where the deployment's card belongs).
-    "no-test-doubles-in-production:doubles",
     // `token-sealed` and its three named mints: the Teller's tokens, `KernelSeal::acquire_for_kernel(`,
     // the arrival-hold mint and `SecretOnce::mint(` are spelled outside their one home crate (266,
     // 136, 49 and 5 sites). Item 317: the one deliberate cross-crate hole in the capability model is
@@ -511,6 +529,9 @@ pub enum Excused {
     /// listed must hold — the workflow still runs it, and branch protection still requires it — or
     /// the gate is scored like any other.
     RequiredAtPromotion(&'static [crate::full_gate::Excuse]),
+    /// The gate's named rows are excused FINDING BY FINDING, against a committed snapshot that can
+    /// only shrink. See [`standing_snapshot`].
+    Snapshot(standing_snapshot::SnapshotReds),
 }
 
 /// An [`Excused::OnlyRows`] list, with the names an operator is told to edit when it goes stale.
@@ -528,6 +549,7 @@ pub struct StandingReds {
 pub fn standing_list_of(name: &str) -> Option<&'static str> {
     match &REPORT_ONLY.iter().find(|p| p.name == name)?.excuse {
         Excused::OnlyRows(sr) => Some(sr.list),
+        Excused::Snapshot(sr) => Some(sr.file),
         _ => None,
     }
 }
@@ -592,6 +614,32 @@ pub fn excused_from_all(name: &str, cx: &Ctx, verdict: &Verdict) -> Option<Strin
             if unexplained.is_empty() {
                 Some(format!("{} — every red row names `{needle}`", p.why))
             } else {
+                None
+            }
+        }
+        Excused::Snapshot(sr) => {
+            let snapshot = match standing_snapshot::load(cx, sr) {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!("  {name} posture: the standing snapshot is unreadable: {e}");
+                    return None;
+                }
+            };
+            let (blocking, report) = standing_snapshot::judge(sr, verdict, &snapshot);
+            for r in &report {
+                eprintln!("  {name} posture (report only): {r}");
+            }
+            if blocking.is_empty() {
+                Some(format!(
+                    "{} — every standing finding is in {} at or below its figure ({} recorded)",
+                    p.why,
+                    sr.file,
+                    snapshot.len()
+                ))
+            } else {
+                for b in &blocking {
+                    eprintln!("  {name} posture: {b}");
+                }
                 None
             }
         }
@@ -3533,6 +3581,46 @@ mod posture_tests {
             excused_from_all("design-bindings", &cx, &verdict(vec![known, fresh])).is_none(),
             "a red about anything else was never excused and still is not"
         );
+    }
+
+    /// THE KIND-ISOLATION POSTURE IS A SNAPSHOT OF FINDINGS, and the snapshot is well-formed: it
+    /// parses, it is keyed only by the rows the posture names, and every one of those rows is a row
+    /// the gate owes. The judgement itself (GREEN when the snapshot equals the tree, RED on a new
+    /// edge and on a rise, stale entries reported and not scored) is proven in
+    /// `standing_snapshot::tests`.
+    #[test]
+    fn the_kind_isolation_snapshot_names_only_rows_the_gate_owes() {
+        let cx = Ctx::workspace().expect("the workspace opens");
+        let p = REPORT_ONLY
+            .iter()
+            .find(|p| p.name == "kind-isolation")
+            .expect("kind-isolation has a posture");
+        let Excused::Snapshot(sr) = &p.excuse else {
+            panic!("the kind-isolation posture is a snapshot");
+        };
+        let owed = REGISTRY
+            .iter()
+            .find(|r| r.name == "kind-isolation")
+            .map(|r| (r.build)().owed())
+            .expect("kind-isolation is registered");
+        for row in sr.rows {
+            assert!(
+                owed.contains(&row.to_string()),
+                "{row} is not a row the gate owes"
+            );
+        }
+        let snapshot = standing_snapshot::load(&cx, sr).expect("the snapshot parses");
+        assert!(
+            !snapshot.is_empty(),
+            "an empty snapshot excuses nothing and should be struck"
+        );
+        for key in snapshot.keys() {
+            let row = key.split('\t').next().unwrap_or("");
+            assert!(
+                sr.rows.contains(&row),
+                "{key} is keyed by a row the posture does not name"
+            );
+        }
     }
 
     /// The release-time posture is not a name on a list here: it is a lookup into the table that

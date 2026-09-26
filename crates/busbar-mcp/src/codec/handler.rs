@@ -24,7 +24,7 @@
 //! exactly as `{"messages": [...]}` is OpenAI's and `{"contents": [...]}` is Gemini's, and it is the
 //! codec's whole job. It is NOT a reason for the engine to know MCP exists.
 //!
-//! **The envelope is read by `busbar_substrate_values::ingress::jsonrpc`, not re-implemented here.** That module
+//! **The envelope is read by `busbar_kernel::ingress::jsonrpc`, not re-implemented here.** That module
 //! exists because the envelope had previously been parsed in two places that disagreed — the A2A
 //! reader checked no `jsonrpc` member at all, and a malformed envelope was relayed to a backend
 //! agent. One reader, two protocols.
@@ -43,8 +43,8 @@
 //! vocabulary is in `lib.rs` so that the channel, when it is mounted, frames the same bytes these
 //! cells already read — not so that the surface can be claimed before it exists.
 
+use busbar_contract::codec::{Cell, OperationHandler, RequestHandler};
 use busbar_contract::operation::OpVerb;
-use busbar_substrate_values::handlers::{Cell, OperationHandler, RequestHandler};
 
 use super::invoke::InvokeOperation;
 use super::subscribe::SubscribeOperation;
@@ -88,10 +88,10 @@ impl RequestHandler for McpRequestHandler {
     }
 
     fn operation_handler(&self, op: OpVerb) -> Option<&dyn OperationHandler> {
-        busbar_substrate_values::handlers::cell_of(CELLS, op)
+        busbar_contract::codec::cell_of(CELLS, op)
     }
 
-    fn upstream_path(&self, _ctx: &busbar_substrate_values::wire::EgressCtx) -> String {
+    fn upstream_path(&self, _ctx: &busbar_contract::codec::EgressCtx) -> String {
         PATH_MCP.into()
     }
 

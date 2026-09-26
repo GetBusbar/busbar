@@ -143,6 +143,7 @@ pub const PLANE_DECLARATION: busbar_contract::plane::PlaneDeclaration =
         // `decisions.fees` figure would charge nothing — refused at boot.
         fee_units: &[],
         metric_families: &[],
+        record_kinds: &[],
         served_op_classes: &[],
     };
 

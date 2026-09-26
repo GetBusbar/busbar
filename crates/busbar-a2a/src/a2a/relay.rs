@@ -92,7 +92,7 @@ use std::net::IpAddr;
 use super::creds::{Lease, LeaseError};
 use super::fetch::{FetchPolicy, FetchRefusal, HttpResponse, Resolver};
 use super::task::TaskState;
-use busbar_kernel::net_guard::PinnedTarget;
+use busbar_kernel::{breaker::normalize_raw_error, net_guard::PinnedTarget};
 
 /// The HTTP round trip the relay makes, as a seam.
 ///
@@ -140,12 +140,14 @@ pub(crate) trait RelayTransport: Send + Sync {
 /// leave busbar holding a blocking thread against an upstream that is happy to keep talking.
 pub(crate) use busbar_kernel::egress::ChunkFlow;
 
-pub(crate) use busbar_kernel::egress::StreamHead;
 /// The head of a streaming reply: what the backend answered before any body arrived — the neutral
 /// host-owned [`busbar_kernel::egress::StreamHead`], re-exported under this plane's historical name so the
 /// relay call sites read unchanged. It lives in [`busbar_kernel::egress`] because the streaming round trip
 /// is the same one whatever framing sits on top of it.
-pub(crate) use busbar_kernel::proxy::sse::{sse_data, SseReader};
+pub(crate) use busbar_kernel::egress::StreamHead;
+
+/// The plane's own SSE frame reader ([`crate::sse`]), named here where the streaming legs read it.
+pub(crate) use crate::sse::{sse_data, SseReader};
 
 /// THE RELAY'S SEAMS, HELD TOGETHER, for the reason [`super::transport::LiveCardFetch`] gives for
 /// holding its own two: a caller that picked up a resolver and a transport from different places
@@ -281,14 +283,14 @@ pub(crate) struct RelayCall<'a> {
     /// the pooled WALK admit (pre-admitted upstream, its id in [`admission`](Self::admission)) and the
     /// un-pooled [`prepare`] admit (through [`host`](Self::host)) register their settle-capable
     /// probe hold into — so [`record_hop_outcome`] settles through it by a host
-    /// [`AdmissionId`](busbar_plugin::hot::AdmissionId) in the same scope (the CLUSTER-1 inversion).
+    /// [`AdmissionId`](busbar_contract::abi::hot::AdmissionId) in the same scope (the CLUSTER-1 inversion).
     /// `None` only where no scoped seam is wired.
     pub(crate) host_scope: Option<&'a busbar_kernel::plane_host::DispatchScope>,
     /// THE HOST ADMISSION ID FOR A PRE-ADMITTED (pooled WALK) HOP — the id the walk's probe hold was
     /// registered under in [`host_scope`](Self::host_scope) before this call was built.
-    /// [`AdmissionId::NONE`](busbar_plugin::hot::AdmissionId::NONE) for an un-pooled hop (whose id
+    /// [`AdmissionId::NONE`](busbar_contract::abi::hot::AdmissionId::NONE) for an un-pooled hop (whose id
     /// [`prepare`] mints directly through the host `breaker_admit` seam) and in the originate direction.
-    pub(crate) admission: busbar_plugin::hot::AdmissionId,
+    pub(crate) admission: busbar_contract::abi::hot::AdmissionId,
     /// WHERE THIS HOP COUNTS THE PAYLOAD BYTES IT MOVED — the tally the ingress bills the hop's
     /// `bytes` class from (see [`HopBytes`]). `None` counts nothing: busbar's own housekeeping hops
     /// (`super::originate`) have no caller whose budget they could bill.
@@ -565,7 +567,7 @@ pub(crate) const SSE_CONTENT_TYPE: &str = "text/event-stream";
 //   * how the payload is WRAPPED — a JSON-RPC envelope, a bare document, or a length-prefixed
 //     protobuf frame.
 //
-// That is FRAMING, and it is exactly the split `busbar_substrate_values::transport`'s header states: `framing =
+// That is FRAMING, and it is exactly the split `busbar_contract::transport::transport`'s header states: `framing =
 // transport.frame(codec)`, with the codec never learning which channel spoke. So [`relay`] and
 // [`relay_stream`] below are ONE implementation — one guard, one live trust gate, one lease, one
 // correlation, one identity substitution — and the only thing that varies across the three legs is
@@ -643,8 +645,8 @@ pub(crate) trait OutboundFraming: Send + Sync {
     fn word(&self) -> &'static str;
 
     /// The axis label for this leg, for telemetry. A STATEMENT OF FACT at a known arrival, which is
-    /// what `busbar_substrate_values::transport`'s own note says naming a variant is for; nothing compares it.
-    fn leg(&self) -> busbar_substrate_values::transport::Transport;
+    /// what `busbar_contract::transport::transport`'s own note says naming a variant is for; nothing compares it.
+    fn leg(&self) -> busbar_contract::transport::transport::Transport;
 
     /// Compose the wire request. `base` is the operator's guarded, pinned endpoint.
     fn compose(
@@ -740,8 +742,8 @@ impl OutboundFraming for JsonRpcFraming {
         BINDING_JSONRPC
     }
 
-    fn leg(&self) -> busbar_substrate_values::transport::Transport {
-        busbar_substrate_values::transport::Transport::JsonRpc
+    fn leg(&self) -> busbar_contract::transport::transport::Transport {
+        busbar_contract::transport::transport::Transport::JsonRpc
     }
 
     fn compose(
@@ -940,8 +942,8 @@ impl OutboundFraming for HttpJsonFraming {
         BINDING_HTTP_JSON
     }
 
-    fn leg(&self) -> busbar_substrate_values::transport::Transport {
-        busbar_substrate_values::transport::Transport::HttpJson
+    fn leg(&self) -> busbar_contract::transport::transport::Transport {
+        busbar_contract::transport::transport::Transport::HttpJson
     }
 
     fn compose(
@@ -1182,8 +1184,8 @@ impl OutboundFraming for GrpcFraming {
         BINDING_GRPC
     }
 
-    fn leg(&self) -> busbar_substrate_values::transport::Transport {
-        busbar_substrate_values::transport::Transport::Grpc
+    fn leg(&self) -> busbar_contract::transport::transport::Transport {
+        busbar_contract::transport::transport::Transport::Grpc
     }
 
     /// The rpc's own path under the service `a2a.proto` declares, and one length-prefixed message.
@@ -1462,7 +1464,7 @@ fn outbound_of(body: &[u8]) -> (String, serde_json::Value) {
 /// (see docs/circuit-breaker.md's two-stage pipeline), Stage 2 being the one core `breaker::classify`
 /// inside `PlaneBreakers::record_signal`. `refusal: None` is a hop that produced an answer.
 ///
-/// The `settle` [`AdmissionId`](busbar_plugin::hot::AdmissionId) is the shared-scope handle this hop's
+/// The `settle` [`AdmissionId`](busbar_contract::abi::hot::AdmissionId) is the shared-scope handle this hop's
 /// outcome is FOLDED THROUGH (CLUSTER-1 breaker inversion): when a [`host_scope`](RelayCall::host_scope)
 /// owns this hop's probe, the classified outcome is settled through it over `settle` — the same arena
 /// the walk-admit registered into. Without a shared scope (originate / unit tests that admit directly)
@@ -1483,7 +1485,7 @@ fn outbound_of(body: &[u8]) -> (String, serde_json::Value) {
 ///   shared scope this means the probe is left UNSETTLED so the scope's drop releases it.
 fn record_hop_outcome(
     call: &RelayCall<'_>,
-    settle: busbar_plugin::hot::AdmissionId,
+    settle: busbar_contract::abi::hot::AdmissionId,
     refusal: Option<&RelayRefusal>,
 ) {
     let Some(target) = call.breakers.as_ref() else {
@@ -1536,7 +1538,7 @@ enum HopOutcome {
     /// well-formed backend A2A error — the WORK failing, not the wire).
     Success,
     /// A wire/answer failure to fold, carried as the plane's own canonical signal.
-    Failure(busbar_substrate_values::breaker::CanonicalSignal),
+    Failure(busbar_contract::upstream::CanonicalSignal),
     /// A busbar-side refusal that is not an upstream health signal — record nothing.
     Nothing,
 }
@@ -1548,24 +1550,22 @@ fn classify_hop(refusal: Option<&RelayRefusal>) -> HopOutcome {
     match refusal {
         None | Some(RelayRefusal::BackendError { .. }) => HopOutcome::Success,
         Some(RelayRefusal::Transport { .. }) => {
-            HopOutcome::Failure(busbar_substrate_values::breaker::CanonicalSignal {
-                class: busbar_substrate_values::breaker::StatusClass::Network,
+            HopOutcome::Failure(busbar_contract::upstream::CanonicalSignal {
+                class: busbar_contract::upstream::StatusClass::Network,
                 provider_signal: None,
                 retry_after: None,
             })
         }
-        Some(RelayRefusal::Status { status, .. }) => {
-            HopOutcome::Failure(busbar_substrate_values::breaker::normalize_raw_error(
-                &busbar_substrate_values::breaker::RawUpstreamError::from_status(*status),
-                &std::collections::HashMap::new(),
-            ))
-        }
+        Some(RelayRefusal::Status { status, .. }) => HopOutcome::Failure(normalize_raw_error(
+            &busbar_contract::upstream::RawUpstreamError::from_status(*status),
+            &std::collections::HashMap::new(),
+        )),
         Some(
             RelayRefusal::BodyTooLarge { .. }
             | RelayRefusal::NotJson { .. }
             | RelayRefusal::Uncorrelated { .. },
-        ) => HopOutcome::Failure(busbar_substrate_values::breaker::CanonicalSignal {
-            class: busbar_substrate_values::breaker::StatusClass::ServerError,
+        ) => HopOutcome::Failure(busbar_contract::upstream::CanonicalSignal {
+            class: busbar_contract::upstream::StatusClass::ServerError,
             provider_signal: None,
             retry_after: None,
         }),
@@ -1589,7 +1589,7 @@ fn prepare<'a>(
     seam: &dyn RelaySeam,
     is_stream: bool,
     now_ms: u64,
-    admit_id: &mut busbar_plugin::hot::AdmissionId,
+    admit_id: &mut busbar_contract::abi::hot::AdmissionId,
 ) -> Result<(url::Url, PinnedTarget, OutboundRelayRequest), RelayRefusal> {
     // ── THE GUARD. One resolution, every answered address judged, one pinned address out. It is
     //    `busbar_kernel::net_guard`'s, reached through the card fetch's hop door, so a relayed submission
@@ -1661,7 +1661,7 @@ fn prepare<'a>(
             method: method.clone(),
             reason,
         })?;
-    // THE LEG, NAMED. A statement of fact at a known point, which is what `busbar_substrate_values::transport`'s own
+    // THE LEG, NAMED. A statement of fact at a known point, which is what `busbar_contract::transport::transport`'s own
     // note says naming a variant is for; nothing on this path compares it.
     tracing::debug!(
         agent = call.agent_id,
@@ -1746,7 +1746,7 @@ fn relay_once(
     call: &RelayCall<'_>,
     seam: &dyn RelaySeam,
     now_ms: u64,
-    admit_id: &mut busbar_plugin::hot::AdmissionId,
+    admit_id: &mut busbar_contract::abi::hot::AdmissionId,
 ) -> Result<RelayReply, RelayRefusal> {
     let (url, pin, request) = prepare(call, seam, false, now_ms, admit_id)?;
 
@@ -2211,7 +2211,7 @@ fn relay_stream_once(
     matched_skill: Option<&str>,
     now_ms: u64,
     sink: &mut (dyn FnMut(RelayEvent) -> ChunkFlow + Send),
-    admit_id: &mut busbar_plugin::hot::AdmissionId,
+    admit_id: &mut busbar_contract::abi::hot::AdmissionId,
 ) -> Result<RelayStream, RelayRefusal> {
     let (url, pin, request) = prepare(call, seam, true, now_ms, admit_id)?;
     let cap = call.policy.max_body_bytes;

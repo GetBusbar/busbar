@@ -595,7 +595,7 @@ pub(crate) struct Runner {
     pub(crate) durable: busbar_kernel::plane_host::DurableScope,
     /// The durable admission's id — what the detached leg settles by. `AdmissionId::NONE` when no
     /// settling admission was handed off (a degenerate route that won nothing to re-home).
-    pub(crate) admission: busbar_plugin::hot::AdmissionId,
+    pub(crate) admission: busbar_contract::abi::hot::AdmissionId,
     /// THE NEUTRAL HOST SEAM for the runner's clock reads and its in-place breaker-record fallback.
     /// Cloned from the request's `ctx.host`: its clock is engine-snapshot independent and its
     /// `plane_breakers` is the process-shared instance, so a single mint is byte-identical to
@@ -747,7 +747,7 @@ async fn settle_or_cancel_on_shutdown<F>(
 /// records nothing in place.
 fn settle_task_leg(
     durable: &busbar_kernel::plane_host::DurableScope,
-    admission: busbar_plugin::hot::AdmissionId,
+    admission: busbar_contract::abi::hot::AdmissionId,
     engine: &Arc<dyn busbar_kernel::plane_host::EngineHost>,
     cell: &super::upstream::BreakerCell,
     outcome: &super::upstream::LegOutcome,

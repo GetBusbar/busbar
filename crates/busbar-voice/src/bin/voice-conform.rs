@@ -1106,7 +1106,7 @@ async fn gov_d2() -> (&'static str, String) {
 async fn gov_v1() -> (&'static str, String) {
     let (core, _drx, _host) = core_with_downlink(None);
     let payload = vec![0u8; 96]; // 2 ms of pcm16
-    let b64 = busbar_substrate_values::media::base64_encode(&Bytes::from(payload));
+    let b64 = busbar_contract::media::base64_encode(&Bytes::from(payload));
     let _ = core
         .on_server_frame(wire_of(
             &serde_json::json!({ "type": "response.output_audio.delta", "delta": b64 }),
@@ -1900,25 +1900,25 @@ impl busbar_kernel::plane_host::BreakerHost for AlwaysAdmitBreakerHost {
         scope: &busbar_kernel::plane_host::DispatchScope,
         _pool: &[u8],
         _lane: u32,
-    ) -> Result<busbar_plugin::hot::AdmissionId, busbar_kernel::store::Unavailable> {
+    ) -> Result<busbar_contract::abi::hot::AdmissionId, busbar_kernel::store::Unavailable> {
         Ok(scope.register_admission(Box::new(())))
     }
     fn breaker_settle(
         &self,
         scope: &busbar_kernel::plane_host::DispatchScope,
-        admission: busbar_plugin::hot::AdmissionId,
-        signal: &busbar_plugin::hot::Signal,
-    ) -> busbar_plugin::hot::StatusClass {
+        admission: busbar_contract::abi::hot::AdmissionId,
+        signal: &busbar_contract::abi::hot::Signal,
+    ) -> busbar_contract::abi::hot::StatusClass {
         scope
             .settle_admission(admission, signal)
-            .unwrap_or(busbar_plugin::hot::StatusClass::Refused)
+            .unwrap_or(busbar_contract::abi::hot::StatusClass::Refused)
     }
     fn breaker_record_success(&self, _pool: &str, _lane: usize) {}
     fn breaker_record_signal(
         &self,
         _pool: &str,
         _lane: usize,
-        _sig: &busbar_substrate_values::breaker::CanonicalSignal,
+        _sig: &busbar_contract::upstream::CanonicalSignal,
     ) {
     }
     fn breaker_retry_after_secs(&self, _pool: &str, _lane: usize) -> u64 {
@@ -2269,7 +2269,7 @@ fn probe_exit_terminal() -> (&'static str, String) {
     let pcm = Bytes::from(vec![0u8; 48_000]); // one second of PCM16 uplink
     let _ = core.on_client_frame(wire_of(&serde_json::json!({
         "type": "input_audio_buffer.append",
-        "audio": busbar_substrate_values::media::base64_encode(&pcm),
+        "audio": busbar_contract::media::base64_encode(&pcm),
     })));
     core.settle_open_turn();
     if counts_ledgered(&fixture) != 1 {

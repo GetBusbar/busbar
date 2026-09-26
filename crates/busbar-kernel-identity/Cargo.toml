@@ -36,6 +36,10 @@ rustls = { workspace = true }
 # The OAuth token response's tolerant `expires_in` parse (`egress_auth::deserialize_expires_in`) is a
 # serde deserializer. A leaf already in this crate's closure through `busbar-contract`.
 serde = { workspace = true }
+# `report_unpresented` logs a credential a declared scheme could not present, in the line its
+# scheme's builder always logged (operator logs are frozen text); the diagnostic emit macros it
+# writes them through expand to `tracing`.
+tracing = { workspace = true }
 
 [features]
 # A production `CredentialDigest` (1.5.5's hex SHA-256) for callers who would rather take the

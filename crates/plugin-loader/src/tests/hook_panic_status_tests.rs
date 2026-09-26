@@ -74,7 +74,7 @@ fn panicking_plugin_returns_status_panic_with_a_body() {
 /// `Envelope<ExportResponse>` — `{ result, metrics[], diagnostics[] }` — so a sink can report the
 /// metrics it produced and the diagnostics it raised. This assertion did exactly its job: it failed
 /// the BUILD, not a test, on the day the window moved.
-const _: () = assert!(busbar_plugin::cold::export::EXPORT_ABI_VERSION == 3);
+const _: () = assert!(busbar_contract::abi::cold::export::EXPORT_ABI_VERSION == 3);
 
 /// The runtime half: the window `export` actually resolves to.
 ///

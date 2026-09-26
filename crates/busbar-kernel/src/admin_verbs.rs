@@ -32,7 +32,7 @@ use std::sync::Arc;
 use axum::body::Bytes;
 use axum::http::HeaderMap;
 use axum::response::Response;
-use busbar_plugin::cold::endpoint::RouteMethod;
+use busbar_contract::abi::cold::endpoint::RouteMethod;
 
 use crate::plane_host::EngineHost;
 

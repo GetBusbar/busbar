@@ -30,9 +30,9 @@
 
 use super::both_ways::{auth_fixture as fixture, both_doors, cdylib, statement};
 use super::*;
+use busbar_contract::abi::cold::auth::{AuthRequest, AuthResponse, BeginLoginRequest};
+use busbar_contract::abi::cold::observe::Envelope;
 use busbar_contract::auth::{AuthModule, AuthPlugin};
-use busbar_plugin::cold::auth::{AuthRequest, AuthResponse, BeginLoginRequest};
-use busbar_plugin::cold::observe::Envelope;
 
 /// The plugin's config: one accepted token and the identity it grants.
 const CFG: &str = r#"{"token": "sekret", "id": "alice", "roles": ["platform"]}"#;
@@ -88,8 +88,8 @@ fn wired(display: &str) -> Option<RawPlugin> {
             lib,
             CFG,
             display.to_string(),
-            busbar_plugin::cold::kind::AUTH,
-            busbar_plugin::cold::kind::AUTH,
+            busbar_contract::abi::cold::kind::AUTH,
+            busbar_contract::abi::cold::kind::AUTH,
             Some(staged),
         )
         .expect("wire up the auth fixture"),
@@ -281,7 +281,7 @@ fn a_linked_and_a_dropped_in_auth_module_register_byte_identical_rows() {
         "auth",
         "auth-fixture",
         "the-auth",
-        busbar_plugin::cold::AUTH_ABI_VERSION,
+        busbar_contract::abi::cold::AUTH_ABI_VERSION,
     );
     let Some([linked, dropped]) = both_doors(
         manifest,
@@ -316,7 +316,7 @@ fn a_linked_and_a_dropped_in_login_handle_answer_identically() {
         "auth",
         "auth-fixture",
         "the-auth",
-        busbar_plugin::cold::AUTH_ABI_VERSION,
+        busbar_contract::abi::cold::AUTH_ABI_VERSION,
     );
     let Some([linked, dropped]) = both_doors(
         manifest,

@@ -16,10 +16,10 @@
 //! nanodollars, settle and hard-close at a cap read once at the open) is deleted; the snapshot is
 //! under `~/Downloads/busbar-1.6.0-snapshots/P2-voice/`.
 
+use busbar_contract::billing::Usage;
 pub use busbar_kernel::plane_host::session_meter::{BudgetRefused, SessionAccount, TurnVerdict};
 use busbar_kernel::plane_host::EngineHost;
 use busbar_plane_streaming::session::{class_counts, TurnCounters};
-use busbar_substrate_values::billing::Usage;
 use std::sync::Arc;
 
 /// THE PRESENTING KEY a live session is metered for, before the session opens: the live host, the

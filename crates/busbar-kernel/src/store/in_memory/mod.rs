@@ -342,7 +342,7 @@ impl HealthState {
     /// the cell almost always exists (created once, on the pool's first request). Only a genuine
     /// first-touch miss takes the write lock.
     pub(crate) fn pool_cell(&self, pool: &str, lane: usize) -> Arc<PoolCell> {
-        let _t = busbar_timing::timeit!("store_cell_lookup");
+        let _t = crate::timeit!("store_cell_lookup");
         {
             let cells = read_recover(&self.pool_cells);
             if let Some(per_lane) = cells.get(&lane) {

@@ -9,13 +9,13 @@
 #[cfg(any(test, feature = "test-support"))]
 use bytes::Bytes;
 
-use busbar_substrate_values::handlers::{CodecError, IngressReject, OperationHandler};
-use busbar_substrate_values::ir::handle::IrHandle;
-use busbar_substrate_values::ir::invoke::{InvokeReq, InvokeResp};
-use busbar_substrate_values::ir::neutral_handles::{InvokeReqHandle, InvokeRespHandle};
-use busbar_substrate_values::ir::SourceScopedExtra;
+use busbar_contract::codec::{CodecError, IngressReject, OperationHandler};
+use busbar_contract::ir::handle::IrHandle;
+use busbar_contract::ir::invoke::{InvokeReq, InvokeResp};
+use busbar_contract::ir::neutral_handles::{InvokeReqHandle, InvokeRespHandle};
+use busbar_contract::ir::SourceScopedExtra;
 #[cfg(any(test, feature = "test-support"))]
-use busbar_substrate_values::wire::{SlabBytes, WireBody};
+use busbar_contract::{codec::WireBody, SlabBytes};
 
 #[cfg(any(test, feature = "test-support"))]
 use busbar_plane_mcp::codec::METHOD_TOOLS_CALL;

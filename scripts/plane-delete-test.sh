@@ -176,9 +176,11 @@ report_coverage() {
 # `strip_workspace_edges` exists to sever), and busbar-substrate-values (the pure-value half that
 # split off busbar-substrate BEFORE the deletion) is still its own crate today. A name here that stops
 # existing hits the same cargo refusal `run_check` already surfaces as a FAIL (cargo errors fast on an
-# unknown `-p` package spec) — loud, not a silent narrowing of what got checked.
-NEUTRAL_PKGS="busbar-kernel busbar-substrate-values busbar-api"
-neutral_pkg_args() {   # echo "-p busbar-kernel -p busbar-substrate-values -p busbar-api"
+# unknown `-p` package spec) — loud, not a silent narrowing of what got checked. busbar-api retired
+# into busbar-contract (fold F4), so the third neutral crate is the contract, the same triple ci.yml's
+# deletion-test matrix builds.
+NEUTRAL_PKGS="busbar-kernel busbar-substrate-values busbar-contract"
+neutral_pkg_args() {   # echo "-p busbar-kernel -p busbar-substrate-values -p busbar-contract"
   local n out=""
   for n in $NEUTRAL_PKGS; do out="${out:+$out }-p $n"; done
   printf '%s' "$out"
@@ -280,16 +282,16 @@ drop_member() {
 }
 
 # neutralise_bin — (c): drop the dep line; strip the `dep:busbar-<P>` token from its feature; strip any
-# `busbar-<P>/…` feature reference wherever it appears (e.g. openapi-schema, root-llm) — those become
+# `busbar-<P>/…` feature reference wherever it appears (e.g. openapi-schema) — those become
 # manifest-load ERRORS the moment the optional dep is gone, so they must go too; drop the plane feature
 # from `default` so a default bin build is coherent.
 #
 # BOTH SPELLINGS of that reference, and the second one is why this note exists. Cargo writes an
 # optional dependency's feature as `busbar-<P>?/<feature>` when the reference must not ENABLE the
-# dep, and as `busbar-<P>/<feature>` when it may — and the bin uses the second form for `root-llm`
-# (`busbar-llm/teller-waist`). A pattern that matched only the `?` form left that one behind, and the
-# scratch's manifest then failed to LOAD ("feature `root-llm` includes `busbar-llm/teller-waist`, but
-# `busbar-llm` is not a dependency"), which aborts before a single line is compiled — so all three
+# dep, and as `busbar-<P>/<feature>` when it may — and the bin once used the second form for its
+# node switch (`busbar-llm/teller-waist`). A pattern that matched only the `?` form left that one
+# behind, and the scratch's manifest then failed to LOAD ("feature … includes `busbar-llm/teller-waist`,
+# but `busbar-llm` is not a dependency"), which aborts before a single line is compiled — so all three
 # legs reported the llm plane as still coupled when what they had measured was the removal's own
 # manifest hygiene.
 #
@@ -359,7 +361,7 @@ neutralise_bin() {
     }
     { line = $0 }
     line ~ deppat { next }                      # (c1) delete the optional dependency line entirely
-    { gsub(optpat, "", line) }                  # (c2) strip busbar-<P>[?]/… refs (openapi-schema, root-llm, …)
+    { gsub(optpat, "", line) }                  # (c2) strip busbar-<P>[?]/… refs (openapi-schema, …)
     line ~ featpat { gsub(deptok, "", line) }   # (c3) strip dep:busbar-<P> from its own feature
     # (c4) drop the removed plane feature AND every feature forwarding to it from `default`
     line ~ /^default[[:space:]]*=[[:space:]]*\[/ {
@@ -624,7 +626,7 @@ plane_probe_body() {
 # the SUBJECT boot must not carry. Space-separated; empty for a plane the fixture does not configure.
 # This is the same fail-closed pairing the product enforces at resolve: the section exists only while
 # the plane that owns it is compiled in.
-plane_config_sections() { case "$1" in mcp) echo "mcp" ;; a2a) echo "agents" ;; *) echo "" ;; esac; }
+plane_config_sections() { case "$1" in mcp) echo "mcp" ;; a2a) echo "agents" ;; voice) echo "streams" ;; *) echo "" ;; esac; }
 # section_omitted <section> <omit-list> → 0 when <section> is in the space-separated <omit-list>.
 section_omitted() { case " ${2:-} " in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
 
@@ -679,6 +681,11 @@ write_boot_config() {
     open)
       section_omitted agents "$omit" || \
         printf 'agents:\n  probe:\n    url: https://remote-agent.example.com/a2a\n    pin:\n      mechanism: unpinned\n' >>"$f"
+      # THE STREAMING PLANE'S OWN SECTION. Under Law 7 a plane with no config section mounts
+      # nothing, so without `streams:` the control boot never mounted the realtime routes and the
+      # voice probe read 404 with the plane compiled in: a positive control that could not pass.
+      section_omitted streams "$omit" || \
+        printf 'streams:\n  context_window_tokens: 16384\n' >>"$f"
       ;;
   esac
 }

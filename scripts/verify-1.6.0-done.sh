@@ -660,7 +660,8 @@ assert_parity_verdict() {  # $1 = report dir
 # every `plane-<x>` in `default` and the `root-<x>` of each dropped plane; keep the rest. A restated
 # list goes stale the day a plane joins `default`, and a new plane left out of the rule would ride
 # into the "LLM-only" leg unseen — so the derivation refuses if what is left names any `plane-*`, or
-# lacks `proto-llm` or `root-llm` (TODO item 156: without `root-llm` rate-history answers 400).
+# lacks `proto-llm` (TODO item 156: without the root's node rate-history answers 400, and the node is
+# compiled with `proto-llm` itself — the plane rides the `node` axis; there is no separate switch).
 PARITY_LEGS="default llm-only"
 PARITY_MANIFEST=crates/busbar/Cargo.toml
 
@@ -695,7 +696,6 @@ parity_llm_only_features() {  # $1 = manifest ; prints the comma-joined LLM-only
   done
   case ",$keep," in *,plane-*) echo "the derived LLM-only set still names a plane feature: $keep" >&2; return 1 ;; esac
   case ",$keep," in *,proto-llm,*) ;; *) echo "the derived LLM-only set lacks proto-llm — it would not be an LLM build: $keep" >&2; return 1 ;; esac
-  case ",$keep," in *,root-llm,*) ;; *) echo "the derived LLM-only set lacks root-llm (TODO item 156) — refusing: $keep" >&2; return 1 ;; esac
   printf '%s\n' "$keep"
 }
 
@@ -965,12 +965,12 @@ if [ "$SELFTEST" -eq 1 ]; then
     case ",$f," in *,plane-*) return 1 ;; esac
     parity_leg_args llm-only "$PARITY_MANIFEST" | grep -qx -- '--no-default-features'; }
   st_expect accept "the llm-only leg derives from THIS manifest: --no-default-features, no plane-*" st_llm_real
-  printf '[features]\ndefault = ["auth-admin-tokens", "proto-llm", "plane-mcp", "plane-voice", "root-admin", "root-voice", "root-llm"]\n' > "$st_tmp/Cargo-legs.toml"
-  printf '[features]\ndefault = ["auth-admin-tokens", "proto-llm", "plane-mcp", "root-admin"]\n' > "$st_tmp/Cargo-noroot.toml"
+  printf '[features]\ndefault = ["auth-admin-tokens", "proto-llm", "plane-mcp", "plane-voice", "root-admin", "root-voice"]\n' > "$st_tmp/Cargo-legs.toml"
+  printf '[features]\ndefault = ["auth-admin-tokens", "plane-mcp", "root-admin"]\n' > "$st_tmp/Cargo-noroot.toml"
   printf '[features]\nfoo = []\n' > "$st_tmp/Cargo-nodefault.toml"
-  st_llm_fixture() { [ "$(parity_llm_only_features "$st_tmp/Cargo-legs.toml")" = "auth-admin-tokens,proto-llm,root-admin,root-llm" ]; }
+  st_llm_fixture() { [ "$(parity_llm_only_features "$st_tmp/Cargo-legs.toml")" = "auth-admin-tokens,proto-llm,root-admin" ]; }
   st_expect accept "a fixture manifest's LLM-only set drops every plane-<x> and its root-<x>, keeps the rest" st_llm_fixture
-  st_expect refuse "an LLM-only set without root-llm (item 156: rate-history answers 400)" parity_llm_only_features "$st_tmp/Cargo-noroot.toml"
+  st_expect refuse "an LLM-only set without proto-llm (item 156: no node, rate-history answers 400)" parity_llm_only_features "$st_tmp/Cargo-noroot.toml"
   st_expect refuse "a manifest with no default list (no leg can be derived)"               parity_llm_only_features "$st_tmp/Cargo-nodefault.toml"
   st_expect refuse "an unknown leg name"                                                  parity_leg_args all-planes "$PARITY_MANIFEST"
   st_expect accept "two legs that are two different binaries"                             assert_legs_distinct "$st_sha" "$st_other"
@@ -1326,14 +1326,15 @@ sys.exit(1 if m else 0)
 '
 # THE ROOT COLUMN. Every plane also runs through the composition root, so the ledger carries a second
 # verdict per cell over its plane's `root-*` leg. Two things are asserted here and neither is the
-# other: that the column HOLDS (the cargo gate, run with every leg's feature on — the two `root-*`
-# features and the `plane-mcp` / `plane-a2a` / `plane-voice` features that link the three planes the
-# kernel-loop rider serves), and that every cell it calls `proven`
+# other: that the column HOLDS (the cargo gate, run with every leg's feature on — `root-admin`,
+# `proto-llm` (the root's node, compiled with the plane that rides the `node` axis) and the
+# `plane-mcp` / `plane-a2a` / `plane-voice` features that link the three planes the kernel-loop rider
+# serves), and that every cell it calls `proven`
 # actually RUNS and passes (the summary's own runner, which refuses a run that executed a different
 # set). The remaining "none" cells are the switch-over queue and are PRINTED, not fatal — the same
 # honest-ledger posture the missing set has.
 step "capability_equality gate, five legs on" \
-  cargo test -p busbar --features root-admin,plane-mcp,plane-a2a,plane-voice,root-llm --quiet --test capability_equality
+  cargo test -p busbar --features root-admin,plane-mcp,plane-a2a,plane-voice,proto-llm --quiet --test capability_equality
 step "every root-leg proof cell RUNS and passes" python3 scripts/capability-equality-summary.py --root-legs
 printf '  \033[36m[info]\033[0m '
 python3 scripts/capability-equality-summary.py 2>/dev/null | grep -E "^ROOT-EQUALITY:" || echo "root-equality count unavailable"

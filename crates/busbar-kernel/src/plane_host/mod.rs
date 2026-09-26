@@ -4,7 +4,7 @@
 //! `plane_host` — the HOST side of the plane ABI: the construction point + lifecycle arena the
 //! capability fan-out fills in.
 //!
-//! The HOT-lane ABI ([`busbar_plugin::hot`]) defines the `#[repr(C)] PlaneHostVtable` — the inbound
+//! The HOT-lane ABI ([`busbar_contract::abi::hot`]) defines the `#[repr(C)] PlaneHostVtable` — the inbound
 //! seam a plane calls BACK into core (`govern_admit`, `meter_charge`, `egress_open`, `clock_now`, …).
 //! This module is core's HOST-SIDE implementation of that seam: it builds the vtable, recovers core's
 //! own state from the opaque [`HostCtx`] the ABI threads through every call, and owns the per-dispatch
@@ -55,7 +55,7 @@ pub use scope::{DispatchScope, DurableScope, SessionScope};
 pub use vtable::build_plane_host_vtable;
 
 use crate::state::App;
-use busbar_plugin::hot::host::{HostCtx, HostGeneration, PlaneHostVtable};
+use busbar_contract::abi::hot::host::{HostCtx, HostGeneration, PlaneHostVtable};
 use std::sync::Arc;
 
 /// Core's own state behind the opaque [`HostCtx`] the plane ABI threads through every host call. A
@@ -85,11 +85,12 @@ pub struct HostState<'a> {
     /// slots that REQUIRE an attributable emitter refuse a `None`. Use
     /// [`with_borrowed_host_as`] to mint a handle that carries one.
     pub emitter: Option<&'static str>,
-    /// WHOSE request a plane's dispatch runs for (DEC-SERVE G1, DECISIONS #65/#40): the caller the
-    /// auth middleware resolved, stamped by the minter from that context — never a word the plane
-    /// wrote. `Some` on every PLANE mint ([`with_plane_door`], [`with_borrowed_host_as`]), and then
-    /// `meter_charge` bills THIS caller and ignores any key id in the plane's `Usage` tail; `None`
-    /// only on the host's own mints, where the kernel composed the `Usage` itself.
+    /// WHOSE request this dispatch runs for (DEC-SERVE G1/G1b, DECISIONS #65/#40): the caller the auth
+    /// middleware resolved, stamped by the minter from that context — never a word the plane wrote.
+    /// THE ONE ATTRIBUTION RULE: `govern_admit`/`govern_admit_reason` admit, and `meter_charge`
+    /// bills, THIS caller; the identity words of a `Facts`/`Usage` tail are never read. `None` (an
+    /// open route, or a mint with no request behind it) admits and bills the named synthetic keys
+    /// (`govern::SYNTH_TENANT_KEY`, `govern::SYNTH_ADMISSION_KEY`).
     caller: Option<HostCaller>,
     /// The operator's destinations for the plane this handle was minted for (DEC-SERVE G3): the only
     /// source of the privilege scope the `egress_open` slot judges a hop against. `None` ⇒ scope `0`.
@@ -99,14 +100,18 @@ pub struct HostState<'a> {
 /// The middleware-resolved caller behind a plane mint (DEC-SERVE G1): an OPAQUE, kernel-only handle.
 /// It has no public constructor — the only way one comes to exist is [`with_plane_door`] lifting it
 /// off the auth context the middleware attached — so neither a plane nor a crate outside the kernel
-/// can hand the host a caller of its choosing (#65). `None` inside: an unauthenticated route, which
-/// bills the synthetic admission-derived attribution, never the plane's tail.
-pub(crate) struct HostCaller(Option<Arc<busbar_contract::records::VirtualKey>>);
+/// can hand the host a caller of its choosing (#65).
+pub(crate) struct HostCaller(Arc<busbar_contract::records::VirtualKey>);
 
 impl HostCaller {
-    /// The resolved key this dispatch is billed to, if the request carried one.
-    pub(crate) fn key(&self) -> Option<&busbar_contract::records::VirtualKey> {
-        self.0.as_deref()
+    /// Lift the caller off the middleware-resolved request context (`None`: no key resolved).
+    fn of(ctx: Option<&busbar_contract::records::PlaneRequestCtx>) -> Option<Self> {
+        ctx.and_then(|g| g.key.clone()).map(HostCaller)
+    }
+
+    /// The resolved key this dispatch is admitted and billed as.
+    pub(crate) fn key(&self) -> &busbar_contract::records::VirtualKey {
+        &self.0
     }
 }
 
@@ -195,16 +200,15 @@ pub fn with_borrowed_host<R>(
 /// attribution unforgeable rather than merely present.
 ///
 /// The mint a plane dispatched over the C ABI rides: every host call the plane makes back during the
-/// dispatch is recovered, and attributed, as that plane's. It resolves no caller, so its metering
-/// bills the synthetic admission key, never the plane's tail — [`with_plane_door`] carries one.
+/// dispatch is recovered, and attributed, as that plane's. It carries no caller, so it admits and
+/// bills the named synthetic keys (see `HostState::caller`) — [`with_plane_door`] carries one.
 pub fn with_borrowed_host_as<R>(
     plane: &'static str,
     app: &App,
     scope: &DispatchScope,
     f: impl FnOnce(HostCtx, &PlaneHostVtable) -> R,
 ) -> R {
-    let caller = Some(HostCaller(None));
-    mint(Some(plane), caller, None, app, scope, f)
+    mint(Some(plane), None, None, app, scope, f)
 }
 
 /// THE HOT DOOR'S MINT (DEC-SERVE G1 + G3): [`with_borrowed_host_as`], plus the two facts only the
@@ -220,8 +224,14 @@ pub fn with_plane_door<R>(
     scope: &DispatchScope,
     f: impl FnOnce(HostCtx, &PlaneHostVtable) -> R,
 ) -> R {
-    let caller = HostCaller(caller.and_then(|g| g.key.clone()));
-    mint(Some(plane), Some(caller), Some(destinations), app, scope, f)
+    mint(
+        Some(plane),
+        HostCaller::of(caller),
+        Some(destinations),
+        app,
+        scope,
+        f,
+    )
 }
 
 /// THE ONE MINT: run `f` with a [`HostCtx`] over a [`HostState`] of `app` + `scope` (attributed to
@@ -278,43 +288,49 @@ pub fn card_sign_over(app: &App, signing_input: &[u8]) -> Option<[u8; 64]> {
             signing_input.len(),
             out.as_mut_ptr(),
         );
-        (status == busbar_plugin::hot::StatusClass::Ok).then_some(out)
+        (status == busbar_contract::abi::hot::StatusClass::Ok).then_some(out)
     })
 }
 
-// The refusal-fidelity admit outcome is a pure POD naming only `busbar_plugin::hot` + std, so it now
+// The refusal-fidelity admit outcome is a pure POD naming only `busbar_contract::abi::hot` + std, so it now
 // lives in the substrate beside the neutral `EngineHost` seam; core re-exports it so every in-core
 // caller (`govern_admit_reason_over`, a2a) is unchanged.
 
 /// Admit one unit of work over the host [`govern_admit_reason`](vtable) seam, REGISTERING the RAII
 /// grant in `scope`'s arena on success and returning the RENDERED refusal reason on a blocked limit —
-/// a SAFE wrapper that keeps the `#[repr(C)]` [`GovRefusal`](busbar_plugin::hot::GovRefusal) out-param
-/// read inside this audited module (busbar-core denies `unsafe` everywhere else). The `Facts` carry the
-/// caller's REAL `(identity_id, group)` and `tokens = budget_remaining = 0`, so the POD gate is a no-op
-/// and the reconstructed chain is the sole decider — identical to the in-place `try_admit`.
+/// a SAFE wrapper that keeps the `#[repr(C)]` [`GovRefusal`](busbar_contract::abi::hot::GovRefusal) out-param
+/// read inside this audited module (busbar-core denies `unsafe` everywhere else). The mint carries
+/// `caller` — the middleware-resolved request context (DEC-SERVE G1b) — and the host admits THAT key's
+/// chain; `tokens = budget_remaining = 0`, so the POD gate is a no-op and the chain is the sole
+/// decider — identical to the in-place `try_admit(cost, key, pool)`.
 #[must_use]
 pub fn govern_admit_reason_over(
     app: &App,
     scope: &DispatchScope,
+    caller: &busbar_contract::records::PlaneRequestCtx,
     pool: &[u8],
-    identity_id: &[u8],
-    group: Option<&[u8]>,
 ) -> GovAdmit {
     let mut reason_buf = [0u8; 512];
-    let mut out = core::mem::MaybeUninit::<busbar_plugin::hot::GovRefusal>::uninit();
-    let decision = with_borrowed_host(app, scope, |hctx, vt| {
-        let facts =
-            busbar_plugin::hot::Facts::with_attribution(0, 0, 0, 0, 0, pool, identity_id, group);
-        (vt.govern_admit_reason
-            .expect("govern_admit_reason is a wired slot"))(
-            hctx,
-            &*facts as *const busbar_plugin::hot::Facts,
-            reason_buf.as_mut_ptr(),
-            reason_buf.len(),
-            std::ptr::from_mut(&mut out),
-        )
-    });
-    if decision == busbar_plugin::hot::Decision::Admit {
+    let mut out = core::mem::MaybeUninit::<busbar_contract::abi::hot::GovRefusal>::uninit();
+    let decision = mint(
+        None,
+        HostCaller::of(Some(caller)),
+        None,
+        app,
+        scope,
+        |hctx, vt| {
+            let facts = busbar_contract::abi::hot::Facts::new(0, 0, 0, 0, 0, pool);
+            (vt.govern_admit_reason
+                .expect("govern_admit_reason is a wired slot"))(
+                hctx,
+                &*facts as *const busbar_contract::abi::hot::Facts,
+                reason_buf.as_mut_ptr(),
+                reason_buf.len(),
+                std::ptr::from_mut(&mut out),
+            )
+        },
+    );
+    if decision == busbar_contract::abi::hot::Decision::Admit {
         return GovAdmit::Admitted;
     }
     // SAFETY: the host ALWAYS initializes `out` up front (see `vtable::govern_admit_reason`), so it is
@@ -331,7 +347,7 @@ pub fn govern_admit_reason_over(
 /// configured auth chain + the ONE verdict resolution over the caller's OWN wire credential and the live
 /// governance state, and reconstruct the resolved `(AuthPrincipal, PlaneRequestCtx)` — or the specific
 /// [`IdentityRefusal`](crate::auth::IdentityRefusal) — from the host's answer. A SAFE wrapper that keeps
-/// the `#[repr(C)]` [`IdentityAdmitted`](busbar_plugin::hot::IdentityAdmitted) out-param read and the
+/// the `#[repr(C)]` [`IdentityAdmitted`](busbar_contract::abi::hot::IdentityAdmitted) out-param read and the
 /// opaque-handle recovery inside this audited module, so a plane admits an inbound session without ever
 /// naming `crate::auth`. Byte-identical to the in-process resolution: the resolved principal and gov
 /// context are the EXACT objects the host produced (recovered through the opaque handle), and a refusal
@@ -361,9 +377,9 @@ pub async fn identity_admit_over(
     tokio::task::spawn_blocking(move || {
         guard.with_host(|hctx, vt| {
             let token_bytes: &[u8] = token.as_deref().map(str::as_bytes).unwrap_or(&[]);
-            let query = busbar_plugin::hot::IdentityQuery {
-                size: core::mem::size_of::<busbar_plugin::hot::IdentityQuery>() as u32,
-                version: busbar_plugin::hot::POD_VERSION,
+            let query = busbar_contract::abi::hot::IdentityQuery {
+                size: core::mem::size_of::<busbar_contract::abi::hot::IdentityQuery>() as u32,
+                version: busbar_contract::abi::hot::POD_VERSION,
                 _reserved: 0,
                 token_present: u32::from(token.is_some()),
                 _reserved2: 0,
@@ -374,13 +390,14 @@ pub async fn identity_admit_over(
                 resource_ptr: resource.as_ptr(),
                 resource_len: resource.len(),
             };
-            let mut out = core::mem::MaybeUninit::<busbar_plugin::hot::IdentityAdmitted>::uninit();
+            let mut out =
+                core::mem::MaybeUninit::<busbar_contract::abi::hot::IdentityAdmitted>::uninit();
             let status = (vt.identity_admit.expect("identity_admit is a wired slot"))(
                 hctx,
-                &query as *const busbar_plugin::hot::IdentityQuery,
+                &query as *const busbar_contract::abi::hot::IdentityQuery,
                 std::ptr::from_mut(&mut out),
             );
-            if status != busbar_plugin::hot::StatusClass::Ok {
+            if status != busbar_contract::abi::hot::StatusClass::Ok {
                 // A null query is impossible here (we pass a live POD); a runtime that will not start /
                 // a caught panic fails closed to a refusal, never an admit.
                 return Err(crate::auth::IdentityRefusal::Denied);
@@ -388,16 +405,16 @@ pub async fn identity_admit_over(
             // SAFETY: the `Ok` status published the out-param (init-only-on-Ok).
             let admitted = unsafe { out.assume_init() };
             match admitted.outcome {
-                busbar_plugin::hot::IdentityOutcome::Admitted => {
+                busbar_contract::abi::hot::IdentityOutcome::Admitted => {
                     // Consume the opaque handle to recover the EXACT resolved (principal, gov). A handle
                     // that vanished (double-consume / eviction) fails closed to a refusal.
                     identity_admit::take(admitted.identity)
                         .ok_or(crate::auth::IdentityRefusal::Denied)
                 }
-                busbar_plugin::hot::IdentityOutcome::Denied => {
+                busbar_contract::abi::hot::IdentityOutcome::Denied => {
                     Err(crate::auth::IdentityRefusal::Denied)
                 }
-                busbar_plugin::hot::IdentityOutcome::NoGrant => {
+                busbar_contract::abi::hot::IdentityOutcome::NoGrant => {
                     Err(crate::auth::IdentityRefusal::NoGrant)
                 }
             }
@@ -549,16 +566,16 @@ impl busbar_kernel::plane_host::BreakerHost for EngineHostImpl {
         scope: &DispatchScope,
         pool: &[u8],
         lane: u32,
-    ) -> Result<busbar_plugin::hot::AdmissionId, busbar_kernel::store::Unavailable> {
+    ) -> Result<busbar_contract::abi::hot::AdmissionId, busbar_kernel::store::Unavailable> {
         breaker::breaker_admit_over(&self.app, scope, pool, lane)
     }
 
     fn breaker_settle(
         &self,
         scope: &DispatchScope,
-        admission: busbar_plugin::hot::AdmissionId,
-        signal: &busbar_plugin::hot::Signal,
-    ) -> busbar_plugin::hot::StatusClass {
+        admission: busbar_contract::abi::hot::AdmissionId,
+        signal: &busbar_contract::abi::hot::Signal,
+    ) -> busbar_contract::abi::hot::StatusClass {
         // SAME dispatch as the in-place `with_borrowed_host` settle the plane's sync leg drove: mint
         // the transient `HostCtx` over the caller's arena, fold the leg through the `breaker_settle`
         // slot, and return the class — the raw host pointer never escapes the call.
@@ -566,7 +583,7 @@ impl busbar_kernel::plane_host::BreakerHost for EngineHostImpl {
             (vt.breaker_settle.expect("breaker_settle is a wired slot"))(
                 host,
                 admission,
-                signal as *const busbar_plugin::hot::Signal,
+                signal as *const busbar_contract::abi::hot::Signal,
             )
         })
     }
@@ -875,14 +892,20 @@ impl busbar_kernel::plane_host::BudgetHost for EngineHostImpl {
         self.app.governance.is_some()
     }
 
-    fn meter_charge(&self, scope: &DispatchScope, usage: &busbar_plugin::hot::Usage) {
-        // SAME dispatch as the in-place `with_borrowed_host` meter the plane's round-charge drove: mint
-        // the transient `HostCtx` over the caller's arena, fire the `meter_charge` slot, and drop the
-        // host pointer without letting it escape. Fire-and-forget, exactly as the direct call was.
-        with_borrowed_host(&self.app, scope, |host, vt| {
+    fn meter_charge(
+        &self,
+        scope: &DispatchScope,
+        caller: &busbar_contract::records::PlaneRequestCtx,
+        usage: &busbar_contract::abi::hot::Usage,
+    ) {
+        // Mint the transient `HostCtx` over the caller's arena CARRYING the middleware-resolved
+        // `caller` (DEC-SERVE G1b — the host bills that key, never the `Usage` tail's), fire the
+        // `meter_charge` slot, and drop the host pointer without letting it escape. Fire-and-forget.
+        let caller = HostCaller::of(Some(caller));
+        mint(None, caller, None, &self.app, scope, |host, vt| {
             let _ = (vt.meter_charge.expect("meter_charge is a wired slot"))(
                 host,
-                usage as *const busbar_plugin::hot::Usage,
+                usage as *const busbar_contract::abi::hot::Usage,
             );
         });
     }
@@ -994,9 +1017,9 @@ impl busbar_kernel::plane_host::IdentityHost for EngineHostImpl {
         // nonce/expiry/now — it never names the `#[repr(C)]` POD or the `SpentTokenLedger`.
         let scope = DispatchScope::new();
         with_borrowed_host(&self.app, &scope, |host, _vt| {
-            let query = busbar_plugin::hot::ApprovalQuery {
-                size: core::mem::size_of::<busbar_plugin::hot::ApprovalQuery>() as u32,
-                version: busbar_plugin::hot::POD_VERSION,
+            let query = busbar_contract::abi::hot::ApprovalQuery {
+                size: core::mem::size_of::<busbar_contract::abi::hot::ApprovalQuery>() as u32,
+                version: busbar_contract::abi::hot::POD_VERSION,
                 _reserved: 0,
                 scope: 0,
                 _reserved2: 0,
@@ -1005,8 +1028,10 @@ impl busbar_kernel::plane_host::IdentityHost for EngineHostImpl {
                 key_ptr: nonce.as_ptr(),
                 key_len: nonce.len(),
             };
-            trust::approval_redeem_q(host, &query as *const busbar_plugin::hot::ApprovalQuery)
-                == busbar_plugin::hot::StatusClass::Ok
+            trust::approval_redeem_q(
+                host,
+                &query as *const busbar_contract::abi::hot::ApprovalQuery,
+            ) == busbar_contract::abi::hot::StatusClass::Ok
         })
     }
 
@@ -1129,11 +1154,10 @@ impl busbar_kernel::plane_host::AdmissionHost for EngineHostImpl {
     fn govern_admit_reason(
         &self,
         scope: &DispatchScope,
+        caller: &busbar_contract::records::PlaneRequestCtx,
         pool: &[u8],
-        identity_id: &[u8],
-        group: Option<&[u8]>,
     ) -> busbar_kernel::plane_host::GovAdmit {
-        govern_admit_reason_over(&self.app, scope, pool, identity_id, group)
+        govern_admit_reason_over(&self.app, scope, caller, pool)
     }
 
     fn destination_guard(
@@ -1334,7 +1358,7 @@ pub fn live_host_factory(
     })
 }
 
-// The request-admission gate verdict is a pure POD naming only `busbar_plugin::hot` + std, so it now
+// The request-admission gate verdict is a pure POD naming only `busbar_contract::abi::hot` + std, so it now
 // lives in the substrate beside the neutral `EngineHost` seam; core re-exports it so every in-core
 // caller (`gate_decide_over`, a2a) is unchanged.
 
@@ -1342,7 +1366,7 @@ pub fn live_host_factory(
 /// reconstruct the [`GateOutcome`] — so an MCP/A2A plane body admits a request through its
 /// `tools.hooks:` / `agents.hooks:` gates without ever naming `crate::hooks::gate::decide` or holding the
 /// resolved `ResolvedPolicy` set (the host owns and re-selects it by `(plane_key, container)`). A SAFE
-/// wrapper that keeps the `#[repr(C)]` [`GateVerdictOut`](busbar_plugin::hot::GateVerdictOut) out-param
+/// wrapper that keeps the `#[repr(C)]` [`GateVerdictOut`](busbar_contract::abi::hot::GateVerdictOut) out-param
 /// read + the two copy-out buffers inside this audited module (busbar-core denies `unsafe` elsewhere).
 ///
 /// Byte-identical to the in-process firing site: the host reconstructs the same `InvokeReq`-shaped facts
@@ -1378,14 +1402,14 @@ pub fn gate_decide_over(
     let plane_key_idx = crate::plane::registry::plane_key_index(plane_key);
     let mut msg_buf = [0u8; 512];
     let mut hook_buf = [0u8; 512];
-    let mut out = core::mem::MaybeUninit::<busbar_plugin::hot::GateVerdictOut>::uninit();
+    let mut out = core::mem::MaybeUninit::<busbar_contract::abi::hot::GateVerdictOut>::uninit();
     let (key_id, key_name) = key.unwrap_or(("", ""));
     let sid = session_id.unwrap_or("");
     let scope = DispatchScope::new();
     let status = with_borrowed_host(app, &scope, |hctx, vt| {
-        let subject = busbar_plugin::hot::GateSubjectRef {
-            size: core::mem::size_of::<busbar_plugin::hot::GateSubjectRef>() as u32,
-            version: busbar_plugin::hot::POD_VERSION,
+        let subject = busbar_contract::abi::hot::GateSubjectRef {
+            size: core::mem::size_of::<busbar_contract::abi::hot::GateSubjectRef>() as u32,
+            version: busbar_contract::abi::hot::POD_VERSION,
             plane_key: plane_key_idx,
             key_present: u8::from(key.is_some()),
             incremental: u8::from(session_id.is_some()),
@@ -1406,7 +1430,7 @@ pub fn gate_decide_over(
         };
         (vt.gate_decide.expect("gate_decide is a wired slot"))(
             hctx,
-            &subject as *const busbar_plugin::hot::GateSubjectRef,
+            &subject as *const busbar_contract::abi::hot::GateSubjectRef,
             msg_buf.as_mut_ptr(),
             msg_buf.len(),
             hook_buf.as_mut_ptr(),
@@ -1417,7 +1441,7 @@ pub fn gate_decide_over(
     // SAFETY: the host ALWAYS initializes `out` up front (see `dispatch::gate_decide`), so it is a live
     // `GateVerdictOut` on every return.
     let v = unsafe { out.assume_init() };
-    if status == busbar_plugin::hot::StatusClass::Ok && v.proceed != 0 {
+    if status == busbar_contract::abi::hot::StatusClass::Ok && v.proceed != 0 {
         return GateOutcome::Proceed;
     }
     // A REJECT (Ok + proceed=0) OR a fail-closed refusal (Refused/Fault leaves the eager 403 header):
@@ -1822,7 +1846,7 @@ pub struct DurableHostDispatch {
     durable: DurableScope,
     /// The durable admission's id — what the detached leg settles by. [`AdmissionId::NONE`] when no
     /// settling admission was handed off (a degenerate route that won nothing to re-home).
-    admission: busbar_plugin::hot::AdmissionId,
+    admission: busbar_contract::abi::hot::AdmissionId,
 }
 
 impl DurableHostDispatch {
@@ -1832,7 +1856,7 @@ impl DurableHostDispatch {
     pub fn new(
         app: Arc<App>,
         durable: DurableScope,
-        admission: busbar_plugin::hot::AdmissionId,
+        admission: busbar_contract::abi::hot::AdmissionId,
     ) -> Self {
         DurableHostDispatch {
             app,
@@ -1843,7 +1867,7 @@ impl DurableHostDispatch {
 
     /// The durable admission id the detached leg settles (or [`AdmissionId::NONE`]).
     #[must_use]
-    pub fn admission(&self) -> busbar_plugin::hot::AdmissionId {
+    pub fn admission(&self) -> busbar_contract::abi::hot::AdmissionId {
         self.admission
     }
 
@@ -1923,9 +1947,9 @@ pub use crate::plane_host::engine_view::{
 use crate::store::Unavailable;
 use crate::trust::validate::{Lapsed, Standing};
 use crate::trust::TrustState;
+use busbar_contract::abi::hot::{AdmissionId, Signal, StatusClass};
 use busbar_contract::auth::{AuthPrincipal, IdentityRefusal};
 use busbar_contract::records::{PlaneRequestCtx, VirtualKey};
-use busbar_plugin::hot::{AdmissionId, Signal, StatusClass};
 
 /// The outcome of a refusal-fidelity admit driven over the host `govern_admit_reason` seam.
 #[cfg_attr(not(any(feature = "dispatch", feature = "relay")), allow(dead_code))]
@@ -2913,12 +2937,17 @@ pub trait BudgetHost: Send + Sync {
     /// `busbar_kernel::state::App::governance.is_some()`.
     fn governance_enabled(&self) -> bool;
 
-    /// Record ONE metered, attributed event through the host `meter_charge` seam over `scope`'s arena.
-    /// `usage` carries the resolved `(key_id, model, provider)` attribution the host writes the cost row
-    /// from; the transient `HostCtx` is minted over `scope` and consumed SYNCHRONOUSLY inside the call.
-    /// Fire-and-forget: a store miss is not surfaced, exactly as the plane's in-place `record_metering`
-    /// was. Identical to driving the `meter_charge` vtable slot under a `with_borrowed_host` over `scope`.
-    fn meter_charge(&self, scope: &DispatchScope, usage: &busbar_plugin::hot::Usage);
+    /// Record ONE metered, attributed event through the host `meter_charge` seam over `scope`'s arena,
+    /// billed to `caller` — the request's middleware-resolved context, carried INTO the mint (DEC-SERVE
+    /// G1b); `usage` supplies the counts and the `(model, provider)` words, never the key. The
+    /// transient `HostCtx` is minted over `scope` and consumed SYNCHRONOUSLY inside the call.
+    /// Fire-and-forget: a store miss is not surfaced, exactly as the in-place `record_metering` was.
+    fn meter_charge(
+        &self,
+        scope: &DispatchScope,
+        caller: &PlaneRequestCtx,
+        usage: &busbar_contract::abi::hot::Usage,
+    );
 
     /// The per-caller RATE HEADROOM (min fraction of remaining request/token budget across the key's
     /// chain, `None` when unconstrained) — the host-driven form of
@@ -3130,15 +3159,15 @@ pub trait AdmissionHost: Send + Sync {
         session_id: Option<&str>,
     ) -> TransformVerdict;
 
-    /// Admit one unit of work over the host `govern_admit_reason` seam, REGISTERING the RAII grant in
-    /// `scope`'s arena on success and returning the RENDERED refusal reason on a blocked limit.
+    /// Admit one unit of work for `caller` (the request's middleware-resolved context, DEC-SERVE G1b)
+    /// over the host `govern_admit_reason` seam, REGISTERING the RAII grant in `scope`'s arena on
+    /// success and returning the RENDERED refusal reason on a blocked limit.
     /// Identical to `busbar_kernel::plane_host::govern_admit_reason_over`.
     fn govern_admit_reason(
         &self,
         scope: &DispatchScope,
+        caller: &PlaneRequestCtx,
         pool: &[u8],
-        identity_id: &[u8],
-        group: Option<&[u8]>,
     ) -> GovAdmit;
 
     /// STAGE 2 pre-admission DESTINATION guard through the host: the pool ACL, the fallback-pool ACL,

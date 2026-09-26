@@ -924,3 +924,40 @@ fn drain_frames_checked_scales_linearly_in_frame_count() {
         t4m.as_secs_f64() / t1m.as_secs_f64()
     );
 }
+
+/// THE SHARED EVENT-STREAM FIXTURE (#83a SD-3): the host encoder writes every frame in
+/// `testing/plane-copies/eventstream-frames.json` byte for byte. The LLM plane's copy of this codec
+/// is held to the same file, so the two copies cannot drift apart without one of the two suites
+/// failing.
+#[test]
+fn the_host_encoder_writes_the_shared_fixture_frames() {
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../testing/plane-copies/eventstream-frames.json"
+    );
+    let doc: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(path).expect("fixture readable"))
+            .expect("fixture is JSON");
+    let bytes = |v: &serde_json::Value| hex::decode(v.as_str().expect("hex")).expect("hex");
+    assert_eq!(doc["max_frame_bytes"], MAX_FRAME_BYTES as u64);
+    for f in doc["frames"].as_array().expect("frames") {
+        let event_type = f["event_type"].as_str().expect("event type");
+        assert_eq!(
+            encode_frame(event_type, &bytes(&f["payload_hex"])),
+            bytes(&f["frame_hex"]),
+            "{event_type:.40}"
+        );
+    }
+    for f in doc["exception_frames"]
+        .as_array()
+        .expect("exception frames")
+    {
+        assert_eq!(
+            encode_exception_frame(
+                f["exception_type"].as_str().expect("type"),
+                f["message"].as_str().expect("message")
+            ),
+            bytes(&f["frame_hex"])
+        );
+    }
+}

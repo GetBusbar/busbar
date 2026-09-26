@@ -125,7 +125,7 @@ pub fn build_egress_targets(
 > {
     use busbar_contract::operation::OpVerb;
     let mut out = std::collections::HashMap::new();
-    let Some(rh) = busbar_substrate_values::handlers::request_handler(protocol) else {
+    let Some(rh) = request_handler(protocol) else {
         return Ok(out);
     };
     // The seven cross-dialect chat/completion-family operations, kept as a local seed set (a neutral
@@ -153,7 +153,7 @@ pub fn build_egress_targets(
             }
             let path = match path_override {
                 Some(p) => p.to_string(),
-                None => rh.upstream_path(&busbar_substrate_values::wire::EgressCtx {
+                None => rh.upstream_path(&busbar_contract::codec::EgressCtx {
                     operation: op,
                     model: wire_model,
                     stream,
@@ -214,8 +214,8 @@ pub(crate) fn sign_and_wire_path_parts(url_path: &str) -> (String, String) {
         };
         return (wire, path.to_string());
     }
-    let wire_path = busbar_substrate_values::sigv4::uri_encode_path(path);
-    let canonical = busbar_substrate_values::sigv4::uri_encode_path(&wire_path); // double-encode (non-S3 SigV4 rule)
+    let wire_path = uri_encode_path(path);
+    let canonical = uri_encode_path(&wire_path); // double-encode (non-S3 SigV4 rule)
     let wire = match query {
         Some(q) => format!("{wire_path}?{q}"),
         None => wire_path,
@@ -377,13 +377,13 @@ pub(crate) trait OpEgressExt {
     fn upstream_path(&self, lane: &Lane, wants_stream: bool) -> Option<String>;
 }
 
-impl OpEgressExt for busbar_substrate_values::handlers::OpDispatch {
+impl OpEgressExt for OpDispatch {
     fn upstream_path(&self, lane: &Lane, wants_stream: bool) -> Option<String> {
         if let Some(p) = &lane.path {
             return Some(p.clone());
         }
-        busbar_substrate_values::handlers::request_handler(lane.protocol).map(|rh| {
-            rh.upstream_path(&busbar_substrate_values::wire::EgressCtx {
+        request_handler(lane.protocol).map(|rh| {
+            rh.upstream_path(&busbar_contract::codec::EgressCtx {
                 operation: self.operation,
                 model: lane.wire_model(),
                 stream: wants_stream,

@@ -135,7 +135,7 @@ pub(crate) struct MeterFacts {
     /// The usage the dialect's reader found. Same source and the same timing: a stream's terminal
     /// usage frame has not arrived when Route returns, so the snapshot is empty and the cell is what
     /// answers later.
-    pub(crate) usage: Option<busbar_substrate_values::billing::TokenUsage>,
+    pub(crate) usage: Option<busbar_contract::billing::TokenUsage>,
     /// Every OPEN class the response billed beside the token split (a rerank's search units), as
     /// the tap reported it — the same map the governance ledger accrued. Same source and timing as
     /// `usage`, and empty until the tap has reported.
@@ -180,9 +180,9 @@ impl MeterFacts {
 /// codec names its counted class, and none names a token tier), and if one ever did the TOKEN
 /// figure stands, so no token figure can move through this function.
 pub(crate) fn billed_classes(
-    usage: Option<&busbar_substrate_values::billing::TokenUsage>,
+    usage: Option<&busbar_contract::billing::TokenUsage>,
     open_units: &std::collections::BTreeMap<String, u64>,
-) -> busbar_substrate_values::billing::Usage {
+) -> busbar_contract::billing::Usage {
     let mut billed = usage
         .map(busbar_llm_codec::wire_shim::tier_usage)
         .unwrap_or_default();
@@ -203,7 +203,7 @@ pub struct MeterCtx<'a> {
     host: &'a Arc<dyn EngineHost>,
     sink: Option<&'a crate::engine::UsageSink>,
     lane: Option<&'a crate::engine::Lane>,
-    usage: Option<&'a busbar_substrate_values::billing::TokenUsage>,
+    usage: Option<&'a busbar_contract::billing::TokenUsage>,
     /// The open classes beside the token split; `None` where nothing reported any.
     open_units: Option<&'a std::collections::BTreeMap<String, u64>>,
     status: u16,
@@ -228,7 +228,7 @@ impl<'a> MeterCtx<'a> {
         host: &'a Arc<dyn EngineHost>,
         sink: Option<&'a crate::engine::UsageSink>,
         lane: Option<&'a crate::engine::Lane>,
-        usage: Option<&'a busbar_substrate_values::billing::TokenUsage>,
+        usage: Option<&'a busbar_contract::billing::TokenUsage>,
         status: u16,
         upstream_leg: bool,
     ) -> Self {
@@ -470,7 +470,7 @@ fn push_line(
 fn metering_row(
     sink: &crate::engine::UsageSink,
     lane: &crate::engine::Lane,
-    usage: Option<&busbar_substrate_values::billing::TokenUsage>,
+    usage: Option<&busbar_contract::billing::TokenUsage>,
 ) -> busbar_contract::records::MeteringRow {
     busbar_contract::records::MeteringRow {
         usage_units: Default::default(),

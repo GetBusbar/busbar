@@ -41,3 +41,59 @@ fn accepts_realistic_depth_and_counts_correctly() {
     let over = format!("{}{}", "[".repeat(129), "]".repeat(129));
     assert!(exceeds_max_depth(over.as_bytes(), MAX_JSON_DEPTH));
 }
+
+/// THE SHARED DEPTH-FLOOR FIXTURE (#83a O6): this seam holds the floor and answers every case in
+/// `testing/plane-copies/json-depth.json` as recorded. The LLM plane's own copy of the seam is held
+/// to the same file, so the two copies of the security floor cannot disagree without one of the two
+/// suites failing.
+#[test]
+fn the_host_seam_holds_the_shared_floor_and_every_shared_verdict() {
+    std::thread::Builder::new()
+        .stack_size(64 * 1024 * 1024)
+        .spawn(|| {
+            let path = concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../../testing/plane-copies/json-depth.json"
+            );
+            let doc: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(path).expect("fixture readable"))
+                    .expect("fixture is JSON");
+            assert_eq!(doc["max_json_depth"], MAX_JSON_DEPTH as u64);
+            for case in doc["cases"].as_array().expect("cases") {
+                let text = match case["raw"].as_str() {
+                    Some(raw) => raw.to_string(),
+                    None => {
+                        let n = case["depth"].as_u64().expect("depth") as usize;
+                        match case["shape"].as_str().expect("shape") {
+                            "arrays" => format!("{}{}", "[".repeat(n), "]".repeat(n)),
+                            "objects" => format!("{}1{}", r#"{"k":"#.repeat(n), "}".repeat(n)),
+                            _ => {
+                                let open: String = (0..n)
+                                    .map(|i| if i % 2 == 0 { "[" } else { r#"{"k":"# })
+                                    .collect();
+                                let close: String = (0..n)
+                                    .rev()
+                                    .map(|i| if i % 2 == 0 { "]" } else { "}" })
+                                    .collect();
+                                format!("{open}1{close}")
+                            }
+                        }
+                    }
+                };
+                let accepted = case["accepted"].as_bool().expect("verdict");
+                assert_eq!(
+                    parse::<serde_json::Value>(text.as_bytes()).is_ok(),
+                    accepted,
+                    "{case}"
+                );
+                assert_eq!(
+                    parse_str::<serde_json::Value>(&text).is_ok(),
+                    accepted,
+                    "{case}"
+                );
+            }
+        })
+        .expect("spawn")
+        .join()
+        .expect("the shared verdicts held");
+}

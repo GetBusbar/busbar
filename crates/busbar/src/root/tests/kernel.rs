@@ -174,7 +174,7 @@ fn the_card_an_apply_builds_carries_its_configured_fee_at_the_one_scale() {
     let holder = RootHistory::default();
     holder.apply(
         super::card_from_config(
-            std::iter::empty::<(&str, busbar_substrate_values::billing::RawTierRates)>(),
+            std::iter::empty::<(&str, busbar_contract::billing::RawTierRates)>(),
             7,
             true,
         ),
@@ -201,7 +201,7 @@ fn the_card_an_apply_builds_carries_its_configured_fee_at_the_one_scale() {
 /// `search_units` cell and the whole read REFUSED with `ClassUnpriced`.
 #[test]
 fn a_card_edit_mid_window_prices_an_open_class_in_both_eras_and_refuses_neither() {
-    let zero = busbar_substrate_values::billing::RawTierRates {
+    let zero = busbar_contract::billing::RawTierRates {
         input: 0.0,
         output: 0.0,
         cache_read: 0.0,
@@ -677,8 +677,8 @@ const EARNED_B: u64 = 30_000;
 const REBOOT: u64 = 40_000;
 const REBOOT_CHANGED: u64 = 50_000;
 
-fn tiers(input: f64) -> busbar_substrate_values::billing::RawTierRates {
-    busbar_substrate_values::billing::RawTierRates {
+fn tiers(input: f64) -> busbar_contract::billing::RawTierRates {
+    busbar_contract::billing::RawTierRates {
         input,
         output: 0.0,
         cache_read: 0.0,
@@ -688,7 +688,7 @@ fn tiers(input: f64) -> busbar_substrate_values::billing::RawTierRates {
 
 /// The deployment's lanes at one price: [`FLAT_LANE`] at `price` micro-units an input token, and
 /// the [`PLANE`] plane's card (its presence key and [`PLANE_LANE`]) at twice that.
-fn lanes_at(price: f64) -> Vec<(String, busbar_substrate_values::billing::RawTierRates)> {
+fn lanes_at(price: f64) -> Vec<(String, busbar_contract::billing::RawTierRates)> {
     vec![
         (FLAT_LANE.to_string(), tiers(price)),
         (format!("{PLANE}\u{1f}"), tiers(0.0)),

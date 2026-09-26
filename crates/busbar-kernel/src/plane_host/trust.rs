@@ -23,7 +23,7 @@
 //! rides the `App`; it stamps the plane's ledger and bumps a per-subject epoch but stores no verdict
 //! digest of its own. The synchronous `#[repr(C)]` ABI cannot drive that async coalescer, so the
 //! host-side FRESHNESS cache here is the faithful synchronous scaffold for it. Because
-//! [`VerifyStoreFn`](busbar_plugin::hot::host::VerifyStoreFn) carries no digest, the cache is
+//! [`VerifyStoreFn`](busbar_contract::abi::hot::host::VerifyStoreFn) carries no digest, the cache is
 //! freshness-only: a `Hit` reports "verified within ttl", never a cached payload, and its
 //! `digest_ptr` is null — exactly what a `VerifyGate` that stores no verdict can promise.
 //!
@@ -51,12 +51,12 @@
 //!   coordination.
 
 use super::{recover, HostState};
-use busbar_plugin::hot::host::HostCtx;
-use busbar_plugin::hot::{
+use busbar_contract::abi::hot::host::HostCtx;
+use busbar_contract::abi::hot::{
     ApprovalQuery, CounterpartyRef, Key, StatusClass, TrustVerdict, VerifyDecision, VerifyLease,
     VerifyOutcome, VerifyQuery, VerifyVerdict, POD_VERSION,
 };
-use busbar_plugin::read_sized_field;
+use busbar_contract::abi::read_sized_field;
 use core::mem::MaybeUninit;
 use std::collections::{HashMap, HashSet};
 use std::panic::{catch_unwind, AssertUnwindSafe};

@@ -29,10 +29,10 @@
 //! that did not run is RED, never skipped-green.
 //!
 //! THE PENDING-RIDER DEPENDENCY. As with the perf instrument, `PlaneHostVtable`
-//! (`crates/busbar-plugin/src/hot/host.rs`) has no production caller yet — the keystone
+//! (`crates/busbar-contract/src/abi/hot/host.rs`) has no production caller yet — the keystone
 //! loop-unification (`crates/busbar/src/root/kernel.rs` + `main.rs`, reserved for the keystone wave)
 //! has not landed — so the instrument is ARMED against the vtable's own construction (the subject
-//! `crates/busbar-plugin/tests/layout_golden.rs` pins) and binds to the production crossing
+//! `crates/busbar-contract/tests/layout_golden.rs` pins) and binds to the production crossing
 //! unchanged when the rider lands: an allocation-free POD call is allocation-free wherever it is
 //! made. This gate is GREEN now and stays green across that transition.
 
@@ -66,7 +66,7 @@ const CLAIMS: &[Claim] = &[
     Claim {
         row: ROW_POD_BATCH,
         clauses: &[
-            "use busbar_plugin::hot::host::{",
+            "use busbar_contract::abi::hot::host::{",
             "PlaneHostVtable",
             "bench_function(\"POD_HOST_CALL_BATCH\"",
             "ALLOC_COUNT.store(0,",

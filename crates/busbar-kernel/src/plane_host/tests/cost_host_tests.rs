@@ -7,8 +7,8 @@
 
 use super::*;
 use crate::plane_host::{with_dispatch_scope, PlaneHostVtable};
-use busbar_plugin::hot::host::HostCtx;
-use busbar_plugin::hot::{CostLeaseId, CostSettleOut, StatusClass};
+use busbar_contract::abi::hot::host::HostCtx;
+use busbar_contract::abi::hot::{CostLeaseId, CostSettleOut, StatusClass};
 use core::mem::MaybeUninit;
 
 /// Drive `f` with a live `HostCtx` minted by `with_dispatch_scope` over a minimal `TestApp` — the

@@ -33,6 +33,7 @@
 //! no identity chain, no completion pipeline). It is a test double: a leg the fixture does not model
 //! answers its documented empty value rather than pretending to be the engine.
 
+use busbar_contract::abi::hot::{AdmissionId, Signal};
 use busbar_contract::auth::{AuthPrincipal, IdentityRefusal};
 use busbar_contract::records::{PlaneRequestCtx, VirtualKey};
 use busbar_kernel::billing::{TokenUsage, Usage};
@@ -49,7 +50,6 @@ use busbar_kernel::plane_host::{
 use busbar_kernel::store::{BreakerState, HealthState, LaneRuntime, Unavailable};
 use busbar_kernel::trust::validate::{Lapsed, Standing};
 use busbar_kernel::trust::TrustState;
-use busbar_plugin::hot::{AdmissionId, Signal};
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -284,9 +284,24 @@ impl FixtureHost {
         entry.requests = entry.requests.saturating_add(1);
     }
 
+    /// The host wall clock, read through the contract's host service
+    /// (`busbar_contract::codec::wall_clock_now`) — the one clock a plane reads. This fixture stands
+    /// in for the host, so it arms that service with its own system-clock reader first (first install
+    /// wins: a process whose real host already armed it keeps the host's clock).
     fn now() -> u64 {
-        busbar_substrate_values::store::now()
+        busbar_contract::codec::install_wall_clock(system_clock_secs);
+        busbar_contract::codec::wall_clock_now().unwrap_or_else(system_clock_secs)
     }
+}
+
+/// The fixture host's system clock: whole seconds since the Unix epoch — the reading the real host
+/// installs into the contract's wall-clock service.
+fn system_clock_secs() -> u64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
 }
 
 // ── The breaker slice: one in-memory cell per (pool, lane) ─────────────────────────────────────────
@@ -313,7 +328,7 @@ impl BreakerHost for FixtureHost {
         scope: &DispatchScope,
         admission: AdmissionId,
         signal: &Signal,
-    ) -> busbar_plugin::hot::StatusClass {
+    ) -> busbar_contract::abi::hot::StatusClass {
         scope
             .settle_admission(admission, signal)
             .unwrap_or(signal.class.class())
@@ -376,8 +391,10 @@ impl ClockHost for FixtureHost {
     fn clock_now_secs(&self) -> u64 {
         Self::now()
     }
+    /// The same host wall clock in milliseconds. The contract's service reads whole seconds, so this
+    /// is that reading scaled; no voice seam reads this fixture's millisecond clock.
     fn clock_now_ms(&self) -> u64 {
-        busbar_substrate_values::store::now_ms()
+        Self::now().saturating_mul(1000)
     }
 }
 
@@ -539,7 +556,13 @@ impl BudgetHost for FixtureHost {
     fn governance_enabled(&self) -> bool {
         self.governed
     }
-    fn meter_charge(&self, _scope: &DispatchScope, _usage: &busbar_plugin::hot::Usage) {}
+    fn meter_charge(
+        &self,
+        _scope: &DispatchScope,
+        _caller: &PlaneRequestCtx,
+        _usage: &busbar_contract::abi::hot::Usage,
+    ) {
+    }
     fn rate_headroom(
         &self,
         _pin: &MeterPin,
@@ -716,9 +739,8 @@ impl AdmissionHost for FixtureHost {
     fn govern_admit_reason(
         &self,
         _scope: &DispatchScope,
+        _caller: &PlaneRequestCtx,
         _pool: &[u8],
-        _identity_id: &[u8],
-        _group: Option<&[u8]>,
     ) -> GovAdmit {
         GovAdmit::Admitted
     }

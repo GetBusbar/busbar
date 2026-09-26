@@ -50,7 +50,7 @@ pub mod config;
 pub mod diagnostics;
 
 /// THE VOICE PLANE'S PLANE-CONTRIBUTED DIAGNOSTICS — the `&'static [&'static Diagnostic]` the
-/// composition root installs via `busbar_substrate_values::diagnostics::install_diagnostics`, re-exported at
+/// composition root installs via `busbar_kernel::diagnostics::install_diagnostics`, re-exported at
 /// the crate root so the `busbar` binary names one stable path (`busbar_voice::DIAGNOSTICS`), exactly
 /// as `busbar_mcp::DIAGNOSTICS` / `busbar_a2a::DIAGNOSTICS`. BOOTED BY THE BINARY: `main.rs`'s
 /// `register_diagnostics` carries `installed.extend_from_slice(busbar_voice::DIAGNOSTICS)` under
@@ -327,6 +327,7 @@ pub const PLANE_DECLARATION: busbar_contract::plane::PlaneDeclaration =
         // passes per-request admission, so `streams.fees.per_request` would charge nothing — refused.
         fee_units: &[PER_SESSION],
         metric_families: &[],
+        record_kinds: &[],
         served_op_classes: &[],
     };
 
@@ -452,4 +453,5 @@ pub static DECLS: busbar_kernel::proto::ProtocolDecl = busbar_kernel::proto::Pro
     residual_default: false,
     vendor_response_metadata: None,
     list_models_fingerprint_headers: &[],
+    static_headers: &[],
 };

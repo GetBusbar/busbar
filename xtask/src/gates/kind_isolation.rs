@@ -67,8 +67,8 @@
 //!
 //! The owner's scheme (2026-09-07) is `busbar-<kind>-<name>`: SEGMENT TWO IS THE KIND. The tree is
 //! not renamed yet, so the kinds whose crates predate it — `busbar-caps`, `busbar-kernel`,
-//! `busbar-contract`, `busbar-grammar`, `busbar-timing`,
-//! `busbar-api`, the `*-codec` halves and the `busbar-plugin-*` tooling — reach their kind through
+//! `busbar-contract`, `busbar-grammar`,
+//! the `*-codec` halves and the `busbar-plugin-*` tooling — reach their kind through
 //! the EXPLICIT TABLE below rather than through segment two. That table is the whole of the
 //! exception: a name that is neither in it nor `busbar-<kind>-…` for a kind IN it is refused, in
 //! the owner's own words. Nothing is grandfathered by silence, and a FIVE-segment name is refused
@@ -233,13 +233,15 @@ struct KindDef {
 
 /// THE KIND TABLE. The SEVEN plugin kinds (DECISIONS #3: store, secret, auth, hook, export, plane,
 /// transport), the infra crate families that are NOT plugin kinds (unit, kernel, contract,
-/// substrate, api, timing, the plugin-abi/plugin-tooling TCB, the `core` neutral spine and
-/// the `cleanliness` compiled-in surfaces), the composition root, and the retiring legacy crates.
+/// substrate, api, the plugin-tooling TCB (the plugin ABI itself is `busbar-contract`'s `abi` module
+/// since the #84 merge) and the `cleanliness` compiled-in surfaces), the composition root, and the
+/// retiring legacy crates.
 ///
 /// `control` and `dialect` are NOT kinds (DECISIONS #4/#5): a dialect is a thing INSIDE a plane
-/// (llm 6, mcp 1, a2a 1, streaming N) with no crate of its own, and admin/oauth2 are compiled-in
-/// CLEANLINESS crates, one-way dep on core, off the hot path — not a `control` plugin kind. They
-/// resolve here as the `cleanliness` infra family, never as one of the seven plugin kinds.
+/// (llm 6, mcp 1, a2a 1, streaming N) with no crate of its own, and admin/oauth2/connsec are
+/// compiled-in CLEANLINESS crates, one-way dep on the kernel, off the hot path — not a `control`
+/// plugin kind. They resolve here as the `cleanliness` infra family, never as one of the seven
+/// plugin kinds.
 static KINDS: &[KindDef] = &[
     KindDef {
         kind: "root",
@@ -262,21 +264,37 @@ static KINDS: &[KindDef] = &[
         family: Family::Plane,
         matchers: &["*-codec"],
     },
-    // CLEANLINESS SURFACES — admin & oauth2, and NOT a `control` plugin kind (DECISIONS #5).
+    // CLEANLINESS SURFACES — admin, oauth2 and connsec, and NOT a `control` plugin kind
+    // (DECISIONS #5).
     //
     // > "admin & oauth2 are NOT plugins. They are compiled-in cleanliness crates, one-way dep on
     // > core, off the hot path. There is no `control` plugin kind." — DECISIONS #5
     //
+    // BUSBAR-1.6.0.md:3780 (R2/#37) seats `busbar-core-connsec` in the same tier: "a trusted
+    // core-side CLEANLINESS crate, same category as `busbar-core-admin`/`busbar-core-oauth2` —
+    // compiled in, one-way dep, off the hot path, never a plugin and never an 8th kind". After the
+    // core -> kernel absorption, "one-way dep on core" is a one-way dep on the KERNEL: a
+    // cleanliness crate may reach the kernel and the contract ([`ARCHITECTURE_ALLOWED`]), the root
+    // links it, and nothing reaches back — no plugin-kind crate names one, and it names no
+    // plugin-kind crate.
+    //
     // These are compiled-in served surfaces, never loaded over the ABI and never one of the seven
-    // plugin kinds. They resolve here so the registry recognises `busbar-admin` and `busbar-oauth2`
-    // without demanding a plugin kind; `busbar-plane-admin`, the retiring pre-rename spelling, is
-    // held to the same family by a `[[registered]]` row until it is deleted. The FAMILY is `Neutral`
-    // — a cleanliness crate carries no plane or transport INSTANCE in its NAME — while its source's
-    // naming of other kinds' vocabulary is measured by the matrix like every other crate's.
+    // plugin kinds. EXACT names, not a prefix: the tier is a closed list the architecture seats one
+    // crate at a time, so a new `busbar-core-<name>` resolves to no kind and is refused by the
+    // registry until it is seated here (and `busbar-core-<kind>` never is — #37). `busbar-admin` is
+    // the retiring pre-fold spelling, kept so a crate landing under it is still read as this tier.
+    // The FAMILY is `Neutral` — a cleanliness crate carries no plane or transport INSTANCE in its
+    // NAME — while its source's naming of other kinds' vocabulary is measured by the matrix like
+    // every other crate's.
     KindDef {
         kind: "cleanliness",
         family: Family::Neutral,
-        matchers: &["=busbar-admin", "=busbar-oauth2"],
+        matchers: &[
+            "=busbar-admin",
+            "=busbar-core-admin",
+            "=busbar-core-connsec",
+            "=busbar-oauth2",
+        ],
     },
     KindDef {
         kind: "transport",
@@ -291,7 +309,7 @@ static KINDS: &[KindDef] = &[
     // THE ENGINE + THE 8 WORKFLOW CRATES (DECISIONS #36). `busbar-kernel` is the loop/registry/
     // teller/sessions; `busbar-kernel-<name>` are the 8 workflow crates the 14 `busbar-unit-*` folded
     // into (identity, scope, budget, ledger, egress, breaker, wal, audit). One kind, matched by the
-    // exact loop name AND the `busbar-kernel-` prefix — the same shape the `core` kind uses. A kernel
+    // exact loop name AND the `busbar-kernel-` prefix. A kernel
     // crate is NEUTRAL: it may carry no plane and no transport instance in its name, and its external
     // deps are the neutral spine ({contract, plugin-sdk} and other kernel crates), so an edge to a
     // plane, a dialect, a transport or a unit is a NEW class and is refused like any other.
@@ -300,35 +318,9 @@ static KINDS: &[KindDef] = &[
         family: Family::Neutral,
         matchers: &["=busbar-kernel", "busbar-kernel-"],
     },
-    // THE COMPILED-IN SCAFFOLDING AROUND THE LOOP — `busbar-core-admin`, `busbar-core-oauth2`,
-    // `busbar-core-substrate` (DECISIONS #37's core-3), plus `busbar-core-connsec`. A `core` crate
-    // is NEUTRAL on exactly the terms `kernel` and `caps` are: it may carry no plane and no
-    // transport instance in its name, and it reaches only the neutral spine ([`PENDING_EDGES`]), so
-    // an edge to a plane, a dialect, a transport or a unit is a NEW class and is refused like any
-    // other.
-    //
-    // NO `busbar-core-<kind>` EVER (#37: "a kind is a plugin, never a core crate"). That rule is
-    // what killed `busbar-core-hooks` — deleted 2026-09-22 along with `busbar-core-config`, whose
-    // one landed helper folded back into `busbar-kernel::config::parse`.
-    //
-    // A PREFIX, not a list of exact names: an exact matcher yields an EMPTY remainder, which would
-    // mean `busbar-core-mcp` was never read for a plane instance at all — the kind would be a hole
-    // the shape of every name it accepted. The prefix now costs NOTHING: it buys the name rule over
-    // every future member and no core crate is waived past it.
-    //
-    // It used to cost one `ACCEPTED_NAMES` entry, for `busbar-core-transport` — a reviewed sentence
-    // arguing that its `transport` remainder was the kind WORD (what the opaque `ConnectionSecurity`
-    // wrap is FOR) rather than a transport INSTANCE. OWNER RULING R2 (2026-09-22, "AGREED") refused
-    // that distinction: #37 says "no `busbar-core-<kind>` ever", transport is one of the seven kinds
-    // (#3), and the ban is on the FORM, so no remainder-reading rescues it. The crate is renamed
-    // `busbar-core-connsec` — named for the `ConnectionSecurity` type it builds, which is not a kind
-    // word — and the waiver is deleted with it. A waiver that argues a rule does not mean what it
-    // says is the thing the rule exists to stop.
-    KindDef {
-        kind: "core",
-        family: Family::Neutral,
-        matchers: &["busbar-core-"],
-    },
+    // There is no `core` kind: its members (`busbar-core-admin`, `busbar-core-connsec`) are the
+    // cleanliness tier above (BUSBAR-1.6.0.md:3780, R2/#37), and a kind that matches no crate
+    // scores `dead-kind`.
     // `busbar-caps` is KILLED/folded into `busbar-contract` (DECISIONS #37/#38, W2.c): the capability
     // vocabulary is neutral ABI and lands in the one contract crate. There is no `caps` kind.
     KindDef {
@@ -343,21 +335,10 @@ static KINDS: &[KindDef] = &[
         family: Family::Neutral,
         matchers: &["=busbar-substrate", "=busbar-substrate-values"],
     },
-    KindDef {
-        kind: "api",
-        family: Family::Neutral,
-        matchers: &["=busbar-api"],
-    },
-    KindDef {
-        kind: "timing",
-        family: Family::Neutral,
-        matchers: &["=busbar-timing"],
-    },
-    KindDef {
-        kind: "plugin-abi",
-        family: Family::Neutral,
-        matchers: &["=busbar-plugin"],
-    },
+    // There is no `api` kind: `busbar-api` retired in fold F4 — its last pieces went to
+    // the homes their definitions name — so the row matched no crate and scored `dead-kind`.
+    // There is no `timing` kind: busbar-timing folded into busbar-kernel as its feature-gated
+    // `timing` module (OWNER Q70), so its lines are the kernel's and the row would name no crate.
     KindDef {
         kind: "plugin-tooling",
         family: Family::Neutral,
@@ -426,28 +407,25 @@ const PLANE_ALIASES: &[(&str, &str, &str)] = &[
 /// dead-kind rule skips these — and the ratchet runs the other way: the day a crate of one of them
 /// exists, the entry must be struck, or a kind would be both pending and live.
 ///
-/// Empty: `dialect` was the only pending kind and it is not a kind at all (DECISIONS #4). Every
-/// kind in the table now has, or is the neutral spine for, at least one crate in the tree.
-const PENDING_KINDS: &[(&str, &str)] = &[];
+/// `dialect` was a pending kind and it is not a kind at all (DECISIONS #4). `secret` is pending
+/// because its instances live OUTSIDE this repo: the owner deleted the in-tree fixture ("FIXTURES",
+/// docs/design/1.6.0-QUESTIONS.md) and the kind is proven by the real plugin repo.
+const PENDING_KINDS: &[(&str, &str)] = &[(
+    "secret",
+    "every plugin lives in its own repo (owner, 1.6.0-QUESTIONS.md \"PLUGIN HOME\"); the in-tree \
+     secret fixture is deleted (\"FIXTURES\") and the kind is proven by GetBusbar/hashicorp-vault \
+     through crates/plugin-loader/src/tests/plugin_proof_tests.rs (ci.yml `plugin-proofs`)",
+)];
 
 /// Edge classes the TARGET scheme has and the tree does not yet. They are allowed without being
 /// scored as dead — a class that cannot exist until the rename lands cannot be a stale allowance.
 const PENDING_EDGES: &[(&str, &str)] = &[
-    // THE `core` KIND'S NEUTRAL SPINE, and deliberately nothing else. The crates being carved out
-    // of `busbar-core` land branch by branch, so their edges cannot be measured yet; what CAN be
-    // stated in advance is the same sink set `kernel` has. A `core` crate that reaches
-    // a plane, a dialect, a transport or a unit is not on this list, so it is a NEW edge class and
-    // is refused — which is the machine form of "a core crate names no plane, dialect, transport or
-    // unit". A core crate that needs a sink not listed here adds the line and says why; the gate
-    // names the missing class for it.
-    //
-    // `(core, caps)` and `(core, grammar)` are struck: neither `caps` nor `grammar` is a kind (both
-    // crates folded into `busbar-contract`, W2.c and #40), so they granted nothing (`dead-grant`).
-    ("core", "api"),
-    ("core", "contract"),
-    ("core", "kernel"),
-    ("core", "substrate"),
-    ("core", "timing"),
+    // EMPTY. Its rows were the `core` kind's neutral spine (`core -> contract`, `kernel`,
+    // `substrate`, and `timing` until that crate folded into the kernel), granted ahead of crates
+    // that had not landed. The kind is gone — its members are the cleanliness tier, whose grants
+    // are READ OF THE ARCHITECTURE and live in [`ARCHITECTURE_ALLOWED`] — so the rows named a kind
+    // the table does not have (`dead-grant`) and are struck. The table stays, because the next
+    // class the design grants ahead of the tree lands here.
 ];
 
 /// The retiring 1.5.x crates, named so the ratchet can check they still exist.
@@ -557,35 +535,9 @@ const ACCEPTED_NAMES: &[(&str, &str)] = &[(
 /// [`PENDING_EDGES`] joins it: those are classes the DESIGN grants ahead of the tree, which is the
 /// same kind of statement made about a crate that does not exist yet.
 const ARCHITECTURE_ALLOWED: &[(&str, &str)] = &[
-    // `busbar-api` REACHES THE CONTRACT FACE, and that is the #84 fix rather than a widening.
-    //
-    // Every plugin in the tree names `busbar-api`, so whatever `busbar-api` names is in every
-    // third-party plugin's compile closure. What it named was `busbar-kernel-ledger` — THE MONEY
-    // ONE-BOOK — for one re-export shim and nothing else, so a store plugin transitively linked
-    // settlement and a ledger type change forced every third-party plugin to rebuild. DECISIONS #84
-    // (owner-locked 2026-09-22) calls that "the nightmare" by name and rules that nothing on the
-    // plugin path may link a crate holding SEMANTICS; DECISIONS #83 draws the seam the record
-    // shapes move along (contract = SHAPES, ledger = SEMANTICS).
-    //
-    // So this grant REPLACES a `not-allowed` row (`busbar-api -> busbar-kernel-ledger`, struck in
-    // qa/kind-isolation.toml in the same commit) with the class every other kind already has:
-    // `kernel`, `legacy`, `plane`, `store`, `substrate`, `transport`, `unit`, `cleanliness` and
-    // `root` are all granted `-> contract` below, on ARCHITECTURE.md 1.2's own words that
-    // busbar-contract "is the face every kind is written against". `api` was absent from that list
-    // only because `busbar-api` had never named the contract — not because the architecture said it
-    // may not.
-    //
-    // THIS GRANT IS TRANSITIONAL, AND SAYING SO IS THE POINT OF THIS PARAGRAPH. #84's end state is
-    // that `busbar-contract` and the plugin-facing half of `busbar-api` MERGE — "`busbar-plugin`'s
-    // ABI declarations and the plugin-facing half of `busbar-api` fold INTO it" — so `busbar-api`
-    // CEASES TO EXIST (#35/W5.b) and the `api` kind loses its only member. The edge then disappears
-    // with the crate rather than being drained: there is no `api` left to name anything. Struck at
-    // that point, not kept.
-    //
-    // Written out because an `allowed` row reads as permanent, and an unexplained row risks being
-    // preserved out of caution during a future audit of this table. It is here because a crate is
-    // on its way out, and it goes when the crate does.
-    ("api", "contract"),
+    // `(api, contract)` WAS HERE, a transitional grant for `busbar-api`'s re-export of the record
+    // SHAPES (#83/#84). #84's end state retired the crate (fold F4), the `api` kind lost
+    // its only member, and the grant went with it, as its own paragraph said it would.
     // THE #40 WALL, GRANTED FOR ALL SEVEN PLUGIN KINDS AT ONCE. DECISIONS #40(a), OWNER-LOCKED:
     // "a plugin crate's entire workspace dependency closure = `busbar-contract` and nothing else".
     // So a plugin-kind crate's edge to the contract is not a coupling this gate ratchets: it is the
@@ -608,13 +560,10 @@ const ARCHITECTURE_ALLOWED: &[(&str, &str)] = &[
     // codec or the loop reaching it is the `-> contract` edge, and a grant naming a kind the table
     // does not have is a `dead-grant`.
     ("kernel", "contract"),
-    // The loop naming a `core` crate — a compiled-in cleanliness surface on the neutral spine — is
-    // the same shape as `kernel` naming `contract`. The instance that produced this
-    // grant (`busbar-kernel` -> `busbar-core-config`) is GONE: #37 killed that crate and its one
-    // helper came home to `busbar_kernel::config::parse`, so the class currently has no edge under
-    // it. The grant stays because this list is the READ OF THE ARCHITECTURE, not a measurement of
-    // the tree (see this const's own doc) — striking it would be an architecture change.
-    ("kernel", "core"),
+    // `("kernel", "core")` WAS HERE, AND IT IS STRUCK. The `core` kind is gone: its members are the
+    // cleanliness tier, whose dependency is ONE-WAY onto the kernel (BUSBAR-1.6.0.md:3780, R2/#37).
+    // The loop naming a cleanliness crate is the reverse of that edge, so it is not re-granted as
+    // `kernel -> cleanliness`; it is measured and refused like any other ungranted class.
     // A kernel workflow crate may depend on other kernel crates (DECISIONS #36 group structure, e.g.
     // budget -> ledger); intra-tier edges are allowed structure, not a widening.
     ("kernel", "kernel"),
@@ -643,7 +592,6 @@ const ARCHITECTURE_ALLOWED: &[(&str, &str)] = &[
     // tree that does not exist. `the_root_is_granted_every_plugin_kind_it_links` measures the
     // root's shipped edges and refuses a plugin kind the root links without a grant here. The
     // grant is the ROOT's: a non-root crate reaching a plugin crate is still refused (selftest).
-    ("root", "api"),
     ("root", "cleanliness"),
     ("root", "contract"),
     ("root", "export"),
@@ -685,10 +633,15 @@ const ARCHITECTURE_ALLOWED: &[(&str, &str)] = &[
     // kinds, and #36's group structure grants intra-tier edges inside the kernel by name.
     ("unit", "contract"),
     ("unit", "unit"),
-    // A CLEANLINESS SURFACE (admin/oauth2) is compiled-in with a one-way dep on core (DECISIONS #5).
-    // The ship twin permits its contract edge here; its core/substrate/api/loader edges are
-    // measured in the `[[dep]]` ledger like every other Neutral kind's.
+    // A CLEANLINESS SURFACE (admin/oauth2/connsec) is compiled-in with a ONE-WAY dep on the kernel
+    // (DECISIONS #5; BUSBAR-1.6.0.md:3780, R2/#37 — "one-way dep on core" is the kernel since the
+    // core -> kernel absorption). So it may name the contract it is written against and the kernel
+    // it serves, and the root links it (`root -> cleanliness`, above). Nothing else is granted: a
+    // cleanliness crate naming a plugin-kind crate, or a plugin-kind crate naming a cleanliness
+    // crate, is an ungranted class and refused — the dependency runs one way. Its substrate and
+    // plugin-loader edges are measured in the `[[dep]]` ledger like every other Neutral kind's.
     ("cleanliness", "contract"),
+    ("cleanliness", "kernel"),
 ];
 
 /// The kind `busbar-contract` resolves to — the one sink #40 leaves a plugin.
@@ -706,18 +659,35 @@ pub(super) fn is_the_wall(from: &str, to: &str) -> bool {
     to == CONTRACT_KIND && truths::PLUGIN_KINDS.contains(&from)
 }
 
+/// THE CORE TIERS THAT NAME THE CONTRACT BY DESIGN. #83/#83a make `busbar-contract` the shared
+/// SHAPES crate: names move INTO it, and every tier that is not a plugin names it on purpose. The
+/// root, the kernel tier, the cleanliness surfaces, the unit crates and the substrate each carry a
+/// granted `-> contract` class, and their contract vocabulary is not a coupling this gate ratchets.
+/// The retiring legacy engines and the plugin tooling are NOT here: their contract naming is still
+/// measured, cell by cell, until they drain.
+const CONTRACT_TIERS: &[&str] = &["root", "kernel", CLEANLINESS, "unit", "substrate"];
+
+/// Is `from -> to` the contract edge a crate of kind `from` carries BY DESIGN, so its vocabulary
+/// column is not measured: the #40 wall for a plugin kind ([`is_the_wall`]), or a core tier's
+/// granted contract class (#83/#83a). The contract reaching anything else, and a plugin reaching
+/// anything past the contract, are never this.
+pub(super) fn names_contract_by_design(from: &str, to: &str) -> bool {
+    is_the_wall(from, to)
+        || (to == CONTRACT_KIND
+            && CONTRACT_TIERS.contains(&from)
+            && ARCHITECTURE_ALLOWED.contains(&(from, to)))
+}
+
 /// THE TRUSTED COMPUTING BASE: the loader and the plugin tooling, which `ARCHITECTURE.md` 1.4 says
 /// in its own words are NOT kinds. Their edges are neither granted nor refused by the kind rules,
 /// because the kind rules are not about them — so they carry their own verdict, they are still
 /// written down instance by instance, and the ship twin still refuses them: a tag's criterion is
 /// the architecture's own graph, and the TCB is a hole in that graph rather than a clause of it.
 const ARCHITECTURE_TCB: &[(&str, &str)] = &[
-    ("plugin-tooling", "api"),
     // The loader's store adapter names the folded capability vocabulary at its new home in
     // `busbar-contract` (formerly `busbar-caps`, W2.c).
     ("plugin-tooling", "contract"),
     ("plugin-tooling", "kernel"),
-    ("plugin-tooling", "plugin-abi"),
     ("plugin-tooling", "plugin-tooling"),
     ("plugin-tooling", "secret"),
     ("plugin-tooling", "unit"),
@@ -747,10 +717,11 @@ const DRAIN_TARGET_KINDS: &[&str] = &["unit", "plane", "transport", CLEANLINESS]
 /// the file has moved: two did, and each compared nothing on every tree.
 const CLEANLINESS: &str = "cleanliness";
 
-// A CLEANLINESS SURFACE (admin/oauth2) is compiled-in with a one-way dep on core (DECISIONS #5).
-// Unlike the retired `control` kind, its edges are NOT a closed sink set: admin/oauth2 legitimately
-// name core, substrate, api and the plugin-loader TCB, so their dependency edges are recorded in
-// the measured graph (the `[[dep]]` rows and [`PENDING_EDGES`]) like every other Neutral kind's.
+// A CLEANLINESS SURFACE (admin/oauth2/connsec) is compiled-in with a one-way dep on the kernel
+// (DECISIONS #5; BUSBAR-1.6.0.md:3780). Unlike the retired `control` kind, its edges are NOT a
+// closed sink set: beyond the granted contract and kernel edges it legitimately names the
+// substrate and the plugin-loader TCB, so those edges are recorded in the measured graph (the
+// `[[dep]]` rows) like every other Neutral kind's.
 
 // ------------------------------------------------------------------------------------------------
 // the shape and the battery
@@ -3767,7 +3738,7 @@ fn plugin_kind_keys(text: &str) -> Vec<String> {
 /// Segment}` acknowledged at-least-once with an `Ack` — and has nothing to do with telemetry
 /// export. It also has ZERO implementors anywhere in the tree, including its own crate's tests, so
 /// deriving the name pointed this rule at a trait no loadable plugin could ever satisfy while the
-/// trait a loadable export MUST implement (`busbar_plugin_sdk::ExportHandler`: `streams` /
+/// trait a loadable export MUST implement (`busbar_contract::abi::sdk::ExportHandler`: `streams` /
 /// `deliver` / `routes` / `handle_http` / `drain_observations`, behind the six C symbols, the signed
 /// manifest and the loader's `[2, 3]` window) went unchecked.
 ///
@@ -6198,7 +6169,7 @@ impl Gate for KindIsolationGate {
                 "a negative `[[cell]]` count is refused at load — it is not a ceiling, it is the \
                  absence of one",
                 &[ROW_DEPS],
-                matrix::cell_subst(cx, "busbar", "api", "-1"),
+                matrix::cell_subst(cx, "busbar-llm", "contract", "-1"),
                 &[
                     "bad-count",
                     "is negative",
@@ -6243,15 +6214,27 @@ impl Gate for KindIsolationGate {
             // A ROW THAT GRANTED ITSELF AN EDGE THE ARCHITECTURE WITHHOLDS. `allowed` is a READING
             // of ARCHITECTURE.md, not an opinion a ledger row is entitled to hold — otherwise the
             // ledger IS the architecture and the ratchet loosens by editing one word.
-            report.push(plant_registry(
+            //
+            // THE EDGE IS THE FIXTURE'S OWN. The case used to flip the verdict of a live row, and
+            // the day that row's edge left the tree the flipped row scored nothing (a row whose
+            // edge is gone is judged dead, not on its verdict) and the case went green. The plant
+            // is now a hooks plugin on the #40 wall reaching `busbar-kernel`, plus the row that
+            // calls it `allowed`: the class `hooks -> kernel` is granted nowhere, whatever the
+            // live ledger holds.
+            let mut ov = the_wall_plant(&["busbar-kernel"]);
+            ov.set(
+                REGISTRY_FILE,
+                planted_dep_row(cx, "busbar-hooks-planted", "busbar-kernel"),
+            );
+            report.push(prove_rows_red(
                 cx,
                 subject,
                 "a ledger row cannot grant itself an edge the architecture withholds",
                 &[ROW_DEPS],
-                verdict_subst(cx, "busbar-transport-tls", "busbar-unit-transport-key"),
+                ov,
                 &[
                     "unsupported-verdict",
-                    "busbar-transport-tls -> busbar-unit-transport-key",
+                    "busbar-hooks-planted -> busbar-kernel",
                     "cannot grant an edge the architecture withholds",
                 ],
             ));
@@ -6261,21 +6244,20 @@ impl Gate for KindIsolationGate {
             // them down is that the owner can rule by reading this file. A pending row whose
             // question is gone has stopped asking, and an unruled edge that has stopped asking is
             // an edge that passes by being unreadable.
+            //
+            // RE-TARGETED at the #84 merge: its subject was the live pending
+            // `busbar-substrate-values -> busbar-plugin` question, and that edge left the tree with
+            // `busbar-plugin` — the last pending row went with it. So the plant now MAKES the unruled
+            // row a case needs: a live, granted edge (`busbar-kernel -> busbar-contract`) re-marked
+            // `owner-ruling-pending` with no `[[question]]` asking about it — exactly the row this
+            // rule refuses, planted over a row no fold retires.
             report.push(plant_registry(
                 cx,
                 subject,
                 "an unruled edge whose question was struck out has stopped asking",
                 &[ROW_DEPS],
-                Ok((
-                    "from     = \"busbar-substrate-values\"\nto       = \"busbar-plugin\"\n"
-                        .to_string(),
-                    "from     = \"busbar-substrate-values\"\nto       = \"busbar-plugin-struck\"\n"
-                        .to_string(),
-                )),
-                &[
-                    "unasked-question",
-                    "busbar-substrate-values -> busbar-plugin",
-                ],
+                pending_subst(cx, "busbar-kernel", "busbar-contract"),
+                &["unasked-question", "busbar-kernel -> busbar-contract"],
             ));
 
             // TWO ROWS FOR ONE EDGE. Two numbers for one measurement, and the one a reader believes
@@ -6349,7 +6331,7 @@ impl Gate for KindIsolationGate {
             // unlisted `[[dep]]`, `[[cell]]` and `[[edge]]` the day `busbar-hooks-ranking` was
             // repointed at the contract, for doing exactly what the wall asks. GREEN on the shipped
             // graph, the test graph and the vocabulary matrix alike, with a source file that names
-            // the contract the way every plugin does. And the same crate reaching `busbar-api` is
+            // the contract the way every plugin does. And the same crate reaching `busbar-kernel` is
             // RED: the wall is one crate wide, not "the contract plus whatever else".
             report.push(prove_rows_green(
                 cx,
@@ -6362,13 +6344,10 @@ impl Gate for KindIsolationGate {
             report.push(prove_rows_red(
                 cx,
                 subject,
-                "a plugin-kind crate reaching busbar-plugin reaches past the #40 wall",
+                "a plugin-kind crate reaching busbar-kernel reaches past the #40 wall",
                 &[ROW_DEPS],
-                the_wall_plant(&["busbar-plugin"]),
-                &[
-                    "busbar-hooks-planted -> busbar-plugin",
-                    "hooks -> plugin-abi",
-                ],
+                the_wall_plant(&["busbar-kernel"]),
+                &["busbar-hooks-planted -> busbar-kernel", "hooks -> kernel"],
             ));
 
             // THE ROOT LINKS A PLUGIN, AND THAT IS ROSTER DEFINITION 1, NOT A COUPLING. The
@@ -6423,6 +6402,75 @@ impl Gate for KindIsolationGate {
                     "busbar-kernel-planted -> busbar-hooks-ranking",
                     "kernel -> hooks",
                 ],
+            ));
+
+            // THE CLEANLINESS TIER IS ONE-WAY (BUSBAR-1.6.0.md:3780, R2/#37). A cleanliness crate
+            // is compiled in with a dependency on the kernel and the contract, the root links it,
+            // and that is the whole of its graph. A PLUGIN reaching one is a plugin linking a
+            // core-side surface — past the #40 wall — and a cleanliness crate reaching a plugin
+            // is the tier choosing a plugin the root is supposed to choose. Both are refused
+            // whatever a row claims: each plant carries the `allowed` row a reviewer might write.
+            let mut ov = the_wall_plant(&["busbar-core-admin"]);
+            ov.set(
+                REGISTRY_FILE,
+                planted_dep_row(cx, "busbar-hooks-planted", "busbar-core-admin"),
+            );
+            report.push(prove_rows_red(
+                cx,
+                subject,
+                "a plugin-kind crate reaching a cleanliness crate is refused whatever its row claims",
+                &[ROW_DEPS],
+                ov,
+                &[
+                    "unsupported-verdict",
+                    "busbar-hooks-planted -> busbar-core-admin",
+                    "hooks -> cleanliness",
+                ],
+            ));
+            let mut ov = Overlay::new();
+            ov.set(
+                "crates/busbar-core-admin/Cargo.toml",
+                manifest_plus(
+                    cx,
+                    "crates/busbar-core-admin/Cargo.toml",
+                    "[dependencies.busbar-hooks-ranking]\npath = \"../hooks-ranking\"\n",
+                ),
+            );
+            ov.set(
+                REGISTRY_FILE,
+                planted_dep_row(cx, "busbar-core-admin", "busbar-hooks-ranking"),
+            );
+            report.push(prove_rows_red(
+                cx,
+                subject,
+                "a cleanliness crate reaching a plugin-kind crate is refused — the tier is one-way",
+                &[ROW_DEPS],
+                ov,
+                &[
+                    "unsupported-verdict",
+                    "busbar-core-admin -> busbar-hooks-ranking",
+                    "cleanliness -> hooks",
+                ],
+            ));
+            // …AND THE ROOT LINKING ONE IS THE GRANT. A fresh cleanliness crate (`busbar-admin`
+            // resolves to the tier by name) linked by `busbar`, with the row every granted edge
+            // still owes, is GREEN on `:deps`.
+            let mut ov = manifest_plant("crates/busbar-admin", "busbar-admin", &[]);
+            ov.set(
+                "crates/busbar/Cargo.toml",
+                manifest_plus(
+                    cx,
+                    "crates/busbar/Cargo.toml",
+                    "[dependencies.busbar-admin]\npath = \"../busbar-admin\"\n",
+                ),
+            );
+            ov.set(REGISTRY_FILE, planted_dep_row(cx, "busbar", "busbar-admin"));
+            report.push(prove_rows_green(
+                cx,
+                subject,
+                "the composition root linking a cleanliness crate is a granted class",
+                &[ROW_DEPS],
+                ov,
             ));
         }
 
@@ -6595,18 +6643,20 @@ impl Gate for KindIsolationGate {
 
         // A KIND NOBODY INSTANTIATES IS A DEAD ROW IN THE TABLE.
         //
-        // THE SUBJECT IS `timing`, AND IT USED TO BE `grammar`, WHICH PROVED NOTHING. The plant was
+        // THE SUBJECT IS `contract` (after `timing`), AND IT USED TO BE `grammar`, WHICH PROVED
+        // NOTHING. The plant was
         // `Overlay::remove("crates/busbar-grammar/Cargo.toml")` — a path that has not been in this
         // tree for as long as the case has existed, so it removed nothing — against a row that is
         // STANDING RED naming `dead-kind KINDS \`grammar\``, the exact two tokens the case
         // asserts. A no-op plant, a red that predates it, and a green case: the rule could have
         // been deleted outright with this case still passing. `prove_red` refuses both halves now.
         //
-        // `timing` is the kind to plant because its matcher is `=busbar-timing`, one crate and no
-        // other, so removing that manifest takes the whole kind out of `live` — which is what the
+        // `contract` is the kind to plant because its matcher is `=busbar-contract`, one crate and
+        // no other, so removing that manifest takes the whole kind out of `live` — which is what the
         // rule reads. A kind with a prefix matcher would need every crate of it removed at once.
+        // (It was `timing`, `=busbar-timing`, until OWNER Q70 folded that crate into the kernel.)
         let mut ov = Overlay::new();
-        ov.remove("crates/busbar-timing/Cargo.toml");
+        ov.remove("crates/busbar-contract/Cargo.toml");
         hold_census_floor(&mut ov, 1);
         report.push(prove_rows_red(
             cx,
@@ -6614,11 +6664,26 @@ impl Gate for KindIsolationGate {
             "a kind in the table that no crate is any more",
             &[ROW_REGISTRY],
             ov,
-            &["dead-kind", "timing"],
+            &["dead-kind", "contract"],
         ));
 
-        // The pending-kind ratchet had exactly one subject, `dialect`, and a dialect is not a kind
-        // (DECISIONS #4). PENDING_KINDS is empty now, so there is no pending kind to plant as arrived.
+        // THE PENDING-KIND RATCHET: a crate of a pending kind retires the pending entry. `secret`
+        // is pending (its instances live in their own repos), so a planted `busbar-secret-*`
+        // manifest makes the kind live while the entry still says pending — the one state the
+        // ratchet exists to refuse.
+        let mut ov = Overlay::new();
+        ov.set(
+            "crates/busbar-secret-planted/Cargo.toml",
+            "[package]\nname = \"busbar-secret-planted\"\nversion = \"0.0.0\"\n",
+        );
+        report.push(prove_rows_red(
+            cx,
+            subject,
+            "a pending kind that now has a crate",
+            &[ROW_REGISTRY],
+            ov,
+            &["kind-arrived", "secret"],
+        ));
 
         // THE RENAME ALIAS EXPIRES WITH THE CRATE IT TRANSLATES.
         //
@@ -7703,29 +7768,32 @@ impl Gate for KindIsolationGate {
             &[REGISTRY_FILE],
         ));
 
-        // ── THE ANNOUNCED CORE CRATES ────────────────────────────────────────────────────────────
+        // ── THE ANNOUNCED KERNEL-TIER CRATES ─────────────────────────────────────────────────────
 
-        // THE `core` KIND IS NOT A HOLE. It accepts `busbar-core-<name>` by PREFIX, so the name rule
-        // reads the remainder of every member — and `busbar-core-mcp` carries a plane instance.
-        // An exact-matcher kind would have yielded an empty remainder and accepted this name in
-        // silence, which is the difference this case exists to hold.
+        // A PREFIX KIND IS NOT A HOLE. `kernel` accepts `busbar-kernel-<name>` by PREFIX, so the
+        // name rule reads the remainder of every member — and `busbar-kernel-mcp` carries a plane
+        // instance. An exact-matcher kind would have yielded an empty remainder and accepted this
+        // name in silence, which is the difference this case exists to hold. (It was planted as
+        // `busbar-core-mcp` while `core` was the prefix kind; that kind is gone, its members seated
+        // by exact name in the cleanliness tier.)
         report.push(prove_rows_red(
             cx,
             subject,
-            "a core crate named after a plane instance (`busbar-core-mcp`)",
+            "a kernel crate named after a plane instance (`busbar-kernel-mcp`)",
             &[ROW_NAME],
-            manifest_plant("crates/busbar-core-mcp", "busbar-core-mcp", &[]),
-            &["busbar-core-mcp", "mcp"],
+            manifest_plant("crates/busbar-kernel-mcp", "busbar-kernel-mcp", &[]),
+            &["busbar-kernel-mcp", "mcp"],
         ));
 
-        // A CORE CRATE REACHES THE NEUTRAL SPINE AND NOTHING ELSE — the same sink set `kernel` and
-        // `caps` have. A unit is not on it, so the edge is a new class.
+        // A KERNEL CRATE REACHES THE NEUTRAL SPINE AND NOTHING ELSE. A unit is not on it, so the
+        // edge is a new class.
         //
         // THE ANNOUNCEMENT IS PLANTED, not borrowed. This case used to lean on the real
         // `[[announced]] busbar-core-config` row; that row and its crate were struck on 2026-09-22
         // when DECISIONS #37 killed `busbar-core-{config,hooks}`. A case whose subject is a live row
-        // goes dark the day that row lands or dies, so it plants its own: `busbar-core-planted`
-        // exists nowhere but here.
+        // goes dark the day that row lands or dies, so it plants its own: [`ANNOUNCED_PLANT`]
+        // exists nowhere but here, announced as `kernel` (the `core` kind it was announced as is
+        // struck).
         //
         // BOTH DEPENDENCIES ARE CRATES THE TREE HAS. They were `busbar-substrate` (renamed
         // `busbar-substrate-values`) and `busbar-unit-audit` (folded into `busbar-kernel-audit`),
@@ -7734,33 +7802,34 @@ impl Gate for KindIsolationGate {
         report.push(prove_rows_red(
             cx,
             subject,
-            "a core crate reaching a unit is a class the architecture grants nothing to",
+            "an announced kernel crate reaching a unit is a class the architecture grants nothing to",
             &[ROW_DEPS],
-            core_announced_reaching_unit(cx),
-            &["announced-edge-class", "core -> unit"],
+            announced_reaching_unit(cx),
+            &["announced-edge-class", "kernel -> unit"],
         ));
 
         // THE ANNOUNCEMENT IS WHAT HOLDS THE KIND ROW OPEN, not silence. Strike the rows while the
-        // crates are still absent and the `core` kind is a dead row in the table — which is what
-        // the dead-kind rule is for, and what it would have said the day the kind was added if the
-        // announcement had not been made with it.
+        // crates are absent and the kind is a dead row in the table — which is what the dead-kind
+        // rule is for, and what it would have said the day the kind was added if the announcement
+        // had not been made with it.
+        //
+        // The subject is the `cleanliness` kind: a real infra kind with real crates (admin, oauth2,
+        // connsec), so an empty registry alone leaves it alive, and "neither a crate nor an
+        // announcement" is the plant — every cleanliness manifest gone and no `[[announced]]` row.
+        // It was the `core` kind until that kind's crates were seated in this one.
         report.push(prove_rows_red(
             cx,
             subject,
-            "the `core` kind row with neither a crate nor an announcement is a dead kind",
+            "the `cleanliness` kind row with neither a crate nor an announcement is a dead kind",
             &[ROW_REGISTRY],
-            // RE-TARGETED (item 89): `core` HAS crates now (`busbar-core-admin`,
-            // `busbar-core-connsec`), so an empty registry alone left the kind alive and the case
-            // GREEN. "Neither a crate nor an announcement" is the plant: every core manifest gone
-            // and no `[[announced]]` row.
             move || {
-                let mut ov = kinds_gone(cx, &["core"]);
+                let mut ov = kinds_gone(cx, &[CLEANLINESS]);
                 let gone = ov.paths().count();
                 hold_census_floor(&mut ov, gone);
                 ov.set(REGISTRY_FILE, String::new());
                 ov
             },
-            &["dead-kind", "core"],
+            &["dead-kind", CLEANLINESS],
         ));
 
         // …and the same on the waiver side. This case named `busbar-core-hooks`: a reviewed
@@ -8035,16 +8104,18 @@ impl Gate for KindIsolationGate {
             // AN ANNOUNCED CRATE LANDING IS GREEN — no unknown kind, no dead kind, no new edge
             // class. This is the case the announcement exists to make true: the agent who lands it
             // reds nothing. Planted, not borrowed, for the reason on the edge-class case above.
-            let mut ov = registry_announcing(cx, "busbar-core-planted", "core");
+            let mut ov = registry_announcing(cx, ANNOUNCED_PLANT, "kernel");
             ov.set(
-                "crates/busbar-core-planted/Cargo.toml",
-                "[package]\nname = \"busbar-core-planted\"\nversion = \"0.0.0\"\n\n\
-                 [dependencies]\nbusbar-substrate = { workspace = true }\n",
+                format!("crates/{ANNOUNCED_PLANT}/Cargo.toml"),
+                format!(
+                    "[package]\nname = \"{ANNOUNCED_PLANT}\"\nversion = \"0.0.0\"\n\n\
+                     [dependencies]\nbusbar-substrate = {{ workspace = true }}\n"
+                ),
             );
             report.push(prove_rows_green(
                 cx,
                 subject,
-                "an announced core crate landing reds nothing",
+                "an announced kernel crate landing reds nothing",
                 &[ROW_NAME, ROW_DEPS, ROW_REGISTRY],
                 ov,
             ));
@@ -8139,11 +8210,13 @@ impl Gate for KindIsolationGate {
         // AN ANNOUNCEMENT DOES NOT SURVIVE ITS LANDING PAST A RELEASE. Landing an announced crate
         // is green on the per-push gate (proven above); on the ship sha the spent row is collected.
         // Planted, not borrowed, for the reason on the edge-class case above.
-        let mut ov = registry_announcing(cx, "busbar-core-planted", "core");
+        let mut ov = registry_announcing(cx, ANNOUNCED_PLANT, "kernel");
         ov.set(
-            "crates/busbar-core-planted/Cargo.toml",
-            "[package]\nname = \"busbar-core-planted\"\nversion = \"0.0.0\"\n\n\
-             [dependencies]\nbusbar-substrate = { workspace = true }\n",
+            format!("crates/{ANNOUNCED_PLANT}/Cargo.toml"),
+            format!(
+                "[package]\nname = \"{ANNOUNCED_PLANT}\"\nversion = \"0.0.0\"\n\n\
+                 [dependencies]\nbusbar-substrate = {{ workspace = true }}\n"
+            ),
         );
         report.push(prove_rows_red(
             cx,
@@ -8151,7 +8224,7 @@ impl Gate for KindIsolationGate {
             "an announcement whose crate has landed is collected at ship time",
             &[ROW_REGISTRY],
             ov,
-            &["announced-landed", "busbar-core-planted"],
+            &["announced-landed", ANNOUNCED_PLANT],
         ));
 
         // THE SHIP ROWS. Each plant makes a NAMED, NEW deviation, because both rows are already
@@ -8507,13 +8580,16 @@ fn registry_plant(rows: &str) -> Overlay {
 const PLANTED_UNIT: &str = "busbar-unit-transport-key";
 const PLANTED_SUBSTRATE: &str = "busbar-substrate-values";
 
-/// An announced `core` crate landing with a dependency on the substrate and on a unit.
-fn core_announced_reaching_unit(cx: &Ctx) -> Overlay {
-    let mut ov = registry_announcing(cx, "busbar-core-planted", "core");
+/// THE ANNOUNCED CRATE THE LANDING-WINDOW CASES PLANT: a `kernel`-kind name no real crate has.
+const ANNOUNCED_PLANT: &str = "busbar-kernel-announced";
+
+/// An announced `kernel` crate landing with a dependency on the substrate and on a unit.
+fn announced_reaching_unit(cx: &Ctx) -> Overlay {
+    let mut ov = registry_announcing(cx, ANNOUNCED_PLANT, "kernel");
     ov.set(
-        "crates/busbar-core-planted/Cargo.toml",
+        format!("crates/{ANNOUNCED_PLANT}/Cargo.toml"),
         format!(
-            "[package]\nname = \"busbar-core-planted\"\nversion = \"0.0.0\"\n\n\
+            "[package]\nname = \"{ANNOUNCED_PLANT}\"\nversion = \"0.0.0\"\n\n\
              [dependencies]\n{PLANTED_SUBSTRATE} = {{ workspace = true }}\n\
              {PLANTED_UNIT} = {{ workspace = true }}\n"
         ),
@@ -8944,6 +9020,17 @@ fn verdict_subst(cx: &Ctx, from: &str, to: &str) -> Result<(String, String), Str
     ))
 }
 
+/// That row, with its `verdict` flipped from `allowed` to `owner-ruling-pending` — an unruled row
+/// with no `[[question]]` asking about it, planted over a granted edge that no fold retires, with
+/// the count read off the file rather than copied into the fixture.
+fn pending_subst(cx: &Ctx, from: &str, to: &str) -> Result<(String, String), String> {
+    let anchor = dep_anchor(cx, from, to)?;
+    Ok((
+        format!("{anchor}\nverdict = \"allowed\""),
+        format!("{anchor}\nverdict = \"owner-ruling-pending\""),
+    ))
+}
+
 /// THE `from`/`to` PAIR OF THE FIRST `[[transitional]]` ROW, exactly as the ledger spells it.
 ///
 /// Two lines rather than one because `to = "…"` is not unique in a file that also carries an
@@ -9012,8 +9099,9 @@ fn the_wall_plant(extra: &[&str]) -> Overlay {
     ov.set("crates/busbar-hooks-planted/Cargo.toml", body);
     ov.set(
         "crates/busbar-hooks-planted/src/lib.rs",
-        "//! A hooks plugin written against busbar_contract alone.\n\
-         pub use busbar_contract::Plugin;\n",
+        // One physical line: the segregation scan blanks a literal line by line, so a string
+        // continued onto a line that begins `pub use busbar_...` reads there as an import.
+        "//! A hooks plugin written against busbar_contract alone.\npub use busbar_contract::Plugin;\n",
     );
     ov
 }
@@ -9370,7 +9458,10 @@ mod plant_tests {
                 e.class.1.as_str()
             })
             .collect();
-        for k in ["hooks", "store", "export", "transport", "plane"] {
+        // `export` is not here: the export sinks left this repository for their own (pulled as
+        // pinned git dependencies), so the census, which reads this tree's crates, holds none of
+        // them and the root links no in-tree export crate.
+        for k in ["hooks", "store", "transport", "plane"] {
             assert!(
                 linked.contains(k),
                 "the root no longer links a `{k}` crate — the census is not the tree this test \
@@ -9405,13 +9496,12 @@ mod plant_tests {
                 verdict_for(&(k.to_string(), CONTRACT_KIND.to_string())),
                 "allowed"
             );
-            assert!(!is_the_wall(k, "api"), "{k} -> api is past the wall");
+            assert!(!is_the_wall(k, "unit"), "{k} -> unit is past the wall");
             assert!(!is_the_wall(k, "kernel"), "{k} -> kernel is past the wall");
         }
         for neutral in [
             "kernel",
-            "core",
-            "api",
+            CLEANLINESS,
             "root",
             "unit",
             "legacy",
@@ -9424,9 +9514,53 @@ mod plant_tests {
         }
     }
 
+    /// THE CORE TIERS NAME THE CONTRACT BY DESIGN (#83/#83a), and nothing wider follows from it:
+    /// every tier's contract class is granted and unmeasured, while a plugin reaching past the
+    /// contract, a legacy engine's or the plugin tooling's contract naming, and the contract
+    /// reaching any other crate are all still judged.
+    #[test]
+    fn the_core_tiers_name_the_contract_by_design_and_nothing_wider() {
+        for tier in CONTRACT_TIERS {
+            assert!(
+                ARCHITECTURE_ALLOWED.contains(&(tier, CONTRACT_KIND)),
+                "`{tier} -> contract` must be a granted class"
+            );
+            assert!(names_contract_by_design(tier, CONTRACT_KIND), "{tier}");
+            assert!(
+                !names_contract_by_design(tier, "plane"),
+                "{tier} -> plane is measured"
+            );
+        }
+        for k in truths::PLUGIN_KINDS {
+            assert!(names_contract_by_design(k, CONTRACT_KIND), "{k}: the wall");
+            assert!(
+                !names_contract_by_design(k, "kernel"),
+                "{k} -> kernel is past the wall"
+            );
+        }
+        for measured in ["legacy", "plugin-tooling"] {
+            assert!(
+                !names_contract_by_design(measured, CONTRACT_KIND),
+                "{measured}"
+            );
+        }
+        for (from, to) in ARCHITECTURE_ALLOWED {
+            assert_ne!(
+                *from, CONTRACT_KIND,
+                "the contract depends on nothing of busbar's; `contract -> {to}` is granted"
+            );
+        }
+        for other in ["kernel", "root", "plane", CLEANLINESS] {
+            assert!(
+                !names_contract_by_design(CONTRACT_KIND, other),
+                "contract -> {other}"
+            );
+        }
+    }
+
     /// Asked of the rule directly, finding by finding, so no standing debt on the real tree can
     /// answer it: the planted crate on the wall draws NO finding on either half of the graph, and
-    /// the same crate reaching busbar-api draws one that names the api edge.
+    /// the same crate reaching busbar-kernel draws one that names the kernel edge.
     #[test]
     fn a_plugin_crate_on_the_wall_draws_no_finding_and_one_past_it_is_red() {
         let green = the_wall_plant(&[]);
@@ -9449,13 +9583,10 @@ mod plant_tests {
             );
         }
 
-        let red = deps_over(the_wall_plant(&["busbar-plugin"]));
+        let red = deps_over(the_wall_plant(&["busbar-kernel"]));
         assert_red_naming(
             &red,
-            &[
-                "busbar-hooks-planted -> busbar-plugin",
-                "hooks -> plugin-abi",
-            ],
+            &["busbar-hooks-planted -> busbar-kernel", "hooks -> kernel"],
         );
         assert!(
             !red.detail
@@ -9530,8 +9661,8 @@ mod plant_tests {
             &["unlisted-transitional", "busbar-llm", PLANTED_UNIT],
         );
         assert_red_naming(
-            &deps_over(core_announced_reaching_unit(&ws())),
-            &["announced-edge-class", "core -> unit"],
+            &deps_over(announced_reaching_unit(&ws())),
+            &["announced-edge-class", "kernel -> unit"],
         );
     }
 

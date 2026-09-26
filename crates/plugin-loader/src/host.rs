@@ -6,7 +6,7 @@
 //! A cold plugin has no host-callback vtable; it cannot be handed a file descriptor, and it must not
 //! open a path or dial a socket itself (the host owns the destination and the egress chokepoint —
 //! BUSBAR-1.6.0 18b(c), Part 4 Axis 3). So a sink ASKS: a delivery answers
-//! [`ExportResponse::Host`](busbar_plugin::cold::export::ExportResponse::Host) with the acts it
+//! [`ExportResponse::Host`](busbar_contract::abi::cold::export::ExportResponse::Host) with the acts it
 //! needs, the host performs them here under its own rules, and hands the outcomes back on
 //! `resume`.
 //!
@@ -24,7 +24,9 @@
 //! external rotator moved aside is not written through a stale descriptor, and an unopenable path is
 //! a per-write failure the sink reports rather than a boot it refuses.
 
-use busbar_plugin::cold::export::{HostOp, HostResult, HttpRequest, Rotation, RotationFault};
+use busbar_contract::abi::cold::export::{
+    HostOp, HostResult, HttpRequest, Rotation, RotationFault,
+};
 use std::collections::BTreeMap;
 use std::io::Write as _;
 use std::path::Path;

@@ -1,0 +1,46 @@
+{
+  "_comment": [
+    "THE DIALECT FIXTURE the node's tests drive the node-axis plane with (root/tests/plane_node.rs).",
+    "Data, not code (ARCHITECT F-T): the dialect names, each dialect's native request body and the",
+    "customer-visible facts its URL carries live here, so the test source names no vendor. Every",
+    "dialect named here is resolved against the linked table the root installs (`crate::LINKED`),",
+    "so a row for a dialect the plane no longer declares fails the test that reads it.",
+    "path_model: the URL-model dialects, one row each, in the linked path table's order:",
+    "  body -- the native request body (the model is in the URL, so one body serves every fixture);",
+    "  json_array_when_streamed -- a streamed request on this dialect's URL takes the JSON-array framing;",
+    "  model_not_found -- the dialect's own miss copy for a model the URL named ({model} is the name),",
+    "    or null for the neutral sentence;",
+    "  over_budget_status -- the status the door's over-budget turn-away answers in this dialect.",
+    "body_model: each body-model dialect's native request body; the test adds the `model` member.",
+    "rerank: the upstream provider the rerank lane is configured with, and the URL-model dialect",
+    "  the rerank unit arrives on."
+  ],
+  "path_model": [
+    {
+      "dialect": "gemini",
+      "body": {"contents": [{"role": "user", "parts": [{"text": "hi"}]}]},
+      "json_array_when_streamed": true,
+      "model_not_found": "models/{model} is not found for API version v1beta, or is not supported for the task you are trying to perform.",
+      "over_budget_status": "429"
+    },
+    {
+      "dialect": "bedrock",
+      "body": {"messages": [{"role": "user", "content": [{"text": "hi"}]}]},
+      "json_array_when_streamed": false,
+      "model_not_found": null,
+      "over_budget_status": "400"
+    }
+  ],
+  "body_model": {
+    "anthropic": {"max_tokens": 16, "messages": [{"role": "user", "content": "hi"}]},
+    "openai": {"messages": [{"role": "user", "content": "hi"}]},
+    "gemini": {"contents": [{"role": "user", "parts": [{"text": "hi"}]}]},
+    "bedrock": {"messages": [{"role": "user", "content": [{"text": "hi"}]}]},
+    "responses": {"input": "hi"},
+    "cohere": {"message": "hi"}
+  },
+  "rerank": {
+    "provider": "cohere",
+    "path_dialect": "bedrock"
+  }
+}

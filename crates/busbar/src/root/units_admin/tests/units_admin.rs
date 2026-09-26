@@ -2764,6 +2764,72 @@ fn the_seal_and_the_marker_this_node_made_are_the_ones_it_serves() {
     );
 }
 
+/// THE CHECKPOINTS READ RENDERS THE SEAL'S VERIFICATION (OWNER Q71(3): one keyset, #82): a
+/// checkpoint the node's own chain key signed verifies against the node's audit keyset, and each
+/// refusal is served in its own words — an EDITED seal and an UNSIGNED one.
+#[cfg(feature = "root-admin")]
+#[test]
+fn the_checkpoints_read_serves_whether_each_seal_verifies_against_the_audit_keyset() {
+    let units = crate::root::kernel::ProductionUnits::admin_only(Arc::new(AnsweringDispatch));
+    let seal = busbar_contract::caps::KernelSeal::acquire_for_kernel();
+    let token = busbar_contract::caps::Grant::<busbar_contract::caps::DurableWrite>::mint(&seal);
+    {
+        let mut durability = units.durability.lock().expect("durability lock");
+        durability.record = busbar_kernel_audit::AuditChain::new()
+            .signing_with(busbar_kernel_audit::AuditSigningKey::from_seed(&[7u8; 32]));
+        let signed = durability
+            .seal_checkpoint(
+                &token,
+                busbar_contract::caps::StepName::Meter,
+                1_700_000_100,
+            )
+            .expect("the node seals and signs");
+        // The same seal with a figure edited after it was made, and one nobody signed.
+        let mut edited = signed.clone();
+        edited.checkpoint_seq = 2;
+        let unsigned = busbar_kernel_ledger::checkpoint::Checkpoint::seal(
+            3,
+            0,
+            1_700_000_200,
+            Vec::new(),
+            std::collections::BTreeMap::new(),
+            0,
+            0,
+            None,
+        )
+        .expect("an unsigned seal cannot fail");
+        durability.checkpoints.push(edited);
+        durability.checkpoints.push(unsigned);
+    }
+
+    let node = AdminNode::new(crate::root::kernel::new_kernel(), units);
+    let served: serde_json::Value = serde_json::from_slice(
+        &node
+            .answer(a_ledger_request("/api/v1/admin/ledger/checkpoints"))
+            .body,
+    )
+    .expect("valid JSON");
+    let sealed = served["checkpoints"].as_array().expect("checkpoints");
+    assert_eq!(sealed.len(), 3);
+
+    assert_eq!(sealed[0]["signed"], true);
+    assert_eq!(sealed[0]["seal_verifies"], true);
+    assert_eq!(sealed[0]["seal_refusal"], serde_json::Value::Null);
+
+    assert_eq!(sealed[1]["seal_verifies"], false);
+    assert_eq!(
+        sealed[1]["seal_refusal"],
+        "checkpoint 2 does not hash to its own figures — it was EDITED after it was sealed"
+    );
+
+    assert_eq!(sealed[2]["signed"], false);
+    assert_eq!(sealed[2]["seal_verifies"], false);
+    assert_eq!(
+        sealed[2]["seal_refusal"],
+        "checkpoint 3 carries no signature — no key in the keyset can vouch for it"
+    );
+}
+
 /// A caller the node will not authenticate gets from a ledger view exactly what it gets from
 /// the legacy read that touches the same money — byte for byte, including the status.
 ///
@@ -3053,12 +3119,16 @@ impl AuditView for SealedChain {
     }
 }
 
+/// The audit step's pass, as the loop lends it at that step — one mint for every chain test here.
+#[cfg(feature = "root-admin")]
+fn an_audit_pass() -> busbar_contract::caps::Pass<busbar_contract::caps::Audit> {
+    busbar_contract::caps::Pass::mint(&busbar_contract::caps::KernelSeal::acquire_for_kernel())
+}
+
 /// Seal three records onto a signing chain, and publish the key's public half.
 #[cfg(feature = "root-admin")]
 fn a_sealed_chain() -> SealedChain {
-    use busbar_contract::caps::{
-        Audit as AuditStep, KernelSeal, Origin, OriginKind, Outcome as UnitOutcome, Pass, UnitKey,
-    };
+    use busbar_contract::caps::{KernelSeal, Origin, OriginKind, Outcome as UnitOutcome, UnitKey};
     use busbar_kernel_audit::{
         Audit as _, AuditInputs, Controls, FinishClass, OpClassId, OutcomeFacts, Subject, Usage,
         What,
@@ -3069,7 +3139,7 @@ fn a_sealed_chain() -> SealedChain {
     keys.insert_signer(&signer);
     let mut chain = busbar_kernel_audit::AuditChain::new().signing_with(signer);
 
-    let token: Pass<AuditStep> = Pass::mint(&KernelSeal::acquire_for_kernel());
+    let token = an_audit_pass();
     let mut records = Vec::new();
     for unit in 1..=3u64 {
         records.push(chain.seal(
@@ -4686,7 +4756,7 @@ fn the_derived_figure_equals_the_settled_balance_while_the_history_has_not_moved
     let view = Arc::new(PricedLedger::over(vec![line.clone()]));
     view.history.apply(a_card_at(2.5, 3), 1_000);
 
-    // What the node WOULD HAVE SETTLED for this line — `units_llm::priced_posting`'s own lookup,
+    // What the node WOULD HAVE SETTLED for this line — `plane_node::priced_posting`'s own lookup,
     // spelled here against the same history and the same arrival instant.
     let pinned = view.history.pin().expect("the fixture has a history");
     let settled_nanos = busbar_kernel_ledger::price_line(&line, &pinned.view(), line.tier_bp)
@@ -5354,4 +5424,116 @@ fn the_admin_listener_binds_its_claim_journal_on_a_data_dir_node_only() {
         bound,
         "a node with a data directory binds the admin claims to its journal"
     );
+}
+
+/// THE DEPLOYMENT KEYSET IS WHAT `/audit/keys` PUBLISHES (spec #82(a)(b); ARCHITECTURE.md §1.2,
+/// PB-13; architect ruling 2026-09-26): a node bound to its keyset seals a SIGNED record and a
+/// SIGNED checkpoint, and both verify against the key the served read publishes — parsed off the
+/// wire, not handed over in-process. RED arm: the same node before the keyset is bound publishes
+/// no key and seals both unsigned.
+#[cfg(feature = "root-admin")]
+#[test]
+fn a_signed_record_and_a_signed_checkpoint_verify_against_the_served_audit_keys() {
+    use busbar_contract::caps::{OriginKind, Outcome as UnitOutcome, UnitKey};
+    use busbar_kernel_audit::{
+        Audit as _, AuditChain, AuditInputs, AuditKeySet, AuditVerifyingKey, Controls, FinishClass,
+        OpClassId, OutcomeFacts, Subject, Usage, What,
+    };
+
+    let inputs = || AuditInputs {
+        subject: Subject::PrincipalId("pseudonym-keyset".into()),
+        what: What {
+            unit_key: UnitKey::new(1),
+            op_class: OpClassId::new("chat.completion"),
+            destination: Some("upstream-a".into()),
+            parent: None,
+            pre_hook_head: None,
+            post_hook_head: None,
+        },
+        wall: 1_700_000_001,
+        mono: 1_000,
+        origin: crate::root::kernel::new_kernel().origin(OriginKind::Client),
+        outcome: OutcomeFacts {
+            unit_end: UnitOutcome::Completed,
+            step: None,
+            finish: FinishClass::Complete,
+            hook_failed: false,
+            emission_delta: 0,
+            stale_policy: false,
+        },
+        usage: Usage {
+            lines: Vec::new(),
+            tier_bp: 10_000,
+            fee_count: 1,
+            currency: "USD".into(),
+            rate_card_version: 1,
+            bucket_chain_ref: "chain:free".into(),
+        },
+        controls: Controls::default(),
+        correlation_label: None,
+    };
+    let audit_token = an_audit_pass();
+    let durable = crate::root::kernel::new_kernel().durability_token();
+    let served_keys = |units: crate::root::kernel::ProductionUnits| -> Vec<String> {
+        let node = AdminNode::new(crate::root::kernel::new_kernel(), units);
+        let served: serde_json::Value = serde_json::from_slice(
+            &node
+                .answer(a_ledger_request("/api/v1/admin/audit/keys"))
+                .body,
+        )
+        .expect("valid JSON");
+        served["keys"]
+            .as_array()
+            .expect("keys")
+            .iter()
+            .map(|k| k["public_key"].as_str().expect("public_key").to_string())
+            .collect()
+    };
+
+    // RED ARM: no keyset bound — nothing published, both seals unsigned.
+    let units = crate::root::kernel::ProductionUnits::admin_only(Arc::new(AnsweringDispatch));
+    let (record, checkpoint) = {
+        let mut durability = units.durability.lock().expect("durability lock");
+        let record = durability.record.seal(inputs(), &audit_token);
+        let checkpoint = durability
+            .seal_checkpoint(
+                &durable,
+                busbar_contract::caps::StepName::Meter,
+                1_700_000_100,
+            )
+            .expect("an unsigned seal goes down");
+        (record, checkpoint)
+    };
+    assert!(
+        served_keys(units).is_empty(),
+        "a keyless node publishes no key"
+    );
+    assert!(record.signature.is_none() && checkpoint.signature.is_none());
+
+    // THE KEYSET BOUND, as the boot binds it.
+    let units = crate::root::kernel::ProductionUnits::admin_only(Arc::new(AnsweringDispatch));
+    let (record, checkpoint) = {
+        let mut durability = units.durability.lock().expect("durability lock");
+        crate::root::keyset::bind_ephemeral(&mut durability).expect("the keyset binds");
+        let record = durability.record.seal(inputs(), &audit_token);
+        let checkpoint = durability
+            .seal_checkpoint(
+                &durable,
+                busbar_contract::caps::StepName::Meter,
+                1_700_000_100,
+            )
+            .expect("the node seals and signs");
+        (record, checkpoint)
+    };
+    let published = served_keys(units);
+    assert_eq!(published.len(), 1, "the one deployment key is published");
+    let key = AuditVerifyingKey::from_hex(&published[0]).expect("a published public key");
+    assert_eq!(record.key_id.as_deref(), Some(key.key_id()));
+    AuditChain::verify_signature(&record, &key)
+        .expect("the signed record verifies against the served key");
+    let mut keys = AuditKeySet::new();
+    keys.insert(key);
+    checkpoint
+        .verify_seal(&crate::root::durability::KeySetVerifier::new(keys))
+        .expect("the signed checkpoint verifies against the served key");
 }

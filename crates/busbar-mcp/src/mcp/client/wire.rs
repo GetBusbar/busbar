@@ -6,10 +6,10 @@
 //!
 //! ## Why a vtable and not a `match` on the dispatch path
 //!
-//! [`busbar_substrate_values::transport::Transport`] is an axis of the matrix, and the `structure-lint` gate bans the core
+//! [`busbar_contract::transport::transport::Transport`] is an axis of the matrix, and the `structure-lint` gate bans the core
 //! from comparing one: a dispatch path that can see which transport it is on forks at every step it
 //! takes afterwards. So the axis answers the question once —
-//! [`busbar_substrate_values::transport::Transport::upstream_wire`] is the only `match` on it in the tree — and hands back
+//! [`busbar_contract::transport::transport::Transport::upstream_wire`] is the only `match` on it in the tree — and hands back
 //! an implementation of this trait. `mcp/upstream.rs` calls [`McpWire::send`] and cannot tell an
 //! HTTP POST from a child process's stdin, which is the property that keeps stdio from becoming a
 //! second dispatch path beside the first.
@@ -173,17 +173,17 @@ pub(crate) trait McpWire: Send + Sync {
     async fn notify(&self, leg: &WireLeg<'_>, req: &OutboundRequest) -> Result<(), TransportError>;
 }
 
-/// RESOLVE A [`Transport`](busbar_substrate_values::transport::Transport) TO ITS MCP CLIENT WIRE — the plane half of
-/// the split the axis makes in [`busbar_substrate_values::transport::Transport::upstream_wire`]. The axis answers WHICH
+/// RESOLVE A [`Transport`](busbar_contract::transport::transport::Transport) TO ITS MCP CLIENT WIRE — the plane half of
+/// the split the axis makes in [`busbar_contract::transport::transport::Transport::upstream_wire`]. The axis answers WHICH
 /// channel with a neutral discriminant (so it names no plane type); this maps that discriminant to
 /// the plane's own zero-sized `&'static dyn McpWire` vtable. The `None` arm is loud for the reason the
 /// old `match` was: an A2A binding is never an MCP client leg, and `mcp/config.rs` refuses any
 /// `transport:` that is not `streamable_http` or `stdio` at boot, so a value reaching it here is a
 /// config-grammar defect, never a silently wrong channel.
 pub(crate) fn wire_for(
-    transport: busbar_substrate_values::transport::Transport,
+    transport: busbar_contract::transport::transport::Transport,
 ) -> &'static dyn McpWire {
-    use busbar_substrate_values::transport::UpstreamWireKind;
+    use busbar_contract::transport::transport::UpstreamWireKind;
     match transport.upstream_wire() {
         Some(UpstreamWireKind::StreamableHttp) => &super::transport::HttpTransport,
         Some(UpstreamWireKind::Stdio) => &super::stdio::StdioWire,
@@ -220,7 +220,7 @@ pub(crate) fn wire_for(
 /// ## The label pair, and why it is the model plane's and not a new one
 ///
 /// `pool` is the operator's REGISTRATION ID (`leg.server`) and `lane` is the transport axis's own
-/// word (`busbar_substrate_values::transport::Transport::name()`) — both operator-configured, neither caller-supplied,
+/// word (`busbar_contract::transport::transport::Transport::name()`) — both operator-configured, neither caller-supplied,
 /// so the series count is bounded by the config file exactly as `pool` is on the model plane. A
 /// registration is one upstream, so its pool has one lane, and naming the CHANNEL there is what makes
 /// `busbar_upstream_failures_total{pool="fs"}` distinguishable between a child process that keeps
@@ -253,7 +253,7 @@ pub(crate) fn wire_for(
 /// A JSON-RPC error inside a 2xx is not counted either: an upstream that answered `-32601` is
 /// reachable and healthy, which is the distinction [`TransportError`]'s own note is about.
 pub(crate) async fn send(
-    transport: busbar_substrate_values::transport::Transport,
+    transport: busbar_contract::transport::transport::Transport,
     leg: &WireLeg<'_>,
     req: &OutboundRequest,
 ) -> Result<TransportResponse, TransportError> {
@@ -276,7 +276,7 @@ pub(crate) async fn send(
 /// classify beyond the transport's own verdict.
 #[allow(dead_code)]
 pub(crate) async fn notify(
-    transport: busbar_substrate_values::transport::Transport,
+    transport: busbar_contract::transport::transport::Transport,
     leg: &WireLeg<'_>,
     req: &OutboundRequest,
 ) -> Result<(), TransportError> {

@@ -463,7 +463,7 @@ fn report_abandon_fail(id: &str, e: &RecordStoreError) {
     static ABANDON_UNRECORDED_WARNED: std::sync::atomic::AtomicBool =
         std::sync::atomic::AtomicBool::new(false);
     if !ABANDON_UNRECORDED_WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
-        busbar_substrate_values::diag_error!(
+        busbar_contract::diag_error!(
             crate::diagnostics::A2A_FAILURE_UNRECORDED,
             task_id = %id,
             error = %e,
@@ -552,7 +552,7 @@ impl TaskRegistry {
             let row = match TaskRow::from_body(body) {
                 Ok(r) => r,
                 Err(e) => {
-                    busbar_substrate_values::diag_error!(
+                    busbar_contract::diag_error!(
                         crate::diagnostics::A2A_TASK_ROWS_UNREADABLE,
                         error = %e,
                         "a persisted A2A task row could not be DECODED on restore; it is being \
@@ -562,7 +562,7 @@ impl TaskRegistry {
                 }
             };
             if let Err(e) = readable(&row) {
-                busbar_substrate_values::diag_error!(
+                busbar_contract::diag_error!(
                     crate::diagnostics::A2A_TASK_ROWS_UNREADABLE,
                     task_id = %row.task_id,
                     error = %e,
@@ -587,7 +587,7 @@ impl TaskRegistry {
                 match TaskEventRow::from_body(b) {
                     Ok(ev) => events.push(ev),
                     Err(e) => {
-                        busbar_substrate_values::diag_error!(
+                        busbar_contract::diag_error!(
                             crate::diagnostics::A2A_TASK_ROWS_UNREADABLE,
                             task_id = %row.task_id,
                             error = %e,
@@ -599,7 +599,7 @@ impl TaskRegistry {
                 }
             }
             if let Err(brk) = verify_chain(&events) {
-                busbar_substrate_values::diag_error!(
+                busbar_contract::diag_error!(
                     crate::diagnostics::A2A_TASK_CHAIN_VERIFY_FAILED,
                     task_id = %row.task_id,
                     break_detail = %brk,

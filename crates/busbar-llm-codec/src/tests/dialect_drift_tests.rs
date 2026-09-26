@@ -2,146 +2,103 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE DIALECT-HELPER DRIFT GUARD (#83a SD-3): the plane's own copies of the shared wire helpers
-//! answer exactly what the host's originals answer — the same constants, the same error codes, the
-//! same SSE frame probes, parses and writes, and the same `usage` strips — over one fixture set, so
+//! answer exactly what the shared fixture `testing/plane-copies/dialect-helpers.json` records — the
+//! same constants, error codes, SSE frame probes, parses and writes, and `usage` strips. The fixture is
+//! the host originals' answers, and the host's own suite holds its originals to the same file, so
 //! moving a dialect onto its own copy changes no byte it reads or writes.
 
 use super::*;
-use busbar_kernel::proto as host;
+
+fn fixture() -> serde_json::Value {
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../testing/plane-copies/dialect-helpers.json"
+    );
+    serde_json::from_str(&std::fs::read_to_string(path).expect("fixture readable"))
+        .expect("fixture is JSON")
+}
+
+fn rows(doc: &serde_json::Value, key: &str) -> Vec<serde_json::Value> {
+    doc[key].as_array().expect(key).clone()
+}
+
+fn bytes(v: &serde_json::Value) -> Vec<u8> {
+    crate::hex::decode(v.as_str().expect("hex string")).expect("hex")
+}
 
 #[test]
-fn the_constants_are_the_host_constants() {
-    assert_eq!(CODE_INVALID_API_KEY, host::CODE_INVALID_API_KEY);
+fn the_constants_are_the_fixture_constants() {
+    let c = &fixture()["constants"];
+    assert_eq!(c["CODE_INVALID_API_KEY"], CODE_INVALID_API_KEY);
     assert_eq!(
-        PROVIDER_SIGNAL_CONTEXT_LENGTH,
-        host::PROVIDER_SIGNAL_CONTEXT_LENGTH
+        c["PROVIDER_SIGNAL_CONTEXT_LENGTH"],
+        PROVIDER_SIGNAL_CONTEXT_LENGTH
     );
-    assert_eq!(MESSAGE_NAMES_SENTINEL, host::MESSAGE_NAMES_SENTINEL);
-    assert_eq!(SSE_DONE_SENTINEL, host::SSE_DONE_SENTINEL);
-    assert_eq!(SSE_DONE_FRAME, host::SSE_DONE_FRAME);
-    assert_eq!(HDR_AUTHORIZATION, host::HDR_AUTHORIZATION);
-    assert_eq!(BASE62_ALPHABET, host::BASE62_ALPHABET);
-    assert_eq!(BASE62_REJECT_THRESHOLD, host::BASE62_REJECT_THRESHOLD);
+    assert_eq!(c["MESSAGE_NAMES_SENTINEL"], MESSAGE_NAMES_SENTINEL);
+    assert_eq!(c["SSE_DONE_SENTINEL"], SSE_DONE_SENTINEL);
+    assert_eq!(
+        c["SSE_DONE_FRAME"].as_str().map(str::as_bytes),
+        Some(SSE_DONE_FRAME)
+    );
+    assert_eq!(c["HDR_AUTHORIZATION"], HDR_AUTHORIZATION);
+    assert_eq!(
+        c["BASE62_ALPHABET"].as_str().map(str::as_bytes),
+        Some(&BASE62_ALPHABET[..])
+    );
+    assert_eq!(c["BASE62_REJECT_THRESHOLD"], BASE62_REJECT_THRESHOLD);
 }
 
 #[test]
 fn error_codes_and_prose_scans_agree() {
-    for t in [
-        "authentication_error",
-        "insufficient_quota",
-        "invalid_request_error",
-        "permission_error",
-        "not_found_error",
-        "rate_limit_error",
-        "server_error",
-        "api_error",
-        "overloaded_error",
-        "something_else",
-        "",
-    ] {
-        assert_eq!(bearer_error_code(t), host::bearer_error_code(t), "{t}");
+    let doc = fixture();
+    for r in rows(&doc, "bearer_error_code") {
+        let t = r["type"].as_str().expect("type");
+        assert_eq!(bearer_error_code(t), r["code"], "{t}");
     }
-    for text in [
-        "this model's maximum context length is 8192 tokens",
-        "context length exceeded",
-        "please reduce the length of the messages",
-        "input exceeds the context window",
-        "prompt exceeds token limit",
-        "maximum number of tokens allowed per day",
-        "exceeds quota",
-        "",
-    ] {
-        assert_eq!(
-            context_length_prose_scan(text),
-            host::context_length_prose_scan(text),
-            "{text}"
-        );
+    for r in rows(&doc, "context_length_prose_scan") {
+        let t = r["text"].as_str().expect("text");
+        assert_eq!(context_length_prose_scan(t), r["context_length"], "{t}");
     }
-}
-
-fn frames() -> Vec<&'static [u8]> {
-    vec![
-        b"event: message_start\ndata: {\"a\":1}\n\n",
-        b"data: {\"a\":1}\n\n",
-        b"event: a\r\nevent: b\r\ndata: x\r\ndata: y\r\n\r\n",
-        b"event: message_start\rdata: {}\r\r",
-        b"event: only\n\n",
-        b"data:no-space\n\n",
-        b"data: [DONE]\n\n",
-        b"\xff\xfe",
-        b"",
-    ]
 }
 
 #[test]
 fn sse_probes_parses_and_writes_agree() {
-    for frame in frames() {
+    let doc = fixture();
+    for r in rows(&doc, "sse_frames") {
+        let frame = bytes(&r["frame_hex"]);
+        assert_eq!(sse_event_type(&frame), r["event_type"], "{frame:?}");
         assert_eq!(
-            sse_event_type(frame),
-            host::sse_event_type(frame),
-            "{frame:?}"
-        );
-        assert_eq!(
-            parse_sse_frame(frame),
-            host::parse_sse_frame(frame),
+            serde_json::json!(parse_sse_frame(&frame)),
+            r["parsed"],
             "{frame:?}"
         );
     }
-    for (event, data) in [
-        (
-            "message_delta",
-            serde_json::json!({"usage": {"output_tokens": 3}}),
-        ),
-        ("", serde_json::json!({"choices": [], "s": "é \"q\""})),
-        ("x", serde_json::json!(null)),
-    ] {
-        let (mut plane, mut hostv) = (Vec::new(), Vec::new());
-        write_sse_frame(&mut plane, event, &data);
-        host::write_sse_frame(&mut hostv, event, &data);
-        assert_eq!(plane, hostv, "{event}");
+    for r in rows(&doc, "write_sse_frame") {
+        let mut out = Vec::new();
+        write_sse_frame(
+            &mut out,
+            r["event_type"].as_str().expect("event"),
+            &r["data"],
+        );
+        assert_eq!(out, bytes(&r["frame_hex"]), "{}", r["event_type"]);
     }
 }
 
 #[test]
 fn value_projections_and_the_usage_strip_agree() {
-    for v in [
-        serde_json::json!("{not json"),
-        serde_json::json!({"a": [1, 2, {"b": "c"}]}),
-        serde_json::json!(null),
-        serde_json::json!(1.5),
-    ] {
-        assert_eq!(
-            tool_arguments_to_string(&v),
-            host::tool_arguments_to_string(&v)
-        );
+    let doc = fixture();
+    for r in rows(&doc, "tool_arguments_to_string") {
+        assert_eq!(tool_arguments_to_string(&r["input"]), r["arguments"]);
     }
-    for messages in [
-        vec![serde_json::json!({"role": "user", "content": "hi"})],
-        vec![
-            serde_json::json!({"role": "user", "content": "hi"}),
-            serde_json::json!({"role": "assistant", "content": [{"type": "text"}]}),
-        ],
-        vec![],
-    ] {
-        assert_eq!(
-            rewrite_text_pairs(&messages),
-            host::rewrite_text_pairs(&messages)
-        );
+    for r in rows(&doc, "rewrite_text_pairs") {
+        let messages = r["messages"].as_array().expect("messages");
+        assert_eq!(serde_json::json!(rewrite_text_pairs(messages)), r["pairs"]);
     }
-    for json in [
-        r#"{"id":"x","usage":null,"choices":[]}"#,
-        r#"{"usage":{"prompt_tokens":1},"id":"x"}"#,
-        r#"{"id":"x","choices":[{"delta":{"content":"\"usage\":null"}}],"usage":null}"#,
-        r#"{"a":{"usage":null}}"#,
-        r#"{"usage":1,"usage":2}"#,
-        r#"  { "usage" : [1,{"x":"}"}] , "k":true }"#,
-        r#"[1,2]"#,
-        r#"{"unterminated":"#,
-        "",
-    ] {
+    for r in rows(&doc, "strip_top_level_usage_member") {
+        let json = r["json"].as_str().expect("json");
         assert_eq!(
-            strip_top_level_usage_member(json),
-            host::strip_top_level_usage_member(json),
+            serde_json::json!(strip_top_level_usage_member(json)),
+            r["stripped"],
             "{json}"
         );
     }

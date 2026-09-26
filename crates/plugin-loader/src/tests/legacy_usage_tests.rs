@@ -132,7 +132,7 @@ fn add_usage_to_a_current_store_still_sends_the_unit_map() {
         return;
     }
     let delta = one_delta();
-    let sent = request_json_for(busbar_plugin::cold::ABI_VERSION, |s| {
+    let sent = request_json_for(busbar_contract::abi::cold::ABI_VERSION, |s| {
         s.add_usage("bucket", 0, &delta).expect("flush accepted");
     });
     let model = &sent["AddUsage"]["delta"]["models"][0];
@@ -205,7 +205,9 @@ fn the_legacy_wire_covers_exactly_the_schemas_below_the_unit_map() {
     assert!(needs_legacy_usage_wire(2), "every published 1.5.x store");
     assert!(needs_legacy_usage_wire(3));
     assert!(!needs_legacy_usage_wire(4));
-    assert!(!needs_legacy_usage_wire(busbar_plugin::cold::ABI_VERSION));
+    assert!(!needs_legacy_usage_wire(
+        busbar_contract::abi::cold::ABI_VERSION
+    ));
 }
 
 /// A round trip through the 1.5.5 shape preserves the four priced tiers exactly.

@@ -452,7 +452,7 @@ fn every_diagnostic_code_is_unique_across_the_neutral_and_plane_catalogues() {
     // would panic by design.
     register_diagnostics();
 
-    let all = busbar_substrate_values::diagnostics::all();
+    let all = busbar_kernel::diagnostics::all();
     assert!(
         !all.is_empty(),
         "the catalog must not be empty — the walk would assert nothing"
@@ -482,7 +482,10 @@ fn every_diagnostic_code_is_unique_across_the_neutral_and_plane_catalogues() {
 // A PLANE-GATED MODULE IS NAMED ONLY FROM CODE UNDER THE SAME GATE
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 
-/// The features a `#[cfg(feature = "…")]` attribute names, or nothing if it is not a `cfg` gate.
+/// The gates a `#[cfg(…)]` attribute names — each `feature = "…"`, and each generated linked-axis
+/// cfg (`linked_axis_<axis>`, set by `build.rs` when a linked plane rides that axis, which is how a
+/// root module that exists for an axis rather than for one plane is gated) — or nothing if it is not
+/// a `cfg` gate.
 ///
 /// `cfg_attr` is deliberately NOT a gate: it decorates code that compiles either way, so a feature
 /// named inside one says nothing about whether the line it sits over is compiled.
@@ -498,6 +501,16 @@ fn cfg_gate_features(attr: &str) -> Vec<String> {
         let Some(end) = rest.find('"') else { break };
         out.push(rest[..end].to_string());
         rest = &rest[end..];
+    }
+    const AXIS: &str = "linked_axis_";
+    let mut rest = attr;
+    while let Some(at) = rest.find(AXIS) {
+        let tail = &rest[at..];
+        let end = tail
+            .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+            .unwrap_or(tail.len());
+        out.push(tail[..end].to_string());
+        rest = &tail[end..];
     }
     out
 }
@@ -623,7 +636,8 @@ fn source_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
 
 /// A ROOT MODULE GATED ON A PLANE'S FEATURE IS NAMED ONLY FROM CODE UNDER THE SAME FEATURE.
 ///
-/// The point of gating `units_<plane>` on `root-<plane>` is that the plane is DELETABLE: a build
+/// The point of gating a plane's root module on the plane's switch (its feature, or the linked-axis
+/// cfg the plane's row sets — the node on `linked_axis_node`) is that the plane is DELETABLE: a build
 /// without the feature must still compile, boot and serve the remaining planes. One unconditional
 /// call into a gated module takes that away, and takes it away SILENTLY — every default build is
 /// green, and only the deletion gates, which are not what a change is usually run against, go red.
@@ -641,7 +655,7 @@ fn a_plane_gated_module_is_named_only_from_code_under_the_same_feature() {
     let root_mod = std::fs::read_to_string(src.join("root/mod.rs"))
         .expect("the composition root's own module file is where the gates are declared");
 
-    // (module name, the single feature its declaration is gated on).
+    // (module name, the single gate — a feature or a linked-axis cfg — its declaration carries).
     let mut gated: Vec<(String, String)> = Vec::new();
     let lines: Vec<&str> = root_mod.lines().collect();
     for (i, line) in lines.iter().enumerate() {
@@ -895,20 +909,16 @@ fn the_boot_path_opens_the_configured_directory_and_seals_before_it_settles() {
     );
 
     // (c) AND IT WAS SEALED FIRST. Nothing else is on the chain yet — the book has not been handed
-    //     to a listener, and this is the instant before the first connection could settle.
+    //     to a listener, and this is the instant before the first connection could settle. The one
+    //     record ahead of the marker is the deployment keyset's `Bootstrap` (spec #82(a)), which
+    //     moves no figure and is sealed before the opening so the opening is signed.
     assert_eq!(
-        first_record.len(),
-        1,
-        "exactly the opening's marker is on the chain at the moment the boot hands the book over; \
-         found {} records",
-        first_record.len()
+        first_record.iter().map(|r| r.class).collect::<Vec<_>>(),
+        vec![RecordClass::Bootstrap, RecordClass::Migration],
+        "exactly the keyset's Bootstrap and the opening's marker are on the chain at the moment \
+         the boot hands the book over"
     );
-    assert_eq!(
-        first_record[0].class,
-        RecordClass::Migration,
-        "the FIRST record on the node's chain is the sealed opening's marker"
-    );
-    let opening_seq = first_record[0].node_seq;
+    let opening_seq = first_record[1].node_seq;
 
     // Now settle, the way an exit arm does, and prove the ORDER rather than merely the presence: the
     // settlement's record is strictly after the opening's. This is the sentence the defect made
@@ -1025,15 +1035,12 @@ fn the_boot_book_ships_its_opening_to_the_configured_store() {
         .replay()
         .expect("the journal reads back")
         .expect("and verifies");
+    // The first boot with a data directory seals the deployment keyset's `Bootstrap` first (spec
+    // #82(a); ARCHITECTURE.md §1.2), then the opening's marker — signed with that keyset.
     assert_eq!(
-        replayed.len(),
-        1,
-        "exactly the one opening marker is on the chain"
-    );
-    assert_eq!(
-        replayed[0].class,
-        RecordClass::Migration,
-        "the sealed opening's marker is a Migration record"
+        replayed.iter().map(|r| r.class).collect::<Vec<_>>(),
+        vec![RecordClass::Bootstrap, RecordClass::Migration],
+        "exactly the keyset's Bootstrap and then the one opening marker are on the chain"
     );
 
     // THE ASSERTION THIS TEST EXISTS FOR. The batch reached the CONFIGURED store's shipper.
@@ -1046,7 +1053,7 @@ fn the_boot_book_ships_its_opening_to_the_configured_store() {
     );
     assert_eq!(
         adapter.head(),
-        Some((mig.node, replayed[0].node_seq)),
+        Some((mig.node, replayed[1].node_seq)),
         "the store acknowledged the opening under THIS node's identity and the marker's sequence"
     );
 }
@@ -1090,6 +1097,83 @@ fn no_configured_directory_still_opens_nothing_and_writes_nothing() {
         adapter.shim_state().records_shipped >= 1,
         "without a directory the book's durability IS the store's, so the batch must still be \
          offered to it"
+    );
+}
+
+/// THE DEPLOYMENT KEYSET AT THE BOOT SEAM (spec #82(a); ARCHITECTURE.md §1.2, PB-13; architect
+/// ruling 2026-09-26): the opening `compose_boot_book` seals is SIGNED with the keyset it bound —
+/// ephemeral without a directory, cached under it with one — and a restart over a directory whose
+/// keyset file is gone refuses `KeysetMissing` in the refusal's own words, which `die` prints.
+#[test]
+fn the_boot_book_signs_its_opening_and_refuses_keyset_missing_without_the_cache() {
+    use busbar_plugin_loader::store_adapter::StoreAdapter;
+
+    let adapter = || {
+        let store: std::sync::Arc<dyn busbar_contract::records::RecordStore> =
+            std::sync::Arc::new(busbar_kernel::governance::MemoryStore::new());
+        StoreAdapter::native(store)
+    };
+    let token = root::kernel::new_kernel().durability_token();
+
+    // No directory: ephemeral, and the opening is signed and verifies against the node's keyset.
+    let (memory, _rows, migration) = compose_boot_book(
+        &adapter(),
+        None,
+        &empty_opening_plan(),
+        1_700_000_000,
+        &token,
+    )
+    .expect("a memory-buffered book composes");
+    let busbar_kernel_ledger::migration::Outcome::Sealed(opening) = &migration.outcome else {
+        panic!("a first boot seals its opening");
+    };
+    let opening = &opening.checkpoint;
+    assert!(opening.signature.is_some(), "the opening is signed");
+    opening
+        .verify_seal(&root::durability::KeySetVerifier::new(
+            root::durability::keyset_of(&memory.record),
+        ))
+        .expect("the node's own keyset verifies its opening");
+
+    // A directory: minted and cached; then the cache is lost and the restart refuses.
+    let dir = BookDir::new("keyset");
+    let (first, _rows, _) = compose_boot_book(
+        &adapter(),
+        Some(dir.0.clone()),
+        &empty_opening_plan(),
+        1_700_000_000,
+        &token,
+    )
+    .expect("the first boot mints the keyset");
+    assert!(first.record.signing_key_id().is_some());
+    drop(first);
+    std::fs::remove_file(dir.0.join(root::keyset::KEYSET_FILE)).expect("the cache is removed");
+    let refused = compose_boot_book(
+        &adapter(),
+        Some(dir.0.clone()),
+        &empty_opening_plan(),
+        1_700_000_000,
+        &token,
+    )
+    .expect_err("a bootstrapped directory with no keyset refuses");
+    let prefix = format!(
+        "KeysetMissing: the journal under {} holds a Bootstrap sealing keyset fingerprint ",
+        dir.0.display()
+    );
+    let suffix = format!(
+        ", and neither the keyset file {}/deployment-keyset nor the configured store yields that \
+         fingerprint. Restore this node's data_dir (the keyset file beside its journal), or boot \
+         against a store that holds the deployment keyset",
+        dir.0.display()
+    );
+    assert!(
+        refused.starts_with(&prefix) && refused.ends_with(&suffix),
+        "the refusal is not KeysetMissing in its own words: {refused}"
+    );
+    assert_eq!(
+        refused.len(),
+        prefix.len() + 64 + suffix.len(),
+        "the fingerprint is 64 hex characters: {refused}"
     );
 }
 

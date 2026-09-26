@@ -4,7 +4,7 @@
 //! Tests for `crates/busbar-core/src/plane_host/mod.rs`.
 
 use super::*;
-use busbar_plugin::hot::{
+use busbar_contract::abi::hot::{
     AdmissionId, AuthQuery, AuthResolved, Decision, Facts, MeterOutcome, MetricSample,
     RawUsageComponent, StatusClass, Usage, UsageComponent, POD_VERSION,
 };
@@ -29,7 +29,7 @@ fn with_test_state<R>(f: impl FnOnce(HostCtx, &PlaneHostVtable, &DispatchScope) 
 #[test]
 fn builds_a_full_vtable_with_frozen_preamble() {
     let vt = build_plane_host_vtable();
-    assert_eq!(busbar_plugin::check_preamble(&vt.abi), Ok(()));
+    assert_eq!(busbar_contract::abi::check_preamble(&vt.abi), Ok(()));
     assert_eq!(vt.size as usize, core::mem::size_of::<PlaneHostVtable>());
     // Every slot is populated and wired after the Phase-1 fan-out: no slot is a `None`.
     assert!(vt.govern_admit.is_some());
@@ -279,7 +279,7 @@ fn sample_of(name: &[u8], value: f64) -> MetricSample {
 fn labelled_sample(name: &[u8], value: f64, labels: &[u8]) -> MetricSample {
     MetricSample {
         size: core::mem::size_of::<MetricSample>() as u32,
-        version: busbar_plugin::hot::POD_VERSION,
+        version: busbar_contract::abi::hot::POD_VERSION,
         _reserved: 0,
         _reserved2: 0,
         value_bits: value.to_bits(),
@@ -356,7 +356,7 @@ fn metrics_emit_refuses_what_the_host_does_not_admit() {
         // name no plane chose and no operator could attribute.
         let unnamed = MetricSample {
             size: core::mem::size_of::<MetricSample>() as u32,
-            version: busbar_plugin::hot::POD_VERSION,
+            version: busbar_contract::abi::hot::POD_VERSION,
             _reserved: 0,
             _reserved2: 0,
             value_bits: 1.0f64.to_bits(),
@@ -854,9 +854,9 @@ static COUNTING_PLANE: crate::plane::registry::PlaneDecl = crate::plane::registr
 };
 
 /// Borrowed label values, as a plane hands them.
-fn values(v: &[&'static str]) -> Vec<busbar_plugin::hot::DeclStr> {
+fn values(v: &[&'static str]) -> Vec<busbar_contract::abi::hot::DeclStr> {
     v.iter()
-        .map(|s| busbar_plugin::hot::DeclStr::new(s))
+        .map(|s| busbar_contract::abi::hot::DeclStr::new(s))
         .collect()
 }
 
@@ -864,7 +864,7 @@ fn values(v: &[&'static str]) -> Vec<busbar_plugin::hot::DeclStr> {
 fn add(
     plane: &'static str,
     family: &str,
-    v: &[busbar_plugin::hot::DeclStr],
+    v: &[busbar_contract::abi::hot::DeclStr],
     delta: u64,
 ) -> StatusClass {
     let _registry = crate::plane::registry::TestRegistryIsolation::seeded(&[&COUNTING_PLANE]);
@@ -917,7 +917,7 @@ fn counter_add_refuses_what_the_plane_did_not_declare() {
     let long: &'static str = Box::leak("x".repeat(65).into_boxed_str());
     let bad_utf8: &'static [u8] = &[0xff, 0xfe];
     let not_utf8 = [
-        busbar_plugin::hot::DeclStr {
+        busbar_contract::abi::hot::DeclStr {
             ptr: bad_utf8.as_ptr(),
             len: 2,
         },
@@ -940,7 +940,7 @@ fn counter_add_refuses_what_the_plane_did_not_declare() {
         (
             "counting-plane",
             "counting_plane_units_total",
-            &[busbar_plugin::hot::DeclStr::NONE, two[1]][..],
+            &[busbar_contract::abi::hot::DeclStr::NONE, two[1]][..],
         ),
         ("undeclaring-plane", "counting_plane_units_total", &two[..]),
     ] {

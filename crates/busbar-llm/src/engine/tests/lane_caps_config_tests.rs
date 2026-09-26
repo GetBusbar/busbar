@@ -7,8 +7,8 @@
 
 use std::collections::HashMap;
 
-use busbar_substrate_values::ir::egress_prep::{LaneCaps, MaxOutputKey};
-use busbar_substrate_values::ir::lane_caps::{
+use busbar_contract::ir::egress_prep::{LaneCaps, MaxOutputKey};
+use busbar_kernel::ir::lane_caps::{
     resolve_lane_caps, MaxOutputKeyCfg, ModelCapabilities, ProviderLaneCaps,
 };
 

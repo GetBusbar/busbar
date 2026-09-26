@@ -48,7 +48,7 @@ use busbar_kernel::{
     build_app_from_config, build_split_routers_with_limits, load_config_from_disk, LoadedConfig,
     ENV_CONFIG,
 };
-use busbar_kernel::{config, config_validate, export, metrics, tls};
+use busbar_kernel::{config, config_validate, diagnostics, export, metrics, tls};
 // Read only by the jemalloc idle-purge fallback below, which is itself
 // `#[cfg(not(target_env = "msvc"))]` — windows-msvc has no jemalloc, so importing this
 // unconditionally is an unused-import error there under `-D warnings`.
@@ -89,10 +89,7 @@ pub(crate) fn build_info_line() -> String {
 /// Print a clean startup error to stderr and exit non-zero. Used for misconfiguration and other
 /// boot-time failures so the operator sees a one-line message instead of a Rust panic backtrace.
 fn die(msg: impl std::fmt::Display) -> ! {
-    eprintln!(
-        "[error] {}: {msg}",
-        busbar_substrate_values::diagnostics::BOOT_FATAL_ERROR.banner()
-    );
+    eprintln!("[error] {}: {msg}", diagnostics::BOOT_FATAL_ERROR.banner());
     std::process::exit(1);
 }
 
@@ -127,7 +124,7 @@ fn worker_threads_from_env(name: &str) -> Option<usize> {
                 eprintln!(
                     "[warn] {code}: {name}={v:?} is not a positive integer; ignoring it and using \
                      the default worker-thread count",
-                    code = busbar_substrate_values::diagnostics::WORKER_THREADS_INVALID.banner()
+                    code = diagnostics::WORKER_THREADS_INVALID.banner()
                 );
                 None
             }
@@ -156,7 +153,7 @@ fn worker_threads_from_config() -> Option<usize> {
             // it goes to STDERR like the other boot diagnostics.
             eprintln!(
                 "[warn] {}: {msg}",
-                busbar_substrate_values::diagnostics::WORKER_THREADS_INVALID.banner()
+                diagnostics::WORKER_THREADS_INVALID.banner()
             );
             None
         }
@@ -240,7 +237,7 @@ fn register_planes() {
 }
 
 /// REGISTER THE LINKED PLANES' DIAGNOSTICS — the composition root's one write into the diagnostics
-/// axis (`busbar_substrate_values::diagnostics::install_diagnostics`). The neutral
+/// axis (`busbar_kernel::diagnostics::install_diagnostics`). The neutral
 /// `REGISTRY ∪ installed` fold makes these codes resolve through `by_code` and land in a rendered
 /// catalog. Installed BEFORE any reader; a build with a plane compiled out contributes nothing.
 fn register_diagnostics() {
@@ -473,7 +470,8 @@ fn main() {
 /// has begun is worse than no opening at all, because it looks authoritative.
 ///
 /// It returns the wired stack, the rows a view reads them back from, and what the migration did.
-/// `secret: None` seals an unsigned opening, which the ledger unit accepts.
+/// The opening is signed with the audit chain's own key (Q71(3): one keyset); a chain given no key
+/// seals it unsigned, which the ledger unit accepts.
 ///
 /// # Errors
 ///
@@ -497,7 +495,9 @@ fn compose_boot_book(
 > {
     let rows = Arc::new(busbar_kernel_ledger::legacy::RecordingRows::new());
     let mut durability = root::durability::build_for_node(
-        &root::durability::DurabilityConfig { data_dir },
+        &root::durability::DurabilityConfig {
+            data_dir: data_dir.clone(),
+        },
         mig.node,
         adapter.shipper(),
         Box::new(busbar_kernel_ledger::legacy::RecordingRows::clone(&rows)),
@@ -517,10 +517,26 @@ fn compose_boot_book(
             "the journal could not record the quarantine boot recovery made"
         );
     }
+    // THE DEPLOYMENT KEYSET (spec #82(a); ARCHITECTURE.md §1.2, PB-13; architect ruling 2026-09-26),
+    // bound BEFORE the opening is sealed so checkpoint 0 is signed with it too. With a data
+    // directory the first boot mints it, caches it there (0600) and seals its fingerprint in a
+    // `Bootstrap` record; a later boot that cannot produce that fingerprint refuses `KeysetMissing`.
+    // Without one it is ephemeral: minted for this process, written nowhere, checked by nothing.
+    root::keyset::bind(
+        &mut durability,
+        data_dir.as_deref(),
+        token,
+        busbar_contract::caps::StepName::Meter,
+        now,
+    )
+    .map_err(|e| e.to_string())?;
     let migration = {
-        let mut records =
-            durability.migration_records(token, busbar_contract::caps::StepName::Meter);
-        root::migration::run(adapter, &mut records, mig, now, None)
+        let (mut records, signer) =
+            durability.migration_records_signed(token, busbar_contract::caps::StepName::Meter);
+        let signer = signer
+            .as_ref()
+            .map(|s| s as &dyn busbar_kernel_ledger::checkpoint::CheckpointSecret);
+        root::migration::run(adapter, &mut records, mig, now, signer)
             .map_err(|e| format!("the boot ledger could not seal its opening balances: {e}"))?
     };
     Ok((durability, rows, migration))
@@ -540,7 +556,14 @@ fn compose_boot_book(
 /// deliberately does not make writing unconditional.
 fn open_boot_book(app: &busbar_kernel::state::App) -> root::durability::NodeBook {
     let Some(gov) = app.governance.as_ref() else {
-        return root::durability::node_book();
+        // No store: the keyset is node-local and ephemeral (PB-13), and the chain still signs.
+        let book = root::durability::node_book();
+        if let Err(e) = root::keyset::bind_ephemeral(
+            &mut book.durability.lock().unwrap_or_else(|p| p.into_inner()),
+        ) {
+            die(e);
+        }
+        return book;
     };
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -717,7 +740,7 @@ async fn run(data_workers: usize) {
         // `resolve_backend` already warned with the remediation; repeat the posture here so the one
         // line an operator greps for ("config is ...") never claims a durability busbar does not have.
         tracing::warn!(
-            diag = %busbar_substrate_values::diagnostics::CONFIG_OVERLAY_NOT_WRITABLE.banner(),
+            diag = %diagnostics::CONFIG_OVERLAY_NOT_WRITABLE.banner(),
             "config is READ-ONLY (the overlay backend is not writable): busbar serves traffic \
              normally, but admin-API config mutations are refused. Set `config.locked: true` to \
              declare this deliberately, or give `config.overlay.file` a writable path."
@@ -749,7 +772,7 @@ async fn run(data_workers: usize) {
     // flag that dumps the full list.
     if cfg.allow_all_metadata {
         tracing::warn!(
-            diag = %busbar_substrate_values::diagnostics::METADATA_PROTECTION_DISABLED.banner(),
+            diag = %diagnostics::METADATA_PROTECTION_DISABLED.banner(),
             "metadata protection DISABLED — all cloud-metadata endpoints reachable"
         );
     } else {
@@ -948,6 +971,33 @@ async fn run(data_workers: usize) {
     let book = (cfg!(feature = "root-admin") || ROOT_UNITS.iter().any(|u| u.opens_book))
         .then(|| open_boot_book(&app_handle.load()));
 
+    // THE CHECKPOINT CADENCE (OWNER Q71(3); ARCHITECTURE.md §4.7): armed on the one book once its
+    // opening is sealed, so every serving append checks the entry half and this tick checks the
+    // interval half — whichever comes first. The tick runs for the process lifetime; each pass
+    // holds the book's lock only for the check (and the seal, when one is due).
+    if let Some(book) = &book {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs());
+        book.durability
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .arm_checkpoints(now);
+        let durability = Arc::clone(&book.durability);
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(std::time::Duration::from_secs(
+                root::durability::CHECKPOINT_TICK_SECS,
+            ));
+            loop {
+                tick.tick().await;
+                durability
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .seal_on_cadence();
+            }
+        });
+    }
+
     // THE ROOT UNITS' BOOK STEP, once the book is open and before either listener binds: the
     // root-driven exit arm is bound to the book, so a posting the loop hands back has somewhere to go.
     if let Some(book) = &book {
@@ -998,6 +1048,13 @@ async fn run(data_workers: usize) {
                 units.admin.pools = std::sync::Arc::new(move |pool: &str| {
                     busbar_kernel::governance::group_provision::pool_known(&live.load(), pool)
                 });
+                // Q71(2): `plane_facts` / `plane_record_write` read the planes this node serves off the
+                // live snapshot (Law 7) and write through the configured store's plane-facing seam.
+                units.admin.planes =
+                    root::units_admin::live_planes(std::sync::Arc::clone(&app_handle));
+                units.admin.records = Some(root::units_admin::live_records(std::sync::Arc::clone(
+                    &app_handle,
+                )));
                 // The root breaker is the kernel's own: one cell set on the node, read through the
                 // live snapshot so an apply's rebuilt store is the one it observes into.
                 units.breaker = root::adapters::BreakerAdapter::over_kernel(
@@ -1540,7 +1597,7 @@ async fn shutdown_signal() {
     let ctrl_c = async {
         if let Err(e) = tokio::signal::ctrl_c().await {
             tracing::warn!(
-                diag = %busbar_substrate_values::diagnostics::SHUTDOWN_SIGNAL_HANDLER_INSTALL_FAILED.banner(),
+                diag = %diagnostics::SHUTDOWN_SIGNAL_HANDLER_INSTALL_FAILED.banner(),
                 error = %e, "failed to install ctrl_c handler; SIGINT shutdown disabled"
             );
             std::future::pending::<()>().await;
@@ -1555,7 +1612,7 @@ async fn shutdown_signal() {
             }
             Err(e) => {
                 tracing::warn!(
-                    diag = %busbar_substrate_values::diagnostics::SHUTDOWN_SIGNAL_HANDLER_INSTALL_FAILED.banner(),
+                    diag = %diagnostics::SHUTDOWN_SIGNAL_HANDLER_INSTALL_FAILED.banner(),
                     error = %e, "failed to install SIGTERM handler; SIGTERM shutdown disabled"
                 );
                 std::future::pending::<()>().await;
@@ -1586,7 +1643,7 @@ async fn shutdown_signal() {
                 }
                 Err(e) => {
                     tracing::warn!(
-                        diag = %busbar_substrate_values::diagnostics::SHUTDOWN_SIGNAL_HANDLER_INSTALL_FAILED.banner(),
+                        diag = %diagnostics::SHUTDOWN_SIGNAL_HANDLER_INSTALL_FAILED.banner(),
                         error = %e, "failed to install ctrl_close handler; CTRL_CLOSE shutdown disabled"
                     );
                     std::future::pending::<()>().await;
@@ -1600,7 +1657,7 @@ async fn shutdown_signal() {
                 }
                 Err(e) => {
                     tracing::warn!(
-                        diag = %busbar_substrate_values::diagnostics::SHUTDOWN_SIGNAL_HANDLER_INSTALL_FAILED.banner(),
+                        diag = %diagnostics::SHUTDOWN_SIGNAL_HANDLER_INSTALL_FAILED.banner(),
                         error = %e, "failed to install ctrl_shutdown handler; CTRL_SHUTDOWN shutdown disabled"
                     );
                     std::future::pending::<()>().await;
@@ -1664,8 +1721,7 @@ fn spawn_jemalloc_idle_purge_fallback() {
                     eprintln!(
                         "[warn] {}: jemalloc idle-purge fallback disabled: could not read \
                          opt.dirty_decay_ms ({e})",
-                        busbar_substrate_values::diagnostics::JEMALLOC_IDLE_PURGE_FALLBACK_UNAVAILABLE
-                            .banner()
+                        diagnostics::JEMALLOC_IDLE_PURGE_FALLBACK_UNAVAILABLE.banner()
                     );
                     return;
                 }
@@ -1693,7 +1749,7 @@ fn spawn_jemalloc_idle_purge_fallback() {
     if let Err(e) = spawned {
         eprintln!(
             "[warn] {}: could not spawn the jemalloc idle-purge fallback thread ({e})",
-            busbar_substrate_values::diagnostics::JEMALLOC_IDLE_PURGE_FALLBACK_UNAVAILABLE.banner()
+            diagnostics::JEMALLOC_IDLE_PURGE_FALLBACK_UNAVAILABLE.banner()
         );
     }
 }

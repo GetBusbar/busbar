@@ -22,7 +22,7 @@
 //! Everything the codec consumes from the engine comes through `busbar-core`'s public surface;
 //! nothing in `busbar-core` names this crate in production, and the `busbar` BINARY — the
 //! composition root — links it and hands [`PROTO_DECL`] to
-//! the substrate's protocol registry (`busbar_kernel::proto::install_protocols`) at boot.
+//! the kernel's protocol registry (`busbar_kernel::proto::install_protocols`) at boot.
 
 /// THE CODEC, THE RECORD VOCABULARY AND THE TWO PURE CONTENT PASSES, RE-EXPORTED FROM
 /// `busbar-plane-mcp`.
@@ -75,7 +75,7 @@ pub mod testkit;
 pub use mcp::{PLANE_DECLARATION, PLANE_HOOKS};
 
 /// MCP'S PLANE-CONTRIBUTED DIAGNOSTICS — the `&'static [&'static Diagnostic]` the composition root
-/// hands to `busbar_substrate_values::diagnostics::install_diagnostics` at boot, re-exported at the crate
+/// hands to `busbar_kernel::diagnostics::install_diagnostics` at boot, re-exported at the crate
 /// root so the `busbar` binary names one stable path (`busbar_mcp::DIAGNOSTICS`). See [`diagnostics`].
 pub use diagnostics::DIAGNOSTICS;
 
@@ -102,7 +102,7 @@ pub mod linked {
     /// The plane axis: the contract declaration, joined kernel-side to the behaviour table.
     pub use crate::mcp::{PLANE_DECLARATION, PLANE_HOOKS};
     /// The protocol axis: the one JSON-RPC declaration.
-    pub static PROTOCOLS: &[&busbar_substrate_values::proto::ProtocolDecl] = &[&crate::PROTO_DECL];
+    pub static PROTOCOLS: &[&busbar_contract::protocol::ProtocolDecl] = &[&crate::PROTO_DECL];
     /// The stdio serve mode: frames on stdin/stdout instead of a listener; the exit code.
     pub use crate::mcp::serve_stdio_boxed as stdio_serve;
     /// The diagnostics axis.

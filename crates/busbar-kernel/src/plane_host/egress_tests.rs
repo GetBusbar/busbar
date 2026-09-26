@@ -8,9 +8,9 @@
 
 use super::*;
 use crate::plane_host::{recover, with_dispatch_scope, HostState};
-use busbar_plugin::hot::host::{HostCtx, PlaneHostVtable};
-use busbar_plugin::hot::pod::POD_VERSION;
-use busbar_plugin::hot::{
+use busbar_contract::abi::hot::host::{HostCtx, PlaneHostVtable};
+use busbar_contract::abi::hot::pod::POD_VERSION;
+use busbar_contract::abi::hot::{
     AuthQuery, AuthResolved, EgressDesc, EgressKind, EgressOpen, StatusClass,
 };
 use std::io::{Read, Write};
@@ -83,7 +83,7 @@ fn http_desc(url: &[u8]) -> EgressDesc {
     EgressDesc {
         size: std::mem::size_of::<EgressDesc>() as u32,
         version: POD_VERSION,
-        kind: busbar_plugin::hot::RawEgressKind::of(EgressKind::OneShot),
+        kind: busbar_contract::abi::hot::RawEgressKind::of(EgressKind::OneShot),
         _reserved: 0,
         allowlist_scope: SCOPE_ALLOW_PRIVATE | SCOPE_ALLOW_PLAINTEXT,
         _reserved2: 0,
@@ -281,7 +281,7 @@ fn open_and_poll_fail_closed_on_null_and_bad_kind() {
         {
             let url = b"http://example.test/".to_vec();
             let mut d = http_desc(&url);
-            d.kind = busbar_plugin::hot::RawEgressKind::of(EgressKind::RawConn);
+            d.kind = busbar_contract::abi::hot::RawEgressKind::of(EgressKind::RawConn);
             assert_eq!(
                 (vt.egress_open.unwrap())(host, &d as *const EgressDesc, &mut out),
                 StatusClass::Unsupported
@@ -292,7 +292,7 @@ fn open_and_poll_fail_closed_on_null_and_bad_kind() {
         {
             let url = b"http://example.test/".to_vec();
             let mut d = http_desc(&url);
-            d.kind = busbar_plugin::hot::RawEgressKind::of(EgressKind::Subprocess);
+            d.kind = busbar_contract::abi::hot::RawEgressKind::of(EgressKind::Subprocess);
             assert_eq!(
                 (vt.egress_open.unwrap())(host, &d as *const EgressDesc, &mut out),
                 StatusClass::Refused
@@ -547,8 +547,8 @@ fn the_connect_head_surfaces_content_type_and_location_as_neutral_records() {
 fn read_fault(
     vt: &PlaneHostVtable,
     host: HostCtx,
-) -> Option<(busbar_plugin::hot::pod::EgressFault, String, String)> {
-    let mut out = std::mem::MaybeUninit::<busbar_plugin::hot::pod::EgressFault>::uninit();
+) -> Option<(busbar_contract::abi::hot::pod::EgressFault, String, String)> {
+    let mut out = std::mem::MaybeUninit::<busbar_contract::abi::hot::pod::EgressFault>::uninit();
     let mut cause = vec![0u8; 8192];
     let mut url = vec![0u8; 8192];
     let class = (vt.egress_fault.unwrap())(
@@ -571,7 +571,7 @@ fn read_fault(
 
 #[test]
 fn a_connect_failure_surfaces_class_connect_with_cause_and_url_kept_separate() {
-    use busbar_plugin::hot::EgressFailClass;
+    use busbar_contract::abi::hot::EgressFailClass;
     // Bind then DROP a listener to obtain a port nothing is listening on, so the connect is refused.
     let port = {
         let l = TcpListener::bind("127.0.0.1:0").expect("bind");
@@ -615,7 +615,7 @@ fn a_connect_failure_surfaces_class_connect_with_cause_and_url_kept_separate() {
 
 #[test]
 fn a_guard_refusal_surfaces_class_refused_with_the_guards_own_reason() {
-    use busbar_plugin::hot::EgressFailClass;
+    use busbar_contract::abi::hot::EgressFailClass;
     // A private/loopback target with a scope that permits neither is refused by the guard.
     let url = b"http://127.0.0.1:9/".to_vec();
     let mut desc = http_desc(&url);

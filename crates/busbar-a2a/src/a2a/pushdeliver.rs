@@ -71,8 +71,8 @@ use super::pushnotify::{self, PinnedCallback, PushNotifyError};
 use super::relay::RelaySeam;
 use super::task::Task;
 use crate::diagnostics::A2A_PUSH_OUTCOME_UNCHAINED;
+use busbar_contract::diag_debug;
 use busbar_contract::vocab as provenance;
-use busbar_substrate_values::diag_debug;
 
 /// THE HEADER EVERY DELIVERY CARRIES, whatever else it carries.
 ///

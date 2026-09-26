@@ -4,7 +4,7 @@
 //! The EXPORT seam of the kind-neutral loader: [`DynExport`], a telemetry sink backed by a
 //! dynamically-loaded plugin whose kind was bound to `export` at load. It queries the plugin's
 //! declared streams ONCE at load (retaining them alongside the handle) and translates each delivery
-//! into a `busbar_call` with the matching op envelope ([`busbar_plugin::cold::export`]).
+//! into a `busbar_call` with the matching op envelope ([`busbar_contract::abi::cold::export`]).
 //!
 //! Mirrors the store/secret load seams: same trust/staging/wire-up pipeline, only the KIND (and the
 //! consuming engine seam) differs. The ACTUAL wiring of a delivery to the engine's
@@ -12,7 +12,7 @@
 //! reports the streams it carries.
 
 use crate::RawPlugin;
-use busbar_plugin::cold::{
+use busbar_contract::abi::cold::{
     endpoint::{EndpointRequest, EndpointResponse, Route},
     export::{ExportRequest, ExportResponse, ExportStream},
     kind as abi_kind,
@@ -155,7 +155,7 @@ impl DynExport {
     /// reports, verbatim. A sink built before the op has nothing to report.
     pub fn check(
         &self,
-        phase: busbar_plugin::cold::export::CheckPhase,
+        phase: busbar_contract::abi::cold::export::CheckPhase,
         instances: &[(String, serde_json::Value)],
     ) -> Result<Vec<String>, String> {
         let req = ExportRequest::Check {
@@ -179,8 +179,8 @@ impl DynExport {
     /// Perform one host op for this sink (K9a S4).
     fn perform(
         &self,
-        op: &busbar_plugin::cold::export::HostOp,
-    ) -> busbar_plugin::cold::export::HostResult {
+        op: &busbar_contract::abi::cold::export::HostOp,
+    ) -> busbar_contract::abi::cold::export::HostResult {
         self.destinations.perform(op)
     }
 
@@ -204,7 +204,7 @@ impl DynExport {
         let metrics = shed.iter();
         let metrics =
             metrics.map(|n| serde_json::json!({"name": n, "type": "counter", "value": 1}));
-        let report = busbar_plugin::cold::observe::Envelope {
+        let report = busbar_contract::abi::cold::observe::Envelope {
             result: (),
             metrics: metrics.collect(),
             diagnostics: Vec::new(),
@@ -239,7 +239,7 @@ impl DynExport {
                 metrics,
                 diagnostics,
             }) => {
-                let report = busbar_plugin::cold::observe::Envelope {
+                let report = busbar_contract::abi::cold::observe::Envelope {
                     result: (),
                     metrics,
                     diagnostics,
@@ -342,7 +342,7 @@ impl crate::PluginRegistry {
     pub fn check_export(
         &self,
         module: &str,
-        phase: busbar_plugin::cold::export::CheckPhase,
+        phase: busbar_contract::abi::cold::export::CheckPhase,
         instances: &[(String, serde_json::Value)],
     ) -> Option<Vec<String>> {
         let p = self
@@ -437,9 +437,9 @@ impl DynExport {
     /// any other act (a destination's file) on the blocking pool.
     async fn perform_async(
         self: std::sync::Arc<Self>,
-        op: busbar_plugin::cold::export::HostOp,
-    ) -> busbar_plugin::cold::export::HostResult {
-        use busbar_plugin::cold::export::{HostOp, HostResult};
+        op: busbar_contract::abi::cold::export::HostOp,
+    ) -> busbar_contract::abi::cold::export::HostResult {
+        use busbar_contract::abi::cold::export::{HostOp, HostResult};
         if let HostOp::Http(request) = op {
             return crate::host::carry_async(request).await;
         }

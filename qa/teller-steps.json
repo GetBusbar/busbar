@@ -13,7 +13,7 @@
     "",
     "THE ROOT COLUMN (`root_legs` + every cell's `root`). The `cell` above is the SHIPPED path: the",
     "step proven where a conformance rig drives the plane as an operator would. Every plane now",
-    "also runs through the composition root -- root-llm / root-voice / root-admin behind their",
+    "also runs through the composition root -- root-llm (the root's node, behind proto-llm) / root-voice / root-admin behind their",
     "features, root-mcp / root-a2a on the kernel-loop rider every linked one-shot plane is served through -- and a step proven on the rig and unwitnessed over the loop is the same half-answer.",
     "So every cell carries a SECOND verdict over its plane's root leg:",
     "  proven -- with `test`: a `<the leg's own file under crates/busbar/src/root/>::<test fn>` cell that drives the",
@@ -76,7 +76,8 @@
   "root_legs": {
     "root-llm": {
       "plane": "llm",
-      "file": "crates/busbar/src/root/tests/units_llm.rs"
+      "file": "crates/busbar/src/root/tests/plane_node.rs",
+      "feature": "proto-llm"
     },
     "root-mcp": {
       "plane": "mcp",
@@ -107,7 +108,7 @@
         "root": {
           "state": "proven",
           "leg": "root-llm",
-          "test": "crates/busbar/src/root/tests/units_llm.rs::every_fixture_reaches_the_end_it_names",
+          "test": "crates/busbar/src/root/tests/plane_node.rs::every_fixture_reaches_the_end_it_names",
           "note": "the Malformed fixture is the arrival step's own parse refusal, taken before a model exists and before anything is accounted"
         }
       },
@@ -118,7 +119,7 @@
         "root": {
           "state": "proven",
           "leg": "root-llm",
-          "test": "crates/busbar/src/root/tests/units_llm.rs::the_loop_decodes_every_dialect_the_way_the_shipped_plane_decodes_it",
+          "test": "crates/busbar/src/root/tests/plane_node.rs::the_loop_decodes_every_dialect_the_way_the_shipped_plane_decodes_it",
           "note": "each of the six body-model dialects driven through run_unit in four shapes and compared with the shipped entry point: a named model reaches the door, a body with no model is the ladder's own 400, a malformed body is step 0's parse refusal, and a verb the dialect declares nothing for is the endpoint's own 404"
         }
       },
@@ -129,7 +130,7 @@
         "root": {
           "state": "proven",
           "leg": "root-llm",
-          "test": "crates/busbar/src/root/tests/units_llm.rs::the_loop_attributes_the_identity_the_door_resolved_and_invents_none",
+          "test": "crates/busbar/src/root/tests/plane_node.rs::the_loop_attributes_the_identity_the_door_resolved_and_invents_none",
           "note": "three credentials through the deployment's own door (EngineHost::identity_admit -- the configured chain plus the one verdict resolution the HTTP middleware runs): the live bearer is admitted and the hold the loop opens names the key it resolved, while a bearer this deployment never minted and one whose exp has passed are both refused before the plane, and the shape the middleware leaves when it binds no key settles on the anonymous actor rather than on the key that was turned away"
         }
       },
@@ -140,7 +141,7 @@
         "root": {
           "state": "proven",
           "leg": "root-llm",
-          "test": "crates/busbar/src/root/tests/units_llm.rs::every_fixture_reaches_the_end_it_names",
+          "test": "crates/busbar/src/root/tests/plane_node.rs::every_fixture_reaches_the_end_it_names",
           "note": "the PoolAcl fixture: a key that may not reach the pool it named, refused by the pre-admission guard before anything is priced"
         }
       },
@@ -151,7 +152,7 @@
         "root": {
           "state": "proven",
           "leg": "root-llm",
-          "test": "crates/busbar/src/root/tests/units_llm.rs::a_seated_gate_stops_the_unit_before_the_door_and_an_empty_seat_list_changes_nothing",
+          "test": "crates/busbar/src/root/tests/plane_node.rs::a_seated_gate_stops_the_unit_before_the_door_and_an_empty_seat_list_changes_nothing",
           "note": "the 1.6.0-native Before(Approve) seat driven both ways through run_unit: the mount's own seat list is asserted empty (the migrated hooks fire after the door and a veto moved in front of a charge would change what is billed), a seat that does not veto is consulted and the unit still answers what the shipped entry point answers, and a seat that vetoes stops the unit at approve -- nothing charged, no metering row, the upstream never dialled, one link on the chain and the plane's own permission refusal in the caller's dialect"
         }
       },
@@ -162,7 +163,7 @@
         "root": {
           "state": "proven",
           "leg": "root-llm",
-          "test": "crates/busbar/src/root/tests/units_llm.rs::the_loop_leaves_the_money_where_the_shipped_plane_leaves_it",
+          "test": "crates/busbar/src/root/tests/plane_node.rs::the_loop_leaves_the_money_where_the_shipped_plane_leaves_it",
           "note": "the OverBudget fixture: the door refuses, and the money the store holds afterwards is compared against the shipped plane's"
         }
       },
@@ -173,7 +174,7 @@
         "root": {
           "state": "proven",
           "leg": "root-llm",
-          "test": "crates/busbar/src/root/tests/units_llm.rs::the_loop_matches_the_shipped_entry_point_on_every_fixture",
+          "test": "crates/busbar/src/root/tests/plane_node.rs::the_loop_matches_the_shipped_entry_point_on_every_fixture",
           "note": "the walk the route step drives, compared byte for byte with the shipped entry point on all six fixtures"
         }
       },
@@ -184,7 +185,7 @@
         "root": {
           "state": "proven",
           "leg": "root-llm",
-          "test": "crates/busbar/src/root/tests/units_llm.rs::the_loop_leaves_the_money_where_the_shipped_plane_leaves_it",
+          "test": "crates/busbar/src/root/tests/plane_node.rs::the_loop_leaves_the_money_where_the_shipped_plane_leaves_it",
           "note": "the delivered fixtures' usage and spend, compared field by field against the shipped plane's own"
         }
       },
@@ -195,7 +196,7 @@
         "root": {
           "state": "proven",
           "leg": "root-llm",
-          "test": "crates/busbar/src/root/tests/units_llm.rs::one_unit_leaves_exactly_one_link_on_the_chain",
+          "test": "crates/busbar/src/root/tests/plane_node.rs::one_unit_leaves_exactly_one_link_on_the_chain",
           "note": "one unit over the loop seals exactly one link, with the action and outcome the shipped plane seals"
         }
       },
@@ -206,7 +207,7 @@
         "root": {
           "state": "proven",
           "leg": "root-llm",
-          "test": "crates/busbar/src/root/tests/units_llm.rs::one_unit_leaves_exactly_one_link_on_the_chain",
+          "test": "crates/busbar/src/root/tests/plane_node.rs::one_unit_leaves_exactly_one_link_on_the_chain",
           "note": "the same cell is the exit assertion: exactly one link, never two, so the exit posts once"
         }
       }

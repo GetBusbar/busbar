@@ -1256,13 +1256,27 @@ pub fn one_teller_loop(tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, String> {
 
 // ── 11. no-response-escapes-audit ────────────────────────────────────────────────────────────────
 
+/// A function under the plane's step directory whose return type names a `Response` is an escape,
+/// wherever it is but the allowed files. THE ONE EXEMPTION IS IN THE SCOPE, NOT PER FUNCTION (#28):
+/// the plane answers with the two-variant `PlaneAnswer`, and its `Live` constructor — the
+/// `answer_carrier` key — is the one carrier a response crosses the plane's boundary in. A return
+/// type naming the carrier's type is not a `Response` return; a carrier configured AS a bare
+/// `Response` would exempt the very thing the rule refuses, so the rule refuses that configuration.
 pub fn no_response_escapes_audit(tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, String> {
     let c = cfg.rule("no-response-escapes-audit")?;
     let root_raw = need_str(c, "root", "no-response-escapes-audit")?;
     let root = format!("{}/", root_raw.trim_end_matches('/'));
     let max_escapes = need_int(c, "max_escapes", "no-response-escapes-audit")?;
     let allowed = c.list_of("allowed_files");
+    let carrier = need_str(c, "answer_carrier", "no-response-escapes-audit")?;
     let returns = Regex::new(r"->[^{;]*(?<![A-Za-z0-9_])Response(?![A-Za-z0-9_])")?;
+    let carrier_type = carrier.split("::").next().unwrap_or(carrier);
+    if returns.is_match_str(&format!("-> {carrier_type}")) {
+        return Err(format!(
+            "[rules.no-response-escapes-audit] answer_carrier `{carrier}` is a bare Response: \
+             the #28 carrier exemption cannot exempt the type the rule refuses"
+        ));
+    }
 
     let files: Vec<&String> = tree
         .fns
@@ -1299,7 +1313,7 @@ pub fn no_response_escapes_audit(tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, St
     } else {
         format!(
             "{current} function(s) under {root_raw} returning a Response outside {} (ceiling \
-             {max_escapes}): {}",
+             {max_escapes}; answer carrier {carrier}, #28): {}",
             py_list(&sorted_allowed),
             join_or_none(&offenders)
         )
@@ -1389,3 +1403,64 @@ pub fn one_pick_site(tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, String> {
 /// The unused-parameter shim: several rules take a `Ctx` they only need for the tree walk, and
 /// keeping the signature uniform is what lets the rule table stay a table.
 pub fn unused(_cx: &Ctx) {}
+
+#[cfg(test)]
+mod no_response_escapes_audit_tests {
+    use super::*;
+    use crate::gates::construction::tree::{find_fns, scan_text, Lexer};
+
+    /// One step file, scanned the way the gate scans the tree, under the rule's configured root.
+    fn tree_of(src: &str) -> Tree {
+        let lexer = Lexer::new().expect("the lexer builds");
+        let rel = "crates/busbar-llm/src/unit/node.rs".to_string();
+        let lines = scan_text(&lexer, &rel, src, &[]);
+        let fns = find_fns(&lexer, &rel, &lines);
+        Tree {
+            root: std::path::PathBuf::from("."),
+            files: BTreeMap::from([(rel.clone(), std::sync::Arc::new(lines))]),
+            fns: BTreeMap::from([(rel, std::sync::Arc::new(fns))]),
+            lexer,
+        }
+    }
+
+    fn cfg_with(carrier: &str) -> Cfg {
+        let text = format!(
+            "[rules.no-response-escapes-audit]\nroot = \"crates/busbar-llm/src/unit\"\n\
+             allowed_files = [\"audit.rs\"]\nanswer_carrier = \"{carrier}\"\nmax_escapes = 0\n"
+        );
+        Cfg {
+            doc: crate::toml_doc::parse_str(&text).expect("the fixture config parses"),
+        }
+    }
+
+    const STEP_FILE: &str = "fn answers() -> PlaneAnswer {\n    PlaneAnswer::Live(render())\n}\n\n\
+                             fn escapes() -> Response {\n    render()\n}\n";
+
+    /// THE CARRIER IS THE SCOPE'S ONE EXEMPTION (#28), AND THE RED ARM STANDS: a step function
+    /// answering with a `PlaneAnswer` is not counted, and one returning a bare `Response` still is.
+    #[test]
+    fn a_plane_answer_passes_and_a_bare_response_is_still_refused() {
+        let rows = no_response_escapes_audit(&tree_of(STEP_FILE), &cfg_with("PlaneAnswer::Live"))
+            .expect("the rule runs");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].current, 1, "{}", rows[0].detail);
+        assert_eq!(
+            rows[0].offenders,
+            vec!["escapes returns a Response at crates/busbar-llm/src/unit/node.rs:5".to_string()]
+        );
+        assert!(matches!(rows[0].status, Status::Fail), "{}", rows[0].detail);
+    }
+
+    /// The exemption cannot be widened to the type the rule refuses: a bare-`Response` carrier is a
+    /// configuration the rule refuses, by name.
+    #[test]
+    fn a_bare_response_carrier_is_refused() {
+        let err = no_response_escapes_audit(&tree_of(STEP_FILE), &cfg_with("Response"))
+            .expect_err("a bare Response cannot be the carrier");
+        assert_eq!(
+            err,
+            "[rules.no-response-escapes-audit] answer_carrier `Response` is a bare Response: the #28 \
+             carrier exemption cannot exempt the type the rule refuses"
+        );
+    }
+}

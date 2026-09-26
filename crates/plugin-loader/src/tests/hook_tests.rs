@@ -18,7 +18,7 @@ use busbar_contract::hooks::{RoutingDecision, TransformOutcome};
 /// was built — and because this function only hard-panics when `CI` is set (not under a bare
 /// local `cargo test`), every gated test here would quietly "pass" via its own early return
 /// with zero real coverage locally. Mirrors this crate's
-/// `store_fixture_plugin_path`/`secret_example_plugin_path`.
+/// `store_fixture_plugin_path`.
 pub(crate) fn hook_plugin_path() -> Option<std::path::PathBuf> {
     let candidate = (|| {
         let exe = std::env::current_exe().ok()?;
@@ -567,7 +567,7 @@ fn a_plugin_log_reaches_the_host() {
     );
     assert_eq!(
         mine[0].1,
-        busbar_plugin::cold::log_level::WARN,
+        busbar_contract::abi::cold::log_level::WARN,
         "the plugin's chosen level must survive the crossing"
     );
 
@@ -592,7 +592,7 @@ fn a_plugin_log_reaches_the_host() {
     );
     assert_eq!(
         traced[0].1,
-        busbar_plugin::cold::log_level::WARN,
+        busbar_contract::abi::cold::log_level::WARN,
         "the tracing level must map across"
     );
 
@@ -605,8 +605,8 @@ fn a_plugin_log_reaches_the_host() {
         .iter()
         .skip(before)
         .filter(|(_, lvl, _)| {
-            *lvl == busbar_plugin::cold::log_level::DEBUG
-                || *lvl == busbar_plugin::cold::log_level::TRACE
+            *lvl == busbar_contract::abi::cold::log_level::DEBUG
+                || *lvl == busbar_contract::abi::cold::log_level::TRACE
         })
         .collect();
     assert!(

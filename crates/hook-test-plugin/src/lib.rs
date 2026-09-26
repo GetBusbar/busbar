@@ -15,7 +15,7 @@
 //! ```
 //! Both optional: absent `order` → abstain; absent `reject_if_contains` → never rejects on content.
 
-use busbar_plugin_sdk::HookHandler;
+use busbar_contract::abi::sdk::HookHandler;
 use serde::Deserialize;
 
 /// The plugin's opaque config: how this trivial gate behaves.
@@ -256,7 +256,7 @@ impl HookHandler for TestGate {
 pub fn open(cfg: &str) -> Result<Box<dyn HookHandler>, String> {
     // Exercises the host log bridge from the one place it matters most — a constructor, where a
     // plugin has something worth reporting and where `tracing::warn!` inside a cdylib goes nowhere.
-    busbar_plugin_sdk::hostlog::warn("test-hook plugin opened (host log bridge check)");
+    busbar_contract::abi::sdk::hostlog::warn("test-hook plugin opened (host log bridge check)");
     // A PLAIN `tracing` call, the shape every plugin library crate already uses. It reaches the
     // operator only because the SDK forwards this cdylib's own dispatcher into the host sink.
     tracing::warn!(
@@ -299,7 +299,7 @@ pub fn open(cfg: &str) -> Result<Box<dyn HookHandler>, String> {
     }))
 }
 
-busbar_plugin_sdk::export_hook_plugin!(open);
+busbar_contract::abi::sdk::export_hook_plugin!(open);
 
 #[cfg(test)]
 #[path = "tests.rs"]

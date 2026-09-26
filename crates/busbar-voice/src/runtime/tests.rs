@@ -116,7 +116,7 @@ fn uplink_audio(ms: usize) -> WireEvent {
     let pcm = Bytes::from(vec![0u8; ms * 48]);
     wire(serde_json::json!({
         "type": "input_audio_buffer.append",
-        "audio": busbar_substrate_values::media::base64_encode(&pcm),
+        "audio": busbar_contract::media::base64_encode(&pcm),
     }))
 }
 
@@ -481,7 +481,7 @@ async fn barge_in_cancels_and_truncates_at_heard_ms() {
     // pcm16 default: 48 bytes/ms. Play 96 bytes of downlink audio = 2 ms heard.
     // 96 raw bytes base64-encodes to 128 chars; use a 96-byte payload.
     let payload = vec![0u8; 96];
-    let b64 = busbar_substrate_values::media::base64_encode(&Bytes::from(payload));
+    let b64 = busbar_contract::media::base64_encode(&Bytes::from(payload));
     let _ = core.on_server_frame(audio_delta(&b64)).await;
 
     let plan = core

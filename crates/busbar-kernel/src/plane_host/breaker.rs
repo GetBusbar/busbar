@@ -37,11 +37,11 @@ use super::recover;
 use super::scope::SettleAdmission;
 use crate::breaker::{CanonicalSignal, StatusClass as BreakerClass};
 use crate::store::{PlaneAdmission, PlaneBreakers, MAX_POOL_MEMBERS};
-use busbar_plugin::hot::host::HostCtx;
-use busbar_plugin::hot::{
+use busbar_contract::abi::hot::host::HostCtx;
+use busbar_contract::abi::hot::{
     AdmissionId, AdmitRefusal, FaultClass, Key, Signal, StatusClass, Unavailability,
 };
-use busbar_plugin::read_sized_field;
+use busbar_contract::abi::read_sized_field;
 use core::mem::MaybeUninit;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::Arc;
@@ -105,7 +105,7 @@ pub fn breaker_admit_over(
 ) -> Result<AdmissionId, busbar_kernel::store::Unavailable> {
     let key = Key {
         size: core::mem::size_of::<Key>() as u32,
-        version: busbar_plugin::hot::POD_VERSION,
+        version: busbar_contract::abi::hot::POD_VERSION,
         _reserved: 0,
         scope: lane,
         _reserved2: 0,
@@ -166,7 +166,7 @@ fn reconstruct_unavailable(
 }
 
 // The plane-side `Signal` constructors a settle leg builds (`success_signal`/`failure_signal`/
-// `refused_signal`) are pure `#[repr(C)]` PODs naming only `busbar_plugin::hot` + the neutral
+// `refused_signal`) are pure `#[repr(C)]` PODs naming only `busbar_contract::abi::hot` + the neutral
 // `CanonicalSignal`, so they now live in `busbar_kernel::plane_host::breaker`; core re-exports
 // them so every in-core caller (the a2a relay/route settle legs) is unchanged. `fault_of` moved with
 // them (it was their only reader); this module keeps the INVERSE `classify` the host slot drives.
@@ -371,13 +371,13 @@ unsafe fn write_refusal(
 ) {
     let refusal = AdmitRefusal {
         size: core::mem::size_of::<AdmitRefusal>() as u32,
-        version: busbar_plugin::hot::POD_VERSION,
+        version: busbar_contract::abi::hot::POD_VERSION,
         reason,
         _reserved: 0,
         retry_after_secs,
     };
     // SAFETY: `out` is a writable, aligned MaybeUninit slot (or null, which `write_out` tolerates).
-    unsafe { busbar_plugin::write_out(out, refusal) };
+    unsafe { busbar_contract::abi::write_out(out, refusal) };
 }
 
 /// WIRED `breaker_admit_reason` — [`breaker_admit`] WITH REFUSAL FIDELITY. Identical admit behaviour
@@ -462,7 +462,7 @@ pub(super) extern "C-unwind" fn breaker_settle(
 mod tests;
 
 // ==== merged from busbar-substrate (W4.b P2 engine drain) ====
-use busbar_plugin::hot::{RawFault, RawStatus};
+use busbar_contract::abi::hot::{RawFault, RawStatus};
 
 /// The inverse of the host `classify`'s fine [`FaultClass`] → [`BreakerClass`] table: the plane's own
 /// canonical class back to the ABI fine class the settle carries. Total — every [`BreakerClass`] maps
@@ -508,7 +508,7 @@ pub fn failure_signal(cs: &CanonicalSignal) -> Signal {
     };
     Signal {
         size: core::mem::size_of::<Signal>() as u32,
-        version: busbar_plugin::hot::POD_VERSION,
+        version: busbar_contract::abi::hot::POD_VERSION,
         class: RawStatus::of(StatusClass::Fault),
         _reserved: 0,
         latency_nanos: 0,
@@ -532,7 +532,7 @@ pub fn failure_signal(cs: &CanonicalSignal) -> Signal {
 pub fn success_signal() -> Signal {
     Signal {
         size: core::mem::size_of::<Signal>() as u32,
-        version: busbar_plugin::hot::POD_VERSION,
+        version: busbar_contract::abi::hot::POD_VERSION,
         class: RawStatus::of(StatusClass::Ok),
         _reserved: 0,
         latency_nanos: 0,
@@ -558,7 +558,7 @@ pub fn success_signal() -> Signal {
 pub fn refused_signal() -> Signal {
     Signal {
         size: core::mem::size_of::<Signal>() as u32,
-        version: busbar_plugin::hot::POD_VERSION,
+        version: busbar_contract::abi::hot::POD_VERSION,
         class: RawStatus::of(StatusClass::Refused),
         _reserved: 0,
         latency_nanos: 0,

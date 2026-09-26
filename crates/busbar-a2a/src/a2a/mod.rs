@@ -97,6 +97,7 @@ pub const PLANE_DECLARATION: busbar_contract::plane::PlaneDeclaration =
         // opens no session account, so `agents.fees.per_session` would charge nothing — refused.
         fee_units: &[PER_REQUEST],
         metric_families: &[],
+        record_kinds: busbar_plane_a2a::records::RECORD_KINDS,
         served_op_classes: &[],
     };
 
@@ -493,10 +494,10 @@ pub(crate) fn a2a_start(
 pub(crate) fn admin_routes(
     _slot: &dyn std::any::Any,
 ) -> Vec<busbar_kernel::admin_verbs::AdminRouteSpec> {
+    use busbar_contract::abi::cold::endpoint::RouteMethod;
     use busbar_kernel::admin_verbs::{
         connect_reply, AdminReplyFuture, AdminReqCtx, AdminRouteSpec, AdminScope, AdminVerbKind,
     };
-    use busbar_plugin::cold::endpoint::RouteMethod;
     vec![
         // `connect` is the SHARED audited verb (resolve, look; the core adapter records the row).
         AdminRouteSpec {

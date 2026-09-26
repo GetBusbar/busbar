@@ -19,7 +19,10 @@ use axum::body::Bytes;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 
-use busbar_kernel::ingress::arrival::ArrivalCtx;
+use busbar_kernel::{
+    handlers::{chat, frame},
+    ingress::arrival::ArrivalCtx,
+};
 // The neutral host seam — the plane holds an `Arc<dyn EngineHost>` (carried on the arrival) and reaches
 // the engine's finish/label/guard/admission capabilities through its typed methods (App-retype WEDGE 3).
 use busbar_kernel::plane_host::EngineHost;
@@ -231,7 +234,7 @@ struct NativePlane<'a> {
     host: &'a Arc<dyn EngineHost>,
     proto: &'static str,
     operation: busbar_contract::operation::OpVerb,
-    op_handler: &'static dyn busbar_substrate_values::handlers::OperationHandler,
+    op_handler: &'static dyn busbar_contract::codec::OperationHandler,
     headers: &'a HeaderMap,
     body: Bytes,
     parsed_v: Option<crate::engine::LazyBody>,
@@ -372,8 +375,8 @@ impl busbar_kernel::plane_host::GauntletPlane for NativePlane<'_> {
             // an axum handler: the exchange came in on one HTTP request and leaves on its response, so
             // the transport is `Http` and saying so is a statement of fact, not a default. The stdio
             // and gRPC arrivals get their own entry points and frame the same codecs.
-            busbar_substrate_values::handlers::frame(
-                busbar_substrate_values::transport::Transport::Http,
+            frame(
+                busbar_contract::transport::transport::Transport::Http,
                 operation,
                 op_handler,
             ),
@@ -428,7 +431,7 @@ pub async fn run(
     gov: &busbar_contract::records::PlaneRequestCtx,
     proto: &'static str,
     operation: busbar_contract::operation::OpVerb,
-    op_handler: &'static dyn busbar_substrate_values::handlers::OperationHandler,
+    op_handler: &'static dyn busbar_contract::codec::OperationHandler,
     model: &str,
     headers: &HeaderMap,
     body: Bytes,
@@ -475,7 +478,7 @@ pub async fn operation_resolved(
     gov: &busbar_contract::records::PlaneRequestCtx,
     proto: &'static str,
     operation: busbar_contract::operation::OpVerb,
-    op_handler: &'static dyn busbar_substrate_values::handlers::OperationHandler,
+    op_handler: &'static dyn busbar_contract::codec::OperationHandler,
     model: &str,
     headers: &HeaderMap,
     body: Bytes,
@@ -603,7 +606,7 @@ pub fn synthesize_completion(
         let parsed = match crate::engine::LazyBody::parse(&body) {
             Ok(v) => Some(v),
             Err(_) => {
-                tracing::debug!(detail = %busbar_substrate_values::json::parse_err_log(body.len()), "synthesized completion body JSON parse failed");
+                tracing::debug!(detail = %busbar_llm_codec::json::parse_err_log(body.len()), "synthesized completion body JSON parse failed");
                 return busbar_kernel::proxy::ingress_error(
                     proto,
                     StatusCode::BAD_REQUEST,
@@ -612,9 +615,9 @@ pub fn synthesize_completion(
                 );
             }
         };
-        let op = busbar_substrate_values::handlers::chat(
+        let op = chat(
             proto,
-            busbar_substrate_values::transport::Transport::Http,
+            busbar_contract::transport::transport::Transport::Http,
         );
         operation_resolved(
             &p.host,

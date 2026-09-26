@@ -44,10 +44,10 @@
 //! pins each individual divergence with the reasoning for what the RIGHT behaviour is. This file is
 //! the SWEEP.
 
+use super::known_protocols;
 use super::*;
 use crate::ir::IrRequest;
 use busbar_contract::ir::facts::IrFacts;
-use busbar_kernel::proto::known_protocols;
 use serde_json::Value;
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────

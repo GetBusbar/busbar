@@ -60,7 +60,7 @@ pub struct Linked {
     /// The plane axis: each entry's contract declaration joined kernel-side to its hooks.
     pub planes: &'static [PlaneDecl],
     /// The plane axis, HOT lane: each linked plane that exports a `#[repr(C)]` plane declaration
-    /// (`busbar_plugin::hot::PlaneDecl`) instead of Rust hooks — admitted and adapted exactly as the
+    /// (`busbar_contract::abi::hot::PlaneDecl`) instead of Rust hooks — admitted and adapted exactly as the
     /// same plane dropped into `plugins/` is (see [`register_planes`]).
     pub hot_planes: &'static [&'static HotPlaneDecl],
     /// Protocol declarations, appended to the installed protocol set in this order.
@@ -73,8 +73,7 @@ pub struct Linked {
     /// synthesizer, a stream-translator factory), each set once.
     pub protocol_seams: &'static [fn()],
     /// Owned diagnostics, joining the rendered catalog.
-    pub diagnostics:
-        &'static [&'static [&'static busbar_substrate_values::diagnostics::Diagnostic]],
+    pub diagnostics: &'static [&'static [&'static busbar_contract::diagnostic::Diagnostic]],
     /// Installers of a duplex plane's inbound WS-accept arrivals (the seam is set once: the first
     /// duplex entry in table order is the one installed).
     pub ws_arrivals: &'static [fn()],
@@ -118,8 +117,8 @@ pub mod node {
     use std::pin::Pin;
     use std::sync::Arc;
 
-    use axum::response::Response;
     use busbar_contract::caps::{OpClassId, PrincipalId};
+    use busbar_kernel::plane_host::PlaneAnswer;
     use busbar_kernel::teller::{AccrualMeter, RouteAwait, Units};
 
     /// A configured lane name to the interned lane the priced axis is written in, or `None` where
@@ -129,11 +128,12 @@ pub mod node {
     pub type Lent = (Resolve, Arc<AccrualMeter>, u64);
     /// What a unit consumed, read after its body drained: every class, the billable count, the
     /// serving lane's config name.
-    pub type Reported = (busbar_substrate_values::billing::Usage, u32, String);
+    pub type Reported = (busbar_contract::billing::Usage, u32, String);
     /// The late reading, taken once, when the body is done with.
     pub type Late = Box<dyn FnOnce() -> Option<Reported> + Send>;
-    /// A unit's finish: the bytes its terminal posted, and the late reading of what they consumed.
-    pub type Finish = Box<dyn FnOnce() -> (Option<Response>, Option<Late>) + Send>;
+    /// A unit's finish: the answer its terminal posted (#28), and the late reading of what it
+    /// consumed. The node turns the answer into the served response on its audited exit.
+    pub type Finish = Box<dyn FnOnce() -> (Option<PlaneAnswer>, Option<Late>) + Send>;
     /// A built unit: its steps, its awaited Route leg (the same unit), and its finish.
     pub type Built = (
         Arc<dyn Units + Send + Sync>,
@@ -144,8 +144,8 @@ pub mod node {
     pub type Build = Box<dyn FnOnce(Lent) -> Built + Send>;
     /// One arrival, handed to the node.
     pub type Handed = (PrincipalId, OpClassId, &'static str, Build);
-    /// The node: takes a handed unit, drives it through the loop, answers with its terminal's bytes.
-    pub type Drive = fn(Handed) -> Pin<Box<dyn Future<Output = Response> + Send>>;
+    /// The node: takes a handed unit, drives it through the loop, answers with its terminal's answer.
+    pub type Drive = fn(Handed) -> Pin<Box<dyn Future<Output = PlaneAnswer> + Send>>;
 }
 
 /// One linked wire, as its crate's entry states it: the registry key, the layers it declares it can
@@ -405,6 +405,7 @@ pub fn hot_plane_row(plane: &'static DynPlane) -> Result<PlaneDecl, String> {
             .collect::<Vec<_>>()
             .leak(),
         fee_units: list(&stated.fee_units),
+        record_kinds: list(&stated.record_kinds),
         metric_families: stated
             .metric_families
             .iter()
@@ -801,7 +802,7 @@ pub const HOST_SERIES: &[&str] = &[
     busbar_kernel::metrics::POOL_QUEUED,
     busbar_kernel::telemetry::UPSTREAM_ATTEMPTS_TOTAL,
     busbar_kernel::telemetry::UPSTREAM_FAILURES_TOTAL,
-    busbar_substrate_values::handlers::BILLING_TAP_DECODE_FAIL_TOTAL,
+    busbar_kernel::metrics::BILLING_TAP_DECODE_FAIL_TOTAL,
     // `proxy_vocab`'s crate-private constant, spelled here as it renders.
     "busbar_tap_notifications_dropped_total",
 ];
@@ -841,7 +842,7 @@ static DROPPED: std::sync::OnceLock<&'static busbar_plugin_loader::PluginRegistr
 /// THE DIAGNOSTICS AXIS: every entry's owned diagnostics, and every first-party plugin's DECLARED
 /// ones (K9a S3), installed once. A declaration the catalogue refuses refuses the boot.
 pub fn register_diagnostics(linked: &Linked) {
-    let mut installed: Vec<&'static busbar_substrate_values::diagnostics::Diagnostic> = linked
+    let mut installed: Vec<&'static busbar_contract::diagnostic::Diagnostic> = linked
         .diagnostics
         .iter()
         .flat_map(|diags| diags.iter().copied())
@@ -855,7 +856,7 @@ pub fn register_diagnostics(linked: &Linked) {
             }
         }
     }
-    busbar_substrate_values::diagnostics::install_diagnostics(installed.leak());
+    busbar_kernel::diagnostics::install_diagnostics(installed.leak());
 }
 
 /// PLUGIN DIAGNOSTICS (K9a S3): the catalogue entries `registry`'s plugins DECLARE
@@ -865,9 +866,10 @@ pub fn register_diagnostics(linked: &Linked) {
 /// token is refused naming the plugin — a code is REGISTERED, never shadowed or renumbered.
 pub fn declared_diagnostics(
     registry: &busbar_plugin_loader::PluginRegistry,
-    taken: &[&'static busbar_substrate_values::diagnostics::Diagnostic],
-) -> Result<Vec<&'static busbar_substrate_values::diagnostics::Diagnostic>, String> {
-    use busbar_substrate_values::diagnostics::{Class, Diagnostic, Severity, REGISTRY};
+    taken: &[&'static busbar_contract::diagnostic::Diagnostic],
+) -> Result<Vec<&'static busbar_contract::diagnostic::Diagnostic>, String> {
+    use busbar_contract::diagnostic::{Class, Diagnostic, Severity};
+    use busbar_kernel::diagnostics::REGISTRY;
     let leak = |s: &str| -> &'static str { Box::leak(s.to_string().into_boxed_str()) };
     let mut declared: Vec<&'static Diagnostic> = Vec::new();
     for p in registry.linked().iter().chain(registry.loadable()) {
@@ -1107,3 +1109,7 @@ mod scrape_tests;
 #[cfg(test)]
 #[path = "tests/metric_family_conformance.rs"]
 mod metric_family_conformance;
+
+#[cfg(all(test, linked_every_plane))]
+#[path = "tests/linked_protocols.rs"]
+mod linked_protocols;

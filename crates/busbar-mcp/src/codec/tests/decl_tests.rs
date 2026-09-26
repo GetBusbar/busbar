@@ -10,7 +10,7 @@
 
 use super::*;
 use busbar_contract::operation::OpVerb;
-use busbar_substrate_values::proto::ProtocolDecl;
+use busbar_contract::protocol::ProtocolDecl;
 
 #[test]
 fn the_mcp_decl_is_the_neutral_row_but_for_its_handler_and_verbs() {
@@ -47,7 +47,7 @@ fn the_mcp_decl_is_the_neutral_row_but_for_its_handler_and_verbs() {
     assert!(d.max_citations_per_delta.is_none());
     assert_eq!(
         d.egress_user_agent,
-        busbar_substrate_values::proxy::EGRESS_UA_DEFAULT
+        busbar_contract::protocol::EGRESS_UA_DEFAULT
     );
     assert!(
         !d.has_model_in_url,
@@ -57,7 +57,7 @@ fn the_mcp_decl_is_the_neutral_row_but_for_its_handler_and_verbs() {
         d.auth_failure_status_and_kind,
         (
             http::StatusCode::UNAUTHORIZED,
-            busbar_substrate_values::proto::ERR_TYPE_AUTHENTICATION
+            busbar_contract::protocol::ERR_TYPE_AUTHENTICATION
         )
     );
     assert!(!d.ingress_relays_amzn_headers);
@@ -67,7 +67,7 @@ fn the_mcp_decl_is_the_neutral_row_but_for_its_handler_and_verbs() {
     assert!(!d.has_native_path_not_found);
     assert_eq!(
         d.egress_stream_accept,
-        busbar_substrate_values::proxy::TEXT_EVENT_STREAM
+        busbar_contract::protocol::TEXT_EVENT_STREAM
     );
     assert!(
         d.models_list_envelope.is_none(),

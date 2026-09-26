@@ -160,7 +160,7 @@ pub struct PlaneCrate {
 /// EVERY CRATE THE ROSTER CALLS A PLANE, PRESENT TENSE.
 ///
 /// `plane-example` is DELIBERATELY ABSENT and this is its written reason: package
-/// `busbar-plugin-example-plane` is a hermetic `cdylib` ABI/TCB fixture over `busbar_plugin::hot`,
+/// `busbar-plugin-example-plane` is a hermetic `cdylib` ABI/TCB fixture over `busbar_contract::abi::hot`,
 /// it does not depend on `busbar-contract` at all, declares no `MeterClassDecl` and implements no
 /// metering surface. It cannot touch money by construction, so listing it would make this gate
 /// assert something vacuously true — and would invite the next ABI fixture to be misfiled as a

@@ -79,8 +79,7 @@ fn a_linked_and_a_dropped_in_plane_add_to_the_hosts_own_series_byte_for_byte() {
         return;
     };
     busbar_kernel::metrics::init();
-    let _ =
-        busbar_substrate_values::handlers::usage_tap_decode_fail_should_warn(PROTOCOL, "decode");
+    let _ = busbar_kernel::handlers::usage_tap_decode_fail_should_warn(PROTOCOL, "decode");
     assert_eq!(
         golden_lines(),
         [format!("{GOLDEN} 1")],
@@ -186,6 +185,7 @@ fn a_plane_declaring_an_unlisted_first_party_family_is_refused_a_row() {
                 billable_classes: &[],
                 fee_units: &[],
                 metric_families: families,
+                record_kinds: &[],
                 served_op_classes: &[],
             };
             let native: &'static [PlaneDecl] = Box::leak(Box::new([PlaneDecl::assemble(

@@ -28,6 +28,8 @@ use axum::body::Bytes;
 use axum::http::{HeaderMap, StatusCode, Uri};
 use axum::response::Response;
 
+use crate::plane_host::PlaneAnswer;
+
 /// THE OPAQUE CORE CONTEXT of one arrival — core's `Arc<App>` + `GovCtx` + `CallerToken`, type-erased
 /// so the dialect crate carries it back into the host methods without naming a core type. Core boxes
 /// its own payload struct in here at the catch-all and downcasts it back inside each [`ArrivalHost`]
@@ -144,12 +146,13 @@ pub struct Arrival {
     pub body: Bytes,
 }
 
-/// A path-model dialect's own ingress: one arrival in, one boxed response future out. `pub` so the
-/// composition root and the dialect crate (`busbar-llm`) name the registration-pair type. Boxed
+/// A path-model dialect's own ingress: one arrival in, one boxed [`PlaneAnswer`] future out (#28) —
+/// the plane answers, and the catch-all that awaits it is the outer handler that serves it. `pub` so
+/// the composition root and the dialect crate (`busbar-llm`) name the registration-pair type. Boxed
 /// deliberately: as a `match` arm every arrival's future inlined into the dispatch coroutine's union,
 /// inflating the future every request carried regardless of dialect — a `fn` pointer to a boxed future
 /// keeps that cost on the requests that take it.
-pub type PathIngress = fn(Arrival) -> Pin<Box<dyn Future<Output = Response> + Send>>;
+pub type PathIngress = fn(Arrival) -> Pin<Box<dyn Future<Output = PlaneAnswer> + Send>>;
 
 /// One protocol-name → arrival pairing, the element of an installed / test arrival table.
 pub type PathIngressEntry = (&'static str, PathIngress);
@@ -223,11 +226,11 @@ pub fn path_ingress_for(name: &str) -> Option<PathIngress> {
 // `ArrivalCtx`.
 // ============================================================================
 
-/// A body-model dialect's own universal ingress: one arrival in, one boxed response future out.
-/// Structurally identical to [`PathIngress` ] (it too takes an [`Arrival`] and returns a boxed
-/// response future); a distinct alias names the DIFFERENT registration table it lands in (the
+/// A body-model dialect's own universal ingress: one arrival in, one boxed [`PlaneAnswer`] future
+/// out. Structurally identical to [`PathIngress` ] (it too takes an [`Arrival`] and returns a boxed
+/// answer future); a distinct alias names the DIFFERENT registration table it lands in (the
 /// body-model side-table, not the path-model one).
-pub type BodyIngress = fn(Arrival) -> Pin<Box<dyn Future<Output = Response> + Send>>;
+pub type BodyIngress = fn(Arrival) -> Pin<Box<dyn Future<Output = PlaneAnswer> + Send>>;
 
 /// One protocol-name → body-arrival pairing, the element of an installed / test body-arrival table.
 pub type BodyIngressEntry = (&'static str, BodyIngress);

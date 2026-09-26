@@ -14,9 +14,9 @@
 
 use super::*;
 use crate::plane_host::{recover, with_dispatch_scope, HostState};
-use busbar_plugin::hot::host::{HostCtx, PlaneHostVtable};
-use busbar_plugin::hot::pod::POD_VERSION;
-use busbar_plugin::hot::{EgressDesc, EgressKind, EgressOpen, PipeId, StatusClass};
+use busbar_contract::abi::hot::host::{HostCtx, PlaneHostVtable};
+use busbar_contract::abi::hot::pod::POD_VERSION;
+use busbar_contract::abi::hot::{EgressDesc, EgressKind, EgressOpen, PipeId, StatusClass};
 use std::mem::MaybeUninit;
 
 /// Pack a `program + argv` command into the length-prefixed wire form (`u32 len | bytes`, LE) that
@@ -36,7 +36,7 @@ fn subprocess_desc(command: &[u8]) -> EgressDesc {
     EgressDesc {
         size: std::mem::size_of::<EgressDesc>() as u32,
         version: POD_VERSION,
-        kind: busbar_plugin::hot::RawEgressKind::of(EgressKind::Subprocess),
+        kind: busbar_contract::abi::hot::RawEgressKind::of(EgressKind::Subprocess),
         _reserved: 0,
         allowlist_scope: 0,
         _reserved2: 0,

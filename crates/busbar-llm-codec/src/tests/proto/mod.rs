@@ -46,29 +46,54 @@ pub use crate::openai_chat::{OpenAiReader, OpenAiWriter};
 pub(crate) use crate::openai_chat::openai_writer;
 pub use crate::openai_responses::{ResponsesReader, ResponsesWriter};
 
-// The NEUTRAL proto atoms the suites reach bare via `super::*` — named at their canonical
-// `busbar_kernel::proto` home (core merely re-exports each by identity), NOT a second witnessed
-// copy (a glob of `busbar_kernel::proto::*` would collide with `crate::proto_codec::*` on
-// `Protocol` &c.).
+// The neutral proto atoms the suites reach bare via `super::*`: the dialect helpers at this plane's
+// own home, the frame-boundary scan and the IR-parse vocabulary at the contract.
 pub use crate::dialect::{
     bearer_error_code, context_length_prose_scan, parse_sse_frame, sse_event_type,
     strip_top_level_usage_member, write_sse_frame, BASE62_ALPHABET, HDR_AUTHORIZATION,
     SSE_DONE_FRAME, SSE_DONE_SENTINEL,
 };
 pub use busbar_contract::protocol::{find_frame_terminator, IrError, SIGNAL_IR_PARSE};
-pub use busbar_kernel::proto::{
-    array_stream_shim_key_for, array_stream_shim_keys, bearer_auth_headers, known_protocols,
-    lane_protocol_name, streaming_content_types,
-};
-// The registry LOOKUP against the boot-installed registry (`decl_for`, the `registry` accessor
-// module) and the two test-only vocabularies core still owns: the six dialect-name fixtures
-// (`PROTO_*`) and the translation-boundary `max_tokens` fallback. These are core's own items (not
-// re-exports), so they are the one reach this prelude keeps into core.
-pub use busbar_kernel::proto::registry;
-pub use busbar_kernel::proto::{
-    decl_for, DEFAULT_MAX_TOKENS, PROTO_ANTHROPIC, PROTO_BEDROCK, PROTO_COHERE, PROTO_GEMINI,
-    PROTO_OPENAI, PROTO_RESPONSES,
-};
+// The by-name views the suites read, over THIS PLANE'S OWN declarations (#83a SD-3: the codec's
+// tests prove the codec's own seam and never reach the host). `decl_for` is the plane's own lookup;
+// the list views are the plane's declaration table read in its declared order, which is the order
+// the host's fold reports it in (the host tests the fold itself).
+pub use crate::decl_of as decl_for;
+
+/// Every protocol this plane declares, in declaration order.
+pub fn known_protocols() -> &'static [&'static str] {
+    static NAMES: std::sync::OnceLock<Vec<&'static str>> = std::sync::OnceLock::new();
+    NAMES.get_or_init(|| crate::DECLS.iter().map(|d| d.name).collect())
+}
+
+/// The distinct streaming content types this plane's dialects declare, sorted.
+pub fn streaming_content_types() -> &'static [&'static str] {
+    static TYPES: std::sync::OnceLock<Vec<&'static str>> = std::sync::OnceLock::new();
+    TYPES.get_or_init(|| {
+        let mut out: Vec<&'static str> = crate::DECLS
+            .iter()
+            .filter_map(|d| d.streaming_content_type)
+            .collect();
+        out.sort_unstable();
+        out.dedup();
+        out
+    })
+}
+
+/// The array-stream shim keys this plane's dialects declare, in declaration order.
+pub fn array_stream_shim_keys() -> &'static [&'static str] {
+    static KEYS: std::sync::OnceLock<Vec<&'static str>> = std::sync::OnceLock::new();
+    KEYS.get_or_init(|| {
+        crate::DECLS
+            .iter()
+            .filter_map(|d| d.array_stream_shim_key)
+            .collect()
+    })
+}
+
+/// The global `max_tokens` fallback a caller hands the egress preparation when neither the request
+/// nor the lane names one (the host's configured default, 4096 unless an operator sets another).
+pub const DEFAULT_MAX_TOKENS: u32 = 4096;
 
 // Substrate atoms the suites name bare (breaker signal + the neutral framing seam types).
 pub use busbar_contract::protocol::{ArrayStreamFramer, DialectCodec};
@@ -102,8 +127,6 @@ mod openai_family_tests;
 mod phase1_5_relocated_tests;
 #[path = "published_spec_shape_tests.rs"]
 mod published_spec_shape_tests;
-#[path = "registry_tests.rs"]
-mod registry_tests;
 #[path = "response_format_matrix_tests.rs"]
 mod response_format_matrix_tests;
 #[path = "roundtrip_fidelity_tests.rs"]

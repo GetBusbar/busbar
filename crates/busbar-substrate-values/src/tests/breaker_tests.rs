@@ -407,3 +407,35 @@ fn test_no_bare_tracing_warn_or_error_in_crate_sources() {
         offenders.join("\n")
     );
 }
+
+/// THE SHARED CLASSIFICATION FIXTURE (#83a SD-3): the raw upstream errors the LLM dialects' error
+/// readers produce in their own suites, and the class this classifier places each in with an EMPTY
+/// operator `error_map`. The dialects' suites read their classification from
+/// `testing/plane-copies/upstream-classes.json` instead of reaching the host; this test holds the
+/// classifier to every row, so the two cannot disagree without one suite failing.
+#[test]
+fn the_classifier_places_every_shared_dialect_error_as_recorded() {
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../testing/plane-copies/upstream-classes.json"
+    );
+    let doc: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(path).expect("fixture readable"))
+            .expect("fixture is JSON");
+    let rows = doc["rows"].as_array().expect("rows");
+    assert!(!rows.is_empty());
+    for row in rows {
+        let raw = RawUpstreamError {
+            http_status: row["http_status"].as_u64().expect("status") as u16,
+            provider_code: row["provider_code"].as_str().map(str::to_string),
+            structured_type: row["structured_type"].as_str().map(str::to_string),
+            retry_after_secs: row["retry_after_secs"].as_u64(),
+        };
+        let sig = normalize_raw_error(&raw, &HashMap::new());
+        assert_eq!(
+            Some(sig.class),
+            StatusClass::parse(row["class"].as_str().expect("class")),
+            "{raw:?}"
+        );
+    }
+}

@@ -1,0 +1,82 @@
+{
+  "about": "The raw upstream errors the LLM dialects' error readers produce in their own suites, and the class the host's classifier places each in with an EMPTY operator error_map. The dialects' suites read their classification from here instead of reaching the host; the host's suite holds its classifier to every row.",
+  "rows": [
+    {
+      "http_status": 400,
+      "provider_code": "context_length_exceeded",
+      "structured_type": "invalid_request_error",
+      "retry_after_secs": null,
+      "class": "context_length"
+    },
+    {
+      "http_status": 429,
+      "provider_code": null,
+      "structured_type": "rate_limit_error",
+      "retry_after_secs": null,
+      "class": "rate_limit"
+    },
+    {
+      "http_status": 400,
+      "provider_code": "context_length_exceeded",
+      "structured_type": null,
+      "retry_after_secs": null,
+      "class": "context_length"
+    },
+    {
+      "http_status": 400,
+      "provider_code": "the password you provided is too long",
+      "structured_type": null,
+      "retry_after_secs": null,
+      "class": "client_error"
+    },
+    {
+      "http_status": 400,
+      "provider_code": "the requested URL is too long",
+      "structured_type": "invalid_request_error",
+      "retry_after_secs": null,
+      "class": "client_error"
+    },
+    {
+      "http_status": 400,
+      "provider_code": "value too long for column name",
+      "structured_type": "invalid_request_error",
+      "retry_after_secs": null,
+      "class": "client_error"
+    },
+    {
+      "http_status": 401,
+      "provider_code": "invalid api key",
+      "structured_type": "invalid_request_error",
+      "retry_after_secs": null,
+      "class": "auth"
+    },
+    {
+      "http_status": 429,
+      "provider_code": "You have exceeded the maximum number of tokens per minute for your trial key",
+      "structured_type": null,
+      "retry_after_secs": null,
+      "class": "rate_limit"
+    },
+    {
+      "http_status": 400,
+      "provider_code": "400",
+      "structured_type": "INVALID_ARGUMENT",
+      "retry_after_secs": null,
+      "class": "client_error"
+    },
+    {
+      "http_status": 401,
+      "provider_code": "auth",
+      "structured_type": "INVALID_ARGUMENT",
+      "retry_after_secs": null,
+      "class": "auth"
+    },
+    {
+      "http_status": 401,
+      "provider_code": "auth",
+      "structured_type": "PERMISSION_DENIED",
+      "retry_after_secs": null,
+      "class": "auth"
+    }
+  ]
+}

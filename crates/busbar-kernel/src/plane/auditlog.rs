@@ -52,12 +52,12 @@ use crate::audit::{verify_chain, ChainBreak, Framing};
 use crate::audit_ring::{AuditEntry, MAX_AUDIT_ENTRIES};
 use crate::plane::store::{decode, encode, PlaneStore, PlaneStoreView, KIND_AUDIT};
 use crate::plane_host::journal::PlaneJournalRecord;
+use busbar_contract::abi::hot::host::HostCtx;
+use busbar_contract::abi::hot::{
+    Framing as AbiFraming, JournalStreamDesc, RawFraming, ReframeOut, Seq, StatusClass, POD_VERSION,
+};
 use busbar_contract::records::{
     PlaneDisposition, PlaneRecord, PlaneSelector, RecordStoreError, RecordStoreResult,
-};
-use busbar_plugin::hot::host::HostCtx;
-use busbar_plugin::hot::{
-    Framing as AbiFraming, JournalStreamDesc, RawFraming, ReframeOut, Seq, StatusClass, POD_VERSION,
 };
 use core::mem::MaybeUninit;
 

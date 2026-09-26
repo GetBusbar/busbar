@@ -207,7 +207,7 @@ fn streams_fees_per_request_refuses_and_per_session_boots_and_charges() {
     let fee_lane = format!("{}{PLANE_LANE_SEP}", crate::PLANE_KEY);
     let price = |fees: &config::PlaneFeesMap| {
         let cost = CostModel::resolve_parts(None, 0, &Default::default()).with_plane_fees(fees);
-        let usage = busbar_substrate_values::billing::Usage {
+        let usage = busbar_contract::billing::Usage {
             usage_units: [("per_session".to_string(), sessions)].into(),
         };
         cost.price_usage_nanos(&fee_lane, &usage)

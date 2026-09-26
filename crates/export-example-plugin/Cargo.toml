@@ -16,8 +16,8 @@ license = "Apache-2.0"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-busbar-plugin-sdk = { path = "../plugin-sdk" }
+busbar-contract = { path = "../busbar-contract" }
 # Named directly because `ExportHandler::deliver` takes a `&serde_json::Value` — the batch the engine
 # built. Not a busbar crate, so it does not widen this plugin's busbar closure (DECISIONS #84: a
-# plugin's busbar closure is exactly `busbar-plugin-sdk`).
+# plugin's busbar closure is exactly `busbar-contract`, the SDK merged into it).
 serde_json = { workspace = true }

@@ -82,7 +82,7 @@ fn moderation_body_projects_text_and_marks_image_url_opaque() {
     let view = gate_view(&f);
     assert!(view.contains("SCREEN-THIS-TEXT"));
     // The ImageUrl is present-but-unscreenable, shown as the marker — not empty, not leaked.
-    assert!(view.contains(busbar_substrate_values::ir::facts::OPAQUE_CONTENT_MARKER));
+    assert!(view.contains(busbar_contract::ir::facts::OPAQUE_CONTENT_MARKER));
     assert!(!view.contains("x.test"));
 }
 

@@ -333,30 +333,16 @@ pub static TRANSPORT_DECL: TransportDecl = TransportDecl {
     poll_close: Some(poll_close),
 };
 
-/// The dropped-in door's three symbols, compiled only into the dropped-in build (feature
-/// `dropped-in`). A build that links this crate takes [`TRANSPORT_DECL`] and never these: rustc emits
-/// the `rlib` and the `cdylib` from one set of objects, so a symbol compiled here is in the linked
-/// `rlib` too, where it is a second definition of the shared handshake the SDK defines for every
-/// SDK-built plugin — a refused link under the release profile's fat LTO.
+/// The dropped-in door, compiled only into the dropped-in build (feature `dropped-in`): this crate's
+/// decl registered as the image's ONE door through the contract's shared door
+/// (`busbar_contract::export_transport!`), so `busbar_abi`, `busbar_plugin_kind() == "transport"` and
+/// `busbar_transport_decl` are the contract's frozen symbols, defined once, answering through
+/// [`TRANSPORT_DECL`]. This crate defines no `#[no_mangle]` symbol of its own, so a link that holds it
+/// beside any other plugin holds one definition of each (the fat-LTO "symbol multiply defined"
+/// refusal is unrepresentable). A build that links this crate takes [`TRANSPORT_DECL`] directly.
 #[cfg(feature = "dropped-in")]
 pub mod exports {
-    /// The shared library handshake.
-    #[no_mangle]
-    pub extern "C-unwind" fn busbar_abi() -> u32 {
-        super::layout::HANDSHAKE_VERSION
-    }
-
-    /// This library's plugin kind, a `'static` NUL-terminated string.
-    #[no_mangle]
-    pub extern "C-unwind" fn busbar_plugin_kind() -> *const u8 {
-        c"transport".as_ptr().cast()
-    }
-
-    /// The transport decl, `'static`, never freed by the loader.
-    #[no_mangle]
-    pub extern "C-unwind" fn busbar_transport_decl() -> *const super::TransportDecl {
-        core::ptr::addr_of!(super::TRANSPORT_DECL)
-    }
+    busbar_contract::export_transport!(super::TRANSPORT_DECL);
 }
 
 /// One built instance of the wire: the transport, the connections it minted, the listeners it

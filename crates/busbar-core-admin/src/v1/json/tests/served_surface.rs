@@ -16,8 +16,8 @@
 //!
 //! 1. the closed verb table (`admin_codec::verbs::table`): every `(method, path)` the node's
 //!    administrative mount walks through the kernel loop, which is how the 66 legacy operations and
-//!    the 1.6.0 kernel verbs whose effect is bound are answered (the other four are declared and
-//!    NOT served — [`unbound_declared_operations`]; the nine the owner removed from 1.6.0 are not
+//!    the 1.6.0 kernel verbs whose effect is bound are answered (a verb declared with no effect
+//!    bound is NOT served — [`unbound_declared_operations`], empty since owner answer Q71(2); the nine the owner removed from 1.6.0 are not
 //!    declared at all — [`REMOVED_OPERATIONS`]);
 //! 2. every named-definition section (`NamedMapSection::sections`), five operations each, which the
 //!    router mounts in one loop — including each plane-owned section;
@@ -324,8 +324,8 @@ async fn admin_corpus_reconciles_with_the_served_router() {
     let unbound = unbound_declared_operations();
     assert_eq!(
         unbound.len(),
-        4,
-        "the four money-governance verbs with no effect bound: {unbound:?}"
+        0,
+        "every money-governance verb has its effect bound since owner answer Q71(2): {unbound:?}"
     );
     let removed = removed_operations();
     let removed_but_present: Vec<&Op> = removed

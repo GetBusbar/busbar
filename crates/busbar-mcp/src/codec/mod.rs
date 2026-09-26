@@ -11,7 +11,7 @@
 //! `busbar-core` names this crate in production (`git grep busbar_mcp crates/busbar-core/src` is
 //! pinned at zero) — the `busbar` BINARY, the composition root, links `busbar-mcp` and hands
 //! [`DECL`] (which `busbar-mcp` re-exports as its `PROTO_DECL`) to
-//! the substrate's protocol registry (`busbar_substrate_values::proto::install_protocols`) at boot. Delete the dependency edge and busbar
+//! the kernel's protocol registry (`busbar_kernel::proto::install_protocols`) at boot. Delete the dependency edge and busbar
 //! still builds, boots, refuses `protocol: mcp` config with the unknown-protocol refusal, and
 //! serves the remaining dialects — that build is a gate, not a thought experiment.
 //!
@@ -44,7 +44,7 @@
 //! builds compile these same sources back in as `handlers::mcp` (via `extern crate self as
 //! busbar_kernel`), so the pre-extraction fixture surface keeps proving what it always proved without
 //! core's PRODUCTION build knowing this dialect exists. That is why every core reference in these
-//! files is spelled through the neutral crates (`busbar_substrate_values::` / `busbar_contract::`) and every self
+//! files is spelled through `busbar_contract::` (the shapes) and `busbar_kernel::` (the host) and every self
 //! reference is relative.
 
 pub mod handler;
@@ -54,38 +54,37 @@ mod subscribe;
 /// MCP'S DECLARATION — and the asymmetry in it is the point. MCP declares a HANDLER and NO CODEC:
 /// its IR is its own, there is no cross-dialect translation into or out of it, and it point-reads no
 /// top-level body key on the pre-materialized path (its method lives in the JSON-RPC envelope, which
-/// `busbar_substrate_values::ingress::jsonrpc` parses). A registry that could only hold six-of-a-kind would have
+/// `busbar_kernel::ingress::jsonrpc` parses). A registry that could only hold six-of-a-kind would have
 /// had to grow a special case for it; this one holds a declaration that says `None` four times.
 ///
 /// Handed to `install_protocols` by the composition root (the `busbar` binary); in `busbar-core`'s
 /// test/`test-support` builds it is instead the cfg-gated built-in row, so the fixture registry the
 /// tests see matches the registry a shipped binary has.
-pub const DECL: busbar_substrate_values::proto::ProtocolDecl =
-    busbar_substrate_values::proto::ProtocolDecl {
-        handler: Some(&handler::McpRequestHandler),
-        verbs: &[
-            busbar_contract::operation::OpVerb::INVOKE,
-            busbar_contract::operation::OpVerb::SUBSCRIBE,
-        ],
-        // EVERY OTHER FIELD IS THE NEUTRAL ROW (`ProtocolDecl::named`), stated once beside the struct
-        // rather than copied here — and each one is exactly what MCP means:
-        // - no codec, no head keys, no stream content type, no array-stream shim, no native tool-id
-        //   prefix: MCP declares a HANDLER and nothing a cross-dialect translation would read;
-        // - the default ingress auth scheme, and no egress credential builder: the shared schemes stay
-        //   in `egress_auth::resolve`, because MCP presents no dialect-specific egress credential
-        //   shaping of its own;
-        // - no path ingress (`has_model_in_url` false): the model is in the BODY, so this dialect
-        //   registers no arrival and the catch-all resolves its operation through the
-        //   `RequestHandler` on the universal ingress;
-        // - every promoted writer fact (G6 step A1) is the `ProtocolWriter` trait DEFAULT: MCP has no
-        //   writer, so these are inert, but the declaration must state them;
-        // - the neutral SSE `egress_stream_accept`, never consulted (no translated egress);
-        // - no `/v1/models` envelope or list-models fingerprint: MCP serves no model discovery;
-        // - no router or residual claim, not the residual default, no vendor response metadata: MCP
-        //   is identified by its EXPLICIT mount (`/mcp`), never by a wire fingerprint.
-        // `the_mcp_decl_is_the_neutral_row_but_for_its_handler_and_verbs` pins each of these.
-        ..busbar_substrate_values::proto::ProtocolDecl::named(busbar_plane_mcp::PLANE_KEY)
-    };
+pub const DECL: busbar_contract::protocol::ProtocolDecl = busbar_contract::protocol::ProtocolDecl {
+    handler: Some(&handler::McpRequestHandler),
+    verbs: &[
+        busbar_contract::operation::OpVerb::INVOKE,
+        busbar_contract::operation::OpVerb::SUBSCRIBE,
+    ],
+    // EVERY OTHER FIELD IS THE NEUTRAL ROW (`ProtocolDecl::named`), stated once beside the struct
+    // rather than copied here — and each one is exactly what MCP means:
+    // - no codec, no head keys, no stream content type, no array-stream shim, no native tool-id
+    //   prefix: MCP declares a HANDLER and nothing a cross-dialect translation would read;
+    // - the default ingress auth scheme, and no egress credential builder: the shared schemes stay
+    //   in `egress_auth::resolve`, because MCP presents no dialect-specific egress credential
+    //   shaping of its own;
+    // - no path ingress (`has_model_in_url` false): the model is in the BODY, so this dialect
+    //   registers no arrival and the catch-all resolves its operation through the
+    //   `RequestHandler` on the universal ingress;
+    // - every promoted writer fact (G6 step A1) is the `ProtocolWriter` trait DEFAULT: MCP has no
+    //   writer, so these are inert, but the declaration must state them;
+    // - the neutral SSE `egress_stream_accept`, never consulted (no translated egress);
+    // - no `/v1/models` envelope or list-models fingerprint: MCP serves no model discovery;
+    // - no router or residual claim, not the residual default, no vendor response metadata: MCP
+    //   is identified by its EXPLICIT mount (`/mcp`), never by a wire fingerprint.
+    // `the_mcp_decl_is_the_neutral_row_but_for_its_handler_and_verbs` pins each of these.
+    ..busbar_contract::protocol::ProtocolDecl::named(busbar_plane_mcp::PLANE_KEY)
+};
 
 #[cfg(test)]
 #[path = "tests/mcp_tests.rs"]

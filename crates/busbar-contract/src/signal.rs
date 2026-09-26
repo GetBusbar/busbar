@@ -7,10 +7,9 @@
 //! (`busbar-contract`) — not a new crate, and no longer in the retiring `busbar-api` (DECISIONS
 //! #84) — because the catalog is a SHAPE in the #83(d) sense: [`Signal::name`] is the wire and
 //! config key, and every honest implementation must spell `candidate_breaker_state` byte-for-byte
-//! or a declared-signal bag does not round-trip. `busbar-plugin-sdk` (a hook-plugin author's actual
-//! dependency) and `busbar-plugin` both re-export [`Signal`] wholesale (see
-//! `busbar_plugin::cold::signal` / `busbar_plugin_sdk`), so a plugin author never needs a raw
-//! dependency on the defining crate to reference `Signal::CandidateBreakerState` at compile time.
+//! or a declared-signal bag does not round-trip. The plugin ABI (`abi::cold`) and its SDK (`abi::sdk`,
+//! both merged into this crate by #84) re-export [`Signal`] wholesale, so a hook-plugin author names
+//! `Signal::CandidateBreakerState` at compile time from the one crate a plugin depends on.
 //! The catalog names NOTHING of the engine: the projections that carry a `signals` field
 //! (`RoutingRequest`, `Candidate`) name IT, never the reverse — a direction this crate's dependency
 //! policy makes structural rather than conventional.

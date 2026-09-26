@@ -124,6 +124,15 @@ mod amend;
 // root leg opens the book; the unit tests reach it through `amend` directly.
 pub use amend::bind_amendments;
 
+/// The checkpoint sealer: the cadence, and the audit keyset bound to the ledger's two seams
+/// (Q71(3)). A private child module, as `replay` is; its public items are re-exported here.
+mod seal;
+pub use seal::{keyset_of, Cadence, ChainSecret, KeySetVerifier, CHECKPOINT_TICK_SECS};
+
+/// How many sealed checkpoints a node holds in memory: the latest 1,024, oldest evicted first
+/// (architect ruling 2026-09-26, "checkpoint retention"). The journal holds every one.
+pub const CHECKPOINT_RING: usize = 1_024;
+
 /// What the root reads out of configuration to decide the durability shape.
 ///
 /// One field, because there is one decision. Its absence is the previous release's shape and its
@@ -154,6 +163,12 @@ pub struct Durability {
     /// Appended by [`Durability::journal_checkpoint`] and by nothing else, and only after the
     /// journal has taken the record: a seal this node kept but never got onto the chain would be a
     /// figure with no position, which is the one thing the journal exists to prevent.
+    ///
+    /// A BOUNDED RING of the latest [`CHECKPOINT_RING`] seals (architect ruling 2026-09-26,
+    /// "checkpoint retention"): at the cadence's busiest a node seals every 10,000 records, so an
+    /// unbounded list is memory that grows for the life of the process. The journal is the durable
+    /// record of every seal; the audit chain's head history (#82(d)) is kept forever on its own.
+    /// The checkpoints read serves this ring.
     pub checkpoints: Vec<Checkpoint>,
     /// WHICH BOOT OF THIS JOURNAL this process is: one more than the highest any record on the
     /// chain was written under, and 1 on a chain that holds none.
@@ -207,6 +222,9 @@ pub struct Durability {
     /// ([`Durability::restore_amendments`]), and so the book whose later amendments are journalled
     /// ([`bind_amendments`]). `None` on every book that rebuilt nothing.
     amendments_through: Option<u64>,
+    /// THE CHECKPOINT CADENCE (ARCHITECTURE.md §4.7), once [`Durability::arm_checkpoints`] armed
+    /// it. `None` on a book nobody armed, which seals nothing on its own.
+    cadence: Option<Cadence>,
 }
 
 /// Where the book reads the dated rate-card history a replay prices against: a snapshot pinned
@@ -309,6 +327,9 @@ impl Durability {
             Entry::new(RecordClass::Checkpoint, checkpoint_body(checkpoint)).at(checkpoint.wall, 0);
         let ack = self.journal.append(token, at, &[entry])?;
         self.checkpoints.push(checkpoint.clone());
+        // The ring: the oldest seal goes once the latest CHECKPOINT_RING are held.
+        let over = self.checkpoints.len().saturating_sub(CHECKPOINT_RING);
+        self.checkpoints.drain(..over);
         Ok(ack)
     }
 
@@ -484,6 +505,10 @@ impl Durability {
                     .record_unreconciled(&key, window, amount.saturating_neg());
             }
         }
+        // Every serving append reports back through here, so this is where the ENTRY half of the
+        // checkpoint cadence is checked (whichever of the two comes first). After the money
+        // above, so a seal made here fixes the figures this append moved.
+        self.seal_on_cadence();
     }
 
     /// Recover every hold a predecessor left open: materialise it from its record and settle it
@@ -977,6 +1002,24 @@ impl Durability {
             token,
             at,
         }
+    }
+
+    /// [`Durability::migration_records`], with the signer the opening is sealed under: the audit
+    /// chain's own key (Q71(3): one keyset), `None` on a chain given no key — which seals the
+    /// opening unsigned, as the ledger unit accepts.
+    pub fn migration_records_signed<'a>(
+        &'a mut self,
+        token: &'a Grant<DurableWrite>,
+        at: StepName,
+    ) -> (JournalMigrationRecords<'a>, Option<ChainSecret<'a>>) {
+        (
+            JournalMigrationRecords {
+                journal: &mut self.journal,
+                token,
+                at,
+            },
+            ChainSecret::of(&self.record),
+        )
     }
 }
 
@@ -2195,7 +2238,7 @@ pub fn build_with_cards(
     cards: Option<&'static crate::root::kernel::RootHistory>,
 ) -> Result<Durability, OpenError> {
     // The journal is handed the root's wall clock: the log unit reads none of its own.
-    let clock = busbar_substrate_values::store::now_ms;
+    let clock = busbar_kernel::store::now_ms;
     let journal = match cfg.data_dir.as_deref() {
         // The previous release's shape: nothing is opened, nothing is probed, and durability is
         // whatever the store the batches are shipped to provides.
@@ -2222,6 +2265,7 @@ pub fn build_with_cards(
         history,
         cards_from: None,
         amendments_through: None,
+        cadence: None,
     };
 
     // A CORRUPT JOURNAL DOES NOT STOP THE BOOT, AND IT IS NEVER SILENT. The log has already kept

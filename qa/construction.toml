@@ -216,19 +216,56 @@ busbar-voice = ["busbar-voice-codec"]
 # base" and asked for exactly this strike. THE CEILINGS THEMSELVES DID NOT MOVE: both still read
 # 7418. The next #83/#84 merge into busbar-contract declares its own re-arm here, once.
 
-# ── THE CONTRACT CEILING PAIR, RE-ARMED AT THE MEASURE AFTER FOLD F4 AND XPLANE ─────────────────
+# ── THE CONTRACT CEILING PAIR, RE-ARMED AFTER SD-3 (1/3) — EXPIRED AND STRUCK ─────────────────
+#
+# The pair declared `gate.surface_ceilings.contract_caps` and
+# `rules.loc-ceilings.caps_contract_ceiling` 9251 -> 9289 (OWNER RULING Q68(3), ARCHITECT O2/S2-b):
+# the re-arm at the measured value after SD-3 (1/3) moved the codec host services into
+# busbar_contract::codec. Its commit reached the base, so `ceiling-rose` reported both as "a
+# declared raise 9251 -> 9289 that is not a raise at the base" and asked for exactly this strike,
+# as it did for the 7414 -> 7418 and 9184 -> 9218 declarations before it. THE CEILINGS THEMSELVES
+# DID NOT MOVE: both still read 9289. The next #83/#84 merge into busbar-contract declares its own
+# re-arm here, once.
+
+# ── THE CONTRACT CEILING PAIR, RE-ARMED AFTER THE PLANE RECORD KINDS — EXPIRED AND STRUCK ────────
+#
+# The pair declared `gate.surface_ceilings.contract_caps` and
+# `rules.loc-ceilings.caps_contract_ceiling` 9289 -> 9294 (OWNER RULING Q68(3), ARCHITECT RULING (b)
+# on UC-VERBS): the re-arm at the measured value after a plane began declaring the plane-record
+# kinds it keeps (PlaneDeclaration.record_kinds and declares_record_kind, +5). Its commit reached the
+# base, so `ceiling-rose` reported both as "a declared raise 9289 -> 9294 that is not a raise at the
+# base" and asked for exactly this strike. THE CEILINGS THEMSELVES DID NOT MOVE: both still read
+# 9294. The next #83/#84 merge into busbar-contract declares its own re-arm here, once.
+
+# ── THE KERNEL CEILING, RE-ARMED BY THE busbar-timing FOLD (OWNER RULING Q70) — EXPIRED AND STRUCK ─
+#
+# Declared `rules.loc-ceilings.kernel_ceiling` 50846 -> 51167: the fold's measured +321 lines
+# (busbar-timing's 318 code lines plus three seam lines), with K2g's named reservation still held
+# open. Its commit reached the base, so `ceiling-rose` reported it as "a declared raise that is not a
+# raise at the base". Struck here; the ceiling itself is re-pinned to its measurement below.
+
+# ── THE CONTRACT CEILING PAIR, RE-ARMED AFTER THE EGRESS STATIC HEADERS AND THE TESTKIT (SD-3b) —
+#    EXPIRED AND STRUCK
+#
+# Declared `gate.surface_ceilings.contract_caps` and `rules.loc-ceilings.caps_contract_ceiling`
+# -> 9463 (OWNER RULING Q68(3), ARCHITECT SD-3 queue (1)): the re-arm at the measured value after
+# SD-3b's egress static headers and testkit. Its commit reached the base, so `ceiling-rose` reported
+# both as "a declared raise ... that is not a raise at the base". THE CEILINGS DID NOT MOVE: both
+# still read 9463. The next merge into busbar-contract declares its own re-arm here, once.
+
+# ── THE CONTRACT CEILING PAIR, RE-ARMED BY THE #84 MERGE (busbar-plugin + the SDK into the contract) ─
 
 [gate.ceiling_raises."gate.surface_ceilings.contract_caps"]
 file    = "qa/construction.toml"
-from    = 9218
-to      = 9251
-because = "OWNER RULING Q68(3) (docs/design/1.6.0-QUESTIONS.md), ARCHITECT O2: contract_caps re-arms at the MEASURED value after each owner-locked #83 merge into busbar-contract, each in its own commit. This is the re-arm for the fold F4 follow-up 94180ed04 (ARCHITECT ruling on F4 queue item 3, #83(d)): the V1 usage-ledger fold (fold_v1_ledger, fold_v1_model, fold_unit) moved verbatim from busbar-kernel-ledger into busbar_contract::records beside the frozen V1 shapes, +33 code lines. Measured by cargo xtask loc busbar-contract --ref: 9218 at 94180ed04^, 9251 at 94180ed04. The live declaration is re-pointed to describe this raise; the 9184 -> 9218 declaration it replaces is at the base and expired."
+from    = 9463
+to      = 14720
+because = "OWNER RULING Q68(3) (docs/design/1.6.0-QUESTIONS.md), ARCHITECT O2: contract_caps re-arms at the MEASURED value after each owner-locked #83/#84 merge into busbar-contract, each in its own commit. This is the re-arm for the #84 merge (spec #84: the SDK and the contract share one definition, so they MERGE): busbar-plugin (the airlock root, the COLD and HOT lanes) and busbar-plugin-sdk (the export macros, the export boundary, the one dropped-in door) moved verbatim into busbar_contract::abi and busbar_contract::abi::sdk, with the transport door (export_transport!) and the unsafe-policy module line, +5257 code lines. Measured by cargo xtask gate construction: 9463 before the merge, 14720 with it; both source crates are deleted, so the lines moved and did not grow."
 
 [gate.ceiling_raises."rules.loc-ceilings.caps_contract_ceiling"]
 file    = "qa/construction.toml"
-from    = 9218
-to      = 9251
-because = "OWNER RULING Q68(3) (docs/design/1.6.0-QUESTIONS.md), ARCHITECT O2: contract_caps re-arms at the MEASURED value after each owner-locked #83 merge into busbar-contract, each in its own commit. This is the re-arm for the fold F4 follow-up 94180ed04 (ARCHITECT ruling on F4 queue item 3, #83(d)): the V1 usage-ledger fold (fold_v1_ledger, fold_v1_model, fold_unit) moved verbatim from busbar-kernel-ledger into busbar_contract::records beside the frozen V1 shapes, +33 code lines. Measured by cargo xtask loc busbar-contract --ref: 9218 at 94180ed04^, 9251 at 94180ed04. The live declaration is re-pointed to describe this raise; the 9184 -> 9218 declaration it replaces is at the base and expired."
+from    = 9463
+to      = 14720
+because = "OWNER RULING Q68(3) (docs/design/1.6.0-QUESTIONS.md), ARCHITECT O2: contract_caps re-arms at the MEASURED value after each owner-locked #83/#84 merge into busbar-contract, each in its own commit. This is the re-arm for the #84 merge (spec #84: the SDK and the contract share one definition, so they MERGE): busbar-plugin (the airlock root, the COLD and HOT lanes) and busbar-plugin-sdk (the export macros, the export boundary, the one dropped-in door) moved verbatim into busbar_contract::abi and busbar_contract::abi::sdk, with the transport door (export_transport!) and the unsafe-policy module line, +5257 code lines. Measured by cargo xtask gate construction: 9463 before the merge, 14720 with it; both source crates are deleted, so the lines moved and did not grow."
 
 # ── THE KERNEL CEILING'S OWNER-APPROVED RAISE — EXPIRED AND STRUCK ─────────────────────────────
 #
@@ -264,6 +301,16 @@ because = "OWNER RULING Q68(3) (docs/design/1.6.0-QUESTIONS.md), ARCHITECT O2: c
 # every one of the ten cells already reads its `to` value, so `ceiling-rose` reported
 # all ten as "a declared raise ... that is not a raise at the base". This is the commit after.
 # Nothing here moved a ceiling; the numbers live in qa/kind-isolation.toml and did not change.
+
+# ── NAMED RESERVATIONS ────────────────────────────────────────────────────────────────────────────
+# Headroom a ruling holds open under one ceiling, for a change that is ruled and not yet landed.
+# `ceiling-slack` subtracts a reservation before judging slack, so a ceiling at measurement plus
+# reservation is pinned and any further gap is still slack. Each names the ceiling by its exact
+# dotted path, holds a positive `lines`, and carries the ruling. The number is ratcheted like every
+# other number in this file: it shrinks as the reserved change spends it and never grows unannounced.
+[gate.ceiling_reservations."rules.loc-ceilings.kernel_ceiling"]
+lines   = 73
+because = "ARCHITECT ruling on the kernel budget (R-KERNEL, sd-extra.txt; K2-0 units plan): K2g's kernel change is ruled and not yet landed and holds up to 73 kernel code lines; every other change nets <= 0 on the kernel, and SD-8 and the timing fold re-arm by their own measured figures in their own commits."
 
 # The surface ceilings from ARCHITECTURE.md section 1.1: what a PLUGIN AUTHOR has to read. These are
 # owner decisions, not ratchets that drift upward with the tree — the gate reads them
@@ -333,7 +380,20 @@ because = "OWNER RULING Q68(3) (docs/design/1.6.0-QUESTIONS.md), ARCHITECT O2: c
 # commit after XPLANE's served-operation-class shape (6537443e2, +30; 3c772d601, -1).
 # RE-ARMED 9218 -> 9251, AT THE MEASUREMENT (OWNER RULING Q68(3)), in its own commit after the fold F4
 # follow-up 94180ed04 (the V1 usage-ledger fold, +33); the live declaration above carries the measure.
-contract_caps = 9251
+# RE-ARMED 9251 -> 9289, AT THE MEASUREMENT (OWNER RULING Q68(3)), in its own commit after SD-3 (1/3)
+# 52ed6199f (the codec host-service seams and the `http` re-export, +38); the live declaration above
+# carries the measure.
+# RE-ARMED 9289 -> 9294, AT THE MEASUREMENT (OWNER RULING Q68(3); ARCHITECT RULING (b) on UC-VERBS), in
+# its own commit after aae5c08f2 (the plane record kinds, +5); the live declaration above carries the
+# measure.
+# RE-ARMED 9294 -> 9296, AT THE MEASUREMENT (OWNER RULING Q68(3); ARCHITECT SD-3 queue (1)), in its
+# own commit after SD-3b's egress static headers (+2); the live declaration above carries the measure.
+# RE-ARMED 9296 -> 9463, AT THE MEASUREMENT (OWNER RULING Q68(3); ARCHITECT SD-3 queue (4)), in its
+# own commit after SD-3b's always-compiled contract testkit (+167); same live declaration.
+# RE-ARMED 9463 -> 14720, AT THE MEASUREMENT (OWNER RULING Q68(3)), in its own commit after the #84
+# merge moved busbar-plugin and busbar-plugin-sdk into busbar_contract::abi (+5257, moved lines); the
+# live declaration above carries the measure.
+contract_caps = 14720
 # REPOINTED, and the repoint is what makes this row a gate again. It named the CRATE
 # `busbar-grammar`, which #40 folded into `busbar-contract` and deleted — so it summed nothing,
 # measured nothing and passed, which is this file's own "zero is not clean" failure sitting inside
@@ -401,8 +461,8 @@ needle = "busbar_kernel::"
 # measurement on the committed tree (HEAD b091b4e83), a raise the owner ruled is a needle repair
 # arming the true count, not a relaxation of what the instrument ever saw. Downward only from here.
 [rules.ports-only.max_per_crate]
-busbar-llm = 263
-busbar-mcp = 287
+busbar-llm = 253
+busbar-mcp = 285
 busbar-a2a = 236
 busbar-voice = 88
 
@@ -413,8 +473,8 @@ counts can trend to zero at their own pace."""
 # item 376 (Q11/Q32, owner-signed 2026-09-24): same needle repair as ports-only above, pinned at
 # TODAY's measurement on the committed tree (HEAD b091b4e83). Downward only from here.
 [rules.ports-only-tests.max_per_crate]
-busbar-llm = 1001
-busbar-mcp = 191
+busbar-llm = 999
+busbar-mcp = 188
 busbar-a2a = 98
 busbar-voice = 43
 
@@ -781,6 +841,13 @@ step directory that returns a `Response` from anywhere but `audit.rs` is a way f
 without being posted — the exact hole the loop exists to close."""
 root = "crates/busbar-llm/src/unit"
 allowed_files = ["audit.rs"]
+# THE SCOPE'S ONE EXEMPTION (spec #28; ARCHITECT RULING, SLOT NODE-AUDIT): a plane's unit answers with
+# the two-variant `PlaneAnswer` — `Unary(status, headers, body)`, turned into a response only on the
+# root's audited exit, or `Live(Response)`, a live body governed at admit. `PlaneAnswer::Live` is the
+# one carrier a response crosses the plane's boundary in, so a function returning a `PlaneAnswer` is
+# not an escape. It is stated HERE, once, for the whole scope; there is no per-function waiver, and a
+# carrier that is itself a bare `Response` is refused by the rule.
+answer_carrier = "PlaneAnswer::Live"
 max_escapes = 0
 
 # ── 12. terminal-doors-in-audit-step ─────────────────────────────────────────────────────────────
@@ -848,7 +915,27 @@ kernel_crate = "busbar-kernel"
 # under 51439; that commit lowers this figure to what it then measures.
 # ── LOWERED 51742 -> 51049 by `--write` on the committed breaker fold: the in-memory store's
 # state machine left the kernel for busbar-kernel-breaker. Downward only.
-kernel_ceiling = 51049
+# ── LOWERED 51049 -> 50846: the measurement (50773) plus the one kernel reservation a ruling holds
+# open, K2g's <= 73 lines. Every other change nets <= 0 on the kernel. SD-8 and the timing fold
+# re-arm by their own measured figures, each in its own commit, as the kernel rulings require.
+# The 73 above the measurement are a NAMED reservation,
+# [gate.ceiling_reservations."rules.loc-ceilings.kernel_ceiling"] above, which ceiling-slack
+# subtracts before it judges slack, so any gap beyond them is still RED.
+# ── RE-ARMED BY THE MEASURED FOLD, OWNER RULING Q70 (docs/design/1.6.0-QUESTIONS.md, OWNER ANSWERS
+# 2026-09-25): busbar-timing folds into busbar-kernel as the feature-gated `timing` module and "the
+# kernel ceiling [is] re-armed at measured in the fold commit". Q70 authorizes exactly the moved
+# lines: busbar-timing's code 318 (`cargo xtask loc --ref 49d676057 busbar-timing`), landing in
+# `src/timing/mod.rs`, plus three seam lines (`pub mod timing;`, `pub use crate::timeit;`, and the
+# `#[allow(unsafe_code)]` the kernel's crate-wide `deny` needs on the atexit call) = +321. This
+# row's own measure (`cargo xtask gate construction`) reads 50773 at 49d676057 and 51094 with the
+# fold. 50846 + 321 = 51167: the fold's measured lines exactly, with K2g's <= 73 named reservation
+# still held open. Its `[gate.ceiling_raises]` declaration reached the base and is struck.
+# ── 51167 -> 51162: the kernel measures 51089 after SD-3b's egress-declaration change, and
+# 51089 + K2g's 73 named lines = 51162. Downward only.
+# ── 51161 -> 51160: the kernel measures 51087 after the #84 merge re-pointed its plugin-ABI imports
+# at busbar_contract::abi (one import tree collapsed), and 51087 + K2g's 73 named lines = 51160.
+# Downward only.
+kernel_ceiling = 51160
 # `caps_crate = "busbar-caps"` WAS HERE AND IS STRUCK, 2026-09-22. The crate was folded into
 # busbar-contract by 2c9eddecf ("W2.c: fold busbar-caps into busbar-contract"); its types live at
 # `crates/busbar-contract/src/caps/`, whose own module header says "Folded from the former
@@ -898,7 +985,12 @@ contract_crate = "busbar-contract"
 # RE-ARMED 9184 -> 9189 with its pair (OWNER RULING Q68(3); fold F4 2/3, +5).
 # RE-ARMED 9189 -> 9218 with its pair (OWNER RULING Q68(3); XPLANE ruling (S), +29).
 # RE-ARMED 9218 -> 9251 with its pair (OWNER RULING Q68(3); fold F4 follow-up, +33).
-caps_contract_ceiling = 9251
+# RE-ARMED 9251 -> 9289 with its pair (OWNER RULING Q68(3); SD-3 (1/3) codec host-service seams, +38).
+# RE-ARMED 9289 -> 9294 with its pair (OWNER RULING Q68(3); the plane record kinds aae5c08f2, +5).
+# RE-ARMED 9294 -> 9296 with its pair (OWNER RULING Q68(3); SD-3b egress static headers, +2).
+# RE-ARMED 9296 -> 9463 with its pair (OWNER RULING Q68(3); SD-3b contract testkit, +167).
+# RE-ARMED 9463 -> 14720 with its pair (OWNER RULING Q68(3); the #84 merge of busbar-plugin and the SDK, +5257).
+caps_contract_ceiling = 14720
 unit_crate_glob = "busbar-unit-*"
 # RE-KEYED on cherry-pick onto 143db6db6: this commit's own delta is -53 (two units stopped
 # declaring their own copies), measured against whatever unit_total_ceiling read when the line was
@@ -911,7 +1003,9 @@ unit_crate_glob = "busbar-unit-*"
 # 2c9eddecf), and the glob `busbar-unit-*` now matches exactly ONE crate,
 # `busbar-unit-transport-key`, at 268 lines. The ceiling had 14,155 lines of slack — room for the
 # whole unit family to come back without a single row going red. Pinned at the measurement.
-unit_total_ceiling = 268
+# RATCHETED DOWN 268 -> 2, AT THE MEASUREMENT: the transport-key fold (F14 1/2) moved the
+# provisioning kernel-side into busbar-kernel-identity, and `busbar-unit-transport-key` now counts 2.
+unit_total_ceiling = 2
 # `verbs_crate` / `verbs_ceiling` ARE STRUCK (P1A-con, 1.6.0 Phase 1). They budgeted
 # `busbar-unit-verbs` as a sub-ceiling of the unit union. OWNER-LOCKED DECISION #36 moved verb
 # execution OUT of the unit set ("EXITS from the unit set: `verbs` -> `busbar-core-admin`"):
@@ -959,7 +1053,12 @@ patterns = ["teller.rs"]
 # mis-pin: a no-headroom ceiling exists precisely so the next line that grows the loop is the line
 # that has to justify itself. Re-measure (`cargo xtask loc --per-file busbar-kernel`) before reading
 # either number as current, and use `--write` to re-pin rather than editing by hand.
-ceiling = 659
+# ── LOWERED 659 -> 604, the measurement (`cargo xtask loc --per-file busbar-kernel`). The settlement
+# table (`settle_amount`, `fee_count`, `requests_drawn`, `requests_settled`, `Evidence`,
+# `FeeEvidence`, `KERNEL_ACCRUAL_CLASS`) moved verbatim into `busbar-kernel/src/settlement.rs`,
+# re-exported from `teller` under every old path; its 96 code lines still spend `kernel_ceiling`.
+# That took the row from 695 (RED against 659) to 604. Downward only.
+ceiling = 604
 
 [rules.loc-ceilings.kernel_files.pump]
 label = "pump/scheduler"
@@ -1047,12 +1146,13 @@ edge is not a shipped edge, and it is scored on `kind-isolation:test-deps` inste
 consulted when present to widen the same check to transitive path/workspace deps, and skipped \
 (noted, not failed) when cargo is unavailable, keeping this gate cargo-optional."""
 # Every dependency a plugin-kind crate may name beyond busbar-contract, with the review recorded in
-# the commit that added it: busbar-api / busbar-plugin-sdk are the 1.5.5-era loader ABI every
-# example plugin still bridges through until it moves onto busbar-contract; busbar-grammar is the
+# the commit that added it: busbar-api is the 1.5.5-era loader ABI every example plugin bridged
+# through until it moved onto busbar-contract (busbar-plugin-sdk, the other half of that bridge, is
+# struck: it merged INTO busbar-contract, #84, so a plugin names the contract alone); busbar-grammar is the
 # closed JSON span grammar the contract itself is written on and re-exports as `spans`, so naming it
 # directly is naming a piece of the contract rather than reaching past it; the rest are ordinary
 # third-party crates.
-reviewed_allowlist = ["busbar-api", "busbar-plugin-sdk", "serde", "serde_json", "tracing", "async-trait", "bytes", "sonic-rs", "busbar-llm-codec", "busbar-voice-codec", "busbar-grammar"]
+reviewed_allowlist = ["busbar-api", "serde", "serde_json", "tracing", "async-trait", "bytes", "sonic-rs", "busbar-llm-codec", "busbar-voice-codec", "busbar-grammar"]
 # busbar-llm-codec: the pure codec half of the split llm crate (no I/O in its closure); the plane adapts it.
 # Per-crate additions beyond the global list above, each a one-line review.
 [rules.manifest-allowlist.reviewed_extra]
@@ -1077,11 +1177,6 @@ reviewed_allowlist = ["busbar-api", "busbar-plugin-sdk", "serde", "serde_json", 
 # `flock` FileStore takes around its read-modify-write (crates/store-example-plugin/src/lib.rs,
 # FileLock), unix-only, in the fixture that models a fleet sharing one durable path.
 store-example-plugin = ["libc"]
-# REVIEWED 2026-09-25 (item 141, the webhook sink's extraction): `url` is the WHATWG parser the host's
-# own webhook guard parses the target with; the sink uses it for one thing only — masking the
-# target's userinfo in its own diagnostic lines, byte for byte as the compiled-in sink did
-# (`mask_userinfo`: re-serialize through the parser, `***` for the userinfo). No I/O, no host state.
-busbar-export-webhook = ["url"]
 [rules.manifest-allowlist.known_red_deps]
 busbar-plane-llm = ["busbar-llm"]
 # busbar-plane-a2a HAS NO ROW, for the same reason busbar-plane-mcp lost its one: the codec fold
@@ -1418,7 +1513,6 @@ deny_kinds = ["transport", "abi", "loader", "store", "export"]
 # name below; a new crate NOT on this list is held to the rule immediately.
 known_missing_forbid = [
   "hook-test-plugin", "hooks-ranking", "auth-static-plugin", "auth-admin-tokens",
-  "secret-example-plugin",
 ]
 known_missing_deny = [ "plugin-loader",
   "store-memory", "store-example-plugin", "export-example-plugin",
@@ -1561,7 +1655,7 @@ known_sites = [
   "crates/busbar-substrate-values/src/proto.rs",
   "crates/busbar-transport-ws/src/transport.rs",
   "crates/plugin-loader/src/",
-  "crates/plugin-sdk/src/boundary.rs",
+  "crates/busbar-contract/src/abi/sdk/boundary.rs",
   "crates/plane-example/src/",
   # REVIEWED 2026-09-25 (item 141): a first-party plugin's diagnostic written as the host's own
   # line needs a tracing callsite and field names that are 'static by tracing's type; `site` makes
@@ -1617,8 +1711,9 @@ because = "aborting skips every exit path at once; the node drains instead"
 symbol = "AssertUnwindSafe"
 confined_to = "kernel/src/teller"
 # The Teller loop's ONE home in this tree: the kernel's own teller.rs. The second site is
-# busbar-timing's atexit diagnostic dump: a debug-only (`feature = "timing"`) profiling crate that
-# holds no unit, so its catch_unwind cannot smuggle a hold across — a distinct, provably-safe use.
+# busbar_kernel::timing's atexit diagnostic dump (the former busbar-timing crate, folded by OWNER
+# Q70): a debug-only (`feature = "timing"`) profiling module that holds no unit, so its catch_unwind
+# cannot smuggle a hold across — a distinct, provably-safe use.
 #
 # STRUCK 2026-09-22: `crates/busbar-substrate/src/teller`. GONE, NOT MOVED, and the distinction is
 # the whole point — there is no successor to repoint at. The list described "the Teller loop's TWO
@@ -1630,8 +1725,8 @@ confined_to = "kernel/src/teller"
 # loop that SURVIVED, and it is already on this list in its own right. Repointing the struck entry
 # at it would be inventing coverage for a scope that no longer exists; the substrate teller's
 # AssertUnwindSafe went away with its code. The remaining paths already confine the live loop.
-confined_to_paths = ["crates/busbar-kernel/src/teller.rs", "crates/busbar-timing/src/lib.rs", "crates/busbar-contract/src/caps/fixtures/lint_rules.rs"]
-because = "it is what lets a hold cross a catch_unwind; the loop needs it in exactly one place (plus busbar-timing's holdless atexit dump)"
+confined_to_paths = ["crates/busbar-kernel/src/teller.rs", "crates/busbar-kernel/src/timing/mod.rs", "crates/busbar-contract/src/caps/fixtures/lint_rules.rs"]
+because = "it is what lets a hold cross a catch_unwind; the loop needs it in exactly one place (plus busbar_kernel::timing's holdless atexit dump)"
 
 [rules.hold-escapes.symbols.join-abort]
 symbol = "JoinHandle::abort"
@@ -2103,14 +2198,16 @@ scope_globs = ["crates/busbar/src/root/*.rs", "crates/busbar/src/main.rs"]
 # TODAY's measurement on the committed tree (HEAD b091b4e83). Downward only from here.
 # RATCHETED DOWN 15 -> 10, AT THE MEASUREMENT (K2f): eefc65fd7 deleted root/units_voice.rs, the last
 # root file naming `busbar_voice::` (5 distinct symbols), so the busbar_voice figure below is 0.
-ceiling = 10
+# RATCHETED DOWN 10 -> 0, AT THE MEASUREMENT: the llm unit became the plane's only arrival path (K2h)
+# and the root names no `busbar_llm::` engine path any more, so every prefix below measures 0.
+ceiling = 0
 
 [rules.legacy-reach.prefixes.busbar_llm]
 prefix = "busbar_llm::"
 # The plane's own unit modules are where the rebuilt steps live; they are not legacy engine reach.
 exclude = ["busbar_llm::unit"]
 because = "the llm engine's non-unit paths: arrival parsing, proto codecs, the stream translator"
-figure = 10
+figure = 0
 
 [rules.legacy-reach.prefixes.busbar_mcp]
 prefix = "busbar_mcp::"
@@ -2332,6 +2429,14 @@ plane_crates = 4
 #     as its `secret_ref` module (the contract has one secret reference type), and its directory was
 #     deleted. `crates/secret-*` now matches exactly one: `crates/secret-example-plugin`.
 #
+# ── RE-PINNED 2026-09-26: `secret` 1 -> 0 ───────────────────────────────────────────────────────────────────
+#
+#   * `secret` 1 -> 0. The fixture deletion (owner, docs/design/1.6.0-QUESTIONS.md "FIXTURES":
+#     "these are trash … real plugins are the examples"): `crates/secret-example-plugin` was
+#     deleted, and the secret kind is proven by the real plugin repo GetBusbar/hashicorp-vault
+#     (crates/plugin-loader/src/tests/plugin_proof_tests.rs, ci.yml `plugin-proofs`).
+#     `crates/secret-*` now matches no directory: the kind's documented zero in this repo.
+#
 # THE BASE COMPARISON STILL REPORTS THE THREE DECREMENTS (plugin_kinds.plane 6->5,
 # plugin_kinds.unit 14->1, plugin_kinds.pure_auth 2->0), AND THAT IS THIS ROW WORKING RATHER THAN
 # FAILING. `[gate.census]` reds a floor that went DOWN versus the base commit precisely because it
@@ -2346,7 +2451,7 @@ plane = 5
 unit = 1
 hook = 2
 auth = 2
-secret = 1
+secret = 0
 store = 2
 export = 1
 transport = 5

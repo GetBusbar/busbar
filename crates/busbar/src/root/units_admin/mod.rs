@@ -306,6 +306,12 @@ pub trait LedgerView: Send + Sync {
     /// The sealed checkpoints, oldest first.
     fn checkpoints(&self) -> Vec<busbar_kernel_ledger::checkpoint::Checkpoint>;
 
+    /// The keyset a checkpoint's seal is verified against — the audit chain's own (Q71(3): one
+    /// keyset, #82). Empty by default: a view bound to no chain vouches for no signature.
+    fn checkpoint_keys(&self) -> busbar_kernel_audit::AuditKeySet {
+        busbar_kernel_audit::AuditKeySet::new()
+    }
+
     /// The marker the first boot after the upgrade sealed, if this deployment has migrated.
     fn migration_marker(&self) -> Option<busbar_kernel_ledger::migration::MigrationMarker>;
 
@@ -386,7 +392,33 @@ pub trait LedgerView: Send + Sync {
     fn recorded_counts(&self, _amends: &str) -> Option<RecordedCounts> {
         None
     }
+
+    /// What the `verify` verb checks (owner answer Q71(2)): the sealed checkpoints, oldest first,
+    /// and the book's balances as they stand NOW — both as of one moment, so a settlement landing
+    /// between the two reads cannot read as an imbalance.
+    ///
+    /// The book is an option, and `None` is "this view holds no book", NEVER "the book is empty":
+    /// the verifier then checks the checkpoints alone and says it did not verify a book. The default
+    /// is exactly that, which is the true answer for a view with no book behind it.
+    fn verify_snapshot(
+        &self,
+    ) -> (
+        Vec<busbar_kernel_ledger::checkpoint::Checkpoint>,
+        Option<BookTotals>,
+    ) {
+        (self.checkpoints(), None)
+    }
 }
+
+/// The book's balances, per bucket, dimension, scope and window — what a checkpoint seals and what
+/// `verify` measures the checkpoint against.
+pub type BookTotals = std::collections::BTreeMap<
+    (
+        busbar_kernel_ledger::totals::TotalsKey,
+        busbar_kernel_ledger::totals::WindowStart,
+    ),
+    busbar_kernel_ledger::totals::Totals,
+>;
 
 /// The view a node has before a ledger is bound behind it.
 ///
@@ -607,6 +639,10 @@ impl LedgerView for NodeLedger {
         self.lock().checkpoints.clone()
     }
 
+    fn checkpoint_keys(&self) -> busbar_kernel_audit::AuditKeySet {
+        crate::root::durability::keyset_of(&self.lock().record)
+    }
+
     fn migration_marker(&self) -> Option<busbar_kernel_ledger::migration::MigrationMarker> {
         self.lock().migration_marker()
     }
@@ -651,6 +687,20 @@ impl LedgerView for NodeLedger {
     /// Read off this node's own journal, under the same lock every other read takes.
     fn recorded_counts(&self, amends: &str) -> Option<RecordedCounts> {
         adjust::recorded_in(&self.lock(), amends)
+    }
+
+    /// Both halves under ONE hold of the lock a settlement takes.
+    fn verify_snapshot(
+        &self,
+    ) -> (
+        Vec<busbar_kernel_ledger::checkpoint::Checkpoint>,
+        Option<BookTotals>,
+    ) {
+        let durability = self.lock();
+        (
+            durability.checkpoints.clone(),
+            Some(durability.ledger.book().snapshot()),
+        )
     }
 }
 
@@ -804,18 +854,12 @@ impl AuditView for NodeAudit {
     }
 
     fn keys(&self) -> busbar_kernel_audit::AuditKeySet {
-        let mut keys = busbar_kernel_audit::AuditKeySet::new();
         // The public half of the key this chain signs with, where it was given one. A node that was
         // given none answers with an EMPTY set, and that is the truth about it: nothing it sealed
         // carries a signature, so there is no key with which to check one. What the set must never
-        // do is carry a key the node does not sign with.
-        let hex = self.lock().record.public_key_hex();
-        if let Some(hex) = hex {
-            if let Ok(key) = busbar_kernel_audit::AuditVerifyingKey::from_hex(&hex) {
-                keys.insert(key);
-            }
-        }
-        keys
+        // do is carry a key the node does not sign with. The checkpoints read verifies against the
+        // same set (Q71(3): one keyset).
+        crate::root::durability::keyset_of(&self.lock().record)
     }
 }
 
@@ -953,6 +997,14 @@ pub struct CoreGovernance {
     /// Which pool names `adjust` accepts (Q64/Q67): the node's configured pools. Knows none until
     /// a root binds them, so an unbound node refuses every correction's pool.
     pools: PoolKnown,
+    /// Which planes this node serves, for `plane_facts` and `plane_record_write` (Q71(2)). Knows
+    /// none until a root binds the registry, so an unbound node answers every plane `404`.
+    planes: PlaneLookup,
+    /// Where `plane_record_write` lands its record. `None` refuses the write (`Store`): a record
+    /// nothing kept was not written.
+    records: Option<PlaneRecordSink>,
+    /// The node's `Idempotency-Key` replay cache for the two Q71(2) writes (contract D-3).
+    replays: Arc<bound::ReplayCache>,
 }
 
 impl CoreGovernance {
@@ -978,7 +1030,25 @@ impl CoreGovernance {
             },
             granted: VerbScope::ReadOnly,
             pools: no_pools(),
+            planes: no_planes(),
+            records: None,
+            replays: Arc::new(bound::ReplayCache::new()),
         }
+    }
+
+    /// Bind the node's `Idempotency-Key` replay cache (contract D-3).
+    #[must_use]
+    pub fn replaying(mut self, replays: Arc<bound::ReplayCache>) -> Self {
+        self.replays = replays;
+        self
+    }
+
+    /// Bind the planes this node serves and where a plane record is written (Q71(2)).
+    #[must_use]
+    pub fn planed(mut self, planes: PlaneLookup, records: Option<PlaneRecordSink>) -> Self {
+        self.planes = planes;
+        self.records = records;
+        self
     }
 
     /// Bind the pool names `adjust` accepts (Q64/Q67).
@@ -1101,6 +1171,55 @@ impl busbar_core_admin::Governance for CoreGovernance {
                 self.ledger.recorded_counts(amends)
             })
             .map(|answer| answer.pack());
+        }
+        // The four verbs owner answer Q71(2) binds (see `bound`). Admitted by the verbs unit —
+        // scope, rate class, and for the irreducible `commit_upgrade` the operator ceremony — before
+        // this seam was reached; none of them is the mounted router's.
+        match verb {
+            KernelVerb::Verify => {
+                return bound::verify_effect(self.ledger.as_ref()).map(|a| a.pack());
+            }
+            KernelVerb::PlaneFacts => {
+                return bound::plane_facts_effect(&self.request.path, &*self.planes)
+                    .map(|a| a.pack());
+            }
+            // The two writes replay under contract D-3: a retry carrying the same `Idempotency-Key`
+            // with the same body answers the first answer, byte for byte, and runs nothing again.
+            KernelVerb::PlaneRecordWrite => {
+                return bound::replayable(
+                    &self.replays,
+                    verb,
+                    &self.attribution.principal,
+                    &self.request,
+                    request,
+                    || {
+                        bound::plane_record_write_effect(
+                            request,
+                            self.request.at,
+                            &*self.planes,
+                            self.records.as_ref(),
+                        )
+                    },
+                );
+            }
+            KernelVerb::CommitUpgrade => {
+                return bound::replayable(
+                    &self.replays,
+                    verb,
+                    &self.attribution.principal,
+                    &self.request,
+                    request,
+                    || {
+                        bound::commit_upgrade_effect(
+                            request,
+                            self.request.at,
+                            &self.attribution.principal,
+                            self.amendments.as_deref(),
+                        )
+                    },
+                );
+            }
+            _ => {}
         }
         Ok(self.run())
     }
@@ -1651,6 +1770,35 @@ impl AmendmentJournal {
             .map(|_| ())
             .map_err(|_| busbar_core_admin::GovernanceError::Store)
     }
+
+    /// Append one `Policy`-class record whose body the caller built, dated `wall_secs`, and answer
+    /// with its node sequence and chain hash — the position an operator cites it by.
+    ///
+    /// # Errors
+    ///
+    /// `Store` when the journal could not make the record durable; the caller then refuses.
+    pub fn seal_policy(
+        &self,
+        body: Vec<u8>,
+        wall_secs: u64,
+    ) -> Result<(u64, [u8; 32]), busbar_core_admin::GovernanceError> {
+        let entry = busbar_kernel_wal::Entry::new(busbar_kernel_wal::RecordClass::Policy, body)
+            .at(wall_secs, 0);
+        let mut durability = self.book.lock().unwrap_or_else(|p| p.into_inner());
+        let ack = durability
+            .journal
+            .append(
+                &self.token,
+                busbar_contract::caps::StepName::Route,
+                &[entry],
+            )
+            .map_err(|_| busbar_core_admin::GovernanceError::Store)?;
+        let sealed = ack
+            .sealed
+            .last()
+            .ok_or(busbar_core_admin::GovernanceError::Store)?;
+        Ok((sealed.node_seq, sealed.hash))
+    }
 }
 
 /// A rate in micro-units per unit, as its decimal TEXT, to the integer nano-units per unit the card
@@ -1777,7 +1925,11 @@ fn render_ledger_view(
                 .map_err(refused)?
                 .into_bytes()
         }
-        KernelVerb::GetLedgerCheckpoints => render_checkpoints(&view.checkpoints()).into_bytes(),
+        KernelVerb::GetLedgerCheckpoints => render_checkpoints(
+            &view.checkpoints(),
+            &crate::root::durability::KeySetVerifier::new(view.checkpoint_keys()),
+        )
+        .into_bytes(),
         KernelVerb::GetLedgerReconciliation => {
             // As the totals arm above: a refused row is off the ledger side of the identity too,
             // since `NodeLedger::rows_of` walks the same settled cells.
@@ -2013,7 +2165,14 @@ fn render_totals(
 /// `body_hash_verifies` is served beside the hash rather than instead of it. The hash is what an
 /// auditor re-derives independently; the boolean is this node's own answer for the same question,
 /// and serving both is what lets the two be compared rather than trusted.
-fn render_checkpoints(checkpoints: &[busbar_kernel_ledger::checkpoint::Checkpoint]) -> String {
+///
+/// `seal_verifies` is [`busbar_kernel_ledger::checkpoint::Checkpoint::verify_seal`] against the
+/// audit keyset (Q71(3): one keyset), and `seal_refusal` is its refusal in its own words — EDITED,
+/// UNSIGNED or a signature the keyset rejects — or `null` when the seal verifies.
+fn render_checkpoints(
+    checkpoints: &[busbar_kernel_ledger::checkpoint::Checkpoint],
+    keys: &dyn busbar_kernel_ledger::checkpoint::CheckpointVerifier,
+) -> String {
     let mut out = String::from("{\"checkpoints\":[");
     for (i, cp) in checkpoints.iter().enumerate() {
         if i > 0 {
@@ -2046,6 +2205,13 @@ fn render_checkpoints(checkpoints: &[busbar_kernel_ledger::checkpoint::Checkpoin
         } else {
             "false"
         });
+        match cp.verify_seal(keys) {
+            Ok(()) => out.push_str(",\"seal_verifies\":true,\"seal_refusal\":null"),
+            Err(refusal) => {
+                out.push_str(",\"seal_verifies\":false,\"seal_refusal\":");
+                json_string(&refusal.to_string(), &mut out);
+            }
+        }
         out.push_str(",\"heads\":[");
         for (j, head) in cp.heads.iter().enumerate() {
             if j > 0 {
@@ -2376,6 +2542,17 @@ pub struct AdminBinding {
     /// Knows none until a root binds them, so a node composed without a configuration refuses every
     /// correction's pool rather than accepting one it cannot check.
     pub pools: PoolKnown,
+    /// Which planes this node serves, and what each declares (`plane_facts`, `plane_record_write`;
+    /// Q71(2)). Knows none until a root binds the registry over its live configuration (Law 7).
+    pub planes: PlaneLookup,
+    /// Where `plane_record_write` lands a record: the plane-facing store seam. `None` until a root
+    /// binds one, and the verb then refuses rather than accept a write nothing keeps.
+    pub records: Option<PlaneRecordSink>,
+    /// THE NODE'S `Idempotency-Key` REPLAY CACHE for `plane_record_write` and `commit_upgrade`
+    /// (contract D-3). Node-level, because a unit's governance value lives for one request; built on
+    /// first use over [`AdminBinding::claims`], so a durable node journals each claim exactly as the
+    /// key mint and rotate caches do (item 271).
+    pub replays: Arc<std::sync::OnceLock<Arc<bound::ReplayCache>>>,
     /// The requests currently being walked.
     pub units: AdminUnits,
 }
@@ -2508,6 +2685,9 @@ impl AdminBinding {
             amendments: None,
             claims: None,
             pools: no_pools(),
+            planes: no_planes(),
+            records: None,
+            replays: Arc::new(std::sync::OnceLock::new()),
             units: AdminUnits::new(),
         }
     }
@@ -2865,36 +3045,45 @@ pub(crate) fn route(
         None => (None, busbar_core_admin::ApprovalState::NotYetApproved),
     };
 
-    let verbs = busbar_core_admin::Verbs::new(
-        CoreGovernance::new(
-            Arc::clone(&binding.dispatch),
-            Arc::clone(&binding.ledger),
-            binding.audit.clone(),
-            verb,
-            request.clone(),
+    let verbs =
+        busbar_core_admin::Verbs::new(
+            CoreGovernance::new(
+                Arc::clone(&binding.dispatch),
+                Arc::clone(&binding.ledger),
+                binding.audit.clone(),
+                verb,
+                request.clone(),
+            )
+            .amending(
+                binding.amendments.clone(),
+                AmendAttribution {
+                    principal: actor.clone(),
+                    dual_control: posture.map(|p| p.dual_control),
+                },
+            )
+            .granted(granted)
+            .pooled(Arc::clone(&binding.pools))
+            .planed(Arc::clone(&binding.planes), binding.records.clone())
+            .replaying(Arc::clone(binding.replays.get_or_init(|| {
+                Arc::new(match &binding.claims {
+                    Some(journal) => bound::ReplayCache::with_journal(Arc::clone(journal)
+                        as Arc<dyn busbar_core_admin::idempotency::ClaimJournal>),
+                    None => bound::ReplayCache::new(),
+                })
+            }))),
+            StoreRef(store),
+            ArrivalNonce(request.at),
+            PackedReplay,
+            CONFIG_CLASS_RULES,
         )
-        .amending(
-            binding.amendments.clone(),
-            AmendAttribution {
-                principal: actor.clone(),
-                dual_control: posture.map(|p| p.dual_control),
-            },
-        )
-        .granted(granted)
-        .pooled(Arc::clone(&binding.pools)),
-        StoreRef(store),
-        ArrivalNonce(request.at),
-        PackedReplay,
-        CONFIG_CLASS_RULES,
-    )
-    // Item 271: the claims the create-key and rotate-key caches take go on the node's journal
-    // where a root bound one; `None` (no data directory) is exactly the unbound executor.
-    .with_claim_journal(
-        binding
-            .claims
-            .clone()
-            .map(|j| j as Arc<dyn busbar_core_admin::idempotency::ClaimJournal>),
-    );
+        // Item 271: the claims the create-key and rotate-key caches take go on the node's journal
+        // where a root bound one; `None` (no data directory) is exactly the unbound executor.
+        .with_claim_journal(
+            binding
+                .claims
+                .clone()
+                .map(|j| j as Arc<dyn busbar_core_admin::idempotency::ClaimJournal>),
+        );
 
     // THE THREE DISASTER-RECOVERY VERBS REACH THE STORE, not the governance seam. They are new
     // verbs and are admitted exactly as every other new verb is — scope, rate class, then the
@@ -3644,6 +3833,8 @@ pub(crate) use admin_mount::*;
 // ── `adjust` and the idempotency claim journal: sibling modules, re-exported here ─────────────────
 mod adjust;
 pub use adjust::RecordedCounts;
+mod bound;
+pub use bound::{live_planes, live_records, no_planes, PlaneLookup, PlaneRecordSink};
 mod claims;
 pub use claims::RootClaimJournal;
 

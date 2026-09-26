@@ -259,7 +259,9 @@ const ROSTER: &[Plane] = &[
         linked_crate: "busbar-llm",
         register_tokens: &["LlmPlane"],
         note: "the 1.5.5 plane; `proto-llm` carries the crate edge, the protocol DECLS and the \
-               plane decl together",
+               plane decl together. Its pre-unification module is gone: what the root keeps is \
+               the plane-free node its units are handed to (`root/plane_node.rs`, on the `node` \
+               axis)",
     },
     Plane {
         key: "mcp",

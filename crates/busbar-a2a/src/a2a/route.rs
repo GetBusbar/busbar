@@ -71,13 +71,13 @@ pub(super) struct SelectedMember {
     pub(super) agent_id: String,
     /// The breaker cell the hop admits against and records into.
     pub(super) breaker: RelayBreaker,
-    /// The host [`AdmissionId`](busbar_plugin::hot::AdmissionId) a walked selection already won and
+    /// The host [`AdmissionId`](busbar_contract::abi::hot::AdmissionId) a walked selection already won and
     /// REGISTERED in the shared dispatch scope (CLUSTER-1: the WIN rode `breaker_admit_over`, so the
     /// plane holds only this POD id and never a `PlaneAdmission`). The hop's recorded outcome settles
     /// through the same scope over this id; an abandoned hop releases the probe when the scope drops.
-    /// [`NONE`](busbar_plugin::hot::AdmissionId::NONE) when the walk won nothing (un-pooled / pinned
+    /// [`NONE`](busbar_contract::abi::hot::AdmissionId::NONE) when the walk won nothing (un-pooled / pinned
     /// hops admit later, inside `prepare`).
-    pub(super) admission_id: busbar_plugin::hot::AdmissionId,
+    pub(super) admission_id: busbar_contract::abi::hot::AdmissionId,
     /// Set when the walk found nothing admissible: the ingress renders it AFTER the task row
     /// exists, through the degenerate breaker refusal's own rendering.
     pub(super) walk_refusal: Option<super::relay::RelayRefusal>,
@@ -103,7 +103,7 @@ pub(super) fn select_member(
     let mut selected = SelectedMember {
         agent_id: admitted_agent.to_string(),
         breaker: RelayBreaker::degenerate(admitted_agent),
-        admission_id: busbar_plugin::hot::AdmissionId::NONE,
+        admission_id: busbar_contract::abi::hot::AdmissionId::NONE,
         walk_refusal: None,
         pin_mismatch: None,
     };

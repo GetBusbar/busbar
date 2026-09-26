@@ -50,6 +50,10 @@ pub const KIND_TASK: &str = "task";
 /// The `task_event` kind — the durable task-event record's tag on the store seam.
 pub const KIND_TASK_EVENT: &str = "task_event";
 
+/// The plane-record kinds this plane keeps on the store's plane-record seam — its declaration's
+/// `record_kinds`, so the administrative `plane_record_write` verb writes only these under it.
+pub const RECORD_KINDS: &[&str] = &[KIND_TASK, KIND_TASK_EVENT];
+
 /// The task rows: one per governed exchange this node is tracking.
 pub const SCHEMA_TASK: RecordSchemaId = RecordSchemaId::new(KIND_TASK);
 

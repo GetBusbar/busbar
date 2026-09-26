@@ -115,7 +115,10 @@
 //! tool description rather than the upstream's — applied to the field where it matters most.
 
 use busbar_contract::plane::{BillableClass, PER_REQUEST};
-use busbar_kernel::{plane::registry::PlaneHooks, plane_host::LiveHostFactory};
+use busbar_kernel::{
+    diagnostics::PLANE_CALLLOG_ROW_UNREADABLE, plane::registry::PlaneHooks,
+    plane_host::LiveHostFactory,
+};
 
 /// THE MCP PLANE'S VOCABULARY DECLARATION, beside the code it describes. Folded into
 /// `plane::registry::BUILTIN_PLANE_DECLS`; every field replaces one arm of a `Plane::Mcp` `match`.
@@ -155,6 +158,7 @@ pub const PLANE_DECLARATION: busbar_contract::plane::PlaneDeclaration =
         // opens no session account, so `tools.fees.per_session` would charge nothing — refused.
         fee_units: &[PER_REQUEST],
         metric_families: &[],
+        record_kinds: busbar_plane_mcp::records::RECORD_KINDS,
         served_op_classes: &[],
     };
 
@@ -596,8 +600,8 @@ pub(crate) fn mcp_hydrate(
             // at the boot summary and at WARN, and fired whenever `unreadable > 0` even if `records`
             // is zero (a scope whose rows were ALL undecodable), so the aggregate is never invisible.
             if r.unreadable > 0 {
-                busbar_substrate_values::diag_warn!(
-                    busbar_substrate_values::diagnostics::PLANE_CALLLOG_ROW_UNREADABLE,
+                busbar_contract::diag_warn!(
+                    PLANE_CALLLOG_ROW_UNREADABLE,
                     rows = r.unreadable,
                     "persisted MCP per-call records could not be decoded on restore and were SKIPPED; \
                      they were most likely written by a different engine version or the store is corrupt"
@@ -607,7 +611,7 @@ pub(crate) fn mcp_hydrate(
             // is what one caller's evidence being deleted wholesale looks like. Surfaced separately
             // rather than summed into `principals`.
             if r.empty_chains > 0 {
-                busbar_substrate_values::diag_warn!(
+                busbar_contract::diag_warn!(
                     crate::diagnostics::MCP_CALLLOG_EMPTY_CHAINS,
                     principals = r.empty_chains,
                     "the durable MCP call log enumerates these principals but holds NO records \
@@ -615,14 +619,14 @@ pub(crate) fn mcp_hydrate(
                 );
             }
             for brk in &r.chain_breaks {
-                busbar_substrate_values::diag_error!(
+                busbar_contract::diag_error!(
                     crate::diagnostics::MCP_CALLLOG_CHAIN_VERIFY_FAILED,
                     break_detail = %brk,
                     "MCP per-call CHAIN VERIFICATION FAILED on restore — TAMPER EVIDENCE"
                 );
             }
         }
-        Err(e) => busbar_substrate_values::diag_warn!(
+        Err(e) => busbar_contract::diag_warn!(
             crate::diagnostics::MCP_CALLLOG_UNREAD,
             error = %e,
             "could not read the durable MCP per-call log; chains start at their persisted \
@@ -647,7 +651,7 @@ pub(crate) fn mcp_hydrate(
     let host = ctx.engine_host();
     match crate::mcp::demotion::hydrate(&host, ctx.plane_store().as_ref()) {
         0 => {}
-        n => busbar_substrate_values::diag_warn!(
+        n => busbar_contract::diag_warn!(
             crate::diagnostics::MCP_DEMOTIONS_RESTORED,
             servers = n,
             "MCP upstream demotions restored from the durable governance store: these servers \
@@ -724,10 +728,10 @@ pub(crate) fn mcp_admin_routes(
     _slot: &dyn std::any::Any,
 ) -> Vec<busbar_kernel::admin_verbs::AdminRouteSpec> {
     use crate::mcp::admin_view::McpServers;
+    use busbar_contract::abi::cold::endpoint::RouteMethod;
     use busbar_kernel::admin_verbs::{
         connect_reply, AdminReplyFuture, AdminReqCtx, AdminRouteSpec, AdminScope, AdminVerbKind,
     };
-    use busbar_plugin::cold::endpoint::RouteMethod;
     vec![
         // `connect` is the SHARED audited verb: resolve, look, and the core adapter records the
         // applied/rejected row. `Full` scope (a POST that reaches the network and can quarantine).

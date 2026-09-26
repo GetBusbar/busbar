@@ -200,6 +200,7 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
     // The Gemini SDK sends `x-goog-api-key`; its presence disambiguates the shared list-models
     // surface as Gemini (the `/v1beta` path is handled by the detection fold, not this header set).
     list_models_fingerprint_headers: &["x-goog-api-key"],
+    static_headers: &[],
 };
 
 /// GEMINI'S RESPONSE-side untranslatable metadata: `safetyRatings` (Google's own harm-category

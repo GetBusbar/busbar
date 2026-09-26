@@ -41,9 +41,9 @@
 //! The authoritative per-kind lane binding in the tree is `supported_abi(kind)` in
 //! `crates/plugin-loader/src/registry.rs`: the ONE `match kind { … }` where the engine decides which
 //! ABI a kind of that name speaks. A COLD kind's arm binds the JSON lane
-//! (`busbar_plugin::cold::…_ABI_VERSION` — the six-symbol `busbar_call` wire); the plane arm binds
-//! the HOT airlock minor (`busbar_plugin::ABI_MINOR` — the `#[repr(C)]` `PlaneDecl` vtable of
-//! `busbar_plugin::hot`), and its own comment says so: "driven over the HOT-tier `#[repr(C)]`
+//! (`busbar_contract::abi::cold::…_ABI_VERSION` — the six-symbol `busbar_call` wire); the plane arm binds
+//! the HOT airlock minor (`busbar_contract::abi::ABI_MINOR` — the `#[repr(C)]` `PlaneDecl` vtable of
+//! `busbar_contract::abi::hot`), and its own comment says so: "driven over the HOT-tier `#[repr(C)]`
 //! `PlaneDecl` vtable — NOT the six-symbol JSON `call` wire the five cold kinds share." A kind whose
 //! arm binds the OTHER lane's ABI is a kind declaring the wrong lane, and this gate turns it RED.
 //!
@@ -55,11 +55,11 @@
 //! * `kind-abi-lane:cold-kinds-declare-cold` — every COLD kind #30 names declares the COLD/JSON lane
 //!   in `supported_abi` and NOT the hot airlock. A cold kind on the hot lane ⇒ RED.
 //! * `kind-abi-lane:hot-kinds-declare-hot` — every HOT kind #30 names that is PRESENT in the tree
-//!   (has a `busbar_plugin::cold::kind` const) declares the HOT/POD lane and NOT the cold JSON wire.
+//!   (has a `busbar_contract::abi::cold::kind` const) declares the HOT/POD lane and NOT the cold JSON wire.
 //!   A hot kind on the cold lane ⇒ RED. `transport` is HOT by #30 but not yet wired into the tree
 //!   (no kind const, no arm); its absence is reported, not failed — absence is not a wrong lane.
 //! * `kind-abi-lane:per-token-loop` — the per-token streaming inner loop (the HOT/POD lane itself,
-//!   `crates/busbar-plugin/src/hot/`) names ONLY {plane, transport}: no COLD kind noun appears there
+//!   `crates/busbar-contract/src/abi/hot/`) names ONLY {plane, transport}: no COLD kind noun appears there
 //!   as an identifier. This is #30's "per-token-loop grep = {plane,transport} only." A `store`/`auth`
 //!   /… identifier on the hot lane ⇒ RED. The scan is case-sensitive over the lowercase kind strings
 //!   #30 governs on code (non-doc-comment, non-test) lines, so the neutral taxonomy's PascalCase type
@@ -83,8 +83,8 @@ pub const ROW_PER_TOKEN: &str = "kind-abi-lane:per-token-loop";
 /// its own mandate from this same file under the name `TAXONOMY_DOC`.
 const DECISIONS_DOC: &str = "docs/design/BUSBAR-1.6.0.md";
 const REGISTRY_REL: &str = "crates/plugin-loader/src/registry.rs";
-const KIND_MOD_REL: &str = "crates/busbar-plugin/src/cold/mod.rs";
-const HOT_LANE: &str = "crates/busbar-plugin/src/hot";
+const KIND_MOD_REL: &str = "crates/busbar-contract/src/abi/cold/mod.rs";
+const HOT_LANE: &str = "crates/busbar-contract/src/abi/hot";
 
 /// The seven plugin kinds #30 partitions. This is the ROSTER, not the assignment: which of these is
 /// HOT and which is COLD is read from the decision. A #30 that named a kind outside this set, or
@@ -100,8 +100,8 @@ const ALL_KINDS: &[&str] = &[
 ];
 
 /// The COLD/JSON lane ABI witness in a `supported_abi` arm: the six-symbol wire's version consts all
-/// live under `busbar_plugin::cold`.
-const COLD_WITNESS: &str = "busbar_plugin::cold";
+/// live under `busbar_contract::abi::cold`.
+const COLD_WITNESS: &str = "busbar_contract::abi::cold";
 /// The HOT/POD lane ABI witness in a `supported_abi` arm: a plane's per-kind axis is the airlock
 /// minor stamped into its `#[repr(C)]` `PlaneDecl` preamble.
 const HOT_WITNESS: &str = "ABI_MINOR";
@@ -173,7 +173,7 @@ fn lane_list(text: &str, marker: &str) -> Option<Vec<String>> {
     }
 }
 
-/// A kind is PRESENT in the tree when the `busbar_plugin::cold::kind` module declares its const (the
+/// A kind is PRESENT in the tree when the `busbar_contract::abi::cold::kind` module declares its const (the
 /// kind roster's home). `plane` is present; `transport` is not yet.
 fn kind_present(cx: &Ctx, kind: &str) -> bool {
     let Ok(text) = cx.read(KIND_MOD_REL) else {
@@ -185,7 +185,7 @@ fn kind_present(cx: &Ctx, kind: &str) -> bool {
 /// The lane a kind DECLARES in `supported_abi`, or `None` when it has no arm there.
 ///
 /// Comments are stripped first so a kind's slice cannot pick up the ABI witness of the NEXT arm's
-/// preceding comment (the plane arm's comment names `busbar_plugin::ABI_MINOR`, and the export arm
+/// preceding comment (the plane arm's comment names `busbar_contract::abi::ABI_MINOR`, and the export arm
 /// sits right above it). After stripping, the double-quoted `"kind"` keys are the only place the kind
 /// strings appear, so slicing between consecutive keys isolates each arm's VALUE.
 fn declared_lane(registry: &str, kind: &str) -> Option<Lane> {
@@ -505,8 +505,8 @@ impl Gate for KindAbiLaneGate {
         ov.set(
             REGISTRY_REL,
             registry.replace(
-                "busbar_plugin::cold::AUTH_ABI_VERSION",
-                "busbar_plugin::ABI_MINOR",
+                "busbar_contract::abi::cold::AUTH_ABI_VERSION",
+                "busbar_contract::abi::ABI_MINOR",
             ),
         );
         report.push(prove_rows_red(
@@ -523,8 +523,8 @@ impl Gate for KindAbiLaneGate {
         ov.set(
             REGISTRY_REL,
             registry.replace(
-                "\"plane\" => &[1, busbar_plugin::ABI_MINOR]",
-                "\"plane\" => &[1, busbar_plugin::cold::ABI_VERSION]",
+                "\"plane\" => &[1, busbar_contract::abi::ABI_MINOR]",
+                "\"plane\" => &[1, busbar_contract::abi::cold::ABI_VERSION]",
             ),
         );
         report.push(prove_rows_red(

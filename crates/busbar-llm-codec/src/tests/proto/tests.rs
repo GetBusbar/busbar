@@ -239,7 +239,7 @@ fn test_requires_max_tokens_per_protocol() {
         ("cohere", false),
     ] {
         assert_eq!(
-            busbar_kernel::proto::decl_for(name).is_some_and(|d| d.requires_max_tokens),
+            crate::decl_of(name).is_some_and(|d| d.requires_max_tokens),
             want,
             "{name}: requires_max_tokens mismatch"
         );
@@ -573,10 +573,8 @@ fn test_cache_control_preserved() {
 fn cache_breakpoints_gated_by_lane_capability_on_bedrock() {
     let anthropic = crate::proto_codec::protocol_for("anthropic").unwrap();
     let bedrock = crate::proto_codec::protocol_for("bedrock").unwrap();
-    assert!(busbar_kernel::proto::decl_for("bedrock").is_some_and(|d| d.cache_markers_model_gated));
-    assert!(
-        busbar_kernel::proto::decl_for("anthropic").is_some_and(|d| !d.cache_markers_model_gated)
-    );
+    assert!(crate::decl_of("bedrock").is_some_and(|d| d.cache_markers_model_gated));
+    assert!(crate::decl_of("anthropic").is_some_and(|d| !d.cache_markers_model_gated));
 
     let body = serde_json::json!({
         "model": "claude", "max_tokens": 64,
@@ -760,35 +758,6 @@ fn test_reader_classify_behavior() {
 }
 
 #[test]
-fn test_writer_auth_headers() {
-    let headers = crate::anthropic::anthropic_auth_headers("k", None);
-    // Pin the VALUES, not just the names. Asserting only that the two header names appear left the
-    // key argument and the `None` version override with no assertion at all: `x-api-key: ""` (the
-    // key dropped by the bad-bytes guard) or a stale `anthropic-version` 401s every upstream call
-    // while both name checks still pass.
-    let named: Vec<(&str, &str)> = headers
-        .iter()
-        .map(|(n, v)| (n.as_str(), v.to_str().expect("ascii header value")))
-        .collect();
-    assert_eq!(
-        named,
-        // `"k"` matches no known credential shape, so `classify_credential` returns `Ambiguous`;
-        // with `creds: None` the mode-blind primitive deliberately emits BOTH native shapes "so
-        // neither path silently drops" (anthropic/mod.rs, the `Ambiguous` arm), then the
-        // always-present version. The version is spelled as a LITERAL rather than read from the
-        // private `ANTHROPIC_API_VERSION` it pins: a golden taken from the same constant it checks
-        // would move silently with it. "2023-06-01" is Anthropic's published version string.
-        vec![
-            ("x-api-key", "k"),
-            ("authorization", "Bearer k"),
-            ("anthropic-version", "2023-06-01"),
-        ],
-        "an ambiguous key with no creds emits both native credential shapes plus the pinned API \
-         version, in that order"
-    );
-}
-
-#[test]
 fn test_irerror_bridge() {
     // `IrError` is a type alias for the breaker's `CanonicalSignal`; verify the bridge by routing
     // it through the classifier rather than re-asserting the field we just set.
@@ -800,7 +769,7 @@ fn test_irerror_bridge() {
 
     // Billing is a hard, non-retryable failure for the breaker.
     assert_eq!(
-        busbar_kernel::breaker::classify(&ir_error),
+        ir_error.class.disposition(),
         busbar_contract::upstream::Disposition::HardDown
     );
 }

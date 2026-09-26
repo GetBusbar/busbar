@@ -56,7 +56,7 @@
 //! the floor row is FAIL and every other row is SKIP, which the reconciler reds by name: "did not
 //! run" and "ran and found nothing" are two facts and this gate keeps them apart.
 //!
-//! **NO GLOBS.** One un-expiring glob row (`crates/busbar-plugin/src/hot/*`) once covered all 52
+//! **NO GLOBS.** One un-expiring glob row (`crates/busbar-contract/src/abi/hot/*`) once covered all 52
 //! markers of a whole directory and would have covered any number more, forever: the stale-waiver
 //! check cannot fire on a glob while even one of its markers survives, so 51 could be resolved with
 //! the row still reading as live. A matcher that is not an exact `path:line` is refused at load.
@@ -971,7 +971,7 @@ impl Gate for NoDeferralGate {
             &[ROW_WAIVER_SHAPE],
             on_base(waivers_overlay(
                 base,
-                "crates/busbar-plugin/src/hot/*\ta whole tree [retires: H5]",
+                "crates/busbar-contract/src/abi/hot/*\ta whole tree [retires: H5]",
             )),
             &["not an exact path:line"],
         ));

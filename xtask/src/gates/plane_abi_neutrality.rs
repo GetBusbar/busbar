@@ -45,10 +45,10 @@ pub const ROW_HOT_LANE: &str = "plane-abi-neutrality:hot-lane-present";
 pub const ROW_EXPORTED: &str = "plane-abi-neutrality:exported-declarations";
 pub const ROW_TEST_RATCHET: &str = "plane-abi-neutrality:test-path-ratchet";
 
-const HOT_LANE: &str = "crates/busbar-plugin/src/hot";
+const HOT_LANE: &str = "crates/busbar-contract/src/abi/hot";
 const TAXONOMY_DOC: &str = "docs/design/BUSBAR-1.6.0.md";
 
-/// DOCUMENTED EXEMPTION for [`declared_plane_keys`]: `crates/busbar-plugin/src/hot/mod.rs` declares
+/// DOCUMENTED EXEMPTION for [`declared_plane_keys`]: `crates/busbar-contract/src/abi/hot/mod.rs` declares
 /// `pub const PLANE_DECL: &[u8] = b"busbar_plane_decl\0";` — the ABI SYMBOL NAME a plane cdylib's
 /// hot-lane entrypoint exports, resolved by the loader via `libloading`. It starts with the same
 /// `pub const PLANE_DECL` grammar every real plane's declaration marker uses, but it is the loader's
@@ -56,14 +56,14 @@ const TAXONOMY_DOC: &str = "docs/design/BUSBAR-1.6.0.md";
 /// Scanned like any other file it makes `declared_plane_keys` read a "plugin" plane into existence,
 /// which the total-coverage row then fails to find in [`BANNED`] — a false positive, not a leak.
 /// Excluded by exact file, not by loosening the grammar or adding "plugin" to the ban list.
-const HOT_LANE_DECL_SITE: &str = "crates/busbar-plugin/src/hot/mod.rs";
+const HOT_LANE_DECL_SITE: &str = "crates/busbar-contract/src/abi/hot/mod.rs";
 
 /// DOCUMENTED EXEMPTION for [`declared_plane_keys`]: the `decisions` plane (jev) declares the key
 /// `plane-decision`, whose noun COLLIDES WITH A NEUTRAL PRIMITIVE. [`BANNED`] matches
 /// case-insensitively as a substring, so banning `decision` forbids `Decision`, `GateDecision` and
 /// `VerifyDecision` — the admit/throttle/deny verdict types that ARE the primitive governance
 /// taxonomy this witness exists to derive the ABI from. Measured: adding the token reds
-/// `exported-declarations` with 7 findings in `crates/busbar-plugin/src/hot/{host,pod}.rs` and
+/// `exported-declarations` with 7 findings in `crates/busbar-contract/src/abi/hot/{host,pod}.rs` and
 /// blows the test-path ratchet, every one of them core naming its own verdict rather than a plane
 /// leaking. The witness cannot distinguish the two by substring, so the plane key is exempted HERE,
 /// in writing, instead of the ban list being loosened or a correct primitive being renamed to dodge

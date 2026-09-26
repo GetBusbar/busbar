@@ -25,10 +25,12 @@
 //! program goes straight to `Command::new` with argv as a vector, never a shell string.
 
 use super::{recover, HostState};
-use busbar_plugin::hot::host::HostCtx;
-use busbar_plugin::hot::pod::POD_VERSION;
-use busbar_plugin::hot::{EgressDesc, EgressHead, EgressId, EgressOpen, PipeId, StatusClass};
-use busbar_plugin::read_sized_field;
+use busbar_contract::abi::hot::host::HostCtx;
+use busbar_contract::abi::hot::pod::POD_VERSION;
+use busbar_contract::abi::hot::{
+    EgressDesc, EgressHead, EgressId, EgressOpen, PipeId, StatusClass,
+};
+use busbar_contract::abi::read_sized_field;
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::mem::MaybeUninit;

@@ -35,7 +35,7 @@
 //! [`PlaneHostVtable`] currently has NO production rider: the loop that will call the host through it
 //! (the keystone loop-unification, `crates/busbar/src/root/kernel.rs` + `main.rs`, reserved for the
 //! keystone wave) has not landed. So this instrument is ARMED against the vtable's own construction —
-//! the exact `#[repr(C)]` subject `crates/busbar-plugin/tests/layout_golden.rs` pins — rather than
+//! the exact `#[repr(C)]` subject `crates/busbar-contract/tests/layout_golden.rs` pins — rather than
 //! against a live dispatch site. When the rider lands, the `HOT_PATH_VTABLE_CALL` leg binds to the
 //! production crossing with no change to the budget: the slot is the same fn pointer either way.
 //!
@@ -48,11 +48,11 @@
 //! The `cargo xtask gate hot-path-perf` gate enforces that this instrument keeps making every one of
 //! the perf-budget claims above; this file is what actually measures them.
 
-use busbar_plugin::hot::host::{ClockNowFn, HostCtx, PlaneHostVtable};
-use busbar_plugin::hot::transport::{
+use busbar_contract::abi::hot::host::{ClockNowFn, HostCtx, PlaneHostVtable};
+use busbar_contract::abi::hot::transport::{
     RawWireOutcome, TransportDecl, WireOutcome, WirePollCloseFn, NO_WAKER,
 };
-use busbar_plugin::AbiPreamble;
+use busbar_contract::abi::AbiPreamble;
 use criterion::{criterion_group, criterion_main, Criterion};
 use std::hint::black_box;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -195,7 +195,7 @@ fn assert_transport_hot_path_delta_under_budget() {
         ));
     });
     let (slot_p50, slot_p99) = percentiles(|| {
-        let f = busbar_plugin::read_sized_field!(
+        let f = busbar_contract::abi::read_sized_field!(
             black_box(decl_ptr),
             black_box(decl.size),
             TransportDecl,
@@ -287,7 +287,7 @@ fn hot_path(c: &mut Criterion) {
     });
     c.bench_function("TRANSPORT_DECL_CALL", |b| {
         b.iter(|| {
-            let f = busbar_plugin::read_sized_field!(
+            let f = busbar_contract::abi::read_sized_field!(
                 black_box(decl_ptr),
                 black_box(decl.size),
                 TransportDecl,

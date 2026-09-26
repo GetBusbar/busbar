@@ -19,6 +19,6 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 tracing = { workspace = true }
-busbar-plugin-sdk = { path = "../plugin-sdk" }
+busbar-contract = { path = "../busbar-contract" }
 serde = { workspace = true }
 serde_json = { workspace = true }

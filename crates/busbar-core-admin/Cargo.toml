@@ -100,8 +100,9 @@ busbar-mcp = { path = "../busbar-mcp", features = ["test-support", "auth-admin-t
 busbar-a2a = { path = "../busbar-a2a", features = ["test-support", "auth-admin-tokens"] }
 busbar-store-memory = { path = "../store-memory" }
 # The export axis the named-map tests resolve `module: prometheus` against: the scrape sink LINKED
-# into the test binary, as the composition root links it into the shipped one.
-busbar-export-prometheus = { path = "../busbar-export-prometheus" }
+# into the test binary, as the composition root links it into the shipped one — from its own repo, at
+# the SAME pinned rev the composition root links.
+busbar-export-prometheus = { git = "https://github.com/GetBusbar/export-prometheus", rev = "05a175910b4a5d9e3bcb7f065ac95a1a3e351358" }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "time", "sync", "io-util", "test-util"] }
 axum = { workspace = true, features = ["http1"] }
 reqwest = { workspace = true, features = ["json"] }

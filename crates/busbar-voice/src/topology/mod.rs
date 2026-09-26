@@ -32,14 +32,14 @@ use crate::runtime::carrier::Carrier;
 use crate::runtime::scope::SessionHandle;
 use crate::runtime::session::SessionCore;
 use crate::runtime::VoiceRuntime;
+use busbar_contract::transport::transport::{Transport, UpstreamWireKind};
+use busbar_contract::upstream::{CanonicalSignal, StatusClass};
 use busbar_kernel::egress::duplex_ws::{self, DialError};
 use busbar_kernel::net_guard::GuardPolicy;
 use busbar_kernel::plane::handle_engine::HandleEngineError;
 use busbar_kernel::plane_host::{
     run_gauntlet_session, BreakerHost, DispatchScope, GauntletPlane, GauntletRequest, VerifyOutcome,
 };
-use busbar_substrate_values::breaker::{CanonicalSignal, StatusClass};
-use busbar_substrate_values::transport::{Transport, UpstreamWireKind};
 use futures::{Sink, Stream};
 use std::sync::Arc;
 

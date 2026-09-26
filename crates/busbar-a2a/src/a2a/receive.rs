@@ -377,7 +377,7 @@ pub(crate) async fn plane_rpc(ctx: busbar_kernel::plane_routes::PlaneReqCtx) -> 
         principal,
         FromCatalogue,
         wire,
-        busbar_substrate_values::transport::Transport::JsonRpc,
+        busbar_contract::transport::transport::Transport::JsonRpc,
         ctx.body,
     )
     .await
@@ -733,21 +733,24 @@ fn governance_required() -> Response {
 fn meter_request(
     engine_host: &dyn EngineHost,
     cap_scope: &busbar_kernel::plane_host::DispatchScope,
-    billed_key_id: &str,
+    caller: &busbar_contract::records::PlaneRequestCtx,
     resource: &str,
 ) {
+    // The key billed is `caller`'s, carried INTO the host mint (DEC-SERVE G1b); the tail's key id
+    // is the same word, written only because the POD's attribution tail is keyed on its presence.
+    let billed_key_id = caller.key().map_or("", |k| k.id.as_str());
     // The `UsageGuard` holds borrowed attribution pointers (`!Send`), so it is built AND consumed
     // inside this call — it never crosses an `.await` and the request future stays `Send`.
-    let usage = busbar_plugin::hot::Usage::with_attribution(
-        busbar_plugin::hot::UsageComponent::Queries,
+    let usage = busbar_contract::abi::hot::Usage::with_attribution(
+        busbar_contract::abi::hot::UsageComponent::Queries,
         0,
         0,
-        busbar_plugin::hot::AdmissionId::NONE,
+        busbar_contract::abi::hot::AdmissionId::NONE,
         billed_key_id.as_bytes(),
         resource.as_bytes(),
         "a2a".as_bytes(),
     );
-    engine_host.meter_charge(cap_scope, &usage);
+    engine_host.meter_charge(cap_scope, caller, &usage);
 }
 
 /// `agents:` configured for the DELEGATING direction alone — no `public_url`, so no receiving side.
@@ -789,7 +792,7 @@ pub(crate) async fn agent_rpc(ctx: busbar_kernel::plane_routes::PlaneReqCtx) -> 
         principal,
         Named(agent_id),
         wire,
-        busbar_substrate_values::transport::Transport::JsonRpc,
+        busbar_contract::transport::transport::Transport::JsonRpc,
         ctx.body,
     )
     .await
@@ -875,8 +878,8 @@ impl busbar_kernel::plane_host::GauntletPlane for A2aInvokePlane {
 
 /// THE INBOUND CALL, EVERY ENDPOINT AND EVERY BINDING, ONE SEQUENCE.
 ///
-/// `transport` is the leg the request arrived on — [`busbar_substrate_values::transport::Transport::JsonRpc`],
-/// [`busbar_substrate_values::transport::Transport::HttpJson`] or [`busbar_substrate_values::transport::Transport::Grpc`] — and it is
+/// `transport` is the leg the request arrived on — [`busbar_contract::transport::transport::Transport::JsonRpc`],
+/// [`busbar_contract::transport::transport::Transport::HttpJson`] or [`busbar_contract::transport::transport::Transport::Grpc`] — and it is
 /// carried as a VALUE, never compared. It is read in exactly one place, the metric label at the end
 /// of this function, and the reason it has to be carried at all is a consequence the second binding
 /// made unavoidable: `plane::observe` can only name the binding a DOOR declares, and two of this
@@ -891,7 +894,7 @@ pub(super) async fn invoke(
     principal: busbar_contract::auth::AuthPrincipal,
     target: Target,
     wire: Wire,
-    transport: busbar_substrate_values::transport::Transport,
+    transport: busbar_contract::transport::transport::Transport,
     body: axum::body::Bytes,
 ) -> Response {
     let started = std::time::Instant::now();
@@ -1219,9 +1222,8 @@ async fn admitted(
         if matches!(
             engine_host.govern_admit_reason(
                 &cap_scope,
-                admission_pool(PLANE_POOL).as_bytes(),
-                key.id.as_bytes(),
-                key.group.as_deref().map(str::as_bytes),
+                &gov,
+                admission_pool(PLANE_POOL).as_bytes()
             ),
             busbar_kernel::plane_host::GovAdmit::Blocked { .. }
         ) {
@@ -1241,7 +1243,7 @@ async fn admitted(
             )
                 .into_response();
         }
-        meter_request(engine_host.as_ref(), &cap_scope, &key.id, PLANE_POOL);
+        meter_request(engine_host.as_ref(), &cap_scope, &gov, PLANE_POOL);
         engine_host.audit_emit(
             AUDIT_ACTION,
             PLANE_POOL,
@@ -1532,12 +1534,8 @@ async fn admitted(
     // enforcement chain `try_admit(&app.cost, key, &resource)` walks; `resource` is the pool. This
     // refusal already discards `LimitBlocked`'s detail (a fixed "budget is spent" reply), so a bare
     // `Deny` is behavior-identical.
-    let admitted_budget = engine_host.govern_admit_reason(
-        &cap_scope,
-        admission_pool(&resource).as_bytes(),
-        key.id.as_bytes(),
-        key.group.as_deref().map(str::as_bytes),
-    );
+    let admitted_budget =
+        engine_host.govern_admit_reason(&cap_scope, &gov, admission_pool(&resource).as_bytes());
     if matches!(
         admitted_budget,
         busbar_kernel::plane_host::GovAdmit::Blocked { .. }
@@ -1699,7 +1697,7 @@ async fn admitted(
             // for every call, forever. The charge is placed here rather than the return moved
             // because the mirroring above is a hop this arm makes on the caller's behalf, and a
             // charge that a mirrored callback could skip past is a charge with a hole in it.
-            meter_request(engine_host.as_ref(), &cap_scope, &principal, &resource);
+            meter_request(engine_host.as_ref(), &cap_scope, &gov, &resource);
             engine_host.audit_emit(
                 AUDIT_ACTION,
                 &resource,
@@ -2096,7 +2094,6 @@ async fn admitted(
     //    so the hop's charge is settled by [`HopCharge`] once the relay has said whether the call
     //    left — every refusal before that is audited `rejected` and metered nothing.
     let charge = HopCharge {
-        billed_key_id: hop.billed_key_id.clone(),
         // The PRESENTING key `hop.billed_key_id` names (`inbound::admit` copies `key.id` into it), as
         // the value the budget chain is walked from — its group is what a `budget:` cap sits on.
         key: Arc::clone(key),
@@ -2410,7 +2407,7 @@ struct HopContext {
     /// probe hold was registered under in the one `hop_scope` scope before the hop was built, threaded
     /// onto the blocking relay's `RelayCall`. `AdmissionId::NONE` for an un-pooled/pinned hop (whose
     /// probe `prepare` admits and re-homes itself into the shared host scope).
-    walk_admission_id: busbar_plugin::hot::AdmissionId,
+    walk_admission_id: busbar_contract::abi::hot::AdmissionId,
     now: u64,
     now_ms: u64,
     rpc_id: serde_json::Value,
@@ -2431,8 +2428,8 @@ struct HopContext {
 /// be billed. Settling in the future would have let a caller cancel its way out of the charge.
 #[derive(Clone)]
 struct HopCharge {
-    billed_key_id: String,
-    /// The key whose budget chain the hop's `bytes` are ledgered on — the one `billed_key_id` names.
+    /// The presenting key (the one `hop.billed_key_id` names): the caller the hop's request row is
+    /// billed to and the budget chain its `bytes` are ledgered on.
     key: Arc<busbar_contract::records::VirtualKey>,
     resource: String,
     actor: String,
@@ -2454,7 +2451,10 @@ impl HopCharge {
             self.refused(engine_host);
             return;
         }
-        meter_request(engine_host, scope, &self.billed_key_id, &self.resource);
+        let caller = busbar_contract::records::PlaneRequestCtx {
+            key: Some(Arc::clone(&self.key)),
+        };
+        meter_request(engine_host, scope, &caller, &self.resource);
         ledger_hop_bytes(engine_host, &self.key, &self.resource, bytes.total());
         engine_host.audit_emit(
             AUDIT_ACTION,
@@ -2508,7 +2508,7 @@ fn ledger_hop_bytes(
     let Some(pin) = engine_host.meter_pin() else {
         return;
     };
-    let usage = busbar_substrate_values::billing::Usage {
+    let usage = busbar_contract::billing::Usage {
         usage_units: std::collections::BTreeMap::from([(
             busbar_plane_a2a::meta::CLASS_BYTES.as_str().to_string(),
             bytes,

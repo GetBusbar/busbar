@@ -853,7 +853,8 @@ async fn delegate_body_arrival(
             headers,
             body,
         })
-        .await;
+        .await
+        .into_response();
     }
     crate::proxy::ingress_error(
         proto,

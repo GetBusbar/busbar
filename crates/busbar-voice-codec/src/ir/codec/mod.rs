@@ -504,12 +504,12 @@ fn audio_ref_of(v: &Value) -> IrAudioRef {
 /// nothing, which is the one confusion a voice plane cannot afford. The Twilio grammar in this same
 /// crate already answers this way (`BadPayload`, never an empty payload).
 fn decode_audio(b64: &str) -> Option<Bytes> {
-    busbar_substrate_values::media::base64_decode(b64).map(Bytes::from_owner)
+    busbar_contract::media::base64_decode(b64).map(Bytes::from_owner)
 }
 
 /// base64-encode opaque media bytes back to a wire audio string.
 fn encode_audio(media: &Bytes) -> String {
-    busbar_substrate_values::media::base64_encode(media)
+    busbar_contract::media::base64_encode(media)
 }
 
 /// DECODE A `session` OBJECT LENIENTLY — the drop-and-warn discipline the cross-dialect map states

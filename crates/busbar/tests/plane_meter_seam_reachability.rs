@@ -215,8 +215,8 @@ const TELLER_USAGE_SEAM_TOKENS: &[&str] = &[
     "fold_usage(",
 ];
 
-/// THE ONE HOP a Meter step is allowed. `units_llm.rs`'s step is `self.walk.meter(token, usage)`,
-/// which lands in the plane's own Meter module — the same one usage seam, reached through the
+/// THE ONE HOP a Meter step is allowed. The node's (`plane_node.rs`) step is
+/// `self.walk.meter(token, usage)`, which lands in the plane's own Meter module — the same one usage seam, reached through the
 /// plane's waist rather than restated in the root. What the hop may NOT do is land anywhere else in
 /// the plane: the destination below is the Meter step's own module, and a `Usage::report(` in the
 /// plane's Admit or Audit step is a different step doing a different thing.

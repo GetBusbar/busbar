@@ -27,7 +27,7 @@
 use super::*;
 use crate::both_ways::{cdylib, dropped, statement, transport_fixture, HOT_FIXTURES};
 use crate::sign::{validate_structure, HookNeeds, Manifest};
-use busbar_plugin::hot::transport::{RawWireOutcome, WireOutcome, WireSettings};
+use busbar_contract::abi::hot::transport::{RawWireOutcome, WireOutcome, WireSettings};
 use std::future::Future;
 use std::io::{Read, Write};
 use std::net::{Shutdown, TcpListener, TcpStream};
@@ -99,7 +99,7 @@ fn fixture_crate() -> &'static str {
 /// artifact is not built (never under CI — `cdylib` refuses to skip there).
 fn dropped_in(tag: &str) -> Option<DynTransport> {
     let lib = std::fs::read(cdylib(fixture_crate())?).expect("read the transport cdylib");
-    let manifest = statement("transport", "wire", "wire", busbar_plugin::ABI_MINOR);
+    let manifest = statement("transport", "wire", "wire", busbar_contract::abi::ABI_MINOR);
     let registry = dropped(tag, manifest, &lib);
     Some(
         registry
@@ -279,7 +279,7 @@ fn both_doors_put_the_same_bytes_on_the_wire() {
 // ── THE RED ARM ─────────────────────────────────────────────────────────────────────────────────
 
 /// The fixture's real `poll_write`, for the altering slot below to forward to.
-static REAL_WRITE: std::sync::OnceLock<busbar_plugin::hot::transport::WirePollWriteFn> =
+static REAL_WRITE: std::sync::OnceLock<busbar_contract::abi::hot::transport::WirePollWriteFn> =
     std::sync::OnceLock::new();
 
 /// A `poll_write` slot that flips the first byte of every offer, then writes through the real slot.
@@ -339,7 +339,7 @@ fn manifest(kind: &str) -> Manifest {
         kind: kind.to_string(),
         version: "1.0.0".to_string(),
         publisher: "acme".to_string(),
-        abi_version: busbar_plugin::ABI_MINOR,
+        abi_version: busbar_contract::abi::ABI_MINOR,
         sha256: crate::sign::sha256_hex(b"lib"),
         signature: String::new(),
         description: String::new(),
@@ -361,14 +361,14 @@ fn a_transport_manifest_is_admitted_on_the_airlock_axis() {
     assert_eq!(
         crate::supported_abi("transport"),
         &[
-            busbar_plugin::hot::TRANSPORT_DECL_MINOR,
-            busbar_plugin::ABI_MINOR
+            busbar_contract::abi::hot::TRANSPORT_DECL_MINOR,
+            busbar_contract::abi::ABI_MINOR
         ]
     );
     validate_structure(&manifest("transport"), b"lib", &crate::supported_abi, "")
         .expect("a transport is a kind the loader admits");
     let mut old = manifest("transport");
-    old.abi_version = busbar_plugin::hot::TRANSPORT_DECL_MINOR - 1;
+    old.abi_version = busbar_contract::abi::hot::TRANSPORT_DECL_MINOR - 1;
     assert!(
         validate_structure(&old, b"lib", &crate::supported_abi, "").is_err(),
         "a minor with no transport decl has no transport surface to speak"
@@ -402,7 +402,7 @@ fn the_admission_refuses_a_decl_it_cannot_trust() {
     refuse(|d| d.abi.magic ^= 1, "BadMagic");
     refuse(|d| d.abi.abi_major += 1, "MajorMismatch");
     refuse(
-        |d| d.abi.abi_minor = busbar_plugin::hot::TRANSPORT_DECL_MINOR - 1,
+        |d| d.abi.abi_minor = busbar_contract::abi::hot::TRANSPORT_DECL_MINOR - 1,
         "before the transport decl this build admits",
     );
     refuse(|d| d.abi.abi_minor = 27, "the blocking slots are retired");
@@ -443,7 +443,7 @@ fn the_admission_refuses_a_decl_it_cannot_trust() {
 }
 
 extern "C-unwind" fn retired_build(
-    _: *const busbar_plugin::hot::transport::WireLower,
+    _: *const busbar_contract::abi::hot::transport::WireLower,
     _: *const WireSettings,
     _: *mut MaybeUninit<OpaqueHandle>,
 ) -> RawWireOutcome {
@@ -467,7 +467,7 @@ extern "C-unwind" fn retired_close(_: *mut std::os::raw::c_void, _: u64) -> RawW
 /// the airlock constants, the handshake and every outcome byte. A drift here is a misread there.
 #[test]
 fn the_fixture_restates_the_host_layout() {
-    use busbar_plugin::hot::transport::TransportDecl as Host;
+    use busbar_contract::abi::hot::transport::TransportDecl as Host;
     use transport_fixture::hot::layout::{self, TransportDecl as Restated};
     macro_rules! same {
         ($($f:ident),*) => {$(
@@ -505,15 +505,15 @@ fn the_fixture_restates_the_host_layout() {
         core::mem::size_of::<Restated>(),
         core::mem::size_of::<Host>()
     );
-    assert_eq!(layout::ABI_MAGIC, busbar_plugin::ABI_MAGIC);
-    assert_eq!(layout::ABI_MAJOR, busbar_plugin::ABI_MAJOR);
+    assert_eq!(layout::ABI_MAGIC, busbar_contract::abi::ABI_MAGIC);
+    assert_eq!(layout::ABI_MAJOR, busbar_contract::abi::ABI_MAJOR);
     assert!(
-        (busbar_plugin::hot::TRANSPORT_DECL_MINOR..=busbar_plugin::ABI_MINOR)
+        (busbar_contract::abi::hot::TRANSPORT_DECL_MINOR..=busbar_contract::abi::ABI_MINOR)
             .contains(&layout::ABI_MINOR)
     );
     assert_eq!(
         layout::HANDSHAKE_VERSION,
-        busbar_plugin::cold::TRANSPORT_VERSION
+        busbar_contract::abi::cold::TRANSPORT_VERSION
     );
     for (byte, outcome) in [
         (layout::outcome::OK, WireOutcome::Ok),
@@ -544,8 +544,8 @@ fn the_fixture_restates_the_host_layout() {
     ] {
         assert_eq!(RawWireOutcome(byte).outcome(), outcome);
     }
-    assert_eq!(layout::NO_WAKER, busbar_plugin::hot::NO_WAKER);
-    use busbar_plugin::hot::transport::WireWaker as HostWaker;
+    assert_eq!(layout::NO_WAKER, busbar_contract::abi::hot::NO_WAKER);
+    use busbar_contract::abi::hot::transport::WireWaker as HostWaker;
     use layout::WireWaker as RestatedWaker;
     for (restated, host) in [
         (
@@ -594,9 +594,10 @@ fn a_hot_lane_crossing_is_under_a_microsecond() {
     let mut samples: Vec<u128> = (0..20_000)
         .map(|_| {
             let t = std::time::Instant::now();
-            let _ = std::hint::black_box(
-                built.poll_close(std::hint::black_box(u64::MAX), busbar_plugin::hot::NO_WAKER),
-            );
+            let _ = std::hint::black_box(built.poll_close(
+                std::hint::black_box(u64::MAX),
+                busbar_contract::abi::hot::NO_WAKER,
+            ));
             t.elapsed().as_nanos()
         })
         .collect();

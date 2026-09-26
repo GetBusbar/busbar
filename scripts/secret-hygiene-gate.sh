@@ -231,7 +231,7 @@ C3_PROXIMITY=56
 #     `busbar-plane-decision/src/meta.rs`. It names a MODE, never a credential. It cannot be renamed
 #     (it is a serde field name in the frozen admin OpenAPI surface), so an allowlist row is the only
 #     available disposition. It suppresses a real hit, so it is load-bearing, not dead weight.
-#   * `token|crates/busbar-plugin/src/cold/auth.rs|` and `secret|...same...|` are likewise vacuous
+#   * `token|crates/busbar-contract/src/abi/cold/auth.rs|` and `secret|...same...|` are likewise vacuous
 #     today: that file's fields are `token_response` and `secret_form_field`, neither of which is an
 #     exact needle. The PATH is live, so they are left exactly as written.
 #   * THE TWO `crates/api/src/store.rs` ROWS WERE BOTH DEAD, FOR TWO DIFFERENT REASONS, and only
@@ -261,8 +261,8 @@ aws_secret_access_key|crates/busbar-kernel/src/admin/v1/contract/schema.rs|aws_s
 access_token|crates/busbar-kernel/src/admin/v1/contract/schema.rs|
 secret|crates/busbar-kernel/src/admin/v1/contract/schema.rs|secret
 upstream_credentials|crates/busbar-kernel/src/admin/v1/contract/mod.rs|upstream_credentials
-token|crates/busbar-plugin/src/cold/auth.rs|
-secret|crates/busbar-plugin/src/cold/auth.rs|
+token|crates/busbar-contract/src/abi/cold/auth.rs|
+secret|crates/busbar-contract/src/abi/cold/auth.rs|
 token|crates/busbar-llm-codec/src/ir/types.rs|token"
 
 # CHECK 3 HAS NO EXCEPTIONS AND THAT IS A MEASUREMENT, NOT AN OVERSIGHT. Every one of the findings

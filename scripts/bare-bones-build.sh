@@ -20,7 +20,8 @@
 # (DECISIONS #2). This gate proves BOTH distributions COMPILE from one tree; the per-kind drop-in
 # CONFORMANCE (a representative plugin of each kind, plane included, loading identically compiled-in
 # vs dropped-in) is proved by the crate tests — `busbar-plugin-loader`'s `plane::tests` for kind:plane
-# and its `plane_sidecar_tests` + the store/secret example round trips for the five cold kinds.
+# and its `plane_sidecar_tests` + the store example round trip for the cold kinds (secret and auth
+# are proven by the real plugin repos: `plugin_proof_tests`, ci.yml `plugin-proofs`).
 #
 # This is the runnable-locally twin of xtask full-gate's `cargo build --no-default-features --locked`
 # step; it names both arms explicitly so the two-distributions contract has a gate of its own.

@@ -393,7 +393,7 @@ fn compiled_legs() -> BTreeSet<&'static str> {
 /// by no leg would be a plane whose loop nobody is judging — the same silent hole one axis over.
 ///
 /// This used to be cfg-gated on all five `root-*` features at once, which meant it ran in exactly one
-/// build configuration and in no other — not the default build, and not `--features root-llm`
+/// build configuration and in no other — not the default build, and not a single-leg build
 /// either. The join it performs is over DATA (the installed decls and
 /// the ledger), so it is answerable on every build and is asked on every build. What the features
 /// decide is which legs are COMPILED, and that is asserted separately below: a plane installed into

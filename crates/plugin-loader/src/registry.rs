@@ -25,7 +25,7 @@
 
 use crate::sign::{evaluate, validate_structure, Manifest, TrustPolicy, Verdict, HOST_IDENTITY};
 use crate::tarball;
-use busbar_plugin::cold::ColdEntry;
+use busbar_contract::abi::cold::ColdEntry;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -51,11 +51,11 @@ pub fn supported_abi(kind: &str) -> &'static [u32] {
         // 1.5.x SDK returns for a variant it cannot decode). v3 and v4 changed the source contract a
         // plugin is COMPILED against, not a byte on the wire, so a v2 artifact keeps behaving exactly
         // as it did under 1.5.5. Raising this floor refuses every published store plugin at load.
-        "store" => &[STORE_ABI_FLOOR, busbar_plugin::cold::ABI_VERSION],
+        "store" => &[STORE_ABI_FLOOR, busbar_contract::abi::cold::ABI_VERSION],
         // A `kind: secret` plugin resolves a secret reference's settings to bytes.
         "secret" => &[
-            busbar_plugin::cold::SECRET_ABI_VERSION,
-            busbar_plugin::cold::SECRET_ABI_VERSION,
+            busbar_contract::abi::cold::SECRET_ABI_VERSION,
+            busbar_contract::abi::cold::SECRET_ABI_VERSION,
         ],
         // A `kind: auth` plugin is a first-class identity provider (the engine's auth chain consumes
         // `Box<dyn AuthModule>` via `open_auth`). Payload schema v1 (verify-only) OR v2 (adds the
@@ -64,13 +64,13 @@ pub fn supported_abi(kind: &str) -> &'static [u32] {
         // `Identity` still loads and works; v3 wraps the same answers in the observability
         // envelope (#85), which the decoder reads beside the bare shape. `[1, AUTH_ABI_VERSION]` =
         // `[1, 3]`.
-        "auth" => &[1, busbar_plugin::cold::AUTH_ABI_VERSION],
+        "auth" => &[1, busbar_contract::abi::cold::AUTH_ABI_VERSION],
         // A `kind: hook` plugin is an in-process routing policy (the engine's routing/hook chains
         // consume `Arc<dyn RoutingPolicy>` via `open_hook`). The 1.5.0 replacement for the retired
         // out-of-process socket/webhook hook transport. Payload schema v1 (bare replies) up to v2
         // (the same replies inside the observability envelope, #85): the decoder accepts either
         // shape, so THE FLOOR STAYS 1 and every published hook keeps loading.
-        "hook" => &[1, busbar_plugin::cold::hook::HOOK_ABI_VERSION],
+        "hook" => &[1, busbar_contract::abi::cold::hook::HOOK_ABI_VERSION],
         // A `kind: export` plugin is a telemetry sink the engine's observability seam feeds
         // (`open_export`). Payload schema v2 (`streams`/`deliver`): 1.5.3 expanded the stream
         // vocabulary and REMOVED `audit` — an auditor is a projection made of other streams, not a
@@ -79,24 +79,24 @@ pub fn supported_abi(kind: &str) -> &'static [u32] {
         // v3 (DECISIONS #85) wraps the response in the observability envelope; v2 answers bare. BOTH
         // load — the decoder accepts either shape and they are disjoint — so the FLOOR stays at the
         // 1.5.3 vocabulary version and the envelope landing refuses no published sink.
-        "export" => &[2, busbar_plugin::cold::export::EXPORT_ABI_VERSION],
+        "export" => &[2, busbar_contract::abi::cold::export::EXPORT_ABI_VERSION],
         // A `kind: plane` plugin is a protocol plane delivered as a `cdylib` and driven over the
-        // HOT-tier `#[repr(C)]` `PlaneDecl` vtable (`busbar_plugin::hot`) — NOT the six-symbol JSON
+        // HOT-tier `#[repr(C)]` `PlaneDecl` vtable (`busbar_contract::abi::hot`) — NOT the six-symbol JSON
         // `call` wire the five cold kinds share. Its per-kind PAYLOAD axis is the AIRLOCK MINOR
-        // (`busbar_plugin::ABI_MINOR`): a plane cdylib stamps that minor into its `PlaneDecl`'s frozen
+        // (`busbar_contract::abi::ABI_MINOR`): a plane cdylib stamps that minor into its `PlaneDecl`'s frozen
         // `AbiPreamble`, and `open_plane` fail-closes on a MAJOR mismatch while accepting an older
         // minor (append-only). The manifest `abi_version` a plane declares is that same minor, floored
         // at 1 (the first minor a plane ABI could target) so an older-minor plane still validates and
         // its real forward-compat gate is the airlock `check_preamble` at load. `[1, ABI_MINOR]`.
-        "plane" => &[1, busbar_plugin::ABI_MINOR],
+        "plane" => &[1, busbar_contract::abi::ABI_MINOR],
         // A `kind: transport` plugin is a wire delivered as a `cdylib` and driven over the HOT-tier
-        // `#[repr(C)]` `TransportDecl` (`busbar_plugin::hot::transport`) — #3 (OWNER-LOCKED) makes
+        // `#[repr(C)]` `TransportDecl` (`busbar_contract::abi::hot::transport`) — #3 (OWNER-LOCKED) makes
         // every kind swappable, compiled in OR dropped in, and #30 puts transport on the HOT lane
         // beside plane. Its payload axis is the AIRLOCK MINOR, as a plane's is, floored at the first
         // minor that has a transport decl: an older minor has no transport surface to speak.
         "transport" => &[
-            busbar_plugin::hot::TRANSPORT_DECL_MINOR,
-            busbar_plugin::ABI_MINOR,
+            busbar_contract::abi::hot::TRANSPORT_DECL_MINOR,
+            busbar_contract::abi::ABI_MINOR,
         ],
         _ => &[],
     }
@@ -161,11 +161,11 @@ pub const LINKED_FILE: &str = "(linked)";
 /// an export sink's included (item 141). A plane is linked through [`crate::link_plane`] (its
 /// HOT-lane airlock).
 const LINKED_KINDS: &[&str] = &[
-    busbar_plugin::cold::kind::STORE,
-    busbar_plugin::cold::kind::SECRET,
-    busbar_plugin::cold::kind::AUTH,
-    busbar_plugin::cold::kind::HOOK,
-    busbar_plugin::cold::kind::EXPORT,
+    busbar_contract::abi::cold::kind::STORE,
+    busbar_contract::abi::cold::kind::SECRET,
+    busbar_contract::abi::cold::kind::AUTH,
+    busbar_contract::abi::cold::kind::HOOK,
+    busbar_contract::abi::cold::kind::EXPORT,
 ];
 
 /// A cold-lane plugin LINKED into this build (DECISIONS #2 rule (1)): the manifest its signed
@@ -222,8 +222,8 @@ impl LinkedPlugin {
         ephemeral: bool,
     ) -> Self {
         let (kind, abi) = (
-            busbar_plugin::cold::kind::STORE,
-            busbar_plugin::cold::ABI_VERSION,
+            busbar_contract::abi::cold::kind::STORE,
+            busbar_contract::abi::cold::ABI_VERSION,
         );
         Self::built_in(name, kind, abi, LinkedEntry::Store(open), ephemeral)
     }
@@ -232,8 +232,8 @@ impl LinkedPlugin {
     /// schema.
     pub fn builtin_secret(name: &str) -> Self {
         let (kind, abi) = (
-            busbar_plugin::cold::kind::SECRET,
-            busbar_plugin::cold::SECRET_ABI_VERSION,
+            busbar_contract::abi::cold::kind::SECRET,
+            busbar_contract::abi::cold::SECRET_ABI_VERSION,
         );
         Self::built_in(name, kind, abi, LinkedEntry::BuiltinSecret, false)
     }
@@ -246,8 +246,8 @@ impl LinkedPlugin {
         open: fn(&str) -> Option<RankingPolicy>,
     ) -> Self {
         let (kind, abi) = (
-            busbar_plugin::cold::kind::HOOK,
-            busbar_plugin::cold::hook::HOOK_ABI_VERSION,
+            busbar_contract::abi::cold::kind::HOOK,
+            busbar_contract::abi::cold::hook::HOOK_ABI_VERSION,
         );
         Self::built_in(
             name,
@@ -636,8 +636,8 @@ impl PluginRegistry {
     }
 
     /// Open a PLANE resolved by name or alias: verifies the resolved plugin's `kind` is `plane`, then
-    /// loads the VERIFIED bytes over the HOT-tier ABI (`busbar_plugin::hot`) and reads its
-    /// [`PlaneDecl`](busbar_plugin::hot::PlaneDecl), returning a [`crate::DynPlane`] — the boundary-safe
+    /// loads the VERIFIED bytes over the HOT-tier ABI (`busbar_contract::abi::hot`) and reads its
+    /// [`PlaneDecl`](busbar_contract::abi::hot::PlaneDecl), returning a [`crate::DynPlane`] — the boundary-safe
     /// handle the composition root drives exactly as it drives a compiled-in plane. Same trust and
     /// load pipeline as store/secret/auth/hook/export; only the kind (and the driving seam) differs.
     /// FAIL-CLOSED on any resolution/kind/load failure. The 1.6.0 S4 both-ways entrypoint for planes.
@@ -648,7 +648,7 @@ impl PluginRegistry {
 
     /// Open a TRANSPORT resolved by name or alias: verifies the resolved plugin's `kind` is
     /// `transport`, then loads the VERIFIED bytes over the HOT-tier ABI and admits its
-    /// [`TransportDecl`](busbar_plugin::hot::TransportDecl) through the SAME admission a linked
+    /// [`TransportDecl`](busbar_contract::abi::hot::TransportDecl) through the SAME admission a linked
     /// transport takes ([`crate::link_transport`]), returning the [`crate::DynTransport`] row the
     /// composition root folds. FAIL-CLOSED on any resolution/kind/load failure.
     pub fn open_transport(&self, name_or_alias: &str) -> Result<crate::DynTransport, String> {
@@ -665,7 +665,7 @@ impl PluginRegistry {
     pub fn open_transports(&self) -> Result<Vec<crate::DynTransport>, String> {
         self.loadable()
             .iter()
-            .filter(|p| p.manifest.kind == busbar_plugin::cold::kind::TRANSPORT)
+            .filter(|p| p.manifest.kind == busbar_contract::abi::cold::kind::TRANSPORT)
             .map(|p| self.open_transport(&p.manifest.name))
             .collect()
     }
@@ -676,7 +676,7 @@ impl PluginRegistry {
     pub fn open_planes(&self) -> Result<Vec<crate::DynPlane>, String> {
         self.loadable()
             .iter()
-            .filter(|p| p.manifest.kind == busbar_plugin::cold::kind::PLANE)
+            .filter(|p| p.manifest.kind == busbar_contract::abi::cold::kind::PLANE)
             .map(|p| self.open_plane(&p.manifest.name))
             .collect()
     }

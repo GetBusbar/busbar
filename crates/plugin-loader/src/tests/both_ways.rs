@@ -22,7 +22,7 @@
 
 use crate::sign::{sign, Manifest, SigningKey, TrustPolicy};
 use crate::{LinkedPlugin, PluginRegistry};
-use busbar_plugin::cold::ColdEntry;
+use busbar_contract::abi::cold::ColdEntry;
 use std::path::PathBuf;
 
 include!(concat!(env!("OUT_DIR"), "/both_ways.rs"));

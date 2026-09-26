@@ -4,7 +4,7 @@
 //! status → error-kind mapping and its dialect-native envelope.
 use super::*;
 use crate::engine::WeightedLane;
-use crate::test_support::{LaneSpec, TestApp};
+use crate::test_support::{chat, LaneSpec, TestApp};
 use busbar_contract::hooks::{
     Candidate, PolicyResult, RoutingContext, RoutingDecision, RoutingPolicy, RoutingRequest,
 };
@@ -2003,9 +2003,9 @@ async fn forward_with_pool_keyed_threads_group_key_to_pool_policy() {
         "p",
         None,
         "anthropic",
-        busbar_substrate_values::handlers::chat(
+        chat(
             "anthropic",
-            busbar_substrate_values::transport::Transport::Http,
+            busbar_contract::transport::transport::Transport::Http,
         ),
         None,
         // No client beta/version headers under test here.
@@ -2387,7 +2387,7 @@ impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for RequestIdSpanCaptu
 fn ensure_forward_span_interest_is_forced_on() {
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {
-        drop(busbar_substrate_values::testkit::warn_capture::WarnCapture::default());
+        drop(crate::test_support::warn_capture::WarnCapture::default());
     });
 }
 

@@ -19,8 +19,8 @@
 //! the plane's own metering inside `drive` stays the only money path. A build with every flip
 //! commented out recorded the two diverging C3 money cells
 //! (`billing|key-usage|after-upstream-down`, `billing|rate-card|history-mid-window`) byte-identical
-//! to the flipped build. The per-plane money authority for LLM is the separate `root-llm` feature,
-//! not this seam.
+//! to the flipped build. The per-plane money authority for a plane on the `node` axis is the root's
+//! node (`root/plane_node.rs`), not this seam.
 
 use std::future::Future;
 use std::pin::Pin;

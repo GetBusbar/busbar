@@ -852,7 +852,10 @@ jobs:
           XTASK_GATE_CEILING_SECS_KIND_ISOLATION: "1800"
         run: cargo xtask gate kind-isolation --selftest
       - name: Kind-isolation gate (BLOCKING — no name, edge, word or root wiring fuses two kinds)
-        run: cargo xtask gate kind-isolation
+        # `--posture`: the Phase 4 drain debt on `:deps`, `:test-deps`, `:closure` and `:matrix` is
+        # excused FINDING BY FINDING against qa/kind-isolation.standing.txt, which only shrinks. A new
+        # edge, cell or rise under those rows, and any red on every other row, still fails this step.
+        run: cargo xtask gate kind-isolation --posture
       # Self-test before verdict, as everywhere else in this file: the deletion test proves it can
       # still see a plane edge before its green over the real planes is believed.
       - name: Plane deletion test self-test
@@ -1240,7 +1243,8 @@ jobs:
             exit 1
           fi
 
-      # `busbar-timing`'s real implementation lives entirely behind its `timing` feature, which is
+      # `busbar_kernel::timing`'s real implementation (the former busbar-timing crate, folded into the
+      # kernel by OWNER Q70) lives entirely behind the kernel's `timing` feature, which is
       # OFF by default and therefore OFF under `cargo test --workspace`. So the only suite that
       # exercises the registry, the thread accounting and the runtime gate was never compiled by any
       # step in this workflow: the default build collects only the zero-cost-when-off proof, prints
@@ -1256,8 +1260,8 @@ jobs:
         run: |
           set -uo pipefail
           rc=0
-          cargo test -p busbar-timing --features timing \
-                     --locked --verbose 2>&1 | tee "$RUNNER_TEMP/timing-test.log" || rc=${PIPESTATUS[0]}
+          cargo test -p busbar-kernel --features timing --lib --test timing_smoke \
+                     --locked --verbose -- timing:: smoke_records 2>&1 | tee "$RUNNER_TEMP/timing-test.log" || rc=${PIPESTATUS[0]}
           total=$(grep -oE 'test result: (ok|FAILED)\. [0-9]+ passed' "$RUNNER_TEMP/timing-test.log" \
                   | grep -oE '[0-9]+ passed' | grep -oE '[0-9]+' \
                   | awk '{s+=$1} END {print s+0}')
@@ -2077,8 +2081,8 @@ jobs:
             features: busbar/test-harness
             tests: -p busbar
           - name: timing
-            features: busbar-kernel/timing,busbar-llm/timing,busbar-llm-codec/timing
-            tests: -p busbar-kernel -p busbar-llm -p busbar-llm-codec -p busbar-timing
+            features: busbar-kernel/timing
+            tests: -p busbar-kernel
           - name: llm webhook-receiver
             features: busbar-llm/webhook-receiver
             tests: -p busbar-llm
@@ -2178,7 +2182,7 @@ jobs:
           # finds by kind and refuses to skip without under CI. `check` runs the same test with the
           # default (linked) row only.
           - name: dropped-in tcp transport
-            features: busbar/auth-admin-tokens,busbar/hooks-ranking,busbar/proto-llm,busbar/plane-mcp,busbar/plane-a2a,busbar/plane-voice,busbar/plane-decision,busbar/export-file,busbar/export-webhook,busbar/export-prometheus,busbar/root-admin,busbar/root-llm
+            features: busbar/auth-admin-tokens,busbar/hooks-ranking,busbar/proto-llm,busbar/plane-mcp,busbar/plane-a2a,busbar/plane-voice,busbar/plane-decision,busbar/export-file,busbar/export-webhook,busbar/export-prometheus,busbar/root-admin
             tests: -p busbar-plugin-loader -p busbar --no-default-features --test transport_dropped_in_serves
             scope: package
     steps:
@@ -2216,7 +2220,6 @@ jobs:
             -p busbar-store-example-plugin \
             -p busbar-hook-test-plugin \
             -p busbar-auth-static-plugin \
-            -p busbar-secret-example-plugin \
             -p busbar-export-example-plugin \
             -p busbar-plugin-example-plane
       - name: Tests — ${{ matrix.name }}
@@ -2331,13 +2334,13 @@ jobs:
           path: target/release/busbar
           if-no-files-found: error
           retention-days: 7
-      # THE DROPPED-IN TCP TRANSPORT, IN ITS OWN INVOCATION. Its `#[no_mangle]` door (`busbar_abi`,
-      # `busbar_plugin_kind`, `busbar_transport_decl`) is compiled only under `--features dropped-in`:
-      # rustc emits a crate's `rlib` and `cdylib` from one set of objects, so a door compiled into the
-      # crate the binary links is a second definition of the handshake the plugin SDK defines once,
-      # and the release profile's fat LTO refuses the link above ("Linking globals named 'busbar_abi':
-      # symbol multiply defined!"). The SDK-built plugins' `cdylib`s come out of the build above with
-      # their door; this is the one artifact built separately, and it must still carry its three.
+      # THE DROPPED-IN TCP TRANSPORT, IN ITS OWN INVOCATION. Its door registration
+      # (`busbar_contract::export_transport!`) is compiled only under `--features dropped-in`; the
+      # frozen symbols it answers through (`busbar_abi`, `busbar_plugin_kind`, `busbar_transport_decl`)
+      # are the contract's shared door, defined once (the #84 merge), so no crate the binary links
+      # defines a second copy and fat LTO has nothing to refuse. The other plugins' `cdylib`s come out
+      # of the build above with their door; this is the one artifact built separately, and it must
+      # still carry its three.
       - name: Build the tcp transport's dropped-in artifact (feature dropped-in, its own invocation)
         run: |
           set -euo pipefail
@@ -2521,7 +2524,6 @@ jobs:
   # feature-covered: busbar-llm-codec/openapi-schema -- openapi-schema -- pulled by the forward from busbar-llm in that job's build
   # feature-covered: busbar-mcp/openapi-schema -- openapi-schema -- pulled by the forward from busbar-kernel in that job's build
   # feature-covered: busbar-voice/openapi-schema -- openapi-schema -- pulled by the forward from busbar with the feature on
-  # feature-covered: busbar-timing/timing -- check -- the Timing implementation tests step names -p busbar-timing --features timing
   # feature-covered: busbar-voice/test-support -- check -- the Voice runtime tests step names --features runtime,test-support
   # feature-covered: busbar-voice/runtime -- check -- the Voice runtime tests step names it, and the root default reaches it
   # feature-covered: busbar-voice-codec/runtime -- check -- the Voice runtime tests step names -p busbar-voice-codec --features runtime
@@ -2647,6 +2649,60 @@ jobs:
         run: scripts/txn-fence.sh
       - name: Loom model of the swap invariant
         run: scripts/loom.sh
+
+  # PLUGIN PROOFS — THE SECRET AND AUTH KINDS, PROVEN BY THE REAL PLUGIN REPOS. The owner deleted
+  # the in-tree secret and auth fixtures ("these are trash … real plugins are the examples",
+  # docs/design/1.6.0-QUESTIONS.md "FIXTURES"); the proofs of those two kinds are
+  # GetBusbar/hashicorp-vault (secret) and GetBusbar/auth-github (auth). Both repos name busbar by the
+  # sibling path `../../busbar/crates/…` from each crate dir, so they are checked out beside THIS
+  # checkout (`busbar/`, `hashicorp-vault/`, `auth-github/` under one workspace) and build against
+  # the tree under test, not against the rev their `.busbar-ref` pins. Their cdylibs land in one
+  # target dir, and `busbar-plugin-loader`'s `plugin_proof_tests` (`#[ignore]`d locally) dlopens each
+  # through the dropped-in door: the kind handshake, one real operation, and the RED arms (the same
+  # bytes signed as the other kind refused naming both kinds; an empty config refused in the
+  # plugin's own words). Unlocked on purpose: the plugin repos' lockfiles pin THEIR resolution, and
+  # this job's question is whether they build against this tree.
+  plugin-proofs:
+    name: plugin proofs · secret + auth by the real plugin repos
+    runs-on: latchkey-large
+    needs: [preflight]
+
+    # BOUNDED — see "EVERY JOB IS BOUNDED" at the top of this file. NEW JOB, no run history yet:
+    # two small plugin workspaces and one loader test binary, cold. Re-measure to p95 x1.5 once
+    # ten green runs exist.
+    timeout-minutes: 30
+    env:
+      CARGO_TARGET_DIR: ${{ github.workspace }}/plugin-proofs-target
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          path: busbar
+      - name: Checkout the real secret plugin (GetBusbar/hashicorp-vault)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: GetBusbar/hashicorp-vault
+          ref: dev
+          path: hashicorp-vault
+      - name: Checkout the real auth plugin (GetBusbar/auth-github)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: GetBusbar/auth-github
+          ref: dev
+          path: auth-github
+      - uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
+      - name: Build the secret plugin's cdylib against this checkout
+        working-directory: hashicorp-vault
+        # package-selector: busbar-hashicorp-vault-plugin -- .github/workflows/ci.yml -- GetBusbar/hashicorp-vault is a sibling checkout; `working-directory: hashicorp-vault` resolves this selector against that workspace, never against this one
+        run: cargo build -p busbar-hashicorp-vault-plugin
+      - name: Build the auth plugin's cdylib against this checkout
+        working-directory: auth-github
+        # package-selector: busbar-auth-github-plugin -- .github/workflows/ci.yml -- GetBusbar/auth-github is a sibling checkout; `working-directory: auth-github` resolves this selector against that workspace, never against this one
+        run: cargo build -p busbar-auth-github-plugin
+      - name: Dlopen both through the dropped-in door (plugin_proof_tests)
+        working-directory: busbar
+        env:
+          BUSBAR_PLUGIN_PROOF_DIR: ${{ github.workspace }}/plugin-proofs-target/debug
+        run: cargo test --locked -p busbar-plugin-loader --lib plugin_proof_tests -- --ignored
 
   # TIMING GATE: the ignored hot-path latency test, in release mode. Its bounds are deliberately
   # generous (25ms p50 / 250ms p99 through the full in-process router+mock round trip) so runner
@@ -3703,9 +3759,10 @@ jobs:
   #   2. --check     every GATING plane x step cell in qa/teller-steps.json names a real scenario and
   #      not "none". This reads the JSON.
   #   3. --root-legs the part that reads nothing and PROVES something: it builds the binary crate with
-  #      all five root legs on (root-admin,plane-mcp,plane-a2a,plane-voice,root-llm -- the mcp, a2a
+  #      all five root legs on (root-admin,plane-mcp,plane-a2a,plane-voice,proto-llm -- the mcp, a2a
   #      and voice legs are the kernel-loop rider those planes are served through, gated by the
-  #      feature that links the plane) and EXECUTES every named root-leg cell. A matrix can only be verified
+  #      feature that links the plane, and the llm leg is the root's node, compiled with the plane
+  #      that rides the `node` axis) and EXECUTES every named root-leg cell. A matrix can only be verified
   #      against cells that run; verified against itself it is a spreadsheet.
   # All three were run by scripts/verify-1.6.0-done.sh alone — the release-time DONE claim — so a cell
   # that stopped executing would have stayed invisible until a release was being cut. Wired here so it
@@ -4063,6 +4120,78 @@ jobs:
             ${{ env.CARGO_HOME }}/git
             target
 
+  # ── CONSUMERS: THE PLUGIN REPOS THIS TREE'S DEFAULT BUILD PULLS, BUILT AGAINST THIS TREE ────────
+  # Every default plugin lives in its own repo (owner ruling, 1.6.0) and names busbar by git at the
+  # rev its `.busbar-ref` pins; its own CI proves it against that PIN. This job is the MOVING leg:
+  # each plugin repo's `dev`, with the busbar crates it names patched to THIS checkout, must fmt,
+  # clippy, build and pass its own suite (including its linked + dropped-in conformance). A change
+  # here that breaks a plugin's source against the contract reds here, on the push that made it,
+  # rather than on the plugin's next re-pin. One matrix row per plugin repo; `patch` lists the busbar
+  # crates that repo's manifests name (normal and dev), each patched to its path in this tree.
+  consumers:
+    name: consumer ${{ matrix.repo }} (its dev against this tree)
+    needs: [preflight]
+    runs-on: latchkey-large
+    # New job: no green history to measure a p95 from. The plugin repo builds its own small
+    # workspace (the SDK, the loader and their closure) cold in well under the floor.
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - repo: export-file
+            patch: "busbar-plugin-sdk=crates/plugin-sdk busbar-plugin-loader=crates/plugin-loader"
+          - repo: export-prometheus
+            patch: "busbar-plugin-sdk=crates/plugin-sdk busbar-plugin-loader=crates/plugin-loader"
+          - repo: export-webhook
+            patch: "busbar-plugin-sdk=crates/plugin-sdk busbar-plugin-loader=crates/plugin-loader"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          path: busbar
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: GetBusbar/${{ matrix.repo }}
+          ref: dev
+          path: plugin
+      - uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
+        with:
+          components: clippy, rustfmt
+      - name: Patch the busbar crates the plugin names to this tree
+        # `[patch]` from cargo config, not an edit of the plugin's manifests: what builds is the
+        # plugin's own source, byte for byte, with only the busbar source redirected.
+        run: |
+          set -euo pipefail
+          {
+            echo '[patch."https://github.com/GetBusbar/busbar"]'
+            for row in ${{ matrix.patch }}; do
+              echo "${row%%=*} = { path = \"$GITHUB_WORKSPACE/busbar/${row#*=}\" }"
+            done
+          } > "$RUNNER_TEMP/consumer-patch.toml"
+          mkdir -p plugin/.cargo
+          cat "$RUNNER_TEMP/consumer-patch.toml" >> plugin/.cargo/config.toml
+          cat plugin/.cargo/config.toml
+      - name: fmt
+        working-directory: plugin
+        run: cargo fmt --all -- --check
+      - name: clippy
+        working-directory: plugin
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Every patch row is used (a stale row would build the plugin against its pin, not this tree)
+        working-directory: plugin
+        run: |
+          set -euo pipefail
+          if cargo metadata --format-version 1 2>&1 >/dev/null | grep -i "was not used in the crate graph"; then
+            echo "::error::a busbar patch row matched nothing the plugin names"; exit 1
+          fi
+          if grep -q 'source = "git+https://github.com/GetBusbar/busbar' Cargo.lock; then
+            grep -n 'git+https://github.com/GetBusbar/busbar' Cargo.lock
+            echo "::error::a busbar crate still resolves from the plugin's pin, not this tree"; exit 1
+          fi
+      - name: build + test (the plugin's own suite, its linked + dropped-in conformance included)
+        working-directory: plugin
+        run: cargo test --workspace
+
   ci-umbrella:
     name: ci umbrella
     if: always()
@@ -4098,6 +4227,13 @@ jobs:
       - construction-gate
       - content-debt-gates
       - gate-all
+      - plugin-proofs
+      - consumers
+    # report-only: plugin-proofs -- the secret and auth kinds' proofs by the REAL plugin repos
+    #   (GetBusbar/hashicorp-vault, GetBusbar/auth-github). RED until both repos build against this
+    #   tree: their Cargo.toml still names `../../busbar/crates/api`, and busbar-api retired at
+    #   7cbf9b133 (fold F4). The umbrella waits for it and prints its result, and counts it the day
+    #   the two repos are ported to busbar-contract and this job is green.
     # report-only: content-debt-gates -- unconstructed, map-proof and sweep-coverage are RED ON HEAD on
     #   content that item 6b (Phase 5) drains, self-test and verdict both, and none has a
     #   gates::REPORT_ONLY posture to score against. The job runs them plainly and goes red; the
@@ -4133,6 +4269,8 @@ jobs:
       CONTENT_DEBT_GATES_RESULT: ${{ needs.content-debt-gates.result }}
       # Report-only: printed, never counted. Flip condition is on the gate-all job.
       GATE_ALL_RESULT: ${{ needs.gate-all.result }}
+      # Report-only: printed, never counted. Flip condition is on the plugin-proofs job.
+      PLUGIN_PROOFS_RESULT: ${{ needs.plugin-proofs.result }}
       # 'true' on any run where the full tier is expected to execute: every event except a push,
       # plus pushes to the three promotion branches. Mirrors the `if:` on the full-tier jobs above,
       # so "expected to run" and "required to have run" cannot drift apart.
@@ -4177,6 +4315,7 @@ jobs:
         perf-build-gate|full|${{ needs.perf-build-gate.result }}
         teller-steps|full|${{ needs.teller-steps.result }}
         construction-gate|fast|${{ needs.construction-gate.result }}
+        consumers|fast|${{ needs.consumers.result }}
     steps:
       - name: Assert every required job reported green (skip-allowlist only on a fast-tier run)
         run: |
@@ -4205,6 +4344,7 @@ jobs:
           printf '  %-24s %s\n' "construction-gate" "posture verdict=${CONSTRUCTION_VERDICT:-unset} (job result ${CONSTRUCTION_RESULT:-unset}; SCORED)"
           printf '  %-24s %s\n' "content-debt-gates" "job result ${CONTENT_DEBT_GATES_RESULT:-unset} (REPORT-ONLY until item 6b drains it; NOT COUNTED)"
           printf '  %-24s %s\n' "gate-all" "job result ${GATE_ALL_RESULT:-unset} (REPORT-ONLY until gate --all is green on HEAD; NOT COUNTED)"
+          printf '  %-24s %s\n' "plugin-proofs" "job result ${PLUGIN_PROOFS_RESULT:-unset} (REPORT-ONLY until the real plugin repos build against this tree; NOT COUNTED)"
           if [ "$fails" -ne 0 ]; then
             echo "::error::ci umbrella: RED — ${fails} required job(s) did not pass on this ref."
             echo "::error::A skipped, failed, or cancelled required job is NOT a pass. DO NOT PROMOTE."

@@ -17,8 +17,8 @@ use crate::proto_codec::{
     PROTO_ANTHROPIC, PROTO_BEDROCK, PROTO_COHERE, PROTO_GEMINI, PROTO_OPENAI, PROTO_RESPONSES,
 };
 use crate::test_support::engine_kit::EngineTestKit as _;
+use crate::test_support::{op_for, request_handler};
 use busbar_contract::operation::OpVerb;
-use busbar_substrate_values::handlers::request_handler;
 use std::collections::HashMap;
 
 /// This plane's registrations, installed into the kernel's process registries through the plane's
@@ -75,10 +75,10 @@ fn chat_declares_its_capabilities() {
     install_llm_registrations();
     // The chat cell as production resolves it — `(protocol, Chat)` through the registry, framed on
     // HTTP — rather than a hand-built const over the plugin's handler type.
-    let chat = busbar_substrate_values::handlers::op_for(
+    let chat = op_for(
         crate::proto_codec::PROTO_OPENAI,
         OpVerb::CHAT,
-        busbar_substrate_values::transport::Transport::Http,
+        busbar_contract::transport::transport::Transport::Http,
     )
     .expect("the shipped protocol serves chat");
     assert_eq!(chat.name(), "chat");
@@ -139,7 +139,7 @@ fn test_fallback_bedrock_404_is_native_envelope_with_amzn_headers() {
         &residual_planes(),
         "/model/some.model/converse",
         axum::http::StatusCode::NOT_FOUND,
-        busbar_substrate_values::proto::ERR_TYPE_NOT_FOUND,
+        busbar_contract::protocol::ERR_TYPE_NOT_FOUND,
         "missing",
     );
     assert_eq!(resp.status(), axum::http::StatusCode::NOT_FOUND);

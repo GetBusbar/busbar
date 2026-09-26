@@ -8,14 +8,6 @@
 frozen_literal = 2
 
 [[leak]]
-noun = "a2a"
-kind = "plane"
-file = "crates/busbar-llm-codec/src/tests/detect_tests.rs"
-count = 1
-category = "cross-plugin"
-wave = "cross-plugin cleanup — broker law #8 (plugins never name each other)"
-
-[[leak]]
 noun = "hook"
 kind = "hook"
 file = "crates/plugin-loader/src/tests/hook_tests.rs"
@@ -48,30 +40,6 @@ category = "cross-plugin"
 wave = "cross-plugin cleanup — broker law #8 (plugins never name each other)"
 
 [[leak]]
-noun = "llm"
-kind = "plane"
-file = "crates/busbar/src/root/mod.rs"
-count = 2
-category = "composition-root"
-wave = "keystone / composition-root — register_planes both-ways self-registration"
-
-[[leak]]
-noun = "llm"
-kind = "plane"
-file = "crates/busbar/src/root/tests/units_llm.rs"
-count = 8
-category = "composition-root"
-wave = "keystone / composition-root — register_planes both-ways self-registration"
-
-[[leak]]
-noun = "llm"
-kind = "plane"
-file = "crates/busbar/src/root/units_llm.rs"
-count = 1
-category = "composition-root"
-wave = "keystone / composition-root — register_planes both-ways self-registration"
-
-[[leak]]
 noun = "mcp"
 kind = "plane"
 file = "crates/busbar-kernel/src/test_support/mod.rs"
@@ -86,30 +54,6 @@ file = "crates/busbar-llm-codec/src/anthropic/tests/field_carry_tests.rs"
 count = 3
 category = "cross-plugin"
 wave = "cross-plugin cleanup — broker law #8 (plugins never name each other)"
-
-[[leak]]
-noun = "mcp"
-kind = "plane"
-file = "crates/busbar-llm-codec/src/tests/detect_tests.rs"
-count = 2
-category = "cross-plugin"
-wave = "cross-plugin cleanup — broker law #8 (plugins never name each other)"
-
-[[leak]]
-noun = "mcp"
-kind = "plane"
-file = "crates/busbar-llm-codec/src/tests/proto/registry_tests.rs"
-count = 5
-category = "cross-plugin"
-wave = "cross-plugin cleanup — broker law #8 (plugins never name each other)"
-
-[[leak]]
-noun = "memory"
-kind = "store"
-file = "crates/plugin-sdk/src/tests/lib_tests.rs"
-count = 1
-category = "core"
-wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
 
 [[leak]]
 noun = "sqlite"

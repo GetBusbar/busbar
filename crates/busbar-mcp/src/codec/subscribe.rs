@@ -42,12 +42,12 @@ impl SubscriptionParams {
     }
 }
 
-use busbar_substrate_values::handlers::{CodecError, IngressReject, OperationHandler};
-use busbar_substrate_values::ir::handle::IrHandle;
-use busbar_substrate_values::ir::neutral_handles::{SubscribeReqHandle, SubscribeRespHandle};
-use busbar_substrate_values::ir::subscribe::{SubscribeIntent, SubscribeReq, SubscribeResp};
+use busbar_contract::codec::{CodecError, IngressReject, OperationHandler};
+use busbar_contract::ir::handle::IrHandle;
+use busbar_contract::ir::neutral_handles::{SubscribeReqHandle, SubscribeRespHandle};
+use busbar_contract::ir::subscribe::{SubscribeIntent, SubscribeReq, SubscribeResp};
 #[cfg(any(test, feature = "test-support"))]
-use busbar_substrate_values::wire::{SlabBytes, WireBody};
+use busbar_contract::{codec::WireBody, SlabBytes};
 
 use busbar_plane_mcp::codec::{METHOD_RESOURCES_SUBSCRIBE, METHOD_RESOURCES_UNSUBSCRIBE};
 

@@ -1107,13 +1107,27 @@ fn test_synthesized_ids_are_unique() {
 /// A well-formed credential produces a single `Authorization: Bearer <key>` header.
 #[test]
 fn test_auth_headers_valid_key_emits_bearer() {
-    let headers =
-        crate::presented_auth_headers("cohere", "valid-key-123", &crate::test_signing_ctx());
-    assert_eq!(headers.len(), 1, "exactly one auth header");
-    assert_eq!(headers[0].0.as_str(), "authorization");
+    // #83a S2-a: the dialect DECLARES its credential scheme and the host presents it — a plain
+    // `authorization: Bearer <key>` for every credential and mode. The bytes the host writes for a
+    // valid key, and the omission of a key whose bytes no header value may carry, are pinned in the
+    // host's suite over the shared fixture `testing/plane-copies/declared-credentials.json`.
+    let Some(busbar_contract::protocol::EgressScheme::Static {
+        families,
+        own,
+        passthrough,
+    }) = crate::cohere::DECL.egress_scheme
+    else {
+        panic!("cohere declares a static credential scheme");
+    };
+    assert!(families.is_empty());
+    assert_eq!(own, busbar_contract::protocol::CredentialHeader::Bearer);
     assert_eq!(
-        headers[0].1.to_str().expect("valid header bytes"),
-        "Bearer valid-key-123"
+        passthrough,
+        busbar_contract::protocol::CredentialHeader::Bearer
+    );
+    assert!(
+        crate::cohere::DECL.egress_auth_headers.is_none(),
+        "no credential passes through the plane"
     );
 }
 
@@ -1124,10 +1138,27 @@ fn test_auth_headers_valid_key_emits_bearer() {
 /// `gemini.rs::test_auth_headers_invalid_key_omits_header_no_empty_value`.
 #[test]
 fn test_auth_headers_invalid_key_omits_header_no_empty_value() {
-    let headers = crate::presented_auth_headers("cohere", "bad\nkey", &crate::test_signing_ctx());
+    // #83a S2-a: the dialect DECLARES its credential scheme and the host presents it — a plain
+    // `authorization: Bearer <key>` for every credential and mode. The bytes the host writes for a
+    // valid key, and the omission of a key whose bytes no header value may carry, are pinned in the
+    // host's suite over the shared fixture `testing/plane-copies/declared-credentials.json`.
+    let Some(busbar_contract::protocol::EgressScheme::Static {
+        families,
+        own,
+        passthrough,
+    }) = crate::cohere::DECL.egress_scheme
+    else {
+        panic!("cohere declares a static credential scheme");
+    };
+    assert!(families.is_empty());
+    assert_eq!(own, busbar_contract::protocol::CredentialHeader::Bearer);
+    assert_eq!(
+        passthrough,
+        busbar_contract::protocol::CredentialHeader::Bearer
+    );
     assert!(
-        headers.is_empty(),
-        "an invalid credential must omit the auth header entirely, got {headers:?}"
+        crate::cohere::DECL.egress_auth_headers.is_none(),
+        "no credential passes through the plane"
     );
 }
 
@@ -1135,11 +1166,27 @@ fn test_auth_headers_invalid_key_omits_header_no_empty_value() {
 /// an empty value).
 #[test]
 fn test_auth_headers_control_byte_key_omits_header() {
-    let headers =
-        crate::presented_auth_headers("cohere", "key\u{0000}bad", &crate::test_signing_ctx());
+    // #83a S2-a: the dialect DECLARES its credential scheme and the host presents it — a plain
+    // `authorization: Bearer <key>` for every credential and mode. The bytes the host writes for a
+    // valid key, and the omission of a key whose bytes no header value may carry, are pinned in the
+    // host's suite over the shared fixture `testing/plane-copies/declared-credentials.json`.
+    let Some(busbar_contract::protocol::EgressScheme::Static {
+        families,
+        own,
+        passthrough,
+    }) = crate::cohere::DECL.egress_scheme
+    else {
+        panic!("cohere declares a static credential scheme");
+    };
+    assert!(families.is_empty());
+    assert_eq!(own, busbar_contract::protocol::CredentialHeader::Bearer);
+    assert_eq!(
+        passthrough,
+        busbar_contract::protocol::CredentialHeader::Bearer
+    );
     assert!(
-        headers.is_empty(),
-        "a control-byte credential must omit the auth header entirely, got {headers:?}"
+        crate::cohere::DECL.egress_auth_headers.is_none(),
+        "no credential passes through the plane"
     );
 }
 
@@ -2467,7 +2514,6 @@ fn test_extract_error_synthesizes_context_length_in_production() {
             br#"{"message": "prompt exceeds the maximum context length"}"#,
         ];
 
-    let empty_map = std::collections::HashMap::new();
     for body in bodies {
         let raw = reader.extract_error(StatusCode::BAD_REQUEST, body);
         assert_eq!(
@@ -2479,7 +2525,7 @@ fn test_extract_error_synthesizes_context_length_in_production() {
 
         // The breaker must then route the canonical code to ContextLength (fail over, no penalty)
         // rather than treating the 400 as a plain ClientError.
-        let signal = busbar_kernel::breaker::normalize_raw_error(&raw, &empty_map);
+        let signal = crate::test_host::classified(&raw);
         assert_eq!(
             signal.class,
             busbar_contract::upstream::StatusClass::ContextLength,
@@ -2502,8 +2548,7 @@ fn test_extract_error_non_context_length_message_preserved() {
         Some("invalid api key"),
         "a non-context-length message must be carried verbatim"
     );
-    let signal =
-        busbar_kernel::breaker::normalize_raw_error(&raw, &std::collections::HashMap::new());
+    let signal = crate::test_host::classified(&raw);
     assert_ne!(
         signal.class,
         busbar_contract::upstream::StatusClass::ContextLength,
@@ -2521,7 +2566,6 @@ fn test_extract_error_non_context_length_message_preserved() {
 #[test]
 fn test_too_long_only_classifies_context_length_when_qualified() {
     let reader = CohereReader;
-    let empty = std::collections::HashMap::new();
 
     // Generic "too long" errors with NO token/context/input qualifier: must NOT be ContextLength.
     let non_context: &[&[u8]] = &[
@@ -2537,7 +2581,7 @@ fn test_too_long_only_classifies_context_length_when_qualified() {
             "a generic 'too long' message must not synthesize the context-length code: {}",
             String::from_utf8_lossy(body)
         );
-        let signal = busbar_kernel::breaker::normalize_raw_error(&raw, &empty);
+        let signal = crate::test_host::classified(&raw);
         assert_ne!(
             signal.class,
             busbar_contract::upstream::StatusClass::ContextLength,
@@ -2561,7 +2605,7 @@ fn test_too_long_only_classifies_context_length_when_qualified() {
             "a qualified 'too long' (context) message must synthesize the context-length code: {}",
             String::from_utf8_lossy(body)
         );
-        let signal = busbar_kernel::breaker::normalize_raw_error(&raw, &empty);
+        let signal = crate::test_host::classified(&raw);
         assert_eq!(
             signal.class,
             busbar_contract::upstream::StatusClass::ContextLength,
@@ -4610,7 +4654,7 @@ fn test_rate_limit_body_mentioning_tokens_is_not_context_length() {
     );
 
     // End-to-end through the breaker: the canonical class is RateLimit, not ContextLength.
-    let sig = busbar_kernel::breaker::normalize_raw_error(&raw, &std::collections::HashMap::new());
+    let sig = crate::test_host::classified(&raw);
     assert_eq!(
             sig.class,
             StatusClass::RateLimit,
@@ -4635,7 +4679,7 @@ fn test_bad_request_body_mentioning_tokens_is_context_length() {
         Some("context_length_exceeded"),
         "a 400 oversized-request body must still override to the canonical code"
     );
-    let sig = busbar_kernel::breaker::normalize_raw_error(&raw, &std::collections::HashMap::new());
+    let sig = crate::test_host::classified(&raw);
     assert_eq!(sig.class, StatusClass::ContextLength);
 
     let signal = reader.classify(StatusCode::BAD_REQUEST, body);

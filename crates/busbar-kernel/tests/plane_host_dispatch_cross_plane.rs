@@ -13,10 +13,10 @@
 
 mod linked;
 
+use busbar_contract::abi::hot::{CallerRef, TargetRef, POD_VERSION};
 use busbar_kernel::governance::{GovState, MemoryStore};
 use busbar_kernel::plane_host::with_dispatch_scope;
 use busbar_kernel::test_support::TestApp;
-use busbar_plugin::hot::{CallerRef, TargetRef, POD_VERSION};
 use std::sync::Arc;
 
 fn register_planes() {

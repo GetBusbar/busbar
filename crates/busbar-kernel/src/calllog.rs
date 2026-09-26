@@ -116,8 +116,8 @@ use busbar_contract::records::{PlaneSelector, RecordStoreError, RecordStoreResul
 use crate::audit::journal::NeutralBody;
 use crate::audit::{verify_chain, ChainBreak, Framing};
 use crate::plane_host::journal::PlaneJournalRecord;
-use busbar_plugin::hot::host::HostCtx;
-use busbar_plugin::hot::{
+use busbar_contract::abi::hot::host::HostCtx;
+use busbar_contract::abi::hot::{
     Framing as AbiFraming, JournalStreamDesc, RawFraming, ReframeOut, StatusClass, POD_VERSION,
 };
 use core::mem::MaybeUninit;

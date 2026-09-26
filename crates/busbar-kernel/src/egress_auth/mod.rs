@@ -33,11 +33,11 @@ mod prebuilt_auth_tests;
 mod license_header_tests;
 
 // ==== merged from busbar-substrate (W4.b P2 engine drain) ====
-use crate::proto::SigningContext;
+use crate::proto::{ProtocolDecl, SigningContext};
 use crate::teller::Kernel;
 use axum::http::{HeaderName, HeaderValue};
-use busbar_contract::protocol::{CredentialHeader::Raw, EgressScheme};
-use busbar_kernel_identity::egress_auth::{present, presentation};
+use busbar_contract::protocol::EgressScheme;
+use busbar_kernel_identity::egress_auth::present_declared;
 use std::sync::Arc;
 
 pub(crate) mod bearer_token;
@@ -183,6 +183,7 @@ pub fn resolve(
         return Arc::new(DeclaredScheme(
             EgressScheme::header("api-key"),
             Kernel::new(),
+            None,
         ));
     }
     if matches!(
@@ -203,7 +204,7 @@ pub fn resolve(
     // each leaves this match when its dialect is extracted.
     if let Some(decl) = crate::proto::decl_for(protocol_name) {
         if let Some(scheme) = decl.egress_scheme {
-            return Arc::new(DeclaredScheme(scheme, Kernel::new()));
+            return Arc::new(DeclaredScheme(scheme, Kernel::new(), Some(decl)));
         }
         if let Some(headers_for) = decl.egress_auth_headers {
             return Arc::new(DeclaredCredential {
@@ -239,24 +240,15 @@ impl CredentialProvider for NoCredential {
 /// A DECLARED egress scheme (`ProtocolDecl::egress_scheme`, or the operator's `auth: api-key`
 /// override, which is the static `api-key` header scheme): presented by the egress-auth unit under a
 /// `Grant<Sign>` the lane's teller mints for each presentation, so the credential is written onto
-/// the request here and never passes through a plane. A static scheme is lane-constant; a signer is not.
-/// A credential the unit could not present (a byte that is not a legal header value) sends no auth
-/// header — the upstream answers 401 — and is reported here, with the key never logged.
-struct DeclaredScheme(EgressScheme, crate::teller::Kernel);
+/// the request here and never passes through a plane, followed verbatim by the declaring protocol's
+/// `static_headers` (the override declares none). A static scheme is lane-constant; a signer is not.
+/// A credential the unit could not present sends no auth header — the upstream answers 401 — and is
+/// reported in the line its scheme's builder always logged, with the key never logged.
+struct DeclaredScheme(EgressScheme, Kernel, Option<&'static ProtocolDecl>);
 impl CredentialProvider for DeclaredScheme {
     fn headers_for(&self, key: &str, ctx: &SigningContext) -> Vec<(HeaderName, HeaderValue)> {
-        let presented = present(&self.1.sign_token(), &self.0, key, ctx);
-        if let (true, Some(Raw { header, .. })) = (
-            presented.is_empty(),
-            presentation(&self.0, key, ctx.upstream_creds),
-        ) {
-            crate::diag_warn!(
-                crate::diagnostics::EGRESS_APIKEY_INVALID_BYTES,
-                header,
-                "egress credential contains invalid header bytes (ASCII control character); \
-                 omitting auth header — upstream will reject with 401"
-            );
-        }
+        let presented =
+            present_declared(&self.1.sign_token(), &self.0, self.2, key, ctx, UNPRESENTED);
         let typed = |(k, v): (String, String)| Some((k.parse().ok()?, v.parse().ok()?));
         presented.into_iter().filter_map(typed).collect()
     }
@@ -264,6 +256,13 @@ impl CredentialProvider for DeclaredScheme {
         matches!(self.0, EgressScheme::Static { .. })
     }
 }
+
+/// The host catalog's codes for a credential a declared scheme could not present: an omitted static
+/// header, an omitted bearer.
+const UNPRESENTED: [&crate::diagnostics::Diagnostic; 2] = [
+    &crate::diagnostics::EGRESS_APIKEY_INVALID_BYTES,
+    &crate::diagnostics::PROTO_AUTH_INVALID_HEADER_BYTES,
+];
 
 /// A credential scheme a PROTOCOL DECLARED (`ProtocolDecl::egress_auth_headers`) — the extracted
 /// dialects' path into this layer. The builder is declared data; this wrapper is only the vtable

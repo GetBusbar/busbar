@@ -1065,7 +1065,7 @@ fn dyn_store_with_fake_call() -> Option<DynStore> {
     // Override the call + free seam so responses come from `fake_call` (freed by `fake_free`).
     raw.call = fake_call;
     raw.free = fake_free;
-    Some(DynStore::new(raw, busbar_plugin::cold::ABI_VERSION))
+    Some(DynStore::new(raw, busbar_contract::abi::cold::ABI_VERSION))
 }
 
 /// (1) A GENUINE unsupported-variant signal — the (rebuilt) SDK returns the crisp
@@ -1150,7 +1150,7 @@ fn no_plugin_crash_shape_can_empty_the_denylist() {
             "v1-SDK caller-protocol violation with a message",
         ),
         (
-            busbar_plugin::cold::STATUS_ERR,
+            busbar_contract::abi::cold::STATUS_ERR,
             b"backend read failed: unknown variant of corruption",
             "real backend error whose text mimics a decode failure",
         ),
@@ -1200,7 +1200,7 @@ fn no_plugin_crash_shape_can_empty_the_denylist() {
 fn current_sdk_bare_protocol_is_not_unsupported() {
     assert!(
             !TransportError::from_status(STATUS_PROTOCOL, "", "p").is_unsupported(),
-            "a bare STATUS_PROTOCOL is what busbar_plugin_sdk::boundary::call_boundary returns for a \
+            "a bare STATUS_PROTOCOL is what busbar_contract::abi::sdk::boundary::call_boundary returns for a \
              caller-protocol violation; treating it as 'unsupported' opens the safe-default fallback"
         );
 }
@@ -1233,7 +1233,7 @@ fn denylist_backend_error_with_unknown_variant_text_propagates() {
     // A crafted / coincidental backend error: STATUS_ERR, but the body contains "unknown variant".
     FAKE_CALL_HANDLE.with(|c| {
         c.set((
-            busbar_plugin::cold::STATUS_ERR,
+            busbar_contract::abi::cold::STATUS_ERR,
             b"backend read failed: table 'denylist' reported unknown variant of corruption",
         ))
     });
@@ -1261,7 +1261,7 @@ fn audit_tail_backend_error_propagates_not_masked_by_fallback() {
     };
     FAKE_CALL_HANDLE.with(|c| {
         c.set((
-            busbar_plugin::cold::STATUS_ERR,
+            busbar_contract::abi::cold::STATUS_ERR,
             b"backend read failed: audit table I/O error",
         ))
     });
@@ -1385,10 +1385,12 @@ fn transport_error_classification() {
     // A PANIC is a Fault, NEVER unsupported — this is what keeps a crash from opening the fallback.
     assert!(!TransportError::from_status(STATUS_PANIC, "panicked", "p").is_unsupported());
     // A backend error whose body contains "unknown variant" is NOT unsupported.
-    assert!(
-        !TransportError::from_status(busbar_plugin::cold::STATUS_ERR, "unknown variant", "p")
-            .is_unsupported()
-    );
+    assert!(!TransportError::from_status(
+        busbar_contract::abi::cold::STATUS_ERR,
+        "unknown variant",
+        "p"
+    )
+    .is_unsupported());
     // A BARE STATUS_PROTOCOL — null handle, null request pointer, or a v1-SDK caught panic — is a
     // caller-protocol violation, NOT unsupported. Reading it as unsupported is the inversion that
     // reopens the revocation fail-open.
@@ -1404,89 +1406,9 @@ fn transport_error_classification() {
     assert!(m.contains("libstore.so") && m.contains("-1"), "{m}");
 }
 
-/// `kind: secret` is the one plugin kind with no other over-the-ABI test coverage. Locate the
-/// hermetic `busbar-secret-example-plugin` cdylib, mirroring `store_fixture_plugin_path` above — CI
-/// (`cargo test --workspace`) always builds it, so a missing cdylib there is a hard failure, not
-/// a silent skip.
-/// Checks BOTH the "uplifted" `<profile_dir>/<name>` copy and the raw `<profile_dir>/deps/<name>`
-/// compiler output — a SCOPED `cargo test -p busbar-plugin-loader` (what qa-gate.yml's `loader`
-/// job runs) does not uplift the cdylib to the top-level profile dir, only to `target/deps`,
-/// so checking only `profile_dir` silently found nothing even though the cdylib really was
-/// built. Same fix already applied to `store_fixture_plugin_path` above and `hook_plugin_path`
-/// in `hook.rs`.
-fn hermetic_secret_plugin_path() -> Option<std::path::PathBuf> {
-    let candidate = (|| {
-        let exe = std::env::current_exe().ok()?;
-        let profile_dir = exe.parent()?.parent()?;
-        let name = plugin_library_filename(artifact("secret_example_cdylib"));
-        let uplifted = profile_dir.join(&name);
-        let raw = profile_dir.join("deps").join(&name);
-        [uplifted, raw]
-            .into_iter()
-            .filter_map(|p| {
-                std::fs::metadata(&p)
-                    .and_then(|m| m.modified())
-                    .ok()
-                    .map(|mtime| (p, mtime))
-            })
-            .max_by_key(|(_, mtime)| *mtime)
-            .map(|(p, _)| p)
-    })();
-    if candidate.is_none() && std::env::var_os("CI").is_some() {
-        panic!(
-            "the secret example plugin cdylib is not built under CI: `cargo test --workspace` \
-                 must build the in-tree secret-example-plugin (checked both the uplifted target dir \
-                 and target/deps). Refusing to silently skip the only over-the-ABI coverage of the \
-                 DynSecret dlopen seam."
-        );
-    }
-    candidate
-}
-
-/// End-to-end: load the REAL secret-example-plugin cdylib over the C ABI and exercise
-/// `SecretModule::resolve` through the `DynSecret` wrapper — a hit, a miss (fail-closed, never an
-/// empty `Ok`), and a reference whose `settings` carries no `key` at all.
-#[test]
-fn load_and_exercise_secret_plugin() {
-    let Some(path) = hermetic_secret_plugin_path() else {
-        eprintln!("skip: secret example plugin cdylib not built (run under --workspace)");
-        return;
-    };
-    let bytes = std::fs::read(&path).expect("read secret example plugin cdylib");
-    let module = load_secret_from_bytes(
-        &bytes,
-        r#"{"map": {"db-password": "hunter2"}}"#,
-        "secret-example",
-        "secret",
-    )
-    .expect("load secret example plugin over the ABI");
-
-    let mut settings = serde_json::Map::new();
-    settings.insert(
-        "key".to_string(),
-        serde_json::Value::String("db-password".into()),
-    );
-    let bytes = module.resolve(&settings).expect("known key resolves");
-    assert_eq!(bytes, b"hunter2");
-
-    let mut miss = serde_json::Map::new();
-    miss.insert(
-        "key".to_string(),
-        serde_json::Value::String("no-such-key".into()),
-    );
-    assert!(
-        module.resolve(&miss).is_err(),
-        "an unknown key must fail closed, never resolve empty"
-    );
-
-    assert!(
-        module.resolve(&serde_json::Map::new()).is_err(),
-        "settings with no `key` field must fail closed"
-    );
-}
-
-/// Locate the hermetic `busbar-export-example-plugin` cdylib, mirroring
-/// `hermetic_secret_plugin_path` above (see its doc for the uplifted-vs-`deps` rationale). CI
+/// Locate the hermetic `busbar-export-example-plugin` cdylib, checking BOTH the uplifted
+/// `<profile_dir>/<name>` copy and the raw `<profile_dir>/deps/<name>` compiler output (a SCOPED
+/// `cargo test -p busbar-plugin-loader` uplifts only to `target/deps`). CI
 /// (`cargo test --workspace`) always builds it, so a missing cdylib there is a hard failure, not a
 /// silent skip — it is the only over-the-ABI coverage of the `DynExport` dlopen seam.
 fn hermetic_export_plugin_path() -> Option<std::path::PathBuf> {
@@ -1524,7 +1446,7 @@ fn hermetic_export_plugin_path() -> Option<std::path::PathBuf> {
 /// observability export will consume: verified bytes in, a `DynExport` out.
 #[test]
 fn load_and_exercise_export_plugin() {
-    use busbar_plugin::cold::export::ExportStream;
+    use busbar_contract::abi::cold::export::ExportStream;
     let Some(path) = hermetic_export_plugin_path() else {
         eprintln!("skip: export example plugin cdylib not built (run under --workspace)");
         return;
@@ -1566,7 +1488,7 @@ fn load_and_exercise_export_plugin() {
 // time, because they never cross the ABI.
 
 /// Locate the hermetic in-tree `busbar-store-example-plugin` cdylib. Mirrors
-/// `hermetic_secret_plugin_path`/`hermetic_export_plugin_path`, including checking BOTH the uplifted
+/// `hermetic_export_plugin_path`, including checking BOTH the uplifted
 /// `<profile_dir>/<name>` copy and the raw `<profile_dir>/deps/<name>` compiler output (a scoped
 /// `cargo test -p busbar-plugin-loader` only produces the latter).
 ///
@@ -1981,7 +1903,7 @@ fn every_store_trait_method_has_an_abi_variant_and_a_dynstore_override() {
     ));
     let abi_src = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../busbar-plugin/src/cold/mod.rs"
+        "/../busbar-contract/src/abi/cold/mod.rs"
     ));
     let loader_src = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/lib.rs"));
 
@@ -2078,7 +2000,7 @@ fn every_store_trait_method_has_an_abi_variant_and_a_dynstore_override() {
 /// chooses the exact `(status, body)` an old plugin would have returned. Mirrors
 /// [`dyn_store_with_fake_call`], which is pinned to the sibling sqlite fixture.
 fn dyn_example_store_with_fake_call() -> Option<DynStore> {
-    dyn_example_store_with_fake_call_at_abi(busbar_plugin::cold::ABI_VERSION)
+    dyn_example_store_with_fake_call_at_abi(busbar_contract::abi::cold::ABI_VERSION)
 }
 
 /// [`dyn_example_store_with_fake_call`] bound to a chosen payload schema, so a test can hold the

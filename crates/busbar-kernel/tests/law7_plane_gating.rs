@@ -39,6 +39,7 @@ static PROBE: PlaneDecl = PlaneDecl {
         billable_classes: &[],
         fee_units: &[],
         metric_families: &[],
+        record_kinds: &[],
         served_op_classes: &[],
     },
     wire_format_names: || &["law7probe"],

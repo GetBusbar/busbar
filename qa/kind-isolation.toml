@@ -62,6 +62,21 @@ from = "busbar-mcp"
 to = "busbar-plane-mcp"
 reason = "legacy drain: the MCP wire dialect folded into the plane crate and the retiring engine reads it"
 
+# The admin surface the A2A and MCP engines' tests drive drained out of busbar-core into the
+# compiled-in cleanliness tier: first as `busbar-admin`, which then folded into `busbar-core-admin`
+# (#37). BUSBAR-1.6.0.md:3780 (R2/#37) seats that crate as a cleanliness crate, and `cleanliness` is
+# a kind the drain targets, so each retiring engine's test edge onto it is named here. Both are
+# dev-dependencies (the engines' admin-verb tests) and die with the engines.
+[[transitional]]
+from = "busbar-a2a"
+to = "busbar-core-admin"
+reason = "legacy drain: the retiring A2A engine's tests drive the admin surface that drained into the cleanliness tier"
+
+[[transitional]]
+from = "busbar-mcp"
+to = "busbar-core-admin"
+reason = "legacy drain: the retiring MCP engine's tests drive the admin surface that drained into the cleanliness tier"
+
 # ------------------------------------------------------------------------------------------------
 # [[announced]] — CRATES THAT ARE LANDING
 # ------------------------------------------------------------------------------------------------
@@ -150,53 +165,11 @@ reason = "legacy drain: the MCP wire dialect folded into the plane crate and the
 # written here is what 1.6.0 still has to delete.
 
 [[edge]]
-from = "api"
-to = "auth"
-cite = "none. ARCHITECTURE.md 1.1 — three blind axes, one small kernel: a crate of kind api has no clause that lets it name auth vocabulary. Every hit is a coupling to delete."
-why = "crates of kind api naming auth vocabulary: auth package names in any spelling, the kind-qualified id (auth-<id>), and — where auth is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
-drain = "delete the auth name from the api crate: a api reaches auth through the contract face it is written against, never by naming it. Every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
-
-[[edge]]
-from = "api"
-to = "contract"
-cite = "ARCHITECTURE.md 1.2 manifest allow-list — busbar-contract is the face every kind is written against; DECISIONS #83/#84 point busbar-api's one re-export shim at the record SHAPES there rather than at the money one-book. Unlike every other row in this table the number here is NOT debt: it is the coupling the architecture wants."
-why = "crates of kind api naming contract vocabulary: contract package names in any spelling, the kind-qualified id (contract-<id>), and — where contract is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
-drain = "none while busbar-api stands. The hits go to zero when #35/W5.b retires busbar-api and every dependent names busbar_contract::records directly; the ratchet here IS that retirement."
-
-[[edge]]
-from = "api"
-to = "plane"
-cite = "none. ARCHITECTURE.md 1.1 — three blind axes, one small kernel: a crate of kind api has no clause that lets it name plane vocabulary. Every hit is a coupling to delete."
-why = "crates of kind api naming plane vocabulary: plane package names in any spelling, the kind-qualified id (plane-<id>), and — where plane is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
-drain = "delete the plane name from the api crate: a api reaches plane through the contract face it is written against, never by naming it. Every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
-
-[[edge]]
-from = "api"
-to = "transport"
-cite = "none. ARCHITECTURE.md 1.1 — three blind axes, one small kernel: a crate of kind api has no clause that lets it name transport vocabulary. Every hit is a coupling to delete."
-why = "crates of kind api naming transport vocabulary: transport package names in any spelling, the kind-qualified id (transport-<id>), and — where transport is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
-drain = "delete the transport name from the api crate: a api reaches transport through the contract face it is written against, never by naming it. Every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
-
-[[edge]]
 from = "auth"
 to = "auth"
 cite = "none. ARCHITECTURE.md 1.1 — three blind axes, one small kernel: a crate of kind auth has no clause that lets it name auth vocabulary. Every hit is a coupling to delete."
 why = "crates of kind auth naming auth vocabulary: auth package names in any spelling, the kind-qualified id (auth-<id>), and — where auth is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
 drain = "delete the auth name from the auth crate: a auth reaches auth through the contract face it is written against, never by naming it. Every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
-
-[[edge]]
-from = "auth"
-to = "plugin-tooling"
-cite = "none. ARCHITECTURE.md 1.1 — three blind axes, one small kernel: a crate of kind auth has no clause that lets it name plugin-tooling vocabulary. Every hit is a coupling to delete."
-why = "crates of kind auth naming plugin-tooling vocabulary: plugin-tooling package names in any spelling, the kind-qualified id (plugin-tooling-<id>), and — where plugin-tooling is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
-drain = "delete the plugin-tooling name from the auth crate: a auth reaches plugin-tooling through the contract face it is written against, never by naming it. Every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
-
-[[edge]]
-from = "codec"
-to = "api"
-cite = "ARCHITECTURE.md 3.1 (crate graph, bounded types) — api is a CORE FACE a plugin kind is written against, and naming the face is what being a plugin of a kind means. What the clause does NOT grant is naming an INSTANCE of another plugin kind, which is why this class still carries a number."
-why = "crates of kind codec naming api vocabulary: api package names in any spelling, the kind-qualified id (api-<id>), and — where api is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
-drain = "nothing to drain while the crate is a plugin of its kind; the row exists so that a NEW codec -> api coupling is visible on the landing that adds it. It falls when the crate stops naming the face outside its ABI-facing modules."
 
 [[edge]]
 from = "codec"
@@ -225,13 +198,6 @@ to = "substrate"
 cite = "ARCHITECTURE.md 3.1 (crate graph, bounded types) — substrate is a CORE FACE a plugin kind is written against, and naming the face is what being a plugin of a kind means. What the clause does NOT grant is naming an INSTANCE of another plugin kind, which is why this class still carries a number."
 why = "crates of kind codec naming substrate vocabulary: substrate package names in any spelling, the kind-qualified id (substrate-<id>), and — where substrate is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
 drain = "nothing to drain while the crate is a plugin of its kind; the row exists so that a NEW codec -> substrate coupling is visible on the landing that adds it. It falls when the crate stops naming the face outside its ABI-facing modules."
-
-[[edge]]
-from = "codec"
-to = "timing"
-cite = "ARCHITECTURE.md 3.1 (crate graph, bounded types) — timing is a CORE FACE a plugin kind is written against, and naming the face is what being a plugin of a kind means. What the clause does NOT grant is naming an INSTANCE of another plugin kind, which is why this class still carries a number."
-why = "crates of kind codec naming timing vocabulary: timing package names in any spelling, the kind-qualified id (timing-<id>), and — where timing is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
-drain = "nothing to drain while the crate is a plugin of its kind; the row exists so that a NEW codec -> timing coupling is visible on the landing that adds it. It falls when the crate stops naming the face outside its ABI-facing modules."
 
 [[edge]]
 from = "codec"
@@ -270,31 +236,10 @@ drain = "delete the plane name from the export crate: a export reaches plane thr
 
 [[edge]]
 from = "export"
-to = "plugin-tooling"
-cite = "none. ARCHITECTURE.md 1.1 — three blind axes, one small kernel: a crate of kind export has no clause that lets it name plugin-tooling vocabulary. Every hit is a coupling to delete."
-why = "crates of kind export naming plugin-tooling vocabulary: plugin-tooling package names in any spelling, the kind-qualified id (plugin-tooling-<id>), and — where plugin-tooling is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
-drain = "delete the plugin-tooling name from the export crate: a export reaches plugin-tooling through the contract face it is written against, never by naming it. Every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
-
-[[edge]]
-from = "export"
-to = "secret"
-cite = "none. ARCHITECTURE.md 1.1 — three blind axes, one small kernel: a crate of kind export has no clause that lets it name secret vocabulary. Every hit is a coupling to delete."
-why = "crates of kind export naming secret vocabulary: secret package names in any spelling, the kind-qualified id (secret-<id>), and — where secret is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
-drain = "delete the secret name from the export crate: a export reaches secret through the contract face it is written against, never by naming it. Every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
-
-[[edge]]
-from = "export"
 to = "store"
 cite = "none. ARCHITECTURE.md 1.1 — three blind axes, one small kernel: a crate of kind export has no clause that lets it name store vocabulary. Every hit is a coupling to delete."
 why = "crates of kind export naming store vocabulary: store package names in any spelling, the kind-qualified id (store-<id>), and — where store is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
 drain = "delete the store name from the export crate: a export reaches store through the contract face it is written against, never by naming it. Every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
-
-[[edge]]
-from = "hooks"
-to = "plugin-tooling"
-cite = "none. ARCHITECTURE.md 1.1 — three blind axes, one small kernel: a crate of kind hooks has no clause that lets it name plugin-tooling vocabulary. Every hit is a coupling to delete."
-why = "crates of kind hooks naming plugin-tooling vocabulary: plugin-tooling package names in any spelling, the kind-qualified id (plugin-tooling-<id>), and — where plugin-tooling is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
-drain = "delete the plugin-tooling name from the hooks crate: a hooks reaches plugin-tooling through the contract face it is written against, never by naming it. Every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
 
 [[edge]]
 from = "kernel"
@@ -309,13 +254,6 @@ to = "transport"
 cite = "none. ARCHITECTURE.md 1.1 — three blind axes, one small kernel: a crate of kind kernel has no clause that lets it name transport vocabulary. Every hit is a coupling to delete."
 why = "crates of kind kernel naming transport vocabulary: transport package names in any spelling, the kind-qualified id (transport-<id>), and — where transport is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
 drain = "delete the transport name from the kernel crate: a kernel reaches transport through the contract face it is written against, never by naming it. Every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
-
-[[edge]]
-from = "legacy"
-to = "api"
-cite = "ARCHITECTURE.md 3.1 (crate graph, bounded types) — api is a CORE FACE a plugin kind is written against, and naming the face is what being a plugin of a kind means. What the clause does NOT grant is naming an INSTANCE of another plugin kind, which is why this class still carries a number."
-why = "crates of kind legacy naming api vocabulary: api package names in any spelling, the kind-qualified id (api-<id>), and — where api is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
-drain = "git rm -r the retiring 1.5.x crate. The ratchet here IS the retirement; this row cannot be edited down any other way."
 
 [[edge]]
 from = "legacy"
@@ -389,24 +327,10 @@ drain = "git rm -r the retiring 1.5.x crate. The ratchet here IS the retirement;
 
 [[edge]]
 from = "legacy"
-to = "timing"
-cite = "ARCHITECTURE.md 3.1 (crate graph, bounded types) — timing is a CORE FACE a plugin kind is written against, and naming the face is what being a plugin of a kind means. What the clause does NOT grant is naming an INSTANCE of another plugin kind, which is why this class still carries a number."
-why = "crates of kind legacy naming timing vocabulary: timing package names in any spelling, the kind-qualified id (timing-<id>), and — where timing is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
-drain = "git rm -r the retiring 1.5.x crate. The ratchet here IS the retirement; this row cannot be edited down any other way."
-
-[[edge]]
-from = "legacy"
 to = "transport"
 cite = "none. The retiring 1.5.x crates predate the plane/transport split (ARCHITECTURE.md 9.2); the number is the SIZE OF THE RETIREMENT, not an allowance, and it goes to zero when the crate does."
 why = "crates of kind legacy naming transport vocabulary: transport package names in any spelling, the kind-qualified id (transport-<id>), and — where transport is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
 drain = "git rm -r the retiring 1.5.x crate. The ratchet here IS the retirement; this row cannot be edited down any other way."
-
-[[edge]]
-from = "plane"
-to = "api"
-cite = "ARCHITECTURE.md 3.1 (crate graph, bounded types) — api is a CORE FACE a plugin kind is written against, and naming the face is what being a plugin of a kind means. What the clause does NOT grant is naming an INSTANCE of another plugin kind, which is why this class still carries a number."
-why = "crates of kind plane naming api vocabulary: api package names in any spelling, the kind-qualified id (api-<id>), and — where api is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
-drain = "nothing to drain while the crate is a plugin of its kind; the row exists so that a NEW plane -> api coupling is visible on the landing that adds it. It falls when the crate stops naming the face outside its ABI-facing modules."
 
 [[edge]]
 from = "plane"
@@ -435,48 +359,6 @@ to = "transport"
 cite = "none. ARCHITECTURE.md 1.1 — three blind axes, one small kernel: a crate of kind plane has no clause that lets it name transport vocabulary. Every hit is a coupling to delete."
 why = "crates of kind plane naming transport vocabulary: transport package names in any spelling, the kind-qualified id (transport-<id>), and — where transport is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
 drain = "delete the transport name from the plane crate: a plane reaches transport through the contract face it is written against, never by naming it. Every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
-
-[[edge]]
-from = "plugin-abi"
-to = "api"
-cite = "ARCHITECTURE.md 3.1 (crate graph, bounded types) — api is a CORE FACE a plugin kind is written against, and naming the face is what being a plugin of a kind means. What the clause does NOT grant is naming an INSTANCE of another plugin kind, which is why this class still carries a number."
-why = "crates of kind plugin-abi naming api vocabulary: api package names in any spelling, the kind-qualified id (api-<id>), and — where api is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
-drain = "nothing to drain while the crate is a plugin of its kind; the row exists so that a NEW plugin-abi -> api coupling is visible on the landing that adds it. It falls when the crate stops naming the face outside its ABI-facing modules."
-
-[[edge]]
-from = "plugin-abi"
-to = "legacy"
-cite = "none. The retiring 1.5.x crates predate the plane/transport split (ARCHITECTURE.md 9.2); the number is the SIZE OF THE RETIREMENT, not an allowance, and it goes to zero when the crate does."
-why = "crates of kind plugin-abi naming legacy vocabulary: legacy package names in any spelling, the kind-qualified id (legacy-<id>), and — where legacy is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
-drain = "git rm -r the retiring 1.5.x crate. The ratchet here IS the retirement; this row cannot be edited down any other way."
-
-[[edge]]
-from = "plugin-abi"
-to = "plane"
-cite = "none. ARCHITECTURE.md 1.1 — three blind axes, one small kernel: a crate of kind plugin-abi has no clause that lets it name plane vocabulary. Every hit is a coupling to delete."
-why = "crates of kind plugin-abi naming plane vocabulary: plane package names in any spelling, the kind-qualified id (plane-<id>), and — where plane is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
-drain = "delete the plane name from the plugin-abi crate: a plugin-abi reaches plane through the contract face it is written against, never by naming it. Every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
-
-[[edge]]
-from = "plugin-abi"
-to = "plugin-tooling"
-cite = "none. ARCHITECTURE.md 1.1 — three blind axes, one small kernel: a crate of kind plugin-abi has no clause that lets it name plugin-tooling vocabulary. Every hit is a coupling to delete."
-why = "crates of kind plugin-abi naming plugin-tooling vocabulary: plugin-tooling package names in any spelling, the kind-qualified id (plugin-tooling-<id>), and — where plugin-tooling is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
-drain = "delete the plugin-tooling name from the plugin-abi crate: a plugin-abi reaches plugin-tooling through the contract face it is written against, never by naming it. Every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
-
-[[edge]]
-from = "plugin-abi"
-to = "transport"
-cite = "none. ARCHITECTURE.md 1.1 — three blind axes, one small kernel: a crate of kind plugin-abi has no clause that lets it name transport vocabulary. Every hit is a coupling to delete."
-why = "crates of kind plugin-abi naming transport vocabulary: transport package names in any spelling, the kind-qualified id (transport-<id>), and — where transport is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
-drain = "delete the transport name from the plugin-abi crate: a plugin-abi reaches transport through the contract face it is written against, never by naming it. Every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
-
-[[edge]]
-from = "plugin-tooling"
-to = "api"
-cite = "ARCHITECTURE.md 3.1 (crate graph, bounded types) — api is a CORE FACE a plugin kind is written against, and naming the face is what being a plugin of a kind means. What the clause does NOT grant is naming an INSTANCE of another plugin kind, which is why this class still carries a number."
-why = "crates of kind plugin-tooling naming api vocabulary: api package names in any spelling, the kind-qualified id (api-<id>), and — where api is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
-drain = "nothing to drain while the crate is a plugin of its kind; the row exists so that a NEW plugin-tooling -> api coupling is visible on the landing that adds it. It falls when the crate stops naming the face outside its ABI-facing modules."
 
 [[edge]]
 from = "plugin-tooling"
@@ -522,13 +404,6 @@ drain = "delete the plugin-tooling name from the plugin-tooling crate: a plugin-
 
 [[edge]]
 from = "plugin-tooling"
-to = "secret"
-cite = "none by clause. The loader, packer, signer and SDK are the tools that BUILD plugins, so a secret name in them is a tool naming its subject; ARCHITECTURE.md 7 keeps them a kind of their own for exactly that reason, and the number says how much of the subject leaked into the tool."
-why = "crates of kind plugin-tooling naming secret vocabulary: secret package names in any spelling, the kind-qualified id (secret-<id>), and — where secret is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
-drain = "delete the secret name from the plugin-tooling crate: a plugin-tooling reaches secret through the contract face it is written against, never by naming it. Every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
-
-[[edge]]
-from = "plugin-tooling"
 to = "store"
 cite = "none by clause. The loader, packer, signer and SDK are the tools that BUILD plugins, so a store name in them is a tool naming its subject; ARCHITECTURE.md 7 keeps them a kind of their own for exactly that reason, and the number says how much of the subject leaked into the tool."
 why = "crates of kind plugin-tooling naming store vocabulary: store package names in any spelling, the kind-qualified id (store-<id>), and — where store is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
@@ -540,13 +415,6 @@ to = "transport"
 cite = "none by clause. The loader, packer, signer and SDK are the tools that BUILD plugins, so a transport name in them is a tool naming its subject; ARCHITECTURE.md 7 keeps them a kind of their own for exactly that reason, and the number says how much of the subject leaked into the tool."
 why = "crates of kind plugin-tooling naming transport vocabulary: transport package names in any spelling, the kind-qualified id (transport-<id>), and — where transport is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
 drain = "delete the transport name from the plugin-tooling crate: a plugin-tooling reaches transport through the contract face it is written against, never by naming it. Every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
-
-[[edge]]
-from = "root"
-to = "api"
-cite = "ARCHITECTURE.md 3.1 (crate graph, bounded types) — api is a CORE FACE a plugin kind is written against, and naming the face is what being a plugin of a kind means. What the clause does NOT grant is naming an INSTANCE of another plugin kind, which is why this class still carries a number."
-why = "crates of kind root naming api vocabulary: api package names in any spelling, the kind-qualified id (api-<id>), and — where api is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
-drain = "delete the per-api wiring from crates/busbar/src/root/** and crates/busbar/src/main.rs: the root mounts a declared surface read off the registry, so each hit goes on the commit that moves the declaration into the api itself."
 
 [[edge]]
 from = "root"
@@ -619,27 +487,6 @@ why = "crates of kind root naming transport vocabulary: transport package names 
 drain = "delete the per-transport wiring from crates/busbar/src/root/** and crates/busbar/src/main.rs: the root mounts a declared surface read off the registry, so each hit goes on the commit that moves the declaration into the transport itself."
 
 [[edge]]
-from = "secret"
-to = "hooks"
-cite = "none. ARCHITECTURE.md 1.1 — three blind axes, one small kernel: a crate of kind secret has no clause that lets it name hooks vocabulary. Every hit is a coupling to delete."
-why = "crates of kind secret naming hooks vocabulary: hooks package names in any spelling, the kind-qualified id (hooks-<id>), and — where hooks is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
-drain = "delete the hooks name from the secret crate: a secret reaches hooks through the contract face it is written against, never by naming it. Every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
-
-[[edge]]
-from = "secret"
-to = "plugin-tooling"
-cite = "none. ARCHITECTURE.md 1.1 — three blind axes, one small kernel: a crate of kind secret has no clause that lets it name plugin-tooling vocabulary. Every hit is a coupling to delete."
-why = "crates of kind secret naming plugin-tooling vocabulary: plugin-tooling package names in any spelling, the kind-qualified id (plugin-tooling-<id>), and — where plugin-tooling is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
-drain = "delete the plugin-tooling name from the secret crate: a secret reaches plugin-tooling through the contract face it is written against, never by naming it. Every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
-
-[[edge]]
-from = "store"
-to = "api"
-cite = "ARCHITECTURE.md 3.1 (crate graph, bounded types) — api is a CORE FACE a plugin kind is written against, and naming the face is what being a plugin of a kind means. What the clause does NOT grant is naming an INSTANCE of another plugin kind, which is why this class still carries a number."
-why = "crates of kind store naming api vocabulary: api package names in any spelling, the kind-qualified id (api-<id>), and — where api is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
-drain = "nothing to drain while the crate is a plugin of its kind; the row exists so that a NEW store -> api coupling is visible on the landing that adds it. It falls when the crate stops naming the face outside its ABI-facing modules."
-
-[[edge]]
 from = "store"
 to = "plane"
 cite = "none. ARCHITECTURE.md 1.1 — three blind axes, one small kernel: a crate of kind store has no clause that lets it name plane vocabulary. Every hit is a coupling to delete."
@@ -655,24 +502,10 @@ drain = "delete the plugin-tooling name from the store crate: a store reaches pl
 
 [[edge]]
 from = "store"
-to = "secret"
-cite = "none. ARCHITECTURE.md 1.1 — three blind axes, one small kernel: a crate of kind store has no clause that lets it name secret vocabulary. Every hit is a coupling to delete."
-why = "crates of kind store naming secret vocabulary: secret package names in any spelling, the kind-qualified id (secret-<id>), and — where secret is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
-drain = "delete the secret name from the store crate: a store reaches secret through the contract face it is written against, never by naming it. Every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
-
-[[edge]]
-from = "store"
 to = "store"
 cite = "none. ARCHITECTURE.md 1.1 — three blind axes, one small kernel: a crate of kind store has no clause that lets it name store vocabulary. Every hit is a coupling to delete."
 why = "crates of kind store naming store vocabulary: store package names in any spelling, the kind-qualified id (store-<id>), and — where store is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
 drain = "delete the store name from the store crate: a store reaches store through the contract face it is written against, never by naming it. Every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
-
-[[edge]]
-from = "substrate"
-to = "api"
-cite = "ARCHITECTURE.md 3.1 (crate graph, bounded types) — api is a CORE FACE a plugin kind is written against, and naming the face is what being a plugin of a kind means. What the clause does NOT grant is naming an INSTANCE of another plugin kind, which is why this class still carries a number."
-why = "crates of kind substrate naming api vocabulary: api package names in any spelling, the kind-qualified id (api-<id>), and — where api is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
-drain = "nothing to drain while the crate is a plugin of its kind; the row exists so that a NEW substrate -> api coupling is visible on the landing that adds it. It falls when the crate stops naming the face outside its ABI-facing modules."
 
 [[edge]]
 from = "substrate"
@@ -697,31 +530,10 @@ drain = "delete the plane name from the substrate crate: a substrate reaches pla
 
 [[edge]]
 from = "substrate"
-to = "timing"
-cite = "ARCHITECTURE.md 3.1 (crate graph, bounded types) — timing is a CORE FACE a plugin kind is written against, and naming the face is what being a plugin of a kind means. What the clause does NOT grant is naming an INSTANCE of another plugin kind, which is why this class still carries a number."
-why = "crates of kind substrate naming timing vocabulary: timing package names in any spelling, the kind-qualified id (timing-<id>), and — where timing is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
-drain = "nothing to drain while the crate is a plugin of its kind; the row exists so that a NEW substrate -> timing coupling is visible on the landing that adds it. It falls when the crate stops naming the face outside its ABI-facing modules."
-
-[[edge]]
-from = "substrate"
 to = "transport"
 cite = "none. ARCHITECTURE.md 1.1 — three blind axes, one small kernel: a crate of kind substrate has no clause that lets it name transport vocabulary. Every hit is a coupling to delete."
 why = "crates of kind substrate naming transport vocabulary: transport package names in any spelling, the kind-qualified id (transport-<id>), and — where transport is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
 drain = "delete the transport name from the substrate crate: a substrate reaches transport through the contract face it is written against, never by naming it. Every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
-
-[[edge]]
-from = "timing"
-to = "plane"
-cite = "none. ARCHITECTURE.md 1.1 — three blind axes, one small kernel: a crate of kind timing has no clause that lets it name plane vocabulary. Every hit is a coupling to delete."
-why = "crates of kind timing naming plane vocabulary: plane package names in any spelling, the kind-qualified id (plane-<id>), and — where plane is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
-drain = "delete the plane name from the timing crate: a timing reaches plane through the contract face it is written against, never by naming it. Every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
-
-[[edge]]
-from = "timing"
-to = "transport"
-cite = "none. ARCHITECTURE.md 1.1 — three blind axes, one small kernel: a crate of kind timing has no clause that lets it name transport vocabulary. Every hit is a coupling to delete."
-why = "crates of kind timing naming transport vocabulary: transport package names in any spelling, the kind-qualified id (transport-<id>), and — where transport is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
-drain = "delete the transport name from the timing crate: a timing reaches transport through the contract face it is written against, never by naming it. Every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
 
 [[edge]]
 from = "transport"
@@ -760,11 +572,6 @@ drain = "delete the transport name from the unit crate: a unit reaches transport
 
 [[cell]]
 crate = "busbar"
-kind = "api"
-count = "96"
-
-[[cell]]
-crate = "busbar"
 kind = "auth"
 count = "26"
 
@@ -780,16 +587,6 @@ count = "5"
 
 [[cell]]
 crate = "busbar"
-kind = "contract"
-count = "471"
-
-[[cell]]
-crate = "busbar"
-kind = "core"
-count = "16"
-
-[[cell]]
-crate = "busbar"
 kind = "hooks"
 count = "5"
 
@@ -801,7 +598,7 @@ count = "981"
 [[cell]]
 crate = "busbar"
 kind = "plane"
-count = "1413"
+count = "1254"
 
 [[cell]]
 crate = "busbar"
@@ -822,11 +619,6 @@ count = "11"
 crate = "busbar"
 kind = "transport"
 count = "780"
-
-[[cell]]
-crate = "busbar-a2a"
-kind = "api"
-count = "215"
 
 [[cell]]
 crate = "busbar-a2a"
@@ -864,28 +656,8 @@ kind = "transport"
 count = "1274"
 
 [[cell]]
-crate = "busbar-api"
-kind = "auth"
-count = "2"
-
-[[cell]]
-crate = "busbar-api"
-kind = "plane"
-count = "17"
-
-[[cell]]
-crate = "busbar-api"
-kind = "transport"
-count = "2"
-
-[[cell]]
 crate = "busbar-auth-static-plugin"
 kind = "auth"
-count = "2"
-
-[[cell]]
-crate = "busbar-auth-static-plugin"
-kind = "plugin-tooling"
 count = "2"
 
 [[cell]]
@@ -915,28 +687,8 @@ count = "3"
 
 [[cell]]
 crate = "busbar-export-example-plugin"
-kind = "plugin-tooling"
-count = "3"
-
-[[cell]]
-crate = "busbar-export-example-plugin"
-kind = "secret"
-count = "2"
-
-[[cell]]
-crate = "busbar-export-example-plugin"
 kind = "store"
 count = "1"
-
-[[cell]]
-crate = "busbar-hook-test-plugin"
-kind = "plugin-tooling"
-count = "4"
-
-[[cell]]
-crate = "busbar-kernel"
-kind = "contract"
-count = "103"
 
 [[cell]]
 crate = "busbar-kernel"
@@ -950,18 +702,8 @@ count = "4"
 
 [[cell]]
 crate = "busbar-kernel-audit"
-kind = "contract"
-count = "37"
-
-[[cell]]
-crate = "busbar-kernel-audit"
 kind = "plane"
 count = "6"
-
-[[cell]]
-crate = "busbar-kernel-breaker"
-kind = "contract"
-count = "14"
 
 [[cell]]
 crate = "busbar-kernel-breaker"
@@ -975,11 +717,6 @@ count = "225"
 
 [[cell]]
 crate = "busbar-kernel-budget"
-kind = "contract"
-count = "48"
-
-[[cell]]
-crate = "busbar-kernel-budget"
 kind = "kernel"
 count = "14"
 
@@ -987,11 +724,6 @@ count = "14"
 crate = "busbar-kernel-budget"
 kind = "transport"
 count = "2"
-
-[[cell]]
-crate = "busbar-kernel-egress"
-kind = "contract"
-count = "210"
 
 [[cell]]
 crate = "busbar-kernel-egress"
@@ -1010,11 +742,6 @@ count = "104"
 
 [[cell]]
 crate = "busbar-kernel-identity"
-kind = "contract"
-count = "14"
-
-[[cell]]
-crate = "busbar-kernel-identity"
 kind = "plane"
 count = "2"
 
@@ -1025,33 +752,13 @@ count = "4"
 
 [[cell]]
 crate = "busbar-kernel-ledger"
-kind = "contract"
-count = "33"
-
-[[cell]]
-crate = "busbar-kernel-ledger"
 kind = "kernel"
-count = "6"
-
-[[cell]]
-crate = "busbar-kernel-scope"
-kind = "contract"
 count = "6"
 
 [[cell]]
 crate = "busbar-kernel-scope"
 kind = "transport"
 count = "6"
-
-[[cell]]
-crate = "busbar-kernel-wal"
-kind = "contract"
-count = "36"
-
-[[cell]]
-crate = "busbar-llm"
-kind = "api"
-count = "299"
 
 [[cell]]
 crate = "busbar-llm"
@@ -1070,18 +777,8 @@ count = "515"
 
 [[cell]]
 crate = "busbar-llm"
-kind = "timing"
-count = "12"
-
-[[cell]]
-crate = "busbar-llm"
 kind = "transport"
 count = "1202"
-
-[[cell]]
-crate = "busbar-llm-codec"
-kind = "api"
-count = "78"
 
 [[cell]]
 crate = "busbar-llm-codec"
@@ -1095,18 +792,8 @@ count = "904"
 
 [[cell]]
 crate = "busbar-llm-codec"
-kind = "timing"
-count = "13"
-
-[[cell]]
-crate = "busbar-llm-codec"
 kind = "transport"
 count = "616"
-
-[[cell]]
-crate = "busbar-mcp"
-kind = "api"
-count = "155"
 
 [[cell]]
 crate = "busbar-mcp"
@@ -1115,7 +802,7 @@ count = "9"
 
 [[cell]]
 crate = "busbar-mcp"
-kind = "core"
+kind = "cleanliness"
 count = "1"
 
 [[cell]]
@@ -1229,34 +916,9 @@ kind = "transport"
 count = "61"
 
 [[cell]]
-crate = "busbar-plugin"
-kind = "api"
-count = "59"
-
-[[cell]]
-crate = "busbar-plugin"
-kind = "plane"
-count = "77"
-
-[[cell]]
-crate = "busbar-plugin"
-kind = "plugin-tooling"
-count = "4"
-
-[[cell]]
-crate = "busbar-plugin"
-kind = "transport"
-count = "103"
-
-[[cell]]
 crate = "busbar-plugin-example-plane"
 kind = "plugin-tooling"
-count = "10"
-
-[[cell]]
-crate = "busbar-plugin-loader"
-kind = "api"
-count = "72"
+count = "3"
 
 [[cell]]
 crate = "busbar-plugin-loader"
@@ -1291,12 +953,7 @@ count = "55"
 [[cell]]
 crate = "busbar-plugin-loader"
 kind = "plugin-tooling"
-count = "10"
-
-[[cell]]
-crate = "busbar-plugin-loader"
-kind = "secret"
-count = "18"
+count = "9"
 
 [[cell]]
 crate = "busbar-plugin-loader"
@@ -1312,42 +969,6 @@ count = "30"
 
 
 [[cell]]
-crate = "busbar-plugin-sdk"
-kind = "api"
-count = "61"
-
-[[cell]]
-crate = "busbar-plugin-sdk"
-kind = "plane"
-count = "20"
-
-[[cell]]
-crate = "busbar-plugin-sdk"
-kind = "store"
-count = "7"
-
-[[cell]]
-crate = "busbar-plugin-sdk"
-kind = "transport"
-count = "22"
-
-
-[[cell]]
-crate = "busbar-secret-example-plugin"
-kind = "hooks"
-count = "1"
-
-[[cell]]
-crate = "busbar-secret-example-plugin"
-kind = "plugin-tooling"
-count = "3"
-
-[[cell]]
-crate = "busbar-store-example-plugin"
-kind = "api"
-count = "2"
-
-[[cell]]
 crate = "busbar-store-example-plugin"
 kind = "plane"
 count = "26"
@@ -1355,12 +976,7 @@ count = "26"
 [[cell]]
 crate = "busbar-store-example-plugin"
 kind = "plugin-tooling"
-count = "3"
-
-[[cell]]
-crate = "busbar-store-example-plugin"
-kind = "secret"
-count = "3"
+count = "1"
 
 [[cell]]
 crate = "busbar-store-example-plugin"
@@ -1374,18 +990,8 @@ count = "1"
 
 [[cell]]
 crate = "busbar-substrate-values"
-kind = "api"
-count = "18"
-
-[[cell]]
-crate = "busbar-substrate-values"
 kind = "codec"
 count = "1"
-
-[[cell]]
-crate = "busbar-substrate-values"
-kind = "contract"
-count = "16"
 
 [[cell]]
 crate = "busbar-substrate-values"
@@ -1394,23 +1000,8 @@ count = "152"
 
 [[cell]]
 crate = "busbar-substrate-values"
-kind = "timing"
-count = "4"
-
-[[cell]]
-crate = "busbar-substrate-values"
 kind = "transport"
 count = "227"
-
-[[cell]]
-crate = "busbar-timing"
-kind = "plane"
-count = "2"
-
-[[cell]]
-crate = "busbar-timing"
-kind = "transport"
-count = "1"
 
 [[cell]]
 crate = "busbar-transport-http"
@@ -1469,18 +1060,8 @@ count = "71"
 
 [[cell]]
 crate = "busbar-unit-transport-key"
-kind = "contract"
-count = "10"
-
-[[cell]]
-crate = "busbar-unit-transport-key"
 kind = "transport"
 count = "106"
-
-[[cell]]
-crate = "busbar-voice"
-kind = "api"
-count = "65"
 
 [[cell]]
 crate = "busbar-voice"
@@ -1509,11 +1090,6 @@ count = "143"
 
 [[cell]]
 crate = "busbar-voice-codec"
-kind = "api"
-count = "9"
-
-[[cell]]
-crate = "busbar-voice-codec"
 kind = "plane"
 count = "128"
 
@@ -1529,11 +1105,6 @@ kind = "plane"
 count = "2"
 
 # L5-INTERIM, ruling-backed (K9b; decisions.md "L5 kind-isolation rows to add at regen"), armed at today's measurement.
-[[cell]]
-crate = "busbar-export-file"
-kind = "plugin-tooling"
-count = "10"
-
 # L5-INTERIM, ruling-backed (K9b same shape; decisions.md "L5 kind-isolation rows to add at regen"), armed at today's measurement.
 [[cell]]
 crate = "busbar-export-webhook"
@@ -1541,11 +1112,6 @@ kind = "plane"
 count = "1"
 
 # L5-INTERIM, ruling-backed (K9b same shape; decisions.md "L5 kind-isolation rows to add at regen"), armed at today's measurement.
-[[cell]]
-crate = "busbar-export-webhook"
-kind = "plugin-tooling"
-count = "9"
-
 # L5-INTERIM, ruling-backed (K9b same shape / K9d; decisions.md "L5 kind-isolation rows to add at regen"), armed at today's measurement.
 [[cell]]
 crate = "busbar-export-prometheus"
@@ -1553,11 +1119,6 @@ kind = "plane"
 count = "2"
 
 # L5-INTERIM, ruling-backed (K9b same shape / K9d; decisions.md "L5 kind-isolation rows to add at regen"), armed at today's measurement.
-[[cell]]
-crate = "busbar-export-prometheus"
-kind = "plugin-tooling"
-count = "5"
-
 [[disagreement]]
 crate = "busbar"
 kind = "plane"
@@ -1671,22 +1232,42 @@ drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an arch
 
 [[dep]]
 from    = "busbar"
-to      = "busbar-api"
-half    = "shipped"
-count   = "1"
-verdict = "allowed"
-cite    = "ARCHITECTURE.md 1.1 / ARCHITECTURE.md 3.1 — the composition root is the one thing that names all three axes."
-why     = "busbar names busbar-api: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
-drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
-
-[[dep]]
-from    = "busbar"
 to      = "busbar-contract"
 half    = "shipped"
 count   = "1"
 verdict = "allowed"
 cite    = "ARCHITECTURE.md 1.1 / ARCHITECTURE.md 3.1 — the composition root is the one thing that names all three axes."
 why     = "busbar names busbar-contract: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
+
+[[dep]]
+from    = "busbar"
+to      = "busbar-core-admin"
+half    = "shipped"
+count   = "1"
+verdict = "allowed"
+cite    = "BUSBAR-1.6.0.md:3780 (R2/#37) and ARCHITECT ruling: cleanliness crates are compiled-in with a one-way dependency on the kernel; the root links them (ARCHITECTURE_ALLOWED root -> cleanliness). busbar-core-admin is the compiled-in admin cleanliness crate the root mounts, as busbar -> busbar-oauth2 is (roster definition 1: the composition root names which crates exist and wires them at boot)."
+why     = "busbar names busbar-core-admin: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none: the architecture grants root -> cleanliness. What this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
+
+[[dep]]
+from    = "busbar"
+to      = "busbar-plane-decision"
+half    = "shipped"
+count   = "1"
+verdict = "allowed"
+cite    = "BUSBAR-1.6.0.md roster definition 1: the composition root is the only place that names which crates exist and wires them at boot (ARCHITECT 2026-09-25, K5d residue); ARCHITECTURE.md 1.1 / 3.1, ARCHITECTURE_ALLOWED root -> plane."
+why     = "busbar names busbar-plane-decision: declared normal, optional in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
+
+[[dep]]
+from    = "busbar"
+to      = "busbar-plane-streaming"
+half    = "shipped"
+count   = "1"
+verdict = "allowed"
+cite    = "BUSBAR-1.6.0.md roster definition 1: the composition root is the only place that names which crates exist and wires them at boot (ARCHITECT 2026-09-25, K5d residue); ARCHITECTURE.md 1.1 / 3.1, ARCHITECTURE_ALLOWED root -> plane."
+why     = "busbar names busbar-plane-streaming: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
 drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
 
 [[dep]]
@@ -1801,26 +1382,6 @@ drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an arch
 
 [[dep]]
 from    = "busbar-a2a"
-to      = "busbar-api"
-half    = "shipped"
-count   = "1"
-verdict = "not-allowed"
-cite    = "ARCHITECTURE.md 1.2 \"Core -> plugin. Never plugin -> core.\" / ARCHITECTURE.md 1.1 the three axes are blind to each other. The retiring 1.5.x crates fuse plane+core+transport in one name."
-why     = "busbar-a2a names busbar-api: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
-drain   = "delete the busbar-api dependency from busbar-a2a's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
-
-[[dep]]
-from    = "busbar-a2a"
-to      = "busbar-plugin"
-half    = "shipped"
-count   = "1"
-verdict = "not-allowed"
-cite    = "ARCHITECTURE.md 1.2 \"Core -> plugin. Never plugin -> core.\" / ARCHITECTURE.md 1.1 the three axes are blind to each other. The retiring 1.5.x crates fuse plane+core+transport in one name."
-why     = "busbar-a2a names busbar-plugin: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
-drain   = "delete the busbar-plugin dependency from busbar-a2a's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
-
-[[dep]]
-from    = "busbar-a2a"
 to      = "busbar-plugin-loader"
 half    = "shipped"
 count   = "1"
@@ -1828,36 +1389,6 @@ verdict = "not-allowed"
 cite    = "ARCHITECTURE.md 1.2 \"Core -> plugin. Never plugin -> core.\" / ARCHITECTURE.md 1.1 the three axes are blind to each other. The retiring 1.5.x crates fuse plane+core+transport in one name."
 why     = "busbar-a2a names busbar-plugin-loader: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
 drain   = "delete the busbar-plugin-loader dependency from busbar-a2a's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
-
-[[dep]]
-from    = "busbar-auth-static-plugin"
-to      = "busbar-plugin-sdk"
-half    = "shipped"
-count   = "1"
-verdict = "not-allowed"
-cite    = "ARCHITECTURE.md 1.2 manifest allow-list: busbar-contract (+busbar-grammar) and reviewed third-party. busbar-api / the loader are not on it."
-why     = "busbar-auth-static-plugin names busbar-plugin-sdk: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
-drain   = "delete the busbar-plugin-sdk dependency from busbar-auth-static-plugin's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
-
-[[dep]]
-from    = "busbar-export-example-plugin"
-to      = "busbar-plugin-sdk"
-half    = "shipped"
-count   = "1"
-verdict = "not-allowed"
-cite    = "ARCHITECTURE.md 1.2 manifest allow-list: busbar-contract (+busbar-grammar) and reviewed third-party. busbar-api / the loader are not on it."
-why     = "busbar-export-example-plugin names busbar-plugin-sdk: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
-drain   = "delete the busbar-plugin-sdk dependency from busbar-export-example-plugin's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
-
-[[dep]]
-from    = "busbar-hook-test-plugin"
-to      = "busbar-plugin-sdk"
-half    = "shipped"
-count   = "1"
-verdict = "not-allowed"
-cite    = "ARCHITECTURE.md 1.2 manifest allow-list: busbar-contract (+busbar-grammar) and reviewed third-party. busbar-api / the loader are not on it."
-why     = "busbar-hook-test-plugin names busbar-plugin-sdk: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
-drain   = "delete the busbar-plugin-sdk dependency from busbar-hook-test-plugin's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
 
 [[dep]]
 from    = "busbar-kernel"
@@ -1868,16 +1399,6 @@ verdict = "allowed"
 cite    = "ARCHITECTURE.md 1.2 manifest allow-list — busbar-contract is the face every kind is written against."
 why     = "busbar-kernel names busbar-contract: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
 drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
-
-[[dep]]
-from    = "busbar-llm"
-to      = "busbar-api"
-half    = "shipped"
-count   = "1"
-verdict = "not-allowed"
-cite    = "ARCHITECTURE.md 1.2 \"Core -> plugin. Never plugin -> core.\" / ARCHITECTURE.md 1.1 the three axes are blind to each other. The retiring 1.5.x crates fuse plane+core+transport in one name."
-why     = "busbar-llm names busbar-api: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
-drain   = "delete the busbar-api dependency from busbar-llm's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
 
 [[dep]]
 from    = "busbar-llm"
@@ -1900,36 +1421,6 @@ why     = "busbar-llm names busbar-llm-codec: declared normal in the shipped gra
 drain   = "delete the busbar-llm-codec dependency from busbar-llm's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
 
 [[dep]]
-from    = "busbar-llm"
-to      = "busbar-plugin"
-half    = "shipped"
-count   = "1"
-verdict = "not-allowed"
-cite    = "ARCHITECTURE.md 1.2 \"Core -> plugin. Never plugin -> core.\" / ARCHITECTURE.md 1.1 the three axes are blind to each other. The retiring 1.5.x crates fuse plane+core+transport in one name."
-why     = "busbar-llm names busbar-plugin: declared normal, optional in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
-drain   = "delete the busbar-plugin dependency from busbar-llm's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
-
-[[dep]]
-from    = "busbar-llm"
-to      = "busbar-timing"
-half    = "shipped"
-count   = "1"
-verdict = "not-allowed"
-cite    = "ARCHITECTURE.md 1.2 \"Core -> plugin. Never plugin -> core.\" / ARCHITECTURE.md 1.1 the three axes are blind to each other. The retiring 1.5.x crates fuse plane+core+transport in one name."
-why     = "busbar-llm names busbar-timing: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
-drain   = "delete the busbar-timing dependency from busbar-llm's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
-
-[[dep]]
-from    = "busbar-llm-codec"
-to      = "busbar-api"
-half    = "shipped"
-count   = "1"
-verdict = "not-allowed"
-cite    = "ARCHITECTURE.md 1.2 manifest allow-list is busbar-contract + busbar-grammar + reviewed third-party only."
-why     = "busbar-llm-codec names busbar-api: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
-drain   = "delete the busbar-api dependency from busbar-llm-codec's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
-
-[[dep]]
 from    = "busbar-llm-codec"
 to      = "busbar-substrate-values"
 half    = "shipped"
@@ -1938,26 +1429,6 @@ verdict = "not-allowed"
 cite    = "ARCHITECTURE.md 1.2 manifest allow-list is busbar-contract + busbar-grammar + reviewed third-party only."
 why     = "busbar-llm-codec names busbar-substrate-values: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
 drain   = "delete the busbar-substrate-values dependency from busbar-llm-codec's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
-
-[[dep]]
-from    = "busbar-llm-codec"
-to      = "busbar-timing"
-half    = "shipped"
-count   = "1"
-verdict = "not-allowed"
-cite    = "ARCHITECTURE.md 1.2 manifest allow-list is busbar-contract + busbar-grammar + reviewed third-party only."
-why     = "busbar-llm-codec names busbar-timing: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
-drain   = "delete the busbar-timing dependency from busbar-llm-codec's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
-
-[[dep]]
-from    = "busbar-mcp"
-to      = "busbar-api"
-half    = "shipped"
-count   = "1"
-verdict = "not-allowed"
-cite    = "ARCHITECTURE.md 1.2 \"Core -> plugin. Never plugin -> core.\" / ARCHITECTURE.md 1.1 the three axes are blind to each other. The retiring 1.5.x crates fuse plane+core+transport in one name."
-why     = "busbar-mcp names busbar-api: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
-drain   = "delete the busbar-api dependency from busbar-mcp's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
 
 [[dep]]
 from    = "busbar-a2a"
@@ -1978,16 +1449,6 @@ verdict = "not-allowed"
 cite    = "ARCHITECTURE.md 1.2 \"Core -> plugin. Never plugin -> core.\" / ARCHITECTURE.md 1.1 the three axes are blind to each other. The retiring 1.5.x crates fuse plane+core+transport in one name."
 why     = "busbar-mcp names busbar-plane-mcp: declared normal in the shipped graph, 1 declaration(s) at this commit. The codec fold (#39, 5fbd891e0) moved the MCP wire dialect into the plane crate, which is where definition 16-20 puts a protocol's dialect, and the retiring engine now READS it rather than restating it. That fold landed the `[[transitional]]` half and not this one, so the edge shipped for a week with no row holding its number. The edge is permitted by the `[[transitional]]` drain row above and by nothing else; this row holds the NUMBER."
 drain   = "delete the busbar-plane-mcp dependency from busbar-mcp's Cargo.toml — which happens when busbar-mcp itself is deleted into busbar-kernel (#19), because the dialect is already where it belongs and it is the ENGINE that is still in the wrong crate."
-
-[[dep]]
-from    = "busbar-mcp"
-to      = "busbar-plugin"
-half    = "shipped"
-count   = "1"
-verdict = "not-allowed"
-cite    = "ARCHITECTURE.md 1.2 \"Core -> plugin. Never plugin -> core.\" / ARCHITECTURE.md 1.1 the three axes are blind to each other. The retiring 1.5.x crates fuse plane+core+transport in one name."
-why     = "busbar-mcp names busbar-plugin: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
-drain   = "delete the busbar-plugin dependency from busbar-mcp's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
 
 [[dep]]
 from    = "busbar-mcp"
@@ -2018,36 +1479,6 @@ verdict = "allowed"
 cite    = "DECISIONS #6/#18/#21 — the streaming plane adapter `busbar-plane-streaming` path-deps its OWN codec. #18: `voice` is one dialect inside the STREAMING plane and the codec rename (busbar-voice-codec -> busbar-streaming-codec) is byte-identical, so busbar-plane-streaming and busbar-voice-codec are one instance (`streams`) until the #19 wave renames the codec. #21: \"the codec crate REMAINS a pure path-dep of its plane adapter\". The instance seal still refuses a plane naming a DIFFERENT plane's codec."
 why     = "busbar-plane-streaming names busbar-voice-codec: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
 drain   = "none: DECISIONS #6/#21 grant this class — the codec crate is a permanent path-dep of its plane adapter. The busbar-voice-codec -> busbar-streaming-codec rename is the #19 wave's byte-identical packaging move, not a drain of this edge. What this row holds is the NUMBER."
-
-[[dep]]
-from    = "busbar-plugin"
-to      = "busbar-api"
-half    = "shipped"
-count   = "1"
-verdict = "owner-ruling-pending"
-cite    = "no ARCHITECTURE.md 1.1/ARCHITECTURE.md 3.1 row covers this pair."
-why     = "busbar-plugin names busbar-api: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
-drain   = "unknown until the ruling. If the edge is granted, this row becomes `allowed` and its class joins ARCHITECTURE_ALLOWED in xtask/src/gates/kind_isolation.rs; if it is not, the drain is deleting the busbar-api dependency from busbar-plugin."
-
-[[dep]]
-from    = "busbar-plugin-example-plane"
-to      = "busbar-plugin"
-half    = "shipped"
-count   = "1"
-verdict = "tcb"
-cite    = "ARCHITECTURE.md 1.4 \"`loader` and `abi` are TCB crates, not kinds.\" The kind:plane drop-in FIXTURE is plugin-tooling (beside busbar-plugin-sdk/busbar-plugin-loader), so naming the plugin-abi crate is inside the trusted computing base."
-why     = "busbar-plugin-example-plane names busbar-plugin: the kind:plane drop-in fixture authors a real busbar_plugin::hot::PlaneDecl, so it names the plugin-abi crate, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
-drain   = "none while the loader and the plugin tooling are outside the kind system (ARCHITECTURE.md 1.4: they are not kinds). The drain is the ruling that gives them one; until it lands this row holds the number."
-
-[[dep]]
-from    = "busbar-plugin-example-plane"
-to      = "busbar-plugin-sdk"
-half    = "shipped"
-count   = "1"
-verdict = "tcb"
-cite    = "ARCHITECTURE.md 1.4 \"`loader` and `abi` are TCB crates, not kinds.\" The fixture exports its PlaneDecl through busbar_plugin_sdk::export_plane!, a plugin-tooling-to-plugin-tooling edge inside the trusted computing base."
-why     = "busbar-plugin-example-plane names busbar-plugin-sdk: it emits its cdylib boundary symbols through busbar_plugin_sdk::export_plane!, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
-drain   = "none while the loader and the plugin tooling are outside the kind system (ARCHITECTURE.md 1.4: they are not kinds). The drain is the ruling that gives them one; until it lands this row holds the number."
 
 [[dep]]
 from    = "busbar-plugin-loader"
@@ -2090,76 +1521,6 @@ why     = "busbar-plugin-loader names busbar-hook-test-plugin: declared dev in t
 drain   = "none while #2 (OWNER-LOCKED) names this edge as the witness's step (4): deleting it deletes the `hook` kind's both-ways proof. The row holds the number, so a second declaration is still a landing that has to say why."
 
 [[dep]]
-from    = "busbar-plugin-loader"
-to      = "busbar-secret-example-plugin"
-half    = "test"
-count   = "1"
-verdict = "tcb"
-cite    = "BUSBAR-1.6.0.md #2 (OWNER-LOCKED), THE COST OF A REAL AUTH WITNESS steps (4) and (5): the both-ways witness of a kind is a path dev-dependency from crates/plugin-loader/Cargo.toml on the kind's [\"cdylib\", \"rlib\"] fixture (step 4) and a conformance test in crates/plugin-loader/src/tests/ that links the rlib and dlopens the cdylib (step 5). The precedent is the export fixture: #2 names busbar-plugin-loader -> busbar-export-example-plugin, a test edge of exactly this shape, as the enforcing witness, and the architect's K5-residue ruling (2026-09-25) applies that admission to every kind's fixture. `plugin-tooling -> secret` is a trusted-computing-base class (ARCHITECTURE.md 1.4 \"`loader` and `abi` are TCB crates, not kinds.\"), so the verdict is `tcb`."
-why     = "busbar-plugin-loader names busbar-secret-example-plugin: declared dev in the test graph so secret_conformance_tests can link the COMPILED-IN `secret` fixture (its rlib) and compare it against the same crate's DROPPED-IN cdylib, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
-drain   = "none while #2 (OWNER-LOCKED) names this edge as the witness's step (4): deleting it deletes the `secret` kind's both-ways proof. The row holds the number, so a second declaration is still a landing that has to say why."
-
-[[dep]]
-from    = "busbar-plugin-loader"
-to      = "busbar-api"
-half    = "shipped"
-count   = "1"
-verdict = "tcb"
-cite    = "ARCHITECTURE.md 1.4 \"`loader` and `abi` are TCB crates, not kinds.\" Not a kind edge; inside the trusted computing base."
-why     = "busbar-plugin-loader names busbar-api: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
-drain   = "none while the loader and the plugin tooling are outside the kind system (ARCHITECTURE.md 1.4: they are not kinds). The drain is the ruling that gives them one; until it lands this row holds the number."
-
-[[dep]]
-from    = "busbar-plugin-loader"
-to      = "busbar-plugin"
-half    = "shipped"
-count   = "1"
-verdict = "tcb"
-cite    = "ARCHITECTURE.md 1.4 \"`loader` and `abi` are TCB crates, not kinds.\" Not a kind edge; inside the trusted computing base."
-why     = "busbar-plugin-loader names busbar-plugin: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
-drain   = "none while the loader and the plugin tooling are outside the kind system (ARCHITECTURE.md 1.4: they are not kinds). The drain is the ruling that gives them one; until it lands this row holds the number."
-
-[[dep]]
-from    = "busbar-plugin-sdk"
-to      = "busbar-api"
-half    = "shipped"
-count   = "1"
-verdict = "tcb"
-cite    = "ARCHITECTURE.md 1.4 \"`loader` and `abi` are TCB crates, not kinds.\" Not a kind edge; inside the trusted computing base."
-why     = "busbar-plugin-sdk names busbar-api: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
-drain   = "none while the loader and the plugin tooling are outside the kind system (ARCHITECTURE.md 1.4: they are not kinds). The drain is the ruling that gives them one; until it lands this row holds the number."
-
-[[dep]]
-from    = "busbar-plugin-sdk"
-to      = "busbar-plugin"
-half    = "shipped"
-count   = "1"
-verdict = "tcb"
-cite    = "ARCHITECTURE.md 1.4 \"`loader` and `abi` are TCB crates, not kinds.\" Not a kind edge; inside the trusted computing base."
-why     = "busbar-plugin-sdk names busbar-plugin: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
-drain   = "none while the loader and the plugin tooling are outside the kind system (ARCHITECTURE.md 1.4: they are not kinds). The drain is the ruling that gives them one; until it lands this row holds the number."
-
-[[dep]]
-from    = "busbar-secret-example-plugin"
-to      = "busbar-plugin-sdk"
-half    = "shipped"
-count   = "1"
-verdict = "not-allowed"
-cite    = "ARCHITECTURE.md 1.2 manifest allow-list: busbar-contract (+busbar-grammar) and reviewed third-party. busbar-api / the loader are not on it."
-why     = "busbar-secret-example-plugin names busbar-plugin-sdk: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
-drain   = "delete the busbar-plugin-sdk dependency from busbar-secret-example-plugin's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
-
-[[dep]]
-from    = "busbar-store-example-plugin"
-to      = "busbar-plugin-sdk"
-half    = "shipped"
-count   = "1"
-verdict = "not-allowed"
-cite    = "ARCHITECTURE.md 1.2 manifest allow-list: busbar-contract (+busbar-grammar) and reviewed third-party. busbar-api / the loader are not on it."
-why     = "busbar-store-example-plugin names busbar-plugin-sdk: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
-drain   = "delete the busbar-plugin-sdk dependency from busbar-store-example-plugin's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
-
-[[dep]]
 from    = "busbar-substrate-values"
 to      = "busbar-contract"
 half    = "shipped"
@@ -2168,36 +1529,6 @@ verdict = "allowed"
 cite    = "ARCHITECTURE.md 1.1 — (substrate, contract) is a granted class: a substrate crate is written against the contract face, never against another kind's crate."
 why     = "busbar-substrate-values names busbar-contract: declared normal in the shipped graph, 1 declaration(s) at this commit. It is the edge this landing CREATES, and it creates it by DELETING a declaration: `breaker::{StatusClass, Disposition}` was a nine-row copy of the upstream status class declared here, and is now the contract's one table re-exported at its historical path. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
 drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
-
-[[dep]]
-from    = "busbar-substrate-values"
-to      = "busbar-api"
-half    = "shipped"
-count   = "1"
-verdict = "owner-ruling-pending"
-cite    = "ARCHITECTURE.md 1.1/ARCHITECTURE.md 3.1 name no `substrate` kind edges; busbar-substrate is one of the four crates ARCHITECTURE.md 1.1 ruled in 2026-09-08 without a stated edge set."
-why     = "busbar-substrate-values names busbar-api: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
-drain   = "unknown until the ruling. If the edge is granted, this row becomes `allowed` and its class joins ARCHITECTURE_ALLOWED in xtask/src/gates/kind_isolation.rs; if it is not, the drain is deleting the busbar-api dependency from busbar-substrate-values."
-
-[[dep]]
-from    = "busbar-substrate-values"
-to      = "busbar-plugin"
-half    = "shipped"
-count   = "1"
-verdict = "owner-ruling-pending"
-cite    = "ARCHITECTURE.md 1.1/ARCHITECTURE.md 3.1 name no `substrate` kind edges; busbar-substrate is one of the four crates ARCHITECTURE.md 1.1 ruled in 2026-09-08 without a stated edge set."
-why     = "busbar-substrate-values names busbar-plugin: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
-drain   = "unknown until the ruling. If the edge is granted, this row becomes `allowed` and its class joins ARCHITECTURE_ALLOWED in xtask/src/gates/kind_isolation.rs; if it is not, the drain is deleting the busbar-plugin dependency from busbar-substrate-values."
-
-[[dep]]
-from    = "busbar-substrate-values"
-to      = "busbar-timing"
-half    = "shipped"
-count   = "1"
-verdict = "owner-ruling-pending"
-cite    = "ARCHITECTURE.md 1.1/ARCHITECTURE.md 3.1 name no `substrate` kind edges; busbar-substrate is one of the four crates ARCHITECTURE.md 1.1 ruled in 2026-09-08 without a stated edge set."
-why     = "busbar-substrate-values names busbar-timing: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
-drain   = "unknown until the ruling. If the edge is granted, this row becomes `allowed` and its class joins ARCHITECTURE_ALLOWED in xtask/src/gates/kind_isolation.rs; if it is not, the drain is deleting the busbar-timing dependency from busbar-substrate-values."
 
 [[dep]]
 from    = "busbar-transport-tls"
@@ -2221,26 +1552,6 @@ drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an arch
 
 [[dep]]
 from    = "busbar-voice"
-to      = "busbar-api"
-half    = "shipped"
-count   = "1"
-verdict = "not-allowed"
-cite    = "ARCHITECTURE.md 1.2 \"Core -> plugin. Never plugin -> core.\" / ARCHITECTURE.md 1.1 the three axes are blind to each other. The retiring 1.5.x crates fuse plane+core+transport in one name."
-why     = "busbar-voice names busbar-api: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
-drain   = "delete the busbar-api dependency from busbar-voice's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
-
-[[dep]]
-from    = "busbar-voice"
-to      = "busbar-plugin"
-half    = "shipped"
-count   = "1"
-verdict = "not-allowed"
-cite    = "ARCHITECTURE.md 1.2 \"Core -> plugin. Never plugin -> core.\" / ARCHITECTURE.md 1.1 the three axes are blind to each other. The retiring 1.5.x crates fuse plane+core+transport in one name."
-why     = "busbar-voice names busbar-plugin: declared normal, optional in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
-drain   = "delete the busbar-plugin dependency from busbar-voice's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
-
-[[dep]]
-from    = "busbar-voice"
 to      = "busbar-voice-codec"
 half    = "shipped"
 count   = "1"
@@ -2248,16 +1559,6 @@ verdict = "not-allowed"
 cite    = "ARCHITECTURE.md 1.2 \"Core -> plugin. Never plugin -> core.\" / ARCHITECTURE.md 1.1 the three axes are blind to each other. The retiring 1.5.x crates fuse plane+core+transport in one name."
 why     = "busbar-voice names busbar-voice-codec: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
 drain   = "delete the busbar-voice-codec dependency from busbar-voice's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
-
-[[dep]]
-from    = "busbar-voice-codec"
-to      = "busbar-api"
-half    = "shipped"
-count   = "1"
-verdict = "not-allowed"
-cite    = "ARCHITECTURE.md 1.2 manifest allow-list is busbar-contract + busbar-grammar + reviewed third-party only."
-why     = "busbar-voice-codec names busbar-api: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
-drain   = "delete the busbar-api dependency from busbar-voice-codec's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
 
 [[dep]]
 from    = "busbar-voice-codec"
@@ -2340,54 +1641,14 @@ why     = "busbar-plane-llm names busbar-llm-codec: declared dev in the test gra
 drain   = "none: DECISIONS #6/#21 grant this class — the codec crate is a permanent path-dep of its plane adapter. Draining it would be an architecture change and not a landing; what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
 
 [[dep]]
-from    = "busbar-plugin-sdk"
-to      = "busbar-plugin"
-half    = "test"
-count   = "1"
-verdict = "tcb"
-cite    = "ARCHITECTURE.md 1.4 \"`loader` and `abi` are TCB crates, not kinds.\" Not a kind edge; inside the trusted computing base."
-why     = "busbar-plugin-sdk names busbar-plugin: declared dev in the test graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
-drain   = "none while the loader and the plugin tooling are outside the kind system (ARCHITECTURE.md 1.4: they are not kinds). The drain is the ruling that gives them one; until it lands this row holds the number."
-
-[[dep]]
-from    = "busbar-plugin-sdk"
-to      = "busbar-store-memory"
-half    = "test"
-count   = "1"
-verdict = "owner-ruling-pending"
-cite    = "no ARCHITECTURE.md 1.1/ARCHITECTURE.md 3.1 row covers this pair."
-why     = "busbar-plugin-sdk names busbar-store-memory: declared dev in the test graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
-drain   = "unknown until the ruling. If the edge is granted, this row becomes `allowed` and its class joins ARCHITECTURE_ALLOWED in xtask/src/gates/kind_isolation.rs; if it is not, the drain is deleting the busbar-store-memory dependency from busbar-plugin-sdk."
-
-[[dep]]
-from    = "busbar-api"
-to      = "busbar-contract"
-half    = "shipped"
-count   = "1"
-verdict = "allowed"
-cite    = "ARCHITECTURE.md 1.2 manifest allow-list — busbar-contract is the face every kind is written against. DECISIONS #83 (contract = SHAPES, ledger = SEMANTICS) and #84 (nothing on the plugin path may link a crate holding semantics) are what pointed this edge here."
-why     = "busbar-api names busbar-contract: declared normal in the shipped graph, 1 declaration(s) at this commit. THIS ROW REPLACES `busbar-api -> busbar-kernel-ledger`, which was `not-allowed` and which this commit drained: every plugin names busbar-api, so that edge put THE MONEY ONE-BOOK in every third-party plugin's compile closure and a ledger type change forced every third-party plugin to rebuild (#84, owner-locked 2026-09-22). The re-export shim now reaches the record SHAPES in the contract instead, and the book's semantics are not nameable from the plugin path at all. The count is TODAY'S MEASUREMENT, exact in both directions."
-drain   = "none while busbar-api stands: ARCHITECTURE.md grants this class. The edge dies with the crate — #35/W5.b retires busbar-api and its re-exports with it, at which point this row is struck as dead."
-
-[[dep]]
 from    = "busbar-oauth2"
 to      = "busbar-kernel"
 half    = "shipped"
 count   = "1"
-verdict = "not-allowed"
-cite    = "ARCHITECTURE.md 1.1 / 3.1 — no clause grants this pair. Measured debt surfaced by the W4.a/W4.b busbar-core -> busbar-kernel and busbar-substrate -> busbar-substrate-values absorption (1.6.0): the edge is real and shipped, and this row holds the number rather than passing it in silence."
+verdict = "allowed"
+cite    = "BUSBAR-1.6.0.md:3780 (R2/#37) and ARCHITECT ruling: cleanliness crates are compiled-in with a one-way dependency on the kernel; the root links them (ARCHITECTURE_ALLOWED cleanliness -> kernel). busbar-oauth2 is a cleanliness crate and the kernel is the one tier it depends on."
 why     = "busbar-oauth2 names busbar-kernel: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
-drain   = "delete the busbar-kernel dependency from busbar-oauth2's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
-
-[[dep]]
-from    = "busbar-kernel"
-to      = "busbar-api"
-half    = "shipped"
-count   = "1"
-verdict = "not-allowed"
-cite    = "ARCHITECTURE.md 1.1 / 3.1 — no clause grants this pair. Measured debt surfaced by the W4.a/W4.b busbar-core -> busbar-kernel and busbar-substrate -> busbar-substrate-values absorption (1.6.0): the edge is real and shipped, and this row holds the number rather than passing it in silence."
-why     = "busbar-kernel names busbar-api: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
-drain   = "delete the busbar-api dependency from busbar-kernel's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
+drain   = "none: the architecture grants cleanliness -> kernel. What this row holds is the NUMBER; the dependency stays one-way, so the kernel naming busbar-oauth2 back would be an ungranted class."
 
 [[dep]]
 from    = "busbar-kernel"
@@ -2441,16 +1702,6 @@ drain   = "none: ARCHITECTURE.md grants the kernel -> kernel class. What this ro
 
 [[dep]]
 from    = "busbar-kernel"
-to      = "busbar-plugin"
-half    = "shipped"
-count   = "1"
-verdict = "not-allowed"
-cite    = "ARCHITECTURE.md 1.1 / 3.1 — no clause grants this pair. Measured debt surfaced by the W4.a/W4.b busbar-core -> busbar-kernel and busbar-substrate -> busbar-substrate-values absorption (1.6.0): the edge is real and shipped, and this row holds the number rather than passing it in silence."
-why     = "busbar-kernel names busbar-plugin: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
-drain   = "delete the busbar-plugin dependency from busbar-kernel's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
-
-[[dep]]
-from    = "busbar-kernel"
 to      = "busbar-plugin-loader"
 half    = "shipped"
 count   = "1"
@@ -2478,16 +1729,6 @@ verdict = "not-allowed"
 cite    = "ARCHITECTURE.md 1.1 / 3.1 — no clause grants this pair. Measured debt surfaced by the W4.a/W4.b busbar-core -> busbar-kernel and busbar-substrate -> busbar-substrate-values absorption (1.6.0): the edge is real and shipped, and this row holds the number rather than passing it in silence."
 why     = "busbar-kernel names busbar-substrate-values: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
 drain   = "delete the busbar-substrate-values dependency from busbar-kernel's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
-
-[[dep]]
-from    = "busbar-kernel"
-to      = "busbar-timing"
-half    = "shipped"
-count   = "1"
-verdict = "not-allowed"
-cite    = "ARCHITECTURE.md 1.1 / 3.1 — no clause grants this pair. Measured debt surfaced by the W4.a/W4.b busbar-core -> busbar-kernel and busbar-substrate -> busbar-substrate-values absorption (1.6.0): the edge is real and shipped, and this row holds the number rather than passing it in silence."
-why     = "busbar-kernel names busbar-timing: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
-drain   = "delete the busbar-timing dependency from busbar-kernel's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
 
 [[dep]]
 from    = "busbar-a2a"
@@ -2590,18 +1831,17 @@ why     = "busbar-voice names busbar-substrate-values: declared normal in the sh
 drain   = "delete the busbar-substrate-values dependency from busbar-voice's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
 
 # busbar-core-connsec is the core-side connection-security seam carved out of busbar-kernel
-# (DECISIONS #40). It is `core` kind (its name resolves through the busbar-core- prefix; the
-# `connsec` remainder is the ConnectionSecurity TYPE it builds, not a kind word, so it needs no
-# ACCEPTED_NAMES waiver -- the one it used to carry under its old name `busbar-core-connsec` was
-# deleted with that name by OWNER RULING R2, #37 "no busbar-core-<kind> ever"), and it reaches only
-# the core kind's neutral spine -- contract and kernel, both granted PENDING_EDGES classes.
+# (DECISIONS #40). It is `cleanliness` kind: BUSBAR-1.6.0.md:3780 (R2/#37) seats it in the same
+# tier as busbar-core-admin and busbar-oauth2 -- compiled in, one-way dependency on the kernel, off
+# the hot path, never a plugin -- and the kind table names it exactly. It reaches the contract and
+# the kernel, both granted cleanliness classes (ARCHITECTURE_ALLOWED).
 [[dep]]
 from    = "busbar-core-connsec"
 to      = "busbar-contract"
 half    = "shipped"
 count   = "1"
 verdict = "allowed"
-cite    = "ARCHITECTURE.md 1.1 — core -> contract is a granted PENDING_EDGES class (the core kind's neutral spine names the ABI contract directly; here the opaque busbar_contract::transport::wire::ConnectionSecurity wrap, DECISIONS #40)."
+cite    = "BUSBAR-1.6.0.md:3780 (R2/#37) and ARCHITECT ruling: cleanliness crates are compiled-in with a one-way dependency on the kernel; the root links them (ARCHITECTURE_ALLOWED cleanliness -> contract). Here the opaque busbar_contract::transport::wire::ConnectionSecurity wrap, DECISIONS #40."
 why     = "busbar-core-connsec names busbar-contract: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
 drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
 
@@ -2611,7 +1851,7 @@ to      = "busbar-kernel"
 half    = "shipped"
 count   = "1"
 verdict = "allowed"
-cite    = "ARCHITECTURE.md 1.1 — core -> kernel is a granted PENDING_EDGES class (the core kind's neutral spine may name the loop; here it reads busbar_kernel's TlsCfg config shape and resolves key material through its SecretResolver seam, DECISIONS #40)."
+cite    = "BUSBAR-1.6.0.md:3780 (R2/#37) and ARCHITECT ruling: cleanliness crates are compiled-in with a one-way dependency on the kernel; the root links them (ARCHITECTURE_ALLOWED cleanliness -> kernel). Here it reads busbar_kernel's TlsCfg config shape and resolves key material through its SecretResolver seam, DECISIONS #40."
 why     = "busbar-core-connsec names busbar-kernel: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
 drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
 
@@ -2620,20 +1860,20 @@ from    = "busbar"
 to      = "busbar-core-connsec"
 half    = "shipped"
 count   = "1"
-verdict = "not-allowed"
-cite    = "ARCHITECTURE.md 1.1 / 3.1 — no clause grants root -> core. The composition root names every axis, but the granted root classes are enumerated and `core` is not among them: the edge is real and shipped (the binary composes the connection-security seam at boot), and this row holds the number rather than passing it in silence."
+verdict = "allowed"
+cite    = "BUSBAR-1.6.0.md:3780 (R2/#37) and ARCHITECT ruling: cleanliness crates are compiled-in with a one-way dependency on the kernel; the root links them (ARCHITECTURE_ALLOWED root -> cleanliness). The binary composes the connection-security seam at boot, which is the root linking a compiled-in cleanliness crate."
 why     = "busbar names busbar-core-connsec: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
-drain   = "delete the busbar-core-connsec dependency from busbar's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
+drain   = "none: the architecture grants root -> cleanliness. What this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
 
 [[dep]]
 from    = "busbar-oauth2"
 to      = "busbar-kernel"
 half    = "test"
 count   = "1"
-verdict = "not-allowed"
-cite    = "ARCHITECTURE.md 1.1 / 3.1 — no clause grants this pair. Measured debt surfaced by the W4.a/W4.b busbar-core -> busbar-kernel and busbar-substrate -> busbar-substrate-values absorption (1.6.0): the edge is real and shipped, and this row holds the number rather than passing it in silence."
+verdict = "allowed"
+cite    = "BUSBAR-1.6.0.md:3780 (R2/#37) and ARCHITECT ruling: cleanliness crates are compiled-in with a one-way dependency on the kernel; the root links them (ARCHITECTURE_ALLOWED cleanliness -> kernel). busbar-oauth2 is a cleanliness crate and the kernel is the one tier it depends on."
 why     = "busbar-oauth2 names busbar-kernel: declared dev in the test graph (dev-dependencies), 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
-drain   = "delete the busbar-kernel dependency from busbar-oauth2's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
+drain   = "none: the architecture grants cleanliness -> kernel. What this row holds is the NUMBER; the dependency stays one-way, so the kernel naming busbar-oauth2 back would be an ungranted class."
 
 [[dep]]
 from    = "busbar-llm-codec"
@@ -2715,36 +1955,6 @@ cite    = "ARCHITECTURE.md 1.1 / 3.1 — the composition root is the one thing t
 why     = "busbar names busbar-kernel: declared dev in the test graph (dev-dependencies), 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
 drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
 
-[[question]]
-from     = "busbar-plugin"
-to       = "busbar-api"
-half     = "shipped"
-question = "OWNER RULING WANTED. busbar-plugin -> busbar-api matches no clause the audit of all 220 workspace-internal edges could find, in either direction. Is it granted? If it is, name the clause and this row becomes `allowed`; if it is not, name the landing that deletes it."
-
-[[question]]
-from     = "busbar-substrate-values"
-to       = "busbar-api"
-half     = "shipped"
-question = "OWNER RULING WANTED. The architecture gives kind substrate no edge set at all: 1.1's ruling added crates with ceilings and not with an edge set, and 3.1's crate graph does not list busbar-substrate-values. Is this edge granted, and under which clause? A kind the architecture does not name cannot be checked against it, so the edge is neither allowed nor refused today — and it is written down as unruled rather than passing in silence."
-
-[[question]]
-from     = "busbar-substrate-values"
-to       = "busbar-plugin"
-half     = "shipped"
-question = "OWNER RULING WANTED. The architecture gives kind substrate no edge set at all: 1.1's ruling added crates with ceilings and not with an edge set, and 3.1's crate graph does not list busbar-substrate-values. Is this edge granted, and under which clause? A kind the architecture does not name cannot be checked against it, so the edge is neither allowed nor refused today — and it is written down as unruled rather than passing in silence."
-
-[[question]]
-from     = "busbar-substrate-values"
-to       = "busbar-timing"
-half     = "shipped"
-question = "OWNER RULING WANTED. The architecture gives kind substrate no edge set at all: 1.1's ruling added crates with ceilings and not with an edge set, and 3.1's crate graph does not list busbar-substrate-values. Is this edge granted, and under which clause? A kind the architecture does not name cannot be checked against it, so the edge is neither allowed nor refused today — and it is written down as unruled rather than passing in silence."
-
-[[question]]
-from     = "busbar-plugin-sdk"
-to       = "busbar-store-memory"
-half     = "test"
-question = "OWNER RULING WANTED. busbar-plugin-sdk -> busbar-store-memory matches no clause the audit of all 220 workspace-internal edges could find, in either direction. Is it granted? If it is, name the clause and this row becomes `allowed`; if it is not, name the landing that deletes it."
-
 # ------------------------------------------------------------------------------------------------
 # [[face]] — A CRATE THAT IMPLEMENTS ANOTHER KIND'S ENTRY FACE, AT ITS EXACT COUNT
 # ------------------------------------------------------------------------------------------------
@@ -2776,10 +1986,10 @@ drain = "finish the a2a drain and delete busbar-a2a; the row goes with the crate
 
 [[face]]
 crate = "busbar-plugin-loader"
-face = "Store"
+face = "Transport"
 count = "1"
 cite = "ARCHITECTURE.md 1.4 — the loader is part of the trusted base and is NOT a kind. Bridging a plugin's face across the ABI is what a loader does; it is the one crate whose job is to be on both sides."
-why = "the loader implements the store face to hand a dynamically loaded store plugin to the kernel. One implementation, in shipped source."
+why = "the loader implements the transport face (transport_adapter.rs `WireTransport`) to hand a dynamically loaded transport plugin to the kernel. One implementation, in shipped source. Re-described against the tree: the store bridge no longer implements a `Store` face (its adapters implement the record/slice/verb store traits), and the transport bridge is the one entry face the loader implements today."
 drain = "none while the loader is outside the kind system. The drain is the ruling that gives the trusted base a kind of its own; until then this row holds the number, so a SECOND face appearing in the loader is a landing that has to say why."
 
 [[face]]
@@ -3061,16 +2271,6 @@ why     = "busbar names busbar-export-file: declared normal in the shipped graph
 drain   = "none while the composition root links the built-in sinks (#3 owner ruling 2026-09-18). The row holds the number, so a second declaration is still a landing that has to say why."
 
 [[dep]]
-from    = "busbar-export-file"
-to      = "busbar-plugin-sdk"
-half    = "shipped"
-count   = "1"
-verdict = "not-allowed"
-cite    = "ARCHITECT 2026-09-25, K9b follow-ups (decisions.md, L5 intake): \"L5 kind-isolation rows to add at regen: [[dep]] busbar->busbar-export-file, busbar-export-file->busbar-plugin-sdk; [[cell]] busbar-export-file x plane=2, x plugin-tooling=10. Same shape for busbar-export-webhook/-prometheus/-otlp.\"; owner ruling 2026-09-18 in BUSBAR-1.6.0.md #3: the four built-in sinks become real both-ways export plugins (item 141). `export -> plugin-tooling` is in neither ARCHITECTURE_ALLOWED nor ARCHITECTURE_TCB, so the verdict is the one the architecture implies; the row records the edge the ruling orders, it does not grant a class."
-why     = "busbar-export-file names busbar-plugin-sdk: declared normal in the shipped graph — the sink is written against the plugin SDK, its one busbar dependency (#84), 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
-drain   = "folds into busbar-contract with the #84 merge (plugin-sdk -> contract): the edge becomes export -> contract, which #40(a) grants as the rule."
-
-[[dep]]
 from    = "busbar"
 to      = "busbar-export-webhook"
 half    = "shipped"
@@ -3079,16 +2279,6 @@ verdict = "allowed"
 cite    = "ARCHITECT 2026-09-25, K9b follow-ups (decisions.md, L5 intake): \"L5 kind-isolation rows to add at regen: [[dep]] busbar->busbar-export-file, busbar-export-file->busbar-plugin-sdk; [[cell]] busbar-export-file x plane=2, x plugin-tooling=10. Same shape for busbar-export-webhook/-prometheus/-otlp.\"; owner ruling 2026-09-18 in BUSBAR-1.6.0.md #3: the four built-in sinks become real both-ways export plugins (item 141). `root -> export` is a granted class: roster def 1, the composition root is 'the only place that names which crates exist and wires them at boot' (ARCHITECT 2026-09-25 \"K5d residue\", ARCHITECTURE_ALLOWED root -> export)."
 why     = "busbar names busbar-export-webhook: declared normal in the shipped graph, optional (feature export-webhook), so the composition root links the webhook sink as a row of the export axis, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
 drain   = "none while the composition root links the built-in sinks (#3 owner ruling 2026-09-18). The row holds the number, so a second declaration is still a landing that has to say why."
-
-[[dep]]
-from    = "busbar-export-webhook"
-to      = "busbar-plugin-sdk"
-half    = "shipped"
-count   = "1"
-verdict = "not-allowed"
-cite    = "ARCHITECT 2026-09-25, K9b follow-ups (decisions.md, L5 intake): \"L5 kind-isolation rows to add at regen: [[dep]] busbar->busbar-export-file, busbar-export-file->busbar-plugin-sdk; [[cell]] busbar-export-file x plane=2, x plugin-tooling=10. Same shape for busbar-export-webhook/-prometheus/-otlp.\"; owner ruling 2026-09-18 in BUSBAR-1.6.0.md #3: the four built-in sinks become real both-ways export plugins (item 141). `export -> plugin-tooling` is in neither ARCHITECTURE_ALLOWED nor ARCHITECTURE_TCB, so the verdict is the one the architecture implies; the row records the edge the ruling orders, it does not grant a class."
-why     = "busbar-export-webhook names busbar-plugin-sdk: declared normal in the shipped graph — the sink is written against the plugin SDK, its one busbar dependency (#84), 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
-drain   = "folds into busbar-contract with the #84 merge (plugin-sdk -> contract): the edge becomes export -> contract, which #40(a) grants as the rule."
 
 [[dep]]
 from    = "busbar"
@@ -3119,16 +2309,6 @@ verdict = "allowed"
 cite    = "ARCHITECT 2026-09-25 \"K5d residue\" (decisions.md): roster def 1 — the composition root is 'the only place that names which crates exist and wires them at boot', so root -> every plugin-kind crate it links is a granted class (ARCHITECTURE_ALLOWED root -> store). K5d (b17f0a2c1, 0ade205df) moved the default store onto the root's linked tables ([package.metadata.busbar.linked] store-memory)."
 why     = "busbar names busbar-store-memory: declared normal in the shipped graph, so the composition root links the build's default store as a row of the store axis, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
 drain   = "none: ARCHITECTURE.md grants this class (roster def 1). What this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
-
-[[dep]]
-from    = "busbar-export-prometheus"
-to      = "busbar-plugin-sdk"
-half    = "shipped"
-count   = "1"
-verdict = "not-allowed"
-cite    = "ARCHITECT 2026-09-25, K9b follow-ups (decisions.md, L5 intake): \"L5 kind-isolation rows to add at regen: [[dep]] busbar->busbar-export-file, busbar-export-file->busbar-plugin-sdk; [[cell]] busbar-export-file x plane=2, x plugin-tooling=10. Same shape for busbar-export-webhook/-prometheus/-otlp.\"; ARCHITECT 2026-09-25, K9d L5 rows (decisions.md, L5 intake): \"busbar->busbar-export-prometheus; kernel/core-admin->export-prometheus (test edges); matrix cells for the new crate.\"; owner ruling 2026-09-18 in BUSBAR-1.6.0.md #3: the four built-in sinks become real both-ways export plugins (item 141). `export -> plugin-tooling` is in neither ARCHITECTURE_ALLOWED nor ARCHITECTURE_TCB, so the verdict is the one the architecture implies; the row records the edge the ruling orders, it does not grant a class."
-why     = "busbar-export-prometheus names busbar-plugin-sdk: declared normal in the shipped graph — the sink is written against the plugin SDK, its one busbar dependency (#84), 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
-drain   = "folds into busbar-contract with the #84 merge (plugin-sdk -> contract): the edge becomes export -> contract, which #40(a) grants as the rule."
 
 [[dep]]
 from    = "busbar-kernel"
@@ -3214,11 +2394,6 @@ kind = "secret"
 count = "10"
 
 [[instance]]
-crate = "busbar-api"
-kind = "secret"
-count = "4"
-
-[[instance]]
 crate = "busbar-contract"
 kind = "secret"
 count = "6"
@@ -3289,11 +2464,6 @@ kind = "secret"
 count = "5"
 
 [[instance]]
-crate = "busbar-plugin"
-kind = "secret"
-count = "5"
-
-[[instance]]
 crate = "busbar-plugin-loader"
 kind = "export"
 count = "1"
@@ -3302,3 +2472,13 @@ count = "1"
 crate = "busbar-plugin-loader"
 kind = "secret"
 count = "4"
+
+# THE ONE REDIRECT: busbar's own crates, as a pulled plugin repo names them. A default plugin lives in
+# its own repo and names busbar-plugin-sdk by git at its `.busbar-ref` rev; the workspace root's
+# `[patch]` resolves that name to THIS tree's crates/plugin-sdk, so the binary links ONE SDK (and
+# through it one busbar-plugin and one busbar-contract), and the census, the edge ledger and the
+# matrix read the same crate the build compiles.
+[[patch]]
+file = "Cargo.toml"
+entry = "patch.'https://github.com/GetBusbar/busbar'"
+reason = "ARCHITECT EXT-PILOT design (owner rulings 2026-09-25: one repo per plugin, store-mysql layout; the default build pulls default plugins at a PINNED version) item 2: the workspace root adds [patch.'https://github.com/GetBusbar/busbar'] for the busbar crates a pulled plugin names (busbar-plugin-sdk for busbar-export-file) -> local path, so ONE contract copy links. The patch substitutes this tree's own crate for the same crate at an older rev; it never substitutes a different crate."

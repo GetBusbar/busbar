@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Loading a **TRANSPORT** over the HOT-tier ABI ([`busbar_plugin::hot::transport`]) — the
+//! Loading a **TRANSPORT** over the HOT-tier ABI ([`busbar_contract::abi::hot::transport`]) — the
 //! transport analogue of [`crate::plane`] (#3, OWNER-LOCKED: transport is one of the seven kinds, and
 //! a kind is swappable, compiled in OR dropped in over the ABI; #30: transport rides the HOT lane).
 //!
@@ -38,15 +38,15 @@
 //! of the image. Build-time crossings (`init` and the state's `free`) run confined, as a plane's do.
 
 use crate::stage;
-use busbar_contract::transport::TransportSettings;
-use busbar_plugin::hot::decl::{DeclStr, OpaqueHandle};
-use busbar_plugin::hot::transport::{
+use busbar_contract::abi::hot::decl::{DeclStr, OpaqueHandle};
+use busbar_contract::abi::hot::transport::{
     RawWireOutcome, TransportDecl, WireConfig, WireConnectFn, WireInitFn, WireListenFn, WireLower,
     WireOutcome, WirePollAcceptFn, WirePollCloseFn, WirePollFlushFn, WirePollReadFn,
     WirePollWriteFn, WireSettings, WireWaker, NO_WAKER, TRANSPORT_DECL_MINOR,
 };
-use busbar_plugin::hot::TransportDeclFn;
-use busbar_plugin::{check_preamble, AbiPreamble};
+use busbar_contract::abi::hot::TransportDeclFn;
+use busbar_contract::abi::{check_preamble, AbiPreamble};
+use busbar_contract::transport::TransportSettings;
 use core::mem::MaybeUninit;
 use futures::task::AtomicWaker;
 use libloading::Library;
@@ -72,7 +72,7 @@ pub type WirePoll<T> = Poll<Result<T, WireOutcome>>;
 /// THE HOST'S WAKER HANDLE, handed to every transport's `init`: one function, [`host_wake`].
 pub static HOST_WAKER: WireWaker = WireWaker {
     size: core::mem::size_of::<WireWaker>() as u32,
-    version: busbar_plugin::ABI_MINOR,
+    version: busbar_contract::abi::ABI_MINOR,
     wake: Some(host_wake),
 };
 
@@ -265,36 +265,71 @@ impl DynTransport {
     }
 
     fn slot_init(&self) -> Option<WireInitFn> {
-        busbar_plugin::read_sized_field!(self.decl, self.honoured_size, TransportDecl, init)
+        busbar_contract::abi::read_sized_field!(self.decl, self.honoured_size, TransportDecl, init)
             .flatten()
     }
     fn slot_listen(&self) -> Option<WireListenFn> {
-        busbar_plugin::read_sized_field!(self.decl, self.honoured_size, TransportDecl, listen)
-            .flatten()
+        busbar_contract::abi::read_sized_field!(
+            self.decl,
+            self.honoured_size,
+            TransportDecl,
+            listen
+        )
+        .flatten()
     }
     fn slot_connect(&self) -> Option<WireConnectFn> {
-        busbar_plugin::read_sized_field!(self.decl, self.honoured_size, TransportDecl, connect)
-            .flatten()
+        busbar_contract::abi::read_sized_field!(
+            self.decl,
+            self.honoured_size,
+            TransportDecl,
+            connect
+        )
+        .flatten()
     }
     fn slot_poll_accept(&self) -> Option<WirePollAcceptFn> {
-        busbar_plugin::read_sized_field!(self.decl, self.honoured_size, TransportDecl, poll_accept)
-            .flatten()
+        busbar_contract::abi::read_sized_field!(
+            self.decl,
+            self.honoured_size,
+            TransportDecl,
+            poll_accept
+        )
+        .flatten()
     }
     fn slot_poll_read(&self) -> Option<WirePollReadFn> {
-        busbar_plugin::read_sized_field!(self.decl, self.honoured_size, TransportDecl, poll_read)
-            .flatten()
+        busbar_contract::abi::read_sized_field!(
+            self.decl,
+            self.honoured_size,
+            TransportDecl,
+            poll_read
+        )
+        .flatten()
     }
     fn slot_poll_write(&self) -> Option<WirePollWriteFn> {
-        busbar_plugin::read_sized_field!(self.decl, self.honoured_size, TransportDecl, poll_write)
-            .flatten()
+        busbar_contract::abi::read_sized_field!(
+            self.decl,
+            self.honoured_size,
+            TransportDecl,
+            poll_write
+        )
+        .flatten()
     }
     fn slot_poll_flush(&self) -> Option<WirePollFlushFn> {
-        busbar_plugin::read_sized_field!(self.decl, self.honoured_size, TransportDecl, poll_flush)
-            .flatten()
+        busbar_contract::abi::read_sized_field!(
+            self.decl,
+            self.honoured_size,
+            TransportDecl,
+            poll_flush
+        )
+        .flatten()
     }
     fn slot_poll_close(&self) -> Option<WirePollCloseFn> {
-        busbar_plugin::read_sized_field!(self.decl, self.honoured_size, TransportDecl, poll_close)
-            .flatten()
+        busbar_contract::abi::read_sized_field!(
+            self.decl,
+            self.honoured_size,
+            TransportDecl,
+            poll_close
+        )
+        .flatten()
     }
 
     /// BUILD the transport over `lower` (the built layer under it, `None` = it opens its own socket)
@@ -344,7 +379,7 @@ pub struct BuiltTransport<'t> {
 }
 
 // SAFETY: the state is the transport's own, and the HOT-lane call discipline
-// (`busbar_plugin::hot::transport`) has the host poll the slots from its request threads — from any
+// (`busbar_contract::abi::hot::transport`) has the host poll the slots from its request threads — from any
 // thread, several at once — so a transport synchronises its own built state. The host never reads
 // through the state pointer; it only hands it back to the slots and, once, to `free`.
 unsafe impl Send for BuiltTransport<'_> {}
@@ -583,7 +618,12 @@ pub fn load_transport(lib_path: &Path) -> Result<DynTransport, String> {
     let display = lib_path.display().to_string();
     let lib = crate::dlopen_on_worker(lib_path.as_os_str())
         .map_err(|e| format!("failed to load transport '{display}': {e}"))?;
-    wire_up_transport(lib, display, busbar_plugin::cold::kind::TRANSPORT, None)
+    wire_up_transport(
+        lib,
+        display,
+        busbar_contract::abi::cold::kind::TRANSPORT,
+        None,
+    )
 }
 
 /// Admit a transport LINKED into this binary through exactly the admission a dropped-in one gets,
@@ -607,18 +647,20 @@ fn wire_up_transport(
     backing: Option<stage::Staged>,
 ) -> Result<DynTransport, String> {
     let handshake = {
-        let f = unsafe { lib.get::<busbar_plugin::cold::AbiFn>(busbar_plugin::cold::symbol::ABI) }
-            .map_err(|_| format!("'{display}' is not a busbar plugin (no busbar_abi symbol)"))?;
+        let f = unsafe {
+            lib.get::<busbar_contract::abi::cold::AbiFn>(busbar_contract::abi::cold::symbol::ABI)
+        }
+        .map_err(|_| format!("'{display}' is not a busbar plugin (no busbar_abi symbol)"))?;
         crate::ffi_guard_confined(&display, "abi", || unsafe { (*f)() })?
     };
-    if handshake != busbar_plugin::cold::TRANSPORT_VERSION {
+    if handshake != busbar_contract::abi::cold::TRANSPORT_VERSION {
         return Err(format!(
             "transport '{display}' targets transport ABI v{handshake}, engine speaks v{}",
-            busbar_plugin::cold::TRANSPORT_VERSION
+            busbar_contract::abi::cold::TRANSPORT_VERSION
         ));
     }
     let exported_kind = crate::read_plugin_kind(&lib, &display)?;
-    if exported_kind != busbar_plugin::cold::kind::TRANSPORT {
+    if exported_kind != busbar_contract::abi::cold::kind::TRANSPORT {
         return Err(format!(
             "transport '{display}' exports kind '{exported_kind}', not 'transport'"
         ));
@@ -630,10 +672,10 @@ fn wire_up_transport(
         ));
     }
     let decl = {
-        let f = unsafe { lib.get::<TransportDeclFn>(busbar_plugin::hot::symbol::TRANSPORT_DECL) }
-            .map_err(|_| {
-            format!("transport '{display}' missing busbar_transport_decl symbol")
-        })?;
+        let f = unsafe {
+            lib.get::<TransportDeclFn>(busbar_contract::abi::hot::symbol::TRANSPORT_DECL)
+        }
+        .map_err(|_| format!("transport '{display}' missing busbar_transport_decl symbol"))?;
         crate::ffi_guard_confined(&display, "transport_decl", || unsafe { (*f)() })?
     };
     assemble(decl, display, Some(lib), backing)
@@ -725,16 +767,18 @@ fn assemble(
     }
     let field = |what: &str| format!("transport '{display}' decl does not reach its `{what}`");
     let key = decl_str(
-        busbar_plugin::read_sized_field!(decl, size, TransportDecl, key)
+        busbar_contract::abi::read_sized_field!(decl, size, TransportDecl, key)
             .ok_or_else(|| field("key"))?,
         &display,
     )?
     .filter(|k| !k.is_empty())
     .ok_or_else(|| format!("transport '{display}' declares no key"))?;
-    let list_ptr = busbar_plugin::read_sized_field!(decl, size, TransportDecl, composes_over_ptr)
-        .ok_or_else(|| field("composes_over_ptr"))?;
-    let list_len = busbar_plugin::read_sized_field!(decl, size, TransportDecl, composes_over_len)
-        .ok_or_else(|| field("composes_over_len"))?;
+    let list_ptr =
+        busbar_contract::abi::read_sized_field!(decl, size, TransportDecl, composes_over_ptr)
+            .ok_or_else(|| field("composes_over_ptr"))?;
+    let list_len =
+        busbar_contract::abi::read_sized_field!(decl, size, TransportDecl, composes_over_len)
+            .ok_or_else(|| field("composes_over_len"))?;
     if list_len > MAX_COMPOSES_OVER || (list_len > 0 && list_ptr.is_null()) {
         return Err(format!(
             "transport '{display}' declares {list_len} composes-over entries it cannot back \
@@ -750,7 +794,7 @@ fn assemble(
                 .ok_or_else(|| format!("transport '{display}' states a null composes-over entry"))
         })
         .collect::<Result<Vec<_>, _>>()?;
-    let session = match busbar_plugin::read_sized_field!(decl, size, TransportDecl, session)
+    let session = match busbar_contract::abi::read_sized_field!(decl, size, TransportDecl, session)
         .ok_or_else(|| field("session"))?
     {
         0 => false,

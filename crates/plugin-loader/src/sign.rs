@@ -65,7 +65,7 @@ pub const FIRST_PARTY_PUBLISHER: &str = "busbar";
 /// the cdylib exports and which engine subsystem consumes it; discovery/trust/validation are shared.
 /// `plane` is the SIXTH kind (1.6.0 S4): a protocol plane delivered as a `cdylib`, sharing this exact
 /// discovery/trust/validation pipeline but driven over the HOT-tier `#[repr(C)]` `PlaneDecl` vtable
-/// (`busbar_plugin::hot`) rather than the five cold kinds' six-symbol JSON `call` wire. Its
+/// (`busbar_contract::abi::hot`) rather than the five cold kinds' six-symbol JSON `call` wire. Its
 /// `abi_version` axis is the airlock minor; this crate's own `supported_abi("plane")` gates it.
 /// `transport` is the SEVENTH (#3, OWNER-LOCKED: a kind is swappable, compiled in OR dropped in): the
 /// second HOT kind (#30), driven over the `#[repr(C)]` `TransportDecl` the same way.
@@ -193,7 +193,7 @@ pub struct Manifest {
 
 /// The declaration shapes a manifest's `declares` section carries, named here so a packer or a
 /// host reaches them beside [`Manifest`].
-pub use busbar_plugin::cold::observe::{DiagnosticDecl, SeriesDecl};
+pub use busbar_contract::abi::cold::observe::{DiagnosticDecl, SeriesDecl};
 
 /// A manifest's `declares` section — the statements a plugin makes ABOUT ITSELF that the host
 /// grants or refuses at open, never trusts as-is (the export ABI's minor, `EXPORT_ABI_MINOR`).
@@ -201,13 +201,13 @@ pub use busbar_plugin::cold::observe::{DiagnosticDecl, SeriesDecl};
 #[serde(deny_unknown_fields, default)]
 pub struct Declares {
     /// The metric series the plugin emits (S1, the first-party metric namespace): granted to a
-    /// first-party plugin only — see [`busbar_plugin::cold::observe::SeriesDecl`].
+    /// first-party plugin only — see [`busbar_contract::abi::cold::observe::SeriesDecl`].
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub metrics: Vec<busbar_plugin::cold::observe::SeriesDecl>,
+    pub metrics: Vec<busbar_contract::abi::cold::observe::SeriesDecl>,
     /// The `BUSBAR-NNNN` diagnostics the plugin raises: registered into the host's catalogue
-    /// for a first-party plugin — see [`busbar_plugin::cold::observe::DiagnosticDecl`].
+    /// for a first-party plugin — see [`busbar_contract::abi::cold::observe::DiagnosticDecl`].
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub diagnostics: Vec<busbar_plugin::cold::observe::DiagnosticDecl>,
+    pub diagnostics: Vec<busbar_contract::abi::cold::observe::DiagnosticDecl>,
     /// The SETTINGS KEYS that name a destination the host opens for the plugin (S4, the
     /// destination handle): the host resolves each against the operator's settings at open, and
     /// the plugin's host ops name the key, never a path.

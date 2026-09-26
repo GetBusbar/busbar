@@ -193,19 +193,19 @@ pub fn table(a: &Addresses) -> Vec<ChokeRow> {
         ChokeRow {
             id: "B-plugin-export".into(),
             tag: "EXPORT-BYPASS".into(),
-            owner: "crates/plugin-sdk/src/boundary.rs (via the export_*_plugin! macro)".into(),
-            class_test: "crates/plugin-sdk/tests/boundary_class.rs::null_out_pointer_never_leaks".into(),
+            owner: "crates/busbar-contract/src/abi/sdk/boundary.rs (via the export_*_plugin! macro)".into(),
+            class_test: "crates/busbar-contract/tests/boundary_class.rs::null_out_pointer_never_leaks".into(),
             remedy: "define exports via export_*_plugin!, never by hand".into(),
             rules: vec![
                 BanRule::new(
                     r"#\[(unsafe\()?no_mangle",
                     "hand-rolled #[no_mangle] export",
-                    &["crates/plugin-sdk/src/lib.rs".into()],
+                    &["crates/busbar-contract/src/abi/sdk/mod.rs".into()],
                 ),
                 BanRule::new(
                     r"#\[(unsafe\()?export_name",
                     "hand-rolled #[export_name] export",
-                    &["crates/plugin-sdk/src/lib.rs".into()],
+                    &["crates/busbar-contract/src/abi/sdk/mod.rs".into()],
                 ),
             ],
             why: "an unwind or a written-then-failed out-param crossing the C ABI is UB, so no export may skip the wrapper".into(),

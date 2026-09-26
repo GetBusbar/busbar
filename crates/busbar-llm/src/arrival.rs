@@ -18,8 +18,8 @@ use std::sync::Arc;
 use axum::body::Bytes;
 use axum::http::{StatusCode, Uri};
 use axum::response::Response;
+use busbar_contract::codec::RequestHandler;
 use busbar_kernel::ingress::arrival::{ArrivalCtx, ArrivalHost};
-use busbar_substrate_values::handlers::RequestHandler;
 
 use crate::proto_codec::{PROTO_BEDROCK, PROTO_GEMINI};
 // The refusal a parse NAMES, one level up (see `unit/mod.rs`) rather than by the audit step's own

@@ -65,7 +65,7 @@ hdr()  { printf '\n== %s ==\n' "$*"; }
 # plane-purity-lint.sh and the plane-transport-neutrality gate scan, so they cannot disagree about
 # what "neutral" means and a drained crate leaves the set by ONE named deletion there.
 #
-# NO ROOT IS HAND-ADDED HERE ANY MORE. This line used to append `crates/busbar-plugin/src` on the
+# NO ROOT IS HAND-ADDED HERE ANY MORE. This line used to append `crates/busbar-contract/src/abi` on the
 # ground that "the plugin ABI is the surface a third-party plugin compiles against" -- and on that
 # same ground omitted `crates/busbar-contract/src`, which is the other half of that surface and
 # carried 14 real leak lines (records.rs `ModelTokens`, config.rs `default_max_tokens`) that this
@@ -75,7 +75,7 @@ hdr()  { printf '\n== %s ==\n' "$*"; }
 . "$(dirname "$0")/plane-keys.sh"
 # The ABI surfaces a third-party plugin compiles against. The default root set MUST carry each of
 # them exactly once (absent = its leaks read 0; twice = its raw hits double).
-ABI_SURFACE_ROOTS="crates/busbar-contract/src crates/busbar-plugin/src"
+ABI_SURFACE_ROOTS="crates/busbar-contract/src"
 default_neutral_roots() { neutral_src_roots; }
 # The env override exists for ONE caller: the --selftest fixtures below. Nothing in CI sets it.
 NEUTRAL_ROOTS="${PLANE_NOUN_NEUTRAL_ROOTS:-$(default_neutral_roots)}"

@@ -10,12 +10,6 @@ use busbar_kernel::observability::HOTPATH_LEVEL;
 // The single neutral translate entrypoint (G6 step 4): the non-stream cross-protocol response arm
 // routes its read→prepare_for_ingress→write core through `TranslateCodec::translate_response`.
 use busbar_kernel::{diag_debug, diag_error};
-use busbar_substrate_values::diagnostics::{
-    DECISION_GATE_REJECTED, DECISION_GATE_RESTRICT_REJECT, DECISION_GATE_RESTRICT_WEIGHTED_ESCAPE,
-    REWRITE_BODY_MATERIALIZE_FAILED, REWRITE_GATE_REJECTED, REWRITE_RESERIALIZE_FAILED,
-    ROUTING_POLICY_REJECTED, ROUTING_POLICY_RESTRICT_REJECT,
-    ROUTING_POLICY_RESTRICT_WEIGHTED_ESCAPE,
-};
 
 /// Forward with pool name context for on_exhausted config lookup.
 /// Thin wrapper: parse the body ONCE for callers that only hold bytes (tests, ad-hoc routes), then
@@ -57,7 +51,7 @@ mod test_forward_entry {
         pool_name: &str,
         affinity_key: Option<&str>,
         ingress_protocol: &str,
-        op: busbar_substrate_values::handlers::Op,
+        op: Op,
         usage_sink: Option<UsageSink>,
     ) -> Response {
         forward_with_pool_keyed(
@@ -90,7 +84,7 @@ mod test_forward_entry {
         pool_name: &str,
         affinity_key: Option<&str>,
         ingress_protocol: &str,
-        op: busbar_substrate_values::handlers::Op,
+        op: Op,
         usage_sink: Option<UsageSink>,
         // The allowlisted client beta/version headers to forward (opt-in). A test entry that exercises
         // the forwarding path passes a collected set; every other test passes an empty Vec.
@@ -104,7 +98,7 @@ mod test_forward_entry {
         let v: LazyBody = match LazyBody::parse(&body) {
             Ok(v) => v,
             Err(_) => {
-                tracing::debug!(detail = %busbar_substrate_values::json::parse_err_log(body.len()), "request body JSON parse failed");
+                tracing::debug!(detail = %busbar_llm_codec::json::parse_err_log(body.len()), "request body JSON parse failed");
                 return ingress_error(
                     ingress_protocol,
                     StatusCode::BAD_REQUEST,
@@ -174,7 +168,7 @@ pub(crate) fn forward_with_pool_parsed<'a>(
     pool_name: &'a str,
     affinity_key: Option<&'a str>,
     ingress_protocol: &'a str,
-    op: busbar_substrate_values::handlers::Op,
+    op: Op,
     usage_sink: Option<UsageSink>,
     // The allowlisted client beta/version headers the caller ACTUALLY SENT (captured at ingress by the
     // neutral `busbar_kernel::proxy::collect_client_headers`), threaded to the egress assembly sites
@@ -316,7 +310,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
     // `op` is the kind of work. Everything below is the engine carrying that pair through pool
     // selection, failover, the breaker, and billing. The engine reads only capabilities off the
     // spec, never its identity; core's `handlers::CHAT` reproduces today's behavior byte-for-byte.
-    op: busbar_substrate_values::handlers::Op,
+    op: Op,
     // Borrowed by each attempt, consumed only by the one that delivers a body (moved whole into the
     // failover loop, which owns the per-attempt borrow/take from there).
     usage_sink: Option<UsageSink>,
@@ -510,7 +504,7 @@ fn fire_global_taps(
             with_prompt,
             request_id,
         );
-        busbar_substrate_values::json::to_vec(&busbar_kernel::hooks::wire::build(
+        busbar_llm_codec::json::to_vec(&busbar_kernel::hooks::wire::build(
             busbar_kernel::hooks::wire::OP_NOTIFY,
             &req,
             &[],
@@ -626,7 +620,7 @@ async fn decide_routing(
     req_content_type: &str,
     pool_name: &str,
     ingress_protocol: &str,
-    op: busbar_substrate_values::handlers::Op,
+    op: Op,
     wants_stream: bool,
     caller_token: Option<&str>,
     resolved_gov_key: Option<&std::sync::Arc<VirtualKey>>,
@@ -684,7 +678,7 @@ async fn run_failover_loop(
     pool_name: &str,
     ingress_protocol: &str,
     req_content_type: &str,
-    op: busbar_substrate_values::handlers::Op,
+    op: Op,
     wants_stream: bool,
     client_include_usage: bool,
     client_has_stream_options: bool,
@@ -842,7 +836,7 @@ async fn pick_lane_or_exhaust(
     body: &Bytes,
     caller_token: Option<&str>,
     ingress_protocol: &str,
-    op: busbar_substrate_values::handlers::Op,
+    op: Op,
     req_content_type: &str,
     usage_sink: &Option<UsageSink>,
 ) -> Result<(usize, Permit, Option<u64>), Response> {
@@ -947,15 +941,13 @@ fn prepare_attempt<'a>(
 fn filter_candidates_for_op(
     rt: &Arc<NativeRuntime>,
     cands: Vec<WeightedLane>,
-    op: busbar_substrate_values::handlers::Op,
+    op: Op,
     ingress_protocol: &str,
 ) -> Result<Vec<WeightedLane>, Response> {
     let supports = |wl: &WeightedLane| {
-        busbar_substrate_values::handlers::request_handler(
-            EngineTables::new(rt).lanes()[wl.idx].protocol,
-        )
-        .and_then(|rh| rh.operation_handler(op.operation))
-        .is_some()
+        request_handler(EngineTables::new(rt).lanes()[wl.idx].protocol)
+            .and_then(|rh| rh.operation_handler(op.operation))
+            .is_some()
     };
     if cands.iter().all(supports) {
         Ok(cands)
@@ -976,10 +968,7 @@ fn filter_candidates_for_op(
 /// The caller's stream intent, read off the ingress head projection BEFORE any rewrite touches
 /// `v`: `(wants_stream, client_include_usage, client_has_stream_options)`. Byte-identical to the
 /// inline reads; `probe()` answers without materializing the DOM in the common case.
-fn read_stream_intent(
-    v: Option<&LazyBody>,
-    op: busbar_substrate_values::handlers::Op,
-) -> (bool, bool, bool) {
+fn read_stream_intent(v: Option<&LazyBody>, op: Op) -> (bool, bool, bool) {
     let wants_stream = v.map(|l| op.wants_stream(l.probe())).unwrap_or(false);
     let client_include_usage = wants_stream
         && v.map(|l| {
@@ -1011,7 +1000,7 @@ async fn run_rewrite_pass(
     body: &mut Bytes,
     pool_name: &str,
     ingress_protocol: &str,
-    op: busbar_substrate_values::handlers::Op,
+    op: Op,
     wants_stream: bool,
     request_id: u64,
 ) -> Result<(), Response> {
@@ -1098,7 +1087,7 @@ async fn run_rewrite_pass(
             // retained bytes so every downstream reader of `body` sees the effective request.
             // Cost only on the rewrite path (a no-op request never reaches this serialize).
             if applied {
-                match busbar_substrate_values::json::to_vec(parsed) {
+                match busbar_llm_codec::json::to_vec(parsed) {
                     Ok(bytes) => *body = Bytes::from(bytes),
                     // A `prompt: rw` rewrite is a TRUSTED, possibly security-critical transform. If it
                     // cannot be serialized into the retained bytes, the first hop carries it but every
@@ -1129,7 +1118,7 @@ fn fire_request_ir_and_taps(
     v: &mut Option<LazyBody>,
     body: &Bytes,
     req_content_type: &str,
-    op: busbar_substrate_values::handlers::Op,
+    op: Op,
     pool_name: &str,
     ingress_protocol: &str,
     wants_stream: bool,
@@ -1164,7 +1153,7 @@ fn fire_request_ir_and_taps(
 /// `op.streaming()`; affinity prefers the header key, else the op's body-derived key).
 fn derive_route_signals(
     v: Option<&LazyBody>,
-    op: busbar_substrate_values::handlers::Op,
+    op: Op,
     ingress_protocol: &str,
     affinity_key: Option<&str>,
 ) -> (bool, Option<u64>) {
@@ -1240,7 +1229,7 @@ async fn reconcile_phase2_gates(
     req_content_type: &str,
     pool_name: &str,
     ingress_protocol: &str,
-    op: busbar_substrate_values::handlers::Op,
+    op: Op,
     wants_stream: bool,
     caller_token: Option<&str>,
     resolved_gov_key: Option<&std::sync::Arc<VirtualKey>>,
@@ -1488,7 +1477,7 @@ async fn resolve_base_policy(
     req_content_type: &str,
     pool_name: &str,
     ingress_protocol: &str,
-    op: busbar_substrate_values::handlers::Op,
+    op: Op,
     wants_stream: bool,
     caller_token: Option<&str>,
     resolved_gov_key: Option<&std::sync::Arc<VirtualKey>>,
@@ -1764,7 +1753,7 @@ fn capture_candidate_taps<'a>(
     req_content_type: &str,
     pool_name: &'a str,
     ingress_protocol: &'a str,
-    op: busbar_substrate_values::handlers::Op,
+    op: Op,
     wants_stream: bool,
     request_id: u64,
     cands_len: usize,
@@ -1867,7 +1856,7 @@ fn derive_hop_body(
     } else {
         let parsed = match v.take() {
             Some(l) => l.into_value(),
-            None => busbar_substrate_values::json::parse(body).map_err(|_| ()),
+            None => busbar_llm_codec::json::parse(body).map_err(|_| ()),
         };
         match parsed {
             Ok(hv) => Ok(Some(hv)),
@@ -1914,7 +1903,7 @@ async fn dispatch_hop(
     req_content_type: &str,
     ingress_protocol: &str,
     egress_name: &str,
-    op: busbar_substrate_values::handlers::Op,
+    op: Op,
     wants_stream: bool,
     client_include_usage: bool,
     client_has_stream_options: bool,
@@ -1980,7 +1969,7 @@ async fn exhaust_pool(
     caller_token: Option<&str>,
     request_ctx: &mut RequestCtx,
     ingress_protocol: &str,
-    op: busbar_substrate_values::handlers::Op,
+    op: Op,
     req_content_type: &str,
     usage_sink: Option<UsageSink>,
 ) -> Response {
@@ -2019,7 +2008,7 @@ async fn run_hop(
     req_content_type: &str,
     ingress_protocol: &str,
     egress_name: &str,
-    op: busbar_substrate_values::handlers::Op,
+    op: Op,
     wants_stream: bool,
     client_include_usage: bool,
     client_has_stream_options: bool,

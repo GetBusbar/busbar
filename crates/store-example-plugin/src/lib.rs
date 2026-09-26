@@ -802,7 +802,7 @@ impl Store for FileStore {
     }
 }
 
-busbar_plugin_sdk::export_store_plugin!(open);
+busbar_contract::abi::sdk::export_store_plugin!(open);
 
 #[cfg(test)]
 mod tests;

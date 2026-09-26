@@ -36,7 +36,7 @@
 //! observable. With reporting routed through here from BOTH builds, the two produce the same
 //! exposition because they take the same path, not because anyone remembered to keep them in step.
 
-use busbar_plugin::cold::observe::Envelope;
+use busbar_contract::abi::cold::observe::Envelope;
 
 /// What the HOST does with what a plugin reported.
 ///
@@ -109,7 +109,7 @@ pub(crate) fn fold<R>(plugin: &str, kind: &str, envelope: &Envelope<R>) {
 
 /// The granted series, by the plugin's host-assigned name. Written at open, read per fold.
 static GRANTS: std::sync::RwLock<
-    Option<std::collections::HashMap<String, Vec<busbar_plugin::cold::observe::SeriesDecl>>>,
+    Option<std::collections::HashMap<String, Vec<busbar_contract::abi::cold::observe::SeriesDecl>>>,
 > = std::sync::RwLock::new(None);
 
 /// The HOST's own series — installed once by the composition root, which is the one place that
@@ -128,7 +128,7 @@ pub fn install_host_series(is_host_series: fn(&str) -> bool) -> bool {
 pub fn grant_series(
     plugin: &str,
     first_party: bool,
-    declared: &[busbar_plugin::cold::observe::SeriesDecl],
+    declared: &[busbar_contract::abi::cold::observe::SeriesDecl],
 ) -> Result<(), String> {
     if !first_party {
         return Ok(());

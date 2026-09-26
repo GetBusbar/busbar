@@ -3,17 +3,17 @@
 
 //! The AUTH seam of the kind-neutral loader: [`DynAuth`], a [`busbar_contract::auth::AuthModule`] backed by a
 //! dynamically-loaded plugin whose kind was bound to `auth` at load. Its verdict carries only an
-//! identity-only [`busbar_plugin::cold::auth::Identity`] (→ [`busbar_contract::auth::Principal`]); a misbehaving
+//! identity-only [`busbar_contract::abi::cold::auth::Identity`] (→ [`busbar_contract::auth::Principal`]); a misbehaving
 //! plugin is FAIL-CLOSED (rejected, never admitted).
 
 use crate::RawPlugin;
+use busbar_contract::abi::cold::{
+    auth::{AuthRequest, AuthResponse},
+    kind as abi_kind,
+};
 use busbar_contract::auth::{
     AuthModule, AuthPlugin, AuthVerdict, BeginLogin, CompleteLogin, LoginKind, LoginModule,
     LoginOutcome, Principal,
-};
-use busbar_plugin::cold::{
-    auth::{AuthRequest, AuthResponse},
-    kind as abi_kind,
 };
 
 /// An `AuthModule` loaded from a dynamic library over the kind-neutral ABI. The module's stable

@@ -31,9 +31,9 @@
 //!    that never issued it.
 
 use super::upstream::{Authorised, BreakerCell, LegFailure, LegOutcome};
+use busbar_contract::abi::hot::AdmissionId;
 use busbar_kernel::failover::{Attempt, Candidate, Refusal, Repeatable, Stage};
 use busbar_kernel::plane_host::DispatchScope;
-use busbar_plugin::hot::AdmissionId;
 use std::sync::{Arc, Mutex};
 
 /// One pool member as the walk sees it. `auth` is `None` when THIS CALLER cannot dispatch to the
@@ -419,7 +419,7 @@ impl PoolRoute {
     ) -> Option<(
         Authorised,
         BreakerCell,
-        busbar_plugin::hot::AdmissionId,
+        busbar_contract::abi::hot::AdmissionId,
         String,
     )> {
         let (idx, admission_id) = {
@@ -460,7 +460,8 @@ fn settle_leg(
             // Fold the outcome through the host `breaker_settle` seam over this leg's id. `Ok` means the
             // live admission was found and settled; `Gone` means the probe was already settled (a later
             // multi-round leg) → fall through to the in-place record, exactly as before.
-            if host.breaker_settle(scope, admission_id, &sig) == busbar_plugin::hot::StatusClass::Ok
+            if host.breaker_settle(scope, admission_id, &sig)
+                == busbar_contract::abi::hot::StatusClass::Ok
             {
                 return;
             }

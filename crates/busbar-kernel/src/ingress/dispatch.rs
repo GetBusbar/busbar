@@ -89,7 +89,16 @@ pub(crate) async fn protocol_dispatch(
     // declaration: `path_ingress` split off `ProtocolDecl` when the decl relocated to
     // `busbar-substrate` (it named the core-only `Arrival`, which the neutral leaf cannot). Same fn
     // pointer, same boxing, same by-name resolution — see `crate::ingress::path_ingress`.
-    if let Some(path_ingress) = crate::ingress::path_ingress::path_ingress_for(proto) {
+    //
+    // Body-model protocols keep the model IN THE BODY, so the universal resolution + forward tail
+    // (the generic `operation_ingress` → the one engine) RELOCATED into the extracted plane crate that
+    // owns it. That plane's universal body-arrival is resolved by protocol name the same way, AFTER
+    // the path-model table, and handed the same neutral arrival — the two aliases are one `fn` type,
+    // so one arm serves both and core names no plane-specific type. No plane linked (core booted
+    // plane-agnostic) → the honest no-handler 404 below.
+    let ingress = crate::ingress::path_ingress::path_ingress_for(proto)
+        .or_else(|| crate::ingress::body_ingress_for(proto));
+    if let Some(ingress) = ingress {
         // Mint the neutral arrival the dialect crate receives: its own URL-parsing reads
         // `path`/`uri`/`headers`/`body` directly, and it reaches core's resolution/forward pipeline
         // through `host`, threading the core-only `App`/`GovCtx`/`CallerToken` back opaquely as `ctx`
@@ -101,7 +110,8 @@ pub(crate) async fn protocol_dispatch(
                 caller_token: caller.0.clone(),
             },
         );
-        return path_ingress(busbar_kernel::ingress::arrival::Arrival {
+        // The plane ANSWERS (#28); this handler is the outer one that serves the answer.
+        return ingress(busbar_kernel::ingress::arrival::Arrival {
             host: std::sync::Arc::new(crate::ingress::arrival_host::CoreArrivalHost),
             ctx,
             path,
@@ -110,31 +120,8 @@ pub(crate) async fn protocol_dispatch(
             headers,
             body,
         })
-        .await;
-    }
-    // Body-model protocols keep the model IN THE BODY, so the universal resolution + forward tail
-    // (the generic `operation_ingress` → the one engine) RELOCATED into the extracted plane crate that
-    // owns it. Resolve that plane's universal body-arrival by protocol name and hand it the neutral
-    // arrival, exactly like the path-model arm above — core names no plane-specific type. No plane
-    // linked (core booted plane-agnostic) → the honest no-handler 404.
-    if let Some(body_ingress) = crate::ingress::body_ingress_for(proto) {
-        let ctx = busbar_kernel::ingress::arrival::ArrivalCtx::new(
-            crate::ingress::arrival_host::ArrivalPayload {
-                host: crate::plane_host::engine_host(&app),
-                gov,
-                caller_token: caller.0.clone(),
-            },
-        );
-        return body_ingress(busbar_kernel::ingress::arrival::Arrival {
-            host: std::sync::Arc::new(crate::ingress::arrival_host::CoreArrivalHost),
-            ctx,
-            path,
-            model_hint: None,
-            uri,
-            headers,
-            body,
-        })
-        .await;
+        .await
+        .into_response();
     }
     crate::fallback_error_response(
         &app.planes,

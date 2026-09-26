@@ -27,8 +27,8 @@
 //! arena that reclaims at future-drop. Reclaiming a durable handle at future-drop was the v4 arena bug.
 
 use super::recover;
-use busbar_plugin::hot::host::HostCtx;
-use busbar_plugin::hot::{
+use busbar_contract::abi::hot::host::HostCtx;
+use busbar_contract::abi::hot::{
     CallerRef, ContentChunk, GateDecision, GateSubjectRef, GateVerdictOut, OpDesc, OpResult,
     StatusClass, TargetRef, WorkHandleDesc, WorkHandleId, POD_VERSION,
 };
@@ -244,7 +244,7 @@ fn scope_kind_str(scope_kind: u32) -> Option<&'static str> {
 /// key, a tombstoned/disabled key, or a caught panic. Only a live enabled key whose grant explicitly
 /// covers the target returns `true`.
 ///
-/// Stays `pub(crate)`: `EntitlementCheckFn` (`busbar_plugin::hot::host`) is a SAFE
+/// Stays `pub(crate)`: `EntitlementCheckFn` (`busbar_contract::abi::hot::host`) is a SAFE
 /// `extern "C-unwind" fn` type — widening this definition to plain `pub` trips clippy's
 /// `not_unsafe_ptr_arg_deref` (a public fn dereferencing a raw pointer without being `unsafe fn`),
 /// and this function's contract is exactly that risk (a forged/dangling `caller`/`target` is UB).
@@ -420,7 +420,7 @@ unsafe fn write_gate_verdict(
         hook_len,
     };
     // SAFETY: `out` is a writable, aligned MaybeUninit slot (or null, which `write_out` tolerates).
-    unsafe { busbar_plugin::write_out(out, verdict) };
+    unsafe { busbar_contract::abi::write_out(out, verdict) };
 }
 
 /// WIRED `gate_decide` → fire the operator's REQUEST-ADMISSION hook gates over the REAL

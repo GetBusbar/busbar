@@ -81,7 +81,7 @@ unsafe extern "C-unwind" fn legacy_store_call(
         *out_len = boxed.len();
         *out = Box::into_raw(boxed) as *mut u8;
     }
-    busbar_plugin::cold::STATUS_OK
+    busbar_contract::abi::cold::STATUS_OK
 }
 
 unsafe extern "C-unwind" fn legacy_store_free(ptr: *mut u8, len: usize) {
@@ -106,7 +106,7 @@ fn legacy_store(abi: u32) -> DynStore {
             free: legacy_store_free,
             close: legacy_store_close,
             path: "legacy-metering".to_string(),
-            kind: busbar_plugin::cold::kind::STORE,
+            kind: busbar_contract::abi::cold::kind::STORE,
             shape: std::sync::atomic::AtomicU8::new(0),
             _lib: None,
             _backing: None,
@@ -216,7 +216,7 @@ fn a_current_store_is_sent_the_delta_unchanged() {
     assert!(needs_legacy_metering_wire(2));
     assert!(needs_legacy_metering_wire(3));
     assert!(!needs_legacy_metering_wire(
-        busbar_plugin::cold::ABI_VERSION
+        busbar_contract::abi::cold::ABI_VERSION
     ));
 }
 

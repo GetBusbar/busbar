@@ -21,7 +21,6 @@ license = "Apache-2.0"
 # process, env}` on a shipped path. `http` — the bare header/status/method vocabulary that `axum`
 # merely re-exports — is the one HTTP name here, and it opens nothing.
 [dependencies]
-busbar-plugin = { path = "../busbar-plugin" }
 # The plugin-visible contract, for the ONE owner of the upstream status class and its disposition
 # (`busbar_contract::upstream`), which this crate's breaker taxonomy used to declare a second copy
 # of. Std-only closure (contract-transport: serde, futures) -- opens nothing.
@@ -60,10 +59,6 @@ hex = { workspace = true }
 # The codec-cell counters the handler matrix emits: `metrics::counter!` writes over bounded labels.
 # Pure data path — the recorder lives elsewhere.
 metrics = { workspace = true }
-# The shared wall clock (`store::now`) is instrumented with `busbar_timing::timeit!`. Timing is
-# default-OFF and zero-dependency in that configuration (the macro expands to `()`), so this edge
-# adds nothing to a shipped build.
-busbar-timing = { path = "../busbar-timing" }
 # The host entropy source the protocol install arms for the codecs (`proto::arm_host_services`):
 # the OS CSPRNG a codec's synthesized wire ids draw from, reached by the codec through the contract.
 getrandom = { workspace = true }

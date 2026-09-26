@@ -12,7 +12,7 @@
 //! "plugin 'busbar-export-prometheus' exports kind 'transport' but is being loaded as 'export'".
 //! The frozen symbols are now defined once, in the plugin SDK, and a binary's linked rows answer
 //! through their own entries (`BUSBAR_COLD_ENTRY`). The link-level half of that is proven in
-//! `crates/plugin-sdk/tests/one_link_many_plugins.rs` (two plugins in one image compile, their
+//! `crates/busbar-contract/tests/one_link_many_plugins.rs` (two plugins in one image compile, their
 //! global door answers as no plugin, each linked entry answers as itself). This test holds the
 //! shipped binary to the outcome: it boots, every sink loads as `export`, and the scrape sink renders
 //! `/metrics`.

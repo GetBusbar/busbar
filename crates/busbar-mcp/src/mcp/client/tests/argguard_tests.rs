@@ -668,7 +668,7 @@ fn dispatch_walks_the_pinned_schema_and_refuses_a_metadata_argument() {
 /// cannot name); this pins the two implementations together so neither can drift from the other.
 #[test]
 fn guard_url_slot_matches_the_inline_arg_guard_for_every_input() {
-    use busbar_plugin::hot::GuardClass;
+    use busbar_contract::abi::hot::GuardClass;
 
     let app = test_app().build();
 

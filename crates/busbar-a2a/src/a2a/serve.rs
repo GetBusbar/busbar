@@ -89,7 +89,7 @@
 //! exact leak the replacement exists to prevent, surviving under the other name.
 
 use crate::diagnostics::A2A_EXTENDED_CARD_AGENT_OMITTED;
-use busbar_substrate_values::diag_debug;
+use busbar_contract::diag_debug;
 use serde_json::{json, Map, Value};
 
 use super::card::CardError;
@@ -224,7 +224,7 @@ pub(crate) fn servable_bindings() -> Vec<String> {
 /// with is the binding it reads, so this answers that transport's name and cannot drift from what
 /// that route actually does. When a per-agent REST mount lands, it lands beside its entry here.
 fn agent_address_bindings() -> Vec<String> {
-    vec![busbar_substrate_values::transport::Transport::JsonRpc
+    vec![busbar_contract::transport::transport::Transport::JsonRpc
         .name()
         .to_uppercase()]
 }

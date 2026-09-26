@@ -22,12 +22,12 @@
 //! Each shim: recovers its [`HostState`](super::HostState) from the opaque [`HostCtx`] FIRST, runs its
 //! body inside a MANDATORY `catch_unwind` (a caught panic maps to the FAIL-CLOSED
 //! [`StatusClass::Fault`], never a permissive value), and writes its out-param ONLY on the `Ok` path
-//! (init-only-on-Ok, tolerating a null slot via [`busbar_plugin::write_out`]).
+//! (init-only-on-Ok, tolerating a null slot via [`busbar_contract::abi::write_out`]).
 
 use super::recover;
 use crate::plane::cost::{CostAmount, CostHold};
-use busbar_plugin::hot::host::HostCtx;
-use busbar_plugin::hot::{CostLeaseId, CostSettleOut, StatusClass};
+use busbar_contract::abi::hot::host::HostCtx;
+use busbar_contract::abi::hot::{CostLeaseId, CostSettleOut, StatusClass};
 use core::mem::MaybeUninit;
 use std::collections::HashMap;
 use std::panic::{catch_unwind, AssertUnwindSafe};
@@ -162,7 +162,7 @@ pub(super) extern "C-unwind" fn cost_reserve(
         let lease = CostLeaseId(id);
         // SAFETY: `out` is a writable, aligned `MaybeUninit<CostLeaseId>` for the call (or null, which
         // `write_out` tolerates); published ONLY on the Ok path (init-only-on-Ok).
-        unsafe { busbar_plugin::write_out(out, lease) };
+        unsafe { busbar_contract::abi::write_out(out, lease) };
         StatusClass::Ok
     }))
     .unwrap_or(StatusClass::Fault) // caught panic → the distinct fault class, never `Ok`.
@@ -197,13 +197,13 @@ pub(super) extern "C-unwind" fn cost_settle(
             Some(exhausted) => {
                 let settle_out = CostSettleOut {
                     size: core::mem::size_of::<CostSettleOut>() as u32,
-                    version: busbar_plugin::hot::POD_VERSION,
+                    version: busbar_contract::abi::hot::POD_VERSION,
                     exhausted: u8::from(exhausted),
                     _reserved: 0,
                 };
                 // SAFETY: `out` is a writable, aligned `MaybeUninit<CostSettleOut>` for the call (or
                 // null, tolerated); published ONLY on the Ok path (init-only-on-Ok).
-                unsafe { busbar_plugin::write_out(out, settle_out) };
+                unsafe { busbar_contract::abi::write_out(out, settle_out) };
                 StatusClass::Ok
             }
             None => StatusClass::Refused, // unknown/closed lease → out-param left untouched.

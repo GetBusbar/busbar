@@ -21,16 +21,6 @@ path = "src/main.rs"
 # dep declared below with the loop crate; `default-features = false` there so the binary's OWN
 # feature list stays the single decision point (each busbar feature forwards to the kernel feature
 # of the same name below).
-# The neutral substrate, named directly so the composition root can install the plane-facing seams
-# that live there — the hostless-egress driver (`egress::seam::install_hostless_egress`), which the
-# binary backs with core's `CoreHostlessEgress`. Core already depends on substrate; naming it here is
-# the one composition-root edge, not a new leaf.
-# THE PURE HALF OF THE SUBSTRATE, named directly. The value families — the clock readers, the proxy
-# vocabularies, the neutral request handler — were split out of `busbar-substrate` into this crate
-# and are only RE-EXPORTED from their historical paths. The composition root names the definition
-# site rather than the re-export, so the surface `busbar-substrate` still has to carry into the
-# kernel is the part that genuinely lives there and not a name that already moved.
-busbar-substrate-values = { path = "../busbar-substrate-values" }
 # THE OAUTH 2.1 AUTHORIZATION-SERVER PLANE (`oauth_as:`), a NORMAL (non-optional) dependency — it
 # carries no feature flag, unlike the protocol crates below, because `oauth-as` (the underlying
 # crate) was always a normal dependency of the engine and 1.6.0's extraction did not change that:
@@ -55,6 +45,9 @@ busbar-core-connsec = { path = "../busbar-core-connsec" }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
 hex = { workspace = true }
+# The deployment keyset (spec #82(a); ARCHITECTURE.md §1.2, PB-13): `root::keyset` mints the one
+# ed25519 seed that signs the audit chain and the ledger's checkpoints from the OS CSPRNG.
+getrandom = { workspace = true }
 # The operator-signature verifier for the D38 `amend_rate_history` effect: the sealed operator key
 # arrives (through the posture seam) as raw ed25519 bytes, and this parses them and checks the
 # detached signature with the inherent STRICT verify. Composition-root knowledge, used only by the
@@ -128,15 +121,21 @@ busbar-store-memory = { path = "../store-memory" }
 # under `hooks-ranking` — one row, the strategy spellings its aliases. The kernel names no hook.
 busbar-hooks-ranking = { path = "../hooks-ranking", optional = true }
 # THE REQUEST-LOG FILE SINK (`module: request-log-file`), a first-party EXPORT plugin linked through
-# the `exports` axis (K9b) — the same row a signed tarball of it registers when dropped in.
-busbar-export-file = { path = "../busbar-export-file", optional = true }
+# the `exports` axis (K9b) — the same row a signed tarball of it registers when dropped in. It lives
+# in its own repo (GetBusbar/export-file) and is pulled at a PINNED rev; the workspace `[patch]`
+# points the busbar crates it names back at this tree.
+busbar-export-file = { git = "https://github.com/GetBusbar/export-file", rev = "5ff2dadcf45cc49ce26f0cf9d0ca0b0d9fc9cb5a", optional = true }
 # THE REQUEST-LOG WEBHOOK SINK (`module: request-log-webhook`), a first-party EXPORT plugin linked
-# through the `exports` axis (K9c) — the same row a signed tarball of it registers when dropped in.
-busbar-export-webhook = { path = "../busbar-export-webhook", optional = true }
+# through the `exports` axis (K9c) — the same row a signed tarball of it registers when dropped in. It
+# lives in its own repo (GetBusbar/export-webhook) and is pulled at a PINNED rev; the workspace
+# `[patch]` points the busbar crates it names back at this tree.
+busbar-export-webhook = { git = "https://github.com/GetBusbar/export-webhook", rev = "1444effa746680412815ed8672da90200aa8ce7e", optional = true }
 # THE PROMETHEUS EXPORT SINK (`module: prometheus`), a first-party EXPORT plugin linked through the
 # `exports` axis (K9d) — the same row a signed tarball of it registers when dropped in. The host
-# keeps the recorder and serves `/metrics`; this sink renders the recorder's snapshot.
-busbar-export-prometheus = { path = "../busbar-export-prometheus", optional = true }
+# keeps the recorder and serves `/metrics`; this sink renders the recorder's snapshot. It lives in its
+# own repo (GetBusbar/export-prometheus) and is pulled at a PINNED rev; the workspace `[patch]` points
+# the busbar crates it names back at this tree.
+busbar-export-prometheus = { git = "https://github.com/GetBusbar/export-prometheus", rev = "05a175910b4a5d9e3bcb7f065ac95a1a3e351358", optional = true }
 # The transports. Composition is an edge that does not exist as a Cargo dependency — a transport may
 # not name the layer beneath it — so the root hands each wire's build the layer it built below it.
 # Which wires a build links is the `transport` rows of the linked table below; the source names none.
@@ -199,19 +198,20 @@ tikv-jemallocator = { workspace = true, features = ["disable_initial_exec_tls"] 
 [features]
 # Pure forwards: every `#[cfg(feature = ...)]` site lives in busbar-core, so the binary's features
 # are one-line re-exports of the core feature with the same name. Every protocol entry below is the
-# SAME default set the monolithic crate had; `root-admin` and `root-llm` are the additions, and
-# both are paths rather than surfaces — the operations, their bytes and their
-# features are unchanged.
-default = ["auth-admin-tokens", "hooks-ranking", "proto-llm", "plane-mcp", "plane-a2a", "plane-voice", "plane-decision", "export-file", "export-webhook", "export-prometheus", "root-admin", "root-llm", "transport-tcp"]
+# SAME default set the monolithic crate had; `root-admin` is the addition, and it is a path rather
+# than a surface — the operations, their bytes and their features are unchanged.
+default = ["auth-admin-tokens", "hooks-ranking", "proto-llm", "plane-mcp", "plane-a2a", "plane-voice", "plane-decision", "export-file", "export-webhook", "export-prometheus", "root-admin", "transport-tcp"]
 # A protocol crate: the dependency edge plus its registration line in main.rs. Dropping the
 # feature is the deletion test's level-1 build. There is no per-DIALECT feature and there must not
 # be one — "LLM coverage or not" is the choice this seam offers, and a `proto-gemini` knob would be
 # a second, finer answer to a question the owner ruling already settled.
-# ONE switch for the plane and the node its units run through: linking the plane turns `root-llm` on
-# (and `root-llm` turns the plane on), because the plane's arrivals hand every unit to the root's node
-# and there is no other path an arrival can take (ARCHITECT R7(b): the build that served them through
-# the shell instead is dropped).
-proto-llm = ["dep:busbar-llm", "busbar-kernel/plane-llm", "root-llm"]
+# ONE switch for the plane and the node its units run through (`src/root/plane_node.rs`): the plane's
+# `linked-axes` row carries the `node` axis, so linking it sets the generated `linked_axis_node` cfg
+# the node compiles under, and its `root-units` row puts the node's `ROOT_UNIT` in the boot order. The
+# plane's arrivals hand every unit to the node and there is no other path an arrival can take
+# (ARCHITECT R7(b): the build that served them through the shell instead is dropped). There is no
+# second, per-node switch (spec #17: one feature per plane, no `root-*`; ARCHITECT K2i residue).
+proto-llm = ["dep:busbar-llm", "busbar-kernel/plane-llm"]
 # THE MCP PROTOCOL, carried by `busbar-mcp`: the dependency edge plus the `busbar_mcp::PROTO_DECL`
 # registration line in main.rs. ONE switch for MCP the protocol codec today and MCP the plane once
 # it folds in — never two — so it keeps the plane-kind name `plane-mcp` rather than a `proto-mcp`
@@ -269,13 +269,6 @@ export-webhook = ["dep:busbar-export-webhook"]
 # the exposition 1.5.5 shipped built in. Off, the module resolves only when a signed tarball of the
 # sink is dropped into `plugins/`.
 export-prometheus = ["dep:busbar-export-prometheus"]
-# THE NODE THE LLM PLANE'S UNITS RUN THROUGH (`src/root/units_llm.rs`): the kernel's loop over the
-# plane's step files, the in-flight table, the Route seam and the money book behind them. It is the
-# same switch as `proto-llm` — each turns the other on — because the plane's arrivals hand every unit
-# to this node and the build that answered them through the shell instead is dropped (ARCHITECT
-# R7(b)). The name stays a feature because the root-units table and the tree's gates key the node's
-# module by it.
-root-llm = ["proto-llm"]
 # THE ROOT-DRIVEN ADMIN SURFACE (composition-root step C1 / switch-over S1). DEFAULT ON: it was held
 # off until the oracle's admin family was green on it, and it is. The switch is what makes an admin
 # request travel through the kernel's loop instead of reaching its handler directly; the 234 owed
@@ -378,7 +371,8 @@ transport-sse = "busbar_transport_http::linked::sse"
 transport-grpc = "busbar_transport_http::linked::grpc"
 
 # The root's own unit modules (the kernel-loop halves of planes that still live in the root), each
-# compiled under its cargo feature and exporting a `ROOT_UNIT` (`root::linked::RootUnit`). Order is
+# compiled when its row's cargo feature is on (the node under the `linked_axis_node` cfg that
+# feature's `linked-axes` row sets) and exporting a `ROOT_UNIT` (`root::linked::RootUnit`). Order is
 # the order their boot steps run in: seals, then the configuration step, then the book step.
 # THE SERVED-LEG WITNESSES the root's rider tests run: cargo feature -> the plane crate whose
 # `testkit::SERVED` table they drive through the kernel-loop runner `gauntlet_install::install()`
@@ -391,7 +385,7 @@ plane-voice = "busbar-voice"
 
 [package.metadata.busbar.root-units]
 plane-decision = "plane_decision"
-root-llm = "units_llm"
+proto-llm = "plane_node"
 
 [dev-dependencies]
 # The loop-unify shadow-compare test (`root::gauntlet_kernel`) implements a deterministic
@@ -434,6 +428,19 @@ busbar-store-example-plugin = { path = "../store-example-plugin" }
 # the test links its `PLANE_DECL` (the linked door) and drops its cdylib into a temp `plugins/`
 # directory (the dropped-in door) and requires the two to install byte-identical registry rows.
 busbar-plugin-example-plane = { path = "../plane-example" }
+# The export axis's both-doors proof (`src/root/tests/linked_exports.rs`) for the FILE sink: its
+# repo's cdylib crate at the SAME pinned rev as the linked `busbar-export-file` edge above, so the
+# test drops in the library a signed tarball of the sink carries next to the row the build links.
+busbar-export-file-plugin = { git = "https://github.com/GetBusbar/export-file", rev = "5ff2dadcf45cc49ce26f0cf9d0ca0b0d9fc9cb5a" }
+# The scrape sink's both-doors proofs (`src/root/tests/linked_scrape.rs`,
+# `tests/export_scrape_is_first_party.rs`): its repo's cdylib crate at the SAME pinned rev as the
+# linked `busbar-export-prometheus` edge above — the library a signed tarball of the sink carries,
+# found in this target dir by what it loads as.
+busbar-export-prometheus-plugin = { git = "https://github.com/GetBusbar/export-prometheus", rev = "05a175910b4a5d9e3bcb7f065ac95a1a3e351358" }
+# The webhook sink's both-ways proof (`src/root/tests/export_webhook_conformance.rs`): its repo's
+# cdylib crate at the SAME pinned rev as the linked `busbar-export-webhook` edge above, so the test
+# drops in the library a signed tarball of the sink carries next to the row the build links.
+busbar-export-webhook-plugin = { git = "https://github.com/GetBusbar/export-webhook", rev = "1444effa746680412815ed8672da90200aa8ce7e" }
 # That proof calls the router it built as the tower service it is (`ServiceExt::oneshot`). The
 # normal-edge `tower` above is `root-admin`'s own and optional, so a build without `root-admin` (every
 # single-plane build) would not compile the test; the test's edge is its own, unconditional here.

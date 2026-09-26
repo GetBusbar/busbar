@@ -50,7 +50,7 @@ fn a_malformed_code_is_refused() {
 /// pages an operator at 3am by asserting that it should.
 #[test]
 fn a_benign_recurring_condition_cannot_be_escalated() {
-    use busbar_plugin::cold::observe::DiagLevel;
+    use busbar_contract::abi::cold::observe::DiagLevel;
     for claimed in [
         DiagLevel::Error,
         DiagLevel::Warn,
@@ -69,7 +69,7 @@ fn a_benign_recurring_condition_cannot_be_escalated() {
 /// thing only the plugin knows.
 #[test]
 fn an_actionable_condition_keeps_the_reported_level() {
-    use busbar_plugin::cold::observe::DiagLevel;
+    use busbar_contract::abi::cold::observe::DiagLevel;
     for claimed in [DiagLevel::Error, DiagLevel::Warn, DiagLevel::Debug] {
         assert_eq!(
             clamp_level(claimed, crate::diagnostics::Severity::Actionable),
@@ -182,7 +182,7 @@ impl metrics::Recorder for Registered {
 /// ordinary name from the granted plugin still carries its provenance label.
 #[test]
 fn a_granted_first_party_series_renders_as_declared_and_nothing_else_is_granted() {
-    use busbar_plugin::cold::observe::SeriesDecl;
+    use busbar_contract::abi::cold::observe::SeriesDecl;
     let declared = [SeriesDecl::new("busbar_s1_fold_total", "counter")];
     busbar_plugin_loader::observe::grant_series("s1-first-party", true, &declared)
         .expect("a first-party declaration is granted");
@@ -357,7 +357,7 @@ fn hook_envelope_metrics_are_carried_but_not_folded() {
     // silently turn the freeze off.
     KernelPluginObserver.observe(
         "some-hook",
-        busbar_plugin::cold::kind::HOOK,
+        busbar_contract::abi::cold::kind::HOOK,
         &entries,
         &[serde_json::json!({"code": "BUSBAR-65535"})],
     );
@@ -381,7 +381,7 @@ fn a_hooks_diagnostic_is_emitted_while_its_metrics_stay_frozen() {
     tracing::subscriber::with_default(subscriber, || {
         KernelPluginObserver.observe(
             "some-hook",
-            busbar_plugin::cold::kind::HOOK,
+            busbar_contract::abi::cold::kind::HOOK,
             &[serde_json::json!({"name": "x_total", "type": "counter", "value": 1})],
             &[serde_json::json!({
                 "code": banner,
@@ -420,7 +420,7 @@ fn a_first_party_plugins_diagnostic_is_written_as_the_hosts_own_line() {
         .expect("an actionable code");
     busbar_plugin_loader::observe::grant_series("k9c-first-party", true, &[]).unwrap();
     let entry = serde_json::to_value(
-        busbar_plugin::cold::observe::PluginDiagnostic::warn(
+        busbar_contract::abi::cold::observe::PluginDiagnostic::warn(
             format!("BUSBAR-{}", d.code),
             "it broke",
         )

@@ -304,13 +304,13 @@ fn banned_set(name: &str) -> &'static str {
     let (kind, remainder, _) = resolve_kind(name);
     match refine(kind, &remainder) {
         Some("kernel") => "THE KERNEL",
-        Some("core") => "a `core-*` crate",
+        // #40(a) names the core-side crates `core-*`; since the core kind's members were seated as
+        // the cleanliness tier (BUSBAR-1.6.0.md:3780), that set is the cleanliness kind.
+        Some(super::CLEANLINESS) => "a `core-*` crate",
         Some("secret") => "a secret implementation",
         Some(k) if PLUGIN_KINDS.contains(&k) => "another plugin",
         Some(k) => match k {
-            "api" | "plugin-abi" | "plugin-tooling" | "substrate" | "timing" | "codec" | "unit" => {
-                "not `busbar-contract`"
-            }
+            "plugin-tooling" | "substrate" | "timing" | "codec" | "unit" => "not `busbar-contract`",
             _ => "not `busbar-contract`",
         },
         None => "not `busbar-contract` (and matches no kind)",
@@ -748,7 +748,10 @@ mod tests {
             "a secret implementation"
         );
         assert_eq!(banned_set("busbar-transport-tcp"), "another plugin");
-        assert_eq!(banned_set("busbar-api"), "not `busbar-contract`");
+        assert_eq!(
+            banned_set("busbar-unit-transport-key"),
+            "not `busbar-contract`"
+        );
     }
 
     /// NO PLUGIN KIND IS GRANTED AN EDGE TO ITSELF, in any of the three class tables. The rule

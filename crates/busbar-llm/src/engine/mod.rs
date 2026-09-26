@@ -32,12 +32,30 @@ use futures::Stream;
 use http::StatusCode;
 use serde_json::Value;
 
-use busbar_kernel::plane_host::OnExhaustedInput as OnExhausted;
-use busbar_kernel::proto::convert_headers;
+use busbar_contract::upstream::Disposition;
 #[cfg_attr(not(test), allow(unused_imports))]
-use busbar_substrate_values::breaker::StatusClass;
-use busbar_substrate_values::breaker::{
-    classify as classify_disposition, normalize_raw_error, Disposition,
+use busbar_contract::upstream::StatusClass;
+use busbar_kernel::plane_host::OnExhaustedInput as OnExhausted;
+use busbar_kernel::{
+    breaker::{classify as classify_disposition, normalize_raw_error, parse_retry_after},
+    // The kernel diagnostic codes the engine's modules emit, named once here for all of them.
+    diagnostics::{
+        ATTEMPT_TIMEOUT_DEGRADED, ATTEMPT_TIMEOUT_FAILOVER, CROSSPROTO_BINARY_CODEC_FAILED,
+        CROSSPROTO_JSON_CODEC_FAILED, CROSSPROTO_NONSTREAM_MIDTRANSFER_FAILED,
+        CROSSPROTO_RESPONSE_NOT_TRANSLATABLE, CROSSPROTO_RESPONSE_NOT_TRANSLATABLE_DEGRADED,
+        CROSSPROTO_TRANSLATION_CAP_EXCEEDED, DECISION_GATE_REJECTED, DECISION_GATE_RESTRICT_REJECT,
+        DECISION_GATE_RESTRICT_WEIGHTED_ESCAPE, FALLBACK_RESTRICT_NO_ELIGIBLE_LANE,
+        LANE_BREAKER_TRIPPED, LANE_HARD_DOWN, ON_ERROR_FALLBACK_ANSWERED,
+        ON_ERROR_FALLBACK_DEADLINE_EXCEEDED, ON_ERROR_FALLBACK_HOOK_FAILED,
+        REWRITE_BODY_MATERIALIZE_FAILED, REWRITE_GATE_REJECTED, REWRITE_RESERIALIZE_FAILED,
+        ROUTING_POLICY_DEADLINE_EXCEEDED, ROUTING_POLICY_FAILED_ON_ERROR_FALLBACK,
+        ROUTING_POLICY_REJECTED, ROUTING_POLICY_RESTRICT_REJECT,
+        ROUTING_POLICY_RESTRICT_WEIGHTED_ESCAPE, UPSTREAM_MIDSTREAM_TRANSPORT_ERROR,
+        UPSTREAM_PREFIRSTBYTE_TRANSPORT_ERROR, USAGE_TAP_REASSEMBLY_CAP_EXCEEDED,
+    },
+    handlers::{op_for, request_handler, Op, OpDispatch},
+    proto::convert_headers,
+    sigv4::uri_encode_path,
 };
 // App-retype WEDGE 3 (THE FLIP): the engine no longer names core's `state::App`. The forward
 // path threads the neutral `host: &Arc<dyn EngineHost>` (minted core-side, carried on the arrival) and

@@ -498,7 +498,7 @@ pub const COUNT_READ_ROOTS: &[CountRoot] = &[
         area: "the neutral carriers",
         homes: &[
             "crates/busbar-substrate-values/src",
-            "crates/busbar-plugin/src",
+            "crates/busbar-contract/src/abi",
         ],
         floor: 27,
     },

@@ -5,8 +5,9 @@
 //!
 //! The four rows this module joins hold the line for the WIRES: `:vocab` proves a transport never
 //! says `a2a`, and a plane never says `hyper`. What none of them measured is the COMPOSITION ROOT.
-//! `crates/busbar/src/root/**` hand-wires one file per plane — `units_llm.rs`, `units_mcp.rs`,
-//! `units_a2a.rs`, `units_voice.rs` — and every one of them slipped past CI, because nothing
+//! `crates/busbar/src/root/**` hand-wired one file per plane — `units_llm.rs` (now the plane-free
+//! node, `plane_node.rs`), `units_mcp.rs`, `units_a2a.rs`, `units_voice.rs` — and every one of them
+//! slipped past CI, because nothing
 //! counted it. A gate that measures the wires and not the place the wires are joined is a gate that
 //! reports the tidy half of the tree.
 //!
@@ -216,8 +217,8 @@ fn alias_of(a: &str, b: &str) -> bool {
 ///   are domain words the whole tree shares rather than a kind's private vocabulary. Counting them
 ///   would report the Teller loop talking about money as the cost unit leaking into the ledger
 ///   unit. The plane and transport families ARE instance vocabularies — that is what the split is
-///   about — so their bare ids count everywhere, which is how `root/units_llm.rs` and
-///   `root-voice-serve` are caught.
+///   about — so their bare ids count everywhere, which is how the root's hand-wired
+///   plane files and `root-voice-serve` were caught.
 ///
 /// A plane contributes its aliases too, because `streaming`, `voice` and `streams` are one instance
 /// (`PLANE_ALIASES`).
@@ -565,7 +566,11 @@ fn measure(cx: &Ctx, crates: &[CrateInfo]) -> Result<Measured, String> {
             // `busbar-contract` the one crate a plugin may name, so a plugin naming it on every
             // `use` line is the wall standing, not a coupling to ratchet ([`super::is_the_wall`]).
             // Every other kind's column is still counted in that crate.
-            if c.kind.is_some_and(|k| super::is_the_wall(k, kind)) {
+            // The core tiers' contract column is not measured either (#83/#83a): see
+            // [`super::names_contract_by_design`].
+            if c.kind
+                .is_some_and(|k| super::names_contract_by_design(k, kind))
+            {
                 continue;
             }
             for n in needles_for(words, c) {
@@ -1522,7 +1527,7 @@ pub fn rule_matrix(cx: &Ctx, crates: &[CrateInfo], reg: &super::KindRegistry, sh
             };
             // THE FILES THE NUMBER IS MADE OF, HEAVIEST FIRST, named in the row itself. A ratchet
             // finding that says only "2881 vs 2891" sends the reader to `--report`; one that says
-            // `root/units_llm.rs` hands them the file. The whole list is in `--report`.
+            // `root/plane_node.rs` hands them the file. The whole list is in `--report`.
             let mut per_file: BTreeMap<&str, usize> = BTreeMap::new();
             for h in &cell.hits {
                 let mut f = h.split('\t');
@@ -1567,12 +1572,12 @@ pub fn rule_matrix(cx: &Ctx, crates: &[CrateInfo], reg: &super::KindRegistry, sh
         // for a plugin kind (see [`measure`]), so the row is an exception to a rule that excepts
         // nothing, and it says so rather than reading as a coupling that drained.
         let src = kind_of.get(krate.as_str()).copied().unwrap_or("?");
-        if super::is_the_wall(src, kind) {
+        if super::names_contract_by_design(src, kind) {
             offenders.push(format!(
-                "rule-granted-cell\t{krate} \u{d7} {kind}\t#40(a) grants every plugin kind the \
-                 contract's vocabulary as the RULE, so a {src} crate's contract column is not \
-                 measured and a `[[cell]]` row for it is an exception to a rule that excepts \
-                 nothing. Strike it."
+                "rule-granted-cell\t{krate} \u{d7} {kind}\t#40(a) (a plugin kind) and #83/#83a (a \
+                 core tier) grant the contract's vocabulary as the RULE, so a {src} crate's \
+                 contract column is not measured and a `[[cell]]` row for it is an exception to a \
+                 rule that excepts nothing. Strike it."
             ));
             continue;
         }
@@ -1599,7 +1604,7 @@ pub fn rule_matrix(cx: &Ctx, crates: &[CrateInfo], reg: &super::KindRegistry, sh
         }
     }
     for (src, dst) in listed.edges.keys() {
-        if super::is_the_wall(src, dst) {
+        if super::names_contract_by_design(src, dst) {
             offenders.push(format!(
                 "rule-granted-edge\t{src} -> {dst}\t#40(a) grants every plugin kind the contract's \
                  vocabulary as the RULE; an `[[edge]]` class for it is an exception to a rule that \
@@ -1759,6 +1764,7 @@ const DEAD_EDGE_FIXTURE: &str = "xtask/fixtures/kind-isolation-root/dead_edge_ro
 
 /// Where the hand-wired root is planted: inside the composition root, where the drained
 /// `root/units_*.rs` files lived.
+// qa-names: crates/busbar/src/root/units_hand_wired.rs -- xtask/src/gates/kind_isolation/matrix.rs -- a PLANT TARGET, not a scan root: the case writes the fixture to this path in its own overlay, so the path is absent from the tree by design, and this declaration reds the day a real file lands there
 const HAND_WIRED_ROOT_PLANT: &str = "crates/busbar/src/root/units_hand_wired.rs";
 
 /// A one-file plant under `dir`, without disturbing anything else in the tree.
@@ -1806,6 +1812,38 @@ fn ledger_with(cx: &Ctx, from: &str, to: &str) -> Result<crate::ctx::Overlay, St
         ));
     }
     Ok(plant(cx, LEDGER, &text.replacen(from, to, 1)))
+}
+
+/// THE FIXTURE CRATE ([`instances::FIXTURE_CRATE`]) with `files` under its `src/`, and a `[[cell]]`
+/// row for `fixture × kind` at `count` appended to the ledger. `inherited` plants the base's copy
+/// of the ledger with the row in it as well, so the row pre-dates the branch and `minted-row` has
+/// nothing to say about it; without it the row is one this branch wrote.
+fn fixture_cell(
+    cx: &Ctx,
+    kind: &str,
+    count: &str,
+    files: &[(&str, &str)],
+    inherited: bool,
+) -> crate::ctx::Overlay {
+    let mut ov = instances::fixture_crate();
+    for (name, body) in files {
+        ov.set(
+            format!("{}/src/{name}", instances::FIXTURE_DIR),
+            (*body).to_string(),
+        );
+    }
+    let ledger = format!(
+        "{}\n\n[[cell]]\n{}\n",
+        cx.read(LEDGER).unwrap_or_default().trim_end(),
+        cell_row(instances::FIXTURE_CRATE, kind, count)
+    );
+    if inherited {
+        if let Some(sha) = super::debt_free::pinned_base(cx) {
+            ov.set_command(format!("git-show:{sha}:{LEDGER}"), ledger.clone());
+        }
+    }
+    ov.set(LEDGER, ledger);
+    ov
 }
 
 /// [`prove_rows_red`](crate::gates::prove_rows_red) over a one-substitution plant into the real
@@ -1934,26 +1972,24 @@ pub fn selftest<'a>(
     // hand-written rows (a `[[cell]]`, an `[[edge]]` and a `[[disagreement]]` whose note the author
     // composed themselves) made the whole gate green.
     //
-    // The plant is a `[[cell]]` for a crate × kind that measures zero, so `dead-cell` fires too and
-    // the naming assertion is what separates the two claims: the row is refused for being NEW,
-    // before anything asks what it covers.
+    // The plant is the fixture crate naming one transport, and a `[[cell]]` row for that cell at
+    // EXACTLY its measurement: nothing about the row is wrong except that it is new, so the refusal
+    // the case asserts is the one it is about.
     report.push(prove_rows_red(
         cx,
         gate,
         "a `[[cell]]` row this branch minted is a 0 -> N raise, not a first measurement",
         &[ROW_MATRIX],
-        plant(
+        fixture_cell(
             cx,
-            LEDGER,
-            &format!(
-                "{}\n\n[[cell]]\n{}\n",
-                cx.read(LEDGER).unwrap_or_default().trim_end(),
-                cell_row("busbar-store-memory", "transport", "1")
-            ),
+            "transport",
+            "1",
+            &[("wire.rs", "pub const WIRE: &str = \"tcp\";\n")],
+            false,
         ),
         &[
             "minted-row",
-            "busbar-store-memory \u{d7} transport",
+            &format!("{} \u{d7} transport", instances::FIXTURE_CRATE),
             "this branch MINTED it",
         ],
     ));
@@ -2071,19 +2107,39 @@ pub fn selftest<'a>(
         &["busbar-kernel", "store"],
     ));
 
-    // A HIT THAT IS ONLY A COMMENT. Nothing is stripped: a plane named in a doc comment of the
-    // kernel is the kernel's reader being taught a plane.
+    // A HIT THAT IS ONLY A COMMENT. Nothing is stripped: a plane named in a doc comment of a
+    // kernel crate is the kernel's reader being taught a plane.
+    //
+    // THE CELL IS THE FIXTURE'S OWN. The case used to plant into `busbar-kernel` and read the live
+    // `busbar-kernel × plane` ceiling, which sits above its measurement on the tree it runs over —
+    // so three more hits left it STALE SLACK and the case could never say RAISED. The fixture
+    // crate names one plane in code, its row (carried by the base's ledger too) records exactly
+    // that one, and the control below is green; the comment is the only thing the red case adds.
+    let comment_fixture = |comment: bool| {
+        let mut files = vec![("wiring.rs", "pub const PLANE: &str = \"llm\";\n")];
+        if comment {
+            files.push(("leak.rs", "// mcp and a2a come through here too.\n"));
+        }
+        fixture_cell(cx, "plane", "1", &files, true)
+    };
+    report.push(prove_rows_green(
+        cx,
+        gate,
+        "a kernel crate's plane cell at its recorded ceiling is green (the comment case's control)",
+        &[ROW_MATRIX],
+        comment_fixture(false),
+    ));
     report.push(prove_rows_red(
         cx,
         gate,
         "a plane named in nothing but a comment inside the kernel",
         &[ROW_MATRIX],
-        plant(
-            cx,
-            "crates/busbar-kernel/src/leak.rs",
-            "// mcp, a2a and llm all come through here.\n",
-        ),
-        &["ratchet", "busbar-kernel × plane", "RAISED"],
+        comment_fixture(true),
+        &[
+            "ratchet",
+            &format!("{} \u{d7} plane", instances::FIXTURE_CRATE),
+            "RAISED",
+        ],
     ));
 
     // THE TWO SCANNERS DISAGREEING. `gRPC` reads whole to the window scanner and splits at its own
@@ -2391,25 +2447,25 @@ pub fn selftest<'a>(
     // The honest fixture for "this row covers nothing" is a tree in which the thing it covered is
     // GONE, and a crate leaves the measurement the way it leaves the census: its manifest goes.
 
-    // A `[[cell]]` ROW WHOSE CRATE IS NOT THERE. `busbar-auth-static-plugin` carries live cells;
-    // every one of them measures nothing the moment the crate stops being one.
+    // A `[[cell]]` ROW WHOSE CRATE IS NOT THERE. `busbar-kernel-scope` carries live cells; every
+    // one of them measures nothing the moment the crate stops being one.
     //
-    // RE-TARGETED: the subject was `busbar-auth-admin-tokens × api`, and that row went dead on the
-    // real tree when the crate's last `busbar-api` name moved to the contract — so its red became
-    // standing debt the debt-free base subtracts, and the case came back green. `busbar-auth-static-plugin × plugin-tooling` is a live row (the SDK edge
-    // stays until F6), and removing the crate's manifest kills it exactly as it did the old one.
+    // RE-TARGETED TWICE. The subject was `busbar-auth-admin-tokens × api`, and that row went dead
+    // on the real tree when the crate's last `busbar-api` name moved to the contract; then
+    // `busbar-auth-static-plugin × plugin-tooling`, which went dead when the SDK merged into the
+    // contract (#84) and the plugin stopped naming `busbar-plugin-sdk`. Each time its red became
+    // standing debt the debt-free base subtracts and the case came back green. A kernel workflow
+    // crate's cell is not a fixture's and not an edge a fold retires: removing the crate's manifest
+    // kills it exactly as it did the old ones.
     let mut ov = crate::ctx::Overlay::new();
-    ov.remove("crates/auth-static-plugin/Cargo.toml");
+    ov.remove("crates/busbar-kernel-scope/Cargo.toml");
     report.push(prove_rows_red(
         cx,
         gate,
         "a `[[cell]]` row whose cell measures nothing is a dead allowance, not a tight one",
         &[ROW_MATRIX],
         ov,
-        &[
-            "dead-cell",
-            "busbar-auth-static-plugin \u{d7} plugin-tooling",
-        ],
+        &["dead-cell", "busbar-kernel-scope \u{d7} transport"],
     ));
 
     // A `[[disagreement]]` ROW WHOSE TWO SCANNERS HAVE NOTHING LEFT TO DISAGREE ABOUT. The note is

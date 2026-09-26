@@ -12,7 +12,7 @@
 //! drops the batch after counting it. Config JSON is ignored (this sink has no configurable shape),
 //! mirroring `busbar-store-example-plugin`'s config-less posture.
 
-use busbar_plugin_sdk::{
+use busbar_contract::abi::sdk::{
     ExportHandler, ExportStream, HostOp, HostResult, HostStep, HttpRequest, Observations,
     PluginDiagnostic, PluginMetric,
 };
@@ -199,7 +199,7 @@ pub fn open(cfg: &str) -> Result<Box<dyn ExportHandler>, String> {
     }))
 }
 
-busbar_plugin_sdk::export_export_plugin!(open);
+busbar_contract::abi::sdk::export_export_plugin!(open);
 
 /// THE COMPILED-IN ENTRY POINT — the twin of the `busbar_call` symbol the macro above emits.
 ///
@@ -216,9 +216,9 @@ busbar_plugin_sdk::export_export_plugin!(open);
 /// the entry point a plugin offers is the plugin's to publish, on both doors.
 pub fn dispatch_compiled_in(
     handler: &dyn ExportHandler,
-    req: busbar_plugin_sdk::ExportRequest,
-) -> busbar_plugin_sdk::Envelope<busbar_plugin_sdk::ExportResponse> {
-    busbar_plugin_sdk::dispatch_export_enveloped(handler, req)
+    req: busbar_contract::abi::sdk::ExportRequest,
+) -> busbar_contract::abi::sdk::Envelope<busbar_contract::abi::sdk::ExportResponse> {
+    busbar_contract::abi::sdk::dispatch_export_enveloped(handler, req)
 }
 
 #[cfg(test)]

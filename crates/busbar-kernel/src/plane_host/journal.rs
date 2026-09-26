@@ -44,8 +44,8 @@ use super::recover;
 use crate::audit::journal::{Journal, NeutralRecord};
 use crate::audit::{frame_prelude, Chain, ChainLabels, ChainedRecord, Digest, Framing};
 use crate::plane::store::PlaneStoreView;
-use busbar_plugin::hot::host::{HostCtx, JournalReframeFn};
-use busbar_plugin::hot::{
+use busbar_contract::abi::hot::host::{HostCtx, JournalReframeFn};
+use busbar_contract::abi::hot::{
     ChainBreakHdr, Framing as AbiFraming, FramingDesc, JournalQuery, JournalStreamDesc, RawFraming,
     ReframeOut, RestoredHdr, Seq, StatusClass, VerifyChainHdr, POD_VERSION,
 };

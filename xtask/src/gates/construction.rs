@@ -778,8 +778,10 @@ mod tests {
 
     /// ITEM 120: THE RULE READS THE `transport` KIND. It read six kinds, so the oracle above owed
     /// seven rows the rule never emitted. Every transport crate now gets a row, and
-    /// `busbar-transport-tls`'s is RED naming the unit crate it path-depends on — the true breach
-    /// the missing kind was hiding.
+    /// `busbar-transport-tls`'s is RED on what it really depends on. It once named the unit crate it
+    /// path-depended on; since the transport-key fold moved provisioning into the kernel tier, that
+    /// edge is gone, and the row is RED on the external crates no reviewed list admits (rustls,
+    /// tokio and the rest). The control is that the row is judged, not a particular breach.
     #[test]
     fn the_manifest_allowlist_rule_emits_a_row_for_every_transport_crate() {
         let cx = Ctx::workspace().expect("workspace");
@@ -816,7 +818,8 @@ mod tests {
         assert_eq!(tls.status, Status::Fail, "{}", tls.detail);
         assert!(
             tls.detail
-                .contains("RED (kernel/caps/unit/plane/transport): busbar-unit-transport-key"),
+                .contains("busbar-transport-tls (transport): not on the reviewed list:")
+                && tls.detail.contains("rustls"),
             "{}",
             tls.detail
         );

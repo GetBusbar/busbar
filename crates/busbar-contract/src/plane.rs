@@ -388,6 +388,18 @@ pub struct PlaneDeclaration {
     /// the plane that declares the class here ([`plane_serving`]); at most one plane declares a class
     /// ([`check_served_op_classes`]). `&[]` for a plane no other plane reaches.
     pub served_op_classes: &'static [ServedOpClass],
+    /// The plane-record KINDS this plane keeps on the store's neutral plane-record seam (the
+    /// `PlaneRecord::kind` tags it writes). The administrative `plane_record_write` verb writes a
+    /// record of a kind only if the named plane declares it here ([`declares_record_kind`]), so an
+    /// operator cannot land a record under another plane's kind or a kind no plane reads. `&[]`
+    /// for a plane that keeps none.
+    pub record_kinds: &'static [&'static str],
+}
+
+/// Whether `decl` declares it keeps plane records of `kind` ([`PlaneDeclaration::record_kinds`]).
+#[must_use]
+pub fn declares_record_kind(decl: &PlaneDeclaration, kind: &str) -> bool {
+    decl.record_kinds.contains(&kind)
 }
 
 /// One operation class a plane serves one level down, and the plane's DECLARED display name — the

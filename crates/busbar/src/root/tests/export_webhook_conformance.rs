@@ -99,21 +99,11 @@ fn statement(registry: &PluginRegistry) -> Manifest {
         .clone()
 }
 
-/// The webhook crate's cdylib in this target dir (under CI a missing artifact fails, never skips).
+/// The webhook sink's cdylib in this target dir (under CI a missing artifact fails, never skips). The
+/// sink is pulled from its own repo at a pinned rev, so the library is that repo's `-plugin` crate
+/// under `deps` with its metadata hash — the same lookup the export axis's both-doors proof uses.
 fn cdylib() -> Option<Vec<u8>> {
-    let exe = std::env::current_exe().ok()?;
-    let profile = exe.parent()?.parent()?;
-    let name = busbar_plugin_loader::plugin_library_filename("busbar_export_webhook");
-    let found = [profile.join(&name), profile.join("deps").join(&name)]
-        .into_iter()
-        .filter_map(|p| Some((std::fs::metadata(&p).ok()?.modified().ok()?, p)))
-        .max()
-        .map(|(_, p)| p);
-    assert!(
-        found.is_some() || std::env::var_os("CI").is_none(),
-        "the webhook sink's cdylib is not built under CI; the both-ways proof must not skip"
-    );
-    std::fs::read(found?).ok()
+    super::export_tests::cdylib("busbar-export-webhook")
 }
 
 /// THE DROPPED-IN DOOR: `lib` signed by the release key under `manifest` into a fresh `plugins/`.
