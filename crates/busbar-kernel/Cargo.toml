@@ -109,8 +109,9 @@ busbar-plugin-loader = { path = "../plugin-loader" }
 busbar-auth-admin-tokens = { path = "../auth-admin-tokens", optional = true }
 # THE STAND-IN LINKED ROWS (test-only edges): the composition root links the build's default store
 # and ranking hooks onto the cold-kind axis (`preflight::install_linked_rows`); a test build has no
-# root, so these fixtures stand in, under `test-support` (and the dev-dependencies below). Renamed to
-# the role they play: no source here names the plugin.
+# root, so these fixtures stand in, under `test-support` (which the dev-dependency cycle through the
+# plane crates turns on for this crate's own tests). Renamed to the role they play: no source here
+# names the plugin.
 fixture-store = { package = "busbar-store-memory", path = "../store-memory", optional = true }
 fixture-hook = { package = "busbar-hooks-ranking", path = "../hooks-ranking", optional = true }
 axum = { workspace = true }
@@ -336,9 +337,6 @@ busbar-llm = { path = "../busbar-llm", features = ["test-support"] }
 # dual-compiled into this crate's test binary). Feature unification carries it for the whole test build.
 busbar-substrate-values = { path = "../busbar-substrate-values", features = ["test-support"] }
 busbar-store-example-plugin = { path = "../store-example-plugin" }
-# The stand-in linked rows for plain `cargo test -p` (the `test-support` edges serve dependents).
-fixture-store = { package = "busbar-store-memory", path = "../store-memory" }
-fixture-hook = { package = "busbar-hooks-ranking", path = "../hooks-ranking" }
 # The export axis this crate's config tests resolve `module: prometheus` against: the scrape sink,
 # LINKED into the test binary exactly as the composition root links it into the shipped one (the
 # kernel names no export module; its tests need one on the axis).
