@@ -353,3 +353,71 @@ pub fn live_records(app: Arc<busbar_kernel::state::AppHandle>) -> PlaneRecordSin
             .map_err(|e| e.0)
     })
 }
+
+/// THE REPLAY CACHE the two Q71(2) writes share (contract D-3): per `(actor, "<verb>:<key>")`, the
+/// SHA-256 of the body the first call carried and the packed answer it produced.
+pub type ReplayCache = busbar_core_admin::idempotency::IdempotencyCache<([u8; 32], Vec<u8>)>;
+
+/// The request header carrying the client-chosen idempotency token (names arrive lowercased).
+const IDEMPOTENCY_KEY_HEADER: &str = "idempotency-key";
+
+/// Run a write under contract D-3's `Idempotency-Key` replay — the same cache, TTL, in-flight
+/// sentinel and per-principal key scoping the key mint and rotate use.
+///
+/// No header: the effect runs, nothing is reserved. First sighting: the effect runs, and a `2xx`
+/// answer is committed under the key (a refusal clears the reservation, so a corrected retry runs).
+/// A replay with the SAME body answers the committed bytes verbatim and runs nothing; the same key
+/// with a DIFFERENT body is `409 conflict`, and a key whose first call is still running is the
+/// existing `409 conflict` "a request with this Idempotency-Key is already in flight".
+pub(crate) fn replayable(
+    cache: &ReplayCache,
+    verb: busbar_core_admin::KernelVerb,
+    actor: &str,
+    unit: &super::AdminRequest,
+    body: &[u8],
+    effect: impl FnOnce() -> Result<AdminAnswer, GovernanceError>,
+) -> Result<Vec<u8>, GovernanceError> {
+    use busbar_core_admin::idempotency::Probe;
+    use sha2::Digest as _;
+
+    let Some(header) = unit
+        .headers
+        .iter()
+        .find(|(name, _)| name == IDEMPOTENCY_KEY_HEADER)
+        .map(|(_, value)| value.as_str())
+        .filter(|value| !value.is_empty())
+    else {
+        return effect().map(|a| a.pack());
+    };
+    let name = busbar_core_admin::verb_name(verb).unwrap_or_default();
+    let digest: [u8; 32] = sha2::Sha256::digest(body).into();
+    // Scoped to the resolved PRINCIPAL, as the key mint's is: two principals sharing a key value
+    // never replay each other's answer.
+    match cache.probe((actor.to_string(), format!("{name}:{header}")), unit.at) {
+        Probe::Replay((first, answer)) if first == digest => Ok(answer),
+        Probe::Replay(_) => Ok(refused(
+            409,
+            "conflict",
+            "this Idempotency-Key was already used with a different request body",
+        )
+        .pack()),
+        Probe::InFlight => Ok(refused(
+            409,
+            "conflict",
+            "a request with this Idempotency-Key is already in flight",
+        )
+        .pack()),
+        Probe::NoKey => effect().map(|a| a.pack()),
+        Probe::Reserved(reservation) => match effect() {
+            Ok(answer) if (200..300).contains(&answer.status) => {
+                let packed = answer.pack();
+                reservation.commit((digest, packed.clone()), unit.at);
+                Ok(packed)
+            }
+            other => {
+                reservation.clear();
+                other.map(|a| a.pack())
+            }
+        },
+    }
+}

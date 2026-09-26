@@ -1305,3 +1305,92 @@ async fn the_four_q71_verbs_refuse_an_unauthorized_caller_by_text() {
         );
     }
 }
+
+/// One request as the operator, carrying `Idempotency-Key: <key>`.
+#[cfg(feature = "root-admin")]
+async fn over_with_key(router: &axum::Router, path: &str, body: &str, key: &str) -> (u16, String) {
+    use tower::ServiceExt;
+
+    let request = axum::http::Request::builder()
+        .method("POST")
+        .uri(path)
+        .header(
+            axum::http::header::AUTHORIZATION,
+            format!("Bearer {THE_OPERATORS_CREDENTIAL}"),
+        )
+        .header("idempotency-key", key)
+        .header(axum::http::header::CONTENT_TYPE, "application/json")
+        .body(axum::body::Body::from(body.to_string()))
+        .expect("the request builds");
+    let response = router
+        .clone()
+        .oneshot(request)
+        .await
+        .expect("the mounted router answers");
+    let status = response.status().as_u16();
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("the answer's body is readable");
+    (
+        status,
+        String::from_utf8(bytes.to_vec()).expect("the answer is text"),
+    )
+}
+
+/// CONTRACT D-3 ON THE TWO Q71(2) WRITES (ARCHITECT RULING (a)): a retry carrying the same
+/// `Idempotency-Key` and the same body answers the FIRST answer byte for byte and runs nothing again;
+/// the same key with a different body is refused by name and runs nothing; a different key runs.
+#[cfg(feature = "root-admin")]
+#[tokio::test]
+async fn the_q71_writes_replay_under_an_idempotency_key() {
+    const MISMATCH: &str = r#"{"error":{"code":"conflict","message":"this Idempotency-Key was already used with a different request body"}}"#;
+    let (node, kept) = a_q71_node(a_door_that_identifies_the_operator(), Some([7u8; 32]));
+
+    // plane_record_write: one record for two identical calls.
+    let (_, _, write) = the_q71_verbs()[2].clone();
+    let path = "/api/v1/admin/plane-record-write";
+    let first = over_with_key(&node, path, &write, "k-write").await;
+    assert_eq!(first.0, 200, "the first call writes: {}", first.1);
+    assert_eq!(
+        over_with_key(&node, path, &write, "k-write").await,
+        first,
+        "the retry answers the first answer, byte for byte"
+    );
+    assert_eq!(
+        kept.lock().expect("the sink").len(),
+        1,
+        "and writes nothing again"
+    );
+    let other = r#"{"plane":"example","kind":"note","id":"n-2","body":{}}"#;
+    assert_eq!(
+        over_with_key(&node, path, other, "k-write").await,
+        (409, MISMATCH.to_string()),
+        "the same key with a different body is refused by name"
+    );
+    assert_eq!(
+        kept.lock().expect("the sink").len(),
+        1,
+        "and writes nothing"
+    );
+    assert_eq!(over_with_key(&node, path, other, "k-other").await.0, 200);
+    assert_eq!(
+        kept.lock().expect("the sink").len(),
+        2,
+        "a different key runs"
+    );
+
+    // commit_upgrade: one sealed record (the same seq and hash) for two identical calls.
+    let (_, _, commit) = the_q71_verbs()[3].clone();
+    let path = "/api/v1/admin/commit-upgrade";
+    let first = over_with_key(&node, path, &commit, "k-commit").await;
+    assert_eq!(first.0, 200, "the first commit seals: {}", first.1);
+    assert_eq!(
+        over_with_key(&node, path, &commit, "k-commit").await,
+        first,
+        "the retry answers the first commit's seq and hash, sealing nothing again"
+    );
+    assert_eq!(
+        over_with_key(&node, path, r#"{"version":"0.0.1"}"#, "k-commit").await,
+        (409, MISMATCH.to_string())
+    );
+}

@@ -820,7 +820,8 @@ fn doc_for(
                           persist through, and only for a `kind` the named plane declares in its \
                           `record_kinds` (`GET /plane-facts` lists them). `body` is stored as its \
                           JSON bytes and never decoded by the store; `terminal` is the retention \
-                          disposition."
+                          disposition. Honors an `Idempotency-Key` header (per-principal, ~10min \
+                          replay): a retry with the same key and body answers the first answer."
                 .to_string(),
             success: Success::Json(
                 schema_of(gen.subschema_for::<PlaneRecordWriteView>()),
@@ -852,6 +853,12 @@ fn doc_for(
                     "404",
                     "`not_found`: ``plane `<key>` not found``".to_string(),
                 ),
+                (
+                    "409",
+                    "`conflict`: `this Idempotency-Key was already used with a different request \
+                     body`, or `a request with this Idempotency-Key is already in flight`"
+                        .to_string(),
+                ),
                 unavailable_503(
                     "the node could not take the unit, binds no record store, or the store \
                      failed",
@@ -862,7 +869,9 @@ fn doc_for(
             summary: "Commit the fleet to the release this node runs (irreducible)",
             description: "The body names the release; one this node does not run is refused and \
                           seals nothing. The committed release is sealed on the node journal \
-                          before the answer names its position and chain hash."
+                          before the answer names its position and chain hash. Honors an \
+                          `Idempotency-Key` header (per-principal, ~10min replay): a retry with the \
+                          same key and body answers the first commit and seals nothing again."
                 .to_string(),
             success: Success::Json(
                 schema_of(gen.subschema_for::<CommitUpgradeView>()),
@@ -881,7 +890,9 @@ fn doc_for(
                 gated_403(),
                 (
                     "409",
-                    "`conflict`: ``this node runs `<release>`; it cannot commit `<version>` ``"
+                    "`conflict`: ``this node runs `<release>`; it cannot commit `<version>` ``, \
+                     `this Idempotency-Key was already used with a different request body`, or \
+                     `a request with this Idempotency-Key is already in flight`"
                         .to_string(),
                 ),
                 unavailable_503(

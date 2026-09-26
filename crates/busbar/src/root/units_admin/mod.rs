@@ -1003,6 +1003,8 @@ pub struct CoreGovernance {
     /// Where `plane_record_write` lands its record. `None` refuses the write (`Store`): a record
     /// nothing kept was not written.
     records: Option<PlaneRecordSink>,
+    /// The node's `Idempotency-Key` replay cache for the two Q71(2) writes (contract D-3).
+    replays: Arc<bound::ReplayCache>,
 }
 
 impl CoreGovernance {
@@ -1030,7 +1032,15 @@ impl CoreGovernance {
             pools: no_pools(),
             planes: no_planes(),
             records: None,
+            replays: Arc::new(bound::ReplayCache::new()),
         }
+    }
+
+    /// Bind the node's `Idempotency-Key` replay cache (contract D-3).
+    #[must_use]
+    pub fn replaying(mut self, replays: Arc<bound::ReplayCache>) -> Self {
+        self.replays = replays;
+        self
     }
 
     /// Bind the planes this node serves and where a plane record is written (Q71(2)).
@@ -1173,23 +1183,41 @@ impl busbar_core_admin::Governance for CoreGovernance {
                 return bound::plane_facts_effect(&self.request.path, &*self.planes)
                     .map(|a| a.pack());
             }
+            // The two writes replay under contract D-3: a retry carrying the same `Idempotency-Key`
+            // with the same body answers the first answer, byte for byte, and runs nothing again.
             KernelVerb::PlaneRecordWrite => {
-                return bound::plane_record_write_effect(
+                return bound::replayable(
+                    &self.replays,
+                    verb,
+                    &self.attribution.principal,
+                    &self.request,
                     request,
-                    self.request.at,
-                    &*self.planes,
-                    self.records.as_ref(),
-                )
-                .map(|a| a.pack());
+                    || {
+                        bound::plane_record_write_effect(
+                            request,
+                            self.request.at,
+                            &*self.planes,
+                            self.records.as_ref(),
+                        )
+                    },
+                );
             }
             KernelVerb::CommitUpgrade => {
-                return bound::commit_upgrade_effect(
-                    request,
-                    self.request.at,
+                return bound::replayable(
+                    &self.replays,
+                    verb,
                     &self.attribution.principal,
-                    self.amendments.as_deref(),
-                )
-                .map(|a| a.pack());
+                    &self.request,
+                    request,
+                    || {
+                        bound::commit_upgrade_effect(
+                            request,
+                            self.request.at,
+                            &self.attribution.principal,
+                            self.amendments.as_deref(),
+                        )
+                    },
+                );
             }
             _ => {}
         }
@@ -2520,6 +2548,11 @@ pub struct AdminBinding {
     /// Where `plane_record_write` lands a record: the plane-facing store seam. `None` until a root
     /// binds one, and the verb then refuses rather than accept a write nothing keeps.
     pub records: Option<PlaneRecordSink>,
+    /// THE NODE'S `Idempotency-Key` REPLAY CACHE for `plane_record_write` and `commit_upgrade`
+    /// (contract D-3). Node-level, because a unit's governance value lives for one request; built on
+    /// first use over [`AdminBinding::claims`], so a durable node journals each claim exactly as the
+    /// key mint and rotate caches do (item 271).
+    pub replays: Arc<std::sync::OnceLock<Arc<bound::ReplayCache>>>,
     /// The requests currently being walked.
     pub units: AdminUnits,
 }
@@ -2654,6 +2687,7 @@ impl AdminBinding {
             pools: no_pools(),
             planes: no_planes(),
             records: None,
+            replays: Arc::new(std::sync::OnceLock::new()),
             units: AdminUnits::new(),
         }
     }
@@ -3011,37 +3045,45 @@ pub(crate) fn route(
         None => (None, busbar_core_admin::ApprovalState::NotYetApproved),
     };
 
-    let verbs = busbar_core_admin::Verbs::new(
-        CoreGovernance::new(
-            Arc::clone(&binding.dispatch),
-            Arc::clone(&binding.ledger),
-            binding.audit.clone(),
-            verb,
-            request.clone(),
+    let verbs =
+        busbar_core_admin::Verbs::new(
+            CoreGovernance::new(
+                Arc::clone(&binding.dispatch),
+                Arc::clone(&binding.ledger),
+                binding.audit.clone(),
+                verb,
+                request.clone(),
+            )
+            .amending(
+                binding.amendments.clone(),
+                AmendAttribution {
+                    principal: actor.clone(),
+                    dual_control: posture.map(|p| p.dual_control),
+                },
+            )
+            .granted(granted)
+            .pooled(Arc::clone(&binding.pools))
+            .planed(Arc::clone(&binding.planes), binding.records.clone())
+            .replaying(Arc::clone(binding.replays.get_or_init(|| {
+                Arc::new(match &binding.claims {
+                    Some(journal) => bound::ReplayCache::with_journal(Arc::clone(journal)
+                        as Arc<dyn busbar_core_admin::idempotency::ClaimJournal>),
+                    None => bound::ReplayCache::new(),
+                })
+            }))),
+            StoreRef(store),
+            ArrivalNonce(request.at),
+            PackedReplay,
+            CONFIG_CLASS_RULES,
         )
-        .amending(
-            binding.amendments.clone(),
-            AmendAttribution {
-                principal: actor.clone(),
-                dual_control: posture.map(|p| p.dual_control),
-            },
-        )
-        .granted(granted)
-        .pooled(Arc::clone(&binding.pools))
-        .planed(Arc::clone(&binding.planes), binding.records.clone()),
-        StoreRef(store),
-        ArrivalNonce(request.at),
-        PackedReplay,
-        CONFIG_CLASS_RULES,
-    )
-    // Item 271: the claims the create-key and rotate-key caches take go on the node's journal
-    // where a root bound one; `None` (no data directory) is exactly the unbound executor.
-    .with_claim_journal(
-        binding
-            .claims
-            .clone()
-            .map(|j| j as Arc<dyn busbar_core_admin::idempotency::ClaimJournal>),
-    );
+        // Item 271: the claims the create-key and rotate-key caches take go on the node's journal
+        // where a root bound one; `None` (no data directory) is exactly the unbound executor.
+        .with_claim_journal(
+            binding
+                .claims
+                .clone()
+                .map(|j| j as Arc<dyn busbar_core_admin::idempotency::ClaimJournal>),
+        );
 
     // THE THREE DISASTER-RECOVERY VERBS REACH THE STORE, not the governance seam. They are new
     // verbs and are admitted exactly as every other new verb is — scope, rate class, then the
