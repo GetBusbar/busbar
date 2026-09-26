@@ -14,9 +14,11 @@
 //!
 //! Relocated, module-path-only and byte-identical in every value, from `busbar-substrate-values`
 //! (`proto` and `proxy`), which re-exports each item under its historical path so every caller
-//! compiles unchanged. The protocol DECLARATION itself (`ProtocolDecl`, its inbound-auth and egress
-//! credential fields) stays there until it lands in the O7-ruled shape; the registry and the
-//! dialect-specific helpers are not shapes and stay there too.
+//! compiles unchanged. The protocol DECLARATION itself ([`ProtocolDecl`]) joined them (#83a SD-2b)
+//! with its inbound-auth field and its DECLARED egress scheme ([`EgressScheme`]); the registry and
+//! the dialect-specific helpers are not shapes and stay there.
+
+use crate::operation::Operation;
 
 // ── THE CANONICAL error-`type` VOCABULARY. The forward layer's error-KIND bank below, the admin
 //    API's not-found/invalid-request types and every dialect writer alias these, so each shared
@@ -377,4 +379,415 @@ pub struct SigningContext<'a> {
     /// upstream-distinguishability tell no native client produces. (The upstream-credential concern,
     /// split out of the front-door auth mode in slice 2d.)
     pub upstream_creds: crate::config::UpstreamCreds,
+}
+
+/// WHICH INBOUND AUTH SCHEME a protocol's clients present. DECLARED metadata, never a branch: the
+/// verification itself stays in the auth layer, which has the governance key lookup and the shared
+/// signing helpers. This replaces a reader-vtable predicate that was the same
+/// fact answered through a vtable — and answering it through a vtable meant allocating a reader to
+/// ask a `&'static` question.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum IngressAuth {
+    /// A bearer token / API key in a header (every protocol but the request-signing one).
+    Bearer,
+    /// A SigV4 request signature (the request-signing protocol's ingress shape).
+    SigV4,
+}
+
+/// A protocol's declared egress credential-header builder: the resolved per-request credential
+/// plus the signing context in, the header pairs to attach out. See
+/// [`ProtocolDecl::egress_auth_headers`].
+///
+pub type EgressAuthHeaders =
+    fn(&str, &SigningContext) -> Vec<(http::HeaderName, http::HeaderValue)>;
+
+/// HOW ONE CREDENTIAL IS PRESENTED on an egress request — which header carries it and in what
+/// form. Declared data: the kernel's egress-auth unit reads it and writes the header itself, so the
+/// credential never has to pass through the plane that declared it.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum CredentialHeader {
+    /// `authorization: Bearer <credential>`.
+    Bearer,
+    /// A custom header (`header`, lowercase) carrying the credential verbatim, or with its leading
+    /// whitespace trimmed when `trim_start` is set (a configured key whose family was recognized on
+    /// its trimmed text is sent as that text).
+    Raw {
+        /// The lowercase header name.
+        header: &'static str,
+        /// Whether leading whitespace is trimmed before the credential is sent.
+        trim_start: bool,
+    },
+}
+
+/// ONE ROW OF A CREDENTIAL-FAMILY TABLE: a credential whose text, leading whitespace trimmed, starts
+/// with `prefix` belongs to this family and is presented as `presented_as`. The table is how a
+/// dialect that accepts two credential families (a static key in one header, an access token as a
+/// bearer) states which is which as data rather than as code.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct CredentialFamily {
+    /// The family's credential prefix.
+    pub prefix: &'static str,
+    /// How a credential of this family is presented.
+    pub presented_as: CredentialHeader,
+}
+
+/// A PROTOCOL'S DECLARED EGRESS SCHEME — how busbar presents a lane's credential to this protocol's
+/// upstream, as data the kernel's egress-auth unit reads. The plane declares WHICH scheme; the
+/// kernel holds the credential and writes (or signs) the headers, so no plane receives a secret.
+/// Non-credential static headers a dialect always sends (a version header) are not auth and stay in
+/// the dialect's writer.
+#[derive(Clone, Copy, Debug)]
+pub enum EgressScheme {
+    /// A static credential, presented by a credential-family table: the first row whose prefix the
+    /// credential starts with decides; a credential matching no row is presented by the lane's
+    /// credential MODE — `own` for a configured lane key, `passthrough` for a forwarded caller token.
+    /// A static scheme is lane-constant: the same credential and mode always present the same bytes.
+    Static {
+        /// The credential-family table, in precedence order (may be empty).
+        families: &'static [CredentialFamily],
+        /// How a configured lane key that matches no family is presented.
+        own: CredentialHeader,
+        /// How a forwarded caller token that matches no family is presented.
+        passthrough: CredentialHeader,
+    },
+    /// A per-request SigV4 signature over the request, the lane credential being
+    /// `ACCESS_KEY_ID:SECRET[:SESSION_TOKEN]`. Never lane-constant: it signs the body, the time and
+    /// the path.
+    SigV4 {
+        /// The service name the signature is scoped to.
+        service: &'static str,
+        /// THE REGION, as a declared pure function of the upstream host (the endpoint names its
+        /// region); `None` when the host names none.
+        region_of_host: fn(&str) -> Option<&str>,
+        /// The region signed for when `region_of_host` finds none.
+        default_region: &'static str,
+        /// The request content type, which the signature covers beside the host.
+        content_type: &'static str,
+    },
+}
+
+impl EgressScheme {
+    /// `authorization: Bearer <credential>` whatever the credential or mode.
+    pub const fn bearer() -> Self {
+        Self::Static {
+            families: &[],
+            own: CredentialHeader::Bearer,
+            passthrough: CredentialHeader::Bearer,
+        }
+    }
+
+    /// The credential verbatim in the custom header `header` whatever the credential or mode.
+    pub const fn header(header: &'static str) -> Self {
+        let raw = CredentialHeader::Raw {
+            header,
+            trim_start: false,
+        };
+        Self::Static {
+            families: &[],
+            own: raw,
+            passthrough: raw,
+        }
+    }
+}
+
+/// EVERYTHING CORE KNOWS ABOUT A PROTOCOL, declared once by the protocol itself.
+///
+/// Core routes, mounts, labels and bounds from this and from nothing else. Each field replaces
+/// either a `match` on a protocol name or a vtable sweep that allocated to read a constant; the
+/// doc on each says which.
+///
+/// A SHAPE (DECISIONS #83): the declaration a protocol FILLS and the kernel reads, so both sides must
+/// agree on it field for field. Relocated from `busbar-substrate-values::proto` (#83a SD-2b), which
+/// re-exports it under its historical path; the registry that holds the installed declarations is
+/// not a shape and stays kernel-side. Every field type is a contract, `http` or `std` type, so the
+/// declaration names no kernel type.
+pub struct ProtocolDecl {
+    /// The registry key, and the metrics label. **OPERATOR-VISIBLE:** a protocol name appears in
+    /// dashboards and in `providers.*.protocol` config, so renaming one re-bases a metric series
+    /// and invalidates a config file. Replaces the `match name` arm.
+    pub name: &'static str,
+
+    /// This protocol's NEUTRAL computed-codec facade ([`DialectCodec`]), or `None` for a protocol
+    /// that serves operations without a cross-dialect codec (a protocol whose IR is its own). Presence
+    /// alone is the "declares a codec" fact the fields below let a caller read without touching it.
+    ///
+    /// `&'static dyn`, EXACTLY like the sibling [`Self::handler`], and that shape is the seam's
+    /// perf contract: the facade is stateless, so handing out a static borrow is a pure-memory
+    /// read. The `fn() -> Box<dyn DialectCodec>` this replaced minted a fresh heap allocation on
+    /// EVERY `dialect()` call — and `dialect()` sits on the per-request egress/response path (UA,
+    /// accept, request-id attach, pristine-head checks), so the plane seam that was designed to
+    /// cost nanoseconds was paying an allocator round-trip per touch instead.
+    pub codec: Option<&'static dyn DialectCodec>,
+
+    /// The cell that serves one exchange on this protocol. Replaces `handlers::request_handler`'s
+    /// match. `None` would be a protocol that declares itself and serves nothing; every declaration
+    /// in the tree today has one.
+    pub handler: Option<&'static dyn crate::codec::RequestHandler>,
+
+    /// THE VERBS this protocol serves — one [`Operation`] (`Verb { op, name }`
+    /// pair) per operation its handler answers. Bounded at load and enumerable at boot (never
+    /// request-derived), which is what makes their names safe as metric labels.
+    pub verbs: &'static [Operation],
+
+    /// TOP-LEVEL body keys the pre-materialized path may point-read, DOM-free. The registry unions
+    /// these with [`Self::array_stream_shim_key`] once, at boot.
+    pub head_keys: &'static [&'static str],
+
+    /// The `Content-Type` this protocol's writer emits on a STREAMING response, or `None` for a
+    /// protocol that does not stream.
+    pub streaming_content_type: Option<&'static str>,
+
+    /// The router's array-stream shim key for this protocol (only one dialect has one: a marker injected
+    /// into a non-`alt=sse` request body and stripped before egress).
+    pub array_stream_shim_key: Option<&'static str>,
+
+    /// This protocol's NATIVE tool-call id prefix, or `None` when it carries no tool id on the wire
+    /// (a dialect that correlates by name) or uses free-form ids with no canonical prefix.
+    pub native_tool_id_prefix: Option<&'static str>,
+
+    /// Which inbound auth scheme this protocol's clients present.
+    pub ingress_auth: IngressAuth,
+
+    /// This protocol's NATIVE egress credential-header builder, or `None` for a protocol whose
+    /// scheme is one of the shared ones the auth layer keeps (`egress_auth::resolve`'s bearer /
+    /// api-key-header / SigV4 arms). The builder receives the resolved per-request credential and the
+    /// [`SigningContext`] (`Own | Passthrough` mode plus what a signer needs) and returns
+    /// the header pairs to attach — the exact `CredentialProvider::headers_for` shape, as declared
+    /// data instead of a core `match`.
+    pub egress_auth_headers: Option<EgressAuthHeaders>,
+
+    /// Whether [`Self::egress_auth_headers`]'s output is LANE-CONSTANT: a pure function of the
+    /// resolved credential string and the `Own`/`Passthrough` mode, reading NOTHING else from the
+    /// [`SigningContext`] (not the body, not the timestamp, not the path). `true` lets the boot
+    /// path prebuild the exact header set once per lane and hand the request path a clone
+    /// (a credential-family api-key-vs-bearer shaping and a plain bearer qualify); a signer that
+    /// covers the request bytes (SigV4 reads body + timestamp + canonical URI) MUST stay
+    /// `false` — prebuilding it would sign one request and send that signature on every other.
+    /// Meaningless (and `false`) when `egress_auth_headers` is `None`.
+    pub egress_auth_lane_constant: bool,
+
+    /// This protocol's DECLARED egress scheme, which the kernel's egress-auth unit presents the
+    /// lane credential under (the plane never holds it), or `None` for a protocol that declares
+    /// none. A declared scheme is read ahead of [`Self::egress_auth_headers`].
+    pub egress_scheme: Option<EgressScheme>,
+
+    /// Whether a STREAMING response on this protocol reports token usage only when the request
+    /// explicitly opted in (a `stream_options.include_usage` request member). `false` — the
+    /// default answer for every other dialect — means the stream reports usage unconditionally.
+    pub stream_usage_requires_opt_in: bool,
+
+    // ── PROMOTED WRITER FACTS (G6 step A1) ─────────────────────────────────────────────────────────
+    // Constant, no-argument, IR-free facts that used to be answered off the `ProtocolWriter` vtable.
+    /// Replaces `ProtocolWriter::requires_max_tokens()`. Whether this dialect hard-rejects a request
+    /// with no `max_tokens` (such a dialect 400s; the forward path injects the lane default).
+    pub requires_max_tokens: bool,
+
+    /// Replaces `ProtocolWriter::stop_sequence_cap()`. The published cap on stop sequences and the
+    /// display name to cite in a rejection, or `None` when the dialect enforces none.
+    pub stop_sequence_cap: Option<(usize, &'static str)>,
+
+    /// Replaces `ProtocolWriter::cache_markers_model_gated()`. Whether this dialect's native cache
+    /// marker is model-gated (a `cachePoint` marker), so the cross-protocol seam clears the cache ask
+    /// unless the lane declares `prompt_caching`.
+    pub cache_markers_model_gated: bool,
+
+    /// Replaces `ProtocolWriter::fills_thought_signature()`. Whether egress fills the
+    /// `thoughtSignature` sentinel on a translated request.
+    pub fills_thought_signature: bool,
+
+    /// Replaces `ProtocolWriter::frame_after_message_start()`. A framed wire frame this dialect emits
+    /// immediately after `message_start` on a translated stream (an `event: ping`), or `None`.
+    pub frame_after_message_start: Option<&'static [u8]>,
+
+    /// Replaces `ProtocolWriter::reshapes_body_at_path_base()` (the PREDICATE only). Whether this
+    /// dialect's body must be reshaped when the lane carries a `path_base` (a re-hosted dialect).
+    pub reshapes_body_at_path_base: bool,
+
+    /// Replaces `ProtocolWriter::max_cache_control_breakpoints()`. The maximum `cache_control`
+    /// breakpoints this dialect accepts on one request, or `None` when the vendor publishes no cap.
+    pub max_cache_control_breakpoints: Option<usize>,
+
+    /// Replaces `ProtocolWriter::quota_exceeded_status()`. The native HTTP status a quota/budget
+    /// exhaustion maps to (429 for most; a service-quota exception may be 400).
+    pub quota_exceeded_status: http::StatusCode,
+
+    /// Replaces `ProtocolWriter::ingress_is_eventstream()`. True when this protocol's ingress client
+    /// decodes a binary event-stream body (a native SDK that reads framed events).
+    pub ingress_is_eventstream: bool,
+
+    /// Replaces `ProtocolWriter::emits_sse_done_terminator()`. True when this protocol's streamed
+    /// response ends with the literal `data: [DONE]` terminator.
+    pub emits_sse_done_terminator: bool,
+
+    /// Replaces `ProtocolWriter::max_citations_per_delta()`. The maximum citations one streamed
+    /// `citations_delta`-equivalent event may carry (one dialect frames exactly one), or `None`.
+    pub max_citations_per_delta: Option<usize>,
+
+    /// Replaces `ProtocolWriter::egress_user_agent()`. The plausible native-SDK `User-Agent` for THIS
+    /// egress protocol (a backend-facing fingerprint guard).
+    pub egress_user_agent: &'static str,
+
+    /// Replaces `ProtocolWriter::has_model_in_url()`. True when this protocol carries the model in the
+    /// URL path rather than the body, so a same-protocol passthrough strips body
+    /// `model`. A protocol declaring `true` MUST register a `path_ingress` (see
+    /// `busbar_kernel::ingress::path_ingress`); the composition root asserts this at boot.
+    pub has_model_in_url: bool,
+
+    /// Replaces `ProtocolWriter::auth_failure_status_and_kind()`. The HTTP status and error `kind` a
+    /// bad/missing credential yields, matched to what the genuine vendor returns.
+    pub auth_failure_status_and_kind: (http::StatusCode, &'static str),
+
+    /// Replaces `ProtocolWriter::ingress_relays_amzn_headers()`. True when this protocol's ingress
+    /// client expects `x-amzn-RequestId` (and `x-amzn-errortype` on errors) on every response.
+    pub ingress_relays_amzn_headers: bool,
+
+    /// Replaces `ProtocolWriter::ingress_relayed_response_header_names()`. The upstream response
+    /// header names a same-protocol passthrough forwards verbatim.
+    pub ingress_relayed_response_header_names: &'static [&'static str],
+
+    /// Replaces `ProtocolWriter::auth_failure_message()`. The vendor-plausible auth-failure wire
+    /// message this dialect lands verbatim in the native error body.
+    pub auth_failure_message: &'static str,
+
+    /// Replaces `ProtocolWriter::uses_array_stream_shim()`. True when this protocol's ingress client
+    /// expects a JSON-array (non-SSE) streamed body (a request without `?alt=sse`).
+    pub uses_array_stream_shim: bool,
+
+    /// Replaces `ProtocolWriter::has_native_path_not_found()`. True when this protocol has a native
+    /// path-not-found envelope with a protocol-specific message format.
+    pub has_native_path_not_found: bool,
+
+    /// Replaces `ProtocolWriter::egress_accept()` (the STREAMING half of it). The native-SDK `Accept`
+    /// header value THIS egress protocol sends on a STREAMING request — `text/event-stream` for every
+    /// SSE-framed dialect, a binary event-stream type for a framed-event dialect. The NON-streaming value
+    /// is universally `application/json`, so the caller reads
+    /// `if wants_stream { decl.egress_stream_accept } else { APPLICATION_JSON }`.
+    pub egress_stream_accept: &'static str,
+
+    /// This protocol's `GET /v1(beta)/models` (list-models) response ENVELOPE builder, or `None`
+    /// for a protocol that serves no model-discovery surface. Given the visible model/pool names
+    /// (already governance-filtered and ordered by core), it returns the dialect-shaped JSON body.
+    pub models_list_envelope: Option<fn(&[&str]) -> serde_json::Value>,
+
+    /// THE ROUTER detection predicate — how (and how tightly) this protocol claims an inbound
+    /// `(headers, path)`. `None` for a protocol identified by its explicit mount rather than a wire
+    /// fingerprint. The generic fold in `busbar_kernel::proto::detect` folds this over every
+    /// registered protocol in registration order and keeps the tightest [`ClaimStrength`], which is
+    /// exactly what the old `busbar-core`-resident `protocol_id` if-ladder computed by hand. Each
+    /// dialect states only ITS OWN rungs here, so the router names no dialect.
+    pub claims: Option<ClaimsFn>,
+
+    /// THE RESIDUAL detection predicate — how (and how tightly) this protocol claims a path from its
+    /// SHAPE ALONE, the arm `busbar_kernel::proto::residual_dialect_for_path` folds when the mount
+    /// table has declined a path and a native error envelope must still be chosen. `None` when this
+    /// protocol names no residual path. Replaces this dialect's arm of the core-resident
+    /// `residual_dialect_for_path` ladder.
+    pub residual_claims: Option<ResidualClaimsFn>,
+
+    /// TRUE for the ONE protocol core falls back to when NO dialect claims a request yet a dialect
+    /// must still be named — the compatible residual the ecosystem defaults to (`GET
+    /// /v1/models` with no fingerprint, an un-resolved ingress on the degraded response path). At
+    /// most one registered protocol sets this; core reads it through the registry so the literal
+    /// default dialect name leaves core entirely.
+    pub residual_default: bool,
+
+    /// THE RESPONSE-side vendor-metadata reporter — the fields this protocol's upstream returns that
+    /// no other protocol can express, reported per response body so the cross-protocol seam can LOG
+    /// the drop. `None` for a protocol with no such vendor-scoped artifact. Replaces the hard-coded
+    /// per-dialect key lists (and their differing lookup shapes) in
+    /// `warn_untranslatable_response_metadata`.
+    pub vendor_response_metadata: Option<VendorResponseMetadataFn>,
+
+    /// THE WIRE-FINGERPRINT HEADERS this dialect declares as SAFE disambiguators of the SHARED
+    /// `GET /v1(beta)/models` list-models surface — the header names whose PRESENCE alone identifies
+    /// this dialect's caller on that endpoint (a version header, a dialect-named key header).
+    /// `&[]` for a protocol with no such header fingerprint (the residual dialect,
+    /// and any protocol that serves no model-discovery surface).
+    ///
+    /// This is DELIBERATELY NARROWER than [`Self::claims`]: the router's full predicate also claims on
+    /// a dialect's CREDENTIAL header (a dialect's own key header, a signature-scheme
+    /// `authorization`) and on PATHS, but an incidental credential header on a models-list GET must NOT
+    /// steer the response envelope. `busbar_kernel`'s list-models handler copies only these declared
+    /// headers into the map it hands the detection fold, so it names no dialect while staying
+    /// byte-identical to the prior hand-coded two-header sniff.
+    pub list_models_fingerprint_headers: &'static [&'static str],
+}
+
+impl ProtocolDecl {
+    /// A NAME-ONLY DECLARATION: this key, and the neutral zero for every other field.
+    ///
+    /// The declaration has forty-odd fields and almost every one of them is "no". A caller that
+    /// needs a decl in order to exercise a fold over `name`/`has_model_in_url` had to write all
+    /// forty out, and two copies of that literal already existed — one here, one on the crate that
+    /// holds the fold. Two copies of a struct literal is two places a NEW field has to be added,
+    /// and the second one is the one that gets missed.
+    ///
+    /// So the neutral row is written ONCE, beside the struct whose fields it names, and a caller
+    /// states only what is true of its own case:
+    ///
+    /// ```ignore
+    /// static URL_MODEL: ProtocolDecl = ProtocolDecl { has_model_in_url: true, ..ProtocolDecl::named("telex") };
+    /// ```
+    ///
+    /// `const`, so it composes into a `static` without a lock or a lazy cell.
+    pub const fn named(name: &'static str) -> Self {
+        Self {
+            name,
+            codec: None,
+            handler: None,
+            verbs: &[],
+            head_keys: &[],
+            streaming_content_type: None,
+            array_stream_shim_key: None,
+            native_tool_id_prefix: None,
+            ingress_auth: IngressAuth::Bearer,
+            egress_auth_headers: None,
+            egress_auth_lane_constant: false,
+            egress_scheme: None,
+            stream_usage_requires_opt_in: false,
+            requires_max_tokens: false,
+            stop_sequence_cap: None,
+            cache_markers_model_gated: false,
+            fills_thought_signature: false,
+            frame_after_message_start: None,
+            reshapes_body_at_path_base: false,
+            max_cache_control_breakpoints: None,
+            quota_exceeded_status: http::StatusCode::TOO_MANY_REQUESTS,
+            ingress_is_eventstream: false,
+            emits_sse_done_terminator: false,
+            max_citations_per_delta: None,
+            egress_user_agent: EGRESS_UA_DEFAULT,
+            has_model_in_url: false,
+            auth_failure_status_and_kind: (http::StatusCode::UNAUTHORIZED, ERR_TYPE_AUTHENTICATION),
+            ingress_relays_amzn_headers: false,
+            ingress_relayed_response_header_names: &[],
+            auth_failure_message: "authentication failed",
+            uses_array_stream_shim: false,
+            has_native_path_not_found: false,
+            egress_stream_accept: TEXT_EVENT_STREAM,
+            models_list_envelope: None,
+            claims: None,
+            residual_claims: None,
+            residual_default: false,
+            vendor_response_metadata: None,
+            list_models_fingerprint_headers: &[],
+        }
+    }
+
+    /// True when this protocol authenticates INBOUND requests with SigV4 rather than a bearer
+    /// token. The auth layer's one consumer of [`ProtocolDecl::ingress_auth`], kept as a predicate
+    /// so the front door reads a QUESTION rather than comparing an enum it would then have to
+    /// exhaust. `pub` (not `pub(crate)` as in its core home) so core's auth layer names it across the
+    /// crate boundary after the relocation.
+    pub fn uses_sigv4_ingress_auth(&self) -> bool {
+        matches!(self.ingress_auth, IngressAuth::SigV4)
+    }
+
+    /// This protocol's neutral computed-codec facade ([`DialectCodec`]) — the 4th seam the
+    /// operation-blind driver reads instead of `protocol_for(name).writer()/.reader()`. `None` for a
+    /// protocol that declares no codec. A pure-memory read of the declaration's static
+    /// borrow: no allocation, no construction — see [`Self::codec`] for why that is load-bearing.
+    pub fn dialect(&self) -> Option<&'static dyn DialectCodec> {
+        self.codec
+    }
 }

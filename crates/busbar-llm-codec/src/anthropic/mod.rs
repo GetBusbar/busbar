@@ -163,6 +163,7 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
     // retired the `"anthropic"` arm in core's `egress_auth::resolve`.
     egress_auth_headers: Some(egress_auth_headers),
     egress_auth_lane_constant: true,
+    egress_scheme: None,
     stream_usage_requires_opt_in: false,
     // ── Promoted writer facts (G6 step A1): the same constants the `AnthropicWriter` methods returned.
     requires_max_tokens: true,

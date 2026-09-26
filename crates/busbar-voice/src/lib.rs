@@ -415,6 +415,7 @@ pub static DECLS: busbar_kernel::proto::ProtocolDecl = busbar_kernel::proto::Pro
     // header set once per lane (the plain-Bearer discipline the LLM plane's OpenAI dialect declares).
     egress_auth_headers: Some(voice_egress_auth_headers),
     egress_auth_lane_constant: true,
+    egress_scheme: None,
     stream_usage_requires_opt_in: false,
     // Promoted writer facts: this plane declares no cross-dialect codec and has no writer, so every
     // promoted fact is the `ProtocolWriter` trait DEFAULT — the same values the codec-less MCP `DECL`

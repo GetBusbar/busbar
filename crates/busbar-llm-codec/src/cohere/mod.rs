@@ -96,6 +96,7 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
     // core's `egress_auth::resolve`. A pure function of the key, so it is lane-constant and prebuilt.
     egress_auth_headers: Some(egress_auth_headers),
     egress_auth_lane_constant: true,
+    egress_scheme: None,
     stream_usage_requires_opt_in: false,
     // ── Promoted writer facts (G6 step A1): the same constants the `CohereWriter` methods returned.
     requires_max_tokens: false,

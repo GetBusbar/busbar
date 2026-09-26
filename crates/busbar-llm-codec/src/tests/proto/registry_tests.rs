@@ -265,6 +265,7 @@ const TELEX_DECL: ProtocolDecl = ProtocolDecl {
     ingress_auth: IngressAuth::SigV4,
     egress_auth_headers: None,
     egress_auth_lane_constant: false,
+    egress_scheme: None,
     stream_usage_requires_opt_in: false,
     // Promoted writer facts (G6 step A1): a codec-less fixture, so every fact is the trait default.
     requires_max_tokens: false,
@@ -478,6 +479,7 @@ const fn named_decl(name: &'static str) -> ProtocolDecl {
         ingress_auth: IngressAuth::Bearer,
         egress_auth_headers: None,
         egress_auth_lane_constant: false,
+        egress_scheme: None,
         stream_usage_requires_opt_in: false,
         // Promoted writer facts (G6 step A1): a name-only fixture, so every fact is the trait default.
         requires_max_tokens: false,
