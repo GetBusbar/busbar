@@ -216,19 +216,19 @@ busbar-voice = ["busbar-voice-codec"]
 # base" and asked for exactly this strike. THE CEILINGS THEMSELVES DID NOT MOVE: both still read
 # 7418. The next #83/#84 merge into busbar-contract declares its own re-arm here, once.
 
-# ── THE CONTRACT CEILING PAIR, RE-ARMED AT THE MEASURE AFTER FOLD F4 (busbar-api retired) ────────
+# ── THE CONTRACT CEILING PAIR, RE-ARMED AT THE MEASURE AFTER FOLD F4 AND XPLANE ─────────────────
 
 [gate.ceiling_raises."gate.surface_ceilings.contract_caps"]
 file    = "qa/construction.toml"
 from    = 9184
-to      = 9189
-because = "OWNER RULING Q68(3) (docs/design/1.6.0-QUESTIONS.md), ARCHITECT O2: contract_caps re-arms at the MEASURED value after each owner-locked #83 merge into busbar-contract, each in its own commit. This is the re-arm for fold F4 (2/3, 7cbf9b133; DECISIONS #35/#83): busbar-api retired, and its one remaining shape, the SecretResolve seam over the config secret reference, moved into busbar_contract::secret (+5 code lines; everything else went to busbar-kernel-wal, busbar-kernel-ledger and busbar-plugin-loader, or was a re-export and died). Measured by cargo xtask loc busbar-contract --ref: 9184 at 7cbf9b133^, 9189 at 7cbf9b133. The live declaration is re-pointed to describe this raise; the 8619 -> 9184 declaration it replaces (SD-2b #83a moves +537 and fold F4 1/3 +28) is at the base and expired."
+to      = 9218
+because = "OWNER RULING Q68(3) (docs/design/1.6.0-QUESTIONS.md), ARCHITECT O2 and ARCHITECT RULING (S) (N-FIXTURE residue): contract_caps re-arms at the MEASURED value after each contract change, each in its own commit. This declaration states two parts. (1) fold F4 (2/3, 7cbf9b133; DECISIONS #35/#83): busbar-api retired and its SecretResolve seam moved into busbar_contract::secret, +5 (9184 at 7cbf9b133^, 9189 at 7cbf9b133). (2) XPLANE, ruling (S): a plane names no other plane (#47/#49), so a nested destination names an operation CLASS and the host answers with the plane that declares it serves the class — the shape ServedOpClass, PlaneDeclaration.served_op_classes, plane_serving and the one-server guard check_served_op_classes (6537443e2, +30), and DestinationFacts::NestedPlane losing its plane field (3c772d601, -1). Measured by cargo xtask loc busbar-contract --ref: 9189 at 7cbf9b133, 9219 at 6537443e2, 9218 at 3c772d601. The one live declaration is re-pointed to the measured 9218 and states both parts."
 
 [gate.ceiling_raises."rules.loc-ceilings.caps_contract_ceiling"]
 file    = "qa/construction.toml"
 from    = 9184
-to      = 9189
-because = "OWNER RULING Q68(3) (docs/design/1.6.0-QUESTIONS.md), ARCHITECT O2: contract_caps re-arms at the MEASURED value after each owner-locked #83 merge into busbar-contract, each in its own commit. This is the re-arm for fold F4 (2/3, 7cbf9b133; DECISIONS #35/#83): busbar-api retired, and its one remaining shape, the SecretResolve seam over the config secret reference, moved into busbar_contract::secret (+5 code lines; everything else went to busbar-kernel-wal, busbar-kernel-ledger and busbar-plugin-loader, or was a re-export and died). Measured by cargo xtask loc busbar-contract --ref: 9184 at 7cbf9b133^, 9189 at 7cbf9b133. The live declaration is re-pointed to describe this raise; the 8619 -> 9184 declaration it replaces (SD-2b #83a moves +537 and fold F4 1/3 +28) is at the base and expired."
+to      = 9218
+because = "OWNER RULING Q68(3) (docs/design/1.6.0-QUESTIONS.md), ARCHITECT O2 and ARCHITECT RULING (S) (N-FIXTURE residue): contract_caps re-arms at the MEASURED value after each contract change, each in its own commit. This declaration states two parts. (1) fold F4 (2/3, 7cbf9b133; DECISIONS #35/#83): busbar-api retired and its SecretResolve seam moved into busbar_contract::secret, +5 (9184 at 7cbf9b133^, 9189 at 7cbf9b133). (2) XPLANE, ruling (S): a plane names no other plane (#47/#49), so a nested destination names an operation CLASS and the host answers with the plane that declares it serves the class — the shape ServedOpClass, PlaneDeclaration.served_op_classes, plane_serving and the one-server guard check_served_op_classes (6537443e2, +30), and DestinationFacts::NestedPlane losing its plane field (3c772d601, -1). Measured by cargo xtask loc busbar-contract --ref: 9189 at 7cbf9b133, 9219 at 6537443e2, 9218 at 3c772d601. The one live declaration is re-pointed to the measured 9218 and states both parts."
 
 # ── THE KERNEL CEILING'S OWNER-APPROVED RAISE — EXPIRED AND STRUCK ─────────────────────────────
 #
@@ -329,7 +329,9 @@ because = "OWNER RULING Q68(3) (docs/design/1.6.0-QUESTIONS.md), ARCHITECT O2: c
 # F4's records.rs (+28). The declared raise above carries the per-commit measure.
 # RE-ARMED 9184 -> 9189, AT THE MEASUREMENT (OWNER RULING Q68(3)), in its own commit after fold F4 (2/3)
 # 7cbf9b133 (the SecretResolve seam, +5); the live declaration above carries the measure.
-contract_caps = 9189
+# RE-ARMED 9189 -> 9218, AT THE MEASUREMENT (OWNER RULING Q68(3); ARCHITECT RULING (S)), in its own
+# commit after XPLANE's served-operation-class shape (6537443e2, +30; 3c772d601, -1).
+contract_caps = 9218
 # REPOINTED, and the repoint is what makes this row a gate again. It named the CRATE
 # `busbar-grammar`, which #40 folded into `busbar-contract` and deleted — so it summed nothing,
 # measured nothing and passed, which is this file's own "zero is not clean" failure sitting inside
@@ -892,7 +894,8 @@ contract_crate = "busbar-contract"
 # RE-ARMED 8558 -> 8619 with its pair (OWNER RULING Q68(3); the MET-1 metric-family shape).
 # RE-ARMED 8619 -> 9184 with its pair (OWNER RULING Q68(3); SD-2b's #83a moves +537, fold F4 +28).
 # RE-ARMED 9184 -> 9189 with its pair (OWNER RULING Q68(3); fold F4 2/3, +5).
-caps_contract_ceiling = 9189
+# RE-ARMED 9189 -> 9218 with its pair (OWNER RULING Q68(3); XPLANE ruling (S), +29).
+caps_contract_ceiling = 9218
 unit_crate_glob = "busbar-unit-*"
 # RE-KEYED on cherry-pick onto 143db6db6: this commit's own delta is -53 (two units stopped
 # declaring their own copies), measured against whatever unit_total_ceiling read when the line was
