@@ -4077,8 +4077,10 @@ async fn a_served_rerank_puts_identical_search_units_on_both_books() {
     node.inflight.remove(key_n);
     // THE NODE'S OWN TAIL, as `answer_arriving_at` runs it: the terminal's bytes, wrapped by the
     // late arm, drained the way a client drains them.
-    let (response, late) = finish();
-    let response = response.expect("the served unit posted its terminal");
+    let (answer, late) = finish();
+    let response = answer
+        .expect("the served unit posted its terminal")
+        .into_response();
     assert_eq!(response.status(), StatusCode::OK, "the rerank was served");
     let response =
         node.attach_late_accrual(response, late, &principal, arrived, Some(history.clone()));
@@ -4327,7 +4329,8 @@ async fn the_linked_arrivals_hand_their_units_to_the_node_the_root_installs() {
         headers: json_headers(),
         body: Fixture::BufferedOk.body(),
     })
-    .await;
+    .await
+    .into_response();
     let observed = observe(&rig, resp).await;
     assert_eq!(
         field(&observed, "status"),

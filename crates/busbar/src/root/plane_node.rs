@@ -50,6 +50,7 @@ use busbar_contract::caps::{
     VerifiedDestination, Verify,
 };
 use busbar_contract::{LaneId, Registration, UnitKey};
+use busbar_kernel::plane_host::PlaneAnswer;
 use busbar_kernel::slice::GroupLeaseSlip;
 use busbar_kernel::teller::{AccrualMeter, Ended, Evidence, RouteAwait, RouteLeg, UnitCtx, Units};
 
@@ -708,8 +709,11 @@ impl Node {
                 // reaches an end without passing one of the two audit doors, so the fallback below
                 // is unreachable — and it is an answer rather than an unwrap, because a path that
                 // cannot be taken still has to say something if it is.
-                let (response, late) = finish();
-                let response = response.unwrap_or_else(|| unavailable(proto));
+                // THE AUDITED EXIT (#28): the plane's answer becomes the served response here, and
+                // nowhere on the plane's side of the seam.
+                let (answer, late) = finish();
+                let response =
+                    answer.map_or_else(|| unavailable(proto), PlaneAnswer::into_response);
                 // THE LATE ARM. The settlement above carried what the terminal knew, and on a plane
                 // whose money is in a cell the response's own body fills when it DRAINS, that is the
                 // record a unit ran and ended and nothing else. So the body goes out wrapped, and
@@ -1537,9 +1541,13 @@ fn card_in_force(card: Option<&crate::root::kernel::PinnedHistory>, arrived_ms: 
 static NODE: LazyLock<Node> = LazyLock::new(Node::new);
 
 /// THE PROCESS'S NODE, as the node axis hands it to a plane ([`ROOT_UNIT`]'s `drive`): one handed
-/// unit, driven on the runtime the request arrived on.
-fn drive(handed: Handed) -> std::pin::Pin<Box<dyn std::future::Future<Output = Response> + Send>> {
-    Box::pin(NODE.answer(handed))
+/// unit, driven on the runtime the request arrived on. What goes back is the served response the
+/// audited exit made, as a [`PlaneAnswer::Live`] (#28): its body may still be draining into the
+/// late arm, so the outer handler serves it as it stands.
+fn drive(
+    handed: Handed,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = PlaneAnswer> + Send>> {
+    Box::pin(async move { PlaneAnswer::Live(NODE.answer(handed).await) })
 }
 
 /// Bind the process's one node to the process's one book.

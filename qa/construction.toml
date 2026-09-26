@@ -794,6 +794,13 @@ step directory that returns a `Response` from anywhere but `audit.rs` is a way f
 without being posted — the exact hole the loop exists to close."""
 root = "crates/busbar-llm/src/unit"
 allowed_files = ["audit.rs"]
+# THE SCOPE'S ONE EXEMPTION (spec #28; ARCHITECT RULING, SLOT NODE-AUDIT): a plane's unit answers with
+# the two-variant `PlaneAnswer` — `Unary(status, headers, body)`, turned into a response only on the
+# root's audited exit, or `Live(Response)`, a live body governed at admit. `PlaneAnswer::Live` is the
+# one carrier a response crosses the plane's boundary in, so a function returning a `PlaneAnswer` is
+# not an escape. It is stated HERE, once, for the whole scope; there is no per-function waiver, and a
+# carrier that is itself a bare `Response` is refused by the rule.
+answer_carrier = "PlaneAnswer::Live"
 max_escapes = 0
 
 # ── 12. terminal-doors-in-audit-step ─────────────────────────────────────────────────────────────

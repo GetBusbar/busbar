@@ -85,13 +85,22 @@
 //! its awaited Route leg and its [`Finish`](crate::unit::node::Finish) — the terminal's bytes and the reading of what they
 //! consumed, taken once their body has drained ([`Late`](crate::unit::node::Late)). The reading is a REPORT, never an amount:
 //! what it is worth is the node's card's answer.
+//!
+//! ## What this file answers with
+//!
+//! A [`PlaneAnswer`] (#28), never a finished response: the construction gate refuses a function
+//! under this directory that returns one anywhere but the audit step's own file. The plane's answer
+//! is `Live` — its body is a live stream whose tap fills as it drains — and `PlaneAnswer::Live` is
+//! the one carrier a response crosses the plane's boundary in. Every answer here that no unit on the
+//! loop produced wears it too: a response the dialect's own arrival already rendered (and, where it
+//! is accounted, already posted through the rejected door), which the outer handler serves as it
+//! stands.
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Instant;
 
 use axum::http::StatusCode;
-use axum::response::Response;
 
 use busbar_contract::caps::{
     Admission, Admit, Admittance, Approve, Arrival, ArrivalRecord, Audit, Authenticate,
@@ -102,7 +111,7 @@ use busbar_contract::slice::GroupLeaseSlip;
 use busbar_contract::LaneId;
 use busbar_kernel::{
     ingress::arrival::{Arrival as ArrivalRequest, ArrivalCtx, ArrivalPayload},
-    proxy::ingress_error,
+    plane_host::PlaneAnswer,
     teller::{AccrualMeter, Ended, Evidence, FeeEvidence, RouteAwait, RouteLeg, UnitCtx, Units},
 };
 use busbar_substrate_values::proxy::POOL_LABEL_UNRESOLVED;
@@ -130,9 +139,10 @@ pub type Reported = (busbar_substrate_values::billing::Usage, u32, String);
 /// The reading of what a drained body consumed, taken once, when the body is done with.
 pub type Late = Box<dyn FnOnce() -> Option<Reported> + Send>;
 
-/// A unit's finish: the bytes its terminal posted, and the late reading of what they consumed —
-/// `None` where the response carries no tap, because nothing was ever going to fill one.
-pub type Finish = Box<dyn FnOnce() -> (Option<Response>, Option<Late>) + Send>;
+/// A unit's finish: the answer its terminal posted, and the late reading of what it consumed —
+/// `None` where the answer carries no tap, because nothing was ever going to fill one. The answer is
+/// a [`PlaneAnswer`] (#28), never a finished response: it becomes one on the node's audited exit.
+pub type Finish = Box<dyn FnOnce() -> (Option<PlaneAnswer>, Option<Late>) + Send>;
 
 /// A built unit: its steps, its awaited Route leg, and its finish. The first two are the same unit.
 pub type Built = (
@@ -149,8 +159,8 @@ pub type Build = Box<dyn FnOnce(Lent) -> Built + Send>;
 pub type Handed = (PrincipalId, OpClassId, &'static str, Build);
 
 /// THE NODE a composition root installs ([`install_node`]): it takes a handed unit, drives it through
-/// the loop, and answers with the bytes its terminal posted.
-pub type Drive = fn(Handed) -> Pin<Box<dyn Future<Output = Response> + Send>>;
+/// the loop, and answers with what its terminal posted — as the plane's [`PlaneAnswer`] (#28).
+pub type Drive = fn(Handed) -> Pin<Box<dyn Future<Output = PlaneAnswer> + Send>>;
 
 /// The node this plane's units are driven through, once the composition root has installed one.
 static NODE: OnceLock<Drive> = OnceLock::new();
@@ -164,12 +174,12 @@ pub fn install_node(drive: Drive) {
 
 /// Hand one unit to the node. A process whose composition root installed no node has no loop to
 /// run the unit on, and says so in the caller's own dialect rather than serving it some other way.
-fn drive(handed: Handed) -> Pin<Box<dyn Future<Output = Response> + Send>> {
+fn drive(handed: Handed) -> Pin<Box<dyn Future<Output = PlaneAnswer> + Send>> {
     match NODE.get() {
         Some(node) => node(handed),
         None => {
             let proto = handed.2;
-            Box::pin(async move { unavailable(proto) })
+            Box::pin(async move { PlaneAnswer::Live(audit::render_refusal(proto, &unavailable())) })
         }
     }
 }
@@ -237,25 +247,25 @@ const TRANSPORT_CHAIN: [&str; 1] = ["http"];
 /// not shareable would have to be cloned per unit.
 pub(crate) static NATIVE_SEATS: &[&(dyn approve::VetoSeat + Sync)] = &[];
 
-/// What a unit a seated gate stopped answers with, in the caller's own dialect.
+/// The refusal a unit a seated gate stopped answers with; the audit step renders it in the caller's
+/// own dialect.
 ///
 /// One permission sentence, vendor-plausible, naming nothing of the operator's — not the seat, not
 /// the principal, not a word of governance vocabulary — because a gate's veto is not entitled to a
 /// reason of its own and a client is owed the same answer whichever gate stopped it. WHICH seat
 /// stopped the unit is the operator's diagnostic, and the step file already logs it.
-fn vetoed(proto: &str) -> Response {
-    ingress_error(
-        proto,
+fn vetoed() -> audit::RefusalOutcome {
+    audit::RefusalOutcome::new(
         StatusCode::FORBIDDEN,
         busbar_substrate_values::proxy::KIND_PERMISSION,
         "Your API key does not have permission to access this resource.",
     )
 }
 
-/// What a node that cannot take the unit at all answers with, in the caller's own dialect.
-fn unavailable(proto: &str) -> Response {
-    ingress_error(
-        proto,
+/// The refusal a node that cannot take the unit at all answers with; the audit step renders it in
+/// the caller's own dialect.
+fn unavailable() -> audit::RefusalOutcome {
+    audit::RefusalOutcome::new(
         StatusCode::SERVICE_UNAVAILABLE,
         busbar_substrate_values::proxy::KIND_OVERLOADED,
         "The service is temporarily overloaded. Please retry shortly.",
@@ -351,7 +361,7 @@ impl LlmUnit {
     /// something — and an answer rather than an unwrap, because a path that cannot be taken still
     /// has to say something if it is.
     fn nothing_rendered(&self) -> audit::Served {
-        audit::Served::of(unavailable(self.walk.proto()))
+        audit::Served::of(audit::render_refusal(self.walk.proto(), &unavailable()))
     }
 }
 
@@ -548,7 +558,8 @@ impl Units for LlmUnit {
         // the route step overwrites it with the upstream's answer, which is the same one-slot
         // discipline every other rendered refusal on this plane already relies on.
         if !self.seats.is_empty() {
-            self.walk.hold_bytes(vetoed(self.walk.proto()));
+            self.walk
+                .hold_bytes(audit::render_refusal(self.walk.proto(), &vetoed()));
         }
         // The auto trait is dropped for the call because the step file's seat list does not ask for
         // it; an empty list collects into a `Vec` that allocates nothing, which is what the mount
@@ -779,7 +790,7 @@ impl LlmUnit {
     ///
     /// The reading keeps the walk alive with it, for exactly as long as it is held: it needs the lane
     /// table the walk resolved and the facts the Route and Meter steps left.
-    fn finish(&self) -> (Option<Response>, Option<Late>) {
+    fn finish(&self) -> (Option<PlaneAnswer>, Option<Late>) {
         let response = self.walk.take_terminal().map(audit::Served::into_response);
         let late = response.as_ref().and_then(Walk::tap_of).map(|tap| {
             let walk = Arc::clone(&self.walk);
@@ -788,7 +799,10 @@ impl LlmUnit {
                     .map(|report| (report.usage, report.fee_count, report.lane))
             }) as Late
         });
-        (response, late)
+        // LIVE, per #28: this plane's answer is a live body whose tap fills as it drains, and it
+        // crosses to the node as it stands — the node turns it into the served response on its
+        // audited exit.
+        (response.map(PlaneAnswer::Live), late)
     }
 }
 
@@ -802,7 +816,7 @@ impl LlmUnit {
 /// own endpoint — read here exactly as the legacy arrival reads it, and a path the dialect names no
 /// operation for is not a request at all: it gets the plain path-shaped 404 the catch-all uses and
 /// is never accounted, which is what the released behaviour does.
-async fn body_arrival(proto: &'static str, a: ArrivalRequest) -> Response {
+async fn body_arrival(proto: &'static str, a: ArrivalRequest) -> PlaneAnswer {
     let ArrivalRequest {
         host,
         ctx,
@@ -815,19 +829,19 @@ async fn body_arrival(proto: &'static str, a: ArrivalRequest) -> Response {
     let Some(operation) = busbar_substrate_values::handlers::request_handler(proto)
         .and_then(|rh| rh.resolve_operation(uri.path(), &body))
     else {
-        return host.fallback_not_found(
+        return PlaneAnswer::Live(host.fallback_not_found(
             &ctx,
             &path,
             StatusCode::NOT_FOUND,
             host.err_type_not_found(),
             "the requested resource was not found",
-        );
+        ));
     };
     // The neutral arrival payload core boxed at the catch-all: the minted engine host, the resolved
     // governance context and the caller's bearer token. A context carrying anything else is a wiring
     // bug rather than a runtime input, and it is answered rather than unwrapped.
     let Some(payload) = ctx.downcast_ref::<ArrivalPayload>() else {
-        return unavailable(proto);
+        return PlaneAnswer::Live(audit::render_refusal(proto, &unavailable()));
     };
     let arrival = WalkArrival {
         host: Arc::clone(&payload.host),
@@ -857,7 +871,7 @@ macro_rules! body_arrivals {
         $(
             pub(crate) fn $name(
                 a: ArrivalRequest,
-            ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Response> + Send>> {
+            ) -> std::pin::Pin<Box<dyn std::future::Future<Output = PlaneAnswer> + Send>> {
                 Box::pin(body_arrival($proto, a))
             }
         )+
@@ -887,12 +901,12 @@ async fn path_arrival(
     ctx: ArrivalCtx,
     headers: axum::http::HeaderMap,
     body: axum::body::Bytes,
-) -> Response {
+) -> PlaneAnswer {
     // The URL's facts, the operation they resolved to, and the routing hint a body-model shape
     // carries. Exactly one of the first and the last is ever set.
     let (facts, operation, model_hint) = match parsed {
         // A pre-rendered fallback 404 (a different terminal): return its bytes unchanged.
-        PathArrivalFacts::Refused(resp) => return resp,
+        PathArrivalFacts::Refused(resp) => return PlaneAnswer::Live(resp),
         // A NAMED pre-routing refusal is rendered and posted through the rejected door at the
         // dialect's own path arrival on the loop, which holds the arrival host and the pinned epoch —
         // BEFORE the loop this function drives — so it never reaches here.
@@ -911,7 +925,7 @@ async fn path_arrival(
     // The neutral arrival payload core boxed at the catch-all. A context carrying anything else is a
     // wiring bug rather than a runtime input, and it is answered rather than unwrapped.
     let Some(payload) = ctx.downcast_ref::<ArrivalPayload>() else {
-        return unavailable(proto);
+        return PlaneAnswer::Live(audit::render_refusal(proto, &unavailable()));
     };
     let arrival = WalkArrival {
         host: Arc::clone(&payload.host),
@@ -936,7 +950,7 @@ async fn path_arrival(
 /// GEMINI'S PATH ARRIVAL, ON THE LOOP. The dialect's own tail decode and URL parse, then the loop.
 pub(crate) fn gemini_path_arrival(
     a: ArrivalRequest,
-) -> std::pin::Pin<Box<dyn std::future::Future<Output = Response> + Send>> {
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = PlaneAnswer> + Send>> {
     // Pinned before the parse, because a parse that rejects accounts its own rejection against them.
     let started = Instant::now();
     let charged_at = busbar_substrate_values::store::now();
@@ -950,7 +964,7 @@ pub(crate) fn gemini_path_arrival(
             envelope_proto,
             outcome,
         } => {
-            let resp = audit::finish_rejected_via_audit_arrival(
+            let resp = PlaneAnswer::Live(audit::finish_rejected_via_audit_arrival(
                 &a.host,
                 &a.ctx,
                 envelope_proto,
@@ -958,7 +972,7 @@ pub(crate) fn gemini_path_arrival(
                 started,
                 charged_at,
                 audit::render_refusal(envelope_proto, &outcome),
-            );
+            ));
             Box::pin(async move { resp })
         }
         other => Box::pin(path_arrival(
@@ -975,7 +989,7 @@ pub(crate) fn gemini_path_arrival(
 /// anything else — all four the dialect's own answer, and only the driving is this file's.
 pub(crate) fn bedrock_path_arrival(
     a: ArrivalRequest,
-) -> std::pin::Pin<Box<dyn std::future::Future<Output = Response> + Send>> {
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = PlaneAnswer> + Send>> {
     let started = Instant::now();
     let charged_at = busbar_substrate_values::store::now();
     let parsed = crate::arrival::bedrock_path_parse(&a.host, &a.ctx, &a.path, &a.uri, &a.body);
@@ -987,7 +1001,7 @@ pub(crate) fn bedrock_path_arrival(
             envelope_proto,
             outcome,
         } => {
-            let resp = audit::finish_rejected_via_audit_arrival(
+            let resp = PlaneAnswer::Live(audit::finish_rejected_via_audit_arrival(
                 &a.host,
                 &a.ctx,
                 envelope_proto,
@@ -995,7 +1009,7 @@ pub(crate) fn bedrock_path_arrival(
                 started,
                 charged_at,
                 audit::render_refusal(envelope_proto, &outcome),
-            );
+            ));
             Box::pin(async move { resp })
         }
         other => Box::pin(path_arrival(

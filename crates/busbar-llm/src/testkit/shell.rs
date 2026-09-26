@@ -27,7 +27,7 @@ use axum::http::{HeaderMap, StatusCode, Uri};
 use axum::response::Response;
 use busbar_kernel::{
     ingress::arrival::{Arrival, ArrivalCtx, ArrivalHost, BodyIngress, PathIngress},
-    plane_host::EngineHost,
+    plane_host::{EngineHost, PlaneAnswer},
     proto::array_stream_shim_key_for,
     proxy::ingress_error,
 };
@@ -38,7 +38,12 @@ use crate::arrival::{PathArrivalFacts, PathModelFacts};
 use crate::proto_codec::{PROTO_BEDROCK, PROTO_GEMINI};
 use crate::unit::{finish_rejected_via_audit, finish_rejected_via_audit_arrival, render_refusal};
 
-type Fut = Pin<Box<dyn Future<Output = Response> + Send>>;
+type Fut = Pin<Box<dyn Future<Output = PlaneAnswer> + Send>>;
+
+/// The seam's answer shape (#28): the shell's response, handed back as it stands.
+fn live(answer: impl Future<Output = Response> + Send + 'static) -> Fut {
+    Box::pin(async move { PlaneAnswer::Live(answer.await) })
+}
 
 /// THE SHELL'S PATH-MODEL ARRIVALS, by dialect name — the witness twin of [`crate::PATH_INGRESS`].
 pub static PATH_INGRESS: &[(&str, PathIngress)] = &[
@@ -427,7 +432,7 @@ async fn ingress_path_model_inner(
 /// route collapse, and hand it to this dialect's own ingress.
 fn gemini_arrival(a: Arrival) -> Fut {
     let rest = crate::arrival::gemini_rest(&a.host, &a.path);
-    Box::pin(gemini_ingress(
+    live(gemini_ingress(
         a.host, a.ctx, rest, a.uri, a.headers, a.body,
     ))
 }
@@ -516,13 +521,13 @@ fn bedrock_arrival(a: Arrival) -> Fut {
     let started = Instant::now();
     let charged_at = busbar_substrate_values::store::now();
     match crate::arrival::bedrock_path_parse(&host, &ctx, &path, &uri, &body) {
-        PathArrivalFacts::PathModel(facts) => Box::pin(bedrock_converse(ctx, facts, headers, body)),
+        PathArrivalFacts::PathModel(facts) => live(bedrock_converse(ctx, facts, headers, body)),
         PathArrivalFacts::BodyModel {
             operation,
             model_hint,
-        } => Box::pin(bedrock_invoke(ctx, model_hint, operation, headers, body)),
+        } => live(bedrock_invoke(ctx, model_hint, operation, headers, body)),
         // A pre-rendered fallback 404 (a different terminal): return its bytes unchanged.
-        PathArrivalFacts::Refused(resp) => Box::pin(async move { resp }),
+        PathArrivalFacts::Refused(resp) => live(async move { resp }),
         // A NAMED pre-routing refusal: render it at the audit terminal and post it through the
         // rejected door — byte- and accounting-identical to the inline finish the site once spelled.
         PathArrivalFacts::RefusedNeutral {
@@ -538,7 +543,7 @@ fn bedrock_arrival(a: Arrival) -> Fut {
                 charged_at,
                 render_refusal(envelope_proto, &outcome),
             );
-            Box::pin(async move { resp })
+            live(async move { resp })
         }
     }
 }
@@ -631,7 +636,7 @@ macro_rules! body_arrivals {
     ($(($name:ident, $proto:expr)),+ $(,)?) => {
         $(
             fn $name(a: Arrival) -> Fut {
-                Box::pin(body_arrival($proto, a))
+                live(body_arrival($proto, a))
             }
         )+
     };

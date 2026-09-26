@@ -118,8 +118,8 @@ pub mod node {
     use std::pin::Pin;
     use std::sync::Arc;
 
-    use axum::response::Response;
     use busbar_contract::caps::{OpClassId, PrincipalId};
+    use busbar_kernel::plane_host::PlaneAnswer;
     use busbar_kernel::teller::{AccrualMeter, RouteAwait, Units};
 
     /// A configured lane name to the interned lane the priced axis is written in, or `None` where
@@ -132,8 +132,9 @@ pub mod node {
     pub type Reported = (busbar_substrate_values::billing::Usage, u32, String);
     /// The late reading, taken once, when the body is done with.
     pub type Late = Box<dyn FnOnce() -> Option<Reported> + Send>;
-    /// A unit's finish: the bytes its terminal posted, and the late reading of what they consumed.
-    pub type Finish = Box<dyn FnOnce() -> (Option<Response>, Option<Late>) + Send>;
+    /// A unit's finish: the answer its terminal posted (#28), and the late reading of what it
+    /// consumed. The node turns the answer into the served response on its audited exit.
+    pub type Finish = Box<dyn FnOnce() -> (Option<PlaneAnswer>, Option<Late>) + Send>;
     /// A built unit: its steps, its awaited Route leg (the same unit), and its finish.
     pub type Built = (
         Arc<dyn Units + Send + Sync>,
@@ -144,8 +145,8 @@ pub mod node {
     pub type Build = Box<dyn FnOnce(Lent) -> Built + Send>;
     /// One arrival, handed to the node.
     pub type Handed = (PrincipalId, OpClassId, &'static str, Build);
-    /// The node: takes a handed unit, drives it through the loop, answers with its terminal's bytes.
-    pub type Drive = fn(Handed) -> Pin<Box<dyn Future<Output = Response> + Send>>;
+    /// The node: takes a handed unit, drives it through the loop, answers with its terminal's answer.
+    pub type Drive = fn(Handed) -> Pin<Box<dyn Future<Output = PlaneAnswer> + Send>>;
 }
 
 /// One linked wire, as its crate's entry states it: the registry key, the layers it declares it can
