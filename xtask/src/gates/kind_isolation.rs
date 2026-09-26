@@ -492,6 +492,16 @@ const OFF_TREE_MANIFESTS: &[(&str, &str)] = &[
          feature and modifies no crate source, so it is an input to fuzzing rather than a crate of \
          the product tree.",
     ),
+    (
+        "testing/ws-conformance/subject/Cargo.toml",
+        "the Autobahn|Testsuite SUBJECT: a testkit binary that composes the same \
+         `WsTransport::over(TcpTransport)` chain a transport battery test composes, so the \
+         fuzzingclient has a real busbar wire to point at. It is a workspace member so \
+         `testing/ws-conformance/scripts/run.sh` can build it with `-p ws-conformance-subject`, and \
+         it is not a crate of the product tree: it ships in no artifact, `cargo build --bin busbar` \
+         never builds it, and it carries no kind and no plane or transport instance of its own. It \
+         is an input to the conformance leg, never a crate a rule here is written about.",
+    ),
 ];
 
 /// `qa/construction.toml`'s `[gate.plugin_kinds]` keys, each mapped onto the kind it names here.
