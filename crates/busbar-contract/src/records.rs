@@ -784,8 +784,8 @@ impl UsageLedger {
 //
 // What a usage-ledger row LOOKED LIKE on a disk before M1b dissolved `TierTokens` into the one
 // name-keyed `usage_units` map. They are SHAPES (every implementation must read the old bytes the
-// same way), so they live here beside the live shapes; the one-shot fold that turns them into the
-// live shapes is the ledger's (`busbar_kernel_ledger::usage_migration`), which re-exports them.
+// same way), so they live here beside the live shapes, with the one-shot fold that turns them into
+// the live shapes; the ledger's schema gate (`busbar_kernel_ledger::usage_migration`) re-exports both.
 // They moved here verbatim when `busbar-api` retired, because the ledger crate defines what money
 // MEANS and carries no serializer.
 
@@ -824,6 +824,54 @@ pub struct UsageLedgerV1 {
     pub billable_requests: u64,
     #[serde(default)]
     pub models: Vec<ModelTokensV1>,
+}
+
+// The one-shot fold of those rows onto the live shapes. A pure SHAPE transform: the mapping is
+// fixed byte for byte by the frozen layouts above and the live ones, so it lives beside both.
+
+/// Fold `add` into `out[unit]`, canonicalizing the legacy `cache_creation` spelling onto
+/// [`UNIT_CACHE_WRITE`] so the two names never split one concept across two keys. A zero add is a
+/// no-op (the idempotent-re-fold identity; also keeps the sparse map free of zero entries).
+fn fold_unit(out: &mut std::collections::BTreeMap<String, u64>, unit: &str, add: u64) {
+    if add == 0 {
+        return;
+    }
+    let canon = if unit == "cache_creation" {
+        UNIT_CACHE_WRITE
+    } else {
+        unit
+    };
+    let slot = out.entry(canon.to_string()).or_insert(0);
+    *slot = slot.saturating_add(add);
+}
+
+/// Fold one pre-M1b per-model row onto the name-keyed representation: the four `tokens` fields land
+/// on the reserved keys, every open unit is carried through (canonicalized). Idempotent: a row whose
+/// `tokens` are all zero (an already-migrated row re-read) folds to exactly its existing units.
+pub fn fold_v1_model(v1: ModelTokensV1) -> ModelTokens {
+    let mut units: std::collections::BTreeMap<String, u64> = std::collections::BTreeMap::new();
+    fold_unit(&mut units, UNIT_INPUT, v1.tokens.input);
+    fold_unit(&mut units, UNIT_OUTPUT, v1.tokens.output);
+    fold_unit(&mut units, UNIT_CACHE_READ, v1.tokens.cache_read);
+    fold_unit(&mut units, UNIT_CACHE_WRITE, v1.tokens.cache_write);
+    for (k, v) in v1.usage_units {
+        fold_unit(&mut units, &k, v);
+    }
+    ModelTokens {
+        model: v1.model,
+        usage_units: units,
+    }
+}
+
+/// Fold one pre-M1b bucket ledger onto the name-keyed representation (see [`fold_v1_model`]). The
+/// request counters pass through unchanged. This is the per-row unit a backend applies under the
+/// usage-ledger schema gate (`busbar_kernel_ledger::usage_migration::USAGE_SCHEMA_V2`).
+pub fn fold_v1_ledger(v1: UsageLedgerV1) -> UsageLedger {
+    UsageLedger {
+        requests: v1.requests,
+        billable_requests: v1.billable_requests,
+        models: v1.models.into_iter().map(fold_v1_model).collect(),
+    }
 }
 
 /// One model's signed unit delta inside a [`UsageDelta`] — the fleet-additive flush primitive's

@@ -4,6 +4,7 @@
 //! Tests for `crates/busbar-kernel-ledger/src/usage_migration.rs`.
 
 use super::*;
+use busbar_contract::records::{UsageLedger, UNIT_INPUT};
 
 /// Deserialize a raw JSON row through the frozen V1 struct and fold it — the exact per-row unit a
 /// byte-persisting backend runs during the schema-gated scan.

@@ -35,62 +35,17 @@
 //! The V1 structs are read ONLY here (never in the serving path); the pricer/ledger/flush all speak
 //! the name-keyed map exclusively.
 
-use std::collections::BTreeMap;
-
-use busbar_contract::records::{
-    ModelTokens, UsageLedger, UNIT_CACHE_READ, UNIT_CACHE_WRITE, UNIT_INPUT, UNIT_OUTPUT,
+// The frozen pre-M1b row SHAPES and the fold that maps them onto the live shapes are the contract's:
+// the V1-to-current mapping is fixed byte for byte by the frozen layouts, so two honest
+// implementations could not differ (#83(d)), and a store backend that runs the fold names only the
+// contract. Re-exported here so the schema gate, the fold and the rows it folds are named from one
+// module.
+pub use busbar_contract::records::{
+    fold_v1_ledger, fold_v1_model, ModelTokensV1, TierTokensV1, UsageLedgerV1,
 };
-// The frozen pre-M1b row SHAPES are the contract's (a shape every reader must agree on); re-exported
-// here so the fold and the rows it folds are named from one module.
-pub use busbar_contract::records::{ModelTokensV1, TierTokensV1, UsageLedgerV1};
 
 /// The name-keyed usage-ledger schema version stamped after the M1b fold completes.
 pub const USAGE_SCHEMA_V2: u32 = 2;
-
-/// Fold `add` into `out[unit]`, canonicalizing the legacy `cache_creation` spelling onto
-/// [`UNIT_CACHE_WRITE`] so the two names never split one concept across two keys. A zero add is a
-/// no-op (the idempotent-re-fold identity; also keeps the sparse map free of zero entries).
-fn fold_unit(out: &mut BTreeMap<String, u64>, unit: &str, add: u64) {
-    if add == 0 {
-        return;
-    }
-    let canon = if unit == "cache_creation" {
-        UNIT_CACHE_WRITE
-    } else {
-        unit
-    };
-    let slot = out.entry(canon.to_string()).or_insert(0);
-    *slot = slot.saturating_add(add);
-}
-
-/// Fold one pre-M1b per-model row onto the name-keyed representation: the four `tokens` fields land
-/// on the reserved keys, every open unit is carried through (canonicalized). Idempotent: a row whose
-/// `tokens` are all zero (an already-migrated row re-read) folds to exactly its existing units.
-pub fn fold_v1_model(v1: ModelTokensV1) -> ModelTokens {
-    let mut units: BTreeMap<String, u64> = BTreeMap::new();
-    fold_unit(&mut units, UNIT_INPUT, v1.tokens.input);
-    fold_unit(&mut units, UNIT_OUTPUT, v1.tokens.output);
-    fold_unit(&mut units, UNIT_CACHE_READ, v1.tokens.cache_read);
-    fold_unit(&mut units, UNIT_CACHE_WRITE, v1.tokens.cache_write);
-    for (k, v) in v1.usage_units {
-        fold_unit(&mut units, &k, v);
-    }
-    ModelTokens {
-        model: v1.model,
-        usage_units: units,
-    }
-}
-
-/// Fold one pre-M1b bucket ledger onto the name-keyed representation (see [`fold_v1_model`]). The
-/// request counters pass through unchanged. This is the per-row unit a backend applies under the
-/// [`USAGE_SCHEMA_V2`] gate.
-pub fn fold_v1_ledger(v1: UsageLedgerV1) -> UsageLedger {
-    UsageLedger {
-        requests: v1.requests,
-        billable_requests: v1.billable_requests,
-        models: v1.models.into_iter().map(fold_v1_model).collect(),
-    }
-}
 
 #[cfg(test)]
 #[path = "tests/usage_migration_tests.rs"]
