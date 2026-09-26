@@ -130,11 +130,14 @@ fn jsonrpc_mount(decl: &'static PlaneDecl, sections: &str) -> String {
         .unwrap_or_else(|| panic!("the `{}` plane claims a JSON-RPC front door", decl.key))
 }
 
-/// THE CARRIED VERIFY GATE of the `agents:` plane — the one line in this file that names a plane:
-/// the gate is a field of that plane's runtime object and the kernel exposes no neutral accessor
-/// for it, so the plane's own test-support accessor reads it.
+/// THE CARRIED VERIFY GATE of the `agents:` plane. The gate is a field of that plane's runtime
+/// object, whose type this file cannot name, so the plane's own test-seam entry reads it off the
+/// built App's plane slots — found in the registry by the key the plane declares.
 fn carried_gate(app: &busbar_kernel::state::App) -> Option<Arc<busbar_kernel::trust::VerifyGate>> {
-    busbar_a2a::a2a::runtime(app).map(|p| p.verify().clone())
+    let read = linked::seam(agents_plane())
+        .verify_gate
+        .expect("the `agents:` plane reads its carried verify gate through its test seam");
+    read(app)
 }
 
 /// The `agents:` plane's verify-on-call gate lives ON its runtime object, carried across a config
@@ -165,6 +168,10 @@ fn the_carried_verify_gate_prunes_dead_subjects_and_drops_with_the_plane() {
     // retain hook prunes the dead subject against the live set (`{planner}`).
     let kept = build_once(resolved(AGENTS_YAML), Some(&prior)).expect("re-apply keeping agents:");
     let kept_gate = carried_gate(&kept).expect("agents: still configured => the plane is present");
+    assert!(
+        Arc::ptr_eq(&kept_gate, &prior_gate),
+        "the surviving plane must carry the prior generation's gate forward, not start a new one"
+    );
     assert!(
         !kept_gate.tracks_subject("retired-agent"),
         "a surviving plane must prune the carried gate entry no live agent names, not leak it"
@@ -637,7 +644,7 @@ mod metrics_scrape {
 /// The test's NAME is pinned by `qa/design-bindings.json` (PB-33) and the structure-lint choke-point
 /// table, which cite it; the body names no plane.
 #[tokio::test]
-async fn test_mcp_token_is_confined_to_the_mcp_plane() {
+async fn an_audience_bound_token_is_confined_to_its_door_plane() {
     use busbar_kernel::governance::signing::{TokenSigner, TokenVerifier, DEFAULT_KID};
     use busbar_kernel::governance::{GovState, MemoryStore};
 

@@ -376,7 +376,7 @@ pub fn table(a: &Addresses) -> Vec<ChokeRow> {
             id: "E-core-route-auth".into(),
             tag: "ROUTE-AUTH-BYPASS".into(),
             owner: format!("{core}/core_routes.rs (CoreRouter::route / CoreRouteTable::declared_auth)"),
-            class_test: "crates/busbar-kernel/tests/plane_integration.rs::test_mcp_token_is_confined_to_the_mcp_plane".into(),
+            class_test: "crates/busbar-kernel/tests/plane_integration.rs::an_audience_bound_token_is_confined_to_its_door_plane".into(),
             remedy: "mount core routes through core_routes::CoreRouter::route, which takes the RouteAuth with the handler".into(),
             rules: Vec::new(),
             why: "a route whose admission bar lives in the middleware rather than at the mount is a bar that drifts, and a per-process bypass leaks onto planes that never mount the route".into(),

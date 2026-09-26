@@ -8,9 +8,9 @@
 //! The property under test in the catalogue tests is the CALLER's grant, and the grant lives on a
 //! `VirtualKey` the auth middleware resolves. Driving that over HTTP would mean minting an
 //! audience-bound token per grant shape and asserting through two layers that are already covered
-//! elsewhere (`auth::tests::test_mcp_token_is_confined_to_the_mcp_plane` owns the audience boundary;
-//! `ingress_tests` owns the envelope). So the grant matrix is driven at the handler, where a test
-//! can state exactly which scopes a caller holds.
+//! elsewhere (`plane_integration::an_audience_bound_token_is_confined_to_its_door_plane`
+//! owns the audience boundary; `ingress_tests` owns the envelope). So the grant matrix is driven
+//! at the handler, where a test can state exactly which scopes a caller holds.
 //!
 //! `the_method_table_is_reachable_through_the_real_mounted_route` is the one that is not, and it is
 //! the one that would catch the failure the handler tests cannot: a method surface that works

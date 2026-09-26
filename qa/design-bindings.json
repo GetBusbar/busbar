@@ -1665,7 +1665,7 @@
     },
     {
      "kind": "test",
-     "ref": "test_mcp_token_is_confined_to_the_mcp_plane",
+     "ref": "an_audience_bound_token_is_confined_to_its_door_plane",
      "proves": "/auth/token is in the unauthenticated exact-path bypass set",
      "source": "curated",
      "status": "mapped"
@@ -1679,7 +1679,7 @@
     }
    ],
    "verdict": "PASS",
-   "verdict_detail": "oracle-cell:http.crosscut|auth-token|GET-none, test:chooser_renders_0_1_n_buttons, test:redirect_begin_still_redirects, test:logout_renders_signed_out_and_clears_cookie, test:callback_state_mismatch_400, test:refresh_rotates_key_and_revokes_the_old_one, test:test_mcp_token_is_confined_to_the_mcp_plane, gate:scripts/release-check-1.5.2.sh"
+   "verdict_detail": "oracle-cell:http.crosscut|auth-token|GET-none, test:chooser_renders_0_1_n_buttons, test:redirect_begin_still_redirects, test:logout_renders_signed_out_and_clears_cookie, test:callback_state_mismatch_400, test:refresh_rotates_key_and_revokes_the_old_one, test:an_audience_bound_token_is_confined_to_its_door_plane, gate:scripts/release-check-1.5.2.sh"
   },
   {
    "id": "PB-34",
