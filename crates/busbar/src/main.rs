@@ -498,7 +498,9 @@ fn compose_boot_book(
 > {
     let rows = Arc::new(busbar_kernel_ledger::legacy::RecordingRows::new());
     let mut durability = root::durability::build_for_node(
-        &root::durability::DurabilityConfig { data_dir },
+        &root::durability::DurabilityConfig {
+            data_dir: data_dir.clone(),
+        },
         mig.node,
         adapter.shipper(),
         Box::new(busbar_kernel_ledger::legacy::RecordingRows::clone(&rows)),
@@ -518,6 +520,19 @@ fn compose_boot_book(
             "the journal could not record the quarantine boot recovery made"
         );
     }
+    // THE DEPLOYMENT KEYSET (spec #82(a); ARCHITECTURE.md §1.2, PB-13; architect ruling 2026-09-26),
+    // bound BEFORE the opening is sealed so checkpoint 0 is signed with it too. With a data
+    // directory the first boot mints it, caches it there (0600) and seals its fingerprint in a
+    // `Bootstrap` record; a later boot that cannot produce that fingerprint refuses `KeysetMissing`.
+    // Without one it is ephemeral: minted for this process, written nowhere, checked by nothing.
+    root::keyset::bind(
+        &mut durability,
+        data_dir.as_deref(),
+        token,
+        busbar_contract::caps::StepName::Meter,
+        now,
+    )
+    .map_err(|e| e.to_string())?;
     let migration = {
         let (mut records, signer) =
             durability.migration_records_signed(token, busbar_contract::caps::StepName::Meter);
@@ -544,7 +559,14 @@ fn compose_boot_book(
 /// deliberately does not make writing unconditional.
 fn open_boot_book(app: &busbar_kernel::state::App) -> root::durability::NodeBook {
     let Some(gov) = app.governance.as_ref() else {
-        return root::durability::node_book();
+        // No store: the keyset is node-local and ephemeral (PB-13), and the chain still signs.
+        let book = root::durability::node_book();
+        if let Err(e) = root::keyset::bind_ephemeral(
+            &mut book.durability.lock().unwrap_or_else(|p| p.into_inner()),
+        ) {
+            die(e);
+        }
+        return book;
     };
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

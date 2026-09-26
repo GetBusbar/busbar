@@ -77,6 +77,7 @@ pub mod gauntlet_kernel;
 #[cfg(any(test, feature = "test-harness"))]
 pub mod harness;
 pub mod kernel;
+pub mod keyset;
 pub mod ledger_identity;
 pub mod linked;
 pub mod migration;

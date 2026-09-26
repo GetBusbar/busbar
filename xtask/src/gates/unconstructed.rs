@@ -13,7 +13,8 @@
 //!    implementation with **zero non-test callers**. The one production construction site,
 //!    `crates/busbar/src/root/durability/mod.rs` → `record: AuditChain::new()`, passes no signer and no
 //!    config supplies a key. Every deployed node therefore seals a chain whose tamper-evidence is
-//!    unsigned, while sixteen `sign_tests.rs` cases prove the signing works.
+//!    unsigned, while sixteen `sign_tests.rs` cases prove the signing works. (Wired 2026-09-26 by
+//!    KEYSET: `root::keyset::bind` gives the chain the deployment keyset.)
 //! 2. **`#79`'s dated-history derivation has no production feed.** `booked_lines()` returns
 //!    `Vec::new()` in both production impls; only a test double is non-empty, and the derivation
 //!    returns `None` on empty. That empty answer is DELIBERATE and well argued — fabricating lines
@@ -152,7 +153,9 @@ pub const ROW_DEAD_SYMBOL: &str = "unconstructed:dead-symbol";
 /// that [`DECLARATIONS`] no longer declares `unshipped` reds [`ROW_STALE`], so the list only
 /// shrinks as the debts drain. Armed 2026-09-23 at the eighteen the file declares today.
 pub const KNOWN_UNSHIPPED: &[&str] = &[
-    "audit-chain-signing",
+    // `audit-chain-signing` STRUCK 2026-09-26 (KEYSET; spec #82(a), ARCHITECTURE.md §1.2/PB-13,
+    // architect ruling "#82(a) key source", owner flag Q78): the root binds the deployment keyset
+    // to its chain (`root::keyset::bind`); the row stays declared as a constructed guard.
     // `breaker-request-budget` STRUCK 2026-09-25 (item 142, the breaker fold): every lane's
     // `max_requests` is declared through `BreakerUnit::set_budget` and spent on that one counter.
     // `breaker-error-map` STRUCK 2026-09-25 (item 142 residue): `BreakerUnit::set_error_map` and
@@ -981,20 +984,44 @@ impl Gate for UnconstructedGate {
 
         // ── CONTROL 6 — THE GATE CAN SEE A CONSTRUCTION WHEN ONE APPEARS. ───────────────────
         // The counterpart of control 2, and the one that proves the gate is not simply blind to
-        // this needle: WIRE THE AUDIT SIGNER — the real, proven-unconstructed capability — and the
-        // debt row must be caught as STALE, because the declaration now says something false.
-        let signed = real.replace(
-            "record: AuditChain::new(),",
-            "record: AuditChain::new().signing_with(key),",
+        // this needle. The audit signer IS wired on the real tree (`root::keyset::bind`, KEYSET
+        // 2026-09-26), so the plant is the DECLARATION going stale over it: re-declare that row
+        // `unshipped` — the state it was in before the wiring landed — and the row must be caught
+        // as STALE, because the declaration now says something the tree refutes.
+        let redeclared = decls.replace(
+            "construct = [\".signing_with(\"]\n",
+            "construct = [\".signing_with(\"]\nunshipped = true\nswitch    = \"STRIKE THIS ROW in \
+             the same commit that gives the composition root a signing key\"\n",
         );
         report.push(prove_rows_red(
             &base,
             self,
-            "wiring the audit signer reds `stale-declaration`: an unshipped row that ACQUIRES a \
-             construction site must be struck",
+            "an audit-signer row declared unshipped over the wired signer reds \
+             `stale-declaration`: an unshipped row that HAS a construction site must be struck",
             &[ROW_STALE],
-            on_base(DURABILITY, signed),
+            on_base(DECLARATIONS, redeclared),
             &["declared `unshipped` but NOW HAS", "audit-chain-signing"],
+        ));
+
+        // ── CONTROL 6b — UNWIRING THE AUDIT SIGNER REDS ITS ROW, BY NAME. ──────────────────
+        // The constructed-guard half of the struck debt: take the one production signing site
+        // away — the root binding the deployment keyset — and `audit-chain-signing` must go RED.
+        const KEYSET: &str = "crates/busbar/src/root/keyset.rs";
+        let unsigned = cx.read(KEYSET).unwrap_or_default().replace(
+            "std::mem::take(&mut durability.record).signing_with(key);",
+            "{ drop(key); std::mem::take(&mut durability.record) };",
+        );
+        report.push(prove_rows_red(
+            cx,
+            self,
+            "removing the root's audit-signer construction site reds `audit-chain-signing`, BY NAME",
+            &[&row_site("audit-chain-signing")],
+            {
+                let mut ov = Overlay::new();
+                ov.set(KEYSET, unsigned);
+                ov
+            },
+            &["NO PRODUCTION CONSTRUCTION SITE", "signing_with"],
         ));
 
         // ── CONTROL 7 — A NON-CALL NEEDLE IS REFUSED AT THE DECLARATION. ────────────────────
@@ -1028,8 +1055,15 @@ impl Gate for UnconstructedGate {
              state this file exists to end",
             &[ROW_SCAN_FLOOR],
             {
+                // The declared-unshipped planted row carries the shrug: every row on the real
+                // register is constructed today, so the switch under test is the plant's own.
                 let mut ov = Overlay::new();
-                let mut lines: Vec<String> = decls.lines().map(str::to_string).collect();
+                let planted = planted_unshipped_toml();
+                let mut lines: Vec<String> = decls
+                    .lines()
+                    .chain(planted.lines())
+                    .map(str::to_string)
+                    .collect();
                 for l in &mut lines {
                     if l.starts_with("switch    =") {
                         *l = "switch    = \"soon\"".to_string();

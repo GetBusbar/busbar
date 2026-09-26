@@ -373,6 +373,7 @@ dependencies = [
  "criterion",
  "ed25519-dalek",
  "futures",
+ "getrandom 0.3.4",
  "hex",
  "http",
  "http-body",

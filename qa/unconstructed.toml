@@ -100,35 +100,18 @@ construct = ["Ledger::dual_writing("]
 scope     = ["crates"]
 why       = "The reconciliation identity and rollback both require the dual write and both are release requirements, not deployment choices. Swapping the composition root back to Ledger::new() would keep its own books correctly and lose the legacy mirror, with no test anywhere going red."
 
-# PROVEN INSTANCE 1 — THE PRODUCTION AUDIT CHAIN IS UNSIGNED.
-#
-# EVIDENCE THAT RE-RUNS:
-#   grep -rn "signing_with" --include="*.rs" --exclude-dir=target . | grep -v "/tests/" | grep -v "tests.rs"
-#     → 1 hit: crates/busbar-kernel-audit/src/record.rs:356, the DEFINITION itself. Every other hit
-#       in the tree is under a tests/ path.
-#   grep -rn "AuditChain::new()" --include="*.rs" --exclude-dir=target . | grep -v "/tests/" | grep -v "tests.rs"
-#     → 2 hits: record.rs:320 (the `Default` impl, i.e. its own constructor) and
-#       crates/busbar/src/root/durability.rs:774 — the ONE production construction site, with no
-#       signer attached and no config anywhere supplying a key.
-#
-# This is NOT a money row and it is not being closed by an agent: it is a security capability that
-# is built, tested and switched off. Declared `unshipped` so the gate is honest about HEAD rather
-# than permanently red; the row prints on every run and `stale-declaration` reds the moment it is
-# wired, so it cannot be forgotten and cannot be silently retired.
+# AUDIT — `audit-chain-signing` STRUCK as unshipped 2026-09-26 (spec #82(a); ARCHITECTURE.md §1.2
+# and PB-13): the composition root binds the deployment keyset (crates/busbar/src/root/keyset.rs) to the chain it builds —
+# minted at the first boot's Bootstrap, cached 0600 under data_dir when one is written, node-local and
+# ephemeral otherwise — so records and checkpoints are signed and GET /audit/keys publishes the key.
+# The row STAYS as a constructed-capability guard: unwiring the signer reds it by name.
 [[capability]]
 id        = "audit-chain-signing"
 built     = "crates/busbar-kernel-audit/src/record.rs"
 symbol    = "signing_with"
 construct = [".signing_with("]
-# THE WHOLE WORKSPACE, deliberately. There are two composition paths — `crates/busbar/src` (the bin
-# crate's root) and `crates/busbar-kernel/src/appbuild.rs`, where the tree's OTHER key wiring lives
-# (`auth.signing_key` -> resolve_signing_key -> gs.set_signing_key, an UNRELATED token-signing key).
-# Scoping to either would leave a reader wondering about the rest. The answer is the same everywhere:
-# nothing calls it. One root also means ONE walk shared by every row below.
 scope     = ["crates"]
-why       = "Every deployed node seals an audit chain whose tamper-evidence is UNSIGNED. A full signing implementation with sixteen green tests sits beside it and has zero non-test callers, so the chain walk proves only that records hash to themselves — not that THIS node produced them."
-unshipped = true
-switch    = "STRIKE THIS ROW in the same commit that gives the composition root a signing key and calls .signing_with() on the chain it builds in crates/busbar/src/root/durability.rs. That commit must also add the config seam that supplies the key, because a builder with no key source is the same defect one layer down."
+why       = "Every deployed node seals an audit chain and ledger checkpoints; without the signer the chain walk proves only that records hash to themselves — not that THIS node produced them — and GET /audit/keys publishes nothing to verify against."
 
 # ─────────────────────────────────────────────────────────────────────────────────────────────────
 # THE SWEEP OF 2026-09-22 — capabilities found built, tested and never constructed.

@@ -55,6 +55,9 @@ busbar-core-connsec = { path = "../busbar-core-connsec" }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
 hex = { workspace = true }
+# The deployment keyset (spec #82(a); ARCHITECTURE.md §1.2, PB-13): `root::keyset` mints the one
+# ed25519 seed that signs the audit chain and the ledger's checkpoints from the OS CSPRNG.
+getrandom = { workspace = true }
 # The operator-signature verifier for the D38 `amend_rate_history` effect: the sealed operator key
 # arrives (through the posture seam) as raw ed25519 bytes, and this parses them and checks the
 # detached signature with the inherent STRICT verify. Composition-root knowledge, used only by the
