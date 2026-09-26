@@ -401,7 +401,7 @@ needle = "busbar_kernel::"
 # measurement on the committed tree (HEAD b091b4e83), a raise the owner ruled is a needle repair
 # arming the true count, not a relaxation of what the instrument ever saw. Downward only from here.
 [rules.ports-only.max_per_crate]
-busbar-llm = 263
+busbar-llm = 253
 busbar-mcp = 287
 busbar-a2a = 236
 busbar-voice = 88
