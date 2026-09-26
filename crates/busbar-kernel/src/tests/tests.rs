@@ -334,7 +334,7 @@ fn test_stateful_plane_ephemeral_store_warn_fires_only_for_ram_plus_stateful() {
         .expect("RAM + the first stateful plane → sharper warn fires");
     assert!(
         w.contains("in-flight tasks will break")
-            && w.contains("sqlite/postgres")
+            && w.contains(frozen_str("durable_store_advice").as_str())
             && w.contains("NOT survive a restart"),
         "the warn must name the CONSEQUENCE and the durable-store fix; got: {w}"
     );
@@ -1984,7 +1984,7 @@ fn migrate_config_then_load_config_from_disk_boots_the_real_migrated_file() {
     assert_eq!(loaded.deploy.listen, "0.0.0.0:8080");
     assert_eq!(
         loaded.deploy.store.as_ref().map(|s| s.module.as_str()),
-        Some("sqlite"),
+        Some(frozen_str("legacy_backend_1_4").as_str()),
         "the migrated store module must survive the real disk-load pipeline"
     );
 
@@ -2759,4 +2759,25 @@ fn lane_caps_resolver_answers_at_the_kernel_ir_path() {
     let first_match = resolve_lane_caps(provider, &rules, "model-a-2-mini");
     assert_eq!(first_match.max_output_key, MaxOutputKey::MaxTokens);
     assert!(first_match.native_structured_output);
+}
+
+/// FROZEN CUSTOMER TEXT the kernel's tests pin (ARCHITECT RULING 2026-09-25, F-T): one value of
+/// `tests/fixtures/frozen_customer_text.yaml`, the golden input DATA that holds the store spellings and
+/// credential kind operators see, byte-for-byte as 1.5.5 shipped them — so no test source spells them.
+pub(crate) fn frozen_text(key: &str) -> serde_yaml::Value {
+    let doc: serde_yaml::Value = serde_yaml::from_str(include_str!(
+        "../../tests/fixtures/frozen_customer_text.yaml"
+    ))
+    .expect("the frozen-text fixture parses");
+    doc.get(key)
+        .cloned()
+        .unwrap_or_else(|| panic!("the frozen-text fixture has no `{key}`"))
+}
+
+/// [`frozen_text`] as a string.
+pub(crate) fn frozen_str(key: &str) -> String {
+    let v = frozen_text(key);
+    v.as_str()
+        .unwrap_or_else(|| panic!("frozen `{key}` is not a string"))
+        .to_string()
 }

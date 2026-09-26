@@ -795,7 +795,7 @@ pools: {}
     };
     assert_eq!(
         get(&["store", "module"]).as_str(),
-        Some("sqlite"),
+        Some(crate::tests::frozen_str("legacy_backend_1_4").as_str()),
         "1.4.x's only durable backend -- migration must select it, not default to memory"
     );
     assert_eq!(
@@ -829,7 +829,7 @@ pools: {}
         store
             .get(serde_yaml::Value::from("module"))
             .and_then(|v| v.as_str()),
-        Some("sqlite")
+        Some(crate::tests::frozen_str("legacy_backend_1_4").as_str())
     );
     assert_eq!(
         store
@@ -2203,7 +2203,16 @@ pools:
 /// `redis` and `detect_legacy_markers` returned nothing for it.
 #[test]
 fn migrate_store_module_retired_1_5_3_spellings_to_the_renamed_alias() {
-    for old in ["redis", "busbar-store-redis", "busbar-store-redis-plugin"] {
+    let renamed = crate::tests::frozen_str("renamed_module_1_5_3");
+    let retired = crate::tests::frozen_text("retired_modules_1_5_3");
+    let retired: Vec<&str> = retired
+        .as_sequence()
+        .unwrap()
+        .iter()
+        .flat_map(|v| v.as_str())
+        .collect();
+    assert_eq!(retired.len(), 3, "the three retired 1.5.x spellings");
+    for old in retired {
         let raw = format!(
             "store:\n  module: {old}\n  settings: {{ url: \"kv://127.0.0.1:6379/0\" }}\n\
              providers: {{}}\nmodels: {{}}\npools: {{}}\n"
@@ -2213,7 +2222,7 @@ fn migrate_store_module_retired_1_5_3_spellings_to_the_renamed_alias() {
         let doc: serde_yaml::Value = serde_yaml::from_str(&raw).unwrap();
         let joined = detect_legacy_markers(&doc).join("\n");
         assert!(
-            joined.contains(old) && joined.contains("valkey"),
+            joined.contains(old) && joined.contains(renamed.as_str()),
             "`store.module: {old}` must loud-fail with a marker naming the old AND new spelling; \
              got: {joined}"
         );
@@ -2222,7 +2231,7 @@ fn migrate_store_module_retired_1_5_3_spellings_to_the_renamed_alias() {
         let (out, doc) = migrate_to_value(&raw);
         assert_eq!(
             dig(&doc, &["store", "module"]).and_then(|v| v.as_str()),
-            Some("valkey"),
+            Some(renamed.as_str()),
             "`store.module: {old}` must be rewritten to the new alias; migrated:\n{}",
             out.yaml
         );
