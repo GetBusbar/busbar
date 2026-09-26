@@ -1,0 +1,9 @@
+
+# A SYNTHETIC `[[edge]]` ROW, appended by the kind-isolation matrix selftest. No crate of kind
+# timing names store vocabulary, so this class covers nothing and must be refused as dead.
+[[edge]]
+from = "timing"
+to = "store"
+cite = "selftest fixture: a class no crate has."
+why = "selftest fixture: crates of kind timing naming store vocabulary. There are none."
+drain = "strike the class."

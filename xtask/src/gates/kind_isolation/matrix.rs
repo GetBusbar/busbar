@@ -1753,6 +1753,10 @@ fn the_accept_loop_that_named_its_plane() -> String {
 /// where it lives.
 const HAND_WIRED_ROOT_FIXTURE: &str = "xtask/fixtures/kind-isolation-root/units_hand_wired.txt";
 
+/// A synthetic `[[edge]]` row whose class no crate has, appended to the ledger by the dead-edge case.
+/// Stored under `xtask/fixtures/`, which this gate treats as off-tree.
+const DEAD_EDGE_FIXTURE: &str = "xtask/fixtures/kind-isolation-root/dead_edge_row.txt";
+
 /// Where the hand-wired root is planted: inside the composition root, where the drained
 /// `root/units_*.rs` files lived.
 const HAND_WIRED_ROOT_PLANT: &str = "crates/busbar/src/root/units_hand_wired.rs";
@@ -2422,19 +2426,25 @@ pub fn selftest<'a>(
         &["dead-disagreement", "busbar-llm-codec \u{d7} transport"],
     ));
 
-    // AN `[[edge]]` ROW WHOSE WHOLE CLASS IS GONE. `busbar-api` is the only crate of kind `api`, so
-    // its manifest is the whole of that kind: every `api -> *` class in the ledger covers nothing
-    // the moment it leaves, and each one is an edge class the next `api` crate would inherit.
-    let mut ov = crate::ctx::Overlay::new();
-    ov.remove("crates/api/Cargo.toml");
-    report.push(prove_rows_red(
-        cx,
-        gate,
-        "an `[[edge]]` row whose class no crate has any more is struck, not left standing",
-        &[ROW_MATRIX],
-        ov,
-        &["dead-edge", "api -> auth"],
-    ));
+    // AN `[[edge]]` ROW WHOSE WHOLE CLASS IS GONE. The case used to delete the one crate of kind
+    // `api`, which the fold retired, so it now plants a synthetic row this battery owns
+    // ([`DEAD_EDGE_FIXTURE`]): a `timing -> store` class that no crate of kind timing has. A class
+    // that covers nothing is an edge the next crate of that kind would inherit, and is struck.
+    let dead_edge = match (cx.read(LEDGER), cx.read(DEAD_EDGE_FIXTURE)) {
+        (Ok(ledger), Ok(row)) => {
+            let mut ov = crate::ctx::Overlay::new();
+            ov.set(LEDGER, format!("{}\n{row}", ledger.trim_end()));
+            Ok(ov)
+        }
+        (Err(e), _) => Err(format!("{LEDGER}: {e}")),
+        (_, Err(e)) => Err(format!("{DEAD_EDGE_FIXTURE}: {e}")),
+    };
+    let name = "an `[[edge]]` row whose class no crate has any more is struck, not left standing";
+    let naming = ["dead-edge", "timing -> store"];
+    match dead_edge {
+        Ok(ov) => report.push(prove_rows_red(cx, gate, name, &[ROW_MATRIX], ov, &naming)),
+        Err(why) => report.push(super::unplantable(name, &[ROW_MATRIX], &naming, why)),
+    }
 
     // THE LEDGER ITSELF GONE. A row that cannot read its allowance is not a row that found nothing.
     let mut gone = crate::ctx::Overlay::new();

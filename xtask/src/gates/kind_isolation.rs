@@ -6267,12 +6267,15 @@ impl Gate for KindIsolationGate {
                 "an unruled edge whose question was struck out has stopped asking",
                 &[ROW_DEPS],
                 Ok((
-                    "from     = \"busbar-substrate-values\"\nto       = \"busbar-api\"\n"
+                    "from     = \"busbar-substrate-values\"\nto       = \"busbar-plugin\"\n"
                         .to_string(),
-                    "from     = \"busbar-substrate-values\"\nto       = \"busbar-api-struck\"\n"
+                    "from     = \"busbar-substrate-values\"\nto       = \"busbar-plugin-struck\"\n"
                         .to_string(),
                 )),
-                &["unasked-question", "busbar-substrate-values -> busbar-api"],
+                &[
+                    "unasked-question",
+                    "busbar-substrate-values -> busbar-plugin",
+                ],
             ));
 
             // TWO ROWS FOR ONE EDGE. Two numbers for one measurement, and the one a reader believes
@@ -6359,10 +6362,13 @@ impl Gate for KindIsolationGate {
             report.push(prove_rows_red(
                 cx,
                 subject,
-                "a plugin-kind crate reaching busbar-api reaches past the #40 wall",
+                "a plugin-kind crate reaching busbar-plugin reaches past the #40 wall",
                 &[ROW_DEPS],
-                the_wall_plant(&["busbar-api"]),
-                &["busbar-hooks-planted -> busbar-api", "hooks -> api"],
+                the_wall_plant(&["busbar-plugin"]),
+                &[
+                    "busbar-hooks-planted -> busbar-plugin",
+                    "hooks -> plugin-abi",
+                ],
             ));
 
             // THE ROOT LINKS A PLUGIN, AND THAT IS ROSTER DEFINITION 1, NOT A COUPLING. The
