@@ -131,7 +131,7 @@ fn busbar(cfg: &Path, args: &[&str]) -> Command {
 fn assert_names_both_keys(where_: &str, text: &str) {
     assert!(
         text.contains("mcp:"),
-        "{where_} must name the `mcp:` key; got:\n{text}"
+        "{where_} must name the door's own config key; got:\n{text}"
     );
     assert!(
         text.contains("auth.chain"),
@@ -200,7 +200,8 @@ fn a_front_door_config_with_no_auth_chain_does_not_boot() {
                 }
                 let cfg_text = std::fs::read_to_string(&cfg).unwrap_or_default();
                 panic!(
-                    "busbar did not exit within 120s with `mcp:` and an empty auth.chain.\n\
+                    "busbar did not exit within 120s with the door configured and an empty \
+                     auth.chain.\n\
                      If the output below carries the refusal, the guard fired and this test's \
                      wait is wrong; if it does not, the plane is being served anonymously.\n\
                      ── what busbar said ──\n{seen}\n── the config it was given ──\n{cfg_text}"
@@ -272,7 +273,7 @@ fn the_control_a_front_door_config_with_a_closed_chain_still_boots() {
     let _ = child.wait();
     assert!(
         listening,
-        "`mcp:` with `chain: [keys]` must still boot and listen on {addr}; a guard that refuses \
+        "the door with `chain: [keys]` must still boot and listen on {addr}; a guard that refuses \
          every such config is vacuous in the other direction"
     );
 }

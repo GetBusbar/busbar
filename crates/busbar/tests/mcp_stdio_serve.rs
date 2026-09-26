@@ -263,7 +263,7 @@ fn spawn(dir: &Path, credential: Option<&str>) -> StdioChild {
     if let Some(c) = credential {
         cmd.env("BUSBAR_MCP_STDIO_CREDENTIAL", c);
     }
-    let mut child = cmd.spawn().expect("spawn busbar --mcp-stdio");
+    let mut child = cmd.spawn().expect("spawn busbar in its stdio serve mode");
     let stdin = child.stdin.take();
     let (out_tx, out_rx) = mpsc::channel();
     let stdout = child.stdout.take().unwrap();
@@ -355,7 +355,7 @@ fn meta() -> serde_json::Value {
 /// session" to have a posture about; the open-relay warning the HTTP door earns for an empty chain
 /// is, on an MCP deployment, a boot refusal instead.
 #[test]
-fn an_mcp_deployment_with_an_empty_chain_refuses_to_boot() {
+fn a_door_deployment_with_an_empty_chain_refuses_to_boot() {
     let dir = fixture_dir("open-refused");
     write_configs(&dir, "");
     let mut child = spawn(&dir, None);
