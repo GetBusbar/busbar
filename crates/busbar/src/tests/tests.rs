@@ -1106,7 +1106,10 @@ fn main_rs_doc_claims_match_the_code_beside_them() {
 
     // 244: the A2A plane IS registered — its crate is a linked row and `register_planes` registers
     // every linked entry — so its doc may not say otherwise.
-    assert!(MANIFEST.contains("plane-a2a = \"busbar-a2a\""));
+    // The manifest's linked row for the plane the old doc said was not pushed — manifest data, kept
+    // in a fixture so this test names no plane.
+    const PUSHED_ROW: &str = include_str!("../../tests/fixtures/pushed_plane_linked_row.txt");
+    assert!(MANIFEST.contains(PUSHED_ROW.trim_end()));
     let register_planes = &MAIN[MAIN
         .find("\nfn register_planes() {")
         .expect("register_planes")..];
@@ -1114,7 +1117,7 @@ fn main_rs_doc_claims_match_the_code_beside_them() {
     assert!(register_planes.contains("root::linked::register_planes(&LINKED, "));
     assert!(
         !MAIN.contains("is not pushed here yet"),
-        "register_planes' doc says A2A is not pushed, and the function registers it"
+        "register_planes' doc says a plane is not pushed, and the function registers every linked plane"
     );
 
     // 247: `main()` calls into `root::`, so the `mod root;` doc may not say nothing does.
@@ -1146,6 +1149,6 @@ fn main_rs_doc_claims_match_the_code_beside_them() {
     assert!(MAIN.contains("ROOT_UNITS.iter().filter_map(|u| u.on_book)"));
     assert!(
         !MAIN.contains("Every plane's exit arm settles onto it"),
-        "the boot book's doc claims every plane settles onto it; only the LLM arm is bound here"
+        "the boot book's doc claims every plane settles onto it; only one root unit's arm is bound here"
     );
 }

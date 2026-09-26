@@ -19,7 +19,9 @@
 //!    arm 1's `404` from being a boot that failed for some other reason.
 
 #![cfg(unix)]
-#![cfg(feature = "proto-llm")]
+// The config below serves `providers:`/`models:`, so the build must link the plane that takes body
+// ingress — the linked table's answer, never a feature name.
+#![cfg(linked_axis_body_ingress)]
 
 use std::io::{Read, Write};
 use std::net::TcpStream;
