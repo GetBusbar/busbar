@@ -823,8 +823,8 @@ pub const RETIRED_OBSERVABILITY_KEYS: &[(&str, &str)] = &[
 
 /// The 1.5.3 store-plugin RENAME: every retired spelling of the first-party Valkey store
 /// plugin, as a `store.module:` VALUE. The plugin was renamed wholesale — repo, crate, artifact,
-/// manifest `name` (now [`STORE_MODULE_VALKEY_NAME`]) and config `alias` (now
-/// [`STORE_MODULE_VALKEY`]) — so NONE of these resolve against the renamed artifact's manifest.
+/// manifest `name` (now [`RENAMED_STORE_MANIFEST_NAME_1_5_3`]) and config `alias` (now
+/// [`RENAMED_STORE_MODULE_1_5_3`]) — so NONE of these resolve against the renamed artifact's manifest.
 ///
 /// Unlike the other retirement tables this one is keyed on a VALUE, not a field name, so serde never
 /// sees it: `store.module` is a plain `String` and any spelling parses. The loud-fail therefore has
@@ -835,18 +835,18 @@ pub const RETIRED_STORE_MODULES_1_5_3: &[&str] =
     &["redis", "busbar-store-redis", "busbar-store-redis-plugin"];
 
 /// The config ALIAS the renamed first-party Valkey store plugin answers to (`store.module: valkey`).
-pub const STORE_MODULE_VALKEY: &str = "valkey";
+pub const RENAMED_STORE_MODULE_1_5_3: &str = "valkey";
 
 /// The renamed plugin's canonical MANIFEST NAME — what `busbar-plugin-pack --name` stamps and what a
 /// `plugins.min_versions` / `plugin_versions` anti-downgrade floor must be keyed by. It is the plugin
 /// CRATE name (`…-plugin`), which is how that repo's release workflow packs it.
-pub const STORE_MODULE_VALKEY_NAME: &str = "busbar-store-valkey-plugin";
+pub const RENAMED_STORE_MANIFEST_NAME_1_5_3: &str = "busbar-store-valkey-plugin";
 
 /// The renamed plugin's release-ASSET stem: the published tarball is
 /// `busbar-store-valkey-<ver>-<target>.tar.gz` (the WORKSPACE name, without the `-plugin` suffix the
 /// cdylib crate and the manifest carry). Two different strings on purpose — see that repo's
 /// `release.yml`, which passes `--name busbar-store-valkey-plugin --out busbar-store-valkey-…`.
-pub const STORE_MODULE_VALKEY_ASSET_STEM: &str = "busbar-store-valkey";
+pub const RENAMED_STORE_ASSET_STEM_1_5_3: &str = "busbar-store-valkey";
 
 // The `providers:` / `models:` config SHAPES — the catalog definition, the operator deployment, the
 // resolved provider the runtime reads, the active-health block and the per-model entry — are plain
@@ -1764,8 +1764,8 @@ pub use busbar_kernel::config::sections::{
 // Moved to `busbar_kernel::config::sections`; re-exported at their historical `config::` path.
 pub use busbar_kernel::config::sections::{
     rate_entry_per_mtok, ConfigMgmtCfg, ExportDefCfg, ExportDefs, OverlayBackend, OverlayCfg,
-    RateEntryCfg, EXPORT_MODULES, EXPORT_MODULE_OTLP, EXPORT_MODULE_PROMETHEUS,
-    EXPORT_MODULE_REQUEST_LOG_FILE, EXPORT_MODULE_REQUEST_LOG_WEBHOOK,
+    RateEntryCfg, EXPORT_MODULES, EXPORT_MODULE_OTLP, EXPORT_MODULE_REQUEST_LOG_FILE,
+    EXPORT_MODULE_REQUEST_LOG_WEBHOOK,
 };
 
 /// The serde default for `per_request_fee:` - 0 (no flat per-request charge; token spend derives
@@ -1779,21 +1779,20 @@ fn default_per_request_fee() -> i64 {
 /// on-disk shape is [`ExportDefs`]).
 ///
 /// Note the asymmetry, which is deliberate and load-bearing: the two LOG sinks are `Vec`s (multiple
-/// named instances are the whole point of the named map), while `prometheus` and `otlp` are at most
-/// ONE each — `prometheus` owns the single well-known `/metrics` route and `otlp` installs the one
-/// process-global tracer subscriber, so a second instance could not do anything except silently lose.
-/// A second instance of either is therefore a loud boot error, never a silent no-op.
+/// named instances are the whole point of the named map), while the scrape sink and `otlp` are at
+/// most ONE each — the scrape sink owns the single well-known `/metrics` route and `otlp` installs the
+/// one process-global tracer subscriber, so a second instance could not do anything except silently
+/// lose. A second instance of either module is therefore a loud boot error, never a silent no-op.
 ///
 /// Each sink's settings carry that instance's resolved [`crate::export::projection::Projection`] —
 /// the streams + fields THAT sink is granted. Core builds every payload TO that projection, so an
 /// ungranted field is never serialized and never crosses the ABI.
 #[derive(Debug, Clone, Default)]
 pub struct ExportCfg {
-    /// The `prometheus` instance's settings, if one is configured. `None` ⇒ no recorder installed,
+    /// The RECORDER's settings, read off the SCRAPE SINK's instance (see
+    /// [`PluginExportSettings::scrape`]), if one is configured. `None` ⇒ no recorder installed,
     /// `/metrics` not mounted, every emit site a true no-op (the zero-config default).
-    pub prometheus: Option<PrometheusSettings>,
-    /// Every configured `request-log-webhook` instance, in config order. Empty ⇒ no webhook sink.
-    pub request_log_webhooks: Vec<WebhookSettings>,
+    pub recorder: Option<PrometheusSettings>,
     /// The `otlp` instance's settings, if one is configured. `None` ⇒ no tracer/span export.
     pub otlp: Option<OtlpSettings>,
     /// Every instance whose `module:` names an export module registered on the EXPORT AXIS
@@ -1814,6 +1813,10 @@ pub struct PluginExportSettings {
     /// The instance's definition.
     pub def: ExportDefCfg,
     pub(crate) projection: crate::export::projection::Projection,
+    /// THE SCRAPE SINK: this instance's sink is granted first-party (linked, or signed by the release
+    /// key), carries the `metrics` stream, and the instance subscribes to it — the host serves the well-known `/metrics` (it holds the recorder) and has
+    /// this sink render the recorder's snapshot (`crate::export::scrape`). At most one instance.
+    pub(crate) scrape: bool,
 }
 
 impl ExportCfg {
@@ -1824,17 +1827,15 @@ impl ExportCfg {
     /// `export::request_log_configured()` boolean — one mechanism, not two.
     pub(crate) fn projection_union(&self) -> crate::export::projection::ProjectionUnion {
         crate::export::projection::ProjectionUnion::of(
-            self.prometheus
+            self.otlp
                 .iter()
                 .map(|s| &s.projection)
-                .chain(self.request_log_webhooks.iter().map(|s| &s.projection))
-                .chain(self.otlp.iter().map(|s| &s.projection))
                 .chain(self.plugins.iter().map(|s| &s.projection)),
         )
     }
 }
 
-/// The two limits `LimitsResolved` sources from the resolved `export:` block rather than from
+/// The limit `LimitsResolved` sources from the resolved `export:` block rather than from
 /// `limits:` itself (1.5.3: moved from the retired `observability.*`/`metrics.*` keys onto the
 /// built-in EXPORTER settings). `busbar_kernel::config::limits::LimitsResolved::from_sections`
 /// takes anything that converts to `ExportLimits`, so core (the only crate that knows the typed
@@ -1842,32 +1843,18 @@ impl ExportCfg {
 /// re-walking `export.*` itself.
 impl From<&ExportCfg> for busbar_kernel::config::limits::ExportLimits {
     fn from(export: &ExportCfg) -> Self {
-        // `max_inflight_webhook_deliveries` seeds ONE shared `AdmissionGate` across every webhook
-        // instance, so with several named instances it takes the MAXIMUM of the CONFIGURED values:
-        // the shared bound must accommodate the most permissive sink, or a generous instance would be
-        // silently throttled by a stingy sibling. No instances ⇒ the historical default. (The
-        // per-delivery TIMEOUT needs no such reconciliation and is NOT projected here: it is applied
-        // per instance off `WebhookSettings::delivery_timeout_secs` at the delivery site, and bounds
-        // -checked per instance by `config_validate` — which is what named instances are FOR.)
-        let max_inflight_webhook_deliveries = export
-            .request_log_webhooks
-            .iter()
-            .map(|w| w.max_inflight_deliveries)
-            .max()
-            .unwrap_or_else(default_max_inflight_webhook_deliveries);
         let key_gauge_limit = export
-            .prometheus
+            .recorder
             .as_ref()
             .map_or_else(default_key_gauge_limit, |p| p.key_gauge_limit);
-        Self {
-            max_inflight_webhook_deliveries,
-            key_gauge_limit,
-        }
+        Self { key_gauge_limit }
     }
 }
 
 /// `settings:` of an `export.<name>.module: prometheus` instance — relocated from the retired
-/// `observability.metrics` block.
+/// `observability.metrics` block. They are the RECORDER's settings (the host holds the recorder):
+/// the sink validates them as it validates its instance, and the host reads them off the scrape
+/// sink's instance ([`ExportCfg::recorder`]).
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct PrometheusSettings {
@@ -1877,45 +1864,6 @@ pub struct PrometheusSettings {
     pub buffer_seconds: u64,
     #[serde(default = "default_key_gauge_limit")]
     pub key_gauge_limit: usize,
-    /// THIS INSTANCE'S RESOLVED PROJECTION — the streams + fields this sink is granted, from its
-    /// `streams:` / `fields:` keys (see `crate::export::projection`). NOT an operator key: it is
-    /// `#[serde(skip)]` so the `settings:` bag stays exactly what the operator wrote, and it is
-    /// filled in by [`resolve_export`]. It rides here so the delivery path can build this sink's
-    /// payload TO ITS PROJECTION without a second lookup keyed on instance name.
-    #[serde(skip)]
-    pub(crate) projection: crate::export::projection::Projection,
-}
-
-/// `settings:` of an `export.<name>.module: request-log-webhook` instance — relocated from the retired
-/// `observability` webhook keys. Also absorbs the retired `generic-webhook` exporter: its ONLY extra
-/// over this one was `auth_header:`, which is now just a setting here, and its other reason to exist
-/// (a SECOND webhook target) is what the named-instance map itself provides.
-#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
-#[serde(deny_unknown_fields)]
-pub struct WebhookSettings {
-    /// The webhook target URL — REQUIRED, `https://`-only, SSRF-guarded (relocated from the retired
-    /// `observability.request_log_webhook_url`).
-    pub url: String,
-    /// An optional auth header applied to every delivery from THIS instance (e.g.
-    /// `{ name: Authorization, value: "Bearer ${WEBHOOK_TOKEN}" }`). The `value` rides the config's
-    /// `${VAR}` env interpolation, so a secret is never stored literally.
-    #[serde(default)]
-    pub auth_header: Option<ExportAuthHeader>,
-    /// Max concurrent deliveries (default 64) — relocated from `max_inflight_webhook_deliveries`.
-    #[serde(default = "default_max_inflight_webhook_deliveries")]
-    pub max_inflight_deliveries: usize,
-    /// Per-delivery timeout (seconds, default 2) — relocated from `webhook_delivery_timeout_secs`.
-    /// Applied PER INSTANCE (each sink carries its own deadline), which is what having named
-    /// instances is for.
-    #[serde(default = "default_webhook_delivery_timeout_secs")]
-    pub delivery_timeout_secs: u64,
-    /// THIS INSTANCE'S RESOLVED PROJECTION — the streams + fields this sink is granted, from its
-    /// `streams:` / `fields:` keys (see `crate::export::projection`). NOT an operator key: it is
-    /// `#[serde(skip)]` so the `settings:` bag stays exactly what the operator wrote, and it is
-    /// filled in by [`resolve_export`]. It rides here so the delivery path can build this sink's
-    /// payload TO ITS PROJECTION without a second lookup keyed on instance name.
-    #[serde(skip)]
-    pub(crate) projection: crate::export::projection::Projection,
 }
 
 /// `settings:` of an `export.<name>.module: otlp` instance — the new home of the DELETED
@@ -1936,14 +1884,6 @@ pub struct OtlpSettings {
     pub(crate) projection: crate::export::projection::Projection,
 }
 
-/// One `{ name, value }` auth header for a webhook export instance.
-#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
-#[serde(deny_unknown_fields)]
-pub struct ExportAuthHeader {
-    pub name: String,
-    pub value: String,
-}
-
 /// Lower the `export:` NAMED-DEFINITION map into the typed [`ExportCfg`] every runtime consumer reads.
 /// Errors are ACCUMULATED (not short-circuited) so `--validate` reports every bad exporter at once,
 /// the same posture `resolve` takes everywhere else.
@@ -1953,8 +1893,9 @@ pub struct ExportAuthHeader {
 ///   the four built-ins (never a silently-ignored sink);
 /// - a bad/typo'd key inside `settings:` is a boot error (each settings struct is
 ///   `deny_unknown_fields`, so the opaque bag is only opaque to the OUTER layer);
-/// - a SECOND `prometheus` or `otlp` instance is a boot error (see [`ExportCfg`] — those two are
-///   process-singleton by construction and a second one could only lose silently);
+/// - a SECOND instance of the scrape sink's module, or of `otlp`, is a boot error (see
+///   [`ExportCfg`] — those two are process-singleton by construction and a second one could only
+///   lose silently);
 /// - the instance's PROJECTION (`streams:` / `fields:` / `durable:`) is resolved + validated by
 ///   [`crate::export::projection::resolve_projection`], which is where the HARD RULE lives: a stream
 ///   with no producer in this release, a stream the module cannot carry, a `fields:` list that omits
@@ -1963,7 +1904,6 @@ pub struct ExportAuthHeader {
 pub fn resolve_export(defs: &ExportDefs, errors: &mut Vec<String>) -> ExportCfg {
     let mut out = ExportCfg::default();
     // The instance name that already claimed each singleton module, for the "named twice" diagnostic.
-    let mut prometheus_owner: Option<&str> = None;
     let mut otlp_owner: Option<&str> = None;
 
     for (name, def) in defs {
@@ -1977,10 +1917,11 @@ pub fn resolve_export(defs: &ExportDefs, errors: &mut Vec<String>) -> ExportCfg 
             .is_none()
             .then(|| crate::export::plugin::probe(name, module, &settings))
             .flatten();
+        let declared = axis.as_ref().and_then(|(streams, _)| streams.as_deref());
         let projection = crate::export::projection::resolve_projection(
             name,
             module,
-            built_in.or(axis.as_ref().and_then(|(streams, _)| streams.as_deref())),
+            built_in.or(declared),
             def.streams.as_deref(),
             def.fields.as_deref(),
             def.durable,
@@ -2005,24 +1946,7 @@ pub fn resolve_export(defs: &ExportDefs, errors: &mut Vec<String>) -> ExportCfg 
                 }
             };
         }
-        match def.module.trim() {
-            EXPORT_MODULE_PROMETHEUS => {
-                if let Some(owner) = prometheus_owner {
-                    errors.push(format!(
-                        "export.{name}: a second `module: prometheus` instance (already defined as \
-                         '{owner}'). Prometheus serves the ONE well-known /metrics route, so a \
-                         second instance could only be silently ignored — keep a single instance."
-                    ));
-                    continue;
-                }
-                prometheus_owner = Some(name);
-                out.prometheus = typed!(PrometheusSettings);
-            }
-            EXPORT_MODULE_REQUEST_LOG_WEBHOOK => {
-                if let Some(v) = typed!(WebhookSettings) {
-                    out.request_log_webhooks.push(v);
-                }
-            }
+        match module {
             EXPORT_MODULE_OTLP => {
                 if let Some(owner) = otlp_owner {
                     errors.push(format!(
@@ -2036,12 +1960,35 @@ pub fn resolve_export(defs: &ExportDefs, errors: &mut Vec<String>) -> ExportCfg 
                 out.otlp = typed!(OtlpSettings);
             }
             // THE EXPORT AXIS: a module some compiled-in or dropped-in export plugin registered.
-            _ if axis.is_some() => {
+            // An instance subscribed to `metrics` whose sink carries it and is granted FIRST-PARTY
+            // is the SCRAPE SINK — once: a second instance of that module could only be silently
+            // ignored. A third party may subscribe to `metrics`; it never renders busbar's own
+            // `/metrics` (#65).
+            other if axis.is_some() => {
+                let metrics = busbar_plugin_loader::ExportStream::Metrics;
+                let carries = declared.is_some_and(|d| d.contains(&metrics));
+                let first_party = crate::export::plugin::first_party(other);
+                let scrape = carries && first_party && projection.wants_stream(metrics);
+                let taken = out.plugins.iter().find(|p| p.scrape && scrape);
+                if let Some(owner) = taken.filter(|p| p.def.module.trim() == other) {
+                    errors.push(format!(
+                        "export.{name}: a second `module: {other}` instance (already defined as \
+                         '{}'). Prometheus serves the ONE well-known /metrics route, so a \
+                         second instance could only be silently ignored — keep a single instance.",
+                        owner.name
+                    ));
+                    continue;
+                }
+                let scrape = scrape && taken.is_none();
+                if scrape {
+                    out.recorder = serde_json::from_value(settings).ok();
+                }
                 errors.extend(axis.into_iter().flat_map(|(_, problems)| problems));
                 out.plugins.push(PluginExportSettings {
                     name: name.clone(),
                     def: def.clone(),
                     projection,
+                    scrape,
                 })
             }
             other => errors.push(format!(
@@ -2066,24 +2013,21 @@ pub use busbar_kernel::config::limits::{
     default_default_max_tokens, default_hard_down_cooldown_secs, default_hook_content_max_bytes,
     default_key_gauge_limit, default_max_auto_provisioned_groups,
     default_max_honored_retry_after_secs, default_max_inbound_concurrent,
-    default_max_inflight_webhook_deliveries, default_max_keys_per_principal,
-    default_pool_idle_timeout_secs, default_pool_max_idle_per_host, default_probe_interval_secs,
-    default_probe_timeout_secs, default_rate_sweep_interval, default_reasoning_high,
-    default_reasoning_low, default_reasoning_medium, default_reasoning_minimal,
-    default_request_body_max_bytes, default_request_body_read_timeout_secs,
-    default_tls_handshake_timeout_secs, default_upstream_error_body_max_bytes,
-    default_upstream_request_timeout_secs, default_usage_flush_interval_ms,
-    default_webhook_delivery_timeout_secs, ExportLimits, HealthDefaultsCfg, LimitsCfg,
-    LimitsResolved, ReasoningEffortBudgets, RoutingCfg, DEFAULT_DEFAULT_MAX_TOKENS,
+    default_max_keys_per_principal, default_pool_idle_timeout_secs, default_pool_max_idle_per_host,
+    default_probe_interval_secs, default_probe_timeout_secs, default_rate_sweep_interval,
+    default_reasoning_high, default_reasoning_low, default_reasoning_medium,
+    default_reasoning_minimal, default_request_body_max_bytes,
+    default_request_body_read_timeout_secs, default_tls_handshake_timeout_secs,
+    default_upstream_error_body_max_bytes, default_upstream_request_timeout_secs,
+    default_usage_flush_interval_ms, ExportLimits, HealthDefaultsCfg, LimitsCfg, LimitsResolved,
+    ReasoningEffortBudgets, RoutingCfg, DEFAULT_DEFAULT_MAX_TOKENS,
     DEFAULT_HARD_DOWN_COOLDOWN_SECS, DEFAULT_KEY_GAUGE_LIMIT, DEFAULT_MAX_HONORED_RETRY_AFTER_SECS,
-    DEFAULT_MAX_INBOUND_CONCURRENT, DEFAULT_MAX_INFLIGHT_WEBHOOK_DELIVERIES,
-    DEFAULT_PLUGIN_FETCH_MAX_BYTES, DEFAULT_POOL_IDLE_TIMEOUT_SECS, DEFAULT_POOL_MAX_IDLE_PER_HOST,
-    DEFAULT_PROBE_INTERVAL_SECS, DEFAULT_PROBE_TIMEOUT_SECS, DEFAULT_RATE_SWEEP_INTERVAL,
-    DEFAULT_REQUEST_BODY_MAX_BYTES, DEFAULT_REQUEST_BODY_READ_TIMEOUT_SECS,
-    DEFAULT_TLS_HANDSHAKE_TIMEOUT_SECS, DEFAULT_UPSTREAM_ERROR_BODY_MAX_BYTES,
-    DEFAULT_UPSTREAM_REQUEST_TIMEOUT_SECS, DEFAULT_USAGE_FLUSH_INTERVAL_MS,
-    DEFAULT_WEBHOOK_DELIVERY_TIMEOUT_SECS, REQUEST_BODY_MAX_BYTES_CEIL,
-    REQUEST_BODY_MAX_BYTES_FLOOR,
+    DEFAULT_MAX_INBOUND_CONCURRENT, DEFAULT_PLUGIN_FETCH_MAX_BYTES, DEFAULT_POOL_IDLE_TIMEOUT_SECS,
+    DEFAULT_POOL_MAX_IDLE_PER_HOST, DEFAULT_PROBE_INTERVAL_SECS, DEFAULT_PROBE_TIMEOUT_SECS,
+    DEFAULT_RATE_SWEEP_INTERVAL, DEFAULT_REQUEST_BODY_MAX_BYTES,
+    DEFAULT_REQUEST_BODY_READ_TIMEOUT_SECS, DEFAULT_TLS_HANDSHAKE_TIMEOUT_SECS,
+    DEFAULT_UPSTREAM_ERROR_BODY_MAX_BYTES, DEFAULT_UPSTREAM_REQUEST_TIMEOUT_SECS,
+    DEFAULT_USAGE_FLUSH_INTERVAL_MS, REQUEST_BODY_MAX_BYTES_CEIL, REQUEST_BODY_MAX_BYTES_FLOOR,
 };
 
 fn default_plugins_dir() -> String {
@@ -2208,24 +2152,8 @@ pub fn resolve(
     // bad settings, and duplicate singleton instances land in `errors` here.
     let export = resolve_export(&deploy.export, &mut errors);
 
-    // A prometheus instance with `buffer_seconds: 0` would ask busbar to retain observations for no
-    // time at all: the rolling window is empty at every scrape, so `/metrics` renders quantiles over
-    // nothing while the hot path still pays the full recording cost — opted-in metrics that report
-    // nothing. Omitting the instance is how collection is turned OFF; `0` is not that, so it fails
-    // boot loudly rather than silently producing an inert collector.
-    if export
-        .prometheus
-        .as_ref()
-        .is_some_and(|p| p.buffer_seconds == 0)
-    {
-        errors.push(
-            "the `module: prometheus` export instance sets settings.buffer_seconds: 0, which \
-             retains no observations — every scrape would report empty quantiles while still paying \
-             the recording cost. Name a positive retention window in seconds, or remove the \
-             instance to turn metrics off"
-                .to_string(),
-        );
-    }
+    // (A scrape sink's zero retention window — recording at full cost, reporting nothing — is its
+    // own settings refusal, raised by the sink while `resolve_export` validates it.)
     let mut resolved_providers: HashMap<String, ProviderCfg> = HashMap::new();
 
     // THE PLANE HOOK (1.6.0 pools stage-B): the per-provider catalog/deployment MERGE is the LLM
@@ -2320,7 +2248,7 @@ pub fn resolve(
             }
             None
         };
-        let mut non_llm: Vec<String> = Vec::new();
+        let mut non_fallback: Vec<String> = Vec::new();
         for (pool_name, pool) in pools.iter() {
             // The pool's kind = its members' shared kind. Determine it from the FIRST resolvable
             // member, then require every other member to agree (homogeneity).
@@ -2347,7 +2275,7 @@ pub fn resolve(
                     //     `tool_pools_derived` / `agent_pools_derived`, and `check_failover_pool`
                     //     below refuses this same member against that plane's registry with the
                     //     message that names the section it looked in.
-                    // There is no third road: `non_llm` is only ever pushed on the two projected
+                    // There is no third road: `non_fallback` is only ever pushed on the two projected
                     // arms, so a pool leaves `pools` only by entering a map that is checked.
                     None => {}
                     Some(k) => match kind {
@@ -2379,12 +2307,12 @@ pub fn resolve(
                 repeatable,
             };
             derived.insert(pool_name.clone(), candidates);
-            non_llm.push(pool_name.clone());
+            non_fallback.push(pool_name.clone());
         }
         // A pool that is NOT a fallback-lane pool must not remain in the fallback `pools` map (its
         // bare members do not resolve to `models:` and would fail the fallback-lane build). Remove
         // the projected ones.
-        for name in non_llm {
+        for name in non_fallback {
             pools.remove(&name);
         }
     }

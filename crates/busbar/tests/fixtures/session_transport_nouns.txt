@@ -1,0 +1,19 @@
+# THE SESSION-TRANSPORT/MEDIA NOUNS plane_transport_neutrality.rs bans from the neutral crates
+# (busbar-kernel, busbar-substrate-values, busbar-contract, api): the vocabulary a duplex live
+# session drags in, which only the plane that serves such sessions may spell. One lowercase noun
+# per line; the detector matches each as a word (`_` is a boundary) and as a CamelCase token.
+#
+# Data, not source: the scanner's own `.rs` spells no word it bans (the fixture shape every
+# no-plane-names scanner in this tree uses).
+rtc
+sdp
+webrtc
+twilio
+dtmf
+rtp
+sideband
+realtime
+audio
+mulaw
+g711
+barge

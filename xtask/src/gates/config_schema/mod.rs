@@ -678,8 +678,9 @@ fn read_baseline(cx: &Ctx, r: &str) -> (BaselineState, Option<Value>) {
 /// source is looked for in two places, both read through [`Ctx::git_show`] and so from history,
 /// never the working tree:
 ///
-/// * the tracked files as they are named TODAY, at the baseline ref — a file that has not moved
-///   (`crates/secret-ref/src/lib.rs`) is found where it is;
+/// * the tracked files as they are named TODAY, at the baseline ref — a file that has not moved is
+///   found where it is, and one that has ([`schema::MOVED_SOURCES`]: `SecretRef`'s, now
+///   `crates/busbar-contract/src/secret_ref.rs`) under the name it had at the baseline;
 /// * every `*.rs` directly inside the directory that held the baseline's own snapshot — the config
 ///   module the baseline froze, which is where a type that has since MOVED lived then.
 ///
@@ -724,6 +725,12 @@ fn see_through(
         .filter(|(_, t)| need.iter().any(|x| t.contains(&format!("for {x}"))))
         .map(|(p, _)| p.clone())
         .collect();
+    let moved: Vec<String> = schema::MOVED_SOURCES
+        .iter()
+        .filter(|(now, _)| paths.iter().any(|p| p == now))
+        .map(|(_, then)| (*then).to_string())
+        .collect();
+    paths.extend(moved);
     if let Some((dir, _)) = baseline_home.rsplit_once('/') {
         // `git show <ref>:<dir>` lists a tree: a `tree …` header, a blank line, then one entry per
         // line with a trailing `/` on a subdirectory.

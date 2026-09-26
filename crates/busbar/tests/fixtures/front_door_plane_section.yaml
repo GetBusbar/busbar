@@ -1,0 +1,4 @@
+mcp:
+  canonical_uri: "http://127.0.0.1:{data_port}/mcp"
+  authorization_servers:
+    - "http://127.0.0.1:{admin_port}"

@@ -818,3 +818,60 @@ async fn test_admin_prefix_is_boundary_safe() {
     handle.abort();
     server.shutdown().await;
 }
+
+/// THE RESIDUAL-DIALECT TABLE for the fallback handlers' 404/405/413 — the same residual resolver as
+/// [`residual_dialect`], so the error and auth envelopes cannot drift apart. Moved here from the
+/// kernel's cross-plane tests (K3; architect ruling "K3 intake list": the table is this plane's
+/// subject), onto this file's existing helper so the move adds no kernel reach.
+/// The fallback handlers resolve the ingress from the request path so a 404/405 is shaped in the
+/// client's own dialect, not a bare axum body.
+#[test]
+fn the_residual_dialect_table_shapes_fallback_errors() {
+    install_llm_registrations();
+    assert_eq!(residual_dialect("/v1/chat/completions"), "openai");
+    assert_eq!(residual_dialect("/v1/responses"), "responses");
+    assert_eq!(residual_dialect("/v2/chat"), "cohere");
+    // Both the stable v1 and v1beta Gemini surfaces infer gemini.
+    assert_eq!(
+        residual_dialect("/v1/models/gemini-pro:generateContent"),
+        "gemini"
+    );
+    assert_eq!(
+        residual_dialect("/v1beta/models/gemini-pro:streamGenerateContent"),
+        "gemini"
+    );
+    // REGRESSION: an OpenAI-SDK `model.retrieve` hits
+    // `GET /v1/models/{model_id}` — NO `:<action>` colon. That must infer OpenAI (so the 405/404
+    // error is OpenAI-decodable), not Gemini, even though it shares the `/v1/models/` prefix.
+    assert_eq!(residual_dialect("/v1/models/gpt-4o"), "openai");
+    assert_eq!(residual_dialect("/v1/models"), "openai"); // list-models (no trailing id)
+                                                          // A `/v1/models/` path WITH a colon action is still the Gemini surface.
+    assert_eq!(
+        residual_dialect("/v1/models/gemini-1.5-pro:generateContent"),
+        "gemini"
+    );
+    // `/v1beta/models/...` is Gemini-only even without a colon (OpenAI has no v1beta surface).
+    assert_eq!(residual_dialect("/v1beta/models/gemini-pro"), "gemini");
+    assert_eq!(
+        residual_dialect("/model/anthropic.claude/converse"),
+        "bedrock"
+    );
+    assert_eq!(
+        residual_dialect("/model/anthropic.claude/converse-stream"),
+        "bedrock"
+    );
+    assert_eq!(residual_dialect("/my-model/v1/messages"), "anthropic");
+    // REGRESSION: a NON-Converse `/model/...` path must NOT be classified as bedrock
+    // (it lacks the `/converse`/`/converse-stream` suffix). The previous unconditional
+    // `starts_with("/model/")` shaped it as bedrock here while auth shaped it as openai —
+    // contradictory error envelopes for one path. The canonical classifier now requires the
+    // suffix, so a bare `/model/foo/bar` falls through to the OpenAI default, matching auth.rs.
+    assert_eq!(
+        residual_dialect("/model/foo/bar"),
+        "openai",
+        "non-Converse /model/ path must align with auth.rs (openai), not bedrock"
+    );
+    assert_eq!(residual_dialect("/model/foo/predict"), "openai");
+    // Unknown path defaults to the widely-understood OpenAI envelope.
+    assert_eq!(residual_dialect("/totally/unknown"), "openai");
+}

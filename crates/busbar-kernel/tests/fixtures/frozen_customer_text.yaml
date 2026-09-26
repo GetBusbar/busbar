@@ -1,0 +1,15 @@
+# FROZEN CUSTOMER TEXT the busbar-kernel tests pin (ARCHITECT RULING 2026-09-25 "FROZEN CUSTOMER TEXT vs
+# the noun gate", F-T): values an operator's config, store and `--migrate-config` / boot output carry,
+# byte-for-byte as 1.5.5 shipped them. The tests load this file as their golden input, so their sources
+# spell no store backend or auth scheme. Changing a value here changes what the tests demand of the
+# kernel — it is a customer-visible change, never a test edit.
+
+# The 1.4.x durable governance backend `--migrate-config` writes as `store.module:`.
+legacy_backend_1_4: sqlite
+# The retired 1.5.x `store.module:` spellings (the 1.5.3 rename) and the alias they migrate to.
+retired_modules_1_5_3: [redis, busbar-store-redis, busbar-store-redis-plugin]
+renamed_module_1_5_3: valkey
+# The durable-store fix the stateful-plane ephemeral-store boot warn names.
+durable_store_advice: sqlite/postgres
+# The persisted credential `kind` of a row-looked-up (AccessKeyId) signed-ingress credential.
+signed_credential_kind: sigv4

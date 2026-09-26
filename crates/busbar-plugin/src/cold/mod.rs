@@ -107,6 +107,12 @@ pub mod kind {
     /// plane is the airlock minor ([`crate::ABI_MINOR`]); its transport-version handshake is the
     /// SHARED [`TRANSPORT_VERSION`], so the discovery/trust half is reused byte-for-byte.
     pub const PLANE: &str = "plane";
+    /// A TRANSPORT (#3: one of the seven kinds, swappable compiled-in OR dropped-in) delivered as a
+    /// `cdylib` and driven over the `#[repr(C)]` [`crate::hot::TransportDecl`] — the second HOT kind
+    /// (#30). Like [`PLANE`] it shares the tarball / signed-manifest / trust pipeline and hands core
+    /// its decl through a dedicated entrypoint ([`crate::hot::symbol::TRANSPORT_DECL`]); its payload
+    /// axis is the airlock minor.
+    pub const TRANSPORT: &str = "transport";
 
     /// [`STORE`], NUL-terminated — return `STORE_NUL.as_ptr()` from `busbar_plugin_kind()`.
     pub const STORE_NUL: &[u8] = b"store\0";
@@ -120,6 +126,8 @@ pub mod kind {
     pub const EXPORT_NUL: &[u8] = b"export\0";
     /// [`PLANE`], NUL-terminated — return `PLANE_NUL.as_ptr()` from `busbar_plugin_kind()`.
     pub const PLANE_NUL: &[u8] = b"plane\0";
+    /// [`TRANSPORT`], NUL-terminated — return `TRANSPORT_NUL.as_ptr()` from `busbar_plugin_kind()`.
+    pub const TRANSPORT_NUL: &[u8] = b"transport\0";
 }
 
 /// The store-plugin PAYLOAD schema version (the signed manifest's `abi_version` for `kind: store`).

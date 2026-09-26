@@ -32,14 +32,20 @@
 //! `capability_equality.rs`): one detector drives both the REAL neutral-crate scan and a planted-hit
 //! self-test, so the self-test proves the REAL witness would fire.
 
+mod common;
+
 use std::path::{Path, PathBuf};
 
-/// The banned voice-transport/media nouns, lowercase (the Plane-4 duplex/live-voice transport
+/// The banned session-transport/media nouns, lowercase (the duplex live-session plane's transport
 /// vocabulary). Every one has ZERO code hits in the neutral crates today; this witness keeps it so.
-const NOUNS: &[&str] = &[
-    "rtc", "sdp", "webrtc", "twilio", "dtmf", "rtp", "sideband", "realtime", "audio", "mulaw",
-    "g711", "barge",
-];
+///
+/// The list is DATA — `tests/fixtures/session_transport_nouns.txt`, one noun per line — so this
+/// scanner's own source spells no word it bans, and the list is edited without touching the
+/// detector.
+fn nouns() -> &'static [String] {
+    static NOUNS: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+    NOUNS.get_or_init(|| common::fixture_lines("session_transport_nouns.txt"))
+}
 
 /// The NEUTRAL crate source roots (the ABI side). A neutral crate that appears/disappears is one edit.
 ///
@@ -188,16 +194,16 @@ fn hit_in_code(code: &str) -> Option<&'static str> {
             if token.is_empty() {
                 continue;
             }
-            for noun in NOUNS {
+            for noun in nouns() {
                 if token.eq_ignore_ascii_case(noun) {
-                    return Some(noun);
+                    return Some(noun.as_str());
                 }
             }
         }
     }
     // CamelCase rule: a Capitalized noun followed by an uppercase letter, a non-identifier char, or
     // end-of-line: `SdpOffer`, `RtpStream`, a bare `Sdp`.
-    for noun in NOUNS {
+    for noun in nouns() {
         let cap = capitalized(noun);
         let mut from = 0;
         while let Some(rel) = code[from..].find(&cap) {
@@ -209,7 +215,7 @@ fn hit_in_code(code: &str) -> Option<&'static str> {
                 Some(ch) => ch.is_ascii_uppercase() || !(ch.is_ascii_alphanumeric() || ch == '_'),
             };
             if camel_boundary {
-                return Some(noun);
+                return Some(noun.as_str());
             }
             from = start + 1;
         }
@@ -254,9 +260,9 @@ fn neutral_rs_files(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
-/// THE REAL WITNESS: no neutral-crate source names a voice-transport/media noun in code.
+/// THE REAL WITNESS: no neutral-crate source names a session-transport/media noun in code.
 #[test]
-fn neutral_crates_name_no_voice_transport_noun() {
+fn neutral_crates_name_no_session_transport_noun() {
     let root = repo_root();
     let mut files = Vec::new();
     for r in NEUTRAL_ROOTS {
@@ -288,8 +294,8 @@ fn neutral_crates_name_no_voice_transport_noun() {
 
     assert!(
         leaks.is_empty(),
-        "voice-transport/media noun(s) leaked into the NEUTRAL crates — the voice plane \
-         (busbar-voice) owns these; cross the ABI as an opaque PlaneRecord, never a transport noun:\n  {}",
+        "session-transport/media noun(s) leaked into the NEUTRAL crates — the duplex live-session \
+         plane owns these; cross the ABI as an opaque PlaneRecord, never a transport noun:\n  {}",
         leaks.join("\n  ")
     );
 }

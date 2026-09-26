@@ -1,0 +1,7 @@
+# THE MCP PLANE'S WIRE (qa_mcp_integrity.rs) — golden input data, one `key = value` per line (`#`
+# starts a comment): the door path (the node's front door and the fake upstream's endpoint alike)
+# and the three request headers a Streamable-HTTP `tools/call` carries.
+door_path = /mcp
+method_header = mcp-method
+protocol_version_header = mcp-protocol-version
+name_header = Mcp-Name

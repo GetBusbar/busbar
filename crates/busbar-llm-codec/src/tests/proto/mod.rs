@@ -80,6 +80,8 @@ mod citation_stream_carriage_tests;
 mod context_length_tests;
 #[path = "cross_protocol_extra_tests.rs"]
 mod cross_protocol_extra_tests;
+#[path = "declared_scheme_tests.rs"]
+mod declared_scheme_tests;
 #[path = "gemini_integration_tests.rs"]
 mod gemini_integration_tests;
 #[path = "gemini_tests.rs"]

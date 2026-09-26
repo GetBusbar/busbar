@@ -107,4 +107,10 @@ pub mod linked {
     pub use crate::mcp::serve_stdio_boxed as stdio_serve;
     /// The diagnostics axis.
     pub use crate::DIAGNOSTICS;
+    /// The claims axis: the pure plane the composition root's boot seal registers, and the claims it
+    /// declares.
+    pub const PLANE: busbar_plane_mcp::McpPlane = busbar_plane_mcp::McpPlane::EMPTY;
+    /// The bytes that plane claims.
+    pub const CLAIMS: &[busbar_contract::grammar::Claim] =
+        <busbar_plane_mcp::McpPlane as busbar_contract::plane::PlaneMeta>::CLAIMS;
 }

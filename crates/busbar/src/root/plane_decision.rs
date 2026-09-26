@@ -142,7 +142,14 @@ pub const PLANE_DECLARATION: busbar_contract::plane::PlaneDeclaration =
         // No fee unit: nothing admits a decision request under this plane's key yet, so any
         // `decisions.fees` figure would charge nothing — refused at boot.
         fee_units: &[],
+        metric_families: &[],
     };
+
+/// The claims axis: the pure plane the boot seal registers, and the two exact-path claims it declares
+/// — sealed against every other plane's so a tie is refused at boot, though no hook below mounts them.
+pub const PLANE: DecisionPlane = DecisionPlane::EMPTY;
+/// The bytes the decision plane declares.
+pub const CLAIMS: &[busbar_contract::grammar::Claim] = <DecisionPlane as PlaneMeta>::CLAIMS;
 
 /// THE DECISION PLANE'S BEHAVIOUR — every hook the kernel runs for it, handed to
 /// `PlaneDecl::assemble` beside [`PLANE_DECLARATION`] by `register_planes()`. Typed by kernel seams,

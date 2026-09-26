@@ -569,6 +569,25 @@ pub type CostSettleFn = extern "C-unwind" fn(
     out: *mut MaybeUninit<CostSettleOut>,
 ) -> StatusClass;
 
+/// Add `delta` to one series of a metric family the calling plane DECLARED (its declaration's
+/// metric families; minor 25). `family_ptr`/`family_len` is the family's name; `values_ptr`/
+/// `values_len` is one borrowed [`DeclStr`](super::decl::DeclStr) label VALUE per declared label key,
+/// in the declared order — every range live for the call only. The host decodes the values for a
+/// declared family only and renders exactly the declared name and keys.
+///
+/// [`StatusClass::Ok`] when added; [`StatusClass::Refused`] for a handle the host attributes to no
+/// plane, a family the plane did not declare, a value count that is not the key count, a value that
+/// is not bounded UTF-8, or a label set over the host's cardinality budget; [`StatusClass::Fault`]
+/// on a caught panic.
+pub type CounterAddFn = extern "C-unwind" fn(
+    host: HostCtx,
+    family_ptr: *const u8,
+    family_len: usize,
+    values_ptr: *const super::decl::DeclStr,
+    values_len: usize,
+    delta: u64,
+) -> StatusClass;
+
 /// The `#[repr(C)]` inbound-capability vtable a plane calls back into. Leads with the FROZEN
 /// [`AbiPreamble`] (a receiver `check_preamble`s it before using any slot) and a `size`/`version`
 /// pair (the sized-struct discipline for the table itself — new slots append at the TAIL and bump the
@@ -723,6 +742,12 @@ pub struct PlaneHostVtable {
     pub cost_reserve: Option<CostReserveFn>,
     /// Settle one exact increment against an open lease and read back exhaustion (writes settle-out).
     pub cost_settle: Option<CostSettleFn>,
+    // ── APPENDED (minor-25, the METRIC-FAMILY seam): a plane adds to a counter family it DECLARED
+    //    (name, kind, label keys) and the host renders it — the only way a plane reaches a series in
+    //    the reserved `busbar_` namespace, and only one the host lists. Trailing slot, append-only,
+    //    same sized/versioned discipline (the minor-25 bump). ──────────────────────────────────────────
+    /// Add to one series of a metric family the plane declared.
+    pub counter_add: Option<CounterAddFn>,
     // ── EXTENSION POINT (reserved) ──────────────────────────────────────────────────────────────
     // New inbound capabilities append as trailing `Option` slots BELOW this line and bump the
     // airlock MINOR — an append-only add, never a reshape of an existing slot.
@@ -929,6 +954,7 @@ impl PlaneHostVtable {
         gate_decide: None,
         cost_reserve: None,
         cost_settle: None,
+        counter_add: None,
     };
 
     /// A fully-populated STUB vtable: every slot points at an `unimplemented!()` stub. It exists to
@@ -983,6 +1009,7 @@ impl PlaneHostVtable {
         gate_decide: Some(stub::gate_decide),
         cost_reserve: Some(stub::cost_reserve),
         cost_settle: Some(stub::cost_settle),
+        counter_add: Some(stub::counter_add),
     };
 }
 
@@ -1358,6 +1385,17 @@ pub mod stub {
         _out: *mut MaybeUninit<CostSettleOut>,
     ) -> StatusClass {
         unimplemented!("PlaneHost::cost_settle — stub")
+    }
+    /// Stub: see module docs.
+    pub extern "C-unwind" fn counter_add(
+        _host: HostCtx,
+        _family_ptr: *const u8,
+        _family_len: usize,
+        _values_ptr: *const crate::hot::decl::DeclStr,
+        _values_len: usize,
+        _delta: u64,
+    ) -> StatusClass {
+        unimplemented!("PlaneHost::counter_add — stub")
     }
 }
 

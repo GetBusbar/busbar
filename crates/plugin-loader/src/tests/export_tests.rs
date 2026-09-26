@@ -67,7 +67,7 @@ fn hermetic_export_plugin_path() -> Option<std::path::PathBuf> {
     let candidate = (|| {
         let exe = std::env::current_exe().ok()?;
         let profile_dir = exe.parent()?.parent()?;
-        let name = crate::plugin_library_filename("busbar_export_example_plugin");
+        let name = crate::plugin_library_filename(crate::tests::artifact("export_example_cdylib"));
         let uplifted = profile_dir.join(&name);
         let raw = profile_dir.join("deps").join(&name);
         [uplifted, raw]

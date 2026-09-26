@@ -12,6 +12,7 @@ use crate::plane::registry::plane_decl_for;
 use busbar_kernel_ledger::cost::{
     flat_card_present, split_plane_lane, PER_REQUEST, PER_SESSION, PLANE_LANE_SEP,
 };
+use busbar_plugin_loader::CheckPhase;
 
 /// Maximum byte-length of an `affinity.header_name`. HTTP header field-names must be ASCII; an
 /// over-long name is rejected at boot so a bad value cannot silently disable affinity at header
@@ -1224,30 +1225,13 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
     // gateway rather than tune it; reject loudly at boot. Deliberately permissive — only the few
     // values where 0/absurd is a foot-gun are constrained (e.g. `max_inbound_concurrent` accepts ANY
     // usize incl. 0, the explicit unlimited posture — the DEFAULT is 8192, not 0).
-    validate_limits(&cfg.limits, &mut errors);
-
-    // PER-INSTANCE webhook bounds (1.5.3): `export:` holds NAMED instances, each with its own
-    // `delivery_timeout_secs`, so this check runs once per configured sink rather than once over a
-    // single process-global value that could only ever describe one of them.
-    for (i, w) in cfg.export.request_log_webhooks.iter().enumerate() {
-        if w.delivery_timeout_secs > MAX_DURATION_SECS {
-            errors.push(format!(
-                "the `module: request-log-webhook` export instance targeting '{}' (#{i}) sets \
-                 settings.delivery_timeout_secs: {}, above the {MAX_DURATION_SECS}-second (30-year) \
-                 ceiling every duration is bounded by — a delivery deadline that far out overflows \
-                 the clock",
-                w.url, w.delivery_timeout_secs
-            ));
-        }
-        if w.delivery_timeout_secs < 1 {
-            errors.push(format!(
-                "the `module: request-log-webhook` export instance targeting '{}' (#{i}) sets \
-                 settings.delivery_timeout_secs: 0, which would abort every delivery — it must be \
-                 >= 1",
-                w.url
-            ));
-        }
-    }
+    // The export-axis sinks' own checks join at the points they always ran at: a bound the sinks'
+    // instances share (a webhook sink's in-flight bound) AMONG the limits' checks, each instance's
+    // own (a webhook's delivery deadline) after them.
+    use crate::export::plugin::check;
+    let sinks = &mut |e: &mut Vec<String>| check(&cfg.export, CheckPhase::Limits, e);
+    validate_limits_with(&cfg.limits, &mut errors, sinks);
+    check(&cfg.export, CheckPhase::Instances, &mut errors);
 
     // A model maps to ONE lane, so its `context_max` must be single-valued across every pool that
     // names it. `build_app_from_config` (boot) rejects a genuine conflict — mirror that here so a
@@ -1288,7 +1272,18 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
 /// Range-check the resolved operational limits. Pushes a message per violation (collect-all, like the
 /// rest of `validate`). The bounds are intentionally loose: each default is the production working
 /// value, so we only reject values that would make a subsystem non-functional.
+#[cfg(test)]
 fn validate_limits(limits: &crate::config::LimitsResolved, errors: &mut Vec<String>) {
+    validate_limits_with(limits, errors, &mut |_| {});
+}
+
+/// [`validate_limits`], with `sinks` adding the export sinks' limit-phase lines where the
+/// in-flight bound's check has always sat (after the timeouts, before the Retry-After ceiling).
+fn validate_limits_with(
+    limits: &crate::config::LimitsResolved,
+    errors: &mut Vec<String>,
+    sinks: &mut dyn FnMut(&mut Vec<String>),
+) {
     use crate::config::{REQUEST_BODY_MAX_BYTES_CEIL, REQUEST_BODY_MAX_BYTES_FLOOR};
 
     validate_limit_ceilings(limits, errors);
@@ -1314,23 +1309,7 @@ fn validate_limits(limits: &crate::config::LimitsResolved, errors: &mut Vec<Stri
                 .to_string(),
         );
     }
-    if limits.max_inflight_webhook_deliveries < 1 {
-        errors.push(
-            "export.request-log-webhook.settings.max_inflight_deliveries must be >= 1 (a 0-permit \
-             semaphore admits nothing, silently dropping every webhook delivery)"
-                .to_string(),
-        );
-    }
-    // The webhook exporter seeds a `Semaphore::new(max_inflight_webhook_deliveries())` with no other
-    // upper bound — see `MAX_SEMAPHORE_PERMITS`'s doc comment for why this is the panic
-    // precondition, not a policy opinion.
-    if limits.max_inflight_webhook_deliveries > MAX_SEMAPHORE_PERMITS {
-        errors.push(format!(
-            "export.request-log-webhook.settings.max_inflight_deliveries must be <= \
-             {MAX_SEMAPHORE_PERMITS} (tokio::sync::Semaphore's hard permit ceiling — a value above \
-             it panics at build time instead of failing validation)"
-        ));
-    }
+    sinks(errors);
     // The honored-Retry-After ceiling and hard-down cooldown must be >= 1s to be meaningful.
     if limits.max_honored_retry_after_secs < 1 {
         errors.push(
@@ -1448,7 +1427,6 @@ fn validate_limit_ceilings(limits: &crate::config::LimitsResolved, errors: &mut 
         // ceiling.
         request_body_max_bytes: _,
         max_inbound_concurrent: _,
-        max_inflight_webhook_deliveries: _,
         // SAFE AT ANY VALUE — compared against a count/length only, never added to, allocated
         // from, or slept on (0 = unlimited where documented).
         pool_max_idle_per_host: _,
@@ -1787,7 +1765,7 @@ fn validate_cost_model(cfg: &RootCfg, errors: &mut Vec<String>) {
         }
         // The built-in `env`/`file` modules need a NON-EMPTY key/path. The `{ env: "" }` /
         // `{ file: "" }` sugar already rejects an empty value in the deserializer
-        // (secret-ref/src/lib.rs), but the CANONICAL `{ module: env, settings: { key: "" } }` form
+        // (contract secret_ref), but the CANONICAL `{ module: env, settings: { key: "" } }` form
         // bypasses that arm — `env_var()`/`file_path()` return `Some("")`, not `None`. Left
         // unchecked, such a config passes `--validate` as "ok" then fail-closes at boot
         // (`std::env::var("")` → Err), so a clean validate would no longer imply a clean boot.

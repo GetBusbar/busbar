@@ -164,6 +164,7 @@ const fn codec_row(name: &'static str, handler: &'static Handler) -> ProtocolDec
 static A: ProtocolDecl = ProtocolDecl {
     egress_auth_headers: Some(static_header),
     egress_auth_lane_constant: true,
+    egress_scheme: None,
     ..codec_row("proto-a", &Handler("proto-a", CHAT))
 };
 static B: ProtocolDecl = ProtocolDecl {

@@ -74,6 +74,7 @@ fn stub_vtable_populates_every_slot() {
         gate_decide,
         cost_reserve,
         cost_settle,
+        counter_add,
     } = PlaneHostVtable::STUB;
 
     for (name, slot) in [
@@ -121,6 +122,7 @@ fn stub_vtable_populates_every_slot() {
         ("gate_decide", gate_decide.is_some()),
         ("cost_reserve", cost_reserve.is_some()),
         ("cost_settle", cost_settle.is_some()),
+        ("counter_add", counter_add.is_some()),
     ] {
         assert!(slot, "STUB leaves `{name}` unpopulated");
     }

@@ -65,7 +65,7 @@ use busbar_contract::caps::{
     Authenticated, CallId, Canary, Consumption, Decision, Decode, Dial, DurabilityLost,
     DurableWrite, Encode, Exit, Grant, Hold, HoldAccrual, HoldCell, KernelSeal, KeyHandle, Meter,
     MeterClassId, Origin, OriginKind, Outcome, Pass, Posted, PostingFlags, PrincipalId,
-    QuantitySource, ReasonCode, Refusal, Route, SessionId, StepName, UnitEnd, UnitKey, Usage,
+    QuantitySource, ReasonCode, Refusal, Route, SessionId, Sign, StepName, UnitEnd, UnitKey, Usage,
     UsageLine, VerifiedDestination, Verify, WriteMoney,
 };
 
@@ -215,6 +215,18 @@ impl Kernel {
     /// mint sees this one too.
     pub fn usage_token(&self) -> Grant<Consumption> {
         Grant::<Consumption>::mint(&self.seal)
+    }
+
+    /// The egress-auth unit's token, as the egress step lends it to one presentation of a lane
+    /// credential under the protocol's declared scheme.
+    ///
+    /// The sixth token minted outside the loop: a credential is presented per upstream ATTEMPT, and
+    /// an attempt is inside Route's leg rather than a step of its own, so no step token can stand in
+    /// — and without this the unit's `decorate` has a parameter no caller in the tree can supply.
+    /// Kept beside the other five and named the same way, so the source scan that accounts for every
+    /// mint sees this one too.
+    pub fn sign_token(&self) -> Grant<Sign> {
+        Grant::<Sign>::mint(&self.seal)
     }
 
     /// The seal itself, for the other two places in the kernel that mint tokens. Between them they

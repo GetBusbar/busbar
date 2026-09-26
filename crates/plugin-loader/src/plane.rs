@@ -37,8 +37,8 @@
 
 use crate::stage;
 use busbar_plugin::hot::decl::{
-    AdminRoutesFn, AdmissionFn, BuildFn, ClaimsFn, ConfigValidateFn, DispatchFn, HydrateFn,
-    OpenApiFn, StartFn,
+    AdminRoutesFn, AdmissionFn, BuildFn, ClaimsFn, ConfigValidateFn, DeclMetricFamily, DispatchFn,
+    HydrateFn, OpenApiFn, StartFn,
 };
 use busbar_plugin::hot::host::HostCtx;
 use busbar_plugin::hot::pod::{OpaqueState, RawStatus, StatusClass, POD_VERSION};
@@ -144,6 +144,20 @@ pub struct HotDeclaration {
     pub billable_classes: Vec<(String, String)>,
     /// The fee units the plane counts.
     pub fee_units: Vec<String>,
+    /// The metric families the plane adds to through the host's `counter_add` (the minor-25 tail;
+    /// empty for a decl that ends before it).
+    pub metric_families: Vec<HotMetricFamily>,
+}
+
+/// One metric family a HOT-lane plane declares, read off its decl into owned values.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HotMetricFamily {
+    /// The series name exactly as it renders.
+    pub name: String,
+    /// The family's kind.
+    pub kind: String,
+    /// The label keys, in render order.
+    pub label_keys: Vec<String>,
 }
 
 impl DynPlane {
@@ -1057,7 +1071,38 @@ fn read_declaration(
             tail_field!(decl, size, fee_units_len, display),
             "fee unit",
         )?,
+        metric_families: read_metric_families(decl, size, display)?,
     })
+}
+
+/// The decl's metric-family tail (minor 25). A decl that ends before it declares no family — an
+/// append-only absence, not a default: the plane states none, so it adds to none.
+fn read_metric_families(
+    decl: *const PlaneDecl,
+    size: u32,
+    display: &str,
+) -> Result<Vec<HotMetricFamily>, String> {
+    let ptr = busbar_plugin::read_sized_field!(decl, size, PlaneDecl, metric_families_ptr);
+    let len = busbar_plugin::read_sized_field!(decl, size, PlaneDecl, metric_families_len);
+    let (Some(ptr), Some(len)) = (ptr, len) else {
+        return Ok(Vec::new());
+    };
+    let stated = |d: DeclStr, what: &str| {
+        decl_str(d, display)?.ok_or_else(|| format!("plane '{display}' states no {what}"))
+    };
+    decl_list(ptr, len, "metric family", display)?
+        .into_iter()
+        .map(|f: DeclMetricFamily| {
+            Ok(HotMetricFamily {
+                name: stated(f.name, "metric family name")?,
+                kind: stated(f.kind, "metric family kind")?,
+                label_keys: decl_list(f.label_keys_ptr, f.label_keys_len, "label key", display)?
+                    .into_iter()
+                    .map(|k| stated(k, "label key"))
+                    .collect::<Result<_, String>>()?,
+            })
+        })
+        .collect()
 }
 
 /// One [`DeclStr`] as an owned string: `None` for a NULL (absent) range, the stated string otherwise.

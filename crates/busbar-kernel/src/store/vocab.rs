@@ -185,7 +185,7 @@ pub enum Permit {
 // ── The RESOLVED runtime breaker configuration the FSM evaluates. Neutral DATA (no serde, no config
 //    grammar attached — the serialized `config::BreakerCfg` grammar and the config->runtime lowering
 //    stay in core). Relocated DOWN here so the LLM plane names the breaker cfg in its money-path
-//    signatures and reconstructs it via `from_llm` without reaching into `busbar-core`; core's `store`
+//    signatures and reconstructs it via `from_breaker_input` without reaching into `busbar-core`; core's `store`
 //    re-exports `BreakerCfg`/`TripConfig`/`TripMode` at their historical `crate::store::*` paths (the
 //    breaker FSM, `appbuild`, and the store tests are untouched), and core owns the
 //    `config::BreakerCfg -> BreakerCfg` lowering as an inherent `to_runtime` method.
@@ -275,7 +275,7 @@ impl BreakerCfg {
     /// names only this pub constructor and the neutral input type).
     ///
     /// [`to_breaker_input`]: Self::to_breaker_input
-    pub fn from_llm(i: &crate::plane_host::BreakerInput) -> Self {
+    pub fn from_breaker_input(i: &crate::plane_host::BreakerInput) -> Self {
         Self {
             base_cooldown_secs: i.base_cooldown_secs,
             max_cooldown_secs: i.max_cooldown_secs,
@@ -785,4 +785,9 @@ pub trait LaneRuntime: Send + Sync + 'static {
     /// consumes it via `restore_health_impl`). Reliability state is NEVER persisted to disk (store-or-
     /// RAM rule): a process restart re-learns it from live traffic, so there is no boot-restore path.
     fn export_health(&self) -> Vec<LaneHealthSnapshot>;
+
+    /// The one breaker whose cells this store's lanes are handles onto, shared — so a reader that
+    /// observes through the handle writes the cells admission reads, never a second set. A lane's
+    /// destination is its index.
+    fn breaker_unit(&self) -> std::sync::Arc<busbar_kernel_breaker::BreakerUnit>;
 }

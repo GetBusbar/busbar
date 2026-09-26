@@ -29,6 +29,7 @@
 
 use std::sync::Arc;
 
+use busbar_contract::plane::MetricFamily;
 use busbar_kernel::ingress::arrival::{BodyIngressEntry, PathIngressEntry};
 use busbar_kernel::plane::registry::PlaneDecl;
 use busbar_kernel::plane::registry::{BillableClass, BuildCtx, PlaneDeclaration, PlaneHooks};
@@ -81,6 +82,40 @@ pub struct Linked {
     /// flips onto the unified loop's ONE-SHOT runner, and of each it flips onto the SESSION runner.
     pub gauntlet_one_shot: &'static [&'static str],
     pub gauntlet_session: &'static [&'static str],
+    /// The transport axis (#3, #30): each linked wire's key, declared layers and build, in manifest
+    /// order — the boot seal folds them bottom-up (see `crate::root::registry`).
+    pub transports: &'static [LinkedTransport],
+    /// Each linked plane's pure plane, as the boot seal registers it, and the claims it declares.
+    pub claims: &'static [LinkedClaims],
+}
+
+/// One linked wire, as its crate's entry states it: the registry key, the layers it declares it can
+/// be built over, and its build — handed the layer the root built beneath it, where one is, and the
+/// deployment's transport settings.
+#[derive(Clone, Copy)]
+pub struct LinkedTransport {
+    /// The wire's registry key.
+    pub key: &'static str,
+    /// The layers it declares, in the order it would take one.
+    pub composes_over: &'static [&'static str],
+    /// Build the wire over `lower`.
+    pub build: BuildTransport,
+}
+
+/// A wire's build: handed the layer built beneath it, where one is, and the deployment's settings.
+pub type BuildTransport = fn(
+    Option<Arc<dyn busbar_contract::Transport>>,
+    &busbar_contract::transport::TransportSettings,
+) -> Arc<dyn busbar_contract::Transport>;
+
+/// One linked plane's contribution to the boot seal: the pure plane registered under its own key,
+/// and the claims that plane declares.
+#[derive(Clone, Copy)]
+pub struct LinkedClaims {
+    /// The pure plane, as the seal's registry holds it.
+    pub plane: fn() -> Arc<dyn busbar_contract::Plugin>,
+    /// The bytes it claims.
+    pub claims: &'static [busbar_contract::grammar::Claim],
 }
 
 /// A linked EXPORT sink's entry (K9b): `(name, alias, declares, boundary)` — what its signed tarball
@@ -235,8 +270,51 @@ pub fn plane_rows(
         .map(hot_plane_row)
         .collect::<Result<Vec<PlaneDecl>, String>>()?
         .leak();
-    Ok(linked.planes.iter().chain(hot_rows).collect())
+    let rows: Vec<&'static PlaneDecl> = linked.planes.iter().chain(hot_rows).collect();
+    let declared: Vec<&PlaneDeclaration> = rows.iter().map(|d| &d.declaration).collect();
+    busbar_contract::plane::check_metric_families(&declared, PLANE_CARRIED_SERIES)?;
+    Ok(rows)
 }
+
+/// THE FIRST-PARTY SERIES A PLANE MAY CARRY — the host-owned list a plane's `busbar_`-named metric
+/// family must be on, with exactly these label keys in this order, to be admitted (ARCHITECT RULING
+/// S2-c; #65: a plane cannot mint an arbitrary `busbar_` series, and a carried one renders byte for
+/// byte as the host's). A plane adds to a family only through `counter_add`, so only COUNTERS are
+/// listed.
+///
+/// SOURCE: every `counter` row of the 1.5.5 metrics inventory, `v1.5.5:docs/observability.md`
+/// (the metric table, lines 95–119), with its label keys in the order the host emits them — which
+/// is the order the 1.5.5 exposition renders them (`busbar_route_policy_*` emit `policy` before
+/// `pool`). Plus ONE row the ruling names that 1.5.5 did not have:
+/// `busbar_billing_tap_decode_fail_total{protocol,reason}` is absent at the v1.5.5 tag (introduced
+/// at 4cab71389) and is listed because S2-c requires the seam to carry it byte-identically.
+pub const PLANE_CARRIED_SERIES: &[(&str, &[&str])] = &[
+    (
+        "busbar_requests_total",
+        &["ingress_protocol", "pool", "outcome"],
+    ),
+    ("busbar_upstream_attempts_total", &["pool", "lane"]),
+    (
+        "busbar_upstream_failures_total",
+        &["pool", "lane", "disposition"],
+    ),
+    ("busbar_breaker_trips_total", &["pool", "lane"]),
+    ("busbar_failovers_total", &["pool", "reason"]),
+    ("busbar_translations_total", &["from", "to"]),
+    ("busbar_route_policy_selections_total", &["policy", "pool"]),
+    (
+        "busbar_route_policy_rejections_total",
+        &["policy", "pool", "status"],
+    ),
+    ("busbar_billing_truncated_total", &[]),
+    ("busbar_tap_notifications_dropped_total", &[]),
+    ("busbar_webhook_logs_dropped_total", &[]),
+    ("busbar_file_logs_dropped_total", &[]),
+    (
+        "busbar_billing_tap_decode_fail_total",
+        &["protocol", "reason"],
+    ),
+];
 
 /// ADAPT ONE HOT-LANE PLANE onto the plane axis — the ONE function a linked and a dropped-in plane
 /// both pass through. The row's contract declaration is the plane's own statement, field for field:
@@ -275,6 +353,16 @@ pub fn hot_plane_row(plane: &'static DynPlane) -> Result<PlaneDecl, String> {
             .collect::<Vec<_>>()
             .leak(),
         fee_units: list(&stated.fee_units),
+        metric_families: stated
+            .metric_families
+            .iter()
+            .map(|f| MetricFamily {
+                name: &f.name,
+                kind: &f.kind,
+                label_keys: list(&f.label_keys),
+            })
+            .collect::<Vec<_>>()
+            .leak(),
     };
     HOT_PLANES
         .lock()
@@ -523,8 +611,14 @@ pub fn dropped_from_config(
         eprintln!("busbar: {refusal}");
         std::process::exit(2);
     });
-    Some(Box::leak(Box::new(registry)))
+    // Kept for the process — the export axis and the diagnostics axis read it for as long as it
+    // serves — in the one registry slot boot fills.
+    Some(REGISTRY.get_or_init(|| registry))
 }
+
+/// The one plugin registry [`dropped_from_config`] builds, held for the process.
+static REGISTRY: std::sync::OnceLock<busbar_plugin_loader::PluginRegistry> =
+    std::sync::OnceLock::new();
 
 /// The configured `plugins.dir`'s admitted rows (see [`dropped_from_config`]).
 fn scan_configured() -> Option<busbar_plugin_loader::PluginRegistry> {
@@ -600,7 +694,6 @@ pub const HOST_SERIES: &[&str] = &[
     busbar_kernel::metrics::TRANSLATIONS_TOTAL,
     busbar_kernel::metrics::PLANE_REQUESTS_TOTAL,
     busbar_kernel::metrics::PLANE_REQUEST_DURATION_SECONDS,
-    busbar_kernel::metrics::WEBHOOK_LOGS_DROPPED_TOTAL,
     busbar_kernel::metrics::ADMISSION_DENIED_TOTAL,
     busbar_kernel::metrics::METERING_PENDING_COALESCED_TOTAL,
     busbar_kernel::metrics::PLUGIN_REQUEST_HEADERS_TRUNCATED_TOTAL,
@@ -782,25 +875,23 @@ pub struct HostEgressCarrier;
 static CARRIER_CLIENT: std::sync::OnceLock<busbar_kernel::proxy::EgressClient> =
     std::sync::OnceLock::new();
 
-impl busbar_plugin_loader::EgressCarrier for HostEgressCarrier {
-    fn carry(
-        &self,
+impl HostEgressCarrier {
+    /// The request as the hop sends it — after the URL policy — and its deadline; or the refusal.
+    fn prepare(
         request: &busbar_plugin_loader::HttpRequest,
-    ) -> busbar_plugin_loader::HostResult {
-        use busbar_plugin_loader::{HostResult, HttpResponse};
-        let failed = |step: &str, error: String| HostResult::Failed {
-            step: step.to_string(),
-            error,
-            rotation: None,
-        };
-        if let Err(refusal) = self.admit(&request.url) {
-            return failed("refused", refusal);
+    ) -> Result<(CarriedRequest, tokio::time::Instant), busbar_plugin_loader::HostResult> {
+        use busbar_plugin_loader::EgressCarrier as _;
+        if let Err(refusal) = HostEgressCarrier.admit(&request.url) {
+            return Err(carried_failure("refused", refusal));
         }
         let (Ok(uri), Ok(method)) = (
             request.url.parse::<axum::http::Uri>(),
             axum::http::Method::from_bytes(request.method.as_bytes()),
         ) else {
-            return failed("request", "target URL does not parse".to_string());
+            return Err(carried_failure(
+                "request",
+                "target URL does not parse".to_string(),
+            ));
         };
         let mut headers = axum::http::HeaderMap::new();
         for (name, value) in &request.headers {
@@ -812,6 +903,16 @@ impl busbar_plugin_loader::EgressCarrier for HostEgressCarrier {
             }
         }
         let body = axum::body::Bytes::from(request.body.clone());
+        let deadline =
+            tokio::time::Instant::now() + std::time::Duration::from_millis(request.timeout_ms);
+        Ok(((method, uri, headers, body), deadline))
+    }
+
+    /// Send a prepared request on the carrier's one client, under its deadline.
+    async fn send(
+        (method, uri, headers, body): CarriedRequest,
+        deadline: tokio::time::Instant,
+    ) -> busbar_plugin_loader::HostResult {
         let req = busbar_kernel::egress::engine::request(method, uri, headers, body);
         let client = CARRIER_CLIENT.get_or_init(|| {
             busbar_kernel::proxy::build_egress_client(
@@ -823,21 +924,62 @@ impl busbar_plugin_loader::EgressCarrier for HostEgressCarrier {
                 ),
             )
         });
-        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
-            return failed("refused", "this host carries no plugin egress".to_string());
-        };
-        let deadline =
-            tokio::time::Instant::now() + std::time::Duration::from_millis(request.timeout_ms);
-        let sent = runtime.block_on(busbar_kernel::egress::engine::send_bounded(
-            client, req, deadline,
-        ));
-        match sent {
-            Ok(answer) => HostResult::Http(HttpResponse {
-                status: answer.status().as_u16(),
-                body: String::new(),
-            }),
-            Err(e) => failed("request", e.into_cause()),
+        match busbar_kernel::egress::engine::send_bounded(client, req, deadline).await {
+            Ok(answer) => {
+                busbar_plugin_loader::HostResult::Http(busbar_plugin_loader::HttpResponse {
+                    status: answer.status().as_u16(),
+                    body: String::new(),
+                })
+            }
+            Err(e) => carried_failure("request", e.into_cause()),
         }
+    }
+}
+
+/// A request the carrier sends: method, target, headers, body.
+type CarriedRequest = (
+    axum::http::Method,
+    axum::http::Uri,
+    axum::http::HeaderMap,
+    axum::body::Bytes,
+);
+
+/// A carried request's failure at `step`.
+fn carried_failure(step: &str, error: String) -> busbar_plugin_loader::HostResult {
+    busbar_plugin_loader::HostResult::Failed {
+        step: step.to_string(),
+        error,
+        rotation: None,
+    }
+}
+
+impl busbar_plugin_loader::EgressCarrier for HostEgressCarrier {
+    fn carry(
+        &self,
+        request: &busbar_plugin_loader::HttpRequest,
+    ) -> busbar_plugin_loader::HostResult {
+        let (req, deadline) = match HostEgressCarrier::prepare(request) {
+            Ok(prepared) => prepared,
+            Err(refused) => return refused,
+        };
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+            return carried_failure("refused", "this host carries no plugin egress".to_string());
+        };
+        runtime.block_on(HostEgressCarrier::send(req, deadline))
+    }
+
+    /// The same hop, awaited by the delivery's task: no thread waits on the far end.
+    fn carry_async(
+        &'static self,
+        request: busbar_plugin_loader::HttpRequest,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = busbar_plugin_loader::HostResult> + Send>>
+    {
+        Box::pin(async move {
+            match HostEgressCarrier::prepare(&request) {
+                Ok((req, deadline)) => HostEgressCarrier::send(req, deadline).await,
+                Err(refused) => refused,
+            }
+        })
     }
 
     fn admit(&self, url: &str) -> Result<(), String> {
@@ -863,3 +1005,15 @@ mod tests;
 #[cfg(test)]
 #[path = "tests/linked_exports.rs"]
 mod export_tests;
+
+#[cfg(test)]
+#[path = "tests/export_webhook_conformance.rs"]
+mod export_webhook_conformance;
+
+#[cfg(test)]
+#[path = "tests/linked_scrape.rs"]
+mod scrape_tests;
+
+#[cfg(test)]
+#[path = "tests/metric_family_conformance.rs"]
+mod metric_family_conformance;

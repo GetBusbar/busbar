@@ -773,8 +773,7 @@ fn a_fresh_trip_is_never_journaled_as_a_failed_probe() {
     let mut disagreements = 0usize;
     for _ in 0..500 {
         let journal = std::sync::Arc::new(RecordingJournal::default());
-        let unit =
-            BreakerUnit::<_, crate::classify::NoopDiagnostics>::with_journal(journal.clone());
+        let unit = BreakerUnit::with_journal(journal.clone());
 
         // Trip it, then win the recovery probe: the cell is HalfOpen and both threads below can see
         // it that way.
@@ -848,8 +847,7 @@ fn a_probe_that_closed_the_cell_is_always_journaled_as_succeeded() {
     let mut orphans = 0usize;
     for _ in 0..2_000 {
         let journal = std::sync::Arc::new(RecordingJournal::default());
-        let unit =
-            BreakerUnit::<_, crate::classify::NoopDiagnostics>::with_journal(journal.clone());
+        let unit = BreakerUnit::with_journal(journal.clone());
 
         // Trip the cell and leave the cooldown long past, so the probe is there to be won.
         unit.observe(

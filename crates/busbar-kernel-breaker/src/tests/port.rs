@@ -3,10 +3,8 @@
 //! super::*` reaches the private items it always did.
 
 use super::*;
-use crate::cfg::BreakerCfg;
 use crate::classify::{Diagnostics, NoopDiagnostics, WarnOnceDiagnostics};
-use crate::{Breaker, BreakerUnit, DestinationId, Outcome};
-use busbar_contract::caps::{KernelSeal, Pass, Route};
+use crate::Outcome;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
@@ -15,12 +13,6 @@ fn err_map(pairs: &[(&str, &str)]) -> HashMap<String, String> {
         .iter()
         .map(|(k, v)| (k.to_string(), v.to_string()))
         .collect()
-}
-
-/// A fresh `Pass<Route>` for one `observe`/`state` call — test-only, minted through the
-/// kernel seal exactly as CG-29 says a real deployment would.
-fn route_token() -> Pass<Route> {
-    Pass::mint(&KernelSeal::acquire_for_kernel())
 }
 
 /// A [`Diagnostics`] sink that records every call it receives, unconditionally (no dedup of
@@ -180,72 +172,6 @@ fn no_code_at_all_classifies_as_network_failure_and_trips() {
     assert!(matches!(out.outcome, Outcome::Transient { .. }));
 }
 
-// ── BreakerUnit::classify: the stateful method, reading the declared per-destination error_map
-
-#[test]
-fn breaker_unit_classify_reads_the_declared_error_map() {
-    let unit: BreakerUnit = BreakerUnit::new();
-    unit.set_error_map(DestinationId::new(7), err_map(&[("1113", "billing")]));
-
-    let out = unit.classify(
-        DestinationId::new(7),
-        UpstreamStatus {
-            code: Some(UpstreamCode::Http(1113)),
-            retry_after: None,
-        },
-    );
-    assert_eq!(out.disposition, Disposition::HardDown);
-
-    // A different destination with no declared map falls back to plain HTTP-status
-    // classification for the SAME numeric code.
-    let out2 = unit.classify(
-        DestinationId::new(8),
-        UpstreamStatus {
-            code: Some(UpstreamCode::Http(1113)),
-            retry_after: None,
-        },
-    );
-    assert_eq!(out2.disposition, Disposition::ClientFault);
-}
-
-#[test]
-fn breaker_unit_classify_then_observe_trips_every_pool_cell_on_hard_down() {
-    let unit: BreakerUnit = BreakerUnit::new();
-    unit.set_error_map(DestinationId::new(7), err_map(&[("1113", "billing")]));
-    // Touch two pools so `hard_down_all`'s fan-out has more than the default cell to reach.
-    let _ = unit.try_admit("pool-a", DestinationId::new(7), 0);
-    let _ = unit.try_admit("pool-b", DestinationId::new(7), 0);
-
-    let out = unit.classify(
-        DestinationId::new(7),
-        UpstreamStatus {
-            code: Some(UpstreamCode::Http(1113)),
-            retry_after: None,
-        },
-    );
-    let tripped = unit.observe(
-        "pool-a",
-        DestinationId::new(7),
-        out.outcome,
-        &BreakerCfg::default(),
-        0,
-        &route_token(),
-    );
-    assert!(
-        tripped,
-        "the first hard-down observation must be a fresh trip"
-    );
-
-    assert_eq!(
-        unit.state("pool-a", DestinationId::new(7), 100, &route_token()),
-        crate::LaneState::Suppressed { until: 1800 }
-    );
-    assert_eq!(
-        unit.state("pool-b", DestinationId::new(7), 100, &route_token()),
-        crate::LaneState::Suppressed { until: 1800 }
-    );
-}
-
 // ── CG-43: the diagnostics sink reaches `classify` ──────────────────────────────────────────
 
 #[test]
@@ -296,42 +222,6 @@ fn noop_diagnostics_stays_silent_on_an_unrecognized_error_map_value() {
     // Falls through to HTTP-status classification: no numeric status recognized as an error
     // (code stood in for the status here), so it lands on the client-fault fallback.
     assert_eq!(out.disposition, Disposition::ClientFault);
-}
-
-#[test]
-fn breaker_unit_classify_reaches_its_own_diagnostics_sink() {
-    // CG-43's binding: `BreakerUnit::classify` must route to the caller-supplied sink, not the
-    // hardcoded `NoopDiagnostics` `classify_upstream` used to close over internally.
-    let sink = Arc::new(RecordingDiagnostics::default());
-    let unit: BreakerUnit<
-        crate::journal::NoopJournal,
-        WarnOnceDiagnostics<Arc<RecordingDiagnostics>>,
-    > = BreakerUnit::with_diagnostics(WarnOnceDiagnostics::new(sink.clone()));
-    unit.set_error_map(
-        DestinationId::new(1),
-        err_map(&[("1113", "not_a_real_class")]),
-    );
-
-    let _ = unit.classify(
-        DestinationId::new(1),
-        UpstreamStatus {
-            code: Some(UpstreamCode::Http(1113)),
-            retry_after: None,
-        },
-    );
-    let _ = unit.classify(
-        DestinationId::new(1),
-        UpstreamStatus {
-            code: Some(UpstreamCode::Http(1113)),
-            retry_after: None,
-        },
-    );
-
-    assert_eq!(
-        *sink.calls.lock().unwrap(),
-        vec!["not_a_real_class".to_string()],
-        "the sink must be reached exactly once, through BreakerUnit::classify"
-    );
 }
 
 // ── the two namespaces, each against its own table ──────────────────────────────────────────

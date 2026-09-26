@@ -5,11 +5,11 @@
 //!
 //! `Router → RequestHandler → OperationHandler → IR`
 //!
-//! - [`RequestHandler`] — ONE per protocol (`openai.rs`, `anthropic.rs`, …). Dumb and
+//! - [`RequestHandler`](busbar_contract::codec::RequestHandler) — ONE per protocol (`openai.rs`, `anthropic.rs`, …). Dumb and
 //!   protocol-specific: reads path+body to decide WHICH operation a request asks for
 //!   (`resolve_operation`), owns the `(protocol, operation) → path template` (`upstream_path`), and
 //!   holds its row of the support matrix (`operation_handler`; `None` = the no-handler 404).
-//! - [`OperationHandler`] — ONE per (protocol × operation). A pure codec: wire ↔ IR, both
+//! - [`OperationHandler`](busbar_contract::codec::OperationHandler) — ONE per (protocol × operation). A pure codec: wire ↔ IR, both
 //!   directions, plus the operation-capability surface the engine reads. It never routes, fails
 //!   over, checks auth, bills, or knows another protocol exists.
 //! - [`OpDispatch`] — the thin `(operation, transport, OperationHandler)` handle the streaming
@@ -22,15 +22,15 @@
 //! `CELLS` table naming the verbs it speaks. Adding an OPERATION: an OperationHandler plus a row in
 //! the `CELLS` table of each protocol that speaks it — a row, not a match arm, and only in the
 //! protocols that speak it, because a verb is that protocol's vocabulary and not a core enum's
-//! variant (see [`Cell`], and `operation.rs` for what the core kept: the SHAPE). Adding a
+//! variant (see [`Cell`](busbar_contract::codec::Cell), and `operation.rs` for what the core kept: the SHAPE). Adding a
 //! TRANSPORT: a variant in `transport.rs` and an arrival that frames these same codecs — no codec
 //! changes, because a codec never learns which channel it is speaking over. Nothing else moves.
 //!
-//! THE CODEC-CELL MATRIX ITSELF LIVES IN `busbar-substrate` (`busbar_substrate_values::handlers`): the
-//! [`OperationHandler`] / [`RequestHandler`] / [`TranslateCodec`] traits, the [`Cell`] / [`cell_of`]
-//! / [`path_of`] row helpers, the [`IngressReject`] / [`CodecError`] reject enums and the translate
-//! value enums are all re-exported below at their historical `busbar_kernel::handlers::…` paths so the
-//! dialect crates and core's own call sites are unchanged. What STAYS in core is the engine dispatch
+//! THE CODEC-CELL SHAPES LIVE IN THE CONTRACT (`busbar_contract::codec`, #83a SD-2b): the
+//! `OperationHandler` / `RequestHandler` traits, the `Cell` / `cell_of` / `path_of` row helpers and
+//! the `IngressReject` / `CodecError` reject enums, named there by every caller. The translate
+//! pipeline ([`TranslateCodec`] and its value enums) stays in `busbar_substrate_values::handlers` and
+//! is re-exported below at its historical `busbar_kernel::handlers::…` paths. What STAYS in core is the engine dispatch
 //! handle [`OpDispatch`] and the registry-resolved [`chat`] / [`op_for`] / [`protocol_error`]
 //! resolvers — those name the core registry singleton.
 
@@ -51,16 +51,13 @@
 // `busbar_mcp::PROTO_DECL` directly (dev-dependency). NOTE THE SCOPE: this was MCP the PROTOCOL; the
 // `mcp/` PLANE (`crate::mcp`) never travelled with the codec and is still core's.
 
-// THE CODEC-CELL MATRIX, relocated to `busbar-substrate` (`busbar_substrate_values::handlers`) so the
-// dialect crates implement it without reaching into `busbar-core`, and re-exported here at its
-// historical `busbar_kernel::handlers::…` paths so every in-core call site (and the netted
-// dual-compile test build) is unchanged. `usage_tap_decode_fail_should_warn` (the usage-tap
+// THE TRANSLATE PIPELINE, relocated to `busbar-substrate` (`busbar_substrate_values::handlers`) and
+// re-exported here at its historical `busbar_kernel::handlers::…` paths. `usage_tap_decode_fail_should_warn` (the usage-tap
 // warn-once latch) travels with the `extract_usage` default that calls it; the
 // `busbar_kernel::metrics::BILLING_TAP_DECODE_FAIL_TOTAL` metric name it increments moved with it and
 // is re-exported from `metrics.rs`.
 pub use busbar_substrate_values::handlers::{
-    cell_of, path_of, usage_tap_decode_fail_should_warn, Cell, CodecError, IngressReject,
-    OperationHandler, RequestHandler, TranslateCodec, TranslateReqInput, TranslateReqReject,
+    usage_tap_decode_fail_should_warn, TranslateCodec, TranslateReqInput, TranslateReqReject,
     TranslateRespInput, TranslatedRequest,
 };
 
@@ -82,28 +79,9 @@ pub use busbar_substrate_values::handlers::request_handler;
 #[cfg(test)]
 use crate::operation::Operation;
 
-// `WireBody` (a serialized wire body + its content-type) RELOCATED to `busbar-substrate` as a
-// neutral wire value type a plane crate names directly; re-exported here so core's call sites and the
-// `busbar-llm` handlers that name `busbar_kernel::handlers::WireBody` are unchanged.
-pub use busbar_substrate_values::wire::WireBody;
-
-// `EgressCtx` (the resolved-primitives egress context routing hands a `RequestHandler`) RELOCATED to
-// `busbar-substrate` as a neutral egress value type a plane crate names directly; re-exported here so
-// core's call sites and the `busbar-llm` handlers that name `busbar_kernel::handlers::EgressCtx` are
-// unchanged.
-pub use busbar_substrate_values::wire::EgressCtx;
-
-// `EgressWire` (a hop's egress request wire — JSON `Value` still to be shim/model-shaped, or a FINAL
-// serialized body) RELOCATED to `busbar-substrate` at Batch C-3 as a neutral value type a plane crate
-// names directly (it is a return type on the sealed neutral `IrHandle`); re-exported here so core's
-// call sites and the `busbar-llm` handlers that name `busbar_kernel::handlers::EgressWire` are unchanged.
-pub use busbar_substrate_values::wire::EgressWire;
-
-// `TranslatedResponse` (the neutral outcome of a non-stream cross-protocol response translation)
-// RELOCATED to `busbar-substrate` at Batch C-3 as a neutral value type a plane crate names directly
-// (a return type on the sealed neutral `IrHandle`); re-exported here so core's call sites and the
-// `busbar-llm` handlers that name `busbar_kernel::handlers::TranslatedResponse` are unchanged.
-pub use busbar_substrate_values::wire::TranslatedResponse;
+// `WireBody`, `EgressCtx`, `EgressWire` and `TranslatedResponse` are codec-cell SHAPES
+// (`busbar_contract::codec`, #83a SD-2b) that every caller names through the contract or its
+// substrate re-export; this module no longer re-exports them.
 
 #[cfg(test)]
 #[path = "tests/contract_tests.rs"]
@@ -168,7 +146,7 @@ pub use busbar_substrate_values::handlers::op_for;
 /// The six LLM protocols wrap every operation's failure in the same provider envelope — an OpenAI
 /// 429 on `/v1/embeddings` carries the `{"error": {…}}` shape it carries on `/v1/chat/completions`
 /// — so that vocabulary is a fact about the PROTOCOL, stated once in its `proto::ProtocolReader`,
-/// and each of that protocol's cells answers [`OperationHandler::extract_error`] through here. A
+/// and each of that protocol's cells answers [`busbar_contract::codec::OperationHandler::extract_error`] through here. A
 /// protocol whose operations do NOT share one envelope never calls this and keeps the status-only
 /// default, which is why the capability belongs to the cell even though these six answer it alike.
 ///

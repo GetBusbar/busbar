@@ -60,11 +60,11 @@ pub const NOUNS: &[&str] = &[
     "g711", "barge",
 ];
 
-/// THE ONE TRACKED IN-CORE-TWIN FIELD. `input_audio`/`output_audio` on the substrate BILLING record
+/// THE ONE TRACKED IN-CORE-TWIN FIELD. `input_audio`/`output_audio` on the contract BILLING record
 /// are usage-accounting modality fields, not a transport leak, and they are the sole reason `_` was
 /// ever excluded from the boundary. Exempted here instead: by exact identifier, in exactly the file
 /// that declares them. A `_audio` name anywhere else, or a NEW transport name in this file, flags.
-const TWIN_FILE: &str = "crates/busbar-substrate-values/src/billing.rs";
+const TWIN_FILE: &str = "crates/busbar-contract/src/billing.rs";
 const TWIN_IDENTS: &[&str] = &["input_audio", "output_audio"];
 
 const CLEAN: &str = "the scan cleared its floors and named nothing";

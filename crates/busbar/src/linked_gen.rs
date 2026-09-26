@@ -8,11 +8,14 @@
 //
 // The composition root names no plugin. Which plugins a build links is DATA in `Cargo.toml`:
 //
-//   [package.metadata.busbar.linked]        <cargo feature> = "<plugin crate>"   (registration order)
-//   [package.metadata.busbar.linked-axes]   <cargo feature> = "<axis> <axis> …"  (what it registers)
-//   [package.metadata.busbar.linked-entry]  "<plugin crate>" = "<entry module>"  (when the entry is
-//                                            not `<crate>::linked`: its kernel-typed half lives in
-//                                            the root)
+//   [package.metadata.busbar.linked]        <cargo feature> = "<plugin crate>"   (registration order;
+//                                            a row whose crate is a NON-OPTIONAL dependency is linked
+//                                            in every build and its key only names the row)
+//   [package.metadata.busbar.linked-axes]   <row key> = "<axis> <axis> …"        (what it registers)
+//   [package.metadata.busbar.linked-entry]  "<plugin crate>" or <row key> = "<entry module>" (when
+//                                            the entry is not `<crate>::linked`: its kernel-typed
+//                                            half lives in the root, or one crate carries several
+//                                            rows)
 //   [package.metadata.busbar.root-units]    <cargo feature> = "<root module>"    (`ROOT_UNIT` of
 //                                            `crate::root::<module>`, in order)
 //
@@ -50,6 +53,14 @@ pub(crate) const AXES: &[(&str, &str, &str)] = &[
         "PLANE_DECLARATION.key",
     ),
 ];
+
+/// The transport axis (#3, #30): each row's entry exports its transport's `KEY`, the `COMPOSES_OVER`
+/// it declares and `build(lower, &TransportSettings)`; the root folds the rows bottom-up.
+const TRANSPORT_AXIS: &str = "transport";
+
+/// The claims axis: each row's entry exports the pure plane the boot seal registers (`PLANE`) and
+/// the claims it declares (`CLAIMS`); rides on `plane`.
+const CLAIMS_AXIS: &str = "claims";
 
 /// The root-bound seams: an axis a crate DRIVES rather than fills, emitted as a cfg the root binds
 /// the seam under (the kernel compiles some of them only when a plane that drives them is linked).
@@ -108,6 +119,26 @@ pub(crate) fn declared_features(manifest: &str) -> Vec<String> {
     out
 }
 
+/// The crates the manifest's `[dependencies]` table declares WITHOUT `optional = true` — the edges no
+/// feature can drop, so a linked row naming one is linked in every build.
+pub(crate) fn required_deps(manifest: &str) -> Vec<String> {
+    let mut in_table = false;
+    let mut out = Vec::new();
+    for line in manifest.lines() {
+        let code = line.split('#').next().unwrap_or("").trim();
+        if code.starts_with('[') {
+            in_table = code == "[dependencies]";
+            continue;
+        }
+        if let (true, Some((krate, spec))) = (in_table, code.split_once('=')) {
+            if !spec.replace(' ', "").contains("optional=true") {
+                out.push(krate.trim().to_string());
+            }
+        }
+    }
+    out
+}
+
 /// `busbar-foo` → `busbar_foo`.
 pub(crate) fn ident(krate: &str) -> String {
     krate.replace('-', "_")
@@ -127,11 +158,24 @@ pub(crate) fn linked_source(
     enabled: &dyn Fn(&str) -> bool,
 ) -> (String, Vec<&'static str>) {
     let features = declared_features(manifest);
+    let required = required_deps(manifest);
     let plugins = metadata_map(manifest, "package.metadata.busbar.linked");
     let axes = metadata_map(manifest, "package.metadata.busbar.linked-axes");
     let entries = metadata_map(manifest, "package.metadata.busbar.linked-entry");
     let units = metadata_map(manifest, "package.metadata.busbar.root-units");
-    for (feature, _) in plugins.iter().chain(&units) {
+    // A row is linked when its feature is on — or always, when its crate is an edge no feature can
+    // drop. Anything else would be a row no build ever links, dropped silently.
+    let always = |key: &str, krate: &str| {
+        !features.iter().any(|f| f == key) && required.iter().any(|d| d == krate)
+    };
+    for (feature, krate) in &plugins {
+        assert!(
+            features.contains(feature) || always(feature, krate),
+            "Cargo.toml: linked feature `{feature}` is not declared under [features] and \
+             `{krate}` is not a required dependency"
+        );
+    }
+    for (feature, _) in &units {
         assert!(
             features.contains(feature),
             "Cargo.toml: linked feature `{feature}` is not declared under [features]"
@@ -143,10 +187,10 @@ pub(crate) fn linked_source(
             "Cargo.toml: `{feature}` has a linked-axes row but no linked row"
         );
     }
-    for (krate, _) in &entries {
+    for (key, _) in &entries {
         assert!(
-            plugins.iter().any(|(_, k)| k == krate),
-            "Cargo.toml: `{krate}` has a linked-entry row but no linked row"
+            plugins.iter().any(|(f, k)| k == key || f == key),
+            "Cargo.toml: `{key}` has a linked-entry row but no linked row"
         );
     }
     let axes_of = |feature: &str, krate: &str| -> Vec<String> {
@@ -158,6 +202,8 @@ pub(crate) fn linked_source(
             assert!(
                 axis == "plane"
                     || axis == "hot-plane"
+                    || axis == TRANSPORT_AXIS
+                    || axis == CLAIMS_AXIS
                     || AXES.iter().any(|(a, _, _)| a == axis)
                     || SEAMS.iter().any(|(a, _)| a == axis),
                 "Cargo.toml: `{krate}` names an unknown linked axis `{axis}`"
@@ -168,14 +214,26 @@ pub(crate) fn linked_source(
             gauntlet == 0 || (gauntlet == 1 && list.iter().any(|a| a == "plane")),
             "Cargo.toml: `{krate}` rides the kernel loop on one gauntlet axis, beside `plane`"
         );
+        assert!(
+            !list.iter().any(|a| a == CLAIMS_AXIS) || list.iter().any(|a| a == "plane"),
+            "Cargo.toml: `{krate}` declares claims only beside `plane`"
+        );
         list
     };
 
-    let on: Vec<&(String, String)> = plugins.iter().filter(|(f, _)| enabled(f)).collect();
+    let on: Vec<&(String, String)> = plugins
+        .iter()
+        .filter(|(f, k)| enabled(f) || always(f, k))
+        .collect();
     let mut out =
         String::from("// @generated by build.rs from Cargo.toml metadata (src/linked_gen.rs).\n");
+    let mut externs: Vec<String> = Vec::new();
     for (_, krate) in &on {
-        out.push_str(&format!("extern crate {} as _;\n", ident(krate)));
+        let line = format!("extern crate {} as _;\n", ident(krate));
+        if !externs.contains(&line) {
+            out.push_str(&line);
+            externs.push(line);
+        }
     }
     // (entry module, axes) per enabled crate, in manifest order.
     let linked: Vec<(String, Vec<String>)> = on
@@ -183,7 +241,8 @@ pub(crate) fn linked_source(
         .map(|(feature, krate)| {
             let entry = entries
                 .iter()
-                .find(|(k, _)| k == krate)
+                .find(|(k, _)| k == feature)
+                .or_else(|| entries.iter().find(|(k, _)| k == krate))
                 .map(|(_, path)| path.clone())
                 .unwrap_or_else(|| format!("{}::linked", ident(krate)));
             (entry, axes_of(feature, krate))
@@ -218,6 +277,22 @@ pub(crate) fn linked_source(
     out.push_str("    hot_planes: &[");
     for e in on_axis("hot-plane") {
         out.push_str(&format!("&{e}::PLANE_DECL, "));
+    }
+    out.push_str("],\n");
+    out.push_str("    transports: &[");
+    for e in on_axis(TRANSPORT_AXIS) {
+        out.push_str(&format!(
+            "crate::root::linked::LinkedTransport {{ key: {e}::KEY, composes_over: \
+             {e}::COMPOSES_OVER, build: {e}::build }}, "
+        ));
+    }
+    out.push_str("],\n");
+    out.push_str("    claims: &[");
+    for e in on_axis(CLAIMS_AXIS) {
+        out.push_str(&format!(
+            "crate::root::linked::LinkedClaims {{ plane: || ::std::sync::Arc::new({e}::PLANE), \
+             claims: {e}::CLAIMS }}, "
+        ));
     }
     out.push_str("],\n");
     for (axis, field, item) in AXES {

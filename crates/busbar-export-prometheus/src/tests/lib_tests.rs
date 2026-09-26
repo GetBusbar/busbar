@@ -13,17 +13,10 @@ fn sink() -> Box<dyn ExportHandler> {
 }
 
 #[test]
-fn it_carries_the_metrics_stream_and_serves_the_well_known_scrape_route() {
+fn it_carries_the_metrics_stream_and_declares_no_route_of_its_own() {
     let sink = sink();
     assert_eq!(sink.streams(), vec![ExportStream::Metrics]);
-    assert_eq!(
-        sink.routes(),
-        vec![Route {
-            path: "/metrics".to_string(),
-            method: RouteMethod::Get,
-            auth: RouteAuth::Key,
-        }]
-    );
+    assert!(sink.routes().is_empty(), "the host serves /metrics");
 }
 
 /// The refusals read as the configuration's own settings errors always have — one line each,
@@ -43,6 +36,16 @@ fn its_settings_refusals_are_the_configurations_words() {
         vec![
             "export.m.settings: unknown field `buffer`, expected `buffer_seconds` or \
              `key_gauge_limit`"
+                .to_string()
+        ]
+    );
+    assert_eq!(
+        check(serde_json::json!({ "buffer_seconds": 0 })),
+        vec![
+            "the `module: prometheus` export instance sets settings.buffer_seconds: 0, which \
+             retains no observations — every scrape would report empty quantiles while still paying \
+             the recording cost. Name a positive retention window in seconds, or remove the \
+             instance to turn metrics off"
                 .to_string()
         ]
     );
@@ -112,7 +115,11 @@ fn it_renders_the_snapshot_back_into_the_exposition() {
 }
 
 #[test]
-fn the_linked_entry_names_the_module_and_this_crates_boundary() {
-    assert_eq!(linked::EXPORT.0, "prometheus");
-    assert!(std::ptr::eq(linked::EXPORT.1, &BUSBAR_COLD_ENTRY));
+fn the_linked_entry_states_the_row_and_this_crates_boundary() {
+    let (name, alias, declares, entry) = linked::EXPORT;
+    assert_eq!(
+        (name, alias, declares),
+        ("busbar-export-prometheus", "prometheus", "{}")
+    );
+    assert!(std::ptr::eq(entry, &BUSBAR_COLD_ENTRY));
 }

@@ -267,9 +267,9 @@ pub(crate) fn detect_legacy_markers(doc: &Value) -> Vec<String> {
                      is Valkey — artifact `{}-<ver>-<target>.tar.gz`, manifest name `{}`. The old \
                      name/alias resolve against NOTHING, so this would fail at boot with a generic \
                      unresolved-plugin error; run `busbar --migrate-config`)",
-                    crate::config::STORE_MODULE_VALKEY,
-                    crate::config::STORE_MODULE_VALKEY_ASSET_STEM,
-                    crate::config::STORE_MODULE_VALKEY_NAME,
+                    crate::config::RENAMED_STORE_MODULE_1_5_3,
+                    crate::config::RENAMED_STORE_ASSET_STEM_1_5_3,
+                    crate::config::RENAMED_STORE_MANIFEST_NAME_1_5_3,
                 ));
             }
         }
@@ -2256,7 +2256,7 @@ fn migrate_store_module(root: &mut Mapping, changes: &mut Vec<String>, todos: &m
     if let Some(old) = retired {
         store.insert(
             "module".into(),
-            Value::from(crate::config::STORE_MODULE_VALKEY),
+            Value::from(crate::config::RENAMED_STORE_MODULE_1_5_3),
         );
         changes.push(format!(
             "store.module: {old} -> {} (the first-party store plugin for this backend was RENAMED \
@@ -2264,9 +2264,9 @@ fn migrate_store_module(root: &mut Mapping, changes: &mut Vec<String>, todos: &m
              renamed tarball — the old one no longer answers to any name in this config. Your \
              `settings.url` is UNCHANGED: `redis://` is the driver's own URL scheme, not a busbar \
              name.)",
-            crate::config::STORE_MODULE_VALKEY,
-            crate::config::STORE_MODULE_VALKEY_ASSET_STEM,
-            crate::config::STORE_MODULE_VALKEY_NAME,
+            crate::config::RENAMED_STORE_MODULE_1_5_3,
+            crate::config::RENAMED_STORE_ASSET_STEM_1_5_3,
+            crate::config::RENAMED_STORE_MANIFEST_NAME_1_5_3,
         ));
     }
     // Unconditional: `take_mapping` already REMOVED the block above, so every path out of this

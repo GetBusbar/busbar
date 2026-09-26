@@ -50,6 +50,9 @@ pub mod ids;
 pub mod ir;
 pub(crate) mod json_grammar;
 pub mod kinds;
+// The media carriers (#83a SD-2b), re-expressed over `bounded::SlabBytes`.
+#[allow(missing_docs, missing_debug_implementations)]
+pub mod media;
 #[allow(missing_docs)]
 pub mod operation;
 pub mod plane;
@@ -67,9 +70,15 @@ pub mod redacted;
 // the serde round-trips.
 #[allow(missing_docs)]
 pub mod records;
+// Which reply wakes which waiting unit: the AwaitReply leg's waiting table, a shape over the
+// contract's own correlation and leg types (DECISIONS #83).
+pub mod reply;
 pub mod scratch;
 #[allow(missing_docs)]
 pub mod secret;
+// The config secret-reference SHAPE (DECISIONS #83 MERGE, fold F1): the former `busbar-secret-ref`
+// crate. Its `SecretRef` is also the kind ABI's (`kinds::SecretRef` re-exports it): one type.
+pub mod secret_ref;
 pub mod signal;
 pub mod slice;
 pub mod spans;

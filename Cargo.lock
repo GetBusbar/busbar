@@ -339,7 +339,10 @@ dependencies = [
  "busbar-contract",
  "busbar-core-admin",
  "busbar-core-connsec",
+ "busbar-export-example-plugin",
  "busbar-export-file",
+ "busbar-export-prometheus",
+ "busbar-export-webhook",
  "busbar-kernel",
  "busbar-kernel-audit",
  "busbar-kernel-breaker",
@@ -352,10 +355,7 @@ dependencies = [
  "busbar-llm",
  "busbar-mcp",
  "busbar-oauth2",
- "busbar-plane-a2a",
  "busbar-plane-decision",
- "busbar-plane-llm",
- "busbar-plane-mcp",
  "busbar-plane-streaming",
  "busbar-plugin-example-plane",
  "busbar-plugin-loader",
@@ -366,7 +366,6 @@ dependencies = [
  "busbar-transport-tcp",
  "busbar-transport-tls",
  "busbar-transport-ws",
- "busbar-unit-transport-key",
  "busbar-voice",
  "bytes",
  "core_affinity",
@@ -374,12 +373,16 @@ dependencies = [
  "ed25519-dalek",
  "futures",
  "hex",
+ "http",
  "http-body",
  "http-body-util",
+ "hyper-rustls",
  "metrics",
- "rcgen",
+ "opentelemetry",
+ "opentelemetry-http",
+ "opentelemetry-otlp",
+ "opentelemetry_sdk",
  "reqwest 0.12.28",
- "rustls",
  "serde_json",
  "serde_yaml_ng",
  "sha2 0.11.0",
@@ -389,6 +392,9 @@ dependencies = [
  "tokio",
  "tower",
  "tracing",
+ "tracing-opentelemetry",
+ "tracing-subscriber",
+ "url",
 ]
 
 [[package]]
@@ -407,7 +413,6 @@ dependencies = [
  "busbar-plane-a2a",
  "busbar-plugin",
  "busbar-plugin-loader",
- "busbar-secret-ref",
  "busbar-substrate-values",
  "bytes",
  "ed25519-dalek",
@@ -443,7 +448,6 @@ version = "1.6.0"
 dependencies = [
  "async-trait",
  "busbar-contract",
- "busbar-secret-ref",
  "serde",
  "serde_json",
 ]
@@ -473,9 +477,11 @@ dependencies = [
  "futures",
  "hex",
  "http",
+ "jsonschema",
  "memchr",
  "serde",
  "serde_json",
+ "serde_yaml_ng",
  "sha2 0.11.0",
  "smallvec",
  "zeroize",
@@ -490,6 +496,7 @@ dependencies = [
  "busbar-a2a",
  "busbar-api",
  "busbar-contract",
+ "busbar-export-prometheus",
  "busbar-kernel",
  "busbar-kernel-ledger",
  "busbar-llm",
@@ -557,6 +564,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "busbar-export-webhook"
+version = "1.5.0"
+dependencies = [
+ "busbar-plugin-sdk",
+ "serde",
+ "serde_json",
+ "url",
+]
+
+[[package]]
 name = "busbar-hook-test-plugin"
 version = "1.5.0"
 dependencies = [
@@ -588,16 +605,17 @@ dependencies = [
  "busbar-api",
  "busbar-auth-admin-tokens",
  "busbar-contract",
+ "busbar-export-prometheus",
  "busbar-hooks-ranking",
  "busbar-kernel-audit",
  "busbar-kernel-breaker",
  "busbar-kernel-egress",
+ "busbar-kernel-identity",
  "busbar-kernel-ledger",
  "busbar-llm",
  "busbar-mcp",
  "busbar-plugin",
  "busbar-plugin-loader",
- "busbar-secret-ref",
  "busbar-store-example-plugin",
  "busbar-store-memory",
  "busbar-substrate-values",
@@ -624,10 +642,6 @@ dependencies = [
  "metrics-exporter-prometheus",
  "metrics-util",
  "oauth-as",
- "opentelemetry",
- "opentelemetry-http",
- "opentelemetry-otlp",
- "opentelemetry_sdk",
  "proptest",
  "rcgen",
  "reqwest 0.12.28",
@@ -651,7 +665,6 @@ dependencies = [
  "tokio-util",
  "tower",
  "tracing",
- "tracing-opentelemetry",
  "tracing-subscriber",
  "url",
  "webpki-roots",
@@ -701,6 +714,9 @@ dependencies = [
  "busbar-contract",
  "hex",
  "hmac",
+ "rcgen",
+ "rustls",
+ "serde",
  "sha2 0.11.0",
 ]
 
@@ -739,6 +755,7 @@ dependencies = [
  "busbar-contract",
  "busbar-kernel",
  "busbar-llm-codec",
+ "busbar-plane-llm",
  "busbar-plugin",
  "busbar-substrate-values",
  "busbar-timing",
@@ -802,7 +819,6 @@ dependencies = [
  "busbar-plane-mcp",
  "busbar-plugin",
  "busbar-plugin-loader",
- "busbar-secret-ref",
  "busbar-substrate-values",
  "bytes",
  "futures",
@@ -928,8 +944,8 @@ dependencies = [
  "busbar-plugin",
  "busbar-plugin-example-plane",
  "busbar-secret-example-plugin",
- "busbar-secret-ref",
  "busbar-store-example-plugin",
+ "busbar-transport-tcp",
  "ed25519-dalek",
  "flate2",
  "getrandom 0.3.4",
@@ -965,16 +981,6 @@ dependencies = [
  "busbar-plugin-sdk",
  "serde",
  "serde_json",
-]
-
-[[package]]
-name = "busbar-secret-ref"
-version = "1.5.0"
-dependencies = [
- "jsonschema",
- "serde",
- "serde_json",
- "serde_yaml_ng",
 ]
 
 [[package]]
@@ -1077,7 +1083,6 @@ name = "busbar-transport-tls"
 version = "1.6.0"
 dependencies = [
  "busbar-contract",
- "busbar-unit-transport-key",
  "futures",
  "rcgen",
  "ring",
@@ -1108,8 +1113,6 @@ name = "busbar-unit-transport-key"
 version = "1.6.0"
 dependencies = [
  "busbar-contract",
- "rcgen",
- "rustls",
 ]
 
 [[package]]

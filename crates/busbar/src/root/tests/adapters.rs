@@ -16,75 +16,6 @@ fn route_token() -> Pass<Route> {
     Pass::mint(&KernelSeal::acquire_for_kernel())
 }
 
-/// A sink for a test that is about a ladder rather than about a diagnostic. The breaker crate's
-/// own noop, at the shared handle's width, so the unit under test is the production one.
-fn silent_sink() -> DiagnosticsSink {
-    Arc::new(busbar_kernel_breaker::classify::NoopDiagnostics)
-}
-
-/// A sink that keeps what it was told, so a test can ask whether the value reached it.
-#[derive(Debug, Default)]
-struct RecordingSink(std::sync::Mutex<Vec<String>>);
-
-impl RecordingSink {
-    fn values(&self) -> Vec<String> {
-        self.0.lock().unwrap_or_else(|p| p.into_inner()).clone()
-    }
-}
-
-impl Diagnostics for RecordingSink {
-    fn unrecognized_error_map_value(&self, value: &str) {
-        self.0
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .push(value.to_string());
-    }
-}
-
-/// The binding, end to end at the adapter's own width: a destination whose operator `error_map`
-/// names a class busbar has no such thing as, one upstream error that hits it, and the value on
-/// the sink the adapter's unit was built over. Without the binding this is the silently-ignored
-/// mapping the previous release had; with it the value is reportable.
-///
-/// The classification itself is unchanged either way — the mapping is ignored and the error is
-/// classified from its HTTP status — which is the half that keeps the legacy path byte-identical.
-#[test]
-fn an_unrecognized_error_map_class_reaches_the_bound_sink() {
-    let sink = Arc::new(RecordingSink::default());
-    let breaker = BreakerAdapter::with_diagnostics(
-        Arc::clone(&sink) as DiagnosticsSink,
-        BreakerPolicy::new().with_pool("pool", a_slow_ladder()),
-    );
-    let dest = DestinationId::new(9);
-    breaker.unit().set_error_map(
-        dest,
-        HashMap::from([("503".to_string(), "rate_limt".to_string())]),
-    );
-
-    let classified = breaker.classify(
-        dest,
-        UpstreamStatus {
-            code: Some(WireStatus::new(
-                busbar_contract::transport::status_ns::HTTP,
-                503,
-            )),
-            class: None,
-            retry_after: None,
-        },
-    );
-
-    assert_eq!(
-        sink.values(),
-        vec!["rate_limt".to_string()],
-        "the operator's typo reached the sink the root bound"
-    );
-    assert_eq!(
-        classified.disposition,
-        Disposition::TransientUpstream,
-        "the mapping is still ignored: a 503 classifies from its HTTP status"
-    );
-}
-
 /// A gRPC upstream's trailers-only `UNAVAILABLE`, at the production adapter's own width: the
 /// status leg the egress unit reads off that frame (the transport's coarse `ServerError` plus
 /// gRPC's own `14`), classified, recorded, and the lane suppressed as a result.
@@ -188,10 +119,7 @@ fn a_slow_ladder() -> BreakerCfg {
 }
 
 fn adapter_for(pool: &str) -> BreakerAdapter {
-    BreakerAdapter::with_diagnostics(
-        silent_sink(),
-        BreakerPolicy::new().with_pool(pool, a_slow_ladder()),
-    )
+    BreakerAdapter::with_policy(BreakerPolicy::new().with_pool(pool, a_slow_ladder()))
 }
 
 /// The seam is implementable over the two real APIs, and a fresh destination behaves as both
@@ -226,10 +154,8 @@ fn the_configured_ladder_reaches_the_unit_and_not_the_default() {
     );
     let under_configured = configured.cooldown_remaining("pool", dest, 0, &route_token());
 
-    let defaulted = BreakerAdapter::with_diagnostics(
-        silent_sink(),
-        BreakerPolicy::new().with_pool("pool", BreakerCfg::default()),
-    );
+    let defaulted =
+        BreakerAdapter::with_policy(BreakerPolicy::new().with_pool("pool", BreakerCfg::default()));
     assert!(
         !defaulted.observe("pool", dest, failure, 0, &route_token()),
         "the default ladder waits for an error rate and logs no trip on one failure"
@@ -250,7 +176,7 @@ fn the_configured_ladder_reaches_the_unit_and_not_the_default() {
 /// name. A lane that never trips is visible; a lane that trips for the wrong duration is not.
 #[test]
 fn an_unconfigured_pool_records_nothing_rather_than_guessing() {
-    let breaker = BreakerAdapter::with_diagnostics(silent_sink(), BreakerPolicy::new());
+    let breaker = BreakerAdapter::with_policy(BreakerPolicy::new());
     let dest = DestinationId::new(2);
 
     assert!(!breaker.observe("unknown-pool", dest, Outcome::HardDown, 0, &route_token()));
@@ -265,10 +191,8 @@ fn an_unconfigured_pool_records_nothing_rather_than_guessing() {
 /// is still a pool nobody configured, and still records nothing.
 #[test]
 fn the_default_cells_ladder_does_not_stand_in_for_a_named_pool() {
-    let breaker = BreakerAdapter::with_diagnostics(
-        silent_sink(),
-        BreakerPolicy::new().with_default_cell(a_slow_ladder()),
-    );
+    let breaker =
+        BreakerAdapter::with_policy(BreakerPolicy::new().with_default_cell(a_slow_ladder()));
     let dest = DestinationId::new(5);
 
     assert!(
@@ -291,27 +215,22 @@ fn the_default_cells_ladder_does_not_stand_in_for_a_named_pool() {
 /// declaration of its own rather than a pool that happens to be missing.
 #[test]
 fn the_default_cell_takes_its_own_declared_ladder() {
-    let breaker = BreakerAdapter::with_diagnostics(
-        silent_sink(),
-        BreakerPolicy::new().with_default_cell(a_slow_ladder()),
-    );
+    let breaker =
+        BreakerAdapter::with_policy(BreakerPolicy::new().with_default_cell(a_slow_ladder()));
     let dest = DestinationId::new(4);
     assert!(breaker.observe("", dest, Outcome::HardDown, 0, &route_token()));
     assert!(breaker.cooldown_remaining("", dest, 0, &route_token()) > 0);
 }
 
-/// The classification comes back through the adapter with the destination's own declared error
-/// map applied — the table is the breaker unit's data and the adapter holds no copy of it.
+/// The port classifies on the status alone: the breaker holds no operator `error_map`, so a
+/// provider code an operator could map (`1113` -> `billing` is the stock example) reaches this
+/// port as the bare number it is and classifies by HTTP's bands. Mapping an error body is the
+/// plane's classifier's work; the unit only takes that classifier's verdict, and there is no
+/// second map here for a deployment to fill that the plane would never read.
 #[test]
-fn classification_carries_the_declared_error_map_through() {
+fn the_port_classifies_on_the_status_alone() {
     let breaker = adapter_for("pool");
     let dest = DestinationId::new(9);
-    breaker.unit().set_error_map(
-        dest,
-        [("1113".to_string(), "billing".to_string())]
-            .into_iter()
-            .collect(),
-    );
 
     let out = breaker.classify(
         dest,
@@ -324,8 +243,13 @@ fn classification_carries_the_declared_error_map_through() {
             retry_after: None,
         },
     );
-    assert_eq!(out.disposition, Disposition::HardDown);
-    assert_eq!(out.outcome, Outcome::HardDown);
+    assert_eq!(out.disposition, Disposition::ClientFault);
+    assert_eq!(out.outcome, Outcome::RecordNothing);
+    assert!(
+        !breaker.observe("pool", dest, out.outcome, 0, &route_token()),
+        "nothing recorded against the destination"
+    );
+    assert!(breaker.ready("pool", dest, 0, &route_token()));
 }
 
 /// The one fold the adapter performs: with no numeric status reported, the transport's coarse
@@ -476,7 +400,64 @@ fn the_boot_seal_runs_the_label_bank_check_and_a_drift_refuses_the_boot() {
     assert!(line.contains("transient_upstream") && line.contains("transient-upstream"));
 
     assert!(
-        crate::root::registry::seal(Default::default()).is_ok(),
+        crate::root::registry::seal(&crate::LINKED, Default::default()).is_ok(),
         "today's banks agree, so the seal still passes"
+    );
+}
+
+/// ONE CELL SET ON THE NODE. The root's breaker is bound to the kernel's own unit through the live
+/// snapshot, so a pool observation made through the root adapter is the cell the kernel's admission
+/// reads, and a trip the kernel records is the one the adapter answers with. A second unit would
+/// pass neither half: its cells are not the lane store's.
+#[test]
+fn the_root_breaker_observes_into_the_kernels_own_cells() {
+    use busbar_kernel::test_support::{LaneSpec, TestApp};
+    let app = TestApp::new()
+        .lane(LaneSpec::new("m0", "wire-under-test", "http://127.0.0.1:9"))
+        .lane(LaneSpec::new("m1", "wire-under-test", "http://127.0.0.1:9"))
+        .pool("pool", &[(0, 1), (1, 1)])
+        .build();
+    let handle = Arc::new(busbar_kernel::state::AppHandle::new(app));
+    let trip_on_first = BreakerCfg {
+        trip: busbar_kernel_breaker::cfg::TripConfig {
+            mode: busbar_kernel_breaker::cfg::TripMode::Consecutive,
+            consecutive_n: 1,
+            ..Default::default()
+        },
+        ..BreakerCfg::default()
+    };
+    let breaker = BreakerAdapter::over_kernel(
+        Arc::clone(&handle),
+        BreakerPolicy::new().with_pool("pool", trip_on_first),
+    );
+
+    // The kernel's own clock: its hard-down below stamps the wall clock in seconds.
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("after the epoch")
+        .as_secs();
+
+    // Through the root adapter, into the kernel's cell.
+    assert!(breaker.observe(
+        "pool",
+        DestinationId::new(0),
+        Outcome::Transient { retry_after: None },
+        now,
+        &route_token(),
+    ));
+    assert!(
+        !handle.load().store.ready_in("pool", 0, now),
+        "the kernel's admission reads the trip the root adapter recorded"
+    );
+
+    // From the kernel's record, out through the root adapter.
+    assert!(breaker.ready("pool", DestinationId::new(1), now, &route_token()));
+    handle
+        .load()
+        .store
+        .record_hard_down_all_cells(1, "one cell set");
+    assert!(
+        !breaker.ready("pool", DestinationId::new(1), now, &route_token()),
+        "the root adapter answers with the trip the kernel recorded"
     );
 }

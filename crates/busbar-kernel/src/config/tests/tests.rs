@@ -1855,12 +1855,8 @@ models:
     );
     assert_eq!(l.default_max_tokens, DEFAULT_DEFAULT_MAX_TOKENS);
     assert_eq!(l.default_max_tokens, crate::proto::DEFAULT_MAX_TOKENS);
-    assert_eq!(
-        l.max_inflight_webhook_deliveries,
-        DEFAULT_MAX_INFLIGHT_WEBHOOK_DELIVERIES
-    );
-    // 1.5.3: the per-delivery webhook TIMEOUT is no longer projected onto `LimitsResolved` — it is
-    // per named `request-log-webhook` export instance (see `WebhookSettings::delivery_timeout_secs`).
+    // The webhook sink's in-flight bound and delivery deadline are its own settings, checked by the
+    // sink (`busbar-export-webhook`), never projected onto `LimitsResolved`.
     assert_eq!(l.key_gauge_limit, DEFAULT_KEY_GAUGE_LIMIT);
     assert_eq!(l.rate_sweep_interval, DEFAULT_RATE_SWEEP_INTERVAL);
     assert_eq!(l.usage_flush_interval_ms, DEFAULT_USAGE_FLUSH_INTERVAL_MS);
@@ -1897,6 +1893,7 @@ fn test_limits_resolved_default_matches_from_sections_defaults() {
 /// The former `governance:` tuning knobs now live under `advanced:`.
 #[test]
 fn test_limits_set_value_overrides_default() {
+    crate::export::scrape::tests::installed_axis();
     let yaml = r#"
 listen: "0.0.0.0:8080"
 providers:
@@ -2597,7 +2594,7 @@ fn test_new_top_level_blocks_parse() {
 providers: {}
 models: {}
 store:
-  module: sqlite
+  module: acme-durable
   settings:
     db_path: /var/lib/busbar/gov.db
     busy_timeout_ms: 250
@@ -2620,7 +2617,7 @@ advanced:
 "#;
     let deploy: DeployCfg = serde_yaml::from_str(yaml).expect("new top-level blocks parse");
     let store = deploy.store.as_ref().expect("store block");
-    assert_eq!(store.module, "sqlite");
+    assert_eq!(store.module, "acme-durable");
     // Store settings are OPAQUE (passed to the plugin verbatim; the old governance.db_path /
     // sqlite_busy_timeout_ms now live here).
     assert_eq!(
@@ -2893,8 +2890,8 @@ fn to_policy_floor_distinguishes_automatic_from_explicit_downgrade() {
     let old = sign(
         &release,
         Manifest {
-            name: "busbar-store-valkey-plugin".into(),
-            alias: "valkey".into(),
+            name: "busbar-store-kv-plugin".into(),
+            alias: "kv".into(),
             kind: "store".into(),
             version: "0.9.0".into(), // below any real CARGO_PKG_VERSION (1.x)
             publisher: busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER.into(),
@@ -2937,10 +2934,9 @@ fn to_policy_floor_distinguishes_automatic_from_explicit_downgrade() {
     // EXPLICIT per-name floor (the rollback-pin seam): pinned exactly at the artifact's version,
     // it loads; the pin binds and nothing older passes (asserted below).
     let mut explicit = cfg.to_policy().expect("explicit policy");
-    explicit.first_party_floors.insert(
-        "busbar-store-valkey-plugin".to_string(),
-        "0.9.0".to_string(),
-    );
+    explicit
+        .first_party_floors
+        .insert("busbar-store-kv-plugin".to_string(), "0.9.0".to_string());
     explicit.first_party_key = Some(release.verifying_key());
     assert!(
         matches!(
@@ -2958,8 +2954,8 @@ fn to_policy_floor_distinguishes_automatic_from_explicit_downgrade() {
     let older = sign(
         &release,
         Manifest {
-            name: "busbar-store-valkey-plugin".into(),
-            alias: "valkey".into(),
+            name: "busbar-store-kv-plugin".into(),
+            alias: "kv".into(),
             kind: "store".into(),
             version: "0.8.0".into(),
             publisher: busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER.into(),
@@ -3172,7 +3168,7 @@ enabled: true
 fetch:
   - github: acme/widget@v2.0.1
     sha256: deadbeef
-  - url: https://host/plugins/store-sqlite.tar.gz
+  - url: https://host/plugins/store-durable.tar.gz
 ";
     let cfg: PluginsCfg = serde_yaml::from_str(yaml).unwrap();
     let specs = cfg.fetch_specs().expect("fetch_specs resolves");
@@ -3185,8 +3181,8 @@ fetch:
     );
     assert_eq!(specs[0].sha256.as_deref(), Some("deadbeef"));
     // url → itself, filename from basename, no pin.
-    assert_eq!(specs[1].url, "https://host/plugins/store-sqlite.tar.gz");
-    assert_eq!(specs[1].filename, "store-sqlite.tar.gz");
+    assert_eq!(specs[1].url, "https://host/plugins/store-durable.tar.gz");
+    assert_eq!(specs[1].filename, "store-durable.tar.gz");
     assert_eq!(specs[1].sha256, None);
 }
 
@@ -3613,26 +3609,28 @@ fn secrets_block_stays_module_keyed_by_design() {
 /// unrepresentable and this test could not be written at all.
 #[test]
 fn export_named_map_allows_two_instances_of_one_module() {
+    // Two instances of one module on the export axis (the webhook and scrape sinks are such modules).
+    crate::export::scrape::tests::installed_axis();
     let defs: crate::config::ExportDefs = serde_yaml::from_str(
-        "req-log:  { module: request-log-webhook, settings: { url: \"https://logs.example.com/a\" } }\n\
-         req-siem: { module: request-log-webhook, settings: { url: \"https://siem.internal/b\", delivery_timeout_secs: 9 } }\n",
+        "req-log:  { module: k9-tail, settings: { url: \"https://logs.example.com/a\" } }\n\
+         req-siem: { module: k9-tail, settings: { url: \"https://siem.internal/b\", delivery_timeout_secs: 9 } }\n",
     )
     .expect("two instances of one module parse");
     let mut errors = Vec::new();
     let export = crate::config::resolve_export(&defs, &mut errors);
     assert!(errors.is_empty(), "{errors:?}");
-    assert_eq!(export.request_log_webhooks.len(), 2);
-    assert_eq!(
-        export.request_log_webhooks[0].url,
-        "https://logs.example.com/a"
-    );
-    assert_eq!(
-        export.request_log_webhooks[1].url,
-        "https://siem.internal/b"
-    );
+    assert_eq!(export.plugins.len(), 2);
+    assert_eq!(export.plugins[0].name, "req-log");
+    assert_eq!(export.plugins[1].name, "req-siem");
     // Per-INSTANCE settings really are independent — the whole point of named instances.
-    assert_eq!(export.request_log_webhooks[0].delivery_timeout_secs, 2);
-    assert_eq!(export.request_log_webhooks[1].delivery_timeout_secs, 9);
+    assert_eq!(
+        export.plugins[0].def.settings.get("delivery_timeout_secs"),
+        None
+    );
+    assert_eq!(
+        export.plugins[1].def.settings["delivery_timeout_secs"],
+        serde_json::json!(9)
+    );
 
     // A second singleton instance is a loud error, never a silent loss.
     for module in ["prometheus", "otlp"] {
@@ -4095,7 +4093,7 @@ fn a_decisions_section_with_no_owning_plane_is_refused_as_an_unknown_key() {
     let err = crate::config::deploy_from_yaml_str(
         "decisions:\n  \
            models:\n    \
-             jev: { provider: typesafe }\n\
+             verdict: { provider: typesafe }\n\
          providers: {}\nmodels: {}\npools: {}\n",
     )
     .expect_err("a `decisions:` block no registered plane declares must be refused")
@@ -4147,6 +4145,7 @@ static CARD_PLANE: crate::plane::registry::PlaneDecl = crate::plane::registry::P
         owned_config_sections: &[],
         billable_classes: &[],
         fee_units: &[],
+        metric_families: &[],
     },
     wire_format_names: || &[],
     claims: |_| Vec::new(),

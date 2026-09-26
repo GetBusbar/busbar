@@ -135,7 +135,6 @@ pub mod mask;
 pub mod pump;
 pub mod recovery;
 pub mod registry;
-pub mod reply;
 pub mod scratch;
 pub mod teller;
 pub mod tick;
@@ -249,8 +248,7 @@ pub mod limits;
 pub mod lineage;
 // wt2/neutral-utils: both relocated DOWN to busbar-substrate (neutral value/util leaves). Core
 // re-exports them so `crate::lossless`/`crate::media` and any `busbar_kernel::{lossless,media}` are unchanged.
-pub use busbar_substrate_values::lossless;
-pub use busbar_substrate_values::media;
+pub use busbar_substrate_values::{lossless, media};
 pub mod metrics;
 pub mod net_guard;
 pub mod oauth_as;

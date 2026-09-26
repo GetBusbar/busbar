@@ -321,7 +321,7 @@ mod internal_error_tests;
 /// field changes, so `If-Match` detects a concurrent modification (409, no lost update).
 fn key_etag(k: &VirtualKey) -> String {
     let meta = key_meta(k);
-    busbar_kernel::sigv4::sha256_hex(meta.to_string().as_bytes())[..16].to_string()
+    busbar_contract::sha256_hex(meta.to_string().as_bytes())[..16].to_string()
 }
 
 /// Parse the optional `If-Match` header for a KEY mutation (PATCH/DELETE `/keys/{id}`): the key's

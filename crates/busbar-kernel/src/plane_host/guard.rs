@@ -60,10 +60,10 @@ pub enum GuardOutcome {
 /// the recovery invariant — the judgement is a pure function of the URL and the policy), judges the
 /// URL STRUCTURALLY, and writes the [`GuardVerdict`] into `out` on the `Ok` path, copying the
 /// offending host/url bytes into `reason_buf` (up to `reason_cap`). `Refused` on a null / non-UTF-8
-/// URL (`out` untouched); `Fault` on a caught panic (`out` untouched). The `extern "C-unwind"` ABI
-/// shim that forwards into this lives in [`super::vtable`] (the boundary-discipline the other slots
-/// follow: the pointer-taking body stays in the capability module, the shim is the seam).
-pub(crate) fn guard_url(
+/// URL (`out` untouched); `Fault` on a caught panic (`out` untouched). The host vtable's `guard_url`
+/// slot references this fn directly, as the breaker, trust, journal and dispatch slots reference
+/// theirs: the boundary discipline is in the body, so a forwarding shim added nothing.
+pub(crate) extern "C-unwind" fn guard_url(
     host: HostCtx,
     url_ptr: *const u8,
     url_len: usize,

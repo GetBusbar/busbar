@@ -92,6 +92,54 @@ pub mod status_ns {
     }
 }
 
+/// The deployment's settings every transport is built from — the operator's `limits:` knobs a wire
+/// holds itself to, resolved once by the composition root and handed to each transport's build.
+///
+/// A shape of the contract because the root that resolves it and the transports that read it may
+/// not name each other: each transport's linked entry takes it at `build`, and none of them reads
+/// a `Default` the served door does not. The body cap is the SAME number the door's inbound limit is
+/// built from, on either side of an exchange; the request timeout is the operator's own
+/// `limits.upstream_request_timeout_secs`.
+#[derive(Clone, Copy, Debug)]
+pub struct TransportSettings {
+    /// Per-host idle keep-alive socket budget.
+    pub pool_max_idle_per_host: usize,
+    /// Idle keep-alive lifetime, in seconds.
+    pub pool_idle_timeout_secs: u64,
+    /// Pin the egress client to HTTP/1.1.
+    pub upstream_http1_only: bool,
+    /// Force cleartext HTTP/2 prior-knowledge.
+    pub upstream_h2_prior_knowledge: bool,
+    /// The largest request body a transport accumulates, in bytes — `limits.request_body_max_bytes`.
+    pub request_body_max_bytes: usize,
+    /// The largest response body a transport carries for one exchange, in bytes.
+    pub response_body_max_bytes: usize,
+    /// The ceiling on one egress exchange up to the response head, in seconds.
+    pub request_timeout_secs: u64,
+}
+
+/// The uninstalled-config fallback for [`TransportSettings::request_body_max_bytes`] — the value the
+/// config layer resolves `limits.request_body_max_bytes` to when no operator limit is installed.
+pub const DEFAULT_REQUEST_BODY_MAX_BYTES: usize = 32 * 1024 * 1024;
+
+/// The uninstalled-config fallback for [`TransportSettings::request_timeout_secs`] — the value the
+/// config layer resolves `limits.upstream_request_timeout_secs` to when unset.
+pub const DEFAULT_REQUEST_TIMEOUT_SECS: u64 = 300;
+
+impl Default for TransportSettings {
+    fn default() -> Self {
+        Self {
+            pool_max_idle_per_host: 32,
+            pool_idle_timeout_secs: 4,
+            upstream_http1_only: false,
+            upstream_h2_prior_knowledge: false,
+            request_body_max_bytes: DEFAULT_REQUEST_BODY_MAX_BYTES,
+            response_body_max_bytes: DEFAULT_REQUEST_BODY_MAX_BYTES,
+            request_timeout_secs: DEFAULT_REQUEST_TIMEOUT_SECS,
+        }
+    }
+}
+
 /// One registered transport, as the registry holds it for the boot check.
 ///
 /// The declarations are associated constants, which a trait object cannot read; this is them as

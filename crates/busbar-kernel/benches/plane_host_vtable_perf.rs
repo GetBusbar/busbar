@@ -49,6 +49,7 @@
 //! the perf-budget claims above; this file is what actually measures them.
 
 use busbar_plugin::hot::host::{ClockNowFn, HostCtx, PlaneHostVtable};
+use busbar_plugin::hot::transport::{RawWireOutcome, TransportDecl, WireCloseFn, WireOutcome};
 use busbar_plugin::AbiPreamble;
 use criterion::{criterion_group, criterion_main, Criterion};
 use std::hint::black_box;
@@ -151,6 +152,62 @@ fn assert_hot_path_delta_under_budget() {
     );
 }
 
+/// A transport slot in the HOT-lane shape: a by-value connection handle in, one outcome byte out.
+/// The body is as trivial as the clock's, for the same reason — the crossing is what is measured.
+extern "C-unwind" fn wire_close(_state: *mut std::os::raw::c_void, conn: u64) -> RawWireOutcome {
+    RawWireOutcome((conn & 1) as u8)
+}
+
+/// A [`TransportDecl`] as a loader admits it: preamble, attested size, and the `close` slot armed
+/// (every other slot `None`, the all-zero niche, as [`armed_vtable`] builds the host table).
+fn armed_transport_decl() -> TransportDecl {
+    // SAFETY: every field of `TransportDecl` is valid all-zero — integers, null pointers, and
+    // `Option<extern "C-unwind" fn>` slots whose `None` is the null niche.
+    let mut decl: TransportDecl = unsafe { std::mem::MaybeUninit::zeroed().assume_init() };
+    decl.abi = AbiPreamble::CURRENT;
+    decl.size = std::mem::size_of::<TransportDecl>() as u32;
+    decl.close = Some(wire_close as WireCloseFn);
+    decl
+}
+
+/// THE TRANSPORT CELL (#30: plane AND transport are the HOT kinds, and both owe `< 1µs`): the same
+/// delta budget, over the crossing a loaded transport's every byte-moving call makes — the slot read
+/// through the sized-struct guard (the attested size bounds it, exactly as the loader reads it) and
+/// the indirect call — against the same slot body called directly.
+fn assert_transport_hot_path_delta_under_budget() {
+    let decl = armed_transport_decl();
+    let decl_ptr: *const TransportDecl = &decl;
+    let state = std::ptr::null_mut();
+
+    let (direct_p50, direct_p99) = percentiles(|| {
+        black_box(wire_close(black_box(state), black_box(3)));
+    });
+    let (slot_p50, slot_p99) = percentiles(|| {
+        let f = busbar_plugin::read_sized_field!(
+            black_box(decl_ptr),
+            black_box(decl.size),
+            TransportDecl,
+            close
+        )
+        .flatten()
+        .expect("close slot is armed");
+        black_box(f(black_box(state), black_box(3)).outcome() == WireOutcome::Refused);
+    });
+
+    let transport_p50_delta_nanos = slot_p50.saturating_sub(direct_p50);
+    let transport_p99_delta_nanos = slot_p99.saturating_sub(direct_p99);
+    assert!(
+        transport_p50_delta_nanos < HOT_PATH_BUDGET_NANOS,
+        "HOT-PATH PERF (transport, p50): the decl crossing cost {transport_p50_delta_nanos}ns over \
+         the direct call (budget {HOT_PATH_BUDGET_NANOS}ns). direct {direct_p50}ns, slot {slot_p50}ns."
+    );
+    assert!(
+        transport_p99_delta_nanos < HOT_PATH_BUDGET_NANOS,
+        "HOT-PATH PERF (transport, p99): the decl crossing cost {transport_p99_delta_nanos}ns over \
+         the direct call (budget {HOT_PATH_BUDGET_NANOS}ns). direct {direct_p99}ns, slot {slot_p99}ns."
+    );
+}
+
 /// THE PER-TOKEN CROSSING ASSERTION — the `per-token host-call counter == 0`.
 ///
 /// Models a plane streaming `n` tokens: the POD-fast path does its per-token work in-plane and
@@ -201,9 +258,30 @@ fn hot_path(c: &mut Criterion) {
         });
     });
 
+    // The transport cell's two legs: the slot body called directly, and through the decl.
+    let decl = armed_transport_decl();
+    let decl_ptr: *const TransportDecl = &decl;
+    c.bench_function("TRANSPORT_DIRECT_CALL", |b| {
+        b.iter(|| black_box(wire_close(black_box(std::ptr::null_mut()), black_box(3))));
+    });
+    c.bench_function("TRANSPORT_DECL_CALL", |b| {
+        b.iter(|| {
+            let f = busbar_plugin::read_sized_field!(
+                black_box(decl_ptr),
+                black_box(decl.size),
+                TransportDecl,
+                close
+            )
+            .flatten()
+            .expect("close slot is armed");
+            black_box(f(black_box(std::ptr::null_mut()), black_box(3)))
+        });
+    });
+
     // The gating assertions run once per bench invocation: a blown budget or a per-token crossing
     // takes the process down non-zero.
     assert_hot_path_delta_under_budget();
+    assert_transport_hot_path_delta_under_budget();
     assert_zero_per_token_host_calls();
 }
 

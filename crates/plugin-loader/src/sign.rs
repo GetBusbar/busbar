@@ -67,7 +67,11 @@ pub const FIRST_PARTY_PUBLISHER: &str = "busbar";
 /// discovery/trust/validation pipeline but driven over the HOT-tier `#[repr(C)]` `PlaneDecl` vtable
 /// (`busbar_plugin::hot`) rather than the five cold kinds' six-symbol JSON `call` wire. Its
 /// `abi_version` axis is the airlock minor; this crate's own `supported_abi("plane")` gates it.
-pub const KNOWN_KINDS: &[&str] = &["store", "auth", "hook", "secret", "export", "plane"];
+/// `transport` is the SEVENTH (#3, OWNER-LOCKED: a kind is swappable, compiled in OR dropped in): the
+/// second HOT kind (#30), driven over the `#[repr(C)]` `TransportDecl` the same way.
+// One line, as it always was: the kind list is one statement, not seven.
+#[rustfmt::skip]
+pub const KNOWN_KINDS: &[&str] = &["store", "auth", "hook", "secret", "export", "plane", "transport"];
 
 /// This binary's own host identity — the value [`Manifest::host`] must match (or omit) to load.
 /// `busbar` names the OSS engine. A sibling product (e.g. `busbar-ui`) that reuses this exact
@@ -666,9 +670,8 @@ pub fn validate_identity(m: &Manifest, host_identity: &str) -> Result<(), String
     }
     if !KNOWN_KINDS.contains(&m.kind.as_str()) {
         return Err(format!(
-            "manifest kind '{}' is not one of {KNOWN_KINDS:?}{}",
-            m.kind,
-            crate::registry::kind_refusal_note(&m.kind)
+            "manifest kind '{}' is not one of {KNOWN_KINDS:?}",
+            m.kind
         ));
     }
     if !valid_semver(&m.version) {

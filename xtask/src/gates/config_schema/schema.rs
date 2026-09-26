@@ -258,6 +258,16 @@ fn core_file(cx: &Ctx, roots: &[String], rel: &str) -> Result<String, String> {
     }
 }
 
+// qa-names: crates/secret-ref/src/lib.rs -- xtask/src/gates/config_schema/schema.rs -- the path SecretRef's source had at the freeze point; the baseline is read from history under this old name, so it is absent from the tree on purpose
+/// TRACKED SOURCES THAT MOVED, as `(path today, path at the baseline)`. The baseline is read from
+/// history ([`crate::ctx::Ctx::git_show`]), where a moved file exists only under its old name, so
+/// the refusal see-through looks there too. Without this a verbatim move reads as a type whose
+/// hand-written refusals appeared from nowhere.
+pub const MOVED_SOURCES: &[(&str, &str)] = &[(
+    "crates/busbar-contract/src/secret_ref.rs",
+    "crates/secret-ref/src/lib.rs",
+)];
+
 /// THE TRACKED SOURCE SET — every file whose serde surface IS config grammar.
 ///
 /// A path is a directory (every `*.rs` directly inside it) or a single file, and a path that does
@@ -277,7 +287,10 @@ pub fn sources(cx: &Ctx) -> Result<Vec<String>, String> {
         // engine was folded into the kernel (W4.b P2). Both the shapes and the loaders that consume
         // them now live under `busbar-kernel/src/config`, which the core-kind census above already
         // tracks as that crate's grammar directory — so there is no separate hardcoded entry for it.
-        "crates/secret-ref/src/lib.rs".to_string(),
+        // `SecretRef` — the secret-reference grammar. Extracted to its own `secret-ref` crate, then
+        // merged into `busbar-contract` (DECISIONS #83, fold F1) VERBATIM: same type name, same
+        // hand-written `Deserialize`. Its name at the baseline is in [`MOVED_SOURCES`].
+        "crates/busbar-contract/src/secret_ref.rs".to_string(),
         // `UpstreamCreds` — the `upstream_credentials:` value grammar — moved to the neutral
         // contracts crate in the plane extraction, exactly as `SecretRef` did to `secret-ref`.
         "crates/api/src/auth.rs".to_string(),
@@ -325,6 +338,10 @@ pub fn sources(cx: &Ctx) -> Result<Vec<String>, String> {
         // (K9b: the file sink is the `busbar-export-file` export plugin). A tracked SOURCE
         // relocation exactly like `ModelCfg` above, so the snapshot does not move by a byte.
         "crates/busbar-export-file/src/config.rs".to_string(),
+        // `WebhookSettings` / `ExportAuthHeader` — a `request-log-webhook` instance's `settings:` —
+        // moved out of `busbar-kernel/src/config/mod.rs` into the sink that reads it (K9c: the
+        // webhook sink is the `busbar-export-webhook` export plugin), same tracked relocation.
+        "crates/busbar-export-webhook/src/config.rs".to_string(),
     ]);
     Ok(out)
 }

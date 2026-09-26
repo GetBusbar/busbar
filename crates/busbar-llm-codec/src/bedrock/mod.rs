@@ -118,6 +118,7 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
     // not a shared scheme the way bearer/api-key are — Bedrock is the only protocol that signs.
     egress_auth_headers: Some(writer::sigv4_sign_headers),
     egress_auth_lane_constant: false,
+    egress_scheme: None,
     // THE MODEL IS IN THE URL (`/model/{model_id}/converse`, `/converse-stream`, `/invoke`): this
     // dialect registers its arrival (`busbar_kernel::ingress::bedrock_arrival`) through
     // `busbar_llm::PATH_INGRESS`, folded into the core side-table by the composition root.

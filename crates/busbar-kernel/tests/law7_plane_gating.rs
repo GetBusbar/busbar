@@ -38,6 +38,7 @@ static PROBE: PlaneDecl = PlaneDecl {
         owned_config_sections: &[],
         billable_classes: &[],
         fee_units: &[],
+        metric_families: &[],
     },
     wire_format_names: || &["law7probe"],
     claims: |_| Vec::new(),

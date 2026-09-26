@@ -95,8 +95,8 @@ pub static SEED: &[(&str, &[SeededCheck])] = &[
         ("gate", "scripts/signing-gate.sh", "signed loads; unsigned, wrong-key and tampered manifests refused with the literal messages"),
     ]),
     ("PB-12", &[
-        ("test", "each_webhook_instance_gets_its_own_admission_gate", "the webhook admission gate is per instance (the corrected export-sink config row)"),
-        ("test", "file_sink_sheds_appends_beyond_its_inflight_cap", "the fixed MAX_INFLIGHT_FILE_APPENDS cap"),
+        ("test", "each_plugin_sink_instance_gets_its_own_admission_gate", "the export sink admission gate is per instance (the corrected export-sink config row)"),
+        ("test", "a_plugin_sink_sheds_deliveries_beyond_its_inflight_cap", "the fixed MAX_INFLIGHT_PLUGIN_DELIVERIES cap"),
         ("test", "producerless_stream_is_a_loud_config_error", "validate-time refusal of a producerless stream"),
         ("test", "audit_is_refused_as_a_stream_with_the_reason", "the audit stream refusal literal"),
         ("test", "unknown_stream_names_the_vocabulary", "an unknown stream names the vocabulary"),
@@ -209,7 +209,7 @@ pub static SEED: &[(&str, &[SeededCheck])] = &[
         ("test", "logout_renders_signed_out_and_clears_cookie", "?logout"),
         ("test", "callback_state_mismatch_400", "?code dispatch with a state check"),
         ("test", "refresh_rotates_key_and_revokes_the_old_one", "?refresh"),
-        ("test", "test_mcp_token_is_confined_to_the_mcp_plane", "/auth/token is in the unauthenticated exact-path bypass set"),
+        ("test", "an_audience_bound_token_is_confined_to_its_door_plane", "/auth/token is in the unauthenticated exact-path bypass set"),
         ("gate", "scripts/release-check-1.5.2.sh", "live-hermetic GET /auth/token?method= through the IdP callback to a key"),
     ]),
     ("PB-34", &[

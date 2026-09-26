@@ -1,0 +1,5 @@
+# THE A2A PLANE'S SERVED PATHS (qa_a2a.rs) — golden input data, one `key = value` per line (`#`
+# starts a comment): the agent route the probe is served under, and the door path a credential's
+# audience is bound to.
+agent_path = /a2a/agents/probe
+audience_path = /a2a

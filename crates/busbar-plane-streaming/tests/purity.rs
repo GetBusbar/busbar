@@ -110,24 +110,25 @@ fn is_comment(line: &str) -> bool {
 /// reaching into the legacy voice ENGINE from using the codec.
 #[test]
 fn the_plane_names_no_kernel_side_crate() {
-    let forbidden = [
-        "busbar_contract::caps",
-        "busbar_kernel",
-        "busbar_unit",
-        "busbar_substrate",
-        "busbar_voice::",
-        "busbar_plane_llm",
-        "busbar_plane_mcp",
-        "busbar_plane_a2a",
-        "busbar_plane_decision",
-    ];
+    // The list is data (`tests/fixtures/forbidden_crates.txt`): the sibling planes' crate names are
+    // what the scan looks FOR, and a plane's own source names no sibling.
+    let forbidden: Vec<&str> = include_str!("fixtures/forbidden_crates.txt")
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .collect();
+    assert_eq!(
+        forbidden.len(),
+        9,
+        "the forbidden-crate fixture lost or gained a row"
+    );
     let mut offenders = Vec::new();
     walk(&src_dir(), &mut |path, text| {
         for (n, line) in text.lines().enumerate() {
             if is_comment(line) {
                 continue;
             }
-            for name in forbidden {
+            for name in &forbidden {
                 if line.contains(name) {
                     offenders.push(format!("{}:{}: {}", path.display(), n + 1, line.trim()));
                 }

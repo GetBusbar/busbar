@@ -1,0 +1,38 @@
+{
+  "metrics": [
+    {
+      "name": "busbar_webhook_logs_dropped_total",
+      "type": "counter",
+      "shed": true
+    }
+  ],
+  "diagnostics": [
+    {
+      "code": 7070,
+      "slug": "webhook-exporter-disabled",
+      "title": "Webhook log exporter disabled (invalid configuration)",
+      "severity": "actionable",
+      "summary": "A request-log webhook exporter could not be built from its configuration and has been disabled, so its request logs are NOT delivered. This is a config problem surfaced at boot, not a transient delivery failure.",
+      "action": "Fix the named webhook exporter's configuration (URL, auth header, or projection) and restart to re-enable delivery.",
+      "since": "1.6.0"
+    },
+    {
+      "code": 7071,
+      "slug": "webhook-delivery-non-2xx",
+      "title": "Webhook log delivery returned non-2xx (log dropped)",
+      "severity": "benign_recurring",
+      "summary": "A request-log webhook delivery got a non-2xx response from the sink, so that one log line was dropped (deliveries are fire-and-forget and never retried). This can recur per request when a sink is unhealthy, so it is logged at debug.",
+      "action": "If logs are being lost, check the webhook sink's health and the delivery counters. `WEBHOOK_LOGS_DROPPED_TOTAL` tracks the volume.",
+      "since": "1.6.0"
+    },
+    {
+      "code": 7072,
+      "slug": "webhook-delivery-transport-error",
+      "title": "Webhook log delivery transport error (log dropped)",
+      "severity": "benign_recurring",
+      "summary": "A request-log webhook delivery failed with a transport error (connection/timeout/DNS), so that one log line was dropped. Deliveries are fire-and-forget and never retried; this can recur per request when a sink is unreachable, so it is logged at debug.",
+      "action": "If logs are being lost, check the webhook sink's reachability and the delivery counters. `WEBHOOK_LOGS_DROPPED_TOTAL` tracks the volume.",
+      "since": "1.6.0"
+    }
+  ]
+}

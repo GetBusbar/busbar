@@ -13,7 +13,7 @@ use busbar_substrate_values::handlers::{
 };
 use busbar_substrate_values::ir::handle::IrHandle;
 use busbar_substrate_values::media::{base64_encode, MediaBlob, MediaPayload};
-use busbar_substrate_values::wire::{EgressCtx, WireBody};
+use busbar_substrate_values::wire::{EgressCtx, SlabBytes, WireBody};
 use bytes::Bytes;
 use serde_json::{json, Value};
 
@@ -249,7 +249,9 @@ pub fn write_transcription_response(r: &crate::ir::audio::TranscriptionResp) -> 
         }
         _ => {}
     }
-    WireBody::json(Bytes::from(serde_json::to_vec(&body).unwrap_or_default()))
+    WireBody::json(SlabBytes::from(
+        serde_json::to_vec(&body).unwrap_or_default(),
+    ))
 }
 
 /// Gemini speech (TTS) — `models/{id}:generateContent` with `responseModalities: [AUDIO]`.
@@ -339,7 +341,9 @@ pub fn write_speech_response(r: &SpeechResp) -> WireBody {
             "finishReason": "STOP",
         }],
     });
-    WireBody::json(Bytes::from(serde_json::to_vec(&body).unwrap_or_default()))
+    WireBody::json(SlabBytes::from(
+        serde_json::to_vec(&body).unwrap_or_default(),
+    ))
 }
 
 /// Gemini/Imagen image generation (`models/{id}:predict`). prompt in → `predictions[].bytesBase64Encoded` out.
@@ -441,7 +445,9 @@ pub fn write_image_response(r: &crate::ir::image::ImageResp) -> WireBody {
             "totalTokenCount": u.input.saturating_add(u.output),
         });
     }
-    WireBody::json(Bytes::from(serde_json::to_vec(&body).unwrap_or_default()))
+    WireBody::json(SlabBytes::from(
+        serde_json::to_vec(&body).unwrap_or_default(),
+    ))
 }
 
 /// Gemini embeddings (`models/{id}:embedContent`). Single content in, `embedding.values` out.
@@ -539,7 +545,7 @@ pub fn write_embeddings_response(r: &EmbeddingsResp) -> WireBody {
             _ => None,
         })
         .unwrap_or_default();
-    WireBody::json(Bytes::from(
+    WireBody::json(SlabBytes::from(
         serde_json::to_vec(&json!({ "embedding": { "values": values } })).unwrap_or_default(),
     ))
 }
@@ -803,7 +809,7 @@ pub fn read_speech_response(wire: &[u8]) -> Result<crate::ir::audio::SpeechResp,
     // upstream deliver. These bytes really are the audio.
     Ok(SpeechResp {
         audio: Some(MediaBlob {
-            payload: MediaPayload::Bytes(Bytes::copy_from_slice(wire)),
+            payload: MediaPayload::Bytes(SlabBytes::from(wire)),
             mime_type: "audio/mpeg".into(),
             pcm: None,
         }),

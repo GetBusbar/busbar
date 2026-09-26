@@ -271,6 +271,7 @@ pub const PLANE_DECLARATION: busbar_contract::plane::PlaneDeclaration =
         // point the old inline merge ran.
         // The fee unit this plane counts: one per admitted request, priced at `per_request_fee:`.
         fee_units: &[PER_REQUEST],
+        metric_families: &[],
     };
 
 /// THE PLANE'S BEHAVIOUR — every hook the kernel runs for it, handed over BESIDE
@@ -343,6 +344,12 @@ pub mod linked {
     pub use crate::{BODY_INGRESS, PATH_INGRESS};
     /// The plane axis: the contract declaration, joined kernel-side to the behaviour table.
     pub use crate::{PLANE_DECLARATION, PLANE_HOOKS};
+    /// The claims axis: the pure plane the composition root's boot seal registers, and the claims it
+    /// declares.
+    pub const PLANE: busbar_plane_llm::LlmPlane = busbar_plane_llm::LlmPlane::EMPTY;
+    /// The bytes that plane claims.
+    pub const CLAIMS: &[busbar_contract::grammar::Claim] =
+        <busbar_plane_llm::LlmPlane as busbar_contract::plane::PlaneMeta>::CLAIMS;
 
     /// THE PROTOCOL-AXIS SEAMS, installed beside the declarations: the resolved-completion
     /// synthesizer — the single re-entry the MCP sampling path drives a synthesized chat completion
@@ -425,12 +432,6 @@ pub static BODY_INGRESS: &[(&str, busbar_kernel::ingress::arrival::BodyIngress)]
 #[cfg(test)]
 #[path = "tests/plane_decl_identity_tests.rs"]
 mod plane_decl_identity_tests;
-
-/// THE RESIDUAL-DIALECT TABLE — which of this plane's dialects a residual 404/405/413 is shaped in.
-/// It lives with the plane because it asserts this plane's own declarations.
-#[cfg(test)]
-#[path = "tests/residual_dialect_tests.rs"]
-mod residual_dialect_tests;
 
 // THE CODEC AND IR SUITES MOVED WITH THE CODECS. The detection fold, the error-frame writers, the
 // tool-id decode, the leaf-op write dispatch, the translate-parity/streaming/round-trip goldens and

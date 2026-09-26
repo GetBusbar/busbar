@@ -300,13 +300,30 @@ impl Drop for Node {
     }
 }
 
+/// The plane's served paths, as DATA (`tests/fixtures/agent_plane_wire.txt`): one `key = value` per line.
+fn wire(key: &str) -> &'static str {
+    include_str!("fixtures/agent_plane_wire.txt")
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .find_map(|l| {
+            let (k, v) = l.split_once('=')?;
+            (k.trim() == key).then(|| v.trim())
+        })
+        .unwrap_or_else(|| panic!("tests/fixtures/agent_plane_wire.txt has no `{key}` row"))
+}
+
 impl Node {
     fn plane_url(&self) -> String {
-        format!("http://127.0.0.1:{}/a2a/agents/probe", self.data_port)
+        format!("http://127.0.0.1:{}{}", self.data_port, wire("agent_path"))
     }
 
     fn audience(&self) -> String {
-        format!("http://127.0.0.1:{}/a2a", self.data_port)
+        format!(
+            "http://127.0.0.1:{}{}",
+            self.data_port,
+            wire("audience_path")
+        )
     }
 
     fn admin(&self, path: &str) -> String {

@@ -61,6 +61,19 @@ models:
     .unwrap();
 }
 
+/// A config that configures the plane owning `tools:` and NOTHING else — no provider, no model — so
+/// it validates on any build that links that plane, whatever other planes (and their provider wire
+/// codecs) the build carries.
+#[cfg(linked_axis_stdio_serve)]
+fn write_tools_only_configs(dir: &Path, extra: &str) {
+    std::fs::write(dir.join("providers.yaml"), "").unwrap();
+    std::fs::write(
+        dir.join("config.yaml"),
+        format!("listen: \"127.0.0.1:0\"\nproviders: {{}}\nmodels: {{}}\n{extra}"),
+    )
+    .unwrap();
+}
+
 /// The variable `validate_notes_unset_interpolated_env_vars_by_name` relies on being ABSENT. Named
 /// here because [`run_busbar`] is what has to guarantee that, per child.
 const UNSET_INTERPOLATION_VAR: &str = "BUSBAR_CLI_VALIDATE_TEST_UNSET_VAR";
@@ -940,14 +953,15 @@ fn validate_fails_on_unresolvable_browser_login_client_secret() {
 ///
 /// GATED ON the linked `stdio-serve` axis (`linked_axis_stdio_serve`, emitted by build.rs from
 /// `[package.metadata.busbar.linked-axes]`): the collision check lives in the plane that owns
-/// `tools:`, the linked row carrying that axis, and is compiled out with it: a `--no-default-features` binary has no `tools:` plane to collide in, so
-/// `--validate` exiting 0 there is the correct answer, not the missed refusal this test exists to
-/// pin. Same shape as the `auth-admin-tokens` gate above.
+/// `tools:`, the linked row carrying that axis, and is compiled out with it — a binary without that
+/// plane has no `tools:` to collide in, so `--validate` exiting 0 there is the correct answer, not the
+/// missed refusal this test exists to pin. The config configures that plane and nothing else (no
+/// provider, no model), so the test runs on every build that links it, whatever else is linked.
 #[cfg(linked_axis_stdio_serve)]
 #[test]
 fn validate_refuses_a_publish_as_collision_with_a_namespaced_default() {
     let dir = fixture_dir("publish-as-collision");
-    write_configs(
+    write_tools_only_configs(
         &dir,
         r#"tools:
   foo:
@@ -978,7 +992,7 @@ fn validate_refuses_a_publish_as_collision_with_a_namespaced_default() {
     // GREEN, one name changed and nothing else: the refusal is about the collision, not about
     // `publish_as:` existing. Without this half the test above is satisfied by a build that refuses
     // every override.
-    write_configs(
+    write_tools_only_configs(
         &dir,
         r#"tools:
   foo:
@@ -1532,12 +1546,14 @@ fn validate_refuses_a_decisions_model_whose_provider_speaks_a_foreign_dialect() 
 // is as unknown to it as it was to 1.5.5.
 
 /// The published 1.5.5 refusal for `protocol: bogus`, byte for byte (golden cell
-/// `boot.refusal|BOOT-020|validate`).
-#[cfg(feature = "plane-decision")]
+/// `boot.refusal|BOOT-020|validate`). The list is the linked provider wire codecs', so these cells
+/// also need the linked `body-ingress` axis: a build with no provider codec refuses every provider
+/// lane first (BUSBAR-3015), and that is the correct answer there, not a missed 1.5.5 line.
+#[cfg(all(feature = "plane-decision", linked_axis_body_ingress))]
 const PROTOCOLS_1_5_5: &str =
     "must be one of: anthropic, openai, gemini, bedrock, responses, cohere\n";
 
-#[cfg(feature = "plane-decision")]
+#[cfg(all(feature = "plane-decision", linked_axis_body_ingress))]
 #[test]
 fn validate_unknown_protocol_lists_only_the_configured_planes_dialects() {
     let dir = fixture_dir("bogus-protocol-no-decisions");
@@ -1556,7 +1572,7 @@ fn validate_unknown_protocol_lists_only_the_configured_planes_dialects() {
 /// `protocol: jev` with no `decisions:` section refuses as 1.5.5 refuses it: no configured plane
 /// speaks it. (The CONTROL `validate_ok_on_a_good_decisions_config` above is the same provider WITH
 /// the section, which validates clean.)
-#[cfg(feature = "plane-decision")]
+#[cfg(all(feature = "plane-decision", linked_axis_body_ingress))]
 #[test]
 fn validate_refuses_the_decision_protocol_when_no_decisions_section_is_configured() {
     let dir = fixture_dir("decision-protocol-no-decisions");
@@ -1574,4 +1590,51 @@ fn validate_refuses_the_decision_protocol_when_no_decisions_section_is_configure
         "the refusal is 1.5.5's unknown-protocol line: {stderr}"
     );
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A CONFIG FAILING SEVERAL LIMITS AT ONCE READS AS IT ALWAYS DID (1.5.5): the request-log webhook
+/// sink's in-flight bound is refused AMONG the operational limits — after the timeouts, before the
+/// Retry-After ceiling — and its delivery deadline after them, though both are the sink's own
+/// checks now. The whole refusal is pinned line for line; RED: the sink's lines answered in one
+/// place (all after the limits) reorder the second and third lines.
+#[cfg(linked_axis_body_ingress)]
+#[test]
+fn validate_orders_a_webhook_sinks_refusals_among_the_limits_as_before() {
+    // Whether this binary links the webhook sink is the binary's own answer — a module on no export
+    // axis is refused as an unknown exporter — never a feature name. A build without it has no
+    // refusal of the sink's to order.
+    let probe = fixture_dir("webhook-order-probe");
+    write_configs(
+        &probe,
+        "export:\n  hook: { module: request-log-webhook, settings: { url: \"https://siem.example/in\" } }\n",
+    );
+    let (_, _, probed) = run_busbar(&probe, &["--validate"]);
+    if probed.contains("unknown exporter 'request-log-webhook'") {
+        return;
+    }
+    let dir = fixture_dir("webhook-order");
+    write_configs(
+        &dir,
+        "limits:\n  upstream_request_timeout_secs: 0\n  max_honored_retry_after_secs: 0\n\
+         export:\n  hook: { module: request-log-webhook, settings: { url: \"https://siem.example/in\", \
+         max_inflight_deliveries: 0, delivery_timeout_secs: 0 } }\n",
+    );
+    let (code, _stdout, stderr) = run_busbar(&dir, &["--validate"]);
+    assert_ne!(code, 0, "{stderr}");
+    let refusal: Vec<&str> = stderr
+        .lines()
+        .skip_while(|l| !l.contains("config validation failed:"))
+        .skip(1)
+        .take_while(|l| l.starts_with("  - "))
+        .collect();
+    assert_eq!(
+        refusal,
+        [
+            "  - limits.upstream_request_timeout_secs must be >= 1 (0 would time out every upstream call instantly)",
+            "  - export.request-log-webhook.settings.max_inflight_deliveries must be >= 1 (a 0-permit semaphore admits nothing, silently dropping every webhook delivery)",
+            "  - limits.max_honored_retry_after_secs must be >= 1 (a 0 ceiling would clamp every honored Retry-After to 0)",
+            "  - the `module: request-log-webhook` export instance targeting 'https://siem.example/in' (#0) sets settings.delivery_timeout_secs: 0, which would abort every delivery — it must be >= 1",
+        ],
+        "{stderr}"
+    );
 }

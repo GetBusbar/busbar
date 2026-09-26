@@ -4,7 +4,7 @@
 //! Re-export shim. THE EGRESS-AUTH SEAM moved DOWN into `busbar-substrate` (the LLM plane named
 //! `busbar_kernel::egress_auth` as its last backwards reach); this module re-exports it (glob) so
 //! every historical `busbar_kernel::egress_auth::…` name — `resolve`, `prebuild_auth`,
-//! `CredentialProvider`, `MetadataSsrfPolicy`, `api_key_headers`, and the `jwt_bearer` /
+//! `CredentialProvider`, `MetadataSsrfPolicy`, and the `jwt_bearer` /
 //! `oauth_client_credentials` mint modules — resolves unchanged, and hosts the two egress-auth
 //! tests that must stay core-side (below).
 //!
@@ -34,7 +34,10 @@ mod license_header_tests;
 
 // ==== merged from busbar-substrate (W4.b P2 engine drain) ====
 use crate::proto::SigningContext;
+use crate::teller::Kernel;
 use axum::http::{HeaderName, HeaderValue};
+use busbar_contract::protocol::{CredentialHeader::Raw, EgressScheme};
+use busbar_kernel_identity::egress_auth::{present, presentation};
 use std::sync::Arc;
 
 pub(crate) mod bearer_token;
@@ -70,58 +73,9 @@ pub(crate) fn minter_client() -> Result<crate::egress::engine::EngineClient, Str
 /// client-level 30s total the retired reqwest builder carried.
 pub(crate) const MINT_DEADLINE: std::time::Duration = std::time::Duration::from_secs(30);
 
-/// Default token TTL when a token endpoint omits `expires_in` (RFC 6749 §5.1 makes it RECOMMENDED, not
-/// required): a conservative 1 h so the token still refreshes on schedule.
-pub(crate) fn default_expires_in() -> u64 {
-    3600
-}
-
-/// Deserialize an OAuth `expires_in` TOLERANTLY. RFC 6749 specifies a number of seconds, but real IdPs
-/// vary — ADFS and Azure AD v1 emit it as a JSON STRING (`"3600"`), and some omit it (handled by
-/// `#[serde(default = "default_expires_in")]` on the field). A strict `u64` field breaks token minting
-/// for those providers, silently downing the lane. Accept an integer, a JSON float/decimal
-/// (`3600.0` / `"3600.5"`, truncated toward zero — a fractional second on a token TTL is noise), or a
-/// numeric string. A negative or non-finite value is rejected.
-pub(crate) fn deserialize_expires_in<'de, D>(d: D) -> Result<u64, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    use serde::Deserialize as _;
-    #[derive(serde::Deserialize)]
-    #[serde(untagged)]
-    enum NumOrStr {
-        // Order matters for `untagged`: an integer matches `Num` first; `Float` only catches a
-        // non-integer JSON number; `Str` catches a quoted value.
-        Num(u64),
-        Float(f64),
-        Str(String),
-    }
-    fn float_to_secs<E: serde::de::Error>(f: f64) -> Result<u64, E> {
-        if f.is_finite() && f >= 0.0 {
-            Ok(f as u64)
-        } else {
-            Err(E::custom(format!(
-                "expires_in must be a non-negative number, got {f}"
-            )))
-        }
-    }
-    match NumOrStr::deserialize(d)? {
-        NumOrStr::Num(n) => Ok(n),
-        NumOrStr::Float(f) => float_to_secs(f),
-        NumOrStr::Str(s) => {
-            let t = s.trim();
-            if let Ok(n) = t.parse::<u64>() {
-                Ok(n)
-            } else if let Ok(f) = t.parse::<f64>() {
-                float_to_secs(f)
-            } else {
-                Err(serde::de::Error::custom(format!(
-                    "expires_in {s:?} is not a number"
-                )))
-            }
-        }
-    }
-}
+// The OAuth token response's `expires_in` reading (its default and its tolerant parse) is egress-auth
+// semantics with no engine in it, so it lives with the egress-auth unit (#83a O1 placement).
+pub(crate) use busbar_kernel_identity::egress_auth::{default_expires_in, deserialize_expires_in};
 
 /// Read a token-endpoint HTTP response body under the engine's established capped-read primitive
 /// (`proxy::read_capped`) rather than `resp.text()`, which buffers an UNBOUNDED body — a hijacked or
@@ -226,7 +180,10 @@ pub fn resolve(
     auth: Option<crate::config::ProviderAuth>,
 ) -> Arc<dyn CredentialProvider> {
     if matches!(auth, Some(crate::config::ProviderAuth::ApiKey)) {
-        return Arc::new(ApiKeyHeader { header: "api-key" });
+        return Arc::new(DeclaredScheme(
+            EgressScheme::header("api-key"),
+            Kernel::new(),
+        ));
     }
     if matches!(
         auth,
@@ -245,6 +202,9 @@ pub fn resolve(
     // `ProtocolDecl`; the arms below are the shared schemes of the dialects still in-tree, and
     // each leaves this match when its dialect is extracted.
     if let Some(decl) = crate::proto::decl_for(protocol_name) {
+        if let Some(scheme) = decl.egress_scheme {
+            return Arc::new(DeclaredScheme(scheme, Kernel::new()));
+        }
         if let Some(headers_for) = decl.egress_auth_headers {
             return Arc::new(DeclaredCredential {
                 headers_for,
@@ -276,26 +236,32 @@ impl CredentialProvider for NoCredential {
     }
 }
 
-/// Static custom header carrying the raw key (`api-key` or `x-goog-api-key`). An un-encodable key
-/// yields no header (upstream 401s). Free function so auth tests exercise the exact same code.
-/// Delegates to the neutral `proto::api_key_auth_headers` so the config-`api-key` override path here
-/// and the Gemini dialect's `x-goog-api-key` scheme share ONE implementation.
-///
-/// THE CUT: this is a total function of its two arguments, while every other mechanism in this
-/// module mints over the network (the token-endpoint POSTs) or reads a service-account key off disk.
-/// So it — and only it — moved into the values crate, and is re-exported here at its historical
-/// `busbar_kernel::egress_auth::api_key_headers` path.
-pub use busbar_substrate_values::egress_auth::api_key_headers;
-
-struct ApiKeyHeader {
-    header: &'static str,
-}
-impl CredentialProvider for ApiKeyHeader {
-    fn headers_for(&self, key: &str, _ctx: &SigningContext) -> Vec<(HeaderName, HeaderValue)> {
-        api_key_headers(self.header, key)
+/// A DECLARED egress scheme (`ProtocolDecl::egress_scheme`, or the operator's `auth: api-key`
+/// override, which is the static `api-key` header scheme): presented by the egress-auth unit under a
+/// `Grant<Sign>` the lane's teller mints for each presentation, so the credential is written onto
+/// the request here and never passes through a plane. A static scheme is lane-constant; a signer is not.
+/// A credential the unit could not present (a byte that is not a legal header value) sends no auth
+/// header — the upstream answers 401 — and is reported here, with the key never logged.
+struct DeclaredScheme(EgressScheme, crate::teller::Kernel);
+impl CredentialProvider for DeclaredScheme {
+    fn headers_for(&self, key: &str, ctx: &SigningContext) -> Vec<(HeaderName, HeaderValue)> {
+        let presented = present(&self.1.sign_token(), &self.0, key, ctx);
+        if let (true, Some(Raw { header, .. })) = (
+            presented.is_empty(),
+            presentation(&self.0, key, ctx.upstream_creds),
+        ) {
+            crate::diag_warn!(
+                crate::diagnostics::EGRESS_APIKEY_INVALID_BYTES,
+                header,
+                "egress credential contains invalid header bytes (ASCII control character); \
+                 omitting auth header — upstream will reject with 401"
+            );
+        }
+        let typed = |(k, v): (String, String)| Some((k.parse().ok()?, v.parse().ok()?));
+        presented.into_iter().filter_map(typed).collect()
     }
     fn is_lane_constant(&self) -> bool {
-        true // pure function of the key
+        matches!(self.0, EgressScheme::Static { .. })
     }
 }
 

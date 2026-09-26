@@ -103,6 +103,9 @@ busbar-substrate-values = { path = "../busbar-substrate-values" }
 # this crate's HTTP stack and async runtime into a pure kind's closure. Every module that moved is
 # re-exported from this crate's `lib.rs` under its old name.
 busbar-llm-codec = { path = "../busbar-llm-codec" }
+# THE PURE PLANE this plugin hosts: its entry hands the composition root's boot seal the plane and
+# the claims it declares, so the root names neither (the edge `busbar-mcp` -> `busbar-plane-mcp` has).
+busbar-plane-llm = { path = "../busbar-plane-llm" }
 # Debug-only per-method micro-timing (DEFAULT OFF, zero cost). Instruments the per-dialect
 # reader/writer translate entry points (bedrock/cohere — the heavy cells). Enable the registry via
 # `--features busbar-timing/timing`.

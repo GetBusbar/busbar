@@ -168,7 +168,7 @@ impl Report {
 ///
 /// The crate is the DIRECTORY name, not the `package.name`, because that is what every ceiling in
 /// `qa/construction.toml` is keyed on and what the script this replaces used. The two differ in
-/// this tree (`crates/secret-ref`, `crates/hooks-ranking`) and re-keying the ceilings is a separate
+/// this tree (`crates/hooks-ranking`) and re-keying the ceilings is a separate
 /// decision from fixing the counter.
 fn discover(cx: &Ctx, source: &Source, cfg: &Config) -> Result<Vec<(String, String)>, String> {
     let mut out: Vec<(String, String)> = match source {

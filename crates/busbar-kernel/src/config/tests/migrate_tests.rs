@@ -24,8 +24,8 @@ auth:
       budget_period: monthly
 governance:
   enabled: true
-  store: postgres
-  db_path: "postgres://host/db"
+  store: acme-durable
+  db_path: "acme://host/db"
   admin_token: "${BUSBAR_ADMIN_TOKEN}"
   price_per_request_cents: 2
   rate_sweep_interval: 128
@@ -140,10 +140,10 @@ fn migrate_14x_round_trips_into_deploy_cfg() {
 
     // governance dissolved.
     assert!(root.get(serde_yaml::Value::from("governance")).is_none());
-    assert_eq!(get(&["store", "module"]).as_str(), Some("postgres"));
+    assert_eq!(get(&["store", "module"]).as_str(), Some("acme-durable"));
     assert_eq!(
         get(&["store", "settings", "url"]).as_str(),
-        Some("postgres://host/db")
+        Some("acme://host/db")
     );
     assert_eq!(get(&["per_request_fee"]).as_u64(), Some(2));
     assert_eq!(
@@ -770,7 +770,7 @@ pools: {}
 /// every real key/budget/audit row in the operator's actual database. The migrated document must
 /// carry the real `db_path` forward as `store: { module: sqlite, settings: { db_path } }`.
 #[test]
-fn migrate_realistic_14x_governance_preserves_the_real_sqlite_db_path() {
+fn migrate_realistic_14x_governance_preserves_the_real_db_path() {
     let raw = r#"
 governance:
   enabled: true
@@ -795,8 +795,8 @@ pools: {}
     };
     assert_eq!(
         get(&["store", "module"]).as_str(),
-        Some("sqlite"),
-        "1.4.x's only durable backend was SQLite -- migration must select it, not default to memory"
+        Some(crate::tests::frozen_str("legacy_backend_1_4").as_str()),
+        "1.4.x's only durable backend -- migration must select it, not default to memory"
     );
     assert_eq!(
         get(&["store", "settings", "db_path"]).as_str(),
@@ -829,7 +829,7 @@ pools: {}
         store
             .get(serde_yaml::Value::from("module"))
             .and_then(|v| v.as_str()),
-        Some("sqlite")
+        Some(crate::tests::frozen_str("legacy_backend_1_4").as_str())
     );
     assert_eq!(
         store
@@ -1129,6 +1129,7 @@ pools: {}
 /// document had no `export:` block — these `dig` lookups return `None` on the pre-migration tree.
 #[test]
 fn migrate_observability_export_rewrites_old_to_new() {
+    crate::export::scrape::tests::installed_axis();
     crate::test_support::register_neutral_test_plane();
     let raw = r#"
 observability:
@@ -1218,10 +1219,10 @@ pools: {}
     let deploy: crate::config::DeployCfg = crate::config::deploy_from_yaml_str(&migrated_yaml)
         .expect("the migrated config must boot-parse");
     let mut errs = Vec::new();
-    let export = crate::config::resolve_export(&deploy.export, &mut errs);
+    let export = crate::config::resolve_export(&built_ins(&deploy.export), &mut errs);
     assert!(errs.is_empty(), "{errs:?}");
-    assert_eq!(export.request_log_webhooks.len(), 1);
-    assert!(export.prometheus.is_some() && export.otlp.is_some());
+    assert_eq!(webhooks(&deploy.export), 1);
+    assert!(export.recorder.is_some() && export.otlp.is_some());
 
     // IDEMPOTENT: re-migrating the already-new document moves nothing more, and the TREE is stable.
     let (out2, doc2) = migrate_to_value(&migrated_yaml);
@@ -1468,6 +1469,7 @@ fn golden_migrate_observability_block_folds_into_an_otlp_export_instance() {
 /// nothing to detect and no named map to converge on.
 #[test]
 fn golden_migrate_type_keyed_export_becomes_a_named_map() {
+    crate::export::scrape::tests::installed_axis();
     crate::test_support::register_neutral_test_plane();
     let raw = "export:\n\
                \x20 prometheus: { settings: { buffer_seconds: 60 } }\n\
@@ -1506,10 +1508,10 @@ fn golden_migrate_type_keyed_export_becomes_a_named_map() {
         crate::config::deploy_from_yaml_str(&serde_yaml::to_string(&doc).unwrap())
             .expect("boot-parses");
     let mut errs = Vec::new();
-    let export = crate::config::resolve_export(&deploy.export, &mut errs);
+    let export = crate::config::resolve_export(&built_ins(&deploy.export), &mut errs);
     assert!(errs.is_empty(), "{errs:?}");
-    assert_eq!(export.request_log_webhooks.len(), 2);
-    assert!(export.prometheus.is_some());
+    assert_eq!(webhooks(&deploy.export), 2);
+    assert!(export.recorder.is_some());
 }
 
 /// GOLDEN — inline `auth.chain:`/`auth.admin_auth:` entries and the `auth.methods:` block all
@@ -2200,10 +2202,19 @@ pools:
 /// Before `migrate_store_module` existed the migrated document still said
 /// `redis` and `detect_legacy_markers` returned nothing for it.
 #[test]
-fn migrate_store_module_redis_to_valkey() {
-    for old in ["redis", "busbar-store-redis", "busbar-store-redis-plugin"] {
+fn migrate_store_module_retired_1_5_3_spellings_to_the_renamed_alias() {
+    let renamed = crate::tests::frozen_str("renamed_module_1_5_3");
+    let retired = crate::tests::frozen_text("retired_modules_1_5_3");
+    let retired: Vec<&str> = retired
+        .as_sequence()
+        .unwrap()
+        .iter()
+        .flat_map(|v| v.as_str())
+        .collect();
+    assert_eq!(retired.len(), 3, "the three retired 1.5.x spellings");
+    for old in retired {
         let raw = format!(
-            "store:\n  module: {old}\n  settings: {{ url: \"redis://127.0.0.1:6379/0\" }}\n\
+            "store:\n  module: {old}\n  settings: {{ url: \"kv://127.0.0.1:6379/0\" }}\n\
              providers: {{}}\nmodels: {{}}\npools: {{}}\n"
         );
 
@@ -2211,7 +2222,7 @@ fn migrate_store_module_redis_to_valkey() {
         let doc: serde_yaml::Value = serde_yaml::from_str(&raw).unwrap();
         let joined = detect_legacy_markers(&doc).join("\n");
         assert!(
-            joined.contains(old) && joined.contains("valkey"),
+            joined.contains(old) && joined.contains(renamed.as_str()),
             "`store.module: {old}` must loud-fail with a marker naming the old AND new spelling; \
              got: {joined}"
         );
@@ -2220,7 +2231,7 @@ fn migrate_store_module_redis_to_valkey() {
         let (out, doc) = migrate_to_value(&raw);
         assert_eq!(
             dig(&doc, &["store", "module"]).and_then(|v| v.as_str()),
-            Some("valkey"),
+            Some(renamed.as_str()),
             "`store.module: {old}` must be rewritten to the new alias; migrated:\n{}",
             out.yaml
         );
@@ -2228,7 +2239,7 @@ fn migrate_store_module_redis_to_valkey() {
         // busbar-owned name, so the migrator must not touch it.
         assert_eq!(
             dig(&doc, &["store", "settings", "url"]).and_then(|v| v.as_str()),
-            Some("redis://127.0.0.1:6379/0"),
+            Some("kv://127.0.0.1:6379/0"),
             "the operator's connection URL must survive verbatim; migrated:\n{}",
             out.yaml
         );
@@ -2248,11 +2259,14 @@ fn migrate_store_module_redis_to_valkey() {
     }
 
     // IDEMPOTENT: a config already on the new alias is untouched and un-flagged.
-    let already = "store:\n  module: valkey\nproviders: {}\nmodels: {}\npools: {}\n";
-    let (out, doc) = migrate_to_value(already);
+    let already = format!(
+        "store:\n  module: {}\nproviders: {{}}\nmodels: {{}}\npools: {{}}\n",
+        crate::config::RENAMED_STORE_MODULE_1_5_3
+    );
+    let (out, doc) = migrate_to_value(&already);
     assert_eq!(
         dig(&doc, &["store", "module"]).and_then(|v| v.as_str()),
-        Some("valkey")
+        Some(crate::config::RENAMED_STORE_MODULE_1_5_3)
     );
     assert!(
         !out.changes.iter().any(|c| c.contains("store.module")),
@@ -2260,11 +2274,11 @@ fn migrate_store_module_redis_to_valkey() {
         out.changes
     );
     // …and an UNRELATED store module is not touched either.
-    let other = "store:\n  module: postgres\nproviders: {}\nmodels: {}\npools: {}\n";
+    let other = "store:\n  module: acme-durable\nproviders: {}\nmodels: {}\npools: {}\n";
     let (_, doc) = migrate_to_value(other);
     assert_eq!(
         dig(&doc, &["store", "module"]).and_then(|v| v.as_str()),
-        Some("postgres")
+        Some("acme-durable")
     );
 }
 
@@ -2275,11 +2289,11 @@ fn migrate_store_module_redis_to_valkey() {
 /// `--validate`: precisely the failure mode `Taken` exists to make structurally impossible.
 #[test]
 fn a_wrong_shaped_store_block_is_never_taken_and_discarded() {
-    let raw = "store: redis\nproviders: {}\nmodels: {}\npools: {}\n";
+    let raw = "store: acme-kv\nproviders: {}\nmodels: {}\npools: {}\n";
     let (out, doc) = migrate_to_value(raw);
     assert_eq!(
         dig(&doc, &["store"]).and_then(|v| v.as_str()),
-        Some("redis"),
+        Some("acme-kv"),
         "a scalar `store:` must be left EXACTLY as written, never dropped; migrated:\n{}",
         out.yaml
     );
@@ -2303,7 +2317,7 @@ fn a_wrong_shaped_store_block_is_never_taken_and_discarded() {
 #[test]
 fn migrate_export_adds_the_explicit_streams_projection() {
     // `request-log-file` is a row of the export axis (K9b), as a linked build's is.
-    crate::test_support::export_axis::install_export_axis();
+    crate::export::scrape::tests::installed_axis();
     let raw = "\
 export:
   metrics:
@@ -2363,11 +2377,12 @@ export:
         serde_yaml::from_value(dig(&doc, &["export"]).unwrap().clone())
             .expect("the migrated export block must parse");
     let mut errs = Vec::new();
-    let export = crate::config::resolve_export(&defs, &mut errs);
+    let export = crate::config::resolve_export(&built_ins(&defs), &mut errs);
     assert!(errs.is_empty(), "{errs:?}");
-    assert!(export.request_log_webhooks[0]
-        .projection
-        .wants_stream(busbar_plugin_loader::ExportStream::Logs));
+    // The webhook instance's projection is the sink's own to resolve (it is an export-axis module);
+    // what the migration writes for it is `logs`, the stream it carries.
+    assert_eq!(webhooks(&defs), 1);
+    let _ = export;
 
     // IDEMPOTENT: a second run writes nothing more.
     let (out2, doc2) = migrate_to_value(&migrated_yaml);
@@ -2575,7 +2590,7 @@ fn migrate_rewrites_a_lingering_at_key_on_a_named_hook_def() {
 /// carried over, and a loud WARNING names the server and the semantics change (a former sweep cadence
 /// is now a drift-serving window on the call path).
 #[test]
-fn migrate_renames_mcp_refresh_ttl_to_verify_ttl_with_a_warning() {
+fn migrate_renames_a_tool_server_refresh_ttl_to_verify_ttl_with_a_warning() {
     let raw = r#"
 tools:
   servers:
@@ -2643,4 +2658,20 @@ fn migrate_never_invents_a_keyless_api_key() {
         dig(&doc, &["providers", "local", "api_key"]).is_none(),
         "a provider with no credential to convert gets NO api_key — never a fabricated `none`"
     );
+}
+
+/// The `request-log-webhook` instances of a migrated `export:` block — an export-axis module (the
+/// `busbar-export-webhook` plugin), which this test binary has no axis for.
+fn webhooks(defs: &crate::config::ExportDefs) -> usize {
+    defs.values()
+        .filter(|d| d.module.trim() == crate::config::EXPORT_MODULE_REQUEST_LOG_WEBHOOK)
+        .count()
+}
+
+/// `defs` without its `request-log-webhook` instances — what this test binary can resolve.
+fn built_ins(defs: &crate::config::ExportDefs) -> crate::config::ExportDefs {
+    defs.iter()
+        .filter(|(_, d)| d.module.trim() != crate::config::EXPORT_MODULE_REQUEST_LOG_WEBHOOK)
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect()
 }

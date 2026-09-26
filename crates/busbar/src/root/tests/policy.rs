@@ -156,7 +156,7 @@ fn the_transport_client_reads_the_operators_limits_and_not_a_default() {
         13,
         "the fixture's timeout must differ from the resolved default"
     );
-    assert_ne!(ClientSettings::default().request_timeout_secs, 13);
+    assert_ne!(TransportSettings::default().request_timeout_secs, 13);
     assert_eq!(settings.request_timeout_secs, 13);
 }
 
@@ -168,7 +168,7 @@ fn an_unset_body_cap_resolves_to_the_transport_default() {
     let settings = client_settings(&LimitsResolved::default());
     assert_eq!(
         settings.request_body_max_bytes,
-        ClientSettings::default().request_body_max_bytes
+        TransportSettings::default().request_body_max_bytes
     );
     assert_eq!(
         settings.request_body_max_bytes,

@@ -573,14 +573,14 @@ fn test_create_key_with_aws_issues_and_resolves_credential() {
     assert_eq!(secret.len(), 40); // golden wire-contract literal (kept bare on purpose)
                                   // The AccessKeyId resolves to the SAME key + its secret.
     let (resolved_key, cred) = gov
-        .lookup_credential("sigv4", &akid)
+        .lookup_credential(&crate::governance::tests::signed_kind(), &akid)
         .expect("akid resolves");
     assert_eq!(resolved_key.id, key.id);
     assert_eq!(cred.secret, format!("v1:plain:{secret}"));
     assert!(resolved_key.enabled);
     // An unknown AccessKeyId resolves to None.
     assert!(gov
-        .lookup_credential("sigv4", "AKIAdoesnotexist0000")
+        .lookup_credential(&signed_kind(), "AKIAdoesnotexist0000")
         .is_none());
 }
 
@@ -651,7 +651,7 @@ fn test_aws_credential_persists_across_reload() {
     };
     let gov2 = GovState::new(store, None).unwrap();
     assert!(
-        gov2.lookup_credential("sigv4", &akid).is_some(),
+        gov2.lookup_credential(&signed_kind(), &akid).is_some(),
         "credential must survive a reload"
     );
 }
@@ -673,10 +673,10 @@ fn test_delete_key_removes_aws_credential() {
             0,
         )
         .unwrap();
-    assert!(gov.lookup_credential("sigv4", &akid).is_some());
+    assert!(gov.lookup_credential(&signed_kind(), &akid).is_some());
     gov.delete_key(&key.id).unwrap();
     assert!(
-        gov.lookup_credential("sigv4", &akid).is_none(),
+        gov.lookup_credential(&signed_kind(), &akid).is_none(),
         "a revoked key's AWS credential must be gone"
     );
     // And the durable credential row is gone too.
@@ -717,7 +717,7 @@ fn test_refresh_updates_both_indices_atomically() {
         "subject id must resolve via by_id before delete"
     );
     assert_eq!(
-        gov.lookup_credential("sigv4", &akid)
+        gov.lookup_credential(&signed_kind(), &akid)
             .map(|(k, _)| k.id.clone()),
         Some(key.id.clone()),
         "akid must resolve via by_access_key_id before delete"
@@ -732,7 +732,7 @@ fn test_refresh_updates_both_indices_atomically() {
         "subject id must be gone from by_id after delete"
     );
     assert!(
-        gov.lookup_credential("sigv4", &akid).is_none(),
+        gov.lookup_credential(&signed_kind(), &akid).is_none(),
         "akid must be gone from by_credential after delete"
     );
 }
@@ -748,7 +748,7 @@ fn test_aws_credential_debug_redacts_secret() {
         meta: CredentialMeta {
             id: "cred_x".to_string(),
             key_id: "vk_x".to_string(),
-            kind: "sigv4".to_string(),
+            kind: signed_kind(),
             slot: 0,
             public_id: "AKIAPUBLIC1234567890".to_string(),
             secret_form: SecretForm::Recoverable,
@@ -3141,7 +3141,9 @@ mod signed_token {
         assert!(akid.starts_with("AKIA"));
         assert!(!secret.is_empty());
         // The AWS credential resolves back to the same subject.
-        let (resolved_key, _cred) = g.lookup_credential("sigv4", &akid).expect("akid resolves");
+        let (resolved_key, _cred) = g
+            .lookup_credential(&crate::governance::tests::signed_kind(), &akid)
+            .expect("akid resolves");
         assert_eq!(resolved_key.id, binding.id);
     }
 
@@ -5723,4 +5725,10 @@ fn a_registry_key_standing_is_unchanged_by_the_bindings_resolver() {
             principal: key.id.clone()
         }))
     );
+}
+
+/// The persisted credential kind of a row-looked-up signed-ingress credential — frozen stored data,
+/// read from the kernel's frozen-text fixture (F-T) rather than spelled here.
+fn signed_kind() -> String {
+    crate::tests::frozen_str("signed_credential_kind")
 }

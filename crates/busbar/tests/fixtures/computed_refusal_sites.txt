@@ -8,5 +8,3 @@ busbar-kernel-egress/src/trust/unit.rs	refusal.kind.reason()
 busbar-llm/src/unit/verify.rs	refusal.reason()
 busbar/src/root/units_admin/mod.rs	verbs_reason(refusal.reason)
 busbar/src/root/units_admin/mod.rs	verbs_reason(refusal.reason)
-busbar/src/root/units_voice.rs	reason
-busbar/src/root/units_voice.rs	refusal.reason()

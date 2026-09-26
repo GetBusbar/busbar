@@ -5,7 +5,7 @@
 //! kept keyed by their SOURCE protocol so an egress OperationHandler may opt in to honoring a
 //! foreign knob it recognizes without merging namespaces across protocols.
 //!
-//! ONE DEFINITION (#83a, O13). This module used to declare a second alias of the type
+//! ONE DEFINITION. This module used to declare a second alias of the type
 //! `ir::SourceScopedExtra` declares; the two resolved to the same concrete type, so the duplicate
 //! died and this path re-exports the one definition, now in `busbar_contract::ir`.
 

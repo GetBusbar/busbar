@@ -7,7 +7,7 @@
 //! the canonical-request → string-to-sign → signature chain is known-correct.
 
 use crate::diag_error;
-use crate::diagnostics::SIGV4_HMAC_INIT_FAILED;
+use crate::diagnostics::REQUEST_SIGNING_HMAC_INIT_FAILED;
 use hmac::digest::KeyInit;
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
@@ -27,8 +27,8 @@ pub const SIGV4_ALGORITHM: &str = "AWS4-HMAC-SHA256";
 /// value is single-sourced even when a byte literal is required.
 pub const SIGV4_TERMINATION: &str = "aws4_request";
 /// The key-derivation prefix prepended to the secret access key before the first HMAC: `"AWS4"`.
-/// Always used via `format!("{SIGV4_KEY_PREFIX}{secret}")`, not mixed into `SIGV4_ALGORITHM`.
-const SIGV4_KEY_PREFIX: &str = "AWS4";
+/// Always used via `format!("{SIGNATURE_KEY_PREFIX}{secret}")`, not mixed into `SIGV4_ALGORITHM`.
+const SIGNATURE_KEY_PREFIX: &str = "AWS4";
 /// The canonical lowercase name of the `x-amz-date` header.
 pub const X_AMZ_DATE: &str = "x-amz-date";
 /// The canonical lowercase name of the `x-amz-content-sha256` header.
@@ -56,7 +56,7 @@ fn hmac(key: &[u8], data: &[u8]) -> Vec<u8> {
         }
         Err(e) => {
             diag_error!(
-                SIGV4_HMAC_INIT_FAILED,
+                REQUEST_SIGNING_HMAC_INIT_FAILED,
                 "HMAC-SHA256 init failed (unreachable: HMAC accepts any key length): {e}"
             );
             Vec::new()
@@ -68,7 +68,7 @@ fn hmac(key: &[u8], data: &[u8]) -> Vec<u8> {
 /// File-private: the only caller is `sign_request` below.
 fn signing_key(secret: &str, datestamp: &str, region: &str, service: &str) -> Vec<u8> {
     let k_date = hmac(
-        format!("{SIGV4_KEY_PREFIX}{secret}").as_bytes(),
+        format!("{SIGNATURE_KEY_PREFIX}{secret}").as_bytes(),
         datestamp.as_bytes(),
     );
     let k_region = hmac(&k_date, region.as_bytes());

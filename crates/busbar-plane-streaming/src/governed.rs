@@ -39,7 +39,7 @@ pub enum ReplyRefusal {
 
 /// THE NODE'S OPEN-CALL TABLE, as the runtime is allowed to see it.
 ///
-/// One fact told and two questions asked, and no more. The runtime never asks which unit a call
+/// Two facts told and two questions asked, and no more. The runtime never asks which unit a call
 /// belongs to, never asks how long the deadline is, and never decides what a refusal costs — those
 /// are the kernel's, and a seam wide enough to answer them would be wide enough to get them wrong.
 pub trait GovernedCalls: Send + Sync {
@@ -61,6 +61,13 @@ pub trait GovernedCalls: Send + Sync {
     /// Node-wide rather than per-session: one tick sweeps the node, which is the only shape in which
     /// a session whose pump has already stopped still has its unanswered calls ended.
     fn expired(&self, now_ms: u64) -> usize;
+
+    /// **The session is over.** Forget every call `session` still has open: a conversation that has
+    /// ended cannot answer anything, so its waits end with it rather than holding a row until a
+    /// deadline nobody is left to meet. Told once, by the session's teardown.
+    ///
+    /// A table with nothing per session to forget has nothing to do, which is the default.
+    fn closed(&self, _session: u64) {}
 }
 
 /// One session's binding to the node's table — the identifier the root keys its calls by, and the

@@ -48,7 +48,7 @@ use busbar_kernel::{
     build_app_from_config, build_split_routers_with_limits, load_config_from_disk, LoadedConfig,
     ENV_CONFIG,
 };
-use busbar_kernel::{config, config_validate, export, metrics, observability, tls};
+use busbar_kernel::{config, config_validate, export, metrics, tls};
 // Read only by the jemalloc idle-purge fallback below, which is itself
 // `#[cfg(not(target_env = "msvc"))]` — windows-msvc has no jemalloc, so importing this
 // unconditionally is an unused-import error there under `-D warnings`.
@@ -669,7 +669,7 @@ async fn run(data_workers: usize) {
     let resolved_export = config::resolve_export(&deploy.export, &mut Vec::new());
     metrics::configure(
         resolved_export
-            .prometheus
+            .recorder
             .as_ref()
             .map(|p| Duration::from_secs(p.buffer_seconds)),
     );
@@ -690,7 +690,7 @@ async fn run(data_workers: usize) {
     // subsequent startup and request-path logging is captured.
     // `--mcp-stdio` reserves stdout for the MCP channel, so its logs move to stderr — see
     // `init_logging`'s `stdout_reserved`.
-    observability::init_logging(
+    root::otlp::init_logging(
         otlp_cfg.as_ref().map(|o| o.url.as_str()),
         stdio_serve_requested(std::env::args()),
     );
@@ -780,7 +780,7 @@ async fn run(data_workers: usize) {
     // same `request_body_max_bytes` the line above hands the served door, so a plane's transport and
     // the door in front of it cannot disagree about which bodies exist. Every build runs it, whatever
     // planes it links; a composition that does not seal exits 2 here, and success writes nothing.
-    root::registry::seal_or_exit(root::policy::client_settings(&cfg.limits));
+    root::registry::seal_or_exit(&LINKED, root::policy::client_settings(&cfg.limits));
     // THE ROOT UNITS' CONFIGURATION STEP, in the same slot: the card repricer is installed BEFORE the
     // first app build below, so the boot's own rate resolution is the history's OPENING ENTRY and
     // nothing has to read the configuration twice. From there each resolution APPENDS an entry dated
@@ -807,6 +807,10 @@ async fn run(data_workers: usize) {
     // as the release without this field, byte for byte.
     #[cfg(feature = "root-admin")]
     let boot_operator_auth = cfg.auth.clone();
+    // The root breaker's per-pool ladders, read off the same `pools:` the build resolves each pool's
+    // own dispatch cfg from, before `cfg` is consumed.
+    #[cfg(feature = "root-admin")]
+    let breaker_policy = root::adapters::BreakerPolicy::from_pools(&cfg.pools);
 
     // The secret resolver the listeners resolve TLS cert/key/CA references through - the SAME seam
     // (built-in env/file + kind:secret plugins) that resolved provider keys at build time.
@@ -872,12 +876,10 @@ async fn run(data_workers: usize) {
          re-learned from live traffic"
     );
 
-    // Configure the built-in request-log EXPORTERS (every named `request-log-webhook` instance; a
-    // `request-log-file` instance is an export-axis sink, opened above) from the resolved `export:` block (the webhook
-    // exporter owns its delivery client). No-op when no request-log sink is configured (the default). The
-    // recorder-installing `prometheus` exporter is wired separately (`metrics::configure` above +
-    // the `/metrics` plugin route in `build_app_from_config`).
-    export::configure(&resolved_export);
+    // START the export axis's opened sinks (every request-log sink is one): each states whether it
+    // takes deliveries this run and its in-flight admission — the moment the built-in request-log
+    // exporters were configured, so a sink that refuses its own target at start says so here.
+    export::plugin::start();
 
     // Spawn the active health probers (one per lane with a probing mode). No-op when every lane is
     // `mode: none` / has no `health:` block. The composition root owns THIS generation's engine host
@@ -991,6 +993,12 @@ async fn run(data_workers: usize) {
                 units.admin.pools = std::sync::Arc::new(move |pool: &str| {
                     busbar_kernel::governance::group_provision::pool_known(&live.load(), pool)
                 });
+                // The root breaker is the kernel's own: one cell set on the node, read through the
+                // live snapshot so an apply's rebuilt store is the one it observes into.
+                units.breaker = root::adapters::BreakerAdapter::over_kernel(
+                    std::sync::Arc::clone(&app_handle),
+                    breaker_policy,
+                );
                 // THE DEPLOYMENT'S OWN DOOR, in front of the authenticate step. Without these two lines
                 // the assembly's open posture shipped: the step admitted every caller anonymously and
                 // the only thing deciding was the surface mounted underneath — so a credential this node
@@ -1097,7 +1105,7 @@ async fn run(data_workers: usize) {
             let m = gov.flush_metering();
             tracing::info!(flushed = m, "metering rows flushed on shutdown");
         }
-        observability::shutdown_tracing();
+        root::otlp::shutdown_tracing();
         std::process::exit(code);
     }
 
@@ -1200,7 +1208,7 @@ async fn run(data_workers: usize) {
     // No state snapshot on shutdown: reliability state is RAM-only (re-learned on boot) and the
     // audit log is written through to the durable store as it happens (store-or-RAM rule — there is
     // no side-car state file to flush).
-    observability::shutdown_tracing();
+    root::otlp::shutdown_tracing();
 }
 
 /// Bind a TCP listener or `die` with a clear, address-named message. Shared by the data and admin

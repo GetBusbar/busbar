@@ -11,19 +11,20 @@
 //! scrape-time gauge derivation live in [`crate::metrics`]; the request-log projection is still built
 //! in the request-finish path. These modules move only the DISTRIBUTION:
 //!
-//! - [`prometheus`] — PULL. Serves `/metrics` via the endpoint-registration `handle_http` path (the
-//!   well-known-`/metrics` exception), rendering the recorder registry. When `export.prometheus` is
-//!   present the recorder is installed (collection on) and a `GET /metrics` plugin route is
-//!   registered; absent ⇒ no recorder, `/metrics` unmounted, every emit site a true no-op.
-//! - [`webhook`] — PUSH per-request. The `request-log-webhook` + `generic-webhook` sinks POST the
-//!   built request-log line behind the relocated SSRF guard + bounded `AdmissionGate` delivery.
+//! - [`scrape`] — PULL. The host's scrape of the well-known `/metrics`: the export-axis instance
+//!   subscribed to `metrics` whose sink carries it (the SCRAPE SINK,
+//!   [`crate::config::PluginExportSettings`]) is handed the recorder's snapshot and renders the
+//!   exposition. With a scrape sink configured the recorder is installed (collection on) and the
+//!   route registered; without one ⇒ no recorder, `/metrics` unmounted, every emit site a true no-op.
 //!
-//! Every other module — `request-log-file` among them — is a row of the EXPORT AXIS ([`plugin`]).
+//! Every other module — `request-log-file` and `request-log-webhook` among them — is a row of the
+//! EXPORT AXIS ([`plugin`]). A row subscribed to `traces` is fed by [`traces`], the kernel's record
+//! producer for that stream (K9a S7): one record per closed span, built to the sink's projection.
 
 pub mod plugin;
 pub(crate) mod projection;
-pub mod prometheus;
-pub(crate) mod webhook;
+pub(crate) mod scrape;
+pub mod traces;
 
 use crate::config::ExportCfg;
 use crate::export::projection::ProjectedRecord;
@@ -32,14 +33,14 @@ use busbar_plugin_loader::{ExportField, ExportStream};
 use serde_json::Value;
 use std::sync::Arc;
 
-/// The live plugin-route declarations the built-in exporters contribute — today just the
-/// `prometheus` exporter's `GET /metrics`. Built at App construction from the resolved `export:` block
+/// The live plugin-route declarations the `export:` block contributes — the host's scrape route and
+/// every opened export-axis sink's own. Built at App construction from the resolved `export:` block
 /// and folded into the [`crate::plugin_routes::PluginRouteTable`] on the App snapshot.
 ///
 /// **A config apply UNMOUNTS but cannot MOUNT.** The two directions are not symmetric, and an earlier
 /// version of this comment claimed they were:
 ///
-/// - **Removing** `export.prometheus` takes effect immediately. The path stays registered on the
+/// - **Removing** the scrape sink's instance takes effect immediately. The path stays registered on the
 ///   router, but [`crate::plugin_routes::plugin_route_dispatch`] resolves the owner from the CURRENT
 ///   snapshot on every request, finds nothing, and 404s. No rebuild needed.
 /// - **Adding** it does NOT take effect until restart. Each declared PATH is registered on the axum
@@ -56,17 +57,8 @@ use std::sync::Arc;
 /// for the route itself — genuinely hot-mounting one is a router rebuild, not done here — but it is no
 /// longer a SILENT one.
 pub(crate) fn route_decls(cfg: &ExportCfg) -> Vec<RouteDecl> {
-    let built_in = prometheus::route_decl(cfg).into_iter();
-    built_in.chain(plugin::route_decls(cfg)).collect()
-}
-
-/// Configure every PUSH request-log exporter from the resolved `export:` block. Called once at
-/// boot; the process-global sinks are `OnceLock`-guarded (like the metrics recorder), so a later
-/// config apply cannot re-point them (restart-to-apply, same posture the request-log webhook always
-/// had). No-op for an absent block. The webhook exporter builds its own delivery client (see
-/// `webhook::CLIENT`) — nothing here touches the LLM egress pool.
-pub fn configure(cfg: &ExportCfg) {
-    webhook::configure(cfg);
+    let scraped = scrape::route_decl(cfg).into_iter();
+    scraped.chain(plugin::route_decls(cfg)).collect()
 }
 
 /// Whether the kernel serves `module` itself — a module an export-axis row may not spell, since
@@ -131,13 +123,6 @@ impl<'a> PayloadCache<'a> {
     }
 }
 
-/// The projection a test sink is given: the whole `logs` stream, so a test that is not ABOUT the
-/// projection sees the same payload the pre-projection code produced.
-#[cfg(test)]
-pub(crate) fn test_logs_projection() -> projection::Projection {
-    projection::Projection::for_test(&[ExportStream::Logs], ExportStream::Logs.default_fields())
-}
-
 /// Fan the request-log facts out to every configured PUSH sink, each receiving a payload built TO
 /// ITS OWN PROJECTION. Fire-and-forget; never blocks the request path and never surfaces errors —
 /// telemetry must not affect serving.
@@ -147,6 +132,5 @@ pub(crate) fn test_logs_projection() -> projection::Projection {
 /// [`PayloadCache`]).
 pub(crate) fn deliver_request_log(facts: &RequestLogFacts<'_>) {
     let mut cache = PayloadCache::new(facts);
-    webhook::deliver_logs(&mut cache);
     plugin::deliver_logs(&mut cache);
 }

@@ -693,7 +693,7 @@ mcp|stdio|client|client|tools/list = implemented
 #     an_idle_subscriptions_keepalive_becomes_a_server_ping
 #   end-to-end, the REAL binary spawned as a child over real OS pipes
 #   (crates/busbar/tests/mcp_stdio_serve.rs):
-#     an_mcp_deployment_with_an_empty_chain_refuses_to_boot
+#     a_door_deployment_with_an_empty_chain_refuses_to_boot
 #     a_governed_deployment_refuses_an_uncredentialed_stdio_session
 #     a_governed_deployment_refuses_a_wrong_audience_credential
 #     a_budgeted_stdio_session_serves_within_budget_and_refuses_over_it

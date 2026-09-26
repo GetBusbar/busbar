@@ -180,7 +180,7 @@ fn export_abi_version_is_three() {
 /// loader gates on stays put — pinned so a seam cannot land without saying so.
 #[test]
 fn export_abi_minor_counts_the_host_seams() {
-    assert_eq!((EXPORT_ABI_VERSION, EXPORT_ABI_MINOR), (3, 8));
+    assert_eq!((EXPORT_ABI_VERSION, EXPORT_ABI_MINOR), (3, 9));
 }
 
 /// S1's declaration wire: `{"name": …, "type": …}`, the same `type` token a reported metric carries.
@@ -478,11 +478,21 @@ fn the_start_check_and_admit_wire_is_pinned() {
     assert_eq!(start, r#"{"op":"start"}"#);
     let check = ExportRequest::Check {
         instances: vec![("a".into(), serde_json::json!({"url": "https://x/"}))],
+        phase: CheckPhase::Limits,
     };
     assert_eq!(
         serde_json::to_string(&check).unwrap(),
-        r#"{"op":"check","instances":[["a",{"url":"https://x/"}]]}"#
+        r#"{"op":"check","instances":[["a",{"url":"https://x/"}]],"phase":"limits"}"#
     );
+    // Absent (the minor-8 wire): after the limits.
+    let bare: ExportRequest = serde_json::from_str(r#"{"op":"check","instances":[]}"#).unwrap();
+    assert!(matches!(
+        bare,
+        ExportRequest::Check {
+            phase: CheckPhase::Instances,
+            ..
+        }
+    ));
     let started = ExportResponse::Started {
         live: true,
         inflight: 64,

@@ -54,6 +54,10 @@ thread_local! {
     /// this rider actually carried — never inferred from a status code. Per thread because the test
     /// harness runs tests in parallel and a `#[tokio::test]` runs its whole scenario on its own.
     pub(crate) static DRIVES_IN_LOOP: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    /// TEST-ONLY: how many session opens THIS thread has run through the kernel loop's door — the
+    /// session plane's twin of [`DRIVES_IN_LOOP`]: a session rides no `drive`, so what the rider
+    /// carries of it is the open, counted where the loop is asked to open it.
+    pub(crate) static OPENS_IN_LOOP: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
 /// One gauntlet request expressed as a kernel [`Units`] value: the plane rides at Verify (its
@@ -458,6 +462,8 @@ pub fn open_gauntlet_via_kernel(
     match entered {
         Err(_refused) => Err(GauntletKernelUnit::plane_spent()),
         Ok(slot) => {
+            #[cfg(test)]
+            OPENS_IN_LOOP.with(|n| n.set(n.get() + 1));
             let opened = busbar_kernel::teller::open_unit(
                 &kernel,
                 &unit,

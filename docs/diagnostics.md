@@ -1214,48 +1214,48 @@ A lane was recorded hard-down across ALL its per-pool cells at once (the all-cel
 **What to do:** Investigate the named upstream/model lane's health — a hard-down across all cells means a definitive lane-wide fault. Traffic fails over automatically; the lane recovers via the half-open probe once the upstream is healthy.
 
 <a id="breaker-unexpected-state-classify"></a>
-### BUSBAR-5041 — Unexpected breaker state on classify (fail-safe: deny admission)
+### BUSBAR-5041 — Unexpected breaker state on classify (fail-safe: deny admission) — RETIRED *(retired)*
 
 - **Severity:** actionable
 - **Since:** 1.6.0
 - **Slug:** `breaker-unexpected-state-classify`
 
-The breaker classify path read a cell state that is not one of the three valid encodings (Closed/Open/HalfOpen). This is IMPOSSIBLE under the atomic-sentinel invariant, so reaching it means a real invariant break or memory corruption. busbar fails SAFE — treats the cell as never-elapsing Open so admission is denied — rather than panic the dispatching task. Warned once per process; recurrence logs at debug.
+RETIRED. The breaker classify path read a cell state that is not one of the three valid encodings (Closed/Open/HalfOpen). This is IMPOSSIBLE under the atomic-sentinel invariant, so reaching it means a real invariant break or memory corruption. busbar fails SAFE — treats the cell as never-elapsing Open so admission is denied — rather than panic the dispatching task. Warned once per process; recurrence logs at debug.
 
-**What to do:** Capture the logged state value and file a bug — a breaker cell should never hold an unexpected state. Requests to that cell are safely denied (fail-closed) until it is re-armed; investigate for memory corruption if it persists.
+**What to do:** Nothing emits this code. The one breaker keeps its cell state behind a lock and answers an unreachable encoding silently, with the same fail-safe result.
 
 <a id="breaker-unexpected-state-probe"></a>
-### BUSBAR-5042 — Unexpected breaker state on probe acquisition (fail-safe: refuse)
+### BUSBAR-5042 — Unexpected breaker state on probe acquisition (fail-safe: refuse) — RETIRED *(retired)*
 
 - **Severity:** actionable
 - **Since:** 1.6.0
 - **Slug:** `breaker-unexpected-state-probe`
 
-The breaker probe-acquisition path read an unexpected cell state (not Closed/Open/HalfOpen). Impossible under the atomic-sentinel invariant; busbar refuses the probe acquisition (admits nobody) rather than panic the dispatching task. Same invariant-break family as BUSBAR-5041. Warned once per process; recurrence logs at debug.
+RETIRED. The breaker probe-acquisition path read an unexpected cell state (not Closed/Open/HalfOpen). Impossible under the atomic-sentinel invariant; busbar refuses the probe acquisition (admits nobody) rather than panic the dispatching task. Same invariant-break family as BUSBAR-5041. Warned once per process; recurrence logs at debug.
 
-**What to do:** Capture the logged state value and file a bug. Probe acquisition is safely refused; investigate for memory corruption if it persists.
+**What to do:** Nothing emits this code. The one breaker keeps its cell state behind a lock and answers an unreachable encoding silently, with the same fail-safe result.
 
 <a id="breaker-unexpected-state-read"></a>
-### BUSBAR-5043 — Unexpected breaker state on state read (reporting Closed)
+### BUSBAR-5043 — Unexpected breaker state on state read (reporting Closed) — RETIRED *(retired)*
 
 - **Severity:** actionable
 - **Since:** 1.6.0
 - **Slug:** `breaker-unexpected-state-read`
 
-A breaker cell state read (a total, side-effect-free projection) found an unexpected encoding. Impossible under the atomic-sentinel invariant; busbar reports the benign Closed default rather than panic, keeping the read total for any encoding. Same family as BUSBAR-5041. Warned once per process; recurrence logs at debug.
+RETIRED. A breaker cell state read (a total, side-effect-free projection) found an unexpected encoding. Impossible under the atomic-sentinel invariant; busbar reports the benign Closed default rather than panic, keeping the read total for any encoding. Same family as BUSBAR-5041. Warned once per process; recurrence logs at debug.
 
-**What to do:** Capture the logged state value and file a bug — this read should never see an unexpected state. The projection is safe; investigate for memory corruption if it persists.
+**What to do:** Nothing emits this code. The one breaker keeps its cell state behind a lock and answers an unreachable encoding silently, with the same fail-safe result.
 
 <a id="breaker-unexpected-state-record-failure"></a>
-### BUSBAR-5044 — Unexpected breaker state in record_failure (no-op)
+### BUSBAR-5044 — Unexpected breaker state in record_failure (no-op) — RETIRED *(retired)*
 
 - **Severity:** actionable
 - **Since:** 1.6.0
 - **Slug:** `breaker-unexpected-state-record-failure`
 
-The breaker failure-recording path read an unexpected cell state (not Closed/Open/HalfOpen). Impossible under the atomic-sentinel invariant; busbar treats it as a no-op (like the already-Open case) rather than panic the task. Same family as BUSBAR-5041. Warned once per process; recurrence logs at debug.
+RETIRED. The breaker failure-recording path read an unexpected cell state (not Closed/Open/HalfOpen). Impossible under the atomic-sentinel invariant; busbar treats it as a no-op (like the already-Open case) rather than panic the task. Same family as BUSBAR-5041. Warned once per process; recurrence logs at debug.
 
-**What to do:** Capture the logged state value and file a bug — a breaker cell should never hold an unexpected state. The failure record is safely dropped; investigate for memory corruption if it persists.
+**What to do:** Nothing emits this code. The one breaker keeps its cell state behind a lock and answers an unreachable encoding silently, with the same fail-safe result.
 
 <a id="metadata-protection-disabled"></a>
 ### BUSBAR-5045 — Cloud-metadata SSRF protection DISABLED (allow_all_metadata is set)

@@ -19,9 +19,14 @@ use busbar_substrate_values::billing::Billing;
 use busbar_substrate_values::ir::facts::IrFacts;
 use busbar_substrate_values::ir::handle::sealed::Sealed;
 use busbar_substrate_values::ir::handle::IrHandle;
-use busbar_substrate_values::wire::{EgressWire, TranslatedResponse};
+use busbar_substrate_values::wire::{EgressWire, SlabBytes, TranslatedResponse};
 use bytes::Bytes;
 use serde_json::Value;
+
+/// A leaf dialect writer's request body as the contract's byte slab the handle hands the engine.
+fn slab(body: Bytes) -> SlabBytes {
+    SlabBytes::from(&body[..])
+}
 
 // ─────────────────────────────── embeddings ───────────────────────────────
 pub struct EmbeddingsReqHandle(pub EmbeddingsReq);
@@ -48,16 +53,19 @@ impl IrHandle for EmbeddingsReqHandle {
             Ok(v) => EgressWire::Json(v),
             Err(_) => {
                 self.0.model = model.to_string();
-                EgressWire::Bytes(super::leaf_codec::embeddings_write_request(
+                EgressWire::Bytes(slab(super::leaf_codec::embeddings_write_request(
                     egress_proto,
                     &self.0,
-                ))
+                )))
             }
         }
     }
-    fn write_egress_request_bytes(&mut self, egress_proto: &str, model: &str) -> Bytes {
+    fn write_egress_request_bytes(&mut self, egress_proto: &str, model: &str) -> SlabBytes {
         self.0.model = model.to_string();
-        super::leaf_codec::embeddings_write_request(egress_proto, &self.0)
+        slab(super::leaf_codec::embeddings_write_request(
+            egress_proto,
+            &self.0,
+        ))
     }
 }
 
@@ -118,16 +126,19 @@ impl IrHandle for ImageReqHandle {
             Ok(v) => EgressWire::Json(v),
             Err(_) => {
                 self.0.model = model.to_string();
-                EgressWire::Bytes(super::leaf_codec::image_write_request(
+                EgressWire::Bytes(slab(super::leaf_codec::image_write_request(
                     egress_proto,
                     &self.0,
-                ))
+                )))
             }
         }
     }
-    fn write_egress_request_bytes(&mut self, egress_proto: &str, model: &str) -> Bytes {
+    fn write_egress_request_bytes(&mut self, egress_proto: &str, model: &str) -> SlabBytes {
         self.0.model = model.to_string();
-        super::leaf_codec::image_write_request(egress_proto, &self.0)
+        slab(super::leaf_codec::image_write_request(
+            egress_proto,
+            &self.0,
+        ))
     }
 }
 
@@ -188,16 +199,19 @@ impl IrHandle for RerankReqHandle {
             Ok(v) => EgressWire::Json(v),
             Err(_) => {
                 self.0.model = model.to_string();
-                EgressWire::Bytes(super::leaf_codec::rerank_write_request(
+                EgressWire::Bytes(slab(super::leaf_codec::rerank_write_request(
                     egress_proto,
                     &self.0,
-                ))
+                )))
             }
         }
     }
-    fn write_egress_request_bytes(&mut self, egress_proto: &str, model: &str) -> Bytes {
+    fn write_egress_request_bytes(&mut self, egress_proto: &str, model: &str) -> SlabBytes {
         self.0.model = model.to_string();
-        super::leaf_codec::rerank_write_request(egress_proto, &self.0)
+        slab(super::leaf_codec::rerank_write_request(
+            egress_proto,
+            &self.0,
+        ))
     }
 }
 
@@ -258,16 +272,19 @@ impl IrHandle for ModerationReqHandle {
             Ok(v) => EgressWire::Json(v),
             Err(_) => {
                 self.0.model = model.to_string();
-                EgressWire::Bytes(super::leaf_codec::moderation_write_request(
+                EgressWire::Bytes(slab(super::leaf_codec::moderation_write_request(
                     egress_proto,
                     &self.0,
-                ))
+                )))
             }
         }
     }
-    fn write_egress_request_bytes(&mut self, egress_proto: &str, model: &str) -> Bytes {
+    fn write_egress_request_bytes(&mut self, egress_proto: &str, model: &str) -> SlabBytes {
         self.0.model = model.to_string();
-        super::leaf_codec::moderation_write_request(egress_proto, &self.0)
+        slab(super::leaf_codec::moderation_write_request(
+            egress_proto,
+            &self.0,
+        ))
     }
 }
 
@@ -328,16 +345,19 @@ impl IrHandle for TranscriptionReqHandle {
             Ok(v) => EgressWire::Json(v),
             Err(_) => {
                 self.0.model = model.to_string();
-                EgressWire::Bytes(super::leaf_codec::transcription_write_request(
+                EgressWire::Bytes(slab(super::leaf_codec::transcription_write_request(
                     egress_proto,
                     &self.0,
-                ))
+                )))
             }
         }
     }
-    fn write_egress_request_bytes(&mut self, egress_proto: &str, model: &str) -> Bytes {
+    fn write_egress_request_bytes(&mut self, egress_proto: &str, model: &str) -> SlabBytes {
         self.0.model = model.to_string();
-        super::leaf_codec::transcription_write_request(egress_proto, &self.0)
+        slab(super::leaf_codec::transcription_write_request(
+            egress_proto,
+            &self.0,
+        ))
     }
 }
 
@@ -403,16 +423,19 @@ impl IrHandle for SpeechReqHandle {
             Ok(v) => EgressWire::Json(v),
             Err(_) => {
                 self.0.model = model.to_string();
-                EgressWire::Bytes(super::leaf_codec::speech_write_request(
+                EgressWire::Bytes(slab(super::leaf_codec::speech_write_request(
                     egress_proto,
                     &self.0,
-                ))
+                )))
             }
         }
     }
-    fn write_egress_request_bytes(&mut self, egress_proto: &str, model: &str) -> Bytes {
+    fn write_egress_request_bytes(&mut self, egress_proto: &str, model: &str) -> SlabBytes {
         self.0.model = model.to_string();
-        super::leaf_codec::speech_write_request(egress_proto, &self.0)
+        slab(super::leaf_codec::speech_write_request(
+            egress_proto,
+            &self.0,
+        ))
     }
 }
 

@@ -334,7 +334,7 @@ fn test_stateful_plane_ephemeral_store_warn_fires_only_for_ram_plus_stateful() {
         .expect("RAM + the first stateful plane → sharper warn fires");
     assert!(
         w.contains("in-flight tasks will break")
-            && w.contains("sqlite/postgres")
+            && w.contains(frozen_str("durable_store_advice").as_str())
             && w.contains("NOT survive a restart"),
         "the warn must name the CONSEQUENCE and the durable-store fix; got: {w}"
     );
@@ -709,7 +709,7 @@ fn gov_with_store(store: &str) -> crate::config::StoreCfg {
 fn store_plugin_with_plugins_disabled_is_boot_error_naming_the_flag() {
     let dir = tmp_plugin_dir("disabled-store");
     let err = crate::plugins_preflight(
-        Some(&gov_with_store("valkey")),
+        Some(&gov_with_store("durable-kv")),
         None,
         &Default::default(),
         &Default::default(),
@@ -718,10 +718,10 @@ fn store_plugin_with_plugins_disabled_is_boot_error_naming_the_flag() {
     )
     .unwrap_err();
     assert!(err.contains("plugins.enabled"), "names the flag: {err}");
-    assert!(err.contains("valkey"), "names the store: {err}");
+    assert!(err.contains("durable-kv"), "names the store: {err}");
     // The ABSENT-block default behaves identically.
     let err = crate::plugins_preflight(
-        Some(&gov_with_store("valkey")),
+        Some(&gov_with_store("durable-kv")),
         None,
         &Default::default(),
         &Default::default(),
@@ -935,14 +935,14 @@ fn the_built_in_ranking_strategies_are_aliases_of_one_linked_row_of_the_hook_axi
 fn configured_store_with_untrusted_plugin_fails_boot_with_naming_error() {
     let dir = tmp_plugin_dir("untrusted-store");
     let tarball = unsigned_tarball(
-        plugin_manifest("busbar-store-sqlite", "sqlite", "busbar"),
+        plugin_manifest("busbar-store-durable", "durable", "busbar"),
         b"unsigned lib bytes",
     );
-    std::fs::write(dir.join("sqlite.tar.gz"), tarball).unwrap();
+    std::fs::write(dir.join("durable.tar.gz"), tarball).unwrap();
 
     // STRICT default trust: the referenced store plugin is skipped -> preflight fails, naming it.
     let err = crate::plugins_preflight(
-        Some(&gov_with_store("sqlite")),
+        Some(&gov_with_store("durable")),
         None,
         &Default::default(),
         &Default::default(),
@@ -951,7 +951,7 @@ fn configured_store_with_untrusted_plugin_fails_boot_with_naming_error() {
     )
     .unwrap_err();
     assert!(
-        err.contains("busbar-store-sqlite") || err.contains("'sqlite'"),
+        err.contains("busbar-store-durable") || err.contains("'durable'"),
         "names the plugin: {err}"
     );
     assert!(
@@ -963,7 +963,7 @@ fn configured_store_with_untrusted_plugin_fails_boot_with_naming_error() {
     let mut cfg = plugins_cfg(&dir, true);
     cfg.trust.allow_unsigned = true;
     let reg = crate::plugins_preflight(
-        Some(&gov_with_store("sqlite")),
+        Some(&gov_with_store("durable")),
         None,
         &Default::default(),
         &Default::default(),
@@ -971,13 +971,13 @@ fn configured_store_with_untrusted_plugin_fails_boot_with_naming_error() {
         &Default::default(),
     )
     .expect("allow_unsigned permits the unsigned store plugin at boot");
-    assert!(reg.resolve("sqlite").is_some(), "alias resolves");
+    assert!(reg.resolve("durable").is_some(), "alias resolves");
     assert!(
-        reg.resolve("busbar-store-sqlite").is_some(),
+        reg.resolve("busbar-store-durable").is_some(),
         "canonical name resolves"
     );
     let reg2 = crate::plugins_preflight(
-        Some(&gov_with_store("busbar-store-sqlite")),
+        Some(&gov_with_store("busbar-store-durable")),
         None,
         &Default::default(),
         &Default::default(),
@@ -985,7 +985,7 @@ fn configured_store_with_untrusted_plugin_fails_boot_with_naming_error() {
         &Default::default(),
     )
     .expect("the canonical name is equally valid as governance.store");
-    assert!(reg2.resolve("busbar-store-sqlite").is_some());
+    assert!(reg2.resolve("busbar-store-durable").is_some());
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -1054,17 +1054,17 @@ fn invalid_manifest_in_enabled_dir_fails_boot() {
 }
 
 /// CONFLICT (hard requirement 3): two loadable plugins claiming the same alias abort boot naming
-/// BOTH — "you can't use valkey and a third-party valkey".
+/// BOTH — "you can't use kv and a third-party kv".
 #[test]
 fn alias_conflict_fails_boot_naming_both() {
     let dir = tmp_plugin_dir("conflict");
     let mut cfg = plugins_cfg(&dir, true);
     cfg.trust.allow_unsigned = true;
     let a = unsigned_tarball(
-        plugin_manifest("busbar-store-valkey-plugin", "valkey", "busbar"),
+        plugin_manifest("busbar-store-kv-plugin", "kv", "busbar"),
         b"a",
     );
-    let b = unsigned_tarball(plugin_manifest("acme-store-valkey", "valkey", "acme"), b"b");
+    let b = unsigned_tarball(plugin_manifest("acme-store-kv", "kv", "acme"), b"b");
     std::fs::write(dir.join("a.tar.gz"), a).unwrap();
     std::fs::write(dir.join("b.tar.gz"), b).unwrap();
     let err = crate::plugins_preflight(
@@ -1077,7 +1077,7 @@ fn alias_conflict_fails_boot_naming_both() {
     )
     .unwrap_err();
     assert!(
-        err.contains("busbar-store-valkey-plugin") && err.contains("acme-store-valkey"),
+        err.contains("busbar-store-kv-plugin") && err.contains("acme-store-kv"),
         "names both plugins: {err}"
     );
     assert!(err.contains("alias conflict"), "got {err}");
@@ -1456,7 +1456,7 @@ fn admin_token_secret_ref_re_resolves_on_apply() {
     let gov = prior.governance.clone().expect("governance");
     assert_eq!(
         gov.admin_token_hash().as_deref(),
-        Some(crate::sigv4::sha256_hex(b"tok-v1").as_str()),
+        Some(busbar_api::sha256_hex(b"tok-v1").as_str()),
         "boot accepts the resolved token"
     );
 
@@ -1471,12 +1471,12 @@ fn admin_token_secret_ref_re_resolves_on_apply() {
     );
     assert_eq!(
         gov.admin_token_hash().as_deref(),
-        Some(crate::sigv4::sha256_hex(b"tok-v2").as_str()),
+        Some(busbar_api::sha256_hex(b"tok-v2").as_str()),
         "the rotated admin token is the one now accepted"
     );
     assert_ne!(
         gov.admin_token_hash().as_deref(),
-        Some(crate::sigv4::sha256_hex(b"tok-v1").as_str()),
+        Some(busbar_api::sha256_hex(b"tok-v1").as_str()),
         "the pre-rotation admin token is no longer accepted"
     );
     let _ = std::fs::remove_dir_all(&dir);
@@ -1593,11 +1593,11 @@ fn blank_admin_token_refuses_to_start() {
     let gov = app.governance.clone().expect("governance");
     assert_eq!(
         gov.admin_token_hash().as_deref(),
-        Some(crate::sigv4::sha256_hex(b"real-token").as_str())
+        Some(busbar_api::sha256_hex(b"real-token").as_str())
     );
     assert_ne!(
         gov.admin_token_hash().as_deref(),
-        Some(crate::sigv4::sha256_hex(b"").as_str()),
+        Some(busbar_api::sha256_hex(b"").as_str()),
         "the blank-string digest must never be a live admin credential"
     );
     let _ = std::fs::remove_dir_all(&dir);
@@ -1690,7 +1690,7 @@ fn a_rejected_config_leaves_no_limits_behind() {
         busbar_kernel::proxy::max_translate_body_bytes(),
         ILLEGAL,
         "the REJECTED config's limits are installed process-wide — an invalid apply changed the \
-         live SigV4 and cross-protocol translate body caps"
+         live signed-ingress and cross-protocol translate body caps"
     );
 }
 
@@ -1884,7 +1884,6 @@ const BOOT_LEGACY_14X_CONFIG: &str = r#"
 listen: "0.0.0.0:8080"
 governance:
   enabled: true
-  store: sqlite
   db_path: "/var/lib/busbar/governance.db"
   admin_token: '${PATH}'
 providers:
@@ -1985,7 +1984,7 @@ fn migrate_config_then_load_config_from_disk_boots_the_real_migrated_file() {
     assert_eq!(loaded.deploy.listen, "0.0.0.0:8080");
     assert_eq!(
         loaded.deploy.store.as_ref().map(|s| s.module.as_str()),
-        Some("sqlite"),
+        Some(frozen_str("legacy_backend_1_4").as_str()),
         "the migrated store module must survive the real disk-load pipeline"
     );
 
@@ -2722,4 +2721,63 @@ fn the_request_panic_boundary_wraps_every_served_router() {
         stray_routers.is_empty(),
         "(3) production routers built outside the request-panic boundary: {stray_routers:#?}"
     );
+}
+
+/// `ir::lane_caps` answers at a kernel path (#83a SD-2): the capability resolver a lane's provider
+/// entry is folded through is reachable as `busbar_kernel::ir::lane_caps`, and it is the real one —
+/// a provider-level spelling applies, and the FIRST matching model rule overrides it.
+#[test]
+fn lane_caps_resolver_answers_at_the_kernel_ir_path() {
+    use crate::ir::lane_caps::{
+        resolve_lane_caps, MaxOutputKeyCfg, ModelCapabilities, ProviderLaneCaps,
+    };
+    use busbar_contract::ir::egress_prep::{LaneCaps, MaxOutputKey};
+    let provider = ProviderLaneCaps {
+        max_output_key: Some(MaxOutputKeyCfg::MaxCompletionTokens),
+        ..ProviderLaneCaps::default()
+    };
+    let rules = [
+        ModelCapabilities {
+            models: vec!["model-a*".to_string()],
+            native_structured_output: Some(true),
+            max_output_key: Some(MaxOutputKeyCfg::MaxTokens),
+            ..ModelCapabilities::default()
+        },
+        ModelCapabilities {
+            models: vec!["model-a-2*".to_string()],
+            native_structured_output: Some(false),
+            ..ModelCapabilities::default()
+        },
+    ];
+    assert_eq!(
+        resolve_lane_caps(ProviderLaneCaps::default(), &[], "any"),
+        LaneCaps::NONE
+    );
+    let other = resolve_lane_caps(provider, &rules, "model-b");
+    assert_eq!(other.max_output_key, MaxOutputKey::MaxCompletionTokens);
+    assert!(!other.native_structured_output);
+    let first_match = resolve_lane_caps(provider, &rules, "model-a-2-mini");
+    assert_eq!(first_match.max_output_key, MaxOutputKey::MaxTokens);
+    assert!(first_match.native_structured_output);
+}
+
+/// FROZEN CUSTOMER TEXT the kernel's tests pin (ARCHITECT RULING 2026-09-25, F-T): one value of
+/// `tests/fixtures/frozen_customer_text.yaml`, the golden input DATA that holds the store spellings and
+/// credential kind operators see, byte-for-byte as 1.5.5 shipped them — so no test source spells them.
+pub(crate) fn frozen_text(key: &str) -> serde_yaml::Value {
+    let doc: serde_yaml::Value = serde_yaml::from_str(include_str!(
+        "../../tests/fixtures/frozen_customer_text.yaml"
+    ))
+    .expect("the frozen-text fixture parses");
+    doc.get(key)
+        .cloned()
+        .unwrap_or_else(|| panic!("the frozen-text fixture has no `{key}`"))
+}
+
+/// [`frozen_text`] as a string.
+pub(crate) fn frozen_str(key: &str) -> String {
+    let v = frozen_text(key);
+    v.as_str()
+        .unwrap_or_else(|| panic!("frozen `{key}` is not a string"))
+        .to_string()
 }

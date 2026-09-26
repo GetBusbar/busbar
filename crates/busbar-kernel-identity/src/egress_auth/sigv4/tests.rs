@@ -177,3 +177,25 @@ fn sign_v4_matches_aws_published_example() {
         "5d672d79c15b13162d9279b0855cfba6789a8edb4c82c400e06b5924a6f2b5d7"
     );
 }
+
+/// The lane credential splits into access key id, secret and an optional session token that keeps
+/// every colon after the second; a credential missing either of the first two halves splits into
+/// nothing, so it is never signed with.
+#[test]
+fn split_credential_takes_the_first_two_colons_and_refuses_a_missing_half() {
+    assert_eq!(
+        split_credential("AKID:SECRET"),
+        Some(("AKID", "SECRET", None))
+    );
+    assert_eq!(
+        split_credential("AKID:SECRET:TOKEN:with:colons"),
+        Some(("AKID", "SECRET", Some("TOKEN:with:colons")))
+    );
+    assert_eq!(
+        split_credential("AKID:SECRET:"),
+        Some(("AKID", "SECRET", Some("")))
+    );
+    for refused in ["", "AKID", "AKID:", ":SECRET", "::TOKEN"] {
+        assert_eq!(split_credential(refused), None, "{refused:?}");
+    }
+}

@@ -69,13 +69,18 @@ pub use diagnostics::DIAGNOSTICS;
 pub mod linked {
     /// The WS-accept axis and the provider-composition axis.
     #[cfg(feature = "runtime")]
-    pub use crate::mount::{
-        compose_from_config as compose, install_arrivals as install_ws_arrivals,
-    };
+    pub use crate::mount::{compose_plane as compose, install_arrivals as install_ws_arrivals};
     /// The diagnostics axis.
     pub use crate::DIAGNOSTICS;
     /// The plane axis: the contract declaration, joined kernel-side to the behaviour table.
     pub use crate::{PLANE_DECLARATION, PLANE_HOOKS};
+    /// The claims axis: the pure plane the composition root's boot seal registers, and the claims it
+    /// declares.
+    pub const PLANE: busbar_plane_streaming::StreamingPlane =
+        busbar_plane_streaming::StreamingPlane::EMPTY;
+    /// The bytes that plane claims.
+    pub const CLAIMS: &[busbar_contract::grammar::Claim] =
+        <busbar_plane_streaming::StreamingPlane as busbar_contract::plane::PlaneMeta>::CLAIMS;
 }
 
 // THE T2 LIVE-SESSION RUNTIME + both topologies — behind the `runtime` cargo feature (OFF by default,
@@ -85,6 +90,11 @@ pub mod linked {
 // default (HARD RULE 4), not because the code is incomplete.
 #[cfg(feature = "runtime")]
 pub mod runtime;
+
+/// THE NODE'S OPEN-CALL TABLE — the client-served tool calls this node's sessions are waiting on,
+/// and the port the session runtime reaches it through; composed by this plane's own `compose` step.
+#[cfg(feature = "runtime")]
+pub mod governed;
 #[cfg(feature = "runtime")]
 pub mod topology;
 
@@ -316,6 +326,7 @@ pub const PLANE_DECLARATION: busbar_contract::plane::PlaneDeclaration =
         // The fee unit this plane counts: one per opened session (`SessionAccount::open`). A turn never
         // passes per-request admission, so `streams.fees.per_request` would charge nothing — refused.
         fee_units: &[PER_SESSION],
+        metric_families: &[],
     };
 
 /// THE PLANE'S BEHAVIOUR — every hook the kernel runs for it, handed over BESIDE
@@ -404,6 +415,7 @@ pub static DECLS: busbar_kernel::proto::ProtocolDecl = busbar_kernel::proto::Pro
     // header set once per lane (the plain-Bearer discipline the LLM plane's OpenAI dialect declares).
     egress_auth_headers: Some(voice_egress_auth_headers),
     egress_auth_lane_constant: true,
+    egress_scheme: None,
     stream_usage_requires_opt_in: false,
     // Promoted writer facts: this plane declares no cross-dialect codec and has no writer, so every
     // promoted fact is the `ProtocolWriter` trait DEFAULT — the same values the codec-less MCP `DECL`

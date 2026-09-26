@@ -134,7 +134,7 @@ pub struct HealthState {
     /// THE ONE BREAKER (item 142): every cell's state machine, every lane's lifetime request budget
     /// (`max_requests`, declared once through `set_budget`), and the two `limits.*` knobs
     /// (`with_limits`). The cells above are handles onto its cells, never copies of them.
-    pub(crate) unit: BreakerUnit,
+    pub(crate) unit: Arc<BreakerUnit>,
     /// Memoized pool-name → shard-index map. `swrr_shard` ran FNV-1a over the pool NAME on EVERY
     /// selection (the hot dispatch path); the index is a pure function of the (small, stable) set of
     /// pool names, so cache it on first touch and reuse thereafter. An append-only `Vec` scanned by
@@ -223,8 +223,9 @@ impl HealthState {
         hard_down_cooldown_secs: u64,
         max_honored_retry_after_secs: u64,
     ) -> Self {
-        let unit =
-            BreakerUnit::new().with_limits(hard_down_cooldown_secs, max_honored_retry_after_secs);
+        let unit = Arc::new(
+            BreakerUnit::new().with_limits(hard_down_cooldown_secs, max_honored_retry_after_secs),
+        );
         let lane_states: Vec<Arc<LaneState>> = lanes
             .into_iter()
             .enumerate()
@@ -361,11 +362,16 @@ impl HealthState {
         // streak) rather than blindly assuming Closed — so a pool whose first request arrives while
         // the lane is mid-cooldown respects it. An inherited HalfOpen restores as Open (the probe it
         // names belongs to the cell that won it; see `CellSnapshot`).
-        let fsm = self.unit.cell(pool, lane_destination(lane));
-        fsm.restore(CellSnapshot {
-            err: 0,
-            ..self.lanes[lane].cell.snapshot()
-        });
+        // Only a cell this touch creates inherits: one the root's breaker already observed into
+        // is the same cell, and its record stands.
+        let fsm = self
+            .unit
+            .cell_seeded(pool, lane_destination(lane), |fresh| {
+                fresh.restore(CellSnapshot {
+                    err: 0,
+                    ..self.lanes[lane].cell.snapshot()
+                })
+            });
         let c = Arc::new(PoolCell {
             fsm,
             swrr: SwrrStripes::new(),
@@ -544,6 +550,14 @@ pub(crate) fn breaker_cfg_to_runtime(cfg: &crate::config::BreakerCfg) -> Breaker
         // its members. The plane cells do not parse config (see `PlaneBreakers::new`).
         bench_below_trip_threshold: true,
     }
+}
+
+/// A configured pool's breaker, as the one breaker's state machine takes it: its `breaker:` block
+/// resolved, or the defaults when it declares none — the cfg the pool's own dispatch resolves.
+pub fn pool_breaker_cfg(
+    cfg: Option<&crate::config::BreakerCfg>,
+) -> busbar_kernel_breaker::cfg::BreakerCfg {
+    fsm_cfg(&cfg.map(breaker_cfg_to_runtime).unwrap_or_default())
 }
 
 // `TripMode` / `TripConfig` (+ its `Default`) moved to `busbar_kernel::store` with `BreakerCfg`

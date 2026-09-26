@@ -55,7 +55,6 @@ const MIGRATED_FILES: &[&str] = &[
     // NOT scan a plane crate's tree — a neutral crate must name no plane path (the plane-purity lint
     // enforces this); each plane crate enforces its own uncoded-diagnostic floor. So none of those
     // plugin sources are listed here.
-    "src/export/webhook.rs",
     "src/ir/mod.rs",
     "src/proto/mod.rs",
     "src/plane/approvals.rs",

@@ -282,6 +282,52 @@ impl SlabBytes {
     }
 }
 
+/// An empty slab.
+impl Default for SlabBytes {
+    fn default() -> Self {
+        Self::new(std::sync::Arc::from(&[][..]))
+    }
+}
+
+/// Take an owned buffer as a whole slab. The bytes are moved into one shared allocation (a copy
+/// into the slab's own header block), after which every clone shares them.
+impl From<Vec<u8>> for SlabBytes {
+    fn from(bytes: Vec<u8>) -> Self {
+        Self::new(std::sync::Arc::from(bytes))
+    }
+}
+
+/// Take an owned string's bytes as a whole slab (the same copy as an owned buffer).
+impl From<String> for SlabBytes {
+    fn from(text: String) -> Self {
+        Self::from(text.into_bytes())
+    }
+}
+
+/// Copy a borrowed slice into a whole slab.
+impl From<&[u8]> for SlabBytes {
+    fn from(bytes: &[u8]) -> Self {
+        Self::new(std::sync::Arc::from(bytes))
+    }
+}
+
+/// The slab reads as the byte slice it windows, so a caller hands `&slab` wherever `&[u8]` is
+/// wanted. Read-only: there is no mutable view.
+impl std::ops::Deref for SlabBytes {
+    type Target = [u8];
+    fn deref(&self) -> &[u8] {
+        self.as_slice()
+    }
+}
+
+/// The slab as a byte slice, for a host that adopts it as the owner of its own buffer type without
+/// copying the bytes.
+impl AsRef<[u8]> for SlabBytes {
+    fn as_ref(&self) -> &[u8] {
+        self.as_slice()
+    }
+}
+
 /// The one resource handle a plugin is given.
 ///
 /// DEAD-BY-DESIGN, kept only while the shipped per-call seam described in DECISIONS #41 is cut

@@ -22,10 +22,11 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 /// A single non-blocking capacity gate: `permits` slots, handed out via [`try_enter`](Self::try_enter)
 /// and returned automatically when the returned permit is dropped. `name` identifies the gate on the
 /// shared `busbar_admission_denied_total{gate="..."}` counter — pick a short, stable, non-request-derived
-/// string (a compile-time constant at every call site today, so the label space is fixed at build time).
+/// string (a compile-time constant, or an export sink's gate name fixed at boot, so the label space is
+/// fixed once the node serves).
 pub(crate) struct AdmissionGate {
     sem: Arc<Semaphore>,
-    name: &'static str,
+    name: metrics::SharedString,
 }
 
 impl AdmissionGate {
@@ -33,10 +34,10 @@ impl AdmissionGate {
     /// store's lane semaphores (`Semaphore::new` accepts it directly — it is not a magic infinity,
     /// just the largest permit count `Semaphore` supports) — a gate built with it will, for any
     /// realistic request volume, never observe `try_enter` return `None`.
-    pub(crate) fn new(permits: usize, name: &'static str) -> Self {
+    pub(crate) fn new(permits: usize, name: impl Into<metrics::SharedString>) -> Self {
         Self {
             sem: Arc::new(Semaphore::new(permits)),
-            name,
+            name: name.into(),
         }
     }
 
@@ -58,7 +59,7 @@ impl AdmissionGate {
         match self.sem.clone().try_acquire_owned() {
             Ok(permit) => Some(permit),
             Err(_) => {
-                metrics::counter!(crate::metrics::ADMISSION_DENIED_TOTAL, "gate" => self.name)
+                metrics::counter!(crate::metrics::ADMISSION_DENIED_TOTAL, "gate" => self.name.clone())
                     .increment(1);
                 None
             }

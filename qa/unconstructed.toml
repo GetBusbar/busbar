@@ -149,16 +149,10 @@ switch    = "STRIKE THIS ROW in the same commit that gives the composition root 
 # mod.rs). The lane spends, refunds and reads that same counter — the unit's own, shared by handle —
 # so the cap is counted once, where it always was, and never beside it.
 
-# BREAKER — the operator's error map never reaches the breaker either.
-[[capability]]
-id        = "breaker-error-map"
-built     = "crates/busbar-kernel-breaker/src/lib.rs"
-symbol    = "set_error_map"
-construct = [".set_error_map("]
-scope     = ["crates"]
-why       = "The per-destination error map that lets an operator classify an upstream's failures is built and tested and installed by nothing, so every destination is judged by the compiled-in default classification whatever the deployment declares."
-unshipped = true
-switch    = "STRIKE THIS ROW in the commit that feeds the operator's declared error_maps into the root breaker at construction time, alongside the budget row above — they are the same seam and should land together."
+# BREAKER — `breaker-error-map` STRUCK 2026-09-25 (item 142 residue, #47, Q67 one classifier):
+# `BreakerUnit::set_error_map` and `BreakerUnit::classify` are DELETED. They were a second
+# classifier nothing read; the operator's `error_map` is read once, by the plane's own classifier,
+# and the one breaker takes that classifier's verdict.
 
 # BREAKER — `breaker-with-limits` STRUCK 2026-09-25 (item 142, the breaker fold): `HealthState` builds
 # its one breaker with `BreakerUnit::new().with_limits(hard_down_cooldown_secs,
@@ -209,16 +203,10 @@ switch    = "STRIKE THIS ROW in the commit that calls journal_checkpoint on a re
 # production writer and are DELETED. Model access stays the key/group pool ACL at the scope step; a
 # deny-list, if the owner wants one, is a new flagged config surface on the folded streaming plane.
 
-# NO NODE CAN LOAD A PLANE PLUGIN.
-[[capability]]
-id        = "plane-plugin-open"
-built     = "crates/plugin-loader/src/registry.rs"
-symbol    = "open_plane"
-construct = [".open_plane("]
-scope     = ["crates"]
-why       = "Of the registry's open_* kinds, open_auth/open_hook/open_secret/open_store all have production callers and open_plane has none, so no node can load a kind: plane plugin — the 1.6.0 plane ABI has a loader and no caller."
-unshipped = true
-switch    = "STRIKE THIS ROW in the commit that calls open_plane from the composition root's plugin wiring. Already described at docs/design/BUSBAR-1.6.0.md:1627 — this row is that sentence made machine-readable."
+# PLANE PLUGINS — `plane-plugin-open` STRUCK 2026-09-25 (UC-GATE): 45a4bea96 (K4 keystone, item 40)
+# wired it. `main.rs` → `register_planes` → `root::linked::dropped_planes_of` →
+# `PluginRegistry::open_planes`, which opens every loadable `kind: plane` plugin through `open_plane`
+# (`crates/plugin-loader/src/registry.rs`), so a node loads a dropped-in plane at boot.
 
 # MID-LOG CORRUPTION — row `wal-corruption-verdict` STRUCK 2026-09-24 by owner ruling:
 # `recover_and_truncate` now branches on the scan's verdict (`.was_torn(`): a torn tail is cut
@@ -235,16 +223,10 @@ switch    = "STRIKE THIS ROW in the commit that calls open_plane from the compos
 # the same `truncates()` policy as `busbar_kernel::recovery::TailVerdict` — only a non-Corrupt
 # verdict is cut without a copy.
 
-# THE ROOT BREAKER OBSERVES NOTHING FOR ANY POOL.
-[[capability]]
-id        = "breaker-pool-observation"
-built     = "crates/busbar/src/root/adapters.rs"
-symbol    = "with_pool"
-construct = [".with_pool("]
-scope     = ["crates"]
-why       = "The sole production BreakerPolicy is BreakerPolicy::new() with no pool and no fallback cell, and observe() bails on `let Some(cfg) = self.policy.for_pool(pool) else { return false }` — so the root breaker records nothing for every pool that exists."
-unshipped = true
-switch    = "STRIKE THIS ROW in the commit that builds the root's BreakerPolicy from configured pools. It belongs with the three breaker rows above — they are one seam and should land together."
+# `breaker-pool-observation` STRUCK 2026-09-25 (item 142 residue): the root's BreakerPolicy is built
+# `BreakerPolicy::from_pools` from the configured `pools:` (every pool `.with_pool` under its resolved
+# `breaker:` block), and the root's BreakerAdapter is bound `over_kernel` to the kernel lane store's
+# own BreakerUnit — one cell set on the node, not a second one beside it.
 
 # THE ABI MINOR WAS BUMPED 19->20 FOR A CAPABILITY WITH NO PRODUCER AND NO CONSUMER.
 # `plugin-abi-keyed-units` STRUCK 2026-09-24 by owner ruling: the host decodes keyed units on the

@@ -1530,7 +1530,7 @@ struct CrateInfo {
     instance: Option<String>,
     /// THE KEYS A TRANSPORT CRATE DECLARES (#50): every `const KEY: &'static str = "…";` in an
     /// `impl TransportMeta for …` under its `src/`. One crate may carry several wires — `http`
-    /// holds `grpc` and `sse` since the dep-wall §6.5 fold — and each declared key is transport
+    /// holds `grpc` and `sse`, which it absorbed as modules — and each declared key is transport
     /// vocabulary exactly as a crate named for it would be. Empty for every other kind.
     declared_keys: Vec<String>,
     /// THE SHIPPED DEPENDENCY DECLARATIONS — `[dependencies]`, `[build-dependencies]` and both of
@@ -4721,6 +4721,37 @@ fn rule_control(cx: &Ctx, crates: &[CrateInfo]) -> Row {
 /// an entry HERE, in a commit that says why.
 const WIRE_PERMITTED_KINDS: &[&str] = &["root", "transport"];
 
+/// THE ONE TEST EDGE A NON-WIRE CRATE MAY TAKE ON A WIRE: the loader's both-ways witness of the
+/// transport kind (ARCHITECT (K8 residue): both-ways fixture dev-edge, #2 (4)/(5), K5 precedent; #3
+/// makes transport a swappable kind like any other). A `plugin-tooling` crate's `[dev-dependencies]`
+/// edge to EXACTLY the crate its own `[package.metadata.busbar.both-ways]` names for kind `transport`
+/// is the fixture both doors of that witness load — the linked rlib and the dropped-in cdylib — and
+/// not a plugin choosing its wire. Nothing else is excused: a NORMAL edge, a dev-edge to any other
+/// wire, or a crate of any other kind is the finding it always was.
+const WIRE_FIXTURE_KIND: &str = "plugin-tooling";
+
+/// The crate a manifest's `[package.metadata.busbar.both-ways]` table names for kind `transport`,
+/// read line by line exactly as the loader's own `build.rs` reads that table.
+fn both_ways_transport_fixture(manifest: &str) -> Option<String> {
+    let mut in_table = false;
+    for line in manifest.lines() {
+        let code = line.split('#').next().unwrap_or("").trim();
+        if code.starts_with('[') {
+            in_table = code == "[package.metadata.busbar.both-ways]";
+            continue;
+        }
+        if !in_table {
+            continue;
+        }
+        if let Some((kind, krate)) = code.split_once('=') {
+            if kind.trim().trim_matches('"') == "transport" {
+                return Some(krate.trim().trim_matches('"').to_string());
+            }
+        }
+    }
+    None
+}
+
 /// The registration symbol a wire is composed under: `busbar-transport-http` -> `HttpTransport`.
 fn wire_symbol(instance: &str) -> String {
     let mut out = String::new();
@@ -4785,6 +4816,31 @@ fn wires_named_in(rel: &str, text: &str, needles: &[(String, String, String)]) -
     entry
 }
 
+/// THE MANIFEST TABLE A ROOT LINKS ITS PLUGINS THROUGH, AS DATA.
+///
+/// A root whose build script turns `<feature> = "<crate>"` rows into the tables it folds names the
+/// crates it links HERE and nowhere in source — so a wire linked by a row is registered by that
+/// row, and the manifest is the one place however many rows it carries.
+const LINKED_TABLE: &str = "[package.metadata.busbar.linked]";
+
+/// The crate each `LINKED_TABLE` row names, in file order. One row per line, the value optionally
+/// quoted — the same reading the root's build script gives the table.
+fn linked_crates(manifest: &str) -> Vec<String> {
+    let mut in_table = false;
+    let mut out = Vec::new();
+    for line in manifest.lines() {
+        let code = line.split('#').next().unwrap_or("").trim();
+        if code.starts_with('[') {
+            in_table = code == LINKED_TABLE;
+            continue;
+        }
+        if let (true, Some((_, value))) = (in_table, code.split_once('=')) {
+            out.push(value.trim().trim_matches('"').to_string());
+        }
+    }
+    out
+}
+
 fn rule_wires(cx: &Ctx, crates: &[CrateInfo]) -> Row {
     let wires: Vec<&CrateInfo> = crates
         .iter()
@@ -4814,7 +4870,17 @@ fn rule_wires(cx: &Ctx, crates: &[CrateInfo]) -> Row {
         // binary picks a wire is a plugin whose author has already decided which wire it is for —
         // the shape reaches production one refactor later, and the row that would have said so was
         // reading one of the two dependency tables.
-        for dep in c.deps.iter().chain(c.dev_deps.iter()) {
+        // The both-ways witness's fixture, when this crate is plugin tooling that declares one.
+        let fixture = (kind == WIRE_FIXTURE_KIND)
+            .then(|| cx.read(&c.manifest).ok())
+            .flatten()
+            .and_then(|m| both_ways_transport_fixture(&m));
+        let witness = |dep: &crate::manifest::DepDecl| fixture.as_deref() == Some(dep.pkg.as_str());
+        for dep in c
+            .deps
+            .iter()
+            .chain(c.dev_deps.iter().filter(|d| !witness(d)))
+        {
             if by_name.get(dep.pkg.as_str()).and_then(|t| t.kind) == Some("transport") {
                 let dep = dep.cite();
                 offenders.push(format!(
@@ -4883,6 +4949,22 @@ fn rule_wires(cx: &Ctx, crates: &[CrateInfo]) -> Row {
             sites.entry(name.clone()).or_default().insert(rel.clone());
         }
     }
+    // …AND THE ROOT'S MANIFEST ROW. A root that links a wire as data registers it in its
+    // `LINKED_TABLE` row, which is one place: the row and a source line naming the same wire are
+    // two registries, exactly as two source files are.
+    for c in crates.iter().filter(|c| c.kind == Some("root")) {
+        let Ok(text) = cx.read(&c.manifest) else {
+            continue;
+        };
+        for krate in linked_crates(&text) {
+            if wires.iter().any(|w| w.name == krate) {
+                sites
+                    .entry(krate)
+                    .or_default()
+                    .insert(format!("{} {LINKED_TABLE}", c.manifest));
+            }
+        }
+    }
     for w in &wires {
         let here = sites.get(&w.name).cloned().unwrap_or_default();
         // EXACTLY ONE HAS TWO SIDES. A wire composed nowhere is a member of the tree — built,
@@ -4891,10 +4973,11 @@ fn rule_wires(cx: &Ctx, crates: &[CrateInfo]) -> Row {
         // predicate was `> 1`, and it printed `<wire>=unregistered` in its own PASS detail.
         if here.is_empty() {
             offenders.push(format!(
-                "unregistered-wire\t{}\tthe wire {} is composed in NO place: no shipped source \
-                 outside a transport names `{}` through its own crate path. A wire is registered \
-                 in exactly ONE place — the transport registry the root composes — and a wire in \
-                 none is a crate the tree ships and nothing can reach",
+                "unregistered-wire\t{}\tthe wire {} is composed in NO place: no root's \
+                 {LINKED_TABLE} row names it and no shipped source outside a transport names `{}` \
+                 through its own crate path. A wire is registered in exactly ONE place — the \
+                 transport registry the root composes — and a wire in none is a crate the tree \
+                 ships and nothing can reach",
                 w.dir,
                 w.name,
                 wire_symbol(&w.remainder.join("-"))
@@ -7646,6 +7729,68 @@ impl Gate for KindIsolationGate {
             &["wire-dependency", "busbar-store-memory", "dev-dependencies"],
         ));
 
+        // THE BOTH-WAYS WITNESS'S FIXTURE (ARCHITECT (K8 residue)). The loader's `[dev-dependencies]`
+        // edge to the crate its own `[package.metadata.busbar.both-ways]` names for `transport` is
+        // the fixture both doors load, and is not a plugin choosing a wire…
+        let loader = |deps: &str, dev: &str, fixture: &str| {
+            let mut ov = Overlay::new();
+            ov.set(
+                "crates/plugin-loader/Cargo.toml",
+                format!(
+                    "[package]\nname = \"busbar-plugin-loader\"\nversion = \"0.0.0\"\n\n\
+                     [dependencies]\nbusbar-contract = {{ path = \"../busbar-contract\" }}\n{deps}\n\
+                     [dev-dependencies]\n{dev}\n\
+                     [package.metadata.busbar.both-ways]\ntransport = \"{fixture}\"\n"
+                ),
+            );
+            ov
+        };
+        report.push(prove_rows_green(
+            cx,
+            subject,
+            "the loader's dev-edge to its declared transport both-ways fixture is the witness, not a wire choice",
+            &[ROW_WIRES],
+            loader(
+                "",
+                "busbar-transport-tcp = { path = \"../busbar-transport-tcp\" }",
+                "busbar-transport-tcp",
+            ),
+        ));
+        // …but the SAME crate as a NORMAL dependency is a wire the loader links into the product…
+        report.push(prove_rows_red(
+            cx,
+            subject,
+            "plugin tooling taking a NORMAL edge on its declared fixture wire",
+            &[ROW_WIRES],
+            loader(
+                "busbar-transport-tcp = { path = \"../busbar-transport-tcp\" }",
+                "",
+                "busbar-transport-tcp",
+            ),
+            &[
+                "wire-dependency",
+                "busbar-plugin-loader",
+                "busbar-transport-tcp [dependencies]",
+            ],
+        ));
+        // …and a dev-edge to a wire the table does NOT name is a wire chosen, not a fixture.
+        report.push(prove_rows_red(
+            cx,
+            subject,
+            "plugin tooling's dev-edge to a wire its both-ways table does not name",
+            &[ROW_WIRES],
+            loader(
+                "",
+                "busbar-transport-stdio = { path = \"../busbar-transport-stdio\" }",
+                "busbar-transport-tcp",
+            ),
+            &[
+                "wire-dependency",
+                "busbar-plugin-loader",
+                "busbar-transport-stdio [dev-dependencies]",
+            ],
+        ));
+
         // A SECOND REGISTRY. Two places compose the same wire, and nothing says which one ran.
         let mut ov = Overlay::new();
         ov.set(
@@ -7669,6 +7814,27 @@ impl Gate for KindIsolationGate {
         let name = "a wire composed in no place at all";
         let naming = ["unregistered-wire", "busbar-transport-stdio"];
         match wire_unregistered(cx, "stdio") {
+            Ok(ov) => report.push(prove_rows_red(cx, self, name, &[ROW_WIRES], ov, &naming)),
+            Err(why) => report.push(unplantable(name, &[ROW_WIRES], &naming, why)),
+        }
+
+        // THE ROOT'S MANIFEST ROW IS THE ONE REGISTRATION. A root that links a wire as data — a
+        // `[package.metadata.busbar.linked]` row its build script folds — names it in no source
+        // file, and the row is the one place. GREEN: the row alone registers the wire. RED: the
+        // same row beside a source file composing the wire is two registries, the row one of them.
+        let name = "a wire linked by the root's manifest row alone is registered once";
+        match wire_linked_by_row(cx, "stdio") {
+            Ok(ov) => report.push(prove_rows_green(cx, self, name, &[ROW_WIRES], ov)),
+            Err(why) => report.push(unplantable(name, &[ROW_WIRES], &[], why)),
+        }
+        let name = "a manifest row and a source file registering one wire are two registrations";
+        let naming = [
+            "second-registration",
+            "busbar-transport-stdio",
+            LINKED_TABLE,
+            "planted_wire_registry.rs",
+        ];
+        match wire_row_and_source(cx, "stdio") {
             Ok(ov) => report.push(prove_rows_red(cx, self, name, &[ROW_WIRES], ov, &naming)),
             Err(why) => report.push(unplantable(name, &[ROW_WIRES], &naming, why)),
         }
@@ -8310,21 +8476,89 @@ fn control_surfaces_clean(cx: &Ctx) -> Overlay {
 /// The composition root with the one line that composes `wire` taken out — the wire is then a
 /// member of the tree, built and shipped, and registered NOWHERE.
 fn wire_unregistered(cx: &Ctx, wire: &str) -> Result<Overlay, String> {
-    let root = "crates/busbar/src/root/registry.rs";
-    let text = cx.read(root)?;
+    let (source, manifest) = (wire_source_unnamed(cx, wire)?, wire_row(cx, wire, false)?);
+    if source.is_none() && manifest.is_none() {
+        return Err(format!(
+            "neither {WIRE_ROOT_SOURCE} nor a {LINKED_TABLE} row in {WIRE_ROOT_MANIFEST} registers \
+             `{wire}` to plant over"
+        ));
+    }
+    let mut ov = Overlay::new();
+    for (path, text) in source.into_iter().chain(manifest) {
+        ov.set(path, text);
+    }
+    Ok(ov)
+}
+
+/// The root source file and manifest the wire-registration plants edit.
+const WIRE_ROOT_SOURCE: &str = "crates/busbar/src/root/registry.rs";
+const WIRE_ROOT_MANIFEST: &str = "crates/busbar/Cargo.toml";
+
+/// The root source with its `use busbar_transport_<wire>::<Wire>Transport;` line taken out, or
+/// `None` when it names no such line.
+fn wire_source_unnamed(cx: &Ctx, wire: &str) -> Result<Option<(String, String)>, String> {
+    let text = cx.read(WIRE_ROOT_SOURCE)?;
     let line = format!(
         "use busbar_transport_{}::{};\n",
         wire.replace('-', "_"),
         wire_symbol(wire)
     );
-    if !text.contains(&line) {
-        return Err(format!(
-            "`{}` is not in {root} to plant over",
-            line.trim_end()
-        ));
+    Ok(text
+        .contains(&line)
+        .then(|| (WIRE_ROOT_SOURCE.to_string(), text.replacen(&line, "", 1))))
+}
+
+/// The root manifest with a `LINKED_TABLE` row for `busbar-transport-<wire>` put in (`present`) or
+/// taken out, or `None` when it already reads that way.
+fn wire_row(cx: &Ctx, wire: &str, present: bool) -> Result<Option<(String, String)>, String> {
+    let text = cx.read(WIRE_ROOT_MANIFEST)?;
+    let krate = format!("busbar-transport-{wire}");
+    if linked_crates(&text).contains(&krate) == present {
+        return Ok(None);
     }
+    let header = text
+        .find(LINKED_TABLE)
+        .ok_or_else(|| format!("{WIRE_ROOT_MANIFEST} has no {LINKED_TABLE} to plant into"))?;
+    let edited = if present {
+        let at = header + LINKED_TABLE.len();
+        format!(
+            "{}\nplanted-{wire} = \"{krate}\"{}",
+            &text[..at],
+            &text[at..]
+        )
+    } else {
+        let row = format!("= \"{krate}\"");
+        text.lines()
+            .filter(|l| !l.trim_end().ends_with(&row))
+            .map(|l| format!("{l}\n"))
+            .collect()
+    };
+    Ok(Some((WIRE_ROOT_MANIFEST.to_string(), edited)))
+}
+
+/// THE WIRE REGISTERED BY ITS MANIFEST ROW ALONE: the row is in, the root source names it nowhere.
+fn wire_linked_by_row(cx: &Ctx, wire: &str) -> Result<Overlay, String> {
     let mut ov = Overlay::new();
-    ov.set(root, text.replacen(&line, "", 1));
+    for (path, text) in wire_source_unnamed(cx, wire)?
+        .into_iter()
+        .chain(wire_row(cx, wire, true)?)
+    {
+        ov.set(path, text);
+    }
+    Ok(ov)
+}
+
+/// …AND THE SAME ROW BESIDE A SOURCE FILE THAT COMPOSES THE WIRE: two registries.
+fn wire_row_and_source(cx: &Ctx, wire: &str) -> Result<Overlay, String> {
+    let mut ov = wire_linked_by_row(cx, wire)?;
+    ov.set(
+        "crates/busbar/src/root/planted_wire_registry.rs",
+        format!(
+            "use busbar_transport_{}::{};\n",
+            wire.replace('-', "_"),
+            wire_symbol(wire)
+        ),
+    );
     Ok(ov)
 }
 
@@ -8690,7 +8924,7 @@ mod plant_tests {
 
     /// A WIRE A TRANSPORT CRATE DECLARES IS TRANSPORT VOCABULARY (#50), read off its
     /// `impl TransportMeta` rather than off its crate name, so a wire folded into a sibling crate
-    /// (the dep-wall §6.5 fold) stays a transport word. Every transport crate declares its own id,
+    /// (as `grpc` and `sse` are folded into `http`) stays a transport word. Every transport crate declares its own id,
     /// and a key declared by a module planted inside another transport crate joins the vocabulary.
     #[test]
     fn a_declared_transport_key_is_transport_vocabulary() {
@@ -9161,6 +9395,27 @@ mod plant_tests {
         assert_red_naming(
             &rule_wires(&planted, &crates_of(&planted).0),
             &["unregistered-wire", "busbar-transport-stdio"],
+        );
+    }
+
+    /// THE ROOT'S MANIFEST ROW IS THE WIRE'S ONE REGISTRATION: the row alone is green, and the
+    /// row beside a source file composing the same wire is two registrations, the row named.
+    #[test]
+    fn a_manifest_row_is_the_wires_one_registration() {
+        let cx = ws();
+        let alone = cx.with_overlay(wire_linked_by_row(&cx, "stdio").expect("plantable"));
+        assert_green(&rule_wires(&alone, &crates_of(&alone).0));
+
+        let plant = wire_row_and_source(&cx, "stdio").expect("plantable");
+        assert_bites(&cx, &plant);
+        let planted = cx.with_overlay(plant);
+        assert_red_naming(
+            &rule_wires(&planted, &crates_of(&planted).0),
+            &[
+                "second-registration",
+                "busbar-transport-stdio",
+                LINKED_TABLE,
+            ],
         );
     }
 }

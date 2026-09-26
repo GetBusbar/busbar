@@ -15,7 +15,7 @@ use busbar_contract::transport::wire::FrameMeta;
 use busbar_contract::transport::wire::Listener;
 use busbar_contract::transport::wire::TransportError;
 use busbar_contract::{
-    Frame, Fut, Plugin, Refusal, ScratchBytes, SlabBytes, StreamId, Transport, TransportConfigView,
+    Frame, Fut, Refusal, ScratchBytes, SlabBytes, StreamId, Transport, TransportConfigView,
     TransportKeyHandle,
 };
 use futures::{Stream, StreamExt};

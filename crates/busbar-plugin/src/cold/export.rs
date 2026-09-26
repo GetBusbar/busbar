@@ -99,10 +99,12 @@ pub const EXPORT_ABI_VERSION: u32 = 3;
 ///   the sink, which the sink is never called for and so cannot count.
 /// 8 (K9c): the START op ([`ExportRequest::Start`] / [`ExportResponse::Started`]) — the host
 ///   starts feeding the sink and it states its in-flight admission; the CHECK op
-///   ([`ExportRequest::Check`]) — the sink's checks across every instance of its module while the
-///   host validates the configuration; and [`HostOp::Admit`] — the host's egress policy asked of a
+///   ([`ExportRequest::Check`], at a [`CheckPhase`]) — the sink's checks across every instance of
+///   its module while the host validates the configuration; and [`HostOp::Admit`] — the host's egress policy asked of a
 ///   target without carrying anything to it.
-pub const EXPORT_ABI_MINOR: u32 = 8;
+/// 9 (K9c): the check op's [`CheckPhase`] — asked among the operational limits' checks, or after
+///   them, so a sink's lines keep their place among the configuration's errors.
+pub const EXPORT_ABI_MINOR: u32 = 9;
 
 /// One observability stream an export sink can carry OUT of the engine — the FROZEN word-space of
 /// the export projection grammar, the same discipline as the hook phase names.
@@ -578,6 +580,10 @@ pub enum ExportRequest {
         /// The `export:` instance name the settings belong to (for the sink's own error lines).
         instance: String,
         /// The instance's `settings:` block exactly as configured.
+        // settings-leak-lint: allow — PLUGIN ABI WIRE STRUCT, and OUTBOUND: the `validate` request
+        // the host serializes INTO the sink's `busbar_call` so the sink can judge the settings it
+        // will be opened with. It is never part of an admin response; key names alone could not
+        // be validated.
         settings: serde_json::Value,
     },
     /// `resume` — the host performed the [`HostOp`]s a `deliver` (or an earlier `resume`) answered
@@ -618,7 +624,23 @@ pub enum ExportRequest {
     Check {
         /// `(instance name, settings as configured)`, in configuration order.
         instances: Vec<(String, serde_json::Value)>,
+        /// Which point of the validation asks: among the operational limits' checks, or after them.
+        /// Absent on the wire: [`CheckPhase::Instances`].
+        #[serde(default)]
+        phase: CheckPhase,
     },
+}
+
+/// The point of the configuration's VALIDATION a [`ExportRequest::Check`] is asked at — so a
+/// sink's lines land where the operator has always read them among the configuration's errors.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CheckPhase {
+    /// Among the operational limits' checks (a bound a sink's instances share).
+    Limits,
+    /// After the limits (each instance's own settings).
+    #[default]
+    Instances,
 }
 
 /// One metric FAMILY of the host recorder's snapshot (K9a S6): its name, its type, its help text,

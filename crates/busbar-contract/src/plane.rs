@@ -377,6 +377,104 @@ pub struct PlaneDeclaration {
     /// The fee units this plane counts — [`PER_REQUEST`] and/or [`PER_SESSION`]. A nonzero fee
     /// naming a unit not listed here is refused: a fee nothing counts charges nothing.
     pub fee_units: &'static [&'static str],
+    /// The metric families this plane emits through the host's `counter_add` — the ONLY series it
+    /// can add to over that seam. The host decodes labels for a declared family only, and admits a
+    /// family in the reserved `busbar_` namespace only when it is one the host lets a plane carry
+    /// (see [`check_metric_families`]). `&[]` for a plane that emits none.
+    pub metric_families: &'static [MetricFamily],
+}
+
+/// One metric family a plane declares it emits: its series name, its kind and its label keys, in
+/// the order the series renders them. Every sample the plane adds names the family and supplies
+/// one value per key, positionally; the host renders exactly this name and these keys.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MetricFamily {
+    /// The series name exactly as it renders (`^[a-z][a-z0-9_]{0,63}$`).
+    pub name: &'static str,
+    /// The family's kind — [`COUNTER`], the one kind a plane adds to.
+    pub kind: &'static str,
+    /// The label keys, in render order.
+    pub label_keys: &'static [&'static str],
+}
+
+/// The counter kind: a family whose samples only ever add.
+pub const COUNTER: &str = "counter";
+
+/// The reserved first-party metric namespace. A plane's family in it is admitted only when the
+/// host lists it (see [`check_metric_families`]).
+pub const RESERVED_METRIC_PREFIX: &str = "busbar_";
+
+/// The most label keys one family may declare — the cap the host's metric validator holds every
+/// reported sample to.
+pub const MAX_FAMILY_LABELS: usize = 8;
+
+/// A series name or label key a scrape can carry: `^[a-z][a-z0-9_]{0,63}$`.
+fn metric_ident(s: &str) -> bool {
+    let mut bytes = s.bytes();
+    matches!(bytes.next(), Some(b'a'..=b'z'))
+        && s.len() <= 64
+        && bytes.all(|b| matches!(b, b'a'..=b'z' | b'0'..=b'9' | b'_'))
+}
+
+/// THE METRIC-FAMILY GUARD over a set of declarations' [`PlaneDeclaration::metric_families`],
+/// judged against the reserved series the HOST lets a plane carry (`carried`, supplied by the
+/// caller as `(name, label keys)` rows — the host owns that list; a plane never supplies it).
+/// `Ok(())` when every family is admissible, else the FIRST refusal:
+///
+/// * a name or label key outside `^[a-z][a-z0-9_]{0,63}$`, a repeated key, or more than
+///   [`MAX_FAMILY_LABELS`] keys;
+/// * a kind other than [`COUNTER`];
+/// * a name in the reserved [`RESERVED_METRIC_PREFIX`] namespace that is not a `carried` row with
+///   exactly these label keys in this order — a plane cannot mint a first-party series, and a
+///   carried one renders byte-identically or not at all;
+/// * a family two planes (or one plane twice) declare — one series, one writer.
+///
+/// Pure: declarations and the host's rows in, a verdict out. The host runs it over its boot fold;
+/// a test drives it directly.
+pub fn check_metric_families(
+    decls: &[&PlaneDeclaration],
+    carried: &[(&str, &[&str])],
+) -> Result<(), String> {
+    let mut seen: std::collections::BTreeMap<&str, &str> = std::collections::BTreeMap::new();
+    for decl in decls {
+        for f in decl.metric_families {
+            let refuse = |why: String| Err(format!("plane `{}` declares {why}", decl.key));
+            let keys = f.label_keys;
+            let repeated = keys.iter().enumerate().any(|(i, k)| keys[..i].contains(k));
+            if !metric_ident(f.name) || !keys.iter().all(|k| metric_ident(k)) || repeated {
+                return refuse(format!(
+                    "the metric family `{}` with label keys {keys:?}: a name and each key is \
+                     `^[a-z][a-z0-9_]{{0,63}}$`, and no key repeats",
+                    f.name
+                ));
+            }
+            if keys.len() > MAX_FAMILY_LABELS || f.kind != COUNTER {
+                return refuse(format!(
+                    "the metric family `{}` of kind `{}` with {} label keys: a plane declares a \
+                     `{COUNTER}` of at most {MAX_FAMILY_LABELS} keys",
+                    f.name,
+                    f.kind,
+                    keys.len()
+                ));
+            }
+            if f.name.starts_with(RESERVED_METRIC_PREFIX) && !carried.contains(&(f.name, keys)) {
+                return refuse(format!(
+                    "the metric family `{}` with label keys {keys:?}, in the reserved \
+                     `{RESERVED_METRIC_PREFIX}` namespace: a plane carries only a first-party \
+                     series the host lists, with exactly its label keys",
+                    f.name
+                ));
+            }
+            if let Some(other) = seen.insert(f.name, decl.key) {
+                return refuse(format!(
+                    "the metric family `{}`, which plane `{other}` declares too: one series has \
+                     one writer",
+                    f.name
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// One billable class a plane ledgers and the unit family its count is in — the family vocabulary
@@ -436,3 +534,7 @@ pub fn check_owned_config_claims(
     }
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "tests/metric_family_tests.rs"]
+mod metric_family_tests;

@@ -1304,15 +1304,7 @@ impl ProductionUnits {
         #[cfg_attr(not(feature = "root-admin"), allow(unused_mut))]
         let mut units = ProductionUnits {
             door: Door::new(InMemoryCells::new()),
-            // The breaker unit's one diagnostic reaches the node's own logging rather than the
-            // noop the crate defaults to. What an operator gets out of the binding is the line
-            // saying an `error_map` entry they wrote names a class that does not exist; what the
-            // request path gets is nothing at all, because the mapping was ignored before the
-            // binding and is ignored after it.
-            breaker: crate::root::adapters::BreakerAdapter::with_diagnostics(
-                crate::root::adapters::root_diagnostics(),
-                breaker_policy,
-            ),
+            breaker: crate::root::adapters::BreakerAdapter::with_policy(breaker_policy),
             egress: EgressUnit::new(),
             auth: Auth::new(auth_chain),
             // The unbound posture, which is the one a node has until it is handed a directory:

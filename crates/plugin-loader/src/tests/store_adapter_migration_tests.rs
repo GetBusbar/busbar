@@ -18,7 +18,7 @@
 //! bound to payload schema 2, which is where the request log lives, and the REAL published sqlite
 //! store from the oracle cache, which skips when the cache is cold.
 
-use super::store_adapter_tests::cached_published_sqlite_tarball;
+use super::store_adapter_tests::cached_published_store_tarball;
 use super::*;
 use crate::store_adapter::{LegacyReadPlan, StoreAdapter, BILLABLE_REQUESTS_CLASS};
 use busbar_api::{
@@ -772,7 +772,7 @@ impl AbiStore for ReadOnly {
 /// about the opening figures are about one binary.
 #[test]
 fn an_opening_sealed_off_the_published_sqlite_store() {
-    let Some(tarball_path) = cached_published_sqlite_tarball() else {
+    let Some(tarball_path) = cached_published_store_tarball() else {
         eprintln!(
             "skip: no published store-sqlite tarball in the oracle cache (run \
              `testing/shadow-oracle/fetch-plugin.sh store-sqlite`)"

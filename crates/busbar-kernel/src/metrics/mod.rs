@@ -502,11 +502,11 @@ fn emit_lane_gauges(
 }
 
 // `GET /metrics` (the Prometheus text exposition) is no longer served by a core route here: 1.5.3
-// lifted the DISTRIBUTION half out to the built-in `prometheus` EXPORTER
-// ([`crate::export::prometheus`]), which serves it via the plugin HTTP endpoint registration
-// (`handle_http`) and renders the SAME registry through [`render`] after refreshing the scrape-time
-// gauges via [`refresh_scrape_gauges`]. COLLECTION (this recorder + the emit sites + the gauge
-// derivation) stays core.
+// lifted the DISTRIBUTION half out to the `prometheus` exporter, and 1.6.0 made it an export sink
+// on the export axis. The host's scrape ([`crate::export::scrape`]) refreshes the scrape-time
+// gauges via [`refresh_scrape_gauges`], snapshots the SAME registry through [`render`], and serves
+// what that sink renders. COLLECTION (this recorder + the emit sites + the gauge derivation) stays
+// core.
 
 #[cfg(test)]
 #[path = "../tests/metrics_tests.rs"]
@@ -709,11 +709,8 @@ pub const PLANE_REQUEST_DURATION_SECONDS: &str = "busbar_plane_request_duration_
 // call site resolve unchanged. Pure `&str` — no registry moved, scrape byte-identical.
 // ROUTE_POLICY_* are defined at the top of this module.
 
-// Request-log webhook deliveries DROPPED because the in-flight delivery semaphore was saturated (the
-// webhook endpoint is slow/unreachable and the bounded delivery pool is full). Incremented once per
-// dropped log. Unlabeled — the drop is a global backpressure condition, not per-request. An operator
-// alerts on a non-zero rate to detect "the webhook is overwhelmed and logs are being shed silently."
-pub const WEBHOOK_LOGS_DROPPED_TOTAL: &str = "busbar_webhook_logs_dropped_total"; // no labels
+// The request-log WEBHOOK sink's `busbar_webhook_logs_dropped_total` is the `busbar-export-webhook`
+// sink's own, declared first-party (its shed counter) in its manifest (K9c).
 
 // The request-log FILE sink's three series (`busbar_file_logs_{dropped,rotated,rotate_failed}_total`)
 // are the `busbar-export-file` sink's own, declared first-party in its manifest (K9b).

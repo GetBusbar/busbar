@@ -405,6 +405,18 @@ fn fold_diagnostics(plugin: &str, raw: &[serde_json::Value]) {
         // log, so they are sanitized and capped exactly as a metric's help text is. A plugin holding
         // a read-only view of request content must not be able to spill it into the log through a
         // diagnostic field.
+        let level = clamp_level(d.level, diag.severity);
+        // A FIRST-PARTY plugin's diagnostic renders as the host renders its own (K9c): the
+        // catalogue line, its fields in the order it attached them, no provenance label.
+        if busbar_plugin_loader::observe::first_party(plugin) {
+            let fields: Vec<(String, String)> = d
+                .ordered_fields()
+                .into_iter()
+                .take(MAX_DIAG_FIELDS)
+                .collect();
+            crate::diagnostics::emit(diag, tracing_level(level), &d.message, &fields);
+            continue;
+        }
         let message = crate::hooks::wire::sanitize_cap(&d.message, MAX_DIAG_MESSAGE_CHARS);
         let fields = d
             .fields
@@ -427,7 +439,7 @@ fn fold_diagnostics(plugin: &str, raw: &[serde_json::Value]) {
         // The LEVEL is the plugin's claim, clamped by the catalogue: a plugin cannot report a
         // `BenignRecurring` condition at `error` and page somebody at 3am.
         let banner = diag.banner();
-        match clamp_level(d.level, diag.severity) {
+        match level {
             busbar_plugin::cold::observe::DiagLevel::Error => {
                 tracing::error!(diag = %banner, plugin = %plugin, fields = %fields, "{message}")
             }
@@ -467,6 +479,17 @@ fn resolve_code(code: &str) -> Option<&'static crate::diagnostics::Diagnostic> {
 /// one is capped at `debug`, because the catalogue has already decided that condition does not need
 /// an operator. The level is a plugin's OPINION about its own severity, and an opinion that could
 /// raise the catalogue's own classification would let a plugin page an operator by asserting it.
+/// The `tracing` level of a plugin diagnostic's (clamped) level.
+fn tracing_level(level: busbar_plugin::cold::observe::DiagLevel) -> tracing::Level {
+    use busbar_plugin::cold::observe::DiagLevel;
+    match level {
+        DiagLevel::Error => tracing::Level::ERROR,
+        DiagLevel::Warn => tracing::Level::WARN,
+        DiagLevel::Info => tracing::Level::INFO,
+        DiagLevel::Debug => tracing::Level::DEBUG,
+    }
+}
+
 fn clamp_level(
     claimed: busbar_plugin::cold::observe::DiagLevel,
     severity: crate::diagnostics::Severity,

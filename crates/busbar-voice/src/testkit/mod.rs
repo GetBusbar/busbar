@@ -21,3 +21,13 @@ pub mod loopback_http;
 
 /// An in-memory `metrics` recorder + exposition render, for asserting this plane's counter emits.
 pub mod metrics_capture;
+
+/// THIS PLANE'S SERVED-LEG WITNESSES — `(capability key, [(loop step or core capability, witness)])`.
+///
+/// What a test binary that links this crate without naming it runs through ITS registered session
+/// runner for this plane's key (the composition root's kernel-loop session rider): each witness opens
+/// a session at the served door, asserts one capability or one loop step on the session it opened,
+/// and returns how many session opens it expects to have reached that runner. See
+/// `tests/served_witness.rs`.
+pub const SERVED: (&str, &[(&str, crate::mount::served_witness::Witness)]) =
+    (crate::PLANE_KEY, crate::mount::served_witness::WITNESSES);

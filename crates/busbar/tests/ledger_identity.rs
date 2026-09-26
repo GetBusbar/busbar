@@ -43,8 +43,9 @@
 //! per-request fee on the posting as a line of its own, so the served figures and the legacy rows
 //! are one sum and the identity is an equality rather than a difference.
 #![cfg(unix)]
-// Needs a bootable server with an LLM route: the money path is what is being reconciled.
-#![cfg(linked_axis_body_ingress)]
+// Needs a bootable server with a provider route (the money path is what is being reconciled) AND
+// the root's admin surface, which serves the ledger reads the identity is asserted over.
+#![cfg(all(linked_axis_body_ingress, feature = "root-admin"))]
 
 use std::io::{Read, Write};
 use std::net::TcpStream;

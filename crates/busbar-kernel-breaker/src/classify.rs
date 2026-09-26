@@ -89,7 +89,7 @@ impl<S: Diagnostics> Diagnostics for WarnOnceDiagnostics<S> {
 
 /// A shared [`Diagnostics`] sink is still one: this is what lets a caller keep a handle on the
 /// concrete sink (e.g. to assert on it in a test, or to fan it out elsewhere) while also handing
-/// an owned value into [`crate::BreakerUnit::with_diagnostics`].
+/// an owned value to [`crate::port::classify_upstream`].
 impl<S: Diagnostics + ?Sized> Diagnostics for std::sync::Arc<S> {
     fn unrecognized_error_map_value(&self, value: &str) {
         (**self).unrecognized_error_map_value(value);

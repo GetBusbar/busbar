@@ -26,9 +26,10 @@ pub mod handle;
 /// The genuinely cross-plane INVOKE leaf, shared by more than one resident plane — neutral, stays in
 /// core.
 pub mod invoke;
-/// **G6 A4b dissolve.** Core-owned neutral `IrHandle`s for `Invoke`/`Subscribe` (trait defaults +
-/// `Billing::Flat`); busbar-mcp's codec yields these.
-pub mod neutral_handles;
+/// A lane's declared request-shape capabilities, resolved from its provider entry and model rules
+/// (`resolve_lane_caps`) into the `LaneCaps` that [`egress_prep`] carries. Re-exported so a caller
+/// names it at `busbar_kernel::ir::lane_caps`, beside the parameter bag it fills.
+pub use busbar_substrate_values::ir::lane_caps;
 /// The genuinely cross-plane SUBSCRIBE leaf, shared by more than one resident plane — neutral, stays
 /// in core.
 pub mod subscribe;

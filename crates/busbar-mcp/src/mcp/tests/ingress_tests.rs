@@ -30,9 +30,9 @@ fn mcp_cfg(allowed_origins: Vec<String>) -> McpCfg {
 /// Open on purpose: these tests are about the PROTOCOL envelope, and every one of them must reach
 /// the handler to say anything. The auth half of this plane is asserted separately — by
 /// `resource_tests` for the challenge and the metadata document, and by
-/// `auth::tests::test_mcp_token_is_confined_to_the_mcp_plane` for the audience boundary — so
-/// leaving the door open here narrows what each test can be wrong about rather than skipping a
-/// check.
+/// `plane_integration::an_audience_bound_token_is_confined_to_its_door_plane`
+/// for the audience boundary — so leaving the door open here narrows what each test can be wrong
+/// about rather than skipping a check.
 async fn serve(origins: Vec<String>) -> (String, tokio::task::JoinHandle<()>) {
     metrics_init();
     let app = test_app().mcp(&mcp_cfg(origins)).build();

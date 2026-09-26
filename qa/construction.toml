@@ -216,6 +216,20 @@ busbar-voice = ["busbar-voice-codec"]
 # base" and asked for exactly this strike. THE CEILINGS THEMSELVES DID NOT MOVE: both still read
 # 7418. The next #83/#84 merge into busbar-contract declares its own re-arm here, once.
 
+# ── THE CONTRACT CEILING PAIR, RE-ARMED AT THE MEASURE AFTER THE METRIC-FAMILY SHAPE MERGE ────────
+
+[gate.ceiling_raises."gate.surface_ceilings.contract_caps"]
+file    = "qa/construction.toml"
+from    = 8558
+to      = 8619
+because = "OWNER RULING Q68(3) (docs/design/1.6.0-QUESTIONS.md): contract_caps re-arms at the MEASURED value after each owner-locked merge commit into busbar-contract, each in its own commit. This is the re-arm for the MET-1 METRICS SEAM commit (ARCHITECT RULING S2-c): PlaneDeclaration.metric_families, the MetricFamily shape, the COUNTER / RESERVED_METRIC_PREFIX / MAX_FAMILY_LABELS constants and the pure check_metric_families guard. Measured by cargo xtask loc busbar-contract --ref: 8558 at its parent, 8619 at that commit; the +61 is that field, shape and guard, nothing else. The 8532 -> 8558 declaration this replaces (K2e, the TransportSettings shape) is at the base and expired. The crate measures more after the later SD-2b #83a moves (the protocol declaration, the codec cells, the R-BYTES carriers); their re-arm is theirs and is not taken here."
+
+[gate.ceiling_raises."rules.loc-ceilings.caps_contract_ceiling"]
+file    = "qa/construction.toml"
+from    = 8558
+to      = 8619
+because = "OWNER RULING Q68(3) (docs/design/1.6.0-QUESTIONS.md): contract_caps re-arms at the MEASURED value after each owner-locked merge commit into busbar-contract, each in its own commit. This is the re-arm for the MET-1 METRICS SEAM commit (ARCHITECT RULING S2-c): PlaneDeclaration.metric_families, the MetricFamily shape, the COUNTER / RESERVED_METRIC_PREFIX / MAX_FAMILY_LABELS constants and the pure check_metric_families guard. Measured by cargo xtask loc busbar-contract --ref: 8558 at its parent, 8619 at that commit; the +61 is that field, shape and guard, nothing else. The 8532 -> 8558 declaration this replaces (K2e, the TransportSettings shape) is at the base and expired. The crate measures more after the later SD-2b #83a moves (the protocol declaration, the codec cells, the R-BYTES carriers); their re-arm is theirs and is not taken here."
+
 # ── THE KERNEL CEILING'S OWNER-APPROVED RAISE — EXPIRED AND STRUCK ─────────────────────────────
 #
 # The entry declared `rules.loc-ceilings.kernel_ceiling` 51439 -> 51799: the owner approved the
@@ -299,7 +313,18 @@ busbar-voice = ["busbar-voice-codec"]
 # RATCHETED DOWN 7418 -> 7414, AT THE MEASUREMENT: rustfmt collapsed the transport-configuration
 # handle's constructor body in `transport/config_handle.rs` from five lines to one (-4), and
 # `ceiling-slack` asks for the room back. Downward only; its pair moves with it.
-contract_caps = 7414
+# RE-ARMED 7414 -> 8148, AT THE MEASUREMENT (OWNER RULING Q68(3), ARCHITECT O2), in its own commit
+# after 4db9c5349 (SD-1) moved the substrate-values shapes into the contract under #83/#83a. The
+# declared raise above carries the before/after measure.
+# RE-ARMED 8148 -> 8424, AT THE MEASUREMENT (OWNER RULING Q68(3)), in its own commit after 4c5a8a3dd
+# (fold F1) merged `busbar-secret-ref` into the contract as `secret_ref` under #83. The +276 is that
+# module; the declared raise above carries the before/after measure.
+# RE-ARMED 8424 -> 8532, AT THE MEASUREMENT (OWNER RULING Q68(3); ARCHITECT ruling R10), in its own
+# commit after 4152c1b6b moved the kernel's reply-leg waiting table into the contract as a shape under
+# #83. The +108 is that module; the declared raise above carries the before/after measure.
+# RE-ARMED 8558 -> 8619, AT THE MEASUREMENT (OWNER RULING Q68(3)), in its own commit after the MET-1 seam
+# added the declared metric-family shape and guard (S2-c). The declared raise above carries the measure.
+contract_caps = 8619
 # REPOINTED, and the repoint is what makes this row a gate again. It named the CRATE
 # `busbar-grammar`, which #40 folded into `busbar-contract` and deleted — so it summed nothing,
 # measured nothing and passed, which is this file's own "zero is not clean" failure sitting inside
@@ -379,7 +404,7 @@ counts can trend to zero at their own pace."""
 # item 376 (Q11/Q32, owner-signed 2026-09-24): same needle repair as ports-only above, pinned at
 # TODAY's measurement on the committed tree (HEAD b091b4e83). Downward only from here.
 [rules.ports-only-tests.max_per_crate]
-busbar-llm = 1002
+busbar-llm = 1001
 busbar-mcp = 191
 busbar-a2a = 98
 busbar-voice = 43
@@ -812,7 +837,7 @@ kernel_crate = "busbar-kernel"
 # budget-book read fix). Pinned at the measurement, no slack. It RATCHETS DOWN when item 142's
 # breaker fold lands (store/in_memory/breaker.rs, ~580 code lines), which takes the kernel back
 # under 51439; that commit lowers this figure to what it then measures.
-# ── LOWERED 51742 -> 51049 by `--write` on the committed fold (ddadb26bb): the in-memory store's
+# ── LOWERED 51742 -> 51049 by `--write` on the committed breaker fold: the in-memory store's
 # state machine left the kernel for busbar-kernel-breaker. Downward only.
 kernel_ceiling = 51049
 # `caps_crate = "busbar-caps"` WAS HERE AND IS STRUCK, 2026-09-22. The crate was folded into
@@ -856,7 +881,11 @@ contract_crate = "busbar-contract"
 # RE-ARMED 7414 -> 7418 with its pair (OWNER RULING Q68(3); the `sha256_hex` #83 move, f42d27d56).
 # RATCHETED DOWN 7418 -> 7414 with its pair, at the measurement (the rustfmt collapse over
 # `[gate.surface_ceilings].contract_caps` above).
-caps_contract_ceiling = 7414
+# RE-ARMED 7414 -> 8148 with its pair (OWNER RULING Q68(3); the SD-1 shapes merge, 4db9c5349).
+# RE-ARMED 8148 -> 8424 with its pair (OWNER RULING Q68(3); fold F1, the secret-ref merge, 4c5a8a3dd).
+# RE-ARMED 8424 -> 8532 with its pair (OWNER RULING Q68(3); the reply-table shape move, 4152c1b6b).
+# RE-ARMED 8558 -> 8619 with its pair (OWNER RULING Q68(3); the MET-1 metric-family shape).
+caps_contract_ceiling = 8619
 unit_crate_glob = "busbar-unit-*"
 # RE-KEYED on cherry-pick onto 143db6db6: this commit's own delta is -53 (two units stopped
 # declaring their own copies), measured against whatever unit_total_ceiling read when the line was
@@ -1035,6 +1064,11 @@ reviewed_allowlist = ["busbar-api", "busbar-plugin-sdk", "serde", "serde_json", 
 # `flock` FileStore takes around its read-modify-write (crates/store-example-plugin/src/lib.rs,
 # FileLock), unix-only, in the fixture that models a fleet sharing one durable path.
 store-example-plugin = ["libc"]
+# REVIEWED 2026-09-25 (item 141, the webhook sink's extraction): `url` is the WHATWG parser the host's
+# own webhook guard parses the target with; the sink uses it for one thing only — masking the
+# target's userinfo in its own diagnostic lines, byte for byte as the compiled-in sink did
+# (`mask_userinfo`: re-serialize through the parser, `***` for the userinfo). No I/O, no host state.
+busbar-export-webhook = ["url"]
 [rules.manifest-allowlist.known_red_deps]
 busbar-plane-llm = ["busbar-llm"]
 # busbar-plane-a2a HAS NO ROW, for the same reason busbar-plane-mcp lost its one: the codec fold
@@ -1371,7 +1405,7 @@ deny_kinds = ["transport", "abi", "loader", "store", "export"]
 # name below; a new crate NOT on this list is held to the rule immediately.
 known_missing_forbid = [
   "hook-test-plugin", "hooks-ranking", "auth-static-plugin", "auth-admin-tokens",
-  "secret-example-plugin", "secret-ref",
+  "secret-example-plugin",
 ]
 known_missing_deny = [ "plugin-loader",
   "store-memory", "store-example-plugin", "export-example-plugin",
@@ -1516,6 +1550,15 @@ known_sites = [
   "crates/plugin-loader/src/",
   "crates/plugin-sdk/src/boundary.rs",
   "crates/plane-example/src/",
+  # REVIEWED 2026-09-25 (item 141): a first-party plugin's diagnostic written as the host's own
+  # line needs a tracing callsite and field names that are 'static by tracing's type; `site` makes
+  # ONE per (code, level, field-name list) and interns it, so the allocation is bounded by the
+  # catalogue and made once — the leak-once intern shape of ids.rs `key` above.
+  "crates/busbar-substrate-values/src/diagnostics/emit.rs::site",
+  # REVIEWED 2026-09-25 (item 141): a first-party plugin's DECLARED diagnostic joins the process
+  # catalogue, whose entries are `&'static Diagnostic` with `&'static str` text by the catalogue's
+  # type; one allocation per declared code, once, at boot, before the catalogue is first read.
+  "crates/busbar/src/root/linked.rs::declared_diagnostics",
 ]
 
 # The escape list, mirroring crates/busbar-contract/src/caps/fixtures/lint_rules.rs HOLD_ESCAPES. A test in that
@@ -2045,7 +2088,9 @@ scope_globs = ["crates/busbar/src/root/*.rs", "crates/busbar/src/main.rs"]
 # deleted crate; busbar_substrate's root reach was already fully retired). 17 (busbar_llm,
 # unchanged) + 5 + 3 + 12 = 37, the same root reach, now counted instead of a false zero. Pinned at
 # TODAY's measurement on the committed tree (HEAD b091b4e83). Downward only from here.
-ceiling = 15
+# RATCHETED DOWN 15 -> 10, AT THE MEASUREMENT (K2f): eefc65fd7 deleted root/units_voice.rs, the last
+# root file naming `busbar_voice::` (5 distinct symbols), so the busbar_voice figure below is 0.
+ceiling = 10
 
 [rules.legacy-reach.prefixes.busbar_llm]
 prefix = "busbar_llm::"
@@ -2070,7 +2115,8 @@ figure = 0
 prefix = "busbar_voice::"
 exclude = []
 because = "item 381 (Q11/Q32): the retiring voice engine, the root still names by prefix"
-figure = 5
+# RATCHETED DOWN 5 -> 0, AT THE MEASUREMENT (K2f, eefc65fd7: root/units_voice.rs deleted).
+figure = 0
 
 # ── 31. no-test-doubles-in-production ────────────────────────────────────────────────────────────
 [rules.no-test-doubles-in-production]
@@ -2096,7 +2142,8 @@ forbidden = [
   "without_directory(",
 ]
 max_unlisted = 0
-max_doubles = 5
+# RATCHETED DOWN 5 -> 3, AT THE MEASUREMENT (K2f): the three main.rs `RecordingRows` sites remain.
+max_doubles = 3
 
 # THE REVIEWED SITES. `verdict = "real"` means the review found this to be the shipped node's own
 # value at this composition — a null shipper on a node with no `peers:`, a memory-buffered book on a
@@ -2107,18 +2154,9 @@ max_doubles = 5
 # unit that composes the node) when the composition root stopped naming plugin crates. A path
 # re-point, not a new review: the symbols, verdicts and reasons are unchanged and the doubles count
 # is the same seven (the main.rs `RecordingRows` row stays for the two left in `compose_boot_book`).
-[rules.no-test-doubles-in-production.known_sites.voice-calls-shipper]
-file = "crates/busbar/src/root/units_voice.rs"
-symbol = "NullShipper"
-verdict = "double"
-because = "the voice governed-call node's journal, built in the default binary from no deployment value at all"
-
-[rules.no-test-doubles-in-production.known_sites.voice-calls-rows]
-file = "crates/busbar/src/root/units_voice.rs"
-symbol = "RecordingRows"
-verdict = "double"
-because = "the same node's rows: a recorder nothing reads, beside the node book the process already opened"
-
+# K2f: those five sites were deleted with root/units_voice.rs — the voice node they built
+# is gone and the plane composes its governed-call table (no pricer, chain, journal or bindings) in
+# its own crate — so their five rows are struck; the main.rs row stays.
 # The main.rs half of the row above, kept: before K1 one `RecordingRows` row for main.rs covered the
 # voice node's rows AND the two in `compose_boot_book`; the node's moved, the boot book's did not.
 [rules.no-test-doubles-in-production.known_sites.voice-calls-rows-boot-book]
@@ -2126,24 +2164,6 @@ file = "crates/busbar/src/main.rs"
 symbol = "RecordingRows"
 verdict = "double"
 because = "the same node's rows: a recorder nothing reads, beside the node book the process already opened"
-
-[rules.no-test-doubles-in-production.known_sites.voice-calls-pricer]
-file = "crates/busbar/src/root/units_voice.rs"
-symbol = "Pricer::flat("
-verdict = "double"
-because = "a zero rate card in the shipped binary, where the deployment's own card is what a priced node needs"
-
-[rules.no-test-doubles-in-production.known_sites.voice-calls-chain]
-file = "crates/busbar/src/root/units_voice.rs"
-symbol = "AuthChain::new(Vec::new()"
-verdict = "double"
-because = "an empty chain in the shipped binary, not the door the deployment configured"
-
-[rules.no-test-doubles-in-production.known_sites.voice-calls-bindings]
-file = "crates/busbar/src/root/units_voice.rs"
-symbol = "without_directory("
-verdict = "double"
-because = "the same node's unbound key authorities, where the sealed root has the governance directory"
 
 [rules.no-test-doubles-in-production.known_sites.bindings-constructor]
 file = "crates/busbar/src/root/auth_bindings.rs"

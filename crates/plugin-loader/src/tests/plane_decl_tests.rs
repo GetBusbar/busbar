@@ -220,11 +220,49 @@ fn the_declaration_tail_reads_back_as_stated() {
             owned_sections: Vec::new(),
             billable_classes: Vec::new(),
             fee_units: Vec::new(),
+            metric_families: Vec::new(),
         }
     );
     let mut d = decl();
     d.fallback = 1;
     assert!(plane_over(&d).unwrap().declaration().fallback);
+}
+
+/// The label keys and families of [`the_metric_family_tail_reads_back_as_stated`].
+static FAMILY_KEYS: [DeclStr; 2] = [DeclStr::new("unit"), DeclStr::new("outcome")];
+static FAMILIES: [busbar_plugin::hot::decl::DeclMetricFamily; 1] =
+    [busbar_plugin::hot::decl::DeclMetricFamily {
+        name: DeclStr::new("memplane_units_total"),
+        kind: DeclStr::new("counter"),
+        label_keys_ptr: FAMILY_KEYS.as_ptr(),
+        label_keys_len: FAMILY_KEYS.len(),
+    }];
+
+/// Minor 25: the metric families a decl states read back as stated, keys in order; a decl that ends
+/// before the tail (an older minor) declares none — an absence, so it adds to nothing.
+#[test]
+fn the_metric_family_tail_reads_back_as_stated() {
+    let _s = serial();
+    let mut d = decl();
+    d.metric_families_ptr = FAMILIES.as_ptr();
+    d.metric_families_len = FAMILIES.len();
+    assert_eq!(
+        plane_over(&d).unwrap().declaration().metric_families,
+        vec![crate::plane::HotMetricFamily {
+            name: "memplane_units_total".into(),
+            kind: "counter".into(),
+            label_keys: vec!["unit".into(), "outcome".into()],
+        }]
+    );
+    d.size = core::mem::offset_of!(PlaneDecl, metric_families_ptr) as u32;
+    assert!(plane_over(&d)
+        .unwrap()
+        .declaration()
+        .metric_families
+        .is_empty());
+    d.size = core::mem::size_of::<PlaneDecl>() as u32;
+    d.metric_families_ptr = core::ptr::null();
+    assert!(plane_over(&d).is_err(), "a stated count behind a null list");
 }
 
 #[test]

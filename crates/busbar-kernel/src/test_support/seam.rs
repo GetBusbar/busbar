@@ -170,6 +170,16 @@ impl<A: TestAppSeam + ?Sized> TestAppSeamExt for A {}
 /// router, so a set-comparison over the declared error set does not depend on which tests ran first.
 pub type ErrorSurfaceDriver = fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = ()>>>;
 
+/// A test plane's SERVED-CALL FRAMER: the headers and the JSON body its own front door requires for
+/// ONE call of `method` with `params`, so a cross-plane test drives the plane's served path through
+/// the real router without spelling that plane's wire.
+pub type ServedCallFramer =
+    fn(&str, serde_json::Value) -> (axum::http::HeaderMap, serde_json::Value);
+
+/// A test plane's CARRIED VERIFY-GATE reader: the verify-on-call gate its runtime object holds on
+/// a built App's plane slots (`None` when the plane is not configured there).
+pub type VerifyGateReader = fn(&dyn PlaneSlots) -> Option<Arc<crate::trust::VerifyGate>>;
+
 /// ONE LINKED TEST PLANE'S SEAM ENTRY — plain data a plane's own test kit exports (as its
 /// `testkit::TEST_SEAM` const), so a reader that needs every linked plane in its test binary loops
 /// [`test_plane_seams`] instead of naming a plane crate.
@@ -181,6 +191,10 @@ pub struct TestPlaneSeam {
     pub install: fn(),
     /// This plane's error-surface driver, if it serves an admin surface with declared errors.
     pub error_surface_driver: Option<ErrorSurfaceDriver>,
+    /// This plane's served-call framer, if it serves a front door a cross-plane test drives.
+    pub served_call: Option<ServedCallFramer>,
+    /// This plane's carried verify-gate reader, if its runtime object carries one across applies.
+    pub verify_gate: Option<VerifyGateReader>,
 }
 
 static TEST_PLANE_SEAMS: std::sync::Mutex<Vec<&'static TestPlaneSeam>> =

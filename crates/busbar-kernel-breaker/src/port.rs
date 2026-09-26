@@ -13,9 +13,9 @@
 //! `Retry-After` through as the cooldown floor; `HardDown` trips every pool cell for the
 //! destination; `ContextLength` records nothing and fails over. [`classify_upstream`] composes that
 //! fold with [`crate::classify::normalize_raw_error`] and [`crate::classify::classify`] into the one
-//! call a caller needs, and [`crate::BreakerUnit::classify`] is the stateful method that reads the
-//! declared per-destination `error_map` and calls it — together the pure function and the method the
-//! task asks for.
+//! call a caller needs. It is a pure function over the status alone: the unit keeps no per-destination
+//! `error_map`, because reading an error body against the operator's map is the plane's classifier's
+//! work and the unit takes that classifier's verdict.
 //!
 //! This module takes no dependency beyond [`crate::classify`] and [`crate::Outcome`] — in
 //! particular, no `busbar-contract` (this crate's `Cargo.toml` is explicit that `busbar-caps` is the
@@ -121,14 +121,12 @@ pub fn outcome_and_label(
 }
 
 /// Classify one upstream answer against a declared `error_map`, and fold the answer straight
-/// through to the [`Outcome`] and label a caller acts on. The pure function
-/// [`crate::BreakerUnit::classify`] is implemented over: no lock, no destination, no clock — a
-/// caller with its own error-map storage can call this directly.
+/// through to the [`Outcome`] and label a caller acts on. A pure function: no lock, no destination,
+/// no clock — a caller with its own error-map storage passes it in.
 ///
 /// `diagnostics` is the sink an unrecognized `error_map` value is reported to: this
-/// function no longer hardcodes [`classify::NoopDiagnostics`] internally, so a real sink bound by
-/// the composition root actually reaches the classifier. Pass `&classify::NoopDiagnostics` for
-/// today's silently-ignored behavior.
+/// function hardcodes no sink, so a caller's own sink reaches the classifier. Pass
+/// `&classify::NoopDiagnostics` for the silently-ignored behavior.
 #[must_use]
 pub fn classify_upstream(
     error_map: &std::collections::HashMap<String, String>,

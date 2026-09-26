@@ -48,8 +48,7 @@
 use busbar_contract::caps::{Pass, Route};
 use busbar_contract::WireStatusClass;
 use busbar_kernel_breaker::cfg::BreakerCfg;
-use busbar_kernel_breaker::classify::Diagnostics;
-use busbar_kernel_breaker::journal::NoopJournal;
+use busbar_kernel_breaker::classify::NoopDiagnostics;
 use busbar_kernel_breaker::{Breaker as BreakerUnitTrait, BreakerUnit, DestinationId};
 use busbar_kernel_egress::ports::{
     Admit, Breaker, Classified, Outcome, Unavailable, UpstreamStatus,
@@ -91,6 +90,21 @@ impl BreakerPolicy {
         self
     }
 
+    /// The policy a deployment's `pools:` declare: every configured pool under its own resolved
+    /// `breaker:` block (or the defaults, when it declares none), and the default cell under the
+    /// defaults — the same ladder each pool's own dispatch resolves, lowered by the kernel's one
+    /// lowering so the two cannot disagree.
+    #[must_use]
+    pub fn from_pools(pools: &HashMap<String, busbar_kernel::config::PoolCfg>) -> Self {
+        use busbar_kernel::store::pool_breaker_cfg;
+        pools.iter().fold(
+            BreakerPolicy::new().with_default_cell(pool_breaker_cfg(None)),
+            |policy, (name, pool)| {
+                policy.with_pool(name.as_str(), pool_breaker_cfg(pool.breaker.as_ref()))
+            },
+        )
+    }
+
     /// The ladder in force for one pool, if the configuration declared one.
     ///
     /// The default cell's declaration answers for the default cell and nothing else. A NAMED pool
@@ -107,86 +121,60 @@ impl BreakerPolicy {
     }
 }
 
-/// The breaker unit's `error_map` diagnostic sink, as the root holds one.
-///
-/// A shared trait object rather than a concrete type, so the sink a deployment binds and the sink a
-/// test asserts against are the same shape and the breaker unit's type parameter does not become a
-/// parameter of everything that holds a [`BreakerAdapter`]. The breaker crate already implements
-/// its own trait for `Arc<S>`, which is what makes the handle usable on both sides at once.
-pub type DiagnosticsSink = Arc<dyn Diagnostics + Send + Sync>;
-
-/// The breaker unit as this root composes it: no journal, and a real diagnostics sink.
-pub type RootBreakerUnit = BreakerUnit<NoopJournal, DiagnosticsSink>;
-
-/// The breaker unit's one diagnostic, delivered through the node's own logging.
-///
-/// The breaker crate takes no logging dependency, so the warning an unrecognized `error_map` class
-/// deserves has to be raised by something that does. This is that something, and it is deliberately
-/// nothing more: it formats no policy, decides no disposition, and cannot change what the mapping
-/// classified as — the mapping is ignored either way, exactly as the previous release ignored it.
-/// What it adds is the line saying so.
-///
-/// The line is a `WARN` carrying the catalog's `diag` field, which is the same tracing path every
-/// other operator-facing configuration warning takes, so an operator greps for the code and lands on
-/// the entry that explains it. It fires on the first upstream error that reaches an unrecognized
-/// mapping and never at boot — which is why a configuration the previous release booted silently
-/// still boots with exactly the lines it booted with then.
-///
-/// Warned ONCE per distinct value: the dedup is the breaker crate's own `WarnOnceDiagnostics`, which
-/// [`root_diagnostics`] wraps this in, rather than a second copy of the same set here.
-#[derive(Debug, Clone, Copy, Default)]
-pub struct TracingDiagnostics;
-
-impl Diagnostics for TracingDiagnostics {
-    fn unrecognized_error_map_value(&self, value: &str) {
-        tracing::warn!(
-            diag = %busbar_substrate_values::diagnostics::CONFIG_ERROR_MAP_CLASS_UNRECOGNIZED.banner(),
-            error_map_value = value,
-            "error_map maps an error to an unrecognized status class; the mapping is IGNORED and \
-             classification falls through to HTTP status. Valid classes: rate_limit, overloaded, \
-             server_error, timeout, network, auth, billing, client_error, context_length"
-        );
-    }
-}
-
-/// The sink the root binds the breaker unit to: the node's logging, warned once per distinct value.
-#[must_use]
-pub fn root_diagnostics() -> DiagnosticsSink {
-    Arc::new(busbar_kernel_breaker::classify::WarnOnceDiagnostics::new(
-        TracingDiagnostics,
-    ))
-}
-
 /// The egress unit's breaker port, bound to the breaker unit.
 ///
 /// A thin wrapper with no policy of its own beyond the two folds the module doc names. What it must
 /// never do is decide anything: a disposition is the breaker unit's data and a route is the egress
 /// unit's walk, and an adapter that split the difference would be a third opinion nobody asked for.
 pub struct BreakerAdapter {
-    unit: RootBreakerUnit,
+    unit: UnitSource,
     policy: BreakerPolicy,
 }
+
+/// Where the adapter reaches its breaker unit: asked on every call, so a source that follows the
+/// live configuration hands back the unit the node is admitting on NOW, not the one it booted with.
+pub type UnitSource = Arc<dyn Fn() -> Arc<BreakerUnit> + Send + Sync>;
 
 impl BreakerAdapter {
     /// Bind the egress port to a breaker unit, under a declared per-pool policy.
     #[must_use]
-    pub fn new(unit: RootBreakerUnit, policy: BreakerPolicy) -> Self {
-        BreakerAdapter { unit, policy }
+    pub fn new(unit: Arc<BreakerUnit>, policy: BreakerPolicy) -> Self {
+        BreakerAdapter::over(Arc::new(move || Arc::clone(&unit)), policy)
     }
 
-    /// Bind the egress port to a breaker unit built over one diagnostics sink, under a declared
-    /// per-pool policy. The one-call form of [`BreakerAdapter::new`] for a caller that has a sink
-    /// rather than a unit — which is every caller in this root, because the unit has no other
-    /// configuration to make here.
+    /// Bind the egress port to whatever unit `source` answers with, under a declared policy.
     #[must_use]
-    pub fn with_diagnostics(diagnostics: DiagnosticsSink, policy: BreakerPolicy) -> Self {
-        BreakerAdapter::new(BreakerUnit::with_diagnostics(diagnostics), policy)
+    pub fn over(source: UnitSource, policy: BreakerPolicy) -> Self {
+        BreakerAdapter {
+            unit: source,
+            policy,
+        }
     }
 
-    /// The breaker unit behind the port, for the boot-time hydration the root does before serving.
+    /// Bind the egress port to the kernel's OWN breaker — the unit the live snapshot's lane store is
+    /// a handle onto — so there is one cell set on the node: an observation through this port is
+    /// the one admission reads, and a trip the kernel records is the one this port answers with.
+    /// Read through the handle on every call, because a config apply rebuilds the store (carrying
+    /// its learned health over by lane identity) and the unit with it.
     #[must_use]
-    pub fn unit(&self) -> &RootBreakerUnit {
-        &self.unit
+    pub fn over_kernel(
+        handle: Arc<busbar_kernel::state::AppHandle>,
+        policy: BreakerPolicy,
+    ) -> Self {
+        BreakerAdapter::over(Arc::new(move || handle.load().store.breaker_unit()), policy)
+    }
+
+    /// Bind the egress port to a fresh breaker unit, under a declared per-pool policy. The
+    /// one-call form of [`BreakerAdapter::new`] for a caller with no unit of its own to hand in.
+    #[must_use]
+    pub fn with_policy(policy: BreakerPolicy) -> Self {
+        BreakerAdapter::new(Arc::new(BreakerUnit::new()), policy)
+    }
+
+    /// The breaker unit behind the port, as its source answers now.
+    #[must_use]
+    pub fn unit(&self) -> Arc<BreakerUnit> {
+        (self.unit)()
     }
 
     /// Fold the transport's coarse reading of a frame down to a representative numeric status, for
@@ -262,7 +250,7 @@ impl Breaker for BreakerAdapter {
         destination: DestinationId,
         now: u64,
     ) -> Result<Admit, Unavailable> {
-        match self.unit.try_admit(pool, destination, now) {
+        match self.unit().try_admit(pool, destination, now) {
             Ok(admit) => Ok(Admit {
                 probe_epoch: admit.probe_epoch,
             }),
@@ -283,7 +271,7 @@ impl Breaker for BreakerAdapter {
 
     fn ready(&self, pool: &str, destination: DestinationId, now: u64, token: &Pass<Route>) -> bool {
         matches!(
-            self.unit.state(pool, destination, now, token),
+            self.unit().state(pool, destination, now, token),
             busbar_kernel_breaker::LaneState::Ready
         )
     }
@@ -293,7 +281,7 @@ impl Breaker for BreakerAdapter {
         // destination is administratively down is declared configuration, which is the egress and
         // configuration layer's to know and not this unit's. Answered from `budget_remaining`
         // alone, never from the sealed `state`/`observe`, so no token crosses here.
-        self.unit.budget_remaining(destination) != Some(0)
+        self.unit().budget_remaining(destination) != Some(0)
     }
 
     fn cooldown_remaining(
@@ -303,20 +291,23 @@ impl Breaker for BreakerAdapter {
         now: u64,
         token: &Pass<Route>,
     ) -> u64 {
-        match self.unit.state(pool, destination, now, token) {
+        match self.unit().state(pool, destination, now, token) {
             busbar_kernel_breaker::LaneState::Suppressed { until } => until.saturating_sub(now),
             _ => 0,
         }
     }
 
-    fn classify(&self, destination: DestinationId, status: UpstreamStatus) -> Classified {
-        let code = Self::narrow_code(status);
-        let classified = self.unit.classify(
-            destination,
+    fn classify(&self, _destination: DestinationId, status: UpstreamStatus) -> Classified {
+        // The status alone, against no operator map: the breaker keeps none. Reading an error body
+        // against the operator's `error_map` is the plane's classifier's work, and the unit is told
+        // that verdict; this port answers only for the numbered status the walk read off the frame.
+        let classified = busbar_kernel_breaker::port::classify_upstream(
+            &HashMap::new(),
             busbar_kernel_breaker::port::UpstreamStatus {
-                code,
+                code: Self::narrow_code(status),
                 retry_after: status.retry_after,
             },
+            &NoopDiagnostics,
         );
         Classified {
             disposition: classified.disposition,
@@ -340,7 +331,7 @@ impl Breaker for BreakerAdapter {
         let Some(cfg) = self.policy.for_pool(pool) else {
             return false;
         };
-        self.unit.observe(
+        self.unit().observe(
             pool,
             destination,
             to_breaker_outcome(outcome),
@@ -351,15 +342,15 @@ impl Breaker for BreakerAdapter {
     }
 
     fn release_probe(&self, pool: &str, destination: DestinationId, epoch: u64, now: u64) {
-        self.unit.release_probe(pool, destination, epoch, now);
+        self.unit().release_probe(pool, destination, epoch, now);
     }
 
     fn spend_budget(&self, destination: DestinationId) -> bool {
-        self.unit.spend_budget(destination)
+        self.unit().spend_budget(destination)
     }
 
     fn refund_budget(&self, destination: DestinationId) {
-        self.unit.refund_budget(destination);
+        self.unit().refund_budget(destination);
     }
 }
 

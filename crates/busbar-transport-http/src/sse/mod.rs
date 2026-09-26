@@ -72,7 +72,7 @@ fn carve_complete_frames(buf: &mut Vec<u8>, scanned: usize) -> (Vec<Arc<[u8]>>, 
 
 /// The `sse` transport.
 pub struct SseTransport {
-    http: Arc<HttpTransport>,
+    http: Arc<dyn busbar_contract::Transport>,
 }
 
 impl std::fmt::Debug for SseTransport {
@@ -86,6 +86,13 @@ impl SseTransport {
     #[must_use]
     pub fn new(http: Arc<HttpTransport>) -> Self {
         Self { http }
+    }
+
+    /// Compose `sse` over whatever lower transport the composition root built beneath it — every
+    /// call is the lower layer's own, through the transport trait, reframed on the way out.
+    #[must_use]
+    pub fn over(lower: Arc<dyn busbar_contract::Transport>) -> Self {
+        Self { http: lower }
     }
 }
 

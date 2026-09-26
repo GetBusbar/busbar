@@ -13,13 +13,13 @@ plane voice-client
 plane voice-server
 #
 # root-leg <leg> <cargo feature that compiles it into this build>: the five root legs. Must equal
-# qa/capability-equality.json `root_legs`. The mcp and a2a legs are the served kernel-loop rider, so
-# the feature that links the plane gates them.
+# qa/capability-equality.json `root_legs`. The mcp, a2a and voice legs are the served kernel-loop
+# rider (the voice leg its session rider), so the feature that links the plane gates them.
 root-leg root-a2a plane-a2a
 root-leg root-admin root-admin
 root-leg root-llm root-llm
 root-leg root-mcp plane-mcp
-root-leg root-voice root-voice
+root-leg root-voice plane-voice
 #
 # crate <crates/busbar-<suffix>> <ledger column>...: the columns each workspace plane crate answers
 # to (both halves of every plane; plane-streaming is the plane voice is a dialect of).

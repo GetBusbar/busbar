@@ -217,9 +217,13 @@ fn additive_red<'a>(
     )
 }
 
-/// The tracked file carrying `SecretRef`'s hand-written `Deserialize`, at its path today and at the
-/// freeze point alike (it has not moved since `v1.5.3`).
-const SECRETREF_SRC: &str = "crates/secret-ref/src/lib.rs";
+/// The tracked file carrying `SecretRef`'s hand-written `Deserialize`, at its path today.
+const SECRETREF_SRC: &str = "crates/busbar-contract/src/secret_ref.rs";
+
+// qa-names: crates/secret-ref/src/lib.rs -- xtask/src/gates/config_schema/selftest.rs -- the baseline plant's path: SecretRef's source at the freeze point, before it moved into busbar-contract; the self-test plants the baseline under the historical name the gate reads
+/// The same file at the freeze point (`v1.5.3`), before it moved (`schema::MOVED_SOURCES`). The
+/// baseline is planted under this name because history is the only place the gate reads it from.
+const SECRETREF_BASE_SRC: &str = "crates/secret-ref/src/lib.rs";
 
 /// A baseline `SecretRef` impl that REFUSES every bare scalar — the `v1.5.3` shape, whose
 /// `visit_str` could only fail and whose other scalar forms fell to serde's default error.
@@ -266,7 +270,10 @@ const BASE_SECRETREF_ACCEPTS_ALL: &str = "impl<'de> Deserialize<'de> for SecretR
 fn predating_baseline(cx: &Ctx, src: &str) -> Overlay {
     let mut ov = baseline_with_waivers(cx, "# no waivers\n", |d| drop_type(d, T_MANUAL));
     ov.set_command(
-        format!("git-show:{}:{SECRETREF_SRC}", super::DEFAULT_BASELINE_REF),
+        format!(
+            "git-show:{}:{SECRETREF_BASE_SRC}",
+            super::DEFAULT_BASELINE_REF
+        ),
         src.to_string(),
     );
     ov
@@ -348,7 +355,7 @@ pub fn run<'a>(gate: &'a dyn Gate, cx: &'a Ctx) -> Report<'a> {
     // a way that could happen, and each must stop the gate rather than narrow the scan.
 
     let mut ov = Overlay::new();
-    ov.remove("crates/secret-ref/src/lib.rs");
+    ov.remove(SECRETREF_SRC);
     report.push(prove_rows_red(
         cx,
         gate,

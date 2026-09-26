@@ -45,7 +45,9 @@ fn transcription_billing_is_model_dependent() {
 fn speech_carries_binary_out_and_char_or_token_billing() {
     let resp = SpeechResp {
         audio: Some(MediaBlob {
-            payload: MediaPayload::Bytes(bytes::Bytes::from_static(b"\xff\xfb")),
+            payload: MediaPayload::Bytes(busbar_substrate_values::wire::SlabBytes::from(
+                &b"\xff\xfb"[..],
+            )),
             mime_type: "audio/mpeg".into(),
             pcm: None,
         }),

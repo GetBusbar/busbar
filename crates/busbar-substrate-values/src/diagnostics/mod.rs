@@ -918,7 +918,7 @@ pub const OAUTH_AS_SWEEP_FAILED: Diagnostic = Diagnostic {
 };
 
 /// HMAC-SHA256 init failed during SigV4 signing — documented unreachable.
-pub const SIGV4_HMAC_INIT_FAILED: Diagnostic = Diagnostic {
+pub const REQUEST_SIGNING_HMAC_INIT_FAILED: Diagnostic = Diagnostic {
     code: 4024,
     class: Class::Auth,
     slug: "sigv4-hmac-init-failed", // noun-neutrality: frozen-literal pinned-by=docs/diagnostics.md BUSBAR-4024 slug, operator-visible; drift-tested render
@@ -2264,53 +2264,6 @@ pub const PLANE_AUDIT_ROW_UNREADABLE: Diagnostic = Diagnostic {
     retired: false,
 };
 
-pub const WEBHOOK_EXPORTER_DISABLED: Diagnostic = Diagnostic {
-    code: 7070,
-    class: Class::Plane,
-    slug: "webhook-exporter-disabled",
-    title: "Webhook log exporter disabled (invalid configuration)",
-    severity: Severity::Actionable,
-    summary: "A request-log webhook exporter could not be built from its configuration and has been \
-              disabled, so its request logs are NOT delivered. This is a config problem surfaced at \
-              boot, not a transient delivery failure.",
-    action: "Fix the named webhook exporter's configuration (URL, auth header, or projection) and \
-             restart to re-enable delivery.",
-    since: "1.6.0",
-    retired: false,
-};
-
-pub const WEBHOOK_DELIVERY_NON_2XX: Diagnostic = Diagnostic {
-    code: 7071,
-    class: Class::Plane,
-    slug: "webhook-delivery-non-2xx",
-    title: "Webhook log delivery returned non-2xx (log dropped)",
-    severity: Severity::BenignRecurring,
-    summary:
-        "A request-log webhook delivery got a non-2xx response from the sink, so that one log \
-              line was dropped (deliveries are fire-and-forget and never retried). This can recur \
-              per request when a sink is unhealthy, so it is logged at debug.",
-    action: "If logs are being lost, check the webhook sink's health and the delivery counters. \
-             `WEBHOOK_LOGS_DROPPED_TOTAL` tracks the volume.",
-    since: "1.6.0",
-    retired: false,
-};
-
-pub const WEBHOOK_DELIVERY_TRANSPORT_ERROR: Diagnostic = Diagnostic {
-    code: 7072,
-    class: Class::Plane,
-    slug: "webhook-delivery-transport-error",
-    title: "Webhook log delivery transport error (log dropped)",
-    severity: Severity::BenignRecurring,
-    summary:
-        "A request-log webhook delivery failed with a transport error (connection/timeout/DNS), \
-              so that one log line was dropped. Deliveries are fire-and-forget and never retried; \
-              this can recur per request when a sink is unreachable, so it is logged at debug.",
-    action: "If logs are being lost, check the webhook sink's reachability and the delivery \
-             counters. `WEBHOOK_LOGS_DROPPED_TOTAL` tracks the volume.",
-    since: "1.6.0",
-    retired: false,
-};
-
 pub const IR_CLAMP_N_TO_1: Diagnostic = Diagnostic {
     code: 7078,
     class: Class::Plane,
@@ -2888,72 +2841,83 @@ pub const LANE_HARD_DOWN_ALL_CELLS: Diagnostic = Diagnostic {
     retired: false,
 };
 
+/// RETIRED before 1.6.0 shipped: the kernel's own breaker state machine that raised this code is
+/// deleted and the kernel runs on the one breaker, which logs nothing. The number is kept so a log
+/// line from a pre-release build still resolves to an entry that says what happened.
 pub const BREAKER_UNEXPECTED_STATE_CLASSIFY: Diagnostic = Diagnostic {
     code: 5041,
     class: Class::Proxy,
     slug: "breaker-unexpected-state-classify",
-    title: "Unexpected breaker state on classify (fail-safe: deny admission)",
+    title: "Unexpected breaker state on classify (fail-safe: deny admission) — RETIRED",
     severity: Severity::Actionable,
-    summary: "The breaker classify path read a cell state that is not one of the three valid \
+    summary:
+        "RETIRED. The breaker classify path read a cell state that is not one of the three valid \
               encodings (Closed/Open/HalfOpen). This is IMPOSSIBLE under the atomic-sentinel \
               invariant, so reaching it means a real invariant break or memory corruption. busbar \
               fails SAFE — treats the cell as never-elapsing Open so admission is denied — rather \
               than panic the dispatching task. Warned once per process; recurrence logs at debug.",
-    action: "Capture the logged state value and file a bug — a breaker cell should never hold an \
-             unexpected state. Requests to that cell are safely denied (fail-closed) until it is \
-             re-armed; investigate for memory corruption if it persists.",
+    action: "Nothing emits this code. The one breaker keeps its cell state behind a lock and \
+             answers an unreachable encoding silently, with the same fail-safe result.",
     since: "1.6.0",
-    retired: false,
+    retired: true,
 };
 
+/// RETIRED before 1.6.0 shipped: the kernel's own breaker state machine that raised this code is
+/// deleted and the kernel runs on the one breaker, which logs nothing. The number is kept so a log
+/// line from a pre-release build still resolves to an entry that says what happened.
 pub const BREAKER_UNEXPECTED_STATE_PROBE: Diagnostic = Diagnostic {
     code: 5042,
     class: Class::Proxy,
     slug: "breaker-unexpected-state-probe",
-    title: "Unexpected breaker state on probe acquisition (fail-safe: refuse)",
+    title: "Unexpected breaker state on probe acquisition (fail-safe: refuse) — RETIRED",
     severity: Severity::Actionable,
-    summary: "The breaker probe-acquisition path read an unexpected cell state (not \
+    summary: "RETIRED. The breaker probe-acquisition path read an unexpected cell state (not \
               Closed/Open/HalfOpen). Impossible under the atomic-sentinel invariant; busbar refuses \
               the probe acquisition (admits nobody) rather than panic the dispatching task. Same \
               invariant-break family as BUSBAR-5041. Warned once per process; recurrence logs at \
               debug.",
-    action: "Capture the logged state value and file a bug. Probe acquisition is safely refused; \
-             investigate for memory corruption if it persists.",
+    action: "Nothing emits this code. The one breaker keeps its cell state behind a lock and \
+             answers an unreachable encoding silently, with the same fail-safe result.",
     since: "1.6.0",
-    retired: false,
+    retired: true,
 };
 
+/// RETIRED before 1.6.0 shipped: the kernel's own breaker state machine that raised this code is
+/// deleted and the kernel runs on the one breaker, which logs nothing. The number is kept so a log
+/// line from a pre-release build still resolves to an entry that says what happened.
 pub const BREAKER_UNEXPECTED_STATE_READ: Diagnostic = Diagnostic {
     code: 5043,
     class: Class::Proxy,
     slug: "breaker-unexpected-state-read",
-    title: "Unexpected breaker state on state read (reporting Closed)",
+    title: "Unexpected breaker state on state read (reporting Closed) — RETIRED",
     severity: Severity::Actionable,
-    summary: "A breaker cell state read (a total, side-effect-free projection) found an unexpected \
+    summary: "RETIRED. A breaker cell state read (a total, side-effect-free projection) found an unexpected \
               encoding. Impossible under the atomic-sentinel invariant; busbar reports the benign \
               Closed default rather than panic, keeping the read total for any encoding. Same family \
               as BUSBAR-5041. Warned once per process; recurrence logs at debug.",
-    action: "Capture the logged state value and file a bug — this read should never see an unexpected \
-             state. The projection is safe; investigate for memory corruption if it persists.",
+    action: "Nothing emits this code. The one breaker keeps its cell state behind a lock and \
+             answers an unreachable encoding silently, with the same fail-safe result.",
     since: "1.6.0",
-    retired: false,
+    retired: true,
 };
 
+/// RETIRED before 1.6.0 shipped: the kernel's own breaker state machine that raised this code is
+/// deleted and the kernel runs on the one breaker, which logs nothing. The number is kept so a log
+/// line from a pre-release build still resolves to an entry that says what happened.
 pub const BREAKER_UNEXPECTED_STATE_RECORD_FAILURE: Diagnostic = Diagnostic {
     code: 5044,
     class: Class::Proxy,
     slug: "breaker-unexpected-state-record-failure",
-    title: "Unexpected breaker state in record_failure (no-op)",
+    title: "Unexpected breaker state in record_failure (no-op) — RETIRED",
     severity: Severity::Actionable,
-    summary: "The breaker failure-recording path read an unexpected cell state (not \
+    summary: "RETIRED. The breaker failure-recording path read an unexpected cell state (not \
               Closed/Open/HalfOpen). Impossible under the atomic-sentinel invariant; busbar treats it \
               as a no-op (like the already-Open case) rather than panic the task. Same family as \
               BUSBAR-5041. Warned once per process; recurrence logs at debug.",
-    action: "Capture the logged state value and file a bug — a breaker cell should never hold an \
-             unexpected state. The failure record is safely dropped; investigate for memory \
-             corruption if it persists.",
+    action: "Nothing emits this code. The one breaker keeps its cell state behind a lock and \
+             answers an unreachable encoding silently, with the same fail-safe result.",
     since: "1.6.0",
-    retired: false,
+    retired: true,
 };
 
 pub const PLUGINS_DIR_FINGERPRINT_FAILED: Diagnostic = Diagnostic {
@@ -3470,7 +3434,7 @@ pub static REGISTRY: &[&Diagnostic] = &[
     &TRUST_REGISTRATION_SUSPENDED,
     &TRUST_SWEEP_PANICKED,
     &OAUTH_AS_SWEEP_FAILED,
-    &SIGV4_HMAC_INIT_FAILED,
+    &REQUEST_SIGNING_HMAC_INIT_FAILED,
     &OAUTH_AS_EPHEMERAL_SIGNING_KEY,
     &USAGE_TAP_REASSEMBLY_CAP_EXCEEDED,
     &UPSTREAM_MIDSTREAM_TRANSPORT_ERROR,
@@ -3546,9 +3510,6 @@ pub static REGISTRY: &[&Diagnostic] = &[
     &PLANE_CALLLOG_ROW_UNREADABLE,
     &PLANE_JOURNAL_ROW_UNREADABLE,
     &PLANE_AUDIT_ROW_UNREADABLE,
-    &WEBHOOK_EXPORTER_DISABLED,
-    &WEBHOOK_DELIVERY_NON_2XX,
-    &WEBHOOK_DELIVERY_TRANSPORT_ERROR,
     &IR_CLAMP_N_TO_1,
     &IR_DROP_REASONING,
     &IR_DROP_PROMPT_CACHE,

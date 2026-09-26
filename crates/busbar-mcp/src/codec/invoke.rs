@@ -15,7 +15,7 @@ use busbar_substrate_values::ir::invoke::{InvokeReq, InvokeResp};
 use busbar_substrate_values::ir::neutral_handles::{InvokeReqHandle, InvokeRespHandle};
 use busbar_substrate_values::ir::SourceScopedExtra;
 #[cfg(any(test, feature = "test-support"))]
-use busbar_substrate_values::wire::WireBody;
+use busbar_substrate_values::wire::{SlabBytes, WireBody};
 
 #[cfg(any(test, feature = "test-support"))]
 use busbar_plane_mcp::codec::METHOD_TOOLS_CALL;
@@ -198,7 +198,7 @@ pub(crate) fn invoke_write_response(r: &InvokeResp) -> WireBody {
     if let Some(s) = &r.structured {
         result["structuredContent"] = s.clone();
     }
-    WireBody::json(Bytes::from(
+    WireBody::json(SlabBytes::from(
         serde_json::to_vec(&serde_json::json!({ "jsonrpc": "2.0", "result": result }))
             .unwrap_or_default(),
     ))

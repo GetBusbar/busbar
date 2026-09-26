@@ -201,7 +201,7 @@ fn only_the_invoke_shape_may_stream() {
 /// why the word rides beside it. If this ever fails, either a verb changed shape or two verbs
 /// collided on a name, and both are breaking changes.
 #[test]
-fn the_llm_family_is_one_shape_with_seven_distinct_words() {
+fn the_named_invoke_family_is_one_shape_with_seven_distinct_words() {
     let family: Vec<&str> = ALL
         .iter()
         .filter(|(op, _, _)| *op != Operation::INVOKE && op.shape() == OpShape::Invoke)

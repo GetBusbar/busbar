@@ -53,6 +53,9 @@ pub mod egress_auth;
 pub mod exchange;
 pub mod module;
 pub mod principal;
+// Folded from the retired transport-key crate (#36: the TLS secret→config provisioning
+// is kernel-side machinery; the credential it resolves is this crate's, roster def 3).
+pub mod transport_key;
 pub mod unit;
 
 pub use admin::{admin_grants, kernel_verb_scope_satisfied, Grants, Scope};

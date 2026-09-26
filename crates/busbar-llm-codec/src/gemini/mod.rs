@@ -168,6 +168,7 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
     // key (no signing context), so it is lane-constant and the boot path prebuilds it.
     egress_auth_headers: Some(egress_auth_headers),
     egress_auth_lane_constant: true,
+    egress_scheme: None,
     // THE MODEL IS IN THE URL (`/v1beta/models/{model}:generateContent`): this dialect registers its
     // arrival (`busbar_kernel::ingress::gemini_arrival`) through `busbar_llm::PATH_INGRESS`, which the
     // composition root hands to the core side-table. `has_model_in_url: true` below is what the boot

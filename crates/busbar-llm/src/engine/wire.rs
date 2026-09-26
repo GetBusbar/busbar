@@ -411,7 +411,9 @@ pub(crate) fn translate_request_cross_protocol(
                 )
                 .map_err(|e| Box::new(map_translate_req_reject(ingress_protocol, e)))?;
             return match translated.wire {
-                busbar_substrate_values::wire::EgressWire::Bytes(b) => Ok(b),
+                busbar_substrate_values::wire::EgressWire::Bytes(b) => {
+                    Ok(bytes::Bytes::from_owner(b))
+                }
                 // An opaque egress wire is always bytes; a JSON here is structurally impossible, but
                 // serialize it rather than panic on the request path — and answer the FAILURE the
                 // way the serialize arm at the end of this function answers its own. An
@@ -530,7 +532,9 @@ pub(crate) fn translate_request_cross_protocol(
             // The EGRESS wire is not JSON (multipart transcription): the IR carried the resolved model
             // in-band, and the JSON-only post-shaping below (shim strips, model rewrite) does not
             // apply — emit the handler's bytes directly.
-            busbar_substrate_values::wire::EgressWire::Bytes(b) => return Ok(b),
+            busbar_substrate_values::wire::EgressWire::Bytes(b) => {
+                return Ok(bytes::Bytes::from_owner(b))
+            }
             // The translate entrypoint already turns an unrepresentable write into its reject, so
             // this arm is not reachable through it; it refuses rather than forwarding anything,
             // because the one thing that must never happen here is an empty body going upstream.

@@ -594,7 +594,7 @@ fn the_remaining_kinds_shapes_are_constructible() {
         session_bindable: true,
     });
     let _: Result<SecretValue, SecretError> = Err(SecretError::Unknown);
-    let _ = SecretRef("fixture://key".into());
+    let _ = SecretRef::file("fixture://key");
     let _: Result<Head, StoreError> = Err(StoreError::Unavailable);
     let _ = ExportItem::Segment {
         stream: "journal",

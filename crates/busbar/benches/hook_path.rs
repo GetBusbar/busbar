@@ -191,33 +191,11 @@ fn spawn_stub_upstream() -> u16 {
     port
 }
 
-/// The hermetic hook cdylib, found the same way the in-crate hook tests find it: newest of the
-/// uplifted copy and the raw `deps/` compiler output, because a scoped `cargo build` only produces
-/// the latter.
-fn hook_cdylib() -> Option<PathBuf> {
-    let exe = std::env::current_exe().ok()?;
-    let profile_dir = exe.parent()?.parent()?;
-    let name = busbar_plugin_loader::plugin_library_filename("busbar_hook_test_plugin");
-    [
-        profile_dir.join(&name),
-        profile_dir.join("deps").join(&name),
-    ]
-    .into_iter()
-    .filter_map(|p| {
-        std::fs::metadata(&p)
-            .and_then(|m| m.modified())
-            .ok()
-            .map(|t| (p, t))
-    })
-    .max_by_key(|(_, t)| *t)
-    .map(|(p, _)| p)
-}
-
 /// Pack the hook cdylib into an UNSIGNED tarball in `dir`, declaring `prompt: ro` — the grant the
 /// C2 cell is about. Unsigned + `allow_unsigned` is the only path available outside release CI, and
 /// it still runs the full scan/trust/load pipeline.
 fn install_prompt_ro_hook(dir: &Path) {
-    let cdylib = hook_cdylib().expect(
+    let cdylib = busbar_kernel::test_support::hook_fixture_cdylib().expect(
         "the hook-test-plugin cdylib is not built, so the C2 cell would silently measure a \
          deployment with NO hook in it. Run `cargo build --workspace --all-targets` first.",
     );

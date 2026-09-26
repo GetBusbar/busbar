@@ -60,6 +60,24 @@ fn free_port() -> u16 {
     l.local_addr().unwrap().port()
 }
 
+/// The door's own plane section, as DATA (`tests/fixtures/front_door_plane_section.yaml`), with the
+/// two listener ports filled in. Its first line is the section key the refusal must name.
+const PLANE_SECTION: &str = include_str!("fixtures/front_door_plane_section.yaml");
+
+fn plane_section(data_port: u16, admin_port: u16) -> String {
+    PLANE_SECTION
+        .replace("{data_port}", &data_port.to_string())
+        .replace("{admin_port}", &admin_port.to_string())
+}
+
+/// The section key the door's plane is configured under — the fixture's first line, `<key>:`.
+fn section_key() -> &'static str {
+    PLANE_SECTION
+        .lines()
+        .next()
+        .expect("the plane-section fixture is not empty")
+}
+
 /// The smallest config that makes a deployment an MCP server, with `auth_block` spliced in
 /// verbatim. Everything absent is absent on purpose: no providers, no models, no pools — the MCP
 /// plane needs none of them, and a fixture that also carried an LLM fleet could fail for a reason
@@ -76,11 +94,8 @@ providers: {{}}
 models: {{}}
 pools: {{}}
 {auth_block}
-mcp:
-  canonical_uri: "http://127.0.0.1:{data_port}/mcp"
-  authorization_servers:
-    - "http://127.0.0.1:{admin_port}"
-"#
+{section}"#,
+            section = plane_section(data_port, admin_port),
         ),
     )
     .unwrap();
@@ -130,8 +145,8 @@ fn busbar(cfg: &Path, args: &[&str]) -> Command {
 /// dev-mode posture.
 fn assert_names_both_keys(where_: &str, text: &str) {
     assert!(
-        text.contains("mcp:"),
-        "{where_} must name the `mcp:` key; got:\n{text}"
+        text.contains(section_key()),
+        "{where_} must name the door's own config key; got:\n{text}"
     );
     assert!(
         text.contains("auth.chain"),
@@ -200,7 +215,8 @@ fn a_front_door_config_with_no_auth_chain_does_not_boot() {
                 }
                 let cfg_text = std::fs::read_to_string(&cfg).unwrap_or_default();
                 panic!(
-                    "busbar did not exit within 120s with `mcp:` and an empty auth.chain.\n\
+                    "busbar did not exit within 120s with the door configured and an empty \
+                     auth.chain.\n\
                      If the output below carries the refusal, the guard fired and this test's \
                      wait is wrong; if it does not, the plane is being served anonymously.\n\
                      ── what busbar said ──\n{seen}\n── the config it was given ──\n{cfg_text}"
@@ -272,7 +288,7 @@ fn the_control_a_front_door_config_with_a_closed_chain_still_boots() {
     let _ = child.wait();
     assert!(
         listening,
-        "`mcp:` with `chain: [keys]` must still boot and listen on {addr}; a guard that refuses \
+        "the door with `chain: [keys]` must still boot and listen on {addr}; a guard that refuses \
          every such config is vacuous in the other direction"
     );
 }

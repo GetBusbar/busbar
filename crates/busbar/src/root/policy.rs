@@ -43,13 +43,13 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use busbar_contract::transport::TransportSettings;
 use busbar_contract::{ClaimKey, OpClassId};
 use busbar_kernel::config::groups::{GroupCfg, LimitMetric};
 use busbar_kernel::config::limits::LimitsResolved;
 use busbar_kernel_budget::{GroupBucket, GroupRuntime, GroupTable, STANDARD_TIER_BP};
 use busbar_kernel_ledger::usage::MeterPolicy;
 use busbar_kernel_scope::{PolicyView, Scope};
-use busbar_transport_http::ClientSettings;
 
 /// One pool, as the metering policy needs to know it: its name and the lanes it stands for.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -146,10 +146,10 @@ pub fn build(cfg: &MeterPolicyConfig) -> MeterPolicyHandle {
     })
 }
 
-/// The egress/ingress client settings the http transport is built from, taken off the deployment's
-/// resolved limits rather than from the transport crate's `Default`.
+/// The settings every linked transport is built from, taken off the deployment's resolved limits
+/// rather than from a `Default`.
 ///
-/// Every field of `ClientSettings` is an operator knob that already has a home in `limits:` /
+/// Every field of `TransportSettings` is an operator knob that already has a home in `limits:` /
 /// `advanced:`, and the legacy serving path builds its upstream client from exactly these six
 /// values. The one that matters most is `request_body_max_bytes`: it is the SAME number the served
 /// door's inbound body limit is built from, so a transport built from a `Default` would accept a
@@ -160,15 +160,15 @@ pub fn build(cfg: &MeterPolicyConfig) -> MeterPolicyHandle {
 /// Reading all six off one struct is what makes that impossible to get half-right.
 ///
 /// A deployment that sets nothing gets the config layer's own resolved defaults — which for the
-/// body cap is the same 32 MiB `ClientSettings::default()` carries, so an unset limit changes
+/// body cap is the same 32 MiB `TransportSettings::default()` carries, so an unset limit changes
 /// nothing.
 ///
 /// The two deprecated upstream env overrides the legacy client build still honors are deliberately
 /// not read here: this is the CONFIGURED posture, and the env vars are the legacy path's own
 /// compatibility shim.
 #[must_use]
-pub fn client_settings(limits: &LimitsResolved) -> ClientSettings {
-    ClientSettings {
+pub fn client_settings(limits: &LimitsResolved) -> TransportSettings {
+    TransportSettings {
         pool_max_idle_per_host: limits.pool_max_idle_per_host,
         pool_idle_timeout_secs: limits.pool_idle_timeout_secs,
         upstream_http1_only: limits.upstream_http1_only,

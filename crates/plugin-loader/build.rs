@@ -2,10 +2,11 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 //
 // THE BOTH-WAYS FIXTURE TABLE (test builds include it; nothing else reads it). Which in-tree plugin
-// proves each cold kind both ways is DATA in `Cargo.toml`:
+// proves each kind both ways is DATA in `Cargo.toml`:
 //
 //   [package.metadata.busbar.both-ways]   <kind> = "<fixture crate>"
 //
+// A HOT kind's row (`HOT_KINDS`) goes to `HOT_FIXTURES` instead of the cold entry table.
 // and this turns the rows into `$OUT_DIR/both_ways.rs`: `(kind, the fixture's cdylib crate name, its
 // linked entry)` per row, in manifest order, and `<kind>_fixture` — the fixture crate itself, for a
 // test that drives its compiled-in twin (`open` + `dispatch_compiled_in`). `src/tests/both_ways.rs`
@@ -18,6 +19,9 @@
 use std::env;
 use std::path::PathBuf;
 
+/// The HOT-lane kinds (#30): their fixtures carry a `#[repr(C)]` decl, not a cold entry.
+const HOT_KINDS: &[&str] = &["plane", "transport"];
+
 fn main() {
     println!("cargo:rerun-if-changed=Cargo.toml");
     let manifest = std::fs::read_to_string("Cargo.toml").expect("read Cargo.toml");
@@ -27,6 +31,13 @@ fn main() {
          pub(crate) static FIXTURES: &[(&str, &str, &busbar_plugin::cold::ColdEntry)] = &[\n",
     );
     let mut crates = String::new();
+    // A HOT kind's row: its fixture has no cold entry — its linked door is its `#[repr(C)]` decl — so
+    // it contributes its crate alias and its cdylib name only.
+    let mut hot = String::from(
+        "/// `(kind, cdylib crate name)` of each HOT kind's both-ways fixture.\n\
+         #[allow(dead_code)]\n\
+         pub(crate) static HOT_FIXTURES: &[(&str, &str)] = &[\n",
+    );
     let mut in_table = false;
     for line in manifest.lines() {
         let code = line.split('#').next().unwrap_or("").trim();
@@ -37,9 +48,13 @@ fn main() {
         if let (true, Some((kind, krate))) = (in_table, code.split_once('=')) {
             let kind = kind.trim().trim_matches('"');
             let snake = krate.trim().trim_matches('"').replace('-', "_");
-            out.push_str(&format!(
-                "    (\"{kind}\", \"{snake}\", &::{snake}::BUSBAR_COLD_ENTRY),\n"
-            ));
+            if HOT_KINDS.contains(&kind) {
+                hot.push_str(&format!("    (\"{kind}\", \"{snake}\"),\n"));
+            } else {
+                out.push_str(&format!(
+                    "    (\"{kind}\", \"{snake}\", &::{snake}::BUSBAR_COLD_ENTRY),\n"
+                ));
+            }
             crates.push_str(&format!(
                 "// The `{kind}` both-ways fixture crate.\n\
                  #[allow(unused_imports)]\n\
@@ -48,6 +63,8 @@ fn main() {
         }
     }
     out.push_str("];\n");
+    hot.push_str("];\n");
+    out.push_str(&hot);
     out.push_str(&crates);
     let path = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR")).join("both_ways.rs");
     std::fs::write(path, out).expect("write both_ways.rs");

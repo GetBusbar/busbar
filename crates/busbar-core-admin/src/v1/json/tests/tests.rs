@@ -3,8 +3,12 @@ use super::*;
 /// The OpenAPI 3 Operation Object's status-keyed field, spelled once. It is the OpenAPI
 /// specification's own key, not a busbar or instance word, and every read of an operation's
 /// documented statuses below goes through it.
+///
+/// Read from `tests/fixtures/openapi_operation_statuses_key.txt`: the key is the specification's
+/// text, so it is golden input data the test loads, not a literal spelled here.
 #[cfg(feature = "openapi-schema")]
-const OAS_OPERATION_STATUSES: &str = "responses"; // plane-purity: frozen-wire OpenAPI 3 Operation Object field name, fixed by the OpenAPI specification
+const OAS_OPERATION_STATUSES: &str =
+    include_str!("../../../../tests/fixtures/openapi_operation_statuses_key.txt").trim_ascii();
 
 /// Collect an axum Response into (status, content-type, parsed JSON body) for the wire-helper
 /// micro-tests below.

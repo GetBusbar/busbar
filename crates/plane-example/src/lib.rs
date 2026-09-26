@@ -76,7 +76,7 @@
 //! proof over the ABI.
 
 use busbar_plugin::hot::decl::{
-    BuildCtx, DeclBillableClass, DeclStr, IngressCarrier, OpaqueHandle,
+    BuildCtx, DeclBillableClass, DeclMetricFamily, DeclStr, IngressCarrier, OpaqueHandle,
 };
 use busbar_plugin::hot::host::{HostCtx, PlaneHostVtable};
 use busbar_plugin::hot::pod::{
@@ -111,6 +111,26 @@ static BILLABLE_CLASSES: [DeclBillableClass; 1] = [DeclBillableClass {
 }];
 /// The fee unit this plane counts: once per billable request.
 static FEE_UNITS: [DeclStr; 1] = [DeclStr::new("per_request")];
+/// The label keys of [`METRIC_FAMILIES`]' first-party family, in the order the host renders them.
+static CARRIED_KEYS: [DeclStr; 2] = [DeclStr::new("protocol"), DeclStr::new("reason")];
+/// The label key of [`METRIC_FAMILIES`]' own family.
+static OWN_KEYS: [DeclStr; 1] = [DeclStr::new("carrier")];
+/// The counter families this plane adds to through the host's `counter_add`: one of its own, and
+/// one first-party series the host lists as carriable — the seam's byte-identity witness.
+static METRIC_FAMILIES: [DeclMetricFamily; 2] = [
+    DeclMetricFamily {
+        name: DeclStr::new("example_dispatches_total"),
+        kind: DeclStr::new("counter"),
+        label_keys_ptr: OWN_KEYS.as_ptr(),
+        label_keys_len: OWN_KEYS.len(),
+    },
+    DeclMetricFamily {
+        name: DeclStr::new("busbar_billing_tap_decode_fail_total"),
+        kind: DeclStr::new("counter"),
+        label_keys_ptr: CARRIED_KEYS.as_ptr(),
+        label_keys_len: CARRIED_KEYS.len(),
+    },
+];
 
 /// THE PATH THIS PLANE ANSWERS ON, the method it takes and the wire format it speaks — what its
 /// `claims` slot states once it is built with a public URL to be admitted under.
@@ -621,6 +641,8 @@ pub static PLANE_DECL: PlaneDecl = PlaneDecl {
     fee_units_len: FEE_UNITS.len(),
     claims: Some(claims),
     admission: Some(admission),
+    metric_families_ptr: METRIC_FAMILIES.as_ptr(),
+    metric_families_len: METRIC_FAMILIES.len(),
 };
 
 // Emit the `cdylib` boundary symbols (`busbar_abi`, `busbar_plugin_kind() == "plane"`,

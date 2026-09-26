@@ -747,21 +747,14 @@ impl LaneSpec {
     }
 }
 
-/// The plugin route table a test `App` carries: the built-in `prometheus` exporter's `GET /metrics`
-/// route when the recorder is installed (`metrics::init()`), else empty. Mirrors production, where the
-/// route is built from `export.prometheus` presence — here the recorder handle is the stand-in switch
-/// (the harness has no `export:` config surface).
+/// The plugin route table a test `App` carries: the host's scrape route `GET /metrics` when the
+/// recorder is installed (`metrics::init()`), else empty. Mirrors production, where the route is the
+/// scrape sink's — here the recorder handle is the stand-in switch (the harness has no `export:`
+/// config surface) and nothing renders but the recorder itself.
 fn test_plugin_route_table() -> crate::plugin_routes::PluginRouteTable {
     if crate::metrics::recorder_installed() {
-        let cfg = crate::config::ExportCfg {
-            prometheus: Some(crate::config::PrometheusSettings {
-                projection: Default::default(),
-                buffer_seconds: 60,
-                key_gauge_limit: crate::config::default_key_gauge_limit(),
-            }),
-            ..Default::default()
-        };
-        crate::plugin_routes::build_route_table(crate::export::route_decls(&cfg))
+        let decl = crate::export::scrape::decl("metrics", None);
+        crate::plugin_routes::build_route_table(vec![decl])
             .unwrap_or_else(|_| crate::plugin_routes::PluginRouteTable::empty())
     } else {
         crate::plugin_routes::PluginRouteTable::empty()
@@ -1316,7 +1309,7 @@ impl TestApp {
         self
     }
 
-    /// Give the built App the DURABLE HOME the MCP trust state writes through to, exactly as boot
+    /// Give the built App the DURABLE HOME a plane's trust state writes through to, exactly as boot
     /// attaches the configured governance store: the demotion record's sink, the shared
     /// spent-approval ledger, and the boot replay of any demotion the store already holds.
     ///
@@ -1326,7 +1319,7 @@ impl TestApp {
     /// `busbar-store-example-plugin` cdylib in its durable mode, loaded over the plugin C ABI (see
     /// [`super::plugin_store`]). A deployment that configures no store simply never calls this, and
     /// gets the process-local behaviour both properties had before.
-    pub fn mcp_durable_store(mut self, store: std::sync::Arc<dyn busbar_api::Store>) -> Self {
+    pub fn durable_store(mut self, store: std::sync::Arc<dyn busbar_api::Store>) -> Self {
         self.plane_durable_store = Some(store);
         self
     }
@@ -2020,6 +2013,33 @@ impl TestApp {
 // checked) named `mcp::runtime`/`mcp::client` types and so RELOCATED to `busbar_mcp::testkit`
 // alongside the plane it serves — core's `test_support` stays plane-neutral.
 
+/// THE HOOK-KIND FIXTURE'S cdylib: the newest of the "uplifted" `<profile_dir>/<name>` copy (only
+/// refreshed when `[lib]` is a ROOT build target, e.g. `cargo build --all-targets`) and the raw
+/// `<profile_dir>/deps/<name>` compiler output (refreshed on every build that recompiles the lib) —
+/// a scoped `cargo test` / `cargo build` never uplifts, so checking only `profile_dir` silently found
+/// nothing and every hook test quietly no-op'd. `None` when neither exists. The fixture is named by
+/// DATA — `[package.metadata.busbar] test-fixtures` in this crate's Cargo.toml, exported by build.rs —
+/// so no source names the plugin. The one lookup the hook tests, the admin suite and the root's
+/// `hook_path` bench share.
+pub fn hook_fixture_cdylib() -> Option<std::path::PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let profile_dir = exe.parent()?.parent()?;
+    let name = busbar_plugin_loader::plugin_library_filename(env!("BUSBAR_FIXTURE_HOOK"));
+    [
+        profile_dir.join(&name),
+        profile_dir.join("deps").join(&name),
+    ]
+    .into_iter()
+    .filter_map(|p| {
+        std::fs::metadata(&p)
+            .and_then(|m| m.modified())
+            .ok()
+            .map(|mtime| (p, mtime))
+    })
+    .max_by_key(|(_, mtime)| *mtime)
+    .map(|(p, _)| p)
+}
+
 /// Build a [`crate::hooks::HookEnv`] whose registry loads the hermetic `busbar-hook-test-plugin`
 /// cdylib under the given alias(es) (all pointing at the SAME cdylib) with the given declared manifest
 /// `needs`. `None` when the cdylib is not built (the caller skips). Uses the unsigned +
@@ -2042,32 +2062,7 @@ pub fn test_hook_env_with_schema(
     settings_schema: Option<&str>,
 ) -> Option<crate::hooks::HookEnv> {
     let cdylib = {
-        let exe = std::env::current_exe().ok()?;
-        let profile_dir = exe.parent()?.parent()?;
-        let name = busbar_plugin_loader::plugin_library_filename("busbar_hook_test_plugin");
-        // Check BOTH the "uplifted" `<profile_dir>/<name>` copy (only refreshed when `[lib]` is a
-        // ROOT build target, e.g. `cargo build --all-targets`) and the raw
-        // `<profile_dir>/deps/<name>` compiler output (refreshed on every build that recompiles the
-        // lib). A bare `cargo test` (a developer running `cargo test -p busbar` locally, or any
-        // other scoped build step) does NOT uplift the cdylib to the top-level profile dir, only to
-        // `target/deps` — checking only `profile_dir` silently found nothing even though the cdylib
-        // really was built, making EVERY test that calls
-        // `test_hook_env`/`test_hook_env_with_schema` (the admin hook-registration/resolution suite
-        // among others) silently no-op instead of exercising real coverage. Same fix already
-        // applied to store-postgres-plugin's, auth-oidc-plugin's, and webrequest-hook's equivalent
-        // helpers.
-        let uplifted = profile_dir.join(&name);
-        let raw = profile_dir.join("deps").join(&name);
-        let candidate = [uplifted, raw]
-            .into_iter()
-            .filter_map(|p| {
-                std::fs::metadata(&p)
-                    .and_then(|m| m.modified())
-                    .ok()
-                    .map(|mtime| (p, mtime))
-            })
-            .max_by_key(|(_, mtime)| *mtime)
-            .map(|(p, _)| p);
+        let candidate = hook_fixture_cdylib();
         let Some(candidate) = candidate else {
             if std::env::var_os("CI").is_some() {
                 panic!(
@@ -2119,23 +2114,7 @@ pub fn test_hook_env_with_wrong_kind_plugin(
     hook_alias: &str,
     wrong_kind_alias: &str,
 ) -> Option<crate::hooks::HookEnv> {
-    let cdylib = {
-        let exe = std::env::current_exe().ok()?;
-        let profile_dir = exe.parent()?.parent()?;
-        let name = busbar_plugin_loader::plugin_library_filename("busbar_hook_test_plugin");
-        let uplifted = profile_dir.join(&name);
-        let raw = profile_dir.join("deps").join(&name);
-        [uplifted, raw]
-            .into_iter()
-            .filter_map(|p| {
-                std::fs::metadata(&p)
-                    .and_then(|m| m.modified())
-                    .ok()
-                    .map(|mtime| (p, mtime))
-            })
-            .max_by_key(|(_, mtime)| *mtime)
-            .map(|(p, _)| p)
-    };
+    let cdylib = hook_fixture_cdylib();
     let Some(cdylib) = cdylib else {
         if std::env::var_os("CI").is_some() {
             panic!(

@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The boot seal: seven transports, the planes' declared claims, and the checks that answer before a
-//! listener is bound.
+//! The boot seal: the linked transports, the linked planes' declared claims, and the checks that
+//! answer before a listener is bound. It names no transport and no plane: both come from the linked
+//! tables (`LINKED.transports`, `LINKED.claims`), which are the manifest's data.
 //!
 //! ## What the claim check reads, and what it does not
 //!
@@ -21,10 +22,9 @@
 //! A plane declares its claims as an associated constant, which is the right shape — the claims are
 //! the plane's own words, fixed at compile time, and a selector derived from configuration would be
 //! a plane deciding at boot what it is for. But an associated constant cannot be read through a
-//! trait object, and the registry stores `Arc<dyn Plugin>`. So the claims reach the check as a
-//! second slice, built here, because this is the only place that knows both a plane's type and the
-//! string that names it. That pairing is done by hand and nothing checks it, which is exactly why
-//! the pairing is written once, in one table, rather than spread across the boot path.
+//! trait object, and the registry stores `Arc<dyn Plugin>`. So each linked plane's entry hands the
+//! seal both — the pure plane (`PLANE`) and its claims (`CLAIMS`) — as one row of the linked claims
+//! table, and the pairing is read from the plane that made the claims rather than typed here.
 //!
 //! ## The two checks, and what each catches
 //!
@@ -77,35 +77,29 @@
 //!
 //! ## The shape that would pass both checks and still refuse every connection
 //!
-//! Two of the seven transports have a constructor that yields a serviceable transport and a
-//! constructor that does not. `WsTransport::new()` and `GrpcTransport::new()` produce transports
-//! whose listen, accept and dial all fail; only `over(lower)` is serviceable. A root that forgot the
-//! composition would register, pass `check_composition` — because `composed_over()` returns `None`
-//! and the check reads a declaration — and then refuse every connection. That is why the two are
-//! built through `over` here and why the registered rows record what they were actually built over.
+//! Two of the transports have a constructor that yields a serviceable transport and a constructor
+//! that does not: `ws` and `grpc` built over nothing refuse every listen, accept and dial. A root
+//! that forgot the composition would register, pass `check_composition` — because `composed_over()`
+//! returns `None` and the check reads a declaration — and then refuse every connection. That is why
+//! the fold hands every wire the layer it built beneath it, and why the registered rows record what
+//! each was actually built over.
+//!
+//! ## The fold, bottom-up
+//!
+//! A wire is built once every layer it declares that this build links is built, in manifest order
+//! otherwise — so a layer always exists before anything that names it — and is handed the first of
+//! its declared layers that was built (`COMPOSES_OVER` order is the composition order). Its
+//! registered row records the layer it answers it was composed over, and `check_composition` holds
+//! that against the declaration.
 
 use std::sync::Arc;
 
-use busbar_contract::plane::PlaneMeta;
-use busbar_contract::transport::TransportMeta;
+use busbar_contract::transport::TransportSettings;
 use busbar_contract::{check_composition, CompositionError, Plugin, Registered, Transport};
 use busbar_core_admin::admin_codec::AdminPlane;
 use busbar_kernel::registry::{seal_claims, ClaimConflict, PlaneClaim, Registry, ResolvedOverlap};
-use busbar_plane_a2a::A2aPlane;
-use busbar_plane_llm::LlmPlane;
-use busbar_plane_mcp::McpPlane;
-#[cfg(feature = "plane-voice")]
-use busbar_plane_streaming::StreamingPlane;
-use busbar_transport_http::grpc::GrpcTransport;
-use busbar_transport_http::sse::SseTransport;
-use busbar_transport_http::{ClientSettings, HttpTransport};
-use busbar_transport_stdio::StdioTransport;
-use busbar_transport_tcp::TcpTransport;
-use busbar_transport_tls::TlsTransport;
-// The WS transport is the voice plane's edge and the one transport that leaves with its plane, so
-// its crate — and everything below it — is compiled only when voice is.
-#[cfg(feature = "plane-voice")]
-use busbar_transport_ws::WsTransport;
+
+use crate::root::linked::{Linked, LinkedClaims, LinkedTransport};
 
 /// Why a node will not boot.
 ///
@@ -117,6 +111,11 @@ pub enum BootRefusal {
     ClaimOverlap(Box<ClaimConflict>),
     /// A transport declares a layer nobody registered, or was built over one it does not declare.
     Composition(CompositionError),
+    /// Linked transports declare layers over each other, so none of them can be built first.
+    Uncomposable {
+        /// The first transport, in manifest order, that could not be placed.
+        transport: &'static str,
+    },
     /// A plane claims bytes on a transport no crate in the tree provides.
     ///
     /// The design lists thirteen transports and seven exist. What the root owes is that a claim on
@@ -140,6 +139,11 @@ impl std::fmt::Display for BootRefusal {
         match self {
             Self::ClaimOverlap(conflict) => write!(f, "{conflict}"),
             Self::Composition(err) => write!(f, "{err}"),
+            Self::Uncomposable { transport } => write!(
+                f,
+                "transport `{transport}` composes over layers that compose over it, so no order \
+                 builds it"
+            ),
             Self::UnregisteredClaimTransport { plane, transport } => write!(
                 f,
                 "plane `{plane}` claims on transport `{transport}`, which no crate provides"
@@ -151,30 +155,6 @@ impl std::fmt::Display for BootRefusal {
 }
 
 impl std::error::Error for BootRefusal {}
-
-/// The composed transports the root keeps a concrete handle on.
-///
-/// The registry holds every transport as an `Arc<dyn Plugin>`, which is all the registry needs. The
-/// root needs more than that in one place: the HTTP transport is the concrete lower layer SSE is
-/// composed over. Holding them here is the difference between a stack that is declared and a stack
-/// that is wired.
-pub struct ComposedTransports {
-    /// The bottom layer.
-    pub tcp: Arc<TcpTransport>,
-    /// The TLS layer.
-    pub tls: Arc<TlsTransport>,
-    /// The HTTP layer, and the concrete lower layer SSE takes.
-    pub http: Arc<HttpTransport>,
-    /// Server-sent events over HTTP.
-    pub sse: Arc<SseTransport>,
-    /// WebSocket, built over HTTP — never over nothing.
-    #[cfg(feature = "plane-voice")]
-    pub ws: Arc<WsTransport>,
-    /// gRPC, built over HTTP — never over nothing.
-    pub grpc: Arc<GrpcTransport>,
-    /// The process's own standard streams.
-    pub stdio: Arc<StdioTransport>,
-}
 
 /// What the boot seal produced: a registry nothing may add to after it, and the claim order every
 /// arriving connection is matched against.
@@ -190,129 +170,84 @@ pub struct BootRegistry {
     /// claim named. Not a warning list: it is the record of which plane owns a shape two planes both
     /// describe, answered once at boot rather than per request.
     pub resolved: Vec<ResolvedOverlap>,
-    /// Every transport as the composition check read it.
+    /// Every transport as the composition check read it, in the order the fold built them.
     pub registered: Vec<Registered>,
-    /// The concrete handles the root keeps.
-    pub transports: ComposedTransports,
+    /// The built transports, index for index with `registered`.
+    pub transports: Vec<Arc<dyn Transport>>,
 }
 
-/// Every plane's claims, paired with the key that names the plane.
-///
-/// This is the pairing nothing else in the tree can do: `<LlmPlane as PlaneMeta>::CLAIMS` needs the
-/// type and `"llm"` needs the string, and only a composition root holds both.
+/// The core plane every build carries: the admin surface, registered after the linked planes.
+fn core_planes() -> [LinkedClaims; 1] {
+    [LinkedClaims {
+        plane: || Arc::new(AdminPlane::new()),
+        claims: <AdminPlane as busbar_contract::plane::PlaneMeta>::CLAIMS,
+    }]
+}
+
+/// Every plane's claims, paired with the key that names the plane: the linked planes in manifest
+/// order, then the core plane. Declaration order is what breaks precedence ties.
 #[must_use]
-pub fn plane_claims() -> Vec<PlaneClaim> {
-    fn claims_of<P: PlaneMeta>() -> impl Iterator<Item = PlaneClaim> {
-        P::CLAIMS.iter().map(|claim| PlaneClaim {
-            plane: P::KEY,
-            claim: *claim,
+pub fn plane_claims(planes: &[LinkedClaims]) -> Vec<PlaneClaim> {
+    planes
+        .iter()
+        .chain(core_planes().iter())
+        .flat_map(|row| {
+            let plane = (row.plane)().key();
+            row.claims.iter().map(move |claim| PlaneClaim {
+                plane,
+                claim: *claim,
+            })
         })
-    }
-
-    // Declaration order is what breaks precedence ties, so the planes are appended in the order the
-    // table has always read: llm, mcp, a2a, voice, admin. Voice's row is present exactly when its
-    // crate edge is — a claim from a plane this build does not register would name a plane, and a
-    // transport, that no request could ever reach.
-    let mut claims: Vec<PlaneClaim> = claims_of::<LlmPlane>()
-        .chain(claims_of::<McpPlane>())
-        .chain(claims_of::<A2aPlane>())
-        .collect();
-    #[cfg(feature = "plane-voice")]
-    claims.extend(claims_of::<StreamingPlane>());
-    // The decision plane (#48's fifth) is appended after the four it joined, for the same reason
-    // voice is gated: its claims are in the seal exactly when its crate edge is in the build.
-    #[cfg(feature = "plane-decision")]
-    claims.extend(claims_of::<busbar_plane_decision::DecisionPlane>());
-    claims.extend(claims_of::<AdminPlane>());
-    claims
+        .collect()
 }
 
-/// Build the seven transports, bottom-up, composing the two that are only serviceable composed.
-///
-/// Registration order is the build order for a reason: `check_composition` resolves a declared
-/// layer against what is registered, so a layer must exist before anything that names it.
-fn compose_transports(client_settings: ClientSettings) -> ComposedTransports {
-    // The same number the door refuses a body at. A WebSocket message is assembled from
-    // continuation frames before anything above the transport sees it, so the ceiling has to be
-    // stated at the handshake or it is not stated at all — and a node that refuses a body of a
-    // given size over HTTP has no basis for holding a larger one over a socket it upgraded.
-    #[cfg(feature = "plane-voice")]
-    let max_message_bytes = client_settings.request_body_max_bytes;
-    let tcp = Arc::new(TcpTransport::new());
-    let tls = Arc::new(TlsTransport::new());
-    let http = Arc::new(HttpTransport::new(client_settings));
-    let sse = Arc::new(SseTransport::new(Arc::clone(&http)));
-    #[cfg(feature = "plane-voice")]
-    let ws = Arc::new(WsTransport::over_with_max_message_bytes(
-        Arc::clone(&http) as Arc<dyn Transport>,
-        max_message_bytes,
-    ));
-    let grpc = Arc::new(GrpcTransport::over(Arc::clone(&http) as Arc<dyn Transport>));
-    let stdio = Arc::new(StdioTransport::new());
-    ComposedTransports {
-        tcp,
-        tls,
-        http,
-        sse,
-        #[cfg(feature = "plane-voice")]
-        ws,
-        grpc,
-        stdio,
-    }
-}
+/// One folded wire: its row as the composition check reads it, and the built transport.
+pub type Built = (Registered, Arc<dyn Transport>);
 
-/// Every transport as the composition check reads it: what it declares, and what it was actually
-/// built over.
+/// FOLD THE LINKED TRANSPORTS, BOTTOM-UP.
 ///
-/// Nothing here is derived from the objects themselves. `composed_over` is the root's own statement
-/// about what it did, because a check that re-derived its own inputs would agree with itself for
-/// free.
-fn registered_rows() -> Vec<Registered> {
-    let mut rows = vec![
-        Registered {
-            key: TcpTransport::KEY,
-            composes_over: TcpTransport::COMPOSES_OVER,
-            composed_over: None,
-        },
-        Registered {
-            key: TlsTransport::KEY,
-            composes_over: TlsTransport::COMPOSES_OVER,
-            // TLS takes its lower layer's connection at `adopt`, per connection, rather than at
-            // construction: there is no lower layer to record here.
-            composed_over: None,
-        },
-        Registered {
-            key: HttpTransport::KEY,
-            composes_over: HttpTransport::COMPOSES_OVER,
-            // Which of TCP or TLS carries a given HTTP listener is the listener's configuration,
-            // not a property of the transport object.
-            composed_over: None,
-        },
-        Registered {
-            key: SseTransport::KEY,
-            composes_over: SseTransport::COMPOSES_OVER,
-            composed_over: Some(HttpTransport::KEY),
-        },
-    ];
-    // WS goes in beside the others when the voice plane is compiled, and leaves with it: a row for a
-    // transport this build does not carry would be the root stating a composition it did not make.
-    #[cfg(feature = "plane-voice")]
-    rows.push(Registered {
-        key: WsTransport::KEY,
-        composes_over: WsTransport::COMPOSES_OVER,
-        composed_over: Some(HttpTransport::KEY),
-    });
-    rows.push(Registered {
-        key: GrpcTransport::KEY,
-        composes_over: GrpcTransport::COMPOSES_OVER,
-        composed_over: Some(HttpTransport::KEY),
-    });
-    rows.push(Registered {
-        key: StdioTransport::KEY,
-        composes_over: StdioTransport::COMPOSES_OVER,
-        composed_over: None,
-    });
-    rows
+/// Each round builds the first row, in manifest order, whose every declared layer this build links
+/// is already built, and hands it the first of its declared layers that was — so a layer always
+/// exists before anything that names it. The registered row records the layer the built wire
+/// answers it was composed over, which `check_composition` holds against its declaration.
+///
+/// # Errors
+///
+/// Rows declare layers over each other and none can be built first.
+pub fn compose(
+    rows: &[LinkedTransport],
+    settings: &TransportSettings,
+) -> Result<Vec<Built>, BootRefusal> {
+    let mut built: Vec<Built> = Vec::with_capacity(rows.len());
+    let mut pending: Vec<&LinkedTransport> = rows.iter().collect();
+    let is_built = |built: &[Built], key: &str| built.iter().any(|(r, _)| r.key == key);
+    while !pending.is_empty() {
+        let ready = pending.iter().position(|row| {
+            row.composes_over
+                .iter()
+                .all(|layer| is_built(&built, layer) || !rows.iter().any(|r| r.key == *layer))
+        });
+        let Some(at) = ready else {
+            return Err(BootRefusal::Uncomposable {
+                transport: pending[0].key,
+            });
+        };
+        let row = pending.remove(at);
+        let lower = row.composes_over.iter().find_map(|layer| {
+            built
+                .iter()
+                .find(|(r, _)| r.key == *layer)
+                .map(|(_, t)| Arc::clone(t))
+        });
+        let transport = (row.build)(lower, settings);
+        let registered = Registered {
+            key: row.key,
+            composes_over: row.composes_over,
+            composed_over: transport.composed_over(),
+        };
+        built.push((registered, transport));
+    }
+    Ok(built)
 }
 
 /// Register every axis and answer both boot checks.
@@ -325,11 +260,12 @@ fn registered_rows() -> Vec<Registered> {
 ///
 /// Two planes claim bytes that could both match; a transport declares a layer nobody registered or
 /// was built over one it does not declare; or the registry refused an entry.
-pub fn seal(client_settings: ClientSettings) -> Result<BootRegistry, BootRefusal> {
-    let transports = compose_transports(client_settings);
-    let registry = register_all(&transports)?;
+pub fn seal(linked: &Linked, settings: TransportSettings) -> Result<BootRegistry, BootRefusal> {
+    let (registered, transports): (Vec<Registered>, Vec<Arc<dyn Transport>>) =
+        compose(linked.transports, &settings)?.into_iter().unzip();
+    let registry = register_all(&transports, linked.claims)?;
 
-    let claims = plane_claims();
+    let claims = plane_claims(linked.claims);
     let sealed = seal_claims(&claims);
     if let Some(refused) = sealed.refused.first() {
         return Err(BootRefusal::ClaimOverlap(Box::new(ClaimConflict {
@@ -339,7 +275,6 @@ pub fn seal(client_settings: ClientSettings) -> Result<BootRegistry, BootRefusal
         })));
     }
 
-    let registered = registered_rows();
     check_composition(&registered).map_err(BootRefusal::Composition)?;
     check_claim_transports(&claims, &registered)?;
     // The two units' metric label banks are duplicate literals kept in step by hand; this is the
@@ -366,8 +301,8 @@ pub fn seal(client_settings: ClientSettings) -> Result<BootRegistry, BootRefusal
 /// that must not bind a listener, so the refusal goes to standard error and the process exits 2 —
 /// not a warning and not a log line, because a node that refused to boot has no boot to log.
 /// Nothing is written on the success path.
-pub fn seal_or_exit(client_settings: ClientSettings) {
-    if let Err(refusal) = seal(client_settings) {
+pub fn seal_or_exit(linked: &Linked, settings: TransportSettings) {
+    if let Err(refusal) = seal(linked, settings) {
         eprintln!("busbar: the composition root did not seal: {refusal}");
         std::process::exit(2);
     }
@@ -399,50 +334,23 @@ fn check_claim_transports(
     Ok(())
 }
 
-/// Put every transport and every plane into one registry, transports first.
-///
-/// Registration order is the build order, because `check_composition` resolves a declared layer
-/// against what is registered and a layer must exist before anything that names it.
+/// Put every transport and every plane into one registry, transports first, in the order they were
+/// built and linked.
 ///
 /// # Errors
 ///
 /// The registry refused an entry — a duplicate key, or a kind it does not take.
-fn register_all(transports: &ComposedTransports) -> Result<Registry, BootRefusal> {
+fn register_all(
+    transports: &[Arc<dyn Transport>],
+    planes: &[LinkedClaims],
+) -> Result<Registry, BootRefusal> {
     let mut registry = Registry::new();
-
-    let mut to_register = vec![
-        Arc::clone(&transports.tcp) as Arc<dyn Plugin>,
-        Arc::clone(&transports.tls) as Arc<dyn Plugin>,
-        Arc::clone(&transports.http) as Arc<dyn Plugin>,
-        Arc::clone(&transports.sse) as Arc<dyn Plugin>,
-    ];
-    #[cfg(feature = "plane-voice")]
-    to_register.push(Arc::clone(&transports.ws) as Arc<dyn Plugin>);
-    to_register.push(Arc::clone(&transports.grpc) as Arc<dyn Plugin>);
-    to_register.push(Arc::clone(&transports.stdio) as Arc<dyn Plugin>);
-    for transport in to_register {
-        registry
-            .register(transport)
-            .map_err(BootRefusal::Registry)?;
+    let core = core_planes();
+    let transports = transports.iter().map(|t| Arc::clone(t) as Arc<dyn Plugin>);
+    let planes = planes.iter().chain(core.iter()).map(|row| (row.plane)());
+    for plugin in transports.chain(planes).collect::<Vec<_>>() {
+        registry.register(plugin).map_err(BootRefusal::Registry)?;
     }
-
-    let mut planes = vec![
-        Arc::new(LlmPlane::EMPTY) as Arc<dyn Plugin>,
-        Arc::new(McpPlane::EMPTY) as Arc<dyn Plugin>,
-        Arc::new(A2aPlane::EMPTY) as Arc<dyn Plugin>,
-    ];
-    // The voice plane goes in with its own crate edge and leaves with it. It is the only plane that
-    // claims bytes on `ws`, so registering it in a build with no WS transport would be the root
-    // mounting a plane whose claims name a layer this binary does not carry.
-    #[cfg(feature = "plane-voice")]
-    planes.push(Arc::new(StreamingPlane::EMPTY) as Arc<dyn Plugin>);
-    #[cfg(feature = "plane-decision")]
-    planes.push(Arc::new(busbar_plane_decision::DecisionPlane::EMPTY) as Arc<dyn Plugin>);
-    planes.push(Arc::new(AdminPlane::new()) as Arc<dyn Plugin>);
-    for plane in planes {
-        registry.register(plane).map_err(BootRefusal::Registry)?;
-    }
-
     Ok(registry)
 }
 

@@ -27,8 +27,9 @@ use crate::testkit::TestAppMcpExt;
 
 /// Serve an MCP-enabled app. The auth chain is open because these tests are about the request
 /// ENVELOPE and every one of them must reach the handler to say anything; the audience boundary is
-/// owned by `auth::tests::test_mcp_token_is_confined_to_the_mcp_plane` and the refusal to CONFIGURE
-/// an anonymous MCP deployment is owned by `tests/mcp_open_front_door.rs`.
+/// owned by `plane_integration::an_audience_bound_token_is_confined_to_its_door_plane`
+/// and the refusal to CONFIGURE an anonymous MCP deployment is owned by
+/// `tests/mcp_open_front_door.rs`.
 async fn serve() -> (String, tokio::task::JoinHandle<()>) {
     metrics_init();
     let app = test_app()

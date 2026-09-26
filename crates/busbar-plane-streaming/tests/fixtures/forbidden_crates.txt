@@ -1,0 +1,12 @@
+# The crate paths this plane's source may not name (tests/purity.rs,
+# the_plane_names_no_kernel_side_crate): the kernel side, and every sibling plane. One per line;
+# `#` starts a comment. `busbar_voice::` keeps its `::` on purpose (see the test's doc).
+busbar_contract::caps
+busbar_kernel
+busbar_unit
+busbar_substrate
+busbar_voice::
+busbar_plane_llm
+busbar_plane_mcp
+busbar_plane_a2a
+busbar_plane_decision

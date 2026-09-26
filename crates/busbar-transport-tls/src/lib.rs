@@ -9,12 +9,10 @@
 //! caller can read: [`busbar_contract::TransportKeyHandle`] is opaque, so this crate keeps a
 //! slot-keyed registry of already-built `rustls` configs and looks one up by the handle's slot. The
 //! kernel side fills that registry through the contract's [`TransportConfigSink`] — an opaque
-//! [`TransportConfigHandle`] per slot and role, #40(b) — and, until the provisioning moves
-//! kernel-side, the transport-key unit fills it through
-//! [`busbar_unit_transport_key::TlsConfigSink`]; both land in the same slot, at the moment the
-//! material is resolved and the `Access` entry the design requires is written — so a production
-//! listener has a key for the same reason a test one does, and nothing in this crate ever resolves
-//! a `SecretRef` or sees a byte of one.
+//! [`TransportConfigHandle`] per slot and role, #40(b) — at the moment the material is resolved and
+//! the `Access` entry the design requires is written, so a production listener has a key for the
+//! same reason a test one does, and nothing in this crate ever resolves a `SecretRef` or sees a
+//! byte of one.
 //!
 //! ## Composition
 //!
@@ -230,10 +228,9 @@ impl TlsTransport {
     /// Register the server-side rustls config a
     /// [`TransportKeyHandle`](busbar_contract::TransportKeyHandle)'s slot resolves to.
     ///
-    /// The kernel side reaches this through [`TransportConfigSink`], and the transport-key unit
-    /// through [`busbar_unit_transport_key::TlsConfigSink`], at the moment the material is resolved
-    /// and the access journaled. Nothing here reads a secret; this end of the seam only ever sees an
-    /// already-built config and a slot number.
+    /// The kernel side reaches this through [`TransportConfigSink`], at the moment the material is
+    /// resolved and the access journaled. Nothing here reads a secret; this end of the seam only
+    /// ever sees an already-built config and a slot number.
     pub fn register_server_config(&self, slot: u64, cfg: Arc<rustls::ServerConfig>) {
         self.server_configs
             .lock()
@@ -426,16 +423,6 @@ impl TransportConfigSink for TlsTransport {
     }
 }
 
-impl busbar_unit_transport_key::TlsConfigSink for TlsTransport {
-    fn register_server_config(&self, slot: u64, cfg: Arc<rustls::ServerConfig>) {
-        TlsTransport::register_server_config(self, slot, cfg);
-    }
-
-    fn register_client_config(&self, slot: u64, cfg: Arc<rustls::ClientConfig>) {
-        TlsTransport::register_client_config(self, slot, cfg);
-    }
-}
-
 /// A stand-in fingerprint: the SHA-256 of the DER bytes, formatted for [`CertFacts`]. Not a trust
 /// decision — the trust decision already happened inside the rustls handshake; this is evidence
 /// carried alongside it.
@@ -549,6 +536,29 @@ where
     w.flush()
         .await
         .map_err(|e| TlsTransport::map_session_err(&e))
+}
+
+/// THE TRANSPORT AXIS ENTRY (#3, #30): what the composition root folds for this wire — its key, the
+/// layers it declares, and how it is built. The root names none of them.
+pub mod linked {
+    use std::sync::Arc;
+
+    use busbar_contract::transport::{Transport, TransportMeta, TransportSettings};
+
+    use crate::TlsTransport;
+
+    /// The row's registry key.
+    pub const KEY: &str = <TlsTransport as TransportMeta>::KEY;
+    /// The layers this wire declares it can be built over.
+    pub const COMPOSES_OVER: &[&str] = <TlsTransport as TransportMeta>::COMPOSES_OVER;
+    /// Whether this wire carries sessions.
+    pub const SESSION: bool = <TlsTransport as TransportMeta>::SESSION;
+
+    /// It opens its own socket, so it takes no lower layer and reads no setting.
+    #[must_use]
+    pub fn build(_: Option<Arc<dyn Transport>>, _: &TransportSettings) -> Arc<dyn Transport> {
+        Arc::new(TlsTransport::new())
+    }
 }
 
 #[cfg(test)]

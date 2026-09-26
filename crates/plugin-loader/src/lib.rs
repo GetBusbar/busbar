@@ -51,6 +51,7 @@ pub mod sign;
 mod stage;
 pub mod store_adapter;
 pub mod tarball;
+pub mod transport;
 
 pub use auth::DynAuth;
 /// Re-export the HTTP-endpoint wire types (plugin route registration + dispatch) so the engine
@@ -63,18 +64,19 @@ pub use export::{load_export_from_bytes, load_export_image, DynExport};
 // The export PROJECTION vocabulary (the frozen `streams:` / `fields:` word-space). Re-exported for
 // the same reason the endpoint types above are: the engine names these through the loader
 // rather than taking a second, direct dependency on the ABI crate.
-pub use busbar_plugin::cold::export::{ExportField, ExportStream};
+pub use busbar_plugin::cold::export::{CheckPhase, ExportField, ExportStream};
 pub use busbar_plugin::cold::export::{HostResult, HttpRequest, HttpResponse};
 /// A cold plugin's LINKED boundary (`BUSBAR_COLD_ENTRY`), named for the composition root's linked
 /// tables, which hand it to [`LinkedPlugin::boundary`].
 pub use busbar_plugin::cold::ColdEntry;
 
 impl LinkedPlugin {
-    /// A FIRST-PARTY cold plugin a build links: `name` (its own alias) of `kind`, at the newest
+    /// A FIRST-PARTY cold plugin a build links: `name` aliased `alias`, of `kind`, at the newest
     /// payload schema this loader speaks for the kind, published by busbar — the manifest its release
     /// tarball states — over `entry`, the boundary its `cdylib` exports under the frozen symbols.
-    pub fn first_party(kind: &str, name: &str, entry: &'static ColdEntry) -> Self {
+    pub fn first_party(kind: &str, name: &str, alias: &str, entry: &'static ColdEntry) -> Self {
         let mut row = LinkedPlugin::store(name, |_| Err(String::new()), false);
+        row.manifest.alias = alias.into();
         row.manifest.kind = kind.into();
         row.manifest.abi_version = supported_abi(kind).iter().copied().max().unwrap_or(0);
         row.entry = LinkedEntry::Boundary(entry);
@@ -103,6 +105,10 @@ pub use registry::{
     LinkedPlugin, LoadablePlugin, PluginRegistry, SkippedPlugin,
 };
 pub use stage::sweep_dead_staging;
+pub use transport::{
+    link_transport, load_transport, load_transport_from_bytes, wire_settings, BuiltTransport,
+    DynTransport,
+};
 
 /// INTERN a plugin name into a stable `&'static str`, reusing one allocation per unique name.
 ///
@@ -1893,8 +1899,7 @@ fn validate_mapped(lib: &Library, display: &str) -> Result<u32, String> {
     let plugin_kind = read_plugin_kind(lib, &display)?;
     if supported_abi(&plugin_kind).is_empty() {
         return Err(format!(
-            "plugin '{display}' declares unsupported kind '{plugin_kind}'{}",
-            registry::kind_refusal_note(&plugin_kind)
+            "plugin '{display}' declares unsupported kind '{plugin_kind}'"
         ));
     }
     // Confirm the operational symbols resolve too, so a half-built library is caught here rather than

@@ -110,6 +110,19 @@ struct Served {
     tools_call: usize,
 }
 
+/// The plane's wire, as DATA (`tests/fixtures/tool_plane_wire.txt`): one `key = value` per line.
+fn wire(key: &str) -> &'static str {
+    include_str!("fixtures/tool_plane_wire.txt")
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .find_map(|l| {
+            let (k, v) = l.split_once('=')?;
+            (k.trim() == key).then(|| v.trim())
+        })
+        .unwrap_or_else(|| panic!("tests/fixtures/tool_plane_wire.txt has no `{key}` row"))
+}
+
 struct Upstream {
     port: u16,
     served: Arc<Mutex<Served>>,
@@ -136,7 +149,7 @@ impl Upstream {
     }
 
     fn url(&self) -> String {
-        format!("http://127.0.0.1:{}/mcp", self.port)
+        format!("http://127.0.0.1:{}{}", self.port, wire("door_path"))
     }
 
     fn calls(&self) -> usize {
@@ -277,7 +290,7 @@ impl Drop for Node {
 
 impl Node {
     fn canonical_uri(&self) -> String {
-        format!("http://127.0.0.1:{}/mcp", self.data_port)
+        format!("http://127.0.0.1:{}{}", self.data_port, wire("door_path"))
     }
 
     fn admin(&self, path: &str) -> String {
@@ -329,12 +342,7 @@ auth:
   chain: [keys]
   admin_auth: [admin-tokens]
   signing_key: {{ file: {key} }}
-mcp:
-  canonical_uri: "http://127.0.0.1:{data_port}/mcp"
-  authorization_servers:
-    - "http://127.0.0.1:{admin_port}"
-  scopes_supported: ["mcp:tools:list", "mcp:tools:call"]
-tools:
+{section}tools:
   probe:
     url: "{upstream}"
     allow_private: true
@@ -348,6 +356,9 @@ tools:
         description: "{TOOL_DESCRIPTION}"
 "#,
             key = key_file.display(),
+            section = include_str!("fixtures/tool_plane_section.yaml")
+                .replace("{data_port}", &data_port.to_string())
+                .replace("{admin_port}", &admin_port.to_string()),
             upstream = upstream.url(),
         ),
     )
@@ -479,9 +490,9 @@ async fn call(node: &Node, bearer: &str, label: &str) -> (u16, Value) {
         .post(node.canonical_uri())
         .bearer_auth(bearer)
         .header("content-type", "application/json")
-        .header("mcp-method", "tools/call")
-        .header("mcp-protocol-version", PROTOCOL)
-        .header("Mcp-Name", "probe_ping")
+        .header(wire("method_header"), "tools/call")
+        .header(wire("protocol_version_header"), PROTOCOL)
+        .header(wire("name_header"), "probe_ping")
         .body(
             json!({
                 "jsonrpc": "2.0",
