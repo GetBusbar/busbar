@@ -332,8 +332,11 @@ models:
 }
 
 /// Oracle cell `boot.refusal|BOOT-181|boot`: on the default (all-planes) build a 1.5.5 config's
-/// boot output carries nothing from a plane it did not configure — the voice plane's root
-/// listener-slot provisioning ran and WARNed on every boot. Control: `streams:` configured, it runs.
+/// boot output carries nothing from a plane it did not configure. The line this once caught — the
+/// root's listener-slot provisioning WARN — is 1.6.0-only text (1.5.5 refuses the `streams:` key
+/// outright) and left with that provisioning; the arm stays as the guard against its return.
+/// Control: a configured plane is observable — each plane door answers as that plane's door once
+/// every plane section is configured, and does not on a 1.5.5 config.
 #[test]
 fn a_1_5_5_config_boot_prints_nothing_from_an_unconfigured_plane() {
     const PLANE_LINE: &str = "listener slots were not provisioned";
@@ -342,9 +345,12 @@ fn a_1_5_5_config_boot_prints_nothing_from_an_unconfigured_plane() {
         out.contains("TLS configuration error for '") && !out.contains(PLANE_LINE),
         "a 1.5.5 config must print no plane line on BOOT-181:\n{out}"
     );
-    let out = boot_181_output(include_str!("fixtures/law7_streams_section.yaml"));
-    assert!(
-        out.contains(PLANE_LINE),
-        "with `streams:` configured the plane root's provisioning runs:\n{out}"
-    );
+    let b = boot("181-control", true);
+    for (door, _) in plane_doors() {
+        let (_, body) = request(&b.data, "POST", door, None);
+        assert!(
+            is_plane_door(&body),
+            "with every plane configured POST {door} reaches that plane's door: {body}"
+        );
+    }
 }
