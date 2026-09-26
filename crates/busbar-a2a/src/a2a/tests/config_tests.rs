@@ -48,6 +48,7 @@ static POOLS_PLANE_STANDIN: busbar_kernel::plane::registry::PlaneDecl =
             billable_classes: &[],
             fee_units: &[],
             metric_families: &[],
+            served_op_classes: &[],
         },
         wire_format_names: || &["pools_standin"],
         claims: |_| Vec::new(),

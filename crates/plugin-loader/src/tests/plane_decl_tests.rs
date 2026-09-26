@@ -221,6 +221,7 @@ fn the_declaration_tail_reads_back_as_stated() {
             billable_classes: Vec::new(),
             fee_units: Vec::new(),
             metric_families: Vec::new(),
+            served_op_classes: Vec::new(),
         }
     );
     let mut d = decl();
@@ -262,6 +263,36 @@ fn the_metric_family_tail_reads_back_as_stated() {
         .is_empty());
     d.size = core::mem::size_of::<PlaneDecl>() as u32;
     d.metric_families_ptr = core::ptr::null();
+    assert!(plane_over(&d).is_err(), "a stated count behind a null list");
+}
+
+/// The served operation classes of [`the_served_op_class_tail_reads_back_as_stated`].
+static SERVED: [busbar_plugin::hot::decl::DeclServedOpClass; 1] =
+    [busbar_plugin::hot::decl::DeclServedOpClass {
+        op: DeclStr::new("summarize"),
+        name: DeclStr::new("Memplane"),
+    }];
+
+/// Minor 27: the operation classes a decl serves one level down read back as stated; a decl that
+/// ends before the tail (an older minor) serves none, so no nested destination resolves to it.
+#[test]
+fn the_served_op_class_tail_reads_back_as_stated() {
+    let _s = serial();
+    let mut d = decl();
+    d.served_op_classes_ptr = SERVED.as_ptr();
+    d.served_op_classes_len = SERVED.len();
+    assert_eq!(
+        plane_over(&d).unwrap().declaration().served_op_classes,
+        vec![("summarize".to_string(), "Memplane".to_string())]
+    );
+    d.size = core::mem::offset_of!(PlaneDecl, served_op_classes_ptr) as u32;
+    assert!(plane_over(&d)
+        .unwrap()
+        .declaration()
+        .served_op_classes
+        .is_empty());
+    d.size = core::mem::size_of::<PlaneDecl>() as u32;
+    d.served_op_classes_ptr = core::ptr::null();
     assert!(plane_over(&d).is_err(), "a stated count behind a null list");
 }
 

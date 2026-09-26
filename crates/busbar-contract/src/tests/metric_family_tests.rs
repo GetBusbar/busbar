@@ -25,6 +25,7 @@ fn decl(key: &'static str, families: &'static [MetricFamily]) -> PlaneDeclaratio
         billable_classes: &[],
         fee_units: &[],
         metric_families: families,
+        served_op_classes: &[],
     }
 }
 

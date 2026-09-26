@@ -7,7 +7,7 @@
 use busbar_contract::ids::{
     AdminVerbId, ClassDirection, MeterClassDecl, MeterClassId, OpClassId, RecordSchemaId,
 };
-use busbar_contract::plane::PlaneMeta;
+use busbar_contract::plane::{PlaneMeta, ServedOpClass};
 
 use crate::claims;
 use crate::LlmPlane;
@@ -208,6 +208,14 @@ const CONFIG_SCHEMA: &str = r#"{
 /// as the binary has always printed it (shadow-oracle cells `cli__--help` / `cli__-h`). It names
 /// this plane, so this plane owns it (#47/#49) and the composition root reads it from here.
 pub const HELP_TAGLINE: &str = "native-protocol LLM gateway";
+
+/// The operation class this plane serves ONE LEVEL DOWN, to another plane's unit that names only the
+/// class it needs, and the display name a refusal naming this plane reads — byte for byte the word
+/// the binary has always printed where it names this plane (#47/#49: this plane owns it).
+pub const SERVED_OP_CLASSES: &[ServedOpClass] = &[ServedOpClass {
+    op: OpClassId::new("chat"),
+    name: "LLM",
+}];
 
 impl PlaneMeta for LlmPlane {
     const KEY: &'static str = "llm";

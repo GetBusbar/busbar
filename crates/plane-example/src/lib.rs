@@ -76,7 +76,8 @@
 //! proof over the ABI.
 
 use busbar_plugin::hot::decl::{
-    BuildCtx, DeclBillableClass, DeclMetricFamily, DeclStr, IngressCarrier, OpaqueHandle,
+    BuildCtx, DeclBillableClass, DeclMetricFamily, DeclServedOpClass, DeclStr, IngressCarrier,
+    OpaqueHandle,
 };
 use busbar_plugin::hot::host::{HostCtx, PlaneHostVtable};
 use busbar_plugin::hot::pod::{
@@ -131,6 +132,14 @@ static METRIC_FAMILIES: [DeclMetricFamily; 2] = [
         label_keys_len: CARRIED_KEYS.len(),
     },
 ];
+
+/// The operation class this plane serves one level down, and the display name a refusal naming it
+/// reads — so a dropped-in plane answers a nested destination (which names a class, never a plane)
+/// exactly as a linked one does, and the both-doors proof compares a non-empty row.
+static SERVED_OP_CLASSES: [DeclServedOpClass; 1] = [DeclServedOpClass {
+    op: DeclStr::new("example_echo"),
+    name: DeclStr::new("Example Plane"),
+}];
 
 /// THE PATH THIS PLANE ANSWERS ON, the method it takes and the wire format it speaks — what its
 /// `claims` slot states once it is built with a public URL to be admitted under.
@@ -643,6 +652,8 @@ pub static PLANE_DECL: PlaneDecl = PlaneDecl {
     admission: Some(admission),
     metric_families_ptr: METRIC_FAMILIES.as_ptr(),
     metric_families_len: METRIC_FAMILIES.len(),
+    served_op_classes_ptr: SERVED_OP_CLASSES.as_ptr(),
+    served_op_classes_len: SERVED_OP_CLASSES.len(),
 };
 
 // Emit the `cdylib` boundary symbols (`busbar_abi`, `busbar_plugin_kind() == "plane"`,

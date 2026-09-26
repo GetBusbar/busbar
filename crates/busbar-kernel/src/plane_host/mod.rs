@@ -407,7 +407,6 @@ pub fn clock_now_ms_over(app: &App) -> u64 {
 /// bytes — so governance attribution and metering are unchanged. The async future stays `Send`: it
 /// only `.await`s the native core async fn; no `HostCtx` is minted here, and any minted inside
 /// `operation_resolved`'s own frames is consumed there, never crossing this `.await`.
-#[allow(dead_code)]
 pub async fn synthesize_completion_over(
     app: Arc<App>,
     gov: &crate::governance::PlaneRequestCtx,

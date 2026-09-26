@@ -155,6 +155,7 @@ pub const PLANE_DECLARATION: busbar_contract::plane::PlaneDeclaration =
         // opens no session account, so `tools.fees.per_session` would charge nothing — refused.
         fee_units: &[PER_REQUEST],
         metric_families: &[],
+        served_op_classes: &[],
     };
 
 /// [`stdio_serve::serve_stdio`], boxed to the stdio-serve axis's shape ([`crate::linked`]).

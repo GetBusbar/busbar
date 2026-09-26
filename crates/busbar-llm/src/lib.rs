@@ -272,6 +272,9 @@ pub const PLANE_DECLARATION: busbar_contract::plane::PlaneDeclaration =
         // The fee unit this plane counts: one per admitted request, priced at `per_request_fee:`.
         fee_units: &[PER_REQUEST],
         metric_families: &[],
+        // The chat class, served one level down: another plane's nested unit names the class and the
+        // host resolves it here, so the requesting plane spells no plane.
+        served_op_classes: busbar_plane_llm::meta::SERVED_OP_CLASSES,
     };
 
 /// THE PLANE'S BEHAVIOUR — every hook the kernel runs for it, handed over BESIDE

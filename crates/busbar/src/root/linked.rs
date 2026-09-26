@@ -29,7 +29,8 @@
 
 use std::sync::Arc;
 
-use busbar_contract::plane::MetricFamily;
+use busbar_contract::ids::OpClassId;
+use busbar_contract::plane::{MetricFamily, ServedOpClass};
 use busbar_kernel::ingress::arrival::{BodyIngressEntry, PathIngressEntry};
 use busbar_kernel::plane::registry::PlaneDecl;
 use busbar_kernel::plane::registry::{BillableClass, BuildCtx, PlaneDeclaration, PlaneHooks};
@@ -285,6 +286,7 @@ pub fn plane_rows(
     let rows: Vec<&'static PlaneDecl> = linked.planes.iter().chain(hot_rows).collect();
     let declared: Vec<&PlaneDeclaration> = rows.iter().map(|d| &d.declaration).collect();
     busbar_contract::plane::check_metric_families(&declared, PLANE_CARRIED_SERIES)?;
+    busbar_contract::plane::check_served_op_classes(&declared)?;
     Ok(rows)
 }
 
@@ -372,6 +374,15 @@ pub fn hot_plane_row(plane: &'static DynPlane) -> Result<PlaneDecl, String> {
                 name: &f.name,
                 kind: &f.kind,
                 label_keys: list(&f.label_keys),
+            })
+            .collect::<Vec<_>>()
+            .leak(),
+        served_op_classes: stated
+            .served_op_classes
+            .iter()
+            .map(|(op, name)| ServedOpClass {
+                op: OpClassId::new(op),
+                name,
             })
             .collect::<Vec<_>>()
             .leak(),

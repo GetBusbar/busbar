@@ -114,7 +114,12 @@ pub const ABI_MAJOR: u32 = 2;
 /// 25→26 (1.6.0, K8 / K3c intake): `hot::TransportDecl` appends `session` (the linked row's
 /// `SESSION`), so a dropped-in transport declares whether it carries sessions exactly as a linked one
 /// does. Append-only at the decl's tail; the loader admits a transport decl only from minor 26.
-pub const ABI_MINOR: u32 = 26;
+///
+/// 26→27 (1.6.0, XPLANE; ARCHITECT RULING (S); #2 rule (2), #47/#49): `hot::PlaneDecl` appends the
+/// `served_op_classes` tail (each `hot::decl::DeclServedOpClass` an operation class and the plane's
+/// display name), so a dropped-in plane serves a nested destination — which names a class, never a
+/// plane — exactly as a linked one does. A decl ending before the tail serves none. Append-only.
+pub const ABI_MINOR: u32 = 27;
 
 /// The FROZEN-FOR-ALL-TIME ABI header. This exact layout — `magic` at offset 0, `abi_major` at 8,
 /// `abi_minor` at 12 — is a permanent contract: it may NEVER be reordered, resized, extended, or

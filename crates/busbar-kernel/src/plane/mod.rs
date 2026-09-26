@@ -817,6 +817,7 @@ const fn neutral_sibling_decl(
             billable_classes: &[],
             fee_units: &[],
             metric_families: &[],
+            served_op_classes: &[],
         },
         wire_format_names: || &[],
         claims: |_| Vec::new(),

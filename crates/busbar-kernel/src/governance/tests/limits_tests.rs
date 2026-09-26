@@ -1231,6 +1231,7 @@ static TOKEN_FAMILY_PLANE: crate::plane::registry::PlaneDecl = crate::plane::reg
         ],
         fee_units: &[],
         metric_families: &[],
+        served_op_classes: &[],
     },
     wire_format_names: || &[],
     claims: |_| Vec::new(),

@@ -74,6 +74,7 @@ fn native(key: &'static str) -> &'static [PlaneDecl] {
         billable_classes: &[],
         fee_units: &[],
         metric_families: &[],
+        served_op_classes: &[],
     };
     let hooks = PlaneHooks {
         wire_format_names: || &[busbar_kernel::plane::WIRE_HTTP_JSON],
@@ -303,6 +304,15 @@ fn stated(d: &'static HotPlaneDecl) -> PlaneDeclaration {
                 name: f.name.as_str(),
                 kind: f.kind.as_str(),
                 label_keys: strs(&f.label_keys),
+            })
+            .collect::<Vec<_>>()
+            .leak(),
+        served_op_classes: h
+            .served_op_classes
+            .iter()
+            .map(|(op, name)| busbar_contract::plane::ServedOpClass {
+                op: busbar_contract::ids::OpClassId::new(op.as_str()),
+                name: name.as_str(),
             })
             .collect::<Vec<_>>()
             .leak(),
