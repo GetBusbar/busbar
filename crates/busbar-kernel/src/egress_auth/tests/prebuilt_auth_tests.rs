@@ -186,7 +186,7 @@ fn the_api_key_override_presents_the_shared_builders_bytes() {
 // headers, in order. The two halves together are the byte-identity proof of the switch; neither
 // suite reaches the other's crate.
 
-mod declared_llm_schemes {
+mod declared_dialect_schemes {
     use crate::egress_auth::resolve;
     use busbar_contract::config::UpstreamCreds;
     use busbar_contract::protocol::{
