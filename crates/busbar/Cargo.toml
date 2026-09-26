@@ -140,8 +140,10 @@ busbar-export-file = { git = "https://github.com/GetBusbar/export-file", rev = "
 busbar-export-webhook = { path = "../busbar-export-webhook", optional = true }
 # THE PROMETHEUS EXPORT SINK (`module: prometheus`), a first-party EXPORT plugin linked through the
 # `exports` axis (K9d) — the same row a signed tarball of it registers when dropped in. The host
-# keeps the recorder and serves `/metrics`; this sink renders the recorder's snapshot.
-busbar-export-prometheus = { path = "../busbar-export-prometheus", optional = true }
+# keeps the recorder and serves `/metrics`; this sink renders the recorder's snapshot. It lives in its
+# own repo (GetBusbar/export-prometheus) and is pulled at a PINNED rev; the workspace `[patch]` points
+# the busbar crates it names back at this tree.
+busbar-export-prometheus = { git = "https://github.com/GetBusbar/export-prometheus", rev = "05a175910b4a5d9e3bcb7f065ac95a1a3e351358", optional = true }
 # The transports. Composition is an edge that does not exist as a Cargo dependency — a transport may
 # not name the layer beneath it — so the root hands each wire's build the layer it built below it.
 # Which wires a build links is the `transport` rows of the linked table below; the source names none.
@@ -438,6 +440,11 @@ busbar-plugin-example-plane = { path = "../plane-example" }
 # repo's cdylib crate at the SAME pinned rev as the linked `busbar-export-file` edge above, so the
 # test drops in the library a signed tarball of the sink carries next to the row the build links.
 busbar-export-file-plugin = { git = "https://github.com/GetBusbar/export-file", rev = "5ff2dadcf45cc49ce26f0cf9d0ca0b0d9fc9cb5a" }
+# The scrape sink's both-doors proofs (`src/root/tests/linked_scrape.rs`,
+# `tests/export_scrape_is_first_party.rs`): its repo's cdylib crate at the SAME pinned rev as the
+# linked `busbar-export-prometheus` edge above — the library a signed tarball of the sink carries,
+# found in this target dir by what it loads as.
+busbar-export-prometheus-plugin = { git = "https://github.com/GetBusbar/export-prometheus", rev = "05a175910b4a5d9e3bcb7f065ac95a1a3e351358" }
 # That proof calls the router it built as the tower service it is (`ServiceExt::oneshot`). The
 # normal-edge `tower` above is `root-admin`'s own and optional, so a build without `root-admin` (every
 # single-plane build) would not compile the test; the test's edge is its own, unconditional here.

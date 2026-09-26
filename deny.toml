@@ -75,4 +75,5 @@ allow-registry = ["https://github.com/rust-lang/crates.io-index"]
 # repo per plugin). Each is a reviewed entry, one URL per plugin repo.
 allow-git = [
     "https://github.com/GetBusbar/export-file",
+    "https://github.com/GetBusbar/export-prometheus",
 ]

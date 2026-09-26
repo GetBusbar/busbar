@@ -340,8 +340,9 @@ busbar-substrate-values = { path = "../busbar-substrate-values", features = ["te
 busbar-store-example-plugin = { path = "../store-example-plugin" }
 # The export axis this crate's config tests resolve `module: prometheus` against: the scrape sink,
 # LINKED into the test binary exactly as the composition root links it into the shipped one (the
-# kernel names no export module; its tests need one on the axis).
-busbar-export-prometheus = { path = "../busbar-export-prometheus" }
+# kernel names no export module; its tests need one on the axis). Pulled from its own repo at the SAME
+# pinned rev the composition root links.
+busbar-export-prometheus = { git = "https://github.com/GetBusbar/export-prometheus", rev = "05a175910b4a5d9e3bcb7f065ac95a1a3e351358" }
 tokio = { workspace = true, features = ["test-util"] }
 reqwest = { workspace = true, features = ["json"] }
 axum = { workspace = true, features = ["http1"] }
