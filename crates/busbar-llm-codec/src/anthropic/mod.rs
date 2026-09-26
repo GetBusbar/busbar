@@ -44,19 +44,19 @@ use slots::*;
 use usage::*;
 
 use crate::ir::{IrBlockMeta, IrDelta, IrStreamEvent, IrUsage};
+use busbar_contract::http::{header::HeaderValue, HeaderName, StatusCode};
+use busbar_contract::protocol::*;
 #[cfg(test)]
-use busbar_substrate_values::breaker::CanonicalSignal;
-use busbar_substrate_values::breaker::StatusClass;
-use busbar_substrate_values::proto::*;
-use http::{header::HeaderValue, HeaderName, StatusCode};
+use busbar_contract::upstream::CanonicalSignal;
+use busbar_contract::upstream::StatusClass;
 // G6 A4b: the wire-codec surface (ProtocolReader/Writer/Protocol/StreamFraming/ToolIdRemap/
 // protocol_for) relocated to this plugin's `proto_codec`; reach it RELATIVELY so it resolves both
 // standalone (crate::proto_codec) and netted into core (core::proto::proto_codec).
 #[allow(unused_imports)]
-// used standalone; redundant with busbar_substrate_values::proto::* when netted into core
+// used standalone; redundant with the `busbar_contract::protocol::*` glob when netted into core
 use super::proto_codec::*;
 // The wire-codec surface, named EXPLICITLY so it resolves to THIS crate's own `proto_codec` and not to
-// the `busbar_substrate_values::proto::*` glob above — which, in a `test-support` build of busbar-core (this
+// the `busbar_contract::protocol::*` glob above — which, in a `test-support` build of busbar-core (this
 // crate's dev-dependency), re-exports a SECOND copy of these same source items through core's `#[path]`
 // dual-compile, and a bare use of either name would then be ambiguous. An explicit import outranks both
 // globs; when this file is netted INTO core the two paths are one item, so the explicit is harmless.
@@ -117,10 +117,10 @@ fn models_list_envelope(names: &[&str]) -> serde_json::Value {
 /// Anthropic's alone among the six (rung 4, catching curl users who omit the version header), then
 /// the `/v1/messages` path (rung 11). Lower strength binds tighter — the shared ladder positions.
 fn claims(
-    h: &http::HeaderMap,
+    h: &busbar_contract::http::HeaderMap,
     path: &str,
-) -> Option<busbar_substrate_values::proto::ClaimStrength> {
-    use busbar_substrate_values::proto::ClaimStrength;
+) -> Option<busbar_contract::protocol::ClaimStrength> {
+    use busbar_contract::protocol::ClaimStrength;
     if h.contains_key("anthropic-version") || h.contains_key("anthropic-beta") {
         return Some(ClaimStrength(2));
     }
@@ -135,9 +135,9 @@ fn claims(
 
 /// ANTHROPIC'S RESIDUAL DETECTION — its arm of the headerless `residual_dialect_for_path` ladder: a
 /// `/v1/messages` path (exact or model-prefixed) names Anthropic (rung 40).
-fn residual_claims(path: &str) -> Option<busbar_substrate_values::proto::ClaimStrength> {
+fn residual_claims(path: &str) -> Option<busbar_contract::protocol::ClaimStrength> {
     if path == "/v1/messages" || path.ends_with("/v1/messages") {
-        return Some(busbar_substrate_values::proto::ClaimStrength(40));
+        return Some(busbar_contract::protocol::ClaimStrength(40));
     }
     None
 }
@@ -153,7 +153,7 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
     handler: Some(&handler::AnthropicRequestHandler),
     verbs: &[busbar_contract::operation::OpVerb::CHAT],
     head_keys: super::proto_codec::LLM_CHAT_HEAD_KEYS,
-    streaming_content_type: Some(busbar_substrate_values::proxy::TEXT_EVENT_STREAM),
+    streaming_content_type: Some(busbar_contract::protocol::TEXT_EVENT_STREAM),
     array_stream_shim_key: None,
     // `toolu_…` is Anthropic's documented native tool-call id shape.
     native_tool_id_prefix: Some("toolu_"),
@@ -173,7 +173,7 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
     frame_after_message_start: Some(ANTHROPIC_PING_SSE_FRAME),
     reshapes_body_at_path_base: true,
     max_cache_control_breakpoints: Some(4),
-    quota_exceeded_status: http::StatusCode::TOO_MANY_REQUESTS,
+    quota_exceeded_status: busbar_contract::http::StatusCode::TOO_MANY_REQUESTS,
     ingress_is_eventstream: false,
     emits_sse_done_terminator: false,
     max_citations_per_delta: Some(1),
@@ -184,15 +184,15 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
     egress_user_agent: "Anthropic/Python 0.39.0",
     has_model_in_url: false,
     auth_failure_status_and_kind: (
-        http::StatusCode::UNAUTHORIZED,
-        busbar_substrate_values::proto::ERR_TYPE_AUTHENTICATION,
+        busbar_contract::http::StatusCode::UNAUTHORIZED,
+        busbar_contract::protocol::ERR_TYPE_AUTHENTICATION,
     ),
     ingress_relays_amzn_headers: false,
     ingress_relayed_response_header_names: &[HDR_REQUEST_ID],
     auth_failure_message: "invalid x-api-key",
     uses_array_stream_shim: false,
     has_native_path_not_found: false,
-    egress_stream_accept: busbar_substrate_values::proxy::TEXT_EVENT_STREAM,
+    egress_stream_accept: busbar_contract::protocol::TEXT_EVENT_STREAM,
     models_list_envelope: Some(models_list_envelope),
     claims: Some(claims),
     residual_claims: Some(residual_claims),
@@ -211,7 +211,7 @@ const ANTHROPIC_API_VERSION: &str = "2023-06-01";
 /// a native Anthropic id token. A native `msg_`/`req_` id is `01` followed by a fixed-length mixed-case
 /// alphanumeric token — NOT lowercase hex — so encoding the synthesized suffix in this alphabet (rather
 /// than bare `{:x}`) removes the alphabet/length/version-prefix distinguishability tell. DISTINCT from
-/// the shared `busbar_substrate_values::proto::BASE62_ALPHABET` (lowercase-first): named `ANTHROPIC_NATIVE_ALPHABET` so
+/// the shared `crate::dialect::BASE62_ALPHABET` (lowercase-first): named `ANTHROPIC_NATIVE_ALPHABET` so
 /// the two can never be confused — `synth_id_with_prefix` (body ids) needs THIS uppercase-first
 /// ordering, while `synth_anthropic_request_id` (response-header id) deliberately uses the shared one.
 const ANTHROPIC_NATIVE_ALPHABET: &[u8; 62] =
@@ -370,7 +370,7 @@ fn inline_document_source(media_type: &str, data: &str) -> Option<serde_json::Va
         .next()
         .is_some_and(|top| top.eq_ignore_ascii_case("text"));
     if is_text {
-        let bytes = busbar_substrate_values::media::base64_decode(data)?;
+        let bytes = busbar_contract::media::base64_decode(data)?;
         let text = String::from_utf8(bytes.to_vec()).ok()?;
         return Some(serde_json::json!({
             "type": "text",
@@ -438,20 +438,20 @@ fn find_stashed_block(
 /// shared with the forward/OpenAI-family vocabulary alias their canonical home in
 /// `openai_family.rs`; only `timeout_error` is an Anthropic-specific spelling (the forward layer's
 /// agnostic kind is the bare `timeout`).
-const ERR_TYPE_OVERLOADED: &str = busbar_substrate_values::proto::ERR_TYPE_OVERLOADED;
-const ERR_TYPE_INVALID_REQUEST: &str = busbar_substrate_values::proto::ERR_TYPE_INVALID_REQUEST;
-const ERR_TYPE_AUTHENTICATION: &str = busbar_substrate_values::proto::ERR_TYPE_AUTHENTICATION;
-const ERR_TYPE_RATE_LIMIT: &str = busbar_substrate_values::proto::ERR_TYPE_RATE_LIMIT;
-const ERR_TYPE_API_ERROR: &str = busbar_substrate_values::proto::ERR_TYPE_API_ERROR;
+const ERR_TYPE_OVERLOADED: &str = busbar_contract::protocol::ERR_TYPE_OVERLOADED;
+const ERR_TYPE_INVALID_REQUEST: &str = busbar_contract::protocol::ERR_TYPE_INVALID_REQUEST;
+const ERR_TYPE_AUTHENTICATION: &str = busbar_contract::protocol::ERR_TYPE_AUTHENTICATION;
+const ERR_TYPE_RATE_LIMIT: &str = busbar_contract::protocol::ERR_TYPE_RATE_LIMIT;
+const ERR_TYPE_API_ERROR: &str = busbar_contract::protocol::ERR_TYPE_API_ERROR;
 const ERR_TYPE_TIMEOUT: &str = "timeout_error";
 /// The billing member of the published Anthropic `ErrorResponse.error` discriminator — the type a
 /// native client sees when the account cannot pay for the request. It has no cross-dialect alias in
 /// the substrate vocabulary (OpenAI names the same condition `insufficient_quota`), so it is spelled
 /// here, beside the other Anthropic-only type token.
 const ERR_TYPE_BILLING: &str = "billing_error";
-const ERR_TYPE_NOT_FOUND: &str = busbar_substrate_values::proto::ERR_TYPE_NOT_FOUND;
-const ERR_TYPE_PERMISSION: &str = busbar_substrate_values::proto::ERR_TYPE_PERMISSION;
-const ERR_TYPE_REQUEST_TOO_LARGE: &str = busbar_substrate_values::proto::ERR_TYPE_REQUEST_TOO_LARGE;
+const ERR_TYPE_NOT_FOUND: &str = busbar_contract::protocol::ERR_TYPE_NOT_FOUND;
+const ERR_TYPE_PERMISSION: &str = busbar_contract::protocol::ERR_TYPE_PERMISSION;
+const ERR_TYPE_REQUEST_TOO_LARGE: &str = busbar_contract::protocol::ERR_TYPE_REQUEST_TOO_LARGE;
 
 /// Anthropic citation `type` tag values (the `type` field on each citation object).
 const CITATION_TYPE_CHAR: &str = "char_location";
@@ -657,7 +657,7 @@ fn read_cache_control(
         None => Ok(None),
         Some(_) => Err(IrError {
             class: StatusClass::ClientError,
-            provider_signal: Some(busbar_substrate_values::proto::SIGNAL_IR_PARSE.to_string()),
+            provider_signal: Some(busbar_contract::protocol::SIGNAL_IR_PARSE.to_string()),
             retry_after: None,
         }),
     }

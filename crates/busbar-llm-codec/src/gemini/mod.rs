@@ -3,25 +3,26 @@
 
 //! Gemini protocol reader/writer implementation.
 
+use crate::dialect::*;
 use crate::ir::IrStreamEvent;
 use crate::usage_count::read_count_u64;
-#[cfg(test)]
-use busbar_substrate_values::breaker::CanonicalSignal;
-use busbar_substrate_values::breaker::StatusClass;
-use busbar_substrate_values::proto::*;
-use busbar_substrate_values::proto::{
+use busbar_contract::http::StatusCode;
+use busbar_contract::protocol::*;
+use busbar_contract::protocol::{
     ERR_TYPE_AUTHENTICATION, ERR_TYPE_INVALID_REQUEST, ERR_TYPE_NOT_FOUND, ERR_TYPE_PERMISSION,
     ERR_TYPE_RATE_LIMIT,
 };
-use http::StatusCode;
+#[cfg(test)]
+use busbar_contract::upstream::CanonicalSignal;
+use busbar_contract::upstream::StatusClass;
 // G6 A4b: the wire-codec surface (ProtocolReader/Writer/Protocol/StreamFraming/ToolIdRemap/
 // protocol_for) relocated to this plugin's `proto_codec`; reach it RELATIVELY so it resolves both
 // standalone (crate::proto_codec) and netted into core (core::proto::proto_codec).
 #[allow(unused_imports)]
-// used standalone; redundant with busbar_substrate_values::proto::* when netted into core
+// used standalone; redundant with the `busbar_contract::protocol::*` glob when netted into core
 use super::proto_codec::*;
 // See the anthropic dialect for the rationale: an explicit import of the codec surface so it binds to
-// THIS crate's own `proto_codec` rather than the ambiguous `busbar_substrate_values::proto::*` re-export.
+// THIS crate's own `proto_codec` rather than the `busbar_contract::protocol::*` glob.
 #[allow(unused_imports)]
 use super::proto_codec::{Protocol, ProtocolReader, ProtocolWriter, StreamFraming};
 
@@ -70,10 +71,10 @@ fn models_list_envelope(names: &[&str]) -> serde_json::Value {
 /// `/v1{,beta}/models/` wildcard surface (rung 6). Strength values are the ladder POSITION (lower
 /// binds tighter); they are the single ladder shared with the sibling dialects' predicates.
 fn claims(
-    h: &http::HeaderMap,
+    h: &busbar_contract::http::HeaderMap,
     path: &str,
-) -> Option<busbar_substrate_values::proto::ClaimStrength> {
-    use busbar_substrate_values::proto::ClaimStrength;
+) -> Option<busbar_contract::protocol::ClaimStrength> {
+    use busbar_contract::protocol::ClaimStrength;
     if h.contains_key("x-goog-api-key") {
         return Some(ClaimStrength(3));
     }
@@ -109,8 +110,8 @@ const GEMINI_RESIDUAL_ACTIONS: [&str; 7] = [
 /// whole `/v1beta/models…` surface is Gemini-only (rung 10), and a `/v1/models/{id}` whose last
 /// segment carries a genuine Gemini action suffix is Gemini (rung 20, tighter than the OpenAI
 /// `/v1/models/` catch at rung 25).
-fn residual_claims(path: &str) -> Option<busbar_substrate_values::proto::ClaimStrength> {
-    use busbar_substrate_values::proto::ClaimStrength;
+fn residual_claims(path: &str) -> Option<busbar_contract::protocol::ClaimStrength> {
+    use busbar_contract::protocol::ClaimStrength;
     if path.starts_with("/v1beta/models") {
         return Some(ClaimStrength(10));
     }
@@ -146,7 +147,7 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
         busbar_contract::operation::OpVerb::SPEECH,
     ],
     head_keys: super::proto_codec::LLM_CHAT_HEAD_KEYS,
-    streaming_content_type: Some(busbar_substrate_values::proxy::TEXT_EVENT_STREAM),
+    streaming_content_type: Some(busbar_contract::protocol::TEXT_EVENT_STREAM),
     array_stream_shim_key: Some(GEMINI_JSON_ARRAY_SHIM_KEY),
     // Gemini carries NO tool id on the wire (it correlates `functionCall`s by name), so there is
     // nothing to reshape and no risk of a foreign id leaking to a Gemini client.
@@ -173,7 +174,7 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
     frame_after_message_start: None,
     reshapes_body_at_path_base: false,
     max_cache_control_breakpoints: None,
-    quota_exceeded_status: http::StatusCode::TOO_MANY_REQUESTS,
+    quota_exceeded_status: busbar_contract::http::StatusCode::TOO_MANY_REQUESTS,
     ingress_is_eventstream: false,
     emits_sse_done_terminator: false,
     max_citations_per_delta: None,
@@ -181,13 +182,16 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
     // `test_egress_ua_versions_are_pinned_and_present` guards drift.
     egress_user_agent: "google-genai-sdk/0.8.0 gl-python/3.11",
     has_model_in_url: true,
-    auth_failure_status_and_kind: (http::StatusCode::BAD_REQUEST, ERR_TYPE_INVALID_REQUEST),
+    auth_failure_status_and_kind: (
+        busbar_contract::http::StatusCode::BAD_REQUEST,
+        ERR_TYPE_INVALID_REQUEST,
+    ),
     ingress_relays_amzn_headers: false,
     ingress_relayed_response_header_names: &[],
     auth_failure_message: GEMINI_BAD_KEY_MESSAGE,
     uses_array_stream_shim: true,
     has_native_path_not_found: true,
-    egress_stream_accept: busbar_substrate_values::proxy::TEXT_EVENT_STREAM,
+    egress_stream_accept: busbar_contract::protocol::TEXT_EVENT_STREAM,
     models_list_envelope: Some(models_list_envelope),
     claims: Some(claims),
     residual_claims: Some(residual_claims),
@@ -453,7 +457,7 @@ const GRPC_NOT_FOUND: &str = "NOT_FOUND";
 /// google.rpc.Code name for an unimplemented / not-supported operation.
 const GRPC_UNIMPLEMENTED: &str = "UNIMPLEMENTED";
 /// Busbar/Anthropic internal error kind for an overloaded upstream (maps to GRPC_UNAVAILABLE).
-const ERR_TYPE_OVERLOADED: &str = busbar_substrate_values::proto::ERR_TYPE_OVERLOADED;
+const ERR_TYPE_OVERLOADED: &str = busbar_contract::protocol::ERR_TYPE_OVERLOADED;
 
 // ── ErrorInfo tokens ──────────────────────────────────────────────────────────
 /// The machine-readable `reason` value carried in `google.rpc.ErrorInfo` for an invalid API key.
@@ -511,8 +515,8 @@ pub struct GeminiReader;
 /// Gemini `responseId` draws from (e.g. `PXmFaPzVMI…`). Carries no `-`/`_`, so no separator or
 /// hyphen leaks the synthetic boundary the old `{:x}-{:x}` form exposed.
 /// Base62 alphabet for the synthesized `responseId` — the shared single-source-of-truth atom (see
-/// `busbar_substrate_values::proto::BASE62_ALPHABET`), aliased locally so the generator below reads naturally.
-const RESPONSE_ID_ALPHABET: &[u8; 62] = busbar_substrate_values::proto::BASE62_ALPHABET;
+/// `crate::dialect::BASE62_ALPHABET`), aliased locally so the generator below reads naturally.
+const RESPONSE_ID_ALPHABET: &[u8; 62] = crate::dialect::BASE62_ALPHABET;
 
 /// Width of a synthesized Gemini `responseId`. Native Gemini bodies/streams carry a short opaque
 /// base64url-style token (~11–16 chars) with NO positional structure; 16 base62 chars stays in that
@@ -524,7 +528,7 @@ const RESPONSE_ID_TOKEN_LEN: usize = 16;
 /// of 62 that fits in a `u8` is `4 * 62 = 248`. Any random byte `>= 248` is in the partial final
 /// block (`248..=255` → residues `0..=7`) that would otherwise be over-represented by a bare
 /// `byte % 62`, so we reject and resample those to keep the symbol distribution uniform.
-const RESPONSE_ID_REJECT_THRESHOLD: u8 = busbar_substrate_values::proto::BASE62_REJECT_THRESHOLD;
+const RESPONSE_ID_REJECT_THRESHOLD: u8 = crate::dialect::BASE62_REJECT_THRESHOLD;
 
 /// Mint a Gemini-shaped `responseId` for the cross-protocol path where the backend supplied none.
 ///
@@ -534,7 +538,7 @@ const RESPONSE_ID_REJECT_THRESHOLD: u8 = busbar_substrate_values::proto::BASE62_
 /// counts: (a) the `-` separator plus `[0-9a-f]`-only character class is a shape no native id has,
 /// and (b) the leading hex segment leaked the proxy host's wall-clock second to anyone holding a
 /// response id. This mints an opaque CSPRNG-backed base62 token of native length instead: the WHOLE
-/// token is filled from `getrandom` with NO counter overlay. A counter overlaid into any fixed
+/// token is filled from the host entropy pool (`synth_rng`) with NO counter overlay. A counter overlaid into any fixed
 /// region of the token leaves those characters predictable/low-entropy (the counter stays small, so
 /// its high base62 digits are constant '0') — a structural tell at whatever position it occupies. A
 /// 16-char base62 token is ~95 bits of entropy, collision-free in practice for a per-process id
@@ -558,7 +562,7 @@ fn synth_response_id() -> String {
     const MAX_ROUNDS: u32 = 8;
     while filled < RESPONSE_ID_TOKEN_LEN && rounds < MAX_ROUNDS {
         rounds += 1;
-        // Draw a generous batch so a single getrandom call typically fills the whole token even after
+        // Draw a generous batch so a single entropy draw typically fills the whole token even after
         // rejections (RESPONSE_ID_TOKEN_LEN*2 bytes leave ample headroom for the ~1.6% reject rate).
         let mut batch = [0u8; RESPONSE_ID_TOKEN_LEN * 2];
         if !super::synth_rng::fill_entropy(&mut batch) {
@@ -1155,7 +1159,7 @@ fn coerce_tool_args(input: &serde_json::Value) -> serde_json::Value {
     // Resolve the candidate value: a string is a serialized payload — parse it, falling back to the
     // string itself (a scalar) when it does not parse as JSON. Any non-string value is used as-is.
     let candidate: serde_json::Value = match input.as_str() {
-        Some(s) => busbar_substrate_values::json::parse_str(s).unwrap_or_else(|_| input.clone()),
+        Some(s) => crate::json::parse_str(s).unwrap_or_else(|_| input.clone()),
         None => input.clone(),
     };
     if candidate.is_object() {

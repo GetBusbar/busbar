@@ -20,10 +20,15 @@
 //! `RequestHandler` and operation cells (`handler.rs`), its own wire constant bank, and its tests.
 //! A seventh dialect is a seventh module here — not a seventh crate and not a seventh feature flag.
 //!
-//! WHAT IS DELIBERATELY *NOT* HERE, SECOND SENSE. `busbar_substrate_values::proto::openai_family` — the
-//! `ERR_TYPE_*` bank, `bearer_error_code`, `tool_arguments_to_string`, `MESSAGE_NAMES_SENTINEL` —
-//! reads like it should have travelled with the OpenAI dialects, and it must not: `busbar-core`
-//! itself consumes it in PRODUCTION. It stays in the substrate and every dialect reaches it there.
+//! WHAT THE DIALECTS SHARE, AND WHERE IT LIVES (#83a SD-3). Two kinds of shared name, two homes.
+//! The vocabulary BOTH sides of the plane seam must spell alike — the declaration a dialect fills,
+//! the codec-cell traits, the IR shapes, the error-`type` bank, the billing and wire carriers — is
+//! the contract's (`busbar_contract::…`), and the crate names it there. The machinery only this
+//! plane's dialects speak — the event-stream framing, the JSON seam, the SSE and OpenAI-family wire
+//! helpers, the cross-dialect translate pipeline and the plane's coded diagnostics — is the plane's
+//! own, in the modules below. Nothing here names the host crate: what the plane needs from its host
+//! (entropy, the wall clock, the translation cap, the usage-tap count) it reaches through the
+//! host services the contract carries, which the host installs where it installs the protocols.
 //!
 //! SIBLING PATHS ARE RELATIVE. A dialect referring to a SIBLING dialect does it RELATIVELY —
 //! `super::gemini::…` from a `mod.rs`, `super::super::…` from one file deeper. That convention
@@ -55,7 +60,29 @@ pub mod gemini;
 pub mod openai_chat;
 pub mod openai_responses;
 
-/// Thread-local OS-entropy pool shared by the writers' synthesized-wire-id paths.
+/// The plane's own CRC-32 (the event-stream framing checksum).
+pub mod crc32;
+
+/// The dialects' shared wire helpers: the OpenAI-family error helpers, the SSE `[DONE]` terminator
+/// and frame probe/parse/write, the base62 id alphabet, the `usage` stripper.
+pub mod dialect;
+
+/// The plane's own coded diagnostics, and the slice the composition root installs.
+pub mod diagnostics;
+
+/// The AWS event-stream framing codec the signing dialect streams in.
+pub mod eventstream;
+
+/// The plane's own hex codec for synthesized wire ids.
+pub mod hex;
+
+/// The plane's own depth-guarded JSON seam.
+pub mod json;
+
+/// The cross-dialect translate pipeline (`TranslateCodec`).
+pub mod translate;
+
+/// Thread-local entropy pool (filled from the host's source) shared by the writers' synthesized-wire-id paths.
 ///
 /// PUBLIC because the plane needs the same source the reference path uses when it mints a wire id
 /// the codec would otherwise mint for it — and because the anthropic ERROR envelope, which is the
@@ -86,7 +113,7 @@ pub mod leaf_codec;
 pub mod proto_codec;
 
 /// The concrete streaming byte-translator (`StreamTranslate`) behind the neutral
-/// `busbar_substrate_values::proto::StreamTranslator`.
+/// `busbar_contract::protocol::StreamTranslator`.
 pub mod proto_stream;
 
 /// The two body-shaping helpers a caller needs on either side of a translate, kept here because
@@ -141,49 +168,28 @@ const ANTHROPIC_REQUEST_ID_MEMBER: &str = "request_id";
 /// re-exports it as `busbar_llm::PLANE_KEY`, the one stable path the `busbar` binary names.
 pub const PLANE_KEY: &str = "llm";
 
-/// PUBLISH THIS PLUGIN'S DIALECT DECLARATIONS into the SHARED substrate test registry, ONCE — the
-/// lazy, self-installing counterpart of the composition root's `install_protocols`, for the test
-/// surface where no `main` runs a composition root.
-///
-/// A codec that resolves a protocol fact through `busbar_substrate_values::proto::decl_for` (the
-/// `Protocol` reader/writer resolution, `protocol_for`, the tool-id remap's
-/// `native_tool_id_prefix`) must first ensure this plugin's declarations are registered. Calling it
-/// at those few entry points makes every codec-exercising test order-independent without a per-test
-/// install. `Once`-guarded, so it is a single atomic load after the first call — off any
-/// allocation-gated path. In a build with a real composition root the set is already present and
-/// the fold dedupes by name.
-#[cfg(any(test, feature = "test-support"))]
-pub fn ensure_test_protocols_registered() {
-    static REGISTER: std::sync::Once = std::sync::Once::new();
-    REGISTER.call_once(|| busbar_substrate_values::proto::register_test_protocols(DECLS));
+/// THIS PLANE'S OWN DECLARATION OF `name`, read off [`DECLS`]. Every fact the codecs look up about a
+/// dialect by name — the path-model shape, the array-stream shim key, the native tool-id prefix, the
+/// provider-metadata reporter — is a fact about one of THESE six dialects, so the lookup reads this
+/// plane's own table (Law 5), never the host's registry. `None` for a name this plane does not
+/// declare.
+#[must_use]
+pub fn decl_of(name: &str) -> Option<&'static busbar_contract::protocol::ProtocolDecl> {
+    DECLS.iter().copied().find(|d| d.name == name)
 }
 
-/// TEST ONLY (#83a S2-a): the credential headers the host presents for `key` on a lane of
-/// `protocol` — the kernel's egress-auth unit reading this plane's DECLARED egress scheme, exactly as
-/// an egress request is decorated. A dialect's auth is asserted through here, never through a
-/// builder of its own: the plane holds no credential.
+/// THIS CRATE'S TEST HOST (#83a SD-3: the test-support registration and the classifier are
+/// dev-only). Everything a test reaches in the host — the test registration seam, the egress-auth
+/// unit a declared credential scheme is presented by, the operator `error_map` classifier — is
+/// reached through here, over this crate's dev-dependency on the kernel; no shipped or dependent
+/// build of this crate names the host.
 #[cfg(test)]
-pub(crate) fn presented_auth_headers(
-    protocol: &str,
-    key: &str,
-    ctx: &busbar_substrate_values::proto::SigningContext,
-) -> Vec<(http::HeaderName, http::HeaderValue)> {
-    ensure_test_protocols_registered();
-    busbar_kernel::egress_auth::resolve(protocol, None).headers_for(key, ctx)
-}
-
-/// TEST ONLY: a signing context for a static-credential presentation — a lane's own key, a JSON
-/// body to a plain path. A static scheme reads nothing from it but the credential mode.
+#[path = "tests/test_host.rs"]
+pub(crate) mod test_host;
 #[cfg(test)]
-pub(crate) fn test_signing_ctx() -> busbar_substrate_values::proto::SigningContext<'static> {
-    busbar_substrate_values::proto::SigningContext {
-        host: "upstream.internal",
-        canonical_uri: "/v1/chat/completions",
-        body: b"{}",
-        timestamp_epoch: 1_752_000_000,
-        upstream_creds: busbar_contract::config::UpstreamCreds::Own,
-    }
-}
+pub(crate) use test_host::{
+    ensure_test_protocols_registered, presented_auth_headers, test_signing_ctx,
+};
 
 /// EVERY DIALECT THIS PLUGIN DECLARES, in the order an operator sees.
 ///
@@ -203,7 +209,7 @@ pub(crate) fn test_signing_ctx() -> busbar_substrate_values::proto::SigningConte
 /// published 1.5.5 binary prints that tail on a bad `protocol:` (shadow-oracle
 /// `boot.refusal|BOOT-020|validate`). The swap was therefore an unannounced move of an
 /// operator-visible list and of every metric-family index behind it, and it is undone here.
-pub static DECLS: &[&busbar_substrate_values::proto::ProtocolDecl] = &[
+pub static DECLS: &[&busbar_contract::protocol::ProtocolDecl] = &[
     &anthropic::DECL,
     &openai_chat::DECL,
     &gemini::DECL,
@@ -260,3 +266,9 @@ mod ir_seam_tests;
 #[cfg(test)]
 #[path = "tests/ir_slot_carry_tests.rs"]
 mod ir_slot_carry_tests;
+
+/// The usage-tap count pin (#83a SD-3, R-USAGE): every same-protocol tap fault counts once on the
+/// host's counter, under its reason, whichever cell or direct call raised it.
+#[cfg(test)]
+#[path = "tests/usage_tap_count_tests.rs"]
+mod usage_tap_count_tests;

@@ -6,12 +6,11 @@
 use crate::ir::embeddings::{
     EmbInput, EmbeddingItem, EmbeddingsReq, EmbeddingsResp, EncFmt, VectorData,
 };
+use busbar_contract::codec::{CodecError, IngressReject, OperationHandler, RequestHandler};
+use busbar_contract::codec::{EgressCtx, WireBody};
+use busbar_contract::ir::handle::IrHandle;
 use busbar_contract::operation::OpVerb;
-use busbar_substrate_values::handlers::{
-    CodecError, IngressReject, OperationHandler, RequestHandler,
-};
-use busbar_substrate_values::ir::handle::IrHandle;
-use busbar_substrate_values::wire::{EgressCtx, SlabBytes, WireBody};
+use busbar_contract::SlabBytes;
 use bytes::Bytes;
 use serde_json::{json, Value};
 
@@ -32,7 +31,7 @@ static RERANK: CohereRerank = CohereRerank;
 /// COHERE'S ROW OF THE SUPPORT MATRIX — the verbs this protocol speaks, as data. A verb absent from
 /// it is the standard no-handler 404: Cohere has no moderation/image/audio surface, and the
 /// protocol-surface verbs are MCP's and A2A's.
-static CELLS: &[busbar_substrate_values::handlers::Cell] = &[
+static CELLS: &[busbar_contract::codec::Cell] = &[
     (OpVerb::CHAT, &CHAT),
     (OpVerb::EMBEDDINGS, &EMB),
     (OpVerb::RERANK, &RERANK),
@@ -50,12 +49,12 @@ impl RequestHandler for CohereRequestHandler {
         "cohere"
     }
     fn operation_handler(&self, op: OpVerb) -> Option<&dyn OperationHandler> {
-        busbar_substrate_values::handlers::cell_of(CELLS, op)
+        busbar_contract::codec::cell_of(CELLS, op)
     }
     fn upstream_path(&self, ctx: &EgressCtx) -> String {
         // Unreachable: `operation_handler` returns `None` for a verb absent from the table, so
         // egress path resolution is never reached for one. The fallback is the pre-1.6.0 answer.
-        busbar_substrate_values::handlers::path_of(PATHS, ctx.operation)
+        busbar_contract::codec::path_of(PATHS, ctx.operation)
             .unwrap_or(PATH_EMBED)
             .into()
     }
@@ -119,7 +118,7 @@ impl OperationHandler for CohereEmbeddings {
         &self,
         status: u16,
         body: &[u8],
-    ) -> busbar_substrate_values::breaker::RawUpstreamError {
+    ) -> busbar_contract::upstream::RawUpstreamError {
         super::super::proto_codec::protocol_error("cohere", status, body)
     }
     // Token-metered: buffer the same-protocol non-stream 2xx body so the default
@@ -267,7 +266,7 @@ impl OperationHandler for CohereRerank {
         &self,
         status: u16,
         body: &[u8],
-    ) -> busbar_substrate_values::breaker::RawUpstreamError {
+    ) -> busbar_contract::upstream::RawUpstreamError {
         super::super::proto_codec::protocol_error("cohere", status, body)
     }
     // Search-unit metered: buffer the same-protocol non-stream 2xx body so the tap reads the
@@ -489,7 +488,7 @@ pub fn read_embeddings_response(
         "input_tokens",
     )
     .map_err(|e| CodecError::Malformed(e.to_string()))?
-    .map(|n| busbar_substrate_values::billing::TokenUsage {
+    .map(|n| busbar_contract::billing::TokenUsage {
         input: n,
         ..Default::default()
     });

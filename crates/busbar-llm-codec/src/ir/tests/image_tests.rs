@@ -62,8 +62,8 @@ fn variation_op_needs_no_prompt() {
 
 // ── IrFacts projection + the new-String-field forcing function ───────────────────────────────────────────────────────
 
+use busbar_contract::ir::facts::{ContentItem, IrFacts, OPAQUE_CONTENT_MARKER};
 use busbar_contract::operation::OpVerb;
-use busbar_substrate_values::ir::facts::{ContentItem, IrFacts, OPAQUE_CONTENT_MARKER};
 
 fn screened(items: &[ContentItem<'_>]) -> Vec<String> {
     items

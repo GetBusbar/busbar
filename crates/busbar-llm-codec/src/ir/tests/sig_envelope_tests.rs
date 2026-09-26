@@ -14,8 +14,8 @@ use crate::proto_codec::protocol_for;
 /// A realistic Anthropic signature: base64 with `+`, `/` and `=` in it.
 const CLAUDE_SIG: &str = "EqQBCkYIBxgCKkBv+9Zk/3mQ==";
 
-fn prep(ingress: &'static str) -> busbar_substrate_values::ir::egress_prep::EgressPrep<'static> {
-    busbar_substrate_values::ir::egress_prep::EgressPrep {
+fn prep(ingress: &'static str) -> busbar_contract::ir::egress_prep::EgressPrep<'static> {
+    busbar_contract::ir::egress_prep::EgressPrep {
         thought_signature_fill: false,
         ingress_protocol: ingress,
         egress_requires_max_tokens: true,

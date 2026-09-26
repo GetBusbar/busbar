@@ -53,7 +53,7 @@ fn item12_off_omits_thinking_on_an_always_on_lane() {
 
 /// The `bedrock` entry's `model_capabilities` from the shipped providers.yaml (written in flow /
 /// JSON style so this crate can read it without a YAML parser).
-fn shipped_bedrock_rules() -> Vec<busbar_substrate_values::ir::lane_caps::ModelCapabilities> {
+fn shipped_bedrock_rules() -> Vec<busbar_kernel::ir::lane_caps::ModelCapabilities> {
     let raw = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../providers.yaml"))
         .expect("read providers.yaml");
     let entry = &raw[raw.find("\nbedrock:\n").expect("bedrock entry")..];
@@ -65,7 +65,7 @@ fn shipped_bedrock_rules() -> Vec<busbar_substrate_values::ir::lane_caps::ModelC
 }
 
 fn shipped_caps(model: &str) -> LaneCaps {
-    busbar_substrate_values::ir::lane_caps::resolve_lane_caps(
+    busbar_kernel::ir::lane_caps::resolve_lane_caps(
         Default::default(),
         &shipped_bedrock_rules(),
         model,

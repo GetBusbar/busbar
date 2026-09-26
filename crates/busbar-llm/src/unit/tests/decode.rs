@@ -102,7 +102,7 @@ fn replace_all(haystack: &[u8], needle: &[u8], with: &[u8]) -> Vec<u8> {
 }
 
 fn registered() {
-    busbar_llm_codec::ensure_test_protocols_registered();
+    busbar_kernel::proto::register_test_protocols(busbar_llm_codec::DECLS);
 }
 
 // ── THE MODEL LADDER vs THE LIVE PATH ──────────────────────────────────────────────────────

@@ -4,7 +4,7 @@
 //! Tests for `crates/busbar/src/ir/audio.rs`.
 
 use super::*;
-use busbar_substrate_values::media::{MediaBlob, MediaPayload};
+use busbar_contract::media::{MediaBlob, MediaPayload};
 
 #[test]
 fn transcription_translation_folds_via_target_language() {
@@ -33,8 +33,7 @@ fn transcription_billing_is_model_dependent() {
     let whisper = TranscriptionResp {
         text: "hi".into(),
         usage: Some(Billing::Duration {
-            seconds: busbar_substrate_values::billing::Count::parse("3.2")
-                .expect("3.2 is an exact decimal"),
+            seconds: busbar_contract::Count::parse("3.2").expect("3.2 is an exact decimal"),
         }),
         ..Default::default()
     };
@@ -45,9 +44,7 @@ fn transcription_billing_is_model_dependent() {
 fn speech_carries_binary_out_and_char_or_token_billing() {
     let resp = SpeechResp {
         audio: Some(MediaBlob {
-            payload: MediaPayload::Bytes(busbar_substrate_values::wire::SlabBytes::from(
-                &b"\xff\xfb"[..],
-            )),
+            payload: MediaPayload::Bytes(busbar_contract::SlabBytes::from(&b"\xff\xfb"[..])),
             mime_type: "audio/mpeg".into(),
             pcm: None,
         }),
@@ -63,8 +60,8 @@ fn speech_carries_binary_out_and_char_or_token_billing() {
 
 // ── IrFacts projection (close-non-chat-gate-blindness) ───────────────────────────────────────────
 
+use busbar_contract::ir::facts::{ContentItem, IrFacts, OPAQUE_CONTENT_MARKER};
 use busbar_contract::operation::OpVerb;
-use busbar_substrate_values::ir::facts::{ContentItem, IrFacts, OPAQUE_CONTENT_MARKER};
 
 fn screened(items: &[ContentItem<'_>]) -> Vec<String> {
     items
@@ -76,8 +73,8 @@ fn screened(items: &[ContentItem<'_>]) -> Vec<String> {
 #[test]
 fn transcription_projects_prompt_as_text_and_audio_as_opaque() {
     let req = TranscriptionReq {
-        audio: Some(busbar_substrate_values::media::MediaBlob {
-            payload: busbar_substrate_values::media::MediaPayload::B64("AAAA".into()),
+        audio: Some(busbar_contract::media::MediaBlob {
+            payload: busbar_contract::media::MediaPayload::B64("AAAA".into()),
             mime_type: "audio/mp3".into(),
             pcm: None,
         }),

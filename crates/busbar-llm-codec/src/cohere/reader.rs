@@ -12,10 +12,7 @@ impl ProtocolReader for CohereReader {
         (!token.is_empty()).then(|| read_cohere_stop_reason(token))
     }
 
-    fn recover_truncated_usage(
-        &self,
-        tail: &[u8],
-    ) -> Option<busbar_substrate_values::billing::TokenUsage> {
+    fn recover_truncated_usage(&self, tail: &[u8]) -> Option<busbar_contract::billing::TokenUsage> {
         let v = super::super::usage_tail::isolate_tail_usage_object(tail, b"\"usage\"")?;
         let tokens = v.get("tokens");
         // The BILLED bucket, read exactly as `read_response` reads it. Cohere reports usage TWICE —
@@ -57,11 +54,11 @@ impl ProtocolReader for CohereReader {
         &self,
         status: StatusCode,
         body: &[u8],
-    ) -> busbar_substrate_values::breaker::RawUpstreamError {
+    ) -> busbar_contract::upstream::RawUpstreamError {
         // Parse the body exactly once and derive both fields from the single binding — the Gemini
         // and Bedrock readers do the same, preserving the "parse once" invariant. Parsing twice
         // paid a pointless 2x CPU cost on every error response.
-        let json = busbar_substrate_values::json::parse::<serde_json::Value>(body).ok();
+        let json = crate::json::parse::<serde_json::Value>(body).ok();
         let provider_code = json
             .as_ref()
             .and_then(|j| j.get("message"))
@@ -97,12 +94,12 @@ impl ProtocolReader for CohereReader {
             || status == StatusCode::PAYLOAD_TOO_LARGE)
             && Self::body_signals_context_length(body)
         {
-            Some(busbar_substrate_values::proxy::PROVIDER_CODE_CONTEXT_LENGTH.to_string())
+            Some(busbar_contract::protocol::PROVIDER_CODE_CONTEXT_LENGTH.to_string())
         } else {
             provider_code
         };
 
-        busbar_substrate_values::breaker::RawUpstreamError {
+        busbar_contract::upstream::RawUpstreamError {
             http_status: status.as_u16(),
             provider_code,
             structured_type,
@@ -150,7 +147,7 @@ impl ProtocolReader for CohereReader {
             return CanonicalSignal {
                 class: StatusClass::ContextLength,
                 provider_signal: Some(
-                    busbar_substrate_values::proxy::PROVIDER_CODE_CONTEXT_LENGTH.to_string(),
+                    busbar_contract::protocol::PROVIDER_CODE_CONTEXT_LENGTH.to_string(),
                 ),
                 retry_after: None,
             };
@@ -172,10 +169,9 @@ impl ProtocolReader for CohereReader {
     }
 
     fn read_request(&self, body: &serde_json::Value) -> Result<crate::ir::IrRequest, IrError> {
-        let _t = busbar_timing::timeit!("cohere_read_request");
         let obj = body.as_object().ok_or(IrError {
             class: StatusClass::ClientError,
-            provider_signal: Some(busbar_substrate_values::proto::SIGNAL_IR_PARSE.to_string()),
+            provider_signal: Some(busbar_contract::protocol::SIGNAL_IR_PARSE.to_string()),
             retry_after: None,
         })?;
 
@@ -189,7 +185,7 @@ impl ProtocolReader for CohereReader {
         if let Some(messages_val) = obj.get("messages") {
             let msgs_arr = messages_val.as_array().ok_or(IrError {
                 class: StatusClass::ClientError,
-                provider_signal: Some(busbar_substrate_values::proto::SIGNAL_IR_PARSE.to_string()),
+                provider_signal: Some(busbar_contract::protocol::SIGNAL_IR_PARSE.to_string()),
                 retry_after: None,
             })?;
 
@@ -204,7 +200,7 @@ impl ProtocolReader for CohereReader {
                         return Err(IrError {
                             class: StatusClass::ClientError,
                             provider_signal: Some(
-                                busbar_substrate_values::proto::SIGNAL_IR_PARSE.to_string(),
+                                busbar_contract::protocol::SIGNAL_IR_PARSE.to_string(),
                             ),
                             retry_after: None,
                         })
@@ -222,7 +218,7 @@ impl ProtocolReader for CohereReader {
                         return Err(IrError {
                             class: StatusClass::ClientError,
                             provider_signal: Some(
-                                busbar_substrate_values::proto::SIGNAL_IR_PARSE.to_string(),
+                                busbar_contract::protocol::SIGNAL_IR_PARSE.to_string(),
                             ),
                             retry_after: None,
                         });
@@ -451,7 +447,7 @@ impl ProtocolReader for CohereReader {
                                         .ok_or(IrError {
                                             class: StatusClass::ClientError,
                                             provider_signal: Some(
-                                                busbar_substrate_values::proto::SIGNAL_IR_PARSE
+                                                busbar_contract::protocol::SIGNAL_IR_PARSE
                                                     .to_string(),
                                             ),
                                             retry_after: None,
@@ -466,10 +462,9 @@ impl ProtocolReader for CohereReader {
                                         .get("arguments")
                                         .and_then(|v| v.as_str())
                                         .unwrap_or("{}");
-                                    let input = busbar_substrate_values::json::parse_str(arguments)
-                                        .unwrap_or(serde_json::Value::String(
-                                            arguments.to_string(),
-                                        ));
+                                    let input = crate::json::parse_str(arguments).unwrap_or(
+                                        serde_json::Value::String(arguments.to_string()),
+                                    );
                                     msg_content.push(crate::ir::IrBlock::ToolUse {
                                         id,
                                         name,
@@ -518,12 +513,12 @@ impl ProtocolReader for CohereReader {
                                         } else {
                                             // Preserve any OTHER non-text typed block verbatim
                                             // rather than dropping it.
-                                            busbar_substrate_values::json::to_string(b).ok()
+                                            crate::json::to_string(b).ok()
                                         }
                                     } else {
                                         // Non-string, non-object array element: serialize it so no
                                         // content is lost.
-                                        busbar_substrate_values::json::to_string(b).ok()
+                                        crate::json::to_string(b).ok()
                                     }
                                 })
                                 .collect::<Vec<_>>()
@@ -536,8 +531,7 @@ impl ProtocolReader for CohereReader {
                         } else if let Some(s) = content_val.as_str() {
                             s.to_string()
                         } else {
-                            busbar_substrate_values::json::to_string(content_val)
-                                .unwrap_or_default()
+                            crate::json::to_string(content_val).unwrap_or_default()
                         }
                     } else {
                         String::new()
@@ -596,7 +590,7 @@ impl ProtocolReader for CohereReader {
         } else {
             return Err(IrError {
                 class: StatusClass::ClientError,
-                provider_signal: Some(busbar_substrate_values::proto::SIGNAL_IR_PARSE.to_string()),
+                provider_signal: Some(busbar_contract::protocol::SIGNAL_IR_PARSE.to_string()),
                 retry_after: None,
             });
         }
@@ -798,9 +792,7 @@ impl ProtocolReader for CohereReader {
         state: &mut crate::ir::StreamDecodeState,
     ) -> Vec<IrStreamEvent> {
         let mut out: Vec<IrStreamEvent> = Vec::new();
-        if data.as_str() == Some(busbar_substrate_values::proto::SSE_DONE_SENTINEL)
-            || !data.is_object()
-        {
+        if data.as_str() == Some(crate::dialect::SSE_DONE_SENTINEL) || !data.is_object() {
             return out;
         }
 
@@ -1100,16 +1092,14 @@ impl ProtocolReader for CohereReader {
                 // a content-moderation refusal is a successful, correctly-served response, and
                 // faulting a lane for one would trip the breaker on ordinary safety behaviour.
                 if stop_reason == Some(crate::ir::IrStopReason::Error) {
-                    out.push(IrStreamEvent::Error(
-                        busbar_substrate_values::proto::IrError {
-                            // The upstream gives no code or message on this frame — only the
-                            // `ERROR` token — so classify it as a TRANSIENT server fault: the lane
-                            // recovers via cooldown rather than being permanently penalized.
-                            class: busbar_substrate_values::breaker::StatusClass::ServerError,
-                            provider_signal: Some(raw_finish_reason.to_string()),
-                            retry_after: None,
-                        },
-                    ));
+                    out.push(IrStreamEvent::Error(busbar_contract::protocol::IrError {
+                        // The upstream gives no code or message on this frame — only the
+                        // `ERROR` token — so classify it as a TRANSIENT server fault: the lane
+                        // recovers via cooldown rather than being permanently penalized.
+                        class: busbar_contract::upstream::StatusClass::ServerError,
+                        provider_signal: Some(raw_finish_reason.to_string()),
+                        retry_after: None,
+                    }));
                 }
 
                 // BILLED COUNTS: absent is zero, a present-but-UNREADABLE count REFUSES (#42) —
@@ -1352,15 +1342,14 @@ impl ProtocolReader for CohereReader {
     }
 
     fn read_response(&self, body: &serde_json::Value) -> Result<crate::ir::IrResponse, IrError> {
-        let _t = busbar_timing::timeit!("cohere_read_response");
         let obj = body.as_object().ok_or(IrError {
             class: StatusClass::ClientError,
-            provider_signal: Some(busbar_substrate_values::proto::SIGNAL_IR_PARSE.to_string()),
+            provider_signal: Some(busbar_contract::protocol::SIGNAL_IR_PARSE.to_string()),
             retry_after: None,
         })?;
         let message_val = obj.get("message").ok_or(IrError {
             class: StatusClass::ClientError,
-            provider_signal: Some(busbar_substrate_values::proto::SIGNAL_IR_PARSE.to_string()),
+            provider_signal: Some(busbar_contract::protocol::SIGNAL_IR_PARSE.to_string()),
             retry_after: None,
         })?;
 
@@ -1465,7 +1454,7 @@ impl ProtocolReader for CohereReader {
                         .get("arguments")
                         .and_then(|v| v.as_str())
                         .unwrap_or("{}");
-                    let input = busbar_substrate_values::json::parse_str(arguments)
+                    let input = crate::json::parse_str(arguments)
                         .unwrap_or(serde_json::Value::String(arguments.to_string()));
                     content.push(crate::ir::IrBlock::ToolUse {
                         id,
@@ -1627,7 +1616,7 @@ fn refuse_unreadable_count(unreadable: crate::usage_count::UnreadableCount) -> I
     );
     IrError {
         class: StatusClass::ClientError,
-        provider_signal: Some(busbar_substrate_values::proto::SIGNAL_IR_PARSE.into()),
+        provider_signal: Some(busbar_contract::protocol::SIGNAL_IR_PARSE.into()),
         retry_after: None,
     }
 }

@@ -1,7 +1,8 @@
 use super::*;
-use busbar_substrate_values::breaker::{classify, Disposition};
-use busbar_substrate_values::proto::PROVIDER_SIGNAL_CONTEXT_LENGTH;
-use http::StatusCode;
+use crate::dialect::PROVIDER_SIGNAL_CONTEXT_LENGTH;
+use busbar_contract::http::StatusCode;
+use busbar_contract::upstream::Disposition;
+use busbar_kernel::breaker::classify;
 
 #[test]
 fn test_classify_context_length_both_protocols() {

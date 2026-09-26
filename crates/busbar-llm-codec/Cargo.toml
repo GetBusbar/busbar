@@ -9,9 +9,10 @@
 # without naming the engine.
 #
 # THE RULE THIS CRATE KEEPS. No `hyper`, no `reqwest`, no `hyper-util`, no `tokio`, no `axum`, and no
-# `std::{net,fs,process,env}` in its own dependencies or its own source. The `http` crate (types
-# only — `StatusCode`, `HeaderMap`, `HeaderName`, `HeaderValue`) replaces what used to be reached as
-# `axum::http::*`: the same types, from the crate that defines them, without axum's server.
+# `std::{net,fs,process,env}` in its own dependencies or its own source. The HTTP vocabulary (types
+# only — `StatusCode`, `HeaderMap`, `HeaderName`, `HeaderValue`), reached through the contract's
+# `http` re-export, replaces what used to be reached as `axum::http::*`: the same types, without
+# axum's server.
 #
 # WHAT STAYED BEHIND in `busbar-llm`: the engine, the native ingress, the path-model arrivals, the
 # plane declaration, the testkit and the inbound webhook receiver — everything that reads a socket,
@@ -32,60 +33,51 @@ name = "busbar_llm_codec"
 path = "src/lib.rs"
 
 [features]
-# Pass-through so a dependent (busbar-llm, and busbar-core's own test binary) can ask for the test
-# surface — the same shape `busbar-llm` exposed. Forwards ONLY to the substrate's test seams.
-test-support = ["busbar-substrate-values/test-support"]
-# Mirrors `busbar-llm`'s `timing` feature: the per-dialect reader/writer translate entry points carry
-# `busbar_timing::timeit!` guards, so the flag exists in lock-step with the `busbar-timing/timing` it
-# forwards. Off ⇒ those guards are zero-sized no-ops.
-timing = ["busbar-timing/timing"]
+# Declared for the dependents that name it (`busbar-llm`, `busbar-plane-llm` test builds). EMPTY since
+# #83a SD-3: this crate's test surface is dev-only — its test registration reaches the host through
+# its OWN dev-dependency on the kernel — so no dependent build of this crate names the host.
+test-support = []
+# Declared for `busbar-llm`, which forwards its own `timing` flag here. EMPTY since #83a SD-3 (owner
+# ruling O9): the plane drops the per-method micro-timing instrumentation, so the flag arms nothing.
+timing = []
 # The CI-only OpenAPI schema derive. DECLARED but EMPTY: this crate carries no `schemars` derive and
-# no `#[cfg(feature = "openapi-schema")]` site of its own — it only ever forwarded the flag on to
-# `busbar-substrate`, and it can no longer name that crate at all without dragging the egress engine
-# back into the plane's closure. Nothing is lost: `busbar-llm`'s own `openapi-schema` already forwards
-# to `busbar-substrate/openapi-schema` directly and in the same breath as this one, so the gated
-# declaration fields still arm in lock-step. The feature stays declared because `busbar-llm` names it.
+# no `#[cfg(feature = "openapi-schema")]` site of its own. The feature stays declared because
+# `busbar-llm` names it.
 openapi-schema = []
 
 [dependencies]
-# The NEUTRAL ABI. Every value family a codec speaks — the protocol declaration and registry, the IR
-# facts, the billing usage carrier, the wire body types, the operation enum — is named at its
-# canonical `busbar_substrate_values::` / `busbar_api::` home.
+# THE CONTRACT — the one busbar crate this plane names (#83/#83a). Every value family a codec speaks
+# that the host must spell identically — the protocol declaration it fills, the codec-cell traits,
+# the IR shapes, the billing, media and wire carriers, the operation vocabulary — is a contract
+# shape, and the host services a codec reaches (the entropy source, the wall clock, the translation
+# cap, the usage-tap count) are installed by the host behind contract seams. The header vocabulary
+# (`StatusCode`, `HeaderMap`, `HeaderName`, `HeaderValue`) is reached through the contract's `http`
+# re-export, so this crate names no HTTP crate of its own.
 #
-# THIS IS THE PURE HALF, NAMED DIRECTLY, and the whole reason the split exists. `busbar-substrate`
-# also carries the egress engine (hyper, hyper-util, hyper-rustls, reqwest, a socket-capable tokio),
-# and a plane is a PURE kind whose ENTIRE transitive closure is scanned — with one whole-workspace
-# metadata resolve unifying features, so no gate could have kept the engine out of this crate's
-# closure while the values lived beside it. Naming the values crate instead drops the engine from
-# `busbar-plane-llm`'s closure outright. Nothing here may take a `busbar-substrate` edge back.
-busbar-substrate-values = { path = "../busbar-substrate-values", default-features = false }
+# NOTHING HERE MAY OPEN ANYTHING. No `hyper`, no `reqwest`, no `tokio`, no `axum`, no host crate: the
+# plane is a pure kind whose whole closure is scanned.
 busbar-contract = { path = "../busbar-contract" }
-# Debug-only per-method micro-timing (DEFAULT OFF, zero cost) on the heavy translate cells.
-busbar-timing = { path = "../busbar-timing" }
-# HTTP VOCABULARY ONLY — `StatusCode`, `HeaderMap`, `HeaderName`, `HeaderValue`. This is the crate
-# axum re-exports as `axum::http`; naming it directly is what lets this crate drop axum (and with it
-# hyper, tower and a socket-capable tokio) out of the plane's closure. The `http` crate itself is
-# types and no I/O.
-http = { workspace = true }
-bytes = { workspace = true }
+# The plane's own JSON seam (`json.rs`) funnels every body parse and serialize through sonic-rs (SIMD
+# on the large string-heavy LLM bodies); `serde` names the traits it is generic over and
+# `serde_json::Value` is the document it produces.
+serde = { workspace = true }
 serde_json = { workspace = true }
+sonic-rs = { workspace = true }
+bytes = { workspace = true }
 tracing = { workspace = true }
-# Synthesized wire ids hex-encode their bytes (the tool-id remap marker, the cohere uuid).
-hex = { workspace = true }
-# The thread-local OS-entropy pool behind the synthesized wire ids the five non-error paths mint
-# (`msg_`, `resp_`, the cohere uuid, the gemini/bedrock request ids). The ANTHROPIC ERROR ENVELOPE's
-# request id does NOT draw from here: its entropy is a caller-supplied input (see
-# `anthropic::error_envelope_with_request_id`), which is what makes a plane-built refusal
-# deterministic over its inputs.
-getrandom = { workspace = true }
 
 [dev-dependencies]
-busbar-substrate-values = { path = "../busbar-substrate-values", features = ["test-support"] }
-# ONE relocated suite reads core's neutral detection fold and its built-in declaration table through
-# core's public surface; a DEV edge only, so no shipped target links core.
+# The host, for this crate's own tests only: the test registration seam (which also arms the host
+# services a shipped binary's composition root arms), the drift guards that hold this plane's copies
+# of the JSON seam, the event-stream codec, the dialect helpers and its coded diagnostics to the
+# host's, the egress-auth unit a dialect's declared credential scheme is asserted through, and the
+# warn-capture layer the tests assert coded diagnostics through. A dev edge only, so no shipped
+# target links the host.
 busbar-kernel = { path = "../busbar-kernel", features = ["test-support"] }
 serde_json = { workspace = true }
 tracing-subscriber = { workspace = true }
+# The usage-tap count pin records the host's counter through a local `metrics` recorder.
+metrics = { workspace = true }
 # ONE relocated registry test asserts the registry's handling of a codec-LESS registered protocol
 # using the real MCP declaration (`busbar_mcp::PROTO_DECL`). A dev-dep back-edge; not linked into any
 # shipped target.

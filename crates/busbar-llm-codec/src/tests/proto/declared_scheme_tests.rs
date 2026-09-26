@@ -17,7 +17,7 @@
 //! declaration field carries yet; its scheme is proven here on a declared twin against that builder.
 
 use busbar_contract::config::UpstreamCreds;
-use busbar_substrate_values::proto::{
+use busbar_contract::protocol::{
     CredentialFamily, CredentialHeader, EgressAuthHeaders, EgressScheme, ProtocolDecl,
     SigningContext,
 };
@@ -60,25 +60,37 @@ static TWIN_ANTHROPIC: ProtocolDecl = ProtocolDecl {
 fn reference_openai(
     key: &str,
     _ctx: &SigningContext,
-) -> Vec<(http::HeaderName, http::HeaderValue)> {
+) -> Vec<(
+    busbar_contract::http::HeaderName,
+    busbar_contract::http::HeaderValue,
+)> {
     busbar_kernel::proto::bearer_auth_headers("openai", key)
 }
 fn reference_responses(
     key: &str,
     _ctx: &SigningContext,
-) -> Vec<(http::HeaderName, http::HeaderValue)> {
+) -> Vec<(
+    busbar_contract::http::HeaderName,
+    busbar_contract::http::HeaderValue,
+)> {
     busbar_kernel::proto::bearer_auth_headers("responses", key)
 }
 fn reference_cohere(
     key: &str,
     _ctx: &SigningContext,
-) -> Vec<(http::HeaderName, http::HeaderValue)> {
+) -> Vec<(
+    busbar_contract::http::HeaderName,
+    busbar_contract::http::HeaderValue,
+)> {
     busbar_kernel::proto::bearer_auth_headers("cohere", key)
 }
 fn reference_gemini(
     key: &str,
     _ctx: &SigningContext,
-) -> Vec<(http::HeaderName, http::HeaderValue)> {
+) -> Vec<(
+    busbar_contract::http::HeaderName,
+    busbar_contract::http::HeaderValue,
+)> {
     busbar_kernel::proto::api_key_auth_headers("x-goog-api-key", key)
 }
 
@@ -88,7 +100,10 @@ fn reference_gemini(
 fn reference_bedrock_signer(
     key: &str,
     ctx: &SigningContext,
-) -> Vec<(http::HeaderName, http::HeaderValue)> {
+) -> Vec<(
+    busbar_contract::http::HeaderName,
+    busbar_contract::http::HeaderValue,
+)> {
     let mut parts = key.splitn(3, ':');
     let (access, secret, token) = match (parts.next(), parts.next(), parts.next()) {
         (Some(a), Some(s), tok) if !a.is_empty() && !s.is_empty() => (a, s, tok),
@@ -105,7 +120,7 @@ fn reference_bedrock_signer(
     let (amzdate, datestamp) = busbar_kernel::sigv4::format_amz_time(ctx.timestamp_epoch);
     let payload_hash = busbar_kernel::sigv4::sha256_hex(ctx.body);
     let token_header = match token {
-        Some(t) => match http::HeaderValue::from_str(t) {
+        Some(t) => match busbar_contract::http::HeaderValue::from_str(t) {
             Ok(v) => Some(v),
             Err(_) => {
                 tracing::warn!("Bedrock lane session token contains a byte rejected by HeaderValue; skipping signing to avoid a signed-but-absent x-amz-security-token header.");
@@ -154,29 +169,33 @@ fn reference_bedrock_signer(
         )
     };
     let (Ok(authorization_val), Ok(amzdate_val), Ok(payload_hash_val)) = (
-        http::HeaderValue::from_str(&authorization),
-        http::HeaderValue::from_str(&amzdate),
-        http::HeaderValue::from_str(&payload_hash),
+        busbar_contract::http::HeaderValue::from_str(&authorization),
+        busbar_contract::http::HeaderValue::from_str(&amzdate),
+        busbar_contract::http::HeaderValue::from_str(&payload_hash),
     ) else {
         return vec![];
     };
     let mut out = vec![
         (
-            http::HeaderName::from_static(busbar_kernel::proto::HDR_AUTHORIZATION),
+            busbar_contract::http::HeaderName::from_static(busbar_kernel::proto::HDR_AUTHORIZATION),
             authorization_val,
         ),
         (
-            http::HeaderName::from_static(busbar_kernel::sigv4::X_AMZ_DATE),
+            busbar_contract::http::HeaderName::from_static(busbar_kernel::sigv4::X_AMZ_DATE),
             amzdate_val,
         ),
         (
-            http::HeaderName::from_static(busbar_kernel::sigv4::X_AMZ_CONTENT_SHA256),
+            busbar_contract::http::HeaderName::from_static(
+                busbar_kernel::sigv4::X_AMZ_CONTENT_SHA256,
+            ),
             payload_hash_val,
         ),
     ];
     if let Some(v) = token_header {
         out.push((
-            http::HeaderName::from_static(busbar_kernel::sigv4::X_AMZ_SECURITY_TOKEN),
+            busbar_contract::http::HeaderName::from_static(
+                busbar_kernel::sigv4::X_AMZ_SECURITY_TOKEN,
+            ),
             v,
         ));
     }
@@ -286,7 +305,12 @@ fn contexts(host: &'static str) -> Vec<SigningContext<'static>> {
     out
 }
 
-fn as_pairs(headers: Vec<(http::HeaderName, http::HeaderValue)>) -> Vec<(String, Vec<u8>)> {
+fn as_pairs(
+    headers: Vec<(
+        busbar_contract::http::HeaderName,
+        busbar_contract::http::HeaderValue,
+    )>,
+) -> Vec<(String, Vec<u8>)> {
     headers
         .into_iter()
         .map(|(k, v)| (k.as_str().to_string(), v.as_bytes().to_vec()))
@@ -347,7 +371,7 @@ fn the_declared_dialects_carry_a_scheme_and_no_builder() {
 #[test]
 fn each_declared_scheme_presents_what_its_dialect_builder_writes() {
     crate::ensure_test_protocols_registered();
-    busbar_substrate_values::proto::register_test_protocols(&[&TWIN_ANTHROPIC]);
+    busbar_kernel::proto::register_test_protocols(&[&TWIN_ANTHROPIC]);
     let mut compared = 0usize;
     for case in cases() {
         let presenter = busbar_kernel::egress_auth::resolve(case.presented.name, None);

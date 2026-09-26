@@ -136,12 +136,7 @@ pub fn anthropic_auth_headers(
     // passthrough/static fallbacks keep the raw closures below, preserving their byte-for-byte
     // round-trip contract — a forwarded caller token must reach the upstream exactly as presented.
     let x_api_key_trimmed = || safe(HDR_X_API_KEY, key.trim_start().to_string());
-    let authorization = || {
-        safe(
-            busbar_substrate_values::proto::HDR_AUTHORIZATION,
-            format!("Bearer {key}"),
-        )
-    };
+    let authorization = || safe(crate::dialect::HDR_AUTHORIZATION, format!("Bearer {key}"));
     let version = (
         HeaderName::from_static(HDR_ANTHROPIC_VERSION),
         HeaderValue::from_static(ANTHROPIC_API_VERSION),

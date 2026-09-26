@@ -71,7 +71,7 @@ impl ProtocolWriter for BedrockWriter {
         if !obj.get("messages").is_some_and(serde_json::Value::is_array) {
             return false;
         }
-        let Some(pairs) = busbar_substrate_values::proto::rewrite_text_pairs(messages) else {
+        let Some(pairs) = crate::dialect::rewrite_text_pairs(messages) else {
             return false;
         };
         let framed: Vec<serde_json::Value> = pairs
@@ -424,7 +424,7 @@ impl ProtocolWriter for BedrockWriter {
     /// `write_response_event` Error arm so both stay consistent.
     fn write_response_exception(
         &self,
-        err: &busbar_substrate_values::proto::IrError,
+        err: &busbar_contract::protocol::IrError,
     ) -> Option<(String, String)> {
         let (exception_name, message) = bedrock_stream_exception_for(err);
         Some((exception_name.to_string(), message))
@@ -432,7 +432,7 @@ impl ProtocolWriter for BedrockWriter {
 
     fn write_error_frame(
         &self,
-        err: &busbar_substrate_values::proto::IrError,
+        err: &busbar_contract::protocol::IrError,
     ) -> Option<(String, serde_json::Value)> {
         // The streaming-error seam. A Bedrock-INGRESS stream never reaches here — its mid-stream
         // error is a modeled-exception event-stream frame emitted via `write_response_exception`
@@ -443,7 +443,6 @@ impl ProtocolWriter for BedrockWriter {
     }
 
     fn write_response(&self, resp: &crate::ir::IrResponse) -> serde_json::Value {
-        let _t = busbar_timing::timeit!("bedrock_write_response");
         let mut content_arr: Vec<serde_json::Value> = Vec::new();
 
         for block in &resp.content {
@@ -606,7 +605,7 @@ impl ProtocolWriter for BedrockWriter {
 
     fn attach_error_response_headers(
         &self,
-        headers: &mut http::HeaderMap,
+        headers: &mut busbar_contract::http::HeaderMap,
         kind: &str,
         _envelope: &serde_json::Value,
     ) {
@@ -650,7 +649,7 @@ impl ProtocolWriter for BedrockWriter {
 
     fn same_protocol_buffered_response_translator(
         &self,
-    ) -> Option<Box<dyn busbar_substrate_values::proto::StreamTranslator>> {
+    ) -> Option<Box<dyn busbar_contract::protocol::StreamTranslator>> {
         // A Bedrock -> Bedrock non-stream response used to relay verbatim, so a Converse body whose
         // upstream omitted `metrics` reached the client without its required member (the only
         // Converse response busbar served that way; every cross-protocol lane injects it above).
@@ -691,7 +690,6 @@ impl BedrockWriter {
     /// The request write for a lane with the declared [`LaneCaps`] (the model gate has already
     /// run — see `write_request_for_lane`). `write_request` is this with the default capabilities.
     fn write_request_with(&self, req: &crate::ir::IrRequest, caps: &LaneCaps) -> serde_json::Value {
-        let _t = busbar_timing::timeit!("bedrock_write_request");
         let mut out = serde_json::Map::new();
 
         // The captured native `cachePoint` markers (see `CACHE_POINTS_SENTINEL`). On a same-protocol

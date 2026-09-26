@@ -8,8 +8,8 @@
 //! no-handler rule. Search-unit metered → `Billing::Counted` (Cohere bills per search unit; the
 //! count is ledgered as the open class `search_units` and priced by the card, item 134).
 
-use busbar_substrate_values::billing::Billing;
-use busbar_substrate_values::lossless::SourceScopedExtra;
+use busbar_contract::billing::Billing;
+use busbar_contract::ir::SourceScopedExtra;
 
 /// Rerank request IR — the superset over both providers.
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -24,11 +24,11 @@ pub struct RerankReq {
     pub extra: SourceScopedExtra,
 }
 
-/// THE RERANK FAMILY'S WALK — this IR's answer to [`busbar_substrate_values::ir::facts::IrFacts`]. Both the `query`
+/// THE RERANK FAMILY'S WALK — this IR's answer to [`busbar_contract::ir::facts::IrFacts`]. Both the `query`
 /// and every `document` are caller free-text sent upstream verbatim, so both project to
-/// [`busbar_substrate_values::ir::facts::ContentItem::Text`] for a screening gate. `top_n`/`max_tokens_per_doc` are
+/// [`busbar_contract::ir::facts::ContentItem::Text`] for a screening gate. `top_n`/`max_tokens_per_doc` are
 /// numeric knobs, not content.
-impl busbar_substrate_values::ir::facts::IrFacts for RerankReq {
+impl busbar_contract::ir::facts::IrFacts for RerankReq {
     fn verb(&self) -> busbar_contract::operation::OpVerb {
         busbar_contract::operation::OpVerb::RERANK
     }
@@ -41,11 +41,10 @@ impl busbar_substrate_values::ir::facts::IrFacts for RerankReq {
         None
     }
 
-    fn shape(&self) -> busbar_substrate_values::ir::facts::Shape {
-        let items = busbar_substrate_values::ir::facts::IrFacts::content(self);
-        let (text_chars, system_chars) =
-            busbar_substrate_values::ir::facts::Shape::counts_over(&items);
-        busbar_substrate_values::ir::facts::Shape {
+    fn shape(&self) -> busbar_contract::ir::facts::Shape {
+        let items = busbar_contract::ir::facts::IrFacts::content(self);
+        let (text_chars, system_chars) = busbar_contract::ir::facts::Shape::counts_over(&items);
+        busbar_contract::ir::facts::Shape {
             turn_count: 1,
             has_tools: false,
             tool_count: 0,
@@ -55,8 +54,8 @@ impl busbar_substrate_values::ir::facts::IrFacts for RerankReq {
         }
     }
 
-    fn content(&self) -> Vec<busbar_substrate_values::ir::facts::ContentItem<'_>> {
-        use busbar_substrate_values::ir::facts::{ContentItem, Slot};
+    fn content(&self) -> Vec<busbar_contract::ir::facts::ContentItem<'_>> {
+        use busbar_contract::ir::facts::{ContentItem, Slot};
         use std::borrow::Cow;
         let mut out = Vec::with_capacity(1 + self.documents.len());
         out.push(ContentItem::Text {

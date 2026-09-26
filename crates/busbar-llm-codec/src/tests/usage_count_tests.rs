@@ -824,8 +824,8 @@ fn no_dialect_defaults_a_lenient_count_read() {
     // `lenient_billed_fields` misses it too). Verbatim (squashed) from gemini/handler.rs and
     // bedrock/handler.rs before this fix.
     let was_live_map = squash(
-        "let usage = v.get(\"usageMetadata\").and_then(|u| u.get(\"promptTokenCount\")).and_then(crate::usage_count::read_count_u64).map(|n| busbar_substrate_values::billing::TokenUsage { input: n, ..Default::default() });\n\
-         let usage = v.get(\"inputTextTokenCount\").and_then(crate::usage_count::read_count_u64).map(|n| busbar_substrate_values::billing::TokenUsage { input: n, ..Default::default() });\n",
+        "let usage = v.get(\"usageMetadata\").and_then(|u| u.get(\"promptTokenCount\")).and_then(crate::usage_count::read_count_u64).map(|n| busbar_contract::billing::TokenUsage { input: n, ..Default::default() });\n\
+         let usage = v.get(\"inputTextTokenCount\").and_then(crate::usage_count::read_count_u64).map(|n| busbar_contract::billing::TokenUsage { input: n, ..Default::default() });\n",
     );
     assert_eq!(
         lenient_struct_maps(&was_live_map).len(),
@@ -836,7 +836,7 @@ fn no_dialect_defaults_a_lenient_count_read() {
     // And NOT the refusing seam, or a lenient read `.map`ped to a bare scalar (already covered by
     // `lenient_defaults` once it is defaulted) rather than a struct.
     let is_fine_map = squash(
-        "let usage = crate::usage_count::billed_count_opt(v.get(\"usageMetadata\"), \"promptTokenCount\").map_err(|e| CodecError::Malformed(e.to_string()))?.map(|n| busbar_substrate_values::billing::TokenUsage { input: n, ..Default::default() });\n\
+        "let usage = crate::usage_count::billed_count_opt(v.get(\"usageMetadata\"), \"promptTokenCount\").map_err(|e| CodecError::Malformed(e.to_string()))?.map(|n| busbar_contract::billing::TokenUsage { input: n, ..Default::default() });\n\
          z: count_of(&v).map(|n| n * 2).unwrap_or(0),\n\
          search_units: billed_u64(\"search_units\"),\n",
     );

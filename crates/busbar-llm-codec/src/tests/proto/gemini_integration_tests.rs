@@ -37,7 +37,7 @@ fn test_gemini_registered_in_builtins() {
     // Since #83a S2-a the declaration states the scheme as data and the host presents it.
     let decl = decl_for("gemini").expect("gemini declares itself");
     assert!(decl.egress_scheme.is_some());
-    let ctx = busbar_substrate_values::proto::SigningContext {
+    let ctx = busbar_contract::protocol::SigningContext {
         host: "generativelanguage.googleapis.com",
         canonical_uri: "/v1beta/models/m:generateContent",
         body: b"{}",

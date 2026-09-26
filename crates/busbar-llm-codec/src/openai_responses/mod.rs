@@ -5,29 +5,29 @@
 
 use crate::ir::IrStreamEvent;
 use crate::usage_count::read_count_u64;
-use http::StatusCode;
+use busbar_contract::http::StatusCode;
 // `bearer_error_code` and `CODE_INVALID_API_KEY` now live in the neutral substrate; read them there
 // so this plugin names no `busbar-core` implementation path for them.
-use busbar_substrate_values::proto::{bearer_error_code, CODE_INVALID_API_KEY};
+use crate::dialect::{bearer_error_code, CODE_INVALID_API_KEY};
 // The neutral canonical error-type vocabulary lives in the substrate; read it there, not via core's
 // re-export, so this plugin names no `busbar-core` implementation path for it.
-#[cfg(test)]
-use busbar_substrate_values::breaker::CanonicalSignal;
-use busbar_substrate_values::breaker::StatusClass;
-use busbar_substrate_values::proto::*;
-use busbar_substrate_values::proto::{
+use busbar_contract::protocol::*;
+use busbar_contract::protocol::{
     ERR_TYPE_AUTHENTICATION, ERR_TYPE_INSUFFICIENT_QUOTA, ERR_TYPE_INVALID_REQUEST,
     ERR_TYPE_NOT_FOUND, ERR_TYPE_OVERLOADED, ERR_TYPE_PERMISSION, ERR_TYPE_RATE_LIMIT,
     ERR_TYPE_SERVER_ERROR,
 };
+#[cfg(test)]
+use busbar_contract::upstream::CanonicalSignal;
+use busbar_contract::upstream::StatusClass;
 // G6 A4b: the wire-codec surface (ProtocolReader/Writer/Protocol/StreamFraming/ToolIdRemap/
 // protocol_for) relocated to this plugin's `proto_codec`; reach it RELATIVELY so it resolves both
 // standalone (crate::proto_codec) and netted into core (core::proto::proto_codec).
 #[allow(unused_imports)]
-// used standalone; redundant with busbar_substrate_values::proto::* when netted into core
+// used standalone; redundant with the `busbar_contract::protocol::*` glob when netted into core
 use super::proto_codec::*;
 // See the anthropic dialect for the rationale: an explicit import of the codec surface so it binds to
-// THIS crate's own `proto_codec` rather than the ambiguous `busbar_substrate_values::proto::*` re-export.
+// THIS crate's own `proto_codec` rather than the `busbar_contract::protocol::*` glob.
 #[allow(unused_imports)]
 use super::proto_codec::{Protocol, ProtocolReader, ProtocolWriter, StreamFraming};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -47,20 +47,20 @@ pub fn protocol() -> Protocol {
 /// THE RESPONSES ROUTER DETECTION — its single rung of the old core `protocol_id` ladder:
 /// `/v1/responses` (rung 10).
 fn claims(
-    _h: &http::HeaderMap,
+    _h: &busbar_contract::http::HeaderMap,
     path: &str,
-) -> Option<busbar_substrate_values::proto::ClaimStrength> {
+) -> Option<busbar_contract::protocol::ClaimStrength> {
     if path.ends_with("/v1/responses") {
-        return Some(busbar_substrate_values::proto::ClaimStrength(10));
+        return Some(busbar_contract::protocol::ClaimStrength(10));
     }
     None
 }
 
 /// THE RESPONSES RESIDUAL DETECTION — its arm of the headerless `residual_dialect_for_path` ladder:
 /// an exact `/v1/responses` (rung 60).
-fn residual_claims(path: &str) -> Option<busbar_substrate_values::proto::ClaimStrength> {
+fn residual_claims(path: &str) -> Option<busbar_contract::protocol::ClaimStrength> {
     if path == "/v1/responses" {
-        return Some(busbar_substrate_values::proto::ClaimStrength(60));
+        return Some(busbar_contract::protocol::ClaimStrength(60));
     }
     None
 }
@@ -78,7 +78,7 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
     handler: Some(&handler::ResponsesRequestHandler),
     verbs: &[busbar_contract::operation::OpVerb::CHAT],
     head_keys: super::proto_codec::LLM_CHAT_HEAD_KEYS,
-    streaming_content_type: Some(busbar_substrate_values::proxy::TEXT_EVENT_STREAM),
+    streaming_content_type: Some(busbar_contract::protocol::TEXT_EVENT_STREAM),
     array_stream_shim_key: None,
     native_tool_id_prefix: Some("call_"),
     ingress_auth: IngressAuth::Bearer,
@@ -97,7 +97,7 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
     frame_after_message_start: None,
     reshapes_body_at_path_base: false,
     max_cache_control_breakpoints: None,
-    quota_exceeded_status: http::StatusCode::TOO_MANY_REQUESTS,
+    quota_exceeded_status: busbar_contract::http::StatusCode::TOO_MANY_REQUESTS,
     ingress_is_eventstream: false,
     emits_sse_done_terminator: false,
     max_citations_per_delta: None,
@@ -106,15 +106,15 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
     egress_user_agent: "OpenAI/Python 1.54.0",
     has_model_in_url: false,
     auth_failure_status_and_kind: (
-        http::StatusCode::UNAUTHORIZED,
-        busbar_substrate_values::proto::ERR_TYPE_AUTHENTICATION,
+        busbar_contract::http::StatusCode::UNAUTHORIZED,
+        busbar_contract::protocol::ERR_TYPE_AUTHENTICATION,
     ),
     ingress_relays_amzn_headers: false,
     ingress_relayed_response_header_names: &[],
     auth_failure_message: AUTH_FAILURE_MSG,
     uses_array_stream_shim: false,
     has_native_path_not_found: false,
-    egress_stream_accept: busbar_substrate_values::proxy::TEXT_EVENT_STREAM,
+    egress_stream_accept: busbar_contract::protocol::TEXT_EVENT_STREAM,
     // The Responses surface carries no list-models fingerprint of its own; a `/v1/models` GET
     // resolves to the OpenAI Chat envelope.
     models_list_envelope: None,
@@ -153,14 +153,15 @@ const MAX_OPEN_TOOLS: usize = super::openai_chat::OPENAI_FAMILY_MAX_OPEN_TOOLS;
 /// grows, which is the other half of the same memory-amplification exposure — a backend streaming an
 /// unbounded run of fragments against a single open index needs only one entry to exhaust memory.
 ///
-/// The value is `busbar_substrate_values::proxy::max_translate_body_bytes()`, the operator-tunable,
+/// The value is `busbar_contract::codec::max_translate_body_bytes()`, the operator-tunable,
 /// live-reconfigurable limit (default 32 MiB) that already bounds a buffered cross-protocol
 /// non-stream body and the Gemini writer's streamed tool-argument buffer. Reusing it — rather than
 /// minting another constant — means an operator who raises the one knob to admit larger payloads
-/// gets that headroom here too, instead of the paths silently diverging. A read is an uncontended
-/// `Relaxed` atomic load, cheap enough to take per fragment.
+/// gets that headroom here too, instead of the paths silently diverging. It is read through the
+/// translate-cap reader the host installs (#83a SD-3), a function-pointer call over an atomic load,
+/// cheap enough to take per fragment.
 fn accum_byte_cap() -> usize {
-    busbar_substrate_values::proxy::max_translate_body_bytes()
+    busbar_contract::codec::max_translate_body_bytes()
 }
 
 /// Append `fragment` to the per-item string buffer at `index`, honouring BOTH bounds: a new index is
@@ -217,9 +218,9 @@ fn citation_bytes(c: &crate::ir::IrCitation) -> usize {
 const TEXT_INDEX_KEY_OFFSET: usize = 1_000;
 
 /// Base62 alphabet the native Responses ids draw their opaque suffix from — the shared
-/// single-source-of-truth atom (see `busbar_substrate_values::proto::BASE62_ALPHABET`), aliased locally. Used by
+/// single-source-of-truth atom (see `crate::dialect::BASE62_ALPHABET`), aliased locally. Used by
 /// [`synthesize_item_id`] and [`synthesize_response_id`].
-const BASE62: &[u8; 62] = busbar_substrate_values::proto::BASE62_ALPHABET;
+const BASE62: &[u8; 62] = crate::dialect::BASE62_ALPHABET;
 
 /// Width of the opaque base62 suffix on a synthesized item id (`msg_…`/`fc_…`). Native Responses
 /// item ids carry a long opaque random token with no positional structure; 48 base62 chars matches
@@ -339,7 +340,7 @@ const AUTH_FAILURE_MSG: &str = "Incorrect API key provided.";
 /// and leaving a faint statistical fingerprint a native uniform-random id never carries). We instead
 /// use REJECTION SAMPLING: any byte >= 248 (= 62 * 4, the largest multiple of 62 that fits in a u8)
 /// is rejected and a fresh CSPRNG byte is drawn for that slot, so every base62 character is
-/// equiprobable. Rejection keeps the function infallible/panic-free — on a getrandom failure a slot
+/// equiprobable. Rejection keeps the function infallible/panic-free — on an entropy failure a slot
 /// simply keeps its all-zero fallback rather than retrying.
 ///
 /// `N` MUST be >= 11. A token narrower than that carries too little base62 entropy to stay
@@ -364,12 +365,12 @@ fn synth_token<const N: usize>() -> String {
     // Largest multiple of 62 that fits in a u8 (62 * 4). A byte in `0..REJECT_THRESHOLD` maps to a
     // base62 digit with NO modular bias; a byte >= this threshold (248..=255) is rejected so every
     // base62 character stays equiprobable. See the docstring for the bias rationale.
-    const REJECT_THRESHOLD: u8 = busbar_substrate_values::proto::BASE62_REJECT_THRESHOLD;
+    const REJECT_THRESHOLD: u8 = crate::dialect::BASE62_REJECT_THRESHOLD;
 
     let mut token = [b'0'; N];
     for slot in token.iter_mut() {
         // Draw fresh bytes until one falls in the unbiased range. A small scratch buffer is refilled
-        // from the CSPRNG as needed; on a getrandom failure the draw yields zeros, which are < the
+        // from the CSPRNG as needed; on an entropy failure the draw yields zeros, which are < the
         // threshold and accepted, so the slot stays at base62 '0' (the existing all-zero fallback)
         // and the loop still terminates — keeping the function infallible and panic-free.
         let mut buf = [0u8; 1];
@@ -645,7 +646,7 @@ fn write_responses_service_tier(tier: Option<&str>) -> Option<&'static str> {
 /// the leading hex segment (`resp_{timestamp_hex}{counter_hex}`), which both made the id shorter than
 /// native AND leaked the proxy's server clock to within one second to anyone holding a response id.
 /// The opaque CSPRNG token here matches the native length/entropy profile and embeds no timestamp;
-/// the whole token is drawn from `getrandom` (via `synth_token`) with NO counter overlay — at >= 48
+/// the whole token is drawn from the host entropy pool (via `synth_token`) with NO counter overlay — at >= 48
 /// base62 chars (~285 bits) the birthday bound makes a per-process collision astronomically unlikely,
 /// so a counter would only ADD a predictable low-entropy region (a structural fingerprint) for no
 /// uniqueness benefit. Native passthrough never calls this: it carries the upstream id verbatim.
@@ -808,8 +809,9 @@ fn class_for_response_failed(signal: &str) -> StatusClass {
     match signal {
         CODE_INVALID_API_KEY | ERR_TYPE_AUTHENTICATION => StatusClass::Auth,
         ERR_CODE_RATE_LIMIT | ERR_TYPE_INSUFFICIENT_QUOTA => StatusClass::RateLimit,
-        busbar_substrate_values::proxy::PROVIDER_CODE_CONTEXT_LENGTH
-        | ERR_CODE_STRING_ABOVE_MAX => StatusClass::ContextLength,
+        busbar_contract::protocol::PROVIDER_CODE_CONTEXT_LENGTH | ERR_CODE_STRING_ABOVE_MAX => {
+            StatusClass::ContextLength
+        }
         ERR_TYPE_SERVER_ERROR | ERR_TYPE_OVERLOADED => StatusClass::ServerError,
         other => {
             // Unrecognized provider signal: default to the transient ServerError bucket so the lane
@@ -841,7 +843,7 @@ fn is_code_like_signal(signal: &str) -> bool {
 /// — the code is DERIVED from the error class so the wire ALWAYS carries a valid enum an SDK can
 /// switch on, never a free-form string. Exhaustive over `StatusClass` (no `_`) per the no-catch-all
 /// rule.
-fn responses_error_code(err: &busbar_substrate_values::proto::IrError) -> String {
+fn responses_error_code(err: &busbar_contract::protocol::IrError) -> String {
     if let Some(s) = err.provider_signal.as_deref() {
         if is_code_like_signal(s) {
             return s.to_string();
@@ -901,7 +903,7 @@ pub struct ResponsesReader;
 fn responses_block(block_val: &serde_json::Value) -> Result<crate::ir::IrBlock, IrError> {
     let obj = block_val.as_object().ok_or(IrError {
         class: StatusClass::ClientError,
-        provider_signal: Some(busbar_substrate_values::proto::SIGNAL_IR_PARSE.to_string()),
+        provider_signal: Some(busbar_contract::protocol::SIGNAL_IR_PARSE.to_string()),
         retry_after: None,
     })?;
 
@@ -934,7 +936,7 @@ fn responses_block(block_val: &serde_json::Value) -> Result<crate::ir::IrBlock, 
             // emitting an empty Image block. Shared with the request-input reader.
             responses_input_image_block(block_val).ok_or(IrError {
                 class: StatusClass::ClientError,
-                provider_signal: Some(busbar_substrate_values::proto::SIGNAL_IR_PARSE.to_string()),
+                provider_signal: Some(busbar_contract::protocol::SIGNAL_IR_PARSE.to_string()),
                 retry_after: None,
             })
         }
@@ -1009,7 +1011,7 @@ fn responses_block(block_val: &serde_json::Value) -> Result<crate::ir::IrBlock, 
         "input_audio" => {
             let audio_obj = obj.get("input_audio").ok_or(IrError {
                 class: StatusClass::ClientError,
-                provider_signal: Some(busbar_substrate_values::proto::SIGNAL_IR_PARSE.to_string()),
+                provider_signal: Some(busbar_contract::protocol::SIGNAL_IR_PARSE.to_string()),
                 retry_after: None,
             })?;
             let data = audio_obj

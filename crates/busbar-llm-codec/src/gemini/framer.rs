@@ -37,7 +37,7 @@ impl Default for GeminiJsonArrayFramer {
 impl GeminiJsonArrayFramer {
     // `pub(crate)` so the framer's tests in `mod.rs` (which exercise the buffer-overflow abort path)
     // can size a payload off the cap; it stays an internal cap, not part of the wire surface.
-    pub const MAX_BUF: usize = busbar_substrate_values::eventstream::MAX_FRAME_BYTES;
+    pub const MAX_BUF: usize = crate::eventstream::MAX_FRAME_BYTES;
 
     pub fn new() -> Self {
         Self {
@@ -79,16 +79,12 @@ impl GeminiJsonArrayFramer {
                     let Some((_event_type, data_str)) = parse_sse_frame(frame) else {
                         continue; // no data: line — keepalive/comment frame
                     };
-                    if data_str.is_empty()
-                        || data_str == busbar_substrate_values::proto::SSE_DONE_SENTINEL
-                    {
+                    if data_str.is_empty() || data_str == crate::dialect::SSE_DONE_SENTINEL {
                         continue; // egress terminator/keepalive — the array close is finish()'s job
                     }
                     // Validate the payload is JSON before forwarding so a malformed frame cannot
                     // corrupt the array; re-serialize from the parsed Value to normalize whitespace.
-                    let Ok(data) =
-                        busbar_substrate_values::json::parse_str::<serde_json::Value>(&data_str)
-                    else {
+                    let Ok(data) = crate::json::parse_str::<serde_json::Value>(&data_str) else {
                         continue;
                     };
                     if self.started {
@@ -211,7 +207,7 @@ impl GeminiJsonArrayFramer {
     }
 }
 
-impl busbar_substrate_values::proto::ArrayStreamFramer for GeminiJsonArrayFramer {
+impl busbar_contract::protocol::ArrayStreamFramer for GeminiJsonArrayFramer {
     fn feed(&mut self, chunk: &[u8]) -> Vec<u8> {
         GeminiJsonArrayFramer::feed(self, chunk)
     }

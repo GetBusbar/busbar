@@ -46,8 +46,8 @@ fn billing_maps_token_usage_or_none() {
 
 // ── IrFacts projection (close-non-chat-gate-blindness) ───────────────────────────────────────────
 
+use busbar_contract::ir::facts::{ContentItem, IrFacts, OPAQUE_CONTENT_MARKER};
 use busbar_contract::operation::OpVerb;
-use busbar_substrate_values::ir::facts::{ContentItem, IrFacts, OPAQUE_CONTENT_MARKER};
 
 /// Every `ContentItem`'s screenable text, in order — the exact strings a `prompt: ro` gate is shown.
 fn screened(items: &[ContentItem<'_>]) -> Vec<String> {

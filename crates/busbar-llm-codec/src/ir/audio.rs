@@ -7,13 +7,13 @@
 //!   (not a third op). Billing is model-dependent: `Duration` (whisper-1) | `Tokens` (gpt-4o-transcribe).
 //! - **Speech** (TTS): text IN → binary audio OUT. Billing: `Characters` (tts-1) | `Tokens` (gpt-4o-mini-tts).
 //!
-//! Both share the [`busbar_substrate_values::media::MediaBlob`] payload (audio in / audio out). Split request/response
+//! Both share the [`busbar_contract::media::MediaBlob`] payload (audio in / audio out). Split request/response
 //! per. Because audio billing is polymorphic per model, the response stores `Option<Billing>`
 //! directly rather than a token struct.
 
-use busbar_substrate_values::billing::Billing;
-use busbar_substrate_values::lossless::SourceScopedExtra;
-use busbar_substrate_values::media::MediaBlob;
+use busbar_contract::billing::Billing;
+use busbar_contract::ir::SourceScopedExtra;
+use busbar_contract::media::MediaBlob;
 
 /// Timestamp detail requested on a transcription (whisper-1 only; requires verbose_json).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -67,13 +67,13 @@ pub struct TranscriptionReq {
     pub extra: SourceScopedExtra,
 }
 
-/// THE TRANSCRIPTION FAMILY'S WALK — this IR's answer to [`busbar_substrate_values::ir::facts::IrFacts`]. The audio
-/// blob is BINARY and unscreenable → one [`busbar_substrate_values::ir::facts::ContentItem::Opaque`]
+/// THE TRANSCRIPTION FAMILY'S WALK — this IR's answer to [`busbar_contract::ir::facts::IrFacts`]. The audio
+/// blob is BINARY and unscreenable → one [`busbar_contract::ir::facts::ContentItem::Opaque`]
 /// (present-but-unscreenable, never silently empty). The `prompt` is caller free-text forwarded
 /// upstream — reachable ONLY through the byte-aware hook seam (a multipart body never reaches the
-/// `&Value` path) → [`busbar_substrate_values::ir::facts::ContentItem::Text`]. `source_language`/
+/// `&Value` path) → [`busbar_contract::ir::facts::ContentItem::Text`]. `source_language`/
 /// `target_language`/`response_format` are enum roles, not content.
-impl busbar_substrate_values::ir::facts::IrFacts for TranscriptionReq {
+impl busbar_contract::ir::facts::IrFacts for TranscriptionReq {
     fn verb(&self) -> busbar_contract::operation::OpVerb {
         busbar_contract::operation::OpVerb::TRANSCRIPTION
     }
@@ -86,11 +86,10 @@ impl busbar_substrate_values::ir::facts::IrFacts for TranscriptionReq {
         None
     }
 
-    fn shape(&self) -> busbar_substrate_values::ir::facts::Shape {
-        let items = busbar_substrate_values::ir::facts::IrFacts::content(self);
-        let (text_chars, system_chars) =
-            busbar_substrate_values::ir::facts::Shape::counts_over(&items);
-        busbar_substrate_values::ir::facts::Shape {
+    fn shape(&self) -> busbar_contract::ir::facts::Shape {
+        let items = busbar_contract::ir::facts::IrFacts::content(self);
+        let (text_chars, system_chars) = busbar_contract::ir::facts::Shape::counts_over(&items);
+        busbar_contract::ir::facts::Shape {
             turn_count: 1,
             has_tools: false,
             tool_count: 0,
@@ -100,8 +99,8 @@ impl busbar_substrate_values::ir::facts::IrFacts for TranscriptionReq {
         }
     }
 
-    fn content(&self) -> Vec<busbar_substrate_values::ir::facts::ContentItem<'_>> {
-        use busbar_substrate_values::ir::facts::{ContentItem, Slot, OPAQUE_CONTENT_MARKER};
+    fn content(&self) -> Vec<busbar_contract::ir::facts::ContentItem<'_>> {
+        use busbar_contract::ir::facts::{ContentItem, Slot, OPAQUE_CONTENT_MARKER};
         use std::borrow::Cow;
         let mut out = Vec::new();
         if self.audio.is_some() {
@@ -179,12 +178,12 @@ impl SpeechReq {
     }
 }
 
-/// THE SPEECH FAMILY'S WALK — this IR's answer to [`busbar_substrate_values::ir::facts::IrFacts`]. Every caller
-/// free-text field is projected to [`busbar_substrate_values::ir::facts::ContentItem::Text`]: the `input` to
+/// THE SPEECH FAMILY'S WALK — this IR's answer to [`busbar_contract::ir::facts::IrFacts`]. Every caller
+/// free-text field is projected to [`busbar_contract::ir::facts::ContentItem::Text`]: the `input` to
 /// synthesize, the `instructions` style prompt when present (forwarded verbatim by both
 /// writers), and each multi-speaker NAME. The speaker VOICE and `response_format`/`speed` are
 /// provider knobs (voice ids, format enums), not caller free-text, and stay out.
-impl busbar_substrate_values::ir::facts::IrFacts for SpeechReq {
+impl busbar_contract::ir::facts::IrFacts for SpeechReq {
     fn verb(&self) -> busbar_contract::operation::OpVerb {
         busbar_contract::operation::OpVerb::SPEECH
     }
@@ -197,11 +196,10 @@ impl busbar_substrate_values::ir::facts::IrFacts for SpeechReq {
         None
     }
 
-    fn shape(&self) -> busbar_substrate_values::ir::facts::Shape {
-        let items = busbar_substrate_values::ir::facts::IrFacts::content(self);
-        let (text_chars, system_chars) =
-            busbar_substrate_values::ir::facts::Shape::counts_over(&items);
-        busbar_substrate_values::ir::facts::Shape {
+    fn shape(&self) -> busbar_contract::ir::facts::Shape {
+        let items = busbar_contract::ir::facts::IrFacts::content(self);
+        let (text_chars, system_chars) = busbar_contract::ir::facts::Shape::counts_over(&items);
+        busbar_contract::ir::facts::Shape {
             turn_count: 1,
             has_tools: false,
             tool_count: 0,
@@ -211,8 +209,8 @@ impl busbar_substrate_values::ir::facts::IrFacts for SpeechReq {
         }
     }
 
-    fn content(&self) -> Vec<busbar_substrate_values::ir::facts::ContentItem<'_>> {
-        use busbar_substrate_values::ir::facts::{ContentItem, Slot};
+    fn content(&self) -> Vec<busbar_contract::ir::facts::ContentItem<'_>> {
+        use busbar_contract::ir::facts::{ContentItem, Slot};
         use std::borrow::Cow;
         let mut out = Vec::new();
         out.push(ContentItem::Text {

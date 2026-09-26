@@ -233,7 +233,7 @@ pub fn clamp_stop(stop: &[String], cap: usize, proto: &'static str) -> Vec<Strin
     // `stop.len() > cap` is guaranteed by the early return above, so this cannot underflow;
     // `saturating_sub` would only imply a doubt that isn't there.
     let dropped = provided - cap;
-    ::tracing::debug!(diag = %busbar_substrate_values::diagnostics::IR_TRUNCATE_STOP_SEQUENCES.banner(),
+    ::tracing::debug!(diag = %crate::diagnostics::IR_TRUNCATE_STOP_SEQUENCES.banner(),
         proto,
         cap,
         provided,
@@ -300,7 +300,7 @@ pub enum IrStreamEvent {
         usage: IrUsage,
     },
     MessageStop,
-    Error(busbar_substrate_values::proto::IrError),
+    Error(busbar_contract::protocol::IrError),
 }
 
 /// Canonical, protocol-neutral stop/finish reason — the typed IR carrier (closing the `stop_reason`
@@ -1239,11 +1239,11 @@ impl IrUsage {
     }
 
     /// Project the four normalized token totals into the neutral, core-resident
-    /// [`busbar_substrate_values::billing::TokenUsage`] — the currency the billing/metering consumers speak so they
+    /// [`busbar_contract::billing::TokenUsage`] — the currency the billing/metering consumers speak so they
     /// need not name this concrete IR type (G6 inversion). The per-modality/attribution buckets are
     /// deliberately not carried: the ledger and metering sinks read only these four totals. Lives
     /// with `IrUsage`, so it follows it to busbar-llm at the cutover, where it becomes an
-    /// `impl From<&IrUsage> for busbar_substrate_values::billing::TokenUsage`.
+    /// `impl From<&IrUsage> for busbar_contract::billing::TokenUsage`.
     ///
     /// COHERE `billed_units` (1.6.0 M1, `billing-unified.md`): Cohere reports usage TWICE — a
     /// raw `tokens` bucket and a separately-metered `billed_units` bucket, and it is the BILLED
@@ -1273,8 +1273,8 @@ impl IrUsage {
     /// billed count is already cache-exclusive is unconfirmed. If it is, this under-attributes the
     /// input lane by the cached share (visible, recoverable); without it busbar over-charges
     /// (silent, not recoverable). Money-sacred cuts one way — never bill more than was reported.
-    pub fn to_token_usage(&self) -> busbar_substrate_values::billing::TokenUsage {
-        busbar_substrate_values::billing::TokenUsage {
+    pub fn to_token_usage(&self) -> busbar_contract::billing::TokenUsage {
+        busbar_contract::billing::TokenUsage {
             // Billed wins over raw when the provider reported it (Cohere); else the raw total.
             input: self
                 .detail

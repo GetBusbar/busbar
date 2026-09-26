@@ -6,12 +6,11 @@
 use crate::ir::embeddings::{
     EmbInput, EmbeddingItem, EmbeddingsReq, EmbeddingsResp, EncFmt, VectorData,
 };
+use busbar_contract::codec::{CodecError, IngressReject, OperationHandler, RequestHandler};
+use busbar_contract::codec::{EgressCtx, WireBody};
+use busbar_contract::ir::handle::IrHandle;
 use busbar_contract::operation::OpVerb;
-use busbar_substrate_values::handlers::{
-    CodecError, IngressReject, OperationHandler, RequestHandler,
-};
-use busbar_substrate_values::ir::handle::IrHandle;
-use busbar_substrate_values::wire::{EgressCtx, SlabBytes, WireBody};
+use busbar_contract::SlabBytes;
 use bytes::Bytes;
 use serde_json::{json, Value};
 
@@ -26,7 +25,7 @@ static RERANK: BedrockRerank = BedrockRerank;
 
 /// BEDROCK'S ROW OF THE SUPPORT MATRIX — the verbs this protocol speaks, as data. A verb absent
 /// from it is a genuine gap → the standard no-handler 404.
-static CELLS: &[busbar_substrate_values::handlers::Cell] = &[
+static CELLS: &[busbar_contract::codec::Cell] = &[
     (OpVerb::CHAT, &CHAT),
     (OpVerb::EMBEDDINGS, &EMB),
     (OpVerb::IMAGE, &IMG),
@@ -52,7 +51,7 @@ static CELLS: &[busbar_substrate_values::handlers::Cell] = &[
 pub fn same_protocol_usage(
     body: &[u8],
     parsed: Option<&Value>,
-) -> Option<busbar_substrate_values::billing::TokenUsage> {
+) -> Option<busbar_contract::billing::TokenUsage> {
     let has = |k: &str| parsed.is_some_and(|v| v.get(k).is_some());
     if has("output") || has("stopReason") {
         CHAT.extract_usage("bedrock", body)
@@ -74,7 +73,7 @@ pub fn same_protocol_usage(
 pub fn same_protocol_open_billing(
     body: &[u8],
     parsed: Option<&Value>,
-) -> Option<busbar_substrate_values::billing::Billing> {
+) -> Option<busbar_contract::billing::Billing> {
     if !parsed.is_some_and(|v| v.get("results").is_some()) {
         return None;
     }
@@ -94,7 +93,7 @@ impl RequestHandler for BedrockRequestHandler {
         "bedrock"
     }
     fn operation_handler(&self, op: OpVerb) -> Option<&dyn OperationHandler> {
-        busbar_substrate_values::handlers::cell_of(CELLS, op)
+        busbar_contract::codec::cell_of(CELLS, op)
     }
     fn upstream_path(&self, ctx: &EgressCtx) -> String {
         // Chat uses the Converse API (stream-aware); everything else rides InvokeModel. The
@@ -157,7 +156,7 @@ impl OperationHandler for BedrockImage {
         &self,
         status: u16,
         body: &[u8],
-    ) -> busbar_substrate_values::breaker::RawUpstreamError {
+    ) -> busbar_contract::upstream::RawUpstreamError {
         super::super::proto_codec::protocol_error("bedrock", status, body)
     }
     // Buffer the same-protocol non-stream 2xx body so the default `extract_usage` runs the op's own
@@ -240,7 +239,7 @@ impl OperationHandler for BedrockEmbeddings {
         &self,
         status: u16,
         body: &[u8],
-    ) -> busbar_substrate_values::breaker::RawUpstreamError {
+    ) -> busbar_contract::upstream::RawUpstreamError {
         super::super::proto_codec::protocol_error("bedrock", status, body)
     }
     // Token-metered: buffer the same-protocol non-stream 2xx body so the default
@@ -341,7 +340,7 @@ impl OperationHandler for BedrockRerank {
         &self,
         status: u16,
         body: &[u8],
-    ) -> busbar_substrate_values::breaker::RawUpstreamError {
+    ) -> busbar_contract::upstream::RawUpstreamError {
         super::super::proto_codec::protocol_error("bedrock", status, body)
     }
     fn read_request(
@@ -473,13 +472,13 @@ pub fn read_image_request(
 pub fn read_image_response(wire: &[u8]) -> Result<crate::ir::image::ImageResp, CodecError> {
     let v: Value =
         serde_json::from_slice(wire).map_err(|e| CodecError::Malformed(e.to_string()))?;
-    let images: Vec<busbar_substrate_values::media::ImageOutput> = v
+    let images: Vec<busbar_contract::media::ImageOutput> = v
         .get("images")
         .and_then(Value::as_array)
         .map(|arr| {
             arr.iter()
                 .filter_map(|b| b.as_str())
-                .map(|b| busbar_substrate_values::media::ImageOutput {
+                .map(|b| busbar_contract::media::ImageOutput {
                     b64: Some(b.to_string()),
                     ..Default::default()
                 })
@@ -551,7 +550,7 @@ pub fn read_embeddings_response(
     // count REFUSES rather than reading as "no usage reported".
     let usage = crate::usage_count::billed_count_opt(Some(&v), "inputTextTokenCount")
         .map_err(|e| CodecError::Malformed(e.to_string()))?
-        .map(|n| busbar_substrate_values::billing::TokenUsage {
+        .map(|n| busbar_contract::billing::TokenUsage {
             input: n,
             ..Default::default()
         });

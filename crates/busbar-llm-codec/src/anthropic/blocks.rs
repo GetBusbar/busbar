@@ -9,7 +9,7 @@ use super::*;
 pub(super) fn read_block(block_val: &serde_json::Value) -> Result<crate::ir::IrBlock, IrError> {
     let obj = block_val.as_object().ok_or(IrError {
         class: StatusClass::ClientError,
-        provider_signal: Some(busbar_substrate_values::proto::SIGNAL_IR_PARSE.to_string()),
+        provider_signal: Some(busbar_contract::protocol::SIGNAL_IR_PARSE.to_string()),
         retry_after: None,
     })?;
 
@@ -74,9 +74,7 @@ pub(super) fn read_block(block_val: &serde_json::Value) -> Result<crate::ir::IrB
                 .filter(|s| !s.is_empty())
                 .ok_or(IrError {
                     class: StatusClass::ClientError,
-                    provider_signal: Some(
-                        busbar_substrate_values::proto::SIGNAL_IR_PARSE.to_string(),
-                    ),
+                    provider_signal: Some(busbar_contract::protocol::SIGNAL_IR_PARSE.to_string()),
                     retry_after: None,
                 })?
                 .to_string();
@@ -128,7 +126,7 @@ pub(super) fn read_block(block_val: &serde_json::Value) -> Result<crate::ir::IrB
         "image" => {
             let source = obj.get("source").ok_or(IrError {
                 class: StatusClass::ClientError,
-                provider_signal: Some(busbar_substrate_values::proto::SIGNAL_IR_PARSE.to_string()),
+                provider_signal: Some(busbar_contract::protocol::SIGNAL_IR_PARSE.to_string()),
                 retry_after: None,
             })?;
             // `cache_control` sits on the OUTER image block object (a sibling of `source`), not on
@@ -190,9 +188,7 @@ pub(super) fn read_block(block_val: &serde_json::Value) -> Result<crate::ir::IrB
             } else {
                 Err(IrError {
                     class: StatusClass::ClientError,
-                    provider_signal: Some(
-                        busbar_substrate_values::proto::SIGNAL_IR_PARSE.to_string(),
-                    ),
+                    provider_signal: Some(busbar_contract::protocol::SIGNAL_IR_PARSE.to_string()),
                     retry_after: None,
                 })
             }
@@ -267,7 +263,7 @@ pub(super) fn read_block(block_val: &serde_json::Value) -> Result<crate::ir::IrB
                         .and_then(|v| v.as_str())
                         .unwrap_or(DOCUMENT_MIME_TEXT_PLAIN)
                         .to_string(),
-                    data: busbar_substrate_values::media::base64_encode(
+                    data: busbar_contract::media::base64_encode(
                         source
                             .get("data")
                             .and_then(|v| v.as_str())
@@ -442,7 +438,7 @@ pub(super) fn read_block(block_val: &serde_json::Value) -> Result<crate::ir::IrB
 pub(super) fn read_message(msg_val: &serde_json::Value) -> Result<crate::ir::IrMessage, IrError> {
     let obj = msg_val.as_object().ok_or(IrError {
         class: StatusClass::ClientError,
-        provider_signal: Some(busbar_substrate_values::proto::SIGNAL_IR_PARSE.to_string()),
+        provider_signal: Some(busbar_contract::protocol::SIGNAL_IR_PARSE.to_string()),
         retry_after: None,
     })?;
 
@@ -454,7 +450,7 @@ pub(super) fn read_message(msg_val: &serde_json::Value) -> Result<crate::ir::IrM
         _ => {
             return Err(IrError {
                 class: StatusClass::ClientError,
-                provider_signal: Some(busbar_substrate_values::proto::SIGNAL_IR_PARSE.to_string()),
+                provider_signal: Some(busbar_contract::protocol::SIGNAL_IR_PARSE.to_string()),
                 retry_after: None,
             })
         }
@@ -468,7 +464,7 @@ pub(super) fn read_message(msg_val: &serde_json::Value) -> Result<crate::ir::IrM
     if !content_val.is_null() && !content_val.is_string() && !content_val.is_array() {
         return Err(IrError {
             class: StatusClass::ClientError,
-            provider_signal: Some(busbar_substrate_values::proto::SIGNAL_IR_PARSE.to_string()),
+            provider_signal: Some(busbar_contract::protocol::SIGNAL_IR_PARSE.to_string()),
             retry_after: None,
         });
     }
@@ -489,7 +485,7 @@ pub(super) fn read_message(msg_val: &serde_json::Value) -> Result<crate::ir::IrM
 pub(super) fn read_tool(tool_val: &serde_json::Value) -> Result<crate::ir::IrTool, IrError> {
     let obj = tool_val.as_object().ok_or(IrError {
         class: StatusClass::ClientError,
-        provider_signal: Some(busbar_substrate_values::proto::SIGNAL_IR_PARSE.to_string()),
+        provider_signal: Some(busbar_contract::protocol::SIGNAL_IR_PARSE.to_string()),
         retry_after: None,
     })?;
 

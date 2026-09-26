@@ -235,7 +235,7 @@ fn shr03_both_openai_readers_produce_a_reference_the_helper_resolves() {
 /// Nova lane, whose reasoning field is spelled differently.
 #[test]
 fn bed06_bedrock_thinking_is_written_only_for_a_claude_lane_model() {
-    use busbar_substrate_values::ir::handle::IrHandle;
+    use busbar_contract::ir::handle::IrHandle;
     let body = json!({
         "model": "claude-x", "max_tokens": 8192,
         "thinking": {"type": "enabled", "budget_tokens": 4096},
@@ -249,7 +249,7 @@ fn bed06_bedrock_thinking_is_written_only_for_a_claude_lane_model() {
     let write = |model: &str| {
         let mut h = crate::chat_handle::ChatReqHandle(ir.clone(), Default::default());
         match h.write_egress_request("bedrock", model) {
-            busbar_substrate_values::wire::EgressWire::Json(v) => v,
+            busbar_contract::codec::EgressWire::Json(v) => v,
             _ => panic!("chat writes JSON"),
         }
     };

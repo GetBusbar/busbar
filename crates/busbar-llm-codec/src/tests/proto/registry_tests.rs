@@ -9,13 +9,13 @@
 //! which proves the audit chain spans a stream nobody wrote by writing one and chaining it.
 //! [`a_protocol_nobody_wrote_costs_a_declaration_and_nothing_else`] is the same claim, one axis over.
 
+use busbar_contract::codec::{CodecError, IngressReject, OperationHandler, RequestHandler};
+use busbar_contract::codec::{EgressCtx, WireBody};
+use busbar_contract::ir::subscribe::{SubscribeIntent, SubscribeReq, SubscribeResp};
 use busbar_contract::operation::OpVerb;
-use busbar_substrate_values::handlers::{
-    CodecError, IngressReject, OperationHandler, RequestHandler,
-};
-use busbar_substrate_values::ir::subscribe::{SubscribeIntent, SubscribeReq, SubscribeResp};
-use busbar_substrate_values::proto::{IngressAuth, ProtocolDecl, Registry};
-use busbar_substrate_values::wire::{EgressCtx, SlabBytes, WireBody};
+use busbar_contract::protocol::{IngressAuth, ProtocolDecl};
+use busbar_contract::SlabBytes;
+use busbar_kernel::proto::Registry;
 
 /// The registry as PRODUCTION builds it, for THIS plugin's dialects — `busbar_llm::DECLS`, the slice
 /// the composition root installs. `busbar-core`'s own `builtin_decls()` is now empty under
@@ -47,7 +47,7 @@ fn builtins() -> Registry {
 fn the_derived_protocol_list_is_byte_identical_to_the_const_it_replaced() {
     crate::ensure_test_protocols_registered();
     assert_eq!(
-        busbar_substrate_values::proto::known_protocols(),
+        busbar_kernel::proto::known_protocols(),
         &[
             "anthropic",
             "openai",
@@ -72,7 +72,7 @@ fn the_derived_protocol_list_is_byte_identical_to_the_const_it_replaced() {
 fn the_derived_protocol_list_is_not_empty() {
     crate::ensure_test_protocols_registered();
     assert!(
-        !busbar_substrate_values::proto::known_protocols().is_empty(),
+        !busbar_kernel::proto::known_protocols().is_empty(),
         "the codec-protocol list is derived from the declarations; an empty one means the built-in \
          table stopped being read, and every operator config would be refused with no cause named"
     );
@@ -84,12 +84,12 @@ fn the_derived_protocol_list_is_not_empty() {
 fn the_absorbed_sweeps_produce_the_sets_they_produced_before() {
     crate::ensure_test_protocols_registered();
     assert_eq!(
-        busbar_substrate_values::proto::streaming_content_types(),
+        busbar_kernel::proto::streaming_content_types(),
         &["application/vnd.amazon.eventstream", "text/event-stream"],
         "absorbed proto::streaming_content_types()"
     );
     assert_eq!(
-        busbar_substrate_values::proto::array_stream_shim_keys(),
+        busbar_kernel::proto::array_stream_shim_keys(),
         &[crate::gemini::GEMINI_JSON_ARRAY_SHIM_KEY],
         "absorbed proto::array_stream_shim_keys()"
     );
@@ -124,7 +124,7 @@ fn the_declared_verbs_are_the_verbs_the_handler_serves() {
         // OTHER protocol declared is caught the same as one serving its own undeclared verb.
         let mut candidates: Vec<OpVerb> = OpVerb::ALL
             .iter()
-            .chain(busbar_substrate_values::proto::declared_verbs())
+            .chain(busbar_kernel::proto::declared_verbs())
             .copied()
             .collect();
         // ALL and the declared half share the shape verbs (MCP declares `invoke`/`subscribe`);
@@ -175,7 +175,7 @@ fn every_declared_verb_has_a_serving_handler() {
     // The whole declared vocabulary — the registry's own answer to "which operations exist", folded
     // from the declarations at boot. Non-empty or the registry has forgotten the LLM/plane verbs.
     assert!(
-        !busbar_substrate_values::proto::declared_verbs().is_empty(),
+        !busbar_kernel::proto::declared_verbs().is_empty(),
         "the registry must declare at least the LLM/plane verbs"
     );
     for decl in builtins().decls() {
@@ -207,8 +207,8 @@ fn a_declaration_without_a_codec_dispatches_but_is_not_a_provider_protocol() {
     // Register the REAL MCP protocol declaration the way the composition root does — MCP is an
     // extracted crate (`busbar-mcp`), and the deleted `#[path]` witness used to net its codec into
     // core's test binary. `busbar-llm` dev-depends on `busbar-mcp` solely for this assertion.
-    busbar_substrate_values::proto::register_test_protocol(&busbar_mcp::PROTO_DECL);
-    let d = busbar_substrate_values::proto::decl_for("mcp").expect("mcp declares itself");
+    busbar_kernel::proto::register_test_protocol(&busbar_mcp::PROTO_DECL);
+    let d = busbar_kernel::proto::decl_for("mcp").expect("mcp declares itself");
     assert!(d.codec.is_none());
     assert!(d.handler.is_some(), "mcp serves operations");
     assert!(
@@ -216,7 +216,7 @@ fn a_declaration_without_a_codec_dispatches_but_is_not_a_provider_protocol() {
         "no codec means no cross-dialect translation into or out of it"
     );
     assert!(
-        !busbar_substrate_values::proto::known_protocols().contains(&"mcp"),
+        !busbar_kernel::proto::known_protocols().contains(&"mcp"),
         "a provider lane cannot name a protocol that has no wire codec"
     );
 }
@@ -275,22 +275,22 @@ const TELEX_DECL: ProtocolDecl = ProtocolDecl {
     frame_after_message_start: None,
     reshapes_body_at_path_base: false,
     max_cache_control_breakpoints: None,
-    quota_exceeded_status: http::StatusCode::TOO_MANY_REQUESTS,
+    quota_exceeded_status: busbar_contract::http::StatusCode::TOO_MANY_REQUESTS,
     ingress_is_eventstream: false,
     emits_sse_done_terminator: false,
     max_citations_per_delta: None,
-    egress_user_agent: busbar_substrate_values::proxy::EGRESS_UA_DEFAULT,
+    egress_user_agent: busbar_contract::protocol::EGRESS_UA_DEFAULT,
     has_model_in_url: false,
     auth_failure_status_and_kind: (
-        http::StatusCode::UNAUTHORIZED,
-        busbar_substrate_values::proto::ERR_TYPE_AUTHENTICATION,
+        busbar_contract::http::StatusCode::UNAUTHORIZED,
+        busbar_contract::protocol::ERR_TYPE_AUTHENTICATION,
     ),
     ingress_relays_amzn_headers: false,
     ingress_relayed_response_header_names: &[],
     auth_failure_message: "authentication failed",
     uses_array_stream_shim: false,
     has_native_path_not_found: false,
-    egress_stream_accept: busbar_substrate_values::proxy::TEXT_EVENT_STREAM,
+    egress_stream_accept: busbar_contract::protocol::TEXT_EVENT_STREAM,
     models_list_envelope: None,
     claims: None,
     residual_claims: None,
@@ -319,7 +319,7 @@ impl OperationHandler for TelexSubscribe {
         &self,
         body: &[u8],
         _content_type: &str,
-    ) -> Result<Box<dyn busbar_substrate_values::ir::handle::IrHandle>, IngressReject> {
+    ) -> Result<Box<dyn busbar_contract::ir::handle::IrHandle>, IngressReject> {
         // The telex wire is not JSON-object-shaped like the six: it is `TO <dest>` on one line.
         let dest = std::str::from_utf8(body)
             .ok()
@@ -336,7 +336,7 @@ impl OperationHandler for TelexSubscribe {
     fn read_response(
         &self,
         wire: &[u8],
-    ) -> Result<Box<dyn busbar_substrate_values::ir::handle::IrHandle>, CodecError> {
+    ) -> Result<Box<dyn busbar_contract::ir::handle::IrHandle>, CodecError> {
         let text = std::str::from_utf8(wire)
             .map_err(|e| CodecError::Malformed(e.to_string()))?
             .to_string();
@@ -353,9 +353,9 @@ impl OperationHandler for TelexSubscribe {
 // this test lives inside busbar-core.
 struct TelexReqHandle(SubscribeReq);
 struct TelexRespHandle(SubscribeResp);
-impl busbar_substrate_values::ir::handle::sealed::Sealed for TelexReqHandle {}
-impl busbar_substrate_values::ir::handle::sealed::Sealed for TelexRespHandle {}
-impl busbar_substrate_values::ir::handle::IrHandle for TelexReqHandle {
+impl busbar_contract::ir::handle::sealed::Sealed for TelexReqHandle {}
+impl busbar_contract::ir::handle::sealed::Sealed for TelexRespHandle {}
+impl busbar_contract::ir::handle::IrHandle for TelexReqHandle {
     fn verb(&self) -> OpVerb {
         OpVerb::SUBSCRIBE
     }
@@ -363,7 +363,7 @@ impl busbar_substrate_values::ir::handle::IrHandle for TelexReqHandle {
         SlabBytes::from(format!("TO {}", self.0.target))
     }
 }
-impl busbar_substrate_values::ir::handle::IrHandle for TelexRespHandle {
+impl busbar_contract::ir::handle::IrHandle for TelexRespHandle {
     fn verb(&self) -> OpVerb {
         OpVerb::SUBSCRIBE
     }
@@ -371,8 +371,8 @@ impl busbar_substrate_values::ir::handle::IrHandle for TelexRespHandle {
         &self,
         _ingress_protocol: &str,
         _ingress_serves_op: bool,
-    ) -> busbar_substrate_values::wire::TranslatedResponse {
-        busbar_substrate_values::wire::TranslatedResponse::Typed(WireBody::typed(
+    ) -> busbar_contract::codec::TranslatedResponse {
+        busbar_contract::codec::TranslatedResponse::Typed(WireBody::typed(
             SlabBytes::from(
                 self.0
                     .registration
@@ -432,7 +432,7 @@ fn a_protocol_nobody_wrote_costs_a_declaration_and_nothing_else() {
     let resp = cell
         .read_response(b"REGISTERED paris")
         .expect("its cell reads its own response");
-    let busbar_substrate_values::wire::TranslatedResponse::Typed(out) =
+    let busbar_contract::codec::TranslatedResponse::Typed(out) =
         resp.write_ingress_response("telex", true)
     else {
         panic!("telex response writes a typed body");
@@ -457,7 +457,7 @@ fn a_protocol_nobody_wrote_costs_a_declaration_and_nothing_else() {
     //    still knows only the built-ins, which is the proof that admitting `telex` above required
     //    no edit here rather than a hidden one.
     assert!(
-        busbar_substrate_values::proto::decl_for("telex").is_none(),
+        busbar_kernel::proto::decl_for("telex").is_none(),
         "the built-in table was not touched"
     );
 }
@@ -489,22 +489,22 @@ const fn named_decl(name: &'static str) -> ProtocolDecl {
         frame_after_message_start: None,
         reshapes_body_at_path_base: false,
         max_cache_control_breakpoints: None,
-        quota_exceeded_status: http::StatusCode::TOO_MANY_REQUESTS,
+        quota_exceeded_status: busbar_contract::http::StatusCode::TOO_MANY_REQUESTS,
         ingress_is_eventstream: false,
         emits_sse_done_terminator: false,
         max_citations_per_delta: None,
-        egress_user_agent: busbar_substrate_values::proxy::EGRESS_UA_DEFAULT,
+        egress_user_agent: busbar_contract::protocol::EGRESS_UA_DEFAULT,
         has_model_in_url: false,
         auth_failure_status_and_kind: (
-            http::StatusCode::UNAUTHORIZED,
-            busbar_substrate_values::proto::ERR_TYPE_AUTHENTICATION,
+            busbar_contract::http::StatusCode::UNAUTHORIZED,
+            busbar_contract::protocol::ERR_TYPE_AUTHENTICATION,
         ),
         ingress_relays_amzn_headers: false,
         ingress_relayed_response_header_names: &[],
         auth_failure_message: "authentication failed",
         uses_array_stream_shim: false,
         has_native_path_not_found: false,
-        egress_stream_accept: busbar_substrate_values::proxy::TEXT_EVENT_STREAM,
+        egress_stream_accept: busbar_contract::protocol::TEXT_EVENT_STREAM,
         models_list_envelope: None,
         claims: None,
         residual_claims: None,
@@ -577,8 +577,7 @@ fn installed_declarations_are_folded_ahead_of_the_builtins() {
     static EXTRACTED: ProtocolDecl = named_decl("extracted");
     static BUILTIN_A: ProtocolDecl = named_decl("builtin-a");
     static BUILTIN_B: ProtocolDecl = named_decl("builtin-b");
-    let merged =
-        busbar_substrate_values::proto::merged_boot_decls(&[&EXTRACTED], &[&BUILTIN_A, &BUILTIN_B]);
+    let merged = busbar_kernel::proto::merged_boot_decls(&[&EXTRACTED], &[&BUILTIN_A, &BUILTIN_B]);
     let names: Vec<&str> = merged.iter().map(|d| d.name).collect();
     assert_eq!(
         names,
@@ -599,10 +598,8 @@ fn a_later_registration_of_a_declared_name_is_skipped_keeping_the_first() {
     static INSTALLED_COPY: ProtocolDecl = named_decl("anthro-like");
     static BUILTIN_COPY: ProtocolDecl = named_decl("anthro-like");
     static OTHER: ProtocolDecl = named_decl("other");
-    let merged = busbar_substrate_values::proto::merged_boot_decls(
-        &[&INSTALLED_COPY],
-        &[&BUILTIN_COPY, &OTHER],
-    );
+    let merged =
+        busbar_kernel::proto::merged_boot_decls(&[&INSTALLED_COPY], &[&BUILTIN_COPY, &OTHER]);
     assert_eq!(merged.len(), 2, "one entry per name");
     assert!(
         std::ptr::eq(merged[0], &INSTALLED_COPY),
@@ -647,7 +644,7 @@ fn two_declarations_of_one_name_refuse_to_boot() {
 fn a_registry_with_no_declarations_reports_no_protocols_at_all() {
     // The boot fold with nothing installed AND nothing built in — a build with every protocol edge
     // removed. Not a hand-written empty slice: the function the process registry initializes with.
-    let decls = busbar_substrate_values::proto::merged_boot_decls(&[], &[]);
+    let decls = busbar_kernel::proto::merged_boot_decls(&[], &[]);
     assert!(decls.is_empty(), "no declarations in, no declarations out");
 
     let empty = Registry::new(decls);
@@ -683,14 +680,14 @@ fn a_url_model_protocol_without_a_registered_arrival_is_caught() {
 
     // RED: the URL-model protocol declared, but no arrival registered → the guard names it.
     assert_eq!(
-        busbar_substrate_values::proto::first_path_model_without_arrival(decls, &[]),
+        busbar_kernel::proto::first_path_model_without_arrival(decls, &[]),
         Some("telex"),
         "a has_model_in_url decl with no arrival must be reported by name"
     );
 
     // GREEN: register the arrival by the SAME name → the guard is satisfied.
     assert_eq!(
-        busbar_substrate_values::proto::first_path_model_without_arrival(decls, &["telex"]),
+        busbar_kernel::proto::first_path_model_without_arrival(decls, &["telex"]),
         None,
         "once its arrival is registered under the same name, the parity rule holds"
     );
@@ -698,7 +695,7 @@ fn a_url_model_protocol_without_a_registered_arrival_is_caught() {
     // A body-model protocol (has_model_in_url == false) needs no arrival and is never reported.
     let body_model: &[&'static ProtocolDecl] = &[&TELEX_DECL];
     assert_eq!(
-        busbar_substrate_values::proto::first_path_model_without_arrival(body_model, &[]),
+        busbar_kernel::proto::first_path_model_without_arrival(body_model, &[]),
         None,
         "a body-model protocol declares no URL model, so it needs no arrival"
     );

@@ -494,7 +494,7 @@ fn bedrock_huge_content_block_index_is_clamped() {
 // ── 5. OVER-DEEP NESTED BODY ─────────────────────────────────────────────────
 
 /// The MAX_JSON_DEPTH floor rejects a pathologically-nested body at the PARSE boundary
-/// (`busbar_substrate_values::json::parse`) — the single seam every ingress body crosses before a
+/// (`crate::json::parse`) — the single seam every ingress body crosses before a
 /// `serde_json::Value` (and therefore any reader recursion, re-serialize, or recursive drop) can be
 /// built. A ~10k-deep body (well under the body cap) would otherwise overflow the worker stack and
 /// abort the process; here it returns a clean parse `Err` and no `Value` is ever constructed, so no
@@ -512,7 +512,7 @@ fn overdeep_nested_body_rejected_at_parse_before_any_reader() {
         s.push(']');
     }
     s.push('}');
-    let parsed = busbar_substrate_values::json::parse::<serde_json::Value>(s.as_bytes());
+    let parsed = crate::json::parse::<serde_json::Value>(s.as_bytes());
     assert!(
         parsed.is_err(),
         "a body nested past MAX_JSON_DEPTH must be rejected at the parse boundary, before any Value/reader"
@@ -521,8 +521,7 @@ fn overdeep_nested_body_rejected_at_parse_before_any_reader() {
     // not over-reject normal traffic).
     let ok_body =
         br#"{"model":"m","messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}"#;
-    let value = busbar_substrate_values::json::parse::<serde_json::Value>(ok_body)
-        .expect("shallow body parses");
+    let value = crate::json::parse::<serde_json::Value>(ok_body).expect("shallow body parses");
     assert!(
         value.is_object(),
         "the shallow control body must parse into an object"
@@ -533,7 +532,7 @@ fn overdeep_nested_body_rejected_at_parse_before_any_reader() {
         // meant an over-eager depth/size guard that started rejecting normal traffic — the exact
         // over-rejection this half exists to rule out — passed unnoticed.
         let body_bytes = serde_json::to_vec(&valid_request_body(name, "hi")).expect("serialize");
-        let native = busbar_substrate_values::json::parse::<serde_json::Value>(&body_bytes)
+        let native = crate::json::parse::<serde_json::Value>(&body_bytes)
             .unwrap_or_else(|e| panic!("{name}: a shallow native body must parse: {e:?}"));
         let ir = protocol_for(name)
             .expect("dialect")

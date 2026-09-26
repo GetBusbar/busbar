@@ -5,12 +5,11 @@
 //! both directions, nothing else: moderation, embeddings, images, audio, and chat each get one.
 
 use crate::ir::moderation::{ModerationInput, ModerationReq, ModerationResp, ModerationResult};
+use busbar_contract::codec::{CodecError, IngressReject, OperationHandler, RequestHandler};
+use busbar_contract::codec::{EgressCtx, WireBody};
+use busbar_contract::ir::handle::IrHandle;
 use busbar_contract::operation::OpVerb;
-use busbar_substrate_values::handlers::{
-    CodecError, IngressReject, OperationHandler, RequestHandler,
-};
-use busbar_substrate_values::ir::handle::IrHandle;
-use busbar_substrate_values::wire::{EgressCtx, SlabBytes, WireBody};
+use busbar_contract::SlabBytes;
 use bytes::Bytes;
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
@@ -42,7 +41,7 @@ static SPEECH: OpenAiSpeech = OpenAiSpeech;
 /// this table is the standard no-handler 404, which is what the enumerated `None` arm used to say:
 /// OpenAI ships no rerank surface, and the protocol-surface verbs are MCP's and A2A's, so the pair
 /// is unrepresentable rather than refused at runtime.
-static CELLS: &[busbar_substrate_values::handlers::Cell] = &[
+static CELLS: &[busbar_contract::codec::Cell] = &[
     (OpVerb::CHAT, &CHAT),
     (OpVerb::MODERATION, &MODERATION),
     (OpVerb::EMBEDDINGS, &EMBEDDINGS),
@@ -67,12 +66,12 @@ impl RequestHandler for OpenAiRequestHandler {
         "openai"
     }
     fn operation_handler(&self, op: OpVerb) -> Option<&dyn OperationHandler> {
-        busbar_substrate_values::handlers::cell_of(CELLS, op)
+        busbar_contract::codec::cell_of(CELLS, op)
     }
     fn upstream_path(&self, ctx: &EgressCtx) -> String {
         // The fallback is unreachable in practice: a verb with no cell above never reaches egress
         // here. It keeps the pre-1.6.0 answer verbatim rather than inventing a new one.
-        busbar_substrate_values::handlers::path_of(PATHS, ctx.operation)
+        busbar_contract::codec::path_of(PATHS, ctx.operation)
             .unwrap_or(PATH_RERANK)
             .into()
     }
@@ -101,8 +100,8 @@ impl RequestHandler for OpenAiRequestHandler {
 // -------------------------------------------------- audio cells (real codecs, cross-protocol)
 
 use crate::ir::audio::{SpeechReq, SpeechResp, TranscriptionReq, TranscriptionResp};
-use busbar_substrate_values::billing::Billing;
-use busbar_substrate_values::media::{base64_decode, MediaBlob, MediaPayload};
+use busbar_contract::billing::Billing;
+use busbar_contract::media::{base64_decode, MediaBlob, MediaPayload};
 
 /// One decoded part of a `multipart/form-data` body (its value borrowed from the request bytes).
 struct MultipartField<'a> {
@@ -251,7 +250,7 @@ impl OperationHandler for OpenAiTranscription {
         &self,
         status: u16,
         body: &[u8],
-    ) -> busbar_substrate_values::breaker::RawUpstreamError {
+    ) -> busbar_contract::upstream::RawUpstreamError {
         super::super::proto_codec::protocol_error("openai", status, body)
     }
     fn egress_request_content_type(&self) -> &'static str {
@@ -473,7 +472,7 @@ pub fn write_transcription_response(r: &TranscriptionResp) -> WireBody {
         Some(Billing::Duration { seconds }) => {
             // The one render boundary — byte-identical to what this wrote before the quantity
             // became exact (see `billing::duration_seconds_to_wire`).
-            let seconds = busbar_substrate_values::billing::duration_seconds_to_wire(*seconds);
+            let seconds = busbar_contract::billing::duration_seconds_to_wire(*seconds);
             body["usage"] = json!({ "type": "duration", "seconds": seconds });
         }
         Some(Billing::Tokens(t)) => {
@@ -503,7 +502,7 @@ fn parse_transcription_usage(wire: &[u8], u: &Value) -> Result<Option<Billing>, 
             if u.get("seconds").is_none() {
                 return Ok(None);
             }
-            let seconds = busbar_substrate_values::billing::Count::read_at(wire, "/usage/seconds")
+            let seconds = busbar_contract::Count::read_at(wire, "/usage/seconds")
                 .map_err(|e| CodecError::Malformed(format!("usage.seconds: {e}")))?
                 .ok_or_else(|| {
                     CodecError::Malformed("usage.seconds: located then lost".to_string())
@@ -518,7 +517,7 @@ fn parse_transcription_usage(wire: &[u8], u: &Value) -> Result<Option<Billing>, 
             None => Ok(None),
             Some(v) if v.is_null() => Ok(None),
             Some(_) => Ok(Some(Billing::Tokens(
-                busbar_substrate_values::billing::TokenUsage {
+                busbar_contract::billing::TokenUsage {
                     input: crate::usage_count::billed_count(u, "input_tokens")
                         .map_err(|e| CodecError::Malformed(e.to_string()))?,
                     output: crate::usage_count::billed_count(u, "output_tokens")
@@ -540,7 +539,7 @@ impl OperationHandler for OpenAiSpeech {
         &self,
         status: u16,
         body: &[u8],
-    ) -> busbar_substrate_values::breaker::RawUpstreamError {
+    ) -> busbar_contract::upstream::RawUpstreamError {
         super::super::proto_codec::protocol_error("openai", status, body)
     }
     fn read_request(
@@ -606,7 +605,7 @@ impl OperationHandler for OpenAiEmbeddings {
         &self,
         status: u16,
         body: &[u8],
-    ) -> busbar_substrate_values::breaker::RawUpstreamError {
+    ) -> busbar_contract::upstream::RawUpstreamError {
         super::super::proto_codec::protocol_error("openai", status, body)
     }
     // Token-metered: buffer the same-protocol non-stream 2xx body so the default
@@ -703,7 +702,7 @@ pub fn write_embeddings_response(r: &EmbeddingsResp) -> WireBody {
 // ---------------------------------------------------------------- image OperationHandler (real, cross-protocol)
 
 use crate::ir::image::{ImageOp, ImageReq, ImageResp, ImageSize};
-use busbar_substrate_values::media::ImageOutput;
+use busbar_contract::media::ImageOutput;
 
 struct OpenAiImage;
 
@@ -714,7 +713,7 @@ impl OperationHandler for OpenAiImage {
         &self,
         status: u16,
         body: &[u8],
-    ) -> busbar_substrate_values::breaker::RawUpstreamError {
+    ) -> busbar_contract::upstream::RawUpstreamError {
         super::super::proto_codec::protocol_error("openai", status, body)
     }
     // Token-metered for gpt-image-1: buffer the same-protocol non-stream 2xx body so the default
@@ -841,7 +840,7 @@ impl OperationHandler for OpenAiModeration {
         &self,
         status: u16,
         body: &[u8],
-    ) -> busbar_substrate_values::breaker::RawUpstreamError {
+    ) -> busbar_contract::upstream::RawUpstreamError {
         super::super::proto_codec::protocol_error("openai", status, body)
     }
     fn read_request(
@@ -1311,9 +1310,9 @@ pub fn read_embeddings_response(
     let usage = v
         .get("usage")
         .map(
-            |u| -> Result<busbar_substrate_values::billing::TokenUsage, CodecError> {
+            |u| -> Result<busbar_contract::billing::TokenUsage, CodecError> {
                 // BILLED COUNT: absent is zero, UNREADABLE IS A REFUSAL (#81/#42).
-                Ok(busbar_substrate_values::billing::TokenUsage {
+                Ok(busbar_contract::billing::TokenUsage {
                     input: crate::usage_count::billed_count(u, "prompt_tokens")
                         .map_err(|e| CodecError::Malformed(e.to_string()))?,
                     ..Default::default()
@@ -1447,9 +1446,9 @@ pub fn read_image_response(wire: &[u8]) -> Result<crate::ir::image::ImageResp, C
     let usage = v
         .get("usage")
         .map(
-            |u| -> Result<busbar_substrate_values::billing::TokenUsage, CodecError> {
+            |u| -> Result<busbar_contract::billing::TokenUsage, CodecError> {
                 // BILLED COUNTS: absent is zero, UNREADABLE IS A REFUSAL (#81/#42).
-                Ok(busbar_substrate_values::billing::TokenUsage {
+                Ok(busbar_contract::billing::TokenUsage {
                     input: crate::usage_count::billed_count(u, "input_tokens")
                         .map_err(|e| CodecError::Malformed(e.to_string()))?,
                     output: crate::usage_count::billed_count(u, "output_tokens")

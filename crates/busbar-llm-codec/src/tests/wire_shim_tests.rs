@@ -20,9 +20,9 @@
 //! than ever reaching `tier_usage()` as a bare, indistinguishable `None`.
 
 use super::tier_usage;
-use busbar_substrate_values::billing::TokenUsage;
+use busbar_contract::billing::TokenUsage;
 
-fn unit(usage: &busbar_substrate_values::billing::Usage, k: &str) -> Option<u64> {
+fn unit(usage: &busbar_contract::billing::Usage, k: &str) -> Option<u64> {
     usage.usage_units.get(k).copied()
 }
 

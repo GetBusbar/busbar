@@ -60,7 +60,7 @@ impl ProtocolWriter for GeminiWriter {
         if !obj.get("contents").is_some_and(serde_json::Value::is_array) {
             return false;
         }
-        let Some(pairs) = busbar_substrate_values::proto::rewrite_text_pairs(messages) else {
+        let Some(pairs) = crate::dialect::rewrite_text_pairs(messages) else {
             return false;
         };
         let framed: Vec<serde_json::Value> = pairs
@@ -261,7 +261,7 @@ impl ProtocolWriter for GeminiWriter {
                         // Text and json together: the json values join the text as one `output`
                         // array, so neither is lost.
                         let payload: serde_json::Value = if json_values.is_empty() {
-                            busbar_substrate_values::json::parse_str(&response_text)
+                            crate::json::parse_str(&response_text)
                                 .unwrap_or_else(|_| serde_json::json!(response_text))
                         } else if response_text.is_empty() {
                             match json_values.as_slice() {
@@ -788,14 +788,14 @@ impl ProtocolWriter for GeminiWriter {
                     Some(GRPC_RESOURCE_EXHAUSTED)
                 }
                 ERR_TYPE_OVERLOADED
-                | busbar_substrate_values::proxy::KIND_OVERLOADED
+                | busbar_contract::protocol::KIND_OVERLOADED
                 | "unavailable" => Some(GRPC_UNAVAILABLE),
-                "deadline_exceeded" | busbar_substrate_values::proxy::KIND_TIMEOUT => {
+                "deadline_exceeded" | busbar_contract::protocol::KIND_TIMEOUT => {
                     Some(GRPC_DEADLINE_EXCEEDED)
                 }
-                busbar_substrate_values::proxy::KIND_API_ERROR
+                busbar_contract::protocol::KIND_API_ERROR
                 | "internal"
-                | busbar_substrate_values::proxy::KIND_SERVER_ERROR => Some(GRPC_INTERNAL),
+                | busbar_contract::protocol::KIND_SERVER_ERROR => Some(GRPC_INTERNAL),
                 "unimplemented" | "not_implemented" => Some(GRPC_UNIMPLEMENTED),
                 _ => None,
             }
@@ -1014,7 +1014,7 @@ impl ProtocolWriter for GeminiWriter {
                 // per-connection memory-amplification DoS distinct from `MAX_GEMINI_TOOL_FRAMES`, which
                 // only bounds the COUNT of distinct open blocks, not one block's accumulated size).
                 //
-                // The cap is `busbar_substrate_values::proxy::max_translate_body_bytes()` — the neutral twin of
+                // The cap is `busbar_contract::codec::max_translate_body_bytes()` — the neutral twin of
                 // core's `limits::translate_body_max_bytes()`, the SAME operator-tunable,
                 // live-reconfigurable limit (default 32 MiB, coupled to `limits.request_body_max_bytes`)
                 // that already bounds a buffered cross-protocol NON-STREAM completion body elsewhere
@@ -1022,9 +1022,9 @@ impl ProtocolWriter for GeminiWriter {
                 // arguments" as exactly why that cap must be generous. Reusing it here — rather than a
                 // new hardcoded constant — means an operator who raises the one knob to admit larger
                 // tool payloads gets that same headroom on this streaming path too, instead of the two
-                // paths silently diverging. Read from the neutral substrate global (core's `limits`
-                // install/reload mirrors the resolved value into it) so this plugin never reaches back
-                // into `busbar-core`. A read per fragment is cheap (an uncontended `Relaxed` atomic load).
+                // paths silently diverging. Read through the translate-cap reader the host installs
+                // (the host's live value, #83a SD-3) so this plugin never reaches the host crate. A
+                // read per fragment is cheap (a function-pointer call over an atomic load).
                 //
                 // Once appending a fragment would cross the cap, that fragment (and every subsequent one
                 // for this block) is dropped whole rather than sliced at the boundary: the buffer is
@@ -1039,7 +1039,7 @@ impl ProtocolWriter for GeminiWriter {
                         if let Some(GeminiOpenTool { args, .. }) =
                             guard.iter_mut().find(|t| t.index == *index)
                         {
-                            let cap = busbar_substrate_values::proxy::max_translate_body_bytes();
+                            let cap = busbar_contract::codec::max_translate_body_bytes();
                             if args.len().saturating_add(json_str.len()) <= cap {
                                 args.push_str(json_str);
                             }
@@ -1194,8 +1194,7 @@ impl ProtocolWriter for GeminiWriter {
                     let args: serde_json::Value = if args_str.is_empty() {
                         serde_json::json!({})
                     } else {
-                        busbar_substrate_values::json::parse_str(&args_str)
-                            .unwrap_or_else(|_| serde_json::json!({}))
+                        crate::json::parse_str(&args_str).unwrap_or_else(|_| serde_json::json!({}))
                     };
                     let mut fc_obj = serde_json::Map::new();
                     // The streamed call's id, as on the buffered path (GEM-08).
@@ -1609,7 +1608,7 @@ impl ProtocolWriter for GeminiWriter {
 
     fn make_array_stream_framer(
         &self,
-    ) -> Option<Box<dyn busbar_substrate_values::proto::ArrayStreamFramer>> {
+    ) -> Option<Box<dyn busbar_contract::protocol::ArrayStreamFramer>> {
         // Gemini `:streamGenerateContent` WITHOUT `?alt=sse` expects a JSON-array streamed body; this
         // builds the framer that reframes the (gemini-shape) SSE bytes into that array. The forward
         // path engages it only when `uses_array_stream_shim()` AND `wants_array_stream(body)` hold.

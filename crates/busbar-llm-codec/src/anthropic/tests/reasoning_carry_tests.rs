@@ -4,7 +4,7 @@
 use super::super::proto_codec::{Protocol, ProtocolReader, ProtocolWriter};
 use super::{anthropic_writer, AnthropicReader};
 use crate::ir::{IrReasoningAsk, IrReasoningEffort};
-use busbar_substrate_values::ir::egress_prep::{EgressPrep, LaneCaps};
+use busbar_contract::ir::egress_prep::{EgressPrep, LaneCaps};
 
 /// A lane that declares adaptive thinking (Opus 4.7+/5.x, Sonnet 5, Fable). Every word-form
 /// assertion below that expects `thinking:{type:"adaptive"}` is about such a lane; a lane that

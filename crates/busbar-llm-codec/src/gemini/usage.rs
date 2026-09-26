@@ -156,7 +156,7 @@ pub(super) fn refuse_unreadable_count(unreadable: crate::usage_count::Unreadable
     );
     IrError {
         class: StatusClass::ClientError,
-        provider_signal: Some(busbar_substrate_values::proto::SIGNAL_IR_PARSE.into()),
+        provider_signal: Some(busbar_contract::protocol::SIGNAL_IR_PARSE.into()),
         retry_after: None,
     }
 }

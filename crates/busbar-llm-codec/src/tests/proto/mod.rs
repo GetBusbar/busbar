@@ -15,7 +15,8 @@
 //! same names it saw when they were `mod`ules of `busbar-core`'s `proto`. Fully-qualified paths in
 //! the suites were repointed mechanically: `crate::proto::{dialect}` → `crate::{dialect}`,
 //! `crate::proto::{proto_codec,proto_stream}` → `crate::{proto_codec,proto_stream}`, and every
-//! neutral `crate::proto::…` / substrate re-export to its `busbar_kernel::` / `busbar_substrate_values::` home.
+//! neutral `crate::proto::…` name to its home: a contract shape to `busbar_contract::`, a dialect
+//! helper to this plane's `crate::dialect`, a registry read to the host (`busbar_kernel::`).
 
 #![allow(unused_imports)]
 
@@ -46,15 +47,18 @@ pub(crate) use crate::openai_chat::openai_writer;
 pub use crate::openai_responses::{ResponsesReader, ResponsesWriter};
 
 // The NEUTRAL proto atoms the suites reach bare via `super::*` — named at their canonical
-// `busbar_substrate_values::proto` home (core merely re-exports each by identity), NOT a second witnessed
-// copy (a glob of `busbar_substrate_values::proto::*` would collide with `crate::proto_codec::*` on
+// `busbar_kernel::proto` home (core merely re-exports each by identity), NOT a second witnessed
+// copy (a glob of `busbar_kernel::proto::*` would collide with `crate::proto_codec::*` on
 // `Protocol` &c.).
-pub use busbar_substrate_values::proto::{
-    array_stream_shim_key_for, array_stream_shim_keys, bearer_auth_headers, bearer_error_code,
-    context_length_prose_scan, find_frame_terminator, known_protocols, lane_protocol_name,
-    parse_sse_frame, sse_event_type, streaming_content_types, strip_top_level_usage_member,
-    write_sse_frame, IrError, BASE62_ALPHABET, HDR_AUTHORIZATION, SIGNAL_IR_PARSE, SSE_DONE_FRAME,
-    SSE_DONE_SENTINEL,
+pub use crate::dialect::{
+    bearer_error_code, context_length_prose_scan, parse_sse_frame, sse_event_type,
+    strip_top_level_usage_member, write_sse_frame, BASE62_ALPHABET, HDR_AUTHORIZATION,
+    SSE_DONE_FRAME, SSE_DONE_SENTINEL,
+};
+pub use busbar_contract::protocol::{find_frame_terminator, IrError, SIGNAL_IR_PARSE};
+pub use busbar_kernel::proto::{
+    array_stream_shim_key_for, array_stream_shim_keys, bearer_auth_headers, known_protocols,
+    lane_protocol_name, streaming_content_types,
 };
 // The registry LOOKUP against the boot-installed registry (`decl_for`, the `registry` accessor
 // module) and the two test-only vocabularies core still owns: the six dialect-name fixtures
@@ -67,8 +71,8 @@ pub use busbar_kernel::proto::{
 };
 
 // Substrate atoms the suites name bare (breaker signal + the neutral framing seam types).
-pub use busbar_substrate_values::breaker::{CanonicalSignal, StatusClass};
-pub use busbar_substrate_values::proto::{ArrayStreamFramer, DialectCodec};
+pub use busbar_contract::protocol::{ArrayStreamFramer, DialectCodec};
+pub use busbar_contract::upstream::{CanonicalSignal, StatusClass};
 
 #[path = "adversarial_tests.rs"]
 mod adversarial_tests;

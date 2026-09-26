@@ -4,19 +4,19 @@
 //! Cohere v2 protocol reader/writer implementation.
 
 use crate::ir::IrStreamEvent;
+use busbar_contract::http::StatusCode;
+use busbar_contract::protocol::*;
 #[cfg(test)]
-use busbar_substrate_values::breaker::CanonicalSignal;
-use busbar_substrate_values::breaker::StatusClass;
-use busbar_substrate_values::proto::*;
-use http::StatusCode;
+use busbar_contract::upstream::CanonicalSignal;
+use busbar_contract::upstream::StatusClass;
 // G6 A4b: the wire-codec surface (ProtocolReader/Writer/Protocol/StreamFraming/ToolIdRemap/
 // protocol_for) relocated to this plugin's `proto_codec`; reach it RELATIVELY so it resolves both
 // standalone (crate::proto_codec) and netted into core (core::proto::proto_codec).
 #[allow(unused_imports)]
-// used standalone; redundant with busbar_substrate_values::proto::* when netted into core
+// used standalone; redundant with the `busbar_contract::protocol::*` glob when netted into core
 use super::proto_codec::*;
 // See the anthropic dialect for the rationale: an explicit import of the codec surface so it binds to
-// THIS crate's own `proto_codec` rather than the ambiguous `busbar_substrate_values::proto::*` re-export.
+// THIS crate's own `proto_codec` rather than the `busbar_contract::protocol::*` glob.
 #[allow(unused_imports)]
 use super::proto_codec::{Protocol, ProtocolReader, ProtocolWriter, StreamFraming};
 use std::sync::OnceLock;
@@ -36,10 +36,10 @@ pub fn protocol() -> Protocol {
 /// (`/v2/chat`, `/v1/chat`, rung 8) and the v2 embed/rerank paths (`/v2/embed`, `/v2/rerank`, rung
 /// 9). Lower strength binds tighter — the shared ladder positions.
 fn claims(
-    _h: &http::HeaderMap,
+    _h: &busbar_contract::http::HeaderMap,
     path: &str,
-) -> Option<busbar_substrate_values::proto::ClaimStrength> {
-    use busbar_substrate_values::proto::ClaimStrength;
+) -> Option<busbar_contract::protocol::ClaimStrength> {
+    use busbar_contract::protocol::ClaimStrength;
     if path.ends_with("/v2/chat") || path.ends_with("/v1/chat") {
         return Some(ClaimStrength(8));
     }
@@ -51,9 +51,9 @@ fn claims(
 
 /// COHERE'S RESIDUAL DETECTION — its arm of the headerless `residual_dialect_for_path` ladder: an
 /// exact `/v2/chat` names Cohere (rung 50).
-fn residual_claims(path: &str) -> Option<busbar_substrate_values::proto::ClaimStrength> {
+fn residual_claims(path: &str) -> Option<busbar_contract::protocol::ClaimStrength> {
     if path == "/v2/chat" {
-        return Some(busbar_substrate_values::proto::ClaimStrength(50));
+        return Some(busbar_contract::protocol::ClaimStrength(50));
     }
     None
 }
@@ -74,7 +74,7 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
         busbar_contract::operation::OpVerb::RERANK,
     ],
     head_keys: super::proto_codec::LLM_CHAT_HEAD_KEYS,
-    streaming_content_type: Some(busbar_substrate_values::proxy::TEXT_EVENT_STREAM),
+    streaming_content_type: Some(busbar_contract::protocol::TEXT_EVENT_STREAM),
     array_stream_shim_key: None,
     // Cohere tool ids are free-form with NO canonical prefix. An empty prefix would make the
     // reversibility marker itself the only distinguishing signal, which collides with a legitimate
@@ -97,7 +97,7 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
     frame_after_message_start: None,
     reshapes_body_at_path_base: false,
     max_cache_control_breakpoints: None,
-    quota_exceeded_status: http::StatusCode::TOO_MANY_REQUESTS,
+    quota_exceeded_status: busbar_contract::http::StatusCode::TOO_MANY_REQUESTS,
     ingress_is_eventstream: false,
     emits_sse_done_terminator: false,
     // Cohere v2's `citation-start` event carries a SINGLE Citation at `delta.message.citations`
@@ -111,15 +111,15 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
     egress_user_agent: "cohere-python/5.11.0",
     has_model_in_url: false,
     auth_failure_status_and_kind: (
-        http::StatusCode::UNAUTHORIZED,
-        busbar_substrate_values::proto::ERR_TYPE_AUTHENTICATION,
+        busbar_contract::http::StatusCode::UNAUTHORIZED,
+        busbar_contract::protocol::ERR_TYPE_AUTHENTICATION,
     ),
     ingress_relays_amzn_headers: false,
     ingress_relayed_response_header_names: &[],
     auth_failure_message: "invalid api token",
     uses_array_stream_shim: false,
     has_native_path_not_found: false,
-    egress_stream_accept: busbar_substrate_values::proxy::TEXT_EVENT_STREAM,
+    egress_stream_accept: busbar_contract::protocol::TEXT_EVENT_STREAM,
     // No model-discovery surface: Cohere's `/v1/models` fingerprint resolves to the OpenAI envelope
     // (documented), so this dialect declares none of its own.
     models_list_envelope: None,
@@ -488,7 +488,7 @@ fn read_cohere_document(doc: &serde_json::Value) -> crate::ir::IrBlock {
         kind: crate::ir::IrMediaKind::Document,
         source: crate::ir::IrImageSource::Base64 {
             media_type: TEXT_PLAIN.to_string(),
-            data: busbar_substrate_values::media::base64_encode(text.as_bytes()),
+            data: busbar_contract::media::base64_encode(text.as_bytes()),
         },
         name: name.filter(|s| !s.is_empty()).map(String::from),
         cache_control: None,
@@ -517,10 +517,8 @@ fn read_cohere_document(doc: &serde_json::Value) -> crate::ir::IrBlock {
             match d.get("text").and_then(|t| t.as_str()) {
                 Some(text) if plain => text_document(text, name),
                 _ => text_document(
-                    &busbar_substrate_values::json::to_string(&serde_json::Value::Object(
-                        d.clone(),
-                    ))
-                    .unwrap_or_default(),
+                    &crate::json::to_string(&serde_json::Value::Object(d.clone()))
+                        .unwrap_or_default(),
                     name,
                 ),
             }
@@ -617,7 +615,7 @@ fn write_cohere_document(
                 .get(..5)
                 .is_some_and(|p| p.eq_ignore_ascii_case("text/")) =>
         {
-            let bytes = busbar_substrate_values::media::base64_decode(data)?;
+            let bytes = busbar_contract::media::base64_decode(data)?;
             let text = std::str::from_utf8(&bytes).ok()?;
             let mut d = serde_json::Map::new();
             d.insert("text".to_string(), serde_json::json!(text));
@@ -772,7 +770,7 @@ fn cohere_modeled_keys() -> &'static std::collections::HashSet<&'static str> {
 /// a native one. The caller is responsible for having already stamped the version/variant bits.
 fn format_uuid_layout(bytes: &[u8; 16]) -> String {
     // One allocation for the 32-char lowercase hex string (no per-byte `format!`).
-    let s = hex::encode(bytes);
+    let s = crate::hex::encode(bytes);
     format!(
         "{}-{}-{}-{}-{}",
         &s[0..8],
@@ -785,7 +783,7 @@ fn format_uuid_layout(bytes: &[u8; 16]) -> String {
 
 /// Synthesize a Cohere-shaped response id for the cross-protocol case where the backend supplied
 /// none. Native Cohere v2 ids are bare RFC-4122 UUIDv4s (8-4-4-4-12 hex, no prefix), so we emit a
-/// PROPER v4: all 128 bits seeded from the OS CSPRNG (`getrandom`), with the version nibble forced
+/// PROPER v4: all 128 bits seeded from the host CSPRNG (`synth_rng`), with the version nibble forced
 /// to `4` and the variant bits forced to `10xx`. A client (or any observer) that validates the id
 /// as a UUIDv4 — Cohere's are — sees a well-formed value, so this is no longer a proxy tell, and no
 /// timestamp is embedded (the earlier `secs << 32` layout leaked the server clock in the first
@@ -793,7 +791,7 @@ fn format_uuid_layout(bytes: &[u8; 16]) -> String {
 /// monotonic-counter overlay: a counter folded into any fixed region leaves those bytes
 /// predictable/low-entropy, a structural tell a native random v4 never carries, and a 122-bit random
 /// id is collision-free in practice for a per-process id stream. Never panics on the request path:
-/// on the near-impossible `getrandom` failure the buffer stays zeroed and the version/variant
+/// on the near-impossible entropy failure the buffer stays zeroed and the version/variant
 /// stamping still yields a well-formed (if non-random) v4.
 fn synthesize_cohere_id() -> String {
     let mut bytes = [0u8; 16];

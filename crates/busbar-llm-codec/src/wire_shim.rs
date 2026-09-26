@@ -4,10 +4,10 @@
 //! THE BODY-SHAPING HELPERS ON EITHER SIDE OF A TRANSLATE.
 //!
 //! These three lived in `busbar-llm`'s engine because the engine is what calls them on the money
-//! path. They are pure over the protocol registry and the neutral billing carrier — they read no
-//! socket, no clock and no configuration but the installed limits — and the suites that pin them are
-//! codec suites (the translate-parity goldens, the IR usage projection). So they travel with the
-//! codecs, and the engine reaches them here.
+//! path. They are pure over the plane's own declarations and the neutral billing carrier — they read
+//! no socket, no clock and no configuration but the host's translation cap — and the suites that pin
+//! them are codec suites (the translate-parity goldens, the IR usage projection). So they travel
+//! with the codecs, and the engine reaches them here.
 
 use serde_json::Value;
 
@@ -42,11 +42,12 @@ pub fn strip_router_shim_keys(v: &mut Value, egress_protocol: &str) -> bool {
     let mut changed = false;
     if let Some(obj) = v.as_object_mut() {
         // A protocol's array-stream shim key is never native to ANY backend wire → strip every
-        // registered protocol's key unconditionally (also closes the leak where a body-model client
-        // smuggles a key in its own controlled body). Iterating the cached registry set keeps this
-        // strip from naming any shim-key literal (and from re-sweeping `protocol_for` per request).
-        // `remove` returns the previous value iff the key was present → a real mutation (#1).
-        for &key in busbar_substrate_values::proto::array_stream_shim_keys() {
+        // key this plane's dialects declare, unconditionally (also closes the leak where a
+        // body-model client smuggles a key in its own controlled body). Reading the declarations
+        // keeps this strip from naming any shim-key literal; the six-entry table is this plane's own
+        // (Law 5), so the walk allocates nothing. `remove` returns the previous value iff the key
+        // was present → a real mutation (#1).
+        for key in crate::DECLS.iter().filter_map(|d| d.array_stream_shim_key) {
             if obj.remove(key).is_some() {
                 changed = true;
             }
@@ -55,7 +56,7 @@ pub fn strip_router_shim_keys(v: &mut Value, egress_protocol: &str) -> bool {
         // model both ride the URL there; `has_model_in_url()` covers both). For body-model egress
         // `stream` is the writer-authored field the backend needs to start streaming, so it must be
         // PRESERVED. Gate on egress, never ingress.
-        if busbar_substrate_values::proto::decl_for(egress_protocol)
+        if crate::decl_of(egress_protocol)
             .map(|d| d.has_model_in_url)
             .unwrap_or(false)
             && obj.remove("stream").is_some()
@@ -67,16 +68,17 @@ pub fn strip_router_shim_keys(v: &mut Value, egress_protocol: &str) -> bool {
     changed
 }
 
-/// The per-response translation cap, read from the installed limits at each use site.
+/// The per-response translation cap, read from the host at each use site.
 ///
 /// The cap is COUPLED with the inbound request-body limit so any completion the gateway would accept
 /// inbound can also be buffered for translation, while still bounding the per-response allocation.
 /// ONE knob (`limits.request_body_max_bytes`) drives BOTH the inbound body limit and this egress cap,
-/// so they can never diverge. A function (not a `const`) so the installed value is read at each use
-/// site; the substrate falls back to the historical 32 MiB default when the limits aren't installed.
+/// so they can never diverge. A function (not a `const`) so the host's live value is read at each use
+/// site, through the translate-cap reader the host installs (#83a SD-3; the plane holds no limit of
+/// its own); a process whose host installed none reads the historical 32 MiB default.
 #[must_use]
 pub fn max_translated_body_bytes() -> usize {
-    busbar_substrate_values::proxy::max_translate_body_bytes()
+    busbar_contract::codec::max_translate_body_bytes()
 }
 
 /// Bytes-per-token divisor for the truncated-tail billing FLOOR. Deliberately conservative
@@ -87,15 +89,13 @@ pub fn max_translated_body_bytes() -> usize {
 /// truncated-beyond-recovery response from billing ZERO.
 pub const TRUNCATED_TAIL_BYTES_PER_TOKEN: u64 = 4;
 
-/// Project the IR's normalized usage into the neutral name-keyed [`busbar_substrate_values::billing::Usage`]
+/// Project the IR's normalized usage into the neutral name-keyed [`busbar_contract::billing::Usage`]
 /// carrier: the four reserved units (`input`/`output`/`cache_read`/`cache_write`) as canonical map
 /// keys. Readers normalize `input_tokens` to UNCACHED and keep the cache fields ADDITIVE, so the
 /// mapping is direct: cache-creation is the `cache_write` unit. Zero tiers are omitted so the map
 /// stays sparse (no-zero-entry).
 #[must_use]
-pub fn tier_usage(
-    u: &busbar_substrate_values::billing::TokenUsage,
-) -> busbar_substrate_values::billing::Usage {
+pub fn tier_usage(u: &busbar_contract::billing::TokenUsage) -> busbar_contract::billing::Usage {
     let mut usage_units = std::collections::BTreeMap::new();
     for (k, v) in [
         (busbar_contract::records::UNIT_INPUT, u.input),
@@ -113,7 +113,7 @@ pub fn tier_usage(
             usage_units.insert(k.to_string(), v);
         }
     }
-    busbar_substrate_values::billing::Usage { usage_units }
+    busbar_contract::billing::Usage { usage_units }
 }
 
 #[cfg(test)]

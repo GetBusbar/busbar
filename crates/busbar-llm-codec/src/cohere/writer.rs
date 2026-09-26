@@ -43,7 +43,6 @@ impl ProtocolWriter for CohereWriter {
     }
 
     fn write_request(&self, req: &crate::ir::IrRequest) -> serde_json::Value {
-        let _t = busbar_timing::timeit!("cohere_write_request");
         let mut out = serde_json::Map::new();
         let mut messages_arr: Vec<serde_json::Value> = Vec::new();
 
@@ -224,9 +223,7 @@ impl ProtocolWriter for CohereWriter {
                                 // tool's output as JSON; Cohere tool content is text, and JSON
                                 // serialized is that same output as text. It used to be dropped,
                                 // leaving the model an empty tool result (COH-20).
-                                crate::ir::IrBlock::Json(v) => {
-                                    busbar_substrate_values::json::to_string(v).ok()
-                                }
+                                crate::ir::IrBlock::Json(v) => crate::json::to_string(v).ok(),
                                 _ => None,
                             })
                             .collect();
@@ -414,8 +411,7 @@ impl ProtocolWriter for CohereWriter {
                         // Emit a raw Value::String (unparseable/streaming-partial args) verbatim rather
                         // than JSON-encoding it a second time (double-encoding) — same as the OpenAI/
                         // Responses writers.
-                        let args_str =
-                            busbar_substrate_values::proto::tool_arguments_to_string(input);
+                        let args_str = crate::dialect::tool_arguments_to_string(input);
                         tool_calls_arr.push(serde_json::json!({ "id": id, "type": "function", "function": { "name": name, "arguments": args_str }}));
                     }
                 }
@@ -1043,7 +1039,6 @@ impl ProtocolWriter for CohereWriter {
     }
 
     fn write_response(&self, resp: &crate::ir::IrResponse) -> serde_json::Value {
-        let _t = busbar_timing::timeit!("cohere_write_response");
         let mut out = serde_json::Map::new();
         let mut content_arr: Vec<serde_json::Value> = Vec::new();
         let mut tool_calls_arr: Vec<serde_json::Value> = Vec::new();
@@ -1057,7 +1052,7 @@ impl ProtocolWriter for CohereWriter {
                     id, name, input, ..
                 } => {
                     // Verbatim for a raw Value::String (avoid double-encoding), same as OpenAI/Responses.
-                    let args_str = busbar_substrate_values::proto::tool_arguments_to_string(input);
+                    let args_str = crate::dialect::tool_arguments_to_string(input);
                     // Accumulate every tool call. Inserting per-iteration would overwrite the
                     // key and silently drop all but the last call on parallel tool use.
                     tool_calls_arr.push(serde_json::json!({ "id": id, "type": "function", "function": { "name": name, "arguments": args_str }}));

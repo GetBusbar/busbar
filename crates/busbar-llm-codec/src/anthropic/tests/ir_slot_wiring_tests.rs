@@ -19,7 +19,7 @@ fn read(body: &Value) -> crate::ir::IrRequest {
 fn egress(mut req: crate::ir::IrRequest, caps: &super::super::proto_codec::LaneCaps) -> Value {
     super::super::chat_handle::chat_prepare_for_egress(
         &mut req,
-        &busbar_substrate_values::ir::egress_prep::EgressPrep {
+        &busbar_contract::ir::egress_prep::EgressPrep {
             thought_signature_fill: false,
             ingress_protocol: "openai",
             egress_requires_max_tokens: true,

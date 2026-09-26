@@ -28,7 +28,7 @@ fn read_then_seam_from(ingress: &str, body: &Value) -> IrRequest {
         .expect("read_request");
     crate::chat_handle::chat_prepare_for_egress(
         &mut ir,
-        &busbar_substrate_values::ir::egress_prep::EgressPrep {
+        &busbar_contract::ir::egress_prep::EgressPrep {
             thought_signature_fill: false,
             ingress_protocol: "anthropic",
             egress_requires_max_tokens: false,

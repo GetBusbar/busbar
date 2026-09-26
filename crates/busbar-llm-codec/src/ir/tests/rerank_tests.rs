@@ -33,8 +33,8 @@ fn rerank_resp_billing_counts_search_units_as_an_open_class() {
 
 // ── IrFacts projection (close-non-chat-gate-blindness) ───────────────────────────────────────────
 
+use busbar_contract::ir::facts::{ContentItem, IrFacts};
 use busbar_contract::operation::OpVerb;
-use busbar_substrate_values::ir::facts::{ContentItem, IrFacts};
 
 #[test]
 fn rerank_projects_query_and_every_document() {

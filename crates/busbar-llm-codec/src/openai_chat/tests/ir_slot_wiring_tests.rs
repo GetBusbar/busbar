@@ -15,7 +15,7 @@ fn through_seam(body: &Value) -> Value {
     let mut req = super::OpenAiReader.read_request(body).expect("body reads");
     crate::chat_handle::chat_prepare_for_egress(
         &mut req,
-        &busbar_substrate_values::ir::egress_prep::EgressPrep {
+        &busbar_contract::ir::egress_prep::EgressPrep {
             thought_signature_fill: false,
             ingress_protocol: "responses",
             egress_requires_max_tokens: false,

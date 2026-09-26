@@ -11,10 +11,10 @@
 //! move changed no routing. (The registry the test sees is core's `test-support` built-in table,
 //! whose netted dialect rows carry these very predicates.)
 
+use busbar_contract::http::{HeaderMap, HeaderValue};
 use busbar_contract::operation::OpVerb;
+use busbar_kernel::handlers::request_handler;
 use busbar_kernel::proto::{detect_protocol, residual_dialect_for_path};
-use busbar_substrate_values::handlers::request_handler;
-use http::{HeaderMap, HeaderValue};
 
 /// Seed the process-global protocol registry with THIS plugin's declarations.
 ///

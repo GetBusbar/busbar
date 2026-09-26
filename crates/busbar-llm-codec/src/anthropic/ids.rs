@@ -38,7 +38,7 @@ pub(super) fn synth_request_id() -> String {
 /// still get a well-formed id, at the entropy it actually supplied.
 #[must_use]
 pub fn request_id_from_entropy(entropy: &[u8]) -> String {
-    const BASE62_REJECT_FLOOR: u8 = busbar_substrate_values::proto::BASE62_REJECT_THRESHOLD;
+    const BASE62_REJECT_FLOOR: u8 = crate::dialect::BASE62_REJECT_THRESHOLD;
     let alphabet = ANTHROPIC_NATIVE_ALPHABET;
     let mut token = [b'0'; SYNTH_ID_TOKEN_LEN];
     if !entropy.is_empty() {
@@ -91,7 +91,7 @@ pub fn request_id_from_entropy(entropy: &[u8]) -> String {
 /// on an entropy failure — callers decide what to do with the partially-filled buffer; `out` is
 /// left with whatever prefix was already written plus its initial contents for the rest.
 pub(super) fn fill_base62(out: &mut [u8], alphabet: &[u8; 62]) -> bool {
-    const BASE62_REJECT_FLOOR: u8 = busbar_substrate_values::proto::BASE62_REJECT_THRESHOLD;
+    const BASE62_REJECT_FLOOR: u8 = crate::dialect::BASE62_REJECT_THRESHOLD;
     // Fixed stack buffer, no heap allocation on this hot path — both callers' tokens (24 chars)
     // fit comfortably; a batch this size draws `len` fresh bytes per retry round, same as before.
     debug_assert!(
@@ -105,7 +105,7 @@ pub(super) fn fill_base62(out: &mut [u8], alphabet: &[u8; 62]) -> bool {
         let batch = &mut batch[..len];
         // Draw from the thread-local OS-entropy pool (same OS-CSPRNG bytes, syscall amortised across
         // ~130 ids per `getentropy` instead of one syscall per id — the whole `rb_finish` cost on the
-        // anthropic-ingress hot path). Same false-on-CSPRNG-failure contract as `getrandom::fill`.
+        // anthropic-ingress hot path). Same false-on-CSPRNG-failure contract as the host entropy source.
         // `super::super::synth_rng` (not `crate::`) so this resolves in BOTH the native busbar-llm
         // build (`crate::synth_rng`) and the `#[path]` dual-compile into busbar-core
         // (`crate::proto::synth_rng`), matching the `super::super::usage_tail` convention the readers
@@ -152,7 +152,7 @@ pub(super) fn synth_id_with_prefix(prefix: &str) -> String {
 /// total, matching `synth_id_with_prefix("req_")` (used for the body `request_id`) so the
 /// response-header length is not a fingerprint tell (a 22-char value would be 8 chars short of
 /// native). Returns `None` (caller OMITS the header) only if entropy is unavailable — on the request
-/// path, must never panic. Uses the SHARED `busbar_substrate_values::proto::BASE62_ALPHABET` (lowercase-first ordering)
+/// path, must never panic. Uses the SHARED `crate::dialect::BASE62_ALPHABET` (lowercase-first ordering)
 /// deliberately — NOT this module's local uppercase-first `ANTHROPIC_NATIVE_ALPHABET`. The alphabet
 /// ORDERING differs from the sibling synth, but a uniform draw over a permuted alphabet is uniform
 /// over the same character set, so that difference is irrelevant to the distribution.
@@ -161,7 +161,7 @@ pub fn synth_anthropic_request_id() -> Option<String> {
     // `Option` contract (omit the header on entropy failure) differs from that sibling's
     // '0'-fill-on-failure contract, so this stays a separate call rather than delegating to it.
     let mut token = [0u8; 24];
-    if !fill_base62(&mut token, busbar_substrate_values::proto::BASE62_ALPHABET) {
+    if !fill_base62(&mut token, crate::dialect::BASE62_ALPHABET) {
         return None;
     }
     // token is ASCII base62, always valid UTF-8.
