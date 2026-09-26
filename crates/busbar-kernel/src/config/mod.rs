@@ -49,9 +49,7 @@ pub use crate::breaker::status_class_from_str;
 use crate::diagnostics::{
     diag_warn, CONFIG_ANTIDOWNGRADE_FLOOR_INVALID, CONFIG_FIRSTPARTY_FLOOR_INVALID,
 };
-use crate::plane::config::{
-    AgentsSection, DecisionsSection, EndpointSection, StreamsSection, ToolsSection,
-};
+use crate::plane::config::{AgentsSection, DeclaredSections, EndpointSection, ToolsSection};
 use busbar_kernel_ledger::cost::compose_plane_cards;
 
 /// Reject an env-var value that could break out of the surrounding YAML scalar when substituted
@@ -823,8 +821,8 @@ pub const RETIRED_OBSERVABILITY_KEYS: &[(&str, &str)] = &[
 
 /// The 1.5.3 store-plugin RENAME: every retired spelling of the first-party Valkey store
 /// plugin, as a `store.module:` VALUE. The plugin was renamed wholesale — repo, crate, artifact,
-/// manifest `name` and config `alias` (the `renamed_*` rows of `data/legacy_store_modules.toml`, read
-/// by [`migrate::legacy_store_text`]) — so NONE of these resolve against the renamed manifest.
+/// manifest `name` (now [`RENAMED_STORE_MANIFEST_NAME_1_5_3`]) and config `alias` (now
+/// [`RENAMED_STORE_MODULE_1_5_3`]) — so NONE of these resolve against the renamed artifact's manifest.
 ///
 /// Unlike the other retirement tables this one is keyed on a VALUE, not a field name, so serde never
 /// sees it: `store.module` is a plain `String` and any spelling parses. The loud-fail therefore has
@@ -833,6 +831,20 @@ pub const RETIRED_OBSERVABILITY_KEYS: &[(&str, &str)] = &[
 /// the loader's generic "does not match any plugin", which names neither the rename nor the fix.
 pub const RETIRED_STORE_MODULES_1_5_3: &[&str] =
     &["redis", "busbar-store-redis", "busbar-store-redis-plugin"];
+
+/// The config ALIAS the renamed first-party Valkey store plugin answers to (`store.module: valkey`).
+pub const RENAMED_STORE_MODULE_1_5_3: &str = "valkey";
+
+/// The renamed plugin's canonical MANIFEST NAME — what `busbar-plugin-pack --name` stamps and what a
+/// `plugins.min_versions` / `plugin_versions` anti-downgrade floor must be keyed by. It is the plugin
+/// CRATE name (`…-plugin`), which is how that repo's release workflow packs it.
+pub const RENAMED_STORE_MANIFEST_NAME_1_5_3: &str = "busbar-store-valkey-plugin";
+
+/// The renamed plugin's release-ASSET stem: the published tarball is
+/// `busbar-store-valkey-<ver>-<target>.tar.gz` (the WORKSPACE name, without the `-plugin` suffix the
+/// cdylib crate and the manifest carry). Two different strings on purpose — see that repo's
+/// `release.yml`, which passes `--name busbar-store-valkey-plugin --out busbar-store-valkey-…`.
+pub const RENAMED_STORE_ASSET_STEM_1_5_3: &str = "busbar-store-valkey";
 
 // The `providers:` / `models:` config SHAPES — the catalog definition, the operator deployment, the
 // resolved provider the runtime reads, the active-health block and the per-model entry — are plain
@@ -1308,34 +1320,15 @@ pub struct DeployCfg {
     /// A lifted CARRIER, exactly as `mcp:` above is.
     #[serde(skip)]
     pub agents: AgentsSection,
-    /// The top-level `streams:` section (1.6.0) — its owning plane's own config: the locked session
-    /// defaults (media/VAD/`SessionConfig`) plus the three session ceilings (wall-clock, context
-    /// window, per-response output tokens). SINGULAR typed section (one live-session posture per
-    /// deployment), NOT a named-definition map, so it carries no reserved section words and no
-    /// registrations.
-    // Type-erased through the neutral `StreamsSection` seam: `streams:` deserializes into its owning
-    // plane's own config type behind `dyn PlaneCfg`, so `DeployCfg` names no plane-specific type. The
-    // plane compiled out (off by default) captures it RAW and refuses a present section at
-    // `resolve`, exactly as `tools:`/`agents:` do — so no `#[cfg]` guards the field itself.
+    /// THE DECLARED SECTIONS (1.6.0): every top-level section a registered plane declares AND owns
+    /// the grammar of, keyed by that section and parsed by that plane (#47/#49) — see
+    /// [`DeclaredSections`]. Its mere EXISTENCE in the document declares that plane (LAW 7). A build
+    /// that compiled the plane out declares nothing for it, so its section is refused at parse as an
+    /// unknown field (Option A, S11b (c) / Q67).
     ///
-    /// A lifted CARRIER, exactly as `mcp:` above is.
+    /// A lifted CARRIER, exactly as `mcp:` above is: one field for every such section.
     #[serde(skip)]
-    pub streams: StreamsSection,
-    /// The top-level `decisions:` section (1.6.0) — the FIFTH plane's declaring noun (DECISIONS
-    /// #47/#48, `docs/design/BUSBAR-1.6.0.md:373`/`:374`), carrying its owning plane's own config:
-    /// the `models:` map of busbar-facing decision models, plus the two reserved members every
-    /// model-serving section carries (`hooks`, `upstream_credentials`). Its mere EXISTENCE declares
-    /// the decision plane, exactly as `streams:` declares the voice plane.
-    // Type-erased through the neutral `DecisionsSection` seam: `decisions:` deserializes into its
-    // owning plane's own config type behind `dyn PlaneCfg`, so `DeployCfg` names no plane-specific
-    // type — and, per #40's dep wall, `busbar-kernel` names no plane CRATE either, which is why the
-    // plane's own `busbar_plane_decision::config::DecisionsSection` cannot appear here. The plane
-    // compiled out captures it RAW and refuses a present section at `resolve`, exactly as
-    // `tools:`/`agents:`/`streams:` do — so no `#[cfg]` guards the field itself.
-    ///
-    /// A lifted CARRIER, exactly as `mcp:` above is.
-    #[serde(skip)]
-    pub decisions: DecisionsSection,
+    pub declared: DeclaredSections,
     // 1.6.0 UNIFIED POOLS: the separate `tool_pools:` and `agent_pools:` sections are GONE. There is
     // ONE neutral top-level `pools:` (above); a pool's kind is INFERRED from its members and each
     // plane's pools are projected to their own carriers in `resolve`. A 1.5.4/1.6.0-dev config still
@@ -2474,16 +2467,15 @@ pub fn resolve(
         }
     }
 
-    // THE `decisions:` PLANE's OWN reserved-attach hook reference (P2-243/P2-decvalidate — this
-    // section carries no per-registration containers, only the section-wide `decisions.hooks:`
-    // list, read through the SAME always-present `container_gates` seam the `tools:` block above
-    // reads). A `decisions.hooks` entry naming an undefined hook booted silently before this.
-    {
-        let g = deploy.decisions.0.container_gates();
-        for hook in &g.section_hooks {
+    // EACH DECLARED SECTION's OWN reserved-attach hook reference (P2-243/P2-decvalidate — such a
+    // section carries no per-registration containers, only its section-wide `<section>.hooks:`
+    // list, read through the SAME `container_gates` seam the `tools:` block above reads). An entry
+    // naming an undefined hook booted silently before this.
+    for (section, cfg) in &deploy.declared.0 {
+        for hook in &cfg.container_gates().section_hooks {
             if !deploy.hooks.contains_key(hook) {
                 errors.push(format!(
-                    "decisions.hooks: names `{hook}`, which is not defined in the top-level `hooks:` \
+                    "{section}.hooks: names `{hook}`, which is not defined in the top-level `hooks:` \
                      map. Define it there, or remove the reference."
                 ));
             }
@@ -2499,12 +2491,11 @@ pub fn resolve(
     // (BUSBAR-1.6.0.md #51, OWNER-LOCKED: an unknown dialect fails closed — "the decisions plane
     // (only jev) handed `anthropic` fails"). Dialect validation stays the PLANE's answer (`#49`: core
     // spells no protocol literal); this loop only compares strings the plane itself supplied.
-    for section in [
-        deploy.tools.0.as_ref(),
-        deploy.agents.0.as_ref(),
-        deploy.streams.0.as_ref(),
-        deploy.decisions.0.as_ref(),
-    ] {
+    let declared = deploy.declared.0.values().map(AsRef::as_ref);
+    for section in [deploy.tools.0.as_ref(), deploy.agents.0.as_ref()]
+        .into_iter()
+        .chain(declared)
+    {
         for (path, provider_name) in section.model_provider_refs() {
             match resolved_providers.get(&provider_name) {
                 None => {
@@ -2558,13 +2549,15 @@ pub fn resolve(
     // so an undeclared one is refused at parse as an unknown field (Option A, S11b (c) / Q67) and no
     // carrier can be present without its plane.
     let mut plane_sections = std::collections::BTreeSet::new();
+    let declared = deploy.declared.0.iter().map(|(s, c)| (*s, c.is_present()));
     for (section, present) in [
-        (Some(ToolsSection::SECTION), deploy.tools.0.is_present()),
-        (Some(AgentsSection::SECTION), deploy.agents.0.is_present()),
-        (Some(StreamsSection::SECTION), deploy.streams.0.is_present()),
-        (DecisionsSection::section(), deploy.decisions.0.is_present()),
-    ] {
-        if let (Some(section), true) = (section, present) {
+        (ToolsSection::SECTION, deploy.tools.0.is_present()),
+        (AgentsSection::SECTION, deploy.agents.0.is_present()),
+    ]
+    .into_iter()
+    .chain(declared)
+    {
+        if present {
             plane_sections.insert(section);
         }
     }
