@@ -104,7 +104,7 @@ fn build_with_hook_demotes_global_false_removes_wiring() {
 /// own three `resolve_*` calls exist for exactly this reason; this test exercises that same
 /// fail-open for a plane-owned attach, using MCP as the concrete plane under test.
 #[test]
-fn build_with_hook_makes_an_mcp_attach_live() {
+fn build_with_hook_makes_a_plane_attach_live() {
     let Some(env) = busbar_kernel::test_support::test_hook_env(&["test-hook"], Default::default())
     else {
         eprintln!("skip: hook cdylib not built (run under --workspace)");
@@ -1104,7 +1104,7 @@ fn install_signed_is_trusted() {
     let lib = b"signed lib bytes";
     let tarball = signed_tarball(
         &key,
-        test_manifest("acme-store-sqlite", "acmesqlite", "acme", "2.1.0"),
+        test_manifest("acme-store-disk", "acmedisk", "acme", "2.1.0"),
         lib,
     );
     let dir = tmp_plugins_dir("signed");
@@ -1116,7 +1116,7 @@ fn install_signed_is_trusted() {
     assert_eq!(view.trust, "trusted");
     assert_eq!(view.publisher.as_deref(), Some("acme"));
     assert_eq!(view.version.as_deref(), Some("2.1.0"));
-    assert_eq!(view.name, "acme-store-sqlite");
+    assert_eq!(view.name, "acme-store-disk");
 
     let cat = svc.store_plugin_catalog();
     let row = cat
@@ -1126,7 +1126,7 @@ fn install_signed_is_trusted() {
     assert_eq!(row.trust, Some("trusted"));
     assert_eq!(row.publisher.as_deref(), Some("acme"));
     assert_eq!(row.version.as_deref(), Some("2.1.0"));
-    assert_eq!(row.name, "acme-store-sqlite");
+    assert_eq!(row.name, "acme-store-disk");
 }
 
 /// ANTI-DOWNGRADE at the ADMIN INSTALL boundary: a `plugins.min_versions` floor rejects a
@@ -1138,14 +1138,14 @@ fn install_downgraded_version_is_rejected_by_floor() {
     let lib = b"lib bytes";
     let mut cfg = publisher_posture("acme", &key);
     cfg.min_versions
-        .insert("acme-store-sqlite".to_string(), "2.0.0".to_string());
+        .insert("acme-store-disk".to_string(), "2.0.0".to_string());
     let dir = tmp_plugins_dir("downgrade");
     let svc = svc_with(dir.clone(), cfg);
 
     // A validly-signed 1.9.0 is below the 2.0.0 floor -> rejected, nothing published.
     let old = signed_tarball(
         &key,
-        test_manifest("acme-store-sqlite", "acmesqlite", "acme", "1.9.0"),
+        test_manifest("acme-store-disk", "acmedisk", "acme", "1.9.0"),
         lib,
     );
     let err = svc.install_store_plugin("old.tar.gz", &old).unwrap_err();
@@ -1158,7 +1158,7 @@ fn install_downgraded_version_is_rejected_by_floor() {
     // The current 2.1.0 clears the floor and installs as trusted.
     let cur = signed_tarball(
         &key,
-        test_manifest("acme-store-sqlite", "acmesqlite", "acme", "2.1.0"),
+        test_manifest("acme-store-disk", "acmedisk", "acme", "2.1.0"),
         lib,
     );
     let view = svc
@@ -1198,7 +1198,7 @@ fn install_alias_conflict_is_rejected() {
 
     let first = signed_tarball(
         &key,
-        test_manifest("acme-store-valkey", "valkey", "acme", "1.0.0"),
+        test_manifest("acme-store-kv", "kv", "acme", "1.0.0"),
         b"lib a",
     );
     svc.install_store_plugin("first.tar.gz", &first)
@@ -1207,7 +1207,7 @@ fn install_alias_conflict_is_rejected() {
     // A DIFFERENT plugin claiming the same alias -> conflict naming both.
     let clash = signed_tarball(
         &key,
-        test_manifest("other-store-valkey", "valkey", "acme", "1.0.0"),
+        test_manifest("other-store-kv", "kv", "acme", "1.0.0"),
         b"lib b",
     );
     let err = svc
@@ -1215,7 +1215,7 @@ fn install_alias_conflict_is_rejected() {
         .unwrap_err();
     assert!(
         matches!(&err, AdminError::Conflict(msg)
-                if msg.contains("acme-store-valkey") && msg.contains("other-store-valkey")),
+                if msg.contains("acme-store-kv") && msg.contains("other-store-kv")),
         "names both plugins: {err:?}"
     );
     assert!(!dir.join("clash.tar.gz").exists());
@@ -1223,7 +1223,7 @@ fn install_alias_conflict_is_rejected() {
     // Upgrading the SAME plugin in place (same name, same file) is allowed.
     let upgrade = signed_tarball(
         &key,
-        test_manifest("acme-store-valkey", "valkey", "acme", "1.1.0"),
+        test_manifest("acme-store-kv", "kv", "acme", "1.1.0"),
         b"lib a v2",
     );
     svc.install_store_plugin("first.tar.gz", &upgrade)
@@ -3618,8 +3618,9 @@ mod plane_fees_on_admin_usage {
     use busbar_kernel_ledger::cost::{PlaneFees, PLANE_LANE_SEP};
 
     const KEY: &str = "vk_plane_fees";
-    const LLM_MODEL: &str = "m";
-    const LLM_PROVIDER: &str = "priced-chat";
+    /// The pools plane's model and provider, as the rows below name them.
+    const POOLS_MODEL: &str = "m";
+    const POOLS_PROVIDER: &str = "priced-chat";
     /// The plane with `fees.per_request: 3`.
     const FEE_PLANE: &str = "tp";
     /// A plane that configured no fees.
@@ -3727,7 +3728,7 @@ mod plane_fees_on_admin_usage {
         let key = key();
         for _ in 0..pool_calls {
             assert!(gov.try_admit(&cost, &key, "", now).is_ok(), "a pools call");
-            gov.record_metering(KEY, LLM_MODEL, LLM_PROVIDER, None, now);
+            gov.record_metering(KEY, POOLS_MODEL, POOLS_PROVIDER, None, now);
         }
         for _ in 0..calls {
             let pool = format!("{plane}{PLANE_LANE_SEP}srv.read");
@@ -3794,7 +3795,11 @@ mod plane_fees_on_admin_usage {
         let tools = format!("{FEE_PLANE}{PLANE_LANE_SEP}srv.read");
         let free = format!("{FREE_PLANE}{PLANE_LANE_SEP}srv.read");
         assert_eq!(price(&tools, 3), 9 * MICROS_PER_MINOR, "3 × tools fee 3");
-        assert_eq!(price(LLM_MODEL, 2), 10 * MICROS_PER_MINOR, "2 × flat fee 5");
+        assert_eq!(
+            price(POOLS_MODEL, 2),
+            10 * MICROS_PER_MINOR,
+            "2 × flat fee 5"
+        );
         assert_eq!(price(&free, 4), 0, "a fee-less plane bills no fee");
         assert_eq!(
             crate::v1::service::derive_spend_micros_row(
@@ -3819,23 +3824,19 @@ mod plane_fees_on_admin_usage {
         assert_eq!((book, admin), (10, 10 * MICROS_PER_MINOR));
         let _planes = TestRegistryIsolation::seeded(&[&POOLS, &FEE, &FREE]);
         assert_eq!(
-            crate::v1::service::row_lane(LLM_MODEL, POOLS_PLANE),
-            LLM_MODEL,
+            crate::v1::service::row_lane(POOLS_MODEL, POOLS_PLANE),
+            POOLS_MODEL,
             "the fallback plane's key is a pools row"
         );
         assert_eq!(
-            crate::v1::service::row_lane(LLM_MODEL, LLM_PROVIDER),
-            LLM_MODEL
+            crate::v1::service::row_lane(POOLS_MODEL, POOLS_PROVIDER),
+            POOLS_MODEL
         );
         assert_eq!(
             crate::v1::service::row_lane("srv.read", FEE_PLANE),
             format!("{FEE_PLANE}{PLANE_LANE_SEP}srv.read")
         );
     }
-
-    /// The pools plane's model and provider, as the rows above name them.
-    const POOLS_MODEL: &str = LLM_MODEL;
-    const POOLS_PROVIDER: &str = LLM_PROVIDER;
 
     // ── THE CLASSES THE BUDGET BOOK HOLDS AND A METERING ROW DID NOT (P2-usagegaps) ──────────────
     //
