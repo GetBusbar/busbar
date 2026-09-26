@@ -220,15 +220,15 @@ busbar-voice = ["busbar-voice-codec"]
 
 [gate.ceiling_raises."gate.surface_ceilings.contract_caps"]
 file    = "qa/construction.toml"
-from    = 9218
-to      = 9251
-because = "OWNER RULING Q68(3) (docs/design/1.6.0-QUESTIONS.md), ARCHITECT O2: contract_caps re-arms at the MEASURED value after each owner-locked #83 merge into busbar-contract, each in its own commit. This is the re-arm for the fold F4 follow-up 94180ed04 (ARCHITECT ruling on F4 queue item 3, #83(d)): the V1 usage-ledger fold (fold_v1_ledger, fold_v1_model, fold_unit) moved verbatim from busbar-kernel-ledger into busbar_contract::records beside the frozen V1 shapes, +33 code lines. Measured by cargo xtask loc busbar-contract --ref: 9218 at 94180ed04^, 9251 at 94180ed04. The live declaration is re-pointed to describe this raise; the 9184 -> 9218 declaration it replaces is at the base and expired."
+from    = 9251
+to      = 9289
+because = "OWNER RULING Q68(3) (docs/design/1.6.0-QUESTIONS.md), ARCHITECT O2/S2-b: contract_caps re-arms at the MEASURED value after each owner-locked #83 merge into busbar-contract, each in its own commit. This is the re-arm for SD-3 (1/3) 52ed6199f of the #83a substrate-values split: the four host-installed seams a codec reaches through busbar_contract::codec (UsageTapFaultLatch, TranslateCapReader with TRANSLATE_BODY_MAX_BYTES_DEFAULT, EntropySource, WallClock, each an install fn and a reader beside SD-2b's usage-tap fault reporter) and the contract's `pub use http` header-vocabulary re-export. Measured by cargo xtask loc busbar-contract --ref: 9251 at 52ed6199f^, 9289 at 52ed6199f (+38); SD-3 (2/3) and (3/3) change no contract line (9289 at both). The 9218 -> 9251 declaration it replaces (fold F4 follow-up 94180ed04) is at the base and expired."
 
 [gate.ceiling_raises."rules.loc-ceilings.caps_contract_ceiling"]
 file    = "qa/construction.toml"
-from    = 9218
-to      = 9251
-because = "OWNER RULING Q68(3) (docs/design/1.6.0-QUESTIONS.md), ARCHITECT O2: contract_caps re-arms at the MEASURED value after each owner-locked #83 merge into busbar-contract, each in its own commit. This is the re-arm for the fold F4 follow-up 94180ed04 (ARCHITECT ruling on F4 queue item 3, #83(d)): the V1 usage-ledger fold (fold_v1_ledger, fold_v1_model, fold_unit) moved verbatim from busbar-kernel-ledger into busbar_contract::records beside the frozen V1 shapes, +33 code lines. Measured by cargo xtask loc busbar-contract --ref: 9218 at 94180ed04^, 9251 at 94180ed04. The live declaration is re-pointed to describe this raise; the 9184 -> 9218 declaration it replaces is at the base and expired."
+from    = 9251
+to      = 9289
+because = "OWNER RULING Q68(3) (docs/design/1.6.0-QUESTIONS.md), ARCHITECT O2/S2-b: contract_caps re-arms at the MEASURED value after each owner-locked #83 merge into busbar-contract, each in its own commit. This is the re-arm for SD-3 (1/3) 52ed6199f of the #83a substrate-values split: the four host-installed seams a codec reaches through busbar_contract::codec (UsageTapFaultLatch, TranslateCapReader with TRANSLATE_BODY_MAX_BYTES_DEFAULT, EntropySource, WallClock, each an install fn and a reader beside SD-2b's usage-tap fault reporter) and the contract's `pub use http` header-vocabulary re-export. Measured by cargo xtask loc busbar-contract --ref: 9251 at 52ed6199f^, 9289 at 52ed6199f (+38); SD-3 (2/3) and (3/3) change no contract line (9289 at both). The 9218 -> 9251 declaration it replaces (fold F4 follow-up 94180ed04) is at the base and expired."
 
 # ── THE KERNEL CEILING'S OWNER-APPROVED RAISE — EXPIRED AND STRUCK ─────────────────────────────
 #
@@ -333,7 +333,10 @@ because = "OWNER RULING Q68(3) (docs/design/1.6.0-QUESTIONS.md), ARCHITECT O2: c
 # commit after XPLANE's served-operation-class shape (6537443e2, +30; 3c772d601, -1).
 # RE-ARMED 9218 -> 9251, AT THE MEASUREMENT (OWNER RULING Q68(3)), in its own commit after the fold F4
 # follow-up 94180ed04 (the V1 usage-ledger fold, +33); the live declaration above carries the measure.
-contract_caps = 9251
+# RE-ARMED 9251 -> 9289, AT THE MEASUREMENT (OWNER RULING Q68(3)), in its own commit after SD-3 (1/3)
+# 52ed6199f (the codec host-service seams and the `http` re-export, +38); the live declaration above
+# carries the measure.
+contract_caps = 9289
 # REPOINTED, and the repoint is what makes this row a gate again. It named the CRATE
 # `busbar-grammar`, which #40 folded into `busbar-contract` and deleted — so it summed nothing,
 # measured nothing and passed, which is this file's own "zero is not clean" failure sitting inside
@@ -898,7 +901,8 @@ contract_crate = "busbar-contract"
 # RE-ARMED 9184 -> 9189 with its pair (OWNER RULING Q68(3); fold F4 2/3, +5).
 # RE-ARMED 9189 -> 9218 with its pair (OWNER RULING Q68(3); XPLANE ruling (S), +29).
 # RE-ARMED 9218 -> 9251 with its pair (OWNER RULING Q68(3); fold F4 follow-up, +33).
-caps_contract_ceiling = 9251
+# RE-ARMED 9251 -> 9289 with its pair (OWNER RULING Q68(3); SD-3 (1/3) codec host-service seams, +38).
+caps_contract_ceiling = 9289
 unit_crate_glob = "busbar-unit-*"
 # RE-KEYED on cherry-pick onto 143db6db6: this commit's own delta is -53 (two units stopped
 # declaring their own copies), measured against whatever unit_total_ceiling read when the line was
