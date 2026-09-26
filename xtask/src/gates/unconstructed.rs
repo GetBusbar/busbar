@@ -178,7 +178,8 @@ pub const KNOWN_UNSHIPPED: &[&str] = &[
     // `breaker-pool-observation` STRUCK 2026-09-25 (item 142 residue): the root's policy is built
     // from the configured pools and its adapter shares the kernel's one BreakerUnit.
     // `plugin-abi-keyed-units` STRUCK 2026-09-24 (owner ruling Q33d/Q35; item 123).
-    "hold-late-accrual-parent-exit",
+    // `hold-late-accrual-parent-exit` STRUCK 2026-09-26 (UC-HOLD, owner ruling Q71(4)): the loop's
+    // terminal converts a child's accrual to its own hold when its parent has exited.
     // `rate-card-multi-currency` STRUCK 2026-09-25 (#66, spec Q4): `set_rate`/`set_fee` deleted.
     // The 1.6.0 admin verbs with no effect bound: not served (architect ruling 2026-09-24);
     // binding each strikes its row. Five STRUCK 2026-09-25 (owner ruling 2026-09-08: set_operator_key,
