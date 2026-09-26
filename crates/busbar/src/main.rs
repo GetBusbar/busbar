@@ -48,7 +48,7 @@ use busbar_kernel::{
     build_app_from_config, build_split_routers_with_limits, load_config_from_disk, LoadedConfig,
     ENV_CONFIG,
 };
-use busbar_kernel::{config, config_validate, export, metrics, observability, tls};
+use busbar_kernel::{config, config_validate, export, metrics, tls};
 // Read only by the jemalloc idle-purge fallback below, which is itself
 // `#[cfg(not(target_env = "msvc"))]` — windows-msvc has no jemalloc, so importing this
 // unconditionally is an unused-import error there under `-D warnings`.
@@ -690,7 +690,7 @@ async fn run(data_workers: usize) {
     // subsequent startup and request-path logging is captured.
     // `--mcp-stdio` reserves stdout for the MCP channel, so its logs move to stderr — see
     // `init_logging`'s `stdout_reserved`.
-    observability::init_logging(
+    root::otlp::init_logging(
         otlp_cfg.as_ref().map(|o| o.url.as_str()),
         stdio_serve_requested(std::env::args()),
     );
@@ -1095,7 +1095,7 @@ async fn run(data_workers: usize) {
             let m = gov.flush_metering();
             tracing::info!(flushed = m, "metering rows flushed on shutdown");
         }
-        observability::shutdown_tracing();
+        root::otlp::shutdown_tracing();
         std::process::exit(code);
     }
 
@@ -1198,7 +1198,7 @@ async fn run(data_workers: usize) {
     // No state snapshot on shutdown: reliability state is RAM-only (re-learned on boot) and the
     // audit log is written through to the durable store as it happens (store-or-RAM rule — there is
     // no side-car state file to flush).
-    observability::shutdown_tracing();
+    root::otlp::shutdown_tracing();
 }
 
 /// Bind a TCP listener or `die` with a clear, address-named message. Shared by the data and admin
