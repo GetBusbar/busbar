@@ -44,10 +44,6 @@ test-linked = ["busbar-llm"]
 # that one function and this manifest, not to the tests. (Optional rather than a dev-dependency today
 # because a feature cannot reference a dev-dep-only crate.)
 busbar-kernel = { path = "../busbar-kernel", default-features = false, features = ["plane-mcp"] }
-# The substrate crate: the neutral shared surface the plugin names instead of busbar-core — the
-# diagnostics macros, the approvals seal, the config-section split, the hostless-egress seam. Carries
-# `plane-mcp` so the plane-gated items (the `HostlessEgress` seam, the relocated leaves) are present
-# in this crate's own default build.
 # THE PLANE. The direction of this edge INVERTED, and that is the point of the fold: the MCP wire
 # dialect — the mount path, the revision, the method names, the `_meta` keys, the error code table,
 # the notification pair, the durable record vocabulary, the content sanitizer and the
@@ -56,7 +52,6 @@ busbar-kernel = { path = "../busbar-kernel", default-features = false, features 
 # the two operation cells in `src/codec/`, which name the kernel's handler matrix and therefore
 # could not follow the dialect into a pure kind. There is no `busbar-mcp-codec` any more (#39).
 busbar-plane-mcp = { path = "../busbar-plane-mcp" }
-busbar-substrate-values = { path = "../busbar-substrate-values" }
 busbar-contract = { path = "../busbar-contract" }
 # The specification authors' own crate, pinned narrow (see busbar-kernel/Cargo.toml's rationale): the
 # codec takes the protocol VOCABULARY — MCP method names and parameter shapes — from it and nothing

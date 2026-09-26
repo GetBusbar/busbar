@@ -2014,7 +2014,7 @@ async fn tools_call(
             // a result that says it is unfinished is not a finished result, and handing the caller a
             // silently-truncated one would be answering a question nobody asked.
             if let Some(field) = upstream_ask_field(&value) {
-                busbar_substrate_values::diag_error!(
+                busbar_contract::diag_error!(
                     crate::diagnostics::MCP_ASK_RECOGNISER_MISSED,
                     tool = %selected.namespaced,
                     field,
@@ -2060,7 +2060,7 @@ async fn tools_call(
             if let Some(schema) = &selected.output_schema {
                 if let Some(structured) = value.get("structuredContent") {
                     if let Err(why) = super::outputschema::check(structured, schema) {
-                        busbar_substrate_values::diag_debug!(
+                        busbar_contract::diag_debug!(
                             crate::diagnostics::MCP_OUTPUT_SCHEMA_VIOLATION,
                             tool = %selected.namespaced,
                             why = %why,
@@ -2109,7 +2109,7 @@ async fn tools_call(
                 busbar_contract::vocab::OUTCOME_REJECTED,
                 ctx.actor,
             );
-            busbar_substrate_values::diag_debug!(
+            busbar_contract::diag_debug!(
                 crate::diagnostics::MCP_TOOLCALL_REFUSED,
                 tool = %selected.namespaced,
                 reason = refusal.audit_reason(),
@@ -2160,7 +2160,7 @@ async fn tools_call(
                 busbar_contract::vocab::OUTCOME_REJECTED,
                 ctx.actor,
             );
-            busbar_substrate_values::diag_debug!(
+            busbar_contract::diag_debug!(
                 crate::diagnostics::MCP_TOOLCALL_UPSTREAM_FAILED,
                 tool = %selected.namespaced,
                 reason = %reason,
@@ -2660,7 +2660,7 @@ pub(super) fn ledger_tool_call(
     let (Some(pin), Some(key)) = (host.meter_pin(), key) else {
         return;
     };
-    let usage = busbar_substrate_values::billing::Usage {
+    let usage = busbar_contract::billing::Usage {
         usage_units: std::collections::BTreeMap::from([(
             busbar_plane_mcp::meta::CLASS_TOOL_CALLS
                 .as_str()
@@ -2708,7 +2708,7 @@ fn refuse_setup(
     // lands in the server's own log, never on the wire. For a `Credential` refusal this `detail`
     // is the only place the secret's source (which env var / file) still appears; see
     // `SetupRefusal::client_message`'s doc for why the wire rendering below must redact it.
-    busbar_substrate_values::diag_debug!(
+    busbar_contract::diag_debug!(
         crate::diagnostics::MCP_TOOLCALL_REFUSED_PRE_UPSTREAM,
         tool = %namespaced,
         reason = denied.audit_reason(),
@@ -3028,7 +3028,7 @@ fn refuse_ask(
         busbar_contract::vocab::OUTCOME_REJECTED,
         ctx.actor,
     );
-    busbar_substrate_values::diag_debug!(
+    busbar_contract::diag_debug!(
         crate::diagnostics::MCP_CALLER_ASK_REFUSED,
         capability = %resource,
         reason = refusal.audit_reason(),

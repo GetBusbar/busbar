@@ -580,7 +580,7 @@ pub(crate) fn listen(
     id: Option<serde_json::Value>,
 ) -> Response {
     // The SDK's parameter type is the acceptance test, for the reason the subscription codec in
-    // `busbar_substrate_values::handlers::mcp` states: a hand-read `params.notifications.toolsListChanged` accepts
+    // `crate::codec::subscribe` states: a hand-read `params.notifications.toolsListChanged` accepts
     // shapes the specification does not, and each acceptance is a difference between what busbar
     // serves and what the protocol says.
     let mut requested: SubscriptionFilter = params

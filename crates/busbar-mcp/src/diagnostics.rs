@@ -4,16 +4,16 @@
 //! MCP plane diagnostics — the `MCP_*` catalog entries this crate OWNS.
 //!
 //! These consts were plane-specific vocabulary living in the neutral
-//! `busbar_substrate_values::diagnostics` catalog; the plane extraction relocated them here so the neutral
+//! `busbar_kernel::diagnostics` catalog; the plane extraction relocated them here so the neutral
 //! crate names no `MCP_*` diagnostic. Each keeps its stable `BUSBAR-NNNN` number and slug — the
 //! move preserves identity, it does not renumber: codes are REGISTERED, never collapsed.
 //!
 //! [`DIAGNOSTICS`] is the slice the composition root hands to
-//! [`install_diagnostics`](busbar_substrate_values::diagnostics::install_diagnostics) so these codes join
+//! [`install_diagnostics`](busbar_kernel::diagnostics::install_diagnostics) so these codes join
 //! the runtime catalog (`REGISTRY ∪ installed`) and resolve through `by_code`. The `busbar` binary
 //! names one stable path: `busbar-mcp::DIAGNOSTICS`.
 
-use busbar_substrate_values::diagnostics::{Class, Diagnostic, Severity};
+use busbar_contract::diagnostic::{Class, Diagnostic, Severity};
 
 pub const MCP_CALLLOG_CHAIN_VERIFY_FAILED: Diagnostic = Diagnostic {
     code: 2040,

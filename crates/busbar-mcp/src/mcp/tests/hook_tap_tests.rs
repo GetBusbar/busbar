@@ -396,7 +396,7 @@ async fn a_hook_that_panics_is_the_seams_own_failed_verdict_never_a_join_failure
 #[tokio::test]
 async fn a_rewrite_leg_that_did_not_join_refuses_the_call_and_is_never_silent() {
     use busbar_kernel::plane_host::TransformVerdict;
-    use busbar_substrate_values::testkit::warn_capture::WarnCapture;
+    use busbar_kernel::test_support::warn_capture::WarnCapture;
     use tracing_subscriber::layer::SubscriberExt as _;
 
     // A REAL `JoinError`: exactly the value the tap leg receives when its blocking task panics.

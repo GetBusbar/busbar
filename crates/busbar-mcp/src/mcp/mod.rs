@@ -597,8 +597,8 @@ pub(crate) fn mcp_hydrate(
             // at the boot summary and at WARN, and fired whenever `unreadable > 0` even if `records`
             // is zero (a scope whose rows were ALL undecodable), so the aggregate is never invisible.
             if r.unreadable > 0 {
-                busbar_substrate_values::diag_warn!(
-                    busbar_substrate_values::diagnostics::PLANE_CALLLOG_ROW_UNREADABLE,
+                busbar_contract::diag_warn!(
+                    busbar_kernel::diagnostics::PLANE_CALLLOG_ROW_UNREADABLE,
                     rows = r.unreadable,
                     "persisted MCP per-call records could not be decoded on restore and were SKIPPED; \
                      they were most likely written by a different engine version or the store is corrupt"
@@ -608,7 +608,7 @@ pub(crate) fn mcp_hydrate(
             // is what one caller's evidence being deleted wholesale looks like. Surfaced separately
             // rather than summed into `principals`.
             if r.empty_chains > 0 {
-                busbar_substrate_values::diag_warn!(
+                busbar_contract::diag_warn!(
                     crate::diagnostics::MCP_CALLLOG_EMPTY_CHAINS,
                     principals = r.empty_chains,
                     "the durable MCP call log enumerates these principals but holds NO records \
@@ -616,14 +616,14 @@ pub(crate) fn mcp_hydrate(
                 );
             }
             for brk in &r.chain_breaks {
-                busbar_substrate_values::diag_error!(
+                busbar_contract::diag_error!(
                     crate::diagnostics::MCP_CALLLOG_CHAIN_VERIFY_FAILED,
                     break_detail = %brk,
                     "MCP per-call CHAIN VERIFICATION FAILED on restore — TAMPER EVIDENCE"
                 );
             }
         }
-        Err(e) => busbar_substrate_values::diag_warn!(
+        Err(e) => busbar_contract::diag_warn!(
             crate::diagnostics::MCP_CALLLOG_UNREAD,
             error = %e,
             "could not read the durable MCP per-call log; chains start at their persisted \
@@ -648,7 +648,7 @@ pub(crate) fn mcp_hydrate(
     let host = ctx.engine_host();
     match crate::mcp::demotion::hydrate(&host, ctx.plane_store().as_ref()) {
         0 => {}
-        n => busbar_substrate_values::diag_warn!(
+        n => busbar_contract::diag_warn!(
             crate::diagnostics::MCP_DEMOTIONS_RESTORED,
             servers = n,
             "MCP upstream demotions restored from the durable governance store: these servers \

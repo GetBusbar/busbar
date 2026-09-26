@@ -42,7 +42,7 @@ use super::wire::{McpWire, TransportError, TransportResponse, WireLeg};
 #[derive(Debug, Default)]
 pub(crate) struct HttpTransport;
 
-/// The vtable arm [`busbar_substrate_values::transport::Transport::Http`] hands an MCP leg to. It unpacks the parts of
+/// The vtable arm [`busbar_contract::transport::transport::Transport::Http`] hands an MCP leg to. It unpacks the parts of
 /// the leg an HTTP send needs and forwards to the inherent [`HttpTransport::send`], which the
 /// refresh path in `mcp::connect` reaches through the same vtable.
 ///
@@ -328,7 +328,7 @@ pub(crate) fn read_server_frames(leg: &WireLeg<'_>, raw: &[u8]) -> Vec<super::pe
                     let accepted = leg
                         .pool
                         .triggers
-                        .signal(leg.server, busbar_substrate_values::store::now_ms());
+                        .signal(leg.server, busbar_kernel::store::now_ms());
                     tracing::debug!(
                         server = %leg.server,
                         notification = ?n,
@@ -343,7 +343,7 @@ pub(crate) fn read_server_frames(leg: &WireLeg<'_>, raw: &[u8]) -> Vec<super::pe
                     let accepted = leg
                         .pool
                         .triggers
-                        .signal(leg.server, busbar_substrate_values::store::now_ms());
+                        .signal(leg.server, busbar_kernel::store::now_ms());
                     if let Some(uri) = frame.pointer("/params/uri").and_then(|u| u.as_str()) {
                         leg.pool.updates.record(leg.server, uri);
                     }

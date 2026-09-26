@@ -153,7 +153,7 @@ fn governed(
         .governance(engine().scratch_store(), Some("admintok".to_string()), None)
         .expect("a governance registry");
     let (mut key, _secret) = gov_state
-        .create_key(Default::default(), busbar_substrate_values::store::now())
+        .create_key(Default::default(), busbar_kernel::store::now())
         .expect("a key");
     key.group = group.map(str::to_string);
     gov_state
@@ -219,7 +219,7 @@ fn charged(gov_state: &Arc<dyn GovKit>, key: &busbar_contract::records::VirtualK
     );
     gov_state.flush_budgets();
     gov_state
-        .usage_for(&*cost, &key.id, busbar_substrate_values::store::now())
+        .usage_for(&*cost, &key.id, busbar_kernel::store::now())
         .expect("the key's usage reads back")
         .map_or(0, |u| u.requests)
 }
@@ -645,7 +645,7 @@ async fn a_served_call_is_charged_to_the_presenting_key() -> u64 {
     let billed = billed_deployment(S).await;
     let (bystander, _secret) = billed
         .gov_state
-        .create_key(Default::default(), busbar_substrate_values::store::now())
+        .create_key(Default::default(), busbar_kernel::store::now())
         .expect("a second key");
     let (status, body) = read_as(&billed.app, &billed.gov, "served-budget", S).await;
     assert_eq!(status, 200, "{body}");

@@ -993,7 +993,7 @@ async fn tools_fees_per_request_boots_and_charges_and_per_session_refuses() {
     let cost =
         CostModel::resolve_parts(None, 5, &groups).with_plane_fees(&resolved(fees).plane_fees);
     let priced: std::sync::Arc<dyn CostKit> = std::sync::Arc::new(cost);
-    let now = busbar_substrate_values::store::now();
+    let now = busbar_kernel::store::now();
     let read = gov
         .derived_bucket_usage(&*priced, "group:g@day", "day", true, now)
         .expect("the group reads");

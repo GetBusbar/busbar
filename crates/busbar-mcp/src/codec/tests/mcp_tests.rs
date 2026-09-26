@@ -9,10 +9,10 @@
 use super::handler::McpRequestHandler;
 use super::invoke::InvokeOperation;
 use super::*;
+use busbar_contract::codec::{OperationHandler, RequestHandler};
+use busbar_contract::ir::invoke::InvokeResp;
+use busbar_contract::ir::subscribe::SubscribeIntent;
 use busbar_contract::operation::OpVerb;
-use busbar_substrate_values::handlers::{OperationHandler, RequestHandler};
-use busbar_substrate_values::ir::invoke::InvokeResp;
-use busbar_substrate_values::ir::subscribe::SubscribeIntent;
 
 fn call_wire(params: serde_json::Value) -> Vec<u8> {
     serde_json::to_vec(&serde_json::json!({
@@ -603,16 +603,16 @@ fn a_registration_record_is_carried_through_untouched() {
 /// otherwise see it.
 #[test]
 fn a_subscription_is_flat_metered_rather_than_free() {
-    let ir = busbar_substrate_values::ir::subscribe::SubscribeResp {
+    let ir = busbar_contract::ir::subscribe::SubscribeResp {
         registration: None,
         extra: Default::default(),
     };
     assert!(
         matches!(
-            busbar_substrate_values::ir::handle::IrHandle::billing(
-                &busbar_substrate_values::ir::neutral_handles::SubscribeRespHandle(ir)
+            busbar_contract::ir::handle::IrHandle::billing(
+                &busbar_contract::ir::neutral_handles::SubscribeRespHandle(ir)
             ),
-            Some(busbar_substrate_values::billing::Billing::Flat)
+            Some(busbar_contract::billing::Billing::Flat)
         ),
         "a registration bills one unit, so it lands on the same budget tree as every other call"
     );
@@ -645,8 +645,8 @@ fn the_declaration_registers_under_the_planes_key() {
 /// content into the prompt projection keeps its own tests there.
 #[test]
 fn subscribe_body_projects_its_target() {
-    use busbar_substrate_values::handlers::TranslateCodec as _;
-    busbar_substrate_values::proto::register_test_protocol(&crate::PROTO_DECL);
+    use busbar_kernel::handlers::TranslateCodec as _;
+    busbar_kernel::proto::register_test_protocol(&crate::PROTO_DECL);
     let v = serde_json::json!({
         "jsonrpc": "2.0",
         "id": 1,
@@ -654,7 +654,7 @@ fn subscribe_body_projects_its_target() {
         "params": {"uri": "mcp://resource/SECRET-TARGET"}
     });
     // The same resolution the hook seam makes: the registered protocol's handler for the operation.
-    let handler = busbar_substrate_values::handlers::request_handler(crate::PROTO_DECL.name)
+    let handler = busbar_kernel::handlers::request_handler(crate::PROTO_DECL.name)
         .and_then(|rh| rh.operation_handler(OpVerb::SUBSCRIBE))
         .expect("the registered protocol serves SUBSCRIBE");
     let facts = handler

@@ -292,7 +292,7 @@ pub(crate) struct ServerEntry {
     /// It rides on the snapshot rather than being re-read from `ToolsCfg` at dispatch for the same
     /// reason every other field here does: the snapshot is what the engine holds, and a second
     /// reader of the operator's intent is a second answer that can disagree with the first.
-    pub(crate) transport: busbar_substrate_values::transport::Transport,
+    pub(crate) transport: busbar_contract::transport::transport::Transport,
     /// The spawn recipe, present exactly when [`ServerEntry::transport`] is the child-process one.
     /// `None` otherwise, and the wire refuses rather than guesses if the two ever disagree.
     pub(crate) stdio: Option<super::client::stdio::StdioCommand>,
