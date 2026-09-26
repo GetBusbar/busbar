@@ -176,9 +176,11 @@ report_coverage() {
 # `strip_workspace_edges` exists to sever), and busbar-substrate-values (the pure-value half that
 # split off busbar-substrate BEFORE the deletion) is still its own crate today. A name here that stops
 # existing hits the same cargo refusal `run_check` already surfaces as a FAIL (cargo errors fast on an
-# unknown `-p` package spec) — loud, not a silent narrowing of what got checked.
-NEUTRAL_PKGS="busbar-kernel busbar-substrate-values busbar-api"
-neutral_pkg_args() {   # echo "-p busbar-kernel -p busbar-substrate-values -p busbar-api"
+# unknown `-p` package spec) — loud, not a silent narrowing of what got checked. busbar-api retired
+# into busbar-contract (fold F4), so the third neutral crate is the contract, the same triple ci.yml's
+# deletion-test matrix builds.
+NEUTRAL_PKGS="busbar-kernel busbar-substrate-values busbar-contract"
+neutral_pkg_args() {   # echo "-p busbar-kernel -p busbar-substrate-values -p busbar-contract"
   local n out=""
   for n in $NEUTRAL_PKGS; do out="${out:+$out }-p $n"; done
   printf '%s' "$out"
