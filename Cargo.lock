@@ -1098,7 +1098,6 @@ dependencies = [
  "busbar-kernel",
  "busbar-plane-streaming",
  "busbar-plugin",
- "busbar-substrate-values",
  "busbar-voice-codec",
  "bytes",
  "futures",

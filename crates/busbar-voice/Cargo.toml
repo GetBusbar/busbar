@@ -61,7 +61,6 @@ busbar-contract = { path = "../busbar-contract" }
 # tasks and telephony dial into a pure kind's closure. Every module that moved is re-exported from
 # this crate under its old name.
 busbar-voice-codec = { path = "../busbar-voice-codec" }
-busbar-substrate-values = { path = "../busbar-substrate-values" }
 # `axum::http::StatusCode` appears in the `ProtocolDecl` field set (quota / auth-failure statuses).
 axum = { workspace = true }
 # The plane's OWN media-frame carrier: `IrAudioFrame.media` is opaque `bytes::Bytes` (`plane4-duplex-session.md` §2.4 identity IR).

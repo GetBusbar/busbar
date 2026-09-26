@@ -285,7 +285,7 @@ impl FixtureHost {
     }
 
     fn now() -> u64 {
-        busbar_substrate_values::store::now()
+        busbar_kernel::store::now()
     }
 }
 
@@ -377,7 +377,7 @@ impl ClockHost for FixtureHost {
         Self::now()
     }
     fn clock_now_ms(&self) -> u64 {
-        busbar_substrate_values::store::now_ms()
+        busbar_kernel::store::now_ms()
     }
 }
 
