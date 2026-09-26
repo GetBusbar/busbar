@@ -1887,7 +1887,7 @@ fn a_mid_log_corrupt_journal_boots_quarantines_and_records_it() {
             0,
             &dir.path,
             Box::new(NullShipper::new()),
-            busbar_substrate_values::store::now_ms,
+            busbar_kernel::store::now_ms,
         )
         .expect("opens");
         for i in 0..4u8 {

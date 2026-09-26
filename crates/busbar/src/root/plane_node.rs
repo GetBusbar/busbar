@@ -325,7 +325,7 @@ impl Node {
     /// audit record and the posting are dated and ordered by — is spelled out of this one value.
     fn arrived(&self) -> Arrived {
         Arrived::at(
-            busbar_substrate_values::store::now_ms(),
+            busbar_kernel::store::now_ms(),
             self.mono.fetch_add(1, Ordering::AcqRel),
         )
     }
@@ -793,7 +793,7 @@ pub struct Report {
     /// Every class the tap reported, by neutral unit class — the reserved token split and every open
     /// class beside it (a rerank's search units): the same counts the governance ledger accrued when
     /// the cell filled. Empty for a response that billed nothing.
-    pub usage: busbar_substrate_values::billing::Usage,
+    pub usage: busbar_contract::billing::Usage,
     /// How many billable requests this unit is: one for a delivered client request that reached an
     /// upstream, zero otherwise — the Meter step's own count, carried rather than re-decided.
     pub fee_count: u32,
@@ -846,7 +846,7 @@ const RESERVED_CLASSES: [&str; 4] = [
 
 fn usage_record(
     token: &busbar_contract::caps::Grant<busbar_contract::caps::Consumption>,
-    usage: &busbar_substrate_values::billing::Usage,
+    usage: &busbar_contract::billing::Usage,
 ) -> busbar_contract::caps::Usage {
     let lines = RESERVED_CLASSES
         .into_iter()
@@ -1267,7 +1267,7 @@ fn unavailable(proto: &str) -> Response {
     busbar_kernel::proxy::ingress_error(
         proto,
         StatusCode::SERVICE_UNAVAILABLE,
-        busbar_substrate_values::proxy::KIND_OVERLOADED,
+        busbar_contract::protocol::KIND_OVERLOADED,
         "The service is temporarily overloaded. Please retry shortly.",
     )
 }

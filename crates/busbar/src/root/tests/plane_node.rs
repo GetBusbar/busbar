@@ -828,7 +828,7 @@ fn history_of(entries: &[(u64, f64)]) -> crate::root::kernel::PinnedHistory {
         let card = crate::root::kernel::card_from_config(
             [(
                 "lane",
-                busbar_substrate_values::billing::RawTierRates {
+                busbar_contract::billing::RawTierRates {
                     input: 0.0,
                     output: *output,
                     cache_read: 0.0,
@@ -857,7 +857,7 @@ fn history_of(entries: &[(u64, f64)]) -> crate::root::kernel::PinnedHistory {
 /// A report of `output` tokens on the lane the histories above price.
 fn report_of(output: u64) -> Report {
     Report {
-        usage: busbar_substrate_values::billing::Usage {
+        usage: busbar_contract::billing::Usage {
             usage_units: std::collections::BTreeMap::from([(
                 busbar_contract::records::UNIT_OUTPUT.to_string(),
                 output,
@@ -914,7 +914,7 @@ fn a_snapshot_pinned_at_admission_cannot_see_an_entry_appended_behind_it() {
         crate::root::kernel::card_from_config(
             [(
                 "lane",
-                busbar_substrate_values::billing::RawTierRates {
+                busbar_contract::billing::RawTierRates {
                     input: 0.0,
                     output: 1.0,
                     cache_read: 0.0,
@@ -935,7 +935,7 @@ fn a_snapshot_pinned_at_admission_cannot_see_an_entry_appended_behind_it() {
         crate::root::kernel::card_from_config(
             [(
                 "lane",
-                busbar_substrate_values::billing::RawTierRates {
+                busbar_contract::billing::RawTierRates {
                     input: 0.0,
                     output: 100.0,
                     cache_read: 0.0,
@@ -3006,7 +3006,7 @@ fn fee_history_of(
         let card = crate::root::kernel::card_from_config(
             [(
                 "lane",
-                busbar_substrate_values::billing::RawTierRates {
+                busbar_contract::billing::RawTierRates {
                     input: *input,
                     output: *output,
                     cache_read: 0.0,
@@ -3042,7 +3042,7 @@ fn split_report(input: u64, output: u64, fee_count: u32) -> Report {
         units.insert(busbar_contract::records::UNIT_OUTPUT.to_string(), output);
     }
     Report {
-        usage: busbar_substrate_values::billing::Usage { usage_units: units },
+        usage: busbar_contract::billing::Usage { usage_units: units },
         fee_count,
         lane: "lane".to_string(),
     }
@@ -3683,7 +3683,7 @@ fn rerank_history_on(
 /// A rerank's drained report: `units` search units and one billable request, no tokens.
 fn rerank_report(units: u64) -> Report {
     Report {
-        usage: busbar_substrate_values::billing::Usage {
+        usage: busbar_contract::billing::Usage {
             usage_units: std::collections::BTreeMap::from([(SEARCH_UNITS.to_string(), units)]),
         },
         fee_count: 1,
@@ -4147,7 +4147,7 @@ fn binding_the_node_to_the_book_journals_every_card_applied_after_it() {
     fn apply(holder: &RootHistory, input: f64, at: u64) {
         let lanes = [(
             "gpt".to_string(),
-            busbar_substrate_values::billing::RawTierRates {
+            busbar_contract::billing::RawTierRates {
                 input,
                 output: 0.0,
                 cache_read: 0.0,

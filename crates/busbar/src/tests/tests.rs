@@ -452,7 +452,7 @@ fn every_diagnostic_code_is_unique_across_the_neutral_and_plane_catalogues() {
     // would panic by design.
     register_diagnostics();
 
-    let all = busbar_substrate_values::diagnostics::all();
+    let all = busbar_kernel::diagnostics::all();
     assert!(
         !all.is_empty(),
         "the catalog must not be empty — the walk would assert nothing"

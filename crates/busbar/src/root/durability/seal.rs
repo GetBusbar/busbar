@@ -313,7 +313,7 @@ impl Durability {
             return;
         }
         let token = busbar_kernel::teller::Kernel::new().durability_token();
-        let now = busbar_substrate_values::store::now();
+        let now = busbar_kernel::store::now();
         match self.seal_if_due(&token, StepName::Meter, now) {
             Some(Ok(checkpoint)) => tracing::debug!(
                 checkpoint_seq = checkpoint.checkpoint_seq,

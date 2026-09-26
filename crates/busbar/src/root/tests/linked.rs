@@ -821,7 +821,8 @@ fn decl(code: u16, severity: &str) -> busbar_plugin_loader::sign::DiagnosticDecl
 /// both-ways test proves either door states the same declaration as first-party.)
 #[test]
 fn a_first_party_plugins_declared_codes_join_the_catalogue_and_nothing_else_does() {
-    use busbar_substrate_values::diagnostics::{by_code, Class, Severity};
+    use busbar_contract::diagnostic::{Class, Severity};
+    use busbar_kernel::diagnostics::{by_code, REGISTRY};
     let release = SigningKey::from_bytes(&[7u8; 32]);
     assert!(by_code(6990).is_none(), "the witness code must be free");
     let registry = declaring_registry("ok", "busbar", &release, vec![decl(6990, "actionable")]);
@@ -845,7 +846,7 @@ fn a_first_party_plugins_declared_codes_join_the_catalogue_and_nothing_else_does
     let refused = declared_diagnostics(&third, &[]).expect_err("a third party is refused");
     assert!(refused.contains("not first-party"), "{refused}");
 
-    let taken = busbar_substrate_values::diagnostics::REGISTRY[0].code;
+    let taken = REGISTRY[0].code;
     for (tag, bad) in [
         ("taken", decl(taken, "actionable")),
         ("class", decl(990, "actionable")),

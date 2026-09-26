@@ -79,8 +79,7 @@ fn a_linked_and_a_dropped_in_plane_add_to_the_hosts_own_series_byte_for_byte() {
         return;
     };
     busbar_kernel::metrics::init();
-    let _ =
-        busbar_substrate_values::handlers::usage_tap_decode_fail_should_warn(PROTOCOL, "decode");
+    let _ = busbar_kernel::handlers::usage_tap_decode_fail_should_warn(PROTOCOL, "decode");
     assert_eq!(
         golden_lines(),
         [format!("{GOLDEN} 1")],

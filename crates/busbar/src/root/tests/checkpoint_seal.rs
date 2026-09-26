@@ -81,7 +81,7 @@ fn the_cadence_is_ten_thousand_entries_or_sixty_seconds_whichever_first() {
 fn the_ten_thousandth_serving_append_seals_a_checkpoint_onto_the_journal() {
     let token = token();
     let mut durability = memory_node();
-    durability.arm_checkpoints(busbar_substrate_values::store::now());
+    durability.arm_checkpoints(busbar_kernel::store::now());
     for n in 0..CHECKPOINT_ENTRIES - 1 {
         append(&mut durability, &token, n);
     }
@@ -112,7 +112,7 @@ fn the_ten_thousandth_serving_append_seals_a_checkpoint_onto_the_journal() {
 fn the_interval_seals_a_changed_book_and_never_an_unchanged_one() {
     let token = token();
     let mut durability = memory_node();
-    let armed = busbar_substrate_values::store::now();
+    let armed = busbar_kernel::store::now();
     durability.arm_checkpoints(armed);
     assert!(
         durability

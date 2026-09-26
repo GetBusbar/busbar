@@ -2238,7 +2238,7 @@ pub fn build_with_cards(
     cards: Option<&'static crate::root::kernel::RootHistory>,
 ) -> Result<Durability, OpenError> {
     // The journal is handed the root's wall clock: the log unit reads none of its own.
-    let clock = busbar_substrate_values::store::now_ms;
+    let clock = busbar_kernel::store::now_ms;
     let journal = match cfg.data_dir.as_deref() {
         // The previous release's shape: nothing is opened, nothing is probed, and durability is
         // whatever the store the batches are shipped to provides.

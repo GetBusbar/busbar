@@ -73,8 +73,7 @@ pub struct Linked {
     /// synthesizer, a stream-translator factory), each set once.
     pub protocol_seams: &'static [fn()],
     /// Owned diagnostics, joining the rendered catalog.
-    pub diagnostics:
-        &'static [&'static [&'static busbar_substrate_values::diagnostics::Diagnostic]],
+    pub diagnostics: &'static [&'static [&'static busbar_contract::diagnostic::Diagnostic]],
     /// Installers of a duplex plane's inbound WS-accept arrivals (the seam is set once: the first
     /// duplex entry in table order is the one installed).
     pub ws_arrivals: &'static [fn()],
@@ -129,7 +128,7 @@ pub mod node {
     pub type Lent = (Resolve, Arc<AccrualMeter>, u64);
     /// What a unit consumed, read after its body drained: every class, the billable count, the
     /// serving lane's config name.
-    pub type Reported = (busbar_substrate_values::billing::Usage, u32, String);
+    pub type Reported = (busbar_contract::billing::Usage, u32, String);
     /// The late reading, taken once, when the body is done with.
     pub type Late = Box<dyn FnOnce() -> Option<Reported> + Send>;
     /// A unit's finish: the answer its terminal posted (#28), and the late reading of what it
@@ -803,7 +802,7 @@ pub const HOST_SERIES: &[&str] = &[
     busbar_kernel::metrics::POOL_QUEUED,
     busbar_kernel::telemetry::UPSTREAM_ATTEMPTS_TOTAL,
     busbar_kernel::telemetry::UPSTREAM_FAILURES_TOTAL,
-    busbar_substrate_values::handlers::BILLING_TAP_DECODE_FAIL_TOTAL,
+    busbar_kernel::metrics::BILLING_TAP_DECODE_FAIL_TOTAL,
     // `proxy_vocab`'s crate-private constant, spelled here as it renders.
     "busbar_tap_notifications_dropped_total",
 ];
@@ -843,7 +842,7 @@ static DROPPED: std::sync::OnceLock<&'static busbar_plugin_loader::PluginRegistr
 /// THE DIAGNOSTICS AXIS: every entry's owned diagnostics, and every first-party plugin's DECLARED
 /// ones (K9a S3), installed once. A declaration the catalogue refuses refuses the boot.
 pub fn register_diagnostics(linked: &Linked) {
-    let mut installed: Vec<&'static busbar_substrate_values::diagnostics::Diagnostic> = linked
+    let mut installed: Vec<&'static busbar_contract::diagnostic::Diagnostic> = linked
         .diagnostics
         .iter()
         .flat_map(|diags| diags.iter().copied())
@@ -857,7 +856,7 @@ pub fn register_diagnostics(linked: &Linked) {
             }
         }
     }
-    busbar_substrate_values::diagnostics::install_diagnostics(installed.leak());
+    busbar_kernel::diagnostics::install_diagnostics(installed.leak());
 }
 
 /// PLUGIN DIAGNOSTICS (K9a S3): the catalogue entries `registry`'s plugins DECLARE
@@ -867,9 +866,10 @@ pub fn register_diagnostics(linked: &Linked) {
 /// token is refused naming the plugin — a code is REGISTERED, never shadowed or renumbered.
 pub fn declared_diagnostics(
     registry: &busbar_plugin_loader::PluginRegistry,
-    taken: &[&'static busbar_substrate_values::diagnostics::Diagnostic],
-) -> Result<Vec<&'static busbar_substrate_values::diagnostics::Diagnostic>, String> {
-    use busbar_substrate_values::diagnostics::{Class, Diagnostic, Severity, REGISTRY};
+    taken: &[&'static busbar_contract::diagnostic::Diagnostic],
+) -> Result<Vec<&'static busbar_contract::diagnostic::Diagnostic>, String> {
+    use busbar_contract::diagnostic::{Class, Diagnostic, Severity};
+    use busbar_kernel::diagnostics::REGISTRY;
     let leak = |s: &str| -> &'static str { Box::leak(s.to_string().into_boxed_str()) };
     let mut declared: Vec<&'static Diagnostic> = Vec::new();
     for p in registry.linked().iter().chain(registry.loadable()) {

@@ -32,7 +32,7 @@
 //! interner, transports, planes, the two boot checks, *then* the CLI flags — because `--validate`
 //! reads the plane and protocol lists and every axis must be installed before any reader.
 
-use busbar_kernel::{config, config_validate};
+use busbar_kernel::{config, config_validate, diagnostics};
 use busbar_kernel::{
     load_config_from_disk, preflight_plugins_and_secrets, validate_builtin_secrets_resolve,
     DEFAULT_CONFIG_PATH, ENV_CONFIG, ENV_PROVIDERS,
@@ -182,7 +182,7 @@ pub(crate) fn handle_cli_flags() -> Option<i32> {
                                 "warning: {code}: config at {config_path} did not parse; printing the \
                                  built-in metadata denylist only (security.blocked_metadata_hosts \
                                  skipped). Run busbar normally to see the parse error.",
-                                code = busbar_substrate_values::diagnostics::CLI_METADATA_BLOCKLIST_CONFIG_UNREADABLE.banner()
+                                code = diagnostics::CLI_METADATA_BLOCKLIST_CONFIG_UNREADABLE.banner()
                             );
                             }
                         }
@@ -196,7 +196,7 @@ pub(crate) fn handle_cli_flags() -> Option<i32> {
                             "warning: {code}: config at {config_path} failed to interpolate; printing \
                              the built-in metadata denylist only (security.blocked_metadata_hosts \
                              skipped). Run busbar normally to see the interpolation error.",
-                            code = busbar_substrate_values::diagnostics::CLI_METADATA_BLOCKLIST_CONFIG_UNREADABLE.banner()
+                            code = diagnostics::CLI_METADATA_BLOCKLIST_CONFIG_UNREADABLE.banner()
                         );
                     }
                 }
@@ -265,7 +265,7 @@ fn validate_config_command() -> i32 {
         Err(e) => {
             eprintln!(
                 "[error] {}: {e}",
-                busbar_substrate_values::diagnostics::CLI_VALIDATE_CONFIG_INVALID.banner()
+                diagnostics::CLI_VALIDATE_CONFIG_INVALID.banner()
             );
             return 1;
         }
@@ -285,7 +285,7 @@ fn validate_config_command() -> i32 {
         Err(errs) => {
             eprintln!(
                 "[error] {}: config errors:\n  - {}",
-                busbar_substrate_values::diagnostics::CLI_VALIDATE_CONFIG_INVALID.banner(),
+                diagnostics::CLI_VALIDATE_CONFIG_INVALID.banner(),
                 errs.join("\n  - ")
             );
             return 1;
@@ -299,7 +299,7 @@ fn validate_config_command() -> i32 {
     if let Err(errs) = config_validate::validate_with_unset(&cfg, &unset_env_vars) {
         eprintln!(
             "[error] {}: config validation failed:\n  - {}",
-            busbar_substrate_values::diagnostics::CLI_VALIDATE_CONFIG_INVALID.banner(),
+            diagnostics::CLI_VALIDATE_CONFIG_INVALID.banner(),
             errs.join("\n  - ")
         );
         return 1;
@@ -314,7 +314,7 @@ fn validate_config_command() -> i32 {
         Err(e) => {
             eprintln!(
                 "[error] {}: {e}",
-                busbar_substrate_values::diagnostics::CLI_VALIDATE_PLUGIN_PREFLIGHT_FAILED.banner()
+                diagnostics::CLI_VALIDATE_PLUGIN_PREFLIGHT_FAILED.banner()
             );
             return 1;
         }
@@ -326,7 +326,7 @@ fn validate_config_command() -> i32 {
     if let Err(e) = validate_builtin_secrets_resolve(&cfg) {
         eprintln!(
             "[error] {}: {e}",
-            busbar_substrate_values::diagnostics::CLI_VALIDATE_CONFIG_INVALID.banner()
+            diagnostics::CLI_VALIDATE_CONFIG_INVALID.banner()
         );
         return 1;
     }
@@ -391,7 +391,7 @@ fn list_plugins_command() -> i32 {
         Err(e) => {
             eprintln!(
                 "[warn] {}: config not readable ({e}); using the default plugins block",
-                busbar_substrate_values::diagnostics::CLI_LIST_PLUGINS_CONFIG_UNREADABLE.banner()
+                diagnostics::CLI_LIST_PLUGINS_CONFIG_UNREADABLE.banner()
             );
             (
                 config::PluginsCfg::default(),
@@ -404,7 +404,7 @@ fn list_plugins_command() -> i32 {
         Err(e) => {
             eprintln!(
                 "[error] {}: plugins.trust is invalid: {e}",
-                busbar_substrate_values::diagnostics::CLI_LIST_PLUGINS_TRUST_INVALID.banner()
+                diagnostics::CLI_LIST_PLUGINS_TRUST_INVALID.banner()
             );
             return 1;
         }
@@ -634,7 +634,7 @@ fn generate_signing_key_command() -> i32 {
         Err(e) => {
             eprintln!(
                 "busbar: {}: could not generate a signing key: {e}",
-                busbar_substrate_values::diagnostics::SIGNING_KEY_GENERATION_FAILED.banner()
+                diagnostics::SIGNING_KEY_GENERATION_FAILED.banner()
             );
             return 1;
         }

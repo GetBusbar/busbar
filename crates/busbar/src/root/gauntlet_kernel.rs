@@ -357,7 +357,7 @@ pub async fn run_gauntlet_via_kernel(
         admin_listener: false,
         zero_hold_tick: false,
         arrival,
-        now: busbar_substrate_values::store::now_ms(),
+        now: busbar_kernel::store::now_ms(),
     });
 
     match entered {
@@ -456,7 +456,7 @@ pub fn open_gauntlet_via_kernel(
         admin_listener: false,
         zero_hold_tick: false,
         arrival,
-        now: busbar_substrate_values::store::now_ms(),
+        now: busbar_kernel::store::now_ms(),
     });
 
     match entered {

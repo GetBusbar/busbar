@@ -21,16 +21,6 @@ path = "src/main.rs"
 # dep declared below with the loop crate; `default-features = false` there so the binary's OWN
 # feature list stays the single decision point (each busbar feature forwards to the kernel feature
 # of the same name below).
-# The neutral substrate, named directly so the composition root can install the plane-facing seams
-# that live there — the hostless-egress driver (`egress::seam::install_hostless_egress`), which the
-# binary backs with core's `CoreHostlessEgress`. Core already depends on substrate; naming it here is
-# the one composition-root edge, not a new leaf.
-# THE PURE HALF OF THE SUBSTRATE, named directly. The value families — the clock readers, the proxy
-# vocabularies, the neutral request handler — were split out of `busbar-substrate` into this crate
-# and are only RE-EXPORTED from their historical paths. The composition root names the definition
-# site rather than the re-export, so the surface `busbar-substrate` still has to carry into the
-# kernel is the part that genuinely lives there and not a name that already moved.
-busbar-substrate-values = { path = "../busbar-substrate-values" }
 # THE OAUTH 2.1 AUTHORIZATION-SERVER PLANE (`oauth_as:`), a NORMAL (non-optional) dependency — it
 # carries no feature flag, unlike the protocol crates below, because `oauth-as` (the underlying
 # crate) was always a normal dependency of the engine and 1.6.0's extraction did not change that:

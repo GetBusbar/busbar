@@ -625,7 +625,7 @@ pub static ROOT_CARD: LazyLock<RootHistory> = LazyLock::new(RootHistory::default
 /// relay used to take a `currency` argument, sourced from a `node_currency()` that always answered
 /// `USD`; both are gone, and the scale is now a constant nothing can name.
 pub(crate) fn card_from_config<'r>(
-    rates: impl IntoIterator<Item = (&'r str, busbar_substrate_values::billing::RawTierRates)>,
+    rates: impl IntoIterator<Item = (&'r str, busbar_contract::billing::RawTierRates)>,
     flat_minor: i64,
     present: bool,
 ) -> busbar_kernel_ledger::cost::RateCard {

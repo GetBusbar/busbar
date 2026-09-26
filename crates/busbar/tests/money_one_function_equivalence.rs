@@ -317,7 +317,7 @@ impl Case {
         let metered = kernel
             .price_usage_nanos(
                 self.lane,
-                &busbar_substrate_values::billing::Usage {
+                &busbar_contract::billing::Usage {
                     usage_units: units.clone(),
                 },
             )

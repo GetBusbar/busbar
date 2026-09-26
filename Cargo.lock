@@ -364,7 +364,6 @@ dependencies = [
  "busbar-plugin-loader",
  "busbar-store-example-plugin",
  "busbar-store-memory",
- "busbar-substrate-values",
  "busbar-transport-http",
  "busbar-transport-stdio",
  "busbar-transport-tcp",

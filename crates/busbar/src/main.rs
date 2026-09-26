@@ -48,7 +48,7 @@ use busbar_kernel::{
     build_app_from_config, build_split_routers_with_limits, load_config_from_disk, LoadedConfig,
     ENV_CONFIG,
 };
-use busbar_kernel::{config, config_validate, export, metrics, tls};
+use busbar_kernel::{config, config_validate, diagnostics, export, metrics, tls};
 // Read only by the jemalloc idle-purge fallback below, which is itself
 // `#[cfg(not(target_env = "msvc"))]` — windows-msvc has no jemalloc, so importing this
 // unconditionally is an unused-import error there under `-D warnings`.
@@ -89,10 +89,7 @@ pub(crate) fn build_info_line() -> String {
 /// Print a clean startup error to stderr and exit non-zero. Used for misconfiguration and other
 /// boot-time failures so the operator sees a one-line message instead of a Rust panic backtrace.
 fn die(msg: impl std::fmt::Display) -> ! {
-    eprintln!(
-        "[error] {}: {msg}",
-        busbar_substrate_values::diagnostics::BOOT_FATAL_ERROR.banner()
-    );
+    eprintln!("[error] {}: {msg}", diagnostics::BOOT_FATAL_ERROR.banner());
     std::process::exit(1);
 }
 
@@ -127,7 +124,7 @@ fn worker_threads_from_env(name: &str) -> Option<usize> {
                 eprintln!(
                     "[warn] {code}: {name}={v:?} is not a positive integer; ignoring it and using \
                      the default worker-thread count",
-                    code = busbar_substrate_values::diagnostics::WORKER_THREADS_INVALID.banner()
+                    code = diagnostics::WORKER_THREADS_INVALID.banner()
                 );
                 None
             }
@@ -156,7 +153,7 @@ fn worker_threads_from_config() -> Option<usize> {
             // it goes to STDERR like the other boot diagnostics.
             eprintln!(
                 "[warn] {}: {msg}",
-                busbar_substrate_values::diagnostics::WORKER_THREADS_INVALID.banner()
+                diagnostics::WORKER_THREADS_INVALID.banner()
             );
             None
         }
@@ -240,7 +237,7 @@ fn register_planes() {
 }
 
 /// REGISTER THE LINKED PLANES' DIAGNOSTICS — the composition root's one write into the diagnostics
-/// axis (`busbar_substrate_values::diagnostics::install_diagnostics`). The neutral
+/// axis (`busbar_kernel::diagnostics::install_diagnostics`). The neutral
 /// `REGISTRY ∪ installed` fold makes these codes resolve through `by_code` and land in a rendered
 /// catalog. Installed BEFORE any reader; a build with a plane compiled out contributes nothing.
 fn register_diagnostics() {
@@ -743,7 +740,7 @@ async fn run(data_workers: usize) {
         // `resolve_backend` already warned with the remediation; repeat the posture here so the one
         // line an operator greps for ("config is ...") never claims a durability busbar does not have.
         tracing::warn!(
-            diag = %busbar_substrate_values::diagnostics::CONFIG_OVERLAY_NOT_WRITABLE.banner(),
+            diag = %diagnostics::CONFIG_OVERLAY_NOT_WRITABLE.banner(),
             "config is READ-ONLY (the overlay backend is not writable): busbar serves traffic \
              normally, but admin-API config mutations are refused. Set `config.locked: true` to \
              declare this deliberately, or give `config.overlay.file` a writable path."
@@ -775,7 +772,7 @@ async fn run(data_workers: usize) {
     // flag that dumps the full list.
     if cfg.allow_all_metadata {
         tracing::warn!(
-            diag = %busbar_substrate_values::diagnostics::METADATA_PROTECTION_DISABLED.banner(),
+            diag = %diagnostics::METADATA_PROTECTION_DISABLED.banner(),
             "metadata protection DISABLED — all cloud-metadata endpoints reachable"
         );
     } else {
@@ -1600,7 +1597,7 @@ async fn shutdown_signal() {
     let ctrl_c = async {
         if let Err(e) = tokio::signal::ctrl_c().await {
             tracing::warn!(
-                diag = %busbar_substrate_values::diagnostics::SHUTDOWN_SIGNAL_HANDLER_INSTALL_FAILED.banner(),
+                diag = %diagnostics::SHUTDOWN_SIGNAL_HANDLER_INSTALL_FAILED.banner(),
                 error = %e, "failed to install ctrl_c handler; SIGINT shutdown disabled"
             );
             std::future::pending::<()>().await;
@@ -1615,7 +1612,7 @@ async fn shutdown_signal() {
             }
             Err(e) => {
                 tracing::warn!(
-                    diag = %busbar_substrate_values::diagnostics::SHUTDOWN_SIGNAL_HANDLER_INSTALL_FAILED.banner(),
+                    diag = %diagnostics::SHUTDOWN_SIGNAL_HANDLER_INSTALL_FAILED.banner(),
                     error = %e, "failed to install SIGTERM handler; SIGTERM shutdown disabled"
                 );
                 std::future::pending::<()>().await;
@@ -1646,7 +1643,7 @@ async fn shutdown_signal() {
                 }
                 Err(e) => {
                     tracing::warn!(
-                        diag = %busbar_substrate_values::diagnostics::SHUTDOWN_SIGNAL_HANDLER_INSTALL_FAILED.banner(),
+                        diag = %diagnostics::SHUTDOWN_SIGNAL_HANDLER_INSTALL_FAILED.banner(),
                         error = %e, "failed to install ctrl_close handler; CTRL_CLOSE shutdown disabled"
                     );
                     std::future::pending::<()>().await;
@@ -1660,7 +1657,7 @@ async fn shutdown_signal() {
                 }
                 Err(e) => {
                     tracing::warn!(
-                        diag = %busbar_substrate_values::diagnostics::SHUTDOWN_SIGNAL_HANDLER_INSTALL_FAILED.banner(),
+                        diag = %diagnostics::SHUTDOWN_SIGNAL_HANDLER_INSTALL_FAILED.banner(),
                         error = %e, "failed to install ctrl_shutdown handler; CTRL_SHUTDOWN shutdown disabled"
                     );
                     std::future::pending::<()>().await;
@@ -1724,8 +1721,7 @@ fn spawn_jemalloc_idle_purge_fallback() {
                     eprintln!(
                         "[warn] {}: jemalloc idle-purge fallback disabled: could not read \
                          opt.dirty_decay_ms ({e})",
-                        busbar_substrate_values::diagnostics::JEMALLOC_IDLE_PURGE_FALLBACK_UNAVAILABLE
-                            .banner()
+                        diagnostics::JEMALLOC_IDLE_PURGE_FALLBACK_UNAVAILABLE.banner()
                     );
                     return;
                 }
@@ -1753,7 +1749,7 @@ fn spawn_jemalloc_idle_purge_fallback() {
     if let Err(e) = spawned {
         eprintln!(
             "[warn] {}: could not spawn the jemalloc idle-purge fallback thread ({e})",
-            busbar_substrate_values::diagnostics::JEMALLOC_IDLE_PURGE_FALLBACK_UNAVAILABLE.banner()
+            diagnostics::JEMALLOC_IDLE_PURGE_FALLBACK_UNAVAILABLE.banner()
         );
     }
 }
