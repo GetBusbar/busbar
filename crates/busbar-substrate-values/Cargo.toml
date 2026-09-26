@@ -64,6 +64,9 @@ metrics = { workspace = true }
 # default-OFF and zero-dependency in that configuration (the macro expands to `()`), so this edge
 # adds nothing to a shipped build.
 busbar-timing = { path = "../busbar-timing" }
+# The host entropy source the protocol install arms for the codecs (`proto::arm_host_services`):
+# the OS CSPRNG a codec's synthesized wire ids draw from, reached by the codec through the contract.
+getrandom = { workspace = true }
 # The neutral `testkit::warn_capture::WarnCapture` tracing layer the plane crates' tests assert
 # diagnostics through; test-surface only, so optional under `test-support`.
 tracing-subscriber = { workspace = true, optional = true }

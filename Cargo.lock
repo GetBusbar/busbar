@@ -1001,6 +1001,7 @@ dependencies = [
  "bytes",
  "crc32fast",
  "futures",
+ "getrandom 0.3.4",
  "hex",
  "hmac",
  "http",
