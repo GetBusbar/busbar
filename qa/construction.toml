@@ -216,19 +216,19 @@ busbar-voice = ["busbar-voice-codec"]
 # base" and asked for exactly this strike. THE CEILINGS THEMSELVES DID NOT MOVE: both still read
 # 7418. The next #83/#84 merge into busbar-contract declares its own re-arm here, once.
 
-# ── THE CONTRACT CEILING PAIR, RE-ARMED AT THE MEASURE AFTER THE METRIC-FAMILY SHAPE MERGE ────────
+# ── THE CONTRACT CEILING PAIR, RE-ARMED AT THE MEASURE AFTER THE SD-2b #83a MOVES ─────────────────
 
 [gate.ceiling_raises."gate.surface_ceilings.contract_caps"]
 file    = "qa/construction.toml"
-from    = 8558
-to      = 8619
-because = "OWNER RULING Q68(3) (docs/design/1.6.0-QUESTIONS.md): contract_caps re-arms at the MEASURED value after each owner-locked merge commit into busbar-contract, each in its own commit. This is the re-arm for the MET-1 METRICS SEAM commit (ARCHITECT RULING S2-c): PlaneDeclaration.metric_families, the MetricFamily shape, the COUNTER / RESERVED_METRIC_PREFIX / MAX_FAMILY_LABELS constants and the pure check_metric_families guard. Measured by cargo xtask loc busbar-contract --ref: 8558 at its parent, 8619 at that commit; the +61 is that field, shape and guard, nothing else. The 8532 -> 8558 declaration this replaces (K2e, the TransportSettings shape) is at the base and expired. The crate measures more after the later SD-2b #83a moves (the protocol declaration, the codec cells, the R-BYTES carriers); their re-arm is theirs and is not taken here."
+from    = 8619
+to      = 9184
+because = "OWNER RULING Q68(3) (docs/design/1.6.0-QUESTIONS.md), ARCHITECT O2/S2-b: contract_caps re-arms at the MEASURED value after each owner-locked #83 merge into busbar-contract, each in its own commit. This is the re-arm for SD-2b of the #83a substrate-values split. It moved three things into the contract, re-expressed over SlabBytes: the Bytes-bearing carriers (media, WireBody/EgressWire/TranslatedResponse, IrHandle and the neutral handles) in dc465dc42; the codec cells (OperationHandler, RequestHandler, Cell/cell_of/path_of) in bf474e37f; and ProtocolDecl/IngressAuth/EgressAuthHeaders with the declared EgressScheme in de5939076. Measured by cargo xtask loc busbar-contract --ref: 8619 at dc465dc42^, 8920 at dc465dc42, 9009 at bf474e37f, 9156 at de5939076, so SD-2b adds +537. The later fold F4 (580bebf24, records.rs) adds +28, giving 9184 at 580bebf24 and at this commit's parent. The one live declaration is re-pointed to the measured 9184 and states both parts, so F4 needs no second declaration. The 8558 -> 8619 declaration it replaces (MET-1) is at the base and expired."
 
 [gate.ceiling_raises."rules.loc-ceilings.caps_contract_ceiling"]
 file    = "qa/construction.toml"
-from    = 8558
-to      = 8619
-because = "OWNER RULING Q68(3) (docs/design/1.6.0-QUESTIONS.md): contract_caps re-arms at the MEASURED value after each owner-locked merge commit into busbar-contract, each in its own commit. This is the re-arm for the MET-1 METRICS SEAM commit (ARCHITECT RULING S2-c): PlaneDeclaration.metric_families, the MetricFamily shape, the COUNTER / RESERVED_METRIC_PREFIX / MAX_FAMILY_LABELS constants and the pure check_metric_families guard. Measured by cargo xtask loc busbar-contract --ref: 8558 at its parent, 8619 at that commit; the +61 is that field, shape and guard, nothing else. The 8532 -> 8558 declaration this replaces (K2e, the TransportSettings shape) is at the base and expired. The crate measures more after the later SD-2b #83a moves (the protocol declaration, the codec cells, the R-BYTES carriers); their re-arm is theirs and is not taken here."
+from    = 8619
+to      = 9184
+because = "OWNER RULING Q68(3) (docs/design/1.6.0-QUESTIONS.md), ARCHITECT O2/S2-b: contract_caps re-arms at the MEASURED value after each owner-locked #83 merge into busbar-contract, each in its own commit. This is the re-arm for SD-2b of the #83a substrate-values split. It moved three things into the contract, re-expressed over SlabBytes: the Bytes-bearing carriers (media, WireBody/EgressWire/TranslatedResponse, IrHandle and the neutral handles) in dc465dc42; the codec cells (OperationHandler, RequestHandler, Cell/cell_of/path_of) in bf474e37f; and ProtocolDecl/IngressAuth/EgressAuthHeaders with the declared EgressScheme in de5939076. Measured by cargo xtask loc busbar-contract --ref: 8619 at dc465dc42^, 8920 at dc465dc42, 9009 at bf474e37f, 9156 at de5939076, so SD-2b adds +537. The later fold F4 (580bebf24, records.rs) adds +28, giving 9184 at 580bebf24 and at this commit's parent. The one live declaration is re-pointed to the measured 9184 and states both parts, so F4 needs no second declaration. The 8558 -> 8619 declaration it replaces (MET-1) is at the base and expired."
 
 # ── THE KERNEL CEILING'S OWNER-APPROVED RAISE — EXPIRED AND STRUCK ─────────────────────────────
 #
@@ -324,7 +324,10 @@ because = "OWNER RULING Q68(3) (docs/design/1.6.0-QUESTIONS.md): contract_caps r
 # #83. The +108 is that module; the declared raise above carries the before/after measure.
 # RE-ARMED 8558 -> 8619, AT THE MEASUREMENT (OWNER RULING Q68(3)), in its own commit after the MET-1 seam
 # added the declared metric-family shape and guard (S2-c). The declared raise above carries the measure.
-contract_caps = 8619
+# RE-ARMED 8619 -> 9184, AT THE MEASUREMENT (OWNER RULING Q68(3)), in its own commit after SD-2b's
+# three #83a moves (+537: the R-BYTES carriers, the codec cells, the protocol declaration) and fold
+# F4's records.rs (+28). The declared raise above carries the per-commit measure.
+contract_caps = 9184
 # REPOINTED, and the repoint is what makes this row a gate again. It named the CRATE
 # `busbar-grammar`, which #40 folded into `busbar-contract` and deleted — so it summed nothing,
 # measured nothing and passed, which is this file's own "zero is not clean" failure sitting inside
@@ -885,7 +888,8 @@ contract_crate = "busbar-contract"
 # RE-ARMED 8148 -> 8424 with its pair (OWNER RULING Q68(3); fold F1, the secret-ref merge, 4c5a8a3dd).
 # RE-ARMED 8424 -> 8532 with its pair (OWNER RULING Q68(3); the reply-table shape move, 4152c1b6b).
 # RE-ARMED 8558 -> 8619 with its pair (OWNER RULING Q68(3); the MET-1 metric-family shape).
-caps_contract_ceiling = 8619
+# RE-ARMED 8619 -> 9184 with its pair (OWNER RULING Q68(3); SD-2b's #83a moves +537, fold F4 +28).
+caps_contract_ceiling = 9184
 unit_crate_glob = "busbar-unit-*"
 # RE-KEYED on cherry-pick onto 143db6db6: this commit's own delta is -53 (two units stopped
 # declaring their own copies), measured against whatever unit_total_ceiling read when the line was
