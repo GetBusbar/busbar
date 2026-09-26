@@ -2142,24 +2142,32 @@ jobs:
           # the package (`--tests`): the binary's own suite and the integration suites under
           # crates/busbar/tests, all of which read the build's linked roster, so a cell that needs a
           # plane, a provider codec or the admin surface is gated on what the build links.
+          # EVERY SINGLE-PLANE ROW ALSO KEEPS THE DEFAULT NON-PLANE FEATURES: `busbar/transport-tcp`
+          # and the three default export sinks (`busbar/export-prometheus`, `-file`, `-webhook`).
+          # These rows vary PLANES, not wires or sinks. The tcp wire is the floor of a bootable node:
+          # a build without it boots only with a dropped-in tcp, and without one it refuses at the
+          # seal ("transport `tls` composes over `tcp`, which no registered transport provides"). A
+          # row without the sinks refuses every config naming one as an unknown exporter. Either
+          # way, the suites would test a refusal instead of the behaviour they are written for.
+          # The no-tcp build is its own row below.
           - name: single plane llm
-            features: busbar/proto-llm
+            features: busbar/proto-llm,busbar/transport-tcp,busbar/export-prometheus,busbar/export-file,busbar/export-webhook
             tests: -p busbar --tests --no-default-features
             scope: package
           - name: single plane mcp
-            features: busbar/plane-mcp
+            features: busbar/plane-mcp,busbar/transport-tcp,busbar/export-prometheus,busbar/export-file,busbar/export-webhook
             tests: -p busbar --tests --no-default-features
             scope: package
           - name: single plane a2a
-            features: busbar/plane-a2a
+            features: busbar/plane-a2a,busbar/transport-tcp,busbar/export-prometheus,busbar/export-file,busbar/export-webhook
             tests: -p busbar --tests --no-default-features
             scope: package
           - name: single plane voice
-            features: busbar/plane-voice
+            features: busbar/plane-voice,busbar/transport-tcp,busbar/export-prometheus,busbar/export-file,busbar/export-webhook
             tests: -p busbar --tests --no-default-features
             scope: package
           - name: single plane decision
-            features: busbar/plane-decision
+            features: busbar/plane-decision,busbar/transport-tcp,busbar/export-prometheus,busbar/export-file,busbar/export-webhook
             tests: -p busbar --tests --no-default-features
             scope: package
           # THE DROPPED-IN TRANSPORT DOOR (#3 OWNER-LOCKED, #30; ruling K8b residue / K8c): the root
