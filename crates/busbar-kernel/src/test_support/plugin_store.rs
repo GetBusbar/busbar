@@ -136,7 +136,7 @@ fn newer_source_than(built: std::time::SystemTime) -> Option<PathBuf> {
 
 fn resolve_cdylib() -> PathBuf {
     let (profile_dir, profile) = profile_dir();
-    let name = busbar_plugin_loader::plugin_library_filename("busbar_store_example_plugin");
+    let name = busbar_plugin_loader::plugin_library_filename(env!("BUSBAR_FIXTURE_STORE"));
 
     // 1. The conventional artifact, when a prior `cargo build -p busbar-store-example-plugin` left
     //    one and nothing watched has moved since. This is the CI path and it builds nothing.

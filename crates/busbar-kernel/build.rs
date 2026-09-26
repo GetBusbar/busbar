@@ -30,6 +30,18 @@ fn main() {
         "testkit::TEST_SEAM",
     );
     std::fs::write(Path::new(&out_dir).join("test_linked.rs"), code).expect("write test_linked.rs");
+    // THE KIND FIXTURES: `test-fixtures` rows read `<kind>=<crate>`; each becomes
+    // `BUSBAR_FIXTURE_<KIND>` = the crate's cdylib file stem, for `test_support` to `env!`.
+    for row in metadata_list(&text, "package.metadata.busbar", "test-fixtures") {
+        let (kind, krate) = row
+            .split_once('=')
+            .expect("a test-fixtures row reads <kind>=<crate>");
+        let stem = krate.replace('-', "_");
+        println!(
+            "cargo:rustc-env=BUSBAR_FIXTURE_{}={stem}",
+            kind.to_uppercase()
+        );
+    }
 }
 
 /// The string array `key = [...]` under the `[table]` header of a Cargo manifest. Deliberately not a

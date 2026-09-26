@@ -30,6 +30,10 @@ path = "src/lib.rs"
 # plane by what its declaration states, read back from the registry.
 [package.metadata.busbar]
 test-linked = ["busbar-llm", "busbar-mcp", "busbar-a2a"]
+# THE KIND FIXTURES: each kind's in-tree fixture plugin, as DATA (`<kind>=<crate>`). build.rs exports
+# each as `BUSBAR_FIXTURE_<KIND>` (the cdylib's file stem), so test_support finds the fixture's
+# artifact while no source names the plugin.
+test-fixtures = ["hook=busbar-hook-test-plugin", "store=busbar-store-example-plugin"]
 
 [dependencies]
 busbar-api = { path = "../api" }
