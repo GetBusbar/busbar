@@ -925,12 +925,21 @@ fn ceiling_ratchet_cases<'a>(
             cover.push(format!("legacy-reach:{key}"));
         }
     }
-    if cover.is_empty() {
+    // EVERY FIGURE DRAINED TO ZERO IS THE GOAL STATE, NOT AN INFRA FAILURE: with no figure above
+    // zero there is nothing to plant down, and every per-crate row is proven where its measurement
+    // moves (the root-reach plant in `money_cases`, which covers each `legacy-reach:<key>`). Only a
+    // figure above zero that could not be planted leaves a row unproven.
+    let plantable = cfg
+        .doc
+        .children("rules.legacy-reach.prefixes")
+        .into_iter()
+        .any(|(_, spec)| spec.int_of("figure").unwrap_or(0) > 0);
+    if cover.is_empty() && plantable {
         r.note_infra_failure(
             "no `[rules.legacy-reach.prefixes.*]` figure could be planted, so the rows that used \
              to be informational are unproven",
         );
-    } else {
+    } else if !cover.is_empty() {
         // The tree is UNCHANGED here and the figure is: a row that had stopped counting the root
         // would measure 0 against 0 and pass, so this plant proves both halves at once.
         combined = pinned;
@@ -987,7 +996,7 @@ fn ceiling_ratchet_cases<'a>(
          therefore be refused as a stale declaration rather than carried\"\n"
     );
     let mut stale_carried = false;
-    for (file, table, key) in rose_plants(cx) {
+    for (file, table, key) in rose_plants(cx, &text, cfg) {
         let Ok(now) = cx.read(&file) else { continue };
         let Some(lowered) = ceilings::set_int(&now, &table, &key, 0) else {
             continue;
@@ -1032,13 +1041,16 @@ fn ceiling_ratchet_cases<'a>(
     // file a genuine raise, and a declaration is appended whose numbers describe a different edit.
     // The refusal is then proven against a `[gate.ceiling_raises]` table that is empty in the tree,
     // which is the state it is supposed to spend most of its life in.
-    if let Some(base_lowered) = ceilings::set_int(&text, "rules.legacy-reach", "ceiling", 0) {
+    let subject = rose_subject(&text, cfg);
+    if let Some((s_table, s_key, base_lowered)) = subject.as_ref().and_then(|(t, k, _)| {
+        ceilings::set_int(&text, t, k, 0).map(|low| (t.clone(), k.clone(), low))
+    }) {
         let mut ov = on(base);
         ov.set_command(format!("git-show:{based}:{CEILINGS}"), base_lowered);
         ov.set(
             CEILINGS,
             format!(
-                "{text}\n[gate.ceiling_raises.\"rules.legacy-reach.ceiling\"]\nfrom = 999\n\
+                "{text}\n[gate.ceiling_raises.\"{s_table}.{s_key}\"]\nfrom = 999\n\
                  to = 998\nbecause = \"planted by the self-test: a declaration whose numbers are \
                  not the raise it sits beside, so the raise is still undeclared and still \
                  refused\"\n"
@@ -1054,8 +1066,8 @@ fn ceiling_ratchet_cases<'a>(
         ));
     } else {
         r.note_infra_failure(
-            "[rules.legacy-reach] carries no `ceiling` to lower at the base, so the arm that \
-             refuses a declaration describing a different edit is unproven",
+            "the ceilings file carries no ratcheted ceiling above 0 to lower at the base, so the \
+             arm that refuses a declaration describing a different edit is unproven",
         );
     }
 
@@ -1074,15 +1086,16 @@ fn ceiling_ratchet_cases<'a>(
             .and_then(|d| d.table(table).and_then(|t| t.int_of(key)))
             .filter(|v| *v > 0)
     };
-    let current = int_at("rules.legacy-reach", "ceiling");
-    match (
-        current,
-        ceilings::set_int(&text, "rules.legacy-reach", "ceiling", 0),
-    ) {
+    let (s_table, s_key) = subject
+        .as_ref()
+        .map(|(t, k, _)| (t.clone(), k.clone()))
+        .unwrap_or_default();
+    let current = subject.as_ref().map(|(_, _, v)| *v);
+    match (current, ceilings::set_int(&text, &s_table, &s_key, 0)) {
         (Some(now), Some(base_lowered)) => {
             let declare = |from: i64, to: i64| {
                 format!(
-                    "\n[gate.ceiling_raises.\"rules.legacy-reach.ceiling\"]\nfrom = {from}\n\
+                    "\n[gate.ceiling_raises.\"{s_table}.{s_key}\"]\nfrom = {from}\n\
                      to = {to}\nbecause = \"planted by the self-test: the re-arm of a ceiling whose \
                      previous declaration had already landed, which moves the declaration's own \
                      numbers up and is still exactly one declared raise\"\n"
@@ -1106,7 +1119,7 @@ fn ceiling_ratchet_cases<'a>(
             // the gate itself keeps rather than named here.
             let second = ceilings::pins(cfg)
                 .into_iter()
-                .filter(|p| !(p.table == "rules.legacy-reach" && p.key == "ceiling"))
+                .filter(|p| !(p.table == s_table && p.key == s_key))
                 .filter(|p| int_at(&p.table, &p.key).is_some())
                 .find_map(|p| {
                     let before = ceilings::set_int(&base_lowered, &p.table, &p.key, 0)?;
@@ -1135,8 +1148,8 @@ fn ceiling_ratchet_cases<'a>(
             }
         }
         _ => r.note_infra_failure(
-            "[rules.legacy-reach] carries no `ceiling` above 0 to re-declare a raise of, so the \
-             arm that reads a re-declaration as one declared raise is unproven",
+            "the ceilings file carries no ratcheted ceiling above 0 to re-declare a raise of, so \
+             the arm that reads a re-declaration as one declared raise is unproven",
         ),
     }
 
@@ -1275,12 +1288,11 @@ fn ceiling_ratchet_cases<'a>(
 
 /// One ceiling per watched file, chosen FROM THE FILE rather than named here: a plant that
 /// hard-codes a key is a plant that stops planting the day the key is renamed, and goes green.
-fn rose_plants(cx: &Ctx) -> Vec<(String, String, String)> {
-    let mut out = vec![(
-        CEILINGS.to_string(),
-        "rules.legacy-reach".to_string(),
-        "ceiling".to_string(),
-    )];
+fn rose_plants(cx: &Ctx, text: &str, cfg: &Cfg) -> Vec<(String, String, String)> {
+    let mut out: Vec<(String, String, String)> = rose_subject(text, cfg)
+        .map(|(table, key, _)| (CEILINGS.to_string(), table, key))
+        .into_iter()
+        .collect();
     if let Ok(text) = cx.read(ceilings::KIND_CEILINGS) {
         if let Ok(doc) = crate::toml_doc::parse_str(&text) {
             let found = doc.tables().iter().find_map(|(p, t)| {
@@ -1295,6 +1307,18 @@ fn rose_plants(cx: &Ctx) -> Vec<(String, String, String)> {
         }
     }
     out
+}
+
+/// A ratcheted ceiling of the ceilings file that reads above zero: the subject the rise cases plant
+/// against, by lowering the base's copy of it. The root's legacy reach was that subject until it
+/// drained to 0, and a ceiling at 0 cannot be lowered at the base to make a rise, so the subject is
+/// read off the pins the gate keeps rather than named here.
+fn rose_subject(text: &str, cfg: &Cfg) -> Option<(String, String, i64)> {
+    let doc = crate::toml_doc::parse_str(text).ok()?;
+    ceilings::pins(cfg).into_iter().find_map(|p| {
+        let v = doc.table(&p.table)?.int_of(&p.key)?;
+        (v > 0).then_some((p.table, p.key, v))
+    })
 }
 
 /// The plugin kinds: the manifest allow-list, the source denylist and the unsafe attributes.
@@ -1771,11 +1795,37 @@ fn money_cases<'a>(gate: &'a dyn Gate, cx: &Ctx, base: &Overlay) -> Report<'a> {
         "pub fn planted_double() {\n    let _ = NullShipper;\n    let _ = RecordingRows;\n    let \
          _ = Pricer::flat(0);\n}\n",
     );
-    if let Ok(basetext) = cx.read("crates/busbar/src/main.rs") {
-        ov.set(
-            "crates/busbar/src/main.rs",
-            format!("{basetext}\npub fn planted_extra_double() {{ let _ = NullShipper; }}\n"),
-        );
+    // A REVIEWED DOUBLE GAINS A SITE: one more construction of a symbol the review already called a
+    // double, in the file it reviewed it in. Read off the reviewed sites rather than named here, so
+    // the plant follows the review when a site is deleted (the voice node's shipper was).
+    let reviewed_double = cfg.as_ref().and_then(|c| {
+        c.doc
+            .children("rules.no-test-doubles-in-production.known_sites")
+            .into_iter()
+            .find_map(|(_, site)| {
+                (site.str_of("verdict") == Some("double"))
+                    .then(|| {
+                        Some((
+                            site.str_of("file")?.to_string(),
+                            site.str_of("symbol")?.to_string(),
+                        ))
+                    })
+                    .flatten()
+            })
+    });
+    match reviewed_double {
+        Some((file, symbol)) => {
+            if let Ok(basetext) = cx.read(&file) {
+                ov.set(
+                    &file,
+                    format!("{basetext}\npub fn planted_extra_double() {{ let _ = {symbol}; }}\n"),
+                );
+            }
+        }
+        None => r.note_infra_failure(
+            "no reviewed site carries `verdict = \"double\"`, so the doubles ratchet cannot be \
+             planted against",
+        ),
     }
     // item 381 (Q11/Q32): `rules.legacy-reach.prefixes` struck the two dead prefixes
     // (busbar_core, busbar_substrate — 0 hits forever) and added the three live retiring engines
