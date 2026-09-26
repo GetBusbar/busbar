@@ -367,6 +367,7 @@ busbar-plane-decision = "crate::root::plane_decision"
 [package.metadata.busbar.served-witness]
 plane-mcp = "busbar-mcp"
 plane-a2a = "busbar-a2a"
+plane-voice = "busbar-voice"
 
 [package.metadata.busbar.root-units]
 plane-decision = "plane_decision"
@@ -383,6 +384,7 @@ busbar-llm = { path = "../busbar-llm", features = ["test-support"] }
 # The served planes' test kits: `testkit::SERVED` (their served-leg witnesses) is `test-support` only.
 busbar-mcp = { path = "../busbar-mcp", features = ["test-support"] }
 busbar-a2a = { path = "../busbar-a2a", features = ["test-support"] }
+busbar-voice = { path = "../busbar-voice", features = ["test-support"] }
 # The bin's own unit tests (src/tests/tests.rs, the ~14 boot/CLI helpers) build App fixtures
 # through the kernel's test_support, exposed to dependents only behind this feature.
 busbar-kernel = { path = "../busbar-kernel", features = ["test-support"] }

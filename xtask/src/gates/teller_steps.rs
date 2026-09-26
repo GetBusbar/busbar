@@ -677,9 +677,9 @@ pub fn default_features(text: &str) -> Result<BTreeSet<String>, String> {
 }
 
 /// The root legs the binary SHIPS: every leg whose feature is on the manifest's `default` line. A
-/// leg's feature is its `feature` member when it names one — the mcp and a2a legs are the kernel-loop
-/// rider those planes are served through, gated by the feature that links the plane (`plane-mcp`,
-/// `plane-a2a`) — and otherwise the leg's own name (`root-llm`, `root-voice`, `root-admin`).
+/// leg's feature is its `feature` member when it names one — the mcp, a2a and voice legs are the
+/// kernel-loop rider those planes are served through, gated by the feature that links the plane (`plane-mcp`,
+/// `plane-a2a`, `plane-voice`) — and otherwise the leg's own name (`root-llm`, `root-admin`).
 pub fn shipped_legs(m: &Matrix, default: &BTreeSet<String>) -> BTreeSet<String> {
     let legs = m.root_legs();
     legs.as_object()
@@ -823,9 +823,9 @@ pub fn root_line(m: &Matrix) -> String {
 // -------------------------------------------------------------------------------------------
 
 /// The features that compile the five root legs, which the `--root-legs` arm builds the binary crate
-/// with: each `root-*` leg's own feature, and for the mcp and a2a legs (the kernel-loop rider those
-/// planes are served through) the feature that links the plane.
-const ROOT_FEATURES: &str = "root-admin,plane-mcp,plane-a2a,root-voice,root-llm";
+/// with: each `root-*` leg's own feature, and for the mcp, a2a and voice legs (the kernel-loop rider
+/// those planes are served through) the feature that links the plane.
+const ROOT_FEATURES: &str = "root-admin,plane-mcp,plane-a2a,plane-voice,root-llm";
 
 const ARM_USAGE: &str = "\
 usage:

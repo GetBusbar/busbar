@@ -449,7 +449,9 @@ fn host_selection_seam_routes_session_to_registered_runner_when_set() {
 // capability — the plane's `testkit::SERVED` table, reached through `$OUT_DIR/served_witness.rs`,
 // which `build.rs` generates from the manifest, so this file names no plane — and requires the
 // plane's `drive` to have run INSIDE THE KERNEL LOOP exactly as many times as the witness says it
-// served a unit. Unflip a plane and its drives stop landing here: every test citing it goes red.
+// served a unit. A SESSION plane rides no `drive`: what the session rider carries is the open, so
+// for it the count is the opens the loop's door ran. Unflip a plane and its units stop landing here:
+// every test citing it goes red.
 
 mod served {
     include!(concat!(env!("OUT_DIR"), "/served_witness.rs"));
@@ -500,6 +502,13 @@ fn linked_planes() -> std::collections::BTreeSet<String> {
         .collect()
 }
 
+/// Every unit THIS thread's kernel-loop rider has carried: a one-shot plane's `drive` run inside the
+/// loop, and a session plane's open run through the loop's door.
+fn carried_in_loop() -> u64 {
+    crate::root::gauntlet_kernel::DRIVES_IN_LOOP.with(std::cell::Cell::get)
+        + crate::root::gauntlet_kernel::OPENS_IN_LOOP.with(std::cell::Cell::get)
+}
+
 /// Run `witness` — a loop step or a core capability — through the served rider for every linked
 /// plane whose served-witness table carries it, and require each plane's `drive` to have run inside
 /// the kernel loop exactly as many times as its witness served a unit. Every linked plane a ledger
@@ -515,10 +524,9 @@ async fn run_served(witness: &str, test_fn: &str) {
         let Some((_, run)) = table.iter().find(|(id, _)| *id == witness) else {
             continue;
         };
-        let before = crate::root::gauntlet_kernel::DRIVES_IN_LOOP.with(std::cell::Cell::get);
+        let before = carried_in_loop();
         let served = run().await;
-        let driven =
-            crate::root::gauntlet_kernel::DRIVES_IN_LOOP.with(std::cell::Cell::get) - before;
+        let driven = carried_in_loop() - before;
         assert!(
             served >= 1,
             "plane `{plane}`'s `{witness}` witness served no unit at all"
@@ -526,8 +534,8 @@ async fn run_served(witness: &str, test_fn: &str) {
         assert_eq!(
             driven, served,
             "plane `{plane}`'s `{witness}` witness served {served} unit(s), and the kernel-loop rider \
-             carried {driven} of them into the plane's `drive`: the capability did not hold on the \
-             served root leg"
+             carried {driven} of them into the plane's `drive` or through its session door: the \
+             capability did not hold on the served root leg"
         );
         answered.insert(plane.to_string());
     }
@@ -679,6 +687,67 @@ async fn served_rider_presents_only_the_planned_credential() {
     run_served(
         "egress-auth",
         "served_rider_presents_only_the_planned_credential",
+    )
+    .await;
+}
+
+/// VERIFY, on a session's served leg: the destination the door judged is the one the session runs
+/// under.
+#[tokio::test]
+async fn served_rider_opens_the_session_on_the_destination_it_judged() {
+    run_served(
+        "session-verify",
+        "served_rider_opens_the_session_on_the_destination_it_judged",
+    )
+    .await;
+}
+
+/// ROUTE, on a session's served leg: the session the door opened relays both directions.
+#[tokio::test]
+async fn served_rider_opens_a_session_that_relays_both_ways() {
+    run_served(
+        "session-route",
+        "served_rider_opens_a_session_that_relays_both_ways",
+    )
+    .await;
+}
+
+/// AUTHENTICATE, on a session's served leg: the session answers for the key the door resolved.
+#[tokio::test]
+async fn served_rider_attributes_the_session_to_the_resolved_key() {
+    run_served(
+        "session-authenticate",
+        "served_rider_attributes_the_session_to_the_resolved_key",
+    )
+    .await;
+}
+
+/// METER, on a session's served leg: each turn is ledgered per class the plane declares.
+#[tokio::test]
+async fn served_rider_meters_each_turn_per_declared_class() {
+    run_served(
+        "session-meter",
+        "served_rider_meters_each_turn_per_declared_class",
+    )
+    .await;
+}
+
+/// METRICS, on a session's served leg: each session the door opens is reported under its labels.
+#[tokio::test]
+async fn served_rider_reports_each_session_it_opens() {
+    run_served(
+        "session-metrics",
+        "served_rider_reports_each_session_it_opens",
+    )
+    .await;
+}
+
+/// BREAKER-FASTFAIL, on the served leg: a tripped upstream cell refuses before any socket opens.
+#[tokio::test]
+async fn served_rider_fast_fails_a_tripped_upstream() {
+    run_served(
+        "breaker-fastfail",
+        "served_rider_fast_fails_a_tripped_upstream",
     )
     .await;
 }

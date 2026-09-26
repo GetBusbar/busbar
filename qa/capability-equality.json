@@ -31,8 +31,8 @@
     "",
     "THE ROOT COLUMN (`root_legs` + every cell's `root`). The `test` above is the LEGACY path: the",
     "capability proven where the plane crate serves it. Every plane now also runs through the",
-    "composition root -- root-llm / root-voice / root-admin behind their features, root-mcp /",
-    "root-a2a on the kernel-loop rider every linked one-shot plane is served through -- and a",
+    "composition root -- root-llm / root-admin behind their features, root-mcp / root-a2a on the",
+    "kernel-loop rider every linked one-shot plane is served through, root-voice on its session rider -- and a",
     "capability that holds on the legacy path and is unwitnessed over the loop is a second, silent",
     "half of the same question. So each cell carries a SECOND verdict, over its plane's root leg:",
     "  proven          -- with `test`: a `<the leg's own file under crates/busbar/src/root/>::<test fn>` cell that",
@@ -99,12 +99,12 @@
       "note": "the A2A plane's SERVED root leg: the inbound call driven through the real router and the kernel-loop rider `gauntlet_install::install()` registers for the plane's key (DECISIONS #28), each root cell running the plane's own served witness (`busbar_a2a::testkit::SERVED`) and requiring its `drive` to have run inside the loop"
     },
     "root-voice": {
-      "file": "crates/busbar/src/root/tests/units_voice.rs",
+      "file": "crates/busbar/src/root/tests/gauntlet_kernel.rs",
       "columns": [
         "voice-client",
         "voice-server"
       ],
-      "note": "the voice plane switched over: a live session as a sequence of ordinary units -- the handshake, the per-frame turns and the metering lease"
+      "note": "the voice (streaming) plane's SERVED root leg: a live session opened at the plane's served door through the kernel-loop SESSION rider `gauntlet_install::install()` registers for the plane's key (DECISIONS #28), each root cell running the plane's own served witness (`busbar_voice::testkit::SERVED`) and requiring the session's open to have run through the loop's door; the turns, their metering on the kernel's session account (Q21b), the audit row and the durable chain are the served session the witness then drives"
     },
     "root-admin": {
       "file": "crates/busbar/src/root/units_admin/tests/units_admin.rs",
@@ -837,7 +837,7 @@
       "root": {
         "state": "none",
         "leg": "root-voice",
-        "reason": "the root-voice dial cell reads a cell that is already open; no cell on this leg records a failing provider dial into the breaker cell to make it open"
+        "reason": "the served session witness trips the provider cell with a guard-refused dial only to show the fast-fail after it; no served witness records a failing dial into the breaker cell and asserts the trip itself as its claim"
       }
     },
     {
@@ -858,7 +858,7 @@
       "root": {
         "state": "proven",
         "leg": "root-voice",
-        "test": "crates/busbar/src/root/tests/units_voice.rs::a_refused_dial_ends_the_opening_unit"
+        "test": "crates/busbar/src/root/tests/gauntlet_kernel.rs::served_rider_fast_fails_a_tripped_upstream"
       }
     },
     {
@@ -899,7 +899,7 @@
       "root": {
         "state": "none",
         "leg": "root-voice",
-        "reason": "no root-voice cell installs an observe or transform hook; the leg drives a session's stations and its lease, and no payload on it passes through a hook"
+        "reason": "no served session witness attaches an observe or transform hook; the witnesses open sessions at the served door with no hook attached, so no payload on this leg passes through one"
       }
     },
     {
@@ -910,7 +910,7 @@
       "root": {
         "state": "none",
         "leg": "root-voice",
-        "reason": "no root-voice cell installs an observe or transform hook; the leg drives a session's stations and its lease, and no payload on it passes through a hook"
+        "reason": "no served session witness attaches an observe or transform hook; the witnesses open sessions at the served door with no hook attached, so no payload on this leg passes through one"
       }
     },
     {
@@ -921,7 +921,7 @@
       "root": {
         "state": "none",
         "leg": "root-voice",
-        "reason": "the refusal a session meets on the root-voice leg is the scope unit's at approve; hooks::gate::decide is reached by no cell on this leg"
+        "reason": "the refusal a session meets on the served leg's witnesses is the session-scope grant's at the door; no served witness attaches an operator gate, so hooks::gate::decide is reached by no cell on this leg"
       }
     },
     {
@@ -932,7 +932,7 @@
       "root": {
         "state": "none",
         "leg": "root-voice",
-        "reason": "the refusal a session meets on the root-voice leg is the scope unit's at approve; hooks::gate::decide is reached by no cell on this leg"
+        "reason": "the refusal a session meets on the served leg's witnesses is the session-scope grant's at the door; no served witness attaches an operator gate, so hooks::gate::decide is reached by no cell on this leg"
       }
     },
     {
@@ -943,7 +943,7 @@
       "root": {
         "state": "proven",
         "leg": "root-voice",
-        "test": "crates/busbar/src/root/tests/units_voice.rs::the_opening_unit_seals_under_the_declared_operation_class"
+        "test": "crates/busbar/src/root/tests/gauntlet_kernel.rs::served_rider_chains_what_it_audits"
       }
     },
     {
@@ -954,7 +954,7 @@
       "root": {
         "state": "proven",
         "leg": "root-voice",
-        "test": "crates/busbar/src/root/tests/units_voice.rs::unit_zero_runs_every_station_and_settles_exactly_once"
+        "test": "crates/busbar/src/root/tests/gauntlet_kernel.rs::served_rider_chains_what_it_audits"
       }
     },
     {
@@ -965,7 +965,7 @@
       "root": {
         "state": "proven",
         "leg": "root-voice",
-        "test": "crates/busbar/src/root/tests/units_voice.rs::a_detached_node_refuses_the_session_at_the_door"
+        "test": "crates/busbar/src/root/tests/gauntlet_kernel.rs::served_rider_charges_the_presenting_key"
       }
     },
     {
@@ -976,7 +976,7 @@
       "root": {
         "state": "proven",
         "leg": "root-voice",
-        "test": "crates/busbar/src/root/tests/units_voice.rs::the_handshake_draws_no_request_slot_and_posts_nothing"
+        "test": "crates/busbar/src/root/tests/gauntlet_kernel.rs::served_rider_charges_the_presenting_key"
       }
     },
     {
@@ -1007,7 +1007,7 @@
       "root": {
         "state": "proven",
         "leg": "root-voice",
-        "test": "crates/busbar/src/root/tests/units_voice.rs::a_turn_meters_the_classes_the_plane_declares_with_text_split_by_direction"
+        "test": "crates/busbar/src/root/tests/gauntlet_kernel.rs::served_rider_reports_each_session_it_opens"
       }
     },
     {
@@ -1018,7 +1018,7 @@
       "root": {
         "state": "proven",
         "leg": "root-voice",
-        "test": "crates/busbar/src/root/tests/units_voice.rs::a_class_with_nothing_to_report_produces_no_line"
+        "test": "crates/busbar/src/root/tests/gauntlet_kernel.rs::served_rider_reports_each_session_it_opens"
       }
     },
     {
@@ -1069,7 +1069,7 @@
       "root": {
         "state": "none",
         "leg": "root-voice",
-        "reason": "the root-voice dial cells compose the provider endpoint from borrowed names; the credential that endpoint is reached with is planned outside this leg and no cell witnesses the injection"
+        "reason": "the served session witnesses compose no provider endpoint; the credential a provider dial is reached with is composed by the plane's compose step and no served witness drives its injection"
       }
     },
     {

@@ -42,10 +42,10 @@
 //!
 //! ## The ROOT LEG column — the same matrix, judged a second time over the loop
 //!
-//! Every plane now also runs through the composition root — `root-llm` / `root-voice` / `root-admin`
-//! behind their features, `root-mcp` / `root-a2a` on the kernel-loop rider those planes are served
-//! through (`root/gauntlet_kernel.rs`, gated by `plane-mcp` / `plane-a2a`, the features that link
-//! them). A capability proven where the plane crate serves it and
+//! Every plane now also runs through the composition root — `root-llm` / `root-admin` behind their
+//! features, `root-mcp` / `root-a2a` / `root-voice` on the kernel-loop rider those planes are served
+//! through (`root/gauntlet_kernel.rs`, the voice leg on its session rider, gated by `plane-mcp` /
+//! `plane-a2a` / `plane-voice`, the features that link them). A capability proven where the plane crate serves it and
 //! unwitnessed where the root drives it is the same silent half-answer this file exists to refuse,
 //! so the ledger carries a SECOND verdict per cell (`root`) and this gate runs the matrix ONCE PER
 //! LEG: for each declared leg, every cell in that leg's ledger columns is checked against the leg's
@@ -772,7 +772,7 @@ fn every_cell_carries_a_root_leg_verdict_and_every_root_proof_exists() {
 /// The Teller-path half of this gate used to be cfg-gated on all five `root-*` features AT ONCE.
 /// That conjunction is the wrong shape for the switch-over it is supposed to judge: the planes are
 /// moved onto the composition root ONE AT A TIME, so the ordinary build has SOME legs on — and under
-/// any such build (including the default one, and including `--features root-voice,root-llm`)
+/// any such build (including the default one, and including `--features root-llm`)
 /// the whole Teller-path check simply did not exist. A gate that is absent reports a green that
 /// asked nothing, which is the exact failure mode the rest of this file is built to refuse.
 ///

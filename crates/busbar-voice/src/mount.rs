@@ -1625,6 +1625,12 @@ where
     )
 }
 
+// THIS PLANE'S SERVED-LEG WITNESSES — exported through `crate::testkit::SERVED` for a composition
+// root's test build to run through its registered session runner (see the file's own header).
+#[cfg(any(test, feature = "test-support"))]
+#[path = "tests/served_witness.rs"]
+pub(crate) mod served_witness;
+
 #[cfg(test)]
 #[path = "tests/mount_tests.rs"]
 mod mount_tests;

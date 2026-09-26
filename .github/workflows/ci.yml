@@ -3669,9 +3669,9 @@ jobs:
   #   2. --check     every GATING plane x step cell in qa/teller-steps.json names a real scenario and
   #      not "none". This reads the JSON.
   #   3. --root-legs the part that reads nothing and PROVES something: it builds the binary crate with
-  #      all five root legs on (root-admin,plane-mcp,plane-a2a,root-voice,root-llm -- the mcp and a2a
-  #      legs are the kernel-loop rider those planes are served through, gated by the feature that
-  #      links the plane) and EXECUTES every named root-leg cell. A matrix can only be verified
+  #      all five root legs on (root-admin,plane-mcp,plane-a2a,plane-voice,root-llm -- the mcp, a2a
+  #      and voice legs are the kernel-loop rider those planes are served through, gated by the
+  #      feature that links the plane) and EXECUTES every named root-leg cell. A matrix can only be verified
   #      against cells that run; verified against itself it is a spreadsheet.
   # All three were run by scripts/verify-1.6.0-done.sh alone — the release-time DONE claim — so a cell
   # that stopped executing would have stayed invisible until a release was being cut. Wired here so it

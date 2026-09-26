@@ -90,7 +90,8 @@
     },
     "root-voice": {
       "plane": "voice",
-      "file": "crates/busbar/src/root/tests/units_voice.rs"
+      "file": "crates/busbar/src/root/tests/gauntlet_kernel.rs",
+      "feature": "plane-voice"
     },
     "root-admin": {
       "plane": "admin",
@@ -442,8 +443,8 @@
         "root": {
           "state": "proven",
           "leg": "root-voice",
-          "test": "crates/busbar/src/root/tests/units_voice.rs::the_arrival_chain_records_both_composed_layers",
-          "note": "a session arrives on WebSocket over HTTP and the chain names both layers; the under-reported chain of one is what composition exists to fix"
+          "test": "crates/busbar/src/root/tests/gauntlet_kernel.rs::served_rider_carries_one_unit_per_call",
+          "note": "on the served session leg (the kernel-loop session rider `install()` registers for the streaming plane's key): each call at the voice door is one session open the rider carries and one report, so two calls are two units, never one"
         }
       },
       "decode": {
@@ -453,8 +454,8 @@
         "root": {
           "state": "proven",
           "leg": "root-voice",
-          "test": "crates/busbar/src/root/tests/units_voice.rs::a_client_event_opens_a_turn_and_a_later_one_relays_onto_it",
-          "note": "the dialect is settled at the door, but the per-frame read is not: a first client event on a realtime session opens a turn and mints the correlation, and the class the step carries is read off the plane's own answer rather than restated, so a shape that drifted from the plane's vocabulary goes red rather than pricing under a name nothing declares (every shape's class is asserted to be one the plane DECLARES). A tool result on the same session relays onto that turn's correlation instead of opening a second unit, which is what one-open-unit-per-direction means. A telephony-carried session handed bytes that are not that carrier's shape is refused Malformed at the step that read them, so no unit exists to have been given a class"
+          "test": "crates/busbar/src/root/tests/gauntlet_kernel.rs::served_rider_refuses_a_body_that_does_not_decode",
+          "note": "on the served session leg: a client event the plane reads is carried to the upstream, and a frame the plane cannot read reaches the upstream on no wire at all, on a session the rider opened"
         }
       },
       "authenticate": {
@@ -464,8 +465,8 @@
         "root": {
           "state": "proven",
           "leg": "root-voice",
-          "test": "crates/busbar/src/root/tests/units_voice.rs::a_credential_is_resolved_against_this_planes_own_audience",
-          "note": "the session-opening unit's credential, through a closed chain whose only arm is the node's own signed-key directory, so the arm is the one thing that can open the door. Three answers: a key minted for this plane admits and carries the key's own id (which is what the audit row and the settlement attribute to); a credential the directory does not hold, and no credential at all, are both refused unauthenticated at the authenticate step before the unit reaches a destination; and a REAL, unexpired key minted for another plane's audience is refused here at this plane's ingress rather than carried to an upstream that would have honoured it -- an audience declared and never checked is not an audience. The rig's provider-credential leg stays the outside evidence"
+          "test": "crates/busbar/src/root/tests/gauntlet_kernel.rs::served_rider_attributes_the_session_to_the_resolved_key",
+          "note": "on the served session leg: the session answers for the key the door resolved and for nobody else -- its turns land on that key's own ledger, and a caller the door resolved no key for is attributed nothing"
         }
       },
       "verify": {
@@ -475,8 +476,8 @@
         "root": {
           "state": "proven",
           "leg": "root-voice",
-          "test": "crates/busbar/src/root/tests/units_voice.rs::each_dialect_dials_its_own_composed_endpoint",
-          "note": "each dialect reaches its own composed provider endpoint and neither reaches the other's -- a destination this session was never scoped to reach"
+          "test": "crates/busbar/src/root/tests/gauntlet_kernel.rs::served_rider_opens_the_session_on_the_destination_it_judged",
+          "note": "on the served session leg: the destination the open-pass gate judged inside the rider is the destination the session is metered under -- every count lands under that one lane"
         }
       },
       "approve": {
@@ -486,8 +487,8 @@
         "root": {
           "state": "proven",
           "leg": "root-voice",
-          "test": "crates/busbar/src/root/tests/units_voice.rs::an_undeclared_operation_class_is_refused_before_the_door",
-          "note": "a turn on an undeclared class is refused at approve, driven through the loop rather than asserted at the table: authorization by omission is what the empty answer prevents"
+          "test": "crates/busbar/src/root/tests/gauntlet_kernel.rs::served_rider_refuses_a_grant_short_of_the_operation",
+          "note": "on the served session leg: a key valid for the door but granted no session scope is refused with the plane's own answer before the gate and opens nothing; a granted key reaches the governed open"
         }
       },
       "admit": {
@@ -497,8 +498,8 @@
         "root": {
           "state": "proven",
           "leg": "root-voice",
-          "test": "crates/busbar/src/root/tests/units_voice.rs::a_detached_node_refuses_the_session_at_the_door",
-          "note": "the reservation IS the budget: a node that cannot take the lease refuses at the door rather than opening a session that cannot pay"
+          "test": "crates/busbar/src/root/tests/gauntlet_kernel.rs::served_rider_refuses_an_over_budget_caller_before_it_dials",
+          "note": "on the served session leg: a key whose chain already reads dry is refused at the open, past the rider's gate and before any durable row or account exists, while a key with room opens"
         }
       },
       "route": {
@@ -508,8 +509,8 @@
         "root": {
           "state": "proven",
           "leg": "root-voice",
-          "test": "crates/busbar/src/root/tests/units_voice.rs::a_refused_dial_ends_the_opening_unit",
-          "note": "a guard-refused or breaker-open dial ends the opening unit rather than half-opening a session -- the down-lane-ends-terminal outcome, in voice terms"
+          "test": "crates/busbar/src/root/tests/gauntlet_kernel.rs::served_rider_opens_a_session_that_relays_both_ways",
+          "note": "on the served session leg: the session the rider opened relays the provider's audio down to the client and the client's audio up to the provider"
         }
       },
       "meter": {
@@ -519,8 +520,8 @@
         "root": {
           "state": "proven",
           "leg": "root-voice",
-          "test": "crates/busbar/src/root/tests/units_voice.rs::a_turn_meters_the_classes_the_plane_declares_with_text_split_by_direction",
-          "note": "a turn settles against exactly what it reports, with the two text halves on their own classes rather than summed at the input rate"
+          "test": "crates/busbar/src/root/tests/gauntlet_kernel.rs::served_rider_meters_each_turn_per_declared_class",
+          "note": "on the served session leg: one turn is ledgered on the presenting key per class the plane declares, the two text halves on their own classes rather than summed (Q21b: the kernel's session account)"
         }
       },
       "audit": {
@@ -530,8 +531,8 @@
         "root": {
           "state": "proven",
           "leg": "root-voice",
-          "test": "crates/busbar/src/root/tests/units_voice.rs::the_opening_unit_seals_under_the_declared_operation_class",
-          "note": "every unit of a session leaves a record, the opening one included, under the operation class the plane declared"
+          "test": "crates/busbar/src/root/tests/gauntlet_kernel.rs::served_rider_audits_each_call_once",
+          "note": "on the served session leg: a served open lands exactly one admin-audit row naming the mutation, the session, its outcome and its principal"
         }
       },
       "exit": {
@@ -541,8 +542,8 @@
         "root": {
           "state": "proven",
           "leg": "root-voice",
-          "test": "crates/busbar/src/root/tests/units_voice.rs::unit_zero_runs_every_station_and_settles_exactly_once",
-          "note": "the whole session-bound path as one unit, settling exactly once -- the exit path takes the hold and there is no second taker"
+          "test": "crates/busbar/src/root/tests/gauntlet_kernel.rs::served_rider_ends_each_call_once",
+          "note": "on the served session leg: the session ends once -- the turn still open when the carrier ends is ledgered with the session, and the durable row is settled and evicted"
         }
       }
     },

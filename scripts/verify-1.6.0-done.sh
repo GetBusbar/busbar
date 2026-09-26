@@ -1326,14 +1326,14 @@ sys.exit(1 if m else 0)
 '
 # THE ROOT COLUMN. Every plane also runs through the composition root, so the ledger carries a second
 # verdict per cell over its plane's `root-*` leg. Two things are asserted here and neither is the
-# other: that the column HOLDS (the cargo gate, run with every leg's feature on — the three `root-*`
-# features and the `plane-mcp` / `plane-a2a` features that link the two planes the kernel-loop rider
-# serves), and that every cell it calls `proven`
+# other: that the column HOLDS (the cargo gate, run with every leg's feature on — the two `root-*`
+# features and the `plane-mcp` / `plane-a2a` / `plane-voice` features that link the three planes the
+# kernel-loop rider serves), and that every cell it calls `proven`
 # actually RUNS and passes (the summary's own runner, which refuses a run that executed a different
 # set). The remaining "none" cells are the switch-over queue and are PRINTED, not fatal — the same
 # honest-ledger posture the missing set has.
 step "capability_equality gate, five legs on" \
-  cargo test -p busbar --features root-admin,plane-mcp,plane-a2a,root-voice,root-llm --quiet --test capability_equality
+  cargo test -p busbar --features root-admin,plane-mcp,plane-a2a,plane-voice,root-llm --quiet --test capability_equality
 step "every root-leg proof cell RUNS and passes" python3 scripts/capability-equality-summary.py --root-legs
 printf '  \033[36m[info]\033[0m '
 python3 scripts/capability-equality-summary.py 2>/dev/null | grep -E "^ROOT-EQUALITY:" || echo "root-equality count unavailable"
