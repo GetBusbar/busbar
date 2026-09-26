@@ -6,8 +6,9 @@
 //! `docs/design/1.6.0-QUESTIONS.md` "FIXTURES"): the proofs of these two kinds are the real plugin
 //! repos, `GetBusbar/hashicorp-vault` (secret) and `GetBusbar/auth-github` (auth).
 //!
-//! ci.yml's `plugin-proofs` job checks both repos out beside this one (their `../../busbar/crates/…`
-//! path convention), builds their `cdylib`s, and runs these tests with `BUSBAR_PLUGIN_PROOF_DIR`
+//! ci.yml's `plugin-proofs` job checks both repos out beside this one at `dev`, `[patch]`es the
+//! busbar crates they name by git (busbar-contract, and busbar-plugin-loader dev-only) to this tree
+//! through cargo config, builds their `cdylib`s, and runs these tests with `BUSBAR_PLUGIN_PROOF_DIR`
 //! naming the directory the `cdylib`s were built into. Each test takes the REAL artifact through the
 //! DROPPED-IN door ([`super::both_ways::dropped`]: signed first-party into a fresh `plugins/`,
 //! found by [`crate::scan_and_validate`], opened by the registry's own `open_*`) and asserts:
