@@ -220,15 +220,15 @@ busbar-voice = ["busbar-voice-codec"]
 
 [gate.ceiling_raises."gate.surface_ceilings.contract_caps"]
 file    = "qa/construction.toml"
-from    = 8148
-to      = 8424
-because = "OWNER RULING Q68(3) (docs/design/1.6.0-QUESTIONS.md): contract_caps re-arms at the MEASURED value after each owner-locked #83/#84 merge commit into busbar-contract, each in its own commit. This is the re-arm for 4c5a8a3dd, fold F1: the busbar-secret-ref crate merged into busbar-contract as its `secret_ref` module (#83 MERGE; ARCHITECT P68-0 residue (c)), the crate deleted. Measured by cargo xtask loc busbar-contract --ref: 8148 at 4c5a8a3dd^, 8424 at 4c5a8a3dd; the +276 is `secret_ref.rs` (276 code lines, byte-identical code from crates/secret-ref/src/lib.rs), +1 its `pub mod` line in lib.rs, -1 the deleted placeholder `kinds::SecretRef(String)` struct now a re-export. The 7414 -> 8148 declaration this replaces (SD-1, 4db9c5349) is at the base and expired."
+from    = 8424
+to      = 8532
+because = "OWNER RULING Q68(3) (docs/design/1.6.0-QUESTIONS.md): contract_caps re-arms at the MEASURED value after each owner-locked #83/#84 merge commit into busbar-contract, each in its own commit. This is the re-arm for 4152c1b6b, K2f (ARCHITECT ruling R10: AwaitingReplies/NotWaiting move to the contract as SHAPES, #83): busbar-kernel/src/reply.rs, the AwaitReply leg's waiting table, moved verbatim to busbar-contract/src/reply.rs so the streaming plane holds its node's governed-call table without a busbar_kernel:: reach. Measured by cargo xtask loc busbar-contract --ref: 8424 at 4152c1b6b^, 8532 at 4152c1b6b; the +108 is that module (107 code lines) and its `pub mod` line in lib.rs; busbar-kernel falls 50746 -> 50639 by the same move. The 8148 -> 8424 declaration this replaces (fold F1, 4c5a8a3dd) is at the base and expired."
 
 [gate.ceiling_raises."rules.loc-ceilings.caps_contract_ceiling"]
 file    = "qa/construction.toml"
-from    = 8148
-to      = 8424
-because = "OWNER RULING Q68(3) (docs/design/1.6.0-QUESTIONS.md): contract_caps re-arms at the MEASURED value after each owner-locked #83/#84 merge commit into busbar-contract, each in its own commit. This is the re-arm for 4c5a8a3dd, fold F1: the busbar-secret-ref crate merged into busbar-contract as its `secret_ref` module (#83 MERGE; ARCHITECT P68-0 residue (c)), the crate deleted. Measured by cargo xtask loc busbar-contract --ref: 8148 at 4c5a8a3dd^, 8424 at 4c5a8a3dd; the +276 is `secret_ref.rs` (276 code lines, byte-identical code from crates/secret-ref/src/lib.rs), +1 its `pub mod` line in lib.rs, -1 the deleted placeholder `kinds::SecretRef(String)` struct now a re-export. The 7414 -> 8148 declaration this replaces (SD-1, 4db9c5349) is at the base and expired."
+from    = 8424
+to      = 8532
+because = "OWNER RULING Q68(3) (docs/design/1.6.0-QUESTIONS.md): contract_caps re-arms at the MEASURED value after each owner-locked #83/#84 merge commit into busbar-contract, each in its own commit. This is the re-arm for 4152c1b6b, K2f (ARCHITECT ruling R10: AwaitingReplies/NotWaiting move to the contract as SHAPES, #83): busbar-kernel/src/reply.rs, the AwaitReply leg's waiting table, moved verbatim to busbar-contract/src/reply.rs so the streaming plane holds its node's governed-call table without a busbar_kernel:: reach. Measured by cargo xtask loc busbar-contract --ref: 8424 at 4152c1b6b^, 8532 at 4152c1b6b; the +108 is that module (107 code lines) and its `pub mod` line in lib.rs; busbar-kernel falls 50746 -> 50639 by the same move. The 8148 -> 8424 declaration this replaces (fold F1, 4c5a8a3dd) is at the base and expired."
 
 # ── THE KERNEL CEILING'S OWNER-APPROVED RAISE — EXPIRED AND STRUCK ─────────────────────────────
 #
@@ -319,7 +319,10 @@ because = "OWNER RULING Q68(3) (docs/design/1.6.0-QUESTIONS.md): contract_caps r
 # RE-ARMED 8148 -> 8424, AT THE MEASUREMENT (OWNER RULING Q68(3)), in its own commit after 4c5a8a3dd
 # (fold F1) merged `busbar-secret-ref` into the contract as `secret_ref` under #83. The +276 is that
 # module; the declared raise above carries the before/after measure.
-contract_caps = 8424
+# RE-ARMED 8424 -> 8532, AT THE MEASUREMENT (OWNER RULING Q68(3); ARCHITECT ruling R10), in its own
+# commit after 4152c1b6b moved the kernel's reply-leg waiting table into the contract as a shape under
+# #83. The +108 is that module; the declared raise above carries the before/after measure.
+contract_caps = 8532
 # REPOINTED, and the repoint is what makes this row a gate again. It named the CRATE
 # `busbar-grammar`, which #40 folded into `busbar-contract` and deleted — so it summed nothing,
 # measured nothing and passed, which is this file's own "zero is not clean" failure sitting inside
@@ -878,7 +881,8 @@ contract_crate = "busbar-contract"
 # `[gate.surface_ceilings].contract_caps` above).
 # RE-ARMED 7414 -> 8148 with its pair (OWNER RULING Q68(3); the SD-1 shapes merge, 4db9c5349).
 # RE-ARMED 8148 -> 8424 with its pair (OWNER RULING Q68(3); fold F1, the secret-ref merge, 4c5a8a3dd).
-caps_contract_ceiling = 8424
+# RE-ARMED 8424 -> 8532 with its pair (OWNER RULING Q68(3); the reply-table shape move, 4152c1b6b).
+caps_contract_ceiling = 8532
 unit_crate_glob = "busbar-unit-*"
 # RE-KEYED on cherry-pick onto 143db6db6: this commit's own delta is -53 (two units stopped
 # declaring their own copies), measured against whatever unit_total_ceiling read when the line was
