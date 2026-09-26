@@ -175,7 +175,8 @@ pub const KNOWN_UNSHIPPED: &[&str] = &[
     // `wal-corruption-verdict` STRUCK 2026-09-24 (owner ruling Q38): recover_and_truncate branches
     // on the verdict and quarantines a Corrupt remainder before the cut.
     // `crash-recovery-open-holds` STRUCK 2026-09-24 (item 127): the boot path calls `recover_all`.
-    "breaker-pool-observation",
+    // `breaker-pool-observation` STRUCK 2026-09-25 (item 142 residue): the root's policy is built
+    // from the configured pools and its adapter shares the kernel's one BreakerUnit.
     // `plugin-abi-keyed-units` STRUCK 2026-09-24 (owner ruling Q33d/Q35; item 123).
     "hold-late-accrual-parent-exit",
     // `rate-card-multi-currency` STRUCK 2026-09-25 (#66, spec Q4): `set_rate`/`set_fee` deleted.

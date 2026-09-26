@@ -404,3 +404,60 @@ fn the_boot_seal_runs_the_label_bank_check_and_a_drift_refuses_the_boot() {
         "today's banks agree, so the seal still passes"
     );
 }
+
+/// ONE CELL SET ON THE NODE. The root's breaker is bound to the kernel's own unit through the live
+/// snapshot, so a pool observation made through the root adapter is the cell the kernel's admission
+/// reads, and a trip the kernel records is the one the adapter answers with. A second unit would
+/// pass neither half: its cells are not the lane store's.
+#[test]
+fn the_root_breaker_observes_into_the_kernels_own_cells() {
+    use busbar_kernel::test_support::{LaneSpec, TestApp};
+    let app = TestApp::new()
+        .lane(LaneSpec::new("m0", "wire-under-test", "http://127.0.0.1:9"))
+        .lane(LaneSpec::new("m1", "wire-under-test", "http://127.0.0.1:9"))
+        .pool("pool", &[(0, 1), (1, 1)])
+        .build();
+    let handle = Arc::new(busbar_kernel::state::AppHandle::new(app));
+    let trip_on_first = BreakerCfg {
+        trip: busbar_kernel_breaker::cfg::TripConfig {
+            mode: busbar_kernel_breaker::cfg::TripMode::Consecutive,
+            consecutive_n: 1,
+            ..Default::default()
+        },
+        ..BreakerCfg::default()
+    };
+    let breaker = BreakerAdapter::over_kernel(
+        Arc::clone(&handle),
+        BreakerPolicy::new().with_pool("pool", trip_on_first),
+    );
+
+    // The kernel's own clock: its hard-down below stamps the wall clock in seconds.
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("after the epoch")
+        .as_secs();
+
+    // Through the root adapter, into the kernel's cell.
+    assert!(breaker.observe(
+        "pool",
+        DestinationId::new(0),
+        Outcome::Transient { retry_after: None },
+        now,
+        &route_token(),
+    ));
+    assert!(
+        !handle.load().store.ready_in("pool", 0, now),
+        "the kernel's admission reads the trip the root adapter recorded"
+    );
+
+    // From the kernel's record, out through the root adapter.
+    assert!(breaker.ready("pool", DestinationId::new(1), now, &route_token()));
+    handle
+        .load()
+        .store
+        .record_hard_down_all_cells(1, "one cell set");
+    assert!(
+        !breaker.ready("pool", DestinationId::new(1), now, &route_token()),
+        "the root adapter answers with the trip the kernel recorded"
+    );
+}

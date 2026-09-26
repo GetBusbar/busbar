@@ -785,4 +785,9 @@ pub trait LaneRuntime: Send + Sync + 'static {
     /// consumes it via `restore_health_impl`). Reliability state is NEVER persisted to disk (store-or-
     /// RAM rule): a process restart re-learns it from live traffic, so there is no boot-restore path.
     fn export_health(&self) -> Vec<LaneHealthSnapshot>;
+
+    /// The one breaker whose cells this store's lanes are handles onto, shared — so a reader that
+    /// observes through the handle writes the cells admission reads, never a second set. A lane's
+    /// destination is its index.
+    fn breaker_unit(&self) -> std::sync::Arc<busbar_kernel_breaker::BreakerUnit>;
 }

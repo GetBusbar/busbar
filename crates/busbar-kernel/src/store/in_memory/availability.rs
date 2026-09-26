@@ -156,6 +156,10 @@ impl HealthState {
 }
 
 impl LaneRuntime for HealthState {
+    fn breaker_unit(&self) -> std::sync::Arc<busbar_kernel_breaker::BreakerUnit> {
+        std::sync::Arc::clone(&self.unit)
+    }
+
     #[cfg(any(test, feature = "test-support"))]
     fn usable(&self, lane: usize, now: u64) -> bool {
         self.usable_for("", lane, now)

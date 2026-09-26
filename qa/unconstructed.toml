@@ -223,16 +223,10 @@ switch    = "STRIKE THIS ROW in the commit that calls journal_checkpoint on a re
 # the same `truncates()` policy as `busbar_kernel::recovery::TailVerdict` — only a non-Corrupt
 # verdict is cut without a copy.
 
-# THE ROOT BREAKER OBSERVES NOTHING FOR ANY POOL.
-[[capability]]
-id        = "breaker-pool-observation"
-built     = "crates/busbar/src/root/adapters.rs"
-symbol    = "with_pool"
-construct = [".with_pool("]
-scope     = ["crates"]
-why       = "The sole production BreakerPolicy is BreakerPolicy::new() with no pool and no fallback cell, and observe() bails on `let Some(cfg) = self.policy.for_pool(pool) else { return false }` — so the root breaker records nothing for every pool that exists."
-unshipped = true
-switch    = "STRIKE THIS ROW in the commit that builds the root's BreakerPolicy from configured pools. It belongs with the three breaker rows above — they are one seam and should land together."
+# `breaker-pool-observation` STRUCK 2026-09-25 (item 142 residue): the root's BreakerPolicy is built
+# `BreakerPolicy::from_pools` from the configured `pools:` (every pool `.with_pool` under its resolved
+# `breaker:` block), and the root's BreakerAdapter is bound `over_kernel` to the kernel lane store's
+# own BreakerUnit — one cell set on the node, not a second one beside it.
 
 # THE ABI MINOR WAS BUMPED 19->20 FOR A CAPABILITY WITH NO PRODUCER AND NO CONSUMER.
 # `plugin-abi-keyed-units` STRUCK 2026-09-24 by owner ruling: the host decodes keyed units on the

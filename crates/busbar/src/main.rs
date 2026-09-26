@@ -807,6 +807,10 @@ async fn run(data_workers: usize) {
     // as the release without this field, byte for byte.
     #[cfg(feature = "root-admin")]
     let boot_operator_auth = cfg.auth.clone();
+    // The root breaker's per-pool ladders, read off the same `pools:` the build resolves each pool's
+    // own dispatch cfg from, before `cfg` is consumed.
+    #[cfg(feature = "root-admin")]
+    let breaker_policy = root::adapters::BreakerPolicy::from_pools(&cfg.pools);
 
     // The secret resolver the listeners resolve TLS cert/key/CA references through - the SAME seam
     // (built-in env/file + kind:secret plugins) that resolved provider keys at build time.
@@ -989,6 +993,12 @@ async fn run(data_workers: usize) {
                 units.admin.pools = std::sync::Arc::new(move |pool: &str| {
                     busbar_kernel::governance::group_provision::pool_known(&live.load(), pool)
                 });
+                // The root breaker is the kernel's own: one cell set on the node, read through the
+                // live snapshot so an apply's rebuilt store is the one it observes into.
+                units.breaker = root::adapters::BreakerAdapter::over_kernel(
+                    std::sync::Arc::clone(&app_handle),
+                    breaker_policy,
+                );
                 // THE DEPLOYMENT'S OWN DOOR, in front of the authenticate step. Without these two lines
                 // the assembly's open posture shipped: the step admitted every caller anonymously and
                 // the only thing deciding was the surface mounted underneath — so a credential this node

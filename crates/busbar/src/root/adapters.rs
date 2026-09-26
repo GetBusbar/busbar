@@ -54,6 +54,7 @@ use busbar_kernel_egress::ports::{
     Admit, Breaker, Classified, Outcome, Unavailable, UpstreamStatus,
 };
 use std::collections::HashMap;
+use std::sync::Arc;
 
 /// The per-pool breaker configuration the adapter closes over.
 ///
@@ -89,6 +90,21 @@ impl BreakerPolicy {
         self
     }
 
+    /// The policy a deployment's `pools:` declare: every configured pool under its own resolved
+    /// `breaker:` block (or the defaults, when it declares none), and the default cell under the
+    /// defaults — the same ladder each pool's own dispatch resolves, lowered by the kernel's one
+    /// lowering so the two cannot disagree.
+    #[must_use]
+    pub fn from_pools(pools: &HashMap<String, busbar_kernel::config::PoolCfg>) -> Self {
+        use busbar_kernel::store::pool_breaker_cfg;
+        pools.iter().fold(
+            BreakerPolicy::new().with_default_cell(pool_breaker_cfg(None)),
+            |policy, (name, pool)| {
+                policy.with_pool(name.as_str(), pool_breaker_cfg(pool.breaker.as_ref()))
+            },
+        )
+    }
+
     /// The ladder in force for one pool, if the configuration declared one.
     ///
     /// The default cell's declaration answers for the default cell and nothing else. A NAMED pool
@@ -111,28 +127,54 @@ impl BreakerPolicy {
 /// never do is decide anything: a disposition is the breaker unit's data and a route is the egress
 /// unit's walk, and an adapter that split the difference would be a third opinion nobody asked for.
 pub struct BreakerAdapter {
-    unit: BreakerUnit,
+    unit: UnitSource,
     policy: BreakerPolicy,
 }
+
+/// Where the adapter reaches its breaker unit: asked on every call, so a source that follows the
+/// live configuration hands back the unit the node is admitting on NOW, not the one it booted with.
+pub type UnitSource = Arc<dyn Fn() -> Arc<BreakerUnit> + Send + Sync>;
 
 impl BreakerAdapter {
     /// Bind the egress port to a breaker unit, under a declared per-pool policy.
     #[must_use]
-    pub fn new(unit: BreakerUnit, policy: BreakerPolicy) -> Self {
-        BreakerAdapter { unit, policy }
+    pub fn new(unit: Arc<BreakerUnit>, policy: BreakerPolicy) -> Self {
+        BreakerAdapter::over(Arc::new(move || Arc::clone(&unit)), policy)
+    }
+
+    /// Bind the egress port to whatever unit `source` answers with, under a declared policy.
+    #[must_use]
+    pub fn over(source: UnitSource, policy: BreakerPolicy) -> Self {
+        BreakerAdapter {
+            unit: source,
+            policy,
+        }
+    }
+
+    /// Bind the egress port to the kernel's OWN breaker — the unit the live snapshot's lane store is
+    /// a handle onto — so there is one cell set on the node: an observation through this port is
+    /// the one admission reads, and a trip the kernel records is the one this port answers with.
+    /// Read through the handle on every call, because a config apply rebuilds the store (carrying
+    /// its learned health over by lane identity) and the unit with it.
+    #[must_use]
+    pub fn over_kernel(
+        handle: Arc<busbar_kernel::state::AppHandle>,
+        policy: BreakerPolicy,
+    ) -> Self {
+        BreakerAdapter::over(Arc::new(move || handle.load().store.breaker_unit()), policy)
     }
 
     /// Bind the egress port to a fresh breaker unit, under a declared per-pool policy. The
     /// one-call form of [`BreakerAdapter::new`] for a caller with no unit of its own to hand in.
     #[must_use]
     pub fn with_policy(policy: BreakerPolicy) -> Self {
-        BreakerAdapter::new(BreakerUnit::new(), policy)
+        BreakerAdapter::new(Arc::new(BreakerUnit::new()), policy)
     }
 
-    /// The breaker unit behind the port, for the boot-time hydration the root does before serving.
+    /// The breaker unit behind the port, as its source answers now.
     #[must_use]
-    pub fn unit(&self) -> &BreakerUnit {
-        &self.unit
+    pub fn unit(&self) -> Arc<BreakerUnit> {
+        (self.unit)()
     }
 
     /// Fold the transport's coarse reading of a frame down to a representative numeric status, for
@@ -208,7 +250,7 @@ impl Breaker for BreakerAdapter {
         destination: DestinationId,
         now: u64,
     ) -> Result<Admit, Unavailable> {
-        match self.unit.try_admit(pool, destination, now) {
+        match self.unit().try_admit(pool, destination, now) {
             Ok(admit) => Ok(Admit {
                 probe_epoch: admit.probe_epoch,
             }),
@@ -229,7 +271,7 @@ impl Breaker for BreakerAdapter {
 
     fn ready(&self, pool: &str, destination: DestinationId, now: u64, token: &Pass<Route>) -> bool {
         matches!(
-            self.unit.state(pool, destination, now, token),
+            self.unit().state(pool, destination, now, token),
             busbar_kernel_breaker::LaneState::Ready
         )
     }
@@ -239,7 +281,7 @@ impl Breaker for BreakerAdapter {
         // destination is administratively down is declared configuration, which is the egress and
         // configuration layer's to know and not this unit's. Answered from `budget_remaining`
         // alone, never from the sealed `state`/`observe`, so no token crosses here.
-        self.unit.budget_remaining(destination) != Some(0)
+        self.unit().budget_remaining(destination) != Some(0)
     }
 
     fn cooldown_remaining(
@@ -249,7 +291,7 @@ impl Breaker for BreakerAdapter {
         now: u64,
         token: &Pass<Route>,
     ) -> u64 {
-        match self.unit.state(pool, destination, now, token) {
+        match self.unit().state(pool, destination, now, token) {
             busbar_kernel_breaker::LaneState::Suppressed { until } => until.saturating_sub(now),
             _ => 0,
         }
@@ -289,7 +331,7 @@ impl Breaker for BreakerAdapter {
         let Some(cfg) = self.policy.for_pool(pool) else {
             return false;
         };
-        self.unit.observe(
+        self.unit().observe(
             pool,
             destination,
             to_breaker_outcome(outcome),
@@ -300,15 +342,15 @@ impl Breaker for BreakerAdapter {
     }
 
     fn release_probe(&self, pool: &str, destination: DestinationId, epoch: u64, now: u64) {
-        self.unit.release_probe(pool, destination, epoch, now);
+        self.unit().release_probe(pool, destination, epoch, now);
     }
 
     fn spend_budget(&self, destination: DestinationId) -> bool {
-        self.unit.spend_budget(destination)
+        self.unit().spend_budget(destination)
     }
 
     fn refund_budget(&self, destination: DestinationId) {
-        self.unit.refund_budget(destination);
+        self.unit().refund_budget(destination);
     }
 }
 

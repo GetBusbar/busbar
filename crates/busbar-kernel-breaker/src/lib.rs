@@ -323,6 +323,18 @@ impl<J: JournalSink> BreakerUnit<J> {
     /// The `(pool, destination)` cell, created Closed on first touch and registered for the
     /// destination's hard-down fan-out ([`Self::hard_down_all`]) before anything can reach it.
     pub fn cell(&self, pool: &str, destination: DestinationId) -> Arc<BreakerCell> {
+        self.cell_seeded(pool, destination, |_| {})
+    }
+
+    /// [`Self::cell`], with `seed` run on the cell exactly when THIS call creates it, before any
+    /// other reader can reach it. A cell another holder of this unit already created is returned as
+    /// it stands: seeding it again would overwrite what that holder recorded.
+    pub fn cell_seeded(
+        &self,
+        pool: &str,
+        destination: DestinationId,
+        seed: impl FnOnce(&BreakerCell),
+    ) -> Arc<BreakerCell> {
         // The hit path — every admission and every observation of an already-touched member —
         // borrows the whole key from the caller's own arguments and allocates nothing.
         if let Some(c) = self
@@ -355,7 +367,11 @@ impl<J: JournalSink> BreakerUnit<J> {
             .entry(pool.to_string())
             .or_default()
             .entry(destination)
-            .or_insert_with(|| Arc::new(BreakerCell::new()))
+            .or_insert_with(|| {
+                let cell = BreakerCell::new();
+                seed(&cell);
+                Arc::new(cell)
+            })
             .clone()
     }
 
