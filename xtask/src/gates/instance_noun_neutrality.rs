@@ -922,8 +922,9 @@ impl InstanceNounNeutralityGate {
         InstanceNounNeutralityGate { write: false }
     }
 
-    /// `--write`: lower and strike ledger rows to the measurement; refuse wholesale if any row
-    /// would be added or would rise without an owner-cited `[[allow_rise]]` (see the `write` module).
+    /// `--write`: lower and strike ledger rows to the measurement; a row that would be added or
+    /// would rise without an owner-cited `[[allow_rise]]` is refused — left as committed, named,
+    /// and the arm exits nonzero (see the `write` module).
     pub fn write() -> InstanceNounNeutralityGate {
         InstanceNounNeutralityGate { write: true }
     }
@@ -994,15 +995,11 @@ impl Gate for InstanceNounNeutralityGate {
 
         // The baseline-regeneration affordance: print the ledger `--write` would write and keep
         // going, so the ordinary verdict still prints too. It is the SAME derivation as `--write`
-        // (see the `write` module), so it can only lower a row or strike one: on a refusal (a row
-        // would be added or would rise) it prints the committed ledger unchanged, and the
-        // `:undocumented` row below names the rise.
+        // (see the `write` module), so it can only lower a row or strike one: a row that would be
+        // added or would rise is left as committed, and the `:undocumented` row below names it.
         if std::env::var("XTASK_INSN_EMIT_BASELINE").as_deref() == Ok("1") {
             let committed = cx.read(BASELINE).unwrap_or_default();
-            match write::derive(&committed, &leaks, pragmas.len()) {
-                Ok(d) => eprint!("{}", d.text),
-                Err(_) => eprint!("{committed}"),
-            }
+            eprint!("{}", write::derive(&committed, &leaks, pragmas.len()).text);
         }
 
         let (baseline, malformed) = baseline_keys(cx);

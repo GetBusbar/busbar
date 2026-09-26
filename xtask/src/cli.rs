@@ -587,8 +587,9 @@ fn build_gate(
         // `--write --selftest` proves the arm it is about to run rather than a different one.
         Box::new(crate::gates::kind_isolation::KindIsolationGate::write())
     } else if write && reg.name == "instance-noun-neutrality" {
-        // `instance-noun-neutrality --write` LOWERS AND STRIKES LEDGER ROWS, and refuses wholesale
-        // if any row would be added or would rise without an owner-cited allow. Built here for the
+        // `instance-noun-neutrality --write` LOWERS AND STRIKES LEDGER ROWS, and refuses (writes
+        // nothing for, names, exits nonzero on) any row that would be added or would rise without
+        // an owner-cited allow. Built here for the
         // same reason as kind-isolation's: `--write --selftest` proves the arm it runs.
         Box::new(crate::gates::instance_noun_neutrality::InstanceNounNeutralityGate::write())
     } else {

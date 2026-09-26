@@ -336,7 +336,8 @@ pub(super) fn push(
 
 /// THE WRITE ARM'S REFUSALS, each a GREEN->RED transition of `instance-noun-neutrality:write` over
 /// the fixture. The clean overlay's ledger already equals the measurement, so the green arm writes
-/// nothing; the planted overlay makes a row RISE or a leak NEW, which must be refused wholesale.
+/// nothing; the planted overlay makes a row RISE or a leak NEW, which must be refused — never
+/// written — while any row that fell is still lowered.
 pub(super) fn push_write(cx: &Ctx, fix: &str, report: &mut Report<'_>) {
     let gate = InstanceNounNeutralityGate::write();
     let one = "pub fn mcp_door() {}\n";
@@ -359,7 +360,7 @@ pub(super) fn push_write(cx: &Ctx, fix: &str, report: &mut Report<'_>) {
     // A RISING LEAK PLUS --write IS REFUSED: the row is not raised to the census.
     report.push(case(
         "--write refuses when a baselined leak RISES above its row",
-        &["would RISE 1 -> 2", "NOTHING was written"],
+        &["would RISE 1 -> 2", "is NEVER written"],
         at(one, &ledger("")),
         at("pub fn mcp_door() {}\npub fn mcp_seat() {}\n", &ledger("")),
     ));
@@ -368,7 +369,7 @@ pub(super) fn push_write(cx: &Ctx, fix: &str, report: &mut Report<'_>) {
         "--write refuses when a live leak has no ledger row",
         &[
             "a2a@crates/busbar-core/src/lib.rs would be ADDED at 1",
-            "NOTHING was written",
+            "is NEVER written",
         ],
         at(one, &ledger("")),
         at("pub fn mcp_door() {}\npub fn a2a_door() {}\n", &ledger("")),
@@ -379,11 +380,34 @@ pub(super) fn push_write(cx: &Ctx, fix: &str, report: &mut Report<'_>) {
                    count = 2\nowner = \"me\"\nreason = \"r\"\n";
     report.push(case(
         "--write refuses a rise whose [[allow_rise]] cites no owner ruling",
-        &["cites no owner ruling", "NOTHING was written"],
+        &["cites no owner ruling", "is NEVER written"],
         at(one, &ledger("")),
         at(
             "pub fn mcp_door() {}\npub fn mcp_seat() {}\n",
             &ledger(unowned),
+        ),
+    )); // A MIXED TREE: one row RISES and another FELL. The fall is lowered, the rise is refused and
+        // left at its committed count, and the arm still exits RED — a lowering never carries a rise
+        // in, and a rise never holds a lowering hostage.
+    let two = |mcp: usize, a2a: usize| {
+        format!(
+            "[[leak]]\nnoun = \"a2a\"\nkind = \"plane\"\nfile = \"{CORE}\"\ncount = {a2a}\n\
+             category = \"core\"\nwave = \"w\"\n\n\
+             [[leak]]\nnoun = \"mcp\"\nkind = \"plane\"\nfile = \"{CORE}\"\ncount = {mcp}\n\
+             category = \"core\"\nwave = \"w\"\n\n"
+        )
+    };
+    report.push(case(
+        "--write on a mixed tree lowers the row that fell and refuses the row that rose",
+        &[
+            "mcp@crates/busbar-core/src/lib.rs would RISE 1 -> 2",
+            "Lowered: a2a@crates/busbar-core/src/lib.rs 2 -> 1",
+            "is NEVER written",
+        ],
+        at("pub fn mcp_door() {}\npub fn a2a_door() {}\n", &two(1, 1)),
+        at(
+            "pub fn mcp_door() {}\npub fn mcp_seat() {}\npub fn a2a_door() {}\n",
+            &two(1, 2),
         ),
     ));
 }

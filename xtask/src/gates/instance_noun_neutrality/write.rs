@@ -7,9 +7,12 @@
 //! coupling is read by a person. The emitter this replaces printed the full census, so one
 //! regeneration run quietly baselined 28 new rows and raised 3 more.
 //!
-//! So the arm derives the ledger it would write, and REFUSES WHOLESALE — nothing written, every
-//! offending row named — when any row would be added or raised, UNLESS the ledger itself carries
-//! an owner-cited `[[allow_rise]]` for exactly that `(noun, file)` at or above the live count:
+//! So the arm derives the ledger it would write PARTIALLY: every lowering and every strike is
+//! written (and `[pragma_ceiling]` carried down to the live count), and a row that would be added
+//! or raised is REFUSED — left exactly as committed, never written, named in the verdict, and the
+//! arm exits nonzero — UNLESS the ledger itself carries an owner-cited `[[allow_rise]]` for exactly
+//! that `(noun, file)` at or above the live count. A refused rise therefore never holds a drain's
+//! lowering hostage, and a lowering never carries a rise in with it:
 //!
 //! ```toml
 //! [[allow_rise]]
@@ -27,7 +30,7 @@
 //! The rewrite is LINE-LEVEL over the committed file (a row's reviewed `category`/`wave` text is
 //! kept); only `count` lines move, struck rows go, and `[pragma_ceiling]` is carried at the lower
 //! of its value and the live pragma count. The `XTASK_INSN_EMIT_BASELINE` emitter prints this same
-//! derivation, and on a refusal prints the committed ledger unchanged, so neither door can raise.
+//! derivation (the lowered ledger, every refused row left as committed), so neither door can raise.
 
 use std::collections::BTreeMap;
 
@@ -56,13 +59,15 @@ fn cites_owner(owner: &str) -> bool {
     b.windows(2).any(|w| w[0] == b'Q' && w[1].is_ascii_digit())
 }
 
-/// What `--write` would do: the text it would write and what moved, or every reason it refuses.
+/// What `--write` would do: the text it would write, what moved, and every row it refused to move
+/// (each left in `text` exactly as committed).
 #[derive(Debug, PartialEq, Eq)]
 pub(super) struct Derived {
     pub text: String,
     pub lowered: Vec<String>,
     pub struck: Vec<String>,
     pub raised_by_allow: Vec<String>,
+    pub refused: Vec<String>,
 }
 
 /// One top-level block of the ledger: its header line (`[[leak]]`, `[pragma_ceiling]`, …) and the
@@ -128,13 +133,10 @@ fn render_new(l: &Leak) -> String {
     )
 }
 
-/// THE DERIVATION `--write` and the emitter share. `Err` carries every refusal, and then nothing
-/// may be written.
-pub(super) fn derive(
-    committed: &str,
-    leaks: &[Leak],
-    live_pragmas: usize,
-) -> Result<Derived, Vec<String>> {
+/// THE DERIVATION `--write` and the emitter share. Every fall and strike is applied; every refusal
+/// (a rise or an addition no owner-cited allow licenses, or a row too malformed to judge) is named
+/// in `refused` and its row is left in `text` byte for byte as committed.
+pub(super) fn derive(committed: &str, leaks: &[Leak], live_pragmas: usize) -> Derived {
     let live: BTreeMap<(String, String), &Leak> = leaks
         .iter()
         .map(|l| ((l.noun.to_string(), l.file.clone()), l))
@@ -237,9 +239,6 @@ pub(super) fn derive(
         }
     }
 
-    if !refused.is_empty() {
-        return Err(refused);
-    }
     let mut text: String = bs
         .iter()
         .zip(&keep)
@@ -252,15 +251,17 @@ pub(super) fn derive(
         }
         text.push_str(&appended);
     }
-    Ok(Derived {
+    Derived {
         text,
         lowered,
         struck,
         raised_by_allow,
-    })
+        refused,
+    }
 }
 
-/// The write arm's one row. Refuses on an unscannable tree, and wholesale on any unlicensed rise.
+/// The write arm's one row. Refuses wholesale on an unscannable tree or an unsettled pragma census;
+/// on an unlicensed rise or addition it writes every lowering and strike, never the rise, and FAILS.
 pub(super) fn rule_write(cx: &Ctx) -> Row {
     let census = match super::census(cx) {
         Ok(c) => c,
@@ -293,51 +294,68 @@ pub(super) fn rule_write(cx: &Ctx) -> Row {
             )
         }
     };
-    let derived = match derive(&committed, &census.leaks, census.pragmas.len()) {
-        Ok(d) => d,
-        Err(refused) => {
+    let derived = derive(&committed, &census.leaks, census.pragmas.len());
+    let moved = format!(
+        "{} lowered, {} struck, {} raised under an owner-cited allow. Lowered: {}. Struck: {}. \
+         Allowed: {}",
+        derived.lowered.len(),
+        derived.struck.len(),
+        derived.raised_by_allow.len(),
+        derived.lowered.join(", "),
+        derived.struck.join(", "),
+        derived.raised_by_allow.join(", ")
+    );
+    // A SELFTEST RUN (an overlay over a fixture) measures the derivation and writes nothing: the
+    // fixture on disk is not the ledger under test.
+    let written = if derived.text == committed || cx.overlay().is_some() {
+        Ok(false)
+    } else {
+        std::fs::write(cx.abs(BASELINE), &derived.text)
+            .map(|()| true)
+            .map_err(|e| e.to_string())
+    };
+    let written = match written {
+        Ok(w) => w,
+        Err(e) => {
             return Row::fail(
                 ROW_WRITE,
-                "--write refuses: a row would be ADDED or would RISE, and this flag only ever \
-                 lowers one",
-                format!(
-                    "{} refusal(s); NOTHING was written. A leak the ledger does not name, or one \
-                     above its row, is a landing a person reads — drain it, or record an \
-                     owner-cited [[allow_rise]] in {BASELINE}. {}",
-                    refused.len(),
-                    refused.join(", ")
-                ),
+                "the ledger could not be written",
+                format!("{e} — the derivation was measured and not committed."),
             )
         }
     };
-    if derived.text == committed {
+    let wrote = if written {
+        format!("{BASELINE} written")
+    } else {
+        format!("{BASELINE} not rewritten")
+    };
+    if !derived.refused.is_empty() {
+        return Row::fail(
+            ROW_WRITE,
+            "--write refuses a row that would be ADDED or would RISE — every lowering and strike is \
+             written, a rise or an addition never",
+            format!(
+                "{} refusal(s), each row left at its committed count — a rise or an addition is \
+                 NEVER written. A leak the ledger does not name, or one above its row, is a \
+                 landing a person reads — drain it, or record an owner-cited [[allow_rise]] in \
+                 {BASELINE}. Refused: {}. {wrote}: {moved}",
+                derived.refused.len(),
+                derived.refused.join(", ")
+            ),
+        );
+    }
+    if !written && derived.text == committed {
         return Row::pass(
             ROW_WRITE,
             "the ledger already equals what the tree measures",
             format!("{BASELINE} is at the measurement; nothing to write"),
         );
     }
-    match std::fs::write(cx.abs(BASELINE), &derived.text) {
-        Ok(()) => Row::pass(
-            ROW_WRITE,
-            "every row that fell is lowered and every drained row struck",
-            format!(
-                "{} lowered, {} struck, {} raised under an owner-cited allow in {BASELINE}. \
-                 Lowered: {}. Struck: {}. Allowed: {}",
-                derived.lowered.len(),
-                derived.struck.len(),
-                derived.raised_by_allow.len(),
-                derived.lowered.join(", "),
-                derived.struck.join(", "),
-                derived.raised_by_allow.join(", ")
-            ),
-        ),
-        Err(e) => Row::fail(
-            ROW_WRITE,
-            "the ledger could not be written",
-            format!("{e} — the derivation was measured and not committed."),
-        ),
-    }
+    Row::pass(
+        ROW_WRITE,
+        "every row that fell is lowered and every drained row struck",
+        format!("{wrote}: {moved}"),
+    )
 }
 
 #[cfg(test)]
@@ -361,7 +379,8 @@ mod tests {
 
     #[test]
     fn a_fall_is_lowered_a_drain_struck_and_the_pragma_ceiling_carried_down() {
-        let d = derive(LEDGER, &[leak("mcp", "crates/a.rs", 3)], 2).expect("only falls");
+        let d = derive(LEDGER, &[leak("mcp", "crates/a.rs", 3)], 2);
+        assert!(d.refused.is_empty(), "only falls: {:?}", d.refused);
         assert!(d.text.contains("count = 3\n"), "{}", d.text);
         assert!(!d.text.contains("crates/b.rs"), "{}", d.text);
         assert!(d.text.contains("frozen_literal = 2\n"), "{}", d.text);
@@ -374,24 +393,34 @@ mod tests {
     }
 
     #[test]
-    fn a_rise_or_a_new_row_is_refused_wholesale() {
-        let err = derive(
+    fn a_rise_or_a_new_row_is_refused_and_left_as_committed_while_the_fall_is_written() {
+        let d = derive(
             LEDGER,
             &[
                 leak("mcp", "crates/a.rs", 1),
                 leak("a2a", "crates/b.rs", 9),
                 leak("llm", "crates/c.rs", 1),
             ],
-            3,
-        )
-        .expect_err("a rise and a new row");
+            2,
+        );
         assert_eq!(
-            err,
+            d.refused,
             vec![
                 "a2a@crates/b.rs would RISE 2 -> 9".to_string(),
                 "llm@crates/c.rs would be ADDED at 1".to_string(),
             ]
         );
+        // The fall is written, the rising row keeps its committed count, the new row is absent, and
+        // the pragma ceiling comes down to the live count.
+        assert_eq!(d.lowered, vec!["mcp@crates/a.rs 5 -> 1".to_string()]);
+        let expected = LEDGER
+            .replace(
+                "file = \"crates/a.rs\"\ncount = 5",
+                "file = \"crates/a.rs\"\ncount = 1",
+            )
+            .replace("frozen_literal = 3", "frozen_literal = 2");
+        assert_eq!(d.text, expected);
+        assert!(!d.text.contains("crates/c.rs"), "{}", d.text);
     }
 
     #[test]
@@ -400,8 +429,8 @@ mod tests {
             LEDGER,
             &[leak("mcp", "crates/a.rs", 5), leak("a2a", "crates/b.rs", 2)],
             7,
-        )
-        .expect("equal");
+        );
+        assert!(d.refused.is_empty(), "{:?}", d.refused);
         assert_eq!(d.text, LEDGER);
     }
 
@@ -419,8 +448,8 @@ mod tests {
                 leak("llm", "crates/c.rs", 1),
             ],
             3,
-        )
-        .expect("both licensed");
+        );
+        assert!(d.refused.is_empty(), "both licensed: {:?}", d.refused);
         assert!(d.text.contains("count = 9\n"));
         assert!(d.text.contains("file = \"crates/c.rs\""));
         assert!(
@@ -436,7 +465,7 @@ mod tests {
             ],
             3,
         )
-        .expect_err("past the allow");
+        .refused;
         assert!(over[0].contains("stops at 9"), "{over:?}");
         let unowned = allowed.replace("owner = \"Q76\"", "owner = \"me\"");
         let err = derive(
@@ -444,7 +473,7 @@ mod tests {
             &[leak("mcp", "crates/a.rs", 5), leak("a2a", "crates/b.rs", 9)],
             3,
         )
-        .expect_err("no owner");
+        .refused;
         assert!(
             err.iter().any(|e| e.contains("cites no owner ruling")),
             "{err:?}"
