@@ -237,27 +237,21 @@ busbar-voice = ["busbar-voice-codec"]
 # base" and asked for exactly this strike. THE CEILINGS THEMSELVES DID NOT MOVE: both still read
 # 9294. The next #83/#84 merge into busbar-contract declares its own re-arm here, once.
 
-# ── THE KERNEL CEILING, RE-ARMED AT THE MEASURE BY THE busbar-timing FOLD (OWNER RULING Q70) ────
+# ── THE KERNEL CEILING, RE-ARMED BY THE busbar-timing FOLD (OWNER RULING Q70) — EXPIRED AND STRUCK ─
+#
+# Declared `rules.loc-ceilings.kernel_ceiling` 50846 -> 51167: the fold's measured +321 lines
+# (busbar-timing's 318 code lines plus three seam lines), with K2g's named reservation still held
+# open. Its commit reached the base, so `ceiling-rose` reported it as "a declared raise that is not a
+# raise at the base". Struck here; the ceiling itself is re-pinned to its measurement below.
 
-[gate.ceiling_raises."rules.loc-ceilings.kernel_ceiling"]
-file    = "qa/construction.toml"
-from    = 50846
-to      = 51167
-because = "OWNER RULING Q70 (docs/design/1.6.0-QUESTIONS.md, OWNER ANSWERS 2026-09-25): busbar-timing folds into busbar-kernel as the feature-gated `timing` module, and the kernel ceiling is re-armed at the measured value in the fold commit. Q70 authorizes exactly the moved lines. busbar-timing measured code 318 (cargo xtask loc --ref 49d676057 busbar-timing). The kernel gains three seam lines: `pub mod timing;`, `pub use crate::timeit;`, and the `#[allow(unsafe_code)]` the crate-wide deny needs on the atexit call. That is +321. The loc-ceilings:kernel row measures 50773 at 49d676057 and 51094 with the fold. The ceiling moves by exactly those 321 lines, 50846 -> 51167. K2g's reserved <= 73 lines, which the 50846 figure holds open by ARCHITECT ruling on R-KERNEL, stay reserved and are not spent by this fold."
-
-# ── THE CONTRACT CEILING PAIR, RE-ARMED AFTER THE EGRESS STATIC HEADERS AND THE TESTKIT (SD-3b) ─────
-
-[gate.ceiling_raises."gate.surface_ceilings.contract_caps"]
-file    = "qa/construction.toml"
-from    = 9294
-to      = 9463
-because = "OWNER RULING Q68(3) (docs/design/1.6.0-QUESTIONS.md), ARCHITECT SD-3 queue (1): contract_caps re-arms at the MEASURED value after each contract change, each in its own commit. This is the re-arm for SD-3b (1): the egress declaration gains its append-only static_headers field (ProtocolDecl.static_headers and its neutral row in ProtocolDecl::named), so a dialect declares the non-credential headers the kernel writes after its credential, +2 code lines. Measured by cargo xtask loc busbar-contract --ref: 9294 before the SD-3b static-headers commit, 9296 at it. RE-ARMED AGAIN 9296 -> 9463 in its own commit for ARCHITECT SD-3 queue (4) / O8 as re-ruled: busbar_contract::testkit ships always compiled (the in-memory log double WarnCapture, the codec's copy deleted), +167 code lines; measured 9296 before the SD-3b testkit commit, 9463 at it."
-
-[gate.ceiling_raises."rules.loc-ceilings.caps_contract_ceiling"]
-file    = "qa/construction.toml"
-from    = 9294
-to      = 9463
-because = "OWNER RULING Q68(3) (docs/design/1.6.0-QUESTIONS.md), ARCHITECT SD-3 queue (1): contract_caps re-arms at the MEASURED value after each contract change, each in its own commit. This is the re-arm for SD-3b (1): the egress declaration gains its append-only static_headers field (ProtocolDecl.static_headers and its neutral row in ProtocolDecl::named), so a dialect declares the non-credential headers the kernel writes after its credential, +2 code lines. Measured by cargo xtask loc busbar-contract --ref: 9294 before the SD-3b static-headers commit, 9296 at it. RE-ARMED AGAIN 9296 -> 9463 in its own commit for ARCHITECT SD-3 queue (4) / O8 as re-ruled: busbar_contract::testkit ships always compiled (the in-memory log double WarnCapture, the codec's copy deleted), +167 code lines; measured 9296 before the SD-3b testkit commit, 9463 at it."
+# ── THE CONTRACT CEILING PAIR, RE-ARMED AFTER THE EGRESS STATIC HEADERS AND THE TESTKIT (SD-3b) —
+#    EXPIRED AND STRUCK
+#
+# Declared `gate.surface_ceilings.contract_caps` and `rules.loc-ceilings.caps_contract_ceiling`
+# -> 9463 (OWNER RULING Q68(3), ARCHITECT SD-3 queue (1)): the re-arm at the measured value after
+# SD-3b's egress static headers and testkit. Its commit reached the base, so `ceiling-rose` reported
+# both as "a declared raise ... that is not a raise at the base". THE CEILINGS DID NOT MOVE: both
+# still read 9463. The next merge into busbar-contract declares its own re-arm here, once.
 
 # ── THE KERNEL CEILING'S OWNER-APPROVED RAISE — EXPIRED AND STRUCK ─────────────────────────────
 #
