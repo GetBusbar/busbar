@@ -344,6 +344,7 @@ dependencies = [
  "busbar-export-prometheus",
  "busbar-export-prometheus-plugin",
  "busbar-export-webhook",
+ "busbar-export-webhook-plugin",
  "busbar-hooks-ranking",
  "busbar-kernel",
  "busbar-kernel-audit",
@@ -576,11 +577,20 @@ dependencies = [
 [[package]]
 name = "busbar-export-webhook"
 version = "1.5.0"
+source = "git+https://github.com/GetBusbar/export-webhook?rev=1444effa746680412815ed8672da90200aa8ce7e#1444effa746680412815ed8672da90200aa8ce7e"
 dependencies = [
  "busbar-plugin-sdk",
  "serde",
  "serde_json",
  "url",
+]
+
+[[package]]
+name = "busbar-export-webhook-plugin"
+version = "1.5.0"
+source = "git+https://github.com/GetBusbar/export-webhook?rev=1444effa746680412815ed8672da90200aa8ce7e#1444effa746680412815ed8672da90200aa8ce7e"
+dependencies = [
+ "busbar-export-webhook",
 ]
 
 [[package]]

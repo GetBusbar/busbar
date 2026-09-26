@@ -339,8 +339,10 @@ pub fn sources(cx: &Ctx) -> Result<Vec<String>, String> {
         pinned_plugin_source(cx, "busbar-export-file", "src/config.rs")?,
         // `WebhookSettings` / `ExportAuthHeader` — a `request-log-webhook` instance's `settings:` —
         // moved out of `busbar-kernel/src/config/mod.rs` into the sink that reads it (K9c: the
-        // webhook sink is the `busbar-export-webhook` export plugin), same tracked relocation.
-        "crates/busbar-export-webhook/src/config.rs".to_string(),
+        // webhook sink is the `busbar-export-webhook` export plugin), same tracked relocation. Like
+        // the file sink above, it now lives in its own repo and the root pulls it at a PINNED rev,
+        // so the file is read from that rev's checkout, as cargo resolved it.
+        pinned_plugin_source(cx, "busbar-export-webhook", "src/config.rs")?,
     ]);
     Ok(out)
 }

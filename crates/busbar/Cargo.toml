@@ -136,8 +136,10 @@ busbar-hooks-ranking = { path = "../hooks-ranking", optional = true }
 # points the busbar crates it names back at this tree.
 busbar-export-file = { git = "https://github.com/GetBusbar/export-file", rev = "5ff2dadcf45cc49ce26f0cf9d0ca0b0d9fc9cb5a", optional = true }
 # THE REQUEST-LOG WEBHOOK SINK (`module: request-log-webhook`), a first-party EXPORT plugin linked
-# through the `exports` axis (K9c) — the same row a signed tarball of it registers when dropped in.
-busbar-export-webhook = { path = "../busbar-export-webhook", optional = true }
+# through the `exports` axis (K9c) — the same row a signed tarball of it registers when dropped in. It
+# lives in its own repo (GetBusbar/export-webhook) and is pulled at a PINNED rev; the workspace
+# `[patch]` points the busbar crates it names back at this tree.
+busbar-export-webhook = { git = "https://github.com/GetBusbar/export-webhook", rev = "1444effa746680412815ed8672da90200aa8ce7e", optional = true }
 # THE PROMETHEUS EXPORT SINK (`module: prometheus`), a first-party EXPORT plugin linked through the
 # `exports` axis (K9d) — the same row a signed tarball of it registers when dropped in. The host
 # keeps the recorder and serves `/metrics`; this sink renders the recorder's snapshot. It lives in its
@@ -445,6 +447,10 @@ busbar-export-file-plugin = { git = "https://github.com/GetBusbar/export-file", 
 # linked `busbar-export-prometheus` edge above — the library a signed tarball of the sink carries,
 # found in this target dir by what it loads as.
 busbar-export-prometheus-plugin = { git = "https://github.com/GetBusbar/export-prometheus", rev = "05a175910b4a5d9e3bcb7f065ac95a1a3e351358" }
+# The webhook sink's both-ways proof (`src/root/tests/export_webhook_conformance.rs`): its repo's
+# cdylib crate at the SAME pinned rev as the linked `busbar-export-webhook` edge above, so the test
+# drops in the library a signed tarball of the sink carries next to the row the build links.
+busbar-export-webhook-plugin = { git = "https://github.com/GetBusbar/export-webhook", rev = "1444effa746680412815ed8672da90200aa8ce7e" }
 # That proof calls the router it built as the tower service it is (`ServiceExt::oneshot`). The
 # normal-edge `tower` above is `root-admin`'s own and optional, so a build without `root-admin` (every
 # single-plane build) would not compile the test; the test's edge is its own, unconditional here.

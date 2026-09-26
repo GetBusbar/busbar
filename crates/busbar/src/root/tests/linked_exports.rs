@@ -34,12 +34,12 @@ fn release() -> SigningKey {
 /// The built cdylib of the crate whose row is named `name` (uplifted or under `deps`, newest wins).
 /// Under CI a missing artifact is a failure, never a skip.
 ///
-/// A sink pulled from its OWN repo at a pinned rev (the file sink, GetBusbar/export-file) is a git
-/// dependency: cargo builds its library under `deps` with the dependency's metadata hash
-/// (`lib<crate>-<hash>`), never uplifted, and the library a tarball of it carries is that repo's
-/// thin cdylib crate, `<crate>-plugin` (the root's dev-dependency at the same rev). Both spellings
-/// are the same row's dropped-in door.
-fn cdylib(name: &str) -> Option<Vec<u8>> {
+/// A sink pulled from its OWN repo at a pinned rev (the file sink, GetBusbar/export-file; the webhook
+/// sink, GetBusbar/export-webhook) is a git dependency: cargo builds its library under `deps` with the
+/// dependency's metadata hash (`lib<crate>-<hash>`), never uplifted, and the library a tarball of it
+/// carries is that repo's thin cdylib crate, `<crate>-plugin` (the root's dev-dependency at the same
+/// rev). Both spellings are the same row's dropped-in door.
+pub(super) fn cdylib(name: &str) -> Option<Vec<u8>> {
     let exe = std::env::current_exe().ok()?;
     let profile = exe.parent()?.parent()?;
     let snake = name.replace('-', "_");
