@@ -598,6 +598,7 @@ fn measure(cx: &Ctx, crates: &[CrateInfo]) -> Result<Measured, String> {
     }
 
     let (files, skipped) = scan_set(cx)?;
+    let contract = contract_identifiers(&files, &vocab);
 
     let mut matrix: Matrix = BTreeMap::new();
     for (rel, text) in &files {
@@ -611,7 +612,14 @@ fn measure(cx: &Ctx, crates: &[CrateInfo]) -> Result<Measured, String> {
         let Some(per_kind) = plan.get(dir.as_str()) else {
             continue;
         };
-        for h in scan_file(per_kind, &dir, &rel, text).iter() {
+        // The contract's own identifiers are masked everywhere EXCEPT in the contract, whose
+        // vocabulary is its own row's to measure (see [`contract_identifiers`]).
+        let masked = if c.name == CONTRACT_PACKAGE {
+            std::borrow::Cow::Borrowed(text.as_str())
+        } else {
+            mask_identifiers(text, &contract)
+        };
+        for h in scan_file(per_kind, &dir, &rel, &masked).iter() {
             let cell = matrix.entry((c.name.clone(), h.kind)).or_default();
             cell.by_segments += h.by_segments;
             cell.by_windows += h.by_windows;
@@ -638,6 +646,100 @@ fn measure(cx: &Ctx, crates: &[CrateInfo]) -> Result<Measured, String> {
         }
     }
     Ok((matrix, files.len(), skipped))
+}
+
+/// The contract crate's package name: the one crate whose exported identifiers are shapes every
+/// other crate may name.
+const CONTRACT_PACKAGE: &str = "busbar-contract";
+
+/// THE CONTRACT'S OWN IDENTIFIERS — every item `busbar-contract` declares `pub` (struct, enum,
+/// trait, type, union, fn, const, static) in its `src/` — measured by nobody's column but the
+/// contract's own (ARCHITECT ruling 2026-09-27, the Q77a measurement-correction class).
+///
+/// An identifier the contract exports is the contract's SHAPE, not a plugin instance's vocabulary.
+/// `busbar_contract::hooks::RoutingDecision` is the hook kind's answer type; a crate that names it
+/// is naming the hook contract, and reading its camel-case half `Decision` as the `decision`
+/// plane's bare id charged every hook caller with a plane coupling it does not have. So such an
+/// identifier, written as a whole token, is masked before the scanners read the line. Everything
+/// else still counts: the same word in prose, in a string, or inside ANY identifier the contract
+/// does not export (a crate's own `LocalDecision`) is a hit exactly as before.
+///
+/// An identifier that IS a needle on its own (a contract `fn mcp`, were there one) is never masked:
+/// that would strike the bare instance word everywhere, which is the vocabulary itself.
+fn contract_identifiers(
+    files: &[(String, String)],
+    vocab: &BTreeMap<&'static str, Vec<Needle>>,
+) -> BTreeSet<String> {
+    let needles: BTreeSet<String> = vocab
+        .values()
+        .flatten()
+        .map(|n| n.word.replace('-', "_"))
+        .collect();
+    let mut out = BTreeSet::new();
+    let prefix = format!("crates/{CONTRACT_PACKAGE}/src/");
+    for (rel, text) in files {
+        if !rel.starts_with(&prefix) || !rel.ends_with(".rs") {
+            continue;
+        }
+        for line in text.lines() {
+            let Some(rest) = line.trim_start().strip_prefix("pub ") else {
+                continue;
+            };
+            let mut words = rest
+                .split(|ch: char| !(ch.is_ascii_alphanumeric() || ch == '_'))
+                .filter(|w| !w.is_empty());
+            let mut declared = None;
+            while let Some(w) = words.next() {
+                match w {
+                    "unsafe" | "async" | "extern" | "C" => continue,
+                    "const" | "struct" | "enum" | "trait" | "type" | "union" | "fn" | "static" => {
+                        match words.next() {
+                            Some("fn") => declared = words.next(),
+                            other => declared = other,
+                        }
+                        break;
+                    }
+                    _ => break,
+                }
+            }
+            if let Some(id) = declared {
+                if !needles.contains(&id.to_lowercase()) {
+                    out.insert(id.to_string());
+                }
+            }
+        }
+    }
+    out
+}
+
+/// `text` with every whole-token occurrence of an identifier in `idents` replaced by a run of `x` of
+/// the same length, so lines and columns are unchanged. The filler is a WORD, not separators: a run
+/// of `_` would let a multi-part needle's joint (which matches any run of non-alphanumerics) reach
+/// across the masked token and join the words on either side of it into a hit neither made.
+fn mask_identifiers<'a>(text: &'a str, idents: &BTreeSet<String>) -> std::borrow::Cow<'a, str> {
+    let is_ident = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
+    let bytes = text.as_bytes();
+    let mut out: Option<Vec<u8>> = None;
+    let mut i = 0;
+    while i < bytes.len() {
+        if !is_ident(bytes[i]) {
+            i += 1;
+            continue;
+        }
+        let start = i;
+        while i < bytes.len() && is_ident(bytes[i]) {
+            i += 1;
+        }
+        if idents.contains(&text[start..i]) {
+            let buf = out.get_or_insert_with(|| bytes.to_vec());
+            buf[start..i].fill(b'x');
+        }
+    }
+    match out {
+        // Only ASCII identifier bytes were replaced by ASCII, so the buffer is still UTF-8.
+        Some(buf) => std::borrow::Cow::Owned(String::from_utf8(buf).expect("ascii-for-ascii")),
+        None => std::borrow::Cow::Borrowed(text),
+    }
 }
 
 /// EVERY BYTE A CRATE SHIPS, and the ones that are not bytes a reader reads.
@@ -2135,6 +2237,46 @@ pub fn selftest<'a>(
         "a plane named in nothing but a comment inside the kernel",
         &[ROW_MATRIX],
         comment_fixture(true),
+        &[
+            "ratchet",
+            &format!("{} \u{d7} plane", instances::FIXTURE_CRATE),
+            "RAISED",
+        ],
+    ));
+
+    // A CONTRACT IDENTIFIER IS THE CONTRACT'S SHAPE, NOT A PLANE'S NAME (the Q77a measurement
+    // correction, [`contract_identifiers`]). The fixture's plane cell is recorded at its one hit;
+    // naming the hook contract's `RoutingDecision` — whose camel half reads as the `decision`
+    // plane's bare id — leaves it there, and a crate's OWN identifier carrying the same word is a
+    // hit exactly as any other spelling is. The red half is the one that proves the mask is no
+    // wider than the contract's exports.
+    let contract_ident_fixture = |own: bool| {
+        let mut files = vec![
+            ("wiring.rs", "pub const PLANE: &str = \"llm\";\n"),
+            (
+                "hook.rs",
+                "use busbar_contract::hooks::RoutingDecision;\n\
+                 pub fn verdict(d: RoutingDecision) -> RoutingDecision { d }\n",
+            ),
+        ];
+        if own {
+            files.push(("own.rs", "pub struct LocalDecision;\n"));
+        }
+        fixture_cell(cx, "plane", "1", &files, true)
+    };
+    report.push(prove_rows_green(
+        cx,
+        gate,
+        "a crate naming the contract's `RoutingDecision` is not naming the decision plane",
+        &[ROW_MATRIX],
+        contract_ident_fixture(false),
+    ));
+    report.push(prove_rows_red(
+        cx,
+        gate,
+        "the same word in an identifier the contract does not export still counts",
+        &[ROW_MATRIX],
+        contract_ident_fixture(true),
         &[
             "ratchet",
             &format!("{} \u{d7} plane", instances::FIXTURE_CRATE),
