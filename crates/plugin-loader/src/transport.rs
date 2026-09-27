@@ -770,6 +770,33 @@ extern "C-unwind" fn out_end(ctx: *mut c_void) {
     }));
 }
 
+/// THE HOST'S CLOCK for a framer call (the design's one clock): the monotonic reading every
+/// deadline is stated against — nanoseconds since this process first read it — and the wall time.
+#[must_use]
+pub fn host_time() -> busbar_contract::transport::HostTime {
+    static EPOCH: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+    let epoch = *EPOCH.get_or_init(std::time::Instant::now);
+    busbar_contract::transport::HostTime {
+        monotonic_nanos: u64::try_from(epoch.elapsed().as_nanos()).unwrap_or(u64::MAX),
+        unix_nanos: std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| u64::try_from(d.as_nanos()).unwrap_or(u64::MAX)),
+    }
+}
+
+/// `ctx` is a `*mut &mut dyn FramerOut` for the call.
+extern "C-unwind" fn out_wake_at(ctx: *mut c_void, has: u8, monotonic_nanos: u64) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if ctx.is_null() {
+            return;
+        }
+        // SAFETY: `ctx` is the caller's sink for this call.
+        unsafe {
+            (**ctx.cast::<&mut dyn FramerOut>()).wake_at((has == 1).then_some(monotonic_nanos))
+        };
+    }));
+}
+
 /// `ctx` is a `*mut &mut dyn BytesOut` for the call.
 extern "C-unwind" fn bytes_put(ctx: *mut c_void, bytes: *const u8, len: usize) {
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -793,11 +820,15 @@ extern "C-unwind" fn bytes_put(ctx: *mut c_void, bytes: *const u8, len: usize) {
 
 /// The host callbacks over the caller's sink, valid while `sink` is borrowed.
 fn framer_out(sink: &mut &mut dyn FramerOut) -> WireFramerOut {
+    let now = sink.now();
     WireFramerOut {
         ctx: (sink as *mut &mut dyn FramerOut).cast(),
         send: out_send,
         frame: out_frame,
         end: out_end,
+        now_monotonic_nanos: now.monotonic_nanos,
+        now_unix_nanos: now.unix_nanos,
+        wake_at: out_wake_at,
     }
 }
 
@@ -1011,6 +1042,15 @@ impl Framer for DeclFramer {
         }))?;
         Ok(state)
     }
+
+    fn tick(&self, state: u64, mut out: &mut dyn FramerOut) -> Result<(), TransportError> {
+        // A framer built before the clock seam states no deadline, so it is never due.
+        let Some(f) = self.slots.tick else {
+            return Ok(());
+        };
+        let sink = framer_out(&mut out);
+        done(self.image.call("transport_tick", |s| f(s, state, &sink)))
+    }
 }
 
 // ── the admission ───────────────────────────────────────────────────────────────────────────────
@@ -1181,10 +1221,7 @@ fn assemble(
             Some(unsafe { slots::<CarrierSlots>(d.carrier, &display)? }),
             None,
         ),
-        (Role::Framer, true, false) => (
-            None,
-            Some(unsafe { slots::<FramerSlots>(d.framer, &display)? }),
-        ),
+        (Role::Framer, true, false) => (None, Some(unsafe { framer_slots(d.framer, &display)? })),
         (role, ..) => {
             return Err(format!(
                 "transport '{display}' composes over {:?}, so it is a {role:?}, and must state \
@@ -1220,6 +1257,27 @@ unsafe fn slots<T: Copy>(table: *const T, display: &str) -> Result<T, String> {
     }
     // SAFETY: the whole table is present (checked above).
     Ok(unsafe { core::ptr::read_unaligned(table) })
+}
+
+/// A framer's slot table: this build's whole table, or one that ends before `tick` (built before the clock seam), read
+/// over an all-`None` table so the slot it does not state is absent.
+///
+/// # Safety
+/// As [`slots`].
+unsafe fn framer_slots(table: *const FramerSlots, display: &str) -> Result<FramerSlots, String> {
+    // SAFETY: per this fn's contract; the size leads every table.
+    let size = unsafe { core::ptr::read_unaligned(table.cast::<u32>()) } as usize;
+    if size != core::mem::offset_of!(FramerSlots, tick) {
+        // SAFETY: per this fn's contract.
+        return unsafe { slots::<FramerSlots>(table, display) };
+    }
+    // SAFETY: every field of `FramerSlots` is valid zeroed (integers, `None` slots), and the table
+    // attests exactly the prefix up to `tick`, copied over it.
+    Ok(unsafe {
+        let mut t = core::mem::MaybeUninit::<FramerSlots>::zeroed();
+        core::ptr::copy_nonoverlapping(table.cast::<u8>(), t.as_mut_ptr().cast::<u8>(), size);
+        t.assume_init()
+    })
 }
 
 /// The ROW a decl declares, every string and list capped, checked and borrowed for the life of the
@@ -1411,3 +1469,7 @@ fn decl_str(d: DeclStr, display: &str) -> Result<Option<&'static str>, String> {
 #[cfg(test)]
 #[path = "tests/transport_conformance_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "tests/transport_clock_tests.rs"]
+mod clock_tests;

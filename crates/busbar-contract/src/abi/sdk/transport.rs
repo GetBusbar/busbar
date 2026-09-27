@@ -37,7 +37,7 @@ use crate::grammar::SelectorForm;
 use crate::ids::StreamId;
 use crate::transport::wire::{CertFacts, TransportError};
 use crate::transport::{
-    BytesOut, Carrier, Claim, ConnFacts, Dest, Framed, Framer, FramerOut, TransportMeta,
+    BytesOut, Carrier, Claim, ConnFacts, Dest, Framed, Framer, FramerOut, HostTime, TransportMeta,
     TransportSettings,
 };
 
@@ -526,6 +526,10 @@ bridges! {
                 .map_err(WireOutcome::of_error)?;
             set(out_state, framing)
         }
+        fn tick(t; framing: u64, out: *const WireFramerOut) {
+            let mut out = host_out(out)?;
+            t.inner.tick(framing, &mut out).map_err(WireOutcome::of_error)
+        }
     }
 }
 
@@ -561,6 +565,19 @@ impl FramerOut for HostOut {
     }
     fn end(&mut self) {
         (self.0.end)(self.0.ctx);
+    }
+    fn now(&self) -> HostTime {
+        HostTime {
+            monotonic_nanos: self.0.now_monotonic_nanos,
+            unix_nanos: self.0.now_unix_nanos,
+        }
+    }
+    fn wake_at(&mut self, monotonic_nanos: Option<u64>) {
+        (self.0.wake_at)(
+            self.0.ctx,
+            u8::from(monotonic_nanos.is_some()),
+            monotonic_nanos.unwrap_or(0),
+        );
     }
 }
 

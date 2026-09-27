@@ -725,7 +725,9 @@ fn compute_layout() -> String {
             refusal,
             close,
             detach,
-            adopt
+            adopt,
+            // The clock seam.
+            tick
         ]
     );
     record!(s, DeclStrList, [ptr, len]);
@@ -785,7 +787,20 @@ fn compute_layout() -> String {
             retry_after_secs
         ]
     );
-    record!(s, WireFramerOut, [ctx, send, frame, end]);
+    record!(
+        s,
+        WireFramerOut,
+        [
+            ctx,
+            send,
+            frame,
+            end,
+            // The host's clock.
+            now_monotonic_nanos,
+            now_unix_nanos,
+            wake_at
+        ]
+    );
     record!(s, WireBytesOut, [ctx, put]);
     record!(s, WireField, [name, value]);
 

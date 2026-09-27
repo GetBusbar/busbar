@@ -109,7 +109,7 @@ fn every_carrier_and_framer_method_has_exactly_one_slot() {
         read("src/abi/hot/transport.rs"),
     );
     assert_eq!(covered(&traits, "Carrier", &abi, "CarrierSlots"), Ok(8));
-    assert_eq!(covered(&traits, "Framer", &abi, "FramerSlots"), Ok(9));
+    assert_eq!(covered(&traits, "Framer", &abi, "FramerSlots"), Ok(10));
 }
 
 /// THE RED ARM, kept: a trait that grew a method its slot table did not is refused, and the refusal

@@ -178,6 +178,12 @@ pub const ABI_MAJOR: u32 = 2;
 /// declares the config sections it requires exactly as a linked one does, and a section no
 /// registered plane requires may be omitted. A decl ending before the tail requires none.
 /// Append-only.
+///
+/// APPENDED WITHOUT A MINOR (OWNER RULING 2026-09-27: every ABI version constant ships as its v1.5.5
+/// value + 1, so pre-release changes do not bump it; the layout golden and the append-compat tests
+/// keep appends safe): the framer clock seam — `hot::transport::WireFramerOut` appends the host's time
+/// at the call and `wake_at`, `hot::transport::FramerSlots` appends `tick`, and a slot table ending
+/// before `tick` keeps no deadline.
 pub const ABI_MINOR: u32 = 34;
 
 /// The FROZEN-FOR-ALL-TIME ABI header. This exact layout — `magic` at offset 0, `abi_major` at 8,

@@ -30,7 +30,7 @@ use busbar_contract::abi::hot::transport::{
 use busbar_contract::ids::StreamId;
 use busbar_contract::transport::wire::{CloseReason, Encode, TransportError, WireStatusClass};
 use busbar_contract::transport::{
-    ConnFacts, Framed, Framer, FramerOut, Located, Role, Side, TransportSettings,
+    ConnFacts, Framed, Framer, FramerOut, HostTime, Located, Role, Side, TransportSettings,
 };
 use busbar_plugin_loader::sign::{sign, Manifest, SigningKey, TrustPolicy};
 use busbar_plugin_loader::transport::{link_transport, wire_settings, Built, DynTransport};
@@ -192,6 +192,10 @@ impl FramerOut for Heard {
     fn end(&mut self) {
         self.ended = true;
     }
+    fn now(&self) -> HostTime {
+        HostTime::default()
+    }
+    fn wake_at(&mut self, _: Option<u64>) {}
 }
 
 impl Heard {

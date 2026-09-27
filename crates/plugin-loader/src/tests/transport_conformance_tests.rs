@@ -398,6 +398,7 @@ static NO_FRAMER: FramerSlots = FramerSlots {
     close: None,
     detach: None,
     adopt: None,
+    tick: None,
 };
 
 static SHORT_CARRIER: OnceLock<CarrierSlots> = OnceLock::new();

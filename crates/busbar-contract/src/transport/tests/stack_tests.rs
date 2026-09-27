@@ -107,6 +107,10 @@ impl FramerOut for Collected {
     fn end(&mut self) {
         self.ended = true;
     }
+    fn now(&self) -> crate::transport::HostTime {
+        crate::transport::HostTime::default()
+    }
+    fn wake_at(&mut self, _: Option<u64>) {}
 }
 
 impl Plugin for Lines {
@@ -191,6 +195,9 @@ impl Framer for Lines {
     fn close(&self, _: u64, _: CloseReason, _: &mut dyn FramerOut) {}
     fn detach(&self, _: u64, out: &mut dyn BytesOut) -> Result<(), TransportError> {
         out.put(&std::mem::take(&mut *self.0.lock().unwrap()));
+        Ok(())
+    }
+    fn tick(&self, _: u64, _: &mut dyn FramerOut) -> Result<(), TransportError> {
         Ok(())
     }
     fn adopt(

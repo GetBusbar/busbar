@@ -622,6 +622,8 @@ pub type WireSendFn = extern "C-unwind" fn(ctx: *mut c_void, bytes: *const u8, l
 pub type WireFrameFn = extern "C-unwind" fn(ctx: *mut c_void, piece: *const WireFramed);
 /// `end(ctx)`: no frame follows on this connection.
 pub type WireEndFn = extern "C-unwind" fn(ctx: *mut c_void);
+/// `wake_at(ctx, has, monotonic_nanos)`: the instant to call `tick` at (`has` `0` = no deadline).
+pub type WireWakeAtFn = extern "C-unwind" fn(ctx: *mut c_void, has: u8, monotonic_nanos: u64);
 
 /// Where a framer puts what a call produced ([`crate::transport::FramerOut`]): host-owned
 /// callbacks, valid for the call only. Never unwinds.
@@ -636,6 +638,13 @@ pub struct WireFramerOut {
     pub frame: WireFrameFn,
     /// The end of the connection's frames.
     pub end: WireEndFn,
+    // ── the host's clock (appended by the clock seam) ──
+    /// The host's monotonic clock at this call, in nanoseconds.
+    pub now_monotonic_nanos: u64,
+    /// The host's wall time at this call, nanoseconds since the Unix epoch.
+    pub now_unix_nanos: u64,
+    /// The next instant to call `tick` at.
+    pub wake_at: WireWakeAtFn,
 }
 
 /// Where a framer puts rendered bytes ([`crate::transport::BytesOut`]): a host-owned callback,
@@ -760,6 +769,9 @@ pub struct FramerSlots lowers Framer {
     /// [`Framer::adopt`](crate::transport::Framer::adopt): writes the new framing state.
     adopt: FramerAdoptFn = fn(state: *mut c_void, side: u8, facts: *const WireConnFacts,
         leftover: *const u8, leftover_len: usize, out: *const WireFramerOut, out_state: *mut u64);
+    /// [`Framer::tick`](crate::transport::Framer::tick) (appended by the clock seam; a table ending before
+    /// it keeps no deadline).
+    tick: FramerTickFn = fn(state: *mut c_void, framing: u64, out: *const WireFramerOut);
 }
 }
 

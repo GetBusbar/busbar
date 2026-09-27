@@ -297,6 +297,14 @@ impl FramerOut for Produced<'_> {
     fn end(&mut self) {
         self.ended = true;
     }
+
+    fn now(&self) -> busbar_contract::transport::HostTime {
+        crate::transport::host_time()
+    }
+
+    // This stack keeps no framer deadline: none of the framers it stacks states one. The
+    // connector's stack calls `tick` at the stated instant.
+    fn wake_at(&mut self, _monotonic_nanos: Option<u64>) {}
 }
 
 // ── the stack ───────────────────────────────────────────────────────────────────────────────────

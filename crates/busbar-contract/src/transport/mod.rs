@@ -30,7 +30,7 @@ pub mod wire;
 pub use config_handle::{ConfigRole, TransportConfigHandle, TransportConfigSink};
 pub use stack::{
     role_of, BytesOut, Carrier, CarrierFacts, CarrierPoll, Claim, ConnFacts, Dest, Framed, Framer,
-    FramerOut, Located, Role, Side, TransportRow,
+    FramerOut, HostTime, Located, Role, Side, TransportRow,
 };
 
 use crate::bounded::ScratchBytes;

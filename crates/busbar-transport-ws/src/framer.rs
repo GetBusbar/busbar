@@ -443,6 +443,21 @@ impl Framer for WsFramer {
         drain(&mut phase, out);
     }
 
+    /// A WebSocket state keeps no deadline of its own (it never states one), so a tick finds nothing
+    /// due; an unknown state is closed.
+    fn tick(&self, state: u64, _out: &mut dyn FramerOut) -> Result<(), TransportError> {
+        if self
+            .states
+            .lock()
+            .expect("framing states poisoned")
+            .contains_key(&state)
+        {
+            Ok(())
+        } else {
+            Err(TransportError::Closed)
+        }
+    }
+
     /// Nothing upgrades in-band out of a WebSocket, so there is no stream to hand on.
     fn detach(&self, _state: u64, _out: &mut dyn BytesOut) -> Result<(), TransportError> {
         Err(TransportError::HandoffMismatch)
