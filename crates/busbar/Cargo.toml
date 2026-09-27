@@ -116,7 +116,7 @@ metrics-exporter-prometheus = { version = "0.18.3", default-features = false }
 # in the graph as the exporter's own dependency, so this adds no new external crate.
 metrics-util = { version = "0.20.4", default-features = false }
 opentelemetry = "0.32.0"
-opentelemetry_sdk = "0.32.1"
+opentelemetry_sdk = "0.33.0"
 # Pin OTLP to the HTTP/proto trace path busbar uses (`SpanExporter::builder().with_http()`). The
 # default bundled client is dropped; busbar injects its OWN HTTP client via `with_http_client` (see
 # observability::build_otlp) so trace export shares busbar's hyper/rustls stack and — critically —
