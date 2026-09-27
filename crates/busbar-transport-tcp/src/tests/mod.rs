@@ -374,8 +374,7 @@ async fn a_dial_to_a_black_hole_self_bounds_on_the_dial_timeout() {
 
 /// One synthetic `io::Error` per `map_io_err` arm, so swapping two arms is caught here rather than
 /// only by whichever live-dial cell happens to provoke that kind. Ported from `busbar-transport-
-/// http`'s table cell, which this transport's mapping matches arm for arm; the `tls` sibling's cell
-/// carries one arm more, for the handshake this transport does not have.
+/// http`'s table cell, which this transport's mapping matches arm for arm.
 #[test]
 fn every_io_error_kind_maps_through_the_table() {
     for (kind, expected) in [

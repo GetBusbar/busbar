@@ -5,7 +5,8 @@
 //!
 //! `http` carries no session (`SESSION = false`) and its per-frame `WireStatusClass` rides the first
 //! response frame (`STATUS_CLASS = Some(FirstFrame)`) — the kernel-derived leg of the fee decision
-//! the design's settlement table reads. It composes over `tcp`/`tls` for its byte stream.
+//! the design's settlement table reads. It composes over `tcp` for its byte stream;
+//! TLS on that stream is core's connection security, never a layer.
 //!
 //! ## What moved here, byte-identical
 //!
@@ -230,7 +231,7 @@ enum Inner {
         /// `Port` is one of the selector forms this transport declares, and a claim by port reads
         /// the arrival record: zero there made every arrival on every listener look alike. It is
         /// taken off the ACCEPTED SOCKET rather than off the bind string, which is the only place
-        /// the fact exists at all on an ephemeral (`:0`) bind — the sibling `tcp`, `tls` and `ws`
+        /// the fact exists at all on an ephemeral (`:0`) bind — the sibling `tcp` and `ws`
         /// crates record it the same way.
         local_port: u16,
     },
@@ -261,8 +262,8 @@ enum Inner {
 /// on the frame path, for every read of every header, every body chunk and every trailer — and a
 /// message dribbled in arbitrarily small pieces pays it once per piece. Keeping it behind the same
 /// lock as the read half is what makes the reuse sound: a connection is read by one pump at a time,
-/// so there is never a second reader to see a half-filled buffer. The sibling `tcp` and `tls`
-/// crates read the same way.
+/// so there is never a second reader to see a half-filled buffer. The sibling `tcp` crate
+/// reads the same way.
 struct ReadSide {
     half: OwnedReadHalf,
     scratch: Vec<u8>,
@@ -941,7 +942,7 @@ async fn pump_response_body(mut body: hyper::body::Incoming, tx: RespSender, max
 /// `write_all` only proves the bytes reached the writer's own buffer. The kernel is told a refusal
 /// was delivered, and a refusal is the client-visible answer to an authentication failure, so the
 /// flush is the evidence and its failure is reported the same way the ordinary write path reports
-/// one rather than being swallowed. The sibling `tcp` and `tls` crates already answer this way.
+/// one rather than being swallowed. The sibling `tcp` crate already answers this way.
 async fn deliver_refusal<W>(w: &mut W, bytes: &[u8]) -> Result<(), TransportError>
 where
     W: tokio::io::AsyncWrite + Unpin + ?Sized,

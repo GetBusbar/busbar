@@ -335,23 +335,20 @@ pub const CONSTRUCTION_STANDING_REDS: &[&str] = &[
     // row is what it caught: a rule claiming "a cancellation-token check precedes every `.await` in
     // the route step" that found no `.await` in scope at all, and passed on that basis.
     "hold-discipline:cancellation-before-await",
-    // FIVE ROWS THAT RUN AND ARE RED ON THEIR MANIFESTS. Until item 120 the allowlist rule did not
+    // FOUR ROWS THAT RUN AND ARE RED ON THEIR MANIFESTS. Until item 120 the allowlist rule did not
     // read the `transport` kind, so these were "owed but no row was recorded — DID NOT RUN". It
     // reads it now, and every one of them FAILS for a real reason, measured: each names
-    // third-party crates no review has recorded (tokio, futures, rustls, hyper, ...), and one names
-    // a crate the rule scores as an automatic RED — `busbar-transport-tls` path-depends on
-    // `busbar-unit-transport-key` (a unit crate; #36/#40 kernel-side machinery). `-grpc` and `-sse`
-    // were the other two, each path-depending on `busbar-transport-http`: both FOLDED INTO it
+    // third-party crates no review has recorded (tokio, futures, rustls, hyper, ...). `-grpc` and
+    // `-sse` were two more, each path-depending on `busbar-transport-http`: both FOLDED INTO it
     // (the transport fold), so their rows have no crate left to score and grpc's third-party
     // deps (`tonic`, `tower`) are `-http`'s row's now. Drain: the owner reviews the third-party
     // deps into `[rules.manifest-allowlist.reviewed_extra]`; each name is struck here AND in
-    // scripts/land.sh as its row goes green. The tls → unit edge is GONE (fold F14, #40(b): the unit
-    // folded into `busbar-kernel-identity` and tls takes only the opaque config handle), so `-tls`
-    // stays here on its third-party deps alone.
+    // scripts/land.sh as its row goes green. `-tls` is STRUCK here and in scripts/land.sh: the crate
+    // is deleted (TRANSPORT-STACK, owner-approved 2026-09-27 — TLS is core's connection security,
+    // `busbar-core-connsec`), so its row has no crate left to score.
     "manifest-allowlist:busbar-transport-http",
     "manifest-allowlist:busbar-transport-stdio",
     "manifest-allowlist:busbar-transport-tcp",
-    "manifest-allowlist:busbar-transport-tls",
     "manifest-allowlist:busbar-transport-ws",
     // Four production call sites of `pick_among(` against a ceiling of 2: the kernel-egress exhaustion
     // and walk sites beside busbar-llm's fallback and pipeline. DRAIN: Phase 4, when the plane's own

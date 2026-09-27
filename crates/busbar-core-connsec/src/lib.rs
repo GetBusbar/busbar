@@ -223,8 +223,8 @@ impl ConnectionSecurity for Tls {
             // `RawIo` is the contract's rustls-free, futures-io-based stream type; `tokio_rustls`
             // needs tokio's `AsyncRead`/`AsyncWrite`. `FuturesAsyncReadCompatExt::compat` bridges
             // the futures-io stream in, the handshake runs, and `TokioAsyncReadCompatExt::compat`
-            // bridges the tokio-io result back out — the same futures-io/tokio-io seam
-            // `busbar-transport-tls` already crosses for its own in-band TLS upgrade.
+            // bridges the tokio-io result back out — the same futures-io/tokio-io seam the
+            // kernel's accept loop crosses on the other side of this call.
             let tokio_io = FuturesAsyncReadCompatExt::compat(io);
             let acceptor = tokio_rustls::TlsAcceptor::from(self.config.clone());
             let tls_stream = acceptor.accept(tokio_io).await?;

@@ -3,8 +3,10 @@
 
 //! The `tcp` transport: a byte stream, and nothing else.
 //!
-//! This is the base every session transport in the design composes over (`tls` frames over it,
-//! `http` dials through `tls`, `sse` composes over `http`). It cannot name a plane and cannot
+//! This is the base every session transport in the design composes over (`http` frames over it,
+//! `ws` and the `http` crate's `sse`/`grpc` wires compose over `http`). TLS is not a layer here: it
+//! is core's connection security, wrapped around this stream host-side, never
+//! a transport. It cannot name a plane and cannot
 //! name a unit: it yields and writes frames, and it knows no protocol and no principal. Its own
 //! `KEY` is `"tcp"`, it carries no per-frame status leg (`STATUS_CLASS = None`), and it is a
 //! session transport whose Unit 0 opens on the first bytes off the wire.
@@ -15,8 +17,7 @@
 //! the connection's opaque id, because [`busbar_contract::transport::wire::ConnHandle`] only exposes `id()` and
 //! `peer()` to the kernel — the concrete socket lives here, never behind the trait object. This is
 //! also what makes an in-band upgrade possible: [`TcpTransport::take_stream`] hands the raw
-//! `TcpStream` to whichever upper layer is upgrading the connection (the `tls` transport calls it
-//! when a plane triggers `UNIT0_TRIGGER: Upgrade`-shaped STARTTLS handoff), removing it from this
+//! `TcpStream` to whichever upper layer is upgrading the connection, removing it from this
 //! registry so it is never read from or written to twice.
 
 #![deny(unsafe_code)]
@@ -59,8 +60,7 @@ pub const READ_CHUNK_BYTES: usize = 16 * 1024;
 /// retransmitting for minutes before it surfaces an error, and until it does the dial task and the
 /// half-open socket it holds are pinned. A completed connect is the whole of what this budget
 /// covers; ten seconds is generous for a handshake that is a single round trip when the peer is
-/// there at all, and still bounds the wait when it is not. The sibling `tls` crate bounds its own
-/// handshake the same way.
+/// there at all, and still bounds the wait when it is not.
 pub const DIAL_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// One connection's live state. Never reachable from the opaque [`Conn`] handle directly; only
@@ -473,10 +473,9 @@ impl TcpTransport {
     /// Named for what it does rather than where it was first used: every I/O path in this crate —
     /// the dial, the frame reads, the writes and the refusal — maps its errors through it.
     ///
-    /// The table is `http`'s, arm for arm. `tls` carries the same arms and one more of its own:
-    /// malformed TLS bytes surface as `InvalidData`, which that transport maps to `HandshakeFailed`
-    /// because it has a handshake to fail. This one has none, so the kind falls to `Closed` with
-    /// every other unclassified error, and the difference is deliberate rather than drift.
+    /// The table is `http`'s, arm for arm. This transport has no TLS handshake to fail, so an
+    /// `InvalidData` falls to `Closed` with every other unclassified error, and the difference from a
+    /// layer that does have one is deliberate rather than drift.
     fn map_io_err(e: &io::Error) -> TransportError {
         match e.kind() {
             io::ErrorKind::ConnectionRefused => TransportError::Refused,

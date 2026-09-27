@@ -73,18 +73,18 @@ const DECISION: bool = cfg!(feature = "plane-decision");
 /// Every transport and every plane goes into one registry, and both counts are what the design
 /// says they are. This is the half of the seal that does not depend on the claims.
 #[test]
-fn seven_transports_and_five_planes_register() {
+fn six_transports_and_five_planes_register() {
     let registry = linked_registry();
     assert_eq!(
         registry.count(PluginKind::Transport),
-        if session_linked() { 7 } else { 6 }
+        if session_linked() { 6 } else { 5 }
     );
     // Every linked plane and the core one: a plane this build does not link registers nothing.
     assert_eq!(
         registry.count(PluginKind::Plane),
         crate::LINKED.claims.len() + 1
     );
-    for key in ["tcp", "tls", "http", "sse", "grpc", "stdio"] {
+    for key in ["tcp", "http", "sse", "grpc", "stdio"] {
         assert!(
             registry.resolve(PluginKind::Transport, key).is_some(),
             "transport `{key}` is not registered"

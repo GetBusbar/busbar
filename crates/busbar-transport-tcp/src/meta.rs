@@ -37,7 +37,7 @@ impl TransportMeta for TcpTransport {
     const SESSION_BOUND: bool = false;
     const UNIT0_TRIGGER: Option<busbar_contract::transport::wire::Unit0Trigger> =
         Some(busbar_contract::transport::wire::Unit0Trigger::FirstBytes);
-    const UPGRADES_TO: &'static [&'static str] = &["tls"];
+    const UPGRADES_TO: &'static [&'static str] = &[];
     const HANDSHAKE_TRIGGER: Option<busbar_contract::transport::wire::HandshakeTrigger> = None;
     const TRANSPORT_FACTS: &'static [&'static str] = &[tfacts::PEER];
     const DECODES_PAYLOAD: bool = false;

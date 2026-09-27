@@ -778,10 +778,11 @@ mod tests {
 
     /// ITEM 120: THE RULE READS THE `transport` KIND. It read six kinds, so the oracle above owed
     /// seven rows the rule never emitted. Every transport crate now gets a row, and
-    /// `busbar-transport-tls`'s is RED on what it really depends on. It once named the unit crate it
-    /// path-depended on; since the transport-key fold moved provisioning into the kernel tier, that
-    /// edge is gone, and the row is RED on the external crates no reviewed list admits (rustls,
-    /// tokio and the rest). The control is that the row is judged, not a particular breach.
+    /// `busbar-transport-http`'s is RED on what it really depends on: the external crates no reviewed
+    /// list admits (rustls, tokio and the rest). It was `busbar-transport-tls`'s row until that crate
+    /// was deleted (TRANSPORT-STACK: TLS is core's connection security); `-http` carries the same
+    /// rustls edge for its egress client. The control is that the row is judged, not a particular
+    /// breach.
     #[test]
     fn the_manifest_allowlist_rule_emits_a_row_for_every_transport_crate() {
         let cx = Ctx::workspace().expect("workspace");
@@ -811,17 +812,17 @@ mod tests {
             missing.is_empty(),
             "no manifest-allowlist row for {missing:?}"
         );
-        let tls = rows
+        let http = rows
             .iter()
-            .find(|r| r.id == "manifest-allowlist:busbar-transport-tls")
-            .expect("the tls row");
-        assert_eq!(tls.status, Status::Fail, "{}", tls.detail);
+            .find(|r| r.id == "manifest-allowlist:busbar-transport-http")
+            .expect("the http row");
+        assert_eq!(http.status, Status::Fail, "{}", http.detail);
         assert!(
-            tls.detail
-                .contains("busbar-transport-tls (transport): not on the reviewed list:")
-                && tls.detail.contains("rustls"),
+            http.detail
+                .contains("busbar-transport-http (transport): not on the reviewed list:")
+                && http.detail.contains("rustls"),
             "{}",
-            tls.detail
+            http.detail
         );
     }
 

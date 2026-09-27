@@ -48,8 +48,8 @@ rustls-pki-types = { workspace = true }
 tokio-rustls = { workspace = true }
 futures = { workspace = true }
 # Bridges the contract's rustls-free, futures-io-based `RawIo` (the wrap's parameter/return type)
-# to the tokio-io types `tokio_rustls::TlsAcceptor` requires — the same compat seam
-# `busbar-transport-tls` already uses to cross the same futures-io/tokio-io boundary.
+# to the tokio-io types `tokio_rustls::TlsAcceptor` requires — the same compat seam the kernel's
+# accept loop (`busbar_kernel::tls::serve_one`) crosses on the other side of `wrap`.
 tokio-util = { workspace = true }
 
 [dev-dependencies]

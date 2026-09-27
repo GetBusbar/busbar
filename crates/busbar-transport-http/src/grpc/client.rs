@@ -74,7 +74,7 @@ pub(crate) async fn handshake_h2(
     preface_timeout: std::time::Duration,
 ) -> Result<(Dialer, http::Uri, ConnectionOver), TransportError> {
     let io = TokioIo::new(stream);
-    // Bounded, the same shape as `tls`'s `HANDSHAKE_TIMEOUT` and `ws`'s `HANDSHAKE_BUDGET` on the
+    // Bounded, the same shape as `ws`'s `HANDSHAKE_BUDGET` on the
     // identical vector: the TCP (or TLS) leg below already proved the far side answered, not that
     // it will ever complete the HTTP/2 preface — an upstream that stops right there would
     // otherwise park this dial task, and the socket under it, for the life of the process. Unlike

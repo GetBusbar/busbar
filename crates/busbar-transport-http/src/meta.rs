@@ -29,7 +29,7 @@ impl TransportMeta for HttpTransport {
     const KEY: &'static str = "http";
     const SELECTOR_FORMS: &'static [SelectorForm] = claims::SELECTOR_FORMS;
     const EGRESS_SELECTOR_FORMS: &'static [SelectorForm] = claims::EGRESS_SELECTOR_FORMS;
-    const COMPOSES_OVER: &'static [&'static str] = &["tcp", "tls"];
+    const COMPOSES_OVER: &'static [&'static str] = &["tcp"];
     const HANDOFF: Option<busbar_contract::transport::wire::Handoff> = None;
     const FRAMING: busbar_contract::transport::wire::Framing =
         busbar_contract::transport::wire::Framing::Stream;

@@ -230,8 +230,9 @@ impl WsTransport {
 
     /// A transport composed over `lower` — the layer that binds, accepts and dials on its behalf.
     ///
-    /// The design's own stack is `tcp → tls → http → ws`: `http` is what an inbound upgrade arrives
-    /// on, and `tcp`/`tls` are what an outbound one is dialled through. Which of them a given
+    /// The design's own stack is `tcp → http → ws`, with core's connection security wrapped around
+    /// the carrier host-side: `http` is what an inbound upgrade arrives on, and `tcp` is what an
+    /// outbound one is dialled through. Which of them a given
     /// instance stands on is the composition root's declaration, and the boot check is what holds
     /// that declaration to the transports actually registered.
     #[must_use]
@@ -452,15 +453,15 @@ impl Transport for WsTransport {
             let lower = self.lower()?;
             // A `wss://` target says the bytes are encrypted before they leave this process, and
             // this transport encrypts nothing of its own: it upgrades whatever stream the layer
-            // below gives up. So the secure claim is the lower layer's to keep, and over a
-            // cleartext one the handshake would go out as a plain GET with no certificate ever
-            // validated — a downgrade the destination never asked for. The dial is refused before
-            // a socket is opened, which is the only answer that does not put cleartext on a wire
-            // the caller was told was secure. Wrapping the stream here instead was the alternative
-            // and is the wrong seam: the trust roots a node accepts upstream are the deployment's
-            // statement, held by the `tls` layer's client config, not a root store this crate
-            // would invent per dial.
-            if secure && lower.key() != "tls" {
+            // below gives up, and no transport below it encrypts either — TLS is core's connection
+            // security, never a transport layer. Over a cleartext layer the
+            // handshake would go out as a plain GET with no certificate ever validated — a
+            // downgrade the destination never asked for. The dial is refused before a socket is
+            // opened, which is the only answer that does not put cleartext on a wire the caller
+            // was told was secure. Wrapping the stream here instead is the wrong seam: the trust
+            // roots a node accepts upstream are the deployment's statement, held host-side, not a
+            // root store this crate would invent per dial.
+            if secure {
                 return Err(TransportError::AddressRefused);
             }
             let beneath = dest

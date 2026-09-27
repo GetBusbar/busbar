@@ -140,7 +140,6 @@ busbar-export-prometheus = { git = "https://github.com/GetBusbar/export-promethe
 # not name the layer beneath it — so the root hands each wire's build the layer it built below it.
 # Which wires a build links is the `transport` rows of the linked table below; the source names none.
 busbar-transport-tcp = { path = "../busbar-transport-tcp" }
-busbar-transport-tls = { path = "../busbar-transport-tls" }
 busbar-transport-http = { path = "../busbar-transport-http" }
 # WebSocket, and the ONE transport that is optional: it is the voice plane's edge and nothing else
 # reaches it, so a build without voice must not carry it. Non-optional, `--no-default-features` still
@@ -325,7 +324,6 @@ hooks-ranking = "busbar-hooks-ranking"
 # seal. A row whose crate is a required dependency is linked in every build (its key names the row);
 # `ws` rides its optional edge. Rows share a crate where one crate carries several wires.
 transport-tcp = "busbar-transport-tcp"
-transport-tls = "busbar-transport-tls"
 transport-http = "busbar-transport-http"
 transport-sse = "busbar-transport-http"
 transport-ws = "busbar-transport-ws"
@@ -354,7 +352,6 @@ export-prometheus = "exports"
 store-memory = "stores"
 hooks-ranking = "hooks"
 transport-tcp = "transport"
-transport-tls = "transport"
 transport-http = "transport"
 transport-sse = "transport"
 transport-ws = "transport"

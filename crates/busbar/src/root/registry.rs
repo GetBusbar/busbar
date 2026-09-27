@@ -130,8 +130,8 @@ pub enum BootRefusal {
     },
     /// A plane claims bytes on a transport no crate in the tree provides.
     ///
-    /// The design lists thirteen transports and seven exist. What the root owes is that a claim on
-    /// one of the missing six is a refusal an operator sees at boot, with the plane and the
+    /// The design lists thirteen transports and six wires exist. What the root owes is that a claim
+    /// on one of the missing seven is a refusal an operator sees at boot, with the plane and the
     /// transport named — never a silent 404 at the first request that would have matched it.
     UnregisteredClaimTransport {
         /// The plane that made the claim.

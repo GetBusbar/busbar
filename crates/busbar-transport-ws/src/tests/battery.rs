@@ -23,7 +23,7 @@ const WS_TARGET: &str = "ws://localhost/";
 
 /// Build a connected pair of live WS connections over an in-memory duplex — one performs the
 /// server handshake role, the other the client role, exactly as `accept`/`dial` would over a real
-/// socket. This is the exact seam a real `tcp`/`tls`/`http` transport would hand this crate a
+/// socket. This is the exact seam a real `tcp`/`http` transport would hand this crate a
 /// connection through once composed (see the crate's own report).
 async fn pair(
     t: &WsTransport,
@@ -266,10 +266,11 @@ async fn the_facts_the_layer_below_established_survive_the_upgrade() {
         Some("sha256:stub".to_string()),
         "the certificate the peer presented"
     );
-    assert_eq!(record.transport_chain, vec!["tcp", "tls", "ws"]);
+    assert_eq!(record.transport_chain, vec!["tcp", "http", "ws"]);
 }
 
-/// A `tls` layer that has one connection to give up, and reports the facts a real one would.
+/// An `http` layer, over a connection core secured, that has one connection to give up and reports
+/// the facts a real one would.
 struct StubLower {
     io: std::sync::Mutex<Option<tokio::io::DuplexStream>>,
 }
@@ -297,7 +298,7 @@ impl StubLower {
 
 impl busbar_contract::Plugin for StubLower {
     fn key(&self) -> &'static str {
-        "tls"
+        "http"
     }
     fn kind(&self) -> busbar_contract::Kind {
         busbar_contract::Kind::Transport
@@ -322,7 +323,7 @@ impl Transport for StubLower {
                 issuer: "CN=issuer".to_string(),
                 fingerprint: "sha256:stub".to_string(),
             }),
-            transport_chain: vec!["tcp", "tls"],
+            transport_chain: vec!["tcp", "http"],
         }
     }
 
@@ -400,7 +401,7 @@ impl Transport for StubLower {
     ) -> Option<busbar_contract::transport::wire::RawStream> {
         let io = self.io.lock().unwrap().take()?;
         Some(busbar_contract::transport::wire::RawStream::new(
-            "tls",
+            "http",
             conn.peer(),
             Box::new(tokio_util::compat::TokioAsyncReadCompatExt::compat(io)),
         ))
@@ -888,11 +889,11 @@ async fn transport_meta_matches_the_architecture_row() {
         Some(Unit0Trigger::Upgrade)
     );
     // The layers this one is actually built over: an inbound upgrade on `http`, an outbound dial
-    // on `tcp` for a plaintext target and on `tls` for a secure one, which is the only lower layer
-    // under which a `wss://` dial is honest.
+    // on `tcp`. No transport layer encrypts (TLS is core's connection security), so none is named
+    // for a `wss://` dial.
     assert_eq!(
         <WsTransport as TransportMeta>::COMPOSES_OVER,
-        &["http", "tcp", "tls"]
+        &["http", "tcp"]
     );
     assert!(<WsTransport as TransportMeta>::UPGRADES_TO.is_empty());
     assert_eq!(<WsTransport as TransportMeta>::STATUS_CLASS, None);

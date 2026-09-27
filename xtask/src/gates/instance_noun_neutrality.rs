@@ -144,7 +144,6 @@ const FAM_HTTP: &[&str] = &["busbar-transport-http"];
 const FAM_WS: &[&str] = &["busbar-transport-ws"];
 const FAM_STDIO: &[&str] = &["busbar-transport-stdio"];
 const FAM_TCP: &[&str] = &["busbar-transport-tcp"];
-const FAM_TLS: &[&str] = &["busbar-transport-tls"];
 const FAM_SSE: &[&str] = &["busbar-transport-http"];
 const FAM_GRPC: &[&str] = &["busbar-transport-http"];
 
@@ -313,7 +312,10 @@ const NOUNS: &[Noun] = &[
     Noun {
         key: "tls",
         kind: "transport",
-        family: FAM_TLS,
+        // No crate holds this instance: `busbar-transport-tls` was deleted (TRANSPORT-STACK — TLS is
+        // core's connection security, `busbar-core-connsec`), so every spelling of the transport
+        // crate's name is a leak wherever it appears.
+        family: FAM_NONE,
         tokens: &["busbar_transport_tls", "transport_tls", "transport-tls"],
         camel: &[],
         section: None,

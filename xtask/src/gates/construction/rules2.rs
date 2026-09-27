@@ -302,7 +302,7 @@ pub fn manifest_allowlist(cx: &Ctx, tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>,
     //
     // AND `transport` WAS MISSING TOO (item 120): the list named six of the seven plugin kinds of
     // `[gate.plugin_kinds]` (DECISIONS #3), so the seven `busbar-transport-*` crates got no row at
-    // all and this rule printed green while `busbar-transport-tls` path-depends on
+    // all and this rule printed green while `busbar-transport-tls` (since deleted) path-depended on
     // `busbar-unit-transport-key`. A transport is a plugin behind the wall like any other kind.
     let kinds = [
         "plane",

@@ -6686,10 +6686,10 @@ impl Gate for KindIsolationGate {
             // compiled into the making of the artifact.
             let mut ov = Overlay::new();
             ov.set(
-                "crates/busbar-transport-tls/Cargo.toml",
+                "crates/busbar-transport-stdio/Cargo.toml",
                 manifest_plus(
                     cx,
-                    "crates/busbar-transport-tls/Cargo.toml",
+                    "crates/busbar-transport-stdio/Cargo.toml",
                     "\n[build-dependencies]\nbusbar-plane-llm = { workspace = true }\n",
                 ),
             );
@@ -6710,10 +6710,10 @@ impl Gate for KindIsolationGate {
             // tree builds on, so the edge is not even conditional.
             let mut ov = Overlay::new();
             ov.set(
-                "crates/busbar-transport-tls/Cargo.toml",
+                "crates/busbar-transport-stdio/Cargo.toml",
                 manifest_plus(
                     cx,
-                    "crates/busbar-transport-tls/Cargo.toml",
+                    "crates/busbar-transport-stdio/Cargo.toml",
                     "\n[target.'cfg(unix)'.dependencies]\nbusbar-plane-mcp = { workspace = true }\n",
                 ),
             );
@@ -6730,10 +6730,10 @@ impl Gate for KindIsolationGate {
             // finding that says only `wire` is a finding about a crate that resolves to no kind at all.
             let mut ov = Overlay::new();
             ov.set(
-                "crates/busbar-transport-tls/Cargo.toml",
+                "crates/busbar-transport-stdio/Cargo.toml",
                 manifest_plus(
                     cx,
-                    "crates/busbar-transport-tls/Cargo.toml",
+                    "crates/busbar-transport-stdio/Cargo.toml",
                     "\n[dependencies.wire]\npackage = \"busbar-plane-llm\"\npath = \"../busbar-plane-llm\"\n",
                 ),
             );
@@ -6746,7 +6746,7 @@ impl Gate for KindIsolationGate {
                 &[
                     "unlisted-dep-edge",
                     "transport -> plane",
-                    "busbar-transport-tls -> busbar-plane-llm",
+                    "busbar-transport-stdio -> busbar-plane-llm",
                 ],
             ));
 
@@ -6755,10 +6755,10 @@ impl Gate for KindIsolationGate {
             // spells a plane word.
             let mut ov = Overlay::new();
             ov.set(
-                "crates/busbar-transport-tls/Cargo.toml",
+                "crates/busbar-transport-stdio/Cargo.toml",
                 manifest_plus(
                     cx,
-                    "crates/busbar-transport-tls/Cargo.toml",
+                    "crates/busbar-transport-stdio/Cargo.toml",
                     "\n[dependencies]\nwire-shim = { workspace = true }\n",
                 ),
             );
@@ -6790,10 +6790,10 @@ impl Gate for KindIsolationGate {
             // read as a kind learning about another kind.
             let mut ov = Overlay::new();
             ov.set(
-                "crates/busbar-transport-tls/Cargo.toml",
+                "crates/busbar-transport-stdio/Cargo.toml",
                 manifest_plus(
                     cx,
-                    "crates/busbar-transport-tls/Cargo.toml",
+                    "crates/busbar-transport-stdio/Cargo.toml",
                     "\n[dev-dependencies]\nbusbar-plane-llm = { workspace = true }\n",
                 ),
             );
@@ -7354,7 +7354,7 @@ impl Gate for KindIsolationGate {
         // FILE PATH — never its content.
         let mut ov = Overlay::new();
         ov.set(
-            "crates/busbar-transport-tls/build.rs",
+            "crates/busbar-transport-stdio/build.rs",
             "fn main() { let _ = include_str!(\"../busbar-plane-mcp/src/lib.rs\"); }\n",
         );
         report.push(prove_rows_red(
@@ -7365,7 +7365,7 @@ impl Gate for KindIsolationGate {
             ov,
             &[
                 "build-script-reach",
-                "busbar-transport-tls",
+                "busbar-transport-stdio",
                 "busbar-plane-mcp",
             ],
         ));
@@ -7760,10 +7760,10 @@ impl Gate for KindIsolationGate {
             &["busbar-plane-llm"],
         );
         ov.set(
-            "crates/busbar-transport-tls/Cargo.toml",
+            "crates/busbar-transport-stdio/Cargo.toml",
             manifest_plus(
                 cx,
-                "crates/busbar-transport-tls/Cargo.toml",
+                "crates/busbar-transport-stdio/Cargo.toml",
                 "\n[dependencies]\nbusbar-plane-shim = { path = \"../../vendor/busbar-plane-shim\" }\n",
             ),
         );
@@ -8493,12 +8493,12 @@ impl Gate for KindIsolationGate {
             &["no-lib", "busbar-transport-planted"],
         ));
 
-        // The two entry-count plants land in `busbar-transport-tls`, a single-entry transport that is
+        // The two entry-count plants land in `busbar-transport-stdio`, a single-entry transport that is
         // NOT the kind's exemplar: a second entry in the exemplar itself (`busbar-transport-tcp`)
         // is `no-entry` for the whole kind, a different finding, and would not prove this one.
         let mut ov = Overlay::new();
         ov.set(
-            "crates/busbar-transport-tls/src/planted_second_entry.rs",
+            "crates/busbar-transport-stdio/src/planted_second_entry.rs",
             "pub struct Second;\nimpl Transport for Second {}\n",
         );
         report.push(prove_rows_red(
@@ -8507,7 +8507,7 @@ impl Gate for KindIsolationGate {
             "a second entry implementation in one crate of a kind",
             &[ROW_SHAPE],
             ov,
-            &["entry-count", "busbar-transport-tls"],
+            &["entry-count", "busbar-transport-stdio"],
         ));
 
         // A GENERIC ENTRY IMPL IS AN ENTRY IMPL. `impl_trait_on` read `impl ` and stopped, so
@@ -8519,7 +8519,7 @@ impl Gate for KindIsolationGate {
         // GREEN. That is the whole difference, and it is what the case is here to hold.
         let mut ov = Overlay::new();
         ov.set(
-            "crates/busbar-transport-tls/src/planted_generic_entry.rs",
+            "crates/busbar-transport-stdio/src/planted_generic_entry.rs",
             "pub struct Generic<'a, S>(&'a S);\n\
              impl<'a, S: Send + Sync> Transport for Generic<'a, S> {}\n",
         );
@@ -8529,7 +8529,7 @@ impl Gate for KindIsolationGate {
             "an entry implementation written with generic parameters is counted",
             &[ROW_SHAPE],
             ov,
-            &["entry-count", "busbar-transport-tls", "2 time(s)"],
+            &["entry-count", "busbar-transport-stdio", "2 time(s)"],
         ));
 
         // THE SKELETON IS THE SPEC'S, NOT THE EXEMPLAR'S FILE LIST. This crate declares `meta` and

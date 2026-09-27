@@ -160,9 +160,8 @@ impl tokio::io::AsyncWrite for Cuttable {
 /// frame either side must send before anything else — has to arrive before this crate gives the
 /// connection up.
 ///
-/// This crate's own constant: `tls` has `HANDSHAKE_TIMEOUT` and `ws` has `HANDSHAKE_BUDGET`, both
-/// on the same shape of vector (a peer that completes the transport leg below and then never
-/// speaks the protocol this layer expects), and neither is imported here — a transport does not
+/// This crate's own constant: `ws` has `HANDSHAKE_BUDGET` on the same shape of vector (a peer that completes the transport leg below and then never
+/// speaks the protocol this layer expects), and it is not imported here — a transport does not
 /// name a sibling transport. Unbounded, a peer that opens the socket and then sends nothing holds
 /// the accept or dial task, and everything it reached for, for the life of the process: the
 /// classic slow-loris. Same budget both directions, for the same reason the siblings use one

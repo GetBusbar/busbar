@@ -1916,7 +1916,7 @@ async fn a_close_ends_a_pump_parked_on_a_body_the_peer_never_finishes() {
 /// The refusal is the client-visible answer to an authentication failure, so "delivered" has to
 /// mean the bytes left. `write_all` only proves they reached the writer's own buffer; the flush is
 /// the evidence, and swallowing its failure reports a refusal nobody ever received. The sibling
-/// `tcp` and `tls` crates already answer this way.
+/// `tcp` crate already answers this way.
 #[tokio::test]
 async fn an_undelivered_unit0_refusal_is_an_error() {
     let mut w = FlushFailsWriter {
@@ -2174,7 +2174,7 @@ async fn frame_meta_is_honest_on_the_frames_this_transport_emits() {
 ///
 /// `Port` is a selector form, and a claim by port reads this field: zero here made every arrival on
 /// every listener look alike, so a node bound to two ports could not tell them apart. The port is
-/// the ACCEPTED SOCKET's local port, which is what the sibling `tcp`, `tls` and `ws` crates report
+/// the ACCEPTED SOCKET's local port, which is what the sibling `tcp` and `ws` crates report
 /// and the only place the fact exists on an ephemeral (`:0`) bind.
 #[tokio::test]
 async fn an_arrival_names_the_port_it_arrived_on() {

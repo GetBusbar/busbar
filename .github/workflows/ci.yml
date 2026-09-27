@@ -2149,7 +2149,7 @@ jobs:
           # and the three default export sinks (`busbar/export-prometheus`, `-file`, `-webhook`).
           # These rows vary PLANES, not wires or sinks. The tcp wire is the floor of a bootable node:
           # a build without it boots only with a dropped-in tcp, and without one it refuses at the
-          # seal ("transport `tls` composes over `tcp`, which no registered transport provides"). A
+          # seal ("transport `http` composes over `tcp`, which no registered transport provides"). A
           # row without the sinks refuses every config naming one as an unknown exporter. Either
           # way, the suites would test a refusal instead of the behaviour they are written for.
           # The no-tcp build is its own row below.

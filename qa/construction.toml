@@ -1533,7 +1533,6 @@ known_sites = [
   "crates/busbar-transport-http/src/tests/mod.rs",
   "crates/busbar-transport-stdio/src/tests/battery.rs",
   "crates/busbar-transport-tcp/src/tests/mod.rs",
-  "crates/busbar-transport-tls/src/tests/mod.rs",
   "crates/busbar-transport-ws/src/tests/battery.rs",
   "crates/busbar-transport-ws/src/transport.rs",
   "crates/busbar-kernel-egress/src/tests/harness.rs",
@@ -2507,6 +2506,13 @@ plane_crates = 4
 #     busbar-plugin-loader `auth_conformance_tests`), and ci.yml `plugin-proofs` proves
 #     GetBusbar/auth-github. `crates/auth-*` now matches exactly one: `crates/auth-admin-tokens`.
 #
+# ── RE-PINNED 2026-09-27: `transport` 5 -> 4 ────────────────────────────────────────────────────────────────
+#
+#   * `transport` 5 -> 4. TRANSPORT-STACK (owner-approved 2026-09-27, docs/design/1.6.0-QUESTIONS.md;
+#     spec #3): TLS is core-only connection security — `busbar-core-connsec` is the one TLS path and
+#     never crosses the plugin ABI — so `crates/busbar-transport-tls` was deleted, not moved.
+#     `crates/busbar-transport-*` now matches exactly four: http, stdio, tcp and ws.
+#
 # THE BASE COMPARISON STILL REPORTS THE THREE DECREMENTS (plugin_kinds.plane 6->5,
 # plugin_kinds.unit 14->1, plugin_kinds.pure_auth 2->0), AND THAT IS THIS ROW WORKING RATHER THAN
 # FAILING. `[gate.census]` reds a floor that went DOWN versus the base commit precisely because it
@@ -2523,7 +2529,7 @@ auth = 1
 secret = 0
 store = 2
 export = 1
-transport = 5
+transport = 4
 loader = 1
 abi = 1
 
