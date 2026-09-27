@@ -417,7 +417,7 @@ async fn a_handoff_onto_stdio_is_a_mismatch() {
     let keys = test_key_handle();
     let err = t.adopt(&t, a, &keys).await.unwrap_err();
     assert_eq!(err, TransportError::HandoffMismatch);
-    assert!(<StdioTransport as busbar_contract::TransportMeta>::COMPOSES_OVER.is_empty());
+    assert!(<crate::StdioCarrier as busbar_contract::TransportMeta>::COMPOSES_OVER.is_empty());
 }
 
 /// The refusal a unit-0 arrival is answered with, for the cells that send one.
@@ -490,17 +490,17 @@ async fn a_refusal_on_a_fenced_connection_is_reported_closed() {
 async fn transport_meta_matches_the_architecture_row() {
     use busbar_contract::transport::wire::Unit0Trigger;
     use busbar_contract::TransportMeta;
-    assert_eq!(<StdioTransport as TransportMeta>::KEY, "stdio");
-    assert!(<StdioTransport as TransportMeta>::SESSION);
-    assert!(<StdioTransport as TransportMeta>::SESSION_BOUND);
+    assert_eq!(<crate::StdioCarrier as TransportMeta>::KEY, "stdio");
+    assert!(<crate::StdioCarrier as TransportMeta>::SESSION);
+    assert!(<crate::StdioCarrier as TransportMeta>::SESSION_BOUND);
     assert_eq!(
-        <StdioTransport as TransportMeta>::UNIT0_TRIGGER,
+        <crate::StdioCarrier as TransportMeta>::UNIT0_TRIGGER,
         Some(Unit0Trigger::FirstMessage)
     );
-    assert!(<StdioTransport as TransportMeta>::UPGRADES_TO.is_empty());
-    assert!(<StdioTransport as TransportMeta>::COMPOSES_OVER.is_empty());
-    assert!(!<StdioTransport as TransportMeta>::DECODES_PAYLOAD);
-    assert_eq!(<StdioTransport as TransportMeta>::STATUS_CLASS, None);
+    assert!(<crate::StdioCarrier as TransportMeta>::UPGRADES_TO.is_empty());
+    assert!(<crate::StdioCarrier as TransportMeta>::COMPOSES_OVER.is_empty());
+    assert!(!<crate::StdioCarrier as TransportMeta>::DECODES_PAYLOAD);
+    assert_eq!(<crate::StdioCarrier as TransportMeta>::STATUS_CLASS, None);
 }
 
 fn test_key_handle() -> busbar_contract::TransportKeyHandle {

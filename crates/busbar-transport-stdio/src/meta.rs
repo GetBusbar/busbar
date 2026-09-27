@@ -17,7 +17,7 @@ use crate::transport::StdioTransport;
 
 impl Plugin for StdioTransport {
     fn key(&self) -> &'static str {
-        <Self as TransportMeta>::KEY
+        crate::linked::KEY
     }
     fn kind(&self) -> Kind {
         Kind::Transport
@@ -27,7 +27,7 @@ impl Plugin for StdioTransport {
     }
 }
 
-impl TransportMeta for StdioTransport {
+impl TransportMeta for crate::StdioCarrier {
     const KEY: &'static str = "stdio";
     const SELECTOR_FORMS: &'static [SelectorForm] = claims::SELECTOR_FORMS;
     const EGRESS_SELECTOR_FORMS: &'static [SelectorForm] = claims::EGRESS_SELECTOR_FORMS;
