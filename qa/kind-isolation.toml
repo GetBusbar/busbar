@@ -556,20 +556,6 @@ cite = "none. ARCHITECTURE.md 1.1 — three blind axes, one small kernel: a crat
 why = "crates of kind transport naming transport vocabulary: transport package names in any spelling, the kind-qualified id (transport-<id>), and — where transport is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
 drain = "delete the transport name from the transport crate: a transport reaches transport through the contract face it is written against, never by naming it. Every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
 
-[[edge]]
-from = "transport"
-to = "unit"
-cite = "none. ARCHITECTURE.md 1.1 — three blind axes, one small kernel: a crate of kind transport has no clause that lets it name unit vocabulary. Every hit is a coupling to delete."
-why = "crates of kind transport naming unit vocabulary: unit package names in any spelling, the kind-qualified id (unit-<id>), and — where unit is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
-drain = "delete the unit name from the transport crate: a transport reaches unit through the contract face it is written against, never by naming it. Every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
-
-[[edge]]
-from = "unit"
-to = "transport"
-cite = "none. ARCHITECTURE.md 1.1 — three blind axes, one small kernel: a crate of kind unit has no clause that lets it name transport vocabulary. Every hit is a coupling to delete."
-why = "crates of kind unit naming transport vocabulary: transport package names in any spelling, the kind-qualified id (transport-<id>), and — where transport is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
-drain = "delete the transport name from the unit crate: a unit reaches transport through the contract face it is written against, never by naming it. Every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
-
 [[cell]]
 crate = "busbar"
 kind = "auth"
@@ -1044,11 +1030,6 @@ kind = "transport"
 count = "68"
 
 [[cell]]
-crate = "busbar-transport-tls"
-kind = "unit"
-count = "34"
-
-[[cell]]
 crate = "busbar-transport-ws"
 kind = "plane"
 count = "2"
@@ -1057,11 +1038,6 @@ count = "2"
 crate = "busbar-transport-ws"
 kind = "transport"
 count = "71"
-
-[[cell]]
-crate = "busbar-unit-transport-key"
-kind = "transport"
-count = "106"
 
 [[cell]]
 crate = "busbar-voice"
@@ -1174,11 +1150,6 @@ crate = "busbar-plane-a2a"
 kind = "transport"
 note = "segment scanner 105, window scanner 110; scored 110. The two read the brand and acronym spellings differently: `gRPC` splits at its own camel joint for the segment scanner and reads whole for the window scanner, and `A2AService` is the mirror case. The scored count is the UNION of the two hit sets, never either one alone, and it falls to zero with the hits."
 
-[[disagreement]]
-crate = "busbar-unit-transport-key"
-kind = "transport"
-note = "segment scanner 105, window scanner 106. The two read the brand and acronym spellings differently: `gRPC` splits at its own camel joint for the segment scanner and reads whole for the window scanner, and `A2AService` is the mirror case. The scored count is the higher, never the lower, and it falls to zero with the hits."
-
 # ------------------------------------------------------------------------------------------------
 #
 # `kind-isolation:deps` held the manifests to a table of kind-to-kind CLASSES in Rust source, and a
@@ -1219,7 +1190,6 @@ note = "segment scanner 105, window scanner 106. The two read the brand and acro
 # ARCHITECTURE'S OWN GRAPH: only the classes ARCHITECTURE_ALLOWED names, with `tcb`, `not-allowed`
 # and `owner-ruling-pending` all refused, because the criterion for a tag is not "no worse than
 # yesterday". What is written here is what 1.6.0 still has to delete or get a ruling on.
-
 [[dep]]
 from    = "busbar"
 to      = "busbar-a2a"
@@ -1528,26 +1498,6 @@ count   = "1"
 verdict = "allowed"
 cite    = "ARCHITECTURE.md 1.1 — (substrate, contract) is a granted class: a substrate crate is written against the contract face, never against another kind's crate."
 why     = "busbar-substrate-values names busbar-contract: declared normal in the shipped graph, 1 declaration(s) at this commit. It is the edge this landing CREATES, and it creates it by DELETING a declaration: `breaker::{StatusClass, Disposition}` was a nine-row copy of the upstream status class declared here, and is now the contract's one table re-exported at its historical path. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
-drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
-
-[[dep]]
-from    = "busbar-transport-tls"
-to      = "busbar-unit-transport-key"
-half    = "shipped"
-count   = "1"
-verdict = "not-allowed"
-cite    = "ARCHITECTURE.md 1.1 \"A transport cannot name a plane or a unit.\" Also ARCHITECTURE.md 1.2: a dependency on a busbar-unit-* is a CI failure."
-why     = "busbar-transport-tls names busbar-unit-transport-key: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
-drain   = "delete the busbar-unit-transport-key dependency from busbar-transport-tls's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
-
-[[dep]]
-from    = "busbar-unit-transport-key"
-to      = "busbar-contract"
-half    = "shipped"
-count   = "1"
-verdict = "allowed"
-cite    = "ARCHITECTURE.md 1.2 manifest allow-list — busbar-contract is the face every kind is written against."
-why     = "busbar-unit-transport-key names busbar-contract: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
 drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
 
 [[dep]]

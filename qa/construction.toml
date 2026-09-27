@@ -124,8 +124,10 @@ auth = ["crates/auth-*"]
 # export crate sat outside the family, unscanned. A glob that stops matching its own kind is the
 # same failure class as a census row that stops counting.
 export = ["crates/export-*", "crates/busbar-export-*"]
-# NON-PLUGIN-KIND infra families: unit (core governance steps), loader and abi (TCB crates).
-unit = ["crates/busbar-unit-*"]
+# NON-PLUGIN-KIND infra families: loader and abi (TCB crates). `unit` is STRUCK (fold F14 2/2): the
+# spec lists it among the NOT-kinds ("unit (core's own workflow)"), the last `busbar-unit-*` crate
+# folded into `busbar-kernel-identity` (#36), and kind-isolation retired the kind in the same
+# commit. `[rules.loc-ceilings] unit_crate_glob` still counts any `busbar-unit-*` crate at 0.
 loader = ["crates/plugin-loader"]
 abi = ["crates/busbar-contract"]
 
@@ -1021,7 +1023,9 @@ unit_crate_glob = "busbar-unit-*"
 # whole unit family to come back without a single row going red. Pinned at the measurement.
 # RATCHETED DOWN 268 -> 2, AT THE MEASUREMENT: the transport-key fold (F14 1/2) moved the
 # provisioning kernel-side into busbar-kernel-identity, and `busbar-unit-transport-key` now counts 2.
-unit_total_ceiling = 2
+# RATCHETED DOWN 2 -> 0 (F14 2/2): that crate is DELETED, the glob matches no crate and the union
+# measures 0. #36's exit test is "no busbar-unit-* crates"; a unit crate that comes back reds here.
+unit_total_ceiling = 0
 # `verbs_crate` / `verbs_ceiling` ARE STRUCK (P1A-con, 1.6.0 Phase 1). They budgeted
 # `busbar-unit-verbs` as a sub-ceiling of the unit union. OWNER-LOCKED DECISION #36 moved verb
 # execution OUT of the unit set ("EXITS from the unit set: `verbs` -> `busbar-core-admin`"):
@@ -1283,7 +1287,10 @@ way."""
 # offenders, all in busbar-kernel); a planted `const PLANTED_LABEL: &str = "anthropic";` in
 # `crates/busbar-kernel-ledger/src/cost/mod.rs` now counts (14 -> 15), where the old scope never
 # opened the file (14 -> 14).
-crates_kernel = ["busbar-kernel", "busbar-unit-transport-key"]
+# RETIRED BY NAME (fold F14 2/2): `busbar-unit-transport-key` is deleted; its code is
+# `busbar-kernel-identity`'s `transport_key` module, which `crate_glob` below already scans, so
+# striking the name narrows nothing.
+crates_kernel = ["busbar-kernel"]
 crate_glob = "busbar-kernel-*"
 # section 6's dialect names + the section 1.3 pinned word list, verbatim.
 words = [
@@ -1437,7 +1444,9 @@ before every `.await` inside the route step, wherever the route step is async.""
 # PASS over the wider set (no finding added), and a planted `let hold = cell.take(); let x =
 # maybe()?; Posted::settle(hold, x)` in `settle.rs` now reds `hold-discipline:no-early-exit`, which
 # under the old glob stayed PASS.
-scope_crates_kernel = ["busbar-kernel", "busbar-unit-transport-key"]
+# RETIRED BY NAME (fold F14 2/2): the last unit crate is deleted and its code sits in
+# `busbar-kernel-identity`, inside `scope_crate_glob` below, so nothing leaves scope.
+scope_crates_kernel = ["busbar-kernel"]
 scope_crate_glob = "busbar-kernel-*"
 take_pattern = '\.take\('
 settle_pattern = '::settle\(|\.settle\('
@@ -1760,7 +1769,7 @@ root reads it ONCE per arrival and hands the reading down, which is also what ke
 one unit from landing in different seconds. Production code only: a test may read a clock to \
 measure a test."""
 # Where a unit crate's production code lives.
-scope_globs = ["crates/busbar-kernel-*/src/*", "crates/busbar-unit-*/src/*"]
+scope_globs = ["crates/busbar-kernel-*/src/*"]
 # The clock reads a unit crate may not perform.
 forbidden = ["SystemTime::now", "Instant::now"]
 # A helper that exists FOR the root, in a unit crate's directory, that nothing in the crate calls.
@@ -1777,7 +1786,7 @@ and the section number moves the next time the document is edited. The rule the 
 be stated in words, in the comment, so the comment survives the worksheet and the renumbering. RFC \
 citations are exempt by construction — they are stable, externally resolvable documents — and only \
 the identifier shapes below are searched for."""
-scope_globs = ["crates/busbar-kernel-*/src/*", "crates/busbar-unit-*/src/*"]
+scope_globs = ["crates/busbar-kernel-*/src/*"]
 # The shapes searched for, as regular expressions over the raw comment text.
 patterns = ["PB-[0-9]", "CG-[0-9]", "ARCHITECTURE\\.md §"]
 # The one crate whose occurrence is knowingly left in place, so the rule can hold the line on every
@@ -2422,6 +2431,12 @@ plane_crates = 4
 #     is deliberately NOT repointed at `crates/busbar-kernel-*`: those eight are KERNEL crates,
 #     held by `[rules.loc-ceilings]`, and moving them under a plugin-kind glob would run the unit
 #     kind's rules over the kernel rather than restore a count.
+#   * `unit` 1 -> STRUCK (fold F14 2/2). `crates/busbar-unit-transport-key` is DELETED: its
+#     provisioning is `busbar-kernel-identity`'s `transport_key` module (#36: the TLS secret->config
+#     provisioning is kernel-side machinery; #40: the tls plugin gets an opaque config handle). The
+#     spec lists `unit` among the NOT-kinds, so the `[gate.plugin_kinds]` key and this pin go with
+#     the kind kind-isolation retired in the same commit. A `busbar-unit-*` crate that comes back
+#     is still counted by `[rules.loc-ceilings] unit_crate_glob` at a ceiling of 0.
 #   * `pure_auth` = 2 and `egress_auth` = 0 are STRUCK and `auth` = 2 takes their place. This is a
 #     RENAME, not a decrement: LOCKED DECISION #3 makes auth ONE kind — inbound-verify and
 #     outbound-sign are two OPERATIONS of it, direction is a usage mode — and `[gate.plugin_kinds]`
@@ -2464,7 +2479,6 @@ plane_crates = 4
 # two things this table is written to prevent.
 [gate.census.plugin_kinds]
 plane = 5
-unit = 1
 hook = 2
 auth = 2
 secret = 0

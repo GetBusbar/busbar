@@ -95,7 +95,18 @@ pub fn loc_ceilings(cx: &Ctx, tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, Strin
     let crate_total = |name: &str| -> i64 { tree.crate_files(name).iter().map(|r| loc(r)).sum() };
 
     let unit_dirs = dirs_for_globs(cx, &[format!("crates/{unit_glob}")]);
-    let unit_crates: Vec<String> = unit_dirs.iter().map(|d| crate_name_of_dir(d)).collect();
+    let mut unit_crates: Vec<String> = unit_dirs.iter().map(|d| crate_name_of_dir(d)).collect();
+    // A UNIT CRATE THE TREE HOLDS SOURCE FOR IS A UNIT CRATE, whether or not its directory is on
+    // disk yet. The directory listing above reads the filesystem only, so a crate that exists in
+    // the tree this rule was handed (a selftest plant, the day a unit crate comes back) and not in
+    // the checkout was invisible and spent nothing. Since fold F14 2/2 no unit crate is on disk at
+    // all and the ceiling is 0, which made that the only way the row could ever go red.
+    for rel in tree.files.keys() {
+        let name = tree.crate_of(rel);
+        if rel.starts_with("crates/") && fnmatch(&name, unit_glob) && !unit_crates.contains(&name) {
+            unit_crates.push(name);
+        }
+    }
 
     let kernel_files_all = tree.crate_files(kernel_crate);
     let teller_files: Vec<&String> = kernel_files_all

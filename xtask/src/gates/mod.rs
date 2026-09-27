@@ -344,8 +344,10 @@ pub const CONSTRUCTION_STANDING_REDS: &[&str] = &[
     // were the other two, each path-depending on `busbar-transport-http`: both FOLDED INTO it
     // (the transport fold), so their rows have no crate left to score and grpc's third-party
     // deps (`tonic`, `tower`) are `-http`'s row's now. Drain: the owner reviews the third-party
-    // deps into `[rules.manifest-allowlist.reviewed_extra]` and the #40 opaque-handle work removes
-    // the tls → unit edge; each name is struck here AND in scripts/land.sh as its row goes green.
+    // deps into `[rules.manifest-allowlist.reviewed_extra]`; each name is struck here AND in
+    // scripts/land.sh as its row goes green. The tls → unit edge is GONE (fold F14, #40(b): the unit
+    // folded into `busbar-kernel-identity` and tls takes only the opaque config handle), so `-tls`
+    // stays here on its third-party deps alone.
     "manifest-allowlist:busbar-transport-http",
     "manifest-allowlist:busbar-transport-stdio",
     "manifest-allowlist:busbar-transport-tcp",

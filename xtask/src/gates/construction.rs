@@ -269,8 +269,8 @@ impl ConstructionGate {
         // AND IT WAS THAT ARRANGEMENT AGAIN, ONE KIND OVER (item 166). Both lists omitted
         // `transport`, so no `manifest-allowlist:busbar-transport-*` row was owed, a missing one
         // was not even DID NOT RUN, and seven transport crates were measured by nothing — while
-        // `busbar-transport-tls` path-depends on `busbar-unit-transport-key`, a dep the rule scores
-        // RED. So the oracle no longer copies the rule's list: it names all seven plugin kinds of
+        // `busbar-transport-tls` path-depended on `busbar-unit-transport-key` (until fold F14), a dep
+        // the rule scores RED. So the oracle no longer copies the rule's list: it names all seven plugin kinds of
         // `[gate.plugin_kinds]` (`unit`, `loader` and `abi` are the kernel side of the wall, not
         // plugins behind it), and a kind the rule forgets is a DID NOT RUN row until the rule
         // reads it. (The rule's own list is item 120, in `rules2.rs`.)

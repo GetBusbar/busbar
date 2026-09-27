@@ -301,11 +301,11 @@ static KINDS: &[KindDef] = &[
         family: Family::Transport,
         matchers: &["busbar-transport-"],
     },
-    KindDef {
-        kind: "unit",
-        family: Family::Neutral,
-        matchers: &["busbar-unit-"],
-    },
+    // `unit` IS RETIRED (fold F14 2/2). The spec lists it among the NOT-kinds ("unit (core's own
+    // workflow)"): the fourteen `busbar-unit-*` crates became the eight `busbar-kernel-<name>`
+    // crates (#36) and the last one, `busbar-unit-transport-key`, folded into
+    // `busbar-kernel-identity`. A `busbar-unit-*` crate that comes back resolves to no kind and is
+    // refused as unknown, which is the retirement working.
     // THE ENGINE + THE 8 WORKFLOW CRATES (DECISIONS #36). `busbar-kernel` is the loop/registry/
     // teller/sessions; `busbar-kernel-<name>` are the 8 workflow crates the 14 `busbar-unit-*` folded
     // into (identity, scope, budget, ledger, egress, breaker, wal, audit). One kind, matched by the
@@ -486,13 +486,12 @@ const OFF_TREE_MANIFESTS: &[(&str, &str)] = &[
 /// A key that maps onto nothing in [`KINDS`] is a second kind vocabulary drifting beside this one.
 ///
 /// The seven plugin kinds get a construction scope (`plane`, `transport`, `store`, `secret`,
-/// `hook`, `auth`, `export`); `unit` scopes the core governance steps; `loader`/`abi` scope the TCB
+/// `hook`, `auth`, `export`); `loader`/`abi` scope the TCB
 /// crates the design excuses by name. `control` and `dialect` are gone (DECISIONS #4/#5), and the
 /// old `pure_auth`/`egress_auth` split is collapsed into one `auth` key: outbound-sign is an
 /// OPERATION of the auth kind, not a second kind (DECISIONS #3).
 const CONSTRUCTION_KIND_KEYS: &[(&str, &str)] = &[
     ("plane", "plane"),
-    ("unit", "unit"),
     ("transport", "transport"),
     ("store", "store"),
     ("hook", "hooks"),
@@ -510,15 +509,13 @@ const CONSTRUCTION_KIND_KEYS: &[(&str, &str)] = &[
 ///
 /// It was TWO until OWNER RULING R2 (2026-09-22): `busbar-core-transport`'s entry is deleted, not
 /// re-worded, because the crate it waived no longer exists — #37 bans the FORM `busbar-core-<kind>`
-/// and the fix was the rename to `busbar-core-connsec`, not a better sentence. The one survivor is
-/// a `busbar-unit-*` crate, which #36 retires on its own schedule.
-const ACCEPTED_NAMES: &[(&str, &str)] = &[(
-    "busbar-unit-transport-key",
-    "the unit that holds TRANSPORT KEYS. `transport` here is the kind word describing what the \
-         unit's keys are for, never a transport instance — no transport is named, and the crate \
-         depends on busbar-contract (contract-transport folded into it) as every unit on that path \
-         does.",
-)];
+/// and the fix was the rename to `busbar-core-connsec`, not a better sentence. It was ONE until
+/// fold F14: the survivor, `busbar-unit-transport-key`, was the last `busbar-unit-*` crate, and #36
+/// retired it into `busbar-kernel-identity`'s `transport_key` module, so its waiver is struck the
+/// same way — its own dead-waiver finding is what demanded it. The list is EMPTY, and the
+/// dead-waiver rule keeps its proof in `plant_tests` (a waiver naming a crate the tree no longer has
+/// is planted through [`rule_name_under`], since a const cannot be planted through an overlay).
+const ACCEPTED_NAMES: &[(&str, &str)] = &[];
 
 // ------------------------------------------------------------------------------------------------
 // the measured dependency graph
@@ -603,7 +600,6 @@ const ARCHITECTURE_ALLOWED: &[(&str, &str)] = &[
     ("root", "store"),
     ("root", "substrate"),
     ("root", "transport"),
-    ("root", "unit"),
     ("substrate", "contract"),
     // `("transport", "transport")` WAS HERE, AND IT IS STRUCK.
     //
@@ -628,11 +624,10 @@ const ARCHITECTURE_ALLOWED: &[(&str, &str)] = &[
     // that admits every transport pair the tree will ever have. `closure::rule_closure` refuses
     // the shape outright so it cannot come back by way of the citation.
     //
-    // `("kernel", "kernel")`, `("unit", "unit")` and the TCB's `("plugin-tooling",
-    // "plugin-tooling")` are NOT this shape and stay: none of the three is one of the seven plugin
-    // kinds, and #36's group structure grants intra-tier edges inside the kernel by name.
-    ("unit", "contract"),
-    ("unit", "unit"),
+    // `("kernel", "kernel")` and the TCB's `("plugin-tooling", "plugin-tooling")` are NOT this
+    // shape and stay: neither is one of the seven plugin kinds, and #36's group structure grants
+    // intra-tier edges inside the kernel by name. (`("unit", "contract")` and `("unit", "unit")`
+    // went with the `unit` kind, fold F14 2/2.)
     // A CLEANLINESS SURFACE (admin/oauth2/connsec) is compiled-in with a ONE-WAY dep on the kernel
     // (DECISIONS #5; BUSBAR-1.6.0.md:3780, R2/#37 — "one-way dep on core" is the kernel since the
     // core -> kernel absorption). So it may name the contract it is written against and the kernel
@@ -701,7 +696,6 @@ const ARCHITECTURE_TCB: &[(&str, &str)] = &[
     ("plugin-tooling", "kernel"),
     ("plugin-tooling", "plugin-tooling"),
     ("plugin-tooling", "secret"),
-    ("plugin-tooling", "unit"),
 ];
 
 /// The verdict a `[[dep]]` row must carry, and the whole vocabulary of them.
@@ -720,7 +714,7 @@ const DEP_HALVES: &[&str] = &["shipped", "test"];
 /// than gate it. These four are different: `busbar-core -> busbar-unit-audit` is the drain in
 /// flight and `busbar-core -> busbar-transport-ws` is the fusion, and nothing about "legacy is
 /// unscored" can tell them apart. A NAME can.
-const DRAIN_TARGET_KINDS: &[&str] = &["unit", "plane", "transport", CLEANLINESS];
+const DRAIN_TARGET_KINDS: &[&str] = &["plane", "transport", CLEANLINESS];
 
 /// THE KIND THE CONTROL-PATH RULES READ. `control` is not a kind (DECISIONS #5); admin and oauth2
 /// resolve as `cleanliness`, and every rule that asks about a served control surface asks about
@@ -744,7 +738,6 @@ const CLEANLINESS: &str = "cleanliness";
 const EXEMPLARS: &[(&str, &str)] = &[
     ("plane", "busbar-plane-a2a"),
     ("transport", "busbar-transport-http"),
-    ("unit", "busbar-unit-auth"),
 ];
 
 /// THE KIND SKELETON IS THE SPEC'S, NEVER THE EXEMPLAR'S FILE LIST (`PLUGIN-TREE.md` §3).
@@ -787,7 +780,6 @@ fn kind_skeleton(kind: &str) -> BTreeSet<String> {
 const ENTRY_TRAIT_KINDS: &[&str] = &[
     "plane",
     "transport",
-    "unit",
     "store",
     "auth",
     "secret",
@@ -808,7 +800,6 @@ const CLAIMING_KINDS: &[&str] = &["plane", "transport", "auth"];
 const BATTERY_KINDS: &[&str] = &[
     "plane",
     "transport",
-    "unit",
     "store",
     "auth",
     "secret",
@@ -2000,10 +1991,22 @@ fn rule_name(
     ports: &BTreeSet<String>,
     reg: &KindRegistry,
 ) -> Row {
+    rule_name_under(crates, planes, ports, reg, ACCEPTED_NAMES)
+}
+
+/// [`rule_name`] over an explicit waiver list — [`ACCEPTED_NAMES`] in every real run. The list is
+/// a parameter only so a test can plant a waiver, which an overlay cannot do to a const.
+fn rule_name_under<'w>(
+    crates: &[CrateInfo],
+    planes: &BTreeSet<String>,
+    ports: &BTreeSet<String>,
+    reg: &KindRegistry,
+    accepted_names: &[(&'w str, &'w str)],
+) -> Row {
     let heads = kind_head_words();
     let mut offenders: Vec<String> = Vec::new();
     let mut fired: BTreeSet<&str> = BTreeSet::new();
-    let accepted: BTreeMap<&str, &str> = ACCEPTED_NAMES.iter().copied().collect();
+    let accepted: BTreeMap<&str, &str> = accepted_names.iter().copied().collect();
 
     // A WORD THAT IS BOTH A PLANE INSTANCE AND A TRANSPORT INSTANCE is the fusion itself, one level
     // above any single crate: `busbar-plane-http` beside `busbar-transport-http` means the tree can
@@ -2145,7 +2148,7 @@ fn rule_name(
     // it. The announcement is what carries that claim, and the ship twin is what refuses it once
     // the crate has landed.
     let announced_names = reg.announced_names();
-    for (name, _) in ACCEPTED_NAMES {
+    for (name, _) in accepted_names {
         if !fired.contains(name) && !announced_names.contains(name) {
             offenders.push(format!(
                 "dead-waiver\t{name}\tthe accepted-name entry for `{name}` no longer covers a live \
@@ -2165,7 +2168,7 @@ fn rule_name(
                 crates.len(),
                 planes.iter().cloned().collect::<Vec<_>>().join(", "),
                 ports.iter().cloned().collect::<Vec<_>>().join(", "),
-                ACCEPTED_NAMES.len()
+                accepted_names.len()
             ),
         );
     }
@@ -5623,7 +5626,7 @@ impl Gate for KindIsolationGate {
                 self,
                 "--write refuses on a tree the ordinary run reds, whatever the counts would do",
                 &[ROW_WRITE],
-                verdict_subst(cx, "busbar-transport-tls", "busbar-unit-transport-key"),
+                verdict_subst(cx, VERDICT_PLANT_FROM, VERDICT_PLANT_TO),
                 &[
                     "the gate is RED",
                     "NOTHING was written",
@@ -5690,10 +5693,10 @@ impl Gate for KindIsolationGate {
         report.push(prove_rows_red(
             cx,
             subject,
-            "a unit named after a plane instance (`busbar-unit-mcp`)",
+            "a neutral kernel crate named after a plane instance (`busbar-kernel-mcp`)",
             &[ROW_NAME],
-            manifest_plant("crates/busbar-unit-mcp", "busbar-unit-mcp", &[]),
-            &["fused-instance-name", "busbar-unit-mcp", "mcp"],
+            manifest_plant("crates/busbar-kernel-mcp", "busbar-kernel-mcp", &[]),
+            &["fused-instance-name", "busbar-kernel-mcp", "mcp"],
         ));
 
         // THE WAIVER LIST CANNOT REACH THE FUSION, and this is the case a red team landed against
@@ -5702,8 +5705,8 @@ impl Gate for KindIsolationGate {
         // because the waiver loop protected only the six names the battery happened to plant.
         // `busbar-transport-a2a` was safe for a reason that does not generalise — `transport` HAS
         // an instance vocabulary, so that crate's own name made `a2a` a transport instance and the
-        // collision was visible one level up as `fused-instance`. `unit` is NEUTRAL and collides
-        // with nothing.
+        // collision was visible one level up as `fused-instance`. A NEUTRAL kind collides with
+        // nothing; since the `unit` kind retired (fold F14 2/2) the neutral subject is `kernel`.
         //
         // The refusal is now structural: a remainder that IS another kind's instance is reported
         // before the waiver map is consulted, so no reviewed sentence — existing or added — reaches
@@ -5715,19 +5718,22 @@ impl Gate for KindIsolationGate {
             subject,
             "no reviewed sentence can waive a crate whose whole name is another kind's instance",
             &[ROW_NAME],
-            manifest_plant("crates/busbar-unit-llm", "busbar-unit-llm", &[]),
+            manifest_plant("crates/busbar-kernel-llm", "busbar-kernel-llm", &[]),
             &[
                 "fused-instance-name",
-                "busbar-unit-llm",
+                "busbar-kernel-llm",
                 "a waiver excuses a QUALIFIER, never a fusion",
             ],
         ));
 
-        // A WAIVER EXCUSES ITS OWN NAME, NOT THE SHORTER ONE. Shorten the one reviewed name,
+        // A WAIVER EXCUSES ITS OWN NAME, NOT THE SHORTER ONE. Shorten the last reviewed name,
         // `busbar-unit-transport-key`, to `busbar-unit-transport` and the qualifier is gone: what is
-        // left is a unit named for another kind's marker and nothing else. The waiver beside it does
-        // not move — the waived crate stays in the tree, its sentence stays in `ACCEPTED_NAMES` —
-        // and the shortened crate is refused anyway.
+        // left is a neutral crate named for another kind's marker and nothing else, and it is
+        // refused. The `unit` kind retired with that crate, so the plant is the same shape on the
+        // surviving neutral kind: `busbar-kernel-transport`.
+        // Since fold F14 the waiver itself is struck with its crate (`ACCEPTED_NAMES` is empty), so
+        // the plant now proves the refusal holds with NO waiver standing, which is the stronger
+        // form: nothing on this tree excuses the fusion shape.
         //
         // RE-TARGETED (item 89): this case used to shorten `busbar-auth-admin-tokens` to
         // `busbar-auth-admin`, whose `admin` was a PLANE instance while `busbar-plane-admin`
@@ -5740,9 +5746,13 @@ impl Gate for KindIsolationGate {
             subject,
             "shortening a waived name to the fusion form is refused with the waiver still standing",
             &[ROW_NAME],
-            manifest_plant("crates/busbar-unit-transport", "busbar-unit-transport", &[]),
+            manifest_plant(
+                "crates/busbar-kernel-transport",
+                "busbar-kernel-transport",
+                &[],
+            ),
             &[
-                "busbar-unit-transport\tcrates/busbar-unit-transport",
+                "busbar-kernel-transport\tcrates/busbar-kernel-transport",
                 "the marker word of kind `transport`",
             ],
         ));
@@ -5763,7 +5773,7 @@ impl Gate for KindIsolationGate {
 
         // THE SCHEME'S OWN WIDTH. Five segments is a name describing the crate instead of naming
         // its kind (four segments is the widest an accepted name reaches, e.g.
-        // `busbar-unit-transport-key`).
+        // `busbar-export-example-plugin`).
         report.push(prove_rows_red(
             cx,
             subject,
@@ -5777,17 +5787,12 @@ impl Gate for KindIsolationGate {
             &["5 segments", "busbar-<kind>-<name>"],
         ));
 
-        // A WAIVER THAT COVERS NOTHING IS RED.
-        let mut ov = Overlay::new();
-        ov.remove("crates/busbar-unit-transport-key/Cargo.toml");
-        report.push(prove_rows_red(
-            cx,
-            subject,
-            "an accepted-name waiver whose crate is gone is reported dead",
-            &[ROW_NAME],
-            ov,
-            &["dead-waiver", "busbar-unit-transport-key"],
-        ));
+        // A WAIVER THAT COVERS NOTHING IS RED. This plant removed `busbar-unit-transport-key`'s
+        // manifest while its waiver stood; fold F14 removed the crate AND struck the waiver, so an
+        // overlay has no waiver left to orphan (the list is a const, which no overlay reaches). The
+        // proof moved, unweakened, to
+        // `plant_tests::an_accepted_name_whose_crate_is_gone_is_a_dead_waiver`, which plants the
+        // same waiver through `rule_name_under` over the real census and demands the same finding.
 
         // AN EDGE NOBODY WROTE DOWN. A plane reaching a transport is the fusion done through
         // Cargo instead of through a name — and the row it needs is the INSTANCE, so the finding
@@ -7658,8 +7663,9 @@ impl Gate for KindIsolationGate {
 
         // ── THE LEGACY DRAIN, NAMED ──────────────────────────────────────────────────────────────
 
-        // AN UNLISTED DRAIN EDGE IS RED. `busbar-llm` is a legacy crate and [`PLANTED_UNIT`] is a
-        // unit, so this is exactly the shape the owner's ruling permits — and no row names it.
+        // AN UNLISTED DRAIN EDGE IS RED. `busbar-llm` is a legacy crate and [`PLANTED_DRAIN_TARGET`]
+        // is a crate of a drain-target kind, so this is exactly the shape the owner's ruling
+        // permits — and no row names it. (It was a unit; that kind retired, fold F14 2/2.)
         // Before the transitional table this edge was invisible: `legacy` was an unscored source,
         // so every legacy edge into every kind was allowed by silence.
         //
@@ -7669,10 +7675,10 @@ impl Gate for KindIsolationGate {
         report.push(prove_rows_red(
             cx,
             subject,
-            "a legacy crate reaching a unit with no transitional row naming the edge",
+            "a legacy crate reaching a drain target with no transitional row naming the edge",
             &[ROW_DEPS],
-            manifest_plant("crates/busbar-llm", "busbar-llm", &[PLANTED_UNIT]),
-            &["unlisted-transitional", "busbar-llm", PLANTED_UNIT],
+            manifest_plant("crates/busbar-llm", "busbar-llm", &[PLANTED_DRAIN_TARGET]),
+            &["unlisted-transitional", "busbar-llm", PLANTED_DRAIN_TARGET],
         ));
 
         // THE TABLE CANNOT EXEMPT A CRATE THAT IS NOT RETIRING. A row whose source is a live,
@@ -7796,8 +7802,9 @@ impl Gate for KindIsolationGate {
             &["busbar-kernel-mcp", "mcp"],
         ));
 
-        // A KERNEL CRATE REACHES THE NEUTRAL SPINE AND NOTHING ELSE. A unit is not on it, so the
-        // edge is a new class.
+        // A KERNEL CRATE REACHES THE NEUTRAL SPINE AND NOTHING ELSE. A cleanliness crate is not on
+        // it (the dependency runs one way), so the edge is a new class. The subject was a unit crate
+        // until that kind retired, fold F14 2/2.
         //
         // THE ANNOUNCEMENT IS PLANTED, not borrowed. This case used to lean on the real
         // `[[announced]] busbar-core-config` row; that row and its crate were struck on 2026-09-22
@@ -7813,10 +7820,11 @@ impl Gate for KindIsolationGate {
         report.push(prove_rows_red(
             cx,
             subject,
-            "an announced kernel crate reaching a unit is a class the architecture grants nothing to",
+            "an announced kernel crate reaching a cleanliness crate is a class the architecture grants \
+             nothing to",
             &[ROW_DEPS],
-            announced_reaching_unit(cx),
-            &["announced-edge-class", "kernel -> unit"],
+            announced_reaching_drain_target(cx),
+            &["announced-edge-class", "kernel -> cleanliness"],
         ));
 
         // THE ANNOUNCEMENT IS WHAT HOLDS THE KIND ROW OPEN, not silence. Strike the rows while the
@@ -7848,8 +7856,8 @@ impl Gate for KindIsolationGate {
         // distinguishing it from a hole nobody re-reads. DECISIONS #37 deleted that crate on
         // 2026-09-22 ("a kind is a plugin, never a core crate") and its waiver went with it, so the
         // pairing has no subject left in the tree. The RULE keeps its proof: the dead-waiver case
-        // above (`busbar-unit-transport-key`, reached by removing the crate rather than the
-        // announcement) is the one that fires it, and it is unchanged.
+        // (`busbar-unit-transport-key`, reached by removing the crate rather than the
+        // announcement; since fold F14 a `plant_tests` cell) is the one that fires it.
 
         // ── THE STRICT STEP LIST, AND THE WIRE REGISTRY ──────────────────────────────────────────
 
@@ -8087,17 +8095,17 @@ impl Gate for KindIsolationGate {
                 manifest_plus(
                     cx,
                     "crates/busbar-llm/Cargo.toml",
-                    &format!("\n[dependencies]\n{PLANTED_UNIT} = {{ workspace = true }}\n"),
+                    &format!("\n[dependencies]\n{PLANTED_DRAIN_TARGET} = {{ workspace = true }}\n"),
                 ),
             );
             ov.set(
                 REGISTRY_FILE,
                 format!(
-                    "{}\n\n[[transitional]]\nfrom = \"busbar-llm\"\nto = \"busbar-unit-*\"\n\
+                    "{}\n\n[[transitional]]\nfrom = \"busbar-llm\"\nto = \"{PLANTED_DRAIN_TARGET}\"\n\
                      reason = \"planted\"\n\n[[dep]]\nfrom    = \"busbar-llm\"\n\
-                     to      = \"{PLANTED_UNIT}\"\nhalf    = \"shipped\"\ncount   = \"1\"\n\
+                     to      = \"{PLANTED_DRAIN_TARGET}\"\nhalf    = \"shipped\"\ncount   = \"1\"\n\
                      verdict = \"not-allowed\"\ncite    = \"the legacy drain: ARCHITECTURE.md 1.1 \
-                     grants a legacy crate no unit edge, and the [[transitional]] row above names \
+                     grants a legacy crate no cleanliness edge, and the [[transitional]] row above names \
                      this one as the retirement in flight.\"\nwhy     = \"planted: proves the drain \
                      row and its own dep count both being present is green.\"\ndrain   = \"planted \
                      fixture; strike when the real drain lands.\"\n",
@@ -8107,7 +8115,8 @@ impl Gate for KindIsolationGate {
             report.push(prove_rows_green(
                 cx,
                 subject,
-                "a legacy crate reaching a unit through a named transitional row and its own count",
+                "a legacy crate reaching a drain target through a named transitional row and its own \
+                 count",
                 &[ROW_DEPS],
                 ov,
             ));
@@ -8342,8 +8351,17 @@ impl Gate for KindIsolationGate {
         // `busbar-unit-auth`'s domain among them (`carrier`, `challenge`, `principal`, …), and the
         // only way to go green would have been to copy another crate's subject matter. The count in
         // the naming is what pins the difference.
-        let mut ov = manifest_plant("crates/busbar-unit-planted", "busbar-unit-planted", &[]);
-        ov.set("crates/busbar-unit-planted/src/lib.rs", "pub mod meta;\n");
+        // (The planted crate was a `unit`; that kind retired, fold F14 2/2, so it is a transport
+        // declaring `meta` and `claims` — missing exactly its entry file, as before.)
+        let mut ov = manifest_plant(
+            "crates/busbar-transport-planted",
+            "busbar-transport-planted",
+            &[],
+        );
+        ov.set(
+            "crates/busbar-transport-planted/src/lib.rs",
+            "pub mod meta;\npub mod claims;\n",
+        );
         report.push(prove_rows_red(
             cx,
             subject,
@@ -8351,9 +8369,9 @@ impl Gate for KindIsolationGate {
             &[ROW_SHAPE],
             ov,
             &[
-                "busbar-unit-planted",
-                "is missing 1 of the `unit` skeleton",
-                "PLUGIN-TREE.md §3): unit",
+                "busbar-transport-planted",
+                "is missing 1 of the `transport` skeleton",
+                "PLUGIN-TREE.md §3): transport",
             ],
         ));
 
@@ -8502,14 +8520,14 @@ impl Gate for KindIsolationGate {
         // deletes as dead code and a criterion that then passes on an empty tree.
 
         // NO CRATE OF ANY EXEMPLAR KIND REACHED `:shape`. The census is intact and readable; what it
-        // no longer holds is a single crate of the three kinds that HAVE an exemplar, so the rule
+        // no longer holds is a single crate of the kinds that HAVE an exemplar, so the rule
         // compared every crate of a kind against its skeleton and found nothing to compare.
         report.push(prove_rows_red(
             cx,
             subject,
             "no crate of any exemplar kind reached the shape rule is refused, not read as clean",
             &[ROW_SHAPE],
-            move || kinds_gone(cx, &["plane", "transport", "unit"]),
+            move || kinds_gone(cx, &["plane", "transport"]),
             &["0 crate(s) reached the shape rule"],
         ));
 
@@ -8583,26 +8601,34 @@ fn registry_plant(rows: &str) -> Overlay {
     ov
 }
 
-/// THE UNIT AND THE SUBSTRATE CRATE THE DRAIN AND EDGE-CLASS CASES PLANT A DEPENDENCY ON. Each
+/// THE DRAIN-TARGET AND THE SUBSTRATE CRATE THE DRAIN AND EDGE-CLASS CASES PLANT A DEPENDENCY ON. Each
 /// must be a package the census knows: `measure_edges` and the drain refusal both skip a
 /// declaration whose package is absent, so an edge onto a name the tree does not have is an edge
 /// that is never scored — the two cases that named `busbar-unit-audit` and `busbar-substrate`
-/// (both folded away) planted exactly that. The exit test holds both to the census.
-const PLANTED_UNIT: &str = "busbar-unit-transport-key";
+/// (both folded away) planted exactly that. The exit test holds both to the census. The drain
+/// target was `busbar-unit-transport-key` until fold F14 2/2 deleted it and retired the `unit`
+/// kind; it is now a `cleanliness` crate, the one neutral drain-target kind.
+const PLANTED_DRAIN_TARGET: &str = "busbar-oauth2";
+
+/// THE `[[dep]]` ROW THE `--write` VERDICT PLANT FLIPS from `not-allowed` to `allowed`. It must be
+/// a live row whose class the architecture withholds (the kernel naming a plugin instance). It was
+/// `busbar-transport-tls -> busbar-unit-transport-key`, drained by fold F14.
+const VERDICT_PLANT_FROM: &str = "busbar-kernel";
+const VERDICT_PLANT_TO: &str = "busbar-store-memory";
 const PLANTED_SUBSTRATE: &str = "busbar-substrate-values";
 
 /// THE ANNOUNCED CRATE THE LANDING-WINDOW CASES PLANT: a `kernel`-kind name no real crate has.
 const ANNOUNCED_PLANT: &str = "busbar-kernel-announced";
 
-/// An announced `kernel` crate landing with a dependency on the substrate and on a unit.
-fn announced_reaching_unit(cx: &Ctx) -> Overlay {
+/// An announced `kernel` crate landing with a dependency on the substrate and on a drain target.
+fn announced_reaching_drain_target(cx: &Ctx) -> Overlay {
     let mut ov = registry_announcing(cx, ANNOUNCED_PLANT, "kernel");
     ov.set(
         format!("crates/{ANNOUNCED_PLANT}/Cargo.toml"),
         format!(
             "[package]\nname = \"{ANNOUNCED_PLANT}\"\nversion = \"0.0.0\"\n\n\
              [dependencies]\n{PLANTED_SUBSTRATE} = {{ workspace = true }}\n\
-             {PLANTED_UNIT} = {{ workspace = true }}\n"
+             {PLANTED_DRAIN_TARGET} = {{ workspace = true }}\n"
         ),
     );
     ov
@@ -9330,6 +9356,43 @@ mod plant_tests {
         );
     }
 
+    // ── fold F14: the dead-waiver rule, proven with the waiver list planted ─────────────────────
+
+    /// A WAIVER THAT COVERS NOTHING IS RED. The selftest proved this by removing the waived crate's
+    /// manifest; fold F14 retired that crate and struck its waiver, so the waiver is planted here
+    /// instead — the same `busbar-unit-transport-key` sentence over the real census, where the
+    /// crate no longer exists — and the finding must name it. With no waiver planted, the same
+    /// census is clean of dead waivers, so the finding is the plant's and not the tree's.
+    #[test]
+    fn an_accepted_name_whose_crate_is_gone_is_a_dead_waiver() {
+        let cx = ws();
+        let mut crates = census(&cx).expect("the census reads");
+        let (planes, ports) = vocabularies(&crates);
+        assign_instances(&mut crates, &planes, &ports);
+        let reg = reg_of(&cx);
+        assert!(
+            !crates.iter().any(|c| c.name == "busbar-unit-transport-key"),
+            "the plant needs a waived crate the tree does not have"
+        );
+        let planted = rule_name_under(
+            &crates,
+            &planes,
+            &ports,
+            &reg,
+            &[(
+                "busbar-unit-transport-key",
+                "the unit that holds TRANSPORT KEYS (the retired waiver, planted)",
+            )],
+        );
+        assert_red_naming(&planted, &["dead-waiver", "busbar-unit-transport-key"]);
+        let unplanted = rule_name_under(&crates, &planes, &ports, &reg, &[]);
+        assert!(
+            !unplanted.detail.contains("dead-waiver"),
+            "{}",
+            unplanted.detail
+        );
+    }
+
     // ── item 171: the retired control-kind block ────────────────────────────────────────────────
 
     fn deps_over(ov: Overlay) -> Row {
@@ -9510,14 +9573,7 @@ mod plant_tests {
             assert!(!is_the_wall(k, "unit"), "{k} -> unit is past the wall");
             assert!(!is_the_wall(k, "kernel"), "{k} -> kernel is past the wall");
         }
-        for neutral in [
-            "kernel",
-            CLEANLINESS,
-            "root",
-            "unit",
-            "legacy",
-            "plugin-tooling",
-        ] {
+        for neutral in ["kernel", CLEANLINESS, "root", "legacy", "plugin-tooling"] {
             assert!(
                 !is_the_wall(neutral, CONTRACT_KIND),
                 "`{neutral}` is not a plugin kind; its contract edge is an ordinary ledger row"
@@ -9660,7 +9716,10 @@ mod plant_tests {
     #[test]
     fn the_drain_and_edge_class_plants_name_packages_the_census_has() {
         let (crates, _) = crates_of(&ws());
-        for (name, kind) in [(PLANTED_UNIT, "unit"), (PLANTED_SUBSTRATE, "substrate")] {
+        for (name, kind) in [
+            (PLANTED_DRAIN_TARGET, CLEANLINESS),
+            (PLANTED_SUBSTRATE, "substrate"),
+        ] {
             assert!(
                 crates.iter().any(|c| c.name == name && c.kind == Some(kind)),
                 "{name} is not a `{kind}` crate of the census, so an edge onto it is never measured"
@@ -9670,25 +9729,25 @@ mod plant_tests {
             &deps_over(manifest_plant(
                 "crates/busbar-llm",
                 "busbar-llm",
-                &[PLANTED_UNIT],
+                &[PLANTED_DRAIN_TARGET],
             )),
-            &["unlisted-transitional", "busbar-llm", PLANTED_UNIT],
+            &["unlisted-transitional", "busbar-llm", PLANTED_DRAIN_TARGET],
         );
         assert_red_naming(
-            &deps_over(announced_reaching_unit(&ws())),
-            &["announced-edge-class", "kernel -> unit"],
+            &deps_over(announced_reaching_drain_target(&ws())),
+            &["announced-edge-class", "kernel -> cleanliness"],
         );
     }
 
     // ── item 200: a missing exemplar does not excuse the kind's members ─────────────────────────
 
-    fn unit_crate(name: &str) -> CrateInfo {
+    fn transport_crate(name: &str) -> CrateInfo {
         CrateInfo {
             dir: format!("crates/{name}"),
             manifest: format!("crates/{name}/Cargo.toml"),
             name: name.to_string(),
-            kind: Some("unit"),
-            family: Family::Neutral,
+            kind: Some("transport"),
+            family: Family::Transport,
             remainder: Vec::new(),
             instance: None,
             declared_keys: Vec::new(),
@@ -9709,13 +9768,16 @@ mod plant_tests {
     }
 
     #[test]
-    fn a_unit_crate_is_checked_although_the_unit_exemplar_is_absent() {
+    /// The kind's crates are handed to the rule WITHOUT its exemplar — the state the `unit` kind
+    /// was in from its exemplar's fold until the kind retired (F14 2/2). The subject is now the
+    /// transport kind with `busbar-transport-http` left out of the census handed in.
+    fn a_crate_is_checked_although_its_kinds_exemplar_is_absent() {
         let (_, exemplar) = EXEMPLARS
             .iter()
-            .find(|(k, _)| *k == "unit")
-            .expect("the unit kind has an exemplar row");
-        let no_lib = unit_crate("busbar-unit-planted-nolib");
-        let bare = unit_crate("busbar-unit-planted-bare");
+            .find(|(k, _)| *k == "transport")
+            .expect("the transport kind has an exemplar row");
+        let no_lib = transport_crate("busbar-transport-planted-nolib");
+        let bare = transport_crate("busbar-transport-planted-bare");
         assert_ne!(&no_lib.name, exemplar);
         let mut idx = empty_index();
         idx.has_lib.insert(bare.dir.clone());
@@ -9724,9 +9786,9 @@ mod plant_tests {
             &row,
             &[
                 "no-exemplar",
-                "no-lib\tcrates/busbar-unit-planted-nolib/src/lib.rs",
-                "entry-count\tcrates/busbar-unit-planted-bare",
-                "skeleton\tcrates/busbar-unit-planted-bare/src/lib.rs",
+                "no-lib\tcrates/busbar-transport-planted-nolib/src/lib.rs",
+                "entry-count\tcrates/busbar-transport-planted-bare",
+                "skeleton\tcrates/busbar-transport-planted-bare/src/lib.rs",
             ],
         );
     }

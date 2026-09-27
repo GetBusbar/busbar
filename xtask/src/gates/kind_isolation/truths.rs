@@ -60,6 +60,9 @@ const FORBIDDEN_KINDS: &[&str] = &[
     "egress-auth",
     "egress_auth",
     "pure_auth",
+    // RETIRED fold F14 2/2: the spec's NOT-kinds are "control, dialect, unit (core's own
+    // workflow)". The last `busbar-unit-*` crate folded into `busbar-kernel-identity` (#36).
+    "unit",
 ];
 
 /// THE ROW. `table_kinds` is the gate's own kind table, handed in rather than read here so this
