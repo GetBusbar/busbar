@@ -1199,8 +1199,8 @@ fn main_rs_doc_claims_match_the_code_beside_them() {
 /// oversize allocation lands) runs at decay 0, and a positive decay written to it makes jemalloc start
 /// a background thread for it — `not_reached()` on a build without background threads (a SIGTRAP on
 /// macOS debug, undefined behaviour in a static-musl release). Restoring the global default to every
-/// arena did exactly that on the first idle window after any oversize allocation; that killed the
-/// stdio serve child in `mcp_stdio_serve` whenever a session sat idle for one sweep window.
+/// arena did exactly that on the first idle window after any oversize allocation, killing an idle
+/// process that had staged a large plugin library or served a large body.
 #[cfg(not(target_env = "msvc"))]
 #[test]
 fn the_idle_purge_puts_each_arena_back_to_its_own_decay() {
