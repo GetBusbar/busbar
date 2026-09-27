@@ -25,15 +25,19 @@
 //! resolve-then-pin network guard sits in front of the dial, in the trust unit, once for the whole
 //! stack — not inside each transport, where a new carrier would have to remember to grow one.
 
-#![forbid(unsafe_code)]
+#![deny(unsafe_code)]
 #![deny(missing_docs)]
 
 mod claims;
 mod conn;
+mod framer;
 mod meta;
 mod transport;
 
 pub use conn::StaticConfig;
+#[cfg(feature = "dropped-in")]
+pub use framer::exports;
+pub use framer::WsFramer;
 pub use transport::{WsTransport, MESSAGE_MAX_BYTES_KEY};
 
 /// THE TRANSPORT AXIS ENTRY (#3, #30): what the composition root folds for this wire — its key, the
@@ -46,11 +50,21 @@ pub mod linked {
     use crate::WsTransport;
 
     /// The row's registry key.
-    pub const KEY: &str = <WsTransport as TransportMeta>::KEY;
+    pub const KEY: &str = <crate::WsFramer as TransportMeta>::KEY;
     /// The layers this wire declares it can be built over.
-    pub const COMPOSES_OVER: &[&str] = <WsTransport as TransportMeta>::COMPOSES_OVER;
+    pub const COMPOSES_OVER: &[&str] = <crate::WsFramer as TransportMeta>::COMPOSES_OVER;
     /// Whether this wire carries sessions.
-    pub const SESSION: bool = <WsTransport as TransportMeta>::SESSION;
+    pub const SESSION: bool = <crate::WsFramer as TransportMeta>::SESSION;
+
+    /// Every constant this wire declares, as the root reads a row.
+    pub const ROW: busbar_contract::transport::TransportRow =
+        busbar_contract::transport::TransportRow::of::<crate::WsFramer>();
+
+    /// The framer, built: the deployment's body cap is its message ceiling.
+    #[must_use]
+    pub fn framer(settings: &TransportSettings) -> Arc<dyn busbar_contract::transport::Framer> {
+        Arc::new(crate::WsFramer::built(settings))
+    }
 
     /// Built over `lower` — never over nothing, which yields a transport that refuses every
     /// connection — with the deployment's body cap as its message ceiling: a message is assembled

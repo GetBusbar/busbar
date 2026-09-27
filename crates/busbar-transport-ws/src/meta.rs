@@ -19,7 +19,7 @@ use crate::transport::WsTransport;
 
 impl Plugin for WsTransport {
     fn key(&self) -> &'static str {
-        <Self as TransportMeta>::KEY
+        <crate::WsFramer as TransportMeta>::KEY
     }
     fn kind(&self) -> Kind {
         Kind::Transport
@@ -29,7 +29,7 @@ impl Plugin for WsTransport {
     }
 }
 
-impl TransportMeta for WsTransport {
+impl TransportMeta for crate::WsFramer {
     const KEY: &'static str = "ws";
     const SELECTOR_FORMS: &'static [SelectorForm] = claims::SELECTOR_FORMS;
     const EGRESS_SELECTOR_FORMS: &'static [SelectorForm] = claims::EGRESS_SELECTOR_FORMS;

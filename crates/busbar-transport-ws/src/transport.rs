@@ -485,7 +485,7 @@ impl Transport for WsTransport {
             let facts = LowerFacts::of(&below);
             let mut chain = below.transport_chain;
             let raw = lower.detach(&conn).ok_or(TransportError::HandoffMismatch)?;
-            chain.push(<Self as TransportMeta>::KEY);
+            chain.push(<crate::WsFramer as TransportMeta>::KEY);
 
             let request_url = format!(
                 "{}://{host_name}:{port}{path}",
@@ -714,7 +714,7 @@ impl Transport for WsTransport {
         _keys: &'a TransportKeyHandle,
     ) -> Fut<'a, Conn> {
         Box::pin(async move {
-            if !<Self as TransportMeta>::COMPOSES_OVER.contains(&from.key()) {
+            if !<crate::WsFramer as TransportMeta>::COMPOSES_OVER.contains(&from.key()) {
                 return Err(TransportError::HandoffMismatch);
             }
             // Read before the detach, for the same reason: after it, `from` knows nothing about
@@ -724,7 +724,7 @@ impl Transport for WsTransport {
             let facts = LowerFacts::of(&below);
             let mut chain = below.transport_chain;
             let raw = from.detach(&conn).ok_or(TransportError::HandoffMismatch)?;
-            chain.push(<Self as TransportMeta>::KEY);
+            chain.push(<crate::WsFramer as TransportMeta>::KEY);
             let peer = raw.peer().to_string();
             let stream = tokio_util::compat::FuturesAsyncReadCompatExt::compat(raw.into_io());
             self.handshake(Box::new(stream), true, "", &peer, chain, facts)

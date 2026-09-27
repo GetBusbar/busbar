@@ -1055,6 +1055,8 @@ name = "busbar-transport-ws"
 version = "1.6.0"
 dependencies = [
  "busbar-contract",
+ "busbar-plugin-loader",
+ "busbar-transport-ws",
  "futures",
  "rustls",
  "rustls-pki-types",

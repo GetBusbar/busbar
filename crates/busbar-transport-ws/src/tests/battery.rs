@@ -881,22 +881,22 @@ async fn a_refusal_cancelled_mid_send_fences_the_connection() {
 async fn transport_meta_matches_the_architecture_row() {
     use busbar_contract::transport::wire::Unit0Trigger;
     use busbar_contract::TransportMeta;
-    assert_eq!(<WsTransport as TransportMeta>::KEY, "ws");
-    assert!(<WsTransport as TransportMeta>::SESSION);
-    assert!(<WsTransport as TransportMeta>::SESSION_BOUND);
+    assert_eq!(<crate::WsFramer as TransportMeta>::KEY, "ws");
+    assert!(<crate::WsFramer as TransportMeta>::SESSION);
+    assert!(<crate::WsFramer as TransportMeta>::SESSION_BOUND);
     assert_eq!(
-        <WsTransport as TransportMeta>::UNIT0_TRIGGER,
+        <crate::WsFramer as TransportMeta>::UNIT0_TRIGGER,
         Some(Unit0Trigger::Upgrade)
     );
     // The layers this one is actually built over: an inbound upgrade on `http`, an outbound dial
     // on `tcp`. No transport layer encrypts (TLS is core's connection security), so none is named
     // for a `wss://` dial.
     assert_eq!(
-        <WsTransport as TransportMeta>::COMPOSES_OVER,
+        <crate::WsFramer as TransportMeta>::COMPOSES_OVER,
         &["http", "tcp"]
     );
-    assert!(<WsTransport as TransportMeta>::UPGRADES_TO.is_empty());
-    assert_eq!(<WsTransport as TransportMeta>::STATUS_CLASS, None);
+    assert!(<crate::WsFramer as TransportMeta>::UPGRADES_TO.is_empty());
+    assert_eq!(<crate::WsFramer as TransportMeta>::STATUS_CLASS, None);
 }
 
 fn test_key_handle() -> busbar_contract::TransportKeyHandle {
