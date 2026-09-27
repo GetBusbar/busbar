@@ -36,13 +36,17 @@ use std::os::raw::c_void;
 
 pub mod boundary;
 pub use boundary::BoundaryOutcome;
+// THE PLUGIN SIDE OF THE TRANSPORT LOWERING: a carrier's or a framer's slots, generated from its trait
+// implementation (`export_carrier!` / `export_framer!`).
+pub mod transport;
 
 // The `#[macro_export]` export macros, named at this module's path too, so a plugin writes
 // `busbar_contract::abi::sdk::export_store_plugin!` exactly where it wrote
 // `busbar_plugin_sdk::export_store_plugin!`.
 pub use crate::{
-    export_auth_plugin, export_export_plugin, export_hook_plugin, export_login_plugin,
-    export_plane, export_plugin, export_secret_plugin, export_store_plugin, export_transport,
+    export_auth_plugin, export_carrier, export_export_plugin, export_framer, export_hook_plugin,
+    export_login_plugin, export_plane, export_plugin, export_secret_plugin, export_store_plugin,
+    export_transport,
 };
 
 // Convenience alias for out-of-tree store plugins that want to name the trait without also

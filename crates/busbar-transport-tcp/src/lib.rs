@@ -40,10 +40,14 @@ use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Mutex as AsyncMutex;
 
+mod carrier;
 mod claims;
-pub mod hot;
 mod meta;
 mod transport;
+
+#[cfg(feature = "dropped-in")]
+pub use carrier::exports;
+pub use carrier::TcpCarrier;
 
 /// How many bytes one read syscall may fill a frame with.
 ///
@@ -426,6 +430,21 @@ impl TcpTransport {
         Self::raced_write(&inner, write).await
     }
 
+    /// The handle of connection `id`, while this transport holds it — what the carrier closes it by.
+    fn conn_handle(&self, id: u64) -> Option<Conn> {
+        let inner = self.inner(id)?;
+        Some(Conn::new(Arc::new(TcpConnHandle {
+            id,
+            peer: inner.peer.to_string(),
+        })))
+    }
+
+    /// What this transport knows about connection `id`'s two ends: the far end and the local port.
+    fn facts(&self, id: u64) -> Option<(String, u16)> {
+        let inner = self.inner(id)?;
+        Some((inner.peer.to_string(), inner.local_port))
+    }
+
     fn inner(&self, id: u64) -> Option<Arc<Inner>> {
         self.conns
             .lock()
@@ -551,16 +570,26 @@ pub mod linked {
     use crate::TcpTransport;
 
     /// The row's registry key.
-    pub const KEY: &str = <TcpTransport as TransportMeta>::KEY;
+    pub const KEY: &str = <crate::TcpCarrier as TransportMeta>::KEY;
     /// The layers this wire declares it can be built over.
-    pub const COMPOSES_OVER: &[&str] = <TcpTransport as TransportMeta>::COMPOSES_OVER;
+    pub const COMPOSES_OVER: &[&str] = <crate::TcpCarrier as TransportMeta>::COMPOSES_OVER;
     /// Whether this wire carries sessions.
-    pub const SESSION: bool = <TcpTransport as TransportMeta>::SESSION;
+    pub const SESSION: bool = <crate::TcpCarrier as TransportMeta>::SESSION;
 
     /// It opens its own socket, so it takes no lower layer and reads no setting.
     #[must_use]
     pub fn build(_: Option<Arc<dyn Transport>>, _: &TransportSettings) -> Arc<dyn Transport> {
         Arc::new(TcpTransport::new())
+    }
+
+    /// Every constant this wire declares, as the root reads a row.
+    pub const ROW: busbar_contract::transport::TransportRow =
+        busbar_contract::transport::TransportRow::of::<crate::TcpCarrier>();
+
+    /// The carrier, built: it opens its own sockets and reads no setting.
+    #[must_use]
+    pub fn carrier(_: &TransportSettings) -> Arc<dyn busbar_contract::transport::Carrier> {
+        Arc::new(crate::TcpCarrier::new())
     }
 }
 

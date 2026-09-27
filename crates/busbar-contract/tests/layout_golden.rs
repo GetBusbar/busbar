@@ -16,7 +16,9 @@ use busbar_contract::abi::hot::decl::{
 };
 use busbar_contract::abi::hot::host::PlaneHostVtable;
 use busbar_contract::abi::hot::transport::{
-    TransportDecl, WireConfig, WireLower, WireSettings, WireWaker,
+    CarrierSlots, DeclByteList, DeclStrList, FramerSlots, TransportDecl, WireBytesOut,
+    WireConnFacts, WireDest, WireEnvPair, WireField, WireFramed, WireFramerOut, WireSettings,
+    WireWaker,
 };
 use busbar_contract::abi::hot::workitem::{EmitHandle, HeadField, InboundHandle, WorkItem};
 use busbar_contract::abi::hot::*;
@@ -630,9 +632,10 @@ fn compute_layout() -> String {
     );
     record!(s, DeclServedOpClass, [op, name]);
 
-    // The TRANSPORT decl (minor 24): the header, the declared row and every slot by name — `listen`,
-    // `accept` and `dial` share no shape, but `read`/`write` and `close` sit beside each other and a
-    // swap of two same-width slots is invisible to everything but this.
+    // The TRANSPORT decl, generation 2 (minor 31, TRANSPORT-STACK): the header, the ROW (every
+    // constant the transport declares) and exactly one role's slot table. Several fields are
+    // same-width neighbours (the `DeclStr`s, the flag bytes, the two table pointers) — a swap is
+    // invisible to everything but this.
     record!(
         s,
         TransportDecl,
@@ -641,29 +644,67 @@ fn compute_layout() -> String {
             size,
             version,
             key,
-            composes_over_ptr,
-            composes_over_len,
-            build,
-            listen,
-            accept,
-            dial,
-            read,
-            write,
-            close,
-            // The linked row's SESSION (minor 26).
+            composes_over,
+            selector_forms,
+            egress_selector_forms,
+            handoff_from,
+            handoff_to,
+            handoff_binding_fact,
+            upgrades_to,
+            handshake_frame_kind,
+            transport_facts,
+            status_namespace,
+            framing,
             session,
+            session_bound,
+            decodes_payload,
+            unit0_trigger,
+            handshake_max_rounds,
+            status_at,
             _reserved,
-            // The POLL shape (minor 28): `poll_read`/`poll_write` and `poll_flush`/`poll_close` are
-            // same-width, same-shape pairs — a swap is invisible to everything but this.
             init,
-            connect,
+            carrier,
+            framer
+        ]
+    );
+    // One slot per `Carrier` method, named for it: every poll slot is a same-width fn pointer, so a
+    // swap of two is invisible to everything but this.
+    record!(
+        s,
+        CarrierSlots,
+        [
+            size,
+            _reserved,
+            listen,
             poll_accept,
+            dial,
             poll_read,
             poll_write,
             poll_flush,
-            poll_close
+            poll_close,
+            arrival
         ]
     );
+    // One slot per `Framer` method, named for it.
+    record!(
+        s,
+        FramerSlots,
+        [
+            size,
+            _reserved,
+            locate,
+            open,
+            ingest,
+            emit,
+            encode_envelope,
+            refusal,
+            close,
+            detach,
+            adopt
+        ]
+    );
+    record!(s, DeclStrList, [ptr, len]);
+    record!(s, DeclByteList, [ptr, len]);
     record!(
         s,
         WireSettings,
@@ -679,14 +720,47 @@ fn compute_layout() -> String {
             request_timeout_secs
         ]
     );
+    // The host's waker handle: the ONE service the host hands a transport.
+    record!(s, WireWaker, [size, version, wake]);
     record!(
         s,
-        WireConfig,
-        [size, version, role, _reserved, slot, handle]
+        WireDest,
+        [size, kind, _reserved, authority, program, args, env, env_len]
     );
-    record!(s, WireLower, [decl, state]);
-    // The host's waker handle (minor 28).
-    record!(s, WireWaker, [size, version, wake]);
+    record!(s, WireEnvPair, [name, value]);
+    record!(
+        s,
+        WireConnFacts,
+        [
+            size,
+            version,
+            sni,
+            alpn,
+            cert_subject,
+            cert_issuer,
+            cert_fingerprint
+        ]
+    );
+    record!(
+        s,
+        WireFramed,
+        [
+            size,
+            end_of_frame,
+            status_class,
+            flags,
+            _reserved,
+            stream,
+            bytes,
+            len,
+            status_code,
+            _reserved2,
+            retry_after_secs
+        ]
+    );
+    record!(s, WireFramerOut, [ctx, send, frame, end]);
+    record!(s, WireBytesOut, [ctx, put]);
+    record!(s, WireField, [name, value]);
 
     s
 }

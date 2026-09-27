@@ -150,7 +150,16 @@ pub const ABI_MAJOR: u32 = 2;
 /// absent/duplex. `hot::host::PlaneHostVtable` appends the four host-service slots (`entropy_fill`,
 /// `wall_clock`, `tap_fault_latch`, `translate_cap`), and a plane image may export the optional
 /// `busbar_plane_arm` door symbol the host calls to arm its contract ports over them. Append-only.
-pub const ABI_MINOR: u32 = 30;
+///
+/// 30→31 (1.6.0, TRANSPORT-STACK; OWNER-APPROVED 2026-09-27, spec #3): the TRANSPORT decl is
+/// replaced whole — its own generation 2 (`hot::transport::TRANSPORT_DECL_MAJOR`, stated in the
+/// decl's `version`), not an append. The byte-stream decl (a key, a composes-over list, a session
+/// flag and the poll slots, minors 24–30) is retired, not kept beside the new one: a transport is a
+/// carrier or a framer (`crate::transport::stack`), and `hot::TransportDecl` is those two traits
+/// lowered one slot per method (`hot::transport::CarrierSlots`, `hot::transport::FramerSlots`), with
+/// every constant the transport declares as its row. The loader admits a transport decl only from
+/// this minor and only at generation 2. No plane struct moves.
+pub const ABI_MINOR: u32 = 31;
 
 /// The FROZEN-FOR-ALL-TIME ABI header. This exact layout — `magic` at offset 0, `abi_major` at 8,
 /// `abi_minor` at 12 — is a permanent contract: it may NEVER be reordered, resized, extended, or

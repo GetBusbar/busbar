@@ -113,10 +113,10 @@ pub use registry::{
 };
 pub use stage::sweep_dead_staging;
 pub use transport::{
-    host_wake, link_transport, load_transport, load_transport_from_bytes, wire_settings,
-    BuiltTransport, DynTransport, WakeToken, WirePoll, HOST_WAKER,
+    host_wake, link_transport, load_transport, load_transport_from_bytes, wire_settings, Built,
+    DeclCarrier, DeclFramer, DynTransport, WakeToken, HOST_WAKER,
 };
-pub use transport_adapter::WireTransport;
+pub use transport_adapter::{CarrierIo, WireTransport};
 
 /// INTERN a plugin name into a stable `&'static str`, reusing one allocation per unique name.
 ///
@@ -2069,6 +2069,11 @@ mod store_scope_kind_conformance_tests;
 #[cfg(test)]
 #[path = "tests/both_ways.rs"]
 mod both_ways;
+
+/// The far end of the transport conformance tests: a peer through the fixture's own linked carrier.
+#[cfg(test)]
+#[path = "tests/carrier_peer.rs"]
+mod carrier_peer;
 
 /// `kind: store` through both doors: one row, one store, one fold over every store operation.
 #[cfg(test)]

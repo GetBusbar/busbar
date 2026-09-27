@@ -8,7 +8,6 @@ use super::*;
 use busbar_contract::transport::wire::{CloseReason, FrameMeta, Listener};
 use busbar_contract::{
     ConfigView, Frame, Plugin, ScratchBytes, StreamId, Transport, TransportConfigView,
-    TransportMeta,
 };
 use futures::StreamExt;
 use std::sync::Arc as StdArc;

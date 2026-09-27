@@ -21,7 +21,7 @@
 //!
 //! Core stacks a connection as `carrier -> [connection security, when the binding says so] ->
 //! framer`, and moves the byte stream on an upgrade; no transport holds, dials or names another.
-//! Connection security is core's alone (`busbar-core-connsec`, #40(b)): no method here hands a
+//! Connection security is core's alone (#40(b); TLS never crosses the ABI): no method here hands a
 //! plugin key or certificate material — [`ConnFacts`] is what the handshake established, as facts.
 //!
 //! These traits are the LINKED source of truth. The HOT lane (`abi::hot::transport`) is their
@@ -123,7 +123,7 @@ impl TransportRow {
 }
 
 /// Where a carrier dials: an address it resolves itself, or a program it starts and speaks to over
-/// the program's own standard streams. Already admitted by the host (the verified destination is
+/// the program's own standard input and output. Already admitted by the host (the verified destination is
 /// the host's; this is what reaching it takes).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Dest<'a> {

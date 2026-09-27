@@ -15,7 +15,7 @@ use crate::TcpTransport;
 
 impl Plugin for TcpTransport {
     fn key(&self) -> &'static str {
-        Self::KEY
+        <crate::TcpCarrier as TransportMeta>::KEY
     }
     fn kind(&self) -> Kind {
         Kind::Transport
@@ -25,7 +25,7 @@ impl Plugin for TcpTransport {
     }
 }
 
-impl TransportMeta for TcpTransport {
+impl TransportMeta for crate::TcpCarrier {
     const KEY: &'static str = "tcp";
     const SELECTOR_FORMS: &'static [SelectorForm] = claims::SELECTOR_FORMS;
     const EGRESS_SELECTOR_FORMS: &'static [SelectorForm] = claims::EGRESS_SELECTOR_FORMS;
