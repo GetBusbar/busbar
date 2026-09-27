@@ -604,7 +604,36 @@ async fn serve_arm() {
             .unwrap(),
     )
     .await;
+    // THE CALLER'S CREDENTIAL (CRED-STRIP, #65/#40(b)): the plane echoes every header it was
+    // handed — once with the credential on the bearer carrier, once on a native-SDK key carrier. The
+    // credential is an unsigned JWT whose `aud` claim is this plane's audience (the public URL joined
+    // to `/example`), which the open chain admits.
+    const CALLER_JWT: &str = "eyJhbGciOiJub25lIn0.\
+        eyJhdWQiOiJodHRwczovL2d3LmV4YW1wbGUuY29tL2V4YW1wbGUiLCJzdWIiOiJjYWxsZXIifQ.c2ln";
+    let bearer = format!("Bearer {CALLER_JWT}");
+    let mut echoed = Vec::new();
+    for (carrier, value) in [
+        ("authorization", bearer.as_str()),
+        ("x-api-key", CALLER_JWT),
+    ] {
+        echoed.push(
+            answered(
+                &router,
+                axum::extract::Request::<()>::builder()
+                    .method("POST")
+                    .uri("/example")
+                    .header("x-example-status", "200")
+                    .header("x-example-echo", "1")
+                    .header(carrier, value)
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await["body"]
+                .clone(),
+        );
+    }
     let served = serde_json::json!({
+        "echoed": echoed,
         "status": status,
         "body": String::from_utf8_lossy(&body),
         "audit": audit,
@@ -769,6 +798,17 @@ fn a_linked_and_a_dropped_in_plane_serve_one_request_identically() {
             "body": { "len": MAX_PLANE_REPLY_LEN + 1, "pattern": true },
         }),
         "{linked:#}"
+    );
+
+    // THE CALLER'S CREDENTIAL NEVER REACHES THE PLANE, through either door (the equality above):
+    // the header the gate consumed is gone from the head the plane read, and nothing else is.
+    assert_eq!(
+        linked["echoed"],
+        serde_json::json!([
+            "x-example-status: 200\nx-example-echo: 1\n",
+            "x-example-status: 200\nx-example-echo: 1\n",
+        ]),
+        "a plane saw a header the auth gate consumed: {linked:#}"
     );
 
     let bypassed = serve_in_a_fresh_process("bypass");

@@ -574,6 +574,22 @@ fn header(work: *const WorkItem, name: &[u8]) -> Option<Vec<u8>> {
     None
 }
 
+/// Every request header the work item's head carries, in order, as `name: value` lines (minor 30).
+fn echoed_headers(work: *const WorkItem) -> Vec<u8> {
+    let mut out = Vec::new();
+    let mut index = 0;
+    // SAFETY: `work` is the live work item of the dispatch this runs inside; each field's ranges are
+    // live for the call.
+    while let Some(field) = unsafe { WorkItem::read_head(work, HeadPart::Header, index) } {
+        out.extend_from_slice(unsafe { field.name() });
+        out.extend_from_slice(b": ");
+        out.extend_from_slice(unsafe { field.value() });
+        out.push(b'\n');
+        index += 1;
+    }
+    out
+}
+
 /// A synthesized id: eight bytes drawn through the contract's entropy port as hex — the host's
 /// entropy, whichever door the plane came in by (a dropped-in image's port is armed over the host's
 /// `entropy_fill` slot, minor 30). The port's failure path is the literal `unavailable`.
@@ -600,6 +616,9 @@ fn provider_answer(work: *const WorkItem, status: u16) -> StatusClass {
         .and_then(|v| v.parse::<usize>().ok())
     {
         Some(n) => (0..n).map(|i| b'a' + (i % 26) as u8).collect(),
+        // `x-example-echo`: every request header the plane was handed, one `name: value` line each
+        // — what a plane can see of the caller's request, and so what it could forward.
+        None if header(work, b"x-example-echo").is_some() => echoed_headers(work),
         None => {
             let mut line = head_part(work, HeadPart::Method);
             line.push(b' ');
