@@ -599,6 +599,9 @@ fn measure(cx: &Ctx, crates: &[CrateInfo]) -> Result<Measured, String> {
 
     let (files, skipped) = scan_set(cx)?;
     let contract = contract_identifiers(&files, &vocab);
+    // A plugin's own conformance test naming the loader it is granted is the witness, not a
+    // coupling ([`super::conformance_witness_edges`]).
+    let granted = super::conformance_witness_edges(cx, crates);
 
     let mut matrix: Matrix = BTreeMap::new();
     for (rel, text) in &files {
@@ -620,6 +623,14 @@ fn measure(cx: &Ctx, crates: &[CrateInfo]) -> Result<Measured, String> {
             mask_identifiers(text, &contract)
         };
         for h in scan_file(per_kind, &dir, &rel, &masked).iter() {
+            let line = h
+                .line
+                .checked_sub(1)
+                .and_then(|i| text.lines().nth(i))
+                .unwrap_or("");
+            if super::is_witness_hit(&granted, c, h.kind, &rel, line) {
+                continue;
+            }
             let cell = matrix.entry((c.name.clone(), h.kind)).or_default();
             cell.by_segments += h.by_segments;
             cell.by_windows += h.by_windows;

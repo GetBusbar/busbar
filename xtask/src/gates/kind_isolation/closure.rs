@@ -324,6 +324,7 @@ fn banned_set(name: &str) -> &'static str {
 /// #40(a), COMPUTED.
 pub fn rule_closure(cx: &Ctx, crates: &[CrateInfo]) -> Row {
     let mut offenders: Vec<String> = Vec::new();
+    let granted = super::conformance_witness_edges(cx, crates);
 
     // A GRANT FOR A PLUGIN KIND NAMING ITSELF IS A RULE THAT CANNOT FAIL.
     //
@@ -532,6 +533,11 @@ pub fn rule_closure(cx: &Ctx, crates: &[CrateInfo]) -> Row {
         // "which table the line is in" is a one-line edit while "the wall moved" is not.
         let mut test_reach: BTreeMap<String, Vec<Hop>> = BTreeMap::new();
         for (first, edge) in dev.get(&c.name).into_iter().flatten() {
+            // The crate's own conformance witness reaches the loader's closure by grant
+            // ([`super::conformance_witness_edges`]); every other dev-edge is walked.
+            if granted.contains(&(c.name.clone(), first.clone())) {
+                continue;
+            }
             let root = Hop {
                 from: c.name.clone(),
                 to: first.clone(),

@@ -2264,11 +2264,24 @@ fn verdict_for(class: &(String, String)) -> &'static str {
 
 /// Every edge instance one half of the build graph has, measured.
 fn measure_edges(crates: &[CrateInfo], half: Half) -> Vec<DepInstance> {
+    measure_edges_granting(crates, half, &BTreeSet::new())
+}
+
+/// [`measure_edges`], with the test half's [`conformance_witness_edges`] left out: a granted edge is
+/// not a measured edge, so no rule below scores it — not as new, not as unlisted, not as a row.
+fn measure_edges_granting(
+    crates: &[CrateInfo],
+    half: Half,
+    granted: &BTreeSet<(String, String)>,
+) -> Vec<DepInstance> {
     let by_name: BTreeMap<&str, &CrateInfo> = crates.iter().map(|c| (c.name.as_str(), c)).collect();
     let mut acc: BTreeMap<(String, String), DepInstance> = BTreeMap::new();
     for c in crates {
         let Some(from) = c.kind else { continue };
         for decl in half.decls(c) {
+            if half == Half::Test && granted.contains(&(c.name.clone(), decl.pkg.clone())) {
+                continue;
+            }
             let Some(target) = by_name.get(decl.pkg.as_str()) else {
                 continue;
             };
@@ -2350,7 +2363,11 @@ fn rule_drain(crates: &[CrateInfo], reg: &KindRegistry) -> Row {
 fn rule_deps(cx: &Ctx, crates: &[CrateInfo], reg: &KindRegistry, half: Half, ship: bool) -> Row {
     let by_name: BTreeMap<&str, &CrateInfo> = crates.iter().map(|c| (c.name.as_str(), c)).collect();
     let drain_targets: BTreeSet<&str> = DRAIN_TARGET_KINDS.iter().copied().collect();
-    let measured = measure_edges(crates, half);
+    let granted = match half {
+        Half::Test => conformance_witness_edges(cx, crates),
+        Half::Shipped => BTreeSet::new(),
+    };
+    let measured = measure_edges_granting(crates, half, &granted);
     // A ROW REFUSED AT LOAD IS REPORTED, NOT DROPPED. A table that quietly skips what it cannot
     // understand is a table that says yes to it, and the row it skipped is the one somebody wrote
     // to get an edge past this rule. Only the shipped row carries them, so one bad row is one
@@ -4961,6 +4978,91 @@ fn cold_witness_edges(cx: &Ctx, crates: &[CrateInfo]) -> BTreeSet<(String, Strin
     out
 }
 
+/// THE CRATE A PLUGIN'S OWN CONFORMANCE TEST DRIVES ITS TWO DOORS THROUGH: the one loader, whose
+/// admission is the one both doors pass (#2 rule (1): one contract, one loading path).
+const CONFORMANCE_LOADER: &str = "busbar-plugin-loader";
+
+/// The one file of a plugin crate that may use [`CONFORMANCE_LOADER`], relative to the crate.
+const CONFORMANCE_FILE: &str = "tests/conformance.rs";
+
+/// THE PLUGIN'S OWN BOTH-WAYS WITNESS (ARCHITECT 2026-09-27, DOOR-TRANSPORT; spec #2 (4)/(5), #3),
+/// the plugin-side mirror of [`cold_witness_edges`]: a plugin crate of ANY kind proves its linked
+/// door and its dropped-in door are one plugin in its own `tests/conformance.rs`, over the real
+/// loader rather than a host written for the test. So the `(from, to)` TEST edges returned here
+/// are granted, and no rule of this gate measures them:
+///
+/// * `(plugin, busbar-plugin-loader)` — the crate is one of the seven plugin kinds, it takes the
+///   loader in `[dev-dependencies]` and NOT in `[dependencies]`, the loader is `plugin-tooling`,
+///   and every source file under the crate that names the loader as code is exactly its
+///   `tests/conformance.rs` (at least one);
+/// * `(plugin, plugin)` — the same crate's dev-edge to ITSELF, which is how `cargo test` builds the
+///   crate's own dropped-in door (a feature of the crate under test) for that test to open. It is
+///   not an edge between two crates.
+///
+/// Nothing else is granted. A NORMAL edge on the loader is the shipped half and stays the finding
+/// it always was, and a dev-edge any other file uses (a unit test, a second integration test, a
+/// bench) is a plugin testing against the host, not a witness of its doors.
+fn conformance_witness_edges(cx: &Ctx, crates: &[CrateInfo]) -> BTreeSet<(String, String)> {
+    let loader_is_tooling = crates
+        .iter()
+        .any(|c| c.name == CONFORMANCE_LOADER && c.kind == Some(WIRE_FIXTURE_KIND));
+    let mut out = BTreeSet::new();
+    if !loader_is_tooling {
+        return out;
+    }
+    let path = format!("{}::", CONFORMANCE_LOADER.replace('-', "_"));
+    for c in crates {
+        if !c.kind.is_some_and(|k| truths::PLUGIN_KINDS.contains(&k))
+            || !c.dev_deps.iter().any(|d| d.pkg == CONFORMANCE_LOADER)
+            || c.deps.iter().any(|d| d.pkg == CONFORMANCE_LOADER)
+        {
+            continue;
+        }
+        let files = cx
+            .walk(&WalkSpec::new([c.dir.clone()]).ext("rs").allow_empty())
+            .unwrap_or_default();
+        let witness = format!("{}/{CONFORMANCE_FILE}", c.dir);
+        let users: Vec<String> = files
+            .iter()
+            .filter(|f| code_only(&f.text).contains(path.as_str()))
+            .map(|f| f.rel_str())
+            .collect();
+        if users.is_empty() || users.iter().any(|u| *u != witness) {
+            continue;
+        }
+        out.insert((c.name.clone(), CONFORMANCE_LOADER.to_string()));
+        if c.dev_deps.iter().any(|d| d.pkg == c.name) {
+            out.insert((c.name.clone(), c.name.clone()));
+        }
+    }
+    out
+}
+
+/// Whether a vocabulary hit is the granted witness naming its loader: a `plugin-tooling` hit in a
+/// crate [`conformance_witness_edges`] grants, in its `tests/conformance.rs`, or on the manifest
+/// line that declares the loader. Every other column is still counted in both files.
+fn is_witness_hit(
+    granted: &BTreeSet<(String, String)>,
+    krate: &CrateInfo,
+    kind: &str,
+    rel: &str,
+    line: &str,
+) -> bool {
+    if kind != WIRE_FIXTURE_KIND
+        || !granted.contains(&(krate.name.clone(), CONFORMANCE_LOADER.to_string()))
+    {
+        return false;
+    }
+    if rel == format!("{}/{CONFORMANCE_FILE}", krate.dir) {
+        return true;
+    }
+    rel == krate.manifest
+        && line
+            .trim_start()
+            .strip_prefix(CONFORMANCE_LOADER)
+            .is_some_and(|rest| rest.trim_start().starts_with('='))
+}
+
 /// `text` with every comment dropped and every literal blanked: a USER of a crate is code that
 /// names it, not a doc comment that mentions it or a string that spells its artifact's file name.
 fn code_only(text: &str) -> String {
@@ -6479,6 +6581,82 @@ impl Gate for KindIsolationGate {
                 &[
                     "new-forbidden-edge",
                     "busbar-plugin-loader -> busbar-hooks-ranking",
+                ],
+            ));
+
+            // THE PLUGIN'S OWN BOTH-WAYS WITNESS (ARCHITECT 2026-09-27, DOOR-TRANSPORT), kind-neutral:
+            // planted in a STORE plugin here, so the grant is shown not to be a transport's. The
+            // crate takes the loader in `[dev-dependencies]` and itself with its dropped-in door on,
+            // and its `tests/conformance.rs` is the loader's only user: no edge, closure or cell is
+            // scored for it…
+            let conformance = |normal: bool, extra_user: bool| {
+                let dir = "crates/store-memory";
+                let rel = format!("{dir}/Cargo.toml");
+                let table = if normal {
+                    "dependencies"
+                } else {
+                    "dev-dependencies"
+                };
+                let mut ov = Overlay::new();
+                ov.set(
+                    rel.as_str(),
+                    manifest_plus(
+                        cx,
+                        &rel,
+                        &format!(
+                            "[{table}]\nbusbar-plugin-loader = {{ path = \"../plugin-loader\" }}\n\
+                             [dev-dependencies]\nbusbar-store-memory = {{ path = \".\", features = \
+                             [\"dropped-in\"] }}\n"
+                        ),
+                    ),
+                );
+                ov.set(
+                    format!("{dir}/{CONFORMANCE_FILE}"),
+                    "use busbar_plugin_loader::transport::link_transport;\n#[test]\nfn both_doors() \
+                     {\n    let _ = link_transport;\n}\n"
+                        .to_string(),
+                );
+                if extra_user {
+                    ov.set(
+                        format!("{dir}/tests/host.rs"),
+                        "#[test]\nfn t() {\n    let _ = busbar_plugin_loader::transport::link_transport;\n}\n"
+                            .to_string(),
+                    );
+                }
+                ov
+            };
+            report.push(prove_rows_green(
+                cx,
+                subject,
+                "a plugin's dev-edge to the loader, used only by its own `tests/conformance.rs`, and \
+                 its dev-edge to itself are its both-ways witness: no edge, closure reach or cell",
+                &[ROW_TEST_DEPS, closure::ROW_CLOSURE, matrix::ROW_MATRIX],
+                conformance(false, false),
+            ));
+            // …but the loader as a NORMAL dependency is a plugin linking the host: the shipped half
+            // excuses nothing…
+            report.push(prove_rows_red(
+                cx,
+                subject,
+                "a plugin taking the loader as a NORMAL dependency",
+                &[ROW_DEPS],
+                conformance(true, false),
+                &[
+                    "new-forbidden-edge",
+                    "busbar-store-memory -> busbar-plugin-loader",
+                ],
+            ));
+            // …and a loader dev-edge any file other than `tests/conformance.rs` uses is a plugin
+            // testing against the host, not a witness of its doors.
+            report.push(prove_rows_red(
+                cx,
+                subject,
+                "a plugin's loader dev-edge used outside its `tests/conformance.rs` is not a witness",
+                &[ROW_TEST_DEPS],
+                conformance(false, true),
+                &[
+                    "new-forbidden-edge",
+                    "busbar-store-memory -> busbar-plugin-loader",
                 ],
             ));
 
