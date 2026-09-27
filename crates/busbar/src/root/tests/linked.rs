@@ -1242,23 +1242,30 @@ async fn the_collector_policy_carries_octets_to_a_loopback_collector_and_nothing
 
 /// K5d (DECISIONS #2 rule (1), #40) — THE DEFAULT STORE AND THE RANKING HOOKS ARE ROWS OF THE ROOT'S
 /// LINKED TABLES. The kernel names neither; `main` hands the `stores`/`hooks` tables to the kernel's
-/// cold-kind axis (`preflight::install_linked_rows`), which registers them through
-/// `PluginRegistry::link` like any dropped-in row: the default `governance.store` name is an
-/// ephemeral in-process store that opens, and each built-in strategy spelling is an alias of the one
-/// hook row, opening the policy of that name.
+/// cold-kind axis (`root::linked::register_stores` -> `preflight::install_linked_rows`), which
+/// registers them through `PluginRegistry::link` like any dropped-in row: the default
+/// `governance.store` is the one row that declares itself the default, an ephemeral in-process store
+/// that opens, and each built-in strategy spelling is an alias of the one hook row, opening the
+/// policy of that name.
 ///
 /// RED by deleting the `store-memory` / `hooks-ranking` rows of `[package.metadata.busbar.linked]`:
 /// the tables carry no default store (and no ranking row) to hand the kernel.
 #[test]
 fn the_default_store_and_ranking_hooks_are_rows_of_the_linked_tables() {
-    let default = busbar_kernel::config::GOVERNANCE_STORE_MEMORY;
-    let stores: Vec<_> = crate::LINKED.stores.iter().map(|s| (s.0, s.1)).collect();
+    let default = super::default_store(crate::LINKED.stores)
+        .expect("one claim")
+        .expect("a linked store declares itself the default");
+    let stores: Vec<_> = crate::LINKED
+        .stores
+        .iter()
+        .map(|s| (s.0, s.1, s.2))
+        .collect();
     assert_eq!(
         stores,
-        [(default, true)],
+        [(default, true, true)],
         "one linked store: the ephemeral default"
     );
-    (crate::LINKED.stores[0].2)("{}").expect("the default store opens");
+    (crate::LINKED.stores[0].3)("{}").expect("the default store opens");
     let strategies = [
         busbar_kernel::config::STRATEGY_CHEAPEST,
         busbar_kernel::config::STRATEGY_FASTEST,
@@ -1280,4 +1287,62 @@ fn the_default_store_and_ranking_hooks_are_rows_of_the_linked_tables() {
             assert_eq!(open(spelling).map(|p| p.name()), Some(*spelling));
         }
     }
+}
+
+/// STORE-DEFAULT — THE DEFAULT GOVERNANCE STORE IS THE LINKED ROW THAT DECLARES ITSELF THE DEFAULT.
+/// The root holds no store name: `default_store` asks each row. The declaring row is the default
+/// wherever it sits in the table, a table with no claim has none, and the one-claim table is what the
+/// kernel resolves an omitted `store.module` to once the rows are installed.
+///
+/// RED when the resolver reads a row's position or its name instead of its claim (e.g. "the first
+/// row"): the declaring second row stops being the default.
+#[test]
+fn the_default_store_is_the_row_that_declares_it() {
+    use busbar_kernel::preflight::LinkedStore;
+    fn open(_: &str) -> Result<Box<dyn busbar_contract::records::RecordStore>, String> {
+        Err("never opened".into())
+    }
+    const PLAIN: LinkedStore = ("acme-plain", false, false, open);
+    const CLAIMS: LinkedStore = ("acme-default", true, true, open);
+    assert_eq!(
+        super::default_store(&[PLAIN, CLAIMS]),
+        Ok(Some("acme-default"))
+    );
+    assert_eq!(
+        super::default_store(&[CLAIMS, PLAIN]),
+        Ok(Some("acme-default"))
+    );
+    assert_eq!(super::default_store(&[PLAIN]), Ok(None));
+    assert_eq!(super::default_store(&[]), Ok(None));
+
+    // The shipped table: the kernel's default is the one declaring row, and an omitted
+    // `store.module` reads as it.
+    let shipped = super::default_store(crate::LINKED.stores).expect("one claim");
+    let declaring = crate::LINKED.stores.iter().find(|s| s.2).map(|s| s.0);
+    assert_eq!((shipped, shipped.is_some()), (declaring, true));
+}
+
+/// STORE-DEFAULT — TWO ROWS DECLARING THE DEFAULT REFUSE BOOT, naming both, like any duplicate claim:
+/// ambiguity is never resolved by picking a winner.
+///
+/// RED ARM: a resolver that takes the first claim (first-wins) answers `Ok(Some("acme-a"))` and the
+/// refusal assertion fails; the single-claim arm beside it stays green.
+#[test]
+fn two_rows_declaring_the_default_refuse_boot() {
+    use busbar_kernel::preflight::LinkedStore;
+    fn open(_: &str) -> Result<Box<dyn busbar_contract::records::RecordStore>, String> {
+        Err("never opened".into())
+    }
+    const A: LinkedStore = ("acme-a", true, true, open);
+    const B: LinkedStore = ("acme-b", false, true, open);
+    const C: LinkedStore = ("acme-c", false, false, open);
+    assert_eq!(
+        super::default_store(&[A, C, B]),
+        Err(
+            "linked stores 'acme-a' and 'acme-b' both declare themselves the default governance \
+             store; a build links at most one default store"
+                .to_string()
+        )
+    );
+    assert_eq!(super::default_store(&[A, C]), Ok(Some("acme-a")));
 }

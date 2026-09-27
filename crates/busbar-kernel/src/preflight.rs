@@ -42,33 +42,49 @@ pub fn fleet_data_dir() -> Option<std::path::PathBuf> {
 }
 
 type StoreOpen = fn(&str) -> Result<Box<dyn governance::RecordStore>, String>;
-/// A linked in-process STORE's entry: `(name, ephemeral, open)` — the name `governance.store`
-/// selects it by, whether what it holds is lost on restart, and its open.
-pub type LinkedStore = (&'static str, bool, StoreOpen);
+/// A linked in-process STORE's entry: `(name, ephemeral, default, open)` — the name
+/// `governance.store` selects it by, whether what it holds is lost on restart, whether it claims to
+/// be the store a deployment that configures none runs on, and its open.
+pub type LinkedStore = (&'static str, bool, bool, StoreOpen);
 type HookOpen = fn(&str) -> Option<busbar_plugin_loader::registry::RankingPolicy>;
 /// A linked RANKING hook's entry: `(name, aliases, open)` — one row, its frozen strategy spellings
 /// the aliases, `open` handed the spelling a reference used.
 pub type LinkedHook = (&'static str, &'static [&'static str], HookOpen);
 use busbar_plugin_loader::LinkedPlugin;
+/// The root's linked entries: its `stores`, its `hooks`, and the name of the default governance
+/// store it resolved from the store rows' own claims (empty when no linked row claims it).
+pub type RootRows = (&'static [LinkedStore], &'static [LinkedHook], &'static str);
 
-/// A test build has no root: its store and ranking fixtures stand in for the root's entries.
+/// A test build has no root: its store and ranking fixtures stand in for the root's entries, the
+/// stand-in store (which claims the default) as the default.
 #[cfg(any(test, feature = "test-support"))]
-const STAND_IN: (&[LinkedStore], &[LinkedHook]) = (
+const STAND_IN: RootRows = (
     &[fixture_store::linked::STORE],
     &[
         #[cfg(feature = "hooks-ranking")]
         fixture_hook::linked::HOOK,
     ],
+    fixture_store::linked::STORE.0,
 );
 
-/// The composition root's linked store and hook entries (the build's in-process default store and,
-/// when compiled in, its ranking hooks), installed once before the first resolution.
-static ROOT_ROWS: std::sync::OnceLock<(&[LinkedStore], &[LinkedHook])> = std::sync::OnceLock::new();
+/// The composition root's linked store and hook entries (the build's in-process stores and, when
+/// compiled in, its ranking hooks) and its resolved default store, installed once before the first
+/// resolution.
+static ROOT_ROWS: std::sync::OnceLock<RootRows> = std::sync::OnceLock::new();
 
-/// THE ROOT'S DOOR onto the cold-kind axis: its linked tables' `stores` and `hooks` entries (the
-/// first install stands). The kernel names none of the plugins it registers (#2 rule (1), #40).
-pub fn install_linked_rows(stores: &'static [LinkedStore], hooks: &'static [LinkedHook]) {
-    let _ = ROOT_ROWS.set((stores, hooks));
+/// THE ROOT'S DOOR onto the cold-kind axis: its linked tables' `stores` and `hooks` entries and the
+/// default store the root resolved from the stores' claims (the first install stands). The kernel
+/// names none of the plugins it registers, and no default store (#2 rule (1), #40).
+pub fn install_linked_rows(rows: RootRows) {
+    let _ = ROOT_ROWS.set(rows);
+}
+
+/// The installed root rows (a test build stands its fixtures in). `.2` is the governance store a
+/// deployment that configures none runs on: the linked row that declares itself the default.
+pub(crate) fn root_rows() -> RootRows {
+    #[cfg(any(test, feature = "test-support"))]
+    let _ = ROOT_ROWS.set(STAND_IN);
+    ROOT_ROWS.get().copied().unwrap_or_default()
 }
 
 /// The rows this build LINKS onto the cold-kind axis, ahead of the plugins directory's: the root's
@@ -76,10 +92,8 @@ pub fn install_linked_rows(stores: &'static [LinkedStore], hooks: &'static [Link
 /// fixture entries in. Registered through `PluginRegistry::link`, the admission a dropped-in row
 /// takes (DECISIONS #2 rule (1)).
 fn linked_rows() -> Vec<LinkedPlugin> {
-    #[cfg(any(test, feature = "test-support"))]
-    let _ = ROOT_ROWS.set(STAND_IN);
-    let (stores, hooks) = ROOT_ROWS.get().copied().unwrap_or_default();
-    let store = |&(name, ephemeral, open): &LinkedStore| LinkedPlugin::store(name, open, ephemeral);
+    let (stores, hooks, _) = root_rows();
+    let store = |s: &LinkedStore| LinkedPlugin::store(s.0, s.3, s.1);
     let hook = |&(name, aliases, open): &LinkedHook| LinkedPlugin::ranking(name, aliases, open);
     let own = [
         config::secret::SECRET_MODULE_ENV,
@@ -173,8 +187,8 @@ fn linked() -> Result<busbar_plugin_loader::PluginRegistry, String> {
 /// config APPLY/RELOAD, and `busbar --validate`, so the pre-flight gate can never drift from real
 /// boot behavior. Fail-closed at every step:
 ///
-/// 1. CONSISTENCY: a non-`memory` `store.module` with `plugins.enabled: false` (or the block
-///    absent) is an error NAMING THE FLAG — a dropped-in tarball is inert until the switch is on.
+/// 1. CONSISTENCY: a `store.module` no linked row answers to, with `plugins.enabled: false` (or the
+///    block absent), is an error NAMING THE FLAG — a dropped-in tarball is inert until the switch is on.
 /// 2. POLICY: `plugins.trust` resolves (embedded first-party key + third-party publishers + the
 ///    explicit opt-ins + anti-downgrade floors); a malformed key is an error.
 /// 3. SCAN: when enabled, every tarball in `plugins.dir` runs the three-phase pipeline
@@ -194,12 +208,10 @@ pub fn plugins_preflight(
     plugins_cfg: &config::PluginsCfg,
     export_cfg: &config::ExportCfg,
 ) -> Result<busbar_plugin_loader::PluginRegistry, String> {
-    let store_ref = store_cfg
-        .map(|g| g.module.as_str())
-        .unwrap_or(config::GOVERNANCE_STORE_MEMORY);
+    let store_ref = store_cfg.map_or_else(config::default_governance_store, |g| g.module.clone());
     // Resolved on the store AXIS: a row this build links opens in-process; any other name is a
     // `kind: store` plugin the plugins directory must supply.
-    let store_is_plugin = linked()?.resolve(store_ref).is_none();
+    let store_is_plugin = linked()?.resolve(&store_ref).is_none();
 
     // Every non-builtin `auth.chain` module is a `kind: auth` plugin — the same manifest-only
     // pre-flight the store ref gets, so `--validate` catches a missing/wrong-kind/untrusted auth
@@ -407,7 +419,7 @@ pub fn plugins_preflight(
         require_plugin(
             &registry,
             &plugins_cfg.dir,
-            store_ref,
+            &store_ref,
             PluginRef {
                 kind: "store",
                 names: format!("store.module: '{store_ref}'"),

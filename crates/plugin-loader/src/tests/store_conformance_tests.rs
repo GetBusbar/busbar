@@ -505,7 +505,7 @@ fn fold(s: &dyn RecordStore) -> Fold {
 /// The store the composition root LINKS: the store proof's own `linked::STORE` row, registered as a
 /// shipped build registers it (`LinkedPlugin::store`), opened through the kind's `open_store`.
 fn linked_store() -> Box<dyn RecordStore> {
-    let (name, ephemeral, open) = super::both_ways::store_fixture::linked::STORE;
+    let (name, ephemeral, _, open) = super::both_ways::store_fixture::linked::STORE;
     crate::PluginRegistry::empty()
         .link(vec![crate::LinkedPlugin::store(name, open, ephemeral)])
         .expect("the linked row registers")

@@ -87,7 +87,7 @@ pub struct Linked {
     pub cli_help: &'static [&'static [CliHelpRow]],
     /// The export axis: each linked export sink's statement and boundary (see [`LinkedExport`]).
     pub exports: &'static [LinkedExport],
-    /// The store axis: each linked in-process store's `(name, ephemeral, open)`.
+    /// The store axis: each linked in-process store's `(name, ephemeral, default, open)`.
     pub stores: &'static [busbar_kernel::preflight::LinkedStore],
     /// The hook axis: each linked ranking row's `(name, aliases, open)`.
     pub hooks: &'static [busbar_kernel::preflight::LinkedHook],
@@ -282,6 +282,40 @@ pub fn register_protocols(linked: &Linked, units: &[&RootUnit]) {
         for install in linked.node {
             install(drive);
         }
+    }
+}
+
+/// THE STORE AND HOOK AXES: the linked store and hook rows onto the kernel's cold-kind axis, with the
+/// default store resolved from the store rows' own claims ([`default_store`]). Two rows claiming the
+/// default refuse the boot (exit 2) before anything resolves a store.
+pub fn register_stores(linked: &Linked) {
+    match default_store(linked.stores) {
+        Ok(default) => {
+            let rows = (linked.stores, linked.hooks, default.unwrap_or_default());
+            busbar_kernel::preflight::install_linked_rows(rows)
+        }
+        Err(refusal) => {
+            eprintln!("busbar: {refusal}");
+            std::process::exit(2);
+        }
+    }
+}
+
+/// THE DEFAULT GOVERNANCE STORE — the one linked store row that DECLARES itself the default, the
+/// store a deployment that configures no `store.module` runs on. The root holds no store name: it
+/// asks each row what it claims. No claim is `None`; two claims are refused, naming both rows —
+/// ambiguity is never resolved by picking a winner.
+pub fn default_store(
+    stores: &[busbar_kernel::preflight::LinkedStore],
+) -> Result<Option<&'static str>, String> {
+    let mut claims = stores.iter().filter(|s| s.2).map(|s| s.0);
+    let first = claims.next();
+    match (first, claims.next()) {
+        (Some(a), Some(b)) => Err(format!(
+            "linked stores '{a}' and '{b}' both declare themselves the default governance store; \
+             a build links at most one default store"
+        )),
+        _ => Ok(first),
     }
 }
 

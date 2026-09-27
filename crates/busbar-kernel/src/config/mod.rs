@@ -1696,9 +1696,7 @@ impl PluginsCfg {
 // The `store:` block and the `secrets:` per-module init block are plain serde data (`{ module,
 // settings }` shapes). Moved to `busbar_kernel::config::sections`; re-exported at their
 // historical `config::` path.
-pub use busbar_kernel::config::sections::{
-    default_governance_store, SecretModuleCfg, StoreCfg, GOVERNANCE_STORE_MEMORY,
-};
+pub use busbar_kernel::config::sections::{default_governance_store, SecretModuleCfg, StoreCfg};
 
 // The `advanced:` block (INTERNAL tuning knobs) and its nested `response_headers:` block are plain
 // serde data with `Default` impls that route through the same shared consts as their `#[serde(default

@@ -782,7 +782,12 @@ fn disabled_plugins_are_inert_even_when_present() {
 /// `store.module: memory` unresolved (the preflight then refuses it as a plugin with plugins off).
 #[test]
 fn the_built_in_store_is_a_linked_row_of_the_store_axis() {
-    let name = crate::config::GOVERNANCE_STORE_MEMORY;
+    let name = crate::preflight::root_rows()
+        .0
+        .iter()
+        .find(|s| s.2)
+        .map(|s| s.0);
+    let name = name.expect("the stand-in store row claims the default");
     let reg = crate::plugins_preflight(
         None,
         None,
