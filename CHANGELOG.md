@@ -818,6 +818,12 @@ moves. See [Protocols and translation](docs/protocols.md#spec-fidelity) and
   states plainly that the `0600`/`0700` modes protecting the config overlay, the signing key and
   the plugin staging directory do not exist on Windows, that `BUSBAR_CONFIG` is effectively
   required there, and what an `env_clear`ed stdio child needs named explicitly.
+- **An idle busbar no longer crashes after serving a large body.** On a build without jemalloc's
+  background purge threads — macOS, and the static-musl release binaries — busbar runs its own idle
+  purge instead, and that purge put every memory arena back to the global setting. The arena that
+  holds allocations over 8 MiB runs with a different setting, and forcing the global one onto it made
+  the allocator abort. So the first quiet 15 seconds after any request or plugin load over 8 MiB could
+  kill the process. This was present in 1.5.5. Each arena now returns to its own setting.
 
 ## [1.5.4], 2026-08-14
 
