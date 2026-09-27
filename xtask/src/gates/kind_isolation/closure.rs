@@ -748,10 +748,7 @@ mod tests {
             "a secret implementation"
         );
         assert_eq!(banned_set("busbar-transport-tcp"), "another plugin");
-        assert_eq!(
-            banned_set("busbar-unit-transport-key"),
-            "not `busbar-contract`"
-        );
+        assert_eq!(banned_set("busbar-plugin-loader"), "not `busbar-contract`");
     }
 
     /// NO PLUGIN KIND IS GRANTED AN EDGE TO ITSELF, in any of the three class tables. The rule

@@ -656,21 +656,14 @@ pub(super) fn is_the_wall(from: &str, to: &str) -> bool {
 
 /// THE CORE TIERS THAT NAME THE CONTRACT BY DESIGN. #83/#83a make `busbar-contract` the shared
 /// SHAPES crate: names move INTO it, and every tier that is not a plugin names it on purpose. The
-/// root, the kernel tier, the cleanliness surfaces, the unit crates and the substrate each carry a
+/// root, the kernel tier, the cleanliness surfaces and the substrate each carry a
 /// granted `-> contract` class, and their contract vocabulary is not a coupling this gate ratchets.
 /// The plugin tooling (the loader and the rest of the trusted computing base) is here too: after the
 /// plugin ABI and SDK merged into the contract (#84), the loader names the ABI in the one crate
 /// where the ABI lives, and its contract class is the TCB's own ([`ARCHITECTURE_TCB`]). The retiring
 /// legacy engines are NOT here: their contract naming is still measured, cell by cell, until they
 /// drain.
-const CONTRACT_TIERS: &[&str] = &[
-    "root",
-    "kernel",
-    CLEANLINESS,
-    "unit",
-    "substrate",
-    "plugin-tooling",
-];
+const CONTRACT_TIERS: &[&str] = &["root", "kernel", CLEANLINESS, "substrate", "plugin-tooling"];
 
 /// Is `from -> to` the contract edge a crate of kind `from` carries BY DESIGN, so its vocabulary
 /// column is not measured: the #40 wall for a plugin kind ([`is_the_wall`]), or a core tier's
