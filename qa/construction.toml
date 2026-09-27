@@ -263,19 +263,27 @@ busbar-voice = ["busbar-voice-codec"]
 # merge. Its commit reached the base; struck by CONTRACT-PURE (ARCHITECT F6 queue (4)), whose commit
 # lowers both to their measurement, 14711, so the declaration no longer describes either number.
 
-# ── THE CONTRACT CEILING PAIR, RE-ARMED BY K9e-2's BINARY EGRESS BODY (export ABI minor 10) ───────
+# ── THE CONTRACT CEILING PAIR, RE-ARMED BY K9e-2's BINARY EGRESS BODY (export ABI minor 10) —
+#    EXPIRED AND STRUCK
+#
+# Declared `gate.surface_ceilings.contract_caps` and `rules.loc-ceilings.caps_contract_ceiling`
+# 14711 -> 14712 (OWNER RULING Q68(3); ARCHITECT RULING K9e carrier (i); OWNER ANSWER Q75): the
+# re-arm after HostOp::HttpBinary (+1). Its commit reached the base; struck by HOTDOOR-B's re-arm,
+# which declares the pair's next figure below.
+
+# ── THE CONTRACT CEILING PAIR, RE-ARMED BY HOTDOOR-B (the HOT ABI's minor-30 carrier and host services) ─
 
 [gate.ceiling_raises."gate.surface_ceilings.contract_caps"]
 file    = "qa/construction.toml"
-from    = 14711
-to      = 14712
-because = "OWNER RULING Q68(3) (docs/design/1.6.0-QUESTIONS.md): contract_caps re-arms at the MEASURED value, in its own commit, after an owner-ruled change lands in busbar-contract. This is the re-arm for K9e-2's carrier (ARCHITECT RULING K9e 2026-09-25, carrier (i): the binary request body on the S5 egress carrier; OWNER ANSWER Q75: fix OTLP export as a bug fix): export ABI minor 10 adds the one HostOp::HttpBinary variant, the same request shape as HostOp::Http with its body the octets as hex, +1 code line. The declared egress policy it pairs with lives in busbar-plugin-loader, not the contract. Measured by cargo xtask gate construction: 14711 before, 14712 with it."
+from    = 14712
+to      = 15015
+because = "OWNER RULING Q68(3) (docs/design/1.6.0-QUESTIONS.md): contract_caps re-arms at the MEASURED value, in its own commit. This is the re-arm for HOTDOOR-B (d4ef64111; ARCHITECT 2026-09-26 DEC-SERVE G2 + SD-3 queue (6); spec Part 3 WorkItem reserved-shape, #28): the HOT ABI's minor-30 carrier (WorkItem's request-head handle and accessor slot, the answer-head and response-stream emit slots, HeadPart/HeadField) and the four host-service slots with the contract module that serves them and arms a dropped-in plane image's ports over them (abi::hot::services, PlaneHostVtable::SERVICES, the busbar_plane_arm door symbol), +303 code lines. Measured by cargo xtask loc: 14712 before, 15015 after."
 
 [gate.ceiling_raises."rules.loc-ceilings.caps_contract_ceiling"]
 file    = "qa/construction.toml"
-from    = 14711
-to      = 14712
-because = "OWNER RULING Q68(3) (docs/design/1.6.0-QUESTIONS.md): contract_caps re-arms at the MEASURED value, in its own commit, after an owner-ruled change lands in busbar-contract. This is the re-arm for K9e-2's carrier (ARCHITECT RULING K9e 2026-09-25, carrier (i): the binary request body on the S5 egress carrier; OWNER ANSWER Q75: fix OTLP export as a bug fix): export ABI minor 10 adds the one HostOp::HttpBinary variant, the same request shape as HostOp::Http with its body the octets as hex, +1 code line. The declared egress policy it pairs with lives in busbar-plugin-loader, not the contract. Measured by cargo xtask gate construction: 14711 before, 14712 with it."
+from    = 14712
+to      = 15015
+because = "OWNER RULING Q68(3) (docs/design/1.6.0-QUESTIONS.md): contract_caps re-arms at the MEASURED value, in its own commit. This is the re-arm for HOTDOOR-B (d4ef64111; ARCHITECT 2026-09-26 DEC-SERVE G2 + SD-3 queue (6); spec Part 3 WorkItem reserved-shape, #28): the HOT ABI's minor-30 carrier (WorkItem's request-head handle and accessor slot, the answer-head and response-stream emit slots, HeadPart/HeadField) and the four host-service slots with the contract module that serves them and arms a dropped-in plane image's ports over them (abi::hot::services, PlaneHostVtable::SERVICES, the busbar_plane_arm door symbol), +303 code lines. Measured by cargo xtask loc: 14712 before, 15015 after."
 
 # ── THE KERNEL CEILING'S OWNER-APPROVED RAISE — EXPIRED AND STRUCK ─────────────────────────────
 #
@@ -409,7 +417,10 @@ because = "ARCHITECT ruling on the kernel budget (R-KERNEL, sd-extra.txt; K2-0 u
 # RE-ARMED 14711 -> 14712, AT THE MEASUREMENT (OWNER RULING Q68(3); ARCHITECT RULING K9e carrier (i);
 # OWNER ANSWER Q75), in its own commit after export ABI minor 10's HostOp::HttpBinary (+1); the live
 # declaration above carries the measure.
-contract_caps = 14712
+# RE-ARMED 14712 -> 15015, AT THE MEASUREMENT (OWNER RULING Q68(3)), in its own commit after HOTDOOR-B
+# appended the HOT ABI's minor-30 carrier and host-service slots (+303); the live declaration above
+# carries the measure.
+contract_caps = 15015
 # REPOINTED, and the repoint is what makes this row a gate again. It named the CRATE
 # `busbar-grammar`, which #40 folded into `busbar-contract` and deleted — so it summed nothing,
 # measured nothing and passed, which is this file's own "zero is not clean" failure sitting inside
@@ -1014,7 +1025,8 @@ contract_crate = "busbar-contract"
 # RE-ARMED 9463 -> 14720 with its pair (OWNER RULING Q68(3); the #84 merge of busbar-plugin and the SDK, +5257).
 # LOWERED 14720 -> 14711 with its pair (CONTRACT-PURE, ARCHITECT F6 queue (4); the host-log bridge left contract code, -9).
 # RE-ARMED 14711 -> 14712 with its pair (OWNER RULING Q68(3); K9e-2's HostOp::HttpBinary, +1).
-caps_contract_ceiling = 14712
+# RE-ARMED 14712 -> 15015 with its pair (OWNER RULING Q68(3); HOTDOOR-B, the HOT ABI minor-30 carrier and host services, +303).
+caps_contract_ceiling = 15015
 unit_crate_glob = "busbar-unit-*"
 # RE-KEYED on cherry-pick onto 143db6db6: this commit's own delta is -53 (two units stopped
 # declaring their own copies), measured against whatever unit_total_ceiling read when the line was
