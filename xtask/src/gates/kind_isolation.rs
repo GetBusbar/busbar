@@ -4983,6 +4983,7 @@ fn cold_witness_edges(cx: &Ctx, crates: &[CrateInfo]) -> BTreeSet<(String, Strin
 const CONFORMANCE_LOADER: &str = "busbar-plugin-loader";
 
 /// The one file of a plugin crate that may use [`CONFORMANCE_LOADER`], relative to the crate.
+// qa-names: tests/conformance.rs -- xtask/src/gates/kind_isolation.rs -- CRATE-RELATIVE, not a repo path: it is joined to each plugin crate's directory (crates/<crate>/tests/conformance.rs), so there is no such file at the repo root by design
 const CONFORMANCE_FILE: &str = "tests/conformance.rs";
 
 /// THE PLUGIN'S OWN BOTH-WAYS WITNESS (ARCHITECT 2026-09-27, DOOR-TRANSPORT; spec #2 (4)/(5), #3),
