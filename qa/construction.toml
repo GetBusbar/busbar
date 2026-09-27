@@ -307,6 +307,14 @@ from    = 16477
 to      = 16482
 because = "OWNER RULING Q68(3) (docs/design/1.6.0-QUESTIONS.md): contract_caps re-arms at the MEASURED value, in its own commit. This is the re-arm for HOTDOOR-B queue 2 (765b2ddc9; ARCHITECT 2026-09-27, #30 HOT lane): hot::PlaneDecl appends dispatch_flags (+ padding) and hot::decl::DISPATCH_BLOCKS at ABI minor 32, so a plane's dispatch runs inline on the request's worker unless it declares it blocks, +5 code lines. Measured by cargo xtask loc: 16477 before, 16482 after."
 
+# ── THE KERNEL CEILING, RE-ARMED BY SD-8 (the substrate-values kernel landing) ─────────────────
+
+[gate.ceiling_raises."rules.loc-ceilings.kernel_ceiling"]
+file    = "qa/construction.toml"
+from    = 51100
+to      = 54801
+because = "OWNER RULING Q69(3) (docs/design/1.6.0-QUESTIONS.md): kernel and contract ceilings re-arm at the MEASURED value after each owner-locked move commit, in its own commit (Q68(3) pattern; ARCHITECT R-KERNEL, sd-extra.txt). This is the re-arm for SD-8 (3/4, 256435c91): the KERNEL-SEMANTICS/HOST items of the deleted busbar-substrate-values land in busbar-kernel per O1. loc-ceilings:kernel measures 51090 before (d946dbcc4) and 54791 after, +3701; the ceiling rises by exactly that, keeping K2g's named reservation as the base held it."
+
 # ── THE KERNEL CEILING'S OWNER-APPROVED RAISE — EXPIRED AND STRUCK ─────────────────────────────
 #
 # The entry declared `rules.loc-ceilings.kernel_ceiling` 51439 -> 51799: the owner approved the
@@ -1005,7 +1013,14 @@ kernel_crate = "busbar-kernel"
 # ── 51103 -> 51100: TLS-RETIRE (2/3) — `Kernel::transport_key_token` (the `Grant<KeyHandle>` mint
 # only the deleted transport-key provisioning took) leaves teller.rs. Measured 51027 + K2g's 73 named
 # lines. Downward only.
-kernel_ceiling = 51100
+# ── RE-ARMED 51100 -> 54801 BY SD-8 (#83a, OWNER RULING Q69(3); ARCHITECT R-KERNEL / O1), declared
+# above. SD-8 (3/4, 256435c91) moved every remaining KERNEL-SEMANTICS/HOST item of the deleted
+# busbar-substrate-values into busbar-kernel (the diagnostics catalog + emit, the protocol registry,
+# handlers, proxy, json seam, lane caps, providers shapes, the clock bodies). This row measures 51090
+# at d946dbcc4 and 54791 at 256435c91: +3701, the moved lines exactly. 51100 + 3701 = 54801, so the
+# gap K2g's named reservation holds is the one the base held (10 of its 73 lines unspent there);
+# the reservation itself is unchanged.
+kernel_ceiling = 54801
 # `caps_crate = "busbar-caps"` WAS HERE AND IS STRUCK, 2026-09-22. The crate was folded into
 # busbar-contract by 2c9eddecf ("W2.c: fold busbar-caps into busbar-contract"); its types live at
 # `crates/busbar-contract/src/caps/`, whose own module header says "Folded from the former
