@@ -288,6 +288,11 @@ jobs:
         run: ./scripts/a2a-subject/h2-route-failover.sh --selftest
       - name: rooms self-test
         run: ./scripts/rooms.sh --selftest
+      - name: plugin fleet scripts self-test (pin check, repin decision by commit, next version)
+        run: |
+          ./scripts/fleet/pin-check.sh --selftest
+          ./scripts/fleet/repin.sh --selftest
+          ./scripts/fleet/next-version.sh --selftest
       - name: proof-manifest collator self-test
         run: python3 scripts/proof-manifest.py --selftest
       - name: plane-noun gate self-test

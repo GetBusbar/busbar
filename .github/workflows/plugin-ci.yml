@@ -1,168 +1,105 @@
-# plugin-ci — the ONE canonical build/test/signoff pipeline every first-party plugin repo calls,
-# via `workflow_call`, instead of hand-copying a ci.yml into each repo. That copying already
-# drifted once (store-valkey's manual health-check step used a `valkey-cli` binary the runner didn't
-# have; the other three repos didn't have that bug because they never had that step at all) — this
-# file exists so every plugin repo's CI is the SAME file, not a fork of it.
+# plugin-ci — THE CI of every first-party plugin repo, in one place. Each plugin repo's own
+# `.github/workflows/ci.yml` is a thin caller rendered by `cargo xtask fleet render <repo>` from
+# plugins.yaml, and it takes this file AT THE BUSBAR COMMIT THE REPO PINS (`@<.busbar-ref field 1>`):
+# the CI logic and the contract a plugin compiles against move together, and a change here reaches a
+# plugin repo only when its pin moves (`cargo xtask fleet sync`). Before this file every repo carried
+# its own copy of these jobs, and the copies drifted (four different pins, five different shapes of
+# the same pin check, a macOS leg on some repos and not others).
 #
-# Standard stages every plugin gets, in this order:
-#   0. RESOLVE WHICH BUSBAR. Every stage below runs ONCE PER LEG of a matrix with two legs: the
-#      PINNED busbar from the caller's own `.busbar-ref` (what that repo's release will actually
-#      build against) and the MOVING busbar from `busbar_ref` (the engine branch it tracks). Either
-#      leg red is red. The two collapse to one leg when they are the same commit. See the `refs`
-#      job for why running only one of them loses real coverage.
-#   1. Checkout the plugin + a sibling checkout of busbar (this repo) at that leg's commit: the
-#      same interim local-path-dependency pattern every plugin's Cargo.toml already uses.
-#   2. Optionally boot a real backend service container (`postgres:16` / `valkey/valkey:8` /
-#      `hashicorp/vault` dev-mode) — never a mock. `pg_isready`/the image's own Docker healthcheck
-#      (or, for vault, a `wget` against its own `/v1/sys/health` endpoint) gates every later step so
-#      nothing races an unready service.
-#   3. fmt / build / clippy / test, in that fixed order, on the plugin repo itself.
-#   4. An optional extra test command against the SIBLING busbar checkout (e.g. the monorepo's own
-#      live-service integration test for this exact backend) — the reason the sibling checkout
-#      exists in the first place for store plugins.
-#   5. SIGNOFF: pack + SIGN the plugin with the real busbar-plugin-pack tool using an EPHEMERAL
-#      per-run ed25519 keypair (never the real release key) — proves the manifest/tarball actually
-#      packs into a valid shape *now*, not first discovered at release time.
-#   6. SIGNING GATE: build busbar with the ephemeral PUBLIC key embedded (BUSBAR_RELEASE_PUBKEY)
-#      and prove end-to-end that a correctly-signed tarball is accepted while unsigned, wrong-key,
-#      and tampered tarballs are each refused with the exact expected error. No step in THIS
-#      workflow uses --allow-unsigned / plugins.trust.allow_unsigned. The bypass is NOT gone from
-#      CI as a whole: plugin-functional.yml's this-tree path packs the calling repo's cdylib with
-#      `--allow-unsigned` (a functional probe, not a signing proof), and docker.yml keeps it for a
-#      bare `test`-tag dispatch build behind its sign guard. The signing proof is this file's.
+# A plugin repo is a standalone Cargo workspace (a logic crate the busbar root links, an adapter crate
+# whose cdylib a signed tarball carries) whose busbar dependencies are `git` dependencies on
+# GetBusbar/busbar at `.busbar-ref` field 1. Nothing here checks busbar out beside the plugin to BUILD
+# it: a checkout at the pin exists only for the end-to-end tests that boot a real busbar binary
+# (`busbar_checkout: true`) and for the fleet scripts.
+#
+# The jobs, in the order a red is cheapest to read:
+#   pin        scripts/fleet/pin-check.sh: .busbar-ref, every manifest rev, Cargo.lock and every
+#              reusable-workflow ref name ONE busbar commit; no sibling-checkout path dependency.
+#   linux      fmt, clippy -D warnings, build, the whole test suite against the real backend service
+#              the plugin declares (never a mock), then the both-ways conformance on its own: the
+#              plugin's `conformance` test (linked row AND dropped-in signed tarball, one transcript)
+#              must RUN at least one test, so a renamed or emptied target is red, not a silent pass.
+#   macos      build and the macOS test command (the plugin's own choice of what runs without a
+#              Linux service container; postgres and valkey are provisioned from Homebrew).
+#   coverage   informational only (llvm-cov; uploaded when CODECOV_TOKEN is present).
+#
+# The moving leg (a plugin's `dev` against busbar's own tree) is busbar's side: ci.yml's `consumers`
+# job. plugin-conformance.yml is the conformance job on its own, callable against any busbar commit.
 name: plugin-ci
 
 on:
   workflow_call:
     inputs:
-      plugin_crate:
-        description: "The plugin cdylib's real Cargo package name, e.g. busbar-store-postgres-plugin"
-        required: true
-        type: string
-      plugin_kind:
-        description: "store | auth | hook | secret — passed to busbar-plugin-pack --kind"
-        required: true
-        type: string
-      plugin_alias:
-        description: "The short config name, e.g. postgres, oidc — passed to --alias"
-        required: true
-        type: string
       service:
-        description: "none | postgres | valkey | vault | mysql | wiremock | openldap — which real backend service container to boot"
+        description: "The real backend the Linux tests run against: none | postgres | mysql | valkey | vault | wiremock | openldap"
         required: false
         type: string
         default: "none"
-      busbar_ref:
-        description: "Which busbar branch to check out as the sibling dependency"
+      busbar_checkout:
+        description: "Check busbar out at the pin and export BUSBAR_CHECKOUT (the end-to-end tests build and boot a real busbar from it)"
+        required: false
+        type: boolean
+        default: false
+      macos_test:
+        description: "The test command the macOS leg runs (a live-service case with no macOS provisioning is excluded here)"
         required: false
         type: string
-        # main since v1.5.0 shipped (2026-08-02): plugins build against the released engine by
-        # default, per the header's own "update once 1.5.0 ships" note. Pass busbar_ref: dev
-        # explicitly to test a plugin against unreleased engine work.
-        #
-        # NOTE this is now only the MOVING leg of a two-leg matrix. See the `refs` job below: the
-        # PINNED leg is derived from the caller's own `.busbar-ref` and is not configurable, because
-        # it is not an opinion. It is whatever that repo's release will actually build against.
-        default: "main"
-    # DECLARED, so the dependency is visible at the call site instead of being an `inherit`-only
-    # assumption. Optional because coverage is non-gating; the coverage job refuses to report green
-    # without it (see "Coverage token is present").
+        default: "cargo test --workspace --locked"
+      extra_test:
+        description: "An extra Linux test command run after the suite (e.g. exclusive, server-wide cases run single-threaded). Empty = none."
+        required: false
+        type: string
+        default: ""
     secrets:
       CODECOV_TOKEN:
-        description: "Codecov upload token for the calling plugin repo. Pass it explicitly or via `secrets: inherit`."
+        description: "Codecov upload token; the coverage job is informational and skips the upload without it."
         required: false
 
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
 jobs:
-  # === WHICH BUSBAR DOES A PLUGIN'S CI ACTUALLY PROVE ANYTHING ABOUT ===
-  #
-  # THE DEFECT THIS JOB EXISTS TO CLOSE. Until now a plugin's CI and a plugin's RELEASE built against
-  # two different busbars, and nothing anywhere compared them:
-  #   - CI  built against `inputs.busbar_ref`, which every caller sets to `github.ref_name` (or
-  #     leaves at `main`). That is the MOVING engine: whatever busbar's branch holds right now.
-  #   - RELEASE builds against field 1 of the plugin repo's own `.busbar-ref`, a PINNED SHA that
-  #     `release-on-upstream.yml` rewrites only when it cuts. That is the engine the shipped
-  #     artifact is actually compiled and linked against.
-  # So a green CI proved the plugin worked against a busbar its release would never build, and an
-  # API or config-grammar break between the two refs stayed INVISIBLE UNTIL RELEASE DAY. That is not
-  # hypothetical: it is why the 1.5.3 fixture breaks were latent across a long list of first-party
-  # repos whose CI was green the whole time they were writing configs 1.5.3 had already retired.
-  #
-  # WHY NOT SIMPLY UNIFY ON THE PIN. Because both refs are load-bearing and they answer different
-  # questions, and dropping either one loses real coverage:
-  #   PINNED  is the only ref whose green is load-bearing for SHIPPING. If this is red, the release
-  #           is broken today. Nothing may be green without it.
-  #   MOVING  is the early warning. Testing only the pin makes a ratchet that never turns: a plugin
-  #           stays green forever while drifting arbitrarily far from the engine, and the break
-  #           finally lands inside `release-on-upstream.yml`, which re-pins `.busbar-ref` AND cuts
-  #           the tag in one workflow. Discovering it there is discovering it too late.
-  # So: run BOTH, fail on EITHER. The cost is bounded, because when the pin and the moving ref
-  # resolve to the SAME COMMIT this job emits ONE leg, not two, and says so. On a plugin that is
-  # up to date with the engine (the steady state) this is free.
-  refs:
-    name: resolve the busbar refs this plugin must be proven against
-    runs-on: latchkey-small
+  pin:
+    name: the busbar pin is one commit
+    runs-on: ubuntu-latest
     timeout-minutes: 10
     outputs:
-      matrix: ${{ steps.build.outputs.matrix }}
+      sha: ${{ steps.pin.outputs.sha }}
     steps:
-      - name: Checkout the plugin (for .busbar-ref only)
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           path: plugin
-
-      # The sibling busbar checkout is what OWNS the decision logic, in a script with a --selftest,
-      # rather than inline YAML nobody can run. `dev` deliberately, not the leg refs being resolved:
-      # this step is what decides those, so it cannot depend on them.
-      - name: Checkout busbar (for the resolver script)
+      - name: read .busbar-ref
+        id: pin
+        run: |
+          set -euo pipefail
+          sha="$(awk '{print $1; exit}' plugin/.busbar-ref)"
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::.busbar-ref field 1 is not a full 40-hex sha: '$sha'"; exit 1; }
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+      - name: the fleet scripts at the pin
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           repository: GetBusbar/busbar
-          ref: dev
+          ref: ${{ steps.pin.outputs.sha }}
           path: busbar
+          sparse-checkout: scripts/fleet
+      - name: pin-check selftest (every refusal fires before the verdict is trusted)
+        run: bash busbar/scripts/fleet/pin-check.sh --selftest
+      - name: pin-check
+        run: bash busbar/scripts/fleet/pin-check.sh plugin
 
-      - name: Ref resolver SELF-TEST (prove the decisions before trusting the verdict)
-        # A gate nobody watched fail is not a gate. This covers the dedupe, the hard failure on an
-        # unresolvable `.busbar-ref` pin, and the `<number>/merge` pull_request fallback, offline.
-        run: bash busbar/scripts/plugin-ci-refs.sh --selftest
-
-      - name: Build the ref matrix
-        id: build
-        run: |
-          bash busbar/scripts/plugin-ci-refs.sh \
-            --plugin-root plugin \
-            --moving-ref "${{ inputs.busbar_ref }}" >> "$GITHUB_OUTPUT"
-
-
-  build-test-signoff:
-    name: build, test, clippy, fmt, signoff [busbar ${{ matrix.label }}]
-    needs: refs
-    strategy:
-      # fail-fast off ON PURPOSE. When the pinned leg and the moving leg disagree, the single most
-      # useful fact is WHICH ONE broke: pinned-red means the release is broken now, moving-red means
-      # the engine has moved out from under this plugin and the next re-pin will break it. Cancelling
-      # the sibling leg on the first failure destroys exactly that signal.
-      fail-fast: false
-      matrix: ${{ fromJSON(needs.refs.outputs.matrix) }}
-    runs-on: latchkey-xlarge
-    timeout-minutes: 60
+  linux:
+    name: fmt, clippy, build, test, conformance [linux]
+    needs: pin
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    # SERVICE IMAGES ARE DIGEST-PINNED, and the digests are testing/fleet-fixtures/service-images.tsv's
+    # rows (`cargo xtask gate service-images` holds every line below to them). An image expression that
+    # evaluates to '' starts no container, so only the service the caller names runs.
     services:
-    # SERVICE IMAGES ARE DIGEST-PINNED. A floating tag means a third party can change what this
-    # workflow tests against, overnight, with no commit here. That matters more in THIS file than
-    # anywhere else in the fleet: every first-party plugin repo calls it, so one upstream retag
-    # moves all of them at once, and the resulting breakage looks like the plugin's own tests
-    # failing. ci.yml pinned its own postgres and valkey containers; these are the same two images
-    # and reuse the SAME digests, so core and the plugin fleet cannot drift apart.
-    #
-    # `hashicorp/vault` was worse than unpinned: it carried NO tag at all, so it resolved to
-    # `latest`. It is pinned by digest alone, with no tag, and that digest is what `latest`
-    # resolved to at pin time, so this is behaviour-preserving rather than a version bump. Moving
-    # vault to a newer explicit version is a real change to what the secret-backend tests run
-    # against and belongs in its own commit, with a run to back it.
-    #
-    # wiremock and openldap already carried explicit VERSION tags rather than `latest`, which is
-    # most of the value, but a version tag can still be retagged upstream. They are digest-pinned
-    # too, at the digest their existing tag resolves to now, so no image in this file can move
-    # without a commit.
       postgres:
         image: ${{ inputs.service == 'postgres' && 'postgres:16@sha256:95206741a5b214807675e14165369d05b93a9cf692223b616d07cca227e74b0b' || '' }}
         env:
@@ -173,19 +110,6 @@ jobs:
           - 5432:5432
         options: >-
           ${{ inputs.service == 'postgres' && '--health-cmd "pg_isready -U busbar" --health-interval 10s --health-timeout 5s --health-retries 5' || '' }}
-      valkey:
-        image: ${{ inputs.service == 'valkey' && 'valkey/valkey:8@sha256:495e4fecdc98ee48a20b207726caa5ab6451e0fac3642a9be10d9e70b3068df6' || '' }}
-        ports:
-          - 6379:6379
-        # Runs INSIDE the container (it has its own valkey-cli — the runner does not); GitHub
-        # Actions blocks every job step from starting until this reports healthy, so no separate
-        # manual "wait for valkey" step is needed or correct here.
-        options: >-
-          ${{ inputs.service == 'valkey' && '--health-cmd "valkey-cli ping" --health-interval 5s --health-timeout 5s --health-retries 10' || '' }}
-      # Real MySQL 8 server (BUSBAR_TEST_MYSQL_URL, set on the Test steps below). `sql_mode` is a
-      # dynamic variable (no restart needed) so strict mode is set via `SET GLOBAL` in a step below
-      # once the container's healthy, rather than a boot flag — GitHub's `services:` block has no
-      # supported way to pass mysqld command-line args, only `docker run` options.
       mysql:
         image: ${{ inputs.service == 'mysql' && 'mysql:8@sha256:b3b90af2a6552ae30c266fdb7d5dd55f3afb72404bb78d37fe8a23eb857fd3fb' || '' }}
         env:
@@ -197,9 +121,12 @@ jobs:
           - 3306:3306
         options: >-
           ${{ inputs.service == 'mysql' && '--health-cmd "mysqladmin ping -h localhost -ubusbar -pbusbar" --health-interval 10s --health-timeout 5s --health-retries 10' || '' }}
-      # Real Vault dev-mode server for a plugin's live-Vault tests (BUSBAR_TEST_VAULT_ADDR /
-      # BUSBAR_TEST_VAULT_TOKEN, set on the Test steps below) — same hard-fail-under-CI-if-unset
-      # discipline the plugin's own tests apply, mirroring busbar's own ci.yml vault service block.
+      valkey:
+        image: ${{ inputs.service == 'valkey' && 'valkey/valkey:8@sha256:495e4fecdc98ee48a20b207726caa5ab6451e0fac3642a9be10d9e70b3068df6' || '' }}
+        ports:
+          - 6379:6379
+        options: >-
+          ${{ inputs.service == 'valkey' && '--health-cmd "valkey-cli ping" --health-interval 2s --health-timeout 3s --health-retries 30' || '' }}
       vault:
         image: ${{ inputs.service == 'vault' && 'hashicorp/vault@sha256:5be49781ecf78bfe775c5309c6a4d9f4e9e040b6c885c99eb2b12fb69855e1a2' || '' }}
         env:
@@ -208,19 +135,10 @@ jobs:
           - 8200:8200
         options: >-
           ${{ inputs.service == 'vault' && '--cap-add=IPC_LOCK --health-cmd "wget -qO- http://127.0.0.1:8200/v1/sys/health" --health-interval 10s --health-timeout 5s --health-retries 5' || '' }}
-      # Ready-made WireMock — the GitHub-OAuth token/user/orgs endpoints for auth-github's live e2e.
-      # PINNED (never :latest). No Docker health-cmd (the image has no curl/wget); auth-github's
-      # tests/e2e.rs polls the /__admin API for readiness and registers its stub mappings over it, so
-      # nothing here mounts a fixture file (service containers start before checkout). Exposed to the
-      # test via BUSBAR_TEST_WIREMOCK_URL on the cargo test step below.
       wiremock:
         image: ${{ inputs.service == 'wiremock' && 'wiremock/wiremock:3.9.2@sha256:d13997cd7b52583528a766019cfe7d4e91c4d224a67bdaa6f60efbb532f32176' || '' }}
         ports:
           - 8080:8080
-      # Ready-made OpenLDAP — the directory auth-ldap binds against for its live e2e. PINNED. The
-      # image auto-creates the base suffix dc=example,dc=org + cn=admin from these env vars; auth-ldap's
-      # tests/e2e.rs then seeds the test user/group over LDAP itself (ldap3) and retries the admin bind
-      # until the container is ready. Exposed via BUSBAR_TEST_LDAP_URL on the cargo test step below.
       openldap:
         image: ${{ inputs.service == 'openldap' && 'osixia/openldap:1.5.0@sha256:18742e9c449c9c1afe129d3f2f3ee15fb34cc43e5f940a20f3399728f41d7c28' || '' }}
         env:
@@ -230,737 +148,162 @@ jobs:
         ports:
           - 389:389
     steps:
-      - name: Checkout the plugin
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           path: plugin
-
-      # The ref was resolved to a COMMIT SHA by the `refs` job above (which also owns the
-      # `<number>/merge` fallback and the pinned-vs-moving decision). Checking out a sha rather than
-      # a branch name also removes a race: the two matrix legs cannot silently pick up different
-      # commits of the same branch if busbar is pushed mid-run.
-      - name: Announce which busbar this leg proves the plugin against
-        run: echo "This leg builds against busbar ${{ matrix.ref }} -- ${{ matrix.label }}."
-
-      - name: Checkout busbar (sibling path dependency)
+      - name: busbar at the pin (the real binaries the end-to-end tests build and boot)
+        if: inputs.busbar_checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           repository: GetBusbar/busbar
-          ref: ${{ matrix.ref }}
+          ref: ${{ needs.pin.outputs.sha }}
           path: busbar
-
-      # TRANSITIONAL busbarAI -> busbar alias. The engine repo was renamed busbarAI -> busbar and this
-      # checkout moved with it, but a plugin repo whose Cargo.toml still carries `../busbarAI/...` (or
-      # `../../busbarAI/...` from a nested crate) path deps must keep resolving until it repoints.
-      # Plugin repos call this workflow @dev and land their repoint on their own schedule, so this
-      # alias makes the landing order irrelevant. Remove once no plugin repo references busbarAI.
-      - name: Alias busbarAI -> busbar (transitional, pre-rename path deps)
-        run: ln -sfn busbar busbarAI
-
+      - name: the test environment (only the variables that apply are SET; an empty one reads as set)
+        env:
+          SERVICE: ${{ inputs.service }}
+          CHECKOUT: ${{ inputs.busbar_checkout }}
+        run: |
+          set -euo pipefail
+          {
+            case "$SERVICE" in
+              none) ;;
+              postgres) echo "BUSBAR_TEST_POSTGRES_URL=postgres://busbar:busbar@localhost:5432/busbar_test" ;;
+              mysql)    echo "BUSBAR_TEST_MYSQL_URL=mysql://busbar:busbar@127.0.0.1:3306/busbar_test" ;;
+              # `redis://` is the Valkey client's own URL scheme (wire-compatible upstream name).
+              valkey)   echo "VALKEY_URL=redis://127.0.0.1:6379/0" ;;
+              vault)    echo "BUSBAR_TEST_VAULT_ADDR=http://127.0.0.1:8200"; echo "BUSBAR_TEST_VAULT_TOKEN=root" ;;
+              wiremock) echo "BUSBAR_TEST_WIREMOCK_URL=http://127.0.0.1:8080" ;;
+              openldap) echo "BUSBAR_TEST_LDAP_URL=ldap://127.0.0.1:389" ;;
+              *) echo "::error::unknown service '$SERVICE'" >&2; exit 1 ;;
+            esac
+            if [ "$CHECKOUT" = true ]; then
+              echo "BUSBAR_CHECKOUT=$GITHUB_WORKSPACE/busbar"
+              echo "BUSBAR_TARGET_DIR=$GITHUB_WORKSPACE/busbar/target"
+              # The nested busbar build is busbar's release profile; a CI leg needs it fast, not small.
+              echo "CARGO_PROFILE_RELEASE_LTO=off"
+              echo "CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16"
+            fi
+          } >> "$GITHUB_ENV"
       - uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
         with:
           components: clippy, rustfmt
-      - name: Resolve cargo home (Latchkey image sets CARGO_HOME off $HOME)
-        uses: ./.github/actions/cargo-home
-      - name: Latchkey Fast Cache (cargo registry + target, restore)
-        # Both `plugin/target` and `busbar/target` are cached explicitly: both checkouts above
-        # use `path:`, so the two Cargo workspaces live at `plugin/` and `busbar/`, and neither is
-        # at $GITHUB_WORKSPACE's root. Both entries are needed, not just the plugin: this workflow
-        # builds busbar-plugin-pack and a full `cargo build --release --bin busbar` out of
-        # busbar/, which is by far the larger of the two.
-        #
-        # The key includes `matrix.ref`: two legs build DIFFERENT busbar commits into
-        # `busbar/target`, and sharing one cache entry between them means each leg restores the
-        # other's artifacts and immediately invalidates them, which is worse than no cache.
-        uses: latchkey-dev/cache-action@d0dd21912a57c7435649c77f689b68d348d8a662 # v1
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
-          action: restore
-          key: cargo-${{ runner.os }}-build-test-signoff-${{ matrix.ref }}-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
-          path: |
-            ${{ env.CARGO_HOME }}/registry
-            ${{ env.CARGO_HOME }}/git
-            plugin/target
-            busbar/target
-
-      - name: PUBLIC-HYGIENE GATE — nothing THIS repo publishes may describe how it was built
-        # INHERITED BY EVERY PLUGIN REPO, deliberately, and that inheritance is the whole point: the
-        # leakage this guards against (internal tracking ids, a developer's home directory,
-        # test-process narration) spans the public fleet, and per-repo
-        # adoption of a new lint does not happen. Living in the reusable workflow, every caller gets
-        # it with zero per-repo work and no way to drift.
-        #
-        # It scans the PLUGIN checkout only (`--root plugin`) — busbar/ has its own run of the same
-        # script in core's ci.yml. File discovery is `git ls-files` inside that checkout, which is
-        # exactly what the plugin repo publishes. Self-test first, and a scan that discovers zero
-        # files EXITS 2 rather than passing, so a layout change here cannot turn the gate into a
-        # no-op that reports green. Runs before the build because it needs no toolchain at all:
-        # stdlib python, a second or two, and it fails fast on the cheapest possible signal.
-        run: |
-          set -euo pipefail
-          python3 busbar/scripts/public-hygiene-lint.py --selftest
-          python3 busbar/scripts/public-hygiene-lint.py --root plugin
-
-      - name: cargo fmt --check
+          workspaces: ${{ inputs.busbar_checkout && fromJSON('"plugin\nbusbar"') || 'plugin' }}
+          key: busbar-${{ needs.pin.outputs.sha }}
+      - name: fmt
         working-directory: plugin
         run: cargo fmt --all -- --check
-
-      - name: cargo build
+      - name: clippy (-D warnings)
         working-directory: plugin
-        run: cargo build --all-targets
-
-      - name: cargo clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: build (the rlib a busbar build links, and the cdylib a signed tarball carries)
         working-directory: plugin
-        run: cargo clippy --all-targets -- -D warnings
-
-      - name: mysql — set strict sql_mode (dynamic variable, no restart needed)
+        run: cargo build --workspace --locked
+      - name: mysql strict sql_mode (a dynamic variable; only root may set it)
         if: inputs.service == 'mysql'
-        # SET GLOBAL requires SUPER/SYSTEM_VARIABLES_ADMIN, which the official mysql image's
-        # MYSQL_USER-created account (`busbar`) never has by design -- only `root` does. Must run
-        # as root, not the `busbar` app user this workflow otherwise tests as.
         run: mysql -h 127.0.0.1 -uroot -pbusbar -e "SET GLOBAL sql_mode='STRICT_ALL_TABLES,NO_ENGINE_SUBSTITUTION';"
-
-      - name: cargo test
+      - name: test (the plugin's whole suite, live backend included)
+        working-directory: plugin
+        run: cargo test --workspace --locked
+      - name: extra test command
+        if: inputs.extra_test != ''
         working-directory: plugin
         env:
-          # Both conventional service-URL env var names are set whenever a service is active; a
-          # plugin's tests read whichever one applies to it and ignore the other.
-          BUSBAR_TEST_POSTGRES_URL: ${{ inputs.service == 'postgres' && 'postgres://busbar:busbar@localhost:5432/busbar_test' || '' }}
-          # `redis://` is the VALKEY driver's own URL SCHEME (Valkey is wire-compatible and the
-          # upstream client crate registers exactly that scheme) — an unrenamable upstream
-          # identifier, not a busbar-owned name. The env var IS busbar-owned, so it is VALKEY_URL.
-          VALKEY_URL: ${{ inputs.service == 'valkey' && 'redis://localhost:6379/0' || '' }}
-          BUSBAR_TEST_VAULT_ADDR: ${{ inputs.service == 'vault' && 'http://127.0.0.1:8200' || '' }}
-          BUSBAR_TEST_VAULT_TOKEN: ${{ inputs.service == 'vault' && 'root' || '' }}
-          BUSBAR_TEST_MYSQL_URL: ${{ inputs.service == 'mysql' && 'mysql://busbar:busbar@127.0.0.1:3306/busbar_test' || '' }}
-          # The 1.5.2 auth login-plugin live e2es (auth-github / auth-ldap tests/e2e.rs): the plugin's
-          # OWN token-exchange direction driven through a REAL busbar boot against these containers.
-          # Unset ⇒ the test skips loudly (never a silent pass).
-          BUSBAR_TEST_WIREMOCK_URL: ${{ inputs.service == 'wiremock' && 'http://127.0.0.1:8080' || '' }}
-          BUSBAR_TEST_LDAP_URL: ${{ inputs.service == 'openldap' && 'ldap://127.0.0.1:389' || '' }}
-        run: cargo test
-      - name: Latchkey Fast Cache (cargo registry + target, save)
-        uses: latchkey-dev/cache-action@d0dd21912a57c7435649c77f689b68d348d8a662 # v1
-        with:
-          action: save
-          key: cargo-${{ runner.os }}-build-test-signoff-${{ matrix.ref }}-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
-          path: |
-            ${{ env.CARGO_HOME }}/registry
-            ${{ env.CARGO_HOME }}/git
-            plugin/target
-            busbar/target
-
-      # REMOVED, and deliberately not replaced by a skippable equivalent: a step named
-      # `cargo test (sibling busbar checkout — this backend's own monorepo integration test)`
-      # used to sit here behind `if: inputs.extra_sibling_test_command != ''`. NO CALLER IN THE
-      # FLEET EVER PASSED THAT INPUT, so on every run of every plugin repo the step reported
-      # `skipped` while the job reported `success` — a leg that read like the one place a plugin was
-      # exercised against the engine, and had never run once. That is the same "a skipped step reads
-      # as a passed step" shape the A2A conformance leg cost this release, and a gate nobody can
-      # tell apart from coverage is worse than no gate.
-      #
-      # It is gone rather than armed because there is nothing left for it to run: it existed to call
-      # `cargo test -p busbar-store-<backend>` against the monorepo's own copy of a store crate, and
-      # those crates no longer live in busbar — each backend's real logic is now in its own repo,
-      # covered by the `cargo test` step ABOVE (which cannot skip). The engine-side integration
-      # coverage this step pretended to give is what the FILE-DROP, INSTALL-AND-SERVE and
-      # EXECUTABLE-CONFIG steps below actually do — a real busbar boot with the real plugin — plus
-      # each store repo's own over-the-ABI e2e, whose `plugin_path()` PANICS under CI rather than
-      # skipping when the cdylib is missing.
-      #
-      # A repo that genuinely needs a second, service-backed job should declare it as its own job,
-      # the way store-valkey's `migrate-destructive-wipe-test` does: visible, named, and impossible
-      # to confuse with a skip.
-
-      - name: Build busbar-plugin-pack (from the sibling checkout)
-        working-directory: busbar
-        run: cargo build --release -p busbar-plugin-loader --features pack --bin busbar-plugin-pack
-
-      - name: Ephemeral CI release keypair (never the real release key)
-        # One throwaway ed25519 pair per run. The PUBLIC half is embedded into the busbar binary
-        # built below (BUSBAR_RELEASE_PUBKEY), the PRIVATE half signs the signoff tarball — so
-        # every later step exercises the REAL first-party verification path instead of the
-        # --allow-unsigned bypass this workflow used to ship.
+          EXTRA: ${{ inputs.extra_test }}
+        run: bash -c "$EXTRA"
+      - name: both-ways conformance (linked row + dropped-in signed tarball; must RUN, not just compile)
+        working-directory: plugin
         run: |
           set -euo pipefail
-          busbar/target/release/busbar-plugin-pack keygen > /tmp/ci-keys
-          PRIV=$(sed -n 's/^private.*: //p' /tmp/ci-keys)
-          PUB=$(sed -n 's/^public.*: //p' /tmp/ci-keys)
-          rm -f /tmp/ci-keys
-          echo "::add-mask::$PRIV"
-          echo "CI_EPHEMERAL_SIGN_KEY=$PRIV" >> "$GITHUB_ENV"
-          echo "CI_EPHEMERAL_PUBKEY=$PUB" >> "$GITHUB_ENV"
-          # A verified first-party plugin must be at/above the binary's version (automatic
-          # anti-downgrade floor), so the signoff pack version must match busbar's own version —
-          # the old 0.0.0-ci would be REJECTED by a signature-verifying binary.
-          BUSBAR_VER=$(sed -n 's/^version *= *"\(.*\)"/\1/p' busbar/crates/busbar/Cargo.toml | head -1)
-          echo "BUSBAR_VER=$BUSBAR_VER" >> "$GITHUB_ENV"
+          out="$(cargo test --workspace --locked --test conformance 2>&1 | tee /dev/stderr)"
+          passed="$(printf '%s\n' "$out" | sed -nE 's/^test result: ok\. ([0-9]+) passed.*/\1/p' | awk '{s+=$1} END {print s+0}')"
+          [ "$passed" -ge 1 ] || { echo "::error::the conformance target ran 0 tests; a filter that matches nothing proves nothing"; exit 1; }
+          echo "conformance: $passed test(s) passed"
 
-      - name: SIGNOFF — pack + SIGN the plugin, prove the manifest/tarball shape is valid now
-        run: |
-          set -euo pipefail
-          libext=so; libprefix=lib
-          lib="plugin/target/debug/${libprefix}$(echo "${{ inputs.plugin_crate }}" | tr '-' '_').${libext}"
-          [ -f "$lib" ] || { echo "expected cdylib not found at $lib" >&2; ls -la plugin/target/debug/ >&2; exit 1; }
-          BUSBAR_SIGN_KEY="$CI_EPHEMERAL_SIGN_KEY" busbar/target/release/busbar-plugin-pack pack \
-            --lib "$lib" \
-            --name "${{ inputs.plugin_crate }}" \
-            --alias "${{ inputs.plugin_alias }}" \
-            --kind "${{ inputs.plugin_kind }}" \
-            --version "$BUSBAR_VER" \
-            --publisher busbar \
-            --description "CI signoff pack for ${{ inputs.plugin_crate }}" \
-            --license Apache-2.0 \
-            --out /tmp/signoff.tar.gz
-          echo "packed OK (signed with the ephemeral CI key):"
-          ls -l /tmp/signoff.tar.gz
-
-      # ── Everything below proves the plugin works the way a real operator actually gets it into a
-      #    running busbar — not by calling `busbar_plugin_loader::load_store()` (or the auth/hook/
-      #    secret equivalents) as a Rust function, which no end user ever does. There are exactly TWO
-      #    real mechanisms, and both are exercised here, against a REAL busbar binary:
-      #      1. FILE-DROP: place the signed tarball in `plugins.dir` before boot; busbar discovers
-      #         and loads it as part of normal startup. This is also how a real durable-persistence
-      #         proof should be structured for a plugin with a real backend (dlopen via a real boot,
-      #         not a direct `load_store()` call) — see the comment on the STORE mint/fetch step below.
-      #      2. RUNTIME INSTALL: `POST /plugins` while busbar is already running, then the documented
-      #         restart-to-apply path (`store` module changes are never a hot swap — confirmed by
-      #         reading `docs/admin-api.md` and validating locally: `PUT /config/settings` returns
-      #         `reload_to_apply: ["store"]` and the change only takes effect after a real process
-      #         restart, which busbar's own `POST /restart` deliberately does NOT self-perform — it
-      #         drains and exits, expecting a supervisor to respawn it, so CI plays that role here).
-      - name: Build busbar (from the sibling checkout) with the ephemeral release key embedded
-        working-directory: busbar
-        # option_env!("BUSBAR_RELEASE_PUBKEY") is compile-time (crates/plugin-loader/src/sign.rs); with the key
-        # set, this binary VERIFIES first-party signatures — no allow_unsigned anywhere below.
-        run: |
-          touch crates/plugin-loader/src/sign.rs
-          BUSBAR_RELEASE_PUBKEY="$CI_EPHEMERAL_PUBKEY" cargo build --release --bin busbar
-
-      - name: EXECUTABLE-CONFIG GATE — every busbar config THIS repo runs, through the real --validate
-        # INHERITED BY EVERY PLUGIN REPO, deliberately, and this is the whole point of putting it
-        # here: the retired-grammar defect it guards against was found across a long list of plugin
-        # repos at once, and per-repo adoption of a new lint does not happen. Living in the reusable
-        # workflow, every caller gets it with zero per-repo work and no way to drift.
-        #
-        # It scans the PLUGIN checkout only (`--root plugin`) — busbar/ has its own run of the same
-        # script in core's ci.yml. It finds busbar configs wherever they are EXECUTED rather than
-        # documented: `cat > config.yaml <<EOF` heredocs in .github/workflows and scripts, config
-        # strings inside Rust integration tests, and yaml under examples/ / docker/. Judgement is the
-        # REAL binary built above, so it cannot drift from the engine's own `detect_legacy_markers`.
-        # Self-test first: a scanner that quietly stopped finding anything must fail, not pass.
-        # Cheap — no build of its own, just the binary that already exists.
-        run: |
-          set -euo pipefail
-          python3 -c "import yaml" 2>/dev/null || pip install --quiet pyyaml
-          B="$PWD/busbar/target/release/busbar"
-          python3 busbar/scripts/executable-config-lint.py --busbar "$B" --selftest
-          python3 busbar/scripts/executable-config-lint.py --busbar "$B" --root plugin
-
-      - name: SIGNING GATE — signed loads; unsigned / wrong-key / tampered are refused
-        # End-to-end proof against the real binary + real `busbar --validate` trust pipeline:
-        #   positive (correctly signed passes) and four negatives (unsigned, wrong key, tampered
-        #   lib bytes, tampered manifest), each asserted on the exact refusal message.
-        # BUSBAR_GATE_* reuses this run's keypair, so the busbar binary built above is reused as-is.
-        run: |
-          set -euo pipefail
-          libext=so; libprefix=lib
-          lib="plugin/target/debug/${libprefix}$(echo "${{ inputs.plugin_crate }}" | tr '-' '_').${libext}"
-          BUSBAR_GATE_SIGN_KEY="$CI_EPHEMERAL_SIGN_KEY" BUSBAR_GATE_PUBKEY="$CI_EPHEMERAL_PUBKEY" \
-            bash busbar/scripts/signing-gate.sh busbar \
-            "${{ inputs.plugin_crate }}" "${{ inputs.plugin_kind }}" "${{ inputs.plugin_alias }}" "$lib"
-
-      - name: INSTALL-AND-SERVE — boot a real busbar, install THIS plugin over the real admin API, confirm it activates
-        if: inputs.plugin_kind == 'store'
-        run: |
-          set -euo pipefail
-          WORKDIR=$(mktemp -d)
-          mkdir -p "$WORKDIR/plugins"
-          BUSBAR_ADMIN_TOKEN="ci-admin-$(date +%s)"
-          export BUSBAR_ADMIN_TOKEN
-          export FAKE_UPSTREAM_KEY="sk-ci-fake"
-
-          cat > "$WORKDIR/providers.yaml" <<EOF
-          anthropic:
-            protocol: anthropic
-            base_url: https://api.anthropic.com
-            api_key: { env: FAKE_UPSTREAM_KEY }
-          EOF
-          # Mint an ephemeral signing key: busbar no longer auto-generates one (1.5.1+), and a
-          # config naming the built-in `keys` verifier in auth.chain now REQUIRES auth.signing_key
-          # at validate/boot. Without it busbar exits 1 with "auth.signing_key is required".
-          "$PWD/busbar/target/release/busbar" --generate-signing-key > "$WORKDIR/signing.key"
-          cat > "$WORKDIR/config.yaml" <<EOF
-          # 1.5.3 define-once auth grammar: an identity provider is declared ONCE under
-          # identity-providers: (module + its own config) and referenced from the chains by BARE
-          # NAME. The pre-1.5.3 inline form (admin_auth: - admin-tokens: { token: ... }) is a
-          # retired marker that detect_legacy_markers fail-closes on, so busbar never boots.
-          identity-providers:
-            admin-tokens:
-              module: admin-tokens
-              token: { env: BUSBAR_ADMIN_TOKEN }
-          auth:
-            chain: [keys]
-            signing_key: { file: $WORKDIR/signing.key }
-            admin_auth: [admin-tokens]
-          # STRICT trust posture — no allow_unsigned: the tarball is signed with this run's
-          # ephemeral key and the binary above embeds the matching public key, so acceptance here
-          # exercises the real first-party signature verification path.
-          plugins:
-            enabled: true
-            dir: $WORKDIR/plugins
-          providers:
-            anthropic:
-              api_key: { env: FAKE_UPSTREAM_KEY }
-          models:
-            m:
-              provider: anthropic
-              max_concurrent: 1
-          EOF
-
-          BUSBAR_BIN=busbar/target/release/busbar
-          export BUSBAR_CONFIG_OVERLAY="$WORKDIR/overlay.json"
-          ADMIN=http://127.0.0.1:8081/api/v1/admin
-
-          # Boot WITHOUT the plugin present — this run's whole point is proving the RUNTIME install
-          # path, so the plugin must not already be loadable at first boot.
-          BUSBAR_PROVIDERS="$WORKDIR/providers.yaml" BUSBAR_CONFIG="$WORKDIR/config.yaml" \
-            "$PWD/$BUSBAR_BIN" > "$WORKDIR/busbar.log" 2>&1 &
-          BUSBAR_PID=$!
-          trap 'kill $BUSBAR_PID 2>/dev/null || true' EXIT
-          # On ANY failure, dump every busbar log before dying — a relaunched busbar that
-          # never comes back up otherwise fails as a bare curl exit 7 with its actual boot
-          # error invisible (exactly how store-valkey's post-restart boot failure hid).
-          trap 'ec=$?; echo "=== step failed (exit $ec) — busbar logs ==="; for f in "$WORKDIR"/busbar*.log; do echo "--- $f ---"; cat "$f" 2>/dev/null || true; done; exit $ec' ERR
-          for _ in $(seq 1 20); do curl -sf -o /dev/null "http://127.0.0.1:8081/api/v1/admin/plugins?type=store" -H "Authorization: Bearer $BUSBAR_ADMIN_TOKEN" && break; sleep 0.5; done
-
-          # The packed tarball's base64 text can run into the tens of MB for a plugin that bundles
-          # a compiled dependency (e.g. rusqlite's bundled sqlite) — passing that as a literal `-d`
-          # ARGUMENT (as this used to) blows past the OS ARG_MAX for a single argv element and curl
-          # fails with "Argument list too long" before it even makes a request. Writing the JSON
-          # body to a file and using `-d @file` reads it as a request body instead, which has no
-          # such limit.
-          python3 -c "
-          import base64, json, sys
-          with open('/tmp/signoff.tar.gz', 'rb') as f:
-              b64 = base64.b64encode(f.read()).decode('ascii')
-          json.dump({'file': '${{ inputs.plugin_crate }}-ci.tar.gz', 'tarball_b64': b64}, open('/tmp/install-body.json', 'w'))
-          "
-          echo "install..."
-          INSTALL_STATUS=$(curl -s -o /tmp/install.json -w "%{http_code}" -X POST \
-            -H "Authorization: Bearer $BUSBAR_ADMIN_TOKEN" -H "Content-Type: application/json" \
-            -d @/tmp/install-body.json \
-            "$ADMIN/plugins")
-          cat /tmp/install.json
-          [ "$INSTALL_STATUS" = "201" ] || { echo "expected 201 from POST /plugins, got $INSTALL_STATUS" >&2; exit 1; }
-
-          # `store` config changes are documented + confirmed restart-to-apply, never a hot swap
-          # (`POST /plugins/reload` alone is NOT enough — it refreshes the plugin registry/hook
-          # transports only). Set the module durably (persist:true, needs the overlay above), then
-          # restart. busbar's restart deliberately does not self-respawn (supervisor_detected), so
-          # this step plays supervisor and relaunches it itself.
-          # Empty `settings: {}` only works for a plugin with a usable default for every required
-          # field (sqlite's default file path) -- postgres, mysql and valkey have no sensible
-          # default connection target and correctly REFUSE to open() without one,
-          # which means the restarted busbar process below never comes back up and every later
-          # curl in this step fails with "Failed to connect" (exit 7). Inject real settings for the
-          # backends that actually need them, matching the service containers' own credentials
-          # above -- confirmed failing for real in CI for both postgres and mysql before this fix.
-          case "${{ inputs.service }}" in
-            postgres) STORE_SETTINGS='{"url": "postgres://busbar:busbar@127.0.0.1:5432/busbar_test"}' ;;
-            mysql)    STORE_SETTINGS='{"url": "mysql://busbar:busbar@127.0.0.1:3306/busbar_test"}' ;;
-            # store-valkey dropped its localhost default -- its settings now REQUIRE a "url"
-            # ("valkey plugin config requires a \"url\""), so the empty-settings fallback made the
-            # restarted busbar die at boot exactly like postgres/mysql did before their fix above.
-            # Logical DB 5, NOT the default 0: the repo's own `cargo test` step ran against this
-            # same service container minutes earlier and its e2e keys persist (a minted key naming
-            # a group absent from this step's minimal config fail-closes the restarted boot).
-            valkey)   STORE_SETTINGS='{"url": "redis://127.0.0.1:6379/5"}' ;;
-            *)        STORE_SETTINGS='{}' ;;
-          esac
-          echo "set store module..."
-          curl -sf -X PUT -H "Authorization: Bearer $BUSBAR_ADMIN_TOKEN" -H "Content-Type: application/json" \
-            -d "{\"store\": {\"module\": \"${{ inputs.plugin_crate }}\", \"settings\": $STORE_SETTINGS}, \"persist\": true}" \
-            "$ADMIN/config/settings"
-          curl -s -X POST -H "Authorization: Bearer $BUSBAR_ADMIN_TOKEN" "$ADMIN/restart" || true
-          sleep 2
-          kill $BUSBAR_PID 2>/dev/null || true
-          wait $BUSBAR_PID 2>/dev/null || true
-
-          BUSBAR_PROVIDERS="$WORKDIR/providers.yaml" BUSBAR_CONFIG="$WORKDIR/config.yaml" \
-            "$PWD/$BUSBAR_BIN" > "$WORKDIR/busbar2.log" 2>&1 &
-          BUSBAR_PID=$!
-          for _ in $(seq 1 20); do curl -sf -o /dev/null "$ADMIN/plugins?type=store" -H "Authorization: Bearer $BUSBAR_ADMIN_TOKEN" && break; sleep 0.5; done
-
-          if grep -q "does not match any plugin" "$WORKDIR/busbar2.log"; then
-            echo "the installed plugin was NOT accepted as the active store module on restart" >&2
-            cat "$WORKDIR/busbar2.log" >&2
-            exit 1
-          fi
-
-          echo "confirm active + mint/fetch round-trip through the freshly-installed plugin..."
-          curl -sf -H "Authorization: Bearer $BUSBAR_ADMIN_TOKEN" "$ADMIN/plugins?type=store" | tee /tmp/list.json
-          grep -q "${{ inputs.plugin_crate }}" /tmp/list.json
-
-          # Mint-and-fetch WITHIN this one process proves install -> activate -> use works
-          # end-to-end. It does NOT prove cross-restart durability against a real backend — that is
-          # backend-specific (needs a real database, not this generic step) and is each plugin's own
-          # job via the FILE-DROP mechanism below, structured like this repo's own persistence tests
-          # but loaded through a real boot instead of a direct `load_store()` call.
-          KEY_ID=$(curl -sf -X POST -H "Authorization: Bearer $BUSBAR_ADMIN_TOKEN" -H "Content-Type: application/json" \
-            -d '{"name":"ci-install-verify"}' "$ADMIN/keys" | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4)
-          [ -n "$KEY_ID" ] || { echo "mint returned no id" >&2; exit 1; }
-          curl -sf -H "Authorization: Bearer $BUSBAR_ADMIN_TOKEN" "$ADMIN/keys/$KEY_ID" | grep -q "$KEY_ID"
-          echo "OK: ${{ inputs.plugin_crate }} installed via the real admin API and served a real mint/fetch round-trip"
-
-      - name: FILE-DROP — boot a real busbar with THIS plugin already in plugins.dir, confirm boot-time discovery
-        if: inputs.plugin_kind == 'store'
-        run: |
-          set -euo pipefail
-          WORKDIR=$(mktemp -d)
-          mkdir -p "$WORKDIR/plugins"
-          cp /tmp/signoff.tar.gz "$WORKDIR/plugins/${{ inputs.plugin_crate }}.tar.gz"
-          BUSBAR_ADMIN_TOKEN="ci-admin-$(date +%s)"
-          export BUSBAR_ADMIN_TOKEN
-          export FAKE_UPSTREAM_KEY="sk-ci-fake"
-
-          cat > "$WORKDIR/providers.yaml" <<EOF
-          anthropic:
-            protocol: anthropic
-            base_url: https://api.anthropic.com
-            api_key: { env: FAKE_UPSTREAM_KEY }
-          EOF
-          # Same reasoning as the INSTALL-AND-SERVE step above: postgres/mysql have no usable
-          # default connection target and refuse to open() with empty settings, so a boot-time
-          # config naming one of them with `settings: {}` never comes up at all.
-          case "${{ inputs.service }}" in
-            postgres) STORE_SETTINGS_FLOW='{ url: "postgres://busbar:busbar@127.0.0.1:5432/busbar_test" }' ;;
-            mysql)    STORE_SETTINGS_FLOW='{ url: "mysql://busbar:busbar@127.0.0.1:3306/busbar_test" }' ;;
-            valkey)   STORE_SETTINGS_FLOW='{ url: "redis://127.0.0.1:6379/6" }' ;;  # own DB — see the valkey notes above
-            *)        STORE_SETTINGS_FLOW='{}' ;;
-          esac
-          # Ephemeral signing key (see the INSTALL-AND-SERVE step above): auth.chain names `keys`,
-          # so auth.signing_key is REQUIRED at validate/boot (1.5.1+, no auto-generation).
-          "$PWD/busbar/target/release/busbar" --generate-signing-key > "$WORKDIR/signing.key"
-          cat > "$WORKDIR/config.yaml" <<EOF
-          # 1.5.3 define-once auth grammar — see the INSTALL-AND-SERVE step above.
-          identity-providers:
-            admin-tokens:
-              module: admin-tokens
-              token: { env: BUSBAR_ADMIN_TOKEN }
-          auth:
-            chain: [keys]
-            signing_key: { file: $WORKDIR/signing.key }
-            admin_auth: [admin-tokens]
-          # STRICT trust posture — no allow_unsigned: the tarball is signed with this run's
-          # ephemeral key and the binary above embeds the matching public key, so acceptance here
-          # exercises the real first-party signature verification path.
-          plugins:
-            enabled: true
-            dir: $WORKDIR/plugins
-          store:
-            module: ${{ inputs.plugin_crate }}
-            settings: $STORE_SETTINGS_FLOW
-          providers:
-            anthropic:
-              api_key: { env: FAKE_UPSTREAM_KEY }
-          models:
-            m:
-              provider: anthropic
-              max_concurrent: 1
-          EOF
-
-          BUSBAR_BIN=busbar/target/release/busbar
-          ADMIN=http://127.0.0.1:8081/api/v1/admin
-
-          BUSBAR_PROVIDERS="$WORKDIR/providers.yaml" BUSBAR_CONFIG="$WORKDIR/config.yaml" \
-            "$PWD/$BUSBAR_BIN" > "$WORKDIR/busbar.log" 2>&1 &
-          BUSBAR_PID=$!
-          trap 'kill $BUSBAR_PID 2>/dev/null || true' EXIT
-          # On ANY failure, dump every busbar log before dying — a relaunched busbar that
-          # never comes back up otherwise fails as a bare curl exit 7 with its actual boot
-          # error invisible (exactly how store-valkey's post-restart boot failure hid).
-          trap 'ec=$?; echo "=== step failed (exit $ec) — busbar logs ==="; for f in "$WORKDIR"/busbar*.log; do echo "--- $f ---"; cat "$f" 2>/dev/null || true; done; exit $ec' ERR
-          for _ in $(seq 1 20); do curl -sf -o /dev/null "$ADMIN/plugins?type=store" -H "Authorization: Bearer $BUSBAR_ADMIN_TOKEN" && break; sleep 0.5; done
-
-          if grep -q "does not match any plugin" "$WORKDIR/busbar.log"; then
-            echo "boot-time file-drop discovery did not pick up the plugin" >&2
-            cat "$WORKDIR/busbar.log" >&2
-            exit 1
-          fi
-
-          KEY_ID=$(curl -sf -X POST -H "Authorization: Bearer $BUSBAR_ADMIN_TOKEN" -H "Content-Type: application/json" \
-            -d '{"name":"ci-filedrop-verify"}' "$ADMIN/keys" | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4)
-          [ -n "$KEY_ID" ] || { echo "mint returned no id" >&2; exit 1; }
-          curl -sf -H "Authorization: Bearer $BUSBAR_ADMIN_TOKEN" "$ADMIN/keys/$KEY_ID" | grep -q "$KEY_ID"
-          echo "OK: ${{ inputs.plugin_crate }} discovered via file-drop at boot and served a real mint/fetch round-trip"
-
-      # ── kind:auth ONLY — the plugin-SIDE half of the 1.5.2 token-exchange cross-repo matrix. The
-      #    busbar-side gate (scripts/release-check-1.5.2.sh) iterates every kind:auth plugin from
-      #    plugins.yaml; THIS step is the mirror that runs on a push to the plugin's OWN repo: build
-      #    the plugin cdylib (already done above), file-drop the SIGNED tarball into a real busbar
-      #    configured with it, and exercise the /auth/token flow(s) the plugin supports — asserting a
-      #    working self-scoped key that drives a real chat-completion. Flow capability is per-plugin
-      #    (see auth_plugin_flows() in release-check-1.5.2.sh): oidc supports POST (held id_token) +
-      #    GET (browser redirect); github supports GET only (opaque token, authenticate()=Pass); ldap
-      #    supports the GET credential-form flow. Only oidc's POST flow runs fully today; the rest are
-      #    marked VERIFIED-AT-INTEGRATION (plugin finalizes in #84) and STRUCTURED to light up when the
-      #    plugin + finalized ABI land. Reuses the ephemeral-key SIGNED /tmp/signoff.tar.gz + the
-      #    matching-pubkey busbar built above (STRICT trust, no allow_unsigned).
-      - name: TOKEN-EXCHANGE E2E — POST /auth/token → self-scoped key → real chat (kind:auth)
-        if: inputs.plugin_kind == 'auth'
-        run: |
-          set -euo pipefail
-          ALIAS='${{ inputs.plugin_alias }}'
-          if [ "$ALIAS" != "oidc" ]; then
-            case "$ALIAS" in
-              github)
-                echo "== github: GET browser-redirect flow — RUN LIVE in this repo's own 'cargo test' step =="
-                echo "   (tests/e2e.rs against the 'service: wiremock' container: the CORE executes the real"
-                echo "    token → /user → /user/orgs hops and mints a self-scoped key). Nothing to do inline here." ;;
-              ldap)
-                echo "== ldap: GET credential-form flow — RUN LIVE in this repo's own 'cargo test' step =="
-                echo "   (tests/e2e.rs against the 'service: openldap' container: real bind + group read →"
-                echo "    key; a wrong password is asserted 401). Nothing to do inline here." ;;
-              *)
-                echo "== kind:auth plugin '$ALIAS' — declare its flow(s) in auth_plugin_flows() and add a live e2e =="
-                echo "   VERIFIED-AT-INTEGRATION until a runner (inline here or a tests/e2e.rs service arm) exists." ;;
-            esac
-            exit 0
-          fi
-
-          # ---- OIDC POST /auth/token flow (RUNS fully). ----
-          WORKDIR=$(mktemp -d); mkdir -p "$WORKDIR/plugins"
-          cp /tmp/signoff.tar.gz "$WORKDIR/plugins/${{ inputs.plugin_crate }}.tar.gz"
-          BUSBAR_ADMIN_TOKEN="ci-admin-$(date +%s)"
-          export BUSBAR_ADMIN_TOKEN
-
-          # Real RSA keypair → JWKS (kid gate-key-1, e=AQAB) + a real RS256-signed JWT.
-          openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out "$WORKDIR/rsa.pem" 2>/dev/null
-          b64url() { openssl base64 -A | tr '+/' '-_' | tr -d '='; }
-          MOD=$(openssl rsa -in "$WORKDIR/rsa.pem" -noout -modulus 2>/dev/null | sed 's/^Modulus=//')
-          N=$(printf '%s' "$MOD" | xxd -r -p | b64url)
-          printf '{"keys":[{"kty":"RSA","use":"sig","alg":"RS256","kid":"gate-key-1","n":"%s","e":"AQAB"}]}' "$N" > "$WORKDIR/jwks.json"
-          # Self-signed TLS for the JWKS host (the plugin does a real HTTPS JWKS fetch).
-          # `basicConstraints=critical,CA:FALSE` is REQUIRED, not cosmetic: OpenSSL 3.x's `req -x509`
-          # (ubuntu-latest) DEFAULTS a self-signed cert to CA:TRUE. The oidc plugin fetches this JWKS
-          # over rustls (reqwest), which REFUSES a CA cert presented as the server's end-entity leaf
-          # (`CaUsedAsEndEntity`) — so the JWKS fetch fails, the token is Rejected, and POST /auth/token
-          # returns 401 "not authenticated" (NOT a BadSubject). Forcing an END-ENTITY cert here is what
-          # makes the real rustls JWKS fetch succeed (the same reason the core's rust e2e uses rcgen,
-          # which emits an EE cert). The cert is still added as `ca_cert_pem` so it is trusted as a root.
-          openssl req -x509 -newkey rsa:2048 -nodes -keyout "$WORKDIR/tls.key" -out "$WORKDIR/tls.crt" \
-            -days 2 -subj "/CN=127.0.0.1" -addext "subjectAltName=IP:127.0.0.1" \
-            -addext "basicConstraints=critical,CA:FALSE" 2>/dev/null
-          ISS="https://idp.ci.local/"; AUD="ci-audience"; SUB="alice"; EXP=$(( $(date +%s) + 3600 ))
-          HDR=$(printf '%s' '{"alg":"RS256","typ":"JWT","kid":"gate-key-1"}' | b64url)
-          PL=$(printf '%s' "{\"iss\":\"$ISS\",\"aud\":\"$AUD\",\"sub\":\"$SUB\",\"groups\":[\"eng\"],\"exp\":$EXP,\"iat\":$(( $(date +%s) - 10 ))}" | b64url)
-          SIG=$(printf '%s' "$HDR.$PL" | openssl dgst -sha256 -sign "$WORKDIR/rsa.pem" -binary | b64url)
-          JWT="$HDR.$PL.$SIG"
-
-          # JWKS server (HTTPS) + mock Anthropic upstream.
-          python3 - "$WORKDIR" 8443 <<'PY' &
-          import http.server, ssl, sys
-          wd, port = sys.argv[1], int(sys.argv[2])
-          body = open(wd + "/jwks.json", "rb").read()
-          class H(http.server.BaseHTTPRequestHandler):
-              def do_GET(self):
-                  self.send_response(200); self.send_header("Content-Type","application/json")
-                  self.send_header("Content-Length", str(len(body))); self.end_headers(); self.wfile.write(body)
-              def log_message(self,*a): pass
-          ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-          ctx.load_cert_chain(wd + "/tls.crt", wd + "/tls.key")
-          srv = http.server.ThreadingHTTPServer(("127.0.0.1", port), H)
-          srv.socket = ctx.wrap_socket(srv.socket, server_side=True); srv.serve_forever()
-          PY
-          JWKS_PID=$!
-          python3 - 8099 <<'PY' &
-          import http.server, json, sys
-          port = int(sys.argv[1])
-          class H(http.server.BaseHTTPRequestHandler):
-              def do_POST(self):
-                  self.rfile.read(int(self.headers.get("Content-Length",0)))
-                  b = json.dumps({"id":"m","type":"message","role":"assistant","model":"test-model",
-                      "content":[{"type":"text","text":"ci-tokenx-marker"}],"stop_reason":"end_turn",
-                      "usage":{"input_tokens":11,"output_tokens":7}}).encode()
-                  self.send_response(200); self.send_header("Content-Type","application/json")
-                  self.send_header("Content-Length", str(len(b))); self.end_headers(); self.wfile.write(b)
-              def log_message(self,*a): pass
-          http.server.ThreadingHTTPServer(("127.0.0.1", port), H).serve_forever()
-          PY
-          MOCK_PID=$!
-          trap 'kill $JWKS_PID $MOCK_PID ${BUSBAR_PID:-} 2>/dev/null || true' EXIT
-
-          BUSBAR_BIN="$PWD/busbar/target/release/busbar"
-          "$BUSBAR_BIN" --generate-signing-key > "$WORKDIR/signing.key" 2>/dev/null
-          CA_PEM=$(sed 's/^/            /' "$WORKDIR/tls.crt")
-          cat > "$WORKDIR/providers.yaml" <<EOF
-          mock:
-            protocol: anthropic
-            base_url: "http://127.0.0.1:8099"
-          EOF
-          cat > "$WORKDIR/config.yaml" <<EOF
-          listen: "127.0.0.1:8080"
-          admin_listen: "127.0.0.1:8081"
-          public_url: "https://gate.busbar.ci"
-          # 1.5.3 define-once auth grammar: BOTH planes are lists of BARE NAMES into
-          # identity-providers:. The retired inline forms (a map-shaped chain/admin_auth entry) are
-          # markers detect_legacy_markers fail-closes on. role_bindings: keys off the provider NAME,
-          # so keeping the definition named "oidc" keeps the binding below working unchanged.
-          # oidc's own parameters live in its settings: bag (a SIBLING of module:, per
-          # IdentityProviderCfg — issuer/audience/... at the definition level is a deny_unknown_fields
-          # rejection). ca_cert_pem's block scalar is emitted at column 12 by the sed above, deeper
-          # than the 6-column key, so the block still parses at this shallower nesting.
-          identity-providers:
-            admin-tokens:
-              module: admin-tokens
-              token: { env: BUSBAR_ADMIN_TOKEN }
-            oidc:
-              module: oidc
-              settings:
-                issuer: "$ISS"
-                audience: "$AUD"
-                jwks_url: "https://127.0.0.1:8443/jwks.json"
-                ca_cert_pem: |
-          $CA_PEM
-          auth:
-            key_ttl: "7d"
-            signing_key: { file: "$WORKDIR/signing.key" }
-            chain: [keys, oidc]
-            admin_auth: [admin-tokens]
-            role_bindings:
-              oidc:
-                eng:
-                  group: eng-team
-          plugins:
-            enabled: true
-            dir: "$WORKDIR/plugins"
-          groups:
-            eng-team:
-              limits:
-                - { requests: 1000000, per: day }
-              child_default:
-                limits:
-                  - { budget: 5000, per: month }
-                  - { requests: 1000, per: day }
-          providers:
-            mock:
-              api_key: { env: MOCK_KEY }
-          models:
-            test-model:
-              provider: mock
-          EOF
-
-          MOCK_KEY=unused BUSBAR_PROVIDERS="$WORKDIR/providers.yaml" BUSBAR_CONFIG="$WORKDIR/config.yaml" \
-            "$BUSBAR_BIN" > "$WORKDIR/busbar.log" 2>&1 &
-          BUSBAR_PID=$!
-          for _ in $(seq 1 40); do curl -sf -o /dev/null "http://127.0.0.1:8080/healthz" && break; sleep 0.5; done
-          curl -sf -o /dev/null "http://127.0.0.1:8080/healthz" || { echo "busbar did not come up"; cat "$WORKDIR/busbar.log"; exit 1; }
-
-          echo "POST /auth/token with the minted JWT..."
-          RESP=$(curl -sS -X POST "http://127.0.0.1:8080/auth/token" -H "Authorization: Bearer $JWT")
-          echo "  → $RESP"
-          API_KEY=$(echo "$RESP" | python3 -c "import sys,json;print(json.load(sys.stdin).get('api_key',''))" 2>/dev/null || true)
-          GROUP=$(echo "$RESP"  | python3 -c "import sys,json;print(json.load(sys.stdin).get('group',''))"   2>/dev/null || true)
-          if [ -z "$API_KEY" ]; then
-            echo "POST /auth/token did not return an api_key: $RESP" >&2
-            echo "NOTE: if this is a 403 BadSubject, the auth-oidc plugin's 'oidc:<sub>' principal id is" >&2
-            echo "hitting sanitize_self_sub's ':' rejection — reconcile the prefix vs the sanitizer." >&2
-            cat "$WORKDIR/busbar.log" >&2; exit 1
-          fi
-          # The self-serve budget group is ALWAYS `user:` + the WHOLE (module-namespaced) principal id,
-          # which for the oidc plugin is `oidc:<sub>` — so the leaf is `user:oidc:<sub>`, NOT `user:<sub>`
-          # (see the step note above re the `oidc:<sub>` principal id, and core's self_keys_tests.rs which
-          # asserts exactly `user:oidc:alice`). The internal ':' is legitimate and cannot escape the
-          # `user:` namespace.
-          [ "$GROUP" = "user:oidc:$SUB" ] || { echo "group '$GROUP' != 'user:oidc:$SUB'" >&2; exit 1; }
-          echo "  self-scoped key issued (group=$GROUP)"
-
-          # One-key idempotency: a second POST returns the SAME key_id.
-          KID1=$(echo "$RESP" | python3 -c "import sys,json;print(json.load(sys.stdin).get('key_id',''))")
-          RESP2=$(curl -sS -X POST "http://127.0.0.1:8080/auth/token" -H "Authorization: Bearer $JWT")
-          KID2=$(echo "$RESP2" | python3 -c "import sys,json;print(json.load(sys.stdin).get('key_id',''))")
-          if [ -z "$KID2" ] || [ "$KID1" != "$KID2" ]; then echo "one-key idempotency broken: $KID1 vs $KID2" >&2; exit 1; fi
-          echo "  one-key idempotency: second POST returned the SAME key_id"
-
-          # Drive a real chat-completion with the issued key.
-          CHAT=$(curl -sS "http://127.0.0.1:8080/v1/chat/completions" -H "Authorization: Bearer $API_KEY" \
-            -H "Content-Type: application/json" -d '{"model":"test-model","messages":[{"role":"user","content":"hi"}]}')
-          echo "$CHAT" | grep -q "ci-tokenx-marker" || { echo "chat via issued key failed: $CHAT" >&2; exit 1; }
-          echo "OK: ${{ inputs.plugin_crate }} — POST /auth/token issued a working self-scoped key that drove a real chat-completion"
-
-  # ── Coverage (NON-GATING): upload this plugin's llvm-cov to Codecov. A SEPARATE job with
-  # `continue-on-error: true` so a coverage/build hiccup can NEVER affect the gating
-  # `build-test-signoff` job or any required check — it can only ever leave THIS job amber. Runs on
-  # push only (not every PR) to bound cost. Uses the org-level CODECOV_TOKEN, which the caller hands
-  # over via `secrets: inherit`; the slug is the calling plugin repo (`github.repository`). Mirrors
-  # busbar core's own coverage job (--ignore-run-fail: this REPORTS coverage, the matrix job is the
-  # real test gate).
-  coverage:
-    name: coverage (llvm-cov · codecov)
-    if: github.event_name == 'push'
-    continue-on-error: true
-    runs-on: latchkey-large
-    timeout-minutes: 45
+  macos:
+    name: build, test [macos]
+    needs: pin
+    runs-on: macos-latest
+    timeout-minutes: 90
     steps:
-      # A MISSING TOKEN IS NAMED, NOT SWALLOWED. `continue-on-error` on this job, `fail_ci_if_error:
-      # false` on the upload and Codecov's own tolerance of an empty token would otherwise stack
-      # into a GREEN coverage job that uploaded nothing -- which is what a caller passing explicit
-      # `secrets:` without CODECOV_TOKEN got. This fails THIS job only (it is continue-on-error, so
-      # the gating jobs are untouched), and it fails before the ~45-minute coverage build is paid.
-      - name: Coverage token is present
-        env:
-          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
-        run: |
-          if [ -z "${CODECOV_TOKEN:-}" ]; then
-            echo "::error::CODECOV_TOKEN is empty in plugin-ci.yml's coverage job, so no coverage would be uploaded. Call plugin-ci.yml with \`secrets: inherit\` or pass \`secrets: { CODECOV_TOKEN: ... }\` explicitly."
-            exit 1
-          fi
-      - name: Checkout the plugin
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           path: plugin
-      - name: Checkout busbar (sibling path dependency)
+      - name: busbar at the pin
+        if: inputs.busbar_checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           repository: GetBusbar/busbar
-          ref: ${{ inputs.busbar_ref }}
+          ref: ${{ needs.pin.outputs.sha }}
           path: busbar
+      - name: the backend, natively (macOS runners have no service containers)
+        env:
+          SERVICE: ${{ inputs.service }}
+          CHECKOUT: ${{ inputs.busbar_checkout }}
+        run: |
+          set -euo pipefail
+          case "$SERVICE" in
+            postgres)
+              brew install postgresql@16
+              pgbin="$(brew --prefix postgresql@16)/bin"
+              echo busbar > "$RUNNER_TEMP/pwfile"
+              "$pgbin/initdb" -D "$RUNNER_TEMP/pgdata" -U busbar --pwfile="$RUNNER_TEMP/pwfile" -A scram-sha-256
+              "$pgbin/pg_ctl" -D "$RUNNER_TEMP/pgdata" -o "-p 5432 -c max_connections=200" -l "$RUNNER_TEMP/pg.log" -w start
+              PGPASSWORD=busbar "$pgbin/createdb" -h localhost -p 5432 -U busbar busbar_test
+              echo "BUSBAR_TEST_POSTGRES_URL=postgres://busbar:busbar@localhost:5432/busbar_test" >> "$GITHUB_ENV" ;;
+            valkey)
+              brew install valkey
+              valkey-server --port 6379 --bind 127.0.0.1 --daemonize yes --save "" --appendonly no --maxmemory-policy noeviction
+              for _ in $(seq 1 30); do valkey-cli -p 6379 ping && break; sleep 1; done
+              valkey-cli -p 6379 ping
+              echo "VALKEY_URL=redis://127.0.0.1:6379/0" >> "$GITHUB_ENV" ;;
+            *) echo "no native $SERVICE on macOS; the macOS test command excludes its live cases" ;;
+          esac
+          if [ "$CHECKOUT" = true ]; then
+            {
+              echo "BUSBAR_CHECKOUT=$GITHUB_WORKSPACE/busbar"
+              echo "BUSBAR_TARGET_DIR=$GITHUB_WORKSPACE/busbar/target"
+              echo "CARGO_PROFILE_RELEASE_LTO=off"
+              echo "CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16"
+            } >> "$GITHUB_ENV"
+          fi
+      - uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          workspaces: ${{ inputs.busbar_checkout && fromJSON('"plugin\nbusbar"') || 'plugin' }}
+          key: busbar-${{ needs.pin.outputs.sha }}
+      - name: build
+        working-directory: plugin
+        run: cargo build --workspace --locked
+      - name: test
+        working-directory: plugin
+        env:
+          MACOS_TEST: ${{ inputs.macos_test }}
+        run: bash -c "$MACOS_TEST"
 
-      # TRANSITIONAL busbarAI -> busbar alias. The engine repo was renamed busbarAI -> busbar and this
-      # checkout moved with it, but a plugin repo whose Cargo.toml still carries `../busbarAI/...` (or
-      # `../../busbarAI/...` from a nested crate) path deps must keep resolving until it repoints.
-      # Plugin repos call this workflow @dev and land their repoint on their own schedule, so this
-      # alias makes the landing order irrelevant. Remove once no plugin repo references busbarAI.
-      - name: Alias busbarAI -> busbar (transitional, pre-rename path deps)
-        run: ln -sfn busbar busbarAI
+  coverage:
+    name: coverage (informational)
+    needs: pin
+    if: github.event_name != 'push' || contains(fromJSON('["refs/heads/main", "refs/heads/dev", "refs/heads/qa"]'), github.ref)
+    continue-on-error: true
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          path: plugin
       - uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
         with:
           components: llvm-tools-preview
-      - name: Resolve cargo home (Latchkey image sets CARGO_HOME off $HOME)
-        uses: ./.github/actions/cargo-home
-      - name: Latchkey Fast Cache (cargo registry + target, restore)
-        uses: latchkey-dev/cache-action@d0dd21912a57c7435649c77f689b68d348d8a662 # v1
-        with:
-          action: restore
-          key: cargo-${{ runner.os }}-coverage-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
-          path: |
-            ${{ env.CARGO_HOME }}/registry
-            ${{ env.CARGO_HOME }}/git
-            plugin/target
       - uses: taiki-e/install-action@b3c2424e62a3f08fd88bf434799847a4d0da36c8 # cargo-llvm-cov
-      - name: Collect coverage (report only, not a re-gate)
+      - name: collect (live-service cases without a service fail and are ignored here; linux is the gate)
         working-directory: plugin
-        run: cargo llvm-cov --workspace --ignore-run-fail --lcov --output-path lcov.info
-      - name: Latchkey Fast Cache (cargo registry + target, save)
-        uses: latchkey-dev/cache-action@d0dd21912a57c7435649c77f689b68d348d8a662 # v1
-        with:
-          action: save
-          key: cargo-${{ runner.os }}-coverage-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
-          path: |
-            ${{ env.CARGO_HOME }}/registry
-            ${{ env.CARGO_HOME }}/git
-            plugin/target
-      - name: Upload to Codecov (never fails the build)
+        run: cargo llvm-cov --workspace --locked --ignore-run-fail --lcov --output-path lcov.info
+      - name: upload
+        env:
+          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+        if: env.CODECOV_TOKEN != ''
         uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
         with:
           token: ${{ secrets.CODECOV_TOKEN }}

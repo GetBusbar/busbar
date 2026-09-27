@@ -1,0 +1,104 @@
+# plugin-conformance — a first-party plugin's BOTH-WAYS conformance on its own: the plugin's
+# `conformance` test target, which loads the plugin through the linked door (the row a busbar build
+# that links the logic crate states) AND the dropped-in door (the adapter's cdylib, packed and signed
+# into a tarball, admitted by the real loader), and compares the two transcripts byte for byte.
+#
+# Callable two ways:
+#   - by a plugin repo (its rendered ci.yml), against the busbar commit the repo PINS
+#     (`busbar_ref` empty): the plugin's own statement that it conforms to the contract it ships with;
+#   - by busbar (or a release step), against ANY busbar commit (`busbar_ref: <sha>`): every busbar
+#     crate the plugin resolves from git is patched to a checkout at that commit through
+#     `.cargo/config.toml` (never a manifest edit), so what builds is the plugin's own source, byte for
+#     byte, against the core under test. A patch row that matches nothing, or a busbar source still in
+#     the lock after patching, is red: either would test the pin while claiming to test the target.
+#
+# The database-free arms run here (CI is unset for the test process, which is how every plugin's
+# live-service arm decides to skip rather than fail); plugin-ci.yml's Linux leg runs the live arms
+# against the real service.
+name: plugin-conformance
+
+on:
+  workflow_call:
+    inputs:
+      repository:
+        description: "The plugin repo (owner/name). Empty = the calling repo."
+        required: false
+        type: string
+        default: ""
+      ref:
+        description: "The plugin commit or branch. Empty = the calling commit."
+        required: false
+        type: string
+        default: ""
+      busbar_ref:
+        description: "A busbar commit to test the plugin AGAINST. Empty = the plugin's own .busbar-ref pin."
+        required: false
+        type: string
+        default: ""
+      os:
+        description: "The runner the conformance runs on."
+        required: false
+        type: string
+        default: "ubuntu-latest"
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  conformance:
+    name: both-ways conformance [${{ inputs.os }}]
+    runs-on: ${{ inputs.os }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: ${{ inputs.repository || github.repository }}
+          ref: ${{ inputs.ref || github.sha }}
+          path: plugin
+      - name: busbar under test
+        if: inputs.busbar_ref != ''
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: GetBusbar/busbar
+          ref: ${{ inputs.busbar_ref }}
+          path: busbar
+      - uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
+      - name: patch every busbar crate the plugin names to the busbar under test
+        if: inputs.busbar_ref != ''
+        env:
+          BUSBAR_REF: ${{ inputs.busbar_ref }}
+        run: |
+          set -euo pipefail
+          names="$(grep -B2 '^source = "git+https://github.com/GetBusbar/busbar' plugin/Cargo.lock | sed -n 's/^name = "\(.*\)"/\1/p' | sort -u)"
+          [ -n "$names" ] || { echo "::error::the plugin's lock resolves no busbar crate from git; nothing to patch"; exit 1; }
+          mkdir -p plugin/.cargo
+          echo '[patch."https://github.com/GetBusbar/busbar"]' >> plugin/.cargo/config.toml
+          for n in $names; do
+            m="$(grep -rlE "^name = \"$n\"$" busbar/crates --include=Cargo.toml | head -1)"
+            [ -n "$m" ] || { echo "::error::busbar at $BUSBAR_REF has no crate '$n'"; exit 1; }
+            echo "$n = { path = \"$GITHUB_WORKSPACE/$(dirname "$m")\" }" >> plugin/.cargo/config.toml
+          done
+          cat plugin/.cargo/config.toml
+          cd plugin
+          if cargo metadata --format-version 1 2>&1 >/dev/null | grep -i "was not used in the crate graph"; then
+            echo "::error::a busbar patch row matched nothing the plugin names"; exit 1
+          fi
+          if grep -n 'source = "git+https://github.com/GetBusbar/busbar' Cargo.lock; then
+            echo "::error::a busbar crate still resolves from the plugin's pin, not the busbar under test"; exit 1
+          fi
+      - name: conformance (must RUN at least one test)
+        working-directory: plugin
+        env:
+          BUSBAR_REF: ${{ inputs.busbar_ref }}
+        run: |
+          set -euo pipefail
+          # --locked holds the plugin to its own lock; a patched build re-resolves the busbar crates.
+          locked=--locked
+          [ -n "$BUSBAR_REF" ] && locked=""
+          out="$(env -u CI cargo test --workspace $locked --test conformance 2>&1 | tee /dev/stderr)"
+          passed="$(printf '%s\n' "$out" | sed -nE 's/^test result: ok\. ([0-9]+) passed.*/\1/p' | awk '{s+=$1} END {print s+0}')"
+          [ "$passed" -ge 1 ] || { echo "::error::the conformance target ran 0 tests; a filter that matches nothing proves nothing"; exit 1; }
+          echo "conformance: $passed test(s) passed"

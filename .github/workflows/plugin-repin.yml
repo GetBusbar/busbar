@@ -1,0 +1,128 @@
+# plugin-repin — move a plugin repo's busbar pin, and decide by COMMIT whether that is a cut.
+#
+# The repo's `.github/workflows/repin.yml` is a thin caller rendered by `cargo xtask fleet render`.
+# It fires on a `busbar-repin` repository_dispatch (client_payload: sha, version), which busbar sends
+# when the fleet pin moves, and on workflow_dispatch. The fleet's pin policy is ONE pin for every
+# plugin repo (plugins.yaml `fleet.busbar_ref`, held by `cargo xtask fleet check`), so this is how the
+# pin reaches a repo without a human editing four files by hand.
+#
+#   decide   scripts/fleet/repin.sh --decide: skip when the incoming commit IS the pin (or older by
+#            version); cut on any other commit, including the same version string at a different
+#            commit. The decision is an output (`decision`) and the job summary.
+#   repin    on `cut`: scripts/fleet/repin.sh moves .busbar-ref, every manifest's busbar rev,
+#            Cargo.lock and the callers' reusable-workflow refs together, pin-check re-verifies them,
+#            and the commit goes to `branch` (default dev). Never to qa or main: a repo promotes
+#            dev -> qa -> main on its own, and its release is cut from main by a tag.
+#   dry_run  decides and repins in the runner, commits nothing.
+#
+# The push rewrites workflow files (the callers' `@<sha>`), which GITHUB_TOKEN may not do: the caller
+# passes FLEET_TOKEN (contents + workflows write). Unprovisioned, the job is red and says so.
+name: plugin-repin
+
+on:
+  workflow_call:
+    inputs:
+      busbar_sha:
+        description: "The busbar commit to pin (40 hex)"
+        required: true
+        type: string
+      busbar_version:
+        description: "The busbar version at that commit (e.g. 1.6.0)"
+        required: true
+        type: string
+      branch:
+        description: "The branch the repin commit goes to"
+        required: false
+        type: string
+        default: "dev"
+      dry_run:
+        description: "Decide and repin in the runner; commit and push nothing"
+        required: false
+        type: boolean
+        default: false
+    outputs:
+      decision:
+        description: "cut | skip"
+        value: ${{ jobs.repin.outputs.decision }}
+    secrets:
+      FLEET_TOKEN:
+        description: "A token that may push workflow-file changes to the plugin repo"
+        required: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: plugin-repin-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  repin:
+    name: repin to busbar ${{ inputs.busbar_version }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    outputs:
+      decision: ${{ steps.decide.outputs.decision }}
+    steps:
+      - name: refuse a protected target
+        if: inputs.branch == 'main' || inputs.branch == 'qa'
+        run: |
+          echo "::error::a repin commits to dev; qa and main move by promotion only" >&2
+          exit 1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ inputs.branch }}
+          path: plugin
+          token: ${{ secrets.FLEET_TOKEN || github.token }}
+      - name: the fleet scripts at the INCOMING busbar
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: GetBusbar/busbar
+          ref: ${{ inputs.busbar_sha }}
+          path: busbar
+          sparse-checkout: scripts/fleet
+      - name: selftests (the decision table and the refusals, before trusting a verdict)
+        run: |
+          set -euo pipefail
+          bash busbar/scripts/fleet/repin.sh --selftest
+          bash busbar/scripts/fleet/pin-check.sh --selftest
+      - name: decide (by commit)
+        id: decide
+        working-directory: plugin
+        env:
+          SHA: ${{ inputs.busbar_sha }}
+          VER: ${{ inputs.busbar_version }}
+        run: |
+          set -euo pipefail
+          d="$(bash ../busbar/scripts/fleet/repin.sh --decide "$SHA" "$VER")"
+          echo "decision=$d" >> "$GITHUB_OUTPUT"
+          echo "repin decision for busbar $VER at $SHA: **$d**" >> "$GITHUB_STEP_SUMMARY"
+      - uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
+        if: steps.decide.outputs.decision == 'cut'
+      - name: repin (.busbar-ref + manifests + Cargo.lock + workflow refs, then pin-check)
+        if: steps.decide.outputs.decision == 'cut'
+        working-directory: plugin
+        env:
+          SHA: ${{ inputs.busbar_sha }}
+          VER: ${{ inputs.busbar_version }}
+        run: |
+          set -euo pipefail
+          bash ../busbar/scripts/fleet/repin.sh "$SHA" "$VER"
+          git --no-pager diff --stat
+      - name: commit + push
+        if: steps.decide.outputs.decision == 'cut' && !inputs.dry_run
+        working-directory: plugin
+        env:
+          HAS_TOKEN: ${{ secrets.FLEET_TOKEN != '' }}
+          SHA: ${{ inputs.busbar_sha }}
+          VER: ${{ inputs.busbar_version }}
+          BRANCH: ${{ inputs.branch }}
+        run: |
+          set -euo pipefail
+          [ "$HAS_TOKEN" = true ] || { echo "::error::FLEET_TOKEN is not provisioned: the repin rewrites workflow files, which GITHUB_TOKEN may not push" >&2; exit 1; }
+          if git diff --quiet; then echo "::notice::already at $SHA"; exit 0; fi
+          git config user.name "busbar-bot"
+          git config user.email "bot@getbusbar.com"
+          git add -u
+          git commit -m "busbar pin: ${VER} (${SHA}): .busbar-ref, manifests, Cargo.lock, workflow refs"
+          git push origin "HEAD:${BRANCH}"
