@@ -469,6 +469,15 @@ busbar-export-example-plugin = { path = "../export-example-plugin" }
 # to the same bytes: the proto's publisher, not the sink's encoder, says it is an OTLP request.
 opentelemetry-proto = { workspace = true }
 prost = { workspace = true }
+# The transport axis's both-doors proofs (`src/root/tests/registry.rs`: a dropped-in wire rides the
+# one fold in place of its linked row, and one on a linked key is refused as a second linked row is)
+# find a `kind: transport` cdylib beside the test binary and refuse to skip without one under CI.
+# The tcp wire's door is compiled only under `dropped-in` (so a release image links one set of door
+# symbols), so without this edge a package-scoped test build (`cargo test -p busbar`, every
+# feature-sets row naming the root) emits a tcp cdylib with no door ("returned a null kind string")
+# and both proofs fail; only a workspace build, where the loader's dev-edge unifies the feature in,
+# carried a loadable one. The normal edge above stays featureless: a release build carries no door.
+busbar-transport-tcp = { path = "../busbar-transport-tcp", features = ["dropped-in"] }
 # tests/cli_validate.rs builds signed plugin tarball fixtures.
 hex = { workspace = true }
 # THE ADDED-LATENCY INSTRUMENT (`benches/hook_path.rs`) — black-box, boots the shipped binary.
