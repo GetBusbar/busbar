@@ -4094,7 +4094,103 @@ fn source_facts(rel: &str, dir: &str, text: &str) -> std::sync::Arc<SourceFacts>
     facts
 }
 
-fn rule_shape(crates: &[CrateInfo], idx: &SourceIndex) -> Row {
+/// THE PINNED EXEMPLAR (ARCHITECT ruling 2026-09-27, EXT-TCP: "the exemplar must stay
+/// measurable"). A kind's exemplar that LEFT the tree for its own repo (one repo per plugin) is
+/// still the kind's model: the root pulls it at a pinned rev, so `cargo metadata` resolves it to a
+/// `git+` checkout, and its shipped source is read from there into `idx` under the key
+/// `pinned:<crate>`. Returns exemplar name -> that key, for each exemplar not in the census that
+/// resolves; one that does not resolve (no package, or not a pinned git source) is returned as a
+/// reason, and [`rule_shape`] reports it as `no-exemplar` — an exemplar nobody can read is never
+/// silently a pass.
+fn pinned_exemplars(
+    cx: &Ctx,
+    crates: &[CrateInfo],
+    idx: &mut SourceIndex,
+) -> BTreeMap<String, Result<String, String>> {
+    let mut out = BTreeMap::new();
+    let absent: Vec<&str> = EXEMPLARS
+        .iter()
+        .map(|&(_, ex)| ex)
+        .filter(|ex| !crates.iter().any(|c| c.name == *ex))
+        .collect();
+    if absent.is_empty() {
+        return out;
+    }
+    let meta = cx.cargo_metadata("Cargo.toml").and_then(|m| {
+        serde_json::from_str::<serde_json::Value>(&m).map_err(|e| format!("not JSON: {e}"))
+    });
+    for ex in absent {
+        let found = (|| {
+            let meta = meta.as_ref().map_err(|e| format!("cargo metadata: {e}"))?;
+            let pkg = meta["packages"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .find(|p| p["name"] == ex)
+                .ok_or_else(|| "it does not resolve in this workspace".to_string())?;
+            let source = pkg["source"].as_str().unwrap_or("");
+            if !source.starts_with("git+") {
+                return Err(format!(
+                    "it resolves from '{source}', not a pinned git source"
+                ));
+            }
+            let manifest = pkg["manifest_path"]
+                .as_str()
+                .ok_or_else(|| "it has no manifest_path".to_string())?;
+            let src = std::path::Path::new(manifest)
+                .parent()
+                .ok_or_else(|| format!("'{manifest}' has no directory"))?
+                .join("src");
+            let key = format!("pinned:{ex}");
+            let mut stack = vec![src.clone()];
+            let mut files = 0usize;
+            while let Some(d) = stack.pop() {
+                let rd = std::fs::read_dir(&d).map_err(|e| format!("{}: {e}", d.display()))?;
+                for e in rd.flatten() {
+                    let path = e.path();
+                    if path.is_dir() {
+                        stack.push(path);
+                        continue;
+                    }
+                    if path.extension().and_then(|x| x.to_str()) != Some("rs") {
+                        continue;
+                    }
+                    let tail = path
+                        .strip_prefix(&src)
+                        .map_err(|e| e.to_string())?
+                        .to_string_lossy()
+                        .replace('\\', "/");
+                    let text = std::fs::read_to_string(&path)
+                        .map_err(|e| format!("{}: {e}", path.display()))?;
+                    let facts = source_facts(&format!("{key}/src/{tail}"), &key, &text);
+                    files += 1;
+                    if !facts.shipped {
+                        continue;
+                    }
+                    let counts = idx.impls.entry(key.clone()).or_default();
+                    for t in &facts.heads {
+                        *counts.entry(t.clone()).or_default() += 1;
+                    }
+                }
+            }
+            if files == 0 {
+                return Err(format!(
+                    "its pinned checkout {} holds no source",
+                    src.display()
+                ));
+            }
+            Ok(key)
+        })();
+        out.insert(ex.to_string(), found);
+    }
+    out
+}
+
+fn rule_shape(
+    crates: &[CrateInfo],
+    idx: &SourceIndex,
+    pinned: &BTreeMap<String, Result<String, String>>,
+) -> Row {
     let dir_of: BTreeMap<&str, &str> = crates
         .iter()
         .map(|c| (c.name.as_str(), c.dir.as_str()))
@@ -4111,9 +4207,14 @@ fn rule_shape(crates: &[CrateInfo], idx: &SourceIndex) -> Row {
         // skeleton is the spec's ([`kind_skeleton`]) and "exactly one entry" is the kind's rule. The
         // exemplar only VOUCHES for the entry trait; with none to vouch, the members are held to
         // the rule as written.
-        let ex_entries = match dir_of.get(exemplar) {
+        let pinned_dir = pinned.get(*exemplar).and_then(|r| r.as_ref().ok());
+        let ex_entries = match dir_of
+            .get(exemplar)
+            .copied()
+            .or(pinned_dir.map(String::as_str))
+        {
             Some(ex_dir) => {
-                let ex_impls = idx.impls.get(*ex_dir).cloned().unwrap_or_default();
+                let ex_impls = idx.impls.get(ex_dir).cloned().unwrap_or_default();
                 let n = ex_impls.get(&want_trait).copied().unwrap_or(0);
                 if n != 1 {
                     offenders.push(format!(
@@ -4125,10 +4226,14 @@ fn rule_shape(crates: &[CrateInfo], idx: &SourceIndex) -> Row {
                 n
             }
             None => {
+                let why = match pinned.get(*exemplar) {
+                    Some(Err(e)) => format!(" (nor read from a pinned checkout: {e})"),
+                    _ => String::new(),
+                };
                 offenders.push(format!(
                     "no-exemplar\t{exemplar}\tthe canonical sibling for kind `{kind}` is not in \
-                     the tree, so no crate models this kind's entry; its members are still held \
-                     to the kind's skeleton and single entry below"
+                     the tree{why}, so no crate models this kind's entry; its members are still \
+                     held to the kind's skeleton and single entry below"
                 ));
                 1
             }
@@ -5644,10 +5749,11 @@ impl Gate for KindIsolationGate {
         // criterion. A wire that implements `Plane` is a plane at the type level on the commit that
         // lands it, and a rule that only says so at release time is a rule that says so too late.
         match index_sources(cx) {
-            Ok(idx) => {
+            Ok(mut idx) => {
                 rows.push(rule_faces(&crates, &idx, &reg, self.ship));
                 if self.ship {
-                    rows.push(rule_shape(&crates, &idx));
+                    let pinned = pinned_exemplars(cx, &crates, &mut idx);
+                    rows.push(rule_shape(&crates, &idx, &pinned));
                     rows.push(rule_testkit(&crates, &idx));
                 }
             }
@@ -9969,7 +10075,7 @@ mod plant_tests {
         assert_ne!(&no_lib.name, exemplar);
         let mut idx = empty_index();
         idx.has_lib.insert(bare.dir.clone());
-        let row = rule_shape(&[no_lib, bare], &idx);
+        let row = rule_shape(&[no_lib, bare], &idx, &BTreeMap::new());
         assert_red_naming(
             &row,
             &[
@@ -9977,6 +10083,145 @@ mod plant_tests {
                 "no-lib\tcrates/busbar-transport-planted-nolib/src/lib.rs",
                 "entry-count\tcrates/busbar-transport-planted-bare",
                 "skeleton\tcrates/busbar-transport-planted-bare/src/lib.rs",
+            ],
+        );
+    }
+
+    /// THE PINNED EXEMPLAR (EXT-TCP; ARCHITECT ruling 2026-09-27, "the exemplar must stay
+    /// measurable"): the transport exemplar lives in its own repo, and the shape rule reads it from
+    /// the checkout the root pins. On the real tree it resolves, it states exactly ONE `Transport`
+    /// entry, and no `no-exemplar` finding is left for the kind.
+    #[test]
+    fn an_exemplar_that_left_the_tree_is_read_from_its_pinned_checkout() {
+        let cx = ws();
+        let (crates, _) = crates_of(&cx);
+        let (_, exemplar) = EXEMPLARS
+            .iter()
+            .find(|(k, _)| *k == "transport")
+            .expect("the transport kind has an exemplar row");
+        if crates.iter().any(|c| c.name == *exemplar) {
+            return; // in the tree: nothing to pin
+        }
+        let mut idx = index_sources(&cx).expect("the source index reads");
+        let pinned = pinned_exemplars(&cx, &crates, &mut idx);
+        let key = pinned
+            .get(*exemplar)
+            .expect("the absent exemplar is looked up")
+            .as_ref()
+            .unwrap_or_else(|e| panic!("the pinned exemplar resolves: {e}"));
+        assert_eq!(
+            idx.impls[key].get("Transport").copied(),
+            Some(1),
+            "the pinned exemplar states exactly one entry"
+        );
+        let row = rule_shape(&crates, &idx, &pinned);
+        assert!(!row.detail.contains("no-exemplar"), "{}", row.detail);
+        assert!(
+            !row.detail.contains(&format!("no-entry\t{key}")),
+            "{}",
+            row.detail
+        );
+    }
+
+    /// THE RESOLVER, LIVE on any tree: `cargo metadata` (answered here by the overlay) names the
+    /// absent exemplar at a pinned `git+` source whose checkout holds ONE entry impl in shipped source
+    /// and a second one under `src/tests/` (not shipped, so not counted); the index gains it under
+    /// `pinned:<crate>`. RED arms: the same package from a registry source, and a package that does
+    /// not resolve, are each refused with the reason — never read.
+    #[test]
+    fn the_pinned_exemplar_resolver_reads_a_git_checkout_and_nothing_else() {
+        let cx = ws();
+        let (crates, _) = crates_of(&cx);
+        let (_, exemplar) = EXEMPLARS
+            .iter()
+            .find(|(k, _)| *k == "transport")
+            .expect("the transport kind has an exemplar row");
+        let crates: Vec<CrateInfo> = crates.into_iter().filter(|c| c.name != *exemplar).collect();
+        let checkout =
+            std::env::temp_dir().join(format!("xtask-pinned-exemplar-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&checkout);
+        std::fs::create_dir_all(checkout.join("src/tests")).unwrap();
+        std::fs::write(
+            checkout.join("src/lib.rs"),
+            "pub struct W;\nimpl Transport for W {}\n",
+        )
+        .unwrap();
+        std::fs::write(
+            checkout.join("src/tests/mod.rs"),
+            "struct T;\nimpl Transport for T {}\n",
+        )
+        .unwrap();
+        let meta = |source: &str| {
+            serde_json::json!({"packages": [{
+                "name": exemplar,
+                "source": source,
+                "manifest_path": checkout.join("Cargo.toml").display().to_string(),
+            }]})
+            .to_string()
+        };
+        let read = |metadata: String| {
+            let mut ov = Overlay::new();
+            ov.set_command("cargo-metadata:Cargo.toml", metadata);
+            let planted = cx.with_overlay(ov);
+            let mut idx = empty_index();
+            let pinned = pinned_exemplars(&planted, &crates, &mut idx);
+            (pinned[*exemplar].clone(), idx)
+        };
+
+        let (got, idx) = read(meta(
+            "git+https://github.com/GetBusbar/transport-tcp?rev=0#0",
+        ));
+        let key = got.expect("a pinned git checkout resolves");
+        assert_eq!(key, format!("pinned:{exemplar}"));
+        assert_eq!(idx.impls[&key].get("Transport").copied(), Some(1));
+
+        let (got, _) = read(meta(
+            "registry+https://github.com/rust-lang/crates.io-index",
+        ));
+        let why = got.expect_err("a registry source is not a pinned checkout");
+        assert!(why.contains("not a pinned git source"), "{why}");
+
+        let (got, _) = read(serde_json::json!({"packages": []}).to_string());
+        let why = got.expect_err("an unresolved exemplar is not read");
+        assert!(why.contains("does not resolve"), "{why}");
+        let _ = std::fs::remove_dir_all(&checkout);
+    }
+
+    /// RED ARMS for the pinned exemplar: one that states two entries is `no-entry` (the kind has no
+    /// single declaration), and one that cannot be read is `no-exemplar` NAMING why — never a pass.
+    #[test]
+    fn a_pinned_exemplar_is_held_to_one_entry_and_an_unreadable_one_is_named() {
+        let member = transport_crate("busbar-transport-planted-member");
+        let (_, exemplar) = EXEMPLARS
+            .iter()
+            .find(|(k, _)| *k == "transport")
+            .expect("the transport kind has an exemplar row");
+        let key = format!("pinned:{exemplar}");
+        let mut idx = empty_index();
+        idx.has_lib.insert(member.dir.clone());
+        idx.impls
+            .entry(key.clone())
+            .or_default()
+            .insert("Transport".to_string(), 2);
+        let pinned = BTreeMap::from([(exemplar.to_string(), Ok(key.clone()))]);
+        let row = rule_shape(std::slice::from_ref(&member), &idx, &pinned);
+        assert_red_naming(&row, &[&format!("no-entry\t{key}"), "2 time(s)"]);
+        assert!(
+            !row.detail.contains(&format!("no-exemplar\t{exemplar}")),
+            "{}",
+            row.detail
+        );
+
+        let unreadable = BTreeMap::from([(
+            exemplar.to_string(),
+            Err("it does not resolve in this workspace".to_string()),
+        )]);
+        let row = rule_shape(&[member], &empty_index(), &unreadable);
+        assert_red_naming(
+            &row,
+            &[
+                &format!("no-exemplar\t{exemplar}"),
+                "nor read from a pinned checkout: it does not resolve",
             ],
         );
     }
