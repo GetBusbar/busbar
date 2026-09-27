@@ -443,8 +443,17 @@ dependencies = [
 [[package]]
 name = "busbar-auth-admin-tokens"
 version = "1.5.0"
+source = "git+https://github.com/GetBusbar/auth-admin-tokens?rev=47cb5047e4c9a73341c613c09a056b4a4bb8eb99#47cb5047e4c9a73341c613c09a056b4a4bb8eb99"
 dependencies = [
  "busbar-contract",
+]
+
+[[package]]
+name = "busbar-auth-admin-tokens-plugin"
+version = "1.5.0"
+source = "git+https://github.com/GetBusbar/auth-admin-tokens?rev=47cb5047e4c9a73341c613c09a056b4a4bb8eb99#47cb5047e4c9a73341c613c09a056b4a4bb8eb99"
+dependencies = [
+ "busbar-auth-admin-tokens",
 ]
 
 [[package]]
@@ -968,7 +977,7 @@ name = "busbar-plugin-loader"
 version = "1.5.0"
 dependencies = [
  "async-trait",
- "busbar-auth-admin-tokens",
+ "busbar-auth-admin-tokens-plugin",
  "busbar-auth-oidc-plugin",
  "busbar-contract",
  "busbar-export-example-plugin",

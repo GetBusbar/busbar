@@ -106,7 +106,10 @@ smallvec = { workspace = true }
 # dump, and only under the non-default `timing` feature. The default build does not link it.
 libc = { workspace = true, optional = true }
 busbar-plugin-loader = { path = "../plugin-loader" }
-busbar-auth-admin-tokens = { path = "../auth-admin-tokens", optional = true }
+# The built-in `admin-tokens` admin-auth module lives in its own repo (owner move-out ruling;
+# ARCHITECT 2026-09-27), pulled at a pinned rev under the same feature and name; its busbar-contract
+# resolves to this tree through the workspace `[patch]` table (one contract copy).
+busbar-auth-admin-tokens = { git = "https://github.com/GetBusbar/auth-admin-tokens", rev = "47cb5047e4c9a73341c613c09a056b4a4bb8eb99", optional = true }
 # THE STAND-IN LINKED ROWS (test-only edges): the composition root links the build's default store
 # and ranking hooks onto the cold-kind axis (`preflight::install_linked_rows`); a test build has no
 # root, so these fixtures stand in, under `test-support` (which the dev-dependency cycle through the

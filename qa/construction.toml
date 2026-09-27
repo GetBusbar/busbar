@@ -1573,7 +1573,7 @@ deny_kinds = ["transport", "abi", "loader", "store", "export"]
 # this rule is born. Each is real debt the owner closes by adding the attribute and deleting the
 # name below; a new crate NOT on this list is held to the rule immediately.
 known_missing_forbid = [
-  "hook-test-plugin", "hooks-ranking", "auth-admin-tokens",
+  "hook-test-plugin", "hooks-ranking",
 ]
 known_missing_deny = [ "plugin-loader",
   "export-example-plugin",
@@ -2520,6 +2520,16 @@ plane_crates = 4
 #     never crosses the plugin ABI — so `crates/busbar-transport-tls` was deleted, not moved.
 #     `crates/busbar-transport-*` now matches exactly four: http, stdio, tcp and ws.
 #
+# ── RE-PINNED 2026-09-27: `auth` 1 -> 0 ───────────────────────────────────────────────────────────────────
+#
+#   * `auth` 1 -> 0. The move-out (owner, "PLUGINS LIVE IN THEIR OWN REPOS"; ARCHITECT 2026-09-27:
+#     auth-admin-tokens is a REAL auth plugin, extracted with its door and conformance):
+#     `crates/auth-admin-tokens` moved to GetBusbar/auth-admin-tokens with its history, and busbar
+#     pulls it at a pinned rev under the unchanged `auth-admin-tokens` feature (busbar-kernel) and as
+#     the loader's `auth-verify` both-ways proof. `crates/auth-*` now matches no directory: the
+#     kind's documented zero in this repo. Its `known_missing_forbid` entry leaves with it (the
+#     crate carries `#![deny(unsafe_code)]` outside its one macro door module).
+#
 # THE BASE COMPARISON STILL REPORTS THE THREE DECREMENTS (plugin_kinds.plane 6->5,
 # plugin_kinds.unit 14->1, plugin_kinds.pure_auth 2->0), AND THAT IS THIS ROW WORKING RATHER THAN
 # FAILING. `[gate.census]` reds a floor that went DOWN versus the base commit precisely because it
@@ -2537,7 +2547,7 @@ plane_crates = 4
 [gate.census.plugin_kinds]
 plane = 5
 hook = 2
-auth = 1
+auth = 0
 secret = 0
 store = 1
 export = 1

@@ -30,9 +30,11 @@ Rust, so "code vs not-code" is obvious at a glance:
 crates/
   busbar/            the engine + binary (src/main.rs, the request path, admin plane, protocols)
   api/               the plugin CONTRACT crate: traits/types both the engine and every plugin build against
-  auth-admin-tokens/ built-in `admin-tokens` admin plugin (default-on, removable feature)
   hooks-ranking/     built-in cheapest/fastest/… policies (default-on, removable feature)
 ```
+
+The built-in `admin-tokens` admin plugin (default-on, removable feature `auth-admin-tokens`) lives in
+its own repo, GetBusbar/auth-admin-tokens, and is pulled at a pinned rev.
 
 Dependency direction is one-way: `busbar` → `api` ← plugins. A plugin depends only on `api`, never on
 the engine, so a built-in is structured exactly like a third-party plugin would be (no privileged

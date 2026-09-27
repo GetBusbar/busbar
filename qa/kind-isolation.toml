@@ -250,13 +250,6 @@ drain = "delete the transport name from the kernel crate: a kernel reaches trans
 
 [[edge]]
 from = "legacy"
-to = "auth"
-cite = "none. The retiring 1.5.x crates predate the plane/transport split (ARCHITECTURE.md 9.2); the number is the SIZE OF THE RETIREMENT, not an allowance, and it goes to zero when the crate does."
-why = "crates of kind legacy naming auth vocabulary: auth package names in any spelling, the kind-qualified id (auth-<id>), and — where auth is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
-drain = "git rm -r the retiring 1.5.x crate. The ratchet here IS the retirement; this row cannot be edited down any other way."
-
-[[edge]]
-from = "legacy"
 to = "codec"
 cite = "none. The retiring 1.5.x crates predate the plane/transport split (ARCHITECTURE.md 9.2); the number is the SIZE OF THE RETIREMENT, not an allowance, and it goes to zero when the crate does."
 why = "crates of kind legacy naming codec vocabulary: codec package names in any spelling, the kind-qualified id (codec-<id>), and — where codec is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
@@ -355,13 +348,6 @@ drain = "delete the transport name from the plane crate: a plane reaches transpo
 
 [[edge]]
 from = "plugin-tooling"
-to = "auth"
-cite = "none by clause. The loader, packer, signer and SDK are the tools that BUILD plugins, so a auth name in them is a tool naming its subject; ARCHITECTURE.md 7 keeps them a kind of their own for exactly that reason, and the number says how much of the subject leaked into the tool."
-why = "crates of kind plugin-tooling naming auth vocabulary: auth package names in any spelling, the kind-qualified id (auth-<id>), and — where auth is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
-drain = "delete the auth name from the plugin-tooling crate: a plugin-tooling reaches auth through the contract face it is written against, never by naming it. Every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
-
-[[edge]]
-from = "plugin-tooling"
 to = "export"
 cite = "none by clause. The loader, packer, signer and SDK are the tools that BUILD plugins, so a export name in them is a tool naming its subject; ARCHITECTURE.md 7 keeps them a kind of their own for exactly that reason, and the number says how much of the subject leaked into the tool."
 why = "crates of kind plugin-tooling naming export vocabulary: export package names in any spelling, the kind-qualified id (export-<id>), and — where export is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
@@ -408,13 +394,6 @@ to = "transport"
 cite = "none by clause. The loader, packer, signer and SDK are the tools that BUILD plugins, so a transport name in them is a tool naming its subject; ARCHITECTURE.md 7 keeps them a kind of their own for exactly that reason, and the number says how much of the subject leaked into the tool."
 why = "crates of kind plugin-tooling naming transport vocabulary: transport package names in any spelling, the kind-qualified id (transport-<id>), and — where transport is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
 drain = "delete the transport name from the plugin-tooling crate: a plugin-tooling reaches transport through the contract face it is written against, never by naming it. Every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
-
-[[edge]]
-from = "root"
-to = "auth"
-cite = "none. ARCHITECTURE.md 1.1 gives the composition root a REGISTRY to assemble from — it mounts what a plugin DECLARES. A auth name inside crates/busbar is the assembly hand-wired instead of read, and no clause grants it."
-why = "crates of kind root naming auth vocabulary: auth package names in any spelling, the kind-qualified id (auth-<id>), and — where auth is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
-drain = "delete the per-auth wiring from crates/busbar/src/root/** and crates/busbar/src/main.rs: the root mounts a declared surface read off the registry, so each hit goes on the commit that moves the declaration into the auth itself."
 
 [[edge]]
 from = "root"
@@ -551,11 +530,6 @@ drain = "delete the transport name from the transport crate: a transport reaches
 
 [[cell]]
 crate = "busbar"
-kind = "auth"
-count = "24"
-
-[[cell]]
-crate = "busbar"
 kind = "cleanliness"
 count = "7"
 
@@ -598,11 +572,6 @@ count = "11"
 crate = "busbar"
 kind = "transport"
 count = "752"
-
-[[cell]]
-crate = "busbar-a2a"
-kind = "auth"
-count = "10"
 
 [[cell]]
 crate = "busbar-a2a"
@@ -771,11 +740,6 @@ count = "616"
 
 [[cell]]
 crate = "busbar-mcp"
-kind = "auth"
-count = "9"
-
-[[cell]]
-crate = "busbar-mcp"
 kind = "cleanliness"
 count = "1"
 
@@ -893,11 +857,6 @@ count = "61"
 crate = "busbar-plugin-example-plane"
 kind = "plugin-tooling"
 count = "3"
-
-[[cell]]
-crate = "busbar-plugin-loader"
-kind = "auth"
-count = "5"
 
 [[cell]]
 crate = "busbar-plugin-loader"
@@ -1428,16 +1387,6 @@ drain   = "none while #2 (OWNER-LOCKED) names this edge as the witness's step (4
 
 [[dep]]
 from    = "busbar-plugin-loader"
-to      = "busbar-auth-admin-tokens"
-half    = "test"
-count   = "1"
-verdict = "not-allowed"
-cite    = "BUSBAR-1.6.0.md #2 (OWNER-LOCKED), THE COST OF A REAL AUTH WITNESS steps (4) and (5): the both-ways witness of a kind is a dev-dependency from crates/plugin-loader/Cargo.toml on the kind's [\"cdylib\", \"rlib\"] plugin (step 4) and a conformance test in crates/plugin-loader/src/tests/ that links the rlib and dlopens the cdylib (step 5); the architect's K5-residue ruling (2026-09-25) applies that admission to every kind's proof, and ARCHITECT 2026-09-27 names this crate: auth-admin-tokens is a REAL auth plugin whose both-ways conformance is the AUTH kind proof. `plugin-tooling -> auth` is in neither ARCHITECTURE_ALLOWED nor ARCHITECTURE_TCB, so the verdict is the one the architecture implies; the row records the edge #2 orders, it does not grant a class."
-why     = "busbar-plugin-loader names busbar-auth-admin-tokens: declared dev in the test graph (under its `dropped-in` door feature) so auth_verify_conformance_tests can link the COMPILED-IN `auth-verify` plugin (its rlib) and compare its verify verdicts against the same crate's DROPPED-IN cdylib, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
-drain   = "the crate moves to its own repo (GetBusbar/auth-admin-tokens, owner move-out ruling) and is pulled at a pinned rev; this workspace-member row is struck in that commit. Until then #2 (OWNER-LOCKED) names this edge as the witness's step (4)."
-
-[[dep]]
-from    = "busbar-plugin-loader"
 to      = "busbar-hook-test-plugin"
 half    = "test"
 count   = "1"
@@ -1545,16 +1494,6 @@ verdict = "allowed"
 cite    = "BUSBAR-1.6.0.md:3780 (R2/#37) and ARCHITECT ruling: cleanliness crates are compiled-in with a one-way dependency on the kernel; the root links them (ARCHITECTURE_ALLOWED cleanliness -> kernel). busbar-oauth2 is a cleanliness crate and the kernel is the one tier it depends on."
 why     = "busbar-oauth2 names busbar-kernel: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
 drain   = "none: the architecture grants cleanliness -> kernel. What this row holds is the NUMBER; the dependency stays one-way, so the kernel naming busbar-oauth2 back would be an ungranted class."
-
-[[dep]]
-from    = "busbar-kernel"
-to      = "busbar-auth-admin-tokens"
-half    = "shipped"
-count   = "1"
-verdict = "not-allowed"
-cite    = "ARCHITECTURE.md 1.1 / 3.1 — no clause grants this pair. Measured debt surfaced by the W4.a/W4.b busbar-core -> busbar-kernel and busbar-substrate -> busbar-substrate-values absorption (1.6.0): the edge is real and shipped, and this row holds the number rather than passing it in silence."
-why     = "busbar-kernel names busbar-auth-admin-tokens: declared normal, optional in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
-drain   = "delete the busbar-auth-admin-tokens dependency from busbar-kernel's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
 
 [[dep]]
 from    = "busbar-kernel"

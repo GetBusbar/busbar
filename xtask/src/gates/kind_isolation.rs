@@ -409,13 +409,25 @@ const PLANE_ALIASES: &[(&str, &str, &str)] = &[
 ///
 /// `dialect` was a pending kind and it is not a kind at all (DECISIONS #4). `secret` is pending
 /// because its instances live OUTSIDE this repo: the owner deleted the in-tree fixture ("FIXTURES",
-/// docs/design/1.6.0-QUESTIONS.md) and the kind is proven by the real plugin repo.
-const PENDING_KINDS: &[(&str, &str)] = &[(
-    "secret",
-    "every plugin lives in its own repo (owner, 1.6.0-QUESTIONS.md \"PLUGIN HOME\"); the in-tree \
-     secret fixture is deleted (\"FIXTURES\") and the kind is proven by GetBusbar/hashicorp-vault \
-     through crates/plugin-loader/src/tests/plugin_proof_tests.rs (ci.yml `plugin-proofs`)",
-)];
+/// docs/design/1.6.0-QUESTIONS.md) and the kind is proven by the real plugin repo. `auth` is
+/// pending on the same terms: its last in-tree crate, the built-in admin-tokens module, moved to its
+/// own repo and is pulled at a pinned rev.
+const PENDING_KINDS: &[(&str, &str)] = &[
+    (
+        "secret",
+        "every plugin lives in its own repo (owner, 1.6.0-QUESTIONS.md \"PLUGIN HOME\"); the in-tree \
+         secret fixture is deleted (\"FIXTURES\") and the kind is proven by GetBusbar/hashicorp-vault \
+         through crates/plugin-loader/src/tests/plugin_proof_tests.rs (ci.yml `plugin-proofs`)",
+    ),
+    (
+        "auth",
+        "every plugin lives in its own repo (owner, 1.6.0-QUESTIONS.md \"PLUGIN HOME\"); the in-tree \
+         auth fixture is deleted (\"FIXTURES\") and the built-in admin-tokens module moved to \
+         GetBusbar/auth-admin-tokens (ARCHITECT 2026-09-27), pulled by busbar-kernel at a pinned \
+         rev; the kind is proven both ways by crates/plugin-loader/src/tests/auth_conformance_tests.rs \
+         and auth_verify_conformance_tests.rs over the pinned real plugins",
+    ),
+];
 
 /// Edge classes the TARGET scheme has and the tree does not yet. They are allowed without being
 /// scored as dead — a class that cannot exist until the rename lands cannot be a stale allowance.
