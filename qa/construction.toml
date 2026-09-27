@@ -313,7 +313,7 @@ because = "OWNER RULING Q68(3) (docs/design/1.6.0-QUESTIONS.md): contract_caps r
 file    = "qa/construction.toml"
 from    = 51100
 to      = 54801
-because = "OWNER RULING Q69(3) (docs/design/1.6.0-QUESTIONS.md): kernel and contract ceilings re-arm at the MEASURED value after each owner-locked move commit, in its own commit (Q68(3) pattern; ARCHITECT R-KERNEL, sd-extra.txt). This is the re-arm for SD-8 (3/4, 256435c91): the KERNEL-SEMANTICS/HOST items of the deleted busbar-substrate-values land in busbar-kernel per O1. loc-ceilings:kernel measures 51090 before (d946dbcc4) and 54791 after, +3701; the ceiling rises by exactly that, keeping K2g's named reservation as the base held it."
+because = "OWNER RULING Q69(3) (docs/design/1.6.0-QUESTIONS.md): kernel and contract ceilings re-arm at the MEASURED value after each owner-locked move commit, in its own commit (the Q68(3) pattern). This is the re-arm for the SD-8 kernel landing, in which the KERNEL-SEMANTICS/HOST items of the deleted busbar-substrate-values move into busbar-kernel. loc-ceilings:kernel measures 51090 before and 54791 after, +3701; the ceiling rises by exactly that, keeping the named kernel reservation as the base held it."
 
 # ── THE KERNEL CEILING'S OWNER-APPROVED RAISE — EXPIRED AND STRUCK ─────────────────────────────
 #
