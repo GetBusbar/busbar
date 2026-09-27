@@ -131,26 +131,16 @@ fn sync_repo(
     }
     git(&dir, &["remote", "set-url", "origin", &url])?;
     git(&dir, &["fetch", "-q", "--prune", "origin"])?;
+    // The workdir clone is the sync's own: whatever an earlier (dry) run left in it is discarded,
+    // and the render starts from the remote's dev.
+    git(&dir, &["reset", "-q", "--hard"])?;
+    git(&dir, &["clean", "-q", "-fd"])?;
     git(
         &dir,
         &["checkout", "-q", "-B", DEV, &format!("origin/{DEV}")],
     )?;
 
-    // 1. The pin: every place that names it moves together.
-    let current = std::fs::read_to_string(dir.join(".busbar-ref")).unwrap_or_default();
-    if current != fleet.busbar_ref() {
-        let st = Command::new("bash")
-            .arg(repin)
-            .args([&fleet.pin_sha, &fleet.pin_version])
-            .current_dir(&dir)
-            .status()
-            .map_err(|e| format!("repin: {e}"))?;
-        if !st.success() {
-            return Err("scripts/fleet/repin.sh failed".to_string());
-        }
-    }
-
-    // 2. The render, and nothing unmanaged beside it.
+    // 1. The render, and nothing unmanaged beside it.
     let files = render(fleet, p, t)?;
     for r in &files {
         let path = dir.join(&r.path);
@@ -171,6 +161,21 @@ fn sync_repo(
             git(&dir, &["rm", "-q", "--", path])?;
         }
     }
+    // 2. The pin: every place that names it moves together. AFTER the render, because repin.sh ends
+    // with pin-check.sh, which also holds every caller's reusable-workflow ref to the pin: an old
+    // caller still taking a workflow `@dev` would fail it.
+    // Always run: the render has already written `.busbar-ref`, so the record cannot say whether the
+    // manifests and the lock moved; repin.sh is a no-op when they already name the pin.
+    let st = Command::new("bash")
+        .arg(repin)
+        .args([&fleet.pin_sha, &fleet.pin_version])
+        .current_dir(&dir)
+        .status()
+        .map_err(|e| format!("repin: {e}"))?;
+    if !st.success() {
+        return Err("scripts/fleet/repin.sh failed".to_string());
+    }
+
     git(&dir, &["add", "-A"])?;
     let staged = git(&dir, &["diff", "--cached", "--name-status"])?;
     if !staged.is_empty() {
