@@ -130,7 +130,7 @@ opentelemetry_sdk = "0.32.1"
 # axum server), the SECOND reqwest major (0.13) that the bundled OTLP client used to pull is gone —
 # `cargo tree -d` no longer lists a duplicate reqwest. The request path's reqwest 0.12 is the only
 # reqwest major.
-opentelemetry-otlp = { version = "0.32.0", default-features = false, features = [
+opentelemetry-otlp = { version = "0.33.0", default-features = false, features = [
     "trace",
     "http-proto",
 ] }
