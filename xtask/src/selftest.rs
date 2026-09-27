@@ -53,14 +53,12 @@ use std::path::PathBuf;
 use crate::denylist::{self, PureCrate};
 
 fn fixtures_dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("fixtures")
+    workspace_root().join("xtask").join("fixtures")
 }
 
+/// The RUNTIME root ([`crate::ctx::workspace_root`]); this command reads the tree it runs in.
 fn workspace_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .unwrap()
-        .to_path_buf()
+    crate::ctx::workspace_root().unwrap_or_else(|e| panic!("xtask selftest: {e}"))
 }
 
 fn check(

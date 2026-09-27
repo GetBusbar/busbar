@@ -12,9 +12,12 @@ use crate::ctx::Ctx;
 use crate::denylist;
 use crate::gates;
 use crate::selftest;
+use std::path::PathBuf;
 
 const USAGE: &str = "\
 usage:
+  cargo xtask [--root <dir>] <subcommand> …   (the tree read is the current git tree, or <dir>)
+  cargo xtask root
   cargo xtask gate <name> [--selftest] [--jobs N] [--report] [--strict] [--write] [--posture] [--format=tsv]
   cargo xtask gate changelog [--require-version=V] [--require-dated-top]
   cargo xtask gate changelog-register [--require-version=V]
@@ -46,10 +49,32 @@ const LEGACY_LEDGER_ENV: &str = "LEDGER";
 /// after `cargo xtask` as a gate name. These two are the exceptions: the runner that DRIVES the
 /// gates and the register that RECORDS the audit, neither of which has an owed row set. Listed
 /// here, beside the dispatch arms that prove it, so the reader and the dispatcher cannot drift.
-pub const NON_GATE_SUBCOMMANDS: &[&str] = &["full-gate", "ledger", "conformance", "loc", "fleet"];
+pub const NON_GATE_SUBCOMMANDS: &[&str] =
+    &["full-gate", "ledger", "conformance", "loc", "fleet", "root"];
 
 pub fn main(args: &[String]) -> i32 {
+    // `--root <dir>` (global, first): the tree every context opens over, in place of the current
+    // directory's git tree. See [`crate::ctx::workspace_root`].
+    if args.first().map(String::as_str) == Some("--root") {
+        let Some(dir) = args.get(1) else {
+            eprintln!("xtask: --root needs a directory");
+            return 2;
+        };
+        crate::ctx::set_root_override(PathBuf::from(dir));
+        return main(&args[2..]);
+    }
     match args.first().map(String::as_str) {
+        // Print the tree this invocation reads — the runtime root — and nothing else.
+        Some("root") => match crate::ctx::workspace_root() {
+            Ok(root) => {
+                println!("{}", root.display());
+                0
+            }
+            Err(e) => {
+                eprintln!("xtask: {e}");
+                3
+            }
+        },
         Some("gate") => gate(&args[1..]),
         Some("selftest") => selftest_cmd(&args[1..]),
         // The pre-registry spelling, kept byte-identical: `cargo xtask denylist` prints exactly
