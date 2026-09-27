@@ -215,26 +215,37 @@ fn install_auth_plugin(dir: &Path) -> bool {
     true
 }
 
-/// The config skeleton every scenario shares: the minimal provider/model pair (required sections),
-/// the MCP resource, and `extra` verbatim.
+/// The config skeleton every scenario shares: the MCP resource, `extra` verbatim, and — ONLY when
+/// the llm plane is linked — the minimal provider/model pair that plane owns.
+///
+/// THE PROVIDER PAIR BELONGS TO THE LLM PLANE (Law 7: a plane with no config section mounts nothing,
+/// and a section for a plane the build does not carry is not this suite's to write). A build that
+/// links the MCP plane without the llm plane — the single-plane-mcp row — has no wire codec, and
+/// refuses a provider naming `anthropic` at boot (BUSBAR-9007), so every scenario there died before
+/// its first frame and the refusal cases read 9007 instead of their own refusal. The config grammar
+/// still requires the two keys, so without the llm plane they are written empty.
 fn write_configs(dir: &Path, extra: &str) {
+    let llm = cfg!(linked_axis_body_ingress);
     std::fs::write(
         dir.join("providers.yaml"),
-        "mock:\n  protocol: anthropic\n  base_url: \"http://127.0.0.1:9\"\n  api_key_env: MOCK_KEY\n",
+        if llm {
+            "mock:\n  protocol: anthropic\n  base_url: \"http://127.0.0.1:9\"\n  api_key_env: MOCK_KEY\n"
+        } else {
+            "{}\n"
+        },
     )
     .unwrap();
+    let providers = if llm {
+        "providers:\n  mock:\n    api_key: { env: MOCK_KEY }\nmodels:\n  test-model:\n    provider: mock\n"
+    } else {
+        "providers: {}\nmodels: {}\n"
+    };
     std::fs::write(
         dir.join("config.yaml"),
         format!(
             r#"listen: "127.0.0.1:0"
 admin_listen: "127.0.0.1:0"
-providers:
-  mock:
-    api_key: {{ env: MOCK_KEY }}
-models:
-  test-model:
-    provider: mock
-{section}{extra}"#,
+{providers}{section}{extra}"#,
             section = include_str!("fixtures/stdio_plane_section.yaml")
                 .replace("{canonical}", canonical()),
         ),
