@@ -1694,8 +1694,9 @@ const IDLE_PURGE_SWEEP_SECS: u64 = 15;
 /// pass dropped it to 14.7 MiB). This thread watches the request-activity ticker and, after a full
 /// sweep window with ZERO requests, forces a one-shot purge of every INITIALIZED arena's dirty pages
 /// by writing `arena.<i>.dirty_decay_ms = 0` (jemalloc's documented "purge all unused dirty pages
-/// immediately" setting) and then restoring the configured decay value — all through
-/// tikv-jemalloc-ctl's SAFE typed mallctl API (`AsName`/`Access`; no `unsafe` anywhere).
+/// immediately" setting) and then restoring THAT ARENA'S OWN prior decay value — all through
+/// tikv-jemalloc-ctl's SAFE typed mallctl API (`AsName`/`Access`; no `unsafe` anywhere). See
+/// [`purge_idle_arenas`] for why the restore is per arena.
 ///
 /// Per-arena (not the `MALLCTL_ARENAS_ALL` pseudo-index) because the ALL write EFAULTs the moment it
 /// hits an UNINITIALIZED arena (jemalloc creates arenas lazily; most of the default 4×ncpu set never
@@ -1709,14 +1710,13 @@ const IDLE_PURGE_SWEEP_SECS: u64 = 15;
 #[cfg(not(target_env = "msvc"))]
 fn spawn_jemalloc_idle_purge_fallback() {
     use tikv_jemalloc_ctl::{Access, AsName};
-    // The configured default decay (what arenas run with; the value restored after each purge).
+    // The configured default decay: read once as the probe that the decay controls are reachable.
     const ARENAS_DIRTY_DECAY_DEFAULT: &[u8] = b"opt.dirty_decay_ms\0";
-    const ARENAS_NARENAS: &[u8] = b"arenas.narenas\0";
     let spawned = std::thread::Builder::new()
         .name("busbar-idle-purge".into())
         .spawn(move || {
-            let restore: isize = match ARENAS_DIRTY_DECAY_DEFAULT.name().read() {
-                Ok(v) => v,
+            match Access::<isize>::read(ARENAS_DIRTY_DECAY_DEFAULT.name()) {
+                Ok(_) => {}
                 Err(e) => {
                     eprintln!(
                         "[warn] {}: jemalloc idle-purge fallback disabled: could not read \
@@ -1735,15 +1735,7 @@ fn spawn_jemalloc_idle_purge_fallback() {
                 if !idle {
                     continue;
                 }
-                // Idle window: force the purge on every initialized arena (decay 0 ⇒ jemalloc purges
-                // all unused dirty pages during the set), then restore the configured decay. An
-                // uninitialized arena's write errors — expected; skip it.
-                let narenas: u32 = ARENAS_NARENAS.name().read().unwrap_or(0);
-                for i in 0..narenas {
-                    let key = format!("arena.{i}.dirty_decay_ms\0");
-                    let name = key.as_bytes().name();
-                    let _ = name.write(0isize).and_then(|()| name.write(restore));
-                }
+                purge_idle_arenas();
             }
         });
     if let Err(e) = spawned {
@@ -1751,6 +1743,37 @@ fn spawn_jemalloc_idle_purge_fallback() {
             "[warn] {}: could not spawn the jemalloc idle-purge fallback thread ({e})",
             diagnostics::JEMALLOC_IDLE_PURGE_FALLBACK_UNAVAILABLE.banner()
         );
+    }
+}
+
+/// ONE IDLE PURGE PASS: every initialized arena's dirty pages are purged (decay 0 ⇒ jemalloc purges
+/// all unused dirty pages during the set), then the arena's decay is put back to ITS OWN prior value.
+/// An arena that cannot be read (uninitialized — jemalloc creates arenas lazily) is skipped, and one
+/// already at 0 purges immediately on its own, so it is left alone.
+///
+/// PER-ARENA RESTORE, NEVER THE GLOBAL DEFAULT. The HUGE arena (the one oversize allocations — a
+/// staged plugin library, a large body — land in, created on first use) runs at decay 0, and
+/// jemalloc answers a POSITIVE decay written to it by starting a background thread for it. On a
+/// build with no background-thread support — exactly the builds this fallback exists for (macOS,
+/// static musl) — that call is jemalloc's `not_reached()`: a SIGTRAP in a debug build and undefined
+/// behaviour in a release one. Restoring `opt.dirty_decay_ms` (10 s) to every arena did exactly that
+/// the first idle window after any oversize allocation; restoring each arena's own value writes 0
+/// back to the huge arena, which starts nothing.
+#[cfg(not(target_env = "msvc"))]
+fn purge_idle_arenas() {
+    use tikv_jemalloc_ctl::{Access, AsName};
+    const ARENAS_NARENAS: &[u8] = b"arenas.narenas\0";
+    let narenas: u32 = ARENAS_NARENAS.name().read().unwrap_or(0);
+    for i in 0..narenas {
+        let key = format!("arena.{i}.dirty_decay_ms\0");
+        let name = key.as_bytes().name();
+        let Ok(prior) = Access::<isize>::read(name) else {
+            continue;
+        };
+        if prior == 0 {
+            continue;
+        }
+        let _ = name.write(0isize).and_then(|()| name.write(prior));
     }
 }
 

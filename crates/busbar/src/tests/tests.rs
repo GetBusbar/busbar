@@ -1194,3 +1194,46 @@ fn main_rs_doc_claims_match_the_code_beside_them() {
         "the boot book's doc claims every plane settles onto it; only one root unit's arm is bound here"
     );
 }
+
+/// THE IDLE PURGE NEVER WRITES A POSITIVE DECAY TO AN ARENA THAT RAN AT 0. The huge arena (where an
+/// oversize allocation lands) runs at decay 0, and a positive decay written to it makes jemalloc start
+/// a background thread for it — `not_reached()` on a build without background threads (a SIGTRAP on
+/// macOS debug, undefined behaviour in a static-musl release). Restoring the global default to every
+/// arena did exactly that on the first idle window after any oversize allocation; that killed the
+/// stdio serve child in `mcp_stdio_serve` whenever a session sat idle for one sweep window.
+#[cfg(not(target_env = "msvc"))]
+#[test]
+fn the_idle_purge_puts_each_arena_back_to_its_own_decay() {
+    use tikv_jemalloc_ctl::{Access, AsName};
+    // An oversize allocation (well past jemalloc's 8 MiB default threshold) brings the huge arena up.
+    let big = vec![1u8; 64 << 20];
+    assert_eq!(big[big.len() - 1], 1);
+    drop(big);
+    let decays = || -> Vec<(u32, isize)> {
+        let n: u32 = b"arenas.narenas\0".name().read().unwrap_or(0);
+        (0..n)
+            .filter_map(|i| {
+                let key = format!("arena.{i}.dirty_decay_ms\0");
+                Access::<isize>::read(key.as_bytes().name())
+                    .ok()
+                    .map(|v| (i, v))
+            })
+            .collect()
+    };
+    let before = decays();
+    assert!(
+        before.iter().any(|(_, v)| *v == 0),
+        "the huge arena is initialized and runs at decay 0: {before:?}"
+    );
+    super::purge_idle_arenas();
+    super::purge_idle_arenas();
+    let after = decays();
+    for (i, was) in &before {
+        let now = after.iter().find(|(j, _)| j == i).map(|(_, v)| *v);
+        assert_eq!(
+            now,
+            Some(*was),
+            "arena {i}'s decay was not put back to its own value"
+        );
+    }
+}
