@@ -41,30 +41,12 @@ const CDYLIB: &str = "busbar_export_file_plugin";
 /// The real sink's `cdylib`, newest wins: uplifted by its exact name, or under `deps/` with a metadata
 /// hash. Under CI a missing artifact is a hard failure, never a silent skip.
 fn export_cdylib() -> Option<Vec<u8>> {
-    let exe = PathBuf::from(env!("CARGO_BIN_EXE_busbar"));
-    let profile = exe.parent()?;
-    let exact = busbar_plugin_loader::plugin_library_filename(CDYLIB);
-    let (stem, ext) = exact.rsplit_once('.')?;
-    let hashed = |p: &PathBuf| {
-        let f = p.file_name().and_then(|f| f.to_str()).unwrap_or("");
-        f == exact
-            || f.strip_prefix(&format!("{stem}-"))
-                .and_then(|rest| rest.strip_suffix(&format!(".{ext}")))
-                .is_some_and(|h| !h.is_empty() && h.chars().all(|c| c.is_ascii_hexdigit()))
-    };
-    let found = [profile.to_path_buf(), profile.join("deps")]
-        .iter()
-        .flat_map(|d| std::fs::read_dir(d).into_iter().flatten().flatten())
-        .map(|e| e.path())
-        .filter(hashed)
-        .filter_map(|p| Some((std::fs::metadata(&p).ok()?.modified().ok()?, p)))
-        .max()
-        .map(|(_, p)| p);
+    let found = common::plugins::cdylib(CDYLIB);
     assert!(
         found.is_some() || std::env::var_os("CI").is_none(),
         "the {CDYLIB} cdylib is not built under CI; refusing to silently skip item 141's control"
     );
-    std::fs::read(found?).ok()
+    found
 }
 
 fn fixture_dir() -> PathBuf {
@@ -92,32 +74,9 @@ fn free_port() -> u16 {
 /// unsigned plugins, as the CLI fixtures do), its manifest declaring `destinations` (K9a S4): the
 /// settings keys the host opens a destination for.
 fn write_tarball_declaring(dir: &Path, lib: &[u8], destinations: &[&str]) {
-    let declares = busbar_plugin_loader::sign::Declares {
-        destinations: destinations.iter().map(|d| d.to_string()).collect(),
-        ..Default::default()
-    };
-    let m = busbar_plugin_loader::sign::Manifest {
-        name: PLUGIN.into(),
-        alias: PLUGIN.into(),
-        kind: "export".into(),
-        version: "1.5.0".into(),
-        publisher: "acme".into(),
-        abi_version: *busbar_plugin_loader::supported_abi("export")
-            .iter()
-            .max()
-            .expect("export abi"),
-        sha256: busbar_plugin_loader::sign::sha256_hex(lib),
-        signature: String::new(),
-        description: String::new(),
-        homepage: String::new(),
-        license: String::new(),
-        needs: Default::default(),
-        settings_schema: None,
-        schema_derived: false,
-        host: None,
-        declares,
-    };
-    let bytes = busbar_plugin_loader::tarball::package(&m, "lib.so", lib).unwrap();
+    let mut m = common::plugins::manifest("export", PLUGIN, "acme");
+    m.declares.destinations = destinations.iter().map(|d| d.to_string()).collect();
+    let bytes = common::plugins::seal(m, lib);
     std::fs::write(dir.join("plugins").join("dropped-sink.tar.gz"), bytes).unwrap();
 }
 
@@ -301,10 +260,7 @@ fn a_dropped_in_export_plugin_serves() {
     // handed to the dropped-in sink, renders back byte for byte — the render a sink serving
     // `/metrics` would hand the host.
     let exposition = scrape(data_port).map(|(_, b)| b).unwrap_or_default();
-    let families = busbar_plugin_loader::scrape::snapshot(&exposition).expect("the snapshot reads");
-    let sink = busbar_plugin_loader::load_export_from_bytes(&lib, "{}", PLUGIN, "export")
-        .expect("the sink loads");
-    let (content_type, rendered) = sink.scrape(families).expect("the sink renders");
+    let (content_type, rendered) = common::plugins::render_snapshot(&lib, PLUGIN, &exposition);
     assert_eq!(content_type, "text/plain; version=0.0.4");
     assert_eq!(
         rendered, exposition,

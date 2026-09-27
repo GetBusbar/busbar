@@ -29,16 +29,17 @@
 //! This is its own test binary because the export axis, the opened sinks and the egress carrier are
 //! process-global, set once — as they are at boot.
 
-use busbar_plugin_loader::sign::{sign, Manifest, SigningKey, TrustPolicy};
+mod common;
+
 use busbar_plugin_loader::{
     EgressPolicy, HostResult, HttpRequest, HttpResponse, LinkedPlugin, PluginRegistry,
 };
+use common::plugins;
 use opentelemetry_proto::tonic::collector::trace::v1::ExportTraceServiceRequest;
 use opentelemetry_proto::tonic::common::v1::any_value::Value as AnyValue;
 use opentelemetry_proto::tonic::trace::v1::Span;
 use prost::Message as _;
 use std::io::{Read as _, Write as _};
-use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 use tracing_subscriber::layer::SubscriberExt as _;
@@ -167,93 +168,34 @@ fn serve_one(mut conn: std::net::TcpStream) {
     }
 }
 
-/// The first-party manifest the linked row states — and the tarball states too, `declares` included.
-fn statement(name: &str) -> Manifest {
-    let (_, _, declares, _) = busbar_export_otlp::linked::EXPORT;
-    Manifest {
-        name: name.into(),
-        alias: name.into(),
-        kind: "export".into(),
-        version: env!("CARGO_PKG_VERSION").into(),
-        publisher: busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER.into(),
-        abi_version: *busbar_plugin_loader::supported_abi("export")
-            .iter()
-            .max()
-            .expect("an export payload schema"),
-        sha256: String::new(),
-        signature: String::new(),
-        description: String::new(),
-        homepage: String::new(),
-        license: String::new(),
-        needs: Default::default(),
-        settings_schema: None,
-        schema_derived: false,
-        host: None,
-        declares: serde_json::from_str(declares).expect("the sink's declares section"),
-    }
-}
-
 /// The sink's built `cdylib`: uplifted, or — a git dependency's — under `deps/` with its metadata
 /// hash (`lib<name>-<hash>.<ext>`), newest wins. Under CI a missing artifact is a failure, never a
 /// skip.
 fn cdylib() -> Option<Vec<u8>> {
-    let exe = std::env::current_exe().ok()?;
-    let profile = exe.parent()?.parent()?;
-    let exact = busbar_plugin_loader::plugin_library_filename(CDYLIB);
-    let (stem, ext) = exact.rsplit_once('.')?;
-    let hashed = |p: &PathBuf| {
-        let f = p.file_name().and_then(|f| f.to_str()).unwrap_or("");
-        f == exact
-            || f.strip_prefix(&format!("{stem}-"))
-                .and_then(|rest| rest.strip_suffix(&format!(".{ext}")))
-                .is_some_and(|h| !h.is_empty() && h.chars().all(|c| c.is_ascii_hexdigit()))
-    };
-    let found = [profile.to_path_buf(), profile.join("deps")]
-        .iter()
-        .flat_map(|d| std::fs::read_dir(d).into_iter().flatten().flatten())
-        .map(|e| e.path())
-        .filter(hashed)
-        .filter_map(|p| Some((std::fs::metadata(&p).ok()?.modified().ok()?, p)))
-        .max()
-        .map(|(_, p)| p);
+    let found = plugins::cdylib(CDYLIB);
     assert!(
         found.is_some() || std::env::var_os("CI").is_none(),
         "the {CDYLIB} cdylib is not built under CI; a both-doors proof must not skip"
     );
-    std::fs::read(found?).ok()
-}
-
-/// A fresh scratch directory for this process.
-fn scratch(tag: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("busbar-k9e2-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("scratch dir");
-    dir
+    found
 }
 
 /// THE DROPPED-IN DOOR: `lib` release-signed under the sink's statement into a fresh `plugins/`
 /// directory, scanned under a policy holding the release key. THE LINKED DOOR joins it through
-/// `PluginRegistry::link`, the same admission boot runs.
+/// `PluginRegistry::link`, the same admission boot runs. Both state the first-party manifest the
+/// linked row states — `declares` included.
 fn both_doors(lib: &[u8]) -> &'static PluginRegistry {
-    let release = SigningKey::from_bytes(&[11u8; 32]);
-    let dir = scratch("plugins");
-    let mut manifest = statement("k9e-dropped");
-    manifest.sha256 = busbar_plugin_loader::sign::sha256_hex(lib);
-    let signed = sign(&release, manifest, lib);
-    let tarball = busbar_plugin_loader::tarball::package(&signed, "libotlp.so", lib).unwrap();
-    std::fs::write(dir.join("otlp.tar.gz"), tarball).unwrap();
-    let policy = TrustPolicy {
-        first_party_key: Some(release.verifying_key()),
-        binary_version: env!("CARGO_PKG_VERSION").into(),
-        first_party_floors: Default::default(),
-        first_party_high_water: Default::default(),
-        publishers: Default::default(),
-        allow_unsigned: false,
-        allow_third_party: false,
-        min_versions: Default::default(),
+    let (_, _, declares, entry) = busbar_export_otlp::linked::EXPORT;
+    let statement = |name: &str| {
+        let mut m = plugins::manifest("export", name, "busbar");
+        m.declares = serde_json::from_str(declares).expect("the sink's declares section");
+        m
     };
-    let scanned = busbar_plugin_loader::scan_and_validate(&dir, &policy).expect("the scan");
-    let (_, _, _, entry) = busbar_export_otlp::linked::EXPORT;
+    let release = plugins::key(11);
+    let dir = plugins::scratch("k9e2-plugins");
+    let tarball = plugins::signed(&release, statement("k9e-dropped"), lib);
+    std::fs::write(dir.join("otlp.tar.gz"), tarball).unwrap();
+    let scanned = plugins::boot_with(&dir, &plugins::release_policy(&release));
     let linked = LinkedPlugin::boundary(statement("k9e-linked"), entry);
     let registry = scanned
         .link(vec![linked])

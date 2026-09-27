@@ -23,9 +23,10 @@
 //! one function, the equality tests below go red for the same reason that arm is unequal.
 
 use super::*;
+use crate::root::test_plugins;
 use busbar_kernel::plane::registry::{merged_boot_plane_decls, BuildCtx};
 use busbar_plugin_example_plane::PLANE_DECL as LINKED_DECL;
-use busbar_plugin_loader::sign::{sign, Manifest, SigningKey, TrustPolicy};
+use busbar_plugin_loader::sign::{DiagnosticDecl, SigningKey, TrustPolicy};
 use busbar_plugin_loader::PluginRegistry;
 
 /// The linked example plane, as the build table carries it.
@@ -138,16 +139,7 @@ fn folded(rows: Vec<&'static PlaneDecl>) -> Vec<String> {
 /// The example plane's cdylib in this target dir (uplifted or under `deps`, newest wins). Under CI a
 /// missing artifact is a failure, never a skip: this is the plane axis's both-doors proof.
 fn cdylib() -> Option<std::path::PathBuf> {
-    let found = (|| {
-        let exe = std::env::current_exe().ok()?;
-        let profile = exe.parent()?.parent()?;
-        let name = busbar_plugin_loader::plugin_library_filename("busbar_plugin_example_plane");
-        [profile.join(&name), profile.join("deps").join(&name)]
-            .into_iter()
-            .filter_map(|p| Some((std::fs::metadata(&p).ok()?.modified().ok()?, p)))
-            .max()
-            .map(|(_, p)| p)
-    })();
+    let found = test_plugins::cdylib_path("busbar_plugin_example_plane");
     assert!(
         found.is_some() || std::env::var_os("CI").is_none(),
         "the example plane cdylib is not built under CI; the both-doors proof must not skip"
@@ -158,45 +150,12 @@ fn cdylib() -> Option<std::path::PathBuf> {
 /// A fresh `plugins/` directory holding the example plane's cdylib as a SIGNED first-party tarball,
 /// and the default trust posture that admits it (the release key held, no opt-ins).
 fn plugins_dir(tag: &str, lib: &[u8]) -> (std::path::PathBuf, TrustPolicy) {
-    let dir = std::env::temp_dir().join(format!(
-        "busbar-root-dropped-plane-{tag}-{}",
-        std::process::id()
-    ));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    let release = SigningKey::from_bytes(&[7u8; 32]);
-    let manifest = Manifest {
-        name: "busbar-plugin-example-plane".into(),
-        alias: "example-plane".into(),
-        kind: "plane".into(),
-        version: "1.6.0".into(),
-        publisher: "busbar".into(),
-        abi_version: 1,
-        sha256: String::new(),
-        signature: String::new(),
-        description: String::new(),
-        homepage: String::new(),
-        license: String::new(),
-        needs: Default::default(),
-        settings_schema: None,
-        schema_derived: false,
-        host: None,
-        declares: Default::default(),
-    };
-    let signed = sign(&release, manifest, lib);
-    let tarball = busbar_plugin_loader::tarball::package(&signed, "libplane.so", lib).unwrap();
+    let dir = test_plugins::scratch(&format!("root-dropped-plane-{tag}"));
+    let release = test_plugins::key(7);
+    let manifest = test_plugins::manifest("plane", "example-plane", "busbar");
+    let tarball = test_plugins::signed(&release, manifest, lib);
     std::fs::write(dir.join("example-plane.tar.gz"), tarball).unwrap();
-    let policy = TrustPolicy {
-        first_party_key: Some(release.verifying_key()),
-        binary_version: "1.6.0".into(),
-        first_party_floors: Default::default(),
-        first_party_high_water: Default::default(),
-        publishers: Default::default(),
-        allow_unsigned: false,
-        allow_third_party: false,
-        min_versions: Default::default(),
-    };
-    (dir, policy)
+    (dir, test_plugins::release_policy(&release))
 }
 
 /// The example plane dropped into a fresh `plugins/` directory and found by the boot scan.
@@ -390,7 +349,7 @@ fn an_untrusted_dropped_in_plane_reaches_no_row() {
     };
     let lib = std::fs::read(path).unwrap();
     let (dir, mut policy) = plugins_dir("untrusted", &lib);
-    policy.first_party_key = Some(SigningKey::from_bytes(&[9u8; 32]).verifying_key());
+    policy.first_party_key = Some(test_plugins::key(9).verifying_key());
     let planes = dropped_planes(&dir, &policy).unwrap();
     let _ = std::fs::remove_dir_all(&dir);
     assert!(planes.is_empty(), "an untrusted plane was loaded");
@@ -901,7 +860,7 @@ fn a_linked_and_a_dropped_in_plane_serve_one_request_identically() {
 /// dropped-in one answers.
 #[test]
 fn every_linked_export_row_answers_its_module_ahead_of_a_dropped_in_spelling() {
-    let release = SigningKey::from_bytes(&[7u8; 32]);
+    let release = test_plugins::key(7);
     for &(name, alias, ..) in crate::LINKED.exports {
         let scan = || export_row_registry(alias, "k9e-dropped", alias, "busbar", &release, vec![]);
         let rows = linked_exports(crate::LINKED.exports).expect("the linked export rows");
@@ -967,7 +926,7 @@ fn declaring_registry(
     tag: &str,
     publisher: &str,
     signer: &SigningKey,
-    decls: Vec<busbar_plugin_loader::sign::DiagnosticDecl>,
+    decls: Vec<DiagnosticDecl>,
 ) -> PluginRegistry {
     let name = format!("s3-{tag}");
     export_row_registry(tag, &name, &name, publisher, signer, decls)
@@ -980,51 +939,30 @@ fn export_row_registry(
     alias: &str,
     publisher: &str,
     signer: &SigningKey,
-    decls: Vec<busbar_plugin_loader::sign::DiagnosticDecl>,
+    decls: Vec<DiagnosticDecl>,
 ) -> PluginRegistry {
-    let dir = std::env::temp_dir().join(format!("busbar-root-s3-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    let release = SigningKey::from_bytes(&[7u8; 32]);
-    let mut manifest = Manifest {
-        name: name.into(),
-        alias: alias.into(),
-        kind: "export".into(),
-        version: "1.6.0".into(),
-        publisher: publisher.into(),
-        abi_version: 3,
-        sha256: String::new(),
-        signature: String::new(),
-        description: String::new(),
-        homepage: String::new(),
-        license: String::new(),
-        needs: Default::default(),
-        settings_schema: None,
-        schema_derived: false,
-        host: None,
-        declares: Default::default(),
-    };
+    let dir = test_plugins::scratch(&format!("root-s3-{tag}"));
+    let mut manifest = test_plugins::manifest("export", name, publisher);
+    manifest.alias = alias.into();
     manifest.declares.diagnostics = decls;
     let lib = b"a manifest-only row";
-    let signed = sign(signer, manifest, lib);
-    let tarball = busbar_plugin_loader::tarball::package(&signed, "lib.so", lib).unwrap();
-    std::fs::write(dir.join("s3.tar.gz"), tarball).unwrap();
-    let policy = TrustPolicy {
-        first_party_key: Some(release.verifying_key()),
-        binary_version: "1.6.0".into(),
-        publishers: [(publisher.to_string(), signer.verifying_key())]
-            .into_iter()
-            .filter(|_| publisher != "busbar")
-            .collect(),
-        ..Default::default()
-    };
-    let registry = busbar_plugin_loader::scan_and_validate(&dir, &policy).expect("the scan");
+    std::fs::write(
+        dir.join("s3.tar.gz"),
+        test_plugins::signed(signer, manifest, lib),
+    )
+    .unwrap();
+    let mut policy = test_plugins::release_policy(&test_plugins::key(7));
+    policy.publishers = [(publisher.to_string(), signer.verifying_key())]
+        .into_iter()
+        .filter(|_| publisher != "busbar")
+        .collect();
+    let registry = test_plugins::boot_with(&dir, &policy);
     let _ = std::fs::remove_dir_all(&dir);
     registry
 }
 
-fn decl(code: u16, severity: &str) -> busbar_plugin_loader::sign::DiagnosticDecl {
-    busbar_plugin_loader::sign::DiagnosticDecl {
+fn decl(code: u16, severity: &str) -> DiagnosticDecl {
+    DiagnosticDecl {
         code,
         slug: format!("s3-code-{code}"),
         title: "A declared plugin code".into(),
@@ -1045,7 +983,7 @@ fn decl(code: u16, severity: &str) -> busbar_plugin_loader::sign::DiagnosticDecl
 fn a_first_party_plugins_declared_codes_join_the_catalogue_and_nothing_else_does() {
     use busbar_contract::diagnostic::{Class, Severity};
     use busbar_kernel::diagnostics::{by_code, REGISTRY};
-    let release = SigningKey::from_bytes(&[7u8; 32]);
+    let release = test_plugins::key(7);
     assert!(by_code(6990).is_none(), "the witness code must be free");
     let registry = declaring_registry("ok", "busbar", &release, vec![decl(6990, "actionable")]);
     let declared = declared_diagnostics(&registry, &[]).expect("a first-party declaration joins");
@@ -1063,7 +1001,7 @@ fn a_first_party_plugins_declared_codes_join_the_catalogue_and_nothing_else_does
     );
     assert_eq!(d.banner().to_string(), "BUSBAR-6990");
 
-    let acme = SigningKey::from_bytes(&[8u8; 32]);
+    let acme = test_plugins::key(8);
     let third = declaring_registry("third", "acme", &acme, vec![decl(6990, "actionable")]);
     let refused = declared_diagnostics(&third, &[]).expect_err("a third party is refused");
     assert!(refused.contains("not first-party"), "{refused}");

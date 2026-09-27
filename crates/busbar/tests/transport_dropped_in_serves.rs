@@ -48,22 +48,7 @@ const EXCHANGE: &str = include_str!("fixtures/transport_dropped_in_exchange.txt"
 /// The in-tree transport `cdylib` and the key it declares, found by KIND beside the binary. Under
 /// CI a missing artifact is a hard failure, never a silent skip.
 fn transport_cdylib() -> Option<(Vec<u8>, &'static str)> {
-    let exe = PathBuf::from(env!("CARGO_BIN_EXE_busbar"));
-    let profile = exe.parent()?;
-    let found = [profile.to_path_buf(), profile.join("deps")]
-        .iter()
-        .flat_map(|dir| {
-            busbar_plugin_loader::list_plugin_files(dir)
-                .into_iter()
-                .map(move |f| dir.join(f))
-        })
-        .find_map(|p| {
-            let bytes = std::fs::read(&p).ok()?;
-            let wire =
-                busbar_plugin_loader::load_transport_from_bytes(&bytes, "probe", "transport")
-                    .ok()?;
-            Some((bytes, wire.key()))
-        });
+    let found = common::plugins::transport_cdylib();
     assert!(
         found.is_some() || std::env::var_os("CI").is_none(),
         "no in-tree kind: transport cdylib is built beside the binary under CI"
@@ -95,28 +80,7 @@ fn free_port() -> u16 {
 /// The transport `cdylib` packed as an UNSIGNED `kind: transport` tarball (the config opts into
 /// unsigned plugins, as the CLI fixtures do).
 fn drop_in(dir: &Path, lib: &[u8]) {
-    let m = busbar_plugin_loader::sign::Manifest {
-        name: "dropped-wire".into(),
-        alias: "dropped-wire".into(),
-        kind: "transport".into(),
-        version: "1.6.0".into(),
-        publisher: "acme".into(),
-        abi_version: *busbar_plugin_loader::supported_abi("transport")
-            .iter()
-            .max()
-            .expect("a transport abi"),
-        sha256: busbar_plugin_loader::sign::sha256_hex(lib),
-        signature: String::new(),
-        description: String::new(),
-        homepage: String::new(),
-        license: String::new(),
-        needs: Default::default(),
-        settings_schema: None,
-        schema_derived: false,
-        host: None,
-        declares: Default::default(),
-    };
-    let bytes = busbar_plugin_loader::tarball::package(&m, "lib.so", lib).unwrap();
+    let bytes = common::plugins::pack("transport", "dropped-wire", lib, "acme");
     std::fs::write(dir.join("plugins").join("dropped-wire.tar.gz"), bytes).unwrap();
 }
 

@@ -16,6 +16,9 @@
 //! Each test gets an isolated temp workspace (its own config/providers/plugins), so no test shares
 //! or mutates process-global state.
 
+mod common;
+
+use common::plugins;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -109,29 +112,9 @@ fn run_busbar(dir: &Path, args: &[&str]) -> (i32, String, String) {
 
 /// An UNSIGNED (structurally valid) plugin tarball written into the fixture's plugins dir.
 fn write_tarball(dir: &Path, file: &str, name: &str, alias: &str, lib: &[u8]) {
-    let m = busbar_plugin_loader::sign::Manifest {
-        name: name.into(),
-        alias: alias.into(),
-        kind: "store".into(),
-        version: "1.5.0".into(),
-        publisher: "acme".into(),
-        abi_version: *busbar_plugin_loader::supported_abi("store")
-            .iter()
-            .max()
-            .expect("store abi"),
-        sha256: busbar_plugin_loader::sign::sha256_hex(lib),
-        signature: String::new(),
-        description: String::new(),
-        homepage: String::new(),
-        license: String::new(),
-        needs: Default::default(),
-        settings_schema: None,
-        schema_derived: false,
-        host: None,
-        declares: Default::default(),
-    };
-    let bytes = busbar_plugin_loader::tarball::package(&m, "lib.so", lib).unwrap();
-    std::fs::write(dir.join("plugins").join(file), bytes).unwrap();
+    let mut m = plugins::manifest("store", name, "acme");
+    m.alias = alias.into();
+    std::fs::write(dir.join("plugins").join(file), plugins::seal(m, lib)).unwrap();
 }
 
 /// The plugins block pointing at this fixture's dir. Single-quoted: a double-quoted YAML scalar
@@ -287,28 +270,10 @@ fn validate_fails_on_invalid_tarball_in_enabled_dir() {
 #[test]
 fn validate_fails_on_sha_mismatch() {
     let dir = fixture_dir("sha");
-    let m = busbar_plugin_loader::sign::Manifest {
-        name: "acme-store-x".into(),
-        alias: "x".into(),
-        kind: "store".into(),
-        version: "1.5.0".into(),
-        publisher: "acme".into(),
-        abi_version: *busbar_plugin_loader::supported_abi("store")
-            .iter()
-            .max()
-            .expect("store abi"),
-        sha256: busbar_plugin_loader::sign::sha256_hex(b"OTHER bytes"),
-        signature: String::new(),
-        description: String::new(),
-        homepage: String::new(),
-        license: String::new(),
-        needs: Default::default(),
-        settings_schema: None,
-        schema_derived: false,
-        host: None,
-        declares: Default::default(),
-    };
-    let bytes = busbar_plugin_loader::tarball::package(&m, "lib.so", b"real bytes").unwrap();
+    let mut m = plugins::manifest("store", "acme-store-x", "acme");
+    m.alias = "x".into();
+    m.sha256 = plugins::sha256(b"OTHER bytes");
+    let bytes = plugins::package(&m, b"real bytes");
     std::fs::write(dir.join("plugins/x.tar.gz"), bytes).unwrap();
     write_configs(&dir, &plugins_block(&dir, true, false));
     let (code, _stdout, stderr) = run_busbar(&dir, &["--validate"]);
@@ -605,28 +570,9 @@ fn validate_fails_when_a_plugin_is_referenced_but_plugins_are_disabled() {
 #[test]
 fn validate_fails_when_store_module_resolves_to_a_non_store_plugin_kind() {
     let dir = fixture_dir("wrongkind");
-    let m = busbar_plugin_loader::sign::Manifest {
-        name: "acme-hook-x".into(),
-        alias: "x".into(),
-        kind: "hook".into(),
-        version: "1.5.0".into(),
-        publisher: "acme".into(),
-        abi_version: *busbar_plugin_loader::supported_abi("hook")
-            .iter()
-            .max()
-            .expect("hook abi"),
-        sha256: busbar_plugin_loader::sign::sha256_hex(b"real bytes"),
-        signature: String::new(),
-        description: String::new(),
-        homepage: String::new(),
-        license: String::new(),
-        needs: Default::default(),
-        settings_schema: None,
-        schema_derived: false,
-        host: None,
-        declares: Default::default(),
-    };
-    let bytes = busbar_plugin_loader::tarball::package(&m, "lib.so", b"real bytes").unwrap();
+    let mut m = plugins::manifest("hook", "acme-hook-x", "acme");
+    m.alias = "x".into();
+    let bytes = plugins::seal(m, b"real bytes");
     std::fs::write(dir.join("plugins/x.tar.gz"), bytes).unwrap();
     // store.module: "x" resolves by ALIAS to the hook plugin above, not any store plugin.
     write_configs(

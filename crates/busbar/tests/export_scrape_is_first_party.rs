@@ -38,26 +38,7 @@ const THIRD_PARTY: &str = "tp-metrics";
 /// target directory this test binary lives in (uplifted or under `deps`, newest first). Under CI a
 /// missing artifact is a failure, never a skip.
 fn metrics_sink_cdylib() -> Option<Vec<u8>> {
-    let exe = PathBuf::from(env!("CARGO_BIN_EXE_busbar"));
-    let profile = exe.parent()?;
-    let mut candidates: Vec<(std::time::SystemTime, PathBuf)> =
-        [profile.to_path_buf(), profile.join("deps")]
-            .iter()
-            .flat_map(|dir| {
-                busbar_plugin_loader::list_plugin_files(dir)
-                    .into_iter()
-                    .map(move |f| dir.join(f))
-            })
-            .filter_map(|p| Some((std::fs::metadata(&p).ok()?.modified().ok()?, p)))
-            .collect();
-    candidates.sort_by_key(|(mtime, _)| std::cmp::Reverse(*mtime));
-    let metrics = [busbar_plugin_loader::ExportStream::Metrics];
-    let found = candidates.into_iter().find_map(|(_, p)| {
-        let bytes = std::fs::read(&p).ok()?;
-        let sink =
-            busbar_plugin_loader::load_export_from_bytes(&bytes, "{}", "probe", "export").ok()?;
-        (sink.streams() == metrics).then_some(bytes)
-    });
+    let found = common::plugins::metrics_sink_cdylib();
     assert!(
         found.is_some() || std::env::var_os("CI").is_none(),
         "no in-tree metrics-stream export cdylib is built under CI; refusing to skip #65's control"
@@ -88,28 +69,7 @@ fn free_port() -> u16 {
 
 /// `lib` packed UNSIGNED as a third-party `kind: export` tarball.
 fn write_third_party(dir: &Path, lib: &[u8]) {
-    let m = busbar_plugin_loader::sign::Manifest {
-        name: THIRD_PARTY.into(),
-        alias: THIRD_PARTY.into(),
-        kind: "export".into(),
-        version: "1.5.0".into(),
-        publisher: "acme".into(),
-        abi_version: *busbar_plugin_loader::supported_abi("export")
-            .iter()
-            .max()
-            .expect("export abi"),
-        sha256: busbar_plugin_loader::sign::sha256_hex(lib),
-        signature: String::new(),
-        description: String::new(),
-        homepage: String::new(),
-        license: String::new(),
-        needs: Default::default(),
-        settings_schema: None,
-        schema_derived: false,
-        host: None,
-        declares: Default::default(),
-    };
-    let bytes = busbar_plugin_loader::tarball::package(&m, "lib.so", lib).unwrap();
+    let bytes = common::plugins::pack("export", THIRD_PARTY, lib, "acme");
     std::fs::write(dir.join("plugins").join("tp.tar.gz"), bytes).unwrap();
 }
 

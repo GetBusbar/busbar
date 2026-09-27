@@ -158,61 +158,13 @@ fn record_skip(reason: &str) {
 /// a skip locally, a hard failure under CI, the same posture busbar-kernel's
 /// `auth/tests/plugin_chain_tests.rs` takes for the same artifact.
 fn install_auth_plugin(dir: &Path) -> bool {
-    let candidate = (|| {
-        let exe = std::env::current_exe().ok()?;
-        let profile_dir = exe.parent()?.parent()?;
-        let snake = "busbar_auth_oidc_plugin";
-        let file = busbar_plugin_loader::plugin_library_filename(snake);
-        let (prefix, suffix) = file.split_once(snake)?;
-        let is_lib = |f: &str| {
-            f.strip_prefix(prefix)
-                .and_then(|f| f.strip_suffix(suffix))
-                .and_then(|f| f.strip_prefix(snake))
-                .is_some_and(|stem| {
-                    stem.is_empty()
-                        || stem.strip_prefix('-').is_some_and(|h| {
-                            !h.is_empty() && h.bytes().all(|b| b.is_ascii_hexdigit())
-                        })
-                })
-        };
-        let in_deps = std::fs::read_dir(profile_dir.join("deps"))
-            .into_iter()
-            .flatten()
-            .filter_map(|e| e.ok().map(|e| e.path()))
-            .filter(|p| p.file_name().and_then(|f| f.to_str()).is_some_and(is_lib));
-        std::iter::once(profile_dir.join(&file))
-            .chain(in_deps)
-            .filter_map(|p| Some((std::fs::metadata(&p).ok()?.modified().ok()?, p)))
-            .max()
-            .map(|(_, p)| p)
-    })();
-    let Some(path) = candidate else {
+    let Some(lib) = common::plugins::cdylib("busbar_auth_oidc_plugin") else {
         record_skip("auth-oidc plugin cdylib not built (cargo test -p busbar builds it)");
         return false;
     };
-    let lib = std::fs::read(&path).expect("read the auth-oidc cdylib");
-    let m = busbar_plugin_loader::sign::Manifest {
-        name: "e2e-idp-module".into(),
-        alias: "e2e-idp".into(),
-        kind: "auth".into(),
-        version: "1.6.0".into(),
-        publisher: "e2e".into(),
-        abi_version: *busbar_plugin_loader::supported_abi("auth")
-            .iter()
-            .max()
-            .expect("auth abi"),
-        sha256: busbar_plugin_loader::sign::sha256_hex(&lib),
-        signature: String::new(),
-        description: String::new(),
-        homepage: String::new(),
-        license: String::new(),
-        needs: Default::default(),
-        settings_schema: None,
-        schema_derived: false,
-        host: None,
-        declares: Default::default(),
-    };
-    let bytes = busbar_plugin_loader::tarball::package(&m, "lib.so", &lib).unwrap();
+    let mut m = common::plugins::manifest("auth", "e2e-idp-module", "e2e");
+    m.alias = "e2e-idp".into();
+    let bytes = common::plugins::seal(m, &lib);
     std::fs::write(dir.join("plugins").join("e2e-idp-module.tar.gz"), bytes).unwrap();
     true
 }
