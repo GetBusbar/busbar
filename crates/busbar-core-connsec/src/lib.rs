@@ -13,7 +13,9 @@
 //! A transport is handed nothing but that wrap. It calls the ONE operation the trait exposes —
 //! `wrap(stream) -> securedstream` — and never sees a rustls type or a key byte: the whole point of
 //! the contract-side trait is that this crate is the only place in the tree that names
-//! `rustls::ServerConfig` for an INBOUND (listener) binding. A future connection-security variant
+//! `rustls::ServerConfig` for an INBOUND (listener) binding, and the [`client`] module is the
+//! OUTBOUND half: the host's outbound trust (extra anchors, an SPKI pin, a client identity) applied
+//! to a dialled stream through the same opaque wrap. A future connection-security variant
 //! (mTLS with a different verifier shape, a PQ hybrid signature scheme, ...) is a change to this
 //! crate alone.
 //!
@@ -44,6 +46,8 @@
 #![deny(missing_docs)]
 
 use std::sync::Arc;
+
+pub mod client;
 
 use busbar_contract::transport::wire::{ConnectionSecurity, RawIo, SecuredIoFut};
 use busbar_kernel::config::secret::SecretResolver;

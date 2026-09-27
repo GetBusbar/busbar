@@ -51,6 +51,11 @@ futures = { workspace = true }
 # to the tokio-io types `tokio_rustls::TlsAcceptor` requires — the same compat seam the kernel's
 # accept loop (`busbar_kernel::tls::serve_one`) crosses on the other side of `wrap`.
 tokio-util = { workspace = true }
+# The OUTBOUND half (`client`): the platform trust anchors every dialled connection starts from, and
+# the SHA-256 an SPKI pin is compared under. Both moved here with the outbound trust itself, which a
+# transport no longer holds (TRANSPORT-STACK: TLS is core's connection security).
+webpki-roots = { workspace = true }
+sha2 = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "io-util"] }

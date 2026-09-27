@@ -29,7 +29,6 @@ futures = { workspace = true }
 tokio = { workspace = true, features = ["net", "rt", "sync", "io-util", "time", "macros"] }
 tokio-rustls = { workspace = true }
 rustls = { workspace = true }
-rustls-pki-types = { workspace = true }
 hyper = { workspace = true }
 hyper-util = { workspace = true }
 hyper-rustls = { workspace = true }
@@ -37,7 +36,6 @@ http-body-util = { workspace = true }
 http = { workspace = true }
 bytes = { workspace = true }
 webpki-roots = { workspace = true }
-sha2 = { workspace = true }
 # THE gRPC MODULE (`src/grpc/`, folded in from `busbar-transport-grpc`).
 # `tonic` here is used ONLY for its codec/status/streaming machinery (`tonic::codec::Codec`,
 # `tonic::Status`, `tonic::server::Grpc`, `tonic::client::Grpc`) — the gRPC WIRE FRAMING (the
