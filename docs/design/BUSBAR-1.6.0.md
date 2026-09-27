@@ -276,6 +276,25 @@ Every kind is configured. The root keys fall into three classes — the 1.5.5 ro
 `role_bindings`, `signing_key`, `key_ttl`), `groups`, `rate_card`, `per_request_fee`, `security`,
 `limits`, `health`, `routing`, `advanced`, `plugins` (the loader policy).
 
+**THE KIND → VERB LIST.** The kernel may know kinds, so it holds this list — one `kind: verb` line
+per kind, in exactly one place in code, `Kind::verb()` beside the closed `Kind` enum
+(`busbar-contract/src/plugin.rs`). Every config reader, `--validate`, `busbar migrate` and the
+selection step (Law 7) reads the root keys from it; no other code spells a kind's root key.
+
+```
+store:     store
+secret:    secrets
+auth:      identity-providers
+hook:      hooks
+export:    export
+transport: providers
+plane:     (declared — each plane plugin declares its own verb(s) in its Statement)
+```
+
+The plane line is the one entry the kernel cannot fill, because a plane verb is instance knowledge
+(`pools`, `tools`, …) and the kernel names no instance: it reads plane verbs from the loaded plane
+plugins' Statements. A new kind is a kernel change; a new plane is not.
+
 **(B) One root key per non-plane kind** — define once, reference by name. The key belongs to the
 KIND, never to a plugin: no store, secret, auth, hook, export or transport plugin gets a root key of
 its own. Each entry picks its plugin — by `module:`, or for transport by the URL scheme it claims.
