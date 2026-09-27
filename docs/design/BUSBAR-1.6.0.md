@@ -578,9 +578,13 @@ Each has a row in `1.6.0-QUESTIONS.md`; the recommended answer is the default pa
   overwrites. Recommended: sign it as an accepted difference.
 - **mysql-ldap-stream** — mysql 26 and ldap3 cannot take a caller-supplied stream. Recommended: patch
   the drivers; the fallback at cut is to ship without them until patched.
-- **ABI-collapse** — eleven ABI version constants, against the 2026-09-19 ruling that each constant is
-  its 1.5.5 baseline + 1 with a loader window that still admits published 1.5.5 plugins.
-  Recommended: one ABI number going forward, with a 1.5.5-compatibility window in the loader.
+- **ABI versions — RULED by the owner 2026-09-27:** *"ABI version should be 1 + what is in 1.5.5. if
+  we changed it 32x in 1.6.0 thats not ABI + 32. Use what went to prod in 1.5.5 + 1 for all ABIs."*
+  Every ABI version constant ships as its v1.5.5 value + 1 (a constant new in 1.6.0 ships as 1);
+  pre-release changes never bump a version — appends during development are guarded by the layout
+  golden and append-compat tests, not by the number. Each kind's loader window admits its v1.5.5 value
+  and the +1 value, so published 1.5.5 plugins keep loading (the 2026-09-19 pairing). The constants
+  stay per ABI; collapsing them to one number is not the ruling.
 - **cloud-metadata** — cloud metadata endpoints on `operator-infrastructure`. Recommended: refuse them,
   as an accepted difference.
 - **norm-rules-accepted-difference** — #79's PostConfigApply entry needs the `norm.rules` class and a
