@@ -55,14 +55,20 @@ fn methods(trait_block: &str) -> BTreeSet<String> {
         .collect()
 }
 
-/// The slots a slot-table block declares (`pub name: Option<...>`); the sized header is not a slot.
+/// The slots a slot-table list declares (`name: Alias = fn(...)`, the one declarative list the
+/// table and its fn-pointer types are generated from); the sized header is not a slot.
 fn slots(table_block: &str) -> BTreeSet<String> {
     table_block
         .lines()
         .map(str::trim)
-        .filter_map(|l| l.strip_prefix("pub "))
-        .filter_map(|rest| rest.split_once(':'))
-        .filter(|(_, ty)| ty.trim_start().starts_with("Option<"))
+        .filter(|l| !l.starts_with("//"))
+        .filter_map(|l| l.split_once(':'))
+        .filter(|(name, ty)| {
+            !name.contains(' ')
+                && ty
+                    .split_once('=')
+                    .is_some_and(|(_, f)| f.trim().starts_with("fn("))
+        })
         .map(|(name, _)| name.trim().to_string())
         .collect()
 }
@@ -71,7 +77,10 @@ fn slots(table_block: &str) -> BTreeSet<String> {
 /// slot is a method's.
 fn covered(traits: &str, trait_name: &str, abi: &str, table_name: &str) -> Result<usize, String> {
     let methods = methods(block(traits, &format!("pub trait {trait_name}: "))?);
-    let slots = slots(block(abi, &format!("pub struct {table_name} {{"))?);
+    let slots = slots(block(
+        abi,
+        &format!("pub struct {table_name} lowers {trait_name} {{"),
+    )?);
     let unlowered: Vec<_> = methods.difference(&slots).collect();
     let unexplained: Vec<_> = slots.difference(&methods).collect();
     if methods.is_empty() {
@@ -124,8 +133,8 @@ fn a_method_without_a_slot_is_red() {
     );
     // And the other direction: a slot no method explains.
     let widened = abi.replacen(
-        "    pub arrival: Option<CarrierArrivalFn>,",
-        "    pub arrival: Option<CarrierArrivalFn>,\n    pub poll_peek: Option<CarrierArrivalFn>,",
+        "pub struct CarrierSlots lowers Carrier {",
+        "pub struct CarrierSlots lowers Carrier {\n    poll_peek: CarrierPeekFn = fn(state: *mut c_void);",
         1,
     );
     assert_ne!(widened, abi, "the plant landed");

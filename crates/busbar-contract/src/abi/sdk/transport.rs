@@ -262,63 +262,61 @@ unsafe fn set<T>(out: *mut T, v: T) -> Result<(), WireOutcome> {
     Ok(())
 }
 
-// ── the carrier's slots ──────────────────────────────────────────────────────────────────────────
-
-/// The carrier slot table for `T`: one slot per [`Carrier`] method.
-#[must_use]
-pub const fn carrier_slots<T: Carrier>() -> CarrierSlots {
-    CarrierSlots {
-        size: core::mem::size_of::<CarrierSlots>() as u32,
-        _reserved: 0,
-        listen: Some(listen::<T>),
-        poll_accept: Some(poll_accept::<T>),
-        dial: Some(dial::<T>),
-        poll_read: Some(poll_read::<T>),
-        poll_write: Some(poll_write::<T>),
-        poll_flush: Some(poll_flush::<T>),
-        poll_close: Some(poll_close::<T>),
-        arrival: Some(arrival::<T>),
-    }
+/// THE BRIDGES, from one list per role (the TRANSPORT-STACK shrink): the role's slot table for `T`
+/// and one generic `extern "C-unwind"` slot per method, each running the slot discipline — its panics
+/// caught ([`guarded`]), the built transport found behind `state` — around a body that is the
+/// method's own translation. Every body runs with the host's promise for the call: the state `init`
+/// produced, and live ranges, callback tables and out-slots.
+macro_rules! bridges {
+    (
+        $(#[$doc:meta])*
+        pub const fn $table_fn:ident -> $table:ident for $trait:ident {
+            $( fn $slot:ident($t:ident; $($arg:ident: $ty:ty),* $(,)?) $body:block )*
+        }
+    ) => {
+        $(#[$doc])*
+        #[must_use]
+        pub const fn $table_fn<T: $trait>() -> $table {
+            $table {
+                size: core::mem::size_of::<$table>() as u32,
+                _reserved: 0,
+                $( $slot: Some($slot::<T>), )*
+            }
+        }
+        $(
+            extern "C-unwind" fn $slot<T: $trait>(
+                state: *mut c_void,
+                $($arg: $ty),*
+            ) -> RawWireOutcome {
+                guarded(|| {
+                    // SAFETY: the host passes the state `init` produced and, for the call, its own
+                    // live ranges, callback tables and out-slots (the module's slot discipline).
+                    unsafe {
+                        let $t = lowered::<T>(state)?;
+                        $body
+                    }
+                })
+            }
+        )*
+    };
 }
 
-extern "C-unwind" fn listen<T: Carrier>(
-    state: *mut c_void,
-    bind: *const u8,
-    bind_len: usize,
-    addr_buf: *mut u8,
-    addr_cap: usize,
-    out_addr_len: *mut usize,
-    out_listener: *mut u64,
-) -> RawWireOutcome {
-    guarded(|| {
-        // SAFETY: the host passes the state `init` produced and its own live ranges and slots.
-        unsafe {
-            let (t, bind) = (lowered::<T>(state)?, text(bind, bind_len)?);
-            let (id, addr) = t.inner.listen(bind).map_err(WireOutcome::of_error)?;
+// ── the carrier's slots ──────────────────────────────────────────────────────────────────────────
+
+bridges! {
+    /// The carrier slot table for `T`: one slot per [`Carrier`] method.
+    pub const fn carrier_slots -> CarrierSlots for Carrier {
+        fn listen(t; bind: *const u8, bind_len: usize, addr_buf: *mut u8, addr_cap: usize,
+            out_addr_len: *mut usize, out_listener: *mut u64) {
+            let (id, addr) = t.inner.listen(text(bind, bind_len)?).map_err(WireOutcome::of_error)?;
             put(&addr, addr_buf, addr_cap, out_addr_len)?;
             set(out_listener, id)
         }
-    })
-}
-
-extern "C-unwind" fn poll_accept<T: Carrier>(
-    state: *mut c_void,
-    listener: u64,
-    token: u64,
-    peer_buf: *mut u8,
-    peer_cap: usize,
-    out_peer_len: *mut usize,
-    out_conn: *mut u64,
-) -> RawWireOutcome {
-    guarded(|| {
-        // SAFETY: the host passes the state `init` produced and its own live ranges and slots.
-        unsafe {
-            let t = lowered::<T>(state)?;
+        fn poll_accept(t; listener: u64, token: u64, peer_buf: *mut u8, peer_cap: usize,
+            out_peer_len: *mut usize, out_conn: *mut u64) {
             let waker = t.waker(listener, ACCEPT, token);
-            let (conn, peer) = polled(
-                t.inner
-                    .poll_accept(listener, &mut Context::from_waker(&waker)),
-            )?;
+            let (conn, peer) =
+                polled(t.inner.poll_accept(listener, &mut Context::from_waker(&waker)))?;
             if let Err(e) = put(&peer, peer_buf, peer_cap, out_peer_len) {
                 let _ = t.inner.poll_close(
                     conn,
@@ -329,22 +327,11 @@ extern "C-unwind" fn poll_accept<T: Carrier>(
             }
             set(out_conn, conn)
         }
-    })
-}
-
-extern "C-unwind" fn dial<T: Carrier>(
-    state: *mut c_void,
-    dest: *const WireDest,
-    out_conn: *mut u64,
-) -> RawWireOutcome {
-    guarded(|| {
-        if dest.is_null() {
-            return Err(WireOutcome::Fault);
-        }
-        // SAFETY: the host passes the state `init` produced and a live `WireDest` whose ranges live
-        // for the call; the sized struct is read only as far as it attests.
-        unsafe {
-            let t = lowered::<T>(state)?;
+        fn dial(t; dest: *const WireDest, out_conn: *mut u64) {
+            if dest.is_null() {
+                return Err(WireOutcome::Fault);
+            }
+            // The sized struct is read only as far as it attests.
             let size = core::ptr::read_unaligned(core::ptr::addr_of!((*dest).size)) as usize;
             if size < core::mem::size_of::<WireDest>() {
                 return Err(WireOutcome::Fault);
@@ -357,21 +344,53 @@ extern "C-unwind" fn dial<T: Carrier>(
                 }
                 1 => {
                     let program = decl_text(d.program)?.ok_or(WireOutcome::AddressRefused)?;
-                    let args = strs(d.args)?;
-                    let env = pairs(d.env, d.env_len)?;
-                    let args: Vec<&str> = args;
-                    t.inner.dial(&Dest::Program {
-                        program,
-                        args: &args,
-                        env: &env,
-                    })
+                    let (args, env) = (strs(d.args)?, pairs(d.env, d.env_len)?);
+                    t.inner.dial(&Dest::Program { program, args: &args, env: &env })
                 }
                 _ => return Err(WireOutcome::AddressRefused),
             }
             .map_err(WireOutcome::of_error)?;
             set(out_conn, conn)
         }
-    })
+        fn poll_read(t; conn: u64, token: u64, buf: *mut u8, buf_cap: usize, out_read: *mut usize) {
+            // A zero-capacity read could only answer `0`, which is the end of the stream.
+            if buf.is_null() || buf_cap == 0 {
+                return Err(WireOutcome::Fault);
+            }
+            let into = std::slice::from_raw_parts_mut(buf, buf_cap);
+            let waker = t.waker(conn, READ, token);
+            let n = polled(t.inner.poll_read(conn, &mut Context::from_waker(&waker), into))?;
+            if n > buf_cap {
+                return Err(WireOutcome::Fault);
+            }
+            set(out_read, n)
+        }
+        fn poll_write(t; conn: u64, token: u64, buf: *const u8, len: usize,
+            out_written: *mut usize) {
+            let (offered, waker) = (bytes(buf, len)?, t.waker(conn, WRITE, token));
+            let n = polled(t.inner.poll_write(conn, &mut Context::from_waker(&waker), offered))?;
+            set(out_written, n)
+        }
+        fn poll_flush(t; conn: u64, token: u64) {
+            let waker = t.waker(conn, WRITE, token);
+            polled(t.inner.poll_flush(conn, &mut Context::from_waker(&waker)))
+        }
+        fn poll_close(t; conn: u64, token: u64, reason: u8) {
+            let reason = code::close_reason_of(reason).ok_or(WireOutcome::Fault)?;
+            let waker = t.waker(conn, CLOSE, token);
+            let closed = polled(t.inner.poll_close(conn, &mut Context::from_waker(&waker), reason));
+            if closed.is_ok() {
+                t.forget(conn);
+            }
+            closed
+        }
+        fn arrival(t; conn: u64, peer_buf: *mut u8, peer_cap: usize, out_peer_len: *mut usize,
+            out_local_port: *mut u16) {
+            let facts = t.inner.arrival(conn).ok_or(WireOutcome::Closed)?;
+            put(&facts.peer, peer_buf, peer_cap, out_peer_len)?;
+            set(out_local_port, facts.local_port)
+        }
+    }
 }
 
 /// A borrowed string list.
@@ -419,129 +438,94 @@ unsafe fn pairs<'a>(
         .collect()
 }
 
-extern "C-unwind" fn poll_read<T: Carrier>(
-    state: *mut c_void,
-    conn: u64,
-    token: u64,
-    buf: *mut u8,
-    buf_cap: usize,
-    out_read: *mut usize,
-) -> RawWireOutcome {
-    guarded(|| {
-        // A zero-capacity read could only answer `0`, which is the end of the stream.
-        if buf.is_null() || buf_cap == 0 {
-            return Err(WireOutcome::Fault);
-        }
-        // SAFETY: the host passes the state `init` produced and its live writable range.
-        unsafe {
-            let t = lowered::<T>(state)?;
-            let into = std::slice::from_raw_parts_mut(buf, buf_cap);
-            let waker = t.waker(conn, READ, token);
-            let n = polled(
-                t.inner
-                    .poll_read(conn, &mut Context::from_waker(&waker), into),
-            )?;
-            if n > buf_cap {
-                return Err(WireOutcome::Fault);
-            }
-            set(out_read, n)
-        }
-    })
-}
-
-extern "C-unwind" fn poll_write<T: Carrier>(
-    state: *mut c_void,
-    conn: u64,
-    token: u64,
-    buf: *const u8,
-    len: usize,
-    out_written: *mut usize,
-) -> RawWireOutcome {
-    guarded(|| {
-        // SAFETY: the host passes the state `init` produced and its live range.
-        unsafe {
-            let (t, offered) = (lowered::<T>(state)?, bytes(buf, len)?);
-            let waker = t.waker(conn, WRITE, token);
-            let n = polled(
-                t.inner
-                    .poll_write(conn, &mut Context::from_waker(&waker), offered),
-            )?;
-            set(out_written, n)
-        }
-    })
-}
-
-extern "C-unwind" fn poll_flush<T: Carrier>(
-    state: *mut c_void,
-    conn: u64,
-    token: u64,
-) -> RawWireOutcome {
-    guarded(|| {
-        // SAFETY: the host passes the state `init` produced.
-        let t = unsafe { lowered::<T>(state)? };
-        let waker = t.waker(conn, WRITE, token);
-        polled(t.inner.poll_flush(conn, &mut Context::from_waker(&waker)))
-    })
-}
-
-extern "C-unwind" fn poll_close<T: Carrier>(
-    state: *mut c_void,
-    conn: u64,
-    token: u64,
-    reason: u8,
-) -> RawWireOutcome {
-    guarded(|| {
-        // SAFETY: the host passes the state `init` produced.
-        let t = unsafe { lowered::<T>(state)? };
-        let reason = code::close_reason_of(reason).ok_or(WireOutcome::Fault)?;
-        let waker = t.waker(conn, CLOSE, token);
-        let closed = polled(
-            t.inner
-                .poll_close(conn, &mut Context::from_waker(&waker), reason),
-        );
-        if closed.is_ok() {
-            t.forget(conn);
-        }
-        closed
-    })
-}
-
-extern "C-unwind" fn arrival<T: Carrier>(
-    state: *mut c_void,
-    conn: u64,
-    peer_buf: *mut u8,
-    peer_cap: usize,
-    out_peer_len: *mut usize,
-    out_local_port: *mut u16,
-) -> RawWireOutcome {
-    guarded(|| {
-        // SAFETY: the host passes the state `init` produced and its own live range and slots.
-        unsafe {
-            let t = lowered::<T>(state)?;
-            let facts = t.inner.arrival(conn).ok_or(WireOutcome::Closed)?;
-            put(&facts.peer, peer_buf, peer_cap, out_peer_len)?;
-            set(out_local_port, facts.local_port)
-        }
-    })
-}
-
 // ── the framer's slots ───────────────────────────────────────────────────────────────────────────
 
-/// The framer slot table for `T`: one slot per [`Framer`] method.
-#[must_use]
-pub const fn framer_slots<T: Framer>() -> FramerSlots {
-    FramerSlots {
-        size: core::mem::size_of::<FramerSlots>() as u32,
-        _reserved: 0,
-        locate: Some(locate::<T>),
-        open: Some(open::<T>),
-        ingest: Some(ingest::<T>),
-        emit: Some(emit::<T>),
-        encode_envelope: Some(encode_envelope::<T>),
-        refusal: Some(refusal::<T>),
-        close: Some(close::<T>),
-        detach: Some(detach::<T>),
-        adopt: Some(adopt::<T>),
+bridges! {
+    /// The framer slot table for `T`: one slot per [`Framer`] method.
+    pub const fn framer_slots -> FramerSlots for Framer {
+        fn locate(t; target: *const u8, target_len: usize, auth_buf: *mut u8, auth_cap: usize,
+            out_auth_len: *mut usize, name_buf: *mut u8, name_cap: usize,
+            out_name_len: *mut usize, out_secure: *mut u8) {
+            let located = t.inner.locate(text(target, target_len)?).map_err(WireOutcome::of_error)?;
+            put(&located.authority, auth_buf, auth_cap, out_auth_len)?;
+            match &located.server_name {
+                Some(name) => put(name, name_buf, name_cap, out_name_len)?,
+                None => set(out_name_len, usize::MAX)?,
+            }
+            set(out_secure, u8::from(located.secure))
+        }
+        fn open(t; side: u8, target: *const u8, target_len: usize, facts: *const WireConnFacts,
+            out: *const WireFramerOut, out_state: *mut u64) {
+            let side = code::side_of(side).ok_or(WireOutcome::Fault)?;
+            let (target, facts, mut out) =
+                (text(target, target_len)?, facts_of(facts)?, host_out(out)?);
+            let framing =
+                t.inner.open(side, target, &facts, &mut out).map_err(WireOutcome::of_error)?;
+            set(out_state, framing)
+        }
+        fn ingest(t; framing: u64, buf: *const u8, len: usize, end: u8,
+            out: *const WireFramerOut) {
+            let (taken, mut out) = (bytes(buf, len)?, host_out(out)?);
+            t.inner.ingest(framing, taken, end == 1, &mut out).map_err(WireOutcome::of_error)
+        }
+        fn emit(t; framing: u64, stream: u64, buf: *const u8, len: usize, end_of_frame: u8,
+            out: *const WireFramerOut) {
+            let (given, mut out) = (bytes(buf, len)?, host_out(out)?);
+            t.inner
+                .emit(framing, StreamId(stream), given, end_of_frame == 1, &mut out)
+                .map_err(WireOutcome::of_error)
+        }
+        fn encode_envelope(t; fields: *const WireField, fields_len: usize, body: *const u8,
+            body_len: usize, out: *const WireBytesOut) {
+            if out.is_null() || (fields.is_null() && fields_len != 0) {
+                return Err(WireOutcome::Fault);
+            }
+            let body = bytes(body, body_len)?;
+            let owned: Vec<(&str, &[u8])> = (0..fields_len)
+                .map(|i| {
+                    let f = core::ptr::read_unaligned(fields.add(i));
+                    let name = decl_text(f.name)?.ok_or(WireOutcome::Fault)?;
+                    let value = if f.value.ptr.is_null() {
+                        &[][..]
+                    } else {
+                        bytes(f.value.ptr, f.value.len)?
+                    };
+                    Ok((name, value))
+                })
+                .collect::<Result<_, WireOutcome>>()?;
+            t.inner
+                .encode_envelope(&owned, body, &mut HostBytes(*out))
+                .map_err(WireOutcome::of_encode)
+        }
+        fn refusal(t; framing: u64, has_stream: u8, stream: u64, buf: *const u8, len: usize,
+            out: *const WireFramerOut) {
+            let (given, mut out) = (bytes(buf, len)?, host_out(out)?);
+            let stream = (has_stream == 1).then_some(StreamId(stream));
+            t.inner.refusal(framing, stream, given, &mut out).map_err(WireOutcome::of_error)
+        }
+        fn close(t; framing: u64, reason: u8, out: *const WireFramerOut) {
+            let (mut out, reason) =
+                (host_out(out)?, code::close_reason_of(reason).ok_or(WireOutcome::Fault)?);
+            t.inner.close(framing, reason, &mut out);
+            Ok(())
+        }
+        fn detach(t; framing: u64, out: *const WireBytesOut) {
+            if out.is_null() {
+                return Err(WireOutcome::Fault);
+            }
+            t.inner.detach(framing, &mut HostBytes(*out)).map_err(WireOutcome::of_error)
+        }
+        fn adopt(t; side: u8, facts: *const WireConnFacts, leftover: *const u8,
+            leftover_len: usize, out: *const WireFramerOut, out_state: *mut u64) {
+            let side = code::side_of(side).ok_or(WireOutcome::Fault)?;
+            let (facts, leftover, mut out) =
+                (facts_of(facts)?, bytes(leftover, leftover_len)?, host_out(out)?);
+            let framing = t
+                .inner
+                .adopt(side, &facts, leftover, &mut out)
+                .map_err(WireOutcome::of_error)?;
+            set(out_state, framing)
+        }
     }
 }
 
@@ -648,225 +632,6 @@ unsafe fn facts_of(facts: *const WireConnFacts) -> Result<ConnFacts, WireOutcome
             claim: owned(f.claim)?,
         })
     }
-}
-
-extern "C-unwind" fn locate<T: Framer>(
-    state: *mut c_void,
-    target: *const u8,
-    target_len: usize,
-    auth_buf: *mut u8,
-    auth_cap: usize,
-    out_auth_len: *mut usize,
-    name_buf: *mut u8,
-    name_cap: usize,
-    out_name_len: *mut usize,
-    out_secure: *mut u8,
-) -> RawWireOutcome {
-    guarded(|| {
-        // SAFETY: the host passes the state `init` produced and its own live ranges and slots.
-        unsafe {
-            let (t, target) = (lowered::<T>(state)?, text(target, target_len)?);
-            let located = t.inner.locate(target).map_err(WireOutcome::of_error)?;
-            put(&located.authority, auth_buf, auth_cap, out_auth_len)?;
-            match &located.server_name {
-                Some(name) => put(name, name_buf, name_cap, out_name_len)?,
-                None => set(out_name_len, usize::MAX)?,
-            }
-            set(out_secure, u8::from(located.secure))
-        }
-    })
-}
-
-extern "C-unwind" fn open<T: Framer>(
-    state: *mut c_void,
-    side: u8,
-    target: *const u8,
-    target_len: usize,
-    facts: *const WireConnFacts,
-    out: *const WireFramerOut,
-    out_state: *mut u64,
-) -> RawWireOutcome {
-    guarded(|| {
-        // SAFETY: the host passes the state `init` produced and its own live ranges, table and slot.
-        unsafe {
-            let t = lowered::<T>(state)?;
-            let side = code::side_of(side).ok_or(WireOutcome::Fault)?;
-            let (target, facts, mut out) =
-                (text(target, target_len)?, facts_of(facts)?, host_out(out)?);
-            let framing = t
-                .inner
-                .open(side, target, &facts, &mut out)
-                .map_err(WireOutcome::of_error)?;
-            set(out_state, framing)
-        }
-    })
-}
-
-extern "C-unwind" fn ingest<T: Framer>(
-    state: *mut c_void,
-    framing: u64,
-    buf: *const u8,
-    len: usize,
-    end: u8,
-    out: *const WireFramerOut,
-) -> RawWireOutcome {
-    guarded(|| {
-        // SAFETY: the host passes the state `init` produced and its own live range and table.
-        unsafe {
-            let (t, taken, mut out) = (lowered::<T>(state)?, bytes(buf, len)?, host_out(out)?);
-            t.inner
-                .ingest(framing, taken, end == 1, &mut out)
-                .map_err(WireOutcome::of_error)
-        }
-    })
-}
-
-extern "C-unwind" fn emit<T: Framer>(
-    state: *mut c_void,
-    framing: u64,
-    stream: u64,
-    buf: *const u8,
-    len: usize,
-    end_of_frame: u8,
-    out: *const WireFramerOut,
-) -> RawWireOutcome {
-    guarded(|| {
-        // SAFETY: the host passes the state `init` produced and its own live range and table.
-        unsafe {
-            let (t, given, mut out) = (lowered::<T>(state)?, bytes(buf, len)?, host_out(out)?);
-            t.inner
-                .emit(
-                    framing,
-                    StreamId(stream),
-                    given,
-                    end_of_frame == 1,
-                    &mut out,
-                )
-                .map_err(WireOutcome::of_error)
-        }
-    })
-}
-
-extern "C-unwind" fn encode_envelope<T: Framer>(
-    state: *mut c_void,
-    fields: *const WireField,
-    fields_len: usize,
-    body: *const u8,
-    body_len: usize,
-    out: *const WireBytesOut,
-) -> RawWireOutcome {
-    guarded(|| {
-        if out.is_null() || (fields.is_null() && fields_len != 0) {
-            return Err(WireOutcome::Fault);
-        }
-        // SAFETY: the host passes the state `init` produced, `fields_len` live fields whose ranges
-        // live for the call, its body range and its callback table.
-        unsafe {
-            let (t, body) = (lowered::<T>(state)?, bytes(body, body_len)?);
-            let owned: Vec<(&str, &[u8])> = (0..fields_len)
-                .map(|i| {
-                    let f = core::ptr::read_unaligned(fields.add(i));
-                    let name = decl_text(f.name)?.ok_or(WireOutcome::Fault)?;
-                    let value = if f.value.ptr.is_null() {
-                        &[][..]
-                    } else {
-                        bytes(f.value.ptr, f.value.len)?
-                    };
-                    Ok((name, value))
-                })
-                .collect::<Result<_, WireOutcome>>()?;
-            let mut sink = HostBytes(*out);
-            t.inner
-                .encode_envelope(&owned, body, &mut sink)
-                .map_err(WireOutcome::of_encode)
-        }
-    })
-}
-
-extern "C-unwind" fn refusal<T: Framer>(
-    state: *mut c_void,
-    framing: u64,
-    has_stream: u8,
-    stream: u64,
-    buf: *const u8,
-    len: usize,
-    out: *const WireFramerOut,
-) -> RawWireOutcome {
-    guarded(|| {
-        // SAFETY: the host passes the state `init` produced and its own live range and table.
-        unsafe {
-            let (t, given, mut out) = (lowered::<T>(state)?, bytes(buf, len)?, host_out(out)?);
-            let stream = (has_stream == 1).then_some(StreamId(stream));
-            t.inner
-                .refusal(framing, stream, given, &mut out)
-                .map_err(WireOutcome::of_error)
-        }
-    })
-}
-
-extern "C-unwind" fn close<T: Framer>(
-    state: *mut c_void,
-    framing: u64,
-    reason: u8,
-    out: *const WireFramerOut,
-) -> RawWireOutcome {
-    guarded(|| {
-        // SAFETY: the host passes the state `init` produced and its own callback table.
-        unsafe {
-            let (t, mut out) = (lowered::<T>(state)?, host_out(out)?);
-            let reason = code::close_reason_of(reason).ok_or(WireOutcome::Fault)?;
-            t.inner.close(framing, reason, &mut out);
-            Ok(())
-        }
-    })
-}
-
-extern "C-unwind" fn detach<T: Framer>(
-    state: *mut c_void,
-    framing: u64,
-    out: *const WireBytesOut,
-) -> RawWireOutcome {
-    guarded(|| {
-        if out.is_null() {
-            return Err(WireOutcome::Fault);
-        }
-        // SAFETY: the host passes the state `init` produced and its own callback table.
-        unsafe {
-            let t = lowered::<T>(state)?;
-            let mut sink = HostBytes(*out);
-            t.inner
-                .detach(framing, &mut sink)
-                .map_err(WireOutcome::of_error)
-        }
-    })
-}
-
-extern "C-unwind" fn adopt<T: Framer>(
-    state: *mut c_void,
-    side: u8,
-    facts: *const WireConnFacts,
-    leftover: *const u8,
-    leftover_len: usize,
-    out: *const WireFramerOut,
-    out_state: *mut u64,
-) -> RawWireOutcome {
-    guarded(|| {
-        // SAFETY: the host passes the state `init` produced and its own live ranges, table and slot.
-        unsafe {
-            let t = lowered::<T>(state)?;
-            let side = code::side_of(side).ok_or(WireOutcome::Fault)?;
-            let (facts, leftover, mut out) = (
-                facts_of(facts)?,
-                bytes(leftover, leftover_len)?,
-                host_out(out)?,
-            );
-            let framing = t
-                .inner
-                .adopt(side, &facts, leftover, &mut out)
-                .map_err(WireOutcome::of_error)?;
-            set(out_state, framing)
-        }
-    })
 }
 
 // ── the decl ─────────────────────────────────────────────────────────────────────────────────────
