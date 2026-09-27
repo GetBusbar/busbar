@@ -1,0 +1,37 @@
+# RENDERED by `cargo xtask fleet render @@repo@@` from GetBusbar/busbar's plugins.yaml and
+# .github/fleet/ templates; `cargo xtask fleet check` is red on any edit here. Moves this repo's
+# busbar pin (busbar's plugin-repin.yml) when busbar dispatches `busbar-repin` or on demand; the
+# cut/skip decision is by commit, and the commit goes to dev only.
+name: repin
+
+on:
+  repository_dispatch:
+    types: [busbar-repin]
+  workflow_dispatch:
+    inputs:
+      busbar_sha:
+        description: "The busbar commit to pin (40 hex)"
+        required: true
+        type: string
+      busbar_version:
+        description: "The busbar version at that commit"
+        required: true
+        type: string
+      dry_run:
+        description: "Decide and repin in the runner; push nothing"
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  repin:
+    uses: GetBusbar/busbar/.github/workflows/plugin-repin.yml@@@pin@@
+    with:
+      busbar_sha: ${{ github.event.client_payload.sha || inputs.busbar_sha }}
+      busbar_version: ${{ github.event.client_payload.version || inputs.busbar_version }}
+      dry_run: ${{ inputs.dry_run == true }}
+    secrets:
+      FLEET_TOKEN: ${{ secrets.FLEET_TOKEN }}

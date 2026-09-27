@@ -1,0 +1,4 @@
+# RENDERED by `cargo xtask fleet render` from GetBusbar/busbar's plugins.yaml and .github/fleet/
+# templates. CI runs clippy with -D warnings (busbar's plugin-ci.yml); the MSRV clippy judges against
+# is the toolchain this repo builds with.
+msrv = "@@toolchain@@"

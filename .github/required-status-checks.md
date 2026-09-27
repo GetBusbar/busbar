@@ -110,11 +110,15 @@ there would be a red against a commit already being released.
   blocker.
 - **`qa-gate` `umbrella`** — the ~2h full promotion gate; runs via `workflow_run` after CI on the
   promotion branches, so it gates **promotion**, not each PR. Watch it on `dev→qa→main` promotions.
+- **`fleet check`** (`sched-fleet-check.yml`) — nightly and on dispatch: every plugin repo in
+  `plugins.yaml` against `cargo xtask fleet render` and the fleet policy. It judges OTHER repos, so
+  it is a fleet monitor, not a merge gate of this one; its red names the repo and the file.
 - **`mirror`** (`sched-ci-images-mirror.yml`, renamed from `ci-images-mirror.yml`) — infra image
   mirror on push/schedule; advisory.
 - **`release.yml`, `prepare-release.yml`, `verify-deploy.yml`, `sched-monthly-refresh.yml`** (the last
   renamed from `monthly-refresh.yml`) — release-time, dispatch, or scheduled; not PR code gates. Each
   still aggregates within its own run.
-- **Reusable workflows** (`plugin-ci.yml`, `plugin-functional.yml`, `plugin-consumer-verify.yml`,
+- **Reusable workflows** (`plugin-ci.yml`, `plugin-release.yml`, `plugin-repin.yml`,
+  `plugin-conformance.yml`, `plugin-functional.yml`, `plugin-consumer-verify.yml`,
   `build-artifact.yml`, `docker.yml`) — `workflow_call` only. Their status bubbles up into the
   **caller's** job, so require the caller's job, never these directly.

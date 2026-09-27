@@ -1,0 +1,38 @@
+# sched-fleet-check — every plugin repo in plugins.yaml against busbar's render and the fleet policy
+# (`cargo xtask fleet check`), nightly and on demand. RED on any drift: a repo's dev that differs from
+# the render, a pin that is not the fleet pin, a missing or stale branch, protection that is not the
+# one in .github/fleet/protection.json, an unmanaged workflow, a name outside busbar-<kind>-<name>.
+# Each finding is one line naming the repo and the file (or branch).
+#
+# Reading branch protection needs an admin-scoped token, so the job reads FLEET_TOKEN; a run without
+# it is RED (a check that cannot look has ruled nothing out), never skipped.
+name: sched-fleet-check
+
+on:
+  schedule:
+    - cron: "17 4 * * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  fleet-check:
+    name: fleet check (every plugin repo against the render)
+    runs-on: latchkey-medium
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
+      - name: the fleet's own tests (render purity; every drift kind goes RED)
+        run: cargo test -p xtask --lib -- fleet::tests
+      - name: fleet check
+        env:
+          GH_TOKEN: ${{ secrets.FLEET_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "${GH_TOKEN:-}" ]; then
+            echo "::error::FLEET_TOKEN is not provisioned: reading every plugin repo's branch protection needs an admin-scoped token. RED, not skipped."
+            exit 1
+          fi
+          cargo xtask fleet check

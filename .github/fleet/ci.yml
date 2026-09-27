@@ -1,0 +1,24 @@
+# RENDERED by `cargo xtask fleet render @@repo@@` from GetBusbar/busbar's plugins.yaml and
+# .github/fleet/ templates; `cargo xtask fleet check` is red on any edit here. The CI itself is
+# busbar's plugin-ci.yml, taken at the busbar commit this repo pins (.busbar-ref).
+name: ci
+
+on:
+  push:
+    branches: [dev, qa, main]
+  pull_request:
+    branches: [dev, qa, main]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    uses: GetBusbar/busbar/.github/workflows/plugin-ci.yml@@@pin@@
+    with:
+      service: @@ci_service@@
+      busbar_checkout: @@busbar_checkout@@
+      macos_test: @@macos_test@@
+      extra_test: @@extra_test@@
+    secrets: inherit
