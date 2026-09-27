@@ -293,19 +293,26 @@ busbar-voice = ["busbar-voice-codec"]
 # 15206 -> 16477 (OWNER RULING Q68(3)). Its commit reached the base; struck by HOTDOOR-B queue 2's
 # re-arm, which declares the pair's next figure below.
 
-# ── THE CONTRACT CEILING PAIR, RE-ARMED BY HOTDOOR-B QUEUE 2 (PlaneDecl dispatch_flags, ABI minor 32) ─
+# ── THE CONTRACT CEILING PAIR, RE-ARMED BY HOTDOOR-B QUEUE 2 (PlaneDecl dispatch_flags, ABI minor 32) —
+#    EXPIRED AND STRUCK
+#
+# Declared `gate.surface_ceilings.contract_caps` and `rules.loc-ceilings.caps_contract_ceiling`
+# 16477 -> 16482 (OWNER RULING Q68(3)). Its commit reached the base; struck by TRANSPORT-STACK claims'
+# re-arm, which declares the pair's next figure below.
+
+# ── THE CONTRACT CEILING PAIR, RE-ARMED BY TRANSPORT-STACK CLAIMS (ABI minor 33) ───────────────────
 
 [gate.ceiling_raises."gate.surface_ceilings.contract_caps"]
 file    = "qa/construction.toml"
-from    = 16477
-to      = 16482
-because = "OWNER RULING Q68(3) (docs/design/1.6.0-QUESTIONS.md): contract_caps re-arms at the MEASURED value, in its own commit. This is the re-arm for HOTDOOR-B queue 2 (765b2ddc9; ARCHITECT 2026-09-27, #30 HOT lane): hot::PlaneDecl appends dispatch_flags (+ padding) and hot::decl::DISPATCH_BLOCKS at ABI minor 32, so a plane's dispatch runs inline on the request's worker unless it declares it blocks, +5 code lines. Measured by cargo xtask loc: 16477 before, 16482 after."
+from    = 16482
+to      = 16664
+because = "OWNER RULING Q68(3) (docs/design/1.6.0-QUESTIONS.md): contract_caps re-arms at the MEASURED value, in its own commit. This is the re-arm for TRANSPORT-STACK claims (8c13af553; ARCHITECT 2026-09-27 TRANSPORT-STACK ruling (A), HOT ABI minor 33): transport::Claim and TransportMeta::CLAIMS (an entry answers for one or more schemes, each with its own per-scheme row), TransportRow.claims and ConnFacts.claim, their append-only lowering (hot::transport::DeclClaim, TransportDecl.claims_ptr/claims_len, WireConnFacts.claim) and the sdk's const lowering of the claims into image statics, +182 code lines. Measured by cargo xtask gate construction: 16482 before, 16664 after."
 
 [gate.ceiling_raises."rules.loc-ceilings.caps_contract_ceiling"]
 file    = "qa/construction.toml"
-from    = 16477
-to      = 16482
-because = "OWNER RULING Q68(3) (docs/design/1.6.0-QUESTIONS.md): contract_caps re-arms at the MEASURED value, in its own commit. This is the re-arm for HOTDOOR-B queue 2 (765b2ddc9; ARCHITECT 2026-09-27, #30 HOT lane): hot::PlaneDecl appends dispatch_flags (+ padding) and hot::decl::DISPATCH_BLOCKS at ABI minor 32, so a plane's dispatch runs inline on the request's worker unless it declares it blocks, +5 code lines. Measured by cargo xtask loc: 16477 before, 16482 after."
+from    = 16482
+to      = 16664
+because = "OWNER RULING Q68(3) (docs/design/1.6.0-QUESTIONS.md): contract_caps re-arms at the MEASURED value, in its own commit. This is the re-arm for TRANSPORT-STACK claims (8c13af553; ARCHITECT 2026-09-27 TRANSPORT-STACK ruling (A), HOT ABI minor 33): transport::Claim and TransportMeta::CLAIMS (an entry answers for one or more schemes, each with its own per-scheme row), TransportRow.claims and ConnFacts.claim, their append-only lowering (hot::transport::DeclClaim, TransportDecl.claims_ptr/claims_len, WireConnFacts.claim) and the sdk's const lowering of the claims into image statics, +182 code lines. Measured by cargo xtask gate construction: 16482 before, 16664 after."
 
 # ── THE KERNEL CEILING, RE-ARMED BY SD-8 (the substrate-values kernel landing) ─────────────────
 
@@ -459,7 +466,10 @@ because = "ARCHITECT ruling on the kernel budget (R-KERNEL, sd-extra.txt; K2-0 u
 # RE-ARMED 16477 -> 16482, AT THE MEASUREMENT (OWNER RULING Q68(3)), in its own commit after HOTDOOR-B
 # queue 2 appended PlaneDecl's dispatch_flags at ABI minor 32 (+5); the live declaration above
 # carries the measure.
-contract_caps = 16482
+# RE-ARMED 16482 -> 16664, AT THE MEASUREMENT (OWNER RULING Q68(3)), in its own commit after
+# TRANSPORT-STACK claims appended the transport entry's claims at ABI minor 33 (+182); the live
+# declaration above carries the measure.
+contract_caps = 16664
 # REPOINTED, and the repoint is what makes this row a gate again. It named the CRATE
 # `busbar-grammar`, which #40 folded into `busbar-contract` and deleted — so it summed nothing,
 # measured nothing and passed, which is this file's own "zero is not clean" failure sitting inside
@@ -1081,7 +1091,8 @@ contract_crate = "busbar-contract"
 # RE-ARMED 15015 -> 15206 with its pair (OWNER RULING Q68(3); TRANSPORT-STACK step 1, the carrier and framer traits, +191).
 # RE-ARMED 15206 -> 16477 with its pair (OWNER RULING Q68(3); TRANSPORT-STACK step 2, the transport HOT lowering, +1271).
 # RE-ARMED 16477 -> 16482 with its pair (OWNER RULING Q68(3); HOTDOOR-B queue 2, PlaneDecl dispatch_flags at ABI minor 32, +5).
-caps_contract_ceiling = 16482
+# RE-ARMED 16482 -> 16664 with its pair (OWNER RULING Q68(3); TRANSPORT-STACK claims, the transport entry's claims at ABI minor 33, +182).
+caps_contract_ceiling = 16664
 unit_crate_glob = "busbar-unit-*"
 # RE-KEYED on cherry-pick onto 143db6db6: this commit's own delta is -53 (two units stopped
 # declaring their own copies), measured against whatever unit_total_ceiling read when the line was
