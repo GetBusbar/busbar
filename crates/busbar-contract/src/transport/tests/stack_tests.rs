@@ -314,3 +314,81 @@ fn a_row_is_its_declaration_constant_for_constant() {
     assert_eq!(row.status_namespace, <Declared as M>::STATUS_NAMESPACE);
     assert_eq!(row.role(), Role::Framer);
 }
+
+/// A transport that answers for its own key alone makes ONE claim, and that claim is its declared
+/// per-scheme constants, field for field.
+#[test]
+fn a_single_wire_transport_claims_its_own_key_with_its_own_constants() {
+    use crate::transport::TransportMeta as M;
+    let row = TransportRow::of::<Declared>();
+    assert_eq!(
+        row.claims,
+        [crate::transport::Claim {
+            key: "declared",
+            session: true,
+            session_bound: false,
+            unit0_trigger: <Declared as M>::UNIT0_TRIGGER,
+            status_at: <Declared as M>::STATUS_CLASS,
+            status_namespace: Some("numbering"),
+            transport_facts: &["fact"],
+            selector_forms: <Declared as M>::SELECTOR_FORMS,
+        }]
+    );
+}
+
+/// An entry that frames several wires states one claim per wire, each with its OWN status leg — the
+/// row carries them as stated, never folded into the entry's.
+#[test]
+fn an_entry_states_one_claim_per_wire_each_with_its_own_status_leg() {
+    use crate::transport::wire::StatusAt;
+    struct Several;
+    impl crate::transport::TransportMeta for Several {
+        const KEY: &'static str = "first";
+        const SELECTOR_FORMS: &'static [crate::grammar::SelectorForm] = &[];
+        const EGRESS_SELECTOR_FORMS: &'static [crate::grammar::SelectorForm] = &[];
+        const COMPOSES_OVER: &'static [&'static str] = &["below"];
+        const HANDOFF: Option<crate::transport::wire::Handoff> = None;
+        const FRAMING: crate::transport::wire::Framing = crate::transport::wire::Framing::Stream;
+        const SESSION: bool = false;
+        const SESSION_BOUND: bool = false;
+        const UNIT0_TRIGGER: Option<crate::transport::wire::Unit0Trigger> = None;
+        const UPGRADES_TO: &'static [&'static str] = &[];
+        const HANDSHAKE_TRIGGER: Option<crate::transport::wire::HandshakeTrigger> = None;
+        const TRANSPORT_FACTS: &'static [&'static str] = &[];
+        const DECODES_PAYLOAD: bool = false;
+        const STATUS_CLASS: Option<StatusAt> = Some(StatusAt::FirstFrame);
+        const STATUS_NAMESPACE: Option<&'static str> = Some("one");
+        const CLAIMS: &'static [crate::transport::Claim] = &[
+            crate::transport::Claim {
+                key: "first",
+                session: false,
+                session_bound: false,
+                unit0_trigger: None,
+                status_at: Some(StatusAt::FirstFrame),
+                status_namespace: Some("one"),
+                transport_facts: &[],
+                selector_forms: &[],
+            },
+            crate::transport::Claim {
+                key: "second",
+                session: true,
+                session_bound: true,
+                unit0_trigger: None,
+                status_at: Some(StatusAt::Terminal),
+                status_namespace: Some("two"),
+                transport_facts: &[],
+                selector_forms: &[],
+            },
+        ];
+    }
+    let row = TransportRow::of::<Several>();
+    let legs: Vec<_> = row.claims.iter().map(|c| (c.key, c.status_at)).collect();
+    assert_eq!(
+        legs,
+        [
+            ("first", Some(StatusAt::FirstFrame)),
+            ("second", Some(StatusAt::Terminal))
+        ]
+    );
+    assert_eq!(row.role(), Role::Framer, "the role stays the entry's");
+}

@@ -50,8 +50,8 @@ use busbar_contract::transport::wire::{
     CloseReason, Encode, Handoff, HandshakeTrigger, TransportError,
 };
 use busbar_contract::transport::{
-    BytesOut, Carrier, CarrierFacts, CarrierPoll, ConnFacts, Dest, Framed, Framer, FramerOut,
-    Located, Role, Side, TransportRow, TransportSettings,
+    BytesOut, Carrier, CarrierFacts, CarrierPoll, Claim, ConnFacts, Dest, Framed, Framer,
+    FramerOut, Located, Role, Side, TransportRow, TransportSettings,
 };
 use busbar_contract::{AbiVersion, Kind, Plugin};
 use core::mem::MaybeUninit;
@@ -821,6 +821,7 @@ fn wire_facts(facts: &ConnFacts) -> WireConnFacts {
         cert_subject: opt(cert.map(|c| &c.subject)),
         cert_issuer: opt(cert.map(|c| &c.issuer)),
         cert_fingerprint: opt(cert.map(|c| &c.fingerprint)),
+        claim: opt(facts.claim.as_ref()),
     }
 }
 
@@ -1143,9 +1144,12 @@ fn assemble(
         ));
     }
     let ours = core::mem::size_of::<TransportDecl>() as u32;
-    if advertised < ours {
+    // The row and the role's slots are every generation-2 decl's; the claims tail was appended at
+    // minor 33, and a decl that ends before it makes the one claim its row describes.
+    let floor = core::mem::offset_of!(TransportDecl, claims_ptr) as u32;
+    if advertised < floor {
         return Err(format!(
-            "transport '{display}' decl attests size {advertised}, below the {ours}-byte decl — it \
+            "transport '{display}' decl attests size {advertised}, below the {floor}-byte decl — it \
              does not reach its own row and slots"
         ));
     }
@@ -1155,9 +1159,18 @@ fn assemble(
              TransportDecl ({ours} bytes); this build will not call a slot it cannot describe"
         ));
     }
-    // SAFETY: the attested size is exactly this build's decl (checked above), and the decl is
-    // immutable image data; copied out unaligned.
-    let d = unsafe { core::ptr::read_unaligned(decl) };
+    // SAFETY: the decl's attested prefix (bounded on both sides above) is immutable image data,
+    // copied over an all-zero decl — every field of which is valid zeroed (integers, null pointers,
+    // `None` slots) — so a tail the transport did not write reads as absent.
+    let d = unsafe {
+        let mut d = core::mem::MaybeUninit::<TransportDecl>::zeroed();
+        core::ptr::copy_nonoverlapping(
+            decl.cast::<u8>(),
+            d.as_mut_ptr().cast::<u8>(),
+            advertised as usize,
+        );
+        d.assume_init()
+    };
     let row = read_row(&d, &display)?;
     let init = d
         .init
@@ -1256,7 +1269,82 @@ fn read_row(d: &TransportDecl, display: &str) -> Result<TransportRow, String> {
         decodes_payload: flag("decodes-payload", d.decodes_payload)?,
         status_at: code::status_at_of(d.status_at).map_err(|v| byte("status position", v))?,
         status_namespace: decl_str(d.status_namespace, display)?,
+        claims: &[],
     })
+    .and_then(|row| {
+        let claims = claims(d, &row, display)?;
+        Ok(TransportRow { claims, ..row })
+    })
+}
+
+/// The entry's CLAIMS: each declared claim read and checked, or — for a decl that ends before the
+/// claims tail — the one claim its row describes. A claim that repeats a key is refused: the root
+/// registers one row per claim, and two rows under one key is a boot the owner rule fails.
+fn claims(
+    d: &TransportDecl,
+    row: &TransportRow,
+    display: &str,
+) -> Result<&'static [Claim], String> {
+    let byte = |what: &str, v: u8| format!("transport '{display}' claims with {what} byte {v}");
+    let flag = |what: &str, v: u8| match v {
+        0 => Ok(false),
+        1 => Ok(true),
+        other => Err(format!(
+            "transport '{display}' claims with {what} flag {other}; a transport declares 0 or 1"
+        )),
+    };
+    if d.claims_len == 0 {
+        return Ok(Box::leak(Box::new([Claim {
+            key: row.key,
+            session: row.session,
+            session_bound: row.session_bound,
+            unit0_trigger: row.unit0_trigger,
+            status_at: row.status_at,
+            status_namespace: row.status_namespace,
+            transport_facts: row.transport_facts,
+            selector_forms: row.selector_forms,
+        }])));
+    }
+    if d.claims_len > MAX_LIST || d.claims_ptr.is_null() {
+        return Err(format!(
+            "transport '{display}' declares a {}-entry claims list it cannot back (null, or past \
+             the {MAX_LIST}-entry cap)",
+            d.claims_len
+        ));
+    }
+    let mut out: Vec<Claim> = Vec::with_capacity(d.claims_len);
+    for i in 0..d.claims_len {
+        // SAFETY: a non-null list addresses `claims_len` live entries (bounded above) for the life
+        // of the image; each is copied out unaligned.
+        let c = unsafe { core::ptr::read_unaligned(d.claims_ptr.add(i)) };
+        let key = decl_str(c.key, display)?
+            .filter(|k| !k.is_empty())
+            .ok_or_else(|| format!("transport '{display}' states a claim with no key"))?;
+        if out.iter().any(|seen| seen.key == key) {
+            return Err(format!(
+                "transport '{display}' claims '{key}' twice; one entry claims a scheme once"
+            ));
+        }
+        out.push(Claim {
+            key,
+            session: flag("session", c.session)?,
+            session_bound: flag("session-bound", c.session_bound)?,
+            unit0_trigger: code::unit0_trigger_of(c.unit0_trigger)
+                .map_err(|v| byte("first-unit trigger", v))?,
+            status_at: code::status_at_of(c.status_at).map_err(|v| byte("status position", v))?,
+            status_namespace: decl_str(c.status_namespace, display)?,
+            transport_facts: strs(c.transport_facts, display)?,
+            selector_forms: forms(c.selector_forms, display)?,
+        });
+    }
+    if out[0].key != row.key {
+        return Err(format!(
+            "transport '{display}' is keyed '{}' and its first claim is '{}'; the first claim is \
+             the entry's own",
+            row.key, out[0].key
+        ));
+    }
+    Ok(Box::leak(out.into_boxed_slice()))
 }
 
 /// A declared string list, owned `'static` (the entries borrow the image).

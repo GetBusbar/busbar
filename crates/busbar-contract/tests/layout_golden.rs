@@ -16,7 +16,7 @@ use busbar_contract::abi::hot::decl::{
 };
 use busbar_contract::abi::hot::host::PlaneHostVtable;
 use busbar_contract::abi::hot::transport::{
-    CarrierSlots, DeclByteList, DeclStrList, FramerSlots, TransportDecl, WireBytesOut,
+    CarrierSlots, DeclByteList, DeclClaim, DeclStrList, FramerSlots, TransportDecl, WireBytesOut,
     WireConnFacts, WireDest, WireEnvPair, WireField, WireFramed, WireFramerOut, WireSettings,
     WireWaker,
 };
@@ -667,7 +667,26 @@ fn compute_layout() -> String {
             _reserved,
             init,
             carrier,
-            framer
+            framer,
+            // The claims (minor 33).
+            claims_ptr,
+            claims_len
+        ]
+    );
+    // One claim of the entry, lowered field for field from `Claim`.
+    record!(
+        s,
+        DeclClaim,
+        [
+            key,
+            selector_forms,
+            transport_facts,
+            status_namespace,
+            session,
+            session_bound,
+            unit0_trigger,
+            status_at,
+            _reserved
         ]
     );
     // One slot per `Carrier` method, named for it: every poll slot is a same-width fn pointer, so a
@@ -741,7 +760,9 @@ fn compute_layout() -> String {
             alpn,
             cert_subject,
             cert_issuer,
-            cert_fingerprint
+            cert_fingerprint,
+            // The resolved claim (minor 33).
+            claim
         ]
     );
     record!(

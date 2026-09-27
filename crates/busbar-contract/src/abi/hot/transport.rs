@@ -578,6 +578,9 @@ pub struct WireConnFacts {
     pub cert_issuer: DeclStr,
     /// The far end's certificate fingerprint (NULL = no certificate).
     pub cert_fingerprint: DeclStr,
+    /// The claim the host resolved the connection to (appended at minor 33; NULL = the entry's
+    /// first claim).
+    pub claim: DeclStr,
 }
 
 /// One frame piece ([`crate::transport::Framed`]), borrowed for the callback.
@@ -935,7 +938,45 @@ pub struct TransportDecl {
     pub carrier: *const CarrierSlots,
     /// The framer's slots (non-null exactly when `composes_over` is not empty).
     pub framer: *const FramerSlots,
+    // ── the claims (appended at minor 33) ──
+    /// `CLAIMS`: every scheme the entry answers for, each with its per-scheme row
+    /// ([`DeclClaim`]); the first is the entry's own. A decl that ends before this tail makes the
+    /// one claim its row above describes.
+    pub claims_ptr: *const DeclClaim,
+    /// Number of entries in the claims list.
+    pub claims_len: usize,
 }
+
+/// ONE CLAIM of a transport entry (`crate::transport::Claim`), borrowed in the list
+/// [`TransportDecl::claims_ptr`] names: the scheme, and every per-scheme constant the root reads.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct DeclClaim {
+    /// The scheme (the row's key).
+    pub key: DeclStr,
+    /// Its selector forms, as [`code::selector_form`] bytes.
+    pub selector_forms: DeclByteList,
+    /// Its transport fact keys.
+    pub transport_facts: DeclStrList,
+    /// Its status numbering (NULL = none).
+    pub status_namespace: DeclStr,
+    /// It carries sessions (`0`/`1`).
+    pub session: u8,
+    /// A session on it caches its principal (`0`/`1`).
+    pub session_bound: u8,
+    /// What opens a session's first unit ([`code::unit0_trigger`]).
+    pub unit0_trigger: u8,
+    /// Which frame carries its status ([`code::status_at`]).
+    pub status_at: u8,
+    /// Alignment padding.
+    pub _reserved: u32,
+}
+
+// SAFETY: a claim borrows the image's own read-only data, mapped for its whole life (the `DeclStr`
+// contract).
+unsafe impl Send for DeclClaim {}
+// SAFETY: see the `Send` impl above.
+unsafe impl Sync for DeclClaim {}
 
 // SAFETY: every raw pointer in the decl points INTO the transport image's own read-only data,
 // mapped for the whole life of the loaded transport and never mutated or freed while a decl that

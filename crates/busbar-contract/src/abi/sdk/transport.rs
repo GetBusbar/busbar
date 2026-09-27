@@ -27,17 +27,18 @@ use std::task::{Context, Poll, Waker};
 
 use crate::abi::hot::decl::{DeclStr, OpaqueHandle};
 use crate::abi::hot::transport::{
-    code, CarrierSlots, DeclByteList, DeclStrList, FramerSlots, RawWireOutcome, TransportDecl,
-    WireBytesOut, WireConnFacts, WireDest, WireField, WireFramed, WireFramerOut, WireOutcome,
-    WireSettings, WireWakeFn, WireWaker, FRAMED_HAS_RETRY_AFTER, FRAMED_HAS_STATUS_CODE, NO_WAKER,
-    TRANSPORT_DECL_MAJOR,
+    code, CarrierSlots, DeclByteList, DeclClaim, DeclStrList, FramerSlots, RawWireOutcome,
+    TransportDecl, WireBytesOut, WireConnFacts, WireDest, WireField, WireFramed, WireFramerOut,
+    WireOutcome, WireSettings, WireWakeFn, WireWaker, FRAMED_HAS_RETRY_AFTER,
+    FRAMED_HAS_STATUS_CODE, NO_WAKER, TRANSPORT_DECL_MAJOR,
 };
 use crate::abi::{AbiPreamble, ABI_MAGIC, ABI_MAJOR, ABI_MINOR};
 use crate::grammar::SelectorForm;
 use crate::ids::StreamId;
 use crate::transport::wire::{CertFacts, TransportError};
 use crate::transport::{
-    BytesOut, Carrier, ConnFacts, Dest, Framed, Framer, FramerOut, TransportMeta, TransportSettings,
+    BytesOut, Carrier, Claim, ConnFacts, Dest, Framed, Framer, FramerOut, TransportMeta,
+    TransportSettings,
 };
 
 // ── the built state ──────────────────────────────────────────────────────────────────────────────
@@ -607,13 +608,28 @@ unsafe fn facts_of(facts: *const WireConnFacts) -> Result<ConnFacts, WireOutcome
     if facts.is_null() {
         return Ok(ConnFacts::default());
     }
-    // SAFETY: per this fn's contract; read only as far as it attests.
+    // SAFETY: per this fn's contract; the size leads the struct.
+    let size = unsafe { core::ptr::read_unaligned(core::ptr::addr_of!((*facts).size)) };
+    // The facts up to the appended claim are every host's; the claim is read only as far as the
+    // host attests (minor 33), and a host that predates it names the first claim.
+    if (size as usize) < core::mem::offset_of!(WireConnFacts, claim) {
+        return Err(WireOutcome::Fault);
+    }
+    let claim = crate::abi::read_sized_field!(facts, size, WireConnFacts, claim);
+    // SAFETY: per this fn's contract; read only as far as it attests (checked above).
     unsafe {
-        let size = core::ptr::read_unaligned(core::ptr::addr_of!((*facts).size)) as usize;
-        if size < core::mem::size_of::<WireConnFacts>() {
-            return Err(WireOutcome::Fault);
-        }
-        let f = core::ptr::read_unaligned(facts);
+        let f = WireConnFacts {
+            size,
+            version: core::ptr::read_unaligned(core::ptr::addr_of!((*facts).version)),
+            sni: core::ptr::read_unaligned(core::ptr::addr_of!((*facts).sni)),
+            alpn: core::ptr::read_unaligned(core::ptr::addr_of!((*facts).alpn)),
+            cert_subject: core::ptr::read_unaligned(core::ptr::addr_of!((*facts).cert_subject)),
+            cert_issuer: core::ptr::read_unaligned(core::ptr::addr_of!((*facts).cert_issuer)),
+            cert_fingerprint: core::ptr::read_unaligned(core::ptr::addr_of!(
+                (*facts).cert_fingerprint
+            )),
+            claim: claim.unwrap_or(DeclStr::NONE),
+        };
         let owned = |d: DeclStr| -> Result<Option<String>, WireOutcome> {
             decl_text(d).map(|t| t.map(str::to_string))
         };
@@ -629,6 +645,7 @@ unsafe fn facts_of(facts: *const WireConnFacts) -> Result<ConnFacts, WireOutcome
             sni: owned(f.sni)?,
             alpn: owned(f.alpn)?,
             peer_cert,
+            claim: owned(f.claim)?,
         })
     }
 }
@@ -908,6 +925,125 @@ pub struct RowLists {
     pub upgrades_to: &'static [DeclStr],
     /// `TRANSPORT_FACTS`.
     pub transport_facts: &'static [DeclStr],
+    /// `CLAIMS`, lowered ([`decl_claims`]).
+    pub claims: &'static [DeclClaim],
+}
+
+/// How many selector forms every claim of `claims` states, together: the length of the pool
+/// [`claim_form_pool`] lays them out in.
+#[must_use]
+pub const fn claim_forms_len(claims: &[Claim]) -> usize {
+    let (mut n, mut i) = (0, 0);
+    while i < claims.len() {
+        n += claims[i].selector_forms.len();
+        i += 1;
+    }
+    n
+}
+
+/// How many fact keys every claim of `claims` states, together: the length of the pool
+/// [`claim_fact_pool`] lays them out in.
+#[must_use]
+pub const fn claim_facts_len(claims: &[Claim]) -> usize {
+    let (mut n, mut i) = (0, 0);
+    while i < claims.len() {
+        n += claims[i].transport_facts.len();
+        i += 1;
+    }
+    n
+}
+
+/// Every claim's selector-form codes, claim after claim, in one `'static` pool.
+#[must_use]
+pub const fn claim_form_pool<const N: usize>(claims: &[Claim]) -> [u8; N] {
+    let mut pool = [0_u8; N];
+    let (mut at, mut i) = (0, 0);
+    while i < claims.len() {
+        let forms = claims[i].selector_forms;
+        let mut j = 0;
+        while j < forms.len() {
+            pool[at] = code::selector_form(forms[j]);
+            at += 1;
+            j += 1;
+        }
+        i += 1;
+    }
+    pool
+}
+
+/// Every claim's fact keys, claim after claim, in one `'static` pool.
+#[must_use]
+pub const fn claim_fact_pool<const N: usize>(claims: &[Claim]) -> [DeclStr; N] {
+    let mut pool = [DeclStr::NONE; N];
+    let (mut at, mut i) = (0, 0);
+    while i < claims.len() {
+        let facts = claims[i].transport_facts;
+        let mut j = 0;
+        while j < facts.len() {
+            pool[at] = DeclStr::new(facts[j]);
+            at += 1;
+            j += 1;
+        }
+        i += 1;
+    }
+    pool
+}
+
+/// `claims` lowered, each claim's lists borrowed from its stretch of the two pools.
+#[must_use]
+pub const fn decl_claims<const N: usize>(
+    claims: &[Claim],
+    forms: &'static [u8],
+    facts: &'static [DeclStr],
+) -> [DeclClaim; N] {
+    let empty = DeclClaim {
+        key: DeclStr::NONE,
+        selector_forms: DeclByteList {
+            ptr: core::ptr::null(),
+            len: 0,
+        },
+        transport_facts: DeclStrList {
+            ptr: core::ptr::null(),
+            len: 0,
+        },
+        status_namespace: DeclStr::NONE,
+        session: 0,
+        session_bound: 0,
+        unit0_trigger: 0,
+        status_at: 0,
+        _reserved: 0,
+    };
+    let mut out = [empty; N];
+    let (mut form_at, mut fact_at, mut i) = (0, 0, 0);
+    while i < N {
+        let c = claims[i];
+        let (nf, nk) = (c.selector_forms.len(), c.transport_facts.len());
+        out[i] = DeclClaim {
+            key: DeclStr::new(c.key),
+            selector_forms: DeclByteList {
+                // Within the pool: `claim_form_pool` laid out exactly these lengths in this order.
+                ptr: forms.split_at(form_at).1.as_ptr(),
+                len: nf,
+            },
+            transport_facts: DeclStrList {
+                ptr: facts.split_at(fact_at).1.as_ptr(),
+                len: nk,
+            },
+            status_namespace: match c.status_namespace {
+                Some(ns) => DeclStr::new(ns),
+                None => DeclStr::NONE,
+            },
+            session: c.session as u8,
+            session_bound: c.session_bound as u8,
+            unit0_trigger: code::unit0_trigger(c.unit0_trigger),
+            status_at: code::status_at(c.status_at),
+            _reserved: 0,
+        };
+        form_at += nf;
+        fact_at += nk;
+        i += 1;
+    }
+    out
 }
 
 /// THE DECL of the transport `T`: its row (read off `T`'s declaration, the lists borrowed from
@@ -970,6 +1106,8 @@ pub const fn decl<T: TransportMeta>(
             Some(f) => f,
             None => core::ptr::null(),
         },
+        claims_ptr: lists.claims.as_ptr(),
+        claims_len: lists.claims.len(),
     }
 }
 
@@ -1021,6 +1159,24 @@ macro_rules! __transport_decl {
             $crate::abi::sdk::transport::decl_strs(
                 <$ty as $crate::transport::TransportMeta>::TRANSPORT_FACTS,
             );
+        static __CLAIM_FORMS: [u8; $crate::abi::sdk::transport::claim_forms_len(
+            <$ty as $crate::transport::TransportMeta>::CLAIMS,
+        )] = $crate::abi::sdk::transport::claim_form_pool(
+            <$ty as $crate::transport::TransportMeta>::CLAIMS,
+        );
+        static __CLAIM_FACTS: [$crate::abi::hot::DeclStr;
+            $crate::abi::sdk::transport::claim_facts_len(
+                <$ty as $crate::transport::TransportMeta>::CLAIMS,
+            )] = $crate::abi::sdk::transport::claim_fact_pool(
+            <$ty as $crate::transport::TransportMeta>::CLAIMS,
+        );
+        static __CLAIMS: [$crate::abi::hot::transport::DeclClaim;
+            <$ty as $crate::transport::TransportMeta>::CLAIMS.len()] =
+            $crate::abi::sdk::transport::decl_claims(
+                <$ty as $crate::transport::TransportMeta>::CLAIMS,
+                &__CLAIM_FORMS,
+                &__CLAIM_FACTS,
+            );
         $crate::__transport_slots!($ty, $role);
         extern "C-unwind" fn __init(
             settings: *const $crate::abi::hot::transport::WireSettings,
@@ -1039,6 +1195,7 @@ macro_rules! __transport_decl {
                     egress_selector_forms: &__EGRESS_SELECTOR_FORMS,
                     upgrades_to: &__UPGRADES_TO,
                     transport_facts: &__TRANSPORT_FACTS,
+                    claims: &__CLAIMS,
                 },
                 __init,
                 __CARRIER,

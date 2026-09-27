@@ -164,7 +164,15 @@ pub const ABI_MAJOR: u32 = 2;
 /// `dispatch_flags` (+ padding). A plane's dispatch runs INLINE on the request's worker — no thread
 /// hop on the hot lane — unless it sets `hot::decl::DISPATCH_BLOCKS`, when the host runs it on a
 /// blocking thread. A decl ending before the tail is run as blocking. Append-only.
-pub const ABI_MINOR: u32 = 32;
+///
+/// 32→33 (1.6.0, TRANSPORT-STACK claims; ARCHITECT 2026-09-27 ruling (A)): a transport ENTRY answers
+/// for one or more schemes. `hot::TransportDecl` appends the claims list (`claims_ptr`,
+/// `claims_len`; each `hot::transport::DeclClaim` a scheme and its per-scheme row — sessions, first
+/// unit, status leg, facts and selector forms), and `hot::transport::WireConnFacts` appends the
+/// claim the host resolved a connection to, which a framer opens its state for. A decl ending before
+/// the tail makes the one claim its row describes; facts ending before theirs name the first claim.
+/// Append-only.
+pub const ABI_MINOR: u32 = 33;
 
 /// The FROZEN-FOR-ALL-TIME ABI header. This exact layout — `magic` at offset 0, `abi_major` at 8,
 /// `abi_minor` at 12 — is a permanent contract: it may NEVER be reordered, resized, extended, or

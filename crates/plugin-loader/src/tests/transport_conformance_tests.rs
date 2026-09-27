@@ -26,7 +26,8 @@ use super::*;
 use crate::both_ways::{cdylib, dropped, statement, transport_fixture, HOT_FIXTURES};
 use crate::carrier_peer::{self, wait};
 use crate::sign::{validate_structure, HookNeeds, Manifest};
-use busbar_contract::abi::hot::transport::{CarrierSlots, FramerSlots};
+use busbar_contract::abi::hot::transport::{CarrierSlots, DeclClaim, FramerSlots};
+use busbar_contract::transport::wire::StatusAt;
 use std::sync::OnceLock;
 
 /// Offer every one of `bytes` to `conn`, then flush.
@@ -430,7 +431,11 @@ fn the_admission_refuses_a_decl_it_cannot_trust() {
         &|d| d.abi.abi_minor = busbar_contract::abi::hot::TRANSPORT_DECL_MINOR - 1,
         "this build admits generation 2",
     );
-    refuse(&|d| d.size -= 8, "does not reach its own row and slots");
+    let tail = core::mem::offset_of!(TransportDecl, claims_ptr) as u32;
+    refuse(
+        &|d| d.size = tail - 8,
+        "does not reach its own row and slots",
+    );
     refuse(&|d| d.size += 8, "exceeding this build's own");
     refuse(&|d| d.key = DeclStr::NONE, "declares no key");
     refuse(&|d| d.session = 2, "declares session flag 2");
@@ -477,6 +482,102 @@ fn the_admission_refuses_a_decl_it_cannot_trust() {
     );
     let short = SHORT_CARRIER.get_or_init(|| CarrierSlots { size: 8, ..*real() });
     refuse(&|d| d.carrier = short, "slot table attests size 8");
+    // THE CLAIMS (minor 33): each is read as strictly as the row.
+    refuse(
+        &|d| {
+            d.claims_ptr = TWICE.as_ptr();
+            d.claims_len = TWICE.len();
+        },
+        &format!("claims '{OWN}' twice; one entry claims a scheme once"),
+    );
+    refuse(
+        &|d| {
+            d.claims_ptr = ELSEWHERE.as_ptr();
+            d.claims_len = 1;
+        },
+        &format!("is keyed '{OWN}' and its first claim is 'elsewhere'"),
+    );
+    refuse(
+        &|d| {
+            d.claims_ptr = BAD_LEG.as_ptr();
+            d.claims_len = 1;
+        },
+        "claims with status position byte 9",
+    );
+    refuse(
+        &|d| {
+            d.claims_ptr = core::ptr::null();
+            d.claims_len = 1;
+        },
+        "claims list it cannot back",
+    );
+}
+
+/// A claim of `key` whose status-position byte is `status_at`.
+const fn claim(key: &'static str, status_at: u8) -> DeclClaim {
+    DeclClaim {
+        key: DeclStr::new(key),
+        selector_forms: DeclByteList {
+            ptr: core::ptr::null(),
+            len: 0,
+        },
+        transport_facts: DeclStrList {
+            ptr: core::ptr::null(),
+            len: 0,
+        },
+        status_namespace: DeclStr::NONE,
+        session: 0,
+        session_bound: 0,
+        unit0_trigger: 0,
+        status_at,
+        _reserved: 0,
+    }
+}
+/// The fixture's own key: its first claim.
+const OWN: &str = transport_fixture::linked::KEY;
+static TWICE: [DeclClaim; 2] = [claim(OWN, 0), claim(OWN, 0)];
+static ELSEWHERE: [DeclClaim; 1] = [claim("elsewhere", 0)];
+static BAD_LEG: [DeclClaim; 1] = [claim(OWN, 9)];
+
+/// A decl that ends before the claims tail (a transport built before minor 33) is admitted, and makes
+/// the one claim its row describes; the fixture's own lowering states that same one claim.
+#[test]
+fn a_decl_before_the_claims_tail_makes_its_rows_one_claim() {
+    let own = admitted(fixture_decl(), "linked-wire").row();
+    assert_eq!(own.claims.len(), 1);
+    assert_eq!(own.claims[0].key, OWN);
+    let mut older = decl_copy();
+    older.size = core::mem::offset_of!(TransportDecl, claims_ptr) as u32;
+    // SAFETY: a live local copy of the valid fixture decl, attesting a shorter prefix; the row is
+    // copied out before the copy goes.
+    let row = *unsafe { link_transport(&older, "older") }
+        .expect("a pre-claims decl is admitted")
+        .row();
+    assert_eq!(
+        row.claims, own.claims,
+        "the row's one claim, read either way"
+    );
+}
+
+/// A decl that states several claims is read claim for claim, each with its OWN status leg.
+#[test]
+fn every_claim_is_read_with_its_own_status_leg() {
+    static SEVERAL: [DeclClaim; 2] = [claim(OWN, 1), claim("second", 2)];
+    let mut copy = decl_copy();
+    copy.claims_ptr = SEVERAL.as_ptr();
+    copy.claims_len = SEVERAL.len();
+    // SAFETY: a live local copy of the valid fixture decl, its claims list `'static`.
+    let row = *unsafe { link_transport(&copy, "several") }
+        .expect("admitted")
+        .row();
+    let legs: Vec<_> = row.claims.iter().map(|c| (c.key, c.status_at)).collect();
+    assert_eq!(
+        legs,
+        [
+            (OWN, Some(StatusAt::FirstFrame)),
+            ("second", Some(StatusAt::Terminal))
+        ]
+    );
 }
 
 /// Every constant the fixture declares reaches the host through its lowered decl — an admission that

@@ -90,6 +90,34 @@ pub struct TransportRow {
     pub status_at: Option<super::wire::StatusAt>,
     /// The numbering its statuses are spelled in, where it reports one.
     pub status_namespace: Option<&'static str>,
+    /// EVERY SCHEME THE ENTRY ANSWERS FOR, each with what the root reads per scheme
+    /// (`TransportMeta::CLAIMS`). The root registers one row per claim, all pointing at this entry.
+    pub claims: &'static [Claim],
+}
+
+/// ONE CLAIM of a transport entry (ARCHITECT 2026-09-27, TRANSPORT-STACK (A)): a scheme the entry
+/// answers for, and everything the root reads per scheme. One entry carries one or more claims — a
+/// carrier or a single-wire framer carries one, a framer that frames several wires carries one per
+/// wire — and each claim is registered as a row of its own, pointing at the one entry. How one claim rides another inside the plugin is the plugin's own business and never
+/// appears here: what the entry composes over stays the ENTRY's ([`TransportRow::composes_over`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Claim {
+    /// The scheme, which is the key the row is registered under.
+    pub key: &'static str,
+    /// It carries sessions.
+    pub session: bool,
+    /// A session on it caches its principal.
+    pub session_bound: bool,
+    /// What opens a session's first unit.
+    pub unit0_trigger: Option<super::wire::Unit0Trigger>,
+    /// Which frame carries its status, where it reports one: the status leg a fee is settled on.
+    pub status_at: Option<super::wire::StatusAt>,
+    /// The numbering its statuses are spelled in, where it reports one.
+    pub status_namespace: Option<&'static str>,
+    /// The transport fact keys it writes.
+    pub transport_facts: &'static [&'static str],
+    /// The selector forms it evaluates on arriving bytes.
+    pub selector_forms: &'static [crate::grammar::SelectorForm],
 }
 
 impl TransportRow {
@@ -112,6 +140,7 @@ impl TransportRow {
             decodes_payload: T::DECODES_PAYLOAD,
             status_at: T::STATUS_CLASS,
             status_namespace: T::STATUS_NAMESPACE,
+            claims: T::CLAIMS,
         }
     }
 
@@ -159,6 +188,9 @@ pub struct ConnFacts {
     pub alpn: Option<String>,
     /// What the far end's presented certificate says about its holder.
     pub peer_cert: Option<CertFacts>,
+    /// The claim the host resolved this connection to — the dialled target's scheme, or the claim
+    /// the accepting binding resolved; `None` is the entry's first claim.
+    pub claim: Option<String>,
 }
 
 /// Which end of a connection a framing state is for.

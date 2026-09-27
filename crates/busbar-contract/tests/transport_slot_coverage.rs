@@ -151,3 +151,65 @@ fn the_host_hands_a_transport_nothing_but_its_waker() {
         .collect();
     assert_eq!(fns, ["wake: Option<WireWakeFn>,"]);
 }
+
+/// The fields a struct block declares (`pub name: ...`), outside comments; `_reserved` padding and
+/// the sized header are not fields a claim states.
+fn fields(struct_block: &str) -> BTreeSet<String> {
+    struct_block
+        .lines()
+        .map(str::trim)
+        .filter_map(|l| l.strip_prefix("pub "))
+        .filter_map(|rest| rest.split_once(':'))
+        .map(|(name, _)| name.trim().to_string())
+        .filter(|name| !name.starts_with('_') && name != "size")
+        .collect()
+}
+
+/// Every field of the linked `Claim` has exactly one field in `DeclClaim`, and every `DeclClaim`
+/// field is a claim's (TRANSPORT-STACK (A): the claims table is lowered as mechanically as the
+/// slots are).
+fn claims_covered(traits: &str, abi: &str) -> Result<usize, String> {
+    let linked = fields(block(traits, "pub struct Claim {")?);
+    let lowered = fields(block(abi, "pub struct DeclClaim {")?);
+    let unlowered: Vec<_> = linked.difference(&lowered).collect();
+    let unexplained: Vec<_> = lowered.difference(&linked).collect();
+    if linked.is_empty() {
+        return Err("`Claim` declares no field the witness can read".to_string());
+    }
+    if !unlowered.is_empty() || !unexplained.is_empty() {
+        return Err(format!(
+            "`Claim` -> `DeclClaim`: fields with no lowering {unlowered:?}, lowered fields no claim \
+             explains {unexplained:?}"
+        ));
+    }
+    Ok(linked.len())
+}
+
+#[test]
+fn every_claim_field_is_lowered_exactly_once() {
+    let (traits, abi) = (
+        read("src/transport/stack.rs"),
+        read("src/abi/hot/transport.rs"),
+    );
+    assert_eq!(claims_covered(&traits, &abi), Ok(8));
+}
+
+/// THE RED ARM, kept: a claim that grew a field the lowering did not is refused, by name.
+#[test]
+fn a_claim_field_without_a_lowering_is_red() {
+    let (traits, abi) = (
+        read("src/transport/stack.rs"),
+        read("src/abi/hot/transport.rs"),
+    );
+    let grown = traits.replacen(
+        "pub struct Claim {",
+        "pub struct Claim {\n    pub framing: Framing,",
+        1,
+    );
+    assert_ne!(grown, traits, "the plant landed");
+    let err = claims_covered(&grown, &abi).unwrap_err();
+    assert!(
+        err.contains("fields with no lowering [\"framing\"]"),
+        "{err}"
+    );
+}

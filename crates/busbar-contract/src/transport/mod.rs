@@ -29,7 +29,7 @@ pub mod wire;
 
 pub use config_handle::{ConfigRole, TransportConfigHandle, TransportConfigSink};
 pub use stack::{
-    role_of, BytesOut, Carrier, CarrierFacts, CarrierPoll, ConnFacts, Dest, Framed, Framer,
+    role_of, BytesOut, Carrier, CarrierFacts, CarrierPoll, Claim, ConnFacts, Dest, Framed, Framer,
     FramerOut, Located, Role, Side, TransportRow,
 };
 
@@ -165,6 +165,19 @@ pub trait TransportMeta {
     /// silently served in plaintext. A transport with no byte stream to wrap at all (stdio) simply
     /// never overrides the default.
     const WRAPPABLE_BYTE_STREAM: bool = false;
+    /// EVERY SCHEME THIS ENTRY ANSWERS FOR ([`Claim`]), in order; the first is the entry's own. A
+    /// transport that answers for its own key alone makes the one claim its per-scheme constants
+    /// above describe, which is this default.
+    const CLAIMS: &'static [Claim] = &[Claim {
+        key: Self::KEY,
+        session: Self::SESSION,
+        session_bound: Self::SESSION_BOUND,
+        unit0_trigger: Self::UNIT0_TRIGGER,
+        status_at: Self::STATUS_CLASS,
+        status_namespace: Self::STATUS_NAMESPACE,
+        transport_facts: Self::TRANSPORT_FACTS,
+        selector_forms: Self::SELECTOR_FORMS,
+    }];
 }
 
 /// The transport's own configuration block, as a read-only view.
