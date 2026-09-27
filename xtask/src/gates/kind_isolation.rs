@@ -7650,6 +7650,30 @@ impl Gate for KindIsolationGate {
             ],
         ));
 
+        // THE SAME FOR A HOT-LANE KIND: every kind ships as its own repo, so an export plugin filed
+        // as a transport is an export sink handed the transport ABI.
+        let mut ov = Overlay::new();
+        ov.set(
+            "plugins.yaml",
+            cx.read("plugins.yaml").unwrap_or_default().replacen(
+                "  - repo: export-file\n    kind: export\n",
+                "  - repo: export-file\n    kind: transport\n",
+                1,
+            ),
+        );
+        report.push(prove_rows_red(
+            cx,
+            subject,
+            "an export plugin filed under the transport kind",
+            &[ROW_INPUTS],
+            ov,
+            &[
+                "registry-kind-mismatch",
+                "busbar-export-file-plugin",
+                "export",
+            ],
+        ));
+
         // A FEATURE NAME IS VOCABULARY TOO. `[features]` was the one part of a manifest no rule
         // read.
         let mut ov = Overlay::new();

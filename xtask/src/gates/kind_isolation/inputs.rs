@@ -44,8 +44,8 @@ const PLUGIN_REGISTRY: &str = "plugins.yaml";
 
 /// THE REGISTRY'S KIND WORDS, each mapped onto the kind it names in this gate's table.
 ///
-/// `plugins.yaml` says in its own header that a plugin is `store | auth | hook | secret` — the four
-/// kinds the C ABI selects on — and it says `hook` where the table here says `hooks`.
+/// `plugins.yaml` files a plugin under any of the seven kinds (every kind ships as its own repo), and
+/// it says `hook` where the table here says `hooks`.
 ///
 /// `:truths` reconciles THREE places that name the kinds: `ARCHITECTURE.md`, the kind table here,
 /// and `qa/construction.toml`. This is the FOURTH, and it is not one of that row's three because it
@@ -58,6 +58,9 @@ const REGISTRY_KIND_KEYS: &[(&str, &str)] = &[
     ("auth", "auth"),
     ("hook", "hooks"),
     ("secret", "secret"),
+    ("export", "export"),
+    ("plane", "plane"),
+    ("transport", "transport"),
 ];
 
 /// THE COMPOSITION ROOT'S FEATURES NAME PLANES BY DESIGN, and this is where that is written down.

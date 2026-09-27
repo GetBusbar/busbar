@@ -12,7 +12,8 @@
 #
 # Fields:
 #   repo:          GitHub repo under GetBusbar/
-#   kind:          store | auth | hook | secret  (busbar plugin kind; selects the C ABI)
+#   kind:          store | secret | auth | hook | export | plane | transport  (busbar plugin kind;
+#                  selects the C ABI; every kind ships as its own repo)
 #   alias:         short config name (busbar-plugin-pack --alias)
 #   crate:         the plugin cdylib's Cargo package name
 #   version_line:  the semver line current releases live on (headroom's 1.x is pre-plugin
@@ -150,3 +151,58 @@ plugins:
     # now the DEFAULT for every sibling (see the field doc above), so the pin said nothing the
     # default does not. Restating it would imply the OTHER nine were deliberately on `main`, which
     # is precisely the reading that cost qa-gate run 31059945604 five legs.
+  - repo: export-file
+    kind: export
+    alias: file
+    crate: busbar-export-file-plugin
+    version_line: "1.0"
+    service: none
+    release_gate: optional
+    gate: suite
+    # Moved out of busbar into its own repo (owner ruling: every plugin kind ships as its own repo);
+    # busbar LINKS it at a pinned rev. Its first release is cut with the core version that pins it.
+    released: false
+  - repo: export-otlp
+    kind: export
+    alias: otlp
+    crate: busbar-export-otlp-plugin
+    version_line: "1.0"
+    service: none
+    release_gate: optional
+    gate: suite
+    # Moved out of busbar into its own repo (owner ruling: every plugin kind ships as its own repo);
+    # busbar LINKS it at a pinned rev. Its first release is cut with the core version that pins it.
+    released: false
+  - repo: export-prometheus
+    kind: export
+    alias: prometheus
+    crate: busbar-export-prometheus-plugin
+    version_line: "1.0"
+    service: none
+    release_gate: optional
+    gate: suite
+    # Moved out of busbar into its own repo (owner ruling: every plugin kind ships as its own repo);
+    # busbar LINKS it at a pinned rev. Its first release is cut with the core version that pins it.
+    released: false
+  - repo: export-webhook
+    kind: export
+    alias: webhook
+    crate: busbar-export-webhook-plugin
+    version_line: "1.0"
+    service: none
+    release_gate: optional
+    gate: suite
+    # Moved out of busbar into its own repo (owner ruling: every plugin kind ships as its own repo);
+    # busbar LINKS it at a pinned rev. Its first release is cut with the core version that pins it.
+    released: false
+  - repo: transport-tcp
+    kind: transport
+    alias: tcp
+    crate: busbar-transport-tcp-plugin
+    version_line: "1.0"
+    service: none
+    release_gate: optional
+    gate: suite
+    # Moved out of busbar into its own repo (owner ruling: every plugin kind ships as its own repo);
+    # busbar LINKS it at a pinned rev. Its first release is cut with the core version that pins it.
+    released: false
