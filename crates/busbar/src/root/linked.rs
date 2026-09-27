@@ -38,9 +38,7 @@ use busbar_kernel::plane::PlaneAdmission;
 use busbar_kernel::plane_host::{EngineHost, LiveHostFactory};
 use busbar_kernel::plane_routes::{PlaneReqCtx, PlaneResponse, PlaneRouteSpec};
 use busbar_plugin_loader::{DynPlane, HotHostVtable, HotPlaneDecl, RouteAuth, RouteMethod};
-use busbar_plugin_loader::{
-    HotReply, HotStatusClass as StatusClass, ReplyStream, RequestHead, ServedPlane,
-};
+use busbar_plugin_loader::{HotStatusClass as StatusClass, ServedPlane};
 
 /// A provider composition step, captured off the resolved configuration before the app is built and
 /// run once the deployment's secret resolver exists.
@@ -589,11 +587,11 @@ enum Emitted {
 /// How many streamed chunks may wait for the caller before the plane's next `emit_body` blocks.
 const HOT_STREAM_DEPTH: usize = 8;
 
-/// The dispatching thread's [`ReplyStream`]: each event goes to the caller's
+/// The dispatching thread's [`busbar_plugin_loader::ReplyStream`]: each event goes to the caller's
 /// response; `false` once the caller went away.
 struct ToCaller(tokio::sync::mpsc::Sender<Emitted>);
 
-impl ReplyStream for ToCaller {
+impl busbar_plugin_loader::ReplyStream for ToCaller {
     fn head(&mut self, status: Option<u16>, headers: &[(Vec<u8>, Vec<u8>)]) -> bool {
         self.0
             .blocking_send(Emitted::Head(status, headers.to_vec()))
@@ -639,7 +637,7 @@ struct Held {
     cap: usize,
 }
 
-impl ReplyStream for Held {
+impl busbar_plugin_loader::ReplyStream for Held {
     fn head(&mut self, status: Option<u16>, headers: &[(Vec<u8>, Vec<u8>)]) -> bool {
         self.head = Some((status, headers.to_vec()));
         true
@@ -691,7 +689,7 @@ fn live_response(
 }
 
 /// A buffered answer: the plane's stated head on `Ok`, else its class status (see [`hot_response`]).
-fn buffered_response(reply: HotReply) -> PlaneResponse {
+fn buffered_response(reply: busbar_plugin_loader::HotReply) -> PlaneResponse {
     let body = axum::body::Body::from(reply.body);
     match (reply.class, reply.status) {
         (StatusClass::Ok, Some(status)) => hot_response(status, Some(&reply.headers), body),
@@ -721,13 +719,15 @@ async fn hot_answer_blocking(ctx: PlaneReqCtx) -> PlaneResponse {
     if let Some(Emitted::Head(status, headers)) = rx.recv().await {
         return live_response(status, &headers, rx);
     }
-    let reply = run.await.unwrap_or_else(|_| HotReply {
-        class: StatusClass::Fault,
-        status: None,
-        headers: Vec::new(),
-        body: Vec::new(),
-        streamed: false,
-    });
+    let reply = run
+        .await
+        .unwrap_or_else(|_| busbar_plugin_loader::HotReply {
+            class: StatusClass::Fault,
+            status: None,
+            headers: Vec::new(),
+            body: Vec::new(),
+            streamed: false,
+        });
     buffered_response(reply)
 }
 
@@ -765,7 +765,10 @@ fn hot_response(
 /// caller the auth middleware resolved (`ctx.gov`, never a key id the plane writes; DEC-SERVE G1),
 /// and its egress judged against the operator's destinations in its section (DEC-SERVE G3). A body
 /// larger than the reply buffer goes to `stream` (DEC-SERVE G2).
-fn hot_dispatch(ctx: &PlaneReqCtx, stream: &mut dyn ReplyStream) -> HotReply {
+fn hot_dispatch(
+    ctx: &PlaneReqCtx,
+    stream: &mut dyn busbar_plugin_loader::ReplyStream,
+) -> busbar_plugin_loader::HotReply {
     let slot = ctx.slot.downcast_ref::<HotSlot>();
     let handle = ctx.engine.downcast_ref::<busbar_kernel::state::AppHandle>();
     let headers: Vec<(&[u8], &[u8])> = ctx
@@ -773,14 +776,14 @@ fn hot_dispatch(ctx: &PlaneReqCtx, stream: &mut dyn ReplyStream) -> HotReply {
         .iter()
         .map(|(name, value)| (name.as_str().as_bytes(), value.as_bytes()))
         .collect();
-    let head = RequestHead {
+    let head = busbar_plugin_loader::RequestHead {
         method: ctx.method.as_str().as_bytes(),
         path: ctx.uri.path().as_bytes(),
         query: ctx.uri.query().unwrap_or_default().as_bytes(),
         headers: &headers,
     };
     let (Some(slot), Some(handle)) = (slot, handle) else {
-        return HotReply {
+        return busbar_plugin_loader::HotReply {
             class: StatusClass::Fault,
             status: None,
             headers: Vec::new(),

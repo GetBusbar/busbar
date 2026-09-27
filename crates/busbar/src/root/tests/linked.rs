@@ -26,7 +26,7 @@ use super::*;
 use busbar_kernel::plane::registry::{merged_boot_plane_decls, BuildCtx};
 use busbar_plugin_example_plane::PLANE_DECL as LINKED_DECL;
 use busbar_plugin_loader::sign::{sign, Manifest, SigningKey, TrustPolicy};
-use busbar_plugin_loader::{PluginRegistry, MAX_PLANE_REPLY_LEN};
+use busbar_plugin_loader::PluginRegistry;
 
 /// The linked example plane, as the build table carries it.
 pub(super) static LINKED_HOT: [&HotPlaneDecl; 1] = [&LINKED_DECL];
@@ -535,10 +535,13 @@ async fn serve_arm() {
     };
     let rows = match arm.as_str() {
         "linked" => plane_rows(&linked(&[], &LINKED_HOT), Vec::new()),
-        // The same linked plane, declaring its dispatch blocks (minor 32): served on a blocking
-        // thread rather than inline — the other door mode, which must answer identically.
+        // The same linked plane, declaring a live answer (the response-stream carrier) and that its
+        // dispatch blocks (minor 32) — which a live answer requires: served on a blocking thread
+        // rather than inline — the other door mode, which must answer identically.
         "blocking" => {
             let blocking: &'static HotPlaneDecl = Box::leak(Box::new(HotPlaneDecl {
+                provided_carriers: LINKED_DECL.provided_carriers
+                    | busbar_contract::abi::hot::IngressCarrier::ResponseStream.bit(),
                 dispatch_flags: busbar_contract::abi::hot::decl::DISPATCH_BLOCKS,
                 ..LINKED_DECL
             }));
@@ -580,7 +583,7 @@ async fn serve_arm() {
     let (audit, metering) = (audit_rows(&app), metering_rows(&app));
 
     // THE CARRIER (DEC-SERVE G2): the plane reads the head and answers its provider's status,
-    // headers and body — first a buffered answer, then one over the reply buffer.
+    // headers and body — first a buffered answer, then one over the reply buffer, which streams.
     let provider = answered(
         &router,
         axum::http::Request::builder()
@@ -592,7 +595,7 @@ async fn serve_arm() {
             .unwrap(),
     )
     .await;
-    let over = MAX_PLANE_REPLY_LEN + 1;
+    let over = busbar_plugin_loader::MAX_PLANE_REPLY_LEN + 1;
     let streamed = answered(
         &router,
         axum::http::Request::builder()
@@ -632,6 +635,7 @@ async fn serve_arm() {
                 .clone(),
         );
     }
+    let first_byte = first_byte_lead(&router).await;
     let served = serde_json::json!({
         "echoed": echoed,
         "status": status,
@@ -640,8 +644,50 @@ async fn serve_arm() {
         "metering": metering,
         "provider": provider,
         "streamed": streamed,
+        "first_byte_lead_ms": first_byte,
     });
     std::fs::write(out, served.to_string()).expect("the arm writes what it served");
+}
+
+/// How long a PAUSE in the plane's stream lasts: its first byte goes out, then it sleeps this long,
+/// then it writes the rest and returns.
+const STREAM_PAUSE_MS: u64 = 300;
+
+/// WHEN THE FIRST STREAMED BYTE REACHED THE CALLER, against when the body ended — the end is when
+/// the plane's dispatch returned, since the stream closes then. Measured by timestamps on the
+/// caller's side, in milliseconds: the first data frame's arrival and the end of the body are each
+/// stamped as the caller polls them, and the lead is their difference (`None` when the answer is
+/// not the plane's 64-byte body). A live stream leads by about the plane's pause; a body held until
+/// the dispatch returns leads by ~0.
+async fn first_byte_lead(router: &axum::Router) -> Option<u128> {
+    use http_body_util::BodyExt;
+    use tower::ServiceExt;
+    let request = axum::http::Request::builder()
+        .method("POST")
+        .uri("/example")
+        .header("x-example-status", "200")
+        .header("x-example-size", "64")
+        .header("x-example-pause-ms", STREAM_PAUSE_MS.to_string())
+        .body(axum::body::Body::empty())
+        .unwrap();
+    let response = router
+        .clone()
+        .oneshot(request)
+        .await
+        .expect("the router answers");
+    let mut body = response.into_body();
+    let mut first = None;
+    let mut bytes = 0usize;
+    while let Some(frame) = body.frame().await {
+        if let Ok(data) = frame.expect("the body reads").into_data() {
+            bytes += data.len();
+            first.get_or_insert_with(std::time::Instant::now);
+        }
+    }
+    let end = std::time::Instant::now();
+    // A door that did not serve the plane (the bypass arm) answers something else: no lead.
+    let first = first.filter(|_| bytes == 64)?;
+    Some(end.duration_since(first).as_millis())
 }
 
 /// The fixed host entropy [`serve_arm`] installs.
@@ -731,15 +777,41 @@ fn a_linked_and_a_dropped_in_plane_serve_one_request_identically() {
         eprintln!("skip: a child arm, or the example plane cdylib is not built");
         return;
     }
-    let linked = serve_in_a_fresh_process("linked");
-    let dropped = serve_in_a_fresh_process("dropped");
+    let mut linked = serve_in_a_fresh_process("linked");
+    let mut dropped = serve_in_a_fresh_process("dropped");
+    let mut blocking = serve_in_a_fresh_process("blocking");
+    // THE FIRST STREAMED BYTE, TIMED. A live-answering plane (the response-stream carrier, which
+    // requires DISPATCH_BLOCKS) sends its first byte to the caller BEFORE its dispatch returns:
+    // the byte leads the end of the body by about the plane's pause. Inline (no bit, no live
+    // carrier) the host holds the body until the dispatch returns, so the byte leads by ~0 — the
+    // contrast that makes the blocking arm's lead a measurement, not a construction.
+    let lead = |arm: &mut serde_json::Value| {
+        arm.as_object_mut()
+            .and_then(|o| o.remove("first_byte_lead_ms"))
+            .and_then(|v| v.as_u64())
+            .expect("the arm timed its first byte")
+    };
+    let (inline_lead, dropped_lead, live_lead) =
+        (lead(&mut linked), lead(&mut dropped), lead(&mut blocking));
+    eprintln!(
+        "first byte ahead of the dispatch's return: live {live_lead} ms, inline linked \
+         {inline_lead} ms / dropped {dropped_lead} ms (plane pause {STREAM_PAUSE_MS} ms)"
+    );
+    assert!(
+        live_lead >= STREAM_PAUSE_MS / 2,
+        "with DISPATCH_BLOCKS the first byte reached the caller only {live_lead} ms before the \
+         dispatch returned (pause {STREAM_PAUSE_MS} ms)"
+    );
+    assert!(
+        inline_lead < STREAM_PAUSE_MS / 2 && dropped_lead < STREAM_PAUSE_MS / 2,
+        "inline, the body is held until the dispatch returns: leads {inline_lead}/{dropped_lead} ms"
+    );
     assert_eq!(
         linked, dropped,
         "the two doors served the same request differently"
     );
     // Inline on the worker (the example plane does not block) or on a blocking thread (the same
     // plane declaring DISPATCH_BLOCKS, minor 32): one answer, byte for byte.
-    let blocking = serve_in_a_fresh_process("blocking");
     assert_eq!(
         linked, blocking,
         "the inline and the blocking dispatch served the same request differently"
@@ -795,7 +867,7 @@ fn a_linked_and_a_dropped_in_plane_serve_one_request_identically() {
                 "x-example-id: 5a5a5a5a5a5a5a5a",
             ],
             "known_len": null,
-            "body": { "len": MAX_PLANE_REPLY_LEN + 1, "pattern": true },
+            "body": { "len": busbar_plugin_loader::MAX_PLANE_REPLY_LEN + 1, "pattern": true },
         }),
         "{linked:#}"
     );

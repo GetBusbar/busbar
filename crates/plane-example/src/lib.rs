@@ -642,8 +642,14 @@ fn provider_answer(work: *const WorkItem, status: u16) -> StatusClass {
     if emit_head(w.emit.id, status, fields.as_ptr(), fields.len()) != StatusClass::Ok {
         return StatusClass::Refused;
     }
+    // `x-example-pause-ms: <n>` asks for the body as a stream whose first byte goes out, then a
+    // pause of `n` ms, then the rest — so a caller can time when the first byte reached it against
+    // when the dispatch returned.
+    let pause = header(work, b"x-example-pause-ms")
+        .and_then(|v| String::from_utf8(v).ok())
+        .and_then(|v| v.parse::<u64>().ok());
     let cap = busbar_contract::abi::read_sized_field!(work, advertised, WorkItem, reply_cap);
-    if body.len() <= cap.unwrap_or(0) {
+    if body.len() <= cap.unwrap_or(0) && pause.is_none() {
         // SAFETY: `reply_ptr`/`reply_written` are the host's live reply channel for this call.
         return unsafe { reply_into(w, &body) };
     }
@@ -656,7 +662,14 @@ fn provider_answer(work: *const WorkItem, status: u16) -> StatusClass {
     if stream.kind != EmitKind::Stream {
         return StatusClass::Refused;
     }
-    for chunk in body.chunks(64 * 1024) {
+    let (first, rest) = body.split_at(body.len().min(1));
+    if emit_body(stream.id, first.as_ptr(), first.len()) != StatusClass::Ok {
+        return StatusClass::Gone;
+    }
+    if let Some(ms) = pause {
+        std::thread::sleep(std::time::Duration::from_millis(ms));
+    }
+    for chunk in rest.chunks(64 * 1024) {
         if emit_body(stream.id, chunk.as_ptr(), chunk.len()) != StatusClass::Ok {
             return StatusClass::Gone;
         }

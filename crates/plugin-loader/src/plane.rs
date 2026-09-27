@@ -1033,6 +1033,21 @@ fn assemble(
         }
     };
 
+    // A LIVE ANSWER NEEDS A BLOCKING DISPATCH: a plane that declares it answers live — a streamed
+    // reply (`ResponseStream`) or a duplex session (`DuplexSession`) — writes its body while the
+    // caller reads it, which only a dispatch on its own thread can do. Inline, the host holds the
+    // body until the dispatch returns, and the stream is live in name only. So the default is safe:
+    // such a plane without `DISPATCH_BLOCKS` is refused, never served late.
+    let live = IngressCarrier::ResponseStream.bit() | IngressCarrier::DuplexSession.bit();
+    if provided_carriers & live != 0 && !dispatch_blocks {
+        return Err(format!(
+            "plane '{name}' declares a live answer (a response-stream or duplex-session carrier) \
+             but not DISPATCH_BLOCKS ({DISPATCH_BLOCKS:#x}) in its dispatch flags: a live answer \
+             is written while the caller reads it, so its dispatch must run on its own thread — \
+             set the bit"
+        ));
+    }
+
     Ok(DynPlane {
         decl: decl_ptr,
         honoured_size,

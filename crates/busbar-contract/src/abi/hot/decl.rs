@@ -445,7 +445,7 @@ impl PlaneDecl {
         served_op_classes_len: 0,
         record_kinds_ptr: core::ptr::null(),
         record_kinds_len: 0,
-        dispatch_flags: 0,
+        dispatch_flags: DISPATCH_BLOCKS,
         _reserved3: 0,
     };
 }

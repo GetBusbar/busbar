@@ -494,3 +494,38 @@ fn the_dispatch_flags_tail_reads_back_as_stated() {
          — rebuild it against this busbar ABI minor"
     );
 }
+
+/// A LIVE ANSWER NEEDS A BLOCKING DISPATCH: a plane declaring a response-stream or duplex-session
+/// carrier without `DISPATCH_BLOCKS` is refused at load, naming the plane and the bit — inline, its
+/// stream would reach the caller only after the dispatch returned. With the bit it is admitted, and
+/// a request/response plane needs no bit.
+#[test]
+fn a_live_answering_plane_without_dispatch_blocks_is_refused() {
+    use busbar_contract::abi::hot::decl::DISPATCH_BLOCKS;
+    let _s = serial();
+    for live in [
+        IngressCarrier::ResponseStream,
+        IngressCarrier::DuplexSession,
+    ] {
+        let mut d = decl();
+        d.provided_carriers = IngressCarrier::RequestResponse.bit() | live.bit();
+        d.dispatch_flags = 0;
+        assert_eq!(
+            plane_over(&d).expect_err("a live answer on an inline dispatch"),
+            "plane 'memplane' declares a live answer (a response-stream or duplex-session carrier) \
+             but not DISPATCH_BLOCKS (0x1) in its dispatch flags: a live answer is written while the \
+             caller reads it, so its dispatch must run on its own thread — set the bit",
+            "{live:?}"
+        );
+        d.dispatch_flags = DISPATCH_BLOCKS;
+        assert!(
+            plane_over(&d).expect("admits").dispatch_blocks(),
+            "{live:?}"
+        );
+    }
+    let mut d = decl();
+    d.dispatch_flags = 0;
+    assert!(!plane_over(&d)
+        .expect("a request/response plane runs inline")
+        .dispatch_blocks());
+}
