@@ -1377,9 +1377,3 @@ mod tests;
 #[cfg(test)]
 #[path = "tests/plane_decl_tests.rs"]
 mod tests_decl;
-
-/// The HOT door's added latency per request, measured (release, `--ignored`): the #30 crossing and
-/// the thread hop, linked and dropped in.
-#[cfg(test)]
-#[path = "tests/hot_door_latency_tests.rs"]
-mod hot_door_latency;
