@@ -144,6 +144,10 @@ static SERVED_OP_CLASSES: [DeclServedOpClass; 1] = [DeclServedOpClass {
 /// The plane-record kind this plane keeps, so the both-doors proof compares a non-empty row.
 static RECORD_KINDS: [DeclStr; 1] = [DeclStr::new("example_record")];
 
+/// The concretely-parsed config section this plane requires, so the both-doors proof compares a
+/// non-empty row.
+static REQUIRED_SECTIONS: [DeclStr; 1] = [DeclStr::new("providers")];
+
 /// THE PATH THIS PLANE ANSWERS ON, the method it takes and the wire format it speaks — what its
 /// `claims` slot states once it is built with a public URL to be admitted under.
 const CLAIM_METHOD: &str = "POST";
@@ -822,6 +826,8 @@ pub static PLANE_DECL: PlaneDecl = PlaneDecl {
     // runs inline on the request's worker (minor 32).
     dispatch_flags: 0,
     _reserved3: 0,
+    required_sections_ptr: REQUIRED_SECTIONS.as_ptr(),
+    required_sections_len: REQUIRED_SECTIONS.len(),
 };
 
 // Emit the `cdylib` boundary symbols (`busbar_abi`, `busbar_plugin_kind() == "plane"`,

@@ -240,6 +240,7 @@ fn the_declaration_tail_reads_back_as_stated() {
             metric_families: Vec::new(),
             served_op_classes: Vec::new(),
             record_kinds: Vec::new(),
+            required_sections: Vec::new(),
         }
     );
     let mut d = decl();
@@ -338,6 +339,38 @@ fn the_record_kind_tail_reads_back_as_stated() {
     d.size = core::mem::size_of::<PlaneDecl>() as u32;
     d.record_kinds_ptr = core::ptr::null();
     assert!(plane_over(&d).is_err(), "a stated count behind a null list");
+}
+
+/// The required sections of [`the_required_section_tail_reads_back_as_stated`].
+static REQUIRED: [DeclStr; 2] = [DeclStr::new("providers"), DeclStr::new("models")];
+
+/// Minor 34: the config sections a decl requires read back as stated; a decl that ends before the
+/// tail (an older minor) requires none, so it makes no section required.
+#[test]
+fn the_required_section_tail_reads_back_as_stated() {
+    let _s = serial();
+    let mut d = decl();
+    d.required_sections_ptr = REQUIRED.as_ptr();
+    d.required_sections_len = REQUIRED.len();
+    assert_eq!(
+        plane_over(&d).unwrap().declaration().required_sections,
+        vec!["providers".to_string(), "models".to_string()]
+    );
+    d.size = core::mem::offset_of!(PlaneDecl, required_sections_ptr) as u32;
+    assert!(plane_over(&d)
+        .unwrap()
+        .declaration()
+        .required_sections
+        .is_empty());
+    d.size = core::mem::size_of::<PlaneDecl>() as u32;
+    d.required_sections_ptr = core::ptr::null();
+    let got = plane_over(&d).map(|p| p.honoured_size);
+    assert!(
+        got.as_ref().is_err_and(
+            |e| e.contains("declares 2 required config section entries behind a null list")
+        ),
+        "a stated count behind a null list: {got:?}"
+    );
 }
 
 #[test]

@@ -32,6 +32,12 @@
 //! frozen struct and is refused with serde's own unknown-field message — exactly what 1.5.5 said
 //! for any key it did not know (Option A, S11b (c) / Q67).
 //!
+//! The mirror image holds for a section a registered plane REQUIRES
+//! (`PlaneDeclaration::required_config_sections`, Law 7): the pass watches for it, and a document
+//! that does not carry it is refused with serde's own missing-field message for it — 1.5.5's bytes
+//! for `providers`/`models` in a build that links a plane requiring them. A section no registered
+//! plane requires may be omitted (the frozen struct defaults it).
+//!
 //! The remaining fleet-scalar keys named in the design (a data directory, peers, a keyset
 //! reference, a WAL capacity, and the per-bucket tier/currency pair) are NOT part of the parse
 //! surface yet — no frozen struct declares them — so there is nothing for this module to lift for
@@ -129,9 +135,6 @@ pub(crate) const LIFTED_AUTH_KEYS: &[&str] = &["policy"];
 /// The top-level key whose VALUE carries a nested lift of its own.
 const NESTED_TOP_LEVEL_KEY: &str = "auth";
 
-/// [`NESTED_TOP_LEVEL_KEY`] as the one-element slice the key reader matches forwarded keys against.
-const NESTED_WATCH: &[&str] = &[NESTED_TOP_LEVEL_KEY];
-
 /// Where one lifted key's value lands.
 #[derive(Clone, Copy)]
 enum Dest {
@@ -206,6 +209,10 @@ pub(crate) struct Lifted {
     plane_rate_cards: super::PlaneRateCards,
     plane_fees: super::PlaneFeesMap,
     plane_raw: std::collections::BTreeMap<&'static str, serde_yaml::Value>,
+    /// The top-level keys the key reader watches for: the nested key, then every section a
+    /// registered plane requires. A key is struck as the document is seen to carry it, so what is
+    /// left once the document is read is what it omitted.
+    watch: Vec<&'static str>,
 }
 
 impl Lifted {
@@ -346,7 +353,7 @@ enum KeyOutcome<V, S> {
 struct KeySeed<'a, S> {
     inner: S,
     lift: &'a [(&'static str, Dest)],
-    watch: &'static [&'static str],
+    watch: &'a [&'static str],
     /// Set to the matched entry of `lift` when the key is lifted.
     lifted: &'a mut Option<(&'static str, Dest)>,
     /// Set to the matched entry of `watch` when a FORWARDED key is one whose value needs a
@@ -409,10 +416,6 @@ impl<'de, M: MapAccess<'de>> MapAccess<'de> for LiftingMap<'_, M> {
         &mut self,
         seed: K,
     ) -> Result<Option<K::Value>, Self::Error> {
-        let watch: &'static [&'static str] = match self.nested {
-            Some(_) => NESTED_WATCH,
-            None => &[],
-        };
         let mut seed = seed;
         loop {
             let mut lifted = None;
@@ -420,14 +423,15 @@ impl<'de, M: MapAccess<'de>> MapAccess<'de> for LiftingMap<'_, M> {
             let outcome = self.inner.next_key_seed(KeySeed {
                 inner: seed,
                 lift: self.lift,
-                watch,
+                watch: &self.lifted.watch,
                 lifted: &mut lifted,
                 watched: &mut watched,
             })?;
             match outcome {
                 None => return Ok(None),
                 Some(KeyOutcome::Forward(v)) => {
-                    self.pending_nested = watched.is_some();
+                    self.pending_nested = watched == Some(NESTED_TOP_LEVEL_KEY);
+                    self.lifted.watch.retain(|k| Some(*k) != watched);
                     return Ok(Some(v));
                 }
                 Some(KeyOutcome::Lift(returned)) => {
@@ -561,6 +565,10 @@ impl<'de> Visitor<'de> for DocumentVisitor {
 
     fn visit_map<M: MapAccess<'de>>(self, map: M) -> Result<Self::Value, M::Error> {
         let mut lifted = Lifted::default();
+        lifted.watch.push(NESTED_TOP_LEVEL_KEY);
+        for d in crate::plane::registry::plane_decls() {
+            lifted.watch.extend(d.required_config_sections);
+        }
         let table = lift_table();
         let mut deploy = DeployCfg::deserialize(MapAccessDeserializer::new(LiftingMap {
             inner: map,
@@ -569,6 +577,12 @@ impl<'de> Visitor<'de> for DocumentVisitor {
             pending_nested: false,
             lifted: &mut lifted,
         }))?;
+        // A section a registered plane requires and the document omits: serde's own refusal for it,
+        // raised where the frozen struct raised it (after the document's keys), so its bytes are the
+        // ones 1.5.5 printed. The first in declaration order, as the derive reports the first.
+        if let Some(s) = lifted.watch.iter().find(|k| **k != NESTED_TOP_LEVEL_KEY) {
+            return Err(M::Error::missing_field(s));
+        }
         lifted.install(&mut deploy);
         Ok(SplitDocument(deploy))
     }

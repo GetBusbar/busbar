@@ -274,6 +274,10 @@ pub const PLANE_DECLARATION: busbar_contract::plane::PlaneDeclaration =
         // host resolves it here, so the requesting plane spells no plane.
         record_kinds: &[],
         served_op_classes: busbar_plane_llm::meta::SERVED_OP_CLASSES,
+        // The two catalog sections this plane cannot serve without: `models` is its own target
+        // section, and every model resolves its upstream through `providers`. A build that links
+        // this plane refuses a document missing either, with the config grammar's own message.
+        required_config_sections: &["providers", "models"],
     };
 
 /// THE PLANE'S BEHAVIOUR — every hook the kernel runs for it, handed over BESIDE

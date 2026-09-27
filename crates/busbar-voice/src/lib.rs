@@ -329,6 +329,10 @@ pub const PLANE_DECLARATION: busbar_contract::plane::PlaneDeclaration =
         metric_families: &[],
         record_kinds: &[],
         served_op_classes: &[],
+        // The realtime provider is resolved through the deployment's `providers:` catalog (the
+        // model this plane's section names, then that model's provider), so this plane consumes
+        // `providers`. `models` belongs to the plane that owns it.
+        required_config_sections: &["providers"],
     };
 
 /// THE PLANE'S BEHAVIOUR — every hook the kernel runs for it, handed over BESIDE

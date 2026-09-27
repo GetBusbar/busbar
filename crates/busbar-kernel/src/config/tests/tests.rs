@@ -4242,6 +4242,7 @@ static CARD_PLANE: crate::plane::registry::PlaneDecl = crate::plane::registry::P
         fee_units: &[],
         metric_families: &[],
         record_kinds: &[],
+        required_config_sections: &[],
         served_op_classes: &[],
     },
     wire_format_names: || &[],
@@ -4374,4 +4375,154 @@ fn a_flat_rate_card_resolves_to_itself() {
         let root = resolve(&deploy, &HashMap::new()).expect("resolves");
         assert_eq!(root.rate_card, deploy.rate_card, "{text}");
     }
+}
+
+// ── CONFIG-REQ (ARCHITECT 2026-09-27, Law 7): A CONCRETE SECTION IS REQUIRED ONLY BY A PLANE ──────
+
+/// A stub plane requiring exactly `required` of the requirable sections, and nothing else.
+const fn requiring_plane(required: &'static [&'static str]) -> crate::plane::registry::PlaneDecl {
+    crate::plane::registry::PlaneDecl {
+        declaration: crate::plane::registry::PlaneDeclaration {
+            key: "req-plane",
+            fallback: false,
+            config_section: "req-plane",
+            scope_kinds: &[],
+            subject_noun: "req thing",
+            admin_noun: "req-thing",
+            audit_kind: "req-thing",
+            card_signing_domain: None,
+            card_kid_prefix: None,
+            owned_config_sections: &[],
+            billable_classes: &[],
+            fee_units: &[],
+            metric_families: &[],
+            record_kinds: &[],
+            required_config_sections: required,
+            served_op_classes: &[],
+        },
+        wire_format_names: || &[],
+        claims: |_| Vec::new(),
+        admission: |_| None,
+        build: |_| None,
+        routes: None,
+        admin_routes: None,
+        openapi: None,
+        hydrate: None,
+        start: None,
+        config_validate: None,
+        named_def_list: None,
+        named_def_get: None,
+        registry_contains: None,
+        reresolve_gates: None,
+        openapi_schemas: None,
+        on_swap: None,
+        parse_section: None,
+        parse_endpoint: None,
+        lower_endpoint: None,
+        build_runtime: None,
+        viewer: None,
+        retain_verify_gates: None,
+        default_section: None,
+        resolve_provider: None,
+    }
+}
+
+/// The plane that requires both catalog sections — the shape a build linking the plane that owns
+/// `models` (and consumes `providers`) registers.
+static REQUIRES_BOTH: crate::plane::registry::PlaneDecl = requiring_plane(&["providers", "models"]);
+
+/// The plane that requires only `providers` — a plane that consumes the catalog but owns no models.
+static REQUIRES_PROVIDERS: crate::plane::registry::PlaneDecl = requiring_plane(&["providers"]);
+
+/// The same plane with its requirement list dropped — the build that links no plane requiring
+/// either section.
+static REQUIRES_NONE: crate::plane::registry::PlaneDecl = requiring_plane(&[]);
+
+/// A document carrying neither catalog section.
+const NO_CATALOG: &str = "listen: \"127.0.0.1:0\"\npools: {}\n";
+
+/// THE DEFAULT-BUILD REFUSAL, byte for byte: with a registered plane requiring the sections, a
+/// document missing one is refused with the config grammar's own missing-field message — the exact
+/// text the published 1.5.5 binary prints after `config.yaml: invalid YAML: ` (measured on the
+/// v1.5.5 release binary: `[error] config.yaml: invalid YAML: missing field `providers``, and
+/// `models` for a document carrying `providers:` only). `providers` is refused first, as 1.5.5 did.
+#[test]
+fn a_section_a_registered_plane_requires_is_refused_with_the_1_5_5_missing_field_text() {
+    let _isolation =
+        busbar_kernel::plane::registry::TestRegistryIsolation::seeded(&[&REQUIRES_BOTH]);
+    let err = crate::config::deploy_from_yaml_str(NO_CATALOG).expect_err("providers required");
+    assert_eq!(err.to_string(), "missing field `providers`");
+    let err = crate::config::deploy_from_yaml_str("listen: \"127.0.0.1:0\"\nproviders: {}\n")
+        .expect_err("models required");
+    assert_eq!(err.to_string(), "missing field `models`");
+    // The in-memory document path (the management surface's overlay merge) refuses identically.
+    let value: serde_yaml::Value = serde_yaml::from_str(NO_CATALOG).unwrap();
+    let err = crate::config::deploy_from_yaml_value(value).expect_err("providers required");
+    assert_eq!(err.to_string(), "missing field `providers`");
+}
+
+/// A plane that requires `providers` only makes `providers` required: `models` reads empty.
+#[test]
+fn a_plane_requiring_one_section_leaves_the_other_omissible() {
+    let _isolation =
+        busbar_kernel::plane::registry::TestRegistryIsolation::seeded(&[&REQUIRES_PROVIDERS]);
+    let err = crate::config::deploy_from_yaml_str(NO_CATALOG).expect_err("providers required");
+    assert_eq!(err.to_string(), "missing field `providers`");
+    let deploy = crate::config::deploy_from_yaml_str("providers: {}\n")
+        .expect("models is required by no registered plane");
+    assert!(deploy.models.is_empty() && deploy.providers.is_empty());
+}
+
+/// THE WARDEN DEFECT, GREEN: a build that registers no plane requiring either section (a
+/// single-plane build of a plane that needs neither) accepts a document with neither, and each
+/// reads empty. A section the document
+/// DOES carry is its own — never replaced by the supplied empty one, never read twice.
+///
+/// RED ARM (kept): this is the same registry and the same document as the refusal above, with only
+/// the plane's requirement list dropped — so the verdict is the plane's declaration, not a kernel
+/// default. Before CONFIG-REQ this document was refused with `missing field `providers`` whatever
+/// the registry held.
+#[test]
+fn a_section_no_registered_plane_requires_may_be_omitted_and_reads_empty() {
+    let _isolation =
+        busbar_kernel::plane::registry::TestRegistryIsolation::seeded(&[&REQUIRES_NONE]);
+    let deploy = crate::config::deploy_from_yaml_str(NO_CATALOG)
+        .expect("no registered plane requires a catalog section");
+    assert!(deploy.providers.is_empty(), "{:?}", deploy.providers.keys());
+    assert!(deploy.models.is_empty(), "{:?}", deploy.models.keys());
+    let value: serde_yaml::Value = serde_yaml::from_str(NO_CATALOG).unwrap();
+    crate::config::deploy_from_yaml_value(value).expect("the in-memory path agrees");
+
+    let carried = crate::config::deploy_from_yaml_str(
+        "models:\n  m1: { provider: p1 }\nlisten: \"127.0.0.1:0\"\n",
+    )
+    .expect("a carried section parses as written");
+    assert_eq!(
+        carried.models.keys().collect::<Vec<_>>(),
+        vec!["m1"],
+        "the document's own section is kept, not replaced by the supplied empty one"
+    );
+    assert!(carried.providers.is_empty());
+
+    // An unknown top-level key is still the frozen struct's own refusal, supplied sections or not.
+    let err = crate::config::deploy_from_yaml_str("listen: \"x\"\nno_such_key: 1\n")
+        .expect_err("unknown key");
+    assert!(
+        err.to_string()
+            .starts_with("unknown field `no_such_key`, expected one of"),
+        "{err}"
+    );
+}
+
+/// Whatever top-level section a plane lists is enforced — nothing is stated and left unenforced:
+/// a document omitting it is refused with serde's own missing-field message for that section.
+#[test]
+fn any_section_a_registered_plane_requires_is_refused_when_absent() {
+    static REQUIRES_POOLS: crate::plane::registry::PlaneDecl = requiring_plane(&["pools"]);
+    let _isolation =
+        busbar_kernel::plane::registry::TestRegistryIsolation::seeded(&[&REQUIRES_POOLS]);
+    let err = crate::config::deploy_from_yaml_str("listen: \"127.0.0.1:0\"\n")
+        .expect_err("pools is required by a registered plane");
+    assert_eq!(err.to_string(), "missing field `pools`");
+    crate::config::deploy_from_yaml_str("pools: {}\n").expect("carried, so accepted");
 }

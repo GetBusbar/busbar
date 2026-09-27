@@ -78,6 +78,7 @@ fn native(key: &'static str) -> &'static [PlaneDecl] {
         fee_units: &[],
         metric_families: &[],
         record_kinds: &[],
+        required_config_sections: &[],
         served_op_classes: &[],
     };
     let hooks = PlaneHooks {
@@ -270,6 +271,7 @@ fn stated(d: &'static HotPlaneDecl) -> PlaneDeclaration {
             .collect::<Vec<_>>()
             .leak(),
         record_kinds: strs(&h.record_kinds),
+        required_config_sections: strs(&h.required_sections),
         served_op_classes: h
             .served_op_classes
             .iter()

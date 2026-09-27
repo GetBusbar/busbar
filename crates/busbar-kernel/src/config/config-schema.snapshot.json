@@ -453,7 +453,7 @@
           "type": "EndpointSection"
         },
         "models": {
-          "optional": false,
+          "optional": true,
           "type": "HashMap<String, ModelCfg>"
         },
         "oauth_as": {
@@ -473,7 +473,7 @@
           "type": "PoolsCfg"
         },
         "providers": {
-          "optional": false,
+          "optional": true,
           "type": "HashMap<String, ProviderDeploy>"
         },
         "providers_file": {

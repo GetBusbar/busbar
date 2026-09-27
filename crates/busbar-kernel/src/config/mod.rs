@@ -1220,7 +1220,12 @@ pub struct DeployCfg {
     /// (`keys` / `admin-tokens`) are referenceable.
     #[serde(default, rename = "identity-providers")]
     pub identity_providers: IdentityProviders,
+    /// `providers:` and `models:` are REQUIRED only when a registered plane declares it requires
+    /// them (`PlaneDeclaration::required_config_sections`); the pre-pass refuses such a document
+    /// with serde's own missing-field message. No such plane: an omitted section reads empty.
+    #[serde(default)]
     pub providers: HashMap<String, ProviderDeploy>,
+    #[serde(default)]
     pub models: HashMap<String, ModelCfg>,
     /// Pools are optional: a deployment can route to models directly (`/<model>/v1/messages`)
     /// without defining any pool. Carries the reserved `pools.hooks:` all-pools attach key (1.5.3);

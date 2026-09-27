@@ -394,6 +394,12 @@ pub struct PlaneDeclaration {
     /// operator cannot land a record under another plane's kind or a kind no plane reads. `&[]`
     /// for a plane that keeps none.
     pub record_kinds: &'static [&'static str],
+    /// The top-level config sections this plane REQUIRES a document to carry — the ones it owns or
+    /// consumes (`models` for the plane that owns it, `providers` for a plane that resolves its
+    /// targets through that catalog). A document omitting one is refused with the config grammar's
+    /// own missing-field message for it; a section no registered plane lists may be omitted. `&[]`
+    /// for a plane that requires none.
+    pub required_config_sections: &'static [&'static str],
 }
 
 /// Whether `decl` declares it keeps plane records of `kind` ([`PlaneDeclaration::record_kinds`]).

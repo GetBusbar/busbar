@@ -440,6 +440,7 @@ pub fn hot_plane_row(plane: &'static DynPlane) -> Result<PlaneDecl, String> {
             .leak(),
         fee_units: list(&stated.fee_units),
         record_kinds: list(&stated.record_kinds),
+        required_config_sections: list(&stated.required_sections),
         metric_families: stated
             .metric_families
             .iter()

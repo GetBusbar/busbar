@@ -163,6 +163,9 @@ pub struct HotDeclaration {
     /// The plane-record kinds the plane keeps (the minor-29 tail; empty for a decl that ends
     /// before it).
     pub record_kinds: Vec<String>,
+    /// The concretely-parsed config sections the plane requires (the minor-34 tail; empty for a
+    /// decl that ends before it).
+    pub required_sections: Vec<String>,
 }
 
 /// One metric family a HOT-lane plane declares, read off its decl into owned values.
@@ -1227,7 +1230,29 @@ fn read_declaration(
         metric_families: read_metric_families(decl, size, display)?,
         served_op_classes: read_served_op_classes(decl, size, display)?,
         record_kinds: read_record_kinds(decl, size, display)?,
+        required_sections: read_required_sections(decl, size, display)?,
     })
+}
+
+/// The decl's required-config-section tail (minor 34). A decl that ends before it requires no
+/// section — an append-only absence: the plane states none, so it makes no section required.
+fn read_required_sections(
+    decl: *const PlaneDecl,
+    size: u32,
+    display: &str,
+) -> Result<Vec<String>, String> {
+    let ptr = busbar_contract::abi::read_sized_field!(decl, size, PlaneDecl, required_sections_ptr);
+    let len = busbar_contract::abi::read_sized_field!(decl, size, PlaneDecl, required_sections_len);
+    let (Some(ptr), Some(len)) = (ptr, len) else {
+        return Ok(Vec::new());
+    };
+    decl_list(ptr, len, "required config section", display)?
+        .into_iter()
+        .map(|d: DeclStr| {
+            decl_str(d, display)?
+                .ok_or_else(|| format!("plane '{display}' states no required config section"))
+        })
+        .collect()
 }
 
 /// The decl's plane-record-kind tail (minor 29). A decl that ends before it keeps no kind — an

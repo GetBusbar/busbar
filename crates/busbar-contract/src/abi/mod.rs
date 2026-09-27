@@ -172,7 +172,13 @@ pub const ABI_MAJOR: u32 = 2;
 /// claim the host resolved a connection to, which a framer opens its state for. A decl ending before
 /// the tail makes the one claim its row describes; facts ending before theirs name the first claim.
 /// Append-only.
-pub const ABI_MINOR: u32 = 33;
+///
+/// 33→34 (1.6.0, CONFIG-REQ; ARCHITECT 2026-09-27, Law 7, Q69(1)): `hot::PlaneDecl` appends the
+/// `required_sections` tail (a borrowed list of `hot::decl::DeclStr`), so a dropped-in plane
+/// declares the config sections it requires exactly as a linked one does, and a section no
+/// registered plane requires may be omitted. A decl ending before the tail requires none.
+/// Append-only.
+pub const ABI_MINOR: u32 = 34;
 
 /// The FROZEN-FOR-ALL-TIME ABI header. This exact layout — `magic` at offset 0, `abi_major` at 8,
 /// `abi_minor` at 12 — is a permanent contract: it may NEVER be reordered, resized, extended, or

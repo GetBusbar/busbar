@@ -623,7 +623,10 @@ fn compute_layout() -> String {
             record_kinds_len,
             // How its dispatch runs (minor 31).
             dispatch_flags,
-            _reserved3
+            _reserved3,
+            // The required config sections (minor 34).
+            required_sections_ptr,
+            required_sections_len
         ]
     );
     record!(s, DeclStr, [ptr, len]);

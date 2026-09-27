@@ -145,6 +145,9 @@ pub const PLANE_DECLARATION: busbar_contract::plane::PlaneDeclaration =
         metric_families: &[],
         record_kinds: &[],
         served_op_classes: &[],
+        // Every model this plane's section declares names its provider in the top-level
+        // `providers:` map, so this plane consumes `providers`.
+        required_config_sections: &["providers"],
     };
 
 /// The claims axis: the pure plane the boot seal registers, and the two exact-path claims it declares

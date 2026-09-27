@@ -98,6 +98,7 @@ pub const PLANE_DECLARATION: busbar_contract::plane::PlaneDeclaration =
         fee_units: &[PER_REQUEST],
         metric_families: &[],
         record_kinds: busbar_plane_a2a::records::RECORD_KINDS,
+        required_config_sections: &[],
         served_op_classes: &[],
     };
 
