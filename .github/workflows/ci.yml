@@ -314,6 +314,8 @@ jobs:
         run: ./scripts/secret-accessor-seal-witness.sh --selftest
       - name: linked-axis feature derivation self-test (the feature-sets rows' one source)
         run: ./scripts/linked-axis-features.sh --selftest
+      - name: oracle premise self-test (a filtered run evaluates its forgivenesses' premises or refuses by name)
+        run: ./bin/oracle premise-selftest
       - name: secret-accessor seal witness (no cdylib plugin reaches a kernel secret accessor)
         run: ./scripts/secret-accessor-seal-witness.sh --check
       - name: qa-gate runner self-test
