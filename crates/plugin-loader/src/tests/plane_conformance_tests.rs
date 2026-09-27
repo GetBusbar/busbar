@@ -42,7 +42,7 @@ use busbar_plugin_example_plane::PLANE_DECL as COMPILED_IN;
 
 /// Locate the REAL `busbar-plane-example` cdylib built into this workspace's target dir (uplifted or
 /// under `deps`, newest wins). Mirrors `store_proof_plugin_path()` in `lib_tests.rs`.
-fn plane_example_cdylib() -> Option<std::path::PathBuf> {
+pub(super) fn plane_example_cdylib() -> Option<std::path::PathBuf> {
     let candidate = (|| {
         let exe = std::env::current_exe().ok()?;
         let profile_dir = exe.parent()?.parent()?;
@@ -94,7 +94,7 @@ fn vocab(ptr: *const u8, len: usize) -> String {
 // the seam. A `dispatch` that returned `Ok` without touching the table would leave every counter at
 // zero and red these tests, which is the property that makes them worth running.
 // ─────────────────────────────────────────────────────────────────────────────────────────────
-mod test_host {
+pub(super) mod test_host {
     use busbar_contract::abi::hot::host::{HostCtx, PlaneHostVtable};
     use busbar_contract::abi::hot::pod::{
         CostLeaseId, CostSettleOut, Decision, Facts, FramingDesc, MeterOutcome, Seq, StatusClass,
@@ -1123,6 +1123,8 @@ fn a_linked_and_a_dropped_in_plane_serve_identically_over_the_abi() {
     let host: &'static PlaneHostVtable = Box::leak(Box::new(test_host::vtable()));
     let section = br#"{"greeting":"hi"}"#;
     let url = Some("https://gw.example.com");
+    // The example plane's dispatch does not block (minor 32), and both doors read it so.
+    assert!(!linked.dispatch_blocks() && !dropped.dispatch_blocks());
 
     let _guard = test_host::reset();
     let serve = |plane: &'static crate::DynPlane| {

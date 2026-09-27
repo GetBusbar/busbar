@@ -41,7 +41,7 @@ use crate::carrier::{
 use crate::stage;
 use busbar_contract::abi::hot::decl::{
     AdminRoutesFn, AdmissionFn, BuildFn, ClaimsFn, ConfigValidateFn, DeclMetricFamily,
-    DeclServedOpClass, DispatchFn, HydrateFn, OpenApiFn, StartFn,
+    DeclServedOpClass, DispatchFn, HydrateFn, OpenApiFn, StartFn, DISPATCH_BLOCKS,
 };
 use busbar_contract::abi::hot::host::HostCtx;
 use busbar_contract::abi::hot::pod::{OpaqueState, RawStatus, StatusClass, POD_VERSION};
@@ -83,6 +83,9 @@ pub struct DynPlane {
     provided_carriers: u32,
     /// The rest of the plane's declaration (the decl's minor-22 tail), owned.
     declaration: HotDeclaration,
+    /// The plane's dispatch may block its thread ([`DISPATCH_BLOCKS`], minor 32): the host runs it
+    /// on a blocking thread, not inline on the request's worker.
+    dispatch_blocks: bool,
     /// The plane name/path, for diagnostics.
     path: String,
     /// The image's optional `busbar_plane_arm` entrypoint (minor 30): a DROPPED-IN plane's own copy
@@ -208,6 +211,13 @@ impl DynPlane {
     #[must_use]
     pub fn declaration(&self) -> &HotDeclaration {
         &self.declaration
+    }
+
+    /// Whether the plane's dispatch may block its thread ([`DISPATCH_BLOCKS`], minor 32) — so the
+    /// host runs it on a blocking thread. `false`: the host runs it inline on the request's worker.
+    #[must_use]
+    pub fn dispatch_blocks(&self) -> bool {
+        self.dispatch_blocks
     }
 
     // ── Slot readers: pull one `Option<fn>` slot out of the decl through the sized-struct guard.
@@ -1005,6 +1015,24 @@ fn assemble(
         ));
     }
 
+    // How its dispatch runs (minor 32): a decl that ends before the tail stated nothing and is run
+    // as blocking, the way it was run before it could say; a bit this build does not know is refused.
+    let dispatch_blocks = match busbar_contract::abi::read_sized_field!(
+        decl_ptr,
+        honoured_size,
+        PlaneDecl,
+        dispatch_flags
+    ) {
+        None => true,
+        Some(flags) if flags & !DISPATCH_BLOCKS == 0 => flags & DISPATCH_BLOCKS != 0,
+        Some(flags) => {
+            return Err(format!(
+                "plane '{display}' declares dispatch flags {flags:#x}; this build knows only \
+                 {DISPATCH_BLOCKS:#x} (dispatch blocks) — rebuild it against this busbar ABI minor"
+            ))
+        }
+    };
+
     Ok(DynPlane {
         decl: decl_ptr,
         honoured_size,
@@ -1014,6 +1042,7 @@ fn assemble(
         label,
         provided_carriers,
         declaration,
+        dispatch_blocks,
         path: display,
         arm: None,
         _lib: lib,
@@ -1333,3 +1362,9 @@ mod tests;
 #[cfg(test)]
 #[path = "tests/plane_decl_tests.rs"]
 mod tests_decl;
+
+/// The HOT door's added latency per request, measured (release, `--ignored`): the #30 crossing and
+/// the thread hop, linked and dropped in.
+#[cfg(test)]
+#[path = "tests/hot_door_latency_tests.rs"]
+mod hot_door_latency;

@@ -464,3 +464,33 @@ fn the_constructor_crossings_run_on_the_plugin_worker() {
         "config_validate and build must cross on the confined worker, not the caller's thread"
     );
 }
+
+/// HOW THE DISPATCH RUNS (minor 32): the flags read back as stated; a decl ending before the tail is
+/// run as blocking (the way it was run before it could say); a bit this build does not know is
+/// refused, naming it.
+#[test]
+fn the_dispatch_flags_tail_reads_back_as_stated() {
+    let _s = serial();
+    let mut d = decl();
+    d.dispatch_flags = 0;
+    assert!(!plane_over(&d).expect("admits").dispatch_blocks(), "inline");
+    d.dispatch_flags = busbar_contract::abi::hot::decl::DISPATCH_BLOCKS;
+    assert!(
+        plane_over(&d).expect("admits").dispatch_blocks(),
+        "declared blocking"
+    );
+    d.dispatch_flags = 0;
+    d.size = core::mem::offset_of!(PlaneDecl, dispatch_flags) as u32;
+    assert!(
+        plane_over(&d).expect("admits").dispatch_blocks(),
+        "a decl before the tail is run as blocking"
+    );
+    d.size = core::mem::size_of::<PlaneDecl>() as u32;
+    d.dispatch_flags = 0b10;
+    let refusal = plane_over(&d).expect_err("an unknown bit");
+    assert_eq!(
+        refusal,
+        "plane 'memplane' declares dispatch flags 0x2; this build knows only 0x1 (dispatch blocks) \
+         — rebuild it against this busbar ABI minor"
+    );
+}

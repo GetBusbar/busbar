@@ -159,7 +159,12 @@ pub const ABI_MAJOR: u32 = 2;
 /// lowered one slot per method (`hot::transport::CarrierSlots`, `hot::transport::FramerSlots`), with
 /// every constant the transport declares as its row. The loader admits a transport decl only from
 /// this minor and only at generation 2. No plane struct moves.
-pub const ABI_MINOR: u32 = 31;
+///
+/// 31→32 (1.6.0, HOTDOOR-B queue 2; ARCHITECT 2026-09-27, #30 HOT lane): `hot::PlaneDecl` appends
+/// `dispatch_flags` (+ padding). A plane's dispatch runs INLINE on the request's worker — no thread
+/// hop on the hot lane — unless it sets `hot::decl::DISPATCH_BLOCKS`, when the host runs it on a
+/// blocking thread. A decl ending before the tail is run as blocking. Append-only.
+pub const ABI_MINOR: u32 = 32;
 
 /// The FROZEN-FOR-ALL-TIME ABI header. This exact layout — `magic` at offset 0, `abi_major` at 8,
 /// `abi_minor` at 12 — is a permanent contract: it may NEVER be reordered, resized, extended, or

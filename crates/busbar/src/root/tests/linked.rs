@@ -26,7 +26,7 @@ use super::*;
 use busbar_kernel::plane::registry::{merged_boot_plane_decls, BuildCtx};
 use busbar_plugin_example_plane::PLANE_DECL as LINKED_DECL;
 use busbar_plugin_loader::sign::{sign, Manifest, SigningKey, TrustPolicy};
-use busbar_plugin_loader::PluginRegistry;
+use busbar_plugin_loader::{PluginRegistry, MAX_PLANE_REPLY_LEN};
 
 /// The linked example plane, as the build table carries it.
 pub(super) static LINKED_HOT: [&HotPlaneDecl; 1] = [&LINKED_DECL];
@@ -535,6 +535,16 @@ async fn serve_arm() {
     };
     let rows = match arm.as_str() {
         "linked" => plane_rows(&linked(&[], &LINKED_HOT), Vec::new()),
+        // The same linked plane, declaring its dispatch blocks (minor 32): served on a blocking
+        // thread rather than inline — the other door mode, which must answer identically.
+        "blocking" => {
+            let blocking: &'static HotPlaneDecl = Box::leak(Box::new(HotPlaneDecl {
+                dispatch_flags: busbar_contract::abi::hot::decl::DISPATCH_BLOCKS,
+                ..LINKED_DECL
+            }));
+            let table: &'static [&'static HotPlaneDecl] = Box::leak(Box::new([blocking]));
+            plane_rows(&linked(&[], table), Vec::new())
+        }
         "dropped" => plane_rows(&linked(&[], &[]), dropped_in()),
         "bypass" => plane_rows(&linked(&[], &[]), dropped_in()).map(bypassed),
         other => panic!("unknown arm {other}"),
@@ -570,7 +580,7 @@ async fn serve_arm() {
     let (audit, metering) = (audit_rows(&app), metering_rows(&app));
 
     // THE CARRIER (DEC-SERVE G2): the plane reads the head and answers its provider's status,
-    // headers and body — first a buffered answer, then one over the reply buffer, which streams.
+    // headers and body — first a buffered answer, then one over the reply buffer.
     let provider = answered(
         &router,
         axum::http::Request::builder()
@@ -582,7 +592,7 @@ async fn serve_arm() {
             .unwrap(),
     )
     .await;
-    let over = busbar_plugin_loader::MAX_PLANE_REPLY_LEN + 1;
+    let over = MAX_PLANE_REPLY_LEN + 1;
     let streamed = answered(
         &router,
         axum::http::Request::builder()
@@ -698,6 +708,13 @@ fn a_linked_and_a_dropped_in_plane_serve_one_request_identically() {
         linked, dropped,
         "the two doors served the same request differently"
     );
+    // Inline on the worker (the example plane does not block) or on a blocking thread (the same
+    // plane declaring DISPATCH_BLOCKS, minor 32): one answer, byte for byte.
+    let blocking = serve_in_a_fresh_process("blocking");
+    assert_eq!(
+        linked, blocking,
+        "the inline and the blocking dispatch served the same request differently"
+    );
 
     assert_eq!(linked["status"], 200, "{linked:#}");
     assert_eq!(
@@ -749,7 +766,7 @@ fn a_linked_and_a_dropped_in_plane_serve_one_request_identically() {
                 "x-example-id: 5a5a5a5a5a5a5a5a",
             ],
             "known_len": null,
-            "body": { "len": busbar_plugin_loader::MAX_PLANE_REPLY_LEN + 1, "pattern": true },
+            "body": { "len": MAX_PLANE_REPLY_LEN + 1, "pattern": true },
         }),
         "{linked:#}"
     );

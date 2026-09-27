@@ -356,7 +356,25 @@ pub struct PlaneDecl {
     pub record_kinds_ptr: *const DeclStr,
     /// Number of entries in the record-kinds list.
     pub record_kinds_len: usize,
+
+    // ── HOW THE PLANE'S DISPATCH RUNS (appended at minor 32; ARCHITECT HOTDOOR-B queue 2, #30). A
+    //    plane's dispatch is a HOT-lane call: the host runs it INLINE on the request's own worker,
+    //    no thread hop. A plane whose dispatch may BLOCK its thread sets [`DISPATCH_BLOCKS`] and the
+    //    host runs it on a blocking thread instead. A decl that ends before this tail stated
+    //    nothing, and is run as blocking — the way it was run before it could say. ──
+    /// The dispatch flags: [`DISPATCH_BLOCKS`], or `0`. Any other bit is refused at load.
+    pub dispatch_flags: u32,
+    /// Alignment padding.
+    pub _reserved3: u32,
 }
+
+/// [`PlaneDecl::dispatch_flags`]: the plane's `dispatch` may block the calling thread — it calls a
+/// host slot that waits (`egress_*`, `pipe_*`, `nested_dispatch`, `identity_admit`, `gate_decide`,
+/// which drive their own runtime and cannot run on an async worker) or writes a live response
+/// stream the caller's pace must hold back (`emit_body` waits for the caller). A plane that sets it
+/// is dispatched on a blocking thread; one that does not is dispatched inline, and its streamed body
+/// is buffered by the host until the dispatch returns.
+pub const DISPATCH_BLOCKS: u32 = 1;
 
 // SAFETY: `PlaneDecl` holds `AbiPreamble` scalars, `Option<extern "C-unwind" fn>` slots — and,
 // UNLIKE `PlaneHostVtable`, genuine raw-pointer fields (`name_ptr`, `section_key_ptr`, `scope_ptr`,
@@ -427,6 +445,8 @@ impl PlaneDecl {
         served_op_classes_len: 0,
         record_kinds_ptr: core::ptr::null(),
         record_kinds_len: 0,
+        dispatch_flags: 0,
+        _reserved3: 0,
     };
 }
 

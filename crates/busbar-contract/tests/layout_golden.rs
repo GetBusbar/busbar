@@ -620,7 +620,10 @@ fn compute_layout() -> String {
             served_op_classes_len,
             // The plane-record kinds (minor 29).
             record_kinds_ptr,
-            record_kinds_len
+            record_kinds_len,
+            // How its dispatch runs (minor 31).
+            dispatch_flags,
+            _reserved3
         ]
     );
     record!(s, DeclStr, [ptr, len]);

@@ -786,6 +786,10 @@ pub static PLANE_DECL: PlaneDecl = PlaneDecl {
     served_op_classes_len: SERVED_OP_CLASSES.len(),
     record_kinds_ptr: RECORD_KINDS.as_ptr(),
     record_kinds_len: RECORD_KINDS.len(),
+    // Its dispatch calls only host slots that answer at once and writes its stream in one go, so it
+    // runs inline on the request's worker (minor 32).
+    dispatch_flags: 0,
+    _reserved3: 0,
 };
 
 // Emit the `cdylib` boundary symbols (`busbar_abi`, `busbar_plugin_kind() == "plane"`,
