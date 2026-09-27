@@ -17,7 +17,7 @@
 //!
 //! The fix makes the wire an opaque, lossless carrier (every kind to its own `allowed_{kind}s`
 //! field), so kind validation stays the engine's and a plugin never needs the vocabulary. This
-//! module drives the SAME store (the in-tree store example), LINKED and `dlopen`ed, through the same
+//! module drives the SAME store (the store both-ways proof), LINKED and `dlopen`ed, through the same
 //! script, and requires both to hand back the key byte-identically.
 //!
 //! RED at the pre-fix HEAD: the dropped-in arm's `get_key` returns the plugin's serialize error
@@ -97,39 +97,6 @@ fn round_trip(store: &dyn RecordStore, arm: &str) -> (Vec<u8>, Vec<u8>) {
     )
 }
 
-/// The in-tree store example `cdylib`, if built: the newest of the uplifted `<profile_dir>/<name>`
-/// copy and the raw `<profile_dir>/deps/<name>` output (a scoped `cargo test -p` only produces the
-/// latter). Under CI a missing artifact is a HARD failure, never a silent skip.
-fn store_example_cdylib() -> Option<std::path::PathBuf> {
-    let candidate = (|| {
-        let exe = std::env::current_exe().ok()?;
-        let profile_dir = exe.parent()?.parent()?;
-        let name = crate::plugin_library_filename(super::both_ways::fixture("store").0);
-        [
-            profile_dir.join(&name),
-            profile_dir.join("deps").join(&name),
-        ]
-        .into_iter()
-        .filter_map(|p| {
-            std::fs::metadata(&p)
-                .and_then(|m| m.modified())
-                .ok()
-                .map(|mtime| (p, mtime))
-        })
-        .max_by_key(|(_, mtime)| *mtime)
-        .map(|(p, _)| p)
-    })();
-    if candidate.is_none() && std::env::var_os("CI").is_some() {
-        panic!(
-            "the store example plugin cdylib is not built under CI: `cargo test --workspace` must \
-             build {}. Refusing to silently skip DECISIONS #11's compiled-in vs dropped-in \
-             scope-kind equivalence.",
-            super::both_ways::fixture("store").0
-        );
-    }
-    candidate
-}
-
 /// **THE EQUIVALENCE.** The same store, LINKED and `dlopen`ed, hands back a key carrying `mcp_server`
 /// and `mcp_tool` grants byte-identically — and identical to what the host put in.
 #[test]
@@ -139,11 +106,11 @@ fn linked_and_dropped_in_store_round_trip_a_plane_scope_grant_identically() {
     let linked = store_fixture::open("{}").expect("compiled-in ctor");
     let (linked_get, linked_list) = round_trip(linked.as_ref(), "linked");
 
-    let Some(path) = store_example_cdylib() else {
-        // Not built under this scoped run; `store_example_cdylib` hard-fails under CI.
+    let Some(path) = super::both_ways::cdylib(super::both_ways::fixture("store").0) else {
+        // Not built under this scoped run; `both_ways::cdylib` hard-fails under CI.
         return;
     };
-    let dropped = crate::load_store(&path, "{}").expect("dlopen the store example plugin");
+    let dropped = crate::load_store(&path, "{}").expect("dlopen the store proof");
     let (dropped_get, dropped_list) = round_trip(dropped.as_ref(), "dropped-in");
 
     // The linked store hands back what it was given, save the `revision` every store stamps.

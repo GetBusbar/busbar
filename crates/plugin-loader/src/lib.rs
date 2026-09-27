@@ -2057,7 +2057,7 @@ mod loader_seam_tests;
 #[path = "tests/export_conformance_tests.rs"]
 mod export_conformance_tests;
 
-/// DECISIONS #11 for `kind: store`: the in-tree store example, LINKED and `dlopen`ed, must hand back
+/// DECISIONS #11 for `kind: store`: the store both-ways proof, LINKED and `dlopen`ed, must hand back
 /// a key carrying a plane scope grant byte-identically — the scope-kind vocabulary must not depend
 /// on which process registered it (1.6.0 SDK-SCOPEKINDS).
 #[cfg(test)]
@@ -2070,7 +2070,7 @@ mod store_scope_kind_conformance_tests;
 #[path = "tests/both_ways.rs"]
 mod both_ways;
 
-/// `kind: store` through both doors: one row, one store.
+/// `kind: store` through both doors: one row, one store, one fold over every store operation.
 #[cfg(test)]
 #[path = "tests/store_conformance_tests.rs"]
 mod store_conformance_tests;

@@ -44,10 +44,10 @@ unsafe extern "C-unwind" fn capture_call(
 
 /// A `DynStore` over the in-tree example plugin, bound to `abi` and with its call seam recording.
 fn store_at_abi(abi: u32) -> Option<DynStore> {
-    let path = store_example_plugin_path()?;
-    let bytes = std::fs::read(&path).expect("read the in-tree store example plugin cdylib");
+    let path = store_proof_plugin_path()?;
+    let bytes = std::fs::read(&path).expect("read the in-tree store proof's cdylib");
     let (lib, staged) = stage::load_library_from_bytes(&bytes, "usage-wire")
-        .expect("stage the in-tree store example plugin for the usage-wire harness");
+        .expect("stage the in-tree store proof for the usage-wire harness");
     let mut raw = wire_up_raw(
         lib,
         "{}",
@@ -99,8 +99,8 @@ fn request_json_for(abi: u32, op: impl FnOnce(&DynStore)) -> serde_json::Value {
 /// carries the four named tiers under `tokens`, which is the only shape that plugin can decode.
 #[test]
 fn add_usage_to_an_abi_2_store_sends_the_1_5_5_tier_row() {
-    if store_example_plugin_path().is_none() {
-        eprintln!("skip: store example plugin cdylib not built (run under --workspace)");
+    if store_proof_plugin_path().is_none() {
+        eprintln!("skip: the store proof's cdylib is not built");
         return;
     }
     let delta = one_delta();
@@ -127,8 +127,8 @@ fn add_usage_to_an_abi_2_store_sends_the_1_5_5_tier_row() {
 /// wire and does not downgrade a store that speaks the new one (open units would be lost).
 #[test]
 fn add_usage_to_a_current_store_still_sends_the_unit_map() {
-    if store_example_plugin_path().is_none() {
-        eprintln!("skip: store example plugin cdylib not built (run under --workspace)");
+    if store_proof_plugin_path().is_none() {
+        eprintln!("skip: the store proof's cdylib is not built");
         return;
     }
     let delta = one_delta();
@@ -147,8 +147,8 @@ fn add_usage_to_a_current_store_still_sends_the_unit_map() {
 /// `put_usage` (the absolute set) travels the same adapter as the additive flush.
 #[test]
 fn put_usage_to_an_abi_2_store_sends_the_1_5_5_tier_row() {
-    if store_example_plugin_path().is_none() {
-        eprintln!("skip: store example plugin cdylib not built (run under --workspace)");
+    if store_proof_plugin_path().is_none() {
+        eprintln!("skip: the store proof's cdylib is not built");
         return;
     }
     let ledger = UsageLedger {
@@ -174,8 +174,8 @@ fn put_usage_to_an_abi_2_store_sends_the_1_5_5_tier_row() {
 /// would be an empty unit map — a restart hydrating zero tokens from a store holding the counts.
 #[test]
 fn get_usage_from_an_abi_2_store_reads_the_1_5_5_tier_row() {
-    if store_example_plugin_path().is_none() {
-        eprintln!("skip: store example plugin cdylib not built (run under --workspace)");
+    if store_proof_plugin_path().is_none() {
+        eprintln!("skip: the store proof's cdylib is not built");
         return;
     }
     let store = store_at_abi(2).expect("checked above");

@@ -960,7 +960,7 @@ dependencies = [
  "busbar-kernel-ledger",
  "busbar-kernel-wal",
  "busbar-plugin-example-plane",
- "busbar-store-example-plugin",
+ "busbar-store-memory",
  "busbar-transport-tcp",
  "ed25519-dalek",
  "flate2",

@@ -94,11 +94,15 @@ busbar-plugin-example-plane = { path = "../plane-example" }
 # the test separately `dlopen`s. DECISIONS #11 says compiled-in ≡ dropped-in; `export_conformance_tests`
 # is what makes that checkable for the thing #11 was silently false about — what a plugin OBSERVES.
 busbar-export-example-plugin = { path = "../export-example-plugin" }
-# The `kind: store` BOTH-WAYS fixture, on the same terms: its `rlib` gives the test the COMPILED-IN
-# `Box<dyn Store>` (its `pub fn open`), its `cdylib` is `dlopen`ed. `store_scope_kind_conformance_tests`
-# requires the two to round-trip a plane scope grant (`mcp_tool`) identically — a dropped-in store's
-# copy of the scope-kind registry is never populated by the engine's boot registration.
-busbar-store-example-plugin = { path = "../store-example-plugin" }
+# The `kind: store` BOTH-WAYS proof is a REAL store (owner FIXTURES ruling: "store: store-memory +
+# store-*"; R-FIX1: every real plugin gets its dropped-in door): the build's default RAM store. Its
+# `rlib` gives the test the COMPILED-IN store (its `pub fn open`, its `linked::STORE` row and its
+# `BUSBAR_COLD_ENTRY`), its `cdylib` is `dlopen`ed. `store_conformance_tests` requires the two to answer
+# every store operation byte-identically; `store_scope_kind_conformance_tests` requires them to
+# round-trip a plane scope grant identically — a dropped-in store's copy of the scope-kind registry is
+# never populated by the engine's boot registration. `dropped-in`: the cdylib's door is compiled only
+# under it (a build that links the store beside other plugins registers it through `linked::STORE`).
+busbar-store-memory = { path = "../store-memory", features = ["dropped-in"] }
 # NO `kind: secret` fixture: the in-tree secret fixture is deleted (owner, 1.6.0-QUESTIONS.md
 # "FIXTURES": "real plugins are the examples"). The secret kind is proven by the REAL plugin repo
 # (GetBusbar/hashicorp-vault) — `plugin_proof_tests` dlopens its built cdylib from
@@ -142,17 +146,19 @@ libc = { workspace = true }
 # sibling ../store-sqlite checkout, since store-sqlite is fully extracted and no longer lives in this
 # workspace), but a cdylib crate cannot be a Rust dependency (no rlib to link). The tests instead
 # locate the artifact on disk — under `cargo test --workspace` every in-tree member cdylib is
-# present, and the kind:store fixture falls back to the in-tree busbar-store-example-plugin when the
-# sqlite sibling is not built; under CI a missing fixture is a hard failure, never a skip. The
-# sibling-built one is required only under qa-gate.yml's `loader` leg (see
-# store_fixture_plugin_path()'s doc comment in src/lib.rs).
+# present, and the kind:store fixture falls back to the store both-ways proof's own cdylib (above)
+# when the sqlite sibling is not built; under CI a missing fixture is a hard failure, never a skip.
+# The sibling-built one is required only under qa-gate.yml's `loader` leg (see
+# store_fixture_plugin_path()'s doc comment in src/tests/lib_tests.rs). The ONE test that needs a
+# DURABLE store across a dlopen restart locates its cdylib by name (tests/fixtures/
+# plugin_artifacts.txt `durable_store_cdylib`), with no edge from this crate.
 
 # THE BOTH-WAYS FIXTURES: <cold kind> = "<fixture crate>". `build.rs` turns these rows into the table
 # `src/tests/both_ways.rs` includes, so each conformance test reaches its kind's fixture by KIND and no
 # test source names a plugin instance. A fixture here is also a dev-dependency above: the linked door
 # needs its `rlib`, the dropped-in door its `cdylib`.
 [package.metadata.busbar.both-ways]
-store = "busbar-store-example-plugin"
+store = "busbar-store-memory"
 export = "busbar-export-example-plugin"
 auth = "busbar-auth-oidc-plugin"
 # A SECOND proof of one kind: `<kind>-<proof>` — the part before the first `-` is the kind, and the

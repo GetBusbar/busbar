@@ -10,27 +10,12 @@
 //! zero therefore deletes the ENTIRE call log; every upserted row lands `Active`, and a
 //! terminal-only purge therefore drops nothing, ever, so tasks accumulate without bound.
 //!
-//! These drive the REAL example plugin over the REAL C ABI (`dlopen` + `busbar_call`), so they
-//! assert what a plugin actually receives, not what an in-tree type happens to serialize to. The
-//! plugin itself already reads the sidecar correctly on its own trait impl (its in-crate tests pass);
-//! only the crossing loses it.
+//! These drive the REAL store proof (the store both-ways fixture) over the REAL C ABI (`dlopen` +
+//! `busbar_call`), so they assert what a plugin actually receives, not what an in-tree type happens
+//! to serialize to. The store itself already reads the sidecar correctly on its own trait impl (its
+//! in-crate tests pass); only the crossing loses it.
 
 use super::*;
-
-/// A private durable file for one test, plus the plugin config that selects the fixture's
-/// file-backed mode.
-fn durable_cfg(tag: &str) -> String {
-    let dir = std::env::temp_dir().join(format!(
-        "busbar-plane-sidecar-{}-{}-{:?}",
-        tag,
-        std::process::id(),
-        std::thread::current().id()
-    ));
-    std::fs::create_dir_all(&dir).expect("create durable dir");
-    let file = dir.join("durable.json");
-    let _ = std::fs::remove_file(&file);
-    serde_json::json!({ "durable_path": file.to_string_lossy() }).to_string()
-}
 
 /// AGE-BASED RETENTION on the `call` kind: rows NEWER than the cutoff survive it.
 ///
@@ -39,12 +24,11 @@ fn durable_cfg(tag: &str) -> String {
 /// takes the whole log — the MCP evidence the audit claim rests on, gone on the first retention tick.
 #[test]
 fn appended_call_rows_newer_than_the_cutoff_survive_a_purge_over_the_abi() {
-    let Some(lib) = store_example_plugin_path() else {
-        eprintln!("skip: store example plugin cdylib not built (run under --workspace)");
+    let Some(lib) = store_proof_plugin_path() else {
+        eprintln!("skip: the store proof's cdylib is not built");
         return;
     };
-    let cfg = durable_cfg("call-purge");
-    let store = load_store(&lib, &cfg).expect("load store example plugin over the ABI");
+    let store = load_store(&lib, "{}").expect("load the store over the ABI");
 
     for (seq, ts) in [(1u64, 100u64), (2, 200), (3, 300)] {
         let call = SampleCall {
@@ -89,12 +73,11 @@ fn appended_call_rows_newer_than_the_cutoff_survive_a_purge_over_the_abi() {
 /// predicate matches nothing and the sweep reports 0 — durable task rows accumulate forever.
 #[test]
 fn a_terminal_task_is_purged_over_the_abi() {
-    let Some(lib) = store_example_plugin_path() else {
-        eprintln!("skip: store example plugin cdylib not built (run under --workspace)");
+    let Some(lib) = store_proof_plugin_path() else {
+        eprintln!("skip: the store proof's cdylib is not built");
         return;
     };
-    let cfg = durable_cfg("task-purge");
-    let store = load_store(&lib, &cfg).expect("load store example plugin over the ABI");
+    let store = load_store(&lib, "{}").expect("load the store over the ABI");
 
     // `completed` is terminal; `input-required` is a live task waiting on a human and must survive
     // the same sweep regardless of age — the split the sidecar exists to express.

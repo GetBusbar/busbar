@@ -591,7 +591,7 @@ fn inventory_reports_every_row_class_without_loading() {
 }
 
 /// The REAL `kind: store` cdylib — exactly the loader tests' `store_fixture_plugin_path` in
-/// `crate::tests` (the sibling-built store-beta plugin, else the in-tree store-example one; see
+/// `crate::tests` (the sibling-built store-beta plugin, else the in-tree store proof; see
 /// that function's doc for where a missing cdylib is a hard failure: ci.yml's `check` job on every
 /// push, qa-gate.yml's `loader` job on `qa`). Used here purely to prove the tarball PIPELINE's
 /// mechanics (sign, package, scan, resolve-by-alias, open), never store-specific behavior.

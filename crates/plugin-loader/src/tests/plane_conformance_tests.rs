@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! DROP-IN CONFORMANCE for `kind: plane` — the plane analogue of the store example's over-the-ABI
+//! DROP-IN CONFORMANCE for `kind: plane` — the plane analogue of the store proof's over-the-ABI
 //! round trips (`DECISIONS #2/#11/#26 S4`: a plugin is a plugin, both-ways for EVERY kind incl. plane).
 //!
 //! `busbar-plane-example` is a `["cdylib", "rlib"]` crate, so these tests hold BOTH forms of the SAME
@@ -41,7 +41,7 @@ use busbar_contract::abi::AbiPreamble;
 use busbar_plugin_example_plane::PLANE_DECL as COMPILED_IN;
 
 /// Locate the REAL `busbar-plane-example` cdylib built into this workspace's target dir (uplifted or
-/// under `deps`, newest wins). Mirrors `store_example_plugin_path()` in `lib_tests.rs`.
+/// under `deps`, newest wins). Mirrors `store_proof_plugin_path()` in `lib_tests.rs`.
 fn plane_example_cdylib() -> Option<std::path::PathBuf> {
     let candidate = (|| {
         let exe = std::env::current_exe().ok()?;

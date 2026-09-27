@@ -31,16 +31,17 @@ pub(crate) fn artifact(key: &str) -> &'static str {
 ///    (`../store-sqlite` relative to this repo, `cargo build --release` there). store-sqlite lives
 ///    entirely in its own repo; its sqlite behaviour is that repo's job (`store-sqlite-plugin/tests/
 ///    e2e.rs`), this crate only loads it.
-/// 2. Otherwise the IN-TREE hermetic `busbar-store-example-plugin` cdylib — a workspace member, so
-///    `cargo test --workspace` always builds it.
+/// 2. Otherwise the store BOTH-WAYS PROOF's own cdylib (`[package.metadata.busbar.both-ways]`
+///    `store`, a real workspace store with its dropped-in door) — a workspace member and this crate's
+///    dev-dependency, so `cargo test --workspace` and `cargo test -p busbar-plugin-loader` build it.
 ///
 /// WHERE THE HARD FAILURE FIRES (item 391 — this comment used to name a `dev-gate.yml` that does
 /// not exist, and the only thing setting `DEV_GATE` ran on `qa`, so on every push these tests
 /// skipped in silence):
 ///
 /// * EVERY PUSH, `.github/workflows/ci.yml`'s `check` job (`cargo test --workspace`, `CI` set, no
-///   sibling checkout): the in-tree store-example cdylib serves, and its absence is a HARD FAILURE
-///   (`store_example_plugin_path`'s panic), never a skip.
+///   sibling checkout): the in-tree store proof's cdylib serves, and its absence is a HARD FAILURE
+///   (`store_proof_plugin_path`'s panic), never a skip.
 /// * `qa`, `.github/workflows/qa-gate.yml`'s `loader` job (`scripts/qa-gate-run.sh loader`, which
 ///   builds the sibling and runs `DEV_GATE=1 cargo test --release -p busbar-plugin-loader`): the
 ///   sibling sqlite cdylib is REQUIRED — `CI` + `DEV_GATE` without it is a hard failure, so the real
@@ -57,7 +58,7 @@ pub(crate) fn store_fixture_plugin_path() -> Option<std::path::PathBuf> {
     };
     resolve_store_fixture(
         sibling,
-        store_example_candidate,
+        store_proof_candidate,
         std::env::var_os("CI").is_some(),
         std::env::var_os("DEV_GATE").is_some(),
     )
@@ -79,7 +80,7 @@ fn resolve_store_fixture(
         return Err(format!(
             "the {} cdylib is not built from the ../{} sibling \
              checkout under qa-gate.yml's loader job (DEV_GATE): refusing to silently degrade the \
-             kind:store dlopen seam's coverage to the in-tree example plugin",
+             kind:store dlopen seam's coverage to the in-tree store proof",
             artifact("sibling_store_plugin"),
             artifact("sibling_store_checkout"),
         ));
@@ -88,7 +89,7 @@ fn resolve_store_fixture(
         Some(p) => Ok(Some(p)),
         None if ci => Err(format!(
             "no kind:store cdylib under CI: neither the ../{} sibling nor \
-             the in-tree store-example-plugin (which `cargo test --workspace` in ci.yml \
+             the in-tree store proof's cdylib (which `cargo test --workspace` in ci.yml \
              builds) is present. Refusing to silently skip loader-mechanism coverage of the \
              kind:store dlopen seam.",
             artifact("sibling_store_checkout"),
@@ -108,7 +109,7 @@ fn the_store_fixture_hard_fails_where_its_doc_says() {
     };
     let ex = || {
         Some(std::path::PathBuf::from(
-            "/target/libbusbar_store_example_plugin.so",
+            "/target/libin_tree_store_proof.so",
         ))
     };
     // ci.yml `check` (CI, no DEV_GATE, no sibling): the in-tree cdylib serves — coverage RUNS.
@@ -134,7 +135,7 @@ fn the_store_fixture_hard_fails_where_its_doc_says() {
 #[test]
 fn the_store_fixture_resolves_on_every_ci_push() {
     let resolved = store_fixture_plugin_path();
-    if std::env::var_os("CI").is_some() || store_example_candidate().is_some() {
+    if std::env::var_os("CI").is_some() || store_proof_candidate().is_some() {
         assert!(
             resolved.is_some(),
             "a built kind:store cdylib exists (or CI is set) but the loader-mechanism tests would skip"
@@ -1487,15 +1488,6 @@ fn load_and_exercise_export_plugin() {
 // discarded the task and returned `Ok(())`. Every store crate's own unit tests passed the whole
 // time, because they never cross the ABI.
 
-/// Locate the hermetic in-tree `busbar-store-example-plugin` cdylib. Mirrors
-/// `hermetic_export_plugin_path`, including checking BOTH the uplifted
-/// `<profile_dir>/<name>` copy and the raw `<profile_dir>/deps/<name>` compiler output (a scoped
-/// `cargo test -p busbar-plugin-loader` only produces the latter).
-///
-/// Under `CI` a missing cdylib is a HARD failure. Unlike the sqlite fixture this plugin is an
-/// in-tree workspace member that `cargo test --workspace` always builds, so its absence means a
-/// broken pipeline — and a silent skip here would restore exactly the situation this test exists to
-/// end: a green run that proved nothing about durability.
 use busbar_contract::records::PlaneDisposition;
 
 // ── the loader test speaks LOCAL STAND-IN rows; the ABI speaks NEUTRAL kind-tagged plane records ──
@@ -1504,8 +1496,8 @@ use busbar_contract::records::PlaneDisposition;
 // exercises the ONLY durable-plane surface there is: the eight neutral verbs. These free helpers
 // build the kind-tagged `PlaneRecord` envelope for a row and decode a body back, so the test bodies
 // stay readable while every call still crosses the real plugin ABI as a neutral verb — the exact
-// surface a deployment takes. The `kind` strings match the reference `impl Store` in
-// `store-example-plugin` verbatim.
+// surface a deployment takes. The `kind` strings are the ones the stores these tests load key their
+// retention contracts on (a `task` purges only terminal rows, every other kind purges all older).
 //
 // This suite is DELIBERATELY OPAQUE over the relocated plane row types (`TaskRow`/`TaskEventRow`/
 // `McpCallRecord`, moved out of `busbar-api`): it names none of them, and instead carries the body as
@@ -1647,26 +1639,56 @@ fn n_list_call_principals(
     s.list_plane_record_parents("call")
 }
 
-fn store_example_plugin_path() -> Option<std::path::PathBuf> {
-    let candidate = store_example_candidate();
+/// The store both-ways proof's cdylib for the tests below that need a real `kind: store` image to
+/// stage and wire (never store-specific durability). Under `CI` a missing cdylib is a HARD failure:
+/// it is this crate's own dev-dependency, so `cargo test` always builds it, and its absence means a
+/// broken pipeline rather than a machine without a sibling checkout.
+fn store_proof_plugin_path() -> Option<std::path::PathBuf> {
+    let candidate = store_proof_candidate();
     if candidate.is_none() && std::env::var_os("CI").is_some() {
         panic!(
-            "the store example plugin cdylib is not built under CI: `cargo test --workspace` must \
-             build the in-tree store-example-plugin (checked both the uplifted target dir and \
-             target/deps). Refusing to silently skip the ONLY end-to-end proof that a task written \
-             through a plugin store survives a restart."
+            "the store both-ways proof's cdylib is not built under CI: `cargo test` must build {} \
+             (checked both the uplifted target dir and target/deps). Refusing to silently skip the \
+             over-the-ABI coverage of the kind:store dlopen seam.",
+            super::both_ways::fixture("store").0
         );
     }
     candidate
 }
 
-/// The in-tree `busbar_store_example_plugin` cdylib, if built — the newest of the uplifted
-/// `<profile_dir>/<name>` copy and the raw `<profile_dir>/deps/<name>` output (a scoped `cargo test
-/// -p` only produces the latter). No CI policy here; the callers own that.
-fn store_example_candidate() -> Option<std::path::PathBuf> {
+/// The store both-ways proof's cdylib (`[package.metadata.busbar.both-ways]` `store`), if built —
+/// the newest of the uplifted `<profile_dir>/<name>` copy and the raw `<profile_dir>/deps/<name>`
+/// output (a scoped `cargo test -p` only produces the latter). No CI policy here; the callers own that.
+fn store_proof_candidate() -> Option<std::path::PathBuf> {
+    newest_cdylib(super::both_ways::fixture("store").0)
+}
+
+/// The FILE-BACKED store the one dlopen-RESTART durability test loads
+/// (`tests/fixtures/plugin_artifacts.txt` `durable_store_cdylib`). A RAM store cannot answer a
+/// restart, so this is the one test that still needs a durable image; the real durable store (the
+/// sibling checkout above) takes its place when it builds against the current contract. It is not a
+/// dependency of this crate: `cargo test --workspace` (ci.yml `check`) and every job that builds the
+/// workspace's cdylibs produce it, and under `CI` its absence is a HARD failure.
+fn durable_store_plugin_path() -> Option<std::path::PathBuf> {
+    let candidate = newest_cdylib(artifact("durable_store_cdylib"));
+    if candidate.is_none() && std::env::var_os("CI").is_some() {
+        panic!(
+            "the durable store cdylib ({}) is not built under CI: `cargo test --workspace` must \
+             build it (checked both the uplifted target dir and target/deps). Refusing to silently \
+             skip the ONLY end-to-end proof that a record written through a plugin store survives a \
+             restart.",
+            artifact("durable_store_cdylib")
+        );
+    }
+    candidate
+}
+
+/// The newest built `cdylib` of `crate_snake` in this target dir: the uplifted `<profile_dir>/<name>`
+/// copy or the raw `<profile_dir>/deps/<name>` output, whichever was written last.
+fn newest_cdylib(crate_snake: &str) -> Option<std::path::PathBuf> {
     let exe = std::env::current_exe().ok()?;
     let profile_dir = exe.parent()?.parent()?;
-    let name = plugin_library_filename(artifact("store_example_cdylib"));
+    let name = plugin_library_filename(crate_snake);
     let uplifted = profile_dir.join(&name);
     let raw = profile_dir.join("deps").join(&name);
     [uplifted, raw]
@@ -1707,8 +1729,8 @@ fn sample_task_row(task_id: &str, state: &str, updated_at: u64) -> SampleTask {
 /// assertion: `get_task` returns `None`, because `DynStore` never sent the write anywhere.
 #[test]
 fn task_state_written_through_a_plugin_store_survives_a_restart() {
-    let Some(lib) = store_example_plugin_path() else {
-        eprintln!("skip: store example plugin cdylib not built (run under --workspace)");
+    let Some(lib) = durable_store_plugin_path() else {
+        eprintln!("skip: the durable store cdylib is not built (run under --workspace)");
         return;
     };
     // A private file for this test's own durable state; `load_store` passes it to the plugin's
@@ -1758,7 +1780,7 @@ fn task_state_written_through_a_plugin_store_survives_a_restart() {
     // instead — which is exactly what happened on the first red run. The same-handle round trip is
     // its own test below, so that diagnostic is not lost, it just does not pre-empt this one.
     {
-        let store = load_store(&lib, &cfg).expect("load store example plugin over the ABI");
+        let store = load_store(&lib, &cfg).expect("load the store over the ABI");
         store
             .upsert_plane_record(&task_record(&task))
             .expect("upsert task");
@@ -1773,7 +1795,7 @@ fn task_state_written_through_a_plugin_store_survives_a_restart() {
     }
 
     // ── THE RESTART: a fresh dlopen and a fresh `busbar_open` ─────────────────────────────────
-    let store = load_store(&lib, &cfg).expect("re-load store example plugin after the restart");
+    let store = load_store(&lib, &cfg).expect("re-load the durable store after the restart");
 
     assert_eq!(
         n_get_task(store.as_ref(), "task-abc").expect("get_task after restart"),
@@ -1837,20 +1859,11 @@ fn task_state_written_through_a_plugin_store_survives_a_restart() {
 /// task written through the plugin ABI is readable back through the plugin ABI at all.
 #[test]
 fn a_task_written_through_a_plugin_store_is_readable_back_through_it() {
-    let Some(lib) = store_example_plugin_path() else {
-        eprintln!("skip: store example plugin cdylib not built (run under --workspace)");
+    let Some(lib) = store_proof_plugin_path() else {
+        eprintln!("skip: the store proof's cdylib is not built");
         return;
     };
-    let dir = std::env::temp_dir().join(format!(
-        "busbar-task-roundtrip-{}-{:?}",
-        std::process::id(),
-        std::thread::current().id()
-    ));
-    std::fs::create_dir_all(&dir).expect("create durable dir");
-    let cfg = serde_json::json!({ "durable_path": dir.join("durable.json").to_string_lossy() })
-        .to_string();
-
-    let store = load_store(&lib, &cfg).expect("load store example plugin over the ABI");
+    let store = load_store(&lib, "{}").expect("load the store proof over the ABI");
     let task = sample_task_row("task-rt", "working", 5_000);
     store
         .upsert_plane_record(&task_record(&task))
@@ -1861,8 +1874,6 @@ fn a_task_written_through_a_plugin_store_is_readable_back_through_it() {
         "`put_task` returned Ok — the task must actually be there. `None` means the write was \
          discarded at the ABI and the success was a lie."
     );
-    drop(store);
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// Every `Store` trait method has a `StoreRequest` variant AND a `DynStore` override — checked by
@@ -1996,20 +2007,20 @@ fn every_store_trait_method_has_an_abi_variant_and_a_dynstore_override() {
 // sibling checkout is absent. A compatibility promise that only gets checked where somebody happens
 // to have cloned a second repo is not a checked promise.
 
-/// A `DynStore` over the in-tree store example plugin with the `call`/`free` seam faked, so a test
+/// A `DynStore` over the in-tree store proof with the `call`/`free` seam faked, so a test
 /// chooses the exact `(status, body)` an old plugin would have returned. Mirrors
 /// [`dyn_store_with_fake_call`], which is pinned to the sibling sqlite fixture.
-fn dyn_example_store_with_fake_call() -> Option<DynStore> {
-    dyn_example_store_with_fake_call_at_abi(busbar_contract::abi::cold::ABI_VERSION)
+fn dyn_proof_store_with_fake_call() -> Option<DynStore> {
+    dyn_proof_store_with_fake_call_at_abi(busbar_contract::abi::cold::ABI_VERSION)
 }
 
-/// [`dyn_example_store_with_fake_call`] bound to a chosen payload schema, so a test can hold the
+/// [`dyn_proof_store_with_fake_call`] bound to a chosen payload schema, so a test can hold the
 /// PUBLISHED one (v2) rather than the schema this binary was built against.
-fn dyn_example_store_with_fake_call_at_abi(abi_version: u32) -> Option<DynStore> {
-    let path = store_example_plugin_path()?;
-    let bytes = std::fs::read(&path).expect("read the in-tree store example plugin cdylib");
+fn dyn_proof_store_with_fake_call_at_abi(abi_version: u32) -> Option<DynStore> {
+    let path = store_proof_plugin_path()?;
+    let bytes = std::fs::read(&path).expect("read the in-tree store proof's cdylib");
     let (lib, staged) = stage::load_library_from_bytes(&bytes, "fake-call-example")
-        .expect("stage the in-tree store example plugin for the fake-call harness");
+        .expect("stage the in-tree store proof for the fake-call harness");
     let mut raw = wire_up_raw(
         lib,
         "{}",
@@ -2067,8 +2078,8 @@ fn under_old_plugin_shapes<T: std::fmt::Debug + PartialEq>(
 /// accept-and-keep-nothing default the engine took from the trait before the ABI carried them.
 #[test]
 fn a_plugin_predating_the_task_variants_still_gets_the_pre_existing_defaults() {
-    let Some(store) = dyn_example_store_with_fake_call() else {
-        eprintln!("skip: store example plugin cdylib not built (run under --workspace)");
+    let Some(store) = dyn_proof_store_with_fake_call() else {
+        eprintln!("skip: the store proof's cdylib is not built");
         return;
     };
     let task = sample_task_row("task-old", "working", 1);
@@ -2154,8 +2165,8 @@ fn a_plugin_predating_the_task_variants_still_gets_the_pre_existing_defaults() {
 /// this time with the variants present.
 #[test]
 fn no_plugin_failure_shape_can_launder_a_dropped_task_into_success() {
-    let Some(store) = dyn_example_store_with_fake_call() else {
-        eprintln!("skip: store example plugin cdylib not built (run under --workspace)");
+    let Some(store) = dyn_proof_store_with_fake_call() else {
+        eprintln!("skip: the store proof's cdylib is not built");
         return;
     };
     let task = sample_task_row("task-err", "working", 1);
@@ -2277,12 +2288,12 @@ fn event_free_probe() -> SampleEvent {
 /// exits.
 #[test]
 fn validate_plugin_unloads_on_a_worker_not_the_callers_thread() {
-    let Some(path) = store_example_plugin_path() else {
-        eprintln!("skip: store-example-plugin cdylib not built");
+    let Some(path) = store_proof_plugin_path() else {
+        eprintln!("skip: the store proof's cdylib is not built");
         return;
     };
     let before = UNLOADS_ON_WORKER.with(std::cell::Cell::get);
-    validate_plugin(&path).expect("the in-tree example store plugin validates");
+    validate_plugin(&path).expect("the in-tree store proof validates");
     let after = UNLOADS_ON_WORKER.with(std::cell::Cell::get);
     assert!(
         after > before,
