@@ -293,19 +293,19 @@ busbar-voice = ["busbar-voice-codec"]
 # 15206 -> 16477 (OWNER RULING Q68(3)). Its commit reached the base; struck by HOTDOOR-B queue 2's
 # re-arm, which declares the pair's next figure below.
 
-# ── THE CONTRACT CEILING PAIR, RE-ARMED BY HOTDOOR-B QUEUE 2 (PlaneDecl dispatch_flags, ABI minor 31) ─
+# ── THE CONTRACT CEILING PAIR, RE-ARMED BY HOTDOOR-B QUEUE 2 (PlaneDecl dispatch_flags, ABI minor 32) ─
 
 [gate.ceiling_raises."gate.surface_ceilings.contract_caps"]
 file    = "qa/construction.toml"
 from    = 16477
 to      = 16482
-because = "OWNER RULING Q68(3) (docs/design/1.6.0-QUESTIONS.md): contract_caps re-arms at the MEASURED value, in its own commit. This is the re-arm for HOTDOOR-B queue 2 (765b2ddc9; ARCHITECT 2026-09-27, #30 HOT lane): hot::PlaneDecl appends dispatch_flags (+ padding) and hot::decl::DISPATCH_BLOCKS at ABI minor 31, so a plane's dispatch runs inline on the request's worker unless it declares it blocks, +5 code lines. Measured by cargo xtask loc: 16477 before, 16482 after."
+because = "OWNER RULING Q68(3) (docs/design/1.6.0-QUESTIONS.md): contract_caps re-arms at the MEASURED value, in its own commit. This is the re-arm for HOTDOOR-B queue 2 (765b2ddc9; ARCHITECT 2026-09-27, #30 HOT lane): hot::PlaneDecl appends dispatch_flags (+ padding) and hot::decl::DISPATCH_BLOCKS at ABI minor 32, so a plane's dispatch runs inline on the request's worker unless it declares it blocks, +5 code lines. Measured by cargo xtask loc: 16477 before, 16482 after."
 
 [gate.ceiling_raises."rules.loc-ceilings.caps_contract_ceiling"]
 file    = "qa/construction.toml"
 from    = 16477
 to      = 16482
-because = "OWNER RULING Q68(3) (docs/design/1.6.0-QUESTIONS.md): contract_caps re-arms at the MEASURED value, in its own commit. This is the re-arm for HOTDOOR-B queue 2 (765b2ddc9; ARCHITECT 2026-09-27, #30 HOT lane): hot::PlaneDecl appends dispatch_flags (+ padding) and hot::decl::DISPATCH_BLOCKS at ABI minor 31, so a plane's dispatch runs inline on the request's worker unless it declares it blocks, +5 code lines. Measured by cargo xtask loc: 16477 before, 16482 after."
+because = "OWNER RULING Q68(3) (docs/design/1.6.0-QUESTIONS.md): contract_caps re-arms at the MEASURED value, in its own commit. This is the re-arm for HOTDOOR-B queue 2 (765b2ddc9; ARCHITECT 2026-09-27, #30 HOT lane): hot::PlaneDecl appends dispatch_flags (+ padding) and hot::decl::DISPATCH_BLOCKS at ABI minor 32, so a plane's dispatch runs inline on the request's worker unless it declares it blocks, +5 code lines. Measured by cargo xtask loc: 16477 before, 16482 after."
 
 # ── THE KERNEL CEILING'S OWNER-APPROVED RAISE — EXPIRED AND STRUCK ─────────────────────────────
 #
@@ -449,7 +449,7 @@ because = "ARCHITECT ruling on the kernel budget (R-KERNEL, sd-extra.txt; K2-0 u
 # TRANSPORT-STACK step 2 lowered the carrier and framer traits to the HOT ABI (+1271); the live
 # declaration above carries the measure.
 # RE-ARMED 16477 -> 16482, AT THE MEASUREMENT (OWNER RULING Q68(3)), in its own commit after HOTDOOR-B
-# queue 2 appended PlaneDecl's dispatch_flags at ABI minor 31 (+5); the live declaration above
+# queue 2 appended PlaneDecl's dispatch_flags at ABI minor 32 (+5); the live declaration above
 # carries the measure.
 contract_caps = 16482
 # REPOINTED, and the repoint is what makes this row a gate again. It named the CRATE
@@ -1065,7 +1065,7 @@ contract_crate = "busbar-contract"
 # RE-ARMED 14712 -> 15015 with its pair (OWNER RULING Q68(3); HOTDOOR-B, the HOT ABI minor-30 carrier and host services, +303).
 # RE-ARMED 15015 -> 15206 with its pair (OWNER RULING Q68(3); TRANSPORT-STACK step 1, the carrier and framer traits, +191).
 # RE-ARMED 15206 -> 16477 with its pair (OWNER RULING Q68(3); TRANSPORT-STACK step 2, the transport HOT lowering, +1271).
-# RE-ARMED 16477 -> 16482 with its pair (OWNER RULING Q68(3); HOTDOOR-B queue 2, PlaneDecl dispatch_flags at ABI minor 31, +5).
+# RE-ARMED 16477 -> 16482 with its pair (OWNER RULING Q68(3); HOTDOOR-B queue 2, PlaneDecl dispatch_flags at ABI minor 32, +5).
 caps_contract_ceiling = 16482
 unit_crate_glob = "busbar-unit-*"
 # RE-KEYED on cherry-pick onto 143db6db6: this commit's own delta is -53 (two units stopped
