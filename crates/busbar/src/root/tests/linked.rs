@@ -608,32 +608,29 @@ async fn serve_arm() {
     )
     .await;
     // THE CALLER'S CREDENTIAL (CRED-STRIP, #65/#40(b)): the plane echoes every header it was
-    // handed — once with the credential on the bearer carrier, once on a native-SDK key carrier. The
-    // credential is an unsigned JWT whose `aud` claim is this plane's audience (the public URL joined
-    // to `/example`), which the open chain admits.
+    // handed — once with the credential on the bearer carrier, once on a native-SDK key carrier, and
+    // once on BOTH (the bearer is the one the gate takes; the key header is a credential all the
+    // same). The credential is an unsigned JWT whose `aud` claim is this plane's audience (the public
+    // URL joined to `/example`), which the open chain admits.
     const CALLER_JWT: &str = "eyJhbGciOiJub25lIn0.\
         eyJhdWQiOiJodHRwczovL2d3LmV4YW1wbGUuY29tL2V4YW1wbGUiLCJzdWIiOiJjYWxsZXIifQ.c2ln";
     let bearer = format!("Bearer {CALLER_JWT}");
     let mut echoed = Vec::new();
-    for (carrier, value) in [
+    let (on_bearer, on_key) = (
         ("authorization", bearer.as_str()),
         ("x-api-key", CALLER_JWT),
-    ] {
-        echoed.push(
-            answered(
-                &router,
-                axum::extract::Request::<()>::builder()
-                    .method("POST")
-                    .uri("/example")
-                    .header("x-example-status", "200")
-                    .header("x-example-echo", "1")
-                    .header(carrier, value)
-                    .body(axum::body::Body::empty())
-                    .unwrap(),
-            )
-            .await["body"]
-                .clone(),
-        );
+    );
+    for carriers in [&[on_bearer][..], &[on_key], &[on_bearer, on_key]] {
+        let mut request = axum::extract::Request::<()>::builder()
+            .method("POST")
+            .uri("/example")
+            .header("x-example-status", "200")
+            .header("x-example-echo", "1");
+        for (carrier, value) in carriers {
+            request = request.header(*carrier, *value);
+        }
+        let request = request.body(axum::body::Body::empty()).unwrap();
+        echoed.push(answered(&router, request).await["body"].clone());
     }
     let first_byte = first_byte_lead(&router).await;
     let served = serde_json::json!({
@@ -873,14 +870,16 @@ fn a_linked_and_a_dropped_in_plane_serve_one_request_identically() {
     );
 
     // THE CALLER'S CREDENTIAL NEVER REACHES THE PLANE, through either door (the equality above):
-    // the header the gate consumed is gone from the head the plane read, and nothing else is.
+    // every credential carrier the gate reads is gone from the head the plane read — the one that
+    // carried the token and the one it did not need — and nothing else is.
     assert_eq!(
         linked["echoed"],
         serde_json::json!([
             "x-example-status: 200\nx-example-echo: 1\n",
             "x-example-status: 200\nx-example-echo: 1\n",
+            "x-example-status: 200\nx-example-echo: 1\n",
         ]),
-        "a plane saw a header the auth gate consumed: {linked:#}"
+        "a plane saw a credential carrier the auth gate reads: {linked:#}"
     );
 
     let bypassed = serve_in_a_fresh_process("bypass");

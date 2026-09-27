@@ -27,6 +27,19 @@ use crate::sigv4::{SIGV4_ALGORITHM, X_AMZ_CONTENT_SHA256, X_AMZ_DATE};
 const X_API_KEY: &str = "x-api-key";
 const X_GOOG_API_KEY: &str = "x-goog-api-key";
 
+/// THE CREDENTIAL CARRIERS THE DATA-PLANE GATE READS, in precedence order — the one declaration
+/// [`AuthMiddleware::extract_client_token`] walks and the host strips from every plane's request
+/// (`caller_credential`): all of them, whichever one carried this request's token (#65).
+const CLIENT_TOKEN_CARRIERS: [HeaderName; 3] = [
+    AUTHORIZATION,
+    HeaderName::from_static(X_API_KEY),
+    HeaderName::from_static(X_GOOG_API_KEY),
+];
+/// THE CREDENTIAL CARRIERS A CONFIGURED ADMIN CHAIN READS (the operator token, Bearer or header) —
+/// stripped from every plane's request whenever an admin chain is configured.
+const ADMIN_TOKEN_CARRIERS: [HeaderName; 2] =
+    [AUTHORIZATION, HeaderName::from_static(X_ADMIN_TOKEN)];
+
 /// The header name for the operator admin token carrier (busbar-proprietary surface).
 pub const X_ADMIN_TOKEN: &str = "x-admin-token";
 /// The Bearer auth-scheme token (case-insensitive match in `extract_bearer_token`).
@@ -667,34 +680,16 @@ impl AuthMiddleware {
     /// so a SigV4-signing ingress now receives full virtual-key governance under `token`/governance
     /// mode — it no longer requires `passthrough`. This token path itself is unchanged.
     pub fn extract_client_token(req: &Request<Body>) -> Option<String> {
-        Self::extract_carried_client_token(req).map(|(token, _)| token)
-    }
-
-    /// [`Self::extract_client_token`] with the header that CARRIED the token — the one the gate
-    /// consumed, which the host strips before any plane sees the request.
-    fn extract_carried_client_token(req: &Request<Body>) -> Option<(String, HeaderName)> {
-        let header_str = |name: &str| {
-            req.headers()
-                .get(name)
-                .and_then(|v| v.to_str().ok())
-                .map(str::to_owned)
-        };
-
-        if let Some(t) = req
-            .headers()
-            .get(AUTHORIZATION)
-            .and_then(|v| v.to_str().ok())
-            .and_then(Self::extract_bearer_token)
-        {
-            return Some((t, AUTHORIZATION));
-        }
-        if let Some(t) = header_str(X_API_KEY).filter(|t| !t.is_empty()) {
-            return Some((t, HeaderName::from_static(X_API_KEY)));
-        }
-        if let Some(t) = header_str(X_GOOG_API_KEY).filter(|t| !t.is_empty()) {
-            return Some((t, HeaderName::from_static(X_GOOG_API_KEY)));
-        }
-        None
+        // Walks the gate's declared carrier table, in its precedence order: the bearer scheme on
+        // `Authorization`, the raw token on the others (blank = absent).
+        CLIENT_TOKEN_CARRIERS.iter().find_map(|carrier| {
+            let value = req.headers().get(carrier)?.to_str().ok()?;
+            if *carrier == AUTHORIZATION {
+                Self::extract_bearer_token(value)
+            } else {
+                Some(value.to_owned()).filter(|t| !t.is_empty())
+            }
+        })
     }
 
     /// Validate the request's token by running the AUTH CHAIN. `token` accepts a credential extracted
@@ -1489,16 +1484,16 @@ pub(crate) async fn auth_middleware(
     // then x-api-key, then x-goog-api-key). This single value drives BOTH the static-allowlist
     // check and the governance virtual-key lookup, so every scheme is validated identically and in
     // constant time. Replaces the previous Bearer-only `bearer_token`.
-    let carried = AuthMiddleware::extract_carried_client_token(&req);
-    // THE CREDENTIAL HEADERS THIS GATE CONSUMED, recorded as it reads them: the carrier above, then
-    // the admin carriers or the SigV4 signature below. Handed on with the request so the host strips
-    // exactly these before any plane sees it (`caller_credential`).
-    let mut consumed = ConsumedCredentials::default();
-    let client_token: Option<String> = carried.map(|(token, carrier)| {
-        consumed.consume(carrier);
-        consumed.caller = Some(CallerCredential(token.clone()));
-        token
-    });
+    let client_token: Option<String> = AuthMiddleware::extract_client_token(&req);
+    // EVERY CREDENTIAL CARRIER THE CONFIGURED GATE READS — the data-plane carriers (whichever one
+    // carried this request's token, and the SigV4 signature on `Authorization`), and the admin
+    // carriers when an admin chain is configured — with the caller's token as a ref. Handed on with
+    // the request so the host strips all of them before any plane sees it (`caller_credential`).
+    let mut consumed = ConsumedCredentials::carrying(&CLIENT_TOKEN_CARRIERS);
+    if !app.admin_chain.is_empty() {
+        consumed.carry(&ADMIN_TOKEN_CARRIERS);
+    }
+    consumed.caller = client_token.clone().map(CallerCredential);
 
     // Thread the caller's token into request extensions for passthrough forwarding, using the same
     // multi-scheme carrier precedence as auth (Bearer / x-api-key / x-goog-api-key). Inserted BEFORE
@@ -1528,12 +1523,6 @@ pub(crate) async fn auth_middleware(
             .get(AUTHORIZATION)
             .and_then(|v| v.to_str().ok())
             .and_then(AuthMiddleware::extract_bearer_token);
-        if admin_bearer.is_some() {
-            consumed.consume(AUTHORIZATION);
-        }
-        if admin_header_token.is_some() {
-            consumed.consume(HeaderName::from_static(X_ADMIN_TOKEN));
-        }
         req.extensions_mut().insert(consumed);
         let (verdict, scope_cap) =
             run_admin_chain_maybe_offloaded(&app, admin_bearer, admin_header_token.clone()).await;
@@ -1727,8 +1716,6 @@ pub(crate) async fn auth_middleware(
         if !structurally_valid {
             return Err(unauthorized_response(&app, &path));
         }
-        // The signature is the credential this step consumes.
-        consumed.consume(AUTHORIZATION);
         // BODY INTEGRITY: a SigV4 signature only binds the payload if we re-hash the actual bytes
         // and confirm they match the signed `x-amz-content-sha256` (which the signature covers).
         // Verifying the signature alone leaves a MitM free to tamper the body in transit while the
@@ -2169,8 +2156,8 @@ impl AuthMiddleware {
     }
 }
 
-/// What the gate took from the caller: the credential headers it consumed (stripped from every
-/// plane's request) and the caller's credential as a ref only the host presents upstream.
+/// What the gate holds of the caller: every credential carrier it reads (stripped from every plane's
+/// request) and the caller's credential as a ref only the host presents upstream.
 pub mod caller_credential;
 pub use caller_credential::{present_caller, CallerCredential, ConsumedCredentials};
 
