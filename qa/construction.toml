@@ -279,19 +279,26 @@ busbar-voice = ["busbar-voice-codec"]
 # slots (+303). Its commit reached the base; struck by TRANSPORT-STACK's re-arm, which declares the
 # pair's next figure below.
 
-# ── THE CONTRACT CEILING PAIR, RE-ARMED BY TRANSPORT-STACK (the carrier and framer traits) ───────────
+# ── THE CONTRACT CEILING PAIR, RE-ARMED BY TRANSPORT-STACK (the carrier and framer traits) —
+#    EXPIRED AND STRUCK
+#
+# Declared `gate.surface_ceilings.contract_caps` and `rules.loc-ceilings.caps_contract_ceiling`
+# 15015 -> 15206 (OWNER RULING Q68(3)): the re-arm after TRANSPORT-STACK step 1's traits (+191). Its
+# commit reached the base; struck by step 2's re-arm, which declares the pair's next figure below.
+
+# ── THE CONTRACT CEILING PAIR, RE-ARMED BY TRANSPORT-STACK (the transport HOT lowering) ─────────────
 
 [gate.ceiling_raises."gate.surface_ceilings.contract_caps"]
 file    = "qa/construction.toml"
-from    = 15015
-to      = 15206
-because = "OWNER RULING Q68(3) (docs/design/1.6.0-QUESTIONS.md): contract_caps re-arms at the MEASURED value, in its own commit. This is the re-arm for TRANSPORT-STACK step 1 (1730b098a + 75ebe53eb; OWNER-APPROVED TRANSPORT-STACK 2026-09-27, spec #3 at 0f7bd7d5c): busbar_contract::transport::stack, the linked source of truth the transport HOT lane lowers — the Carrier and Framer traits, role_of, TransportRow (every TransportMeta constant as one value), Dest, CarrierFacts, ConnFacts, Located, Framed, FramerOut and BytesOut, +191 code lines. Measured by cargo xtask gate construction: 15015 before, 15206 after."
+from    = 15206
+to      = 16477
+because = "OWNER RULING Q68(3) (docs/design/1.6.0-QUESTIONS.md): contract_caps re-arms at the MEASURED value, in its own commit. This is the re-arm for TRANSPORT-STACK step 2 (78c45eacd; OWNER-APPROVED TRANSPORT-STACK 2026-09-27 (3)): the transport HOT ABI lowered from the Carrier and Framer traits one slot per method — abi::hot::transport rewritten (generation 2: the row, CarrierSlots, FramerSlots, the crossing shapes and their byte vocabularies) and abi::sdk::transport, the plugin side of the lowering (one generic slot per trait method and export_carrier!/export_framer!), with the retired byte-stream decl removed, +1271 code lines. Measured by cargo xtask gate construction: 15206 before, 16477 after."
 
 [gate.ceiling_raises."rules.loc-ceilings.caps_contract_ceiling"]
 file    = "qa/construction.toml"
-from    = 15015
-to      = 15206
-because = "OWNER RULING Q68(3) (docs/design/1.6.0-QUESTIONS.md): contract_caps re-arms at the MEASURED value, in its own commit. This is the re-arm for TRANSPORT-STACK step 1 (1730b098a + 75ebe53eb; OWNER-APPROVED TRANSPORT-STACK 2026-09-27, spec #3 at 0f7bd7d5c): busbar_contract::transport::stack, the linked source of truth the transport HOT lane lowers — the Carrier and Framer traits, role_of, TransportRow (every TransportMeta constant as one value), Dest, CarrierFacts, ConnFacts, Located, Framed, FramerOut and BytesOut, +191 code lines. Measured by cargo xtask gate construction: 15015 before, 15206 after."
+from    = 15206
+to      = 16477
+because = "OWNER RULING Q68(3) (docs/design/1.6.0-QUESTIONS.md): contract_caps re-arms at the MEASURED value, in its own commit. This is the re-arm for TRANSPORT-STACK step 2 (78c45eacd; OWNER-APPROVED TRANSPORT-STACK 2026-09-27 (3)): the transport HOT ABI lowered from the Carrier and Framer traits one slot per method — abi::hot::transport rewritten (generation 2: the row, CarrierSlots, FramerSlots, the crossing shapes and their byte vocabularies) and abi::sdk::transport, the plugin side of the lowering (one generic slot per trait method and export_carrier!/export_framer!), with the retired byte-stream decl removed, +1271 code lines. Measured by cargo xtask gate construction: 15206 before, 16477 after."
 
 # ── THE KERNEL CEILING'S OWNER-APPROVED RAISE — EXPIRED AND STRUCK ─────────────────────────────
 #
@@ -431,7 +438,10 @@ because = "ARCHITECT ruling on the kernel budget (R-KERNEL, sd-extra.txt; K2-0 u
 # RE-ARMED 15015 -> 15206, AT THE MEASUREMENT (OWNER RULING Q68(3)), in its own commit after
 # TRANSPORT-STACK step 1 added the carrier and framer traits and the transport row (+191); the live
 # declaration above carries the measure.
-contract_caps = 15206
+# RE-ARMED 15206 -> 16477, AT THE MEASUREMENT (OWNER RULING Q68(3)), in its own commit after
+# TRANSPORT-STACK step 2 lowered the carrier and framer traits to the HOT ABI (+1271); the live
+# declaration above carries the measure.
+contract_caps = 16477
 # REPOINTED, and the repoint is what makes this row a gate again. It named the CRATE
 # `busbar-grammar`, which #40 folded into `busbar-contract` and deleted — so it summed nothing,
 # measured nothing and passed, which is this file's own "zero is not clean" failure sitting inside
@@ -1044,7 +1054,8 @@ contract_crate = "busbar-contract"
 # RE-ARMED 14711 -> 14712 with its pair (OWNER RULING Q68(3); K9e-2's HostOp::HttpBinary, +1).
 # RE-ARMED 14712 -> 15015 with its pair (OWNER RULING Q68(3); HOTDOOR-B, the HOT ABI minor-30 carrier and host services, +303).
 # RE-ARMED 15015 -> 15206 with its pair (OWNER RULING Q68(3); TRANSPORT-STACK step 1, the carrier and framer traits, +191).
-caps_contract_ceiling = 15206
+# RE-ARMED 15206 -> 16477 with its pair (OWNER RULING Q68(3); TRANSPORT-STACK step 2, the transport HOT lowering, +1271).
+caps_contract_ceiling = 16477
 unit_crate_glob = "busbar-unit-*"
 # RE-KEYED on cherry-pick onto 143db6db6: this commit's own delta is -53 (two units stopped
 # declaring their own copies), measured against whatever unit_total_ceiling read when the line was
