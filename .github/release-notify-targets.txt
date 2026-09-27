@@ -17,14 +17,14 @@
 # read getbusbar.com AFTER publication, and cannot gate it -- they run in `consumer-verification`,
 # which is downstream of an already-public release by construction.
 
-GetBusbar/store-mysql
-GetBusbar/store-postgres
-GetBusbar/store-sqlite
-GetBusbar/store-valkey
-GetBusbar/hashicorp-vault
-GetBusbar/auth-oidc
-GetBusbar/webrequest-hook
-GetBusbar/headroom-hook
+GetBusbar/busbar-store-mysql
+GetBusbar/busbar-store-postgres
+GetBusbar/busbar-store-sqlite
+GetBusbar/busbar-store-valkey
+GetBusbar/busbar-secret-vault
+GetBusbar/busbar-auth-oidc
+GetBusbar/busbar-hook-webrequest
+GetBusbar/busbar-hook-headroom
 GetBusbar/helm-charts
 GetBusbar/homebrew-busbar
 GetBusbar/terraform-provider-busbar

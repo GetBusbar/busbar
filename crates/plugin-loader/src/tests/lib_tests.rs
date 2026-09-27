@@ -27,7 +27,7 @@ pub(crate) fn artifact(key: &str) -> &'static str {
 /// hot-swap coexistence, staged-file lifecycle, denylist-fallback classification — never
 /// store-specific behaviour). Two real plugins can serve, in this order:
 ///
-/// 1. `busbar-store-sqlite-plugin`, built from a SIBLING checkout of `GetBusbar/store-sqlite`
+/// 1. `busbar-store-sqlite-plugin`, built from a SIBLING checkout of `GetBusbar/busbar-store-sqlite`
 ///    (`../store-sqlite` relative to this repo, `cargo build --release` there). store-sqlite lives
 ///    entirely in its own repo; its sqlite behaviour is that repo's job (`store-sqlite-plugin/tests/
 ///    e2e.rs`), this crate only loads it.

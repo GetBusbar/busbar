@@ -195,7 +195,7 @@ oauth-as = { version = "1.0.0", features = [
     "resource-metadata",
 ] }
 # The OpenTelemetry project's own generated OTLP types, DEV-ONLY: the root's OTLP proofs decode what
-# the `otlp` sink (GetBusbar/export-otlp) posts with the proto's publisher's types, never with the
+# the `otlp` sink (GetBusbar/busbar-export-otlp) posts with the proto's publisher's types, never with the
 # sink's own encoder. Not in any shipped build.
 opentelemetry-proto = { version = "0.32", default-features = false, features = ["gen-tonic-messages", "trace"] }
 proptest = "1"

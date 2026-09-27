@@ -173,7 +173,7 @@ const GCP_GENERIC_MENTION_FILES: &[&str] = &[
 
 // ── HOOK (self-contained test plugin; matched on crate identity) ────────────────────────────────
 // The SECRET kind has no crate in this tree: its in-tree fixture was deleted (owner, "FIXTURES":
-// "real plugins are the examples") and it is proven by the real plugin repo GetBusbar/hashicorp-vault,
+// "real plugins are the examples") and it is proven by the real plugin repo GetBusbar/busbar-secret-vault,
 // so its noun below is censused like the stores — an empty family, every hit a leak.
 const FAM_HOOK: &[&str] = &["hook-test-plugin"];
 // The store-kind crate that DOES exist in this tree, and the one in-tree hook plugin (item 197).

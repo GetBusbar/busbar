@@ -85,7 +85,7 @@ excluded_repos:
   - hindsight-hook # design docs only — no crate, no workflows, private
 
 plugins:
-  - repo: store-mysql
+  - repo: busbar-store-mysql
     kind: store
     alias: mysql
     crate: busbar-store-mysql-plugin
@@ -99,7 +99,7 @@ plugins:
     busbar_checkout: true
     macos_test: "env -u CI cargo test --locked -p busbar-store-mysql-plugin --test conformance"
     declares: "store-mysql/declares.json"
-  - repo: store-postgres
+  - repo: busbar-store-postgres
     kind: store
     alias: postgres
     crate: busbar-store-postgres-plugin
@@ -111,7 +111,7 @@ plugins:
     description: "First-party signed kind:store plugin cdylib: the Postgres backend for busbar's durable governance store, exported over the store C ABI. Drop the built library into the plugins folder and set store.module: postgres to share virtual keys, budgets, and usage across a fleet of busbar nodes."
     busbar_checkout: true
     declares: "store-postgres/declares.json"
-  - repo: store-sqlite
+  - repo: busbar-store-sqlite
     kind: store
     alias: sqlite
     crate: busbar-store-sqlite-plugin
@@ -123,7 +123,7 @@ plugins:
     description: "First-party signed kind:store plugin cdylib: the SQLite governance store packaged as a droppable busbar plugin exporting the store C ABI. Drop the built library into the plugins folder and set store.module: sqlite."
     busbar_checkout: true
     declares: "store-sqlite/declares.json"
-  - repo: store-valkey
+  - repo: busbar-store-valkey
     kind: store
     alias: valkey
     crate: busbar-store-valkey-plugin
@@ -136,7 +136,7 @@ plugins:
     busbar_checkout: true
     extra_test: "cargo test -p busbar-store-valkey --locked -- --ignored --test-threads=1"
     declares: "store-valkey/declares.json"
-  - repo: hashicorp-vault
+  - repo: busbar-secret-vault
     kind: secret
     alias: vault
     crate: busbar-hashicorp-vault-plugin
@@ -149,7 +149,7 @@ plugins:
     description: "The HashiCorp Vault secret backend as a droppable busbar plugin: a cdylib exporting the secret C ABI. Drop it in the plugins folder, add vault to secrets: with its addr/token settings, and reference secrets as { module: vault, settings: { path: \"kv/data/name#field\" } }."
     macos_test: "cargo test --workspace --locked --lib --test conformance -- --skip roundtrip_against_live_vault"
     declares: "hashicorp-vault/declares.json"
-  - repo: auth-oidc
+  - repo: busbar-auth-oidc
     kind: auth
     alias: oidc
     crate: busbar-auth-oidc-plugin
@@ -164,7 +164,7 @@ plugins:
     declares: "auth-oidc/declares.json"
     keep:
       - .github/workflows/entra-live-check.yml
-  - repo: auth-github
+  - repo: busbar-auth-github
     kind: auth
     alias: github
     crate: busbar-auth-github-plugin
@@ -178,7 +178,7 @@ plugins:
     busbar_checkout: true
     macos_test: "cargo test --workspace --locked --lib --test conformance"
     declares: "busbar-auth-github/declares.json"
-  - repo: auth-ldap
+  - repo: busbar-auth-ldap
     kind: auth
     alias: ldap
     crate: busbar-auth-ldap-plugin
@@ -192,7 +192,7 @@ plugins:
     busbar_checkout: true
     macos_test: "cargo test --workspace --locked --lib --test conformance"
     declares: "auth-ldap/declares.json"
-  - repo: auth-admin-tokens
+  - repo: busbar-auth-admin-tokens
     kind: auth
     alias: admin-tokens
     crate: busbar-auth-admin-tokens-plugin
@@ -206,7 +206,7 @@ plugins:
     # 2026-09-27). busbar LINKS it at a pinned rev (busbar-kernel, feature `auth-admin-tokens`); its
     # first release is cut with the core version that pins it.
     released: false
-  - repo: webrequest-hook
+  - repo: busbar-hook-webrequest
     kind: hook
     alias: webrequest
     crate: busbar-webrequest-hook-plugin
@@ -222,7 +222,7 @@ plugins:
     needs_prompt: "rw"
     needs_user: "ro"
     declares: "declares.json"
-  - repo: headroom-hook
+  - repo: busbar-hook-headroom
     kind: hook
     alias: headroom
     crate: headroom-hook
@@ -244,6 +244,7 @@ plugins:
       - .github/workflows/docker-bundle.yml
       - .github/workflows/headroom-release-publish.yml
       - .github/workflows/headroom-release-watch.yml
+      - .github/scripts/next-version.sh
       - .github/scripts/stamp-version.sh
       - .github/scripts/docker-bundle-smoke-test/config.yaml
       - .github/scripts/docker-bundle-smoke-test/mock_upstream.py
@@ -254,7 +255,7 @@ plugins:
     # now the DEFAULT for every sibling (see the field doc above), so the pin said nothing the
     # default does not. Restating it would imply the OTHER nine were deliberately on `main`, which
     # is precisely the reading that cost qa-gate run 31059945604 five legs.
-  - repo: export-file
+  - repo: busbar-export-file
     kind: export
     alias: file
     crate: busbar-export-file-plugin
@@ -267,7 +268,7 @@ plugins:
     # Moved out of busbar into its own repo (owner ruling: every plugin kind ships as its own repo);
     # busbar LINKS it at a pinned rev. Its first release is cut with the core version that pins it.
     released: false
-  - repo: export-otlp
+  - repo: busbar-export-otlp
     kind: export
     alias: otlp
     crate: busbar-export-otlp-plugin
@@ -280,7 +281,7 @@ plugins:
     # Moved out of busbar into its own repo (owner ruling: every plugin kind ships as its own repo);
     # busbar LINKS it at a pinned rev. Its first release is cut with the core version that pins it.
     released: false
-  - repo: export-prometheus
+  - repo: busbar-export-prometheus
     kind: export
     alias: prometheus
     crate: busbar-export-prometheus-plugin
@@ -293,7 +294,7 @@ plugins:
     # Moved out of busbar into its own repo (owner ruling: every plugin kind ships as its own repo);
     # busbar LINKS it at a pinned rev. Its first release is cut with the core version that pins it.
     released: false
-  - repo: export-webhook
+  - repo: busbar-export-webhook
     kind: export
     alias: webhook
     crate: busbar-export-webhook-plugin
@@ -306,7 +307,7 @@ plugins:
     # Moved out of busbar into its own repo (owner ruling: every plugin kind ships as its own repo);
     # busbar LINKS it at a pinned rev. Its first release is cut with the core version that pins it.
     released: false
-  - repo: transport-tcp
+  - repo: busbar-transport-tcp
     kind: transport
     alias: tcp
     crate: busbar-transport-tcp-plugin

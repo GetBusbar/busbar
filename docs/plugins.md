@@ -246,7 +246,7 @@ busbar_contract::abi::sdk::export_secret_plugin!(open);
 ```
 
 A complete, real reference implementation is the HashiCorp Vault plugin
-([GetBusbar/hashicorp-vault](https://github.com/GetBusbar/hashicorp-vault)): the Vault KV v2 client
+([GetBusbar/busbar-secret-vault](https://github.com/GetBusbar/busbar-secret-vault)): the Vault KV v2 client
 crate beside its thin ABI adapter crate. busbar's CI builds it against this tree and loads its
 `cdylib` through the dropped-in door (`busbar-plugin-loader`'s `plugin_proof_tests`, the
 `plugin-proofs` job), so this doc example is kept honest against a real plugin, not written once and
@@ -271,7 +271,7 @@ secrets:
 ```
 
 The first-party **`vault`** module (`busbar-hashicorp-vault-plugin`, released from
-[`GetBusbar/hashicorp-vault`](https://github.com/GetBusbar/hashicorp-vault)) is exactly such a
+[`GetBusbar/busbar-secret-vault`](https://github.com/GetBusbar/busbar-secret-vault)) is exactly such a
 plugin: the first-party HashiCorp Vault KV v2 backend (a same-repo `hashicorp-vault` crate for the
 logic, `hashicorp-vault-plugin` for the thin cdylib adapter, mirroring the `busbar-auth-oidc` /
 `busbar-auth-oidc-plugin` split). Open-time config is
@@ -339,7 +339,7 @@ providers with independent bindings and ceilings.
 Like every configured plugin, an auth plugin that cannot load is a hard error and never silently
 degrades. See [Fail-closed loading](#fail-closed-loading), below.
 
-The first-party **`oidc`** module (`busbar-auth-oidc-plugin`, released from `GetBusbar/auth-oidc`)
+The first-party **`oidc`** module (`busbar-auth-oidc-plugin`, released from `GetBusbar/busbar-auth-oidc`)
 is exactly such a plugin. See
 [configuration.md](configuration.md#auth-plugins) for the `auth.chain: [oidc]` + `settings:` recipe
 (including an Entra ID example, and the **app roles vs. security groups** gotcha that trips up most
@@ -351,9 +351,9 @@ Three first-party `kind: auth` plugins ship for busbar, each an independently-ve
 
 | Plugin | Repo | Identity | Flow |
 |--------|------|----------|------|
-| **`oidc`** (`busbar-auth-oidc-plugin`) | `GetBusbar/auth-oidc` | `oidc:<sub>` from a verified id_token (RS256/ES256 JWKS, iss/aud/exp/nbf) | verify a held bearer, **or** browser/headless [token-exchange](token-exchange.md) |
-| **`github`** (`busbar-auth-github-plugin`) | `GetBusbar/auth-github` | `github:<login>` + `github:org/<org>` groups | OAuth authorization-code (opaque token → core-executed `/user` + `/user/orgs` hops), via the [token-exchange](token-exchange.md) `GET` browser flow |
-| **`ldap`** (`busbar-auth-ldap-plugin`) | `GetBusbar/auth-ldap` | `ldap:<dn>` + `memberOf` groups | credential form (username/password → the plugin's own LDAP/LDAPS bind), via the [token-exchange](token-exchange.md) credential flow |
+| **`oidc`** (`busbar-auth-oidc-plugin`) | `GetBusbar/busbar-auth-oidc` | `oidc:<sub>` from a verified id_token (RS256/ES256 JWKS, iss/aud/exp/nbf) | verify a held bearer, **or** browser/headless [token-exchange](token-exchange.md) |
+| **`github`** (`busbar-auth-github-plugin`) | `GetBusbar/busbar-auth-github` | `github:<login>` + `github:org/<org>` groups | OAuth authorization-code (opaque token → core-executed `/user` + `/user/orgs` hops), via the [token-exchange](token-exchange.md) `GET` browser flow |
+| **`ldap`** (`busbar-auth-ldap-plugin`) | `GetBusbar/busbar-auth-ldap` | `ldap:<dn>` + `memberOf` groups | credential form (username/password → the plugin's own LDAP/LDAPS bind), via the [token-exchange](token-exchange.md) credential flow |
 
 GitHub is **not** OIDC (its access token is opaque, so there is nothing to verify offline): identity
 comes from REST userinfo hops the core executes on the plugin's behalf. LDAP is a **credential**
@@ -634,12 +634,12 @@ signing identity, but the *release* it ships from depends on the plugin:
 
 - **Store plugins** (`busbar-store-sqlite`, `busbar-store-postgres`, `busbar-store-mysql`,
   `busbar-store-valkey-plugin`), the **auth plugin** (`busbar-auth-oidc`), and the **secret plugin**
-  (`busbar-hashicorp-vault`) each live in their own standalone repo (`GetBusbar/store-sqlite`,
-  `GetBusbar/store-postgres`, `GetBusbar/store-mysql`, `GetBusbar/store-valkey`,
-  `GetBusbar/auth-oidc`, `GetBusbar/hashicorp-vault`) with its own CI and its own release workflow. Download the tarball for the backend you need from *that plugin's own*
+  (`busbar-hashicorp-vault`) each live in their own standalone repo (`GetBusbar/busbar-store-sqlite`,
+  `GetBusbar/busbar-store-postgres`, `GetBusbar/busbar-store-mysql`, `GetBusbar/busbar-store-valkey`,
+  `GetBusbar/busbar-auth-oidc`, `GetBusbar/busbar-secret-vault`) with its own CI and its own release workflow. Download the tarball for the backend you need from *that plugin's own*
   GitHub Release, not from busbar's.
 - **Hook plugins** (`busbar-headroom`, `busbar-webrequest`) also live in their own repos
-  (`GetBusbar/headroom-hook`, `GetBusbar/webrequest-hook`) with their own CI and release workflow,
+  (`GetBusbar/busbar-hook-headroom`, `GetBusbar/busbar-hook-webrequest`) with their own CI and release workflow,
   same as every other kind. Busbar's own release no longer builds or re-publishes any plugin
   tarball, hook or otherwise: download the tarball for the plugin you need from *that plugin's own*
   GitHub Release, not from busbar's.

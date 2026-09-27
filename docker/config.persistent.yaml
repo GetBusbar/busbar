@@ -40,4 +40,4 @@ plugins:
   enabled: true                                # master switch — default false
   dir: /etc/busbar/plugins                     # ABSOLUTE — the default ("plugins") resolves to /plugins here
   fetch:
-    - github: "GetBusbar/store-sqlite@v1.0.0"  # writes into plugins.dir at boot, hence that dir must be writable (see compose's busbar-plugins)
+    - github: "GetBusbar/busbar-store-sqlite@v1.0.0"  # writes into plugins.dir at boot, hence that dir must be writable (see compose's busbar-plugins)

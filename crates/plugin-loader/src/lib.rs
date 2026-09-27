@@ -2080,8 +2080,8 @@ mod carrier_peer;
 #[path = "tests/store_conformance_tests.rs"]
 mod store_conformance_tests;
 
-/// `kind: secret` and `kind: auth` proven by the REAL plugin repos (GetBusbar/hashicorp-vault,
-/// GetBusbar/auth-github): their built cdylibs, dlopened from `BUSBAR_PLUGIN_PROOF_DIR` (ci.yml's
+/// `kind: secret` and `kind: auth` proven by the REAL plugin repos (GetBusbar/busbar-secret-vault,
+/// GetBusbar/busbar-auth-github): their built cdylibs, dlopened from `BUSBAR_PLUGIN_PROOF_DIR` (ci.yml's
 /// `plugin-proofs` job). `#[ignore]`d without that directory.
 #[cfg(test)]
 #[path = "tests/plugin_proof_tests.rs"]

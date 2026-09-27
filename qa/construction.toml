@@ -2538,7 +2538,7 @@ plane_crates = 4
 #
 #   * `secret` 1 -> 0. The fixture deletion (owner, docs/design/1.6.0-QUESTIONS.md "FIXTURES":
 #     "these are trash … real plugins are the examples"): `crates/secret-example-plugin` was
-#     deleted, and the secret kind is proven by the real plugin repo GetBusbar/hashicorp-vault
+#     deleted, and the secret kind is proven by the real plugin repo GetBusbar/busbar-secret-vault
 #     (crates/plugin-loader/src/tests/plugin_proof_tests.rs, ci.yml `plugin-proofs`).
 #     `crates/secret-*` now matches no directory: the kind's documented zero in this repo.
 #
@@ -2546,10 +2546,10 @@ plane_crates = 4
 #
 #   * `auth` 2 -> 1. The fixture deletion (owner, docs/design/1.6.0-QUESTIONS.md "FIXTURES": "real
 #     plugins are the examples"; ARCHITECT R-FIX2): `crates/auth-static-plugin` was deleted. The auth
-#     kind's dropped-in proofs load the REAL token-verifying module GetBusbar/auth-oidc (pinned by
+#     kind's dropped-in proofs load the REAL token-verifying module GetBusbar/busbar-auth-oidc (pinned by
 #     git: busbar-kernel `auth/tests/plugin_chain_tests.rs`, `crates/busbar/tests/mcp_stdio_serve.rs`,
 #     busbar-plugin-loader `auth_conformance_tests`), and ci.yml `plugin-proofs` proves
-#     GetBusbar/auth-github. `crates/auth-*` now matches exactly one: `crates/auth-admin-tokens`.
+#     GetBusbar/busbar-auth-github. `crates/auth-*` now matches exactly one: `crates/auth-admin-tokens`.
 #
 # ── RE-PINNED 2026-09-27: `transport` 5 -> 4 ────────────────────────────────────────────────────────────────
 #
@@ -2562,7 +2562,7 @@ plane_crates = 4
 #
 #   * `auth` 1 -> 0. The move-out (owner, "PLUGINS LIVE IN THEIR OWN REPOS"; ARCHITECT 2026-09-27:
 #     auth-admin-tokens is a REAL auth plugin, extracted with its door and conformance):
-#     `crates/auth-admin-tokens` moved to GetBusbar/auth-admin-tokens with its history, and busbar
+#     `crates/auth-admin-tokens` moved to GetBusbar/busbar-auth-admin-tokens with its history, and busbar
 #     pulls it at a pinned rev under the unchanged `auth-admin-tokens` feature (busbar-kernel) and as
 #     the loader's `auth-verify` both-ways proof. `crates/auth-*` now matches no directory: the
 #     kind's documented zero in this repo. Its `known_missing_forbid` entry leaves with it (the
@@ -2580,12 +2580,12 @@ plane_crates = 4
 #
 # store 2 -> 1 (DOOR-STORE item 4, R-FIX2 + owner FIXTURES ruling): crates/store-example-plugin is
 # DELETED — its one remaining test (the dlopen-restart durability proof) moved onto the real durable
-# store GetBusbar/store-sqlite in `plugin_proof_tests`. `crates/store-*` now matches exactly one:
+# store GetBusbar/busbar-store-sqlite in `plugin_proof_tests`. `crates/store-*` now matches exactly one:
 # `crates/store-memory`, the store kind's both-ways proof.
 #
 # export 1 -> 0 (EX-DEL, owner FIXTURES ruling "real plugins are the proofs" + Q75): the export
 # fixture crate is DELETED. Every test that loaded it now loads a REAL sink from its own repo at the
-# root's pinned rev (GetBusbar/export-file, -webhook, -prometheus, -otlp) — the loader's both-ways
+# root's pinned rev (GetBusbar/busbar-export-file, -webhook, -prometheus, -otlp) — the loader's both-ways
 # rows `export`, `export-webhook`, `export-scrape`, `export-otlp`. Neither export glob matches a
 # directory in this repo any more: the kind's documented zero.
 [gate.census.plugin_kinds]

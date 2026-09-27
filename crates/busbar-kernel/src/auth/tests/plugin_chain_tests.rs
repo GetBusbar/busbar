@@ -3,7 +3,7 @@
 
 //! FULL-CHAIN auth-plugin seam tests: the engine's `AuthMiddleware` loading a REAL signed
 //! `kind: auth` plugin cdylib over the loader, exactly as boot does. The plugin is the REAL
-//! token-verifying OIDC module, GetBusbar/auth-oidc (the owner's FIXTURES ruling: real plugins are the
+//! token-verifying OIDC module, GetBusbar/busbar-auth-oidc (the owner's FIXTURES ruling: real plugins are the
 //! proofs; R-FIX2), pulled at a pinned rev as a dev-dependency of the composition root so the
 //! workspace build carries its cdylib. We pack it into a tarball, run it through `plugins_preflight` +
 //! `AuthMiddleware::new` against a LOCAL issuer ([`Issuer`]: an ES256 key whose JWKS is served over a

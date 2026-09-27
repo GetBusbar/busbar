@@ -4,10 +4,10 @@
 //! **`kind: secret`, `kind: auth`, `kind: store` AND `kind: hook`, PROVEN BY REAL PLUGINS.** The owner
 //! deleted the in-tree fixtures ("these are trash … real plugins are the examples",
 //! `docs/design/1.6.0-QUESTIONS.md` "FIXTURES"): the proofs of these kinds are the real plugin repos —
-//! `GetBusbar/hashicorp-vault` (secret), `GetBusbar/auth-github` (auth), and, per the R-FIX2 ruling
-//! (dropped-in door proofs use REAL plugins), `GetBusbar/store-sqlite` (store: a durable file, a
-//! restart, two nodes on one file) and `GetBusbar/webrequest-hook` (hook: reject, restrict and a slow
-//! upstream, against a local mock upstream), and `GetBusbar/headroom-hook` (hook: a THIRD party's
+//! `GetBusbar/busbar-secret-vault` (secret), `GetBusbar/busbar-auth-github` (auth), and, per the R-FIX2 ruling
+//! (dropped-in door proofs use REAL plugins), `GetBusbar/busbar-store-sqlite` (store: a durable file, a
+//! restart, two nodes on one file) and `GetBusbar/busbar-hook-webrequest` (hook: reject, restrict and a slow
+//! upstream, against a local mock upstream), and `GetBusbar/busbar-hook-headroom` (hook: a THIRD party's
 //! plugin reporting its own metrics on its status reply).
 //!
 //! ci.yml's `plugin-proofs` job checks hashicorp-vault and auth-github out beside this one at `dev`,
@@ -196,7 +196,7 @@ fn the_real_auth_plugin_begins_a_login_through_the_dropped_in_door() {
     );
 }
 
-// ── `kind: store` — the REAL durable store (GetBusbar/store-sqlite), R-FIX2 ─────────────────────────
+// ── `kind: store` — the REAL durable store (GetBusbar/busbar-store-sqlite), R-FIX2 ─────────────────────────
 
 /// A fresh scratch directory for one proof, unique to this process and `tag`.
 fn proof_scratch(tag: &str) -> std::path::PathBuf {
@@ -362,7 +362,7 @@ const PER_NODE: u64 = 200;
 #[test]
 #[ignore = "needs BUSBAR_PLUGIN_PROOF_DIR (ci.yml plugin-proofs builds the real plugin repos)"]
 fn task_state_written_through_a_plugin_store_survives_a_restart() {
-    // The REAL durable store (GetBusbar/store-sqlite), dropped in, on a private file of this test's
+    // The REAL durable store (GetBusbar/busbar-store-sqlite), dropped in, on a private file of this test's
     // own: `open` is handed that file, the only place a restarted instance can find the rows.
     let lib = real_cdylib("store");
     let dir = proof_scratch("task-durability");
@@ -574,7 +574,7 @@ fn the_real_store_plugin_loses_no_record_across_two_nodes_on_one_file() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-// ── `kind: hook` — the REAL forwarding hook (GetBusbar/webrequest-hook), R-FIX2 ─────────────────────
+// ── `kind: hook` — the REAL forwarding hook (GetBusbar/busbar-hook-webrequest), R-FIX2 ─────────────────────
 
 /// The engine-side projectors for the hook proofs: the decide projection carries the pool and the
 /// candidate indices, and the decide reply is read by the engine's reply precedence (reject, then
@@ -856,7 +856,7 @@ async fn the_real_hook_plugin_rejects_restricts_and_times_out_through_the_droppe
     );
 }
 
-// ── a THIRD-PARTY plugin's OWN metrics — the real metrics-reporting hook (GetBusbar/headroom-hook) ──
+// ── a THIRD-PARTY plugin's OWN metrics — the real metrics-reporting hook (GetBusbar/busbar-hook-headroom) ──
 
 /// The engine-side projectors for the metrics proof: the `transform` projection carries the pool and
 /// the granted prompt's turns (`{role, text}`), as the engine projects a `prompt: rw` grant, and the

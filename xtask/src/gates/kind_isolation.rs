@@ -415,14 +415,14 @@ const PENDING_KINDS: &[(&str, &str)] = &[
     (
         "secret",
         "every plugin lives in its own repo (owner, 1.6.0-QUESTIONS.md \"PLUGIN HOME\"); the in-tree \
-         secret fixture is deleted (\"FIXTURES\") and the kind is proven by GetBusbar/hashicorp-vault \
+         secret fixture is deleted (\"FIXTURES\") and the kind is proven by GetBusbar/busbar-secret-vault \
          through crates/plugin-loader/src/tests/plugin_proof_tests.rs (ci.yml `plugin-proofs`)",
     ),
     (
         "auth",
         "every plugin lives in its own repo (owner, 1.6.0-QUESTIONS.md \"PLUGIN HOME\"); the in-tree \
          auth fixture is deleted (\"FIXTURES\") and the built-in admin-tokens module moved to \
-         GetBusbar/auth-admin-tokens (ARCHITECT 2026-09-27), pulled by busbar-kernel at a pinned \
+         GetBusbar/busbar-auth-admin-tokens (ARCHITECT 2026-09-27), pulled by busbar-kernel at a pinned \
          rev; the kind is proven both ways by crates/plugin-loader/src/tests/auth_conformance_tests.rs \
          and auth_verify_conformance_tests.rs over the pinned real plugins",
     ),
@@ -430,7 +430,7 @@ const PENDING_KINDS: &[(&str, &str)] = &[
         "export",
         "every plugin lives in its own repo (owner, 1.6.0-QUESTIONS.md \"PLUGIN HOME\"); the in-tree \
          export fixture is deleted (\"FIXTURES\") and the kind is proven by its real sinks \
-         GetBusbar/export-file, -webhook, -prometheus and -otlp, pinned git dev-dependencies of \
+         GetBusbar/busbar-export-file, -webhook, -prometheus and -otlp, pinned git dev-dependencies of \
          busbar-plugin-loader (export_conformance_tests, both ways) and of busbar",
     ),
 ];
@@ -10385,7 +10385,7 @@ mod plant_tests {
         };
 
         let (got, idx) = read(meta(
-            "git+https://github.com/GetBusbar/transport-tcp?rev=0#0",
+            "git+https://github.com/GetBusbar/busbar-transport-tcp?rev=0#0",
         ));
         let key = got.expect("a pinned git checkout resolves");
         assert_eq!(key, format!("pinned:{exemplar}"));

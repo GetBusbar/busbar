@@ -28,8 +28,8 @@ proof_auth_authorize_prefix = https://github.com/login/oauth/authorize?response_
 proof_auth_refusal = github plugin requires config (client_id); none provided
 
 # The REAL plugin repos that prove the store and hook kinds' dropped-in doors (R-FIX2): the durable
-# store (GetBusbar/store-sqlite: a durable file, a restart, two handles on one file) and the
-# forwarding hook (GetBusbar/webrequest-hook, against the proof's local mock upstream). ci.yml
+# store (GetBusbar/busbar-store-sqlite: a durable file, a restart, two handles on one file) and the
+# forwarding hook (GetBusbar/busbar-hook-webrequest, against the proof's local mock upstream). ci.yml
 # `plugin-proofs` builds each at the rev it pins into BUSBAR_PLUGIN_PROOF_DIR.
 proof_store_cdylib = busbar_store_sqlite_plugin
 proof_store_path_key = db_path
@@ -40,7 +40,7 @@ proof_hook_timeout_key = timeout_ms
 proof_hook_timeout_error = webrequest: request failed
 proof_hook_refusal = webrequest: settings.url is required
 
-# The REAL plugin that reports its OWN metrics on its status reply (GetBusbar/headroom-hook; ci.yml
+# The REAL plugin that reports its OWN metrics on its status reply (GetBusbar/busbar-hook-headroom; ci.yml
 # `plugin-proofs` builds it at the rev it pins): a compression gate that counts, per pool, every
 # conversation it is handed, under its own series names. The proof reads these rows, not the names.
 proof_metrics_hook_cdylib = headroom_hook
@@ -48,7 +48,7 @@ proof_metrics_hook_requests_series = headroom_requests_total
 proof_metrics_hook_other_series = headroom_tokens_input_total dollars_saved
 
 # The `kind: auth` both-ways witness (`src/tests/auth_conformance_tests.rs`) is the REAL OIDC module
-# (GetBusbar/auth-oidc). Its open-time config, with a JWKS endpoint nothing listens on (so every
+# (GetBusbar/busbar-auth-oidc). Its open-time config, with a JWKS endpoint nothing listens on (so every
 # verification it attempts fails closed identically through either door) and explicit login
 # endpoints (so `open` performs no discovery); a token-shaped credential it must try to verify; and
 # the prefix of the authorize URL its login start builds.

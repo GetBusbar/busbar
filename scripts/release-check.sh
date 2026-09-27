@@ -27,29 +27,29 @@
 #
 # WHAT THIS DOES NOT TEST
 #   - Store-sqlite's hermetic in-process dlopen path — that's a separate, parallel test, and now
-#     lives entirely in store-sqlite's own repo (GetBusbar/store-sqlite, a same-repo 2-crate
+#     lives entirely in store-sqlite's own repo (GetBusbar/busbar-store-sqlite, a same-repo 2-crate
 #     workspace) — see Phase 1 below for how this script reaches it via a sibling checkout.
 #   - The release-SIGNING pipeline (BUSBAR_SIGN_KEY) — out of scope by design. Every tarball
 #     here is packed with `--allow-unsigned`, exactly like CI's fallback path when the signing
 #     secret isn't provisioned (see the TODO(release-keys) seam in release.yml).
-#   - OIDC's real-ABI plugin proof — auth-oidc now lives entirely in its own repo (GetBusbar/auth-oidc,
+#   - OIDC's real-ABI plugin proof — auth-oidc now lives entirely in its own repo (GetBusbar/busbar-auth-oidc,
 #     a same-repo 2-crate workspace bringing 100% of its own logic + adapter). That repo's own test
 #     suite already stands up a real local JWKS server + a real minted JWT and drives the plugin
 #     through the real ABI. This script sibling-checks-out that repo and runs its suite as a gate
 #     (the Phase 2 suite loop below) rather than reinventing a second, lower-quality fake-IdP proof.
 #   - hashicorp-vault's real-ABI plugin proof — busbar-hashicorp-vault / busbar-hashicorp-vault-plugin
-#     no longer live in this workspace (extracted to GetBusbar/hashicorp-vault). The Phase 2 suite
+#     no longer live in this workspace (extracted to GetBusbar/busbar-secret-vault). The Phase 2 suite
 #     loop below runs THAT repo's own test suite (a sibling checkout) against a real Vault dev-mode container,
 #     rather than duplicating the proof in-tree.
 #   - Valkey's real-ABI + real-persistence proof — store-valkey now lives entirely in its own repo
-#     (GetBusbar/store-valkey, a same-repo 2-crate workspace bringing 100% of its own logic +
+#     (GetBusbar/busbar-store-valkey, a same-repo 2-crate workspace bringing 100% of its own logic +
 #     adapter). That repo's own tests/e2e.rs already dlopens the real cdylib against a real
 #     valkey/valkey:8, writes through it, closes + reopens the plugin, and independently verifies via the
 #     plain busbar-store-valkey lib crate — genuine, hermetic, real-Valkey coverage. This script
 #     sibling-checks-out that repo and runs its suite as a gate (the Phase 2 suite loop below) rather than
 #     reinventing a second, lower-quality proof in-tree.
 #   - Postgres's full-busbar-binary + real-HTTP-traffic + process-restart-durability proof —
-#     store-postgres was likewise extracted to its own repo (GetBusbar/store-postgres); Phase 2
+#     store-postgres was likewise extracted to its own repo (GetBusbar/busbar-store-postgres); Phase 2
 #     below runs THAT repo's own real-dlopen-ABI + real-Postgres test suite (against the same real
 #     postgres:16 container this script always spun up) as the gate instead, the same trade-off
 #     already made for OIDC and Valkey above.
@@ -77,11 +77,11 @@
 #     loudly up front, because "gate incomplete" must never look like "gate green".
 #   - python3 (stdlib only) — used for a tiny local mock upstream server. No network access
 #     beyond localhost and the Docker daemon is required.
-#   - A sibling checkout `../store-postgres` (GetBusbar/store-postgres) next to this repo — REQUIRED
+#   - A sibling checkout `../busbar-store-postgres` (GetBusbar/busbar-store-postgres) next to this repo — REQUIRED
 #     (not optional): Phase 2 runs that repo's own `cargo test --workspace` as the Postgres gate.
-#   - Optionally, sibling checkouts for every other plugins.yaml entry (`../store-sqlite`,
-#     `../store-mysql`, `../store-valkey`, `../hashicorp-vault`, `../auth-oidc`, `../headroom-hook`,
-#     `../webrequest-hook`) next to this repo. Each of these plugins has been fully extracted — its
+#   - Optionally, sibling checkouts for every other plugins.yaml entry (`../busbar-store-sqlite`,
+#     `../busbar-store-mysql`, `../busbar-store-valkey`, `../busbar-secret-vault`, `../busbar-auth-oidc`, `../busbar-hook-headroom`,
+#     `../busbar-hook-webrequest`) next to this repo. Each of these plugins has been fully extracted — its
 #     own repo now owns 100% of its logic + release-gate proof (see that repo's own CI). If a
 #     sibling is present, its phase below runs the real proof against it; if absent, that phase is
 #     recorded as a COVERAGE GAP: the verdict banner changes, names it, and says it did not run.
@@ -324,16 +324,16 @@ while read -r _pr; do
   esac
 done <<<"$(all_plugin_repos)"
 # THE THREE SPECIAL (non-suite) PLUGIN PHASES, DERIVED LIKE THE SUITE ONES. Their bodies below are
-# keyed by repo (they build ../store-sqlite, ../headroom-hook, ../webrequest-hook), so their ids come
+# keyed by repo (they build ../busbar-store-sqlite, ../busbar-hook-headroom, ../busbar-hook-webrequest), so their ids come
 # from plugin_phase_id on that repo -- the SAME function the registry used above. They used to be
 # written as literals (phase-1-sqlite-binary, ...) while the registry derived them from the plugins.yaml
 # ALIAS, so one alias rename made every segmented run record the phase `not-in-segment` and skip it.
-SQLITE_BINARY_PHASE="$(plugin_phase_id store-sqlite)" \
-  || setup_fail "plugins.yaml has no store-sqlite entry, but Phase 1 builds ../store-sqlite: the registry and this gate disagree."
-HEADROOM_SMOKE_PHASE="$(plugin_phase_id headroom-hook)" \
-  || setup_fail "plugins.yaml has no headroom-hook entry, but Phase 5 smokes ../headroom-hook: the registry and this gate disagree."
-WEBREQUEST_SMOKE_PHASE="$(plugin_phase_id webrequest-hook)" \
-  || setup_fail "plugins.yaml has no webrequest-hook entry, but Phase 5 smokes ../webrequest-hook: the registry and this gate disagree."
+SQLITE_BINARY_PHASE="$(plugin_phase_id busbar-store-sqlite)" \
+  || setup_fail "plugins.yaml has no busbar-store-sqlite entry, but Phase 1 builds ../busbar-store-sqlite: the registry and this gate disagree."
+HEADROOM_SMOKE_PHASE="$(plugin_phase_id busbar-hook-headroom)" \
+  || setup_fail "plugins.yaml has no busbar-hook-headroom entry, but Phase 5 smokes ../busbar-hook-headroom: the registry and this gate disagree."
+WEBREQUEST_SMOKE_PHASE="$(plugin_phase_id busbar-hook-webrequest)" \
+  || setup_fail "plugins.yaml has no busbar-hook-webrequest entry, but Phase 5 smokes ../busbar-hook-webrequest: the registry and this gate disagree."
 add_phase phase-admin-cli          yes "Phase: busbar-admin CLI driven against the fresh busbar"
 add_phase phase-152-feature-gate   yes "Phase: 1.5.2 feature gate (plugins.fetch + token-exchange + admin authz)"
 
@@ -1082,8 +1082,8 @@ else
 fi
 
 # ── Nothing left to build here. Every first-party store/auth/secret plugin has been extracted to
-#    its own repo (GetBusbar/store-sqlite, GetBusbar/store-postgres, GetBusbar/store-valkey,
-#    GetBusbar/auth-oidc, GetBusbar/hashicorp-vault; each a same-repo 2-crate workspace, the pattern
+#    its own repo (GetBusbar/busbar-store-sqlite, GetBusbar/busbar-store-postgres, GetBusbar/busbar-store-valkey,
+#    GetBusbar/busbar-auth-oidc, GetBusbar/busbar-secret-vault; each a same-repo 2-crate workspace, the pattern
 #    auth-oidc's own extraction established) — busbarAI's release.yml itself no longer builds or
 #    packs any of them; it only ships the busbar binary + the bundled hook plugins now (see the
 #    "Store/auth plugin releases moved out" comment there). Phase 1 and the registry-driven
@@ -1561,7 +1561,7 @@ EOF
 #    proof. Its own release-check-equivalent lives in ITS repo/CI; this script's job is only to
 #    prove busbar's real HTTP + restart-durability story against it when the sibling is available
 #    locally (dockerless, fastest feedback loop of the three backends). ────────────────────────────
-STORE_SQLITE_SRC="${REPO_ROOT}/../store-sqlite"
+STORE_SQLITE_SRC="${REPO_ROOT}/../busbar-store-sqlite"
 if ! phase_selected "${SQLITE_BINARY_PHASE}"; then
   record_phase_skip "${SQLITE_BINARY_PHASE}" "not-in-segment"
 elif [ -d "$STORE_SQLITE_SRC" ]; then
@@ -1589,8 +1589,8 @@ elif [ -d "$STORE_SQLITE_SRC" ]; then
   ok "SQLite phase complete: $(date -u +%H:%M:%S) elapsed=${SECONDS}s"
   end_phase ran
 else
-  echo "SKIP: ../store-sqlite not present as a sibling checkout on this machine." >&2
-  echo "Gate incomplete — SQLite coverage could not run. Check out ../store-sqlite for full" >&2
+  echo "SKIP: ../busbar-store-sqlite not present as a sibling checkout on this machine." >&2
+  echo "Gate incomplete — SQLite coverage could not run. Check out ../busbar-store-sqlite for full" >&2
   echo "coverage before tagging, or confirm that repo's own CI is green." >&2
   SQLITE_SKIPPED=1
   record_phase_skip "${SQLITE_BINARY_PHASE}" "sibling-missing"
@@ -1806,8 +1806,8 @@ done <<<"$REGISTRY_LIST"
 
 # ── Phase 5: Headroom / Webrequest — local --validate dlopen smoke test ────────────────────────────
 phase "Phase 5: headroom-hook / webrequest-hook — local busbar --validate dlopen smoke test"
-HEADROOM_SRC="${REPO_ROOT}/../headroom-hook"
-WEBREQUEST_SRC="${REPO_ROOT}/../webrequest-hook"
+HEADROOM_SRC="${REPO_ROOT}/../busbar-hook-headroom"
+WEBREQUEST_SRC="${REPO_ROOT}/../busbar-hook-webrequest"
 
 run_validate_smoke() {
   local name="$1" manifest_path="$2" crate_lib_name="$3" kind="$4" needs_flag="${5:-}"
@@ -1862,7 +1862,7 @@ elif [ -d "$HEADROOM_SRC" ]; then
   run_validate_smoke "headroom" "${HEADROOM_SRC}/Cargo.toml" "headroom_hook" hook needs
   end_phase ran
 else
-  note "SKIP: ../headroom-hook not present as a sibling checkout on this machine."
+  note "SKIP: ../busbar-hook-headroom not present as a sibling checkout on this machine."
   record_phase_skip "${HEADROOM_SMOKE_PHASE}" "sibling-missing"
 fi
 
@@ -1873,7 +1873,7 @@ elif [ -d "$WEBREQUEST_SRC" ]; then
   run_validate_smoke "webrequest" "${WEBREQUEST_SRC}/Cargo.toml" "busbar_webrequest_hook_plugin" hook
   end_phase ran
 else
-  note "SKIP: ../webrequest-hook not present as a sibling checkout on this machine."
+  note "SKIP: ../busbar-hook-webrequest not present as a sibling checkout on this machine."
   record_phase_skip "${WEBREQUEST_SMOKE_PHASE}" "sibling-missing"
 fi
 
@@ -1943,8 +1943,8 @@ for p in ${SUITE_SKIPPED[@]+"${SUITE_SKIPPED[@]}"}; do
 done
 if phase_selected "${SQLITE_BINARY_PHASE}"; then
   if [ -n "${SQLITE_SKIPPED:-}" ]; then
-    echo "NOTE: ../store-sqlite was not present locally — SQLite coverage was skipped, not passed. Run"
-    echo "on a machine with ../store-sqlite checked out for full coverage before tagging, or confirm"
+    echo "NOTE: ../busbar-store-sqlite was not present locally — SQLite coverage was skipped, not passed. Run"
+    echo "on a machine with ../busbar-store-sqlite checked out for full coverage before tagging, or confirm"
     echo "that repo's own CI is green."
   else
     echo "SQLite phase passed with real assertions (sibling checkout)."
@@ -1953,7 +1953,7 @@ fi
 if phase_selected "${HEADROOM_SMOKE_PHASE}" || phase_selected "${WEBREQUEST_SMOKE_PHASE}"; then
   if [ ! -d "$HEADROOM_SRC" ] || [ ! -d "$WEBREQUEST_SRC" ]; then
     echo "NOTE: one or both hook-plugin sibling repos were not present locally — that phase was"
-    echo "partially or fully skipped. Run on a machine with ../headroom-hook and ../webrequest-hook"
+    echo "partially or fully skipped. Run on a machine with ../busbar-hook-headroom and ../busbar-hook-webrequest"
     echo "checked out for full coverage before tagging, or confirm docker.yml's own smoke test is green."
   fi
 fi

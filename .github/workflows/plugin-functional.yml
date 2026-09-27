@@ -46,7 +46,7 @@ name: plugin-functional
 #       with:
 #         plugin_kind: store
 #         plugin_alias: sqlite
-#         plugin_repo: GetBusbar/store-sqlite
+#         plugin_repo: GetBusbar/busbar-store-sqlite
 #         plugin_asset_prefix: busbar-store-sqlite
 #         plugin_ref: this-tree          # build THIS plugin from source
 #         plugin_crate: busbar-store-sqlite-plugin
@@ -69,7 +69,7 @@ on:
         type: string
         default: ""
       plugin_repo:
-        description: "The GetBusbar repo the plugin comes from, e.g. GetBusbar/store-sqlite."
+        description: "The GetBusbar repo the plugin comes from, e.g. GetBusbar/busbar-store-sqlite."
         required: true
         type: string
       plugin_asset_prefix:

@@ -30,14 +30,14 @@
 # WHAT RUNS vs. WHAT IS MARKED VERIFIED-AT-INTEGRATION
 #   Phase A runs FULLY and hermetically here (only needs the busbar binary + python3 + an in-tree
 #   cdylib). Phase B and Phase C's OIDC-backed postures need a packed auth-oidc `kind:auth` plugin
-#   (sibling checkout ../auth-oidc) and a minted JWT; this script BUILDS the real JWKS + JWT fixtures
+#   (sibling checkout ../busbar-auth-oidc) and a minted JWT; this script BUILDS the real JWKS + JWT fixtures
 #   and runs `busbar --validate` on every config (a real, fail-closed check), then drives the full
 #   boot + HTTP assertions when the sibling plugin is present. Any assertion that cannot be proven
 #   standalone in this worktree is labelled `# VERIFIED-AT-INTEGRATION` with the exact thing the
 #   integrator must confirm. Nothing here fakes a pass: a phase that cannot run its real proof says
 #   so LOUDLY and (for the optional OIDC bits) loud-skips rather than reporting green.
 #
-# THE LIVE OIDC PROOFS RUN WHENEVER ../auth-oidc IS PRESENT (item 480). Phase B's POST /auth/token
+# THE LIVE OIDC PROOFS RUN WHENEVER ../busbar-auth-oidc IS PRESENT (item 480). Phase B's POST /auth/token
 #   round-trip and Phase C's admin authorization matrix were once behind an opt-in env var nothing in
 #   the repository set, so they never ran and nothing counted them as skipped. The "oidc:<sub>" vs
 #   `sanitize_self_sub` blocker that justified the opt-in is gone: the sanitizer
@@ -693,7 +693,7 @@ PYEOF
 
 # Build + pack the sibling auth-oidc plugin into $1/plugins as alias `oidc`. Echoes 0 on success,
 # 1 if the sibling checkout is absent (caller loud-skips the OIDC-backed assertions).
-OIDC_SRC="${REPO_ROOT}/../auth-oidc"
+OIDC_SRC="${REPO_ROOT}/../busbar-auth-oidc"
 oidc_pack_plugin() {
   local dir="$1"
   [ -d "$OIDC_SRC" ] || return 1
@@ -820,7 +820,7 @@ run_phase_b() {
       oidc)
         # OIDC supports BOTH directions.
         # (b) POST /auth/token (held id_token) — RUNS fully here (fixture self-test + --validate now;
-        #     boot + POST whenever ../auth-oidc is present; a recorded coverage gap when it is not).
+        #     boot + POST whenever ../busbar-auth-oidc is present; a recorded coverage gap when it is not).
         run_tokenx_oidc_post "$P_DIR"
         # (a) GET /auth/token browser redirect flow — VERIFIED-AT-INTEGRATION: the GET handler is
         #     mounted by Step 6 (see auth/exchange.rs "Step 6 mounts the GET browser flow"); Steps 1-5
@@ -938,7 +938,7 @@ EOF
     ok "packed sibling auth-oidc plugin as alias 'oidc' into ${pdir}"
     HAVE_OIDC=1
   else
-    note "SKIP: ../auth-oidc sibling checkout absent — cannot pack the oidc plugin."
+    note "SKIP: ../busbar-auth-oidc sibling checkout absent — cannot pack the oidc plugin."
     note "Phase B's config-validate + boot are OIDC-dependent; loud-skipping them (NOT a green pass)."
     HAVE_OIDC=0
   fi
@@ -1007,8 +1007,8 @@ EOF
   else
     record_gap phase-152-b-oidc-token-exchange-live sibling-missing
     integ "Phase B boot + POST /auth/token round-trip. RAN: JWKS/JWT fixture self-test only."
-    integ "  NOT RUN: ../auth-oidc is absent, so the live boot + POST could not run (a COVERAGE GAP)."
-    integ "  With ../auth-oidc checked out it runs and asserts:"
+    integ "  NOT RUN: ../busbar-auth-oidc is absent, so the live boot + POST could not run (a COVERAGE GAP)."
+    integ "  With ../busbar-auth-oidc checked out it runs and asserts:"
     integ "   1) POST /auth/token with the minted JWT returns 200 + { api_key, key_id, group:'user:oidc:${SUB}', exp }."
     integ "   2) exp-now ≈ auth.key_ttl (7d = 604800s)."
     integ "   3) a second POST returns the SAME key_id (one-key idempotency)."
@@ -1485,7 +1485,7 @@ EOF
     ok "packed sibling auth-oidc plugin as alias 'oidc' for the admin-plane postures"
   else
     HAVE_OIDC_C=0
-    note "SKIP: ../auth-oidc sibling absent — admin-plane OIDC postures (a)/(b) loud-skipped (NOT a pass)."
+    note "SKIP: ../busbar-auth-oidc sibling absent — admin-plane OIDC postures (a)/(b) loud-skipped (NOT a pass)."
   fi
 
   if [ "$HAVE_OIDC_C" = "1" ]; then
@@ -1565,8 +1565,8 @@ EOF
   else
     record_gap phase-152-c-admin-authz-matrix-live sibling-missing
     integ "Phase C postures (a)/(b) live boot + enforcement matrix."
-    integ "  NOT RUN: ../auth-oidc is absent, so the live admin JWT drive could not run (a COVERAGE GAP)."
-    integ "  With ../auth-oidc checked out it runs and asserts:"
+    integ "  NOT RUN: ../busbar-auth-oidc is absent, so the live admin JWT drive could not run (a COVERAGE GAP)."
+    integ "  With ../busbar-auth-oidc checked out it runs and asserts:"
     integ "   (a) admin_scope: full   → GET /api/v1/admin/keys = 200 AND POST /api/v1/admin/keys = 200/201."
     integ "   (b) admin_scope: read-only → GET = 200 (read allowed) but EVERY mutation on the SAME endpoints"
     integ "       (POST/PUT/DELETE keys, PUT /config/settings, hooks) = 403 forbidden — the required_scope"

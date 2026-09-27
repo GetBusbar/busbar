@@ -34,7 +34,7 @@ crates/
 ```
 
 The built-in `admin-tokens` admin plugin (default-on, removable feature `auth-admin-tokens`) lives in
-its own repo, GetBusbar/auth-admin-tokens, and is pulled at a pinned rev.
+its own repo, GetBusbar/busbar-auth-admin-tokens, and is pulled at a pinned rev.
 
 Dependency direction is one-way: `busbar` → `api` ← plugins. A plugin depends only on `api`, never on
 the engine, so a built-in is structured exactly like a third-party plugin would be (no privileged

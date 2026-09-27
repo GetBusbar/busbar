@@ -1,7 +1,7 @@
 # qa-gate — the automated inverse of each plugin's own CI.
 #
 # Each first-party plugin repo runs its OWN lightweight CI on every push, proving "this plugin
-# works" against a real backend where one applies (see e.g. GetBusbar/store-postgres's real
+# works" against a real backend where one applies (see e.g. GetBusbar/busbar-store-postgres's real
 # postgres: service container). This workflow is the other direction: on every push to `qa`
 # (the pre-release integration branch — see the dev→qa→main branch-model note in
 # scripts/release-check.sh's header), it runs the real end-to-end release gate, proving "busbar

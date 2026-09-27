@@ -23,7 +23,7 @@
 # release. Want a specific plugin pre-wired (e.g. Headroom's prompt compression)? See that plugin's
 # OWN repo — some ship their own bundled "busbar + plugin, one image" convenience variant for users
 # who came specifically for that plugin and just want it running (e.g.
-# https://github.com/GetBusbar/headroom-hook publishes `getbusbar/busbar-headroom`). This image is
+# https://github.com/GetBusbar/busbar-hook-headroom publishes `getbusbar/busbar-headroom`). This image is
 # the plain core: drop a signed plugin tarball into `/etc/busbar/plugins` yourself (see
 # docs/plugins.md) if you want one.
 #
@@ -45,8 +45,8 @@
 # image sets no WORKDIR); (3) store.module: sqlite + store.settings.db_path on a writable volume
 # (its directory must already exist); (4) the signed tarball actually IN plugins.dir — either
 # bind-mount it yourself, or let Busbar fetch it via
-# `plugins.fetch: [{ github: "GetBusbar/store-sqlite@vX" }]` (resolves to
-# https://github.com/GetBusbar/store-sqlite/releases/download/vX/store-sqlite.tar.gz), in which
+# `plugins.fetch: [{ github: "GetBusbar/busbar-store-sqlite@vX" }]` (resolves to
+# https://github.com/GetBusbar/busbar-store-sqlite/releases/download/vX/store-sqlite.tar.gz), in which
 # case plugins.dir must itself be WRITABLE (the fetch downloads into it). Example:
 #   -v busbar-plugins:/etc/busbar/plugins -v busbar-data:/var/lib/busbar
 # See docs/getting-started.md#durable-store-giving-persistence-a-writable-volume for the full

@@ -942,7 +942,7 @@ jobs:
           --health-retries 5
       # NOTE: there used to be a `vault:` service here for busbar-secret-vault /
       # busbar-secret-vault-plugin's live-Vault tests. That coverage moved with the crates to
-      # GetBusbar/hashicorp-vault (its own ci.yml boots the same real hashicorp/vault dev-mode
+      # GetBusbar/busbar-secret-vault (its own ci.yml boots the same real hashicorp/vault dev-mode
       # container) — see docs/plugins.md and scripts/release-check.sh's Vault phase for how the
       # monorepo now gates on that repo's own test suite via a sibling checkout instead.
     steps:
@@ -2256,9 +2256,9 @@ jobs:
         # than skip for exactly that reason; this line is what keeps them from having to.
         #
         # The auth kind's cdylib is not on the list: it is the REAL token-verifying module
-        # (GetBusbar/auth-oidc), a pinned git dev-dependency of busbar-kernel, busbar and
+        # (GetBusbar/busbar-auth-oidc), a pinned git dev-dependency of busbar-kernel, busbar and
         # busbar-plugin-loader, so each of those crates' own test build carries it. Nor are the export
-        # kind's: they are the REAL sinks (GetBusbar/export-file, -webhook, -prometheus, -otlp), pinned
+        # kind's: they are the REAL sinks (GetBusbar/busbar-export-file, -webhook, -prometheus, -otlp), pinned
         # git dev-dependencies of busbar and busbar-plugin-loader, carried the same way.
         run: |
           cargo build --locked \
@@ -2691,7 +2691,7 @@ jobs:
   # PLUGIN PROOFS — THE SECRET, AUTH, STORE AND HOOK KINDS, PROVEN BY THE REAL PLUGIN REPOS. The owner deleted
   # the in-tree secret and auth fixtures ("these are trash … real plugins are the examples",
   # docs/design/1.6.0-QUESTIONS.md "FIXTURES"); the proofs of those two kinds are
-  # GetBusbar/hashicorp-vault (secret) and GetBusbar/auth-github (auth). Both repos depend on busbar
+  # GetBusbar/busbar-secret-vault (secret) and GetBusbar/busbar-auth-github (auth). Both repos depend on busbar
   # by `git` at the rev their `.busbar-ref` pins, and name busbar-contract alone (#40; plus
   # busbar-plugin-loader dev-only). Each is checked out at `dev` beside THIS checkout and built with
   # both busbar crates `[patch]`ed to THIS tree through cargo config (no manifest edit: what builds is
@@ -2703,8 +2703,8 @@ jobs:
   # in the plugin's own words). Unlocked on purpose: the patch rewrites the plugins' busbar source,
   # and this job's question is whether they build against this tree.
   #
-  # THE STORE AND HOOK KINDS (R-FIX2: dropped-in door proofs use REAL plugins): GetBusbar/store-sqlite
-  # (the durable store — a durable file, a restart, two nodes on one file) and GetBusbar/webrequest-hook
+  # THE STORE AND HOOK KINDS (R-FIX2: dropped-in door proofs use REAL plugins): GetBusbar/busbar-store-sqlite
+  # (the durable store — a durable file, a restart, two nodes on one file) and GetBusbar/busbar-hook-webrequest
   # (the forwarding hook — reject, restrict and a slow upstream, against the proof's own local mock
   # upstream). Both name busbar-contract alone by git at their `.busbar-ref`, and each is built AT THE
   # REV THIS FILE PINS (`STORE_SQLITE_REV`, `WEBREQUEST_HOOK_REV`), unpatched and `--locked`: the
@@ -2726,7 +2726,7 @@ jobs:
       # busbar-contract port. Bump deliberately, like any pin.
       STORE_SQLITE_REV: 04f4c9ee0a151b3d9689553f0fa72ec6429f16b2
       WEBREQUEST_HOOK_REV: 2861fa4921e95f03c553444627e08409dcf900ab
-      # The real plugin that reports its OWN metrics on its status reply (GetBusbar/headroom-hook,
+      # The real plugin that reports its OWN metrics on its status reply (GetBusbar/busbar-hook-headroom,
       # `dev` after its busbar-contract port): the proof that a third-party plugin's own series cross
       # the dropped-in door. Bump deliberately, like any pin.
       HEADROOM_HOOK_REV: 1db9747b14d253e164f0da075b1fe6f697ee9290
@@ -2734,34 +2734,34 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           path: busbar
-      - name: Checkout the real secret plugin (GetBusbar/hashicorp-vault)
+      - name: Checkout the real secret plugin (GetBusbar/busbar-secret-vault)
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          repository: GetBusbar/hashicorp-vault
+          repository: GetBusbar/busbar-secret-vault
           ref: dev
           path: hashicorp-vault
-      - name: Checkout the real auth plugin (GetBusbar/auth-github)
+      - name: Checkout the real auth plugin (GetBusbar/busbar-auth-github)
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          repository: GetBusbar/auth-github
+          repository: GetBusbar/busbar-auth-github
           ref: dev
           path: auth-github
-      - name: Checkout the real durable store (GetBusbar/store-sqlite, pinned)
+      - name: Checkout the real durable store (GetBusbar/busbar-store-sqlite, pinned)
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          repository: GetBusbar/store-sqlite
+          repository: GetBusbar/busbar-store-sqlite
           ref: ${{ env.STORE_SQLITE_REV }}
           path: store-sqlite
-      - name: Checkout the real forwarding hook (GetBusbar/webrequest-hook, pinned)
+      - name: Checkout the real forwarding hook (GetBusbar/busbar-hook-webrequest, pinned)
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          repository: GetBusbar/webrequest-hook
+          repository: GetBusbar/busbar-hook-webrequest
           ref: ${{ env.WEBREQUEST_HOOK_REV }}
           path: webrequest-hook
-      - name: Checkout the real metrics-reporting hook (GetBusbar/headroom-hook, pinned)
+      - name: Checkout the real metrics-reporting hook (GetBusbar/busbar-hook-headroom, pinned)
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          repository: GetBusbar/headroom-hook
+          repository: GetBusbar/busbar-hook-headroom
           ref: ${{ env.HEADROOM_HOOK_REV }}
           path: headroom-hook
       - uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
@@ -2788,23 +2788,23 @@ jobs:
           done
       - name: Build the secret plugin's cdylib against this checkout
         working-directory: hashicorp-vault
-        # package-selector: busbar-hashicorp-vault-plugin -- .github/workflows/ci.yml -- GetBusbar/hashicorp-vault is a sibling checkout; `working-directory: hashicorp-vault` resolves this selector against that workspace, never against this one
+        # package-selector: busbar-hashicorp-vault-plugin -- .github/workflows/ci.yml -- GetBusbar/busbar-secret-vault is a sibling checkout; `working-directory: hashicorp-vault` resolves this selector against that workspace, never against this one
         run: cargo build -p busbar-hashicorp-vault-plugin
       - name: Build the auth plugin's cdylib against this checkout
         working-directory: auth-github
-        # package-selector: busbar-auth-github-plugin -- .github/workflows/ci.yml -- GetBusbar/auth-github is a sibling checkout; `working-directory: auth-github` resolves this selector against that workspace, never against this one
+        # package-selector: busbar-auth-github-plugin -- .github/workflows/ci.yml -- GetBusbar/busbar-auth-github is a sibling checkout; `working-directory: auth-github` resolves this selector against that workspace, never against this one
         run: cargo build -p busbar-auth-github-plugin
       - name: Build the durable store's cdylib at its pinned rev
         working-directory: store-sqlite
-        # package-selector: busbar-store-sqlite-plugin -- .github/workflows/ci.yml -- GetBusbar/store-sqlite is its own checkout; `working-directory: store-sqlite` resolves this selector against that workspace, never against this one
+        # package-selector: busbar-store-sqlite-plugin -- .github/workflows/ci.yml -- GetBusbar/busbar-store-sqlite is its own checkout; `working-directory: store-sqlite` resolves this selector against that workspace, never against this one
         run: cargo build --locked -p busbar-store-sqlite-plugin
       - name: Build the forwarding hook's cdylib at its pinned rev
         working-directory: webrequest-hook
-        # package-selector: busbar-webrequest-hook-plugin -- .github/workflows/ci.yml -- GetBusbar/webrequest-hook is its own checkout; `working-directory: webrequest-hook` resolves this selector against that workspace, never against this one
+        # package-selector: busbar-webrequest-hook-plugin -- .github/workflows/ci.yml -- GetBusbar/busbar-hook-webrequest is its own checkout; `working-directory: webrequest-hook` resolves this selector against that workspace, never against this one
         run: cargo build --locked -p busbar-webrequest-hook-plugin
       - name: Build the metrics-reporting hook's cdylib at its pinned rev
         working-directory: headroom-hook
-        # package-selector: headroom-hook -- .github/workflows/ci.yml -- GetBusbar/headroom-hook is its own checkout; `working-directory: headroom-hook` resolves this selector against that workspace, never against this one
+        # package-selector: headroom-hook -- .github/workflows/ci.yml -- GetBusbar/busbar-hook-headroom is its own checkout; `working-directory: headroom-hook` resolves this selector against that workspace, never against this one
         run: cargo build --locked -p headroom-hook --lib
       - name: Dlopen all five through the dropped-in door (plugin_proof_tests)
         working-directory: busbar
@@ -4257,17 +4257,17 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - repo: export-file
+          - repo: busbar-export-file
             patch: "busbar-contract=crates/busbar-contract busbar-plugin-loader=crates/plugin-loader"
-          - repo: export-prometheus
+          - repo: busbar-export-prometheus
             patch: "busbar-contract=crates/busbar-contract busbar-plugin-loader=crates/plugin-loader"
-          - repo: export-webhook
+          - repo: busbar-export-webhook
             patch: "busbar-contract=crates/busbar-contract busbar-plugin-loader=crates/plugin-loader"
-          - repo: export-otlp
+          - repo: busbar-export-otlp
             patch: "busbar-contract=crates/busbar-contract busbar-plugin-loader=crates/plugin-loader"
-          - repo: transport-tcp
+          - repo: busbar-transport-tcp
             patch: "busbar-contract=crates/busbar-contract busbar-plugin-loader=crates/plugin-loader"
-          - repo: auth-admin-tokens
+          - repo: busbar-auth-admin-tokens
             patch: "busbar-contract=crates/busbar-contract busbar-plugin-loader=crates/plugin-loader"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7

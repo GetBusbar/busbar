@@ -12,7 +12,7 @@
 //!   chain with no `BUSBAR_MCP_STDIO_CREDENTIAL`, or with one the admission refuses, **exits
 //!   nonzero without serving a single frame** — the stdio spelling of the HTTP door's `401`;
 //! * a GOVERNED SESSION end to end: the credential — a JWT a local issuer signed — is verified by a
-//!   REAL token-verifying auth plugin (GetBusbar/auth-oidc, against the issuer's JWKS on a
+//!   REAL token-verifying auth plugin (GetBusbar/busbar-auth-oidc, against the issuer's JWKS on a
 //!   certificate-verified loopback endpoint) loaded over the REAL plugin pipeline, `role_bindings` binds the session to a
 //!   budget-capped group,
 //!   the operator's `ask_caller` is driven as LIVE `elicitation/create` requests over the pipes,
@@ -152,7 +152,7 @@ fn record_skip(reason: &str) {
     );
 }
 
-/// Package the REAL `busbar-auth-oidc-plugin` cdylib (GetBusbar/auth-oidc, a pinned git
+/// Package the REAL `busbar-auth-oidc-plugin` cdylib (GetBusbar/busbar-auth-oidc, a pinned git
 /// dev-dependency of this crate, so the build leaves it under `deps/` with a metadata hash) into an
 /// unsigned `kind: auth` tarball in the fixture's plugins dir. `false` when the cdylib is not built —
 /// a skip locally, a hard failure under CI, the same posture busbar-kernel's

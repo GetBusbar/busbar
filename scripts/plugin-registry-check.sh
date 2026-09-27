@@ -5,7 +5,8 @@
 # design; this gate is what turns "remembered in five places" into "enforced from one".
 #
 # Checks, in order:
-#   1. Registry shape: required fields, valid kinds/gates, unique repo/alias/crate.
+#   1. Registry shape: required fields, valid kinds/gates, unique repo/alias/crate, and every repo is
+#      named busbar-<kind>-<name> for its OWN kind (owner ruling: repo = crate = artifact prefix).
 #   2. qa-gate.yml derives its sibling checkouts from the registry (its clone loop calls this
 #      script's --list mode) — per-plugin hand-written checkout steps are gone by design, so the
 #      check is "the registry-driven step exists", not "a literal step per plugin exists".
@@ -16,10 +17,9 @@
 #   4. [network, skipped with --offline] every entry has a published GitHub release on its
 #      version_line WITH >0 assets (a tag+release with no assets is a phantom, not a release).
 #   5. [network, skipped with --offline] reverse sweep: org repos matching plugin naming
-#      (store-*, *-hook, auth-*, secret-*, export-*, transport-*, plane-*, or kind-named like
-#      hashicorp-*) must be in the registry or in excluded_repos. EVERY plugin kind lives in its own
-#      repo (owner ruling), so every kind's naming is swept, not just the four cold kinds that
-#      shipped first.
+#      (^busbar-(store|secret|auth|hook|export|plane|transport)-, the one name every plugin repo
+#      carries) must be in the registry or in excluded_repos. EVERY plugin kind lives in its own
+#      repo (owner ruling), so every kind's naming is swept.
 #
 # Usage: scripts/plugin-registry-check.sh [--offline]
 #        scripts/plugin-registry-check.sh --list
@@ -50,7 +50,7 @@ if [ "$MODE" = "--selftest" ]; then
   # 5's cases, so check 2's fail-injection below never executed on the happy path and could not
   # change the outcome on the unhappy one. The EXIT trap counts the cases that actually ran and
   # turns a green exit with any case unrun into RED.
-  SELFTEST_CASES=9
+  SELFTEST_CASES=12
   ran=0
   selftest_exit() {
     local st=$?
@@ -107,9 +107,9 @@ PAGES
 
   # CASE 3: a real-shaped listing containing an unregistered plugin-shaped repo — the sweep's whole
   # purpose. This is the half that proves the guards above did not just disable the check.
-  mk_stub "    python3 '$tmp/pages.py' '[[$(python3 -c 'print(",".join(f"\"r{i}\"" for i in range(40)))'),\"store-bogus\"]]' \"\$@\""
+  mk_stub "    python3 '$tmp/pages.py' '[[$(python3 -c 'print(",".join(f"\"r{i}\"" for i in range(40)))'),\"busbar-store-bogus\"]]' \"\$@\""
   probe "a plausible listing still catches an unregistered plugin-shaped repo" \
-    want-present "org repo 'store-bogus' matches plugin naming"
+    want-present "org repo 'busbar-store-bogus' matches plugin naming"
 
   # CASE 4: the same listing without the stray repo must not manufacture a finding.
   mk_stub "    python3 '$tmp/pages.py' '[[$(python3 -c 'print(",".join(f"\"r{i}\"" for i in range(40)))')]]' \"\$@\""
@@ -118,18 +118,18 @@ PAGES
   # CASE 5 (item 510): the org is bigger than one page, and the stray is on PAGE 2. A sweep that
   # reads one page of at most 100 repos clears the floor (the registry's own count, ~11) on page 1
   # alone and never sees it -- a truncated answer indistinguishable from a complete one.
-  mk_stub "    python3 '$tmp/pages.py' '[[$(python3 -c 'print(",".join(f"\"r{i}\"" for i in range(100)))')],[\"r100\",\"store-on-page-two\"]]' \"\$@\""
+  mk_stub "    python3 '$tmp/pages.py' '[[$(python3 -c 'print(",".join(f"\"r{i}\"" for i in range(100)))')],[\"r100\",\"busbar-store-on-page-two\"]]' \"\$@\""
   probe "a plugin-shaped repo on the SECOND page of the org listing is still caught" \
-    want-present "org repo 'store-on-page-two' matches plugin naming"
+    want-present "org repo 'busbar-store-on-page-two' matches plugin naming"
 
   # CASES 6-7: the sweep covers EVERY kind's naming, not only the cold kinds that shipped first.
   # An unregistered export-* and an unregistered transport-* repo are each caught.
-  mk_stub "    python3 '$tmp/pages.py' '[[$(python3 -c 'print(",".join(f"\"r{i}\"" for i in range(40)))'),\"export-bogus\"]]' \"\$@\""
-  probe "an unregistered export-* repo is caught by the org sweep" \
-    want-present "org repo 'export-bogus' matches plugin naming"
-  mk_stub "    python3 '$tmp/pages.py' '[[$(python3 -c 'print(",".join(f"\"r{i}\"" for i in range(40)))'),\"transport-bogus\"]]' \"\$@\""
-  probe "an unregistered transport-* repo is caught by the org sweep" \
-    want-present "org repo 'transport-bogus' matches plugin naming"
+  mk_stub "    python3 '$tmp/pages.py' '[[$(python3 -c 'print(",".join(f"\"r{i}\"" for i in range(40)))'),\"busbar-export-bogus\"]]' \"\$@\""
+  probe "an unregistered busbar-export-* repo is caught by the org sweep" \
+    want-present "org repo 'busbar-export-bogus' matches plugin naming"
+  mk_stub "    python3 '$tmp/pages.py' '[[$(python3 -c 'print(",".join(f"\"r{i}\"" for i in range(40)))'),\"busbar-transport-bogus\"]]' \"\$@\""
+  probe "an unregistered busbar-transport-* repo is caught by the org sweep" \
+    want-present "org repo 'busbar-transport-bogus' matches plugin naming"
 
   # ── CHECK 2, FAIL-INJECTED. A COMMENT MENTIONING THE LOOP IS NOT THE LOOP ──────────────────────
   # Check 2 asserted only that the string `plugin-registry-check.sh --list` appeared SOMEWHERE in
@@ -184,8 +184,43 @@ MUT
     printf '  [FAILED] %s\n' "check 2 passed with the registry-driven loop DELETED — a comment satisfied it"; rc=1
   fi
 
+  # ── CHECK 1, THE NAME. A registered repo outside busbar-<kind>-<name>, or named for another kind,
+  # is RED; the committed registry (the control) is not. Planted in a copy of plugins.yaml.
   echo
-  [ "$rc" = 0 ] && { echo "plugin-registry-check selftest: the org sweep fails loud and still finds strays, and a comment cannot stand in for the registry loop"; exit 0; }
+  echo "plugin-registry-check selftest (check 1, every repo is busbar-<its kind>-<name>)"
+  c1="$tmp/c1"; mkdir -p "$c1/scripts" "$c1/.github/workflows"
+  cp plugins.yaml "$c1/plugins.yaml"
+  cp scripts/plugin-registry-check.sh scripts/release-check.sh scripts/qa-gate-run.sh "$c1/scripts/"
+  [ -f scripts/release-check-1.5.2.sh ] && cp scripts/release-check-1.5.2.sh "$c1/scripts/"
+  [ -f .github/workflows/qa-gate.yml ] && cp .github/workflows/qa-gate.yml "$c1/.github/workflows/"
+  c1_says() { local out; out="$( (cd "$c1" && ./scripts/plugin-registry-check.sh --offline) 2>&1 || true)"; case "$out" in *"$1"*) return 0 ;; *) return 1 ;; esac; }
+  first="$(sed -n 's/^  - repo: //p' plugins.yaml | head -1)"
+  first_kind="$(awk '/^  - repo: /{n++} n==1 && /^    kind: /{print $2; exit}' plugins.yaml)"
+  ran=$((ran + 1))
+  if c1_says "repo name does not match"; then
+    printf '  [FAILED] %s\n' "control: the COMMITTED registry fails the naming check (the check is broken, not the subject)"; rc=1
+  else
+    printf '  [ok]     %s\n' "control: every committed repo is busbar-<its kind>-<name>"
+  fi
+  ran=$((ran + 1))
+  sed -i.bak "s/^  - repo: ${first}\$/  - repo: legacy-${first#busbar-}/" "$c1/plugins.yaml"
+  if c1_says "does not match ^busbar-${first_kind}-"; then
+    printf '  [ok]     %s\n' "a registered repo named outside busbar-<kind>-<name> is RED"
+  else
+    printf '  [FAILED] %s\n' "check 1 passed a repo named legacy-${first#busbar-}"; rc=1
+  fi
+  cp plugins.yaml "$c1/plugins.yaml"
+  ran=$((ran + 1))
+  other="plane"; [ "$first_kind" = plane ] && other="hook"
+  sed -i.bak "s/^  - repo: ${first}\$/  - repo: busbar-${other}-${first#busbar-*-}/" "$c1/plugins.yaml"
+  if c1_says "does not match ^busbar-${first_kind}-"; then
+    printf '  [ok]     %s\n' "a repo named for ANOTHER kind (busbar-${other}-...) is RED"
+  else
+    printf '  [FAILED] %s\n' "check 1 passed a kind:${first_kind} repo named busbar-${other}-..."; rc=1
+  fi
+
+  echo
+  [ "$rc" = 0 ] && { echo "plugin-registry-check selftest: the org sweep fails loud and still finds strays, a comment cannot stand in for the registry loop, and a plugin repo is named busbar-<kind>-<name>"; exit 0; }
   echo "plugin-registry-check selftest: FAILED"; exit 1
 fi
 
@@ -252,6 +287,10 @@ for p in plugins:
         if p[k] in seen[k]:
             fail.append(f"duplicate {k} '{p[k]}' in registry")
         seen[k].add(p[k])
+    # THE NAME (owner ruling: repo = crate = artifact prefix): busbar-<kind>-<name>, for its OWN kind.
+    if not re.match(rf"^busbar-{re.escape(p['kind'])}-[a-z0-9]+(-[a-z0-9]+)*$", p["repo"]):
+        fail.append(f"{p['repo']}: repo name does not match ^busbar-{p['kind']}-<name> "
+                    f"(every plugin repo is busbar-<kind>-<name>, for its own kind)")
 if not plugins:
     fail.append("plugins.yaml parsed to an empty plugin list")
 
@@ -434,8 +473,7 @@ if not offline:
                     "implausibly small set cannot rule out an unregistered plugin repo.")
     else:
         known = {p["repo"] for p in plugins} | excluded
-        pat = re.compile(
-            r"^(store-.*|.*-hook|auth-.*|hashicorp-.*|secret-.*|export-.*|transport-.*|plane-.*)$")
+        pat = re.compile(r"^busbar-(store|secret|auth|hook|export|plane|transport)-")
         for r in repos:
             name = r["name"]
             if pat.match(name) and name not in known:

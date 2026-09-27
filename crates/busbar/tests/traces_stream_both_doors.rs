@@ -3,7 +3,7 @@
 
 //! **THE `traces` STREAM, BOTH DOORS, TO A COLLECTOR** — K9a S7 (BUSBAR-1.6.0 18b(d)) and K9e-2 end
 //! to end through the kernel's real export axis: the kernel's traces producer turns closed tracing
-//! spans into `traces` records, and the OTLP sink (`module: otlp`, GetBusbar/export-otlp at the
+//! spans into `traces` records, and the OTLP sink (`module: otlp`, GetBusbar/busbar-export-otlp at the
 //! root's pinned rev) is handed them the same whether it came in LINKED or DROPPED IN — and has the
 //! host post each as an OTLP/HTTP protobuf request to a collector.
 //!

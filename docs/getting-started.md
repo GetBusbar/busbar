@@ -399,8 +399,8 @@ own writable path; it does not make keys/usage/ledgers durable.
 
 A durable store ships as a **signed plugin**, not code baked into the binary or the Docker image —
 `sqlite`, `postgres`, `mysql` and `valkey` are each a separate release from their own repo
-(`GetBusbar/store-sqlite`, `GetBusbar/store-postgres`, `GetBusbar/store-mysql`,
-`GetBusbar/store-valkey` — the full list, with each plugin's alias and crate name, is
+(`GetBusbar/busbar-store-sqlite`, `GetBusbar/busbar-store-postgres`, `GetBusbar/busbar-store-mysql`,
+`GetBusbar/busbar-store-valkey` — the full list, with each plugin's alias and crate name, is
 [`plugins.yaml`](../plugins.yaml) at the repo root). "Give it a writable volume" is necessary but
 not sufficient; the complete recipe has **four** parts:
 
@@ -421,7 +421,7 @@ not sufficient; the complete recipe has **four** parts:
    - **`plugins.fetch`**: let Busbar download it at boot. One entry, `{ github: "org/repo@tag" }`,
      resolves to the exact GitHub release-asset URL
      `https://github.com/{org}/{repo}/releases/download/{tag}/{repo}.tar.gz` — for sqlite that is
-     `https://github.com/GetBusbar/store-sqlite/releases/download/v1.0.0/store-sqlite.tar.gz`
+     `https://github.com/GetBusbar/busbar-store-sqlite/releases/download/v1.0.0/store-sqlite.tar.gz`
      (pin whatever tag you actually want; `v1.0.0` here is illustrative). Because this path
      *writes* the downloaded tarball into `plugins.dir`, that directory must be **writable**, not
      merely mounted — a read-only `plugins.dir` fails the download, not just the load.
@@ -433,7 +433,7 @@ plugins:
   enabled: true
   dir: /etc/busbar/plugins          # ABSOLUTE — the default ("plugins") resolves to /plugins in the image
   fetch:
-    - github: "GetBusbar/store-sqlite@v1.0.0"   # or omit `fetch` and mount the tarball yourself
+    - github: "GetBusbar/busbar-store-sqlite@v1.0.0"   # or omit `fetch` and mount the tarball yourself
 
 store:
   module: sqlite

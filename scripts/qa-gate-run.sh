@@ -494,12 +494,12 @@ cmd_segment() {
 # loader tests would skip (off CI) or dlopen a stale artifact, and the leg would still report green.
 loader_sibling_cdylib() {
   local root; root="$(sibling_root)"
-  if [ ! -d "${root}/store-sqlite" ]; then
-    sibling_gap "no ${root}/store-sqlite sibling checkout - the loader leg cannot load the real sqlite plugin it exists to prove"
+  if [ ! -d "${root}/busbar-store-sqlite" ]; then
+    sibling_gap "no ${root}/busbar-store-sqlite sibling checkout - the loader leg cannot load the real sqlite plugin it exists to prove"
     return 0
   fi
-  # package-selector: busbar-store-sqlite-plugin -- scripts/qa-gate-run.sh -- store-sqlite left this tree and lives in a sibling checkout; this `cd ../store-sqlite` resolves the selector against THAT workspace, not this one
-  (cd "${root}/store-sqlite" && cargo build --release -p busbar-store-sqlite-plugin) || \
+  # package-selector: busbar-store-sqlite-plugin -- scripts/qa-gate-run.sh -- store-sqlite left this tree and lives in a sibling checkout; this `cd ../busbar-store-sqlite` resolves the selector against THAT workspace, not this one
+  (cd "${root}/busbar-store-sqlite" && cargo build --release -p busbar-store-sqlite-plugin) || \
     sibling_gap "the store-sqlite sibling cdylib build FAILED - any cdylib in its target/ is from an earlier build, not this run's"
 }
 
@@ -545,9 +545,9 @@ cmd_selftest() {
   echo "qa-gate-run selftest"
 
   # ITEM 520: the loader leg's sibling cdylib. Missing or unbuildable is a hole in the soak.
-  mkdir -p "$tmp/none" "$tmp/have/store-sqlite"
+  mkdir -p "$tmp/none" "$tmp/have/busbar-store-sqlite"
   cargo_stub 0
-  st "loader: no ../store-sqlite on the soak is RED"          1 in_root "$tmp/none" 1 loader_sibling_cdylib
+  st "loader: no ../busbar-store-sqlite on the soak is RED"          1 in_root "$tmp/none" 1 loader_sibling_cdylib
   st "loader: a sibling that builds is green"                 0 in_root "$tmp/have" 1 loader_sibling_cdylib
   cargo_stub 101
   st "loader: a sibling whose cdylib build FAILS is RED"      1 in_root "$tmp/have" 1 loader_sibling_cdylib

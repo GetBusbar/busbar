@@ -159,7 +159,7 @@ Each of these is an owner-accepted difference from 1.5.5: additive, or strictly 
   the endpoint rules are 1.5.5's: plaintext `http://` to a loopback collector only, `https://`
   elsewhere, link-local, private, CGNAT and cloud-metadata targets refused, and credentials in the
   URL sent as an `Authorization: Basic` header. The sink ships as a plugin
-  ([GetBusbar/export-otlp](https://github.com/GetBusbar/export-otlp)), linked into the default build.
+  ([GetBusbar/busbar-export-otlp](https://github.com/GetBusbar/busbar-export-otlp)), linked into the default build.
 - **A service-account key file that cannot be read no longer echoes the credential into the error.**
   `auth: jwt-bearer` tells a pasted service-account JSON from a path to one by a single leading
   `{`, so an operator who pastes the key BODY — or whose `env:`/`file:` reference resolves to key

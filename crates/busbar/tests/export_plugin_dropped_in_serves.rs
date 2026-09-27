@@ -6,7 +6,7 @@
 //! Before the export axis, `export.<name>.module:` could name only the four built-ins — any other
 //! name was refused at boot ("unknown exporter"), `open_export` had no caller and nothing ever
 //! handed a loaded sink a batch. This drives the REAL binary with a REAL `kind: export` plugin — the
-//! request-log FILE sink's `cdylib` (GetBusbar/export-file, at the root's pinned rev) — dropped into
+//! request-log FILE sink's `cdylib` (GetBusbar/busbar-export-file, at the root's pinned rev) — dropped into
 //! `plugins.dir` as a third-party tarball under a name this test gives it, an `export:` instance
 //! naming it, and the `prometheus` exporter beside it, then proves the whole path over the wire:
 //!

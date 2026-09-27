@@ -71,7 +71,7 @@
       "the signature code compiles (scripts/signing-gate.sh already proves that, on a binary it",
       "builds itself); it would have gone green on the broken 1.5.3 aarch64 artifact."
     ],
-    "repo": "GetBusbar/store-sqlite",
+    "repo": "GetBusbar/busbar-store-sqlite",
     "tag": "v1.0.4",
     "alias": "sqlite",
     "expect_signature": "first-party",
