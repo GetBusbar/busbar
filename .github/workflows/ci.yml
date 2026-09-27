@@ -2211,9 +2211,8 @@ jobs:
       - name: Clippy — ${{ matrix.name }}
         run: cargo clippy ${{ matrix.scope == 'package' && matrix.tests || '--workspace' }} --all-targets --features "${{ matrix.features }}" --locked -- -D warnings
       - name: Plugin cdylibs the suites dlopen
-        # MEASURED, not precautionary. `cargo test -p busbar-core` alone fails eleven tests with
-        # "the busbar-store-example-plugin cdylib is not built at target/debug/…", and
-        # `cargo test -p busbar-llm` one more on the hook-test plugin: those batteries cross the REAL
+        # MEASURED, not precautionary. `cargo test -p busbar-llm` alone fails a test on the hook-test
+        # plugin's cdylib not being built at target/debug/…: those batteries cross the REAL
         # plugin C ABI on purpose and REFUSE to skip when the artifact is missing. The `check` job
         # never sees it because `cargo build --workspace` has already produced every cdylib by the
         # time its tests run. A per-package test run has to say so itself. ~30 s, and the alternative
@@ -2230,7 +2229,6 @@ jobs:
         # busbar-plugin-loader, so each of those crates' own test build carries it.
         run: |
           cargo build --locked \
-            -p busbar-store-example-plugin \
             -p busbar-hook-test-plugin \
             -p busbar-export-example-plugin \
             -p busbar-plugin-example-plane
@@ -2772,11 +2770,12 @@ jobs:
         run: |
           set -euo pipefail
           # FLOOR ON THE MATCH COUNT: the proofs are `#[ignore]`d, so this is their only execution,
-          # and a filter that matches nothing exits 0 having proven nothing. Six: the five real-plugin
-          # proofs and the two-node store proof's second node (a no-op when run on its own).
+          # and a filter that matches nothing exits 0 having proven nothing. Seven: the five real-plugin
+          # proofs, the task-state restart over the real durable store, and the two-node store proof's
+          # second node (a no-op when run on its own).
           out="$(cargo test --locked -p busbar-plugin-loader --lib plugin_proof_tests -- --ignored 2>&1 | tee /dev/stderr)"
-          echo "$out" | grep -qE 'test result: ok\. 6 passed' || {
-            echo "::error::plugin_proof_tests did not run exactly the five real-plugin proofs and the second node"
+          echo "$out" | grep -qE 'test result: ok\. 7 passed' || {
+            echo "::error::plugin_proof_tests did not run exactly the five real-plugin proofs, the task-state restart and the second node"
             exit 1
           }
 

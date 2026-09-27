@@ -942,20 +942,8 @@ count = "30"
 
 
 
-[[cell]]
-crate = "busbar-store-example-plugin"
-kind = "plane"
-count = "26"
 
-[[cell]]
-crate = "busbar-store-example-plugin"
-kind = "plugin-tooling"
-count = "1"
 
-[[cell]]
-crate = "busbar-store-example-plugin"
-kind = "store"
-count = "8"
 
 [[cell]]
 crate = "busbar-store-memory"

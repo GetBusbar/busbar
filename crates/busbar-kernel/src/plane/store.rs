@@ -44,8 +44,8 @@ use busbar_contract::records::{RecordStoreError, RecordStoreResult};
 //
 // One constant per plane concept, so a consumer names a `kind` in exactly one place and a typo is a
 // missing symbol rather than a silently-inert string. These are the on-wire tags a store branches on;
-// they are neutral strings that name no Rust plane type, and they match the reference `impl Store` in
-// `store-example-plugin` verbatim. A plane crate mirrors the constant it owns (e.g. `busbar_mcp`'s
+// they are neutral strings that name no Rust plane type, and the stores key their retention on them
+// verbatim (a `task` purges only terminal rows). A plane crate mirrors the constant it owns (e.g. `busbar_mcp`'s
 // `KIND_CALL`, `busbar_a2a`'s `KIND_TASK`) so the tag it writes and the tag core reads agree.
 
 /// One plane's task row kind.

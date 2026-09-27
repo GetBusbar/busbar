@@ -1209,9 +1209,6 @@ reviewed_allowlist = ["busbar-api", "serde", "serde_json", "tracing", "async-tra
 # busbar-llm-codec: the pure codec half of the split llm crate (no I/O in its closure); the plane adapts it.
 # Per-crate additions beyond the global list above, each a one-line review.
 [rules.manifest-allowlist.reviewed_extra]
-# RETIRED 2026-09-08: store-example-plugin named busbar-store-memory, a sibling instance of its own
-# kind, which PLUGIN-TREE.md §4 forbids without exception. The waiver is gone because the dependency
-# is: the example now carries its own in-process backend (crates/store-example-plugin/src/ram.rs).
 # Ratchet, NOT a review: each busbar-plane-* adapter names its own dialect's legacy engine crate
 # (busbar-llm/-mcp/-a2a/-voice) for codecs only, read-only, no engine state crossing back — but
 # those engine crates are ALSO named in gate.plane_crates, so this is structurally the exact "a
@@ -1222,14 +1219,6 @@ reviewed_allowlist = ["busbar-api", "serde", "serde_json", "tracing", "async-tra
 # the workspace. This ratchet describes a tree that no longer exists and tells a reader the coupling
 # is still there. Delete it (PLUGIN-TREE.md section 9) — noted here, not done here, because a rule
 # change is not this commit's business.
-#
-# REVIEWED 2026-09-09, and it is the first dependency this rule could see: the manifest reader read
-# `[dependencies]` and nothing else, so a `[target.'cfg(unix)'.dependencies]` entry was invisible to
-# it — and `cfg(unix)` is true on every runner and every shipped Linux artifact this tree builds, so
-# what the narrowing excluded was a dependency that ships. `libc` here is the advisory whole-file
-# `flock` FileStore takes around its read-modify-write (crates/store-example-plugin/src/lib.rs,
-# FileLock), unix-only, in the fixture that models a fleet sharing one durable path.
-store-example-plugin = ["libc"]
 [rules.manifest-allowlist.known_red_deps]
 busbar-plane-llm = ["busbar-llm"]
 # busbar-plane-a2a HAS NO ROW, for the same reason busbar-plane-mcp lost its one: the codec fold
@@ -1572,7 +1561,7 @@ known_missing_forbid = [
   "hook-test-plugin", "hooks-ranking", "auth-admin-tokens",
 ]
 known_missing_deny = [ "plugin-loader",
-  "store-example-plugin", "export-example-plugin",
+  "export-example-plugin",
 ]
 
 # ── 22. secret-carrier-debug (ARCHITECTURE.md section 3.7) ───────────────────────────────────────────────────
@@ -2525,12 +2514,17 @@ plane_crates = 4
 # carries these numbers, the decrement disappears and the comparison is quiet. Re-pinning without
 # naming the fold, or leaving the pins stale so the row reds on `actual < pinned` forever, are the
 # two things this table is written to prevent.
+#
+# store 2 -> 1 (DOOR-STORE item 4, R-FIX2 + owner FIXTURES ruling): crates/store-example-plugin is
+# DELETED — its one remaining test (the dlopen-restart durability proof) moved onto the real durable
+# store GetBusbar/store-sqlite in `plugin_proof_tests`. `crates/store-*` now matches exactly one:
+# `crates/store-memory`, the store kind's both-ways proof.
 [gate.census.plugin_kinds]
 plane = 5
 hook = 2
 auth = 1
 secret = 0
-store = 2
+store = 1
 export = 1
 transport = 4
 loader = 1

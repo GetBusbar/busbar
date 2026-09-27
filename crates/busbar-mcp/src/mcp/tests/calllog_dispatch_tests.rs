@@ -15,22 +15,21 @@
 //! and says nothing about whether a customer's `tools/call` ever reaches it. So this battery does not
 //! touch the log's write surface. It drives `tools/call` and then LOOKS.
 //!
-//! The `dlopen` half is the other lesson, and it is a lesson this release already paid for once. The
+//! The store half is the other lesson, and it is a lesson this release already paid for once. The
 //! plugin ABI carried four store methods while the trait carried ten, so every task and call-log
-//! write through the real plugin path was accepted and silently discarded — while each store
-//! plugin's own unit tests passed, because they never crossed the ABI. A call-log test held against
-//! an in-process `Store` double would have been green throughout that entire defect. The store here
-//! is therefore the genuine `busbar-store-example-plugin` cdylib, loaded through
-//! `busbar_plugin_loader::load_store`, i.e. across the same C ABI a customer's postgres or sqlite
-//! plugin is reached over.
+//! write through the real plugin path was accepted and silently discarded. That the ABI now carries
+//! every verb a linked store answers is the loader's both-ways fold (`busbar-plugin-loader`'s
+//! `store_conformance_tests`, with its pre-variant-wire RED arm); what this battery judges is the
+//! plane's side, against the kernel's durable store double (`test_support::durable_store`,
+//! R-FIX3), whose rows outlive the handle that wrote them.
 //!
-//! ## Why the read-back is a second `dlopen` and not a second method call
+//! ## Why the read-back is a second handle and not a second method call
 //!
 //! `Ok(())` from a write is worthless as evidence — the `Store` trait's defaults accept and keep
 //! nothing — so durability is only ever learned by READING BACK. Reading back through the SAME
-//! handle would still pass against a plugin that kept the row in a map it drops on close. The
-//! fixture's `durable_path` mode puts bytes on disk precisely so a second `busbar_open` can find
-//! them, and a second `busbar_open` is what this file does.
+//! handle would still pass against a store that kept the row in a map it drops on close. The double
+//! puts its journal on disk precisely so a second handle can find it, and a second handle is what
+//! this file opens.
 //!
 //! ## The `CALLS` global is serialised here, deliberately
 //!

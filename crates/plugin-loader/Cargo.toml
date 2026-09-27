@@ -149,9 +149,9 @@ libc = { workspace = true }
 # present, and the kind:store fixture falls back to the store both-ways proof's own cdylib (above)
 # when the sqlite sibling is not built; under CI a missing fixture is a hard failure, never a skip.
 # The sibling-built one is required only under qa-gate.yml's `loader` leg (see
-# store_fixture_plugin_path()'s doc comment in src/tests/lib_tests.rs). The ONE test that needs a
-# DURABLE store across a dlopen restart locates its cdylib by name (tests/fixtures/
-# plugin_artifacts.txt `durable_store_cdylib`), with no edge from this crate.
+# store_fixture_plugin_path()'s doc comment in src/tests/lib_tests.rs). The DURABLE store across a
+# dlopen restart is the real one (GetBusbar/store-sqlite), dlopened by `plugin_proof_tests` from
+# `BUSBAR_PLUGIN_PROOF_DIR` (ci.yml `plugin-proofs`), with no edge from this crate.
 
 # THE BOTH-WAYS FIXTURES: <cold kind> = "<fixture crate>". `build.rs` turns these rows into the table
 # `src/tests/both_ways.rs` includes, so each conformance test reaches its kind's fixture by KIND and no

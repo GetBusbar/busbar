@@ -68,7 +68,6 @@ kind-isolation:matrix	ratchet	busbar-plugin-loader × kernel	42
 kind-isolation:matrix	ratchet	busbar-plugin-loader × plane	111
 kind-isolation:matrix	ratchet	busbar-plugin-loader × store	81
 kind-isolation:matrix	ratchet	busbar-plugin-loader × transport	92
-kind-isolation:matrix	ratchet	busbar-store-example-plugin × plane	30
 kind-isolation:matrix	ratchet	busbar-store-memory × plane	8
 kind-isolation:matrix	ratchet	busbar-transport-stdio × plane	2
 kind-isolation:matrix	ratchet	busbar-voice × contract	126

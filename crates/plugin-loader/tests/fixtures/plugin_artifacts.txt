@@ -14,10 +14,6 @@ sibling_store_cdylib = busbar_store_sqlite_plugin
 published_store_plugin_id = store-sqlite
 
 # The in-tree hermetic example cdylibs (crates/*-example-plugin), by their crate identifier.
-# `durable_store_cdylib`: the file-backed store the ONE dlopen-restart durability test loads, until the
-# real durable store (the sibling above) builds against the current contract; every other kind:store
-# test loads the store both-ways proof (Cargo.toml `[package.metadata.busbar.both-ways]`).
-durable_store_cdylib = busbar_store_example_plugin
 export_example_cdylib = busbar_export_example_plugin
 
 # The REAL plugin repos that prove the secret and auth kinds (`src/tests/plugin_proof_tests.rs`;

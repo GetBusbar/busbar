@@ -20,7 +20,7 @@
 #     [ "$n" != "$b" ] && echo "$b -> $n"; done
 # api, auth-admin-tokens, auth-static-plugin, export-example-plugin, hook-test-plugin,
 # hooks-ranking, plane-example (-> busbar-plugin-example-plane), plugin-loader,
-# secret-example-plugin, secret-ref, store-example-plugin, store-memory — every one but
+# secret-example-plugin, secret-ref, store-memory — every one but
 # plane-example is its directory with `busbar-` prefixed. Re-run it before quoting the count.
 # Re-keying the ceilings onto package names is a separate decision from fixing the counter, and
 # doing both at once would make neither reviewable.

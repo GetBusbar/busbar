@@ -1507,53 +1507,53 @@ use busbar_contract::records::PlaneDisposition;
 
 /// A stand-in for the `task`-kind body — the exact field names the reference store decodes by.
 #[derive(serde::Serialize, serde::Deserialize, PartialEq, Clone, Debug)]
-struct SampleTask {
-    task_id: String,
-    context_id: String,
-    principal: String,
-    direction: String,
-    state: String,
-    agent_id: String,
-    artifact_cursor: u64,
-    push_callback: String,
-    created_at: u64,
-    updated_at: u64,
+pub(crate) struct SampleTask {
+    pub(crate) task_id: String,
+    pub(crate) context_id: String,
+    pub(crate) principal: String,
+    pub(crate) direction: String,
+    pub(crate) state: String,
+    pub(crate) agent_id: String,
+    pub(crate) artifact_cursor: u64,
+    pub(crate) push_callback: String,
+    pub(crate) created_at: u64,
+    pub(crate) updated_at: u64,
 }
 
 /// A stand-in for the `task_event`-kind body (carried verbatim by the store).
 #[derive(serde::Serialize, serde::Deserialize, PartialEq, Clone, Debug)]
-struct SampleEvent {
-    task_id: String,
-    seq: u64,
-    ts: u64,
-    kind: String,
-    context_id: String,
-    principal: String,
-    agent_id: String,
-    state: String,
-    request_id: String,
-    prev_hash: String,
-    hash: String,
+pub(crate) struct SampleEvent {
+    pub(crate) task_id: String,
+    pub(crate) seq: u64,
+    pub(crate) ts: u64,
+    pub(crate) kind: String,
+    pub(crate) context_id: String,
+    pub(crate) principal: String,
+    pub(crate) agent_id: String,
+    pub(crate) state: String,
+    pub(crate) request_id: String,
+    pub(crate) prev_hash: String,
+    pub(crate) hash: String,
 }
 
 /// A stand-in for the `call`-kind body — `ts` is the field the reference store's retention reads.
 #[derive(serde::Serialize, serde::Deserialize, PartialEq, Clone, Debug)]
-struct SampleCall {
-    principal: String,
-    seq: u64,
-    ts: u64,
-    server: String,
-    tool: String,
-    outcome: String,
-    reason: String,
-    tool_digest: String,
-    pin_generation: u64,
-    request_id: String,
-    prev_hash: String,
-    hash: String,
+pub(crate) struct SampleCall {
+    pub(crate) principal: String,
+    pub(crate) seq: u64,
+    pub(crate) ts: u64,
+    pub(crate) server: String,
+    pub(crate) tool: String,
+    pub(crate) outcome: String,
+    pub(crate) reason: String,
+    pub(crate) tool_digest: String,
+    pub(crate) pin_generation: u64,
+    pub(crate) request_id: String,
+    pub(crate) prev_hash: String,
+    pub(crate) hash: String,
 }
 
-fn task_record(t: &SampleTask) -> PlaneRecord {
+pub(crate) fn task_record(t: &SampleTask) -> PlaneRecord {
     PlaneRecord {
         kind: "task".into(),
         id: t.task_id.clone(),
@@ -1572,7 +1572,7 @@ fn task_record(t: &SampleTask) -> PlaneRecord {
     }
 }
 
-fn event_record(e: &SampleEvent) -> PlaneRecord {
+pub(crate) fn event_record(e: &SampleEvent) -> PlaneRecord {
     PlaneRecord {
         kind: "task_event".into(),
         id: e.task_id.clone(),
@@ -1584,7 +1584,7 @@ fn event_record(e: &SampleEvent) -> PlaneRecord {
     }
 }
 
-fn call_record(c: &SampleCall) -> PlaneRecord {
+pub(crate) fn call_record(c: &SampleCall) -> PlaneRecord {
     PlaneRecord {
         kind: "call".into(),
         id: c.principal.clone(),
@@ -1596,14 +1596,14 @@ fn call_record(c: &SampleCall) -> PlaneRecord {
     }
 }
 
-fn n_get_task(
+pub(crate) fn n_get_task(
     s: &dyn busbar_contract::records::RecordStore,
     id: &str,
 ) -> RecordStoreResult<Option<SampleTask>> {
     Ok(s.get_plane_record("task", id)?
         .map(|b| serde_json::from_slice(&b).unwrap()))
 }
-fn n_list_tasks(
+pub(crate) fn n_list_tasks(
     s: &dyn busbar_contract::records::RecordStore,
 ) -> RecordStoreResult<Vec<SampleTask>> {
     Ok(s.list_plane_records("task", &PlaneSelector::All)?
@@ -1611,7 +1611,7 @@ fn n_list_tasks(
         .map(|b| serde_json::from_slice(b).unwrap())
         .collect())
 }
-fn n_list_task_events(
+pub(crate) fn n_list_task_events(
     s: &dyn busbar_contract::records::RecordStore,
     id: &str,
 ) -> RecordStoreResult<Vec<SampleEvent>> {
@@ -1622,7 +1622,7 @@ fn n_list_task_events(
             .collect(),
     )
 }
-fn n_list_calls(
+pub(crate) fn n_list_calls(
     s: &dyn busbar_contract::records::RecordStore,
     p: &str,
 ) -> RecordStoreResult<Vec<SampleCall>> {
@@ -1633,7 +1633,7 @@ fn n_list_calls(
             .collect(),
     )
 }
-fn n_list_call_principals(
+pub(crate) fn n_list_call_principals(
     s: &dyn busbar_contract::records::RecordStore,
 ) -> RecordStoreResult<Vec<String>> {
     s.list_plane_record_parents("call")
@@ -1663,26 +1663,6 @@ fn store_proof_candidate() -> Option<std::path::PathBuf> {
     newest_cdylib(super::both_ways::fixture("store").0)
 }
 
-/// The FILE-BACKED store the one dlopen-RESTART durability test loads
-/// (`tests/fixtures/plugin_artifacts.txt` `durable_store_cdylib`). A RAM store cannot answer a
-/// restart, so this is the one test that still needs a durable image; the real durable store (the
-/// sibling checkout above) takes its place when it builds against the current contract. It is not a
-/// dependency of this crate: `cargo test --workspace` (ci.yml `check`) and every job that builds the
-/// workspace's cdylibs produce it, and under `CI` its absence is a HARD failure.
-fn durable_store_plugin_path() -> Option<std::path::PathBuf> {
-    let candidate = newest_cdylib(artifact("durable_store_cdylib"));
-    if candidate.is_none() && std::env::var_os("CI").is_some() {
-        panic!(
-            "the durable store cdylib ({}) is not built under CI: `cargo test --workspace` must \
-             build it (checked both the uplifted target dir and target/deps). Refusing to silently \
-             skip the ONLY end-to-end proof that a record written through a plugin store survives a \
-             restart.",
-            artifact("durable_store_cdylib")
-        );
-    }
-    candidate
-}
-
 /// The newest built `cdylib` of `crate_snake` in this target dir: the uplifted `<profile_dir>/<name>`
 /// copy or the raw `<profile_dir>/deps/<name>` output, whichever was written last.
 fn newest_cdylib(crate_snake: &str) -> Option<std::path::PathBuf> {
@@ -1705,7 +1685,7 @@ fn newest_cdylib(crate_snake: &str) -> Option<std::path::PathBuf> {
 
 /// A `SampleTask` with every field set to something distinguishable, so a round trip that drops or
 /// transposes a field fails rather than passing on a mostly-empty row.
-fn sample_task_row(task_id: &str, state: &str, updated_at: u64) -> SampleTask {
+pub(crate) fn sample_task_row(task_id: &str, state: &str, updated_at: u64) -> SampleTask {
     SampleTask {
         task_id: task_id.to_string(),
         context_id: "ctx-42".into(),
@@ -1718,140 +1698,6 @@ fn sample_task_row(task_id: &str, state: &str, updated_at: u64) -> SampleTask {
         created_at: 1_000,
         updated_at,
     }
-}
-
-/// THE TEST. Load the store as a PLUGIN, write a task (plus its provenance chain and an MCP call
-/// record), then RESTART the plugin — drop the handle, unload the library, `dlopen` it again and
-/// `busbar_open` a fresh instance whose only possible source of state is the bytes on disk — and
-/// read everything back over the same ABI.
-///
-/// Against the ABI as it stood before the ten variants were added this fails at the first
-/// assertion: `get_task` returns `None`, because `DynStore` never sent the write anywhere.
-#[test]
-fn task_state_written_through_a_plugin_store_survives_a_restart() {
-    let Some(lib) = durable_store_plugin_path() else {
-        eprintln!("skip: the durable store cdylib is not built (run under --workspace)");
-        return;
-    };
-    // A private file for this test's own durable state; `load_store` passes it to the plugin's
-    // `open`, which is what selects the fixture's file-backed mode.
-    let dir = std::env::temp_dir().join(format!(
-        "busbar-task-durability-{}-{:?}",
-        std::process::id(),
-        std::thread::current().id()
-    ));
-    std::fs::create_dir_all(&dir).expect("create durable dir");
-    let state_file = dir.join("durable.json");
-    let cfg = serde_json::json!({ "durable_path": state_file.to_string_lossy() }).to_string();
-
-    let task = sample_task_row("task-abc", "input-required", 2_000);
-    let event = SampleEvent {
-        task_id: "task-abc".into(),
-        seq: 1,
-        ts: 1_500,
-        kind: "task.submitted".into(),
-        context_id: "ctx-42".into(),
-        principal: "vk_owner".into(),
-        agent_id: "agent-7".into(),
-        state: "submitted".into(),
-        request_id: "req-9".into(),
-        prev_hash: String::new(),
-        hash: "deadbeef".into(),
-    };
-    let call = SampleCall {
-        principal: "vk_owner".into(),
-        seq: 1,
-        ts: 1_600,
-        server: "srv".into(),
-        tool: "srv_echo".into(),
-        outcome: "dispatched".into(),
-        reason: String::new(),
-        tool_digest: "sha256:aaa".into(),
-        pin_generation: 4,
-        request_id: "req-9".into(),
-        prev_hash: String::new(),
-        hash: "cafebabe".into(),
-    };
-
-    // ── BEFORE THE RESTART: write through the plugin, and assert NOTHING ──────────────────────
-    //
-    // Deliberately no read-back here. The failure this test exists to show is the one AFTER the
-    // restart, and an assertion in this block would fire first and report a same-process symptom
-    // instead — which is exactly what happened on the first red run. The same-handle round trip is
-    // its own test below, so that diagnostic is not lost, it just does not pre-empt this one.
-    {
-        let store = load_store(&lib, &cfg).expect("load the store over the ABI");
-        store
-            .upsert_plane_record(&task_record(&task))
-            .expect("upsert task");
-        store
-            .append_plane_record(&event_record(&event))
-            .expect("append task_event");
-        store
-            .append_plane_record(&call_record(&call))
-            .expect("append call");
-        // Dropping the box closes the plugin handle and unloads the library. Everything the plugin
-        // held in memory goes with it.
-    }
-
-    // ── THE RESTART: a fresh dlopen and a fresh `busbar_open` ─────────────────────────────────
-    let store = load_store(&lib, &cfg).expect("re-load the durable store after the restart");
-
-    assert_eq!(
-        n_get_task(store.as_ref(), "task-abc").expect("get_task after restart"),
-        Some(task.clone()),
-        "THE WHOLE POINT: a task written through the plugin ABI must still be there after a \
-         restart. `None` here is the production defect — `put_task` reported success and the \
-         engine kept nothing."
-    );
-    assert_eq!(
-        n_list_tasks(store.as_ref()).expect("list_tasks after restart"),
-        vec![task.clone()]
-    );
-    assert_eq!(
-        n_list_task_events(store.as_ref(), "task-abc").expect("list_task_events after restart"),
-        vec![event],
-        "the provenance chain must survive with `hash`/`prev_hash` verbatim"
-    );
-    assert_eq!(
-        n_list_calls(store.as_ref(), "vk_owner").expect("list_calls after restart"),
-        vec![call]
-    );
-    assert_eq!(
-        n_list_call_principals(store.as_ref()).expect("list_call_principals after restart"),
-        vec!["vk_owner".to_string()],
-        "the boot enumeration must find the principal whose chain this process never saw written"
-    );
-
-    // ── retention over the plugin RPC: the ops route and their COUNT comes from the plugin, not a
-    // defaulted `Ok(0)` no-op. This exercises the AGE axis — the `kind: call` "drop all older"
-    // contract — against a row whose `ts` reached the plugin over the wire. Both retention axes and
-    // the sidecar that carries them are pinned directly in `plane_sidecar_tests`; this test's unique
-    // job is the DLOPEN-RESTART round trip of the durable body/identity, which the assertions above
-    // have already proven.
-    let call_purged = store
-        .purge_plane_records_before("call", 2_000)
-        .expect("purge_calls_before");
-    assert_eq!(
-        call_purged, 1,
-        "the `call` retention op drops the older row and the count comes from the plugin, not a default"
-    );
-
-    // The purge is durable too: a third open sees the compacted state — the call chain is gone, the
-    // still-open `input-required` task survives (a `task` row is never age-collected while non-terminal).
-    drop(store);
-    let store = load_store(&lib, &cfg).expect("re-load after the purge");
-    assert_eq!(
-        n_list_tasks(store.as_ref()).expect("list_tasks"),
-        vec![task.clone()],
-        "the purge must have been written through, not just applied in the plugin's memory"
-    );
-    assert!(n_list_calls(store.as_ref(), "vk_owner")
-        .expect("list_calls")
-        .is_empty());
-
-    drop(store);
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// The same-handle round trip, split out of the durability test so that a failure there names the

@@ -31,7 +31,10 @@
 //! passes by finding nothing.
 
 use super::both_ways::{dropped, statement};
-use crate::tests::artifact;
+use crate::tests::{
+    artifact, call_record, event_record, n_get_task, n_list_call_principals, n_list_calls,
+    n_list_task_events, n_list_tasks, sample_task_row, task_record, SampleCall, SampleEvent,
+};
 use busbar_contract::auth::{BeginLogin, LoginOutcome};
 
 /// The environment variable naming the directory the real plugins' `cdylib`s were built into.
@@ -346,6 +349,137 @@ const SECOND_NODE: &str = "BUSBAR_PLUGIN_PROOF_STORE_SECOND_NODE";
 
 /// Records each node appends to the shared chain in the two-node proof.
 const PER_NODE: u64 = 200;
+
+/// THE TASK-STATE RESTART, over the real durable store. Load the store as a PLUGIN, write a task (plus its provenance chain and an MCP call
+/// record), then RESTART the plugin — drop the handle, unload the library, `dlopen` it again and
+/// `busbar_open` a fresh instance whose only possible source of state is the bytes on disk — and
+/// read everything back over the same ABI.
+///
+/// Against the ABI as it stood before the ten variants were added this fails at the first
+/// assertion: `get_task` returns `None`, because `DynStore` never sent the write anywhere.
+#[test]
+#[ignore = "needs BUSBAR_PLUGIN_PROOF_DIR (ci.yml plugin-proofs builds the real plugin repos)"]
+fn task_state_written_through_a_plugin_store_survives_a_restart() {
+    // The REAL durable store (GetBusbar/store-sqlite), dropped in, on a private file of this test's
+    // own: `open` is handed that file, the only place a restarted instance can find the rows.
+    let lib = real_cdylib("store");
+    let dir = proof_scratch("task-durability");
+    let cfg = store_config(&dir.join("governance.db"));
+    let load = |tag: &str| {
+        dropped(tag, manifest("store", "proof-store"), &lib)
+            .open_store("proof-store", &cfg)
+            .expect("the real store plugin opens as `store`")
+    };
+
+    let task = sample_task_row("task-abc", "input-required", 2_000);
+    let event = SampleEvent {
+        task_id: "task-abc".into(),
+        seq: 1,
+        ts: 1_500,
+        kind: "task.submitted".into(),
+        context_id: "ctx-42".into(),
+        principal: "vk_owner".into(),
+        agent_id: "agent-7".into(),
+        state: "submitted".into(),
+        request_id: "req-9".into(),
+        prev_hash: String::new(),
+        hash: "deadbeef".into(),
+    };
+    let call = SampleCall {
+        principal: "vk_owner".into(),
+        seq: 1,
+        ts: 1_600,
+        server: "srv".into(),
+        tool: "srv_echo".into(),
+        outcome: "dispatched".into(),
+        reason: String::new(),
+        tool_digest: "sha256:aaa".into(),
+        pin_generation: 4,
+        request_id: "req-9".into(),
+        prev_hash: String::new(),
+        hash: "cafebabe".into(),
+    };
+
+    // ── BEFORE THE RESTART: write through the plugin, and assert NOTHING ──────────────────────
+    //
+    // Deliberately no read-back here. The failure this test exists to show is the one AFTER the
+    // restart, and an assertion in this block would fire first and report a same-process symptom
+    // instead — which is exactly what happened on the first red run. The same-handle round trip is
+    // its own test below, so that diagnostic is not lost, it just does not pre-empt this one.
+    {
+        let store = load("task-durability-a");
+        store
+            .upsert_plane_record(&task_record(&task))
+            .expect("upsert task");
+        store
+            .append_plane_record(&event_record(&event))
+            .expect("append task_event");
+        store
+            .append_plane_record(&call_record(&call))
+            .expect("append call");
+        // Dropping the box closes the plugin handle and unloads the library. Everything the plugin
+        // held in memory goes with it.
+    }
+
+    // ── THE RESTART: a fresh dlopen and a fresh `busbar_open` ─────────────────────────────────
+    let store = load("task-durability-b");
+
+    assert_eq!(
+        n_get_task(store.as_ref(), "task-abc").expect("get_task after restart"),
+        Some(task.clone()),
+        "THE WHOLE POINT: a task written through the plugin ABI must still be there after a \
+         restart. `None` here is the production defect — `put_task` reported success and the \
+         engine kept nothing."
+    );
+    assert_eq!(
+        n_list_tasks(store.as_ref()).expect("list_tasks after restart"),
+        vec![task.clone()]
+    );
+    assert_eq!(
+        n_list_task_events(store.as_ref(), "task-abc").expect("list_task_events after restart"),
+        vec![event],
+        "the provenance chain must survive with `hash`/`prev_hash` verbatim"
+    );
+    assert_eq!(
+        n_list_calls(store.as_ref(), "vk_owner").expect("list_calls after restart"),
+        vec![call]
+    );
+    assert_eq!(
+        n_list_call_principals(store.as_ref()).expect("list_call_principals after restart"),
+        vec!["vk_owner".to_string()],
+        "the boot enumeration must find the principal whose chain this process never saw written"
+    );
+
+    // ── retention over the plugin RPC: the ops route and their COUNT comes from the plugin, not a
+    // defaulted `Ok(0)` no-op. This exercises the AGE axis — the `kind: call` "drop all older"
+    // contract — against a row whose `ts` reached the plugin over the wire. Both retention axes and
+    // the sidecar that carries them are pinned directly in `plane_sidecar_tests`; this test's unique
+    // job is the DLOPEN-RESTART round trip of the durable body/identity, which the assertions above
+    // have already proven.
+    let call_purged = store
+        .purge_plane_records_before("call", 2_000)
+        .expect("purge_calls_before");
+    assert_eq!(
+        call_purged, 1,
+        "the `call` retention op drops the older row and the count comes from the plugin, not a default"
+    );
+
+    // The purge is durable too: a third open sees the compacted state — the call chain is gone, the
+    // still-open `input-required` task survives (a `task` row is never age-collected while non-terminal).
+    drop(store);
+    let store = load("task-durability-c");
+    assert_eq!(
+        n_list_tasks(store.as_ref()).expect("list_tasks"),
+        vec![task.clone()],
+        "the purge must have been written through, not just applied in the plugin's memory"
+    );
+    assert!(n_list_calls(store.as_ref(), "vk_owner")
+        .expect("list_calls")
+        .is_empty());
+
+    drop(store);
+    let _ = std::fs::remove_dir_all(&dir);
+}
 
 /// Append `seqs` to the proof's `call` chain on `file`, through the real store dropped in.
 fn append_chain(file: &std::path::Path, tag: &str, seqs: std::ops::Range<u64>) {
