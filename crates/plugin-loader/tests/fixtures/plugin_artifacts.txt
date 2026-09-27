@@ -30,3 +30,16 @@ proof_auth_redirect_uri = https://busbar.example/auth/token
 proof_auth_config = {"client_id": "Iv1.busbar-proof"}
 proof_auth_authorize_prefix = https://github.com/login/oauth/authorize?response_type=code&client_id=Iv1.busbar-proof&redirect_uri=https%3A%2F%2Fbusbar.example%2Fauth%2Ftoken&scope=
 proof_auth_refusal = github plugin requires config (client_id); none provided
+
+# The REAL plugin repos that prove the store and hook kinds' dropped-in doors (R-FIX2): the durable
+# store (GetBusbar/store-sqlite: a durable file, a restart, two handles on one file) and the
+# forwarding hook (GetBusbar/webrequest-hook, against the proof's local mock upstream). ci.yml
+# `plugin-proofs` builds each at the rev it pins into BUSBAR_PLUGIN_PROOF_DIR.
+proof_store_cdylib = busbar_store_sqlite_plugin
+proof_store_path_key = db_path
+proof_store_refusal = invalid sqlite plugin config: `db_path` must be a string, got 5
+proof_hook_cdylib = busbar_webrequest_hook_plugin
+proof_hook_url_key = url
+proof_hook_timeout_key = timeout_ms
+proof_hook_timeout_error = webrequest: request failed
+proof_hook_refusal = webrequest: settings.url is required

@@ -2650,7 +2650,7 @@ jobs:
       - name: Loom model of the swap invariant
         run: scripts/loom.sh
 
-  # PLUGIN PROOFS — THE SECRET AND AUTH KINDS, PROVEN BY THE REAL PLUGIN REPOS. The owner deleted
+  # PLUGIN PROOFS — THE SECRET, AUTH, STORE AND HOOK KINDS, PROVEN BY THE REAL PLUGIN REPOS. The owner deleted
   # the in-tree secret and auth fixtures ("these are trash … real plugins are the examples",
   # docs/design/1.6.0-QUESTIONS.md "FIXTURES"); the proofs of those two kinds are
   # GetBusbar/hashicorp-vault (secret) and GetBusbar/auth-github (auth). Both repos depend on busbar
@@ -2664,17 +2664,28 @@ jobs:
   # arms (the same bytes signed as the other kind refused naming both kinds; an empty config refused
   # in the plugin's own words). Unlocked on purpose: the patch rewrites the plugins' busbar source,
   # and this job's question is whether they build against this tree.
+  #
+  # THE STORE AND HOOK KINDS (R-FIX2: dropped-in door proofs use REAL plugins): GetBusbar/store-sqlite
+  # (the durable store — a durable file, a restart, two nodes on one file) and GetBusbar/webrequest-hook
+  # (the forwarding hook — reject, restrict and a slow upstream, against the proof's own local mock
+  # upstream). Both name busbar-contract alone by git at their `.busbar-ref`, and each is built AT THE
+  # REV THIS FILE PINS (`STORE_SQLITE_REV`, `WEBREQUEST_HOOK_REV`), unpatched and `--locked`: the
+  # artifact proven is byte for byte the one that repo ships, dlopened by THIS tree's loader.
   plugin-proofs:
-    name: plugin proofs · secret + auth by the real plugin repos
+    name: plugin proofs · secret + auth + store + hook by the real plugin repos
     runs-on: latchkey-large
     needs: [preflight]
 
     # BOUNDED — see "EVERY JOB IS BOUNDED" at the top of this file. NEW JOB, no run history yet:
-    # two small plugin workspaces and one loader test binary, cold. Re-measure to p95 x1.5 once
-    # ten green runs exist.
-    timeout-minutes: 30
+    # four small plugin workspaces (store-sqlite compiles a bundled SQLite) and one loader test
+    # binary, cold. Re-measure to p95 x1.5 once ten green runs exist.
+    timeout-minutes: 40
     env:
       CARGO_TARGET_DIR: ${{ github.workspace }}/plugin-proofs-target
+      # The real store and hook plugin commits the proofs run: each repo's `dev` after its
+      # busbar-contract port. Bump deliberately, like any pin.
+      STORE_SQLITE_REV: 04f4c9ee0a151b3d9689553f0fa72ec6429f16b2
+      WEBREQUEST_HOOK_REV: 2861fa4921e95f03c553444627e08409dcf900ab
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -2691,6 +2702,18 @@ jobs:
           repository: GetBusbar/auth-github
           ref: dev
           path: auth-github
+      - name: Checkout the real durable store (GetBusbar/store-sqlite, pinned)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: GetBusbar/store-sqlite
+          ref: ${{ env.STORE_SQLITE_REV }}
+          path: store-sqlite
+      - name: Checkout the real forwarding hook (GetBusbar/webrequest-hook, pinned)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: GetBusbar/webrequest-hook
+          ref: ${{ env.WEBREQUEST_HOOK_REV }}
+          path: webrequest-hook
       - uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
       - name: Patch the busbar crates both plugins name to this tree
         # `[patch]` from cargo config, not an edit of the plugins' manifests: what builds is each
@@ -2721,11 +2744,28 @@ jobs:
         working-directory: auth-github
         # package-selector: busbar-auth-github-plugin -- .github/workflows/ci.yml -- GetBusbar/auth-github is a sibling checkout; `working-directory: auth-github` resolves this selector against that workspace, never against this one
         run: cargo build -p busbar-auth-github-plugin
-      - name: Dlopen both through the dropped-in door (plugin_proof_tests)
+      - name: Build the durable store's cdylib at its pinned rev
+        working-directory: store-sqlite
+        # package-selector: busbar-store-sqlite-plugin -- .github/workflows/ci.yml -- GetBusbar/store-sqlite is its own checkout; `working-directory: store-sqlite` resolves this selector against that workspace, never against this one
+        run: cargo build --locked -p busbar-store-sqlite-plugin
+      - name: Build the forwarding hook's cdylib at its pinned rev
+        working-directory: webrequest-hook
+        # package-selector: busbar-webrequest-hook-plugin -- .github/workflows/ci.yml -- GetBusbar/webrequest-hook is its own checkout; `working-directory: webrequest-hook` resolves this selector against that workspace, never against this one
+        run: cargo build --locked -p busbar-webrequest-hook-plugin
+      - name: Dlopen all four through the dropped-in door (plugin_proof_tests)
         working-directory: busbar
         env:
           BUSBAR_PLUGIN_PROOF_DIR: ${{ github.workspace }}/plugin-proofs-target/debug
-        run: cargo test --locked -p busbar-plugin-loader --lib plugin_proof_tests -- --ignored
+        run: |
+          set -euo pipefail
+          # FLOOR ON THE MATCH COUNT: the proofs are `#[ignore]`d, so this is their only execution,
+          # and a filter that matches nothing exits 0 having proven nothing. Six: the five real-plugin
+          # proofs and the two-node store proof's second node (a no-op when run on its own).
+          out="$(cargo test --locked -p busbar-plugin-loader --lib plugin_proof_tests -- --ignored 2>&1 | tee /dev/stderr)"
+          echo "$out" | grep -qE 'test result: ok\. 6 passed' || {
+            echo "::error::plugin_proof_tests did not run exactly the five real-plugin proofs and the second node"
+            exit 1
+          }
 
   # TIMING GATE: the ignored hot-path latency test, in release mode. Its bounds are deliberately
   # generous (25ms p50 / 250ms p99 through the full in-process router+mock round trip) so runner
