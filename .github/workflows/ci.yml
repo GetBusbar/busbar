@@ -2213,6 +2213,19 @@ jobs:
             features: busbar-store-memory/dropped-in
             tests: -p busbar-store-memory --test dropped_in_door
             scope: package
+          # THE DROPPED-IN TRANSPORT DOORS OF THE STDIO CARRIER AND THE WS FRAMER (#2, #3;
+          # TRANSPORT-STACK step 5): each crate's cdylib door is compiled only under its non-default
+          # `dropped-in` feature, and its own both-ways witness (tests/conformance.rs) runs the linked
+          # door and the dropped-in cdylib through one script. These rows clippy the door on its own
+          # and run that witness.
+          - name: dropped-in stdio carrier
+            features: busbar-transport-stdio/dropped-in
+            tests: -p busbar-transport-stdio --test conformance
+            scope: package
+          - name: dropped-in ws framer
+            features: busbar-transport-ws/dropped-in
+            tests: -p busbar-transport-ws --test conformance
+            scope: package
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
