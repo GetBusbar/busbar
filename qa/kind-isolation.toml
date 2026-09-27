@@ -2036,7 +2036,7 @@ count = "43"
 [[instance]]
 crate = "busbar-core-admin"
 kind = "store"
-count = "12"
+count = "10"
 
 [[instance]]
 crate = "busbar-kernel"

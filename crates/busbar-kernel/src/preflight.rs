@@ -80,8 +80,9 @@ pub fn install_linked_rows(rows: RootRows) {
 }
 
 /// The installed root rows (a test build stands its fixtures in). `.2` is the governance store a
-/// deployment that configures none runs on: the linked row that declares itself the default.
-pub(crate) fn root_rows() -> RootRows {
+/// deployment that configures none runs on: the linked row that declares itself the default. Admin's
+/// store catalog lists `.0`, the stores this build links.
+pub fn root_rows() -> RootRows {
     #[cfg(any(test, feature = "test-support"))]
     let _ = ROOT_ROWS.set(STAND_IN);
     ROOT_ROWS.get().copied().unwrap_or_default()

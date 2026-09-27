@@ -4133,3 +4133,31 @@ mod plane_fees_on_admin_usage {
         assert_eq!(admin, book * MICROS_PER_MINOR);
     }
 }
+
+/// STORE-DEFAULT (admin) — THE STORE CATALOG'S COMPILED-IN ROWS ARE THE STORES THIS BUILD LINKS, read
+/// off the root's installed linked rows (the declared default among them), in table order, ahead of
+/// every dropped-in row. Admin names no store instance; the row shape (`store`, `compiled-in`, no
+/// `active`) is 1.5.5's.
+///
+/// RED when the catalog stops reading the linked rows (a fixed name, or no head row): the head names
+/// differ from the linked table's.
+#[test]
+fn the_store_catalog_heads_with_the_linked_store_rows() {
+    let svc = svc_with(tmp_plugins_dir("linked-head"), unsigned_ok_posture());
+    let (stores, _, default) = busbar_kernel::preflight::root_rows();
+    let linked: Vec<&str> = stores.iter().map(|s| s.0).collect();
+    assert!(
+        linked.contains(&default),
+        "the declared default is a linked row"
+    );
+    let cat = svc.store_plugin_catalog();
+    let head: Vec<(&str, &str, &str, Option<bool>)> = cat[..linked.len()]
+        .iter()
+        .map(|p| (p.name.as_str(), p.r#type, p.loader, p.active))
+        .collect();
+    let want: Vec<_> = linked
+        .iter()
+        .map(|n| (*n, "store", "compiled-in", None))
+        .collect();
+    assert_eq!(head, want);
+}

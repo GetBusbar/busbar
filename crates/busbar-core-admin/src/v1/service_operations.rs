@@ -587,16 +587,11 @@ impl AdminService {
     /// case is one extra rescan on the next call, never a wrong answer served indefinitely (the
     /// fingerprint fix below is what actually prevents a wrong answer being served indefinitely).
     pub(super) fn store_plugin_catalog(&self) -> Vec<PluginView> {
-        // The compiled-in RAM default is always present. Which store backend is ACTIVE is a
+        // Every store this build LINKS is always present (the declared default among them), read
+        // off the root's linked rows; admin names no store. Which store backend is ACTIVE is a
         // `store.module` config concern (read via `GET /config`), not summarized per-row here,
         // the same posture the compiled-in hook rows take (`active: None`).
-        let mut out = vec![PluginView::basic(
-            "memory".to_string(),
-            "store",
-            "compiled-in",
-            None,
-            None,
-        )];
+        let mut out = linked_store_rows();
         let Ok(policy) = self.app.plugins_cfg.to_policy() else {
             return out;
         };
@@ -833,16 +828,10 @@ impl AdminService {
                     error = %join_err,
                     "admin blocking task failed"
                 );
-                // Fail soft to the always-true compiled-in row rather than an admin 500 for what is
+                // Fail soft to the always-true linked rows rather than an admin 500 for what is
                 // just a plugin CATALOG read — same posture `store_plugin_catalog` itself takes on
                 // an unparseable `plugins_cfg` (`to_policy()` failing) just above.
-                Ok(vec![PluginView::basic(
-                    "memory".to_string(),
-                    "store",
-                    "compiled-in",
-                    None,
-                    None,
-                )])
+                Ok(linked_store_rows())
             }
         }
     }
@@ -1673,4 +1662,15 @@ impl AdminService {
     fn hook_view(&self, name: &str, cfg: &HookCfg) -> HookView {
         project_hook_view(name, cfg, &self.app.global_hooks)
     }
+}
+
+/// THE LINKED STORE ROWS of the store catalog: one `compiled-in` row per store this build links, in
+/// the root's table order (the declared default among them). Read off the kernel's installed root
+/// rows, so admin names no store instance.
+fn linked_store_rows() -> Vec<PluginView> {
+    let (stores, _, _) = busbar_kernel::preflight::root_rows();
+    let row = |s: &busbar_kernel::preflight::LinkedStore| {
+        PluginView::basic(s.0.to_string(), "store", "compiled-in", None, None)
+    };
+    stores.iter().map(row).collect()
 }
