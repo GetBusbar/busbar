@@ -80,7 +80,8 @@
 //! 1. [`ROW_UNIVERSE`] — the package universe and the kind table were read, each above its floor. A
 //!    reader that lost its input resolves nothing, and every name in `qa/` would be reported for a
 //!    defect in this gate.
-//! 2. [`ROW_FLOOR`] — at least [`NAME_FLOOR`] names were discovered. Zero is never clean: "every
+//! 2. [`ROW_FLOOR`] — at least [`NAME_FLOOR`] names were discovered in `qa/*.toml` (the Rust half
+//!    has its own floor, [`XTASK_NAME_FLOOR`]). Zero is never clean: "every
 //!    name resolves" is vacuously true over no names, which is exactly what a scanner whose
 //!    classifier stopped matching reports.
 //! 3. [`ROW_KIND`] — every kind name is a key of `[gate.plugin_kinds]`. A `[gate.census.plugin_kinds]`
@@ -187,15 +188,17 @@ pub const UNIVERSE_FLOOR: usize = 40;
 /// locks SEVEN plugin kinds and the table adds three non-plugin infra families. Set at the locked
 /// seven, because a kind table that lost rows makes every kind name in the file look phantom.
 pub const KIND_FLOOR: usize = 7;
-/// The floor under the discovered names. Measured at 1_182 across ten covered files on the 1.6.0
-/// integration tree. Set well below that: the number this floor exists to reject is a scan that
-/// COLLAPSED, and an empty scan set is the one state in which "every name resolves" is true and
-/// means nothing.
-pub const NAME_FLOOR: usize = 400;
+/// The floor under the names discovered in `qa/*.toml`, counted on their own (the Rust half has
+/// [`XTASK_NAME_FLOOR`]). Re-measured at 392 across the covered TOML files at 81724a0b5 (fold F14
+/// struck the retired unit kind's ledger rows; 1_182 on the early 1.6.0 integration tree). Set below
+/// that: it is a READS-NOTHING detector, not a quality ratchet — the number it exists to reject is a
+/// scan that COLLAPSED, and an empty scan set is the one state in which "every name resolves" is
+/// true and means nothing (ARCHITECT ruling 2026-09-27, option (b)).
+pub const NAME_FLOOR: usize = 300;
 /// The floor under the names discovered in `xtask/src/**.rs` CONSTANTS, counted on its own.
 ///
-/// SEPARATE FROM [`NAME_FLOOR`] ON PURPOSE. The `qa/*.toml` half alone is ~1_182 names, so a
-/// combined floor of 400 is cleared by the TOML scan whatever the Rust scan does — and a Rust
+/// SEPARATE FROM [`NAME_FLOOR`] ON PURPOSE. A combined floor would be cleared by the TOML scan
+/// whatever the Rust scan does — and a Rust
 /// reader whose item parser stopped matching would report ZERO dead constants and a green row. A
 /// scan set gets its own floor or it has none.
 pub const XTASK_NAME_FLOOR: usize = 150;
@@ -972,27 +975,28 @@ impl Gate for QaNamesGate {
             ),
         )];
 
+        // THE TOML HALF, COUNTED ON ITS OWN: the Rust half has its own floor below, so neither
+        // half can hold the other's row green.
+        let toml_files = files.iter().filter(|(r, _)| !is_rust(r)).count();
+        let toml_names = names.iter().filter(|n| !is_rust(&n.file)).count();
         rows.push(row(
             ROW_FLOOR,
-            names.len() >= NAME_FLOOR,
+            toml_names >= NAME_FLOOR,
             "enough names were discovered for the check to mean something",
             format!(
-                "{} name(s) across {} covered file(s) (floor {NAME_FLOOR})",
-                names.len(),
-                files.len()
+                "{toml_names} name(s) across {toml_files} covered `{QA_ROOT}/*.{QA_EXT}` file(s) \
+                 (floor {NAME_FLOOR})"
             ),
             "the name scan collapsed below its discovery floor",
             format!(
-                "only {} name(s) were found across {} covered file(s) under `{QA_ROOT}/*.{QA_EXT}` \
-                 (floor {NAME_FLOOR}). An empty scan set is the one state in which 'every name \
-                 resolves' is true and means nothing.",
-                names.len(),
-                files.len()
+                "only {toml_names} name(s) were found across {toml_files} covered file(s) under \
+                 `{QA_ROOT}/*.{QA_EXT}` (floor {NAME_FLOOR}). An empty scan set is the one state \
+                 in which 'every name resolves' is true and means nothing."
             ),
         ));
 
-        // THE RUST HALF GETS ITS OWN DENOMINATOR, because the TOML half clears the combined floor
-        // on its own and would mask a Rust reader that had stopped reading.
+        // THE RUST HALF GETS ITS OWN DENOMINATOR, because a combined count would let the TOML half
+        // mask a Rust reader that had stopped reading.
         let rust_files = files.iter().filter(|(r, _)| is_rust(r)).count();
         let rust_names = names.iter().filter(|n| is_rust(&n.file)).count();
         rows.push(row(
@@ -1683,10 +1687,8 @@ fn plants(cx: &Ctx) -> Vec<Plant> {
     //
     // THE TOML HALF ONLY. Blanking the Rust files as well also empties the Rust half, which reds
     // `xtask-const-floor` beside this row -- correctly, and a second case already owns that row.
-    // With the gates' constants left in place the combined floor is judged on the Rust half
-    // alone, which sits above XTASK_NAME_FLOOR and below NAME_FLOOR; the day it clears NAME_FLOOR
-    // on its own this case stops reddening its row and
-    // `each_plant_reddens_its_own_row_and_nothing_that_was_green` says so.
+    // `name-floor` counts the TOML half alone, so the gates' constants left in place cannot hold
+    // it green.
     let empty_scan = covered(cx).ok().and_then(|files| {
         let (_, config) = files.iter().find(|(r, _)| r == CONFIG_REL)?;
         let doc = toml_doc::parse_str(config).ok()?;
