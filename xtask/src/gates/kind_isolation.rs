@@ -728,9 +728,15 @@ const CLEANLINESS: &str = "cleanliness";
 /// THE CLEANEST SIBLING PER KIND — the crate whose SINGLE ENTRY IMPLEMENTATION is what every
 /// sibling of that kind owes. It is no longer the source of the kind's SKELETON: see
 /// [`kind_skeleton`].
+///
+/// The transport exemplar is `busbar-transport-tcp` (ARCHITECT ruling 2026-09-27): since the D4
+/// fold (Q68(1)) `busbar-transport-http` implements `Transport` three times — http, sse and grpc —
+/// so as the exemplar it stated no single entry and `entry-count` went unjudged for the whole kind.
+/// http's three is a finding on `:shape`, carried in the standing snapshot until TRANSPORT-STACK
+/// (one entry per plugin) collapses it to one framer entry claiming http, sse and grpc.
 const EXEMPLARS: &[(&str, &str)] = &[
     ("plane", "busbar-plane-a2a"),
-    ("transport", "busbar-transport-http"),
+    ("transport", "busbar-transport-tcp"),
 ];
 
 /// THE KIND SKELETON IS THE SPEC'S, NEVER THE EXEMPLAR'S FILE LIST (`PLUGIN-TREE.md` §3).
@@ -8468,9 +8474,12 @@ impl Gate for KindIsolationGate {
             &["no-lib", "busbar-transport-planted"],
         ));
 
+        // The two entry-count plants land in `busbar-transport-tls`, a single-entry transport that is
+        // NOT the kind's exemplar: a second entry in the exemplar itself (`busbar-transport-tcp`)
+        // is `no-entry` for the whole kind, a different finding, and would not prove this one.
         let mut ov = Overlay::new();
         ov.set(
-            "crates/busbar-transport-tcp/src/planted_second_entry.rs",
+            "crates/busbar-transport-tls/src/planted_second_entry.rs",
             "pub struct Second;\nimpl Transport for Second {}\n",
         );
         report.push(prove_rows_red(
@@ -8479,7 +8488,7 @@ impl Gate for KindIsolationGate {
             "a second entry implementation in one crate of a kind",
             &[ROW_SHAPE],
             ov,
-            &["entry-count", "busbar-transport-tcp"],
+            &["entry-count", "busbar-transport-tls"],
         ));
 
         // A GENERIC ENTRY IMPL IS AN ENTRY IMPL. `impl_trait_on` read `impl ` and stopped, so
@@ -8491,7 +8500,7 @@ impl Gate for KindIsolationGate {
         // GREEN. That is the whole difference, and it is what the case is here to hold.
         let mut ov = Overlay::new();
         ov.set(
-            "crates/busbar-transport-tcp/src/planted_generic_entry.rs",
+            "crates/busbar-transport-tls/src/planted_generic_entry.rs",
             "pub struct Generic<'a, S>(&'a S);\n\
              impl<'a, S: Send + Sync> Transport for Generic<'a, S> {}\n",
         );
@@ -8501,7 +8510,7 @@ impl Gate for KindIsolationGate {
             "an entry implementation written with generic parameters is counted",
             &[ROW_SHAPE],
             ov,
-            &["entry-count", "busbar-transport-tcp", "2 time(s)"],
+            &["entry-count", "busbar-transport-tls", "2 time(s)"],
         ));
 
         // THE SKELETON IS THE SPEC'S, NOT THE EXEMPLAR'S FILE LIST. This crate declares `meta` and
@@ -9929,7 +9938,7 @@ mod plant_tests {
     #[test]
     /// The kind's crates are handed to the rule WITHOUT its exemplar — the state the `unit` kind
     /// was in from its exemplar's fold until the kind retired (F14 2/2). The subject is now the
-    /// transport kind with `busbar-transport-http` left out of the census handed in.
+    /// transport kind with its exemplar left out of the census handed in.
     fn a_crate_is_checked_although_its_kinds_exemplar_is_absent() {
         let (_, exemplar) = EXEMPLARS
             .iter()
