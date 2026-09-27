@@ -622,6 +622,8 @@ fn measure(cx: &Ctx, crates: &[CrateInfo]) -> Result<Measured, String> {
         } else {
             mask_identifiers(text, &contract)
         };
+        // English words that are also instance names are not counted as English prose.
+        let masked = mask_english_prose(&rel, &masked);
         for h in scan_file(per_kind, &dir, &rel, &masked).iter() {
             let line = h
                 .line
@@ -721,6 +723,102 @@ fn contract_identifiers(
         }
     }
     out
+}
+
+/// THE INSTANCE NAMES THAT ARE ALSO ORDINARY ENGLISH WORDS (ARCHITECT ruling 2026-09-27, the owner
+/// law of that day: the gate measures INSTANCE knowledge, not English). `streams` is the streaming
+/// plane's section-key alias and `decision` the decision plane's bare id, and both are words a
+/// sentence uses with no plane in mind ("the reply buffer, which streams"; "the hook's decision").
+/// In PROSE — a `//` comment of a `.rs` file, or a line of a `.md` — such a word standing on its own
+/// is masked before the scanners read the line. It still counts everywhere else: in code (an
+/// identifier, a string literal), in section-key position (`streams:`, followed by a colon), when
+/// quoted as a name (`` `decision` ``), and when joined into a longer name (`plane-decision`,
+/// `decision_plane`). Instance ids that are not English words (`llm`, `mcp`, `a2a`, `voice`, every
+/// registry alias) are never masked.
+pub(super) const ENGLISH_INSTANCE_WORDS: &[&str] = &["streams", "decision", "decisions"];
+
+/// `text` with every PROSE occurrence of an [`ENGLISH_INSTANCE_WORDS`] word masked (same-length word
+/// filler, so lines and columns hold). Prose is the part of a `.rs` line after a `//` that is not
+/// inside a string literal, and the whole of a `.md` line; nothing else is touched.
+fn mask_english_prose<'a>(rel: &str, text: &'a str) -> std::borrow::Cow<'a, str> {
+    let rs = rel.ends_with(".rs");
+    if !rs && !rel.ends_with(".md") {
+        return std::borrow::Cow::Borrowed(text);
+    }
+    let lower = text.to_ascii_lowercase();
+    if !ENGLISH_INSTANCE_WORDS.iter().any(|w| lower.contains(w)) {
+        return std::borrow::Cow::Borrowed(text);
+    }
+    let mut out = String::with_capacity(text.len());
+    for line in text.split_inclusive('\n') {
+        let start = if rs {
+            match comment_start(line) {
+                Some(at) => at,
+                None => {
+                    out.push_str(line);
+                    continue;
+                }
+            }
+        } else {
+            0
+        };
+        let (code, prose) = line.split_at(start);
+        out.push_str(code);
+        out.push_str(&mask_prose_words(prose));
+    }
+    std::borrow::Cow::Owned(out)
+}
+
+/// The byte offset of a `//` comment on `line` that is not inside a `"…"` string literal.
+fn comment_start(line: &str) -> Option<usize> {
+    let b = line.as_bytes();
+    let mut in_str = false;
+    let mut i = 0;
+    while i < b.len() {
+        match b[i] {
+            b'\\' if in_str => i += 1,
+            b'"' => in_str = !in_str,
+            b'/' if !in_str && b.get(i + 1) == Some(&b'/') => return Some(i),
+            _ => {}
+        }
+        i += 1;
+    }
+    None
+}
+
+/// `prose` with each standalone [`ENGLISH_INSTANCE_WORDS`] word masked. Standalone: not joined to
+/// a neighbouring name by `-`, `_`, `.`, `::` or a letter, not quoted in backticks, and not followed
+/// by `:` (section-key position).
+fn mask_prose_words(prose: &str) -> String {
+    let b = prose.as_bytes();
+    let mut out = prose.as_bytes().to_vec();
+    // A `.` joins only between name characters (`decision.rs`, `cfg.streams`); a sentence's full
+    // stop is followed by a space or the end of the line and joins nothing.
+    let joins = |c: u8| c.is_ascii_alphanumeric() || matches!(c, b'-' | b'_' | b'`');
+    let name_char = |c: Option<&u8>| c.is_some_and(|c| c.is_ascii_alphanumeric());
+    let mut i = 0;
+    while i < b.len() {
+        let joined_before = i > 0
+            && (joins(b[i - 1])
+                || (b[i - 1] == b'.' && name_char(i.checked_sub(2).and_then(|k| b.get(k)))));
+        if !b[i].is_ascii_alphabetic() || joined_before {
+            i += 1;
+            continue;
+        }
+        let mut j = i;
+        while j < b.len() && b[j].is_ascii_alphabetic() {
+            j += 1;
+        }
+        let word = prose[i..j].to_ascii_lowercase();
+        let after = b.get(j).copied();
+        let joined_after =
+            after.is_some_and(|c| joins(c) || c == b':' || (c == b'.' && name_char(b.get(j + 1))));
+        if ENGLISH_INSTANCE_WORDS.contains(&word.as_str()) && !joined_after {
+            out[i..j].fill(b'x');
+        }
+        i = j;
+    }
+    String::from_utf8(out).expect("ascii-for-ascii")
 }
 
 /// `text` with every whole-token occurrence of an identifier in `idents` replaced by a run of `x` of
@@ -2248,6 +2346,54 @@ pub fn selftest<'a>(
         "a plane named in nothing but a comment inside the kernel",
         &[ROW_MATRIX],
         comment_fixture(true),
+        &[
+            "ratchet",
+            &format!("{} \u{d7} plane", instances::FIXTURE_CRATE),
+            "RAISED",
+        ],
+    ));
+
+    // AN ENGLISH WORD THAT IS ALSO AN INSTANCE NAME, IN PROSE, IS NOT THE INSTANCE (ARCHITECT ruling
+    // 2026-09-27; [`ENGLISH_INSTANCE_WORDS`]). The fixture's plane cell is recorded at its one hit;
+    // a comment that says "which streams" leaves it there (GREEN). The same word as a config
+    // section key, and the decision plane's id as a code identifier, are each a hit (RED).
+    let english_fixture = |extra: Option<(&'static str, &'static str)>| {
+        let mut files = vec![
+            ("wiring.rs", "pub const PLANE: &str = \"llm\";\n"),
+            (
+                "prose.rs",
+                "// first a buffered answer, then one over the reply buffer, which streams.\n\
+                 // the hook's decision is final.\n",
+            ),
+        ];
+        files.extend(extra);
+        fixture_cell(cx, "plane", "1", &files, true)
+    };
+    report.push(prove_rows_green(
+        cx,
+        gate,
+        "an English word that is also an instance name, in a comment, is not the instance",
+        &[ROW_MATRIX],
+        english_fixture(None),
+    ));
+    report.push(prove_rows_red(
+        cx,
+        gate,
+        "`streams:` in section-key position in a fixture still counts",
+        &[ROW_MATRIX],
+        english_fixture(Some(("fixture.yaml", "streams:\n  gw: {}\n"))),
+        &[
+            "ratchet",
+            &format!("{} \u{d7} plane", instances::FIXTURE_CRATE),
+            "RAISED",
+        ],
+    ));
+    report.push(prove_rows_red(
+        cx,
+        gate,
+        "`decision` as a code identifier naming the plane still counts",
+        &[ROW_MATRIX],
+        english_fixture(Some(("route.rs", "pub fn route_to_decision() {}\n"))),
         &[
             "ratchet",
             &format!("{} \u{d7} plane", instances::FIXTURE_CRATE),
