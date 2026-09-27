@@ -271,19 +271,27 @@ busbar-voice = ["busbar-voice-codec"]
 # re-arm after HostOp::HttpBinary (+1). Its commit reached the base; struck by HOTDOOR-B's re-arm,
 # which declares the pair's next figure below.
 
-# ── THE CONTRACT CEILING PAIR, RE-ARMED BY HOTDOOR-B (the HOT ABI's minor-30 carrier and host services) ─
+# ── THE CONTRACT CEILING PAIR, RE-ARMED BY HOTDOOR-B (the HOT ABI's minor-30 carrier and host services) —
+#    EXPIRED AND STRUCK
+#
+# Declared `gate.surface_ceilings.contract_caps` and `rules.loc-ceilings.caps_contract_ceiling`
+# 14712 -> 15015 (OWNER RULING Q68(3)): the re-arm after HOTDOOR-B's minor-30 carrier and host-service
+# slots (+303). Its commit reached the base; struck by TRANSPORT-STACK's re-arm, which declares the
+# pair's next figure below.
+
+# ── THE CONTRACT CEILING PAIR, RE-ARMED BY TRANSPORT-STACK (the carrier and framer traits) ───────────
 
 [gate.ceiling_raises."gate.surface_ceilings.contract_caps"]
 file    = "qa/construction.toml"
-from    = 14712
-to      = 15015
-because = "OWNER RULING Q68(3) (docs/design/1.6.0-QUESTIONS.md): contract_caps re-arms at the MEASURED value, in its own commit. This is the re-arm for HOTDOOR-B (d4ef64111; ARCHITECT 2026-09-26 DEC-SERVE G2 + SD-3 queue (6); spec Part 3 WorkItem reserved-shape, #28): the HOT ABI's minor-30 carrier (WorkItem's request-head handle and accessor slot, the answer-head and response-stream emit slots, HeadPart/HeadField) and the four host-service slots with the contract module that serves them and arms a dropped-in plane image's ports over them (abi::hot::services, PlaneHostVtable::SERVICES, the busbar_plane_arm door symbol), +303 code lines. Measured by cargo xtask loc: 14712 before, 15015 after."
+from    = 15015
+to      = 15206
+because = "OWNER RULING Q68(3) (docs/design/1.6.0-QUESTIONS.md): contract_caps re-arms at the MEASURED value, in its own commit. This is the re-arm for TRANSPORT-STACK step 1 (1730b098a + 75ebe53eb; OWNER-APPROVED TRANSPORT-STACK 2026-09-27, spec #3 at 0f7bd7d5c): busbar_contract::transport::stack, the linked source of truth the transport HOT lane lowers — the Carrier and Framer traits, role_of, TransportRow (every TransportMeta constant as one value), Dest, CarrierFacts, ConnFacts, Located, Framed, FramerOut and BytesOut, +191 code lines. Measured by cargo xtask gate construction: 15015 before, 15206 after."
 
 [gate.ceiling_raises."rules.loc-ceilings.caps_contract_ceiling"]
 file    = "qa/construction.toml"
-from    = 14712
-to      = 15015
-because = "OWNER RULING Q68(3) (docs/design/1.6.0-QUESTIONS.md): contract_caps re-arms at the MEASURED value, in its own commit. This is the re-arm for HOTDOOR-B (d4ef64111; ARCHITECT 2026-09-26 DEC-SERVE G2 + SD-3 queue (6); spec Part 3 WorkItem reserved-shape, #28): the HOT ABI's minor-30 carrier (WorkItem's request-head handle and accessor slot, the answer-head and response-stream emit slots, HeadPart/HeadField) and the four host-service slots with the contract module that serves them and arms a dropped-in plane image's ports over them (abi::hot::services, PlaneHostVtable::SERVICES, the busbar_plane_arm door symbol), +303 code lines. Measured by cargo xtask loc: 14712 before, 15015 after."
+from    = 15015
+to      = 15206
+because = "OWNER RULING Q68(3) (docs/design/1.6.0-QUESTIONS.md): contract_caps re-arms at the MEASURED value, in its own commit. This is the re-arm for TRANSPORT-STACK step 1 (1730b098a + 75ebe53eb; OWNER-APPROVED TRANSPORT-STACK 2026-09-27, spec #3 at 0f7bd7d5c): busbar_contract::transport::stack, the linked source of truth the transport HOT lane lowers — the Carrier and Framer traits, role_of, TransportRow (every TransportMeta constant as one value), Dest, CarrierFacts, ConnFacts, Located, Framed, FramerOut and BytesOut, +191 code lines. Measured by cargo xtask gate construction: 15015 before, 15206 after."
 
 # ── THE KERNEL CEILING'S OWNER-APPROVED RAISE — EXPIRED AND STRUCK ─────────────────────────────
 #
@@ -420,7 +428,10 @@ because = "ARCHITECT ruling on the kernel budget (R-KERNEL, sd-extra.txt; K2-0 u
 # RE-ARMED 14712 -> 15015, AT THE MEASUREMENT (OWNER RULING Q68(3)), in its own commit after HOTDOOR-B
 # appended the HOT ABI's minor-30 carrier and host-service slots (+303); the live declaration above
 # carries the measure.
-contract_caps = 15015
+# RE-ARMED 15015 -> 15206, AT THE MEASUREMENT (OWNER RULING Q68(3)), in its own commit after
+# TRANSPORT-STACK step 1 added the carrier and framer traits and the transport row (+191); the live
+# declaration above carries the measure.
+contract_caps = 15206
 # REPOINTED, and the repoint is what makes this row a gate again. It named the CRATE
 # `busbar-grammar`, which #40 folded into `busbar-contract` and deleted — so it summed nothing,
 # measured nothing and passed, which is this file's own "zero is not clean" failure sitting inside
@@ -1026,7 +1037,8 @@ contract_crate = "busbar-contract"
 # LOWERED 14720 -> 14711 with its pair (CONTRACT-PURE, ARCHITECT F6 queue (4); the host-log bridge left contract code, -9).
 # RE-ARMED 14711 -> 14712 with its pair (OWNER RULING Q68(3); K9e-2's HostOp::HttpBinary, +1).
 # RE-ARMED 14712 -> 15015 with its pair (OWNER RULING Q68(3); HOTDOOR-B, the HOT ABI minor-30 carrier and host services, +303).
-caps_contract_ceiling = 15015
+# RE-ARMED 15015 -> 15206 with its pair (OWNER RULING Q68(3); TRANSPORT-STACK step 1, the carrier and framer traits, +191).
+caps_contract_ceiling = 15206
 unit_crate_glob = "busbar-unit-*"
 # RE-KEYED on cherry-pick onto 143db6db6: this commit's own delta is -53 (two units stopped
 # declaring their own copies), measured against whatever unit_total_ceiling read when the line was
