@@ -1540,7 +1540,7 @@ known_missing_forbid = [
   "hook-test-plugin", "hooks-ranking", "auth-static-plugin", "auth-admin-tokens",
 ]
 known_missing_deny = [ "plugin-loader",
-  "store-memory", "store-example-plugin", "export-example-plugin",
+  "store-example-plugin", "export-example-plugin",
 ]
 
 # ── 22. secret-carrier-debug (ARCHITECTURE.md section 3.7) ───────────────────────────────────────────────────

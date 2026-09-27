@@ -7,6 +7,21 @@ rust-version = "1.97"
 description = "The default in-memory (RAM) backend for busbar's durable governance store — ephemeral, zero-setup."
 license = "Apache-2.0"
 
+[lib]
+# rlib: the LINKED door (the composition root takes `linked::STORE` onto the store axis, and the
+# loader's both-ways test takes `BUSBAR_COLD_ENTRY`). cdylib: the DROPPED-IN door — the same `open`,
+# exported through the contract's store export macro for the loader to `dlopen` (#2: every plugin is
+# compiled in OR dropped in, over the same contract and the same loading path).
+crate-type = ["rlib", "cdylib"]
+
+[features]
+# THE DROPPED-IN DOOR (`exports`): this crate's `open` registered as its image's one door through the
+# contract's `export_store_plugin!`. The frozen symbols (`busbar_abi`, `busbar_plugin_kind`,
+# `busbar_open`, ...) are defined ONCE, in the contract, so this crate defines none of its own. OFF in
+# a build that links this crate (the linked door is `linked::STORE`); the dropped-in artifact is built
+# on its own: `cargo build -p busbar-store-memory --release --features dropped-in`.
+dropped-in = []
+
 [dependencies]
 # The record half of the store protocol. `busbar_contract::kinds::Store` declares `record_put`,
 # `record_get` and `record_scan` for a plane's kernel-held durable records, and this backend answers
