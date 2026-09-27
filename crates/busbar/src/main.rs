@@ -1770,3 +1770,7 @@ mod build_stamp;
 #[cfg(test)]
 #[path = "tests/tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "tests/catalogue_tests.rs"]
+mod catalogue_tests;

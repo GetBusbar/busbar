@@ -1,9 +1,17 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Tests for `crates/busbar-core/src/eventstream.rs`.
+//! The framing codec's unit suite: decode, encode, the header guards and their coded drops, the
+//! checked drain's malformed-prelude signal and its linear scaling. It travelled with the codec to
+//! the plane's copy (#83a SD-8: the host's copy had no host consumer left and is deleted), so the
+//! copy that serves is the copy these hold.
 
 use super::*;
+
+/// AWS event-stream header name for the human-readable error text an error frame carries alongside
+/// its code. The decoder does not read it — the CODE is the classification, and the message rides in
+/// the frame the reader goes on to build — but it is part of the frame shape these tests construct.
+const HDR_ERROR_MESSAGE: &str = ":error-message";
 
 #[test]
 fn test_decode_single_frame() {
@@ -111,7 +119,7 @@ fn test_encode_crcs_are_real() {
 
     // prelude_crc lives at bytes [8..12] and covers bytes [0..8].
     let prelude_crc = u32::from_be_bytes([frame[8], frame[9], frame[10], frame[11]]);
-    let expected_prelude = crc32fast::hash(&frame[..8]);
+    let expected_prelude = crate::crc32::hash(&frame[..8]);
     assert_eq!(
         prelude_crc, expected_prelude,
         "prelude CRC is the real CRC32"
@@ -127,7 +135,7 @@ fn test_encode_crcs_are_real() {
         frame[len - 2],
         frame[len - 1],
     ]);
-    let expected_message = crc32fast::hash(&frame[..len - 4]);
+    let expected_message = crate::crc32::hash(&frame[..len - 4]);
     assert_eq!(
         message_crc, expected_message,
         "message CRC is the real CRC32"
@@ -196,7 +204,7 @@ fn test_event_type_exception_frame_returns_normalized_exception_name() {
     let mut h = string_header(HDR_EXCEPTION_TYPE, "InternalServerException");
     h.extend_from_slice(&string_header(
         HDR_CONTENT_TYPE,
-        crate::proxy::APPLICATION_JSON,
+        busbar_contract::protocol::APPLICATION_JSON,
     ));
     h.extend_from_slice(&string_header(HDR_MESSAGE_TYPE, MSG_TYPE_EXCEPTION));
     assert_eq!(event_type_for_frame(&h), "internalServerException");
@@ -335,7 +343,7 @@ fn test_event_type_exception_without_exception_type_yields_empty() {
     let mut h2 = string_header(HDR_MESSAGE_TYPE, MSG_TYPE_EXCEPTION);
     h2.extend_from_slice(&string_header(
         HDR_CONTENT_TYPE,
-        crate::proxy::APPLICATION_JSON,
+        busbar_contract::protocol::APPLICATION_JSON,
     ));
     assert_eq!(
         event_type_for_frame(&h2),
@@ -383,7 +391,7 @@ fn test_encode_exception_frame_is_valid() {
     assert_eq!(total_len, frame.len(), "total_len matches frame bytes");
     // prelude CRC over [0..8] is real.
     let prelude_crc = u32::from_be_bytes([frame[8], frame[9], frame[10], frame[11]]);
-    assert_eq!(prelude_crc, crc32fast::hash(&frame[..8]));
+    assert_eq!(prelude_crc, crate::crc32::hash(&frame[..8]));
     // message CRC over [0..len-4] is real.
     let len = frame.len();
     let msg_crc = u32::from_be_bytes([
@@ -392,7 +400,7 @@ fn test_encode_exception_frame_is_valid() {
         frame[len - CRC_BYTES + 2],
         frame[len - CRC_BYTES + 3],
     ]);
-    assert_eq!(msg_crc, crc32fast::hash(&frame[..len - CRC_BYTES]));
+    assert_eq!(msg_crc, crate::crc32::hash(&frame[..len - CRC_BYTES]));
     // Header block carries the exception markers.
     let headers_len = u32::from_be_bytes([frame[4], frame[5], frame[6], frame[7]]) as usize;
     let headers = String::from_utf8_lossy(&frame[PRELUDE_LEN..PRELUDE_LEN + headers_len]);
@@ -532,10 +540,10 @@ fn test_drain_frames_minimum_valid_frame() {
     let mut frame = Vec::with_capacity(16); // golden wire-contract literal (kept bare on purpose)
     frame.extend_from_slice(&16u32.to_be_bytes()); // golden wire-contract literal (kept bare on purpose): total_len = 16 (the minimum valid value)
     frame.extend_from_slice(&0u32.to_be_bytes()); // headers_len = 0
-    let prelude_crc = crc32fast::hash(&frame[..8]);
+    let prelude_crc = crate::crc32::hash(&frame[..8]);
     frame.extend_from_slice(&prelude_crc.to_be_bytes()); // prelude CRC over [0..8]
                                                          // No headers, no payload. message_crc over everything written so far ([0..12]).
-    let message_crc = crc32fast::hash(&frame);
+    let message_crc = crate::crc32::hash(&frame);
     frame.extend_from_slice(&message_crc.to_be_bytes());
     assert_eq!(
         frame.len(),
@@ -582,11 +590,11 @@ fn test_encode_frame_byte_for_byte_matches_reference() {
     let mut want = Vec::new();
     want.extend_from_slice(&(total_len as u32).to_be_bytes()); // total_len
     want.extend_from_slice(&(headers_len as u32).to_be_bytes()); // headers_len
-    let prelude_crc = crc32fast::hash(&want[..8]); // prelude CRC over the two length fields
+    let prelude_crc = crate::crc32::hash(&want[..8]); // prelude CRC over the two length fields
     want.extend_from_slice(&prelude_crc.to_be_bytes());
     want.extend_from_slice(&headers);
     want.extend_from_slice(payload);
-    let message_crc = crc32fast::hash(&want); // message CRC over everything written so far
+    let message_crc = crate::crc32::hash(&want); // message CRC over everything written so far
     want.extend_from_slice(&message_crc.to_be_bytes());
 
     assert_eq!(
@@ -595,7 +603,7 @@ fn test_encode_frame_byte_for_byte_matches_reference() {
     );
 }
 
-use crate::test_support::warn_capture::WarnCapture;
+use busbar_contract::testkit::WarnCapture;
 
 /// When an oversized `:event-type` makes `push_string_header` reject the header, `encode_frame`
 /// drops the frame. The drop stays OBSERVABLE in the diagnostics catalog: it carries
@@ -608,16 +616,16 @@ use crate::test_support::warn_capture::WarnCapture;
 #[test]
 fn test_encode_frame_oversized_event_type_is_a_coded_debug_drop() {
     use crate::diagnostics::EVENTSTREAM_EVENTTYPE_HEADER_OVERSIZE as DIAG;
-    use tracing_subscriber::layer::SubscriberExt as _;
 
     let huge_event_type = "e".repeat(u16::MAX as usize + 1);
 
+    // The same deterministic encode, once under each threshold: DEBUG-and-above, then WARN-and-above.
     let debug_cap = WarnCapture::capturing_debug();
+    let frame = tracing::subscriber::with_default(debug_cap.clone(), || {
+        encode_frame(&huge_event_type, br#"{"x":1}"#)
+    });
     let warn_cap = WarnCapture::default();
-    let subscriber = tracing_subscriber::registry()
-        .with(debug_cap.clone())
-        .with(warn_cap.clone());
-    let frame = tracing::subscriber::with_default(subscriber, || {
+    tracing::subscriber::with_default(warn_cap.clone(), || {
         encode_frame(&huge_event_type, br#"{"x":1}"#)
     });
 
@@ -644,17 +652,16 @@ fn test_encode_frame_oversized_event_type_is_a_coded_debug_drop() {
 #[test]
 fn test_encode_exception_frame_oversized_type_is_a_coded_debug_drop() {
     use crate::diagnostics::EVENTSTREAM_EXCEPTIONTYPE_HEADER_OVERSIZE as DIAG;
-    use tracing_subscriber::layer::SubscriberExt as _;
 
     let huge = "x".repeat(u16::MAX as usize + 1);
 
+    // The same deterministic encode, once under each threshold: DEBUG-and-above, then WARN-and-above.
     let debug_cap = WarnCapture::capturing_debug();
+    let frame = tracing::subscriber::with_default(debug_cap.clone(), || {
+        encode_exception_frame(&huge, "msg")
+    });
     let warn_cap = WarnCapture::default();
-    let subscriber = tracing_subscriber::registry()
-        .with(debug_cap.clone())
-        .with(warn_cap.clone());
-    let frame =
-        tracing::subscriber::with_default(subscriber, || encode_exception_frame(&huge, "msg"));
+    tracing::subscriber::with_default(warn_cap.clone(), || encode_exception_frame(&huge, "msg"));
 
     assert!(
         frame.is_empty(),
@@ -765,10 +772,10 @@ fn test_drain_frames_two_byte_payload_no_headers() {
     let mut frame = Vec::with_capacity(total_len as usize);
     frame.extend_from_slice(&total_len.to_be_bytes());
     frame.extend_from_slice(&0u32.to_be_bytes()); // headers_len = 0
-    let prelude_crc = crc32fast::hash(&frame[..8]);
+    let prelude_crc = crate::crc32::hash(&frame[..8]);
     frame.extend_from_slice(&prelude_crc.to_be_bytes());
     frame.extend_from_slice(payload);
-    let message_crc = crc32fast::hash(&frame);
+    let message_crc = crate::crc32::hash(&frame);
     frame.extend_from_slice(&message_crc.to_be_bytes());
     assert_eq!(frame.len(), 18); // golden wire-contract literal (kept bare on purpose)
 
@@ -925,10 +932,9 @@ fn drain_frames_checked_scales_linearly_in_frame_count() {
     );
 }
 
-/// THE SHARED EVENT-STREAM FIXTURE (#83a SD-3): the host encoder writes every frame in
-/// `testing/plane-copies/eventstream-frames.json` byte for byte. The LLM plane's copy of this codec
-/// is held to the same file, so the two copies cannot drift apart without one of the two suites
-/// failing.
+/// THE SHARED EVENT-STREAM FIXTURE (#83a SD-3): the encoder writes every frame in
+/// `testing/plane-copies/eventstream-frames.json` byte for byte — the frames the host's copy of this
+/// codec wrote before it was deleted (SD-8), so the serving copy still writes exactly those bytes.
 #[test]
 fn the_host_encoder_writes_the_shared_fixture_frames() {
     let path = concat!(
@@ -938,7 +944,7 @@ fn the_host_encoder_writes_the_shared_fixture_frames() {
     let doc: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(path).expect("fixture readable"))
             .expect("fixture is JSON");
-    let bytes = |v: &serde_json::Value| hex::decode(v.as_str().expect("hex")).expect("hex");
+    let bytes = |v: &serde_json::Value| crate::hex::decode(v.as_str().expect("hex")).expect("hex");
     assert_eq!(doc["max_frame_bytes"], MAX_FRAME_BYTES as u64);
     for f in doc["frames"].as_array().expect("frames") {
         let event_type = f["event_type"].as_str().expect("event type");

@@ -232,10 +232,6 @@ pub mod endpoints;
 // once it lives in its own plane crate (1.6.0 money-path relocation, Phase 0). Pure visibility lift
 // — see the module.
 pub mod engine_facade;
-// wt2/neutral-utils: relocated DOWN to busbar-substrate (the neutral crate a plane's own extracted
-// crate may name) so a plane reaches the AWS EventStream framing codec via the ABI, not
-// `busbar_kernel::`. Core re-exports it here so `crate::eventstream::…` call sites are unchanged.
-pub use busbar_substrate_values::eventstream;
 pub mod export;
 pub mod failover;
 pub mod governance;

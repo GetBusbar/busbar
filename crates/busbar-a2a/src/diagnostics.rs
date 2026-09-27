@@ -619,6 +619,9 @@ pub const A2A_PUSH_REARM_FAILED: Diagnostic = Diagnostic {
 
 /// A2A'S PLANE-CONTRIBUTED DIAGNOSTICS — the `&'static [&'static Diagnostic]` the composition
 /// root installs via `install_diagnostics`. Ascending by code, mirroring the neutral `REGISTRY`.
+/// The last, `BUSBAR-7104`, came out of the host registry with the relay's frame reader that emits
+/// it (#83a O4): the plane defines it and the composition root installs it, and it stays published
+/// on the host page, under its frozen number, rather than this plane's own.
 pub static DIAGNOSTICS: &[&Diagnostic] = &[
     &A2A_TASK_CHAIN_VERIFY_FAILED,
     &A2A_EXTENDED_CARD_AGENT_OMITTED,
@@ -654,6 +657,7 @@ pub static DIAGNOSTICS: &[&Diagnostic] = &[
     &A2A_PUSH_CALLBACK_UNPERSISTED,
     &A2A_PUSH_CONFIG_UNDELETED,
     &A2A_PUSH_REARM_FAILED,
+    &crate::sse::PLANE_SSE_FRAME_NOT_UTF8,
 ];
 
 #[cfg(test)]

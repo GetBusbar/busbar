@@ -10,8 +10,6 @@
 //! plane crate names it without reaching into `busbar-core`. Core's `proxy::wire` re-exports it
 //! unchanged.
 
-pub mod sse;
-
 use bytes::Bytes;
 use std::sync::atomic::{AtomicUsize, Ordering};
 

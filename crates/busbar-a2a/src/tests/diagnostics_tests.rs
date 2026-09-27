@@ -16,6 +16,22 @@ const COMMITTED_JSON: &str = concat!(
     "/../../docs/diagnostics-a2a.json"
 );
 
+/// THIS PLANE'S OWN PAGE: every code of [`DIAGNOSTICS`] except those the HOST page publishes — the
+/// codes the plane took out of the host registry together with the code that emits them (#83a O4),
+/// whose page and number are frozen there. One code, one page: the composition root's docs gate
+/// renders the host page's share from the same constants.
+fn own_page() -> Vec<&'static Diagnostic> {
+    let host = concat!(env!("CARGO_MANIFEST_DIR"), "/../../docs/diagnostics.json");
+    let text = std::fs::read_to_string(host).expect("docs/diagnostics.json is readable");
+    let entries: Vec<serde_json::Value> =
+        serde_json::from_str(&text).expect("docs/diagnostics.json is a JSON array");
+    DIAGNOSTICS
+        .iter()
+        .copied()
+        .filter(|d| !entries.iter().any(|e| e["number"] == u64::from(d.code)))
+        .collect()
+}
+
 /// THE CATALOG IS NOT EMPTY, AND NOT ENTIRELY RETIRED.
 ///
 /// Every other test in this file is a `for d in DIAGNOSTICS` loop whose assertions live INSIDE the
@@ -121,12 +137,12 @@ fn every_live_entry_documents_meaning_and_action() {
     }
 }
 
-/// The committed per-plane docs equal a fresh render of this plane's `DIAGNOSTICS`. Regenerate
-/// after any catalog change with:
+/// The committed per-plane docs equal a fresh render of this plane's own page ([`own_page`]).
+/// Regenerate after any catalog change with:
 ///   `UPDATE_DIAGNOSTICS=1 cargo test -p busbar-a2a diagnostics`
 #[test]
 fn committed_markdown_matches_diagnostics() {
-    let fresh = render_markdown_for(DIAGNOSTICS);
+    let fresh = render_markdown_for(&own_page());
     if std::env::var("UPDATE_DIAGNOSTICS").is_ok_and(|v| v == "1") {
         std::fs::write(COMMITTED_MD, &fresh)
             .unwrap_or_else(|e| panic!("write {COMMITTED_MD}: {e}"));
@@ -144,7 +160,7 @@ fn committed_markdown_matches_diagnostics() {
 
 #[test]
 fn committed_json_matches_diagnostics() {
-    let fresh = render_json_for(DIAGNOSTICS);
+    let fresh = render_json_for(&own_page());
     if std::env::var("UPDATE_DIAGNOSTICS").is_ok_and(|v| v == "1") {
         std::fs::write(COMMITTED_JSON, &fresh)
             .unwrap_or_else(|e| panic!("write {COMMITTED_JSON}: {e}"));

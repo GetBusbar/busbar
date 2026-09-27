@@ -1091,37 +1091,6 @@ pub fn convert_headers(headers: Vec<(http::HeaderName, http::HeaderValue)>) -> h
     map
 }
 
-/// Signal the RESPONSE-side provider metadata that an egress dialect carries and no ingress dialect
-/// can express, so it does not vanish from a translated response with nothing in the logs. WHICH
-/// fields are present, and the SHAPE of the lookup, are the egress dialect's own knowledge — declared
-/// on `ProtocolDecl::vendor_response_metadata` and read here by name so the substrate spells no
-/// dialect. A dialect with no such vendor-scoped artifact declares `None` and reports nothing. Called
-/// ONLY from the cross-protocol response seam, so a same-protocol route never logs a word about them.
-pub fn warn_untranslatable_response_metadata(
-    egress: &str,
-    ingress: &str,
-    body: &serde_json::Value,
-) {
-    let present: Vec<&str> = decl_for(egress)
-        .and_then(|d| d.vendor_response_metadata)
-        .map(|report| report(body))
-        .unwrap_or_default();
-    if present.is_empty() {
-        return;
-    }
-    crate::diag_debug!(
-        crate::diagnostics::PROTO_DROP_PROVIDER_METADATA,
-        egress = %egress,
-        ingress = %ingress,
-        fields = %present.join(","),
-        "dropping response-side provider metadata on the cross-protocol seam: the field(s) named \
-         here are vendor-scoped artifacts (a guardrail assessment is an AWS account resource; a \
-         harm-category rating uses Google's own vocabulary) and the caller's protocol has no shape \
-         to receive them. If this metadata is compliance evidence, route the request to a \
-         same-protocol lane, where the upstream body reaches the client verbatim"
-    );
-}
-
 #[cfg(test)]
 #[path = "tests/proto.rs"]
 mod boot_fold_tests;

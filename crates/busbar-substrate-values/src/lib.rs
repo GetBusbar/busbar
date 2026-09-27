@@ -31,10 +31,9 @@ pub mod diagnostics;
 // `crate::diag_warn!` site resolve exactly as before.
 pub use busbar_contract::{diag_debug, diag_error, diag_warn};
 
-// The five neutral transport/crypto utility leaves: JSON canonicalization + the depth-guarded parser
-// seam, the base64/media-type helper, the AWS EventStream framing codec, the source-scoped
-// lossless-extras namespace, and the hand-rolled SigV4 signer.
-pub mod eventstream;
+// The neutral transport/crypto utility leaves: JSON canonicalization + the depth-guarded parser
+// seam, the base64/media-type helper, the source-scoped lossless-extras namespace, and the
+// hand-rolled SigV4 signer. (The AWS EventStream framing codec is the LLM plane's own.)
 pub mod json;
 pub mod lossless;
 pub mod media;

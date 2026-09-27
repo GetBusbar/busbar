@@ -33,7 +33,7 @@ kind-isolation:matrix	ratchet	busbar × store	15
 kind-isolation:matrix	ratchet	busbar × transport	864
 kind-isolation:matrix	ratchet	busbar-a2a × auth	12
 kind-isolation:matrix	ratchet	busbar-a2a × plane	3167
-kind-isolation:matrix	ratchet	busbar-a2a × transport	1395
+kind-isolation:matrix	ratchet	busbar-a2a × transport	1397
 kind-isolation:matrix	ratchet	busbar-contract × plane	460
 kind-isolation:matrix	ratchet	busbar-contract × substrate	23
 kind-isolation:matrix	ratchet	busbar-contract × transport	588
@@ -49,12 +49,12 @@ kind-isolation:matrix	ratchet	busbar-kernel-identity × plane	13
 kind-isolation:matrix	ratchet	busbar-kernel-identity × transport	146
 kind-isolation:matrix	ratchet	busbar-kernel-ledger × kernel	10
 kind-isolation:matrix	ratchet	busbar-kernel-scope × transport	8
-kind-isolation:matrix	ratchet	busbar-llm × codec	131
+kind-isolation:matrix	ratchet	busbar-llm × codec	133
 kind-isolation:matrix	ratchet	busbar-llm × contract	538
-kind-isolation:matrix	ratchet	busbar-llm × plane	965
+kind-isolation:matrix	ratchet	busbar-llm × plane	967
 kind-isolation:matrix	ratchet	busbar-llm × transport	1257
-kind-isolation:matrix	ratchet	busbar-llm-codec × plane	821
-kind-isolation:matrix	ratchet	busbar-llm-codec × transport	740
+kind-isolation:matrix	ratchet	busbar-llm-codec × plane	823
+kind-isolation:matrix	ratchet	busbar-llm-codec × transport	741
 kind-isolation:matrix	ratchet	busbar-mcp × cleanliness	5
 kind-isolation:matrix	ratchet	busbar-mcp × plane	4143
 kind-isolation:matrix	ratchet	busbar-mcp × plugin-tooling	10
@@ -129,7 +129,7 @@ kind-isolation:matrix	unlisted-cell	busbar-kernel-scope × plane	1
 kind-isolation:matrix	unlisted-cell	busbar-kernel-wal × plane	8
 kind-isolation:matrix	unlisted-cell	busbar-llm × kernel	28
 kind-isolation:matrix	unlisted-cell	busbar-llm × legacy	10
-kind-isolation:matrix	unlisted-cell	busbar-llm-codec × contract	863
+kind-isolation:matrix	unlisted-cell	busbar-llm-codec × contract	866
 kind-isolation:matrix	unlisted-cell	busbar-llm-codec × legacy	1
 kind-isolation:matrix	unlisted-cell	busbar-mcp × contract	310
 kind-isolation:matrix	unlisted-cell	busbar-mcp × kernel	50
@@ -161,7 +161,7 @@ kind-isolation:matrix	unlisted-edge	cleanliness -> plane	145
 kind-isolation:matrix	unlisted-edge	cleanliness -> plugin-tooling	95
 kind-isolation:matrix	unlisted-edge	cleanliness -> store	8
 kind-isolation:matrix	unlisted-edge	cleanliness -> transport	878
-kind-isolation:matrix	unlisted-edge	codec -> contract	887
+kind-isolation:matrix	unlisted-edge	codec -> contract	890
 kind-isolation:matrix	unlisted-edge	contract -> auth	2
 kind-isolation:matrix	unlisted-edge	contract -> cleanliness	1
 kind-isolation:matrix	unlisted-edge	contract -> kernel	10

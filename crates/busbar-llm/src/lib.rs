@@ -349,6 +349,9 @@ pub mod linked {
     pub use crate::{BODY_INGRESS, PATH_INGRESS};
     /// The plane axis: the contract declaration, joined kernel-side to the behaviour table.
     pub use crate::{PLANE_DECLARATION, PLANE_HOOKS};
+    /// The diagnostics axis: the plane's own coded diagnostics (#83a O4), defined beside the dialect
+    /// code that emits them.
+    pub use busbar_llm_codec::diagnostics::DIAGNOSTICS;
     /// The CLI-help axis: this plane's rows of `busbar --help`, as declared data — `("tagline",
     /// text)` is the one-line description the help opens with, `("endpoint", text)` its rows of the
     /// `ENDPOINTS` block.

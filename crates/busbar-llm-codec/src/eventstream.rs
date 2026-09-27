@@ -4,7 +4,8 @@
 //! THE LLM PLANE'S OWN COPY of the AWS event-stream framing codec (#83a SD-3: dialect machinery —
 //! only the Bedrock dialect and its stream translator speak it). The CRC32 it frames with is this
 //! plane's own table implementation ([`crate::crc32`]), with the standard check vectors pinned; the
-//! drift test beside this module holds every encoded frame byte-identical to the host's copy.
+//! drift test beside this module holds every encoded frame byte-identical to the frames the host's
+//! copy wrote (the host's copy is deleted: no host code frames event streams).
 //!
 //! AWS event-stream (`application/vnd.amazon.eventstream`) frame codec.
 //!
@@ -536,3 +537,7 @@ fn frame_close(mut frame: Vec<u8>, payload: &[u8]) -> Vec<u8> {
 #[cfg(test)]
 #[path = "tests/eventstream_drift_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "tests/eventstream_tests.rs"]
+mod unit_tests;
