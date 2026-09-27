@@ -343,6 +343,11 @@ pub fn sources(cx: &Ctx) -> Result<Vec<String>, String> {
         // the file sink above, it now lives in its own repo and the root pulls it at a PINNED rev,
         // so the file is read from that rev's checkout, as cargo resolved it.
         pinned_plugin_source(cx, "busbar-export-webhook", "src/config.rs")?,
+        // `OtlpSettings` — an `export.<name>.module: otlp` instance's `settings:` — moved out of
+        // `busbar-kernel/src/config/mod.rs` into the sink that reads it (K9e-2: the OTLP sink is the
+        // `busbar-export-otlp` export plugin), same tracked relocation: the shape is the same `url`,
+        // `deny_unknown_fields`, read from the rev the root pins.
+        pinned_plugin_source(cx, "busbar-export-otlp", "src/config.rs")?,
     ]);
     Ok(out)
 }

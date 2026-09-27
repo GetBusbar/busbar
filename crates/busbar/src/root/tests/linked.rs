@@ -764,67 +764,69 @@ fn a_linked_and_a_dropped_in_plane_serve_one_request_identically() {
     }
 }
 
-/// A `kind: export` row whose name or alias spells a built-in export module is refused before the
-/// export axis is installed: every `export:` instance naming it would reach the built-in, so the
-/// plugin would sit on the axis unreachable, silently. A row spelling neither is admitted.
+/// THE KERNEL SERVES NO EXPORT MODULE OF ITS OWN (K9e-2): `otlp`, its last built-in, is the linked
+/// `busbar-export-otlp` row, so the refusal of a row "spelling a built-in module" has nothing left to
+/// guard and is gone. What replaces it: every module is a row of the axis, and a LINKED row answers
+/// its module ahead of any row a plugins directory drops in under the same spelling — a dropped-in
+/// `otlp` never takes the module from the sink this build links. RED: without the linked row, the
+/// dropped-in one answers.
+#[cfg(feature = "export-otlp")]
 #[test]
-fn an_export_row_spelling_a_built_in_module_is_refused() {
-    let registry_of = |tag: &str, name: &str, alias: &str| {
-        let dir = std::env::temp_dir().join(format!(
-            "busbar-root-export-shadow-{tag}-{}",
-            std::process::id()
-        ));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let lib = b"not a library";
-        let release = SigningKey::from_bytes(&[7u8; 32]);
-        let manifest = Manifest {
-            name: name.into(),
-            alias: alias.into(),
-            kind: "export".into(),
-            version: "1.6.0".into(),
-            publisher: "busbar".into(),
-            abi_version: busbar_plugin_loader::supported_abi("export")[1],
-            sha256: String::new(),
-            signature: String::new(),
-            description: String::new(),
-            homepage: String::new(),
-            license: String::new(),
-            needs: Default::default(),
-            settings_schema: None,
-            schema_derived: false,
-            host: None,
-            declares: Default::default(),
-        };
-        let signed = sign(&release, manifest, lib);
-        let tarball = busbar_plugin_loader::tarball::package(&signed, "libexport.so", lib).unwrap();
-        std::fs::write(dir.join("export.tar.gz"), tarball).unwrap();
-        let policy = TrustPolicy {
-            first_party_key: Some(release.verifying_key()),
-            binary_version: "1.6.0".into(),
-            first_party_floors: Default::default(),
-            first_party_high_water: Default::default(),
-            publishers: Default::default(),
-            allow_unsigned: false,
-            allow_third_party: false,
-            min_versions: Default::default(),
-        };
-        let registry = busbar_plugin_loader::scan_and_validate(&dir, &policy).expect("the scan");
-        let _ = std::fs::remove_dir_all(&dir);
-        registry
+fn the_linked_otlp_row_answers_its_module_ahead_of_a_dropped_in_spelling() {
+    let dir = std::env::temp_dir().join(format!("busbar-root-export-otlp-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let lib = b"not a library";
+    let release = SigningKey::from_bytes(&[7u8; 32]);
+    let manifest = Manifest {
+        name: "k9e-dropped-otlp".into(),
+        alias: "otlp".into(),
+        kind: "export".into(),
+        version: "1.6.0".into(),
+        publisher: busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER.into(),
+        abi_version: *busbar_plugin_loader::supported_abi("export")
+            .iter()
+            .max()
+            .unwrap(),
+        sha256: busbar_plugin_loader::sign::sha256_hex(lib),
+        signature: String::new(),
+        description: String::new(),
+        homepage: String::new(),
+        license: String::new(),
+        needs: Default::default(),
+        settings_schema: None,
+        schema_derived: false,
+        host: None,
+        declares: Default::default(),
     };
-    for (tag, name, alias) in [("name", "otlp", "k9-otlp"), ("alias", "k9-traces", "otlp")] {
-        assert_eq!(
-            shadowed_export(&registry_of(tag, name, alias)),
-            Err(format!(
-                "export plugin '{name}' spells a built-in export module"
-            )),
-        );
-    }
+    let signed = sign(&release, manifest, lib);
+    let tarball = busbar_plugin_loader::tarball::package(&signed, "libexport.so", lib).unwrap();
+    std::fs::write(dir.join("export.tar.gz"), tarball).unwrap();
+    let policy = TrustPolicy {
+        first_party_key: Some(release.verifying_key()),
+        binary_version: "1.6.0".into(),
+        first_party_floors: Default::default(),
+        first_party_high_water: Default::default(),
+        publishers: Default::default(),
+        allow_unsigned: false,
+        allow_third_party: false,
+        min_versions: Default::default(),
+    };
+    let scan = || busbar_plugin_loader::scan_and_validate(&dir, &policy).expect("the scan");
+    let rows = linked_exports(crate::LINKED.exports).expect("the linked export rows");
+    let both = scan().link(rows).expect("the linked door admits them");
+    let answering = |r: &busbar_plugin_loader::PluginRegistry| {
+        r.resolve("otlp").map(|p| p.manifest.name.clone())
+    };
+    assert_eq!(answering(&both).as_deref(), Some("busbar-export-otlp"));
     assert_eq!(
-        shadowed_export(&registry_of("clear", "k9-tail", "k9-tail")),
-        Ok(())
+        both.resolve("otlp").map(|p| p.manifest.declares.egress),
+        Some(busbar_plugin_loader::EgressPolicy::Collector),
+        "the linked row states the collector policy its tarball's declaration carries"
     );
+    // RED ARM: the dropped-in row alone answers.
+    assert_eq!(answering(&scan()).as_deref(), Some("k9e-dropped-otlp"));
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// THE HOST'S METRIC CATALOG CANNOT DRIFT (K9a S1). Every `busbar_*` series constant the host's

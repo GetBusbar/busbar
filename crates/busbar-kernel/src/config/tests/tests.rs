@@ -321,13 +321,16 @@ fn test_removed_key_aliases_are_rejected() {
 
 /// 1.5.3: the `observability:` BLOCK IS DELETED and its last field (`otlp_url`, and before it the
 /// 1.4.x `otlp_endpoint`) is now the `settings.url` of an `export:` instance with `module: otlp`.
-/// The new spelling resolves; the 1.4.x key inside the settings bag is rejected (`OtlpSettings` is
-/// `deny_unknown_fields`), so the retirement is loud rather than a silently-dropped trace sink.
+/// The new spelling resolves — through the export axis since K9e-2, where the `otlp` sink is an
+/// export plugin (`busbar-export-otlp`) — and the instance keeps its settings bag exactly as
+/// written. (The 1.4.x key inside the bag is the SINK's refusal now: the binary-level
+/// `crates/busbar/tests/export_otlp_refuses_as_1_5_5_did.rs` pins its words.)
 ///
 /// Before 1.5.3 `otlp_url` was an `ObservabilityCfg` field and there was no
-/// `otlp` export module at all, so neither half of this compiled.
+/// `otlp` export module at all, so this did not compile.
 #[test]
 fn test_otlp_folds_into_an_export_instance() {
+    crate::test_support::export_axis::install_export_axis();
     let defs: crate::config::ExportDefs = serde_yaml::from_str(
         "traces:\n  module: otlp\n  settings: { url: \"http://localhost:4318/v1/traces\" }\n",
     )
@@ -335,20 +338,24 @@ fn test_otlp_folds_into_an_export_instance() {
     let mut errors = Vec::new();
     let export = crate::config::resolve_export(&defs, &mut errors);
     assert!(errors.is_empty(), "{errors:?}");
+    let otlp: Vec<_> = export
+        .plugins
+        .iter()
+        .map(|p| {
+            (
+                p.name.as_str(),
+                p.def.module.as_str(),
+                p.def.settings.get("url"),
+            )
+        })
+        .collect();
     assert_eq!(
-        export.otlp.as_ref().map(|o| o.url.as_str()),
-        Some("http://localhost:4318/v1/traces")
-    );
-
-    let defs: crate::config::ExportDefs = serde_yaml::from_str(
-        "traces:\n  module: otlp\n  settings: { otlp_endpoint: \"http://localhost:4318\" }\n",
-    )
-    .expect("the outer instance shape still parses (settings is an opaque bag)");
-    let mut errors = Vec::new();
-    let _ = crate::config::resolve_export(&defs, &mut errors);
-    assert!(
-        errors.iter().any(|e| e.contains("otlp_endpoint")),
-        "the 1.4.x otlp_endpoint key must be rejected inside otlp settings; got {errors:?}"
+        otlp,
+        vec![(
+            "traces",
+            crate::config::EXPORT_MODULE_OTLP,
+            Some(&serde_json::json!("http://localhost:4318/v1/traces"))
+        )]
     );
 }
 
@@ -3601,8 +3608,8 @@ fn secrets_block_stays_module_keyed_by_design() {
 
 /// `export:` is a NAMED map, so the SAME module can back MULTIPLE instances — the exact
 /// thing the retired TYPE-KEYED block could not express (two `request-log-webhook`s to two URLs).
-/// The two process-SINGLETON modules (`prometheus` owns the one `/metrics` route, `otlp` installs the
-/// one tracer subscriber) reject a second instance LOUDLY rather than silently ignoring it.
+/// The two SINGLETON modules (`prometheus` owns the one `/metrics` route; `otlp`, in 1.5.5's frozen
+/// words) reject a second instance LOUDLY rather than silently ignoring it.
 ///
 /// The type-keyed `ExportCfg` had one `Option` per module, so a second webhook was
 /// unrepresentable and this test could not be written at all.
@@ -3655,7 +3662,8 @@ fn export_named_map_allows_two_instances_of_one_module() {
 
     // An unknown module is refused naming the modules this build serves, never silently dropped.
     // Which sinks are linked depends on whether this test binary's axis is installed yet (a
-    // process-global another test installs), so the kernel's own `otlp`, always served, closes it.
+    // process-global another test installs); the binary-level
+    // `crates/busbar/tests/export_unknown_module_lists_what_links.rs` pins the default build's line.
     let defs: crate::config::ExportDefs =
         serde_yaml::from_str("x: { module: nope }\n").expect("parses");
     let mut errors = Vec::new();
@@ -3663,7 +3671,7 @@ fn export_named_map_allows_two_instances_of_one_module() {
     assert!(
         errors.iter().any(|e| e.starts_with(
             "export.x.module: unknown exporter 'nope'; the built-in export modules are "
-        ) && e.ends_with("otlp")),
+        )),
         "an unknown export module must name the modules this build serves; got {errors:?}"
     );
 }

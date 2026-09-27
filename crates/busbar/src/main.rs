@@ -669,12 +669,8 @@ async fn run(data_workers: usize) {
         config::overlay::apply_root_to_deploy(&mut deploy, doc);
     }
 
-    // The OTLP trace sink — 1.5.3: no longer an `observability:` block, but the `module: otlp`
-    // instance of the `export:` NAMED map. Grabbed before `deploy` is borrowed by resolve.
-    let otlp_cfg = config::resolve_export(&deploy.export, &mut Vec::new()).otlp;
-    // The `advanced.response_headers:` toggles (BOTH default false), read here — same
-    // BOOT-ONCE spot as `otlp_cfg` above, for the same reason: `server_timing` is baked into
-    // router middleware state below (`build_split_routers_with_limits`) and `route_policy` seeds a
+    // The `advanced.response_headers:` toggles (BOTH default false), read here, at a BOOT-ONCE
+    // spot: `server_timing` is baked into router middleware state below (`build_split_routers_with_limits`) and `route_policy` seeds a
     // process-wide `OnceLock` (`proxy::configure_route_policy_headers`) neither of which a later
     // config apply rebuilds — a live `PUT` is stored but restart-to-apply (see `reload_to_apply`).
     let response_headers_cfg = deploy.advanced.response_headers.clone();
@@ -711,14 +707,12 @@ async fn run(data_workers: usize) {
         );
     }
 
-    // Install the tracing subscriber now (stderr fmt always; OTLP export if configured) so all
-    // subsequent startup and request-path logging is captured.
+    // Install the tracing subscriber now (stderr fmt always; the `traces` record producer for the
+    // export sinks subscribed to it, the `otlp` module's among them) so all subsequent startup and
+    // request-path logging is captured.
     // `--mcp-stdio` reserves stdout for the MCP channel, so its logs move to stderr — see
     // `init_logging`'s `stdout_reserved`.
-    root::otlp::init_logging(
-        otlp_cfg.as_ref().map(|o| o.url.as_str()),
-        stdio_serve_requested(std::env::args()),
-    );
+    busbar_kernel::observability::init_logging(stdio_serve_requested(std::env::args()));
 
     // First line in the logs: which build is running. Operators need this to confirm a deploy /
     // correlate logs to a release without shelling in to run `--version`.
@@ -1101,11 +1095,10 @@ async fn run(data_workers: usize) {
         app_handle.attach_on_swap(spawn);
     }
 
-    // Graceful shutdown: on ctrl_c (SIGINT) or SIGTERM, stop accepting new connections, let
-    // in-flight requests drain, then flush the OTLP tracer so the final (most diagnostic) spans are
-    // exported rather than dropped when the runtime tears down. The signal future is panic-free —
-    // a failed registration logs and parks forever (so a missing signal facility degrades to "no
-    // graceful shutdown", never a crash), and `shutdown_tracing()` is a no-op when OTLP is off.
+    // Graceful shutdown: on ctrl_c (SIGINT) or SIGTERM, stop accepting new connections and let
+    // in-flight requests drain. The signal future is panic-free — a failed registration logs and
+    // parks forever (so a missing signal facility degrades to "no graceful shutdown", never a
+    // crash).
     // ONE signal fans out to BOTH listeners (data + admin) so both planes drain together.
     let (shutdown_tx, _keep_open) = tokio::sync::broadcast::channel::<()>(1);
     // Publish the sender so `POST /admin/restart` can trigger the SAME drain a signal does. A
@@ -1167,7 +1160,6 @@ async fn run(data_workers: usize) {
             let m = gov.flush_metering();
             tracing::info!(flushed = m, "metering rows flushed on shutdown");
         }
-        root::otlp::shutdown_tracing();
         std::process::exit(code);
     }
 
@@ -1275,7 +1267,6 @@ async fn run(data_workers: usize) {
     // No state snapshot on shutdown: reliability state is RAM-only (re-learned on boot) and the
     // audit log is written through to the durable store as it happens (store-or-RAM rule — there is
     // no side-car state file to flush).
-    root::otlp::shutdown_tracing();
 }
 
 /// Bind a TCP listener or `die` with a clear, address-named message. Shared by the data and admin

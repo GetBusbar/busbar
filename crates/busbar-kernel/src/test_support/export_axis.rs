@@ -58,7 +58,7 @@ static AXIS: std::sync::OnceLock<PluginRegistry> = std::sync::OnceLock::new();
 /// The axis every test in this binary resolves `export:` against — installed once, as the
 /// composition root does. Besides a neutral row (`k9-axis-sink`, alias `k9-tail`) it holds a row
 /// spelling each FIRST-PARTY sink's frozen module name (`request-log-file`, K9b;
-/// `request-log-webhook`, K9c): a linked build
+/// `request-log-webhook`, K9c; `otlp`, K9e-2): a linked build
 /// resolves that module on its axis, so a test configuration naming it resolves here too. The rows'
 /// bytes are not a library, so each sink validates nothing and opens nothing — enough for the
 /// configuration layer, which is all a kernel test drives.
@@ -74,6 +74,7 @@ pub fn install_export_axis_with(linked: Vec<busbar_plugin_loader::LinkedPlugin>)
             ("k9-axis-sink", "k9-tail"),
             ("k9b-log-file", "request-log-file"),
             ("k9c-webhook", "request-log-webhook"),
+            ("k9e-otlp", crate::config::EXPORT_MODULE_OTLP),
         ];
         let scanned = registry_of("installed", &rows);
         scanned

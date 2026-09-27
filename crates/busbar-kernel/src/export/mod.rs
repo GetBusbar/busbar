@@ -61,12 +61,6 @@ pub(crate) fn route_decls(cfg: &ExportCfg) -> Vec<RouteDecl> {
     scraped.chain(plugin::route_decls(cfg)).collect()
 }
 
-/// Whether the kernel serves `module` itself — a module an export-axis row may not spell, since
-/// every instance naming it would reach the built-in.
-pub fn built_in(module: &str) -> bool {
-    projection::module_streams(module).is_some()
-}
-
 /// The raw per-request facts the `logs` stream is built FROM — everything core knows at
 /// request-finish, before any projection is applied. Deliberately NOT a payload: it is the producer's
 /// output, and [`build_request_log`] is the only thing that turns it into one, per sink, bounded by

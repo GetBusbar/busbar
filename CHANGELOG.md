@@ -150,6 +150,16 @@ Each of these is an owner-accepted difference from 1.5.5: additive, or strictly 
   lines on stderr are prefixed `BUSBAR-NNNN:`, and every boot log line carries `diag=BUSBAR-NNNN`.
   The text after the code is byte-identical to 1.5.5; the code is a stable key into
   [the diagnostics reference](docs/diagnostics.md), which says what each one means and what to do.
+- **OTLP trace export works.** A `module: otlp` export instance delivered nothing in 1.5.5: every
+  batch's export thread panicked (`there is no reactor running`) and shutdown printed `OTLP tracer
+  shutdown failed`. Each request-path span is now POSTed to the instance's `url` as it closes, one
+  OTLP/HTTP protobuf `ExportTraceServiceRequest` per span (`content-type: application/x-protobuf`;
+  resource `service.name = busbar`; the span's `pool`, `ingress`, `op`, `lane`, `provider` and
+  `model` as attributes), and neither failure line is printed. The configuration, its refusals and
+  the endpoint rules are 1.5.5's: plaintext `http://` to a loopback collector only, `https://`
+  elsewhere, link-local, private, CGNAT and cloud-metadata targets refused, and credentials in the
+  URL sent as an `Authorization: Basic` header. The sink ships as a plugin
+  ([GetBusbar/export-otlp](https://github.com/GetBusbar/export-otlp)), linked into the default build.
 - **A service-account key file that cannot be read no longer echoes the credential into the error.**
   `auth: jwt-bearer` tells a pasted service-account JSON from a path to one by a single leading
   `{`, so an operator who pastes the key BODY — or whose `env:`/`file:` reference resolves to key

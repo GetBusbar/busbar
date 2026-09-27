@@ -1730,11 +1730,11 @@ fn default_per_request_fee() -> i64 {
 /// definition map into, and the shape every runtime consumer reads. NOT deserialized from YAML (the
 /// on-disk shape is [`ExportDefs`]).
 ///
-/// Note the asymmetry, which is deliberate and load-bearing: the two LOG sinks are `Vec`s (multiple
-/// named instances are the whole point of the named map), while the scrape sink and `otlp` are at
-/// most ONE each — the scrape sink owns the single well-known `/metrics` route and `otlp` installs the
-/// one process-global tracer subscriber, so a second instance could not do anything except silently
-/// lose. A second instance of either module is therefore a loud boot error, never a silent no-op.
+/// Every module is served by a sink on the export AXIS (a plugin, compiled in or dropped in), so
+/// every instance is one of [`ExportCfg::plugins`]. The scrape sink is at most ONE — it owns the
+/// single well-known `/metrics` route, so a second instance could not do anything except silently
+/// lose — and a second instance of its module is a loud boot error, never a silent no-op; a sink
+/// that refuses a second instance of its own module does so through its checks.
 ///
 /// Each sink's settings carry that instance's resolved [`crate::export::projection::Projection`] —
 /// the streams + fields THAT sink is granted. Core builds every payload TO that projection, so an
@@ -1745,8 +1745,6 @@ pub struct ExportCfg {
     /// [`PluginExportSettings::scrape`]), if one is configured. `None` ⇒ no recorder installed,
     /// `/metrics` not mounted, every emit site a true no-op (the zero-config default).
     pub recorder: Option<PrometheusSettings>,
-    /// The `otlp` instance's settings, if one is configured. `None` ⇒ no tracer/span export.
-    pub otlp: Option<OtlpSettings>,
     /// Every instance whose `module:` names an export module registered on the EXPORT AXIS
     /// ([`crate::export::plugin::register_module`]) — a plugin sink, compiled in or dropped in — in
     /// config order. Opened once at boot ([`crate::export::plugin::open`]).
@@ -1778,12 +1776,7 @@ impl ExportCfg {
     /// stream's records ONLY when some sink declared it. Supersedes the one-off
     /// `export::request_log_configured()` boolean — one mechanism, not two.
     pub(crate) fn projection_union(&self) -> crate::export::projection::ProjectionUnion {
-        crate::export::projection::ProjectionUnion::of(
-            self.otlp
-                .iter()
-                .map(|s| &s.projection)
-                .chain(self.plugins.iter().map(|s| &s.projection)),
-        )
+        crate::export::projection::ProjectionUnion::of(self.plugins.iter().map(|s| &s.projection))
     }
 }
 
@@ -1818,36 +1811,18 @@ pub struct PrometheusSettings {
     pub key_gauge_limit: usize,
 }
 
-/// `settings:` of an `export.<name>.module: otlp` instance — the new home of the DELETED
-/// `observability.otlp_url`. The tracer/log-init machinery in `crate::observability` is
-/// unchanged; only the config surface that drives it moved.
-#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
-#[serde(deny_unknown_fields)]
-pub struct OtlpSettings {
-    /// OTLP/HTTP traces endpoint URL (e.g. `http://localhost:4318/v1/traces`) — REQUIRED. When an
-    /// `otlp` export instance is present busbar installs an OpenTelemetry tracer + exports spans.
-    pub url: String,
-    /// THIS INSTANCE'S RESOLVED PROJECTION — the streams + fields this sink is granted, from its
-    /// `streams:` / `fields:` keys (see `crate::export::projection`). NOT an operator key: it is
-    /// `#[serde(skip)]` so the `settings:` bag stays exactly what the operator wrote, and it is
-    /// filled in by [`resolve_export`]. It rides here so the delivery path can build this sink's
-    /// payload TO ITS PROJECTION without a second lookup keyed on instance name.
-    #[serde(skip)]
-    pub(crate) projection: crate::export::projection::Projection,
-}
-
 /// Lower the `export:` NAMED-DEFINITION map into the typed [`ExportCfg`] every runtime consumer reads.
 /// Errors are ACCUMULATED (not short-circuited) so `--validate` reports every bad exporter at once,
 /// the same posture `resolve` takes everywhere else.
 ///
 /// Enforced here:
-/// - a `module:` that is neither a built-in nor registered on the export axis is a boot error naming
-///   the four built-ins (never a silently-ignored sink);
+/// - a `module:` that is not registered on the export axis is a boot error naming the modules this
+///   build serves (never a silently-ignored sink);
 /// - a bad/typo'd key inside `settings:` is a boot error (each settings struct is
 ///   `deny_unknown_fields`, so the opaque bag is only opaque to the OUTER layer);
-/// - a SECOND instance of the scrape sink's module, or of `otlp`, is a boot error (see
-///   [`ExportCfg`] — those two are process-singleton by construction and a second one could only
-///   lose silently);
+/// - a SECOND instance of the scrape sink's module is a boot error (see [`ExportCfg`] — it is
+///   process-singleton by construction and a second one could only lose silently), and so, in
+///   1.5.5's words, is a second `module: otlp` instance;
 /// - the instance's PROJECTION (`streams:` / `fields:` / `durable:`) is resolved + validated by
 ///   [`crate::export::projection::resolve_projection`], which is where the HARD RULE lives: a stream
 ///   with no producer in this release, a stream the module cannot carry, a `fields:` list that omits
@@ -1855,62 +1830,40 @@ pub struct OtlpSettings {
 ///   and delivers nothing.
 pub fn resolve_export(defs: &ExportDefs, errors: &mut Vec<String>) -> ExportCfg {
     let mut out = ExportCfg::default();
-    // The instance name that already claimed each singleton module, for the "named twice" diagnostic.
+    // The instance that already claimed `module: otlp`, for 1.5.5's "named twice" refusal.
     let mut otlp_owner: Option<&str> = None;
 
     for (name, def) in defs {
         let settings = serde_json::Value::Object(def.settings.clone());
         let module = def.module.trim();
-        // A module the kernel does not serve is asked of the export axis: the streams its sink
-        // declares (so the projection is resolved against them now, as a built-in's is) and its
-        // own verdict on the settings.
-        let built_in = crate::export::projection::module_streams(module);
-        let axis = built_in
-            .is_none()
-            .then(|| crate::export::plugin::probe(name, module, &settings))
-            .flatten();
+        // The module is asked of the export axis: the streams its sink declares (so the projection
+        // is resolved against them now) and its own verdict on the settings.
+        let axis = crate::export::plugin::probe(name, module, &settings);
         let declared = axis.as_ref().and_then(|(streams, _)| streams.as_deref());
         let projection = crate::export::projection::resolve_projection(
             name,
             module,
-            built_in.or(declared),
+            declared,
             def.streams.as_deref(),
             def.fields.as_deref(),
             def.durable,
             errors,
         );
-        // Parse the opaque bag into this module's typed settings struct. One helper so every module
-        // produces the identical `export.<name>.settings: …` error prefix.
-        macro_rules! typed {
-            ($t:ty) => {
-                match serde_json::from_value::<$t>(settings) {
-                    // The resolved projection rides onto the typed settings here, so every sink the
-                    // delivery path sees already carries the bound on what it may be handed. There
-                    // is no path that produces settings WITHOUT a projection.
-                    Ok(mut v) => {
-                        v.projection = projection;
-                        Some(v)
-                    }
-                    Err(e) => {
-                        errors.push(format!("export.{name}.settings: {e}"));
-                        None
-                    }
-                }
-            };
+        // 1.5.5 refused a second `module: otlp` instance HERE, as a configuration error, in these
+        // frozen words: the module is a sink on the export axis now, and the refusal keeps its
+        // words and its place among the configuration's errors.
+        if module == EXPORT_MODULE_OTLP {
+            if let Some(owner) = otlp_owner {
+                errors.push(format!(
+                    "export.{name}: a second `module: otlp` instance (already defined as \
+                     '{owner}'). OTLP installs the ONE process-global tracer subscriber, so a \
+                     second instance could only be silently ignored — keep a single instance."
+                ));
+                continue;
+            }
+            otlp_owner = Some(name);
         }
         match module {
-            EXPORT_MODULE_OTLP => {
-                if let Some(owner) = otlp_owner {
-                    errors.push(format!(
-                        "export.{name}: a second `module: otlp` instance (already defined as \
-                         '{owner}'). OTLP installs the ONE process-global tracer subscriber, so a \
-                         second instance could only be silently ignored — keep a single instance."
-                    ));
-                    continue;
-                }
-                otlp_owner = Some(name);
-                out.otlp = typed!(OtlpSettings);
-            }
             // THE EXPORT AXIS: a module some compiled-in or dropped-in export plugin registered.
             // An instance subscribed to `metrics` whose sink carries it and is granted FIRST-PARTY
             // is the SCRAPE SINK — once: a second instance of that module could only be silently
@@ -1943,16 +1896,15 @@ pub fn resolve_export(defs: &ExportDefs, errors: &mut Vec<String>) -> ExportCfg 
                     scrape,
                 })
             }
-            // The modules THIS build serves: the kernel's own and the ones it links, in the frozen
-            // order. A default build links every sink, so its text is 1.5.5's byte for byte.
+            // The modules THIS build serves: the ones it links, in the frozen order. A default
+            // build links every sink, so its text is 1.5.5's byte for byte.
             other => errors.push(format!(
                 "export.{name}.module: unknown exporter '{other}'; the built-in export modules are \
                  {}",
                 EXPORT_MODULES
                     .iter()
                     .copied()
-                    .filter(|m| crate::export::projection::module_streams(m).is_some()
-                        || crate::export::plugin::linked(m))
+                    .filter(|m| crate::export::plugin::linked(m))
                     .collect::<Vec<_>>()
                     .join(" | ")
             )),

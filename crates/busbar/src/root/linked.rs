@@ -872,8 +872,9 @@ pub fn dropped_transports() -> &'static [busbar_plugin_loader::DynTransport] {
 /// THE EXPORT AXIS: the registry an `export:` instance's `module:` resolves against — every
 /// `kind: export` row the plugin registry's one registration admitted, dropped in here (and, as a
 /// linked export crate lands, linked through `PluginRegistry::link`, the same admission) — installed
-/// once, before the configuration is resolved (`busbar_kernel::export::plugin::install`). A row the
-/// axis refuses (one spelling a built-in's module name) refuses the boot before any listener binds.
+/// once, before the configuration is resolved (`busbar_kernel::export::plugin::install`). The kernel
+/// serves no export module of its own (K9e-2: `otlp`, its last, is a linked row), so every module
+/// is a row here, and a linked row answers its module ahead of any dropped-in row spelling it.
 pub fn register_exports(dropped: Option<&'static busbar_plugin_loader::PluginRegistry>) {
     busbar_plugin_loader::observe::install_host_series(host_series);
     // The host's egress, which every sink's outbound request rides (K9a S5) — whatever else this
@@ -883,10 +884,6 @@ pub fn register_exports(dropped: Option<&'static busbar_plugin_loader::PluginReg
         return;
     };
     let _ = DROPPED.set(registry);
-    if let Err(refusal) = shadowed_export(registry) {
-        eprintln!("busbar: {refusal}");
-        std::process::exit(2);
-    }
     busbar_kernel::export::plugin::install(registry);
 }
 
@@ -936,24 +933,6 @@ pub fn host_series(name: &str) -> bool {
         .iter()
         .find_map(|suffix| name.strip_suffix(suffix));
     HOST_SERIES.iter().any(|s| *s == name || Some(*s) == base)
-}
-
-/// A `kind: export` row spelling a built-in export module's name — as its name or its alias — is
-/// refused: every instance naming it would reach the built-in, and the plugin would sit on the axis
-/// unreachable, silently.
-pub fn shadowed_export(registry: &busbar_plugin_loader::PluginRegistry) -> Result<(), String> {
-    let built_in = busbar_kernel::export::built_in;
-    let rows = registry.linked().iter().chain(registry.loadable());
-    let shadows = |p: &&busbar_plugin_loader::LoadablePlugin| {
-        p.manifest.kind == "export" && (built_in(&p.manifest.name) || built_in(&p.manifest.alias))
-    };
-    match rows.into_iter().find(shadows) {
-        Some(p) => Err(format!(
-            "export plugin '{}' spells a built-in export module",
-            p.manifest.name
-        )),
-        None => Ok(()),
-    }
 }
 
 /// The plugin registry [`register_exports`] installed — read again by [`register_diagnostics`], so

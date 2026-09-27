@@ -373,7 +373,7 @@ fn projection_union_is_the_compute_gate() {
     }
 
     let defs: ExportDefs = serde_yaml::from_str(
-        "req-log:\n  module: request-log-webhook\n  streams: [logs]\n  settings:\n    url: https://sink.example.com/l\ntraces:\n  module: otlp\n  settings:\n    url: http://localhost:4318/v1/traces\n",
+        "req-log:\n  module: request-log-webhook\n  streams: [logs]\n  settings:\n    url: https://sink.example.com/l\ntraces:\n  module: otlp\n  streams: [traces]\n  settings:\n    url: http://localhost:4318/v1/traces\n",
     )
     .unwrap();
     let mut errors = Vec::new();

@@ -198,13 +198,10 @@ oauth-as = { version = "1.0.0", features = [
     "consent",
     "resource-metadata",
 ] }
-opentelemetry = "0.32.0"
-opentelemetry-http = { version = "0.32.0", default-features = false, features = ["hyper"] }
-opentelemetry-otlp = { version = "0.32.0", default-features = false, features = [
-    "trace",
-    "http-proto",
-] }
-opentelemetry_sdk = "0.32.1"
+# The OpenTelemetry project's own generated OTLP types, DEV-ONLY: the root's OTLP proofs decode what
+# the `otlp` sink (GetBusbar/export-otlp) posts with the proto's publisher's types, never with the
+# sink's own encoder. Not in any shipped build.
+opentelemetry-proto = { version = "0.32", default-features = false, features = ["gen-tonic-messages", "trace"] }
 proptest = "1"
 rcgen = "0.14"
 # ── MCP, from the specification authors' own crate ─────────────────────────────────────────────
@@ -325,7 +322,6 @@ tonic-types = "0.14"
 tower = "0.5"
 tracing = "0.1.44"
 tracing-core = "0.1"
-tracing-opentelemetry = "0.33.0"
 tracing-subscriber = "0.3.23"
 # The WHATWG URL parser, named under its OWN name: every `reqwest::Url` in the tree was this crate
 # under reqwest's re-export alias, and the egress-symmetry sweep spells the dependency honestly.

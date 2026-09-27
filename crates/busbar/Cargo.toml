@@ -136,6 +136,13 @@ busbar-export-webhook = { git = "https://github.com/GetBusbar/export-webhook", r
 # own repo (GetBusbar/export-prometheus) and is pulled at a PINNED rev; the workspace `[patch]` points
 # the busbar crates it names back at this tree.
 busbar-export-prometheus = { git = "https://github.com/GetBusbar/export-prometheus", rev = "087bbcc6a9bafc63591799770407a478f2742027", optional = true }
+# THE OTLP TRACE SINK (`module: otlp`), a first-party EXPORT plugin linked through the `exports` axis
+# (K9e-2; owner answer Q75: OTLP export never delivered in 1.5.5, and 1.6.0 fixes it) — the same row a
+# signed tarball of it registers when dropped in. It encodes each `traces` record as an OTLP/HTTP
+# protobuf request the host posts under the collector egress policy it declares. It lives in its own
+# repo (GetBusbar/export-otlp) and is pulled at a PINNED rev; the workspace `[patch]` points the busbar
+# crate it names back at this tree.
+busbar-export-otlp = { git = "https://github.com/GetBusbar/export-otlp", rev = "02f463307f9820faedda131467dcfaa83b25df78", optional = true }
 # The transports. Composition is an edge that does not exist as a Cargo dependency — a transport may
 # not name the layer beneath it — so the root hands each wire's build the layer it built below it.
 # Which wires a build links is the `transport` rows of the linked table below; the source names none.
@@ -162,17 +169,8 @@ axum = { workspace = true }
 # the same version axum is built on — this is the trait axum's own `Body` implements, not a second one.
 http-body = { workspace = true }
 tracing = { workspace = true }
-# THE OTLP SPAN EXPORTER (`root::otlp`, K9e-1): the OpenTelemetry OTLP/HTTP exporter, its tracer
-# provider and `tracing` layer, the redirect-free hyper-rustls client it posts over, and the URL /
-# header types its SSRF guard and credential split use — moved here with it from the kernel.
-tracing-subscriber = { workspace = true }
-tracing-opentelemetry = { workspace = true }
-opentelemetry = { workspace = true }
-opentelemetry_sdk = { workspace = true }
-opentelemetry-otlp = { workspace = true }
-opentelemetry-http = { workspace = true }
-hyper-rustls = { workspace = true }
-http = { workspace = true }
+# THE COLLECTOR EGRESS POLICY (`root::otlp`, K9e-2): the OTLP endpoint guard, which the host's egress
+# carrier holds a sink that declares `collector` to, parses the target as a URL.
 url = { workspace = true }
 metrics = { workspace = true }
 serde_yaml = { workspace = true }
@@ -199,7 +197,7 @@ tikv-jemallocator = { workspace = true, features = ["disable_initial_exec_tls"] 
 # are one-line re-exports of the core feature with the same name. Every protocol entry below is the
 # SAME default set the monolithic crate had; `root-admin` is the addition, and it is a path rather
 # than a surface — the operations, their bytes and their features are unchanged.
-default = ["auth-admin-tokens", "hooks-ranking", "proto-llm", "plane-mcp", "plane-a2a", "plane-voice", "plane-decision", "export-file", "export-webhook", "export-prometheus", "root-admin", "transport-tcp"]
+default = ["auth-admin-tokens", "hooks-ranking", "proto-llm", "plane-mcp", "plane-a2a", "plane-voice", "plane-decision", "export-file", "export-webhook", "export-prometheus", "export-otlp", "root-admin", "transport-tcp"]
 # A protocol crate: the dependency edge plus its registration line in main.rs. Dropping the
 # feature is the deletion test's level-1 build. There is no per-DIALECT feature and there must not
 # be one — "LLM coverage or not" is the choice this seam offers, and a `proto-gemini` knob would be
@@ -268,6 +266,10 @@ export-webhook = ["dep:busbar-export-webhook"]
 # the exposition 1.5.5 shipped built in. Off, the module resolves only when a signed tarball of the
 # sink is dropped into `plugins/`.
 export-prometheus = ["dep:busbar-export-prometheus"]
+# THE OTLP TRACE SINK, DEFAULT ON (K9e-2; the `module: otlp` 1.5.5 shipped): the `busbar-export-otlp`
+# crate on the export axis. Off, the module resolves only when a signed tarball of the sink is dropped
+# into `plugins/`.
+export-otlp = ["dep:busbar-export-otlp"]
 # THE ROOT-DRIVEN ADMIN SURFACE (composition-root step C1 / switch-over S1). DEFAULT ON: it was held
 # off until the oracle's admin family was green on it, and it is. The switch is what makes an admin
 # request travel through the kernel's loop instead of reaching its handler directly; the 234 owed
@@ -316,6 +318,7 @@ plane-decision = "busbar-plane-decision"
 export-file = "busbar-export-file"
 export-webhook = "busbar-export-webhook"
 export-prometheus = "busbar-export-prometheus"
+export-otlp = "busbar-export-otlp"
 # THE COLD-KIND AXIS's in-process rows: the default store (a required dependency: every build links
 # it) and the ranking hooks (under their feature).
 store-memory = "busbar-store-memory"
@@ -349,6 +352,7 @@ plane-decision = "plane claims"
 export-file = "exports"
 export-webhook = "exports"
 export-prometheus = "exports"
+export-otlp = "exports"
 store-memory = "stores"
 hooks-ranking = "hooks"
 transport-tcp = "transport"
@@ -451,10 +455,20 @@ busbar-auth-oidc = { git = "https://github.com/GetBusbar/auth-oidc", rev = "9ff6
 # normal-edge `tower` above is `root-admin`'s own and optional, so a build without `root-admin` (every
 # single-plane build) would not compile the test; the test's edge is its own, unconditional here.
 tower = { workspace = true, features = ["util"] }
-# The `traces` stream's both-doors proof (`tests/traces_stream_both_doors.rs`, K9a S7): the export
-# `["cdylib", "rlib"]` fixture, its `rlib`'s boundary registered through the LINKED door and its
-# `cdylib` dropped in, both fed the kernel's traces producer.
+# The `traces` stream's both-doors proof (`tests/traces_stream_both_doors.rs`, K9a S7 + K9e-2): the
+# OTLP sink's repo's cdylib crate at the SAME pinned rev as the linked `busbar-export-otlp` edge above —
+# its linked row and its dropped-in library both fed the kernel's traces producer, both posting to a
+# local collector — and the subscriber that test installs the producer under.
+busbar-export-otlp-plugin = { git = "https://github.com/GetBusbar/export-otlp", rev = "02f463307f9820faedda131467dcfaa83b25df78" }
+tracing-subscriber = { workspace = true }
+# `tests/export_plugin_dropped_in_serves.rs` (item 141's positive control) finds an in-tree export
+# `cdylib` by its KIND in this target dir and drops it in: the export fixture, built as this dev-edge.
 busbar-export-example-plugin = { path = "../export-example-plugin" }
+# What that test and `tests/export_otlp_delivers_spans.rs` (the shipped binary posting to a local
+# collector) receive is decoded with the OpenTelemetry project's own generated types, and re-encoded
+# to the same bytes: the proto's publisher, not the sink's encoder, says it is an OTLP request.
+opentelemetry-proto = { workspace = true }
+prost = { workspace = true }
 # tests/cli_validate.rs builds signed plugin tarball fixtures.
 hex = { workspace = true }
 # THE ADDED-LATENCY INSTRUMENT (`benches/hook_path.rs`) — black-box, boots the shipped binary.
