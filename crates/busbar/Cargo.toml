@@ -422,8 +422,6 @@ futures = { workspace = true }
 base64 = { workspace = true }
 bytes = { workspace = true }
 serde_json = { workspace = true }
-# tests/method_coverage.rs et al. keep their rationale from the pre-split manifest (git history).
-busbar-store-example-plugin = { path = "../store-example-plugin" }
 # The plane axis's both-doors proof (`src/root/tests/linked.rs`): a `["cdylib", "rlib"]` fixture, so
 # the test links its `PLANE_DECL` (the linked door) and drops its cdylib into a temp `plugins/`
 # directory (the dropped-in door) and requires the two to install byte-identical registry rows.

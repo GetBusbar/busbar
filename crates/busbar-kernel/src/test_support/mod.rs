@@ -1320,10 +1320,10 @@ impl TestApp {
     ///
     /// It takes a `dyn Store` rather than a whole governance runtime because these two properties
     /// need one thing from the store seam and nothing from governance, and because the only honest
-    /// way to test them is against a store that really persists — which for this tree means the real
-    /// `busbar-store-example-plugin` cdylib in its durable mode, loaded over the plugin C ABI (see
-    /// [`super::plugin_store`]). A deployment that configures no store simply never calls this, and
-    /// gets the process-local behaviour both properties had before.
+    /// way to test them is against a store that really persists — the durable store double, whose
+    /// plane records outlive the handle that wrote them (see [`super::durable_store`]). A deployment
+    /// that configures no store simply never calls this, and gets the process-local behaviour both
+    /// properties had before.
     pub fn durable_store(
         mut self,
         store: std::sync::Arc<dyn busbar_contract::records::RecordStore>,
@@ -2222,8 +2222,9 @@ pub mod warn_capture;
 /// The export axis a test binary's configurations resolve against (K9b).
 pub mod export_axis;
 
-/// The REAL `kind: store` plugin, loaded over the REAL C ABI: how a durability claim is judged.
-pub mod plugin_store;
+/// The durable store double (R-FIX3): plane records that outlive the handle that wrote them, for the
+/// restart and fleet properties of a plane's trust state. Linked only.
+pub mod durable_store;
 
 /// THE TEST-APP / BUILT-APP SEAM — the object-safe doorway onto this module's own `TestApp` and the
 /// `App` that comes out of its `build()`. Relocated here from the deleted `busbar_kernel::testkit`

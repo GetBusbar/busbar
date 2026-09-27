@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE RECORD ITSELF, ACROSS THE REAL PLUGIN ABI — written by one handle, read by the next.
+//! THE RECORD ITSELF, ACROSS A RESTART — written by one handle, read by the next.
 //!
 //! `quarantine_boot_tests.rs` judges the property from OUTSIDE: a real request against a real
 //! upstream, refused after a restart. That is the case that matters and it is where the claim is
@@ -12,19 +12,18 @@
 //!   approved, and the row must go — otherwise the demotion outlives its own cause and the only way
 //!   back is to edit a store by hand. A quarantine that cannot be lifted is not a stronger control,
 //!   it is an outage.
-//! * **THE ABI CROSSING, on its own.** Every method here is DEFAULTED on the trait to
-//!   accept-and-keep-nothing, so each one has a silent-no-op shape available to it at three separate
-//!   places — the trait, the wire enum, and `DynStore`. Exercising them through a `dlopen`ed cdylib
-//!   with the handle dropped in between is the only arrangement in which "it was written" and "the
-//!   call returned `Ok(())`" are different sentences.
+//! * **THE HANDLE DROPPED IN BETWEEN.** Every method here is DEFAULTED on the trait to
+//!   accept-and-keep-nothing, so "it was written" and "the call returned `Ok(())`" are only different
+//!   sentences against a store whose state outlives the handle that wrote it.
 //!
-//! Everything below loads the genuine `busbar-store-example-plugin` cdylib through
-//! `busbar_plugin_loader::load_store`, i.e. across the same C ABI a customer's postgres or sqlite
-//! plugin is reached over.
+//! Everything below runs against the durable store double (`test_support::durable_store`, R-FIX3:
+//! linked only): each handle a fresh one on the same file, so a row is found only if it was really
+//! kept. That a store crossing the plugin C ABI answers these verbs exactly as it answers linked is
+//! the loader's both-ways fold (`busbar-plugin-loader`'s `store_conformance_tests`).
 
 use crate::plane::quarantine::{DemotionRecord, DemotionRow};
 use crate::plane::store::{decode, KIND_DEMOTION};
-use crate::test_support::plugin_store::{durable_cfg, open_plugin};
+use crate::test_support::durable_store::{durable_cfg, open_durable};
 use busbar_contract::records::{PlaneSelector, RecordStore, RecordStoreResult};
 
 /// TEST-ONLY named-vocabulary demotion-store extension — the demotion twin of the call-log test-ext,
@@ -41,10 +40,10 @@ trait DemotionStoreTestExt: RecordStore {
 }
 impl<T: RecordStore + ?Sized> DemotionStoreTestExt for T {}
 
-/// A `DemotionRecord` with a freshly `dlopen`ed handle on `cfg`.
+/// A `DemotionRecord` with a fresh handle on the durable store `cfg` names.
 fn node(cfg: &str) -> DemotionRecord {
     let d = DemotionRecord::new();
-    d.set_sink(crate::plane::store::PlaneStoreView::narrow(open_plugin(
+    d.set_sink(crate::plane::store::PlaneStoreView::narrow(open_durable(
         cfg,
     )));
     d
@@ -52,10 +51,10 @@ fn node(cfg: &str) -> DemotionRecord {
 
 /// A DEMOTION SURVIVES THE HANDLE THAT WROTE IT. The whole claim, at its narrowest.
 #[test]
-fn a_recorded_demotion_is_found_by_a_second_dlopen_of_the_same_store() {
+fn a_recorded_demotion_is_found_by_a_second_handle_on_the_same_store() {
     let (file, cfg) = durable_cfg("demotion-roundtrip");
 
-    // The writing handle is scoped so the library is unloaded before anything reads: a row still
+    // The writing handle is scoped so it is dropped before anything reads: a row still
     // reachable through the handle that wrote it says nothing about durability, because the fixture
     // could be holding it in a map it drops on close.
     {
@@ -214,9 +213,9 @@ fn with_no_durable_sink_a_demotion_is_recorded_nowhere() {
         "a `DemotionRecord` with no store must report nothing, because it has nothing"
     );
     assert!(
-        open_plugin(&cfg)
+        open_durable(&cfg)
             .list_demotions()
-            .expect("list_demotions over the ABI")
+            .expect("list_demotions through the store")
             .is_empty(),
         "and nothing may have reached a store it was never given — a durability test that has \
          never seen a NON-durable deployment has proven nothing"

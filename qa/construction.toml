@@ -951,7 +951,10 @@ kernel_crate = "busbar-kernel"
 # ── 51161 -> 51160: the kernel measures 51087 after the #84 merge re-pointed its plugin-ABI imports
 # at busbar_contract::abi (one import tree collapsed), and 51087 + K2g's 73 named lines = 51160.
 # Downward only.
-kernel_ceiling = 51160
+# ── 51160 -> 51159: the kernel measures 51086 after DOOR-STORE (R-FIX3) replaced the test-support
+# store-plugin locator with the in-crate durable store double, and 51086 + K2g's 73 named lines =
+# 51159. Downward only.
+kernel_ceiling = 51159
 # `caps_crate = "busbar-caps"` WAS HERE AND IS STRUCK, 2026-09-22. The crate was folded into
 # busbar-contract by 2c9eddecf ("W2.c: fold busbar-caps into busbar-contract"); its types live at
 # `crates/busbar-contract/src/caps/`, whose own module header says "Folded from the former
