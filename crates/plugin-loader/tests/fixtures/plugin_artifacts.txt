@@ -13,9 +13,6 @@ sibling_store_cdylib = busbar_store_sqlite_plugin
 # <plugin-id> fills `plugins/<plugin-id>`).
 published_store_plugin_id = store-sqlite
 
-# The in-tree hermetic example cdylibs (crates/*-example-plugin), by their crate identifier.
-export_example_cdylib = busbar_export_example_plugin
-
 # The REAL plugin repos that prove the secret and auth kinds (`src/tests/plugin_proof_tests.rs`;
 # ci.yml `plugin-proofs` builds them into BUSBAR_PLUGIN_PROOF_DIR). The cdylib names are what those
 # repos' own builds produce; the rest is what each plugin's own code answers.

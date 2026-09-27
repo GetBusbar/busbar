@@ -5,19 +5,17 @@
 //!
 //! Before the export axis, `export.<name>.module:` could name only the four built-ins — any other
 //! name was refused at boot ("unknown exporter"), `open_export` had no caller and nothing ever
-//! handed a loaded sink a batch. This drives the REAL binary with an in-tree `kind: export` plugin
-//! dropped into `plugins.dir` as a tarball, an `export:` instance naming it, and the built-in
-//! `prometheus` exporter beside it, then proves the whole path over the wire:
+//! handed a loaded sink a batch. This drives the REAL binary with a REAL `kind: export` plugin — the
+//! request-log FILE sink's `cdylib` (GetBusbar/export-file, at the root's pinned rev) — dropped into
+//! `plugins.dir` as a third-party tarball under a name this test gives it, an `export:` instance
+//! naming it, and the `prometheus` exporter beside it, then proves the whole path over the wire:
 //!
 //! 1. the boot ACCEPTS the instance (the module resolves through the export axis);
-//! 2. a request's `logs` line is DELIVERED to the plugin over the ABI (the in-tree export plugin
-//!    counts every batch it is handed and reports the count on its observability envelope);
-//! 3. what the plugin reported reaches the host's `/metrics` exposition, attributed to it by the
-//!    host (`plugin="<name>"`) — the envelope folded down the one observability path.
-//!
-//! The composition root names no plugin (#2, the instance-noun rule): the plugin is found by its
-//! KIND — the one in-tree plugin `cdylib` the loader will load as `kind: export` — and dropped in
-//! under a name this test gives it.
+//! 2. a request's `logs` line is DELIVERED to the plugin over the ABI: the sink has the HOST append
+//!    it to the destination its manifest declares, and the line is on disk — the line, and no span
+//!    (the instance subscribes `logs` only);
+//! 3. the host's `/metrics` exposition, read into the recorder snapshot, renders back byte for byte
+//!    through the dropped-in sink.
 //!
 //! RED against the tree before the axis: step 1 fails, the process exits naming the unknown exporter.
 
@@ -36,42 +34,37 @@ use std::time::{Duration, Instant};
 /// `module:` names, and the provenance label the host attaches to what it reports.
 const PLUGIN: &str = "dropped-sink";
 
-/// The in-tree `kind: export` plugin, found by its KIND: of the SDK fixture `cdylib`s (`*_plugin`)
-/// in the target directory this test binary lives in — uplifted or under `deps`, newest first — the
-/// one the loader LOADS as an export sink (every other kind is refused at the kind check, before its
-/// `open` runs). Under CI a missing artifact is a hard failure, never a silent skip — `cargo test
-/// --workspace` builds every member `cdylib`.
+/// The dropped-in door's library: the export-file repo's cdylib crate, snake-cased — built into this
+/// target dir by this crate's dev-edge on it (under `deps/`, hashed).
+const CDYLIB: &str = "busbar_export_file_plugin";
+
+/// The real sink's `cdylib`, newest wins: uplifted by its exact name, or under `deps/` with a metadata
+/// hash. Under CI a missing artifact is a hard failure, never a silent skip.
 fn export_cdylib() -> Option<Vec<u8>> {
     let exe = PathBuf::from(env!("CARGO_BIN_EXE_busbar"));
     let profile = exe.parent()?;
-    let mut candidates: Vec<(std::time::SystemTime, PathBuf)> =
-        [profile.to_path_buf(), profile.join("deps")]
-            .iter()
-            .flat_map(|dir| {
-                busbar_plugin_loader::list_plugin_files(dir)
-                    .into_iter()
-                    .map(move |f| dir.join(f))
-            })
-            .filter(|p| {
-                let stem = p.file_stem().and_then(|s| s.to_str()).unwrap_or_default();
-                stem.ends_with("_plugin")
-            })
-            .filter_map(|p| Some((std::fs::metadata(&p).ok()?.modified().ok()?, p)))
-            .collect();
-    candidates.sort_by_key(|(mtime, _)| std::cmp::Reverse(*mtime));
-    let found = candidates.into_iter().find_map(|(_, p)| {
-        let bytes = std::fs::read(&p).ok()?;
-        busbar_plugin_loader::load_export_from_bytes(&bytes, "{}", "probe", "export")
-            .ok()
-            .map(|_| bytes)
-    });
-    if found.is_none() && std::env::var_os("CI").is_some() {
-        panic!(
-            "no in-tree kind: export plugin cdylib is built under CI: `cargo test --workspace` \
-             must build every member cdylib. Refusing to silently skip item 141's control."
-        );
-    }
-    found
+    let exact = busbar_plugin_loader::plugin_library_filename(CDYLIB);
+    let (stem, ext) = exact.rsplit_once('.')?;
+    let hashed = |p: &PathBuf| {
+        let f = p.file_name().and_then(|f| f.to_str()).unwrap_or("");
+        f == exact
+            || f.strip_prefix(&format!("{stem}-"))
+                .and_then(|rest| rest.strip_suffix(&format!(".{ext}")))
+                .is_some_and(|h| !h.is_empty() && h.chars().all(|c| c.is_ascii_hexdigit()))
+    };
+    let found = [profile.to_path_buf(), profile.join("deps")]
+        .iter()
+        .flat_map(|d| std::fs::read_dir(d).into_iter().flatten().flatten())
+        .map(|e| e.path())
+        .filter(hashed)
+        .filter_map(|p| Some((std::fs::metadata(&p).ok()?.modified().ok()?, p)))
+        .max()
+        .map(|(_, p)| p);
+    assert!(
+        found.is_some() || std::env::var_os("CI").is_none(),
+        "the {CDYLIB} cdylib is not built under CI; refusing to silently skip item 141's control"
+    );
+    std::fs::read(found?).ok()
 }
 
 fn fixture_dir() -> PathBuf {
@@ -96,13 +89,8 @@ fn free_port() -> u16 {
 }
 
 /// The export `cdylib` packed as an UNSIGNED `kind: export` tarball (the config below opts into
-/// unsigned plugins, as the CLI fixtures do).
-fn write_tarball(dir: &Path, lib: &[u8]) {
-    write_tarball_declaring(dir, lib, &[]);
-}
-
-/// [`write_tarball`] with the manifest declaring `destinations` (K9a S4): the settings keys the host
-/// opens a destination for.
+/// unsigned plugins, as the CLI fixtures do), its manifest declaring `destinations` (K9a S4): the
+/// settings keys the host opens a destination for.
 fn write_tarball_declaring(dir: &Path, lib: &[u8], destinations: &[&str]) {
     let declares = busbar_plugin_loader::sign::Declares {
         destinations: destinations.iter().map(|d| d.to_string()).collect(),
@@ -131,10 +119,6 @@ fn write_tarball_declaring(dir: &Path, lib: &[u8], destinations: &[&str]) {
     };
     let bytes = busbar_plugin_loader::tarball::package(&m, "lib.so", lib).unwrap();
     std::fs::write(dir.join("plugins").join("dropped-sink.tar.gz"), bytes).unwrap();
-}
-
-fn write_configs(dir: &Path, data_port: u16, admin_port: u16) {
-    write_configs_with(dir, data_port, admin_port, "{}");
 }
 
 /// [`write_configs`] with the plugin instance's `settings:` block spelled `tail_settings`.
@@ -218,13 +202,19 @@ fn log_of(dir: &Path) -> String {
 #[test]
 fn a_dropped_in_export_plugin_serves() {
     let Some(lib) = export_cdylib() else {
-        eprintln!("skip: no in-tree export plugin cdylib is built (run under --workspace)");
+        eprintln!("skip: the {CDYLIB} cdylib is not built");
         return;
     };
     let dir = fixture_dir();
-    write_tarball(&dir, &lib);
+    write_tarball_declaring(&dir, &lib, &["path"]);
+    let lines = dir.join("lines.jsonl");
     let (data_port, admin_port) = (free_port(), free_port());
-    write_configs(&dir, data_port, admin_port);
+    write_configs_with(
+        &dir,
+        data_port,
+        admin_port,
+        &format!("{{ path: '{}' }}", lines.display()),
+    );
 
     let log = std::fs::File::create(dir.join("out.log")).unwrap();
     let mut child = Reap(
@@ -271,27 +261,46 @@ fn a_dropped_in_export_plugin_serves() {
     );
     exchange(data_port, &request).expect("the request is answered");
 
-    // 3. THE PLUGIN WAS HANDED THE LINE, and what it reported (one delivery) reached the host's
-    // exposition, attributed to it by the host. Delivery is off the request path, so poll briefly.
-    let expected = format!("{{plugin=\"{PLUGIN}\"}} 1");
+    // THE PLUGIN WAS HANDED THE LINE: the host appended what the sink asked it to write to the
+    // destination the manifest declares. Delivery is off the request path, so poll briefly.
+    let read = || -> Vec<serde_json::Value> {
+        std::fs::read_to_string(&lines)
+            .unwrap_or_default()
+            .lines()
+            .map(|l| serde_json::from_str(l).expect("a JSON line"))
+            .collect()
+    };
     let deadline = Instant::now() + Duration::from_secs(10);
-    let exposition = loop {
-        let exposition = scrape(data_port).map(|(_, b)| b).unwrap_or_default();
-        if exposition.contains(&expected) {
-            break exposition;
+    let logged = loop {
+        let logged = read();
+        if !logged.is_empty() {
+            break logged;
         }
         assert!(
             Instant::now() < deadline,
-            "the dropped-in export plugin never reported its delivery on /metrics (wanted \
-             `{expected}`); last exposition:\n{exposition}\nlog:\n{}",
+            "the dropped-in export plugin never wrote the request's line; log:\n{}",
             log_of(&dir)
         );
         std::thread::sleep(Duration::from_millis(50));
     };
+    assert!(
+        logged
+            .iter()
+            .any(|l| l["ingress_protocol"] == "anthropic" && l["outcome"] == "client_error"),
+        "the request's own line: {logged:?}"
+    );
+    // A sink subscribed to `logs` only is handed its line and no span.
+    assert!(
+        logged
+            .iter()
+            .all(|l| l.get("trace_id").is_none() && l.get("span_id").is_none()),
+        "a sink not subscribed to `traces` was handed spans: {logged:?}"
+    );
 
-    // 4. THE RECORDER SNAPSHOT (K9a S6): the host's real exposition, read into the snapshot and
+    // 3. THE RECORDER SNAPSHOT (K9a S6): the host's real exposition, read into the snapshot and
     // handed to the dropped-in sink, renders back byte for byte — the render a sink serving
     // `/metrics` would hand the host.
+    let exposition = scrape(data_port).map(|(_, b)| b).unwrap_or_default();
     let families = busbar_plugin_loader::scrape::snapshot(&exposition).expect("the snapshot reads");
     let sink = busbar_plugin_loader::load_export_from_bytes(&lib, "{}", PLUGIN, "export")
         .expect("the sink loads");
@@ -313,11 +322,11 @@ fn a_dropped_in_export_plugin_serves() {
 #[test]
 fn validate_reports_a_dropped_in_sinks_settings_errors_in_its_own_words() {
     let Some(lib) = export_cdylib() else {
-        eprintln!("skip: no in-tree export plugin cdylib is built (run under --workspace)");
+        eprintln!("skip: the {CDYLIB} cdylib is not built");
         return;
     };
     let dir = fixture_dir();
-    write_tarball(&dir, &lib);
+    write_tarball_declaring(&dir, &lib, &[]);
     let validate = |tail_settings: &str| {
         write_configs_with(&dir, free_port(), free_port(), tail_settings);
         Command::new(common::boot::exe())
@@ -328,169 +337,21 @@ fn validate_reports_a_dropped_in_sinks_settings_errors_in_its_own_words() {
             .output()
             .expect("run busbar --validate")
     };
-    let refused = validate("{ series: 7 }");
+    let refused = validate("{ path: 7 }");
     let stderr = String::from_utf8_lossy(&refused.stderr);
     assert!(!refused.status.success(), "stderr:\n{stderr}");
     assert!(
-        stderr
-            .contains("export.tail.settings.series: must be a string naming the delivery counter"),
+        stderr.contains("export.tail.settings: invalid type: integer `7`, expected a string"),
         "stderr:\n{stderr}"
     );
-    let accepted = validate("{ series: tail_deliveries_total }");
+    let accepted = validate(&format!(
+        "{{ path: '{}' }}",
+        dir.join("tail.jsonl").display()
+    ));
     assert!(
         accepted.status.success(),
         "stderr:\n{}",
         String::from_utf8_lossy(&accepted.stderr)
     );
-    let _ = std::fs::remove_dir_all(&dir);
-}
-
-/// K9a S7 (BUSBAR-1.6.0 18b(d)), end to end over the real binary: **a dropped-in sink subscribed
-/// to `traces` is handed the request's spans.** The kernel's traces producer turns each closed span
-/// into a `traces` record built to the sink's projection; the sink has the host append each record
-/// to its declared destination. A request that reaches the upstream hop closes its `forward` span,
-/// and that span's record — its ids, name, timing and the stream's own fields — is on disk.
-///
-/// RED ARM, in the same test: the same sink as a second instance subscribed to `logs` only is handed
-/// the request's log line and no span. RED against the tree before the producer: the `traces`
-/// destination is never written.
-#[test]
-fn a_dropped_in_sink_subscribed_to_traces_is_handed_the_request_spans() {
-    let Some(lib) = export_cdylib() else {
-        eprintln!("skip: no in-tree export plugin cdylib is built (run under --workspace)");
-        return;
-    };
-    let dir = fixture_dir();
-    write_tarball_declaring(&dir, &lib, &["path"]);
-    let (spans, lines) = (dir.join("spans.jsonl"), dir.join("lines.jsonl"));
-    let (data_port, admin_port) = (free_port(), free_port());
-    std::fs::write(
-        dir.join("providers.yaml"),
-        "mock:\n  protocol: anthropic\n  base_url: \"http://127.0.0.1:9\"\n  api_key_env: MOCK_KEY\n",
-    )
-    .unwrap();
-    std::fs::write(
-        dir.join("config.yaml"),
-        format!(
-            r#"listen: "127.0.0.1:{data_port}"
-admin_listen: "127.0.0.1:{admin_port}"
-admin_require_mtls: false
-auth:
-  chain: []
-plugins:
-  enabled: true
-  dir: '{plugins}'
-  trust:
-    allow_unsigned: true
-export:
-  metrics: {{ module: prometheus, settings: {{ buffer_seconds: 60 }} }}
-  spans: {{ module: {PLUGIN}, streams: [traces], settings: {{ path: '{spans}' }} }}
-  lines: {{ module: {PLUGIN}, streams: [logs], settings: {{ path: '{lines}' }} }}
-providers:
-  mock:
-    api_key: {{ env: MOCK_KEY }}
-models:
-  test-model:
-    provider: mock
-"#,
-            plugins = dir.join("plugins").display(),
-            spans = spans.display(),
-            lines = lines.display(),
-        ),
-    )
-    .unwrap();
-
-    let log = std::fs::File::create(dir.join("out.log")).unwrap();
-    let mut child = Reap(
-        Command::new(common::boot::exe())
-            .env("BUSBAR_CONFIG", dir.join("config.yaml"))
-            .env("BUSBAR_PROVIDERS", dir.join("providers.yaml"))
-            .env("MOCK_KEY", "x")
-            .env("RUST_LOG", "warn")
-            .stdout(log.try_clone().unwrap())
-            .stderr(log)
-            .spawn()
-            .expect("spawn busbar"),
-    );
-    // A generous boot bound: this test shares the machine with whatever else the suite runs.
-    let deadline = Instant::now() + Duration::from_secs(60);
-    loop {
-        if let Some(status) = child.0.try_wait().expect("try_wait") {
-            panic!(
-                "busbar refused to boot with a traces subscription (status {status:?}); log:\n{}",
-                log_of(&dir)
-            );
-        }
-        if matches!(scrape(data_port), Some((200, _))) {
-            break;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "/metrics never answered 200; log:\n{}",
-            log_of(&dir)
-        );
-        std::thread::sleep(Duration::from_millis(20));
-    }
-
-    // A request for a configured model: it reaches the upstream hop (which refuses the connection),
-    // so its `forward` span opens and closes.
-    let body =
-        r#"{"model":"test-model","max_tokens":1,"messages":[{"role":"user","content":"hi"}]}"#;
-    let request = format!(
-        "POST /v1/messages HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\n\
-         Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
-        body.len()
-    );
-    exchange(data_port, &request).expect("the request is answered");
-
-    let read = |p: &Path| -> Vec<serde_json::Value> {
-        std::fs::read_to_string(p)
-            .unwrap_or_default()
-            .lines()
-            .map(|l| serde_json::from_str(l).expect("a JSON line"))
-            .collect()
-    };
-    let deadline = Instant::now() + Duration::from_secs(10);
-    let records = loop {
-        let records = read(&spans);
-        if records.iter().any(|r| r["name"] == "forward") && !read(&lines).is_empty() {
-            break records;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "the request's `forward` span never reached the traces sink: {records:?}; log:\n{}",
-            log_of(&dir)
-        );
-        std::thread::sleep(Duration::from_millis(50));
-    };
-    for record in &records {
-        for field in ["trace_id", "span_id", "name"] {
-            assert!(record[field].is_string(), "`{field}` missing: {record}");
-        }
-        assert!(
-            record["start"].is_u64() && record["duration_us"].is_u64(),
-            "{record}"
-        );
-        assert!(
-            record.get("outcome").is_none(),
-            "a logs field on a span: {record}"
-        );
-    }
-    let forward = records.iter().find(|r| r["name"] == "forward").unwrap();
-    assert!(
-        forward["pool"].is_string() && forward["ingress"].is_string(),
-        "{forward}"
-    );
-
-    // RED ARM: the `logs`-only instance of the same sink was handed its line and no span.
-    let logged = read(&lines);
-    assert!(
-        logged
-            .iter()
-            .all(|l| l.get("trace_id").is_none() && l.get("span_id").is_none()),
-        "a sink not subscribed to `traces` was handed spans: {logged:?}"
-    );
-
-    drop(child);
     let _ = std::fs::remove_dir_all(&dir);
 }

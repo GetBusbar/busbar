@@ -406,11 +406,11 @@ const PLANE_ALIASES: &[(&str, &str, &str)] = &[
 /// dead-kind rule skips these — and the ratchet runs the other way: the day a crate of one of them
 /// exists, the entry must be struck, or a kind would be both pending and live.
 ///
-/// `dialect` was a pending kind and it is not a kind at all (DECISIONS #4). `secret` is pending
-/// because its instances live OUTSIDE this repo: the owner deleted the in-tree fixture ("FIXTURES",
-/// docs/design/1.6.0-QUESTIONS.md) and the kind is proven by the real plugin repo. `auth` is
-/// pending on the same terms: its last in-tree crate, the built-in admin-tokens module, moved to its
-/// own repo and is pulled at a pinned rev.
+/// `dialect` was a pending kind and it is not a kind at all (DECISIONS #4). `secret` and `export`
+/// are pending because their instances live OUTSIDE this repo: the owner deleted the in-tree
+/// fixtures ("FIXTURES", docs/design/1.6.0-QUESTIONS.md) and each kind is proven by its real plugin
+/// repos. `auth` is pending on the same terms: its last in-tree crate, the built-in admin-tokens
+/// module, moved to its own repo and is pulled at a pinned rev.
 const PENDING_KINDS: &[(&str, &str)] = &[
     (
         "secret",
@@ -425,6 +425,13 @@ const PENDING_KINDS: &[(&str, &str)] = &[
          GetBusbar/auth-admin-tokens (ARCHITECT 2026-09-27), pulled by busbar-kernel at a pinned \
          rev; the kind is proven both ways by crates/plugin-loader/src/tests/auth_conformance_tests.rs \
          and auth_verify_conformance_tests.rs over the pinned real plugins",
+    ),
+    (
+        "export",
+        "every plugin lives in its own repo (owner, 1.6.0-QUESTIONS.md \"PLUGIN HOME\"); the in-tree \
+         export fixture is deleted (\"FIXTURES\") and the kind is proven by its real sinks \
+         GetBusbar/export-file, -webhook, -prometheus and -otlp, pinned git dev-dependencies of \
+         busbar-plugin-loader (export_conformance_tests, both ways) and of busbar",
     ),
 ];
 
@@ -5985,7 +5992,7 @@ impl Gate for KindIsolationGate {
 
         // THE SCHEME'S OWN WIDTH. Five segments is a name describing the crate instead of naming
         // its kind (four segments is the widest an accepted name reaches, e.g.
-        // `busbar-export-example-plugin`).
+        // `busbar-plugin-example-plane`).
         report.push(prove_rows_red(
             cx,
             subject,

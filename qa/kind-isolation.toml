@@ -209,20 +209,6 @@ drain = "delete the transport name from the contract crate: a contract reaches t
 
 [[edge]]
 from = "export"
-to = "hooks"
-cite = "none. ARCHITECTURE.md 1.1 — three blind axes, one small kernel: a crate of kind export has no clause that lets it name hooks vocabulary. Every hit is a coupling to delete."
-why = "crates of kind export naming hooks vocabulary: hooks package names in any spelling, the kind-qualified id (hooks-<id>), and — where hooks is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
-drain = "delete the hooks name from the export crate: a export reaches hooks through the contract face it is written against, never by naming it. Every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
-
-[[edge]]
-from = "export"
-to = "plane"
-cite = "none. ARCHITECTURE.md 1.1 — three blind axes, one small kernel: a crate of kind export has no clause that lets it name plane vocabulary. Every hit is a coupling to delete."
-why = "crates of kind export naming plane vocabulary: plane package names in any spelling, the kind-qualified id (plane-<id>), and — where plane is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
-drain = "delete the plane name from the export crate: a export reaches plane through the contract face it is written against, never by naming it. Every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
-
-[[edge]]
-from = "export"
 to = "store"
 cite = "none. ARCHITECTURE.md 1.1 — three blind axes, one small kernel: a crate of kind export has no clause that lets it name store vocabulary. Every hit is a coupling to delete."
 why = "crates of kind export naming store vocabulary: store package names in any spelling, the kind-qualified id (store-<id>), and — where store is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
@@ -333,13 +319,6 @@ to = "transport"
 cite = "none. ARCHITECTURE.md 1.1 — three blind axes, one small kernel: a crate of kind plane has no clause that lets it name transport vocabulary. Every hit is a coupling to delete."
 why = "crates of kind plane naming transport vocabulary: transport package names in any spelling, the kind-qualified id (transport-<id>), and — where transport is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
 drain = "delete the transport name from the plane crate: a plane reaches transport through the contract face it is written against, never by naming it. Every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
-
-[[edge]]
-from = "plugin-tooling"
-to = "export"
-cite = "none by clause. The loader, packer, signer and SDK are the tools that BUILD plugins, so a export name in them is a tool naming its subject; ARCHITECTURE.md 7 keeps them a kind of their own for exactly that reason, and the number says how much of the subject leaked into the tool."
-why = "crates of kind plugin-tooling naming export vocabulary: export package names in any spelling, the kind-qualified id (export-<id>), and — where export is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
-drain = "delete the export name from the plugin-tooling crate: a plugin-tooling reaches export through the contract face it is written against, never by naming it. Every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
 
 [[edge]]
 from = "plugin-tooling"
@@ -569,21 +548,6 @@ kind = "transport"
 count = "345"
 
 [[cell]]
-crate = "busbar-export-example-plugin"
-kind = "hooks"
-count = "1"
-
-[[cell]]
-crate = "busbar-export-example-plugin"
-kind = "plane"
-count = "3"
-
-[[cell]]
-crate = "busbar-export-example-plugin"
-kind = "store"
-count = "1"
-
-[[cell]]
 crate = "busbar-kernel"
 kind = "plane"
 count = "2049"
@@ -808,11 +772,6 @@ count = "3"
 crate = "busbar-plugin-loader"
 kind = "contract"
 count = "5"
-
-[[cell]]
-crate = "busbar-plugin-loader"
-kind = "export"
-count = "29"
 
 [[cell]]
 crate = "busbar-plugin-loader"
@@ -1303,7 +1262,7 @@ to      = "busbar-hook-test-plugin"
 half    = "test"
 count   = "1"
 verdict = "not-allowed"
-cite    = "BUSBAR-1.6.0.md #2 (OWNER-LOCKED), THE COST OF A REAL AUTH WITNESS steps (4) and (5): the both-ways witness of a kind is a path dev-dependency from crates/plugin-loader/Cargo.toml on the kind's [\"cdylib\", \"rlib\"] fixture (step 4) and a conformance test in crates/plugin-loader/src/tests/ that links the rlib and dlopens the cdylib (step 5). The precedent is the export fixture: #2 names busbar-plugin-loader -> busbar-export-example-plugin, a test edge of exactly this shape, as the enforcing witness, and the architect's K5-residue ruling (2026-09-25) applies that admission to every kind's fixture. `plugin-tooling -> hooks` is in neither ARCHITECTURE_ALLOWED nor ARCHITECTURE_TCB, so the verdict is the one the architecture implies; the row records the edge #2 orders, it does not grant a class."
+cite    = "BUSBAR-1.6.0.md #2 (OWNER-LOCKED), THE COST OF A REAL AUTH WITNESS steps (4) and (5): the both-ways witness of a kind is a path dev-dependency from crates/plugin-loader/Cargo.toml on the kind's [\"cdylib\", \"rlib\"] fixture (step 4) and a conformance test in crates/plugin-loader/src/tests/ that links the rlib and dlopens the cdylib (step 5). The precedent is the export kind's witness: #2 names the loader's test edge on the export kind's both-ways crate, a test edge of exactly this shape, as the enforcing witness, and the architect's K5-residue ruling (2026-09-25) applies that admission to every kind's fixture. `plugin-tooling -> hooks` is in neither ARCHITECTURE_ALLOWED nor ARCHITECTURE_TCB, so the verdict is the one the architecture implies; the row records the edge #2 orders, it does not grant a class."
 why     = "busbar-plugin-loader names busbar-hook-test-plugin: declared dev in the test graph so hook_conformance_tests can link the COMPILED-IN `hook` fixture (its rlib) and compare it against the same crate's DROPPED-IN cdylib, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
 drain   = "none while #2 (OWNER-LOCKED) names this edge as the witness's step (4): deleting it deletes the `hook` kind's both-ways proof. The row holds the number, so a second declaration is still a landing that has to say why."
 
@@ -2015,16 +1974,6 @@ verdict = "not-allowed"
 cite    = "BUSBAR-1.6.0.md #2 (OWNER-LOCKED), THE COST OF A REAL AUTH WITNESS steps (4) and (5): the both-ways witness of a kind is a path dev-dependency from crates/plugin-loader/Cargo.toml on the kind's fixture (step 4) and a conformance test in crates/plugin-loader/src/tests/ that links the rlib and dlopens the cdylib (step 5). ARCHITECT 2026-09-25 (K5 residue, decisions.md): \"the export precedent's admission applies to every kind's fixture\"; the fixture is the crate plugin-loader's own [package.metadata.busbar.both-ways] names for `store` — since DOOR-STORE (R-FIX1/R-FIX2; owner FIXTURES ruling \"store: store-memory + store-*\") the REAL default store with its dropped-in door, replacing busbar-store-example-plugin on this ONE edge (a move, not a second edge). `plugin-tooling -> store` is in neither ARCHITECTURE_ALLOWED nor ARCHITECTURE_TCB, so the verdict is the one the architecture implies; the row records the edge the ruling orders, it does not grant a class."
 why     = "busbar-plugin-loader names busbar-store-memory: declared dev in the test graph so the store conformance tests can link the COMPILED-IN `store` proof (its rlib: `linked::STORE`, `BUSBAR_COLD_ENTRY`) and compare it against the same crate's DROPPED-IN cdylib, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
 drain   = "none while #2 (OWNER-LOCKED) names this edge as the witness's step (4): deleting it deletes the `store` kind's both-ways proof. The row holds the number, so a second declaration is still a landing that has to say why."
-
-[[dep]]
-from    = "busbar-plugin-loader"
-to      = "busbar-export-example-plugin"
-half    = "test"
-count   = "1"
-verdict = "not-allowed"
-cite    = "BUSBAR-1.6.0.md #2 (OWNER-LOCKED), THE COST OF A REAL AUTH WITNESS steps (4) and (5): the both-ways witness of a kind is a path dev-dependency from crates/plugin-loader/Cargo.toml on the kind's fixture (step 4) and a conformance test in crates/plugin-loader/src/tests/ that links the rlib and dlopens the cdylib (step 5). ARCHITECT 2026-09-25 (K5 residue, decisions.md): \"the export precedent's admission applies to every kind's fixture\"; the fixture is the crate plugin-loader's own [package.metadata.busbar.both-ways] names for `export`. `plugin-tooling -> export` is in neither ARCHITECTURE_ALLOWED nor ARCHITECTURE_TCB, so the verdict is the one the architecture implies; the row records the edge the ruling orders, it does not grant a class."
-why     = "busbar-plugin-loader names busbar-export-example-plugin: declared dev in the test graph so the export conformance tests can link the COMPILED-IN `export` fixture (its rlib) and compare it against the same crate's DROPPED-IN cdylib, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
-drain   = "none while #2 (OWNER-LOCKED) names this edge as the witness's step (4): deleting it deletes the `export` kind's both-ways proof. The row holds the number, so a second declaration is still a landing that has to say why."
 
 [[edge]]
 from = "kernel"

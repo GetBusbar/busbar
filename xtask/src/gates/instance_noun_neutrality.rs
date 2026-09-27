@@ -171,12 +171,11 @@ const GCP_GENERIC_MENTION_FILES: &[&str] = &[
     "crates/busbar-kernel/src/diagnostics/mod.rs",
 ];
 
-// ── HOOK / EXPORT (self-contained example/test plugins; matched on crate identity) ─────────────
+// ── HOOK (self-contained test plugin; matched on crate identity) ────────────────────────────────
 // The SECRET kind has no crate in this tree: its in-tree fixture was deleted (owner, "FIXTURES":
 // "real plugins are the examples") and it is proven by the real plugin repo GetBusbar/hashicorp-vault,
 // so its noun below is censused like the stores — an empty family, every hit a leak.
 const FAM_HOOK: &[&str] = &["hook-test-plugin"];
-const FAM_EXPORT: &[&str] = &["export-example-plugin"];
 // The store-kind crate that DOES exist in this tree, and the one in-tree hook plugin (item 197).
 // Matched, like the example/test plugins above, on its own identifiers. (`store-example-plugin`,
 // the second store crate, was deleted by DOOR-STORE; its noun now polices this crate's kind-qualified
@@ -439,14 +438,6 @@ const NOUNS: &[Noun] = &[
         kind: "hook",
         family: FAM_HOOKS_RANKING,
         tokens: &["busbar_hooks_ranking"],
-        camel: &[],
-        section: None,
-    },
-    Noun {
-        key: "export",
-        kind: "export",
-        family: FAM_EXPORT,
-        tokens: &["export_example_plugin"],
         camel: &[],
         section: None,
     },

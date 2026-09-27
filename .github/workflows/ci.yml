@@ -2252,11 +2252,12 @@ jobs:
         #
         # The auth kind's cdylib is not on the list: it is the REAL token-verifying module
         # (GetBusbar/auth-oidc), a pinned git dev-dependency of busbar-kernel, busbar and
-        # busbar-plugin-loader, so each of those crates' own test build carries it.
+        # busbar-plugin-loader, so each of those crates' own test build carries it. Nor are the export
+        # kind's: they are the REAL sinks (GetBusbar/export-file, -webhook, -prometheus, -otlp), pinned
+        # git dev-dependencies of busbar and busbar-plugin-loader, carried the same way.
         run: |
           cargo build --locked \
             -p busbar-hook-test-plugin \
-            -p busbar-export-example-plugin \
             -p busbar-plugin-example-plane
       - name: Tests — ${{ matrix.name }}
         # The OWNING crates' suites, with the feature on. Compiling the `#[cfg]`-ed code proves it is

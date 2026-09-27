@@ -119,9 +119,9 @@ hook = ["crates/hook*"]
 auth = ["crates/auth-*"]
 # BOTH spellings, and the second is the one that matters. #34 names every plugin instance
 # `busbar-<kind>-<name>`, so the roster's export sinks land at `crates/busbar-export-*` — a path the
-# bare `export-*` glob does not match. It matched the one crate that predates the naming rule
-# (`crates/export-example-plugin`) and would have gone on printing a green row while every real
-# export crate sat outside the family, unscanned. A glob that stops matching its own kind is the
+# bare `export-*` glob does not match. It matched only the export fixture that predated the naming
+# rule (deleted 2026-09-27; the real sinks live in their own repos) and would have gone on printing a
+# green row while every real export crate sat outside the family, unscanned. A glob that stops matching its own kind is the
 # same failure class as a census row that stops counting.
 export = ["crates/export-*", "crates/busbar-export-*"]
 # NON-PLUGIN-KIND infra families: loader and abi (TCB crates). `unit` is STRUCK (fold F14 2/2): the
@@ -1607,7 +1607,6 @@ known_missing_forbid = [
   "hook-test-plugin", "hooks-ranking",
 ]
 known_missing_deny = [ "plugin-loader",
-  "export-example-plugin",
 ]
 
 # ── 22. secret-carrier-debug (ARCHITECTURE.md section 3.7) ───────────────────────────────────────────────────
@@ -2469,9 +2468,8 @@ plane_crates = 4
 # with no crate yet, and a blanket "at least one" would red such a documented zero while still
 # saying nothing about `plane` going from five crates to one. The count catches the narrowing and
 # leaves an intended zero alone; the day a kind's first crate appears, its number is raised with it.
-# `export`'s `crates/busbar-export-*` half matches no directory today and is the live example: the
-# kind still counts 1, from `crates/export-example-plugin`, and the second glob is the #34 landing
-# zone rather than a miscount.
+# `export` is the live example: both of its globs match no directory today (every export sink lives
+# in its own repo), so the kind counts 0 — its documented zero in this repo, not a miscount.
 #
 # ── RE-PINNED 2026-09-22, AND EVERY DECREMENT NAMES ITS CAUSE ───────────────────────────────────
 #
@@ -2577,13 +2575,19 @@ plane_crates = 4
 # DELETED — its one remaining test (the dlopen-restart durability proof) moved onto the real durable
 # store GetBusbar/store-sqlite in `plugin_proof_tests`. `crates/store-*` now matches exactly one:
 # `crates/store-memory`, the store kind's both-ways proof.
+#
+# export 1 -> 0 (EX-DEL, owner FIXTURES ruling "real plugins are the proofs" + Q75): the export
+# fixture crate is DELETED. Every test that loaded it now loads a REAL sink from its own repo at the
+# root's pinned rev (GetBusbar/export-file, -webhook, -prometheus, -otlp) — the loader's both-ways
+# rows `export`, `export-webhook`, `export-scrape`, `export-otlp`. Neither export glob matches a
+# directory in this repo any more: the kind's documented zero.
 [gate.census.plugin_kinds]
 plane = 5
 hook = 2
 auth = 0
 secret = 0
 store = 1
-export = 1
+export = 0
 transport = 4
 loader = 1
 abi = 1

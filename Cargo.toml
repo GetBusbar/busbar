@@ -30,7 +30,6 @@ members = [
     "crates/busbar-plane-decision",
     "crates/plugin-loader",
     "crates/hook-test-plugin",
-    "crates/export-example-plugin",
     "crates/plane-example",
     "crates/hooks-ranking",
     "crates/store-memory",

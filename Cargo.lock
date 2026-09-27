@@ -340,7 +340,6 @@ dependencies = [
  "busbar-contract",
  "busbar-core-admin",
  "busbar-core-connsec",
- "busbar-export-example-plugin",
  "busbar-export-file",
  "busbar-export-file-plugin",
  "busbar-export-otlp",
@@ -551,14 +550,6 @@ dependencies = [
  "tokio-rustls",
  "tokio-util",
  "webpki-roots",
-]
-
-[[package]]
-name = "busbar-export-example-plugin"
-version = "1.5.0"
-dependencies = [
- "busbar-contract",
- "serde_json",
 ]
 
 [[package]]
@@ -981,7 +972,10 @@ dependencies = [
  "busbar-auth-admin-tokens-plugin",
  "busbar-auth-oidc-plugin",
  "busbar-contract",
- "busbar-export-example-plugin",
+ "busbar-export-file-plugin",
+ "busbar-export-otlp-plugin",
+ "busbar-export-prometheus-plugin",
+ "busbar-export-webhook-plugin",
  "busbar-hook-test-plugin",
  "busbar-kernel-ledger",
  "busbar-kernel-wal",

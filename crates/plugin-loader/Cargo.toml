@@ -89,11 +89,21 @@ tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
 # `PLANE_DECL` reference and separately `dlopen`s its `cdylib` (located on disk) — the two decls the
 # both-ways test compares. `cargo test -p busbar-plugin-loader` builds the member cdylib.
 busbar-plugin-example-plane = { path = "../plane-example" }
-# The `kind: export` BOTH-WAYS fixture, on exactly the terms the plane one above is here: a
-# `["cdylib", "rlib"]` crate whose `rlib` gives the test the COMPILED-IN handler and whose `cdylib`
-# the test separately `dlopen`s. DECISIONS #11 says compiled-in ≡ dropped-in; `export_conformance_tests`
-# is what makes that checkable for the thing #11 was silently false about — what a plugin OBSERVES.
-busbar-export-example-plugin = { path = "../export-example-plugin" }
+# The `kind: export` BOTH-WAYS proofs are the REAL sinks (owner, 1.6.0-QUESTIONS.md "FIXTURES": "real
+# plugins are the proofs"), each from its own repo at the SAME pinned rev the composition root
+# links: the request-log FILE sink (the `export` row — host-written destinations, rotation counters),
+# the request-log WEBHOOK sink (`export-webhook` — host-carried POSTs, raised diagnostics, its
+# in-flight admission), the prometheus sink (`export-scrape` — the recorder snapshot's render) and the
+# OTLP trace sink (`export-otlp` — the `collector` egress policy it declares). Each is a
+# `["cdylib", "rlib"]` crate: its `rlib` gives the test the COMPILED-IN sink (`open`,
+# `dispatch_compiled_in`, `BUSBAR_COLD_ENTRY`) and its `cdylib` (built under `deps/`, hashed) is the
+# dropped-in door. DECISIONS #11 says compiled-in ≡ dropped-in; `export_conformance_tests` is what makes
+# that checkable for the thing #11 was silently false about — what a plugin OBSERVES. Their
+# busbar-contract resolves to this tree through the workspace `[patch]` table.
+busbar-export-file-plugin = { git = "https://github.com/GetBusbar/export-file", rev = "795eadb866e5f9a98bc854b9697ae42a28a51e92" }
+busbar-export-webhook-plugin = { git = "https://github.com/GetBusbar/export-webhook", rev = "5e0170432aa2dc7640c8b6f6e89c9d38edad1df0" }
+busbar-export-prometheus-plugin = { git = "https://github.com/GetBusbar/export-prometheus", rev = "087bbcc6a9bafc63591799770407a478f2742027" }
+busbar-export-otlp-plugin = { git = "https://github.com/GetBusbar/export-otlp", rev = "02f463307f9820faedda131467dcfaa83b25df78" }
 # The `kind: store` BOTH-WAYS proof is a REAL store (owner FIXTURES ruling: "store: store-memory +
 # store-*"; R-FIX1: every real plugin gets its dropped-in door): the build's default RAM store. Its
 # `rlib` gives the test the COMPILED-IN store (its `pub fn open`, its `linked::STORE` row and its
@@ -161,7 +171,10 @@ libc = { workspace = true }
 # needs its `rlib`, the dropped-in door its `cdylib`.
 [package.metadata.busbar.both-ways]
 store = "busbar-store-memory"
-export = "busbar-export-example-plugin"
+export = "busbar-export-file-plugin"
+export-webhook = "busbar-export-webhook-plugin"
+export-scrape = "busbar-export-prometheus-plugin"
+export-otlp = "busbar-export-otlp-plugin"
 auth = "busbar-auth-oidc-plugin"
 # A SECOND proof of one kind: `<kind>-<proof>` — the part before the first `-` is the kind, and the
 # test reaches the row by that whole key (`both_doors_of`), never by the plugin's name.

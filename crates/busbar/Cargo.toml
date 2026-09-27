@@ -461,9 +461,6 @@ tower = { workspace = true, features = ["util"] }
 # local collector — and the subscriber that test installs the producer under.
 busbar-export-otlp-plugin = { git = "https://github.com/GetBusbar/export-otlp", rev = "02f463307f9820faedda131467dcfaa83b25df78" }
 tracing-subscriber = { workspace = true }
-# `tests/export_plugin_dropped_in_serves.rs` (item 141's positive control) finds an in-tree export
-# `cdylib` by its KIND in this target dir and drops it in: the export fixture, built as this dev-edge.
-busbar-export-example-plugin = { path = "../export-example-plugin" }
 # What that test and `tests/export_otlp_delivers_spans.rs` (the shipped binary posting to a local
 # collector) receive is decoded with the OpenTelemetry project's own generated types, and re-encoded
 # to the same bytes: the proto's publisher, not the sink's encoder, says it is an OTLP request.

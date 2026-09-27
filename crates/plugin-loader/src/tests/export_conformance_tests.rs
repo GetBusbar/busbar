@@ -41,9 +41,42 @@
 //! registry of its own — and shows the two builds diverging. A test that only ever passes cannot tell you what
 //! it is protecting you from.
 
-use super::both_ways::export_fixture;
+use super::both_ways::{export_fixture, export_otlp_fixture, export_webhook_fixture};
 use super::*;
-use busbar_contract::abi::cold::export::{ExportRequest, ExportResponse};
+use busbar_contract::abi::cold::export::{ExportRequest, ExportResponse, HostResult, Rotation};
+
+/// The export row's sink — the request-log FILE sink — opened with a destination and a rotation
+/// size, so a delivery is a host-written append the host may rotate first.
+const FILE_CFG: &str = r#"{"path": "/busbar-11/requests.jsonl", "rotate_mb": 1}"#;
+
+/// What the export row's sink carries: the request-log line.
+const FILE_CARRIES: [ExportStream; 1] = [ExportStream::Logs];
+
+/// A line too large to share a 1 MiB file with another: a delivery of it to a file that already
+/// holds one has the host rotate first (`rotate_mb: 1`), and the sink counts the rotation.
+fn big_line(n: u32) -> serde_json::Value {
+    serde_json::json!({ "n": n, "pad": "x".repeat(1_100_000) })
+}
+
+/// A manifest of the export row stating the `path` destination its sink writes.
+fn with_destination(mut m: crate::sign::Manifest) -> crate::sign::Manifest {
+    m.declares.destinations = vec!["path".into()];
+    m
+}
+
+/// `path`'s JSON lines as their `n` fields — what one door left on disk, independent of the pad.
+fn ns(path: &std::path::Path) -> Option<Vec<u64>> {
+    let text = std::fs::read_to_string(path).ok()?;
+    Some(
+        text.lines()
+            .map(|l| {
+                serde_json::from_str::<serde_json::Value>(l).expect("a JSON line")["n"]
+                    .as_u64()
+                    .expect("n")
+            })
+            .collect(),
+    )
+}
 
 /// The two arms are compared on `(kind, metrics, diagnostics)`.
 ///
@@ -54,7 +87,7 @@ use busbar_contract::abi::cold::export::{ExportRequest, ExportResponse};
 type Compared = (String, Vec<serde_json::Value>, Vec<serde_json::Value>);
 
 /// The host-assigned names the two arms load under. They are the FILTER as well as the label: the
-/// fold log is process-global and other tests in this binary legitimately load the same example
+/// fold log is process-global and other tests in this binary legitimately load the same export
 /// plugin and deliver to it, so a window-based read would pick up their folds and report them as
 /// this test's divergence. Filtering by the name THIS test chose is exact.
 const COMPILED_IN: &str = "#11-compiled-in";
@@ -72,20 +105,34 @@ fn compared(who: &str, folds: Vec<crate::observe::testing::Fold>) -> Vec<Compare
 
 /// The operations both arms run, in order.
 ///
-/// Two deliveries then a `streams` query. The deliveries give the sink something to observe; the
-/// trailing query is there to prove the OPPOSITE of what one might expect — having already drained
-/// on each delivery's own response, the sink has nothing left to say, so `streams` answers a BARE
-/// envelope and folds nothing. A drain that leaked would show up here as a third fold on one arm.
+/// Two deliveries, each followed by the host's answer to the write it asked for (the host rotated
+/// the file first), then a `streams` query. The answers give the sink something to observe — each
+/// rotation is a count; the trailing query is there to prove the OPPOSITE of what one might expect
+/// — having already drained on each answer's own response, the sink has nothing left to say, so
+/// `streams` answers a BARE envelope and folds nothing. A drain that leaked would show up here as a
+/// third fold on one arm.
 fn script() -> Vec<ExportRequest> {
+    let rotated = || ExportRequest::Resume {
+        token: 0,
+        results: vec![HostResult::Done {
+            rotation: Some(Rotation {
+                archive: "/busbar-11/requests.jsonl.1".into(),
+                renamed: true,
+                faults: Vec::new(),
+            }),
+        }],
+    };
     vec![
         ExportRequest::Deliver {
-            stream: ExportStream::Metrics,
+            stream: ExportStream::Logs,
             payload: serde_json::json!({"n": 1}),
         },
+        rotated(),
         ExportRequest::Deliver {
-            stream: ExportStream::Metrics,
+            stream: ExportStream::Logs,
             payload: serde_json::json!({"n": 2}),
         },
+        rotated(),
         ExportRequest::Streams,
     ]
 }
@@ -101,7 +148,7 @@ fn script() -> Vec<ExportRequest> {
 /// host needs no edge to the author machinery to run this: the entry point a plugin offers is the
 /// plugin's to publish, on both doors.
 fn run_compiled_in() {
-    let handler = export_fixture::open("{}").expect("compiled-in ctor");
+    let handler = export_fixture::open(FILE_CFG).expect("compiled-in ctor");
     for req in script() {
         let envelope = export_fixture::dispatch_compiled_in(handler.as_ref(), req);
         crate::observe::fold(
@@ -113,76 +160,48 @@ fn run_compiled_in() {
 }
 
 /// Run the same script against the DROPPED-IN build: the `cdylib` on disk, `dlopen`ed and driven
-/// over the six-symbol C ABI, its envelope folded by the host at the loader's ONE wire seam.
+/// over the six-symbol C ABI — every op of the script sent as it is, through the loader's ONE wire
+/// seam, which folds each envelope for the host.
 ///
 /// Returns `None` when the `cdylib` is not built (a scoped `cargo test -p` of an unrelated crate);
-/// under CI that is a hard failure, exactly as [`example_cdylib`] enforces.
+/// under CI that is a hard failure, exactly as [`sink_cdylib`] enforces.
 fn run_dropped_in() -> Option<()> {
-    let path = example_cdylib()?;
-    let bytes = std::fs::read(&path).expect("read the export example plugin cdylib");
+    let path = sink_cdylib()?;
+    let bytes = std::fs::read(&path).expect("read the export sink cdylib");
     let sink = crate::export::load_export_from_bytes(
         &bytes,
-        "{}",
+        FILE_CFG,
         DROPPED_IN,
         busbar_contract::abi::cold::kind::EXPORT,
     )
-    .expect("load the export example plugin over the ABI");
+    .expect("load the export sink over the ABI");
     // `load_export_from_bytes` ALREADY ran `streams` and `routes` at load, so the script below is
     // run against a sink that has answered twice. That is fine and is the point: the two arms are
     // compared on the folds the SCRIPT produces, and a load-time query folds nothing because the
     // sink has observed nothing yet.
+    assert_eq!(sink.streams(), &FILE_CARRIES);
     for req in script() {
-        match req {
-            ExportRequest::Deliver { stream, payload } => {
-                sink.deliver(stream, &payload).expect("deliver");
-            }
-            ExportRequest::Streams => {
-                let declared = [
-                    ExportStream::Metrics,
-                    ExportStream::Logs,
-                    ExportStream::Traces,
-                ];
-                assert_eq!(sink.streams(), &declared);
-            }
-            _ => unreachable!("the script only uses deliver + streams"),
+        let answer = sink
+            .raw
+            .transport_call::<ExportRequest, ExportResponse>(&req)
+            .expect("the op crosses the ABI");
+        if let ExportResponse::Streams(s) = answer {
+            assert_eq!(s, FILE_CARRIES);
         }
     }
     Some(())
 }
 
-/// Locate the built `cdylib`, checking BOTH the uplifted `<profile_dir>/<name>` copy and the raw
-/// `<profile_dir>/deps/<name>` compiler output (a scoped `cargo test -p` only produces the latter).
+/// Locate the built `cdylib`, checking the uplifted `<profile_dir>/<name>` copy and the
+/// `<profile_dir>/deps/` compiler output (a scoped `cargo test -p` only produces the latter).
 /// Under CI a missing artifact is a HARD failure, never a silent skip: the equivalence this module
 /// proves is the one #11 was false about, and a test that quietly stops running where it matters is
 /// worse than no test.
-fn example_cdylib() -> Option<std::path::PathBuf> {
-    let candidate = (|| {
-        let exe = std::env::current_exe().ok()?;
-        let profile_dir = exe.parent()?.parent()?;
-        let name = crate::plugin_library_filename(super::both_ways::fixture("export").0);
-        [
-            profile_dir.join(&name),
-            profile_dir.join("deps").join(&name),
-        ]
-        .into_iter()
-        .filter_map(|p| {
-            std::fs::metadata(&p)
-                .and_then(|m| m.modified())
-                .ok()
-                .map(|mtime| (p, mtime))
-        })
-        .max_by_key(|(_, mtime)| *mtime)
-        .map(|(p, _)| p)
-    })();
-    if candidate.is_none() && std::env::var_os("CI").is_some() {
-        panic!(
-            "the export example plugin cdylib is not built under CI: `cargo test --workspace` must \
-             build {}. Refusing to silently skip design decision #11's compiled-in vs dropped-in \
-             equivalence.",
-            super::both_ways::fixture("export").0
-        );
-    }
-    candidate
+///
+/// The sink is pulled from its own repo, so its `cdylib` is built only under `deps/`, with a
+/// metadata hash: [`super::both_ways::cdylib`] finds it there, and asserts under CI.
+fn sink_cdylib() -> Option<std::path::PathBuf> {
+    super::both_ways::cdylib(super::both_ways::fixture("export").0)
 }
 
 /// **THE EQUIVALENCE.** The same crate, built both ways, hands the host byte-identical observations.
@@ -200,7 +219,7 @@ fn compiled_in_and_dropped_in_report_identical_observations() {
 
     let _guard = crate::observe::testing::exclusive();
     let Some(()) = run_dropped_in() else {
-        // Not built under this scoped run. `example_cdylib` already hard-fails under CI, so this arm
+        // Not built under this scoped run. `sink_cdylib` already hard-fails under CI, so this arm
         // cannot quietly disappear where it matters.
         return;
     };
@@ -223,8 +242,9 @@ fn compiled_in_and_dropped_in_report_identical_observations() {
 /// the response of the call that produced it — so the equivalence above is over real content rather
 /// than over two identical nothings.
 ///
-/// TWO folds, not three: the handler runs and is drained WITHIN one boundary call, so each delivery
-/// reports its own increment on its own response, and the trailing `streams` finds nothing left to
+/// TWO folds, not three (nor five): the handler runs and is drained WITHIN one boundary call, so
+/// each rotation the host reported is counted on the response to that report, a delivery (which
+/// only ASKS the host to write) observes nothing, and the trailing `streams` finds nothing left to
 /// report and answers bare (a bare envelope is never folded).
 #[test]
 fn the_reported_observations_are_the_ones_the_sink_produced() {
@@ -236,7 +256,7 @@ fn the_reported_observations_are_the_ones_the_sink_produced() {
         assert_eq!(kind, busbar_contract::abi::cold::kind::EXPORT);
         assert!(diagnostics.is_empty());
         assert_eq!(metrics.len(), 1);
-        assert_eq!(metrics[0]["name"], "example_export_deliveries_total");
+        assert_eq!(metrics[0]["name"], export_fixture::ROTATED_TOTAL);
         assert_eq!(metrics[0]["type"], "counter");
         // A DELTA of one, not a running total of one-then-two.
         assert_eq!(metrics[0]["value"], 1.0);
@@ -256,17 +276,22 @@ fn the_reported_observations_are_the_ones_the_sink_produced() {
 /// `link` refuses the row and the linked arm never opens.
 #[test]
 fn a_linked_and_a_dropped_in_export_sink_register_one_row_and_fold_the_same() {
-    let manifest = super::both_ways::statement(
+    let manifest = with_destination(super::both_ways::statement(
         "export",
         "export-fixture",
         "the-sink",
         busbar_contract::abi::cold::export::EXPORT_ABI_VERSION,
-    );
+    ));
+    let dir = std::env::temp_dir().join(format!("busbar-k5-export-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("scratch dir");
+    let door = std::sync::atomic::AtomicUsize::new(0);
     let _guard = crate::observe::testing::exclusive();
     let transcript = |sink: &crate::export::DynExport| {
         let before = crate::observe::testing::folds().len();
+        // Two lines too large to share the file: the second has the host rotate first.
         for n in [1, 2] {
-            sink.deliver(ExportStream::Logs, &serde_json::json!({ "n": n }))
+            sink.deliver(ExportStream::Logs, &big_line(n))
                 .expect("deliver");
         }
         let folds: Vec<Compared> = crate::observe::testing::folds()[before..]
@@ -284,23 +309,27 @@ fn a_linked_and_a_dropped_in_export_sink_register_one_row_and_fold_the_same() {
     let Some([linked, dropped]) = super::both_ways::both_doors(
         manifest,
         |registry| {
+            let n = door.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let path = dir.join(format!("door-{n}.jsonl"));
+            let cfg = serde_json::json!({ "path": path.display().to_string(), "rotate_mb": 1 });
             registry
-                .open_export("the-sink", "{}")
+                .open_export("the-sink", &cfg.to_string())
                 .expect("the export sink opens through its alias")
         },
         transcript,
     ) else {
-        eprintln!("skip: the export fixture's cdylib is not built");
+        eprintln!("skip: the export sink's cdylib is not built");
         return;
     };
+    let _ = std::fs::remove_dir_all(&dir);
     assert!(
         !linked.0.starts_with("no row"),
         "the linked door registered no row: {}",
         linked.0
     );
     assert!(
-        linked.1.contains(r#""counter""#),
-        "the linked sink reported its deliveries: {}",
+        linked.1.contains(r#""counter""#) && linked.1.contains(export_fixture::ROTATED_TOTAL),
+        "the linked sink reported the rotation its deliveries caused: {}",
         linked.1
     );
     assert_eq!(
@@ -332,7 +361,7 @@ static PRE_ENVELOPE_DISPATCH: std::sync::Mutex<Option<PreEnvelopeDispatch>> =
 
 /// A `busbar_call` speaking the wire as it was BEFORE #85: the kind's response, BARE.
 ///
-/// It runs the real example handler through its real op-dispatch, so the plugin genuinely observes
+/// It runs the real sink's handler through its real op-dispatch, so the plugin genuinely observes
 /// what it observes on the other two arms. What it cannot do is put those observations on the wire:
 /// the pre-envelope response had no `metrics` field. So they go where a dropped-in cdylib's
 /// statically-linked `metrics` facade sent them — into a registry of the plugin's own
@@ -387,7 +416,7 @@ unsafe extern "C-unwind" fn pre_envelope_free(ptr: *mut u8, len: usize) {
 /// bare-shape arm is the production pre-envelope path (still live for plugins built before #85). The
 /// compiled-in arm is the real one. The fold log is the host's real observer.
 ///
-/// So it is RED-capable in every direction the claim has: if the example sink stops observing, if
+/// So it is RED-capable in every direction the claim has: if the real sink stops observing, if
 /// the bare arm stops decoding (or starts inventing folds), or if the two builds stop diverging, one
 /// of the assertions below fails.
 ///
@@ -402,23 +431,23 @@ fn the_pre_envelope_path_loses_a_dropped_in_plugins_counters() {
     let compiled_in = compared(COMPILED_IN, crate::observe::testing::folds());
 
     // Dropped-in, pre-envelope: the real cdylib wired over the real loader, answering bare.
-    let Some(path) = example_cdylib() else {
-        // Not built under this scoped run; `example_cdylib` hard-fails under CI.
+    let Some(path) = sink_cdylib() else {
+        // Not built under this scoped run; `sink_cdylib` hard-fails under CI.
         return;
     };
-    let bytes = std::fs::read(&path).expect("read the export example plugin cdylib");
-    let (lib, staged) = stage::load_library_from_bytes(&bytes, PRE_ENVELOPE)
-        .expect("stage the export example plugin cdylib");
+    let bytes = std::fs::read(&path).expect("read the export sink cdylib");
+    let (lib, staged) =
+        stage::load_library_from_bytes(&bytes, PRE_ENVELOPE).expect("stage the export sink cdylib");
     let mut raw = wire_up_raw(
         lib,
-        "{}",
+        FILE_CFG,
         PRE_ENVELOPE.to_string(),
         busbar_contract::abi::cold::kind::EXPORT,
         busbar_contract::abi::cold::kind::EXPORT,
         Some(staged),
     )
-    .expect("wire up the export example plugin");
-    let handler = export_fixture::open("{}").expect("the same constructor");
+    .expect("wire up the export sink");
+    let handler = export_fixture::open(FILE_CFG).expect("the same constructor");
     *PRE_ENVELOPE_DISPATCH
         .lock()
         .unwrap_or_else(|p| p.into_inner()) = Some(Box::new(move |req| {
@@ -435,17 +464,14 @@ fn the_pre_envelope_path_loses_a_dropped_in_plugins_counters() {
             .transport_call::<ExportRequest, ExportResponse>(&req)
             .expect("the bare pre-envelope response decodes through the loader's wire seam")
         {
+            ExportResponse::Host { ops, .. } => {
+                assert!(matches!(req, ExportRequest::Deliver { .. }), "{req:?}");
+                assert_eq!(ops.len(), 1, "one write per delivery: {ops:?}");
+            }
             ExportResponse::Delivered => {
-                assert!(matches!(req, ExportRequest::Deliver { .. }), "{req:?}")
+                assert!(matches!(req, ExportRequest::Resume { .. }), "{req:?}")
             }
-            ExportResponse::Streams(s) => {
-                let declared = [
-                    ExportStream::Metrics,
-                    ExportStream::Logs,
-                    ExportStream::Traces,
-                ];
-                assert_eq!(s, declared)
-            }
+            ExportResponse::Streams(s) => assert_eq!(s, FILE_CARRIES),
             other => panic!("unexpected response {other:?}"),
         }
     }
@@ -468,7 +494,7 @@ fn the_pre_envelope_path_loses_a_dropped_in_plugins_counters() {
     assert_eq!(
         host_saw.len(),
         2,
-        "the compiled-in build must report both deliveries: {compiled_in:?}"
+        "the compiled-in build must report both rotations: {compiled_in:?}"
     );
     // The pre-envelope build OBSERVED exactly the same thing — the counters existed...
     assert_eq!(
@@ -514,62 +540,71 @@ fn the_rendered_exposition_equivalence_is_owed_at_the_composition_root() {
     // Nothing to assert; this test is a landmark. It fails only if deleted, which is the point.
 }
 
-/// The series the S1 witness's sink reports its deliveries under — reserved, and declared.
-const S1_SERIES: &str = "busbar_s1_example_deliveries_total";
-
 /// A series the host itself emits, for the collision arm — installed once as this test binary's
 /// host catalog (the composition root installs the real one).
 const S1_HOST_SERIES: &str = "busbar_s1_host_owned_total";
 
-/// **K9a S1 — THE FIRST-PARTY METRIC NAMESPACE, BOTH WAYS.** The export fixture, its manifest
-/// declaring a reserved series, registered through the LINKED door and the DROPPED-IN door (signed
-/// by the release key): each open GRANTS the declared series, so the host renders it as declared
-/// (the kernel's `observe` tests render the grant), and the two doors register one row and fold the
-/// same. RED ARMS, in the same test so the grant cannot pass vacuously: the same crate dropped in by
-/// a THIRD party (allowlisted, trusted, not first-party) is granted nothing whatever it declares,
-/// and a first-party claim on a series the host emits refuses the open naming it.
+/// **K9a S1 — THE FIRST-PARTY METRIC NAMESPACE, BOTH WAYS.** The export row's sink, its manifest
+/// declaring the reserved series it reports its rotations under, registered through the LINKED door
+/// and the DROPPED-IN door (signed by the release key): each open GRANTS the declared series, so the
+/// host renders it as declared (the kernel's `observe` tests render the grant), and the two doors
+/// register one row and fold the same. RED ARMS, in the same test so the grant cannot pass
+/// vacuously: the same crate dropped in by a THIRD party (allowlisted, trusted, not first-party) is
+/// granted nothing whatever it declares, and a first-party claim on a series the host emits refuses
+/// the open naming it.
 #[test]
 fn a_first_party_series_is_granted_through_either_door_and_to_nobody_else() {
     use busbar_contract::abi::cold::observe::SeriesDecl;
     crate::observe::install_host_series(|name| name == S1_HOST_SERIES);
+    let series = export_fixture::ROTATED_TOTAL;
     let declaring = |name: &str, series: &str| {
-        let mut m = super::both_ways::statement(
+        let mut m = with_destination(super::both_ways::statement(
             "export",
             name,
             &format!("{name}-alias"),
             busbar_contract::abi::cold::export::EXPORT_ABI_VERSION,
-        );
+        ));
         m.declares.metrics = vec![SeriesDecl::new(series, "counter")];
         m
     };
-    let cfg = serde_json::json!({ "series": S1_SERIES }).to_string();
+    let dir = std::env::temp_dir().join(format!("busbar-s1-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("scratch dir");
+    let door = std::sync::atomic::AtomicUsize::new(0);
     let _guard = crate::observe::testing::exclusive();
     let transcript = |sink: &crate::export::DynExport| {
         let before = crate::observe::testing::folds().len();
-        sink.deliver(ExportStream::Logs, &serde_json::json!({ "n": 1 }))
-            .expect("deliver");
+        // Two lines too large to share the file: the second has the host rotate first.
+        for n in [1, 2] {
+            sink.deliver(ExportStream::Logs, &big_line(n))
+                .expect("deliver");
+        }
         let folds: Vec<Compared> = crate::observe::testing::folds()[before..]
             .iter()
             .filter(|(who, ..)| who == "s1-fixture")
             .map(|(_, k, m, d)| (k.clone(), m.clone(), d.clone()))
             .collect();
-        let granted = crate::observe::first_party_series("s1-fixture", S1_SERIES, "counter");
+        let granted = crate::observe::first_party_series("s1-fixture", series, "counter");
         serde_json::json!({ "granted": granted, "folds": folds }).to_string()
     };
     let Some([linked, dropped]) = super::both_ways::both_doors(
-        declaring("s1-fixture", S1_SERIES),
+        declaring("s1-fixture", series),
         |registry| {
+            let n = door.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let path = dir.join(format!("door-{n}.jsonl"));
+            let cfg = serde_json::json!({ "path": path.display().to_string(), "rotate_mb": 1 });
             registry
-                .open_export("s1-fixture-alias", &cfg)
+                .open_export("s1-fixture-alias", &cfg.to_string())
                 .expect("a first-party declaration opens")
         },
         transcript,
     ) else {
-        eprintln!("skip: the export fixture's cdylib is not built");
+        eprintln!("skip: the export sink's cdylib is not built");
         return;
     };
+    let _ = std::fs::remove_dir_all(&dir);
     assert!(
-        linked.1.contains(r#""granted":true"#) && linked.1.contains(S1_SERIES),
+        linked.1.contains(r#""granted":true"#) && linked.1.contains(series),
         "the linked door grants the declared series and the sink reports under it: {}",
         linked.1
     );
@@ -579,7 +614,7 @@ fn a_first_party_series_is_granted_through_either_door_and_to_nobody_else() {
     let (crate_snake, _) = super::both_ways::fixture("export");
     let lib = std::fs::read(super::both_ways::cdylib(crate_snake).expect("built above"))
         .expect("read the cdylib");
-    let mut third = declaring("s1-third-party", "busbar_s1_third_party_total");
+    let mut third = declaring("s1-third-party", series);
     third.publisher = "acme".into();
     let registry = super::both_ways::dropped_third_party(crate_snake, third, &lib);
     registry
@@ -587,7 +622,7 @@ fn a_first_party_series_is_granted_through_either_door_and_to_nobody_else() {
         .expect("a third party opens; its declaration is simply not granted");
     assert!(!crate::observe::first_party_series(
         "s1-third-party",
-        "busbar_s1_third_party_total",
+        series,
         "counter"
     ));
 
@@ -605,7 +640,7 @@ fn a_first_party_series_is_granted_through_either_door_and_to_nobody_else() {
     );
 }
 
-/// **K9a S2 — THE VALIDATE OP, BOTH WAYS.** The export fixture registered through the LINKED door
+/// **K9a S2 — THE VALIDATE OP, BOTH WAYS.** The export row's sink registered through the LINKED door
 /// and the DROPPED-IN door answers the host's `validate` identically: settings it accepts report
 /// nothing, and settings it refuses report the sink's own line verbatim — the text the host prints
 /// among the configuration's errors. A module that is not an export row is not the axis's to judge.
@@ -620,10 +655,11 @@ fn a_sink_validates_its_settings_the_same_through_either_door() {
         "s2-sink",
         busbar_contract::abi::cold::export::EXPORT_ABI_VERSION,
     );
-    let refused = serde_json::json!({ "series": 7 });
+    let refused = serde_json::json!({ "path": 7 });
+    let accepted = serde_json::json!({ "path": "/var/log/busbar/requests.jsonl", "rotate_mb": 64 });
     let transcript = |registry: &PluginRegistry| {
         serde_json::json!({
-            "accepted": registry.validate_export("s2-sink", "tail", &serde_json::json!({})),
+            "accepted": registry.validate_export("s2-sink", "tail", &accepted),
             "refused": registry.validate_export("s2-sink", "tail", &refused),
             "not_export": registry.validate_export("no-such-module", "tail", &refused),
         })
@@ -631,10 +667,10 @@ fn a_sink_validates_its_settings_the_same_through_either_door() {
     };
     let Some([linked, dropped]) = super::both_ways::both_doors(manifest, transcript, String::clone)
     else {
-        eprintln!("skip: the export fixture's cdylib is not built");
+        eprintln!("skip: the export sink's cdylib is not built");
         return;
     };
-    let line = "export.tail.settings.series: must be a string naming the delivery counter";
+    let line = "export.tail.settings: invalid type: integer `7`, expected a string";
     assert_eq!(
         linked.1,
         serde_json::json!({ "accepted": [], "refused": [line], "not_export": null }).to_string()
@@ -666,25 +702,21 @@ unsafe extern "C-unwind" fn unsupported_call(
     STATUS_UNSUPPORTED
 }
 
-/// **K9a S3 — PLUGIN DIAGNOSTICS, BOTH WAYS.** The export fixture, its manifest declaring a
-/// `BUSBAR-NNNN` code, registered through the LINKED door and the DROPPED-IN door: both rows state
-/// the same declaration and are FIRST-PARTY — which is everything the composition root reads to
-/// register the code into the host's catalogue (`root::linked::declared_diagnostics`, whose own
-/// tests hold the catalogue half) — and a sink raising the code hands the host the same diagnostic
-/// either way. RED ARM, in the same test: the same declaration dropped in by a THIRD party is not
-/// first-party, which the root refuses.
+/// **K9a S3 — PLUGIN DIAGNOSTICS, BOTH WAYS.** The request-log WEBHOOK sink (the `export-webhook`
+/// row), its manifest declaring the `BUSBAR-NNNN` codes it raises (its own `declares.json`),
+/// registered through the LINKED door and the DROPPED-IN door: both rows state the same declaration
+/// and are FIRST-PARTY — which is everything the composition root reads to register the codes into
+/// the host's catalogue (`root::linked::declared_diagnostics`, whose own tests hold the catalogue
+/// half) — and the sink raising a code (a delivery the host's egress refused: BUSBAR-7072) hands the
+/// host the same diagnostic either way. RED ARM, in the same test: the same declaration dropped in by
+/// a THIRD party is not first-party, which the root refuses.
 #[test]
 fn a_declared_diagnostic_is_stated_and_raised_the_same_through_either_door() {
-    use busbar_contract::abi::cold::observe::DiagnosticDecl;
-    let decl = DiagnosticDecl {
-        code: 6990,
-        slug: "s3-example-batches-delivered".into(),
-        title: "Example batches delivered".into(),
-        severity: "actionable".into(),
-        summary: "The example sink delivered batches.".into(),
-        action: "None.".into(),
-        since: "1.6.0".into(),
-    };
+    crate::install_egress_carrier(&CARRIER);
+    let decl = serde_json::from_str::<crate::sign::Declares>(export_webhook_fixture::DECLARES)
+        .expect("the sink's declaration parses")
+        .diagnostics;
+    assert!(decl.iter().any(|d| d.code == 7072), "{decl:?}");
     let declaring = |name: &str| {
         let mut m = super::both_ways::statement(
             "export",
@@ -692,10 +724,10 @@ fn a_declared_diagnostic_is_stated_and_raised_the_same_through_either_door() {
             name,
             busbar_contract::abi::cold::export::EXPORT_ABI_VERSION,
         );
-        m.declares.diagnostics = vec![decl.clone()];
+        m.declares.diagnostics = decl.clone();
         m
     };
-    let cfg = serde_json::json!({ "diagnostic": "BUSBAR-6990" }).to_string();
+    let cfg = serde_json::json!({ "url": "https://refused.example/in" }).to_string();
     let _guard = crate::observe::testing::exclusive();
     let transcript = |registry: &PluginRegistry| {
         let first_party = registry.resolve("s3-fixture").map(|p| p.first_party());
@@ -710,43 +742,81 @@ fn a_declared_diagnostic_is_stated_and_raised_the_same_through_either_door() {
             .collect();
         serde_json::json!({ "first_party": first_party, "raised": raised }).to_string()
     };
-    let Some([linked, dropped]) =
-        super::both_ways::both_doors(declaring("s3-fixture"), transcript, String::clone)
-    else {
-        eprintln!("skip: the export fixture's cdylib is not built");
+    let Some([linked, dropped]) = super::both_ways::both_doors_of(
+        "export-webhook",
+        declaring("s3-fixture"),
+        transcript,
+        String::clone,
+    ) else {
+        eprintln!("skip: the webhook sink's cdylib is not built");
         return;
     };
     assert!(
-        linked.0.contains("s3-example-batches-delivered"),
+        linked.0.contains("webhook-delivery-transport-error"),
         "{}",
         linked.0
     );
     assert!(
-        linked.1.contains(r#""first_party":true"#) && linked.1.contains("BUSBAR-6990"),
+        linked.1.contains(r#""first_party":true"#) && linked.1.contains("BUSBAR-7072"),
         "{}",
         linked.1
     );
     assert_eq!(linked, dropped, "both doors state and raise the same");
 
     // RED ARM: a third party's declaration is not first-party.
-    let (crate_snake, _) = super::both_ways::fixture("export");
+    let (crate_snake, _) = super::both_ways::fixture("export-webhook");
     let lib = std::fs::read(super::both_ways::cdylib(crate_snake).expect("built above"))
         .expect("read the cdylib");
     let mut third = declaring("s3-third-party");
     third.publisher = "acme".into();
     let registry = super::both_ways::dropped_third_party(crate_snake, third, &lib);
     let row = registry.resolve("s3-third-party").expect("admitted");
-    assert_eq!(row.manifest.declares.diagnostics, vec![decl]);
+    assert_eq!(row.manifest.declares.diagnostics, decl);
     assert!(!row.first_party());
 }
 
-/// **K9a S4 — THE DESTINATION HANDLE, BOTH WAYS.** The export fixture, its manifest declaring the
-/// `path` settings key a destination, registered through the LINKED door and the DROPPED-IN door
-/// and opened with the operator's path: each delivery has the HOST append the batch (the sink
-/// names the key; the host opens the path it resolved), rotating at the sink's limit — and both
-/// doors leave the same files and report the same folds. RED ARM, in the same test: the same sink
-/// whose manifest does NOT declare the key is refused every write — the path the operator's
-/// settings name is never created — and it reports the refusals.
+/// Every `tracing` event that fired on this thread while it was the subscriber, rendered as
+/// `LEVEL field=value ...` — how the S4 RED arm reads the lines the sink reports its refusals as.
+#[derive(Clone, Default)]
+struct EventLog(std::sync::Arc<std::sync::Mutex<Vec<String>>>);
+
+impl EventLog {
+    fn lines(&self) -> Vec<String> {
+        self.0.lock().unwrap_or_else(|p| p.into_inner()).clone()
+    }
+}
+
+impl tracing::Subscriber for EventLog {
+    fn enabled(&self, _: &tracing::Metadata<'_>) -> bool {
+        true
+    }
+    fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+        tracing::span::Id::from_u64(1)
+    }
+    fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
+    fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
+    fn event(&self, event: &tracing::Event<'_>) {
+        struct Render(String);
+        impl tracing::field::Visit for Render {
+            fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+                self.0.push_str(&format!(" {}={:?}", field.name(), value));
+            }
+        }
+        let mut r = Render(format!("{}", event.metadata().level()));
+        event.record(&mut r);
+        self.0.lock().unwrap_or_else(|p| p.into_inner()).push(r.0);
+    }
+    fn enter(&self, _: &tracing::span::Id) {}
+    fn exit(&self, _: &tracing::span::Id) {}
+}
+
+/// **K9a S4 — THE DESTINATION HANDLE, BOTH WAYS.** The request-log FILE sink (the export row), its
+/// manifest declaring the `path` settings key a destination, registered through the LINKED door and
+/// the DROPPED-IN door and opened with the operator's path: each delivery has the HOST append the
+/// line (the sink names the key; the host opens the path it resolved), rotating at the sink's
+/// `rotate_mb` — and both doors leave the same files and report the same folds. RED ARM, in the same
+/// test: the same sink whose manifest does NOT declare the key is refused every write — the path the
+/// operator's settings name is never created — and it reports the refusals (its BUSBAR-7074 line).
 #[test]
 fn a_sink_writes_its_declared_destination_through_the_host_the_same_through_either_door() {
     let declaring = |name: &str, declared: bool| {
@@ -769,22 +839,22 @@ fn a_sink_writes_its_declared_destination_through_the_host_the_same_through_eith
     let run = |registry: &PluginRegistry, name: &str| {
         let n = door.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let path = dir.join(format!("door-{n}.jsonl"));
-        let cfg = serde_json::json!({ "path": path.display().to_string(), "rotate_bytes": 20 });
+        let cfg = serde_json::json!({ "path": path.display().to_string(), "rotate_mb": 1 });
         let sink = registry.open_export(name, &cfg.to_string()).expect("opens");
         let before = crate::observe::testing::folds().len();
+        // Two lines fill the MiB; the third has the host rotate first.
         for n in 1..=4 {
-            sink.deliver(ExportStream::Logs, &serde_json::json!({ "n": n }))
-                .expect("deliver");
+            let line = serde_json::json!({ "n": n, "pad": "x".repeat(600_000) });
+            sink.deliver(ExportStream::Logs, &line).expect("deliver");
         }
         let folds: Vec<Compared> = crate::observe::testing::folds()[before..]
             .iter()
             .filter(|(who, ..)| who == name)
             .map(|(_, k, m, d)| (k.clone(), m.clone(), d.clone()))
             .collect();
-        let read = |p: &std::path::Path| std::fs::read_to_string(p).ok();
         serde_json::json!({
-            "live": read(&path),
-            "archive": read(&path.with_extension("jsonl.1")),
+            "live": ns(&path),
+            "archive": ns(&path.with_extension("jsonl.1")),
             "folds": folds,
         })
         .to_string()
@@ -794,29 +864,38 @@ fn a_sink_writes_its_declared_destination_through_the_host_the_same_through_eith
         |registry| run(registry, "s4-fixture"),
         String::clone,
     ) else {
-        eprintln!("skip: the export fixture's cdylib is not built");
+        eprintln!("skip: the export sink's cdylib is not built");
         return;
     };
-    let expected_files = r#""archive":"{\"n\":1}\n{\"n\":2}\n{\"n\":3}\n","#;
-    assert!(linked.1.contains(expected_files), "{}", linked.1);
-    assert!(linked.1.contains(r#""live":"{\"n\":4}\n""#), "{}", linked.1);
+    assert!(linked.1.contains(r#""archive":[1,2]"#), "{}", linked.1);
+    assert!(linked.1.contains(r#""live":[3,4]"#), "{}", linked.1);
     assert!(
-        linked.1.contains("example_export_rotations_total"),
+        linked.1.contains(export_fixture::ROTATED_TOTAL),
         "{}",
         linked.1
     );
     assert_eq!(linked, dropped, "both doors write and rotate the same");
 
-    // RED ARM: undeclared, the key is not a destination — every write refused, nothing created.
+    // RED ARM: undeclared, the key is not a destination — every write refused, nothing created,
+    // and the sink reports each refusal as its open-failed line.
     let registry = super::both_ways::linked(
         declaring("s4-undeclared", false),
         super::both_ways::fixture("export").1,
     );
-    let refused = run(&registry, "s4-undeclared");
+    let log = EventLog::default();
+    let refused =
+        tracing::subscriber::with_default(log.clone(), || run(&registry, "s4-undeclared"));
     assert!(refused.contains(r#""live":null"#), "{refused}");
-    assert!(
-        refused.contains("example_export_host_failures_total"),
-        "{refused}"
+    let reported = log
+        .lines()
+        .iter()
+        .filter(|l| l.contains(export_fixture::OPEN_FAILED))
+        .count();
+    assert_eq!(
+        reported,
+        4,
+        "one refusal line per delivery: {:?}",
+        log.lines()
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -902,11 +981,13 @@ static CARRIER: RecordingCarrier = RecordingCarrier(std::sync::Mutex::new(Vec::n
 static STALLED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 static RELEASED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
-/// **K9a S5 — THE EGRESS CARRIER, BOTH WAYS.** The export fixture registered through the LINKED
-/// door and the DROPPED-IN door, opened with a `url`: each delivery has the HOST carry the POST
-/// through the installed egress (the sink never dials), and both doors hand the carrier the same
-/// requests and fold the same answer. RED ARM, in the same test: a target the host's policy refuses
-/// never reaches the wire — nothing is carried — and the sink is told, and reports it.
+/// **K9a S5 — THE EGRESS CARRIER, BOTH WAYS.** The request-log WEBHOOK sink (the `export-webhook`
+/// row) registered through the LINKED door and the DROPPED-IN door, opened with a `url`: each
+/// delivery has the HOST carry the POST through the installed egress (the sink never dials), and
+/// both doors hand the carrier the same requests and fold the same answer — nothing, for a far end
+/// that accepted every line, as the 1.5.5 webhook reported nothing. RED ARM, in the same test: a
+/// target the host's policy refuses never reaches the wire — nothing is carried — and the sink is
+/// told, and reports it (its BUSBAR-7072 transport-error diagnostic).
 #[test]
 fn a_sinks_outbound_request_is_carried_by_the_host_the_same_through_either_door() {
     crate::install_egress_carrier(&CARRIER);
@@ -934,37 +1015,36 @@ fn a_sinks_outbound_request_is_carried_by_the_host_the_same_through_either_door(
             .collect();
         serde_json::json!({ "carried": carried, "folds": folds }).to_string()
     };
-    let Some([linked, dropped]) = super::both_ways::both_doors(
+    let Some([linked, dropped]) = super::both_ways::both_doors_of(
+        "export-webhook",
         manifest.clone(),
         |registry| run(registry, "https://collector.example/v1"),
         String::clone,
     ) else {
-        eprintln!("skip: the export fixture's cdylib is not built");
+        eprintln!("skip: the webhook sink's cdylib is not built");
         return;
     };
     assert!(
-        linked.1.contains(r#""body":"{\"n\":2}""#)
-            && linked.1.contains("example_export_posts_total"),
+        linked.1.contains(r#""body":"{\"n\":2}""#) && linked.1.contains(r#""folds":[]"#),
         "{}",
         linked.1
     );
     assert_eq!(linked, dropped, "both doors are carried the same");
 
     // RED ARM: the policy refuses the target — nothing is carried, and the sink reports it.
-    let registry = super::both_ways::linked(manifest, super::both_ways::fixture("export").1);
+    let registry =
+        super::both_ways::linked(manifest, super::both_ways::fixture("export-webhook").1);
     let refused = run(&registry, "https://refused.example/v1");
     assert!(refused.contains(r#""carried":[]"#), "{refused}");
-    assert!(
-        refused.contains("example_export_host_failures_total"),
-        "{refused}"
-    );
+    assert!(refused.contains("BUSBAR-7072"), "{refused}");
 }
 
 /// **K9a S6 — THE RECORDER SNAPSHOT, BOTH WAYS.** A recorder exposition in the host recorder's own
 /// shape — counters, a gauge with escaped label values, a quantile summary, a bucketed histogram —
-/// read into the snapshot and handed to the export fixture registered through the LINKED door and
-/// the DROPPED-IN door: each renders it back BYTE FOR BYTE under the text exposition's content type,
-/// the same either way. RED ARM, in the same test: a sink over the wire that predates the op renders
+/// read into the snapshot and handed to the prometheus sink (the `export-scrape` row) registered
+/// through the LINKED door and the DROPPED-IN door: each renders it back BYTE FOR BYTE under the
+/// text exposition's content type, in the sink's stable order (families by name, so the same
+/// metrics scrape to the same bytes), the same either way. RED ARM, in the same test: a sink over the wire that predates the op renders
 /// nothing (the host keeps serving its own exposition).
 #[test]
 fn a_sink_renders_the_recorder_snapshot_byte_identically_through_either_door() {
@@ -982,31 +1062,44 @@ fn a_sink_renders_the_recorder_snapshot_byte_identically_through_either_door() {
         serde_json::json!({ "content_type": content_type, "body": body }).to_string()
     };
     let Some([linked, dropped]) =
-        super::both_ways::both_doors(manifest.clone(), render, String::clone)
+        super::both_ways::both_doors_of("export-scrape", manifest.clone(), render, String::clone)
     else {
-        eprintln!("skip: the export fixture's cdylib is not built");
+        eprintln!("skip: the prometheus sink's cdylib is not built");
         return;
     };
+    // The sink renders the snapshot LOSSLESSLY in its stable order — families by name (the recorder
+    // hands them over in hash order, which differs from boot to boot): every family of the
+    // exposition, byte for byte, and nothing else.
+    let family = |block: &&str| {
+        let typed = block.lines().find_map(|l| l.strip_prefix("# TYPE "));
+        typed
+            .and_then(|t| t.split(' ').next())
+            .unwrap_or_default()
+            .to_string()
+    };
+    let mut blocks: Vec<&str> = exposition.split_terminator("\n\n").collect();
+    blocks.sort_by_key(family);
     let expected = serde_json::json!({
         "content_type": "text/plain; version=0.0.4",
-        "body": exposition,
+        "body": blocks.iter().map(|b| format!("{b}\n\n")).collect::<String>(),
     });
     assert_eq!(
         linked.1,
         expected.to_string(),
-        "the render is byte-identical"
+        "the render is the snapshot, byte for byte, in its stable order"
     );
     assert_eq!(linked, dropped, "both doors render the same");
 
     // RED ARM: the pre-minor-6 wire renders nothing.
-    let registry = super::both_ways::linked(manifest, super::both_ways::fixture("export").1);
+    let registry = super::both_ways::linked(manifest, super::both_ways::fixture("export-scrape").1);
     let mut sink = registry.open_export("s6-fixture", "{}").expect("opens");
     sink.raw.call = unsupported_call;
     let families = crate::scrape::snapshot(exposition).expect("the snapshot reads");
     assert!(sink.scrape(families).is_err());
 }
 
-/// **K9c — START, CHECK AND ADMIT, BOTH WAYS.** The export fixture (which takes the SDK's defaults)
+/// **K9c — START, CHECK AND ADMIT, BOTH WAYS.** The export row's FILE sink (which takes the SDK's
+/// defaults for both ops)
 /// starts live at the host's default admission and has nothing to check, identically through
 /// either door; and an `admit` op is answered by the installed carrier's POLICY without anything
 /// being carried. RED ARM: a sink over the wire that predates the ops says nothing (`None` / no
@@ -1032,7 +1125,7 @@ fn a_sink_starts_and_checks_the_same_through_either_door() {
     };
     let Some([linked, dropped]) = super::both_ways::both_doors(manifest, transcript, String::clone)
     else {
-        eprintln!("skip: the export fixture's cdylib is not built");
+        eprintln!("skip: the export sink's cdylib is not built");
         return;
     };
     assert_eq!(linked.1, r#"Ok(Some((true, 0, ""))) Ok([]) Some([])"#);
@@ -1073,7 +1166,9 @@ fn a_sink_starts_and_checks_the_same_through_either_door() {
     );
 }
 
-/// **K9c — A SINK'S DELIVERIES IN FLIGHT ARE BOUNDED BY ITS ADMISSION ALONE.** At an in-flight bound
+/// **K9c — A SINK'S DELIVERIES IN FLIGHT ARE BOUNDED BY ITS ADMISSION ALONE.** The request-log
+/// WEBHOOK sink (the `export-webhook` row), whose every delivery is a host-carried POST. At an
+/// in-flight bound
 /// of 600 — above the runtime's 512 blocking threads — 600 deliveries are in flight at once, each
 /// awaiting the far end on the host's egress, and the 601st is shed at the gate: the effective
 /// concurrency is the configured bound, as the 1.5.5 webhook's async deliveries were. (RED: a
@@ -1088,8 +1183,12 @@ fn a_sinks_deliveries_in_flight_reach_its_admission_bound_past_the_blocking_pool
         "k9c-bound",
         busbar_contract::abi::cold::export::EXPORT_ABI_VERSION,
     );
-    let registry = super::both_ways::linked(manifest, super::both_ways::fixture("export").1);
-    let settings = serde_json::json!({ "url": "https://stall.example/in" }).to_string();
+    let registry =
+        super::both_ways::linked(manifest, super::both_ways::fixture("export-webhook").1);
+    // The far end is held until released: a per-delivery deadline past the wait below.
+    let settings =
+        serde_json::json!({ "url": "https://stall.example/in", "delivery_timeout_secs": 600 })
+            .to_string();
     let sink = std::sync::Arc::new(registry.open_export("k9c-bound", &settings).expect("opens"));
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(4)
@@ -1203,7 +1302,8 @@ fn a_carrier_that_implements_no_policy_but_the_open_web_refuses_the_rest() {
 }
 
 /// **K9e-2 — A DECLARED EGRESS POLICY IS GRANTED TO A FIRST-PARTY SINK ONLY, AND EVERY REQUEST THE
-/// SINK ASKS FOR MEETS IT.** A linked sink whose manifest declares `egress: collector` opens under
+/// SINK ASKS FOR MEETS IT.** The OTLP trace sink (the `export-otlp` row), its manifest stating the
+/// declaration it ships (`egress: collector`, its own `declares.json`), linked, opens under
 /// it, and its admission and its carried requests are judged under that policy (this binary's
 /// carrier implements only the open web, so both are refused with the policy's name — the proof
 /// the policy, not the open web, reached the carrier). RED ARMS: the same declaration from a third
@@ -1228,6 +1328,9 @@ fn a_declared_egress_policy_is_granted_to_a_first_party_sink_only() {
         serde_json::to_value(crate::sign::Declares::default()).expect("encode"),
         serde_json::json!({})
     );
+    let shipped = serde_json::from_str::<crate::sign::Declares>(export_otlp_fixture::DECLARES)
+        .expect("the sink's declaration parses");
+    assert_eq!(shipped.egress, EgressPolicy::Collector);
     let declaring = |name: &str| {
         let mut m = super::both_ways::statement(
             "export",
@@ -1235,12 +1338,12 @@ fn a_declared_egress_policy_is_granted_to_a_first_party_sink_only() {
             name,
             busbar_contract::abi::cold::export::EXPORT_ABI_VERSION,
         );
-        m.declares.egress = EgressPolicy::Collector;
+        m.declares = shipped.clone();
         m
     };
     let registry = super::both_ways::linked(
         declaring("k9e2-collector"),
-        super::both_ways::fixture("export").1,
+        super::both_ways::fixture("export-otlp").1,
     );
     let sink = registry
         .open_export("k9e2-collector", "{}")
@@ -1271,9 +1374,9 @@ fn a_declared_egress_policy_is_granted_to_a_first_party_sink_only() {
     }
 
     // RED ARM 1: a third party declaring the same policy is refused at open, naming it.
-    let (crate_snake, _) = super::both_ways::fixture("export");
+    let (crate_snake, _) = super::both_ways::fixture("export-otlp");
     let Some(path) = super::both_ways::cdylib(crate_snake) else {
-        eprintln!("skip: the export fixture's cdylib is not built");
+        eprintln!("skip: the OTLP sink's cdylib is not built");
         return;
     };
     let lib = std::fs::read(path).expect("read the cdylib");
@@ -1298,7 +1401,7 @@ fn a_declared_egress_policy_is_granted_to_a_first_party_sink_only() {
             "k9e2-open-web",
             busbar_contract::abi::cold::export::EXPORT_ABI_VERSION,
         ),
-        super::both_ways::fixture("export").1,
+        super::both_ways::fixture("export-otlp").1,
     )
     .open_export("k9e2-open-web", "{}")
     .expect("opens");

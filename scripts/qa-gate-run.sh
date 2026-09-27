@@ -85,7 +85,7 @@ sibling_gap() {
 # THIS SET IS THE WHOLE POINT, so it is derived rather than restated. Every in-tree cdylib is a
 # plugin some test dlopens, and those tests PANIC under CI when their .so is missing rather than
 # skipping — so a crate missing from a hand-kept list costs a leg, loudly and late. That has already
-# happened twice: `busbar-export-example-plugin` was omitted and took out the loader leg, and the
+# happened twice: the in-tree export fixture was omitted and took out the loader leg, and the
 # hand-kept list then fell two crates behind the workspace (store-example, auth-static) while
 # `land.sh` named all of them. A `cargo test --workspace` builds every member cdylib as a side
 # effect; naming packages explicitly is faster, but only if the naming cannot go stale.
@@ -511,7 +511,7 @@ cmd_loader() {
   # hard-panic via their own path-discovery helpers under CI if they are ever missing, so a future
   # regression fails loud rather than silently losing this coverage again. Identical to cmd_build's
   # (2/3) line BY CONSTRUCTION now (both call cdylib_pkg_args) -- when the two lists drifted, the
-  # artifact was missing the export-example cdylib and this belt-and-braces rebuild did not cover
+  # artifact was missing the export fixture's cdylib and this belt-and-braces rebuild did not cover
   # for it.
   local cdylibs; cdylibs="$(cdylib_pkg_args)" || die "could not derive the cdylib fixture set"
   log "build the in-tree dlopen fixture cdylibs"
