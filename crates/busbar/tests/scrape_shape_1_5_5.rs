@@ -23,6 +23,8 @@
 // giving a false pass/fail.
 #![cfg(linked_every_plane)]
 
+mod common;
+
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -61,7 +63,7 @@ fn write_configs(dir: &Path, data_port: u16, admin_port: u16) {
         "mock:\n  protocol: anthropic\n  base_url: \"http://127.0.0.1:9\"\n  api_key_env: MOCK_KEY\n",
     )
     .unwrap();
-    let signing_key = Command::new(env!("CARGO_BIN_EXE_busbar"))
+    let signing_key = Command::new(common::boot::exe())
         .arg("--generate-signing-key")
         .output()
         .expect("generate a signing key");
@@ -196,7 +198,7 @@ fn a_1_5_5_shaped_config_exposes_no_plane_series_with_every_plane_compiled_in() 
     let log_path = dir.join("out.log");
     let log = std::fs::File::create(&log_path).unwrap();
     let log_err = log.try_clone().unwrap();
-    let mut child = Command::new(env!("CARGO_BIN_EXE_busbar"))
+    let mut child = Command::new(common::boot::exe())
         .env("BUSBAR_CONFIG", dir.join("config.yaml"))
         .env("BUSBAR_PROVIDERS", dir.join("providers.yaml"))
         .env("MOCK_KEY", "x")

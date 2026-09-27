@@ -21,6 +21,8 @@
 // ingress: the linked table's answer, never a feature name.
 #![cfg(linked_axis_body_ingress)]
 
+mod common;
+
 use opentelemetry_proto::tonic::collector::trace::v1::ExportTraceServiceRequest;
 use opentelemetry_proto::tonic::common::v1::any_value::Value as AnyValue;
 use prost::Message as _;
@@ -157,7 +159,7 @@ fn request(port: u16, method: &str, path: &str, body: &str) -> Option<u16> {
 
 /// Is `module: otlp` served by this build? A module on no export axis is refused by `--validate`.
 fn otlp_linked(dir: &Path) -> bool {
-    let out = Command::new(env!("CARGO_BIN_EXE_busbar"))
+    let out = Command::new(common::boot::exe())
         .arg("--validate")
         .env("BUSBAR_CONFIG", dir.join("config.yaml"))
         .env("BUSBAR_PROVIDERS", dir.join("providers.yaml"))
@@ -189,7 +191,7 @@ fn the_shipped_binary_posts_its_spans_to_an_otlp_collector() {
     let log_path = dir.join("out.log");
     let log = std::fs::File::create(&log_path).unwrap();
     let mut child = Reap(
-        Command::new(env!("CARGO_BIN_EXE_busbar"))
+        Command::new(common::boot::exe())
             .env("BUSBAR_CONFIG", dir.join("config.yaml"))
             .env("BUSBAR_PROVIDERS", dir.join("providers.yaml"))
             .env("MOCK_KEY", "x")

@@ -24,6 +24,8 @@
 #![cfg(unix)]
 #![cfg(linked_axis_body_ingress)]
 
+mod common;
+
 use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::path::{Path, PathBuf};
@@ -226,7 +228,7 @@ fn a_dropped_in_export_plugin_serves() {
 
     let log = std::fs::File::create(dir.join("out.log")).unwrap();
     let mut child = Reap(
-        Command::new(env!("CARGO_BIN_EXE_busbar"))
+        Command::new(common::boot::exe())
             .env("BUSBAR_CONFIG", dir.join("config.yaml"))
             .env("BUSBAR_PROVIDERS", dir.join("providers.yaml"))
             .env("MOCK_KEY", "x")
@@ -318,7 +320,7 @@ fn validate_reports_a_dropped_in_sinks_settings_errors_in_its_own_words() {
     write_tarball(&dir, &lib);
     let validate = |tail_settings: &str| {
         write_configs_with(&dir, free_port(), free_port(), tail_settings);
-        Command::new(env!("CARGO_BIN_EXE_busbar"))
+        Command::new(common::boot::exe())
             .arg("--validate")
             .env("BUSBAR_CONFIG", dir.join("config.yaml"))
             .env("BUSBAR_PROVIDERS", dir.join("providers.yaml"))
@@ -400,7 +402,7 @@ models:
 
     let log = std::fs::File::create(dir.join("out.log")).unwrap();
     let mut child = Reap(
-        Command::new(env!("CARGO_BIN_EXE_busbar"))
+        Command::new(common::boot::exe())
             .env("BUSBAR_CONFIG", dir.join("config.yaml"))
             .env("BUSBAR_PROVIDERS", dir.join("providers.yaml"))
             .env("MOCK_KEY", "x")

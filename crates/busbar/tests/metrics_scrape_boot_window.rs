@@ -24,6 +24,8 @@
 // seam under test here.
 #![cfg(linked_axis_body_ingress)]
 
+mod common;
+
 use std::collections::BTreeSet;
 use std::io::{Read, Write};
 use std::net::TcpStream;
@@ -115,7 +117,7 @@ fn metrics_scrape_is_never_a_200_with_an_empty_body() {
     let log_path = dir.join("out.log");
     let log = std::fs::File::create(&log_path).unwrap();
     let log_err = log.try_clone().unwrap();
-    let mut child = Command::new(env!("CARGO_BIN_EXE_busbar"))
+    let mut child = Command::new(common::boot::exe())
         .env("BUSBAR_CONFIG", dir.join("config.yaml"))
         .env("BUSBAR_PROVIDERS", dir.join("providers.yaml"))
         .env("MOCK_KEY", "x")

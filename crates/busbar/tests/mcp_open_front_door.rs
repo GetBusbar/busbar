@@ -34,6 +34,8 @@
 // `linked_axis_stdio_serve` from `[package.metadata.busbar.linked-axes]`).
 #![cfg(linked_axis_stdio_serve)]
 
+mod common;
+
 use std::io::Read as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -124,7 +126,7 @@ const AUTH_CLOSED: &str = r#"auth:
 "#;
 
 fn busbar(cfg: &Path, args: &[&str]) -> Command {
-    let mut c = Command::new(env!("CARGO_BIN_EXE_busbar"));
+    let mut c = Command::new(common::boot::exe());
     c.args(args)
         .env("BUSBAR_CONFIG", cfg)
         .env(

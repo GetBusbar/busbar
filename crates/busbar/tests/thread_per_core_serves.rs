@@ -21,6 +21,8 @@
 // still run it.
 #![cfg(linked_axis_body_ingress)]
 
+mod common;
+
 use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::path::{Path, PathBuf};
@@ -90,7 +92,7 @@ fn thread_per_core_boots_and_serves_healthz() {
     let log = std::fs::File::create(&log_path).unwrap();
     let log_err = log.try_clone().unwrap();
 
-    let mut child = Command::new(env!("CARGO_BIN_EXE_busbar"))
+    let mut child = Command::new(common::boot::exe())
         .env("BUSBAR_CONFIG", dir.join("config.yaml"))
         .env("BUSBAR_PROVIDERS", dir.join("providers.yaml"))
         .env("MOCK_KEY", "x")

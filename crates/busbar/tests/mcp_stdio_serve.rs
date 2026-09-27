@@ -36,6 +36,8 @@
 // `linked_axis_stdio_serve` from `[package.metadata.busbar.linked-axes]`).
 #![cfg(linked_axis_stdio_serve)]
 
+mod common;
+
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -286,7 +288,7 @@ struct StdioChild {
 }
 
 fn spawn(dir: &Path, credential: Option<&str>) -> StdioChild {
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_busbar"));
+    let mut cmd = Command::new(common::boot::exe());
     cmd.arg(surface("serve_flag"))
         .env("MOCK_KEY", "test-key-value")
         .env(

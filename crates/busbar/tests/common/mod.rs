@@ -23,6 +23,8 @@
 
 #![allow(dead_code)]
 
+pub mod boot;
+
 use std::path::{Path, PathBuf};
 
 /// One classified source line.
