@@ -20,6 +20,7 @@
 //! are one cohesive unit — they all rewrite the same section, in sequence.
 
 use super::migrate::{one_line, take, take_mapping, Taken};
+use busbar_contract::abi::cold::export::ExportStream;
 use serde_yaml::{Mapping, Value};
 
 /// The default instance NAME each built-in export module gets when the TYPE-KEYED `export:` block is
@@ -41,22 +42,13 @@ pub(crate) const EXPORT_TYPE_KEY_TO_INSTANCE_NAME: &[(&str, &str, &str)] = &[
 /// rewrites, for the modules the kernel no longer serves itself (a first-party sink on the export
 /// axis now carries them, and declares the same streams: `request-log-file` → `logs`, K9b;
 /// `request-log-webhook` → `logs`, K9c; `prometheus` → `metrics`, K9d; `otlp` → `traces`, K9e-2).
-const RELEASED_MODULE_STREAMS: &[(&str, &[busbar_plugin_loader::ExportStream])] = &[
-    (
-        "request-log-file",
-        &[busbar_plugin_loader::ExportStream::Logs],
-    ),
+const RELEASED_MODULE_STREAMS: &[(&str, &[ExportStream])] = &[
+    ("request-log-file", &[ExportStream::Logs]),
     // K9c.
-    (
-        "request-log-webhook",
-        &[busbar_plugin_loader::ExportStream::Logs],
-    ),
-    ("prometheus", &[busbar_plugin_loader::ExportStream::Metrics]),
+    ("request-log-webhook", &[ExportStream::Logs]),
+    ("prometheus", &[ExportStream::Metrics]),
     // K9e-2.
-    (
-        crate::config::EXPORT_MODULE_OTLP,
-        &[busbar_plugin_loader::ExportStream::Traces],
-    ),
+    (crate::config::EXPORT_MODULE_OTLP, &[ExportStream::Traces]),
 ];
 
 /// Ensure `root.export` exists as a mapping, returning a handle to splice an instance into.

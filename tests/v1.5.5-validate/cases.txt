@@ -1,0 +1,10 @@
+  trace: { module: otlp, settings: { url: \"http://localhost:4318/v1/traces\" } }\n
+  trace: { module: otlp, settings: { url: \"http://localhost:4318/v1/traces\" }, fields: [bogus] }\n
+  trace: { module: otlp, settings: { url: \"http://localhost:4318/v1/traces\" }, fields: [trace_id, span_id] }\n
+  trace: { module: otlp, settings: { url: \"http://localhost:4318/v1/traces\" }, fields: [pool] }\n
+  trace: { module: otlp, settings: { url: \"http://localhost:4318/v1/traces\" }, fields: [] }\n
+  trace: { module: otlp, settings: { url: \"http://localhost:4318/v1/traces\" }, fields: [model_requested] }\n
+  trace: { module: otlp, settings: { url: \"http://localhost:4318/v1/traces\" }, streams: [logs] }\n
+  traces: { module: otlp, settings: { url: \"http://localhost:4318/v1/traces\" } }\n  again: { module: otlp, settings: { url: \"http://localhost:4318/v1/traces\" } }\n
+  traces: { module: otlp, settings: { url: \"http://x/\", otlp_endpoint: \"y\" } }\n
+  traces: { module: otlp, settings: {} }\n

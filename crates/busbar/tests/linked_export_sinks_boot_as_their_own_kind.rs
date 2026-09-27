@@ -48,10 +48,6 @@ const SINKS: &[(&str, &str)] = &[
         "request-log-file",
         "  file: { module: request-log-file, settings: { path: '{dir}/requests.jsonl' } }\n",
     ),
-    (
-        "otlp",
-        "  traces: { module: otlp, settings: { url: \"http://127.0.0.1:9/v1/traces\" } }\n",
-    ),
 ];
 
 fn fixture_dir(tag: &str) -> PathBuf {

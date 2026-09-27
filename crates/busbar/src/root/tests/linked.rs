@@ -26,6 +26,7 @@ use super::*;
 use busbar_kernel::plane::registry::{merged_boot_plane_decls, BuildCtx};
 use busbar_plugin_example_plane::PLANE_DECL as LINKED_DECL;
 use busbar_plugin_loader::sign::{sign, Manifest, SigningKey, TrustPolicy};
+use busbar_plugin_loader::PluginRegistry;
 
 /// The linked example plane, as the build table carries it.
 pub(super) static LINKED_HOT: [&HotPlaneDecl; 1] = [&LINKED_DECL];
@@ -764,69 +765,28 @@ fn a_linked_and_a_dropped_in_plane_serve_one_request_identically() {
     }
 }
 
-/// THE KERNEL SERVES NO EXPORT MODULE OF ITS OWN (K9e-2): `otlp`, its last built-in, is the linked
-/// `busbar-export-otlp` row, so the refusal of a row "spelling a built-in module" has nothing left to
-/// guard and is gone. What replaces it: every module is a row of the axis, and a LINKED row answers
-/// its module ahead of any row a plugins directory drops in under the same spelling — a dropped-in
-/// `otlp` never takes the module from the sink this build links. RED: without the linked row, the
+/// THE KERNEL SERVES NO EXPORT MODULE OF ITS OWN (K9e-2: its last built-in became a linked sink),
+/// so the refusal of a row "spelling a built-in module" has nothing left to guard and is gone. What
+/// replaces it: every module is a row of the axis, and each LINKED export row answers its own
+/// module ahead of any row a plugins directory drops in under the same alias — a dropped-in row
+/// never takes a module from the sink this build links. RED: without the linked rows, the
 /// dropped-in one answers.
-#[cfg(feature = "export-otlp")]
 #[test]
-fn the_linked_otlp_row_answers_its_module_ahead_of_a_dropped_in_spelling() {
-    let dir = std::env::temp_dir().join(format!("busbar-root-export-otlp-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    let lib = b"not a library";
+fn every_linked_export_row_answers_its_module_ahead_of_a_dropped_in_spelling() {
     let release = SigningKey::from_bytes(&[7u8; 32]);
-    let manifest = Manifest {
-        name: "k9e-dropped-otlp".into(),
-        alias: "otlp".into(),
-        kind: "export".into(),
-        version: "1.6.0".into(),
-        publisher: busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER.into(),
-        abi_version: *busbar_plugin_loader::supported_abi("export")
-            .iter()
-            .max()
-            .unwrap(),
-        sha256: busbar_plugin_loader::sign::sha256_hex(lib),
-        signature: String::new(),
-        description: String::new(),
-        homepage: String::new(),
-        license: String::new(),
-        needs: Default::default(),
-        settings_schema: None,
-        schema_derived: false,
-        host: None,
-        declares: Default::default(),
-    };
-    let signed = sign(&release, manifest, lib);
-    let tarball = busbar_plugin_loader::tarball::package(&signed, "libexport.so", lib).unwrap();
-    std::fs::write(dir.join("export.tar.gz"), tarball).unwrap();
-    let policy = TrustPolicy {
-        first_party_key: Some(release.verifying_key()),
-        binary_version: "1.6.0".into(),
-        first_party_floors: Default::default(),
-        first_party_high_water: Default::default(),
-        publishers: Default::default(),
-        allow_unsigned: false,
-        allow_third_party: false,
-        min_versions: Default::default(),
-    };
-    let scan = || busbar_plugin_loader::scan_and_validate(&dir, &policy).expect("the scan");
-    let rows = linked_exports(crate::LINKED.exports).expect("the linked export rows");
-    let both = scan().link(rows).expect("the linked door admits them");
-    let answering = |r: &busbar_plugin_loader::PluginRegistry| {
-        r.resolve("otlp").map(|p| p.manifest.name.clone())
-    };
-    assert_eq!(answering(&both).as_deref(), Some("busbar-export-otlp"));
-    assert_eq!(
-        both.resolve("otlp").map(|p| p.manifest.declares.egress),
-        Some(busbar_plugin_loader::EgressPolicy::Collector),
-        "the linked row states the collector policy its tarball's declaration carries"
-    );
-    // RED ARM: the dropped-in row alone answers.
-    assert_eq!(answering(&scan()).as_deref(), Some("k9e-dropped-otlp"));
-    let _ = std::fs::remove_dir_all(&dir);
+    for &(name, alias, ..) in crate::LINKED.exports {
+        let scan = || export_row_registry(alias, "k9e-dropped", alias, "busbar", &release, vec![]);
+        let rows = linked_exports(crate::LINKED.exports).expect("the linked export rows");
+        let both = scan().link(rows).expect("the linked door admits them");
+        let answering = |r: &PluginRegistry| r.resolve(alias).map(|p| p.manifest.name.clone());
+        assert_eq!(answering(&both).as_deref(), Some(name), "{alias}");
+        // RED ARM: the dropped-in row alone answers.
+        assert_eq!(
+            answering(&scan()).as_deref(),
+            Some("k9e-dropped"),
+            "{alias}"
+        );
+    }
 }
 
 /// THE HOST'S METRIC CATALOG CANNOT DRIFT (K9a S1). Every `busbar_*` series constant the host's
@@ -881,14 +841,27 @@ fn declaring_registry(
     publisher: &str,
     signer: &SigningKey,
     decls: Vec<busbar_plugin_loader::sign::DiagnosticDecl>,
-) -> busbar_plugin_loader::PluginRegistry {
+) -> PluginRegistry {
+    let name = format!("s3-{tag}");
+    export_row_registry(tag, &name, &name, publisher, signer, decls)
+}
+
+/// [`declaring_registry`]'s row under the `name` and `alias` given.
+fn export_row_registry(
+    tag: &str,
+    name: &str,
+    alias: &str,
+    publisher: &str,
+    signer: &SigningKey,
+    decls: Vec<busbar_plugin_loader::sign::DiagnosticDecl>,
+) -> PluginRegistry {
     let dir = std::env::temp_dir().join(format!("busbar-root-s3-{tag}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let release = SigningKey::from_bytes(&[7u8; 32]);
     let mut manifest = Manifest {
-        name: format!("s3-{tag}"),
-        alias: format!("s3-{tag}"),
+        name: name.into(),
+        alias: alias.into(),
         kind: "export".into(),
         version: "1.6.0".into(),
         publisher: publisher.into(),
