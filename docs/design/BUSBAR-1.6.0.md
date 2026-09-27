@@ -276,8 +276,9 @@ Every kind is configured. The root keys fall into three classes — the 1.5.5 ro
 `role_bindings`, `signing_key`, `key_ttl`), `groups`, `rate_card`, `per_request_fee`, `security`,
 `limits`, `health`, `routing`, `advanced`, `plugins` (the loader policy).
 
-**(B) One definition map per non-plane kind** — define once, reference by name. Each entry names its
-plugin with `module:`; a store, secret, auth, hook or export plugin never gets a root key of its own.
+**(B) One root key per non-plane kind** — define once, reference by name. The key belongs to the
+KIND, never to a plugin: no store, secret, auth, hook, export or transport plugin gets a root key of
+its own. Each entry picks its plugin — by `module:`, or for transport by the URL scheme it claims.
 
 | Root key | Kind | Shape |
 |---|---|---|
@@ -286,10 +287,12 @@ plugin with `module:`; a store, secret, auth, hook or export plugin never gets a
 | `identity-providers:` | auth, inbound | named entries, referenced by name from `auth.chain`, `admin_auth`, `role_bindings` |
 | `hooks:` | hook | named map, referenced by bare name from `pools.hooks` or a pool's `hooks:` |
 | `export:` | export | named map: `module` plus a `streams` projection |
+| `providers:` | transport | named map of upstream destinations; an entry's `base_url` scheme picks the transport plugin (below) |
 
-Outbound auth has no root key: its style is the provider entry's `auth:` field (§6). **Transport has
-no root key:** a transport is selected by the URL scheme it claims, and its settings are the 1.5.5
-paths under `limits:` (e.g. `limits.upstream_http1_only`), declared by the transport plugin.
+Outbound auth has no root key of its own: its style is the provider entry's `auth:` field (§6).
+Transport settings stay at their 1.5.5 paths under `limits:` (e.g. `limits.upstream_http1_only`),
+declared by the transport plugin. A non-plane plugin's own connections (a store URL, a vault
+address) are its settings under its kind's key, not `providers:` entries.
 
 **(C) Plane verbs** — the plane is the only kind whose plugins bring their own root keys: llm →
 `pools` and `models` (two root keys, as in 1.5.5; the llm plane owns both); mcp → `tools`; a2a →
@@ -298,7 +301,7 @@ names none. The root `streams:` (the streaming plane's verb) and `export.<name>.
 projection) are different keys. Tool and agent pools sit under their own plane's verb as a reserved
 `pools` sub-key, and `busbar migrate` moves 1.5.x pools there.
 
-**`providers:`** is the shared upstream-destination map every plane uses — the 1.5.5 provider entry,
+**`providers:`** is the transport kind's root key: the upstream-destination map every plane sends to — the 1.5.5 provider entry,
 unchanged: `base_url` (its scheme picks the transport), `api_key` / `api_key_env`, an optional
 `auth:` (`bearer` | `api-key` | `jwt-bearer` | `oauth-client-credentials`, with `token_url`, `scope`,
 `subject`), `protocol`, `error_map`. The connector owns it (catalog merge, `base_url`, trust); its
@@ -306,8 +309,9 @@ unchanged: `base_url` (its scheme picks the transport), `api_key` / `api_key_env
 to the planes that use the provider.
 
 **Selection follows the classes (Law 7).** A plane loads iff its verb is present. A store, secret,
-auth, hook or export plugin loads iff some entry names its `module` (or a reference uses its sugar,
-e.g. `{env: X}`). A transport loads iff a configured URL uses a scheme it claims.
+auth, hook or export plugin loads iff some entry under its kind's key names its `module` (or a
+reference uses its sugar, e.g. `{env: X}`). A transport loads iff a configured URL (a `providers:`
+entry's `base_url`, or a non-plane plugin's connection setting) uses a scheme it claims.
 
 - **Reserved core-owned sub-keys** are read by the kernel from any plane's section and stripped before
   the section reaches the plane: `breaker`, `on_exhausted`, `gates` / `hooks` (the hook bindings),
