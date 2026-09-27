@@ -312,14 +312,14 @@ fn the_frame_axes_a_transport_declares_are_each_closed() {
     }
     for s in [
         WireStatusClass::Success,
-        WireStatusClass::ClientError,
-        WireStatusClass::ServerError,
+        WireStatusClass::CallerFault,
+        WireStatusClass::FarEndFault,
         WireStatusClass::Other,
     ] {
         let _: bool = match s {
             WireStatusClass::Success
-            | WireStatusClass::ClientError
-            | WireStatusClass::ServerError
+            | WireStatusClass::CallerFault
+            | WireStatusClass::FarEndFault
             | WireStatusClass::Other => true,
         };
     }

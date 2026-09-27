@@ -14,7 +14,7 @@
 //! is gone: both units now name `busbar_contract::DestinationId`, so there is nothing to narrow and
 //! no width at which a locator could be truncated on the way between them.
 //! - The upstream status: this crate's `UpstreamStatus` carries the transport's own COARSE
-//!   `busbar_contract::transport::wire::WireStatusClass` (`Success` / `ClientError` / `ServerError` / `Other`) as a
+//!   `busbar_contract::transport::wire::WireStatusClass` (`Success` / `CallerFault` / `FarEndFault` / `Other`) as a
 //!   fallback leg for when no numeric `code` is known; the breaker unit takes no dependency on
 //!   `busbar-contract` at all (its `Cargo.toml` allows only `busbar-caps`), so its own
 //!   `port::UpstreamStatus` carries its own `port::UpstreamCode`. Both sides carry the NUMBERING
@@ -61,8 +61,8 @@ impl BreakerAdapter {
     /// path.
     fn fold_class(class: Option<WireStatusClass>) -> Option<u16> {
         match class {
-            Some(WireStatusClass::ClientError) => Some(400),
-            Some(WireStatusClass::ServerError) => Some(500),
+            Some(WireStatusClass::CallerFault) => Some(400),
+            Some(WireStatusClass::FarEndFault) => Some(500),
             Some(WireStatusClass::Success) | Some(WireStatusClass::Other) | None => None,
         }
     }
@@ -251,7 +251,7 @@ fn classify_falls_back_to_the_coarse_transport_class_when_no_code_is_known() {
     let out = breaker.classify(
         DestinationId::new(1),
         UpstreamStatus {
-            class: Some(WireStatusClass::ServerError),
+            class: Some(WireStatusClass::FarEndFault),
             code: None,
             retry_after: Some(5),
         },
@@ -291,7 +291,7 @@ fn a_hard_down_trip_suppresses_a_later_admit_with_the_cooldown_the_port_expects(
     );
 }
 
-/// A 403 is a 4xx, so the coarse class says `ClientError` and the coarse class alone would record
+/// A 403 is a 4xx, so the coarse class says `CallerFault` and the coarse class alone would record
 /// nothing at all. The number says the credential was refused, which is a fact about the SHARED
 /// destination — so the disposition is hard-down and the trip fans out to every pool cell that
 /// names the destination, not just the pool the failing attempt ran through.
@@ -303,7 +303,7 @@ fn a_403_is_hard_down_and_takes_every_sibling_pool_cell_for_the_destination_with
     let out = breaker.classify(
         destination,
         UpstreamStatus {
-            class: Some(WireStatusClass::ClientError),
+            class: Some(WireStatusClass::CallerFault),
             code: Some(WireStatus::new(status_ns::HTTP, 403)),
             retry_after: None,
         },
@@ -343,7 +343,7 @@ fn a_429_with_a_retry_after_of_seven_sets_a_seven_second_cooldown() {
     let out = breaker.classify(
         destination,
         UpstreamStatus {
-            class: Some(WireStatusClass::ClientError),
+            class: Some(WireStatusClass::CallerFault),
             code: Some(WireStatus::new(status_ns::HTTP, 429)),
             retry_after: Some(7),
         },
@@ -377,7 +377,7 @@ fn a_server_error_with_no_retry_after_keeps_the_ladders_own_cooldown() {
     let out = breaker.classify(
         destination,
         UpstreamStatus {
-            class: Some(WireStatusClass::ServerError),
+            class: Some(WireStatusClass::FarEndFault),
             code: Some(WireStatus::new(status_ns::HTTP, 503)),
             retry_after: None,
         },

@@ -278,7 +278,7 @@ impl crate::transport::TransportMeta for Declared {
     const HANDSHAKE_TRIGGER: Option<crate::transport::wire::HandshakeTrigger> =
         Some(crate::transport::wire::HandshakeTrigger {
             frame_kind: "k",
-            max_rounds: 3,
+            max_steps: 3,
         });
     const TRANSPORT_FACTS: &'static [&'static str] = &["fact"];
     const DECODES_PAYLOAD: bool = true;

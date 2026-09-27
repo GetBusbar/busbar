@@ -401,7 +401,7 @@ async fn an_upstream_frame_past_the_cursor_budget_ends_the_stream() {
 ///
 /// A rate-limited provider answers a JSON body with no blank line anywhere in it: nothing to carve
 /// a frame at, nothing that parses as an event. The re-segmenter therefore had a status leg in hand
-/// (`ClientError`, off `http`'s HEAD frame) and ended the stream without ever attaching it to
+/// (`CallerFault`, off `http`'s HEAD frame) and ended the stream without ever attaching it to
 /// anything, so a consumer polling this stream saw `None` on the first poll — indistinguishable
 /// from a provider that answered 200 with an empty event stream. The upstream's own answer has to
 /// survive the composition: 1.5.5 surfaces the 429 to the client, and it cannot if the transport
@@ -450,7 +450,7 @@ async fn an_upstream_error_body_reaches_the_plane_with_its_status_leg() {
         .expect("the error body is carried as a frame, not thrown away");
     assert_eq!(
         only.meta.status,
-        Some(busbar_contract::transport::wire::WireStatusClass::ClientError),
+        Some(busbar_contract::transport::wire::WireStatusClass::CallerFault),
         "the status leg http read off the 429 is attached to the frame that carries the body"
     );
     assert_eq!(

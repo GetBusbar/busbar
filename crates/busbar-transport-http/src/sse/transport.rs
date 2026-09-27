@@ -198,9 +198,9 @@ impl Transport for SseTransport {
                         // frame is defensible and the framing error is what is left.
                         let failing = matches!(
                             st.status.class,
-                            Some(busbar_contract::transport::wire::WireStatusClass::ClientError)
+                            Some(busbar_contract::transport::wire::WireStatusClass::CallerFault)
                                 | Some(
-                                    busbar_contract::transport::wire::WireStatusClass::ServerError
+                                    busbar_contract::transport::wire::WireStatusClass::FarEndFault
                                 )
                                 | Some(busbar_contract::transport::wire::WireStatusClass::Other)
                         );

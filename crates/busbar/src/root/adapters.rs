@@ -185,8 +185,8 @@ impl BreakerAdapter {
     /// previous release did with an unexpected success reaching the error path.
     fn fold_class(class: Option<WireStatusClass>) -> Option<u16> {
         match class {
-            Some(WireStatusClass::ClientError) => Some(400),
-            Some(WireStatusClass::ServerError) => Some(500),
+            Some(WireStatusClass::CallerFault) => Some(400),
+            Some(WireStatusClass::FarEndFault) => Some(500),
             Some(WireStatusClass::Success | WireStatusClass::Other) | None => None,
         }
     }

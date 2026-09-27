@@ -418,8 +418,8 @@ fn webpki_roots_store() -> rustls::RootCertStore {
 fn status_class(status: u16) -> WireStatusClass {
     match status {
         200..=299 => WireStatusClass::Success,
-        400..=499 => WireStatusClass::ClientError,
-        500..=599 => WireStatusClass::ServerError,
+        400..=499 => WireStatusClass::CallerFault,
+        500..=599 => WireStatusClass::FarEndFault,
         _ => WireStatusClass::Other,
     }
 }

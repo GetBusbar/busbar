@@ -662,7 +662,7 @@ fn compute_layout() -> String {
             session_bound,
             decodes_payload,
             unit0_trigger,
-            handshake_max_rounds,
+            handshake_max_steps,
             status_at,
             _reserved,
             init,

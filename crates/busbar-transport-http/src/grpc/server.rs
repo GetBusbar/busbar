@@ -319,7 +319,7 @@ pub(crate) fn map_status(status: &Status) -> busbar_contract::transport::wire::W
         | Code::Unauthenticated
         | Code::FailedPrecondition
         | Code::OutOfRange
-        | Code::ResourceExhausted => WireStatusClass::ClientError,
+        | Code::ResourceExhausted => WireStatusClass::CallerFault,
         // The upstream blamed ITSELF. The four that were falling to the catch-all belong here and
         // are named rather than left to it, because the two classes part company on money: only a
         // server-side failure is one this node retries elsewhere and holds the destination
@@ -338,7 +338,7 @@ pub(crate) fn map_status(status: &Status) -> busbar_contract::transport::wire::W
         | Code::Unimplemented
         | Code::Unknown
         | Code::DeadlineExceeded
-        | Code::Aborted => WireStatusClass::ServerError,
+        | Code::Aborted => WireStatusClass::FarEndFault,
         // Cancelled is the one code where NEITHER side is blamed: the call was called off, usually
         // by the caller itself, so `Other` is the honest reading. Named, with no catch-all behind
         // it: every code gRPC defines has a row here, so one added later stops this compiling

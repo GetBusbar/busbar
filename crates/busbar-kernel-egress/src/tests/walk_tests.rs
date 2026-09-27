@@ -177,14 +177,14 @@ fn the_callers_own_fault_is_relayed_and_the_member_is_not_penalised() {
     node.preference = Some(vec![DestinationId::new(0), DestinationId::new(1)]);
     node.transport.script(
         "a",
-        Script::Frames(vec![frame(Some(WireStatusClass::ClientError), "bad")]),
+        Script::Frames(vec![frame(Some(WireStatusClass::CallerFault), "bad")]),
     );
 
     let outcome = node.route("primary");
     match outcome {
         RouteOutcome::Delivered(delivered) => {
             assert_eq!(delivered.destination, DestinationId::new(0));
-            assert_eq!(delivered.status, Some(WireStatusClass::ClientError));
+            assert_eq!(delivered.status, Some(WireStatusClass::CallerFault));
         }
         other => panic!("expected the client fault to be relayed, got {other:?}"),
     }
@@ -206,7 +206,7 @@ fn a_member_that_answers_with_a_server_error_is_failed_over_from() {
     node.preference = Some(vec![DestinationId::new(0), DestinationId::new(1)]);
     node.transport.script(
         "a",
-        Script::Frames(vec![frame(Some(WireStatusClass::ServerError), "boom")]),
+        Script::Frames(vec![frame(Some(WireStatusClass::FarEndFault), "boom")]),
     );
     node.transport.script("b", Script::Frames(ok_frames()));
 
@@ -221,7 +221,7 @@ fn a_member_that_answers_with_a_server_error_is_failed_over_from() {
 }
 
 /// A withdrawn credential answers 403, and 403 is a 4xx — so the coarse class alone says
-/// `ClientError`, which is the caller's own fault and penalises nothing. The exact number is the
+/// `CallerFault`, which is the caller's own fault and penalises nothing. The exact number is the
 /// only thing that tells the two apart, and it has to reach the classifier for the destination to
 /// go down. The verdict here is stated against the NUMBER: a walk that hands the classifier no
 /// number falls through to the coarse-class default and relays instead of failing over.
@@ -240,7 +240,7 @@ fn a_403_reaches_the_classifier_as_a_403_and_the_destination_goes_hard_down() {
     node.transport.script(
         "a",
         Script::Frames(vec![frame_with_upstream(
-            Some(WireStatusClass::ClientError),
+            Some(WireStatusClass::CallerFault),
             Some(WireStatus::new(status_ns::HTTP, 403)),
             None,
             "forbidden",
@@ -280,7 +280,7 @@ fn a_429_carries_the_upstreams_own_retry_after_through_to_the_breaker() {
     node.transport.script(
         "a",
         Script::Frames(vec![frame_with_upstream(
-            Some(WireStatusClass::ClientError),
+            Some(WireStatusClass::CallerFault),
             Some(WireStatus::new(status_ns::HTTP, 429)),
             Some(7),
             "slow down",
@@ -317,7 +317,7 @@ fn a_server_error_with_no_retry_after_leaves_the_cooldown_to_the_ladder() {
     node.transport.script(
         "a",
         Script::Frames(vec![frame_with_upstream(
-            Some(WireStatusClass::ServerError),
+            Some(WireStatusClass::FarEndFault),
             Some(WireStatus::new(status_ns::HTTP, 503)),
             None,
             "boom",
@@ -352,7 +352,7 @@ fn a_grpc_unavailable_records_a_failure_and_fails_over() {
     node.transport.script(
         "a",
         Script::Frames(vec![frame_with_upstream(
-            Some(WireStatusClass::ServerError),
+            Some(WireStatusClass::FarEndFault),
             Some(WireStatus::new(status_ns::GRPC, 14)),
             None,
             "",
@@ -403,7 +403,7 @@ fn a_request_too_large_excludes_every_member_with_the_same_or_a_smaller_window()
             label: disposition::CONTEXT_LENGTH,
         },
     );
-    let too_big = frame(Some(WireStatusClass::ClientError), "too big");
+    let too_big = frame(Some(WireStatusClass::CallerFault), "too big");
     node.transport
         .script("a", Script::Frames(vec![too_big.clone()]));
     node.transport.script("b", Script::Frames(vec![too_big]));

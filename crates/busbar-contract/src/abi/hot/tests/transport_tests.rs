@@ -26,7 +26,7 @@ fn every_outcome_byte_decodes_and_the_unknown_ones_are_faults() {
 
 /// A transport failure and a rendering refusal each cross and come back as themselves.
 #[test]
-fn failures_and_refusals_round_trip_through_their_outcome() {
+fn failures_and_refusals_cross_their_outcome_and_come_back() {
     use crate::transport::wire::{Encode, TransportError as E};
     for e in [
         E::Refused,
@@ -57,7 +57,7 @@ fn failures_and_refusals_round_trip_through_their_outcome() {
 
 /// Every closed vocabulary crosses as a byte and comes back as itself; an unknown byte is refused.
 #[test]
-fn every_closed_vocabulary_round_trips_and_refuses_an_unknown_byte() {
+fn every_closed_vocabulary_crosses_as_a_byte_and_refuses_an_unknown_one() {
     for r in [
         CloseReason::Normal,
         CloseReason::PeerClosed,
@@ -74,8 +74,8 @@ fn every_closed_vocabulary_round_trips_and_refuses_an_unknown_byte() {
     for s in [
         None,
         Some(WireStatusClass::Success),
-        Some(WireStatusClass::ClientError),
-        Some(WireStatusClass::ServerError),
+        Some(WireStatusClass::CallerFault),
+        Some(WireStatusClass::FarEndFault),
         Some(WireStatusClass::Other),
     ] {
         assert_eq!(code::status_class_of(code::status_class(s)), Ok(s));

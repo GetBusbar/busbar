@@ -927,8 +927,8 @@ pub const fn decl<T: TransportMeta>(
         ),
         None => (DeclStr::NONE, DeclStr::NONE, DeclStr::NONE),
     };
-    let (handshake_frame_kind, handshake_max_rounds) = match T::HANDSHAKE_TRIGGER {
-        Some(h) => (DeclStr::new(h.frame_kind), h.max_rounds),
+    let (handshake_frame_kind, handshake_max_steps) = match T::HANDSHAKE_TRIGGER {
+        Some(h) => (DeclStr::new(h.frame_kind), h.max_steps),
         None => (DeclStr::NONE, 0),
     };
     TransportDecl {
@@ -958,7 +958,7 @@ pub const fn decl<T: TransportMeta>(
         session_bound: T::SESSION_BOUND as u8,
         decodes_payload: T::DECODES_PAYLOAD as u8,
         unit0_trigger: code::unit0_trigger(T::UNIT0_TRIGGER),
-        handshake_max_rounds,
+        handshake_max_steps,
         status_at: code::status_at(T::STATUS_CLASS),
         _reserved: 0,
         init: Some(init),

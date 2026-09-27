@@ -267,8 +267,8 @@ pub mod code {
         match s {
             None => 0,
             Some(WireStatusClass::Success) => 1,
-            Some(WireStatusClass::ClientError) => 2,
-            Some(WireStatusClass::ServerError) => 3,
+            Some(WireStatusClass::CallerFault) => 2,
+            Some(WireStatusClass::FarEndFault) => 3,
             Some(WireStatusClass::Other) => 4,
         }
     }
@@ -278,8 +278,8 @@ pub mod code {
         Ok(match b {
             0 => None,
             1 => Some(WireStatusClass::Success),
-            2 => Some(WireStatusClass::ClientError),
-            3 => Some(WireStatusClass::ServerError),
+            2 => Some(WireStatusClass::CallerFault),
+            3 => Some(WireStatusClass::FarEndFault),
             4 => Some(WireStatusClass::Other),
             other => return Err(other),
         })
@@ -921,8 +921,8 @@ pub struct TransportDecl {
     pub decodes_payload: u8,
     /// `UNIT0_TRIGGER` ([`code::unit0_trigger`]).
     pub unit0_trigger: u8,
-    /// `HANDSHAKE_TRIGGER`'s `max_rounds`.
-    pub handshake_max_rounds: u8,
+    /// `HANDSHAKE_TRIGGER`'s `max_steps`.
+    pub handshake_max_steps: u8,
     /// `STATUS_CLASS` ([`code::status_at`]).
     pub status_at: u8,
     /// Alignment padding.

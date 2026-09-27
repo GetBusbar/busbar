@@ -1249,7 +1249,7 @@ fn read_row(d: &TransportDecl, display: &str) -> Result<TransportRow, String> {
         handshake_trigger: decl_str(d.handshake_frame_kind, display)?.map(|frame_kind| {
             HandshakeTrigger {
                 frame_kind,
-                max_rounds: d.handshake_max_rounds,
+                max_steps: d.handshake_max_steps,
             }
         }),
         transport_facts: strs(d.transport_facts, display)?,
