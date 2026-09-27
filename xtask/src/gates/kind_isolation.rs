@@ -4825,13 +4825,32 @@ fn cold_witness_edges(cx: &Ctx, crates: &[CrateInfo]) -> BTreeSet<(String, Strin
             let alias = format!("{key}_fixture");
             let users: Vec<String> = files
                 .iter()
-                .filter(|f| f.text.contains(path.as_str()) || names_ident(&f.text, &alias))
+                .filter(|f| {
+                    let code = code_only(&f.text);
+                    code.contains(path.as_str()) || names_ident(&code, &alias)
+                })
                 .map(|f| f.rel_str())
                 .collect();
             if !users.is_empty() && users.iter().all(|u| u.ends_with("_conformance_tests.rs")) {
                 out.insert((c.name.clone(), fixture));
             }
         }
+    }
+    out
+}
+
+/// `text` with every comment dropped and every literal blanked: a USER of a crate is code that
+/// names it, not a doc comment that mentions it or a string that spells its artifact's file name.
+fn code_only(text: &str) -> String {
+    let mut lex = scan::LexState::default();
+    let mut out = String::new();
+    for line in text.lines() {
+        let (blanked, comment_at) = scan::blank_code_marking(line, &mut lex);
+        if blanked.trim_start().starts_with("//") {
+            continue;
+        }
+        out.extend(blanked.chars().take(comment_at.unwrap_or(usize::MAX)));
+        out.push('\n');
     }
     out
 }
@@ -9999,6 +10018,29 @@ mod plant_tests {
                 LINKED_TABLE,
             ],
         );
+    }
+}
+
+#[cfg(test)]
+mod cold_witness_tests {
+    use super::*;
+
+    /// A USER is code: a doc comment naming the crate path and a string spelling its artifact are
+    /// not, and `resolve_store_fixture` does not name `store_fixture` — while an aliased `use` does.
+    #[test]
+    fn a_fixture_user_is_code_that_names_it() {
+        let named = |text: &str| {
+            let code = code_only(text);
+            code.contains("busbar_store_memory::") || names_ident(&code, "store_fixture")
+        };
+        assert!(!named(
+            "//! like the compiled-in `busbar_store_memory::MemoryStore`\n"
+        ));
+        assert!(!named("/// see busbar_store_memory::open\nfn f() {}\n"));
+        assert!(!named("let n = lib(\"busbar_store_memory::x\");\n"));
+        assert!(!named("fn resolve_store_fixture() {}\n"));
+        assert!(named("use super::both_ways::{store_fixture as fixture};\n"));
+        assert!(named("let s = busbar_store_memory::open(\"{}\"); // doc\n"));
     }
 }
 
