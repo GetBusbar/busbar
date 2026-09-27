@@ -534,8 +534,12 @@ fn mount_plane_route(
               uri: axum::http::Uri,
               gov: Option<axum::extract::Extension<busbar_contract::records::PlaneRequestCtx>>,
               principal: Option<axum::extract::Extension<busbar_contract::auth::AuthPrincipal>>,
-              headers: axum::http::HeaderMap,
+              consumed: Option<axum::extract::Extension<auth::ConsumedCredentials>>,
+              mut headers: axum::http::HeaderMap,
               body: axum::body::Bytes| {
+            // The plane never sees the caller's credential: the headers the gate consumed go here,
+            // before the context — and the HOT request head built from it — exists (#65, #40(b)).
+            auth::ConsumedCredentials::strip_from(consumed.as_deref(), &mut headers);
             let handler = handler.clone();
             let slot = slot.clone();
             let ctx_path = ctx_path.clone();
@@ -628,7 +632,10 @@ fn mount_ws_arrivals(
                   principal: Option<
                 axum::extract::Extension<busbar_contract::auth::AuthPrincipal>,
             >,
-                  headers: axum::http::HeaderMap| {
+                  consumed: Option<axum::extract::Extension<auth::ConsumedCredentials>>,
+                  mut headers: axum::http::HeaderMap| {
+                // As for a data route: the plane never sees the credential the gate consumed.
+                auth::ConsumedCredentials::strip_from(consumed.as_deref(), &mut headers);
                 let accept = accept.clone();
                 let slot = slot.clone();
                 let ctx_path = ctx_path.clone();

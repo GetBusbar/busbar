@@ -795,10 +795,12 @@ pub(crate) async fn named(
     crate::state::CurrentApp(app): crate::state::CurrentApp,
     Path(name): Path<String>,
     axum::extract::Extension(gov): axum::extract::Extension<crate::governance::GovCtx>,
-    axum::extract::Extension(caller): axum::extract::Extension<crate::auth::CallerToken>,
-    headers: HeaderMap,
+    consumed: Option<axum::extract::Extension<crate::auth::ConsumedCredentials>>,
+    mut headers: HeaderMap,
     body: Bytes,
 ) -> Response {
+    // The plane never sees the credential the gate consumed (#65, #40(b)).
+    crate::auth::ConsumedCredentials::strip_from(consumed.as_deref(), &mut headers);
     // The dialect the `/v1/messages` convenience surface speaks, resolved from the registry (the
     // dialect whose `residual_claims` predicate claims that path — Anthropic Messages), so core names
     // no dialect. `""` when no such dialect is registered.
@@ -806,7 +808,7 @@ pub(crate) async fn named(
     delegate_body_arrival(
         app,
         gov,
-        caller,
+        consumed.and_then(|axum::extract::Extension(c)| c.caller),
         proto,
         format!("/{name}/v1/messages"),
         // The `named` convenience surface routes by the PATH name (a pool or model), NOT a body
@@ -828,7 +830,7 @@ pub(crate) async fn named(
 async fn delegate_body_arrival(
     app: Arc<App>,
     gov: crate::governance::GovCtx,
-    caller: crate::auth::CallerToken,
+    caller: Option<crate::auth::CallerCredential>,
     proto: &'static str,
     path: String,
     model_hint: Option<String>,
@@ -841,7 +843,7 @@ async fn delegate_body_arrival(
             crate::ingress::arrival_host::ArrivalPayload {
                 host: crate::plane_host::engine_host(&app),
                 gov,
-                caller_token: caller.0.clone(),
+                caller_token: caller,
             },
         );
         return body_ingress(busbar_kernel::ingress::arrival::Arrival {
@@ -870,10 +872,12 @@ pub async fn adhoc(
     crate::state::CurrentApp(app): crate::state::CurrentApp,
     Path((provider, model)): Path<(String, String)>,
     axum::extract::Extension(gov): axum::extract::Extension<crate::governance::GovCtx>,
-    axum::extract::Extension(caller): axum::extract::Extension<crate::auth::CallerToken>,
-    headers: HeaderMap,
+    consumed: Option<axum::extract::Extension<crate::auth::ConsumedCredentials>>,
+    mut headers: HeaderMap,
     body: Bytes,
 ) -> Response {
+    // The plane never sees the credential the gate consumed (#65, #40(b)).
+    crate::auth::ConsumedCredentials::strip_from(consumed.as_deref(), &mut headers);
     // The dialect the `/v1/messages` convenience surface speaks, resolved from the registry (see
     // `named`); `""` when no such dialect is registered.
     let proto = crate::proto::residual_dialect_for_path("/v1/messages").unwrap_or("");
@@ -898,7 +902,7 @@ pub async fn adhoc(
     delegate_body_arrival(
         app,
         gov,
-        caller,
+        consumed.and_then(|axum::extract::Extension(c)| c.caller),
         proto,
         format!("/{provider}/{model}/v1/messages"),
         // The `adhoc` surface names the model in the PATH (with the provider verified above); thread the

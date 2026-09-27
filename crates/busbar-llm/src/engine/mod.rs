@@ -37,6 +37,7 @@ use busbar_contract::upstream::Disposition;
 use busbar_contract::upstream::StatusClass;
 use busbar_kernel::plane_host::OnExhaustedInput as OnExhausted;
 use busbar_kernel::{
+    auth::{present_caller, CallerCredential as KernelCallerCredential},
     breaker::{classify as classify_disposition, normalize_raw_error, parse_retry_after},
     // The kernel diagnostic codes the engine's modules emit, named once here for all of them.
     diagnostics::{
@@ -62,6 +63,8 @@ use busbar_kernel::{
 // the plane's own `rt: &Arc<NativeRuntime>` (resolved off the host slot) instead. Every `app.X` reach
 // flipped to the host seam (`host.X()`) or the runtime tables (`EngineTables::new(rt)`).
 use busbar_kernel::plane_host::EngineHost;
+// The caller's credential as a REF, and the host's presentation of it (CRED-STRIP, #65/#40(b)).
+pub(crate) type CallerCredential = KernelCallerCredential;
 use busbar_kernel::store::{now, Permit};
 
 pub(crate) mod build_runtime;

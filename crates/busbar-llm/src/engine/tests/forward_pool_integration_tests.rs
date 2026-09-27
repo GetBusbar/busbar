@@ -30,11 +30,12 @@ async fn forward<A: busbar_kernel::test_support::BuiltAppSeam>(
     caller_token: Option<&str>,
     usage_sink: Option<crate::engine::UsageSink>,
 ) -> axum::response::Response {
+    let caller_token = caller_token.map(crate::engine::CallerCredential::for_test);
     forward_with_pool(
         &app,
         cands,
         body,
-        caller_token,
+        caller_token.as_ref(),
         "",
         None,
         "anthropic",
@@ -5095,7 +5096,7 @@ async fn test_adhoc_rejects_unconfigured_provider_model() {
         busbar_kernel::state::CurrentApp(app.clone()),
         axum::extract::Path(("evil.example.com".to_string(), "../secret".to_string())),
         axum::extract::Extension(busbar_contract::records::PlaneRequestCtx::default()),
-        axum::extract::Extension(busbar_contract::auth::CallerToken::default()),
+        None,
         axum::http::HeaderMap::new(),
         body.clone(),
     )
@@ -5111,7 +5112,7 @@ async fn test_adhoc_rejects_unconfigured_provider_model() {
         busbar_kernel::state::CurrentApp(app),
         axum::extract::Path(("wrong-provider".to_string(), "test-model".to_string())),
         axum::extract::Extension(busbar_contract::records::PlaneRequestCtx::default()),
-        axum::extract::Extension(busbar_contract::auth::CallerToken::default()),
+        None,
         axum::http::HeaderMap::new(),
         body,
     )

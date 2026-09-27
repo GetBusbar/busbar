@@ -19,7 +19,7 @@ pub(crate) async fn handle_least_bad(
     cands: &[WeightedLane],
     now: u64,
     body: &Bytes,
-    caller_token: Option<&str>,
+    caller_token: Option<&crate::engine::CallerCredential>,
     request_ctx: &RequestCtx,
     pool: &str,
     ingress_protocol: &str,

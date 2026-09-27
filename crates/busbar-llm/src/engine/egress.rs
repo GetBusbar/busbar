@@ -231,8 +231,9 @@ pub(crate) fn sign_and_wire_path_parts(url_path: &str) -> (String, String) {
 /// upstream then rejects with 401, classified by the breaker like any other auth failure).
 ///
 /// NO CREDENTIAL ⇒ NO AUTH HEADER. An empty key means there is nothing to present: either the
-/// provider declared `api_key: none` (a keyless local upstream — ollama, vLLM), or a passthrough
-/// lane's caller arrived without a token. Sending `Authorization: Bearer ` with no token is
+/// provider declared `api_key: none` (a keyless local upstream — ollama, vLLM). (A `passthrough`
+/// pool never reaches here: the HOST presents the caller's credential,
+/// `crate::engine::present_caller`, under the same no-credential rule.) Sending `Authorization: Bearer ` with no token is
 /// strictly worse than sending nothing — a keyless upstream can reject a malformed empty
 /// credential, and an empty auth header is a proxy tell no native client emits. It also matches
 /// every other no-credential path here (an un-encodable key, an OAuth token not yet minted). A

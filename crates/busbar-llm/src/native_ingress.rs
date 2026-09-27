@@ -238,7 +238,7 @@ struct NativePlane<'a> {
     headers: &'a HeaderMap,
     body: Bytes,
     parsed_v: Option<crate::engine::LazyBody>,
-    caller_token: Option<&'a str>,
+    caller_token: Option<&'a crate::engine::CallerCredential>,
     /// A dialect's PRE-SHAPED model-not-found body, or `None` for the neutral copy. The dialect that
     /// owns the request built this at arrival (a path-model dialect that echoes its own not-found
     /// vocabulary); `drive` uses it verbatim on a model miss, opaque to every other stage — core names
@@ -436,7 +436,7 @@ pub async fn run(
     headers: &HeaderMap,
     body: Bytes,
     parsed_v: Option<crate::engine::LazyBody>,
-    caller_token: Option<&str>,
+    caller_token: Option<&crate::engine::CallerCredential>,
     started: Instant,
     charged_at: u64,
     model_not_found_message: Option<&str>,
@@ -483,7 +483,7 @@ pub async fn operation_resolved(
     headers: &HeaderMap,
     body: Bytes,
     parsed_v: Option<crate::engine::LazyBody>,
-    caller_token: Option<&str>,
+    caller_token: Option<&crate::engine::CallerCredential>,
     started: Instant,
     charged_at: u64,
     model_not_found_message: Option<&str>,
@@ -629,7 +629,7 @@ pub fn synthesize_completion(
             &headers,
             body,
             parsed,
-            p.caller_token.as_deref(),
+            p.caller_token.as_ref(),
             Instant::now(),
             // C10: the synthesized completion's charge epoch, off the arrival payload's own host
             // clock port rather than the ambient free function. Same value, one clock.

@@ -95,7 +95,7 @@ pub(crate) struct RouteInput<'a> {
     /// The body the Arrival step validated, carried as the lazy head projection. `None` for an
     /// opaque (multipart/binary) body, which relays at the byte level.
     pub(crate) parsed: Option<LazyBody>,
-    pub(crate) caller_token: Option<&'a str>,
+    pub(crate) caller_token: Option<&'a crate::engine::CallerCredential>,
     /// The key the Authenticate step resolved, so a group or SSO principal still projects its
     /// routing signals for a pool that reads them.
     pub(crate) resolved_gov_key: Option<&'a Arc<busbar_contract::records::VirtualKey>>,
