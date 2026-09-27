@@ -982,7 +982,10 @@ kernel_crate = "busbar-kernel"
 # ── 51158 -> 51103: K9e-2 — the kernel's `otlp` built-in (OtlpSettings, its resolve arm, the span
 # exporter layer parameter, `module_streams`, `built_in`) leaves: `otlp` is the linked
 # busbar-export-otlp sink. Measured 51030 + K2g's 73 named lines. Downward only.
-kernel_ceiling = 51103
+# ── 51103 -> 51100: TLS-RETIRE (2/3) — `Kernel::transport_key_token` (the `Grant<KeyHandle>` mint
+# only the deleted transport-key provisioning took) leaves teller.rs. Measured 51027 + K2g's 73 named
+# lines. Downward only.
+kernel_ceiling = 51100
 # `caps_crate = "busbar-caps"` WAS HERE AND IS STRUCK, 2026-09-22. The crate was folded into
 # busbar-contract by 2c9eddecf ("W2.c: fold busbar-caps into busbar-contract"); its types live at
 # `crates/busbar-contract/src/caps/`, whose own module header says "Folded from the former
@@ -1111,7 +1114,8 @@ patterns = ["teller.rs"]
 # `FeeEvidence`, `KERNEL_ACCRUAL_CLASS`) moved verbatim into `busbar-kernel/src/settlement.rs`,
 # re-exported from `teller` under every old path; its 96 code lines still spend `kernel_ceiling`.
 # That took the row from 695 (RED against 659) to 604. Downward only.
-ceiling = 604
+# ── LOWERED 604 -> 601, the measurement: TLS-RETIRE (2/3) deletes `Kernel::transport_key_token`.
+ceiling = 601
 
 [rules.loc-ceilings.kernel_files.pump]
 label = "pump/scheduler"
@@ -1309,9 +1313,9 @@ way."""
 # offenders, all in busbar-kernel); a planted `const PLANTED_LABEL: &str = "anthropic";` in
 # `crates/busbar-kernel-ledger/src/cost/mod.rs` now counts (14 -> 15), where the old scope never
 # opened the file (14 -> 14).
-# RETIRED BY NAME (fold F14 2/2): `busbar-unit-transport-key` is deleted; its code is
-# `busbar-kernel-identity`'s `transport_key` module, which `crate_glob` below already scans, so
-# striking the name narrows nothing.
+# RETIRED BY NAME (fold F14 2/2): `busbar-unit-transport-key` is deleted; its code became
+# `busbar-kernel-identity`'s `transport_key` module (itself deleted by TRANSPORT-STACK: TLS is
+# core-only connection security, `busbar-core-connsec`), so striking the name narrows nothing.
 crates_kernel = ["busbar-kernel"]
 crate_glob = "busbar-kernel-*"
 # section 6's dialect names + the section 1.3 pinned word list, verbatim.

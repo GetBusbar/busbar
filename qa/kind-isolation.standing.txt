@@ -21,7 +21,6 @@ kind-isolation:matrix	instance-ratchet	busbar-kernel × secret	54
 kind-isolation:matrix	instance-ratchet	busbar-plugin-loader × secret	9
 kind-isolation:matrix	measurement-disagreement	busbar-kernel × plane	1901
 kind-isolation:matrix	measurement-disagreement	busbar-kernel × transport	1754
-kind-isolation:matrix	measurement-disagreement	busbar-kernel-identity × transport	24
 kind-isolation:matrix	ratchet	busbar × cleanliness	206
 kind-isolation:matrix	ratchet	busbar × hooks	16
 kind-isolation:matrix	ratchet	busbar × kernel	1287
@@ -41,7 +40,7 @@ kind-isolation:matrix	ratchet	busbar-kernel-budget × kernel	52
 kind-isolation:matrix	ratchet	busbar-kernel-egress × kernel	44
 kind-isolation:matrix	ratchet	busbar-kernel-egress × plane	38
 kind-isolation:matrix	ratchet	busbar-kernel-identity × plane	13
-kind-isolation:matrix	ratchet	busbar-kernel-identity × transport	24
+kind-isolation:matrix	ratchet	busbar-kernel-identity × transport	10
 kind-isolation:matrix	ratchet	busbar-kernel-ledger × kernel	10
 kind-isolation:matrix	ratchet	busbar-kernel-scope × transport	8
 kind-isolation:matrix	ratchet	busbar-llm × codec	133

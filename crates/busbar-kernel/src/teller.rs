@@ -64,9 +64,9 @@ use busbar_contract::caps::{
     Abort, AdminVerb, Admission, Admit, Admittance, Approve, Arrival, Audit, Authenticate,
     Authenticated, CallId, Canary, Consumption, Decision, Decode, Dial, DurabilityLost,
     DurableWrite, Encode, Exit, Grant, Hold, HoldAccrual, HoldCell, HoldCellState, KernelSeal,
-    KeyHandle, Meter, Origin, OriginKind, Outcome, Pass, Posted, PostingFlags, PrincipalId,
-    QuantitySource, ReasonCode, Refusal, Route, SessionId, Sign, StepName, UnitEnd, UnitKey, Usage,
-    UsageLine, VerifiedDestination, Verify, WriteMoney,
+    Meter, Origin, OriginKind, Outcome, Pass, Posted, PostingFlags, PrincipalId, QuantitySource,
+    ReasonCode, Refusal, Route, SessionId, Sign, StepName, UnitEnd, UnitKey, Usage, UsageLine,
+    VerifiedDestination, Verify, WriteMoney,
 };
 
 use crate::registry::Generation;
@@ -137,29 +137,13 @@ impl Kernel {
         Grant::<Admittance>::mint(&self.seal)
     }
 
-    /// The transport-key unit's token, as the composition root lends it.
-    ///
-    /// The first token minted OUTSIDE the loop. Keys are resolved at listen, dial and upgrade, none
-    /// of which is a step of a unit, so there is no step whose token could stand in — and without
-    /// this the unit's `provision_server` and `provision_client` have a parameter no caller in the
-    /// tree can supply, which is why the only thing that ever registered a listener's TLS config
-    /// was the transport's own tests.
-    ///
-    /// Kept beside `admit_token` and named the same way, so the source scan that accounts for every
-    /// mint sees this one too.
-    pub fn transport_key_token(&self) -> Grant<KeyHandle> {
-        Grant::<KeyHandle>::mint(&self.seal)
-    }
-
     /// The verbs unit's token, as the composition root lends it.
     ///
-    /// The second token minted outside the loop, and for the same reason as the first: a kernel
-    /// verb is a Route DESTINATION rather than a step of its own, so there is no step whose token
-    /// could stand in, and without this the verbs unit's `execute` has a parameter no caller in the
-    /// tree can supply. That was true of `provision_server` until `transport_key_token` existed and
-    /// it is true of `execute` until this does.
+    /// The first token minted OUTSIDE the loop: a kernel verb is a Route DESTINATION rather than a
+    /// step of its own, so there is no step whose token could stand in, and without this the verbs
+    /// unit's `execute` has a parameter no caller in the tree can supply.
     ///
-    /// Kept beside the other two and named the same way, so the source scan that accounts for every
+    /// Kept beside `admit_token` and named the same way, so the source scan that accounts for every
     /// mint sees this one too.
     pub fn admin_token(&self) -> Grant<AdminVerb> {
         Grant::<AdminVerb>::mint(&self.seal)
@@ -167,14 +151,14 @@ impl Kernel {
 
     /// The journal's token, as the composition root lends it to an exit arm.
     ///
-    /// The third token minted outside the loop, and for the same reason as the other two: making a
+    /// The second token minted outside the loop, and for the same reason as the first: making a
     /// posting durable happens AFTER the exit has sealed the end, so there is no step of the unit
     /// whose token could stand in, and the root's exit arm has a parameter no caller in the tree can
     /// supply without this. Without it a root that wanted to journal what the loop posted had to
     /// reach for the seal itself, which is the one symbol that must not be spelled outside this
     /// crate.
     ///
-    /// Kept beside the other three and named the same way, so the source scan that accounts for
+    /// Kept beside the other two and named the same way, so the source scan that accounts for
     /// every mint sees this one too.
     pub fn durability_token(&self) -> Grant<DurableWrite> {
         Grant::<DurableWrite>::mint(&self.seal)
@@ -182,7 +166,7 @@ impl Kernel {
 
     /// The ledger unit's token, as the composition root lends it to a posting made after the exit.
     ///
-    /// The fourth token minted outside the loop, and the reason is the sharpest of the four. Inside
+    /// The third token minted outside the loop, and the reason is the sharpest of the three. Inside
     /// the loop the ledger's token is minted at the terminal, which is where every posting the loop
     /// itself makes is built — and a figure that only exists AFTER that terminal cannot be built
     /// there. There is no step of the unit still running when it arrives, so there is no step token

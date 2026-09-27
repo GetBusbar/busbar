@@ -511,7 +511,8 @@ const CONSTRUCTION_KIND_KEYS: &[(&str, &str)] = &[
 /// re-worded, because the crate it waived no longer exists — #37 bans the FORM `busbar-core-<kind>`
 /// and the fix was the rename to `busbar-core-connsec`, not a better sentence. It was ONE until
 /// fold F14: the survivor, `busbar-unit-transport-key`, was the last `busbar-unit-*` crate, and #36
-/// retired it into `busbar-kernel-identity`'s `transport_key` module, so its waiver is struck the
+/// retired it into `busbar-kernel-identity`'s `transport_key` module (since deleted: TLS is core's
+/// connection security, `busbar-core-connsec`), so its waiver is struck the
 /// same way — its own dead-waiver finding is what demanded it. The list is EMPTY, and the
 /// dead-waiver rule keeps its proof in `plant_tests` (a waiver naming a crate the tree no longer has
 /// is planted through [`rule_name_under`], since a const cannot be planted through an overlay).

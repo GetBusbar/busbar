@@ -38,7 +38,7 @@ impl TransportConfigView for TestCfg {
     }
 }
 
-/// A fixture-only key handle: no real transport-key unit exists in this crate's tests, so tests
+/// A fixture-only key handle: nothing issues a real one in this crate's tests, so tests
 /// build the opaque handle through the contract's blessed `test-seal` type (#65) rather than
 /// forging a seal of their own, which the sealed `KernelSeal` trait no longer permits.
 use busbar_contract::plugin::TestKernelSeal as FixtureSeal;

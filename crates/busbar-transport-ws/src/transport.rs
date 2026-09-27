@@ -174,7 +174,7 @@ pub(crate) fn split_ws_url(url: &str) -> Result<(bool, String, u16, String), Tra
 /// It opens no socket of its own. Every byte reaches it through the layer it composes over: the
 /// lower transport binds, accepts and dials, and this one takes the stream that layer gives up and
 /// runs the WebSocket handshake on it. That is what makes the composed chain real rather than
-/// declared, and it is what puts the network guard, the transport-key unit and the frame-honesty
+/// declared, and it is what puts the network guard and the frame-honesty
 /// tests in ONE place for the whole stack instead of one place per transport.
 pub struct WsTransport {
     next_id: AtomicU64,
@@ -891,7 +891,7 @@ impl Drop for PoisonGuard<'_> {
 /// The keys an accept-side upgrade is adopted under.
 ///
 /// The WebSocket handshake needs no key material of its own: whatever secured the bytes was
-/// resolved by the layer underneath, at its own `listen`, through the transport-key unit. A handle
+/// resolved host-side, by core's connection security, never by a transport. A handle
 /// naming no slot is the honest way to say that rather than passing one this layer never reads.
 static NO_KEYS: std::sync::LazyLock<TransportKeyHandle> =
     std::sync::LazyLock::new(TransportKeyHandle::keyless);

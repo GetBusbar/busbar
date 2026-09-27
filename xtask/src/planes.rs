@@ -148,8 +148,9 @@ pub fn neutral_src_roots() -> Vec<String> {
         "crates/busbar-core-connsec/src",
         "crates/busbar-oauth2/src",
         // `crates/busbar-unit-transport-key/src` is STRUCK (fold F14): the crate folded into
-        // `busbar-kernel-identity` (`src/transport_key/`, #36/#40), whose root is listed above, so
-        // every file it held is still scanned, under its new path.
+        // `busbar-kernel-identity` (`src/transport_key/`, #36/#40), and that module is deleted in
+        // turn (TRANSPORT-STACK: TLS is core's connection security, `busbar-core-connsec`, listed
+        // above).
     ]
     .into_iter()
     .map(str::to_string)
