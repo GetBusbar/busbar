@@ -67,6 +67,18 @@ pub const ROW_DECL_REASON: &str = "feature-sets:declaration-reason";
 /// The SECOND axis this gate holds: an executable scenario the tree carries and no job runs is the
 /// same defect as a feature no job builds. See [`RIG_DIRS`].
 pub const ROW_RIGS_RUN: &str = "feature-sets:every-h2-rig-is-run-by-a-named-step";
+/// A matrix row that builds the root package without its defaults keeps every default row of each
+/// KEPT AXIS in its EFFECTIVE feature list. See [`KEPT_AXES`].
+pub const ROW_KEPT_AXES: &str = "feature-sets:rows-keep-the-default-axes";
+
+/// The root package's manifest: its `[features] default` and its linked-axes table are the ONE
+/// source a row's kept axes are derived from (`scripts/linked-axis-features.sh` reads the same two).
+pub const ROOT_PACKAGE_MANIFEST: &str = "crates/busbar/Cargo.toml";
+/// The linked axes a root row that varies something else still carries in full. A single-plane row
+/// varies PLANES, not sinks: a row without a default export sink refuses every config naming one.
+pub const KEPT_AXES: &[&str] = &["exports"];
+/// The matrix key that asks the workflow to append an axis' default rows to a row's features.
+pub const AXES_KEY: &str = "default_axes:";
 
 /// The discovery floor under the non-default feature count. Measured at 46 on the 1.6.0 integration
 /// tree. Deliberately NOT overridable from the environment: a floor a caller can lower is a floor a
@@ -104,6 +116,15 @@ struct CrateFeatures {
     /// The keys reachable from `default` WITHIN this crate. Cross-crate forwards are somebody
     /// else's `default` and are classified in that crate's own row.
     default_on: BTreeSet<String>,
+}
+
+/// One row of the job's matrix, as the kept-axes rule reads it.
+#[derive(Debug, Clone, Default)]
+struct MatrixRow {
+    name: String,
+    features: String,
+    tests: String,
+    default_axes: String,
 }
 
 /// One `# feature-covered:` line.
@@ -310,6 +331,161 @@ fn read_workflow(text: &str) -> (Vec<String>, Vec<Decl>, BTreeSet<String>) {
     (matrix, decls, jobs)
 }
 
+/// Every row of the job's matrix: a row opens at `- name:`, and its `features:`, `tests:` and
+/// `default_axes:` keys are read until the next row or the next job.
+fn read_rows(text: &str) -> Vec<MatrixRow> {
+    let mut rows: Vec<MatrixRow> = Vec::new();
+    let mut in_job = false;
+    let unquote = |v: &str| v.trim().trim_matches(['"', '\'']).trim().to_string();
+    for raw in text.lines() {
+        if let Some(name) = job_key(raw) {
+            in_job = name == JOB;
+            continue;
+        }
+        if !in_job {
+            continue;
+        }
+        let t = raw.trim();
+        if let Some(v) = t.strip_prefix("- name:") {
+            rows.push(MatrixRow {
+                name: unquote(v),
+                ..MatrixRow::default()
+            });
+            continue;
+        }
+        let Some(row) = rows.last_mut() else { continue };
+        if let Some(v) = t.strip_prefix("features:") {
+            row.features = unquote(v);
+        } else if let Some(v) = t.strip_prefix("tests:") {
+            row.tests = unquote(v);
+        } else if let Some(v) = t.strip_prefix(AXES_KEY) {
+            row.default_axes = unquote(v);
+        }
+    }
+    rows
+}
+
+/// The root package's DEFAULT features on `axis`, as `busbar/<feature>` — the same derivation
+/// `scripts/linked-axis-features.sh` makes for the workflow.
+fn default_axis_features(manifest: &str, axis: &str) -> Result<Vec<String>, String> {
+    // The linked-axes table is a flat `feature = "axis axis …"` section; read it line by line (the
+    // manifest carries inline tables elsewhere that a general reader here would have to parse too).
+    const HEADER: &str = "[package.metadata.busbar.linked-axes]";
+    let mut axes: Vec<(String, String)> = Vec::new();
+    let mut inside = false;
+    let mut seen = false;
+    for raw in manifest.lines() {
+        let t = raw.split('#').next().unwrap_or("").trim();
+        if t.starts_with('[') {
+            inside = t == HEADER;
+            seen |= inside;
+            continue;
+        }
+        if !inside {
+            continue;
+        }
+        if let Some((k, v)) = t.split_once('=') {
+            axes.push((
+                k.trim().trim_matches(['"', '\'']).to_string(),
+                v.trim().trim_matches(['"', '\'']).to_string(),
+            ));
+        }
+    }
+    if !seen {
+        return Err(format!("{ROOT_PACKAGE_MANIFEST} has no {HEADER}"));
+    }
+    let default = default_closure(&feature_table(manifest));
+    Ok(axes
+        .into_iter()
+        .filter(|(f, a)| default.contains(f) && a.split_whitespace().any(|x| x == axis))
+        .map(|(f, _)| format!("busbar/{f}"))
+        .collect())
+}
+
+/// The kept-axes rule: every row that builds the ROOT package with `--no-default-features` carries,
+/// in its effective list (its `features:` plus every `default_axes:` axis derived), every default
+/// row of each [`KEPT_AXES`] axis.
+fn kept_axes_row(cx: &Ctx, workflow: &str) -> Row {
+    let manifest = match cx.read(ROOT_PACKAGE_MANIFEST) {
+        Ok(t) => t,
+        Err(e) => {
+            return Row::fail(
+                ROW_KEPT_AXES,
+                "the root package manifest is unreadable",
+                format!(
+                "{ROOT_PACKAGE_MANIFEST}: {e} — a kept axis derived from nothing is kept by no row"
+            ),
+            )
+        }
+    };
+    let mut want: Vec<(String, Vec<String>)> = Vec::new();
+    for axis in KEPT_AXES {
+        match default_axis_features(&manifest, axis) {
+            Ok(f) if !f.is_empty() => want.push(((*axis).to_string(), f)),
+            Ok(_) => {
+                return Row::fail(
+                    ROW_KEPT_AXES,
+                    "a kept axis has no default row",
+                    format!(
+                        "{ROOT_PACKAGE_MANIFEST} ships no default feature on the `{axis}` axis —                          a rule that keeps an empty set holds nothing; re-derive KEPT_AXES"
+                    ),
+                )
+            }
+            Err(why) => return Row::fail(ROW_KEPT_AXES, "the kept axes could not be derived", why),
+        }
+    }
+    let mut checked = 0usize;
+    let mut missing: Vec<String> = Vec::new();
+    for row in read_rows(workflow) {
+        let tests: Vec<&str> = row.tests.split_whitespace().collect();
+        let root = tests.windows(2).any(|w| w == ["-p", "busbar"]);
+        if !root || !tests.contains(&"--no-default-features") {
+            continue;
+        }
+        checked += 1;
+        let mut effective: BTreeSet<String> =
+            split_features(&row.features).map(str::to_string).collect();
+        for axis in row.default_axes.split_whitespace() {
+            if let Ok(f) = default_axis_features(&manifest, axis) {
+                effective.extend(f);
+            }
+        }
+        for (axis, feats) in &want {
+            let gone: Vec<&str> = feats
+                .iter()
+                .filter(|f| !effective.contains(*f))
+                .map(String::as_str)
+                .collect();
+            if !gone.is_empty() {
+                missing.push(format!(
+                    "row `{}` misses default `{axis}` row(s) {}",
+                    row.name,
+                    gone.join(", ")
+                ));
+            }
+        }
+    }
+    if missing.is_empty() {
+        Row::pass(
+            ROW_KEPT_AXES,
+            "every root row without its defaults keeps each kept axis' default rows",
+            format!(
+                "{checked} root row(s) checked against the default `{}` rows of {ROOT_PACKAGE_MANIFEST}",
+                KEPT_AXES.join("`, `")
+            ),
+        )
+    } else {
+        Row::fail(
+            ROW_KEPT_AXES,
+            "a root row without its defaults drops a default row of a kept axis",
+            format!(
+                "{} — a row that varies planes must not vary sinks; derive them with                  `{AXES_KEY} exports` (scripts/linked-axis-features.sh) rather than hand-listing them",
+                missing.join(" | ")
+            ),
+        )
+    }
+}
+
 /// `  some-job:` — exactly two spaces, a key, a colon, nothing else.
 fn job_key(raw: &str) -> Option<String> {
     let rest = raw.strip_prefix("  ")?;
@@ -512,6 +688,7 @@ impl Gate for FeatureSetsGate {
             ROW_DECL_JOB.to_string(),
             ROW_DECL_REASON.to_string(),
             ROW_RIGS_RUN.to_string(),
+            ROW_KEPT_AXES.to_string(),
         ]
     }
 
@@ -713,6 +890,7 @@ impl Gate for FeatureSetsGate {
         });
 
         rows.push(rig_row(&rig_scripts(cx), &workflow));
+        rows.push(kept_axes_row(cx, &workflow));
 
         Verdict::of(rows)
     }
@@ -922,6 +1100,28 @@ fn plants(cx: &Ctx) -> Vec<Plant> {
             ov
         });
 
+    // A ROOT ROW THAT DROPPED A KEPT AXIS: the first single-plane row loses its `default_axes:`
+    // line, so its effective list is its hand-listed features alone and every default export sink
+    // is missing — the shape of the hand-listed rows that missed export-otlp.
+    let dropped_axis = workflow.as_ref().and_then(|t| {
+        let mut done = false;
+        let out: Vec<&str> = t
+            .lines()
+            .filter(|l| {
+                if !done && l.trim() == format!("{AXES_KEY} exports") {
+                    done = true;
+                    return false;
+                }
+                true
+            })
+            .collect();
+        done.then(|| {
+            let mut ov = Overlay::new();
+            ov.set(WORKFLOW, out.join("\n"));
+            ov
+        })
+    });
+
     // THE ROOT MANIFEST GONE. Everything below rule 1 is UNPROVEN, never passed.
     let mut no_root = Overlay::new();
     no_root.remove(ROOT_MANIFEST);
@@ -980,6 +1180,15 @@ fn plants(cx: &Ctx) -> Vec<Plant> {
             rule: ROW_RIGS_RUN,
             naming: vec!["run by no step".to_string()],
             overlay: disabled_rig,
+        },
+        Plant {
+            label: "a root row missing a default export sink from its effective features",
+            rule: ROW_KEPT_AXES,
+            naming: vec![
+                "busbar/export-otlp".to_string(),
+                "misses default `exports`".to_string(),
+            ],
+            overlay: dropped_axis,
         },
         Plant {
             label: "the root manifest is unreadable",

@@ -312,6 +312,8 @@ jobs:
         run: python3 scripts/extract-inline-tests.py --selftest
       - name: secret-accessor seal witness self-test
         run: ./scripts/secret-accessor-seal-witness.sh --selftest
+      - name: linked-axis feature derivation self-test (the feature-sets rows' one source)
+        run: ./scripts/linked-axis-features.sh --selftest
       - name: secret-accessor seal witness (no cdylib plugin reaches a kernel secret accessor)
         run: ./scripts/secret-accessor-seal-witness.sh --check
       - name: qa-gate runner self-test
@@ -2146,31 +2148,40 @@ jobs:
           # crates/busbar/tests, all of which read the build's linked roster, so a cell that needs a
           # plane, a provider codec or the admin surface is gated on what the build links.
           # EVERY SINGLE-PLANE ROW ALSO KEEPS THE DEFAULT NON-PLANE FEATURES: `busbar/transport-tcp`
-          # and the three default export sinks (`busbar/export-prometheus`, `-file`, `-webhook`).
-          # These rows vary PLANES, not wires or sinks. The tcp wire is the floor of a bootable node:
+          # and EVERY default export sink. These rows vary PLANES, not wires or sinks. The sinks are
+          # not hand-listed: `default_axes: exports` makes the "Effective features" step append
+          # `scripts/linked-axis-features.sh exports` — the root manifest's default rows on the
+          # `exports` axis, the one source — so a new default sink is carried without a workflow
+          # edit (a hand-listed row missed export-otlp when it became default), and
+          # `cargo xtask gate feature-sets` reds a row whose effective list misses one. The tcp wire is the floor of a bootable node:
           # a build without it boots only with a dropped-in tcp, and without one it refuses at the
           # seal ("transport `http` composes over `tcp`, which no registered transport provides"). A
           # row without the sinks refuses every config naming one as an unknown exporter. Either
           # way, the suites would test a refusal instead of the behaviour they are written for.
           # The no-tcp build is its own row below.
           - name: single plane llm
-            features: busbar/proto-llm,busbar/transport-tcp,busbar/export-prometheus,busbar/export-file,busbar/export-webhook,busbar/export-otlp
+            features: busbar/proto-llm,busbar/transport-tcp
+            default_axes: exports
             tests: -p busbar --tests --no-default-features
             scope: package
           - name: single plane mcp
-            features: busbar/plane-mcp,busbar/transport-tcp,busbar/export-prometheus,busbar/export-file,busbar/export-webhook,busbar/export-otlp
+            features: busbar/plane-mcp,busbar/transport-tcp
+            default_axes: exports
             tests: -p busbar --tests --no-default-features
             scope: package
           - name: single plane a2a
-            features: busbar/plane-a2a,busbar/transport-tcp,busbar/export-prometheus,busbar/export-file,busbar/export-webhook,busbar/export-otlp
+            features: busbar/plane-a2a,busbar/transport-tcp
+            default_axes: exports
             tests: -p busbar --tests --no-default-features
             scope: package
           - name: single plane voice
-            features: busbar/plane-voice,busbar/transport-tcp,busbar/export-prometheus,busbar/export-file,busbar/export-webhook,busbar/export-otlp
+            features: busbar/plane-voice,busbar/transport-tcp
+            default_axes: exports
             tests: -p busbar --tests --no-default-features
             scope: package
           - name: single plane decision
-            features: busbar/plane-decision,busbar/transport-tcp,busbar/export-prometheus,busbar/export-file,busbar/export-webhook,busbar/export-otlp
+            features: busbar/plane-decision,busbar/transport-tcp
+            default_axes: exports
             tests: -p busbar --tests --no-default-features
             scope: package
           # THE DROPPED-IN TRANSPORT DOOR (#3 OWNER-LOCKED, #30; ruling K8b residue / K8c): the root
@@ -2183,7 +2194,8 @@ jobs:
           # finds by kind and refuses to skip without under CI. `check` runs the same test with the
           # default (linked) row only.
           - name: dropped-in tcp transport
-            features: busbar/auth-admin-tokens,busbar/hooks-ranking,busbar/proto-llm,busbar/plane-mcp,busbar/plane-a2a,busbar/plane-voice,busbar/plane-decision,busbar/export-file,busbar/export-webhook,busbar/export-prometheus,busbar/root-admin
+            features: busbar/auth-admin-tokens,busbar/hooks-ranking,busbar/proto-llm,busbar/plane-mcp,busbar/plane-a2a,busbar/plane-voice,busbar/plane-decision,busbar/root-admin
+            default_axes: exports
             tests: -p busbar-plugin-loader -p busbar --no-default-features --test transport_dropped_in_serves
             scope: package
           # THE DROPPED-IN STORE DOOR (#2; R-FIX1, DOOR-STORE): busbar-store-memory's cdylib door is
@@ -2208,8 +2220,20 @@ jobs:
             ${{ env.CARGO_HOME }}/registry
             ${{ env.CARGO_HOME }}/git
             target
+      - name: Effective features — ${{ matrix.name }}
+        # The row's own `features:` plus, for each axis in `default_axes:`, the root manifest's
+        # default rows on that axis (scripts/linked-axis-features.sh, the one source).
+        run: |
+          set -euo pipefail
+          f="${{ matrix.features }}"
+          for axis in ${{ matrix.default_axes }}; do
+            extra="$(./scripts/linked-axis-features.sh "$axis")"
+            [ -n "$extra" ] && f="$f,$extra"
+          done
+          echo "effective features: $f"
+          echo "FS_FEATURES=$f" >> "$GITHUB_ENV"
       - name: Clippy — ${{ matrix.name }}
-        run: cargo clippy ${{ matrix.scope == 'package' && matrix.tests || '--workspace' }} --all-targets --features "${{ matrix.features }}" --locked -- -D warnings
+        run: cargo clippy ${{ matrix.scope == 'package' && matrix.tests || '--workspace' }} --all-targets --features "$FS_FEATURES" --locked -- -D warnings
       - name: Plugin cdylibs the suites dlopen
         # MEASURED, not precautionary. `cargo test -p busbar-llm` alone fails a test on the hook-test
         # plugin's cdylib not being built at target/debug/…: those batteries cross the REAL
@@ -2235,7 +2259,7 @@ jobs:
       - name: Tests — ${{ matrix.name }}
         # The OWNING crates' suites, with the feature on. Compiling the `#[cfg]`-ed code proves it is
         # valid Rust; running the suite is what proves it does anything.
-        run: cargo test ${{ matrix.tests }} --features "${{ matrix.features }}" --locked
+        run: cargo test ${{ matrix.tests }} --features "$FS_FEATURES" --locked
       - name: Latchkey Fast Cache (cargo registry + target, save)
         uses: latchkey-dev/cache-action@d0dd21912a57c7435649c77f689b68d348d8a662 # v1
         with:
