@@ -2154,23 +2154,23 @@ jobs:
           # way, the suites would test a refusal instead of the behaviour they are written for.
           # The no-tcp build is its own row below.
           - name: single plane llm
-            features: busbar/proto-llm,busbar/transport-tcp,busbar/export-prometheus,busbar/export-file,busbar/export-webhook
+            features: busbar/proto-llm,busbar/transport-tcp,busbar/export-prometheus,busbar/export-file,busbar/export-webhook,busbar/export-otlp
             tests: -p busbar --tests --no-default-features
             scope: package
           - name: single plane mcp
-            features: busbar/plane-mcp,busbar/transport-tcp,busbar/export-prometheus,busbar/export-file,busbar/export-webhook
+            features: busbar/plane-mcp,busbar/transport-tcp,busbar/export-prometheus,busbar/export-file,busbar/export-webhook,busbar/export-otlp
             tests: -p busbar --tests --no-default-features
             scope: package
           - name: single plane a2a
-            features: busbar/plane-a2a,busbar/transport-tcp,busbar/export-prometheus,busbar/export-file,busbar/export-webhook
+            features: busbar/plane-a2a,busbar/transport-tcp,busbar/export-prometheus,busbar/export-file,busbar/export-webhook,busbar/export-otlp
             tests: -p busbar --tests --no-default-features
             scope: package
           - name: single plane voice
-            features: busbar/plane-voice,busbar/transport-tcp,busbar/export-prometheus,busbar/export-file,busbar/export-webhook
+            features: busbar/plane-voice,busbar/transport-tcp,busbar/export-prometheus,busbar/export-file,busbar/export-webhook,busbar/export-otlp
             tests: -p busbar --tests --no-default-features
             scope: package
           - name: single plane decision
-            features: busbar/plane-decision,busbar/transport-tcp,busbar/export-prometheus,busbar/export-file,busbar/export-webhook
+            features: busbar/plane-decision,busbar/transport-tcp,busbar/export-prometheus,busbar/export-file,busbar/export-webhook,busbar/export-otlp
             tests: -p busbar --tests --no-default-features
             scope: package
           # THE DROPPED-IN TRANSPORT DOOR (#3 OWNER-LOCKED, #30; ruling K8b residue / K8c): the root
