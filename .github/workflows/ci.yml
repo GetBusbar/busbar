@@ -4096,6 +4096,10 @@ jobs:
 
   content-debt-gates:
     name: registered gates red on content (${{ matrix.gate }} — REPORT-ONLY in the umbrella, never softened here)
+    # `map-proof` and `sweep-coverage` stood here too until 2026-09-27; both judged scratch reports
+    # under docs/design (the map-proof corpus, the sweep slices and file verdicts) that the owner's
+    # docs/design purge deletes, so both gates were retired with them rather than re-pointed.
+    #
     # THREE REGISTERED GATES RAN NOWHERE. `unconstructed`, `map-proof` and `sweep-coverage` were in
     # the registry with no call site and no written excuse, so `cargo xtask full-gate --selftest`
     # — whose registry-vs-ci.yml SET EQUALITY is what this job satisfies — exited 1, and a gate
@@ -4127,12 +4131,12 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        gate: [unconstructed, sweep-coverage, map-proof]
+        gate: [unconstructed]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          # sweep-coverage's denominator is git's tracked set and map-proof re-runs the commands its
-          # corpus prints, some of which read history; a shallow clone would measure a different tree.
+          # Full history kept from when this job also ran sweep-coverage and map-proof (both read
+          # git's tracked set and history); unconstructed does not need it, and it costs little.
           fetch-depth: 0
       - uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
       - name: Resolve cargo home (Latchkey image sets CARGO_HOME off $HOME)
@@ -4149,18 +4153,6 @@ jobs:
         # carries both. It does not soften either — the job is red if either step is.
         if: ${{ !cancelled() && matrix.gate == 'unconstructed' }}
         run: cargo xtask gate unconstructed
-      - name: sweep-coverage self-test
-        if: matrix.gate == 'sweep-coverage'
-        run: cargo xtask gate sweep-coverage --selftest
-      - name: sweep-coverage (every tracked file carries a sweep verdict)
-        if: ${{ !cancelled() && matrix.gate == 'sweep-coverage' }}
-        run: cargo xtask gate sweep-coverage
-      - name: map-proof self-test
-        if: matrix.gate == 'map-proof'
-        run: cargo xtask gate map-proof --selftest
-      - name: map-proof (every printed figure re-derived from the command that prints it)
-        if: ${{ !cancelled() && matrix.gate == 'map-proof' }}
-        run: cargo xtask gate map-proof
 
   # EVERY REGISTERED GATE, IN ONE RUN, ON EVERY PUSH -- REPORT-ONLY IN THE UMBRELLA, NEVER SOFTENED
   # HERE (KICKOFF 13.2). `cargo xtask gate --all` is the registry's own verdict: every gate, one
@@ -4387,10 +4379,10 @@ jobs:
       - gate-all
       - plugin-proofs
       - consumers
-    # report-only: content-debt-gates -- unconstructed, map-proof and sweep-coverage are RED ON HEAD on
-    #   content that item 6b (Phase 5) drains, self-test and verdict both, and none has a
-    #   gates::REPORT_ONLY posture to score against. The job runs them plainly and goes red; the
-    #   umbrella waits for it and prints its result, and does not count it until each is green.
+    # report-only: content-debt-gates -- unconstructed is RED ON HEAD on
+    #   content that item 6b (Phase 5) drains, self-test and verdict both, and has no
+    #   gates::REPORT_ONLY posture to score against. The job runs it plainly and goes red; the
+    #   umbrella waits for it and prints its result, and does not count it until it is green.
     # report-only: gate-all -- `cargo xtask gate --all` is RED ON HEAD in the gates later phases
     #   drain (KICKOFF 13.2). The job runs it plainly and goes red on every run; the umbrella waits
     #   for it and prints its result, and does not count it until `gate --all` exits 0 on HEAD.

@@ -39,7 +39,6 @@ pub mod inventory_ref;
 pub mod kernel_token_wire_purity;
 pub mod kind_abi_lane;
 pub mod kind_isolation;
-pub mod map_proof;
 pub mod money_invariants;
 pub mod no_deferral;
 pub mod no_float_money;
@@ -63,7 +62,6 @@ pub mod settings_leak;
 pub mod ship_ready;
 pub mod standing_snapshot;
 pub mod structure_lint;
-pub mod sweep_coverage;
 pub mod teller_steps;
 pub mod tracing;
 pub mod unconstructed;
@@ -2749,21 +2747,6 @@ pub static REGISTRY: &[Registration] = &[
         tier: Tier::Fast,
         build: || Box::new(seal_witness::SealWitnessGate),
         summary: "capability proofs are exactly Pass<stage> + Grant<capability> + one kernel minter (#65/#73)",
-    },
-    Registration {
-        name: "sweep-coverage",
-        batch: 1,
-        tier: Tier::Fast,
-        build: || Box::new(sweep_coverage::SweepCoverageGate),
-        summary: "every tracked file carries a sweep verdict; the denominator is git's, not the sweep's",
-    },
-    Registration {
-        name: "map-proof",
-        batch: 2,
-        tier: Tier::Full,
-        build: || Box::new(map_proof::MapProofGate),
-        summary: "every command the map-proof corpus prints is re-run and every printed figure \
-                  re-derived; unrunnable and unbound figures are verdicts of their own",
     },
     Registration {
         name: "money-invariants",
