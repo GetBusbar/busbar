@@ -2501,6 +2501,12 @@ fn rule_deps(cx: &Ctx, crates: &[CrateInfo], reg: &KindRegistry, half: Half, shi
     // ship twin already reds every edge the architecture withholds, whatever its history.
     //
     // See [`base`] for why a base that cannot be established is RED rather than green.
+    // The cold kinds' both-ways witness is the one TEST edge a plugin-tooling crate may take on a
+    // cold kind (`cold_witness_edges`); the shipped half excuses nothing.
+    let witness = match half {
+        Half::Test => cold_witness_edges(cx, crates),
+        Half::Shipped => BTreeSet::new(),
+    };
     match base::read(cx) {
         Ok(base) => {
             for e in &measured {
@@ -2509,6 +2515,9 @@ fn rule_deps(cx: &Ctx, crates: &[CrateInfo], reg: &KindRegistry, half: Half, shi
                     continue;
                 }
                 if base.has_edge(&e.from, &e.to, half.word()) {
+                    continue;
+                }
+                if witness.contains(&(e.from.clone(), e.to.clone())) {
                     continue;
                 }
                 // THE DRAIN IS THE ONE EDGE THAT IS SUPPOSED TO BE NEW.
@@ -4762,9 +4771,78 @@ const WIRE_PERMITTED_KINDS: &[&str] = &["root", "transport"];
 /// wire, or a crate of any other kind is the finding it always was.
 const WIRE_FIXTURE_KIND: &str = "plugin-tooling";
 
-/// The crate a manifest's `[package.metadata.busbar.both-ways]` table names for kind `transport`,
-/// read line by line exactly as the loader's own `build.rs` reads that table.
+/// The crate a manifest's `[package.metadata.busbar.both-ways]` table names for kind `transport`.
 fn both_ways_transport_fixture(manifest: &str) -> Option<String> {
+    both_ways_fixture(manifest, "transport")
+}
+
+/// THE COLD KINDS' BOTH-WAYS WITNESS (ARCHITECT 2026-09-27, DOOR-STORE queue; spec #2 (4)/(5)), the
+/// cold-lane twin of [`WIRE_FIXTURE_KIND`]'s transport grant. Each row is `(the key a
+/// `[package.metadata.busbar.both-ways]` table names the kind by, the kind this table calls it)`.
+const COLD_WITNESS_KINDS: &[(&str, &str)] = &[
+    ("store", "store"),
+    ("export", "export"),
+    ("auth", "auth"),
+    ("hook", "hooks"),
+    ("secret", "secret"),
+];
+
+/// The `(from, to)` TEST edges that are a cold kind's both-ways witness, and so are not a
+/// `new-forbidden-edge`: a `plugin-tooling` crate's `[dev-dependencies]` edge to EXACTLY the crate
+/// its own `[package.metadata.busbar.both-ways]` table names for a cold kind, that crate being of
+/// that kind, and every source file of the tooling crate that names the fixture as a Rust path (its
+/// crate identifier or the `<key>_fixture` alias the table generates) being a
+/// `*_conformance_tests.rs` file — at least one. That is the witness shape #2 orders (the linked
+/// rlib and the dropped-in cdylib of one plugin, compared by a conformance test), not a widening of
+/// the plugin wall: a NORMAL edge on the same crate is the shipped half and stays the finding it
+/// always was, as does a dev-edge the table does not name, or one that any other test file uses.
+fn cold_witness_edges(cx: &Ctx, crates: &[CrateInfo]) -> BTreeSet<(String, String)> {
+    let by_name: BTreeMap<&str, &CrateInfo> = crates.iter().map(|c| (c.name.as_str(), c)).collect();
+    let mut out = BTreeSet::new();
+    for c in crates.iter().filter(|c| c.kind == Some(WIRE_FIXTURE_KIND)) {
+        let Ok(manifest) = cx.read(&c.manifest) else {
+            continue;
+        };
+        let files = cx
+            .walk(&WalkSpec::new([format!("{}/src", c.dir)]).ext("rs"))
+            .unwrap_or_default();
+        for &(key, kind) in COLD_WITNESS_KINDS {
+            let Some(fixture) = both_ways_fixture(&manifest, key) else {
+                continue;
+            };
+            let is_dev = c.dev_deps.iter().any(|d| d.pkg == fixture);
+            let of_kind = by_name.get(fixture.as_str()).and_then(|t| t.kind) == Some(kind);
+            if !is_dev || !of_kind {
+                continue;
+            }
+            let path = format!("{}::", fixture.replace('-', "_"));
+            let alias = format!("{key}_fixture");
+            let users: Vec<String> = files
+                .iter()
+                .filter(|f| f.text.contains(path.as_str()) || names_ident(&f.text, &alias))
+                .map(|f| f.rel_str())
+                .collect();
+            if !users.is_empty() && users.iter().all(|u| u.ends_with("_conformance_tests.rs")) {
+                out.insert((c.name.clone(), fixture));
+            }
+        }
+    }
+    out
+}
+
+/// Whether `text` names `ident` as a whole identifier (`use …::hook_fixture as fixture` counts;
+/// `resolve_store_fixture` does not name `store_fixture`).
+fn names_ident(text: &str, ident: &str) -> bool {
+    let is_word = |c: char| c.is_ascii_alphanumeric() || c == '_';
+    text.match_indices(ident).any(|(at, _)| {
+        !text[..at].chars().next_back().is_some_and(is_word)
+            && !text[at + ident.len()..].chars().next().is_some_and(is_word)
+    })
+}
+
+/// The crate a manifest's `[package.metadata.busbar.both-ways]` table names for `key`, read line
+/// by line exactly as the loader's own `build.rs` reads that table.
+fn both_ways_fixture(manifest: &str, key: &str) -> Option<String> {
     let mut in_table = false;
     for line in manifest.lines() {
         let code = line.split('#').next().unwrap_or("").trim();
@@ -4775,8 +4853,8 @@ fn both_ways_transport_fixture(manifest: &str) -> Option<String> {
         if !in_table {
             continue;
         }
-        if let Some((kind, krate)) = code.split_once('=') {
-            if kind.trim().trim_matches('"') == "transport" {
+        if let Some((k, krate)) = code.split_once('=') {
+            if k.trim().trim_matches('"') == key {
                 return Some(krate.trim().trim_matches('"').to_string());
             }
         }
@@ -6165,6 +6243,94 @@ impl Gate for KindIsolationGate {
                     "new-forbidden-edge",
                     "busbar-transport-tcp -> busbar-plane-llm",
                     "never introduce one",
+                ],
+            ));
+
+            // THE COLD KINDS' BOTH-WAYS WITNESS (ARCHITECT 2026-09-27, DOOR-STORE queue). The
+            // loader re-points its `hook` both-ways row at a real hook crate the base never named,
+            // takes it as a `[dev-dependencies]` edge, and records the row: the conformance test is
+            // the fixture's only user, so the edge is #2's witness and not a new forbidden edge…
+            let witness = |dev: bool, extra_user: bool| {
+                let rel = "crates/plugin-loader/Cargo.toml";
+                let fixture = "busbar-hooks-ranking = { path = \"../hooks-ranking\" }\n";
+                let mut m = cx.read(rel).unwrap_or_default().replacen(
+                    "hook = \"busbar-hook-test-plugin\"",
+                    "hook = \"busbar-hooks-ranking\"",
+                    1,
+                );
+                m = if dev {
+                    m.replacen(
+                        "busbar-hook-test-plugin = { path = \"../hook-test-plugin\" }\n",
+                        &format!("busbar-hook-test-plugin = {{ path = \"../hook-test-plugin\" }}\n{fixture}"),
+                        1,
+                    )
+                } else {
+                    m.replacen(
+                        "busbar-contract = { path = \"../busbar-contract\" }\n",
+                        &format!(
+                            "busbar-contract = {{ path = \"../busbar-contract\" }}\n{fixture}"
+                        ),
+                        1,
+                    )
+                };
+                let mut ov = Overlay::new();
+                ov.set(rel, m);
+                ov.set(
+                    REGISTRY_FILE,
+                    format!(
+                        "{}\n\n[[dep]]\nfrom    = \"busbar-plugin-loader\"\nto      = \
+                         \"busbar-hooks-ranking\"\nhalf    = \"{}\"\ncount   = \"1\"\nverdict = \
+                         \"not-allowed\"\ncite    = \"planted by the self-test\"\nwhy     = \"the \
+                         hook kind's both-ways witness\"\ndrain   = \"none\"\n",
+                        cx.read(REGISTRY_FILE).unwrap_or_default().trim_end(),
+                        if dev { "test" } else { "shipped" }
+                    ),
+                );
+                if extra_user {
+                    let t = "crates/plugin-loader/src/tests/hook_tests.rs";
+                    ov.set(
+                        t,
+                        manifest_plus(
+                            cx,
+                            t,
+                            "fn planted_user() {\n    let _ = super::both_ways::hook_fixture::open;\n}\n",
+                        ),
+                    );
+                }
+                ov
+            };
+            report.push(prove_rows_green(
+                cx,
+                subject,
+                "the loader's dev-edge to its declared cold-kind both-ways fixture, used only by \
+                 its conformance test, is #2's witness and not a new forbidden edge",
+                &[ROW_TEST_DEPS],
+                witness(true, false),
+            ));
+            // …but the SAME crate as a NORMAL dependency is a plugin the loader links into the
+            // product: the shipped half excuses nothing…
+            report.push(prove_rows_red(
+                cx,
+                subject,
+                "plugin tooling taking a NORMAL edge on its declared cold-kind fixture",
+                &[ROW_DEPS],
+                witness(false, false),
+                &[
+                    "new-forbidden-edge",
+                    "busbar-plugin-loader -> busbar-hooks-ranking",
+                ],
+            ));
+            // …and a fixture any test other than a conformance test uses is a plugin the tooling
+            // tests against, not a witness.
+            report.push(prove_rows_red(
+                cx,
+                subject,
+                "a cold-kind fixture used outside `*_conformance_tests` is not a witness",
+                &[ROW_TEST_DEPS],
+                witness(true, true),
+                &[
+                    "new-forbidden-edge",
+                    "busbar-plugin-loader -> busbar-hooks-ranking",
                 ],
             ));
 
