@@ -1069,6 +1069,9 @@ fn open_plane_refuses_an_artifact_whose_decl_preamble_carries_a_foreign_abi_majo
 /// `None` means this environment cannot produce a loadable edited image (no `codesign`, or it
 /// refused). The caller SKIPS rather than asserts — but never under CI, where the toolchain is known
 /// and a silent skip would hide the loss of the ONLY fail-closed proof on this path.
+// Off macOS the first cfg block is the whole body, so its `return` is the tail; the macOS block
+// below needs it to be a statement. One body, two platforms: the lint is wrong on one of them.
+#[cfg_attr(not(target_os = "macos"), allow(clippy::needless_return))]
 fn relink_for_this_platform(bytes: &[u8], tag: &str) -> Option<Vec<u8>> {
     #[cfg(not(target_os = "macos"))]
     {

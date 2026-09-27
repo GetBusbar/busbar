@@ -285,3 +285,136 @@ fn pid_liveness() {
     assert!(pid_alive(std::process::id()));
     assert!(!pid_alive(4_294_967_294));
 }
+
+/// Env marker: set in the child process [`a_replaced_image_on_a_reused_fd_runs_its_own_bytes`]
+/// re-executes itself in, so only the child runs the load/unload/load body.
+#[cfg(target_os = "linux")]
+const REUSED_FD_CHILD: &str = "BUSBAR_STAGE_REUSED_FD_CHILD";
+
+/// Build a tiny shared object from C `src` with the system C compiler (the same `cc` rustc links
+/// with on linux-gnu, so it is present wherever this crate builds). `extra` adds linker flags.
+#[cfg(target_os = "linux")]
+fn build_probe_library(dir: &std::path::Path, stem: &str, src: &str, extra: &[&str]) -> Vec<u8> {
+    let c = dir.join(format!("{stem}.c"));
+    let so = dir.join(format!("{stem}.so"));
+    std::fs::write(&c, src).expect("write probe source");
+    let out = std::process::Command::new("cc")
+        .args(["-shared", "-fPIC", "-o"])
+        .arg(&so)
+        .arg(&c)
+        .args(extra)
+        .output()
+        .expect("run cc (the system C compiler rustc links with)");
+    assert!(
+        out.status.success(),
+        "cc failed building {stem}: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    std::fs::read(&so).expect("read probe library")
+}
+
+/// THE REPLACED-PLUGIN DEFECT (PORT-EXT-B; spec #40, code-signing integrity). Linux stages a verified
+/// library as a memfd and `dlopen`s it by the name `/proc/self/fd/N`. glibc's `dlopen` first matches
+/// the NAME against every object still in the link map, and an image routinely outlives its handle
+/// (`DF_1_NODELETE`, or a Rust cdylib whose thread-local destructors ran on a plugin worker — glibc
+/// will not unload it). So when plugin A is unloaded, its fd number is closed and handed out again,
+/// and a replacement B is staged on that SAME number, `dlopen("/proc/self/fd/N")` returned A's image:
+/// the verified new bytes never ran, the old ones answered in their place.
+///
+/// A is built `-z nodelete` (the deterministic form of "the image outlives its handle"); A and B
+/// both export `busbar_stage_probe` (A answers 1, B answers 2) and each exports a symbol the other
+/// lacks. After A is unloaded and B is loaded, B's handle must answer with B's bytes.
+///
+/// The body runs in a CHILD of this test binary (`--exact`, one test thread): fd numbers are
+/// process-wide, and in the shared harness a sibling test could take A's freed number first, which
+/// would let the defective loader pass by luck. Alone in its process, the lowest free fd after A's
+/// memfd closes IS A's number, so on the defective loader B is staged on exactly A's fd, every run.
+///
+/// Linux-only: the memfd + `/proc/self/fd/N` path exists only there. macOS/Windows stage into a
+/// per-process directory under a monotonic, never-reused file name, so no name is ever reused.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_replaced_image_on_a_reused_fd_runs_its_own_bytes() {
+    if std::env::var_os(REUSED_FD_CHILD).is_none() {
+        let out = std::process::Command::new(std::env::current_exe().expect("test binary path"))
+            .args([
+                "--exact",
+                "stage::tests::a_replaced_image_on_a_reused_fd_runs_its_own_bytes",
+                "--test-threads=1",
+                "--nocapture",
+            ])
+            .env(REUSED_FD_CHILD, "1")
+            .output()
+            .expect("re-exec the test binary");
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            out.status.success() && stdout.contains("1 passed"),
+            "the replaced-plugin child failed (status {:?}):\n--- stdout\n{stdout}\n--- stderr\n{stderr}",
+            out.status
+        );
+        return;
+    }
+
+    let dir = std::env::temp_dir().join(format!(
+        "busbar-stage-reused-fd-{}-{}",
+        std::process::id(),
+        random_hex(4)
+    ));
+    std::fs::create_dir(&dir).expect("probe build dir");
+    let a = build_probe_library(
+        &dir,
+        "probe_a",
+        "int busbar_stage_probe(void) { return 1; }\nint busbar_stage_only_a(void) { return 1; }\n",
+        &["-Wl,-z,nodelete"],
+    );
+    let b = build_probe_library(
+        &dir,
+        "probe_b",
+        "int busbar_stage_probe(void) { return 2; }\nint busbar_stage_only_b(void) { return 2; }\n",
+        &[],
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+
+    type Probe = unsafe extern "C" fn() -> i32;
+
+    // Load A and prove it is A.
+    let (lib_a, staged_a) = load_library_from_bytes(&a, "probe-a").expect("stage plugin A");
+    // SAFETY: the symbol is the `int (void)` function compiled above.
+    let from_a = unsafe {
+        lib_a
+            .get::<Probe>(b"busbar_stage_probe")
+            .expect("A's probe")()
+    };
+    assert_eq!(from_a, 1, "plugin A answers with A's bytes");
+
+    // Unload A the way every holder does: the library first (on the FFI worker), then its backing.
+    crate::dlclose_on_worker(lib_a);
+    drop(staged_a);
+
+    // Load the REPLACEMENT. Its bytes, and only its bytes, must answer.
+    let (lib_b, staged_b) = load_library_from_bytes(&b, "probe-b").expect("stage plugin B");
+    // SAFETY: as above.
+    let from_b = unsafe {
+        lib_b
+            .get::<Probe>(b"busbar_stage_probe")
+            .expect("B's probe")()
+    };
+    assert_eq!(
+        from_b, 2,
+        "plugin B was loaded but plugin A's resident image answered: the replacement's verified \
+         bytes never ran"
+    );
+    // SAFETY: as above.
+    let only_b = unsafe { lib_b.get::<Probe>(b"busbar_stage_only_b") };
+    assert!(
+        only_b.is_ok(),
+        "B's own symbol must resolve on B's handle (it resolved against A's image instead)"
+    );
+    // SAFETY: as above.
+    let only_a = unsafe { lib_b.get::<Probe>(b"busbar_stage_only_a") };
+    assert!(only_a.is_err(), "A's symbol must not answer on B's handle");
+
+    crate::dlclose_on_worker(lib_b);
+    drop(staged_b);
+}
