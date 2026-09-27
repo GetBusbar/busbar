@@ -2712,8 +2712,8 @@ jobs:
     # BOUNDED — see "EVERY JOB IS BOUNDED" at the top of this file. NEW JOB, no run history yet:
     # four small plugin workspaces (store-sqlite compiles a bundled SQLite) and one loader test
     # binary, cold; since the metrics-reporting hook joined, a fifth plugin (its compression engine
-    # compiles tokenizers and tree-sitter grammars) and the busbar binary with one black-box test,
-    # cold. Re-measure to p95 x1.5 once ten green runs exist.
+    # compiles tokenizers and tree-sitter grammars), cold. Re-measure to p95 x1.5 once ten green runs
+    # exist.
     timeout-minutes: 60
     env:
       CARGO_TARGET_DIR: ${{ github.workspace }}/plugin-proofs-target
@@ -2722,8 +2722,8 @@ jobs:
       STORE_SQLITE_REV: 04f4c9ee0a151b3d9689553f0fa72ec6429f16b2
       WEBREQUEST_HOOK_REV: 2861fa4921e95f03c553444627e08409dcf900ab
       # The real plugin that reports its OWN metrics on its status reply (GetBusbar/headroom-hook,
-      # `dev` after its busbar-contract port): the proof that a third-party plugin's series reach the
-      # hook scrape attributed by the host. Bump deliberately, like any pin.
+      # `dev` after its busbar-contract port): the proof that a third-party plugin's own series cross
+      # the dropped-in door. Bump deliberately, like any pin.
       HEADROOM_HOOK_REV: 1db9747b14d253e164f0da075b1fe6f697ee9290
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -2801,31 +2801,19 @@ jobs:
         working-directory: headroom-hook
         # package-selector: headroom-hook -- .github/workflows/ci.yml -- GetBusbar/headroom-hook is its own checkout; `working-directory: headroom-hook` resolves this selector against that workspace, never against this one
         run: cargo build --locked -p headroom-hook --lib
-      - name: Dlopen all four through the dropped-in door (plugin_proof_tests)
+      - name: Dlopen all five through the dropped-in door (plugin_proof_tests)
         working-directory: busbar
         env:
           BUSBAR_PLUGIN_PROOF_DIR: ${{ github.workspace }}/plugin-proofs-target/debug
         run: |
           set -euo pipefail
           # FLOOR ON THE MATCH COUNT: the proofs are `#[ignore]`d, so this is their only execution,
-          # and a filter that matches nothing exits 0 having proven nothing. Seven: the five real-plugin
+          # and a filter that matches nothing exits 0 having proven nothing. Eight: the six real-plugin
           # proofs, the task-state restart over the real durable store, and the two-node store proof's
           # second node (a no-op when run on its own).
           out="$(cargo test --locked -p busbar-plugin-loader --lib plugin_proof_tests -- --ignored 2>&1 | tee /dev/stderr)"
-          echo "$out" | grep -qE 'test result: ok\. 7 passed' || {
-            echo "::error::plugin_proof_tests did not run exactly the five real-plugin proofs, the task-state restart and the second node"
-            exit 1
-          }
-      - name: A third-party plugin's own metrics on the hook scrape (the real metrics-reporting hook)
-        working-directory: busbar
-        env:
-          BUSBAR_PLUGIN_PROOF_DIR: ${{ github.workspace }}/plugin-proofs-target/debug
-        run: |
-          set -euo pipefail
-          # FLOOR ON THE MATCH COUNT, as above: the proof is `#[ignore]`d and this is its only run.
-          out="$(cargo test --locked -p busbar --test hook_plugin_metrics_on_scrape -- --ignored 2>&1 | tee /dev/stderr)"
-          echo "$out" | grep -qE 'test result: ok\. 1 passed' || {
-            echo "::error::hook_plugin_metrics_on_scrape did not run its one real-plugin proof"
+          echo "$out" | grep -qE 'test result: ok\. 8 passed' || {
+            echo "::error::plugin_proof_tests did not run exactly the six real-plugin proofs, the task-state restart and the second node"
             exit 1
           }
 
