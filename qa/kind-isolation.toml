@@ -165,13 +165,6 @@ reason = "legacy drain: the retiring MCP engine's tests drive the admin surface 
 # written here is what 1.6.0 still has to delete.
 
 [[edge]]
-from = "auth"
-to = "auth"
-cite = "none. ARCHITECTURE.md 1.1 — three blind axes, one small kernel: a crate of kind auth has no clause that lets it name auth vocabulary. Every hit is a coupling to delete."
-why = "crates of kind auth naming auth vocabulary: auth package names in any spelling, the kind-qualified id (auth-<id>), and — where auth is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
-drain = "delete the auth name from the auth crate: a auth reaches auth through the contract face it is written against, never by naming it. Every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
-
-[[edge]]
 from = "codec"
 to = "codec"
 cite = "none. ARCHITECTURE.md 1.1 — three blind axes, one small kernel: a crate of kind codec has no clause that lets it name codec vocabulary. Every hit is a coupling to delete."
@@ -359,13 +352,6 @@ to = "transport"
 cite = "none. ARCHITECTURE.md 1.1 — three blind axes, one small kernel: a crate of kind plane has no clause that lets it name transport vocabulary. Every hit is a coupling to delete."
 why = "crates of kind plane naming transport vocabulary: transport package names in any spelling, the kind-qualified id (transport-<id>), and — where transport is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
 drain = "delete the transport name from the plane crate: a plane reaches transport through the contract face it is written against, never by naming it. Every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
-
-[[edge]]
-from = "plugin-tooling"
-to = "auth"
-cite = "none by clause. The loader, packer, signer and SDK are the tools that BUILD plugins, so a auth name in them is a tool naming its subject; ARCHITECTURE.md 7 keeps them a kind of their own for exactly that reason, and the number says how much of the subject leaked into the tool."
-why = "crates of kind plugin-tooling naming auth vocabulary: auth package names in any spelling, the kind-qualified id (auth-<id>), and — where auth is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
-drain = "delete the auth name from the plugin-tooling crate: a plugin-tooling reaches auth through the contract face it is written against, never by naming it. Every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
 
 [[edge]]
 from = "plugin-tooling"
@@ -559,7 +545,7 @@ drain = "delete the transport name from the transport crate: a transport reaches
 [[cell]]
 crate = "busbar"
 kind = "auth"
-count = "26"
+count = "24"
 
 [[cell]]
 crate = "busbar"
@@ -640,11 +626,6 @@ count = "11"
 crate = "busbar-a2a"
 kind = "transport"
 count = "1274"
-
-[[cell]]
-crate = "busbar-auth-static-plugin"
-kind = "auth"
-count = "2"
 
 [[cell]]
 crate = "busbar-contract"
@@ -905,11 +886,6 @@ count = "61"
 crate = "busbar-plugin-example-plane"
 kind = "plugin-tooling"
 count = "3"
-
-[[cell]]
-crate = "busbar-plugin-loader"
-kind = "auth"
-count = "1"
 
 [[cell]]
 crate = "busbar-plugin-loader"
@@ -1459,16 +1435,6 @@ verdict = "tcb"
 cite    = "ARCHITECTURE.md 1.4 \"`loader` and `abi` are TCB crates, not kinds.\" The loader's drop-in conformance test dev-depends on the fixture's rlib for the COMPILED-IN PLANE_DECL reference it compares the DROPPED-IN decl against; a plugin-tooling-to-plugin-tooling test edge inside the trusted computing base."
 why     = "busbar-plugin-loader names busbar-plugin-example-plane: declared dev in the test graph so plane_conformance_tests can link the compiled-in PLANE_DECL, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
 drain   = "none while the loader and the plugin tooling are outside the kind system (ARCHITECTURE.md 1.4: they are not kinds). The drain is the ruling that gives them one; until it lands this row holds the number."
-
-[[dep]]
-from    = "busbar-plugin-loader"
-to      = "busbar-auth-static-plugin"
-half    = "test"
-count   = "1"
-verdict = "not-allowed"
-cite    = "BUSBAR-1.6.0.md #2 (OWNER-LOCKED), THE COST OF A REAL AUTH WITNESS steps (4) and (5): the both-ways witness of a kind is a path dev-dependency from crates/plugin-loader/Cargo.toml on the kind's [\"cdylib\", \"rlib\"] fixture (step 4) and a conformance test in crates/plugin-loader/src/tests/ that links the rlib and dlopens the cdylib (step 5). The precedent is the export fixture: #2 names busbar-plugin-loader -> busbar-export-example-plugin, a test edge of exactly this shape, as the enforcing witness, and the architect's K5-residue ruling (2026-09-25) applies that admission to every kind's fixture. `plugin-tooling -> auth` is in neither ARCHITECTURE_ALLOWED nor ARCHITECTURE_TCB, so the verdict is the one the architecture implies; the row records the edge #2 orders, it does not grant a class."
-why     = "busbar-plugin-loader names busbar-auth-static-plugin: declared dev in the test graph so auth_conformance_tests can link the COMPILED-IN `auth` fixture (its rlib) and compare it against the same crate's DROPPED-IN cdylib, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
-drain   = "none while #2 (OWNER-LOCKED) names this edge as the witness's step (4): deleting it deletes the `auth` kind's both-ways proof. The row holds the number, so a second declaration is still a landing that has to say why."
 
 [[dep]]
 from    = "busbar-plugin-loader"

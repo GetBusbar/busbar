@@ -61,15 +61,34 @@ pub(crate) fn statement(kind: &str, name: &str, alias: &str, abi_version: u32) -
     }
 }
 
-/// The in-tree `cdylib` of `crate_snake` in this target dir (uplifted or under `deps`, newest wins).
-/// Under CI a missing artifact is a failure, never a skip: this is a both-ways proof.
+/// The `cdylib` of `crate_snake` in this target dir, newest wins: uplifted, under `deps` by its
+/// exact name, or under `deps` WITH a metadata hash (`lib<snake>-<hex>.<ext>`) — the only place a
+/// fixture pulled from its own repo as a git dependency is ever built. Under CI a missing artifact
+/// is a failure, never a skip: this is a both-ways proof.
 pub(crate) fn cdylib(crate_snake: &str) -> Option<PathBuf> {
     let found = (|| {
         let exe = std::env::current_exe().ok()?;
         let profile = exe.parent()?.parent()?;
         let name = crate::plugin_library_filename(crate_snake);
-        [profile.join(&name), profile.join("deps").join(&name)]
+        let (prefix, suffix) = name.split_once(crate_snake)?;
+        let is_lib = |f: &str| {
+            f.strip_prefix(prefix)
+                .and_then(|f| f.strip_suffix(suffix))
+                .and_then(|f| f.strip_prefix(crate_snake))
+                .is_some_and(|stem| {
+                    stem.is_empty()
+                        || stem.strip_prefix('-').is_some_and(|h| {
+                            !h.is_empty() && h.bytes().all(|b| b.is_ascii_hexdigit())
+                        })
+                })
+        };
+        let in_deps = std::fs::read_dir(profile.join("deps"))
             .into_iter()
+            .flatten()
+            .filter_map(|e| e.ok().map(|e| e.path()))
+            .filter(|p| p.file_name().and_then(|f| f.to_str()).is_some_and(is_lib));
+        std::iter::once(profile.join(&name))
+            .chain(in_deps)
             .filter_map(|p| Some((std::fs::metadata(&p).ok()?.modified().ok()?, p)))
             .max()
             .map(|(_, p)| p)

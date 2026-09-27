@@ -11,8 +11,10 @@
 //!   `auth.chain` refuses to BOOT (the same config validation every transport runs); a configured
 //!   chain with no `BUSBAR_MCP_STDIO_CREDENTIAL`, or with one the admission refuses, **exits
 //!   nonzero without serving a single frame** — the stdio spelling of the HTTP door's `401`;
-//! * a GOVERNED SESSION end to end: the credential is admitted by a REAL auth-chain plugin loaded
-//!   over the REAL plugin pipeline, `role_bindings` binds the session to a budget-capped group,
+//! * a GOVERNED SESSION end to end: the credential — a JWT a local issuer signed — is verified by a
+//!   REAL token-verifying auth plugin (GetBusbar/auth-oidc, against the issuer's JWKS on a
+//!   certificate-verified loopback endpoint) loaded over the REAL plugin pipeline, `role_bindings` binds the session to a
+//!   budget-capped group,
 //!   the operator's `ask_caller` is driven as LIVE `elicitation/create` requests over the pipes,
 //!   and **the call over budget is refused with the budget named** — governance applied to a
 //!   child process, watched from outside it;
@@ -71,19 +73,21 @@ fn fixture_dir(tag: &str) -> PathBuf {
     d
 }
 
-/// A structurally-valid JWT bound to `aud` — what the audience pre-filter reads. The signature is
-/// junk on purpose: the CHAIN is what verifies possession here (the static-auth plugin compares
-/// the whole string), and the pre-filter only ever narrows.
-fn jwt_with_aud(aud: &str) -> String {
-    use base64::Engine as _;
-    let b64 = |v: &serde_json::Value| {
-        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(serde_json::to_vec(v).unwrap())
-    };
-    format!(
-        "{}.{}.e2e-sig",
-        b64(&serde_json::json!({ "alg": "none" })),
-        b64(&serde_json::json!({ "aud": aud, "sub": "e2e" })),
-    )
+/// THE LOCAL ISSUER, one per test process: the auth module's OWN test issuer (its logic crate's
+/// `testkit` feature) — an ES256 key, its JWKS served over a certificate-verified loopback endpoint
+/// the module trusts through `ca_cert_pem`, and genuinely signed tokens. The child `busbar` process's
+/// dropped-in module does the whole fetch and the whole verification.
+fn issuer() -> &'static busbar_auth_oidc::testkit::Issuer {
+    static ONE: std::sync::OnceLock<busbar_auth_oidc::testkit::Issuer> = std::sync::OnceLock::new();
+    ONE.get_or_init(|| {
+        busbar_auth_oidc::testkit::Issuer::start("https://issuer.e2e.invalid", "e2e-issuer")
+    })
+}
+
+/// A JWT for principal `e2e` with role `tester`, bound to `aud` and signed by the local issuer —
+/// what the audience pre-filter reads and the auth module verifies.
+fn token_for(aud: &str) -> String {
+    issuer().mint("e2e", &["tester"], aud)
 }
 
 /// RECORD A SKIP, LOUDLY AND DURABLY — never a silent pass.
@@ -146,37 +150,47 @@ fn record_skip(reason: &str) {
     );
 }
 
-/// Package the REAL `busbar-auth-static-plugin` cdylib (built into this workspace's target dir)
-/// into an unsigned `kind: auth` tarball in the fixture's plugins dir. `false` when the cdylib is
-/// not built — a skip locally, a hard failure under CI, the same posture
+/// Package the REAL `busbar-auth-oidc-plugin` cdylib (GetBusbar/auth-oidc, a pinned git
+/// dev-dependency of this crate, so the build leaves it under `deps/` with a metadata hash) into an
+/// unsigned `kind: auth` tarball in the fixture's plugins dir. `false` when the cdylib is not built —
+/// a skip locally, a hard failure under CI, the same posture busbar-kernel's
 /// `auth/tests/plugin_chain_tests.rs` takes for the same artifact.
-fn install_static_auth_plugin(dir: &Path) -> bool {
+fn install_auth_plugin(dir: &Path) -> bool {
     let candidate = (|| {
         let exe = std::env::current_exe().ok()?;
         let profile_dir = exe.parent()?.parent()?;
-        let name = busbar_plugin_loader::plugin_library_filename("busbar_auth_static_plugin");
-        let uplifted = profile_dir.join(&name);
-        let raw = profile_dir.join("deps").join(&name);
-        [uplifted, raw]
+        let snake = "busbar_auth_oidc_plugin";
+        let file = busbar_plugin_loader::plugin_library_filename(snake);
+        let (prefix, suffix) = file.split_once(snake)?;
+        let is_lib = |f: &str| {
+            f.strip_prefix(prefix)
+                .and_then(|f| f.strip_suffix(suffix))
+                .and_then(|f| f.strip_prefix(snake))
+                .is_some_and(|stem| {
+                    stem.is_empty()
+                        || stem.strip_prefix('-').is_some_and(|h| {
+                            !h.is_empty() && h.bytes().all(|b| b.is_ascii_hexdigit())
+                        })
+                })
+        };
+        let in_deps = std::fs::read_dir(profile_dir.join("deps"))
             .into_iter()
-            .filter_map(|p| {
-                std::fs::metadata(&p)
-                    .and_then(|m| m.modified())
-                    .ok()
-                    .map(|mtime| (p, mtime))
-            })
-            .max_by_key(|(_, mtime)| *mtime)
-            .map(|(p, _)| p)
+            .flatten()
+            .filter_map(|e| e.ok().map(|e| e.path()))
+            .filter(|p| p.file_name().and_then(|f| f.to_str()).is_some_and(is_lib));
+        std::iter::once(profile_dir.join(&file))
+            .chain(in_deps)
+            .filter_map(|p| Some((std::fs::metadata(&p).ok()?.modified().ok()?, p)))
+            .max()
+            .map(|(_, p)| p)
     })();
     let Some(path) = candidate else {
-        record_skip(
-            "static-auth plugin cdylib not built (cargo build -p busbar-auth-static-plugin)",
-        );
+        record_skip("auth-oidc plugin cdylib not built (cargo test -p busbar builds it)");
         return false;
     };
-    let lib = std::fs::read(&path).expect("read the static-auth cdylib");
+    let lib = std::fs::read(&path).expect("read the auth-oidc cdylib");
     let m = busbar_plugin_loader::sign::Manifest {
-        name: "e2e-auth-static".into(),
+        name: "e2e-idp-module".into(),
         alias: "e2e-idp".into(),
         kind: "auth".into(),
         version: "1.6.0".into(),
@@ -197,7 +211,7 @@ fn install_static_auth_plugin(dir: &Path) -> bool {
         declares: Default::default(),
     };
     let bytes = busbar_plugin_loader::tarball::package(&m, "lib.so", &lib).unwrap();
-    std::fs::write(dir.join("plugins").join("e2e-auth-static.tar.gz"), bytes).unwrap();
+    std::fs::write(dir.join("plugins").join("e2e-idp-module.tar.gz"), bytes).unwrap();
     true
 }
 
@@ -228,9 +242,15 @@ models:
     .unwrap();
 }
 
-/// The governed deployment: the static-auth plugin admits `token` as principal `e2e` with role
-/// `tester`; `bindings` decides what that role earns.
-fn governed_config(dir: &Path, token: &str, bindings_and_more: &str) -> String {
+/// The governed deployment: the dropped-in auth module (provider `idp`) verifies tokens the local
+/// issuer signed for the canonical audience and admits principal `e2e` with role `tester`;
+/// `bindings` decides what that role earns.
+fn governed_config(dir: &Path, bindings_and_more: &str) -> String {
+    let settings: String = issuer()
+        .settings(canonical())
+        .into_iter()
+        .map(|(k, v)| format!("      {k}: {v}\n"))
+        .collect();
     format!(
         r#"plugins:
   enabled: true
@@ -238,14 +258,11 @@ fn governed_config(dir: &Path, token: &str, bindings_and_more: &str) -> String {
   trust:
     allow_unsigned: true
 identity-providers:
-  statauth:
-    module: e2e-auth-static
+  idp:
+    module: e2e-idp-module
     settings:
-      token: "{token}"
-      id: e2e
-      roles: [tester]
-auth:
-  chain: [statauth]
+{settings}auth:
+  chain: [idp]
   signing_key: {{ env: BUSBAR_SIGNING_KEY }}
 {bindings_and_more}"#,
         plugins = dir.join("plugins").display(),
@@ -393,11 +410,10 @@ fn a_door_deployment_with_an_empty_chain_refuses_to_boot() {
 #[test]
 fn a_governed_deployment_refuses_an_uncredentialed_stdio_session() {
     let dir = fixture_dir("denied-absent");
-    if !install_static_auth_plugin(&dir) {
+    if !install_auth_plugin(&dir) {
         return;
     }
-    let token = jwt_with_aud(canonical());
-    write_configs(&dir, &governed_config(&dir, &token, ""));
+    write_configs(&dir, &governed_config(&dir, ""));
     let mut child = spawn(&dir, None);
     let code = wait_bounded(&mut child.child, Duration::from_secs(120));
     assert_ne!(code, 0, "a governed deployment must not serve unattributed");
@@ -418,12 +434,13 @@ fn a_governed_deployment_refuses_an_uncredentialed_stdio_session() {
 #[test]
 fn a_governed_deployment_refuses_a_wrong_audience_credential() {
     let dir = fixture_dir("denied-aud");
-    if !install_static_auth_plugin(&dir) {
+    if !install_auth_plugin(&dir) {
         return;
     }
-    let token = jwt_with_aud(canonical());
-    write_configs(&dir, &governed_config(&dir, &token, ""));
-    let wrong = jwt_with_aud(surface("wrong_audience_uri"));
+    write_configs(&dir, &governed_config(&dir, ""));
+    // Signed by the SAME issuer the module trusts — only the audience is wrong, so the refusal can
+    // only be the audience rule's.
+    let wrong = token_for(surface("wrong_audience_uri"));
     let mut child = spawn(&dir, Some(&wrong));
     let code = wait_bounded(&mut child.child, Duration::from_secs(120));
     assert_ne!(code, 0);
@@ -442,17 +459,13 @@ fn a_governed_deployment_refuses_a_wrong_audience_credential() {
 #[test]
 fn a_budgeted_stdio_session_serves_within_budget_and_refuses_over_it() {
     let dir = fixture_dir("budget");
-    if !install_static_auth_plugin(&dir) {
+    if !install_auth_plugin(&dir) {
         return;
     }
-    let token = jwt_with_aud(canonical());
+    let token = token_for(canonical());
     write_configs(
         &dir,
-        &governed_config(
-            &dir,
-            &token,
-            include_str!("fixtures/stdio_budget_bindings.yaml"),
-        ),
+        &governed_config(&dir, include_str!("fixtures/stdio_budget_bindings.yaml")),
     );
     let mut child = spawn(&dir, Some(&token));
 
@@ -528,11 +541,11 @@ fn a_budgeted_stdio_session_serves_within_budget_and_refuses_over_it() {
 #[test]
 fn a_roleless_admitted_credential_is_refused_without_serving_a_frame() {
     let dir = fixture_dir("roleless");
-    if !install_static_auth_plugin(&dir) {
+    if !install_auth_plugin(&dir) {
         return;
     }
-    let token = jwt_with_aud(canonical());
-    write_configs(&dir, &governed_config(&dir, &token, ""));
+    let token = token_for(canonical());
+    write_configs(&dir, &governed_config(&dir, ""));
     let mut child = spawn(&dir, Some(&token));
     let code = wait_bounded(&mut child.child, Duration::from_secs(120));
     assert_ne!(
@@ -561,17 +574,16 @@ fn a_roleless_admitted_credential_is_refused_without_serving_a_frame() {
 #[test]
 fn a_bound_session_serves_and_eof_with_a_live_subscription_exits_promptly() {
     let dir = fixture_dir("bound");
-    if !install_static_auth_plugin(&dir) {
+    if !install_auth_plugin(&dir) {
         return;
     }
-    let token = jwt_with_aud(canonical());
+    let token = token_for(canonical());
     write_configs(
         &dir,
         &governed_config(
             &dir,
-            &token,
             r#"  role_bindings:
-    statauth:
+    idp:
       tester: {}
 "#,
         ),

@@ -439,6 +439,17 @@ busbar-export-prometheus-plugin = { git = "https://github.com/GetBusbar/export-p
 # cdylib crate at the SAME pinned rev as the linked `busbar-export-webhook` edge above, so the test
 # drops in the library a signed tarball of the sink carries next to the row the build links.
 busbar-export-webhook-plugin = { git = "https://github.com/GetBusbar/export-webhook", rev = "5e0170432aa2dc7640c8b6f6e89c9d38edad1df0" }
+# The REAL token-verifying auth module the dropped-in auth proofs load (R-FIX2; the owner's FIXTURES
+# ruling: real plugins are the proofs): GetBusbar/auth-oidc's cdylib crate at a pinned rev. Nothing
+# links it; the dev edge is what makes this crate's test build carry its cdylib (under `deps/`,
+# hashed), which the child-process session battery signs into a temp `plugins/` directory and drives
+# with JWTs a local issuer signs. Its busbar-contract resolves to this tree through the `[patch]`
+# table in the workspace manifest.
+busbar-auth-oidc-plugin = { git = "https://github.com/GetBusbar/auth-oidc", rev = "9ff64ff4d74bdd4d043ed7200d8771389810d19b" }
+# The local issuer those proofs verify against: the module's OWN test issuer (its logic crate's
+# `testkit` feature — an ES256 key, its JWKS served over a certificate-verified loopback endpoint the
+# module trusts through `ca_cert_pem`, and genuinely signed tokens), at the SAME rev.
+busbar-auth-oidc = { git = "https://github.com/GetBusbar/auth-oidc", rev = "9ff64ff4d74bdd4d043ed7200d8771389810d19b", features = ["testkit"] }
 # That proof calls the router it built as the tower service it is (`ServiceExt::oneshot`). The
 # normal-edge `tower` above is `root-admin`'s own and optional, so a build without `root-admin` (every
 # single-plane build) would not compile the test; the test's edge is its own, unconditional here.

@@ -11,7 +11,7 @@ fn key(seed: u8) -> SigningKey {
 }
 
 /// After the auth ABI v1→2 bump (and v2→3, the enveloped wire) the loader floor MUST still admit
-/// v1 — a pre-built v1 auth plugin (verify-only, e.g. `auth-static-plugin`) keeps loading. The
+/// v1 — a pre-built v1 auth plugin (a verify-only module built against 1.5.x) keeps loading. The
 /// supported range is the inclusive `[1, 3]`.
 #[test]
 fn supported_abi_auth_floor_admits_v1() {

@@ -103,12 +103,14 @@ busbar-store-example-plugin = { path = "../store-example-plugin" }
 # "FIXTURES": "real plugins are the examples"). The secret kind is proven by the REAL plugin repo
 # (GetBusbar/hashicorp-vault) — `plugin_proof_tests` dlopens its built cdylib from
 # `BUSBAR_PLUGIN_PROOF_DIR`, run by ci.yml's `plugin-proofs` job.
-# The `kind: auth` BOTH-WAYS fixture — #2's auth witness, step (4) (OWNER-LOCKED): its `rlib` gives the
-# test the COMPILED-IN module (its `pub fn open`, driven through the `dispatch_compiled_in` twin
-# `export_auth_plugin!` emits) and its `BUSBAR_COLD_ENTRY` (the linked door); its `cdylib` is the
-# dropped-in door. `auth_conformance_tests` requires the two to be one plugin — the auth kind's first
-# both-ways witness at any tag.
-busbar-auth-static-plugin = { path = "../auth-static-plugin" }
+# The `kind: auth` BOTH-WAYS witness — #2's auth witness, step (4) (OWNER-LOCKED) — is a REAL plugin, not
+# a fixture (owner, 1.6.0-QUESTIONS.md "FIXTURES": "real plugins are the examples"; R-FIX2): the
+# token-verifying OIDC module from its own repo (GetBusbar/auth-oidc) at a pinned rev. Its `rlib` gives
+# the test the COMPILED-IN module (its `pub fn open`, driven through the `dispatch_compiled_in` twin
+# `export_login_plugin!` emits) and its `BUSBAR_COLD_ENTRY` (the linked door); its `cdylib` (built
+# under `deps/`, hashed) is the dropped-in door. `auth_conformance_tests` requires the two to be one
+# plugin. Its busbar-contract resolves to this tree through the workspace `[patch]` table.
+busbar-auth-oidc-plugin = { git = "https://github.com/GetBusbar/auth-oidc", rev = "9ff64ff4d74bdd4d043ed7200d8771389810d19b" }
 # The `kind: hook` BOTH-WAYS fixture, on the same terms (`hook_conformance_tests`).
 busbar-hook-test-plugin = { path = "../hook-test-plugin" }
 # The `kind: transport` BOTH-WAYS fixture (#3, OWNER-LOCKED: a transport is swappable, compiled in
@@ -143,7 +145,7 @@ libc = { workspace = true }
 [package.metadata.busbar.both-ways]
 store = "busbar-store-example-plugin"
 export = "busbar-export-example-plugin"
-auth = "busbar-auth-static-plugin"
+auth = "busbar-auth-oidc-plugin"
 hook = "busbar-hook-test-plugin"
 # A HOT kind's fixture: its linked door is its `#[repr(C)]` decl, not a cold entry, so `build.rs`
 # emits only its crate alias and its cdylib name for this row. It is also the one wire crate this

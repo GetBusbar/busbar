@@ -341,6 +341,16 @@ busbar-substrate-values = { path = "../busbar-substrate-values", features = ["te
 # kernel names no export module; its tests need one on the axis). Pulled from its own repo at the SAME
 # pinned rev the composition root links.
 busbar-export-prometheus = { git = "https://github.com/GetBusbar/export-prometheus", rev = "087bbcc6a9bafc63591799770407a478f2742027" }
+# The REAL token-verifying auth module `auth/tests/plugin_chain_tests.rs` loads through the dropped-in
+# door (R-FIX2; the owner's FIXTURES ruling: real plugins are the proofs): GetBusbar/auth-oidc's cdylib
+# crate at the SAME pinned rev the composition root's tests use. Nothing links it; this edge is what
+# makes `cargo test -p busbar-kernel` build its cdylib (under `deps/`, hashed), which the tests sign
+# into a temp `plugins/` directory and drive with JWTs a local issuer signs.
+busbar-auth-oidc-plugin = { git = "https://github.com/GetBusbar/auth-oidc", rev = "9ff64ff4d74bdd4d043ed7200d8771389810d19b" }
+# ...and the issuer those tokens come from: the module's OWN test issuer (its logic crate's `testkit`
+# feature — an ES256 key, its JWKS served over a certificate-verified loopback endpoint the module
+# trusts through `ca_cert_pem`, and genuinely signed tokens), at the SAME rev.
+busbar-auth-oidc = { git = "https://github.com/GetBusbar/auth-oidc", rev = "9ff64ff4d74bdd4d043ed7200d8771389810d19b", features = ["testkit"] }
 tokio = { workspace = true, features = ["test-util"] }
 reqwest = { workspace = true, features = ["json"] }
 axum = { workspace = true, features = ["http1"] }

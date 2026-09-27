@@ -335,6 +335,8 @@ dependencies = [
  "axum",
  "base64 0.23.1",
  "busbar-a2a",
+ "busbar-auth-oidc",
+ "busbar-auth-oidc-plugin",
  "busbar-contract",
  "busbar-core-admin",
  "busbar-core-connsec",
@@ -450,12 +452,30 @@ dependencies = [
 ]
 
 [[package]]
-name = "busbar-auth-static-plugin"
-version = "1.5.0"
+name = "busbar-auth-oidc"
+version = "1.0.0"
+source = "git+https://github.com/GetBusbar/auth-oidc?rev=9ff64ff4d74bdd4d043ed7200d8771389810d19b#9ff64ff4d74bdd4d043ed7200d8771389810d19b"
 dependencies = [
+ "base64 0.22.1",
  "busbar-contract",
+ "rcgen",
+ "reqwest 0.12.28",
+ "ring",
+ "rustls",
  "serde",
  "serde_json",
+ "tracing",
+]
+
+[[package]]
+name = "busbar-auth-oidc-plugin"
+version = "1.0.0"
+source = "git+https://github.com/GetBusbar/auth-oidc?rev=9ff64ff4d74bdd4d043ed7200d8771389810d19b#9ff64ff4d74bdd4d043ed7200d8771389810d19b"
+dependencies = [
+ "busbar-auth-oidc",
+ "busbar-contract",
+ "serde_json",
+ "tracing",
 ]
 
 [[package]]
@@ -620,6 +640,8 @@ dependencies = [
  "bumpalo",
  "busbar-a2a",
  "busbar-auth-admin-tokens",
+ "busbar-auth-oidc",
+ "busbar-auth-oidc-plugin",
  "busbar-contract",
  "busbar-export-prometheus",
  "busbar-hooks-ranking",
@@ -930,7 +952,7 @@ name = "busbar-plugin-loader"
 version = "1.5.0"
 dependencies = [
  "async-trait",
- "busbar-auth-static-plugin",
+ "busbar-auth-oidc-plugin",
  "busbar-contract",
  "busbar-export-example-plugin",
  "busbar-hook-test-plugin",
@@ -3469,6 +3491,7 @@ checksum = "eddd3ca559203180a307f12d114c268abf583f59b03cb906fd0b3ff8646c1147"
 dependencies = [
  "base64 0.22.1",
  "bytes",
+ "futures-channel",
  "futures-core",
  "futures-util",
  "h2",

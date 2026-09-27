@@ -1540,7 +1540,7 @@ deny_kinds = ["transport", "abi", "loader", "store", "export"]
 # this rule is born. Each is real debt the owner closes by adding the attribute and deleting the
 # name below; a new crate NOT on this list is held to the rule immediately.
 known_missing_forbid = [
-  "hook-test-plugin", "hooks-ranking", "auth-static-plugin", "auth-admin-tokens",
+  "hook-test-plugin", "hooks-ranking", "auth-admin-tokens",
 ]
 known_missing_deny = [ "plugin-loader",
   "store-example-plugin", "export-example-plugin",
@@ -2471,6 +2471,15 @@ plane_crates = 4
 #     (crates/plugin-loader/src/tests/plugin_proof_tests.rs, ci.yml `plugin-proofs`).
 #     `crates/secret-*` now matches no directory: the kind's documented zero in this repo.
 #
+# ── RE-PINNED 2026-09-26: `auth` 2 -> 1 ─────────────────────────────────────────────────────────────────────
+#
+#   * `auth` 2 -> 1. The fixture deletion (owner, docs/design/1.6.0-QUESTIONS.md "FIXTURES": "real
+#     plugins are the examples"; ARCHITECT R-FIX2): `crates/auth-static-plugin` was deleted. The auth
+#     kind's dropped-in proofs load the REAL token-verifying module GetBusbar/auth-oidc (pinned by
+#     git: busbar-kernel `auth/tests/plugin_chain_tests.rs`, `crates/busbar/tests/mcp_stdio_serve.rs`,
+#     busbar-plugin-loader `auth_conformance_tests`), and ci.yml `plugin-proofs` proves
+#     GetBusbar/auth-github. `crates/auth-*` now matches exactly one: `crates/auth-admin-tokens`.
+#
 # THE BASE COMPARISON STILL REPORTS THE THREE DECREMENTS (plugin_kinds.plane 6->5,
 # plugin_kinds.unit 14->1, plugin_kinds.pure_auth 2->0), AND THAT IS THIS ROW WORKING RATHER THAN
 # FAILING. `[gate.census]` reds a floor that went DOWN versus the base commit precisely because it
@@ -2483,7 +2492,7 @@ plane_crates = 4
 [gate.census.plugin_kinds]
 plane = 5
 hook = 2
-auth = 2
+auth = 1
 secret = 0
 store = 2
 export = 1

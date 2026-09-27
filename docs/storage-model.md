@@ -31,7 +31,7 @@ tokens valid ≤24h" is *policy* → config.
 | Thing | Home | Survives a restart on a MEMORY store? |
 |---|---|---|
 | Signing key (ed25519) | **config** → keyfile/env (`auth.signing_key`) | **Yes** — it is config, not store |
-| Static identities (`auth-static-plugin`) | **config** (token → id + roles) | **Yes** — reloaded from disk |
+| Identity-provider settings (an auth plugin's `settings:`) | **config** | **Yes** — reloaded from disk |
 | The minted `vk_` token itself | **never stored** — self-verifying by signature | N/A — shown once |
 | Key BINDING (enabled, generation, `allowed_pools`, group, labels) | **store** (RAM-cached) | **No** — lost on restart |
 | Denylist / revocation | **store** (+ RAM cache) | **No** — wiped on restart |
@@ -87,10 +87,11 @@ static-config identity keeps working.
   the `keys` verifier is in the chain. Fleet deployments provide it shared so
   every node verifies the same tokens.
 
-- **Static identities** — `crates/auth-static-plugin/src/lib.rs`. The config
-  supplies `{ token, id, roles }`; a matching token yields `Identify(id, roles)`.
-  This is config, reloaded from disk, so it survives a restart independent of any
-  store.
+- **Identity-provider settings** — an auth plugin's `settings:` (for example the
+  OIDC module's issuer, audience and JWKS location, GetBusbar/auth-oidc) are
+  config, reloaded from disk, so they survive a restart independent of any store.
+  A verifying module holds no identities of its own: it judges each presented
+  credential against its settings.
 
 - **Minting a key** — `state.rs:253` (`mint_signed`). It persists the policy
   **binding** row via `self.store.put_key(&binding)` (`state.rs:293`) and returns

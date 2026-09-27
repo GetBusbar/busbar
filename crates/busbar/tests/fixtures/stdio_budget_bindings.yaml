@@ -1,5 +1,5 @@
   role_bindings:
-    statauth:
+    idp:
       tester: { group: tiny }
 groups:
   tiny:

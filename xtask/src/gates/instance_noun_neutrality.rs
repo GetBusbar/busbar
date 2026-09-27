@@ -152,7 +152,7 @@ const FAM_GRPC: &[&str] = &["busbar-transport-http"];
 const FAM_NONE: &[&str] = &[];
 
 // ── AUTH SCHEMES (DECISION #3: currently internal units, so heavy known-debt into core/units) ──
-const FAM_AUTH: &[&str] = &["auth-static-plugin", "auth-admin-tokens", "busbar-oauth2"];
+const FAM_AUTH: &[&str] = &["auth-admin-tokens", "busbar-oauth2"];
 
 /// DOCUMENTED EXEMPTION for the `gcp` noun: these 2 files use "GCP" as the general
 /// Google-Cloud-Platform term in cloud-metadata/SSRF security prose — `busbar-a2a`'s

@@ -2215,11 +2215,14 @@ jobs:
         # that the plane ABI has a real rider ("no 0-caller ABI"), and a
         # missing artifact would make all seven of its tests pass vacuously. They panic under CI rather
         # than skip for exactly that reason; this line is what keeps them from having to.
+        #
+        # The auth kind's cdylib is not on the list: it is the REAL token-verifying module
+        # (GetBusbar/auth-oidc), a pinned git dev-dependency of busbar-kernel, busbar and
+        # busbar-plugin-loader, so each of those crates' own test build carries it.
         run: |
           cargo build --locked \
             -p busbar-store-example-plugin \
             -p busbar-hook-test-plugin \
-            -p busbar-auth-static-plugin \
             -p busbar-export-example-plugin \
             -p busbar-plugin-example-plane
       - name: Tests — ${{ matrix.name }}
