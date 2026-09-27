@@ -347,7 +347,6 @@ dependencies = [
  "busbar-export-prometheus",
  "busbar-export-prometheus-plugin",
  "busbar-export-webhook",
- "busbar-export-webhook-plugin",
  "busbar-hooks-ranking",
  "busbar-kernel",
  "busbar-kernel-audit",

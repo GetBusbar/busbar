@@ -427,19 +427,16 @@ serde_json = { workspace = true }
 # the test links its `PLANE_DECL` (the linked door) and drops its cdylib into a temp `plugins/`
 # directory (the dropped-in door) and requires the two to install byte-identical registry rows.
 busbar-plugin-example-plane = { path = "../plane-example" }
-# The export axis's both-doors proof (`src/root/tests/linked_exports.rs`) for the FILE sink: its
-# repo's cdylib crate at the SAME pinned rev as the linked `busbar-export-file` edge above, so the
-# test drops in the library a signed tarball of the sink carries next to the row the build links.
+# The dropped-in export plugin's end-to-end proof (`tests/export_plugin_dropped_in_serves.rs`): the
+# FILE sink's repo's cdylib crate at the SAME pinned rev as the linked `busbar-export-file` edge
+# above, dropped into `plugins/` as the library a tarball of the sink carries. The sink's own
+# both-doors conformance lives in its repo (GetBusbar/export-file, `tests/conformance.rs`).
 busbar-export-file-plugin = { git = "https://github.com/GetBusbar/export-file", rev = "795eadb866e5f9a98bc854b9697ae42a28a51e92" }
-# The scrape sink's both-doors proofs (`src/root/tests/linked_scrape.rs`,
-# `tests/export_scrape_is_first_party.rs`): its repo's cdylib crate at the SAME pinned rev as the
-# linked `busbar-export-prometheus` edge above — the library a signed tarball of the sink carries,
-# found in this target dir by what it loads as.
+# The scrape role's first-party proof (`tests/export_scrape_is_first_party.rs`): the scrape sink's
+# repo's cdylib crate at the SAME pinned rev as the linked `busbar-export-prometheus` edge above —
+# the library a tarball of the sink carries, found in this target dir by what it loads as. The
+# sink's own both-doors conformance lives in its repo (GetBusbar/export-prometheus).
 busbar-export-prometheus-plugin = { git = "https://github.com/GetBusbar/export-prometheus", rev = "087bbcc6a9bafc63591799770407a478f2742027" }
-# The webhook sink's both-ways proof (`src/root/tests/export_webhook_conformance.rs`): its repo's
-# cdylib crate at the SAME pinned rev as the linked `busbar-export-webhook` edge above, so the test
-# drops in the library a signed tarball of the sink carries next to the row the build links.
-busbar-export-webhook-plugin = { git = "https://github.com/GetBusbar/export-webhook", rev = "5e0170432aa2dc7640c8b6f6e89c9d38edad1df0" }
 # The REAL token-verifying auth module the dropped-in auth proofs load (R-FIX2; the owner's FIXTURES
 # ruling: real plugins are the proofs): GetBusbar/auth-oidc's cdylib crate at a pinned rev. Nothing
 # links it; the dev edge is what makes this crate's test build carry its cdylib (under `deps/`,

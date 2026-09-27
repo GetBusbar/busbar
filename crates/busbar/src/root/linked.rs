@@ -1355,18 +1355,6 @@ pub fn seal(units: &[&RootUnit]) {
 mod tests;
 
 #[cfg(test)]
-#[path = "tests/linked_exports.rs"]
-mod export_tests;
-
-#[cfg(test)]
-#[path = "tests/export_webhook_conformance.rs"]
-mod export_webhook_conformance;
-
-#[cfg(test)]
-#[path = "tests/linked_scrape.rs"]
-mod scrape_tests;
-
-#[cfg(test)]
 #[path = "tests/metric_family_conformance.rs"]
 mod metric_family_conformance;
 
