@@ -70,11 +70,7 @@ fn fixture_dir(tag: &str) -> PathBuf {
 }
 
 fn free_port() -> u16 {
-    std::net::TcpListener::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port()
+    common::boot::free_port()
 }
 
 /// The transport `cdylib` packed as an UNSIGNED `kind: transport` tarball (the config opts into

@@ -34,3 +34,42 @@ pub fn exe() -> &'static str {
     });
     path
 }
+
+/// A LOOPBACK PORT NO OTHER BUSBAR TEST IN ANY PROCESS WILL BE HANDED, for this process's lifetime.
+///
+/// Picking a port by binding `:0` and dropping the socket leaves a window before the child busbar
+/// binds it, and the DATA door binds with `SO_REUSEPORT` (one listener per worker), so a second test
+/// that was handed the same number did not fail to bind: both busbars listened on one port and
+/// the kernel spread connections across the two. A scrape then reached the other test's node, which
+/// is how `/metrics never settled` read after 80-120 s under a full workspace run. So each port is
+/// also claimed by an exclusive lock on a per-port file shared by every test process on the machine,
+/// held until this process exits (the OS releases it even on a crash); a number another process has
+/// claimed is skipped. Busbar's boot output is not read and not changed: the listen line logs the
+/// CONFIGURED address, so binding `:0` there would report nothing.
+pub fn free_port() -> u16 {
+    static HELD: std::sync::Mutex<Vec<std::fs::File>> = std::sync::Mutex::new(Vec::new());
+    for _ in 0..512 {
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .and_then(|l| l.local_addr())
+            .expect("bind an ephemeral loopback port")
+            .port();
+        if let Some(lock) = try_reserve(port) {
+            HELD.lock().unwrap_or_else(|p| p.into_inner()).push(lock);
+            return port;
+        }
+    }
+    panic!("no loopback port could be reserved in 512 tries");
+}
+
+/// The exclusive, cross-process claim on `port`, or `None` when another holder has it.
+pub fn try_reserve(port: u16) -> Option<std::fs::File> {
+    let dir = std::env::temp_dir().join("busbar-test-ports");
+    std::fs::create_dir_all(&dir).expect("the port-claim directory");
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(dir.join(format!("{port}.lock")))
+        .expect("the port-claim file");
+    file.try_lock().ok().map(|()| file)
+}

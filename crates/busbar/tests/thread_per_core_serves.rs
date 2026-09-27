@@ -43,11 +43,8 @@ fn fixture_dir() -> PathBuf {
     d
 }
 
-/// A free loopback port asked of the OS. thread-per-core needs a FIXED port (not `:0`): every per-core
-/// listener binds the SAME address, so an ephemeral `:0` would hand each socket a different port.
 fn free_port() -> u16 {
-    let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    l.local_addr().unwrap().port()
+    common::boot::free_port()
 }
 
 /// Minimal config that boots a full server on a fixed data port — NOTHING topology-specific in it:

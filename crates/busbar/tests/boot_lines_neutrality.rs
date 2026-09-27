@@ -39,8 +39,7 @@ fn fixture_dir() -> PathBuf {
 }
 
 fn free_port() -> u16 {
-    let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    l.local_addr().unwrap().port()
+    common::boot::free_port()
 }
 
 /// A 1.5.5-SHAPED config: no `mcp:`/`agents:`/`streams:` section, governance ON (a keyed `auth.chain`,

@@ -77,11 +77,7 @@ impl Drop for Booted {
 }
 
 fn free_port() -> u16 {
-    std::net::TcpListener::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port()
+    common::boot::free_port()
 }
 
 /// Boot the shipped binary on a 1.5.5-shaped config (one provider, one model, keys, an admin token,

@@ -66,11 +66,7 @@ fn fixture_dir(tag: &str) -> PathBuf {
 }
 
 fn free_port() -> u16 {
-    std::net::TcpListener::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port()
+    common::boot::free_port()
 }
 
 fn write_configs(dir: &Path, data_port: u16, admin_port: u16, export: &str) {

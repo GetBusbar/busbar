@@ -55,11 +55,8 @@ fn fixture_dir(tag: &str) -> PathBuf {
     d
 }
 
-/// A free loopback port, asked of the OS rather than hard-coded: a hard-coded port is a red that is
-/// not a defect the first time this machine happens to have something on it.
 fn free_port() -> u16 {
-    let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    l.local_addr().unwrap().port()
+    common::boot::free_port()
 }
 
 /// The door's own plane section, as DATA (`tests/fixtures/front_door_plane_section.yaml`), with the

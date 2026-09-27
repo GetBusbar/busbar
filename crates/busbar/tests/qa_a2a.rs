@@ -266,11 +266,7 @@ fn serve_one(mut conn: TcpStream, port: u16, state: &Mutex<Published>) {
 // ── the node: the shipped binary, booted on loopback ────────────────────────────────────────────
 
 fn free_port() -> u16 {
-    TcpListener::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port()
+    common::boot::free_port()
 }
 
 fn fixture_dir(tag: &str) -> PathBuf {
