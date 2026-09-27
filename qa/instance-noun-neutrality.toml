@@ -167,3 +167,58 @@ count = 2
 category = "core"
 wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
 
+[[leak]]
+noun = "store"
+kind = "store"
+file = "crates/busbar-kernel/src/config/mod.rs"
+count = 1
+category = "core"
+wave = "drain slot STORE-DEFAULT — core names the default governance store instance (`GOVERNANCE_STORE_MEMORY` = \"memory\"); the drain reads the default store's name from the linked store row, not a kernel const (ARCHITECT ruling 2026-09-27, option (i) now, (ii) the drain)"
+
+[[leak]]
+noun = "store"
+kind = "store"
+file = "crates/busbar-kernel/src/config/sections.rs"
+count = 2
+category = "core"
+wave = "drain slot STORE-DEFAULT — core names the default governance store instance (`GOVERNANCE_STORE_MEMORY` = \"memory\"); the drain reads the default store's name from the linked store row, not a kernel const (ARCHITECT ruling 2026-09-27, option (i) now, (ii) the drain)"
+
+[[leak]]
+noun = "store"
+kind = "store"
+file = "crates/busbar-kernel/src/config/tests/tests.rs"
+count = 1
+category = "core"
+wave = "drain slot STORE-DEFAULT — core names the default governance store instance (`GOVERNANCE_STORE_MEMORY` = \"memory\"); the drain reads the default store's name from the linked store row, not a kernel const (ARCHITECT ruling 2026-09-27, option (i) now, (ii) the drain)"
+
+[[leak]]
+noun = "store"
+kind = "store"
+file = "crates/busbar-kernel/src/preflight.rs"
+count = 1
+category = "core"
+wave = "drain slot STORE-DEFAULT — core names the default governance store instance (`GOVERNANCE_STORE_MEMORY` = \"memory\"); the drain reads the default store's name from the linked store row, not a kernel const (ARCHITECT ruling 2026-09-27, option (i) now, (ii) the drain)"
+
+[[leak]]
+noun = "store"
+kind = "store"
+file = "crates/busbar-kernel/src/tests/tests.rs"
+count = 1
+category = "core"
+wave = "drain slot STORE-DEFAULT — core names the default governance store instance (`GOVERNANCE_STORE_MEMORY` = \"memory\"); the drain reads the default store's name from the linked store row, not a kernel const (ARCHITECT ruling 2026-09-27, option (i) now, (ii) the drain)"
+
+[[leak]]
+noun = "store"
+kind = "store"
+file = "crates/busbar/src/root/cli.rs"
+count = 2
+category = "composition-root"
+wave = "drain slot STORE-DEFAULT — core names the default governance store instance (`GOVERNANCE_STORE_MEMORY` = \"memory\"); the drain reads the default store's name from the linked store row, not a kernel const (ARCHITECT ruling 2026-09-27, option (i) now, (ii) the drain)"
+
+[[leak]]
+noun = "store"
+kind = "store"
+file = "crates/busbar/src/root/tests/linked.rs"
+count = 1
+category = "composition-root"
+wave = "drain slot STORE-DEFAULT — core names the default governance store instance (`GOVERNANCE_STORE_MEMORY` = \"memory\"); the drain reads the default store's name from the linked store row, not a kernel const (ARCHITECT ruling 2026-09-27, option (i) now, (ii) the drain)"

@@ -177,10 +177,11 @@ const GCP_GENERIC_MENTION_FILES: &[&str] = &[
 // so its noun below is censused like the stores — an empty family, every hit a leak.
 const FAM_HOOK: &[&str] = &["hook-test-plugin"];
 const FAM_EXPORT: &[&str] = &["export-example-plugin"];
-// The two store-kind crates that DO exist in this tree, and the one in-tree hook plugin (item 197).
-// Each is matched, like the example/test plugins above, on its own crate identifier.
+// The store-kind crate that DOES exist in this tree, and the one in-tree hook plugin (item 197).
+// Matched, like the example/test plugins above, on its own identifiers. (`store-example-plugin`,
+// the second store crate, was deleted by DOOR-STORE; its noun now polices this crate's kind-qualified
+// spelling instead of a family with no crate.)
 const FAM_STORE_MEMORY: &[&str] = &["store-memory"];
-const FAM_STORE_EXAMPLE: &[&str] = &["store-example-plugin"];
 const FAM_HOOKS_RANKING: &[&str] = &["hooks-ranking"];
 
 /// PROTOCOL VOCABULARY (owner rulings Q1, 2026-09-23 and Q76, 2026-09-25): wire/auth scheme words
@@ -369,10 +370,13 @@ const NOUNS: &[Noun] = &[
         camel: &[],
         section: None,
     },
-    // Stores that DO have a crate (item 197). The four above are censused on backends with no crate
-    // here; these two ARE the store kind's in-tree instances, and until this row they had no Noun
-    // at all, so the kind's real instance vocabulary was unpoliced. Matched on the crate identifier
-    // (bare `memory` is a core word; the example plugin's name is its only unambiguous spelling).
+    // The store that DOES have a crate (item 197). The four above are censused on backends with no
+    // crate here; busbar-store-memory IS the store kind's in-tree instance, and until these rows it
+    // had no Noun at all, so the kind's real instance vocabulary was unpoliced. Bare `memory` is a
+    // core word, so it is matched on two unambiguous spellings: the crate identifier
+    // (`busbar_store_memory`, the `memory` row) and the kind-qualified id (`store_memory`, the `store`
+    // row) — the second is how core names the instance without importing it
+    // (`GOVERNANCE_STORE_MEMORY`, the default governance store; drain slot STORE-DEFAULT).
     Noun {
         key: "memory",
         kind: "store",
@@ -384,8 +388,8 @@ const NOUNS: &[Noun] = &[
     Noun {
         key: "store",
         kind: "store",
-        family: FAM_STORE_EXAMPLE,
-        tokens: &["busbar_store_example_plugin"],
+        family: FAM_STORE_MEMORY,
+        tokens: &["store_memory"],
         camel: &[],
         section: None,
     },
