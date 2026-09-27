@@ -307,6 +307,20 @@ busbar-voice = ["busbar-voice-codec"]
 # 16482 -> 16664 (OWNER RULING Q68(3)). Its commit reached the base; struck by the transport
 # lowering shrink, which LOWERS the pair to its measurement (16368) below.
 
+# ── THE CONTRACT CEILING PAIR, RE-ARMED BY CONFIG-REQ (PlaneDecl required_sections, ABI minor 34) ─
+
+[gate.ceiling_raises."gate.surface_ceilings.contract_caps"]
+file    = "qa/construction.toml"
+from    = 16368
+to      = 16373
+because = "OWNER RULING Q68(3) (docs/design/1.6.0-QUESTIONS.md): contract_caps re-arms at the MEASURED value, in its own commit. This is the re-arm for CONFIG-REQ (ARCHITECT 2026-09-27, Law 7, mirror of Q69(1)): a plane declares the config sections it requires, linked and dropped-in alike — PlaneDeclaration.required_config_sections and the HOT ABI minor-34 PlaneDecl tail required_sections_ptr/len (+ its STUB rows), +5 code lines. Measured by cargo xtask gate construction: 16368 before, 16373 after."
+
+[gate.ceiling_raises."rules.loc-ceilings.caps_contract_ceiling"]
+file    = "qa/construction.toml"
+from    = 16368
+to      = 16373
+because = "OWNER RULING Q68(3) (docs/design/1.6.0-QUESTIONS.md): contract_caps re-arms at the MEASURED value, in its own commit. This is the re-arm for CONFIG-REQ (ARCHITECT 2026-09-27, Law 7, mirror of Q69(1)): a plane declares the config sections it requires, linked and dropped-in alike — PlaneDeclaration.required_config_sections and the HOT ABI minor-34 PlaneDecl tail required_sections_ptr/len (+ its STUB rows), +5 code lines. Measured by cargo xtask gate construction: 16368 before, 16373 after."
+
 # ── THE KERNEL CEILING, RE-ARMED BY SD-8 (the substrate-values kernel landing) ─────────────────
 
 [gate.ceiling_raises."rules.loc-ceilings.kernel_ceiling"]
@@ -464,7 +478,7 @@ because = "ARCHITECT ruling on the kernel budget (R-KERNEL, sd-extra.txt; K2-0 u
 # declaration above carries the measure.
 # LOWERED 16664 -> 16368, AT THE MEASUREMENT, in the commit that shrank the transport lowering (slot
 # tables and bridges generated from one declarative list per role, -296).
-contract_caps = 16368
+contract_caps = 16373
 # REPOINTED, and the repoint is what makes this row a gate again. It named the CRATE
 # `busbar-grammar`, which #40 folded into `busbar-contract` and deleted — so it summed nothing,
 # measured nothing and passed, which is this file's own "zero is not clean" failure sitting inside
@@ -1088,7 +1102,7 @@ contract_crate = "busbar-contract"
 # RE-ARMED 16477 -> 16482 with its pair (OWNER RULING Q68(3); HOTDOOR-B queue 2, PlaneDecl dispatch_flags at ABI minor 32, +5).
 # RE-ARMED 16482 -> 16664 with its pair (OWNER RULING Q68(3); TRANSPORT-STACK claims, the transport entry's claims at ABI minor 33, +182).
 # LOWERED 16664 -> 16368 with its pair (the transport lowering shrink: slot tables and bridges from one declarative list per role, -296).
-caps_contract_ceiling = 16368
+caps_contract_ceiling = 16373
 unit_crate_glob = "busbar-unit-*"
 # RE-KEYED on cherry-pick onto 143db6db6: this commit's own delta is -53 (two units stopped
 # declaring their own copies), measured against whatever unit_total_ceiling read when the line was
