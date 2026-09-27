@@ -123,6 +123,10 @@ pub fn build_plane_host_vtable() -> PlaneHostVtable {
         // ── WIRED `counter_add` (minor-25, the METRIC-FAMILY seam) → the recorder, over a family the
         //    emitting plane DECLARED. Always wired; what a plane may add to is its declaration's. ──
         counter_add: Some(counter_add),
+        // ── The HOST SERVICES (minor 30): entropy, wall clock, usage-tap fault latch, translate
+        //    cap — the contract ports this image's host armed, served by the contract itself, so a
+        //    dropped-in plane gets the services a linked one does (ARCHITECT SD-3 queue (6)). ──
+        ..PlaneHostVtable::SERVICES
     }
 }
 

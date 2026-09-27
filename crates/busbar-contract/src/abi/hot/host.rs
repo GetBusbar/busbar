@@ -588,6 +588,37 @@ pub type CounterAddFn = extern "C-unwind" fn(
     delta: u64,
 ) -> StatusClass;
 
+// ── THE HOST SERVICES (minor 30; ARCHITECT SD-3 queue (6), DEC-SERVE G2). The contract ports a
+//    codec reaches — `busbar_contract::codec::{fill_entropy, wall_clock_now,
+//    usage_tap_fault_should_warn, max_translate_body_bytes}` — are process-wide `OnceLock`s the host
+//    arms in ITS image. A plane dropped in as a `cdylib` carries its own copy of the contract, whose
+//    ports nothing armed, so it read the failure path of every one. These four slots carry the
+//    host's own services across the seam; the dropped-in door arms the plane image's ports over
+//    them (`services::arm`) when the host opens the door. Process-wide, so `host` may be
+//    `HostCtx::NULL`. ──
+/// Fill `out_len` bytes at `out` from the host's entropy source (its CSPRNG). [`StatusClass::Ok`]
+/// when every byte was written; [`StatusClass::Refused`] when the host has no entropy to give or
+/// `out` is NULL with a non-zero length (the bytes are then unspecified); [`StatusClass::Fault`] on
+/// a caught panic.
+pub type EntropyFillFn =
+    extern "C-unwind" fn(host: HostCtx, out: *mut u8, out_len: usize) -> StatusClass;
+/// The host's wall clock in whole seconds since the Unix epoch; `0` when the host holds no clock
+/// (the fail-closed reading, never a real second).
+pub type WallClockFn = extern "C-unwind" fn(host: HostCtx) -> u64;
+/// Count one usage-tap fault of `reason` for `protocol` (two borrowed UTF-8 ranges, live for the
+/// call) and answer `true` only the FIRST time the host sees that pair, so the caller warns once.
+/// `false` for a range that is not UTF-8 or a caught panic.
+pub type TapFaultLatchFn = extern "C-unwind" fn(
+    host: HostCtx,
+    protocol_ptr: *const u8,
+    protocol_len: usize,
+    reason_ptr: *const u8,
+    reason_len: usize,
+) -> bool;
+/// The operator's per-response translation cap in bytes, as the host holds it NOW (the operator may
+/// reload it live).
+pub type TranslateCapFn = extern "C-unwind" fn(host: HostCtx) -> u64;
+
 /// The `#[repr(C)]` inbound-capability vtable a plane calls back into. Leads with the FROZEN
 /// [`AbiPreamble`] (a receiver `check_preamble`s it before using any slot) and a `size`/`version`
 /// pair (the sized-struct discipline for the table itself — new slots append at the TAIL and bump the
@@ -748,6 +779,17 @@ pub struct PlaneHostVtable {
     //    same sized/versioned discipline (the minor-25 bump). ──────────────────────────────────────────
     /// Add to one series of a metric family the plane declared.
     pub counter_add: Option<CounterAddFn>,
+    // ── APPENDED (minor-30, the HOST-SERVICES seam): the contract ports a codec reaches (entropy,
+    //    wall clock, usage-tap fault latch, translate cap), so a dropped-in plane gets the services a
+    //    linked one does. Trailing slots, append-only, same sized/versioned discipline. ─────────────
+    /// Fill a buffer from the host's entropy source.
+    pub entropy_fill: Option<EntropyFillFn>,
+    /// Read the host's wall clock (whole Unix seconds).
+    pub wall_clock: Option<WallClockFn>,
+    /// Count a usage-tap fault and answer whether it is the first of its kind.
+    pub tap_fault_latch: Option<TapFaultLatchFn>,
+    /// Read the operator's live translation cap.
+    pub translate_cap: Option<TranslateCapFn>,
     // ── EXTENSION POINT (reserved) ──────────────────────────────────────────────────────────────
     // New inbound capabilities append as trailing `Option` slots BELOW this line and bump the
     // airlock MINOR — an append-only add, never a reshape of an existing slot.
@@ -956,6 +998,21 @@ impl PlaneHostVtable {
         cost_reserve: None,
         cost_settle: None,
         counter_add: None,
+        entropy_fill: None,
+        wall_clock: None,
+        tap_fault_latch: None,
+        translate_cap: None,
+    };
+
+    /// [`EMPTY`](Self::EMPTY) plus the four HOST SERVICES, each served from THIS image's own armed
+    /// contract ports ([`super::services`]). A host grants them by building its table over this
+    /// (`..PlaneHostVtable::SERVICES`): the services are the contract's, so the host adds no code.
+    pub const SERVICES: PlaneHostVtable = PlaneHostVtable {
+        entropy_fill: Some(super::services::entropy_fill),
+        wall_clock: Some(super::services::wall_clock),
+        tap_fault_latch: Some(super::services::tap_fault_latch),
+        translate_cap: Some(super::services::translate_cap),
+        ..Self::EMPTY
     };
 
     /// A fully-populated STUB vtable: every slot points at an `unimplemented!()` stub. It exists to
@@ -1011,6 +1068,10 @@ impl PlaneHostVtable {
         cost_reserve: Some(stub::cost_reserve),
         cost_settle: Some(stub::cost_settle),
         counter_add: Some(stub::counter_add),
+        entropy_fill: Some(stub::entropy_fill),
+        wall_clock: Some(stub::wall_clock),
+        tap_fault_latch: Some(stub::tap_fault_latch),
+        translate_cap: Some(stub::translate_cap),
     };
 }
 
@@ -1397,6 +1458,35 @@ pub mod stub {
         _delta: u64,
     ) -> StatusClass {
         unimplemented!("PlaneHost::counter_add — stub")
+    }
+    // The host-services stubs (minor 30) answer each slot's documented fail-closed reading instead
+    // of panicking: the fixture type-checks their signatures, and a stub that granted no service
+    // must read exactly like a host that holds none.
+    /// Stub: no entropy to give.
+    pub extern "C-unwind" fn entropy_fill(
+        _host: HostCtx,
+        _out: *mut u8,
+        _len: usize,
+    ) -> StatusClass {
+        StatusClass::Refused
+    }
+    /// Stub: no clock.
+    pub extern "C-unwind" fn wall_clock(_host: HostCtx) -> u64 {
+        0
+    }
+    /// Stub: never the first.
+    pub extern "C-unwind" fn tap_fault_latch(
+        _host: HostCtx,
+        _protocol_ptr: *const u8,
+        _protocol_len: usize,
+        _reason_ptr: *const u8,
+        _reason_len: usize,
+    ) -> bool {
+        false
+    }
+    /// Stub: the contract's unconfigured default.
+    pub extern "C-unwind" fn translate_cap(_host: HostCtx) -> u64 {
+        crate::codec::TRANSLATE_BODY_MAX_BYTES_DEFAULT as u64
     }
 }
 

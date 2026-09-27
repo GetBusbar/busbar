@@ -35,6 +35,9 @@
 //! into a [`ServedPlane`], whose `claims`, `admission` and `dispatch` slots are what the root mounts,
 //! admits and serves through (minor 23) — one path over the HOT-lane vtable, whichever door.
 
+use crate::carrier::{
+    self, Current, HotReply, ReplyStream, RequestHead, Sink, MAX_PLANE_REPLY_LEN,
+};
 use crate::stage;
 use busbar_contract::abi::hot::decl::{
     AdminRoutesFn, AdmissionFn, BuildFn, ClaimsFn, ConfigValidateFn, DeclMetricFamily,
@@ -82,6 +85,10 @@ pub struct DynPlane {
     declaration: HotDeclaration,
     /// The plane name/path, for diagnostics.
     path: String,
+    /// The image's optional `busbar_plane_arm` entrypoint (minor 30): a DROPPED-IN plane's own copy
+    /// of the contract's host-service ports, armed over the host's table when the door opens
+    /// ([`serve`](Self::serve)). `None` for a linked plane, which shares the host's ports.
+    arm: Option<busbar_contract::abi::hot::PlaneArmFn>,
     /// The mapped library. `Option` only so `Drop` can TAKE it and unload it on a plugin worker.
     /// Declared BEFORE `_backing` so the unload runs first (Windows' unload-then-remove order).
     _lib: Option<Library>,
@@ -544,12 +551,28 @@ impl DynPlane {
     /// returned [`ServedPlane`] and freed through the plane's own `free` when it drops. No host call
     /// is live at build, so the build context carries the null `HostCtx`; every dispatch is handed
     /// the one minted for it.
+    ///
+    /// THE DOOR OPENS HERE, so a dropped-in plane's contract host-service ports are armed over `host`
+    /// first (its `busbar_plane_arm`, minor 30): its codecs then read the host's entropy, clock,
+    /// usage-tap latch and translate cap, as a linked plane's do. A plane that refuses the arm is
+    /// not served.
     pub fn serve(
         &'static self,
         host: &'static PlaneHostVtable,
         section: &[u8],
         public_url: Option<&str>,
     ) -> Result<ServedPlane, String> {
+        if let Some(arm) = self.arm {
+            // SAFETY: `host` is a live `'static` table, so it outlives the image.
+            let raw = crate::ffi_guard_confined(&self.path, "plane_arm", || unsafe { arm(host) })?;
+            if raw.class() != StatusClass::Ok {
+                return Err(format!(
+                    "plane '{}' refused the host services: {:?}",
+                    self.path,
+                    raw.class()
+                ));
+            }
+        }
         // SAFETY: `host` is a live `'static` vtable, so it outlives the built plane.
         let (class, state) =
             unsafe { self.build_at(host, HostCtx::NULL, section, &[], public_url) };
@@ -643,39 +666,88 @@ impl ServedPlane {
         }
     }
 
-    /// DISPATCH one request-response work item: `inbound` as the finite buffer, a reply channel of
-    /// [`MAX_PLANE_REPLY_LEN`] bytes, and the dispatch's own `host` + `host_ctx` (minted for this
-    /// call; the plane calls back through them). Returns the plane's status and the reply it wrote;
-    /// a caught panic fails closed (`Fault`, no reply), and a claimed reply length past the channel
-    /// is a `Fault`.
+    /// DISPATCH one request-response work item with no request head and no stream: the plane's
+    /// status class and its buffered reply (see [`answer`](Self::answer)).
     pub fn dispatch(
         &self,
         host: &PlaneHostVtable,
         host_ctx: HostCtx,
         inbound: &[u8],
     ) -> (StatusClass, Vec<u8>) {
+        let reply = self.answer(host, host_ctx, None, inbound, None);
+        (reply.class, reply.body)
+    }
+
+    /// ANSWER one request (minor 30; DEC-SERVE G2): `inbound` as the finite buffer, `head` behind the
+    /// work item's request-head handle and `head_read` accessor slot, a reply channel of
+    /// [`MAX_PLANE_REPLY_LEN`] bytes with the `emit_head` slot for the answer's status and headers,
+    /// and — when `stream` is given — the response-stream handle and `emit_body` slot a larger body
+    /// is written through, chunk by chunk, into `stream`. The dispatch's own `host` + `host_ctx`
+    /// (minted for this call) ride along; the plane calls back through them.
+    ///
+    /// The plane's status and headers pass through untouched. A caught panic fails closed (`Fault`,
+    /// no reply); a claimed reply length past the channel is a `Fault`; so is a plane that streamed
+    /// AND wrote the reply buffer (two bodies for one answer).
+    pub fn answer(
+        &self,
+        host: &PlaneHostVtable,
+        host_ctx: HostCtx,
+        head: Option<&RequestHead<'_>>,
+        inbound: &[u8],
+        stream: Option<&mut dyn ReplyStream>,
+    ) -> HotReply {
         // The channel is reserved, not zeroed: the plane writes into it and the host reads back only
         // the prefix the plane says it wrote.
         let mut reply: Vec<u8> = Vec::with_capacity(MAX_PLANE_REPLY_LEN);
         let mut written = 0usize;
+        let mut sink = Sink::new(stream);
+        let offers_stream = sink.offers_stream();
+        let sink_id = core::ptr::addr_of_mut!(sink) as usize as u64;
+        let head_ptr = head.map_or(core::ptr::null(), |h| {
+            core::ptr::from_ref(h).cast::<std::os::raw::c_void>()
+        });
         let mut work = WorkItem::new(
             InboundHandle::finite_buffer(inbound),
-            EmitHandle::new(EmitKind::Reply, 0),
+            EmitHandle::new(EmitKind::Reply, sink_id),
         )
         .with_host(host, host_ctx);
         work.reply_ptr = reply.as_mut_ptr();
         work.reply_cap = reply.capacity();
         work.reply_written = &mut written;
-        // SAFETY: `raw.ptr` is the live state this plane's `build` produced (owned by `self`); every
-        // borrow the work item carries (`inbound`, `host`, the reply channel) outlives the call.
-        let class = unsafe { self.plane.dispatch(self.raw.ptr, &work) };
-        if written > reply.capacity() {
-            return (StatusClass::Fault, Vec::new());
+        work.head = head_ptr;
+        work.head_read = Some(carrier::head_read);
+        work.emit_head = Some(carrier::emit_head);
+        if offers_stream {
+            work.stream = EmitHandle::new(EmitKind::Stream, sink_id);
+            work.emit_body = Some(carrier::emit_body);
+        }
+        let class = {
+            let _current = Current::enter(head_ptr, sink_id);
+            // SAFETY: `raw.ptr` is the live state this plane's `build` produced (owned by `self`);
+            // every borrow the work item carries (`inbound`, `head`, `host`, the reply channel, the
+            // sink) outlives the call.
+            unsafe { self.plane.dispatch(self.raw.ptr, &work) }
+        };
+        let fault = HotReply {
+            class: StatusClass::Fault,
+            status: None,
+            headers: Vec::new(),
+            body: Vec::new(),
+            streamed: sink.streamed,
+        };
+        if written > reply.capacity() || (sink.streamed && written > 0) {
+            return fault;
         }
         // SAFETY: the plane initialized the first `written` bytes of the channel (the reply
         // discipline), and `written` is within the reserved capacity (checked above).
         unsafe { reply.set_len(written) };
-        (class, reply)
+        HotReply {
+            class,
+            status: sink.status,
+            headers: std::mem::take(&mut sink.headers),
+            body: reply,
+            streamed: sink.streamed,
+        }
     }
 }
 
@@ -699,9 +771,6 @@ impl Drop for ServedPlane {
         });
     }
 }
-
-/// Cap on one dispatch's reply: the channel the host hands the plane.
-const MAX_PLANE_REPLY_LEN: usize = 1024 * 1024;
 
 /// A plane handle (`config_validate`'s parsed config or `build`'s plane state) OWNED by the host.
 ///
@@ -831,7 +900,17 @@ fn wire_up_plane(
             .map_err(|_| format!("plane '{display}' missing busbar_plane_decl symbol"))?;
         crate::ffi_guard_confined(&display, "plane_decl", || unsafe { (*f)() })?
     };
-    assemble(decl_ptr, display, Some(lib), backing)
+    // ── 4. The OPTIONAL host-services arm (minor 30): an image built before it simply lacks it. ──
+    let arm = unsafe {
+        lib.get::<busbar_contract::abi::hot::PlaneArmFn>(
+            busbar_contract::abi::hot::symbol::PLANE_ARM,
+        )
+    }
+    .ok()
+    .map(|f| *f);
+    let mut plane = assemble(decl_ptr, display, Some(lib), backing)?;
+    plane.arm = arm;
+    Ok(plane)
 }
 
 /// Admit a plane's decl and materialise it: refuse a null pointer, check the FROZEN preamble and the
@@ -936,6 +1015,7 @@ fn assemble(
         provided_carriers,
         declaration,
         path: display,
+        arm: None,
         _lib: lib,
         _backing: backing,
     })

@@ -35,6 +35,7 @@ use std::path::Path;
 pub mod auth;
 // The two BUILT-IN secret modules (`env`, `file`) the registry's built-in secret rows resolve through.
 pub mod builtin_secret;
+pub mod carrier;
 pub mod export;
 pub mod fetch;
 mod ffi_thread;
@@ -98,6 +99,7 @@ pub use busbar_contract::abi::hot::PlaneDecl as HotPlaneDecl;
 pub use busbar_contract::abi::hot::PlaneHostVtable as HotHostVtable;
 /// The status class a served plane's dispatch answers with, re-exported beside the vtable.
 pub use busbar_contract::abi::hot::StatusClass as HotStatusClass;
+pub use carrier::{HotReply, ReplyStream, RequestHead, MAX_PLANE_REPLY_LEN};
 pub use fetch::{fetch_plugins, FetchOutcome, FetchSpec};
 pub use highwater::{HighWaterMarks, HIGH_WATER_FILE};
 pub use hook::DlopenPolicy;

@@ -954,7 +954,10 @@ kernel_crate = "busbar-kernel"
 # ── 51160 -> 51159: the kernel measures 51086 after DOOR-STORE (R-FIX3) replaced the test-support
 # store-plugin locator with the in-crate durable store double, and 51086 + K2g's 73 named lines =
 # 51159. Downward only.
-kernel_ceiling = 51159
+# ── 51159 -> 51158: the kernel measures 51085 after HOTDOOR-B (the plane-door mint's redundant
+# keep-alive borrow dropped, the minor-30 host services granted by one struct-update line), and
+# 51085 + K2g's 73 named lines = 51158. Downward only.
+kernel_ceiling = 51158
 # `caps_crate = "busbar-caps"` WAS HERE AND IS STRUCK, 2026-09-22. The crate was folded into
 # busbar-contract by 2c9eddecf ("W2.c: fold busbar-caps into busbar-contract"); its types live at
 # `crates/busbar-contract/src/caps/`, whose own module header says "Folded from the former

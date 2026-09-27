@@ -43,6 +43,12 @@ fn builds_a_full_vtable_with_frozen_preamble() {
     // The minor-19 metering-lease slots are now WIRED (no longer the reserved `None`).
     assert!(vt.cost_reserve.is_some());
     assert!(vt.cost_settle.is_some());
+    // The minor-30 HOST SERVICES are granted: a dropped-in plane gets the contract services a
+    // linked one does (ARCHITECT SD-3 queue (6)).
+    assert!(vt.entropy_fill.is_some());
+    assert!(vt.wall_clock.is_some());
+    assert!(vt.tap_fault_latch.is_some());
+    assert!(vt.translate_cap.is_some());
 }
 
 #[test]

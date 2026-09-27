@@ -1189,7 +1189,8 @@ macro_rules! export_hook_plugin {
 // ── THE DROPPED-IN DOOR'S FROZEN SYMBOLS, DEFINED ONCE ─────────────────────────────────────────────
 // Every frozen name the loader looks up in a plugin `cdylib` (`busbar_abi`, `busbar_plugin_kind`,
 // `busbar_set_log_sink`, `busbar_open`, `busbar_call`, `busbar_free`, `busbar_close`,
-// `busbar_plane_decl`, `busbar_transport_decl`) is defined HERE, in `busbar-contract`, exactly once
+// `busbar_plane_decl`, `busbar_transport_decl`, `busbar_plane_arm`) is defined HERE, in
+// `busbar-contract`, exactly once
 // (the SDK merged into the contract, #84, and the transport's door joined the shared one then). A
 // plugin crate's `export_*!` macro defines none of them: it registers its image's ONE door ([`__door::Door`]) and these symbols
 // answer through it.
@@ -1391,6 +1392,28 @@ pub mod __door {
         }
     }
 
+    /// `busbar_plane_arm` — arm this plane image's contract host-service ports over the host's
+    /// table (minor 30; [`crate::abi::hot::services::arm`]). `Refused` for an image that is not a
+    /// plane.
+    ///
+    /// # Safety
+    /// Called only by the busbar loader, with a `host` that outlives this image (its `'static`
+    /// table) or NULL.
+    #[no_mangle]
+    pub unsafe extern "C-unwind" fn busbar_plane_arm(
+        host: *const crate::abi::hot::PlaneHostVtable,
+    ) -> crate::abi::hot::RawStatus {
+        let class = match the_door() {
+            // SAFETY: the caller's obligation, passed through.
+            Some(Door::Plane(_)) => {
+                std::panic::catch_unwind(|| unsafe { crate::abi::hot::services::arm(host) })
+                    .unwrap_or(crate::abi::hot::StatusClass::Fault)
+            }
+            _ => crate::abi::hot::StatusClass::Refused,
+        };
+        crate::abi::hot::RawStatus::of(class)
+    }
+
     /// Every frozen symbol above, referenced from a `#[used]` static in each plugin image so the
     /// linker keeps them in the `cdylib` whichever codegen unit of this crate they landed in.
     #[allow(dead_code)]
@@ -1416,6 +1439,7 @@ pub mod __door {
         close: unsafe extern "C-unwind" fn(*mut c_void),
         plane_decl: unsafe extern "C-unwind" fn() -> *const PlaneDecl,
         transport_decl: unsafe extern "C-unwind" fn() -> *const TransportDecl,
+        plane_arm: crate::abi::hot::PlaneArmFn,
     }
 
     /// The one [`Symbols`] table.
@@ -1429,6 +1453,7 @@ pub mod __door {
         close: busbar_close,
         plane_decl: busbar_plane_decl,
         transport_decl: busbar_transport_decl,
+        plane_arm: busbar_plane_arm,
     };
 }
 

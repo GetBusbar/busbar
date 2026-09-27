@@ -18,7 +18,7 @@ use busbar_contract::abi::hot::host::PlaneHostVtable;
 use busbar_contract::abi::hot::transport::{
     TransportDecl, WireConfig, WireLower, WireSettings, WireWaker,
 };
-use busbar_contract::abi::hot::workitem::{EmitHandle, InboundHandle, WorkItem};
+use busbar_contract::abi::hot::workitem::{EmitHandle, HeadField, InboundHandle, WorkItem};
 use busbar_contract::abi::hot::*;
 use busbar_contract::abi::AbiPreamble;
 use std::fmt::Write as _;
@@ -467,9 +467,16 @@ fn compute_layout() -> String {
             host_ctx,
             reply_ptr,
             reply_cap,
-            reply_written
+            reply_written,
+            // The request head and the answer's head and stream (minor 30).
+            head,
+            head_read,
+            emit_head,
+            stream,
+            emit_body
         ]
     );
+    record!(s, HeadField, [name_ptr, name_len, value_ptr, value_len]);
 
     // The two vtable headers (preamble + sized header), then the slots themselves. (Slot offsets do
     // NOT "follow deterministically" from the header — every slot is one pointer wide, so the
@@ -532,7 +539,12 @@ fn compute_layout() -> String {
             gate_decide,
             cost_reserve,
             cost_settle,
-            counter_add
+            counter_add,
+            // The host services (minor 30).
+            entropy_fill,
+            wall_clock,
+            tap_fault_latch,
+            translate_cap
         ]
     );
     record!(

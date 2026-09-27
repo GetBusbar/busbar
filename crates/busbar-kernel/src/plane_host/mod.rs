@@ -262,9 +262,8 @@ fn mint<R>(
         .cast_mut()
         .cast::<std::os::raw::c_void>();
     let host = HostCtx::new(ptr, generation.value(), HostCtx::KIND_PLANE_HOST);
-    let out = f(host, &vtable);
-    let _keep_alive = &state;
-    out
+    // `state` and `generation` are locals, dropped only after this tail call returns.
+    f(host, &vtable)
 }
 
 /// Sign a plane-framed agent-card signing input through the host [`card_sign`](vtable) seam,

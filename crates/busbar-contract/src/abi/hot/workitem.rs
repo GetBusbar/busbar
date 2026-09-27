@@ -17,8 +17,17 @@
 //! `WorkItem` to a bare `(ptr,len)+sink` would force that reshape on the first exotic carrier, so the
 //! keystone declares ALL tags now. A CI witness (this module's tests) asserts the tags exist and that
 //! `WorkItem` can represent an absent/duplex inbound+emit.
+//!
+//! THE CARRIER A PLANE IN ITS OWN REPOSITORY NEEDS (minor 30, DEC-SERVE G2) rides the same item,
+//! appended: the request-head handle and its accessor slot (method, path, query, headers), the
+//! answer's head slot (status `u16` + headers) and the response-stream handle and slot a body larger
+//! than the reply buffer goes out through. The kind tags above are unchanged, and still reserve
+//! absent/duplex.
 
 use super::host::{HostCtx, PlaneHostVtable};
+use super::pod::StatusClass;
+use core::mem::MaybeUninit;
+use std::os::raw::c_void;
 
 /// The kind of a [`WorkItem`]'s inbound handle. Reserves all three representations from day one;
 /// append-only (new kinds get a fresh trailing discriminant).
@@ -178,7 +187,137 @@ pub struct WorkItem {
     /// Where the plane records how many reply bytes it wrote (at most `reply_cap`); NULL with
     /// `reply_ptr`.
     pub reply_written: *mut usize,
+    // ── THE REQUEST HEAD AND THE ANSWER'S OWN HEAD AND BODY (appended at minor 30, DEC-SERVE G2).
+    //    A plane that lives in its own repository reads what the caller sent — method, path, query,
+    //    headers — and answers with the status, headers and body its provider answered, byte for
+    //    byte. The head is a HANDLE the plane reads through `head_read`; the answer's status and
+    //    headers go out through `emit_head`, and a body larger than `reply_cap` goes out in chunks
+    //    through `emit_body` on the `stream` handle (the response-stream emit kind). All five are
+    //    supplied by the door that built the work item, and a plane reads them only when `size`
+    //    proves the host wrote them. ──
+    /// The request-head handle: host-owned, live for the dispatch call, read ONLY through
+    /// [`head_read`](Self::head_read). NULL = the host carries no head.
+    pub head: *const c_void,
+    /// The accessor slot over [`head`](Self::head); see [`HeadReadFn`].
+    pub head_read: Option<HeadReadFn>,
+    /// The slot that states the answer's status and headers, on [`emit`](Self::emit)'s id; see
+    /// [`EmitHeadFn`].
+    pub emit_head: Option<EmitHeadFn>,
+    /// The response-stream emit handle ([`EmitKind::Stream`]) a body over `reply_cap` is written
+    /// through; [`EmitKind::Absent`] = the host offers no stream.
+    pub stream: EmitHandle,
+    /// The slot that writes one body chunk on [`stream`](Self::stream)'s id; see [`EmitBodyFn`].
+    pub emit_body: Option<EmitBodyFn>,
 }
+
+/// Which part of a request head [`HeadReadFn`] reads. Crosses the seam as its raw `u8` (a peer's
+/// unknown value is refused, never transmuted); append-only.
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HeadPart {
+    /// The request method, as sent (`value` only).
+    Method = 0,
+    /// The request path, without the query (`value` only).
+    Path = 1,
+    /// The query string, without the `?` (`value` only; empty when the request carried none).
+    Query = 2,
+    /// The `index`-th header, in the order the host received them (`name` and `value`).
+    Header = 3,
+}
+
+/// One borrowed head field: a `(name, value)` pair of byte ranges. For a method, path or query the
+/// name is empty. Ranges handed OUT by [`HeadReadFn`] are live for the dispatch call; ranges handed
+/// IN to [`EmitHeadFn`] are live for that call only (the host copies them).
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct HeadField {
+    /// The field name's bytes (NULL with `name_len == 0` for none).
+    pub name_ptr: *const u8,
+    /// The field name's length.
+    pub name_len: usize,
+    /// The field value's bytes (NULL with `value_len == 0` for none).
+    pub value_ptr: *const u8,
+    /// The field value's length.
+    pub value_len: usize,
+}
+
+impl HeadField {
+    /// A field borrowing `name` and `value`.
+    #[must_use]
+    pub fn new(name: &[u8], value: &[u8]) -> Self {
+        HeadField {
+            name_ptr: name.as_ptr(),
+            name_len: name.len(),
+            value_ptr: value.as_ptr(),
+            value_len: value.len(),
+        }
+    }
+
+    /// The name's bytes.
+    ///
+    /// # Safety
+    /// The range must be live for `'a` (the discipline of whichever slot handed the field over).
+    #[must_use]
+    pub unsafe fn name<'a>(&self) -> &'a [u8] {
+        // SAFETY: the caller's obligation.
+        unsafe { borrowed(self.name_ptr, self.name_len) }
+    }
+
+    /// The value's bytes.
+    ///
+    /// # Safety
+    /// As [`name`](Self::name).
+    #[must_use]
+    pub unsafe fn value<'a>(&self) -> &'a [u8] {
+        // SAFETY: the caller's obligation.
+        unsafe { borrowed(self.value_ptr, self.value_len) }
+    }
+}
+
+/// A borrowed `(ptr, len)` range as a slice; empty for NULL or zero.
+///
+/// # Safety
+/// A non-null `ptr` must address `len` live, initialized bytes for `'a`.
+unsafe fn borrowed<'a>(ptr: *const u8, len: usize) -> &'a [u8] {
+    if ptr.is_null() || len == 0 {
+        return &[];
+    }
+    // SAFETY: the caller's obligation.
+    unsafe { core::slice::from_raw_parts(ptr, len) }
+}
+
+/// READ ONE PART OF THE REQUEST HEAD: `part` is a [`HeadPart`] as its raw `u8`; `index` selects the
+/// header (ignored for the other parts). Writes the field into `out` on [`StatusClass::Ok`] (init only
+/// on Ok); [`StatusClass::Gone`] past the last header; [`StatusClass::Refused`] for a NULL head or
+/// out, or a `part` this host does not know; [`StatusClass::Fault`] on a caught panic.
+pub type HeadReadFn = extern "C-unwind" fn(
+    head: *const c_void,
+    part: u8,
+    index: u32,
+    out: *mut MaybeUninit<HeadField>,
+) -> StatusClass;
+
+/// STATE THE ANSWER'S HEAD on emit handle `emit`: the HTTP `status` the plane answers with (its
+/// provider's, passed through) and `headers_len` headers, each a [`HeadField`]. Called at most once,
+/// before any [`EmitBodyFn`] chunk; the host serves exactly this status and exactly these headers.
+/// [`StatusClass::Ok`] when taken; [`StatusClass::Refused`] for a status outside `100..=999`, a
+/// header the host cannot serve, a second call or a call after the body began;
+/// [`StatusClass::Fault`] on a caught panic.
+pub type EmitHeadFn = extern "C-unwind" fn(
+    emit: u64,
+    status: u16,
+    headers_ptr: *const HeadField,
+    headers_len: usize,
+) -> StatusClass;
+
+/// WRITE ONE CHUNK of a streamed body on emit handle `emit` (the work item's
+/// [`stream`](WorkItem::stream) id). The first chunk commits the head (the one
+/// [`EmitHeadFn`] stated, or the host's default) and the answer is then served as a stream: the
+/// reply buffer is not read. [`StatusClass::Ok`] when taken; [`StatusClass::Gone`] when the caller
+/// went away (the plane stops); [`StatusClass::Refused`] for a handle the host did not issue;
+/// [`StatusClass::Fault`] on a caught panic.
+pub type EmitBodyFn =
+    extern "C-unwind" fn(emit: u64, chunk_ptr: *const u8, chunk_len: usize) -> StatusClass;
 
 impl WorkItem {
     /// Assemble a `WorkItem` from an inbound and an emit handle, stamping the sized/versioned
@@ -196,6 +335,11 @@ impl WorkItem {
             reply_ptr: core::ptr::null_mut(),
             reply_cap: 0,
             reply_written: core::ptr::null_mut(),
+            head: core::ptr::null(),
+            head_read: None,
+            emit_head: None,
+            stream: EmitHandle::absent(),
+            emit_body: None,
         }
     }
 
@@ -216,6 +360,31 @@ impl WorkItem {
         self.reply_cap = reply.len();
         self.reply_written = written;
         self
+    }
+
+    /// Read one part of the request head through the work item's own accessor slot: `Some` with the
+    /// field when the host wrote a head and its slot answered `Ok`, `None` otherwise (an older host's
+    /// work item, no head, a header `index` past the last).
+    ///
+    /// # Safety
+    /// `work` must address a live work item for the dispatch call whose `size` states what its
+    /// sender wrote (the dispatch discipline). The field's ranges are live for that call.
+    #[must_use]
+    pub unsafe fn read_head(
+        work: *const WorkItem,
+        part: HeadPart,
+        index: u32,
+    ) -> Option<HeadField> {
+        // SAFETY: the caller's obligation; `size` leads every work item.
+        let size = unsafe { core::ptr::read_unaligned(core::ptr::addr_of!((*work).size)) };
+        let head = crate::read_sized_field!(work, size, WorkItem, head)?;
+        let read = crate::read_sized_field!(work, size, WorkItem, head_read)??;
+        let mut out = MaybeUninit::<HeadField>::uninit();
+        if read(head, part as u8, index, &mut out) != StatusClass::Ok {
+            return None; // init-only-on-Ok: `out` stays unread
+        }
+        // SAFETY: init-only-on-Ok — the slot wrote `out` before answering `Ok`.
+        Some(unsafe { out.assume_init() })
     }
 }
 

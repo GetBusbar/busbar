@@ -438,10 +438,11 @@ pub fn hot_plane_row(plane: &'static DynPlane) -> Result<PlaneDecl, String> {
 /// plane with a section is the one the boot fold kept (it keeps the first row of a key).
 static HOT_PLANES: std::sync::Mutex<Vec<&'static DynPlane>> = std::sync::Mutex::new(Vec::new());
 
-/// THE HOST EVERY HOT-LANE PLANE IS BUILT AGAINST: the kernel's own vtable, all 44 slots, built once
+/// THE HOST EVERY HOT-LANE PLANE IS BUILT AGAINST: the kernel's own vtable, every slot, built once
 /// and kept for the process — a built plane may hold the table it was handed at `build`, so the
-/// table outlives it (the ABI's build contract). Each dispatch is handed a table and `HostCtx` of its
-/// own, minted for it.
+/// table outlives it (the ABI's build contract), and a dropped-in plane's contract host-service
+/// ports are armed over it when its door opens (minor 30). Each dispatch is handed a table and
+/// `HostCtx` of its own, minted for it.
 static HOT_HOST: std::sync::LazyLock<HotHostVtable> =
     std::sync::LazyLock::new(busbar_kernel::plane_host::build_plane_host_vtable);
 
@@ -549,7 +550,7 @@ fn hot_admission(slot: &dyn std::any::Any) -> Option<PlaneAdmission> {
 }
 
 /// THE DATA ROUTES A HOT-LANE PLANE SERVES: one per claimed path, at the data-plane bar
-/// ([`RouteAuth::Key`]), each driving [`hot_dispatch`].
+/// ([`RouteAuth::Key`]), each answered by [`hot_answer`].
 fn hot_routes(slot: &dyn std::any::Any) -> Vec<PlaneRouteSpec> {
     let Some(slot) = slot.downcast_ref::<HotSlot>() else {
         return Vec::new();
@@ -560,53 +561,174 @@ fn hot_routes(slot: &dyn std::any::Any) -> Vec<PlaneRouteSpec> {
             path: path.clone(),
             method: *method,
             auth: RouteAuth::Key,
-            handler: std::sync::Arc::new(|ctx| {
-                let response = hot_dispatch(&ctx);
-                Box::pin(async move { response })
-            }),
+            handler: std::sync::Arc::new(|ctx| Box::pin(hot_answer(ctx))),
         })
         .collect()
 }
 
+/// One event of a HOT-lane answer on its way to the caller: the streamed head, a body chunk, or the
+/// plane's fault after the stream began.
+enum Emitted {
+    Head(Option<u16>, Vec<(Vec<u8>, Vec<u8>)>),
+    Chunk(axum::body::Bytes),
+    Fault,
+}
+
+/// How many streamed chunks may wait for the caller before the plane's next `emit_body` blocks.
+const HOT_STREAM_DEPTH: usize = 8;
+
+/// The dispatching thread's [`busbar_plugin_loader::ReplyStream`]: each event goes to the caller's
+/// response; `false` once the caller went away.
+struct ToCaller(tokio::sync::mpsc::Sender<Emitted>);
+
+impl busbar_plugin_loader::ReplyStream for ToCaller {
+    fn head(&mut self, status: Option<u16>, headers: &[(Vec<u8>, Vec<u8>)]) -> bool {
+        self.0
+            .blocking_send(Emitted::Head(status, headers.to_vec()))
+            .is_ok()
+    }
+    fn chunk(&mut self, bytes: &[u8]) -> bool {
+        let chunk = axum::body::Bytes::copy_from_slice(bytes);
+        self.0.blocking_send(Emitted::Chunk(chunk)).is_ok()
+    }
+}
+
+/// A streamed HOT-lane body: the chunks as the plane writes them; a plane fault after the stream
+/// began ends the body with an error, so the caller sees a cut answer, never a clean short one.
+struct HotStream(tokio::sync::mpsc::Receiver<Emitted>);
+
+impl http_body::Body for HotStream {
+    type Data = axum::body::Bytes;
+    type Error = std::io::Error;
+
+    fn poll_frame(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Result<http_body::Frame<Self::Data>, Self::Error>>> {
+        self.0.poll_recv(cx).map(|event| match event? {
+            Emitted::Chunk(chunk) => Some(Ok(http_body::Frame::data(chunk))),
+            Emitted::Head(..) | Emitted::Fault => Some(Err(std::io::Error::other(
+                "the plane faulted after its answer began",
+            ))),
+        })
+    }
+}
+
+/// ANSWER ONE REQUEST THROUGH A HOT-LANE PLANE (DEC-SERVE G2). The dispatch runs on a blocking
+/// thread ([`hot_dispatch`]): a plane's host calls may block, and a streamed body is written while
+/// the caller already reads it. What the plane answered decides the response: a streamed body is
+/// served LIVE — its head first, then each chunk as the plane writes it; a buffered one is served
+/// whole ([`hot_response`]).
+async fn hot_answer(ctx: PlaneReqCtx) -> PlaneResponse {
+    let (tx, mut rx) = tokio::sync::mpsc::channel(HOT_STREAM_DEPTH);
+    let run = tokio::task::spawn_blocking(move || {
+        let mut to_caller = ToCaller(tx);
+        let reply = hot_dispatch(&ctx, &mut to_caller);
+        if reply.streamed && reply.class != StatusClass::Ok {
+            let _ = to_caller.0.blocking_send(Emitted::Fault);
+        }
+        reply
+    });
+    if let Some(Emitted::Head(status, headers)) = rx.recv().await {
+        let body = axum::body::Body::new(HotStream(rx));
+        return match status {
+            Some(status) => hot_response(status, Some(&headers), body),
+            None => hot_response(200, None, body),
+        };
+    }
+    let reply = run
+        .await
+        .unwrap_or_else(|_| busbar_plugin_loader::HotReply {
+            class: StatusClass::Fault,
+            status: None,
+            headers: Vec::new(),
+            body: Vec::new(),
+            streamed: false,
+        });
+    let body = axum::body::Body::from(reply.body);
+    match (reply.class, reply.status) {
+        (StatusClass::Ok, Some(status)) => hot_response(status, Some(&reply.headers), body),
+        (StatusClass::Ok, None) => hot_response(200, None, body),
+        (StatusClass::Refused, _) => hot_response(403, None, body),
+        (StatusClass::Gone, _) => hot_response(410, None, body),
+        (StatusClass::Unsupported, _) => hot_response(501, None, body),
+        (StatusClass::Fault, _) => hot_response(500, None, body),
+    }
+}
+
+/// The response a HOT-lane plane answered: on an `Ok` answer with a stated head, EXACTLY the status
+/// and headers it stated — its provider's, passed through; otherwise (`headers` `None`) the status
+/// of its class with the JSON content type every HOT-lane answer carried before a plane could state
+/// a head (`Ok` 200, `Refused` 403, `Gone` 410, `Unsupported` 501, anything else 500). A status or
+/// header the host cannot serve is a 500.
+fn hot_response(
+    status: u16,
+    headers: Option<&[(Vec<u8>, Vec<u8>)]>,
+    body: axum::body::Body,
+) -> PlaneResponse {
+    let mut response = axum::http::Response::builder().status(status);
+    match headers {
+        None => response = response.header(axum::http::header::CONTENT_TYPE, "application/json"),
+        Some(headers) => {
+            for (name, value) in headers {
+                response = response.header(name.as_slice(), value.as_slice());
+            }
+        }
+    }
+    response.body(body).unwrap_or_else(|_| {
+        let mut fault = axum::http::Response::default();
+        *fault.status_mut() = axum::http::StatusCode::INTERNAL_SERVER_ERROR;
+        fault
+    })
+}
+
 /// DRIVE ONE REQUEST THROUGH A HOT-LANE PLANE: the request body is the work item's finite inbound
-/// buffer, dispatched through the plane's `dispatch` slot inside the kernel's plane-door mint
-/// (`with_plane_door`, under the plane's registry key, over this request's engine snapshot and a
-/// fresh arena) — so every host call the plane makes back is recovered, governed, metered and
-/// journalled as this plane's, billed to the caller the auth middleware resolved (`ctx.gov`, never a
-/// key id the plane writes; DEC-SERVE G1), and its egress judged against the operator's destinations
-/// in its section (DEC-SERVE G3). The plane's reply is the response body; its status class is the
-/// response status (`Ok` 200, `Refused` 403, `Gone` 410, `Unsupported` 501, anything else 500).
-fn hot_dispatch(ctx: &PlaneReqCtx) -> PlaneResponse {
+/// buffer and the request's method, path, query and headers its request head, dispatched through the
+/// plane's `dispatch` slot inside the kernel's plane-door mint (`with_plane_door`, under the plane's
+/// registry key, over this request's engine snapshot and a fresh arena) — so every host call the
+/// plane makes back is recovered, governed, metered and journalled as this plane's, billed to the
+/// caller the auth middleware resolved (`ctx.gov`, never a key id the plane writes; DEC-SERVE G1),
+/// and its egress judged against the operator's destinations in its section (DEC-SERVE G3). A body
+/// larger than the reply buffer goes to `stream` (DEC-SERVE G2).
+fn hot_dispatch(
+    ctx: &PlaneReqCtx,
+    stream: &mut dyn busbar_plugin_loader::ReplyStream,
+) -> busbar_plugin_loader::HotReply {
     let slot = ctx.slot.downcast_ref::<HotSlot>();
     let handle = ctx.engine.downcast_ref::<busbar_kernel::state::AppHandle>();
-    let (class, reply) = match (slot, handle) {
-        (Some(slot), Some(handle)) => {
-            let app = handle.load();
-            let scope = busbar_kernel::plane_host::DispatchScope::new();
-            let key = slot.served.plane().name();
-            busbar_kernel::plane_host::with_plane_door(
-                key,
-                ctx.gov.as_ref(),
-                &slot.destinations,
-                &app,
-                &scope,
-                |host, vt| slot.served.dispatch(vt, host, &ctx.body),
-            )
-        }
-        _ => (StatusClass::Fault, Vec::new()),
+    let headers: Vec<(&[u8], &[u8])> = ctx
+        .headers
+        .iter()
+        .map(|(name, value)| (name.as_str().as_bytes(), value.as_bytes()))
+        .collect();
+    let head = busbar_plugin_loader::RequestHead {
+        method: ctx.method.as_str().as_bytes(),
+        path: ctx.uri.path().as_bytes(),
+        query: ctx.uri.query().unwrap_or_default().as_bytes(),
+        headers: &headers,
     };
-    let status = match class {
-        StatusClass::Ok => axum::http::StatusCode::OK,
-        StatusClass::Refused => axum::http::StatusCode::FORBIDDEN,
-        StatusClass::Gone => axum::http::StatusCode::GONE,
-        StatusClass::Unsupported => axum::http::StatusCode::NOT_IMPLEMENTED,
-        StatusClass::Fault => axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+    let (Some(slot), Some(handle)) = (slot, handle) else {
+        return busbar_plugin_loader::HotReply {
+            class: StatusClass::Fault,
+            status: None,
+            headers: Vec::new(),
+            body: Vec::new(),
+            streamed: false,
+        };
     };
-    axum::http::Response::builder()
-        .status(status)
-        .header(axum::http::header::CONTENT_TYPE, "application/json")
-        .body(axum::body::Body::from(reply))
-        .unwrap_or_default()
+    let app = handle.load();
+    let scope = busbar_kernel::plane_host::DispatchScope::new();
+    busbar_kernel::plane_host::with_plane_door(
+        slot.served.plane().name(),
+        ctx.gov.as_ref(),
+        &slot.destinations,
+        &app,
+        &scope,
+        |host, vt| {
+            slot.served
+                .answer(vt, host, Some(&head), &ctx.body, Some(stream))
+        },
+    )
 }
 
 /// THE KERNEL HOOKS OF A HOT-LANE PLANE — the same set for every HOT-lane plane, whichever door it

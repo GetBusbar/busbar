@@ -521,6 +521,10 @@ async fn serve_arm() {
     let (Ok(arm), Ok(out)) = (std::env::var(SERVE_ARM), std::env::var(SERVE_OUT)) else {
         return;
     };
+    // The host's entropy, armed first thing in this fresh process (first install wins): a fixed
+    // draw, so a plane id synthesized from it is the same through either door — and is not the
+    // entropy port's failure path.
+    busbar_contract::codec::install_entropy_source(host_entropy);
     let dropped_in = || {
         let lib = std::fs::read(cdylib().expect("the parent found the cdylib")).unwrap();
         let (dir, policy) = plugins_dir(&format!("serve-{arm}"), &lib);
@@ -553,18 +557,98 @@ async fn serve_arm() {
         .header(axum::http::header::CONTENT_TYPE, "application/json")
         .body(axum::body::Body::from("{\"ping\":1}"))
         .unwrap();
-    let response = router.oneshot(request).await.expect("the router answers");
+    let response = router
+        .clone()
+        .oneshot(request)
+        .await
+        .expect("the router answers");
     let status = response.status().as_u16();
     let body = axum::body::to_bytes(response.into_body(), usize::MAX)
         .await
         .expect("the body reads");
+    let (audit, metering) = (audit_rows(&app), metering_rows(&app));
+
+    // THE CARRIER (DEC-SERVE G2): the plane reads the head and answers its provider's status,
+    // headers and body — first a buffered answer, then one over the reply buffer, which streams.
+    let provider = answered(
+        &router,
+        axum::http::Request::builder()
+            .method("POST")
+            .uri("/example?trace=on&n=2")
+            .header(axum::http::header::CONTENT_TYPE, "application/json")
+            .header("x-example-status", "429")
+            .body(axum::body::Body::from("{\"ping\":2}"))
+            .unwrap(),
+    )
+    .await;
+    let over = busbar_plugin_loader::MAX_PLANE_REPLY_LEN + 1;
+    let streamed = answered(
+        &router,
+        axum::http::Request::builder()
+            .method("POST")
+            .uri("/example")
+            .header("x-example-status", "206")
+            .header("x-example-size", over.to_string())
+            .body(axum::body::Body::empty())
+            .unwrap(),
+    )
+    .await;
     let served = serde_json::json!({
         "status": status,
         "body": String::from_utf8_lossy(&body),
-        "audit": audit_rows(&app),
-        "metering": metering_rows(&app),
+        "audit": audit,
+        "metering": metering,
+        "provider": provider,
+        "streamed": streamed,
     });
     std::fs::write(out, served.to_string()).expect("the arm writes what it served");
+}
+
+/// The fixed host entropy [`serve_arm`] installs.
+fn host_entropy(out: &mut [u8]) -> bool {
+    out.fill(0x5a);
+    true
+}
+
+/// What `router` answered `request`: the status, every header in order, whether the body's length
+/// was known before it was read (`None` = it streamed), and the body — a long one as its length and
+/// whether it is the example plane's `a..z` pattern.
+async fn answered(
+    router: &axum::Router,
+    request: axum::http::Request<axum::body::Body>,
+) -> serde_json::Value {
+    use http_body::Body as _;
+    use tower::ServiceExt;
+    let response = router
+        .clone()
+        .oneshot(request)
+        .await
+        .expect("the router answers");
+    let status = response.status().as_u16();
+    let headers: Vec<String> = response
+        .headers()
+        .iter()
+        .map(|(n, v)| format!("{n}: {}", String::from_utf8_lossy(v.as_bytes())))
+        .collect();
+    let known_len = response.body().size_hint().exact();
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("the body reads");
+    let text = if body.len() > 4096 {
+        let pattern = body
+            .iter()
+            .enumerate()
+            .all(|(i, b)| *b == b'a' + (i % 26) as u8);
+        serde_json::json!({ "len": body.len(), "pattern": pattern })
+    } else {
+        serde_json::json!(String::from_utf8_lossy(&body))
+    };
+    serde_json::json!({
+        "status": status,
+        "headers": headers,
+        "known_len": known_len,
+        "body": text,
+    })
 }
 
 /// Run [`serve_arm`] for `arm` in a fresh process of this test binary; what it served.
@@ -635,8 +719,44 @@ fn a_linked_and_a_dropped_in_plane_serve_one_request_identically() {
         "the host ledgered the plane's metering: {linked:#}"
     );
 
+    // THE CARRIER (DEC-SERVE G2), both doors alike (the equality above): the plane read the method,
+    // path, query and headers, and its provider's status, headers and body passed through untouched
+    // — no JSON content type stamped over its own, no 200 over its 429. The id it synthesized drew
+    // the HOST's entropy (0x5a…), not the port's failure path, through the dropped-in door too.
+    assert_eq!(
+        linked["provider"],
+        serde_json::json!({
+            "status": 429,
+            "headers": [
+                "content-type: text/plain; charset=utf-8",
+                "x-example-id: 5a5a5a5a5a5a5a5a",
+                "content-length: 37",
+            ],
+            "known_len": 37,
+            "body": "POST /example?trace=on&n=2\n{\"ping\":2}",
+        }),
+        "{linked:#}"
+    );
+    // A body one byte over the reply buffer went out through the response-stream emit kind: its
+    // length was unknown when the head was served, and every byte arrived, in order.
+    assert_eq!(
+        linked["streamed"],
+        serde_json::json!({
+            "status": 206,
+            "headers": [
+                "content-type: text/plain; charset=utf-8",
+                "x-example-id: 5a5a5a5a5a5a5a5a",
+            ],
+            "known_len": null,
+            "body": { "len": busbar_plugin_loader::MAX_PLANE_REPLY_LEN + 1, "pattern": true },
+        }),
+        "{linked:#}"
+    );
+
     let bypassed = serve_in_a_fresh_process("bypass");
-    for leg in ["status", "body", "audit", "metering"] {
+    for leg in [
+        "status", "body", "audit", "metering", "provider", "streamed",
+    ] {
         assert_ne!(
             bypassed[leg], dropped[leg],
             "with its drive bypassed the dropped-in plane must not serve the same {leg}"

@@ -35,6 +35,7 @@
 pub mod decl;
 pub mod host;
 pub mod pod;
+pub mod services;
 pub mod transport;
 pub mod workitem;
 
@@ -59,7 +60,19 @@ pub mod symbol {
     /// the loader. The transport cdylib also exports `busbar_abi()` and `busbar_plugin_kind()` (==
     /// `"transport"`).
     pub const TRANSPORT_DECL: &[u8] = b"busbar_transport_decl\0";
+
+    /// `busbar_plane_arm(host: *const PlaneHostVtable) -> RawStatus` — OPTIONAL (minor 30): arm the
+    /// dropped-in plane image's contract host-service ports over the host's table
+    /// ([`services::arm`](super::services::arm)). The host calls it when it opens the door, before
+    /// `build`; an image that does not export it simply keeps its ports' failure paths.
+    pub const PLANE_ARM: &[u8] = b"busbar_plane_arm\0";
 }
+
+/// `busbar_plane_arm` — the optional arm entrypoint's fn-pointer type (see [`symbol::PLANE_ARM`]).
+///
+/// # Safety
+/// A non-null `host` must address a live `PlaneHostVtable` that outlives the loaded image.
+pub type PlaneArmFn = unsafe extern "C-unwind" fn(host: *const PlaneHostVtable) -> RawStatus;
 
 /// `busbar_plane_decl` — the plane cdylib entrypoint's fn-pointer type the loader resolves via
 /// `libloading`. `unsafe extern "C-unwind"` for parity with the cold [`AbiFn`](crate::abi::cold::AbiFn):
@@ -88,4 +101,7 @@ pub use transport::{
     RawWireOutcome, TransportDecl, WireConfig, WireLower, WireOutcome, WireSettings, WireWaker,
     NO_WAKER, TRANSPORT_DECL_MINOR,
 };
-pub use workitem::{EmitHandle, EmitKind, InboundHandle, InboundKind, WorkItem};
+pub use workitem::{
+    EmitBodyFn, EmitHandle, EmitHeadFn, EmitKind, HeadField, HeadPart, HeadReadFn, InboundHandle,
+    InboundKind, WorkItem,
+};
