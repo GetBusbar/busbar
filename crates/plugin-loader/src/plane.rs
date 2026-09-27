@@ -285,7 +285,7 @@ impl DynPlane {
         // Confined: a per-LOAD crossing, the parse half of the plane's constructor (see `build`).
         match crate::ffi_guard_confined(&self.path, "plane_config_validate", || {
             #[cfg(test)]
-            tests_decl::note_thread();
+            tests_decl::note_thread(&self.path);
             f(raw_ptr, raw_len, out_ptr)
         }) {
             Ok(status) => {
@@ -379,7 +379,7 @@ impl DynPlane {
         // thread that minted it, so moving them to a worker would refuse every host crossing.
         match crate::ffi_guard_confined(&self.path, "plane_build", || {
             #[cfg(test)]
-            tests_decl::note_thread();
+            tests_decl::note_thread(&self.path);
             f(ctx_ptr, out_ptr)
         }) {
             Ok(status) => {

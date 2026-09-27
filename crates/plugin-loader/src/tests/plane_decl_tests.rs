@@ -22,22 +22,36 @@ fn serial() -> std::sync::MutexGuard<'static, ()> {
 
 // ── Instruments ───────────────────────────────────────────────────────────────────────────────
 
-/// The name of the thread each noted crossing ran on, in order.
-static THREADS: Mutex<Vec<String>> = Mutex::new(Vec::new());
+/// The name of the thread each noted crossing ran on, in order, beside the path of the plane that
+/// crossed.
+///
+/// KEYED BY THE PLANE'S PATH, because the recorder is the LOADER's, not this file's: every plane's
+/// constructor crossing in this test binary notes itself, and `plane_conformance_tests` drives real
+/// planes' `config_validate`/`build` on other test threads that do not hold [`SERIAL`]. Read
+/// unkeyed, one of those crossings landing between a test's drain and its read was a third entry
+/// in a list that expected two (1 in ~8 Linux runs).
+static THREADS: Mutex<Vec<(String, String)>> = Mutex::new(Vec::new());
 
 /// Called from inside the loader's guard closure for the constructor crossings: records the thread
-/// the crossing actually ran on.
-pub(super) fn note_thread() {
-    THREADS.lock().unwrap_or_else(|p| p.into_inner()).push(
+/// the crossing actually ran on, and whose crossing it was.
+pub(super) fn note_thread(plane_path: &str) {
+    THREADS.lock().unwrap_or_else(|p| p.into_inner()).push((
+        plane_path.to_string(),
         std::thread::current()
             .name()
             .unwrap_or("<unnamed>")
             .to_string(),
-    );
+    ));
 }
 
+/// Drain the recorder, returning the threads THIS file's plane (`memplane`, see [`plane_over`])
+/// crossed on; other planes' crossings are dropped.
 fn take_threads() -> Vec<String> {
     std::mem::take(&mut *THREADS.lock().unwrap_or_else(|p| p.into_inner()))
+        .into_iter()
+        .filter(|(path, _)| path == DECL_PLANE_PATH)
+        .map(|(_, thread)| thread)
+        .collect()
 }
 
 /// How many times the plane's `free` ran.
@@ -155,8 +169,11 @@ fn decl() -> PlaneDecl {
     }
 }
 
+/// The path every plane this file assembles is known by.
+const DECL_PLANE_PATH: &str = "memplane";
+
 fn plane_over(d: &PlaneDecl) -> Result<DynPlane, String> {
-    assemble(d, "memplane".to_string(), None, None)
+    assemble(d, DECL_PLANE_PATH.to_string(), None, None)
 }
 
 // ── Item 389: a decl size over-claim is REFUSED, as the host vtable's is ──────────────────────
