@@ -111,7 +111,7 @@ GATE_TARGET_ROOT="${CARGO_TARGET_DIR:-target}"
 # `busbar-substrate`'s value leaves became `busbar-substrate-values` (W4.b P2, 5fa320208), which
 # was then deleted into the contract and the kernel (#83a SD-8). The two roots below are the core
 # ones `xtask/src/planes.rs::neutral_src_roots()` also scans. THIS SCRIPT WAS MISSED BY THAT REPOINT — the finding
-# docs/design/1.6.0-security-posture.md §2.4 filed as BROKEN.
+# docs/security/1.6.0-security-posture.md §2.4 filed as BROKEN.
 #
 # ZERO IS THE PASSING ANSWER TO EVERY BAN. That sentence is why this table exists and why
 # `require_scan_dir` refuses a root that is not on disk instead of scanning it as zero files. It is
@@ -399,7 +399,7 @@ note "level 1 static: core names no protocol crate (0 hits over $CORE_NFILES pro
 # plus the core-owned invoke/subscribe leaf handles. This is the structural proof the enum is gone;
 # the freeze witness → 0 pinned the concrete-family relocation, this pins the dissolve. (The witness
 # script `scripts/g6-freeze-witness.sh` has since been DELETED — see
-# docs/design/1.6.0-security-posture.md; the prose above is history, this leg is the live claim.)
+# docs/security/1.6.0-security-posture.md; the prose above is history, this leg is the live claim.)
 #
 # WHERE THE FILE WOULD BE TODAY. Its old address was `crates/busbar-core/src/ir/variant.rs`, and
 # `crates/busbar-core` does not exist. Core's `ir` module FORKED at W4.b: the sealed `IrHandle` and
