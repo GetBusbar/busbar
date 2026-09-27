@@ -117,6 +117,18 @@ plugins:
     service: none
     release_gate: optional
     gate: suite
+  - repo: auth-admin-tokens
+    kind: auth
+    alias: admin-tokens
+    crate: busbar-auth-admin-tokens-plugin
+    version_line: "1.0"
+    service: none
+    release_gate: optional
+    gate: suite
+    # The built-in operator admin-auth module, moved out of busbar (owner move-out ruling; ARCHITECT
+    # 2026-09-27). busbar LINKS it at a pinned rev (busbar-kernel, feature `auth-admin-tokens`); its
+    # first release is cut with the core version that pins it.
+    released: false
   - repo: webrequest-hook
     kind: hook
     alias: webrequest

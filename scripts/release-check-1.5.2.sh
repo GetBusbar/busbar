@@ -785,6 +785,7 @@ auth_plugin_flows() {
     oidc)   echo "post get" ;;   # both directions
     github) echo "get" ;;        # opaque token → GET redirect only (no held-token POST path)
     ldap)   echo "form" ;;       # credential-form bind flow
+    admin-tokens) echo "none" ;; # the operator ADMIN credential: gates /api/v1/admin only, no /auth/token
     *)      echo "" ;;
   esac
 }
@@ -840,6 +841,11 @@ run_phase_b() {
         # plugin binds against a seeded OpenLDAP container; a wrong password is asserted 401. Loud-skips
         # (never a silent pass) when docker or the sibling checkout is absent.
         run_tokenx_ldap_form "$P_DIR"
+        ;;
+      admin-tokens)
+        # Declared `none`: an admin_auth: module, never an /auth/token issuer. Its verdicts are proven
+        # both ways by busbar-plugin-loader's auth_verify_conformance_tests and its repo's conformance.
+        note "'${P_ALIAS}' declares no /auth/token direction (admin_auth: only) — nothing to exchange."
         ;;
       *)
         integ "flows [${flows}] declared for '${P_ALIAS}' but no runner wired — treat as VERIFIED-AT-INTEGRATION."
