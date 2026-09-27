@@ -14,12 +14,6 @@
 
 use super::*;
 use busbar_contract::diagnostic::Diagnostic;
-use busbar_kernel::diagnostics::{render_json_for, render_markdown_for, REGISTRY};
-
-/// The committed operator page, relative to this crate's manifest dir.
-const COMMITTED_MD: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../docs/diagnostics.md");
-/// The committed machine-readable page.
-const COMMITTED_JSON: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../docs/diagnostics.json");
 
 /// The runtime catalogue — the host registry and every linked plane's own — as the composition root
 /// installs it, installed ONCE for this test binary (a second `install_diagnostics` panics by design).
@@ -74,49 +68,6 @@ fn declared_by_linked_plugins() -> Vec<&'static Diagnostic> {
         }
     }
     out
-}
-
-/// The numbers the committed JSON page publishes.
-fn published_numbers() -> std::collections::BTreeSet<u64> {
-    let text = std::fs::read_to_string(COMMITTED_JSON)
-        .unwrap_or_else(|e| panic!("read {COMMITTED_JSON}: {e}"));
-    let entries: Vec<serde_json::Value> =
-        serde_json::from_str(&text).expect("docs/diagnostics.json is a JSON array");
-    entries
-        .iter()
-        .map(|e| e["number"].as_u64().expect("every entry has a number"))
-        .collect()
-}
-
-/// THE HOST PAGE'S ENTRIES, each rendered from its defining constant: every code the host registry
-/// defines, every code a linked first-party plugin declares, and every linked plane's code the page
-/// publishes. A plane code the page does not publish belongs to that plane's own page
-/// (`docs/diagnostics-<plane>.md`) — one code, one page.
-fn host_page() -> Vec<&'static Diagnostic> {
-    let published = published_numbers();
-    let in_registry = |d: &Diagnostic| REGISTRY.iter().any(|r| r.code == d.code);
-    let mut page: Vec<&'static Diagnostic> = REGISTRY.to_vec();
-    page.extend(declared_by_linked_plugins());
-    page.extend(
-        installed()
-            .into_iter()
-            .filter(|d| !in_registry(d) && published.contains(&u64::from(d.code))),
-    );
-    page
-}
-
-/// Compare `fresh` with the committed file at `path`, or write it under `UPDATE_DIAGNOSTICS=1`.
-fn committed_matches(path: &str, fresh: &str) {
-    if std::env::var("UPDATE_DIAGNOSTICS").is_ok_and(|v| v == "1") {
-        std::fs::write(path, fresh).unwrap_or_else(|e| panic!("write {path}: {e}"));
-        return;
-    }
-    let committed = std::fs::read_to_string(path)
-        .unwrap_or_else(|e| panic!("read {path}: {e} — generate it with UPDATE_DIAGNOSTICS=1"));
-    assert_eq!(
-        committed, fresh,
-        "{path} is stale — regenerate with `UPDATE_DIAGNOSTICS=1 cargo test -p busbar catalogue_tests`"
-    );
 }
 
 /// EVERY DIAGNOSTIC CODE IS UNIQUE ACROSS THE WHOLE CATALOG — the host registry in `busbar-kernel`
@@ -179,14 +130,74 @@ fn declared_codes_do_not_collide_with_the_registry() {
 
 // ── DOCS-IN-SYNC ────────────────────────────────────────────────────────────────────────────
 //
-// The committed docs/diagnostics.{md,json} MUST equal a fresh render of the host page.
+// THE PUBLISHED PAGE DOCUMENTS THE SHIPPED CATALOGUE: the host registry, every plane's catalogue and
+// the linked export sinks' declared codes. A feature-set build that links fewer rows (a single-plane
+// row, `--no-default-features`) installs fewer catalogues, so its render is a DIFFERENT page, not a
+// stale one; the pair below is compiled only where every plane and the export axis are linked. The
+// uniqueness checks above run in every build.
+#[cfg(all(linked_every_plane, linked_axis_exports))]
+mod page {
+    use super::*;
+    use busbar_kernel::diagnostics::{render_json_for, render_markdown_for, REGISTRY};
 
-#[test]
-fn committed_markdown_matches_registry() {
-    committed_matches(COMMITTED_MD, &render_markdown_for(&host_page()));
-}
+    /// The committed operator page, relative to this crate's manifest dir.
+    const COMMITTED_MD: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../docs/diagnostics.md");
+    /// The committed machine-readable page.
+    const COMMITTED_JSON: &str =
+        concat!(env!("CARGO_MANIFEST_DIR"), "/../../docs/diagnostics.json");
 
-#[test]
-fn committed_json_matches_registry() {
-    committed_matches(COMMITTED_JSON, &render_json_for(&host_page()));
+    /// The numbers the committed JSON page publishes.
+    fn published_numbers() -> std::collections::BTreeSet<u64> {
+        let text = std::fs::read_to_string(COMMITTED_JSON)
+            .unwrap_or_else(|e| panic!("read {COMMITTED_JSON}: {e}"));
+        let entries: Vec<serde_json::Value> =
+            serde_json::from_str(&text).expect("docs/diagnostics.json is a JSON array");
+        entries
+            .iter()
+            .map(|e| e["number"].as_u64().expect("every entry has a number"))
+            .collect()
+    }
+
+    /// THE HOST PAGE'S ENTRIES, each rendered from its defining constant: every code the host registry
+    /// defines, every code a linked first-party plugin declares, and every linked plane's code the page
+    /// publishes. A plane code the page does not publish belongs to that plane's own page
+    /// (`docs/diagnostics-<plane>.md`) — one code, one page.
+    fn host_page() -> Vec<&'static Diagnostic> {
+        let published = published_numbers();
+        let in_registry = |d: &Diagnostic| REGISTRY.iter().any(|r| r.code == d.code);
+        let mut page: Vec<&'static Diagnostic> = REGISTRY.to_vec();
+        page.extend(declared_by_linked_plugins());
+        page.extend(
+            installed()
+                .into_iter()
+                .filter(|d| !in_registry(d) && published.contains(&u64::from(d.code))),
+        );
+        page
+    }
+
+    /// Compare `fresh` with the committed file at `path`, or write it under `UPDATE_DIAGNOSTICS=1`.
+    fn committed_matches(path: &str, fresh: &str) {
+        if std::env::var("UPDATE_DIAGNOSTICS").is_ok_and(|v| v == "1") {
+            std::fs::write(path, fresh).unwrap_or_else(|e| panic!("write {path}: {e}"));
+            return;
+        }
+        let committed = std::fs::read_to_string(path)
+            .unwrap_or_else(|e| panic!("read {path}: {e} — generate it with UPDATE_DIAGNOSTICS=1"));
+        assert_eq!(
+            committed, fresh,
+            "{path} is stale — regenerate with `UPDATE_DIAGNOSTICS=1 cargo test -p busbar catalogue_tests`"
+        );
+    }
+
+    // The committed docs/diagnostics.{md,json} MUST equal a fresh render of the host page.
+
+    #[test]
+    fn committed_markdown_matches_registry() {
+        committed_matches(COMMITTED_MD, &render_markdown_for(&host_page()));
+    }
+
+    #[test]
+    fn committed_json_matches_registry() {
+        committed_matches(COMMITTED_JSON, &render_json_for(&host_page()));
+    }
 }
