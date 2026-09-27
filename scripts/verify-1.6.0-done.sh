@@ -1464,7 +1464,7 @@ fi
 end_group
 
 # ─────────────────────────────────────────────────────────────────────────────────────────────────
-begin_group "DESIGN — every ARCHITECTURE.md Appendix B binding is mapped to a check that exists"
+begin_group "DESIGN — every qa/parity-bindings.md (Appendix B) binding is mapped to a check that exists"
 # The design bindings ledger (qa/design-bindings.json) maps each parity binding to the tests, oracle
 # cells, lints and gates that prove it. Plain --check reports gaps; --strict owes EVERY binding to the
 # verdict so an unmapped binding is red. DONE means the design is fully bound, not partly.

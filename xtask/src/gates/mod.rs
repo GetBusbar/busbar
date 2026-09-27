@@ -2618,7 +2618,7 @@ pub static REGISTRY: &[Registration] = &[
         batch: 2,
         tier: Tier::Fast,
         build: || Box::new(design_bindings::DesignBindingsGate),
-        summary: "every ARCHITECTURE.md Appendix B binding cites a check that compares something",
+        summary: "every qa/parity-bindings.md (Appendix B) binding cites a check that compares something",
     },
     Registration {
         name: "denylist",

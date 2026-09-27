@@ -1,6 +1,7 @@
 //! THE DESIGN BINDINGS GATE — "is what we built compliant with what we designed?"
 //!
-//! `docs/design/ARCHITECTURE.md` Appendix B is the one part of the design written as testable
+//! `qa/parity-bindings.md` (Appendix B of the former `docs/design/ARCHITECTURE.md`) is the one part
+//! of the design written as testable
 //! rules: the PB-0 master rule plus one table row per binding. `qa/design-bindings.json` maps each
 //! to the checks that prove it today. This gate does NOT run those checks; it proves that every
 //! referenced check still EXISTS and that something it names actually COMPARES something, and it

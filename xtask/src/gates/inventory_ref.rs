@@ -489,14 +489,14 @@ fn divergence_for(label: &str) -> crate::gates::Divergence {
     }
 }
 
-/// Every path the legacy script can read out of the tree it judges: the binding manifest, the two
-/// `docs/design` files the alias table names directly, and every inventory file under the inventory
+/// Every path the legacy script can read out of the tree it judges: the binding manifest, the
+/// binding table it derives from, the files the alias table names directly, and every inventory file under the inventory
 /// directory. Derived by walking, not listed by hand, so an inventory file added tomorrow is
 /// materialized without a second edit here.
 fn readable_inputs(cx: &Ctx) -> Vec<String> {
     let mut out = vec![
         BINDINGS_PATH.to_string(),
-        "docs/design/ARCHITECTURE.md".to_string(),
+        crate::gates::design_bindings::build::ARCH_REL.to_string(),
     ];
     for (_, path) in ALIASES {
         out.push((*path).to_string());

@@ -4068,7 +4068,7 @@ jobs:
           if-no-files-found: warn
 
   # DESIGN BINDINGS — "is what we built compliant with what we designed?" qa/design-bindings.json maps
-  # every ARCHITECTURE.md Appendix B binding to the checks that prove it (tests, oracle cells, lints,
+  # every qa/parity-bindings.md (Appendix B) binding to the checks that prove it (tests, oracle cells, lints,
   # gates). Two things are asserted here, no toolchain needed (stdlib python + bash):
   #   1. EXISTENCE (the plain run): every referenced check still exists in the tree. A vanished
   #      test or cell is RED. An UNMAPPED binding is a named gap — listed, not red, and only a gap

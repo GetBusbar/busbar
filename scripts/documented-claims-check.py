@@ -3,7 +3,7 @@
 # Copyright (C) 2026 Busbar Inc and contributors
 """documented-claims-check.py -- assert the documented-behaviour claim register.
 
-qa/documented-claims.json is the register behind the ARCHITECTURE.md Appendix B binding on
+qa/documented-claims.json is the register behind the qa/parity-bindings.md (Appendix B) binding on
 documented behaviour: the README and CHANGELOG claims cross-checked in
 qa/evidence/inventory/1.5.5-ops-observability.md, each either pinned by a shadow-oracle cell
 (`status: "cell"`) or written off as untestable prose with a stated reason (`status: "prose"`),
