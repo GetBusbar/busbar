@@ -11,8 +11,9 @@
 #            commit. The decision is an output (`decision`) and the job summary.
 #   repin    on `cut`: scripts/fleet/repin.sh moves .busbar-ref, every manifest's busbar rev,
 #            Cargo.lock and the callers' reusable-workflow refs together, pin-check re-verifies them,
-#            and the commit goes to `branch` (default dev). Never to qa or main: a repo promotes
-#            dev -> qa -> main on its own, and its release is cut from main by a tag.
+#            and the commit goes to the repo's `dev` — a FIXED destination, never an input: qa and
+#            main are release branches (release-order R11), and a repo promotes dev -> qa -> main on
+#            its own, its release cut from main by a tag.
 #   dry_run  decides and repins in the runner, commits nothing.
 #
 # The push rewrites workflow files (the callers' `@<sha>`), which GITHUB_TOKEN may not do: the caller
@@ -30,11 +31,6 @@ on:
         description: "The busbar version at that commit (e.g. 1.6.0)"
         required: true
         type: string
-      branch:
-        description: "The branch the repin commit goes to"
-        required: false
-        type: string
-        default: "dev"
       dry_run:
         description: "Decide and repin in the runner; commit and push nothing"
         required: false
@@ -64,14 +60,9 @@ jobs:
     outputs:
       decision: ${{ steps.decide.outputs.decision }}
     steps:
-      - name: refuse a protected target
-        if: inputs.branch == 'main' || inputs.branch == 'qa'
-        run: |
-          echo "::error::a repin commits to dev; qa and main move by promotion only" >&2
-          exit 1
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          ref: ${{ inputs.branch }}
+          ref: dev
           path: plugin
           token: ${{ secrets.FLEET_TOKEN || github.token }}
       - name: the fleet scripts at the INCOMING busbar
@@ -116,7 +107,6 @@ jobs:
           HAS_TOKEN: ${{ secrets.FLEET_TOKEN != '' }}
           SHA: ${{ inputs.busbar_sha }}
           VER: ${{ inputs.busbar_version }}
-          BRANCH: ${{ inputs.branch }}
         run: |
           set -euo pipefail
           [ "$HAS_TOKEN" = true ] || { echo "::error::FLEET_TOKEN is not provisioned: the repin rewrites workflow files, which GITHUB_TOKEN may not push" >&2; exit 1; }
@@ -125,4 +115,4 @@ jobs:
           git config user.email "bot@getbusbar.com"
           git add -u
           git commit -m "busbar pin: ${VER} (${SHA}): .busbar-ref, manifests, Cargo.lock, workflow refs"
-          git push origin "HEAD:${BRANCH}"
+          git push origin HEAD:dev
