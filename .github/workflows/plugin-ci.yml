@@ -289,6 +289,9 @@ jobs:
     continue-on-error: true
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    env:
+      # A step's `if:` cannot read its own `env:` or `secrets`; a job-level flag it can.
+      HAS_CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN != '' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -301,9 +304,7 @@ jobs:
         working-directory: plugin
         run: cargo llvm-cov --workspace --locked --ignore-run-fail --lcov --output-path lcov.info
       - name: upload
-        env:
-          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
-        if: env.CODECOV_TOKEN != ''
+        if: env.HAS_CODECOV_TOKEN == 'true'
         uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
