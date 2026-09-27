@@ -80,7 +80,13 @@ pub const ROW_STRICT_DONE: &str = "no-deferral:strict-done";
 pub const DISCOVERY_FLOOR: usize = 50;
 
 const WAIVERS: &str = "scripts/no-deferral.waivers";
-const TRACKER: &str = "docs/design/1.6.0-TRACKER.md";
+/// The plan every waiver's expiry is looked up in. It was `docs/design/1.6.0-TRACKER.md` until
+/// 2026-09-27, when the owner cut docs/design down to the spec, the TODO and their three companions;
+/// the TODO is the one list of work that survives, so it is the one a waiver may name. See
+/// [`todo_item_open`] for the two id spaces it answers.
+const TODO: &str = "docs/design/1.6.0-TODO.md";
+/// The TODO section whose table rows are the `KP-<step>` ids.
+const KP_SECTION: &str = "## KERNEL<>PLUGINS";
 
 #[derive(Debug, Clone)]
 struct Waiver {
@@ -375,16 +381,14 @@ fn discover(cx: &Ctx) -> Result<Vec<(String, String)>, String> {
 
 /// Load the committed allowlist, refusing every shape a waiver must not have. A reason says why a
 /// marker is exempt today; it says nothing about when it stops being exempt, so each row also names
-/// the tracker row that retires it, and that row is LOOKED UP: a `[retires: X]` pointing at nothing
+/// the TODO item that retires it, and that item is LOOKED UP: a `[retires: X]` pointing at nothing
 /// is a promise nobody made.
 fn load_waivers(cx: &Ctx) -> Result<Vec<Waiver>, String> {
     let text = cx
         .read(WAIVERS)
         .map_err(|e| format!("the waivers file {WAIVERS} could not be read: {e}"))?;
-    let tracker = cx.read(TRACKER).map_err(|e| {
-        format!(
-            "the tracker {TRACKER} could not be read, so no waiver's expiry can be checked: {e}"
-        )
+    let todo = cx.read(TODO).map_err(|e| {
+        format!("the plan {TODO} could not be read, so no waiver's expiry can be checked: {e}")
     })?;
 
     let mut out = Vec::new();
@@ -411,27 +415,29 @@ fn load_waivers(cx: &Ctx) -> Result<Vec<Waiver>, String> {
         let Some(id) = expiry_id(&reason) else {
             return Err(format!(
                 "waiver row carries no expiry: '{t}'. Every row must end in `[retires: <ID>]` \
-                 naming the {TRACKER} row that retires it; a waiver that cannot expire is a \
-                 permanent unreviewed exemption."
+                 naming the {TODO} item (`KP-<step>` or `ITEM-<n>`) that retires it; a waiver \
+                 that cannot expire is a permanent unreviewed exemption."
             ));
         };
-        match tracker_row_open(&tracker, &id) {
+        match todo_item_open(&todo, &id) {
             None => {
                 return Err(format!(
-                    "waiver names expiry `{id}`, which is not a row in {TRACKER}: '{t}'. The \
-                     waiver outlived the work that was supposed to retire it, or the id is a typo."
+                    "waiver names expiry `{id}`, which is not an item in {TODO}: '{t}'. The \
+                     waiver outlived the work that was supposed to retire it, or the id is a typo. \
+                     An expiry is `KP-<step>` (a {KP_SECTION} step) or `ITEM-<n>` (a numbered \
+                     work item)."
                 ));
             }
-            // THE EXPIRY FIRED (item 212). A ticked row is the authorisation withdrawn: the work
+            // THE EXPIRY FIRED (item 212). A closed item is the authorisation withdrawn: the work
             // that was to retire this marker is recorded as done, and the marker is still here.
-            // Accepting `- [x]` as well as `- [ ]` meant no state existed in which a waiver was
-            // expired.
+            // Accepting a closed item as well as an open one meant no state existed in which a
+            // waiver was expired.
             Some(false) => {
                 return Err(format!(
-                    "waiver's expiry `{id}` is EXPIRED — {TRACKER} carries it ticked closed \
-                     (`- [x] {id}`), yet the waiver still excuses a marker: '{t}'. Resolve the \
-                     marker and drop the row, or re-open / re-point the tracker row that \
-                     authorises it."
+                    "waiver's expiry `{id}` is EXPIRED — {TODO} carries it closed (struck, or \
+                     its status reads done/landed), yet the waiver still excuses a marker: '{t}'. \
+                     Resolve the marker and drop the row, or re-open / re-point the TODO item \
+                     that authorises it."
                 ));
             }
             Some(true) => {}
@@ -470,26 +476,103 @@ fn expiry_id(reason: &str) -> Option<String> {
     Some(id.to_string())
 }
 
-/// The tracker row `^- \[[ xX]\] <id>\s`: `Some(true)` while it is OPEN (`- [ ]`), `Some(false)`
-/// once it is ticked (`- [x]` / `- [X]`), `None` when no such row exists. An open row anywhere wins,
-/// so a duplicated id is judged by whichever copy still authorises the waiver.
-fn tracker_row_open(tracker: &str, id: &str) -> Option<bool> {
+/// Look an expiry id up in the TODO: `Some(true)` while the item is OPEN, `Some(false)` once it is
+/// CLOSED, `None` when no such item exists. An open copy anywhere wins, so a duplicated id is judged
+/// by whichever copy still authorises the waiver.
+///
+/// Two id spaces, PREFIXED because they overlap numerically — the KERNEL<>PLUGINS steps run 1-41
+/// and so do the first 41 work items, and a bare `36` would resolve to whichever table came first:
+///
+/// * `KP-<step>` — a row of the table under the [`KP_SECTION`] heading (to the next `## `), whose
+///   first cell is `<step>` (`C0` included). CLOSED when that cell is struck (`~~36~~`) or the row's
+///   last cell, its Status, begins `done` or `landed` (bold ignored). `PARTLY LANDED` is open.
+/// * `ITEM-<n>` — a numbered work item: a table row OUTSIDE that section whose first cell is `<n>`,
+///   or an `ITEM <n> ` heading. CLOSED when struck (`| ~~n~~ |`, `## ~~ITEM n~~`) — the TODO's own
+///   convention for a superseded or struck item.
+fn todo_item_open(todo: &str, id: &str) -> Option<bool> {
     let mut state = None;
-    for l in tracker.lines() {
-        for (head, open) in [("- [ ] ", true), ("- [x] ", false), ("- [X] ", false)] {
-            if let Some(rest) = l.strip_prefix(head) {
-                if let Some(tail) = rest.strip_prefix(id) {
-                    if tail.starts_with([' ', '\t']) {
-                        if open {
-                            return Some(true);
-                        }
-                        state = Some(false);
-                    }
-                }
-            }
+    let mut in_kp = false;
+    for l in todo.lines() {
+        if l.starts_with("## ") {
+            in_kp = l.starts_with(KP_SECTION);
+        }
+        match item_on_line(l, in_kp, id) {
+            Some(true) => return Some(true),
+            Some(false) => state = Some(false),
+            None => {}
         }
     }
     state
+}
+
+/// Is `l` (inside the KERNEL<>PLUGINS section when `in_kp`) a copy of TODO item `id`? `Some(open)`
+/// when it is, `None` when it is not — see [`todo_item_open`] for the two id spaces.
+fn item_on_line(l: &str, in_kp: bool, id: &str) -> Option<bool> {
+    let unstrike = |c: &str| -> (bool, String) {
+        let c = c.trim();
+        match c.strip_prefix("~~").and_then(|r| r.strip_suffix("~~")) {
+            Some(inner) => (true, inner.trim().to_string()),
+            None => (false, c.to_string()),
+        }
+    };
+    let row = l.trim_start().starts_with('|');
+    if let Some(step) = id.strip_prefix("KP-") {
+        if !(row && in_kp) {
+            return None;
+        }
+        let cells = table_cells(l);
+        let (struck, first) = unstrike(cells.first().map_or("", String::as_str));
+        if first != step {
+            return None;
+        }
+        let status = cells
+            .iter()
+            .rev()
+            .find(|c| !c.trim().is_empty())
+            .map(|c| c.replace('*', "").trim().to_ascii_lowercase())
+            .unwrap_or_default();
+        return Some(!(struck || status.starts_with("done") || status.starts_with("landed")));
+    }
+    let n = id.strip_prefix("ITEM-")?;
+    if row {
+        if in_kp {
+            return None;
+        }
+        let cells = table_cells(l);
+        let (struck, first) = unstrike(cells.first().map_or("", String::as_str));
+        return (first == n).then_some(!struck);
+    }
+    if !l.starts_with('#') {
+        return None;
+    }
+    let head = l.trim_start_matches('#').trim_start();
+    let (struck, head) = match head.strip_prefix("~~") {
+        Some(rest) => (true, rest),
+        None => (false, head),
+    };
+    let tail = head.strip_prefix("ITEM ")?.strip_prefix(n)?;
+    (tail.is_empty() || tail.starts_with([' ', '~'])).then_some(!struck)
+}
+
+/// A markdown table row's cells, split on every `|` not escaped as `\|` (the TODO escapes the
+/// pipes inside backticked cell text, and a naive split would move the Status cell).
+fn table_cells(line: &str) -> Vec<String> {
+    let t = line.trim();
+    let t = t.strip_prefix('|').unwrap_or(t);
+    let t = t.strip_suffix('|').unwrap_or(t);
+    let mut cells = Vec::new();
+    let mut cur = String::new();
+    let mut prev_backslash = false;
+    for ch in t.chars() {
+        if ch == '|' && !prev_backslash {
+            cells.push(std::mem::take(&mut cur));
+        } else {
+            cur.push(ch);
+        }
+        prev_backslash = ch == '\\';
+    }
+    cells.push(cur);
+    cells
 }
 
 // ── THE ROWS ─────────────────────────────────────────────────────────────────────────────────────
@@ -760,7 +843,7 @@ impl Gate for NoDeferralGate {
 
         // THE BASELINE EVERY CASE IS ASKED OVER (item 89). For the plain gate it is the tree. For
         // `--strict-done` it cannot be: the committed allowlist carries non-hot waivers -- real
-        // debt the tracker's N-rows retire, the owners' to drain -- so `strict-done` is standing
+        // debt the TODO items they name retire, the owners' to drain -- so `strict-done` is standing
         // RED, the green controls could not be green and the strict case scored IMPOSSIBLE. The
         // strict baseline is the tree with that debt RESOLVED in an overlay: each non-hot waiver
         // dropped AND the marker line it excused blanked (line numbers kept), which is exactly
@@ -776,6 +859,10 @@ impl Gate for NoDeferralGate {
         let on_base = |ov: Overlay| layered(&base_ov, ov);
         let owed: Vec<String> = self.owed();
         let all: Vec<&str> = owed.iter().map(String::as_str).collect();
+        // The expiry every planted waiver names: the one the committed `hot/*` rows retire against,
+        // read off the allowlist rather than typed here, so a re-pointed plan cannot leave these
+        // plants naming an item that is gone (they named tracker row `H5` for as long as it lived).
+        let live = hot_expiry(base).unwrap_or_else(|| "KP-36".to_string());
 
         report.push(prove_green(
             base,
@@ -912,7 +999,10 @@ impl Gate for NoDeferralGate {
             &[ROW_STALE_WAIVER],
             on_base(waivers_overlay(
                 base,
-                "crates/busbar-core/src/no-such-file.rs:1\tplanted, matches nothing [retires: H5]",
+                &format!(
+                    "crates/busbar-core/src/no-such-file.rs:1\tplanted, matches nothing \
+                     [retires: {live}]"
+                ),
             )),
             &["no-such-file.rs:1"],
         ));
@@ -929,40 +1019,47 @@ impl Gate for NoDeferralGate {
             )),
             &["carries no expiry"],
         ));
-        report.push(prove_red(
-            base,
-            self,
-            "an expiry naming a tracker row that does not exist is refused",
-            &[ROW_WAIVER_SHAPE],
-            on_base(waivers_overlay(
-                base,
-                "crates/x/src/a.rs:1\ta reason [retires: ZZ999]",
-            )),
-            &["not a row in"],
-        ));
-        // ── ITEM 212: A WAIVER WHOSE EXPIRY FIRED. Tick the tracker row every `hot/*` waiver names
-        //    while the 52 markers stay; before this case the ticked row still "resolved" and the
-        //    waivers could never expire.
-        {
-            let tracker = base.read(TRACKER).unwrap_or_default();
-            let ticked: String = tracker
-                .lines()
-                .map(|l| match l.strip_prefix("- [ ] H5 ") {
-                    Some(rest) => format!("- [x] H5 {rest}"),
-                    None => l.to_string(),
-                })
-                .collect::<Vec<_>>()
-                .join("\n");
-            let mut ov = Overlay::new();
-            ov.set(TRACKER, ticked);
+        // Both id spaces, each naming an item the TODO does not carry, and an id in neither space.
+        for (why, id) in [
+            ("a KERNEL<>PLUGINS step that does not exist", "KP-999"),
+            ("a work item that does not exist", "ITEM-99999"),
+            (
+                "an id in neither TODO id space (a retired TRACKER row)",
+                "H5",
+            ),
+        ] {
             report.push(prove_red(
                 base,
                 self,
-                "a waiver whose [retires: …] row is ticked closed is EXPIRED, not resolved",
+                format!("an expiry naming {why} is refused"),
                 &[ROW_WAIVER_SHAPE],
-                on_base(ov),
-                &["EXPIRED", "H5"],
+                on_base(waivers_overlay(
+                    base,
+                    &format!("crates/x/src/a.rs:1\ta reason [retires: {id}]"),
+                )),
+                &["not an item in", id],
             ));
+        }
+        // ── ITEM 212: A WAIVER WHOSE EXPIRY FIRED. Close the TODO item every `hot/*` waiver names
+        //    while the 52 markers stay; before this case the closed row still "resolved" and the
+        //    waivers could never expire.
+        match close_todo_item(&base.read(TODO).unwrap_or_default(), &live) {
+            Some(closed) => {
+                let mut ov = Overlay::new();
+                ov.set(TODO, closed);
+                report.push(prove_red(
+                    base,
+                    self,
+                    "a waiver whose [retires: …] item is closed in the TODO is EXPIRED, not resolved",
+                    &[ROW_WAIVER_SHAPE],
+                    on_base(ov),
+                    &["EXPIRED", &live],
+                ));
+            }
+            None => report.note_infra_failure(
+                "the expired-waiver case could not be planted: the committed hot/* waivers' expiry \
+                 names no open KP-/ITEM- row in the TODO to close",
+            ),
         }
         report.push(prove_red(
             base,
@@ -971,7 +1068,7 @@ impl Gate for NoDeferralGate {
             &[ROW_WAIVER_SHAPE],
             on_base(waivers_overlay(
                 base,
-                "crates/busbar-contract/src/abi/hot/*\ta whole tree [retires: H5]",
+                &format!("crates/busbar-contract/src/abi/hot/*\ta whole tree [retires: {live}]"),
             )),
             &["not an exact path:line"],
         ));
@@ -1008,8 +1105,10 @@ impl Gate for NoDeferralGate {
             // finding is the one --strict-done exists for.
             let mut ov = waivers_overlay(
                 base,
-                "crates/busbar-core/src/xtask_no_deferral_plant.rs:1\tplanted voice-shaped debt \
-                 [retires: H5]",
+                &format!(
+                    "crates/busbar-core/src/xtask_no_deferral_plant.rs:1\tplanted voice-shaped \
+                     debt [retires: {live}]"
+                ),
             );
             ov.set(
                 "crates/busbar-core/src/xtask_no_deferral_plant.rs",
@@ -1027,6 +1126,55 @@ impl Gate for NoDeferralGate {
 
         report
     }
+}
+
+/// The expiry the first committed `*/hot/*` waiver names — the id every planted waiver reuses.
+fn hot_expiry(cx: &Ctx) -> Option<String> {
+    let text = cx.read(WAIVERS).ok()?;
+    text.lines()
+        .filter(|l| !l.trim_start().starts_with('#'))
+        .filter(|l| {
+            l.split(char::is_whitespace)
+                .next()
+                .is_some_and(|m| m.contains("/hot/"))
+        })
+        .find_map(expiry_id)
+}
+
+/// The TODO with item `id` CLOSED — every open copy of a `KP-` row gets its Status cell rewritten
+/// to `done`, every open `ITEM-` row or heading is struck — or `None` when the TODO carries no open
+/// copy to close. The expired-waiver case's plant; it goes through [`item_on_line`], the parse the
+/// gate itself uses, so the two cannot disagree about which line is the item.
+fn close_todo_item(todo: &str, id: &str) -> Option<String> {
+    let mut in_kp = false;
+    let mut closed_any = false;
+    let mut out: Vec<String> = Vec::new();
+    for l in todo.lines() {
+        if l.starts_with("## ") {
+            in_kp = l.starts_with(KP_SECTION);
+        }
+        if item_on_line(l, in_kp, id) != Some(true) {
+            out.push(l.to_string());
+            continue;
+        }
+        closed_any = true;
+        let n = id.split_once('-').map_or(id, |(_, n)| n);
+        let rewritten = if id.starts_with("KP-") {
+            let mut cells = table_cells(l);
+            if let Some(last) = cells.iter_mut().rev().find(|c| !c.trim().is_empty()) {
+                *last = " done ".to_string();
+            }
+            format!("|{}|", cells.join("|"))
+        } else if l.starts_with('#') {
+            l.replacen(&format!("ITEM {n}"), &format!("~~ITEM {n}~~"), 1)
+        } else {
+            let mut cells = table_cells(l);
+            cells[0] = format!(" ~~{n}~~ ");
+            format!("|{}|", cells.join("|"))
+        };
+        out.push(rewritten);
+    }
+    closed_any.then(|| out.join("\n"))
 }
 
 /// THE TREE `--strict-done` IS WAITING FOR, as an overlay: every non-hot waiver dropped from the
@@ -1264,4 +1412,92 @@ fn decolour(line: &str) -> String {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod todo_expiry_tests {
+    use super::{close_todo_item, todo_item_open};
+
+    /// A TODO in the committed shape: numbered items before and after the KERNEL<>PLUGINS table,
+    /// whose step numbers overlap theirs, plus an `ITEM <n>` heading.
+    const TODO_DOC: &str = "\
+# THE PLAN
+## PHASE 4
+| # | item | exit |
+|---|---|---|
+| 36 | a work item that shares step 36's number | x |
+| ~~41~~ | a superseded item | x |
+## KERNEL<>PLUGINS — the migration
+| # | Step | Depends on | Gate | Status |
+|---|---|---|---|---|
+| C0 | CAP: `llm\\|*\\|x` | – | | open |
+| 5 | BOOT-LOOP | 1 | | **PARTLY LANDED.** steps 1-2 landed |
+| 36 | Delete the engine | 33 | perf | open. **BLOCKED** half |
+| 37 | FLEET | 2 | | done |
+| 38 | postgres | 3 | | **LANDED** at abc |
+| ~~39~~ | struck | 21 | | open |
+### LANDED
+| commit | what | feeds step |
+| a2312c5cc | fixture | 5 |
+## KERNEL: A DIFFERENT SECTION
+| 40 | not a KP step | x |
+## ITEM 572 — `oauth-as` 0.9.3 → 1.0.0
+## ~~ITEM 573~~ — struck
+";
+
+    #[test]
+    fn kp_steps_resolve_inside_their_section_only() {
+        assert_eq!(todo_item_open(TODO_DOC, "KP-36"), Some(true));
+        assert_eq!(todo_item_open(TODO_DOC, "KP-C0"), Some(true));
+        // PARTLY LANDED is open; done / LANDED / struck are closed.
+        assert_eq!(todo_item_open(TODO_DOC, "KP-5"), Some(true));
+        assert_eq!(todo_item_open(TODO_DOC, "KP-37"), Some(false));
+        assert_eq!(todo_item_open(TODO_DOC, "KP-38"), Some(false));
+        assert_eq!(todo_item_open(TODO_DOC, "KP-39"), Some(false));
+        // `## KERNEL: …` is another section; its row 40 is not a step.
+        assert_eq!(todo_item_open(TODO_DOC, "KP-40"), None);
+        assert_eq!(todo_item_open(TODO_DOC, "KP-999"), None);
+    }
+
+    #[test]
+    fn items_resolve_outside_the_kp_table_and_by_heading() {
+        assert_eq!(todo_item_open(TODO_DOC, "ITEM-36"), Some(true));
+        assert_eq!(todo_item_open(TODO_DOC, "ITEM-41"), Some(false));
+        assert_eq!(todo_item_open(TODO_DOC, "ITEM-572"), Some(true));
+        assert_eq!(todo_item_open(TODO_DOC, "ITEM-573"), Some(false));
+        // Step 37 is a KP row, never an item; `ITEM-57` is not a prefix match of 572.
+        assert_eq!(todo_item_open(TODO_DOC, "ITEM-37"), None);
+        assert_eq!(todo_item_open(TODO_DOC, "ITEM-57"), None);
+        assert_eq!(todo_item_open(TODO_DOC, "ITEM-40"), Some(true));
+    }
+
+    #[test]
+    fn unprefixed_ids_name_nothing() {
+        // The retired TRACKER ids, and a bare number that would be ambiguous between the spaces.
+        for id in ["H5", "N1", "36", "C0"] {
+            assert_eq!(todo_item_open(TODO_DOC, id), None, "{id}");
+        }
+    }
+
+    #[test]
+    fn the_expired_plant_closes_exactly_the_named_item() {
+        for id in ["KP-36", "KP-C0", "KP-5", "ITEM-36", "ITEM-572"] {
+            let closed = close_todo_item(TODO_DOC, id).expect(id);
+            assert_eq!(todo_item_open(&closed, id), Some(false), "{id}");
+            // Nothing else moved: the other space's same number is still open.
+            let other = if id.starts_with("KP-") {
+                id.replacen("KP-", "ITEM-", 1)
+            } else {
+                id.replacen("ITEM-", "KP-", 1)
+            };
+            assert_eq!(
+                todo_item_open(&closed, &other),
+                todo_item_open(TODO_DOC, &other),
+                "{id} closed {other} too"
+            );
+        }
+        // Already closed, or absent: nothing to close.
+        assert_eq!(close_todo_item(TODO_DOC, "KP-37"), None);
+        assert_eq!(close_todo_item(TODO_DOC, "ITEM-99999"), None);
+    }
 }
