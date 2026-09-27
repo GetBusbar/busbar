@@ -61,13 +61,13 @@
    "id": "PB-0",
    "surface": "master rule",
    "binding": "EVERY row of every inventory file under `inventory/` is a parity binding and an oracle cell, whether or not it is restated below: the 1.5.5 behaviour it cites is reproduced byte for byte on every 1.5.5-reachable surface. Appendix B restates only the rows where a sentence in the body needed an explicit override or where a reviewer found the transcription worth pinning; absence of a row from this table binds nothing looser. Where a binding paraphrases its row imprecisely, the row wins (PB-72). Consequently the reviewer's question for the body is only: does a body sentence introduce a user-observable behaviour that contradicts an inventory row without an override here?",
-   "inventory": "every row of every inventory file under docs/design/inventory/",
+   "inventory": "every row of every inventory file under qa/evidence/inventory/",
    "status": "mapped",
    "checks": [
     {
      "kind": "gate",
      "ref": "xtask/src/gates/inventory_coverage.rs",
-     "proves": "every docs/design/inventory/*.md row id either has a citing shadow-oracle cell that PASSes on the golden ledger or is a NAMED gap in qa/inventory-gaps.json; a row with neither turns the check red, and so does a gap entry naming a row that no longer exists or has since been covered",
+     "proves": "every qa/evidence/inventory/*.md row id either has a citing shadow-oracle cell that PASSes on the golden ledger or is a NAMED gap in qa/inventory-gaps.json; a row with neither turns the check red, and so does a gap entry naming a row that no longer exists or has since been covered",
      "source": "curated",
      "status": "mapped"
     },
@@ -1292,7 +1292,7 @@
   {
    "id": "PB-27",
    "surface": "zero-token ends",
-   "binding": "a response bills ZERO tokens (located and accrued figures internal evidence only) on every 1.5.5 not-billed arm: a stream ending with a terminal error signal (`terminal_error != None`); an SSE transport cut after the first byte (`stream_failed = true`); a buffered cross-protocol 2xx that fails after the upstream 2xx (transport failed mid-read → 502, over the translate cap → 500, untranslatable → 500); the `max_requests` lane unit is refunded on the pre-first-byte cut, on the post-first-byte cut of a NON-SSE body, and on the client disconnect, and NOT on the post-first-byte cut of an SSE body — the discriminator is the content type, never `first_byte_sent`, because `FirstByteBody`'s `else` arm carries the pre-first-byte cut and the non-SSE mid-body cut together and refunds ungated on `had_first`, while the SSE arm touches `budget_spent` nowhere and sets `ended` so the Drop refund is suppressed too (`docs/design/inventory/1.5.5-proxy-hooks.md` §3 :407 \"before first byte (or non-SSE mid-body) … budget refunded\"; governance 3.8.10 :319 \"pre-first-byte / mid-stream transport error\"; the §4 no-refund row :435 is the SSE row, and §4 carries no non-SSE post-first-byte row at all); a client disconnect bills the partial tokens and refunds the LANE `max_requests` unit; the flat fee (`billable_requests`) is KEPT, as on every exit after 2xx headers were relayed (`ingress/mod.rs:574-579` refunds only on a non-2xx client status) — each arm one cell",
+   "binding": "a response bills ZERO tokens (located and accrued figures internal evidence only) on every 1.5.5 not-billed arm: a stream ending with a terminal error signal (`terminal_error != None`); an SSE transport cut after the first byte (`stream_failed = true`); a buffered cross-protocol 2xx that fails after the upstream 2xx (transport failed mid-read → 502, over the translate cap → 500, untranslatable → 500); the `max_requests` lane unit is refunded on the pre-first-byte cut, on the post-first-byte cut of a NON-SSE body, and on the client disconnect, and NOT on the post-first-byte cut of an SSE body — the discriminator is the content type, never `first_byte_sent`, because `FirstByteBody`'s `else` arm carries the pre-first-byte cut and the non-SSE mid-body cut together and refunds ungated on `had_first`, while the SSE arm touches `budget_spent` nowhere and sets `ended` so the Drop refund is suppressed too (`qa/evidence/inventory/1.5.5-proxy-hooks.md` §3 :407 \"before first byte (or non-SSE mid-body) … budget refunded\"; governance 3.8.10 :319 \"pre-first-byte / mid-stream transport error\"; the §4 no-refund row :435 is the SSE row, and §4 carries no non-SSE post-first-byte row at all); a client disconnect bills the partial tokens and refunds the LANE `max_requests` unit; the flat fee (`billable_requests`) is KEPT, as on every exit after 2xx headers were relayed (`ingress/mod.rs:574-579` refunds only on a non-2xx client status) — each arm one cell",
    "inventory": "dialects; proxy-hooks (:430-436; `engine/mod.rs:329-378`, `:552-589`, `response_body.rs:283-345`); governance",
    "status": "mapped",
    "checks": [

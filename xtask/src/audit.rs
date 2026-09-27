@@ -1,7 +1,7 @@
 //! THE AUDIT LEDGER — the 1.6.0 audit's row store and its queries.
 //!
 //! Ported from `scripts/audit-ledger.py`. The register (`qa/audit-ledger.json`) and the report it
-//! generates (`docs/design/AUDIT-STATUS.md`) STAY WHERE THEY ARE and stay byte-identical: this
+//! generates (`qa/evidence/AUDIT-STATUS.md`) STAY WHERE THEY ARE and stay byte-identical: this
 //! module reads and writes them through [`crate::json_lite`], which reproduces
 //! `json.dump(doc, fh, indent=1, ensure_ascii=False, sort_keys=False)` exactly, so `sync --write`
 //! under the Rust produces the same 147KB the Python produced.
@@ -56,7 +56,7 @@ use crate::sha256::Sha256;
 // moment to delete it.
 // qa-names: qa/audit-ledger.json -- xtask/src/audit.rs -- the DEFAULT home `cargo xtask ledger sync --write` writes a fresh register to; absent since 647f2fae9 deleted the old one, and verify-1.6.0-done.sh reads that absence as its absent_step
 pub const REGISTER_REL: &str = "qa/audit-ledger.json";
-pub const REPORT_REL: &str = "docs/design/AUDIT-STATUS.md";
+pub const REPORT_REL: &str = "qa/evidence/AUDIT-STATUS.md";
 
 pub const SEVERITIES: [&str; 4] = ["HIGH", "MEDIUM", "LOW", "NIT"];
 pub const RESULTS: [&str; 4] = ["zero", "findings", "in_progress", "unaudited"];
@@ -121,7 +121,7 @@ const REGISTER_COMMENT: [&str; 6] = [
     "`record` and `fixed` and are preserved across sync.",
     "tree_hash = sha256 over the sorted `path<TAB>blob-oid` list of the scope's tracked files at",
     "the audited commit; when it stops matching the tree, the audit result has expired.",
-    "status is DERIVED at report time, never stored. See docs/design/AUDIT-STATUS.md.",
+    "status is DERIVED at report time, never stored. See qa/evidence/AUDIT-STATUS.md.",
 ];
 
 /// Tracked files that are deliberately in no scope. Manifests are governed by workspace-deps-lint

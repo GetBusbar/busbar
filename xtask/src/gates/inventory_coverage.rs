@@ -2,10 +2,10 @@
 //! claim for claim.
 //!
 //! ARCHITECTURE.md Appendix B claims that every row of every inventory file under
-//! `docs/design/inventory/` is a parity binding AND an oracle cell. Nothing checked that claim
+//! `qa/evidence/inventory/` is a parity binding AND an oracle cell. Nothing checked that claim
 //! before the Python this gate replaces. It:
 //!
-//! 1. reads every row id out of `docs/design/inventory/*.md` — only rows in a table whose header
+//! 1. reads every row id out of `qa/evidence/inventory/*.md` — only rows in a table whose header
 //!    row is literally `| id | ...` count;
 //! 2. reads `testing/shadow-oracle/cells.json` (read-only — that tree belongs to another owner)
 //!    and asks, for each inventory id, whether any oracle cell cites it: the id text appears
@@ -13,7 +13,7 @@
 //!    `admin.ops` cell's second id-segment is the exact `operationId` the ADM row names;
 //! 3. reads the golden ledger (read-only) for PASS/SKIP per citing cell, and classifies every id as
 //!    `covered` (a citer is PASS), `partial` (cited, but nothing executed against it) or `none`;
-//! 4. rewrites the 40-row coverage matrix in `docs/design/1.5.5-BEHAVIOUR.md` between
+//! 4. rewrites the 40-row coverage matrix in `qa/evidence/1.5.5-BEHAVIOUR.md` between
 //!    `<!-- coverage:begin -->` / `<!-- coverage:end -->`;
 //! 5. writes `qa/inventory-coverage.json` (full per-id detail) and `qa/inventory-gaps.json` (every
 //!    non-`covered` id, one line each).
@@ -53,8 +53,8 @@ pub const ROW_COVERAGE_ARTIFACT: &str = "inventory-coverage:coverage-artifact";
 pub const ROW_GAPS_ARTIFACT: &str = "inventory-coverage:gaps-artifact";
 pub const ROW_BEHAVIOUR_TABLE: &str = "inventory-coverage:behaviour-table";
 
-const INVENTORY_DIR: &str = "docs/design/inventory";
-const BEHAVIOUR_MD: &str = "docs/design/1.5.5-BEHAVIOUR.md";
+const INVENTORY_DIR: &str = "qa/evidence/inventory";
+const BEHAVIOUR_MD: &str = "qa/evidence/1.5.5-BEHAVIOUR.md";
 const CELLS_JSON: &str = "testing/shadow-oracle/cells.json";
 const GOLDEN_LEDGER: &str = "testing/shadow-oracle/golden/1.5.5/ledger.tsv";
 const COVERAGE_JSON: &str = "qa/inventory-coverage.json";
@@ -155,7 +155,7 @@ fn is_id_row(s: &str) -> bool {
     !rest.is_empty() && rest.chars().all(|c| c.is_ascii_alphanumeric())
 }
 
-/// Parse every `| id | ... |` table in `docs/design/inventory/*.md`, in sorted-path, in-file order
+/// Parse every `| id | ... |` table in `qa/evidence/inventory/*.md`, in sorted-path, in-file order
 /// — the same order `glob.glob` (sorted) and a top-to-bottom scan give the Python.
 fn parse_inventory_ids(cx: &Ctx) -> Result<Vec<InventoryId>, Refusal> {
     let files = cx
@@ -482,7 +482,7 @@ fn render_matrix_table(matrix: &[MatrixRow]) -> String {
     lines.join("\n")
 }
 
-/// The rewritten `docs/design/1.5.5-BEHAVIOUR.md`, or `None` if the markers are gone from the tree
+/// The rewritten `qa/evidence/1.5.5-BEHAVIOUR.md`, or `None` if the markers are gone from the tree
 /// (this gate — like the Python — requires them to already be present; the first-run,
 /// heading-anchored insertion the Python also supported is not reproduced here because the markers
 /// have been in the committed file since before this conversion).
@@ -627,7 +627,7 @@ fn render_coverage_json(
                     .into(),
             ),
             Json::Str(
-                "Answers, for every row id in docs/design/inventory/*.md, whether an oracle cell"
+                "Answers, for every row id in qa/evidence/inventory/*.md, whether an oracle cell"
                     .into(),
             ),
             // Spelled through the constant so `segregation:oracle-data-allow` sees the allowlisted

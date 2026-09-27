@@ -21,7 +21,7 @@
 # different path from the subject proves less than it appears to".
 #
 # STATUS: ready. Each ordered pair is driven as read(A) → shared IR → write(B) → IR against the
-# machine-readable `docs/design/voice-cross-dialect-map.json`. For every SHARED concept the map
+# machine-readable `qa/evidence/voice-cross-dialect-map.json`. For every SHARED concept the map
 # declares, the load-bearing fields must survive the bridge (compared on a correlation-collapsed
 # fingerprint, so a streamed⟷atomic tool-call reframing counts as agreement, and documented
 # non-survivors — text modality, VAD specifics, truncate ms — are excluded per the map). And EVERY

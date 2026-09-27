@@ -5,7 +5,7 @@
 
 qa/documented-claims.json is the register behind the ARCHITECTURE.md Appendix B binding on
 documented behaviour: the README and CHANGELOG claims cross-checked in
-docs/design/inventory/1.5.5-ops-observability.md, each either pinned by a shadow-oracle cell
+qa/evidence/inventory/1.5.5-ops-observability.md, each either pinned by a shadow-oracle cell
 (`status: "cell"`) or written off as untestable prose with a stated reason (`status: "prose"`),
 and the two rows the design calls CONTRADICTED carrying the CODE's behaviour as the parity target.
 
@@ -56,14 +56,14 @@ ROOT = Path(__file__).resolve().parents[1]
 CLAIMS = ROOT / "qa" / "documented-claims.json"
 CELLS = ROOT / "testing" / "shadow-oracle" / "cells.json"
 LEDGER = ROOT / "testing" / "shadow-oracle" / "golden" / "1.5.5" / "ledger.tsv"
-DOC = ROOT / "docs" / "design" / "inventory" / "1.5.5-ops-observability.md"
+DOC = ROOT / "qa" / "evidence" / "inventory" / "1.5.5-ops-observability.md"
 # Arm 6: the fraction of a quote's words that must appear on the line its id addresses.
 QUOTE_MATCH_FLOOR = 0.9
 _WORD = re.compile(r"[a-z0-9]+")
 _VERSION_TAG = re.compile(r"^\s*[0-9]+\.[0-9]+\.[0-9]+:\s*")
 
 # The two runs the binding names, as (prefix, first, last). These are line addresses into
-# docs/design/inventory/1.5.5-ops-observability.md's two cross-check sections, so the span is part
+# qa/evidence/inventory/1.5.5-ops-observability.md's two cross-check sections, so the span is part
 # of the claim: a register that silently narrows its own range has stopped covering the document.
 RUNS = (("README", 1048, 1074), ("CHANGELOG", 1088, 1116))
 # The rows the design pins as code-wins. Named here so that demoting one to prose is RED.

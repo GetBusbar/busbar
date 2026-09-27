@@ -570,7 +570,7 @@ id     = "inventory-coverage"
 status = "active"
 tier   = "fast"
 # THE INVENTORY COVERAGE SCOREBOARD (cargo xtask gate inventory-coverage). Every
-# docs/design/inventory/*.md row id either has a citing shadow-oracle cell that PASSes on the golden
+# qa/evidence/inventory/*.md row id either has a citing shadow-oracle cell that PASSes on the golden
 # ledger, or is a NAMED gap in qa/inventory-gaps.json carrying a written reason; an id with neither
 # is RED, and so is a gap entry naming an id that no longer exists or has since been covered — the
 # gaps file is rederived on every run, so a stale name cannot survive one. The `--selftest` proves
@@ -582,7 +582,7 @@ tier   = "fast"
 # "--check is RED: one config-inventory row — the one naming the plugin that backs a configured hook
 # — is neither covered by a citing cell nor named in qa/inventory-gaps.json", and named
 # scripts/inventory-coverage.sh, a file deleted at c8272b166. Both halves are settled. CONF-220 is
-# `hooks.<h>.module` (docs/design/inventory/1.5.5-config.md:369) — the plugin backing a configured
+# `hooks.<h>.module` (qa/evidence/inventory/1.5.5-config.md:369) — the plugin backing a configured
 # hook, exactly the row described — and cells.json now carries three cells that cite it BY ID in
 # their own `inventory` field, all three PASS on the golden ledger:
 # admin.ops|PutHooksName|ok, admin.ops|PutHooksName|if-match-malformed and

@@ -835,7 +835,7 @@ async fn no_frame_is_emitted_after_the_terminal_framing_error() {
 /// stream there says the answer arrived and was simply short, which is the one thing it was not —
 /// and the fee was already decided on the 2xx head, so "it ended fine" is a billed lie. 1.5.5
 /// surfaced exactly this to the caller as an error rather than delivering the partial
-/// (`docs/design/inventory/1.5.5-proxy-hooks.md:406-407`: the mid-stream row ends the body in an
+/// (`qa/evidence/inventory/1.5.5-proxy-hooks.md:406-407`: the mid-stream row ends the body in an
 /// error frame, the pre-first-byte/mid-body row terminates the body stream with an `io::Error`).
 /// The events that DID complete are still events, and go out ahead of it.
 #[tokio::test]

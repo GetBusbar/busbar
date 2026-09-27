@@ -221,7 +221,7 @@ impl Transport for SseTransport {
                         // the upstream never wrote. Ending clean is out too, and that is what 1.5.5
                         // decides: a body that failed part-way through was surfaced to the caller
                         // as an error, never delivered as a shorter answer that arrived
-                        // (`docs/design/inventory/1.5.5-proxy-hooks.md:406-407` — the mid-stream and
+                        // (`qa/evidence/inventory/1.5.5-proxy-hooks.md:406-407` — the mid-stream and
                         // pre-first-byte rows, both of which end the body stream with an error). So
                         // it is a framing error, which is also the reading the sibling `stdio` crate
                         // gives a line the peer never finished.

@@ -403,7 +403,13 @@ SKIP_PATHS = re.compile(r"(^|/)tests/migration-corpus/|^testing/llm-conformance/
 # per-crate READMEs, and every source comment (a shipped comment is read as the software, so it is
 # held to the software standard even when it cites a design doc — the citation belongs in the design
 # doc, not the code).
-SKIP_DESIGN = re.compile(r"(^|/)docs/design/")
+#
+# `qa/evidence/` is the same category, moved out of docs/design on 2026-09-27 when the owner cut
+# docs/design to the spec and the TODO: the 1.5.5 behaviour inventory, the audit evidence records and
+# the generated audit status report. They are RECORDS of the work, quoted as captured (the audit
+# evidence cites commits and tracker rows because that is what it is evidence of), not prose about the
+# product — so they keep the exemption they had, and nothing else under `qa/` gains it.
+SKIP_DESIGN = re.compile(r"(^|/)(docs/design|qa/evidence)/")
 
 
 def is_text_candidate(rel):

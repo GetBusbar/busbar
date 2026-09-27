@@ -68,25 +68,25 @@ pub const BINDING_FLOOR: usize = 40;
 pub const ALIASES: &[(&str, &str)] = &[
     (
         "auth-secrets",
-        "docs/design/inventory/1.5.5-auth-secrets.md",
+        "qa/evidence/inventory/1.5.5-auth-secrets.md",
     ),
-    ("config", "docs/design/inventory/1.5.5-config.md"),
-    ("dialects", "docs/design/inventory/1.5.5-dialects.md"),
+    ("config", "qa/evidence/inventory/1.5.5-config.md"),
+    ("dialects", "qa/evidence/inventory/1.5.5-dialects.md"),
     (
         "governance",
-        "docs/design/inventory/1.5.5-governance-billing.md",
+        "qa/evidence/inventory/1.5.5-governance-billing.md",
     ),
-    ("ops", "docs/design/inventory/1.5.5-ops-observability.md"),
+    ("ops", "qa/evidence/inventory/1.5.5-ops-observability.md"),
     (
         "plugins-stores",
-        "docs/design/inventory/1.5.5-plugins-stores.md",
+        "qa/evidence/inventory/1.5.5-plugins-stores.md",
     ),
-    ("proxy-hooks", "docs/design/inventory/1.5.5-proxy-hooks.md"),
+    ("proxy-hooks", "qa/evidence/inventory/1.5.5-proxy-hooks.md"),
     (
         "routes-admin",
-        "docs/design/inventory/1.5.5-routes-admin.md",
+        "qa/evidence/inventory/1.5.5-routes-admin.md",
     ),
-    ("1.5.5-behaviour", "docs/design/1.5.5-BEHAVIOUR.md"),
+    ("1.5.5-behaviour", "qa/evidence/1.5.5-BEHAVIOUR.md"),
 ];
 
 /// One known table-parsing artifact carried over verbatim from the Python: PB-20's binding text
@@ -501,7 +501,7 @@ fn readable_inputs(cx: &Ctx) -> Vec<String> {
     for (_, path) in ALIASES {
         out.push((*path).to_string());
     }
-    if let Ok(files) = cx.walk(&WalkSpec::new(["docs/design/inventory"]).ext("md")) {
+    if let Ok(files) = cx.walk(&WalkSpec::new(["qa/evidence/inventory"]).ext("md")) {
         out.extend(files.iter().map(SourceFile::rel_str));
     }
     out.retain(|p| cx.exists(p));
@@ -682,7 +682,7 @@ mod tests {
             resolve_prefix("`config/mod.rs:1796-1799`"),
             Some(Resolved::Alias(
                 "config",
-                "docs/design/inventory/1.5.5-config.md"
+                "qa/evidence/inventory/1.5.5-config.md"
             ))
         );
         assert_eq!(resolve_prefix("`src/lib.rs:12`"), None);
@@ -694,7 +694,7 @@ mod tests {
             resolve_prefix("routes-admin LST-001"),
             Some(Resolved::Alias(
                 "routes-admin",
-                "docs/design/inventory/1.5.5-routes-admin.md"
+                "qa/evidence/inventory/1.5.5-routes-admin.md"
             ))
         );
         assert_eq!(

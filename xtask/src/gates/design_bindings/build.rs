@@ -83,7 +83,7 @@ pub fn parse_appendix_b(text: &str) -> Result<(Option<Row>, Vec<Row>), String> {
                 id: "PB-0".to_string(),
                 surface: "master rule".to_string(),
                 binding: l[m.end..].trim().to_string(),
-                inventory: "every row of every inventory file under docs/design/inventory/"
+                inventory: "every row of every inventory file under qa/evidence/inventory/"
                     .to_string(),
             });
             continue;

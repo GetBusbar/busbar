@@ -1478,7 +1478,7 @@ begin_group "AUDIT-LEDGER — every production path is covered by a scope, nothi
 # the round that produced the result. --check is red two ways: a tracked production file that no
 # scope covers (coverage cannot silently regress when a crate is added), and a scope with findings
 # recorded and no fix commit stamped. A result whose tree hash has moved reads `stale` in
-# docs/design/AUDIT-STATUS.md rather than green — an audit describes one tree, not the code forever.
+# qa/evidence/AUDIT-STATUS.md rather than green — an audit describes one tree, not the code forever.
 if [ -f qa/audit-ledger.json ]; then
   # The gate's own RED proof runs first, as everywhere else. It judges the five rules about the
   # REGISTER (is the instrument believable); `--check` below judges those five plus the two about
@@ -1513,7 +1513,7 @@ fi
 end_group
 
 # ─────────────────────────────────────────────────────────────────────────────────────────────────
-begin_group "INVENTORY-COVERAGE — every docs/design/inventory/*.md row id is bound to an oracle cell"
+begin_group "INVENTORY-COVERAGE — every qa/evidence/inventory/*.md row id is bound to an oracle cell"
 # Appendix B says every inventory row is a parity binding AND an oracle cell; this is the check that
 # was missing. qa/inventory-gaps.json names every row id with no citing cell yet, so a gap is a
 # visible, owned line item rather than a silent hole. DONE means no id has no cell and no name.

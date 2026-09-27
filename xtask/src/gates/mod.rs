@@ -2945,7 +2945,7 @@ pub static REGISTRY: &[Registration] = &[
         batch: 2,
         tier: Tier::Fast,
         build: || Box::new(inventory_coverage::InventoryCoverageGate),
-        summary: "every docs/design/inventory/*.md id is a named coverage claim or a named gap",
+        summary: "every qa/evidence/inventory/*.md id is a named coverage claim or a named gap",
     },
     Registration {
         name: "no-tracked-ignored",
