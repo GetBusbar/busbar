@@ -134,7 +134,7 @@ opentelemetry-otlp = { version = "0.32.0", default-features = false, features = 
     "trace",
     "http-proto",
 ] }
-opentelemetry-http = { version = "0.32.0", default-features = false, features = [
+opentelemetry-http = { version = "0.33.0", default-features = false, features = [
     "hyper",
 ] }
 # HTTPS connector for the OTLP HyperClient (rustls, http/1.1). Already in the graph via the server
