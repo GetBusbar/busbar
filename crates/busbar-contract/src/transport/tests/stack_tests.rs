@@ -296,7 +296,10 @@ fn a_row_is_its_declaration_constant_for_constant() {
     assert_eq!(row.key, <Declared as M>::KEY);
     assert_eq!(row.composes_over, <Declared as M>::COMPOSES_OVER);
     assert_eq!(row.selector_forms, <Declared as M>::SELECTOR_FORMS);
-    assert_eq!(row.egress_selector_forms, <Declared as M>::EGRESS_SELECTOR_FORMS);
+    assert_eq!(
+        row.egress_selector_forms,
+        <Declared as M>::EGRESS_SELECTOR_FORMS
+    );
     assert_eq!(row.handoff, <Declared as M>::HANDOFF);
     assert_eq!(row.framing, <Declared as M>::FRAMING);
     assert_eq!(
