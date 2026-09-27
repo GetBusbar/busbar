@@ -55,10 +55,12 @@ fn main() {
                     "    (\"{kind}\", \"{snake}\", &::{snake}::BUSBAR_COLD_ENTRY),\n"
                 ));
             }
+            // A second proof of one kind is keyed `<kind>-<proof>`; its alias is that key as an ident.
+            let alias = kind.replace('-', "_");
             crates.push_str(&format!(
                 "// The `{kind}` both-ways fixture crate.\n\
                  #[allow(unused_imports)]\n\
-                 pub(crate) use ::{snake} as {kind}_fixture;\n"
+                 pub(crate) use ::{snake} as {alias}_fixture;\n"
             ));
         }
     }

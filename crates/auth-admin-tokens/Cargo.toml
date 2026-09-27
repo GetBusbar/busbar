@@ -7,5 +7,19 @@ rust-version = "1.97"
 description = "The built-in `admin-tokens` admin-auth plugin for busbar: the single operator admin token, compared in constant time across both carriers."
 license = "Apache-2.0"
 
+[lib]
+# rlib: the linked door — a build that links this crate calls `authenticate_admin_tokens` (both
+# carriers, one constant-time fold) and, under `dropped-in`, hands the loader `BUSBAR_COLD_ENTRY`.
+# cdylib: the dropped-in door — the same module behind the contract's auth export macro, for the
+# loader to `dlopen` (#2: a plugin is compiled in OR dropped in, over one contract).
+crate-type = ["cdylib", "rlib"]
+
+[features]
+# THE DROPPED-IN DOOR (`door`): `open` registered as this image's one door through the contract's
+# `export_auth_plugin!`. OFF in a build that links this crate (the linked door is the function
+# itself, and a host image must not carry a second door registration); the dropped-in artifact is
+# built on its own: `cargo build -p busbar-auth-admin-tokens --release --features dropped-in`.
+dropped-in = []
+
 [dependencies]
 busbar-contract = { path = "../busbar-contract" }

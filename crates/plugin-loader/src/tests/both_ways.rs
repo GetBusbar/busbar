@@ -185,7 +185,20 @@ pub(crate) fn both_doors<T>(
     open: impl Fn(&PluginRegistry) -> T,
     script: impl Fn(&T) -> String,
 ) -> Option<[(String, String); 2]> {
-    let (crate_snake, entry) = fixture(&manifest.kind);
+    let kind = manifest.kind.clone();
+    both_doors_of(&kind, manifest, open, script)
+}
+
+/// [`both_doors`] for the plugin of table row `proof` — a kind's SECOND proof, keyed
+/// `<kind>-<proof>` in `[package.metadata.busbar.both-ways]`, still reached by its row and never by
+/// the plugin's name. `manifest.kind` stays the plugin's kind.
+pub(crate) fn both_doors_of<T>(
+    proof: &str,
+    manifest: Manifest,
+    open: impl Fn(&PluginRegistry) -> T,
+    script: impl Fn(&T) -> String,
+) -> Option<[(String, String); 2]> {
+    let (crate_snake, entry) = fixture(proof);
     let lib = std::fs::read(cdylib(crate_snake)?).expect("read the cdylib");
     let name = manifest.name.clone();
     let doors = [

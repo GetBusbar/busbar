@@ -118,3 +118,57 @@ fn deferring_never_admits_and_never_widens_the_door() {
         }
     }
 }
+
+// ── THE DROPPED-IN MODULE (`open`) ────────────────────────────────────────────────────────────
+
+/// `open` takes the digest, never the raw token, and refuses anything that is not one — with a
+/// message that does not echo what it was given.
+#[test]
+fn open_refuses_a_config_that_is_not_a_sha256_hex_digest() {
+    for cfg in [
+        "",
+        "   ",
+        "secret",
+        &hash("secret")[..63],
+        &format!("{}0", hash("secret")),
+    ] {
+        let err = open(cfg).err().unwrap_or_else(|| panic!("{cfg:?} opened"));
+        assert_eq!(
+            err,
+            "admin-tokens plugin config must be the admin token's SHA-256 digest as 64 hex \
+             characters (the value is not echoed)"
+        );
+    }
+    let raw = "zz".repeat(32);
+    assert!(
+        open(&raw).is_err(),
+        "64 non-hex characters are not a digest"
+    );
+}
+
+/// The module `open` builds answers, over the ONE candidate, exactly what the linked function
+/// answers with that candidate on the Bearer carrier: same verdicts, same principal.
+#[test]
+fn the_opened_module_judges_as_the_linked_function_does() {
+    let h = hash("secret");
+    let module = open(&format!("  {}\n", h.to_ascii_uppercase())).expect("a digest opens");
+    assert_eq!(module.name(), "admin-tokens");
+    assert!(!module.cacheable(), "an in-process compare is never cached");
+    for candidate in [
+        None,
+        Some("secret"),
+        Some("wrong"),
+        Some(""),
+        Some("aaa.bbb.ccc"),
+    ] {
+        assert_eq!(
+            module.authenticate(candidate),
+            authenticate_admin_tokens(Some(&h), candidate, None),
+            "candidate {candidate:?}"
+        );
+    }
+    assert_eq!(
+        module.authenticate(Some("secret")),
+        AuthVerdict::Identify(Principal::from_id(ADMIN_TOKENS_PRINCIPAL_ID))
+    );
+}

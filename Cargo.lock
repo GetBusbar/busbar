@@ -952,6 +952,7 @@ name = "busbar-plugin-loader"
 version = "1.5.0"
 dependencies = [
  "async-trait",
+ "busbar-auth-admin-tokens",
  "busbar-auth-oidc-plugin",
  "busbar-contract",
  "busbar-export-example-plugin",

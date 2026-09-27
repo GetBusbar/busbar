@@ -10,8 +10,19 @@
 //! carriers rather than the `AuthModule` single-candidate shape (an admin credential legitimately
 //! arrives on two carriers, and the constant-time both-carriers fold must live INSIDE the module —
 //! selecting a carrier before the compare would reintroduce the timing observable the fold kills).
+//!
+//! ## Both doors (#2: compiled in OR dropped in, one contract)
+//!
+//! LINKED: a build that links this crate calls [`authenticate_admin_tokens`] with both carriers.
+//! DROPPED IN: [`open`] builds the same module as a `busbar_contract::auth::AuthModule` over the
+//! single candidate the host's auth seam hands a `kind: auth` plugin, and the `dropped-in` feature
+//! registers it as the `cdylib`'s one door through the contract's `export_auth_plugin!` (`door`,
+//! the ONE module allowed `unsafe` — the macro's C-ABI boundary). Every verdict either door gives is
+//! [`authenticate_admin_tokens`]'s.
 
-use busbar_contract::auth::{AuthVerdict, Principal};
+#![deny(unsafe_code)]
+
+use busbar_contract::auth::{AuthModule, AuthVerdict, Principal};
 use busbar_contract::redacted::{constant_time_eq, sha256_hex};
 
 /// The fixed principal id the operator admin token identifies as. The built-in operator credential
@@ -105,6 +116,60 @@ fn is_jws_shaped(candidate: &str) -> bool {
     };
     !a.is_empty() && !b.is_empty() && !c.is_empty()
 }
+
+/// The module name the dropped-in door reports: the `admin_auth:` chain entry this module answers.
+pub const ADMIN_TOKENS_MODULE_NAME: &str = "admin-tokens";
+
+/// The `admin-tokens` module as an [`AuthModule`]: the configured admin token's SHA-256 hex digest
+/// (never the raw token), judged over the ONE candidate the host's auth seam hands a plugin.
+struct AdminTokensModule {
+    configured_hash: String,
+}
+
+impl AuthModule for AdminTokensModule {
+    fn name(&self) -> &'static str {
+        ADMIN_TOKENS_MODULE_NAME
+    }
+
+    /// The candidate is the Bearer carrier; the verdict is [`authenticate_admin_tokens`]'s, so the
+    /// constant-time compare, the JWS-shape deferral and the reject rule are the linked door's.
+    fn authenticate(&self, candidate: Option<&str>) -> AuthVerdict {
+        authenticate_admin_tokens(Some(&self.configured_hash), candidate, None)
+    }
+}
+
+/// Construct the module from its config: the configured admin token's SHA-256 digest as 64 hex
+/// characters (the value the engine pre-computes; surrounding whitespace is ignored). Fail-closed:
+/// anything else is a load error, and the raw token is never accepted here, so no config file has
+/// to hold it.
+pub fn open(cfg: &str) -> Result<Box<dyn AuthModule>, String> {
+    let configured_hash = cfg.trim();
+    if configured_hash.len() != 64 || !configured_hash.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err(
+            "admin-tokens plugin config must be the admin token's SHA-256 digest as 64 hex \
+             characters (the value is not echoed)"
+                .to_string(),
+        );
+    }
+    Ok(Box::new(AdminTokensModule {
+        configured_hash: configured_hash.to_ascii_lowercase(),
+    }))
+}
+
+/// THE DROPPED-IN DOOR, compiled only into the dropped-in build (feature `dropped-in`): [`open`]
+/// registered as the image's ONE door through the contract's `export_auth_plugin!`, which also emits
+/// `BUSBAR_COLD_ENTRY` (the linked registration a loader test hands `PluginRegistry::link`) and
+/// `dispatch_compiled_in` (the compiled-in twin of `busbar_call`). The frozen symbols are the
+/// contract's, defined once, so this crate defines no `#[no_mangle]` symbol of its own. The only
+/// module in this crate allowed `unsafe`: the macro's C-ABI boundary expands here.
+#[cfg(feature = "dropped-in")]
+#[allow(unsafe_code)]
+pub mod door {
+    busbar_contract::export_auth_plugin!(super::open);
+}
+
+#[cfg(feature = "dropped-in")]
+pub use door::{dispatch_compiled_in, BUSBAR_COLD_ENTRY};
 
 #[cfg(test)]
 #[path = "tests/lib_tests.rs"]

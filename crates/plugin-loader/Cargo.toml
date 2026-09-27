@@ -111,6 +111,15 @@ busbar-store-example-plugin = { path = "../store-example-plugin" }
 # under `deps/`, hashed) is the dropped-in door. `auth_conformance_tests` requires the two to be one
 # plugin. Its busbar-contract resolves to this tree through the workspace `[patch]` table.
 busbar-auth-oidc-plugin = { git = "https://github.com/GetBusbar/auth-oidc", rev = "9ff64ff4d74bdd4d043ed7200d8771389810d19b" }
+# The `kind: auth` VERIFY-VERDICT both-ways proof (the `auth-verify` row below), over a second REAL
+# auth plugin: the shipped operator admin-auth module (ARCHITECT 2026-09-27: it is a REAL auth
+# plugin — door + both-ways conformance, the AUTH kind proof). The row above proves the
+# login-capable surface, but its token can only be REFUSED (the issuer's keys are unreachable
+# offline); this one runs the token cases to every verdict — the accepted token IDENTIFIES, a wrong
+# one is REJECTED, another scheme's token and no credential PASS — on both doors. `dropped-in`: the
+# door is compiled only under it (a build that links the module must not carry a second door
+# registration), and this proof needs both halves of it.
+busbar-auth-admin-tokens = { path = "../auth-admin-tokens", features = ["dropped-in"] }
 # The `kind: hook` BOTH-WAYS fixture, on the same terms (`hook_conformance_tests`).
 busbar-hook-test-plugin = { path = "../hook-test-plugin" }
 # The `kind: transport` BOTH-WAYS fixture (#3, OWNER-LOCKED: a transport is swappable, compiled in
@@ -146,6 +155,9 @@ libc = { workspace = true }
 store = "busbar-store-example-plugin"
 export = "busbar-export-example-plugin"
 auth = "busbar-auth-oidc-plugin"
+# A SECOND proof of one kind: `<kind>-<proof>` — the part before the first `-` is the kind, and the
+# test reaches the row by that whole key (`both_doors_of`), never by the plugin's name.
+auth-verify = "busbar-auth-admin-tokens"
 hook = "busbar-hook-test-plugin"
 # A HOT kind's fixture: its linked door is its `#[repr(C)]` decl, not a cold entry, so `build.rs`
 # emits only its crate alias and its cdylib name for this row. It is also the one wire crate this
