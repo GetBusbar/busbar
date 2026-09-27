@@ -80,18 +80,23 @@ fn section_key() -> &'static str {
 /// The smallest config that makes a deployment an MCP server, with `auth_block` spliced in
 /// verbatim. Everything absent is absent on purpose: no providers, no models, no pools — the MCP
 /// plane needs none of them, and a fixture that also carried an LLM fleet could fail for a reason
-/// that is about the fleet.
+/// that is about the fleet. The empty `providers:`/`models:` pair is written only when the plane that
+/// owns `models:` is linked (`linked_axis_body_ingress`): a plane the build does not link requires
+/// nothing (Law 7).
 fn write_config(dir: &Path, data_port: u16, admin_port: u16, auth_block: &str) -> PathBuf {
     std::fs::write(dir.join("providers.yaml"), "{}\n").unwrap();
+    let catalog = if cfg!(linked_axis_body_ingress) {
+        "providers: {}\nmodels: {}\n"
+    } else {
+        ""
+    };
     let path = dir.join("config.yaml");
     std::fs::write(
         &path,
         format!(
             r#"listen: "127.0.0.1:{data_port}"
 admin_listen: "127.0.0.1:{admin_port}"
-providers: {{}}
-models: {{}}
-pools: {{}}
+{catalog}pools: {{}}
 {auth_block}
 {section}"#,
             section = plane_section(data_port, admin_port),

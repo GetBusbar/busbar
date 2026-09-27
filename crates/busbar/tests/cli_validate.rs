@@ -66,13 +66,20 @@ models:
 
 /// A config that configures the plane owning `tools:` and NOTHING else — no provider, no model — so
 /// it validates on any build that links that plane, whatever other planes (and their provider wire
-/// codecs) the build carries.
+/// codecs) the build carries. The empty `providers:`/`models:` pair is written only when the plane
+/// that owns `models:` is linked (`linked_axis_body_ingress`): a plane the build does not link
+/// requires nothing (Law 7).
 #[cfg(linked_axis_stdio_serve)]
 fn write_tools_only_configs(dir: &Path, extra: &str) {
     std::fs::write(dir.join("providers.yaml"), "").unwrap();
+    let catalog = if cfg!(linked_axis_body_ingress) {
+        "providers: {}\nmodels: {}\n"
+    } else {
+        ""
+    };
     std::fs::write(
         dir.join("config.yaml"),
-        format!("listen: \"127.0.0.1:0\"\nproviders: {{}}\nmodels: {{}}\n{extra}"),
+        format!("listen: \"127.0.0.1:0\"\n{catalog}{extra}"),
     )
     .unwrap();
 }
