@@ -829,7 +829,7 @@ pub use busbar_kernel::config::providers::{
 };
 
 // ABI-purity CONFIG-ENUMS: the per-provider auth-style selector is a plane-owned runtime config
-// value concept; it moved OUT to `busbar_substrate_values::ir::providers` (serde `Deserialize` + the
+// value concept; its body lives in `config::providers` (serde `Deserialize` + the
 // `#[serde(rename)]` wire strings VERBATIM, byte-identical; architect ruling PROVIDERS-MOVE).
 // Re-exported (end of this file) at its historical `config::ProviderAuth` path so the frozen
 // providers.yaml grammar parse is unchanged.
@@ -2683,6 +2683,6 @@ pub enum PolicyOnError {
 }
 
 /// Per-provider auth-style override — the LLM plane's selector, declared with the rest of the
-/// `providers:` shapes in `busbar_substrate_values::ir::providers` (architect ruling PROVIDERS-MOVE)
+/// `providers:` shapes in `config::providers` (architect ruling PROVIDERS-MOVE; home since #83a SD-8)
 /// and re-exported here at its historical `config::ProviderAuth` path.
 pub use providers::ProviderAuth;

@@ -531,7 +531,7 @@ counts can trend to zero at their own pace."""
 # item 376 (Q11/Q32, owner-signed 2026-09-24): same needle repair as ports-only above, pinned at
 # TODAY's measurement on the committed tree (HEAD b091b4e83). Downward only from here.
 [rules.ports-only-tests.max_per_crate]
-busbar-llm = 999
+busbar-llm = 990
 busbar-mcp = 188
 busbar-a2a = 98
 busbar-voice = 43
@@ -542,11 +542,11 @@ why = """An installable seam (a substrate `install_*` / `set_*_factory` that fil
 static) is a promise that boot fills it. A seam only the test kit installs is a seam production \
 never fills — the stream-translator factory fault that made real streams pass through \
 untranslated while every test was green."""
-# BOTH HALVES of the substrate, AS THEY EXIST TODAY. The value families split into
-# `busbar-substrate-values` so a plane's closure resolves no hyper/reqwest/tokio edge, and
-# `install_protocols`, `install_stream_translator_factory` and `install_diagnostics` all went with
-# them — that root is what keeps this rule reading the seams the fault it exists for actually
-# lived in.
+# BOTH HALVES of the substrate are in the kernel today. The value families split into
+# `busbar-substrate-values` so a plane's closure resolves no hyper/reqwest/tokio edge, taking
+# `install_protocols`, `install_stream_translator_factory` and `install_diagnostics` with them; that
+# crate is deleted (#83a SD-8) and the three seams are the kernel's again (`proto/installed.rs`,
+# `diagnostics/mod.rs`), so the one kernel root reads every seam the fault it exists for lived in.
 #
 # THE ENGINE HALF IS `crates/busbar-kernel/src`, NOT `crates/busbar-substrate/src`. This row named
 # the deleted path and therefore scanned a population of ZERO on that side — a ban over nothing,
@@ -560,7 +560,7 @@ untranslated while every test was green."""
 # Measured at `5fa320208^`: `crates/busbar-substrate/src` held ELEVEN `pub fn install_*` seams and
 # `crates/busbar-core/src` held SIX; all seventeen stand today under `crates/busbar-kernel/src` at
 # the same relative path, nine of them at the SAME LINE NUMBER. The subject moved; the name did not.
-seam_root = ["crates/busbar-kernel/src", "crates/busbar-substrate-values/src"]
+seam_root = ["crates/busbar-kernel/src"]
 seam_name_pattern = '^(install_[a-z0-9_]+|set_[a-z0-9_]+_factory)$'
 # A file whose path contains one of these is NOT production and cannot count as an installer.
 non_production_path_fragments = ["testkit", "test_support", "plugin-testkit", "fixtures.rs"]
@@ -1389,6 +1389,11 @@ known_sites = [
   "crates/busbar-kernel/src/config/mod.rs:2369",
   "crates/busbar-kernel/src/config/pools.rs:302",
   "crates/busbar-kernel/src/config/prepass.rs:123",
+  # Moved from the retired shared value crate with the code that carries them (#83a SD-8), reviewed
+  # there and frozen: the omitted-`protocol:` default of the 1.5.3 providers.yaml grammar, and the
+  # published title of BUSBAR-3020 (docs/diagnostics.md, byte-identical).
+  "crates/busbar-kernel/src/config/providers.rs:104",
+  "crates/busbar-kernel/src/diagnostics/mod.rs:2843",
   # `crates/busbar-kernel/src/config/providers.rs:75` STRUCK: the provider config shapes moved to
   # the LLM plane side and left that file 20 lines long, so the pin named a line that does not exist
   # and waived nothing. A reviewed site that points at nothing is a waiver waiting for the next
@@ -1419,7 +1424,7 @@ known_sites = [
   "crates/busbar-kernel/src/metrics/money.rs:224",
   "crates/busbar-kernel/src/plane/config.rs:368",
   "crates/busbar-kernel/src/plane_host/build_input.rs:149",
-  "crates/busbar-kernel/src/router.rs:425",
+  "crates/busbar-kernel/src/router.rs:424",
   "crates/busbar-kernel/src/store/vocab.rs:136",
   "crates/busbar-kernel/src/test_support/mod.rs:220",
 ]
@@ -1724,7 +1729,9 @@ known_sites = [
   # was crates/busbar-substrate/src/plane_host/scope.rs::reclaim_all — merged the same way (+596).
   # Still named BY FUNCTION, so the rest of the merged file is still held to the rule.
   "crates/busbar-kernel/src/plane_host/scope.rs::reclaim_all",
-  "crates/busbar-substrate-values/src/proto.rs",
+  # was crates/busbar-substrate-values/src/proto.rs — the protocol registry moved to the kernel
+  # verbatim (#83a SD-8).
+  "crates/busbar-kernel/src/proto/installed.rs",
   "crates/busbar-transport-ws/src/transport.rs",
   "crates/plugin-loader/src/",
   "crates/busbar-contract/src/abi/sdk/boundary.rs",
@@ -1733,7 +1740,7 @@ known_sites = [
   # line needs a tracing callsite and field names that are 'static by tracing's type; `site` makes
   # ONE per (code, level, field-name list) and interns it, so the allocation is bounded by the
   # catalogue and made once — the leak-once intern shape of ids.rs `key` above.
-  "crates/busbar-substrate-values/src/diagnostics/emit.rs::site",
+  "crates/busbar-kernel/src/diagnostics/emit.rs::site",
   # REVIEWED 2026-09-25 (item 141): a first-party plugin's DECLARED diagnostic joins the process
   # catalogue, whose entries are `&'static Diagnostic` with `&'static str` text by the catalogue's
   # type; one allocation per declared code, once, at boot, before the catalogue is first read.

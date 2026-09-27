@@ -26,9 +26,9 @@ use crate::store::{HealthState, LaneData};
 use crate::{
     admin, audit, auth, auth_cache, billing, breaker, catalogue, config, config_validate,
     core_routes, cost, durable, egress_auth, endpoints, export, failover, governance, handlers,
-    hooks, ingress, ir, json, limits, lossless, media, metrics, net_guard, oauth_as, observability,
-    operation, plane, plugin_routes, profile, proto, proxy, ratelimit, state, store, telemetry,
-    tls, transport, trust,
+    hooks, ingress, ir, json, limits, metrics, net_guard, oauth_as, observability, operation,
+    plane, plugin_routes, profile, proto, proxy, ratelimit, state, store, telemetry, tls,
+    transport, trust,
 };
 use busbar_kernel::plane_host::{
     AffinityInput, AuthStyleInput, ClientSettingsInput, FailoverInput, HealthInput,
@@ -841,8 +841,8 @@ pub fn build_app_from_config(
             prompt_caching: ld.prompt_caching,
             // The provider entry's lane-capability keys, carried unread and resolved against the
             // lane's wire model by `ir::lane_caps`, which owns them (architect ruling LANECAPS-MOVE).
-            lane_caps: busbar_substrate_values::ir::lane_caps::resolve_lane_caps(
-                busbar_substrate_values::ir::lane_caps::ProviderLaneCaps {
+            lane_caps: crate::ir::lane_caps::resolve_lane_caps(
+                crate::ir::lane_caps::ProviderLaneCaps {
                     max_output_key: provider_cfg.max_output_key,
                     anthropic_adaptive_thinking: provider_cfg.anthropic_adaptive_thinking,
                     native_structured_output: provider_cfg.native_structured_output,

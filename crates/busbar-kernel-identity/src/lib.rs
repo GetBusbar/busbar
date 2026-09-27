@@ -51,6 +51,7 @@ pub mod chain;
 pub mod challenge;
 pub mod egress_auth;
 pub mod exchange;
+pub mod ingress_sigv4;
 pub mod module;
 pub mod principal;
 pub mod unit;

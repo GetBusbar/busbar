@@ -111,10 +111,9 @@ plane_src_roots() {   # echo "crates/busbar-<k>/src crates/busbar-<k>-codec/src 
 # still compile with every plane crate `git rm -r`'d. It lives here, beside the plane list, for the
 # reason the header gives: one list, sourced, never restated per gate.
 #
-# `busbar-substrate-values` is the PURE HALF of the substrate — the value families the codecs and the
-# planes name, split out so a plane's closure resolves no hyper/reqwest/tokio edge. It is every bit as
-# NEUTRAL as the crate it came out of, and the bulk of the surface a plane talks to (proto, ir,
-# breaker, handlers) now lives there. Omitting it would leave those files scanned by nothing.
+# `busbar-substrate-values`, the PURE HALF of the substrate, was a root here while it existed; it is
+# deleted (#83a SD-8) and its files live under the contract and kernel roots below, so they are still
+# scanned.
 #
 # REMOVING A ROOT IS A NAMED CHANGE, NEVER A SILENT ONE. That day has come for two of them, and this
 # IS the reviewed diff that says so. `busbar-core` was absorbed into `busbar-kernel` (W4.a, 673ecdaaa)
@@ -136,7 +135,7 @@ plane_src_roots() {   # echo "crates/busbar-<k>/src crates/busbar-<k>-codec/src 
 # plane-noun-gate.sh) therefore scanned 220 of 427 neutral files and printed 0 for needles that are
 # not 0 -- the ZERO those meters document as the signal to arm their hard gates. The list below is
 # the twin's, same order, one line (the pinning test parses this exact line).
-NEUTRAL_ROOTS_LIST="crates/busbar-kernel/src crates/busbar-kernel-audit/src crates/busbar-kernel-breaker/src crates/busbar-kernel-budget/src crates/busbar-kernel-egress/src crates/busbar-kernel-identity/src crates/busbar-kernel-ledger/src crates/busbar-kernel-scope/src crates/busbar-kernel-wal/src crates/busbar-contract/src crates/busbar-substrate-values/src crates/plugin-loader/src crates/busbar-core-admin/src crates/busbar-core-connsec/src crates/busbar-oauth2/src"
+NEUTRAL_ROOTS_LIST="crates/busbar-kernel/src crates/busbar-kernel-audit/src crates/busbar-kernel-breaker/src crates/busbar-kernel-budget/src crates/busbar-kernel-egress/src crates/busbar-kernel-identity/src crates/busbar-kernel-ledger/src crates/busbar-kernel-scope/src crates/busbar-kernel-wal/src crates/busbar-contract/src crates/plugin-loader/src crates/busbar-core-admin/src crates/busbar-core-connsec/src crates/busbar-oauth2/src"
 
 neutral_src_roots() { printf '%s' "$NEUTRAL_ROOTS_LIST"; }
 

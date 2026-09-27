@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Tests for `strip_top_level_usage_member`'s refusal contract in
-//! `crates/busbar-substrate-values/src/proto.rs`.
+//! Tests for `strip_top_level_usage_member`'s refusal contract, and the dialect helpers' answers to
+//! the shared fixture (moved with the host's copies when those were deleted, SD-8).
 
 use super::*;
 
@@ -43,9 +43,8 @@ fn a_closed_object_still_strips_and_stays_parseable() {
     assert_eq!(first, r#"{"a":1}"#);
 }
 
-/// THE SHARED DIALECT-HELPER FIXTURE (#83a SD-3): the host originals answer every case in
-/// `testing/plane-copies/dialect-helpers.json` as recorded. The LLM plane's own copies are held to
-/// the same file, so the copies cannot drift apart without one of the two suites failing.
+/// THE SHARED DIALECT-HELPER FIXTURE (#83a SD-3): the helpers answer every case in
+/// `testing/plane-copies/dialect-helpers.json` as the host's originals recorded it, in one pass.
 #[test]
 fn the_host_helpers_answer_the_shared_fixture() {
     let path = concat!(
@@ -56,7 +55,7 @@ fn the_host_helpers_answer_the_shared_fixture() {
         serde_json::from_str(&std::fs::read_to_string(path).expect("fixture readable"))
             .expect("fixture is JSON");
     let rows = |k: &str| doc[k].as_array().expect("rows").clone();
-    let bytes = |v: &serde_json::Value| hex::decode(v.as_str().expect("hex")).expect("hex");
+    let bytes = |v: &serde_json::Value| crate::hex::decode(v.as_str().expect("hex")).expect("hex");
     let c = &doc["constants"];
     assert_eq!(c["CODE_INVALID_API_KEY"], CODE_INVALID_API_KEY);
     assert_eq!(

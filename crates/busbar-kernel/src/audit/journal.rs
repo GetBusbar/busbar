@@ -546,8 +546,8 @@ impl<R: NeutralRecord> Journal<R> {
                 // `hash`/`content` only — see `NeutralBody` — so stamping this changes no sealed
                 // byte, only an existing sidecar column that was previously left unset). Read
                 // through the composition-root-injected clock seam every other core call site uses
-                // (`busbar_kernel::store::now()`, ultimately `busbar_substrate_values::store::now`
-                // — see `crates/busbar-kernel/src/store/vocab.rs`), never `SystemTime::now()`
+                // (`busbar_kernel::store::now()`, whose body is in
+                // `crates/busbar-kernel/src/store/vocab.rs`), never `SystemTime::now()`
                 // directly. A hardcoded `ts: 0` here made every row look infinitely old to
                 // `purge_plane_records_before`'s `r.ts < before` check, so the FIRST retention sweep
                 // deleted the whole class regardless of how recently it was written — the configured

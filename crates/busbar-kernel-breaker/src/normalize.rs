@@ -1,72 +1,31 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Protocol-agnostic classifier for breaker dispositions.
+//! THE SERVED PATH'S UPSTREAM-ERROR NORMALIZER (#83a O1: the error-map rule and the `Retry-After`
+//! reading are breaker semantics): Stage 1b of the disposition pipeline, turning a dialect's
+//! [`RawUpstreamError`] into the [`CanonicalSignal`] the breaker acts on, and the `Retry-After`
+//! header read that bounds a cooldown. Moved verbatim from the retired shared value crate; the one
+//! adaptation is that the unrecognized-`error_map` report is the caller's (`unrecognized`), since
+//! this unit takes no logging dependency.
 //!
-//! Stage 2 of the two-stage disposition pipeline:
-//! - Stage 1 (src/proto/): per-protocol normalizer → CanonicalSignal with typed StatusClass
-//! - Stage 2 (this module): protocol-agnostic classifier → Disposition
-//!
-//! Mapping (+ ADR-0002):
-//!   RateLimit|Overloaded|ServerError|Timeout|Network → TransientUpstream
-//!   Auth|Billing → HardDown
-//!   ClientError → ClientFault
+//! [`crate::classify`] is this unit's own classifier over its own raw-error record; the two read a
+//! status-less error (0) and the obsolete HTTP-date forms differently, so they are not merged here.
 
-/// Anthropic non-standard 529 overload status — not in the IANA registry but
-/// documented by Anthropic as their server-overloaded signal (distinct from 503).
+use busbar_contract::http;
+use busbar_contract::upstream::{CanonicalSignal, RawUpstreamError, StatusClass};
+
+/// The non-standard 529 overload status a provider sends as its server-overloaded signal (distinct
+/// from 503); not in the IANA registry.
 const HTTP_OVERLOADED: u16 = 529;
-
-/// The status class and the disposition, as the contract owns them.
-///
-/// Both used to be declared HERE, and again in two unit crates, with the labels kept in step by
-/// hand. They are one table now — `busbar_contract::upstream` — and this crate names the rows
-/// rather than re-spelling them; every reader that matched on `breaker::StatusClass` still does.
-pub use busbar_contract::upstream::{Disposition, StatusClass};
-
-/// Convert a string to StatusClass. Returns None for unknown values.
-pub fn status_class_from_str(s: &str) -> Option<StatusClass> {
-    StatusClass::parse(s)
-}
-
-/// Warn (once per distinct value) that an operator `error_map` entry maps to a string that is not a
-/// recognized StatusClass. Such a value is silently ignored by `normalize_raw_error` — the error
-/// then falls through to HTTP-status classification — so without this signal a typo'd mapping (e.g.
-/// `rate_limt`) would never take effect and the operator would have no indication why. Deduped via a
-/// process-wide set so a misconfiguration on a hot error path logs once, not per request.
-fn warn_unrecognized_error_map_value(value: &str) {
-    use std::collections::HashSet;
-    use std::sync::{Mutex, OnceLock};
-    static SEEN: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
-    let seen = SEEN.get_or_init(|| Mutex::new(HashSet::new()));
-    // Poisoning is harmless here (the set only dedupes warnings); recover the guard either way.
-    let mut guard = seen.lock().unwrap_or_else(|e| e.into_inner());
-    if guard.insert(value.to_string()) {
-        crate::diag_warn!(
-            crate::diagnostics::CONFIG_ERROR_MAP_CLASS_UNRECOGNIZED,
-            error_map_value = value,
-            "error_map maps an error to an unrecognized status class; the mapping is IGNORED and \
-             classification falls through to HTTP status. Valid classes: rate_limit, overloaded, \
-             server_error, timeout, network, auth, billing, client_error, context_length"
-        );
-    }
-}
-
-/// Classify a CanonicalSignal into a disposition — the disposition column of the contract's table.
-/// Per ADR-0002: ClientFault never counted; HardDown immediate trip.
-pub fn classify(sig: &CanonicalSignal) -> Disposition {
-    sig.class.disposition()
-}
-
-/// The raw upstream error a dialect reads off the body and the canonical signal the classifier
-/// places it in. SHAPES: defined in `busbar_contract::upstream` (DECISIONS #83, SD-1 of the #83a
-/// split) and re-exported here under their historical paths.
-pub use busbar_contract::upstream::{CanonicalSignal, RawUpstreamError};
 
 /// Parse a `Retry-After` header value. RFC 9110 §10.2.3 defines the field as
 /// `delay-seconds / HTTP-date`; BOTH forms are normative and providers send both. Parsing only the
 /// integer form silently discards the provider's stated cooldown floor on every date-form response,
 /// leaving the breaker to guess.
-pub fn parse_retry_after(headers: &http::HeaderMap) -> Option<u64> {
+///
+/// `now` is a PARAMETER: a unit reads no clock, so the caller that read the response hands in the
+/// instant it read it at (the kernel's `breaker::parse_retry_after` passes the wall clock).
+pub fn parse_retry_after(headers: &http::HeaderMap, now: std::time::SystemTime) -> Option<u64> {
     let s = headers.get(http::header::RETRY_AFTER)?.to_str().ok()?;
     let s = s.trim();
     if let Ok(n) = s.parse::<u64>() {
@@ -75,23 +34,22 @@ pub fn parse_retry_after(headers: &http::HeaderMap) -> Option<u64> {
     // A date already in the past means "retry now", not "retry in a very long time" — hence
     // saturating_duration_since, which floors at zero.
     let at = httpdate::parse_http_date(s).ok()?;
-    Some(
-        at.duration_since(std::time::SystemTime::now())
-            .unwrap_or_default()
-            .as_secs(),
-    )
+    Some(at.duration_since(now).unwrap_or_default().as_secs())
 }
 
 /// Classify a raw upstream error into a canonical signal using an error_map.
-/// Stage 1b (provider normalizer): data-driven mapping from raw errors to StatusClass.
+/// Stage 1b (provider normalizer): data-driven mapping from raw errors to StatusClass. An operator
+/// `error_map` value that names no status class is IGNORED (classification falls through to the
+/// HTTP status) and handed to `unrecognized`, the caller's report of the misconfiguration.
 pub fn normalize_raw_error(
     raw: &RawUpstreamError,
     error_map: &std::collections::HashMap<String, String>,
+    unrecognized: &dyn Fn(&str),
 ) -> CanonicalSignal {
     // Step 1: a provider error code mapped in error_map refines (overrides) the HTTP-status default.
     let provider_signal = if let Some(ref code) = raw.provider_code {
         if let Some(mapped_class) = error_map.get(code) {
-            if let Some(class) = status_class_from_str(mapped_class) {
+            if let Some(class) = StatusClass::parse(mapped_class) {
                 // CLASS guard: context_length must NEVER mask a 5xx upstream
                 // outage. An operator error_map mapping a code to `context_length` on a 5xx
                 // status would otherwise reclassify a transient outage as no-penalty
@@ -109,7 +67,7 @@ pub fn normalize_raw_error(
                 // The operator mapped this code to a string that is not a recognized status class
                 // (typo such as `rate_limt`). It is silently ignored below; warn so the misconfig
                 // is visible instead of a mapping that never takes effect.
-                warn_unrecognized_error_map_value(mapped_class);
+                unrecognized(mapped_class);
             }
         }
         // built-in recognition of the canonical context-length code (the operator
@@ -126,7 +84,7 @@ pub fn normalize_raw_error(
         // The previous `!(500..600)` guard let any non-5xx (e.g. a 200/3xx/auth) carrying a
         // `context_length_exceeded` code masquerade as ContextLength; restrict to the precise
         // request-size set so it can never mask a non-request-size status.
-        if code == crate::proxy::PROVIDER_CODE_CONTEXT_LENGTH
+        if code == busbar_contract::protocol::PROVIDER_CODE_CONTEXT_LENGTH
             && (raw.http_status == 400 || raw.http_status == 413)
         {
             return CanonicalSignal {
@@ -148,9 +106,9 @@ pub fn normalize_raw_error(
         // Resolve the mapped class, warning (once) if the operator mapped this type to an
         // unrecognized status-class string — otherwise it is silently ignored and falls through.
         let mapped = error_map.get(ty).and_then(|m| {
-            let class = status_class_from_str(m);
+            let class = StatusClass::parse(m);
             if class.is_none() {
-                warn_unrecognized_error_map_value(m);
+                unrecognized(m);
             }
             class
         });
@@ -198,7 +156,3 @@ pub fn normalize_raw_error(
         retry_after: raw.retry_after_secs,
     }
 }
-
-#[cfg(test)]
-#[path = "tests/breaker_tests.rs"]
-mod tests;

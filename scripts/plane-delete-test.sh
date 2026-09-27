@@ -12,10 +12,10 @@
 #
 #   busbar-core and busbar-substrate NO LONGER EXIST BY THOSE NAMES: busbar-core's whole ~130k LOC
 #   was absorbed into busbar-kernel, and busbar-substrate's engine half was absorbed into
-#   busbar-kernel too (its pure-value half had already split out
-#   to busbar-substrate-values). "The NEUTRAL crates" this test proves survive a
-#   plane's removal are therefore busbar-kernel, busbar-substrate-values and busbar-api today — see
-#   NEUTRAL_PKGS below, the one place that triple is named.
+#   busbar-kernel too (its pure-value half split out, then went to busbar-contract and
+#   busbar-kernel, #83a SD-8). "The NEUTRAL crates" this test proves survive a plane's removal are
+#   therefore busbar-kernel and busbar-contract today — see NEUTRAL_PKGS below, the one place that
+#   pair is named.
 #
 #   ci.yml already runs the WEAK form of this (the `deletion-test-matrix` job): build the neutral
 #   crates with a plane's cargo FEATURE off. That proves the neutral crates do not *reference* the
@@ -173,14 +173,14 @@ report_coverage() {
 # the header above) — busbar-kernel is their direct successor for this purpose (it carries the
 # `plane-mcp`/`plane-a2a`/`plane-voice` features `neutral_keep` below names, the `openapi-schema`
 # forward to each plane crate, and the dev-dependency back-edge on busbar-mcp/busbar-a2a
-# `strip_workspace_edges` exists to sever), and busbar-substrate-values (the pure-value half that
-# split off busbar-substrate BEFORE the deletion) is still its own crate today. A name here that stops
+# `strip_workspace_edges` exists to sever); busbar-substrate-values (the pure-value half that split
+# off busbar-substrate) was deleted too, its values to busbar-contract and busbar-kernel (#83a SD-8). A name here that stops
 # existing hits the same cargo refusal `run_check` already surfaces as a FAIL (cargo errors fast on an
 # unknown `-p` package spec) — loud, not a silent narrowing of what got checked. busbar-api retired
-# into busbar-contract (fold F4), so the third neutral crate is the contract, the same triple ci.yml's
+# into busbar-contract (fold F4), so the other neutral crate is the contract, the same pair ci.yml's
 # deletion-test matrix builds.
-NEUTRAL_PKGS="busbar-kernel busbar-substrate-values busbar-contract"
-neutral_pkg_args() {   # echo "-p busbar-kernel -p busbar-substrate-values -p busbar-contract"
+NEUTRAL_PKGS="busbar-kernel busbar-contract"
+neutral_pkg_args() {   # echo "-p busbar-kernel -p busbar-contract"
   local n out=""
   for n in $NEUTRAL_PKGS; do out="${out:+$out }-p $n"; done
   printf '%s' "$out"

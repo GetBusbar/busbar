@@ -15,7 +15,7 @@
 
 use crate::egress_auth::{prebuild_auth, resolve};
 use crate::proto::{convert_headers, SigningContext};
-use busbar_substrate_values::proto::ProtocolDecl;
+use busbar_contract::protocol::ProtocolDecl;
 
 /// A credential every declared builder can use: a request signer reads `<id>:<secret>`, a static
 /// scheme presents the whole string.
@@ -168,7 +168,10 @@ fn the_api_key_override_presents_the_shared_builders_bytes() {
             };
             assert_eq!(
                 cred.headers_for(key, &c),
-                busbar_substrate_values::proto::api_key_auth_headers("api-key", key),
+                busbar_kernel_identity::egress_auth::api_key_auth_headers("api-key", key)
+                    .into_iter()
+                    .map(|(k, v)| (k.parse().expect("name"), v.parse().expect("value")))
+                    .collect::<Vec<(http::HeaderName, http::HeaderValue)>>(),
                 "key {key:?}, mode {upstream_creds:?}"
             );
         }

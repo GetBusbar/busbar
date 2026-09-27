@@ -1751,7 +1751,7 @@ async fn test_gemini_stream_generate_content_alt_sse_is_event_stream() {
         .lines()
         .filter_map(|line| line.strip_prefix("data:"))
         .map(str::trim)
-        .filter(|data| !data.is_empty() && *data != busbar_kernel::proto::SSE_DONE_SENTINEL)
+        .filter(|data| !data.is_empty() && *data != busbar_llm_codec::dialect::SSE_DONE_SENTINEL)
         .filter_map(|data| serde_json::from_str(data).ok())
         .collect();
     assert!(
@@ -1830,7 +1830,7 @@ async fn test_gemini_alt_sse_mid_stream_transport_error_appends_native_sse_frame
         .lines()
         .filter_map(|line| line.strip_prefix("data:"))
         .map(str::trim)
-        .filter(|data| !data.is_empty() && *data != busbar_kernel::proto::SSE_DONE_SENTINEL)
+        .filter(|data| !data.is_empty() && *data != busbar_llm_codec::dialect::SSE_DONE_SENTINEL)
         .filter_map(|data| serde_json::from_str(data).ok())
         .collect();
     assert!(
@@ -4242,7 +4242,7 @@ fn sse_frames(body: &str) -> Vec<(String, String)> {
             }
         }
         if let Some(d) = data {
-            if d == busbar_kernel::proto::SSE_DONE_SENTINEL {
+            if d == busbar_llm_codec::dialect::SSE_DONE_SENTINEL {
                 continue;
             }
             out.push((event_name, d));
@@ -5844,7 +5844,7 @@ async fn test_gemini_v1_stable_stream_generate_content_alt_sse() {
         .lines()
         .filter_map(|line| line.strip_prefix("data:"))
         .map(str::trim)
-        .filter(|data| !data.is_empty() && *data != busbar_kernel::proto::SSE_DONE_SENTINEL)
+        .filter(|data| !data.is_empty() && *data != busbar_llm_codec::dialect::SSE_DONE_SENTINEL)
         .filter_map(|data| serde_json::from_str(data).ok())
         .collect();
     assert!(

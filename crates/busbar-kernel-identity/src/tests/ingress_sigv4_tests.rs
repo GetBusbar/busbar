@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Tests for `crates/busbar-core/src/sigv4.rs`.
+//! Tests for `ingress_sigv4.rs`: the inbound check's parse, date window and recomputed signature,
+//! and the shared signing helpers it recomputes with.
 
 use super::*;
+use crate::egress_auth::sigv4::{format_amz_time, uri_encode_path};
 
 #[test]
 fn test_format_amz_time_known_epoch() {
@@ -684,9 +686,9 @@ fn test_sign_v4_matches_aws_published_example() {
     );
 }
 
-// The canonical constant-time-reject dummy secret. In busbar-core this lives at
-// `crate::auth::DUMMY_SECRET` (the reject path there uses it); the sigv4 signer now lives in the
-// neutral substrate below auth, so this test pins the SAME byte string locally. Used to prove the
+// The canonical constant-time-reject dummy secret. The kernel's auth layer holds it at
+// `auth::DUMMY_SECRET` (the reject path there uses it); this check lives below auth, so this test
+// pins the SAME byte string locally. Used to prove the
 // unknown-key path produces an ordinary SignatureMismatch, not a distinct variant.
 const DUMMY_SECRET: &str = "AWS4-DUMMY-SECRET-FOR-CONSTANT-TIME-REJECT-PATH";
 

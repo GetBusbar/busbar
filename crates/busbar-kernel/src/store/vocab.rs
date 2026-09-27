@@ -136,12 +136,25 @@ pub fn agent_key(agent: &str) -> String {
     format!("agent:{agent}")
 }
 
-/// THE WALL CLOCK, re-exported at its historical path. THE CUT: the rest of this module names
-/// `tokio::sync` — the lane-availability taxonomy's semaphore-permit arm and the `lane_semaphore`
-/// accessor — while `now`/`now_ms` are a pure `SystemTime` read that a dialect writer calls on the
-/// response path (an omitted `created` timestamp). So the clock crossed into the values crate and
-/// the semaphore-shaped remainder stayed here; `busbar_kernel::store::now` resolves unchanged.
-pub use busbar_substrate_values::store::{now, now_ms};
+/// Get current time in seconds since epoch — THE host wall clock (the composition root arms the
+/// contract's host clock service with it; a plane reads time through that service, never here).
+pub fn now() -> u64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
+
+/// The same wall clock in MILLISECONDS — for the sub-second callers (an operator TTL and a task
+/// poll). `u64`, matching [`now`]: a duration since the epoch, never negative.
+pub fn now_ms() -> u64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
+}
 
 // ── The FNV-1a 64-bit string hash, relocated DOWN from `busbar-core`'s `store` so a plane crate
 //    (SWRR shard selection, session affinity) hashes without reaching into `busbar-core`; core's

@@ -1,15 +1,14 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The neutral capped-read primitive shared by every upstream body read.
-//!
-//! `read_capped` streams an upstream response body under a byte cap rather than buffering it whole,
-//! and [`ReadEnd`] records WHY the read stopped so a caller that must parse the whole body can tell
-//! a body that arrived in full from one that was cut short. It lives in the neutral substrate
-//! because both core's proxy engine and the egress/auth paths read upstream bodies this way, and a
-//! plane crate names it without reaching into `busbar-core`. Core's `proxy::wire` re-exports it
-//! unchanged.
+//! What the egress unit does to an upstream exchange's bytes and headers (#83a O1): the capped
+//! upstream-body read ([`read_capped`], and [`ReadEnd`], WHY it stopped), the two operator body caps
+//! it reads under, the network-failure labels a transient failure is recorded with, and the
+//! client-header transparency that carries caller-sent headers onto the egress request. Moved
+//! verbatim from the retired shared value crate; the kernel's `proxy` re-exports every item at its
+//! historical `busbar_kernel::proxy::…` path.
 
+use busbar_contract::http;
 use bytes::Bytes;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -149,111 +148,17 @@ pub async fn read_capped<E>(
     (Bytes::from(buf), end)
 }
 
-// ── THE SHAPE VOCABULARY lives in `busbar_contract::protocol` (DECISIONS #83: contract = shapes;
-//    SD-1 of the #83a split): the media-type and default user-agent literals a declaration defaults
-//    to, the provider context-length code, the agnostic error-KIND tokens and the context-length
-//    disposition label a dialect and the kernel both key on. Re-exported here under their historical
-//    paths, so every caller compiles unchanged.
-pub use busbar_contract::protocol::{
-    APPLICATION_JSON, DISPOSITION_CONTEXT_LENGTH, EGRESS_UA_DEFAULT, KIND_API_ERROR,
-    KIND_AUTHENTICATION, KIND_INSUFFICIENT_QUOTA, KIND_INVALID_REQUEST, KIND_NOT_FOUND,
-    KIND_OVERLOADED, KIND_PERMISSION, KIND_RATE_LIMIT, KIND_REQUEST_TOO_LARGE, KIND_SERVER_ERROR,
-    KIND_TIMEOUT, PROVIDER_CODE_CONTEXT_LENGTH, TEXT_EVENT_STREAM,
-};
-
-/// Metric-label values for the `disposition` dimension on `UPSTREAM_FAILURES_TOTAL` and the
-/// `reason` dimension on `FAILOVERS_TOTAL`.
-pub const DISPOSITION_TRANSIENT: &str =
-    busbar_contract::upstream::Disposition::TransientUpstream.label();
-
-/// Bounded `pool` metric-label sentinel used for every pre-routing failure (malformed body,
-/// unresolved model, governance rejection) so the label space stays finite (metrics.rs).
-pub const POOL_LABEL_UNRESOLVED: &str = "unresolved";
-
-// ── Network-transient `err_type` values passed to `record_transient_in`. Distinct from the error-KIND
-//    tokens above: they label the *category* of network failure recorded in the breaker store, not the
-//    protocol-level error kind surfaced to the caller. Relocated DOWN from `busbar-core`'s `proxy` so
-//    the relocated LLM engine names them at `busbar_kernel::proxy::ERR_NET_*` without reaching into
-//    `busbar-core`; core's `proxy` re-exports each at its historical `crate::proxy::ERR_NET_*` path.
+// ── Network-transient `err_type` values passed to `record_transient_in`. Distinct from the
+//    protocol's error-KIND tokens: they label the *category* of network failure recorded in the
+//    breaker store, not the protocol-level error kind surfaced to the caller.
+/// `err_type` recorded when the upstream connection could not be opened.
 pub const ERR_NET_CONNECT: &str = "connect";
+/// `err_type` recorded when the upstream did not answer within the attempt's deadline.
 pub const ERR_NET_TIMEOUT: &str = "timeout";
+/// `err_type` recorded when the transport failed after the connection opened.
 pub const ERR_NET_TRANSPORT: &str = "transport";
 /// `err_type` recorded when a HalfOpen probe's degraded forward returns a non-2xx (bumps cooldown).
 pub const ERR_DEGRADED_NON2XX: &str = "degraded-non2xx";
-
-// ── Failure-DISPOSITION metric-label values (the `disposition` dimension on `UPSTREAM_FAILURES_TOTAL`
-//    / the `reason` dimension on `FAILOVERS_TOTAL`). [`DISPOSITION_TRANSIENT`] already lives above;
-//    these three are relocated DOWN from `busbar-core`'s `proxy` alongside it so the money-path
-//    failure-classification names them without reaching into `busbar-core`.
-/// A single attempt's budget-clamped transport timeout fired (retryable within the request).
-pub const DISPOSITION_ATTEMPT_TIMEOUT: &str = "attempt_timeout";
-pub const DISPOSITION_HARD_DOWN: &str = busbar_contract::upstream::Disposition::HardDown.label();
-
-// ── The two `x-busbar-*` TRANSPARENCY response-header NAMES stamped when a non-default routing policy
-//    chose the target lane, the operator opt-in gate, and the per-request upstream-RTT task-local the
-//    router reads. Neutral vocabulary relocated DOWN from `busbar-core`'s `proxy` so the money-path
-//    wire layer names them without reaching into `busbar-core`; core's `proxy` re-exports each at its
-//    historical `crate::proxy::…` path (so `router.rs`/`main.rs`/`admin` call sites are untouched).
-/// The `x-busbar-route-policy` TRANSPARENCY response header: the policy name that chose the lane.
-pub const HDR_ROUTE_POLICY: &str = "x-busbar-route-policy";
-/// The `x-busbar-route-target` TRANSPARENCY response header: the chosen lane's model.
-pub const HDR_ROUTE_TARGET: &str = "x-busbar-route-target";
-
-/// Whether the operator opted in to the `x-busbar-route-policy` / `-target` TRANSPARENCY headers
-/// (`advanced.response_headers.route_policy`; default `false`). Set SYNCHRONOUSLY once at boot by
-/// [`configure_route_policy_headers`]: a settled decision read at every emission site, never rebuilt
-/// by a config apply (restart-to-apply). Unset ⇒ `false`.
-static ROUTE_POLICY_HEADERS_ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-
-/// Apply the operator's `advanced.response_headers.route_policy` decision. Called exactly once, at
-/// boot, before the router is built; `OnceLock::set` silently no-ops on any later call.
-pub fn configure_route_policy_headers(enabled: bool) {
-    let _ = ROUTE_POLICY_HEADERS_ENABLED.set(enabled);
-}
-
-/// Did the operator opt in to the `x-busbar-route-*` headers? Gates the route-policy header emit —
-/// the header is a fingerprintable observable, so it defaults OFF.
-pub fn route_policy_headers_enabled() -> bool {
-    ROUTE_POLICY_HEADERS_ENABLED.get().copied().unwrap_or(false)
-}
-
-// THE CUT (`UPSTREAM_RTT_US`): the per-request upstream-RTT slot is a `tokio::task_local!`, which
-// is the runtime's own storage — it cannot cross into a crate whose closure carries no tokio. It
-// stayed in `busbar-substrate` beside the middleware that scopes it and the forward path that writes
-// it, still single-compiled, still read through `busbar_kernel::proxy::UPSTREAM_RTT_US`.
-
-/// The DEFAULT ceiling, in bytes, on the content a hook is shown in one projection. `0` = UNLIMITED
-/// (the default): the LLM prompt projection is sent UNCAPPED. A non-zero ceiling is an OPT-IN an
-/// operator sets via `limits.hook_content_max_bytes`. Lives HERE so the plane's hook-projection
-/// enforcer names the ceiling without reaching into `busbar-core`; core's `proxy` re-exports it.
-pub const DEFAULT_HOOK_CONTENT_MAX_BYTES: usize = 0;
-
-/// The effective content ceiling for this config generation, resolved once at config apply
-/// (`limits.hook_content_max_bytes`) and read with a single relaxed load — never recomputed per
-/// request.
-static HOOK_CONTENT_MAX_BYTES: AtomicUsize = AtomicUsize::new(DEFAULT_HOOK_CONTENT_MAX_BYTES);
-
-/// Install the generation's content ceiling. Called at boot and on every config apply (by core's
-/// `appbuild`).
-pub fn set_hook_content_max_bytes(bytes: usize) {
-    HOOK_CONTENT_MAX_BYTES.store(bytes, Ordering::Relaxed);
-}
-
-/// Read the generation's content ceiling. `0` = UNLIMITED. Named across the crate boundary by the
-/// relocated hook-projection enforcer, which caps SERIALIZED BYTES against this value.
-pub fn hook_content_max_bytes() -> usize {
-    HOOK_CONTENT_MAX_BYTES.load(Ordering::Relaxed)
-}
-
-// THE CUT (`build_egress_client`): the shim's whole signature is the engine's — it takes an
-// `EngineSpec` and returns an `EngineClient`, both hyper types — so it is the engine's surface, not a
-// value. It stayed in `busbar-substrate` beside `egress::engine`, reachable as before at
-// `busbar_kernel::proxy::build_egress_client`.
-//
-// THE CUT (`ingress_error`): the shaper returns an `axum::response::Response`, i.e. a body backed by
-// the server stack, so it drags axum (and through it hyper and tokio) into anything that names it.
-// It stayed in `busbar-substrate`, where it still reads this crate's [`agnostic_error_envelope`],
-// [`APPLICATION_JSON`] and the protocol registry — the same three inputs, the same output bytes.
 
 // ── CLIENT-HEADER FORWARDING — THE NEUTRAL MECHANISM (dialect-agnostic) ────────────────────────────
 //
@@ -326,23 +231,4 @@ pub fn apply_client_headers(
             replaced.push(name);
         }
     }
-}
-
-/// THE NEUTRAL ERROR ENVELOPE — the body for an ingress name that resolves to no protocol. The
-/// plainest `{"error": {"message", "type"}}` object, stated ONCE here so the spellings cannot drift,
-/// and neutral so it survives every LLM dialect being dropped from the build.
-pub fn agnostic_error_envelope(kind: &str, msg: &str) -> serde_json::Value {
-    serde_json::json!({ "error": { "message": msg, "type": kind } })
-}
-
-/// The canonical auth-failure `(HTTP status, error kind)` for an ingress protocol name — the agnostic
-/// dispatch through the registry's `ProtocolDecl::auth_failure_status_and_kind` (which replaced the
-/// `ProtocolWriter` vtable method). `BedrockWriter` resolves to (403, "auth"); `GeminiWriter` to (400,
-/// "invalid_request_error"); every other dialect and an unknown/dropped protocol fall back to the
-/// default (401, [`KIND_AUTHENTICATION`]) so the request path stays panic-free. Neutral: reads only the
-/// protocol registry, so it survives every LLM dialect being dropped from the build.
-pub fn auth_failure_status_and_kind(proto: &str) -> (http::StatusCode, &'static str) {
-    crate::proto::decl_for(proto)
-        .map(|d| d.auth_failure_status_and_kind)
-        .unwrap_or((http::StatusCode::UNAUTHORIZED, KIND_AUTHENTICATION))
 }

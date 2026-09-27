@@ -275,10 +275,6 @@ Covering leg is the FIRST leg that compiles the feature; several are compiled by
 | `busbar-substrate/relay` | non-default | `check` — reached from a workspace default | yes |
 | `busbar-substrate/runtime` | non-default | `check` — reached from a workspace default | yes |
 | `busbar-substrate/test-support` | non-default | `check` — `--all-targets` dev-dep unification | yes (incidental) |
-| `busbar-substrate-values/dispatch` | non-default | `check` — reached from a workspace default | yes |
-| `busbar-substrate-values/relay` | non-default | `check` — reached from a workspace default | yes |
-| `busbar-substrate-values/runtime` | non-default | `check` — reached from a workspace default | yes |
-| `busbar-substrate-values/test-support` | non-default | `check` — `--all-targets` dev-dep unification | yes (incidental) |
 | `busbar-kernel/timing` | non-default | `check` step "Timing implementation tests" (was `busbar-timing/timing`, OWNER Q70) | yes |
 | `busbar-unit-auth/sha256` | non-default | `check` — reached from a workspace default | yes |
 | `busbar-voice/openapi-schema` | non-default | `openapi-schema` | yes |

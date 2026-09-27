@@ -63,6 +63,9 @@ const FORBIDDEN_KINDS: &[&str] = &[
     // RETIRED fold F14 2/2: the spec's NOT-kinds are "control, dialect, unit (core's own
     // workflow)". The last `busbar-unit-*` crate folded into `busbar-kernel-identity` (#36).
     "unit",
+    // RETIRED #83a SD-8: the substrate's last crate, `busbar-substrate-values`, is deleted — its
+    // shapes are the contract's and its semantics the kernel tier's.
+    "substrate",
 ];
 
 /// THE ROW. `table_kinds` is the gate's own kind table, handed in rather than read here so this

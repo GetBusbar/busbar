@@ -11,7 +11,6 @@ members = [
     "crates/busbar-a2a",
     "crates/busbar-voice",
     "crates/busbar-voice-codec",
-    "crates/busbar-substrate-values",
     "crates/busbar-contract",
     "crates/busbar-transport-tcp",
     "crates/busbar-transport-http",

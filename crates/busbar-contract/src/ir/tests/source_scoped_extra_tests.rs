@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Tests for `crates/busbar-core/src/lossless.rs`.
+//! Tests for the one source-scoped extras alias, [`SourceScopedExtra`](super::SourceScopedExtra).
 
-use super::*;
+use super::SourceScopedExtra;
+use serde_json::Value;
+use std::collections::BTreeMap;
 
 #[test]
 fn source_scoped_extra_namespaces_by_protocol() {

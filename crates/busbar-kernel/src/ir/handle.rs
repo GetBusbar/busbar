@@ -11,4 +11,4 @@
 //! every in-core and plugin caller — and the four neutral `Invoke`/`Subscribe` handles that travelled
 //! with it to `busbar_substrate_values::ir::neutral_handles` — is unchanged.
 
-pub use busbar_substrate_values::ir::handle::{sealed, IrHandle};
+pub use busbar_contract::ir::handle::{sealed, IrHandle};

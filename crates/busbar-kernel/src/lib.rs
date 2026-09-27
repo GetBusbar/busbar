@@ -200,11 +200,11 @@ pub mod billing;
 /// THE BOOT SEAM: one entry point per boot action, so the internals each action composes stay
 /// crate-private. See the module header.
 pub mod boot;
+pub mod breaker;
 /// THE DURABLE PER-CALL LOG: one hash-chained record per recorded call. A plane supplies the RECORD
 /// SHAPE for core's one audit chain — named at the crate root rather than under the
 /// neutral `plane::` namespace. See the module header.
 pub mod calllog;
-pub use busbar_substrate_values::breaker;
 pub mod catalogue;
 pub mod config;
 pub mod config_validate;
@@ -239,14 +239,11 @@ pub mod handlers;
 pub mod hooks;
 pub mod ingress;
 pub mod ir;
-// wt2/neutral-utils: relocated DOWN to busbar-substrate. The depth-guarded JSON parse/serialize seam
-// (sonic-rs) is a neutral utility; core re-exports it so `crate::json::{parse,to_vec,…}` are unchanged.
-pub use busbar_substrate_values::json;
+// The host's depth-guarded JSON parse/serialize seam (sonic-rs, MAX_JSON_DEPTH = 128). The LLM plane
+// keeps its own copy of the same seam (#83a O6); both are held to one shared fixture of verdicts.
+pub mod json;
 pub mod limits;
 pub mod lineage;
-// wt2/neutral-utils: both relocated DOWN to busbar-substrate (neutral value/util leaves). Core
-// re-exports them so `crate::lossless`/`crate::media` and any `busbar_kernel::{lossless,media}` are unchanged.
-pub use busbar_substrate_values::{lossless, media};
 pub mod metrics;
 pub mod net_guard;
 pub mod oauth_as;
@@ -295,10 +292,8 @@ pub mod session;
 /// path moved, since `ingress::dispatch`/`ingress::arrival_host`/`router` consume them, not the
 /// admin HTTP API.
 pub(crate) mod taxonomy;
-// wt2/neutral-utils: the hand-rolled SigV4 signer relocated DOWN to busbar-substrate (neutral crypto,
-// verifies via `busbar_contract::redacted::constant_time_eq`). Core re-exports it so
-// `crate::sigv4::…` is unchanged.
-pub use busbar_substrate_values::sigv4;
+// AWS SigV4: the inbound check (the identity unit's) and its signing helpers.
+pub mod sigv4;
 pub mod state;
 pub mod store;
 
@@ -324,7 +319,8 @@ pub mod timing;
 pub mod test_support;
 pub mod tls;
 pub mod topology;
-pub use busbar_substrate_values::transport;
+/// The wire-selection axis (`Transport`, `UpstreamWireKind`), the contract's.
+pub use busbar_contract::transport::transport;
 
 #[cfg(test)]
 #[path = "tests/transport_tests.rs"]

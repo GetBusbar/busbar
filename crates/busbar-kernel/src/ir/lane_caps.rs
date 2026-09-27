@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! A provider entry's LANE-CAPABILITY keys — the egress writer's own vocabulary, parsed, validated
-//! and resolved here, beside [`LaneCaps`] and `EgressPrep`, never in the kernel (architect ruling
-//! LANECAPS-MOVE; spec Part 1 and #43: the owner of a shape declares it).
+//! A provider entry's LANE-CAPABILITY keys, parsed, validated and resolved into the [`LaneCaps`] the
+//! egress writer receives (the contract's shape). The first-match glob resolution is host semantics
+//! (#83a O1: a second honest implementation could resolve differently), so it lives with the
+//! kernel that parses the section; it moved here verbatim when `busbar-substrate-values` was
+//! deleted.
 //!
 //! A provider entry (catalog definition, deployment, resolved section) carries the keys
 //! `max_output_key`, `anthropic_adaptive_thinking`, `native_structured_output` and
@@ -19,7 +21,7 @@
 
 use serde::Deserialize;
 
-use super::egress_prep::{LaneCaps, MaxOutputKey};
+use busbar_contract::ir::egress_prep::{LaneCaps, MaxOutputKey};
 
 /// The spelling of a cross-protocol output-token cap a provider expects (see
 /// `ProviderDef::max_output_key`).
@@ -135,5 +137,5 @@ pub fn glob_match(pattern: &str, text: &str) -> bool {
 }
 
 #[cfg(test)]
-#[path = "../tests/lane_caps_tests.rs"]
+#[path = "tests/lane_caps_tests.rs"]
 mod tests;

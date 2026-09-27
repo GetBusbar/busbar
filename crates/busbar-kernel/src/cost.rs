@@ -87,7 +87,7 @@ pub struct RateNanos {
 }
 
 impl RateNanos {
-    /// Project the NEUTRAL raw-rate view ([`busbar_substrate_values::billing::RawTierRates`]) — the four raw
+    /// Project the NEUTRAL raw-rate view ([`busbar_contract::billing::RawTierRates`]) — the four raw
     /// micro-float-per-token rates in canonical reserved order — to this integer nano-rate. Core
     /// reads rates through this NEUTRAL view so the projection names no plane config type.
     ///
@@ -105,7 +105,7 @@ impl RateNanos {
     /// Every in-range rate projects to the same integer it always did; only the out-of-range ones
     /// move, and they move from a garbage overcharge to the zero that means "nobody can price
     /// this".
-    pub fn from_raw(raw: &busbar_substrate_values::billing::RawTierRates) -> Self {
+    pub fn from_raw(raw: &busbar_contract::billing::RawTierRates) -> Self {
         let nanos = busbar_kernel_ledger::cost::nano_rate;
         Self {
             input: nanos(raw.input),
@@ -559,7 +559,7 @@ impl CostModel {
         })
     }
 
-    /// PRICE a neutral [`busbar_substrate_values::billing::Usage`] for `model` into nano-units — the
+    /// PRICE a neutral [`busbar_contract::billing::Usage`] for `model` into nano-units — the
     /// host-side entry point the [`MeteringHost::price_usage`](busbar_kernel::plane_host::MeteringHost::price_usage)
     /// seam a live carrier drives folds through.
     ///
@@ -571,7 +571,7 @@ impl CostModel {
     pub fn price_usage_nanos(
         &self,
         model: &str,
-        usage: &busbar_substrate_values::billing::Usage,
+        usage: &busbar_contract::billing::Usage,
     ) -> Option<u128> {
         let mut tally = busbar_kernel_ledger::cost::Tally::at_card(&self.card);
         tally

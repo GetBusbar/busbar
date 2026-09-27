@@ -1,17 +1,16 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Tests for the write-default's terminal (`ir/handle.rs`, `wire.rs`, `handlers.rs`).
+//! Tests for the write-default's terminal: the contract's `IrHandle::write_egress_request` default
+//! refuses rather than invents a body, and this plane's translate seam turns that refusal into the
+//! 4xx reject. (Moved with the translate seam from `busbar-substrate-values`, SD-8.)
 
-use crate::handlers::{
-    CodecError, IngressReject, OperationHandler, TranslateCodec, TranslateReqInput,
-    TranslateReqReject,
-};
-use crate::ir::egress_prep::EgressPrep;
-use crate::ir::handle::IrHandle;
-use crate::ir::invoke::InvokeReq;
-use crate::ir::neutral_handles::InvokeReqHandle;
-use crate::wire::EgressWire;
+use crate::translate::{TranslateCodec, TranslateReqInput, TranslateReqReject};
+use busbar_contract::codec::{CodecError, EgressWire, IngressReject, OperationHandler};
+use busbar_contract::ir::egress_prep::EgressPrep;
+use busbar_contract::ir::handle::IrHandle;
+use busbar_contract::ir::invoke::InvokeReq;
+use busbar_contract::ir::neutral_handles::InvokeReqHandle;
 
 fn prep<'a>() -> EgressPrep<'a> {
     EgressPrep {

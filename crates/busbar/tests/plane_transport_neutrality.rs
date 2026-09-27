@@ -54,16 +54,21 @@ fn nouns() -> &'static [String] {
 /// 1.6.0 and their contents went to four places, so the successor set is four roots:
 ///   * `busbar-core` was absorbed INTO `busbar-kernel`;
 ///   * `busbar-substrate`'s ENGINE was absorbed into `busbar-kernel` too, its VALUE
-///     families went down to `busbar-substrate-values` and its civil/duration/audit
-///     vocabulary went to `busbar-contract`, which later also took the slice ABI;
+///     families went down to `busbar-substrate-values` — deleted in turn (#83a SD-8): its shapes to
+///     `busbar-contract` and its semantics to `busbar-kernel` and the kernel-tier units that took
+///     them (identity, breaker, egress, ledger) — and its civil/duration/audit vocabulary went to
+///     `busbar-contract`, which later also took the slice ABI;
 ///   * `busbar-api` is unmoved.
 ///
-/// Naming all four is not a widening — it is what keeps the ORIGINAL surface covered. The
+/// Naming every successor is not a widening — it is what keeps the ORIGINAL surface covered. The
 /// 2026-09-05 split silently carried `busbar-substrate/src/billing.rs` out of this scan, and no
 /// commit since has looked at it; listing only the kernel would leave that hole open.
 const NEUTRAL_ROOTS: &[&str] = &[
     "crates/busbar-kernel/src",
-    "crates/busbar-substrate-values/src",
+    "crates/busbar-kernel-breaker/src",
+    "crates/busbar-kernel-egress/src",
+    "crates/busbar-kernel-identity/src",
+    "crates/busbar-kernel-ledger/src",
     "crates/busbar-contract/src",
     "crates/api/src",
 ];

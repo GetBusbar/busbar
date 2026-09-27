@@ -228,3 +228,7 @@ impl Drop for GateHold {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "tests/warn_capture_tests.rs"]
+mod tests;

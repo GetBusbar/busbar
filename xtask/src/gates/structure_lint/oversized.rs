@@ -86,7 +86,7 @@ pub fn grandfathered(a: &Addresses) -> Vec<String> {
         "crates/busbar-core-admin/src/v1/json/handlers.rs".to_string(),
         format!("{}/config/mod.rs", a.core),
         format!("{}/config/migrate.rs", a.core),
-        format!("{}/diagnostics/mod.rs", a.substrate_values),
+        format!("{}/diagnostics/mod.rs", a.core),
         "crates/busbar-a2a/src/a2a/receive.rs".to_string(),
         "crates/busbar-mcp/src/mcp/method.rs".to_string(),
         format!("{}/plane_host/mod.rs", a.core),

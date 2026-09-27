@@ -106,8 +106,8 @@ jsonschema = { workspace = true }
 # The two NEUTRAL capability features that gate the `transport::transport` module's
 # `Transport`/`UpstreamWireKind` wire-selection axis (folded in from `busbar-contract-transport`,
 # DECISIONS #38). Both empty here — they gate `#[cfg]` sites only — and must stay DECLARED or
-# `unexpected_cfgs` fires under `-D warnings`. `busbar-substrate-values` forwards its own same-named
-# features to these so the gated surface arms in lock-step, exactly as before the fold.
+# `unexpected_cfgs` fires under `-D warnings`. `busbar-kernel` forwards its own same-named features
+# to these so the gated surface arms in lock-step, exactly as before the fold.
 [features]
 dispatch = []
 runtime = []

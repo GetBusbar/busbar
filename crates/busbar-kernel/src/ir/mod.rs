@@ -27,9 +27,9 @@ pub mod handle;
 /// core.
 pub mod invoke;
 /// A lane's declared request-shape capabilities, resolved from its provider entry and model rules
-/// (`resolve_lane_caps`) into the `LaneCaps` that [`egress_prep`] carries. Re-exported so a caller
-/// names it at `busbar_kernel::ir::lane_caps`, beside the parameter bag it fills.
-pub use busbar_substrate_values::ir::lane_caps;
+/// (`resolve_lane_caps`) into the `LaneCaps` that [`egress_prep`] carries, named at
+/// `busbar_kernel::ir::lane_caps`, beside the parameter bag it fills.
+pub mod lane_caps;
 /// The genuinely cross-plane SUBSCRIBE leaf, shared by more than one resident plane — neutral, stays
 /// in core.
 pub mod subscribe;

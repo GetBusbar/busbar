@@ -1,136 +1,22 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! AWS Signature Version 4 request signing — hand-rolled with RustCrypto (sha2 + hmac), no
-//! AWS SDK. Used by the Bedrock protocol writer to sign Converse requests. The core algorithm is
-//! verified against AWS's published worked example (GET iam ListUsers, 20150830) in the tests, so
-//! the canonical-request → string-to-sign → signature chain is known-correct.
+//! INBOUND AWS Signature Version 4 verification — the ingress-auth step that checks a signature a
+//! CLIENT computed against busbar (#83a O1: inbound SigV4 verify is identity). Moved verbatim from
+//! the retired shared value crate: the `Authorization` parse, the `x-amz-date` window, and the
+//! canonical signing the check recomputes. That signing canonicalizes a quoted header value's
+//! interior spaces verbatim (what a signing client sent), which the egress signer
+//! ([`crate::egress_auth::sigv4`]) does not, so the check keeps its own [`sign_v4`]; the HMAC chain,
+//! the key derivation and the algorithm tokens are the egress signer's, shared.
 
-use crate::diag_error;
-use crate::diagnostics::REQUEST_SIGNING_HMAC_INIT_FAILED;
-use hmac::digest::KeyInit;
-use hmac::{Hmac, Mac};
-use sha2::Sha256;
+use crate::egress_auth::sigv4::{
+    hmac, sha256_hex, signing_key, SIGNATURE_TERMINATION, SIGV4_ALGORITHM,
+};
 
-type HmacSha256 = Hmac<Sha256>;
-
-/// Seconds in a UTC day / hour, for the epoch↔civil-time conversions below. Named rather than bare
-/// literals so the time arithmetic reads in canonical units. (`store` and `governance` keep their
-/// own copies — layering forbids a cross-module import for a one-line constant.)
-const SECS_PER_DAY: u64 = 86_400;
-const SECS_PER_HOUR: u64 = 3_600;
-
-/// The SigV4 algorithm token that appears in the `Authorization` header and the string-to-sign.
-pub const SIGV4_ALGORITHM: &str = "AWS4-HMAC-SHA256";
-/// The terminating scope component appended to every Credential scope and fed to the HMAC chain.
-/// Used as `SIGV4_TERMINATION` (&str) or `SIGV4_TERMINATION.as_bytes()` (byte slice) so the
-/// value is single-sourced even when a byte literal is required.
-pub const SIGV4_TERMINATION: &str = "aws4_request";
-/// The key-derivation prefix prepended to the secret access key before the first HMAC: `"AWS4"`.
-/// Always used via `format!("{SIGNATURE_KEY_PREFIX}{secret}")`, not mixed into `SIGV4_ALGORITHM`.
-const SIGNATURE_KEY_PREFIX: &str = "AWS4";
 /// The canonical lowercase name of the `x-amz-date` header.
 pub const X_AMZ_DATE: &str = "x-amz-date";
 /// The canonical lowercase name of the `x-amz-content-sha256` header.
 pub const X_AMZ_CONTENT_SHA256: &str = "x-amz-content-sha256";
-/// The canonical lowercase name of the `x-amz-security-token` header (STS session credentials).
-pub const X_AMZ_SECURITY_TOKEN: &str = "x-amz-security-token";
-
-/// Lowercase hex SHA-256 of `data` — re-exported from the `busbar-api` contract crate (plugins
-/// hash credentials under the SAME digest facility).
-pub use busbar_contract::redacted::sha256_hex;
-
-/// HMAC-SHA256 of `data` under `key`. `Hmac::new_from_slice` is infallible for HMAC — the spec
-/// accepts a key of ANY length — so the `Err` arm is unreachable. We still avoid `expect()`/panic
-/// here because this runs transitively on the Bedrock request hot path (via `sign_v4` →
-/// `sign_request`), where the project rule forbids a panic surface: a future refactor that swaps the
-/// HMAC impl or key type must not turn a signing-init failure into a task abort. On the unreachable
-/// error we return an empty digest, which yields a wrong signature → AWS responds 403 → the caller's
-/// existing "misconfigured key" fallback surfaces it as an upstream auth failure, exactly the same
-/// graceful path it already takes for an unparseable credential.
-fn hmac(key: &[u8], data: &[u8]) -> Vec<u8> {
-    match HmacSha256::new_from_slice(key) {
-        Ok(mut mac) => {
-            mac.update(data);
-            mac.finalize().into_bytes().to_vec()
-        }
-        Err(e) => {
-            diag_error!(
-                REQUEST_SIGNING_HMAC_INIT_FAILED,
-                "HMAC-SHA256 init failed (unreachable: HMAC accepts any key length): {e}"
-            );
-            Vec::new()
-        }
-    }
-}
-
-/// Derive the SigV4 signing key: HMAC chain over date → region → service → "aws4_request".
-/// File-private: the only caller is `sign_request` below.
-fn signing_key(secret: &str, datestamp: &str, region: &str, service: &str) -> Vec<u8> {
-    let k_date = hmac(
-        format!("{SIGNATURE_KEY_PREFIX}{secret}").as_bytes(),
-        datestamp.as_bytes(),
-    );
-    let k_region = hmac(&k_date, region.as_bytes());
-    let k_service = hmac(&k_region, service.as_bytes());
-    hmac(&k_service, SIGV4_TERMINATION.as_bytes())
-}
-
-/// AWS URI-encode a path, preserving `/`. Unreserved chars (A-Za-z0-9-_.~) pass through; everything
-/// else becomes %XX (uppercase hex). Bedrock model IDs contain `:` and `.`, so the path must be
-/// encoded identically in the canonical request and the wire request.
-pub fn uri_encode_path(path: &str) -> String {
-    let mut out = String::with_capacity(path.len());
-    for &b in path.as_bytes() {
-        match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' | b'/' => {
-                out.push(b as char)
-            }
-            // Percent-encode directly into the pre-allocated buffer (no per-byte heap allocation
-            // from `format!`). Index into a static hex table — a 4-bit nibble is always 0..=15, so
-            // the indexing can never go out of bounds and there is no panic on the request path.
-            _ => {
-                const HEX: &[u8; 16] = b"0123456789ABCDEF";
-                out.push('%');
-                out.push(HEX[(b >> 4) as usize] as char);
-                out.push(HEX[(b & 0x0f) as usize] as char);
-            }
-        }
-    }
-    out
-}
-
-/// Convert a Unix epoch (seconds) to (amzdate `YYYYMMDDTHHMMSSZ`, datestamp `YYYYMMDD`). Pure UTC,
-/// no external date crate (a public-domain civil-from-days algorithm).
-pub fn format_amz_time(epoch_secs: u64) -> (String, String) {
-    let days = (epoch_secs / SECS_PER_DAY) as i64;
-    let sod = epoch_secs % SECS_PER_DAY;
-    let (h, mi, s) = (sod / SECS_PER_HOUR, (sod % SECS_PER_HOUR) / 60, sod % 60);
-
-    // civil_from_days: days since 1970-01-01 → (year, month, day)
-    let z = days + 719_468;
-    // The `z < 0` branch is UNREACHABLE for any real `u64 epoch_secs`: `days` (u64::MAX /
-    // SECS_PER_DAY, cast to i64) tops out around 2.1e14, far short of i64::MAX (~9.2e18), so `days`
-    // can never overflow negative on the cast and `z = days + 719_468` is always positive. Any
-    // variation of the `z - 146_096` expression in this branch (`+`/`/` instead of `-`) is
-    // therefore unobservable — dead code no `u64`-typed test input can reach — unlike
-    // `governance::civil_from_days`, which takes a general `i64` and DOES exercise this branch for
-    // pre-1970 dates (see that function's own test table).
-    let era = (if z >= 0 { z } else { z - 146_096 }) / 146_097;
-    let doe = z - era * 146_097; // [0, 146096]
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365; // [0, 399]
-    let year = yoe + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100); // [0, 365]
-    let mp = (5 * doy + 2) / 153; // [0, 11]
-    let day = doy - (153 * mp + 2) / 5 + 1; // [1, 31]
-    let month = if mp < 10 { mp + 3 } else { mp - 9 }; // [1, 12]
-    let year = if month <= 2 { year + 1 } else { year };
-
-    (
-        format!("{year:04}{month:02}{day:02}T{h:02}{mi:02}{s:02}Z"),
-        format!("{year:04}{month:02}{day:02}"),
-    )
-}
 
 /// Canonicalize a signed-header value per AWS SigV4: trim leading/trailing ASCII spaces (0x20) and
 /// collapse each run of sequential ASCII spaces to a single space — EXCEPT inside a quoted string,
@@ -206,7 +92,7 @@ pub fn sign_v4(
     let canonical_request = format!(
         "{method}\n{canonical_uri}\n{canonical_querystring}\n{canonical_headers}\n{signed_headers}\n{payload_hash}"
     );
-    let scope = format!("{datestamp}/{region}/{service}/{SIGV4_TERMINATION}");
+    let scope = format!("{datestamp}/{region}/{service}/{SIGNATURE_TERMINATION}");
     let string_to_sign = format!(
         "{SIGV4_ALGORITHM}\n{amzdate}\n{scope}\n{}",
         sha256_hex(canonical_request.as_bytes())
@@ -265,9 +151,13 @@ pub enum VerifyError {
 /// AccessKeyId and signature both travel in plaintext on the wire).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ParsedAuthHeader {
+    /// The Credential scope's AccessKeyId: which key the client claims to sign with.
     pub access_key_id: String,
+    /// The Credential scope's `YYYYMMDD` date.
     pub datestamp: String,
+    /// The Credential scope's region.
     pub region: String,
+    /// The Credential scope's service.
     pub service: String,
     /// The lowercase, `;`-joined SignedHeaders list, e.g. `host;x-amz-content-sha256;x-amz-date`.
     pub signed_headers: String,
@@ -327,7 +217,7 @@ pub fn parse_authorization_header(value: &str) -> Result<ParsedAuthHeader, Verif
 
     // Credential = AccessKeyId/datestamp/region/service/aws4_request (exactly five parts).
     let parts: Vec<&str> = credential.split('/').collect();
-    if parts.len() != 5 || parts[4] != SIGV4_TERMINATION {
+    if parts.len() != 5 || parts[4] != SIGNATURE_TERMINATION {
         return Err(VerifyError::MalformedAuthorization);
     }
     let access_key_id = parts[0].to_string();
@@ -387,7 +277,7 @@ fn parse_amz_date(amzdate: &str) -> Option<u64> {
     let doy = (153 * (if month > 2 { month - 3 } else { month + 9 }) + 2) / 5 + day - 1;
     let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
     let days = era * 146_097 + doe - 719_468;
-    let epoch = days * SECS_PER_DAY as i64 + hour * SECS_PER_HOUR as i64 + min * 60 + sec;
+    let epoch = days * 86_400 + hour * 3_600 + min * 60 + sec;
     if epoch < 0 {
         return None;
     }
@@ -401,8 +291,11 @@ fn parse_amz_date(amzdate: &str) -> Option<u64> {
 /// empty). `headers` carries the ACTUAL request header values for (at least) every name in the parsed
 /// `SignedHeaders` list; extra headers are ignored (only the signed ones enter the canonical request).
 pub struct InboundRequest<'a> {
+    /// The request method, as sent.
     pub method: &'a str,
+    /// The URI-encoded request path.
     pub canonical_uri: &'a str,
+    /// The sorted, encoded query string (or empty).
     pub canonical_querystring: &'a str,
     /// (name, value) pairs from the request; names case-insensitive. Must include every signed header.
     pub headers: &'a [(String, String)],
@@ -523,5 +416,5 @@ pub fn verify_inbound_sigv4(
 }
 
 #[cfg(test)]
-#[path = "tests/sigv4_tests.rs"]
+#[path = "tests/ingress_sigv4_tests.rs"]
 mod tests;

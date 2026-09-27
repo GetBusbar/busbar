@@ -186,3 +186,7 @@ impl RawTierRates {
         (self.input + self.output) / 2.0
     }
 }
+
+#[cfg(test)]
+#[path = "tests/billing_duration_tests.rs"]
+mod billing_duration_tests;

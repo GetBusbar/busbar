@@ -735,12 +735,8 @@ pub const PLANE_REQUEST_DURATION_SECONDS: &str = "busbar_plane_request_duration_
 // tap-decode fault class: the log site is warn-once-per-(protocol,reason) to avoid per-request spam,
 // so this counter — not the log — is what an operator alerts on. A steady non-zero rate means a live
 // protocol/dialect the tap reader cannot decode, i.e. silent under-billing.
-//
-// The metric name and its warn-once latch (`usage_tap_decode_fail_should_warn`) relocated to
-// `busbar_kernel::handlers` with the `OperationHandler::extract_usage` default that increments it;
-// re-exported here so the `describe_counter!` registration below and the doc-links in
-// `handlers::mod` still resolve at `crate::metrics::BILLING_TAP_DECODE_FAIL_TOTAL`.
-pub use busbar_substrate_values::handlers::BILLING_TAP_DECODE_FAIL_TOTAL;
+// Labels: `protocol`, `reason`. Its warn-once latch is `handlers::usage_tap_decode_fail_should_warn`.
+pub const BILLING_TAP_DECODE_FAIL_TOTAL: &str = "busbar_billing_tap_decode_fail_total";
 
 // A request/task denied entry by a `limits::admission::AdmissionGate` because its permit cap was
 // saturated. Labeled `gate` = the gate's fixed name (`"inbound"`/`"webhook"`/`"tap"`/

@@ -10,9 +10,7 @@
 // engine names them across the crate boundary as `busbar_kernel::proxy::*`.
 pub mod proxy_vocab;
 pub use proxy_vocab::{
-    agnostic_error_envelope, gate_rejected, hook_content_max_bytes, max_upstream_buffered_bytes,
-    read_capped, set_hook_content_max_bytes, GateRejected, ReadEnd, StageShape,
-    DEFAULT_HOOK_CONTENT_MAX_BYTES,
+    gate_rejected, max_upstream_buffered_bytes, read_capped, GateRejected, ReadEnd, StageShape,
 };
 
 // NOTE: cross-protocol max-tokens defaulting lives in `IrReq::prepare_for_egress` — the IR owns its
@@ -79,12 +77,110 @@ pub use busbar_kernel::egress::engine::{
 // (`forward_with_pool` et al.). Only the record/dispatch audit tests that go
 // through core's `build_router` (`reqlog_dispatch_tests`, above; `reqlog_tests`, in `reqlog.rs`) stay.
 
-// ==== merged from busbar-substrate (W4.b P2 engine drain) ====
+// THE EGRESS UNIT'S upstream-exchange vocabulary (#83a O1) — the capped body read, the operator
+// body caps, the network-failure labels and the client-header transparency — at its historical
+// `crate::proxy::…` paths.
+pub use busbar_kernel_egress::upstream::*;
 
-// THE RE-EXPORT of the pure half, at the historical path. A glob so a value added there needs no
-// edit here, and so `crate::proxy::sse`, `crate::proxy::KIND_*`, `crate::proxy::read_capped` and the
-// rest resolve inside this crate exactly as when they were defined in this file.
-pub use busbar_substrate_values::proxy::*;
+// ── THE SHAPE VOCABULARY lives in `busbar_contract::protocol` (DECISIONS #83: contract = shapes;
+//    SD-1 of the #83a split): the media-type and default user-agent literals a declaration defaults
+//    to, the provider context-length code, the agnostic error-KIND tokens and the context-length
+//    disposition label a dialect and the kernel both key on. Re-exported here under their historical
+//    paths, so every caller compiles unchanged.
+pub use busbar_contract::protocol::{
+    APPLICATION_JSON, DISPOSITION_CONTEXT_LENGTH, EGRESS_UA_DEFAULT, KIND_API_ERROR,
+    KIND_AUTHENTICATION, KIND_INSUFFICIENT_QUOTA, KIND_INVALID_REQUEST, KIND_NOT_FOUND,
+    KIND_OVERLOADED, KIND_PERMISSION, KIND_RATE_LIMIT, KIND_REQUEST_TOO_LARGE, KIND_SERVER_ERROR,
+    KIND_TIMEOUT, PROVIDER_CODE_CONTEXT_LENGTH, TEXT_EVENT_STREAM,
+};
+
+/// Metric-label values for the `disposition` dimension on `UPSTREAM_FAILURES_TOTAL` and the
+/// `reason` dimension on `FAILOVERS_TOTAL`.
+pub const DISPOSITION_TRANSIENT: &str =
+    busbar_contract::upstream::Disposition::TransientUpstream.label();
+
+/// Bounded `pool` metric-label sentinel used for every pre-routing failure (malformed body,
+/// unresolved model, governance rejection) so the label space stays finite (metrics.rs).
+pub const POOL_LABEL_UNRESOLVED: &str = "unresolved";
+
+// ── Failure-DISPOSITION metric-label values (the `disposition` dimension on `UPSTREAM_FAILURES_TOTAL`
+//    / the `reason` dimension on `FAILOVERS_TOTAL`). [`DISPOSITION_TRANSIENT`] already lives above;
+//    these three are relocated DOWN from `busbar-core`'s `proxy` alongside it so the money-path
+//    failure-classification names them without reaching into `busbar-core`.
+/// A single attempt's budget-clamped transport timeout fired (retryable within the request).
+pub const DISPOSITION_ATTEMPT_TIMEOUT: &str = "attempt_timeout";
+pub const DISPOSITION_HARD_DOWN: &str = busbar_contract::upstream::Disposition::HardDown.label();
+
+// ── The two `x-busbar-*` TRANSPARENCY response-header NAMES stamped when a non-default routing policy
+//    chose the target lane, the operator opt-in gate, and the per-request upstream-RTT task-local the
+//    router reads. Neutral vocabulary relocated DOWN from `busbar-core`'s `proxy` so the money-path
+//    wire layer names them without reaching into `busbar-core`; core's `proxy` re-exports each at its
+//    historical `crate::proxy::…` path (so `router.rs`/`main.rs`/`admin` call sites are untouched).
+/// The `x-busbar-route-policy` TRANSPARENCY response header: the policy name that chose the lane.
+pub const HDR_ROUTE_POLICY: &str = "x-busbar-route-policy";
+/// The `x-busbar-route-target` TRANSPARENCY response header: the chosen lane's model.
+pub const HDR_ROUTE_TARGET: &str = "x-busbar-route-target";
+
+/// Whether the operator opted in to the `x-busbar-route-policy` / `-target` TRANSPARENCY headers
+/// (`advanced.response_headers.route_policy`; default `false`). Set SYNCHRONOUSLY once at boot by
+/// [`configure_route_policy_headers`]: a settled decision read at every emission site, never rebuilt
+/// by a config apply (restart-to-apply). Unset ⇒ `false`.
+static ROUTE_POLICY_HEADERS_ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+
+/// Apply the operator's `advanced.response_headers.route_policy` decision. Called exactly once, at
+/// boot, before the router is built; `OnceLock::set` silently no-ops on any later call.
+pub fn configure_route_policy_headers(enabled: bool) {
+    let _ = ROUTE_POLICY_HEADERS_ENABLED.set(enabled);
+}
+
+/// Did the operator opt in to the `x-busbar-route-*` headers? Gates the route-policy header emit —
+/// the header is a fingerprintable observable, so it defaults OFF.
+pub fn route_policy_headers_enabled() -> bool {
+    ROUTE_POLICY_HEADERS_ENABLED.get().copied().unwrap_or(false)
+}
+
+/// The DEFAULT ceiling, in bytes, on the content a hook is shown in one projection. `0` = UNLIMITED
+/// (the default): the LLM prompt projection is sent UNCAPPED. A non-zero ceiling is an OPT-IN an
+/// operator sets via `limits.hook_content_max_bytes`. Lives HERE so the plane's hook-projection
+/// enforcer names the ceiling without reaching into `busbar-core`; core's `proxy` re-exports it.
+pub const DEFAULT_HOOK_CONTENT_MAX_BYTES: usize = 0;
+
+/// The effective content ceiling for this config generation, resolved once at config apply
+/// (`limits.hook_content_max_bytes`) and read with a single relaxed load — never recomputed per
+/// request.
+static HOOK_CONTENT_MAX_BYTES: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(DEFAULT_HOOK_CONTENT_MAX_BYTES);
+
+/// Install the generation's content ceiling. Called at boot and on every config apply (by core's
+/// `appbuild`).
+pub fn set_hook_content_max_bytes(bytes: usize) {
+    HOOK_CONTENT_MAX_BYTES.store(bytes, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Read the generation's content ceiling. `0` = UNLIMITED. Named across the crate boundary by the
+/// relocated hook-projection enforcer, which caps SERIALIZED BYTES against this value.
+pub fn hook_content_max_bytes() -> usize {
+    HOOK_CONTENT_MAX_BYTES.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// THE NEUTRAL ERROR ENVELOPE — the body for an ingress name that resolves to no protocol. The
+/// plainest `{"error": {"message", "type"}}` object, stated ONCE here so the spellings cannot drift,
+/// and neutral so it survives every LLM dialect being dropped from the build.
+pub fn agnostic_error_envelope(kind: &str, msg: &str) -> serde_json::Value {
+    serde_json::json!({ "error": { "message": msg, "type": kind } })
+}
+
+/// The canonical auth-failure `(HTTP status, error kind)` for an ingress protocol name — the agnostic
+/// dispatch through the registry's `ProtocolDecl::auth_failure_status_and_kind` (which replaced the
+/// `ProtocolWriter` vtable method). `BedrockWriter` resolves to (403, "auth"); `GeminiWriter` to (400,
+/// "invalid_request_error"); every other dialect and an unknown/dropped protocol fall back to the
+/// default (401, [`KIND_AUTHENTICATION`]) so the request path stays panic-free. Neutral: reads only the
+/// protocol registry, so it survives every LLM dialect being dropped from the build.
+pub fn auth_failure_status_and_kind(proto: &str) -> (http::StatusCode, &'static str) {
+    crate::proto::decl_for(proto)
+        .map(|d| d.auth_failure_status_and_kind)
+        .unwrap_or((http::StatusCode::UNAUTHORIZED, KIND_AUTHENTICATION))
+}
 
 tokio::task_local! {
     /// Per-request slot the `server_timing` middleware reads to compute Busbar's INTERNAL

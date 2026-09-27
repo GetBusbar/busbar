@@ -51,10 +51,10 @@ const PLANE_KEYS: &[&str] = &["mcp", "a2a"];
 const EXCLUDE_TESTS_DIR: &str = "/tests/";
 // THE FLOOR MOVED TO `gates::population`, along with the scan set it is a floor on.
 
-/// The `x-busbar-route-*` NAME literals and their `HDR_ROUTE_*` consts live in the neutral
-/// substrate; the ONE emission call lives in the LLM plane's wire; `server-timing` stayed in core's
+/// The `x-busbar-route-*` NAME literals and their `HDR_ROUTE_*` consts live in the kernel's
+/// `proxy`; the ONE emission call lives in the LLM plane's wire; `server-timing` stayed in core's
 /// router. The table names where they ACTUALLY are, or its allow column stops describing reality.
-const HDR_ROUTE_POLICY_FILE: &str = "crates/busbar-substrate-values/src/proxy/mod.rs";
+const HDR_ROUTE_POLICY_FILE: &str = "crates/busbar-kernel/src/proxy/mod.rs";
 const HDR_ROUTE_WIRE_FILE: &str = "crates/busbar-llm/src/engine/wire.rs";
 const HDR_SERVER_TIMING_FILE: &str = "crates/busbar-kernel/src/router.rs";
 

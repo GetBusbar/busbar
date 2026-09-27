@@ -7,7 +7,7 @@
 //!
 //! * `CORE`/`BIN` — the library/binary seam. Each row's choice between them is a signed decision
 //!   about which side of the seam that invariant watches.
-//! * `SUBSTRATE`/`SUBSTRATE_VALUES` — where the plane-neutral machinery and the value families went
+//! * `SUBSTRATE` — where the plane-neutral machinery and the value families went
 //!   in 1.6.0. A census row whose symbol moved gains the scope so it FOLLOWS the symbol rather than
 //!   reading zero.
 //! * The PROTOCOL CRATES, the PLANE ROOTS and the TREE-WIDE SCOPE are DERIVED, not spelled,
@@ -57,7 +57,6 @@ pub const ROW_PLANE_ROOTS: &str = "structure-lint:plane-roots";
 pub const CORE: &str = "crates/busbar-kernel/src";
 pub const BIN: &str = "crates/busbar/src";
 pub const SUBSTRATE: &str = "crates/busbar-kernel/src";
-pub const SUBSTRATE_VALUES: &str = "crates/busbar-substrate-values/src";
 
 /// The root every walk in this gate starts from.
 pub const CRATES: &str = "crates";
@@ -90,7 +89,6 @@ pub struct Addresses {
     pub core: String,
     pub bin: String,
     pub substrate: String,
-    pub substrate_values: String,
     /// Every protocol crate's `src/`, each with its trailing `/`, sorted.
     pub proto_roots: Vec<String>,
     /// Every `crates/<crate>/src/` that holds a source file, each with its trailing `/`, sorted —
@@ -222,7 +220,6 @@ pub fn resolve(cx: &Ctx, f: &mut Findings) -> Addresses {
         core: CORE.to_string(),
         bin: BIN.to_string(),
         substrate: SUBSTRATE.to_string(),
-        substrate_values: SUBSTRATE_VALUES.to_string(),
         proto_roots: proto_roots.into_iter().collect(),
         src_roots: src_roots.into_iter().collect(),
         planes,

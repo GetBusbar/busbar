@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Tests for the warn-capture fixture's interest handling (`testkit/warn_capture.rs`).
+//! Tests for the warn-capture double's interest handling (`testkit/warn_capture.rs`).
 
-use crate::testkit::warn_capture::WarnCapture;
+use super::WarnCapture;
 
 /// ONE callsite, fired twice — once with nobody listening, once under a capture. Both fires must be
 /// the SAME callsite for this to be a statement about interest caching rather than about two
@@ -31,15 +31,12 @@ fn building_a_capture_leaves_the_process_interested_in_warns() {
 /// visible to a capture that fires it afterwards.
 #[test]
 fn a_warn_fired_without_a_subscriber_does_not_blind_a_later_capture() {
-    use tracing_subscriber::layer::SubscriberExt as _;
-
     // Nobody listening. Before the constructor forced interest on, this is where a callsite could
     // be cached off for the rest of the process.
     fire();
 
     let cap = WarnCapture::default();
-    let subscriber = tracing_subscriber::registry().with(cap.clone());
-    tracing::subscriber::with_default(subscriber, fire);
+    tracing::subscriber::with_default(cap.clone(), fire);
 
     assert!(
         cap.contains("a warn a later capture must still be able to see"),

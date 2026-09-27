@@ -496,9 +496,18 @@ pub const COUNT_READ_ROOTS: &[CountRoot] = &[
     },
     CountRoot {
         area: "the neutral carriers",
+        // The shared value crate these carriers lived in is deleted (#83a SD-8): its SHAPES are the
+        // contract's (SD-1 moved them to the files listed here) and its semantics are the kernel's,
+        // which "the kernel" area scans. The ban moved with the carriers, to where they live.
         homes: &[
-            "crates/busbar-substrate-values/src",
             "crates/busbar-contract/src/abi",
+            "crates/busbar-contract/src/ir",
+            "crates/busbar-contract/src/billing.rs",
+            "crates/busbar-contract/src/codec.rs",
+            "crates/busbar-contract/src/diagnostic.rs",
+            "crates/busbar-contract/src/media.rs",
+            "crates/busbar-contract/src/protocol.rs",
+            "crates/busbar-contract/src/upstream.rs",
         ],
         floor: 27,
     },

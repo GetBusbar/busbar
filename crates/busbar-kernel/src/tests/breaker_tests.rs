@@ -338,71 +338,49 @@ fn the_uncoded_log_scan_matches_both_spellings_of_both_macros() {
     assert!(!is_bare_log_emission("    let warn = 1;"));
 }
 
-/// EVERY operator-facing warn/error in this crate carries a `BUSBAR-NNNN` code. The diagnostics
-/// module states that policy unconditionally; this scan makes the next uncoded `warn!` / `error!`
-/// (in either spelling) fail the build rather than quietly drift the docs away from the logs.
+/// EVERY operator-facing warn/error in the sources this crate took from the retired shared value
+/// crate carries a `BUSBAR-NNNN` code — the policy that crate held over its own tree, kept over the
+/// same code where it lives now ([`crate::tests::moved_sources`]). (The kernel's own migrated files
+/// are held by `diagnostics::tests`'s coverage lint.) This scan makes the next uncoded `warn!` /
+/// `error!` (in either spelling) there fail the build rather than quietly drift the docs away from
+/// the logs.
 ///
 /// A line is CODED when the emission carries a `diag = ` field — either written through
 /// `diag_warn!`/`diag_error!` (which prepend it) or spelled out at a site that branches between
 /// warn and debug. The module that DEFINES those macros is the one place the bare macros are
-/// legitimately named, so it is excluded; so are the test-only trees.
+/// legitimately named, so it is excluded.
 #[test]
 fn test_no_bare_tracing_warn_or_error_in_crate_sources() {
-    fn scan(dir: &std::path::Path, offenders: &mut Vec<String>) {
-        for entry in std::fs::read_dir(dir).expect("read crate source dir") {
-            let path = entry.expect("dir entry").path();
-            let name = path
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or_default()
-                .to_string();
-            if path.is_dir() {
-                if matches!(name.as_str(), "tests" | "test_support" | "testkit") {
-                    continue;
-                }
-                scan(&path, offenders);
+    let mut offenders = Vec::new();
+    for rel in crate::tests::moved_sources() {
+        if rel.ends_with("diagnostics/mod.rs") {
+            continue;
+        }
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(rel);
+        let src = std::fs::read_to_string(&path).expect("read source file");
+        let lines: Vec<&str> = src.lines().collect();
+        for (i, line) in lines.iter().enumerate() {
+            if line.trim_start().starts_with("//") {
+                continue; // prose about the macros is not an emission
+            }
+            // Match both spellings of both macros: a file carrying `use tracing::warn;` and
+            // emitting a bare `warn!(…)` is the same uncoded operator-facing log, one import away.
+            if !is_bare_log_emission(line) {
                 continue;
             }
-            if path.extension().and_then(|e| e.to_str()) != Some("rs") {
-                continue;
-            }
-            // The macro definitions themselves, and any co-located test source.
-            if path.ends_with("diagnostics/mod.rs") || name.ends_with("_tests.rs") {
-                continue;
-            }
-            let src = std::fs::read_to_string(&path).expect("read source file");
-            let lines: Vec<&str> = src.lines().collect();
-            for (i, line) in lines.iter().enumerate() {
-                if line.trim_start().starts_with("//") {
-                    continue; // prose about the macros is not an emission
-                }
-                // The scan matched only the PATH-QUALIFIED spelling, so a file carrying
-                // `use tracing::warn;` and emitting a bare `warn!(…)` — the same uncoded
-                // operator-facing log, one import away — passed straight through it. Match both
-                // spellings of both macros.
-                if !is_bare_log_emission(line) {
-                    continue;
-                }
-                let coded = line.contains("diag = ")
-                    || lines[i + 1..]
-                        .iter()
-                        .find(|l| !l.trim().is_empty())
-                        .is_some_and(|l| l.trim_start().starts_with("diag = "));
-                if !coded {
-                    offenders.push(format!("{}:{}: {}", path.display(), i + 1, line.trim()));
-                }
+            let coded = line.contains("diag = ")
+                || lines[i + 1..]
+                    .iter()
+                    .find(|l| !l.trim().is_empty())
+                    .is_some_and(|l| l.trim_start().starts_with("diag = "));
+            if !coded {
+                offenders.push(format!("{}:{}: {}", path.display(), i + 1, line.trim()));
             }
         }
     }
-
-    let mut offenders = Vec::new();
-    scan(
-        std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/src")),
-        &mut offenders,
-    );
     assert!(
         offenders.is_empty(),
-        "bare tracing::warn!/error! (no BUSBAR-NNNN code) in this crate's sources — emit through \
+        "bare tracing::warn!/error! (no BUSBAR-NNNN code) in the moved sources — emit through \
          diag_warn!/diag_error! with a registered Diagnostic:\n{}",
         offenders.join("\n")
     );

@@ -156,7 +156,7 @@ const FAM_AUTH: &[&str] = &["auth-admin-tokens", "busbar-oauth2"];
 /// DOCUMENTED EXEMPTION for the `gcp` noun: these 2 files use "GCP" as the general
 /// Google-Cloud-Platform term in cloud-metadata/SSRF security prose — `busbar-a2a`'s
 /// `fetch_tests.rs` table entries `"AWS/GCP/Azure IMDS link-local"` / `"the GCP metadata NAME"`, and
-/// `busbar-substrate-values`'s boot diagnostic warning that the metadata-SSRF guard covers
+/// `busbar-kernel`'s boot diagnostic warning that the metadata-SSRF guard covers
 /// `"169.254.169.254, the GCP/Azure metadata hosts"` — never the name of a concrete `gcp`
 /// auth-scheme plugin instance. This is exactly the vocabulary problem the header note above
 /// already excludes bare `aws` for (broad infra, never an instance spelling);
@@ -168,7 +168,7 @@ const FAM_AUTH: &[&str] = &["auth-admin-tokens", "busbar-oauth2"];
 /// (not bare `gcp`) is what should be tracked.
 const GCP_GENERIC_MENTION_FILES: &[&str] = &[
     "crates/busbar-a2a/src/a2a/tests/fetch_tests.rs",
-    "crates/busbar-substrate-values/src/diagnostics/mod.rs",
+    "crates/busbar-kernel/src/diagnostics/mod.rs",
 ];
 
 // ── HOOK / EXPORT (self-contained example/test plugins; matched on crate identity) ─────────────

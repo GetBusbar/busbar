@@ -330,11 +330,10 @@ static KINDS: &[KindDef] = &[
     },
     // There is no `grammar` kind: `busbar-grammar` folded into `busbar-contract` (#40) and its
     // manifest is gone from the tree, so the row matched no crate and scored `dead-kind`.
-    KindDef {
-        kind: "substrate",
-        family: Family::Neutral,
-        matchers: &["=busbar-substrate", "=busbar-substrate-values"],
-    },
+    // `substrate` IS RETIRED (#83a SD-8). Its last crate, `busbar-substrate-values`, is deleted:
+    // the shapes went to `busbar-contract` (SD-1) and the semantics to `busbar-kernel` and the
+    // kernel-tier units O1 names. A crate spelled `busbar-substrate*` that comes back resolves to no
+    // kind and is refused as unknown, which is the retirement working.
     // There is no `api` kind: `busbar-api` retired in fold F4 — its last pieces went to
     // the homes their definitions name — so the row matched no crate and scored `dead-kind`.
     // There is no `timing` kind: busbar-timing folded into busbar-kernel as its feature-gated
@@ -611,9 +610,7 @@ const ARCHITECTURE_ALLOWED: &[(&str, &str)] = &[
     ("root", "plane"),
     ("root", "plugin-tooling"),
     ("root", "store"),
-    ("root", "substrate"),
     ("root", "transport"),
-    ("substrate", "contract"),
     // `("transport", "transport")` WAS HERE, AND IT IS STRUCK.
     //
     // It granted the CLASS `transport -> transport` — eight live edges (`grpc -> http`,
@@ -676,7 +673,7 @@ pub(super) fn is_the_wall(from: &str, to: &str) -> bool {
 /// where the ABI lives, and its contract class is the TCB's own ([`ARCHITECTURE_TCB`]). The retiring
 /// legacy engines are NOT here: their contract naming is still measured, cell by cell, until they
 /// drain.
-const CONTRACT_TIERS: &[&str] = &["root", "kernel", CLEANLINESS, "substrate", "plugin-tooling"];
+const CONTRACT_TIERS: &[&str] = &["root", "kernel", CLEANLINESS, "plugin-tooling"];
 
 /// Is `from -> to` the contract edge a crate of kind `from` carries BY DESIGN, so its vocabulary
 /// column is not measured: the #40 wall for a plugin kind ([`is_the_wall`]), or a core tier's
@@ -8456,7 +8453,7 @@ impl Gate for KindIsolationGate {
                 format!("crates/{ANNOUNCED_PLANT}/Cargo.toml"),
                 format!(
                     "[package]\nname = \"{ANNOUNCED_PLANT}\"\nversion = \"0.0.0\"\n\n\
-                     [dependencies]\nbusbar-substrate = {{ workspace = true }}\n"
+                     [dependencies]\nbusbar-contract = {{ workspace = true }}\n"
                 ),
             );
             report.push(prove_rows_green(
@@ -8562,7 +8559,7 @@ impl Gate for KindIsolationGate {
             format!("crates/{ANNOUNCED_PLANT}/Cargo.toml"),
             format!(
                 "[package]\nname = \"{ANNOUNCED_PLANT}\"\nversion = \"0.0.0\"\n\n\
-                 [dependencies]\nbusbar-substrate = {{ workspace = true }}\n"
+                 [dependencies]\nbusbar-contract = {{ workspace = true }}\n"
             ),
         );
         report.push(prove_rows_red(
@@ -8945,19 +8942,18 @@ const PLANTED_DRAIN_TARGET: &str = "busbar-oauth2";
 /// `busbar-transport-tls -> busbar-unit-transport-key`, drained by fold F14.
 const VERDICT_PLANT_FROM: &str = "busbar-kernel";
 const VERDICT_PLANT_TO: &str = "busbar-store-memory";
-const PLANTED_SUBSTRATE: &str = "busbar-substrate-values";
 
 /// THE ANNOUNCED CRATE THE LANDING-WINDOW CASES PLANT: a `kernel`-kind name no real crate has.
 const ANNOUNCED_PLANT: &str = "busbar-kernel-announced";
 
-/// An announced `kernel` crate landing with a dependency on the substrate and on a drain target.
+/// An announced `kernel` crate landing with a dependency on the contract and on a drain target.
 fn announced_reaching_drain_target(cx: &Ctx) -> Overlay {
     let mut ov = registry_announcing(cx, ANNOUNCED_PLANT, "kernel");
     ov.set(
         format!("crates/{ANNOUNCED_PLANT}/Cargo.toml"),
         format!(
             "[package]\nname = \"{ANNOUNCED_PLANT}\"\nversion = \"0.0.0\"\n\n\
-             [dependencies]\n{PLANTED_SUBSTRATE} = {{ workspace = true }}\n\
+             [dependencies]\nbusbar-contract = {{ workspace = true }}\n\
              {PLANTED_DRAIN_TARGET} = {{ workspace = true }}\n"
         ),
     );
@@ -10046,15 +10042,13 @@ mod plant_tests {
     #[test]
     fn the_drain_and_edge_class_plants_name_packages_the_census_has() {
         let (crates, _) = crates_of(&ws());
-        for (name, kind) in [
-            (PLANTED_DRAIN_TARGET, CLEANLINESS),
-            (PLANTED_SUBSTRATE, "substrate"),
-        ] {
-            assert!(
-                crates.iter().any(|c| c.name == name && c.kind == Some(kind)),
-                "{name} is not a `{kind}` crate of the census, so an edge onto it is never measured"
-            );
-        }
+        let (name, kind) = (PLANTED_DRAIN_TARGET, CLEANLINESS);
+        assert!(
+            crates
+                .iter()
+                .any(|c| c.name == name && c.kind == Some(kind)),
+            "{name} is not a `{kind}` crate of the census, so an edge onto it is never measured"
+        );
         assert_red_naming(
             &deps_over(manifest_plant(
                 "crates/busbar-llm",

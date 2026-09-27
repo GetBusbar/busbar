@@ -124,7 +124,7 @@ fn a_double_cannot_hold_a_billable_duration_and_an_exact_decimal_can() {
     let duration = Count::parse("1942.955374").expect("exact");
     assert_eq!(
         duration.checked_mul(rate),
-        Err(busbar_contract::CountError::Inexact),
+        Err(crate::CountError::Inexact),
         "a product needing a seventh place must refuse, never round"
     );
     // ...and `checked_mul_wide` is the form a pricing fold accumulates in: the EXACT scale-12

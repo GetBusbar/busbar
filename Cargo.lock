@@ -682,7 +682,6 @@ dependencies = [
  "busbar-mcp",
  "busbar-plugin-loader",
  "busbar-store-memory",
- "busbar-substrate-values",
  "bytes",
  "crc32fast",
  "criterion",
@@ -752,6 +751,7 @@ name = "busbar-kernel-breaker"
 version = "1.6.0"
 dependencies = [
  "busbar-contract",
+ "httpdate",
 ]
 
 [[package]]
@@ -768,6 +768,7 @@ version = "1.6.0"
 dependencies = [
  "busbar-contract",
  "busbar-kernel-breaker",
+ "bytes",
  "futures",
 ]
 
@@ -1010,28 +1011,6 @@ dependencies = [
  "busbar-contract",
  "serde",
  "serde_json",
-]
-
-[[package]]
-name = "busbar-substrate-values"
-version = "1.6.0"
-dependencies = [
- "busbar-contract",
- "bytes",
- "futures",
- "getrandom 0.3.4",
- "hex",
- "hmac",
- "http",
- "httpdate",
- "memchr",
- "metrics",
- "serde",
- "serde_json",
- "sha2 0.11.0",
- "sonic-rs",
- "tracing",
- "tracing-subscriber",
 ]
 
 [[package]]

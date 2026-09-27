@@ -23,8 +23,8 @@ fn lane_caps_glob_matches_star_runs_only() {
 /// keep the pre-capability defaults (today's bytes).
 #[test]
 fn rule_reasoning_none_and_thinking_always_on_resolve_per_model_and_default_off() {
-    use crate::ir::egress_prep::LaneCaps;
     use crate::ir::lane_caps::{resolve_lane_caps, ModelCapabilities};
+    use busbar_contract::ir::egress_prep::LaneCaps;
     let rules: Vec<ModelCapabilities> = serde_json::from_str(
         r#"[{"models": ["claude-fable-5*"], "thinking_always_on": true},
             {"models": ["gpt-5.1"], "reasoning_none": true},
