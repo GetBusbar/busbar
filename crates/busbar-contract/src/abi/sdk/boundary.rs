@@ -135,6 +135,14 @@ unsafe fn read_buf<'a>(ptr: *const u8, len: usize) -> Result<&'a [u8], ()> {
     }
 }
 
+/// Run `f` under the MANDATORY `catch_unwind` every export boundary shares, answering `None` for a
+/// caught panic: the HOT lane's transport slots (`super::transport`) cross here, so a panicking
+/// carrier or framer answers its fault byte instead of unwinding out of the image, through the one
+/// reviewed choke point rather than a second one. No hold is in scope on either side of the call.
+pub fn caught<T>(f: impl FnOnce() -> T) -> Option<T> {
+    catch_unwind(AssertUnwindSafe(f)).ok()
+}
+
 /// Run `f` under a MANDATORY `catch_unwind`, mapping outcome → `(status, bytes)`. A caught panic maps
 /// to the distinct [`STATUS_PANIC`] (NEVER [`STATUS_UNSUPPORTED`]), so a plugin panic can never open the
 /// loader's safe-default fallback. This is the ONLY function that produces a status for a call, so the

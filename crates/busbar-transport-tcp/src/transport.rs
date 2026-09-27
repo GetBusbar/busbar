@@ -16,7 +16,6 @@ use busbar_contract::transport::wire::Listener;
 use busbar_contract::transport::wire::TransportError;
 use busbar_contract::{
     Frame, Fut, Refusal, ScratchBytes, SlabBytes, StreamId, Transport, TransportConfigView,
-    TransportMeta,
 };
 use futures::Stream;
 use tokio::io::AsyncReadExt;
@@ -187,7 +186,7 @@ impl Transport for TcpTransport {
     fn detach(&self, conn: &Conn) -> Option<busbar_contract::transport::wire::RawStream> {
         let (stream, peer) = self.take_stream(conn)?;
         Some(busbar_contract::transport::wire::RawStream::new(
-            Self::KEY,
+            crate::linked::KEY,
             peer.to_string(),
             Box::new(TokioAsyncReadCompatExt::compat(stream)),
         ))

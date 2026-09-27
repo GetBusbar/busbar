@@ -824,8 +824,22 @@ fn ceiling_cases<'a>(
         format!("crates/{contract}/src/zz_planted_loc.rs"),
         bulk(200),
     );
-    for d in dirs_for_globs(cx, &strings(&["crates/busbar-unit-*"])) {
-        let name = crate_name_of_dir(&d);
+    // A UNIT CRATE THAT COMES BACK IS WHAT `loc-ceilings:unit-total` IS FOR, so when the tree has
+    // none — fold F14 2/2 deleted the last, and the ceiling is 0 — the plant brings one back.
+    // Planting only into the unit crates on disk would plant nothing and leave the row unspent.
+    let mut units: Vec<String> = dirs_for_globs(cx, &strings(&["crates/busbar-unit-*"]))
+        .iter()
+        .map(|d| crate_name_of_dir(d))
+        .collect();
+    if units.is_empty() {
+        let planted = "busbar-unit-planted";
+        ov.set(
+            format!("crates/{planted}/Cargo.toml"),
+            format!("[package]\nname = \"{planted}\"\nversion = \"0.0.0\"\n"),
+        );
+        units.push(planted.to_string());
+    }
+    for name in units {
         ov.set(format!("crates/{name}/src/zz_planted_loc.rs"), bulk(2_600));
     }
     r.push(prove_red(
@@ -1362,9 +1376,10 @@ fn kind_cases<'a>(gate: &'a dyn Gate, cx: &Ctx, base: &Overlay) -> Report<'a> {
     // `busbar-transport-*` crates had no `manifest-allowlist:` row at all and this plant never
     // touched them; the completeness oracle owed their rows and nothing covered them. They are
     // planted now like every other kind. Each is RED on the real tree (third-party deps nobody has
-    // reviewed; `busbar-transport-tls` path-depends on `busbar-unit-transport-key`, `-grpc`/`-sse`
-    // on `busbar-transport-http`) and stays red on the gate; the green fixture records those deps
-    // in the rule's review lists so this plant asks about a NEW kernel edge, which is a transition.
+    // reviewed; `busbar-transport-tls` path-depended on `busbar-unit-transport-key` until fold
+    // F14, `-grpc`/`-sse` on `busbar-transport-http`) and stays red on the gate; the green fixture
+    // records those deps in the rule's review lists so this plant asks about a NEW kernel edge,
+    // which is a transition.
     let manifest_kinds = strings(&[
         "plane",
         "store",
@@ -1704,11 +1719,15 @@ fn vocabulary_cases<'a>(gate: &'a dyn Gate, cx: &Ctx, base: &Overlay) -> Report<
         ],
     ));
 
-    let units = dirs_for_globs(cx, &strings(&["crates/busbar-unit-*"]));
+    // THE PLANT GOES WHERE THE RULES' SCOPE IS. It planted into a `busbar-unit-*` crate; fold F14
+    // 2/2 deleted the last one and struck that glob from both rules' `scope_globs`, which now read
+    // `crates/busbar-kernel-*/src/*` alone — the crates the units became (#36). The ledger crate is
+    // `unit-no-finding-ids`' one exempt crate, so the plant lands in the first other kernel crate.
+    let units = dirs_for_globs(cx, &strings(&["crates/busbar-kernel-*"]));
     let target = units
         .iter()
         .map(|d| crate_name_of_dir(d))
-        .find(|n| n != "busbar-unit-ledger");
+        .find(|n| n != "busbar-kernel-ledger");
     match target {
         Some(unit) => {
             let mut ov = on(base);

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! DROP-IN CONFORMANCE for `kind: plane` — the plane analogue of the store example's over-the-ABI
+//! DROP-IN CONFORMANCE for `kind: plane` — the plane analogue of the store proof's over-the-ABI
 //! round trips (`DECISIONS #2/#11/#26 S4`: a plugin is a plugin, both-ways for EVERY kind incl. plane).
 //!
 //! `busbar-plane-example` is a `["cdylib", "rlib"]` crate, so these tests hold BOTH forms of the SAME
@@ -41,8 +41,8 @@ use busbar_contract::abi::AbiPreamble;
 use busbar_plugin_example_plane::PLANE_DECL as COMPILED_IN;
 
 /// Locate the REAL `busbar-plane-example` cdylib built into this workspace's target dir (uplifted or
-/// under `deps`, newest wins). Mirrors `store_example_plugin_path()` in `lib_tests.rs`.
-fn plane_example_cdylib() -> Option<std::path::PathBuf> {
+/// under `deps`, newest wins). Mirrors `store_proof_plugin_path()` in `lib_tests.rs`.
+pub(super) fn plane_example_cdylib() -> Option<std::path::PathBuf> {
     let candidate = (|| {
         let exe = std::env::current_exe().ok()?;
         let profile_dir = exe.parent()?.parent()?;
@@ -94,7 +94,7 @@ fn vocab(ptr: *const u8, len: usize) -> String {
 // the seam. A `dispatch` that returned `Ok` without touching the table would leave every counter at
 // zero and red these tests, which is the property that makes them worth running.
 // ─────────────────────────────────────────────────────────────────────────────────────────────
-mod test_host {
+pub(super) mod test_host {
     use busbar_contract::abi::hot::host::{HostCtx, PlaneHostVtable};
     use busbar_contract::abi::hot::pod::{
         CostLeaseId, CostSettleOut, Decision, Facts, FramingDesc, MeterOutcome, Seq, StatusClass,
@@ -1069,6 +1069,9 @@ fn open_plane_refuses_an_artifact_whose_decl_preamble_carries_a_foreign_abi_majo
 /// `None` means this environment cannot produce a loadable edited image (no `codesign`, or it
 /// refused). The caller SKIPS rather than asserts — but never under CI, where the toolchain is known
 /// and a silent skip would hide the loss of the ONLY fail-closed proof on this path.
+// Off macOS the first cfg block is the whole body, so its `return` is the tail; the macOS block
+// below needs it to be a statement. One body, two platforms: the lint is wrong on one of them.
+#[cfg_attr(not(target_os = "macos"), allow(clippy::needless_return))]
 fn relink_for_this_platform(bytes: &[u8], tag: &str) -> Option<Vec<u8>> {
     #[cfg(not(target_os = "macos"))]
     {
@@ -1120,6 +1123,8 @@ fn a_linked_and_a_dropped_in_plane_serve_identically_over_the_abi() {
     let host: &'static PlaneHostVtable = Box::leak(Box::new(test_host::vtable()));
     let section = br#"{"greeting":"hi"}"#;
     let url = Some("https://gw.example.com");
+    // The example plane's dispatch does not block (minor 32), and both doors read it so.
+    assert!(!linked.dispatch_blocks() && !dropped.dispatch_blocks());
 
     let _guard = test_host::reset();
     let serve = |plane: &'static crate::DynPlane| {

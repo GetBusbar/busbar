@@ -5,7 +5,8 @@
 //!
 //! `http` carries no session (`SESSION = false`) and its per-frame `WireStatusClass` rides the first
 //! response frame (`STATUS_CLASS = Some(FirstFrame)`) — the kernel-derived leg of the fee decision
-//! the design's settlement table reads. It composes over `tcp`/`tls` for its byte stream.
+//! the design's settlement table reads. It composes over `tcp` for its byte stream;
+//! TLS on that stream is core's connection security, never a layer.
 //!
 //! ## What moved here, byte-identical
 //!
@@ -71,7 +72,6 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use busbar_contract::transport::trust::EgressTrust;
 use busbar_contract::transport::wire::ConnHandle;
 use busbar_contract::transport::wire::Direction;
 use busbar_contract::transport::wire::FrameMeta;
@@ -84,7 +84,6 @@ use http_body_util::{BodyExt, Full};
 use hyper_util::client::legacy::connect::HttpConnector;
 use hyper_util::client::legacy::Client;
 use hyper_util::rt::TokioExecutor;
-use sha2::Digest as _;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::TcpListener;
@@ -230,7 +229,7 @@ enum Inner {
         /// `Port` is one of the selector forms this transport declares, and a claim by port reads
         /// the arrival record: zero there made every arrival on every listener look alike. It is
         /// taken off the ACCEPTED SOCKET rather than off the bind string, which is the only place
-        /// the fact exists at all on an ephemeral (`:0`) bind — the sibling `tcp`, `tls` and `ws`
+        /// the fact exists at all on an ephemeral (`:0`) bind — the sibling `tcp` and `ws`
         /// crates record it the same way.
         local_port: u16,
     },
@@ -261,8 +260,8 @@ enum Inner {
 /// on the frame path, for every read of every header, every body chunk and every trailer — and a
 /// message dribbled in arbitrarily small pieces pays it once per piece. Keeping it behind the same
 /// lock as the read half is what makes the reuse sound: a connection is read by one pump at a time,
-/// so there is never a second reader to see a half-filled buffer. The sibling `tcp` and `tls`
-/// crates read the same way.
+/// so there is never a second reader to see a half-filled buffer. The sibling `tcp` crate
+/// reads the same way.
 struct ReadSide {
     half: OwnedReadHalf,
     scratch: Vec<u8>,
@@ -372,26 +371,11 @@ impl HttpTransport {
 /// Build the pinned egress client. Free function (not a method) so a battery test can build one
 /// without a whole transport, to assert the posture directly.
 ///
-/// The platform-roots, no-client-auth posture. Identical to
-/// [`build_egress_client_with_trust`] handed a default [`EgressTrust`]; kept as the bare name every
-/// existing caller already spells, so none of them changes.
+/// The platform-roots, no-client-auth posture, and the only one a transport holds: extra trust
+/// anchors, a per-destination SPKI pin and a client identity for a mutual handshake are core's
+/// connection security (TRANSPORT-STACK), built host-side, never inside a transport.
 #[must_use]
 pub fn build_egress_client(settings: &ClientSettings) -> EgressClient {
-    build_egress_client_with_trust(settings, &EgressTrust::default())
-}
-
-/// Build the egress client with the host's OUTBOUND trust decisions applied — extra trust anchors, a
-/// per-destination SPKI pin check, and/or a client identity for a mutual handshake.
-///
-/// The seam is additive and byte-inert when unset: a default [`EgressTrust`]
-/// ([`EgressTrust::is_unset`]) takes the exact platform-roots / no-client-auth branch this transport
-/// has always taken, so nothing about an existing caller moves until a caller fills a field in. The
-/// client-identity path is the real consumer a mutual-TLS destination opts into.
-#[must_use]
-pub fn build_egress_client_with_trust(
-    settings: &ClientSettings,
-    trust: &EgressTrust,
-) -> EgressClient {
     let _ = rustls::crypto::ring::default_provider().install_default();
     let mut http = HttpConnector::new();
     http.enforce_http(false);
@@ -399,7 +383,9 @@ pub fn build_egress_client_with_trust(
     http.set_keepalive(Some(Duration::from_secs(60)));
     http.set_nodelay(true);
 
-    let tls = client_tls_config(trust);
+    let tls = rustls::ClientConfig::builder()
+        .with_root_certificates(webpki_roots_store())
+        .with_no_client_auth();
     let builder = hyper_rustls::HttpsConnectorBuilder::new().with_tls_config(tls);
     let https = if settings.upstream_http1_only {
         builder.https_or_http().enable_http1().wrap_connector(http)
@@ -427,218 +413,6 @@ fn webpki_roots_store() -> rustls::RootCertStore {
     let mut roots = rustls::RootCertStore::empty();
     roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
     roots
-}
-
-/// The client TLS config the egress client is built over, given the host's outbound trust.
-///
-/// The unset case is spelled FIRST and returns early down the exact branch this crate has always
-/// taken — platform roots, no client auth — so a caller that decided nothing is provably unchanged
-/// rather than merely equal to what it was.
-fn client_tls_config(trust: &EgressTrust) -> rustls::ClientConfig {
-    if trust.is_unset() {
-        return rustls::ClientConfig::builder()
-            .with_root_certificates(webpki_roots_store())
-            .with_no_client_auth();
-    }
-    match &trust.client_identity {
-        None => wants_client_cert(trust).with_no_client_auth(),
-        Some(identity) => {
-            // A private key the stack cannot parse, or a chain it will not accept, is the honest
-            // "present no identity" outcome — the mutual peer closes its own handshake rather than
-            // this side forging one — so a bad identity falls back to no client auth instead of
-            // panicking a boot path.
-            let Ok(key) = rustls_pki_types::PrivateKeyDer::try_from(identity.private_key.clone())
-            else {
-                return wants_client_cert(trust).with_no_client_auth();
-            };
-            let chain: Vec<rustls_pki_types::CertificateDer<'static>> = identity
-                .cert_chain
-                .iter()
-                .cloned()
-                .map(rustls_pki_types::CertificateDer::from)
-                .collect();
-            wants_client_cert(trust)
-                .with_client_auth_cert(chain, key)
-                .unwrap_or_else(|_| wants_client_cert(trust).with_no_client_auth())
-        }
-    }
-}
-
-/// The verifier half of the client config, before the client-auth decision: platform roots plus any
-/// extra anchors, and — when the host pinned any keys — an SPKI-pin check layered over the ordinary
-/// chain verification.
-fn wants_client_cert(
-    trust: &EgressTrust,
-) -> rustls::ConfigBuilder<rustls::ClientConfig, rustls::client::WantsClientCert> {
-    let mut roots = webpki_roots_store();
-    for der in &trust.extra_anchors {
-        let _ = roots.add(rustls_pki_types::CertificateDer::from(der.clone()));
-    }
-    let builder = rustls::ClientConfig::builder();
-    if trust.pinned_public_keys.is_empty() {
-        builder.with_root_certificates(roots)
-    } else {
-        let verifier = PinnedKeyVerifier::new(roots, &trust.pinned_public_keys);
-        builder
-            .dangerous()
-            .with_custom_certificate_verifier(Arc::new(verifier))
-    }
-}
-
-/// A server-certificate verifier that runs the ordinary chain-and-name check AND then requires the
-/// peer's SubjectPublicKeyInfo to hash (SHA-256) to one of the pinned values. The pin is layered
-/// OVER the standard verification, never in place of it: a pinned key on an otherwise-invalid chain
-/// is still a refusal.
-#[derive(Debug)]
-struct PinnedKeyVerifier {
-    inner: Arc<rustls::client::WebPkiServerVerifier>,
-    pins: Vec<[u8; 32]>,
-}
-
-impl PinnedKeyVerifier {
-    fn new(roots: rustls::RootCertStore, pins: &[[u8; 32]]) -> Self {
-        let inner = rustls::client::WebPkiServerVerifier::builder(Arc::new(roots))
-            .build()
-            .expect("a root store with at least the platform anchors builds a verifier");
-        Self {
-            inner,
-            pins: pins.to_vec(),
-        }
-    }
-}
-
-impl rustls::client::danger::ServerCertVerifier for PinnedKeyVerifier {
-    fn verify_server_cert(
-        &self,
-        end_entity: &rustls_pki_types::CertificateDer<'_>,
-        intermediates: &[rustls_pki_types::CertificateDer<'_>],
-        server_name: &rustls_pki_types::ServerName<'_>,
-        ocsp_response: &[u8],
-        now: rustls_pki_types::UnixTime,
-    ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
-        let verified = self.inner.verify_server_cert(
-            end_entity,
-            intermediates,
-            server_name,
-            ocsp_response,
-            now,
-        )?;
-        let key_info = subject_public_key_info(end_entity.as_ref()).ok_or_else(|| {
-            rustls::Error::General("peer certificate carries no readable key".into())
-        })?;
-        let digest = sha2::Sha256::digest(key_info);
-        if self
-            .pins
-            .iter()
-            .any(|pin| pin.as_slice() == digest.as_slice())
-        {
-            Ok(verified)
-        } else {
-            Err(rustls::Error::General(
-                "the peer's key is not one this destination is pinned to".into(),
-            ))
-        }
-    }
-
-    fn verify_tls12_signature(
-        &self,
-        message: &[u8],
-        cert: &rustls_pki_types::CertificateDer<'_>,
-        dss: &rustls::DigitallySignedStruct,
-    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
-        self.inner.verify_tls12_signature(message, cert, dss)
-    }
-
-    fn verify_tls13_signature(
-        &self,
-        message: &[u8],
-        cert: &rustls_pki_types::CertificateDer<'_>,
-        dss: &rustls::DigitallySignedStruct,
-    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
-        self.inner.verify_tls13_signature(message, cert, dss)
-    }
-
-    fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
-        self.inner.supported_verify_schemes()
-    }
-}
-
-/// THE SubjectPublicKeyInfo of a DER certificate, whole (tag and length included), or `None` when the
-/// bytes are not the DER this pin walk expects.
-///
-/// RFC 5280 section 4.1 read literally: `Certificate` is a `SEQUENCE` whose first member is
-/// `TBSCertificate`, itself a `SEQUENCE` whose members up to the key are `[0] version DEFAULT v1`,
-/// `serialNumber`, `signature`, `issuer`, `validity`, `subject`, then the SPKI. Nothing here
-/// interprets a field it walks past; the TLS stack has already validated the certificate this reads a
-/// key off. The pin is taken over the SPKI's whole encoding, so a pinning caller and any other tool
-/// compute the same digest for one key.
-fn subject_public_key_info(cert_der: &[u8]) -> Option<&[u8]> {
-    /// ASN.1 SEQUENCE, constructed — the only tag this walk expects at a structural position.
-    const TAG_SEQUENCE: u8 = 0x30;
-    /// `[0] EXPLICIT`, the optional context tag carrying `TBSCertificate.version`.
-    const TAG_VERSION: u8 = 0xA0;
-    /// `serialNumber`, `signature`, `issuer`, `validity`, `subject` — the members before the SPKI.
-    const MEMBERS_BEFORE_KEY: usize = 5;
-
-    // (tag, contents, whole) of one DER element off the front of `buf`, DER-strict on length.
-    fn element(buf: &[u8]) -> Option<(u8, &[u8])> {
-        let (&tag, rest) = buf.split_first()?;
-        let (&first_len, rest) = rest.split_first()?;
-        let (len, header) = if first_len < 0x80 {
-            (usize::from(first_len), 2usize)
-        } else if first_len == 0x80 {
-            return None; // an indefinite length is BER, not DER
-        } else {
-            let count = usize::from(first_len & 0x7f);
-            if count > 4 {
-                return None; // a length wider than any certificate needs
-            }
-            let bytes = rest.get(..count)?;
-            if bytes.first() == Some(&0) {
-                return None; // a non-minimal length
-            }
-            let mut len = 0usize;
-            for b in bytes {
-                len = (len << 8) | usize::from(*b);
-            }
-            if len < 0x80 {
-                return None; // long form where the short form would have fit
-            }
-            (len, 2 + count)
-        };
-        let end = header.checked_add(len)?;
-        let whole = buf.get(..end)?;
-        Some((tag, whole))
-    }
-
-    fn expect_sequence(buf: &[u8]) -> Option<&[u8]> {
-        let (tag, whole) = element(buf)?;
-        (tag == TAG_SEQUENCE).then_some(whole)
-    }
-
-    fn contents(whole: &[u8]) -> Option<&[u8]> {
-        // Re-read the header length off the whole element to hand back its contents.
-        let first_len = *whole.get(1)?;
-        let header = if first_len < 0x80 {
-            2
-        } else {
-            2 + usize::from(first_len & 0x7f)
-        };
-        whole.get(header..)
-    }
-
-    let certificate = expect_sequence(cert_der)?;
-    let tbs = expect_sequence(contents(certificate)?)?;
-    let mut rest = contents(tbs)?;
-    if rest.first() == Some(&TAG_VERSION) {
-        let (_, version) = element(rest)?;
-        rest = &rest[version.len()..];
-    }
-    for _ in 0..MEMBERS_BEFORE_KEY {
-        let (_, member) = element(rest)?;
-        rest = &rest[member.len()..];
-    }
-    expect_sequence(rest)
 }
 
 fn status_class(status: u16) -> WireStatusClass {
@@ -941,7 +715,7 @@ async fn pump_response_body(mut body: hyper::body::Incoming, tx: RespSender, max
 /// `write_all` only proves the bytes reached the writer's own buffer. The kernel is told a refusal
 /// was delivered, and a refusal is the client-visible answer to an authentication failure, so the
 /// flush is the evidence and its failure is reported the same way the ordinary write path reports
-/// one rather than being swallowed. The sibling `tcp` and `tls` crates already answer this way.
+/// one rather than being swallowed. The sibling `tcp` crate already answers this way.
 async fn deliver_refusal<W>(w: &mut W, bytes: &[u8]) -> Result<(), TransportError>
 where
     W: tokio::io::AsyncWrite + Unpin + ?Sized,

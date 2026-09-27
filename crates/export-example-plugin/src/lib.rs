@@ -9,8 +9,7 @@
 //! dlopen seam to round-trip through.
 //!
 //! It does NO real telemetry export: `streams()` reports `[Metrics, Logs, Traces]` and `deliver()`
-//! drops the batch after counting it. Config JSON is ignored (this sink has no configurable shape),
-//! mirroring `busbar-store-example-plugin`'s config-less posture.
+//! drops the batch after counting it. Config JSON is ignored: this sink has no configurable shape.
 
 use busbar_contract::abi::sdk::{
     ExportHandler, ExportStream, HostOp, HostResult, HostStep, HttpRequest, Observations,

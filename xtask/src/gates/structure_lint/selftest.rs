@@ -510,7 +510,7 @@ pub fn run<'a>(gate: &'a StructureLintGate, cx: &'a Ctx) -> Report<'a> {
     let plugin_dir = choke_points::plugin_kind_dirs(cx)
         .ok()
         .and_then(|d| d.into_iter().next())
-        .unwrap_or_else(|| "crates/store-example-plugin".to_string());
+        .unwrap_or_else(|| "crates/store-memory".to_string());
     let mut ov = without_existing(&existing.choke_bypass);
     ov.set(
         format!("{plugin_dir}/src/planted_bypass.rs"),

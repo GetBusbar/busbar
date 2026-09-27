@@ -945,4 +945,4 @@ pub struct PlaneAdmission {
 /// plane's wire-format list and the served card's `protocolBinding`, which is the entire reason they
 /// are constants — so they moved into the values crate with the transport axis. Nothing about them
 /// changed: `busbar_kernel::plane::WIRE_JSONRPC` and its siblings still resolve to these strings.
-pub use busbar_substrate_values::plane::{WIRE_GRPC, WIRE_HTTP_JSON, WIRE_JSONRPC};
+pub use busbar_contract::transport::transport::plane::{WIRE_GRPC, WIRE_HTTP_JSON, WIRE_JSONRPC};

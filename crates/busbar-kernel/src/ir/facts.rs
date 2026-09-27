@@ -13,4 +13,4 @@
 //! (`ir::facts_impl`); the two in-core neutral-IR impls (`InvokeReq`/`SubscribeReq`) travelled to
 //! substrate beside their data, keeping the orphan rule satisfied end-to-end.
 
-pub use busbar_substrate_values::ir::facts::*;
+pub use busbar_contract::ir::facts::*;

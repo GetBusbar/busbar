@@ -17,6 +17,8 @@
 // regression. Full-feature builds run it.
 #![cfg(linked_axis_body_ingress)]
 
+mod common;
+
 use std::collections::BTreeSet;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -59,7 +61,7 @@ fn write_configs(dir: &Path, data_port: u16, admin_port: u16) {
         "mock:\n  protocol: anthropic\n  base_url: \"http://127.0.0.1:9\"\n  api_key_env: MOCK_KEY\n",
     )
     .unwrap();
-    let signing_key = Command::new(env!("CARGO_BIN_EXE_busbar"))
+    let signing_key = Command::new(common::boot::exe())
         .arg("--generate-signing-key")
         .output()
         .expect("generate a signing key");
@@ -141,7 +143,7 @@ fn no_ledger_series_and_no_keyset_lines_without_data_dir() {
          nothing, and this assertion would then pass on a node that wrote a whole ledger tree.",
         before.len()
     );
-    let mut child = Command::new(env!("CARGO_BIN_EXE_busbar"))
+    let mut child = Command::new(common::boot::exe())
         // The directory the assertion below reads is only the directory a stray file lands in if
         // it is also the directory the node was started in: a journal opened at a RELATIVE path
         // follows the process, not the config. Every path the node is given here is absolute, so

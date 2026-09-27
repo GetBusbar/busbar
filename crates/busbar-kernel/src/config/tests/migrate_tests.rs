@@ -1222,7 +1222,13 @@ pools: {}
     let export = crate::config::resolve_export(&built_ins(&deploy.export), &mut errs);
     assert!(errs.is_empty(), "{errs:?}");
     assert_eq!(webhooks(&deploy.export), 1);
-    assert!(export.recorder.is_some() && export.otlp.is_some());
+    assert!(
+        export.recorder.is_some()
+            && export
+                .plugins
+                .iter()
+                .any(|p| p.def.module == crate::config::EXPORT_MODULE_OTLP)
+    );
 
     // IDEMPOTENT: re-migrating the already-new document moves nothing more, and the TREE is stable.
     let (out2, doc2) = migrate_to_value(&migrated_yaml);

@@ -19,7 +19,7 @@
 //! old store answers with an error, never "fresh"), and that exception is pinned here too so it
 //! cannot drift into a fail-open default unnoticed.
 //!
-//! Runs over the in-tree store example plugin with its `call` seam faked, so it runs wherever the
+//! Runs over the in-tree store proof with its `call` seam faked, so it runs wherever the
 //! workspace is built (no sibling checkout needed).
 
 use super::*;
@@ -103,9 +103,9 @@ fn run<T>(
 /// skips cleanly then, the same convention the sibling fake-call tests follow, rather than failing
 /// on a partial build.
 fn open() -> Option<DynStore> {
-    let store = dyn_example_store_with_fake_call();
+    let store = dyn_proof_store_with_fake_call();
     if store.is_none() {
-        eprintln!("skip: store example plugin cdylib not built (run under --workspace)");
+        eprintln!("skip: the store proof's cdylib is not built");
     }
     store
 }

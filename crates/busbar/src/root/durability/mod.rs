@@ -127,7 +127,11 @@ pub use amend::bind_amendments;
 /// The checkpoint sealer: the cadence, and the audit keyset bound to the ledger's two seams
 /// (Q71(3)). A private child module, as `replay` is; its public items are re-exported here.
 mod seal;
-pub use seal::{keyset_of, Cadence, ChainSecret, KeySetVerifier, CHECKPOINT_TICK_SECS};
+pub use seal::{Cadence, ChainSecret, CHECKPOINT_TICK_SECS};
+// The keyset readers' callers are the admin units (`root-admin`) and the tests; a build without
+// the admin units names neither.
+#[cfg(any(test, feature = "root-admin"))]
+pub use seal::{keyset_of, KeySetVerifier};
 
 /// How many sealed checkpoints a node holds in memory: the latest 1,024, oldest evicted first
 /// (architect ruling 2026-09-26, "checkpoint retention"). The journal holds every one.

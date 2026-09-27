@@ -447,11 +447,10 @@ pub trait EngineTestKit: Send + Sync {
         def: &serde_json::Value,
     ) -> Result<(), String>;
 
-    // ── the store-plugin fixture (the real cdylib, over the real plugin C ABI) ────────────────
-    /// A private durable file for one test and the plugin config selecting the fixture's on-disk
-    /// mode.
+    // ── the durable store double (`test_support::durable_store`, R-FIX3; linked only) ─────────
+    /// A private durable file for one test and the store config naming it.
     fn durable_store_cfg(&self, tag: &str) -> (PathBuf, String);
-    /// Open the example store plugin over the ABI with `cfg` — a fresh dlopen per call (a restart).
+    /// Open a fresh handle on the durable store `cfg` names — a restart, or a second node.
     fn open_store_plugin(&self, cfg: &str) -> Arc<dyn RecordStore>;
 }
 

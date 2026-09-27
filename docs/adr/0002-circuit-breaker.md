@@ -1,7 +1,7 @@
 # ADR-0002: Circuit breaker: disposition taxonomy & recovery
 
 > Status: accepted. `ADR-0002` is referenced throughout
-> `crates/busbar-substrate-values/src/breaker.rs`, `crates/busbar-kernel/src/store/mod.rs`,
+> `crates/busbar-kernel/src/breaker.rs`, `crates/busbar-kernel-breaker/src/normalize.rs`, `crates/busbar-kernel/src/store/mod.rs`,
 > `crates/busbar-llm/src/engine/attempt/classify.rs`, and `crates/busbar-kernel/src/config/mod.rs`.
 
 ## Context

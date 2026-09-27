@@ -38,7 +38,7 @@ pub fn sha256_hex(data: &[u8]) -> String {
 /// accepts a key of any length), so the error arm is unreachable; on it we return an empty digest,
 /// which yields a wrong signature and a graceful upstream 403 rather than a panic on the request
 /// path.
-fn hmac(key: &[u8], data: &[u8]) -> Vec<u8> {
+pub(crate) fn hmac(key: &[u8], data: &[u8]) -> Vec<u8> {
     match HmacSha256::new_from_slice(key) {
         Ok(mut mac) => {
             mac.update(data);
@@ -49,7 +49,7 @@ fn hmac(key: &[u8], data: &[u8]) -> Vec<u8> {
 }
 
 /// Derive the SigV4 signing key: HMAC chain over date -> region -> service -> "aws4_request".
-fn signing_key(secret: &str, datestamp: &str, region: &str, service: &str) -> Vec<u8> {
+pub(crate) fn signing_key(secret: &str, datestamp: &str, region: &str, service: &str) -> Vec<u8> {
     let k_date = hmac(
         format!("{SIGNATURE_KEY_PREFIX}{secret}").as_bytes(),
         datestamp.as_bytes(),

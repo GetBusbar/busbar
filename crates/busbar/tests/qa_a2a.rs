@@ -33,6 +33,8 @@
 // `linked_admin_envelope` from `[package.metadata.busbar.linked-axes]`).
 #![cfg(all(linked_admin_envelope, feature = "auth-admin-tokens"))]
 
+mod common;
+
 use std::io::{Read as _, Write as _};
 use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
@@ -350,7 +352,7 @@ async fn boot(tag: &str, agent: &Agent) -> Node {
     let (data_port, admin_port) = (free_port(), free_port());
     let admin_token = format!("qa-delegation-admin-{}", std::process::id());
 
-    let key_out = Command::new(env!("CARGO_BIN_EXE_busbar"))
+    let key_out = Command::new(common::boot::exe())
         .arg("--generate-signing-key")
         .output()
         .expect("run busbar --generate-signing-key");
@@ -398,7 +400,7 @@ agents:
     .unwrap();
 
     let log = std::fs::File::create(dir.join("busbar.log")).unwrap();
-    let child = Command::new(env!("CARGO_BIN_EXE_busbar"))
+    let child = Command::new(common::boot::exe())
         .env("BUSBAR_CONFIG", &cfg)
         .env("BUSBAR_PROVIDERS", dir.join("providers.yaml"))
         .env("BUSBAR_ADMIN_TOKEN", &admin_token)

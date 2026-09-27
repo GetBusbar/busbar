@@ -1,6 +1,22 @@
 use super::*;
 use crate::test_support::EnvVarGuard;
 use crate::test_support::{build_once, cfg_with_provider_api_key};
+
+/// The sources this crate took from the retired shared value crate (#83a SD-8), relative to this
+/// crate's manifest dir. The rules that crate held over its own tree — body JSON through the one
+/// seam, every operator-facing warn/error coded — are kept over the same code where it lives now.
+pub(crate) fn moved_sources() -> &'static [&'static str] {
+    &[
+        "src/breaker.rs",
+        "src/diagnostics/mod.rs",
+        "src/diagnostics/emit.rs",
+        "src/json.rs",
+        "src/ir/lane_caps.rs",
+        "src/config/providers.rs",
+        "src/proto/installed.rs",
+        "src/sigv4.rs",
+    ]
+}
 // The monolith's root tests reached every crate-root item through `use super::*`. The split put
 // those items in appbuild/preflight/router/boot; this block restores the same names to this file's
 // scope. Allowed-unused as one block: which of these a given test build exercises varies by cfg.

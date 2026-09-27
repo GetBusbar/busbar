@@ -16,6 +16,8 @@ pub mod config_handle;
 pub mod dest;
 pub mod driver;
 pub mod registry;
+// THE TWO TRANSPORT ROLES (TRANSPORT-STACK): a transport plugin is a carrier or a framer.
+pub mod stack;
 pub mod surface;
 // The transport-axis enum (`Transport`, `UpstreamWireKind`) keeps its own file name from the folded
 // crate; nested under the `transport` kind module this reads as inception, but renaming the axis
@@ -26,6 +28,10 @@ pub mod trust;
 pub mod wire;
 
 pub use config_handle::{ConfigRole, TransportConfigHandle, TransportConfigSink};
+pub use stack::{
+    role_of, BytesOut, Carrier, CarrierFacts, CarrierPoll, ConnFacts, Dest, Framed, Framer,
+    FramerOut, Located, Role, Side, TransportRow,
+};
 
 use crate::bounded::ScratchBytes;
 use crate::dest::{TransportKeyHandle, VerifiedDestination};

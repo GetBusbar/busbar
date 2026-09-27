@@ -164,8 +164,15 @@ fn conform(a: &PluginRegistry, b: &PluginRegistry, name: &str, own: &str) -> Res
     if ea != eb {
         return Err("the sinks render the snapshot differently".into());
     }
-    if ea.1 != own {
-        return Err("the rendering is not the recorder's own bytes".into());
+    // The sink emits families and series in a stable sorted order, and the recorder hands them
+    // over in its maps' hash order: the rendering is the recorder's own LINES, byte for byte.
+    let lines = |text: &str| {
+        let mut v: Vec<String> = text.lines().map(str::to_string).collect();
+        v.sort();
+        v
+    };
+    if lines(&ea.1) != lines(own) {
+        return Err("the rendering is not the recorder's own lines".into());
     }
     Ok(())
 }

@@ -733,7 +733,7 @@ fn from_raw_clamps_a_finite_but_overflowing_rate_to_zero_not_to_u64_max() {
     // defence the clamp was there to provide. The ledger's projection refuses it to zero: a rate
     // nobody can price is priced at nothing, and config validation is what is supposed to have
     // caught it one layer earlier.
-    let raw = busbar_substrate_values::billing::RawTierRates {
+    let raw = busbar_contract::billing::RawTierRates {
         input: 1e300,
         output: f64::INFINITY,
         cache_read: -1.0,
@@ -931,7 +931,7 @@ fn from_raw_is_byte_identical_to_the_unclamped_projection_for_every_in_range_rat
             2 => (next() % 1_000_000_000) as f64 / 1_000_000.0,
             _ => (next() % 100) as f64 / 7.0,
         };
-        let raw = busbar_substrate_values::billing::RawTierRates {
+        let raw = busbar_contract::billing::RawTierRates {
             input: utok,
             output: utok,
             cache_read: utok,

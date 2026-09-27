@@ -310,7 +310,7 @@ fn banned_set(name: &str) -> &'static str {
         Some("secret") => "a secret implementation",
         Some(k) if PLUGIN_KINDS.contains(&k) => "another plugin",
         Some(k) => match k {
-            "plugin-tooling" | "substrate" | "timing" | "codec" | "unit" => "not `busbar-contract`",
+            "plugin-tooling" | "timing" | "codec" => "not `busbar-contract`",
             _ => "not `busbar-contract`",
         },
         None => "not `busbar-contract` (and matches no kind)",
@@ -678,8 +678,8 @@ mod tests {
     #[test]
     fn an_optional_hop_is_in_the_union_closure_and_out_of_the_unconditional_one() {
         let graph = g(&[
-            ("plugin", "busbar-plugin-sdk", false, &[]),
-            ("busbar-plugin-sdk", "busbar-plugin-loader", true, &["pack"]),
+            ("plugin", "busbar-contract", false, &[]),
+            ("busbar-contract", "busbar-plugin-loader", true, &["pack"]),
             ("busbar-plugin-loader", "busbar-kernel-ledger", false, &[]),
         ]);
         assert!(!walk(&graph, "plugin", true).contains_key("busbar-kernel-ledger"));
@@ -748,10 +748,7 @@ mod tests {
             "a secret implementation"
         );
         assert_eq!(banned_set("busbar-transport-tcp"), "another plugin");
-        assert_eq!(
-            banned_set("busbar-unit-transport-key"),
-            "not `busbar-contract`"
-        );
+        assert_eq!(banned_set("busbar-plugin-loader"), "not `busbar-contract`");
     }
 
     /// NO PLUGIN KIND IS GRANTED AN EDGE TO ITSELF, in any of the three class tables. The rule

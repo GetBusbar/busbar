@@ -12,17 +12,17 @@
 //! claiming the `/model/` residual path. THE ORDER IS FIXED: tests read these rows by position.
 
 use axum::http::{header::AUTHORIZATION, HeaderName, HeaderValue, StatusCode};
-use busbar_contract::operation::OpVerb;
-use busbar_substrate_values::breaker::{CanonicalSignal, RawUpstreamError};
-use busbar_substrate_values::handlers::{
-    CodecError, IngressReject, OperationHandler, RequestHandler,
+use busbar_contract::billing::TokenUsage;
+use busbar_contract::codec::{
+    CodecError, EgressCtx, IngressReject, OperationHandler, RequestHandler,
 };
-use busbar_substrate_values::ir::handle::IrHandle;
-use busbar_substrate_values::proto::{
+use busbar_contract::ir::handle::IrHandle;
+use busbar_contract::operation::OpVerb;
+use busbar_contract::protocol::{
     ArrayStreamFramer, ClaimStrength, DialectCodec, IngressAuth, ProtocolDecl, SigningContext,
     ERR_TYPE_PERMISSION,
 };
-use busbar_substrate_values::{billing::TokenUsage, wire::EgressCtx};
+use busbar_contract::upstream::{CanonicalSignal, RawUpstreamError};
 use serde_json::{json, Map, Value};
 
 /// The passthrough codec: says nothing a dialect would say, and changes no body.

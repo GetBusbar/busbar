@@ -7,8 +7,8 @@
 //! ## Where this runs in the boot order, and why exactly there
 //!
 //! Immediately AFTER the durability branch — the step that builds the journal and constructs the
-//! ledger dual-writing onto the previous release's rows — and BEFORE the transport-key unit
-//! provisions a listener, which is the step before anything binds an address.
+//! ledger dual-writing onto the previous release's rows — and BEFORE any listener's connection
+//! security is prepared, which is the step before anything binds an address.
 //!
 //! Both edges are load-bearing.
 //!

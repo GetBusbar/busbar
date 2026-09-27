@@ -66,8 +66,9 @@ pub struct ArrivalPayload {
     pub host: Arc<dyn crate::plane_host::EngineHost>,
     /// The resolved per-request governance context (public `busbar_contract` type).
     pub gov: busbar_contract::records::PlaneRequestCtx,
-    /// The caller's resolved bearer token (for passthrough forwarding), flattened to a neutral scalar.
-    pub caller_token: Option<String>,
+    /// The caller's verified credential, as a REF the host presents upstream for a `passthrough`
+    /// pool (`crate::auth::present_caller`) — never plaintext a plane can read.
+    pub caller_token: Option<crate::auth::CallerCredential>,
 }
 
 /// THE CORE REQUEST PIPELINE, as a path-model dialect's ingress reaches it. Every method that produces

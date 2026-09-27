@@ -28,8 +28,8 @@ pub(crate) async fn protocol_dispatch(
     OriginalUri(uri): OriginalUri,
     method: axum::http::Method,
     axum::extract::Extension(gov): axum::extract::Extension<crate::governance::GovCtx>,
-    axum::extract::Extension(caller): axum::extract::Extension<crate::auth::CallerToken>,
-    headers: HeaderMap,
+    consumed: Option<axum::extract::Extension<crate::auth::ConsumedCredentials>>,
+    mut headers: HeaderMap,
     body: Bytes,
 ) -> Response {
     let path = uri.path().to_string();
@@ -107,9 +107,12 @@ pub(crate) async fn protocol_dispatch(
             crate::ingress::arrival_host::ArrivalPayload {
                 host: crate::plane_host::engine_host(&app),
                 gov,
-                caller_token: caller.0.clone(),
+                caller_token: consumed.as_ref().and_then(|c| c.caller.clone()),
             },
         );
+        // Identified (above, off the request as it arrived), the plane never sees the credential
+        // the gate consumed — it carries the ref in the payload instead (#65, #40(b)).
+        crate::auth::ConsumedCredentials::strip_from(consumed.as_deref(), &mut headers);
         // The plane ANSWERS (#28); this handler is the outer one that serves the answer.
         return ingress(busbar_kernel::ingress::arrival::Arrival {
             host: std::sync::Arc::new(crate::ingress::arrival_host::CoreArrivalHost),

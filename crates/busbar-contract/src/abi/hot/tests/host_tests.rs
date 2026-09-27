@@ -16,6 +16,8 @@ fn empty_vtable_grants_nothing() {
     assert!(vt.journal_verify_scoped.is_none());
     assert!(vt.cost_reserve.is_none());
     assert!(vt.cost_settle.is_none());
+    assert!(vt.entropy_fill.is_none());
+    assert!(vt.translate_cap.is_none());
     assert_eq!(crate::abi::check_preamble(&vt.abi), Ok(()));
 }
 
@@ -75,6 +77,10 @@ fn stub_vtable_populates_every_slot() {
         cost_reserve,
         cost_settle,
         counter_add,
+        entropy_fill,
+        wall_clock,
+        tap_fault_latch,
+        translate_cap,
     } = PlaneHostVtable::STUB;
 
     for (name, slot) in [
@@ -123,6 +129,10 @@ fn stub_vtable_populates_every_slot() {
         ("cost_reserve", cost_reserve.is_some()),
         ("cost_settle", cost_settle.is_some()),
         ("counter_add", counter_add.is_some()),
+        ("entropy_fill", entropy_fill.is_some()),
+        ("wall_clock", wall_clock.is_some()),
+        ("tap_fault_latch", tap_fault_latch.is_some()),
+        ("translate_cap", translate_cap.is_some()),
     ] {
         assert!(slot, "STUB leaves `{name}` unpopulated");
     }

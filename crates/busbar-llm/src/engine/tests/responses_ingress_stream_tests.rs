@@ -81,7 +81,7 @@ async fn canned_upstream(content_type: &'static str, body: Vec<u8>) -> String {
 fn sse(frames: &[(&str, Value)]) -> Vec<u8> {
     let mut out = Vec::new();
     for (event, data) in frames {
-        busbar_kernel::proto::write_sse_frame(&mut out, event, data);
+        busbar_llm_codec::dialect::write_sse_frame(&mut out, event, data);
     }
     out
 }
@@ -131,7 +131,7 @@ fn upstream_answer(egress: &str, shape: &Upstream) -> (&'static str, Vec<u8>) {
             last["choices"] = json!([{"index": 0, "delta": {}, "finish_reason": "stop"}]);
             last["usage"] = usage_oa;
             let mut body = sse(&[("", first), ("", last)]);
-            body.extend_from_slice(busbar_kernel::proto::SSE_DONE_FRAME);
+            body.extend_from_slice(busbar_llm_codec::dialect::SSE_DONE_FRAME);
             ("text/event-stream", body)
         }
         ("openai", Upstream::Buffered) => (
@@ -151,7 +151,7 @@ fn upstream_answer(egress: &str, shape: &Upstream) -> (&'static str, Vec<u8>) {
                 ("", json!({"type": "message-end", "delta": {"finish_reason": "COMPLETE",
                     "usage": {"tokens": {"input_tokens": IN_TOK, "output_tokens": OUT_TOK}}}})),
             ]);
-            body.extend_from_slice(busbar_kernel::proto::SSE_DONE_FRAME);
+            body.extend_from_slice(busbar_llm_codec::dialect::SSE_DONE_FRAME);
             ("text/event-stream", body)
         }
         ("cohere", Upstream::Buffered) => (

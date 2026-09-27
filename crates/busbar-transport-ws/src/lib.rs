@@ -11,14 +11,14 @@
 //!
 //! ## The lower layer
 //!
-//! The architecture composes `ws` OVER `http` (itself over `tcp`/`tls`), and states the top
+//! The architecture composes `ws` OVER `http` (itself over `tcp`), and states the top
 //! transport in a stack owns claims while lower layers only yield frames. That is literally what
 //! happens here: this crate opens no socket, binds no address and resolves no name. It is built
 //! [`WsTransport::over`] a lower transport, and every byte reaches it as a stream that layer gives
-//! up — an inbound upgrade arrives on `http`, an outbound one is dialled through `tcp` or `tls`.
-//! Which of those two carries an outbound dial is not a preference: this crate encrypts nothing,
-//! so a `wss://` target is only honest when the layer below is `tls`, and a secure target dialled
-//! over a cleartext layer is refused rather than downgraded onto the wire.
+//! up — an inbound upgrade arrives on `http`, an outbound one is dialled through `tcp`. No
+//! transport encrypts: TLS is core's connection security, applied
+//! host-side and never composed as a layer. This crate encrypts nothing either, so a `wss://`
+//! target dialled through a transport is refused rather than downgraded onto the wire.
 //!
 //! Two things follow from that, and both are the point. The composed chain an arrival reports is
 //! the one it actually stands on, because it is the layer below's chain plus this one. And the

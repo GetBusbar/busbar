@@ -35,3 +35,7 @@ use std::collections::BTreeMap;
 /// THE ONE DEFINITION: the substrate's `lossless::SourceScopedExtra` was a second alias of
 /// this same type; it is now a re-export of this one.
 pub type SourceScopedExtra = BTreeMap<String, Map<String, Value>>;
+
+#[cfg(test)]
+#[path = "tests/source_scoped_extra_tests.rs"]
+mod source_scoped_extra_tests;

@@ -137,7 +137,6 @@ pub fn neutral_src_roots() -> Vec<String> {
         // (The plugin ABI and its SDK, the former `busbar-plugin` / `busbar-plugin-sdk`, are
         // `busbar-contract/src/abi` since the #84 merge, so this root covers them.)
         "crates/busbar-contract/src",
-        "crates/busbar-substrate-values/src",
         // THE LOADER AND THE SDK — the TCB crates ARCHITECTURE.md excuses by name from the plugin
         // KINDS, which is not the same as excusing them from neutrality: the loader dlopens every
         // kind and the SDK is what an author writes against.
@@ -147,7 +146,10 @@ pub fn neutral_src_roots() -> Vec<String> {
         "crates/busbar-core-admin/src",
         "crates/busbar-core-connsec/src",
         "crates/busbar-oauth2/src",
-        "crates/busbar-unit-transport-key/src",
+        // `crates/busbar-unit-transport-key/src` is STRUCK (fold F14): the crate folded into
+        // `busbar-kernel-identity` (`src/transport_key/`, #36/#40), and that module is deleted in
+        // turn (TRANSPORT-STACK: TLS is core's connection security, `busbar-core-connsec`, listed
+        // above).
     ]
     .into_iter()
     .map(str::to_string)

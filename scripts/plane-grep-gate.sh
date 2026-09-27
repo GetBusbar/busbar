@@ -188,7 +188,7 @@ OPERATION_EXCLUDE="crates/api/src/operation.rs"
 #               key is 1.6.0-additive, so both lines now REPORT as the core-names-a-plane debt they are.
 ALLOWLIST="responses|crates/busbar-mcp/src/|
 responses|crates/busbar-a2a/src/|
-anthropic|crates/busbar-substrate-values/src/ir/providers.rs|DEFAULT_PROTOCOL"
+anthropic|crates/busbar-kernel/src/config/providers.rs|DEFAULT_PROTOCOL"
 
 # ── THE TEST-SUPPORT MODULE PREPASS ────────────────────────────────────────────────────────────────
 # Emits the file/subtree prefixes of every brace-less `mod NAME;` whose `#[cfg(…)]` predicate NAMES

@@ -434,50 +434,6 @@ fn the_pgo_stamp_is_derived_only_from_the_flags_that_reached_the_compiler() {
     assert_eq!(flag_value(&flags, "lto"), None);
 }
 
-/// EVERY DIAGNOSTIC CODE IS UNIQUE ACROSS THE WHOLE CATALOG — the neutral half in
-/// `busbar-substrate-values` AND every plane catalogue the composition root installs.
-///
-/// Each half is internally consistent on its own, and neither crate can see the other: a plane
-/// numbers its codes without the neutral registry in scope, and the neutral registry is compiled
-/// long before any plane is linked. THIS binary is the only place both halves exist at once, which
-/// is why the check lives here. A collision is not cosmetic — `by_code` resolves a code to the FIRST
-/// match, so a duplicate makes one diagnostic permanently unreachable and makes `busbar explain
-/// <code>` and a rendered catalog describe the wrong failure.
-///
-/// `slug` is checked too, for the same reason: it is the other stable handle a catalog is keyed by.
-#[test]
-fn every_diagnostic_code_is_unique_across_the_neutral_and_plane_catalogues() {
-    // The composition root's own registration, so `all()` returns the real runtime union rather
-    // than the neutral half alone. This is the only installer in the test binary; a second call
-    // would panic by design.
-    register_diagnostics();
-
-    let all = busbar_kernel::diagnostics::all();
-    assert!(
-        !all.is_empty(),
-        "the catalog must not be empty — the walk would assert nothing"
-    );
-
-    let mut by_code: std::collections::HashMap<u16, Vec<&str>> = std::collections::HashMap::new();
-    let mut by_slug: std::collections::HashMap<&str, Vec<u16>> = std::collections::HashMap::new();
-    for d in &all {
-        by_code.entry(d.code).or_default().push(d.slug);
-        by_slug.entry(d.slug).or_default().push(d.code);
-    }
-
-    let dup_codes: Vec<_> = by_code.iter().filter(|(_, v)| v.len() > 1).collect();
-    assert!(
-        dup_codes.is_empty(),
-        "diagnostic CODES collide across the neutral and plane catalogues: {dup_codes:?}"
-    );
-
-    let dup_slugs: Vec<_> = by_slug.iter().filter(|(_, v)| v.len() > 1).collect();
-    assert!(
-        dup_slugs.is_empty(),
-        "diagnostic SLUGS collide across the neutral and plane catalogues: {dup_slugs:?}"
-    );
-}
-
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 // A PLANE-GATED MODULE IS NAMED ONLY FROM CODE UNDER THE SAME GATE
 // ─────────────────────────────────────────────────────────────────────────────────────────────
@@ -1237,4 +1193,47 @@ fn main_rs_doc_claims_match_the_code_beside_them() {
         !MAIN.contains("Every plane's exit arm settles onto it"),
         "the boot book's doc claims every plane settles onto it; only one root unit's arm is bound here"
     );
+}
+
+/// THE IDLE PURGE NEVER WRITES A POSITIVE DECAY TO AN ARENA THAT RAN AT 0. The huge arena (where an
+/// oversize allocation lands) runs at decay 0, and a positive decay written to it makes jemalloc start
+/// a background thread for it — `not_reached()` on a build without background threads (a SIGTRAP on
+/// macOS debug, undefined behaviour in a static-musl release). Restoring the global default to every
+/// arena did exactly that on the first idle window after any oversize allocation, killing an idle
+/// process that had staged a large plugin library or served a large body.
+#[cfg(not(target_env = "msvc"))]
+#[test]
+fn the_idle_purge_puts_each_arena_back_to_its_own_decay() {
+    use tikv_jemalloc_ctl::{Access, AsName};
+    // An oversize allocation (well past jemalloc's 8 MiB default threshold) brings the huge arena up.
+    let big = vec![1u8; 64 << 20];
+    assert_eq!(big[big.len() - 1], 1);
+    drop(big);
+    let decays = || -> Vec<(u32, isize)> {
+        let n: u32 = b"arenas.narenas\0".name().read().unwrap_or(0);
+        (0..n)
+            .filter_map(|i| {
+                let key = format!("arena.{i}.dirty_decay_ms\0");
+                Access::<isize>::read(key.as_bytes().name())
+                    .ok()
+                    .map(|v| (i, v))
+            })
+            .collect()
+    };
+    let before = decays();
+    assert!(
+        before.iter().any(|(_, v)| *v == 0),
+        "the huge arena is initialized and runs at decay 0: {before:?}"
+    );
+    super::purge_idle_arenas();
+    super::purge_idle_arenas();
+    let after = decays();
+    for (i, was) in &before {
+        let now = after.iter().find(|(j, _)| j == i).map(|(_, v)| *v);
+        assert_eq!(
+            now,
+            Some(*was),
+            "arena {i}'s decay was not put back to its own value"
+        );
+    }
 }

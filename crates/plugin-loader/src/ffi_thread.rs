@@ -32,6 +32,11 @@
 //! signature-verified load path, and it made in-place hot-upgrade serve pre-upgrade code forever.
 //! Both are silent, so both are worse than the crash. Do not reintroduce it.
 //!
+//! The substitution itself is now closed at the staging layer, whatever keeps an image resident:
+//! `stage` seals each memfd and RETAINS the fd of any image still in the link map after its handle
+//! closes, so `N` is never recycled while a resident image holds the name
+//! (`stage::tests::a_replaced_image_on_a_reused_fd_runs_its_own_bytes`).
+//!
 //! The crash does not actually require the image to stay mapped. It requires a thread that ARMED
 //! THE PLUGIN'S TLS KEY to exit AFTER the unmap. So the invariant is about threads:
 //!

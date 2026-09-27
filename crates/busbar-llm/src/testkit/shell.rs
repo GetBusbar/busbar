@@ -77,7 +77,7 @@ pub async fn operation_ingress(
     operation_ingress_inner(
         &p.host,
         &p.gov,
-        p.caller_token.as_deref(),
+        p.caller_token.as_ref(),
         &headers,
         body,
         proto,
@@ -93,7 +93,7 @@ pub async fn operation_ingress(
 pub(crate) async fn operation_ingress_inner(
     host: &Arc<dyn EngineHost>,
     gov: &busbar_contract::records::PlaneRequestCtx,
-    caller_token: Option<&str>,
+    caller_token: Option<&crate::engine::CallerCredential>,
     headers: &HeaderMap,
     body: Bytes,
     proto: &'static str,
@@ -248,7 +248,7 @@ pub async fn ingress_path_model(
     ingress_path_model_inner(
         &p.host,
         &p.gov,
-        p.caller_token.as_deref(),
+        p.caller_token.as_ref(),
         &headers,
         body,
         &model,
@@ -265,7 +265,7 @@ pub async fn ingress_path_model(
 async fn ingress_path_model_inner(
     host: &Arc<dyn EngineHost>,
     gov: &busbar_contract::records::PlaneRequestCtx,
-    caller_token: Option<&str>,
+    caller_token: Option<&crate::engine::CallerCredential>,
     headers: &HeaderMap,
     body: Bytes,
     model: &str,

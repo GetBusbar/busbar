@@ -51,12 +51,9 @@ fn framing_carries_the_codec_through_unchanged() {
     assert_eq!(framed.transport().name(), "http");
     // The codec is the SAME object, not a wrapper around it.
     assert!(std::ptr::eq(
-        std::ptr::from_ref::<dyn busbar_substrate_values::handlers::OperationHandler>(
-            framed.op_handler
-        )
-        .cast::<u8>(),
-        std::ptr::from_ref::<dyn busbar_substrate_values::handlers::OperationHandler>(codec)
+        std::ptr::from_ref::<dyn busbar_contract::codec::OperationHandler>(framed.op_handler)
             .cast::<u8>(),
+        std::ptr::from_ref::<dyn busbar_contract::codec::OperationHandler>(codec).cast::<u8>(),
     ));
     // And every capability the engine reads off the cell still answers exactly as the bare codec
     // does: framing added no behaviour.

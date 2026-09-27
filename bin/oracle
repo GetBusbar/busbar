@@ -27,6 +27,123 @@
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
+# ── A FILTERED RUN CARRIES ITS FORGIVENESSES' PREMISES ──────────────────────────────────────────
+# An accepted difference forgives its cells only once its PREMISE holds, and the premise probes other
+# cells. A record or replay narrowed by a filter that leaves a premise cell out cannot evaluate it, so
+# the engine WITHHOLDS the owner-signed forgiveness and reports its cells FAIL — a false red that
+# reads exactly like a regression (24 Q40 cells, 2026-09-27, from a filter missing
+# `ops.scrape|metrics|key`). So a filter is widened here to every premise cell of every accepted
+# difference whose cells it selects, and a premise that names a cell the corpus does not have is a
+# refusal naming it. After a filtered replay, a forgiveness still withheld for an unevaluable
+# premise the filter selected is a refusal too, never a FAIL row.
+premise_closure() {  # premise_closure <filter> -> the premise cells the filter's forgivenesses need
+  python3 - "$1" "${BUSBAR_ORACLE_DATA:-$here/testing/shadow-oracle}" <<'PY'
+import json, re, sys
+flt, data = sys.argv[1], sys.argv[2]
+ids = [c["id"] for c in json.load(open(f"{data}/cells.json"))["cells"]]
+universe = set(ids)
+try:
+    sel = re.compile(flt)
+except re.error as e:
+    sys.exit(f"oracle: the filter {flt!r} is not a regex this shim can widen ({e})")
+selected = [i for i in ids if sel.search(i)]
+def cells_of(node, out):
+    if isinstance(node, dict):
+        if isinstance(node.get("cell"), str):
+            out.add(node["cell"])
+        for v in node.values():
+            cells_of(v, out)
+    elif isinstance(node, list):
+        for v in node:
+            cells_of(v, out)
+need, bad = set(), []
+for e in json.load(open(f"{data}/accepted-differences.json"))["accepted"]:
+    if not e.get("premise") or not e.get("cells"):
+        continue
+    try:
+        pat = re.compile(e["cells"])
+    except re.error:
+        continue
+    if not any(pat.search(i) for i in selected):
+        continue
+    probes = set()
+    cells_of(e["premise"], probes)
+    for c in sorted(probes):
+        if c not in universe:
+            bad.append(f"{e.get('id')!r} probes premise cell {c!r}, which cells.json does not have")
+        elif not sel.search(c):
+            need.add(c)
+if bad:
+    sys.exit("oracle: a filtered run cannot evaluate a forgiveness it selects:\n  " + "\n  ".join(bad))
+print("\n".join(sorted(need)))
+PY
+}
+widen_filter() {  # widen_filter <filter> -> the filter plus the premise cells it needs
+  local extra
+  extra="$(premise_closure "$1")" || exit 3
+  if [ -z "$extra" ]; then printf '%s\n' "$1"; return; fi
+  local alt
+  alt="$(printf '%s\n' "$extra" | python3 -c 'import re,sys; print("|".join(re.escape(l.strip()) for l in sys.stdin if l.strip()))')"
+  echo "oracle: the filter is widened to the premise cells its accepted differences probe: $(printf '%s' "$extra" | tr '\n' ' ')" >&2
+  printf '(?:%s)|^(?:%s)$\n' "$1" "$alt"
+}
+# withheld_selected <engine-output-file> <filter> -> nonzero, naming each, when a forgiveness the
+# filter selected was withheld because its premise could not be evaluated.
+withheld_selected() {
+  local closure
+  closure="$(premise_closure "$2")" || return 3
+  python3 - "$1" "$2" "$closure" <<'PY'
+import re, sys
+out, flt, closure = sys.argv[1], sys.argv[2], set(filter(None, sys.argv[3].split("\n")))
+sel = re.compile(flt)
+hits = []
+for line in open(out, errors="replace"):
+    m = re.search(r"entry (.+?) is WITHHELD .*premise UNEVALUABLE: premise probes cell \"([^\"]+)\"", line)
+    if m and (m.group(2) in closure or sel.search(m.group(2))):
+        hits.append(f"{m.group(1)} (premise cell {m.group(2)!r})")
+if hits:
+    print("oracle: a filtered replay could not evaluate the premise of a forgiveness it selected, so "
+          "its cells would report FAIL for a difference the owner signed. Refusing instead:\n  "
+          + "\n  ".join(hits) + "\nRecord the premise cells (bin/oracle record widens its --filter "
+          "to them) and replay again.", file=sys.stderr)
+    sys.exit(3)
+PY
+}
+if [ "${1:-}" = "premise-filter" ]; then widen_filter "${2:?premise-filter <filter>}"; exit 0; fi
+if [ "${1:-}" = "premise-selftest" ]; then
+  tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
+  cat >"$tmp/cells.json" <<'J'
+{"cells": [{"id": "fam|forgiven"}, {"id": "fam|other"}, {"id": "probe|premise"}]}
+J
+  cat >"$tmp/accepted-differences.json" <<'J'
+{"accepted": [{"id": "PLANT", "cells": "^fam\\|forgiven$", "premise": {"all": [{"cell": "probe|premise", "status": 200}]}}]}
+J
+  fail=0
+  got="$(BUSBAR_ORACLE_DATA="$tmp" widen_filter '^fam\|forgiven$' 2>/dev/null)"
+  if python3 -c 'import re,sys; r=re.compile(sys.argv[1]); sys.exit(0 if r.search("probe|premise") and r.search("fam|forgiven") and not r.search("fam|other") else 1)' "$got"; then
+    echo "  [ok]     a filter selecting a forgiven cell but not its premise is widened to the premise"
+  else echo "  [FAILED] the premise cell was not added to the filter: $got"; fail=1; fi
+  got="$(BUSBAR_ORACLE_DATA="$tmp" widen_filter '^fam\|other$' 2>/dev/null)"
+  if [ "$got" = '^fam\|other$' ]; then echo "  [ok]     a filter that selects no forgiven cell is left as it is"
+  else echo "  [FAILED] an unrelated filter was widened: $got"; fail=1; fi
+  sed -i.bak 's/probe|premise", "status"/probe|gone", "status"/' "$tmp/accepted-differences.json"
+  if ( BUSBAR_ORACLE_DATA="$tmp" widen_filter '^fam\|forgiven$' ) >/dev/null 2>"$tmp/err"; then
+    echo "  [FAILED] a premise naming a cell the corpus lacks was not refused"; fail=1
+  elif grep -q "probe|gone" "$tmp/err"; then echo "  [ok]     a premise naming a cell the corpus lacks is refused, by name"
+  else echo "  [FAILED] the refusal did not name the premise cell: $(cat "$tmp/err")"; fail=1; fi
+  mv "$tmp/accepted-differences.json.bak" "$tmp/accepted-differences.json"
+  printf "accepted-differences: entry 'PLANT' is WITHHELD — premise UNEVALUABLE: premise probes cell \"probe|premise\", which the build under test did not record\n" >"$tmp/out"
+  if ( BUSBAR_ORACLE_DATA="$tmp" withheld_selected "$tmp/out" '^fam\|forgiven$' ) 2>"$tmp/err2"; then
+    echo "  [FAILED] a withheld forgiveness the filter selected was not refused"; fail=1
+  elif grep -q "probe|premise" "$tmp/err2"; then echo "  [ok]     a replay whose selected forgiveness was withheld refuses, naming the premise"
+  else echo "  [FAILED] the replay refusal did not name the premise"; fail=1; fi
+  if ( BUSBAR_ORACLE_DATA="$tmp" withheld_selected "$tmp/out" '^fam\|other$' ) 2>/dev/null; then
+    echo "  [ok]     a withheld forgiveness the filter did not select is not this run's refusal"
+  else echo "  [FAILED] an unselected withheld forgiveness refused the run"; fail=1; fi
+  [ "$fail" = 0 ] && { echo "oracle premise-selftest: a filtered run evaluates its forgivenesses' premises or refuses by name"; exit 0; }
+  echo "oracle premise-selftest: FAILED"; exit 1
+fi
+
 pin="$here/testing/shadow-oracle/oracle-rust.pin"
 [ -f "$pin" ] || { echo "oracle: missing source pin $pin" >&2; exit 1; }
 _pin() { awk -F= -v k="$1" '$1==k{sub(/^[^=]*=/,"");print;exit}' "$pin"; }
@@ -122,6 +239,8 @@ while [ \$# -gt 0 ]; do case "\$1" in
   *) shift;;
 esac; done
 [ -n "\$BIN" ] && [ -n "\$OUT" ] || { echo "record.sh(shim): need --bin and --out" >&2; exit 2; }
+# A filtered recording carries the premise cells its forgivenesses probe (bin/oracle premise-filter).
+[ -z "\$FILTER" ] || FILTER="\$("$here/bin/oracle" premise-filter "\$FILTER")"
 # --out is passed through as --out-dir, so the recording lands where the caller asked rather than at
 # <work>/candidate. HarnessOracle happens to name its --out "candidate", so the two used to agree by
 # luck; any other caller silently got an empty --out and read it as a recording of nothing.
@@ -239,6 +358,8 @@ case "$sub" in
     # broken one, and is the reported shape of "--filter records nothing". The engine has taken
     # --out-dir for exactly this since the native cutover; this just stops discarding it.
     mkdir -p "$OUT"; OUT="$(cd "$OUT" && pwd)"; WORK="$(cd "$(dirname "$OUT")" && pwd)"
+    # A filtered recording carries the premise cells its forgivenesses probe (see premise_closure).
+    [ -z "$FILTER" ] || FILTER="$(widen_filter "$FILTER")"
     exec "$RUST_BIN" record --native --busbar-repo "$ROOT" --candidate-bin "$BIN" \
       --oracle-data "$DATA" --work-dir "$WORK" --out-dir "$OUT" --family "$PLANE" ${FILTER:+--filter "$FILTER"} ;;
 
@@ -258,9 +379,37 @@ case "$sub" in
     # records BOTH sides with this engine, so its revisions agree and it needs no flag — which is
     # exactly the run the guard should have been armed on all along. Re-recording the committed
     # golden with the Rust engine (oracle-rerecord workflow) retires the two explicit uses too.
-    exec "$RUST_BIN" diff "$@" --cells "$DATA/cells.json" ;;
+    # A FILTERED REPLAY: widen --id-filter to the premise cells, and refuse (by name) any selected
+    # forgiveness the engine still withholds for an unevaluable premise.
+    IDF="" args=()
+    while [ $# -gt 0 ]; do case "$1" in
+      --id-filter) IDF="$2"; shift 2;;
+      *) args+=("$1"); shift;;
+    esac; done
+    if [ -z "$IDF" ]; then exec "$RUST_BIN" diff "${args[@]}" --cells "$DATA/cells.json"; fi
+    WIDE="$(widen_filter "$IDF")"
+    log="$(mktemp)"; set +e
+    "$RUST_BIN" diff "${args[@]}" --id-filter "$WIDE" --cells "$DATA/cells.json" 2>&1 | tee "$log"
+    rc=${PIPESTATUS[0]}; set -e
+    withheld_selected "$log" "$IDF" || { rm -f "$log"; exit 3; }
+    rm -f "$log"; exit "$rc" ;;
+
+  diff)
+    # The engine's own diff: a FILTERED one gets the same premise widening and refusal as replay.
+    IDF="" args=()
+    while [ $# -gt 0 ]; do case "$1" in
+      --id-filter) IDF="$2"; shift 2;;
+      *) args+=("$1"); shift;;
+    esac; done
+    if [ -z "$IDF" ]; then exec "$RUST_BIN" diff "${args[@]}"; fi
+    WIDE="$(widen_filter "$IDF")"
+    log="$(mktemp)"; set +e
+    "$RUST_BIN" diff "${args[@]}" --id-filter "$WIDE" 2>&1 | tee "$log"
+    rc=${PIPESTATUS[0]}; set -e
+    withheld_selected "$log" "$IDF" || { rm -f "$log"; exit 3; }
+    rm -f "$log"; exit "$rc" ;;
 
   *)
-    # diff / normalize / merge / renormalize / harness-rev / selftest / … pass through unchanged.
+    # normalize / merge / renormalize / harness-rev / selftest / … pass through unchanged.
     exec "$RUST_BIN" "$sub" "$@" ;;
 esac

@@ -12,7 +12,7 @@
 //!
 //! ## The lower layer
 //!
-//! The architecture composes `grpc` OVER `http` (itself over `tcp`/`tls`), and this crate opens no
+//! The architecture composes `grpc` OVER `http` (itself over `tcp`), and this crate opens no
 //! socket: it is built [`GrpcTransport::over`] a lower transport, which binds, accepts and dials,
 //! and drives HTTP/2 ([`hyper`] + [`hyper_util`], not `tonic::transport` — see `server.rs`'s header
 //! for why) over the stream that layer gives up. Two things follow. The composed chain an arrival

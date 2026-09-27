@@ -34,11 +34,11 @@ impl TransportMeta for WsTransport {
     const SELECTOR_FORMS: &'static [SelectorForm] = claims::SELECTOR_FORMS;
     const EGRESS_SELECTOR_FORMS: &'static [SelectorForm] = claims::EGRESS_SELECTOR_FORMS;
     // The layers this one is actually built over: an inbound upgrade arrives on `http`, an
-    // outbound one is dialled through `tcp` for a `ws://` target and through `tls` for a `wss://`
-    // one. `tls` is named because a secure target is dialled ON it directly — this transport adds
-    // no encryption of its own, so that is the only composition under which `wss` is honest, and
-    // `dial` refuses a secure target over any other lower layer.
-    const COMPOSES_OVER: &'static [&'static str] = &["http", "tcp", "tls"];
+    // outbound one is dialled through `tcp` for a `ws://` target. No transport encrypts: TLS is
+    // core's connection security, never a layer a transport composes over,
+    // and this transport adds no encryption of its own, so `dial` refuses a `wss://` target rather
+    // than put a cleartext upgrade on a wire the destination said was secure.
+    const COMPOSES_OVER: &'static [&'static str] = &["http", "tcp"];
     const HANDOFF: Option<busbar_contract::transport::wire::Handoff> = None;
     const FRAMING: busbar_contract::transport::wire::Framing =
         busbar_contract::transport::wire::Framing::Stream;

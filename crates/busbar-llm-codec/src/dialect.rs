@@ -498,3 +498,11 @@ pub fn warn_untranslatable_response_metadata(
 #[cfg(test)]
 #[path = "tests/dialect_drift_tests.rs"]
 mod drift_tests;
+
+#[cfg(test)]
+#[path = "tests/dialect_strip_tests.rs"]
+mod strip_tests;
+
+#[cfg(test)]
+#[path = "tests/dialect_sse_frame_tests.rs"]
+mod sse_frame_tests;

@@ -2,13 +2,18 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! FULL-CHAIN auth-plugin seam tests: the engine's `AuthMiddleware` loading a REAL signed
-//! `kind: auth` plugin cdylib over the loader, exactly as boot does. We pack the hermetic
-//! `busbar-auth-static-plugin` cdylib into a tarball, run it through `plugins_preflight` +
-//! `AuthMiddleware::new`, and prove:
+//! `kind: auth` plugin cdylib over the loader, exactly as boot does. The plugin is the REAL
+//! token-verifying OIDC module, GetBusbar/auth-oidc (the owner's FIXTURES ruling: real plugins are the
+//! proofs; R-FIX2), pulled at a pinned rev as a dev-dependency of the composition root so the
+//! workspace build carries its cdylib. We pack it into a tarball, run it through `plugins_preflight` +
+//! `AuthMiddleware::new` against a LOCAL issuer ([`Issuer`]: an ES256 key whose JWKS is served over a
+//! real HTTPS listener, trusted through the module's `ca_cert_pem` setting), present SIGNED JWTs, and
+//! prove:
 //!
 //! * a valid token → `Identify` → a mapped `Principal` whose roles resolve to `role_bindings`
 //!   policy AND whose admin scope is capped by `auth.chain.<module>.max_admin_scope`;
-//! * an invalid/absent credential → the chain fail-closed-denies (all-`Pass`);
+//! * an invalid/absent credential → the chain fail-closed-denies (all-`Pass`), and a token signed by
+//!   another key is refused;
 //! * a MISSING or UNTRUSTED plugin at boot → a LOUD failure (never a silently-open front door);
 //! * `plugins.enabled: false` + a configured auth plugin → boot refuses (`plugins_preflight`).
 //!
@@ -20,47 +25,83 @@ use crate::config::{AuthCfg, AuthChainEntry, PluginsCfg};
 use crate::tests::{plugin_manifest, tmp_plugin_dir, unsigned_tarball};
 use std::path::{Path, PathBuf};
 
-/// Locate the hermetic static-auth plugin cdylib in the build's target dir (like the sqlite store
-/// tests). Under CI (`cargo test --workspace` always builds it) a missing cdylib is a HARD failure,
-/// never a silent skip; locally a missing cdylib skips cleanly.
+/// The auth-oidc module's cdylib, built by the workspace build as a git dev-dependency of the
+/// composition root — so it lives under `deps/` WITH a metadata hash (`lib<name>-<hex>.<ext>`) and is
+/// never uplifted; the exact name is checked too. Newest wins. Under CI (`cargo test --workspace`
+/// always builds it) a missing cdylib is a HARD failure, never a silent skip; locally a missing
+/// cdylib skips cleanly.
 ///
-/// Checks BOTH the uplifted profile dir AND `target/deps`, newest wins. Cargo only uplifts a cdylib
-/// to the top-level profile dir for the build that requested it: a SCOPED build (`cargo test -p
-/// busbar`, which is what one runs while working on auth) leaves the artifact in `target/deps`
-/// ALONE. Checking only `profile_dir` therefore found nothing even though the cdylib really was
-/// built, and all seven cdylib-gated tests in this file silently returned and reported `ok` — the
-/// suite printed the same "16 passed" as a real run, only faster (3.0s vs 26.5s). What got skipped
-/// is not incidental: `untrusted_auth_plugin_fails_closed_not_open` and
-/// `missing_auth_plugin_is_loud_boot_failure` are the front-door fail-closed guarantees.
-///
-/// This is the SAME defect, and the same fix, as `hooks::tests::hook_cdylib` (see its note) and the
-/// `plugin_path()` helpers in auth-oidc / store-postgres / webrequest-hook. This helper was missed
-/// when that fix was propagated.
-fn static_auth_cdylib() -> Option<PathBuf> {
+/// Checks BOTH the uplifted profile dir AND `target/deps`: a SCOPED build leaves the artifact in
+/// `target/deps` ALONE, and checking only the profile dir once made every cdylib-gated test in this
+/// file return early and report `ok` — `untrusted_auth_plugin_fails_closed_not_open` and
+/// `missing_auth_plugin_is_loud_boot_failure`, the front-door fail-closed guarantees, among them.
+fn auth_cdylib() -> Option<PathBuf> {
     let candidate = (|| {
         let exe = std::env::current_exe().ok()?;
         let profile_dir = exe.parent()?.parent()?;
-        let name = busbar_plugin_loader::plugin_library_filename("busbar_auth_static_plugin");
-        let uplifted = profile_dir.join(&name);
-        let raw = profile_dir.join("deps").join(&name);
-        [uplifted, raw]
+        let snake = "busbar_auth_oidc_plugin";
+        let file = busbar_plugin_loader::plugin_library_filename(snake);
+        let (prefix, suffix) = file.split_once(snake)?;
+        let is_lib = |f: &str| {
+            f.strip_prefix(prefix)
+                .and_then(|f| f.strip_suffix(suffix))
+                .and_then(|f| f.strip_prefix(snake))
+                .is_some_and(|stem| {
+                    stem.is_empty()
+                        || stem.strip_prefix('-').is_some_and(|h| {
+                            !h.is_empty() && h.bytes().all(|b| b.is_ascii_hexdigit())
+                        })
+                })
+        };
+        let in_deps = std::fs::read_dir(profile_dir.join("deps"))
             .into_iter()
-            .filter_map(|p| {
-                std::fs::metadata(&p)
-                    .and_then(|m| m.modified())
-                    .ok()
-                    .map(|mtime| (p, mtime))
-            })
-            .max_by_key(|(_, mtime)| *mtime)
-            .map(|(p, _)| p)
+            .flatten()
+            .filter_map(|e| e.ok().map(|e| e.path()))
+            .filter(|p| p.file_name().and_then(|f| f.to_str()).is_some_and(is_lib));
+        std::iter::once(profile_dir.join(&file))
+            .chain(in_deps)
+            .filter_map(|p| Some((std::fs::metadata(&p).ok()?.modified().ok()?, p)))
+            .max()
+            .map(|(_, p)| p)
     })();
     if candidate.is_none() && std::env::var_os("CI").is_some() {
         panic!(
-            "the static-auth plugin cdylib is not built under CI; refusing to silently skip the \
+            "the auth-oidc plugin cdylib is not built under CI; refusing to silently skip the \
              full-chain auth-plugin seam coverage"
         );
     }
     candidate
+}
+
+/// The issuer every token in this file is signed by, and the audience it is bound to.
+const ISSUER: &str = "https://issuer.plugin-chain.invalid";
+const AUDIENCE: &str = "api://plugin-chain";
+
+/// THE LOCAL ISSUER, one per test process: the auth module's OWN test issuer (its logic crate's
+/// `testkit` feature) — an ES256 key, its JWKS served over a certificate-verified loopback endpoint
+/// the module trusts through `ca_cert_pem`, and genuinely signed tokens. The module's own blocking
+/// fetcher does the whole fetch and the whole verification.
+fn issuer() -> &'static busbar_auth_oidc::testkit::Issuer {
+    static ONE: std::sync::OnceLock<busbar_auth_oidc::testkit::Issuer> = std::sync::OnceLock::new();
+    ONE.get_or_init(|| busbar_auth_oidc::testkit::Issuer::start(ISSUER, "plugin-chain"))
+}
+
+/// The module's `settings:` for the local issuer and [`AUDIENCE`].
+fn settings() -> serde_json::Map<String, serde_json::Value> {
+    issuer().settings(AUDIENCE)
+}
+
+/// `alice`'s token: role `platform`, bound to [`AUDIENCE`].
+fn alice_token() -> String {
+    issuer().mint("alice", &["platform"], AUDIENCE)
+}
+
+/// The runtime identity the module reports for itself — what its OWN compiled-in constructor's
+/// `name()` answers under the same settings. The chain must report this, never the config alias.
+fn module_name() -> &'static str {
+    busbar_auth_oidc_plugin::open(&serde_json::Value::Object(settings()).to_string())
+        .expect("the compiled-in constructor opens under the same settings")
+        .name()
 }
 
 /// A `kind: auth` manifest for the given name/alias (the store helper stamps kind=store; we retarget
@@ -82,14 +123,14 @@ fn auth_manifest(name: &str, alias: &str, publisher: &str) -> busbar_plugin_load
 #[test]
 fn browser_login_on_v1_plugin_is_a_build_error() {
     let dir = tmp_plugin_dir("auth-login-v1-gate");
-    let Some(path) = static_auth_cdylib() else {
-        eprintln!("skip: static-auth plugin cdylib not built (run under --workspace)");
+    let Some(path) = auth_cdylib() else {
+        eprintln!("skip: auth-oidc plugin cdylib not built (run under --workspace)");
         return;
     };
-    let lib = std::fs::read(&path).expect("read static-auth cdylib");
-    let mut manifest = auth_manifest("acme-auth-static", "cap-idp", "acme");
+    let lib = std::fs::read(&path).expect("read the auth-oidc cdylib");
+    let mut manifest = auth_manifest("acme-idp", "cap-idp", "acme");
     manifest.abi_version = 1; // PRE-v2 — no login capability
-    std::fs::write(dir.join("static.tar.gz"), unsigned_tarball(manifest, &lib)).unwrap();
+    std::fs::write(dir.join("idp.tar.gz"), unsigned_tarball(manifest, &lib)).unwrap();
     let plugins = plugins_cfg_allow_unsigned(&dir);
     let registry = busbar_plugin_loader::scan_and_validate(
         Path::new(&plugins.dir),
@@ -98,22 +139,18 @@ fn browser_login_on_v1_plugin_is_a_build_error() {
     .expect("scan admits a v1 auth plugin (floor is 1)");
 
     let mut cfg = AuthCfg::default_none();
-    let mut method = crate::config::AuthMethodCfg {
+    let method = crate::config::AuthMethodCfg {
         // 1.5.3: the resolved method carries the PROVIDER's `module:` — the plugin it opens —
         // separately from the map key, which is the provider NAME.
-        module: "acme-auth-static".into(),
+        module: "acme-idp".into(),
         browser_login: Some(crate::config::BrowserLoginCfg {
             client_secret: Some(crate::config::SecretRef::env("BUSBAR_TEST_CLIENT_SECRET")),
             client_id: Some("client-abc".into()),
         }),
-        // Valid static-auth settings so `open()` SUCCEEDS — the build must then fail on the ABI
+        // Valid module settings so `open()` SUCCEEDS — the build must then fail on the ABI
         // CAPABILITY GATE (abi_version < 2), not on a missing-config open error.
-        settings: alice_settings(),
+        settings: settings(),
     };
-    method.settings.insert(
-        "issuer".into(),
-        serde_json::json!("https://idp.example.com"),
-    );
     cfg.methods.insert("cap-idp".into(), method);
     // The v2 build below resolves the client_secret (the v1 gate fires BEFORE resolution); set the
     // env so the v2 case fails ONLY on capability, never on an unresolvable secret.
@@ -130,9 +167,9 @@ fn browser_login_on_v1_plugin_is_a_build_error() {
     // A v2 build of the SAME plugin (login-capable) with browser_login succeeds — the gate is
     // specifically the version, not the presence of browser_login.
     let dir2 = tmp_plugin_dir("auth-login-v2-ok");
-    let mut m2 = auth_manifest("acme-auth-static", "cap-idp", "acme");
+    let mut m2 = auth_manifest("acme-idp", "cap-idp", "acme");
     m2.abi_version = 2;
-    std::fs::write(dir2.join("static.tar.gz"), unsigned_tarball(m2, &lib)).unwrap();
+    std::fs::write(dir2.join("idp.tar.gz"), unsigned_tarball(m2, &lib)).unwrap();
     let plugins2 = plugins_cfg_allow_unsigned(&dir2);
     let registry2 = busbar_plugin_loader::scan_and_validate(
         Path::new(&plugins2.dir),
@@ -146,14 +183,14 @@ fn browser_login_on_v1_plugin_is_a_build_error() {
     let _ = std::fs::remove_dir_all(&dir2);
 }
 
-/// Write an UNSIGNED (structurally valid) static-auth tarball into `dir` under `file`, returning the
+/// Write an UNSIGNED (structurally valid) auth-oidc tarball into `dir` under `file`, returning the
 /// cdylib bytes' presence. We use the unsigned+`allow_unsigned` path because the test cannot sign
 /// with the embedded first-party release key; this still exercises the whole load pipeline.
-fn write_static_auth(dir: &Path, file: &str, name: &str, alias: &str) -> bool {
-    let Some(path) = static_auth_cdylib() else {
+fn write_auth_plugin(dir: &Path, file: &str, name: &str, alias: &str) -> bool {
+    let Some(path) = auth_cdylib() else {
         return false;
     };
-    let lib = std::fs::read(&path).expect("read static-auth cdylib");
+    let lib = std::fs::read(&path).expect("read the auth-oidc cdylib");
     let tarball = unsigned_tarball(auth_manifest(name, alias, "acme"), &lib);
     std::fs::write(dir.join(file), tarball).unwrap();
     true
@@ -189,28 +226,28 @@ fn auth_manifest_with_root_secret_schema(
         "type": "object",
         "properties": {
             field: {"type": "string", "x-busbar-secret": true},
-            "id": {"type": "string"},
-            "roles": {"type": "array", "items": {"type": "string"}},
+            "issuer": {"type": "string"},
+            "jwks_url": {"type": "string"},
         },
     });
     m.settings_schema = Some(schema.to_string());
     m
 }
 
-/// Write an UNSIGNED static-auth tarball whose manifest declares `token` as a ROOT-LEVEL
+/// Write an UNSIGNED auth-oidc tarball whose manifest declares `audience` as a ROOT-LEVEL
 /// `x-busbar-secret` field (see [`auth_manifest_with_root_secret_schema`]).
-fn write_static_auth_with_root_secret_schema(
+fn write_auth_plugin_with_root_secret_schema(
     dir: &Path,
     file: &str,
     name: &str,
     alias: &str,
 ) -> bool {
-    let Some(path) = static_auth_cdylib() else {
+    let Some(path) = auth_cdylib() else {
         return false;
     };
-    let lib = std::fs::read(&path).expect("read static-auth cdylib");
+    let lib = std::fs::read(&path).expect("read the auth-oidc cdylib");
     let tarball = unsigned_tarball(
-        auth_manifest_with_root_secret_schema(name, alias, "acme", "token"),
+        auth_manifest_with_root_secret_schema(name, alias, "acme", "audience"),
         &lib,
     );
     std::fs::write(dir.join(file), tarball).unwrap();
@@ -227,46 +264,27 @@ fn chain_with(module: &str, settings: serde_json::Map<String, serde_json::Value>
     }
 }
 
-/// The static-auth `settings:` map: token `sekret` → id `alice`, role `platform`.
-fn alice_settings() -> serde_json::Map<String, serde_json::Value> {
-    serde_json::json!({ "token": "sekret", "id": "alice", "roles": ["platform"] })
-        .as_object()
-        .unwrap()
-        .clone()
-}
-
-/// The static-auth settings with a `licenseKey` spelled as the given SecretRef value (raw JSON for
-/// the ref, e.g. `{ "env": "VAR" }`). Proves the ENGINE resolves the ref before the plugin sees it.
-fn alice_settings_with_license_ref(
-    license_ref: serde_json::Value,
-) -> serde_json::Map<String, serde_json::Value> {
-    let mut s = alice_settings();
-    s.insert("licenseKey".to_string(), license_ref);
-    s
-}
-
-/// PLUGIN LICENSING E2E (ADR-0010): a `licenseKey` spelled as a SecretRef (`{ env: VAR }`) is
-/// RESOLVED by the engine to the raw key and DELIVERED to the plugin, which validates it ITSELF and
-/// loads. Conversely, an UNRESOLVABLE license ref fails the load FAIL-CLOSED — the plugin is never
-/// handed a dangling reference. Proves the whole path: SecretRef-in-settings → resolve → deliver →
-/// plugin self-validates.
+/// A SECRET-REFERENCE SETTING, END TO END (the ADR-0010 delivery path, on a real module): a setting
+/// spelled as a SecretRef (`{ env: VAR }`) is RESOLVED by the engine and DELIVERED to the plugin,
+/// which uses it ITSELF — here the module's `ca_cert_pem`, the trust root its own HTTPS fetcher needs
+/// to reach the issuer, so a token only verifies if the resolved PEM arrived. Conversely, an
+/// UNRESOLVABLE ref fails the load FAIL-CLOSED — the plugin is never handed a dangling reference.
 #[test]
-fn auth_plugin_license_key_secret_ref_is_resolved_and_delivered() {
-    let dir = tmp_plugin_dir("auth-plugin-license");
-    if !write_static_auth(&dir, "static.tar.gz", "acme-auth-static", "lic-auth") {
-        eprintln!("skip: static-auth plugin cdylib not built (run under --workspace)");
+fn auth_plugin_setting_secret_ref_is_resolved_and_delivered() {
+    let dir = tmp_plugin_dir("auth-plugin-secret-ref");
+    if !write_auth_plugin(&dir, "idp.tar.gz", "acme-idp", "ref-auth") {
+        eprintln!("skip: auth-oidc plugin cdylib not built (run under --workspace)");
         return;
     }
     let plugins = plugins_cfg_allow_unsigned(&dir);
 
-    // A VALID license delivered via an env SecretRef: the engine resolves `{ env: VAR }` to the demo
-    // key BEFORE open, the plugin validates its own license, and the chain loads.
-    let ok_var = format!("BUSBAR_PLUGIN_LICENSE_OK_{}", std::process::id());
-    std::env::set_var(&ok_var, "LICENSE-OK");
-    let cfg = chain_with(
-        "lic-auth",
-        alice_settings_with_license_ref(serde_json::json!({ "env": ok_var })),
-    );
+    // The trust root delivered via an env SecretRef: the engine resolves `{ env: VAR }` to the PEM
+    // BEFORE open, the module builds its fetcher on it, and a signed token verifies against its keys.
+    let var = format!("BUSBAR_PLUGIN_CA_PEM_{}", std::process::id());
+    std::env::set_var(&var, issuer().cert_pem());
+    let mut settings = settings();
+    settings.insert("ca_cert_pem".into(), serde_json::json!({ "env": var }));
+    let cfg = chain_with("ref-auth", settings);
     let registry = crate::plugins_preflight(
         None,
         Some(&cfg),
@@ -281,27 +299,31 @@ fn auth_plugin_license_key_secret_ref_is_resolved_and_delivered() {
         &registry,
         &crate::config::secret::SecretResolver::builtins_only(),
     )
-    .expect("a resolvable, valid licenseKey is delivered and the plugin loads");
-    assert_eq!(mw.chain_names(), vec!["static-auth"], "plugin loaded");
-    std::env::remove_var(&ok_var);
+    .expect("a resolvable setting ref is delivered and the plugin loads");
+    assert_eq!(mw.chain_names(), vec![module_name()], "plugin loaded");
+    match mw.run_chain(Some(&alice_token())) {
+        ChainVerdict::Identified { principal, .. } => assert_eq!(principal.id, "oidc:alice"),
+        other => panic!("the delivered trust root must let the module verify: {other:?}"),
+    }
+    std::env::remove_var(&var);
 
-    // FAIL-CLOSED: the SAME license ref, now UNRESOLVABLE (env unset), refuses the chain build — the
-    // plugin is never handed the unresolved ref. The error names the field, never a secret value.
+    // FAIL-CLOSED: the SAME ref, now UNRESOLVABLE (env unset), refuses the chain build — the plugin
+    // is never handed the unresolved ref. The error names the field, never a secret value.
     let err = AuthMiddleware::new(
         &cfg,
         &registry,
         &crate::config::secret::SecretResolver::builtins_only(),
     )
-    .expect_err("an unresolvable licenseKey ref fails the load fail-closed");
+    .expect_err("an unresolvable setting ref fails the load fail-closed");
     assert!(
-        err.contains("licenseKey") && err.contains("did not resolve"),
+        err.contains("ca_cert_pem") && err.contains("did not resolve"),
         "fail-closed, names the setting: {err}"
     );
     // The overlay/config still holds the REFERENCE, never the resolved secret: SecretRef serializes
-    // the ref, so a licenseKey setting serialized back out is the env ref, not `LICENSE-OK`.
+    // the ref, so the setting serialized back out is the env ref, not the PEM.
     let serialized = serde_json::to_string(&cfg.chain[0].settings).expect("serialize settings");
     assert!(
-        serialized.contains(&ok_var) && !serialized.contains("LICENSE-OK"),
+        serialized.contains(&var) && !serialized.contains("BEGIN CERTIFICATE"),
         "config keeps the ref, never the resolved secret: {serialized}"
     );
 
@@ -310,41 +332,33 @@ fn auth_plugin_license_key_secret_ref_is_resolved_and_delivered() {
 
 /// THE CONTRACT TEST for the `x-busbar-secret` guarantee, via the PLUGIN-SETTINGS path
 /// specifically: a manifest that declares an
-/// ARBITRARY root-level field (`token` — not the well-known `licenseKey` convention the OTHER
-/// contract test above already covers) as `x-busbar-secret: true`, set to `{ env: VAR }`, boots for
+/// ARBITRARY root-level field (`audience` — not the trust-root setting the OTHER contract test above
+/// already covers) as `x-busbar-secret: true`, set to `{ env: VAR }`, boots for
 /// REAL through the full engine pipeline (`plugins_preflight` → `AuthMiddleware::new`, the exact
 /// path boot itself takes — no shortcut through `resolve_settings()` directly), and the plugin's
-/// `open()` receives a PLAIN STRING it can authenticate a caller against — never the raw `{env:
-/// VAR}` reference object (which would fail `StaticConfig`'s `token: String` deserialization, so
-/// this test would fail closed rather than silently pass on a lucky coincidence).
+/// `open()` receives a PLAIN STRING it verifies callers against — never the raw `{env: VAR}`
+/// reference object (which would fail the module's `audience: String` deserialization, so this test
+/// would fail closed rather than silently pass on a lucky coincidence).
 ///
 /// This pins the guarantee generically (any field shape resolve_settings recognizes, not merely the
 /// license-key convention some future refactor might special-case) — a future change that broke
 /// resolution for a non-license field would go red here even if it happened to leave the
-/// license-key path intact.
+/// trust-root path intact.
 #[test]
 fn auth_plugin_root_level_secret_marked_setting_resolves_and_authenticates() {
     let dir = tmp_plugin_dir("auth-plugin-root-secret-contract");
-    if !write_static_auth_with_root_secret_schema(
-        &dir,
-        "static.tar.gz",
-        "acme-auth-static",
-        "sec-auth",
-    ) {
-        eprintln!("skip: static-auth plugin cdylib not built (run under --workspace)");
+    if !write_auth_plugin_with_root_secret_schema(&dir, "idp.tar.gz", "acme-idp", "sec-auth") {
+        eprintln!("skip: auth-oidc plugin cdylib not built (run under --workspace)");
         return;
     }
     let plugins = plugins_cfg_allow_unsigned(&dir);
 
     let var = format!("BUSBAR_PLUGIN_ROOT_SECRET_CONTRACT_{}", std::process::id());
-    let raw_token = "the-actual-plaintext-token-value";
-    std::env::set_var(&var, raw_token);
+    let raw_audience = "api://the-actual-plaintext-audience";
+    std::env::set_var(&var, raw_audience);
 
-    let mut settings = serde_json::json!({ "id": "alice", "roles": ["platform"] })
-        .as_object()
-        .unwrap()
-        .clone();
-    settings.insert("token".to_string(), serde_json::json!({ "env": var }));
+    let mut settings = settings();
+    settings.insert("audience".to_string(), serde_json::json!({ "env": var }));
     let cfg = chain_with("sec-auth", settings);
 
     let registry = crate::plugins_preflight(
@@ -356,7 +370,7 @@ fn auth_plugin_root_level_secret_marked_setting_resolves_and_authenticates() {
         &Default::default(),
     )
     .expect(
-        "preflight resolves the kind:auth plugin, whose manifest declares `token` as a \
+        "preflight resolves the kind:auth plugin, whose manifest declares `audience` as a \
                  root-level x-busbar-secret field",
     );
     let mw = AuthMiddleware::new(
@@ -365,21 +379,26 @@ fn auth_plugin_root_level_secret_marked_setting_resolves_and_authenticates() {
         &crate::config::secret::SecretResolver::builtins_only(),
     )
     .expect(
-        "the {env: VAR} reference resolves BEFORE open() — the plugin's StaticConfig.token: String \
-         field would fail to deserialize an unresolved reference object, so a load success here is \
+        "the {env: VAR} reference resolves BEFORE open() — the module's `audience: String` field \
+         would fail to deserialize an unresolved reference object, so a load success here is \
          itself proof open() received a plain string",
     );
 
     // The PLAIN, resolved value (never the reference) is what open() actually stored as the
-    // credential — authenticating with the RAW env value succeeds; the literal reference text
-    // never authenticates anything (it was never delivered to the plugin at all).
-    match mw.run_chain(Some(raw_token)) {
-        ChainVerdict::Identified { principal, .. } => assert_eq!(principal.id, "alice"),
+    // audience — a token bound to the RAW env value verifies; a token bound to any other audience
+    // does not, and the literal reference text never authenticates anything.
+    match mw.run_chain(Some(&issuer().mint("alice", &["platform"], raw_audience))) {
+        ChainVerdict::Identified { principal, .. } => assert_eq!(principal.id, "oidc:alice"),
         other => panic!(
-            "the resolved plaintext token must authenticate — open() did not receive the plain \
-             string: {other:?}"
+            "a token for the resolved plaintext audience must authenticate — open() did not \
+             receive the plain string: {other:?}"
         ),
     }
+    assert_eq!(
+        mw.run_chain(Some(&alice_token())),
+        ChainVerdict::Denied,
+        "a token for any other audience is refused"
+    );
     assert_eq!(
         mw.run_chain(Some("{\"env\":\"irrelevant\"}")),
         ChainVerdict::Denied,
@@ -389,7 +408,7 @@ fn auth_plugin_root_level_secret_marked_setting_resolves_and_authenticates() {
     // The overlay/config still holds the REFERENCE, never the resolved secret.
     let serialized = serde_json::to_string(&cfg.chain[0].settings).expect("serialize settings");
     assert!(
-        serialized.contains(&var) && !serialized.contains(raw_token),
+        serialized.contains(&var) && !serialized.contains(raw_audience),
         "config keeps the ref, never the resolved secret: {serialized}"
     );
 
@@ -397,18 +416,19 @@ fn auth_plugin_root_level_secret_marked_setting_resolves_and_authenticates() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// FULL CHAIN, REAL CDYLIB: `auth.chain: [my-auth]` loads the static-auth plugin over the loader;
-/// the valid token identifies as `alice/platform`, an invalid/absent credential fail-closed-denies.
+/// FULL CHAIN, REAL CDYLIB: `auth.chain: [my-auth]` loads the auth-oidc plugin over the loader; a
+/// token the issuer signed identifies as `oidc:alice/platform`, and a token with a forged signature,
+/// a non-token and an absent credential fail-closed-deny.
 #[test]
 fn auth_plugin_loads_and_identifies_through_middleware() {
     let dir = tmp_plugin_dir("auth-plugin-e2e");
     // The config chain name is the ALIAS `my-auth`; the plugin's canonical name differs on purpose.
-    if !write_static_auth(&dir, "static.tar.gz", "acme-auth-static", "my-auth") {
-        eprintln!("skip: static-auth plugin cdylib not built (run under --workspace)");
+    if !write_auth_plugin(&dir, "idp.tar.gz", "acme-idp", "my-auth") {
+        eprintln!("skip: auth-oidc plugin cdylib not built (run under --workspace)");
         return;
     }
     let plugins = plugins_cfg_allow_unsigned(&dir);
-    let cfg = chain_with("my-auth", alice_settings());
+    let cfg = chain_with("my-auth", settings());
 
     // Manifest-only preflight resolves the auth plugin (the `--validate`/boot gate).
     let registry = crate::plugins_preflight(
@@ -428,11 +448,16 @@ fn auth_plugin_loads_and_identifies_through_middleware() {
         &crate::config::secret::SecretResolver::builtins_only(),
     )
     .expect("auth chain loads the plugin");
-    // The RUNTIME module identity is the plugin's own `name()` (`static-auth`), NOT the config alias.
-    assert_eq!(mw.chain_names(), vec!["static-auth"], "runtime module name");
+    // The RUNTIME module identity is the plugin's own `name()`, NOT the config alias.
+    assert_eq!(mw.chain_names(), vec![module_name()], "runtime module name");
+    assert_ne!(
+        module_name(),
+        "my-auth",
+        "the alias is not the module's identity"
+    );
 
-    // Valid token → Identify with the configured id + roles.
-    match mw.run_chain(Some("sekret")) {
+    // Valid token → Identify with the token's subject + roles.
+    match mw.run_chain(Some(&alice_token())) {
         ChainVerdict::Identified {
             module, principal, ..
         } => {
@@ -441,16 +466,24 @@ fn auth_plugin_loads_and_identifies_through_middleware() {
             // name. That is what makes two NAMED providers backed by one module independently
             // bindable (`role_bindings.<name>`) instead of silently collapsing onto one identity.
             assert_eq!(module, "my-auth", "role_bindings key = the PROVIDER NAME");
-            assert_eq!(principal.id, "alice");
+            assert_eq!(principal.id, "oidc:alice");
             assert_eq!(principal.roles, vec!["platform".to_string()]);
         }
         other => panic!("valid token must Identify, got {other:?}"),
     }
-    // Invalid credential → the module Passes → a non-empty chain fail-closed-DENIES.
+    // A non-token credential → the module Passes → a non-empty chain fail-closed-DENIES.
     assert_eq!(
         mw.run_chain(Some("wrong")),
         ChainVerdict::Denied,
         "bad token denies"
+    );
+    // The same token with a FORGED signature → the module rejects it.
+    let token = alice_token();
+    let (signed, _) = token.rsplit_once('.').expect("a JWT");
+    assert_eq!(
+        mw.run_chain(Some(&format!("{signed}.{}", "A".repeat(86)))),
+        ChainVerdict::Denied,
+        "a forged signature denies"
     );
     // Absent credential → likewise denied (never the open front door for a configured chain).
     assert_eq!(
@@ -470,16 +503,16 @@ fn auth_plugin_role_binding_and_scope_cap_apply() {
     use crate::admin::v1::contract::Scope;
 
     let dir = tmp_plugin_dir("auth-plugin-policy");
-    if !write_static_auth(&dir, "static.tar.gz", "acme-auth-static", "static-auth") {
-        eprintln!("skip: static-auth plugin cdylib not built (run under --workspace)");
+    if !write_auth_plugin(&dir, "idp.tar.gz", "acme-idp", "idp") {
+        eprintln!("skip: auth-oidc plugin cdylib not built (run under --workspace)");
         return;
     }
     let plugins = plugins_cfg_allow_unsigned(&dir);
-    let mut cfg = chain_with("static-auth", alice_settings());
+    let mut cfg = chain_with("idp", settings());
     // The chain entry caps this module at `read-only`, below the `full` the role would otherwise
     // grant (1.5.2 scope collapse retired the intermediate `mint`/`hooks-register` ceilings).
     cfg.chain[0].max_admin_scope = Some("read-only".into());
-    // role_bindings NESTED BY THE PLUGIN'S RUNTIME NAME (`static-auth`): the `platform` role → full.
+    // role_bindings NESTED BY THE PROVIDER NAME (`idp`): the `platform` role → full.
     let mut roles = std::collections::BTreeMap::new();
     roles.insert(
         "platform".to_string(),
@@ -488,7 +521,7 @@ fn auth_plugin_role_binding_and_scope_cap_apply() {
             ..Default::default()
         },
     );
-    cfg.role_bindings.insert("static-auth".into(), roles);
+    cfg.role_bindings.insert("idp".into(), roles);
 
     let registry = crate::plugins_preflight(
         None,
@@ -506,13 +539,12 @@ fn auth_plugin_role_binding_and_scope_cap_apply() {
     )
     .expect("load");
 
-    let principal = match mw.run_chain(Some("sekret")) {
+    let principal = match mw.run_chain(Some(&alice_token())) {
         ChainVerdict::Identified { principal, .. } => principal,
         other => panic!("expected Identify, got {other:?}"),
     };
-    // The role resolves to `full` in role_bindings.static-auth.platform...
-    let bound =
-        crate::auth::admin_scope_for(Some("static-auth"), Some(&principal), &cfg.role_bindings);
+    // The role resolves to `full` in role_bindings.idp.platform...
+    let bound = crate::auth::admin_scope_for(Some("idp"), Some(&principal), &cfg.role_bindings);
     assert_eq!(
         bound,
         crate::admin::v1::contract::Grants::of(Scope::Full),
@@ -541,8 +573,8 @@ fn auth_plugin_role_binding_and_scope_cap_apply() {
 fn admin_modules_rebuilt_on_reload() {
     use crate::auth::AdminAuthChain;
     let dir = tmp_plugin_dir("admin-modules-reload");
-    if !write_static_auth(&dir, "static.tar.gz", "acme-auth-static", "admin-oidc") {
-        eprintln!("skip: static-auth plugin cdylib not built (run under --workspace)");
+    if !write_auth_plugin(&dir, "idp.tar.gz", "acme-idp", "admin-oidc") {
+        eprintln!("skip: auth-oidc plugin cdylib not built (run under --workspace)");
         return;
     }
     let plugins = plugins_cfg_allow_unsigned(&dir);
@@ -553,7 +585,7 @@ fn admin_modules_rebuilt_on_reload() {
     .expect("scan succeeds");
     let mut cfg = AuthCfg::default_none();
     let mut entry = AuthChainEntry::bare("admin-oidc");
-    entry.settings = alice_settings();
+    entry.settings = settings();
     cfg.admin_auth = vec![
         AuthChainEntry::bare(crate::config::ADMIN_TOKENS_MODULE),
         entry,
@@ -593,13 +625,13 @@ fn admin_modules_rebuilt_on_reload() {
 #[test]
 fn untrusted_auth_plugin_fails_closed_not_open() {
     let dir = tmp_plugin_dir("auth-plugin-untrusted");
-    let Some(path) = static_auth_cdylib() else {
-        eprintln!("skip: static-auth plugin cdylib not built (run under --workspace)");
+    let Some(path) = auth_cdylib() else {
+        eprintln!("skip: auth-oidc plugin cdylib not built (run under --workspace)");
         return;
     };
     let lib = std::fs::read(&path).unwrap();
-    let tarball = unsigned_tarball(auth_manifest("acme-auth-static", "oidc", "acme"), &lib);
-    std::fs::write(dir.join("static.tar.gz"), tarball).unwrap();
+    let tarball = unsigned_tarball(auth_manifest("acme-idp", "oidc", "acme"), &lib);
+    std::fs::write(dir.join("idp.tar.gz"), tarball).unwrap();
 
     // STRICT default trust: the unsigned auth plugin is skipped.
     let strict = PluginsCfg {
@@ -607,7 +639,7 @@ fn untrusted_auth_plugin_fails_closed_not_open() {
         dir: dir.to_string_lossy().into_owned(),
         ..Default::default()
     };
-    let cfg = chain_with("oidc", alice_settings());
+    let cfg = chain_with("oidc", settings());
     // Preflight refuses (names the module + carries the trust opt-in to set).
     let err = crate::plugins_preflight(
         None,
@@ -658,7 +690,7 @@ fn missing_auth_plugin_is_loud_boot_failure() {
     let other = unsigned_tarball(plugin_manifest("acme-store-x", "x", "acme"), b"lib");
     std::fs::write(dir.join("x.tar.gz"), other).unwrap();
     let plugins = plugins_cfg_allow_unsigned(&dir);
-    let cfg = chain_with("oidc", alice_settings());
+    let cfg = chain_with("oidc", settings());
 
     let err = crate::plugins_preflight(
         None,
@@ -708,7 +740,7 @@ fn auth_plugin_with_plugins_disabled_is_boot_error_naming_the_flag() {
         dir: dir.to_string_lossy().into_owned(),
         ..Default::default()
     };
-    let cfg = chain_with("oidc", alice_settings());
+    let cfg = chain_with("oidc", settings());
     let err = crate::plugins_preflight(
         None,
         Some(&cfg),

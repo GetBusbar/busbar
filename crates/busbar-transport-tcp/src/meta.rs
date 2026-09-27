@@ -15,7 +15,7 @@ use crate::TcpTransport;
 
 impl Plugin for TcpTransport {
     fn key(&self) -> &'static str {
-        Self::KEY
+        <crate::TcpCarrier as TransportMeta>::KEY
     }
     fn kind(&self) -> Kind {
         Kind::Transport
@@ -25,7 +25,7 @@ impl Plugin for TcpTransport {
     }
 }
 
-impl TransportMeta for TcpTransport {
+impl TransportMeta for crate::TcpCarrier {
     const KEY: &'static str = "tcp";
     const SELECTOR_FORMS: &'static [SelectorForm] = claims::SELECTOR_FORMS;
     const EGRESS_SELECTOR_FORMS: &'static [SelectorForm] = claims::EGRESS_SELECTOR_FORMS;
@@ -37,7 +37,7 @@ impl TransportMeta for TcpTransport {
     const SESSION_BOUND: bool = false;
     const UNIT0_TRIGGER: Option<busbar_contract::transport::wire::Unit0Trigger> =
         Some(busbar_contract::transport::wire::Unit0Trigger::FirstBytes);
-    const UPGRADES_TO: &'static [&'static str] = &["tls"];
+    const UPGRADES_TO: &'static [&'static str] = &[];
     const HANDSHAKE_TRIGGER: Option<busbar_contract::transport::wire::HandshakeTrigger> = None;
     const TRANSPORT_FACTS: &'static [&'static str] = &[tfacts::PEER];
     const DECODES_PAYLOAD: bool = false;

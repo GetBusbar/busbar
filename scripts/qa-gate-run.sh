@@ -210,11 +210,10 @@ cmd_fast() {
 #                                                   tests hard-panic under CI if it is missing.
 #   test -p busbar-plugin-loader --no-run           the loader job's test binaries, linked here so
 #                                                   that job only has to RUN them.
-#   -p busbar-store-example-plugin                  the `plane-plugin-suites` segment's own two
-#   -p busbar-hook-test-plugin                      lines: the cdylibs its mcp batteries dlopen
-#   test -p busbar-mcp --features test-support      (store-example is reached by NO other consumer
-#   test -p busbar-a2a --features test-support      here) and the two `test-support` test binaries
-#                                                   nothing else in this workflow links.
+#   -p busbar-hook-test-plugin                      the `plane-plugin-suites` segment's own lines:
+#   test -p busbar-mcp --features test-support      the cdylib its mcp batteries dlopen and the two
+#   test -p busbar-a2a --features test-support      `test-support` test binaries nothing else in
+#                                                   this workflow links.
 # If a leg ever grows a new cargo invocation against this workspace, add it here too, or that leg
 # quietly pays a full build and the hydrate assertion will say so.
 #
@@ -255,11 +254,10 @@ cmd_build() {
   # reason the header states: a selection that differs by even one package resolves different
   # features and shares nothing, so the exact line is what has to be replayed. That segment runs
   # busbar-mcp's and busbar-a2a's own `test-support` batteries (~1000 tests no other line in this
-  # workflow compiles in), and its mcp half dlopens the store-example and hook-test cdylibs — the
-  # store-example one is NOT covered by the fixture line above, and its battery hard-panics rather
-  # than skipping when the artifact is missing.
+  # workflow compiles in), and its mcp half dlopens the hook-test cdylib, whose battery hard-panics
+  # rather than skipping when the artifact is missing.
   log "build once (5/5): the plane-plugin-suites segment's fixture cdylibs and test binaries"
-  cargo build --release -p busbar-store-example-plugin -p busbar-hook-test-plugin
+  cargo build --release -p busbar-hook-test-plugin
   cargo test --release -p busbar-mcp --features test-support --no-run
   cargo test --release -p busbar-a2a --features test-support --no-run
 

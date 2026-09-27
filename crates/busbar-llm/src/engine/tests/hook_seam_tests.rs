@@ -1733,7 +1733,7 @@ async fn send_user_projects_governance_key_identity() {
         "anthropic",
         busbar_contract::operation::OpVerb::CHAT,
         false,
-        Some(&secret),
+        Some(&crate::engine::CallerCredential::for_test(&secret)),
         None,
     )
     .await;
@@ -1814,7 +1814,9 @@ async fn send_user_falls_back_to_synthesized_group_key_identity() {
         "anthropic",
         busbar_contract::operation::OpVerb::CHAT,
         false,
-        Some("sso-jwt-not-a-vkey-secret"),
+        Some(&crate::engine::CallerCredential::for_test(
+            "sso-jwt-not-a-vkey-secret",
+        )),
         Some(&synth),
     )
     .await;
@@ -1924,7 +1926,7 @@ async fn send_user_prefers_resolved_key_over_disabled_legacy_lookup() {
         "anthropic",
         busbar_contract::operation::OpVerb::CHAT,
         false,
-        Some(&secret), // the RAW token, which DOES hash-match the disabled key in `by_hash`
+        Some(&crate::engine::CallerCredential::for_test(&secret)), // the RAW token, which DOES hash-match the disabled key in `by_hash`
         Some(&synth),
     )
     .await;
@@ -1998,7 +2000,9 @@ async fn forward_with_pool_keyed_threads_group_key_to_pool_policy() {
         &app,
         cands,
         body,
-        Some("sso-jwt-not-a-vkey-secret"),
+        Some(&crate::engine::CallerCredential::for_test(
+            "sso-jwt-not-a-vkey-secret",
+        )),
         Some(&synth),
         "p",
         None,

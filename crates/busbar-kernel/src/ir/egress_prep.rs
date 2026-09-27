@@ -10,4 +10,4 @@
 //! Batch C-1 so a plane crate names it without reaching into `busbar-core`; core re-exports it from
 //! this historical path (`crate::ir::egress_prep::EgressPrep`) so every in-core caller is unchanged.
 
-pub use busbar_substrate_values::ir::egress_prep::EgressPrep;
+pub use busbar_contract::ir::egress_prep::EgressPrep;

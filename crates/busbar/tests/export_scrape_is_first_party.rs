@@ -23,6 +23,8 @@
 // ingress — the linked table's answer, never a feature name.
 #![cfg(linked_axis_body_ingress)]
 
+mod common;
+
 use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::path::{Path, PathBuf};
@@ -189,7 +191,7 @@ fn settled_scrape(dir: &Path, data_port: u16) -> ((u16, String, String), String)
     let log_path = dir.join("out.log");
     let log = std::fs::File::create(&log_path).unwrap();
     let mut child = Reap(
-        Command::new(env!("CARGO_BIN_EXE_busbar"))
+        Command::new(common::boot::exe())
             .env("BUSBAR_CONFIG", dir.join("config.yaml"))
             .env("BUSBAR_PROVIDERS", dir.join("providers.yaml"))
             .env("MOCK_KEY", "x")

@@ -11,6 +11,7 @@
 //! metrics/audit/logs pipelines lands separately — this seam just proves an export plugin LOADS and
 //! reports the streams it carries.
 
+use crate::sign::EgressPolicy;
 use crate::RawPlugin;
 use busbar_contract::abi::cold::{
     endpoint::{EndpointRequest, EndpointResponse, Route},
@@ -31,6 +32,9 @@ pub struct DynExport {
     /// The destinations the host bound for this instance at open (K9a S4): its manifest's declared
     /// settings keys, resolved against the operator's settings. Empty unless bound.
     destinations: crate::host::Destinations,
+    /// The egress policy the host GRANTED this instance at open (K9e-2): its manifest's declared
+    /// one, or the open web. Every request it asks the host to admit or carry meets it.
+    egress: EgressPolicy,
 }
 
 /// How many times one delivery may answer with host ops before the host stops performing them —
@@ -176,12 +180,48 @@ impl DynExport {
         }
     }
 
-    /// Perform one host op for this sink (K9a S4).
-    fn perform(
+    /// Perform one host op for this sink (K9a S4): an outbound request, or an admission, under the
+    /// egress policy it was granted (K9e-2); any other act against its destinations.
+    pub(crate) fn perform(
         &self,
         op: &busbar_contract::abi::cold::export::HostOp,
     ) -> busbar_contract::abi::cold::export::HostResult {
-        self.destinations.perform(op)
+        use busbar_contract::abi::cold::export::HostOp;
+        match op {
+            HostOp::Http(request) if !self.egress.is_default() => {
+                crate::host::carry_under(self.egress, request, request.body.as_bytes())
+            }
+            HostOp::HttpBinary(request) => crate::host::carry_binary(self.egress, request),
+            HostOp::Admit { url } if !self.egress.is_default() => {
+                crate::host::admit_under(self.egress, url)
+            }
+            _ => self.destinations.perform(op),
+        }
+    }
+
+    /// GRANT this instance the egress policy its manifest `declared` (K9e-2): the open web to any
+    /// sink; another policy to a FIRST-PARTY sink only — a third party that declares one is refused
+    /// at open, naming the policy, rather than carried under the open web it did not ask for.
+    pub fn with_egress(
+        mut self,
+        first_party: bool,
+        declared: EgressPolicy,
+    ) -> Result<Self, String> {
+        if !declared.is_default() && !first_party {
+            return Err(format!(
+                "export plugin '{}' declares the `{}` egress policy, which the host grants to a \
+                 first-party plugin only",
+                self.raw.path,
+                declared.as_token()
+            ));
+        }
+        self.egress = declared;
+        Ok(self)
+    }
+
+    /// The egress policy this instance was granted at open (K9e-2).
+    pub fn egress(&self) -> EgressPolicy {
+        self.egress
     }
 
     /// Bind the destinations this instance's manifest `declared` against its `settings` (JSON
@@ -440,8 +480,23 @@ impl DynExport {
         op: busbar_contract::abi::cold::export::HostOp,
     ) -> busbar_contract::abi::cold::export::HostResult {
         use busbar_contract::abi::cold::export::{HostOp, HostResult};
-        if let HostOp::Http(request) = op {
-            return crate::host::carry_async(request).await;
+        match op {
+            HostOp::Http(request) if self.egress.is_default() => {
+                return crate::host::carry_async(request).await;
+            }
+            HostOp::Http(request) => {
+                let body = request.body.clone().into_bytes();
+                return crate::host::carry_under_async(self.egress, request, body).await;
+            }
+            HostOp::HttpBinary(request) => {
+                return match crate::host::octets(&request) {
+                    Ok((head, body)) => {
+                        crate::host::carry_under_async(self.egress, head, body).await
+                    }
+                    Err(failure) => failure,
+                };
+            }
+            _ => {}
         }
         let acted = tokio::task::spawn_blocking(move || self.perform(&op)).await;
         acted.unwrap_or_else(|e| HostResult::Failed {
@@ -529,6 +584,7 @@ fn export_from_raw(raw: RawPlugin, display: &str) -> Result<DynExport, String> {
         streams,
         routes,
         destinations: Default::default(),
+        egress: EgressPolicy::OpenWeb,
     })
 }
 

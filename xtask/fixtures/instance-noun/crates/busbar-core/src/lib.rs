@@ -23,5 +23,5 @@ pub fn hashicorp_vault_leak() {}
 pub fn hook_test_plugin_leak() {}
 pub fn export_example_plugin_leak() {}
 pub fn busbar_store_memory_leak() {}
-pub fn busbar_store_example_plugin_leak() {}
+pub const GOVERNANCE_STORE_MEMORY_LEAK: &str = "memory";
 pub fn busbar_hooks_ranking_leak() {}

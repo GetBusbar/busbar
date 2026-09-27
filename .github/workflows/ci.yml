@@ -312,6 +312,10 @@ jobs:
         run: python3 scripts/extract-inline-tests.py --selftest
       - name: secret-accessor seal witness self-test
         run: ./scripts/secret-accessor-seal-witness.sh --selftest
+      - name: linked-axis feature derivation self-test (the feature-sets rows' one source)
+        run: ./scripts/linked-axis-features.sh --selftest
+      - name: oracle premise self-test (a filtered run evaluates its forgivenesses' premises or refuses by name)
+        run: ./bin/oracle premise-selftest
       - name: secret-accessor seal witness (no cdylib plugin reaches a kernel secret accessor)
         run: ./scripts/secret-accessor-seal-witness.sh --check
       - name: qa-gate runner self-test
@@ -1924,9 +1928,9 @@ jobs:
   # THE DELETION-TEST BUILD MATRIX — the enforcement gate (weak form).
   #
   # THE DELETION TEST: for each plane P, with busbar-<P> absent the NEUTRAL crates —
-  # busbar-kernel, busbar-substrate-values, busbar-contract — must still COMPILE (and the binary boots serving no P
+  # busbar-kernel, busbar-contract — must still COMPILE (and the binary boots serving no P
   # protocol). This job is the WEAK form of that test, expressed at the neutral-crate level and made a
-  # PERMANENT, ASSERTED property: build ONLY the three neutral crates with one plane's feature OFF (the
+  # PERMANENT, ASSERTED property: build ONLY the neutral crates with one plane's feature OFF (the
   # other planes kept ON), and with ALL planes off. It is the compile-only complement to the
   # boot-proving `Protocol deletion gate` above (which builds and boots the whole BIN): this leg proves
   # the neutral ABI crates themselves need no plane crate to compile, one plane at a time.
@@ -1995,24 +1999,24 @@ jobs:
             ${{ env.CARGO_HOME }}/git
             target
       - name: Build neutral crates — ${{ matrix.name }}
-        # The three NEUTRAL crates only, no default features, with just the kept plane(s). cargo
-        # applies `--features` to the packages that declare it (busbar-kernel, which absorbed both
-        # busbar-core at 673ecdaaa and busbar-substrate's engine at 5fa320208 and is where the
-        # plane-<P> features are declared today); busbar-substrate-values (the substrate's pure value
-        # leaves) and busbar-contract carry no plane features and are simply built neutral alongside. The
+        # The NEUTRAL crates only, no default features, with just the kept plane(s). cargo
+        # applies `--features` to the packages that declare it (busbar-kernel, which absorbed
+        # busbar-core at 673ecdaaa, busbar-substrate's engine at 5fa320208 and its value leaves at
+        # SD-8, and is where the plane-<P> features are declared today); busbar-contract carries no
+        # plane features and is simply built neutral alongside. The
         # crate NAMES here are the deletion test's subject: while they read `busbar-core`/
         # `busbar-substrate` after the absorptions, this job could not have gone green at all.
         # A red here means a neutral crate still needs the removed plane crate to compile — a
-        # deletion-test failure. The same three are single-sourced for the shell and Rust gates in
+        # deletion-test failure. The same crates are single-sourced for the shell and Rust gates in
         # scripts/plane-keys.sh (NEUTRAL_ROOTS_LIST) and xtask/src/planes.rs (neutral_src_roots).
         run: |
           set -euo pipefail
           FEATS="${{ matrix.features }}"
           if [ -n "$FEATS" ]; then
-            cargo build -p busbar-kernel -p busbar-substrate-values -p busbar-contract \
+            cargo build -p busbar-kernel -p busbar-contract \
               --no-default-features --features "$FEATS" --locked --verbose
           else
-            cargo build -p busbar-kernel -p busbar-substrate-values -p busbar-contract \
+            cargo build -p busbar-kernel -p busbar-contract \
               --no-default-features --locked --verbose
           fi
       - name: Latchkey Fast Cache (cargo registry + target, save)
@@ -2059,9 +2063,10 @@ jobs:
     # plus one set of crate test binaries; `check`'s own workspace clippy+build+test is ~13 min warm
     # and ~40 cold, and a row is a strict subset of that work. 45 leaves cold-cache headroom.
     timeout-minutes: 60
-    # FULL TIER ONLY. Fourteen legs: eight a near-full workspace recompile under a distinct feature
+    # FULL TIER ONLY. Fifteen legs: eight a near-full workspace recompile under a distinct feature
     # closure, six (the single-plane rows and the dropped-in transport row) one root-package build
-    # with its defaults off — a promotion check, not a per-commit one. Skipped on pushes to non-promotion branches
+    # with its defaults off, and one (the dropped-in store row) one plugin crate's own door test — a
+    # promotion check, not a per-commit one. Skipped on pushes to non-promotion branches
     # (integration/**); runs on every pull request, on dev/qa/main, and on workflow_dispatch. `dev`
     # is train-write-only (DECISIONS #67), so skipping only integration/** costs ~the same as a
     # qa-only guard while keeping this job COUNTED and enforced in ci-umbrella. See the tier note at
@@ -2145,31 +2150,40 @@ jobs:
           # crates/busbar/tests, all of which read the build's linked roster, so a cell that needs a
           # plane, a provider codec or the admin surface is gated on what the build links.
           # EVERY SINGLE-PLANE ROW ALSO KEEPS THE DEFAULT NON-PLANE FEATURES: `busbar/transport-tcp`
-          # and the three default export sinks (`busbar/export-prometheus`, `-file`, `-webhook`).
-          # These rows vary PLANES, not wires or sinks. The tcp wire is the floor of a bootable node:
+          # and EVERY default export sink. These rows vary PLANES, not wires or sinks. The sinks are
+          # not hand-listed: `default_axes: exports` makes the "Effective features" step append
+          # `scripts/linked-axis-features.sh exports` — the root manifest's default rows on the
+          # `exports` axis, the one source — so a new default sink is carried without a workflow
+          # edit (a hand-listed row missed export-otlp when it became default), and
+          # `cargo xtask gate feature-sets` reds a row whose effective list misses one. The tcp wire is the floor of a bootable node:
           # a build without it boots only with a dropped-in tcp, and without one it refuses at the
-          # seal ("transport `tls` composes over `tcp`, which no registered transport provides"). A
+          # seal ("transport `http` composes over `tcp`, which no registered transport provides"). A
           # row without the sinks refuses every config naming one as an unknown exporter. Either
           # way, the suites would test a refusal instead of the behaviour they are written for.
           # The no-tcp build is its own row below.
           - name: single plane llm
-            features: busbar/proto-llm,busbar/transport-tcp,busbar/export-prometheus,busbar/export-file,busbar/export-webhook
+            features: busbar/proto-llm,busbar/transport-tcp
+            default_axes: exports
             tests: -p busbar --tests --no-default-features
             scope: package
           - name: single plane mcp
-            features: busbar/plane-mcp,busbar/transport-tcp,busbar/export-prometheus,busbar/export-file,busbar/export-webhook
+            features: busbar/plane-mcp,busbar/transport-tcp
+            default_axes: exports
             tests: -p busbar --tests --no-default-features
             scope: package
           - name: single plane a2a
-            features: busbar/plane-a2a,busbar/transport-tcp,busbar/export-prometheus,busbar/export-file,busbar/export-webhook
+            features: busbar/plane-a2a,busbar/transport-tcp
+            default_axes: exports
             tests: -p busbar --tests --no-default-features
             scope: package
           - name: single plane voice
-            features: busbar/plane-voice,busbar/transport-tcp,busbar/export-prometheus,busbar/export-file,busbar/export-webhook
+            features: busbar/plane-voice,busbar/transport-tcp
+            default_axes: exports
             tests: -p busbar --tests --no-default-features
             scope: package
           - name: single plane decision
-            features: busbar/plane-decision,busbar/transport-tcp,busbar/export-prometheus,busbar/export-file,busbar/export-webhook
+            features: busbar/plane-decision,busbar/transport-tcp
+            default_axes: exports
             tests: -p busbar --tests --no-default-features
             scope: package
           # THE DROPPED-IN TRANSPORT DOOR (#3 OWNER-LOCKED, #30; ruling K8b residue / K8c): the root
@@ -2182,8 +2196,17 @@ jobs:
           # finds by kind and refuses to skip without under CI. `check` runs the same test with the
           # default (linked) row only.
           - name: dropped-in tcp transport
-            features: busbar/auth-admin-tokens,busbar/hooks-ranking,busbar/proto-llm,busbar/plane-mcp,busbar/plane-a2a,busbar/plane-voice,busbar/plane-decision,busbar/export-file,busbar/export-webhook,busbar/export-prometheus,busbar/root-admin
+            features: busbar/auth-admin-tokens,busbar/hooks-ranking,busbar/proto-llm,busbar/plane-mcp,busbar/plane-a2a,busbar/plane-voice,busbar/plane-decision,busbar/root-admin
+            default_axes: exports
             tests: -p busbar-plugin-loader -p busbar --no-default-features --test transport_dropped_in_serves
+            scope: package
+          # THE DROPPED-IN STORE DOOR (#2; R-FIX1, DOOR-STORE): busbar-store-memory's cdylib door is
+          # compiled only under its non-default `dropped-in` feature, so this row is what type-checks
+          # and runs it on its own — the door's BUSBAR_COLD_ENTRY opens the crate's own store and
+          # answers a store operation as the store answers it directly (tests/dropped_in_door.rs).
+          - name: dropped-in memory store
+            features: busbar-store-memory/dropped-in
+            tests: -p busbar-store-memory --test dropped_in_door
             scope: package
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -2199,12 +2222,23 @@ jobs:
             ${{ env.CARGO_HOME }}/registry
             ${{ env.CARGO_HOME }}/git
             target
+      - name: Effective features — ${{ matrix.name }}
+        # The row's own `features:` plus, for each axis in `default_axes:`, the root manifest's
+        # default rows on that axis (scripts/linked-axis-features.sh, the one source).
+        run: |
+          set -euo pipefail
+          f="${{ matrix.features }}"
+          for axis in ${{ matrix.default_axes }}; do
+            extra="$(./scripts/linked-axis-features.sh "$axis")"
+            [ -n "$extra" ] && f="$f,$extra"
+          done
+          echo "effective features: $f"
+          echo "FS_FEATURES=$f" >> "$GITHUB_ENV"
       - name: Clippy — ${{ matrix.name }}
-        run: cargo clippy ${{ matrix.scope == 'package' && matrix.tests || '--workspace' }} --all-targets --features "${{ matrix.features }}" --locked -- -D warnings
+        run: cargo clippy ${{ matrix.scope == 'package' && matrix.tests || '--workspace' }} --all-targets --features "$FS_FEATURES" --locked -- -D warnings
       - name: Plugin cdylibs the suites dlopen
-        # MEASURED, not precautionary. `cargo test -p busbar-core` alone fails eleven tests with
-        # "the busbar-store-example-plugin cdylib is not built at target/debug/…", and
-        # `cargo test -p busbar-llm` one more on the hook-test plugin: those batteries cross the REAL
+        # MEASURED, not precautionary. `cargo test -p busbar-llm` alone fails a test on the hook-test
+        # plugin's cdylib not being built at target/debug/…: those batteries cross the REAL
         # plugin C ABI on purpose and REFUSE to skip when the artifact is missing. The `check` job
         # never sees it because `cargo build --workspace` has already produced every cdylib by the
         # time its tests run. A per-package test run has to say so itself. ~30 s, and the alternative
@@ -2215,17 +2249,19 @@ jobs:
         # that the plane ABI has a real rider ("no 0-caller ABI"), and a
         # missing artifact would make all seven of its tests pass vacuously. They panic under CI rather
         # than skip for exactly that reason; this line is what keeps them from having to.
+        #
+        # The auth kind's cdylib is not on the list: it is the REAL token-verifying module
+        # (GetBusbar/auth-oidc), a pinned git dev-dependency of busbar-kernel, busbar and
+        # busbar-plugin-loader, so each of those crates' own test build carries it.
         run: |
           cargo build --locked \
-            -p busbar-store-example-plugin \
             -p busbar-hook-test-plugin \
-            -p busbar-auth-static-plugin \
             -p busbar-export-example-plugin \
             -p busbar-plugin-example-plane
       - name: Tests — ${{ matrix.name }}
         # The OWNING crates' suites, with the feature on. Compiling the `#[cfg]`-ed code proves it is
         # valid Rust; running the suite is what proves it does anything.
-        run: cargo test ${{ matrix.tests }} --features "${{ matrix.features }}" --locked
+        run: cargo test ${{ matrix.tests }} --features "$FS_FEATURES" --locked
       - name: Latchkey Fast Cache (cargo registry + target, save)
         uses: latchkey-dev/cache-action@d0dd21912a57c7435649c77f689b68d348d8a662 # v1
         with:
@@ -2529,12 +2565,8 @@ jobs:
   # feature-covered: busbar-voice-codec/runtime -- check -- the Voice runtime tests step names -p busbar-voice-codec --features runtime
   # feature-covered: busbar-kernel/plane-voice -- check -- reached from the root binary's default plane-voice in the workspace build
   # feature-covered: busbar-kernel/runtime -- check -- reached from the plane-voice forward in the workspace default build
-  # feature-covered: busbar-substrate-values/dispatch -- check -- reached from busbar-kernel/dispatch in the default build
-  # feature-covered: busbar-substrate-values/relay -- check -- reached from busbar-kernel/relay in the default build
-  # feature-covered: busbar-substrate-values/runtime -- check -- reached from busbar-kernel/runtime in the default build
   # feature-covered: busbar-kernel-identity/sha256 -- check -- reached from the default auth-admin-tokens closure in the workspace build
   # feature-covered: busbar-kernel/test-support -- check -- unified in by a dev-dependency under cargo clippy --workspace --all-targets
-  # feature-covered: busbar-substrate-values/test-support -- check -- unified in by a dev-dependency under --all-targets in that job
   # feature-covered: busbar-a2a/test-support -- check -- unified in by a dev-dependency under --all-targets in that job
   # feature-covered: busbar-a2a/auth-admin-tokens -- check -- unified in by a dev-dependency under --all-targets in that job
   # feature-covered: busbar-mcp/test-support -- check -- unified in by a dev-dependency under --all-targets in that job
@@ -2542,8 +2574,8 @@ jobs:
   # feature-covered: busbar-llm/test-support -- check -- unified in by a dev-dependency under --all-targets in that job
   # feature-covered: busbar-llm-codec/test-support -- check -- unified in by a dev-dependency under --all-targets in that job
   # feature-covered: busbar-core-admin/openapi-schema -- openapi-schema -- the job clippies and tests -p busbar-core-admin with the feature named
-  # feature-covered: busbar-contract/dispatch -- check -- reached from busbar-substrate-values/dispatch in the workspace default build (transport axis folded into busbar-contract, DECISIONS #38)
-  # feature-covered: busbar-contract/runtime -- check -- reached from busbar-substrate-values/runtime in the workspace default build (transport axis folded into busbar-contract, DECISIONS #38)
+  # feature-covered: busbar-contract/dispatch -- check -- reached from busbar-kernel/dispatch in the workspace default build (transport axis folded into busbar-contract, DECISIONS #38)
+  # feature-covered: busbar-contract/runtime -- check -- reached from busbar-kernel/runtime in the workspace default build (transport axis folded into busbar-contract, DECISIONS #38)
   # feature-covered: busbar-transport-tcp/dropped-in -- build-release -- the tcp transport's dropped-in artifact is built in its own invocation after the canonical binary, and its three door symbols are asserted
 
   # THE MECHANICAL DEFINITION OF "PLUGIN". Anything busbar calls a plugin must be 100% a plugin: make
@@ -2650,29 +2682,42 @@ jobs:
       - name: Loom model of the swap invariant
         run: scripts/loom.sh
 
-  # PLUGIN PROOFS — THE SECRET AND AUTH KINDS, PROVEN BY THE REAL PLUGIN REPOS. The owner deleted
+  # PLUGIN PROOFS — THE SECRET, AUTH, STORE AND HOOK KINDS, PROVEN BY THE REAL PLUGIN REPOS. The owner deleted
   # the in-tree secret and auth fixtures ("these are trash … real plugins are the examples",
   # docs/design/1.6.0-QUESTIONS.md "FIXTURES"); the proofs of those two kinds are
-  # GetBusbar/hashicorp-vault (secret) and GetBusbar/auth-github (auth). Both repos name busbar by the
-  # sibling path `../../busbar/crates/…` from each crate dir, so they are checked out beside THIS
-  # checkout (`busbar/`, `hashicorp-vault/`, `auth-github/` under one workspace) and build against
-  # the tree under test, not against the rev their `.busbar-ref` pins. Their cdylibs land in one
-  # target dir, and `busbar-plugin-loader`'s `plugin_proof_tests` (`#[ignore]`d locally) dlopens each
-  # through the dropped-in door: the kind handshake, one real operation, and the RED arms (the same
-  # bytes signed as the other kind refused naming both kinds; an empty config refused in the
-  # plugin's own words). Unlocked on purpose: the plugin repos' lockfiles pin THEIR resolution, and
-  # this job's question is whether they build against this tree.
+  # GetBusbar/hashicorp-vault (secret) and GetBusbar/auth-github (auth). Both repos depend on busbar
+  # by `git` at the rev their `.busbar-ref` pins, and name busbar-contract alone (#40; plus
+  # busbar-plugin-loader dev-only). Each is checked out at `dev` beside THIS checkout and built with
+  # both busbar crates `[patch]`ed to THIS tree through cargo config (no manifest edit: what builds is
+  # the plugin's own source against the tree under test, not against its pin). A patch row that
+  # matches nothing, or a busbar crate still resolving from the pin, fails the job. Their cdylibs land
+  # in one target dir, and `busbar-plugin-loader`'s `plugin_proof_tests` (`#[ignore]`d locally)
+  # dlopens each through the dropped-in door: the kind handshake, one real operation, and the RED
+  # arms (the same bytes signed as the other kind refused naming both kinds; an empty config refused
+  # in the plugin's own words). Unlocked on purpose: the patch rewrites the plugins' busbar source,
+  # and this job's question is whether they build against this tree.
+  #
+  # THE STORE AND HOOK KINDS (R-FIX2: dropped-in door proofs use REAL plugins): GetBusbar/store-sqlite
+  # (the durable store — a durable file, a restart, two nodes on one file) and GetBusbar/webrequest-hook
+  # (the forwarding hook — reject, restrict and a slow upstream, against the proof's own local mock
+  # upstream). Both name busbar-contract alone by git at their `.busbar-ref`, and each is built AT THE
+  # REV THIS FILE PINS (`STORE_SQLITE_REV`, `WEBREQUEST_HOOK_REV`), unpatched and `--locked`: the
+  # artifact proven is byte for byte the one that repo ships, dlopened by THIS tree's loader.
   plugin-proofs:
-    name: plugin proofs · secret + auth by the real plugin repos
+    name: plugin proofs · secret + auth + store + hook by the real plugin repos
     runs-on: latchkey-large
     needs: [preflight]
 
     # BOUNDED — see "EVERY JOB IS BOUNDED" at the top of this file. NEW JOB, no run history yet:
-    # two small plugin workspaces and one loader test binary, cold. Re-measure to p95 x1.5 once
-    # ten green runs exist.
-    timeout-minutes: 30
+    # four small plugin workspaces (store-sqlite compiles a bundled SQLite) and one loader test
+    # binary, cold. Re-measure to p95 x1.5 once ten green runs exist.
+    timeout-minutes: 40
     env:
       CARGO_TARGET_DIR: ${{ github.workspace }}/plugin-proofs-target
+      # The real store and hook plugin commits the proofs run: each repo's `dev` after its
+      # busbar-contract port. Bump deliberately, like any pin.
+      STORE_SQLITE_REV: 04f4c9ee0a151b3d9689553f0fa72ec6429f16b2
+      WEBREQUEST_HOOK_REV: 2861fa4921e95f03c553444627e08409dcf900ab
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -2689,7 +2734,40 @@ jobs:
           repository: GetBusbar/auth-github
           ref: dev
           path: auth-github
+      - name: Checkout the real durable store (GetBusbar/store-sqlite, pinned)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: GetBusbar/store-sqlite
+          ref: ${{ env.STORE_SQLITE_REV }}
+          path: store-sqlite
+      - name: Checkout the real forwarding hook (GetBusbar/webrequest-hook, pinned)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: GetBusbar/webrequest-hook
+          ref: ${{ env.WEBREQUEST_HOOK_REV }}
+          path: webrequest-hook
       - uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
+      - name: Patch the busbar crates both plugins name to this tree
+        # `[patch]` from cargo config, not an edit of the plugins' manifests: what builds is each
+        # plugin's own source, byte for byte, with only the busbar git source redirected here.
+        run: |
+          set -euo pipefail
+          for repo in hashicorp-vault auth-github; do
+            mkdir -p "$repo/.cargo"
+            {
+              echo '[patch."https://github.com/GetBusbar/busbar"]'
+              echo "busbar-contract = { path = \"$GITHUB_WORKSPACE/busbar/crates/busbar-contract\" }"
+              echo "busbar-plugin-loader = { path = \"$GITHUB_WORKSPACE/busbar/crates/plugin-loader\" }"
+            } >> "$repo/.cargo/config.toml"
+            cat "$repo/.cargo/config.toml"
+            ( cd "$repo"
+              if cargo metadata --format-version 1 2>&1 >/dev/null | grep -i "was not used in the crate graph"; then
+                echo "::error::$repo: a busbar patch row matched nothing the plugin names"; exit 1
+              fi
+              if grep -n 'source = "git+https://github.com/GetBusbar/busbar' Cargo.lock; then
+                echo "::error::$repo: a busbar crate still resolves from the plugin's pin, not this tree"; exit 1
+              fi )
+          done
       - name: Build the secret plugin's cdylib against this checkout
         working-directory: hashicorp-vault
         # package-selector: busbar-hashicorp-vault-plugin -- .github/workflows/ci.yml -- GetBusbar/hashicorp-vault is a sibling checkout; `working-directory: hashicorp-vault` resolves this selector against that workspace, never against this one
@@ -2698,11 +2776,29 @@ jobs:
         working-directory: auth-github
         # package-selector: busbar-auth-github-plugin -- .github/workflows/ci.yml -- GetBusbar/auth-github is a sibling checkout; `working-directory: auth-github` resolves this selector against that workspace, never against this one
         run: cargo build -p busbar-auth-github-plugin
-      - name: Dlopen both through the dropped-in door (plugin_proof_tests)
+      - name: Build the durable store's cdylib at its pinned rev
+        working-directory: store-sqlite
+        # package-selector: busbar-store-sqlite-plugin -- .github/workflows/ci.yml -- GetBusbar/store-sqlite is its own checkout; `working-directory: store-sqlite` resolves this selector against that workspace, never against this one
+        run: cargo build --locked -p busbar-store-sqlite-plugin
+      - name: Build the forwarding hook's cdylib at its pinned rev
+        working-directory: webrequest-hook
+        # package-selector: busbar-webrequest-hook-plugin -- .github/workflows/ci.yml -- GetBusbar/webrequest-hook is its own checkout; `working-directory: webrequest-hook` resolves this selector against that workspace, never against this one
+        run: cargo build --locked -p busbar-webrequest-hook-plugin
+      - name: Dlopen all four through the dropped-in door (plugin_proof_tests)
         working-directory: busbar
         env:
           BUSBAR_PLUGIN_PROOF_DIR: ${{ github.workspace }}/plugin-proofs-target/debug
-        run: cargo test --locked -p busbar-plugin-loader --lib plugin_proof_tests -- --ignored
+        run: |
+          set -euo pipefail
+          # FLOOR ON THE MATCH COUNT: the proofs are `#[ignore]`d, so this is their only execution,
+          # and a filter that matches nothing exits 0 having proven nothing. Seven: the five real-plugin
+          # proofs, the task-state restart over the real durable store, and the two-node store proof's
+          # second node (a no-op when run on its own).
+          out="$(cargo test --locked -p busbar-plugin-loader --lib plugin_proof_tests -- --ignored 2>&1 | tee /dev/stderr)"
+          echo "$out" | grep -qE 'test result: ok\. 7 passed' || {
+            echo "::error::plugin_proof_tests did not run exactly the five real-plugin proofs, the task-state restart and the second node"
+            exit 1
+          }
 
   # TIMING GATE: the ignored hot-path latency test, in release mode. Its bounds are deliberately
   # generous (25ms p50 / 250ms p99 through the full in-process router+mock round trip) so runner
@@ -4140,11 +4236,17 @@ jobs:
       matrix:
         include:
           - repo: export-file
-            patch: "busbar-plugin-sdk=crates/plugin-sdk busbar-plugin-loader=crates/plugin-loader"
+            patch: "busbar-contract=crates/busbar-contract busbar-plugin-loader=crates/plugin-loader"
           - repo: export-prometheus
-            patch: "busbar-plugin-sdk=crates/plugin-sdk busbar-plugin-loader=crates/plugin-loader"
+            patch: "busbar-contract=crates/busbar-contract busbar-plugin-loader=crates/plugin-loader"
           - repo: export-webhook
-            patch: "busbar-plugin-sdk=crates/plugin-sdk busbar-plugin-loader=crates/plugin-loader"
+            patch: "busbar-contract=crates/busbar-contract busbar-plugin-loader=crates/plugin-loader"
+          - repo: export-otlp
+            patch: "busbar-contract=crates/busbar-contract busbar-plugin-loader=crates/plugin-loader"
+          - repo: transport-tcp
+            patch: "busbar-contract=crates/busbar-contract busbar-plugin-loader=crates/plugin-loader"
+          - repo: auth-admin-tokens
+            patch: "busbar-contract=crates/busbar-contract busbar-plugin-loader=crates/plugin-loader"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -4229,11 +4331,6 @@ jobs:
       - gate-all
       - plugin-proofs
       - consumers
-    # report-only: plugin-proofs -- the secret and auth kinds' proofs by the REAL plugin repos
-    #   (GetBusbar/hashicorp-vault, GetBusbar/auth-github). RED until both repos build against this
-    #   tree: their Cargo.toml still names `../../busbar/crates/api`, and busbar-api retired at
-    #   7cbf9b133 (fold F4). The umbrella waits for it and prints its result, and counts it the day
-    #   the two repos are ported to busbar-contract and this job is green.
     # report-only: content-debt-gates -- unconstructed, map-proof and sweep-coverage are RED ON HEAD on
     #   content that item 6b (Phase 5) drains, self-test and verdict both, and none has a
     #   gates::REPORT_ONLY posture to score against. The job runs them plainly and goes red; the
@@ -4269,8 +4366,6 @@ jobs:
       CONTENT_DEBT_GATES_RESULT: ${{ needs.content-debt-gates.result }}
       # Report-only: printed, never counted. Flip condition is on the gate-all job.
       GATE_ALL_RESULT: ${{ needs.gate-all.result }}
-      # Report-only: printed, never counted. Flip condition is on the plugin-proofs job.
-      PLUGIN_PROOFS_RESULT: ${{ needs.plugin-proofs.result }}
       # 'true' on any run where the full tier is expected to execute: every event except a push,
       # plus pushes to the three promotion branches. Mirrors the `if:` on the full-tier jobs above,
       # so "expected to run" and "required to have run" cannot drift apart.
@@ -4316,6 +4411,7 @@ jobs:
         teller-steps|full|${{ needs.teller-steps.result }}
         construction-gate|fast|${{ needs.construction-gate.result }}
         consumers|fast|${{ needs.consumers.result }}
+        plugin-proofs|fast|${{ needs.plugin-proofs.result }}
     steps:
       - name: Assert every required job reported green (skip-allowlist only on a fast-tier run)
         run: |
@@ -4344,7 +4440,6 @@ jobs:
           printf '  %-24s %s\n' "construction-gate" "posture verdict=${CONSTRUCTION_VERDICT:-unset} (job result ${CONSTRUCTION_RESULT:-unset}; SCORED)"
           printf '  %-24s %s\n' "content-debt-gates" "job result ${CONTENT_DEBT_GATES_RESULT:-unset} (REPORT-ONLY until item 6b drains it; NOT COUNTED)"
           printf '  %-24s %s\n' "gate-all" "job result ${GATE_ALL_RESULT:-unset} (REPORT-ONLY until gate --all is green on HEAD; NOT COUNTED)"
-          printf '  %-24s %s\n' "plugin-proofs" "job result ${PLUGIN_PROOFS_RESULT:-unset} (REPORT-ONLY until the real plugin repos build against this tree; NOT COUNTED)"
           if [ "$fails" -ne 0 ]; then
             echo "::error::ci umbrella: RED — ${fails} required job(s) did not pass on this ref."
             echo "::error::A skipped, failed, or cancelled required job is NOT a pass. DO NOT PROMOTE."

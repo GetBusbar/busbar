@@ -4,8 +4,14 @@
 //! Platform staging for loading VERIFIED library bytes - the "bytes verified == bytes loaded"
 //! (TOCTOU-safe) half of the loader.
 //!
-//! - **Linux**: `memfd_create` - the verified bytes are written to an anonymous in-memory fd and
-//!   `dlopen`ed via `/proc/self/fd/N`. ZERO disk files, nothing to sweep, nothing to swap.
+//! - **Linux**: `memfd_create` - the verified bytes are written to an anonymous in-memory fd,
+//!   SEALED (no write, grow or shrink, ever again), and `dlopen`ed via `/proc/self/fd/N`. ZERO disk
+//!   files, nothing to sweep, nothing to swap. glibc's `dlopen` matches an already-loaded object
+//!   by its NAME STRING before anything else, and an image can outlive its handle (`DF_1_NODELETE`,
+//!   a thread-local destructor pinning it). So a name is never handed to a second image while an image is
+//!   still registered under it: when a staged image is released but stays resident, its memfd is
+//!   RETAINED for the life of the process (see [`retire_memfd`]), and `N` cannot be recycled for a
+//!   replacement that would otherwise be served the old image instead of its own verified bytes.
 //! - **macOS / Windows** (and any non-Linux unix): the verified bytes are written to a file inside
 //!   a PER-PROCESS private staging directory and loaded from there. Every process stages under ONE
 //!   dedicated parent, `<temp>/busbar-plugin-staging-<uid>` on unix (`<temp>/busbar-plugin-staging`
@@ -131,10 +137,11 @@ fn ensure_staging_parent(temp_base: &std::path::Path) -> Result<PathBuf, String>
 /// this was the last staged file). It MUST be declared AFTER the `Library` in any holder struct so
 /// the library unloads first (Rust drops fields in declaration order).
 pub(crate) enum Staged {
-    /// Linux memfd: the anonymous fd holding the library bytes. Kept open for the library's whole
-    /// life (the dlopen'd mapping does not need it, but holding it is free and unambiguous).
+    /// Linux memfd: the sealed anonymous fd holding the library bytes, whose number is the image's
+    /// `dlopen` NAME (`/proc/self/fd/N`). Kept open for the library's whole life, and past it when
+    /// the image stays resident ([`retire_memfd`]). `None` only once the drop has retired it.
     #[cfg(target_os = "linux")]
-    Memfd { _fd: std::os::fd::OwnedFd },
+    Memfd { fd: Option<std::os::fd::OwnedFd> },
     /// A file inside the per-process private staging directory (non-Linux, or Linux memfd
     /// fallback). Removed on drop; the (shared, per-process) directory is removed too once empty.
     TempFile { path: PathBuf },
@@ -160,8 +167,14 @@ impl Staged {
 impl Drop for Staged {
     fn drop(&mut self) {
         match self {
+            // Unload happened first (field order in the holder). The fd closes, unless the image
+            // is still resident under its name, in which case the name stays reserved.
             #[cfg(target_os = "linux")]
-            Staged::Memfd { .. } => {} // the OwnedFd closes itself
+            Staged::Memfd { fd } => {
+                if let Some(fd) = fd.take() {
+                    retire_memfd(fd);
+                }
+            }
             Staged::TempFile { path } => {
                 // Unload happened first (field order in the holder). Release under the shared
                 // staging lock: remove the file, and remove the per-process directory only when
@@ -346,7 +359,7 @@ fn load_via_memfd(bytes: &[u8], display: &str) -> Result<(Library, Staged), Stri
         libc::syscall(
             libc::SYS_memfd_create,
             c"busbar-plugin".as_ptr(),
-            libc::MFD_CLOEXEC,
+            libc::MFD_CLOEXEC | libc::MFD_ALLOW_SEALING,
         )
     };
     if raw < 0 {
@@ -366,12 +379,75 @@ fn load_via_memfd(bytes: &[u8], display: &str) -> Result<(Library, Staged), Stri
             .and_then(|()| f.flush())
             .map_err(|e| format!("memfd write: {e}"))?;
     }
-    let path = format!("/proc/self/fd/{}", fd.as_raw_fd());
+    // SEAL before the map: from here the memfd's content can never change again, through this fd,
+    // a `/proc/<pid>/fd/N` reopen, or anything else. The bytes `dlopen` maps are the verified
+    // bytes, and so is every page of a MAP_PRIVATE mapping not yet copied-on-write.
+    // SAFETY: plain fcntl on an fd we own; no pointers.
+    let sealed = unsafe {
+        libc::fcntl(
+            fd.as_raw_fd(),
+            libc::F_ADD_SEALS,
+            libc::F_SEAL_WRITE | libc::F_SEAL_GROW | libc::F_SEAL_SHRINK | libc::F_SEAL_SEAL,
+        )
+    };
+    if sealed < 0 {
+        return Err(format!(
+            "memfd seal failed: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    let path = memfd_name(&fd);
     // SAFETY: same operator-trust as any plugin load; the fd content is exactly the verified bytes
-    // and is not reachable by path from any other process's namespace.
+    // and is not reachable by path from any other process's namespace. The name is not held by any
+    // resident image: a released image that stays resident keeps its fd, so `N` is not free.
     let lib = crate::dlopen_on_worker(std::ffi::OsStr::new(&path))
         .map_err(|e| format!("failed to load plugin '{display}' from memfd: {e}"))?;
-    Ok((lib, Staged::Memfd { _fd: fd }))
+    Ok((lib, Staged::Memfd { fd: Some(fd) }))
+}
+
+/// The `dlopen` name of a staged memfd: `/proc/self/fd/N`.
+#[cfg(target_os = "linux")]
+fn memfd_name(fd: &std::os::fd::OwnedFd) -> String {
+    use std::os::fd::AsRawFd as _;
+    format!("/proc/self/fd/{}", fd.as_raw_fd())
+}
+
+/// Memfds whose image outlived its handle. Held for the life of the process: while an image is in
+/// the link map under `/proc/self/fd/N`, `N` must never be recycled (glibc would serve that image
+/// to the next `dlopen` of the same name). Costs one fd per such release; the pages are already
+/// pinned by the resident mapping, so it costs no memory.
+#[cfg(target_os = "linux")]
+static RETAINED_MEMFDS: Mutex<Vec<std::os::fd::OwnedFd>> = Mutex::new(Vec::new());
+
+/// Release a staged memfd AFTER its library handle was closed. If the link map still holds an
+/// image under the fd's name (the image outlived its handle), the fd is retained forever so the
+/// name stays reserved; otherwise it closes and the number is free for reuse, since nothing can
+/// match it any more.
+#[cfg(target_os = "linux")]
+fn retire_memfd(fd: std::os::fd::OwnedFd) {
+    if name_still_loaded(&memfd_name(&fd)) {
+        RETAINED_MEMFDS
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .push(fd);
+    }
+}
+
+/// Does the dynamic linker still hold an object under `name`? `RTLD_NOLOAD` never maps or
+/// initialises anything: it only answers from the link map (a hit takes a reference, dropped at
+/// once — the image stays resident, so no `.fini_array` runs). Runs on the FFI worker like every
+/// other `dlopen`/`dlclose`. A probe that cannot answer counts as loaded: retaining an fd is the
+/// safe mistake, recycling a name still in use is the defect.
+#[cfg(target_os = "linux")]
+fn name_still_loaded(name: &str) -> bool {
+    let probe = crate::ffi_thread::on_plugin_thread(|| {
+        // SAFETY: RTLD_NOLOAD loads nothing and runs no initialiser; see the doc comment.
+        let found = unsafe {
+            libloading::os::unix::Library::open(Some(name), libc::RTLD_NOLOAD | libc::RTLD_LAZY)
+        };
+        found.is_ok()
+    });
+    probe.unwrap_or(true)
 }
 
 /// Is the process with `pid` alive? Unix: `kill(pid, 0)` (EPERM still means alive). Non-unix:

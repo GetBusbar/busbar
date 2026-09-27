@@ -262,9 +262,8 @@ fn mint<R>(
         .cast_mut()
         .cast::<std::os::raw::c_void>();
     let host = HostCtx::new(ptr, generation.value(), HostCtx::KIND_PLANE_HOST);
-    let out = f(host, &vtable);
-    let _keep_alive = &state;
-    out
+    // `state` and `generation` are locals, dropped only after this tail call returns.
+    f(host, &vtable)
 }
 
 /// Sign a plane-framed agent-card signing input through the host [`card_sign`](vtable) seam,
@@ -596,7 +595,7 @@ impl busbar_kernel::plane_host::BreakerHost for EngineHostImpl {
         &self,
         pool: &str,
         lane: usize,
-        sig: &busbar_substrate_values::breaker::CanonicalSignal,
+        sig: &busbar_contract::upstream::CanonicalSignal,
     ) {
         self.app.plane_breakers.record_signal(pool, lane, sig);
     }
@@ -650,11 +649,7 @@ impl busbar_kernel::plane_host::LanePoolHost for EngineHostImpl {
 // so a statically-linked plane's session and a dlopen plane's lease are one ledger. Only the pricing is
 // this host's: its bound snapshot's rate card.
 impl busbar_kernel::plane_host::MeteringHost for EngineHostImpl {
-    fn price_usage(
-        &self,
-        model: &str,
-        usage: &busbar_substrate_values::billing::Usage,
-    ) -> Option<u128> {
+    fn price_usage(&self, model: &str, usage: &busbar_contract::billing::Usage) -> Option<u128> {
         // Price against the BOUND snapshot's resolved `CostModel` — the SAME rate card + arithmetic the
         // LLM enforcement/derive path prices with (a new reader, not a new pricer), so a live voice
         // carrier meters against the deployment's real rates while staying plane-neutral.
@@ -960,7 +955,7 @@ impl busbar_kernel::plane_host::BudgetHost for EngineHostImpl {
         key: &busbar_contract::records::VirtualKey,
         pool: &str,
         model: &str,
-        usage: &busbar_substrate_values::billing::Usage,
+        usage: &busbar_contract::billing::Usage,
         now: u64,
     ) {
         // Recover the concrete gov/cost the plane's pin was minted over and drive the SAME accrual
@@ -979,7 +974,7 @@ impl busbar_kernel::plane_host::BudgetHost for EngineHostImpl {
         key_id: &str,
         model: &str,
         provider: &str,
-        usage: Option<&busbar_substrate_values::billing::TokenUsage>,
+        usage: Option<&busbar_contract::billing::TokenUsage>,
         now: u64,
     ) {
         if let Ok(g) = gov.0.clone().downcast::<crate::governance::GovState>() {
@@ -1580,13 +1575,13 @@ pub fn transform_over_over(
 /// rewrite hook acts on. The content ceiling is enforced on serialized bytes exactly as the LLM seam
 /// enforces it.
 ///
-/// [`IrFacts`]: busbar_substrate_values::ir::facts::IrFacts
+/// [`IrFacts`]: busbar_contract::ir::facts::IrFacts
 fn build_invoke_rewrite_request<'a>(
-    facts: &'a dyn busbar_substrate_values::ir::facts::IrFacts,
+    facts: &'a dyn busbar_contract::ir::facts::IrFacts,
     ingress_protocol: &'a str,
     request_id: u64,
 ) -> busbar_contract::hooks::RoutingRequest<'a> {
-    use busbar_substrate_values::ir::facts::Slot;
+    use busbar_contract::ir::facts::Slot;
     use std::borrow::Cow;
     let shape = facts.shape();
     let mut system_pieces: Vec<String> = Vec::new();

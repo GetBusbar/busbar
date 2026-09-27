@@ -124,8 +124,10 @@ auth = ["crates/auth-*"]
 # export crate sat outside the family, unscanned. A glob that stops matching its own kind is the
 # same failure class as a census row that stops counting.
 export = ["crates/export-*", "crates/busbar-export-*"]
-# NON-PLUGIN-KIND infra families: unit (core governance steps), loader and abi (TCB crates).
-unit = ["crates/busbar-unit-*"]
+# NON-PLUGIN-KIND infra families: loader and abi (TCB crates). `unit` is STRUCK (fold F14 2/2): the
+# spec lists it among the NOT-kinds ("unit (core's own workflow)"), the last `busbar-unit-*` crate
+# folded into `busbar-kernel-identity` (#36), and kind-isolation retired the kind in the same
+# commit. `[rules.loc-ceilings] unit_crate_glob` still counts any `busbar-unit-*` crate at 0.
 loader = ["crates/plugin-loader"]
 abi = ["crates/busbar-contract"]
 
@@ -253,19 +255,65 @@ busbar-voice = ["busbar-voice-codec"]
 # both as "a declared raise ... that is not a raise at the base". THE CEILINGS DID NOT MOVE: both
 # still read 9463. The next merge into busbar-contract declares its own re-arm here, once.
 
-# ── THE CONTRACT CEILING PAIR, RE-ARMED BY THE #84 MERGE (busbar-plugin + the SDK into the contract) ─
+# ── THE CONTRACT CEILING PAIR, RE-ARMED BY THE #84 MERGE (busbar-plugin + the SDK into the
+#    contract) — EXPIRED AND STRUCK
+#
+# Declared `gate.surface_ceilings.contract_caps` and `rules.loc-ceilings.caps_contract_ceiling`
+# 9463 -> 14720 (OWNER RULING Q68(3), ARCHITECT O2): the re-arm at the measured value after the #84
+# merge. Its commit reached the base; struck by CONTRACT-PURE (ARCHITECT F6 queue (4)), whose commit
+# lowers both to their measurement, 14711, so the declaration no longer describes either number.
+
+# ── THE CONTRACT CEILING PAIR, RE-ARMED BY K9e-2's BINARY EGRESS BODY (export ABI minor 10) —
+#    EXPIRED AND STRUCK
+#
+# Declared `gate.surface_ceilings.contract_caps` and `rules.loc-ceilings.caps_contract_ceiling`
+# 14711 -> 14712 (OWNER RULING Q68(3); ARCHITECT RULING K9e carrier (i); OWNER ANSWER Q75): the
+# re-arm after HostOp::HttpBinary (+1). Its commit reached the base; struck by HOTDOOR-B's re-arm,
+# which declares the pair's next figure below.
+
+# ── THE CONTRACT CEILING PAIR, RE-ARMED BY HOTDOOR-B (the HOT ABI's minor-30 carrier and host services) —
+#    EXPIRED AND STRUCK
+#
+# Declared `gate.surface_ceilings.contract_caps` and `rules.loc-ceilings.caps_contract_ceiling`
+# 14712 -> 15015 (OWNER RULING Q68(3)): the re-arm after HOTDOOR-B's minor-30 carrier and host-service
+# slots (+303). Its commit reached the base; struck by TRANSPORT-STACK's re-arm, which declares the
+# pair's next figure below.
+
+# ── THE CONTRACT CEILING PAIR, RE-ARMED BY TRANSPORT-STACK (the carrier and framer traits) —
+#    EXPIRED AND STRUCK
+#
+# Declared `gate.surface_ceilings.contract_caps` and `rules.loc-ceilings.caps_contract_ceiling`
+# 15015 -> 15206 (OWNER RULING Q68(3)): the re-arm after TRANSPORT-STACK step 1's traits (+191). Its
+# commit reached the base; struck by step 2's re-arm, which declares the pair's next figure below.
+
+# ── THE CONTRACT CEILING PAIR, RE-ARMED BY TRANSPORT-STACK (the transport HOT lowering) —
+#    EXPIRED AND STRUCK
+#
+# Declared `gate.surface_ceilings.contract_caps` and `rules.loc-ceilings.caps_contract_ceiling`
+# 15206 -> 16477 (OWNER RULING Q68(3)). Its commit reached the base; struck by HOTDOOR-B queue 2's
+# re-arm, which declares the pair's next figure below.
+
+# ── THE CONTRACT CEILING PAIR, RE-ARMED BY HOTDOOR-B QUEUE 2 (PlaneDecl dispatch_flags, ABI minor 32) ─
 
 [gate.ceiling_raises."gate.surface_ceilings.contract_caps"]
 file    = "qa/construction.toml"
-from    = 9463
-to      = 14720
-because = "OWNER RULING Q68(3) (docs/design/1.6.0-QUESTIONS.md), ARCHITECT O2: contract_caps re-arms at the MEASURED value after each owner-locked #83/#84 merge into busbar-contract, each in its own commit. This is the re-arm for the #84 merge (spec #84: the SDK and the contract share one definition, so they MERGE): busbar-plugin (the airlock root, the COLD and HOT lanes) and busbar-plugin-sdk (the export macros, the export boundary, the one dropped-in door) moved verbatim into busbar_contract::abi and busbar_contract::abi::sdk, with the transport door (export_transport!) and the unsafe-policy module line, +5257 code lines. Measured by cargo xtask gate construction: 9463 before the merge, 14720 with it; both source crates are deleted, so the lines moved and did not grow."
+from    = 16477
+to      = 16482
+because = "OWNER RULING Q68(3) (docs/design/1.6.0-QUESTIONS.md): contract_caps re-arms at the MEASURED value, in its own commit. This is the re-arm for HOTDOOR-B queue 2 (765b2ddc9; ARCHITECT 2026-09-27, #30 HOT lane): hot::PlaneDecl appends dispatch_flags (+ padding) and hot::decl::DISPATCH_BLOCKS at ABI minor 32, so a plane's dispatch runs inline on the request's worker unless it declares it blocks, +5 code lines. Measured by cargo xtask loc: 16477 before, 16482 after."
 
 [gate.ceiling_raises."rules.loc-ceilings.caps_contract_ceiling"]
 file    = "qa/construction.toml"
-from    = 9463
-to      = 14720
-because = "OWNER RULING Q68(3) (docs/design/1.6.0-QUESTIONS.md), ARCHITECT O2: contract_caps re-arms at the MEASURED value after each owner-locked #83/#84 merge into busbar-contract, each in its own commit. This is the re-arm for the #84 merge (spec #84: the SDK and the contract share one definition, so they MERGE): busbar-plugin (the airlock root, the COLD and HOT lanes) and busbar-plugin-sdk (the export macros, the export boundary, the one dropped-in door) moved verbatim into busbar_contract::abi and busbar_contract::abi::sdk, with the transport door (export_transport!) and the unsafe-policy module line, +5257 code lines. Measured by cargo xtask gate construction: 9463 before the merge, 14720 with it; both source crates are deleted, so the lines moved and did not grow."
+from    = 16477
+to      = 16482
+because = "OWNER RULING Q68(3) (docs/design/1.6.0-QUESTIONS.md): contract_caps re-arms at the MEASURED value, in its own commit. This is the re-arm for HOTDOOR-B queue 2 (765b2ddc9; ARCHITECT 2026-09-27, #30 HOT lane): hot::PlaneDecl appends dispatch_flags (+ padding) and hot::decl::DISPATCH_BLOCKS at ABI minor 32, so a plane's dispatch runs inline on the request's worker unless it declares it blocks, +5 code lines. Measured by cargo xtask loc: 16477 before, 16482 after."
+
+# ── THE KERNEL CEILING, RE-ARMED BY SD-8 (the substrate-values kernel landing) ─────────────────
+
+[gate.ceiling_raises."rules.loc-ceilings.kernel_ceiling"]
+file    = "qa/construction.toml"
+from    = 51100
+to      = 54801
+because = "OWNER RULING Q69(3) (docs/design/1.6.0-QUESTIONS.md): kernel and contract ceilings re-arm at the MEASURED value after each owner-locked move commit, in its own commit (Q68(3) pattern; ARCHITECT R-KERNEL, sd-extra.txt). This is the re-arm for SD-8 (3/4, 256435c91): the KERNEL-SEMANTICS/HOST items of the deleted busbar-substrate-values land in busbar-kernel per O1. loc-ceilings:kernel measures 51090 before (d946dbcc4) and 54791 after, +3701; the ceiling rises by exactly that, keeping K2g's named reservation as the base held it."
 
 # ── THE KERNEL CEILING'S OWNER-APPROVED RAISE — EXPIRED AND STRUCK ─────────────────────────────
 #
@@ -393,7 +441,25 @@ because = "ARCHITECT ruling on the kernel budget (R-KERNEL, sd-extra.txt; K2-0 u
 # RE-ARMED 9463 -> 14720, AT THE MEASUREMENT (OWNER RULING Q68(3)), in its own commit after the #84
 # merge moved busbar-plugin and busbar-plugin-sdk into busbar_contract::abi (+5257, moved lines); the
 # live declaration above carries the measure.
-contract_caps = 14720
+# LOWERED 14720 -> 14711, AT THE MEASUREMENT (standing downward re-pin rule), by CONTRACT-PURE
+# (ARCHITECT F6 queue (4)): the SDK's host-log bridge left contract code — the eprintln fallback is
+# deleted and the `tracing` forwarder is generated by `export_plugin!` into the plugin image (-9).
+# RE-ARMED 14711 -> 14712, AT THE MEASUREMENT (OWNER RULING Q68(3); ARCHITECT RULING K9e carrier (i);
+# OWNER ANSWER Q75), in its own commit after export ABI minor 10's HostOp::HttpBinary (+1); the live
+# declaration above carries the measure.
+# RE-ARMED 14712 -> 15015, AT THE MEASUREMENT (OWNER RULING Q68(3)), in its own commit after HOTDOOR-B
+# appended the HOT ABI's minor-30 carrier and host-service slots (+303); the live declaration above
+# carries the measure.
+# RE-ARMED 15015 -> 15206, AT THE MEASUREMENT (OWNER RULING Q68(3)), in its own commit after
+# TRANSPORT-STACK step 1 added the carrier and framer traits and the transport row (+191); the live
+# declaration above carries the measure.
+# RE-ARMED 15206 -> 16477, AT THE MEASUREMENT (OWNER RULING Q68(3)), in its own commit after
+# TRANSPORT-STACK step 2 lowered the carrier and framer traits to the HOT ABI (+1271); the live
+# declaration above carries the measure.
+# RE-ARMED 16477 -> 16482, AT THE MEASUREMENT (OWNER RULING Q68(3)), in its own commit after HOTDOOR-B
+# queue 2 appended PlaneDecl's dispatch_flags at ABI minor 32 (+5); the live declaration above
+# carries the measure.
+contract_caps = 16482
 # REPOINTED, and the repoint is what makes this row a gate again. It named the CRATE
 # `busbar-grammar`, which #40 folded into `busbar-contract` and deleted — so it summed nothing,
 # measured nothing and passed, which is this file's own "zero is not clean" failure sitting inside
@@ -461,7 +527,7 @@ needle = "busbar_kernel::"
 # measurement on the committed tree (HEAD b091b4e83), a raise the owner ruled is a needle repair
 # arming the true count, not a relaxation of what the instrument ever saw. Downward only from here.
 [rules.ports-only.max_per_crate]
-busbar-llm = 253
+busbar-llm = 252
 busbar-mcp = 285
 busbar-a2a = 236
 busbar-voice = 88
@@ -473,7 +539,7 @@ counts can trend to zero at their own pace."""
 # item 376 (Q11/Q32, owner-signed 2026-09-24): same needle repair as ports-only above, pinned at
 # TODAY's measurement on the committed tree (HEAD b091b4e83). Downward only from here.
 [rules.ports-only-tests.max_per_crate]
-busbar-llm = 999
+busbar-llm = 990
 busbar-mcp = 188
 busbar-a2a = 98
 busbar-voice = 43
@@ -484,11 +550,11 @@ why = """An installable seam (a substrate `install_*` / `set_*_factory` that fil
 static) is a promise that boot fills it. A seam only the test kit installs is a seam production \
 never fills — the stream-translator factory fault that made real streams pass through \
 untranslated while every test was green."""
-# BOTH HALVES of the substrate, AS THEY EXIST TODAY. The value families split into
-# `busbar-substrate-values` so a plane's closure resolves no hyper/reqwest/tokio edge, and
-# `install_protocols`, `install_stream_translator_factory` and `install_diagnostics` all went with
-# them — that root is what keeps this rule reading the seams the fault it exists for actually
-# lived in.
+# BOTH HALVES of the substrate are in the kernel today. The value families split into
+# `busbar-substrate-values` so a plane's closure resolves no hyper/reqwest/tokio edge, taking
+# `install_protocols`, `install_stream_translator_factory` and `install_diagnostics` with them; that
+# crate is deleted (#83a SD-8) and the three seams are the kernel's again (`proto/installed.rs`,
+# `diagnostics/mod.rs`), so the one kernel root reads every seam the fault it exists for lived in.
 #
 # THE ENGINE HALF IS `crates/busbar-kernel/src`, NOT `crates/busbar-substrate/src`. This row named
 # the deleted path and therefore scanned a population of ZERO on that side — a ban over nothing,
@@ -502,7 +568,7 @@ untranslated while every test was green."""
 # Measured at `5fa320208^`: `crates/busbar-substrate/src` held ELEVEN `pub fn install_*` seams and
 # `crates/busbar-core/src` held SIX; all seventeen stand today under `crates/busbar-kernel/src` at
 # the same relative path, nine of them at the SAME LINE NUMBER. The subject moved; the name did not.
-seam_root = ["crates/busbar-kernel/src", "crates/busbar-substrate-values/src"]
+seam_root = ["crates/busbar-kernel/src"]
 seam_name_pattern = '^(install_[a-z0-9_]+|set_[a-z0-9_]+_factory)$'
 # A file whose path contains one of these is NOT production and cannot count as an installer.
 non_production_path_fragments = ["testkit", "test_support", "plugin-testkit", "fixtures.rs"]
@@ -935,7 +1001,26 @@ kernel_crate = "busbar-kernel"
 # ── 51161 -> 51160: the kernel measures 51087 after the #84 merge re-pointed its plugin-ABI imports
 # at busbar_contract::abi (one import tree collapsed), and 51087 + K2g's 73 named lines = 51160.
 # Downward only.
-kernel_ceiling = 51160
+# ── 51160 -> 51159: the kernel measures 51086 after DOOR-STORE (R-FIX3) replaced the test-support
+# store-plugin locator with the in-crate durable store double, and 51086 + K2g's 73 named lines =
+# 51159. Downward only.
+# ── 51159 -> 51158: the kernel measures 51085 after HOTDOOR-B (the plane-door mint's redundant
+# keep-alive borrow dropped, the minor-30 host services granted by one struct-update line), and
+# 51085 + K2g's 73 named lines = 51158. Downward only.
+# ── 51158 -> 51103: K9e-2 — the kernel's `otlp` built-in (OtlpSettings, its resolve arm, the span
+# exporter layer parameter, `module_streams`, `built_in`) leaves: `otlp` is the linked
+# busbar-export-otlp sink. Measured 51030 + K2g's 73 named lines. Downward only.
+# ── 51103 -> 51100: TLS-RETIRE (2/3) — `Kernel::transport_key_token` (the `Grant<KeyHandle>` mint
+# only the deleted transport-key provisioning took) leaves teller.rs. Measured 51027 + K2g's 73 named
+# lines. Downward only.
+# ── RE-ARMED 51100 -> 54801 BY SD-8 (#83a, OWNER RULING Q69(3); ARCHITECT R-KERNEL / O1), declared
+# above. SD-8 (3/4, 256435c91) moved every remaining KERNEL-SEMANTICS/HOST item of the deleted
+# busbar-substrate-values into busbar-kernel (the diagnostics catalog + emit, the protocol registry,
+# handlers, proxy, json seam, lane caps, providers shapes, the clock bodies). This row measures 51090
+# at d946dbcc4 and 54791 at 256435c91: +3701, the moved lines exactly. 51100 + 3701 = 54801, so the
+# gap K2g's named reservation holds is the one the base held (10 of its 73 lines unspent there);
+# the reservation itself is unchanged.
+kernel_ceiling = 54801
 # `caps_crate = "busbar-caps"` WAS HERE AND IS STRUCK, 2026-09-22. The crate was folded into
 # busbar-contract by 2c9eddecf ("W2.c: fold busbar-caps into busbar-contract"); its types live at
 # `crates/busbar-contract/src/caps/`, whose own module header says "Folded from the former
@@ -990,7 +1075,13 @@ contract_crate = "busbar-contract"
 # RE-ARMED 9294 -> 9296 with its pair (OWNER RULING Q68(3); SD-3b egress static headers, +2).
 # RE-ARMED 9296 -> 9463 with its pair (OWNER RULING Q68(3); SD-3b contract testkit, +167).
 # RE-ARMED 9463 -> 14720 with its pair (OWNER RULING Q68(3); the #84 merge of busbar-plugin and the SDK, +5257).
-caps_contract_ceiling = 14720
+# LOWERED 14720 -> 14711 with its pair (CONTRACT-PURE, ARCHITECT F6 queue (4); the host-log bridge left contract code, -9).
+# RE-ARMED 14711 -> 14712 with its pair (OWNER RULING Q68(3); K9e-2's HostOp::HttpBinary, +1).
+# RE-ARMED 14712 -> 15015 with its pair (OWNER RULING Q68(3); HOTDOOR-B, the HOT ABI minor-30 carrier and host services, +303).
+# RE-ARMED 15015 -> 15206 with its pair (OWNER RULING Q68(3); TRANSPORT-STACK step 1, the carrier and framer traits, +191).
+# RE-ARMED 15206 -> 16477 with its pair (OWNER RULING Q68(3); TRANSPORT-STACK step 2, the transport HOT lowering, +1271).
+# RE-ARMED 16477 -> 16482 with its pair (OWNER RULING Q68(3); HOTDOOR-B queue 2, PlaneDecl dispatch_flags at ABI minor 32, +5).
+caps_contract_ceiling = 16482
 unit_crate_glob = "busbar-unit-*"
 # RE-KEYED on cherry-pick onto 143db6db6: this commit's own delta is -53 (two units stopped
 # declaring their own copies), measured against whatever unit_total_ceiling read when the line was
@@ -1005,7 +1096,9 @@ unit_crate_glob = "busbar-unit-*"
 # whole unit family to come back without a single row going red. Pinned at the measurement.
 # RATCHETED DOWN 268 -> 2, AT THE MEASUREMENT: the transport-key fold (F14 1/2) moved the
 # provisioning kernel-side into busbar-kernel-identity, and `busbar-unit-transport-key` now counts 2.
-unit_total_ceiling = 2
+# RATCHETED DOWN 2 -> 0 (F14 2/2): that crate is DELETED, the glob matches no crate and the union
+# measures 0. #36's exit test is "no busbar-unit-* crates"; a unit crate that comes back reds here.
+unit_total_ceiling = 0
 # `verbs_crate` / `verbs_ceiling` ARE STRUCK (P1A-con, 1.6.0 Phase 1). They budgeted
 # `busbar-unit-verbs` as a sub-ceiling of the unit union. OWNER-LOCKED DECISION #36 moved verb
 # execution OUT of the unit set ("EXITS from the unit set: `verbs` -> `busbar-core-admin`"):
@@ -1058,7 +1151,8 @@ patterns = ["teller.rs"]
 # `FeeEvidence`, `KERNEL_ACCRUAL_CLASS`) moved verbatim into `busbar-kernel/src/settlement.rs`,
 # re-exported from `teller` under every old path; its 96 code lines still spend `kernel_ceiling`.
 # That took the row from 695 (RED against 659) to 604. Downward only.
-ceiling = 604
+# ── LOWERED 604 -> 601, the measurement: TLS-RETIRE (2/3) deletes `Kernel::transport_key_token`.
+ceiling = 601
 
 [rules.loc-ceilings.kernel_files.pump]
 label = "pump/scheduler"
@@ -1156,9 +1250,6 @@ reviewed_allowlist = ["busbar-api", "serde", "serde_json", "tracing", "async-tra
 # busbar-llm-codec: the pure codec half of the split llm crate (no I/O in its closure); the plane adapts it.
 # Per-crate additions beyond the global list above, each a one-line review.
 [rules.manifest-allowlist.reviewed_extra]
-# RETIRED 2026-09-08: store-example-plugin named busbar-store-memory, a sibling instance of its own
-# kind, which PLUGIN-TREE.md §4 forbids without exception. The waiver is gone because the dependency
-# is: the example now carries its own in-process backend (crates/store-example-plugin/src/ram.rs).
 # Ratchet, NOT a review: each busbar-plane-* adapter names its own dialect's legacy engine crate
 # (busbar-llm/-mcp/-a2a/-voice) for codecs only, read-only, no engine state crossing back — but
 # those engine crates are ALSO named in gate.plane_crates, so this is structurally the exact "a
@@ -1169,14 +1260,6 @@ reviewed_allowlist = ["busbar-api", "serde", "serde_json", "tracing", "async-tra
 # the workspace. This ratchet describes a tree that no longer exists and tells a reader the coupling
 # is still there. Delete it (PLUGIN-TREE.md section 9) — noted here, not done here, because a rule
 # change is not this commit's business.
-#
-# REVIEWED 2026-09-09, and it is the first dependency this rule could see: the manifest reader read
-# `[dependencies]` and nothing else, so a `[target.'cfg(unix)'.dependencies]` entry was invisible to
-# it — and `cfg(unix)` is true on every runner and every shipped Linux artifact this tree builds, so
-# what the narrowing excluded was a dependency that ships. `libc` here is the advisory whole-file
-# `flock` FileStore takes around its read-modify-write (crates/store-example-plugin/src/lib.rs,
-# FileLock), unix-only, in the fixture that models a fleet sharing one durable path.
-store-example-plugin = ["libc"]
 [rules.manifest-allowlist.known_red_deps]
 busbar-plane-llm = ["busbar-llm"]
 # busbar-plane-a2a HAS NO ROW, for the same reason busbar-plane-mcp lost its one: the codec fold
@@ -1267,7 +1350,10 @@ way."""
 # offenders, all in busbar-kernel); a planted `const PLANTED_LABEL: &str = "anthropic";` in
 # `crates/busbar-kernel-ledger/src/cost/mod.rs` now counts (14 -> 15), where the old scope never
 # opened the file (14 -> 14).
-crates_kernel = ["busbar-kernel", "busbar-unit-transport-key"]
+# RETIRED BY NAME (fold F14 2/2): `busbar-unit-transport-key` is deleted; its code became
+# `busbar-kernel-identity`'s `transport_key` module (itself deleted by TRANSPORT-STACK: TLS is
+# core-only connection security, `busbar-core-connsec`), so striking the name narrows nothing.
+crates_kernel = ["busbar-kernel"]
 crate_glob = "busbar-kernel-*"
 # section 6's dialect names + the section 1.3 pinned word list, verbatim.
 words = [
@@ -1318,6 +1404,11 @@ known_sites = [
   "crates/busbar-kernel/src/config/mod.rs:2369",
   "crates/busbar-kernel/src/config/pools.rs:302",
   "crates/busbar-kernel/src/config/prepass.rs:123",
+  # Moved from the retired shared value crate with the code that carries them (#83a SD-8), reviewed
+  # there and frozen: the omitted-`protocol:` default of the 1.5.3 providers.yaml grammar, and the
+  # published title of BUSBAR-3020 (docs/diagnostics.md, byte-identical).
+  "crates/busbar-kernel/src/config/providers.rs:104",
+  "crates/busbar-kernel/src/diagnostics/mod.rs:2843",
   # `crates/busbar-kernel/src/config/providers.rs:75` STRUCK: the provider config shapes moved to
   # the LLM plane side and left that file 20 lines long, so the pin named a line that does not exist
   # and waived nothing. A reviewed site that points at nothing is a waiver waiting for the next
@@ -1348,7 +1439,7 @@ known_sites = [
   "crates/busbar-kernel/src/metrics/money.rs:224",
   "crates/busbar-kernel/src/plane/config.rs:368",
   "crates/busbar-kernel/src/plane_host/build_input.rs:149",
-  "crates/busbar-kernel/src/router.rs:425",
+  "crates/busbar-kernel/src/router.rs:424",
   "crates/busbar-kernel/src/store/vocab.rs:136",
   "crates/busbar-kernel/src/test_support/mod.rs:220",
 ]
@@ -1421,7 +1512,9 @@ before every `.await` inside the route step, wherever the route step is async.""
 # PASS over the wider set (no finding added), and a planted `let hold = cell.take(); let x =
 # maybe()?; Posted::settle(hold, x)` in `settle.rs` now reds `hold-discipline:no-early-exit`, which
 # under the old glob stayed PASS.
-scope_crates_kernel = ["busbar-kernel", "busbar-unit-transport-key"]
+# RETIRED BY NAME (fold F14 2/2): the last unit crate is deleted and its code sits in
+# `busbar-kernel-identity`, inside `scope_crate_glob` below, so nothing leaves scope.
+scope_crates_kernel = ["busbar-kernel"]
 scope_crate_glob = "busbar-kernel-*"
 take_pattern = '\.take\('
 settle_pattern = '::settle\(|\.settle\('
@@ -1478,7 +1571,6 @@ known_sites = [
   "crates/busbar-transport-http/src/tests/mod.rs",
   "crates/busbar-transport-stdio/src/tests/battery.rs",
   "crates/busbar-transport-tcp/src/tests/mod.rs",
-  "crates/busbar-transport-tls/src/tests/mod.rs",
   "crates/busbar-transport-ws/src/tests/battery.rs",
   "crates/busbar-transport-ws/src/transport.rs",
   "crates/busbar-kernel-egress/src/tests/harness.rs",
@@ -1512,10 +1604,10 @@ deny_kinds = ["transport", "abi", "loader", "store", "export"]
 # this rule is born. Each is real debt the owner closes by adding the attribute and deleting the
 # name below; a new crate NOT on this list is held to the rule immediately.
 known_missing_forbid = [
-  "hook-test-plugin", "hooks-ranking", "auth-static-plugin", "auth-admin-tokens",
+  "hook-test-plugin", "hooks-ranking",
 ]
 known_missing_deny = [ "plugin-loader",
-  "store-memory", "store-example-plugin", "export-example-plugin",
+  "export-example-plugin",
 ]
 
 # ── 22. secret-carrier-debug (ARCHITECTURE.md section 3.7) ───────────────────────────────────────────────────
@@ -1561,7 +1653,7 @@ max_sites = 0
 #   countable, and interning is idempotent — so "leaked once" is a property of the interner rather
 #   than a hope. It is named by function, so the rest of the file is still held to the rule.
 #
-#   The plane-host, plugin-loader and plugin-sdk boundaries catch a panic crossing the ABI, which is
+#   The plane-host, plugin-loader and busbar-contract abi::sdk boundaries catch a panic crossing the ABI, which is
 #   the design: a plugin that panics must not take the node with it, and no hold is in scope on
 #   either side of those calls. busbar-core was the crate being emptied; its sites MOVED, and this
 #   list has now followed them. See the repoint note below.
@@ -1652,7 +1744,9 @@ known_sites = [
   # was crates/busbar-substrate/src/plane_host/scope.rs::reclaim_all — merged the same way (+596).
   # Still named BY FUNCTION, so the rest of the merged file is still held to the rule.
   "crates/busbar-kernel/src/plane_host/scope.rs::reclaim_all",
-  "crates/busbar-substrate-values/src/proto.rs",
+  # was crates/busbar-substrate-values/src/proto.rs — the protocol registry moved to the kernel
+  # verbatim (#83a SD-8).
+  "crates/busbar-kernel/src/proto/installed.rs",
   "crates/busbar-transport-ws/src/transport.rs",
   "crates/plugin-loader/src/",
   "crates/busbar-contract/src/abi/sdk/boundary.rs",
@@ -1661,7 +1755,7 @@ known_sites = [
   # line needs a tracing callsite and field names that are 'static by tracing's type; `site` makes
   # ONE per (code, level, field-name list) and interns it, so the allocation is bounded by the
   # catalogue and made once — the leak-once intern shape of ids.rs `key` above.
-  "crates/busbar-substrate-values/src/diagnostics/emit.rs::site",
+  "crates/busbar-kernel/src/diagnostics/emit.rs::site",
   # REVIEWED 2026-09-25 (item 141): a first-party plugin's DECLARED diagnostic joins the process
   # catalogue, whose entries are `&'static Diagnostic` with `&'static str` text by the catalogue's
   # type; one allocation per declared code, once, at boot, before the catalogue is first read.
@@ -1744,7 +1838,7 @@ root reads it ONCE per arrival and hands the reading down, which is also what ke
 one unit from landing in different seconds. Production code only: a test may read a clock to \
 measure a test."""
 # Where a unit crate's production code lives.
-scope_globs = ["crates/busbar-kernel-*/src/*", "crates/busbar-unit-*/src/*"]
+scope_globs = ["crates/busbar-kernel-*/src/*"]
 # The clock reads a unit crate may not perform.
 forbidden = ["SystemTime::now", "Instant::now"]
 # A helper that exists FOR the root, in a unit crate's directory, that nothing in the crate calls.
@@ -1761,7 +1855,7 @@ and the section number moves the next time the document is edited. The rule the 
 be stated in words, in the comment, so the comment survives the worksheet and the renumbering. RFC \
 citations are exempt by construction — they are stable, externally resolvable documents — and only \
 the identifier shapes below are searched for."""
-scope_globs = ["crates/busbar-kernel-*/src/*", "crates/busbar-unit-*/src/*"]
+scope_globs = ["crates/busbar-kernel-*/src/*"]
 # The shapes searched for, as regular expressions over the raw comment text.
 patterns = ["PB-[0-9]", "CG-[0-9]", "ARCHITECTURE\\.md §"]
 # The one crate whose occurrence is knowingly left in place, so the rule can hold the line on every
@@ -2406,6 +2500,12 @@ plane_crates = 4
 #     is deliberately NOT repointed at `crates/busbar-kernel-*`: those eight are KERNEL crates,
 #     held by `[rules.loc-ceilings]`, and moving them under a plugin-kind glob would run the unit
 #     kind's rules over the kernel rather than restore a count.
+#   * `unit` 1 -> STRUCK (fold F14 2/2). `crates/busbar-unit-transport-key` is DELETED: its
+#     provisioning is `busbar-kernel-identity`'s `transport_key` module (#36: the TLS secret->config
+#     provisioning is kernel-side machinery; #40: the tls plugin gets an opaque config handle). The
+#     spec lists `unit` among the NOT-kinds, so the `[gate.plugin_kinds]` key and this pin go with
+#     the kind kind-isolation retired in the same commit. A `busbar-unit-*` crate that comes back
+#     is still counted by `[rules.loc-ceilings] unit_crate_glob` at a ceiling of 0.
 #   * `pure_auth` = 2 and `egress_auth` = 0 are STRUCK and `auth` = 2 takes their place. This is a
 #     RENAME, not a decrement: LOCKED DECISION #3 makes auth ONE kind — inbound-verify and
 #     outbound-sign are two OPERATIONS of it, direction is a usage mode — and `[gate.plugin_kinds]`
@@ -2437,6 +2537,32 @@ plane_crates = 4
 #     (crates/plugin-loader/src/tests/plugin_proof_tests.rs, ci.yml `plugin-proofs`).
 #     `crates/secret-*` now matches no directory: the kind's documented zero in this repo.
 #
+# ── RE-PINNED 2026-09-26: `auth` 2 -> 1 ─────────────────────────────────────────────────────────────────────
+#
+#   * `auth` 2 -> 1. The fixture deletion (owner, docs/design/1.6.0-QUESTIONS.md "FIXTURES": "real
+#     plugins are the examples"; ARCHITECT R-FIX2): `crates/auth-static-plugin` was deleted. The auth
+#     kind's dropped-in proofs load the REAL token-verifying module GetBusbar/auth-oidc (pinned by
+#     git: busbar-kernel `auth/tests/plugin_chain_tests.rs`, `crates/busbar/tests/mcp_stdio_serve.rs`,
+#     busbar-plugin-loader `auth_conformance_tests`), and ci.yml `plugin-proofs` proves
+#     GetBusbar/auth-github. `crates/auth-*` now matches exactly one: `crates/auth-admin-tokens`.
+#
+# ── RE-PINNED 2026-09-27: `transport` 5 -> 4 ────────────────────────────────────────────────────────────────
+#
+#   * `transport` 5 -> 4. TRANSPORT-STACK (owner-approved 2026-09-27, docs/design/1.6.0-QUESTIONS.md;
+#     spec #3): TLS is core-only connection security — `busbar-core-connsec` is the one TLS path and
+#     never crosses the plugin ABI — so `crates/busbar-transport-tls` was deleted, not moved.
+#     `crates/busbar-transport-*` now matches exactly four: http, stdio, tcp and ws.
+#
+# ── RE-PINNED 2026-09-27: `auth` 1 -> 0 ───────────────────────────────────────────────────────────────────
+#
+#   * `auth` 1 -> 0. The move-out (owner, "PLUGINS LIVE IN THEIR OWN REPOS"; ARCHITECT 2026-09-27:
+#     auth-admin-tokens is a REAL auth plugin, extracted with its door and conformance):
+#     `crates/auth-admin-tokens` moved to GetBusbar/auth-admin-tokens with its history, and busbar
+#     pulls it at a pinned rev under the unchanged `auth-admin-tokens` feature (busbar-kernel) and as
+#     the loader's `auth-verify` both-ways proof. `crates/auth-*` now matches no directory: the
+#     kind's documented zero in this repo. Its `known_missing_forbid` entry leaves with it (the
+#     crate carries `#![deny(unsafe_code)]` outside its one macro door module).
+#
 # THE BASE COMPARISON STILL REPORTS THE THREE DECREMENTS (plugin_kinds.plane 6->5,
 # plugin_kinds.unit 14->1, plugin_kinds.pure_auth 2->0), AND THAT IS THIS ROW WORKING RATHER THAN
 # FAILING. `[gate.census]` reds a floor that went DOWN versus the base commit precisely because it
@@ -2446,15 +2572,19 @@ plane_crates = 4
 # carries these numbers, the decrement disappears and the comparison is quiet. Re-pinning without
 # naming the fold, or leaving the pins stale so the row reds on `actual < pinned` forever, are the
 # two things this table is written to prevent.
+#
+# store 2 -> 1 (DOOR-STORE item 4, R-FIX2 + owner FIXTURES ruling): crates/store-example-plugin is
+# DELETED — its one remaining test (the dlopen-restart durability proof) moved onto the real durable
+# store GetBusbar/store-sqlite in `plugin_proof_tests`. `crates/store-*` now matches exactly one:
+# `crates/store-memory`, the store kind's both-ways proof.
 [gate.census.plugin_kinds]
 plane = 5
-unit = 1
 hook = 2
-auth = 2
+auth = 0
 secret = 0
-store = 2
+store = 1
 export = 1
-transport = 5
+transport = 4
 loader = 1
 abi = 1
 

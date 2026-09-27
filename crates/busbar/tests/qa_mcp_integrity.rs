@@ -37,6 +37,8 @@
 // `linked_axis_stdio_serve` from `[package.metadata.busbar.linked-axes]`).
 #![cfg(all(linked_axis_stdio_serve, feature = "auth-admin-tokens"))]
 
+mod common;
+
 use std::io::{Read as _, Write as _};
 use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
@@ -310,7 +312,7 @@ async fn boot(tag: &str, upstream: &Upstream, approved_digest: &str) -> Node {
     let (data_port, admin_port) = (free_port(), free_port());
     let admin_token = format!("qa-tool-integrity-admin-{}", std::process::id());
 
-    let key_out = Command::new(env!("CARGO_BIN_EXE_busbar"))
+    let key_out = Command::new(common::boot::exe())
         .arg("--generate-signing-key")
         .output()
         .expect("run busbar --generate-signing-key");
@@ -365,7 +367,7 @@ auth:
     .unwrap();
 
     let log = std::fs::File::create(dir.join("busbar.log")).unwrap();
-    let child = Command::new(env!("CARGO_BIN_EXE_busbar"))
+    let child = Command::new(common::boot::exe())
         .env("BUSBAR_CONFIG", &cfg)
         .env("BUSBAR_PROVIDERS", dir.join("providers.yaml"))
         .env("BUSBAR_ADMIN_TOKEN", &admin_token)

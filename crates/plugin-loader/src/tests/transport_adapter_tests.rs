@@ -1,34 +1,38 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE ADAPTER'S WITNESS (#2 rule (1), #3 OWNER-LOCKED): a transport admitted over the HOT-tier ABI
-//! — linked door or dropped-in door — is, through [`WireTransport`], the host's own
-//! [`Transport`], and speaks it exactly as the same wire linked as Rust does.
+//! THE STACK'S WITNESS (#2 rule (1), #3; TRANSPORT-STACK): a carrier — linked, or admitted over the
+//! HOT-tier ABI through either door — stacked as the host's connection, speaks exactly as the same
+//! carrier linked as Rust does.
 //!
-//! One script runs through the TRAIT against three instances of the both-ways fixture wire: the
-//! linked row's own `build` (the Rust transport the root folds today), the adapter over its linked
-//! decl, and the adapter over its dropped-in cdylib. It listens and accepts a plain `std::net` peer,
-//! drains the frame pump, answers and closes; dials a plain peer, writes, drains, closes; and
-//! accepts once more and DETACHES the connection, moving bytes over the detached stream (the path a
-//! served listener takes). The three records must be equal, and equal to what the script sent.
+//! One script runs against three stacks over the both-ways fixture carrier: the linked Rust carrier
+//! itself, the loader's decl-backed carrier over its linked decl, and the decl-backed carrier over its
+//! dropped-in cdylib. It listens and accepts a peer through busbar's own linked carrier (a separate
+//! instance, `carrier_peer`), drains the frame pump, answers
+//! and closes; dials a plain peer, writes, drains, closes; and accepts once more and DETACHES the
+//! connection, moving bytes over the detached stream (the path a served listener takes). The three
+//! records must be equal, and equal to what the script sent.
 //!
-//! THE RED ARM, kept: [`an_adapter_over_a_divergent_wire_is_seen_by_the_script`] runs the script over
-//! the adapter of a decl whose `poll_write` flips one byte, and requires the record to DIFFER.
+//! THE RED ARM, kept: [`a_stack_over_a_divergent_carrier_is_seen_by_the_script`] runs the script over
+//! a decl whose `poll_write` slot flips one byte, and requires the record to DIFFER.
 //!
-//! INLINE, NO HOP (#30, airlock minor 28): [`the_adapter_polls_the_wire_on_the_callers_thread`] runs
-//! the script on a single-threaded runtime over a decl whose poll slots record the thread they ran
-//! on, and requires every crossing to have run on the runtime's own thread.
+//! INLINE, NO HOP (#30): [`the_stack_polls_the_carrier_on_the_callers_thread`] runs the script on a
+//! single-threaded runtime over a decl whose poll slots record the thread they ran on, and requires
+//! every crossing to have run on the runtime's own thread.
+//!
+//! A FRAMER OVER THE CARRIER: [`a_framer_stacks_over_a_carrier_and_the_upgrade_moves_its_bytes`] stacks
+//! a line framer over the fixture carrier, and moves a connection's byte stream — with the half line
+//! the framer held — to a second stack that adopts it.
 
 use super::*;
 use crate::both_ways::{cdylib, dropped, statement, transport_fixture, HOT_FIXTURES};
+use crate::carrier_peer;
 use crate::transport::link_transport;
-use busbar_contract::abi::hot::transport::{RawWireOutcome, TransportDecl, NO_WAKER};
+use busbar_contract::abi::hot::transport::{CarrierSlots, RawWireOutcome, TransportDecl, NO_WAKER};
 use busbar_contract::plugin::TestKernelSeal;
-use busbar_contract::transport::dest::UpstreamAddress;
-use busbar_contract::{ConfigView, LaneId};
+use busbar_contract::transport::{CarrierPoll, ConnFacts, Located, Side, TransportRow};
+use busbar_contract::{AbiVersion, ConfigView, LaneId, StreamId};
 use futures::{AsyncReadExt, AsyncWriteExt, StreamExt};
-use std::io::{Read, Write};
-use std::net::{Shutdown, TcpListener, TcpStream};
 use std::sync::OnceLock;
 
 struct Bind;
@@ -51,23 +55,28 @@ impl TransportConfigView for Bind {
     }
 }
 
-/// The fixture's decl, as the host's type.
-fn fixture_decl() -> *const TransportDecl {
-    core::ptr::addr_of!(transport_fixture::hot::TRANSPORT_DECL).cast::<TransportDecl>()
+/// The fixture carrier's decl.
+fn fixture_decl() -> &'static TransportDecl {
+    &transport_fixture::exports::TRANSPORT_DECL
 }
 
-/// The fixture wire through the LINKED door, admitted once for the process.
+/// The fixture carrier's own slot table.
+fn real() -> &'static CarrierSlots {
+    // SAFETY: the fixture is a carrier, so its decl's carrier table is its `'static` table.
+    unsafe { &*fixture_decl().carrier }
+}
+
+/// The fixture carrier through the LINKED decl, admitted once for the process.
 fn linked_row() -> &'static DynTransport {
     static ROW: OnceLock<DynTransport> = OnceLock::new();
     ROW.get_or_init(|| {
-        // SAFETY: the fixture's decl is `'static` and laid out as `TransportDecl` (the conformance
-        // test pins every offset).
+        // SAFETY: the fixture's decl is `'static` and laid out as `TransportDecl`.
         unsafe { link_transport(fixture_decl(), "linked-wire") }.expect("the linked door admits")
     })
 }
 
-/// The fixture wire through the DROPPED-IN door (its cdylib signed into a fresh `plugins/`), admitted
-/// once for the process. `None` when the artifact is not built (never under CI).
+/// The fixture carrier through the DROPPED-IN door (its cdylib signed into a fresh `plugins/`),
+/// admitted once for the process. `None` when the artifact is not built (never under CI).
 fn dropped_row() -> Option<&'static DynTransport> {
     static ROW: OnceLock<Option<DynTransport>> = OnceLock::new();
     ROW.get_or_init(|| {
@@ -90,8 +99,19 @@ fn settings() -> TransportSettings {
     TransportSettings::default()
 }
 
-fn adapter(row: &'static DynTransport) -> Arc<dyn Transport> {
-    Arc::new(WireTransport::build(row, None, &settings()).expect("the wire builds"))
+/// The stack over a decl-backed carrier `row` builds.
+fn adapter(row: &'static DynTransport) -> Arc<WireTransport> {
+    Arc::new(WireTransport::build(row, None, &settings()).expect("the carrier builds"))
+}
+
+/// The stack over the linked Rust carrier.
+fn rust() -> Arc<WireTransport> {
+    Arc::new(WireTransport::stack(
+        transport_fixture::linked::ROW,
+        Some(transport_fixture::linked::carrier(&settings())),
+        None,
+        None,
+    ))
 }
 
 fn payload(seed: u8, len: usize) -> Vec<u8> {
@@ -114,32 +134,40 @@ fn upstream(addr: &str) -> VerifiedDestination {
     )
 }
 
-/// Everything one instance declared and put on / took off the wire, through the trait.
+/// Everything one stack declared and put on / took off the wire.
 #[derive(Debug, PartialEq, Eq)]
 struct Record {
     key: &'static str,
     kind: Kind,
+    abi: AbiVersion,
     composed_over: Option<&'static str>,
     /// Listened: what the pump drained from the peer, and what the peer received back.
     pumped: Vec<u8>,
     answered: Vec<u8>,
+    /// The accepted connection's arrival: its chain, and whether it named a local port.
+    chain: Vec<&'static str>,
+    has_port: bool,
     /// Dialled: what the peer received, and what the pump drained back.
     dialled: Vec<u8>,
     dial_pumped: Vec<u8>,
     /// Detached: what the stream read from the peer, and what the peer received back.
     detached_read: Vec<u8>,
     detached_answered: Vec<u8>,
-    /// A write on a connection the transport closed.
+    /// A write on a connection the stack closed.
     write_after_close: Option<TransportError>,
 }
 
 const SENT: (u8, usize) = (7, 40_000);
 const REPLY: (u8, usize) = (91, 20_001);
 
-async fn pump(t: &dyn Transport, conn: &Conn) -> Vec<u8> {
+/// The frame pump of `conn`, drained until `upto` bytes (or to its end when `None`).
+async fn pump(t: &WireTransport, conn: &Conn, upto: Option<usize>) -> Vec<u8> {
     let mut frames = t.frames(conn.clone());
     let mut all = Vec::new();
-    while let Some(frame) = frames.next().await {
+    while upto.is_none_or(|n| all.len() < n) {
+        let Some(frame) = frames.next().await else {
+            break;
+        };
         let (_, frame) = frame.expect("a frame");
         assert_eq!(frame.meta.bytes as usize, frame.bytes.as_slice().len());
         all.extend_from_slice(frame.bytes.as_slice());
@@ -147,20 +175,17 @@ async fn pump(t: &dyn Transport, conn: &Conn) -> Vec<u8> {
     all
 }
 
-/// A plain peer that connects to `addr`, sends `sent`, half-closes and reads to the end.
+/// A peer that dials `addr`, sends `sent`, and reads to the clean end the stack's close makes.
 fn near(addr: String, sent: Vec<u8>) -> std::thread::JoinHandle<Vec<u8>> {
     std::thread::spawn(move || {
-        let mut s = TcpStream::connect(addr).unwrap();
-        s.write_all(&sent).unwrap();
-        s.shutdown(Shutdown::Write).unwrap();
-        let mut back = Vec::new();
-        s.read_to_end(&mut back).unwrap();
-        back
+        let peer = carrier_peer::dial(&addr);
+        peer.write_all(&sent);
+        peer.read_to_end()
     })
 }
 
-/// THE SCRIPT, run identically through the trait against every instance.
-async fn script(t: Arc<dyn Transport>) -> Record {
+/// THE SCRIPT, run identically against every stack.
+async fn script(t: Arc<WireTransport>) -> Record {
     let keys = TransportKeyHandle::keyless();
 
     // ── listen, accept, drain the pump, answer, close ──
@@ -168,7 +193,8 @@ async fn script(t: Arc<dyn Transport>) -> Record {
     let peer = near(listener.local_addr(), payload(SENT.0, SENT.1));
     let conn = t.accept(&listener).await.expect("accept");
     assert!(conn.peer().starts_with("127.0.0.1:"), "{}", conn.peer());
-    let pumped = pump(&*t, &conn).await;
+    let arrival = t.arrival(&conn);
+    let pumped = pump(&t, &conn, Some(SENT.1)).await;
     let reply = payload(REPLY.0, REPLY.1);
     let n = t
         .write(&conn, StreamId(0), ScratchBytes::new(&reply))
@@ -182,15 +208,14 @@ async fn script(t: Arc<dyn Transport>) -> Record {
         .err();
     let answered = peer.join().unwrap();
 
-    // ── dial a plain peer, write, drain what it answers, close ──
-    let far = TcpListener::bind("127.0.0.1:0").unwrap();
-    let dest = upstream(&far.local_addr().unwrap().to_string());
+    // ── dial the peer, write, drain what it answers to the end its close makes, close ──
+    let far = carrier_peer::listen();
+    let dest = upstream(&far.addr);
     let far = std::thread::spawn(move || {
-        let (mut s, _) = far.accept().unwrap();
-        let mut got = vec![0_u8; SENT.1];
-        s.read_exact(&mut got).unwrap();
-        s.write_all(&payload(REPLY.0 ^ 0x5a, REPLY.1)).unwrap();
-        s.shutdown(Shutdown::Write).unwrap();
+        let (peer, _) = far.accept();
+        let got = peer.read_exact(SENT.1);
+        peer.write_all(&payload(REPLY.0 ^ 0x5a, REPLY.1));
+        peer.close();
         got
     });
     let conn = t.dial(&dest, &keys).await.expect("dial");
@@ -198,7 +223,7 @@ async fn script(t: Arc<dyn Transport>) -> Record {
     t.write(&conn, StreamId(0), ScratchBytes::new(&sent))
         .await
         .expect("write the request");
-    let dial_pumped = pump(&*t, &conn).await;
+    let dial_pumped = pump(&t, &conn, None).await;
     t.close(conn, CloseReason::Normal);
     let dialled = far.join().unwrap();
 
@@ -210,8 +235,8 @@ async fn script(t: Arc<dyn Transport>) -> Record {
     assert_eq!(stream.from(), t.key());
     assert!(t.detach(&conn).is_none(), "a detached connection is gone");
     let mut io = stream.into_io();
-    let mut detached_read = Vec::new();
-    io.read_to_end(&mut detached_read).await.expect("read");
+    let mut detached_read = vec![0_u8; SENT.1];
+    io.read_exact(&mut detached_read).await.expect("read");
     io.write_all(&payload(REPLY.0 ^ 0xff, REPLY.1))
         .await
         .expect("write");
@@ -222,9 +247,12 @@ async fn script(t: Arc<dyn Transport>) -> Record {
     Record {
         key: t.key(),
         kind: t.kind(),
+        abi: t.abi(),
         composed_over: t.composed_over(),
         pumped,
         answered,
+        chain: arrival.transport_chain,
+        has_port: arrival.port != 0,
         dialled,
         dial_pumped,
         detached_read,
@@ -238,9 +266,12 @@ fn expected() -> Record {
     Record {
         key: transport_fixture::linked::KEY,
         kind: Kind::Transport,
+        abi: busbar_contract::transport::TRANSPORT_ABI,
         composed_over: None,
         pumped: payload(SENT.0, SENT.1),
         answered: payload(REPLY.0, REPLY.1),
+        chain: vec![transport_fixture::linked::KEY],
+        has_port: true,
         dialled: payload(SENT.0 ^ 0x5a, SENT.1),
         dial_pumped: payload(REPLY.0 ^ 0x5a, REPLY.1),
         detached_read: payload(SENT.0 ^ 0xff, SENT.1),
@@ -249,20 +280,20 @@ fn expected() -> Record {
     }
 }
 
-/// THE WITNESS: the linked Rust wire, the adapter over its linked decl and the adapter over its
-/// dropped-in cdylib run the script to ONE record, and it is the bytes the script sent.
+/// THE WITNESS: the linked Rust carrier, the decl-backed carrier over its linked decl and over its
+/// dropped-in cdylib, each stacked, run the script to ONE record, and it is the bytes the script sent.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn every_door_speaks_the_trait_alike() {
-    let rust = script((transport_fixture::linked::build)(None, &settings())).await;
+async fn every_door_speaks_alike_through_the_stack() {
+    let rust = script(rust()).await;
     assert_eq!(
         rust,
         expected(),
-        "the linked Rust wire moves the bytes it is given"
+        "the linked carrier moves the bytes it is given"
     );
     let linked = script(adapter(linked_row())).await;
     assert_eq!(
         linked, rust,
-        "the adapter over the linked decl is the linked wire"
+        "the carrier over its linked decl is the linked carrier"
     );
     let Some(row) = dropped_row() else {
         return;
@@ -270,51 +301,19 @@ async fn every_door_speaks_the_trait_alike() {
     let dropped = script(adapter(row)).await;
     assert_eq!(
         dropped, rust,
-        "the adapter over the dropped-in wire is the linked wire"
+        "the dropped-in carrier is the linked carrier"
     );
 }
 
-/// The adapter registers as the linked wire does: the same key, kind and generation, from the row
-/// the decl declared.
+/// The decl-backed carrier's row is the linked carrier's row, constant for constant.
 #[test]
-fn the_adapter_is_the_rows_plugin() {
-    let rust = (transport_fixture::linked::build)(None, &settings());
+fn a_decl_backed_carrier_presents_the_linked_row() {
     let wire = WireTransport::build(linked_row(), None, &settings()).unwrap();
-    assert_eq!(
-        (wire.key(), wire.kind(), wire.abi()),
-        (rust.key(), rust.kind(), rust.abi())
-    );
-    assert_eq!(wire.wire().key(), transport_fixture::linked::KEY);
-    assert_eq!(
-        wire.wire().composes_over(),
-        transport_fixture::linked::COMPOSES_OVER
-    );
-}
-
-/// A wire built over another adapter answers it was composed over that layer, and its arrivals
-/// report the stack bottom-first.
-#[test]
-fn a_wire_built_over_a_wire_names_it() {
-    let lower = WireTransport::build(linked_row(), None, &settings()).unwrap();
-    let upper = WireTransport::build(linked_row(), Some(&lower), &settings()).unwrap();
-    assert_eq!(upper.composed_over(), Some(transport_fixture::linked::KEY));
-    let conn = Conn::new(Arc::new(WireConn {
-        id: 1,
-        peer: "p".into(),
-    }));
-    assert_eq!(
-        upper.arrival(&conn).transport_chain,
-        [transport_fixture::linked::KEY; 2]
-    );
+    assert_eq!(*wire.row(), transport_fixture::linked::ROW);
+    assert_eq!(wire.key(), transport_fixture::linked::KEY);
 }
 
 // ── THE RED ARM ─────────────────────────────────────────────────────────────────────────────────
-
-/// The fixture's real poll slots, for the altering and recording slots below to forward to.
-fn real() -> &'static TransportDecl {
-    // SAFETY: the fixture's decl is `'static`.
-    unsafe { &*fixture_decl() }
-}
 
 /// A `poll_write` slot that flips the first byte of every offer, then writes through the real slot.
 extern "C-unwind" fn altering_write(
@@ -335,31 +334,38 @@ extern "C-unwind" fn altering_write(
     real(state, conn, token, bytes.as_ptr(), bytes.len(), out)
 }
 
-/// THE RED ARM, kept: the adapter over a wire whose `poll_write` alters one byte runs the script to
-/// a DIFFERENT record, on exactly the legs it wrote — the equality above is one a wrong wire fails.
+/// A `'static` copy of the fixture decl whose carrier table is `slots`.
+fn decl_with(slots: &'static CarrierSlots) -> TransportDecl {
+    // SAFETY: a byte copy of the live fixture decl; every pointer in it is `'static` image data.
+    let mut decl = unsafe { core::ptr::read(fixture_decl()) };
+    decl.carrier = slots;
+    decl
+}
+
+/// THE RED ARM, kept: the stack over a carrier whose `poll_write` alters one byte runs the script to
+/// a DIFFERENT record, on exactly the legs it wrote — the equality above is one a wrong carrier fails.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn an_adapter_over_a_divergent_wire_is_seen_by_the_script() {
+async fn a_stack_over_a_divergent_carrier_is_seen_by_the_script() {
+    static SLOTS: OnceLock<CarrierSlots> = OnceLock::new();
     static ALTERED: OnceLock<TransportDecl> = OnceLock::new();
     static ROW: OnceLock<DynTransport> = OnceLock::new();
-    let altered = ALTERED.get_or_init(|| {
-        // SAFETY: a byte copy of a live `TransportDecl`-layout value whose every pointer is to the
-        // fixture's `'static` data.
-        let mut decl = unsafe { core::ptr::read(fixture_decl()) };
-        decl.poll_write = Some(altering_write);
-        decl
+    let slots = SLOTS.get_or_init(|| CarrierSlots {
+        poll_write: Some(altering_write),
+        ..*real()
     });
+    let altered = ALTERED.get_or_init(|| decl_with(slots));
     // SAFETY: `altered` is `'static`, and every range it borrows is the fixture's `'static` data.
     let row = ROW.get_or_init(|| unsafe { link_transport(altered, "altered-wire") }.unwrap());
     let seen = script(adapter(row)).await;
     let honest = expected();
     assert_ne!(
         seen, honest,
-        "the script must see a wire that changed a byte"
+        "the script must see a carrier that changed a byte"
     );
     assert_ne!(seen.answered, honest.answered);
     assert_ne!(seen.dialled, honest.dialled);
     assert_ne!(seen.detached_answered, honest.detached_answered);
-    // What the altered wire only READ is untouched: the difference is where the bytes changed.
+    // What the altered carrier only READ is untouched: the difference is where the bytes changed.
     assert_eq!(seen.pumped, honest.pumped);
     assert_eq!(seen.detached_read, honest.detached_read);
 }
@@ -419,23 +425,22 @@ extern "C-unwind" fn recording_flush(
     real().poll_flush.unwrap()(state, conn, token)
 }
 
-/// NO BLOCKING-POOL HOP (#30, ruling K8c): on a single-threaded runtime, every poll crossing the
-/// script makes — accept, read, write, flush — runs on the runtime's own thread, the one that awaits
-/// the trait method; and the script still moves exactly the bytes it was given. RED against the
-/// minor-26 bridge, whose every crossing ran on a blocking-pool (or accept) thread.
+/// NO BLOCKING-POOL HOP (#30): on a single-threaded runtime, every poll crossing the script makes —
+/// accept, read, write, flush — runs on the runtime's own thread, the one that awaits the stack; and
+/// the script still moves exactly the bytes it was given.
 #[test]
-fn the_adapter_polls_the_wire_on_the_callers_thread() {
+fn the_stack_polls_the_carrier_on_the_callers_thread() {
+    static SLOTS: OnceLock<CarrierSlots> = OnceLock::new();
     static RECORDING: OnceLock<TransportDecl> = OnceLock::new();
     static ROW: OnceLock<DynTransport> = OnceLock::new();
-    let recording = RECORDING.get_or_init(|| {
-        // SAFETY: a byte copy of the live fixture decl; every pointer in it is `'static` data.
-        let mut decl = unsafe { core::ptr::read(fixture_decl()) };
-        decl.poll_accept = Some(recording_accept);
-        decl.poll_read = Some(recording_read);
-        decl.poll_write = Some(recording_write);
-        decl.poll_flush = Some(recording_flush);
-        decl
+    let slots = SLOTS.get_or_init(|| CarrierSlots {
+        poll_accept: Some(recording_accept),
+        poll_read: Some(recording_read),
+        poll_write: Some(recording_write),
+        poll_flush: Some(recording_flush),
+        ..*real()
     });
+    let recording = RECORDING.get_or_init(|| decl_with(slots));
     // SAFETY: `recording` is `'static`, and every range it borrows is the fixture's `'static` data.
     let row = ROW.get_or_init(|| unsafe { link_transport(recording, "recording-wire") }.unwrap());
     let runtime = tokio::runtime::Builder::new_current_thread()
@@ -482,6 +487,230 @@ fn a_token_wakes_only_its_own_live_task() {
     assert_eq!(count.0.load(std::sync::atomic::Ordering::SeqCst), 1);
 }
 
+// ── A FRAMER OVER THE CARRIER ───────────────────────────────────────────────────────────────────
+
+/// A linked framer whose frame is one line — enough framing to see the stack ingest, emit, and move
+/// a connection's bytes on an upgrade. Each framing state keeps the bytes of its unfinished line.
+struct Lines {
+    held: Mutex<HashMap<u64, Vec<u8>>>,
+    next: std::sync::atomic::AtomicU64,
+}
+
+impl Lines {
+    fn new() -> Self {
+        Self {
+            held: Mutex::new(HashMap::new()),
+            next: std::sync::atomic::AtomicU64::new(1),
+        }
+    }
+}
+
+impl Plugin for Lines {
+    fn key(&self) -> &'static str {
+        "lines"
+    }
+    fn kind(&self) -> Kind {
+        Kind::Transport
+    }
+    fn abi(&self) -> AbiVersion {
+        busbar_contract::transport::TRANSPORT_ABI
+    }
+}
+
+impl busbar_contract::transport::Framer for Lines {
+    fn locate(&self, target: &str) -> Result<Located, TransportError> {
+        Ok(Located {
+            authority: target.to_string(),
+            secure: false,
+            server_name: None,
+        })
+    }
+    fn open(
+        &self,
+        _: Side,
+        _: &str,
+        _: &ConnFacts,
+        _: &mut dyn busbar_contract::transport::FramerOut,
+    ) -> Result<u64, TransportError> {
+        let id = self.next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.held.lock().unwrap().insert(id, Vec::new());
+        Ok(id)
+    }
+    fn ingest(
+        &self,
+        state: u64,
+        bytes: &[u8],
+        end: bool,
+        out: &mut dyn busbar_contract::transport::FramerOut,
+    ) -> Result<(), TransportError> {
+        let mut all = self.held.lock().unwrap();
+        let held = all.get_mut(&state).ok_or(TransportError::Closed)?;
+        held.extend_from_slice(bytes);
+        while let Some(at) = held.iter().position(|b| *b == b'\n') {
+            let line: Vec<u8> = held.drain(..=at).collect();
+            out.frame(busbar_contract::transport::Framed::plain(
+                StreamId(0),
+                &line[..at],
+                true,
+            ));
+        }
+        if end {
+            out.end();
+        }
+        Ok(())
+    }
+    fn emit(
+        &self,
+        _: u64,
+        _: StreamId,
+        bytes: &[u8],
+        end_of_frame: bool,
+        out: &mut dyn busbar_contract::transport::FramerOut,
+    ) -> Result<(), TransportError> {
+        out.send(bytes);
+        if end_of_frame {
+            out.send(b"\n");
+        }
+        Ok(())
+    }
+    fn encode_envelope(
+        &self,
+        _: &[(&str, &[u8])],
+        body: &[u8],
+        out: &mut dyn busbar_contract::transport::BytesOut,
+    ) -> Result<(), busbar_contract::transport::wire::Encode> {
+        out.put(body);
+        out.put(b"\n");
+        Ok(())
+    }
+    fn refusal(
+        &self,
+        state: u64,
+        _: Option<StreamId>,
+        bytes: &[u8],
+        out: &mut dyn busbar_contract::transport::FramerOut,
+    ) -> Result<(), TransportError> {
+        self.emit(state, StreamId(0), bytes, true, out)
+    }
+    fn close(
+        &self,
+        state: u64,
+        _: CloseReason,
+        out: &mut dyn busbar_contract::transport::FramerOut,
+    ) {
+        if self.held.lock().unwrap().remove(&state).is_some() {
+            out.send(b"bye\n");
+        }
+    }
+    fn detach(
+        &self,
+        state: u64,
+        out: &mut dyn busbar_contract::transport::BytesOut,
+    ) -> Result<(), TransportError> {
+        let held = self
+            .held
+            .lock()
+            .unwrap()
+            .remove(&state)
+            .ok_or(TransportError::Closed)?;
+        out.put(&held);
+        Ok(())
+    }
+    fn adopt(
+        &self,
+        side: Side,
+        facts: &ConnFacts,
+        leftover: &[u8],
+        out: &mut dyn busbar_contract::transport::FramerOut,
+    ) -> Result<u64, TransportError> {
+        let state = self.open(side, "", facts, out)?;
+        self.ingest(state, leftover, false, out)?;
+        Ok(state)
+    }
+}
+
+/// The row of a framer composed over the fixture carrier.
+fn lines_row() -> TransportRow {
+    TransportRow {
+        key: "lines",
+        composes_over: &[transport_fixture::linked::KEY],
+        ..transport_fixture::linked::ROW
+    }
+}
+
+/// A framer stacked over a carrier frames its bytes (a line per frame, what the framer answers going
+/// out), names the layer it stands on, and closes with the framer's own close bytes. On an upgrade
+/// the byte stream MOVES: the source stack gives up the connection with the half line its framer
+/// held in front of it, and the stack that adopts it frames that half line as the start of its first
+/// frame — nothing lost, nothing read twice.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_framer_stacks_over_a_carrier_and_the_upgrade_moves_its_bytes() {
+    let carrier = transport_fixture::linked::carrier(&settings());
+    let stack = WireTransport::stack(
+        lines_row(),
+        Some(Arc::clone(&carrier)),
+        Some(Arc::new(Lines::new())),
+        None,
+    );
+    let moved_to = WireTransport::stack(
+        lines_row(),
+        Some(carrier),
+        Some(Arc::new(Lines::new())),
+        None,
+    );
+    assert_eq!(stack.composed_over(), Some(transport_fixture::linked::KEY));
+    let keys = TransportKeyHandle::keyless();
+    let listener = stack.listen(&Bind, &keys).await.unwrap();
+    let addr = listener.local_addr();
+    let (ready_tx, ready_rx) = std::sync::mpsc::channel::<()>();
+    let peer = std::thread::spawn(move || {
+        let peer = carrier_peer::dial(&addr);
+        peer.write_all(b"one\ntw");
+        ready_rx.recv().unwrap();
+        peer.write_all(b"o\n");
+        peer.read_to_end()
+    });
+    let conn = stack.accept(&listener).await.unwrap();
+    assert_eq!(
+        stack.arrival(&conn).transport_chain,
+        [transport_fixture::linked::KEY, "lines"]
+    );
+    // The first line is a frame; the half line after it stays with the framer.
+    let mut frames = stack.frames(conn.clone());
+    let (_, first) = frames.next().await.unwrap().unwrap();
+    assert_eq!(first.bytes.as_slice(), b"one");
+    drop(frames);
+    stack
+        .write(&conn, StreamId(0), ScratchBytes::new(b"hi"))
+        .await
+        .unwrap();
+    // THE UPGRADE: the connection moves, with the half line in front of its stream.
+    let adopted = moved_to
+        .adopt(&stack, conn.clone(), &keys)
+        .await
+        .expect("the stream moves");
+    assert!(
+        stack.detach(&conn).is_none(),
+        "the source gave the connection up"
+    );
+    ready_tx.send(()).unwrap();
+    let mut frames = moved_to.frames(adopted.clone());
+    let (_, second) = frames.next().await.unwrap().unwrap();
+    assert_eq!(
+        second.bytes.as_slice(),
+        b"two",
+        "the held half line moved with the stream"
+    );
+    moved_to.close(adopted, CloseReason::Normal);
+    assert!(
+        frames.next().await.is_none(),
+        "a closed connection's frames end"
+    );
+    drop(frames);
+    let back = peer.join().unwrap();
+    assert_eq!(back, b"hi\nbye\n", "the framer's bytes out, then its close");
+}
+
 // ── THE #30 MEASUREMENT ─────────────────────────────────────────────────────────────────────────
 
 fn percentiles(mut samples: Vec<u128>) -> (u128, u128) {
@@ -493,20 +722,20 @@ fn percentiles(mut samples: Vec<u128>) -> (u128, u128) {
 }
 
 /// A detached stream on `t` whose far end is an echo peer, and the peer's thread.
-async fn echoing(t: &Arc<dyn Transport>) -> (RawStreamIo, std::thread::JoinHandle<()>) {
+async fn echoing(t: &WireTransport) -> (RawStreamIo, std::thread::JoinHandle<()>) {
     let listener = t
         .listen(&Bind, &TransportKeyHandle::keyless())
         .await
         .unwrap();
     let addr = listener.local_addr();
     let echo = std::thread::spawn(move || {
-        let mut s = TcpStream::connect(addr).unwrap();
-        s.set_nodelay(true).unwrap();
-        let mut b = [0_u8; 1];
-        while s.read_exact(&mut b).is_ok() {
-            if s.write_all(&b).is_err() {
+        let peer = carrier_peer::dial(&addr);
+        loop {
+            let b = peer.read_some(1);
+            if b.is_empty() {
                 break;
             }
+            peer.write_all(&b);
         }
     });
     let conn = t.accept(&listener).await.unwrap();
@@ -526,11 +755,11 @@ async fn round_trip(io: &mut RawStreamIo) -> u128 {
     t0.elapsed().as_nanos()
 }
 
-/// One-byte ping-pong against an echo peer over a detached stream of EACH wire, INTERLEAVED round by
+/// One-byte ping-pong against an echo peer over a detached stream of EACH stack, INTERLEAVED round by
 /// round, so the two samples see the same machine: nanoseconds per round trip, `(a, b)`.
 async fn echo_rtt(
-    a: Arc<dyn Transport>,
-    b: Arc<dyn Transport>,
+    a: Arc<WireTransport>,
+    b: Arc<WireTransport>,
     rounds: usize,
 ) -> (Vec<u128>, Vec<u128>) {
     let ((mut io_a, echo_a), (mut io_b, echo_b)) = (echoing(&a).await, echoing(&b).await);
@@ -545,79 +774,75 @@ async fn echo_rtt(
     (out_a, out_b)
 }
 
-/// #30 (HOT lane, < 1 µs per crossing): the DROPPED-IN path's added latency, measured at three
+/// #30 (HOT lane, < 1 µs per crossing): the DROPPED-IN carrier's added latency, measured at three
 /// depths, printed, and held to the budget. Release build: `cargo test --release -p
 /// busbar-plugin-loader transport_adapter -- --ignored --nocapture`.
 ///
-/// 1. the ABI crossing itself (a poll slot answered without I/O) — p50 and p99 under the budget;
-/// 2. the adapter's async bridge around one crossing — the waker registration, the guarded indirect
-///    call and the answer's decode, awaited inline on the calling task (airlock minor 28: no
-///    blocking-pool hop) — p50 and p99 under the budget;
-/// 3. a one-byte echo round trip over a detached stream, adapter over the dropped-in cdylib against
-///    the linked Rust wire (a write, a flush and a read crossing each), the two interleaved round by
-///    round — the dropped-in p99 within twice the linked wire's.
+/// 1. the ABI crossing itself — a poll slot of the dropped-in image answered without I/O;
+/// 2. one trait method of the decl-backed carrier around that crossing (the waker registration, the
+///    guarded indirect call, the answer's decode), polled inline on the calling task;
+/// 3. a one-byte echo round trip over a detached stream, the dropped-in carrier's stack against the
+///    linked Rust carrier's (a write, a flush and a read crossing each), interleaved round by round —
+///    the dropped-in p99 within twice the linked one's.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "perf measurement; run in release with --ignored --nocapture"]
 async fn the_adapters_added_latency_per_crossing_is_measured() {
     let Some(row) = dropped_row() else {
         return;
     };
-    let wire = WireTransport::build(row, None, &settings()).unwrap();
-    let hosted = Arc::clone(&wire.hosted);
-
+    let decl_carrier = row.decl_carrier(&crate::wire_settings(&settings()));
+    let carrier: &dyn Carrier = &decl_carrier;
     let crossing = percentiles(
         (0..20_000)
             .map(|_| {
                 let t0 = std::time::Instant::now();
                 let _ = std::hint::black_box(
-                    hosted
-                        .built
-                        .poll_close(std::hint::black_box(u64::MAX), NO_WAKER),
+                    decl_carrier.raw_poll_flush(std::hint::black_box(u64::MAX)),
                 );
                 t0.elapsed().as_nanos()
             })
             .collect(),
     );
-    let token = crate::transport::WakeToken::new();
-    let mut bridged = Vec::with_capacity(20_000);
-    for _ in 0..20_000 {
-        let t0 = std::time::Instant::now();
-        let _ = polled(&token, |t| hosted.built.poll_close(u64::MAX, t)).await;
-        bridged.push(t0.elapsed().as_nanos());
-    }
-    let bridged = percentiles(bridged);
-    let (rust, dropped) = echo_rtt(
-        (transport_fixture::linked::build)(None, &settings()),
-        adapter(row),
-        20_000,
-    )
-    .await;
-    let (rust, dropped) = (percentiles(rust), percentiles(dropped));
+    let waker = futures::task::noop_waker();
+    let mut cx = std::task::Context::from_waker(&waker);
+    let bridged = percentiles(
+        (0..20_000)
+            .map(|_| {
+                let t0 = std::time::Instant::now();
+                let _: CarrierPoll<()> = std::hint::black_box(
+                    carrier.poll_flush(std::hint::black_box(u64::MAX), &mut cx),
+                );
+                t0.elapsed().as_nanos()
+            })
+            .collect(),
+    );
+    let (linked, dropped) = echo_rtt(rust(), adapter(row), 20_000).await;
+    let (linked, dropped) = (percentiles(linked), percentiles(dropped));
     println!(
-        "#30 transport, dropped-in path (budget {} ns per crossing):",
+        "#30 transport, dropped-in carrier (budget {} ns per crossing):",
         1_000
     );
     println!(
-        "  ABI crossing alone:           p50 {:>7} ns  p99 {:>7} ns",
+        "  ABI crossing alone:            p50 {:>7} ns  p99 {:>7} ns",
         crossing.0, crossing.1
     );
     println!(
-        "  adapter bridge + crossing:    p50 {:>7} ns  p99 {:>7} ns",
+        "  carrier method + crossing:     p50 {:>7} ns  p99 {:>7} ns",
         bridged.0, bridged.1
     );
     println!(
-        "  echo RTT, linked Rust wire:   p50 {:>7} ns  p99 {:>7} ns",
-        rust.0, rust.1
+        "  echo RTT, linked carrier:      p50 {:>7} ns  p99 {:>7} ns",
+        linked.0, linked.1
     );
     println!(
-        "  echo RTT, dropped-in adapter: p50 {:>7} ns  p99 {:>7} ns",
+        "  echo RTT, dropped-in carrier:  p50 {:>7} ns  p99 {:>7} ns",
         dropped.0, dropped.1
     );
     println!(
-        "  added per round trip:         p50 {:>7} ns  p99 {:>7} ns  (dropped-in p99 / linked p99 = {:.2})",
-        dropped.0.saturating_sub(rust.0),
-        dropped.1.saturating_sub(rust.1),
-        dropped.1 as f64 / rust.1 as f64
+        "  added per round trip:          p50 {:>7} ns  p99 {:>7} ns  (dropped-in p99 / linked p99 = {:.2})",
+        dropped.0.saturating_sub(linked.0),
+        dropped.1.saturating_sub(linked.1),
+        dropped.1 as f64 / linked.1 as f64
     );
     assert!(
         crossing.0 < 1_000 && crossing.1 < 1_000,
@@ -625,12 +850,12 @@ async fn the_adapters_added_latency_per_crossing_is_measured() {
     );
     assert!(
         bridged.0 < 1_000 && bridged.1 < 1_000,
-        "the adapter's bridge around one crossing is over the #30 budget: {bridged:?}"
+        "one carrier method around a crossing is over the #30 budget: {bridged:?}"
     );
     assert!(
-        dropped.1 <= 2 * rust.1,
-        "the dropped-in echo p99 {} ns is over twice the linked wire's {} ns",
+        dropped.1 <= 2 * linked.1,
+        "the dropped-in echo p99 {} ns is over twice the linked carrier's {} ns",
         dropped.1,
-        rust.1
+        linked.1
     );
 }

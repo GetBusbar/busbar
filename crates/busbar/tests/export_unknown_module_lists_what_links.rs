@@ -5,8 +5,8 @@
 //! binary's `--validate`.
 //!
 //! A config naming an export module nothing serves is refused with the list of the modules that do
-//! exist. That list is the kernel's own modules plus the export sinks this build LINKS, in the
-//! frozen order. A default build links every sink, so its refusal is 1.5.5's line byte for byte, and
+//! exist. That list is the export sinks this build LINKS, in the frozen order — the kernel serves
+//! no module of its own since `otlp` became the linked `busbar-export-otlp` sink (K9e-2). A default build links every sink, so its refusal is 1.5.5's line byte for byte, and
 //! that line is pinned below. A build that does not link a sink does not offer it: it would be
 //! naming, as available, the very module it refuses when asked for it.
 //!
@@ -33,6 +33,10 @@ const SINKS: &[(&str, &str)] = &[
     (
         "request-log-file",
         "  x: { module: request-log-file, settings: { path: '/tmp/busbar-requests.jsonl' } }\n",
+    ),
+    (
+        "otlp",
+        "  x: { module: otlp, settings: { url: \"http://localhost:4318/v1/traces\" } }\n",
     ),
 ];
 
@@ -94,9 +98,8 @@ fn the_unknown_exporter_refusal_lists_exactly_the_modules_this_build_serves() {
         .find(|l| l.starts_with("export.x.module: unknown exporter 'nosuch'"))
         .unwrap_or_else(|| panic!("no unknown-exporter refusal for 'nosuch':\n{refusal}"));
 
-    // What this build serves: the sinks it links, then the kernel's own `otlp`, in the frozen order.
-    let mut served = linked.clone();
-    served.push("otlp");
+    // What this build serves: the sinks it links, in the frozen order.
+    let served = linked.clone();
     assert_eq!(
         line,
         format!(

@@ -11,7 +11,7 @@ fn key(seed: u8) -> SigningKey {
 }
 
 /// After the auth ABI v1→2 bump (and v2→3, the enveloped wire) the loader floor MUST still admit
-/// v1 — a pre-built v1 auth plugin (verify-only, e.g. `auth-static-plugin`) keeps loading. The
+/// v1 — a pre-built v1 auth plugin (a verify-only module built against 1.5.x) keeps loading. The
 /// supported range is the inclusive `[1, 3]`.
 #[test]
 fn supported_abi_auth_floor_admits_v1() {
@@ -591,7 +591,7 @@ fn inventory_reports_every_row_class_without_loading() {
 }
 
 /// The REAL `kind: store` cdylib — exactly the loader tests' `store_fixture_plugin_path` in
-/// `crate::tests` (the sibling-built store-beta plugin, else the in-tree store-example one; see
+/// `crate::tests` (the sibling-built store-beta plugin, else the in-tree store proof; see
 /// that function's doc for where a missing cdylib is a hard failure: ci.yml's `check` job on every
 /// push, qa-gate.yml's `loader` job on `qa`). Used here purely to prove the tarball PIPELINE's
 /// mechanics (sign, package, scan, resolve-by-alias, open), never store-specific behavior.

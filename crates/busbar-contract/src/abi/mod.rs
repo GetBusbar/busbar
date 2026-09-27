@@ -141,7 +141,30 @@ pub const ABI_MAJOR: u32 = 2;
 /// plane-record kinds it keeps exactly as a linked one does, and the administrative
 /// `plane_record_write` verb writes only a kind the named plane declares. A decl ending before the
 /// tail keeps none. Append-only.
-pub const ABI_MINOR: u32 = 29;
+///
+/// 29→30 (1.6.0, HOTDOOR-B; ARCHITECT DEC-SERVE G2 + SD-3 queue (6); spec Part 3, #28): the CARRIER a
+/// plane in its own repository needs. `hot::WorkItem` appends the request-head handle and its
+/// accessor slot (`head`, `head_read`: method, path, query, headers), the answer's head slot
+/// (`emit_head`: status `u16` + headers) and the response-stream emit handle and slot (`stream`,
+/// `emit_body`) a body over the reply buffer is written through — the kind tags still reserve
+/// absent/duplex. `hot::host::PlaneHostVtable` appends the four host-service slots (`entropy_fill`,
+/// `wall_clock`, `tap_fault_latch`, `translate_cap`), and a plane image may export the optional
+/// `busbar_plane_arm` door symbol the host calls to arm its contract ports over them. Append-only.
+///
+/// 30→31 (1.6.0, TRANSPORT-STACK; OWNER-APPROVED 2026-09-27, spec #3): the TRANSPORT decl is
+/// replaced whole — its own generation 2 (`hot::transport::TRANSPORT_DECL_MAJOR`, stated in the
+/// decl's `version`), not an append. The byte-stream decl (a key, a composes-over list, a session
+/// flag and the poll slots, minors 24–30) is retired, not kept beside the new one: a transport is a
+/// carrier or a framer (`crate::transport::stack`), and `hot::TransportDecl` is those two traits
+/// lowered one slot per method (`hot::transport::CarrierSlots`, `hot::transport::FramerSlots`), with
+/// every constant the transport declares as its row. The loader admits a transport decl only from
+/// this minor and only at generation 2. No plane struct moves.
+///
+/// 31→32 (1.6.0, HOTDOOR-B queue 2; ARCHITECT 2026-09-27, #30 HOT lane): `hot::PlaneDecl` appends
+/// `dispatch_flags` (+ padding). A plane's dispatch runs INLINE on the request's worker — no thread
+/// hop on the hot lane — unless it sets `hot::decl::DISPATCH_BLOCKS`, when the host runs it on a
+/// blocking thread. A decl ending before the tail is run as blocking. Append-only.
+pub const ABI_MINOR: u32 = 32;
 
 /// The FROZEN-FOR-ALL-TIME ABI header. This exact layout — `magic` at offset 0, `abi_major` at 8,
 /// `abi_minor` at 12 — is a permanent contract: it may NEVER be reordered, resized, extended, or

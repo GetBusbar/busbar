@@ -19,7 +19,7 @@ pub(crate) async fn handle_fallback_pool(
     host: Arc<dyn EngineHost>,
     rt: Arc<NativeRuntime>,
     body: Bytes,
-    caller_token: Option<&str>,
+    caller_token: Option<&crate::engine::CallerCredential>,
     pool_name: &str,
     request_ctx: &mut RequestCtx,
     ingress_protocol: &str,

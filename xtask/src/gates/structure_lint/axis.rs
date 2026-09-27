@@ -110,7 +110,6 @@ pub fn table(a: &Addresses) -> Vec<AxisRow> {
     ];
     op_allowed.extend(a.proto_roots.iter().cloned());
     let mut tr_allowed = vec![
-        format!("{}/transport.rs", a.substrate_values),
         format!("{}/proto/", a.core),
         format!("{}/handlers/", a.core),
     ];

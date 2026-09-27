@@ -5,8 +5,8 @@
 //! kernel from its own tracing spans and delivered to the export-axis sinks that subscribe to it.
 //!
 //! `traces` has always been in the export vocabulary and in the projection mask, but nothing built
-//! a traces RECORD: spans left the process only through the `otlp` module's `tracing-opentelemetry`
-//! layer, installed once at boot. This layer is the record producer that was missing. Each span it
+//! a traces RECORD. This layer is that record producer — and, since K9e-2, the only way a span
+//! leaves the process: the `otlp` module is an export plugin fed by it. Each span it
 //! sees closing becomes one record of the stream's documented fields — `trace_id` (the root span's
 //! id), `span_id`, `parent_span_id`, `name`, `start` (epoch microseconds), `duration_us`, and the
 //! span's own `pool` / `ingress` / `op` / `lane` / `provider` / `model` where it carries them —

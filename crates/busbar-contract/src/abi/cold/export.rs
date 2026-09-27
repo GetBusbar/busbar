@@ -104,7 +104,11 @@ pub const EXPORT_ABI_VERSION: u32 = 3;
 ///   target without carrying anything to it.
 /// 9 (K9c): the check op's [`CheckPhase`] — asked among the operational limits' checks, or after
 ///   them, so a sink's lines keep their place among the configuration's errors.
-pub const EXPORT_ABI_MINOR: u32 = 9;
+/// 10 (K9e-2): the BINARY egress body — [`HostOp::HttpBinary`] carries a request whose body is
+///   octets (hex on the wire) — and the sink's DECLARED EGRESS POLICY (a manifest's
+///   `declares.egress`: `open-web` | `collector`), which the host applies to every request the sink
+///   asks it to admit or carry.
+pub const EXPORT_ABI_MINOR: u32 = 10;
 
 /// One observability stream an export sink can carry OUT of the engine — the FROZEN word-space of
 /// the export projection grammar, the same discipline as the hook phase names.
@@ -731,6 +735,10 @@ pub enum HostOp {
     /// SSRF and cloud-metadata refusal), its TLS, its timeouts. The sink never dials; a request the
     /// policy refuses is a [`HostResult::Failed`] with step `refused`.
     Http(HttpRequest),
+    /// [`HostOp::Http`] whose `body` is OCTETS, spelled as lowercase hex (K9e-2, export ABI minor
+    /// 10) — a wire format that is not text (a protobuf payload) rides the same carrier, under the
+    /// same policy, answered the same way. A body that is not hex is a `request` failure.
+    HttpBinary(HttpRequest),
 }
 
 /// An outbound HTTP request a sink asks the host to carry (K9a S5).

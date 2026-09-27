@@ -98,7 +98,7 @@ pub(crate) struct Hop<'a> {
     pub(crate) client_include_usage: bool,
     pub(crate) client_has_stream_options: bool,
     pub(crate) gemini_json_array: bool,
-    pub(crate) caller_token: Option<&'a str>,
+    pub(crate) caller_token: Option<&'a crate::engine::CallerCredential>,
     pub(crate) upstream_creds: busbar_contract::config::UpstreamCreds,
     pub(crate) resolved_gov_key: Option<&'a Arc<busbar_contract::records::VirtualKey>>,
     pub(crate) remaining_secs: u64,

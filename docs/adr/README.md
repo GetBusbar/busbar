@@ -8,7 +8,7 @@ the modules that implement it.
 | ADR | Title | Primary code |
 |---|---|---|
 | [0001](0001-weighted-selection.md) | Smooth weighted round-robin (SWRR) selection | `crates/busbar-kernel/src/store/mod.rs` |
-| [0002](0002-circuit-breaker.md) | Circuit breaker: disposition taxonomy & recovery | `crates/busbar-substrate-values/src/breaker.rs`, `crates/busbar-kernel/src/store/mod.rs`, `crates/busbar-llm/src/engine/attempt/classify.rs` |
+| [0002](0002-circuit-breaker.md) | Circuit breaker: disposition taxonomy & recovery | `crates/busbar-kernel/src/breaker.rs`, `crates/busbar-kernel-breaker/src/normalize.rs`, `crates/busbar-kernel/src/store/mod.rs`, `crates/busbar-llm/src/engine/attempt/classify.rs` |
 | [0005](0005-ir-fidelity.md) | Superset IR & translation fidelity | `crates/busbar-llm-codec/src/ir/mod.rs`, `crates/busbar-kernel/src/proto/` |
 | [0010](0010-plugin-licensing.md) | Plugin licensing: plugin self-validates; core resolves SecretRefs & delivers settings | `crates/busbar-kernel/src/config/secret.rs`, `crates/busbar-kernel/src/auth/mod.rs`, `crates/busbar-kernel/src/hooks/mod.rs` |
 

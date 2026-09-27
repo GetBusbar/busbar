@@ -8,7 +8,7 @@
 #
 # LEVELS (per dialect)
 #   1. STATIC   — core's sources never name a protocol crate: the underscore crate-name grep over
-#                 the NEUTRAL CORE ROOTS (crates/busbar-kernel/src, crates/busbar-substrate-values/src,
+#                 the NEUTRAL CORE ROOTS (crates/busbar-kernel/src,
 #                 crates/busbar-contract/src — the same roots `xtask/src/planes.rs::neutral_src_roots()` scans) is
 #                 exactly zero (core-split exit criterion 7). Checked ONCE, up front — it is a
 #                 property of the whole tree, not any one dialect. NOTE THE ROOTS ARE A TABLE AND
@@ -108,9 +108,9 @@ GATE_TARGET_ROOT="${CARGO_TARGET_DIR:-target}"
 # ── THE SCAN ROOTS, AND THE RULE THAT A MISSING ONE IS RED, NEVER A PASS ───────────────────────
 # `crates/busbar-core` IS NOT ON DISK AND HAS NOT BEEN FOR SOME TIME. `busbar-core` was absorbed
 # INTO `busbar-kernel` (W4.a, 673ecdaaa; `crates/busbar/Cargo.toml` says so in as many words), and
-# `busbar-substrate`'s value leaves became `busbar-substrate-values` (W4.b P2, 5fa320208). That is
-# the same pair of moves `xtask/src/planes.rs::neutral_src_roots()` already records, and its three
-# roots are the three below. THIS SCRIPT WAS MISSED BY THAT REPOINT — the finding
+# `busbar-substrate`'s value leaves became `busbar-substrate-values` (W4.b P2, 5fa320208), which
+# was then deleted into the contract and the kernel (#83a SD-8). The two roots below are the core
+# ones `xtask/src/planes.rs::neutral_src_roots()` also scans. THIS SCRIPT WAS MISSED BY THAT REPOINT — the finding
 # docs/design/1.6.0-security-posture.md §2.4 filed as BROKEN.
 #
 # ZERO IS THE PASSING ANSWER TO EVERY BAN. That sentence is why this table exists and why
@@ -132,7 +132,6 @@ GATE_TARGET_ROOT="${CARGO_TARGET_DIR:-target}"
 # wiring rather than on a seam violation. `neutral_src_roots()` leaves it out for the same reason.
 CORE_SRC_ROOTS=(
   "crates/busbar-kernel/src"           # the engine — `busbar-core` was absorbed INTO it (W4.a)
-  "crates/busbar-substrate-values/src" # the neutral value leaves `busbar-substrate` left behind
   "crates/busbar-contract/src"         # the neutral ABI crate (the former `crates/api` retired into it)
 )
 # CORE PROPER — the direct successor of the historical `crates/busbar-core/src`, and what the
@@ -285,7 +284,7 @@ if [ "${1:-}" = "--selftest" ]; then
   # AND EVERY ROOT THE REAL RUN READS, proved present by the same guard the real run uses — so a
   # rename reds the self-test too, not only the run, and names which path went.
   for st_root in "${CORE_SRC_ROOTS[@]}" \
-                 crates/busbar-kernel/src/ir crates/busbar-substrate-values/src/ir \
+                 crates/busbar-kernel/src/ir \
                  crates/busbar-kernel/src/handlers crates/busbar-mcp/src crates/busbar-plane-mcp/src; do
     if ( require_scan_dir "$st_root" "a live scan root" ) >/dev/null 2>&1; then
       note "self-test ROOT(3): live scan root present — $st_root"
@@ -404,13 +403,14 @@ note "level 1 static: core names no protocol crate (0 hits over $CORE_NFILES pro
 #
 # WHERE THE FILE WOULD BE TODAY. Its old address was `crates/busbar-core/src/ir/variant.rs`, and
 # `crates/busbar-core` does not exist. Core's `ir` module FORKED at W4.b: the sealed `IrHandle` and
-# the neutral Invoke/Subscribe handles went to `crates/busbar-substrate-values/src/ir` (see
+# the neutral Invoke/Subscribe handles went to the shared value crate's `ir`, and from there to
+# `crates/busbar-contract/src/ir` (#83a SD-1; the value crate is deleted, SD-8) (see
 # `crates/busbar-kernel/src/ir/handle.rs`, which re-exports them at the historical path) while the
 # operation-blind remainder stayed at `crates/busbar-kernel/src/ir`. BOTH are a home the dissolved
 # enums could come back to, so BOTH are pinned — and each `ir` directory is proved present FIRST,
 # because `[ -e <a-directory-that-moved>/variant.rs ]` is false for the wrong reason and prints a
 # green note over nothing. That vacuous green is exactly what this leg did before this repoint.
-for ir_root in crates/busbar-kernel/src/ir crates/busbar-substrate-values/src/ir; do
+for ir_root in crates/busbar-kernel/src/ir crates/busbar-contract/src/ir; do
   require_scan_dir "$ir_root" "an IR module the A4b dissolve emptied"
   if [ -e "$ir_root/variant.rs" ]; then
     die "$ir_root/variant.rs still exists — A4b dissolves IrReq/IrResp onto Box<dyn IrHandle> and DELETES this file"
@@ -422,7 +422,7 @@ if grep -rREq "\benum IrReq\b|\benum IrResp\b" "${CORE_SRC_ROOTS[@]}"; then
   grep -rREn "\benum IrReq\b|\benum IrResp\b" "${CORE_SRC_ROOTS[@]}"
   die "enum IrReq/IrResp still defined in core — the A4b dissolve must remove them entirely"
 fi
-note "level 1b structural: IrReq/IrResp hub enums ABSENT (A4b dissolve complete — no variant.rs under crates/busbar-kernel/src/ir or crates/busbar-substrate-values/src/ir, no enum declared across ${CORE_SRC_ROOTS[*]})"
+note "level 1b structural: IrReq/IrResp hub enums ABSENT (A4b dissolve complete — no variant.rs under crates/busbar-kernel/src/ir or crates/busbar-contract/src/ir, no enum declared across ${CORE_SRC_ROOTS[*]})"
 
 # ── fixtures ─────────────────────────────────────────────────────────────────────────────────────
 FIX=$(mktemp -d "${TMPDIR:-/tmp}/proto-deletion-gate.XXXXXX")
@@ -710,9 +710,8 @@ run_gate "anthropic" "proto-llm" "plane-mcp" \
 # WHERE THAT BUILT-IN WOULD BE TODAY: `crates/busbar-kernel/src/handlers/mcp.rs`. The old address
 # was `crates/busbar-core/src/handlers/mcp.rs`; `busbar-core` was absorbed into `busbar-kernel`
 # (W4.a) and the handlers module went with it — `crates/busbar-kernel/src/handlers` is the ONLY
-# `handlers` DIRECTORY in the workspace (substrate's share of the codec-cell matrix is the flat file
-# `crates/busbar-substrate-values/src/handlers.rs`, which is a re-export surface and not a place a
-# dialect handler can be a sibling in). The directory is proved present BEFORE the path-pin: a
+# `handlers` DIRECTORY in the workspace (the codec-cell shapes are the contract's flat
+# `crates/busbar-contract/src/codec.rs`, not a place a dialect handler can be a sibling in). The directory is proved present BEFORE the path-pin: a
 # `[ ! -e … ]` over a directory that moved does not read "the handler left core", it reads as this
 # gate answering a question about nothing — and it answered it GREEN for as long as nobody looked.
 require_scan_dir crates/busbar-kernel/src/handlers "core's protocol-handler module — the MCP built-in's old home"

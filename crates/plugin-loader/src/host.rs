@@ -24,6 +24,7 @@
 //! external rotator moved aside is not written through a stale descriptor, and an unopenable path is
 //! a per-write failure the sink reports rather than a boot it refuses.
 
+use crate::sign::EgressPolicy;
 use busbar_contract::abi::cold::export::{
     HostOp, HostResult, HttpRequest, Rotation, RotationFault,
 };
@@ -78,6 +79,7 @@ impl Destinations {
             | HostOp::Rotate { destination, .. }
             | HostOp::Flush { destination } => destination,
             HostOp::Http(request) => return carry(request),
+            HostOp::HttpBinary(request) => return carry_binary(EgressPolicy::OpenWeb, request),
             HostOp::Admit { url } => return admit(url),
         };
         let Some(d) = self.0.get(destination) else {
@@ -97,6 +99,7 @@ impl Destinations {
             },
             HostOp::Flush { .. } => flush(d),
             HostOp::Http(request) => carry(request),
+            HostOp::HttpBinary(request) => carry_binary(EgressPolicy::OpenWeb, request),
             HostOp::Admit { url } => admit(url),
         }
     }
@@ -132,6 +135,85 @@ pub trait EgressCarrier: Send + Sync {
             carried.unwrap_or_else(|e| failed("request", e, None))
         })
     }
+
+    /// [`admit`](Self::admit) under a sink's declared [`EgressPolicy`] (K9e-2). Default: the
+    /// open-web policy is `admit`; a carrier that implements no other policy refuses the rest.
+    fn admit_under(&self, policy: EgressPolicy, url: &str) -> Result<(), String> {
+        match policy {
+            EgressPolicy::OpenWeb => self.admit(url),
+            other => Err(no_policy(other)),
+        }
+    }
+
+    /// [`carry`](Self::carry) of `request` with the OCTETS `body` (its own `body` is not read)
+    /// under a sink's declared [`EgressPolicy`] (K9e-2). Default: an open-web request whose body is
+    /// text is `carry`; a binary body, or another policy, is refused by a carrier that implements
+    /// neither.
+    fn carry_under(&self, policy: EgressPolicy, request: &HttpRequest, body: &[u8]) -> HostResult {
+        match (policy, std::str::from_utf8(body)) {
+            (EgressPolicy::OpenWeb, Ok(text)) => self.carry(&HttpRequest {
+                body: text.to_string(),
+                ..request.clone()
+            }),
+            (EgressPolicy::OpenWeb, Err(_)) => {
+                failed("refused", "this host carries no binary request body", None)
+            }
+            (other, _) => failed("refused", no_policy(other), None),
+        }
+    }
+
+    /// [`carry_under`](Self::carry_under), AWAITED by the delivery's task (as
+    /// [`carry_async`](Self::carry_async) is to `carry`). Default: an open-web request whose body
+    /// is text is `carry_async`; anything else is `carry_under`'s answer.
+    fn carry_under_async(
+        &'static self,
+        policy: EgressPolicy,
+        request: HttpRequest,
+        body: Vec<u8>,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = HostResult> + Send>> {
+        match (policy, String::from_utf8(body)) {
+            (EgressPolicy::OpenWeb, Ok(body)) => self.carry_async(HttpRequest { body, ..request }),
+            (policy, Err(e)) => {
+                let answer = self.carry_under(policy, &request, e.as_bytes());
+                Box::pin(async move { answer })
+            }
+            (policy, Ok(body)) => {
+                let answer = self.carry_under(policy, &request, body.as_bytes());
+                Box::pin(async move { answer })
+            }
+        }
+    }
+}
+
+/// A carrier's refusal of a policy it does not implement.
+fn no_policy(policy: EgressPolicy) -> String {
+    format!("this host carries no `{}` plugin egress", policy.as_token())
+}
+
+/// A binary request's OCTETS — its `body`, which is lowercase hex on the wire (K9e-2) — and its
+/// head (method, target, headers, deadline) with no body of its own; or the `request` failure a
+/// body that is not hex is.
+pub(crate) fn octets(request: &HttpRequest) -> Result<(HttpRequest, Vec<u8>), HostResult> {
+    let body = hex::decode(&request.body).map_err(|e| {
+        failed(
+            "request",
+            format!("the binary request body is not hex ({e})"),
+            None,
+        )
+    })?;
+    let head = HttpRequest {
+        body: String::new(),
+        ..request.clone()
+    };
+    Ok((head, body))
+}
+
+/// Carry one BINARY sink request (hex body) under `policy`.
+pub(crate) fn carry_binary(policy: EgressPolicy, request: &HttpRequest) -> HostResult {
+    match octets(request) {
+        Ok((head, body)) => carry_under(policy, &head, &body),
+        Err(failure) => failure,
+    }
 }
 
 static CARRIER: std::sync::OnceLock<&'static dyn EgressCarrier> = std::sync::OnceLock::new();
@@ -155,6 +237,39 @@ fn carry(request: &HttpRequest) -> HostResult {
 pub(crate) async fn carry_async(request: HttpRequest) -> HostResult {
     match CARRIER.get() {
         Some(carrier) => carrier.carry_async(request).await,
+        None => failed("refused", "this host carries no plugin egress", None),
+    }
+}
+
+/// Carry one sink request with the octets `body` under the sink's declared `policy` (K9e-2); with
+/// no carrier installed, refuse it.
+pub(crate) fn carry_under(policy: EgressPolicy, request: &HttpRequest, body: &[u8]) -> HostResult {
+    match CARRIER.get() {
+        Some(carrier) => carrier.carry_under(policy, request, body),
+        None => failed("refused", "this host carries no plugin egress", None),
+    }
+}
+
+/// [`carry_under`], awaited (see [`EgressCarrier::carry_under_async`]).
+pub(crate) async fn carry_under_async(
+    policy: EgressPolicy,
+    request: HttpRequest,
+    body: Vec<u8>,
+) -> HostResult {
+    match CARRIER.get() {
+        Some(carrier) => carrier.carry_under_async(policy, request, body).await,
+        None => failed("refused", "this host carries no plugin egress", None),
+    }
+}
+
+/// Ask the installed carrier's `policy` about `url` (K9e-2); with none installed, refuse it.
+pub(crate) fn admit_under(policy: EgressPolicy, url: &str) -> HostResult {
+    match CARRIER
+        .get()
+        .map(|carrier| carrier.admit_under(policy, url))
+    {
+        Some(Ok(())) => HostResult::Done { rotation: None },
+        Some(Err(refusal)) => failed("refused", refusal, None),
         None => failed("refused", "this host carries no plugin egress", None),
     }
 }

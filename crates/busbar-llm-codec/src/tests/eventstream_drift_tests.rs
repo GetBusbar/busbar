@@ -5,9 +5,9 @@
 //! frame in the shared fixture `testing/plane-copies/eventstream-frames.json` byte for byte —
 //! prelude, headers, payload and both CRC-32s — and decodes the same frames back from their
 //! concatenation, including a trailing partial frame at every split and a malformed prelude. The
-//! fixture is the host encoder's output, and the host's own suite holds its encoder to the same
-//! file, so the two copies cannot drift apart without one of the two suites failing. Matching real
-//! frames also pins the plane's own CRC-32 against the host's.
+//! fixture is the output of the host encoder this copy was taken from (deleted in SD-8, when no host
+//! code framed event streams any more), so the serving copy writes exactly the bytes the host did.
+//! Matching real frames also pins the plane's own CRC-32 against the host's.
 
 use super::*;
 

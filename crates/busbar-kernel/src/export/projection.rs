@@ -31,7 +31,7 @@
 //! instance of it, hand-built. So all three of these are LOUD errors at `--validate`/boot:
 //!
 //! 1. a stream this release has **no producer** for ([`stream_produced`]);
-//! 2. a stream the instance's **module cannot carry** ([`module_streams`]);
+//! 2. a stream the instance's **module cannot carry** (the streams its sink declares);
 //! 3. a `fields:` list that omits a **pinned** field, or names a field this release does not
 //!    produce.
 
@@ -56,9 +56,9 @@ use serde_json::Value;
 /// - `logs` — [`crate::export::build_request_log`], from the request-finish path
 ///   (`crate::ingress::finish_inner`). PARTIAL: it produces a subset of the stream's documented
 ///   default fields (see [`produced_fields`]).
-/// - `traces` — the OpenTelemetry span pipeline (`crate::observability`), exported by the `otlp`
-///   module; and, for an export-axis sink subscribed to it, the kernel's traces producer
-///   (`crate::export::traces`, K9a S7), which builds one record per closed span.
+/// - `traces` — the kernel's traces producer (`crate::export::traces`, K9a S7), which builds one
+///   record per closed span for every export-axis sink subscribed to it (the `otlp` module's
+///   among them).
 /// - `events` — the hash-chained admin records in `crate::audit_ring` (`busbar_contract::records::AuditRecord`:
 ///   `seq`/`ts`/`action`/`resource`/`outcome`/`principal`/`prev_hash`/`hash`). PARTIAL: admin
 ///   mutations only; config applies, plugin loads/refusals, boot and shutdown are a later unit.
@@ -99,11 +99,10 @@ pub(crate) fn produced_fields(stream: ExportStream) -> &'static [ExportField] {
         // of the stream's documented default set (correlation_id, model_requested, model_served,
         // provider, status) is the producer unit that follows this one.
         ExportStream::Logs => &[F::Ts, F::IngressProtocol, F::Pool, F::Outcome, F::LatencyMs],
-        // Spans reach the `otlp` module through the tracing/OTLP layer, not as records, so there is
-        // no per-field projection to apply to them; an operator asking to project trace FIELDS
-        // is refused, loudly, in the words this release has always used. (A sink on the export
-        // axis is GRANTED the stream's documented set — see `resolve_projection` — which the
-        // traces producer, K9a S7, fills.)
+        // Empty ON PURPOSE: an operator asking to project trace FIELDS is refused, loudly, in the
+        // words this release has always used (1.5.5 printed them for an `otlp` instance). A sink
+        // subscribed to `traces` is GRANTED the stream's documented set — see `resolve_projection`
+        // — which the traces producer, K9a S7, fills.)
         ExportStream::Traces => &[],
         // `busbar_contract::records::AuditRecord`, mapped onto the stream's field names: seq → seq, ts → ts,
         // prev_hash → prev_hash, action → kind, principal → actor, resource → resource,
@@ -123,19 +122,6 @@ pub(crate) fn produced_fields(stream: ExportStream) -> &'static [ExportField] {
         | ExportStream::Identity
         | ExportStream::Prompts
         | ExportStream::Completions => &[],
-    }
-}
-
-/// The streams a built-in `export:` MODULE can carry.
-///
-/// Checked so that `module: otlp` + `streams: [logs]` is a LOUD error instead of a sink that
-/// validates and receives nothing: the module is the transport, the projection is what rides it, and
-/// a projection the transport cannot carry is a configuration mistake, not an empty subscription.
-/// `None` for a module this build does not know (the unknown-module diagnostic owns that case).
-pub(crate) fn module_streams(module: &str) -> Option<&'static [ExportStream]> {
-    match module {
-        crate::config::EXPORT_MODULE_OTLP => Some(&[ExportStream::Traces]),
-        _ => None,
     }
 }
 

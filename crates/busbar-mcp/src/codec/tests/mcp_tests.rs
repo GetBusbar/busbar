@@ -645,10 +645,7 @@ fn the_declaration_registers_under_the_planes_key() {
 /// content into the prompt projection keeps its own tests there.
 #[test]
 fn subscribe_body_projects_its_target() {
-    use busbar_kernel::{
-        handlers::{request_handler, TranslateCodec as _},
-        proto::register_test_protocol,
-    };
+    use busbar_kernel::{handlers::request_handler, proto::register_test_protocol};
     register_test_protocol(&crate::PROTO_DECL);
     let v = serde_json::json!({
         "jsonrpc": "2.0",
@@ -661,8 +658,9 @@ fn subscribe_body_projects_its_target() {
         .and_then(|rh| rh.operation_handler(OpVerb::SUBSCRIBE))
         .expect("the registered protocol serves SUBSCRIBE");
     let facts = handler
-        .read_facts_value(&v)
-        .unwrap_or_else(|_| panic!("the SUBSCRIBE reader refused this body"));
+        .read_request_value(&v)
+        .unwrap_or_else(|_| panic!("the SUBSCRIBE reader refused this body"))
+        .facts();
     let shown: Vec<String> = facts
         .content()
         .iter()

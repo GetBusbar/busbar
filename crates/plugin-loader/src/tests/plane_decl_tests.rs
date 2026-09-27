@@ -22,22 +22,36 @@ fn serial() -> std::sync::MutexGuard<'static, ()> {
 
 // ── Instruments ───────────────────────────────────────────────────────────────────────────────
 
-/// The name of the thread each noted crossing ran on, in order.
-static THREADS: Mutex<Vec<String>> = Mutex::new(Vec::new());
+/// The name of the thread each noted crossing ran on, in order, beside the path of the plane that
+/// crossed.
+///
+/// KEYED BY THE PLANE'S PATH, because the recorder is the LOADER's, not this file's: every plane's
+/// constructor crossing in this test binary notes itself, and `plane_conformance_tests` drives real
+/// planes' `config_validate`/`build` on other test threads that do not hold [`SERIAL`]. Read
+/// unkeyed, one of those crossings landing between a test's drain and its read was a third entry
+/// in a list that expected two (1 in ~8 Linux runs).
+static THREADS: Mutex<Vec<(String, String)>> = Mutex::new(Vec::new());
 
 /// Called from inside the loader's guard closure for the constructor crossings: records the thread
-/// the crossing actually ran on.
-pub(super) fn note_thread() {
-    THREADS.lock().unwrap_or_else(|p| p.into_inner()).push(
+/// the crossing actually ran on, and whose crossing it was.
+pub(super) fn note_thread(plane_path: &str) {
+    THREADS.lock().unwrap_or_else(|p| p.into_inner()).push((
+        plane_path.to_string(),
         std::thread::current()
             .name()
             .unwrap_or("<unnamed>")
             .to_string(),
-    );
+    ));
 }
 
+/// Drain the recorder, returning the threads THIS file's plane (`memplane`, see [`plane_over`])
+/// crossed on; other planes' crossings are dropped.
 fn take_threads() -> Vec<String> {
     std::mem::take(&mut *THREADS.lock().unwrap_or_else(|p| p.into_inner()))
+        .into_iter()
+        .filter(|(path, _)| path == DECL_PLANE_PATH)
+        .map(|(_, thread)| thread)
+        .collect()
 }
 
 /// How many times the plane's `free` ran.
@@ -155,8 +169,11 @@ fn decl() -> PlaneDecl {
     }
 }
 
+/// The path every plane this file assembles is known by.
+const DECL_PLANE_PATH: &str = "memplane";
+
 fn plane_over(d: &PlaneDecl) -> Result<DynPlane, String> {
-    assemble(d, "memplane".to_string(), None, None)
+    assemble(d, DECL_PLANE_PATH.to_string(), None, None)
 }
 
 // ── Item 389: a decl size over-claim is REFUSED, as the host vtable's is ──────────────────────
@@ -446,4 +463,69 @@ fn the_constructor_crossings_run_on_the_plugin_worker() {
         ],
         "config_validate and build must cross on the confined worker, not the caller's thread"
     );
+}
+
+/// HOW THE DISPATCH RUNS (minor 32): the flags read back as stated; a decl ending before the tail is
+/// run as blocking (the way it was run before it could say); a bit this build does not know is
+/// refused, naming it.
+#[test]
+fn the_dispatch_flags_tail_reads_back_as_stated() {
+    let _s = serial();
+    let mut d = decl();
+    d.dispatch_flags = 0;
+    assert!(!plane_over(&d).expect("admits").dispatch_blocks(), "inline");
+    d.dispatch_flags = busbar_contract::abi::hot::decl::DISPATCH_BLOCKS;
+    assert!(
+        plane_over(&d).expect("admits").dispatch_blocks(),
+        "declared blocking"
+    );
+    d.dispatch_flags = 0;
+    d.size = core::mem::offset_of!(PlaneDecl, dispatch_flags) as u32;
+    assert!(
+        plane_over(&d).expect("admits").dispatch_blocks(),
+        "a decl before the tail is run as blocking"
+    );
+    d.size = core::mem::size_of::<PlaneDecl>() as u32;
+    d.dispatch_flags = 0b10;
+    let refusal = plane_over(&d).expect_err("an unknown bit");
+    assert_eq!(
+        refusal,
+        "plane 'memplane' declares dispatch flags 0x2; this build knows only 0x1 (dispatch blocks) \
+         — rebuild it against this busbar ABI minor"
+    );
+}
+
+/// A LIVE ANSWER NEEDS A BLOCKING DISPATCH: a plane declaring a response-stream or duplex-session
+/// carrier without `DISPATCH_BLOCKS` is refused at load, naming the plane and the bit — inline, its
+/// stream would reach the caller only after the dispatch returned. With the bit it is admitted, and
+/// a request/response plane needs no bit.
+#[test]
+fn a_live_answering_plane_without_dispatch_blocks_is_refused() {
+    use busbar_contract::abi::hot::decl::DISPATCH_BLOCKS;
+    let _s = serial();
+    for live in [
+        IngressCarrier::ResponseStream,
+        IngressCarrier::DuplexSession,
+    ] {
+        let mut d = decl();
+        d.provided_carriers = IngressCarrier::RequestResponse.bit() | live.bit();
+        d.dispatch_flags = 0;
+        assert_eq!(
+            plane_over(&d).expect_err("a live answer on an inline dispatch"),
+            "plane 'memplane' declares a live answer (a response-stream or duplex-session carrier) \
+             but not DISPATCH_BLOCKS (0x1) in its dispatch flags: a live answer is written while the \
+             caller reads it, so its dispatch must run on its own thread — set the bit",
+            "{live:?}"
+        );
+        d.dispatch_flags = DISPATCH_BLOCKS;
+        assert!(
+            plane_over(&d).expect("admits").dispatch_blocks(),
+            "{live:?}"
+        );
+    }
+    let mut d = decl();
+    d.dispatch_flags = 0;
+    assert!(!plane_over(&d)
+        .expect("a request/response plane runs inline")
+        .dispatch_blocks());
 }

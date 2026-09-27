@@ -47,6 +47,8 @@
 // the root's admin surface, which serves the ledger reads the identity is asserted over.
 #![cfg(all(linked_axis_body_ingress, feature = "root-admin"))]
 
+mod common;
+
 use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::path::{Path, PathBuf};
@@ -630,7 +632,7 @@ impl Rig {
 
         let log_path = dir.join("out.log");
         let log = std::fs::File::create(&log_path).unwrap();
-        let child = Command::new(env!("CARGO_BIN_EXE_busbar"))
+        let child = Command::new(common::boot::exe())
             .env("BUSBAR_CONFIG", dir.join("config.yaml"))
             .env("BUSBAR_PROVIDERS", dir.join("providers.yaml"))
             .env("BUSBAR_ADMIN_TOKEN", ADMIN_TOKEN)
@@ -867,7 +869,7 @@ fn write_configs(dir: &Path) {
     )
     .unwrap();
 
-    let key = Command::new(env!("CARGO_BIN_EXE_busbar"))
+    let key = Command::new(common::boot::exe())
         .arg("--generate-signing-key")
         .output()
         .expect("generate a signing key");

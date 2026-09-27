@@ -31,16 +31,17 @@ pub(crate) fn artifact(key: &str) -> &'static str {
 ///    (`../store-sqlite` relative to this repo, `cargo build --release` there). store-sqlite lives
 ///    entirely in its own repo; its sqlite behaviour is that repo's job (`store-sqlite-plugin/tests/
 ///    e2e.rs`), this crate only loads it.
-/// 2. Otherwise the IN-TREE hermetic `busbar-store-example-plugin` cdylib — a workspace member, so
-///    `cargo test --workspace` always builds it.
+/// 2. Otherwise the store BOTH-WAYS PROOF's own cdylib (`[package.metadata.busbar.both-ways]`
+///    `store`, a real workspace store with its dropped-in door) — a workspace member and this crate's
+///    dev-dependency, so `cargo test --workspace` and `cargo test -p busbar-plugin-loader` build it.
 ///
 /// WHERE THE HARD FAILURE FIRES (item 391 — this comment used to name a `dev-gate.yml` that does
 /// not exist, and the only thing setting `DEV_GATE` ran on `qa`, so on every push these tests
 /// skipped in silence):
 ///
 /// * EVERY PUSH, `.github/workflows/ci.yml`'s `check` job (`cargo test --workspace`, `CI` set, no
-///   sibling checkout): the in-tree store-example cdylib serves, and its absence is a HARD FAILURE
-///   (`store_example_plugin_path`'s panic), never a skip.
+///   sibling checkout): the in-tree store proof's cdylib serves, and its absence is a HARD FAILURE
+///   (`store_proof_plugin_path`'s panic), never a skip.
 /// * `qa`, `.github/workflows/qa-gate.yml`'s `loader` job (`scripts/qa-gate-run.sh loader`, which
 ///   builds the sibling and runs `DEV_GATE=1 cargo test --release -p busbar-plugin-loader`): the
 ///   sibling sqlite cdylib is REQUIRED — `CI` + `DEV_GATE` without it is a hard failure, so the real
@@ -57,7 +58,7 @@ pub(crate) fn store_fixture_plugin_path() -> Option<std::path::PathBuf> {
     };
     resolve_store_fixture(
         sibling,
-        store_example_candidate,
+        store_proof_candidate,
         std::env::var_os("CI").is_some(),
         std::env::var_os("DEV_GATE").is_some(),
     )
@@ -79,7 +80,7 @@ fn resolve_store_fixture(
         return Err(format!(
             "the {} cdylib is not built from the ../{} sibling \
              checkout under qa-gate.yml's loader job (DEV_GATE): refusing to silently degrade the \
-             kind:store dlopen seam's coverage to the in-tree example plugin",
+             kind:store dlopen seam's coverage to the in-tree store proof",
             artifact("sibling_store_plugin"),
             artifact("sibling_store_checkout"),
         ));
@@ -88,7 +89,7 @@ fn resolve_store_fixture(
         Some(p) => Ok(Some(p)),
         None if ci => Err(format!(
             "no kind:store cdylib under CI: neither the ../{} sibling nor \
-             the in-tree store-example-plugin (which `cargo test --workspace` in ci.yml \
+             the in-tree store proof's cdylib (which `cargo test --workspace` in ci.yml \
              builds) is present. Refusing to silently skip loader-mechanism coverage of the \
              kind:store dlopen seam.",
             artifact("sibling_store_checkout"),
@@ -108,7 +109,7 @@ fn the_store_fixture_hard_fails_where_its_doc_says() {
     };
     let ex = || {
         Some(std::path::PathBuf::from(
-            "/target/libbusbar_store_example_plugin.so",
+            "/target/libin_tree_store_proof.so",
         ))
     };
     // ci.yml `check` (CI, no DEV_GATE, no sibling): the in-tree cdylib serves — coverage RUNS.
@@ -134,7 +135,7 @@ fn the_store_fixture_hard_fails_where_its_doc_says() {
 #[test]
 fn the_store_fixture_resolves_on_every_ci_push() {
     let resolved = store_fixture_plugin_path();
-    if std::env::var_os("CI").is_some() || store_example_candidate().is_some() {
+    if std::env::var_os("CI").is_some() || store_proof_candidate().is_some() {
         assert!(
             resolved.is_some(),
             "a built kind:store cdylib exists (or CI is set) but the loader-mechanism tests would skip"
@@ -1487,15 +1488,6 @@ fn load_and_exercise_export_plugin() {
 // discarded the task and returned `Ok(())`. Every store crate's own unit tests passed the whole
 // time, because they never cross the ABI.
 
-/// Locate the hermetic in-tree `busbar-store-example-plugin` cdylib. Mirrors
-/// `hermetic_export_plugin_path`, including checking BOTH the uplifted
-/// `<profile_dir>/<name>` copy and the raw `<profile_dir>/deps/<name>` compiler output (a scoped
-/// `cargo test -p busbar-plugin-loader` only produces the latter).
-///
-/// Under `CI` a missing cdylib is a HARD failure. Unlike the sqlite fixture this plugin is an
-/// in-tree workspace member that `cargo test --workspace` always builds, so its absence means a
-/// broken pipeline — and a silent skip here would restore exactly the situation this test exists to
-/// end: a green run that proved nothing about durability.
 use busbar_contract::records::PlaneDisposition;
 
 // ── the loader test speaks LOCAL STAND-IN rows; the ABI speaks NEUTRAL kind-tagged plane records ──
@@ -1504,8 +1496,8 @@ use busbar_contract::records::PlaneDisposition;
 // exercises the ONLY durable-plane surface there is: the eight neutral verbs. These free helpers
 // build the kind-tagged `PlaneRecord` envelope for a row and decode a body back, so the test bodies
 // stay readable while every call still crosses the real plugin ABI as a neutral verb — the exact
-// surface a deployment takes. The `kind` strings match the reference `impl Store` in
-// `store-example-plugin` verbatim.
+// surface a deployment takes. The `kind` strings are the ones the stores these tests load key their
+// retention contracts on (a `task` purges only terminal rows, every other kind purges all older).
 //
 // This suite is DELIBERATELY OPAQUE over the relocated plane row types (`TaskRow`/`TaskEventRow`/
 // `McpCallRecord`, moved out of `busbar-api`): it names none of them, and instead carries the body as
@@ -1515,53 +1507,53 @@ use busbar_contract::records::PlaneDisposition;
 
 /// A stand-in for the `task`-kind body — the exact field names the reference store decodes by.
 #[derive(serde::Serialize, serde::Deserialize, PartialEq, Clone, Debug)]
-struct SampleTask {
-    task_id: String,
-    context_id: String,
-    principal: String,
-    direction: String,
-    state: String,
-    agent_id: String,
-    artifact_cursor: u64,
-    push_callback: String,
-    created_at: u64,
-    updated_at: u64,
+pub(crate) struct SampleTask {
+    pub(crate) task_id: String,
+    pub(crate) context_id: String,
+    pub(crate) principal: String,
+    pub(crate) direction: String,
+    pub(crate) state: String,
+    pub(crate) agent_id: String,
+    pub(crate) artifact_cursor: u64,
+    pub(crate) push_callback: String,
+    pub(crate) created_at: u64,
+    pub(crate) updated_at: u64,
 }
 
 /// A stand-in for the `task_event`-kind body (carried verbatim by the store).
 #[derive(serde::Serialize, serde::Deserialize, PartialEq, Clone, Debug)]
-struct SampleEvent {
-    task_id: String,
-    seq: u64,
-    ts: u64,
-    kind: String,
-    context_id: String,
-    principal: String,
-    agent_id: String,
-    state: String,
-    request_id: String,
-    prev_hash: String,
-    hash: String,
+pub(crate) struct SampleEvent {
+    pub(crate) task_id: String,
+    pub(crate) seq: u64,
+    pub(crate) ts: u64,
+    pub(crate) kind: String,
+    pub(crate) context_id: String,
+    pub(crate) principal: String,
+    pub(crate) agent_id: String,
+    pub(crate) state: String,
+    pub(crate) request_id: String,
+    pub(crate) prev_hash: String,
+    pub(crate) hash: String,
 }
 
 /// A stand-in for the `call`-kind body — `ts` is the field the reference store's retention reads.
 #[derive(serde::Serialize, serde::Deserialize, PartialEq, Clone, Debug)]
-struct SampleCall {
-    principal: String,
-    seq: u64,
-    ts: u64,
-    server: String,
-    tool: String,
-    outcome: String,
-    reason: String,
-    tool_digest: String,
-    pin_generation: u64,
-    request_id: String,
-    prev_hash: String,
-    hash: String,
+pub(crate) struct SampleCall {
+    pub(crate) principal: String,
+    pub(crate) seq: u64,
+    pub(crate) ts: u64,
+    pub(crate) server: String,
+    pub(crate) tool: String,
+    pub(crate) outcome: String,
+    pub(crate) reason: String,
+    pub(crate) tool_digest: String,
+    pub(crate) pin_generation: u64,
+    pub(crate) request_id: String,
+    pub(crate) prev_hash: String,
+    pub(crate) hash: String,
 }
 
-fn task_record(t: &SampleTask) -> PlaneRecord {
+pub(crate) fn task_record(t: &SampleTask) -> PlaneRecord {
     PlaneRecord {
         kind: "task".into(),
         id: t.task_id.clone(),
@@ -1580,7 +1572,7 @@ fn task_record(t: &SampleTask) -> PlaneRecord {
     }
 }
 
-fn event_record(e: &SampleEvent) -> PlaneRecord {
+pub(crate) fn event_record(e: &SampleEvent) -> PlaneRecord {
     PlaneRecord {
         kind: "task_event".into(),
         id: e.task_id.clone(),
@@ -1592,7 +1584,7 @@ fn event_record(e: &SampleEvent) -> PlaneRecord {
     }
 }
 
-fn call_record(c: &SampleCall) -> PlaneRecord {
+pub(crate) fn call_record(c: &SampleCall) -> PlaneRecord {
     PlaneRecord {
         kind: "call".into(),
         id: c.principal.clone(),
@@ -1604,14 +1596,14 @@ fn call_record(c: &SampleCall) -> PlaneRecord {
     }
 }
 
-fn n_get_task(
+pub(crate) fn n_get_task(
     s: &dyn busbar_contract::records::RecordStore,
     id: &str,
 ) -> RecordStoreResult<Option<SampleTask>> {
     Ok(s.get_plane_record("task", id)?
         .map(|b| serde_json::from_slice(&b).unwrap()))
 }
-fn n_list_tasks(
+pub(crate) fn n_list_tasks(
     s: &dyn busbar_contract::records::RecordStore,
 ) -> RecordStoreResult<Vec<SampleTask>> {
     Ok(s.list_plane_records("task", &PlaneSelector::All)?
@@ -1619,7 +1611,7 @@ fn n_list_tasks(
         .map(|b| serde_json::from_slice(b).unwrap())
         .collect())
 }
-fn n_list_task_events(
+pub(crate) fn n_list_task_events(
     s: &dyn busbar_contract::records::RecordStore,
     id: &str,
 ) -> RecordStoreResult<Vec<SampleEvent>> {
@@ -1630,7 +1622,7 @@ fn n_list_task_events(
             .collect(),
     )
 }
-fn n_list_calls(
+pub(crate) fn n_list_calls(
     s: &dyn busbar_contract::records::RecordStore,
     p: &str,
 ) -> RecordStoreResult<Vec<SampleCall>> {
@@ -1641,32 +1633,42 @@ fn n_list_calls(
             .collect(),
     )
 }
-fn n_list_call_principals(
+pub(crate) fn n_list_call_principals(
     s: &dyn busbar_contract::records::RecordStore,
 ) -> RecordStoreResult<Vec<String>> {
     s.list_plane_record_parents("call")
 }
 
-fn store_example_plugin_path() -> Option<std::path::PathBuf> {
-    let candidate = store_example_candidate();
+/// The store both-ways proof's cdylib for the tests below that need a real `kind: store` image to
+/// stage and wire (never store-specific durability). Under `CI` a missing cdylib is a HARD failure:
+/// it is this crate's own dev-dependency, so `cargo test` always builds it, and its absence means a
+/// broken pipeline rather than a machine without a sibling checkout.
+fn store_proof_plugin_path() -> Option<std::path::PathBuf> {
+    let candidate = store_proof_candidate();
     if candidate.is_none() && std::env::var_os("CI").is_some() {
         panic!(
-            "the store example plugin cdylib is not built under CI: `cargo test --workspace` must \
-             build the in-tree store-example-plugin (checked both the uplifted target dir and \
-             target/deps). Refusing to silently skip the ONLY end-to-end proof that a task written \
-             through a plugin store survives a restart."
+            "the store both-ways proof's cdylib is not built under CI: `cargo test` must build {} \
+             (checked both the uplifted target dir and target/deps). Refusing to silently skip the \
+             over-the-ABI coverage of the kind:store dlopen seam.",
+            super::both_ways::fixture("store").0
         );
     }
     candidate
 }
 
-/// The in-tree `busbar_store_example_plugin` cdylib, if built — the newest of the uplifted
-/// `<profile_dir>/<name>` copy and the raw `<profile_dir>/deps/<name>` output (a scoped `cargo test
-/// -p` only produces the latter). No CI policy here; the callers own that.
-fn store_example_candidate() -> Option<std::path::PathBuf> {
+/// The store both-ways proof's cdylib (`[package.metadata.busbar.both-ways]` `store`), if built —
+/// the newest of the uplifted `<profile_dir>/<name>` copy and the raw `<profile_dir>/deps/<name>`
+/// output (a scoped `cargo test -p` only produces the latter). No CI policy here; the callers own that.
+fn store_proof_candidate() -> Option<std::path::PathBuf> {
+    newest_cdylib(super::both_ways::fixture("store").0)
+}
+
+/// The newest built `cdylib` of `crate_snake` in this target dir: the uplifted `<profile_dir>/<name>`
+/// copy or the raw `<profile_dir>/deps/<name>` output, whichever was written last.
+fn newest_cdylib(crate_snake: &str) -> Option<std::path::PathBuf> {
     let exe = std::env::current_exe().ok()?;
     let profile_dir = exe.parent()?.parent()?;
-    let name = plugin_library_filename(artifact("store_example_cdylib"));
+    let name = plugin_library_filename(crate_snake);
     let uplifted = profile_dir.join(&name);
     let raw = profile_dir.join("deps").join(&name);
     [uplifted, raw]
@@ -1683,7 +1685,7 @@ fn store_example_candidate() -> Option<std::path::PathBuf> {
 
 /// A `SampleTask` with every field set to something distinguishable, so a round trip that drops or
 /// transposes a field fails rather than passing on a mostly-empty row.
-fn sample_task_row(task_id: &str, state: &str, updated_at: u64) -> SampleTask {
+pub(crate) fn sample_task_row(task_id: &str, state: &str, updated_at: u64) -> SampleTask {
     SampleTask {
         task_id: task_id.to_string(),
         context_id: "ctx-42".into(),
@@ -1698,159 +1700,16 @@ fn sample_task_row(task_id: &str, state: &str, updated_at: u64) -> SampleTask {
     }
 }
 
-/// THE TEST. Load the store as a PLUGIN, write a task (plus its provenance chain and an MCP call
-/// record), then RESTART the plugin — drop the handle, unload the library, `dlopen` it again and
-/// `busbar_open` a fresh instance whose only possible source of state is the bytes on disk — and
-/// read everything back over the same ABI.
-///
-/// Against the ABI as it stood before the ten variants were added this fails at the first
-/// assertion: `get_task` returns `None`, because `DynStore` never sent the write anywhere.
-#[test]
-fn task_state_written_through_a_plugin_store_survives_a_restart() {
-    let Some(lib) = store_example_plugin_path() else {
-        eprintln!("skip: store example plugin cdylib not built (run under --workspace)");
-        return;
-    };
-    // A private file for this test's own durable state; `load_store` passes it to the plugin's
-    // `open`, which is what selects the fixture's file-backed mode.
-    let dir = std::env::temp_dir().join(format!(
-        "busbar-task-durability-{}-{:?}",
-        std::process::id(),
-        std::thread::current().id()
-    ));
-    std::fs::create_dir_all(&dir).expect("create durable dir");
-    let state_file = dir.join("durable.json");
-    let cfg = serde_json::json!({ "durable_path": state_file.to_string_lossy() }).to_string();
-
-    let task = sample_task_row("task-abc", "input-required", 2_000);
-    let event = SampleEvent {
-        task_id: "task-abc".into(),
-        seq: 1,
-        ts: 1_500,
-        kind: "task.submitted".into(),
-        context_id: "ctx-42".into(),
-        principal: "vk_owner".into(),
-        agent_id: "agent-7".into(),
-        state: "submitted".into(),
-        request_id: "req-9".into(),
-        prev_hash: String::new(),
-        hash: "deadbeef".into(),
-    };
-    let call = SampleCall {
-        principal: "vk_owner".into(),
-        seq: 1,
-        ts: 1_600,
-        server: "srv".into(),
-        tool: "srv_echo".into(),
-        outcome: "dispatched".into(),
-        reason: String::new(),
-        tool_digest: "sha256:aaa".into(),
-        pin_generation: 4,
-        request_id: "req-9".into(),
-        prev_hash: String::new(),
-        hash: "cafebabe".into(),
-    };
-
-    // ── BEFORE THE RESTART: write through the plugin, and assert NOTHING ──────────────────────
-    //
-    // Deliberately no read-back here. The failure this test exists to show is the one AFTER the
-    // restart, and an assertion in this block would fire first and report a same-process symptom
-    // instead — which is exactly what happened on the first red run. The same-handle round trip is
-    // its own test below, so that diagnostic is not lost, it just does not pre-empt this one.
-    {
-        let store = load_store(&lib, &cfg).expect("load store example plugin over the ABI");
-        store
-            .upsert_plane_record(&task_record(&task))
-            .expect("upsert task");
-        store
-            .append_plane_record(&event_record(&event))
-            .expect("append task_event");
-        store
-            .append_plane_record(&call_record(&call))
-            .expect("append call");
-        // Dropping the box closes the plugin handle and unloads the library. Everything the plugin
-        // held in memory goes with it.
-    }
-
-    // ── THE RESTART: a fresh dlopen and a fresh `busbar_open` ─────────────────────────────────
-    let store = load_store(&lib, &cfg).expect("re-load store example plugin after the restart");
-
-    assert_eq!(
-        n_get_task(store.as_ref(), "task-abc").expect("get_task after restart"),
-        Some(task.clone()),
-        "THE WHOLE POINT: a task written through the plugin ABI must still be there after a \
-         restart. `None` here is the production defect — `put_task` reported success and the \
-         engine kept nothing."
-    );
-    assert_eq!(
-        n_list_tasks(store.as_ref()).expect("list_tasks after restart"),
-        vec![task.clone()]
-    );
-    assert_eq!(
-        n_list_task_events(store.as_ref(), "task-abc").expect("list_task_events after restart"),
-        vec![event],
-        "the provenance chain must survive with `hash`/`prev_hash` verbatim"
-    );
-    assert_eq!(
-        n_list_calls(store.as_ref(), "vk_owner").expect("list_calls after restart"),
-        vec![call]
-    );
-    assert_eq!(
-        n_list_call_principals(store.as_ref()).expect("list_call_principals after restart"),
-        vec!["vk_owner".to_string()],
-        "the boot enumeration must find the principal whose chain this process never saw written"
-    );
-
-    // ── retention over the plugin RPC: the ops route and their COUNT comes from the plugin, not a
-    // defaulted `Ok(0)` no-op. This exercises the AGE axis — the `kind: call` "drop all older"
-    // contract — against a row whose `ts` reached the plugin over the wire. Both retention axes and
-    // the sidecar that carries them are pinned directly in `plane_sidecar_tests`; this test's unique
-    // job is the DLOPEN-RESTART round trip of the durable body/identity, which the assertions above
-    // have already proven.
-    let call_purged = store
-        .purge_plane_records_before("call", 2_000)
-        .expect("purge_calls_before");
-    assert_eq!(
-        call_purged, 1,
-        "the `call` retention op drops the older row and the count comes from the plugin, not a default"
-    );
-
-    // The purge is durable too: a third open sees the compacted state — the call chain is gone, the
-    // still-open `input-required` task survives (a `task` row is never age-collected while non-terminal).
-    drop(store);
-    let store = load_store(&lib, &cfg).expect("re-load after the purge");
-    assert_eq!(
-        n_list_tasks(store.as_ref()).expect("list_tasks"),
-        vec![task.clone()],
-        "the purge must have been written through, not just applied in the plugin's memory"
-    );
-    assert!(n_list_calls(store.as_ref(), "vk_owner")
-        .expect("list_calls")
-        .is_empty());
-
-    drop(store);
-    let _ = std::fs::remove_dir_all(&dir);
-}
-
 /// The same-handle round trip, split out of the durability test so that a failure there names the
 /// RESTART rather than being pre-empted by a same-process symptom. This is the narrower claim: a
 /// task written through the plugin ABI is readable back through the plugin ABI at all.
 #[test]
 fn a_task_written_through_a_plugin_store_is_readable_back_through_it() {
-    let Some(lib) = store_example_plugin_path() else {
-        eprintln!("skip: store example plugin cdylib not built (run under --workspace)");
+    let Some(lib) = store_proof_plugin_path() else {
+        eprintln!("skip: the store proof's cdylib is not built");
         return;
     };
-    let dir = std::env::temp_dir().join(format!(
-        "busbar-task-roundtrip-{}-{:?}",
-        std::process::id(),
-        std::thread::current().id()
-    ));
-    std::fs::create_dir_all(&dir).expect("create durable dir");
-    let cfg = serde_json::json!({ "durable_path": dir.join("durable.json").to_string_lossy() })
-        .to_string();
-
-    let store = load_store(&lib, &cfg).expect("load store example plugin over the ABI");
+    let store = load_store(&lib, "{}").expect("load the store proof over the ABI");
     let task = sample_task_row("task-rt", "working", 5_000);
     store
         .upsert_plane_record(&task_record(&task))
@@ -1861,8 +1720,6 @@ fn a_task_written_through_a_plugin_store_is_readable_back_through_it() {
         "`put_task` returned Ok — the task must actually be there. `None` means the write was \
          discarded at the ABI and the success was a lie."
     );
-    drop(store);
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// Every `Store` trait method has a `StoreRequest` variant AND a `DynStore` override — checked by
@@ -1996,20 +1853,20 @@ fn every_store_trait_method_has_an_abi_variant_and_a_dynstore_override() {
 // sibling checkout is absent. A compatibility promise that only gets checked where somebody happens
 // to have cloned a second repo is not a checked promise.
 
-/// A `DynStore` over the in-tree store example plugin with the `call`/`free` seam faked, so a test
+/// A `DynStore` over the in-tree store proof with the `call`/`free` seam faked, so a test
 /// chooses the exact `(status, body)` an old plugin would have returned. Mirrors
 /// [`dyn_store_with_fake_call`], which is pinned to the sibling sqlite fixture.
-fn dyn_example_store_with_fake_call() -> Option<DynStore> {
-    dyn_example_store_with_fake_call_at_abi(busbar_contract::abi::cold::ABI_VERSION)
+fn dyn_proof_store_with_fake_call() -> Option<DynStore> {
+    dyn_proof_store_with_fake_call_at_abi(busbar_contract::abi::cold::ABI_VERSION)
 }
 
-/// [`dyn_example_store_with_fake_call`] bound to a chosen payload schema, so a test can hold the
+/// [`dyn_proof_store_with_fake_call`] bound to a chosen payload schema, so a test can hold the
 /// PUBLISHED one (v2) rather than the schema this binary was built against.
-fn dyn_example_store_with_fake_call_at_abi(abi_version: u32) -> Option<DynStore> {
-    let path = store_example_plugin_path()?;
-    let bytes = std::fs::read(&path).expect("read the in-tree store example plugin cdylib");
+fn dyn_proof_store_with_fake_call_at_abi(abi_version: u32) -> Option<DynStore> {
+    let path = store_proof_plugin_path()?;
+    let bytes = std::fs::read(&path).expect("read the in-tree store proof's cdylib");
     let (lib, staged) = stage::load_library_from_bytes(&bytes, "fake-call-example")
-        .expect("stage the in-tree store example plugin for the fake-call harness");
+        .expect("stage the in-tree store proof for the fake-call harness");
     let mut raw = wire_up_raw(
         lib,
         "{}",
@@ -2067,8 +1924,8 @@ fn under_old_plugin_shapes<T: std::fmt::Debug + PartialEq>(
 /// accept-and-keep-nothing default the engine took from the trait before the ABI carried them.
 #[test]
 fn a_plugin_predating_the_task_variants_still_gets_the_pre_existing_defaults() {
-    let Some(store) = dyn_example_store_with_fake_call() else {
-        eprintln!("skip: store example plugin cdylib not built (run under --workspace)");
+    let Some(store) = dyn_proof_store_with_fake_call() else {
+        eprintln!("skip: the store proof's cdylib is not built");
         return;
     };
     let task = sample_task_row("task-old", "working", 1);
@@ -2154,8 +2011,8 @@ fn a_plugin_predating_the_task_variants_still_gets_the_pre_existing_defaults() {
 /// this time with the variants present.
 #[test]
 fn no_plugin_failure_shape_can_launder_a_dropped_task_into_success() {
-    let Some(store) = dyn_example_store_with_fake_call() else {
-        eprintln!("skip: store example plugin cdylib not built (run under --workspace)");
+    let Some(store) = dyn_proof_store_with_fake_call() else {
+        eprintln!("skip: the store proof's cdylib is not built");
         return;
     };
     let task = sample_task_row("task-err", "working", 1);
@@ -2277,12 +2134,12 @@ fn event_free_probe() -> SampleEvent {
 /// exits.
 #[test]
 fn validate_plugin_unloads_on_a_worker_not_the_callers_thread() {
-    let Some(path) = store_example_plugin_path() else {
-        eprintln!("skip: store-example-plugin cdylib not built");
+    let Some(path) = store_proof_plugin_path() else {
+        eprintln!("skip: the store proof's cdylib is not built");
         return;
     };
     let before = UNLOADS_ON_WORKER.with(std::cell::Cell::get);
-    validate_plugin(&path).expect("the in-tree example store plugin validates");
+    validate_plugin(&path).expect("the in-tree store proof validates");
     let after = UNLOADS_ON_WORKER.with(std::cell::Cell::get);
     assert!(
         after > before,

@@ -11,10 +11,8 @@ members = [
     "crates/busbar-a2a",
     "crates/busbar-voice",
     "crates/busbar-voice-codec",
-    "crates/busbar-substrate-values",
     "crates/busbar-contract",
     "crates/busbar-transport-tcp",
-    "crates/busbar-transport-tls",
     "crates/busbar-transport-http",
     "crates/busbar-kernel",
     "crates/busbar-kernel-identity",
@@ -30,13 +28,8 @@ members = [
     "crates/busbar-plane-a2a",
     "crates/busbar-plane-streaming",
     "crates/busbar-plane-decision",
-    "crates/busbar-unit-transport-key",
-    "crates/plugin-sdk",
     "crates/plugin-loader",
-    "crates/auth-admin-tokens",
-    "crates/auth-static-plugin",
     "crates/hook-test-plugin",
-    "crates/store-example-plugin",
     "crates/export-example-plugin",
     "crates/plane-example",
     "crates/hooks-ranking",
@@ -202,13 +195,10 @@ oauth-as = { version = "1.0.0", features = [
     "consent",
     "resource-metadata",
 ] }
-opentelemetry = "0.32.0"
-opentelemetry-http = { version = "0.32.0", default-features = false, features = ["hyper"] }
-opentelemetry-otlp = { version = "0.32.0", default-features = false, features = [
-    "trace",
-    "http-proto",
-] }
-opentelemetry_sdk = "0.32.1"
+# The OpenTelemetry project's own generated OTLP types, DEV-ONLY: the root's OTLP proofs decode what
+# the `otlp` sink (GetBusbar/export-otlp) posts with the proto's publisher's types, never with the
+# sink's own encoder. Not in any shipped build.
+opentelemetry-proto = { version = "0.32", default-features = false, features = ["gen-tonic-messages", "trace"] }
 proptest = "1"
 rcgen = "0.14"
 # ── MCP, from the specification authors' own crate ─────────────────────────────────────────────
@@ -329,7 +319,6 @@ tonic-types = "0.14"
 tower = "0.5"
 tracing = "0.1.44"
 tracing-core = "0.1"
-tracing-opentelemetry = "0.33.0"
 tracing-subscriber = "0.3.23"
 # The WHATWG URL parser, named under its OWN name: every `reqwest::Url` in the tree was this crate
 # under reqwest's re-export alias, and the egress-symmetry sweep spells the dependency honestly.
@@ -340,15 +329,14 @@ zeroize = "1"
 # ── BUSBAR'S OWN CRATES, AS A PLUGIN REPO NAMES THEM ─────────────────────────────────────────────
 #
 # A default plugin lives in its own repo (owner ruling, 1.6.0: one repo per plugin) and names busbar
-# by git: `busbar-plugin-sdk = { git = "https://github.com/GetBusbar/busbar", rev = <.busbar-ref> }`.
-# When THIS workspace links that plugin (the root pulls it at a pinned rev), every busbar crate the
-# plugin names resolves to THIS tree instead, so exactly ONE copy of the SDK — `busbar-plugin-sdk` is
-# the source-compatibility name for `busbar_contract::abi::sdk` since the #84 merge — and through it
-# of busbar-contract links into the binary, and a plugin's rev of busbar never
-# decides what the binary's contract is. Add a row here for each busbar crate a pulled plugin names
-# directly (a crate named only by a patched crate follows its path dependency and needs no row).
+# by git: `busbar-contract = { git = "https://github.com/GetBusbar/busbar", rev = <.busbar-ref> }` —
+# a plugin's whole busbar closure is the contract (#40; the plugin SDK is `busbar_contract::abi::sdk`
+# since the #84 merge). When THIS workspace links that plugin (the root pulls it at a pinned rev),
+# every busbar crate the plugin names resolves to THIS tree instead, so exactly ONE copy of
+# busbar-contract links into the binary, and a plugin's rev of busbar never decides what the
+# binary's contract is. Add a row here for each busbar crate a pulled plugin names directly.
 [patch.'https://github.com/GetBusbar/busbar']
-busbar-plugin-sdk = { path = "crates/plugin-sdk" }
+busbar-contract = { path = "crates/busbar-contract" }
 
 [profile.release]
 # Tuned for the shipped "deploy-and-done" binary: max optimization and smallest size,

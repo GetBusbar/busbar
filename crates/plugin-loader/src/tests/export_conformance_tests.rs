@@ -1127,3 +1127,181 @@ fn a_sinks_deliveries_in_flight_reach_its_admission_bound_past_the_blocking_pool
     );
     assert_eq!(shed, 1, "the delivery past the bound is shed");
 }
+
+/// **K9e-2 — A CARRIER CARRIES ONLY THE POLICIES IT IMPLEMENTS.** The loader routes an outbound
+/// request with its octets and the sink's granted policy; a carrier that implements only the open
+/// web (this binary's recording one, every carrier written before the seam) carries a TEXT body
+/// under it exactly as `carry` always did, and REFUSES — carrying nothing — a binary body or any
+/// other policy, in words that name what it lacks.
+#[test]
+fn a_carrier_that_implements_no_policy_but_the_open_web_refuses_the_rest() {
+    use crate::EgressPolicy;
+    use busbar_contract::abi::cold::export::{HostOp, HostResult, HttpRequest};
+    crate::install_egress_carrier(&CARRIER);
+    let request = HttpRequest {
+        method: "POST".into(),
+        url: "https://k9e2-open-web.example/in".into(),
+        headers: Vec::new(),
+        body: "ignored: the octets travel beside the head".into(),
+        timeout_ms: 1000,
+    };
+    let ours = || {
+        CARRIER
+            .0
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .filter(|r| r.url.contains("k9e2-open-web.example"))
+            .map(|r| r.body.clone())
+            .collect::<Vec<_>>()
+    };
+    let text = crate::host::carry_under(EgressPolicy::OpenWeb, &request, b"{\"a\":1}");
+    assert!(
+        matches!(text, HostResult::Http(ref r) if r.status == 204),
+        "{text:?}"
+    );
+    assert_eq!(ours(), vec![r#"{"a":1}"#.to_string()], "carried as text");
+
+    let refused = |answer: HostResult, words: &str| match answer {
+        HostResult::Failed { step, error, .. } => {
+            assert_eq!((step.as_str(), error.as_str()), ("refused", words))
+        }
+        other => panic!("expected a refusal, got {other:?}"),
+    };
+    refused(
+        crate::host::carry_under(EgressPolicy::OpenWeb, &request, &[0x0a, 0xff]),
+        "this host carries no binary request body",
+    );
+    refused(
+        crate::host::carry_under(EgressPolicy::Collector, &request, b"{}"),
+        "this host carries no `collector` plugin egress",
+    );
+    refused(
+        crate::host::admit_under(EgressPolicy::Collector, "http://127.0.0.1:4318/v1/traces"),
+        "this host carries no `collector` plugin egress",
+    );
+    // A binary body that is not hex never reaches any carrier.
+    let not_hex = HostOp::HttpBinary(HttpRequest {
+        body: "zz".into(),
+        ..request.clone()
+    });
+    match crate::host::Destinations::default().perform(&not_hex) {
+        HostResult::Failed { step, error, .. } => {
+            assert_eq!(step, "request");
+            assert!(
+                error.starts_with("the binary request body is not hex ("),
+                "{error}"
+            );
+        }
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(
+        ours().len(),
+        1,
+        "a refused request never reaches the carrier's wire"
+    );
+}
+
+/// **K9e-2 — A DECLARED EGRESS POLICY IS GRANTED TO A FIRST-PARTY SINK ONLY, AND EVERY REQUEST THE
+/// SINK ASKS FOR MEETS IT.** A linked sink whose manifest declares `egress: collector` opens under
+/// it, and its admission and its carried requests are judged under that policy (this binary's
+/// carrier implements only the open web, so both are refused with the policy's name — the proof
+/// the policy, not the open web, reached the carrier). RED ARMS: the same declaration from a third
+/// party refuses the open, naming the policy; and a sink that declares none is judged under the
+/// open web, as every sink before the seam was.
+#[test]
+fn a_declared_egress_policy_is_granted_to_a_first_party_sink_only() {
+    use crate::EgressPolicy;
+    use busbar_contract::abi::cold::export::{HostOp, HostResult, HttpRequest};
+    crate::install_egress_carrier(&CARRIER);
+    // The declaration's manifest spelling; the default is left off the signed bytes.
+    let collector = crate::sign::Declares {
+        egress: EgressPolicy::Collector,
+        ..Default::default()
+    };
+    assert_eq!(
+        serde_json::to_value(&collector).expect("encode"),
+        serde_json::json!({"egress": "collector"})
+    );
+    assert!(!collector.is_empty() && crate::sign::Declares::default().is_empty());
+    assert_eq!(
+        serde_json::to_value(crate::sign::Declares::default()).expect("encode"),
+        serde_json::json!({})
+    );
+    let declaring = |name: &str| {
+        let mut m = super::both_ways::statement(
+            "export",
+            name,
+            name,
+            busbar_contract::abi::cold::export::EXPORT_ABI_VERSION,
+        );
+        m.declares.egress = EgressPolicy::Collector;
+        m
+    };
+    let registry = super::both_ways::linked(
+        declaring("k9e2-collector"),
+        super::both_ways::fixture("export").1,
+    );
+    let sink = registry
+        .open_export("k9e2-collector", "{}")
+        .expect("a first-party declaration is granted");
+    assert_eq!(sink.egress(), EgressPolicy::Collector);
+    let lacks = "this host carries no `collector` plugin egress";
+    let binary = HostOp::HttpBinary(HttpRequest {
+        method: "POST".into(),
+        url: "http://127.0.0.1:4318/v1/traces".into(),
+        headers: Vec::new(),
+        body: "0a00".into(),
+        timeout_ms: 1000,
+    });
+    let admit = HostOp::Admit {
+        url: "http://127.0.0.1:4318/v1/traces".into(),
+    };
+    for op in [&binary, &admit] {
+        match sink.perform(op) {
+            HostResult::Failed { step, error, .. } => {
+                assert_eq!(
+                    (step.as_str(), error.as_str()),
+                    ("refused", lacks),
+                    "{op:?}"
+                )
+            }
+            other => panic!("{op:?} was not judged under the declared policy: {other:?}"),
+        }
+    }
+
+    // RED ARM 1: a third party declaring the same policy is refused at open, naming it.
+    let (crate_snake, _) = super::both_ways::fixture("export");
+    let Some(path) = super::both_ways::cdylib(crate_snake) else {
+        eprintln!("skip: the export fixture's cdylib is not built");
+        return;
+    };
+    let lib = std::fs::read(path).expect("read the cdylib");
+    let mut third = declaring("k9e2-third-party");
+    third.publisher = "acme".into();
+    let refused = super::both_ways::dropped_third_party(crate_snake, third, &lib)
+        .open_export("k9e2-third-party", "{}")
+        .expect_err("a third party is not granted a policy past the open web");
+    assert!(
+        refused.contains(
+            "declares the `collector` egress policy, which the host grants to a \
+             first-party plugin only"
+        ),
+        "{refused}"
+    );
+
+    // RED ARM 2: declaring none is the open web — the admission reaches the carrier's own policy.
+    let plain = super::both_ways::linked(
+        super::both_ways::statement(
+            "export",
+            "k9e2-open-web",
+            "k9e2-open-web",
+            busbar_contract::abi::cold::export::EXPORT_ABI_VERSION,
+        ),
+        super::both_ways::fixture("export").1,
+    )
+    .open_export("k9e2-open-web", "{}")
+    .expect("opens");
+    assert_eq!(plain.egress(), EgressPolicy::OpenWeb);
+    assert_eq!(plain.perform(&admit), HostResult::Done { rotation: None });
+}

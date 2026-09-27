@@ -150,6 +150,16 @@ Each of these is an owner-accepted difference from 1.5.5: additive, or strictly 
   lines on stderr are prefixed `BUSBAR-NNNN:`, and every boot log line carries `diag=BUSBAR-NNNN`.
   The text after the code is byte-identical to 1.5.5; the code is a stable key into
   [the diagnostics reference](docs/diagnostics.md), which says what each one means and what to do.
+- **OTLP trace export works.** A `module: otlp` export instance delivered nothing in 1.5.5: every
+  batch's export thread panicked (`there is no reactor running`) and shutdown printed `OTLP tracer
+  shutdown failed`. Each request-path span is now POSTed to the instance's `url` as it closes, one
+  OTLP/HTTP protobuf `ExportTraceServiceRequest` per span (`content-type: application/x-protobuf`;
+  resource `service.name = busbar`; the span's `pool`, `ingress`, `op`, `lane`, `provider` and
+  `model` as attributes), and neither failure line is printed. The configuration, its refusals and
+  the endpoint rules are 1.5.5's: plaintext `http://` to a loopback collector only, `https://`
+  elsewhere, link-local, private, CGNAT and cloud-metadata targets refused, and credentials in the
+  URL sent as an `Authorization: Basic` header. The sink ships as a plugin
+  ([GetBusbar/export-otlp](https://github.com/GetBusbar/export-otlp)), linked into the default build.
 - **A service-account key file that cannot be read no longer echoes the credential into the error.**
   `auth: jwt-bearer` tells a pasted service-account JSON from a path to one by a single leading
   `{`, so an operator who pastes the key BODY — or whose `env:`/`file:` reference resolves to key
@@ -358,6 +368,12 @@ Each of these is an owner-accepted difference from 1.5.5: additive, or strictly 
   Both now surface a real error to the client, record the upstream fault on the breaker, and are
   not billed as completions. The content-moderation `ERROR_TOXIC` stop is untouched: a safety
   refusal is a correctly-served response and must not fault a lane. No successful stream changes.
+- **/metrics families are emitted in a stable sorted order.** 1.5.5 printed the exposition's
+  families, and the series inside each family, in its recorder's hash order, so the same metrics
+  could scrape to different bytes from one boot to the next. Families now come out by name and
+  series by their labels; a histogram's or summary's lines stay together in their usual order
+  (buckets ascending, then `_sum`, then `_count`). Every name, label and value is unchanged, and
+  the order served is one 1.5.5 could already print.
 
 ### Breaking
 
@@ -812,6 +828,12 @@ moves. See [Protocols and translation](docs/protocols.md#spec-fidelity) and
   states plainly that the `0600`/`0700` modes protecting the config overlay, the signing key and
   the plugin staging directory do not exist on Windows, that `BUSBAR_CONFIG` is effectively
   required there, and what an `env_clear`ed stdio child needs named explicitly.
+- **An idle busbar no longer crashes after serving a large body.** On a build without jemalloc's
+  background purge threads — macOS, and the static-musl release binaries — busbar runs its own idle
+  purge instead, and that purge put every memory arena back to the global setting. The arena that
+  holds allocations over 8 MiB runs with a different setting, and forcing the global one onto it made
+  the allocator abort. So the first quiet 15 seconds after any request or plugin load over 8 MiB could
+  kill the process. This was present in 1.5.5. Each arena now returns to its own setting.
 
 ## [1.5.4], 2026-08-14
 

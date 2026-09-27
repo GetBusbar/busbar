@@ -35,6 +35,7 @@ use std::path::Path;
 pub mod auth;
 // The two BUILT-IN secret modules (`env`, `file`) the registry's built-in secret rows resolve through.
 pub mod builtin_secret;
+pub mod carrier;
 pub mod export;
 pub mod fetch;
 mod ffi_thread;
@@ -73,6 +74,7 @@ pub use busbar_contract::abi::cold::export::{HostResult, HttpRequest, HttpRespon
 /// A cold plugin's LINKED boundary (`BUSBAR_COLD_ENTRY`), named for the composition root's linked
 /// tables, which hand it to [`LinkedPlugin::boundary`].
 pub use busbar_contract::abi::cold::ColdEntry;
+pub use sign::EgressPolicy;
 
 impl LinkedPlugin {
     /// A FIRST-PARTY cold plugin a build links: `name` aliased `alias`, of `kind`, at the newest
@@ -97,6 +99,7 @@ pub use busbar_contract::abi::hot::PlaneDecl as HotPlaneDecl;
 pub use busbar_contract::abi::hot::PlaneHostVtable as HotHostVtable;
 /// The status class a served plane's dispatch answers with, re-exported beside the vtable.
 pub use busbar_contract::abi::hot::StatusClass as HotStatusClass;
+pub use carrier::{HotReply, ReplyStream, RequestHead, MAX_PLANE_REPLY_LEN};
 pub use fetch::{fetch_plugins, FetchOutcome, FetchSpec};
 pub use highwater::{HighWaterMarks, HIGH_WATER_FILE};
 pub use hook::DlopenPolicy;
@@ -110,10 +113,10 @@ pub use registry::{
 };
 pub use stage::sweep_dead_staging;
 pub use transport::{
-    host_wake, link_transport, load_transport, load_transport_from_bytes, wire_settings,
-    BuiltTransport, DynTransport, WakeToken, WirePoll, HOST_WAKER,
+    host_wake, link_transport, load_transport, load_transport_from_bytes, wire_settings, Built,
+    DeclCarrier, DeclFramer, DynTransport, WakeToken, HOST_WAKER,
 };
-pub use transport_adapter::WireTransport;
+pub use transport_adapter::{CarrierIo, WireTransport};
 
 /// INTERN a plugin name into a stable `&'static str`, reusing one allocation per unique name.
 ///
@@ -2054,7 +2057,7 @@ mod loader_seam_tests;
 #[path = "tests/export_conformance_tests.rs"]
 mod export_conformance_tests;
 
-/// DECISIONS #11 for `kind: store`: the in-tree store example, LINKED and `dlopen`ed, must hand back
+/// DECISIONS #11 for `kind: store`: the store both-ways proof, LINKED and `dlopen`ed, must hand back
 /// a key carrying a plane scope grant byte-identically — the scope-kind vocabulary must not depend
 /// on which process registered it (1.6.0 SDK-SCOPEKINDS).
 #[cfg(test)]
@@ -2067,7 +2070,12 @@ mod store_scope_kind_conformance_tests;
 #[path = "tests/both_ways.rs"]
 mod both_ways;
 
-/// `kind: store` through both doors: one row, one store.
+/// The far end of the transport conformance tests: a peer through the fixture's own linked carrier.
+#[cfg(test)]
+#[path = "tests/carrier_peer.rs"]
+mod carrier_peer;
+
+/// `kind: store` through both doors: one row, one store, one fold over every store operation.
 #[cfg(test)]
 #[path = "tests/store_conformance_tests.rs"]
 mod store_conformance_tests;
@@ -2085,6 +2093,12 @@ mod plugin_proof_tests;
 #[cfg(test)]
 #[path = "tests/auth_conformance_tests.rs"]
 mod auth_conformance_tests;
+
+/// `kind: auth` through both doors, VERIFY VERDICTS: the token cases driven to every verdict
+/// (identify, reject, defer) over a second real auth plugin, one wire and one module either way.
+#[cfg(test)]
+#[path = "tests/auth_verify_conformance_tests.rs"]
+mod auth_verify_conformance_tests;
 
 /// `kind: hook` through both doors: one wire, one row, one routing policy.
 #[cfg(test)]

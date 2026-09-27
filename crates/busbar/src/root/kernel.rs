@@ -22,7 +22,7 @@
 //! | `verify` | the trust unit, reading the breaker unit's view |
 //! | `approve` | the scope unit |
 //! | `admit` | the admission unit, priced by the cost unit |
-//! | `route` | the egress unit, over the breaker, egress-auth and transport-key units |
+//! | `route` | the egress unit, over the breaker and egress-auth units |
 //! | `meter` | the usage unit |
 //! | `audit` | the audit unit, then the ledger unit |
 //! | `audit_refused` | the audit unit — the door a unit that never passed Admit leaves through |
@@ -31,7 +31,7 @@
 //!
 //! Reached elsewhere, and bound by the root rather than by a step: the WAL unit sits under the
 //! ledger on the durability path; the verbs unit is a destination at Route, holding the admin
-//! token; the transport-key unit runs at listen, dial and upgrade, outside the loop entirely; the
+//! token; connection security (TLS) is core's, built once per listener outside the loop entirely; the
 //! egress-auth unit is called from inside Route by the egress unit; and the breaker unit is
 //! consulted at Verify and recorded at Route without ever being a step of its own.
 //!

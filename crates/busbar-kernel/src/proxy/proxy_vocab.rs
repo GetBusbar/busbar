@@ -24,15 +24,6 @@ pub fn max_upstream_buffered_bytes() -> usize {
     crate::limits::upstream_error_body_max_bytes()
 }
 
-// The hook-content ceiling (the default, the process-global slot's setter, and the reader) now lives
-// in the neutral `busbar_kernel::proxy` so the relocated hook-projection enforcer names it without
-// reaching into `busbar-core`. Re-exported here so every core `crate::proxy::{
-// DEFAULT_HOOK_CONTENT_MAX_BYTES, set_hook_content_max_bytes, hook_content_max_bytes}` call site
-// (`config`, `appbuild`) resolves unchanged.
-pub use busbar_kernel::proxy::{
-    hook_content_max_bytes, set_hook_content_max_bytes, DEFAULT_HOOK_CONTENT_MAX_BYTES,
-};
-
 // THE PER-REQUEST STAGE SHAPE CAPTURE relocated DOWN to `busbar_kernel::proxy::proxy_vocab`
 // (App-retype WEDGE 2e), so a plane crate builds the shape without reaching into `busbar-core`.
 // Re-exported here so every core `crate::proxy::StageShape` call site — and core's own

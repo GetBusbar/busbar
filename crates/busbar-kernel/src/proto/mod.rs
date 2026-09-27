@@ -246,7 +246,7 @@ pub use registry::{
 /// the value an operator writes in a provider's `protocol:` key, and all six have been accepted there
 /// unchanged since 1.5.3 (`git show v1.5.3:crates/busbar/src/proto/mod.rs`, lines 1744-1749, holds
 /// these six consts byte-for-byte). So each line carries the frozen-wire pragma naming that key,
-/// exactly as `busbar_substrate_values::ir::providers::DEFAULT_PROTOCOL` does for the omitted-key
+/// exactly as `crate::config::providers::DEFAULT_PROTOCOL` does for the omitted-key
 /// default.
 #[cfg(any(test, feature = "test-support"))]
 mod dialect_test_names {
@@ -328,8 +328,17 @@ pub use dialect_test_names::{
 // and the concrete wire codecs, which a neutral crate's tests must not, so they live beside the
 // types they exercise. The dialect/IR SOURCE `#[path]` witnesses above remain until Phase 2's flip.
 
-// ==== merged from busbar-substrate proto.rs (W4.b P2) ====
-pub use busbar_substrate_values::proto::*;
+// THE INSTALLED PROTOCOL SET (the registry runtime, its lookups and test seams) and the declaration
+// SHAPES it holds, which are the contract's (#83a).
+mod installed;
+pub use busbar_contract::protocol::{
+    find_frame_terminator, ArrayStreamFramer, CredentialFamily, CredentialHeader, DialectCodec,
+    EgressAuthHeaders, EgressScheme, IrError, SigningContext, StreamTranslator, ERR_TYPE_API_ERROR,
+    ERR_TYPE_AUTHENTICATION, ERR_TYPE_INSUFFICIENT_QUOTA, ERR_TYPE_INVALID_REQUEST,
+    ERR_TYPE_NOT_FOUND, ERR_TYPE_OVERLOADED, ERR_TYPE_PERMISSION, ERR_TYPE_RATE_LIMIT,
+    ERR_TYPE_REQUEST_TOO_LARGE, ERR_TYPE_SERVER_ERROR, SIGNAL_IR_PARSE, STREAM_ABORT_DETAIL,
+};
+pub use installed::*;
 
 use crate::ingress::arrival::{install_path_ingress, PathIngress};
 

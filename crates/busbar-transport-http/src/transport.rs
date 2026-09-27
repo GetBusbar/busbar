@@ -478,7 +478,7 @@ impl Transport for HttpTransport {
 
     fn composed_over(&self) -> Option<&'static str> {
         // `http` opens its own raw TCP socket at `listen`/`accept`, and its egress dials through a
-        // pooled client of its own; which of `tcp`/`tls` a given listener runs over is that
+        // pooled client of its own; whether core secures a given listener's stream is that
         // listener's own configuration, not a property of this transport object.
         None
     }

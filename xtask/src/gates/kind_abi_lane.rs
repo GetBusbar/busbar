@@ -372,7 +372,7 @@ fn per_token_row(cx: &Ctx, cold: &[String]) -> Row {
                 continue;
             }
             for kind in cold {
-                if contains_word(code, kind) {
+                if contains_word(&unatomic(code), kind) {
                     offenders.push(format!("{rel}:{}:{}", i + 1, line.trim()));
                     break;
                 }
@@ -397,6 +397,55 @@ fn per_token_row(cx: &Ctx, cold: &[String]) -> Row {
             ),
         )
     }
+}
+
+/// `code` with every ATOMIC method call blanked: `.store(…, Ordering::…)` / `.load(Ordering::…)` /
+/// `.swap(…, Ordering::…)` etc. are `std::sync::atomic`'s own vocabulary, and the hot lane's arming
+/// flags are atomics (`ARMED.store(host, Ordering::Release)`); the method NAME `store` there is
+/// not the store kind. Only a call whose argument list names `Ordering::` on the same line is
+/// blanked — `.store(` with any other argument, and every other spelling of a cold kind, still
+/// counts.
+fn unatomic(code: &str) -> String {
+    if !code.contains("Ordering::") {
+        return code.to_string();
+    }
+    let mut out = code.to_string();
+    for method in [
+        "store",
+        "load",
+        "swap",
+        "compare_exchange",
+        "fetch_add",
+        "fetch_sub",
+    ] {
+        let needle = format!(".{method}(");
+        let mut from = 0;
+        while let Some(rel) = out[from..].find(&needle) {
+            let start = from + rel + 1;
+            let args = start + method.len();
+            // The matching `)`, by depth: an argument may itself be a call (`host.cast_mut()`).
+            let mut depth = 0usize;
+            let mut close = out.len();
+            for (j, b) in out.bytes().enumerate().skip(args) {
+                match b {
+                    b'(' => depth += 1,
+                    b')' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            close = j;
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            if out[args..close].contains("Ordering::") {
+                out.replace_range(start..args, &"_".repeat(method.len()));
+            }
+            from = args;
+        }
+    }
+    out
 }
 
 /// Whole-word, case-sensitive containment: `store` matches `store(` and `store:` but not `restore`
@@ -549,6 +598,35 @@ impl Gate for KindAbiLaneGate {
             &[ROW_PER_TOKEN],
             ov,
             &["store"],
+        ));
+
+        // AN ATOMIC'S `.store(…, Ordering::…)` IS NOT THE STORE KIND: the hot lane's arming flags are
+        // atomics, and the method name is `std`'s. The same line calling `.store(` WITHOUT an
+        // `Ordering` is still a finding (the RED twin), so the carve-out is exactly the atomic call.
+        let mut ov = Overlay::new();
+        ov.set(
+            format!("{HOT_LANE}/planted_atomic.rs"),
+            "pub fn arm(f: &core::sync::atomic::AtomicUsize) { \
+             f.store(usize::from(true), core::sync::atomic::Ordering::Release); }\n",
+        );
+        report.push(prove_green(
+            &cx.with_overlay(ov),
+            self,
+            "an atomic's `.store(…, Ordering::…)` on the hot lane is not the store kind",
+            &[ROW_PER_TOKEN],
+        ));
+        let mut ov = Overlay::new();
+        ov.set(
+            format!("{HOT_LANE}/planted_store_call.rs"),
+            "pub fn put(s: &dyn Sink, v: u64) { s.store(v); }\n",
+        );
+        report.push(prove_rows_red(
+            cx,
+            self,
+            "a `.store(` call that is not an atomic's is still a cold kind on the hot lane",
+            &[ROW_PER_TOKEN],
+            ov,
+            &["planted_store_call.rs"],
         ));
 
         // ...AND A HOT-LANE FILE NAMING ONLY plane/transport IS NOT, so the case above is not a scan

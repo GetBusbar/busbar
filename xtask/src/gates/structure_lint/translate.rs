@@ -40,7 +40,6 @@ fn nominal() -> Addresses {
         core: roots::CORE.to_string(),
         bin: roots::BIN.to_string(),
         substrate: roots::SUBSTRATE.to_string(),
-        substrate_values: roots::SUBSTRATE_VALUES.to_string(),
         proto_roots: Vec::new(),
         src_roots: Vec::new(),
         planes: Vec::new(),

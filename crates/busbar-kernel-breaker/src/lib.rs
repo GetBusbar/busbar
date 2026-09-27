@@ -37,6 +37,7 @@ pub mod cfg;
 pub mod classify;
 pub mod clock;
 pub mod journal;
+pub mod normalize;
 pub mod port;
 
 use std::collections::HashMap;

@@ -31,7 +31,9 @@ use busbar_contract::plane::{
     Ingress, Plane, PlaneMeta, PlaneSessionState, Progress, Response, SessionPlane, UnitDraft,
 };
 use busbar_contract::plugin::{AbiVersion, Kind, Plugin};
-use busbar_contract::transport::{FrameStream, Fut, Transport, TransportConfigView, TransportMeta};
+use busbar_contract::transport::{
+    Carrier, FrameStream, Framer, Fut, Transport, TransportConfigView, TransportMeta,
+};
 use busbar_contract::unit::{
     AdmitFacts, AuditFacts, Clock, ConfigView, Ctx, FinishClass, Refusal, ScopeFacts, SessionView,
     Step, TransportView, Unit, UnitEnd, UsageLocators,
@@ -46,6 +48,9 @@ use busbar_contract::wire::{
 const _PLANE: Option<&dyn Plane> = None;
 const _SESSION_PLANE: Option<&dyn SessionPlane> = None;
 const _TRANSPORT: Option<&dyn Transport> = None;
+// The two transport roles (TRANSPORT-STACK): a transport plugin is one or the other.
+const _CARRIER: Option<&dyn Carrier> = None;
+const _FRAMER: Option<&dyn Framer> = None;
 const _AUTH: Option<&dyn AuthScheme> = None;
 const _STORE: Option<&dyn Store> = None;
 const _SECRET: Option<&dyn Secret> = None;

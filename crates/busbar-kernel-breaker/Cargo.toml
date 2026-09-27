@@ -9,11 +9,12 @@
 #
 # NO WORKSPACE DEPENDENCIES BEYOND busbar-caps. Every other crate in the workspace belongs to
 # another agent during this build; `busbar-caps` is the one committed, stable capability-token
-# crate this unit is allowed to name. Concretely this means: no `axum`/`httpdate` for Retry-After
-# parsing (the substrate's `parse_retry_after` took an `axum::http::HeaderMap`; this crate takes a
-# plain `&str` and parses the HTTP-date form itself — see `classify::parse_retry_after`), and no
-# `tracing` for the "unrecognized error_map value" diagnostic (routed through an injectable sink
-# trait instead — see the `// contract:` note on `classify::Diagnostics`).
+# crate this unit is allowed to name. Concretely this means: no `axum` (`classify::parse_retry_after`
+# takes a plain `&str` and parses the HTTP-date form itself), and no `tracing` for the "unrecognized
+# error_map value" diagnostic (routed through an injectable sink instead — see the `// contract:`
+# note on `classify::Diagnostics`). The served path's own normalizer (`normalize`, #83a O1) moved in
+# verbatim with the `httpdate` read it has always made; its unrecognized-value report is injected
+# the same way.
 [package]
 name = "busbar-kernel-breaker"
 version = "1.6.0"
@@ -29,3 +30,6 @@ path = "src/lib.rs"
 
 [dependencies]
 busbar-contract = { path = "../busbar-contract" }
+# The served path's `Retry-After` read (`normalize::parse_retry_after`) accepts every RFC 9110
+# HTTP-date form a provider may send, through the one date parser the host has always used.
+httpdate = { workspace = true }

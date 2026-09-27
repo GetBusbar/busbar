@@ -32,8 +32,9 @@ path = "src/lib.rs"
 test-linked = ["busbar-llm", "busbar-mcp", "busbar-a2a"]
 # THE KIND FIXTURES: each kind's in-tree fixture plugin, as DATA (`<kind>=<crate>`). build.rs exports
 # each as `BUSBAR_FIXTURE_<KIND>` (the cdylib's file stem), so test_support finds the fixture's
-# artifact while no source names the plugin.
-test-fixtures = ["hook=busbar-hook-test-plugin", "store=busbar-store-example-plugin"]
+# artifact while no source names the plugin. No `store` row: the durable store the kernel's tests
+# need is an in-crate double (`test_support::durable_store`, R-FIX3), linked only.
+test-fixtures = ["hook=busbar-hook-test-plugin"]
 
 [dependencies]
 # ── ABSORBED from the pre-1.6.0 busbar-kernel crate (W4.a #19/#37) ────────────────────────────────
@@ -42,11 +43,6 @@ test-fixtures = ["hook=busbar-hook-test-plugin", "store=busbar-store-example-plu
 # (`busbar-grammar`); it folded into `busbar-contract` (DECISIONS #40) and is now named via
 # `busbar_contract::spans`, which this crate already depends on below.
 bumpalo = { workspace = true }
-# The PURE half of the neutral substrate (value families a codec/plane names). 1.6.0 W4.b P2 drains
-# the substrate ENGINE up into this crate and deletes `busbar-substrate`, but this pure crate STAYS a
-# kernel dependency — kernel names its value modules (breaker/eventstream/json/lossless/media/profile/
-# sigv4/transport/billing) directly rather than via the retiring `busbar-substrate` re-export layer.
-busbar-substrate-values = { path = "../busbar-substrate-values" }
 # The plugin-visible contract. Core names it directly for the GENERIC authorization lattice
 # (`busbar_contract::authz::{Scope, Grants}`) — the admin-worded ceiling/error/path vocabulary
 # stays on the admin surface; only the neutral scope model lives here, so a non-admin core
@@ -105,7 +101,10 @@ smallvec = { workspace = true }
 # dump, and only under the non-default `timing` feature. The default build does not link it.
 libc = { workspace = true, optional = true }
 busbar-plugin-loader = { path = "../plugin-loader" }
-busbar-auth-admin-tokens = { path = "../auth-admin-tokens", optional = true }
+# The built-in `admin-tokens` admin-auth module lives in its own repo (owner move-out ruling;
+# ARCHITECT 2026-09-27), pulled at a pinned rev under the same feature and name; its busbar-contract
+# resolves to this tree through the workspace `[patch]` table (one contract copy).
+busbar-auth-admin-tokens = { git = "https://github.com/GetBusbar/auth-admin-tokens", rev = "47cb5047e4c9a73341c613c09a056b4a4bb8eb99", optional = true }
 # THE STAND-IN LINKED ROWS (test-only edges): the composition root links the build's default store
 # and ranking hooks onto the cold-kind axis (`preflight::install_linked_rows`); a test build has no
 # root, so these fixtures stand in, under `test-support` (which the dev-dependency cycle through the
@@ -178,8 +177,8 @@ tokio-rustls = { workspace = true }
 rustls = { workspace = true }
 rustls-pki-types = { workspace = true }
 # The futures-io/tokio-io compat seam `tls::serve_one` bridges the accepted `TcpStream` and the
-# `ConnectionSecurity::wrap` result through (DECISIONS #40) — the same seam `busbar-transport-tls`
-# already uses to cross the same boundary.
+# `ConnectionSecurity::wrap` result through (DECISIONS #40) — the same seam the core
+# connection-security `Tls` wrap crosses on the other side of that call.
 tokio-util = { workspace = true }
 # W4.b P2 (absorbed from busbar-substrate): the client WS handshake for the neutral full-duplex
 # WEBSOCKET transport, OPTIONAL behind the `runtime` capability — OFF in a default/shipped build.
@@ -253,12 +252,14 @@ plane-voice = ["duplex-ws"]
 # money-path build carries no `axum/ws` edge (no tokio-tungstenite/sha1/base64) and this seam is
 # compiled out entirely — byte-identical assembly, strong-form deletable.
 duplex-ws  = ["runtime"]
-# W4.b P2 neutral capability markers, absorbed from busbar-substrate. `dispatch`/`relay` gate the
-# `#[cfg]`/dead-code-allowance sites in the absorbed engine source; each forwards to the value crate's
-# same-named marker. `runtime` arms the full-duplex WS transport (client handshake + `axum/ws`).
-dispatch = ["busbar-substrate-values/dispatch"]
-relay = ["busbar-substrate-values/relay"]
-runtime = ["dep:tokio-tungstenite", "axum/ws", "busbar-substrate-values/runtime"]
+# The neutral capability markers. `dispatch`/`relay` gate the `#[cfg]`/dead-code-allowance sites in
+# this crate's engine source; `runtime` arms the full-duplex WS transport (client handshake +
+# `axum/ws`). `dispatch` and `runtime` forward to the contract's same-named markers, which gate its
+# `Transport`/`UpstreamWireKind` wire-selection axis, so the two arm in lock-step; the contract has
+# no `relay` marker (the one it had was empty), so `relay` gates this crate's sites alone.
+dispatch = ["busbar-contract/dispatch"]
+relay = []
+runtime = ["dep:tokio-tungstenite", "axum/ws", "busbar-contract/runtime"]
 # ── NEUTRAL CAPABILITY MARKERS (plane-purity) ──────────────────────────────────────────────────────
 # The neutral crates must name NO plane token in source (enforced by the plane-purity
 # lint). These pure markers stand in for the `#[cfg(feature = "plane-mcp"/"plane-a2a")]` gates that
@@ -296,10 +297,9 @@ egress-auth-gate = []
 openapi-schema = ["dep:schemars", "busbar-llm/openapi-schema", "busbar-mcp/openapi-schema", "busbar-a2a/openapi-schema"]
 loom-model = ["dep:loom"]
 # Exposes `test_support` to a DEPENDENT crate's tests (the bin's). Never on in a normal build;
-# the bin enables it from its [dev-dependencies] edge only. Forwards to substrate's matching feature
-# so the relocated test-only `governance::signing::TokenSigner::mint_for_audience` is likewise
-# revealed to a dependent test binary.
-test-support = ["busbar-substrate-values/test-support", "dep:rmcp", "dep:reqwest", "dep:rcgen", "dep:fixture-store", "dep:fixture-hook"]
+# the bin enables it from its [dev-dependencies] edge only. The contract's test double (its warn
+# capture) is always compiled (ARCHITECT SD-3 queue (4)), so nothing forwards there.
+test-support = ["dep:rmcp", "dep:reqwest", "dep:rcgen", "dep:fixture-store", "dep:fixture-hook"]
 # The debug-only per-method micro-timing in `src/timing` (folded from busbar-timing, OWNER Q70).
 # DEFAULT OFF: with this off, `timeit!` expands to `()` and the RAII guards it produces are
 # zero-sized no-ops, so the `drop(_guard)` calls that end a timed span are compiled in ONLY under this
@@ -330,17 +330,21 @@ busbar-mcp = { path = "../busbar-mcp", features = ["test-support", "auth-admin-t
 # `#[path]` dual-compile of its source. `busbar-llm` normal-depends on `busbar-core`; a dev-dep the
 # other way is not a build cycle (lib built first, then dev-deps, then the test binary).
 busbar-llm = { path = "../busbar-llm", features = ["test-support"] }
-# The plain `cargo test -p busbar-kernel` build does not turn on this crate's own `test-support`
-# feature; name busbar-substrate-values' here to reveal the relocated test-only
-# `TokenSigner::mint_for_audience` (used by the auth/governance/a2a tests and the mcp plane tests
-# dual-compiled into this crate's test binary). Feature unification carries it for the whole test build.
-busbar-substrate-values = { path = "../busbar-substrate-values", features = ["test-support"] }
-busbar-store-example-plugin = { path = "../store-example-plugin" }
 # The export axis this crate's config tests resolve `module: prometheus` against: the scrape sink,
 # LINKED into the test binary exactly as the composition root links it into the shipped one (the
 # kernel names no export module; its tests need one on the axis). Pulled from its own repo at the SAME
 # pinned rev the composition root links.
-busbar-export-prometheus = { git = "https://github.com/GetBusbar/export-prometheus", rev = "05a175910b4a5d9e3bcb7f065ac95a1a3e351358" }
+busbar-export-prometheus = { git = "https://github.com/GetBusbar/export-prometheus", rev = "087bbcc6a9bafc63591799770407a478f2742027" }
+# The REAL token-verifying auth module `auth/tests/plugin_chain_tests.rs` loads through the dropped-in
+# door (R-FIX2; the owner's FIXTURES ruling: real plugins are the proofs): GetBusbar/auth-oidc's cdylib
+# crate at the SAME pinned rev the composition root's tests use. Nothing links it; this edge is what
+# makes `cargo test -p busbar-kernel` build its cdylib (under `deps/`, hashed), which the tests sign
+# into a temp `plugins/` directory and drive with JWTs a local issuer signs.
+busbar-auth-oidc-plugin = { git = "https://github.com/GetBusbar/auth-oidc", rev = "9ff64ff4d74bdd4d043ed7200d8771389810d19b" }
+# ...and the issuer those tokens come from: the module's OWN test issuer (its logic crate's `testkit`
+# feature — an ES256 key, its JWKS served over a certificate-verified loopback endpoint the module
+# trusts through `ca_cert_pem`, and genuinely signed tokens), at the SAME rev.
+busbar-auth-oidc = { git = "https://github.com/GetBusbar/auth-oidc", rev = "9ff64ff4d74bdd4d043ed7200d8771389810d19b", features = ["testkit"] }
 tokio = { workspace = true, features = ["test-util"] }
 reqwest = { workspace = true, features = ["json"] }
 axum = { workspace = true, features = ["http1"] }

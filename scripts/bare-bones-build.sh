@@ -15,7 +15,7 @@
 #
 # The drop-in half is the SAME in both builds: `busbar_plugin_loader::load_plane` / `open_plane`
 # (the HOT-tier `PlaneDecl` loader), `busbar_plugin_loader::registry::supported_abi("plane")`, and
-# the `busbar_plugin_sdk::export_plane!` SDK are unconditional — a bare-bones node loads a plane the
+# the `busbar_contract::abi::sdk::export_plane!` SDK are unconditional — a bare-bones node loads a plane the
 # same way a default node loads a dropped-in one, which is the whole point of "a plugin is a plugin"
 # (DECISIONS #2). This gate proves BOTH distributions COMPILE from one tree; the per-kind drop-in
 # CONFORMANCE (a representative plugin of each kind, plane included, loading identically compiled-in

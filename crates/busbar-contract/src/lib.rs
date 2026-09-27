@@ -168,6 +168,7 @@ pub use transport::{
     check_composition, CompositionError, FrameStream, Fut, Registered, Transport,
     TransportConfigView, TransportMeta, TRANSPORT_ABI,
 };
+pub use transport::{Carrier, Framer};
 pub use unit::{
     AbortBy, AdmitFacts, AuditFacts, Clock, ConfigView, Ctx, FailureReason, FinishClass, LegResult,
     Origin, Refusal, RefusalReason, ResourceLocator, ScopeFacts, SessionView, Step, TransportView,

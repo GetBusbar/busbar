@@ -46,7 +46,7 @@ pub(crate) type Sock = WebSocketStream<Box<dyn LowerIo>>;
 /// An upgrade replaces the layer an arrival record describes; it does not delete what the layers
 /// underneath already established. The port the bytes arrived on, the name offered at the TLS
 /// handshake, the protocol negotiated there and the certificate the peer presented are all facts
-/// about THIS connection that no later layer can re-derive — the `tls` layer has given the stream
+/// about THIS connection that no later layer can re-derive — the layer below has given the stream
 /// up and will never be asked again. `ws` declares Sni, Alpn and Port selector forms, so a record
 /// that answered zero and `None` to all of them made every location resolving on those forms
 /// unresolvable against a connection that genuinely had them.

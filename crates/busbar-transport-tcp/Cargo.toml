@@ -8,22 +8,23 @@ description = "The tcp transport: a byte stream, the base every session transpor
 license = "Apache-2.0"
 
 [lib]
-# rlib: the linked door (a build that links this crate hands the loader `hot::TRANSPORT_DECL`) and
-# the tests. cdylib: the dropped-in door — the same decl, exported as `busbar_transport_decl` for the
+# rlib: the linked door (a build that links this crate holds its `TcpCarrier` as the contract's
+# `Carrier`) and the tests. cdylib: the dropped-in door — the same carrier lowered by the contract's
+# `export_carrier!` to the HOT decl, exported as `busbar_transport_decl` for the
 # loader to `dlopen` (#3: a transport is swappable, compiled in OR dropped in, over the HOT lane).
 crate-type = ["rlib", "cdylib"]
 
 # DEPENDENCY POLICY. A transport is a plugin (#3), so its closure is `busbar-contract` plus the async
-# runtime and stream plumbing it actually needs: no plane, no kernel crate, no capability crate, and
-# not the crate that defines the HOT lane either — `src/hot.rs` restates the published layout it
-# implements (#84: a layout, not a crate).
+# runtime and stream plumbing it actually needs: no plane, no kernel crate, no capability crate. Its
+# HOT-lane door is the contract's own lowering of its `Carrier` (`export_carrier!`), so no layout is
+# restated here (#84).
 [features]
-# THE DROPPED-IN DOOR (`hot::exports`): this crate's decl registered as its image's one door through
+# THE DROPPED-IN DOOR (`exports`): this crate's carrier, lowered and registered as its image's one door through
 # the contract's SHARED door (`busbar_contract::export_transport!`, the #84 merge). The frozen symbols
 # (`busbar_abi`, `busbar_plugin_kind`, `busbar_transport_decl`) are defined ONCE, in the contract, so
 # this crate defines none and a link holding it beside the other plugins holds one definition of each
 # (the fat-LTO "symbol multiply defined" refusal the per-crate symbols caused). OFF in a build that
-# links this crate (the linked door is `hot::TRANSPORT_DECL`); the dropped-in artifact is built on its
+# links this crate (the linked door is `TcpCarrier` itself); the dropped-in artifact is built on its
 # own: `cargo build -p busbar-transport-tcp --release --features dropped-in`.
 dropped-in = []
 

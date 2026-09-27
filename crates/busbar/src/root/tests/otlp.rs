@@ -1,13 +1,23 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The OTLP span exporter's own tests, moved with it from the kernel (K9e-1) unchanged.
+//! The collector egress policy's tests — the OTLP endpoint guard's, moved with it from the kernel
+//! (K9e-1) unchanged. The credential split and the "enabled" line moved with the exporter into the
+//! `busbar-export-otlp` plugin (K9e-2), whose own suite carries their tests.
 
 use super::*;
 
+/// The guard's full verdict — name resolution included — in the shape 1.5.x's endpoint validator
+/// answered it: `None` (no endpoint) is valid; an accepted endpoint comes back as written.
+fn validate_otlp_endpoint(endpoint: Option<&str>) -> Result<Option<String>, String> {
+    endpoint.map_or(Ok(None), |e| {
+        collector_policy(e, true).map(|()| Some(e.to_string()))
+    })
+}
+
 #[test]
 fn test_validate_otlp_endpoint_error_masks_userinfo() {
-    // Regression: the OTLP validation error is printed to stderr (`init_logging`), so a
+    // Regression: the OTLP validation error is logged when the sink starts, so a
     // rejected endpoint with userinfo must not leak credentials there either.
     let err = validate_otlp_endpoint(Some("https://svc:topsecret@10.0.0.1/v1/traces"))
         .expect_err("internal host must be rejected");
@@ -31,106 +41,6 @@ fn test_validate_otlp_endpoint_error_masks_userinfo() {
         !err.contains("pw0rd"),
         "OTLP plaintext-remote error must mask embedded userinfo; leaked: {err}"
     );
-}
-
-#[test]
-fn test_base64_encode_rfc4648_vectors() {
-    // Standard RFC 4648 test vectors, including the padding edge cases the OTLP Basic-auth token
-    // exercises (input lengths not a multiple of 3).
-    assert_eq!(base64_encode(b""), "");
-    assert_eq!(base64_encode(b"f"), "Zg==");
-    assert_eq!(base64_encode(b"fo"), "Zm8=");
-    assert_eq!(base64_encode(b"foo"), "Zm9v");
-    assert_eq!(base64_encode(b"foob"), "Zm9vYg==");
-    assert_eq!(base64_encode(b"fooba"), "Zm9vYmE=");
-    assert_eq!(base64_encode(b"foobar"), "Zm9vYmFy");
-    // The exact token the credential path produces for `alice:s3cr3t`.
-    assert_eq!(base64_encode(b"alice:s3cr3t"), "YWxpY2U6czNjcjN0");
-}
-
-#[test]
-fn test_split_otlp_credentials_moves_secret_off_url() {
-    // Regression: an endpoint with embedded userinfo must yield (a) a credential-FREE
-    // endpoint for `with_endpoint` (so the URI the SDK may log never carries the secret) and (b)
-    // an `Authorization: Basic base64(user:pass)` header carrying the credential out of band.
-    let (clean, auth) =
-        split_otlp_credentials("https://alice:s3cr3t@collector.example.com:4318/v1/traces");
-    // The clean endpoint must NOT contain the username or password in any form...
-    assert!(
-        !clean.contains("alice") && !clean.contains("s3cr3t") && !clean.contains('@'),
-        "endpoint passed to the SDK must be credential-free: {clean}"
-    );
-    // ...while still pointing at the same collector (host/port/path preserved).
-    assert_eq!(clean, "https://collector.example.com:4318/v1/traces");
-    // The credential rides in a Basic auth header, base64 of `alice:s3cr3t`.
-    let auth = auth.expect("userinfo must produce an Authorization header");
-    let auth = auth.to_str().expect("header value is ascii");
-    assert_eq!(auth, "Basic YWxpY2U6czNjcjN0"); // golden wire-contract literal (kept bare on purpose)
-                                                // Belt-and-braces: the raw secret must not appear verbatim in the header either.
-    assert!(
-        !auth.contains("s3cr3t") && !auth.contains("alice"),
-        "credential must be base64-encoded, not plaintext: {auth}"
-    );
-}
-
-#[test]
-fn test_split_otlp_credentials_password_only_and_user_only() {
-    // Password-only (`:pass@`) and username-only (`user@`) userinfo are both moved off the URL.
-    let (clean, auth) = split_otlp_credentials("https://:topsecret@host:4318/v1/traces");
-    assert!(
-        !clean.contains("topsecret") && !clean.contains('@'),
-        "password-only secret must leave the URL: {clean}"
-    );
-    let auth = auth.expect("password-only userinfo still authenticates");
-    assert_eq!(
-        auth.to_str().unwrap(),
-        format!("Basic {}", base64_encode(b":topsecret")) // golden wire-contract literal (kept bare on purpose)
-    );
-
-    let (clean, auth) = split_otlp_credentials("https://tokenuser@host:4318/v1/traces");
-    assert!(
-        !clean.contains("tokenuser") && !clean.contains('@'),
-        "username-only secret must leave the URL: {clean}"
-    );
-    let auth = auth.expect("username-only userinfo still authenticates");
-    assert_eq!(
-        auth.to_str().unwrap(),
-        format!("Basic {}", base64_encode(b"tokenuser:")) // golden wire-contract literal (kept bare on purpose)
-    );
-}
-
-#[test]
-fn test_split_otlp_credentials_passthrough_without_userinfo() {
-    // A credential-free endpoint must be returned unchanged with NO Authorization header, so
-    // unauthenticated collectors keep working exactly as before.
-    let (clean, auth) = split_otlp_credentials("https://collector.example.com:4318/v1/traces");
-    assert_eq!(clean, "https://collector.example.com:4318/v1/traces");
-    assert!(auth.is_none(), "no userinfo must mean no auth header");
-    // Loopback http collector, also credential-free.
-    let (clean, auth) = split_otlp_credentials("http://localhost:4318");
-    assert!(auth.is_none());
-    assert!(clean.starts_with("http://localhost:4318"));
-}
-
-#[test]
-fn test_split_otlp_credentials_percent_decodes() {
-    // Percent-encoded userinfo (e.g. a password containing `@` or `:`) must be decoded so the
-    // wire credential matches what the operator configured. `%40` is `@`, `%3A` is `:`.
-    let (clean, auth) = split_otlp_credentials("https://u:p%40ss%3Aword@host/v1/traces");
-    assert!(!clean.contains('@'), "userinfo stripped: {clean}");
-    let auth = auth.expect("auth header present");
-    // Decoded credential is `u:p@ss:word`.
-    assert_eq!(
-        auth.to_str().unwrap(),
-        format!("Basic {}", base64_encode(b"u:p@ss:word")) // golden wire-contract literal (kept bare on purpose)
-    );
-}
-
-#[test]
-fn test_shutdown_tracing_is_noop_when_unconfigured() {
-    // OTLP never configured (TRACER_PROVIDER unset): shutdown must be a harmless, panic-free
-    // no-op. Also exercises the function so it is not dead code outside `cfg(test)`.
-    shutdown_tracing();
 }
 
 #[test]
@@ -397,33 +307,6 @@ fn test_validate_otlp_endpoint_requires_https_for_remote_collector() {
             "plaintext http:// to a loopback OTLP collector '{ok}' must stay accepted; got {res:?}"
         );
     }
-}
-
-/// NO PROVIDER, NO "ENABLED" LINE (item 570).
-///
-/// The "OTLP tracing enabled" info line used to be gated on the endpoint being configured, so an
-/// endpoint whose exporter failed to build — `build_otlp` prints its failure to stderr and returns
-/// `None` — still logged "enabled" while no provider was installed and no span would ever leave the
-/// process. The line is now the installing step's own, so an endpoint with nothing built behind it
-/// says nothing, and nothing global is touched.
-#[test]
-fn an_endpoint_whose_exporter_did_not_build_never_logs_enabled() {
-    use busbar_kernel::test_support::warn_capture::WarnCapture;
-    use tracing_subscriber::layer::SubscriberExt as _;
-    let cap = WarnCapture::capturing_debug();
-    let subscriber = tracing_subscriber::registry().with(cap.clone());
-    tracing::subscriber::with_default(subscriber, || {
-        install_otlp(None, Some("https://collector.example:4318/v1/traces"));
-    });
-    assert!(
-        !cap.contains("OTLP tracing enabled"),
-        "no provider was built, so nothing may claim tracing is enabled; captured: {:?}",
-        cap.messages()
-    );
-    assert!(
-        TRACER_PROVIDER.get().is_none(),
-        "a failed build must not install a provider"
-    );
 }
 
 /// The OTLP twin of the kernel's `test_validate_webhook_url_rejects_trailing_dot_internal_hosts`,

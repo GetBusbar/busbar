@@ -144,7 +144,6 @@ const FAM_HTTP: &[&str] = &["busbar-transport-http"];
 const FAM_WS: &[&str] = &["busbar-transport-ws"];
 const FAM_STDIO: &[&str] = &["busbar-transport-stdio"];
 const FAM_TCP: &[&str] = &["busbar-transport-tcp"];
-const FAM_TLS: &[&str] = &["busbar-transport-tls"];
 const FAM_SSE: &[&str] = &["busbar-transport-http"];
 const FAM_GRPC: &[&str] = &["busbar-transport-http"];
 
@@ -152,12 +151,12 @@ const FAM_GRPC: &[&str] = &["busbar-transport-http"];
 const FAM_NONE: &[&str] = &[];
 
 // ── AUTH SCHEMES (DECISION #3: currently internal units, so heavy known-debt into core/units) ──
-const FAM_AUTH: &[&str] = &["auth-static-plugin", "auth-admin-tokens", "busbar-oauth2"];
+const FAM_AUTH: &[&str] = &["auth-admin-tokens", "busbar-oauth2"];
 
 /// DOCUMENTED EXEMPTION for the `gcp` noun: these 2 files use "GCP" as the general
 /// Google-Cloud-Platform term in cloud-metadata/SSRF security prose — `busbar-a2a`'s
 /// `fetch_tests.rs` table entries `"AWS/GCP/Azure IMDS link-local"` / `"the GCP metadata NAME"`, and
-/// `busbar-substrate-values`'s boot diagnostic warning that the metadata-SSRF guard covers
+/// `busbar-kernel`'s boot diagnostic warning that the metadata-SSRF guard covers
 /// `"169.254.169.254, the GCP/Azure metadata hosts"` — never the name of a concrete `gcp`
 /// auth-scheme plugin instance. This is exactly the vocabulary problem the header note above
 /// already excludes bare `aws` for (broad infra, never an instance spelling);
@@ -169,7 +168,7 @@ const FAM_AUTH: &[&str] = &["auth-static-plugin", "auth-admin-tokens", "busbar-o
 /// (not bare `gcp`) is what should be tracked.
 const GCP_GENERIC_MENTION_FILES: &[&str] = &[
     "crates/busbar-a2a/src/a2a/tests/fetch_tests.rs",
-    "crates/busbar-substrate-values/src/diagnostics/mod.rs",
+    "crates/busbar-kernel/src/diagnostics/mod.rs",
 ];
 
 // ── HOOK / EXPORT (self-contained example/test plugins; matched on crate identity) ─────────────
@@ -178,10 +177,11 @@ const GCP_GENERIC_MENTION_FILES: &[&str] = &[
 // so its noun below is censused like the stores — an empty family, every hit a leak.
 const FAM_HOOK: &[&str] = &["hook-test-plugin"];
 const FAM_EXPORT: &[&str] = &["export-example-plugin"];
-// The two store-kind crates that DO exist in this tree, and the one in-tree hook plugin (item 197).
-// Each is matched, like the example/test plugins above, on its own crate identifier.
+// The store-kind crate that DOES exist in this tree, and the one in-tree hook plugin (item 197).
+// Matched, like the example/test plugins above, on its own identifiers. (`store-example-plugin`,
+// the second store crate, was deleted by DOOR-STORE; its noun now polices this crate's kind-qualified
+// spelling instead of a family with no crate.)
 const FAM_STORE_MEMORY: &[&str] = &["store-memory"];
-const FAM_STORE_EXAMPLE: &[&str] = &["store-example-plugin"];
 const FAM_HOOKS_RANKING: &[&str] = &["hooks-ranking"];
 
 /// PROTOCOL VOCABULARY (owner rulings Q1, 2026-09-23 and Q76, 2026-09-25): wire/auth scheme words
@@ -313,7 +313,10 @@ const NOUNS: &[Noun] = &[
     Noun {
         key: "tls",
         kind: "transport",
-        family: FAM_TLS,
+        // No crate holds this instance: `busbar-transport-tls` was deleted (TRANSPORT-STACK — TLS is
+        // core's connection security, `busbar-core-connsec`), so every spelling of the transport
+        // crate's name is a leak wherever it appears.
+        family: FAM_NONE,
         tokens: &["busbar_transport_tls", "transport_tls", "transport-tls"],
         camel: &[],
         section: None,
@@ -367,10 +370,13 @@ const NOUNS: &[Noun] = &[
         camel: &[],
         section: None,
     },
-    // Stores that DO have a crate (item 197). The four above are censused on backends with no crate
-    // here; these two ARE the store kind's in-tree instances, and until this row they had no Noun
-    // at all, so the kind's real instance vocabulary was unpoliced. Matched on the crate identifier
-    // (bare `memory` is a core word; the example plugin's name is its only unambiguous spelling).
+    // The store that DOES have a crate (item 197). The four above are censused on backends with no
+    // crate here; busbar-store-memory IS the store kind's in-tree instance, and until these rows it
+    // had no Noun at all, so the kind's real instance vocabulary was unpoliced. Bare `memory` is a
+    // core word, so it is matched on two unambiguous spellings: the crate identifier
+    // (`busbar_store_memory`, the `memory` row) and the kind-qualified id (`store_memory`, the `store`
+    // row) — the second is how core names the instance without importing it
+    // (`GOVERNANCE_STORE_MEMORY`, the default governance store; drain slot STORE-DEFAULT).
     Noun {
         key: "memory",
         kind: "store",
@@ -382,8 +388,8 @@ const NOUNS: &[Noun] = &[
     Noun {
         key: "store",
         kind: "store",
-        family: FAM_STORE_EXAMPLE,
-        tokens: &["busbar_store_example_plugin"],
+        family: FAM_STORE_MEMORY,
+        tokens: &["store_memory"],
         camel: &[],
         section: None,
     },

@@ -5,6 +5,13 @@
 //! `busbar-contract` records contract — governance works out of the box. EPHEMERAL: every counter, key, and
 //! credential is lost on restart; configure a durable backend (e.g. `store-sqlite`/`store-postgres`)
 //! for persistence. Poison-recovering locks (the governance surface must never panic on a request).
+//!
+//! BOTH DOORS, ONE CONSTRUCTOR (#2): [`open`] is what a build that links this crate registers
+//! ([`linked::STORE`]) and what the dropped-in `cdylib` answers `busbar_open` with (feature
+//! `dropped-in`, the [`exports`] module). Unsafe code is denied crate-wide; the one exception is the
+//! door module the contract's export macro generates, whose C-ABI symbols cannot be written without it.
+
+#![deny(unsafe_code)]
 
 use busbar_contract::records::{
     AuditRecord, CredentialMeta, CredentialSecret, MeteringDelta, MeteringRow, PlaneDisposition,
@@ -897,18 +904,40 @@ impl Store for MemoryStore {
     }
 }
 
+/// Open this store. It reads no configuration, so every body opens the same fresh RAM store — the
+/// ONE constructor both doors reach: the linked row ([`linked::STORE`]) calls it in process, and the
+/// dropped-in `cdylib` calls it from `busbar_open` ([`exports`]).
+pub fn open(_cfg: &str) -> Result<Box<dyn Store>, String> {
+    Ok(Box::new(MemoryStore::new()))
+}
+
+/// THE DROPPED-IN DOOR (feature `dropped-in`): [`open`] exported through the contract's store export
+/// macro. The frozen symbols the loader looks up are the contract's, answering through this image's
+/// one registered door, so this crate defines no `#[no_mangle]` symbol of its own. The ONE module in
+/// this crate where unsafe code is allowed: the C-ABI boundary functions the macro generates are
+/// `unsafe extern "C-unwind"` by the ABI's own definition.
+#[cfg(feature = "dropped-in")]
+#[allow(unsafe_code)]
+pub mod exports {
+    busbar_contract::abi::sdk::export_store_plugin!(super::open);
+}
+
+/// The dropped-in door's boundary as a LINKED entry: the same functions the `cdylib`'s frozen symbols
+/// answer through, for a host that links this crate and registers it through the cold lane's linked
+/// door (the loader's both-ways proof).
+#[cfg(feature = "dropped-in")]
+pub use exports::BUSBAR_COLD_ENTRY;
+
 /// THE LINKED ENTRY (DECISIONS #2 rule (1)): what a build that links this store registers onto the
 /// cold-kind axis — the same row a dropped-in store takes, opened in process. `STORE` is
 /// `(name, ephemeral, open)`: the name `governance.store` selects it by, its statement that what it
 /// holds is lost on restart, and the open handed the row's configuration (this backend reads none).
 pub mod linked {
-    use super::MemoryStore;
-
     /// An in-process store row's open.
     pub type Open = fn(&str) -> Result<Box<dyn busbar_contract::records::RecordStore>, String>;
 
     /// `(name, ephemeral, open)`.
-    pub const STORE: (&str, bool, Open) = ("memory", true, |_| Ok(Box::new(MemoryStore::new())));
+    pub const STORE: (&str, bool, Open) = ("memory", true, super::open);
 }
 
 #[cfg(test)]

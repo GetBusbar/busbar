@@ -144,7 +144,7 @@ async fn stream_refused_usage_bills_the_floor_not_zero() {
     let events = vec![first.to_string(), last.to_string(), usage.to_string()];
     // The bytes the upstream sent: each event framed `data: …\n\n`, then the `[DONE]` frame.
     let upstream: usize = events.iter().map(|e| e.len() + 8).sum::<usize>()
-        + busbar_kernel::proto::SSE_DONE_FRAME.len();
+        + busbar_llm_codec::dialect::SSE_DONE_FRAME.len();
     let state = Arc::new(MockServerState::new());
     state.push(MockResponse::Sse {
         events,

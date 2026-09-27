@@ -14,6 +14,8 @@
 #![cfg(unix)]
 #![cfg(linked_every_plane)]
 
+mod common;
+
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
@@ -100,7 +102,7 @@ fn boot(tag: &str, with_planes: bool) -> Booted {
         "mock:\n  protocol: anthropic\n  base_url: \"http://127.0.0.1:9\"\n  api_key_env: MOCK_KEY\n",
     )
     .unwrap();
-    let key = Command::new(env!("CARGO_BIN_EXE_busbar"))
+    let key = Command::new(common::boot::exe())
         .arg("--generate-signing-key")
         .output()
         .expect("generate a signing key");
@@ -140,7 +142,7 @@ models:
     .unwrap();
     let log_path = dir.join("out.log");
     let log = std::fs::File::create(&log_path).unwrap();
-    let child = Command::new(env!("CARGO_BIN_EXE_busbar"))
+    let child = Command::new(common::boot::exe())
         .env("BUSBAR_CONFIG", dir.join("config.yaml"))
         .env("BUSBAR_PROVIDERS", dir.join("providers.yaml"))
         .env("MOCK_KEY", "x")
@@ -314,7 +316,7 @@ models:
         ),
     )
     .unwrap();
-    let out = Command::new(env!("CARGO_BIN_EXE_busbar"))
+    let out = Command::new(common::boot::exe())
         .env("BUSBAR_CONFIG", dir.join("config.yaml"))
         .env("BUSBAR_PROVIDERS", dir.join("providers.yaml"))
         .env("MOCK_KEY", "x")

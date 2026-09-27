@@ -221,7 +221,7 @@ tier   = "fast"
 # `cargo clippy --workspace --all-targets`, and the only thing it adds over that line is the
 # `test-support` feature — the configuration in which the batteries and their support code are
 # actually compiled, and therefore the only one in which their warnings exist at all.
-run    = "cargo build --release -p busbar-store-example-plugin -p busbar-hook-test-plugin && cargo test --release -p busbar-mcp --features test-support && cargo test --release -p busbar-a2a --features test-support && cargo clippy -p busbar-mcp --all-targets --features test-support -- -D warnings && cargo clippy -p busbar-a2a --all-targets --features test-support -- -D warnings"
+run    = "cargo build --release -p busbar-hook-test-plugin && cargo test --release -p busbar-mcp --features test-support && cargo test --release -p busbar-a2a --features test-support && cargo clippy -p busbar-mcp --all-targets --features test-support -- -D warnings && cargo clippy -p busbar-a2a --all-targets --features test-support -- -D warnings"
 
 [[segment]]
 id     = "benches"

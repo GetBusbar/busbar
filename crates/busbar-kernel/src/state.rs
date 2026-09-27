@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 // R5-store: `crate::state::now` DELETED — it was a re-export of a re-export (`crate::store::now`,
-// itself `busbar_kernel::store::now`, itself `busbar_substrate_values::store::now`). Its nine
+// itself `busbar_kernel::store::now`, whose body is in `store/vocab.rs`). Its nine
 // readers (metrics, endpoints, plane/quarantine and the metrics tests) name
 // `busbar_kernel::store::now` directly, which is where the production wall clock lives.
 //

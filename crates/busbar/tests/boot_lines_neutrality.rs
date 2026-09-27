@@ -17,6 +17,8 @@
 #![cfg(unix)]
 #![cfg(linked_axis_body_ingress)]
 
+mod common;
+
 use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::path::{Path, PathBuf};
@@ -55,7 +57,7 @@ fn write_configs(dir: &Path, data_port: u16, admin_port: u16) {
     // A REAL ed25519 signing secret, minted through the binary's own `--generate-signing-key` (the
     // same mint `oracle_write_config` uses) — a placeholder string would fail `auth.signing_key`
     // resolution at boot (BUSBAR-9007), which is a different cell, not this one.
-    let key_hex = Command::new(env!("CARGO_BIN_EXE_busbar"))
+    let key_hex = Command::new(common::boot::exe())
         .arg("--generate-signing-key")
         .output()
         .expect("run --generate-signing-key");
@@ -199,7 +201,7 @@ fn boot_lines_match_1_5_5_shape() {
     let log = std::fs::File::create(&log_path).unwrap();
     let log_err = log.try_clone().unwrap();
 
-    let mut child = Command::new(env!("CARGO_BIN_EXE_busbar"))
+    let mut child = Command::new(common::boot::exe())
         .env("BUSBAR_CONFIG", dir.join("config.yaml"))
         .env("BUSBAR_PROVIDERS", dir.join("providers.yaml"))
         .env("MOCK_KEY", "x")

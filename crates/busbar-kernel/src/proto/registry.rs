@@ -20,7 +20,7 @@
 //! rule): `Registry`, the process singleton, `decl_for`, the detection folds
 //! and `known_protocols` now live on the substrate so an extracted protocol crate
 //! resolves them through the neutral ABI rather than reaching BACK into `busbar-core`. This module
-//! re-exports every one of them at its historical `busbar_substrate_values::proto::registry::…` path so every
+//! re-exports every one of them at its historical `super::installed::registry::…` path so every
 //! in-core / plugin caller compiles unchanged and the values are byte-identical. What STAYS here is
 //! the population glue core alone owns and nothing else: the built-in table (empty in production;
 //! core's own test set named in a `tests/` file the lint excludes and handed to the substrate through
@@ -30,7 +30,7 @@
 //! and the reason given was that it named "the core-only `Arrival`" — but that type relocated to
 //! `busbar_kernel::ingress::arrival::PathIngress` and core's spelling of it had become a `pub use`
 //! of the substrate's. With both halves neutral the fold is neutral, so it lives at
-//! `busbar_substrate_values::proto::install_protocols_with_path_ingress`, beside the two seams it folds, and
+//! `super::installed::install_protocols_with_path_ingress`, beside the two seams it folds, and
 //! the composition root names no retiring crate to register a protocol. No shim is left here: a
 //! re-export would be the same reach under a longer name.
 
@@ -39,18 +39,18 @@
 // leaf (Batch A) so an extracted protocol plugin names it without depending on `busbar-core`;
 // re-exported here so `registry::IngressAuth`, the `ProtocolDecl` field, and every plugin caller are
 // unchanged.
-pub use busbar_substrate_values::proto::IngressAuth;
+pub use busbar_contract::protocol::IngressAuth;
 
 // `ProtocolDecl` and its `EgressAuthHeaders` builder type RELOCATED DOWN to the neutral
 // `busbar_kernel::proto` leaf (Batch C-6) so extracted protocol plugin crates name the declaration
 // WITHOUT reaching into `busbar-core`. Re-exported here
-// at their historical `busbar_substrate_values::proto::registry::{ProtocolDecl, EgressAuthHeaders}` paths so the
+// at their historical `super::installed::registry::{ProtocolDecl, EgressAuthHeaders}` paths so the
 // built-in table, and every core / plugin caller, are unchanged.
-pub use busbar_substrate_values::proto::{EgressAuthHeaders, ProtocolDecl};
+pub use busbar_contract::protocol::{EgressAuthHeaders, ProtocolDecl};
 // The generic detection ABI relocated to `busbar_kernel::proto` alongside `ProtocolDecl`: the
 // opaque claim strength and the two predicate types each dialect states on its own decl, so the
 // router/residual detection is a fold over registered predicates and core names no dialect.
-pub use busbar_substrate_values::proto::{
+pub use busbar_contract::protocol::{
     ClaimStrength, ClaimsFn, ResidualClaimsFn, VendorResponseMetadataFn,
 };
 
@@ -62,11 +62,11 @@ pub use busbar_substrate_values::proto::{
 // `install_protocols` and `first_path_model_without_arrival` are NOT re-exported. They had one caller
 // each and it was the two-seam fold, which now lives on the substrate beside them; an alias kept here
 // for nobody would be exactly the longer-named reach this cut removed.
-pub use busbar_substrate_values::proto::{merged_boot_decls, Registry};
+pub use super::installed::{merged_boot_decls, Registry};
 
 /// THE BUILT-INS — one line per protocol, and every line is DATA. Production carries NO built-in
 /// protocol rows: every protocol is a plugin crate the composition root installs through
-/// [`busbar_substrate_values::proto::install_protocols`]. Naming a protocol crate's `&DECL` here would be a
+/// [`super::installed::install_protocols`]. Naming a protocol crate's `&DECL` here would be a
 /// protocol-crate symbol
 /// reference in neutral source — a side channel around the ABI — so this stays empty.
 ///
@@ -74,7 +74,7 @@ pub use busbar_substrate_values::proto::{merged_boot_decls, Registry};
 /// there. That list names each plugin crate's own declaration table, which belongs OFF the
 /// neutral source, so it is defined in the test module ([`test_builtins`], a `tests/` file the
 /// neutral-purity lint excludes) and handed to the substrate registry through its
-/// [`busbar_substrate_values::proto::set_test_builtins`] hook by the `cfg(test)` accessors below.
+/// [`super::installed::set_test_builtins`] hook by the `cfg(test)` accessors below.
 #[cfg(not(test))]
 static BUILTIN_DECLS: &[&ProtocolDecl] = &[];
 
@@ -105,20 +105,20 @@ pub fn builtin_decls() -> &'static [&'static ProtocolDecl] {
 // (seeding GROWS the memo's target size so a registry already folded without the tail re-folds WITH
 // it on the next read regardless of call order). `known_protocols` MUST be a direct re-export in every
 // build so a model-serving plane's `PLANE_DECL.wire_format_names` and
-// `busbar_substrate_values::proto::known_protocols` are the SAME fn pointer (the plane-decl identity pin); it
+// `super::installed::known_protocols` are the SAME fn pointer (the plane-decl identity pin); it
 // seeds nothing and relies on the accessors below
 // (read on essentially every request path) having seeded the hook first.
 #[cfg(not(test))]
-pub use busbar_substrate_values::proto::registry;
+pub use super::installed::registry;
 #[cfg(not(test))]
-pub use busbar_substrate_values::proto::{
+pub use super::installed::{
     declared_verbs, detect_protocol, residual_default_protocol, residual_protocol_for_path,
 };
 
 #[cfg(test)]
 pub fn registry() -> &'static Registry {
-    busbar_substrate_values::proto::set_test_builtins(builtin_decls);
-    busbar_substrate_values::proto::registry()
+    super::installed::set_test_builtins(builtin_decls);
+    super::installed::registry()
 }
 
 /// RESOLVE A PROTOCOL BY NAME — THE ONE by-name protocol resolution in busbar (the `structure-lint`
@@ -132,25 +132,25 @@ pub fn decl_for(name: &str) -> Option<&'static ProtocolDecl> {
 
 #[cfg(test)]
 pub fn detect_protocol(path: &str, headers: &axum::http::HeaderMap) -> Option<&'static str> {
-    busbar_substrate_values::proto::set_test_builtins(builtin_decls);
-    busbar_substrate_values::proto::detect_protocol(path, headers)
+    super::installed::set_test_builtins(builtin_decls);
+    super::installed::detect_protocol(path, headers)
 }
 
 #[cfg(test)]
 pub fn residual_protocol_for_path(path: &str) -> Option<&'static str> {
-    busbar_substrate_values::proto::set_test_builtins(builtin_decls);
-    busbar_substrate_values::proto::residual_protocol_for_path(path)
+    super::installed::set_test_builtins(builtin_decls);
+    super::installed::residual_protocol_for_path(path)
 }
 
 #[cfg(test)]
 pub fn residual_default_protocol() -> Option<&'static str> {
-    busbar_substrate_values::proto::set_test_builtins(builtin_decls);
-    busbar_substrate_values::proto::residual_default_protocol()
+    super::installed::set_test_builtins(builtin_decls);
+    super::installed::residual_default_protocol()
 }
 
 #[cfg(test)]
 #[cfg_attr(not(any(test, feature = "test-support")), allow(dead_code))]
 pub fn declared_verbs() -> &'static [crate::operation::OpVerb] {
-    busbar_substrate_values::proto::set_test_builtins(builtin_decls);
-    busbar_substrate_values::proto::declared_verbs()
+    super::installed::set_test_builtins(builtin_decls);
+    super::installed::declared_verbs()
 }

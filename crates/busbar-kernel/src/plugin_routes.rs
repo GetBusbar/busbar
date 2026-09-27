@@ -375,9 +375,12 @@ async fn plugin_route_dispatch(
     CurrentApp(app): CurrentApp,
     method: Method,
     uri: Uri,
-    headers: HeaderMap,
+    consumed: Option<axum::extract::Extension<crate::auth::ConsumedCredentials>>,
+    mut headers: HeaderMap,
     body: Bytes,
 ) -> Response {
+    // No plugin sees the credential the gate consumed for this request (#40(b)).
+    crate::auth::ConsumedCredentials::strip_from(consumed.as_deref(), &mut headers);
     let Some(rm) = route_method_of(&method) else {
         return StatusCode::METHOD_NOT_ALLOWED.into_response_stub();
     };

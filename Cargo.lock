@@ -335,12 +335,16 @@ dependencies = [
  "axum",
  "base64 0.23.1",
  "busbar-a2a",
+ "busbar-auth-oidc",
+ "busbar-auth-oidc-plugin",
  "busbar-contract",
  "busbar-core-admin",
  "busbar-core-connsec",
  "busbar-export-example-plugin",
  "busbar-export-file",
  "busbar-export-file-plugin",
+ "busbar-export-otlp",
+ "busbar-export-otlp-plugin",
  "busbar-export-prometheus",
  "busbar-export-prometheus-plugin",
  "busbar-export-webhook",
@@ -362,12 +366,10 @@ dependencies = [
  "busbar-plane-streaming",
  "busbar-plugin-example-plane",
  "busbar-plugin-loader",
- "busbar-store-example-plugin",
  "busbar-store-memory",
  "busbar-transport-http",
  "busbar-transport-stdio",
  "busbar-transport-tcp",
- "busbar-transport-tls",
  "busbar-transport-ws",
  "busbar-voice",
  "bytes",
@@ -377,15 +379,11 @@ dependencies = [
  "futures",
  "getrandom 0.3.4",
  "hex",
- "http",
  "http-body",
  "http-body-util",
- "hyper-rustls",
  "metrics",
- "opentelemetry",
- "opentelemetry-http",
- "opentelemetry-otlp",
- "opentelemetry_sdk",
+ "opentelemetry-proto",
+ "prost",
  "reqwest 0.12.28",
  "serde_json",
  "serde_yaml_ng",
@@ -396,7 +394,6 @@ dependencies = [
  "tokio",
  "tower",
  "tracing",
- "tracing-opentelemetry",
  "tracing-subscriber",
  "url",
 ]
@@ -446,17 +443,44 @@ dependencies = [
 [[package]]
 name = "busbar-auth-admin-tokens"
 version = "1.5.0"
+source = "git+https://github.com/GetBusbar/auth-admin-tokens?rev=47cb5047e4c9a73341c613c09a056b4a4bb8eb99#47cb5047e4c9a73341c613c09a056b4a4bb8eb99"
 dependencies = [
  "busbar-contract",
 ]
 
 [[package]]
-name = "busbar-auth-static-plugin"
+name = "busbar-auth-admin-tokens-plugin"
 version = "1.5.0"
+source = "git+https://github.com/GetBusbar/auth-admin-tokens?rev=47cb5047e4c9a73341c613c09a056b4a4bb8eb99#47cb5047e4c9a73341c613c09a056b4a4bb8eb99"
 dependencies = [
+ "busbar-auth-admin-tokens",
+]
+
+[[package]]
+name = "busbar-auth-oidc"
+version = "1.0.0"
+source = "git+https://github.com/GetBusbar/auth-oidc?rev=9ff64ff4d74bdd4d043ed7200d8771389810d19b#9ff64ff4d74bdd4d043ed7200d8771389810d19b"
+dependencies = [
+ "base64 0.22.1",
  "busbar-contract",
+ "rcgen",
+ "reqwest 0.12.28",
+ "ring",
+ "rustls",
  "serde",
  "serde_json",
+ "tracing",
+]
+
+[[package]]
+name = "busbar-auth-oidc-plugin"
+version = "1.0.0"
+source = "git+https://github.com/GetBusbar/auth-oidc?rev=9ff64ff4d74bdd4d043ed7200d8771389810d19b#9ff64ff4d74bdd4d043ed7200d8771389810d19b"
+dependencies = [
+ "busbar-auth-oidc",
+ "busbar-contract",
+ "serde_json",
+ "tracing",
 ]
 
 [[package]]
@@ -522,9 +546,11 @@ dependencies = [
  "rcgen",
  "rustls",
  "rustls-pki-types",
+ "sha2 0.11.0",
  "tokio",
  "tokio-rustls",
  "tokio-util",
+ "webpki-roots",
 ]
 
 [[package]]
@@ -538,9 +564,9 @@ dependencies = [
 [[package]]
 name = "busbar-export-file"
 version = "1.5.0"
-source = "git+https://github.com/GetBusbar/export-file?rev=5ff2dadcf45cc49ce26f0cf9d0ca0b0d9fc9cb5a#5ff2dadcf45cc49ce26f0cf9d0ca0b0d9fc9cb5a"
+source = "git+https://github.com/GetBusbar/export-file?rev=795eadb866e5f9a98bc854b9697ae42a28a51e92#795eadb866e5f9a98bc854b9697ae42a28a51e92"
 dependencies = [
- "busbar-plugin-sdk",
+ "busbar-contract",
  "serde",
  "serde_json",
  "tracing",
@@ -549,17 +575,37 @@ dependencies = [
 [[package]]
 name = "busbar-export-file-plugin"
 version = "1.5.0"
-source = "git+https://github.com/GetBusbar/export-file?rev=5ff2dadcf45cc49ce26f0cf9d0ca0b0d9fc9cb5a#5ff2dadcf45cc49ce26f0cf9d0ca0b0d9fc9cb5a"
+source = "git+https://github.com/GetBusbar/export-file?rev=795eadb866e5f9a98bc854b9697ae42a28a51e92#795eadb866e5f9a98bc854b9697ae42a28a51e92"
 dependencies = [
  "busbar-export-file",
 ]
 
 [[package]]
+name = "busbar-export-otlp"
+version = "1.6.0"
+source = "git+https://github.com/GetBusbar/export-otlp?rev=02f463307f9820faedda131467dcfaa83b25df78#02f463307f9820faedda131467dcfaa83b25df78"
+dependencies = [
+ "busbar-contract",
+ "serde",
+ "serde_json",
+ "tracing",
+ "url",
+]
+
+[[package]]
+name = "busbar-export-otlp-plugin"
+version = "1.6.0"
+source = "git+https://github.com/GetBusbar/export-otlp?rev=02f463307f9820faedda131467dcfaa83b25df78#02f463307f9820faedda131467dcfaa83b25df78"
+dependencies = [
+ "busbar-export-otlp",
+]
+
+[[package]]
 name = "busbar-export-prometheus"
 version = "1.5.0"
-source = "git+https://github.com/GetBusbar/export-prometheus?rev=05a175910b4a5d9e3bcb7f065ac95a1a3e351358#05a175910b4a5d9e3bcb7f065ac95a1a3e351358"
+source = "git+https://github.com/GetBusbar/export-prometheus?rev=087bbcc6a9bafc63591799770407a478f2742027#087bbcc6a9bafc63591799770407a478f2742027"
 dependencies = [
- "busbar-plugin-sdk",
+ "busbar-contract",
  "serde",
  "serde_json",
 ]
@@ -567,7 +613,7 @@ dependencies = [
 [[package]]
 name = "busbar-export-prometheus-plugin"
 version = "1.5.0"
-source = "git+https://github.com/GetBusbar/export-prometheus?rev=05a175910b4a5d9e3bcb7f065ac95a1a3e351358#05a175910b4a5d9e3bcb7f065ac95a1a3e351358"
+source = "git+https://github.com/GetBusbar/export-prometheus?rev=087bbcc6a9bafc63591799770407a478f2742027#087bbcc6a9bafc63591799770407a478f2742027"
 dependencies = [
  "busbar-export-prometheus",
 ]
@@ -575,9 +621,9 @@ dependencies = [
 [[package]]
 name = "busbar-export-webhook"
 version = "1.5.0"
-source = "git+https://github.com/GetBusbar/export-webhook?rev=1444effa746680412815ed8672da90200aa8ce7e#1444effa746680412815ed8672da90200aa8ce7e"
+source = "git+https://github.com/GetBusbar/export-webhook?rev=5e0170432aa2dc7640c8b6f6e89c9d38edad1df0#5e0170432aa2dc7640c8b6f6e89c9d38edad1df0"
 dependencies = [
- "busbar-plugin-sdk",
+ "busbar-contract",
  "serde",
  "serde_json",
  "url",
@@ -586,7 +632,7 @@ dependencies = [
 [[package]]
 name = "busbar-export-webhook-plugin"
 version = "1.5.0"
-source = "git+https://github.com/GetBusbar/export-webhook?rev=1444effa746680412815ed8672da90200aa8ce7e#1444effa746680412815ed8672da90200aa8ce7e"
+source = "git+https://github.com/GetBusbar/export-webhook?rev=5e0170432aa2dc7640c8b6f6e89c9d38edad1df0#5e0170432aa2dc7640c8b6f6e89c9d38edad1df0"
 dependencies = [
  "busbar-export-webhook",
 ]
@@ -621,6 +667,8 @@ dependencies = [
  "bumpalo",
  "busbar-a2a",
  "busbar-auth-admin-tokens",
+ "busbar-auth-oidc",
+ "busbar-auth-oidc-plugin",
  "busbar-contract",
  "busbar-export-prometheus",
  "busbar-hooks-ranking",
@@ -633,9 +681,7 @@ dependencies = [
  "busbar-llm",
  "busbar-mcp",
  "busbar-plugin-loader",
- "busbar-store-example-plugin",
  "busbar-store-memory",
- "busbar-substrate-values",
  "bytes",
  "crc32fast",
  "criterion",
@@ -705,6 +751,7 @@ name = "busbar-kernel-breaker"
 version = "1.6.0"
 dependencies = [
  "busbar-contract",
+ "httpdate",
 ]
 
 [[package]]
@@ -721,6 +768,7 @@ version = "1.6.0"
 dependencies = [
  "busbar-contract",
  "busbar-kernel-breaker",
+ "bytes",
  "futures",
 ]
 
@@ -731,8 +779,6 @@ dependencies = [
  "busbar-contract",
  "hex",
  "hmac",
- "rcgen",
- "rustls",
  "serde",
  "sha2 0.11.0",
  "tracing",
@@ -744,6 +790,7 @@ version = "1.6.0"
 dependencies = [
  "busbar-contract",
  "busbar-kernel-budget",
+ "serde",
  "serde_json",
  "sha2 0.11.0",
 ]
@@ -931,14 +978,15 @@ name = "busbar-plugin-loader"
 version = "1.5.0"
 dependencies = [
  "async-trait",
- "busbar-auth-static-plugin",
+ "busbar-auth-admin-tokens-plugin",
+ "busbar-auth-oidc-plugin",
  "busbar-contract",
  "busbar-export-example-plugin",
  "busbar-hook-test-plugin",
  "busbar-kernel-ledger",
  "busbar-kernel-wal",
  "busbar-plugin-example-plane",
- "busbar-store-example-plugin",
+ "busbar-store-memory",
  "busbar-transport-tcp",
  "ed25519-dalek",
  "flate2",
@@ -957,52 +1005,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "busbar-plugin-sdk"
-version = "1.5.0"
-dependencies = [
- "busbar-contract",
-]
-
-[[package]]
-name = "busbar-store-example-plugin"
-version = "1.5.0"
-dependencies = [
- "busbar-contract",
- "libc",
- "serde",
- "serde_json",
-]
-
-[[package]]
 name = "busbar-store-memory"
 version = "1.5.0"
 dependencies = [
  "busbar-contract",
  "serde",
  "serde_json",
-]
-
-[[package]]
-name = "busbar-substrate-values"
-version = "1.6.0"
-dependencies = [
- "busbar-contract",
- "bytes",
- "crc32fast",
- "futures",
- "getrandom 0.3.4",
- "hex",
- "hmac",
- "http",
- "httpdate",
- "memchr",
- "metrics",
- "serde",
- "serde_json",
- "sha2 0.11.0",
- "sonic-rs",
- "tracing",
- "tracing-subscriber",
 ]
 
 [[package]]
@@ -1019,8 +1027,6 @@ dependencies = [
  "hyper-util",
  "memchr",
  "rustls",
- "rustls-pki-types",
- "sha2 0.11.0",
  "tokio",
  "tokio-rustls",
  "tokio-util",
@@ -1049,21 +1055,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "busbar-transport-tls"
-version = "1.6.0"
-dependencies = [
- "busbar-contract",
- "futures",
- "rcgen",
- "ring",
- "rustls",
- "rustls-pki-types",
- "tokio",
- "tokio-rustls",
- "tokio-util",
-]
-
-[[package]]
 name = "busbar-transport-ws"
 version = "1.6.0"
 dependencies = [
@@ -1076,13 +1067,6 @@ dependencies = [
  "tokio-tungstenite",
  "tokio-util",
  "webpki-roots",
-]
-
-[[package]]
-name = "busbar-unit-transport-key"
-version = "1.6.0"
-dependencies = [
- "busbar-contract",
 ]
 
 [[package]]
@@ -2747,38 +2731,6 @@ dependencies = [
  "js-sys",
  "pin-project-lite",
  "thiserror",
- "tracing",
-]
-
-[[package]]
-name = "opentelemetry-http"
-version = "0.32.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5683015d09e2df236ef005b17f6f196f0d5f6313c4fa43a7b6a53b52776e4331"
-dependencies = [
- "async-trait",
- "bytes",
- "http",
- "http-body-util",
- "hyper",
- "hyper-util",
- "opentelemetry",
- "tokio",
-]
-
-[[package]]
-name = "opentelemetry-otlp"
-version = "0.32.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9966929966d17620d7c316c643ba62631826e10021409357772d5eea84f62c35"
-dependencies = [
- "http",
- "opentelemetry",
- "opentelemetry-http",
- "opentelemetry-proto",
- "opentelemetry_sdk",
- "prost",
- "thiserror",
 ]
 
 [[package]]
@@ -3484,6 +3436,7 @@ checksum = "eddd3ca559203180a307f12d114c268abf583f59b03cb906fd0b3ff8646c1147"
 dependencies = [
  "base64 0.22.1",
  "bytes",
+ "futures-channel",
  "futures-core",
  "futures-util",
  "h2",
@@ -4562,22 +4515,6 @@ dependencies = [
  "log",
  "once_cell",
  "tracing-core",
-]
-
-[[package]]
-name = "tracing-opentelemetry"
-version = "0.33.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "adbc64cba7137545b8044cb1fe9814f7aacf3c6b5f9b45be8bb5db538befdb26"
-dependencies = [
- "js-sys",
- "opentelemetry",
- "smallvec",
- "tracing",
- "tracing-core",
- "tracing-log",
- "tracing-subscriber",
- "web-time",
 ]
 
 [[package]]

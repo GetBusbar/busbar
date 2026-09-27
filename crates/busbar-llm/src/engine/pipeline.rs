@@ -47,7 +47,7 @@ mod test_forward_entry {
         app: &Arc<A>,
         cands: Vec<WeightedLane>,
         body: Bytes,
-        caller_token: Option<&str>,
+        caller_token: Option<&crate::engine::CallerCredential>,
         pool_name: &str,
         affinity_key: Option<&str>,
         ingress_protocol: &str,
@@ -79,7 +79,7 @@ mod test_forward_entry {
         app: &Arc<A>,
         cands: Vec<WeightedLane>,
         body: Bytes,
-        caller_token: Option<&str>,
+        caller_token: Option<&crate::engine::CallerCredential>,
         resolved_gov_key: Option<&std::sync::Arc<VirtualKey>>,
         pool_name: &str,
         affinity_key: Option<&str>,
@@ -163,7 +163,7 @@ pub(crate) fn forward_with_pool_parsed<'a>(
     body: Bytes,
     mut v: Option<LazyBody>,
     req_content_type: &'a str,
-    caller_token: Option<&'a str>,
+    caller_token: Option<&'a crate::engine::CallerCredential>,
     resolved_gov_key: Option<&'a std::sync::Arc<VirtualKey>>,
     pool_name: &'a str,
     affinity_key: Option<&'a str>,
@@ -299,7 +299,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
     mut v: Option<LazyBody>,
     // The ingress request Content-Type — the byte-level codec's parse hint (multipart boundary).
     req_content_type: &str,
-    caller_token: Option<&str>,
+    caller_token: Option<&crate::engine::CallerCredential>,
     // The key the auth layer already resolved/synthesized for this caller (`GovCtx.key`) — used as
     // the routing-signal source when the token is not a virtual-key secret (group/SSO principals).
     resolved_gov_key: Option<&std::sync::Arc<VirtualKey>>,
@@ -622,7 +622,7 @@ async fn decide_routing(
     ingress_protocol: &str,
     op: Op,
     wants_stream: bool,
-    caller_token: Option<&str>,
+    caller_token: Option<&crate::engine::CallerCredential>,
     resolved_gov_key: Option<&std::sync::Arc<VirtualKey>>,
 ) -> Result<(Option<Vec<usize>>, Option<&'static str>), Response> {
     let gate_order = reconcile_phase2_gates(
@@ -687,7 +687,7 @@ async fn run_failover_loop(
     max_cap: usize,
     policy_order: Option<Vec<usize>>,
     chosen_policy_name: Option<&'static str>,
-    caller_token: Option<&str>,
+    caller_token: Option<&crate::engine::CallerCredential>,
     resolved_gov_key: Option<&std::sync::Arc<VirtualKey>>,
     _prep: Option<busbar_kernel::profile::Timer>,
 ) -> Response {
@@ -834,7 +834,7 @@ async fn pick_lane_or_exhaust(
     pool_name: &str,
     policy_order: Option<&[usize]>,
     body: &Bytes,
-    caller_token: Option<&str>,
+    caller_token: Option<&crate::engine::CallerCredential>,
     ingress_protocol: &str,
     op: Op,
     req_content_type: &str,
@@ -1231,7 +1231,7 @@ async fn reconcile_phase2_gates(
     ingress_protocol: &str,
     op: Op,
     wants_stream: bool,
-    caller_token: Option<&str>,
+    caller_token: Option<&crate::engine::CallerCredential>,
     resolved_gov_key: Option<&std::sync::Arc<VirtualKey>>,
 ) -> Result<Option<(Vec<usize>, &'static str)>, Response> {
     let pool_gates: &[(u16, busbar_kernel::hooks::ResolvedPolicy)] = host.pool_gates(pool_name);
@@ -1479,7 +1479,7 @@ async fn resolve_base_policy(
     ingress_protocol: &str,
     op: Op,
     wants_stream: bool,
-    caller_token: Option<&str>,
+    caller_token: Option<&crate::engine::CallerCredential>,
     resolved_gov_key: Option<&std::sync::Arc<VirtualKey>>,
     gate_order: Option<(Vec<usize>, &'static str)>,
 ) -> Result<(Option<Vec<usize>>, Option<&'static str>), Response> {
@@ -1908,7 +1908,7 @@ async fn dispatch_hop(
     client_include_usage: bool,
     client_has_stream_options: bool,
     gemini_json_array: bool,
-    caller_token: Option<&str>,
+    caller_token: Option<&crate::engine::CallerCredential>,
     upstream_creds: busbar_contract::config::UpstreamCreds,
     resolved_gov_key: Option<&Arc<VirtualKey>>,
     request_ctx: &RequestCtx,
@@ -1966,7 +1966,7 @@ async fn exhaust_pool(
     cands: &[WeightedLane],
     pool_name: &str,
     body: Bytes,
-    caller_token: Option<&str>,
+    caller_token: Option<&crate::engine::CallerCredential>,
     request_ctx: &mut RequestCtx,
     ingress_protocol: &str,
     op: Op,
@@ -2013,7 +2013,7 @@ async fn run_hop(
     client_include_usage: bool,
     client_has_stream_options: bool,
     gemini_json_array: bool,
-    caller_token: Option<&str>,
+    caller_token: Option<&crate::engine::CallerCredential>,
     upstream_creds: busbar_contract::config::UpstreamCreds,
     resolved_gov_key: Option<&Arc<VirtualKey>>,
     request_ctx: &mut RequestCtx,

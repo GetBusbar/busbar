@@ -26,6 +26,7 @@ use super::*;
 use busbar_kernel::plane::registry::{merged_boot_plane_decls, BuildCtx};
 use busbar_plugin_example_plane::PLANE_DECL as LINKED_DECL;
 use busbar_plugin_loader::sign::{sign, Manifest, SigningKey, TrustPolicy};
+use busbar_plugin_loader::PluginRegistry;
 
 /// The linked example plane, as the build table carries it.
 pub(super) static LINKED_HOT: [&HotPlaneDecl; 1] = [&LINKED_DECL];
@@ -521,6 +522,10 @@ async fn serve_arm() {
     let (Ok(arm), Ok(out)) = (std::env::var(SERVE_ARM), std::env::var(SERVE_OUT)) else {
         return;
     };
+    // The host's entropy, armed first thing in this fresh process (first install wins): a fixed
+    // draw, so a plane id synthesized from it is the same through either door — and is not the
+    // entropy port's failure path.
+    busbar_contract::codec::install_entropy_source(host_entropy);
     let dropped_in = || {
         let lib = std::fs::read(cdylib().expect("the parent found the cdylib")).unwrap();
         let (dir, policy) = plugins_dir(&format!("serve-{arm}"), &lib);
@@ -530,6 +535,19 @@ async fn serve_arm() {
     };
     let rows = match arm.as_str() {
         "linked" => plane_rows(&linked(&[], &LINKED_HOT), Vec::new()),
+        // The same linked plane, declaring a live answer (the response-stream carrier) and that its
+        // dispatch blocks (minor 32) — which a live answer requires: served on a blocking thread
+        // rather than inline — the other door mode, which must answer identically.
+        "blocking" => {
+            let blocking: &'static HotPlaneDecl = Box::leak(Box::new(HotPlaneDecl {
+                provided_carriers: LINKED_DECL.provided_carriers
+                    | busbar_contract::abi::hot::IngressCarrier::ResponseStream.bit(),
+                dispatch_flags: busbar_contract::abi::hot::decl::DISPATCH_BLOCKS,
+                ..LINKED_DECL
+            }));
+            let table: &'static [&'static HotPlaneDecl] = Box::leak(Box::new([blocking]));
+            plane_rows(&linked(&[], table), Vec::new())
+        }
         "dropped" => plane_rows(&linked(&[], &[]), dropped_in()),
         "bypass" => plane_rows(&linked(&[], &[]), dropped_in()).map(bypassed),
         other => panic!("unknown arm {other}"),
@@ -553,18 +571,170 @@ async fn serve_arm() {
         .header(axum::http::header::CONTENT_TYPE, "application/json")
         .body(axum::body::Body::from("{\"ping\":1}"))
         .unwrap();
-    let response = router.oneshot(request).await.expect("the router answers");
+    let response = router
+        .clone()
+        .oneshot(request)
+        .await
+        .expect("the router answers");
     let status = response.status().as_u16();
     let body = axum::body::to_bytes(response.into_body(), usize::MAX)
         .await
         .expect("the body reads");
+    let (audit, metering) = (audit_rows(&app), metering_rows(&app));
+
+    // THE CARRIER (DEC-SERVE G2): the plane reads the head and answers its provider's status,
+    // headers and body — first a buffered answer, then one over the reply buffer, which streams.
+    let provider = answered(
+        &router,
+        axum::http::Request::builder()
+            .method("POST")
+            .uri("/example?trace=on&n=2")
+            .header(axum::http::header::CONTENT_TYPE, "application/json")
+            .header("x-example-status", "429")
+            .body(axum::body::Body::from("{\"ping\":2}"))
+            .unwrap(),
+    )
+    .await;
+    let over = busbar_plugin_loader::MAX_PLANE_REPLY_LEN + 1;
+    let streamed = answered(
+        &router,
+        axum::http::Request::builder()
+            .method("POST")
+            .uri("/example")
+            .header("x-example-status", "206")
+            .header("x-example-size", over.to_string())
+            .body(axum::body::Body::empty())
+            .unwrap(),
+    )
+    .await;
+    // THE CALLER'S CREDENTIAL (CRED-STRIP, #65/#40(b)): the plane echoes every header it was
+    // handed — once with the credential on the bearer carrier, once on a native-SDK key carrier. The
+    // credential is an unsigned JWT whose `aud` claim is this plane's audience (the public URL joined
+    // to `/example`), which the open chain admits.
+    const CALLER_JWT: &str = "eyJhbGciOiJub25lIn0.\
+        eyJhdWQiOiJodHRwczovL2d3LmV4YW1wbGUuY29tL2V4YW1wbGUiLCJzdWIiOiJjYWxsZXIifQ.c2ln";
+    let bearer = format!("Bearer {CALLER_JWT}");
+    let mut echoed = Vec::new();
+    for (carrier, value) in [
+        ("authorization", bearer.as_str()),
+        ("x-api-key", CALLER_JWT),
+    ] {
+        echoed.push(
+            answered(
+                &router,
+                axum::extract::Request::<()>::builder()
+                    .method("POST")
+                    .uri("/example")
+                    .header("x-example-status", "200")
+                    .header("x-example-echo", "1")
+                    .header(carrier, value)
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await["body"]
+                .clone(),
+        );
+    }
+    let first_byte = first_byte_lead(&router).await;
     let served = serde_json::json!({
+        "echoed": echoed,
         "status": status,
         "body": String::from_utf8_lossy(&body),
-        "audit": audit_rows(&app),
-        "metering": metering_rows(&app),
+        "audit": audit,
+        "metering": metering,
+        "provider": provider,
+        "streamed": streamed,
+        "first_byte_lead_ms": first_byte,
     });
     std::fs::write(out, served.to_string()).expect("the arm writes what it served");
+}
+
+/// How long a PAUSE in the plane's stream lasts: its first byte goes out, then it sleeps this long,
+/// then it writes the rest and returns.
+const STREAM_PAUSE_MS: u64 = 300;
+
+/// WHEN THE FIRST STREAMED BYTE REACHED THE CALLER, against when the body ended — the end is when
+/// the plane's dispatch returned, since the stream closes then. Measured by timestamps on the
+/// caller's side, in milliseconds: the first data frame's arrival and the end of the body are each
+/// stamped as the caller polls them, and the lead is their difference (`None` when the answer is
+/// not the plane's 64-byte body). A live stream leads by about the plane's pause; a body held until
+/// the dispatch returns leads by ~0.
+async fn first_byte_lead(router: &axum::Router) -> Option<u128> {
+    use http_body_util::BodyExt;
+    use tower::ServiceExt;
+    let request = axum::http::Request::builder()
+        .method("POST")
+        .uri("/example")
+        .header("x-example-status", "200")
+        .header("x-example-size", "64")
+        .header("x-example-pause-ms", STREAM_PAUSE_MS.to_string())
+        .body(axum::body::Body::empty())
+        .unwrap();
+    let response = router
+        .clone()
+        .oneshot(request)
+        .await
+        .expect("the router answers");
+    let mut body = response.into_body();
+    let mut first = None;
+    let mut bytes = 0usize;
+    while let Some(frame) = body.frame().await {
+        if let Ok(data) = frame.expect("the body reads").into_data() {
+            bytes += data.len();
+            first.get_or_insert_with(std::time::Instant::now);
+        }
+    }
+    let end = std::time::Instant::now();
+    // A door that did not serve the plane (the bypass arm) answers something else: no lead.
+    let first = first.filter(|_| bytes == 64)?;
+    Some(end.duration_since(first).as_millis())
+}
+
+/// The fixed host entropy [`serve_arm`] installs.
+fn host_entropy(out: &mut [u8]) -> bool {
+    out.fill(0x5a);
+    true
+}
+
+/// What `router` answered `request`: the status, every header in order, whether the body's length
+/// was known before it was read (`None` = it streamed), and the body — a long one as its length and
+/// whether it is the example plane's `a..z` pattern.
+async fn answered(
+    router: &axum::Router,
+    request: axum::http::Request<axum::body::Body>,
+) -> serde_json::Value {
+    use http_body::Body as _;
+    use tower::ServiceExt;
+    let response = router
+        .clone()
+        .oneshot(request)
+        .await
+        .expect("the router answers");
+    let status = response.status().as_u16();
+    let headers: Vec<String> = response
+        .headers()
+        .iter()
+        .map(|(n, v)| format!("{n}: {}", String::from_utf8_lossy(v.as_bytes())))
+        .collect();
+    let known_len = response.body().size_hint().exact();
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("the body reads");
+    let text = if body.len() > 4096 {
+        let pattern = body
+            .iter()
+            .enumerate()
+            .all(|(i, b)| *b == b'a' + (i % 26) as u8);
+        serde_json::json!({ "len": body.len(), "pattern": pattern })
+    } else {
+        serde_json::json!(String::from_utf8_lossy(&body))
+    };
+    serde_json::json!({
+        "status": status,
+        "headers": headers,
+        "known_len": known_len,
+        "body": text,
+    })
 }
 
 /// Run [`serve_arm`] for `arm` in a fresh process of this test binary; what it served.
@@ -607,11 +777,44 @@ fn a_linked_and_a_dropped_in_plane_serve_one_request_identically() {
         eprintln!("skip: a child arm, or the example plane cdylib is not built");
         return;
     }
-    let linked = serve_in_a_fresh_process("linked");
-    let dropped = serve_in_a_fresh_process("dropped");
+    let mut linked = serve_in_a_fresh_process("linked");
+    let mut dropped = serve_in_a_fresh_process("dropped");
+    let mut blocking = serve_in_a_fresh_process("blocking");
+    // THE FIRST STREAMED BYTE, TIMED. A live-answering plane (the response-stream carrier, which
+    // requires DISPATCH_BLOCKS) sends its first byte to the caller BEFORE its dispatch returns:
+    // the byte leads the end of the body by about the plane's pause. Inline (no bit, no live
+    // carrier) the host holds the body until the dispatch returns, so the byte leads by ~0 — the
+    // contrast that makes the blocking arm's lead a measurement, not a construction.
+    let lead = |arm: &mut serde_json::Value| {
+        arm.as_object_mut()
+            .and_then(|o| o.remove("first_byte_lead_ms"))
+            .and_then(|v| v.as_u64())
+            .expect("the arm timed its first byte")
+    };
+    let (inline_lead, dropped_lead, live_lead) =
+        (lead(&mut linked), lead(&mut dropped), lead(&mut blocking));
+    eprintln!(
+        "first byte ahead of the dispatch's return: live {live_lead} ms, inline linked \
+         {inline_lead} ms / dropped {dropped_lead} ms (plane pause {STREAM_PAUSE_MS} ms)"
+    );
+    assert!(
+        live_lead >= STREAM_PAUSE_MS / 2,
+        "with DISPATCH_BLOCKS the first byte reached the caller only {live_lead} ms before the \
+         dispatch returned (pause {STREAM_PAUSE_MS} ms)"
+    );
+    assert!(
+        inline_lead < STREAM_PAUSE_MS / 2 && dropped_lead < STREAM_PAUSE_MS / 2,
+        "inline, the body is held until the dispatch returns: leads {inline_lead}/{dropped_lead} ms"
+    );
     assert_eq!(
         linked, dropped,
         "the two doors served the same request differently"
+    );
+    // Inline on the worker (the example plane does not block) or on a blocking thread (the same
+    // plane declaring DISPATCH_BLOCKS, minor 32): one answer, byte for byte.
+    assert_eq!(
+        linked, blocking,
+        "the inline and the blocking dispatch served the same request differently"
     );
 
     assert_eq!(linked["status"], 200, "{linked:#}");
@@ -635,8 +838,55 @@ fn a_linked_and_a_dropped_in_plane_serve_one_request_identically() {
         "the host ledgered the plane's metering: {linked:#}"
     );
 
+    // THE CARRIER (DEC-SERVE G2), both doors alike (the equality above): the plane read the method,
+    // path, query and headers, and its provider's status, headers and body passed through untouched
+    // — no JSON content type stamped over its own, no 200 over its 429. The id it synthesized drew
+    // the HOST's entropy (0x5a…), not the port's failure path, through the dropped-in door too.
+    assert_eq!(
+        linked["provider"],
+        serde_json::json!({
+            "status": 429,
+            "headers": [
+                "content-type: text/plain; charset=utf-8",
+                "x-example-id: 5a5a5a5a5a5a5a5a",
+                "content-length: 37",
+            ],
+            "known_len": 37,
+            "body": "POST /example?trace=on&n=2\n{\"ping\":2}",
+        }),
+        "{linked:#}"
+    );
+    // A body one byte over the reply buffer went out through the response-stream emit kind: its
+    // length was unknown when the head was served, and every byte arrived, in order.
+    assert_eq!(
+        linked["streamed"],
+        serde_json::json!({
+            "status": 206,
+            "headers": [
+                "content-type: text/plain; charset=utf-8",
+                "x-example-id: 5a5a5a5a5a5a5a5a",
+            ],
+            "known_len": null,
+            "body": { "len": busbar_plugin_loader::MAX_PLANE_REPLY_LEN + 1, "pattern": true },
+        }),
+        "{linked:#}"
+    );
+
+    // THE CALLER'S CREDENTIAL NEVER REACHES THE PLANE, through either door (the equality above):
+    // the header the gate consumed is gone from the head the plane read, and nothing else is.
+    assert_eq!(
+        linked["echoed"],
+        serde_json::json!([
+            "x-example-status: 200\nx-example-echo: 1\n",
+            "x-example-status: 200\nx-example-echo: 1\n",
+        ]),
+        "a plane saw a header the auth gate consumed: {linked:#}"
+    );
+
     let bypassed = serve_in_a_fresh_process("bypass");
-    for leg in ["status", "body", "audit", "metering"] {
+    for leg in [
+        "status", "body", "audit", "metering", "provider", "streamed",
+    ] {
         assert_ne!(
             bypassed[leg], dropped[leg],
             "with its drive bypassed the dropped-in plane must not serve the same {leg}"
@@ -644,67 +894,28 @@ fn a_linked_and_a_dropped_in_plane_serve_one_request_identically() {
     }
 }
 
-/// A `kind: export` row whose name or alias spells a built-in export module is refused before the
-/// export axis is installed: every `export:` instance naming it would reach the built-in, so the
-/// plugin would sit on the axis unreachable, silently. A row spelling neither is admitted.
+/// THE KERNEL SERVES NO EXPORT MODULE OF ITS OWN (K9e-2: its last built-in became a linked sink),
+/// so the refusal of a row "spelling a built-in module" has nothing left to guard and is gone. What
+/// replaces it: every module is a row of the axis, and each LINKED export row answers its own
+/// module ahead of any row a plugins directory drops in under the same alias — a dropped-in row
+/// never takes a module from the sink this build links. RED: without the linked rows, the
+/// dropped-in one answers.
 #[test]
-fn an_export_row_spelling_a_built_in_module_is_refused() {
-    let registry_of = |tag: &str, name: &str, alias: &str| {
-        let dir = std::env::temp_dir().join(format!(
-            "busbar-root-export-shadow-{tag}-{}",
-            std::process::id()
-        ));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let lib = b"not a library";
-        let release = SigningKey::from_bytes(&[7u8; 32]);
-        let manifest = Manifest {
-            name: name.into(),
-            alias: alias.into(),
-            kind: "export".into(),
-            version: "1.6.0".into(),
-            publisher: "busbar".into(),
-            abi_version: busbar_plugin_loader::supported_abi("export")[1],
-            sha256: String::new(),
-            signature: String::new(),
-            description: String::new(),
-            homepage: String::new(),
-            license: String::new(),
-            needs: Default::default(),
-            settings_schema: None,
-            schema_derived: false,
-            host: None,
-            declares: Default::default(),
-        };
-        let signed = sign(&release, manifest, lib);
-        let tarball = busbar_plugin_loader::tarball::package(&signed, "libexport.so", lib).unwrap();
-        std::fs::write(dir.join("export.tar.gz"), tarball).unwrap();
-        let policy = TrustPolicy {
-            first_party_key: Some(release.verifying_key()),
-            binary_version: "1.6.0".into(),
-            first_party_floors: Default::default(),
-            first_party_high_water: Default::default(),
-            publishers: Default::default(),
-            allow_unsigned: false,
-            allow_third_party: false,
-            min_versions: Default::default(),
-        };
-        let registry = busbar_plugin_loader::scan_and_validate(&dir, &policy).expect("the scan");
-        let _ = std::fs::remove_dir_all(&dir);
-        registry
-    };
-    for (tag, name, alias) in [("name", "otlp", "k9-otlp"), ("alias", "k9-traces", "otlp")] {
+fn every_linked_export_row_answers_its_module_ahead_of_a_dropped_in_spelling() {
+    let release = SigningKey::from_bytes(&[7u8; 32]);
+    for &(name, alias, ..) in crate::LINKED.exports {
+        let scan = || export_row_registry(alias, "k9e-dropped", alias, "busbar", &release, vec![]);
+        let rows = linked_exports(crate::LINKED.exports).expect("the linked export rows");
+        let both = scan().link(rows).expect("the linked door admits them");
+        let answering = |r: &PluginRegistry| r.resolve(alias).map(|p| p.manifest.name.clone());
+        assert_eq!(answering(&both).as_deref(), Some(name), "{alias}");
+        // RED ARM: the dropped-in row alone answers.
         assert_eq!(
-            shadowed_export(&registry_of(tag, name, alias)),
-            Err(format!(
-                "export plugin '{name}' spells a built-in export module"
-            )),
+            answering(&scan()).as_deref(),
+            Some("k9e-dropped"),
+            "{alias}"
         );
     }
-    assert_eq!(
-        shadowed_export(&registry_of("clear", "k9-tail", "k9-tail")),
-        Ok(())
-    );
 }
 
 /// THE HOST'S METRIC CATALOG CANNOT DRIFT (K9a S1). Every `busbar_*` series constant the host's
@@ -718,7 +929,6 @@ fn the_host_series_catalog_holds_every_series_the_host_defines() {
         "busbar-kernel/src/metrics/mod.rs",
         "busbar-kernel/src/telemetry.rs",
         "busbar-kernel/src/proxy/proxy_vocab.rs",
-        "busbar-substrate-values/src/handlers.rs",
     ];
     let mut defined = Vec::new();
     for file in sources {
@@ -759,14 +969,27 @@ fn declaring_registry(
     publisher: &str,
     signer: &SigningKey,
     decls: Vec<busbar_plugin_loader::sign::DiagnosticDecl>,
-) -> busbar_plugin_loader::PluginRegistry {
+) -> PluginRegistry {
+    let name = format!("s3-{tag}");
+    export_row_registry(tag, &name, &name, publisher, signer, decls)
+}
+
+/// [`declaring_registry`]'s row under the `name` and `alias` given.
+fn export_row_registry(
+    tag: &str,
+    name: &str,
+    alias: &str,
+    publisher: &str,
+    signer: &SigningKey,
+    decls: Vec<busbar_plugin_loader::sign::DiagnosticDecl>,
+) -> PluginRegistry {
     let dir = std::env::temp_dir().join(format!("busbar-root-s3-{tag}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let release = SigningKey::from_bytes(&[7u8; 32]);
     let mut manifest = Manifest {
-        name: format!("s3-{tag}"),
-        alias: format!("s3-{tag}"),
+        name: name.into(),
+        alias: alias.into(),
         kind: "export".into(),
         version: "1.6.0".into(),
         publisher: publisher.into(),
@@ -894,6 +1117,127 @@ fn the_egress_carrier_refuses_what_the_host_policy_refuses() {
     assert_eq!(
         HostEgressCarrier.admit("https://collector.example/v1"),
         Ok(())
+    );
+}
+
+/// **K9e-2 — THE COLLECTOR POLICY, AND OCTETS ON THE WIRE.** Under the collector policy a sink may
+/// declare, the host's carrier takes a BINARY body to a plaintext loopback collector — the listener
+/// receives exactly the octets and headers the sink asked for — while refusing, with the OTLP
+/// endpoint guard's own words and nothing dialled, a plaintext remote collector, a private address
+/// and cloud metadata. RED ARM: the same loopback request under the open web (the webhook policy
+/// every undeclared sink gets) is refused and never reaches the listener.
+#[cfg(linked_egress)]
+#[tokio::test(flavor = "multi_thread")]
+async fn the_collector_policy_carries_octets_to_a_loopback_collector_and_nothing_else() {
+    use busbar_plugin_loader::{EgressCarrier as _, EgressPolicy, HostResult, HttpRequest};
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let port = listener.local_addr().expect("addr").port();
+    let (seen_tx, mut seen) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
+    tokio::spawn(async move {
+        while let Ok((mut conn, _)) = listener.accept().await {
+            let seen_tx = seen_tx.clone();
+            tokio::spawn(async move {
+                let mut raw = Vec::new();
+                let mut buf = [0u8; 4096];
+                loop {
+                    let n = conn.read(&mut buf).await.unwrap_or(0);
+                    if n == 0 {
+                        return;
+                    }
+                    raw.extend_from_slice(&buf[..n]);
+                    let Some(end) = raw.windows(4).position(|w| w == b"\r\n\r\n") else {
+                        continue;
+                    };
+                    let head = String::from_utf8_lossy(&raw[..end]).to_ascii_lowercase();
+                    let length: usize = head
+                        .lines()
+                        .find_map(|l| l.strip_prefix("content-length:"))
+                        .and_then(|v| v.trim().parse().ok())
+                        .unwrap_or(0);
+                    if raw.len() >= end + 4 + length {
+                        let _ = seen_tx.send(raw.clone());
+                        let _ = conn
+                            .write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 0\r\n\r\n")
+                            .await;
+                        return;
+                    }
+                }
+            });
+        }
+    });
+    let collector = format!("http://127.0.0.1:{port}/v1/traces");
+    let octets = vec![0x0a, 0x00, 0xff, 0x80, 0x0d, 0x0a];
+    let request = |url: &str| HttpRequest {
+        method: "POST".into(),
+        url: url.into(),
+        headers: vec![("content-type".into(), "application/x-protobuf".into())],
+        body: String::new(),
+        timeout_ms: 5000,
+    };
+    let carried = HostEgressCarrier
+        .carry_under_async(EgressPolicy::Collector, request(&collector), octets.clone())
+        .await;
+    assert!(
+        matches!(carried, HostResult::Http(ref r) if r.status == 200),
+        "{carried:?}"
+    );
+    let raw = seen
+        .recv()
+        .await
+        .expect("the collector received the request");
+    let end = raw
+        .windows(4)
+        .position(|w| w == b"\r\n\r\n")
+        .expect("a head")
+        + 4;
+    let head = String::from_utf8_lossy(&raw[..end]).to_ascii_lowercase();
+    assert!(head.starts_with("post /v1/traces http/1.1\r\n"), "{head}");
+    assert!(
+        head.contains("content-type: application/x-protobuf\r\n"),
+        "{head}"
+    );
+    assert_eq!(&raw[end..], &octets[..], "the octets arrive exactly");
+    assert_eq!(
+        HostEgressCarrier.admit_under(EgressPolicy::Collector, "http://localhost:4318/v1/traces"),
+        Ok(())
+    );
+
+    for url in [
+        "http://collector.example/v1/traces",
+        "https://10.0.0.1/v1/traces",
+        "https://169.254.169.254/latest",
+    ] {
+        let guard = crate::root::otlp::collector_policy(url, false);
+        assert!(guard.is_err(), "{url}");
+        let answer = HostEgressCarrier
+            .carry_under_async(EgressPolicy::Collector, request(url), octets.clone())
+            .await;
+        match answer {
+            HostResult::Failed { step, error, .. } => {
+                assert_eq!((step.as_str(), Err(error)), ("refused", guard), "{url}")
+            }
+            other => panic!("{url} was carried: {other:?}"),
+        }
+    }
+
+    // RED ARM: the loopback collector under the open web is refused, and nothing arrives.
+    let open_web = HostEgressCarrier
+        .carry_under_async(EgressPolicy::OpenWeb, request(&collector), octets)
+        .await;
+    let guard = busbar_kernel::observability::validate_webhook_url(Some(collector.clone()));
+    match open_web {
+        HostResult::Failed { step, error, .. } => {
+            assert_eq!((step.as_str(), Err(error)), ("refused", guard.map(|_| ())))
+        }
+        other => panic!("the open web carried a loopback request: {other:?}"),
+    }
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    assert!(
+        seen.try_recv().is_err(),
+        "a refused request reached the collector"
     );
 }
 

@@ -66,6 +66,7 @@ pub mod ports;
 pub mod race;
 pub mod select;
 pub mod trust;
+pub mod upstream;
 pub mod walk;
 pub mod wire;
 

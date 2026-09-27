@@ -519,7 +519,7 @@ pub(crate) async fn decide_policy_order(
     ingress_protocol: &str,
     operation: busbar_contract::operation::OpVerb,
     wants_stream: bool,
-    caller_token: Option<&str>,
+    caller_token: Option<&crate::engine::CallerCredential>,
     resolved_gov_key: Option<&std::sync::Arc<busbar_contract::records::VirtualKey>>,
 ) -> PolicyOutcome {
     // The hook CONTRACT projection types are api-owned; the resolved-policy carrier is neutral
@@ -585,7 +585,7 @@ pub(crate) async fn decide_policy_order(
         {
             // Test-only raw-token resolution rides the DATA-PLANE boundary (no audience), through the
             // test-support host seam (the neutral form of `App::governance.verify_token(...)`).
-            caller_token.and_then(|tok| host.verify_token_test(tok))
+            caller_token.and_then(|tok| host.verify_token_test(tok.reveal_for_test()))
         }
         #[cfg(not(test))]
         {

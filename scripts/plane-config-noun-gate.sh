@@ -102,9 +102,6 @@ hdr()  { printf '\n== %s ==\n' "$*"; }
 #   Every crate a bullet above names is checked to EXIST by the self-test (REJECTED NAMES): this
 #   block once named `busbar-core-oauth2`, `busbar-core-hooks` and `busbar-admin`, none of which the
 #   tree has, so the rejections could not be re-run as written.
-#   * `busbar-substrate-values` — the PURE value-family types a codec/plane names, not config
-#     parsing at all (a later split off `busbar-substrate`, itself split off busbar-core's session
-#     substrate). Zero grep hits.
 # Each plane's OWN crate (`busbar-mcp` etc.) also matches `"tools"`/`"agents"`/… freely — that is
 # EXPECTED (a plane naming its own section) and is not what this meter is about; scanning plane crates
 # here would conflate "a plane knows its own noun" with "core hard-coded a plane's noun".

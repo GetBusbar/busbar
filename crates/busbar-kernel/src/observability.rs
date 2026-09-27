@@ -5,8 +5,9 @@
 //! ([`init_logging`]), the one-spot hot-path level policy, and the URL guard and userinfo masker the
 //! request-log webhook and the host's egress carrier use.
 //!
-//! The OTLP span EXPORTER is not here: it is built, validated, installed and flushed by the
-//! composition root (`busbar::root::otlp`, K9e), which hands [`init_logging`] its layer.
+//! Spans leave the process as `traces` RECORDS (K9a S7, `crate::export::traces`), which an export
+//! sink subscribed to the stream — the `otlp` module's `busbar-export-otlp` plugin among them —
+//! is handed like any other stream (K9e-2).
 
 // SSRF obfuscation-defense primitives shared with the analogous operator-configured-upstream-URL
 // guard in `config_validate`.
@@ -319,41 +320,16 @@ fn log_levels() -> (
     )
 }
 
-/// The subscriber a SPAN EXPORTER layer rides: the registry under the stderr `fmt` layer — the
-/// stack [`init_logging`] builds, named so the composition root can build its exporter for it.
-pub type ExporterBase = tracing_subscriber::layer::Layered<
-    tracing_subscriber::filter::Filtered<
-        tracing_subscriber::fmt::Layer<
-            tracing_subscriber::Registry,
-            tracing_subscriber::fmt::format::DefaultFields,
-            tracing_subscriber::fmt::format::Format,
-            tracing_subscriber::fmt::writer::BoxMakeWriter,
-        >,
-        tracing_subscriber::filter::LevelFilter,
-        tracing_subscriber::Registry,
-    >,
-    tracing_subscriber::Registry,
->;
-
 /// Install the process-wide `tracing` subscriber once at startup: always a stderr `fmt` layer
 /// (level from `RUST_LOG`, default `info`) so spans/warnings are visible out of the box, plus the
-/// composition root's span exporter when one is configured, plus the `traces` record producer
-/// ([`crate::export::traces`]).
+/// `traces` record producer ([`crate::export::traces`]) under the span floor (see [`log_levels`]).
 ///
 /// `stdout_reserved`: set by a caller whose transport uses this process's own stdout as its wire
 /// channel — the framed protocol on stdout forbids any byte that is not one of its own messages —
 /// so every log line moves to stderr instead, which is where such a transport's spec sends a
-/// server's diagnostics anyway. The listener modes keep stdout, unchanged.
-///
-/// `span_exporter`: the composition root's span EXPORTER layer, when one is configured (the OTLP
-/// layer, built and validated there), attached under the span exporter's own level filter (see
-/// [`log_levels`]). Returns whether the subscriber installed: the caller installs anything global
-/// its exporter needs only when it did, so a repeated call never leaves new global state behind an
-/// old subscriber.
-pub fn init_logging<L>(span_exporter: Option<L>, stdout_reserved: bool) -> bool
-where
-    L: tracing_subscriber::Layer<ExporterBase> + Send + Sync + 'static,
-{
+/// server's diagnostics anyway. The listener modes keep stdout, unchanged. Returns whether the
+/// subscriber installed.
+pub fn init_logging(stdout_reserved: bool) -> bool {
     use tracing_subscriber::fmt::writer::BoxMakeWriter;
     use tracing_subscriber::layer::SubscriberExt as _;
     use tracing_subscriber::util::SubscriberInitExt as _;
@@ -370,7 +346,6 @@ where
         .with_filter(stderr_filter);
     let initialized = tracing_subscriber::registry()
         .with(fmt_layer)
-        .with(span_exporter.map(|layer| layer.with_filter(otlp_filter)))
         .with(crate::export::traces::layer(otlp_filter))
         .try_init()
         .is_ok();

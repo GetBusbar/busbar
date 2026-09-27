@@ -18,6 +18,8 @@
 // codec fail-closes at boot. The shed layer itself is plane-independent.
 #![cfg(linked_axis_body_ingress)]
 
+mod common;
+
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
@@ -46,7 +48,7 @@ fn inbound_cap_sheds_the_excess_and_serves_the_admitted() {
     let log_path = dir.join("out.log");
     let log = std::fs::File::create(&log_path).unwrap();
     let log_err = log.try_clone().unwrap();
-    let mut child = Command::new(env!("CARGO_BIN_EXE_busbar"))
+    let mut child = Command::new(common::boot::exe())
         .env("BUSBAR_CONFIG", dir.join("config.yaml"))
         .env("BUSBAR_PROVIDERS", dir.join("providers.yaml"))
         .env("MOCK_KEY", "x")

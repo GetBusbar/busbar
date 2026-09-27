@@ -40,7 +40,7 @@ pub(crate) async fn handle_queue(
     cands: &[WeightedLane],
     max_ms: u64,
     body: &Bytes,
-    caller_token: Option<&str>,
+    caller_token: Option<&crate::engine::CallerCredential>,
     request_ctx: &RequestCtx,
     pool: &str,
     ingress_protocol: &str,

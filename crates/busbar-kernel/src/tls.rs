@@ -769,8 +769,8 @@ impl Served {
     /// `security` is the opaque connection-security wrap `serve`'s caller was handed by
     /// `busbar-core-connsec` (DECISIONS #40): this calls `wrap` on the raw accepted stream and
     /// nothing else — it names no rustls type, no cert, no key byte. The `RawIo`/tokio-io compat
-    /// bridge on either side of `wrap` is the same seam `busbar-transport-tls` uses to cross the
-    /// same futures-io/tokio-io boundary. No wrap serves the stream as it arrived.
+    /// bridge on either side of `wrap` is the same seam the core connection-security `Tls` wrap
+    /// crosses inside it. No wrap serves the stream as it arrived.
     async fn raw(self, raw: Box<dyn RawIo>, peer: impl std::fmt::Display + Send, watcher: Watcher) {
         // Bound the handshake (see `handshake_timeout()`): on elapse the `wrap` future is dropped,
         // which closes the half-open connection and frees the task + FDs. Cancel-safe.

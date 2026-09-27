@@ -36,15 +36,6 @@ pub(super) async fn build(
 
     let _cbuild = busbar_kernel::profile::start(busbar_kernel::profile::Stage::ClientBuild);
 
-    // Mode-aware key selection: passthrough uses the caller's token, own-mode the lane's api_key.
-    // Passthrough with NO caller credential sends an EMPTY credential — never the operator's key
-    // (a security boundary: borrowing it would let an unauthenticated caller spend on the operator's
-    // upstream account). The provider then returns its own 401/403, attributed to the caller.
-    let key = match hop.upstream_creds {
-        busbar_contract::config::UpstreamCreds::Passthrough => hop.caller_token.unwrap_or(""),
-        busbar_contract::config::UpstreamCreds::Own => hop.lane_row().api_key.expose_secret(),
-    };
-
     // The (operation × stream) egress target — wire URL and SigV4 canonical URI — precomputed at
     // boot on the lane (see `egress::build_egress_targets` for the sign-what-you-send rule). A
     // lookup miss means this lane's protocol has no handler for the operation: unreachable for chat
@@ -64,12 +55,27 @@ pub(super) async fn build(
         timestamp_epoch: now(),
         upstream_creds: EngineTables::new(rt).upstream_creds(),
     };
-    // Own-mode dispatch on a lane-constant credential takes the boot-prebuilt header map (one
-    // buffer copy, byte-identical to the live build). Passthrough carries the caller's key and a
-    // non-constant credential (OAuth / SigV4) reads the request, so both build live.
+    // Mode-aware credential: own-mode presents the lane's api_key; a lane-constant one takes the
+    // boot-prebuilt header map (one buffer copy, byte-identical to the live build), a non-constant
+    // one (OAuth / SigV4) reads the request, so builds live. PASSTHROUGH presents the CALLER's
+    // credential, and the HOST presents it: this plane carries only the ref the gate handed it and
+    // never holds the plaintext (#65, #40(b)). No caller credential presents nothing — never the
+    // operator's key (borrowing it would let an unauthenticated caller spend on the operator's
+    // upstream account); the provider then returns its own 401/403, attributed to the caller.
     let egress_auth = match (&hop.lane_row().prebuilt_auth, hop.upstream_creds) {
+        (_, busbar_contract::config::UpstreamCreds::Passthrough) => {
+            convert_headers(crate::engine::present_caller(
+                hop.lane_row().credential.as_ref(),
+                hop.caller_token,
+                &signing_ctx,
+            ))
+        }
         (Some(pre), busbar_contract::config::UpstreamCreds::Own) => pre.clone(),
-        _ => convert_headers(lane_auth_headers(hop.lane_row(), key, &signing_ctx)),
+        (None, busbar_contract::config::UpstreamCreds::Own) => convert_headers(lane_auth_headers(
+            hop.lane_row(),
+            hop.lane_row().api_key.expose_secret(),
+            &signing_ctx,
+        )),
     };
     drop(_cb_auth);
 

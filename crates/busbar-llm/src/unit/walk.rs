@@ -56,7 +56,7 @@ pub struct WalkArrival {
     /// The operation the dialect resolved off its own endpoint.
     pub operation: busbar_contract::operation::OpVerb,
     /// The caller's bearer token, for passthrough forwarding.
-    pub caller_token: Option<String>,
+    pub caller_token: Option<crate::engine::CallerCredential>,
     /// The request headers, as they arrived.
     pub headers: HeaderMap,
     /// The request body, as it arrived.
@@ -166,7 +166,7 @@ pub struct Walk {
     gov: busbar_contract::records::PlaneRequestCtx,
     proto: &'static str,
     operation: busbar_contract::operation::OpVerb,
-    caller_token: Option<String>,
+    caller_token: Option<crate::engine::CallerCredential>,
     headers: HeaderMap,
     body: Bytes,
     path: Option<crate::arrival::PathModelFacts>,
@@ -634,7 +634,7 @@ impl Walk {
             headers: &self.headers,
             body,
             parsed,
-            caller_token: self.caller_token.as_deref(),
+            caller_token: self.caller_token.as_ref(),
             resolved_gov_key: self.gov.key.as_ref(),
             usage_sink: sink,
             // THE DIALECT'S OWN MISS COPY, where the URL's parse produced one. A body-model arrival

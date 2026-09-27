@@ -33,19 +33,19 @@
 //!   somewhere else. On a capability an operator gated because it moves money, that is the defect the
 //!   gate exists to stop, multiplied by the size of the fleet.
 //!
-//! ## Judged through the served door, and through the real plugin
+//! ## Judged through the served door, against a store that really keeps the record
 //!
 //! A test against the ledger's `spend` would prove the ledger and say nothing about whether the gate
 //! consults it, which is exactly the shape of "a complete subsystem with no production caller" this
 //! tree has already paid for once. So every case below asks and redeems through the front door a
 //! caller uses, and reads the answer the caller reads.
 //!
-//! And the shared ledger is the genuine `busbar-store-example-plugin` cdylib in its durable mode,
-//! `dlopen`ed once PER NODE through `busbar_plugin_loader::load_store`. Two `dlopen`s of one file is
-//! what two nodes of a fleet are; a `dlopen`, a drop, and a second `dlopen` is what a restart is. An
-//! in-process `Store` double would be green against an ABI that carried no variant for this method
-//! at all, which is precisely how ten store methods were dropped at this seam earlier in the same
-//! release.
+//! And the shared ledger is the durable store double (`test_support::durable_store`, R-FIX3: linked
+//! only), opened once PER NODE on one file. Two handles on one file is what two nodes of a fleet
+//! are; a handle, a drop, and a second handle is what a restart is — the second finds only what the
+//! first really kept. That a store crossing the plugin C ABI answers this verb exactly as it answers
+//! linked is the loader's both-ways fold (`busbar-plugin-loader`'s `store_conformance_tests`), whose
+//! kept RED arm is the ABI that carried no variant for it.
 
 mod linked;
 
@@ -53,7 +53,7 @@ use busbar_kernel::config::RootCfg;
 use busbar_kernel::governance::signing::{TokenSigner, TokenVerifier, DEFAULT_KID};
 use busbar_kernel::governance::{GovState, MemoryStore, NewKeySpec};
 use busbar_kernel::plane::registry::{BuildCtx, PlaneDecl};
-use busbar_kernel::test_support::plugin_store::{durable_cfg, open_plugin};
+use busbar_kernel::test_support::durable_store::{durable_cfg, open_durable};
 use busbar_kernel::test_support::TestApp;
 use std::any::Any;
 use std::sync::Arc;
@@ -267,7 +267,7 @@ impl Fleet {
 }
 
 /// A served node. Dropping it stops serving and drops its `App` — and with it the node's handle on
-/// the durable store, so the plugin library unloads.
+/// the durable store, so a later node on the same file finds only what the store really kept.
 struct Node {
     url: String,
     token: String,
@@ -358,8 +358,8 @@ fn refused_as_spent(answer: &Answer) -> bool {
 async fn a_second_fleet_node_cannot_redeem_an_approval_the_first_already_spent() {
     let fleet = Fleet::new();
     let (file, cfg) = durable_cfg("askstate-fleet");
-    let node_a = fleet.node(Some(open_plugin(&cfg))).await;
-    let node_b = fleet.node(Some(open_plugin(&cfg))).await;
+    let node_a = fleet.node(Some(open_durable(&cfg))).await;
+    let node_b = fleet.node(Some(open_durable(&cfg))).await;
 
     let state = node_a.ask().await;
     let first = node_a.redeem(&state).await;
@@ -388,7 +388,7 @@ async fn a_second_fleet_node_cannot_redeem_an_approval_the_first_already_spent()
     eprintln!(
         "SHARED SPENT-APPROVAL LEDGER {}:\n{}",
         file.display(),
-        std::fs::read_to_string(&file).expect("the plugin's on-disk state")
+        std::fs::read_to_string(&file).expect("the store's on-disk state")
     );
 }
 
@@ -400,7 +400,7 @@ async fn a_restarted_node_cannot_redeem_an_approval_the_previous_process_spent()
     let (_file, cfg) = durable_cfg("askstate-restart");
 
     let state = {
-        let before = fleet.node(Some(open_plugin(&cfg))).await;
+        let before = fleet.node(Some(open_durable(&cfg))).await;
         let state = before.ask().await;
         let first = before.redeem(&state).await;
         assert!(
@@ -412,7 +412,7 @@ async fn a_restarted_node_cannot_redeem_an_approval_the_previous_process_spent()
         // below cannot be answered out of anything the first process kept in RAM.
     };
 
-    let after = fleet.node(Some(open_plugin(&cfg))).await;
+    let after = fleet.node(Some(open_durable(&cfg))).await;
     let second = after.redeem(&state).await;
     assert!(
         refused_as_spent(&second),
@@ -429,8 +429,8 @@ async fn a_restarted_node_cannot_redeem_an_approval_the_previous_process_spent()
 async fn a_fresh_approval_is_not_refused_by_a_ledger_holding_another() {
     let fleet = Fleet::new();
     let (_file, cfg) = durable_cfg("askstate-distinct");
-    let node_a = fleet.node(Some(open_plugin(&cfg))).await;
-    let node_b = fleet.node(Some(open_plugin(&cfg))).await;
+    let node_a = fleet.node(Some(open_durable(&cfg))).await;
+    let node_b = fleet.node(Some(open_durable(&cfg))).await;
 
     let first = node_a.ask().await;
     let spent = node_a.redeem(&first).await;

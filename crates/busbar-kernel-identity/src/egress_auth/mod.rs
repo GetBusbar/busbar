@@ -162,8 +162,8 @@ pub fn api_key_auth_headers(header: &'static str, key: &str) -> Vec<(String, Str
 }
 
 /// Decorate an outbound request for `scheme`, given the already-resolved `secret`. Only the
-/// egress-auth unit ever sees `secret` in the clear (`expose()` is confined to the auth,
-/// egress-auth and transport-key units) — that is why this function, not a plane, takes it.
+/// egress-auth unit ever sees `secret` in the clear (`expose()` is confined to the auth
+/// and egress-auth units) — that is why this function, not a plane, takes it.
 ///
 /// Every static scheme (bearer, the custom-header schemes) declares a [`SecretSlot`] naming WHERE
 /// the secret goes rather than writing it into `fields` directly, so [`substitute`] is the one place

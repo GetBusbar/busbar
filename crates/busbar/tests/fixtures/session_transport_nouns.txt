@@ -1,5 +1,5 @@
 # THE SESSION-TRANSPORT/MEDIA NOUNS plane_transport_neutrality.rs bans from the neutral crates
-# (busbar-kernel, busbar-substrate-values, busbar-contract, api): the vocabulary a duplex live
+# (busbar-kernel and the kernel-tier units, busbar-contract, api): the vocabulary a duplex live
 # session drags in, which only the plane that serves such sessions may spell. One lowercase noun
 # per line; the detector matches each as a word (`_` is a boundary) and as a CamelCase token.
 #

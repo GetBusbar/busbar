@@ -329,7 +329,11 @@ fn test_pre_routing_failure_does_not_refund_prior_charge() {
     let resp = futures::executor::block_on(operation_ingress_inner(
         &host,
         &gov,
-        caller.0.as_deref(),
+        caller
+            .0
+            .as_deref()
+            .map(crate::engine::CallerCredential::for_test)
+            .as_ref(),
         &headers,
         Bytes::from_static(b"{ this is not valid json"),
         "openai",
@@ -659,6 +663,12 @@ async fn test_cohere_ingress_to_openai_backend() {
         .await
         .unwrap();
     assert_eq!(resp.status().as_u16(), 200, "cohere→openai round-trip 2xx");
+    // CRED-STRIP: an own-mode upstream receives busbar's lane key (`k`), never the caller's (`t`).
+    assert_eq!(
+        state.get_last_auth_header().as_deref(),
+        Some(super::auth_dispatch_tests::credential_header_value("k").as_str()),
+        "the own-mode upstream must receive busbar's key"
+    );
 
     // The backend must have received a translated OpenAI chat-completion request.
     let upstream: serde_json::Value =
@@ -1741,7 +1751,7 @@ async fn test_gemini_stream_generate_content_alt_sse_is_event_stream() {
         .lines()
         .filter_map(|line| line.strip_prefix("data:"))
         .map(str::trim)
-        .filter(|data| !data.is_empty() && *data != busbar_kernel::proto::SSE_DONE_SENTINEL)
+        .filter(|data| !data.is_empty() && *data != busbar_llm_codec::dialect::SSE_DONE_SENTINEL)
         .filter_map(|data| serde_json::from_str(data).ok())
         .collect();
     assert!(
@@ -1820,7 +1830,7 @@ async fn test_gemini_alt_sse_mid_stream_transport_error_appends_native_sse_frame
         .lines()
         .filter_map(|line| line.strip_prefix("data:"))
         .map(str::trim)
-        .filter(|data| !data.is_empty() && *data != busbar_kernel::proto::SSE_DONE_SENTINEL)
+        .filter(|data| !data.is_empty() && *data != busbar_llm_codec::dialect::SSE_DONE_SENTINEL)
         .filter_map(|data| serde_json::from_str(data).ok())
         .collect();
     assert!(
@@ -2819,6 +2829,13 @@ async fn test_passthrough_401_cross_protocol_reshaped_to_ingress() {
             .and_then(|v| v.as_str()),
         Some("authentication_error"), // golden wire-contract literal (kept bare on purpose)
         "401 maps to authentication_error in the ingress envelope; got {body}"
+    );
+    // CRED-STRIP (#65/#40(b)): through the auth gate, the passthrough upstream received the CALLER's
+    // credential byte for byte — presented by the HOST from the ref the plane carries.
+    assert_eq!(
+        state.get_last_auth_header().as_deref(),
+        Some(super::auth_dispatch_tests::credential_header_value("caller-token").as_str()),
+        "the passthrough upstream must receive the caller's own credential"
     );
     handle.abort();
     server.shutdown().await;
@@ -4225,7 +4242,7 @@ fn sse_frames(body: &str) -> Vec<(String, String)> {
             }
         }
         if let Some(d) = data {
-            if d == busbar_kernel::proto::SSE_DONE_SENTINEL {
+            if d == busbar_llm_codec::dialect::SSE_DONE_SENTINEL {
                 continue;
             }
             out.push((event_name, d));
@@ -5827,7 +5844,7 @@ async fn test_gemini_v1_stable_stream_generate_content_alt_sse() {
         .lines()
         .filter_map(|line| line.strip_prefix("data:"))
         .map(str::trim)
-        .filter(|data| !data.is_empty() && *data != busbar_kernel::proto::SSE_DONE_SENTINEL)
+        .filter(|data| !data.is_empty() && *data != busbar_llm_codec::dialect::SSE_DONE_SENTINEL)
         .filter_map(|data| serde_json::from_str(data).ok())
         .collect();
     assert!(

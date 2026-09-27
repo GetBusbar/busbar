@@ -25,6 +25,8 @@
 // ingress: the linked table's answer, never a feature name.
 #![cfg(linked_axis_body_ingress)]
 
+mod common;
+
 use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::path::{Path, PathBuf};
@@ -105,7 +107,7 @@ models:
 }
 
 fn busbar(dir: &Path) -> Command {
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_busbar"));
+    let mut cmd = Command::new(common::boot::exe());
     cmd.env("BUSBAR_CONFIG", dir.join("config.yaml"))
         .env("BUSBAR_PROVIDERS", dir.join("providers.yaml"))
         .env("MOCK_KEY", "x")

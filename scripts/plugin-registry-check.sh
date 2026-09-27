@@ -16,8 +16,10 @@
 #   4. [network, skipped with --offline] every entry has a published GitHub release on its
 #      version_line WITH >0 assets (a tag+release with no assets is a phantom, not a release).
 #   5. [network, skipped with --offline] reverse sweep: org repos matching plugin naming
-#      (store-*, *-hook, auth-*, or kind-named like hashicorp-*) must be in the registry or in
-#      excluded_repos.
+#      (store-*, *-hook, auth-*, secret-*, export-*, transport-*, plane-*, or kind-named like
+#      hashicorp-*) must be in the registry or in excluded_repos. EVERY plugin kind lives in its own
+#      repo (owner ruling), so every kind's naming is swept, not just the four cold kinds that
+#      shipped first.
 #
 # Usage: scripts/plugin-registry-check.sh [--offline]
 #        scripts/plugin-registry-check.sh --list
@@ -48,7 +50,7 @@ if [ "$MODE" = "--selftest" ]; then
   # 5's cases, so check 2's fail-injection below never executed on the happy path and could not
   # change the outcome on the unhappy one. The EXIT trap counts the cases that actually ran and
   # turns a green exit with any case unrun into RED.
-  SELFTEST_CASES=7
+  SELFTEST_CASES=9
   ran=0
   selftest_exit() {
     local st=$?
@@ -119,6 +121,15 @@ PAGES
   mk_stub "    python3 '$tmp/pages.py' '[[$(python3 -c 'print(",".join(f"\"r{i}\"" for i in range(100)))')],[\"r100\",\"store-on-page-two\"]]' \"\$@\""
   probe "a plugin-shaped repo on the SECOND page of the org listing is still caught" \
     want-present "org repo 'store-on-page-two' matches plugin naming"
+
+  # CASES 6-7: the sweep covers EVERY kind's naming, not only the cold kinds that shipped first.
+  # An unregistered export-* and an unregistered transport-* repo are each caught.
+  mk_stub "    python3 '$tmp/pages.py' '[[$(python3 -c 'print(",".join(f"\"r{i}\"" for i in range(40)))'),\"export-bogus\"]]' \"\$@\""
+  probe "an unregistered export-* repo is caught by the org sweep" \
+    want-present "org repo 'export-bogus' matches plugin naming"
+  mk_stub "    python3 '$tmp/pages.py' '[[$(python3 -c 'print(",".join(f"\"r{i}\"" for i in range(40)))'),\"transport-bogus\"]]' \"\$@\""
+  probe "an unregistered transport-* repo is caught by the org sweep" \
+    want-present "org repo 'transport-bogus' matches plugin naming"
 
   # ── CHECK 2, FAIL-INJECTED. A COMMENT MENTIONING THE LOOP IS NOT THE LOOP ──────────────────────
   # Check 2 asserted only that the string `plugin-registry-check.sh --list` appeared SOMEWHERE in
@@ -224,7 +235,8 @@ excluded = set(doc.get("excluded_repos") or [])
 
 # ── 1. Shape.
 REQUIRED = ["repo", "kind", "alias", "crate", "version_line", "service", "release_gate", "gate"]
-KINDS = {"store", "auth", "hook", "secret"}
+# All seven plugin kinds (BUSBAR-1.6.0.md Part 2 #3): every kind ships as its own repo.
+KINDS = {"store", "secret", "auth", "hook", "export", "plane", "transport"}
 GATES = {"suite", "binary", "smoke"}
 seen = {"repo": set(), "alias": set(), "crate": set()}
 for p in plugins:
@@ -422,7 +434,8 @@ if not offline:
                     "implausibly small set cannot rule out an unregistered plugin repo.")
     else:
         known = {p["repo"] for p in plugins} | excluded
-        pat = re.compile(r"^(store-.*|.*-hook|auth-.*|hashicorp-.*|secret-.*)$")
+        pat = re.compile(
+            r"^(store-.*|.*-hook|auth-.*|hashicorp-.*|secret-.*|export-.*|transport-.*|plane-.*)$")
         for r in repos:
             name = r["name"]
             if pat.match(name) and name not in known:

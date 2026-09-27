@@ -218,7 +218,7 @@ pub struct Node {
     ///
     /// Minted outside the loop because making a posting durable happens after the exit has sealed
     /// the end: there is no step of the unit whose token could stand in, which is the same reason
-    /// the verbs unit's and the transport-key unit's are minted outside it.
+    /// the verbs unit's is minted outside it.
     durability_token: busbar_contract::caps::Grant<busbar_contract::caps::DurableWrite>,
     // THE RATE-CARD HISTORY THIS NODE PRICES AGAINST is NOT a field here. It belongs to the root
     // (`crate::root::kernel::ROOT_CARD`) rather than to this node, and it is appended to rather than

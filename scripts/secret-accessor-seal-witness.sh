@@ -46,7 +46,12 @@ hdr()  { printf '\n== %s ==\n' "$*"; }
 # The forbidden needles (ERE alternation), matched after comment/string stripping.
 # Bracket expressions ([.] / [(]) rather than backslash escapes: awk's -v assignment eats a
 # backslash before it ever reaches the regex engine, so \( would arrive as a bare, unbalanced (.
-NEEDLES='KernelSeal::acquire_for_kernel|SecretValue::expose|KeyMaterial::bytes|[.]expose[(]|[.]bytes[(]'
+#
+# The two method-call needles take an ARGUMENT: both sealed accessors take the seal
+# (`expose(&self, seal)`, `bytes(&self, seal)`), so a zero-argument call (`str::bytes()`, as a plugin
+# validating its own hex config does) is a different method and not a reach. `[(]([^)]|$)` is
+# `(` followed by anything but `)`, or by the end of the line (an argument on the next line).
+NEEDLES='KernelSeal::acquire_for_kernel|SecretValue::expose|KeyMaterial::bytes|[.]expose[(]([^)]|$)|[.]bytes[(]([^)]|$)'
 
 # Strip // and /* */ comments and "..." string bodies from one line (so a needle in prose/a doctest
 # example or a string literal is not a violation). Shared by the real run and the self-test.
@@ -149,6 +154,18 @@ fn sneak(v: &SecretValue, seal: &Seal) {
 RED
   out="$(scan "$tmp/bad.rs")"
   if [ -n "$out" ]; then note "RED: caught acquire_for_kernel + .expose( + SecretValue::expose + .bytes("; else fail=1; note "RED FAILED: forbidden reaches not flagged"; fi
+
+  # RED: a sealed accessor call whose seal argument is on the next line.
+  printf '%s\n' 'fn sneak2(km: &KeyMaterial, seal: &Seal) {' '    let _ = km.bytes(' '        seal,' '    );' '}' >"$tmp/bad2.rs"
+  out="$(scan "$tmp/bad2.rs")"
+  if [ -n "$out" ]; then note "RED: caught .bytes( with its seal argument on the next line"; else fail=1; note "RED FAILED: a multi-line sealed call not flagged"; fi
+
+  # GREEN: a ZERO-argument `.bytes()` / `.expose()` is not a sealed accessor (`str::bytes()`).
+  cat >"$tmp/ok2.rs" <<'GREEN'
+fn open(cfg: &str) -> bool { cfg.trim().bytes().all(|b| b.is_ascii_hexdigit()) }
+GREEN
+  out="$(scan "$tmp/ok2.rs")"
+  if [ -z "$out" ]; then note "GREEN: a zero-argument str::bytes() flagged NONE"; else fail=1; note "GREEN FAILED: false positive:"; printf '%s\n' "$out" | sed 's/^/    /'; fi
 
   # GREEN: the SAME names only in a comment and a string — no violation.
   cat >"$tmp/ok.rs" <<'GREEN'

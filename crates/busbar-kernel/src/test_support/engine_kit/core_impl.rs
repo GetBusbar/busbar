@@ -160,11 +160,11 @@ impl EngineTestKit for CoreEngineKit {
     }
 
     fn durable_store_cfg(&self, tag: &str) -> (PathBuf, String) {
-        crate::test_support::plugin_store::durable_cfg(tag)
+        crate::test_support::durable_store::durable_cfg(tag)
     }
 
     fn open_store_plugin(&self, cfg: &str) -> Arc<dyn RecordStore> {
-        crate::test_support::plugin_store::open_plugin(cfg)
+        crate::test_support::durable_store::open_durable(cfg)
     }
 }
 

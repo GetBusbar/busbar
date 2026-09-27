@@ -248,3 +248,7 @@ pub trait TranslateCodec: OperationHandler {
 }
 
 impl<T: OperationHandler + ?Sized> TranslateCodec for T {}
+
+#[cfg(test)]
+#[path = "tests/egress_wire_tests.rs"]
+mod egress_wire_tests;

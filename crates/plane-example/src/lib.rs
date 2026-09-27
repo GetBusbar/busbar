@@ -84,7 +84,7 @@ use busbar_contract::abi::hot::pod::{
     AdmissionId, CostLeaseId, CostSettleOut, Decision, Facts, Framing, FramingDesc, MeterOutcome,
     OpaqueState, RawFraming, RawStatus, StatusClass, Usage, UsageComponent, POD_VERSION,
 };
-use busbar_contract::abi::hot::{PlaneDecl, WorkItem};
+use busbar_contract::abi::hot::{EmitKind, HeadField, HeadPart, PlaneDecl, WorkItem};
 use busbar_contract::abi::{host_slot, write_out, AbiPreamble};
 use core::mem::MaybeUninit;
 use core::sync::atomic::{AtomicU64, Ordering};
@@ -505,6 +505,14 @@ extern "C-unwind" fn dispatch(state: *mut c_void, work: *const WorkItem) -> RawS
         st.dispatched.fetch_add(1, Ordering::Relaxed);
         st.metered_units.fetch_add(units, Ordering::Relaxed);
 
+        // ── 7a. THE PROVIDER ANSWER — a request naming a status in `x-example-status` (minor 30). ──
+        if let Some(status) = header(work, b"x-example-status")
+            .and_then(|v| String::from_utf8(v).ok())
+            .and_then(|v| v.parse::<u16>().ok())
+        {
+            return provider_answer(work, status);
+        }
+
         // ── 7. REPLY — when the work item carries a reply channel (minor 23): the section this plane
         //    was built with and the raw count it metered, as one JSON object. ────────────────────────
         let reply_ptr =
@@ -539,6 +547,150 @@ extern "C-unwind" fn dispatch(state: *mut c_void, work: *const WorkItem) -> RawS
     }))
     .unwrap_or(StatusClass::Fault);
     RawStatus::of(class)
+}
+
+/// Read one part of the request head through the work item's accessor slot (minor 30); empty when
+/// the host carries none.
+fn head_part(work: *const WorkItem, part: HeadPart) -> Vec<u8> {
+    // SAFETY: `work` is the live work item of the dispatch this runs inside.
+    unsafe { WorkItem::read_head(work, part, 0) }
+        // SAFETY: the field's ranges are live for the dispatch call.
+        .map(|f| unsafe { f.value() }.to_vec())
+        .unwrap_or_default()
+}
+
+/// The value of the first request header named `name` (ASCII case-insensitive), read through the
+/// work item's accessor slot (minor 30).
+fn header(work: *const WorkItem, name: &[u8]) -> Option<Vec<u8>> {
+    let mut index = 0;
+    // SAFETY: `work` is the live work item of the dispatch this runs inside; each field's ranges are
+    // live for the call.
+    while let Some(field) = unsafe { WorkItem::read_head(work, HeadPart::Header, index) } {
+        if unsafe { field.name() }.eq_ignore_ascii_case(name) {
+            return Some(unsafe { field.value() }.to_vec());
+        }
+        index += 1;
+    }
+    None
+}
+
+/// Every request header the work item's head carries, in order, as `name: value` lines (minor 30).
+fn echoed_headers(work: *const WorkItem) -> Vec<u8> {
+    let mut out = Vec::new();
+    let mut index = 0;
+    // SAFETY: `work` is the live work item of the dispatch this runs inside; each field's ranges are
+    // live for the call.
+    while let Some(field) = unsafe { WorkItem::read_head(work, HeadPart::Header, index) } {
+        out.extend_from_slice(unsafe { field.name() });
+        out.extend_from_slice(b": ");
+        out.extend_from_slice(unsafe { field.value() });
+        out.push(b'\n');
+        index += 1;
+    }
+    out
+}
+
+/// A synthesized id: eight bytes drawn through the contract's entropy port as hex — the host's
+/// entropy, whichever door the plane came in by (a dropped-in image's port is armed over the host's
+/// `entropy_fill` slot, minor 30). The port's failure path is the literal `unavailable`.
+fn synthesized_id() -> String {
+    let mut drawn = [0u8; 8];
+    if !busbar_contract::codec::fill_entropy(&mut drawn) {
+        return "unavailable".to_string();
+    }
+    drawn.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// THE PROVIDER ANSWER (minor 30, the carrier a relay plane needs): the request is answered the way a
+/// plane passes its provider's reply through — the provider's `status`, the provider's headers and
+/// the provider's body, byte for byte. This fixture's "provider" is deterministic: its body is the
+/// request's method, path and query on one line, then the inbound bytes verbatim; an
+/// `x-example-size: <n>` header asks for an `n`-byte body instead, which goes out through the
+/// response-stream emit kind when it is larger than the reply buffer.
+fn provider_answer(work: *const WorkItem, status: u16) -> StatusClass {
+    // SAFETY: `work` is the live work item of the dispatch this runs inside.
+    let w = unsafe { &*work };
+    let advertised = w.size;
+    let body: Vec<u8> = match header(work, b"x-example-size")
+        .and_then(|v| String::from_utf8(v).ok())
+        .and_then(|v| v.parse::<usize>().ok())
+    {
+        Some(n) => (0..n).map(|i| b'a' + (i % 26) as u8).collect(),
+        // `x-example-echo`: every request header the plane was handed, one `name: value` line each
+        // — what a plane can see of the caller's request, and so what it could forward.
+        None if header(work, b"x-example-echo").is_some() => echoed_headers(work),
+        None => {
+            let mut line = head_part(work, HeadPart::Method);
+            line.push(b' ');
+            line.extend(head_part(work, HeadPart::Path));
+            line.push(b'?');
+            line.extend(head_part(work, HeadPart::Query));
+            line.push(b'\n');
+            line.extend_from_slice(&borrowed(w.inbound.ptr, w.inbound.len));
+            line
+        }
+    };
+    let id = synthesized_id();
+    let fields = [
+        HeadField::new(b"content-type", b"text/plain; charset=utf-8"),
+        HeadField::new(b"x-example-id", id.as_bytes()),
+    ];
+    let emit_head = busbar_contract::abi::read_sized_field!(work, advertised, WorkItem, emit_head);
+    let Some(Some(emit_head)) = emit_head else {
+        return StatusClass::Refused; // a host too old to carry an answer head
+    };
+    if emit_head(w.emit.id, status, fields.as_ptr(), fields.len()) != StatusClass::Ok {
+        return StatusClass::Refused;
+    }
+    // `x-example-pause-ms: <n>` asks for the body as a stream whose first byte goes out, then a
+    // pause of `n` ms, then the rest — so a caller can time when the first byte reached it against
+    // when the dispatch returned.
+    let pause = header(work, b"x-example-pause-ms")
+        .and_then(|v| String::from_utf8(v).ok())
+        .and_then(|v| v.parse::<u64>().ok());
+    let cap = busbar_contract::abi::read_sized_field!(work, advertised, WorkItem, reply_cap);
+    if body.len() <= cap.unwrap_or(0) && pause.is_none() {
+        // SAFETY: `reply_ptr`/`reply_written` are the host's live reply channel for this call.
+        return unsafe { reply_into(w, &body) };
+    }
+    // Larger than the reply buffer: the response-stream emit kind, in chunks.
+    let stream = busbar_contract::abi::read_sized_field!(work, advertised, WorkItem, stream);
+    let emit_body = busbar_contract::abi::read_sized_field!(work, advertised, WorkItem, emit_body);
+    let (Some(stream), Some(Some(emit_body))) = (stream, emit_body) else {
+        return StatusClass::Refused;
+    };
+    if stream.kind != EmitKind::Stream {
+        return StatusClass::Refused;
+    }
+    let (first, rest) = body.split_at(body.len().min(1));
+    if emit_body(stream.id, first.as_ptr(), first.len()) != StatusClass::Ok {
+        return StatusClass::Gone;
+    }
+    if let Some(ms) = pause {
+        std::thread::sleep(std::time::Duration::from_millis(ms));
+    }
+    for chunk in rest.chunks(64 * 1024) {
+        if emit_body(stream.id, chunk.as_ptr(), chunk.len()) != StatusClass::Ok {
+            return StatusClass::Gone;
+        }
+    }
+    StatusClass::Ok
+}
+
+/// Write `body` into the work item's reply channel.
+///
+/// # Safety
+/// `w`'s reply channel, when non-null, is live for the dispatch call.
+unsafe fn reply_into(w: &WorkItem, body: &[u8]) -> StatusClass {
+    if w.reply_ptr.is_null() || w.reply_written.is_null() || body.len() > w.reply_cap {
+        return StatusClass::Refused;
+    }
+    // SAFETY: the caller's obligation; `body` fits.
+    unsafe {
+        core::ptr::copy_nonoverlapping(body.as_ptr(), w.reply_ptr, body.len());
+        *w.reply_written = body.len();
+    }
+    StatusClass::Ok
 }
 
 /// Copy a borrowed `(ptr, len)` range out (empty for NULL). Safe only on a range the caller's ABI
@@ -666,6 +818,10 @@ pub static PLANE_DECL: PlaneDecl = PlaneDecl {
     served_op_classes_len: SERVED_OP_CLASSES.len(),
     record_kinds_ptr: RECORD_KINDS.as_ptr(),
     record_kinds_len: RECORD_KINDS.len(),
+    // Its dispatch calls only host slots that answer at once and writes its stream in one go, so it
+    // runs inline on the request's worker (minor 32).
+    dispatch_flags: 0,
+    _reserved3: 0,
 };
 
 // Emit the `cdylib` boundary symbols (`busbar_abi`, `busbar_plugin_kind() == "plane"`,

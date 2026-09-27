@@ -5,13 +5,15 @@
 //! OWNER-LOCKED: "THE COST OF A REAL AUTH WITNESS, IN ORDER", step (5); the #2 row records that the
 //! auth kind had none, v1.5.5 included).
 //!
-//! Modelled on `export_conformance_tests`: ONE crate — the auth kind's in-tree fixture, reached by
-//! KIND through `[package.metadata.busbar.both-ways]` so no test source names a plugin instance —
-//! driven two ways over one script, and the two compared.
+//! Modelled on `export_conformance_tests`: ONE crate — the auth kind's witness, a REAL plugin pulled
+//! from its own repo (the owner's FIXTURES ruling), reached by KIND through
+//! `[package.metadata.busbar.both-ways]` so no test source names a plugin instance; its config and
+//! credentials are data (`tests/fixtures/plugin_artifacts.txt`, `both_ways_auth_*`) — driven two
+//! ways over one script, and the two compared.
 //!
-//! * [`run_compiled_in`] — the fixture's `rlib`: its `pub fn open` (step (3)), each request run
-//!   through the `dispatch_compiled_in` twin `export_auth_plugin!` emits beside `busbar_call` (step
-//!   (2)), which is `dispatch_auth_enveloped` (step (1)).
+//! * [`run_compiled_in`] — the witness's `rlib`: its `pub fn open` (step (3)), each request run
+//!   through the `dispatch_compiled_in` twin the export macro emits beside `busbar_call` (step (2)),
+//!   which is `dispatch_auth_enveloped` (step (1)).
 //! * [`run_dropped_in`] — the same crate's `cdylib`, staged and wired by the loader's real load, each
 //!   request sent over its `busbar_call` symbol.
 //!
@@ -30,26 +32,32 @@
 
 use super::both_ways::{auth_fixture as fixture, both_doors, cdylib, statement};
 use super::*;
+use crate::tests::artifact;
 use busbar_contract::abi::cold::auth::{AuthRequest, AuthResponse, BeginLoginRequest};
 use busbar_contract::abi::cold::observe::Envelope;
 use busbar_contract::auth::{AuthModule, AuthPlugin};
 
-/// The plugin's config: one accepted token and the identity it grants.
-const CFG: &str = r#"{"token": "sekret", "id": "alice", "roles": ["platform"]}"#;
+/// The plugin's open-time config (data: `both_ways_auth_config`).
+fn cfg() -> &'static str {
+    artifact("both_ways_auth_config")
+}
 
-/// The candidates the script presents: the accepted token, a wrong one, none.
-const CANDIDATES: [&str; 3] = ["sekret", "not-the-token", ""];
+/// The candidates the script presents: a token the module must try to verify (its JWKS is
+/// unreachable, so the verdict is a fail-closed refusal), a credential that is not a token, none.
+fn candidates() -> [&'static str; 3] {
+    [artifact("both_ways_auth_token"), "not-a-token", ""]
+}
 
 /// The operations both arms run, in order: what the host asks at load (name, cacheability, login
-/// kind), a verdict per candidate, and a login START — which a verify-only module refuses through
-/// the fail-closed adapter both doors share.
+/// kind), a verdict per candidate, and a login START — which the login-capable module answers with
+/// its authorize URL.
 fn script() -> Vec<AuthRequest> {
     let mut ops = vec![
         AuthRequest::Name,
         AuthRequest::Cacheable,
         AuthRequest::LoginKind,
     ];
-    ops.extend(CANDIDATES.iter().map(|c| AuthRequest::Authenticate {
+    ops.extend(candidates().iter().map(|c| AuthRequest::Authenticate {
         credential: (*c).to_string(),
     }));
     ops.push(AuthRequest::BeginLogin(BeginLoginRequest {
@@ -66,7 +74,7 @@ fn script() -> Vec<AuthRequest> {
 /// `dispatch_compiled_in` — the entry point the plugin publishes beside `busbar_call`, so the host
 /// needs no edge to the author machinery — and what it answers, as the bytes a wire would carry.
 fn run_compiled_in() -> Vec<Vec<u8>> {
-    let module = fixture::open(CFG).expect("the compiled-in constructor");
+    let module = fixture::open(cfg()).expect("the compiled-in constructor");
     script()
         .into_iter()
         .map(|req| {
@@ -86,7 +94,7 @@ fn wired(display: &str) -> Option<RawPlugin> {
     Some(
         wire_up_raw(
             lib,
-            CFG,
+            cfg(),
             display.to_string(),
             busbar_contract::abi::cold::kind::AUTH,
             busbar_contract::abi::cold::kind::AUTH,
@@ -178,10 +186,13 @@ fn compiled_in_and_dropped_in_answer_byte_identically() {
         response_shape::ENVELOPE,
         "the host latched the envelope"
     );
-    // Not a vacuous pass: the accepted token identified, the others passed, login was refused.
+    // Not a vacuous pass: the token was judged (refused — its keys are unreachable), the other
+    // credentials passed, and the login start built the IdP's authorize URL.
     let script_read = read.join("\n");
     assert!(
-        script_read.contains("alice") && script_read.contains("Pass"),
+        script_read.contains("Reject")
+            && script_read.contains("Pass")
+            && script_read.contains(artifact("both_ways_auth_authorize_prefix")),
         "{script_read}"
     );
 }
@@ -234,7 +245,7 @@ unsafe extern "C-unwind" fn pre_envelope_call(
 ) -> i32 {
     let req: AuthRequest =
         serde_json::from_slice(std::slice::from_raw_parts(req, req_len)).expect("decode request");
-    let module = fixture::open(CFG).expect("the same constructor");
+    let module = fixture::open(cfg()).expect("the same constructor");
     let envelope = fixture::dispatch_compiled_in(module.as_ref(), req);
     let boxed: Box<[u8]> = serde_json::to_vec(&envelope.result)
         .expect("encode the bare answer")
@@ -253,7 +264,7 @@ unsafe extern "C-unwind" fn pre_envelope_free(ptr: *mut u8, len: usize) {
 
 /// The verify seam's transcript: the runtime identity, whether it is cacheable, and each verdict.
 fn verify_script(module: &dyn AuthModule) -> String {
-    let verdicts: Vec<String> = CANDIDATES
+    let verdicts: Vec<String> = candidates()
         .iter()
         .map(|c| {
             let c = (!c.is_empty()).then_some(*c);
@@ -287,7 +298,7 @@ fn a_linked_and_a_dropped_in_auth_module_register_byte_identical_rows() {
         manifest,
         |registry| {
             registry
-                .open_auth("the-auth", CFG)
+                .open_auth("the-auth", cfg())
                 .expect("the auth module opens through its alias")
         },
         |opened| verify_script(opened.as_ref()),
@@ -301,8 +312,8 @@ fn a_linked_and_a_dropped_in_auth_module_register_byte_identical_rows() {
         linked.0
     );
     assert!(
-        linked.1.contains("Identify"),
-        "the linked module identified the accepted token: {}",
+        linked.1.contains("Reject") && linked.1.contains("Pass"),
+        "the linked module judged the token and passed the rest: {}",
         linked.1
     );
     assert_eq!(linked, dropped, "the two doors must register one row");
@@ -322,7 +333,7 @@ fn a_linked_and_a_dropped_in_login_handle_answer_identically() {
         manifest,
         |registry| {
             registry
-                .open_login("auth-fixture", CFG)
+                .open_login("auth-fixture", cfg())
                 .expect("the login handle opens through its name")
         },
         |(handle, abi): &(Box<dyn AuthPlugin>, u32)| {
@@ -333,8 +344,8 @@ fn a_linked_and_a_dropped_in_login_handle_answer_identically() {
         return;
     };
     assert!(
-        linked.1.contains("Identify"),
-        "the linked handle identified the accepted token: {}",
+        linked.1.contains("Reject") && linked.1.contains("Pass"),
+        "the linked handle judged the token and passed the rest: {}",
         linked.1
     );
     assert_eq!(

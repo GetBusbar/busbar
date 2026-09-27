@@ -26,6 +26,8 @@
 // of it requires a bootable server, so it is gated on the LLM plane. Full-feature builds still run it.
 #![cfg(linked_axis_body_ingress)]
 
+mod common;
+
 use std::collections::BTreeSet;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -91,7 +93,7 @@ fn a_running_busbar_writes_no_state_file() {
     // the log we just opened. Anything the run adds to this set is state the process persisted.
     let before = tree(&dir);
 
-    let mut child = Command::new(env!("CARGO_BIN_EXE_busbar"))
+    let mut child = Command::new(common::boot::exe())
         .env("BUSBAR_CONFIG", dir.join("config.yaml"))
         .env("BUSBAR_PROVIDERS", dir.join("providers.yaml"))
         .env("BUSBAR_STATE_FILE", &state_file)

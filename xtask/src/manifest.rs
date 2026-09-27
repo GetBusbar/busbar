@@ -81,8 +81,8 @@ pub struct DepDecl {
     ///
     /// IT IS AN EDGE, NOT AN ABSENCE, and that distinction is what a closure rule is for. A gate
     /// that reads only the default feature set reports a wall standing while a feature CI builds
-    /// on every push walks through it: `busbar-plugin-sdk`'s `pack` pulls the loader, and the
-    /// loader carries the money one-book into six plugin closures. See [`feature_table`] for the
+    /// on every push walks through it: the plugin SDK's `pack` once pulled the loader, and the
+    /// loader carried the money one-book into six plugin closures. See [`feature_table`] for the
     /// other half — WHICH feature turns it on.
     pub optional: bool,
     /// The `path = "…"` this declaration states, verbatim and unresolved, when it states one.

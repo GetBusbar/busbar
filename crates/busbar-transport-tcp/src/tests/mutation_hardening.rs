@@ -75,7 +75,7 @@ fn transport_debug_names_itself() {
 fn plugin_key_is_tcp() {
     let transport = TcpTransport::new();
     assert_eq!(Plugin::key(&transport), "tcp");
-    assert_eq!(Plugin::key(&transport), TcpTransport::KEY);
+    assert_eq!(Plugin::key(&transport), crate::linked::KEY);
 }
 
 /// `tcp` is the bottom of every composition chain in this design: `composed_over` must report
