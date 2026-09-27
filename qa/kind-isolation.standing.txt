@@ -116,11 +116,11 @@ kind-isolation:matrix	unlisted-cell	busbar-kernel × auth	87
 kind-isolation:matrix	unlisted-cell	busbar-kernel × cleanliness	47
 kind-isolation:matrix	unlisted-cell	busbar-kernel × codec	3
 kind-isolation:matrix	unlisted-cell	busbar-kernel × hooks	35
-kind-isolation:matrix	unlisted-cell	busbar-kernel × kernel	318
+kind-isolation:matrix	unlisted-cell	busbar-kernel × kernel	320
 kind-isolation:matrix	unlisted-cell	busbar-kernel × legacy	84
 kind-isolation:matrix	unlisted-cell	busbar-kernel × plugin-tooling	217
 kind-isolation:matrix	unlisted-cell	busbar-kernel × store	68
-kind-isolation:matrix	unlisted-cell	busbar-kernel × substrate	109
+kind-isolation:matrix	unlisted-cell	busbar-kernel × substrate	106
 kind-isolation:matrix	unlisted-cell	busbar-kernel-audit × kernel	2
 kind-isolation:matrix	unlisted-cell	busbar-kernel-budget × plane	59
 kind-isolation:matrix	unlisted-cell	busbar-kernel-ledger × cleanliness	4
@@ -178,7 +178,7 @@ kind-isolation:matrix	unlisted-edge	kernel -> hooks	35
 kind-isolation:matrix	unlisted-edge	kernel -> legacy	84
 kind-isolation:matrix	unlisted-edge	kernel -> plugin-tooling	217
 kind-isolation:matrix	unlisted-edge	kernel -> store	68
-kind-isolation:matrix	unlisted-edge	kernel -> substrate	109
+kind-isolation:matrix	unlisted-edge	kernel -> substrate	106
 kind-isolation:matrix	unlisted-edge	legacy -> cleanliness	9
 kind-isolation:matrix	unlisted-edge	plane -> substrate	3
 kind-isolation:matrix	unlisted-edge	root -> cleanliness	206

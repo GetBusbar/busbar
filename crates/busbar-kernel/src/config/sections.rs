@@ -11,6 +11,7 @@
 use serde::{Deserialize, Serialize};
 
 use busbar_contract::secret_ref::SecretRef;
+use busbar_kernel_ledger::cost::UnitRate;
 
 use super::limits::{DEFAULT_RATE_SWEEP_INTERVAL, DEFAULT_USAGE_FLUSH_INTERVAL_MS};
 
@@ -323,7 +324,7 @@ pub struct OverlayBackend {
 /// `units:` (item 123) prices the OPEN meter classes a plane declares on this lane — a rerank's
 /// `search_units`, an a2a `hops` — keyed by the class string, each rate in micro-units per unit like
 /// the four above but parsed EXACTLY, with no float, straight into the card's integer nano-unit
-/// representation ([`busbar_kernel_ledger::cost::UnitRate`]). Absent ⇒ no open class is priced
+/// representation ([`UnitRate`]). Absent ⇒ no open class is priced
 /// here, and a hit on one refuses (#42). A reserved class named under `units:` is refused at boot
 /// (it would be priced twice). Omitted from the serialized form when empty, so an existing card
 /// round-trips byte-identically.
@@ -339,7 +340,7 @@ pub struct RateEntryCfg {
     #[serde(default)]
     pub cache_write_utok: f64,
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
-    pub units: std::collections::BTreeMap<String, busbar_kernel_ledger::cost::UnitRate>,
+    pub units: std::collections::BTreeMap<String, UnitRate>,
 }
 
 impl RateEntryCfg {

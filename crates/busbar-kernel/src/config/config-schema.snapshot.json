@@ -1801,7 +1801,7 @@
         },
         "units": {
           "optional": true,
-          "type": "std::collections::BTreeMap<String, busbar_kernel_ledger::cost::UnitRate>"
+          "type": "std::collections::BTreeMap<String, UnitRate>"
         }
       },
       "kind": "struct",

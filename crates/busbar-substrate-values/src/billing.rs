@@ -7,7 +7,7 @@
 //! and [`duration_seconds_to_wire`] — moved to `busbar_contract::billing` (DECISIONS #83: contract =
 //! shapes; SD-1 of the #83a split) and are re-exported here under their historical paths, so every
 //! caller compiles unchanged. The rate-card representation, `UnitRate`, is pricing semantics rather
-//! than a shape, and lives with the card (`busbar_kernel_ledger::cost::UnitRate`, #83a O1).
+//! than a shape, and lives with the card (#83a O1).
 
 pub use busbar_contract::billing::{
     duration_seconds_to_wire, Billing, RawTierRates, ServiceTier, TokenUsage, Usage,
