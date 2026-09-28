@@ -17,10 +17,10 @@ The three words are not interchangeable:
 ## Summary
 
 - bindings: **104**  (PB-0 master rule + 103 table rows)
-- mapped (proven): **103**
-- unproven (cited, but nothing compared): **1**
+- mapped (proven): **104**
+- unproven (cited, but nothing compared): **0**
 - unmapped (named gap): **0**
-- checks by kind (mapped bindings only): gate 12, lint 5, oracle-cell 65, oracle-family 4, test 455
+- checks by kind (mapped bindings only): gate 13, lint 5, oracle-cell 65, oracle-family 5, test 458
 
 ## Bindings
 
@@ -37,7 +37,7 @@ The three words are not interchangeable:
 | PB-8 | request bounds for `http`/`sse` units | mapped | PASS |  | oracle-cell: `route.failover\|fo\|primary-down`<br>test: `test_saturated_lane_respects_deadline_no_infinite_spin`<br>test: `test_context_length_failover_no_penalty`<br>test: `test_prefers_larger_context_max`<br>test: `a_changed_upstream_timeout_rebuilds_the_client_an_unrelated_apply_reuses_it`<br>test: `test_member_override_wins_over_model_default`<br>test: `test_attempt_cap_budget_floor`<br>test: `route_deadline_503_carries_detail_request_timeout`<br>test: `pick_among_none_lands_on_on_exhausted_with_overloaded_and_retry_after` |
 | PB-9 | revocation / rotation | mapped | PASS |  | test: `rotate_invalidates_the_outstanding_signed_token`<br>test: `local_revoke_rejects_the_very_next_auth_attempt`<br>test: `peer_revoke_written_to_the_store_is_honoured_within_the_window` |
 | PB-10 | upstream disposition and status mapping | mapped | PASS |  | oracle-cell: `route.failover\|fo\|primary-down`<br>test: `test_disposition_hard_down_billing_code`<br>test: `test_disposition_transient_rate_limit_code`<br>test: `test_disposition_transient_server_error`<br>test: `test_disposition_hard_down_auth`<br>test: `test_disposition_code_drives_classification`<br>test: `test_disposition_client_fault_no_known_code`<br>test: `test_classify_context_length_both_protocols`<br>test: `test_extract_error_bad_api_key_classifies_as_auth_harddown` |
-| PB-11 | plugin trust and ABI windows | unproven | FAIL | partly proven; a referenced check settles nothing: gate:scripts/signing-gate.sh (exists on disk, but nothing under .github/workflows invokes it, directly or through the qa segment manifest -- a gate nobody runs compares nothing) | oracle-family: `plugins` (14/14 cells cite it)<br>test: `supported_abi_auth_floor_admits_v1`<br>test: `a_v2_store_artifact_is_accepted_at_load`<br>test: `untrusted_is_skipped_not_fatal_but_reference_fails_loud`<br>gate: `scripts/signing-gate.sh` |
+| PB-11 | plugin trust and ABI windows | mapped | PASS |  | oracle-family: `plugins` (14/14 cells cite it)<br>test: `supported_abi_auth_floor_admits_v1`<br>test: `a_v2_store_artifact_is_accepted_at_load`<br>test: `untrusted_is_skipped_not_fatal_but_reference_fails_loud`<br>gate: `scripts/signing-gate.sh` |
 | PB-12 | export subsystem | mapped | PASS |  | test: `each_plugin_sink_instance_gets_its_own_admission_gate`<br>test: `a_plugin_sink_sheds_deliveries_beyond_its_inflight_cap`<br>test: `producerless_stream_is_a_loud_config_error`<br>test: `audit_is_refused_as_a_stream_with_the_reason`<br>test: `unknown_stream_names_the_vocabulary`<br>test: `durable_true_is_a_loud_not_yet_implemented_error`<br>test: `fields_on_metrics_is_a_loud_error`<br>test: `empty_streams_list_is_a_loud_error` |
 | PB-13 | `data_dir` | mapped | PASS |  | oracle-cell: `ops.scrape\|metrics\|no-ledger-series`<br>test: `no_ledger_series_and_no_keyset_lines_without_data_dir` |
 | PB-14 | store outage, peerless node | mapped | PASS |  | test: `test_metering_accumulator_is_bounded_and_lossless_under_sustained_store_outage` |
@@ -130,14 +130,6 @@ The three words are not interchangeable:
 | PB-101 | inbound auth details | mapped | PASS |  | test: `test_verify_sigv4_ingress_credential_unsigned_payload_rejected`<br>test: `test_verify_sigv4_ingress_credential_body_matches_signed_hash_admits`<br>test: `test_verify_sigv4_ingress_credential_tampered_body_rejected`<br>test: `test_verify_inbound_sigv4_unknown_key_dummy_secret_is_signature_mismatch`<br>test: `throughput_floor_trips_on_a_dribble_the_inter_frame_timer_cannot_catch`<br>test: `a_fast_large_upload_is_not_killed_by_the_throughput_floor`<br>test: `total_deadline_trips_on_a_body_that_stays_above_the_floor_forever`<br>test: `body_read_timeout_trips_on_stalled_body`<br>test: `mtls_valid_client_cert_gets_200`<br>test: `mtls_rejects_bad_client_then_serves_valid` |
 | PB-102 | alarms and the disputes report | mapped | PASS |  | test: `a_1_5_5_request_lifecycle_emits_no_alarm_or_dispute_event_or_metric` |
 | PB-103 | the dated rate-card history, and the `/usage` read path that does not consult it | mapped | PASS |  | oracle-cell: `billing\|rate-card\|history-mid-window`<br>oracle-cell: `config\|rate-card\|append-not-replace`<br>oracle-cell: `ledger\|amend\|adjusting-entries`<br>oracle-cell: `ledger\|amend\|refused-unsigned`<br>oracle-cell: `ledger\|currency\|minor-unit-rounding`<br>oracle-cell: `ledger\|currency\|native`<br>oracle-cell: `ledger\|rate-history\|as-of` |
-
-## The unproven bindings: cited, but nothing was compared
-
-Each of these names one or more checks and is still proof of nothing. A binding here is
-red under `cargo xtask gate design-bindings`; it is fixed by making the citation real,
-or it is demoted to a named gap. It is never waived.
-
-- **PB-11** (plugin trust and ABI windows): partly proven; a referenced check settles nothing: gate:scripts/signing-gate.sh (exists on disk, but nothing under .github/workflows invokes it, directly or through the qa segment manifest -- a gate nobody runs compares nothing)
 
 ## Findings: bindings in conflict with the tree
 
