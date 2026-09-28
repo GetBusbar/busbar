@@ -629,6 +629,19 @@ fn measure(cx: &Ctx, crates: &[CrateInfo]) -> Result<Measured, String> {
         let Some(per_kind) = plan.get(dir.as_str()) else {
             continue;
         };
+        // §11.5 "One place for every ABI shape": every ABI shape lives in ONE place,
+        // `busbar-contract/src/abi/` — the seven kinds' operations, data shapes and versions
+        // legitimately live and cross-reference each other there (`abi/store/` naming `abi/auth/`'s
+        // shapes is the mechanism working, not a coupling). So the MATRIX — this row's crate × kind
+        // vocabulary count — never attributes a hit inside that directory to any cell. The exemption
+        // is scoped to THIS counting alone: `contract_identifiers` above still reads `abi/` to learn
+        // the contract's own exported shapes, and the neutrality gates
+        // (instance-noun-neutrality, plane-abi-neutrality, c1-literals) still scan every byte of
+        // `abi/` exactly as before — only the kind-isolation MATRIX stops filing it into a cell. Code
+        // in `busbar-contract` OUTSIDE `abi/` is still counted, same as any other crate.
+        if c.name == CONTRACT_PACKAGE && is_contract_abi_shape(&rel) {
+            continue;
+        }
         // The contract's own identifiers are masked everywhere EXCEPT in the contract, whose
         // vocabulary is its own row's to measure (see [`contract_identifiers`]).
         let masked = if c.name == CONTRACT_PACKAGE {
@@ -678,6 +691,20 @@ fn measure(cx: &Ctx, crates: &[CrateInfo]) -> Result<Measured, String> {
 /// The contract crate's package name: the one crate whose exported identifiers are shapes every
 /// other crate may name.
 const CONTRACT_PACKAGE: &str = "busbar-contract";
+
+/// THE ONE DESIGNATED HOME OF EVERY ABI SHAPE (`BUSBAR-1.6.0.md` THE DESIGN §11.5, "One place for
+/// every ABI shape" — "Every ABI shape lives only in `busbar-contract/src/abi/`"). ARCHITECT ruling
+/// 2026-09-27 scopes the MATRIX's crate × kind counting to exclude this directory in the
+/// `busbar-contract` row: the seven kinds' shapes legitimately live and cross-reference one another
+/// there, so a hit inside it is the mechanism, not a leak. See the call site in [`measure`] for what
+/// this does and does not touch.
+const CONTRACT_ABI_PREFIX: &str = "crates/busbar-contract/src/abi/";
+
+/// Whether `rel` (a path under `crates/`) is inside [`CONTRACT_ABI_PREFIX`] — the MATRIX's one
+/// carve-out, and the only place this gate calls it.
+fn is_contract_abi_shape(rel: &str) -> bool {
+    rel.starts_with(CONTRACT_ABI_PREFIX)
+}
 
 /// THE CONTRACT'S OWN IDENTIFIERS — every item `busbar-contract` declares `pub` (struct, enum,
 /// trait, type, union, fn, const, static) in its `src/` — measured by nobody's column but the
@@ -2332,6 +2359,44 @@ pub fn selftest<'a>(
         &["busbar-kernel", "store"],
     ));
 
+    // §11.5's SCOPED EXEMPTION, BOTH WAYS. ARCHITECT ruling 2026-09-27: the MATRIX never files a hit
+    // inside `busbar-contract/src/abi/` into any cell, because that directory is the ONE designated
+    // home every kind's ABI shapes legitimately cross-reference (`is_contract_abi_shape`). The
+    // exemption is scoped to THIS counting, not to `busbar-contract` wholesale — the same noun one
+    // path segment outside `abi/` still counts, exactly like it would in any other crate.
+    report.push(prove_rows_red(
+        cx,
+        gate,
+        "a kind noun planted in `busbar-contract/src/<non-abi>.rs` still counts",
+        &[ROW_MATRIX],
+        plant(
+            cx,
+            "crates/busbar-contract/src/leak.rs",
+            "//! Not an ABI shape: the mcp plane's frames are described here.\n",
+        ),
+        &["busbar-contract", "plane"],
+    ));
+    report.push(prove_rows_green(
+        cx,
+        gate,
+        "the same noun under `busbar-contract/src/abi/<kind>/` does not count",
+        &[ROW_MATRIX],
+        plant(
+            cx,
+            "crates/busbar-contract/src/abi/plane/leak.rs",
+            "//! Not an ABI shape: the mcp plane's frames are described here.\n",
+        ),
+    ));
+
+    // THE OTHER GATE STILL BITES — proved in `mod tests`'
+    // [`tests::a_noun_under_contract_abi_still_fails_instance_noun_neutrality`], not here. Running
+    // `InstanceNounNeutralityGate` through the `prove_rows_red` machinery costs THREE full `crates/`
+    // walks per case (baseline + inert-check + planted) on top of its own unmemoized scan, and one
+    // planted case alone measured 51.8s against this row's whole selftest budget of 204854 work
+    // units — the exact "a self-test that grew a whole-tree scan per plant" failure mode item 89's
+    // rule and [`super::census_holding`]'s doc comment both warn about. So, like those, it runs
+    // through `cargo test`, calling the gate's `run` directly, ONCE, over `Ctx::workspace()`.
+
     // A HIT THAT IS ONLY A COMMENT. Nothing is stripped: a plane named in a doc comment of a
     // kernel crate is the kernel's reader being taught a plane.
     //
@@ -3155,5 +3220,47 @@ mod tests {
     fn a_camel_spelling_is_seen_by_both() {
         let (a, b) = both("let VoiceServe = 1;", "voice");
         assert_eq!((a, b), (1, 1));
+    }
+
+    /// THE OTHER GATE STILL BITES. The §11.5 exemption [`super::is_contract_abi_shape`] adds is
+    /// `:matrix`'s alone — instance-noun-neutrality reads nothing this module writes, and this is
+    /// the proof rather than the assumption: a code reference (not a comment — that gate strips
+    /// comments before matching, unlike `:matrix`, which is why the plant is a real `const`) to
+    /// `postgres`, a store noun with no family crate in this tree (`FAM_NONE`, so ANY reference is a
+    /// leak), planted under `crates/busbar-contract/src/abi/store/` — exactly the directory `:matrix`
+    /// now exempts — still fails `instance-noun-neutrality:postgres`.
+    ///
+    /// AT UNIT SPEED, NOT THE SELFTEST BATTERY'S: this used to be a `prove_rows_red` case in
+    /// [`super::selftest`], and one planted case alone cost 51.8s of the row's whole self-test
+    /// budget (three full unmemoized `crates/` walks — baseline, inert-check, planted — for a
+    /// single-shot proof). Called directly, once, it is one walk.
+    #[test]
+    fn a_noun_under_contract_abi_still_fails_instance_noun_neutrality() {
+        use crate::gates::instance_noun_neutrality::{row_id, InstanceNounNeutralityGate};
+        use crate::gates::Gate as _;
+        use crate::ledger::Status;
+
+        let cx = Ctx::workspace().expect("the workspace opens");
+        let rel = "crates/busbar-contract/src/abi/store/leak.rs";
+        let planted = cx.with_overlay(plant(
+            &cx,
+            rel,
+            "pub const NOT_AN_ABI_SHAPE: &str = \"postgres\";\n",
+        ));
+
+        let row = row_id("postgres");
+        let verdict = InstanceNounNeutralityGate::check().run(&planted);
+        let found = verdict.rows.iter().find(|r| r.id == row);
+        assert_eq!(
+            found.map(|r| &r.status),
+            Some(&Status::Fail),
+            "{row}: expected FAIL for a `postgres` reference planted under {rel}, got {:?}",
+            found.map(|r| &r.status)
+        );
+        let detail = found.map(|r| r.detail.as_str()).unwrap_or_default();
+        assert!(
+            detail.contains(rel),
+            "{row} failed but did not name the plant at {rel}: {detail}"
+        );
     }
 }
