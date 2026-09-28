@@ -92,7 +92,7 @@
     "root-voice": {
       "plane": "voice",
       "file": "crates/busbar/src/root/tests/gauntlet_kernel.rs",
-      "feature": "plane-voice"
+      "feature": "plane-streaming"
     },
     "root-admin": {
       "plane": "admin",

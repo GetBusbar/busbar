@@ -16,7 +16,7 @@
 //! | `:core-no-default` | `busbar-kernel`, `--no-default-features` | ABSENT |
 //! | `:binary-default` | `busbar`, default features | PRESENT — voice is armed default-on |
 //! | `:binary-no-default` | `busbar`, `--no-default-features` | ABSENT — the edge goes with voice |
-//! | `:voice-feature-control` | `busbar --features plane-voice` | PRESENT — the positive control |
+//! | `:voice-feature-control` | `busbar --features plane-streaming` | PRESENT — the positive control |
 //!
 //! ## A TREE THAT WAS NEVER RESOLVED IS NOT A TREE WITHOUT THE EDGE
 //!
@@ -86,9 +86,9 @@ const CLAIMS: &[Claim] = &[
     },
     Claim {
         row: ROW_VOICE_CONTROL,
-        args: &["-p", "busbar", "--features", "plane-voice"],
+        args: &["-p", "busbar", "--features", "plane-streaming"],
         expects: Expects::Present,
-        label: "busbar (--features plane-voice)",
+        label: "busbar (--features plane-streaming)",
     },
 ];
 
@@ -223,7 +223,7 @@ impl Gate for DuplexWsDefaultEdgeGate {
         // claim above would still pass over a resolver that found nothing anywhere.
         let mut ov = Overlay::new();
         ov.set_command(
-            "cargo-tree:-p busbar --features plane-voice",
+            "cargo-tree:-p busbar --features plane-streaming",
             "busbar v1.6.0\naxum v0.8.0\n",
         );
         report.push(prove_red(

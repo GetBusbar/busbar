@@ -65,7 +65,7 @@ const REGISTRY_KIND_KEYS: &[(&str, &str)] = &[
 
 /// THE COMPOSITION ROOT'S FEATURES NAME PLANES BY DESIGN, and this is where that is written down.
 ///
-/// `crates/busbar` carries `proto-llm`, `plane-mcp`, `plane-voice`: the root is the one place
+/// `crates/busbar` carries `proto-llm`, `plane-mcp`, `plane-streaming`: the root is the one place
 /// the tree assembles a plane, so a feature that switches one on is the root doing its job. Every
 /// other kind's features are its own vocabulary and may not name another kind's.
 ///
@@ -985,7 +985,7 @@ pub fn rule_inputs(
         // A FEATURE NAME IS A NAME. It is the one part of a manifest no rule was reading, and a
         // `[features] llm-serve = []` in a transport is that transport declaring a plane.
         //
-        // THE COMPOSITION ROOT IS EXEMPT, IN WRITING. `proto-llm`, `plane-voice`: the root is
+        // THE COMPOSITION ROOT IS EXEMPT, IN WRITING. `proto-llm`, `plane-streaming`: the root is
         // the one place the tree assembles a plane, so a feature that switches one on is the root
         // doing its job. That is an exemption with a number attached rather than a silence —
         // `:matrix` counts every one of those words against the root's own cell, at an exact

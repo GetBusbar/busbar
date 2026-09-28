@@ -493,7 +493,7 @@ jobs:
       - name: Release-order lint
         run: cargo xtask gate release-order
       # DUPLEX-WS DEFAULT-EDGE gate: `tokio-tungstenite` must not be in the DEFAULT money-path
-      # build's dependency closure — the WebSocket edge belongs to `plane-voice` and nowhere else.
+      # build's dependency closure — the WebSocket edge belongs to `plane-streaming` and nowhere else.
       # It was a fully-written, self-testing gate that NOTHING invoked: it lived in `scripts/`,
       # named itself a gate in its own header, passed on every commit, and no workflow, no script
       # and no gate runner ever executed it. A gate nothing runs is not a gate — it is a file that
@@ -2151,7 +2151,7 @@ jobs:
           - name: llm webhook-receiver
             features: busbar-llm/webhook-receiver
             tests: -p busbar-llm
-          # duplex-ws is reachable from the root binary's default `plane-voice` TODAY. It is in this
+          # duplex-ws is reachable from the root binary's default `plane-streaming` TODAY. It is in this
           # matrix anyway, because reachability is a property of a DEFAULT and a default moving is
           # the exposure this whole job is about. A row that NAMES the feature survives the flip.
           - name: core duplex-ws
@@ -2237,7 +2237,7 @@ jobs:
             tests: -p busbar --tests --no-default-features
             scope: package
           - name: single plane voice
-            features: busbar/plane-voice,busbar/transport-tcp
+            features: busbar/plane-streaming,busbar/transport-tcp
             default_axes: exports
             tests: -p busbar --tests --no-default-features
             scope: package
@@ -2256,7 +2256,7 @@ jobs:
           # finds by kind and refuses to skip without under CI. `check` runs the same test with the
           # default (linked) row only.
           - name: dropped-in tcp transport
-            features: busbar/auth-admin-tokens,busbar/hooks-ranking,busbar/proto-llm,busbar/plane-mcp,busbar/plane-a2a,busbar/plane-voice,busbar/plane-decisions,busbar/root-admin
+            features: busbar/auth-admin-tokens,busbar/hooks-ranking,busbar/proto-llm,busbar/plane-mcp,busbar/plane-a2a,busbar/plane-streaming,busbar/plane-decisions,busbar/root-admin
             default_axes: exports
             tests: -p busbar-plugin-loader -p busbar --no-default-features --test transport_dropped_in_serves
             scope: package
@@ -2635,8 +2635,7 @@ jobs:
   # feature-covered: busbar-voice/openapi-schema -- openapi-schema -- pulled by the forward from busbar with the feature on
   # feature-covered: busbar-voice/test-support -- check -- the Voice runtime tests step names --features runtime,test-support
   # feature-covered: busbar-voice/runtime -- check -- the Voice runtime tests step names it, and the root default reaches it
-  # feature-covered: busbar-kernel/plane-voice -- check -- reached from the root binary's default plane-voice in the workspace build
-  # feature-covered: busbar-kernel/runtime -- check -- reached from the plane-voice forward in the workspace default build
+  # feature-covered: busbar-kernel/runtime -- check -- reached from the plane-streaming forward in the workspace default build
   # feature-covered: busbar-kernel-identity/sha256 -- check -- reached from the default auth-admin-tokens closure in the workspace build
   # feature-covered: busbar-kernel/test-support -- check -- unified in by a dev-dependency under cargo clippy --workspace --all-targets
   # feature-covered: busbar-a2a/test-support -- check -- unified in by a dev-dependency under --all-targets in that job
@@ -3941,7 +3940,7 @@ jobs:
   #   2. --check     every GATING plane x step cell in qa/teller-steps.json names a real scenario and
   #      not "none". This reads the JSON.
   #   3. --root-legs the part that reads nothing and PROVES something: it builds the binary crate with
-  #      all five root legs on (root-admin,plane-mcp,plane-a2a,plane-voice,proto-llm -- the mcp, a2a
+  #      all five root legs on (root-admin,plane-mcp,plane-a2a,plane-streaming,proto-llm -- the mcp, a2a
   #      and voice legs are the kernel-loop rider those planes are served through, gated by the
   #      feature that links the plane, and the llm leg is the root's node, compiled with the plane
   #      that rides the `node` axis) and EXECUTES every named root-leg cell. A matrix can only be verified

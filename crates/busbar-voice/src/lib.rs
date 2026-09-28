@@ -11,7 +11,7 @@
 //! (see `docs/design/BUSBAR-1.6.0.md` #18/#45).
 //!
 //! BOOT-MOUNTING HAS LANDED — this paragraph used to say it was separate, tracked work, and that is
-//! no longer true. `plane-voice` is IN the binary's `default` feature set, and the composition root
+//! no longer true. `plane-streaming` is IN the binary's `default` feature set, and the composition root
 //! installs this crate at four sites: `register_planes` pushes [`PLANE_DECLARATION`] into the plane axis,
 //! `register_diagnostics` extends with [`DIAGNOSTICS`], `register_ws_arrivals` installs
 //! `mount::voice_ws_arrivals()`, and `mount_root_voice` calls `mount::install_governed_calls`. The
@@ -55,7 +55,7 @@ pub use busbar_plane_streaming::diagnostics;
 /// the crate root so the `busbar` binary names one stable path (`busbar_voice::DIAGNOSTICS`), exactly
 /// as `busbar_mcp::DIAGNOSTICS` / `busbar_a2a::DIAGNOSTICS`. BOOTED BY THE BINARY: `main.rs`'s
 /// `register_diagnostics` carries `installed.extend_from_slice(busbar_voice::DIAGNOSTICS)` under
-/// `plane-voice`, which is in `default`. (This line used to read "not yet booted … at M5"; M5
+/// `plane-streaming`, which is in `default`. (This line used to read "not yet booted … at M5"; M5
 /// landed.) See [`diagnostics`].
 pub use diagnostics::DIAGNOSTICS;
 
@@ -144,7 +144,7 @@ const VOICE_BUILD_RUNTIME: Option<
 // (feature-off) `PLANE_HOOKS` is BYTE-UNCHANGED (claims empty, admits no one, builds no slot, mounts no
 // route) and the `runtime` build wires the real neutral hooks in `crate::mount`. Route-mounting the
 // pump needs the T2 topologies (runtime-gated) to open governed sessions, so these arm in lock-step
-// with the runtime — a plane installed at boot (only under `plane-voice`, which turns on
+// with the runtime — a plane installed at boot (only under `plane-streaming`, which turns on
 // `busbar-voice/runtime`) both mounts and admits, keeping the ratchet's "mounted ⇒ admitted" true.
 
 /// `PLANE_HOOKS.build` — construct the per-generation dispatch slot from `public_url` (the audience),
@@ -260,9 +260,9 @@ use busbar_kernel::plane::registry::PlaneHooks;
 /// THE VOICE PLANE'S DECLARATION — contract data the composition root registers at boot, joined
 /// kernel-side to [`PLANE_HOOKS`], so the `busbar` binary names one stable path
 /// (`busbar_voice::PLANE_DECLARATION`). Together the two declare the plane's identity
-/// (key, config section, audit kind, wire formats), is INSTALLED at boot behind the `plane-voice`
+/// (key, config section, audit kind, wire formats), is INSTALLED at boot behind the `plane-streaming`
 /// feature with `build_runtime` wired to the real runtime constructor, and — behind the `runtime`
-/// feature (which `plane-voice` turns on) — MOUNTS its data plane: `build` erases the dispatch slot from
+/// feature (which `plane-streaming` turns on) — MOUNTS its data plane: `build` erases the dispatch slot from
 /// `public_url`, `claims`/`admission` bind the plane's RFC 8707 audience, and `routes` mounts the five
 /// ingress doors across both dialects (see [`mount`]), and the BOOT hooks `hydrate` / `start` rehydrate the durable session
 /// working-set before the listener and confirm readiness after. What stays `None` is the `ProtocolDecl`
@@ -353,7 +353,7 @@ pub const PLANE_HOOKS: PlaneHooks = PlaneHooks {
     // under the SAME bound audience, and mounts the five ingress routes across both dialects, whose
     // handlers open governed sessions through `run_gauntlet_session` (see `crate::mount`).
     // Off-feature these stay empty/`None` (the byte-unchanged default decl). A plane installed at
-    // boot is installed under `plane-voice` (⇒ `busbar-voice/runtime`), so it always both mounts and
+    // boot is installed under `plane-streaming` (⇒ `busbar-voice/runtime`), so it always both mounts and
     // admits — the ratchet's "mounted ⇒ admitted" holds by construction.
     claims: VOICE_CLAIMS,
     admission: VOICE_ADMISSION,

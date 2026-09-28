@@ -409,7 +409,7 @@ jobs:
           if-no-files-found: warn
 
   boot-validate:
-    name: "boot --features plane-voice parses the owned streams: section"
+    name: "boot --features plane-streaming parses the owned streams: section"
     needs: gate-selftest
     runs-on: latchkey-xlarge
     # BOUNDED. Measured p95 2.4 min over the last 9 runs of this job; the
@@ -433,12 +433,12 @@ jobs:
             ${{ env.CARGO_HOME }}/registry
             ${{ env.CARGO_HOME }}/git
             target
-      # M5: the composition root LINKS busbar-voice under `plane-voice`, the plane OWNS the `streams:`
+      # M5: the composition root LINKS busbar-voice under `plane-streaming`, the plane OWNS the `streams:`
       # section, and its grammar is reached at config validation. This leg proves that end to end, so a
       # regression that unwires `parse_section`/`owned_config_sections` — or one that lets a second
       # plane claim `streams` — is RED here rather than discovered at a live boot.
       - name: Build busbar with the voice plane
-        run: cargo build -p busbar --features plane-voice
+        run: cargo build -p busbar --features plane-streaming
       - name: "The owned streams: grammar parses/refuses; voice reaches config_sections; the dup-claim guard bites"
         run: |
           set -euo pipefail
@@ -448,7 +448,7 @@ jobs:
           # (b) "streams" reaches busbar_core::plane::config::config_sections() once voice is
           #     registered, and (c) the dup-claim guard admits the real voice decl and REFUSES a
           #     planted second claimant of `streams`.
-          cargo test -p busbar --features plane-voice --test voice_boot -- --nocapture | tee -a voice-boot-validate.log
+          cargo test -p busbar --features plane-streaming --test voice_boot -- --nocapture | tee -a voice-boot-validate.log
       - name: Latchkey Fast Cache (cargo registry + target, save)
         uses: latchkey-dev/cache-action@d0dd21912a57c7435649c77f689b68d348d8a662 # v1
         with:

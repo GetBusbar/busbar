@@ -41,7 +41,7 @@ shape as telephony (client WS ↔ Busbar ↔ provider WS), under `/v1/realtime/g
 ephemeral-mint or SDP-broker concept of its own — it is a native full-duplex socket on both legs — so
 it gains one route, not a mint/SDP pair.
 
-**Voice ships default-on.** `plane-voice` is in the `busbar` binary's default feature set, the same
+**Voice ships default-on.** `plane-streaming` is in the `busbar` binary's default feature set, the same
 posture as `plane-mcp` / `plane-a2a` — a shipped build installs the plane, claims its `streams:`
 section, and mounts its routes without any build flag (`crates/busbar/Cargo.toml:78`,
 `crates/busbar/src/main.rs:687-693`). It is also strong-form deletable: `git rm -r

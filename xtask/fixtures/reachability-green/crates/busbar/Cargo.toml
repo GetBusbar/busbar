@@ -19,7 +19,7 @@ busbar-plane-decisions = { path = "../busbar-plane-decisions", optional = true }
 proto-llm = "busbar-llm"
 plane-mcp = "busbar-mcp"
 plane-a2a = "busbar-a2a"
-plane-voice = "busbar-voice"
+plane-streaming = "busbar-voice"
 plane-decisions = "busbar-plane-decisions"
 
 # The axes each linked crate registers on; the plane axis is what `register_planes()` folds.
@@ -27,7 +27,7 @@ plane-decisions = "busbar-plane-decisions"
 proto-llm = "plane protocols"
 plane-mcp = "plane protocols diagnostics"
 plane-a2a = "plane diagnostics"
-plane-voice = "plane diagnostics"
+plane-streaming = "plane diagnostics"
 plane-decisions = "plane"
 
 # The decisions plane's entry module is in the composition root, as on the real tree.

@@ -68,7 +68,7 @@ busbar-mcp = { path = "../busbar-mcp", optional = true }
 # until the plane/codec code that a later step moves actually lands here.
 busbar-a2a = { path = "../busbar-a2a", optional = true }
 # THE VOICE PLANE-KIND CRATE (Plane 4), the analogue of busbar-a2a above. Optional behind
-# `plane-voice`, now IN `default` (voice ships default-ON + deletable, exactly like plane-mcp/
+# `plane-streaming`, now IN `default` (voice ships default-ON + deletable, exactly like plane-mcp/
 # plane-a2a). The LLM money path is unchanged (busbar-core's default carries no voice/duplex-ws
 # edge); the shipped binary gains the voice plane + its WS transport, and `--no-default` proves the
 # whole edge disappears with the crate (strong-form deletable). The `busbar-voice/runtime` edge is
@@ -106,7 +106,7 @@ busbar-plane-streaming = { path = "../busbar-plane-streaming" }
 # the section. That is why this line is OPTIONAL when the four above are not: it follows the
 # convention of the thing it is — the crate whose `PLANE_DECL` is installed — and `plane-decisions`
 # below is the ONE switch for the plane and its crate edge together, exactly as `plane-a2a` and
-# `plane-voice` are. `--no-default-features` therefore still installs no plane at all, which is the
+# `plane-streaming` are. `--no-default-features` therefore still installs no plane at all, which is the
 # property the strong-form deletion test is written about.
 #
 # The declaration itself is NOT in this crate and cannot be: a pure plane's manifest may name
@@ -157,7 +157,7 @@ busbar-transport-http = { path = "../busbar-transport-http" }
 # WebSocket, and the ONE transport that is optional: it is the voice plane's edge and nothing else
 # reaches it, so a build without voice must not carry it. Non-optional, `--no-default-features` still
 # pulled `tokio-tungstenite` through this line and voice stopped being strong-form deletable — the
-# exact leak `cargo xtask gate duplex-ws-default-edge` exists to catch. `plane-voice` carries the edge.
+# exact leak `cargo xtask gate duplex-ws-default-edge` exists to catch. `plane-streaming` carries the edge.
 busbar-transport-ws = { path = "../busbar-transport-ws", optional = true }
 busbar-transport-stdio = { path = "../busbar-transport-stdio" }
 # The root's card is SWAPPED by a live config apply and PINNED by every unit that prices against it,
@@ -203,7 +203,7 @@ tikv-jemallocator = { workspace = true, features = ["disable_initial_exec_tls"] 
 # are one-line re-exports of the core feature with the same name. Every protocol entry below is the
 # SAME default set the monolithic crate had; `root-admin` is the addition, and it is a path rather
 # than a surface — the operations, their bytes and their features are unchanged.
-default = ["auth-admin-tokens", "hooks-ranking", "proto-llm", "plane-mcp", "plane-a2a", "plane-voice", "plane-decisions", "export-file", "export-webhook", "export-prometheus", "export-otlp", "root-admin", "transport-tcp"]
+default = ["auth-admin-tokens", "hooks-ranking", "proto-llm", "plane-mcp", "plane-a2a", "plane-streaming", "plane-decisions", "export-file", "export-webhook", "export-prometheus", "export-otlp", "root-admin", "transport-tcp"]
 # A protocol crate: the dependency edge plus its registration line in main.rs. Dropping the
 # feature is the deletion test's level-1 build. There is no per-DIALECT feature and there must not
 # be one — "LLM coverage or not" is the choice this seam offers, and a `proto-gemini` knob would be
@@ -235,8 +235,8 @@ plane-a2a = ["dep:busbar-a2a", "busbar-kernel/plane-a2a", "busbar-core-admin/pla
 # reference, so the strong-form deletion gate (scripts/plane-delete-test.sh) strips it with the same
 # rule it strips `busbar-voice?/openapi-schema`, leaving voice byte-for-byte removable. Compiling the
 # runtime here gives the `build_runtime` body; the skeleton build leaves `build_runtime: None`.
-plane-voice = ["dep:busbar-voice", "transport-ws", "busbar-voice?/runtime", "busbar-kernel/plane-voice"]
-# THE WS WIRE, the one optional transport: the voice plane's edge and nothing else's, so `plane-voice`
+plane-streaming = ["dep:busbar-voice", "transport-ws", "busbar-voice?/runtime", "busbar-kernel/duplex-ws"]
+# THE WS WIRE, the one optional transport: the voice plane's edge and nothing else's, so `plane-streaming`
 # carries it and `--no-default-features` drops the crate edge and its linked row together.
 transport-ws = ["dep:busbar-transport-ws"]
 # THE TCP WIRE'S LINKED ROW, DEFAULT ON (#3: a transport is swappable, compiled in OR dropped in). Off,
@@ -322,7 +322,7 @@ loom-model = ["busbar-kernel/loom-model"]
 proto-llm = "busbar-llm"
 plane-mcp = "busbar-mcp"
 plane-a2a = "busbar-a2a"
-plane-voice = "busbar-voice"
+plane-streaming = "busbar-voice"
 plane-decisions = "busbar-plane-decisions"
 export-file = "busbar-export-file"
 export-webhook = "busbar-export-webhook"
@@ -359,7 +359,7 @@ transport-stdio = "busbar-transport-stdio"
 proto-llm = "plane claims protocols path-ingress body-ingress protocol-seams diagnostics on-host cli-help node gauntlet-one-shot"
 plane-mcp = "plane claims protocols diagnostics egress stdio-serve cli-help gauntlet-one-shot"
 plane-a2a = "plane claims diagnostics egress plane-sections admin-envelope gauntlet-one-shot"
-plane-voice = "plane claims diagnostics ws-arrivals compose gauntlet-session"
+plane-streaming = "plane claims diagnostics ws-arrivals compose gauntlet-session"
 plane-decisions = "plane claims"
 export-file = "exports"
 export-webhook = "exports"
@@ -401,7 +401,7 @@ auth-admin-tokens = "admin-tokens"
 [package.metadata.busbar.served-witness]
 plane-mcp = "busbar-mcp"
 plane-a2a = "busbar-a2a"
-plane-voice = "busbar-voice"
+plane-streaming = "busbar-voice"
 
 [package.metadata.busbar.root-units]
 plane-decisions = "plane_decisions"

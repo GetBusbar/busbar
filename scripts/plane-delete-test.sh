@@ -171,7 +171,7 @@ report_coverage() {
 # distinct namespace this script alone owns, so it is declared here rather than borrowed. Was
 # `busbar-core busbar-substrate busbar-api`; both busbar-core and busbar-substrate were deleted (see
 # the header above) — busbar-kernel is their direct successor for this purpose (it carries the
-# `plane-mcp`/`plane-a2a`/`plane-voice` features `neutral_keep` below names, the `openapi-schema`
+# `plane-mcp`/`plane-a2a`/`plane-streaming` features `neutral_keep` below names, the `openapi-schema`
 # forward to each plane crate, and the dev-dependency back-edge on busbar-mcp/busbar-a2a
 # `strip_workspace_edges` exists to sever); busbar-substrate-values (the pure-value half that split
 # off busbar-substrate) was deleted too, its values to busbar-contract and busbar-kernel (#83a SD-8). A name here that stops
@@ -198,13 +198,13 @@ command -v cargo >/dev/null 2>&1 || { echo "plane-delete-test: cargo not found" 
 # EXCEPT the one being removed) — llm has no neutral-side feature of its own, so removing it keeps both
 # plane-mcp and plane-a2a. A crate/feature that appears or moves is a one-line edit here.
 # `voice` (busbar-voice, Plane 4) is WIRED into the bin and DEFAULT-ON, on both of its features: it has
-# a `dep:busbar-voice` optional dependency and the `plane-voice` bin feature, whose forwards to the
+# a `dep:busbar-voice` optional dependency and the `plane-streaming` bin feature, whose forwards to the
 # plane crate are `dep:busbar-voice`, `busbar-voice?/runtime` and `busbar-voice?/openapi-schema` — all
-# three stripped by neutralise_bin. Its bin_feature is `plane-voice`; its neutral_keep is the full
+# three stripped by neutralise_bin. Its bin_feature is `plane-streaming`; its neutral_keep is the full
 # default plane set (removing voice touches neither mcp nor a2a). A feature that FORWARDS to
-# `plane-voice` would leave the bin's default build incoherent without the crate until it came out
+# `plane-streaming` would leave the bin's default build incoherent without the crate until it came out
 # too — which is what neutralise_bin's forwarding closure is for.
-bin_feature() { case "$1" in llm) echo proto-llm ;; mcp) echo plane-mcp ;; a2a) echo plane-a2a ;; voice) echo plane-voice ;; plane-decisions) echo plane-decisions ;; esac; }
+bin_feature() { case "$1" in llm) echo proto-llm ;; mcp) echo plane-mcp ;; a2a) echo plane-a2a ;; voice) echo plane-streaming ;; plane-decisions) echo plane-decisions ;; esac; }
 neutral_keep() {
   case "$1" in
     llm) echo "plane-mcp,plane-a2a" ;;

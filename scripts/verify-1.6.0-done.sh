@@ -965,7 +965,7 @@ if [ "$SELFTEST" -eq 1 ]; then
     case ",$f," in *,plane-*) return 1 ;; esac
     parity_leg_args llm-only "$PARITY_MANIFEST" | grep -qx -- '--no-default-features'; }
   st_expect accept "the llm-only leg derives from THIS manifest: --no-default-features, no plane-*" st_llm_real
-  printf '[features]\ndefault = ["auth-admin-tokens", "proto-llm", "plane-mcp", "plane-voice", "root-admin", "root-voice"]\n' > "$st_tmp/Cargo-legs.toml"
+  printf '[features]\ndefault = ["auth-admin-tokens", "proto-llm", "plane-mcp", "plane-streaming", "root-admin", "root-voice"]\n' > "$st_tmp/Cargo-legs.toml"
   printf '[features]\ndefault = ["auth-admin-tokens", "plane-mcp", "root-admin"]\n' > "$st_tmp/Cargo-noroot.toml"
   printf '[features]\nfoo = []\n' > "$st_tmp/Cargo-nodefault.toml"
   st_llm_fixture() { [ "$(parity_llm_only_features "$st_tmp/Cargo-legs.toml")" = "auth-admin-tokens,proto-llm,root-admin" ]; }
@@ -1330,13 +1330,13 @@ sys.exit(1 if m else 0)
 # verdict per cell over its plane's `root-*` leg. Two things are asserted here and neither is the
 # other: that the column HOLDS (the cargo gate, run with every leg's feature on — `root-admin`,
 # `proto-llm` (the root's node, compiled with the plane that rides the `node` axis) and the
-# `plane-mcp` / `plane-a2a` / `plane-voice` features that link the three planes the kernel-loop rider
+# `plane-mcp` / `plane-a2a` / `plane-streaming` features that link the three planes the kernel-loop rider
 # serves), and that every cell it calls `proven`
 # actually RUNS and passes (the summary's own runner, which refuses a run that executed a different
 # set). The remaining "none" cells are the switch-over queue and are PRINTED, not fatal — the same
 # honest-ledger posture the missing set has.
 step "capability_equality gate, five legs on" \
-  cargo test -p busbar --features root-admin,plane-mcp,plane-a2a,plane-voice,proto-llm --quiet --test capability_equality
+  cargo test -p busbar --features root-admin,plane-mcp,plane-a2a,plane-streaming,proto-llm --quiet --test capability_equality
 step "every root-leg proof cell RUNS and passes" python3 scripts/capability-equality-summary.py --root-legs
 printf '  \033[36m[info]\033[0m '
 python3 scripts/capability-equality-summary.py 2>/dev/null | grep -E "^ROOT-EQUALITY:" || echo "root-equality count unavailable"

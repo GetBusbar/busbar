@@ -113,7 +113,7 @@
 #
 # ── busbar-voice: the SKELETON / "dev-only until DoD" markers are CLEARED ───────────────────────────
 # The voice plane's IR + both dialect codecs + T2 runtime + both topologies are implemented (behind the
-# "runtime" feature) and the plane is installed at boot behind `plane-voice`; the stale SKELETON /
+# "runtime" feature) and the plane is installed at boot behind `plane-streaming`; the stale SKELETON /
 # "dev-only until DoD" marker prose in busbar-voice src has been reworded to truthful current-state, so
 # no waiver rows remain for it. (Any residual "dev-only until DoD" prose outside busbar-voice src — e.g.
 # the config-schema tracking note or the composition-root feature comment — is its own row, not this one's.)

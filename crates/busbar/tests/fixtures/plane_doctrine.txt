@@ -19,7 +19,7 @@ root-leg root-a2a plane-a2a
 root-leg root-admin root-admin
 root-leg root-llm proto-llm
 root-leg root-mcp plane-mcp
-root-leg root-voice plane-voice
+root-leg root-voice plane-streaming
 #
 # crate <crates/busbar-<suffix>> <ledger column>...: the columns each workspace plane crate answers
 # to (both halves of every plane; plane-streaming is the plane voice is a dialect of).
