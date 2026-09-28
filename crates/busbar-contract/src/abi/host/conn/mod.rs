@@ -26,7 +26,7 @@ use std::sync::{Arc, Mutex};
 use crate::abi::hot::decl::DeclStr;
 use crate::abi::hot::transport::{code, WireConnFacts, WireField};
 use crate::conn::{
-    ConnError, ConnId, Conns, Deadline, InstanceId, NeedId, OpenDesc, Piece, PieceKind,
+    ConnError, ConnId, Conns, InstanceId, NeedId, OpenDesc, Piece, PieceKind, Ticket,
 };
 use crate::ids::StreamId;
 use crate::transport::wire::CertFacts;
@@ -46,8 +46,8 @@ pub struct RawConnOutcome(pub u8);
 pub enum ConnOutcome {
     /// Answered.
     Ok = 0,
-    /// [`ConnError::NotReady`].
-    NotReady = 1,
+    /// [`ConnError::Pending`].
+    Pending = 1,
     /// [`ConnError::Timeout`].
     Timeout = 2,
     /// [`ConnError::Closed`].
@@ -68,7 +68,7 @@ impl RawConnOutcome {
     pub const fn of(r: Result<(), ConnError>) -> Self {
         Self(match r {
             Ok(()) => ConnOutcome::Ok,
-            Err(ConnError::NotReady) => ConnOutcome::NotReady,
+            Err(ConnError::Pending) => ConnOutcome::Pending,
             Err(ConnError::Timeout) => ConnOutcome::Timeout,
             Err(ConnError::Closed) => ConnOutcome::Closed,
             Err(ConnError::NotOwner) => ConnOutcome::NotOwner,
@@ -86,7 +86,7 @@ impl RawConnOutcome {
     pub const fn result(self) -> Result<(), ConnError> {
         match self.0 {
             0 => Ok(()),
-            1 => Err(ConnError::NotReady),
+            1 => Err(ConnError::Pending),
             2 => Err(ConnError::Timeout),
             3 => Err(ConnError::Closed),
             4 => Err(ConnError::NotOwner),
@@ -168,11 +168,13 @@ pub struct ConnSlots lowers Conns -> RawConnOutcome {
     /// [`Conns::write`]: writes how many were taken.
     write: ConnWriteFn = fn(ctx: ConnCtx, conn: u64, bytes: *const u8, len: usize, end: u8,
         out_written: *mut usize);
-    /// [`Conns::read`]: the piece's bytes into `buf`, the piece into `out_piece`.
-    read: ConnReadFn = fn(ctx: ConnCtx, conn: u64, deadline: u64, buf: *mut u8, cap: usize,
+    /// [`Conns::read`]: the piece's bytes into `buf`, the piece into `out_piece`; with nothing
+    /// ready, pending with interest registered under `ticket`.
+    read: ConnReadFn = fn(ctx: ConnCtx, conn: u64, ticket: u64, buf: *mut u8, cap: usize,
         out_piece: *mut WirePiece);
-    /// [`Conns::wait`]: writes the position of a ready connection in the set.
-    wait: ConnWaitFn = fn(ctx: ConnCtx, set: *const u64, set_len: usize, deadline: u64,
+    /// [`Conns::wait`]: writes the position of a ready connection in the set; with none ready,
+    /// pending with interest registered under `ticket`.
+    wait: ConnWaitFn = fn(ctx: ConnCtx, set: *const u64, set_len: usize, ticket: u64,
         out_ready: *mut usize);
     /// [`Conns::facts`]: the facts, borrowed until the connection closes.
     facts: ConnFactsFn = fn(ctx: ConnCtx, conn: u64, out_facts: *mut WireConnFacts);
@@ -376,7 +378,7 @@ extern "C-unwind" fn host_write(
 extern "C-unwind" fn host_read(
     ctx: ConnCtx,
     conn: u64,
-    deadline: u64,
+    ticket: u64,
     buf: *mut u8,
     cap: usize,
     out_piece: *mut WirePiece,
@@ -391,9 +393,7 @@ extern "C-unwind" fn host_read(
         } else {
             unsafe { std::slice::from_raw_parts_mut(buf, cap) }
         };
-        let piece = host
-            .conns
-            .read(host.instance, ConnId(conn), deadline, into)?;
+        let piece = host.conns.read(host.instance, ConnId(conn), ticket, into)?;
         if piece.len > cap {
             return Err(ConnError::Fault);
         }
@@ -438,7 +438,7 @@ extern "C-unwind" fn host_wait(
     ctx: ConnCtx,
     set_ptr: *const u64,
     set_len: usize,
-    deadline: u64,
+    ticket: u64,
     out_ready: *mut usize,
 ) -> RawConnOutcome {
     hosted(ctx, |host| {
@@ -449,7 +449,7 @@ extern "C-unwind" fn host_wait(
         let ids: Vec<ConnId> = (0..set_len)
             .map(|i| ConnId(unsafe { core::ptr::read_unaligned(set_ptr.add(i)) }))
             .collect();
-        let ready = host.conns.wait(host.instance, &ids, deadline)?;
+        let ready = host.conns.wait(host.instance, &ids, ticket)?;
         // SAFETY: the plugin's out-slot.
         unsafe { set(out_ready, ready) }
     })
@@ -598,18 +598,13 @@ impl HostConns {
     /// # Errors
     ///
     /// As [`Conns::read`].
-    pub fn read(
-        &self,
-        conn: ConnId,
-        deadline: Deadline,
-        buf: &mut [u8],
-    ) -> Result<Piece, ConnError> {
+    pub fn read(&self, conn: ConnId, ticket: Ticket, buf: &mut [u8]) -> Result<Piece, ConnError> {
         let f = self.slots.read.ok_or(ConnError::Fault)?;
         let mut p = core::mem::MaybeUninit::<WirePiece>::zeroed();
         f(
             self.ctx,
             conn.0,
-            deadline,
+            ticket,
             buf.as_mut_ptr(),
             buf.len(),
             p.as_mut_ptr(),
@@ -639,11 +634,11 @@ impl HostConns {
     /// # Errors
     ///
     /// As [`Conns::wait`].
-    pub fn wait(&self, set: &[ConnId], deadline: Deadline) -> Result<usize, ConnError> {
+    pub fn wait(&self, set: &[ConnId], ticket: Ticket) -> Result<usize, ConnError> {
         let f = self.slots.wait.ok_or(ConnError::Fault)?;
         let ids: Vec<u64> = set.iter().map(|c| c.0).collect();
         let mut ready = 0_usize;
-        f(self.ctx, ids.as_ptr(), ids.len(), deadline, &mut ready).result()?;
+        f(self.ctx, ids.as_ptr(), ids.len(), ticket, &mut ready).result()?;
         Ok(ready)
     }
 

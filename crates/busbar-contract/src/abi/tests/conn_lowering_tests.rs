@@ -13,7 +13,7 @@ use crate::transport::wire::WireStatusClass;
 /// A host whose connections echo what was written, one body piece per write, ownership kept by the
 /// shared [`ConnSlab`].
 #[derive(Default)]
-struct Echo(ConnSlab<Mutex<Vec<Vec<u8>>>>);
+struct Echo(ConnSlab<Mutex<Vec<Vec<u8>>>>, Mutex<Vec<u64>>);
 
 impl Conns for Echo {
     fn open(
@@ -48,13 +48,15 @@ impl Conns for Echo {
         &self,
         caller: InstanceId,
         conn: ConnId,
-        _: Deadline,
+        ticket: Ticket,
         buf: &mut [u8],
     ) -> Result<Piece, ConnError> {
         let (_, q) = self.0.get(caller, conn)?;
         let mut q = q.lock().unwrap();
         if q.is_empty() {
-            return Err(ConnError::NotReady);
+            // Interest registered under the caller's ticket; the host would wake it later.
+            self.1.lock().unwrap().push(ticket);
+            return Err(ConnError::Pending);
         }
         let next = q.remove(0);
         buf[..next.len()].copy_from_slice(&next);
@@ -69,14 +71,14 @@ impl Conns for Echo {
             retry_after_secs: None,
         })
     }
-    fn wait(&self, caller: InstanceId, set: &[ConnId], _: Deadline) -> Result<usize, ConnError> {
+    fn wait(&self, caller: InstanceId, set: &[ConnId], _: Ticket) -> Result<usize, ConnError> {
         for (i, c) in set.iter().enumerate() {
             let (_, q) = self.0.get(caller, *c)?;
             if !q.lock().unwrap().is_empty() {
                 return Ok(i);
             }
         }
-        Err(ConnError::NotReady)
+        Err(ConnError::Pending)
     }
     fn facts(&self, caller: InstanceId, conn: ConnId) -> Result<ConnFacts, ConnError> {
         self.0.get(caller, conn)?;
@@ -151,8 +153,8 @@ fn every_operation_crosses_the_lowering() {
     assert_eq!(&buf[..again], b"again");
     assert_eq!(
         pa.read(conn, 0, &mut buf),
-        Err(ConnError::NotReady),
-        "a try-read of nothing"
+        Err(ConnError::Pending),
+        "nothing ready is pending, never a block"
     );
     assert_eq!(pa.facts(conn).unwrap().alpn.as_deref(), Some("h2"));
     assert_eq!(pa.close(conn), Ok(()));
@@ -233,7 +235,7 @@ fn an_undeclared_need_opens_nothing_across_the_lowering() {
 #[test]
 fn every_outcome_byte_decodes_and_the_unknown_ones_are_faults() {
     for e in [
-        ConnError::NotReady,
+        ConnError::Pending,
         ConnError::Timeout,
         ConnError::Closed,
         ConnError::NotOwner,
@@ -262,4 +264,33 @@ fn a_null_context_is_a_fault() {
         )
     };
     assert_eq!(p.close(ConnId(1)), Err(ConnError::Fault));
+}
+
+/// NOTHING BLOCKS: a read with nothing ready answers pending at once, and the caller's wake ticket
+/// crosses the lowering to the host, which registers interest under it.
+#[test]
+fn a_read_with_nothing_ready_is_pending_and_hands_the_host_its_ticket() {
+    let echo = Arc::new(Echo::default());
+    echo.0.declare(InstanceId(1), NEED);
+    let conns: Arc<dyn Conns> = echo.clone();
+    let host = Box::new(ConnHost::new(conns, InstanceId(1)));
+    // SAFETY: the host's own table, over a context the box keeps alive for the test.
+    let p = unsafe { HostConns::new(host_slots(), host.ctx()) };
+    let conn = p
+        .open(
+            NEED,
+            &OpenDesc {
+                target: "echo.test",
+                ..OpenDesc::default()
+            },
+        )
+        .unwrap();
+    let mut buf = [0_u8; 64];
+    p.read(conn, 7, &mut buf).unwrap();
+    assert_eq!(p.read(conn, 42, &mut buf), Err(ConnError::Pending));
+    assert_eq!(*echo.1.lock().unwrap(), [42], "the ticket reached the host");
+    assert_eq!(
+        ConnError::Pending.to_string(),
+        "nothing is ready on the connection yet"
+    );
 }
