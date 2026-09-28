@@ -192,10 +192,10 @@ Each of these is an owner-accepted difference from 1.5.5: additive, or strictly 
   response and a new `409` cross-section-reference guard (deleting a definition another config
   section still references by bare name is refused).
 - **Validation messages know the new keys.** An `expected one of` list now includes the plane keys
-  (`mcp`, `oauth_as`, `tools`, `agents`, `streams`, …) and the four new group-limit metrics
-  (`tokens_input`, `tokens_output`, `tokens_cache_read`, `tokens_cache_write`); the reserved-name,
-  credential-mode and unknown-pool-member sentences are rephrased; the protocol list is reordered.
-  Same refusal, same exit code in every case.
+  (`mcp`, `oauth_as`, `tools`, `agents`, `streams`, …). A group limit's refusals keep 1.5.5's words
+  and list only 1.5.5's metrics, though the four new group-limit metrics (`tokens_input`,
+  `tokens_output`, `tokens_cache_read`, `tokens_cache_write`) parse. Same refusal, same exit code in
+  every case.
 - **An inline literal where a secret reference belongs is refused without echoing it.** Every
   secret-bearing key takes a reference — `{ env: VAR }`, `{ file: /path }`, or a secret module —
   and pasting the value inline is the mistake that grammar exists to prevent. 1.5.5 rejected it
