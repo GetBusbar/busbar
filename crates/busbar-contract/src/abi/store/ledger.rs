@@ -177,7 +177,7 @@ pub struct HostRecords {
 }
 
 /// `record_scan`'s `in` (kinds.rs:370): a plane's records under `prefix`, in key order, at most
-/// `limit`; `limit` 0 means NOTHING, never everything (store-memory `record_scan`).
+/// `limit`; `limit` 0 means NOTHING, never everything (the in-tree RAM store's `record_scan`).
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct RecordScanIn {
