@@ -593,9 +593,15 @@ fn the_auth_slots_follow_the_lifecycle_contiguously() {
     );
     pin!(
         store::ReserveOut,
-        112,
+        120,
         8,
-        [head = 0, grants_len = 96, reason = 104, failed_cell = 108]
+        [
+            head = 0,
+            grants_len = 96,
+            reason = 104,
+            failed_cell = 108,
+            needed_grants = 112
+        ]
     );
     pin!(store::ReleaseItem, 16, 8, [slice_id = 0, unspent = 8]);
     pin!(
@@ -614,9 +620,9 @@ fn the_auth_slots_follow_the_lifecycle_contiguously() {
     );
     pin!(
         store::SliceReleaseOut,
-        104,
+        112,
         8,
-        [head = 0, released_len = 96]
+        [head = 0, released_len = 96, needed_released = 104]
     );
     pin!(
         store::UsageCell,

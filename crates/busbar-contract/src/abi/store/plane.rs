@@ -4,7 +4,7 @@
 //! PLANE RECORDS as store v3 slots (B.1 "Slots": "plane records"): the neutral kind-tagged verbs
 //! of `records.rs:1481-1597`. The sidecar `{kind, id, parent, seq, ts, disposition}` is fixed; the
 //! body is opaque octets the store keeps verbatim and never decodes. Reads on the request path
-//! write into HOST buffers under the SHORT-BUFFER RULE ([`super`]).
+//! write into HOST buffers under the short-buffer answer (M-SB, stated on the mechanism's `OutHead`).
 
 use super::money::OpId;
 use super::{HostBlobs, HostBuf};

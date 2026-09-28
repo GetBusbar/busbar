@@ -41,11 +41,8 @@
 //! * REQUEST-PATH results go into HOST buffers the `in` names, pointer + capacity ([`HostBuf`],
 //!   [`HostBlobs`], [`HostSessions`], [`HostRecords`], `reserve`'s grants, `slice_release`'s
 //!   released amounts), never in the `out`, which the host zeroes before every call (mechanism
-//!   memory class (i); ARCHITECT 2026-09-28). THE SHORT-BUFFER RULE (all kinds, ARCHITECT
-//!   2026-09-28): the `out` states what was written and what is needed. A result that does not
-//!   fit is answered FAILED with nothing written and every `needed_*` above its capacity; the host
-//!   makes ONE fresh re-call with buffers that large, and a second short answer is FAULT. The
-//!   answer validators in [`check`] enforce it.
+//!   memory class (i); ARCHITECT 2026-09-28). A result that does not fit is the short-buffer answer, M-SB, stated once on
+//!   [`OutHead`] and not restated here; the answer validators in [`check`] enforce it.
 //! * OFF-PATH results (the 1.5.5 lists and single records, `heads`) are plugin-owned under the
 //!   `out`'s lease until `release(lease)` (mechanism memory class (iv)); secret material is a
 //!   [`BLOB_SECRET`](crate::abi::mechanism::call::BLOB_SECRET) blob, zeroised on release.
@@ -75,7 +72,7 @@
 //!   [`DIAG_OPID_CONFLICT`].
 //! * S3 WHAT IS RECORDED under an `op_id`: only an outcome that APPLIED a change (READY). A FAILED
 //!   or REFUSED answer with nothing applied is NOT recorded, so a retry with the same `op_id` is
-//!   evaluated afresh; a short-buffer REFUSED is never recorded.
+//!   evaluated afresh; a short-buffer FAILED (M-SB) is never recorded.
 //! * S4 RETENTION: dedupe is DURABLE (it survives a store restart) and an `op_id` is remembered at
 //!   least [`OP_ID_RETENTION_SECS`] (24 h). The kernel never re-issues an `op_id` older than that,
 //!   and a store treats an `op_id` it does not know as new.
@@ -125,9 +122,9 @@ pub struct HostBlobs {
     pub bytes: HostBuf,
 }
 
-/// The `out` of a request-path single-value read into a [`HostBuf`] (THE SHORT-BUFFER RULE: on
-/// READY `written` bytes are in the buffer and `needed == 0`; a value over the capacity is FAILED
-/// with `written == 0` and `needed` its full length).
+/// The `out` of a request-path single-value read into a [`HostBuf`]: on READY `written` bytes are
+/// in the buffer and `needed == 0`; a value over the capacity is the short-buffer answer (M-SB, on
+/// [`OutHead`]) with `needed` its full length.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct HostBytesOut {
@@ -143,9 +140,9 @@ pub struct HostBytesOut {
     pub needed: u64,
 }
 
-/// The `out` of a request-path list written into host buffers (THE SHORT-BUFFER RULE: on READY
-/// `items_written` items and `bytes_written` bytes are in the buffers and both `needed_*` are `0`;
-/// a list over either capacity is FAILED with nothing written and the full sizes in `needed_*`).
+/// The `out` of a request-path list written into host buffers: on READY `items_written` items and
+/// `bytes_written` bytes are in the buffers and both `needed_*` are `0`; a list over either
+/// capacity is the short-buffer answer (M-SB, on [`OutHead`]) with the full sizes in `needed_*`.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct HostListOut {

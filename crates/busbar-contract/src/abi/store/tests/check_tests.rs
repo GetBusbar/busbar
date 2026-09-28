@@ -88,6 +88,7 @@ fn reserve_out(grants_len: usize, reason: u32, failed_cell: u32) -> ReserveOut {
         grants_len,
         reason,
         failed_cell,
+        needed_grants: 0,
     }
 }
 
@@ -227,6 +228,7 @@ fn release_out(released_len: usize) -> SliceReleaseOut {
     SliceReleaseOut {
         head: head(),
         released_len,
+        needed_released: 0,
     }
 }
 
@@ -305,7 +307,7 @@ fn a_found_outside_the_vocabulary_is_fault() {
 fn needed_on_ready_is_fault() {
     assert_eq!(
         check_record_get(R, &bytes_out(FOUND, 1, 9), 512),
-        Err(Fault::NeededOnReady)
+        Err(Fault::NeededNotFailed)
     );
 }
 
@@ -423,7 +425,7 @@ fn list_needed_on_ready_is_fault() {
     let host = b.host();
     assert_eq!(
         check_list_plane_records(R, &list_out(0, 0, 1, 0), &host, &[]),
-        Err(Fault::NeededOnReady)
+        Err(Fault::NeededNotFailed)
     );
 }
 
@@ -806,5 +808,126 @@ fn window_caps_refusal_names_a_cap() {
     assert_eq!(
         check_window_caps(Outcome::Ready, LIST_ITEMS_HARD_MAX + 1, None),
         Err(Fault::CountOverCap)
+    );
+}
+
+// ── M-SB: the short-buffer answer ────────────────────────────────────────────────────────────
+
+fn short_reserve(needed: u64) -> ReserveOut {
+    ReserveOut {
+        needed_grants: needed,
+        ..reserve_out(0, 0, RESERVE_NO_FAILED_CELL)
+    }
+}
+
+#[test]
+fn reserve_short_answer_passes() {
+    let cells = [cell(1), cell(1)];
+    assert_eq!(check_reserve(F, &short_reserve(2), &cells, 1, &[]), Ok(()));
+}
+
+#[test]
+fn reserve_needed_with_a_non_failed_outcome_is_fault() {
+    let cells = [cell(1)];
+    for o in [R, Outcome::Refused, Outcome::Pending] {
+        assert_eq!(
+            check_reserve(o, &short_reserve(2), &cells, 1, &[grant(1)]),
+            Err(Fault::NeededNotFailed)
+        );
+    }
+}
+
+#[test]
+fn reserve_needed_within_the_capacity_is_fault() {
+    let cells = [cell(1), cell(1)];
+    assert_eq!(
+        check_reserve(F, &short_reserve(2), &cells, 2, &[]),
+        Err(Fault::NeededWithinCap)
+    );
+}
+
+#[test]
+fn reserve_short_answer_with_a_reason_is_fault() {
+    let out = ReserveOut {
+        reason: RESERVE_EXHAUSTED,
+        ..short_reserve(2)
+    };
+    assert_eq!(
+        check_reserve(F, &out, &[cell(1), cell(1)], 1, &[]),
+        Err(Fault::Vocabulary)
+    );
+}
+
+#[test]
+fn reserve_short_answer_naming_a_cell_is_fault() {
+    let out = ReserveOut {
+        failed_cell: 0,
+        ..short_reserve(2)
+    };
+    assert_eq!(
+        check_reserve(F, &out, &[cell(1), cell(1)], 1, &[]),
+        Err(Fault::FailedCellOutOfRange)
+    );
+}
+
+#[test]
+fn reserve_short_answer_needing_other_than_one_grant_per_cell_is_fault() {
+    assert_eq!(
+        check_reserve(F, &short_reserve(3), &[cell(1), cell(1)], 1, &[]),
+        Err(Fault::CountMismatch)
+    );
+}
+
+#[test]
+fn reserve_needed_over_the_hard_max_is_fault() {
+    assert_eq!(
+        check_reserve(F, &short_reserve(u64::from(u32::MAX)), &[cell(1)], 0, &[]),
+        Err(Fault::NeededTooLarge)
+    );
+}
+
+fn short_release(needed: u64) -> SliceReleaseOut {
+    SliceReleaseOut {
+        needed_released: needed,
+        ..release_out(0)
+    }
+}
+
+#[test]
+fn slice_release_short_answer_rules() {
+    let items = [item(1), item(1)];
+    assert_eq!(
+        check_slice_release(F, &short_release(2), &items, 1, &[]),
+        Ok(())
+    );
+    assert_eq!(
+        check_slice_release(R, &short_release(2), &items, 2, &[1, 1]),
+        Err(Fault::NeededNotFailed)
+    );
+    assert_eq!(
+        check_slice_release(F, &short_release(2), &items, 2, &[]),
+        Err(Fault::NeededWithinCap)
+    );
+    assert_eq!(
+        check_slice_release(F, &short_release(3), &items, 1, &[]),
+        Err(Fault::CountMismatch)
+    );
+    assert_eq!(
+        check_slice_release(F, &short_release(LIST_ITEMS_HARD_MAX + 1), &items, 1, &[]),
+        Err(Fault::NeededTooLarge)
+    );
+}
+
+#[test]
+fn needed_with_refused_is_fault_on_reads_and_lists() {
+    assert_eq!(
+        check_record_get(Outcome::Refused, &bytes_out(FOUND, 0, 900), 512),
+        Err(Fault::NeededNotFailed)
+    );
+    let mut b = Bufs::new();
+    let host = b.host();
+    assert_eq!(
+        check_list_plane_records(Outcome::Refused, &list_out(0, 0, 9, 0), &host, &[]),
+        Err(Fault::NeededNotFailed)
     );
 }

@@ -1207,14 +1207,22 @@ fn compute_layout() -> String {
         StoreReserveIn,
         [head, op_id, epoch, cells, cells_len, grants, grants_cap]
     );
-    record!(s, StoreReserveOut, [head, grants_len, reason, failed_cell]);
+    record!(
+        s,
+        StoreReserveOut,
+        [head, grants_len, reason, failed_cell, needed_grants]
+    );
     record!(s, StoreReleaseItem, [slice_id, unspent]);
     record!(
         s,
         StoreSliceReleaseIn,
         [head, op_id, epoch, items, items_len, released, released_cap]
     );
-    record!(s, StoreSliceReleaseOut, [head, released_len]);
+    record!(
+        s,
+        StoreSliceReleaseOut,
+        [head, released_len, needed_released]
+    );
     record!(s, StoreUsageCell, [bucket, window_start, delta]);
     record!(s, StoreAddUsageBatchIn, [head, op_id, cells, cells_len]);
     record!(s, StoreOpBlobsIn, [head, op_id, records, records_len]);

@@ -150,7 +150,8 @@ pub struct ReserveIn {
     /// 2026-09-28: a request-path result's buffer is named in the `in`, never in the `out` the
     /// host zeroes). One grant per cell, in cell order.
     pub grants: *mut CellGrant,
-    /// Its capacity, `>= cells_len`. A smaller capacity is REFUSED with nothing applied.
+    /// Its capacity. Below `cells_len` the store applies nothing and answers FAILED with
+    /// `needed_grants = cells_len` (the short-buffer answer, M-SB, stated on [`OutHead`](crate::abi::mechanism::call::OutHead)).
     pub grants_cap: usize,
 }
 
@@ -158,9 +159,11 @@ pub struct ReserveIn {
 /// [`ReserveIn::grants`]).
 ///
 /// On READY the store has written one grant per cell into the host's array and
-/// `grants_len == cells_len`. On FAILED nothing is written, `grants_len == 0` and `reason` is one
-/// of [`RESERVE_EXHAUSTED`], [`RESERVE_STALE_EPOCH`], [`RESERVE_UNAVAILABLE`], [`RESERVE_NO_CAP`].
-/// FAILED with a reason outside 1-4, or a `failed_cell` that is neither below `cells_len` nor
+/// `grants_len == cells_len`. On FAILED nothing is written and `grants_len == 0`: either a
+/// short buffer (`needed_grants > grants_cap`, `reason == 0`, M-SB) or a refusal of the draw
+/// (`needed_grants == 0`, `reason` one of [`RESERVE_EXHAUSTED`], [`RESERVE_STALE_EPOCH`],
+/// [`RESERVE_UNAVAILABLE`], [`RESERVE_NO_CAP`]). A short answer is never recorded under the
+/// `op_id` (S3). A refusal with a reason outside 1-4, or a `failed_cell` that is neither below `cells_len` nor
 /// [`RESERVE_NO_FAILED_CELL`], is FAULT; READY with `grants_len != cells_len`, a grant other than
 /// the cell's whole `amount` (a partial grant), `reason != 0` or a named `failed_cell` is FAULT
 /// ([`super::check::check_reserve`]).
@@ -177,6 +180,8 @@ pub struct ReserveOut {
     /// `ChainRefused { at }`); [`RESERVE_NO_FAILED_CELL`] when none applies ("window caps"
     /// correction (3)).
     pub failed_cell: u32,
+    /// On a short FAILED, how many grants the answer needs (`cells_len`); `0` otherwise (M-SB).
+    pub needed_grants: u64,
 }
 
 /// [`ReserveOut::failed_cell`]: no cell is named (READY, or a failure no single cell caused).
@@ -214,7 +219,8 @@ pub struct SliceReleaseIn {
     /// The HOST-owned array the released amounts are written into, per item in order
     /// (mechanism memory class (i); ARCHITECT 2026-09-28: named in the `in`, never in the `out`).
     pub released: *mut u64,
-    /// Its capacity, `>= items_len`. A smaller capacity is REFUSED with nothing applied.
+    /// Its capacity. Below `items_len` the store applies nothing and answers FAILED with
+    /// `needed_released = items_len` (the short-buffer answer, M-SB, stated on [`OutHead`](crate::abi::mechanism::call::OutHead)).
     pub released_cap: usize,
 }
 
@@ -231,6 +237,8 @@ pub struct SliceReleaseOut {
     pub head: OutHead,
     /// How many amounts were written.
     pub released_len: usize,
+    /// On a short FAILED, how many amounts the answer needs (`items_len`); `0` otherwise (M-SB).
+    pub needed_released: u64,
 }
 
 /// One cell of the token ledger and its signed delta: the fixed (bucket, window) plus the tree's

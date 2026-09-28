@@ -109,12 +109,13 @@ pin!(
 );
 pin!(
     ReserveOut,
-    112,
+    120,
     8,
     head = 0,
     grants_len = 96,
     reason = 104,
-    failed_cell = 108
+    failed_cell = 108,
+    needed_grants = 112
 );
 pin!(ReleaseItem, 16, 8, slice_id = 0, unspent = 8);
 pin!(
@@ -129,7 +130,14 @@ pin!(
     released = 128,
     released_cap = 136
 );
-pin!(SliceReleaseOut, 104, 8, head = 0, released_len = 96);
+pin!(
+    SliceReleaseOut,
+    112,
+    8,
+    head = 0,
+    released_len = 96,
+    needed_released = 104
+);
 pin!(UsageCell, 48, 8, bucket = 0, window_start = 16, delta = 24);
 pin!(
     AddUsageBatchIn,

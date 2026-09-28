@@ -33,8 +33,9 @@ pub const NEEDED_BYTES_HARD_MAX: u64 = u32::MAX as u64;
 pub enum Fault {
     /// A reason, verdict, disposition, `found` or blob format outside the op's vocabulary.
     Vocabulary,
-    /// READY with a non-zero `needed_*`.
-    NeededOnReady,
+    /// A non-zero `needed_*` with an outcome other than FAILED (M-SB, on
+    /// [`OutHead`](crate::abi::mechanism::call::OutHead)).
+    NeededNotFailed,
     /// A `needed_bytes` above `u32::MAX`, or a `needed_<count>` above its hard maximum.
     NeededTooLarge,
     /// FAILED with a non-zero `needed_*` that the capacity given already covers (it would waste the
@@ -87,6 +88,7 @@ pub fn check_reserve(
 ) -> Result<(), Fault> {
     let cells_len = u(cells.len());
     check_cells_len(cells_len)?;
+    needed_only_on_failed(outcome, out.needed_grants != 0)?;
     match outcome {
         Outcome::Ready => {
             if out.reason != RESERVE_OK {
@@ -113,6 +115,20 @@ pub fn check_reserve(
             if out.grants_len != 0 {
                 return Err(Fault::WrittenOnFailed);
             }
+            if out.needed_grants != 0 {
+                // The short-buffer answer (M-SB): no reason, no cell, one grant per cell needed.
+                if out.reason != RESERVE_OK {
+                    return Err(Fault::Vocabulary);
+                }
+                if out.failed_cell != RESERVE_NO_FAILED_CELL {
+                    return Err(Fault::FailedCellOutOfRange);
+                }
+                short(out.needed_grants, grants_cap, u64::from(u32::MAX - 1))?;
+                if out.needed_grants != cells_len {
+                    return Err(Fault::CountMismatch);
+                }
+                return Ok(());
+            }
             if out.reason == RESERVE_OK || out.reason > RESERVE_NO_CAP {
                 return Err(Fault::Vocabulary);
             }
@@ -136,6 +152,7 @@ pub fn check_slice_release(
     released_cap: u64,
     released: &[u64],
 ) -> Result<(), Fault> {
+    needed_only_on_failed(outcome, out.needed_released != 0)?;
     match outcome {
         Outcome::Ready => {
             if u(out.released_len) > released_cap {
@@ -149,9 +166,28 @@ pub fn check_slice_release(
             }
             Ok(())
         }
-        Outcome::Failed if out.released_len != 0 => Err(Fault::WrittenOnFailed),
+        Outcome::Failed => {
+            if out.released_len != 0 {
+                return Err(Fault::WrittenOnFailed);
+            }
+            if out.needed_released != 0 {
+                short(out.needed_released, released_cap, LIST_ITEMS_HARD_MAX)?;
+                if out.needed_released != u(items.len()) {
+                    return Err(Fault::CountMismatch);
+                }
+            }
+            Ok(())
+        }
         _ => Ok(()),
     }
+}
+
+/// M-SB: a non-zero `needed_*` with any outcome other than FAILED is FAULT.
+fn needed_only_on_failed(outcome: Outcome, any_needed: bool) -> Result<(), Fault> {
+    if any_needed && outcome != Outcome::Failed {
+        return Err(Fault::NeededNotFailed);
+    }
+    Ok(())
 }
 
 /// `window_caps`' answer (m3-inputs "window caps" correction (1)): the push is atomic, so READY
@@ -200,11 +236,9 @@ fn check_bytes(outcome: Outcome, out: &HostBytesOut, cap: u64, hard: u64) -> Res
     if out.found != FOUND && out.found != ABSENT {
         return Err(Fault::Vocabulary);
     }
+    needed_only_on_failed(outcome, out.needed != 0)?;
     match outcome {
         Outcome::Ready => {
-            if out.needed != 0 {
-                return Err(Fault::NeededOnReady);
-            }
             if out.written > cap || out.written > hard {
                 return Err(Fault::CountOverCap);
             }
@@ -271,11 +305,9 @@ fn check_list(
     items_len: usize,
     spans: impl Iterator<Item = (usize, u64)>,
 ) -> Result<(), Fault> {
+    needed_only_on_failed(outcome, out.needed_items != 0 || out.needed_bytes != 0)?;
     match outcome {
         Outcome::Ready => {
-            if out.needed_items != 0 || out.needed_bytes != 0 {
-                return Err(Fault::NeededOnReady);
-            }
             if out.items_written > bufs.items_cap || out.bytes_written > bufs.bytes_cap {
                 return Err(Fault::CountOverCap);
             }
