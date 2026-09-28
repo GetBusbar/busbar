@@ -372,9 +372,9 @@ abi = ["crates/busbar-contract"]
 
 [gate.ceiling_raises."rules.loc-ceilings.kernel_ceiling"]
 file    = "qa/construction.toml"
-from    = 54915
-to      = 55056
-because = "ARCHITECT 2026-09-28: R-KERNEL, H1 KERNEL<>PLUGINS 3a HostSlots. busbar-kernel/src/host_services.rs implements KernelServices (clock.now, dest.judge over egress check_structure/pin_answer), the kernel's host-services seam. Measured by cargo xtask gate construction: 54915 before, 55056 after, +141. The ceiling rises by exactly that."
+from    = 55056
+to      = 55077
+because = "ARCHITECT 2026-09-28: R-KERNEL, owner 2026-09-28 plugin log files ruling (BUSBAR-1.6.0.md #85 and THE DESIGN, §11.2 Plugin logging). The kernel carries the plugins.logs config grammar (the field, its default and a five-field struct), kernel config by necessity because the config-schema gate reads only kernel config, and refuses a bad value at the one plugins_preflight seam every path runs. Measured by cargo xtask gate construction: 55056 before, 55077 after, +21. The ceiling rises by exactly that."
 
 # ── THE KERNEL CEILING, RE-ARMED BY FOLD-LLM C2' — EXPIRED AND STRUCK
 #
@@ -1246,7 +1246,9 @@ kernel_crate = "busbar-kernel"
 # usage lines and metering-row evidence), declared above. Measured 54842 before, 54915 after, +73.
 # RE-ARMED 54915 -> 55056 for H1 KERNEL<>PLUGINS 3a HostSlots (clock.now, dest.judge over egress
 # check_structure/pin_answer), declared above. Measured 54915 before, 55056 after, +141.
-kernel_ceiling = 55056
+# ── RE-ARMED 55056 -> 55077 for the plugins.logs config grammar and its pre-flight refusal
+# (plugin log files, owner 2026-09-28), declared above. Measured 55056 before and 55077 after, +21.
+kernel_ceiling = 55077
 # `caps_crate = "busbar-caps"` WAS HERE AND IS STRUCK, 2026-09-22. The crate was folded into
 # busbar-contract by 2c9eddecf ("W2.c: fold busbar-caps into busbar-contract"); its types live at
 # `crates/busbar-contract/src/caps/`, whose own module header says "Folded from the former
