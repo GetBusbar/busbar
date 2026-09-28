@@ -6,16 +6,6 @@
 # Regenerate with `cargo xtask gate plugin-closure-deps --write`.
 
 [[finding]]
-rule = "plugin-closure-deps:busbar-deps"
-file = "crates/busbar-plane-llm/Cargo.toml"
-item = "busbar-llm-codec"
-
-[[finding]]
-rule = "plugin-closure-deps:busbar-deps"
-file = "crates/busbar-plane-streaming/Cargo.toml"
-item = "busbar-voice-codec"
-
-[[finding]]
 rule = "plugin-closure-deps:runtime-deps"
 file = "crates/busbar-plane-a2a/Cargo.toml"
 item = "tracing (via busbar-contract)"
@@ -28,7 +18,7 @@ item = "tracing (via busbar-contract)"
 [[finding]]
 rule = "plugin-closure-deps:runtime-deps"
 file = "crates/busbar-plane-llm/Cargo.toml"
-item = "tracing (via busbar-contract)"
+item = "tracing"
 
 [[finding]]
 rule = "plugin-closure-deps:runtime-deps"
@@ -104,6 +94,11 @@ item = "tracing (via busbar-contract)"
 rule = "plugin-closure-deps:runtime-deps"
 file = "crates/store-memory/Cargo.toml"
 item = "tracing (via busbar-contract)"
+
+[[finding]]
+rule = "plugin-closure-deps:std-io"
+file = "crates/busbar-plane-streaming/src/codec/ir/codec/tests.rs"
+item = "std::fs"
 
 [[finding]]
 rule = "plugin-closure-deps:std-io"
