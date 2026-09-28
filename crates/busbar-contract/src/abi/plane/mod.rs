@@ -775,6 +775,75 @@ pub struct ServeOut {
     pub _reserved: u32,
 }
 
+// THE SDK's VIEW OF THE PLANE TABLE (`abi::sdk::door`): each kind op's `in`/`out`, stated next to
+// the table, so `plugin_door!` refuses a plane plugin that wires a kind op to another op's
+// structs. Every struct named here is plain data (integers, raw pointers, `AbiStr`/`Blob`, nested
+// plain structs): every bit pattern is a valid value, which is what `AbiIn`/`AbiOut` promise.
+//
+// SAFETY (all below): `#[repr(C)]`, leading with `InHead`/`OutHead`, plain data only.
+unsafe impl super::sdk::door::AbiIn for ArriveIn {}
+unsafe impl super::sdk::door::AbiIn for OnPieceIn {}
+unsafe impl super::sdk::door::AbiIn for RefusalIn {}
+unsafe impl super::sdk::door::AbiIn for ServeIn {}
+unsafe impl super::sdk::door::AbiOut for ArriveOut {}
+unsafe impl super::sdk::door::AbiOut for OnPieceOut {}
+unsafe impl super::sdk::door::AbiOut for RefusalOut {}
+unsafe impl super::sdk::door::AbiOut for ServeOut {}
+
+/// Each plane kind op's `in`/`out` for [`plugin_door!`](crate::plugin_door), per [`Ops`]' docs. A
+/// plugin wiring a slot to another op's structs does not compile:
+///
+/// ```compile_fail,E0271
+/// use busbar_contract::abi::plane::{ArriveIn, ArriveOut, OnPieceIn, OnPieceOut};
+/// use busbar_contract::abi::plane::{RefusalIn, RefusalOut, ServeIn, ServeOut};
+/// use busbar_contract::abi::mechanism::call::{InHead, OutHead, Outcome};
+/// use busbar_contract::abi::mechanism::lifecycle::*;
+/// use busbar_contract::abi::sdk::door::Slot;
+/// # use std::ffi::c_void;
+/// # macro_rules! ready { ($n:ident, $i:ty, $o:ty) => {
+/// #     struct $n;
+/// #     impl Slot for $n { type In = $i; type Out = $o;
+/// #         fn call(_: *mut c_void, _: &$i, _: &mut $o) -> Outcome { Outcome::Ready } }
+/// # } }
+/// # ready!(V, ValidateIn, OutHead); ready!(Op_, OpenIn, OpenOut); ready!(Rf, RefreshIn, OutHead);
+/// # ready!(Rt, GenIn, OutHead); ready!(Tk, TickIn, TickOut); ready!(Dr, DriveIn, OutHead);
+/// # ready!(Cn, CancelIn, CancelOut); ready!(Rl, ReleaseIn, OutHead); ready!(Cl, InHead, OutHead);
+/// # ready!(Arrive, ArriveIn, ArriveOut); ready!(Refusal, RefusalIn, RefusalOut);
+/// # ready!(Serve, ServeIn, ServeOut); ready!(Hydrate, GenIn, OutHead);
+/// # ready!(Start, GenIn, OutHead);
+/// ready!(OnPiece, RefusalIn, RefusalOut); // `refusal`'s structs on `on_piece`: refused
+/// busbar_contract::plugin_door! {
+///     ops: busbar_contract::abi::plane::Ops,
+///     statement: busbar_contract::abi::sdk::door::statement("wrong", "0", 1),
+///     lifecycle: { validate: V, open: Op_, refresh: Rf, retire: Rt, tick: Tk, drive: Dr,
+///                  cancel: Cn, release: Rl, close: Cl },
+///     kind_ops: { arrive: Arrive, on_piece: OnPiece, refusal: Refusal, serve: Serve,
+///                 hydrate: Hydrate, start: Start },
+/// }
+/// # fn main() { let _ = door(); }
+/// ```
+///
+/// With `OnPiece` reading [`OnPieceIn`] and writing [`OnPieceOut`] the same plugin compiles
+/// (`abi/sdk/tests/door_tests.rs`, `a_plane_plugin_wires_every_kind_op`).
+macro_rules! kind_slots {
+    ($($slot:ident => $in:ty, $out:ty;)*) => {$(
+        // SAFETY: the structs `Ops`' doc states for this slot.
+        unsafe impl super::sdk::door::KindSlot<{ slot::$slot }> for Ops {
+            type In = $in;
+            type Out = $out;
+        }
+    )*};
+}
+
+kind_slots! {
+    ARRIVE => ArriveIn, ArriveOut;
+    ON_PIECE => OnPieceIn, OnPieceOut;
+    REFUSAL => RefusalIn, RefusalOut;
+    SERVE => ServeIn, ServeOut;
+    HYDRATE => GenIn, OutHead;
+    START => GenIn, OutHead;
+}
+
 #[cfg(test)]
 #[path = "../tests/plane_kind_tests.rs"]
 mod tests;

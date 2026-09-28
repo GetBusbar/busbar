@@ -936,6 +936,116 @@ pub struct AdoptIn {
     pub sink: FramerSink,
 }
 
+// THE SDK's VIEW OF THE TRANSPORT TABLE (`abi::sdk::door`): each kind op's `in`/`out`, stated
+// next to the table, so `plugin_door!` refuses a transport plugin that wires a kind op to
+// another op's structs. Every struct named here is plain data (integers, raw pointers,
+// `AbiStr`, nested plain structs): every bit pattern is a valid value, which is what
+// `AbiIn`/`AbiOut` promise.
+//
+// SAFETY (all below): `#[repr(C)]`, leading with `InHead`/`OutHead`, plain data only.
+unsafe impl super::sdk::door::AbiIn for ListenIn {}
+unsafe impl super::sdk::door::AbiIn for AcceptIn {}
+unsafe impl super::sdk::door::AbiIn for DialIn {}
+unsafe impl super::sdk::door::AbiIn for ReadIn {}
+unsafe impl super::sdk::door::AbiIn for WriteIn {}
+unsafe impl super::sdk::door::AbiIn for ConnIn {}
+unsafe impl super::sdk::door::AbiIn for ShutIn {}
+unsafe impl super::sdk::door::AbiIn for ArrivalIn {}
+unsafe impl super::sdk::door::AbiIn for LocateIn {}
+unsafe impl super::sdk::door::AbiIn for BeginIn {}
+unsafe impl super::sdk::door::AbiIn for IngestIn {}
+unsafe impl super::sdk::door::AbiIn for EmitIn {}
+unsafe impl super::sdk::door::AbiIn for EncodeIn {}
+unsafe impl super::sdk::door::AbiIn for RefuseIn {}
+unsafe impl super::sdk::door::AbiIn for FinishIn {}
+unsafe impl super::sdk::door::AbiIn for FramingIn {}
+unsafe impl super::sdk::door::AbiIn for AdoptIn {}
+unsafe impl super::sdk::door::AbiOut for ListenOut {}
+unsafe impl super::sdk::door::AbiOut for AcceptOut {}
+unsafe impl super::sdk::door::AbiOut for ConnOut {}
+unsafe impl super::sdk::door::AbiOut for IoOut {}
+unsafe impl super::sdk::door::AbiOut for ArrivalOut {}
+unsafe impl super::sdk::door::AbiOut for LocateOut {}
+unsafe impl super::sdk::door::AbiOut for FramerOut {}
+
+/// Each transport kind op's `in`/`out` for [`plugin_door!`](crate::plugin_door), per [`Ops`]'
+/// docs. A plugin wiring a slot to another op's structs does not compile:
+///
+/// ```compile_fail,E0271
+/// use busbar_contract::abi::transport::{AcceptIn, AcceptOut, AdoptIn, ArrivalIn, ArrivalOut};
+/// use busbar_contract::abi::transport::{BeginIn, ConnIn, ConnOut, DialIn, EmitIn, EncodeIn};
+/// use busbar_contract::abi::transport::{FinishIn, FramerOut, FramingIn, IngestIn, IoOut};
+/// use busbar_contract::abi::transport::{ListenIn, ListenOut, LocateIn, LocateOut, OutHead};
+/// use busbar_contract::abi::transport::{ReadIn, RefuseIn, ShutIn, WriteIn};
+/// use busbar_contract::abi::mechanism::call::{InHead, OutHead, Outcome};
+/// use busbar_contract::abi::mechanism::lifecycle::*;
+/// use busbar_contract::abi::sdk::door::Slot;
+/// # use std::ffi::c_void;
+/// # macro_rules! ready { ($n:ident, $i:ty, $o:ty) => {
+/// #     struct $n;
+/// #     impl Slot for $n { type In = $i; type Out = $o;
+/// #         fn call(_: *mut c_void, _: &$i, _: &mut $o) -> Outcome { Outcome::Ready } }
+/// # } }
+/// # ready!(V, ValidateIn, OutHead); ready!(Op_, OpenIn, OpenOut); ready!(Rf, RefreshIn, OutHead);
+/// # ready!(Rt, GenIn, OutHead); ready!(Tk, TickIn, TickOut); ready!(Dr, DriveIn, OutHead);
+/// # ready!(Cn, CancelIn, CancelOut); ready!(Rl, ReleaseIn, OutHead); ready!(Cl, InHead, OutHead);
+/// # ready!(Accept, AcceptIn, AcceptOut); ready!(Dial, DialIn, ConnOut);
+/// # ready!(Read, ReadIn, IoOut); ready!(Write, WriteIn, IoOut); ready!(Flush, ConnIn, OutHead);
+/// # ready!(Shut, ShutIn, OutHead); ready!(Arrival, ArrivalIn, ArrivalOut);
+/// # ready!(Locate, LocateIn, LocateOut); ready!(Begin, BeginIn, FramerOut);
+/// # ready!(Ingest, IngestIn, FramerOut); ready!(Emit, EmitIn, FramerOut);
+/// # ready!(Encode, EncodeIn, FramerOut); ready!(Refuse, RefuseIn, FramerOut);
+/// # ready!(Finish, FinishIn, FramerOut); ready!(Detach, FramingIn, FramerOut);
+/// # ready!(Adopt, AdoptIn, FramerOut); ready!(Timer, FramingIn, FramerOut);
+/// ready!(Listen, AcceptIn, AcceptOut); // `accept`'s structs on `listen`: refused
+/// busbar_contract::plugin_door! {
+///     ops: busbar_contract::abi::transport::Ops,
+///     statement: busbar_contract::abi::sdk::door::statement("wrong", "0", 1),
+///     lifecycle: { validate: V, open: Op_, refresh: Rf, retire: Rt, tick: Tk, drive: Dr,
+///                  cancel: Cn, release: Rl, close: Cl },
+///     kind_ops: {
+///         listen: Listen, accept: Accept, dial: Dial, read: Read, write: Write, flush: Flush,
+///         shut: Shut, arrival: Arrival, locate: Locate, begin: Begin, ingest: Ingest,
+///         emit: Emit, encode: Encode, refuse: Refuse, finish: Finish, detach: Detach,
+///         adopt: Adopt, timer: Timer
+///     },
+/// }
+/// # fn main() { let _ = door(); }
+/// ```
+///
+/// With `Listen` reading [`ListenIn`] and writing [`ListenOut`] the same plugin compiles
+/// (`abi/sdk/tests/door_tests.rs`, `a_transport_plugin_wires_every_kind_op`).
+macro_rules! kind_slots {
+    ($($slot:ident => $in:ty, $out:ty;)*) => {$(
+        // SAFETY: the structs `Ops`' doc states for this slot.
+        unsafe impl super::sdk::door::KindSlot<{ slot::$slot }> for Ops {
+            type In = $in;
+            type Out = $out;
+        }
+    )*};
+}
+
+kind_slots! {
+    LISTEN => ListenIn, ListenOut;
+    ACCEPT => AcceptIn, AcceptOut;
+    DIAL => DialIn, ConnOut;
+    READ => ReadIn, IoOut;
+    WRITE => WriteIn, IoOut;
+    FLUSH => ConnIn, OutHead;
+    SHUT => ShutIn, OutHead;
+    ARRIVAL => ArrivalIn, ArrivalOut;
+    LOCATE => LocateIn, LocateOut;
+    BEGIN => BeginIn, FramerOut;
+    INGEST => IngestIn, FramerOut;
+    EMIT => EmitIn, FramerOut;
+    ENCODE => EncodeIn, FramerOut;
+    REFUSE => RefuseIn, FramerOut;
+    FINISH => FinishIn, FramerOut;
+    DETACH => FramingIn, FramerOut;
+    ADOPT => AdoptIn, FramerOut;
+    TIMER => FramingIn, FramerOut;
+}
+
 #[cfg(test)]
 #[path = "../tests/transport_kind_tests.rs"]
 mod tests;

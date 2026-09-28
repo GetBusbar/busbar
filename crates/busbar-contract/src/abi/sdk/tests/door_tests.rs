@@ -1299,3 +1299,186 @@ fn a_store_plugin_wires_every_kind_op() {
         assert!(s.is_some(), "store kind op {i} is NULL");
     }
 }
+
+mod plane_plugin {
+    //! A REAL kind table: every plane kind op wired to the structs `abi::plane` states for it.
+    use super::*;
+    use crate::abi::plane::{ArriveIn, ArriveOut, OnPieceIn, OnPieceOut, RefusalIn, RefusalOut};
+    use crate::abi::plane::{ServeIn, ServeOut};
+
+    macro_rules! answers {
+        ($name:ident, $in:ty, $out:ty, $outcome:expr) => {
+            pub struct $name;
+            impl Slot for $name {
+                type In = $in;
+                type Out = $out;
+                fn call(_: *mut c_void, _: &$in, _: &mut $out) -> Outcome {
+                    $outcome
+                }
+            }
+        };
+    }
+    answers!(Arrive, ArriveIn, ArriveOut, Outcome::Ready);
+    answers!(OnPiece, OnPieceIn, OnPieceOut, Outcome::Refused);
+    answers!(Refusal, RefusalIn, RefusalOut, Outcome::Failed);
+    answers!(Serve, ServeIn, ServeOut, Outcome::Ready);
+    answers!(Hydrate, GenIn, OutHead, Outcome::Ready);
+    answers!(Start, GenIn, OutHead, Outcome::Ready);
+
+    crate::plugin_door! {
+        ops: crate::abi::plane::Ops,
+        statement: crate::abi::sdk::door::statement("sdk-door-plane", "0.0.1", 1),
+        lifecycle: {
+            validate: Validate, open: Open, refresh: Refresh, retire: Retire, tick: Tick,
+            drive: Drive, cancel: Cancel, release: Release, close: Close,
+        },
+        kind_ops: {
+            arrive: Arrive, on_piece: OnPiece, refusal: Refusal, serve: Serve, hydrate: Hydrate,
+            start: Start,
+        },
+    }
+}
+
+#[test]
+fn a_plane_plugin_wires_every_kind_op() {
+    use crate::abi::plane::{slot as plane_slot, ArriveIn, ArriveOut, Ops};
+    // SAFETY: the macro's `'static` door and its plane table.
+    let d = unsafe { &*plane_plugin::door() };
+    let t = unsafe { &*d.ops.cast::<Ops>() };
+    assert_eq!(d.kind, KindCode::Plane as u32);
+    assert_eq!(d.kind_abi, crate::abi::plane::ABI_VERSION);
+    assert_eq!(t.head.slots, crate::abi::plane::SLOTS);
+    assert_eq!(t.head.size as usize, size_of::<Ops>());
+
+    // `arrive`, the first kind slot, answers only its own index, reading a whole `ArriveIn`.
+    // SAFETY: `ArriveIn` is plain data; all-zero is valid.
+    let mut input: ArriveIn = unsafe { std::mem::zeroed() };
+    input.head = in_head::<ArriveIn>(plane_slot::ARRIVE, Ticket::NONE);
+    // SAFETY: as above.
+    let mut out: ArriveOut = unsafe { std::mem::zeroed() };
+    out.head = prefilled_head(size_of::<ArriveOut>());
+    assert_eq!(call(t.arrive, &input, &mut out), Outcome::Ready);
+    assert_eq!(out.head.outcome.outcome(), Outcome::Ready);
+    input.head.op = plane_slot::ON_PIECE;
+    out.head = prefilled_head(size_of::<ArriveOut>());
+    assert_eq!(call(t.arrive, &input, &mut out), Outcome::Fault);
+
+    // `start`, the last kind slot, likewise.
+    // SAFETY: plain data; all-zero is valid.
+    let mut input: GenIn = unsafe { std::mem::zeroed() };
+    input.head = in_head::<GenIn>(plane_slot::START, Ticket::NONE);
+    // SAFETY: as above.
+    let mut out: OutHead = prefilled_head(size_of::<OutHead>());
+    assert_eq!(call(t.start, &input, &mut out), Outcome::Ready);
+    assert_eq!(out.outcome.outcome(), Outcome::Ready);
+
+    for (i, s) in [t.arrive, t.on_piece, t.refusal, t.serve, t.hydrate, t.start]
+        .iter()
+        .enumerate()
+    {
+        assert!(s.is_some(), "plane kind op {i} is NULL");
+    }
+}
+
+mod transport_plugin {
+    //! A REAL kind table: every transport kind op wired to the structs `abi::transport`
+    //! states for it.
+    use super::*;
+    use crate::abi::transport::{AcceptIn, AcceptOut, AdoptIn, ArrivalIn, ArrivalOut, BeginIn};
+    use crate::abi::transport::{ConnIn, ConnOut, DialIn, EmitIn, EncodeIn, FinishIn, FramerOut};
+    use crate::abi::transport::{FramingIn, IngestIn, IoOut, ListenIn, ListenOut, LocateIn};
+    use crate::abi::transport::{LocateOut, ReadIn, RefuseIn, ShutIn, WriteIn};
+
+    macro_rules! answers {
+        ($name:ident, $in:ty, $out:ty, $outcome:expr) => {
+            pub struct $name;
+            impl Slot for $name {
+                type In = $in;
+                type Out = $out;
+                fn call(_: *mut c_void, _: &$in, _: &mut $out) -> Outcome {
+                    $outcome
+                }
+            }
+        };
+    }
+    answers!(Listen, ListenIn, ListenOut, Outcome::Ready);
+    answers!(Accept, AcceptIn, AcceptOut, Outcome::Refused);
+    answers!(Dial, DialIn, ConnOut, Outcome::Failed);
+    answers!(Read, ReadIn, IoOut, Outcome::Ready);
+    answers!(Write, WriteIn, IoOut, Outcome::Refused);
+    answers!(Flush, ConnIn, OutHead, Outcome::Failed);
+    answers!(Shut, ShutIn, OutHead, Outcome::Ready);
+    answers!(Arrival, ArrivalIn, ArrivalOut, Outcome::Refused);
+    answers!(Locate, LocateIn, LocateOut, Outcome::Failed);
+    answers!(Begin, BeginIn, FramerOut, Outcome::Ready);
+    answers!(Ingest, IngestIn, FramerOut, Outcome::Refused);
+    answers!(Emit, EmitIn, FramerOut, Outcome::Failed);
+    answers!(Encode, EncodeIn, FramerOut, Outcome::Ready);
+    answers!(Refuse, RefuseIn, FramerOut, Outcome::Refused);
+    answers!(Finish, FinishIn, FramerOut, Outcome::Failed);
+    answers!(Detach, FramingIn, FramerOut, Outcome::Ready);
+    answers!(Adopt, AdoptIn, FramerOut, Outcome::Refused);
+    answers!(Timer, FramingIn, FramerOut, Outcome::Ready);
+
+    crate::plugin_door! {
+        ops: crate::abi::transport::Ops,
+        statement: crate::abi::sdk::door::statement("sdk-door-transport", "0.0.1", 1),
+        lifecycle: {
+            validate: Validate, open: Open, refresh: Refresh, retire: Retire, tick: Tick,
+            drive: Drive, cancel: Cancel, release: Release, close: Close,
+        },
+        kind_ops: {
+            listen: Listen, accept: Accept, dial: Dial, read: Read, write: Write, flush: Flush,
+            shut: Shut, arrival: Arrival, locate: Locate, begin: Begin, ingest: Ingest,
+            emit: Emit, encode: Encode, refuse: Refuse, finish: Finish, detach: Detach,
+            adopt: Adopt, timer: Timer
+        },
+    }
+}
+
+#[test]
+fn a_transport_plugin_wires_every_kind_op() {
+    use crate::abi::transport::{
+        slot as transport_slot, FramerOut, FramingIn, ListenIn, ListenOut, Ops,
+    };
+    // SAFETY: the macro's `'static` door and its transport table.
+    let d = unsafe { &*transport_plugin::door() };
+    let t = unsafe { &*d.ops.cast::<Ops>() };
+    assert_eq!(d.kind, KindCode::Transport as u32);
+    assert_eq!(d.kind_abi, crate::abi::transport::ABI_VERSION);
+    assert_eq!(t.head.slots, crate::abi::transport::SLOTS);
+    assert_eq!(t.head.size as usize, size_of::<Ops>());
+
+    // `listen`, the first kind slot, answers only its own index, reading a whole `ListenIn`.
+    // SAFETY: `ListenIn` is plain data; all-zero is valid.
+    let mut input: ListenIn = unsafe { std::mem::zeroed() };
+    input.head = in_head::<ListenIn>(transport_slot::LISTEN, Ticket::NONE);
+    // SAFETY: as above.
+    let mut out: ListenOut = unsafe { std::mem::zeroed() };
+    out.head = prefilled_head(size_of::<ListenOut>());
+    assert_eq!(call(t.listen, &input, &mut out), Outcome::Ready);
+    assert_eq!(out.head.outcome.outcome(), Outcome::Ready);
+    input.head.op = transport_slot::ACCEPT;
+    out.head = prefilled_head(size_of::<ListenOut>());
+    assert_eq!(call(t.listen, &input, &mut out), Outcome::Fault);
+
+    // `timer`, the last kind slot, likewise.
+    // SAFETY: plain data; all-zero is valid.
+    let mut input: FramingIn = unsafe { std::mem::zeroed() };
+    input.head = in_head::<FramingIn>(transport_slot::TIMER, Ticket::NONE);
+    // SAFETY: as above.
+    let mut out: FramerOut = unsafe { std::mem::zeroed() };
+    out.head = prefilled_head(size_of::<FramerOut>());
+    assert_eq!(call(t.timer, &input, &mut out), Outcome::Ready);
+    assert_eq!(out.head.outcome.outcome(), Outcome::Ready);
+
+    for (i, s) in [
+        t.listen, t.accept, t.dial, t.read, t.write, t.flush, t.shut, t.arrival, t.locate, t.begin,
+        t.ingest, t.emit, t.encode, t.refuse, t.finish, t.detach, t.adopt, t.timer,
+    ]
+    .iter()
+    .enumerate()
+    {
+        assert!(s.is_some(), "transport kind op {i} is NULL");
+    }
+}
