@@ -17,11 +17,11 @@ cargo-fuzz = true
 [dependencies]
 libfuzzer-sys = "0.4"
 
-# The codec crate exposes the concrete per-dialect readers behind its `test-support` feature (the
-# same seam its own fidelity tests use). `embeddings_read_request` dispatches straight into the
+# The LLM plane's folded-in `codec` module (no `busbar-*-codec` crate, THE DESIGN §9/#39) exposes
+# the concrete per-dialect readers. `embeddings_read_request` dispatches straight into the
 # production `read_embeddings_request` reader for each dialect — so fuzzing this entry point fuzzes
 # the real JSON/wire decode of an untrusted request body.
-busbar-llm-codec = { path = "../crates/busbar-llm-codec", features = ["test-support"] }
+busbar-plane-llm = { path = "../crates/busbar-plane-llm", features = ["test-support"] }
 
 # Fuzz harnesses are not doctested/benchmarked and must not be picked up as workspace tests.
 [[bin]]

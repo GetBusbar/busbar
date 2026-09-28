@@ -98,7 +98,7 @@ mod test_forward_entry {
         let v: LazyBody = match LazyBody::parse(&body) {
             Ok(v) => v,
             Err(_) => {
-                tracing::debug!(detail = %busbar_llm_codec::json::parse_err_log(body.len()), "request body JSON parse failed");
+                tracing::debug!(detail = %busbar_plane_llm::codec::json::parse_err_log(body.len()), "request body JSON parse failed");
                 return ingress_error(
                     ingress_protocol,
                     StatusCode::BAD_REQUEST,
@@ -505,7 +505,7 @@ fn fire_global_taps(
             with_prompt,
             request_id,
         );
-        busbar_llm_codec::json::to_vec(&busbar_kernel::hooks::wire::build(
+        busbar_plane_llm::codec::json::to_vec(&busbar_kernel::hooks::wire::build(
             busbar_kernel::hooks::wire::OP_NOTIFY,
             &req,
             &[],
@@ -1088,7 +1088,7 @@ async fn run_rewrite_pass(
             // retained bytes so every downstream reader of `body` sees the effective request.
             // Cost only on the rewrite path (a no-op request never reaches this serialize).
             if applied {
-                match busbar_llm_codec::json::to_vec(parsed) {
+                match busbar_plane_llm::codec::json::to_vec(parsed) {
                     Ok(bytes) => *body = Bytes::from(bytes),
                     // A `prompt: rw` rewrite is a TRUSTED, possibly security-critical transform. If it
                     // cannot be serialized into the retained bytes, the first hop carries it but every
@@ -1859,7 +1859,7 @@ fn derive_hop_body(
     } else {
         let parsed = match v.take() {
             Some(l) => l.into_value(),
-            None => busbar_llm_codec::json::parse(body).map_err(|_| ()),
+            None => busbar_plane_llm::codec::json::parse(body).map_err(|_| ()),
         };
         match parsed {
             Ok(hv) => Ok(Some(hv)),

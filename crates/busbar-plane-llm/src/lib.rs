@@ -27,6 +27,12 @@
 #![deny(missing_docs)]
 
 pub mod claims;
+// `#![deny(missing_docs)]` above is a rule this crate holds itself to; the folded-in codec (moved
+// unchanged from the former `busbar-llm-codec`, owner ruling R7, 2026-09-27, THE DESIGN §9/#39) was
+// never written under it, so applying it retroactively here would not be a pure move. Scoped to
+// exactly this module.
+#[allow(missing_docs)]
+pub mod codec;
 pub mod dialect;
 pub mod meta;
 pub mod plane;
@@ -34,7 +40,7 @@ pub mod plane;
 use busbar_contract::ids::LaneId;
 use busbar_contract::plugin::{AbiVersion, Kind, Plugin};
 /// A lane's declared request-shape capabilities (see [`Upstream::caps`]).
-pub use busbar_llm_codec::proto_codec::{LaneCaps, MaxOutputKey};
+pub use codec::proto_codec::{LaneCaps, MaxOutputKey};
 
 /// One configured upstream this plane may name.
 ///

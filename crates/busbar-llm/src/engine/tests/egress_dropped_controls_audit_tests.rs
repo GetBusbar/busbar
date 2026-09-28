@@ -37,7 +37,7 @@ fn openai_to_anthropic_response_format_forwards_and_translates_not_dropped() {
         "messages": [{"role": "user", "content": "hi"}],
         "response_format": {"type": "json_object"}
     });
-    let hop_bytes = bytes::Bytes::from(busbar_llm_codec::json::to_vec(&body).unwrap());
+    let hop_bytes = bytes::Bytes::from(busbar_plane_llm::codec::json::to_vec(&body).unwrap());
     // Unique principal so the assertion below reads THIS test's event out of the shared audit ring
     // without racing other tests that append to the same global log.
     let caller = "test-key-anthropic-respfmt";
@@ -104,7 +104,7 @@ fn openai_to_bedrock_tool_choice_none_forwards_and_audits_degraded() {
         }],
         "tool_choice": "none"
     });
-    let hop_bytes = bytes::Bytes::from(busbar_llm_codec::json::to_vec(&body).unwrap());
+    let hop_bytes = bytes::Bytes::from(busbar_plane_llm::codec::json::to_vec(&body).unwrap());
     let caller = "test-key-bedrock-toolnone";
     let (host, rt) = crate::engine::test_host_rt(&app);
     let out = translate_request_cross_protocol(
@@ -220,7 +220,7 @@ fn translate_onto(
     let app = TestApp::new()
         .lane(LaneSpec::new(model, protocol, "http://unused.local").lane_caps(caps))
         .build();
-    let hop_bytes = bytes::Bytes::from(busbar_llm_codec::json::to_vec(&body).unwrap());
+    let hop_bytes = bytes::Bytes::from(busbar_plane_llm::codec::json::to_vec(&body).unwrap());
     let (host, rt) = crate::engine::test_host_rt(&app);
     let out = translate_request_cross_protocol(
         &host,
@@ -370,7 +370,7 @@ fn translate_anthropic_onto_openai(
             .lane_caps(caps),
         )
         .build();
-    let hop_bytes = bytes::Bytes::from(busbar_llm_codec::json::to_vec(&body).unwrap());
+    let hop_bytes = bytes::Bytes::from(busbar_plane_llm::codec::json::to_vec(&body).unwrap());
     let (host, rt) = crate::engine::test_host_rt(&app);
     let out = translate_request_cross_protocol(
         &host,

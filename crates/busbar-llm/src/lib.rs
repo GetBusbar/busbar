@@ -104,16 +104,16 @@ mod alloc_gate_instrument {
     }
 }
 
-/// THE CODECS, RE-EXPORTED FROM `busbar-llm-codec`.
+/// THE CODECS, RE-EXPORTED FROM `busbar-plane-llm::codec`.
 ///
 /// The six dialect modules, the concrete IR, the chat/leaf handles, the wire-codec surface, the
-/// stream translator and the answer-normalization helpers all live in `busbar-llm-codec` now — the
-/// pure half of this plugin, split out so `busbar-plane-llm` can name the codecs without linking
-/// this crate's HTTP stack and async runtime. They are re-exported HERE, under their old names, so
-/// every caller that spells `busbar_llm::proto_codec::…`, `busbar_llm::anthropic::…`,
-/// `busbar_llm::ir::…` resolves exactly what it always did. The split is a MOVE: no item changed
-/// shape crossing it.
-pub use busbar_llm_codec::{
+/// stream translator and the answer-normalization helpers all live in `busbar-plane-llm`'s `codec`
+/// module now (owner ruling R7, 2026-09-27, THE DESIGN §9/#39: no `busbar-*-codec` crate) — folded
+/// into the plane that already named them, rather than a separate crate. They are re-exported HERE,
+/// under their old names, so every caller that spells `busbar_llm::proto_codec::…`,
+/// `busbar_llm::anthropic::…`, `busbar_llm::ir::…` resolves exactly what it always did. The fold is
+/// a MOVE: no item changed shape crossing it.
+pub use busbar_plane_llm::codec::{
     anthropic, bedrock, chat_handle, cohere, gemini, ir, ir_encode, leaf_codec, leaf_handles,
     openai_annotations, openai_chat, openai_responses, proto_codec, proto_stream, synth_rng,
     usage_tail, wire_shim, DECLS,
@@ -123,7 +123,7 @@ pub use busbar_llm_codec::{
 /// kernel loop and the same string the LLM native plane reports from its
 /// `GauntletPlane::capability_key`. Re-exported at the crate root so the `busbar` binary names ONE
 /// stable path (`busbar_llm::PLANE_KEY`) and the plane and the flip cannot drift onto two literals.
-pub use busbar_llm_codec::PLANE_KEY;
+pub use busbar_plane_llm::codec::PLANE_KEY;
 
 /// THE RELOCATED LLM MONEY-PATH ENGINE (1.6.0 money-path Phase 3-4 C). Routing tables, egress
 /// pipeline, health probe loop and native fallback plane — see [`engine`].
@@ -262,7 +262,7 @@ pub const PLANE_DECLARATION: busbar_contract::plane::PlaneDeclaration =
                 family: TOKEN_FAMILY,
             },
             BillableClass {
-                class: busbar_llm_codec::ir::rerank::SEARCH_UNITS_CLASS,
+                class: busbar_plane_llm::codec::ir::rerank::SEARCH_UNITS_CLASS,
                 family: "count",
             },
         ],
@@ -358,7 +358,7 @@ pub mod linked {
     pub use crate::{PLANE_DECLARATION, PLANE_HOOKS};
     /// The diagnostics axis: the plane's own coded diagnostics (#83a O4), defined beside the dialect
     /// code that emits them.
-    pub use busbar_llm_codec::diagnostics::DIAGNOSTICS;
+    pub use busbar_plane_llm::codec::diagnostics::DIAGNOSTICS;
     /// The CLI-help axis: this plane's rows of `busbar --help`, as declared data — `("tagline",
     /// text)` is the one-line description the help opens with, `("endpoint", text)` its rows of the
     /// `ENDPOINTS` block.

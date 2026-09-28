@@ -1877,7 +1877,7 @@ async fn test_sse_incremental_arrival() {
     let mut events_found = 0;
     for line in text.lines() {
         if line.starts_with("data: event-")
-            && !line.contains(busbar_llm_codec::dialect::SSE_DONE_SENTINEL)
+            && !line.contains(busbar_plane_llm::codec::dialect::SSE_DONE_SENTINEL)
         {
             events_found += 1;
         }

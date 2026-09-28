@@ -6,7 +6,6 @@ members = [
     "crates/busbar-core-admin",
     "crates/busbar-oauth2",
     "crates/busbar-llm",
-    "crates/busbar-llm-codec",
     "crates/busbar-mcp",
     "crates/busbar-a2a",
     "crates/busbar-voice",

@@ -228,14 +228,14 @@ pub(crate) async fn dispatch_degraded(
     usage_sink: &mut Option<UsageSink>,
     client_fwd: &[(axum::http::HeaderName, axum::http::HeaderValue)],
 ) -> Result<Response, ()> {
-    let hop_v: Option<Value> = match busbar_llm_codec::json::parse(body) {
+    let hop_v: Option<Value> = match busbar_plane_llm::codec::json::parse(body) {
         Ok(v) => Some(v),
         Err(_) if !req_content_type.starts_with(APPLICATION_JSON) => None,
         Err(_) => {
             // Log a sanitized note for operators; never the parser's raw error (it embeds a fragment
             // of the input body) nor leak it into the client 400 body. Nothing was dispatched, so a
             // probe this dispatch won is released owner-checked here rather than by the attempt.
-            tracing::debug!(detail = %busbar_llm_codec::json::parse_err_log(body.len()), "request body JSON parse failed");
+            tracing::debug!(detail = %busbar_plane_llm::codec::json::parse_err_log(body.len()), "request body JSON parse failed");
             if let Some(epoch) = probe_epoch {
                 host.lane_store().release_probe_owned_in(pool, i, epoch);
             }

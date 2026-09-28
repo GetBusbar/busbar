@@ -493,7 +493,7 @@ fn the_plane_key_contract_matches_plane_keys_sh() {
     assert_eq!(planes::plane_keys_other("a2a"), vec!["mcp", "voice"]);
     let src = planes::plane_src_roots();
     assert_eq!(src[0], "crates/busbar-llm/src");
-    assert!(src.contains(&"crates/busbar-llm-codec/src".to_string()));
+    assert!(!src.contains(&"crates/busbar-llm-codec/src".to_string()));
     assert!(src.contains(&"crates/busbar-voice-codec/src".to_string()));
     // READ THE SHELL, DO NOT RESTATE IT. This assertion used to be a literal copy of
     // `NEUTRAL_ROOTS_LIST`, which is the defect the test's own NAME promises to catch: when

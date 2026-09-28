@@ -10,7 +10,7 @@ frozen_literal = 2
 [[leak]]
 noun = "mcp"
 kind = "plane"
-file = "crates/busbar-llm-codec/src/anthropic/tests/field_carry_tests.rs"
+file = "crates/busbar-plane-llm/src/codec/anthropic/tests/field_carry_tests.rs"
 count = 3
 category = "cross-plugin"
 wave = "cross-plugin cleanup — broker law #8 (plugins never name each other)"
@@ -18,7 +18,7 @@ wave = "cross-plugin cleanup — broker law #8 (plugins never name each other)"
 [[leak]]
 noun = "voice"
 kind = "plane"
-file = "crates/busbar-llm-codec/src/gemini/handler.rs"
+file = "crates/busbar-plane-llm/src/codec/gemini/handler.rs"
 count = 7
 category = "cross-plugin"
 wave = "cross-plugin cleanup — broker law #8 (plugins never name each other)"
@@ -26,7 +26,7 @@ wave = "cross-plugin cleanup — broker law #8 (plugins never name each other)"
 [[leak]]
 noun = "voice"
 kind = "plane"
-file = "crates/busbar-llm-codec/src/gemini/tests/handler_tests.rs"
+file = "crates/busbar-plane-llm/src/codec/gemini/tests/handler_tests.rs"
 count = 2
 category = "cross-plugin"
 wave = "cross-plugin cleanup — broker law #8 (plugins never name each other)"
@@ -34,7 +34,7 @@ wave = "cross-plugin cleanup — broker law #8 (plugins never name each other)"
 [[leak]]
 noun = "voice"
 kind = "plane"
-file = "crates/busbar-llm-codec/src/gemini/tests/logprobs_carry_tests.rs"
+file = "crates/busbar-plane-llm/src/codec/gemini/tests/logprobs_carry_tests.rs"
 count = 1
 category = "cross-plugin"
 wave = "cross-plugin cleanup — broker law #8 (plugins never name each other)"
@@ -42,7 +42,7 @@ wave = "cross-plugin cleanup — broker law #8 (plugins never name each other)"
 [[leak]]
 noun = "voice"
 kind = "plane"
-file = "crates/busbar-llm-codec/src/ir/audio.rs"
+file = "crates/busbar-plane-llm/src/codec/ir/audio.rs"
 count = 2
 category = "cross-plugin"
 wave = "cross-plugin cleanup — broker law #8 (plugins never name each other)"
@@ -50,7 +50,7 @@ wave = "cross-plugin cleanup — broker law #8 (plugins never name each other)"
 [[leak]]
 noun = "voice"
 kind = "plane"
-file = "crates/busbar-llm-codec/src/ir/tests/audio_tests.rs"
+file = "crates/busbar-plane-llm/src/codec/ir/tests/audio_tests.rs"
 count = 2
 category = "cross-plugin"
 wave = "cross-plugin cleanup — broker law #8 (plugins never name each other)"
@@ -58,7 +58,7 @@ wave = "cross-plugin cleanup — broker law #8 (plugins never name each other)"
 [[leak]]
 noun = "voice"
 kind = "plane"
-file = "crates/busbar-llm-codec/src/openai_chat/handler.rs"
+file = "crates/busbar-plane-llm/src/codec/openai_chat/handler.rs"
 count = 2
 category = "cross-plugin"
 wave = "cross-plugin cleanup — broker law #8 (plugins never name each other)"
@@ -66,7 +66,7 @@ wave = "cross-plugin cleanup — broker law #8 (plugins never name each other)"
 [[leak]]
 noun = "voice"
 kind = "plane"
-file = "crates/busbar-llm-codec/src/openai_chat/tests/field_carry_tests.rs"
+file = "crates/busbar-plane-llm/src/codec/openai_chat/tests/field_carry_tests.rs"
 count = 2
 category = "cross-plugin"
 wave = "cross-plugin cleanup — broker law #8 (plugins never name each other)"
@@ -74,7 +74,7 @@ wave = "cross-plugin cleanup — broker law #8 (plugins never name each other)"
 [[leak]]
 noun = "voice"
 kind = "plane"
-file = "crates/busbar-llm-codec/src/openai_chat/tests/handler_tests.rs"
+file = "crates/busbar-plane-llm/src/codec/openai_chat/tests/handler_tests.rs"
 count = 2
 category = "cross-plugin"
 wave = "cross-plugin cleanup — broker law #8 (plugins never name each other)"

@@ -32,5 +32,5 @@ fuzz_target!(|data: &[u8]| {
         "application/octet-stream"
     };
 
-    let _ = busbar_llm_codec::leaf_codec::embeddings_read_request(proto, body, content_type);
+    let _ = busbar_plane_llm::codec::leaf_codec::embeddings_read_request(proto, body, content_type);
 });

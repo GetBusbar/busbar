@@ -138,7 +138,7 @@ fn an_answer_with_no_tool_use_reports_zero_tool_calls() {
     );
 }
 
-/// One finish-reason case: an upstream token that reads to a named [`busbar_llm_codec::ir::IrStopReason`]
+/// One finish-reason case: an upstream token that reads to a named [`busbar_plane_llm::codec::ir::IrStopReason`]
 /// renders under `stop_name`'s own closed word for it, never the upstream's own spelling.
 struct FinishCase {
     /// The dialect whose vocabulary supplies the token.

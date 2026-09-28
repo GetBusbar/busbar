@@ -184,7 +184,7 @@ pub(crate) fn billed_classes(
     open_units: &std::collections::BTreeMap<String, u64>,
 ) -> busbar_contract::billing::Usage {
     let mut billed = usage
-        .map(busbar_llm_codec::wire_shim::tier_usage)
+        .map(busbar_plane_llm::codec::wire_shim::tier_usage)
         .unwrap_or_default();
     for (class, count) in open_units {
         if *count > 0 {

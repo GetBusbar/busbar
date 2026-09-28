@@ -606,7 +606,7 @@ pub fn synthesize_completion(
         let parsed = match crate::engine::LazyBody::parse(&body) {
             Ok(v) => Some(v),
             Err(_) => {
-                tracing::debug!(detail = %busbar_llm_codec::json::parse_err_log(body.len()), "synthesized completion body JSON parse failed");
+                tracing::debug!(detail = %busbar_plane_llm::codec::json::parse_err_log(body.len()), "synthesized completion body JSON parse failed");
                 return busbar_kernel::proxy::ingress_error(
                     proto,
                     StatusCode::BAD_REQUEST,

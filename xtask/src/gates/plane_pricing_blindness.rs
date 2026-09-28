@@ -192,10 +192,10 @@ pub const PLANE_CRATES: &[PlaneCrate] = &[
     },
     // FOLD row: "each is a WIRE DIALECT, which def 16–20 absorbs. They are not homeless; they are
     // pre-fold." Scanned now so the fold cannot carry money across with it.
-    PlaneCrate {
-        dir: "busbar-llm-codec",
-        placement: "#83 FOLD -> def 16-20",
-    },
+    //
+    // `busbar-llm-codec` HAS NO ROW ANY MORE (owner ruling R7, 2026-09-27, #39): it dissolved into
+    // `busbar-plane-llm`'s own `codec` module, a pure move. The `busbar-plane-llm` row above already
+    // scans the whole crate directory, `codec` module included, so there is no second dir to name.
     PlaneCrate {
         dir: "busbar-voice-codec",
         placement: "#83 FOLD -> def 16-20",

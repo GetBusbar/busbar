@@ -12,7 +12,7 @@ use crate::engine::*;
 
 use busbar_contract::diag_debug;
 use busbar_kernel::store::BreakerCfg;
-use busbar_llm_codec::translate::TranslateCodec;
+use busbar_plane_llm::codec::translate::TranslateCodec;
 
 /// RAII refund for the headers-time `spend_budget` unit across the BUFFERED path's spend →
 /// `read_capped(...).await` window. A client disconnect parked at that await drops the future
@@ -187,7 +187,7 @@ pub(crate) async fn translate_response_cross_protocol(
     // bridges at the byte level through the operation codecs; a JSON body takes the Value path.
     // Token accounting happens ONLY inside an exit that actually delivers a body (a 2xx whose usage
     // parses but whose shape is unmodeled falls through to the ingress-native 500 and bills nothing).
-    let body_json = busbar_llm_codec::json::parse::<Value>(&bytes);
+    let body_json = busbar_plane_llm::codec::json::parse::<Value>(&bytes);
     if body_json.is_err() {
         if let Some(resp) = try_deliver_opaque(
             host,
@@ -276,7 +276,7 @@ fn try_deliver_opaque(
 ) -> Option<Response> {
     let eh = egress_op?;
     match eh.translate_response(
-        busbar_llm_codec::translate::TranslateRespInput::Opaque(bytes),
+        busbar_plane_llm::codec::translate::TranslateRespInput::Opaque(bytes),
         ingress_op_present,
         ingress_protocol,
         &EngineTables::new(rt).lanes()[i].model,
@@ -579,7 +579,7 @@ fn deliver_json(
     // streaming wire contract), so the generic IR-frame-synthesis fork must not run for it: that
     // fork produces `text/event-stream`, which is not what a native Gemini SDK expects here.
     let (usage, delivered) = match eh.translate_response(
-        busbar_llm_codec::translate::TranslateRespInput::Json(rv),
+        busbar_plane_llm::codec::translate::TranslateRespInput::Json(rv),
         ingress_serves_op,
         ingress_protocol,
         &EngineTables::new(rt).lanes()[i].model,
@@ -603,7 +603,7 @@ fn deliver_json(
     };
     // The reader just discarded any vendor-scoped response metadata the caller's protocol has no
     // shape for; this is the one place that still holds the upstream body and knows the hop crossed.
-    busbar_llm_codec::dialect::warn_untranslatable_response_metadata(
+    busbar_plane_llm::codec::dialect::warn_untranslatable_response_metadata(
         egress_name,
         ingress_protocol,
         rv,
@@ -713,14 +713,14 @@ fn deliver_json(
                 );
                 return Some(
                     rb.body(Body::from(
-                        busbar_llm_codec::json::to_vec(&arr)
+                        busbar_plane_llm::codec::json::to_vec(&arr)
                             .unwrap_or_else(|_| arr.to_string().into_bytes()),
                     ))
                     .unwrap_or_else(|_| d.status.into_response()),
                 );
             }
             // The body is now in the client's native non-stream shape: the ingress JSON CT.
-            let body_bytes = busbar_llm_codec::json::to_vec(&translated)
+            let body_bytes = busbar_plane_llm::codec::json::to_vec(&translated)
                 .unwrap_or_else(|_| translated.to_string().into_bytes());
             Some(d.respond(APPLICATION_JSON, body_bytes))
         }

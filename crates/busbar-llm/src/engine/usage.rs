@@ -8,7 +8,7 @@ use busbar_contract::diag_warn;
 /// terminal `IrUsage` is available WITHOUT a separate byte-scan — bill straight from `ir.usage`.
 ///
 /// Billed tokens = the normalized billable total: `uncached_input + cache_read +
-/// cache_creation + output` (see [`busbar_llm_codec::ir::IrUsage::billable_tokens`]). Readers normalize
+/// cache_creation + output` (see [`busbar_plane_llm::codec::ir::IrUsage::billable_tokens`]). Readers normalize
 /// `input_tokens` to UNCACHED and keep the cache fields ADDITIVE, so this sum is correct
 /// provider-agnostically. This matches the streaming billing arm.
 /// OPERATION-BLIND usage recording: project the response IR's neutral `Billing` and record token
@@ -114,7 +114,7 @@ pub(crate) fn ledger_open_units(
 /// keys (M1b — `TierTokens` is dissolved). Readers normalize `input_tokens` to UNCACHED and keep the
 /// cache fields ADDITIVE, so the mapping is direct: cache-creation is the `cache_write` unit. Zero
 /// tiers are omitted so the map stays sparse (no-zero-entry).
-pub(crate) use busbar_llm_codec::wire_shim::tier_usage;
+pub(crate) use busbar_plane_llm::codec::wire_shim::tier_usage;
 
 /// THE ONE PLACE a delivered response is attributed to a model — for the budget LEDGER and for the
 /// METERING series both. Every accrual site in the proxy funnels through here so the two can never

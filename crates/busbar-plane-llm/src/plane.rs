@@ -19,8 +19,8 @@ use busbar_contract::unit::{
 };
 use busbar_contract::wire::{Decode, Encode, EnvelopeField, Frame, FrameCursor, TransportEnvelope};
 
-use busbar_llm_codec::ir::{IrResponse, IrStopReason, IrStreamEvent, StreamDecodeState};
-use busbar_llm_codec::proto_codec::{with_reader, with_writer};
+use crate::codec::ir::{IrResponse, IrStopReason, IrStreamEvent, StreamDecodeState};
+use crate::codec::proto_codec::{with_reader, with_writer};
 
 use crate::dialect::{self, Dialect};
 use crate::meta;
@@ -324,7 +324,7 @@ fn event_payload(bytes: &[u8]) -> Option<(&str, serde_json::Value)> {
 /// The stream state is a fresh one because a usage frame states its own figures: this step reads
 /// one frame and returns what that frame reported, and it holds nothing across frames the way the
 /// decode step, which owns the kernel's state, does.
-fn reported_usage(dialect: &str, r: &Response<'_>) -> Option<busbar_llm_codec::ir::IrUsage> {
+fn reported_usage(dialect: &str, r: &Response<'_>) -> Option<crate::codec::ir::IrUsage> {
     let bytes = r.ir.body();
     if !is_streamed(r) {
         let value: serde_json::Value = sonic_rs::from_slice(bytes).ok()?;
@@ -727,7 +727,7 @@ impl Plane for LlmPlane {
             // stays a `Protocol`: the ingress WRITER below is asked once per event of this frame,
             // and every open block it tracks is a fact about the events it has already written. One
             // instance has to see all of them, so it is held across the loop rather than rebuilt.
-            let ingress_protocol = busbar_llm_codec::proto_codec::protocol_for(ingress.name)
+            let ingress_protocol = crate::codec::proto_codec::protocol_for(ingress.name)
                 .ok_or(Encode::Unrepresentable)?;
             let value: serde_json::Value =
                 sonic_rs::from_slice(data).map_err(|_| Encode::Unrepresentable)?;
@@ -775,7 +775,7 @@ impl Plane for LlmPlane {
         // The creation time is an INPUT, taken from the context's clock. That is the whole reason
         // this call can live in a plane: the pass reads no clock of its own, so a plane running it
         // stays pure over its inputs, and two calls with the same context produce the same answer.
-        busbar_llm_codec::chat_handle::chat_prepare_for_ingress(
+        crate::codec::chat_handle::chat_prepare_for_ingress(
             &mut response,
             ingress.name,
             ctx.clock().unix_secs,
@@ -805,7 +805,7 @@ impl Plane for LlmPlane {
         // the codec builds the identifier from bytes handed to it, which keeps the envelope's native
         // shape while leaving this method a pure function of what it was given. Two refusals built
         // from the same context are therefore the same bytes.
-        let envelope = busbar_llm_codec::write_error_envelope(
+        let envelope = crate::codec::write_error_envelope(
             ingress.name,
             status,
             kind,
@@ -1073,7 +1073,7 @@ fn response_facts<'u>(ctx: &Ctx<'u>, response: &IrResponse, facts: &mut Facts<'u
     let tool_calls = response
         .content
         .iter()
-        .filter(|b| matches!(b, busbar_llm_codec::ir::IrBlock::ToolUse { .. }))
+        .filter(|b| matches!(b, crate::codec::ir::IrBlock::ToolUse { .. }))
         .count();
     let _ = facts.set(
         meta::FACT_TOOL_CALLS,

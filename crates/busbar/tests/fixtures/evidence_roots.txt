@@ -2,7 +2,7 @@
 # engine's thin bin, then each linked protocol's engine and codec halves. One path per line.
 crates/busbar/src
 crates/busbar-llm/src
-crates/busbar-llm-codec/src
+crates/busbar-plane-llm/src/codec
 crates/busbar-mcp/src/codec
 crates/busbar-plane-mcp/src
 crates/busbar-plane-a2a/src

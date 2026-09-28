@@ -55,12 +55,17 @@ pub fn plane_keys_other(self_key: &str) -> Vec<&'static str> {
 /// `plane_pricing_blindness::PLANE_CRATES`, kind-isolation's closure wall, and the crate's own
 /// `tests/purity.rs` — which is strictly stronger than this legacy-engine needle list. Nothing went
 /// unscanned; it changed which gate reads it.
+///
+/// LLM HAS NO `-codec` ROOT ANY MORE EITHER (owner ruling R7, 2026-09-27, #39): `busbar-llm-codec`
+/// dissolved into `busbar-plane-llm`'s own `codec` module, a pure move. `crates/busbar-plane-llm/src`
+/// is NOT listed here for the same reason `crates/busbar-plane-mcp/src` is not: it is scanned by the
+/// PLANE-KIND regime instead, which already walks the whole crate directory, `codec` module
+/// included.
 pub fn plane_src_roots() -> Vec<String> {
     let mut out: Vec<String> = PLANE_KEYS
         .iter()
         .map(|k| format!("crates/busbar-{k}/src"))
         .collect();
-    out.push("crates/busbar-llm-codec/src".to_string());
     out.push("crates/busbar-voice-codec/src".to_string());
     out
 }

@@ -198,15 +198,17 @@ TOMLPY
 # THE LLM DIALECTS ARE DERIVED FROM THE PLUGIN'S OWN DECLS, NOT TYPED (item 517). Level 3a proves
 # every dialect the deleted plugin carried is refused; the list it iterated was a hand-typed string
 # nothing counted, under a closing line claiming "all six". A seventh `&x::DECL` in DECLS would have
-# been probed by nobody while the claim stood. This reads `DECLS` in busbar-llm-codec's lib.rs, then
-# each listed module's `DECL` `name:` -- the string an operator writes as `protocol:`.
-# $1 = the codec crate's src dir. Prints the names in DECLS order; dies if any entry has no name.
+# been probed by nobody while the claim stood. This reads `DECLS` in the codec's `mod.rs` (owner
+# ruling R7, 2026-09-27, THE DESIGN §9/#39: `busbar-llm-codec` folded into `busbar-plane-llm` as its
+# `codec` module, so its former crate-root `lib.rs` is now `codec/mod.rs`), then each listed module's
+# `DECL` `name:` -- the string an operator writes as `protocol:`.
+# $1 = the codec module's src dir. Prints the names in DECLS order; dies if any entry has no name.
 llm_dialects() {
-  local src="${1:-crates/busbar-llm-codec/src}" mods m f n out=""
-  [ -f "$src/lib.rs" ] || die "cannot derive the LLM dialects: $src/lib.rs is not on disk"
-  mods="$(awk '/static DECLS:/ {on=1} on {print} on && /\];/ {exit}' "$src/lib.rs" \
+  local src="${1:-crates/busbar-plane-llm/src/codec}" mods m f n out=""
+  [ -f "$src/mod.rs" ] || die "cannot derive the LLM dialects: $src/mod.rs is not on disk"
+  mods="$(awk '/static DECLS:/ {on=1} on {print} on && /\];/ {exit}' "$src/mod.rs" \
           | grep -oE '&[A-Za-z0-9_]+::DECL' | sed -e 's/^&//' -e 's/::DECL$//')"
-  [ -n "$mods" ] || die "cannot derive the LLM dialects: no '&<module>::DECL' entry in $src/lib.rs DECLS"
+  [ -n "$mods" ] || die "cannot derive the LLM dialects: no '&<module>::DECL' entry in $src/mod.rs DECLS"
   for m in $mods; do
     f="$src/$m/mod.rs"; [ -f "$f" ] || f="$src/$m.rs"
     [ -f "$f" ] || die "DECLS names module '$m' but neither $src/$m/mod.rs nor $src/$m.rs exists"
@@ -321,8 +323,8 @@ if [ "${1:-}" = "--selftest" ]; then
 
   # DIALECTS ARE DERIVED AND COUNTED (item 517): the live derivation matches the DECLS entry count and
   # carries the leg's own probe dialect; a fixture DECLS yields exactly its own entries.
-  st_decls_n="$(awk '/static DECLS:/ {on=1} on {print} on && /\];/ {exit}' crates/busbar-llm-codec/src/lib.rs | grep -cE '&[A-Za-z0-9_]+::DECL' || true)"
-  st_dialects="$(llm_dialects crates/busbar-llm-codec/src)"
+  st_decls_n="$(awk '/static DECLS:/ {on=1} on {print} on && /\];/ {exit}' crates/busbar-plane-llm/src/codec/mod.rs | grep -cE '&[A-Za-z0-9_]+::DECL' || true)"
+  st_dialects="$(llm_dialects crates/busbar-plane-llm/src/codec)"
   st_dialects_n="$(printf '%s\n' "$st_dialects" | wc -w | tr -d ' ')"
   if [ "${st_decls_n:-0}" -gt 0 ] && [ "$st_dialects_n" = "$st_decls_n" ] && printf ' %s ' "$st_dialects" | grep -q ' anthropic '; then
     note "self-test DIALECTS: $st_dialects_n derived from DECLS ($st_dialects), one per entry"
@@ -682,7 +684,7 @@ run_gate() {
 # The deleted-ingress probe is anthropic's `/v1/messages`; every other dialect's URL space
 # (gemini's `/v1beta/...`, bedrock's `/model/{id}/converse`, `/v1/responses`, `/v2/chat`) is covered
 # by the same binary having no LLM handler at all.
-LLM_DIALECTS="$(llm_dialects crates/busbar-llm-codec/src)"
+LLM_DIALECTS="$(llm_dialects crates/busbar-plane-llm/src/codec)"
 LLM_DIALECTS_N="$(printf '%s\n' "$LLM_DIALECTS" | wc -w | tr -d ' ')"
 case " $LLM_DIALECTS " in
   *" anthropic "*) ;;

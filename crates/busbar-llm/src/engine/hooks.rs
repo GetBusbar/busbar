@@ -149,7 +149,7 @@ pub(crate) fn read_hook_facts(
     // reader directly — byte-identical to the pre-change seam). A non-object body is either a
     // multipart/binary payload (transcription/speech audio) whose caller text is reachable ONLY
     // through the byte reader, or the engine's absent-body sentinel with no bytes at all.
-    use busbar_llm_codec::translate::TranslateCodec;
+    use busbar_plane_llm::codec::translate::TranslateCodec;
     // THE ONE READ, through the codec cell's neutral `read_facts` entrypoint — the same reader the
     // cross-protocol translate path uses, projected straight to `IrFacts` so this seam never holds the
     // concrete IR. A JSON OBJECT body takes the value-codec fast path (chat calls its proto reader

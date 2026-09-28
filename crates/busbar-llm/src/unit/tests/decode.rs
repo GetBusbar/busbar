@@ -12,7 +12,7 @@ use http_body_util::BodyExt;
 /// The recorded request fixtures, read from where they are recorded.
 const GOLDEN: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../busbar-llm-codec/src/tests/proto/golden"
+    "/../busbar-plane-llm/src/codec/tests/proto/golden"
 );
 
 fn fixtures() -> Vec<(String, Bytes)> {

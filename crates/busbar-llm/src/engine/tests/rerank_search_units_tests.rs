@@ -63,7 +63,7 @@ fn spend_cents_after(card_yaml: Option<&str>, body: &str) -> Result<i64, String>
         .pool("pr", &[(0, 1)])
         .build();
     let (host, rt) = crate::engine::test_host_rt(&app);
-    let resp = busbar_llm_codec::cohere::handler::read_rerank_response(body.as_bytes())
+    let resp = busbar_plane_llm::codec::cohere::handler::read_rerank_response(body.as_bytes())
         .expect("the rerank body reads");
     record_resp_usage(
         &host,
@@ -160,7 +160,7 @@ async fn same_protocol_rerank_books(protocol: &'static str, body: &str) -> TwoBo
     let translate: Option<Box<dyn busbar_contract::protocol::StreamTranslator>> =
         if protocol == crate::proto_codec::PROTO_BEDROCK {
             Some(Box::new(
-                busbar_llm_codec::bedrock::BedrockConverseBodyTranslator::new(),
+                busbar_plane_llm::codec::bedrock::BedrockConverseBodyTranslator::new(),
             ))
         } else {
             None
@@ -204,7 +204,7 @@ async fn same_protocol_rerank_books(protocol: &'static str, body: &str) -> TwoBo
         .find(|m| m.model == "rerank-v3.5")
         .and_then(|m| {
             m.usage_units
-                .get(busbar_llm_codec::ir::rerank::SEARCH_UNITS_CLASS)
+                .get(busbar_plane_llm::codec::ir::rerank::SEARCH_UNITS_CLASS)
         })
         .copied()
         .filter(|n| *n > 0);
@@ -212,7 +212,7 @@ async fn same_protocol_rerank_books(protocol: &'static str, body: &str) -> TwoBo
         .get()
         .expect("the tap reported the end the body reached")
         .open_units
-        .get(busbar_llm_codec::ir::rerank::SEARCH_UNITS_CLASS)
+        .get(busbar_plane_llm::codec::ir::rerank::SEARCH_UNITS_CLASS)
         .copied();
     TwoBooks { governance, tap }
 }

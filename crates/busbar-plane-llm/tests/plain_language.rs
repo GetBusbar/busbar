@@ -8,6 +8,12 @@
 //! The last one is worth stating plainly: a section number in a comment is a cross-reference that
 //! goes stale the first time the document is renumbered, and a stale cross-reference is worse than
 //! none, because a reader trusts it.
+//!
+//! `src/codec/` IS EXCLUDED FROM EVERY SCAN BELOW. It is the folded-in dialect codecs (owner ruling
+//! R7, 2026-09-27, THE DESIGN §9/#39 — no `busbar-*-codec` crate; moved in unchanged from the former
+//! `busbar-llm-codec`, which carried none of these four properties as a rule). These checks are about
+//! THIS PLANE's own adapter prose and structure — `claims.rs`, `dialect.rs`, `meta.rs`, `plane.rs`,
+//! `lib.rs` — never about the codec it wraps, which the plane calls read-only and never edits.
 
 use std::path::{Path, PathBuf};
 
@@ -22,19 +28,52 @@ fn manifest() -> String {
         .expect("the manifest is readable")
 }
 
-/// The manifest declares no features at all.
+/// The manifest declares no feature that could compile the PLANE two ways.
 ///
 /// A plane compiled two ways is two planes, and the registry has no way to tell which one it holds.
+/// `[crate::LlmPlane]` and its `Plugin` impl carry no `#[cfg(feature = …)]` of their own — that
+/// property is what this test actually protects, and it is asserted directly at the bottom.
+///
+/// ONE NAMED EXCEPTION: `test-support`, EMPTY, carried in unchanged by the codec fold (owner ruling
+/// R7, 2026-09-27, THE DESIGN §9/#39) — it gates `codec`'s own test-only constructors, never
+/// anything this crate's own `plane.rs`/`dialect.rs`/`lib.rs` read. A second feature, or a non-empty
+/// one, is not this exception and must fail below.
 #[test]
 fn the_crate_declares_no_features() {
     let manifest = manifest();
     assert!(
-        !manifest.contains("[features]"),
-        "the plane declares cargo features, so it is not one plane"
-    );
-    assert!(
         !manifest.contains("optional = true"),
         "an optional dependency is a feature by another name"
+    );
+    let features_block = manifest
+        .split("[features]\n")
+        .nth(1)
+        .map(|rest| rest.split("\n\n").next().unwrap_or(rest).trim())
+        .unwrap_or_default();
+    assert_eq!(
+        features_block, "test-support = []",
+        "the plane declares a feature beyond the one named, carried-in exception: {features_block:?}"
+    );
+}
+
+/// The registered plane itself is never behind a `#[cfg(feature = …)]`: the one named exception
+/// above may gate codec test helpers, but never `LlmPlane`, `Upstream` or their impls.
+#[test]
+fn the_plane_type_itself_is_never_feature_gated() {
+    let mut offenders = Vec::new();
+    for name in ["lib.rs", "plane.rs", "dialect.rs", "claims.rs", "meta.rs"] {
+        let text = std::fs::read_to_string(src_dir().join(name)).expect("plane file is readable");
+        for (n, line) in text.lines().enumerate() {
+            if line.trim_start().starts_with("#[cfg(feature")
+                || line.trim_start().starts_with("#![cfg(feature")
+            {
+                offenders.push(format!("{name}:{}", n + 1));
+            }
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "the plane's own files carry a feature-gated item: {offenders:?}"
     );
 }
 
@@ -107,9 +146,9 @@ fn the_manifest_names_only_what_a_plane_may_name() {
         .split("[dependencies]")
         .nth(1)
         .expect("the manifest has a dependency section");
-    // `busbar-llm-codec`, not `busbar-llm`: the codecs are their own crate now, and the crate they
-    // used to share carried an HTTP stack and an async runtime that a plane may not link.
-    let allowed = ["busbar-contract", "busbar-llm-codec"];
+    // The codecs are this crate's own `codec` module now (THE DESIGN §9/#39: no `busbar-*-codec`
+    // crate), not a named dependency — `busbar-contract` is the only workspace crate a plane names.
+    let allowed = ["busbar-contract"];
     for line in deps.lines() {
         let line = line.trim();
         if line.is_empty() || line.starts_with('#') || line.starts_with('[') {
@@ -158,12 +197,16 @@ fn the_doc_comments_cite_the_design_in_words() {
     );
 }
 
-/// Walk every source file under a directory.
+/// Walk every source file under a directory, except the folded-in `codec` module (see the module
+/// header: these four checks are about the plane's own adapter, not the codec it wraps).
 fn walk(dir: &Path, f: &mut impl FnMut(&Path, &str)) {
     let entries = std::fs::read_dir(dir).expect("the directory is readable");
     for entry in entries.flatten() {
         let path = entry.path();
         if path.is_dir() {
+            if path.file_name().is_some_and(|n| n == "codec") {
+                continue;
+            }
             walk(&path, f);
         } else if path.extension().is_some_and(|e| e == "rs") {
             let text = std::fs::read_to_string(&path).expect("a source file is readable");

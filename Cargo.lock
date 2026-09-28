@@ -811,7 +811,6 @@ dependencies = [
  "base64 0.23.1",
  "busbar-contract",
  "busbar-kernel",
- "busbar-llm-codec",
  "busbar-plane-llm",
  "bytes",
  "crc32fast",
@@ -838,19 +837,6 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "url",
-]
-
-[[package]]
-name = "busbar-llm-codec"
-version = "1.6.0"
-dependencies = [
- "busbar-contract",
- "bytes",
- "getrandom 0.3.4",
- "serde",
- "serde_json",
- "sonic-rs",
- "tracing",
 ]
 
 [[package]]
@@ -933,9 +919,12 @@ name = "busbar-plane-llm"
 version = "1.6.0"
 dependencies = [
  "busbar-contract",
- "busbar-llm-codec",
+ "bytes",
+ "getrandom 0.3.4",
+ "serde",
  "serde_json",
  "sonic-rs",
+ "tracing",
 ]
 
 [[package]]

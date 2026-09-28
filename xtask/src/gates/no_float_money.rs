@@ -526,7 +526,7 @@ pub const COUNT_READ_ROOTS: &[CountRoot] = &[
 /// THE SEAM BEING REPLACED. Its own body is a list of the needle strings it hunts, so scanning it
 /// finds its own patterns rather than a defect. It is excluded for the same reason its in-crate
 /// ancestor excluded itself, and it goes away with the conversion wave.
-const SUPERSEDED_SEAM: &str = "crates/busbar-llm-codec/src/usage_count.rs";
+const SUPERSEDED_SEAM: &str = "crates/busbar-plane-llm/src/codec/usage_count.rs";
 
 /// The JSON-number accessors a count could be read through. `as_f64` is here as well as the integer
 /// pair because a count that arrives through a double has already lost the exactness #81 requires.
@@ -619,31 +619,31 @@ pub const PENDING_CEILING: usize = 0;
 pub const ALLOWED_COUNT_READS: &[Allow] = &[
     // ── Not a count, permanently ──────────────────────────────────────────────────────────────
     Allow {
-        file: "crates/busbar-llm-codec/src/bedrock/mod.rs",
+        file: "crates/busbar-plane-llm/src/codec/bedrock/mod.rs",
         needle: "contentBlockIndex",
         class: AllowClass::NotACount,
         why: "a frame's position in a sequence, not a quantity anybody is billed for",
     },
     Allow {
-        file: "crates/busbar-llm-codec/src/cohere/mod.rs",
+        file: "crates/busbar-plane-llm/src/codec/cohere/mod.rs",
         needle: "clamp_frame_index",
         class: AllowClass::NotACount,
         why: "a frame's position in a sequence, not a quantity anybody is billed for",
     },
     Allow {
-        file: "crates/busbar-llm-codec/src/openai_chat/handler.rs",
+        file: "crates/busbar-plane-llm/src/codec/openai_chat/handler.rs",
         needle: "audio::Segment",
         class: AllowClass::NotACount,
         why: "a transcription segment's own id — metadata echoed back, never metered",
     },
     Allow {
-        file: "crates/busbar-llm-codec/src/openai_chat/handler.rs",
+        file: "crates/busbar-plane-llm/src/codec/openai_chat/handler.rs",
         needle: "get(\"start\")",
         class: AllowClass::NotACount,
         why: "a transcription timing offset — metadata echoed back, never metered",
     },
     Allow {
-        file: "crates/busbar-llm-codec/src/openai_chat/handler.rs",
+        file: "crates/busbar-plane-llm/src/codec/openai_chat/handler.rs",
         needle: "get(\"end\")",
         class: AllowClass::NotACount,
         why: "a transcription timing offset — metadata echoed back, never metered",

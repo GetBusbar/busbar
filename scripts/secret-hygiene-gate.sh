@@ -263,7 +263,7 @@ secret|crates/busbar-kernel/src/admin/v1/contract/schema.rs|secret
 upstream_credentials|crates/busbar-kernel/src/admin/v1/contract/mod.rs|upstream_credentials
 token|crates/busbar-contract/src/abi/cold/auth.rs|
 secret|crates/busbar-contract/src/abi/cold/auth.rs|
-token|crates/busbar-llm-codec/src/ir/types.rs|token"
+token|crates/busbar-plane-llm/src/codec/ir/types.rs|token"
 
 # CHECK 3 HAS NO EXCEPTIONS AND THAT IS A MEASUREMENT, NOT AN OVERSIGHT. Every one of the findings
 # Check 3 makes on this tree was read against the source and is a real member of the class (see
