@@ -336,6 +336,12 @@ from    = 17126
 to      = 17170
 because = "OWNER RULING Q68(3) (docs/design/1.6.0-QUESTIONS.md): contract_caps re-arms at the MEASURED value, in its own commit. This is the re-arm for THE KIND -> VERB LIST (TODO KERNEL<>PLUGINS step 9 item 1; the design's config section): busbar_contract::plugin::Kind::verb() with Verb, root_key(), root(), Kind::ALL and owning_root_key() — the one place a kind's config root key is spelled — +44 code lines. Measured by cargo xtask gate construction: 17126 before, 17170 after."
 
+[gate.ceiling_raises."rules.loc-ceilings.kernel_ceiling"]
+file    = "qa/construction.toml"
+from    = 54801
+to      = 54814
+because = "ARCHITECT 2026-09-27: R-KERNEL exception for the Phase-2 exit-test regression (plane-pricing-blindness), A+C. The kernel's door now opens the zero hold an llm unit's admission carries and mints every unit key through one allocator, acts the llm and voice planes performed themselves. Measured by cargo xtask gate construction: 54785 before, 54798 after, +13. The ceiling rises by exactly that; K2g's named reservation is unchanged."
+
 [gate.ceiling_raises."rules.loc-ceilings.caps_contract_ceiling"]
 file    = "qa/construction.toml"
 from    = 17126
@@ -343,12 +349,7 @@ to      = 17170
 because = "OWNER RULING Q68(3) (docs/design/1.6.0-QUESTIONS.md): contract_caps re-arms at the MEASURED value, in its own commit. This is the re-arm for THE KIND -> VERB LIST (TODO KERNEL<>PLUGINS step 9 item 1; the design's config section): busbar_contract::plugin::Kind::verb() with Verb, root_key(), root(), Kind::ALL and owning_root_key() — the one place a kind's config root key is spelled — +44 code lines. Measured by cargo xtask gate construction: 17126 before, 17170 after."
 
 # ── THE KERNEL CEILING, RE-ARMED BY SD-8 (the substrate-values kernel landing) ─────────────────
-
-[gate.ceiling_raises."rules.loc-ceilings.kernel_ceiling"]
-file    = "qa/construction.toml"
-from    = 51100
-to      = 54801
-because = "OWNER RULING Q69(3) (docs/design/1.6.0-QUESTIONS.md): kernel and contract ceilings re-arm at the MEASURED value after each owner-locked move commit, in its own commit (the Q68(3) pattern). This is the re-arm for the SD-8 kernel landing, in which the KERNEL-SEMANTICS/HOST items of the deleted busbar-substrate-values move into busbar-kernel. loc-ceilings:kernel measures 51090 before and 54791 after, +3701; the ceiling rises by exactly that, keeping the named kernel reservation as the base held it."
+# Its 51100 -> 54801 declaration expired once landed and is struck; the ceiling text below keeps it.
 
 # ── THE KERNEL CEILING'S OWNER-APPROVED RAISE — EXPIRED AND STRUCK ─────────────────────────────
 #
@@ -1064,7 +1065,10 @@ kernel_crate = "busbar-kernel"
 # at d946dbcc4 and 54791 at 256435c91: +3701, the moved lines exactly. 51100 + 3701 = 54801, so the
 # gap K2g's named reservation holds is the one the base held (10 of its 73 lines unspent there);
 # the reservation itself is unchanged.
-kernel_ceiling = 54801
+# ── RE-ARMED 54801 -> 54814 for the Phase-2 exit-test regression, declared above: the kernel's
+# door takes the zero hold and the unit-key mint the llm and voice planes performed. Measured 54785
+# before and 54798 after, +13; K2g's named reservation is unchanged and unspent by it.
+kernel_ceiling = 54814
 # `caps_crate = "busbar-caps"` WAS HERE AND IS STRUCK, 2026-09-22. The crate was folded into
 # busbar-contract by 2c9eddecf ("W2.c: fold busbar-caps into busbar-contract"); its types live at
 # `crates/busbar-contract/src/caps/`, whose own module header says "Folded from the former
