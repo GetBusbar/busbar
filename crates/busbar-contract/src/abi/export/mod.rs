@@ -257,7 +257,9 @@ pub struct ScrapeFamily {
 pub struct ScrapeIn {
     /// The head.
     pub head: InHead,
-    /// The host recorder's snapshot, filtered to the families this instance's Statement declared.
+    /// The host recorder's WHOLE snapshot (H5: SEH fix-forward ruling, 2026-09-27) — every family,
+    /// not filtered to this instance's Statement — in the 1.5.5 recorder's render order,
+    /// kind-then-name (6855ef238).
     pub families: *const ScrapeFamily,
     /// How many.
     pub families_len: usize,
