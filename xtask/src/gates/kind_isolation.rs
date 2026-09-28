@@ -88,9 +88,9 @@
 //! ## VOICE AND STREAMS ARE THE STREAMING PLANE
 //!
 //! The fourth plane is STREAMING (DECISIONS #18): `busbar-plane-streaming`, whose `PlaneMeta::KEY`
-//! is `"streaming"`. `voice` is one dialect inside it and still the key the plane's own codec
-//! module registers its sessions under (`codec::PLANE_KEY`), and `streams` is its config section
-//! (`streams:`). [`PLANE_ALIASES`] holds
+//! is `"streaming"`. `voice` is one dialect inside it and still the registry key its sessions are
+//! admitted under, named once in the plane's own codec module (`codec::PLANE_KEY`), and `streams`
+//! is its config section (`streams:`). [`PLANE_ALIASES`] holds
 //! the three spellings together so they are one instance for every rule here — canonical on the
 //! plane's DECLARED key, which `:registry` reads off the plane's own source — and holds each on a
 //! ratchet: an alias is RED once the crate that spells it is gone.
@@ -385,12 +385,15 @@ const MAX_NAME_SEGMENTS: usize = 4;
 /// crate's declared key off its `impl PlaneMeta` and refuses an alias whose canonical side no plane
 /// declares (`alias-undeclared`), so this table cannot drift from the plane it names.
 ///
-/// * `voice` is one DIALECT inside the streaming plane, and `busbar-voice-codec` still spells it
-///   until the #19 wave renames it `busbar-streaming-codec` (byte-identical). `busbar-plane-voice`
-///   was the crate this entry used to key on; #18/#83 deleted it into `busbar-plane-streaming`,
-///   and the codec is the one crate left whose name forces the alias. Canonicalising
-///   `voice` onto `streaming` is what lets `busbar-plane-streaming -> busbar-voice-codec` read as a
-///   plane naming ITS OWN codec rather than a cross-instance reach.
+/// * `voice` is one DIALECT inside the streaming plane and still the key its sessions are admitted
+///   under: `busbar_plane_streaming::codec::PLANE_KEY` is `"voice"`, the string the composition
+///   root flips onto the kernel's session admit and the voice gauntlet reports as its capability
+///   key (legacy `busbar-voice` re-exports it and declares the same key). This entry keyed on
+///   `busbar-plane-voice` and then on `busbar-voice-codec`; #18/#83 deleted the first into
+///   `busbar-plane-streaming`, and R7 folded the second, `PLANE_KEY` with it, into the same crate.
+///   So it keys on `busbar-plane-streaming`, the crate that defines the spelling, and
+///   canonicalising `voice` onto `streaming` is what lets the plane name its own key without it
+///   reading as a cross-instance reach.
 /// * `streams` is the plane's CONFIG SECTION (`streams:`, frozen 1.5.x wire), so it is the plane's
 ///   word in every other crate's source; it expires with the plane.
 /// * `decisions` is the fifth plane's crate and config verb (`busbar-plane-decisions`, `decisions:`;
@@ -401,7 +404,7 @@ const MAX_NAME_SEGMENTS: usize = 4;
 /// All three spellings are one instance for every rule here and banned vocabulary in every other
 /// kind, and an entry is RED once the crate it names is gone.
 const PLANE_ALIASES: &[(&str, &str, &str)] = &[
-    ("voice", "streaming", "busbar-voice-codec"),
+    ("voice", "streaming", "busbar-plane-streaming"),
     ("streams", "streaming", "busbar-plane-streaming"),
     ("decisions", "decision", "busbar-plane-decisions"),
 ];
@@ -7187,13 +7190,14 @@ impl Gate for KindIsolationGate {
 
         // THE RENAME ALIAS EXPIRES WITH THE CRATE IT TRANSLATES.
         //
-        // THE SUBJECT IS `busbar-voice-codec`, AND IT USED TO BE `busbar-plane-voice`, the twin of
-        // the no-op above and for the same reason: `crates/busbar-plane-voice/Cargo.toml` is not in
-        // the tree, so removing it removed nothing. The `voice` alias itself now keys on the codec,
-        // the one crate left that spells the dialect as a plane id, so removing it is a violation
-        // the tree does not already have.
+        // THE SUBJECT IS `busbar-plane-streaming`. It was `busbar-plane-voice` and then
+        // `busbar-voice-codec`, and each became a no-op the day its crate left the tree: removing an
+        // absent manifest removes nothing. R7 folded `busbar-voice-codec`, and the `PLANE_KEY` that
+        // spells `voice`, into `busbar-plane-streaming`, which is what the `voice` alias keys on
+        // now, so removing that manifest is a violation the tree does not already have. The needle
+        // is the `voice` entry's own finding, not merely some alias going red.
         let mut ov = Overlay::new();
-        ov.remove("crates/busbar-voice-codec/Cargo.toml");
+        ov.remove("crates/busbar-plane-streaming/Cargo.toml");
         hold_census_floor(&mut ov, 1);
         report.push(prove_rows_red(
             cx,
@@ -7201,7 +7205,10 @@ impl Gate for KindIsolationGate {
             "a plane alias that outlived the crate it translates",
             &[ROW_REGISTRY],
             ov,
-            &["alias-retired", "busbar-voice-codec"],
+            &[
+                "alias-retired",
+                "the `voice` -> `streaming` plane alias outlived `busbar-plane-streaming`",
+            ],
         ));
 
         // AN ALIAS ONTO A KEY NO PLANE DECLARES. The canonical side of `PLANE_ALIASES` is checked
