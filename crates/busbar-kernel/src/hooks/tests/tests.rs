@@ -2670,3 +2670,7 @@ fn only_reject_refuses_a_failed_call() {
         &PolicyOnError::First
     ));
 }
+
+// TODO M4 HOOK-PARITY: the consolidated v1.5.5 hook acceptance suite (module doc there).
+#[path = "m4_acceptance_suite.rs"]
+mod m4_acceptance_suite;
