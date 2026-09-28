@@ -111,8 +111,8 @@ pub struct FieldsIn {
 
 /// `fields`' `out`. READY with `fields_len == 0` = no auth header.
 ///
-/// THE ANSWER RULES, enforced by [`super::check_fields`] in `u64` math (any violation is FAULT):
-/// on READY, `needed_fields == 0` and `needed_bytes == 0`, `fields_len <= fields_cap`, every
+/// THE ANSWER RULES, enforced by [`super::check_fields`] in `u64` math (any violation is FAULT).
+/// On REFUSED or PENDING, every `needed_*` is `0`. On READY, `needed_fields == 0` and `needed_bytes == 0`, `fields_len <= fields_cap`, every
 /// written [`FieldSpan`]'s name and value are present with `off + len <= field_buf_cap`, and its
 /// `flags` hold only [`super::FIELD_SENSITIVE`]. On FAILED, `needed_bytes <= u32::MAX` and
 /// `needed_fields <=` [`super::FIELDS_HARD_MAX`]; a non-zero `needed_*` at or below its capacity is

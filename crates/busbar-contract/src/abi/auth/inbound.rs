@@ -132,8 +132,8 @@ pub struct VerifyIn {
 /// and serves the retry from it, never repeating the work (an authorization code redeems once).
 /// `FAILED` with both at `0` is a real failure. A buffer is at most `u32::MAX` bytes ([`Span`]).
 ///
-/// THE ANSWER RULES, enforced by [`super::check_identify`] in `u64` math (any violation is FAULT):
-/// on READY, `needed_groups == 0` and `needed_bytes == 0`; the verdict is in the op's vocabulary;
+/// THE ANSWER RULES, enforced by [`super::check_identify`] and [`super::check_complete_login`]
+/// in `u64` math (any violation is FAULT). On REFUSED or PENDING, every `needed_*` is `0`. On READY, `needed_groups == 0` and `needed_bytes == 0`; the verdict is in the op's vocabulary;
 /// for an identity, `subject` is present, every present [`Span`] has `off + len <= buf_cap`, an
 /// absent one ([`super::SPAN_ABSENT`]) has `len == 0`, `groups_len <= groups_cap`, every group
 /// span is present and in bounds, and `flags` holds only [`super::IDENTITY_HAS_TTL`]. On FAILED,

@@ -9,8 +9,8 @@
 use super::inbound::{BeginLoginOut, IdentifyOut, IdentityBuf, Span};
 use super::outbound::{FieldSpan, FieldsOut};
 use super::{
-    BEGIN_AUTHORIZE, BEGIN_FORM, FIELD_SENSITIVE, IDENTITY_HAS_TTL, SPAN_ABSENT, VERDICT_IDENTITY,
-    VERDICT_PASS,
+    BEGIN_AUTHORIZE, BEGIN_FORM, FIELD_SENSITIVE, IDENTITY_HAS_TTL, LOGIN_IDENTITY, LOGIN_OUTAGE,
+    SPAN_ABSENT, VERDICT_IDENTITY, VERDICT_PASS,
 };
 use crate::abi::mechanism::call::{AbiStr, Outcome, BLOB_OCTETS};
 
@@ -28,6 +28,8 @@ pub enum Fault {
     NotExactlyOne,
     /// READY with a non-zero `needed_*`.
     NeededOnReady,
+    /// REFUSED or PENDING with a non-zero `needed_*`: only FAILED may ask for a larger buffer.
+    NeededNotFailed,
     /// `needed_bytes > u32::MAX`, or a `needed_<count>` above its hard maximum.
     NeededTooLarge,
     /// FAILED with a non-zero `needed_*` that the given capacity already covers (it would waste the
@@ -39,6 +41,8 @@ pub enum Fault {
     SpanOutOfBounds,
     /// A count above its capacity.
     CountOverCap,
+    /// A count that disagrees with the length of the slice the host built for it.
+    CountMismatch,
     /// A count above zero with a NULL pointer.
     NullWithCount,
     /// A flag bit the ABI does not define.
@@ -81,14 +85,60 @@ fn short(
     Ok(())
 }
 
-/// `verify`'s and `complete_login`'s answer. `buf` is the [`IdentityBuf`] the host handed in, and
-/// `groups` the first `groups_len` spans of its group array (the host reads them only after the
-/// count checks pass). Outcomes other than READY and FAILED carry nothing to check.
+/// REFUSED or PENDING answers ask for nothing: any non-zero `needed_*` is FAULT (ruling H3).
+fn no_need(needed_bytes: u64, needed_count: u32) -> Result<(), Fault> {
+    if needed_bytes != 0 || needed_count != 0 {
+        return Err(Fault::NeededNotFailed);
+    }
+    Ok(())
+}
+
+/// `verify`'s answer. `buf` is the [`IdentityBuf`] the host handed in, and `groups` the first
+/// `groups_len` spans of its group array.
+///
+/// HOST DUTY: the host checks `out.identity.groups_len <= buf.groups_cap` BEFORE it builds
+/// `groups` from its array; a larger count is FAULT without reading a single span.
 pub fn check_identify(
     outcome: Outcome,
     out: &IdentifyOut,
     buf: &IdentityBuf,
     groups: &[Span],
+) -> Result<(), Fault> {
+    identify(
+        outcome,
+        out,
+        buf,
+        groups,
+        (VERDICT_IDENTITY, VERDICT_PASS),
+        VERDICT_IDENTITY,
+    )
+}
+
+/// `complete_login`'s answer: the same rules as [`check_identify`] (and the same host duty), over
+/// the login vocabulary [`LOGIN_IDENTITY`] ..= [`LOGIN_OUTAGE`].
+pub fn check_complete_login(
+    outcome: Outcome,
+    out: &IdentifyOut,
+    buf: &IdentityBuf,
+    groups: &[Span],
+) -> Result<(), Fault> {
+    identify(
+        outcome,
+        out,
+        buf,
+        groups,
+        (LOGIN_IDENTITY, LOGIN_OUTAGE),
+        LOGIN_IDENTITY,
+    )
+}
+
+fn identify(
+    outcome: Outcome,
+    out: &IdentifyOut,
+    buf: &IdentityBuf,
+    groups: &[Span],
+    (lo, hi): (u32, u32),
+    identified: u32,
 ) -> Result<(), Fault> {
     let cap = buf.buf_cap as u64;
     match outcome {
@@ -103,10 +153,10 @@ pub fn check_identify(
             if out.needed_bytes != 0 || out.needed_groups != 0 {
                 return Err(Fault::NeededOnReady);
             }
-            if !(VERDICT_IDENTITY..=VERDICT_PASS).contains(&out.verdict) {
+            if !(lo..=hi).contains(&out.verdict) {
                 return Err(Fault::Vocabulary);
             }
-            if out.verdict != VERDICT_IDENTITY {
+            if out.verdict != identified {
                 return Ok(());
             }
             let id = &out.identity;
@@ -120,7 +170,7 @@ pub fn check_identify(
                 return Err(Fault::CountOverCap);
             }
             if groups.len() as u64 != u64::from(id.groups_len) {
-                return Err(Fault::CountOverCap);
+                return Err(Fault::CountMismatch);
             }
             span(id.subject, cap, false)?;
             for s in [
@@ -135,12 +185,15 @@ pub fn check_identify(
             }
             groups.iter().try_for_each(|g| span(*g, cap, false))
         }
-        _ => Ok(()),
+        Outcome::Refused | Outcome::Pending => no_need(out.needed_bytes, out.needed_groups),
+        Outcome::Fault => Ok(()),
     }
 }
 
 /// `fields`' answer. `field_buf_cap`/`fields_cap` are the capacities the host handed in, and
 /// `fields` the first `fields_len` entries of its field array.
+///
+/// HOST DUTY: the host checks `out.fields_len <= fields_cap` BEFORE it builds `fields`.
 pub fn check_fields(
     outcome: Outcome,
     out: &FieldsOut,
@@ -161,8 +214,11 @@ pub fn check_fields(
             if out.needed_bytes != 0 || out.needed_fields != 0 {
                 return Err(Fault::NeededOnReady);
             }
-            if out.fields_len > fields_cap || fields.len() as u64 != u64::from(out.fields_len) {
+            if out.fields_len > fields_cap {
                 return Err(Fault::CountOverCap);
+            }
+            if fields.len() as u64 != u64::from(out.fields_len) {
+                return Err(Fault::CountMismatch);
             }
             fields.iter().try_for_each(|f| {
                 if f.flags & !FIELD_SENSITIVE != 0 {
@@ -172,7 +228,8 @@ pub fn check_fields(
                 span(f.value, cap, false)
             })
         }
-        _ => Ok(()),
+        Outcome::Refused | Outcome::Pending => no_need(out.needed_bytes, out.needed_fields),
+        Outcome::Fault => Ok(()),
     }
 }
 

@@ -43,7 +43,7 @@ mod inbound;
 mod outbound;
 
 pub use check::{
-    check_begin_login, check_fields, check_identify, Fault, FIELDS_HARD_MAX,
+    check_begin_login, check_complete_login, check_fields, check_identify, Fault, FIELDS_HARD_MAX,
     IDENTITY_GROUPS_HARD_MAX,
 };
 

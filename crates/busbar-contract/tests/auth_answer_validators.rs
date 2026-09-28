@@ -6,9 +6,10 @@
 //! asserts the named FAULT, so removing any one check turns its test red.
 
 use busbar_contract::abi::auth::{
-    check_begin_login, check_fields, check_identify, BeginLoginOut, Fault, FieldSpan, FieldsOut,
-    IdentifyOut, IdentityBuf, LoginField, Span, BEGIN_AUTHORIZE, BEGIN_FORM, FIELDS_HARD_MAX,
-    IDENTITY_GROUPS_HARD_MAX, SPAN_ABSENT, VERDICT_IDENTITY, VERDICT_REJECT,
+    check_begin_login, check_complete_login, check_fields, check_identify, BeginLoginOut, Fault,
+    FieldSpan, FieldsOut, IdentifyOut, IdentityBuf, LoginField, Span, BEGIN_AUTHORIZE, BEGIN_FORM,
+    FIELDS_HARD_MAX, IDENTITY_GROUPS_HARD_MAX, LOGIN_IDENTITY, LOGIN_OUTAGE, SPAN_ABSENT,
+    VERDICT_IDENTITY, VERDICT_REJECT,
 };
 use busbar_contract::abi::mechanism::call::Outcome;
 
@@ -334,5 +335,74 @@ fn an_absent_group_span_is_fault() {
 fn a_count_that_disagrees_with_the_slice_is_fault() {
     let mut o = identity();
     o.identity.groups_len = 2;
-    assert_eq!(ready_identity(&o, &[sp(0, 1)]), Err(Fault::CountOverCap));
+    assert_eq!(ready_identity(&o, &[sp(0, 1)]), Err(Fault::CountMismatch));
+}
+
+#[test]
+fn a_fields_count_that_disagrees_with_the_slice_is_fault() {
+    assert_eq!(
+        check_fields(Outcome::Ready, &fields_out(2), CAP, FIELDS_CAP, &[field()]),
+        Err(Fault::CountMismatch)
+    );
+}
+
+#[test]
+fn ready_fields_with_needed_fields_is_fault() {
+    let mut f = fields_out(1);
+    f.needed_fields = 1;
+    assert_eq!(
+        check_fields(Outcome::Ready, &f, CAP, FIELDS_CAP, &[field()]),
+        Err(Fault::NeededOnReady)
+    );
+}
+
+#[test]
+fn refused_or_pending_identify_with_needed_is_fault() {
+    for outcome in [Outcome::Refused, Outcome::Pending] {
+        let mut o: IdentifyOut = zeroed();
+        assert_eq!(check_identify(outcome, &o, &buf(), &[]), Ok(()));
+        o.needed_bytes = CAP as u64 + 1;
+        assert_eq!(
+            check_identify(outcome, &o, &buf(), &[]),
+            Err(Fault::NeededNotFailed)
+        );
+    }
+}
+
+#[test]
+fn refused_or_pending_fields_with_needed_is_fault() {
+    for outcome in [Outcome::Refused, Outcome::Pending] {
+        let mut f: FieldsOut = zeroed();
+        assert_eq!(check_fields(outcome, &f, CAP, FIELDS_CAP, &[]), Ok(()));
+        f.needed_fields = FIELDS_CAP + 1;
+        assert_eq!(
+            check_fields(outcome, &f, CAP, FIELDS_CAP, &[]),
+            Err(Fault::NeededNotFailed)
+        );
+    }
+}
+
+#[test]
+fn complete_login_checks_its_own_vocabulary() {
+    let mut o = identity();
+    o.verdict = LOGIN_IDENTITY;
+    assert_eq!(
+        check_complete_login(Outcome::Ready, &o, &buf(), &[]),
+        Ok(())
+    );
+    o.verdict = LOGIN_OUTAGE;
+    assert_eq!(
+        check_complete_login(Outcome::Ready, &o, &buf(), &[]),
+        Ok(())
+    );
+    o.verdict = LOGIN_OUTAGE + 1;
+    assert_eq!(
+        check_complete_login(Outcome::Ready, &o, &buf(), &[]),
+        Err(Fault::Vocabulary)
+    );
+    o.verdict = 0;
+    assert_eq!(
+        check_complete_login(Outcome::Ready, &o, &buf(), &[]),
+        Err(Fault::Vocabulary)
+    );
 }
