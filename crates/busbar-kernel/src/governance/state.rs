@@ -1296,25 +1296,17 @@ impl GovState {
             // production data yet, so there was no live refunded-to-zero row that migration could
             // have mis-fired against. From v6 onward every row is written correctly from the
             // start, so this function has nothing left to infer.
-            let mut cell = BudgetCell::fresh(window);
+            let mut cell = durable_cell(ledger, window);
             // Stamp as touched NOW, not 0: an unstamped hydrated cell is instantly older than any
             // TTL, so the first post-boot sweep would discard every restored key's history before
             // that key had served a single request.
             cell.last_touch = now;
-            cell.requests = ledger.requests;
-            cell.flushed_requests = ledger.requests;
-            cell.billable_requests = ledger.billable_requests;
-            cell.flushed_billable_requests = ledger.billable_requests;
-            cell.models = ledger
-                .models
-                .iter()
-                .map(|m| ModelCell {
-                    model: std::sync::Arc::from(m.model.as_str()),
-                    era: 0,
-                    cur: m.usage_units.clone(),
-                    flushed: m.usage_units.clone(),
-                })
-                .collect();
+            // The store already holds every count restored here: the flush baselines start level.
+            cell.flushed_requests = cell.requests;
+            cell.flushed_billable_requests = cell.billable_requests;
+            for m in &mut cell.models {
+                m.flushed = m.cur.clone();
+            }
             self.budget
                 .write(bucket_id)
                 .insert(bucket_id.to_string(), cell);
@@ -1349,7 +1341,8 @@ impl GovState {
 
     /// The DERIVED current-window usage of one bucket (key or group): cell-authoritative, durable
     /// fallback, spend recomputed from tokens x the card in force per era (Q14; the durable row
-    /// carries no era, so the fallback prices at the live card). `include_request_fee` controls whether
+    /// carries no era, so the fallback prices it as the cell hydrated from it would: era zero, the
+    /// card in force when the window opened). `include_request_fee` controls whether
     /// the flat per-request fee is folded into `spend_cents`. ENFORCEMENT (`try_admit`) counts the fee
     /// for EVERY chain bucket — key AND group — so a read that wants to match what the enforcer sees
     /// must pass `true` for both. The parameter exists only for callers that deliberately want
@@ -1382,36 +1375,25 @@ impl GovState {
         let live = (self.budget.read(bucket_id).get(bucket_id))
             .filter(|c| c.window_start == window)
             .cloned();
-        if let Some(mut cell) = live {
-            // Q51: the counts AS CORRECTED by every sealed `adjust` landing on this bucket. Fee
-            // derives from the BILLABLE (2xx-only) count; `requests` reports the admission count
-            // (the requests-limit truth).
-            let fixed =
-                self.corrected(cost, (bucket_id, budget_period, window), &mut cell.models)?;
-            let spend = fixed.and_then(|()| cell.spend(cost, include_request_fee));
-            return Ok(spend
-                .and_then(Money::minor_i64)
-                .map(|spend_cents| DerivedUsage {
-                    spend_cents,
-                    tokens: cell.total_tokens(),
-                    requests: cell.requests,
-                }));
-        }
-        let ledger = self.store.get_usage(bucket_id, window)?;
-        let mut models = durable_segments(ledger.models);
-        let fixed = self.corrected(cost, (bucket_id, budget_period, window), &mut models)?;
-        let spend = fixed.and_then(|()| {
-            cost.derive_spend_cents(
-                models.iter().map(|m| (&*m.model, &m.cur)),
-                ledger.billable_requests,
-                include_request_fee,
-            )
-        });
-        Ok(spend.map(|spend_cents| DerivedUsage {
-            spend_cents,
-            tokens: super::token_total(models.iter().map(|m| &m.cur)),
-            requests: ledger.requests,
-        }))
+        // No live cell: the durable row, read AS THE CELL HYDRATED FROM IT (era zero, the card in
+        // force when the window opened), so a read that reaches the store answers what the same
+        // read answers once the bucket is hydrated — never the current card over stored history.
+        let mut cell = match live {
+            Some(cell) => cell,
+            None => durable_cell(self.store.get_usage(bucket_id, window)?, window),
+        };
+        // Q51: the counts AS CORRECTED by every sealed `adjust` landing on this bucket. Fee derives
+        // from the BILLABLE (2xx-only) count; `requests` reports the admission count (the
+        // requests-limit truth).
+        let fixed = self.corrected(cost, (bucket_id, budget_period, window), &mut cell.models)?;
+        let spend = fixed.and_then(|()| cell.spend(cost, include_request_fee));
+        Ok(spend
+            .and_then(Money::minor_i64)
+            .map(|spend_cents| DerivedUsage {
+                spend_cents,
+                tokens: cell.total_tokens(),
+                requests: cell.requests,
+            }))
     }
 
     /// **THE BUDGET BOOK'S COUNTS AS CORRECTED** (Q51, item 404, OWNER RULING Q9). An `adjust`
@@ -2236,6 +2218,18 @@ fn money_refusal(bucket_id: &str, e: &busbar_kernel_ledger::cost::MoneyError) ->
 }
 
 /// The durable ledger's per-model rows as undated segments (the row carries no era).
+/// A bucket's durable window row as a cell: the counts it holds, each model at era zero (the row
+/// carries no era). The ONE reading of a durable row — boot hydration builds the cell it keeps from
+/// this, and a read of a bucket with no live cell prices this — so the two cannot answer different
+/// figures for the same row.
+fn durable_cell(row: busbar_contract::records::UsageLedger, window: u64) -> BudgetCell {
+    let mut cell = BudgetCell::fresh(window);
+    cell.requests = row.requests;
+    cell.billable_requests = row.billable_requests;
+    cell.models = durable_segments(row.models);
+    cell
+}
+
 fn durable_segments(rows: Vec<busbar_contract::records::ModelTokens>) -> Vec<ModelCell> {
     let segment = |m: busbar_contract::records::ModelTokens| ModelCell {
         model: std::sync::Arc::from(m.model),
