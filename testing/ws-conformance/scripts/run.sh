@@ -18,6 +18,15 @@
 #   --control               run Autobahn against the pinned reference echo server (Docker)
 #   --negative-control      run Autobahn against the deliberately broken echo server (Docker); MUST be RED
 #   --subject                run Autobahn against the busbar ws-conformance-subject (Docker); ARMED OR RED
+#
+# SCOPE: busbar's ws transport does not negotiate RFC 7692 permessage-deflate, so Autobahn scores
+# every case in groups 12/13 (its permessage-deflate module) `UNIMPLEMENTED` against a peer that
+# never asked for the extension — correctly, since nothing there is broken. This suite's claim
+# (`conformance/registry.toml`, this crate's own `standard` field) is RFC 6455 alone, so the parser
+# (`bin/parse-autobahn-report.mjs`) counts `UNIMPLEMENTED` as its own outcome, neither a pass nor a
+# failure, rather than either excluding those cases (which would hide a REAL regression the day
+# busbar starts answering the extension's handshake) or failing the suite over a spec it never
+# claims to pass.
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 REPO_ROOT="$(cd "$ROOT/../.." && pwd)"
