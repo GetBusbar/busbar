@@ -20,9 +20,12 @@ does not exist.
   (`tools:`), over HTTP and over stdio. See [the MCP guide](docs/mcp.md).
 - **A2A.** Busbar serves A2A over all three of that specification's bindings (JSON-RPC, HTTP+JSON,
   gRPC) in front of registered agents (`agents:`). See [the A2A guide](docs/a2a.md).
-- **Voice.** A `streams:` block declares the live-voice plane: full-duplex realtime sessions
-  (OpenAI Realtime and Gemini Live dialects over one IR) metered by the same ledger as everything
-  else. See [the voice guide](docs/voice.md).
+- **Streaming.** A `streams:` block declares the streaming plane: full-duplex realtime sessions
+  (voice, over the OpenAI Realtime and Gemini Live dialects, on one IR) metered by the same ledger
+  as everything else. Named `streaming` rather than `voice` (owner ruling Q96/F10): voice is one
+  dialect the plane carries, not the plane itself. Since this plane did not exist in any published
+  1.5.5 release, there is nothing to migrate — refusal text, log lines, the audit record kind and
+  the plane's diagnostic all read `streaming` in 1.6.0. See [the voice guide](docs/voice.md).
 
 Each plane is inert until its section is written. An `mcp:` block with an empty `auth.chain`
 refuses to start, because an anonymous MCP request is never narrowed by a key and would run with
