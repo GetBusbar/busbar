@@ -2120,6 +2120,12 @@ mod dispatch_test_plugin;
 #[path = "tests/dispatch_tests.rs"]
 mod dispatch_tests;
 
+/// The plane door's test plugin, compiled in: the LINKED door of `plane_conformance_tests` (the
+/// same source is the `plane_door_plugin` example `cdylib`, the DROPPED door).
+#[cfg(test)]
+#[path = "../tests/fixtures/plane_door_plugin.rs"]
+mod plane_door_plugin;
+
 /// The secret and export kind's answer checks, through the dispatcher's `Kind` adapter.
 #[cfg(test)]
 #[path = "tests/dispatch_kind_secret_export_tests.rs"]

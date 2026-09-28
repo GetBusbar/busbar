@@ -32,6 +32,7 @@ struct LifecycleOnly {
 // SAFETY: `#[repr(C)]`, `head: OpsHead` first, nothing after it.
 unsafe impl KindOps for LifecycleOnly {
     const KIND: KindCode = KindCode::Secret;
+    type Lifecycle = crate::abi::sdk::door::Lifecycle;
 }
 
 /// `validate` with this settings length panics.
@@ -607,6 +608,7 @@ struct TwoKindOps {
 // SAFETY: `#[repr(C)]`, `head: OpsHead` first, then only `Option<Op>` slots.
 unsafe impl KindOps for TwoKindOps {
     const KIND: KindCode = KindCode::Store;
+    type Lifecycle = crate::abi::sdk::door::Lifecycle;
 }
 
 // SAFETY: this test kind states these structs for its two ops.
@@ -1304,6 +1306,8 @@ mod plane_plugin {
     //! A REAL kind table: every plane kind op wired to the structs `abi::plane` states for it.
     use super::*;
     use crate::abi::plane::{ArriveIn, ArriveOut, OnPieceIn, OnPieceOut, RefusalIn, RefusalOut};
+    use crate::abi::plane::{PlaneDriveIn, PlaneDriveOut, PlaneOpenIn, PlaneOpenOut};
+    use crate::abi::plane::{PlaneRefreshOut, PlaneSnapshot};
     use crate::abi::plane::{ProjectIn, ProjectOut, ServeIn, ServeOut};
 
     macro_rules! answers {
@@ -1325,6 +1329,60 @@ mod plane_plugin {
     answers!(Hydrate, GenIn, OutHead, Outcome::Ready);
     answers!(Start, GenIn, OutHead, Outcome::Ready);
     answers!(Project, ProjectIn, ProjectOut, Outcome::Ready);
+    answers!(Refresh, RefreshIn, PlaneRefreshOut, Outcome::Failed);
+
+    /// The generation snapshot `open` publishes.
+    pub const SNAPSHOT: &PlaneSnapshot = &PlaneSnapshot {
+        size: size_of::<PlaneSnapshot>() as u32,
+        _reserved: 0,
+        generation: 7,
+        claims: std::ptr::null(),
+        claims_len: 0,
+        admin_routes: std::ptr::null(),
+        admin_routes_len: 0,
+        openapi: Blob {
+            ptr: std::ptr::null(),
+            len: 0,
+            fmt: crate::abi::mechanism::call::BLOB_ABSENT,
+            flags: 0,
+        },
+        audience: crate::abi::mechanism::call::AbiStr {
+            ptr: std::ptr::null(),
+            len: 0,
+        },
+        resource_metadata: crate::abi::mechanism::call::AbiStr {
+            ptr: std::ptr::null(),
+            len: 0,
+        },
+    };
+
+    /// `open`: the plane's own `out`, carrying the snapshot.
+    pub struct Open;
+    impl Slot for Open {
+        type In = PlaneOpenIn;
+        type Out = PlaneOpenOut;
+        fn call(_: *mut c_void, _: &PlaneOpenIn, out: &mut PlaneOpenOut) -> Outcome {
+            out.snapshot = SNAPSHOT;
+            Outcome::Ready
+        }
+    }
+
+    /// `drive`: names the session `41` ready in the host's buffer.
+    pub struct Drive;
+    impl Slot for Drive {
+        type In = PlaneDriveIn;
+        type Out = PlaneDriveOut;
+        fn call(_: *mut c_void, input: &PlaneDriveIn, out: &mut PlaneDriveOut) -> Outcome {
+            if input.sessions_cap == 0 {
+                out.sessions_needed = 1;
+                return Outcome::Failed;
+            }
+            // SAFETY: the host's buffer of `sessions_cap >= 1` streams.
+            unsafe { input.sessions_buf.write(41) };
+            out.sessions_written = 1;
+            Outcome::Ready
+        }
+    }
 
     crate::plugin_door! {
         ops: crate::abi::plane::Ops,
@@ -1343,6 +1401,9 @@ mod plane_plugin {
 #[test]
 fn a_plane_plugin_wires_every_kind_op() {
     use crate::abi::plane::{slot as plane_slot, ArriveIn, ArriveOut, Ops, ProjectIn, ProjectOut};
+    use crate::abi::plane::{
+        PlaneDriveIn, PlaneDriveOut, PlaneOpenIn, PlaneOpenOut, PlaneSnapshot,
+    };
     // SAFETY: the macro's `'static` door and its plane table.
     let d = unsafe { &*plane_plugin::door() };
     let t = unsafe { &*d.ops.cast::<Ops>() };
@@ -1382,6 +1443,34 @@ fn a_plane_plugin_wires_every_kind_op() {
     out.head = prefilled_head(size_of::<ProjectOut>());
     assert_eq!(call(t.project, &input, &mut out), Outcome::Ready);
     assert_eq!(out.head.outcome.outcome(), Outcome::Ready);
+
+    // `open` writes the plane's whole `PlaneOpenOut`: the snapshot reaches the host.
+    // SAFETY: plain data; all-zero is valid.
+    let mut input: PlaneOpenIn = unsafe { std::mem::zeroed() };
+    input.open.head = in_head::<PlaneOpenIn>(slot::OPEN, Ticket::NONE);
+    // SAFETY: as above.
+    let mut out: PlaneOpenOut = unsafe { std::mem::zeroed() };
+    out.open.head = prefilled_head(size_of::<PlaneOpenOut>());
+    assert_eq!(call(t.head.open, &input, &mut out), Outcome::Ready);
+    assert_eq!(out.snapshot, plane_plugin::SNAPSHOT as *const PlaneSnapshot);
+    assert_eq!(out.open.head.size as usize, size_of::<PlaneOpenOut>());
+
+    // `drive` names the ready session in the host's buffer; a zero cap is the short answer.
+    let mut sessions = [0_u64; 2];
+    // SAFETY: plain data; all-zero is valid.
+    let mut input: PlaneDriveIn = unsafe { std::mem::zeroed() };
+    input.drive.head = in_head::<PlaneDriveIn>(slot::DRIVE, Ticket::NONE);
+    input.sessions_buf = sessions.as_mut_ptr();
+    input.sessions_cap = sessions.len();
+    // SAFETY: as above.
+    let mut out: PlaneDriveOut = unsafe { std::mem::zeroed() };
+    out.head = prefilled_head(size_of::<PlaneDriveOut>());
+    assert_eq!(call(t.head.drive, &input, &mut out), Outcome::Ready);
+    assert_eq!((out.sessions_written, sessions[0]), (1, 41));
+    input.sessions_cap = 0;
+    out.head = prefilled_head(size_of::<PlaneDriveOut>());
+    assert_eq!(call(t.head.drive, &input, &mut out), Outcome::Failed);
+    assert_eq!(out.sessions_needed, 1);
 
     for (i, s) in [
         t.arrive, t.on_piece, t.refusal, t.serve, t.hydrate, t.start, t.project,

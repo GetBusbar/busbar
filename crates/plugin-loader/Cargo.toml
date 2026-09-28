@@ -34,6 +34,13 @@ name = "dispatch_test_plugin"
 path = "tests/fixtures/dispatch_test_plugin.rs"
 crate-type = ["cdylib"]
 
+# The plane door's test plugin (`plane_conformance_tests`): a minimal plane built with the SDK's
+# `plugin_door!`, one source LINKED (a test-build module) and DROPPED (this `cdylib`).
+[[example]]
+name = "plane_door_plugin"
+path = "tests/fixtures/plane_door_plugin.rs"
+crate-type = ["cdylib"]
+
 [dependencies]
 # The three unit-side store seams the composition root binds to one loaded store (`store_adapter`).
 # None of the three crates may name a store, so the adapter that implements all three lives on this

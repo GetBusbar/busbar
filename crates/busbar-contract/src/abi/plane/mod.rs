@@ -129,7 +129,10 @@ use super::mechanism::call::{AbiStr, Blob, InHead, Op, OutHead};
 pub use super::mechanism::check::SPAN_ABSENT;
 use super::mechanism::check::{contract, OpContract};
 use super::mechanism::door::KindTailHead;
-use super::mechanism::lifecycle::{DriveIn, GenIn, OpenIn, OpenOut, OpsHead, LIFECYCLE_SLOTS};
+use super::mechanism::lifecycle::{
+    slot as life, CancelIn, CancelOut, DriveIn, GenIn, OpenIn, OpenOut, OpsHead, RefreshIn,
+    ReleaseIn, TickIn, TickOut, ValidateIn, LIFECYCLE_SLOTS,
+};
 
 /// The plane kind's ABI version: new in 1.6.0 (v1.5.5 had no plane ABI), so it ships `1`.
 pub const ABI_VERSION: u32 = 1;
@@ -953,23 +956,42 @@ pub struct ProjectOut {
 // plain structs): every bit pattern is a valid value, which is what `AbiIn`/`AbiOut` promise.
 //
 // SAFETY (all below): `#[repr(C)]`, leading with `InHead`/`OutHead`, plain data only.
+unsafe impl super::sdk::door::AbiIn for PlaneOpenIn {}
+unsafe impl super::sdk::door::AbiIn for PlaneDriveIn {}
 unsafe impl super::sdk::door::AbiIn for ArriveIn {}
 unsafe impl super::sdk::door::AbiIn for OnPieceIn {}
 unsafe impl super::sdk::door::AbiIn for RefusalIn {}
 unsafe impl super::sdk::door::AbiIn for ServeIn {}
 unsafe impl super::sdk::door::AbiIn for ProjectIn {}
+unsafe impl super::sdk::door::AbiOut for PlaneOpenOut {}
+unsafe impl super::sdk::door::AbiOut for PlaneRefreshOut {}
+unsafe impl super::sdk::door::AbiOut for PlaneDriveOut {}
 unsafe impl super::sdk::door::AbiOut for ArriveOut {}
 unsafe impl super::sdk::door::AbiOut for OnPieceOut {}
 unsafe impl super::sdk::door::AbiOut for RefusalOut {}
 unsafe impl super::sdk::door::AbiOut for ServeOut {}
 unsafe impl super::sdk::door::AbiOut for ProjectOut {}
 
-/// Each plane kind op's `in`/`out` for [`plugin_door!`](crate::plugin_door), per [`Ops`]' docs. A
-/// plugin wiring a slot to another op's structs does not compile:
+// Each plane kind op's `in`/`out`, per [`Ops`]' docs.
+super::sdk::door::slot_structs!(Ops {
+    slot::ARRIVE => ArriveIn, ArriveOut;
+    slot::ON_PIECE => OnPieceIn, OnPieceOut;
+    slot::REFUSAL => RefusalIn, RefusalOut;
+    slot::SERVE => ServeIn, ServeOut;
+    slot::HYDRATE => GenIn, OutHead;
+    slot::START => GenIn, OutHead;
+    slot::PROJECT => ProjectIn, ProjectOut;
+});
+
+/// The plane's LIFECYCLE `in`/`out` ([`KindOps::Lifecycle`](super::sdk::door::KindOps::Lifecycle)):
+/// the lifecycle's own, except `open` ([`PlaneOpenIn`], [`PlaneOpenOut`]) and `refresh`
+/// ([`PlaneRefreshOut`]), which carry the generation snapshot, and `drive` ([`PlaneDriveIn`],
+/// [`PlaneDriveOut`]), which names the ready sessions.
+///
+/// A plane plugin wiring a slot to another op's structs does not compile, a kind op:
 ///
 /// ```compile_fail,E0271
-/// use busbar_contract::abi::plane::{ArriveIn, ArriveOut, OnPieceIn, OnPieceOut};
-/// use busbar_contract::abi::plane::{ProjectIn, ProjectOut, RefusalIn, RefusalOut, ServeIn, ServeOut};
+/// use busbar_contract::abi::plane::*;
 /// use busbar_contract::abi::mechanism::call::{InHead, OutHead, Outcome};
 /// use busbar_contract::abi::mechanism::lifecycle::*;
 /// use busbar_contract::abi::sdk::door::Slot;
@@ -979,8 +1001,10 @@ unsafe impl super::sdk::door::AbiOut for ProjectOut {}
 /// #     impl Slot for $n { type In = $i; type Out = $o;
 /// #         fn call(_: *mut c_void, _: &$i, _: &mut $o) -> Outcome { Outcome::Ready } }
 /// # } }
-/// # ready!(V, ValidateIn, OutHead); ready!(Op_, OpenIn, OpenOut); ready!(Rf, RefreshIn, OutHead);
-/// # ready!(Rt, GenIn, OutHead); ready!(Tk, TickIn, TickOut); ready!(Dr, DriveIn, OutHead);
+/// # ready!(V, ValidateIn, OutHead); ready!(Op_, PlaneOpenIn, PlaneOpenOut);
+/// # ready!(Rf, RefreshIn, PlaneRefreshOut);
+/// # ready!(Rt, GenIn, OutHead); ready!(Tk, TickIn, TickOut);
+/// # ready!(Dr, PlaneDriveIn, PlaneDriveOut);
 /// # ready!(Cn, CancelIn, CancelOut); ready!(Rl, ReleaseIn, OutHead); ready!(Cl, InHead, OutHead);
 /// # ready!(Arrive, ArriveIn, ArriveOut); ready!(Refusal, RefusalIn, RefusalOut);
 /// # ready!(Serve, ServeIn, ServeOut); ready!(Hydrate, GenIn, OutHead);
@@ -997,27 +1021,55 @@ unsafe impl super::sdk::door::AbiOut for ProjectOut {}
 /// # fn main() { let _ = door(); }
 /// ```
 ///
+/// or a lifecycle slot (an `open` writing the lifecycle's `OpenOut`, with no snapshot):
+///
+/// ```compile_fail,E0271
+/// use busbar_contract::abi::plane::*;
+/// use busbar_contract::abi::mechanism::call::{InHead, OutHead, Outcome};
+/// use busbar_contract::abi::mechanism::lifecycle::*;
+/// use busbar_contract::abi::sdk::door::Slot;
+/// # use std::ffi::c_void;
+/// # macro_rules! ready { ($n:ident, $i:ty, $o:ty) => {
+/// #     struct $n;
+/// #     impl Slot for $n { type In = $i; type Out = $o;
+/// #         fn call(_: *mut c_void, _: &$i, _: &mut $o) -> Outcome { Outcome::Ready } }
+/// # } }
+/// # ready!(V, ValidateIn, OutHead); ready!(Rf, RefreshIn, PlaneRefreshOut);
+/// ready!(Op_, OpenIn, OpenOut); // the lifecycle's `open`, no snapshot: refused
+/// # ready!(Rt, GenIn, OutHead); ready!(Tk, TickIn, TickOut);
+/// # ready!(Dr, PlaneDriveIn, PlaneDriveOut);
+/// # ready!(Cn, CancelIn, CancelOut); ready!(Rl, ReleaseIn, OutHead); ready!(Cl, InHead, OutHead);
+/// # ready!(Arrive, ArriveIn, ArriveOut); ready!(Refusal, RefusalIn, RefusalOut);
+/// # ready!(Serve, ServeIn, ServeOut); ready!(Hydrate, GenIn, OutHead);
+/// # ready!(Start, GenIn, OutHead); ready!(Project, ProjectIn, ProjectOut);
+/// # ready!(OnPiece, OnPieceIn, OnPieceOut);
+/// busbar_contract::plugin_door! {
+///     ops: busbar_contract::abi::plane::Ops,
+///     statement: busbar_contract::abi::sdk::door::statement("wrong", "0", 1),
+///     lifecycle: { validate: V, open: Op_, refresh: Rf, retire: Rt, tick: Tk, drive: Dr,
+///                  cancel: Cn, release: Rl, close: Cl },
+///     kind_ops: { arrive: Arrive, on_piece: OnPiece, refusal: Refusal, serve: Serve,
+///                 hydrate: Hydrate, start: Start, project: Project },
+/// }
+/// # fn main() { let _ = door(); }
+/// ```
+///
 /// With `OnPiece` reading [`OnPieceIn`] and writing [`OnPieceOut`] the same plugin compiles
 /// (`abi/sdk/tests/door_tests.rs`, `a_plane_plugin_wires_every_kind_op`).
-macro_rules! kind_slots {
-    ($($slot:ident => $in:ty, $out:ty;)*) => {$(
-        // SAFETY: the structs `Ops`' doc states for this slot.
-        unsafe impl super::sdk::door::KindSlot<{ slot::$slot }> for Ops {
-            type In = $in;
-            type Out = $out;
-        }
-    )*};
-}
+#[derive(Debug, Clone, Copy)]
+pub struct PlaneLifecycle;
 
-kind_slots! {
-    ARRIVE => ArriveIn, ArriveOut;
-    ON_PIECE => OnPieceIn, OnPieceOut;
-    REFUSAL => RefusalIn, RefusalOut;
-    SERVE => ServeIn, ServeOut;
-    HYDRATE => GenIn, OutHead;
-    START => GenIn, OutHead;
-    PROJECT => ProjectIn, ProjectOut;
-}
+super::sdk::door::slot_structs!(PlaneLifecycle {
+    life::VALIDATE => ValidateIn, OutHead;
+    life::OPEN => PlaneOpenIn, PlaneOpenOut;
+    life::REFRESH => RefreshIn, PlaneRefreshOut;
+    life::RETIRE => GenIn, OutHead;
+    life::TICK => TickIn, TickOut;
+    life::DRIVE => PlaneDriveIn, PlaneDriveOut;
+    life::CANCEL => CancelIn, CancelOut;
+    life::RELEASE => ReleaseIn, OutHead;
+    life::CLOSE => InHead, OutHead;
+});
 
 #[cfg(test)]
 #[path = "../tests/plane_kind_tests.rs"]
