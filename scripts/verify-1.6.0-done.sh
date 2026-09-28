@@ -15,7 +15,7 @@
 #                    LOCKED 5-plane roster (llm/mcp/a2a/streaming/decisions, BUSBAR-1.6.0 #18/#48)
 #                    has no plane left untested on disk.
 #   byte-identity    the MONEY PATH is byte-stable: openapi_json_matches_committed_file,
-#                    resolved_billing_and_limits_config_is_byte_stable, and the 6 busbar-llm-codec
+#                    resolved_billing_and_limits_config_is_byte_stable, and the 6 busbar-plane-llm
 #                    same-proto byte-exact oracles. Bless/regen env vars MUST be empty first (else the
 #                    check is a no-op that regenerates the goldens instead of comparing to them), and
 #                    every filtered step declares its test count so a filter that selects nothing is
