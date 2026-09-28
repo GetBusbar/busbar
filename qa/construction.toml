@@ -413,19 +413,27 @@ because = "ARCHITECT 2026-09-27: R-KERNEL exception for the Phase-2 exit-test re
 
 # ── THE CONTRACT CEILING PAIR, RE-ARMED BY M3-PT (abi/transport v1 table/shapes/tail/validators,
 #    abi/plane v1 table/shapes/tail/snapshot/validators, the shared mechanism answer-validator
-#    helpers) — measured and written by LANDER at land time ────────────────────────────────────
+#    helpers) — EXPIRED AND STRUCK
+#
+# Declared `gate.surface_ceilings.contract_caps` and `rules.loc-ceilings.caps_contract_ceiling`
+# 21694 -> 23892 (OWNER RULING Q68(3)). Its commit reached the base; struck by KINDSLOT-STORE +
+# PT's KindSlot re-arm below, which declares the pair's next figure.
+
+# ── THE CONTRACT CEILING PAIR, RE-ARMED BY KINDSLOT-STORE + PT'S KINDSLOT (KindSlot type-checking
+#    for store's 47 kind ops, plane's 6 kind ops and transport's 18 kind ops) — measured and
+#    written by LANDER at land time ─────────────────────────────────────────────────────────────
 
 [gate.ceiling_raises."gate.surface_ceilings.contract_caps"]
 file    = "qa/construction.toml"
-from    = 21694
-to      = 23892
-because = "OWNER RULING Q68(3) (docs/design/1.6.0-QUESTIONS.md): contract_caps re-arms at the MEASURED value, in its own commit, written by LANDER per ARCHITECT's re-measure-at-land-time authorization. Growth is M3-PT (design B.6/B.7): the transport kind's v1 table, shapes and tail plus its answer validators; the plane kind's v1 table, shapes, tail and snapshot plus its answer validators; the shared mechanism answer-validator helpers (P5, M-SB); the PT review's written/needed, M-SB and two-ticket fixes for both kinds; and the plane+transport prose pass. Measured by cargo xtask gate construction: 21694 before, 23892 after."
+from    = 23892
+to      = 24063
+because = "OWNER RULING Q68(3) (docs/design/1.6.0-QUESTIONS.md): contract_caps re-arms at the MEASURED value, in its own commit, written by LANDER per ARCHITECT's re-measure-at-land-time authorization. Growth is KindSlot type-checking for the store kind's 47 ops (KINDSLOT-STORE, ABI-b3) and, rebased alongside it, the plane kind's 6 ops and the transport kind's 18 ops (PT's KindSlot follow-up, ABI-b3) — no shape/layout change, abi-layout.golden diff zero throughout. Measured by cargo xtask gate construction: 23892 before, 24063 after."
 
 [gate.ceiling_raises."rules.loc-ceilings.caps_contract_ceiling"]
 file    = "qa/construction.toml"
-from    = 21694
-to      = 23892
-because = "OWNER RULING Q68(3) (docs/design/1.6.0-QUESTIONS.md): contract_caps re-arms at the MEASURED value, in its own commit, written by LANDER per ARCHITECT's re-measure-at-land-time authorization. Growth is M3-PT (design B.6/B.7): the transport kind's v1 table, shapes and tail plus its answer validators; the plane kind's v1 table, shapes, tail and snapshot plus its answer validators; the shared mechanism answer-validator helpers (P5, M-SB); the PT review's written/needed, M-SB and two-ticket fixes for both kinds; and the plane+transport prose pass. Measured by cargo xtask gate construction: 21694 before, 23892 after."
+from    = 23892
+to      = 24063
+because = "OWNER RULING Q68(3) (docs/design/1.6.0-QUESTIONS.md): contract_caps re-arms at the MEASURED value, in its own commit, written by LANDER per ARCHITECT's re-measure-at-land-time authorization. Growth is KindSlot type-checking for the store kind's 47 ops (KINDSLOT-STORE, ABI-b3) and, rebased alongside it, the plane kind's 6 ops and the transport kind's 18 ops (PT's KindSlot follow-up, ABI-b3) — no shape/layout change, abi-layout.golden diff zero throughout. Measured by cargo xtask gate construction: 23892 before, 24063 after."
 
 # ── THE KERNEL CEILING, RE-ARMED BY SD-8 (the substrate-values kernel landing) ─────────────────
 # Its 51100 -> 54801 declaration expired once landed and is struck; the ceiling text below keeps it.
@@ -605,7 +613,10 @@ because = "ARCHITECT ruling on the kernel budget (R-KERNEL, sd-extra.txt; K2-0 u
 # RE-ARMED 21694 -> 23892, AT THE MEASUREMENT (OWNER RULING Q68(3)), in its own commit after
 # M3-PT (transport v1 + plane v1 tables/shapes/tail/snapshot/validators, the shared mechanism
 # answer-validator helpers); the live declaration above carries the measure.
-contract_caps = 23892
+# RE-ARMED 23892 -> 24063, AT THE MEASUREMENT (OWNER RULING Q68(3)), in its own commit after
+# KINDSLOT-STORE + PT's KindSlot (KindSlot type-checking for store's 47, plane's 6 and transport's
+# 18 kind ops; no shape/layout change); the live declaration above carries the measure.
+contract_caps = 24063
 # REPOINTED, and the repoint is what makes this row a gate again. It named the CRATE
 # `busbar-grammar`, which #40 folded into `busbar-contract` and deleted — so it summed nothing,
 # measured nothing and passed, which is this file's own "zero is not clean" failure sitting inside
@@ -1247,7 +1258,9 @@ contract_crate = "busbar-contract"
 # kind-op type-checking).
 # RE-ARMED 21694 -> 23892 with its pair (OWNER RULING Q68(3); M3-PT, transport v1 + plane v1
 # tables/shapes/tail/snapshot/validators).
-caps_contract_ceiling = 23892
+# RE-ARMED 23892 -> 24063 with its pair (OWNER RULING Q68(3); KINDSLOT-STORE + PT's KindSlot,
+# store's 47 + plane's 6 + transport's 18 kind ops, no shape/layout change).
+caps_contract_ceiling = 24063
 unit_crate_glob = "busbar-unit-*"
 # RE-KEYED on cherry-pick onto 143db6db6: this commit's own delta is -53 (two units stopped
 # declaring their own copies), measured against whatever unit_total_ceiling read when the line was
