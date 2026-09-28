@@ -1705,7 +1705,10 @@ forget_or_drop_pattern = '(?:mem::forget|drop)\(\s*&?\s*[A-Za-z_][A-Za-z0-9_]*[H
 # deadline/cancel path: in a function of `cancel_scope_dirs` that names a cancel or a deadline, a
 # money hold (`hold_open_pattern`) is released or settled (`hold_close_pattern`) before any `.await`
 # or `return` that follows the cancel.
-cancel_scope_dirs = ["crates/plugin-loader/src/dispatch/"]
+# The dispatcher's cancel paths hold no money hold today; the ONE money `.await` in the tree is the
+# teller's `under_hold(...).await` (crates/busbar-kernel/src/teller.rs), so the row scans both: a
+# cancel or deadline path growing around it is held to the rule the day it appears.
+cancel_scope_dirs = ["crates/plugin-loader/src/dispatch/", "crates/busbar-kernel/src/teller.rs"]
 cancel_path_pattern = 'slot::CANCEL|DropClient|drop_client|deadline'
 hold_open_pattern = 'Hold::open|HoldCell|\blet\s+(?:mut\s+)?\w*[Hh]old\w*\s*[:=]'
 hold_close_pattern = '::settle\(|\.settle\(|::release\(|\.release\('
