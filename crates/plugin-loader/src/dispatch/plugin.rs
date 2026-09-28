@@ -126,6 +126,10 @@ pub struct Bind {
     pub max_inflight_cap: u32,
     /// Where the envelope goes.
     pub sink: Arc<dyn EnvelopeSink>,
+    /// The dispatcher that ADOPTS the instance at bind: its wakes route there and its watchdog
+    /// watches every crossing from the first (a ticket-less `validate` or `open` included). `None`
+    /// = adopted by the first dispatcher that submits to it.
+    pub dispatcher: Option<super::worker::Adopter>,
 }
 
 impl std::fmt::Debug for Bind {
@@ -136,8 +140,32 @@ impl std::fmt::Debug for Bind {
     }
 }
 
+/// THE ONE RE-CALL a SHORT answer earns: consumed by [`Plugin::recall`], and neither `Clone` nor
+/// `Copy`, so it cannot be spent twice.
+///
+/// ```compile_fail
+/// fn twice<K: busbar_plugin_loader::dispatch::Kind>(
+///     p: &busbar_plugin_loader::dispatch::Plugin<K>,
+///     r: busbar_plugin_loader::dispatch::Recall,
+///     f: &mut busbar_plugin_loader::dispatch::Frame<
+///         busbar_contract::abi::mechanism::call::InHead,
+///         busbar_contract::abi::mechanism::call::OutHead,
+///     >,
+/// ) {
+///     let _ = p.recall(r, 4, f);
+///     let _ = p.recall(r, 4, f); // use of moved value: a token is spent once
+/// }
+/// ```
+#[derive(Debug, PartialEq, Eq)]
+pub struct Recall {
+    /// The instance that answered short.
+    instance: usize,
+    /// The op that answered short.
+    slot: u32,
+}
+
 /// What one ticket-less call answered, copied out of the plugin's memory.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct Called {
     /// The authoritative outcome.
     pub outcome: Outcome,
@@ -145,9 +173,9 @@ pub struct Called {
     pub error: Option<Vec<u8>>,
     /// A lease the caller hands back to `release`; `0` = none.
     pub lease: u64,
-    /// A FAILED answer the kind calls SHORT ([`Kind::short`]): the caller may re-ask ONCE, through
-    /// [`Plugin::recall`], with bigger buffers.
-    pub short: bool,
+    /// For a FAILED answer the kind calls SHORT ([`Kind::short`]): the token for the ONE re-call,
+    /// through [`Plugin::recall`], with bigger buffers.
+    pub recall: Option<Recall>,
 }
 
 /// What one crossing answered.
@@ -632,7 +660,7 @@ impl<K: Kind> Plugin<K> {
         }));
         let name = str_bytes(st.name)
             .ok_or_else(|| LoadError::BadStatement("the name is NULL or over-long".into()))?;
-        Ok(Self {
+        let plugin = Self {
             inner: Arc::new(Instance {
                 kind: v.kind,
                 name: String::from_utf8_lossy(name).into_owned(),
@@ -653,13 +681,17 @@ impl<K: Kind> Plugin<K> {
                 timeout: K::TIMEOUT,
                 check: K::check,
                 short: K::short,
-                sink: bind.sink,
+                sink: bind.sink.clone(),
                 wake,
                 tables,
                 _lib: lib,
             }),
             _k: PhantomData,
-        })
+        };
+        if let Some(adopter) = &bind.dispatcher {
+            adopter.adopt(&plugin.inner);
+        }
+        Ok(plugin)
     }
 
     /// The kind.
@@ -701,19 +733,23 @@ impl<K: Kind> Plugin<K> {
         self.call_once(s, frame, false)
     }
 
-    /// THE ONE RE-CALL of a SHORT answer ([`Called::short`]), with the caller's bigger buffers in
-    /// `frame`. REFUSED without a crossing when `prev` was not short; a second short answer is
-    /// FAULT (ruling M-SB).
+    /// THE ONE RE-CALL of a SHORT answer, spending its [`Recall`] token, with the caller's bigger
+    /// buffers in `frame`. REFUSED without a crossing when the token is another instance's or
+    /// another op's; a second short answer is FAULT (ruling M-SB).
     pub fn recall<I: InFrame, O: OutFrame>(
         &self,
-        prev: Called,
+        token: Recall,
         s: u32,
         frame: &mut Frame<I, O>,
     ) -> Called {
-        if !prev.short {
+        if token.instance != self.instance_id() || token.slot != s {
             return Called::from(Crossed::host(Outcome::Refused));
         }
         self.call_once(s, frame, true)
+    }
+
+    fn instance_id(&self) -> usize {
+        Arc::as_ptr(&self.inner) as usize
     }
 
     fn call_once<I: InFrame, O: OutFrame>(
@@ -756,7 +792,14 @@ impl<K: Kind> Plugin<K> {
         if recall && crossed.short {
             return Called::from(Crossed::host(Outcome::Fault));
         }
-        Called::from(crossed)
+        let token = crossed.short.then(|| Recall {
+            instance: self.instance_id(),
+            slot: s,
+        });
+        Called {
+            recall: token,
+            ..Called::from(crossed)
+        }
     }
 }
 
@@ -766,7 +809,7 @@ impl From<Crossed> for Called {
             outcome: c.outcome,
             error: c.error,
             lease: c.lease,
-            short: c.short,
+            recall: None,
         }
     }
 }

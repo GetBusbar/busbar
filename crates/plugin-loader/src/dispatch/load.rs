@@ -209,26 +209,43 @@ pub(crate) struct Lib(Option<Library>);
 
 impl Drop for Lib {
     fn drop(&mut self) {
-        let Some(lib) = self.0.take() else {
-            return;
-        };
-        // Never under a worker-state lock: the unload runs plugin code.
-        if super::worker::state_held() {
-            #[cfg(test)]
-            DEFERRED_UNLOADS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            return super::worker::defer_unload(Lib(Some(lib)));
+        if let Some(lib) = self.0.take() {
+            reap(Box::new(move || crate::dlclose_on_worker(lib)));
         }
-        #[cfg(test)]
-        UNLOADS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        crate::dlclose_on_worker(lib);
     }
 }
 
-/// TEST WITNESSES: unloads deferred past a worker-state lock, and unloads actually run (never
-/// under one, by construction of the branch above).
-#[cfg(test)]
-pub(crate) static DEFERRED_UNLOADS: std::sync::atomic::AtomicU64 =
-    std::sync::atomic::AtomicU64::new(0);
+/// An unload, as the reaper runs it.
+pub(crate) type Unload = Box<dyn FnOnce() + Send>;
+
+/// THE REAPER: every library unload (plugin `.fini_array` code) runs on this one dedicated thread,
+/// fire and forget. Never on a request worker, never on the watchdog, never under a worker's lock
+/// and never inside another op's crossing record, so an unload that hangs wedges only the reaper:
+/// no innocent instance is faulted and no caller waits.
+pub(crate) fn reap(unload: Unload) {
+    static REAPER: std::sync::OnceLock<std::sync::Mutex<std::sync::mpsc::Sender<Unload>>> =
+        std::sync::OnceLock::new();
+    let tx = REAPER.get_or_init(|| {
+        let (tx, rx) = std::sync::mpsc::channel::<Unload>();
+        std::thread::Builder::new()
+            .name(REAPER_THREAD.into())
+            .spawn(move || {
+                for unload in rx {
+                    unload();
+                    #[cfg(test)]
+                    UNLOADS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                }
+            })
+            .expect("spawn the unload reaper");
+        std::sync::Mutex::new(tx)
+    });
+    let _ = tx.lock().unwrap_or_else(|e| e.into_inner()).send(unload);
+}
+
+/// The reaper thread's name.
+pub(crate) const REAPER_THREAD: &str = "busbar-dispatch-reaper";
+
+/// TEST WITNESS: unloads the reaper finished.
 #[cfg(test)]
 pub(crate) static UNLOADS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 

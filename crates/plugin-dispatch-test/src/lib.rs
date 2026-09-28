@@ -62,6 +62,10 @@ pub const UNHANG: &[u8] = b"unhang:";
 /// `tick` mode: `pend:hold:<d>` is held like [`PEND_HOLD`]; its `cancel` answers disposition `<d>`
 /// (`f` = `cancel` answers FAULT).
 pub const PEND_HOLD_DISPOSED: &[u8] = b"pend:hold:";
+/// `tick` mode: the next `drive` hangs until `unhang:drive`.
+pub const DRIVE_HANGS: &[u8] = b"drivehangs";
+/// `tick` mode: READY once a hanging `drive` is inside its crossing, else REFUSED.
+pub const DRIVE_ENTERED: &[u8] = b"driveentered";
 /// `tick` mode: return READY WITHOUT writing the mirror (a host that did not zero `out` would read
 /// its own garbage as the answer).
 pub const SILENT: &[u8] = b"silent";
@@ -284,6 +288,10 @@ struct Inst {
     invocations: AtomicU32,
     cancels: AtomicU32,
     drives: AtomicU32,
+    /// [`DRIVE_HANGS`]: the next `drive` hangs until `unhang:drive`.
+    drive_hangs: AtomicBool,
+    /// A hanging `drive` is inside its crossing.
+    drive_entered: AtomicBool,
 }
 
 /// Write the outcome into the head (the mirror) and return it.
@@ -348,6 +356,11 @@ extern "C" fn validate(_: *mut c_void, input: *const c_void, out: *mut c_void) -
 extern "C" fn open(_: *mut c_void, input: *const c_void, out: *mut c_void) -> RawOutcome {
     unsafe {
         let open_in = &*input.cast::<OpenIn>();
+        // Settings `hang:open`: `open` does not return until `unhang:open`.
+        let st = open_in.settings;
+        if !st.ptr.is_null() && std::slice::from_raw_parts(st.ptr, st.len) == b"hang:open" {
+            hang_until(b"open");
+        }
         let Some(wake) = open_in.host.as_ref().and_then(|h| h.wake) else {
             return say(out, Outcome::Refused);
         };
@@ -360,6 +373,8 @@ extern "C" fn open(_: *mut c_void, input: *const c_void, out: *mut c_void) -> Ra
             invocations: AtomicU32::new(0),
             cancels: AtomicU32::new(0),
             drives: AtomicU32::new(0),
+            drive_hangs: AtomicBool::new(false),
+            drive_entered: AtomicBool::new(false),
         });
         (*out.cast::<OpenOut>()).instance = Arc::into_raw(inst).cast_mut().cast();
         say(out, Outcome::Ready)
@@ -372,8 +387,20 @@ extern "C" fn ready_only(_: *mut c_void, _: *const c_void, out: *mut c_void) -> 
 
 extern "C" fn drive(instance: *mut c_void, _: *const c_void, out: *mut c_void) -> RawOutcome {
     unsafe {
-        inst(instance).drives.fetch_add(1, Ordering::SeqCst);
+        let me = inst(instance);
+        if me.drive_hangs.load(Ordering::SeqCst) {
+            me.drive_entered.store(true, Ordering::SeqCst);
+            hang_until(b"drive");
+        }
+        me.drives.fetch_add(1, Ordering::SeqCst);
         say(out, Outcome::Ready)
+    }
+}
+
+/// Block until `unhang:<key>` released `key`.
+fn hang_until(key: &[u8]) {
+    while !UNHUNG.lock().unwrap().iter().any(|k| k == key) {
+        std::thread::sleep(Duration::from_millis(5));
     }
 }
 
@@ -450,10 +477,16 @@ extern "C" fn tick(instance: *mut c_void, input: *const c_void, out: *mut c_void
             return say(out, Outcome::Ready);
         }
         if let Some(key) = mode.strip_prefix(HANG) {
-            while !UNHUNG.lock().unwrap().iter().any(|k| k == key) {
-                std::thread::sleep(Duration::from_millis(5));
-            }
+            hang_until(key);
             return say(out, Outcome::Ready);
+        }
+        if mode == DRIVE_HANGS {
+            me.drive_hangs.store(true, Ordering::SeqCst);
+            return say(out, Outcome::Ready);
+        }
+        if mode == DRIVE_ENTERED {
+            let on = me.drive_entered.load(Ordering::SeqCst);
+            return say(out, if on { Outcome::Ready } else { Outcome::Refused });
         }
         if let Some(key) = mode.strip_prefix(UNHANG) {
             UNHUNG.lock().unwrap().push(key.to_vec());

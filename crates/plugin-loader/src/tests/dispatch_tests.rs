@@ -118,6 +118,7 @@ fn bind(sink: Arc<Recorder>) -> Bind {
     Bind {
         max_inflight_cap: 64,
         sink,
+        dispatcher: None,
     }
 }
 
@@ -1290,8 +1291,23 @@ fn cancel_carries_the_disposition_and_a_fault_on_cancel_is_fault() {
 }
 
 #[test]
-fn an_unload_never_runs_under_a_worker_lock() {
-    use crate::dispatch::load::{DEFERRED_UNLOADS, UNLOADS};
+fn red_the_host_zeroes_the_whole_out_before_a_crossing() {
+    let d = Dispatcher::new(config());
+    let (p, _sink) = opened(&d);
+    // The caller's `out` holds garbage that reads as a READY mirror; a plugin that returns READY
+    // without writing the mirror must still be FAULT, which only a zeroed `out` makes it.
+    let mut f = frame(plug::SILENT);
+    f.out.head.outcome = busbar_contract::abi::mechanism::call::RawOutcome::of(Outcome::Ready);
+    f.out.head.lease = 0xBAD;
+    f.out.next_tick_ns = 0xBAD;
+    let c = p.call(TICK, &mut f);
+    assert_eq!(c.outcome, Outcome::Fault);
+    assert_eq!(f.out.next_tick_ns, 0, "the tail was zeroed too");
+}
+
+#[test]
+fn an_unload_runs_on_the_reaper_never_under_a_worker_lock() {
+    use crate::dispatch::load::UNLOADS;
     use std::sync::atomic::Ordering::SeqCst;
     if dropped_path().is_none() {
         return;
@@ -1301,19 +1317,47 @@ fn an_unload_never_runs_under_a_worker_lock() {
     assert_eq!(open(&d, &p, 0), Outcome::Ready);
     let drv = d.driver(&p, 0).unwrap();
     let gone = std::sync::Arc::downgrade(&p.inner);
-    let (deferred0, unloads0) = (DEFERRED_UNLOADS.load(SeqCst), UNLOADS.load(SeqCst));
-    // The driver now holds the last reference, and a recycle drops it on the worker, under its
-    // state lock: the unload must wait for the lock to be released.
+    let unloads0 = UNLOADS.load(SeqCst);
+    // The driver holds the last reference; a recycle drops it on the worker, under its lock. The
+    // unload is handed to the reaper, which runs it after (and apart from) the worker.
     drop(p);
     d.recycle(drv);
     until("the instance is gone", || gone.strong_count() == 0);
-    until("the library is unloaded", || {
+    until("the reaper unloaded the library", || {
         UNLOADS.load(SeqCst) > unloads0
     });
-    assert!(
-        DEFERRED_UNLOADS.load(SeqCst) > deferred0,
-        "the unload was deferred past the lock"
-    );
+}
+
+#[test]
+fn red_a_hanging_unload_faults_no_innocent_instance() {
+    use crate::dispatch::load::reap;
+    let d = Dispatcher::new(config());
+    let (p, _sink) = opened(&d);
+    // An unload that hangs: it wedges only the reaper.
+    let (release, hold) = std::sync::mpsc::channel::<()>();
+    let (entered, inside) = std::sync::mpsc::channel::<String>();
+    reap(Box::new(move || {
+        let _ = entered.send(
+            std::thread::current()
+                .name()
+                .unwrap_or_default()
+                .to_string(),
+        );
+        let _ = hold.recv();
+    }));
+    let reaper = inside
+        .recv_timeout(WAIT)
+        .expect("the reaper runs the unload");
+    assert_eq!(reaper, crate::dispatch::load::REAPER_THREAD);
+    // Past every budget of the test config, the innocent instance still crosses and is not faulted.
+    std::thread::sleep(config().budgets.call * 2);
+    assert!(!p.is_faulted());
+    assert_eq!(p.call(TICK, &mut frame(answer(1))).outcome, Outcome::Ready);
+    let t = d.mint(0).unwrap();
+    let r = d.submit(&p, t, TICK, frame(answer(1)), DeadlineClass::Call, 0);
+    assert_eq!(r.wait(WAIT).unwrap().outcome, Outcome::Ready);
+    assert_eq!(d.stats().replacements, 0, "no worker was replaced");
+    release.send(()).unwrap();
 }
 
 #[test]
@@ -1321,20 +1365,34 @@ fn red_a_ticketless_short_answer_is_re_called_once() {
     let d = Dispatcher::new(config());
     let (p, _sink) = opened(&d);
     let first = p.call(TICK, &mut frame(plug::SHORT_ANSWER));
-    assert_eq!((first.outcome, first.short), (Outcome::Failed, true));
-    let again = p.recall(first.clone(), TICK, &mut frame(plug::SHORT_ANSWER));
-    assert_eq!(again.outcome, Outcome::Fault, "short twice is FAULT");
+    assert_eq!(first.outcome, Outcome::Failed);
+    let token = first.recall.expect("a short answer earns one re-call");
+    // The token is spent here; a second `recall` with it does not compile (the `Recall` doc test).
+    let again = p.recall(token, TICK, &mut frame(plug::SHORT_ANSWER));
     assert_eq!(
-        p.recall(first, TICK, &mut frame(answer(1))).outcome,
+        again.outcome,
+        Outcome::Fault,
+        "short again on the re-call is FAULT"
+    );
+    assert!(again.recall.is_none());
+    // A fresh short answer, re-called with an answer that fits: READY.
+    let token = p.call(TICK, &mut frame(plug::SHORT_ANSWER)).recall.unwrap();
+    assert_eq!(
+        p.recall(token, TICK, &mut frame(answer(1))).outcome,
         Outcome::Ready
     );
-    let ready = p.call(TICK, &mut frame(answer(1)));
+    // A token is bound to its instance and op.
+    let (other, _s) = opened(&d);
+    let token = p.call(TICK, &mut frame(plug::SHORT_ANSWER)).recall.unwrap();
     assert_eq!(
-        p.recall(ready, TICK, &mut frame(answer(1))).outcome,
-        Outcome::Refused,
-        "only a short answer earns a re-call"
+        other.recall(token, TICK, &mut frame(answer(1))).outcome,
+        Outcome::Refused
     );
-    // Ticketed: the reply says short.
+    assert!(
+        p.call(TICK, &mut frame(answer(1))).recall.is_none(),
+        "only a short answer earns one"
+    );
+    // Ticketed: the reply says short; the dispatcher enforces the one re-call on the ticket.
     let t = d.mint(0).unwrap();
     let done = d
         .submit(
@@ -1352,16 +1410,82 @@ fn red_a_ticketless_short_answer_is_re_called_once() {
 }
 
 #[test]
-fn red_the_host_zeroes_the_whole_out_before_a_crossing() {
-    let d = Dispatcher::new(config());
+fn red_a_hung_ticketless_open_is_watched_from_bind() {
+    let d = Dispatcher::new(DispatchConfig {
+        budgets: Budgets {
+            lifecycle: Duration::from_millis(400),
+            ..config().budgets
+        },
+        ..config()
+    });
+    let sink = quiet();
+    let p = load_linked::<TestKind>(
+        plug::busbar_plugin_door,
+        Bind {
+            dispatcher: Some(d.adopter()),
+            ..bind(sink)
+        },
+    )
+    .unwrap();
+    let hung = p.clone();
+    let caller = std::thread::spawn(move || {
+        let mut f = open_frame();
+        let settings = b"hang:open";
+        f.input.settings = busbar_contract::abi::mechanism::call::Blob {
+            ptr: settings.as_ptr(),
+            len: settings.len(),
+            fmt: BLOB_OCTETS,
+            flags: 0,
+        };
+        hung.call(slot::OPEN, &mut f).outcome
+    });
+    // No submit ever reached the dispatcher: the instance was adopted at bind.
+    until("the watchdog faults the hung open", || p.is_faulted());
+    let (other, _s) = opened(&d);
+    assert_eq!(
+        other.call(TICK, &mut frame(b"unhang:open")).outcome,
+        Outcome::Ready
+    );
+    caller.join().unwrap();
+}
+
+#[test]
+fn red_close_is_refused_while_a_drive_is_mid_crossing() {
+    let d = Dispatcher::new(DispatchConfig {
+        budgets: Budgets {
+            connection: Duration::from_secs(30),
+            ..config().budgets
+        },
+        ..config()
+    });
     let (p, _sink) = opened(&d);
-    // The caller's `out` holds garbage that reads as a READY mirror; a plugin that returns READY
-    // without writing the mirror must still be FAULT, which only a zeroed `out` makes it.
-    let mut f = frame(plug::SILENT);
-    f.out.head.outcome = busbar_contract::abi::mechanism::call::RawOutcome::of(Outcome::Ready);
-    f.out.head.lease = 0xBAD;
-    f.out.next_tick_ns = 0xBAD;
-    let c = p.call(TICK, &mut f);
-    assert_eq!(c.outcome, Outcome::Fault);
-    assert_eq!(f.out.next_tick_ns, 0, "the tail was zeroed too");
+    // Opened before the drive wedges worker 0 (its crossing holds that worker).
+    let (other, _s) = opened(&d);
+    let drv = d.driver(&p, 0).unwrap();
+    assert_eq!(
+        p.call(TICK, &mut frame(plug::DRIVE_HANGS)).outcome,
+        Outcome::Ready
+    );
+    crate::dispatch::ticket::host_wake(p.inner.ctx(), drv);
+    until("the drive is inside its crossing", || {
+        p.call(TICK, &mut frame(plug::DRIVE_ENTERED)).outcome == Outcome::Ready
+    });
+    // A drive holds no max_inflight unit: only the crossing gate refuses the close.
+    assert_eq!(p.inflight(), 0);
+    let n = crossings(&p);
+    assert_eq!(
+        p.call(slot::CLOSE, &mut close_frame()).outcome,
+        Outcome::Refused
+    );
+    assert_eq!(crossings(&p), n, "the refused close never crossed");
+    assert!(p.is_open());
+    assert_eq!(
+        other.call(TICK, &mut frame(b"unhang:drive")).outcome,
+        Outcome::Ready
+    );
+    // Once the drive returns, the gate opens and close crosses.
+    until("close after the drive", || {
+        p.call(slot::CLOSE, &mut close_frame()).outcome == Outcome::Ready
+    });
+    assert!(!p.is_open());
 }

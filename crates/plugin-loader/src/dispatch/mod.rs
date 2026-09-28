@@ -46,10 +46,10 @@ use busbar_contract::abi::mechanism::ticket::{HostCtx, Ticket};
 use busbar_contract::abi::mechanism::KindCode;
 
 pub use load::{load_dropped, load_linked, LoadError, ManifestFacts};
-pub use plugin::{Bind, Called, Diagnostic, Dropped, EnvelopeSink, Metric, NoSink, Plugin};
+pub use plugin::{Bind, Called, Diagnostic, Dropped, EnvelopeSink, Metric, NoSink, Plugin, Recall};
 pub use ticket::{Completions, Redeem};
 pub use validate::Violation;
-pub use worker::{Budgets, DispatchConfig, DispatchStats, Dispatcher, Done, Reply};
+pub use worker::{Adopter, Budgets, DispatchConfig, DispatchStats, Dispatcher, Done, Reply};
 
 /// A kind, as the dispatcher sees it: its code, its table and its timeout outcome. Implemented once
 /// per kind when the kernel adopts it (M3); `Ops` is that kind's `abi/<kind>/Ops`.

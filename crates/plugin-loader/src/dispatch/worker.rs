@@ -26,7 +26,6 @@
 //! * THE WATCHDOG (`watchdog`): an op that does not RETURN within its class budget faults its
 //!   instance and replaces its worker; see there for what happens to every ticket.
 
-use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
 use std::mem::size_of;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -38,7 +37,6 @@ use busbar_contract::abi::mechanism::call::{DeadlineClass, InHead, OutHead, Outc
 use busbar_contract::abi::mechanism::lifecycle::{slot, CancelIn, CancelOut, DriveIn};
 use busbar_contract::abi::mechanism::ticket::Ticket;
 
-use super::load::Lib;
 use super::plugin::{is_lifecycle, Crossed, Instance, Plugin};
 use super::ticket::{
     decode, encode, next_generation, Completions, WakeRoute, MAX_INDEX, MAX_WORKERS,
@@ -373,65 +371,6 @@ pub(crate) struct CrossingRecord {
     pub(crate) instance: Arc<Instance>,
 }
 
-thread_local! {
-    /// How many worker-state locks this thread holds.
-    static HELD: Cell<u32> = const { Cell::new(0) };
-    /// Libraries whose last reference dropped while this thread held a worker-state lock: they
-    /// are unloaded (plugin `.fini_array` code) only once the lock is released.
-    static DEFERRED: RefCell<Vec<Lib>> = const { RefCell::new(Vec::new()) };
-}
-
-/// Whether this thread holds a worker-state lock.
-pub(crate) fn state_held() -> bool {
-    HELD.with(|h| h.get() > 0)
-}
-
-/// Keep `lib` until this thread releases its worker-state lock.
-pub(crate) fn defer_unload(lib: Lib) {
-    DEFERRED.with(|d| d.borrow_mut().push(lib));
-}
-
-/// A held worker-state lock. NOTHING THAT RUNS PLUGIN CODE RUNS UNDER IT: the last reference to an
-/// instance (a `Meta`, a driver, a local clone) may drop here, and its library's unload is
-/// deferred to the moment this guard releases the lock.
-pub(crate) struct StateGuard<'a> {
-    g: Option<MutexGuard<'a, WorkerState>>,
-}
-
-impl<'a> StateGuard<'a> {
-    fn new(g: MutexGuard<'a, WorkerState>) -> Self {
-        HELD.with(|h| h.set(h.get() + 1));
-        Self { g: Some(g) }
-    }
-}
-
-impl std::ops::Deref for StateGuard<'_> {
-    type Target = WorkerState;
-    fn deref(&self) -> &WorkerState {
-        self.g.as_ref().expect("a live guard")
-    }
-}
-
-impl std::ops::DerefMut for StateGuard<'_> {
-    fn deref_mut(&mut self) -> &mut WorkerState {
-        self.g.as_mut().expect("a live guard")
-    }
-}
-
-impl Drop for StateGuard<'_> {
-    fn drop(&mut self) {
-        drop(self.g.take());
-        let last = HELD.with(|h| {
-            h.set(h.get() - 1);
-            h.get() == 0
-        });
-        if last {
-            let unload = DEFERRED.with(|d| std::mem::take(&mut *d.borrow_mut()));
-            drop(unload);
-        }
-    }
-}
-
 /// One worker incarnation. The watchdog replaces a wedged one with a fresh incarnation at the same
 /// index.
 pub(crate) struct Worker {
@@ -514,8 +453,8 @@ impl Worker {
         (w, rx)
     }
 
-    pub(crate) fn lock(&self) -> StateGuard<'_> {
-        StateGuard::new(self.state.lock().unwrap_or_else(|e| e.into_inner()))
+    pub(crate) fn lock(&self) -> MutexGuard<'_, WorkerState> {
+        self.state.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     fn ticket(&self, idx: u32, generation: u32) -> Ticket {
@@ -735,12 +674,12 @@ impl Worker {
     /// meanwhile (the caller exits).
     fn cross<'a>(
         &'a self,
-        st: StateGuard<'a>,
+        st: MutexGuard<'a, WorkerState>,
         instance: &Arc<Instance>,
         s: u32,
         heads: (*mut InHead, *mut OutHead, u32),
         budget: Duration,
-    ) -> Option<(StateGuard<'a>, Crossed)> {
+    ) -> Option<(MutexGuard<'a, WorkerState>, Crossed)> {
         self.begin_crossing(instance.clone(), budget);
         drop(st);
         // SAFETY: the frame is boxed and owned by this crossing; `s` passed `refuse` at submit.
@@ -753,10 +692,10 @@ impl Worker {
     /// Run the action scheduled for `idx`. `None` when this worker was replaced mid-crossing.
     fn run_one<'a>(
         &'a self,
-        mut st: StateGuard<'a>,
+        mut st: MutexGuard<'a, WorkerState>,
         idx: u32,
         env: &Env,
-    ) -> Option<StateGuard<'a>> {
+    ) -> Option<MutexGuard<'a, WorkerState>> {
         let e = &mut st.entries[idx as usize];
         let Some(action) = e.next.take() else {
             return Some(st);
@@ -901,13 +840,13 @@ impl Worker {
 
     fn cross_current<'a>(
         &'a self,
-        mut st: StateGuard<'a>,
+        mut st: MutexGuard<'a, WorkerState>,
         idx: u32,
         inst: &Arc<Instance>,
         s: u32,
         budget: Duration,
         env: &Env,
-    ) -> Option<StateGuard<'a>> {
+    ) -> Option<MutexGuard<'a, WorkerState>> {
         let cur = st.entries[idx as usize].current.as_mut()?;
         let mut job = cur.job.take()?;
         let heads = job.heads();
@@ -991,6 +930,38 @@ pub(crate) fn spawn_worker(w: Arc<Worker>, rx: Receiver<Msg>, env: Arc<Env>) {
         .expect("spawn a dispatch worker");
 }
 
+/// A dispatcher's adoption handle ([`Dispatcher::adopter`]), held by a [`super::Bind`].
+#[derive(Clone)]
+pub struct Adopter {
+    pool: Weak<Pool>,
+}
+
+impl std::fmt::Debug for Adopter {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Adopter").finish_non_exhaustive()
+    }
+}
+
+impl Adopter {
+    /// Route `inst`'s wakes to the dispatcher and put it under its watchdog; `false` when the
+    /// instance already belongs to another dispatcher (or this one is gone).
+    pub(crate) fn adopt(&self, inst: &Arc<Instance>) -> bool {
+        let Some(pool) = self.pool.upgrade() else {
+            return false;
+        };
+        let route: Arc<dyn WakeRoute> = pool.clone();
+        let mine = Arc::downgrade(&route);
+        let bound = inst.wake.route.get_or_init(|| {
+            pool.adopted
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push(Arc::downgrade(inst));
+            mine.clone()
+        });
+        Weak::ptr_eq(bound, &mine)
+    }
+}
+
 /// THE DISPATCHER: its workers and its watchdog.
 pub struct Dispatcher {
     pool: Arc<Pool>,
@@ -1062,18 +1033,14 @@ impl Dispatcher {
 
     /// Bind `inst`'s wakes to this dispatcher; `false` when it is bound to another.
     fn adopt(&self, inst: &Arc<Instance>) -> bool {
-        let pool: Arc<dyn WakeRoute> = self.pool.clone();
-        let mine = Arc::downgrade(&pool);
-        let route = inst.wake.route.get_or_init(|| {
-            // First adoption: the watchdog now covers this instance's ticket-less crossings too.
-            self.pool
-                .adopted
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .push(Arc::downgrade(inst));
-            mine.clone()
-        });
-        Weak::ptr_eq(route, &mine)
+        self.adopter().adopt(inst)
+    }
+
+    /// The handle a [`super::Bind`] carries to be adopted by this dispatcher at bind.
+    pub fn adopter(&self) -> Adopter {
+        Adopter {
+            pool: Arc::downgrade(&self.pool),
+        }
     }
 
     /// Whether an op on `t` is pending (test witness: it has crossed and answered PENDING).
