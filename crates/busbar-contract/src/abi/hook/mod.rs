@@ -103,8 +103,8 @@
 //! - **Boot:** `preopen_gate_hooks` aborts on a broken GATE and never on a broken TAP (kernel boot
 //!   behaviour; [`Tail::kind_class`] is what it reads). Hook secrets are pre-resolved and fail
 //!   closed (the shared `open`'s `secrets`/`secrets_len`, mechanism-level, not new here).
-//! - **SDK helpers `lower_1_5_5_reply` / `projection_json`:** named in the brief for the NEW SDK
-//!   (M3-wire); the current tree's equivalents are `busbar_kernel::hooks::wire::{normalize,
+//! - **SDK helpers `lower_1_5_5_reply` / `projection_json`:** the NEW SDK's (M3-wire) equivalents
+//!   of the current tree's `busbar_kernel::hooks::wire::{normalize,
 //!   transform_outcome}` (reply lowering) and the `SignalBag` `Serialize` impl walking `iter()` in
 //!   push order (the projection). Their byte-for-byte behaviour (a typed-field mismatch answers
 //!   FAILED; an out-of-range `order` index is dropped; no `requested_model`/`tool_count`/

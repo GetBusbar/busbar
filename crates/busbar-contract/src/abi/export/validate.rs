@@ -279,7 +279,7 @@ mod tests {
     }
 
     /// The legitimate re-call shape passes: nothing written, `needed` bigger than `cap`, and the
-    /// outcome is FAILED (H3).
+    /// outcome is FAILED (the FAILED-only re-call rule: a short buffer writes nothing).
     #[test]
     fn legitimate_too_small_answer_passes() {
         assert!(check_written_needed(4, 0, 8, true).is_ok());
