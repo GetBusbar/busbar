@@ -245,7 +245,7 @@ fn every_kind_table_leads_with_the_lifecycle() {
     pin!(hook::Ops, 136, 8, [head = 0]);
     pin!(export::Ops, 120, 8, [head = 0]);
     pin!(plane::Ops, 80, 8, [head = 0]);
-    pin!(transport::Ops, 80, 8, [head = 0]);
+    pin!(transport::Ops, 224, 8, [head = 0]);
 }
 
 #[test]

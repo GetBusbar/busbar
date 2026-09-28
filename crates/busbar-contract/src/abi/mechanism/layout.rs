@@ -794,4 +794,408 @@ pin!(
 );
 
 pin!(crate::abi::plane::Ops, 80, 8, head = 0);
-pin!(crate::abi::transport::Ops, 80, 8, head = 0);
+
+// ── THE TRANSPORT KIND (abi/transport/, B.7) ──────────────────────────────────────────────────────
+mod transport_kind {
+    use crate::abi::transport::*;
+    use std::mem::{align_of, offset_of, size_of};
+
+    pin!(
+        Ops,
+        224,
+        8,
+        head = 0,
+        listen = 80,
+        accept = 88,
+        dial = 96,
+        read = 104,
+        write = 112,
+        flush = 120,
+        shut = 128,
+        arrival = 136,
+        locate = 144,
+        begin = 152,
+        ingest = 160,
+        emit = 168,
+        encode = 176,
+        refuse = 184,
+        finish = 192,
+        detach = 200,
+        adopt = 208,
+        timer = 216
+    );
+    pin!(
+        Claim,
+        88,
+        8,
+        key = 0,
+        selector_forms = 16,
+        egress_selector_forms = 32,
+        facts = 48,
+        facts_len = 56,
+        status_namespace = 64,
+        session = 80,
+        session_bound = 81,
+        unit0_trigger = 82,
+        status_at = 83,
+        _reserved = 84
+    );
+    pin!(StatusRow, 16, 4, claim = 0, lo = 4, hi = 8, class = 12);
+    pin!(
+        SettingDecl,
+        40,
+        8,
+        path = 0,
+        kind = 16,
+        _reserved = 20,
+        default = 24
+    );
+    pin!(
+        TransportTail,
+        168,
+        8,
+        head = 0,
+        role = 8,
+        framing = 12,
+        facts = 16,
+        handshake_max_steps = 20,
+        composes_over = 24,
+        composes_over_len = 32,
+        claims = 40,
+        claims_len = 48,
+        upgrades_to = 56,
+        upgrades_to_len = 64,
+        handoff_from = 72,
+        handoff_to = 88,
+        handoff_binding_fact = 104,
+        handshake_frame_kind = 120,
+        status_rows = 136,
+        status_rows_len = 144,
+        settings = 152,
+        settings_len = 160
+    );
+    pin!(Field, 32, 8, name = 0, value = 16);
+    pin!(
+        Destination,
+        72,
+        8,
+        kind = 0,
+        _reserved = 4,
+        authority = 8,
+        program = 24,
+        args = 40,
+        args_len = 48,
+        env = 56,
+        env_len = 64
+    );
+    pin!(
+        ConnFacts,
+        104,
+        8,
+        size = 0,
+        _reserved = 4,
+        offered_name = 8,
+        agreed_protocol = 24,
+        peer_subject = 40,
+        peer_issuer = 56,
+        peer_fingerprint = 72,
+        claim = 88
+    );
+    pin!(
+        FramePiece,
+        40,
+        8,
+        stream = 0,
+        offset = 8,
+        len = 16,
+        status_code = 24,
+        status_class = 28,
+        flags = 29,
+        _reserved = 30,
+        retry_after_secs = 32
+    );
+    pin!(
+        FramerSink,
+        64,
+        8,
+        wire = 0,
+        wire_cap = 8,
+        frame = 16,
+        frame_cap = 24,
+        pieces = 32,
+        pieces_cap = 40,
+        now_monotonic_ns = 48,
+        now_unix_ns = 56
+    );
+    pin!(
+        FramerYield,
+        32,
+        8,
+        wire_len = 0,
+        frame_len = 8,
+        pieces_len = 16,
+        flags = 20,
+        next_deadline_ns = 24
+    );
+    pin!(
+        ListenIn,
+        120,
+        8,
+        head = 0,
+        bind = 88,
+        addr_buf = 104,
+        addr_cap = 112
+    );
+    pin!(ListenOut, 112, 8, head = 0, listener = 96, addr_len = 104);
+    pin!(
+        AcceptIn,
+        112,
+        8,
+        head = 0,
+        listener = 88,
+        peer_buf = 96,
+        peer_cap = 104
+    );
+    pin!(AcceptOut, 112, 8, head = 0, conn = 96, peer_len = 104);
+    pin!(DialIn, 96, 8, head = 0, dest = 88);
+    pin!(ConnOut, 104, 8, head = 0, conn = 96);
+    pin!(ReadIn, 112, 8, head = 0, conn = 88, buf = 96, cap = 104);
+    pin!(WriteIn, 112, 8, head = 0, conn = 88, bytes = 96, len = 104);
+    pin!(IoOut, 104, 8, head = 0, len = 96);
+    pin!(ConnIn, 96, 8, head = 0, conn = 88);
+    pin!(
+        ShutIn,
+        104,
+        8,
+        head = 0,
+        conn = 88,
+        reason = 96,
+        _reserved = 100
+    );
+    pin!(
+        ArrivalIn,
+        112,
+        8,
+        head = 0,
+        conn = 88,
+        peer_buf = 96,
+        peer_cap = 104
+    );
+    pin!(
+        ArrivalOut,
+        112,
+        8,
+        head = 0,
+        peer_len = 96,
+        local_port = 104,
+        _reserved = 108
+    );
+    pin!(
+        LocateIn,
+        136,
+        8,
+        head = 0,
+        target = 88,
+        authority_buf = 104,
+        authority_cap = 112,
+        name_buf = 120,
+        name_cap = 128
+    );
+    pin!(
+        LocateOut,
+        120,
+        8,
+        head = 0,
+        authority_len = 96,
+        name_len = 104,
+        secure = 112,
+        _reserved = 116
+    );
+    pin!(FramerOut, 136, 8, head = 0, yielded = 96, framing = 128);
+    pin!(
+        BeginIn,
+        184,
+        8,
+        head = 0,
+        side = 88,
+        _reserved = 92,
+        target = 96,
+        facts = 112,
+        sink = 120
+    );
+    pin!(
+        IngestIn,
+        184,
+        8,
+        head = 0,
+        framing = 88,
+        bytes = 96,
+        len = 104,
+        end = 112,
+        _reserved = 116,
+        sink = 120
+    );
+    pin!(
+        EmitIn,
+        192,
+        8,
+        head = 0,
+        framing = 88,
+        stream = 96,
+        bytes = 104,
+        len = 112,
+        end_of_frame = 120,
+        _reserved = 124,
+        sink = 128
+    );
+    pin!(
+        EncodeIn,
+        184,
+        8,
+        head = 0,
+        fields = 88,
+        fields_len = 96,
+        body = 104,
+        body_len = 112,
+        sink = 120
+    );
+    pin!(
+        RefuseIn,
+        192,
+        8,
+        head = 0,
+        framing = 88,
+        stream = 96,
+        has_stream = 104,
+        _reserved = 108,
+        bytes = 112,
+        len = 120,
+        sink = 128
+    );
+    pin!(
+        FinishIn,
+        168,
+        8,
+        head = 0,
+        framing = 88,
+        reason = 96,
+        _reserved = 100,
+        sink = 104
+    );
+    pin!(FramingIn, 160, 8, head = 0, framing = 88, sink = 96);
+    pin!(
+        AdoptIn,
+        184,
+        8,
+        head = 0,
+        side = 88,
+        _reserved = 92,
+        facts = 96,
+        leftover = 104,
+        leftover_len = 112,
+        sink = 120
+    );
+}
+
+// ── THE HOST CONNECTOR (abi/host/conn/connector.rs) ──────────────────────────────────────────────
+mod host_connector {
+    use crate::abi::host::conn::connector::*;
+    use std::mem::{align_of, offset_of, size_of};
+
+    pin!(
+        Need,
+        96,
+        8,
+        direction = 0,
+        egress_class = 4,
+        transport = 8,
+        auth = 24,
+        target_from = 40,
+        trust_from = 56,
+        details = 72
+    );
+    pin!(ServiceHead, 24, 4, size = 0, op = 4, handle = 8);
+    pin!(
+        ServiceOut,
+        40,
+        8,
+        size = 0,
+        outcome = 4,
+        _reserved = 5,
+        value = 8,
+        len = 16,
+        error = 24
+    );
+    pin!(
+        EstablishIn,
+        48,
+        8,
+        head = 0,
+        need = 24,
+        _reserved = 28,
+        target = 32
+    );
+    pin!(StreamIn, 32, 8, head = 0, stream = 24);
+    pin!(IoIn, 48, 8, head = 0, stream = 24, buf = 32, len = 40);
+    pin!(
+        UpgradeIn,
+        64,
+        8,
+        head = 0,
+        stream = 24,
+        offered_name = 32,
+        trust = 48
+    );
+    pin!(FactsIn, 40, 8, head = 0, stream = 24, facts = 32);
+    pin!(
+        StreamFacts,
+        56,
+        8,
+        size = 0,
+        secure = 4,
+        endpoint = 8,
+        agreed_protocol = 24,
+        peer_cert_hash = 40
+    );
+    pin!(CheckoutIn, 32, 4, head = 0, need = 24, _reserved = 28);
+    pin!(
+        CheckinIn,
+        40,
+        8,
+        head = 0,
+        stream = 24,
+        disposition = 32,
+        _reserved = 36
+    );
+    pin!(RandomIn, 40, 8, head = 0, buf = 24, len = 32);
+    pin!(
+        ProcessIdentity,
+        48,
+        8,
+        size = 0,
+        _reserved = 4,
+        pid = 8,
+        os_user = 16,
+        program = 32
+    );
+    pin!(IdentityIn, 32, 8, head = 0, identity = 24);
+    pin!(
+        ConnectorSlots,
+        104,
+        8,
+        size = 0,
+        slots = 4,
+        establish = 8,
+        reject_endpoint = 16,
+        side_stream = 24,
+        read = 32,
+        write = 40,
+        upgrade_secure = 48,
+        facts = 56,
+        checkout = 64,
+        checkin = 72,
+        close = 80,
+        random = 88,
+        identity = 96
+    );
+}

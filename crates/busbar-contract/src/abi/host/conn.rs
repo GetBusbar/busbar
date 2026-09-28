@@ -32,6 +32,8 @@ use crate::ids::StreamId;
 use crate::transport::wire::CertFacts;
 use crate::transport::ConnFacts;
 
+pub mod connector;
+
 /// The outcome byte every connection slot answers ([`ConnOutcome`]); an unknown byte reads as
 /// [`ConnOutcome::Fault`].
 #[repr(transparent)]

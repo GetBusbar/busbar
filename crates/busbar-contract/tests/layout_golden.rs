@@ -80,6 +80,9 @@ use busbar_contract::abi::auth::{
     RequestFacts as AuthRequestFacts, Span as AuthSpan, StyleDecl as AuthStyleDecl,
     VerifyIn as AuthVerifyIn,
 };
+// THE TRANSPORT KIND (B.7) and THE HOST CONNECTOR: aliased, so the hot lane's names cannot collide.
+use busbar_contract::abi::host::conn::connector as hconn;
+use busbar_contract::abi::transport as tkind;
 // THE STORE KIND (v3): aliased with a `Store` prefix so a golden line names its kind.
 use busbar_contract::abi::store::{
     AddUsageBatchIn as StoreAddUsageBatchIn, AddUsageIn as StoreAddUsageIn,
@@ -1344,6 +1347,247 @@ fn compute_layout() -> String {
     record!(s, PlaneOps, [head]);
     record!(s, TransportOps, [head]);
 
+    // THE TRANSPORT KIND (abi/transport/, B.7) and THE HOST CONNECTOR (abi/host/conn/connector.rs).
+    record!(
+        s,
+        tkind::Ops,
+        [
+            head, listen, accept, dial, read, write, flush, shut, arrival, locate, begin, ingest,
+            emit, encode, refuse, finish, detach, adopt, timer
+        ]
+    );
+    record!(
+        s,
+        tkind::Claim,
+        [
+            key,
+            selector_forms,
+            egress_selector_forms,
+            facts,
+            facts_len,
+            status_namespace,
+            session,
+            session_bound,
+            unit0_trigger,
+            status_at,
+            _reserved
+        ]
+    );
+    record!(s, tkind::StatusRow, [claim, lo, hi, class]);
+    record!(s, tkind::SettingDecl, [path, kind, _reserved, default]);
+    record!(
+        s,
+        tkind::TransportTail,
+        [
+            head,
+            role,
+            framing,
+            facts,
+            handshake_max_steps,
+            composes_over,
+            composes_over_len,
+            claims,
+            claims_len,
+            upgrades_to,
+            upgrades_to_len,
+            handoff_from,
+            handoff_to,
+            handoff_binding_fact,
+            handshake_frame_kind,
+            status_rows,
+            status_rows_len,
+            settings,
+            settings_len
+        ]
+    );
+    record!(s, tkind::Field, [name, value]);
+    record!(
+        s,
+        tkind::Destination,
+        [kind, _reserved, authority, program, args, args_len, env, env_len]
+    );
+    record!(
+        s,
+        tkind::ConnFacts,
+        [
+            size,
+            _reserved,
+            offered_name,
+            agreed_protocol,
+            peer_subject,
+            peer_issuer,
+            peer_fingerprint,
+            claim
+        ]
+    );
+    record!(
+        s,
+        tkind::FramePiece,
+        [
+            stream,
+            offset,
+            len,
+            status_code,
+            status_class,
+            flags,
+            _reserved,
+            retry_after_secs
+        ]
+    );
+    record!(
+        s,
+        tkind::FramerSink,
+        [
+            wire,
+            wire_cap,
+            frame,
+            frame_cap,
+            pieces,
+            pieces_cap,
+            now_monotonic_ns,
+            now_unix_ns
+        ]
+    );
+    record!(
+        s,
+        tkind::FramerYield,
+        [wire_len, frame_len, pieces_len, flags, next_deadline_ns]
+    );
+    record!(s, tkind::ListenIn, [head, bind, addr_buf, addr_cap]);
+    record!(s, tkind::ListenOut, [head, listener, addr_len]);
+    record!(s, tkind::AcceptIn, [head, listener, peer_buf, peer_cap]);
+    record!(s, tkind::AcceptOut, [head, conn, peer_len]);
+    record!(s, tkind::DialIn, [head, dest]);
+    record!(s, tkind::ConnOut, [head, conn]);
+    record!(s, tkind::ReadIn, [head, conn, buf, cap]);
+    record!(s, tkind::WriteIn, [head, conn, bytes, len]);
+    record!(s, tkind::IoOut, [head, len]);
+    record!(s, tkind::ConnIn, [head, conn]);
+    record!(s, tkind::ShutIn, [head, conn, reason, _reserved]);
+    record!(s, tkind::ArrivalIn, [head, conn, peer_buf, peer_cap]);
+    record!(
+        s,
+        tkind::ArrivalOut,
+        [head, peer_len, local_port, _reserved]
+    );
+    record!(
+        s,
+        tkind::LocateIn,
+        [
+            head,
+            target,
+            authority_buf,
+            authority_cap,
+            name_buf,
+            name_cap
+        ]
+    );
+    record!(
+        s,
+        tkind::LocateOut,
+        [head, authority_len, name_len, secure, _reserved]
+    );
+    record!(s, tkind::FramerOut, [head, yielded, framing]);
+    record!(
+        s,
+        tkind::BeginIn,
+        [head, side, _reserved, target, facts, sink]
+    );
+    record!(
+        s,
+        tkind::IngestIn,
+        [head, framing, bytes, len, end, _reserved, sink]
+    );
+    record!(
+        s,
+        tkind::EmitIn,
+        [
+            head,
+            framing,
+            stream,
+            bytes,
+            len,
+            end_of_frame,
+            _reserved,
+            sink
+        ]
+    );
+    record!(
+        s,
+        tkind::EncodeIn,
+        [head, fields, fields_len, body, body_len, sink]
+    );
+    record!(
+        s,
+        tkind::RefuseIn,
+        [head, framing, stream, has_stream, _reserved, bytes, len, sink]
+    );
+    record!(s, tkind::FinishIn, [head, framing, reason, _reserved, sink]);
+    record!(s, tkind::FramingIn, [head, framing, sink]);
+    record!(
+        s,
+        tkind::AdoptIn,
+        [head, side, _reserved, facts, leftover, leftover_len, sink]
+    );
+    record!(
+        s,
+        hconn::Need,
+        [
+            direction,
+            egress_class,
+            transport,
+            auth,
+            target_from,
+            trust_from,
+            details
+        ]
+    );
+    record!(s, hconn::ServiceHead, [size, op, handle]);
+    record!(
+        s,
+        hconn::ServiceOut,
+        [size, outcome, _reserved, value, len, error]
+    );
+    record!(s, hconn::EstablishIn, [head, need, _reserved, target]);
+    record!(s, hconn::StreamIn, [head, stream]);
+    record!(s, hconn::IoIn, [head, stream, buf, len]);
+    record!(s, hconn::UpgradeIn, [head, stream, offered_name, trust]);
+    record!(s, hconn::FactsIn, [head, stream, facts]);
+    record!(
+        s,
+        hconn::StreamFacts,
+        [size, secure, endpoint, agreed_protocol, peer_cert_hash]
+    );
+    record!(s, hconn::CheckoutIn, [head, need, _reserved]);
+    record!(s, hconn::CheckinIn, [head, stream, disposition, _reserved]);
+    record!(s, hconn::RandomIn, [head, buf, len]);
+    record!(
+        s,
+        hconn::ProcessIdentity,
+        [size, _reserved, pid, os_user, program]
+    );
+    record!(s, hconn::IdentityIn, [head, identity]);
+    record!(
+        s,
+        hconn::ConnectorSlots,
+        [
+            size,
+            slots,
+            establish,
+            reject_endpoint,
+            side_stream,
+            read,
+            write,
+            upgrade_secure,
+            facts,
+            checkout,
+            checkin,
+            close,
+            random,
+            identity
+        ]
+    );
+
     // M3-SHAPES (abi-v2-perkind.md B.2): the secret kind's `resolve`.
     record!(s, SecretOps, [head, resolve]);
     record!(s, SecretResolveIn, [head, settings]);
@@ -1663,6 +1907,28 @@ fn a_perturbed_golden_line_fails_the_comparator() {
     let perturbed = actual.replacen(line, "MechDoor.kind_abi=24", 1);
     let err = compare(&perturbed, &actual).expect_err("a perturbed line must fail");
     assert!(err.contains("MechDoor.kind_abi=24"), "{err}");
+}
+
+/// RED ARM (transport kind, B.7): one perturbed transport golden line fails the comparator.
+#[test]
+fn a_perturbed_transport_golden_line_fails_the_comparator() {
+    let actual = compute_layout();
+    let line = "tkind::Ops.timer=216";
+    assert!(actual.lines().any(|l| l == line), "the golden holds {line}");
+    let perturbed = actual.replacen(line, "tkind::Ops.timer=208", 1);
+    let err = compare(&perturbed, &actual).expect_err("a perturbed line must fail");
+    assert!(err.contains("tkind::Ops.timer=208"), "{err}");
+}
+
+/// RED ARM (host connector): one perturbed connector golden line fails the comparator.
+#[test]
+fn a_perturbed_connector_golden_line_fails_the_comparator() {
+    let actual = compute_layout();
+    let line = "hconn::ConnectorSlots.identity=96";
+    assert!(actual.lines().any(|l| l == line), "the golden holds {line}");
+    let perturbed = actual.replacen(line, "hconn::ConnectorSlots.identity=88", 1);
+    let err = compare(&perturbed, &actual).expect_err("a perturbed line must fail");
+    assert!(err.contains("hconn::ConnectorSlots.identity=88"), "{err}");
 }
 
 /// RED ARM, THE AUTH KIND: one perturbed auth golden line (`fields`' slot in the auth table) fails
