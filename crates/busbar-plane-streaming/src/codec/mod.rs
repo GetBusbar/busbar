@@ -36,7 +36,7 @@ pub mod ir;
 /// so its in-crate path is the one the runtime half still spells, and the move is invisible to
 /// every caller.
 ///
-/// UNGATED BY THIS FOLD (owner ruling R7, 2026-09-27, THE DESIGN §9/#39: no `busbar-*-codec` crate;
+/// UNGATED BY THIS FOLD (owner ruling R7, 2026-09-27, THE DESIGN section 9/#39: no `busbar-*-codec` crate;
 /// folded into `busbar-plane-streaming` as a pure move). It used to sit behind this crate's own
 /// `runtime` feature, forwarded from `busbar-voice`'s `runtime`, so that `busbar_voice::topology`
 /// stayed OFF by default exactly as before the split. `busbar-plane-streaming` declares NO features

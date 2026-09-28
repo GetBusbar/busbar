@@ -5,7 +5,7 @@
 //!
 //! An ADAPTER, in the same sense `busbar-plane-llm` is one: every method of the plane kind here is a
 //! thin wrapper over a codec that already exists in this crate's own `codec` module (folded in from
-//! `busbar-voice-codec`, owner ruling R7, 2026-09-27, THE DESIGN §9/#39: no `busbar-*-codec` crate) —
+//! `busbar-voice-codec`, owner ruling R7, 2026-09-27, THE DESIGN section 9/#39: no `busbar-*-codec` crate) —
 //! the OpenAI Realtime and Gemini Live dialect readers/writers and the four-layer duplex/session IR
 //! they meet in (`docs/design/BUSBAR-1.6.0.md` #18/#45, the four-layer IR section). No wire format
 //! for those two dialects is written twice.
@@ -63,7 +63,7 @@
 
 pub mod claims;
 // `#![deny(missing_docs)]` above is a rule this crate holds itself to; the folded-in codec (moved
-// unchanged from the former `busbar-voice-codec`, owner ruling R7, 2026-09-27, THE DESIGN §9/#39)
+// unchanged from the former `busbar-voice-codec`, owner ruling R7, 2026-09-27, THE DESIGN section 9/#39)
 // was never written under it, so applying it retroactively here would not be a pure move. Scoped to
 // exactly this module.
 #[allow(missing_docs)]

@@ -8,7 +8,7 @@
 #
 # WHY IT DELEGATES. Every byte of every dialect this plane speaks is already read and written by the
 # duplex codecs in its own `codec` module (folded in from `busbar-voice-codec`, owner ruling R7,
-# 2026-09-27, THE DESIGN §9/#39: no `busbar-*-codec` crate), which this crate adapts onto the
+# 2026-09-27, THE DESIGN section 9/#39: no `busbar-*-codec` crate), which this crate adapts onto the
 # contract plane trait itself. No wire format is written twice: this crate is the ONE streaming
 # plane (its own registry key, its own capability key) over those codecs. `busbar-plane-voice` was
 # the second adapter over the same codecs and is DELETED into this one (#18/#83 — one crate per
@@ -42,7 +42,7 @@ path = "src/lib.rs"
 busbar-contract = { path = "../busbar-contract" }
 # THE CODECS. Read-only from `plane.rs`/`session.rs`/etc.: this crate calls the plane-4 duplex/session
 # IR and both dialect readers/writers and edits none of them. Folded IN as the `codec` module (owner
-# ruling R7, 2026-09-27, THE DESIGN §9/#39: no `busbar-*-codec` crate) rather than named as a separate
+# ruling R7, 2026-09-27, THE DESIGN section 9/#39: no `busbar-*-codec` crate) rather than named as a separate
 # crate — the fold is a pure move, so the codecs' own dependencies (serde/serde_json/bytes) are now
 # this crate's own.
 serde = { workspace = true }
