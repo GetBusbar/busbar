@@ -4,36 +4,26 @@
 //! THE COMPOSITION-ROOT-OWNED INBOUND AGENT-CARD JWS SEAM (HOST-CAPS S3, DECISIONS #26).
 //!
 //! Verifying an inbound agent card against the operator's out-of-band issuer key, and pinning ONLY
-//! what verified, lives today in [`pin::pin_a_signed_card`](super::pin::pin_a_signed_card) over
-//! [`jws::verify_card`](super::jws::verify_card). That is a plane function called directly by
-//! [`verify::verify_document`](super::verify::verify_document); nothing NAMES it as a host capability
-//! a boot flip could swap behind a stable boundary.
-//!
-//! This seam is that name. [`InboundCardJws`] wraps the verify-then-pin decision as ONE capability the
-//! plane's composition installs once at boot ([`install_inbound_card_jws`]); a caller reads it back
-//! through [`inbound_card_jws`] and calls the typed method instead of the free function, so the JWS
-//! verification is swappable without the call site changing. It mirrors the egress fetch seam's
-//! `install_hostless_egress` / `hostless` and this wave's SSE / egress-trust host-caps seams.
+//! what verified, is [`pin::pin_a_signed_card`](super::pin::pin_a_signed_card) over
+//! [`jws::verify_card`](super::jws::verify_card) — and the ONE path to it is this seam.
+//! [`verify::verify_document`](super::verify::verify_document) reaches the signature through
+//! [`inbound_card_jws`] and nothing else calls `pin_a_signed_card` (TODO 607), so the JWS verification
+//! is swappable behind a stable boundary without the call site changing. It mirrors the egress fetch
+//! seam's `install_hostless_egress` / `hostless` and the SSE / egress-trust host-caps seams.
 //!
 //! ## Crate-internal, and why
 //!
 //! The verify outcome is `(CardPin, jws::Verified)` and its refusal is `jws::JwsError` — both this
 //! plane's own crypto vocabulary, deliberately NOT part of the crate's public surface. So the seam is
-//! `pub(crate)` and its composition root is this plane's own boot wiring, exactly as
-//! `busbar-plane-streaming`'s `register.rs` stages its plane-side composition IN-crate with the
-//! cross-crate kernel flip written down for the switchover pass rather than half-done now.
+//! `pub(crate)` and its composition root is this crate's own registry build (`from_config_carrying`),
+//! which installs [`PassThroughInboundJws`] ([`install_inbound_card_jws`]).
 //!
-//! ## Additive and DORMANT
+//! ## One path, byte for byte
 //!
-//! [`PassThroughInboundJws`] delegates to the exact `pin_a_signed_card` the shipped path calls today —
-//! same pin, same `Verified`, same `JwsError`, byte for byte. And NOTHING on the shipped path consults
-//! the seam yet: `verify_document` still calls `pin_a_signed_card` directly, so inbound verification is
-//! unchanged until the call site opts in. Reading [`inbound_card_jws`] in a build that installed
-//! no capability returns `None`.
-
-// The seam's install/get are reached by tests until the `verify_document` call site flips onto it
-// — the same not-yet-mounted posture the plane's other staged pieces record.
-#![cfg_attr(not(test), allow(dead_code))]
+//! [`PassThroughInboundJws`] delegates to the exact `pin_a_signed_card` — same pin, same `Verified`,
+//! same `JwsError`, byte for byte. [`inbound_card_jws`] never answers "none": a read before the
+//! composition's install yields the same pass-through, so there is no fallback path that verifies
+//! any other way.
 
 use serde_json::Value;
 
@@ -72,20 +62,28 @@ impl InboundCardJws for PassThroughInboundJws {
 }
 
 /// THE PROCESS-WIDE inbound-JWS capability, installed once by the plane's composition
-/// ([`install_inbound_card_jws`]). A caller reads it back through [`inbound_card_jws`] and gets `None`
-/// in a build that installed none — the dormant default, under which `verify_document` calls
-/// `pin_a_signed_card` directly and inbound verification is unchanged.
+/// ([`install_inbound_card_jws`]) and read by [`verify::verify_document`](super::verify::verify_document)
+/// through [`inbound_card_jws`].
 static INBOUND_JWS: std::sync::OnceLock<&'static dyn InboundCardJws> = std::sync::OnceLock::new();
 
-/// Install the process inbound-JWS capability — the plane composition's one write, at boot, before any
+/// The production capability the composition installs and a pre-install read resolves to.
+static PASS_THROUGH: PassThroughInboundJws = PassThroughInboundJws;
+
+/// Install the process inbound-JWS capability — the plane composition's one write, at build, before any
 /// card is verified. Idempotent by `OnceLock`: a second install is a no-op (the first wins).
 pub(crate) fn install_inbound_card_jws(host: &'static dyn InboundCardJws) {
     let _ = INBOUND_JWS.set(host);
 }
 
-/// The installed inbound-JWS capability, or `None` when none was installed (the dormant default).
-pub(crate) fn inbound_card_jws() -> Option<&'static dyn InboundCardJws> {
-    INBOUND_JWS.get().copied()
+/// Install the production pass-through — what the composition root calls on every build.
+pub(crate) fn install_pass_through() {
+    install_inbound_card_jws(&PASS_THROUGH);
+}
+
+/// The installed inbound-JWS capability. A read before any install pins the production pass-through,
+/// so every verification goes through the ONE capability the process holds.
+pub(crate) fn inbound_card_jws() -> &'static dyn InboundCardJws {
+    *INBOUND_JWS.get_or_init(|| &PASS_THROUGH)
 }
 
 // Test body externalised to `tests/inbound_jws_tests.rs` (the sibling `jws`/`pin` convention) so this

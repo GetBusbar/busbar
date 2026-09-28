@@ -579,8 +579,8 @@ pub mod inbound;
 pub(crate) mod jws;
 // THE COMPOSITION-ROOT-OWNED INBOUND AGENT-CARD JWS SEAM (HOST-CAPS S3, DECISIONS #26): the
 // `InboundCardJws` trait naming verify-then-pin as ONE host capability, with a byte-for-byte
-// pass-through impl and a plane-composition install/get. Additive and DORMANT — `verify_document`
-// still calls `pin_a_signed_card` directly (W2 flips it onto the seam).
+// pass-through impl and a plane-composition install/get. The ONE verifier: `verify_document` reaches
+// `pin_a_signed_card` only through it (TODO 607).
 pub(crate) mod inbound_jws;
 pub(crate) mod local;
 /// METERING ATTRIBUTION — who an A2A task BILLS, and how far the claim reaches. It is here and not
