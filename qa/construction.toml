@@ -372,9 +372,16 @@ abi = ["crates/busbar-contract"]
 
 [gate.ceiling_raises."rules.loc-ceilings.kernel_ceiling"]
 file    = "qa/construction.toml"
-from    = 55056
-to      = 55077
-because = "ARCHITECT 2026-09-28: R-KERNEL, owner 2026-09-28 plugin log files ruling (BUSBAR-1.6.0.md #85 and THE DESIGN, §11.2 Plugin logging). The kernel carries the plugins.logs config grammar (the field, its default and a five-field struct), kernel config by necessity because the config-schema gate reads only kernel config, and refuses a bad value at the one plugins_preflight seam every path runs. Measured by cargo xtask gate construction: 55056 before, 55077 after, +21. The ceiling rises by exactly that."
+from    = 55077
+to      = 55163
+because = "ARCHITECT 2026-09-28: R-KERNEL, FOLD-LLM C4' option (a) (legacy fold rulings F19/F20; BUSBAR-1.6.0.md THE DESIGN, §1). The VERIFY step's destination guard (pool allow-list, reachable fallback pools, priced destination), PoolView and VerifyRefusal move from the llm plane's verify step into the kernel's door, contract types only, for the plane driver to call at VERIFY; no kernel -> kernel-scope edge. Rebased over LOG-BRIDGE's landed +21 (plugins.logs config grammar): measured fresh at the new base by LANDER at land time. Measured by cargo xtask gate construction: 55077 before, 55163 after, +86. The ceiling rises by exactly that."
+
+# ── THE KERNEL CEILING, RE-ARMED BY LOG-BRIDGE plugin logging (#85; THE DESIGN §11.2) — EXPIRED
+#    AND STRUCK
+#
+# Declared `rules.loc-ceilings.kernel_ceiling` 55056 -> 55077 (ARCHITECT 2026-09-28, R-KERNEL). Its
+# commit reached the base; struck by FOLD-LLM C4's re-arm above, which declares the pair's next
+# figure.
 
 # ── THE KERNEL CEILING, RE-ARMED BY FOLD-LLM C2' — EXPIRED AND STRUCK
 #
@@ -1258,7 +1265,9 @@ kernel_crate = "busbar-kernel"
 # check_structure/pin_answer), declared above. Measured 54915 before, 55056 after, +141.
 # ── RE-ARMED 55056 -> 55077 for the plugins.logs config grammar and its pre-flight refusal
 # (plugin log files, owner 2026-09-28), declared above. Measured 55056 before and 55077 after, +21.
-kernel_ceiling = 55077
+# ── RE-ARMED 55077 -> 55163 for FOLD-LLM C4' (the VERIFY step's destination guard, PoolView and
+# VerifyRefusal move into the kernel door), declared above. Measured 55077 before, 55163 after, +86.
+kernel_ceiling = 55163
 # `caps_crate = "busbar-caps"` WAS HERE AND IS STRUCK, 2026-09-22. The crate was folded into
 # busbar-contract by 2c9eddecf ("W2.c: fold busbar-caps into busbar-contract"); its types live at
 # `crates/busbar-contract/src/caps/`, whose own module header says "Folded from the former
