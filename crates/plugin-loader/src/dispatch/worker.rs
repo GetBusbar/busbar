@@ -39,7 +39,7 @@ use busbar_contract::abi::mechanism::ticket::Ticket;
 
 use super::plugin::{is_lifecycle, Crossed, Instance, Plugin};
 use super::ticket::{
-    decode, encode, next_generation, Completions, WakeRoute, MAX_INDEX, MAX_WORKERS,
+    decode, encode, recycled_generation, Completions, WakeRoute, MAX_INDEX, MAX_WORKERS,
 };
 use super::{in_head, now_ns, out_head, watchdog, Frame, InFrame, Kind, OutFrame};
 
@@ -574,7 +574,7 @@ impl Worker {
     fn recycle_now(&self, st: &mut WorkerState, idx: u32, env: &Env) {
         let e = &mut st.entries[idx as usize];
         env.completions.forget(self.ticket(idx, e.generation));
-        e.generation = next_generation(e.generation);
+        e.generation = recycled_generation(e.generation);
         e.live = false;
         e.latched = false;
         e.client_dropped = false;

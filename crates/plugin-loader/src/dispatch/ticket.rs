@@ -35,8 +35,9 @@ pub(crate) fn decode(slot: u32) -> (u32, u32) {
     (slot >> INDEX_BITS, slot & MAX_INDEX)
 }
 
-/// The generation after `g`; never `0`.
-pub(crate) fn next_generation(g: u32) -> u32 {
+/// A recycled ticket slot's generation: the one after `g`, never `0` (a ticket generation, not
+/// a configuration generation).
+pub(crate) fn recycled_generation(g: u32) -> u32 {
     match g.wrapping_add(1) {
         0 => 1,
         n => n,

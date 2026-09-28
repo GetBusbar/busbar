@@ -23,7 +23,7 @@ use std::time::{Duration, Instant};
 
 use busbar_contract::abi::mechanism::call::DeadlineClass;
 
-use super::ticket::next_generation;
+use super::ticket::recycled_generation;
 use super::worker::{spawn_worker, Pool, Worker};
 
 /// Start the watchdog of `pool`; it ends when the pool does.
@@ -98,7 +98,7 @@ fn replace(pool: &Pool, i: usize, old: &Arc<Worker>, started: Instant) {
         let gens: Vec<u32> = st
             .entries
             .iter()
-            .map(|e| next_generation(e.generation))
+            .map(|e| recycled_generation(e.generation))
             .collect();
         (Worker::fault_all(&mut st), gens)
     };

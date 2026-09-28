@@ -193,11 +193,13 @@ static DOOR: Shared<Door> = Shared(Door {
     ops: &OPS.0 as *const OpsHead,
 });
 
-/// THE DOOR.
-#[no_mangle]
-pub extern "C" fn busbar_plugin_door() -> *const Door {
+/// THE DOOR: the `DoorFn` a compiled-in row holds.
+pub extern "C" fn door() -> *const Door {
     &DOOR.0
 }
+
+// The one exported symbol, forwarding to the same door (the SDK's one export).
+busbar_contract::export_door!(door);
 
 // The #85 envelope `answer` hands back: two good metrics, three the host must drop (an index out of
 // range, a non-finite value, a kind the family does not have), one good diagnostic and one bad.
