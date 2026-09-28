@@ -268,6 +268,16 @@ mod tests {
         );
     }
 
+    /// H6 RED: `needed` past `u32::MAX` is FAULT (checked before the kind's own, smaller, hard
+    /// max).
+    #[test]
+    fn needed_past_u32_max_faults() {
+        assert_eq!(
+            check_written_needed(0, 0, u32::MAX as usize + 1, true),
+            Err(Fault("needed exceeds u32::MAX"))
+        );
+    }
+
     /// The legitimate re-call shape passes: nothing written, `needed` bigger than `cap`, and the
     /// outcome is FAILED (H3).
     #[test]
@@ -297,7 +307,27 @@ mod tests {
             status: blob_absent(),
         };
         out.status.len = 4;
-        assert!(check_status(&out).is_err());
+        assert_eq!(
+            check_status(&out),
+            Err(Fault("status: status.len > 0 with a NULL status.ptr"))
+        );
+    }
+
+    /// H4 RED: a READY `status` answer with no material but a lease is FAULT (the spurious-lease
+    /// arm).
+    #[test]
+    fn status_ready_no_material_with_lease_faults() {
+        let mut out = StatusOut {
+            head: head(Outcome::Ready),
+            status: blob_absent(),
+        };
+        out.head.lease = 7;
+        assert_eq!(
+            check_status(&out),
+            Err(Fault(
+                "status: a READY answer with no status material must not set a lease"
+            ))
+        );
     }
 
     /// H6 RED: `status`'s blob past the hard max is FAULT (the check_blob oversize arm).
@@ -382,6 +412,152 @@ mod tests {
             findings: blob_absent(),
         };
         assert!(check_check(&out).is_ok());
+    }
+
+    /// H6 RED: `check`'s findings blob with a NULL pointer and a non-zero len is FAULT.
+    #[test]
+    fn check_findings_null_with_len_faults() {
+        let mut out = CheckOut {
+            head: head(Outcome::Ready),
+            findings: blob_absent(),
+        };
+        out.findings.len = 4;
+        assert_eq!(
+            check_check(&out),
+            Err(Fault("check: findings.len > 0 with a NULL findings.ptr"))
+        );
+    }
+
+    /// H6 RED: `check`'s findings blob past the hard max is FAULT (the check_blob oversize arm).
+    #[test]
+    fn check_findings_oversize_faults() {
+        let byte = 0u8;
+        let mut out = CheckOut {
+            head: head(Outcome::Ready),
+            findings: blob_absent(),
+        };
+        out.findings.ptr = &byte as *const u8;
+        out.findings.len = (HARD_MAX_BYTES + 1) as usize;
+        assert_eq!(
+            check_check(&out),
+            Err(Fault("check: findings.len exceeds the hard max"))
+        );
+    }
+
+    /// H6 RED: a READY `check` answer with findings but no lease is FAULT.
+    #[test]
+    fn check_ready_material_without_lease_faults() {
+        let byte = 0u8;
+        let mut out = CheckOut {
+            head: head(Outcome::Ready),
+            findings: blob_absent(),
+        };
+        out.findings.ptr = &byte as *const u8;
+        out.findings.len = 1;
+        assert_eq!(
+            check_check(&out),
+            Err(Fault(
+                "check: a READY answer with findings must set a non-zero lease"
+            ))
+        );
+    }
+
+    /// H6 RED: a READY `check` answer with no findings but a lease is FAULT (the spurious-lease
+    /// arm).
+    #[test]
+    fn check_ready_no_material_with_lease_faults() {
+        let mut out = CheckOut {
+            head: head(Outcome::Ready),
+            findings: blob_absent(),
+        };
+        out.head.lease = 7;
+        assert_eq!(
+            check_check(&out),
+            Err(Fault(
+                "check: a READY answer with no findings must not set a lease"
+            ))
+        );
+    }
+
+    /// H6 RED: `serve`'s body blob with a NULL pointer and a non-zero len is FAULT.
+    #[test]
+    fn serve_body_null_with_len_faults() {
+        let mut out = ServeOut {
+            head: head(Outcome::Ready),
+            status_code: 200,
+            _reserved: [0; 6],
+            headers_out: std::ptr::null(),
+            headers_out_len: 0,
+            body: blob_absent(),
+        };
+        out.body.len = 4;
+        assert_eq!(
+            check_serve(&out),
+            Err(Fault("serve: body.len > 0 with a NULL body.ptr"))
+        );
+    }
+
+    /// H6 RED: `serve`'s body blob past the hard max is FAULT (the check_blob oversize arm).
+    #[test]
+    fn serve_body_oversize_faults() {
+        let byte = 0u8;
+        let mut out = ServeOut {
+            head: head(Outcome::Ready),
+            status_code: 200,
+            _reserved: [0; 6],
+            headers_out: std::ptr::null(),
+            headers_out_len: 0,
+            body: blob_absent(),
+        };
+        out.body.ptr = &byte as *const u8;
+        out.body.len = (HARD_MAX_BYTES + 1) as usize;
+        assert_eq!(
+            check_serve(&out),
+            Err(Fault("serve: body.len exceeds the hard max"))
+        );
+    }
+
+    /// H6 RED: a READY `serve` answer with a body but no lease is FAULT (the missing-lease arm).
+    #[test]
+    fn serve_ready_material_without_lease_faults() {
+        let byte = 0u8;
+        let mut out = ServeOut {
+            head: head(Outcome::Ready),
+            status_code: 200,
+            _reserved: [0; 6],
+            headers_out: std::ptr::null(),
+            headers_out_len: 0,
+            body: blob_absent(),
+        };
+        out.body.ptr = &byte as *const u8;
+        out.body.len = 1;
+        assert_eq!(
+            check_serve(&out),
+            Err(Fault(
+                "serve: a READY answer with headers or a body must set a non-zero lease"
+            ))
+        );
+    }
+
+    /// H6 RED: a READY `serve` answer with no headers and no body but a lease is FAULT (the
+    /// spurious-lease arm).
+    #[test]
+    fn serve_ready_no_material_with_lease_faults() {
+        let mut out = ServeOut {
+            head: head(Outcome::Ready),
+            status_code: 200,
+            _reserved: [0; 6],
+            headers_out: std::ptr::null(),
+            headers_out_len: 0,
+            body: blob_absent(),
+        };
+        out.head.lease = 7;
+        assert_eq!(
+            check_serve(&out),
+            Err(Fault(
+                "serve: a READY answer with no headers and no body must not set a lease"
+            ))
+        );
     }
 
     /// A well-formed `deliver` answer passes.
