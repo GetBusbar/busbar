@@ -170,6 +170,8 @@ verdict = "conformance-verdict-tls"
 public = "true"
 not_run_reason = "planned 1.6.0 — testssl leg not yet green (MATRIX-RULING B-tier report card)"
 
+# ── RAN for 1.6.0, FAILING (verdict artifact present; a real, diagnosed red — not "never ran") ────
+
 [[suite]]
 id = "ws"
 standard = "WebSocket (RFC 6455)"
@@ -178,4 +180,3 @@ tier = "conformant"
 label = "WebSocket"
 verdict = "conformance-verdict-ws"
 public = "true"
-not_run_reason = "planned 1.6.0 — Autobahn leg not yet green; currently zero coverage (MATRIX-RULING)"

@@ -1,7 +1,7 @@
 {
   "_generated": "by `cargo xtask gate conformance-sync --write`; DO NOT EDIT — the drift gate is fatal",
   "commit": "67ee7910305068c2c86ccd1811d4bd189973b45b",
-  "generated_at": "2026-09-28T18:19:26Z",
+  "generated_at": "2026-09-28T19:37:44Z",
   "release": "1.6.0",
   "schema": "busbar.conformance.manifest/1",
   "suites": [
@@ -199,9 +199,9 @@
       "claim": null,
       "plan": "Autobahn|Testsuite against busbar-transport-ws",
       "public": true,
-      "reason": "planned 1.6.0 — Autobahn leg not yet green; currently zero coverage (MATRIX-RULING)",
+      "reason": "127 of 517 cases FAIL (216 UNIMPLEMENTED -- RFC 7692 permessage-deflate, out of this suite's RFC 6455 claim, not counted). Root cause diagnosed and singular: busbar-transport-ws's wire Frame carries no text/binary discriminator, so every inbound WS TEXT frame is echoed back as BINARY -- content, close code and close cleanliness all now match (the close-handshake defects this same commit range fixed are gone from the failure set). Fix in flight as PIECE_TEXT (abi/transport vocabulary bit); this verdict is expected to flip to pass once that lands and Autobahn is re-run clean.",
       "standard": "WebSocket (RFC 6455)",
-      "status": "not-run",
+      "status": "fail",
       "suite": "ws",
       "tier": "conformant"
     }

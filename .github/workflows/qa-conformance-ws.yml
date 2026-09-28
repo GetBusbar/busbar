@@ -1,0 +1,343 @@
+name: WS conformance
+
+# LATCHKEY MIGRATION (phase 4, LK-7): every job runs on a sized `latchkey-*` runner label, the same
+# convention the sibling MCP and A2A conformance workflows already use.
+
+# WHERE THIS RUNS, AND WHY. A conformance battery is a statement ABOUT busbar, so it belongs where
+# busbar is built and where a red blocks the release it is about (mirrors qa-conformance-mcp.yml).
+# The instrument here is Autobahn|Testsuite (`crossbario/autobahn-testsuite`, an independent
+# third-party fuzzingclient that ships as a Docker image), driven by
+# `testing/ws-conformance/scripts/run.sh` against `WsTransport::over(TcpTransport)` -- the same
+# composition a battery test in `busbar-transport-tcp/src/tests/mod.rs` builds. The harness itself
+# carries no product knowledge: `testing/ws-conformance/subject` is a testkit binary that is not a
+# workspace member of the product build (`cargo build --bin busbar` never sees it) and is excused by
+# name in the kind-isolation and segregation gates (`xtask/src/gates/kind_isolation.rs`,
+# `xtask/src/gates/segregation.rs`).
+#
+# THE THREE-LEG RULE, which is the shape of this file:
+#
+#   CONTROL runs ALWAYS, against Autobahn's own pinned reference peer (`reference/echo-server.mjs`).
+#   A suite that cannot judge a known-good peer cannot be trusted to judge ours.
+#
+#   NEGATIVE CONTROL runs ALWAYS, against a deliberately broken peer (`broken/broken-echo-server.mjs`)
+#   and MUST be graded red by the parser. A battery that only ever sees a good peer says nothing
+#   about its own sensitivity.
+#
+#   SUBJECT IS ARMED OR RED (BUSBAR-1.6.0.md THE DESIGN, streaming-plane MUST-set). The subject leg
+#   builds `ws-conformance-subject` FROM THIS COMMIT; if the build fails there is no busbar binary
+#   to judge and the leg publishes `armed=false`, which the verdict job treats as red rather than
+#   skip. `NOT ARMED, SO NOT RUN` is a RED state, never a green tick over an instrument that ran but
+#   judged nothing.
+#
+# AND `verdict` IS NOT OPTIONAL. Every leg above is required to have reached `success`, and the
+# subject leg is additionally required to have published `armed=true` -- a job whose steps all skip
+# still reports `success`, so the arm state is a published job OUTPUT the verdict job reads directly
+# rather than infers from the job result. `testing/verdict-covers-every-leg.py` holds this workflow's
+# `needs:` list to SET EQUALITY with its job set, so a leg added later cannot silently drop out of
+# the verdict.
+on:
+  # SERIALISED BEHIND CI (mirrors qa-conformance-mcp.yml). `workflow_run` loads THIS file from the
+  # default branch and checks out the default branch by default, so every checkout below pins
+  # `github.event.workflow_run.head_sha` to judge the commit CI actually tested, not main.
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+  workflow_dispatch:
+
+concurrency:
+  # Keyed on the TRIGGERING branch, not github.ref: for a workflow_run event github.ref is always the
+  # default branch, so every run (including the ones a dev/main CI completion spawns that then skip
+  # via the job `if:`) would otherwise share one group and cancel the real in-flight qa run.
+  group: ws-conformance-${{ github.event.workflow_run.head_branch || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  gate-selftest:
+    name: gate self-test (the coverage assertion cannot be lied to)
+    # THE ONE GATE (mirrors qa-conformance-mcp.yml). Every other job needs this one, so gating it
+    # here cascades: on a non-qa CI completion the whole battery skips with it. A manual
+    # workflow_dispatch always proceeds.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       contains(fromJSON('["qa"]'), github.event.workflow_run.head_branch))
+    runs-on: latchkey-large
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # workflow_run defaults to the default branch; pin to the CI run's tested commit (see on:).
+          ref: ${{ github.event.workflow_run.head_sha || github.ref }}
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '22'
+      - uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
+      - name: Resolve cargo home (Latchkey image sets CARGO_HOME off $HOME)
+        uses: ./.github/actions/cargo-home
+      - name: Latchkey Fast Cache (cargo registry + target, restore)
+        uses: latchkey-dev/cache-action@d0dd21912a57c7435649c77f689b68d348d8a662 # v1
+        with:
+          action: restore
+          key: cargo-${{ runner.os }}-ws-gate-selftest-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
+          path: |
+            ${{ env.CARGO_HOME }}/registry
+            ${{ env.CARGO_HOME }}/git
+            target
+      - name: npm ci (parser + reference/broken peers)
+        working-directory: testing/ws-conformance
+        run: npm ci
+      # Proves the parser bites on captured fixture reports, and that the arm-state transition
+      # (unarmed -> never "pass") holds -- the one part of the harness a Docker-less check can prove.
+      # It also builds `ws-conformance-subject` as its final step, which populates the cargo cache
+      # every later job restores from.
+      - name: Prove the parser + arm-state assertions bite, and that the subject builds
+        run: ./testing/ws-conformance/scripts/run.sh --selftest
+      - name: Latchkey Fast Cache (cargo registry + target, save)
+        uses: latchkey-dev/cache-action@d0dd21912a57c7435649c77f689b68d348d8a662 # v1
+        with:
+          action: save
+          key: cargo-${{ runner.os }}-ws-gate-selftest-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
+          path: |
+            ${{ env.CARGO_HOME }}/registry
+            ${{ env.CARGO_HOME }}/git
+            target
+      # The aggregator's `needs:` list is itself a hand-maintained enumeration (mirrors
+      # qa-conformance-mcp.yml).
+      - name: Prove the verdict-coverage lint bites
+        run: |
+          set -euo pipefail
+          python3 -m pip install --quiet pyyaml
+          python3 testing/verdict-covers-every-leg.py --selftest
+      - name: The verdict must depend on, and judge, every leg
+        run: python3 testing/verdict-covers-every-leg.py
+
+  control:
+    name: Autobahn · CONTROL (pinned reference echo peer)
+    needs: gate-selftest
+    runs-on: latchkey-small
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.ref }}
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '22'
+      - name: npm ci
+        working-directory: testing/ws-conformance
+        run: npm ci
+      - name: Judge the pinned reference echo peer (Docker-live)
+        run: ./testing/ws-conformance/scripts/run.sh --control
+      - name: Publish the control report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: ws-control
+          path: testing/ws-conformance/reports/control
+          if-no-files-found: warn
+
+  negative-control:
+    name: Autobahn · NEGATIVE control (a broken peer MUST be red)
+    needs: gate-selftest
+    runs-on: latchkey-small
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.ref }}
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '22'
+      - name: npm ci
+        working-directory: testing/ws-conformance
+        run: npm ci
+      # A battery that only ever runs against a good peer says nothing about its own sensitivity.
+      # `run.sh --negative-control` itself fails the step if the broken peer is NOT caught, so this
+      # job going green already proves the catch; nothing here softens that.
+      - name: A deliberately broken peer must be caught (Docker-live)
+        run: ./testing/ws-conformance/scripts/run.sh --negative-control
+      - name: Publish the negative-control report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: ws-negative-control
+          path: testing/ws-conformance/reports/negative-control
+          if-no-files-found: warn
+
+  subject:
+    name: Autobahn · SUBJECT (busbar — ARMED OR RED)
+    needs: gate-selftest
+    runs-on: latchkey-xlarge
+    timeout-minutes: 45
+    # PUBLISHED, not inferred (mirrors qa-conformance-mcp.yml's official-subject). A job whose steps
+    # all skip still reports `success`, so the arm state is an explicit job output the verdict job
+    # reads directly.
+    outputs:
+      armed: ${{ steps.arm.outputs.armed }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.ref }}
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '22'
+      - uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
+      - name: Resolve cargo home (Latchkey image sets CARGO_HOME off $HOME)
+        uses: ./.github/actions/cargo-home
+      - name: Latchkey Fast Cache (cargo registry + target, restore)
+        uses: latchkey-dev/cache-action@d0dd21912a57c7435649c77f689b68d348d8a662 # v1
+        with:
+          action: restore
+          key: cargo-${{ runner.os }}-ws-subject-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
+          path: |
+            ${{ env.CARGO_HOME }}/registry
+            ${{ env.CARGO_HOME }}/git
+            target
+      - name: npm ci
+        working-directory: testing/ws-conformance
+        run: npm ci
+      # THE SUBJECT IS BUILT FROM THIS COMMIT. `run.sh --subject` builds
+      # `ws-conformance-subject`, boots it on loopback, and only calls Autobahn if it bound a port;
+      # it always writes `reports/subject/verdict.json` when Docker ran, with `armed` set from
+      # whether the build/boot actually produced a listening busbar peer.
+      - name: Build, boot and judge busbar's ws transport (Docker-live)
+        env:
+          CARGO_INCREMENTAL: '0'
+        run: ./testing/ws-conformance/scripts/run.sh --subject
+      - name: Latchkey Fast Cache (cargo registry + target, save)
+        uses: latchkey-dev/cache-action@d0dd21912a57c7435649c77f689b68d348d8a662 # v1
+        with:
+          action: save
+          key: cargo-${{ runner.os }}-ws-subject-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
+          path: |
+            ${{ env.CARGO_HOME }}/registry
+            ${{ env.CARGO_HOME }}/git
+            target
+      # THE ARM STATE IS READ BACK OUT OF THE VERDICT THE RUN JUST WROTE, not re-derived: one fact,
+      # one source. Absent entirely (Docker never ran, or the job died before writing it), armed is
+      # false and this is RED.
+      - name: Record the arm state
+        id: arm
+        run: |
+          set -euo pipefail
+          v=testing/ws-conformance/reports/subject/verdict.json
+          if [ -f "$v" ] && [ "$(node -e "console.log(require('./$v').armed)")" = "true" ]; then
+            echo "armed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "armed=false" >> "$GITHUB_OUTPUT"
+            {
+              echo "### WS Autobahn subject leg: NOT ARMED — this is RED"
+              echo ""
+              echo "The build produced no listening busbar ws peer, so Autobahn could only have run"
+              echo "against its pinned third-party controls (if it ran at all). That proves the"
+              echo "SUITE works. It proves nothing about busbar."
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Publish the subject report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: ws-subject
+          path: testing/ws-conformance/reports/subject
+          if-no-files-found: warn
+
+  boundary-check:
+    name: the Autobahn testkit binary never enters the product build
+    needs: gate-selftest
+    runs-on: latchkey-large
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.ref }}
+      - uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
+      - name: Resolve cargo home (Latchkey image sets CARGO_HOME off $HOME)
+        uses: ./.github/actions/cargo-home
+      - name: Latchkey Fast Cache (cargo registry + target, restore)
+        uses: latchkey-dev/cache-action@d0dd21912a57c7435649c77f689b68d348d8a662 # v1
+        with:
+          action: restore
+          key: cargo-${{ runner.os }}-ws-boundary-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
+          path: |
+            ${{ env.CARGO_HOME }}/registry
+            ${{ env.CARGO_HOME }}/git
+            target
+      # `kind-isolation` and `segregation` already name `testing/ws-conformance/subject/Cargo.toml`
+      # by hand as an excused testkit crate (xtask/src/gates/kind_isolation.rs,
+      # xtask/src/gates/segregation.rs); this leg proves those two gates still pass, so the Autobahn
+      # subject stays an INPUT to this conformance leg and never a crate of the product tree.
+      - name: cargo xtask gate kind-isolation --posture
+        run: cargo xtask gate kind-isolation --posture
+      - name: cargo xtask gate segregation
+        run: cargo xtask gate segregation
+      - name: Latchkey Fast Cache (cargo registry + target, save)
+        uses: latchkey-dev/cache-action@d0dd21912a57c7435649c77f689b68d348d8a662 # v1
+        with:
+          action: save
+          key: cargo-${{ runner.os }}-ws-boundary-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
+          path: |
+            ${{ env.CARGO_HOME }}/registry
+            ${{ env.CARGO_HOME }}/git
+            target
+
+  verdict:
+    name: WS conformance verdict
+    runs-on: latchkey-small
+    timeout-minutes: 10
+    # `!cancelled()` preserves the always-run-the-verdict property WITHIN a real run (a failing leg
+    # must still be judged), but the same CI/branch gate as the rest keeps it from running -- and
+    # reporting every leg as skipped-is-red -- on a non-qa CI completion.
+    if: >-
+      !cancelled() &&
+      (github.event_name == 'workflow_dispatch' ||
+       (github.event.workflow_run.conclusion == 'success' &&
+        contains(fromJSON('["qa"]'), github.event.workflow_run.head_branch)))
+    needs:
+      - gate-selftest
+      - control
+      - negative-control
+      - subject
+      - boundary-check
+    steps:
+      # A ROW THAT CANNOT RUN IS RED, NEVER SKIPPED (mirrors qa-conformance-mcp.yml). Every leg
+      # above is required to have reached `success`, and the subject leg is additionally required
+      # to have published `armed=true`.
+      - name: Every leg must have EXECUTED, and the subject leg must have been ARMED
+        env:
+          GATE_SELFTEST: ${{ needs.gate-selftest.result }}
+          CONTROL: ${{ needs.control.result }}
+          NEGATIVE_CONTROL: ${{ needs.negative-control.result }}
+          SUBJECT: ${{ needs.subject.result }}
+          SUBJECT_ARMED: ${{ needs.subject.outputs.armed }}
+          BOUNDARY_CHECK: ${{ needs.boundary-check.result }}
+        run: |
+          set -euo pipefail
+          fail=0
+          strict () {
+            if [ "$2" != "success" ]; then
+              echo "::error::$1 did not succeed (result: $2). A leg that did not EXECUTE is red, not skipped."
+              fail=1
+            else
+              echo "  ok    $1"
+            fi
+          }
+          armed () {
+            case "${3:-}" in
+              true)  strict "$1" "$2" ;;
+              false)
+                echo "::error::$1 published armed=false. NOT ARMED, SO NOT RUN is a RED state: the controls proved the instruments, not busbar. The arm is the busbar peer this run built and booted, not a repository variable: find why the leg has no listening peer."
+                fail=1 ;;
+              *)
+                echo "::error::$1 published no arm state (result: $2, armed: '${3:-}'). The leg did not reach its own arming check, so whether busbar was tested is unknown -- and unknown is red."
+                fail=1 ;;
+            esac
+          }
+          strict gate-selftest    "$GATE_SELFTEST"
+          strict control          "$CONTROL"
+          strict negative-control "$NEGATIVE_CONTROL"
+          strict boundary-check   "$BOUNDARY_CHECK"
+          armed  subject          "$SUBJECT" "$SUBJECT_ARMED"
+
+          [ "$fail" -eq 0 ] || exit 1
+          echo
+          echo "WS conformance verdict: every leg executed, and the subject leg judged busbar."
