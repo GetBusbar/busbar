@@ -89,7 +89,7 @@ MONEY_PREFIXES = (
     "crates/busbar-contract/src/count.rs",
     "crates/busbar/src/root/durability.rs",
     "crates/busbar/src/root/ledger_identity.rs", "crates/busbar/src/root/migration.rs",
-    "crates/busbar-llm-codec/", "crates/busbar-voice-codec/",
+    "crates/busbar-plane-llm/src/codec/", "crates/busbar-plane-streaming/src/codec/",
 )
 MONEY_NAME_RE = re.compile(
     r"(?i)(money|nanos|cents|micro_?unit|rate_?card|rate_?nanos|price|pricing|spend|"
