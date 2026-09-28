@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
+//! The hook answer validators: one RED test per arm, each asserting its exact rule and field and
+//! failing if its check is removed, and the GREEN answers per outcome.
+
 use super::*;
 use crate::abi::mechanism::call::{AbiStr, Envelope, RawOutcome};
 
@@ -28,6 +31,10 @@ fn head(outcome: Outcome) -> OutHead {
             flags: 0,
         },
     }
+}
+
+fn red(rule: Rule, field: &'static str) -> Result<(), Fault> {
+    Err(Fault { rule, field })
 }
 
 fn blob_absent() -> Blob {
@@ -75,34 +82,29 @@ fn decide_out_baseline_passes() {
     assert!(check_decide(&decide_out(), 0, 0, 0).is_ok());
 }
 
-/// H1 RED: zero verb bits set on READY is FAULT (was `empty_decide_out_passes`; the
-/// exactly-one-verb rule makes the all-zero READY answer illegal, not a pass case).
+/// RED: zero verb bits set on READY is FAULT: the all-zero READY answer names no verb.
 #[test]
 fn decide_zero_verbs_faults() {
     let mut out = decide_out();
     out.verbs = 0;
     assert_eq!(
         check_decide(&out, 0, 0, 0),
-        Err(Fault(
-            "decide: verbs must set exactly one of PREFER|ABSTAIN|REJECT|RESTRICT"
-        ))
+        red(Rule::NotExactlyOne, "decide.verbs")
     );
 }
 
-/// H1 RED: two verb bits set together on READY is FAULT.
+/// RED: two verb bits set together on READY is FAULT.
 #[test]
 fn decide_two_verbs_faults() {
     let mut out = decide_out();
     out.verbs = VERB_PREFER | VERB_RESTRICT;
     assert_eq!(
         check_decide(&out, 0, 0, 0),
-        Err(Fault(
-            "decide: verbs must set exactly one of PREFER|ABSTAIN|REJECT|RESTRICT"
-        ))
+        red(Rule::NotExactlyOne, "decide.verbs")
     );
 }
 
-/// H1 RED: a `verbs` bit outside the known set is FAULT even though exactly one dimension
+/// RED: a `verbs` bit outside the known set is FAULT even though exactly one dimension
 /// verb is also set.
 #[test]
 fn decide_unknown_verb_bit_faults() {
@@ -110,13 +112,11 @@ fn decide_unknown_verb_bit_faults() {
     out.verbs = VERB_ABSTAIN | (1 << 30);
     assert_eq!(
         check_decide(&out, 0, 0, 0),
-        Err(Fault(
-            "decide: verbs sets a bit outside PREFER|ABSTAIN|REJECT|RESTRICT|HAS_REJECT_STATUS"
-        ))
+        red(Rule::UnknownCode, "decide.verbs_unknown")
     );
 }
 
-/// H1 PASS: a FAILED answer with `verbs == 0` is legal — `verbs` carries no meaning outside
+/// PASS: a FAILED answer with `verbs == 0` is legal — `verbs` carries no meaning outside
 /// READY.
 #[test]
 fn decide_failed_zero_verbs_passes() {
@@ -126,46 +126,40 @@ fn decide_failed_zero_verbs_passes() {
     assert!(check_decide(&out, 0, 0, 0).is_ok());
 }
 
-/// H1 RED: `transform`'s exactly-one-verb rule FAULTs on zero bits (READY).
+/// RED: `transform`'s exactly-one-verb rule FAULTs on zero bits (READY).
 #[test]
 fn transform_zero_verbs_faults() {
     let mut out = transform_out();
     out.verbs = 0;
     assert_eq!(
         check_transform(&out, 0, 0),
-        Err(Fault(
-            "transform: verbs must set exactly one of REWRITE|ABSTAIN|REJECT"
-        ))
+        red(Rule::NotExactlyOne, "transform.verbs")
     );
 }
 
-/// H1 RED: `transform`'s exactly-one-verb rule FAULTs on 2+ bits (READY).
+/// RED: `transform`'s exactly-one-verb rule FAULTs on 2+ bits (READY).
 #[test]
 fn transform_two_verbs_faults() {
     let mut out = transform_out();
     out.verbs = VERB_REWRITE | VERB_REJECT;
     assert_eq!(
         check_transform(&out, 0, 0),
-        Err(Fault(
-            "transform: verbs must set exactly one of REWRITE|ABSTAIN|REJECT"
-        ))
+        red(Rule::NotExactlyOne, "transform.verbs")
     );
 }
 
-/// H1 RED: a `transform` `verbs` bit outside the known set is FAULT.
+/// RED: a `transform` `verbs` bit outside the known set is FAULT.
 #[test]
 fn transform_unknown_verb_bit_faults() {
     let mut out = transform_out();
     out.verbs = VERB_REWRITE | (1 << 30);
     assert_eq!(
         check_transform(&out, 0, 0),
-        Err(Fault(
-            "transform: verbs sets a bit outside REWRITE|ABSTAIN|REJECT|HAS_REJECT_STATUS"
-        ))
+        red(Rule::UnknownCode, "transform.verbs_unknown")
     );
 }
 
-/// H1 PASS: a FAILED `transform` answer with `verbs == 0` is legal.
+/// PASS: a FAILED `transform` answer with `verbs == 0` is legal.
 #[test]
 fn transform_failed_zero_verbs_passes() {
     let mut out = transform_out();
@@ -181,9 +175,7 @@ fn reject_status_without_bit_faults() {
     out.reject_status = 400;
     assert_eq!(
         check_decide(&out, 0, 0, 0),
-        Err(Fault(
-            "reject_status is non-zero without VERB_HAS_REJECT_STATUS"
-        ))
+        red(Rule::Contradiction, "decide.reject_status")
     );
 }
 
@@ -194,7 +186,7 @@ fn has_reject_status_without_reject_verb_faults() {
     out.verbs = VERB_ABSTAIN | VERB_HAS_REJECT_STATUS;
     assert_eq!(
         check_decide(&out, 0, 0, 0),
-        Err(Fault("VERB_HAS_REJECT_STATUS is set without VERB_REJECT"))
+        red(Rule::Contradiction, "decide.has_reject_status")
     );
 }
 
@@ -205,11 +197,11 @@ fn order_written_beyond_cap_faults() {
     out.order_written = 5;
     assert_eq!(
         check_decide(&out, 0, 0, 4),
-        Err(Fault("order_written exceeds order_cap"))
+        red(Rule::OverCap, "decide.order_written")
     );
 }
 
-/// H6 RED: a successful `order` write also claiming `needed` is FAULT.
+/// RED: a successful `order` write also claiming `needed` is FAULT.
 #[test]
 fn order_written_and_needed_together_faults() {
     let mut out = decide_out();
@@ -217,24 +209,22 @@ fn order_written_and_needed_together_faults() {
     out.order_needed = 1;
     assert_eq!(
         check_decide(&out, 0, 0, 4),
-        Err(Fault(
-            "a successful order write must not also claim more is needed"
-        ))
+        red(Rule::WrittenOnShort, "decide.order_written_on_short")
     );
 }
 
-/// H3 RED: `order_needed != 0` with an outcome other than FAILED is FAULT.
+/// RED: `order_needed != 0` with an outcome other than FAILED is FAULT.
 #[test]
 fn order_needed_without_failed_faults() {
     let mut out = decide_out();
     out.order_needed = 4;
     assert_eq!(
         check_decide(&out, 0, 0, 4),
-        Err(Fault("order_needed is non-zero without a FAILED outcome"))
+        red(Rule::NeededNotFailed, "decide.order_needed")
     );
 }
 
-/// RED (M-SB REFINEMENT joint rule): `order_needed <= order_cap`, and no other dimension's
+/// RED (the multi-buffer short answer): `order_needed <= order_cap`, and no other dimension's
 /// `needed` exceeds its cap either, so nothing justifies the re-call.
 #[test]
 fn order_needed_not_larger_than_cap_faults() {
@@ -243,13 +233,11 @@ fn order_needed_not_larger_than_cap_faults() {
     out.order_needed = 4;
     assert_eq!(
         check_decide(&out, 0, 0, 4),
-        Err(Fault(
-            "decide: a FAILED short-buffer answer must have at least one needed_* exceed its cap"
-        ))
+        red(Rule::WastedRecall, "decide.needed")
     );
 }
 
-/// M-SB REFINEMENT PASS: `order_needed <= order_cap` (fits) is legal when `reject_message`'s
+/// PASS (the multi-buffer short answer): `order_needed <= order_cap` (fits) is legal when `reject_message`'s
 /// `needed` exceeds ITS cap — one dimension's overflow is enough to justify the whole re-call.
 #[test]
 fn order_needed_fits_while_reject_message_overflows_passes() {
@@ -260,8 +248,7 @@ fn order_needed_fits_while_reject_message_overflows_passes() {
     assert!(check_decide(&out, 32, 0, 4).is_ok());
 }
 
-/// H6 RED: `order_needed` past the hard max slot count is FAULT (the hook needed hard-max
-/// arm).
+/// RED: `order_needed` past the hard max slot count is FAULT.
 #[test]
 fn order_needed_past_hard_max_faults() {
     let mut out = decide_out();
@@ -269,12 +256,12 @@ fn order_needed_past_hard_max_faults() {
     out.order_needed = (HARD_MAX_ORDER_SLOTS + 1) as usize;
     assert_eq!(
         check_decide(&out, 0, 0, 0),
-        Err(Fault("order_needed exceeds the hard max slot count"))
+        red(Rule::OverMax, "decide.order_needed_max")
     );
 }
 
 /// The legitimate too-small answer passes: nothing written, `needed` bigger than `cap`,
-/// FAILED (H3 + the M-SB REFINEMENT's single-overflow rule).
+/// FAILED (one dimension's overflow justifies the re-call).
 #[test]
 fn legitimate_reject_message_too_small_passes() {
     let mut out = decide_out();
@@ -283,8 +270,7 @@ fn legitimate_reject_message_too_small_passes() {
     assert!(check_decide(&out, 32, 0, 0).is_ok());
 }
 
-/// H6 RED: a successful `reject_message` write also claiming `needed` is FAULT (the
-/// check_bytes_written_needed written&needed arm).
+/// RED: a successful `reject_message` write also claiming `needed` is FAULT.
 #[test]
 fn decide_reject_message_written_and_needed_together_faults() {
     let mut out = decide_out();
@@ -292,27 +278,25 @@ fn decide_reject_message_written_and_needed_together_faults() {
     out.reject_message_needed = 1;
     assert_eq!(
         check_decide(&out, 4, 0, 0),
-        Err(Fault(
-            "decide: a successful reject_message write must not also claim more is needed"
-        ))
+        red(
+            Rule::WrittenOnShort,
+            "decide.reject_message_written_on_short"
+        )
     );
 }
 
-/// H6 RED: `reject_message_needed != 0` on a non-FAILED outcome is FAULT (the
-/// check_bytes_written_needed needed-without-FAILED arm).
+/// RED: `reject_message_needed != 0` on a non-FAILED outcome is FAULT.
 #[test]
 fn decide_reject_message_needed_without_failed_faults() {
     let mut out = decide_out();
     out.reject_message_needed = 4;
     assert_eq!(
         check_decide(&out, 4, 0, 0),
-        Err(Fault(
-            "decide: reject_message_needed is non-zero without a FAILED outcome"
-        ))
+        red(Rule::NeededNotFailed, "decide.reject_message_needed")
     );
 }
 
-/// H6 RED: `decide`'s `reject_message_needed` past `u32::MAX` is FAULT (checked before the
+/// RED: `decide`'s `reject_message_needed` past `u32::MAX` is FAULT (checked before the
 /// kind's own, smaller, hard max).
 #[test]
 fn decide_reject_message_needed_past_u32_max_faults() {
@@ -321,12 +305,11 @@ fn decide_reject_message_needed_past_u32_max_faults() {
     out.reject_message_needed = u32::MAX as usize + 1;
     assert_eq!(
         check_decide(&out, 0, 0, 0),
-        Err(Fault("decide: reject_message_needed exceeds u32::MAX"))
+        red(Rule::OverMax, "decide.reject_message_needed_u32")
     );
 }
 
-/// H6 RED: `decide`'s `reject_message_needed` past its byte hard max is FAULT (the hook needed
-/// hard-max arm, bytes side).
+/// RED: `decide`'s `reject_message_needed` past its byte hard max is FAULT.
 #[test]
 fn decide_reject_message_needed_past_hard_max_faults() {
     let mut out = decide_out();
@@ -334,13 +317,11 @@ fn decide_reject_message_needed_past_hard_max_faults() {
     out.reject_message_needed = (HARD_MAX_BYTES + 1) as usize;
     assert_eq!(
         check_decide(&out, 0, 0, 0),
-        Err(Fault(
-            "decide: reject_message_needed exceeds the kind's hard max"
-        ))
+        red(Rule::OverMax, "decide.reject_message_needed_max")
     );
 }
 
-/// H6 RED: `decide`'s `restrict_tags_written` beyond `restrict_tags_cap` is FAULT (the first
+/// RED: `decide`'s `restrict_tags_written` beyond `restrict_tags_cap` is FAULT (the first
 /// of both restrict_tags arms).
 #[test]
 fn decide_restrict_tags_written_beyond_cap_faults() {
@@ -348,13 +329,11 @@ fn decide_restrict_tags_written_beyond_cap_faults() {
     out.restrict_tags_written = 5;
     assert_eq!(
         check_decide(&out, 0, 4, 0),
-        Err(Fault(
-            "decide: restrict_tags_written exceeds restrict_tags_cap"
-        ))
+        red(Rule::OverCap, "decide.restrict_tags_written")
     );
 }
 
-/// RED (M-SB REFINEMENT joint rule; the second of both restrict_tags arms): `restrict_tags`
+/// RED (the multi-buffer short answer): `restrict_tags`
 /// fits its cap, and nothing else overflows either, so nothing justifies the re-call.
 #[test]
 fn decide_restrict_tags_needed_not_larger_than_cap_faults() {
@@ -363,9 +342,7 @@ fn decide_restrict_tags_needed_not_larger_than_cap_faults() {
     out.restrict_tags_needed = 4;
     assert_eq!(
         check_decide(&out, 0, 4, 0),
-        Err(Fault(
-            "decide: a FAILED short-buffer answer must have at least one needed_* exceed its cap"
-        ))
+        red(Rule::WastedRecall, "decide.needed")
     );
 }
 
@@ -376,11 +353,11 @@ fn transform_rewrite_written_beyond_cap_faults() {
     out.rewrite_written = 10;
     assert_eq!(
         check_transform(&out, 0, 4),
-        Err(Fault("transform: rewrite_written exceeds rewrite_cap"))
+        red(Rule::OverCap, "transform.rewrite_written")
     );
 }
 
-/// H6 RED: `transform`'s reject-message written beyond its cap is FAULT (transform's
+/// RED: `transform`'s reject-message written beyond its cap is FAULT (transform's
 /// reject-message arm).
 #[test]
 fn transform_reject_message_written_beyond_cap_faults() {
@@ -388,9 +365,7 @@ fn transform_reject_message_written_beyond_cap_faults() {
     out.reject_message_written = 5;
     assert_eq!(
         check_transform(&out, 4, 0),
-        Err(Fault(
-            "transform: reject_message_written exceeds reject_message_cap"
-        ))
+        red(Rule::OverCap, "transform.reject_message_written")
     );
 }
 
@@ -403,9 +378,7 @@ fn configure_ready_must_ack_pushed_version() {
     };
     assert_eq!(
         check_configure(&out, 2),
-        Err(Fault(
-            "configure: a READY answer must ack the pushed version"
-        ))
+        red(Rule::Contradiction, "configure.acked_version")
     );
 }
 
@@ -429,11 +402,11 @@ fn status_null_with_len_faults() {
     out.status.len = 1;
     assert_eq!(
         check_status(&out),
-        Err(Fault("status: status.len > 0 with a NULL status.ptr"))
+        red(Rule::NullWithCount, "status.status")
     );
 }
 
-/// H6 RED: `status`'s blob past the hard max is FAULT (the check_blob oversize arm).
+/// RED: `status`'s blob past the hard max is FAULT (the oversize arm).
 #[test]
 fn status_oversize_faults() {
     let byte = 0u8;
@@ -443,13 +416,10 @@ fn status_oversize_faults() {
     };
     out.status.ptr = &byte as *const u8;
     out.status.len = (HARD_MAX_BYTES + 1) as usize;
-    assert_eq!(
-        check_status(&out),
-        Err(Fault("status: status.len exceeds the hard max"))
-    );
+    assert_eq!(check_status(&out), red(Rule::OverMax, "status.status.len"));
 }
 
-/// H4 RED: a READY `status` answer with material but no lease is FAULT.
+/// RED: a READY `status` answer with material but no lease is FAULT.
 #[test]
 fn status_ready_material_without_lease_faults() {
     let byte = 0u8;
@@ -459,15 +429,10 @@ fn status_ready_material_without_lease_faults() {
     };
     out.status.ptr = &byte as *const u8;
     out.status.len = 1;
-    assert_eq!(
-        check_status(&out),
-        Err(Fault(
-            "status: a READY answer with status material must set a non-zero lease"
-        ))
-    );
+    assert_eq!(check_status(&out), red(Rule::Missing, "status.lease"));
 }
 
-/// H6 RED: a READY `status` answer with no material but a lease is FAULT (the spurious-lease
+/// RED: a READY `status` answer with no material but a lease is FAULT (the spurious-lease
 /// arm).
 #[test]
 fn status_ready_no_material_with_lease_faults() {
@@ -478,9 +443,7 @@ fn status_ready_no_material_with_lease_faults() {
     out.head.lease = 7;
     assert_eq!(
         check_status(&out),
-        Err(Fault(
-            "status: a READY answer with no status material must not set a lease"
-        ))
+        red(Rule::Contradiction, "status.lease_without_material")
     );
 }
 
@@ -494,11 +457,11 @@ fn describe_null_with_len_faults() {
     out.describe.len = 1;
     assert_eq!(
         check_describe(&out),
-        Err(Fault("describe: describe.len > 0 with a NULL describe.ptr"))
+        red(Rule::NullWithCount, "describe.describe")
     );
 }
 
-/// H6 RED: a READY `describe` answer with material but no lease is FAULT (the missing-lease
+/// RED: a READY `describe` answer with material but no lease is FAULT (the missing-lease
 /// arm).
 #[test]
 fn describe_ready_material_without_lease_faults() {
@@ -509,15 +472,10 @@ fn describe_ready_material_without_lease_faults() {
     };
     out.describe.ptr = &byte as *const u8;
     out.describe.len = 1;
-    assert_eq!(
-        check_describe(&out),
-        Err(Fault(
-            "describe: a READY answer with describe material must set a non-zero lease"
-        ))
-    );
+    assert_eq!(check_describe(&out), red(Rule::Missing, "describe.lease"));
 }
 
-/// H6 RED: a READY `describe` answer with no material but a lease is FAULT (the
+/// RED: a READY `describe` answer with no material but a lease is FAULT (the
 /// spurious-lease arm).
 #[test]
 fn describe_ready_no_material_with_lease_faults() {
@@ -528,13 +486,11 @@ fn describe_ready_no_material_with_lease_faults() {
     out.head.lease = 7;
     assert_eq!(
         check_describe(&out),
-        Err(Fault(
-            "describe: a READY answer with no describe material must not set a lease"
-        ))
+        red(Rule::Contradiction, "describe.lease_without_material")
     );
 }
 
-/// H2 RED: `serve`'s `headers_out_len` above the 128-entry cap is FAULT.
+/// RED: `serve`'s `headers_out_len` above the 128-entry cap is FAULT.
 #[test]
 fn serve_headers_out_len_exceeds_cap_faults() {
     let one = AbiStr {
@@ -551,9 +507,7 @@ fn serve_headers_out_len_exceeds_cap_faults() {
     };
     assert_eq!(
         check_serve(&out),
-        Err(Fault(
-            "serve: headers_out_len exceeds the 128-entry (64-header) cap"
-        ))
+        red(Rule::OverMax, "serve.headers_out_len")
     );
 }
 
@@ -570,11 +524,11 @@ fn serve_headers_null_with_len_faults() {
     };
     assert_eq!(
         check_serve(&out),
-        Err(Fault("serve: headers_out_len > 0 with a NULL headers_out"))
+        red(Rule::NullWithCount, "serve.headers_out")
     );
 }
 
-/// H6 RED: `serve`'s body blob with a NULL pointer and a non-zero len is FAULT.
+/// RED: `serve`'s body blob with a NULL pointer and a non-zero len is FAULT.
 #[test]
 fn serve_body_null_with_len_faults() {
     let mut out = ServeOut {
@@ -586,13 +540,10 @@ fn serve_body_null_with_len_faults() {
         body: blob_absent(),
     };
     out.body.len = 4;
-    assert_eq!(
-        check_serve(&out),
-        Err(Fault("serve: body.len > 0 with a NULL body.ptr"))
-    );
+    assert_eq!(check_serve(&out), red(Rule::NullWithCount, "serve.body"));
 }
 
-/// H6 RED: `serve`'s body blob past the hard max is FAULT (the check_blob oversize arm).
+/// RED: `serve`'s body blob past the hard max is FAULT (the oversize arm).
 #[test]
 fn serve_body_oversize_faults() {
     let byte = 0u8;
@@ -606,13 +557,10 @@ fn serve_body_oversize_faults() {
     };
     out.body.ptr = &byte as *const u8;
     out.body.len = (HARD_MAX_BYTES + 1) as usize;
-    assert_eq!(
-        check_serve(&out),
-        Err(Fault("serve: body.len exceeds the hard max"))
-    );
+    assert_eq!(check_serve(&out), red(Rule::OverMax, "serve.body.len"));
 }
 
-/// H6 RED: a READY `serve` answer with a body but no lease is FAULT (the missing-lease arm).
+/// RED: a READY `serve` answer with a body but no lease is FAULT (the missing-lease arm).
 #[test]
 fn serve_ready_material_without_lease_faults() {
     let byte = 0u8;
@@ -626,15 +574,10 @@ fn serve_ready_material_without_lease_faults() {
     };
     out.body.ptr = &byte as *const u8;
     out.body.len = 1;
-    assert_eq!(
-        check_serve(&out),
-        Err(Fault(
-            "serve: a READY answer with headers or a body must set a non-zero lease"
-        ))
-    );
+    assert_eq!(check_serve(&out), red(Rule::Missing, "serve.lease"));
 }
 
-/// H6 RED: a READY `serve` answer with no headers and no body but a lease is FAULT (the
+/// RED: a READY `serve` answer with no headers and no body but a lease is FAULT (the
 /// spurious-lease arm).
 #[test]
 fn serve_ready_no_material_with_lease_faults() {
@@ -649,9 +592,7 @@ fn serve_ready_no_material_with_lease_faults() {
     out.head.lease = 7;
     assert_eq!(
         check_serve(&out),
-        Err(Fault(
-            "serve: a READY answer with no headers and no body must not set a lease"
-        ))
+        red(Rule::Contradiction, "serve.lease_without_material")
     );
 }
 
@@ -661,21 +602,16 @@ fn notify_out_passes() {
     assert!(check_notify(&head(Outcome::Ready)).is_ok());
 }
 
-/// H6 RED: `notify`'s NULL-error check fires on a FAILED answer with `error.len > 0` and a
+/// RED: `notify`'s NULL-error check fires on a FAILED answer with `error.len > 0` and a
 /// NULL `error.ptr`.
 #[test]
 fn notify_null_error_faults() {
     let mut out = head(Outcome::Failed);
     out.error.len = 4;
-    assert_eq!(
-        check_notify(&out),
-        Err(Fault("notify: error.len > 0 with a NULL error.ptr"))
-    );
+    assert_eq!(check_notify(&out), red(Rule::NullWithCount, "notify.error"));
 }
 
-// ---- SEH follow-up: transform joint short-buffer rule (item 1) ----
-
-/// RED (M-SB REFINEMENT joint rule, `transform`): both `reject_message_needed` and
+/// RED (the multi-buffer short answer): both `reject_message_needed` and
 /// `rewrite_needed` fit their own caps, so nothing justifies the re-call.
 #[test]
 fn transform_joint_both_dims_fit_faults() {
@@ -685,13 +621,11 @@ fn transform_joint_both_dims_fit_faults() {
     out.rewrite_needed = 4;
     assert_eq!(
         check_transform(&out, 8, 8),
-        Err(Fault(
-            "transform: a FAILED short-buffer answer must have at least one needed_* exceed its cap"
-        ))
+        red(Rule::WastedRecall, "transform.needed")
     );
 }
 
-/// M-SB REFINEMENT PASS (`transform`): `rewrite_needed` fits its cap while
+/// PASS (the multi-buffer short answer): `rewrite_needed` fits its cap while
 /// `reject_message_needed` overflows its own — one dimension's overflow justifies the whole
 /// re-call.
 #[test]
@@ -703,22 +637,18 @@ fn transform_joint_one_dim_overflows_other_fits_passes() {
     assert!(check_transform(&out, 32, 8).is_ok());
 }
 
-// ---- SEH follow-up: every check_dim_local arm, transform's two dimensions (item 2) ----
-
-/// H6 RED: `transform`'s `reject_message_needed != 0` on a non-FAILED outcome is FAULT.
+/// RED: `transform`'s `reject_message_needed != 0` on a non-FAILED outcome is FAULT.
 #[test]
 fn transform_reject_message_needed_without_failed_faults() {
     let mut out = transform_out();
     out.reject_message_needed = 4;
     assert_eq!(
         check_transform(&out, 4, 0),
-        Err(Fault(
-            "transform: reject_message_needed is non-zero without a FAILED outcome"
-        ))
+        red(Rule::NeededNotFailed, "transform.reject_message_needed")
     );
 }
 
-/// H6 RED: `transform`'s `reject_message_needed` past `u32::MAX` is FAULT.
+/// RED: `transform`'s `reject_message_needed` past `u32::MAX` is FAULT.
 #[test]
 fn transform_reject_message_needed_past_u32_max_faults() {
     let mut out = transform_out();
@@ -726,11 +656,11 @@ fn transform_reject_message_needed_past_u32_max_faults() {
     out.reject_message_needed = u32::MAX as usize + 1;
     assert_eq!(
         check_transform(&out, 0, 0),
-        Err(Fault("transform: reject_message_needed exceeds u32::MAX"))
+        red(Rule::OverMax, "transform.reject_message_needed_u32")
     );
 }
 
-/// H6 RED: `transform`'s `reject_message_needed` past its byte hard max is FAULT.
+/// RED: `transform`'s `reject_message_needed` past its byte hard max is FAULT.
 #[test]
 fn transform_reject_message_needed_past_hard_max_faults() {
     let mut out = transform_out();
@@ -738,13 +668,11 @@ fn transform_reject_message_needed_past_hard_max_faults() {
     out.reject_message_needed = (HARD_MAX_BYTES + 1) as usize;
     assert_eq!(
         check_transform(&out, 0, 0),
-        Err(Fault(
-            "transform: reject_message_needed exceeds the kind's hard max"
-        ))
+        red(Rule::OverMax, "transform.reject_message_needed_max")
     );
 }
 
-/// H6 RED: a successful `transform` `reject_message` write also claiming `needed` is FAULT.
+/// RED: a successful `transform` `reject_message` write also claiming `needed` is FAULT.
 #[test]
 fn transform_reject_message_written_and_needed_faults() {
     let mut out = transform_out();
@@ -752,26 +680,25 @@ fn transform_reject_message_written_and_needed_faults() {
     out.reject_message_needed = 1;
     assert_eq!(
         check_transform(&out, 4, 0),
-        Err(Fault(
-            "transform: a successful reject_message write must not also claim more is needed"
-        ))
+        red(
+            Rule::WrittenOnShort,
+            "transform.reject_message_written_on_short"
+        )
     );
 }
 
-/// H6 RED: `transform`'s `rewrite_needed != 0` on a non-FAILED outcome is FAULT.
+/// RED: `transform`'s `rewrite_needed != 0` on a non-FAILED outcome is FAULT.
 #[test]
 fn transform_rewrite_needed_without_failed_faults() {
     let mut out = transform_out();
     out.rewrite_needed = 4;
     assert_eq!(
         check_transform(&out, 0, 4),
-        Err(Fault(
-            "transform: rewrite_needed is non-zero without a FAILED outcome"
-        ))
+        red(Rule::NeededNotFailed, "transform.rewrite_needed")
     );
 }
 
-/// H6 RED: `transform`'s `rewrite_needed` past `u32::MAX` is FAULT.
+/// RED: `transform`'s `rewrite_needed` past `u32::MAX` is FAULT.
 #[test]
 fn transform_rewrite_needed_past_u32_max_faults() {
     let mut out = transform_out();
@@ -779,11 +706,11 @@ fn transform_rewrite_needed_past_u32_max_faults() {
     out.rewrite_needed = u32::MAX as usize + 1;
     assert_eq!(
         check_transform(&out, 0, 0),
-        Err(Fault("transform: rewrite_needed exceeds u32::MAX"))
+        red(Rule::OverMax, "transform.rewrite_needed_u32")
     );
 }
 
-/// H6 RED: `transform`'s `rewrite_needed` past its byte hard max is FAULT.
+/// RED: `transform`'s `rewrite_needed` past its byte hard max is FAULT.
 #[test]
 fn transform_rewrite_needed_past_hard_max_faults() {
     let mut out = transform_out();
@@ -791,13 +718,11 @@ fn transform_rewrite_needed_past_hard_max_faults() {
     out.rewrite_needed = (HARD_MAX_BYTES + 1) as usize;
     assert_eq!(
         check_transform(&out, 0, 0),
-        Err(Fault(
-            "transform: rewrite_needed exceeds the kind's hard max"
-        ))
+        red(Rule::OverMax, "transform.rewrite_needed_max")
     );
 }
 
-/// H6 RED: a successful `transform` `rewrite` write also claiming `needed` is FAULT.
+/// RED: a successful `transform` `rewrite` write also claiming `needed` is FAULT.
 #[test]
 fn transform_rewrite_written_and_needed_faults() {
     let mut out = transform_out();
@@ -805,28 +730,22 @@ fn transform_rewrite_written_and_needed_faults() {
     out.rewrite_needed = 1;
     assert_eq!(
         check_transform(&out, 0, 4),
-        Err(Fault(
-            "transform: a successful rewrite write must not also claim more is needed"
-        ))
+        red(Rule::WrittenOnShort, "transform.rewrite_written_on_short")
     );
 }
 
-// ---- SEH follow-up: decide's restrict_tags arms (item 3) ----
-
-/// H6 RED: `decide`'s `restrict_tags_needed != 0` on a non-FAILED outcome is FAULT.
+/// RED: `decide`'s `restrict_tags_needed != 0` on a non-FAILED outcome is FAULT.
 #[test]
 fn decide_restrict_tags_needed_without_failed_faults() {
     let mut out = decide_out();
     out.restrict_tags_needed = 4;
     assert_eq!(
         check_decide(&out, 0, 4, 0),
-        Err(Fault(
-            "decide: restrict_tags_needed is non-zero without a FAILED outcome"
-        ))
+        red(Rule::NeededNotFailed, "decide.restrict_tags_needed")
     );
 }
 
-/// H6 RED: `decide`'s `restrict_tags_needed` past `u32::MAX` is FAULT.
+/// RED: `decide`'s `restrict_tags_needed` past `u32::MAX` is FAULT.
 #[test]
 fn decide_restrict_tags_needed_past_u32_max_faults() {
     let mut out = decide_out();
@@ -834,11 +753,11 @@ fn decide_restrict_tags_needed_past_u32_max_faults() {
     out.restrict_tags_needed = u32::MAX as usize + 1;
     assert_eq!(
         check_decide(&out, 0, 0, 0),
-        Err(Fault("decide: restrict_tags_needed exceeds u32::MAX"))
+        red(Rule::OverMax, "decide.restrict_tags_needed_u32")
     );
 }
 
-/// H6 RED: `decide`'s `restrict_tags_needed` past its byte hard max is FAULT.
+/// RED: `decide`'s `restrict_tags_needed` past its byte hard max is FAULT.
 #[test]
 fn decide_restrict_tags_needed_past_hard_max_faults() {
     let mut out = decide_out();
@@ -846,13 +765,11 @@ fn decide_restrict_tags_needed_past_hard_max_faults() {
     out.restrict_tags_needed = (HARD_MAX_BYTES + 1) as usize;
     assert_eq!(
         check_decide(&out, 0, 0, 0),
-        Err(Fault(
-            "decide: restrict_tags_needed exceeds the kind's hard max"
-        ))
+        red(Rule::OverMax, "decide.restrict_tags_needed_max")
     );
 }
 
-/// H6 RED: a successful `decide` `restrict_tags` write also claiming `needed` is FAULT.
+/// RED: a successful `decide` `restrict_tags` write also claiming `needed` is FAULT.
 #[test]
 fn decide_restrict_tags_written_and_needed_faults() {
     let mut out = decide_out();
@@ -860,30 +777,25 @@ fn decide_restrict_tags_written_and_needed_faults() {
     out.restrict_tags_needed = 1;
     assert_eq!(
         check_decide(&out, 0, 4, 0),
-        Err(Fault(
-            "decide: a successful restrict_tags write must not also claim more is needed"
-        ))
+        red(
+            Rule::WrittenOnShort,
+            "decide.restrict_tags_written_on_short"
+        )
     );
 }
 
-// ---- SEH follow-up: item 4 ----
-
-/// H6 RED: `decide`'s `reject_message_written` beyond `reject_message_cap` is FAULT.
+/// RED: `decide`'s `reject_message_written` beyond `reject_message_cap` is FAULT.
 #[test]
 fn decide_reject_message_written_beyond_cap_faults() {
     let mut out = decide_out();
     out.reject_message_written = 5;
     assert_eq!(
         check_decide(&out, 4, 0, 0),
-        Err(Fault(
-            "decide: reject_message_written exceeds reject_message_cap"
-        ))
+        red(Rule::OverCap, "decide.reject_message_written")
     );
 }
 
-// ---- SEH follow-up: item 5 ----
-
-/// H6 RED: `describe`'s blob past the hard max is FAULT (the check_blob oversize arm).
+/// RED: `describe`'s blob past the hard max is FAULT (the oversize arm).
 #[test]
 fn describe_oversize_faults() {
     let byte = 0u8;
@@ -895,13 +807,11 @@ fn describe_oversize_faults() {
     out.describe.len = (HARD_MAX_BYTES + 1) as usize;
     assert_eq!(
         check_describe(&out),
-        Err(Fault("describe: describe.len exceeds the hard max"))
+        red(Rule::OverMax, "describe.describe.len")
     );
 }
 
-// ---- M-SB addendum (item B): a short FAILED answer writes nothing ----
-
-/// RED (M-SB addendum, m3-inputs.md): `decide`'s `reject_message` dimension is short
+/// RED (the multi-buffer short answer): `decide`'s `reject_message` dimension is short
 /// (`needed > cap`), so the WHOLE answer must write nothing — even `restrict_tags`, which
 /// itself fits (`needed == 0`) and would otherwise be free to report a partial write.
 #[test]
@@ -912,13 +822,11 @@ fn decide_short_answer_writes_something_faults() {
     out.restrict_tags_written = 2;
     assert_eq!(
         check_decide(&out, 32, 4, 0),
-        Err(Fault(
-            "decide: a FAILED short-buffer answer must write nothing"
-        ))
+        red(Rule::WrittenOnShort, "decide.written")
     );
 }
 
-/// RED (M-SB addendum, m3-inputs.md): same rule for `transform` — `rewrite` is short, so
+/// RED (the multi-buffer short answer): same rule for `transform` — `rewrite` is short, so
 /// `reject_message` (itself fitting) must not have written anything either.
 #[test]
 fn transform_short_answer_writes_something_faults() {
@@ -928,8 +836,69 @@ fn transform_short_answer_writes_something_faults() {
     out.reject_message_written = 2;
     assert_eq!(
         check_transform(&out, 4, 32),
-        Err(Fault(
-            "transform: a FAILED short-buffer answer must write nothing"
-        ))
+        red(Rule::WrittenOnShort, "transform.written")
+    );
+}
+
+/// A zeroed `out` on PENDING and on REFUSED passes every op's check: those outcomes carry no
+/// verb, no buffer and no lease.
+#[test]
+fn zeroed_pending_and_refused_pass_every_op() {
+    for o in [Outcome::Pending, Outcome::Refused] {
+        let mut decide = decide_out();
+        decide.head = head(o);
+        decide.verbs = 0;
+        assert_eq!(check_decide(&decide, 0, 0, 0), Ok(()), "decide {o:?}");
+        let mut transform = transform_out();
+        transform.head = head(o);
+        transform.verbs = 0;
+        assert_eq!(check_transform(&transform, 0, 0), Ok(()), "transform {o:?}");
+        assert_eq!(check_notify(&head(o)), Ok(()), "notify {o:?}");
+        let configure = ConfigureOut {
+            head: head(o),
+            acked_version: 0,
+        };
+        assert_eq!(check_configure(&configure, 7), Ok(()), "configure {o:?}");
+        let status = StatusOut {
+            head: head(o),
+            status: blob_absent(),
+        };
+        assert_eq!(check_status(&status), Ok(()), "status {o:?}");
+        let describe = DescribeOut {
+            head: head(o),
+            describe: blob_absent(),
+        };
+        assert_eq!(check_describe(&describe), Ok(()), "describe {o:?}");
+        let serve = ServeOut {
+            head: head(o),
+            status_code: 0,
+            _reserved: [0; 6],
+            headers_out: std::ptr::null(),
+            headers_out_len: 0,
+            body: blob_absent(),
+        };
+        assert_eq!(check_serve(&serve), Ok(()), "serve {o:?}");
+    }
+}
+
+/// RED: `transform`'s `reject_status` set without `VERB_HAS_REJECT_STATUS`.
+#[test]
+fn transform_reject_status_without_bit_faults() {
+    let mut out = transform_out();
+    out.reject_status = 400;
+    assert_eq!(
+        check_transform(&out, 0, 0),
+        red(Rule::Contradiction, "transform.reject_status")
+    );
+}
+
+/// RED: `transform`'s `VERB_HAS_REJECT_STATUS` set without `VERB_REJECT`.
+#[test]
+fn transform_has_reject_status_without_reject_verb_faults() {
+    let mut out = transform_out();
+    out.verbs = VERB_REWRITE | VERB_HAS_REJECT_STATUS;
+    assert_eq!(
+        check_transform(&out, 0, 0),
+        red(Rule::Contradiction, "transform.has_reject_status")
     );
 }

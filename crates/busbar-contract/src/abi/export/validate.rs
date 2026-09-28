@@ -1,50 +1,46 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! ANSWER VALIDATORS FOR THE EXPORT KIND (ARCHITECT RULING, 2026-09-28, all kinds): "each kind's
-//! Out-validation is a PURE fn in `abi/<kind>/` beside its shapes ... uses `u64` math, has no
-//! statics, and ships RED tests, one per rule, each failing if its check is removed. M1's
-//! dispatcher calls it; no host re-implements it." Nothing dispatches through this yet (M3-wire);
-//! this is the validator M1 will call.
+//! THE EXPORT KIND'S ANSWER VALIDATORS, beside the shapes they judge: one pure `check_<op>` per
+//! answer, `u64` math, no statics, each answering the shared [`Fault`] (one [`Rule`] and one
+//! distinct field per arm). The dispatcher turns an `Err` into FAULT; no host re-implements a
+//! check.
 //!
-//! SEH FIX-FORWARD RULINGS (ARCHITECT, 2026-09-27) applied here: H2 (a `serve` `headers_out_len`
-//! above 128 is FAULT), H3 (the short-buffer answer, per RULING M-SB — [`Outcome::Failed`]'s doc,
-//! this kind's own instance of the one mechanism-wide rule), H4 (a lease is required exactly when
-//! a READY off-path answer carries material).
+//! Per outcome: a blob's or list's pointer/length pairing and its size are judged on every outcome
+//! (a PENDING or REFUSED `out` the host zeroed passes them). A lease (memory class iv) is judged on
+//! READY only: required exactly when the answer carries material. `scrape` is the one op with a
+//! short path: its `needed` is non-zero only on FAILED, under the short-buffer rule
+//! ([`OutHead`](crate::abi::mechanism::call::OutHead)).
+
+pub use crate::abi::mechanism::check::{Fault, Rule};
 
 use super::{CheckOut, ScrapeOut, ServeOut, StatusOut};
 use crate::abi::mechanism::call::{Blob, OutHead, Outcome, RawOutcome};
+use crate::abi::mechanism::check::fault;
 
-/// Why a validator refused an `out` — FAULT, never a safe default
-/// ([`Outcome::Fault`]).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Fault(pub &'static str);
-
-/// The hard per-answer byte cap this kind's validators enforce. ASSUMPTION (M3-SHAPES): no
-/// specific number is stated for export; 16 MiB matches the inbound cap set for a comparable
-/// sans-IO backend (SANSIO-LDAP, `m3-inputs.md`'s OWNER SIGN-OFF batch).
+/// The largest blob or `needed` one answer may state, in bytes (16 MiB).
 pub const HARD_MAX_BYTES: u64 = 16 * 1024 * 1024;
 
-/// H2: the hard cap on `serve`'s `headers_out_len` — twice the 64-header cap (name, value pairs).
+/// The most entries `serve`'s `headers_out` may carry: 64 headers, as (name, value) pairs.
 pub const HARD_MAX_HEADERS_OUT_LEN: u64 = 128;
 
-/// A count > 0 with a NULL pointer is FAULT; a blob's `len` and `ptr` must agree the same way. The
-/// null-pointer and oversize checks each carry their own message (H6: a distinct message per arm).
-fn check_blob(null_msg: &'static str, oversize_msg: &'static str, b: &Blob) -> Result<(), Fault> {
+/// A blob: a length above zero never comes with a NULL pointer, and never exceeds
+/// [`HARD_MAX_BYTES`]. `null` and `over` name the two arms.
+fn check_blob(null: &'static str, over: &'static str, b: &Blob) -> Result<(), Fault> {
     if b.len > 0 && b.ptr.is_null() {
-        return Err(Fault(null_msg));
+        return Err(fault(Rule::NullWithCount, null));
     }
     if b.len as u64 > HARD_MAX_BYTES {
-        return Err(Fault(oversize_msg));
+        return Err(fault(Rule::OverMax, over));
     }
     Ok(())
 }
 
-/// H4: a lease (memory class iv) is required exactly when a READY answer carries material, and
-/// forbidden when it does not. Non-READY outcomes are unconstrained here.
+/// On READY, a lease is required exactly when the answer carries material; `missing` and
+/// `spurious` name the two arms. Other outcomes carry no lease rule.
 fn check_lease(
-    missing_msg: &'static str,
-    spurious_msg: &'static str,
+    missing: &'static str,
+    spurious: &'static str,
     outcome: RawOutcome,
     lease: u64,
     has_material: bool,
@@ -53,17 +49,17 @@ fn check_lease(
         return Ok(());
     }
     if has_material && lease == 0 {
-        return Err(Fault(missing_msg));
+        return Err(fault(Rule::Missing, missing));
     }
     if !has_material && lease != 0 {
-        return Err(Fault(spurious_msg));
+        return Err(fault(Rule::Contradiction, spurious));
     }
     Ok(())
 }
 
-/// Validates a `may_pend` request-path op's `written`/`needed` pair against the capacity the
-/// plugin was given, per RULING M-SB ([`Outcome::Failed`]'s doc; also `needed_bytes <=
-/// u32::MAX` and this kind's hard max).
+/// `scrape`'s `written`/`needed` pair against the capacity the host gave, under the short-buffer
+/// rule: `written <= cap`; a non-zero `needed` only on FAILED, with nothing written, within
+/// `u32::MAX` and [`HARD_MAX_BYTES`], and above `cap`.
 fn check_written_needed(
     cap: usize,
     written: usize,
@@ -71,37 +67,36 @@ fn check_written_needed(
     failed: bool,
 ) -> Result<(), Fault> {
     if written > cap {
-        return Err(Fault("written exceeds the given capacity"));
+        return Err(fault(Rule::OverCap, "scrape.written"));
     }
     if written > 0 && needed != 0 {
-        return Err(Fault(
-            "a successful write must not also claim more is needed",
-        ));
+        return Err(fault(Rule::WrittenOnShort, "scrape.written_on_short"));
     }
     if needed != 0 {
         if !failed {
-            return Err(Fault("needed is non-zero without a FAILED outcome"));
+            return Err(fault(Rule::NeededNotFailed, "scrape.needed"));
         }
         if needed as u64 > u32::MAX as u64 {
-            return Err(Fault("needed exceeds u32::MAX"));
+            return Err(fault(Rule::OverMax, "scrape.needed_u32"));
         }
         if needed as u64 > HARD_MAX_BYTES {
-            return Err(Fault("needed exceeds the kind's hard max"));
+            return Err(fault(Rule::OverMax, "scrape.needed_max"));
         }
         if needed <= cap {
-            return Err(Fault("needed <= the given capacity wastes the one re-call"));
+            return Err(fault(Rule::WastedRecall, "scrape.needed_within_cap"));
         }
     }
     Ok(())
 }
 
 /// Validates `deliver`'s `out` (the shared [`OutHead`]; `deliver` reads nothing back beyond it).
+/// A FAILED answer's error text is judged; other outcomes state nothing here.
 ///
 /// # Errors
-/// Returns [`Fault`] when `out` cannot be a legal answer.
+/// The rule `out` breaks.
 pub fn check_deliver(out: &OutHead) -> Result<(), Fault> {
     if out.outcome.0 == (Outcome::Failed as u8) && out.error.len > 0 && out.error.ptr.is_null() {
-        return Err(Fault("deliver: error.len > 0 with a NULL error.ptr"));
+        return Err(fault(Rule::NullWithCount, "deliver.error"));
     }
     Ok(())
 }
@@ -109,7 +104,7 @@ pub fn check_deliver(out: &OutHead) -> Result<(), Fault> {
 /// Validates `scrape`'s `out` against the capacity [`super::ScrapeIn::cap`] gave the plugin.
 ///
 /// # Errors
-/// Returns [`Fault`] when `out` cannot be a legal answer.
+/// The rule `out` breaks.
 pub fn check_scrape(out: &ScrapeOut, cap: usize) -> Result<(), Fault> {
     let failed = out.head.outcome.0 == (Outcome::Failed as u8);
     check_written_needed(cap, out.written, out.needed, failed)
@@ -118,16 +113,12 @@ pub fn check_scrape(out: &ScrapeOut, cap: usize) -> Result<(), Fault> {
 /// Validates `status`'s `out`.
 ///
 /// # Errors
-/// Returns [`Fault`] when `out` cannot be a legal answer.
+/// The rule `out` breaks.
 pub fn check_status(out: &StatusOut) -> Result<(), Fault> {
-    check_blob(
-        "status: status.len > 0 with a NULL status.ptr",
-        "status: status.len exceeds the hard max",
-        &out.status,
-    )?;
+    check_blob("status.status", "status.status.len", &out.status)?;
     check_lease(
-        "status: a READY answer with status material must set a non-zero lease",
-        "status: a READY answer with no status material must not set a lease",
+        "status.lease",
+        "status.lease_without_material",
         out.head.outcome,
         out.head.lease,
         out.status.len > 0,
@@ -137,16 +128,12 @@ pub fn check_status(out: &StatusOut) -> Result<(), Fault> {
 /// Validates `check`'s `out`.
 ///
 /// # Errors
-/// Returns [`Fault`] when `out` cannot be a legal answer.
+/// The rule `out` breaks.
 pub fn check_check(out: &CheckOut) -> Result<(), Fault> {
-    check_blob(
-        "check: findings.len > 0 with a NULL findings.ptr",
-        "check: findings.len exceeds the hard max",
-        &out.findings,
-    )?;
+    check_blob("check.findings", "check.findings.len", &out.findings)?;
     check_lease(
-        "check: a READY answer with findings must set a non-zero lease",
-        "check: a READY answer with no findings must not set a lease",
+        "check.lease",
+        "check.lease_without_material",
         out.head.outcome,
         out.head.lease,
         out.findings.len > 0,
@@ -156,25 +143,18 @@ pub fn check_check(out: &CheckOut) -> Result<(), Fault> {
 /// Validates `serve`'s `out`.
 ///
 /// # Errors
-/// Returns [`Fault`] when `out` cannot be a legal answer.
+/// The rule `out` breaks.
 pub fn check_serve(out: &ServeOut) -> Result<(), Fault> {
     if out.headers_out_len > 0 && out.headers_out.is_null() {
-        return Err(Fault("serve: headers_out_len > 0 with a NULL headers_out"));
+        return Err(fault(Rule::NullWithCount, "serve.headers_out"));
     }
-    // H2: a serve headers_out_len above 2*64 = FAULT (the 64-header cap).
     if out.headers_out_len as u64 > HARD_MAX_HEADERS_OUT_LEN {
-        return Err(Fault(
-            "serve: headers_out_len exceeds the 128-entry (64-header) cap",
-        ));
+        return Err(fault(Rule::OverMax, "serve.headers_out_len"));
     }
-    check_blob(
-        "serve: body.len > 0 with a NULL body.ptr",
-        "serve: body.len exceeds the hard max",
-        &out.body,
-    )?;
+    check_blob("serve.body", "serve.body.len", &out.body)?;
     check_lease(
-        "serve: a READY answer with headers or a body must set a non-zero lease",
-        "serve: a READY answer with no headers and no body must not set a lease",
+        "serve.lease",
+        "serve.lease_without_material",
         out.head.outcome,
         out.head.lease,
         out.headers_out_len > 0 || out.body.len > 0,
@@ -182,5 +162,5 @@ pub fn check_serve(out: &ServeOut) -> Result<(), Fault> {
 }
 
 #[cfg(test)]
-#[path = "tests/validate_tests.rs"]
+#[path = "../tests/export_validate_tests.rs"]
 mod tests;
