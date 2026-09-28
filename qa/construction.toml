@@ -363,13 +363,12 @@ abi = ["crates/busbar-contract"]
 # 17775 -> 17779 (OWNER RULING Q68(3)). Its commit reached the base; struck by the M0 decisions
 # re-arm, which declares the pair's next figure below.
 
-# ── THE CONTRACT CEILING PAIR, RE-ARMED BY THE ARCHITECT'S RULINGS ON M0 DECISIONS 1-6 ─────────
-
-[gate.ceiling_raises."gate.surface_ceilings.contract_caps"]
-file    = "qa/construction.toml"
-from    = 17779
-to      = 17802
-because = "OWNER RULING Q68(3) (docs/design/1.6.0-QUESTIONS.md): contract_caps re-arms at the MEASURED value, in its own commit. This is the re-arm for the ARCHITECT rulings on M0 decisions 1-6: InHead.trace_id as the 16-byte W3C id plus parent_span_id, RefreshIn (the reload carries settings and secrets), Statement.settings_schema, and their compile-time layout pins, +23 code lines. Measured by cargo xtask gate construction: 17779 before, 17802 after."
+# ── THE CONTRACT CEILING PAIR, RE-ARMED BY THE ARCHITECT'S RULINGS ON M0 DECISIONS 1-6 —
+#    EXPIRED AND STRUCK
+#
+# Declared `gate.surface_ceilings.contract_caps` and `rules.loc-ceilings.caps_contract_ceiling`
+# 17779 -> 17802 (OWNER RULING Q68(3)). Its commit reached the base; struck by the batch re-arm
+# below, which declares the pair's next figure.
 
 [gate.ceiling_raises."rules.loc-ceilings.kernel_ceiling"]
 file    = "qa/construction.toml"
@@ -377,11 +376,20 @@ from    = 54801
 to      = 54814
 because = "ARCHITECT 2026-09-27: R-KERNEL exception for the Phase-2 exit-test regression (plane-pricing-blindness), A+C. The kernel's door now opens the zero hold an llm unit's admission carries and mints every unit key through one allocator, acts the llm and voice planes performed themselves. Measured by cargo xtask gate construction: 54785 before, 54798 after, +13. The ceiling rises by exactly that; K2g's named reservation is unchanged."
 
+# ── THE CONTRACT CEILING PAIR, RE-ARMED BY LANDER'S BATCH (XTASK-SPEED, KI-ABI-SCOPE, M3-SDK,
+#    M3-SHAPES AUTH, billing-cite) ──────────────────────────────────────────────────────────────
+
+[gate.ceiling_raises."gate.surface_ceilings.contract_caps"]
+file    = "qa/construction.toml"
+from    = 17802
+to      = 18797
+because = "OWNER RULING Q68(3) (docs/design/1.6.0-QUESTIONS.md): contract_caps re-arms at the MEASURED value, in its own commit, written by LANDER per ARCHITECT's re-measure-at-land-time authorization for this batch. Growth is M3-SDK's door macro (+324, ABI-b3) and M3-SHAPES AUTH's v3 shapes, review, fix-forward and answer validators (+671, B.3); XTASK-SPEED and KI-ABI-SCOPE add no contract growth. Measured by cargo xtask gate construction: 17802 before, 18797 after."
+
 [gate.ceiling_raises."rules.loc-ceilings.caps_contract_ceiling"]
 file    = "qa/construction.toml"
-from    = 17779
-to      = 17802
-because = "OWNER RULING Q68(3) (docs/design/1.6.0-QUESTIONS.md): contract_caps re-arms at the MEASURED value, in its own commit. This is the re-arm for the ARCHITECT rulings on M0 decisions 1-6: InHead.trace_id as the 16-byte W3C id plus parent_span_id, RefreshIn (the reload carries settings and secrets), Statement.settings_schema, and their compile-time layout pins, +23 code lines. Measured by cargo xtask gate construction: 17779 before, 17802 after."
+from    = 17802
+to      = 18797
+because = "OWNER RULING Q68(3) (docs/design/1.6.0-QUESTIONS.md): contract_caps re-arms at the MEASURED value, in its own commit, written by LANDER per ARCHITECT's re-measure-at-land-time authorization for this batch. Growth is M3-SDK's door macro (+324, ABI-b3) and M3-SHAPES AUTH's v3 shapes, review, fix-forward and answer validators (+671, B.3); XTASK-SPEED and KI-ABI-SCOPE add no contract growth. Measured by cargo xtask gate construction: 17802 before, 18797 after."
 
 # ── THE KERNEL CEILING, RE-ARMED BY SD-8 (the substrate-values kernel landing) ─────────────────
 # Its 51100 -> 54801 declaration expired once landed and is struck; the ceiling text below keeps it.
