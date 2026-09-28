@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE TRAIT-TO-SLOT COVERAGE WITNESS for the connection table: the linked [`Conns`] trait
-//! (`src/conn.rs`) and its lowering's declarative list (`src/abi/host/conn.rs`) name exactly the same
+//! (`src/conn.rs`) and its lowering's declarative list (`src/abi/host/conn/mod.rs`) name exactly the same
 //! operations. A method with no slot (a lowering that drops what a linked host does) is RED, and so
 //! is a slot no method explains. The RED arm is kept.
 
@@ -90,7 +90,7 @@ fn read(rel: &str) -> String {
 
 #[test]
 fn every_connection_operation_has_exactly_one_slot() {
-    let (traits, abi) = (read("src/conn.rs"), read("src/abi/host/conn.rs"));
+    let (traits, abi) = (read("src/conn.rs"), read("src/abi/host/conn/mod.rs"));
     assert_eq!(covered(&traits, &abi), Ok(6));
 }
 
@@ -98,7 +98,7 @@ fn every_connection_operation_has_exactly_one_slot() {
 /// no operation explains, are each refused by name.
 #[test]
 fn an_operation_without_a_slot_and_a_slot_without_an_operation_are_red() {
-    let (traits, abi) = (read("src/conn.rs"), read("src/abi/host/conn.rs"));
+    let (traits, abi) = (read("src/conn.rs"), read("src/abi/host/conn/mod.rs"));
     let grown = traits.replacen(
         "pub trait Conns: Send + Sync {",
         "pub trait Conns: Send + Sync {\n    fn peek(&self);",

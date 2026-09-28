@@ -690,5 +690,5 @@ impl HostConns {
 }
 
 #[cfg(test)]
-#[path = "../tests/conn_lowering_tests.rs"]
+#[path = "../../tests/conn_lowering_tests.rs"]
 mod tests;
