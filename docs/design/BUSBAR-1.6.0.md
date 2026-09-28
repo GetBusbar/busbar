@@ -287,8 +287,11 @@ Every kind is on the memory ABI (§11.1); the Lane column is SUPERSEDED 2026-09-
 returns Ready inline on the worker, and slow I/O returns not-ready and fires the wake on completion. ~~**COLD dispatch.** A
 COLD plugin that declares no need and no `blocks` mark (CPU-only — ranking, memory) runs inline on the
 worker. Every other COLD plugin runs on a blocking thread with a per-plugin semaphore.~~ SUPERSEDED
-2026-09-27 by THE DESIGN §11.2: no blocking thread exists. In debug builds a parked read on a data
-worker panics.
+2026-09-27 by THE DESIGN §11.2: no blocking thread exists. ~~In debug builds a parked read on a data
+worker panics.~~ SUPERSEDED 2026-09-27 by THE DESIGN §11.11 (Q-LEAK, owner ruling R1): workers are
+thread-per-core, so a call cannot simply "not exist" on one — every hook call runs on an off-worker
+lane, a crossing watchdog trips at the deadline, and worker replacement (abandon the wedged worker,
+spawn a fresh one into its slot) contains a call that is actually wedged, in every build, not only debug.
 
 ~~**Legacy artifacts.** A dropped-in plugin with no Statement, or an ABI below the Statement's, is read
 through 1.5.5's setting classifier, limited to first-party sugar.~~ SUPERSEDED 2026-09-27 by THE DESIGN
@@ -752,8 +755,18 @@ plugin of that kind implements it. The kind's conformance suite is the finish li
 
 **11.7 Hooks are on the memory ABI.** Gates, rewrites and base-ordering are on the request path; the
 request body passes zero-copy as a blob. Hook behaviour stays 1.5.5's (#85): reply precedence, the
-status clamp, the message cap, `on_error` and the taps. The 1.5.5 thread leak on a timed-out hook call
-becomes structurally impossible: a slow hook returns not-ready, and there is no blocking thread to leak.
+status clamp, the message cap, `on_error` and the taps. ~~The 1.5.5 thread leak on a timed-out hook call
+becomes structurally impossible: a slow hook returns not-ready, and there is no blocking thread to leak.~~
+**SUPERSEDED 2026-09-27 by THE DESIGN §11.11 (Q-LEAK, owner ruling R1):** workers are thread-per-core; a
+hook that sleeps or spins in `decide` freezes its whole worker, not just the calling instance, and a slow
+hook returning not-ready does not by itself get the wedged call off the worker. So: **every hook call —
+not only one a plugin marks `cpu_heavy`, and with no per-plugin flag — runs on an off-worker lane
+carrying 1.5.5's `timeout_ms` guarantee.** A crossing watchdog plus worker replacement contains a call
+that is actually wedged: the watchdog trips at the deadline, the wedged worker is abandoned (never
+rejoined, never trusted again) and a fresh worker takes its slot, so only that worker's in-flight work is
+lost, not the whole fleet. The two 1.5.5 timeout tests, `dlopen_decide_deadline_cuts_off_a_slow_gate` and
+`dlopen_slow_gate_hits_the_deadline`, must pass as written — no rewrite. This lane's cost is measured in
+PHASE SIX (§11.9), not gated before it.
 
 **11.8 No legacy loading.** Owner: published 1.5.5 JSON-contract plugins no longer load. Every
 first-party plugin is rewritten; a third party rebuilds against the 1.6.0 SDK. This is an owner-signed
@@ -776,6 +789,148 @@ needed. we just design the kind abis and spin up agents to implement for every p
 kind ABIs (with an adversarial review); build the kernel side once (one loader, one kind lookup, one
 dispatcher, the SDK and the generated header, one conformance suite per kind, the ABI-location gate);
 then fan out one agent per plugin, siblings per kind. `1.6.0-TODO.md`, KERNEL<>PLUGINS, holds the list.
+
+**11.11 The signed kind-ABI design — owner review round 2, ruled 2026-09-27.** §11.1-§11.10 locked the
+shape; a two-round adversarial review (hot path, parity, contract lenses) then read it against the
+tree at `b48a79a9a` and against v1.5.5, and disagreed on nine points. The owner ruled on all nine.
+Where this subsection conflicts with an earlier §11.N, THIS SUBSECTION WINS (§11's own rule at the
+top of this section) and the earlier text is struck in place citing §11.11.
+
+**What the review changed, going in.** Store: all ten 1.6.0 ledger operations become real store v3
+slots; additive writes carry an `op_id` and the store dedupes on it; record blobs use the tree's
+unit-map shapes plus the scale marker, not "1.5.5 serde bytes"; the migration read moves into the
+kernel. Auth: the inbound credential cache stayed in the kernel, unresolved until Q-INCACHE was
+answered below;
+caller-credential passthrough is restored; SigV4 gets its request inputs; before the first token mint
+a call returns READY with no fields, giving the upstream 401 as in 1.5.5; inbound SigV4 moves into an
+auth plugin. Hooks: `configure`, `status` and `describe` run on a fresh management instance and
+return the 1.5.5 blobs; taps use a host pool with the global cap of 1024; an `infallible` fact carries
+the `weighted` rule; the reply sanitiser runs host-side. Mechanics: slabs are per worker with no
+atomics except the wake push; each operation has a deadline class (call, stream, connection,
+write_behind); memory for an operation whose call can return not-ready never lives in the worker's
+scratch pad; a
+crossing watchdog runs in every build (§11.7); the host pre-fills `out`. Plane: every piece reports
+cumulative units and `cancel` returns a disposition; backpressure uses `emitted`/`more`; `rate_card`
+and `fees` are stripped before any blob reaches a plane. Crates: the contract crate loses all its
+statics; `busbar-llm`, `busbar-mcp`, `busbar-a2a` and `busbar-voice` fold into contract-only plane
+crates; the `plane-*`, `hooks-ranking` and `auth-admin-tokens` kernel features are deleted; transport
+http becomes a sans-IO rewrite. Retired outright: the cold symbols, `.init_array` registration, the
+`ABI_MAJOR`/`ABI_MINOR`/`POD_VERSION`/`TRANSPORT_DECL_MAJOR` constants, `STORE_ABI_FLOOR` and the
+`poll` slot.
+
+**R1 — Hooks (Q-LEAK).** Ruled in §11.7: every hook call, not only `cpu_heavy` ones and with no
+per-plugin flag, runs on an off-worker lane carrying 1.5.5's `timeout_ms` guarantee; a crossing
+watchdog plus worker replacement (abandon the wedged worker, spawn a fresh one) contains a call that
+is actually wedged. The two 1.5.5 timeout tests, `dlopen_decide_deadline_cuts_off_a_slow_gate` and
+`dlopen_slow_gate_hits_the_deadline`, must pass as written. Its cost is measured in PHASE SIX (§11.9).
+
+**R2 — Quarantine.** A wedged hook comes back through a timed probe: circuit-breaker discipline —
+backoff, then one trial call, promote on success. It is registered as an accepted difference from
+1.5.5 (`1.6.0-TODO.md`'s accepted-differences register), since 1.5.5 had no quarantine to exit at all.
+
+**R3 — Q-INCACHE.** The inbound credential cache moves OUT of the kernel and into the auth plugins,
+as an SDK `VerifyCache` helper each auth plugin owns, flushed through its own `refresh`. The kernel
+keeps only Pass buffering (the short-lived buffer that lets a body be replayed once verification
+completes) — no verified-credential cache of its own. This supersedes the "stays in the kernel
+unresolved until Q-INCACHE was answered" line above and closes Q-INCACHE.
+
+**R4 — Q-DISK.** A host-owned bounded disk lane is the ONE exception to "no blocking" (§11.2's rule
+otherwise holds absolutely): it exists solely for the SQLite store and the file export sink, both of
+which are inherently local-disk-bound and cannot be made sans-IO without becoming a different product.
+No other kind may claim this exception.
+
+**R5 — Q-MYSQL.** A sans-IO mysql store and a sans-IO ldap auth plugin are built (the `mysql-ldap-stream`
+ruling, Q82, patches both drivers to take a host-supplied stream); both ship in the default distribution.
+
+**R6 — oauth2 and admin.** `busbar-core-oauth2` and `busbar-core-admin` stay core (§8), not plugins —
+unchanged from §8's existing text. The door-only gate (§11's gate list, widened by this round) exempts
+EXACTLY their two `OnceLock` seams (`oauth_as/seam.rs`, `admin/seam.rs`) and refuses any new
+fn-pointer seam installed into the kernel by name (contract review BLOCKER 1: the bypass list was
+incomplete because `door-only` did not scan for a static seam at all).
+
+**R7 — Codec crates fold into their planes.** `busbar-llm-codec` and `busbar-voice-codec` (and any
+sibling codec crate) fold into their plane crates rather than becoming standalone plugin-side
+libraries; the kernel and the `busbar` binary never depend on a codec crate, directly or transitively
+(closes contract review M10 — plane crates depending on a codec crate conflicted with "plugins depend
+only on `busbar-contract` from busbar").
+
+**R8 — Accepted differences.** Q-BODY is REJECTED: `ro`/`rw` hooks see exactly the 1.5.5 view, tools
+and images included — no widened view ships. A 503 when auth verify is overloaded is ACCEPTED as a new
+difference from 1.5.5 (register it). Q-EXPIRED is an accepted difference ONLY IF measurement shows
+1.5.5 actually differs on the expired-token path; absent that measurement it is not registered.
+
+**R9 — Data-struct evolution and the version rename.** Data structs grow extensions-first (the
+`extensions` blob of §11.2/§11.3 is where a new field lives first); appending a genuinely new fixed
+field to a struct's C layout requires a version bump of that struct's kind ABI — "append under
+`honoured_size` without a bump" (contract review M7) is not a path this design allows, and it does
+not conflict with extensions-first because it is a different mechanism for a different situation.
+`TRANSPORT_VERSION` is renamed `MECHANISM_VERSION` and ships as **2** (its 1.5.5 value + 1, per the
+existing ABI-version ruling, §10); the four pre-release counters `ABI_MAJOR`, `ABI_MINOR`,
+`POD_VERSION` and `TRANSPORT_DECL_MAJOR` are retired, not renamed — nothing outside `abi/` may define
+a version constant (§11.5's ABI-location gate covers this).
+
+**Implementation requirements the review's technical and contract lenses raised, ARCHITECT-owned —
+each is a requirement, each carries the fix the review scoped for it:**
+
+| # | requirement | the fix |
+|---|---|---|
+| H2 | Tickets carry a generation, `(slot, generation)`, so a late wake cannot resume a slot the host has since recycled to a different call | tickets are latched and spurious-tolerant: a wake against a stale generation does nothing |
+| H3 | The tap view is never rebuilt as JSON per request (ruling 3, §11.3) | the tap pool holds a copy of the fixed stage view; any JSON a plugin wants, the plugin builds itself, off the request path |
+| H4 | Off-path writes queued per request must not be unbounded-and-never-drop; 1.5.5 coalesced them per cell | coalesced batches, one `op_id` per batch, with durable dedupe retention on the store side |
+| H5 | A `write_behind` call to a hung store must not stall reload drain | `write_behind` carries its own deadline class, distinct from `call`/`stream`/`connection`, and reload drain does not wait on it |
+| H6 | Continuation and ticket ownership across a hook chain, and its sizing, must be a stated invariant, not left implicit | tickets are host-owned for the lifetime of the chain; a chain's continuation state is sized and documented per kind, not left to grow unbounded |
+| M2 (contract) | The kernel names no protocol anywhere, including features and `cfg` sites — `jsonrpc-ingress`, `card-signing`, `relay`, `duplex-ws`, `egress-*`, `dispatch`, `openapi-schema` all named a protocol in the kernel | the nine kernel features are deleted (listed below); `c1-literals` is widened to scan all 7 kinds plus feature names and `cfg` sites |
+| M3 (contract) | `extern "C-unwind"` across a foreign cdylib boundary is undefined behaviour | every door and table entry is `extern "C"`; an escaping panic aborts, it never unwinds across the boundary |
+| M4 (contract) | Linked-plugin `tracing`/`log` output reaches the kernel subscriber; dropped-in output goes nowhere — an origin-visible difference `origin-blind` must catch | `plugin-closure-deps` is extended to deny `tracing`, `log` and `std::thread`/`std::net`/`std::fs`/`std::env` in a plugin's dependency closure, so neither build can depend on host-visible logging or ambient I/O to begin with |
+| M5 (contract) | Cargo feature unification can make a linked and a dropped build of the same plugin differ | a gate proves the feature sets are equal between the linked and dropped builds of the same plugin |
+| M6 (contract) | The both-ways suite ran against the test profile, not the shipped binary, and "counters above 0" was too weak a pass condition | the both-ways suite runs against the release binary, with exact crossing counts asserted, not merely a nonzero count |
+| M7 (contract) | "Append under `honoured_size`" conflicted with ruling 3's extensions-first rule; the draft also contradicted itself on FAULT pre-fill vs. zeroed `out` | resolved by R9 above (extensions-first; a fixed-field append is a version bump); the host pre-fills `out` (one rule, stated once, no FAULT-vs-zero split) |
+| M8 (contract) | Store `reserve`, `slice_release` and record operations sit on the request path but carried JSON unit maps | store request-path money operations carry fixed `bb_units[]`, not a JSON unit map |
+| M9 (contract) | The inbound cache was adopted before Q-INCACHE was answered | resolved by R3 above |
+| M10 (contract) | Plane crates depending on the codec crates conflicted with "only `busbar-contract` from busbar" | resolved by R7 above |
+| M2 (parity) | Quarantine had no exit rule and was not registered as a difference from 1.5.5 | resolved by R2 above |
+| M3 (parity, money) | 1.5.5 never bills a translate-abort; it bills only provider-reported usage, bills 0 for a non-stream partial, and refunds the budget unit separately — the draft bet "unless failed" | plane cancel billing is pinned to these four 1.5.5 rules; the budget refund is a separate act, never folded into the cancel billing call |
+| M4 (parity) | The http rewrite had no recorded 1.5.5 wire-byte oracle | step 20 (`1.6.0-TODO.md`) is re-scoped to the sans-IO http rewrite, gated by a recorded 1.5.5 h1/h2/grpc wire golden suite as its exit test |
+| M5 (parity) | The rewritten export, store and secret plugins had no golden suite against 1.5.5 output; `op_id` dedupe durability was unstated | a golden 1.5.5 suite is owed for each export stream and each store backend; dedupe retention must be durable (ties to H4) |
+| M6 (parity) | The hook view's budget and cost fields were not listed | every hook-view field is listed, each marked static or dynamic, in the hook kind's contract definition |
+| M7 (parity) | The 503-on-overload and the unbounded queue were unregistered | the 503 is registered under R8; the queue is bounded per H4 |
+
+**Gates.** `kind_abi_lane` is deleted (its two lanes no longer exist, §11.1/§11.3). Added, beside the
+gates §11 already names:
+- `one-memory-abi` — only the door symbol is exported anywhere in the plugin closure; no cold/JSON
+  lane symbol exists.
+- `abi-location` — every ABI shape and version constant lives under `abi/` (sharpens §11.5's existing
+  rule into its own named gate).
+- `contract-stateless` — no `static`, `OnceLock` or `thread_local` in `busbar-contract`.
+- `plugin-closure-deps` — a plugin depends only on `busbar-contract` from busbar, with no runtime or
+  subscriber dependency; extended per M4 above to deny `tracing`, `log`, `std::thread`, `std::net`,
+  `std::fs` and `std::env`.
+- `c1-literals` — the kernel names no plugin, style or protocol; widened per M2 (contract) to scan all
+  7 kinds plus feature names and `cfg` sites.
+- `door-only` — widened to the whole binary closure, plus a "no static fn-pointer seam installed into
+  the kernel" check, exempting exactly the two seams named in R6.
+- a feature-set-equality gate between a plugin's linked and dropped builds (M5, contract).
+
+Kernel features deleted: `jsonrpc-ingress`, `card-signing`, `relay`, `duplex-ws`, `egress-stream`,
+`egress-auth-gate`, `egress-seam`, `dispatch`, `openapi-schema` — in addition to the `plane-*`,
+`hooks-ranking` and `auth-admin-tokens` features this section's opening list already retires.
+
+**Migration order.** M0 ABI-SPEC (the §11.5 layout, the constants test, the gates above — report-only)
+→ M1 DISPATCH (generation tickets, driver tickets, completion handles, deadline classes, the watchdog
+plus worker replacement) → M2 GATES → M3 TABLES, kinds smallest first: secret, store, hook, auth,
+export, transport, plane → M4 HOOK-PARITY (the 178 v1.5.5 hook tests) / M4b AUTH-PARITY / M4c
+STORE-MONEY → M5 ZERODEP, with PLANE-FOLD inside it and the http rewrite at step 20 → M6 COLD-DELETE,
+last. The full row-by-row order is `1.6.0-TODO.md`, KERNEL<>PLUGINS, THE PLUGIN ABI LOCK.
+
+**Stop or change now, per this review:** delete the blocking `deadline` parameters on
+`abi/host/conn.rs`'s `read`/`wait` (landed at `d4671c960`) before anything builds on them; add no new
+kernel `OnceLock` seam beyond the two R6 exempts; nothing new on the cold/JSON lane; no new
+`LinkedEntry` variant or Rust registration table (`PLANE_HOOKS` and similar); no new `static`,
+`OnceLock` or `thread_local` in `busbar-contract`; no tokio, hyper or `std::thread` in a plugin crate;
+stop hyper-based http transport work; no new protocol-named kernel feature or `cfg` site; AUTH-ROW
+(step 8, landed 658fe02e7..0e54934f3) removed the admin-tokens call but the inbound cache itself was
+correctly left alone until Q-INCACHE, now answered by R3; no further kernel dependency from a
+step-34 plane move.
 
 ## The vocabulary (get this right or you will design the wrong thing)
 
