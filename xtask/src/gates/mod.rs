@@ -338,10 +338,12 @@ pub const REPORT_ONLY: &[Posture] = &[
 /// EQUAL by `posture_tests::land_sh_subtracts_exactly_the_construction_standing_reds`: an edit to
 /// either alone reds `cargo test -p xtask`.
 pub const CONSTRUCTION_STANDING_REDS: &[&str] = &[
-    // The scan-set floor added 2026-09-09 scores an absent subject RED instead of PASS, and this
-    // row is what it caught: a rule claiming "a cancellation-token check precedes every `.await` in
-    // the route step" that found no `.await` in scope at all, and passed on that basis.
-    "hold-discipline:cancellation-before-await",
+    // "hold-discipline:cancellation-before-await" — STRUCK (M1 DISPATCH, 2590f8493). The scan-set
+    // floor added 2026-09-09 scored an absent subject RED instead of PASS, catching a rule claiming
+    // "a cancellation-token check precedes every `.await` in the route step" that found no `.await`
+    // in scope at all, and passed on that basis. M1 repointed the rule's subject to the plugin
+    // dispatcher's cancel/deadline paths and the teller's one money `.await`, so it now scores a
+    // real scan and is green.
     // FOUR ROWS THAT RUN AND ARE RED ON THEIR MANIFESTS. Until item 120 the allowlist rule did not
     // read the `transport` kind, so these were "owed but no row was recorded — DID NOT RUN". It
     // reads it now, and every one of them FAILS for a real reason, measured: each names

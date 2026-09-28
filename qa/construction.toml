@@ -420,20 +420,32 @@ because = "ARCHITECT 2026-09-27: R-KERNEL exception for the Phase-2 exit-test re
 # PT's KindSlot re-arm below, which declares the pair's next figure.
 
 # ── THE CONTRACT CEILING PAIR, RE-ARMED BY KINDSLOT-STORE + PT'S KINDSLOT (KindSlot type-checking
-#    for store's 47 kind ops, plane's 6 kind ops and transport's 18 kind ops) — measured and
-#    written by LANDER at land time ─────────────────────────────────────────────────────────────
+#    for store's 47 kind ops, plane's 6 kind ops and transport's 18 kind ops) — EXPIRED AND STRUCK
+#
+# Declared `gate.surface_ceilings.contract_caps` and `rules.loc-ceilings.caps_contract_ceiling`
+# 23892 -> 24063 (OWNER RULING Q68(3)). Its commit reached the base; struck by M1 DISPATCH's re-arm
+# below, which declares the pair's next figure.
+
+# ── THE CONTRACT CEILING PAIR, RE-ARMED BY M1 DISPATCH (abi check::reported, one definition; the
+#    plugin dispatcher's answer validation) — measured and written by LANDER at land time ────────
 
 [gate.ceiling_raises."gate.surface_ceilings.contract_caps"]
 file    = "qa/construction.toml"
-from    = 23892
-to      = 24063
-because = "OWNER RULING Q68(3) (docs/design/1.6.0-QUESTIONS.md): contract_caps re-arms at the MEASURED value, in its own commit, written by LANDER per ARCHITECT's re-measure-at-land-time authorization. Growth is KindSlot type-checking for the store kind's 47 ops (KINDSLOT-STORE, ABI-b3) and, rebased alongside it, the plane kind's 6 ops and the transport kind's 18 ops (PT's KindSlot follow-up, ABI-b3) — no shape/layout change, abi-layout.golden diff zero throughout. Measured by cargo xtask gate construction: 23892 before, 24063 after."
+from    = 24063
+to      = 24079
+because = "OWNER RULING Q68(3) (docs/design/1.6.0-QUESTIONS.md): contract_caps re-arms at the MEASURED value, in its own commit, written by LANDER per ARCHITECT's re-measure-at-land-time authorization. Growth is M1 DISPATCH's abi check::reported (a plugin-reported count capped before any slice), one definition the plugin dispatch adapters call in production, +16 — no shape/layout change. Measured by cargo xtask gate construction: 24063 before, 24079 after."
 
 [gate.ceiling_raises."rules.loc-ceilings.caps_contract_ceiling"]
 file    = "qa/construction.toml"
-from    = 23892
-to      = 24063
-because = "OWNER RULING Q68(3) (docs/design/1.6.0-QUESTIONS.md): contract_caps re-arms at the MEASURED value, in its own commit, written by LANDER per ARCHITECT's re-measure-at-land-time authorization. Growth is KindSlot type-checking for the store kind's 47 ops (KINDSLOT-STORE, ABI-b3) and, rebased alongside it, the plane kind's 6 ops and the transport kind's 18 ops (PT's KindSlot follow-up, ABI-b3) — no shape/layout change, abi-layout.golden diff zero throughout. Measured by cargo xtask gate construction: 23892 before, 24063 after."
+from    = 24063
+to      = 24079
+because = "OWNER RULING Q68(3) (docs/design/1.6.0-QUESTIONS.md): contract_caps re-arms at the MEASURED value, in its own commit, written by LANDER per ARCHITECT's re-measure-at-land-time authorization. Growth is M1 DISPATCH's abi check::reported (a plugin-reported count capped before any slice), one definition the plugin dispatch adapters call in production, +16 — no shape/layout change. Measured by cargo xtask gate construction: 24063 before, 24079 after."
+
+[gate.ceiling_raises."cell[crate=busbar-plugin-loader,kind=plugin-tooling].count"]
+file    = "qa/kind-isolation.toml"
+from    = 4
+to      = 6
+because = "ARCHITECT-accepted (M1 DISPATCH): the dispatcher's both-ways proof names its test plugin twice in crates/plugin-loader/src/tests/dispatch_tests.rs (the rlib `use`, the cdylib's name); the edge is the [[dep]] row busbar-plugin-loader -> busbar-plugin-dispatch-test. Measured by cargo xtask gate kind-isolation: 4 before, 6 after."
 
 # ── THE KERNEL CEILING, RE-ARMED BY SD-8 (the substrate-values kernel landing) ─────────────────
 # Its 51100 -> 54801 declaration expired once landed and is struck; the ceiling text below keeps it.
@@ -616,7 +628,10 @@ because = "ARCHITECT ruling on the kernel budget (R-KERNEL, sd-extra.txt; K2-0 u
 # RE-ARMED 23892 -> 24063, AT THE MEASUREMENT (OWNER RULING Q68(3)), in its own commit after
 # KINDSLOT-STORE + PT's KindSlot (KindSlot type-checking for store's 47, plane's 6 and transport's
 # 18 kind ops; no shape/layout change); the live declaration above carries the measure.
-contract_caps = 24063
+# RE-ARMED 24063 -> 24079, AT THE MEASUREMENT (OWNER RULING Q68(3)), in its own commit after
+# M1 DISPATCH (abi check::reported, one definition, +16); the live declaration above carries the
+# measure.
+contract_caps = 24079
 # REPOINTED, and the repoint is what makes this row a gate again. It named the CRATE
 # `busbar-grammar`, which #40 folded into `busbar-contract` and deleted — so it summed nothing,
 # measured nothing and passed, which is this file's own "zero is not clean" failure sitting inside
@@ -1260,7 +1275,9 @@ contract_crate = "busbar-contract"
 # tables/shapes/tail/snapshot/validators).
 # RE-ARMED 23892 -> 24063 with its pair (OWNER RULING Q68(3); KINDSLOT-STORE + PT's KindSlot,
 # store's 47 + plane's 6 + transport's 18 kind ops, no shape/layout change).
-caps_contract_ceiling = 24063
+# RE-ARMED 24063 -> 24079 with its pair (OWNER RULING Q68(3); M1 DISPATCH's abi check::reported,
+# +16).
+caps_contract_ceiling = 24079
 unit_crate_glob = "busbar-unit-*"
 # RE-KEYED on cherry-pick onto 143db6db6: this commit's own delta is -53 (two units stopped
 # declaring their own copies), measured against whatever unit_total_ceiling read when the line was
