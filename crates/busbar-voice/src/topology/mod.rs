@@ -15,12 +15,10 @@
 
 pub mod minter_https;
 pub mod telephony;
-/// MOVED to `busbar-plane-streaming`'s `codec` module (owner ruling R7, 2026-09-27, THE DESIGN
-/// `BUSBAR-1.6.0.md` §9/#39: no `busbar-*-codec` crate — the former `busbar-voice-codec` folded in there): the Twilio
-/// Media Streams messages are a GRAMMAR, not a dial — a total function from a frame to an IR event
-/// and back — so they travelled with the IR they map onto. Re-exported here under the old in-crate
-/// path so `crate::topology::twilio::…` and `busbar_voice::topology::twilio::…` resolve unchanged.
-/// The Twilio DIAL (the outbound call the webhook answers) is `telephony`, and it stayed.
+/// The Twilio Media Streams messages belong to the plane crate's own `codec` module: they are a
+/// GRAMMAR, not a dial — a total function from a frame to an IR event and back — so they live with
+/// the IR they map onto. Re-exported here so `crate::topology::twilio::…` resolves to them.
+/// The Twilio DIAL (the outbound call the webhook answers) is `telephony`, and it lives here.
 pub use busbar_plane_streaming::codec::topology::twilio;
 pub mod webrtc;
 

@@ -73,10 +73,9 @@ webhook-receiver = []
 busbar-kernel = { path = "../busbar-kernel", default-features = false, features = ["plane-llm"] }
 # THE PURE PLANE this plugin hosts: its entry hands the composition root's boot seal the plane and
 # the claims it declares, so the root names neither (the edge `busbar-mcp` -> `busbar-plane-mcp` has).
-# ALSO THE CODECS (owner ruling R7, 2026-09-27): the dialect readers/writers, the IR, the stream
-# translator and the answer-normalization pass live in `busbar-plane-llm`'s `codec` module now — no
-# `busbar-*-codec` crate (`BUSBAR-1.6.0.md` THE DESIGN, §9/#39) — and this crate re-exports every module that folded in
-# under its old name (`lib.rs`), so a caller spelling `busbar_llm::proto_codec::…` still resolves it.
+# ALSO THE CODECS: the dialect readers/writers, the IR, the stream translator and the
+# answer-normalization pass are that plane's own `codec` module, and this crate re-exports each of
+# those modules at its root (`lib.rs`) so existing callers resolve them by the same paths.
 busbar-plane-llm = { path = "../busbar-plane-llm" }
 axum = { workspace = true }
 bytes = { workspace = true }
@@ -116,13 +115,9 @@ base64 = { workspace = true }
 busbar-contract = { path = "../busbar-contract" }
 
 [dev-dependencies]
-# Turns on `busbar-plane-llm`'s `test-support` feature under this crate's own `--all-targets` test
-# build. Owner ruling R7 (2026-09-27, #39): `busbar-llm-codec` used to carry this same incidental
-# unification edge (it was a dev-dependency of both `busbar-llm` and `busbar-plane-llm`, each
-# turning its `test-support` on) before its `test-support` feature folded into `busbar-plane-llm`'s
-# own, unchanged. Nothing in this crate's tests reads the feature; this edge exists so
-# `feature-sets` sees `busbar-plane-llm/test-support` built somewhere, matching the fuzz target's
-# own coverage of the same feature.
+# Turns on the plane dependency's `test-support` feature under this crate's own `--all-targets`
+# test build. Nothing in this crate's tests reads the feature; this edge exists so `feature-sets`
+# sees that feature built somewhere, matching the fuzz target's own coverage of the same feature.
 busbar-plane-llm = { path = "../busbar-plane-llm", features = ["test-support"] }
 # THE NEUTRAL TEST KIT (`busbar_substrate::testkit`: the built-app seam the money-path tests forward
 # through, the warn-capture layer, the fixture seams), named explicitly here so this crate's test build

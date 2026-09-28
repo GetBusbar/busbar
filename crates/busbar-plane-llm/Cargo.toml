@@ -37,12 +37,11 @@ path = "src/lib.rs"
 # impl are unconditional, never behind a `#[cfg(feature = …)]`. The contract crate holds itself to
 # the same rule and asserts it.
 #
-# ONE EXCEPTION, CARRIED IN BY THE FOLD (owner ruling R7, 2026-09-27, THE DESIGN section 9/#39): the former
-# `busbar-llm-codec` declared `test-support`, EMPTY, purely so `#[cfg(any(test, feature =
-# "test-support"))]` on its own test-only constructors (`Protocol::anthropic()` and siblings,
-# `leaf_codec`'s per-dialect readers `fuzz` drives directly) resolves as a KNOWN feature rather than
-# an unexpected-cfg warning. It gates CODEC test helpers only — nothing the registered plane's own
-# methods read — so it is declared here unchanged, still empty, for the same reason.
+# ONE EXCEPTION, CARRIED BY THE `codec` MODULE: it declares `test-support`, EMPTY, purely so
+# `#[cfg(any(test, feature = "test-support"))]` on its own test-only constructors
+# (`Protocol::anthropic()` and siblings, `leaf_codec`'s per-dialect readers `fuzz` drives directly)
+# resolves as a KNOWN feature rather than an unexpected-cfg warning. It gates CODEC test helpers
+# only — nothing the registered plane's own methods read — so it stays empty.
 [features]
 test-support = []
 

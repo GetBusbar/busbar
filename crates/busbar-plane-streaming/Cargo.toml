@@ -7,8 +7,7 @@
 # operations. Voice is ONE dialect inside this plane; the plane is streaming.
 #
 # WHY IT DELEGATES. Every byte of every dialect this plane speaks is already read and written by the
-# duplex codecs in its own `codec` module (folded in from `busbar-voice-codec`, owner ruling R7,
-# 2026-09-27, THE DESIGN section 9/#39: no `busbar-*-codec` crate), which this crate adapts onto the
+# duplex codecs in its own `codec` module, which this crate adapts onto the
 # contract plane trait itself. No wire format is written twice: this crate is the ONE streaming
 # plane (its own registry key, its own capability key) over those codecs. `busbar-plane-voice` was
 # the second adapter over the same codecs and is DELETED into this one (#18/#83 — one crate per

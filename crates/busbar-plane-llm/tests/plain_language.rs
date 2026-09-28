@@ -9,9 +9,8 @@
 //! goes stale the first time the document is renumbered, and a stale cross-reference is worse than
 //! none, because a reader trusts it.
 //!
-//! `src/codec/` IS EXCLUDED FROM EVERY SCAN BELOW. It is the folded-in dialect codecs (owner ruling
-//! R7, 2026-09-27, THE DESIGN section 9/#39 — no `busbar-*-codec` crate; moved in unchanged from the former
-//! `busbar-llm-codec`, which carried none of these four properties as a rule). These checks are about
+//! `src/codec/` IS EXCLUDED FROM EVERY SCAN BELOW. It is the dialect codecs, which were not written
+//! to these four properties as a rule. These checks are about
 //! THIS PLANE's own adapter prose and structure — `claims.rs`, `dialect.rs`, `meta.rs`, `plane.rs`,
 //! `lib.rs` — never about the codec it wraps, which the plane calls read-only and never edits.
 

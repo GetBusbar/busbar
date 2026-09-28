@@ -104,11 +104,10 @@ fn is_comment(line: &str) -> bool {
 
 /// The plane names no kernel-side crate, and no sibling plane.
 ///
-/// `busbar_voice::` carries its `::` on purpose. The bare stem would match `busbar_voice_codec`
-/// (now this crate's own `codec` module, folded in — owner ruling R7, 2026-09-27, THE DESIGN
-/// section 9/#39 — but the identifier still appears in `codec`'s own doc comments, which this scan skips
-/// as comments) — banning it would ban the thing the plane is built out of. The path separator is
-/// what distinguishes reaching into the legacy voice ENGINE from using the codec.
+/// The legacy engine's path is matched with its `::` on purpose: the bare stem would also match
+/// identifiers in this crate's own `codec` module's doc comments, which this scan skips as
+/// comments — banning it would ban the thing the plane is built out of. The path separator is what
+/// distinguishes reaching into the legacy ENGINE from using the codec.
 #[test]
 fn the_plane_names_no_kernel_side_crate() {
     // The list is data (`tests/fixtures/forbidden_crates.txt`): the sibling planes' crate names are
