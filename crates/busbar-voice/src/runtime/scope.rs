@@ -10,18 +10,16 @@
 //! anti-enumeration contract is carried up from the engine unchanged; this module only stamps the
 //! session's `(owner, id)` into the row and drives open → bump → close.
 
-use busbar_contract::records::{PlaneDisposition, PlaneRecord, RecordStoreResult};
+pub use crate::plane_session_row::VoiceSessionRow;
+use crate::plane_session_row::VOICE_SESSION_KIND;
+use busbar_contract::records::RecordStoreResult;
 use busbar_kernel::plane::handle_engine::{
     ChainPosition, DurableHandleEngine, HandleEngineError, HandleMeta, Mutation, RehydrateCounts,
     RehydrateOutcome, ScopedMutateError, SealedEvent, SubmitRecord, SweepBounds,
 };
 use busbar_kernel::plane::store::PlaneStore;
 use busbar_kernel::plane_host::SessionScope;
-use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-
-/// The durable-audit kind stamped on a voice session's records — matches `PLANE_DECLARATION.audit_kind`.
-const VOICE_SESSION_KIND: &str = "voice_session";
 
 /// Retain a live session for an hour of idle, an hour past terminal, and cap the working set — plain,
 /// generous bounds for a long-lived carrier (the plane's own retention policy, not a wire fact).
@@ -33,63 +31,19 @@ fn session_bounds() -> SweepBounds {
     }
 }
 
-/// THE OPAQUE DURABLE ROW for one voice session — the neutral engine stores it as `Arc<dyn Any>`; the
-/// plane owns its shape. Carries the session `(owner, id)` (the engine's scoped key), a monotonic
-/// `turns` cursor bumped per settled turn, and whether the session has reached its terminal state.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct VoiceSessionRow {
-    /// The session id — the working-set key (must equal the [`SessionScope::id`]).
-    pub id: String,
-    /// The principal the session is attributed to (must equal the [`SessionScope::owner`]).
-    pub owner: String,
-    /// Monotonic turn counter — bumped each metered turn.
-    pub turns: u64,
-    /// Unix seconds of the last mutation (the retention age key).
-    pub updated_at: u64,
-    /// Whether the session has settled into its terminal state (gates eviction).
-    pub terminal: bool,
-    /// The provider's `rtc_<call_id>` correlation key for a browser-WebRTC session — the `Location`
-    /// header the SDP broker preserved from `POST /v1/realtime/calls`. It ties the brokered media call
-    /// and busbar's sideband control socket to the SAME session, so governance applied here provably
-    /// governs the media that flows there. `None` until the SDP broker sets it (and for topologies
-    /// with no brokered media call). `#[serde(default)]` so a row written before this field existed
-    /// rehydrates cleanly.
-    #[serde(default)]
-    pub rtc_call_id: Option<String>,
+/// The row's handle metadata, as the kernel's handle engine indexes it.
+fn row_meta(row: &VoiceSessionRow) -> HandleMeta {
+    HandleMeta {
+        owner: row.owner.clone(),
+        updated_at: row.updated_at,
+        terminal: row.terminal,
+        cursor: row.turns,
+    }
 }
 
-impl VoiceSessionRow {
-    fn record(&self) -> PlaneRecord {
-        PlaneRecord {
-            kind: VOICE_SESSION_KIND.to_string(),
-            id: self.id.clone(),
-            parent: None,
-            seq: self.turns,
-            ts: self.updated_at,
-            disposition: if self.terminal {
-                PlaneDisposition::Terminal
-            } else {
-                PlaneDisposition::Active
-            },
-            // The durable body IS the row: a boot rehydrate reconstructs the working-set entry from it
-            // (see [`rehydrate_sessions`]). An in-memory-only posture (no sink attached) simply never
-            // reads it back; the encode is infallible for these scalar fields.
-            body: serde_json::to_vec(self).unwrap_or_default(),
-        }
-    }
-
-    fn meta(&self) -> HandleMeta {
-        HandleMeta {
-            owner: self.owner.clone(),
-            updated_at: self.updated_at,
-            terminal: self.terminal,
-            cursor: self.turns,
-        }
-    }
-
-    fn arc(self) -> Arc<dyn std::any::Any + Send + Sync> {
-        Arc::new(self)
-    }
+/// The row as the opaque value the handle engine stores.
+fn row_arc(row: VoiceSessionRow) -> Arc<dyn std::any::Any + Send + Sync> {
+    Arc::new(row)
 }
 
 /// A VOICE SESSION'S DURABLE BINDING — the [`SessionScope`] plus the plane's row shape. Open it at
@@ -143,10 +97,10 @@ impl SessionHandle {
             session_bounds(),
             |_pos: &ChainPosition| {
                 let record = row.record();
-                let meta = row.meta();
+                let meta = row_meta(&row);
                 Ok(SubmitRecord {
                     id: row.id.clone(),
-                    row: row.clone().arc(),
+                    row: row_arc(row.clone()),
                     meta,
                     row_record: record.clone(),
                     event: Some(SealedEvent {
@@ -263,8 +217,8 @@ pub fn rehydrate_sessions(
             Ok(row) if row.terminal => Ok(RehydrateOutcome::Terminal),
             Ok(row) => Ok(RehydrateOutcome::Active {
                 id: row.id.clone(),
-                meta: row.meta(),
-                row: row.clone().arc(),
+                meta: row_meta(&row),
+                row: row_arc(row.clone()),
                 // Voice sessions carry no resumable event chain beyond genesis in this build.
                 pos: ChainPosition::genesis(),
                 event_unreadable: 0,
@@ -296,9 +250,9 @@ pub fn unix_now_secs() -> u64 {
 
 fn mutation_for(next: VoiceSessionRow) -> Mutation {
     let record = next.record();
-    let meta = next.meta();
+    let meta = row_meta(&next);
     Mutation {
-        row: Some(next.arc()),
+        row: Some(row_arc(next)),
         meta: Some(meta),
         row_record: Some(record),
         event: None,

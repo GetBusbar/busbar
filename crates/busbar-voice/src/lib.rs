@@ -211,6 +211,10 @@ pub use busbar_plane_streaming::provider::{GEMINI_LIVE, OPENAI_REALTIME};
 // A dialect's provider address rules (the streaming plane's), read by the mount's provider dial.
 use busbar_plane_streaming::provider as plane_provider;
 
+// A live session's durable row (the streaming plane's shape), bound by the runtime's session scope.
+#[cfg(feature = "runtime")]
+use busbar_plane_streaming::session_row as plane_session_row;
+
 /// THE TWO WIRE FORMATS this plane translates: OpenAI Realtime and Gemini Live. Its length (== 2) is
 /// what EARNS this plane a superset IR (`Plane::has_superset_ir` is DERIVED from this list's length),
 /// the A2A discipline — a plane earns a superset at its SECOND wire format and not before.
