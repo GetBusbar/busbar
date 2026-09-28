@@ -166,19 +166,28 @@ fn check_order_dim_local(
 /// LEAST ONE dimension's `needed` exceeds its own `cap` — a dimension that fits may still report
 /// its (non-zero) full size without wasting the call, as long as some other dimension is why the
 /// call is short.
+///
+/// M-SB addendum (m3-inputs.md, ARCHITECT 2026-09-28): "a short FAILED answer writes NOTHING" —
+/// once any dimension's `needed` is non-zero (the answer is short), EVERY dimension's `written`
+/// must be zero, even a dimension that itself fits (`needed == 0`) and would otherwise be free to
+/// report a partial write. `written_msg` names that distinct fault.
 fn check_joint_short_answer(
     failed: bool,
-    dims: &[(usize, usize)],
-    msg: &'static str,
+    dims: &[(usize, usize, usize)],
+    needed_msg: &'static str,
+    written_msg: &'static str,
 ) -> Result<(), Fault> {
     if !failed {
         return Ok(());
     }
-    if !dims.iter().any(|&(needed, _cap)| needed != 0) {
+    if !dims.iter().any(|&(_written, needed, _cap)| needed != 0) {
         return Ok(());
     }
-    if !dims.iter().any(|&(needed, cap)| needed > cap) {
-        return Err(Fault(msg));
+    if !dims.iter().any(|&(_written, needed, cap)| needed > cap) {
+        return Err(Fault(needed_msg));
+    }
+    if dims.iter().any(|&(written, _needed, _cap)| written != 0) {
+        return Err(Fault(written_msg));
     }
     Ok(())
 }
@@ -254,11 +263,20 @@ pub fn check_decide(
     check_joint_short_answer(
         failed,
         &[
-            (out.reject_message_needed, reject_message_cap),
-            (out.restrict_tags_needed, restrict_tags_cap),
-            (out.order_needed, order_cap),
+            (
+                out.reject_message_written,
+                out.reject_message_needed,
+                reject_message_cap,
+            ),
+            (
+                out.restrict_tags_written,
+                out.restrict_tags_needed,
+                restrict_tags_cap,
+            ),
+            (out.order_written, out.order_needed, order_cap),
         ],
         "decide: a FAILED short-buffer answer must have at least one needed_* exceed its cap",
+        "decide: a FAILED short-buffer answer must write nothing",
     )
 }
 
@@ -314,10 +332,15 @@ pub fn check_transform(
     check_joint_short_answer(
         failed,
         &[
-            (out.reject_message_needed, reject_message_cap),
-            (out.rewrite_needed, rewrite_cap),
+            (
+                out.reject_message_written,
+                out.reject_message_needed,
+                reject_message_cap,
+            ),
+            (out.rewrite_written, out.rewrite_needed, rewrite_cap),
         ],
         "transform: a FAILED short-buffer answer must have at least one needed_* exceed its cap",
+        "transform: a FAILED short-buffer answer must write nothing",
     )
 }
 
@@ -1082,6 +1105,267 @@ mod tests {
         assert_eq!(
             check_notify(&out),
             Err(Fault("notify: error.len > 0 with a NULL error.ptr"))
+        );
+    }
+
+    // ---- SEH follow-up: transform joint short-buffer rule (item 1) ----
+
+    /// RED (M-SB REFINEMENT joint rule, `transform`): both `reject_message_needed` and
+    /// `rewrite_needed` fit their own caps, so nothing justifies the re-call.
+    #[test]
+    fn transform_joint_both_dims_fit_faults() {
+        let mut out = transform_out();
+        out.head.outcome = RawOutcome(Outcome::Failed as u8);
+        out.reject_message_needed = 4;
+        out.rewrite_needed = 4;
+        assert_eq!(
+            check_transform(&out, 8, 8),
+            Err(Fault(
+                "transform: a FAILED short-buffer answer must have at least one needed_* exceed its cap"
+            ))
+        );
+    }
+
+    /// M-SB REFINEMENT PASS (`transform`): `rewrite_needed` fits its cap while
+    /// `reject_message_needed` overflows its own — one dimension's overflow justifies the whole
+    /// re-call.
+    #[test]
+    fn transform_joint_one_dim_overflows_other_fits_passes() {
+        let mut out = transform_out();
+        out.head.outcome = RawOutcome(Outcome::Failed as u8);
+        out.reject_message_needed = 64;
+        out.rewrite_needed = 4;
+        assert!(check_transform(&out, 32, 8).is_ok());
+    }
+
+    // ---- SEH follow-up: every check_dim_local arm, transform's two dimensions (item 2) ----
+
+    /// H6 RED: `transform`'s `reject_message_needed != 0` on a non-FAILED outcome is FAULT.
+    #[test]
+    fn transform_reject_message_needed_without_failed_faults() {
+        let mut out = transform_out();
+        out.reject_message_needed = 4;
+        assert_eq!(
+            check_transform(&out, 4, 0),
+            Err(Fault(
+                "transform: reject_message_needed is non-zero without a FAILED outcome"
+            ))
+        );
+    }
+
+    /// H6 RED: `transform`'s `reject_message_needed` past `u32::MAX` is FAULT.
+    #[test]
+    fn transform_reject_message_needed_past_u32_max_faults() {
+        let mut out = transform_out();
+        out.head.outcome = RawOutcome(Outcome::Failed as u8);
+        out.reject_message_needed = u32::MAX as usize + 1;
+        assert_eq!(
+            check_transform(&out, 0, 0),
+            Err(Fault("transform: reject_message_needed exceeds u32::MAX"))
+        );
+    }
+
+    /// H6 RED: `transform`'s `reject_message_needed` past its byte hard max is FAULT.
+    #[test]
+    fn transform_reject_message_needed_past_hard_max_faults() {
+        let mut out = transform_out();
+        out.head.outcome = RawOutcome(Outcome::Failed as u8);
+        out.reject_message_needed = (HARD_MAX_BYTES + 1) as usize;
+        assert_eq!(
+            check_transform(&out, 0, 0),
+            Err(Fault(
+                "transform: reject_message_needed exceeds the kind's hard max"
+            ))
+        );
+    }
+
+    /// H6 RED: a successful `transform` `reject_message` write also claiming `needed` is FAULT.
+    #[test]
+    fn transform_reject_message_written_and_needed_faults() {
+        let mut out = transform_out();
+        out.reject_message_written = 2;
+        out.reject_message_needed = 1;
+        assert_eq!(
+            check_transform(&out, 4, 0),
+            Err(Fault(
+                "transform: a successful reject_message write must not also claim more is needed"
+            ))
+        );
+    }
+
+    /// H6 RED: `transform`'s `rewrite_needed != 0` on a non-FAILED outcome is FAULT.
+    #[test]
+    fn transform_rewrite_needed_without_failed_faults() {
+        let mut out = transform_out();
+        out.rewrite_needed = 4;
+        assert_eq!(
+            check_transform(&out, 0, 4),
+            Err(Fault(
+                "transform: rewrite_needed is non-zero without a FAILED outcome"
+            ))
+        );
+    }
+
+    /// H6 RED: `transform`'s `rewrite_needed` past `u32::MAX` is FAULT.
+    #[test]
+    fn transform_rewrite_needed_past_u32_max_faults() {
+        let mut out = transform_out();
+        out.head.outcome = RawOutcome(Outcome::Failed as u8);
+        out.rewrite_needed = u32::MAX as usize + 1;
+        assert_eq!(
+            check_transform(&out, 0, 0),
+            Err(Fault("transform: rewrite_needed exceeds u32::MAX"))
+        );
+    }
+
+    /// H6 RED: `transform`'s `rewrite_needed` past its byte hard max is FAULT.
+    #[test]
+    fn transform_rewrite_needed_past_hard_max_faults() {
+        let mut out = transform_out();
+        out.head.outcome = RawOutcome(Outcome::Failed as u8);
+        out.rewrite_needed = (HARD_MAX_BYTES + 1) as usize;
+        assert_eq!(
+            check_transform(&out, 0, 0),
+            Err(Fault(
+                "transform: rewrite_needed exceeds the kind's hard max"
+            ))
+        );
+    }
+
+    /// H6 RED: a successful `transform` `rewrite` write also claiming `needed` is FAULT.
+    #[test]
+    fn transform_rewrite_written_and_needed_faults() {
+        let mut out = transform_out();
+        out.rewrite_written = 2;
+        out.rewrite_needed = 1;
+        assert_eq!(
+            check_transform(&out, 0, 4),
+            Err(Fault(
+                "transform: a successful rewrite write must not also claim more is needed"
+            ))
+        );
+    }
+
+    // ---- SEH follow-up: decide's restrict_tags arms (item 3) ----
+
+    /// H6 RED: `decide`'s `restrict_tags_needed != 0` on a non-FAILED outcome is FAULT.
+    #[test]
+    fn decide_restrict_tags_needed_without_failed_faults() {
+        let mut out = decide_out();
+        out.restrict_tags_needed = 4;
+        assert_eq!(
+            check_decide(&out, 0, 4, 0),
+            Err(Fault(
+                "decide: restrict_tags_needed is non-zero without a FAILED outcome"
+            ))
+        );
+    }
+
+    /// H6 RED: `decide`'s `restrict_tags_needed` past `u32::MAX` is FAULT.
+    #[test]
+    fn decide_restrict_tags_needed_past_u32_max_faults() {
+        let mut out = decide_out();
+        out.head.outcome = RawOutcome(Outcome::Failed as u8);
+        out.restrict_tags_needed = u32::MAX as usize + 1;
+        assert_eq!(
+            check_decide(&out, 0, 0, 0),
+            Err(Fault("decide: restrict_tags_needed exceeds u32::MAX"))
+        );
+    }
+
+    /// H6 RED: `decide`'s `restrict_tags_needed` past its byte hard max is FAULT.
+    #[test]
+    fn decide_restrict_tags_needed_past_hard_max_faults() {
+        let mut out = decide_out();
+        out.head.outcome = RawOutcome(Outcome::Failed as u8);
+        out.restrict_tags_needed = (HARD_MAX_BYTES + 1) as usize;
+        assert_eq!(
+            check_decide(&out, 0, 0, 0),
+            Err(Fault(
+                "decide: restrict_tags_needed exceeds the kind's hard max"
+            ))
+        );
+    }
+
+    /// H6 RED: a successful `decide` `restrict_tags` write also claiming `needed` is FAULT.
+    #[test]
+    fn decide_restrict_tags_written_and_needed_faults() {
+        let mut out = decide_out();
+        out.restrict_tags_written = 2;
+        out.restrict_tags_needed = 1;
+        assert_eq!(
+            check_decide(&out, 0, 4, 0),
+            Err(Fault(
+                "decide: a successful restrict_tags write must not also claim more is needed"
+            ))
+        );
+    }
+
+    // ---- SEH follow-up: item 4 ----
+
+    /// H6 RED: `decide`'s `reject_message_written` beyond `reject_message_cap` is FAULT.
+    #[test]
+    fn decide_reject_message_written_beyond_cap_faults() {
+        let mut out = decide_out();
+        out.reject_message_written = 5;
+        assert_eq!(
+            check_decide(&out, 4, 0, 0),
+            Err(Fault(
+                "decide: reject_message_written exceeds reject_message_cap"
+            ))
+        );
+    }
+
+    // ---- SEH follow-up: item 5 ----
+
+    /// H6 RED: `describe`'s blob past the hard max is FAULT (the check_blob oversize arm).
+    #[test]
+    fn describe_oversize_faults() {
+        let byte = 0u8;
+        let mut out = DescribeOut {
+            head: head(Outcome::Ready),
+            describe: blob_absent(),
+        };
+        out.describe.ptr = &byte as *const u8;
+        out.describe.len = (HARD_MAX_BYTES + 1) as usize;
+        assert_eq!(
+            check_describe(&out),
+            Err(Fault("describe: describe.len exceeds the hard max"))
+        );
+    }
+
+    // ---- M-SB addendum (item B): a short FAILED answer writes nothing ----
+
+    /// RED (M-SB addendum, m3-inputs.md): `decide`'s `reject_message` dimension is short
+    /// (`needed > cap`), so the WHOLE answer must write nothing — even `restrict_tags`, which
+    /// itself fits (`needed == 0`) and would otherwise be free to report a partial write.
+    #[test]
+    fn decide_short_answer_writes_something_faults() {
+        let mut out = decide_out();
+        out.head.outcome = RawOutcome(Outcome::Failed as u8);
+        out.reject_message_needed = 64;
+        out.restrict_tags_written = 2;
+        assert_eq!(
+            check_decide(&out, 32, 4, 0),
+            Err(Fault(
+                "decide: a FAILED short-buffer answer must write nothing"
+            ))
+        );
+    }
+
+    /// RED (M-SB addendum, m3-inputs.md): same rule for `transform` — `rewrite` is short, so
+    /// `reject_message` (itself fitting) must not have written anything either.
+    #[test]
+    fn transform_short_answer_writes_something_faults() {
+        let mut out = transform_out();
+        out.head.outcome = RawOutcome(Outcome::Failed as u8);
+        out.rewrite_needed = 64;
+        out.reject_message_written = 2;
+        assert_eq!(
+            check_transform(&out, 4, 32),
+            Err(Fault(
+                "transform: a FAILED short-buffer answer must write nothing"
+            ))
         );
     }
 }
