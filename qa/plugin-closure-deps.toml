@@ -22,7 +22,7 @@ item = "tracing (via busbar-contract)"
 
 [[finding]]
 rule = "plugin-closure-deps:runtime-deps"
-file = "crates/busbar-plane-decision/Cargo.toml"
+file = "crates/busbar-plane-decisions/Cargo.toml"
 item = "tracing (via busbar-contract)"
 
 [[finding]]
