@@ -280,7 +280,7 @@ Every kind is on the memory ABI (§11.1); the Lane column is SUPERSEDED 2026-09-
 | auth | memory ~~COLD~~ | inbound `AuthModule + LoginModule`; outbound `open`, the per-request auth-fields call, `refresh`, `tick` (§6) ~~`open_bound`, `decorate`, `tick`~~ | `tick` |
 | hook | memory ~~COLD~~ | `HookHandler` | — |
 | export | memory ~~COLD~~ | `ExportHandler` | file destinations |
-| plane | memory ~~HOT~~ | `PlaneDecl` + resumable `on_piece` | `govern_admit(expected_units)`, `route.next` / `route.settle`, journal, approval, nested dispatch, work handle, `hook.call` |
+| plane | memory ~~HOT~~ | `PlaneDecl` + resumable `on_piece` + `project` | the `HostSlots` families (§11.12): clock, records (reads and one-time claims), dest, sign, unit (nested dispatch), work (work handles), trust, verify, entitlement, content scan, `hook.call`. ~~`govern_admit(expected_units)`, `route.next` / `route.settle`, journal, approval~~ SUPERSEDED 2026-09-28 by THE DESIGN §11.12: expected units ride `arrive`'s answer, routing attempts are pushed to `on_piece` as ATTEMPT pieces, record writes ride `on_piece`'s answer, and approval redemption is a one-time record claim |
 | transport | memory ~~HOT~~ | `Carrier` or `Framer` | `io.*`, clock ~~, `auth.decorate` (framers)~~ |
 
 **Dispatch.** Every call of every kind returns Ready or not-ready-with-a-wake (§11.2); a CPU-only call
@@ -464,8 +464,8 @@ not-ready and fires the wake on completion, never on a blocking thread; the stor
 
 | # | Who | What happens |
 |---|---|---|
-| 1 | PLANE plugin | builds the unauthenticated request (method, path, dialect headers, body) and calls send(to: provider X) |
-| 2 | KERNEL | route (pool walk, member, breaker), allow-list + pin, budget |
+| 1 | KERNEL | route (pool walk, member, breaker), allow-list + pin, budget; pushes the chosen attempt to the plane as an ATTEMPT piece (Part 3 §12) |
+| 2 | PLANE plugin | answers the ATTEMPT piece with the unauthenticated request (verb, target, dialect headers, body) ~~builds the unauthenticated request and calls send(to: provider X)~~ SUPERSEDED 2026-09-28 by THE DESIGN §11.12 |
 | 3 | CONNECTOR (core) | gets a conn: the tcp CARRIER plugin dials; *https only:* the TLS wrapper handshakes (connector, core); the http FRAMER plugin sits on top |
 | 4 | FRAMER | finalises the head |
 | 5 | KERNEL → AUTH PLUGIN | the one per-request call returns the auth fields, which join the head (§6) ~~`decorate(final head)` → the credential header~~ SUPERSEDED 2026-09-27 by THE DESIGN §11.6 |
@@ -500,8 +500,12 @@ itself; the kernel holds no auth cache and does no per-plugin branching. The ker
 plugins", and it routes each call by the style the provider entry resolves to. The crossing measures
 ~42 ns — owner: noise. The call never blocks.
 
-1. **The plane sends an unauthenticated request.** It asks `route.next` for an attempt and writes the
-   method, path, dialect headers and body. It never sees a key.
+1. **The plane sends an unauthenticated request.** The kernel's route walk picks the attempt and
+   pushes it to the plane's `on_piece` as an ATTEMPT piece; the plane answers with the verb, the target,
+   the dialect headers and the body, bound for the far end. It never sees a key. ~~It asks `route.next`
+   for an attempt and writes the method, path, dialect headers and body.~~ SUPERSEDED 2026-09-28 by
+   THE DESIGN §11.12: `route.next` and `route.settle` are not host services; the walk drives, the
+   plane answers (Part 3 §12).
 2. **The kernel resolves the provider when it seals the generation.** Transport = the claim for the
    `base_url` scheme. Style = the provider's `auth:`, else the plane's dialect default (bearer,
    x-goog-api-key, SigV4). Credential = `api_key` / `api_key_env`. All three are opaque strings to the
@@ -572,20 +576,30 @@ its bench are gone.
   the allowed destinations, against what is left — a guess by design, kept simple for the kernel; the
   route walk never looks at the budget. `on_exhaustion: finish-unit` (the default) finishes the unit in
   flight; `cut-stream` cuts it, and a cut bills what streamed. A non-streaming unit overshoots by at
-  most one request.
+  most one request. The budget check may use the plane's estimated units; billing never does: a
+  line carries only far-end-reported units (`UNITS_REPORTED`), and "what streamed" is the last
+  far-end-reported cumulative count the plane gave before the cut (owner, 2026-09-28).
 - **A cut is told to the client and booked as what happened.** Client side (owner, on or before
   2026-09-15): *"A cut IS a reason the client is told. Where the protocol carries a place to say so, a
   cut ends the stream WITH AN ERROR FRAME naming budget exhaustion — not a silent end of stream."* A
   silent end would make a cut look like a short answer. Ledger side (#77(7), 2026-09-20): a cut is not
   a refusal (#62); it settles one closed Abort line carrying the class, the cap and the delivered
   quantity.
+- **A session is one unit with one line (owner, 2026-09-28).** The kernel owns session money. A
+  duplex session admits at its open; each turn's cumulative units become a kernel session-account
+  CHECKPOINT — crash-safe, on a bounded cadence and a named store slot, never a ledger line and never a
+  durable write per piece; a checkpoint that dries the budget cuts the session; the session's end
+  writes ONE sealed line. The plane reports counts only and holds no reservation. The retired
+  per-turn ledger write of the old session meter is not reused. This strikes #28's session seam (3)
+  ("the plane keeps its plane-side reserve + per-turn/per-frame settle").
 - **A refusal names no amount.** A refused request of a plane new in 1.6.0 (mcp included) is
   unpriced, and its refusal names no amount or budget (owner, 2026-09-12; scoped 2026-09-27). The llm
   plane's refusal bytes stay 1.5.5's.
 - Auth objects touch no money.
 
 *Proven by:* the oracle's billing, ledger and teller families; kill -9 during a stream; the
-cut-stream failover cell, which asserts the client's error frame and the one Abort line.
+cut-stream failover cell, which asserts the client's error frame and the one Abort line; the streaming
+conformance rig's session legs (admit at open, checkpoints, one sealed line).
 
 ### 8. Cleanliness crates
 
@@ -868,6 +882,9 @@ not conflict with extensions-first because it is a different mechanism for a dif
 existing ABI-version ruling, §10); the four pre-release counters `ABI_MAJOR`, `ABI_MINOR`,
 `POD_VERSION` and `TRANSPORT_DECL_MAJOR` are retired, not renamed — nothing outside `abi/` may define
 a version constant (§11.5's ABI-location gate covers this).
+*Clarified by the owner 2026-09-28:* R9 governs the evolution of a SHIPPED layout. Until the 1.6.0 tag,
+a kind ABI's first version is still being defined: a v1 layout edit lands with the layout golden
+regenerated in the same commit and no version bump. From the 1.6.0 tag on, R9 applies unchanged.
 
 **Implementation requirements the review's technical and contract lenses raised, ARCHITECT-owned —
 each is a requirement, each carries the fix the review scoped for it:**
@@ -931,6 +948,43 @@ stop hyper-based http transport work; no new protocol-named kernel feature or `c
 (step 8, landed 658fe02e7..0e54934f3) removed the admin-tokens call but the inbound cache itself was
 correctly left alone until Q-INCACHE, now answered by R3; no further kernel dependency from a
 step-34 plane move.
+
+**11.12 Host services — owner-approved 2026-09-28.** Every host service a plugin calls beyond the
+connector sits in ONE table, `HostSlots`, in `abi/host/`, on the connector's call shape:
+`svc(ctx, in, out)`, `extern "C"`, answering the mechanism's outcome; every `in` leads with the
+service head and its completion handle; a service that cannot finish answers PENDING and wakes the
+handle's ticket, and on resume the plugin re-issues the SAME handle and receives the stored result —
+the host never runs a service twice. `HostTables.conns` is swapped to the connector table first;
+`HostSlots` is appended after it. Names obey the neutrality witness (Part 4).
+
+| Family | Ops | What it is |
+|---|---|---|
+| clock | `clock.now` | wall and monotonic time from the kernel's one clock (§1); never pends |
+| records | `records.get`, `records.list`, `records.claim` | the calling plane's own records (its Statement's record kinds only), through the store's plane-record slots. Reads see the instance's own queued write-behind batch (read-your-writes within the instance). `records.claim` is a one-time put-if-absent with a TTL (a store slot): the ONE path for approval redemption and replay refusal |
+| dest | `dest.judge` | judges a destination named inside content against the egress rules (allow-list, class, cloud metadata hosts) without dialing, at the same point and with the same refusal timing as 1.5.5; its name resolution may pend |
+| sign | `sign` | signs bytes with busbar's key under the plane's declared signing domain and key-id prefix; refused for a plane that declares none. The plane assembles its envelope itself |
+| unit | `unit.nest` | runs a nested unit on whatever plane serves the named claim, as a child of the calling unit (its principal, its audit correlation, accruing against its admission), depth-capped; the reply comes back whole and buffered. The kernel never learns what the child is |
+| work | `work.open`, `work.find`, `work.settle`, `work.resume` | durable work handles (§1: never evicted; a bound refuses at admission; retention bounds only settled handles; the sweep runs on submit). `work.find` is the anti-enumeration scoped lookup: every denial answers alike. `work.resume` only binds the record: a continuation is a NEW unit with its own arrival, admission and window |
+| trust | `trust.sight`, `trust.due` | the kernel-owned trust lifecycle over a generic counterparty: the plane reports a catalogue hash and the kernel judges it (new, same, drifted, quarantined); pinning and demotion are kernel state; `trust.due` names the counterparties the kernel's `tick` marked for re-verification |
+| verify | `verify.lookup`, `verify.store` | the host-side verify cache with single-flight leadership: hit, lead (the plane fetches and stores) or follow |
+| entitlement | `entitlement.check` | caller→target entitlement (the catalogue visibility filter) |
+| content | `content.scan` | in-session content governance: a piece of content passes the gate that governs it |
+| hook | `hook.call` | a hook stage run for an in-session sub-operation, over the hook kind's own `RequestView` |
+
+**The short-buffer rule for services.** The caller is the plugin, so a service writes its result
+into PLUGIN buffers the `in` names (pointer + capacity). The service `out` carries `needed_*` per dimension. A
+plugin declares its maximum buffer sizes at `open` and preallocates them. A short answer is FAILED with
+every `needed_*` at its full size, at least one above its capacity, and nothing applied or written;
+the PLUGIN re-calls once, on the same handle, with at least `needed_*`, and the re-call reads the
+stored result without acting again. A second short answer on that handle is FAULT for the service
+call, and the plugin's op that made it answers FAULT.
+
+**A service that may pend is callable only inside a ticketed op.** A pure op (`arrive`, `refusal`,
+`project`) or any call made with no ticket that calls a may-pend service gets REFUSED, never PENDING;
+a RED test holds the rule for every may-pend service.
+
+*Proven by:* the `HostSlots` layout golden; one RED test per service validator arm; the may-pend
+refusal RED; a compiled-in and a dropped-in plane calling every service through the same table.
 
 ## The vocabulary (get this right or you will design the wrong thing)
 
@@ -1425,7 +1479,7 @@ are IN this file — nothing outside it does.
 
 | 27 | **No step waits on another where a seam or fixed artifact can decouple it (generalizes #25/#26).** (a) The 1.5.5 GOLDEN is a fixed reference recorded from the 1.5.5 binary UP FRONT in parallel — only the diff needs a 1.6.0 candidate, so golden-recording never waits on a green build. (b) The busbar-core DRAIN moves each engine step behind a per-step facade/re-export in busbar-core, so steps relocate to their unit crates in ANY order (no L0→L3 chain; App/state behind a composition facade is not "last"). (c) The two arch audits run continuously against the rolling frozen SHA (they score the LOCKED architecture, fixed once the #26 seams are set), converging as code lands. (d) Plane onboarding + boot-chain assembly are additive registrations into the #26 table — parallel, never a single builder. (e) Integration stays near-parallel via disjoint per-crate agent ownership. (f) The fleet scales to prove N candidates concurrently. | the plan carries no "must finish before" that a landed seam/facade removes |
 
-| 28 | **The loop's answer shape is two-variant `PlaneAnswer`; live streams settle per sub-unit, not by final byte count.** NAME: the two-variant type is `PlaneAnswer`, NOT `PlaneDispatch` — the shipped `PlaneDispatch` trait (`crates/busbar/src/root/transports.rs:483`, RouteLeg carrier, `DrivenOnce`; `LlmNode` builds on it) KEEPS its name and role. They COEXIST: `PlaneDispatch` carries bytes through Route; `PlaneAnswer` is what the loop settles / hands to the outer async handler. A caller's serving body produces either `Unary(status, headers, body)` — buffered, crosses the sync channel and settles at Encode on the final byte count (the admin cleanliness caller + all unary verbs, incl. SSE materialized after dispatch) — or `Live(Response)` — a live body the outer async handler serves directly, governed at admit (auth/verify/approve/admit/audit ran unary), bypassing the Encode-emits-bytes path. llm keeps its RouteLeg and emits `Live`; admin + unary verbs emit `Unary`. Live-stream settlement is the plane's, through the money-book seam at its natural sub-unit boundary: a streaming session admits at open and writes one sealed line at its end (#23); a non-billed notification channel (e.g. an mcp subscription listen stream — new plane, no 1.5.5 billing) is admission-governed and zero-metered. A plane-neutral `PlaneInFlight` binding table on ProductionUnits keyed by `ctx.key` carries per-request state (bytes/frame/principal/creds at ingress; answer at Route), mirroring `AdminUnitTable`. GOVERNANCE MODE: planes are ALREADY loop-served plane-faithfully — MCP/A2A/voice/llm-native ride a SECOND teller loop (`crates/busbar-substrate/src/teller/`) via `run_gauntlet[_session]`→`GauntletAdapter`→substrate `run_unit`, which already carries a real arena (`DispatchScope`, `crates/busbar-kernel/src/plane_host/scope.rs` — `busbar-substrate` was renamed `busbar-kernel`) through verify/approve/admit. The keystone is therefore NOT a per-plane admin-bytes bridge and NOT "first plane on the loop" — it is LOOP UNIFICATION: lift the `DispatchScope` arena onto kernel `busbar-kernel::teller::run_unit`, re-point the gauntlet riders (`busbar-llm/src/native_ingress.rs`, `busbar-a2a/.../receive.rs`, `busbar-mcp/.../method.rs`, voice `topology`, `duplex_ws.rs`) at the one kernel loop, collapse the substrate loop's TWO audit doors (`crates/busbar-kernel/src/teller.rs` `audit_refused` + admitted/abandoned) to the kernel loop's single audit step, then DELETE `crates/busbar-substrate/src/teller/` (~973 prod LOC). Prove MCP end-to-end byte-identical on the unified loop first (existing plane-faithful governance UNCHANGED — no rewrite, no asymmetry), then the rest ride the same seam. This is the single wave that clears §11a→9 AND makes §11b's per-token/POD perf+alloc benches measurable in production. LOOP-UNIFICATION IMPLEMENTATION RULINGS (three seams): (1) **THIN VERBATIM RIDER is the onboard** — the gauntlet riders re-point at the kernel loop VERBATIM, with NO `bind_book`, the kernel exit settles NOTHING, and metering stays in `drive`; full-governance-on-exit is a §11b refinement, not part of the unification. (2) **FLIP SEAM = composition-tier host selection** — a plane calls `ctx.host.run_gauntlet` UNCHANGED; the composition root installs a kernel-loop-backed host, per-plane-keyed and oracle-gated, so a plane flips onto the unified loop by composition, never by editing the plane. (3) **SESSION SEAM = Option C-on-A** — the kernel governs-to-admit then hands back to the plane, returning `PlaneAnswer::Live` (empty / `ZeroHold`, no exit-settle, no `bind_book`); the plane keeps its plane-side reserve + per-turn/per-frame settle. Option B (kernel owns session settlement) is REJECTED. `PlaneAnswer` is the answer shape at the unified boundary. | teller-steps: plane onboarded via the loop (admin template); live verbs byte-identical on the conformance rig; loop names no concrete caller |
+| 28 | **The loop's answer shape is two-variant `PlaneAnswer`; live streams settle per sub-unit, not by final byte count.** NAME: the two-variant type is `PlaneAnswer`, NOT `PlaneDispatch` — the shipped `PlaneDispatch` trait (`crates/busbar/src/root/transports.rs:483`, RouteLeg carrier, `DrivenOnce`; `LlmNode` builds on it) KEEPS its name and role. They COEXIST: `PlaneDispatch` carries bytes through Route; `PlaneAnswer` is what the loop settles / hands to the outer async handler. A caller's serving body produces either `Unary(status, headers, body)` — buffered, crosses the sync channel and settles at Encode on the final byte count (the admin cleanliness caller + all unary verbs, incl. SSE materialized after dispatch) — or `Live(Response)` — a live body the outer async handler serves directly, governed at admit (auth/verify/approve/admit/audit ran unary), bypassing the Encode-emits-bytes path. llm keeps its RouteLeg and emits `Live`; admin + unary verbs emit `Unary`. Live-stream settlement is the plane's, through the money-book seam at its natural sub-unit boundary: a streaming session admits at open and writes one sealed line at its end (#23); a non-billed notification channel (e.g. an mcp subscription listen stream — new plane, no 1.5.5 billing) is admission-governed and zero-metered. A plane-neutral `PlaneInFlight` binding table on ProductionUnits keyed by `ctx.key` carries per-request state (bytes/frame/principal/creds at ingress; answer at Route), mirroring `AdminUnitTable`. GOVERNANCE MODE: planes are ALREADY loop-served plane-faithfully — MCP/A2A/voice/llm-native ride a SECOND teller loop (`crates/busbar-substrate/src/teller/`) via `run_gauntlet[_session]`→`GauntletAdapter`→substrate `run_unit`, which already carries a real arena (`DispatchScope`, `crates/busbar-kernel/src/plane_host/scope.rs` — `busbar-substrate` was renamed `busbar-kernel`) through verify/approve/admit. The keystone is therefore NOT a per-plane admin-bytes bridge and NOT "first plane on the loop" — it is LOOP UNIFICATION: lift the `DispatchScope` arena onto kernel `busbar-kernel::teller::run_unit`, re-point the gauntlet riders (`busbar-llm/src/native_ingress.rs`, `busbar-a2a/.../receive.rs`, `busbar-mcp/.../method.rs`, voice `topology`, `duplex_ws.rs`) at the one kernel loop, collapse the substrate loop's TWO audit doors (`crates/busbar-kernel/src/teller.rs` `audit_refused` + admitted/abandoned) to the kernel loop's single audit step, then DELETE `crates/busbar-substrate/src/teller/` (~973 prod LOC). Prove MCP end-to-end byte-identical on the unified loop first (existing plane-faithful governance UNCHANGED — no rewrite, no asymmetry), then the rest ride the same seam. This is the single wave that clears §11a→9 AND makes §11b's per-token/POD perf+alloc benches measurable in production. LOOP-UNIFICATION IMPLEMENTATION RULINGS (three seams): (1) **THIN VERBATIM RIDER is the onboard** — the gauntlet riders re-point at the kernel loop VERBATIM, with NO `bind_book`, the kernel exit settles NOTHING, and metering stays in `drive`; full-governance-on-exit is a §11b refinement, not part of the unification. (2) **FLIP SEAM = composition-tier host selection** — a plane calls `ctx.host.run_gauntlet` UNCHANGED; the composition root installs a kernel-loop-backed host, per-plane-keyed and oracle-gated, so a plane flips onto the unified loop by composition, never by editing the plane. ~~(3) **SESSION SEAM = Option C-on-A** — the kernel governs-to-admit then hands back to the plane, returning `PlaneAnswer::Live` (empty / `ZeroHold`, no exit-settle, no `bind_book`); the plane keeps its plane-side reserve + per-turn/per-frame settle. Option B (kernel owns session settlement) is REJECTED.~~ SUPERSEDED 2026-09-28 by THE DESIGN §7 (owner): the kernel owns session money — admit at open, per-turn checkpoints in a kernel session account, one sealed line at the end; a plugin holds no reservation across the ABI. `PlaneAnswer` is the answer shape at the unified boundary. | teller-steps: plane onboarded via the loop (admin template); live verbs byte-identical on the conformance rig; loop names no concrete caller |
 
 | 29 | **During the drain, the money oracle runs via `bin/oracle` DIRECTLY on a fleet box — NOT through `prove-remote.sh`.** `prove-remote.sh` gates the shadow oracle behind `xtask gate --all`, which exits 1 if ANY gate is RED; the 5 core-deletion completeness gates (construction, kind-isolation, ship-ready, structure-lint, audit-ledger) are expected-RED until busbar-core deletion lands, so that wrapper is CIRCULAR (money cutovers need the oracle → the wrapper needs the gates green → the gates need the cutovers). The money byte-proof therefore runs `bin/oracle record`+`replay` directly on a fleet box (docker present), scoped to the money families, vs the 1.5.5 golden. This is NOT waiving the oracle — it still runs and must be byte-green; only the circular gate wrapper is bypassed. The 5 core-deletion gates do NOT gate the money oracle. PROVEN: the kernel-loop llm path is money-parity byte-faithful to legacy (switch-over golden 25/25 — loop==legacy on every fixture), so per-plane money cutovers are dual-write-then-flip-authority, not from-scratch byte reproduction. | money proofs use bin/oracle direct; loop==legacy switch-over golden green |
 | 30 | **Every plugin kind speaks the memory ABI — seven ABIs, one per kind, on one shared mechanism. OWNER-LOCKED 2026-09-27 (THE DESIGN §11).** Owner: *"Plugins speak Memory ABI ONLY."* and *"BINGO LOCKED"*. The shared mechanism: one table of function pointers over data in fixed C layout; every call returns Ready or not-ready-with-a-wake; plugin-owned returned memory is valid until the plugin's next refresh generation; no allocation and no blocking on the hot path; slow I/O returns not-ready and fires the wake on completion, never on a blocking thread; setup and refresh via `open`/`refresh`/`tick`; the `extensions` blob on every operation; the #85 envelope on every reply; one entry point per plugin, one loading path, one dispatcher. Per kind: its own operations, data shapes and version (its v1.5.5 value + 1; new in 1.6.0 = 1); a kind evolves without forcing another kind's plugins to rebuild. JSON is only a payload — a pointer + length blob inside a field, decided once per kind; the kernel builds no JSON per request and passes the request body zero-copy (§11.3). Plane→host calls per chunk = 0 (the running unit report rides the `on_piece` return). ~~**Each plugin kind is bound to exactly ONE ABI lane, chosen by HEAT — a plugin uses the tier matched to its heat, NOT both.** There are two lanes on one seam (LOCKED §2/§3): the HOT/POD-memory lane (`#[repr(C)]` by pointer, zero-alloc, zero per-token host crossings, <1µs — LOCKED §8) and the COLD/JSON lane (serialize-per-call, off the per-token path). **The discriminator is the per-TOKEN streaming inner loop:** a kind that runs inside it is HOT; everything else is COLD. **HOT/POD lane = plane, transport** — the only kinds in the per-token loop; both are NEW in 1.6.0 (neither existed in 1.5.5), so there is no 1.5.5 byte-identity constraint on them. **COLD/JSON lane = store, secret, auth, hook, export** — all five existed in 1.5.5 as cold JSON plugins *by deliberate design* (busbar hook.rs: "off the request hot path… a serialize per call never touches request latency"); each fires per-request-once or at boot/write-behind, NEVER per-token: store=write-behind, secret=config/boot resolve, auth=one admission check per request (cached), hook=per-request phases (inbound transform mutates request IR ×N gates; decide redirects lanes ×hops; outbound is a read-only notify tap once at response head — none per-token), export=write-behind sink. Keeping the five on JSON is REQUIRED for 1.5.5 byte-identity (they ARE JSON in 1.5.5; moving them to POD would rewrite them and risk the oracle). Corollary: the "every plugin has BOTH ABIs" shorthand is SUPERSEDED — the law is "both LANES exist on the seam; each kind is assigned to one." The lane binds a kind's DISPATCH, not the host services it calls, so three things are on-lane: the running unit report riding the HOT `on_piece` return (not a crossing — plane→host calls per chunk = 0), INLINE dispatch of a CPU-only COLD plugin (no need, no `blocks` mark), and INLINE auth `decorate` once per attempt (THE DESIGN §2, §5, §6).~~ SUPERSEDED 2026-09-27 by THE DESIGN §11.1–§11.3: the COLD/JSON lane is abolished and #30's two lanes are gone. | every kind's table lives in `busbar-contract/src/abi/<kind>/`; the ABI-location gate (THE DESIGN §11.5); one conformance suite per kind, compiled-in and dropped-in through the same table (§11.4); per-crossing microbench < 1 µs; zero-alloc hot path; plane→host per chunk = 0; debug RED: a parked read on a data worker panics ~~kind-abi-lane gate: plane/transport declare hot(POD) ABI, store/secret/auth/hook/export declare cold(JSON) ABI; a kind declaring the wrong lane ⇒ RED; per-token-loop grep = {plane,transport} only; inline COLD dispatch p99 < 100 µs (if JSON alone fails it, that is an owner question on this row); `decorate` p99 < 20 µs; debug RED: a parked read on a data worker panics~~ SUPERSEDED 2026-09-27 by THE DESIGN §11.1 and §11.9 |
@@ -1604,10 +1658,13 @@ Every `dispatch(req_bytes, sink)` runs inside a host-owned **DispatchScope** (§
 
 ## 4. plane → core: `PlaneHost` + DispatchScope arena
 > **SUPERSEDED 2026-09-27 by THE DESIGN §5–§7 for the egress, subprocess, credential and metering rows of the
-> table below:** a plane writes an unauthenticated request on a `ConnId` from `route.next`; the connector owns
+> table below:** a plane writes an unauthenticated request in answer to the kernel's ATTEMPT piece (§12
+> below) ~~on a `ConnId` from `route.next`~~; the connector owns
 > pinning, SPKI and mTLS; a subprocess is a carrier need; credentials are auth objects, never a host-minted
-> header; `meter_charge` becomes `govern_admit(expected_units)` plus the plane's unit reports; `auth_resolve`
-> is gone. DispatchScope and the other rows stand.
+> header; `meter_charge` becomes the expected units of `arrive` plus the plane's unit reports; `auth_resolve`
+> is gone. **SUPERSEDED 2026-09-28 by THE DESIGN §11.12 for the remaining rows:** the host services a plane
+> calls are the `HostSlots` families; `journal_append` with a per-stream framing is not a plane service (the
+> audit record is the fixed one of §1, and a plane's records are store records). DispatchScope stands.
 
 Plane holds `host` + its OWN opaque state + HANDLE-IDS to host-side objects. Never holds a live
 `Transport`/`GovState`/`Admission`/`VirtualKey`/secret.
@@ -1756,6 +1813,90 @@ cleanliness 7, tests/benches 8). The rerun must confirm:
 - **The audit chain stays exactly one chain**, byte-compatible with every deployed store (golden-gated).
 - **The arch-review's 4/10 becomes real siblings**: both planes ride ONE seam, error taxonomy and egress
   centralize, the plane/ mislabel resolves.
+
+## 12. The plane driver (owner-approved 2026-09-28)
+
+The kernel serves every plane through ONE driver, in `busbar-kernel` (#36: the loop, the registry, the
+teller, the sessions). It implements the teller loop's `Units` and `RouteAwait` over the one
+dispatcher's plane handle, so `run_unit_async` and `open_unit` drive it and no second loop exists
+(#26, #28). A compiled-in and a dropped-in plane reach it through the same table (THE DESIGN §11.4).
+
+**Async completion.** The dispatcher answers the driver through an async completion (a waker on the
+reply slot). The driver's control loop runs on the caller's runtime task and never blocks a runtime
+thread; each crossing runs on the dispatcher's owning worker.
+
+**One unit, step by step** (THE DESIGN §1's order):
+
+| State | Plane op | Kernel |
+|---|---|---|
+| arrival | — | size, rate, source and budget gates |
+| decode | `arrive` (pure) | reads the op class, the principal need, the dialect and the expected units |
+| authenticate → verify → approve → admit | `project` (pure, once per unit, when a hook is bound) | identity; scope seals the destinations; request-stage hooks see the projection; the budget admits (§7) and opens the hold |
+| refused | `refusal` | audits the refusal and encodes it; nothing was charged |
+| route | the `on_piece` pump | below |
+| meter | — | the last cumulative units are final; only far-end-reported units bill (§7) |
+| audit | — | the one fixed record (§1) |
+| exit | — | one sealed line; a late line files under the arrival window (§7) |
+
+**`project`.** A pure plane op that writes the hook kind's own `RequestView` (its plane-derived fields,
+and a projected body where the plane has one — the `{tool, arguments}` projection of §9) into host
+buffers. The kernel fills the stage fields (attempt number, candidates, previous failure, outcome,
+status) from the route walk. 1.5.5's hook tests run verbatim against it (#85).
+
+**The route pump.** The route step is the kernel's existing egress walk — pool, member pick, breaker,
+allow-list, pin, failover and exhaustion terminals; the driver builds no second walk.
+- The kernel KEEPS the caller's body and re-pushes it on every attempt. Each attempt starts with an
+  ATTEMPT piece (`FROM_KERNEL`, carrying the member and the attempt number); the plane answers with
+  the request bound for the far end: the verb and the target as explicit fields, then the dialect
+  fields and the body. The kernel adds the auth fields (THE DESIGN §6) and sends through the connector.
+- Far-end pieces are pushed `FROM_FAR_END` with their status. The plane's answer may carry a verdict
+  (ok, retry, hard) beside the walk's own status table. The walk fails over only before the first byte
+  reaches the caller; a retry verdict after the first byte is treated as hard.
+- One attempt is live per unit; there is no hedging.
+- Backpressure is `emitted`/`more`: a full reply buffer answers `more = 1`, the kernel flushes, waits
+  for the caller's side to be writable and calls again.
+- Every answer carries cumulative units: they feed the budget check (which may use estimates) and the
+  checkpoint cadence (§7); a checkpoint that dries the budget under `cut-stream` cuts the unit, the
+  plane renders the error frame through `refusal`, and one Abort line settles (§7).
+- Record writes in an answer go to the store's plane-record slots as coalesced write-behind batches.
+
+**Cancel** (client drop, deadline, reload). The driver keeps its own facts — whether the far end
+answered, whether the reply streamed, the last reported units. On every path it controls (deadline,
+cut, reload) the driver makes the ticketless `cancel` call itself before the loop future ends; a caller
+that goes away drops the future, and then the ticket goes to the dispatcher's client-drop path, which
+makes the cancel crossing on its worker. Nothing crosses the dispatcher inside a `Drop` (the loop's
+`abandoned` path). The disposition bills by the four 1.5.5 cancel rules; a FAULT or absent disposition
+bills as `CANCEL_FAILED` (nothing); the budget hold is released as its own act.
+
+**Sessions** (a duplex carrier, Part 4 Axis 1). `open_unit` runs the steps to the door and admits at
+open; pieces then flow both ways on the session's tickets. Unsolicited output reaches the kernel through
+the plane instance's ONE driver ticket: the plane wakes it, its `drive` answer names the sessions with
+output ready, and the driver calls `on_piece` (`FROM_KERNEL`, empty) for each. There is no per-session
+driver ticket. Per-turn units are session-account checkpoints and the end writes one sealed line (§7).
+
+**Inbound webhooks.** A plane's webhook routes belong to that plane plugin: its snapshot declares them
+as public routes served by its `serve` op, and its own settings decide whether it answers; neither the
+kernel nor core config has a webhook switch. The route's signature is verified by an auth plugin's
+inbound verify under the style the route declares, so the plane never sees the signing secret; the
+plane refuses a replay through a one-time record claim. The surface is new in 1.6.0 and is registered
+as such.
+
+**Nested units, work continuations and probes are units of their own.** A nested unit (`unit.nest`)
+is a child of its caller. A work continuation is a NEW unit with its own arrival, admission and window;
+its principal is the one its work handle recorded. A health probe is a kernel-originated unit pinned
+to one member: a plane that declares probes answers an `arrive` for the probe claim and the ATTEMPT
+piece with its probe request, the breaker service classifies the answer as it classifies organic
+traffic, and the probe is zero-billed and draws no lease (§1's exempt origins).
+
+**What the plane ABI v1 gains for this** (a v1 layout edit before the 1.6.0 tag, THE DESIGN §11.11 R9):
+the `FROM_KERNEL` piece source; the ATTEMPT fields on `OnPieceIn` (member, attempt number); the
+answer's verdict on `OnPieceOut`; the `project` op; the plane's `drive` in/out with a host buffer for
+the ready sessions; a public flag on a snapshot route; the probe claim and the probe tail flag. Each
+lands with its validator beside it and a RED test per rule.
+
+*Proven by:* the plane conformance suite (compiled-in and dropped-in through one table); zero
+plane→host calls per chunk; the hook parity tests verbatim; the oracle families of each plane as it is
+flipped onto the driver; the money suites for every money step.
 
 ---
 
