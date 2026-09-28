@@ -71,6 +71,14 @@ pub const OVERSIZE: &[u8] = b"oversize";
 pub const BAD_TEXT: &[u8] = b"badtext";
 /// `tick` mode: READY, with a metrics array NULL but a length.
 pub const BAD_ENVELOPE: &[u8] = b"badenv";
+/// `tick` mode: READY with `next_tick_ns` = [`KIND_REJECTS`] (the test kind's validator refuses it).
+pub const REJECTED: &[u8] = b"rejected";
+/// `tick` mode: FAILED with `next_tick_ns` = [`SHORT`] (the test kind reads it as a short buffer).
+pub const SHORT_ANSWER: &[u8] = b"short";
+/// The `next_tick_ns` the test kind's `check` refuses.
+pub const KIND_REJECTS: u64 = 0xDEAD;
+/// The `next_tick_ns` the test kind's `short` reads as "needs a bigger buffer".
+pub const SHORT: u64 = 0x5807;
 /// `tick` mode: panic. `tick` has no guard, so the process aborts.
 pub const PANIC: &[u8] = b"panic";
 
@@ -484,6 +492,14 @@ extern "C" fn tick(instance: *mut c_void, input: *const c_void, out: *mut c_void
                     diags_len: 0,
                 };
                 say(out, Outcome::Ready)
+            }
+            REJECTED => {
+                (*out.cast::<TickOut>()).next_tick_ns = KIND_REJECTS;
+                say(out, Outcome::Ready)
+            }
+            SHORT_ANSWER => {
+                (*out.cast::<TickOut>()).next_tick_ns = SHORT;
+                say(out, Outcome::Failed)
             }
             PANIC => panic!("a hand-written slot panicked"),
             _ => say(out, Outcome::Refused),

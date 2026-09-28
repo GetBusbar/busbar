@@ -321,6 +321,8 @@ pub(crate) struct Entry {
     latched: bool,
     client_dropped: bool,
     recycle_when_idle: bool,
+    /// The op whose last answer was SHORT: its next answer on this ticket is the one re-call.
+    short_slot: Option<u32>,
     next: Option<Action>,
     pub(crate) current: Option<Current>,
     pub(crate) queue: VecDeque<(Meta, Box<dyn Job>)>,
@@ -560,18 +562,26 @@ impl Worker {
         e.latched = false;
         e.client_dropped = false;
         e.recycle_when_idle = false;
+        e.short_slot = None;
         e.next = None;
         e.driver = None;
         st.free.push(idx);
     }
 
     /// The op on `idx` is over: answer it, give back what it held, start the next.
-    fn end(&self, st: &mut WorkerState, idx: u32, c: Crossed, env: &Env) {
+    fn end(&self, st: &mut WorkerState, idx: u32, mut c: Crossed, env: &Env) {
         let e = &mut st.entries[idx as usize];
         let Some(cur) = e.current.take() else {
             return;
         };
         e.latched = false;
+        // THE ONE RE-CALL: a short answer may be re-asked once on this ticket; short twice is FAULT.
+        let recall = e.short_slot.take() == Some(cur.meta.slot);
+        if c.short && recall {
+            c = Crossed::host(Outcome::Fault);
+        } else if c.short {
+            e.short_slot = Some(cur.meta.slot);
+        }
         if let Some(job) = cur.job {
             if !job.finish(c) {
                 env.stats.write_behind_late.fetch_add(1, Ordering::Relaxed);

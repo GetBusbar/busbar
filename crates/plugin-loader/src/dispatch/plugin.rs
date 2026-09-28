@@ -153,6 +153,8 @@ pub(crate) struct Crossed {
     pub(crate) error: Option<Vec<u8>>,
     pub(crate) lease: u64,
     pub(crate) wake_at_ns: u64,
+    /// A FAILED answer the kind calls short ([`Kind::short`]).
+    pub(crate) short: bool,
 }
 
 impl Crossed {
@@ -162,6 +164,7 @@ impl Crossed {
             error: None,
             lease: 0,
             wake_at_ns: 0,
+            short: false,
         }
     }
 }
@@ -195,6 +198,10 @@ pub(crate) struct Instance {
     pub(crate) cap: u32,
     lifecycle_busy: AtomicBool,
     pub(crate) timeout: Outcome,
+    /// [`Kind::check`] of the bound kind.
+    check: fn(u32, *const InHead, *const OutHead) -> bool,
+    /// [`Kind::short`] of the bound kind.
+    short: fn(u32, *const OutHead) -> bool,
     sink: Arc<dyn EnvelopeSink>,
     pub(crate) wake: &'static InstanceWake,
     tables: Tables,
@@ -315,6 +322,11 @@ impl Instance {
         if outcome == Outcome::Fault {
             return Crossed::host(Outcome::Fault);
         }
+        let answered = matches!(outcome, Outcome::Ready | Outcome::Failed);
+        if answered && !(self.check)(s, input.cast_const(), out.cast_const()) {
+            return Crossed::host(Outcome::Fault);
+        }
+        let short = outcome == Outcome::Failed && (self.short)(s, out.cast_const());
         self.ingest(&head);
         let error = matches!(outcome, Outcome::Failed | Outcome::Refused)
             .then(|| copy_str(head.error))
@@ -342,6 +354,7 @@ impl Instance {
             } else {
                 0
             },
+            short,
         }
     }
 
@@ -524,6 +537,8 @@ impl<K: Kind> Plugin<K> {
                 cap: st.max_inflight.clamp(1, bind.max_inflight_cap.max(1)),
                 lifecycle_busy: AtomicBool::new(false),
                 timeout: K::TIMEOUT,
+                check: K::check,
+                short: K::short,
                 sink: bind.sink,
                 wake,
                 tables,

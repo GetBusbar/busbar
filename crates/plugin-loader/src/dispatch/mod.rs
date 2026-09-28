@@ -12,8 +12,9 @@
 //!   the #85 envelope ingest, and `max_inflight`.
 //! * [`ticket`] — tickets `(slot, generation)` unique per instance across all workers, the host's
 //!   `wake`, and completion handles `(ticket, seq)`.
-//! * [`validate`] — every answer is validated before it is read (spans, counts, `written`,
-//!   `needed`, sizes, text and array lengths); a violation is FAULT.
+//! * [`validate`] — the mechanism's own checks of every `out` head before it is read (its size,
+//!   the error text, the #85 arrays); a violation is FAULT. A kind's reply fields are checked by
+//!   its own `abi/<kind>/check_<op>` through [`Kind::check`], never re-implemented here.
 //! * [`worker`] — the workers: per-worker ticket slabs, latched spurious-tolerant wakes, RESUME,
 //!   `wake_at_ns` timers, driver tickets, deadline classes and client drop.
 //! * `watchdog` — an op that does not RETURN within its class budget faults its instance and
@@ -59,6 +60,23 @@ pub trait Kind: Send + Sync + 'static {
     type Ops: Copy;
     /// What a Call/Stream/Connection deadline answers, after `cancel`.
     const TIMEOUT: Outcome;
+
+    /// THE KIND'S ANSWER VALIDATORS (ARCHITECT ruling "answer validators live with the shape"):
+    /// the pure `check_<op>` fns in `abi/<kind>/`, called after every READY or FAILED answer of op
+    /// `slot` with that op's `in` and `out`; `false` is FAULT. The dispatcher never re-implements
+    /// them. None exist on predev yet, so the default accepts; each kind wires its own in M3.
+    fn check(slot: u32, input: *const InHead, out: *const OutHead) -> bool {
+        let _ = (slot, input, out);
+        true
+    }
+
+    /// Whether a FAILED answer of op `slot` is SHORT (a host buffer too small; its `needed_*` say
+    /// how much). The host re-calls once, on the same ticket, with bigger buffers; a second short
+    /// answer is FAULT. The kind's `abi/<kind>/` shape says which field carries it.
+    fn short(slot: u32, out: *const OutHead) -> bool {
+        let _ = (slot, out);
+        false
+    }
 }
 
 /// The byte offset of the first slot in every table.

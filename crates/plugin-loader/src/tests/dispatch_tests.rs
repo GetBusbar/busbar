@@ -44,6 +44,22 @@ impl Kind for TestKind {
     const CODE: KindCode = plug::KIND;
     type Ops = OpsHead;
     const TIMEOUT: Outcome = Outcome::Failed;
+
+    /// The test kind's `check_tick`: refuses [`plug::KIND_REJECTS`].
+    fn check(
+        slot: u32,
+        _: *const busbar_contract::abi::mechanism::call::InHead,
+        out: *const OutHead,
+    ) -> bool {
+        // SAFETY: `tick`'s `out` is a `TickOut`.
+        slot != TICK || unsafe { (*out.cast::<TickOut>()).next_tick_ns } != plug::KIND_REJECTS
+    }
+
+    /// The test kind's short answer: `tick` FAILED with [`plug::SHORT`].
+    fn short(slot: u32, out: *const OutHead) -> bool {
+        // SAFETY: as above.
+        slot == TICK && unsafe { (*out.cast::<TickOut>()).next_tick_ns } == plug::SHORT
+    }
 }
 
 /// The #85 envelope as the host received it: one line per entry, and the plugin's report gauges
@@ -988,26 +1004,49 @@ fn red_an_answer_that_fails_validation_is_fault() {
 }
 
 #[test]
-fn red_the_reply_field_checks() {
-    use crate::dispatch::validate::{count, needed, span, written, Violation};
-    // span: inside, at the edge, past the cap, and an offset+len that overflows.
-    assert_eq!(span(2, 3, 5), Ok(2..5));
-    assert_eq!(span(0, 0, 0), Ok(0..0));
-    assert!(matches!(span(3, 3, 5), Err(Violation::Span { .. })));
-    assert!(matches!(
-        span(u64::MAX, 2, u64::MAX),
-        Err(Violation::Span { .. })
-    ));
-    // count and written: at the cap is fine, one past is not.
-    assert_eq!(count(4, 4), Ok(4));
-    assert!(matches!(count(5, 4), Err(Violation::Count { .. })));
-    assert_eq!(written(8, 8), Ok(8));
-    assert!(matches!(written(9, 8), Err(Violation::Written { .. })));
-    // needed: zero on READY; a PENDING or FAILED answer may name what it needs.
-    assert_eq!(needed(Outcome::Ready, 0), Ok(()));
-    assert_eq!(needed(Outcome::Ready, 1), Err(Violation::NeededOnReady(1)));
-    assert_eq!(needed(Outcome::Failed, 64), Ok(()));
-    assert_eq!(Violation::NeededOnReady(1).outcome(), Outcome::Fault);
+fn red_the_kinds_validator_refuses_an_answer_as_fault() {
+    let d = Dispatcher::new(config());
+    let (p, _sink) = opened(&d);
+    assert_eq!(
+        p.call(TICK, &mut frame(plug::REJECTED)).outcome,
+        Outcome::Fault
+    );
+    // The GREEN twin: the same op with an answer the validator accepts.
+    assert_eq!(p.call(TICK, &mut frame(answer(1))).outcome, Outcome::Ready);
+}
+
+#[test]
+fn red_one_recall_a_second_short_answer_is_fault() {
+    let d = Dispatcher::new(config());
+    let (p, _sink) = opened(&d);
+    let t = d.mint(0).unwrap();
+    let ask = |mode| {
+        d.submit(&p, t, TICK, frame(mode), DeadlineClass::Call, 0)
+            .wait(WAIT)
+            .unwrap()
+            .outcome
+    };
+    assert_eq!(
+        ask(plug::SHORT_ANSWER),
+        Outcome::Failed,
+        "the first short answer earns one re-call"
+    );
+    assert_eq!(
+        ask(plug::SHORT_ANSWER),
+        Outcome::Fault,
+        "short again on the re-call is FAULT"
+    );
+    assert_eq!(
+        ask(plug::SHORT_ANSWER),
+        Outcome::Failed,
+        "a fresh op may be short once more"
+    );
+    assert_eq!(
+        ask(answer(1)),
+        Outcome::Ready,
+        "the re-call that fits is READY"
+    );
+    d.recycle(t);
 }
 
 // ── EXACT VERSIONS (item 410's replacement): older, newer and a wrong magic are each refused ─────
