@@ -1558,7 +1558,7 @@ fn no_deferral_reports_the_unwaived_markers_and_the_stale_waiver_together() {
     let mut ov = Overlay::new();
     ov.set(
         "scripts/no-deferral.waivers",
-        "crates/busbar-core/src/no-such-file.rs:1\tplanted, matches nothing [retires: H5]\n",
+        "crates/busbar-core/src/no-such-file.rs:1\tplanted, matches nothing [retires: KP-36]\n",
     );
     let reg = gates::find("no-deferral").expect("the gate is registered");
     let gate = (reg.build)();
