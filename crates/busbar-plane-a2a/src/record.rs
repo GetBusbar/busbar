@@ -15,7 +15,7 @@ use busbar_contract::records::{
 // declares its schema under (`busbar_plane_a2a::records::SCHEMA_TASK`), so it is named once, there,
 // and this crate reads it. Spelling it on both sides is how two answers to "what is this record
 // called" come to differ, and the schema id is what a store indexes by.
-pub use busbar_plane_a2a::records::{KIND_TASK, KIND_TASK_EVENT};
+pub use crate::records::{KIND_TASK, KIND_TASK_EVENT};
 
 /// DIGEST FRAMING VERSION 1 — the LEGACY ambiguous pipe-join (`{prev_hash}|{task_id}|…|{state}`). The
 /// free-text fields (`context_id`, `principal`, `agent_id`) are NOT length-framed, so a value that

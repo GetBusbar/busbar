@@ -46,11 +46,6 @@ item = "busbar_plane_a2a"
 
 [[finding]]
 rule = "door-only:plugin-path"
-file = "crates/busbar-a2a/src/record.rs"
-item = "busbar_plane_a2a"
-
-[[finding]]
-rule = "door-only:plugin-path"
 file = "crates/busbar-llm/src/engine/attempt/assemble.rs"
 item = "busbar_plane_llm"
 

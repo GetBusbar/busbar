@@ -41,7 +41,7 @@ use serde::{Deserialize, Serialize};
 /// outbound one re-subscribes to the remote agent it was delegated to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
-pub(crate) enum Direction {
+pub enum Direction {
     /// busbar is the server: an external caller delegated work to a busbar-fronted agent.
     Inbound,
     /// busbar is the client: a fronted agent delegated work to a registered remote agent.
@@ -51,7 +51,7 @@ pub(crate) enum Direction {
 impl Direction {
     /// The stable wire/store token. Config, admin responses, audit rows and store rows all spell it
     /// this way, so an operator comparing two of them is comparing the same string.
-    pub(crate) fn as_str(self) -> &'static str {
+    pub fn as_str(self) -> &'static str {
         match self {
             Direction::Inbound => "inbound",
             Direction::Outbound => "outbound",
@@ -61,7 +61,7 @@ impl Direction {
     /// Parse a stored token. An UNKNOWN token is an error rather than a default, because defaulting
     /// picks a direction for a row that will then be resumed the wrong way — re-subscribing to a
     /// remote agent for a task that never had one, or relaying to a caller that never asked.
-    pub(crate) fn parse(s: &str) -> Result<Self, TaskError> {
+    pub fn parse(s: &str) -> Result<Self, TaskError> {
         match s {
             "inbound" => Ok(Direction::Inbound),
             "outbound" => Ok(Direction::Outbound),
@@ -73,7 +73,7 @@ impl Direction {
 /// The A2A task lifecycle states busbar runs, spelled exactly as the protocol spells them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
-pub(crate) enum TaskState {
+pub enum TaskState {
     /// Accepted, not yet started.
     Submitted,
     /// Running.
@@ -94,7 +94,7 @@ pub(crate) enum TaskState {
 
 impl TaskState {
     /// The stable wire/store token.
-    pub(crate) fn as_str(self) -> &'static str {
+    pub fn as_str(self) -> &'static str {
         match self {
             TaskState::Submitted => "submitted",
             TaskState::Working => "working",
@@ -114,7 +114,7 @@ impl TaskState {
     /// terminal (safe to compact) or interrupted (must be preserved and resumed). Defaulting such a
     /// row to anything is guessing, and the cheap guess — "unknown means terminal" — is the one that
     /// deletes a live task on a downgrade.
-    pub(crate) fn parse(s: &str) -> Result<Self, TaskError> {
+    pub fn parse(s: &str) -> Result<Self, TaskError> {
         match s {
             "submitted" => Ok(TaskState::Submitted),
             "working" => Ok(TaskState::Working),
@@ -129,7 +129,7 @@ impl TaskState {
     }
 
     /// A state nothing leaves.
-    pub(crate) fn is_terminal(self) -> bool {
+    pub fn is_terminal(self) -> bool {
         matches!(
             self,
             TaskState::Completed | TaskState::Failed | TaskState::Canceled | TaskState::Rejected
@@ -139,13 +139,13 @@ impl TaskState {
     /// PAUSED awaiting the caller. Distinct from terminal AND from active: an interrupted task
     /// consumes no compute and may sit for a long time, and is the exact row the durable store
     /// exists for.
-    pub(crate) fn is_interrupted(self) -> bool {
+    pub fn is_interrupted(self) -> bool {
         matches!(self, TaskState::InputRequired | TaskState::AuthRequired)
     }
 
     /// Live in any sense — running or paused. The rehydrate-on-restart set, and the set the
     /// retention sweep must never touch.
-    pub(crate) fn is_active(self) -> bool {
+    pub fn is_active(self) -> bool {
         !self.is_terminal()
     }
 
@@ -153,7 +153,7 @@ impl TaskState {
     ///
     /// Written as a total function over the pair rather than as guards at the call sites, so the
     /// combination nobody thought about is refused by default instead of falling through.
-    pub(crate) fn can_transition_to(self, to: TaskState) -> bool {
+    pub fn can_transition_to(self, to: TaskState) -> bool {
         use TaskState::*;
         match self {
             // A submitted task may start, be interrupted before starting (an auth challenge can
@@ -191,14 +191,16 @@ impl TaskState {
 
 /// What went wrong reading or moving a task.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum TaskError {
+pub enum TaskError {
     /// A stored state token this binary does not know (see [`TaskState::parse`]).
     UnknownState(String),
     /// A stored direction token this binary does not know.
     UnknownDirection(String),
     /// The move is not in the transition table.
     IllegalTransition {
+        /// The state token the task was in.
         from: &'static str,
+        /// The state token the move asked for.
         to: &'static str,
     },
     /// A row with no `task_id`, `context_id` or `principal`. Refused on the way IN rather than
@@ -231,28 +233,35 @@ impl std::fmt::Display for TaskError {
 /// restart — who it belongs to, what state it is in, which agent it went to, and how far its
 /// artifact stream got — plus the two timestamps the retention policy reads.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct Task {
-    pub(crate) task_id: String,
-    pub(crate) context_id: String,
-    pub(crate) principal: String,
-    pub(crate) direction: Direction,
-    pub(crate) state: TaskState,
+pub struct Task {
+    /// busbar's own task id.
+    pub task_id: String,
+    /// The A2A context the task belongs to.
+    pub context_id: String,
+    /// The principal the task belongs to: the only caller it is ever shown to.
+    pub principal: String,
+    /// Whether busbar received the task or delegated it.
+    pub direction: Direction,
+    /// Where the task is in its lifecycle.
+    pub state: TaskState,
     /// The chosen (outbound) or fronted (inbound) agent id; empty before dispatch.
-    pub(crate) agent_id: String,
+    pub agent_id: String,
     /// How many artifact chunks have been durably relayed — the resubscribe resume point.
-    pub(crate) artifact_cursor: u64,
+    pub artifact_cursor: u64,
     /// The registered push-notification callback for this task, or `None`. Already SSRF-validated
-    /// when it was registered (see [`super::pushnotify`]); it is re-validated before delivery,
-    /// because the row can outlive the DNS answer that was checked when it was written.
-    pub(crate) push_callback: Option<String>,
-    pub(crate) created_at: u64,
-    pub(crate) updated_at: u64,
+    /// when it was registered (see the plane's push-notification guard); it is re-validated before
+    /// delivery, because the row can outlive the DNS answer that was checked when it was written.
+    pub push_callback: Option<String>,
+    /// When the task was submitted, in whole seconds since the Unix epoch.
+    pub created_at: u64,
+    /// When the task last changed, in whole seconds since the Unix epoch.
+    pub updated_at: u64,
 }
 
 impl Task {
     /// A freshly SUBMITTED task. The only constructor that invents a state, so every other path has
     /// to go through [`Task::transition_to`] and be checked.
-    pub(crate) fn submitted(
+    pub fn submitted(
         task_id: impl Into<String>,
         context_id: impl Into<String>,
         principal: impl Into<String>,
@@ -290,7 +299,7 @@ impl Task {
 
     /// Move to `to`, or refuse. `updated_at` moves only on a move that was ACCEPTED, so the
     /// retention sweep's age key never advances because of a rejected transition.
-    pub(crate) fn transition_to(&mut self, to: TaskState, now: u64) -> Result<(), TaskError> {
+    pub fn transition_to(&mut self, to: TaskState, now: u64) -> Result<(), TaskError> {
         if !self.state.can_transition_to(to) {
             return Err(TaskError::IllegalTransition {
                 from: self.state.as_str(),
@@ -303,7 +312,7 @@ impl Task {
     }
 
     /// Project onto the store seam.
-    pub(crate) fn to_row(&self) -> crate::TaskRow {
+    pub fn to_row(&self) -> crate::TaskRow {
         crate::TaskRow {
             task_id: self.task_id.clone(),
             context_id: self.context_id.clone(),
@@ -322,7 +331,7 @@ impl Task {
     /// does not parse is REFUSED and reported; the rehydrate path counts refusals rather than
     /// dropping them, because a silently skipped row is an in-flight task that quietly ceased to
     /// exist across a deploy — the exact failure the durable store was built to prevent.
-    pub(crate) fn from_row(row: &crate::TaskRow) -> Result<Self, TaskError> {
+    pub fn from_row(row: &crate::TaskRow) -> Result<Self, TaskError> {
         let task = Task {
             task_id: row.task_id.clone(),
             context_id: row.context_id.clone(),
@@ -354,7 +363,7 @@ impl Task {
 /// `from` is the state BEFORE the move and it is load-bearing: an `interrupted → working` move is a
 /// RESUME, a distinct event from a fresh `working`, and the two are only separable by looking at the
 /// prior state. The fallthrough is `working`, matching the pre-cleave inline mapping byte-for-byte.
-pub(crate) fn event_kind_for_transition(from: TaskState, to: TaskState) -> &'static str {
+pub fn event_kind_for_transition(from: TaskState, to: TaskState) -> &'static str {
     use busbar_contract::vocab::{EV_INTERRUPTED, EV_RESUMED, EV_TERMINAL, EV_WORKING};
     match to {
         TaskState::Working if from.is_interrupted() => EV_RESUMED,
@@ -366,14 +375,14 @@ pub(crate) fn event_kind_for_transition(from: TaskState, to: TaskState) -> &'sta
 }
 
 /// THE TRANSITION PLAN the neutral engine applies under its working-set lock. Given the CURRENT
-/// persisted [`TaskRow`], reconstruct the canonical [`Task`], VALIDATE the move against the state
-/// machine, choose the provenance event `kind`, and project the new row back — all A2A domain logic
-/// the engine must not name. Returns the new row + kind on success, or the codec's rendered message
+/// persisted [`TaskRow`](crate::TaskRow), reconstruct the canonical [`Task`], VALIDATE the move
+/// against the state machine, choose the provenance event `kind`, and project the new row back — all
+/// A2A domain logic the engine must not name. Returns the new row + kind on success, or the codec's rendered message
 /// on refusal (an illegal move, an unreadable current row), which the engine wraps into its neutral
 /// `Domain` error byte-identically to the pre-cleave `TaskStoreError::Task(TaskError)`. The new row's
 /// `updated_at` is `now` (the move's timestamp), which the engine also uses as the event `ts` — the
 /// same value the pre-cleave `transition(.., now, ..)` argument carried.
-pub(crate) fn plan_transition(
+pub fn plan_transition(
     to: TaskState,
     now: u64,
 ) -> impl FnOnce(&crate::TaskRow) -> Result<(crate::TaskRow, &'static str), String> {
@@ -390,12 +399,12 @@ pub(crate) fn plan_transition(
 /// when the row parses as a canonical [`Task`] (a known state + direction token and a present
 /// identity) and `Err(rendered message)` otherwise — the exact classification the pre-cleave
 /// `restore_from_store` made inline with `Task::from_row`, moved to the a2a side so core names no
-/// codec. The terminal/active split is the task store's ([`crate::taskstore`]'s neutral token check),
+/// codec. The terminal/active split is the task store's (the task store's neutral token check),
 /// applied only after this predicate confirms the token is one this binary knows.
 pub fn readable_row(row: &crate::TaskRow) -> Result<(), String> {
     Task::from_row(row).map(|_| ()).map_err(|e| e.to_string())
 }
 
-#[cfg(all(test, feature = "test-support"))]
+#[cfg(test)]
 #[path = "tests/task_tests.rs"]
 mod task_tests;

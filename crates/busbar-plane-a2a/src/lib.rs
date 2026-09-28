@@ -44,6 +44,7 @@
 pub mod a2a {
     pub mod anomaly;
     pub mod canonical;
+    pub mod task;
 }
 
 pub mod claims;
@@ -54,10 +55,14 @@ pub mod jsonrpc;
 pub mod meta;
 pub mod ops;
 pub mod plane;
+pub mod record;
 pub mod records;
 pub mod surface;
 
 pub use frame::{rewrite, Direction, Frame, Tap, Transform};
+
+/// The task and task-event row structs at the crate root, where the task type names them.
+pub use record::{TaskEventRow, TaskRow};
 
 // ══ THE A2A WIRE VOCABULARY ══════════════════════════════════════════════════════════════════════
 //

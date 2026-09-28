@@ -624,7 +624,7 @@ pub(crate) use busbar_kernel::trust::reverify;
 pub(crate) mod key_info;
 pub mod serve;
 pub(crate) mod sign;
-pub mod task;
+pub use busbar_plane_a2a::a2a::task;
 pub(crate) mod transport;
 pub mod verbs;
 pub(crate) mod verify;
