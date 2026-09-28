@@ -60,7 +60,8 @@ pub const DIM_CONCURRENCY: u32 = 2;
 pub const DIM_CLASS: u32 = 3;
 
 /// One cell of a draw: THE fixed `bb_units[]` element (m3-inputs "store v3 money slots",
-/// `UnitCell`). `(bucket, pool, dimension, class_key)` names the cell; `amount` is how much.
+/// `UnitCell`; `window_start` per the ARCHITECT "window caps" correction, 2026-09-28).
+/// `(bucket, pool, dimension, class_key, window_start)` names the cell; `amount` is how much.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct UnitCell {
@@ -76,6 +77,9 @@ pub struct UnitCell {
     pub class_key: AbiStr,
     /// How much is wanted.
     pub amount: u64,
+    /// The window this cell draws from (ms), named BY THE CALLER. `0` = no window: a gauge
+    /// ([`DIM_CONCURRENCY`]) or a window that never rolls, whose cap is pushed at `0`.
+    pub window_start: u64,
 }
 
 /// What one cell drew (m3-inputs "store v3 money slots", `reserve` out, `CellGrant`).
@@ -102,11 +106,11 @@ pub const RESERVE_UNAVAILABLE: u32 = 3;
 /// implicit unlimited (m3-inputs ARCHITECT ruling "window caps", reason 4 `NoCap`).
 pub const RESERVE_NO_CAP: u32 = 4;
 
-/// `reserve`'s `in` (m3-inputs "store v3 money slots", `reserve`; `window_start` per the
-/// "window caps" ruling). Request path, may pend, [`DeadlineClass::Call`](crate::abi::mechanism::call::DeadlineClass::Call).
+/// `reserve`'s `in` (m3-inputs "store v3 money slots", `reserve`). Request path, may pend, [`DeadlineClass::Call`](crate::abi::mechanism::call::DeadlineClass::Call).
 ///
 /// Each cell draws from its `(bucket, pool, dimension, class_key, window_start)` slot, capped by
-/// the cap `window_caps` last set for it. ATOMIC: if ANY cell would grant 0, the store applies
+/// the cap `window_caps` last set for it; one reserve is one all-or-nothing chain draw even across
+/// cells in different windows ("window caps" correction). ATOMIC: if ANY cell would grant 0, the store applies
 /// NOTHING and answers FAILED with a [`ReserveOut::reason`] and `grants_len == 0`. A node-local
 /// store (Statement tail `ephemeral`) holds one constant epoch and never answers
 /// [`RESERVE_STALE_EPOCH`] (store_adapter.rs module doc, "Slices"). Deduped on `op_id`.
@@ -119,34 +123,43 @@ pub struct ReserveIn {
     pub op_id: OpId,
     /// The epoch the node believes it is in.
     pub epoch: u64,
-    /// The window every cell draws from (ms), named BY THE CALLER ("window caps" ruling).
-    pub window_start: u64,
     /// The cells.
     pub cells: *const UnitCell,
     /// How many.
     pub cells_len: usize,
+    /// The HOST-owned array the grants are written into (mechanism memory class (i); ARCHITECT
+    /// 2026-09-28: a request-path result's buffer is named in the `in`, never in the `out` the
+    /// host zeroes). One grant per cell, in cell order.
+    pub grants: *mut CellGrant,
+    /// Its capacity, `>= cells_len`. A smaller capacity is REFUSED with nothing applied.
+    pub grants_cap: usize,
 }
 
-/// `reserve`'s `out` (m3-inputs "store v3 money slots", `reserve`).
+/// `reserve`'s `out` (m3-inputs "store v3 money slots", `reserve`; the grants themselves go into
+/// [`ReserveIn::grants`]).
 ///
-/// `grants` is a HOST-owned array of `cells_len` [`CellGrant`]s (mechanism memory class (i)); on
-/// READY the store writes one grant per cell, in cell order, and `grants_len == cells_len`. On
-/// FAILED `grants_len == 0` and `reason` is one of [`RESERVE_EXHAUSTED`], [`RESERVE_STALE_EPOCH`],
-/// [`RESERVE_UNAVAILABLE`], [`RESERVE_NO_CAP`].
+/// On READY the store has written one grant per cell into the host's array and
+/// `grants_len == cells_len`. On FAILED nothing is written, `grants_len == 0` and `reason` is one
+/// of [`RESERVE_EXHAUSTED`], [`RESERVE_STALE_EPOCH`], [`RESERVE_UNAVAILABLE`], [`RESERVE_NO_CAP`].
+/// FAILED with reason `0` or a reason not listed reads as [`RESERVE_UNAVAILABLE`]. READY with
+/// `grants_len != cells_len`, a grant outside `(0, amount]`, or `reason != 0` is FAULT.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct ReserveOut {
     /// The head.
     pub head: OutHead,
-    /// The host's grant array, capacity `cells_len`.
-    pub grants: *mut CellGrant,
     /// How many grants were written: `cells_len` on READY, `0` on FAILED.
     pub grants_len: usize,
     /// [`RESERVE_OK`] or the refusal reason.
     pub reason: u32,
-    /// Alignment padding.
-    pub _reserved: u32,
+    /// On FAILED, the index of the first cell that could not be granted (slice.rs
+    /// `ChainRefused { at }`); [`RESERVE_NO_FAILED_CELL`] when none applies ("window caps"
+    /// correction (3)).
+    pub failed_cell: u32,
 }
+
+/// [`ReserveOut::failed_cell`]: no cell is named (READY, or a failure no single cell caused).
+pub const RESERVE_NO_FAILED_CELL: u32 = u32::MAX;
 
 /// One slice handed back (m3-inputs "store v3 money slots", `slice_release` items).
 #[repr(C)]
@@ -177,18 +190,24 @@ pub struct SliceReleaseIn {
     pub items: *const ReleaseItem,
     /// How many.
     pub items_len: usize,
+    /// The HOST-owned array the released amounts are written into, per item in order
+    /// (mechanism memory class (i); ARCHITECT 2026-09-28: named in the `in`, never in the `out`).
+    pub released: *mut u64,
+    /// Its capacity, `>= items_len`. A smaller capacity is REFUSED with nothing applied.
+    pub released_cap: usize,
 }
 
-/// `slice_release`'s `out` (m3-inputs "store v3 money slots", `slice_release`). `released` is a
-/// HOST-owned array of `items_len` amounts; on READY the store writes, per item in order, the
-/// amount it actually took back after clamping.
+/// `slice_release`'s `out` (m3-inputs "store v3 money slots", `slice_release`; the amounts go into
+/// [`SliceReleaseIn::released`]). On READY the store has written, per item in order, the amount it
+/// actually took back after clamping, and `released_len == items_len`. READY with any other
+/// `released_len`, or an amount over what that slice had left, is FAULT.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct SliceReleaseOut {
     /// The head.
     pub head: OutHead,
-    /// The host's array, capacity `items_len`.
-    pub released: *mut u64,
+    /// How many amounts were written.
+    pub released_len: usize,
 }
 
 /// One cell of the token ledger and its signed delta: the fixed (bucket, window) plus the tree's
@@ -263,10 +282,12 @@ pub struct WindowCap {
 /// `window_caps`' `in` (m3-inputs ARCHITECT ruling "window caps"). Off path, may pend,
 /// [`DeadlineClass::Call`](crate::abi::mechanism::call::DeadlineClass::Call). Deduped on `op_id`.
 ///
-/// An UPSERT keyed by `(bucket, pool, dimension, class_key, window_start)`: a HIGHER `config_gen`
-/// replaces the cap (an operator's mid-window change takes effect, as 1.5.5 read caps from live
-/// config); an EQUAL `config_gen` with a different cap is REFUSED with
-/// [`super::DIAG_CAP_CONFLICT`]; a LOWER one is ignored. The kernel pushes caps at `open`/`refresh`
+/// An UPSERT keyed by `(bucket, pool, dimension, class_key, window_start)` (`window_start` `0` =
+/// no window): a HIGHER `config_gen` replaces the cap (an operator's mid-window change takes
+/// effect, as 1.5.5 read caps from live config); an EQUAL `config_gen` with a different cap is a
+/// conflict; a LOWER one is ignored. ATOMIC PER PUSH, like a batch: one conflict REFUSES the
+/// whole push, nothing applied, with [`super::DIAG_CAP_CONFLICT`] and an `OutHead.error` text
+/// naming the first conflicting cap's index ("window caps" correction (1)). The kernel pushes caps at `open`/`refresh`
 /// and BEFORE the first `reserve` of each new window.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]

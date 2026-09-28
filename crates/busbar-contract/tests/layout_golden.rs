@@ -1185,26 +1185,22 @@ fn compute_layout() -> String {
     record!(
         s,
         StoreUnitCell,
-        [bucket, pool, dimension, _r, class_key, amount]
+        [bucket, pool, dimension, _r, class_key, amount, window_start]
     );
     record!(s, StoreCellGrant, [slice_id, granted, valid_until_ms]);
     record!(
         s,
         StoreReserveIn,
-        [head, op_id, epoch, window_start, cells, cells_len]
+        [head, op_id, epoch, cells, cells_len, grants, grants_cap]
     );
-    record!(
-        s,
-        StoreReserveOut,
-        [head, grants, grants_len, reason, _reserved]
-    );
+    record!(s, StoreReserveOut, [head, grants_len, reason, failed_cell]);
     record!(s, StoreReleaseItem, [slice_id, unspent]);
     record!(
         s,
         StoreSliceReleaseIn,
-        [head, op_id, epoch, items, items_len]
+        [head, op_id, epoch, items, items_len, released, released_cap]
     );
-    record!(s, StoreSliceReleaseOut, [head, released]);
+    record!(s, StoreSliceReleaseOut, [head, released_len]);
     record!(s, StoreUsageCell, [bucket, window_start, delta]);
     record!(s, StoreAddUsageBatchIn, [head, op_id, cells, cells_len]);
     record!(s, StoreOpBlobsIn, [head, op_id, records, records_len]);
@@ -1696,14 +1692,14 @@ fn a_perturbed_hook_golden_line_fails_the_comparator() {
     let perturbed = actual.replacen(line, "HookDecideOut.order_written=144", 1);
     let err = compare(&perturbed, &actual).expect_err("a perturbed line must fail");
     assert!(err.contains("HookDecideOut.order_written=144"), "{err}");
-/// RED ARM, store kind: one perturbed store golden line (`reserve`'s `window_start` offset, the
+/// RED ARM, store kind: one perturbed store golden line (a `UnitCell`'s `window_start` offset, the
 /// money shape of m3-inputs "store v3 money slots" / "window caps") fails the comparator.
 #[test]
 fn a_perturbed_store_golden_line_fails_the_comparator() {
     let actual = compute_layout();
-    let line = "StoreReserveIn.window_start=112";
+    let line = "StoreUnitCell.window_start=64";
     assert!(actual.lines().any(|l| l == line), "the golden holds {line}");
-    let perturbed = actual.replacen(line, "StoreReserveIn.window_start=120", 1);
+    let perturbed = actual.replacen(line, "StoreUnitCell.window_start=56", 1);
     let err = compare(&perturbed, &actual).expect_err("a perturbed store line must fail");
-    assert!(err.contains("StoreReserveIn.window_start=120"), "{err}");
+    assert!(err.contains("StoreUnitCell.window_start=56"), "{err}");
 }

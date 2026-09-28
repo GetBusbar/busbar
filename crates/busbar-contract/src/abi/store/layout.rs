@@ -74,14 +74,15 @@ pin!(
 pin!(OpId, 16, 1);
 pin!(
     UnitCell,
-    64,
+    72,
     8,
     bucket = 0,
     pool = 16,
     dimension = 32,
     _r = 36,
     class_key = 40,
-    amount = 56
+    amount = 56,
+    window_start = 64
 );
 pin!(
     CellGrant,
@@ -93,37 +94,39 @@ pin!(
 );
 pin!(
     ReserveIn,
-    136,
+    144,
     8,
     head = 0,
     op_id = 88,
     epoch = 104,
-    window_start = 112,
-    cells = 120,
-    cells_len = 128
+    cells = 112,
+    cells_len = 120,
+    grants = 128,
+    grants_cap = 136
 );
 pin!(
     ReserveOut,
-    120,
+    112,
     8,
     head = 0,
-    grants = 96,
-    grants_len = 104,
-    reason = 112,
-    _reserved = 116
+    grants_len = 96,
+    reason = 104,
+    failed_cell = 108
 );
 pin!(ReleaseItem, 16, 8, slice_id = 0, unspent = 8);
 pin!(
     SliceReleaseIn,
-    128,
+    144,
     8,
     head = 0,
     op_id = 88,
     epoch = 104,
     items = 112,
-    items_len = 120
+    items_len = 120,
+    released = 128,
+    released_cap = 136
 );
-pin!(SliceReleaseOut, 104, 8, head = 0, released = 96);
+pin!(SliceReleaseOut, 104, 8, head = 0, released_len = 96);
 pin!(UsageCell, 48, 8, bucket = 0, window_start = 16, delta = 24);
 pin!(
     AddUsageBatchIn,

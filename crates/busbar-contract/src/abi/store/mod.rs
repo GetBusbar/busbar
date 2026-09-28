@@ -413,7 +413,7 @@ store_slots! {
     25 GET_PLANE_RECORD get_plane_record GetPlaneRecordIn, HostBytesOut, Request, Call, HostCap,
         "`get_plane_record` (records.rs:1499-1503). In [`GetPlaneRecordIn`], out [`HostBytesOut`] (the body, into the host buffer). B.1 plane records.";
     26 APPEND_PLANE_RECORD append_plane_record AppendPlaneRecordIn, OutHead, Request, WriteBehind, HostCap,
-        "`append_plane_record` (records.rs:1505-1511). In [`AppendPlaneRecordIn`], out [`OutHead`]. B.1 plane records + \"Writes\": appending, op_id-deduped, write_behind; a fork at a used seq is FAILED when the tail states `fork_refusal`.";
+        "`append_plane_record` (records.rs:1505-1511). In [`AppendPlaneRecordIn`], out [`OutHead`]. B.1 plane records + \"Writes\": appending, op_id-deduped, write_behind; a fork at a used seq is FAILED when the tail states `fork_refusal`. A request waits on this long, never-cancelled class: B.1 makes every appending write write_behind.";
     27 LIST_PLANE_RECORDS list_plane_records ListPlaneRecordsIn, HostListOut, Request, Call, HostCap,
         "`list_plane_records` (records.rs:1513-1522). In [`ListPlaneRecordsIn`], out [`HostListOut`] (bodies into [`HostBlobs`]). B.1 plane records.";
     28 LIST_PLANE_RECORD_PARENTS list_plane_record_parents IdIn, LeasedStrListOut, Off, Call, HostCap,
@@ -429,9 +429,9 @@ store_slots! {
     // ── the ten 1.6.0 ledger ops (B.1 "Slots"; semantics store_adapter.rs, signatures kinds.rs:300-392) ──
     33 APPEND_BATCH append_batch AppendBatchIn, HeadOut, Off, WriteBehind, PerRecord(MAX_RECORD_BYTES),
         "`append_batch` (kinds.rs:302). In [`AppendBatchIn`], out [`HeadOut`]. B.1 ledger op + \"Writes\"; the shipping ack.";
-    34 RESERVE reserve ReserveIn, ReserveOut, Request, Call, Fixed,
-        "`reserve` (m3-inputs \"store v3 money slots\" `reserve`; window per the \"window caps\" ruling). In [`ReserveIn`], out [`ReserveOut`]. ATOMIC.";
-    35 SLICE_RELEASE slice_release SliceReleaseIn, SliceReleaseOut, Request, Call, Fixed,
+    34 RESERVE reserve ReserveIn, ReserveOut, Request, Call, HostCap,
+        "`reserve` (m3-inputs \"store v3 money slots\" `reserve`; each cell names its window and a failure names its cell per the \"window caps\" correction). In [`ReserveIn`], out [`ReserveOut`]. ATOMIC.";
+    35 SLICE_RELEASE slice_release SliceReleaseIn, SliceReleaseOut, Request, Call, HostCap,
         "`slice_release` (m3-inputs \"store v3 money slots\" `slice_release`; B.1 renames the slice op `release`). In [`SliceReleaseIn`], out [`SliceReleaseOut`]. Clamped.";
     36 HEADS heads InHead, HeadsOut, Off, Call, HostCap,
         "`heads` (kinds.rs:319). In [`InHead`], out [`HeadsOut`]. B.1 ledger op.";
@@ -455,6 +455,6 @@ store_slots! {
     45 APPEND_AUDIT_BATCH append_audit_batch OpBlobsIn, OutHead, Off, WriteBehind, HostCap,
         "`append_audit_batch` (m3-inputs \"store v3 money slots\"). In [`OpBlobsIn`] (`AuditRecord`s), out [`OutHead`]. One op_id per coalesced batch; in order, atomic per batch.";
     // ── the cap input (m3-inputs "store v3 money slots" line on Exhausted; ARCHITECT ruling "window caps") ──
-    46 WINDOW_CAPS window_caps WindowCapsIn, OutHead, Off, Call, Fixed,
-        "`window_caps` (m3-inputs ARCHITECT ruling \"window caps\"). In [`WindowCapsIn`], out [`OutHead`]. An upsert by (cell, window_start), newest `config_gen` wins.";
+    46 WINDOW_CAPS window_caps WindowCapsIn, OutHead, Off, Call, HostCap,
+        "`window_caps` (m3-inputs ARCHITECT ruling \"window caps\"). In [`WindowCapsIn`], out [`OutHead`]. An upsert by (cell, window_start), newest `config_gen` wins; atomic per push (\"window caps\" correction (1)).";
 }

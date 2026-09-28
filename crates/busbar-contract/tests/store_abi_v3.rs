@@ -137,6 +137,8 @@ fn the_zero_readings_are_the_safe_ones() {
     assert_eq!(store::RESERVE_STALE_EPOCH, 2);
     assert_eq!(store::RESERVE_UNAVAILABLE, 3);
     assert_eq!(store::RESERVE_NO_CAP, 4);
+    // "window caps" correction (3): no failed cell is u32::MAX.
+    assert_eq!(store::RESERVE_NO_FAILED_CELL, u32::MAX);
     // Dimensions: 0 NanoUnits, 1 Requests, 2 Concurrency, 3 Class.
     assert_eq!(
         [
