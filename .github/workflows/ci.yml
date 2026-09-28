@@ -883,6 +883,11 @@ jobs:
       # owner refused. The SHIP-criterion twin (`kind-isolation-ship`, one surface and one shared
       # conformance battery per kind) is red on HEAD by design and runs at release time.
       - name: Kind-isolation self-test (the refused busbar-transport-a2a, planted and proven RED)
+        # RUNS WHATEVER FAILED ABOVE IT. A red in an unrelated earlier step used to SKIP this pair, so
+        # a standing-cell rise could show on one run and be skipped for the next several. Skipping a
+        # gate is not seeing it: only a cancelled job skips it now.
+        id: ki_selftest
+        if: ${{ !cancelled() }}
         # THE HANG CEILING IS A CEILING, NOT A BUDGET, AND THIS SELF-TEST IS LEGITIMATELY LONG.
         # `gates::DEFAULT_GATE_CEILING` is 300s, which is the right number for a gate RUN and the
         # wrong one for a self-test that plants fifty-eight trees and runs the whole gate over each:
@@ -894,6 +899,8 @@ jobs:
           XTASK_GATE_CEILING_SECS_KIND_ISOLATION: "1800"
         run: cargo xtask gate kind-isolation --selftest
       - name: Kind-isolation gate (BLOCKING — no name, edge, word or root wiring fuses two kinds)
+        # Its verdict is trusted only after its own self-test passed, never after an unrelated one.
+        if: ${{ !cancelled() && steps.ki_selftest.outcome == 'success' }}
         # `--posture`: the Phase 4 drain debt on `:deps`, `:test-deps`, `:closure` and `:matrix` is
         # excused FINDING BY FINDING against qa/kind-isolation.standing.txt, which only shrinks. A new
         # edge, cell or rise under those rows, and any red on every other row, still fails this step.
