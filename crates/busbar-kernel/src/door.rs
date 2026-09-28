@@ -11,3 +11,16 @@ use busbar_contract::caps::{Admission, Admittance, Grant, Hold, PrincipalId};
 pub fn admitted_at_zero(admit_token: &Grant<Admittance>, principal: PrincipalId) -> Admission {
     Admission::Own(Hold::open(admit_token, principal, 0))
 }
+
+/// THE NODE'S ONE UNIT-KEY ALLOCATOR, from 1. A unit's identity is the kernel's to mint: a plane
+/// that needs a key for a table it keeps (a served session's open calls) takes it from here.
+#[derive(Debug, Default)]
+pub struct UnitKeyMint(std::sync::atomic::AtomicU64);
+
+impl UnitKeyMint {
+    /// The next key, unique on this node.
+    pub fn mint(&self) -> busbar_contract::ids::UnitKey {
+        let n = self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        busbar_contract::ids::UnitKey::new(n + 1)
+    }
+}

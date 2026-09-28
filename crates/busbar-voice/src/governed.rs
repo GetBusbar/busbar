@@ -19,7 +19,6 @@
 //! how a call ended, so the port reads it.
 
 use std::collections::{BTreeMap, HashMap};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use busbar_contract::dest::ClientMode;
@@ -227,9 +226,9 @@ impl OpenToolCalls {
 pub struct NodeCalls {
     table: Arc<OpenToolCalls>,
     /// The unit key each planned client-served leg is entered under. A served session runs no unit
-    /// per call, so the port mints one: unique on this node, which is all the table's per-session
-    /// map needs of it.
-    next_unit: AtomicU64,
+    /// per call, so the port takes one from the kernel's allocator: unique on this node, which is
+    /// all the table's per-session map needs of it.
+    keys: busbar_kernel::door::UnitKeyMint,
 }
 
 impl NodeCalls {
@@ -238,7 +237,7 @@ impl NodeCalls {
     pub fn new(table: Arc<OpenToolCalls>) -> Self {
         NodeCalls {
             table,
-            next_unit: AtomicU64::new(1),
+            keys: busbar_kernel::door::UnitKeyMint::default(),
         }
     }
 
@@ -260,7 +259,7 @@ fn tool_call(call_id: &str) -> CorrelationRef<'_> {
 
 impl GovernedCalls for NodeCalls {
     fn planned(&self, session: u64, call_id: &str, now_ms: u64) -> bool {
-        let unit = UnitKey::new(self.next_unit.fetch_add(1, Ordering::Relaxed));
+        let unit = self.keys.mint();
         self.table
             .planned(
                 session,

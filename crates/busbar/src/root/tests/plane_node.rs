@@ -1202,7 +1202,7 @@ async fn drive_keeping_the_unit(
         path: None,
     };
     let (principal, op_class, _proto, build) = plane::handed_seated(arrival, None, seats);
-    let key = UnitKey::new(node.next_key.fetch_add(1, Ordering::Relaxed));
+    let key = node.next_key.mint();
     let meter = Arc::new(AccrualMeter::new());
     let (units, route, _finish) = build((node.resolver(), Arc::clone(&meter), EPOCH));
     let history = crate::root::kernel::ROOT_CARD.pin();
@@ -4022,7 +4022,7 @@ async fn a_served_rerank_puts_identical_search_units_on_both_books() {
         }),
     };
     let arrived = Arrived::at(EPOCH * 1_000, 0);
-    let key_n = UnitKey::new(node.next_key.fetch_add(1, Ordering::Relaxed));
+    let key_n = node.next_key.mint();
     // THE UNIT, as the plane's path arrival hands it to the node.
     let (principal, op_class, _proto, build) = plane::handed(arrival, None);
     let meter = Arc::new(AccrualMeter::new());
