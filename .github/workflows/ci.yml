@@ -698,6 +698,16 @@ jobs:
         run: cargo xtask gate money-invariants --selftest
       - name: Money-invariants gate (BLOCKING — no plugin-keyed money, no stored price, one seal site)
         run: cargo xtask gate money-invariants --posture
+      # PLANE-PRICING-BLINDNESS (#43/#71), THE PHASE 2 EXIT TEST'S THIRD LEG: a plane crate opens no
+      # hold, mints no unit key, resolves no card and prices nothing — the kernel does. Its baseline
+      # (qa/plane-pricing-blindness.toml) is EMPTY since the Phase 2 close, so it runs here plainly,
+      # BLOCKING on every push. It ran only at release time and inside the report-only `--all`, and
+      # that is how two plane money acts landed and stayed unseen for two days. Every phase EXIT TEST
+      # command is a blocking CI step. Self-test first.
+      - name: Plane-pricing-blindness self-test (the plane money-act scanner cannot be lied to)
+        run: cargo xtask gate plane-pricing-blindness --selftest
+      - name: Plane-pricing-blindness gate (BLOCKING — a plane performs no money act; Phase 2 exit)
+        run: cargo xtask gate plane-pricing-blindness
       # SEAL-WITNESS (#77): the money facts-line seal has exactly ONE root minter, spelled only inside
       # the kernel crate — a second minter anywhere else is a second book. This is the money-model
       # sibling of money-invariants above; it runs on every push for the same reason. Self-test FIRST,

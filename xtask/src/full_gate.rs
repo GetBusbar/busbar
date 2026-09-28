@@ -112,6 +112,8 @@ pub const CARGO_LOCAL: &[&str] = &[
     "cargo xtask gate kernel-token-wire-purity",
     "cargo xtask gate money-invariants --selftest",
     "cargo xtask gate money-invariants --posture",
+    "cargo xtask gate plane-pricing-blindness --selftest",
+    "cargo xtask gate plane-pricing-blindness",
     "cargo xtask gate seal-witness --selftest",
     "cargo xtask gate seal-witness",
     "cargo xtask gate no-float-money --selftest",
@@ -566,30 +568,6 @@ pub const REGISTRY_NOT_IN_CI: &[(&str, &str, Excuse)] = &[
         Excuse::ReleaseRun(
             "scripts/verify-1.6.0-done.sh",
             "cargo xtask gate reachability",
-        ),
-    ),
-    (
-        "plane-pricing-blindness",
-        "DECISION #43's witness — planes always ledger, and the money acts (resolve a card, price, \
-         mint a unit key, arithmetic a hold) are kernel-side. It is RED ON HEAD BY DESIGN, and the \
-         #83 roster said so before this gate ever measured it: the SPLIT row for \
-         busbar-{llm,mcp,a2a,voice} reads `Session, turn and dialect rules -> 16-20. But \
-         unit/{admit,approve,meter,route} and runtime/metering.rs decide admission and price - \
-         that is defs 5/6, not a plane.` This gate is that sentence made mechanical. It reds on 11 \
-         files across busbar-llm and busbar-voice — including `engine/usage.rs`'s \
-         `if host.cost_pricing_enabled(..)`, which is the literal branch #43 outlaws — and is \
-         GREEN on all five EXTRACTED busbar-plane-* crates, whose 125 `rate_card|nanos|price|spend` \
-         grep hits are prose. That separation is its red-before-green proof. Excused from ci.yml \
-         because a gate that is red every push is a gate somebody puts a `|| true` in front of; \
-         MOVE IT TO ci.yml when qa/plane-pricing-blindness.toml is empty. Its VERDICT is a \
-         release-time question (Tier::Full, item 185) and runs in full on the sha being staged: \
-         release-stage.yml's `done-oracle` job runs the gate plainly, on every push to qa, and that \
-         run gates the promotion. This entry used to rest on the SELFTEST alone \
-         (xtask/tests/plane_pricing_blindness.rs, still run under `cargo test --workspace --locked` \
-         on every push) — which proves the scanner can be driven red and ran the verdict nowhere.",
-        Excuse::ReleaseScript(
-            ".github/workflows/release-stage.yml",
-            "run: cargo xtask gate plane-pricing-blindness\n",
         ),
     ),
     (
