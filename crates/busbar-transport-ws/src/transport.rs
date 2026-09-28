@@ -707,17 +707,18 @@ impl Transport for WsTransport {
                             // otherwise both try to write, which is a second frame after a close no peer
                             // is still parsing.
                             //
-                            // DEREGISTERING is not optional either. Flushing the reply satisfies the WS
-                            // *frame* layer, but RFC 6455 §7.1.1 also puts the underlying TCP teardown on
-                            // this (server) side, and a peer's WebSocket library — `ws`, browsers, every
-                            // one Autobahn drives — waits for the SOCKET to end, not merely for the reply
-                            // frame, before it calls the handshake closed. `self.conns` is the only other
-                            // owner of this connection's `Arc<ConnState>` ("the fence goes up before
-                            // anything is spawned" doc on `close()`, above); removing this id from it
-                            // drops the last reference once this pump's own local `state` clone goes out
-                            // of scope, which drops `reader`/`writer` and, with them, the socket — the
-                            // FIN the peer is waiting for. Left registered, the reply frame answers the
-                            // WS-level handshake and the TCP connection leaks for the rest of the
+                            // DEREGISTERING is not optional either. Flushing the reply satisfies the
+                            // *frame* layer, but RFC 6455 §7.1.1 also puts the underlying connection's
+                            // teardown on this (server) side, and a peer's WebSocket library — the far
+                            // side's own stack, browsers, every one Autobahn drives — waits for the
+                            // SOCKET to end, not merely for the reply frame, before it calls the
+                            // handshake closed. `self.conns` is the only other owner of this
+                            // connection's `Arc<ConnState>` ("the fence goes up before anything is
+                            // spawned" doc on `close()`, above); removing this id from it drops the
+                            // last reference once this pump's own local `state` clone goes out of
+                            // scope, which drops `reader`/`writer` and, with them, the socket — the end
+                            // the peer is waiting for. Left registered, the reply frame answers the
+                            // frame-level handshake and the connection leaks for the rest of the
                             // process, which every peer sees as a hang, not a close.
                             Some(Ok(Message::Close(_))) => {
                                 if state
