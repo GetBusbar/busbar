@@ -211,13 +211,6 @@ impl FixtureHost {
         self
     }
 
-    /// Install a type-erased plane runtime slot under `key`, read back through `plane_slot`.
-    #[must_use]
-    pub fn with_plane_slot(self, key: &str, slot: Arc<dyn std::any::Any + Send + Sync>) -> Self {
-        self.lock().slots.insert(key.to_string(), slot);
-        self
-    }
-
     /// Finish the builder as the `Arc<dyn EngineHost>` a plane's production path takes.
     #[must_use]
     pub fn into_host(self) -> Arc<dyn EngineHost> {

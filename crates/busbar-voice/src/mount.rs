@@ -298,18 +298,6 @@ pub(crate) fn composed_gemini_provider() -> Option<&'static ProviderEndpoint> {
     COMPOSED_PROVIDER_GEMINI.get()
 }
 
-/// Whether a Gemini Live provider endpoint has been composed.
-#[must_use]
-pub fn gemini_provider_composed() -> bool {
-    COMPOSED_PROVIDER_GEMINI.get().is_some()
-}
-
-/// The composed Gemini provider's ORIGIN (never its key).
-#[must_use]
-pub fn composed_gemini_provider_base_url() -> Option<&'static str> {
-    COMPOSED_PROVIDER_GEMINI.get().map(|p| p.base_url.as_str())
-}
-
 // ── THE NODE'S OPEN-CALL TABLE, AS A SERVED SESSION REACHES IT ───────────────────────────────────
 //
 // The runtime declares the port (`crate::runtime::GovernedCalls`) and the node's table implements it
