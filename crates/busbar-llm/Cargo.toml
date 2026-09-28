@@ -75,7 +75,7 @@ busbar-kernel = { path = "../busbar-kernel", default-features = false, features 
 # the claims it declares, so the root names neither (the edge `busbar-mcp` -> `busbar-plane-mcp` has).
 # ALSO THE CODECS (owner ruling R7, 2026-09-27): the dialect readers/writers, the IR, the stream
 # translator and the answer-normalization pass live in `busbar-plane-llm`'s `codec` module now — no
-# `busbar-*-codec` crate (THE DESIGN §9/#39) — and this crate re-exports every module that folded in
+# `busbar-*-codec` crate (`BUSBAR-1.6.0.md` THE DESIGN, §9/#39) — and this crate re-exports every module that folded in
 # under its old name (`lib.rs`), so a caller spelling `busbar_llm::proto_codec::…` still resolves it.
 busbar-plane-llm = { path = "../busbar-plane-llm" }
 axum = { workspace = true }

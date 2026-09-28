@@ -1254,7 +1254,7 @@ jobs:
       # actually run and go green.
       #
       # `busbar-voice-codec` HAD NO ROW HERE ANY MORE (owner ruling R7, 2026-09-27, THE DESIGN
-      # §9/#39): it dissolved into `busbar-plane-streaming`'s own `codec` module, and the Twilio
+      # `BUSBAR-1.6.0.md` §9/#39): it dissolved into `busbar-plane-streaming`'s own `codec` module, and the Twilio
       # Media Streams grammar's tests (`codec/topology/tests/twilio_tests.rs`) were UNGATED by the
       # same fold — the plane declares no features, so they now compile and run unconditionally as
       # part of the ordinary `cargo test --workspace` step above. There is nothing left for this step
@@ -1268,7 +1268,7 @@ jobs:
           # 100 -> 92: the 8 Twilio Media Streams grammar tests
           # (`busbar-plane-streaming/src/codec/topology/tests/twilio_tests.rs`) left this step's
           # count when the codec fold ungated them into the ordinary `cargo test --workspace` step
-          # above (owner ruling R7, 2026-09-27, THE DESIGN §9/#39). Equal totals, moved, not lost.
+          # above (owner ruling R7, 2026-09-27, `BUSBAR-1.6.0.md` THE DESIGN, §9/#39). Equal totals, moved, not lost.
           VOICE_MIN_TESTS: "92"
         # `set -uo pipefail` + PIPESTATUS[0], matching the workspace / no-default-features / windows
         # steps. Without it `cargo … | tee` reports TEE's exit status, which is 0 whether cargo

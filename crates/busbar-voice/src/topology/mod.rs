@@ -16,7 +16,7 @@
 pub mod minter_https;
 pub mod telephony;
 /// MOVED to `busbar-plane-streaming`'s `codec` module (owner ruling R7, 2026-09-27, THE DESIGN
-/// §9/#39: no `busbar-*-codec` crate — the former `busbar-voice-codec` folded in there): the Twilio
+/// `BUSBAR-1.6.0.md` §9/#39: no `busbar-*-codec` crate — the former `busbar-voice-codec` folded in there): the Twilio
 /// Media Streams messages are a GRAMMAR, not a dial — a total function from a frame to an IR event
 /// and back — so they travelled with the IR they map onto. Re-exported here under the old in-crate
 /// path so `crate::topology::twilio::…` and `busbar_voice::topology::twilio::…` resolve unchanged.

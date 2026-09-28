@@ -1204,7 +1204,7 @@ if assert_bless_env_empty >/tmp/done-oracle-step.$$ 2>&1; then
   step "resolved billing+limits config byte-stable" filtered_cargo_test 1  cargo test -p busbar-kernel --quiet resolved_billing_and_limits_config_is_byte_stable
   # The six `*_round_trip_byte_exact` oracles live in busbar-plane-llm's folded-in `codec` module
   # (crates/busbar-plane-llm/src/codec/tests/proto/same_proto_fidelity_tests.rs; owner ruling R7,
-  # 2026-09-27, THE DESIGN §9/#39 — `busbar-llm-codec` dissolved into it), not in busbar-llm.
+  # 2026-09-27, `BUSBAR-1.6.0.md` THE DESIGN, §9/#39 — `busbar-llm-codec` dissolved into it), not in busbar-llm.
   step "6 same-proto byte-exact oracles"            filtered_cargo_test 6  cargo test -p busbar-plane-llm --quiet round_trip_byte_exact
 else
   printf '  \033[31m[RED]\033[0m  bless/regen env is NOT empty — refusing byte-identity (would regenerate goldens)\n'

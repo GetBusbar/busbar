@@ -199,7 +199,7 @@ TOMLPY
 # every dialect the deleted plugin carried is refused; the list it iterated was a hand-typed string
 # nothing counted, under a closing line claiming "all six". A seventh `&x::DECL` in DECLS would have
 # been probed by nobody while the claim stood. This reads `DECLS` in the codec's `mod.rs` (owner
-# ruling R7, 2026-09-27, THE DESIGN §9/#39: `busbar-llm-codec` folded into `busbar-plane-llm` as its
+# ruling R7, 2026-09-27, `BUSBAR-1.6.0.md` THE DESIGN, §9/#39: `busbar-llm-codec` folded into `busbar-plane-llm` as its
 # `codec` module, so its former crate-root `lib.rs` is now `codec/mod.rs`), then each listed module's
 # `DECL` `name:` -- the string an operator writes as `protocol:`.
 # $1 = the codec module's src dir. Prints the names in DECLS order; dies if any entry has no name.

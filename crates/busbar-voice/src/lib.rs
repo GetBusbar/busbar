@@ -35,7 +35,7 @@
 ///
 /// The plane-4 session intermediate representation (media, control, events, tools, session config,
 /// usage), the shared duplex reader/writer and the Gemini Live dialect live in `busbar-plane-streaming`'s
-/// `codec` module now (owner ruling R7, 2026-09-27, THE DESIGN §9/#39: no `busbar-*-codec` crate) —
+/// `codec` module now (owner ruling R7, 2026-09-27, `BUSBAR-1.6.0.md` THE DESIGN, §9/#39: no `busbar-*-codec` crate) —
 /// folded into the plane that already named them, rather than a separate crate. They are re-exported
 /// HERE, under their old name, so every caller that spells `busbar_voice::ir::…` resolves exactly
 /// what it always did. The fold is a MOVE: no item changed shape crossing it.

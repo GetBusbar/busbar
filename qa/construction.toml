@@ -2149,7 +2149,7 @@ which is the row that can name the home the call belongs in, so one site is neve
 # fixes a staleness defect. Adding unreviewed debt under cover of a repoint is the move this whole
 # exercise exists to refuse; widening llm is a separate edit that owes its own review.
 #
-# `crates/busbar-*-codec/src/*` IS GONE (owner ruling R7, 2026-09-27, THE DESIGN §9/#39: no
+# `crates/busbar-*-codec/src/*` IS GONE (owner ruling R7, 2026-09-27, `BUSBAR-1.6.0.md` THE DESIGN, §9/#39: no
 # `busbar-*-codec` crate). Unlike MCP/A2A's codec dissolution — which folded into the LEGACY ENGINE
 # crate (`busbar-mcp/src`, `busbar-a2a/src`), a root this glob list already names on its own line —
 # both remaining codecs (llm, voice) folded into their PLANE crate (`busbar-plane-llm`,

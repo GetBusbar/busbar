@@ -119,7 +119,7 @@ metrics = { workspace = true, optional = true }
 # (`busbar_plane_streaming::governed::{GovernedCalls, GovernedSession, ReplyRefusal}`) now lives there,
 # beside the correlation key a wait is entered under, and `crate::runtime` re-exports it under its
 # old name — so the port is unconditional and the dep cannot be feature-gated behind `test-support`.
-# (3) THE CODECS (owner ruling R7, 2026-09-27, THE DESIGN §9/#39: no `busbar-*-codec` crate) — the
+# (3) THE CODECS (owner ruling R7, 2026-09-27, `BUSBAR-1.6.0.md` THE DESIGN, §9/#39: no `busbar-*-codec` crate) — the
 # duplex IR and the dialect grammars folded into `busbar-plane-streaming`'s own `codec` module, a pure
 # move; this crate re-exports every module that folded in under its old name (`lib.rs`,
 # `topology/mod.rs`). The closure this adds to the shipped build is `busbar-contract` + `bytes`, both

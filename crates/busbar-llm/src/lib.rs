@@ -108,7 +108,7 @@ mod alloc_gate_instrument {
 ///
 /// The six dialect modules, the concrete IR, the chat/leaf handles, the wire-codec surface, the
 /// stream translator and the answer-normalization helpers all live in `busbar-plane-llm`'s `codec`
-/// module now (owner ruling R7, 2026-09-27, THE DESIGN §9/#39: no `busbar-*-codec` crate) — folded
+/// module now (owner ruling R7, 2026-09-27, `BUSBAR-1.6.0.md` THE DESIGN, §9/#39: no `busbar-*-codec` crate) — folded
 /// into the plane that already named them, rather than a separate crate. They are re-exported HERE,
 /// under their old names, so every caller that spells `busbar_llm::proto_codec::…`,
 /// `busbar_llm::anthropic::…`, `busbar_llm::ir::…` resolves exactly what it always did. The fold is

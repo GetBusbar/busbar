@@ -629,7 +629,7 @@ fn measure(cx: &Ctx, crates: &[CrateInfo]) -> Result<Measured, String> {
         let Some(per_kind) = plan.get(dir.as_str()) else {
             continue;
         };
-        // §11.5 "One place for every ABI shape": every ABI shape lives in ONE place,
+        // `BUSBAR-1.6.0.md` §11.5 "One place for every ABI shape": every ABI shape lives in ONE place,
         // `busbar-contract/src/abi/` — the seven kinds' operations, data shapes and versions
         // legitimately live and cross-reference each other there (`abi/store/` naming `abi/auth/`'s
         // shapes is the mechanism working, not a coupling). So the MATRIX — this row's crate × kind
@@ -692,7 +692,7 @@ fn measure(cx: &Ctx, crates: &[CrateInfo]) -> Result<Measured, String> {
 /// other crate may name.
 const CONTRACT_PACKAGE: &str = "busbar-contract";
 
-/// THE ONE DESIGNATED HOME OF EVERY ABI SHAPE (`BUSBAR-1.6.0.md` THE DESIGN §11.5, "One place for
+/// THE ONE DESIGNATED HOME OF EVERY ABI SHAPE (`BUSBAR-1.6.0.md` THE DESIGN, §11.5, "One place for
 /// every ABI shape" — "Every ABI shape lives only in `busbar-contract/src/abi/`"). ARCHITECT ruling
 /// 2026-09-27 scopes the MATRIX's crate × kind counting to exclude this directory in the
 /// `busbar-contract` row: the seven kinds' shapes legitimately live and cross-reference one another
@@ -2359,7 +2359,7 @@ pub fn selftest<'a>(
         &["busbar-kernel", "store"],
     ));
 
-    // §11.5's SCOPED EXEMPTION, BOTH WAYS. ARCHITECT ruling 2026-09-27: the MATRIX never files a hit
+    // `BUSBAR-1.6.0.md` §11.5's SCOPED EXEMPTION, BOTH WAYS. ARCHITECT ruling 2026-09-27: the MATRIX never files a hit
     // inside `busbar-contract/src/abi/` into any cell, because that directory is the ONE designated
     // home every kind's ABI shapes legitimately cross-reference (`is_contract_abi_shape`). The
     // exemption is scoped to THIS counting, not to `busbar-contract` wholesale — the same noun one
@@ -3222,7 +3222,7 @@ mod tests {
         assert_eq!((a, b), (1, 1));
     }
 
-    /// THE OTHER GATE STILL BITES. The §11.5 exemption [`super::is_contract_abi_shape`] adds is
+    /// THE OTHER GATE STILL BITES. The `BUSBAR-1.6.0.md` §11.5 exemption [`super::is_contract_abi_shape`] adds is
     /// `:matrix`'s alone — instance-noun-neutrality reads nothing this module writes, and this is
     /// the proof rather than the assumption: a code reference (not a comment — that gate strips
     /// comments before matching, unlike `:matrix`, which is why the plant is a real `const`) to

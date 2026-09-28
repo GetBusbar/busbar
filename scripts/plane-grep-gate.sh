@@ -126,7 +126,7 @@ MCP_NEEDLES="$DIALECTS $(plane_keys_other mcp)"
 # which this needle gate does not read — a plane-kind crate is held to the plugin-kind rules instead.
 A2A_ROOT="crates/busbar-a2a/src"
 A2A_NEEDLES="$DIALECTS $(plane_keys_other a2a)"
-# VOICE IS ONE ROOT NOW TOO, same reason (owner ruling R7, 2026-09-27, THE DESIGN §9/#39):
+# VOICE IS ONE ROOT NOW TOO, same reason (owner ruling R7, 2026-09-27, `BUSBAR-1.6.0.md` THE DESIGN, §9/#39):
 # `busbar-voice-codec` dissolved into `busbar-plane-streaming`'s own `codec` module, a plane-kind
 # crate this needle gate does not read.
 VOICE_ROOT="crates/busbar-voice/src"
