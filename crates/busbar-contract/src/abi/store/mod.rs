@@ -38,12 +38,14 @@
 //! [`DeadlineClass`], its `in`/`out` sizes and its payload bound. Network stores pend through
 //! driver tickets; the memory store is always READY (B.1 "Behaviour"), so every slot is `may_pend`.
 //!
-//! * REQUEST-PATH results go into HOST buffers the `in` names ([`HostBuf`], [`HostBlobs`],
-//!   [`HostSessions`], [`HostRecords`]) or the `out` names (`reserve`'s grants, `slice_release`'s
-//!   released amounts). THE RESIZE RULE: a variable-length result states its full size in the `out`
-//!   (`len`, `items_len`, `bytes_len`); when it does not fit the capacity the plugin writes none of
-//!   it and answers READY with the sizes, and the host re-issues the op with buffers that large
-//!   (mechanism memory class (i)).
+//! * REQUEST-PATH results go into HOST buffers the `in` names, pointer + capacity ([`HostBuf`],
+//!   [`HostBlobs`], [`HostSessions`], [`HostRecords`], `reserve`'s grants, `slice_release`'s
+//!   released amounts), never in the `out`, which the host zeroes before every call (mechanism
+//!   memory class (i); ARCHITECT 2026-09-28). THE SHORT-BUFFER RULE (all kinds, ARCHITECT
+//!   2026-09-28): the `out` states what was written and what is needed. A result that does not
+//!   fit is answered FAILED with nothing written and every `needed_*` above its capacity; the host
+//!   makes ONE fresh re-call with buffers that large, and a second short answer is FAULT. The
+//!   answer validators in [`check`] enforce it.
 //! * OFF-PATH results (the 1.5.5 lists and single records, `heads`) are plugin-owned under the
 //!   `out`'s lease until `release(lease)` (mechanism memory class (iv)); secret material is a
 //!   [`BLOB_SECRET`](crate::abi::mechanism::call::BLOB_SECRET) blob, zeroised on release.
@@ -61,13 +63,24 @@
 //! Every additive or appending write carries an [`OpId`] and uses [`DeadlineClass::WriteBehind`]
 //! (B.1 "Writes"); `reserve` and `slice_release` carry one on the request path with
 //! [`DeadlineClass::Call`] (m3-inputs "store v3 money slots", `reserve`/`slice_release`). The
-//! rule, the same on every such slot (m3-inputs "store v3 money slots", DEDUPE):
-//! * the same `op_id` replayed with the same body returns the ORIGINAL `out` and applies nothing;
-//! * dedupe is DURABLE: it survives a store restart, and an `op_id` is remembered at least
-//!   [`OP_ID_RETENTION_SECS`] (24 h);
-//! * the same `op_id` with a DIFFERENT body is never applied: the store answers REFUSED with the
-//!   diagnostic [`DIAG_OPID_CONFLICT`].
+//! rule, the same on every such slot (m3-inputs "store v3 money slots", DEDUPE, and "STORE v3 MONEY
+//! RULINGS" S1-S4):
+//! * S1 REPLAY: the same `op_id` replayed with the same body applies nothing and returns the
+//!   ORIGINAL `out`; where the result lives in a host buffer the `in` names (`reserve`'s grants,
+//!   `slice_release`'s released amounts) the replay RE-WRITES the ORIGINAL results into the NEW
+//!   call's host buffers.
+//! * S2 SAME BODY means the op's VALUE fields only: the epoch, the cells or items, the amounts, the
+//!   caps and the window fields. Host-buffer pointers and capacities are EXCLUDED. The same `op_id`
+//!   with different value fields is never applied: the store answers REFUSED with the diagnostic
+//!   [`DIAG_OPID_CONFLICT`].
+//! * S3 WHAT IS RECORDED under an `op_id`: only an outcome that APPLIED a change (READY). A FAILED
+//!   or REFUSED answer with nothing applied is NOT recorded, so a retry with the same `op_id` is
+//!   evaluated afresh; a short-buffer REFUSED is never recorded.
+//! * S4 RETENTION: dedupe is DURABLE (it survives a store restart) and an `op_id` is remembered at
+//!   least [`OP_ID_RETENTION_SECS`] (24 h). The kernel never re-issues an `op_id` older than that,
+//!   and a store treats an `op_id` it does not know as new.
 
+pub mod check;
 mod layout;
 pub mod ledger;
 pub mod money;
@@ -112,8 +125,9 @@ pub struct HostBlobs {
     pub bytes: HostBuf,
 }
 
-/// The `out` of a request-path single-value read into a [`HostBuf`] (THE RESIZE RULE: `len` is the
-/// full length; `len > cap` means nothing was written and the host re-issues with `cap >= len`).
+/// The `out` of a request-path single-value read into a [`HostBuf`] (THE SHORT-BUFFER RULE: on
+/// READY `written` bytes are in the buffer and `needed == 0`; a value over the capacity is FAILED
+/// with `written == 0` and `needed` its full length).
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct HostBytesOut {
@@ -123,25 +137,31 @@ pub struct HostBytesOut {
     pub found: u32,
     /// Alignment padding.
     pub _reserved: u32,
-    /// The value's full length in bytes.
-    pub len: usize,
+    /// How many bytes were written.
+    pub written: u64,
+    /// On a short FAILED, the value's full length; `0` otherwise.
+    pub needed: u64,
 }
 
-/// The `out` of a request-path list written into host buffers (THE RESIZE RULE: `items_len` and
-/// `bytes_len` are the full sizes; if either exceeds its capacity nothing was written and the host
-/// re-issues with buffers that large).
+/// The `out` of a request-path list written into host buffers (THE SHORT-BUFFER RULE: on READY
+/// `items_written` items and `bytes_written` bytes are in the buffers and both `needed_*` are `0`;
+/// a list over either capacity is FAILED with nothing written and the full sizes in `needed_*`).
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct HostListOut {
     /// The head.
     pub head: OutHead,
-    /// How many items the whole answer holds.
-    pub items_len: usize,
-    /// How many bytes the whole answer's items need in the byte buffer.
-    pub bytes_len: usize,
+    /// How many items were written.
+    pub items_written: u64,
+    /// How many bytes of the byte buffer the written items use.
+    pub bytes_written: u64,
+    /// On a short FAILED, how many items the whole answer holds; `0` otherwise.
+    pub needed_items: u64,
+    /// On a short FAILED, how many bytes the whole answer needs; `0` otherwise.
+    pub needed_bytes: u64,
 }
 
-/// [`HostBytesOut::found`]: the record exists and was written (or sized).
+/// [`HostBytesOut::found`]: the record exists and was written.
 pub const FOUND: u32 = 1;
 /// [`HostBytesOut::found`] / [`LeasedBlobOut::found`]: no such record. `0`, so an `out` nobody
 /// wrote reads as absent, never as a record.

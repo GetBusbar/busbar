@@ -392,15 +392,27 @@ fn the_store_kind_has_its_stated_layout() {
     );
     pin!(
         store::HostBytesOut,
-        112,
+        120,
         8,
-        [head = 0, found = 96, _reserved = 100, len = 104]
+        [
+            head = 0,
+            found = 96,
+            _reserved = 100,
+            written = 104,
+            needed = 112
+        ]
     );
     pin!(
         store::HostListOut,
-        112,
+        128,
         8,
-        [head = 0, items_len = 96, bytes_len = 104]
+        [
+            head = 0,
+            items_written = 96,
+            bytes_written = 104,
+            needed_items = 112,
+            needed_bytes = 120
+        ]
     );
     pin!(
         store::LeasedBlobOut,

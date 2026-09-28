@@ -7,10 +7,10 @@
 //! dimension, wanted, epoch); dimension ∈ {NanoUnits, Requests, Concurrency, Class(key)}; a chain
 //! draw is all or nothing.
 //!
-//! DEDUPE, the same on every slot here: the module rule in [`super`] ("Dedupe"). The same `op_id`
-//! with the same body returns the ORIGINAL `out` and applies nothing, durably across a store
-//! restart, for at least [`super::OP_ID_RETENTION_SECS`]; with a different body it is REFUSED with
-//! [`super::DIAG_OPID_CONFLICT`] and never applied.
+//! DEDUPE, the same on every slot here: the module rule in [`super`] ("Dedupe", S1-S4): a replay
+//! with the same value fields applies nothing, returns the ORIGINAL `out` and re-writes the
+//! original grants or released amounts into the NEW call's host buffers; different value fields
+//! are REFUSED with [`super::DIAG_OPID_CONFLICT`]; only a READY that applied a change is recorded.
 
 use crate::abi::mechanism::call::{AbiStr, Blob, InHead, OutHead};
 
@@ -88,7 +88,8 @@ pub struct UnitCell {
 pub struct CellGrant {
     /// The store's handle for the slice, spoken back on `slice_release`.
     pub slice_id: u64,
-    /// How much was granted: `0 < granted ≤` the cell's `amount`.
+    /// How much was granted: EXACTLY the cell's `amount`. There is no partial grant ([`ReserveIn`]
+    /// "GRANT SIZE", the 1.5.5 rule, STORE v3 MONEY RULINGS S5).
     pub granted: u64,
     /// When the node must stop drawing against it (ms).
     pub valid_until_ms: u64,
@@ -110,10 +111,28 @@ pub const RESERVE_NO_CAP: u32 = 4;
 ///
 /// Each cell draws from its `(bucket, pool, dimension, class_key, window_start)` slot, capped by
 /// the cap `window_caps` last set for it; one reserve is one all-or-nothing chain draw even across
-/// cells in different windows ("window caps" correction). ATOMIC: if ANY cell would grant 0, the store applies
-/// NOTHING and answers FAILED with a [`ReserveOut::reason`] and `grants_len == 0`. A node-local
+/// cells in different windows ("window caps" correction). ATOMIC: if ANY cell would grant 0, the
+/// store applies NOTHING and answers FAILED with a [`ReserveOut::reason`] and `grants_len == 0`. A node-local
 /// store (Statement tail `ephemeral`) holds one constant epoch and never answers
 /// [`RESERVE_STALE_EPOCH`] (store_adapter.rs module doc, "Slices"). Deduped on `op_id`.
+///
+/// GRANT SIZE, PINNED TO 1.5.5 (STORE v3 MONEY RULINGS S5). 1.5.5 never granted PART of a draw:
+/// its admission checked every capped bucket of the chain and either charged all of them or
+/// none (v1.5.5 `crates/busbar/src/governance/state.rs:1588-1604` `try_admit`, `:1791-1800` the
+/// per-metric test). So a cell grants its WHOLE `amount` or the reserve fails
+/// [`RESERVE_EXHAUSTED`]; a READY grant is ALWAYS `granted == amount`, and a store never grants
+/// partially. Every cell's `amount` is above `0`. `used` is the cell's slot total in its window,
+/// and the test per dimension is exactly 1.5.5's:
+/// * [`DIM_REQUESTS`]: exhausted iff `used + amount > cap` (state.rs:1791-1793,
+///   `requests.saturating_add(1) > cap`);
+/// * [`DIM_CLASS`] (the token meters): exhausted iff `used >= cap` (state.rs:1796,
+///   `tokens >= cap`: best effort, the draw that crosses the cap is granted whole);
+/// * [`DIM_NANO_UNITS`] (budget): exhausted iff `used >= cap || used + amount > cap`
+///   (state.rs:1798-1800, `derived >= cap || derived.saturating_add(fee) > cap`);
+/// * [`DIM_CONCURRENCY`]: exhausted iff `used + amount > cap`, the gauge's compare-and-increment
+///   (state.rs:1662-1665, `(v < cap).then_some(v + 1)`).
+///
+/// `used + amount` is CHECKED arithmetic: an overflow is [`RESERVE_EXHAUSTED`].
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct ReserveIn {
@@ -141,8 +160,10 @@ pub struct ReserveIn {
 /// On READY the store has written one grant per cell into the host's array and
 /// `grants_len == cells_len`. On FAILED nothing is written, `grants_len == 0` and `reason` is one
 /// of [`RESERVE_EXHAUSTED`], [`RESERVE_STALE_EPOCH`], [`RESERVE_UNAVAILABLE`], [`RESERVE_NO_CAP`].
-/// FAILED with reason `0` or a reason not listed reads as [`RESERVE_UNAVAILABLE`]. READY with
-/// `grants_len != cells_len`, a grant outside `(0, amount]`, or `reason != 0` is FAULT.
+/// FAILED with a reason outside 1-4, or a `failed_cell` that is neither below `cells_len` nor
+/// [`RESERVE_NO_FAILED_CELL`], is FAULT; READY with `grants_len != cells_len`, a grant other than
+/// the cell's whole `amount` (a partial grant), `reason != 0` or a named `failed_cell` is FAULT
+/// ([`super::check::check_reserve`]).
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct ReserveOut {
@@ -200,7 +221,9 @@ pub struct SliceReleaseIn {
 /// `slice_release`'s `out` (m3-inputs "store v3 money slots", `slice_release`; the amounts go into
 /// [`SliceReleaseIn::released`]). On READY the store has written, per item in order, the amount it
 /// actually took back after clamping, and `released_len == items_len`. READY with any other
-/// `released_len`, or an amount over what that slice had left, is FAULT.
+/// `released_len`, or an amount over the item's `unspent`, is FAULT. FAILED (the store could not be
+/// reached, a stale epoch, an unknown slice) applies nothing and writes nothing: `released_len == 0`
+/// ([`super::check::check_slice_release`]).
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct SliceReleaseOut {
@@ -287,8 +310,9 @@ pub struct WindowCap {
 /// effect, as 1.5.5 read caps from live config); an EQUAL `config_gen` with a different cap is a
 /// conflict; a LOWER one is ignored. ATOMIC PER PUSH, like a batch: one conflict REFUSES the
 /// whole push, nothing applied, with [`super::DIAG_CAP_CONFLICT`] and an `OutHead.error` text
-/// naming the first conflicting cap's index ("window caps" correction (1)). The kernel pushes caps at `open`/`refresh`
-/// and BEFORE the first `reserve` of each new window.
+/// that BEGINS with the decimal index of the first conflicting cap ("window caps" correction
+/// (1); [`super::check::check_window_caps`]). The kernel pushes caps at `open`/`refresh` and
+/// BEFORE the first `reserve` of each new window.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct WindowCapsIn {

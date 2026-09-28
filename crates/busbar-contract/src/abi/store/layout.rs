@@ -26,20 +26,23 @@ pin!(HostBuf, 16, 8, ptr = 0, cap = 8);
 pin!(HostBlobs, 32, 8, items = 0, items_cap = 8, bytes = 16);
 pin!(
     HostBytesOut,
-    112,
+    120,
     8,
     head = 0,
     found = 96,
     _reserved = 100,
-    len = 104
+    written = 104,
+    needed = 112
 );
 pin!(
     HostListOut,
-    112,
+    128,
     8,
     head = 0,
-    items_len = 96,
-    bytes_len = 104
+    items_written = 96,
+    bytes_written = 104,
+    needed_items = 112,
+    needed_bytes = 120
 );
 pin!(
     LeasedBlobOut,

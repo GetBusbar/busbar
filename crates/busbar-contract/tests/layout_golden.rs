@@ -1169,8 +1169,22 @@ fn compute_layout() -> String {
     );
     record!(s, StoreHostBuf, [ptr, cap]);
     record!(s, StoreHostBlobs, [items, items_cap, bytes]);
-    record!(s, StoreHostBytesOut, [head, found, _reserved, len]);
-    record!(s, StoreHostListOut, [head, items_len, bytes_len]);
+    record!(
+        s,
+        StoreHostBytesOut,
+        [head, found, _reserved, written, needed]
+    );
+    record!(
+        s,
+        StoreHostListOut,
+        [
+            head,
+            items_written,
+            bytes_written,
+            needed_items,
+            needed_bytes
+        ]
+    );
     record!(s, StoreLeasedBlobOut, [head, found, _reserved, record]);
     record!(s, StoreLeasedListOut, [head, items, items_len]);
     record!(s, StoreLeasedStrListOut, [head, items, items_len]);
