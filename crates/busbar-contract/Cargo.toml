@@ -7,6 +7,16 @@ rust-version = "1.97"
 description = "The plugin-visible contract: the traits, closed grammars and bounded types every busbar plugin is written against, and nothing else."
 license = "Apache-2.0"
 
+# The door macro's test plugin (`abi::sdk::door`), loaded by the dropped-in leg
+# `tests/sdk_door_cdylib.rs`. It is an example, not a crate: `cargo test` builds it and it never
+# ships. It lives under `tests/` because it is a test double (its lifecycle-only table is a shape no
+# kind ships). It sits above the dependency section, which `tests/feature_invariance.rs` reads
+# line by line.
+[[example]]
+name = "sdk_door_plugin"
+path = "tests/fixtures/sdk_door_plugin.rs"
+crate-type = ["cdylib"]
+
 # DEPENDENCY POLICY (the core-to-plugin section of the design). This crate is the ONLY thing a
 # plugin manifest may name from busbar, so it must stand alone: it names no kernel crate, no
 # capability crate, no unit crate, no plane and no transport. Standard library, serde, and reviewed
