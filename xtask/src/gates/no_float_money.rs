@@ -439,7 +439,10 @@ pub const COUNT_READ_ROOTS: &[CountRoot] = &[
     // `crates/busbar-voice-codec/src` home is struck.
     CountRoot {
         area: "the audio codecs, engine and plane",
-        homes: &["crates/busbar-voice/src", "crates/busbar-plane-streaming/src"],
+        homes: &[
+            "crates/busbar-voice/src",
+            "crates/busbar-plane-streaming/src",
+        ],
         floor: 28,
     },
     // THE ONE FOLD THIS GROUP WAS BUILT FOR ACTUALLY HAPPENED, AND THE GROUP DID NOT MOVE WITH IT.
