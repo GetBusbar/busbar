@@ -61,13 +61,15 @@ pub fn plane_keys_other(self_key: &str) -> Vec<&'static str> {
 /// is NOT listed here for the same reason `crates/busbar-plane-mcp/src` is not: it is scanned by the
 /// PLANE-KIND regime instead, which already walks the whole crate directory, `codec` module
 /// included.
+///
+/// VOICE HAS NO `-codec` ROOT ANY MORE EITHER, same ruling: `busbar-voice-codec` dissolved into
+/// `busbar-plane-streaming`'s own `codec` module. `crates/busbar-plane-streaming/src` is NOT listed
+/// here for the same reason — the PLANE-KIND regime already walks it whole.
 pub fn plane_src_roots() -> Vec<String> {
-    let mut out: Vec<String> = PLANE_KEYS
+    PLANE_KEYS
         .iter()
         .map(|k| format!("crates/busbar-{k}/src"))
-        .collect();
-    out.push("crates/busbar-voice-codec/src".to_string());
-    out
+        .collect()
 }
 
 /// The NEUTRAL (ABI-side) src roots — the crates a plane must never leak into and that must still

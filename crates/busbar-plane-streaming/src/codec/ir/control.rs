@@ -9,7 +9,7 @@
 //! (a client-originated `SessionConfigure` is a HINT reconciled against the locked config, never
 //! trusted blind), and barge-in `audio_played_ms` is PLANE-COMPUTED IR state, not a wire field.
 
-use crate::ir::config::SessionConfig;
+use crate::codec::ir::config::SessionConfig;
 use serde::{Deserialize, Serialize};
 
 /// SEMANTIC-VAD EAGERNESS — how eagerly the model judges end-of-turn. The GA `semantic_vad` knob,
@@ -96,7 +96,7 @@ pub enum IrDuplexControl {
     InputAudioClear,
     /// Inject a conversation item (a non-tool message) — `conversation.item.create` whose `item` is
     /// carried VERBATIM as opaque JSON (a `function_call_output` item is modeled instead as
-    /// [`crate::ir::tool::IrDuplexTool::CallResult`]).
+    /// [`crate::codec::ir::tool::IrDuplexTool::CallResult`]).
     ItemCreate {
         /// The `item` object, opaque.
         item: serde_json::Value,

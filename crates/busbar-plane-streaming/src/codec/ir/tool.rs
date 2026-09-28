@@ -16,7 +16,7 @@ use bytes::Bytes;
 /// speaks OpenAI `call_id` be bridged to a Gemini Live tool-call that correlates by NAME, not id.
 ///
 /// An opaque newtype over a monotonic per-session counter, minted in
-/// [`crate::ir::codec::DecodeState`]. The `CallRef ↔ call_id` map lives there; each tool IR variant
+/// [`crate::codec::ir::codec::DecodeState`]. The `CallRef ↔ call_id` map lives there; each tool IR variant
 /// ALSO carries the raw wire `call_id` so the stateless writer can re-frame `function_call_output`
 /// without consulting the map.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

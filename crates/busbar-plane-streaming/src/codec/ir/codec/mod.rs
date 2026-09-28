@@ -10,7 +10,7 @@
 //!
 //! The dialect is OpenAI Realtime GA: every wire event is a JSON object tagged on a `type` field. The
 //! reader parses `WireEvent` bytes to a `serde_json::Value` and hand-maps by `type` (the LLM-plane
-//! convention — serde-derive is reserved for the [`crate::ir::config::SessionConfig`] object); the
+//! convention — serde-derive is reserved for the [`crate::codec::ir::config::SessionConfig`] object); the
 //! writer builds the JSON back. One wire event maps to 0..n IR events; a malformed / unrecognized
 //! frame yields an EMPTY vec (the streaming-decode discipline — degrade, don't error), except a
 //! dialect `error` event, which surfaces as [`IrServerEvent::Error`].
@@ -23,12 +23,12 @@
 //! framed whole at its close. Everything else a writer needs is still carried in the IR (each tool
 //! variant carries its raw `call_id`, so re-framing a `function_call_output` invents nothing).
 
-use crate::ir::config::SessionConfig;
-use crate::ir::control::IrDuplexControl;
-use crate::ir::event::{IrClientEvent, IrServerEvent};
-use crate::ir::media::{AudioFormat, IrAudioFrame, IrAudioRef, UpDown};
-use crate::ir::tool::{CallRef, IrDuplexTool};
-use crate::ir::usage::IrDuplexUsage;
+use crate::codec::ir::config::SessionConfig;
+use crate::codec::ir::control::IrDuplexControl;
+use crate::codec::ir::event::{IrClientEvent, IrServerEvent};
+use crate::codec::ir::media::{AudioFormat, IrAudioFrame, IrAudioRef, UpDown};
+use crate::codec::ir::tool::{CallRef, IrDuplexTool};
+use crate::codec::ir::usage::IrDuplexUsage;
 use bytes::Bytes;
 use serde_json::{json, Value};
 use std::collections::{HashMap, VecDeque};
@@ -395,7 +395,8 @@ impl DecodeState {
     /// clock when the runtime has fed one (no clock: the bytes stand alone, an upper bound).
     #[must_use]
     pub fn played_ms(&self) -> u64 {
-        let by_bytes = crate::ir::media::truncate_point_ms(self.played_bytes, self.output_fmt);
+        let by_bytes =
+            crate::codec::ir::media::truncate_point_ms(self.played_bytes, self.output_fmt);
         match self.played_clock_ms {
             Some(elapsed) => by_bytes.min(elapsed),
             None => by_bytes,
@@ -447,7 +448,7 @@ const USAGE_UNREADABLE: &str = "usage_unreadable";
 
 /// Read one BILLED count: an absent object, an absent field or a JSON `null` is 0 (no such quantity
 /// was reported), a readable count is the count (through the crate's one seam,
-/// [`crate::ir::usage::read_count_u64`]), and a present-but-UNREADABLE count is a REFUSAL (#42) —
+/// [`crate::codec::ir::usage::read_count_u64`]), and a present-but-UNREADABLE count is a REFUSAL (#42) —
 /// the old `unwrap_or_default` metered a count the provider really sent as zero, and every money view
 /// over that turn was then faithfully wrong. The error is the operator-facing message: the field and
 /// a BOUNDED spelling (cut on a character, so a hostile multi-byte spelling cannot panic the cut).
@@ -455,7 +456,7 @@ fn billed_count(o: Option<&Value>, key: &str) -> Result<u64, String> {
     match o.and_then(|x| x.get(key)) {
         None => Ok(0),
         Some(v) if v.is_null() => Ok(0),
-        Some(v) => crate::ir::usage::read_count_u64(v).ok_or_else(|| {
+        Some(v) => crate::codec::ir::usage::read_count_u64(v).ok_or_else(|| {
             let spelling: String = v.to_string().chars().take(64).collect();
             format!("usage field `{key}` is present but is not a count: {spelling}")
         }),

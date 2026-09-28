@@ -1740,7 +1740,7 @@ fn class_counts_are_the_lines_meter_emits_for_the_same_turn() {
         .collect();
     emitted.sort();
 
-    let usage = busbar_voice_codec::ir::IrDuplexUsage {
+    let usage = crate::codec::ir::IrDuplexUsage {
         audio_in: 10,
         audio_out: 20,
         text_in: 3,
@@ -1748,7 +1748,7 @@ fn class_counts_are_the_lines_meter_emits_for_the_same_turn() {
         cached: 1,
     };
     let mut counters = crate::session::TurnCounters::default();
-    counters.admit_audio(busbar_voice_codec::ir::AudioFormat::Pcm16, 48_000);
+    counters.admit_audio(crate::codec::ir::AudioFormat::Pcm16, 48_000);
     counters.open_tool_call();
     let mut counted: Vec<(String, u64)> = crate::session::class_counts(Some(&usage), counters)
         .into_iter()

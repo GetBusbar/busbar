@@ -1239,22 +1239,30 @@ jobs:
           fi
 
       # THE VOICE RUNTIME SUITE — the 4th plane's live duplex/session tests
-      # (crates/busbar-voice/src/runtime/tests.rs + crates/busbar-voice-codec/src/topology/tests/)
-      # live under `#[cfg(feature = "runtime")]`, which is OFF by default. The workspace `cargo test`
-      # above runs with default features, so those tests NEVER execute there, and the
-      # voice-conformance workflow only `cargo build`s the conform bin — nothing ran the tests until
-      # this step. Voice is dev-only until DoD, so this is a plain `--features runtime` run: no
-      # service containers, just the previously-dark plane suites made to actually run and go green.
-      # `busbar-voice-codec` is a SEPARATE crate from `busbar-voice` (the codec/topology split moved
-      # the Twilio Media Streams grammar and its tests out from under `busbar-voice`'s own tree), so
-      # it is named here too — a step that only ever named `busbar-voice` would go on passing green
-      # while a whole suite sat uncollected behind a feature gate nothing runs. The floor below is
-      # this step's own version of the workspace job's collected-test-count guard above: a suite that
-      # stops being built/collected still prints `test result: ok` and exits 0, so the count is what
-      # actually proves the suite ran rather than compiled to nothing.
-      - name: Voice runtime tests (the `runtime`-gated plane suites `cargo test --workspace` never runs)
+      # (crates/busbar-voice/src/runtime/tests.rs) live under `#[cfg(feature = "runtime")]`, which is
+      # OFF by default. The workspace `cargo test` above runs with default features, so those tests
+      # NEVER execute there, and the voice-conformance workflow only `cargo build`s the conform bin —
+      # nothing ran the tests until this step. Voice is dev-only until DoD, so this is a plain
+      # `--features runtime` run: no service containers, just the previously-dark plane suite made to
+      # actually run and go green.
+      #
+      # `busbar-voice-codec` HAD NO ROW HERE ANY MORE (owner ruling R7, 2026-09-27, THE DESIGN
+      # §9/#39): it dissolved into `busbar-plane-streaming`'s own `codec` module, and the Twilio
+      # Media Streams grammar's tests (`codec/topology/tests/twilio_tests.rs`) were UNGATED by the
+      # same fold — the plane declares no features, so they now compile and run unconditionally as
+      # part of the ordinary `cargo test --workspace` step above. There is nothing left for this step
+      # to cover a second time.
+      #
+      # The floor below is this step's own version of the workspace job's collected-test-count guard
+      # above: a suite that stops being built/collected still prints `test result: ok` and exits 0,
+      # so the count is what actually proves the suite ran rather than compiled to nothing.
+      - name: Voice runtime tests (the `runtime`-gated plane suite `cargo test --workspace` never runs)
         env:
-          VOICE_MIN_TESTS: "100"
+          # 100 -> 92: the 8 Twilio Media Streams grammar tests
+          # (`busbar-plane-streaming/src/codec/topology/tests/twilio_tests.rs`) left this step's
+          # count when the codec fold ungated them into the ordinary `cargo test --workspace` step
+          # above (owner ruling R7, 2026-09-27, THE DESIGN §9/#39). Equal totals, moved, not lost.
+          VOICE_MIN_TESTS: "92"
         # `set -uo pipefail` + PIPESTATUS[0], matching the workspace / no-default-features / windows
         # steps. Without it `cargo … | tee` reports TEE's exit status, which is 0 whether cargo
         # passed or failed, and the only surviving check was a count of PASSING tests — a run with
@@ -1265,7 +1273,6 @@ jobs:
           set -uo pipefail
           rc=0
           cargo test -p busbar-voice --features runtime,test-support \
-                     -p busbar-voice-codec --features runtime \
                      --locked --verbose 2>&1 | tee "$RUNNER_TEMP/voice-test.log" || rc=${PIPESTATUS[0]}
           total=$(grep -oE 'test result: (ok|FAILED)\. [0-9]+ passed' "$RUNNER_TEMP/voice-test.log" \
                   | grep -oE '[0-9]+ passed' | grep -oE '[0-9]+' \
@@ -2613,7 +2620,6 @@ jobs:
   # feature-covered: busbar-voice/openapi-schema -- openapi-schema -- pulled by the forward from busbar with the feature on
   # feature-covered: busbar-voice/test-support -- check -- the Voice runtime tests step names --features runtime,test-support
   # feature-covered: busbar-voice/runtime -- check -- the Voice runtime tests step names it, and the root default reaches it
-  # feature-covered: busbar-voice-codec/runtime -- check -- the Voice runtime tests step names -p busbar-voice-codec --features runtime
   # feature-covered: busbar-kernel/plane-voice -- check -- reached from the root binary's default plane-voice in the workspace build
   # feature-covered: busbar-kernel/runtime -- check -- reached from the plane-voice forward in the workspace default build
   # feature-covered: busbar-kernel-identity/sha256 -- check -- reached from the default auth-admin-tokens closure in the workspace build

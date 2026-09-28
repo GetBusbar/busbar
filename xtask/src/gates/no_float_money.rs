@@ -649,13 +649,13 @@ pub const ALLOWED_COUNT_READS: &[Allow] = &[
         why: "a transcription timing offset — metadata echoed back, never metered",
     },
     Allow {
-        file: "crates/busbar-voice-codec/src/topology/twilio.rs",
+        file: "crates/busbar-plane-streaming/src/codec/topology/twilio.rs",
         needle: "get(\"sampleRate\")",
         class: AllowClass::NotACount,
         why: "a media format's sample rate, not a metered quantity",
     },
     Allow {
-        file: "crates/busbar-voice-codec/src/topology/twilio.rs",
+        file: "crates/busbar-plane-streaming/src/codec/topology/twilio.rs",
         needle: "get(\"channels\")",
         class: AllowClass::NotACount,
         why: "a media format's channel count, not a metered quantity",
@@ -680,7 +680,7 @@ pub const ALLOWED_COUNT_READS: &[Allow] = &[
             "the #44 config boundary: a configured decimal read once at parse, not a runtime count",
     },
     Allow {
-        file: "crates/busbar-voice-codec/src/ir/codec/mod.rs",
+        file: "crates/busbar-plane-streaming/src/codec/ir/codec/mod.rs",
         needle: "fn u64_at",
         class: AllowClass::NotACount,
         why: "measured 2026-09-24: its only callers are a truncate's content_index and three audio \

@@ -40,12 +40,12 @@
 use super::{billed_count, usage_refusal};
 use super::{decode_audio, encode_audio, parse, str_at, wire_of, DecodeState};
 use super::{DuplexReader, DuplexWriter, WireEvent, WireRef};
-use crate::ir::config::{MaxOutputTokens, SessionConfig};
-use crate::ir::control::{IrDuplexControl, IrVad};
-use crate::ir::event::{IrClientEvent, IrServerEvent};
-use crate::ir::media::{AudioFormat, IrAudioFrame, IrAudioRef, UpDown};
-use crate::ir::tool::{CallRef, IrDuplexTool};
-use crate::ir::usage::IrDuplexUsage;
+use crate::codec::ir::config::{MaxOutputTokens, SessionConfig};
+use crate::codec::ir::control::{IrDuplexControl, IrVad};
+use crate::codec::ir::event::{IrClientEvent, IrServerEvent};
+use crate::codec::ir::media::{AudioFormat, IrAudioFrame, IrAudioRef, UpDown};
+use crate::codec::ir::tool::{CallRef, IrDuplexTool};
+use crate::codec::ir::usage::IrDuplexUsage;
 use bytes::Bytes;
 use serde_json::{json, Value};
 

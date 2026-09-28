@@ -196,10 +196,11 @@ pub const PLANE_CRATES: &[PlaneCrate] = &[
     // `busbar-llm-codec` HAS NO ROW ANY MORE (owner ruling R7, 2026-09-27, #39): it dissolved into
     // `busbar-plane-llm`'s own `codec` module, a pure move. The `busbar-plane-llm` row above already
     // scans the whole crate directory, `codec` module included, so there is no second dir to name.
-    PlaneCrate {
-        dir: "busbar-voice-codec",
-        placement: "#83 FOLD -> def 16-20",
-    },
+    //
+    // `busbar-voice-codec` HAS NO ROW ANY MORE EITHER, same ruling: it dissolved into
+    // `busbar-plane-streaming`'s own `codec` module. The `busbar-plane-streaming` row above already
+    // scans the whole crate directory, `codec` module included.
+    //
     // SPLIT row: "Session, turn and dialect rules -> 16-20. But unit/{admit,approve,meter,route}
     // and runtime/metering.rs decide admission and price - that is defs 5/6, not a plane." THIS
     // GATE IS THAT SENTENCE. These four are where the money actually is.

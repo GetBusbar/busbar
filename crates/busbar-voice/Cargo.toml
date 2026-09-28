@@ -56,11 +56,6 @@ busbar-kernel = { path = "../busbar-kernel", default-features = false }
 # `busbar_contract::plane::PlaneDeclaration` — plain data naming no kernel type — so the declaration
 # a plane states about itself survives the fold into `busbar-plane-streaming` without a kernel edge.
 busbar-contract = { path = "../busbar-contract" }
-# THE CODECS. The pure half of this plugin, split out so `busbar-plane-streaming` can name the duplex IR
-# and the dialect grammars without pulling this crate's axum mount, WebSocket accept, tokio session
-# tasks and telephony dial into a pure kind's closure. Every module that moved is re-exported from
-# this crate under its old name.
-busbar-voice-codec = { path = "../busbar-voice-codec" }
 # `axum::http::StatusCode` appears in the `ProtocolDecl` field set (quota / auth-failure statuses).
 axum = { workspace = true }
 # The plane's OWN media-frame carrier: `IrAudioFrame.media` is opaque `bytes::Bytes` (`BUSBAR-1.6.0.md` #18/#45 identity IR).
@@ -116,7 +111,7 @@ hyper = { workspace = true, optional = true }
 # The front door itself reports through the host's `request_finished` seam (count + duration, item
 # 566) and emits nothing by hand. OPTIONAL, pulled only by `runtime`.
 metrics = { workspace = true, optional = true }
-# THE PURE HALF OF THIS PLANE. Named for two things now, which is why it is NO LONGER OPTIONAL.
+# THE PURE HALF OF THIS PLANE, AND THE CODECS TOO NOW. Named for three things.
 # (1) The conformance harness and the governed-binding cells pin the tool-reply deadline
 # (`busbar_plane_streaming::plane::TOOL_REPLY_DEADLINE_SECS`) against the one declaration the composition
 # root's own leg is built from, rather than restating thirty seconds in a second place where the two
@@ -124,9 +119,12 @@ metrics = { workspace = true, optional = true }
 # (`busbar_plane_streaming::governed::{GovernedCalls, GovernedSession, ReplyRefusal}`) now lives there,
 # beside the correlation key a wait is entered under, and `crate::runtime` re-exports it under its
 # old name — so the port is unconditional and the dep cannot be feature-gated behind `test-support`.
-# The closure this adds to the shipped build is `busbar-contract` + `busbar-voice-codec` + `bytes`,
-# all of which this crate already links. No cycle: `busbar-plane-streaming` names `busbar-contract` +
-# `busbar-voice-codec` and never this crate.
+# (3) THE CODECS (owner ruling R7, 2026-09-27, THE DESIGN §9/#39: no `busbar-*-codec` crate) — the
+# duplex IR and the dialect grammars folded into `busbar-plane-streaming`'s own `codec` module, a pure
+# move; this crate re-exports every module that folded in under its old name (`lib.rs`,
+# `topology/mod.rs`). The closure this adds to the shipped build is `busbar-contract` + `bytes`, both
+# of which this crate already links. No cycle: `busbar-plane-streaming` names `busbar-contract` and
+# never this crate.
 busbar-plane-streaming = { path = "../busbar-plane-streaming" }
 
 [features]
@@ -138,7 +136,7 @@ busbar-plane-streaming = { path = "../busbar-plane-streaming" }
 # net-guard-pinned egress dialer): the plane SELECTS `Transport::WebSocket` and lets the substrate open
 # the socket, so the provider sideband WSS dials THROUGH `net_guard` and the plane holds no socket
 # plumbing of its own. Turned on in lock-step with the plane's own async runtime.
-runtime = ["dep:async-trait", "dep:futures", "dep:tokio", "dep:tokio-tungstenite", "dep:url", "dep:tracing", "dep:http", "dep:http-body-util", "dep:hyper", "dep:metrics", "busbar-kernel/runtime", "busbar-voice-codec/runtime"]
+runtime = ["dep:async-trait", "dep:futures", "dep:tokio", "dep:tokio-tungstenite", "dep:url", "dep:tracing", "dep:http", "dep:http-body-util", "dep:hyper", "dep:metrics", "busbar-kernel/runtime"]
 # THE OPENAPI-SCHEMA EDGE, mirroring busbar-mcp/busbar-a2a: `PlaneDecl::openapi_schemas` is a field the
 # substrate struct gates on its own `openapi-schema` feature, so this forwards to substrate to keep the
 # `#[cfg(feature = "openapi-schema")]` field site and the struct definition in lock-step. The plane

@@ -8,10 +8,10 @@
 //! vocabulary that has NO analog anywhere in the tree today (the LLM request path is whole-JSON
 //! `IrRequest`, not a stream of events).
 
-use crate::ir::control::IrDuplexControl;
-use crate::ir::media::IrAudioFrame;
-use crate::ir::tool::IrDuplexTool;
-use crate::ir::usage::IrDuplexUsage;
+use crate::codec::ir::control::IrDuplexControl;
+use crate::codec::ir::media::IrAudioFrame;
+use crate::codec::ir::tool::IrDuplexTool;
+use crate::codec::ir::usage::IrDuplexUsage;
 
 /// CLIENT → SERVER events (`BUSBAR-1.6.0.md` #18/#45). The union of the client-originated cases across the four layers.
 /// **This vocabulary has no analog anywhere in the tree today** — building it is the net-new IR work.

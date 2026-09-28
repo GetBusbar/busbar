@@ -9,7 +9,7 @@
 //! declares it. The transport primitive that carries it (`pipe_read`/`pipe_write`) moves RAW BYTES;
 //! the plane frames on top.
 //!
-//! The wire encodes audio as base64 STRINGS inside JSON events; the codec (see [`crate::ir::codec`])
+//! The wire encodes audio as base64 STRINGS inside JSON events; the codec (see [`crate::codec::ir::codec`])
 //! base64-decodes on the way in and re-encodes on the way out, storing the DECODED bytes in
 //! [`IrAudioFrame::media`]. The identity IR is the decoded bytes, not the base64 text.
 
@@ -90,9 +90,9 @@ impl AudioFormat {
 /// a turn far faster than it plays, so straight after a burst this is the whole turn while the user is
 /// still on its first syllable. That makes it an UPPER BOUND on what was heard — the safe direction for
 /// a truncate (never cut before the user got there) and the wrong number to call a measurement. The
-/// count is the plane's own bookkeeping ([`crate::ir::codec::DecodeState`]), never a field copied off
+/// count is the plane's own bookkeeping ([`crate::codec::ir::codec::DecodeState`]), never a field copied off
 /// the wire, and it narrows toward the truth as the runtime feeds a clock through
-/// [`crate::ir::codec::DecodeState::record_played_at`]. The runtime that ACTS on this (cancel +
+/// [`crate::codec::ir::codec::DecodeState::record_played_at`]. The runtime that ACTS on this (cancel +
 /// truncate) is the next layer; this function is the arithmetic only.
 #[must_use]
 pub fn truncate_point_ms(bytes_played: u64, fmt: AudioFormat) -> u64 {

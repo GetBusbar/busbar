@@ -15,8 +15,8 @@
 //! decode→encode round-trip is JSON-stable (opaque `tools` / `tool_choice` ride as `serde_json::Value`;
 //! the plane locks and reconciles them but never reshapes them).
 
-use crate::ir::control::IrVad;
-use crate::ir::media::AudioFormat;
+use crate::codec::ir::control::IrVad;
+use crate::codec::ir::media::AudioFormat;
 use serde::{Deserialize, Deserializer, Serialize};
 
 /// Deserialize a PRESENT key into `Some(_)`, so an `Option<Option<T>>` field can tell an absent key

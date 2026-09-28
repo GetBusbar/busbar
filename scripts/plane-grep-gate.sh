@@ -126,7 +126,10 @@ MCP_NEEDLES="$DIALECTS $(plane_keys_other mcp)"
 # which this needle gate does not read — a plane-kind crate is held to the plugin-kind rules instead.
 A2A_ROOT="crates/busbar-a2a/src"
 A2A_NEEDLES="$DIALECTS $(plane_keys_other a2a)"
-VOICE_ROOT="crates/busbar-voice/src crates/busbar-voice-codec/src"
+# VOICE IS ONE ROOT NOW TOO, same reason (owner ruling R7, 2026-09-27, THE DESIGN §9/#39):
+# `busbar-voice-codec` dissolved into `busbar-plane-streaming`'s own `codec` module, a plane-kind
+# crate this needle gate does not read.
+VOICE_ROOT="crates/busbar-voice/src"
 VOICE_NEEDLES="$DIALECTS $(plane_keys_other voice)"
 
 # The neutral Operation enum — generic op vocabulary, explicitly in-scope-neutral. Excluded whole.

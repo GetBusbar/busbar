@@ -8,10 +8,10 @@
 //! captured-shape Gemini Live literals.
 
 use super::*;
-use crate::ir::config::MaxOutputTokens;
-use crate::ir::control::IrVad;
-use crate::ir::media::{IrAudioRef, UpDown};
-use crate::ir::tool::CallRef;
+use crate::codec::ir::config::MaxOutputTokens;
+use crate::codec::ir::control::IrVad;
+use crate::codec::ir::media::{IrAudioRef, UpDown};
+use crate::codec::ir::tool::CallRef;
 
 // ── helpers ──────────────────────────────────────────────────────────────────────────────────────
 
@@ -907,7 +907,7 @@ fn distinct_tool_call_ids_mint_distinct_refs() {
 fn a_result_bridged_to_gemini_names_the_originating_call() {
     // Gemini REQUIRES `functionResponse.name`; OpenAI's `function_call_output` does not carry one, so
     // the name is remembered from the call that opened and travels on the result.
-    let oa = crate::ir::codec::OpenAiRealtimeCodec;
+    let oa = crate::codec::ir::codec::OpenAiRealtimeCodec;
     let ge = GeminiLiveCodec;
     let mut st = DecodeState::default();
     let _ = oa.read_down(

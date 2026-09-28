@@ -943,8 +943,8 @@ version = "1.6.0"
 dependencies = [
  "async-trait",
  "busbar-contract",
- "busbar-voice-codec",
  "bytes",
+ "serde",
  "serde_json",
 ]
 
@@ -1067,7 +1067,6 @@ dependencies = [
  "busbar-contract",
  "busbar-kernel",
  "busbar-plane-streaming",
- "busbar-voice-codec",
  "bytes",
  "futures",
  "http",
@@ -1081,16 +1080,6 @@ dependencies = [
  "tokio-tungstenite",
  "tracing",
  "url",
-]
-
-[[package]]
-name = "busbar-voice-codec"
-version = "1.6.0"
-dependencies = [
- "busbar-contract",
- "bytes",
- "serde",
- "serde_json",
 ]
 
 [[package]]

@@ -23,7 +23,7 @@
 //! ([`event::IrClientEvent`]) the LLM `IrStreamEvent` structurally lacks (`BUSBAR-1.6.0.md` #18/#45).
 //!
 //! Both dialect codecs ([`OpenAiRealtimeCodec`], [`GeminiLiveCodec`]) implement the reader/writer pair
-//! over these types; the T2 session pump and session store live in `crate::runtime` behind the `runtime`
+//! over these types; the T2 session pump and session store live in `crate::codec::runtime` behind the `runtime`
 //! feature. The shapes mirror `BUSBAR-1.6.0.md` #18/#45.
 
 pub mod codec;

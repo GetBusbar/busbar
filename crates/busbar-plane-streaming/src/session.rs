@@ -4,8 +4,8 @@
 //! holds one half of per connection: one for the client, one more per upstream a session dials. This
 //! module is the concrete type this plane wraps in it.
 
+use crate::codec::ir::{AudioFormat, DecodeState, IrClientEvent, IrDuplexUsage};
 use busbar_contract::ids::{CorrelationRef, CorrelationValue, MeterClassId};
-use busbar_voice_codec::ir::{AudioFormat, DecodeState, IrClientEvent, IrDuplexUsage};
 
 use crate::claims::Dialect;
 use crate::meta;
@@ -35,7 +35,7 @@ pub enum Pending {
 /// Taken (and so reset to zero) every time a turn is ANSWERED — a usage report, an upstream error or
 /// a carrier `stop`, each of which states them on its own facts — and CARRIED, not reset, when a
 /// barge-in supersedes the open turn, because a superseded turn is never answered and nothing else
-/// would ever state what it served. These are the quantities [`busbar_voice_codec::ir::usage::IrDuplexUsage`] does not carry and this plane must
+/// would ever state what it served. These are the quantities [`crate::codec::ir::usage::IrDuplexUsage`] does not carry and this plane must
 /// derive itself: `audio_seconds_in` from the byte counts of ingress audio frames, `tool_calls` from
 /// counting `IrDuplexTool::CallOpen` events as they are decoded.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]

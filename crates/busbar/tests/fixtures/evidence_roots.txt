@@ -6,4 +6,4 @@ crates/busbar-plane-llm/src/codec
 crates/busbar-mcp/src/codec
 crates/busbar-plane-mcp/src
 crates/busbar-plane-a2a/src
-crates/busbar-voice-codec/src
+crates/busbar-plane-streaming/src/codec

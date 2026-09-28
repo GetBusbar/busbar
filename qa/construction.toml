@@ -177,8 +177,15 @@ abi = ["crates/busbar-contract"]
 # own row, so the whole crate directory, `codec` module included, is scanned as part of it; there is
 # no second source root to fold in, and `busbar-llm` re-exports the moved modules under their old
 # names so no in-tree caller changed a spelling.
+#
+# VOICE HAS NO ROW HERE ANY MORE EITHER (owner ruling R7, 2026-09-27). `busbar-voice-codec`
+# dissolved (#39: no `busbar-*-codec` crate): the plane-4 duplex/session IR, the shared duplex
+# reader/writer, the Gemini Live dialect and the Twilio grammar folded into `busbar-plane-streaming`
+# as its `codec` module — a pure move. `busbar-plane-streaming` is already `gate.plugin_kinds.plane`'s
+# own row, so the whole crate directory, `codec` module included, is scanned as part of it; there is
+# no second source root to fold in, and `busbar-voice` re-exports the moved modules under their old
+# names so no in-tree caller changed a spelling.
 [gate.plane_codec_crates]
-busbar-voice = ["busbar-voice-codec"]
 
 # ── DECLARED CEILING RAISES ──────────────────────────────────────────────────────────────────────
 #
@@ -1336,9 +1343,9 @@ consulted when present to widen the same check to transitive path/workspace deps
 # closed JSON span grammar the contract itself is written on and re-exports as `spans`, so naming it
 # directly is naming a piece of the contract rather than reaching past it; the rest are ordinary
 # third-party crates.
-reviewed_allowlist = ["busbar-api", "serde", "serde_json", "tracing", "async-trait", "bytes", "sonic-rs", "busbar-voice-codec", "busbar-grammar"]
-# busbar-llm-codec is GONE from this list (owner ruling R7, 2026-09-27, #39): it dissolved into
-# `busbar-plane-llm`'s own `codec` module, so the plane no longer NAMES a codec crate at all.
+reviewed_allowlist = ["busbar-api", "serde", "serde_json", "tracing", "async-trait", "bytes", "sonic-rs", "busbar-grammar"]
+# busbar-llm-codec and busbar-voice-codec are GONE from this list (owner ruling R7, 2026-09-27, #39):
+# both dissolved into their plane's own `codec` module, so neither plane NAMES a codec crate at all.
 # Per-crate additions beyond the global list above, each a one-line review.
 [rules.manifest-allowlist.reviewed_extra]
 # Ratchet, NOT a review: each busbar-plane-* adapter names its own dialect's legacy engine crate
@@ -2131,9 +2138,17 @@ which is the row that can name the home the call belongs in, so one site is neve
 # widening it to `crates/busbar-llm/src/*` would pull `src/engine/` into scope in the same edit that
 # fixes a staleness defect. Adding unreviewed debt under cover of a repoint is the move this whole
 # exercise exists to refuse; widening llm is a separate edit that owes its own review.
+#
+# `crates/busbar-*-codec/src/*` IS GONE (owner ruling R7, 2026-09-27, THE DESIGN §9/#39: no
+# `busbar-*-codec` crate). Unlike MCP/A2A's codec dissolution — which folded into the LEGACY ENGINE
+# crate (`busbar-mcp/src`, `busbar-a2a/src`), a root this glob list already names on its own line —
+# both remaining codecs (llm, voice) folded into their PLANE crate (`busbar-plane-llm`,
+# `busbar-plane-streaming`), which `crates/busbar-plane-*/src/*` already covers whole. So there is no
+# coverage gap to widen for: the glob would match zero directories and is struck rather than left to
+# read that permanent zero back as a fact about the tree, which is the exact anti-pattern the
+# 2026-09-22 repoint above this row already fixed once.
 scope_globs = [
   "crates/busbar-plane-*/src/*",
-  "crates/busbar-*-codec/src/*",
   "crates/busbar-llm/src/unit/*",
   "crates/busbar-mcp/src/*",
   "crates/busbar-a2a/src/*",

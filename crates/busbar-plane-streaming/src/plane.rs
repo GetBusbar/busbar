@@ -1,6 +1,6 @@
 //! The `Plane`/`SessionPlane` implementation.
 //!
-//! Every method here is a thin adapter over `busbar_voice_codec::ir`'s shared duplex codec
+//! Every method here is a thin adapter over `crate::codec::ir`'s shared duplex codec
 //! ([`OpenAiRealtimeCodec`], [`GeminiLiveCodec`]), this crate's own Twilio reader/writer
 //! ([`crate::twilio`]) and its own µ-law transform ([`crate::ulaw`]). None of the three inputs the
 //! design brief names is skipped: a turn is the unit (opened on the first audio frame of a session,
@@ -41,7 +41,7 @@
 //!   `CallOpen` announces the call (and increments [`crate::session::TurnCounters::tool_calls`]) but
 //!   mints nothing on its own — a tool call dispatched with no arguments is a different call. The
 //!   streamed `CallArgs` fragments are accumulated on the session's own codec state
-//!   ([`busbar_voice_codec::ir::codec::DecodeState::push_call_args`], which appends a fragment and
+//!   ([`crate::codec::ir::codec::DecodeState::push_call_args`], which appends a fragment and
 //!   replaces on a whole object, so the OpenAI done-repeat and the Gemini atomic call both land the
 //!   right bytes), and `CallClose` mints the `tool_call` `OneShot` carrying the tool name and those
 //!   arguments as its body, correlated by the wire call id. That is when the call becomes visible,
@@ -79,11 +79,11 @@ use busbar_contract::unit::{
 };
 use busbar_contract::wire::{Decode, DiscardCode, Encode, Frame, FrameCursor, TransportEnvelope};
 
-use busbar_voice_codec::ir::control::IrDuplexControl;
-use busbar_voice_codec::ir::event::{IrClientEvent, IrServerEvent};
-use busbar_voice_codec::ir::media::{AudioFormat, IrAudioFrame, IrAudioRef, UpDown};
-use busbar_voice_codec::ir::tool::IrDuplexTool;
-use busbar_voice_codec::ir::{
+use crate::codec::ir::control::IrDuplexControl;
+use crate::codec::ir::event::{IrClientEvent, IrServerEvent};
+use crate::codec::ir::media::{AudioFormat, IrAudioFrame, IrAudioRef, UpDown};
+use crate::codec::ir::tool::IrDuplexTool;
+use crate::codec::ir::{
     DecodeState, DuplexReader, DuplexWriter, GeminiLiveCodec, OpenAiRealtimeCodec, WireRef,
 };
 

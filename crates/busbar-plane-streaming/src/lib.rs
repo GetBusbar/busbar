@@ -4,23 +4,24 @@
 //! ## What this crate is
 //!
 //! An ADAPTER, in the same sense `busbar-plane-llm` is one: every method of the plane kind here is a
-//! thin wrapper over a codec that already exists in `busbar-voice-codec` — the OpenAI Realtime and
-//! Gemini Live dialect readers/writers and the four-layer duplex/session IR they meet in
-//! (`docs/design/BUSBAR-1.6.0.md` #18/#45, the four-layer IR section). No wire format for those two dialects is written
-//! twice.
+//! thin wrapper over a codec that already exists in this crate's own `codec` module (folded in from
+//! `busbar-voice-codec`, owner ruling R7, 2026-09-27, THE DESIGN §9/#39: no `busbar-*-codec` crate) —
+//! the OpenAI Realtime and Gemini Live dialect readers/writers and the four-layer duplex/session IR
+//! they meet in (`docs/design/BUSBAR-1.6.0.md` #18/#45, the four-layer IR section). No wire format
+//! for those two dialects is written twice.
 //!
 //! Two things this crate DOES write itself, because nothing upstream provides them and the task this
 //! crate exists for names them explicitly:
 //!
-//! * A minimal Twilio Media Streams JSON reader/writer ([`twilio`]) — `busbar-voice-codec` has no
-//!   dialect codec for Twilio's own wire, and the one Twilio-shaped module in that crate
-//!   (`busbar_voice_codec::topology::twilio`) is gated behind its `runtime` cargo feature, which this crate
-//!   never turns on (see the crate-root dependency note below). So this crate's Twilio reader/writer
-//!   is written from the wire shape alone, independently, and is NOT a copy of that module.
-//! * A standard G.711 µ-law ↔ PCM16 transform ([`ulaw`]) — `busbar-voice-codec` only carries the byte-rate
-//!   bookkeeping for the format (`busbar_voice_codec::ir::media::AudoFormat`), not an actual sample
-//!   transcoder; its own doc comments call the transcode an unimplemented "seam...armed only when a
-//!   lane declares it." This crate is the lane that declares it.
+//! * A minimal Twilio Media Streams JSON reader/writer ([`twilio`]) — `codec` has no dialect codec
+//!   for Twilio's own wire, and the one Twilio-shaped module in it ([`codec::topology::twilio`]) is
+//!   for `busbar-voice`'s own use, not this crate's — this crate never reaches it (see the
+//!   crate-root dependency note below). So this crate's Twilio reader/writer is written from the
+//!   wire shape alone, independently, and is NOT a copy of that module.
+//! * A standard G.711 µ-law ↔ PCM16 transform ([`ulaw`]) — `codec` only carries the byte-rate
+//!   bookkeeping for the format (`codec::ir::media::AudoFormat`), not an actual sample transcoder;
+//!   its own doc comments call the transcode an unimplemented "seam...armed only when a lane
+//!   declares it." This crate is the lane that declares it.
 //!
 //! ## What this crate is not
 //!
@@ -34,10 +35,10 @@
 //!
 //! THIS CRATE DOES NOT DEPEND ON `busbar-voice`, AND THE EDGE RUNS THE OTHER WAY. Measured with
 //! `cargo tree -p busbar-plane-streaming --edges normal --depth 1`, this crate's whole direct
-//! closure is `busbar-contract` + `busbar-voice-codec` + `serde_json` + `bytes` + `async-trait`
-//! (a proc-macro). It is `busbar-voice` that names THIS crate (`crates/busbar-voice/Cargo.toml`),
-//! not the reverse — so there is no `default-features = false` on a `busbar-voice` line here,
-//! because there is no such line at all.
+//! closure is `busbar-contract` + `serde` + `serde_json` + `bytes` + `async-trait` (a proc-macro) —
+//! the codecs are this crate's own `codec` module now, not a named dependency. It is `busbar-voice`
+//! that names THIS crate (`crates/busbar-voice/Cargo.toml`), not the reverse — so there is no
+//! `default-features = false` on a `busbar-voice` line here, because there is no such line at all.
 //!
 //! `busbar-voice`'s own plane machinery (`PLANE_DECL`, `mount`, `runtime`, `topology`) is built
 //! against a different, older plane architecture (`busbar_kernel::plane::registry::PlaneDecl`,
@@ -45,10 +46,8 @@
 //! feature. None of that machinery, and none of the async runtime it would pull in (`tokio`,
 //! `futures`, `hyper`), is reachable from here — the closure above measures zero of them.
 //!
-//! What this crate DOES use is `busbar_voice_codec::ir` — the plane-4 duplex/session intermediate
-//! representation and both dialect codecs — which is unconditional in `busbar-voice-codec`'s own
-//! manifest (that crate's one feature, `runtime`, is not in `default` and this crate never turns it
-//! on) and is pure, sync, and free of any async surface.
+//! What this crate DOES use is [`codec::ir`] — the plane-4 duplex/session intermediate
+//! representation and both dialect codecs — which is pure, sync, and free of any async surface.
 //!
 //! ## What it holds across calls
 //!
@@ -63,6 +62,12 @@
 #![deny(missing_docs)]
 
 pub mod claims;
+// `#![deny(missing_docs)]` above is a rule this crate holds itself to; the folded-in codec (moved
+// unchanged from the former `busbar-voice-codec`, owner ruling R7, 2026-09-27, THE DESIGN §9/#39)
+// was never written under it, so applying it retroactively here would not be a pure move. Scoped to
+// exactly this module.
+#[allow(missing_docs)]
+pub mod codec;
 pub mod governed;
 pub mod meta;
 pub mod oneshot;

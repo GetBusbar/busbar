@@ -7,9 +7,9 @@
 //! `serde_json::Value` level (field order irrelevant). Fixtures use captured-shape GA literals.
 
 use super::*;
-use crate::ir::config::MaxOutputTokens;
-use crate::ir::control::{Eagerness, IrVad};
-use crate::ir::media::UpDown;
+use crate::codec::ir::config::MaxOutputTokens;
+use crate::codec::ir::control::{Eagerness, IrVad};
+use crate::codec::ir::media::UpDown;
 
 // ── helpers ──────────────────────────────────────────────────────────────────────────────────────
 
@@ -474,7 +474,7 @@ fn audio_format_math() {
     assert_eq!(AudioFormat::Pcm16.ms_to_bytes(10), 480);
     assert_eq!(AudioFormat::G711Ulaw.bytes_to_ms(80), 10);
     assert_eq!(
-        crate::ir::media::truncate_point_ms(480, AudioFormat::Pcm16),
+        crate::codec::ir::media::truncate_point_ms(480, AudioFormat::Pcm16),
         10
     );
 }

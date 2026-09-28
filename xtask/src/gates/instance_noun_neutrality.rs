@@ -126,11 +126,7 @@ const FAM_LLM: &[&str] = &["busbar-llm", "busbar-plane-llm"];
 // The streaming family. `busbar-streaming-codec` is named by the owner's map but does not exist in
 // this tree; `busbar-plane-voice` was DELETED into `busbar-plane-streaming` (#18/#83 — one plane per
 // protocol, and the plane is streaming). The family is what EXISTS.
-const FAM_STREAM: &[&str] = &[
-    "busbar-plane-streaming",
-    "busbar-voice",
-    "busbar-voice-codec",
-];
+const FAM_STREAM: &[&str] = &["busbar-plane-streaming", "busbar-voice"];
 // The FIFTH plane (DECISION #48, owner-locked: llm, mcp, a2a, streaming, decisions(jev)). Its one
 // crate is `busbar-plane-decisions`; #39 folds codecs and dialects INTO the plane crate, so there is
 // no `busbar-decision-codec` for the family to list. The family is what EXISTS.

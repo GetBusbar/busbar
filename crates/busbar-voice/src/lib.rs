@@ -31,15 +31,15 @@
 //! that superset as its OWN shared IR types ([`ir`]), not the LLM-style `DialectCodec` facade, so
 //! [`DECLS`] stays `codec: None` exactly as MCP / A2A do.
 
-/// THE DUPLEX IR AND THE DIALECT CODECS, RE-EXPORTED FROM `busbar-voice-codec`.
+/// THE DUPLEX IR AND THE DIALECT CODECS, RE-EXPORTED FROM `busbar-plane-streaming::codec`.
 ///
 /// The plane-4 session intermediate representation (media, control, events, tools, session config,
-/// usage), the shared duplex reader/writer and the Gemini Live dialect live in `busbar-voice-codec`
-/// now — the pure half of this plugin, split out so `busbar-plane-streaming` can name the IR without
-/// linking this crate's axum mount, WebSocket accept, tokio session tasks and telephony dial. They
-/// are re-exported HERE, under their old name, so every caller that spells `busbar_voice::ir::…`
-/// resolves exactly what it always did. The split is a MOVE: no item changed shape crossing it.
-pub use busbar_voice_codec::ir;
+/// usage), the shared duplex reader/writer and the Gemini Live dialect live in `busbar-plane-streaming`'s
+/// `codec` module now (owner ruling R7, 2026-09-27, THE DESIGN §9/#39: no `busbar-*-codec` crate) —
+/// folded into the plane that already named them, rather than a separate crate. They are re-exported
+/// HERE, under their old name, so every caller that spells `busbar_voice::ir::…` resolves exactly
+/// what it always did. The fold is a MOVE: no item changed shape crossing it.
+pub use busbar_plane_streaming::codec::ir;
 
 /// THE `streams:` CONFIG SECTION — the voice plane's owned config grammar ([`config::StreamsCfg`]) and
 /// its `parse_section` / `default_section` seam hooks. UNCONDITIONAL (outside the `runtime` gate):
@@ -201,7 +201,7 @@ const VOICE_START: Option<busbar_kernel::plane::registry::BootHook> = None;
 /// onto the unified kernel loop's SESSION admit and the same string the voice session gauntlet reports
 /// from its `GauntletPlane::capability_key`. Re-exported at the crate root so the `busbar` binary names
 /// ONE stable path (`busbar_voice::PLANE_KEY`) and the plane and the flip cannot drift onto two.
-pub use busbar_voice_codec::PLANE_KEY;
+pub use busbar_plane_streaming::codec::PLANE_KEY;
 
 /// THE DIALECT NAME this plane speaks first — OpenAI's bidirectional Realtime voice API. Named once
 /// here; it is the [`DECLS`] registry key and the FIRST of the plane's [`PLANE_HOOKS`] wire formats.

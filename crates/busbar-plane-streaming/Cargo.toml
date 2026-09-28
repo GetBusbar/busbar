@@ -7,17 +7,19 @@
 # operations. Voice is ONE dialect inside this plane; the plane is streaming.
 #
 # WHY IT DELEGATES. Every byte of every dialect this plane speaks is already read and written by the
-# duplex codecs in `busbar-voice-codec`, which this crate adapts onto the contract plane trait itself.
-# No wire format is written twice: this crate is the ONE streaming plane (its own registry key, its own
-# capability key) over those codecs. `busbar-plane-voice` was the second adapter over the same codecs and
-# is DELETED into this one (#18/#83 — one crate per plane, and the plane is streaming).
+# duplex codecs in its own `codec` module (folded in from `busbar-voice-codec`, owner ruling R7,
+# 2026-09-27, THE DESIGN §9/#39: no `busbar-*-codec` crate), which this crate adapts onto the
+# contract plane trait itself. No wire format is written twice: this crate is the ONE streaming
+# plane (its own registry key, its own capability key) over those codecs. `busbar-plane-voice` was
+# the second adapter over the same codecs and is DELETED into this one (#18/#83 — one crate per
+# plane, and the plane is streaming).
 #
 # WHAT THIS CRATE IS NOT. There is no governance here, no breaker, no hook seat and no metering
 # arithmetic — those are units, on the far side of the kernel from a plane. The metering method returns
 # LOCATORS (where the per-turn quantities are), never a price. The routing method returns a plan, never
 # a connection. Nothing here opens a socket, reads a file or reads a clock other than the one the
-# context hands it: the plane's entire transitive closure is `busbar-contract` + `busbar-voice-codec`
-# (default features only — no runtime, no async, no `hyper`/`tokio`/`net`).
+# context hands it: the plane's entire transitive closure is `busbar-contract` + the codecs it
+# already carries as its own module (no async, no `hyper`/`tokio`/`net`).
 [package]
 name = "busbar-plane-streaming"
 version = "1.6.0"
@@ -25,7 +27,7 @@ publish = false            # internal workspace crate; never goes to crates.io
 edition = "2021"
 # One pinned number, set to what CI verifies — the same rationale every other member states.
 rust-version = "1.97"
-description = "The streaming plane for busbar: the plugin contract's plane and session-plane kinds for duplex/live sessions (openai-realtime, gemini-live, twilio, one-shot), with the live realtime voice dialect as one dialect among them — implemented as a thin adapter over the busbar-voice-codec duplex codecs."
+description = "The streaming plane for busbar: the plugin contract's plane and session-plane kinds for duplex/live sessions (openai-realtime, gemini-live, twilio, one-shot), with the live realtime voice dialect as one dialect among them — implemented as a thin adapter over its own folded-in duplex codecs."
 license = "Apache-2.0"
 
 [lib]
@@ -38,12 +40,12 @@ path = "src/lib.rs"
 [dependencies]
 # THE CONTRACT. The one busbar crate a plugin manifest may name without argument.
 busbar-contract = { path = "../busbar-contract" }
-# THE CODECS. Read-only from here: this crate calls the plane-4 duplex/session IR and both dialect
-# readers/writers and edits none of them. `busbar-voice-codec`, NOT any plane crate: a plane naming
-# another plane is the `kind-isolation` gate's forbidden plane→plane edge, so the streaming plane adapts
-# the shared, pure, sync codec directly. The codec's default features carry no async surface, no `hyper`,
-# no `tokio`, no `net` — the closure a pure kind may hold.
-busbar-voice-codec = { path = "../busbar-voice-codec" }
+# THE CODECS. Read-only from `plane.rs`/`session.rs`/etc.: this crate calls the plane-4 duplex/session
+# IR and both dialect readers/writers and edits none of them. Folded IN as the `codec` module (owner
+# ruling R7, 2026-09-27, THE DESIGN §9/#39: no `busbar-*-codec` crate) rather than named as a separate
+# crate — the fold is a pure move, so the codecs' own dependencies (serde/serde_json/bytes) are now
+# this crate's own.
+serde = { workspace = true }
 # The object notation the dialect wire (OpenAI Realtime, Gemini Live, Twilio) is written in. The adapter
 # hands values across the seam and never invents a second parser.
 serde_json = { workspace = true }

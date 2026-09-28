@@ -7,7 +7,7 @@
 //! `streamSid` that was not the one admitted; and the webhook TwiML renders as ONE `<Stream>` element
 //! whatever the URL it is handed contains.
 
-use crate::topology::twilio::{
+use crate::codec::topology::twilio::{
     assert_g711_ulaw, render_twiml_for_call, AdmissionGuard, TwilioEnvelope, TwilioError,
     TwilioEvent,
 };
