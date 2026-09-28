@@ -2107,7 +2107,7 @@ impl Gate for NoFloatMoneyGate {
             self,
             "the PATH form of a defaulted count read is flagged in the first codec crate",
             &[ROW_COUNT_READ],
-            "crates/busbar-llm-codec/src/planted_path_form.rs",
+            "crates/busbar-plane-llm/src/planted_path_form.rs",
             Edit::Create(
                 "use serde_json::Value;\npub fn planted(u: &Value) -> u64 {\n    u.get(\"planted_tokens\").and_then(Value::as_u64).unwrap_or(0)\n}\n"
                     .to_string(),
@@ -2121,7 +2121,7 @@ impl Gate for NoFloatMoneyGate {
             self,
             "a defaulted count read is flagged in the SECOND codec crate too",
             &[ROW_COUNT_READ],
-            "crates/busbar-voice-codec/src/planted_second_crate.rs",
+            "crates/busbar-plane-streaming/src/planted_second_crate.rs",
             Edit::Create(
                 "use serde_json::Value;\npub fn planted(u: &Value) -> u64 {\n    u.get(\"planted_tokens\").and_then(Value::as_u64).unwrap_or_default()\n}\n"
                     .to_string(),
@@ -2158,7 +2158,7 @@ impl Gate for NoFloatMoneyGate {
                 self,
                 &format!("{what} of a defaulted count read is flagged"),
                 &[ROW_COUNT_READ],
-                "crates/busbar-llm-codec/src/planted_spelling.rs",
+                "crates/busbar-plane-llm/src/planted_spelling.rs",
                 Edit::Create(format!(
                     "use serde_json::Value as Json;\npub fn planted(v: &Json) -> u64 {{\n    {body}\n}}\n"
                 )),
@@ -2170,7 +2170,7 @@ impl Gate for NoFloatMoneyGate {
         // and named, which is a different act from recording that no work happened.
         let mut ov = Overlay::new();
         ov.set(
-            "crates/busbar-llm-codec/src/planted_named_default.rs",
+            "crates/busbar-plane-llm/src/planted_named_default.rs",
             "use serde_json::Value;\npub fn planted(v: &Value, idx: u64) -> u64 {\n    v.as_u64().unwrap_or(idx)\n}\n",
         );
         report.push(Case {
@@ -2184,7 +2184,7 @@ impl Gate for NoFloatMoneyGate {
         // be pushing authors away from the very thing it wants.
         let mut ov = Overlay::new();
         ov.set(
-            "crates/busbar-llm-codec/src/planted_propagating.rs",
+            "crates/busbar-plane-llm/src/planted_propagating.rs",
             "use serde_json::Value;\npub fn planted(v: &Value) -> Option<u64> {\n    v.get(\"tokens\").and_then(Value::as_u64)\n}\n",
         );
         report.push(Case {
