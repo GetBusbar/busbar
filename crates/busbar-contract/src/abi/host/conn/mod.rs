@@ -60,6 +60,8 @@ pub enum ConnOutcome {
     Refused = 6,
     /// [`ConnError::Fault`].
     Fault = 7,
+    /// [`ConnError::Unarmed`].
+    Unarmed = 8,
 }
 
 impl RawConnOutcome {
@@ -75,6 +77,7 @@ impl RawConnOutcome {
             Err(ConnError::UndeclaredNeed) => ConnOutcome::UndeclaredNeed,
             Err(ConnError::Refused) => ConnOutcome::Refused,
             Err(ConnError::Fault) => ConnOutcome::Fault,
+            Err(ConnError::Unarmed) => ConnOutcome::Unarmed,
         } as u8)
     }
 
@@ -92,6 +95,7 @@ impl RawConnOutcome {
             4 => Err(ConnError::NotOwner),
             5 => Err(ConnError::UndeclaredNeed),
             6 => Err(ConnError::Refused),
+            8 => Err(ConnError::Unarmed),
             _ => Err(ConnError::Fault),
         }
     }

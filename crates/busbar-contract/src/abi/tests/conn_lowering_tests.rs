@@ -230,7 +230,7 @@ fn an_undeclared_need_opens_nothing_across_the_lowering() {
     );
 }
 
-/// Every outcome byte decodes, and only the eight stated ones decode to themselves: an unknown byte
+/// Every outcome byte decodes, and only the nine stated ones decode to themselves: an unknown byte
 /// is a fault, never a refusal it is not.
 #[test]
 fn every_outcome_byte_decodes_and_the_unknown_ones_are_faults() {
@@ -242,11 +242,12 @@ fn every_outcome_byte_decodes_and_the_unknown_ones_are_faults() {
         ConnError::UndeclaredNeed,
         ConnError::Refused,
         ConnError::Fault,
+        ConnError::Unarmed,
     ] {
         assert_eq!(RawConnOutcome::of(Err(e)).result(), Err(e));
     }
     assert_eq!(RawConnOutcome::of(Ok(())).result(), Ok(()));
-    for b in 8..=u8::MAX {
+    for b in 9..=u8::MAX {
         assert_eq!(RawConnOutcome(b).result(), Err(ConnError::Fault));
     }
 }
@@ -264,6 +265,18 @@ fn a_null_context_is_a_fault() {
         )
     };
     assert_eq!(p.close(ConnId(1)), Err(ConnError::Fault));
+}
+
+/// An instance its host handed no table answers [`ConnError::Unarmed`], by its own refusal text and
+/// its own outcome byte, both ways across the ABI.
+#[test]
+fn an_unarmed_instance_is_refused_by_name() {
+    assert_eq!(RawConnOutcome::of(Err(ConnError::Unarmed)).0, 8);
+    assert_eq!(RawConnOutcome(8).result(), Err(ConnError::Unarmed));
+    assert_eq!(
+        ConnError::Unarmed.to_string(),
+        "this plugin was handed no connection table"
+    );
 }
 
 /// NOTHING BLOCKS: a read with nothing ready answers pending at once, and the caller's wake ticket

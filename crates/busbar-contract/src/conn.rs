@@ -106,6 +106,9 @@ pub enum ConnError {
     Refused,
     /// The host failed the call.
     Fault,
+    /// The plugin was handed no connection table: its host's open/refresh tables gave THIS instance
+    /// none. Decided per instance, never per image.
+    Unarmed,
 }
 
 impl std::fmt::Display for ConnError {
@@ -118,6 +121,7 @@ impl std::fmt::Display for ConnError {
             Self::UndeclaredNeed => "the plugin did not declare this need",
             Self::Refused => "the connection was refused",
             Self::Fault => "the host failed the connection call",
+            Self::Unarmed => "this plugin was handed no connection table",
         })
     }
 }
