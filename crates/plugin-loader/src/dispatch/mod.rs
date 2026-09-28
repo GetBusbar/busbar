@@ -10,7 +10,10 @@
 //! * [`plugin`] — [`plugin::Plugin`]`<K>`: the instance handle, the one crossing and its outcome
 //!   authority (the return value decides; a mirror that disagrees, or an unknown byte, is FAULT),
 //!   the #85 envelope ingest, and `max_inflight`.
-//! * [`ticket`] — the host's `wake`, handed to every instance at `open`.
+//! * [`ticket`] — tickets `(slot, generation)` unique per instance across all workers, the host's
+//!   `wake`, and completion handles `(ticket, seq)`.
+//! * [`worker`] — the workers: per-worker ticket slabs, latched spurious-tolerant wakes, RESUME,
+//!   `wake_at_ns` timers, driver tickets, deadline classes and client drop.
 //!
 //! Nothing here names a kernel type, and nothing existing is rewired to it: the kernel adopts it
 //! per kind (M3). A kind is a [`Kind`] marker naming its code, its table (`abi/<kind>/Ops`) and its
@@ -19,6 +22,7 @@
 pub mod load;
 pub mod plugin;
 pub mod ticket;
+pub mod worker;
 
 use std::mem::{offset_of, size_of};
 use std::sync::OnceLock;
@@ -36,6 +40,8 @@ use busbar_contract::abi::mechanism::KindCode;
 
 pub use load::{load_dropped, load_linked, LoadError, ManifestFacts};
 pub use plugin::{Bind, Called, Diagnostic, Dropped, EnvelopeSink, Metric, NoSink, Plugin};
+pub use ticket::{Completions, Redeem};
+pub use worker::{DispatchConfig, DispatchStats, Dispatcher, Done, Reply};
 
 /// A kind, as the dispatcher sees it: its code, its table and its timeout outcome. Implemented once
 /// per kind when the kernel adopts it (M3); `Ops` is that kind's `abi/<kind>/Ops`.

@@ -151,6 +151,7 @@ pub(crate) struct Crossed {
     pub(crate) outcome: Outcome,
     pub(crate) error: Option<Vec<u8>>,
     pub(crate) lease: u64,
+    pub(crate) wake_at_ns: u64,
 }
 
 impl Crossed {
@@ -159,6 +160,7 @@ impl Crossed {
             outcome,
             error: None,
             lease: 0,
+            wake_at_ns: 0,
         }
     }
 }
@@ -187,8 +189,11 @@ pub(crate) struct Instance {
     ptr: AtomicPtr<c_void>,
     pub(crate) faulted: AtomicBool,
     inflight: AtomicU32,
+    /// Ops in flight that a reload drain waits for: every op but WriteBehind.
+    pub(crate) drainable: AtomicU32,
     pub(crate) cap: u32,
     lifecycle_busy: AtomicBool,
+    pub(crate) timeout: Outcome,
     sink: Arc<dyn EnvelopeSink>,
     pub(crate) wake: &'static InstanceWake,
     tables: Tables,
@@ -331,6 +336,11 @@ impl Instance {
             outcome,
             error,
             lease: head.lease,
+            wake_at_ns: if outcome == Outcome::Pending {
+                head.wake_at_ns
+            } else {
+                0
+            },
         }
     }
 
@@ -508,8 +518,10 @@ impl<K: Kind> Plugin<K> {
                 ptr: AtomicPtr::new(std::ptr::null_mut()),
                 faulted: AtomicBool::new(false),
                 inflight: AtomicU32::new(0),
+                drainable: AtomicU32::new(0),
                 cap: st.max_inflight.clamp(1, bind.max_inflight_cap.max(1)),
                 lifecycle_busy: AtomicBool::new(false),
+                timeout: K::TIMEOUT,
                 sink: bind.sink,
                 wake,
                 tables,
