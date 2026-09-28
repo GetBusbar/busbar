@@ -2213,3 +2213,10 @@ mod tests;
 #[cfg(test)]
 #[path = "tests/plugin_chain_tests.rs"]
 mod plugin_chain_tests;
+
+/// M4b AUTH-PARITY acceptance suite (see the inventory at
+/// `/Users/matthew/Developer/tmp/busbar-run/inventory-auth.md`): black-box 1.5.5 parity pins the
+/// scattered unit suites above don't directly assert.
+#[cfg(test)]
+#[path = "tests/acceptance_1_5_5_tests.rs"]
+mod acceptance_1_5_5_tests;
