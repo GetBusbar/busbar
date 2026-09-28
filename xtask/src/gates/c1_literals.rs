@@ -9,9 +9,10 @@
 //!   `#[cfg(feature = "…")]` site is a literal too, so every cfg site naming one is read here.
 //! * **`feature`** — a `[features]` name in one of those crates' manifests holding such a word.
 //!
-//! The vocabulary is the seven kinds' first-party instance names (planes, transports, stores,
-//! secrets, auth plugins, hooks, exports), the wire protocols the transports and planes speak, and
-//! the provider auth styles. It is the M0 draft: which words C1 bans is the M2 decision it feeds.
+//! The vocabulary is the first-party plugin instance names (planes, stores, secrets, auth plugins,
+//! hooks, exports), the planes' protocol and dialect names, and the provider auth styles. The
+//! kernel's own neutral carrier vocabulary ([`NEUTRAL_CARRIER`]: `http`, `tcp`, …, a transport
+//! carrier id) is NOT a C1 leak and is not matched (ARCHITECT ruling on M0).
 //!
 //! REPORT-ONLY, armed at today's count as the drain-only ledger `qa/c1-literals.toml`.
 
@@ -24,15 +25,11 @@ use crate::manifest;
 pub const ROW_LITERAL: &str = "c1-literals:literal";
 pub const ROW_FEATURE: &str = "c1-literals:feature";
 
-/// The words the kernel may not spell, lower case. A word holding `-` also matches with `_`.
-pub const VOCABULARY: &[&str] = &[
-    // planes
-    "llm",
-    "mcp",
-    "a2a",
-    "voice",
-    "streaming",
-    // transports and the protocols they carry
+/// THE KERNEL'S OWN NEUTRAL CARRIER VOCABULARY — NOT C1 leaks (ARCHITECT ruling on M0). A
+/// transport-carrier id (`http`, `tcp`, …) names the connection the kernel's connector carries, the
+/// way `store` names a kind; what C1 bans is a PLANE's dialect or protocol name, a plugin instance
+/// or an auth style. Listed so the exclusion is reviewable, never matched.
+pub const NEUTRAL_CARRIER: &[&str] = &[
     "http",
     "https",
     "h2",
@@ -42,6 +39,18 @@ pub const VOCABULARY: &[&str] = &[
     "websocket",
     "tcp",
     "stdio",
+    "unix",
+];
+
+/// The words the kernel may not spell, lower case. A word holding `-` also matches with `_`.
+pub const VOCABULARY: &[&str] = &[
+    // planes
+    "llm",
+    "mcp",
+    "a2a",
+    "voice",
+    "streaming",
+    // plane protocols and dialect documents (a carrier id is NOT here: see [`NEUTRAL_CARRIER`])
     "jsonrpc",
     "openapi",
     // provider dialects and auth styles
@@ -86,6 +95,11 @@ pub const SPEC: Spec = Spec {
         ),
     ],
     header: "# c1-literals: DRAIN-ONLY ledger (M0 ABI-SPEC, REPORT-ONLY).\n\
+             # THE RULE (ARCHITECT ruling on M0): a plane's dialect or protocol name, a plugin\n\
+             # instance name or an auth style spelled by the kernel or the loader IS a C1 leak; the\n\
+             # kernel's own neutral carrier vocabulary (a transport-carrier id: http, https, h2,\n\
+             # grpc, sse, ws, websocket, tcp, stdio, unix) is NOT, and is not matched. The word list\n\
+             # is VOCABULARY in xtask/src/gates/c1_literals.rs.\n\
              # The kernel and the loader name no plugin, style or protocol: each row is a file and\n\
              # the vocabulary word one of its string literals (or a manifest's feature) spells\n\
              # today. Strike a row in the commit that drains it; never add one.\n\
