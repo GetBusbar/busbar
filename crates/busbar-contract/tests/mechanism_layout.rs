@@ -9,6 +9,7 @@
 
 use std::mem::{align_of, offset_of, size_of};
 
+use busbar_contract::abi::host::conn::connector::{ConnectorSlots, ServiceFn};
 use busbar_contract::abi::mechanism::call::{
     AbiStr, Blob, Diag, Envelope, InHead, MetricEntry, OutHead, RawOutcome,
 };
@@ -154,6 +155,18 @@ fn the_door_and_the_statement_have_their_stated_layout() {
             settings_schema = 128
         ]
     );
+}
+
+/// `HostTables.conns` hands the connector table, whose every slot is an `extern "C"` service
+/// (`BUSBAR-1.6.0.md` THE DESIGN, §11.12): a panic escaping a slot aborts, it never unwinds across
+/// the boundary.
+#[test]
+fn host_tables_hand_the_connector_table() {
+    fn conns_of(t: &HostTables) -> *const ConnectorSlots {
+        t.conns
+    }
+    let establish: fn(&ConnectorSlots) -> Option<ServiceFn> = |s| s.establish;
+    let _ = (conns_of, establish);
 }
 
 #[test]

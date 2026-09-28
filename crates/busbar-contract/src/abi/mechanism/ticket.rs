@@ -16,7 +16,7 @@
 
 use std::os::raw::c_void;
 
-use crate::abi::host::conn::ConnSlots;
+use crate::abi::host::conn::connector::ConnectorSlots;
 
 /// A ticket: `(slot, generation)`. UNIQUE PER INSTANCE across all workers, so a plugin may key its
 /// per-ticket state by the whole `Ticket`. The encoding of `slot` is HOST-PRIVATE (a host may pack a
@@ -81,6 +81,7 @@ pub struct HostTables {
     pub ctx: HostCtx,
     /// The wake.
     pub wake: Option<WakeFn>,
-    /// The connection table; NULL when the instance declared no need.
-    pub conns: *const ConnSlots,
+    /// The connector table (`abi/host/conn/connector.rs`), every slot `extern "C"`; NULL when the
+    /// instance declared no need.
+    pub conns: *const ConnectorSlots,
 }

@@ -42,8 +42,8 @@
 //! on resume the plugin re-issues the SAME handle and receives the stored result — the host never
 //! runs a service twice. A call with `handle.ticket` = `Ticket::NONE` may not pend.
 //!
-//! NOTHING IS WIRED YET: [`crate::abi::mechanism::ticket::HostTables`] still hands the older
-//! connection table; this table joins it when the connector is wired.
+//! [`crate::abi::mechanism::ticket::HostTables::conns`] hands this table to every instance that
+//! declared a need.
 
 use std::os::raw::c_void;
 
