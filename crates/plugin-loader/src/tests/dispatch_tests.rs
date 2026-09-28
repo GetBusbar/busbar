@@ -118,7 +118,7 @@ fn bind(sink: Arc<Recorder>) -> Bind {
     Bind {
         max_inflight_cap: 64,
         sink,
-        dispatcher: None,
+        dispatcher: crate::dispatch::Adopter::unwatched(),
     }
 }
 
@@ -1422,7 +1422,7 @@ fn red_a_hung_ticketless_open_is_watched_from_bind() {
     let p = load_linked::<TestKind>(
         plug::busbar_plugin_door,
         Bind {
-            dispatcher: Some(d.adopter()),
+            dispatcher: d.adopter(),
             ..bind(sink)
         },
     )

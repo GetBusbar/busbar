@@ -943,6 +943,13 @@ impl std::fmt::Debug for Adopter {
 }
 
 impl Adopter {
+    /// TEST ONLY: an adopter of no dispatcher; the instance is adopted by the first dispatcher
+    /// that submits to it.
+    #[cfg(test)]
+    pub(crate) fn unwatched() -> Self {
+        Self { pool: Weak::new() }
+    }
+
     /// Route `inst`'s wakes to the dispatcher and put it under its watchdog; `false` when the
     /// instance already belongs to another dispatcher (or this one is gone).
     pub(crate) fn adopt(&self, inst: &Arc<Instance>) -> bool {

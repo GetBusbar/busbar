@@ -127,9 +127,15 @@ pub struct Bind {
     /// Where the envelope goes.
     pub sink: Arc<dyn EnvelopeSink>,
     /// The dispatcher that ADOPTS the instance at bind: its wakes route there and its watchdog
-    /// watches every crossing from the first (a ticket-less `validate` or `open` included). `None`
-    /// = adopted by the first dispatcher that submits to it.
-    pub dispatcher: Option<super::worker::Adopter>,
+    /// watches every crossing from the first (a ticket-less `validate` or `open` included).
+    /// REQUIRED: a production bind cannot skip the watchdog.
+    ///
+    /// ```compile_fail
+    /// let sink = std::sync::Arc::new(busbar_plugin_loader::dispatch::NoSink);
+    /// // missing field `dispatcher`: there is no unwatched production bind
+    /// let _ = busbar_plugin_loader::dispatch::Bind { max_inflight_cap: 1, sink };
+    /// ```
+    pub dispatcher: super::worker::Adopter,
 }
 
 impl std::fmt::Debug for Bind {
@@ -688,9 +694,7 @@ impl<K: Kind> Plugin<K> {
             }),
             _k: PhantomData,
         };
-        if let Some(adopter) = &bind.dispatcher {
-            adopter.adopt(&plugin.inner);
-        }
+        bind.dispatcher.adopt(&plugin.inner);
         Ok(plugin)
     }
 
