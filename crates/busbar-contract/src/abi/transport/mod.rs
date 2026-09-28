@@ -36,7 +36,17 @@
 //! FRAMER OUTPUT goes into HOST buffers ([`FramerSink`]): bytes owed to the far side into `wire`,
 //! frame bytes into `frame`, frame pieces (offsets into `frame`) into `pieces`. A framer that fills a
 //! buffer answers READY with [`YIELD_MORE`] and the host calls the same op again once it has
-//! drained them. A framer op never pends.
+//! drained them. That RE-CALL CARRIES NO NEW BYTES (an `ingest` or `emit` of length `0`): the bytes
+//! of the first call were taken whole, and the re-call answers only what the first could not hold,
+//! continuing where it stopped. A framer that answers any byte or piece twice is wrong. A framer op
+//! never pends.
+//!
+//! STREAMS END BY PIECE. A frame is one or more pieces on one stream; the last carries
+//! [`PIECE_END_OF_FRAME`]. A stream's frames END with an EMPTY piece (length `0`) carrying
+//! [`PIECE_END_OF_FRAME`]; a stream that FAILED ends instead with a piece carrying
+//! [`PIECE_STREAM_FAILED`] and [`PIECE_END_OF_FRAME`], its bytes the reason (never secret material).
+//! A failed stream fails alone: its siblings on the connection carry on. [`YIELD_ENDED`] ends the
+//! CONNECTION, never one stream.
 //!
 //! EVERY REQUEST-PATH RESULT IS IN A HOST BUFFER (memory class (i)): a carrier's addresses and read
 //! bytes, a framer's wire bytes, frame bytes and pieces. The short-buffer rule is stated once,
@@ -339,6 +349,9 @@ pub const PIECE_END_OF_FRAME: u8 = 1;
 pub const PIECE_HAS_CODE: u8 = 2;
 /// [`FramePiece::flags`]: `retry_after_secs` is present.
 pub const PIECE_HAS_RETRY_AFTER: u8 = 4;
+/// [`FramePiece::flags`]: the stream FAILED; the piece's bytes are the reason. Always with
+/// [`PIECE_END_OF_FRAME`]: it is the stream's last piece.
+pub const PIECE_STREAM_FAILED: u8 = 8;
 
 /// [`FramerYield::flags`]: no frame follows on this connection.
 pub const YIELD_ENDED: u32 = 1;

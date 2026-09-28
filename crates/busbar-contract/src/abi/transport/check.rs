@@ -16,9 +16,9 @@ use super::{
     AcceptOut, ArrivalOut, Claim, ConnFacts, FramePiece, FramerOut, IoOut, ListenOut, LocateOut,
     SettingDecl, StatusRow, TransportTail, CANCEL_COMPLETED, CANCEL_NOTHING_MOVED,
     FACT_DECODES_PAYLOAD, FACT_SIGNS_NOTHING_AFTER_AUTH, FRAMING_DATAGRAM, FRAMING_STREAM,
-    MAX_ADDR, PIECE_END_OF_FRAME, PIECE_HAS_CODE, PIECE_HAS_RETRY_AFTER, ROLE_CARRIER, ROLE_FRAMER,
-    SETTING_FLAG, SETTING_TEXT, STATUS_AT_TERMINAL, STATUS_OTHER, STATUS_SUCCESS, UNIT0_HANDSHAKE,
-    YIELD_ENDED, YIELD_HAS_DEADLINE, YIELD_MORE,
+    MAX_ADDR, PIECE_END_OF_FRAME, PIECE_HAS_CODE, PIECE_HAS_RETRY_AFTER, PIECE_STREAM_FAILED,
+    ROLE_CARRIER, ROLE_FRAMER, SETTING_FLAG, SETTING_TEXT, STATUS_AT_TERMINAL, STATUS_OTHER,
+    STATUS_SUCCESS, UNIT0_HANDSHAKE, YIELD_ENDED, YIELD_HAS_DEADLINE, YIELD_MORE,
 };
 use crate::abi::mechanism::call::{AbiStr, Outcome};
 use crate::abi::mechanism::check::{
@@ -154,9 +154,19 @@ pub fn check_framer(
         range(p.offset, p.len, y.frame_len, "framer.piece.bytes")?;
         bits(
             u64::from(p.flags),
-            u64::from(PIECE_END_OF_FRAME | PIECE_HAS_CODE | PIECE_HAS_RETRY_AFTER),
+            u64::from(
+                PIECE_END_OF_FRAME | PIECE_HAS_CODE | PIECE_HAS_RETRY_AFTER | PIECE_STREAM_FAILED,
+            ),
             "framer.piece.flags",
         )?;
+        // An empty piece is a stream's end, so it completes its frame; a failed stream's piece is
+        // its last, so it does too.
+        if (p.len == 0 || p.flags & PIECE_STREAM_FAILED != 0) && p.flags & PIECE_END_OF_FRAME == 0 {
+            return Err(fault(
+                Rule::Contradiction,
+                "framer.piece.end_without_end_of_frame",
+            ));
+        }
         code(
             u64::from(p.status_class),
             0,

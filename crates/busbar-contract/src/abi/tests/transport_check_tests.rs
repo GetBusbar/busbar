@@ -188,6 +188,31 @@ fn a_failed_framer_answer_that_wrote_is_fault() {
     );
 }
 
+/// A stream ends with an EMPTY piece, and a failed stream with a STREAM_FAILED piece; each is the
+/// stream's last piece, so each carries END_OF_FRAME. Either without it is FAULT.
+#[test]
+fn a_stream_end_or_failure_without_end_of_frame_is_fault() {
+    let mut o: FramerOut = z();
+    o.yielded.frame_len = 4;
+    o.yielded.pieces_len = 1;
+    let mut end = piece(4, 0);
+    end.flags = PIECE_END_OF_FRAME;
+    assert_eq!(check_framer(Ready, &o, &[end], 8, 8, 8), Ok(()));
+    end.flags = 0;
+    assert_eq!(
+        check_framer(Ready, &o, &[end], 8, 8, 8),
+        f(Rule::Contradiction, "framer.piece.end_without_end_of_frame")
+    );
+    let mut failed = piece(0, 4);
+    failed.flags = PIECE_STREAM_FAILED | PIECE_END_OF_FRAME;
+    assert_eq!(check_framer(Ready, &o, &[failed], 8, 8, 8), Ok(()));
+    failed.flags = PIECE_STREAM_FAILED;
+    assert_eq!(
+        check_framer(Ready, &o, &[failed], 8, 8, 8),
+        f(Rule::Contradiction, "framer.piece.end_without_end_of_frame")
+    );
+}
+
 #[test]
 fn a_piece_outside_the_frame_or_with_unknown_codes_is_fault() {
     let mut o: FramerOut = z();
@@ -203,7 +228,7 @@ fn a_piece_outside_the_frame_or_with_unknown_codes_is_fault() {
         f(Rule::SpanOutOfBounds, "framer.piece.bytes")
     );
     let mut bad = piece(0, 1);
-    bad.flags = 8;
+    bad.flags = 16;
     assert_eq!(
         check_framer(Ready, &o, &[bad], 8, 8, 8),
         f(Rule::UnknownCode, "framer.piece.flags")
