@@ -4985,6 +4985,22 @@ const CONFORMANCE_LOADER: &str = "busbar-plugin-loader";
 // qa-names: tests/conformance.rs -- xtask/src/gates/kind_isolation.rs -- CRATE-RELATIVE, not a repo path: it is joined to each plugin crate's directory (crates/<crate>/tests/conformance.rs), so there is no such file at the repo root by design
 const CONFORMANCE_FILE: &str = "tests/conformance.rs";
 
+/// The one file of a CLEANLINESS crate that may use [`CONFORMANCE_LOADER`], relative to the crate:
+/// the connector's universal-needs witness, which loads a fixture of a non-transport kind dropped in
+/// and shows it reaches the network only through a need.
+// qa-names: tests/universal_needs.rs -- xtask/src/gates/kind_isolation.rs -- CRATE-RELATIVE, not a repo path: it is joined to the cleanliness crate's directory (crates/<crate>/tests/universal_needs.rs), so there is no such file at the repo root by design
+const UNIVERSAL_NEEDS_FILE: &str = "tests/universal_needs.rs";
+
+/// The one file a crate of `kind` may use the loader from, when its kind has one: a plugin's own
+/// both-ways witness, or a cleanliness crate's universal-needs witness.
+fn witness_file(kind: Option<&str>) -> Option<&'static str> {
+    match kind {
+        Some(k) if truths::PLUGIN_KINDS.contains(&k) => Some(CONFORMANCE_FILE),
+        Some("cleanliness") => Some(UNIVERSAL_NEEDS_FILE),
+        _ => None,
+    }
+}
+
 /// THE PLUGIN'S OWN BOTH-WAYS WITNESS (ARCHITECT 2026-09-27, DOOR-TRANSPORT; spec #2 (4)/(5), #3),
 /// the plugin-side mirror of [`cold_witness_edges`]: a plugin crate of ANY kind proves its linked
 /// door and its dropped-in door are one plugin in its own `tests/conformance.rs`, over the real
@@ -4999,6 +5015,10 @@ const CONFORMANCE_FILE: &str = "tests/conformance.rs";
 ///   crate's own dropped-in door (a feature of the crate under test) for that test to open. It is
 ///   not an edge between two crates.
 ///
+/// The same grant, in the same shape, holds for a CLEANLINESS crate's `tests/universal_needs.rs`:
+/// the connector loads a fixture plugin dropped in to show any kind reaches the network only
+/// through a need. No self-edge is granted there.
+///
 /// Nothing else is granted. A NORMAL edge on the loader is the shipped half and stays the finding
 /// it always was, and a dev-edge any other file uses (a unit test, a second integration test, a
 /// bench) is a plugin testing against the host, not a witness of its doors.
@@ -5012,8 +5032,10 @@ fn conformance_witness_edges(cx: &Ctx, crates: &[CrateInfo]) -> BTreeSet<(String
     }
     let path = format!("{}::", CONFORMANCE_LOADER.replace('-', "_"));
     for c in crates {
-        if !c.kind.is_some_and(|k| truths::PLUGIN_KINDS.contains(&k))
-            || !c.dev_deps.iter().any(|d| d.pkg == CONFORMANCE_LOADER)
+        let Some(file) = witness_file(c.kind) else {
+            continue;
+        };
+        if !c.dev_deps.iter().any(|d| d.pkg == CONFORMANCE_LOADER)
             || c.deps.iter().any(|d| d.pkg == CONFORMANCE_LOADER)
         {
             continue;
@@ -5021,7 +5043,7 @@ fn conformance_witness_edges(cx: &Ctx, crates: &[CrateInfo]) -> BTreeSet<(String
         let files = cx
             .walk(&WalkSpec::new([c.dir.clone()]).ext("rs").allow_empty())
             .unwrap_or_default();
-        let witness = format!("{}/{CONFORMANCE_FILE}", c.dir);
+        let witness = format!("{}/{file}", c.dir);
         let users: Vec<String> = files
             .iter()
             .filter(|f| code_only(&f.text).contains(path.as_str()))
@@ -5031,7 +5053,7 @@ fn conformance_witness_edges(cx: &Ctx, crates: &[CrateInfo]) -> BTreeSet<(String
             continue;
         }
         out.insert((c.name.clone(), CONFORMANCE_LOADER.to_string()));
-        if c.dev_deps.iter().any(|d| d.pkg == c.name) {
+        if file == CONFORMANCE_FILE && c.dev_deps.iter().any(|d| d.pkg == c.name) {
             out.insert((c.name.clone(), c.name.clone()));
         }
     }
@@ -5039,8 +5061,8 @@ fn conformance_witness_edges(cx: &Ctx, crates: &[CrateInfo]) -> BTreeSet<(String
 }
 
 /// Whether a vocabulary hit is the granted witness naming its loader: a `plugin-tooling` hit in a
-/// crate [`conformance_witness_edges`] grants, in its `tests/conformance.rs`, or on the manifest
-/// line that declares the loader. Every other column is still counted in both files.
+/// crate [`conformance_witness_edges`] grants, in its witness file ([`witness_file`]), or on the
+/// manifest line that declares the loader. Every other column is still counted in both files.
 fn is_witness_hit(
     granted: &BTreeSet<(String, String)>,
     krate: &CrateInfo,
@@ -5053,7 +5075,7 @@ fn is_witness_hit(
     {
         return false;
     }
-    if rel == format!("{}/{CONFORMANCE_FILE}", krate.dir) {
+    if witness_file(krate.kind).is_some_and(|file| rel == format!("{}/{file}", krate.dir)) {
         return true;
     }
     rel == krate.manifest
@@ -6660,6 +6682,75 @@ impl Gate for KindIsolationGate {
                     "new-forbidden-edge",
                     "busbar-store-memory -> busbar-plugin-loader",
                 ],
+            ));
+
+            // THE SAME GRANT FOR A CLEANLINESS CRATE'S UNIVERSAL-NEEDS WITNESS,
+            // planted in a cleanliness crate that has none: the loader as a dev-edge whose
+            // only user is `tests/universal_needs.rs` is scored nowhere…
+            let universal = |normal: bool, extra_user: bool| {
+                let dir = "crates/busbar-oauth2";
+                let rel = format!("{dir}/Cargo.toml");
+                let table = if normal {
+                    "dependencies"
+                } else {
+                    "dev-dependencies"
+                };
+                let mut ov = Overlay::new();
+                ov.set(
+                    rel.as_str(),
+                    manifest_plus(
+                        cx,
+                        &rel,
+                        &format!(
+                            "[{table}]\nbusbar-plugin-loader = {{ path = \"../plugin-loader\" }}\n"
+                        ),
+                    ),
+                );
+                ov.set(
+                    format!("{dir}/{UNIVERSAL_NEEDS_FILE}"),
+                    "use busbar_plugin_loader::scan_and_validate;\n#[test]\nfn reaches() \
+                     {\n    let _ = scan_and_validate;\n}\n"
+                        .to_string(),
+                );
+                if extra_user {
+                    ov.set(
+                        format!("{dir}/tests/host.rs"),
+                        "#[test]\nfn t() {\n    let _ = busbar_plugin_loader::scan_and_validate;\n}\n"
+                            .to_string(),
+                    );
+                }
+                ov
+            };
+            report.push(prove_rows_green(
+                cx,
+                subject,
+                "a cleanliness crate's dev-edge to the loader, used only by its own \
+                 `tests/universal_needs.rs`, is its universal-needs witness: no edge, closure reach \
+                 or cell",
+                &[ROW_TEST_DEPS, closure::ROW_CLOSURE, matrix::ROW_MATRIX],
+                universal(false, false),
+            ));
+            // …but a NORMAL dependency on the loader is the shipped half…
+            report.push(prove_rows_red(
+                cx,
+                subject,
+                "a cleanliness crate taking the loader as a NORMAL dependency",
+                &[ROW_DEPS],
+                universal(true, false),
+                &[
+                    "new-forbidden-edge",
+                    "busbar-oauth2 -> busbar-plugin-loader",
+                ],
+            ));
+            // …and any other file using it is not the witness.
+            report.push(prove_rows_red(
+                cx,
+                subject,
+                "a cleanliness crate's loader dev-edge used outside its `tests/universal_needs.rs` \
+                 is not a witness",
+                &[ROW_TEST_DEPS],
+                universal(false, true),
+                &["new-forbidden-edge", "busbar-oauth2 -> busbar-plugin-loader"],
             ));
 
             // A NEGATIVE COUNT IS A PER-CELL OFF SWITCH, and it is refused where every other
