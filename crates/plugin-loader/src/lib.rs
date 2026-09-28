@@ -2107,3 +2107,9 @@ mod auth_verify_conformance_tests;
 #[cfg(test)]
 #[path = "tests/hook_conformance_tests.rs"]
 mod hook_conformance_tests;
+
+/// The M1 dispatcher through both doors: one script, LINKED and DROPPED, byte-identical, and a RED
+/// arm per mechanism rule.
+#[cfg(test)]
+#[path = "tests/dispatch_tests.rs"]
+mod dispatch_tests;

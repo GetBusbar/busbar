@@ -136,6 +136,10 @@ busbar-auth-oidc-plugin = { git = "https://github.com/GetBusbar/busbar-auth-oidc
 # From its own repo at the rev busbar-kernel pins: the repo's plugin crate, which turns the module's
 # `dropped-in` door on and re-exports it whole; its cdylib is built under `deps/`, hashed.
 busbar-auth-admin-tokens-plugin = { git = "https://github.com/GetBusbar/busbar-auth-admin-tokens", rev = "47cb5047e4c9a73341c613c09a056b4a4bb8eb99" }
+# The M1 dispatcher's test plugin (`dispatch_tests`): its `rlib` is the LINKED door, its `cdylib` the
+# DROPPED one. It defines no ABI shape of its own (every table and struct is `busbar_contract::abi`'s);
+# it is test support, never a shipped plugin.
+busbar-plugin-dispatch-test = { path = "../plugin-dispatch-test" }
 # The `kind: hook` BOTH-WAYS fixture, on the same terms (`hook_conformance_tests`).
 busbar-hook-test-plugin = { path = "../hook-test-plugin" }
 # The `kind: transport` BOTH-WAYS fixture (#3, OWNER-LOCKED: a transport is swappable, compiled in

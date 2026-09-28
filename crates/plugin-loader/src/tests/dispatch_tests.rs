@@ -1,0 +1,966 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+
+//! **THE M1 DISPATCHER, BOTH WAYS.** One test plugin LINKED (its
+//! `rlib`'s door, through [`load_linked`]) and DROPPED (its `cdylib`, through [`load_dropped`]),
+//! driven by ONE script, and the two transcripts compared byte for byte — and against the
+//! transcript the mechanism's rules require.
+//!
+//! The script walks every rule: each outcome, outcome authority (a mismatched mirror, an unknown
+//! byte, PENDING on NONE: all FAULT), the #85 envelope ingest, PENDING + wake (after, before —
+//! latched —, spurious, stale generations, `wake_at_ns`), a Call deadline and a client drop (both
+//! `cancel` then the timeout outcome), `max_inflight` (REFUSED without a call), a WriteBehind op
+//! (never cancelled, detached at its deadline, a reload drain that does not wait on it, a late
+//! completion), a driver ticket, and a hung op (the watchdog faults the instance, every ticket on
+//! its worker FAULTs, a fresh worker serves the next instance).
+//!
+//! RED ARMS, kept: each rule also has its own test below, the door refusals included, and a panic
+//! in a hand-written slot is shown to ABORT the process (in a subprocess).
+
+use std::collections::BTreeMap;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+
+use busbar_contract::abi::mechanism::call::{Blob, DeadlineClass, OutHead, Outcome, BLOB_OCTETS};
+use busbar_contract::abi::mechanism::door::{Door, KindTailHead, Statement};
+use busbar_contract::abi::mechanism::lifecycle::{
+    slot, OpenIn, OpenOut, OpsHead, RefreshIn, TickIn, TickOut, ValidateIn, LIFECYCLE_SLOTS,
+};
+use busbar_contract::abi::mechanism::ticket::Ticket;
+use busbar_contract::abi::mechanism::{KindCode, DOOR_MAGIC, MECHANISM_VERSION};
+use busbar_plugin_dispatch_test as plug;
+
+use crate::dispatch::load::validate_door;
+use crate::dispatch::{
+    in_head, load_dropped, load_linked, now_ns, out_head, Bind, Budgets, Diagnostic,
+    DispatchConfig, Dispatcher, Dropped, EnvelopeSink, Frame, Kind, LoadError, ManifestFacts,
+    Metric, Plugin, Redeem, NO_BLOB,
+};
+
+/// The test plugin's kind, as the dispatcher sees it: its code, the lifecycle skeleton for a table
+/// (the kind's own ops land in M3), FAILED on a timeout.
+struct TestKind;
+impl Kind for TestKind {
+    const CODE: KindCode = plug::KIND;
+    type Ops = OpsHead;
+    const TIMEOUT: Outcome = Outcome::Failed;
+}
+
+/// The #85 envelope as the host received it: one line per entry, and the plugin's report gauges
+/// (families 2..=5) by family.
+#[derive(Default)]
+struct Recorder {
+    lines: Mutex<Vec<String>>,
+    gauges: Mutex<BTreeMap<u32, u32>>,
+}
+impl EnvelopeSink for Recorder {
+    fn metric(&self, m: Metric<'_>) {
+        if m.family >= plug::GAUGE_INVOCATIONS {
+            self.gauges.lock().unwrap().insert(m.family, m.value as u32);
+            return;
+        }
+        let labels: Vec<String> = m
+            .labels
+            .iter()
+            .map(|l| String::from_utf8_lossy(l).into_owned())
+            .collect();
+        self.lines.lock().unwrap().push(format!(
+            "  metric f={} k={} v={} {labels:?}",
+            m.family, m.kind, m.value
+        ));
+    }
+    fn diag(&self, d: Diagnostic<'_>) {
+        self.lines.lock().unwrap().push(format!(
+            "  diag id={} sev={} {}",
+            d.id,
+            d.severity,
+            String::from_utf8_lossy(d.text)
+        ));
+    }
+    fn dropped(&self, why: Dropped) {
+        self.lines
+            .lock()
+            .unwrap()
+            .push(format!("  dropped {why:?}"));
+    }
+}
+impl Recorder {
+    fn take(&self) -> Vec<String> {
+        std::mem::take(&mut self.lines.lock().unwrap())
+    }
+    fn gauge(&self, family: u32) -> u32 {
+        self.gauges
+            .lock()
+            .unwrap()
+            .get(&family)
+            .copied()
+            .unwrap_or(0)
+    }
+}
+
+fn bind(sink: Arc<Recorder>) -> Bind {
+    Bind {
+        max_inflight_cap: 64,
+        sink,
+    }
+}
+
+fn facts() -> ManifestFacts {
+    ManifestFacts {
+        mechanism_version: MECHANISM_VERSION,
+        kind: plug::KIND,
+        kind_abi: plug::KIND.abi_version(),
+    }
+}
+
+fn linked(sink: Arc<Recorder>) -> Plugin<TestKind> {
+    load_linked::<TestKind>(plug::busbar_plugin_door, bind(sink)).expect("the linked door loads")
+}
+
+fn dropped_path() -> Option<std::path::PathBuf> {
+    super::both_ways::cdylib("busbar_plugin_dispatch_test")
+}
+
+fn dropped(sink: Arc<Recorder>) -> Option<Plugin<TestKind>> {
+    let path = dropped_path()?;
+    Some(load_dropped::<TestKind>(&path, &facts(), bind(sink)).expect("the dropped door loads"))
+}
+
+/// A `tick` frame whose extensions blob names the test op.
+fn frame(mode: &'static [u8]) -> Frame<TickIn, TickOut> {
+    let mut head = in_head();
+    head.extensions = Blob {
+        ptr: mode.as_ptr(),
+        len: mode.len(),
+        fmt: BLOB_OCTETS,
+        flags: 0,
+    };
+    Frame::new(
+        TickIn {
+            head,
+            now_ns: now_ns(),
+        },
+        TickOut {
+            head: out_head(),
+            next_tick_ns: 0,
+        },
+    )
+}
+
+/// `answer:<byte>`.
+fn answer(byte: u8) -> &'static [u8] {
+    Box::leak(format!("answer:{byte}").into_bytes().into_boxed_slice())
+}
+
+/// `arm:<slot>:<generation>`.
+fn arm(t: Ticket) -> &'static [u8] {
+    Box::leak(
+        format!("arm:{}:{}", t.slot, t.generation)
+            .into_bytes()
+            .into_boxed_slice(),
+    )
+}
+
+const TICK: u32 = slot::TICK;
+
+fn text(e: &Option<Vec<u8>>) -> String {
+    e.as_ref()
+        .map(|b| String::from_utf8_lossy(b).into_owned())
+        .unwrap_or_default()
+}
+
+/// A ticket-less `count`: `(invocations, cancels, drives)`, as the plugin's gauges reported them.
+fn count(p: &Plugin<TestKind>, sink: &Recorder) -> (u32, u32, u32) {
+    assert_eq!(
+        p.call(TICK, &mut frame(plug::COUNT)).outcome,
+        Outcome::Ready
+    );
+    (
+        sink.gauge(plug::GAUGE_INVOCATIONS),
+        sink.gauge(plug::GAUGE_CANCELS),
+        sink.gauge(plug::GAUGE_DRIVES),
+    )
+}
+
+fn open_frame() -> Frame<OpenIn, OpenOut> {
+    Frame::new(
+        OpenIn {
+            head: in_head(),
+            host: std::ptr::null(),
+            settings: NO_BLOB,
+            secrets: std::ptr::null(),
+            secrets_len: 0,
+            generation: 1,
+        },
+        OpenOut {
+            head: out_head(),
+            instance: std::ptr::null_mut(),
+        },
+    )
+}
+
+const WAIT: Duration = Duration::from_secs(10);
+
+/// `open` on a fresh ticket of `worker`.
+fn open(d: &Dispatcher, p: &Plugin<TestKind>, worker: u32) -> Outcome {
+    let t = d.mint(worker).expect("a ticket");
+    let done = d
+        .submit(p, t, slot::OPEN, open_frame(), DeadlineClass::Call, 0)
+        .wait(WAIT)
+        .expect("open answers");
+    d.recycle(t);
+    done.outcome
+}
+
+fn until(what: &str, f: impl Fn() -> bool) {
+    let t = Instant::now();
+    while !f() {
+        assert!(t.elapsed() < WAIT, "timed out waiting for {what}");
+        std::thread::sleep(Duration::from_millis(2));
+    }
+}
+
+fn config() -> DispatchConfig {
+    DispatchConfig {
+        workers: 2,
+        budgets: Budgets {
+            call: Duration::from_millis(400),
+            ..Budgets::default()
+        },
+        watchdog_period: Duration::from_millis(20),
+    }
+}
+
+/// THE SCRIPT. `load` makes a fresh instance of the same origin (the watchdog step needs a second).
+fn script(load: &dyn Fn(Arc<Recorder>) -> Plugin<TestKind>) -> Vec<String> {
+    let sink = Arc::new(Recorder::default());
+    let p = load(sink.clone());
+    let d = Dispatcher::new(config());
+    let mut out = Vec::new();
+    let mut say = |line: String, sink: &Recorder| {
+        out.push(line);
+        out.extend(sink.take());
+    };
+
+    say(format!("load max_inflight={}", p.max_inflight()), &sink);
+    let mut v = Frame::new(
+        ValidateIn {
+            head: in_head(),
+            settings: NO_BLOB,
+        },
+        out_head(),
+    );
+    say(
+        format!("validate {:?}", p.call(slot::VALIDATE, &mut v).outcome),
+        &sink,
+    );
+    let before = p.call(TICK, &mut frame(answer(1))).outcome;
+    say(format!("answer before open {before:?}"), &sink);
+    say(
+        format!("open {:?} is_open={}", open(&d, &p, 0), p.is_open()),
+        &sink,
+    );
+    say(format!("open again {:?}", open(&d, &p, 0)), &sink);
+
+    // Each outcome, ticket-less; PENDING on NONE is a FAULT.
+    for arg in [1, 3, 4, 2, 0] {
+        let c = p.call(TICK, &mut frame(answer(arg)));
+        say(
+            format!("answer {arg} -> {:?} {:?}", c.outcome, text(&c.error)),
+            &sink,
+        );
+    }
+    for (name, mode) in [("mismatch", plug::MISMATCH), ("unknown", plug::UNKNOWN)] {
+        let c = p.call(TICK, &mut frame(mode));
+        say(format!("answer {name} -> {:?}", c.outcome), &sink);
+    }
+
+    // PENDING, and every kind of wake.
+    for (name, mode) in [
+        ("after", plug::PEND_AFTER),
+        ("before", plug::PEND_BEFORE),
+        ("spurious", plug::PEND_SPURIOUS),
+        ("stale", plug::PEND_STALE),
+        ("timer", plug::PEND_TIMER),
+    ] {
+        let stale0 = d.stats().stale_wakes;
+        let t = d.mint(1).expect("a ticket");
+        let done = d
+            .submit(
+                &p,
+                t,
+                TICK,
+                frame(mode),
+                DeadlineClass::Call,
+                now_ns() + 5_000_000_000,
+            )
+            .wait(WAIT)
+            .expect("pend answers");
+        d.recycle(t);
+        let f = done.frame.expect("the frame comes back");
+        say(
+            format!(
+                "pend {name} -> {:?} resume={} invocations={} early={} stale_wakes+{}",
+                done.outcome,
+                f.input.head.flags,
+                sink.gauge(plug::GAUGE_INVOCATIONS),
+                sink.gauge(plug::GAUGE_EARLY),
+                d.stats().stale_wakes - stale0
+            ),
+            &sink,
+        );
+    }
+
+    // A Call deadline, then a client drop: `cancel`, then the kind's timeout outcome.
+    let t = d.mint(1).expect("a ticket");
+    let done = d
+        .submit(
+            &p,
+            t,
+            TICK,
+            frame(plug::PEND_HOLD),
+            DeadlineClass::Call,
+            now_ns() + 50_000_000,
+        )
+        .wait(WAIT)
+        .expect("the deadline answers");
+    d.recycle(t);
+    say(
+        format!(
+            "deadline -> {:?} cancels={}",
+            done.outcome,
+            count(&p, &sink).1
+        ),
+        &sink,
+    );
+    let t = d.mint(0).expect("a ticket");
+    let reply = d.submit(
+        &p,
+        t,
+        TICK,
+        frame(plug::PEND_HOLD),
+        DeadlineClass::Stream,
+        0,
+    );
+    until("the held op", || d.is_pending(t));
+    d.drop_client(t);
+    let done = reply.wait(WAIT).expect("the drop answers");
+    d.recycle(t);
+    say(
+        format!(
+            "client drop -> {:?} cancels={}",
+            done.outcome,
+            count(&p, &sink).1
+        ),
+        &sink,
+    );
+
+    // max_inflight: over the cap, REFUSED without a call.
+    let calls0 = count(&p, &sink).0;
+    let (a, b, c) = (d.mint(0).unwrap(), d.mint(1).unwrap(), d.mint(0).unwrap());
+    let ra = d.submit(&p, a, TICK, frame(plug::PEND_HOLD), DeadlineClass::Call, 0);
+    let rb = d.submit(&p, b, TICK, frame(plug::PEND_HOLD), DeadlineClass::Call, 0);
+    let rc = d.submit(&p, c, TICK, frame(plug::PEND_HOLD), DeadlineClass::Call, 0);
+    let over = rc.wait(WAIT).expect("over the cap answers at once").outcome;
+    let none_over = p.call(TICK, &mut frame(plug::COUNT)).outcome;
+    until("two held ops", || d.is_pending(a) && d.is_pending(b));
+    d.drop_client(a);
+    let da = ra.wait(WAIT).expect("a answers").outcome;
+    let kick = p.call(TICK, &mut frame(plug::KICK)).outcome;
+    let db = rb.wait(WAIT).expect("b answers").outcome;
+    for t in [a, b, c] {
+        d.recycle(t);
+    }
+    say(
+        format!(
+            "max_inflight: third {over:?}, ticket-less {none_over:?}, dropped {da:?}, kick {kick:?}, kicked {db:?}, calls+{}",
+            count(&p, &sink).0 - calls0
+        ),
+        &sink,
+    );
+
+    // WriteBehind: never cancelled; detached at its deadline; a drain does not wait on it.
+    let (cancels0, late0) = (count(&p, &sink).1, d.stats().write_behind_late);
+    let w = d.mint(1).expect("a ticket");
+    let rw = d.submit(
+        &p,
+        w,
+        TICK,
+        frame(plug::PEND_HOLD),
+        DeadlineClass::WriteBehind,
+        now_ns() + 50_000_000,
+    );
+    let dw = rw.wait(WAIT).expect("the caller stops waiting");
+    d.drop_client(w);
+    let drained = d.drain(&p, Duration::from_secs(2));
+    let rt = d.mint(0).expect("a ticket");
+    let refresh = d
+        .submit(
+            &p,
+            rt,
+            slot::REFRESH,
+            Frame::new(
+                RefreshIn {
+                    head: in_head(),
+                    generation: 2,
+                    settings: NO_BLOB,
+                    secrets: std::ptr::null(),
+                    secrets_len: 0,
+                },
+                out_head(),
+            ),
+            DeadlineClass::Call,
+            0,
+        )
+        .wait(WAIT)
+        .expect("refresh answers")
+        .outcome;
+    d.recycle(rt);
+    let kick = p.call(TICK, &mut frame(plug::KICK)).outcome;
+    until("the late write-behind", || {
+        d.stats().write_behind_late > late0
+    });
+    d.recycle(w);
+    say(
+        format!(
+            "write_behind -> {:?} detached={} drained={drained} refresh={refresh:?} kick={kick:?} cancels+{} late+{}",
+            dw.outcome,
+            dw.detached,
+            count(&p, &sink).1 - cancels0,
+            d.stats().write_behind_late - late0
+        ),
+        &sink,
+    );
+
+    // A driver ticket: three wakes, three drives, outside max_inflight.
+    let drv = d.driver(&p, 0).expect("a driver ticket");
+    let armed = p.call(TICK, &mut frame(arm(drv))).outcome;
+    until("three drives", || count(&p, &sink).2 >= 3);
+    std::thread::sleep(Duration::from_millis(30));
+    say(
+        format!(
+            "driver armed={armed:?} drives={} inflight={}",
+            count(&p, &sink).2,
+            p.inflight()
+        ),
+        &sink,
+    );
+    d.recycle(drv);
+
+    // The watchdog: a hung op faults its instance and replaces its worker.
+    let held = d.mint(1).expect("a ticket");
+    let rh = d.submit(
+        &p,
+        held,
+        TICK,
+        frame(plug::PEND_HOLD),
+        DeadlineClass::Call,
+        0,
+    );
+    let hung = d.mint(1).expect("a ticket");
+    let rg = d.submit(&p, hung, TICK, frame(plug::HANG), DeadlineClass::Call, 0);
+    let (dh, dg) = (
+        rh.wait(WAIT).expect("held answers"),
+        rg.wait(WAIT).expect("hung answers"),
+    );
+    let after = p.call(TICK, &mut frame(answer(1))).outcome;
+    let stale = d
+        .submit(
+            &p,
+            held,
+            TICK,
+            frame(plug::PEND_HOLD),
+            DeadlineClass::Call,
+            0,
+        )
+        .wait(WAIT)
+        .expect("a stale ticket answers")
+        .outcome;
+    let p2 = load(sink.clone());
+    let fresh = d.mint(1).expect("the fresh worker mints");
+    let fresh_stale = fresh.generation > 1;
+    d.recycle(fresh);
+    let opened2 = open(&d, &p2, 1);
+    let unhang = p2.call(TICK, &mut frame(plug::UNHANG)).outcome;
+    say(
+        format!(
+            "watchdog: hung={:?} frame={} held={:?} faulted={} after={after:?} stale_ticket={stale:?} inflight={} replaced={} fresh_generation_bumped={fresh_stale} next_instance_open={opened2:?} unhang={unhang:?}",
+            dg.outcome,
+            dg.frame.is_some(),
+            dh.outcome,
+            p.is_faulted(),
+            p.inflight(),
+            d.stats().replacements,
+        ),
+        &sink,
+    );
+    let t = d.mint(0).expect("a ticket");
+    let closed = d
+        .submit(
+            &p2,
+            t,
+            slot::CLOSE,
+            Frame::new(in_head(), out_head()),
+            DeadlineClass::Call,
+            0,
+        )
+        .wait(WAIT)
+        .expect("close answers")
+        .outcome;
+    d.recycle(t);
+    say(format!("close {closed:?} is_open={}", p2.is_open()), &sink);
+    out
+}
+
+/// The transcript the mechanism's rules require.
+const EXPECTED: &[&str] = &[
+    "load max_inflight=2",
+    "validate Ready",
+    "answer before open Refused",
+    "open Ready is_open=true",
+    "open again Refused",
+    "answer 1 -> Ready \"\"",
+    "  metric f=0 k=0 v=1 [\"answer\"]",
+    "  dropped FamilyOutOfRange(9)",
+    "  dropped NonFinite(1)",
+    "  dropped KindMismatch { family: 1, kind: 0 }",
+    "  metric f=1 k=1 v=7.5 []",
+    "  diag id=0 sev=1 answered",
+    "  dropped DiagOutOfRange(5)",
+    "answer 3 -> Failed \"answer failed\"",
+    "  metric f=0 k=0 v=1 [\"answer\"]",
+    "  dropped FamilyOutOfRange(9)",
+    "  dropped NonFinite(1)",
+    "  dropped KindMismatch { family: 1, kind: 0 }",
+    "  metric f=1 k=1 v=7.5 []",
+    "  diag id=0 sev=1 answered",
+    "  dropped DiagOutOfRange(5)",
+    "answer 4 -> Refused \"answer refused\"",
+    "  metric f=0 k=0 v=1 [\"answer\"]",
+    "  dropped FamilyOutOfRange(9)",
+    "  dropped NonFinite(1)",
+    "  dropped KindMismatch { family: 1, kind: 0 }",
+    "  metric f=1 k=1 v=7.5 []",
+    "  diag id=0 sev=1 answered",
+    "  dropped DiagOutOfRange(5)",
+    "answer 2 -> Fault \"\"",
+    "answer 0 -> Fault \"\"",
+    "answer mismatch -> Fault",
+    "answer unknown -> Fault",
+    "pend after -> Ready resume=1 invocations=2 early=0 stale_wakes+0",
+    "pend before -> Ready resume=1 invocations=2 early=0 stale_wakes+0",
+    "pend spurious -> Ready resume=1 invocations=3 early=1 stale_wakes+0",
+    "pend stale -> Ready resume=1 invocations=2 early=0 stale_wakes+2",
+    "pend timer -> Ready resume=1 invocations=2 early=0 stale_wakes+0",
+    "deadline -> Failed cancels=1",
+    "client drop -> Failed cancels=2",
+    "max_inflight: third Refused, ticket-less Refused, dropped Failed, kick Ready, kicked Ready, calls+3",
+    "write_behind -> Failed detached=true drained=true refresh=Ready kick=Ready cancels+0 late+1",
+    "driver armed=Ready drives=3 inflight=0",
+    "watchdog: hung=Fault frame=false held=Fault faulted=true after=Fault stale_ticket=Fault inflight=0 replaced=1 fresh_generation_bumped=true next_instance_open=Ready unhang=Ready",
+    "close Ready is_open=false",
+];
+
+/// THE BOTH-WAYS PROOF: the same script, LINKED and DROPPED, byte-identical, and what the rules say.
+#[test]
+fn one_script_linked_and_dropped_is_byte_identical() {
+    let Some(_) = dropped_path() else {
+        return;
+    };
+    let linked_run = script(&|s| linked(s));
+    let dropped_run = script(&|s| dropped(s).expect("the dropped door"));
+    assert_eq!(linked_run, dropped_run, "LINKED and DROPPED diverge");
+    assert_eq!(
+        linked_run, EXPECTED,
+        "the transcript is not what the mechanism requires"
+    );
+}
+
+// ── RED ARMS ─────────────────────────────────────────────────────────────────────────────────────
+
+fn quiet() -> Arc<Recorder> {
+    Arc::new(Recorder::default())
+}
+
+fn opened(d: &Dispatcher) -> (Plugin<TestKind>, Arc<Recorder>) {
+    let sink = quiet();
+    let p = linked(sink.clone());
+    assert_eq!(open(d, &p, 0), Outcome::Ready);
+    (p, sink)
+}
+
+#[test]
+fn red_outcome_mismatch_unknown_byte_and_pending_on_none_are_fault() {
+    let d = Dispatcher::new(config());
+    let (p, _sink) = opened(&d);
+    for mode in [
+        plug::MISMATCH,
+        plug::UNKNOWN,
+        answer(2),
+        answer(0),
+        answer(5),
+    ] {
+        let c = p.call(TICK, &mut frame(mode));
+        assert_eq!(
+            c.outcome,
+            Outcome::Fault,
+            "{}",
+            String::from_utf8_lossy(mode)
+        );
+    }
+    // The GREEN twin: the same op answering honestly is READY.
+    assert_eq!(p.call(TICK, &mut frame(answer(1))).outcome, Outcome::Ready);
+}
+
+#[test]
+fn red_over_max_inflight_is_refused_without_a_call() {
+    let d = Dispatcher::new(config());
+    let (p, sink) = opened(&d);
+    let calls0 = count(&p, &sink).0;
+    let (a, b, c) = (d.mint(0).unwrap(), d.mint(0).unwrap(), d.mint(1).unwrap());
+    let ra = d.submit(&p, a, TICK, frame(plug::PEND_HOLD), DeadlineClass::Call, 0);
+    let rb = d.submit(&p, b, TICK, frame(plug::PEND_HOLD), DeadlineClass::Call, 0);
+    let rc = d.submit(&p, c, TICK, frame(plug::PEND_HOLD), DeadlineClass::Call, 0);
+    assert_eq!(rc.wait(WAIT).unwrap().outcome, Outcome::Refused);
+    until("two held ops", || d.is_pending(a) && d.is_pending(b));
+    d.drop_client(a);
+    assert_eq!(ra.wait(WAIT).unwrap().outcome, Outcome::Failed);
+    assert_eq!(p.call(TICK, &mut frame(plug::KICK)).outcome, Outcome::Ready);
+    assert_eq!(rb.wait(WAIT).unwrap().outcome, Outcome::Ready);
+    assert_eq!(
+        count(&p, &sink).0 - calls0,
+        3,
+        "the refused op was never called"
+    );
+    assert_eq!(p.inflight(), 0);
+}
+
+#[test]
+fn red_a_stale_generation_wake_is_dropped() {
+    let d = Dispatcher::new(config());
+    let (p, _sink) = opened(&d);
+    let old = d.mint(0).unwrap();
+    d.recycle(old);
+    // The slot comes back once the recycle landed, one generation on.
+    let t = loop {
+        let t = d.mint(0).unwrap();
+        if t.slot == old.slot {
+            break t;
+        }
+    };
+    assert_eq!(t.generation, old.generation + 1);
+    let reply = d.submit(&p, t, TICK, frame(plug::PEND_HOLD), DeadlineClass::Call, 0);
+    until("the held op", || d.is_pending(t));
+    let stale0 = d.stats().stale_wakes;
+    crate::dispatch::ticket::host_wake(p.inner.ctx(), old);
+    until("the stale wake is counted", || {
+        d.stats().stale_wakes > stale0
+    });
+    assert!(
+        reply.wait(Duration::from_millis(100)).is_none(),
+        "a stale wake resumed an op"
+    );
+    d.drop_client(t);
+    assert_eq!(reply.wait(WAIT).unwrap().outcome, Outcome::Failed);
+}
+
+#[test]
+fn red_a_reload_drain_does_not_wait_on_a_pending_write_behind() {
+    let d = Dispatcher::new(config());
+    let (p, sink) = opened(&d);
+    let w = d.mint(0).unwrap();
+    let rw = d.submit(
+        &p,
+        w,
+        TICK,
+        frame(plug::PEND_HOLD),
+        DeadlineClass::WriteBehind,
+        0,
+    );
+    until("the write-behind pends", || d.is_pending(w));
+    d.drop_client(w);
+    assert!(
+        d.drain(&p, Duration::from_secs(1)),
+        "the drain waited on a WriteBehind op"
+    );
+    // The RED twin: a Call-class op holds the drain.
+    let t = d.mint(1).unwrap();
+    let rt = d.submit(&p, t, TICK, frame(plug::PEND_HOLD), DeadlineClass::Call, 0);
+    until("the call pends", || d.is_pending(t));
+    assert!(
+        !d.drain(&p, Duration::from_millis(100)),
+        "a pending Call op must hold the drain"
+    );
+    // Its client drop cancels it (the one cancel); the WriteBehind op's did not.
+    d.drop_client(t);
+    assert_eq!(rt.wait(WAIT).unwrap().outcome, Outcome::Failed);
+    assert!(d.drain(&p, Duration::from_secs(1)));
+    assert_eq!(p.call(TICK, &mut frame(plug::KICK)).outcome, Outcome::Ready);
+    assert_eq!(
+        rw.wait(WAIT).unwrap().outcome,
+        Outcome::Ready,
+        "the write-behind was never cancelled"
+    );
+    assert_eq!(count(&p, &sink).1, 1, "one cancel: the Call op's");
+}
+
+#[test]
+fn completion_handles_store_the_result_and_never_run_twice() {
+    let d = Dispatcher::new(config());
+    let t = d.mint(0).unwrap();
+    let c = d.completions();
+    assert!(
+        c.issue(Ticket::NONE).is_none(),
+        "a ticket-less call has no service to wait for"
+    );
+    let h = c.issue(t).unwrap();
+    let runs = std::sync::atomic::AtomicU32::new(0);
+    runs.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    assert_eq!(c.redeem(h), Redeem::Waiting);
+    assert!(c.complete(h, b"row".to_vec()));
+    assert!(!c.complete(h, b"again".to_vec()), "a handle completes once");
+    assert_eq!(c.redeem(h), Redeem::Ready(b"row".to_vec()));
+    assert_eq!(c.redeem(h), Redeem::Ready(b"row".to_vec()));
+    assert_eq!(runs.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert_eq!(c.issue(t).unwrap().seq, 1);
+    d.recycle(t);
+    until("the recycle forgets the handles", || {
+        c.redeem(h) == Redeem::Unknown
+    });
+}
+
+/// Every door refusal, on copies of the real door with one field wrong.
+#[test]
+fn red_every_door_refusal() {
+    // SAFETY: the real door is `'static`.
+    let real: Door = unsafe { *plug::busbar_plugin_door() };
+    let ops: OpsHead = unsafe { *real.ops };
+    let st = unsafe { *real.statement };
+    let leak_ops = |o: OpsHead| Box::leak(Box::new(o)) as *const OpsHead;
+    let with = |f: &dyn Fn(&mut Door)| {
+        let mut d = real;
+        f(&mut d);
+        validate_door::<TestKind>(Box::leak(Box::new(d))).err()
+    };
+    assert!(validate_door::<TestKind>(&real).is_ok(), "the GREEN twin");
+    assert_eq!(
+        validate_door::<TestKind>(std::ptr::null()).err(),
+        Some(LoadError::NullDoor)
+    );
+    assert_eq!(
+        with(&|d| d.magic = u64::from_le_bytes(*b"BUSPLANE")),
+        Some(LoadError::Magic(u64::from_le_bytes(*b"BUSPLANE")))
+    );
+    assert_ne!(DOOR_MAGIC, u64::from_le_bytes(*b"BUSPLANE"));
+    for v in [MECHANISM_VERSION - 1, MECHANISM_VERSION + 1] {
+        assert_eq!(
+            with(&|d| d.mechanism_version = v),
+            Some(LoadError::Mechanism {
+                door: v,
+                host: MECHANISM_VERSION
+            })
+        );
+    }
+    let abi = plug::KIND.abi_version();
+    for v in [abi - 1, abi + 1] {
+        assert_eq!(
+            with(&|d| d.kind_abi = v),
+            Some(LoadError::KindAbi {
+                kind: plug::KIND,
+                door: v,
+                host: abi
+            })
+        );
+    }
+    assert_eq!(with(&|d| d.kind = 99), Some(LoadError::UnknownKind(99)));
+    let other_kind = *KindCode::ALL.iter().find(|k| **k != plug::KIND).unwrap();
+    assert_eq!(
+        with(&|d| d.kind = other_kind as u32),
+        Some(LoadError::WrongKind {
+            door: other_kind,
+            want: plug::KIND
+        })
+    );
+    assert!(matches!(
+        with(&|d| d.size = 8),
+        Some(LoadError::DoorSize { .. })
+    ));
+    assert_eq!(
+        with(&|d| d.ops = std::ptr::null()),
+        Some(LoadError::NullOps)
+    );
+    for n in [LIFECYCLE_SLOTS - 1, LIFECYCLE_SLOTS + 1] {
+        let p = leak_ops(OpsHead { slots: n, ..ops });
+        assert_eq!(
+            with(&|d| d.ops = p),
+            Some(LoadError::TableSlots {
+                door: n,
+                host: LIFECYCLE_SLOTS
+            })
+        );
+    }
+    let p = leak_ops(OpsHead {
+        size: ops.size + 8,
+        ..ops
+    });
+    assert!(matches!(
+        with(&|d| d.ops = p),
+        Some(LoadError::TableSize { .. })
+    ));
+    let p = leak_ops(OpsHead {
+        cancel: None,
+        ..ops
+    });
+    assert_eq!(
+        with(&|d| d.ops = p),
+        Some(LoadError::NullSlot(slot::CANCEL))
+    );
+    let p = leak_ops(OpsHead { close: None, ..ops });
+    assert_eq!(with(&|d| d.ops = p), Some(LoadError::NullSlot(slot::CLOSE)));
+    assert_eq!(
+        with(&|d| d.statement = std::ptr::null()),
+        Some(LoadError::NullStatement)
+    );
+    let other = Box::leak(Box::new(Statement {
+        kind_abi: abi + 1,
+        ..st
+    }));
+    assert_eq!(
+        with(&|d| d.statement = other),
+        Some(LoadError::StatementDisagrees("kind_abi"))
+    );
+    let tail = Box::leak(Box::new(KindTailHead {
+        size: 4,
+        _reserved: 0,
+    }));
+    let short = Box::leak(Box::new(Statement {
+        kind_tail: tail,
+        ..st
+    }));
+    assert!(matches!(
+        with(&|d| d.statement = short),
+        Some(LoadError::KindTail(_))
+    ));
+    let tail = Box::leak(Box::new(KindTailHead {
+        size: 8,
+        _reserved: 0,
+    }));
+    let fine = Box::leak(Box::new(Statement {
+        kind_tail: tail,
+        ..st
+    }));
+    assert!(
+        with(&|d| d.statement = fine).is_none(),
+        "a well-formed kind tail loads"
+    );
+}
+
+extern "C" fn null_door() -> *const Door {
+    std::ptr::null()
+}
+
+#[test]
+fn red_both_origins_refuse_the_same_way() {
+    assert_eq!(
+        load_linked::<TestKind>(null_door, bind(quiet())).err(),
+        Some(LoadError::NullDoor)
+    );
+    // The manifest's mechanism is checked BEFORE dlopen: a path that does not exist is never opened.
+    let nowhere = std::path::Path::new("/nonexistent/libnothing.so");
+    for v in [MECHANISM_VERSION - 1, MECHANISM_VERSION + 1] {
+        let f = ManifestFacts {
+            mechanism_version: v,
+            ..facts()
+        };
+        assert_eq!(
+            load_dropped::<TestKind>(nowhere, &f, bind(quiet())).err(),
+            Some(LoadError::ManifestMechanism {
+                stated: v,
+                host: MECHANISM_VERSION
+            })
+        );
+    }
+    let f = ManifestFacts {
+        kind_abi: plug::KIND.abi_version() + 1,
+        ..facts()
+    };
+    assert!(matches!(
+        load_dropped::<TestKind>(nowhere, &f, bind(quiet())).err(),
+        Some(LoadError::ManifestKindAbi { .. })
+    ));
+    assert!(matches!(
+        load_dropped::<TestKind>(nowhere, &facts(), bind(quiet())).err(),
+        Some(LoadError::Open(_))
+    ));
+    // A library that is not a 1.6.0 plugin exports no door: the platform's C library.
+    #[cfg(target_os = "macos")]
+    let libc = "/usr/lib/libSystem.B.dylib";
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let libc = "libc.so.6";
+    #[cfg(unix)]
+    assert!(matches!(
+        load_dropped::<TestKind>(std::path::Path::new(libc), &facts(), bind(quiet())).err(),
+        Some(LoadError::NoDoor(_))
+    ));
+}
+
+/// The child half of the abort test: runs only when its parent sets the variable.
+#[test]
+fn panic_child() {
+    let Ok(origin) = std::env::var("BUSBAR_M1_PANIC_CHILD") else {
+        return;
+    };
+    let p = if origin == "dropped" {
+        dropped(quiet()).expect("the dropped door")
+    } else {
+        linked(quiet())
+    };
+    let d = Dispatcher::new(config());
+    assert_eq!(open(&d, &p, 0), Outcome::Ready);
+    let _ = p.call(TICK, &mut frame(plug::PANIC));
+    // Unreachable: the panic escapes an `extern "C"` slot and the process aborts.
+    std::process::exit(0);
+}
+
+/// A panic that escapes a hand-written slot ABORTS the process — in both origins.
+#[test]
+fn red_a_panic_in_a_hand_written_slot_aborts() {
+    let origins: &[&str] = if dropped_path().is_some() {
+        &["linked", "dropped"]
+    } else {
+        &["linked"]
+    };
+    for origin in origins {
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "dispatch_tests::panic_child",
+                "--test-threads=1",
+                "--nocapture",
+            ])
+            .env("BUSBAR_M1_PANIC_CHILD", origin)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .expect("run the child");
+        assert!(
+            !status.success(),
+            "{origin}: the child survived a panic across extern \"C\""
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::ExitStatusExt;
+            assert_eq!(
+                status.signal(),
+                Some(libc::SIGABRT),
+                "{origin}: not an abort: {status:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn outhead_is_prefilled_as_fault() {
+    let h: OutHead = out_head();
+    assert_eq!(h.outcome.outcome(), Outcome::Fault);
+}

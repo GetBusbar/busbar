@@ -949,6 +949,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "busbar-plugin-dispatch-test"
+version = "1.5.0"
+dependencies = [
+ "busbar-contract",
+]
+
+[[package]]
 name = "busbar-plugin-example-plane"
 version = "1.6.0"
 dependencies = [
@@ -970,6 +977,7 @@ dependencies = [
  "busbar-hook-test-plugin",
  "busbar-kernel-ledger",
  "busbar-kernel-wal",
+ "busbar-plugin-dispatch-test",
  "busbar-plugin-example-plane",
  "busbar-store-memory",
  "busbar-transport-tcp",

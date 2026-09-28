@@ -968,6 +968,17 @@ impl Dispatcher {
         Weak::ptr_eq(inst.wake.route.get_or_init(|| mine.clone()), &mine)
     }
 
+    /// Whether an op on `t` is pending (test witness: it has crossed and answered PENDING).
+    #[cfg(test)]
+    pub(crate) fn is_pending(&self, t: Ticket) -> bool {
+        let Some(w) = self.worker(decode(t.slot).0) else {
+            return false;
+        };
+        let mut st = w.lock();
+        w.entry(&mut st, t)
+            .is_some_and(|(_, e)| e.current.as_ref().is_some_and(|c| c.pending))
+    }
+
     /// Mint a request ticket on `worker`.
     pub fn mint(&self, worker: u32) -> Option<Ticket> {
         self.worker(worker)?.mint(None)
