@@ -9,6 +9,11 @@ sibling_store_checkout = busbar-store-sqlite
 sibling_store_plugin = store-sqlite-plugin
 sibling_store_cdylib = busbar_store_sqlite_plugin
 
+# The in-tree `kind: hook` fixture crate (`crates/hook-test-plugin`) the dlopen-seam tests in
+# `hook_tests.rs` build and load over the real ABI. The loader names no instance; the test reads
+# this name here, as data.
+hook_fixture_cdylib = busbar_hook_test_plugin
+
 # The oracle cache's directory for the published store tarball (testing/shadow-oracle/fetch-plugin.sh
 # <plugin-id> fills `plugins/<plugin-id>`).
 published_store_plugin_id = store-sqlite

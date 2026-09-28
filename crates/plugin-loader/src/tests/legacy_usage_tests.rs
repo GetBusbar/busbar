@@ -241,14 +241,14 @@ fn an_open_unit_with_no_1_5_5_column_is_reported() {
             model: "m".to_string(),
             usage_units: [
                 (UNIT_INPUT.to_string(), 6i64),
-                ("voice_seconds".to_string(), 30i64),
+                ("extra_seconds".to_string(), 30i64),
             ]
             .into_iter()
             .collect(),
         }],
     };
     let (legacy, dropped) = delta_to_legacy(&delta);
-    assert_eq!(dropped, vec!["voice_seconds".to_string()]);
+    assert_eq!(dropped, vec!["extra_seconds".to_string()]);
     assert_eq!(legacy.models[0].tokens.input, 6);
 }
 

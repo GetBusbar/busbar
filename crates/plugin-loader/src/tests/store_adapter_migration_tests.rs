@@ -777,11 +777,12 @@ impl AbiStore for ReadOnly {
 /// the oracle's store-persist cell drives, so what that proves about the wire and what this proves
 /// about the opening figures are about one binary.
 #[test]
-fn an_opening_sealed_off_the_published_sqlite_store() {
+fn an_opening_sealed_off_the_published_store() {
+    let plugin_id = crate::tests::artifact("published_store_plugin_id");
     let Some(tarball_path) = cached_published_store_tarball() else {
         eprintln!(
-            "skip: no published store-sqlite tarball in the oracle cache (run \
-             `testing/shadow-oracle/fetch-plugin.sh store-sqlite`)"
+            "skip: no published {plugin_id} tarball in the oracle cache (run \
+             `testing/shadow-oracle/fetch-plugin.sh {plugin_id}`)"
         );
         return;
     };
@@ -798,18 +799,18 @@ fn an_opening_sealed_off_the_published_sqlite_store() {
     let store = load_dyn_store_from_bytes_at_abi(
         &unpacked.lib_bytes,
         &cfg,
-        "published-store-sqlite",
+        &format!("published-{plugin_id}"),
         &unpacked.manifest.kind,
         unpacked.manifest.abi_version,
     )
-    .unwrap_or_else(|e| panic!("the published sqlite store must load on this binary: {e}"));
+    .unwrap_or_else(|e| panic!("the published store must load on this binary: {e}"));
     let seeding = StoreAdapter::over_loaded_store(store);
 
     // The previous release's rows, written through the published wire the previous release used.
     seeding
         .store()
         .put_key(&VirtualKey {
-            id: "vk_sqlite".to_string(),
+            id: "vk_b".to_string(),
             generation_hash: "gen".to_string(),
             name: "migration".to_string(),
             enabled: true,
@@ -820,7 +821,7 @@ fn an_opening_sealed_off_the_published_sqlite_store() {
     seeding
         .store()
         .put_usage(
-            "vk_sqlite",
+            "vk_b",
             WINDOW,
             &UsageLedger {
                 requests: 21,
@@ -833,7 +834,7 @@ fn an_opening_sealed_off_the_published_sqlite_store() {
         .store()
         .add_metering(&MeteringDelta {
             usage_units: Default::default(),
-            key_id: "vk_sqlite".to_string(),
+            key_id: "vk_b".to_string(),
             bucket: WINDOW,
             model: "gpt-4".to_string(),
             provider: "prov-a".to_string(),
@@ -853,7 +854,7 @@ fn an_opening_sealed_off_the_published_sqlite_store() {
     let read_only = StoreAdapter::new(Arc::new(ReadOnly(seeding.store())), PUBLISHED_SCHEMA);
     let plan = read_only
         .key_bucket_plan(WINDOW, &[], &[WINDOW])
-        .expect("the key rows list off sqlite");
+        .expect("the key rows list off the store");
     let rows = read_only.legacy_ledger_rows(plan);
     let mut records = read_only.migration_records();
     let Outcome::Sealed(opening) =
@@ -865,18 +866,18 @@ fn an_opening_sealed_off_the_published_sqlite_store() {
     assert_eq!(
         opened(
             &opening.checkpoint.totals,
-            "vk_sqlite",
+            "vk_b",
             CapDimension::Class("input".into()),
             BucketScope::Pool("lane:gpt-4".into())
         )
         .settled,
         1_234,
-        "the sealed figure is the row sqlite actually holds"
+        "the sealed figure is the row the store actually holds"
     );
     assert_eq!(
         opened(
             &opening.checkpoint.totals,
-            "vk_sqlite",
+            "vk_b",
             CapDimension::Class("input".into()),
             meter_pool_scope("gpt-4", "prov-a")
         )
@@ -886,7 +887,7 @@ fn an_opening_sealed_off_the_published_sqlite_store() {
     assert_eq!(
         opened(
             &opening.checkpoint.totals,
-            "vk_sqlite",
+            "vk_b",
             CapDimension::Requests,
             BucketScope::All
         )
@@ -899,7 +900,7 @@ fn an_opening_sealed_off_the_published_sqlite_store() {
     // The second boot on the same node is a no-op, on the real store as on the double.
     let again = migrate(
         &read_only.legacy_ledger_rows(LegacyReadPlan {
-            windows: vec![("vk_sqlite".to_string(), WINDOW)],
+            windows: vec![("vk_b".to_string(), WINDOW)],
             days: vec![WINDOW],
         }),
         &mut records,

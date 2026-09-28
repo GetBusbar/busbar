@@ -23,7 +23,8 @@ pub(crate) fn hook_plugin_path() -> Option<std::path::PathBuf> {
     let candidate = (|| {
         let exe = std::env::current_exe().ok()?;
         let profile_dir = exe.parent()?.parent()?;
-        let name = crate::plugin_library_filename("busbar_hook_test_plugin");
+        let name =
+            crate::plugin_library_filename(crate::tests::artifact("hook_fixture_cdylib"));
         let uplifted = profile_dir.join(&name);
         let raw = profile_dir.join("deps").join(&name);
         [uplifted, raw]
@@ -38,9 +39,10 @@ pub(crate) fn hook_plugin_path() -> Option<std::path::PathBuf> {
             .map(|(p, _)| p)
     })();
     if candidate.is_none() && std::env::var_os("CI").is_some() {
+        let cdylib = crate::tests::artifact("hook_fixture_cdylib");
         panic!(
             "the hook test plugin cdylib is not built under CI: `cargo test --workspace` must \
-                 build busbar_hook_test_plugin (checked both the uplifted target dir and \
+                 build {cdylib} (checked both the uplifted target dir and \
                  target/deps). Refusing to silently skip the only over-the-ABI coverage of the \
                  DlopenPolicy hook seam."
         );

@@ -8,89 +8,9 @@
 frozen_literal = 2
 
 [[leak]]
-noun = "hook"
-kind = "hook"
-file = "crates/plugin-loader/src/tests/hook_tests.rs"
-count = 2
-category = "core"
-wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
-
-[[leak]]
-noun = "http"
-kind = "transport"
-file = "crates/busbar-plane-mcp/src/claims.rs"
-count = 3
-category = "cross-plugin"
-wave = "cross-plugin cleanup — broker law #8 (plugins never name each other)"
-
-[[leak]]
-noun = "http"
-kind = "transport"
-file = "crates/busbar-plane-mcp/src/plane.rs"
-count = 1
-category = "cross-plugin"
-wave = "cross-plugin cleanup — broker law #8 (plugins never name each other)"
-
-[[leak]]
-noun = "http"
-kind = "transport"
-file = "crates/busbar-plane-mcp/src/tests/claims.rs"
-count = 3
-category = "cross-plugin"
-wave = "cross-plugin cleanup — broker law #8 (plugins never name each other)"
-
-[[leak]]
-noun = "mcp"
-kind = "plane"
-file = "crates/busbar-kernel/src/test_support/mod.rs"
-count = 1
-category = "core"
-wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
-
-[[leak]]
 noun = "mcp"
 kind = "plane"
 file = "crates/busbar-llm-codec/src/anthropic/tests/field_carry_tests.rs"
-count = 3
-category = "cross-plugin"
-wave = "cross-plugin cleanup — broker law #8 (plugins never name each other)"
-
-[[leak]]
-noun = "sqlite"
-kind = "store"
-file = "crates/plugin-loader/src/tests/store_adapter_migration_tests.rs"
-count = 14
-category = "core"
-wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
-
-[[leak]]
-noun = "sse"
-kind = "transport"
-file = "crates/busbar-plane-mcp/src/claims.rs"
-count = 2
-category = "cross-plugin"
-wave = "cross-plugin cleanup — broker law #8 (plugins never name each other)"
-
-[[leak]]
-noun = "sse"
-kind = "transport"
-file = "crates/busbar-plane-mcp/src/tests/claims.rs"
-count = 3
-category = "cross-plugin"
-wave = "cross-plugin cleanup — broker law #8 (plugins never name each other)"
-
-[[leak]]
-noun = "stdio"
-kind = "transport"
-file = "crates/busbar-plane-mcp/src/claims.rs"
-count = 3
-category = "cross-plugin"
-wave = "cross-plugin cleanup — broker law #8 (plugins never name each other)"
-
-[[leak]]
-noun = "stdio"
-kind = "transport"
-file = "crates/busbar-plane-mcp/src/tests/claims.rs"
 count = 3
 category = "cross-plugin"
 wave = "cross-plugin cleanup — broker law #8 (plugins never name each other)"
@@ -159,10 +79,3 @@ count = 2
 category = "cross-plugin"
 wave = "cross-plugin cleanup — broker law #8 (plugins never name each other)"
 
-[[leak]]
-noun = "voice"
-kind = "plane"
-file = "crates/plugin-loader/src/tests/legacy_usage_tests.rs"
-count = 2
-category = "core"
-wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
