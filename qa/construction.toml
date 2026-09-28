@@ -372,9 +372,9 @@ abi = ["crates/busbar-contract"]
 
 [gate.ceiling_raises."rules.loc-ceilings.kernel_ceiling"]
 file    = "qa/construction.toml"
-from    = 54814
-to      = 54842
-because = "ARCHITECT 2026-09-28: R-KERNEL, FOLD-LLM C1' (legacy fold rulings F19/F20; BUSBAR-1.6.0.md THE DESIGN, §7). The kernel's door now reads the ADMIT verdict (OverBudget with the door's Retry-After, whether the charge landed, the downgrade pool) that the llm plane's admit step decided itself; the door function is typed in contract and kernel types only, for the plane driver to call at ADMIT. Measured by cargo xtask gate construction: 54814 before, 54842 after, +28. The ceiling rises by exactly that."
+from    = 54842
+to      = 54915
+because = "ARCHITECT 2026-09-28: R-KERNEL, FOLD-LLM C2' (legacy fold rulings F19/F20; BUSBAR-1.6.0.md THE DESIGN, §7). The kernel's door now decides the METER step's fee count, usage lines and metering-row evidence that the llm plane's meter step built itself; the door functions are typed in contract types only, for the plane driver to call at METER. Measured by cargo xtask gate construction: 54842 before, 54915 after, +73. The ceiling rises by exactly that."
 
 # ── THE CONTRACT CEILING PAIR, RE-ARMED BY KERNEL<>PLUGINS STEP 4a (the plane ABI v1 additions for
 #    the plane driver, validators beside each) ─────────────────────────────────────────────────
@@ -1209,7 +1209,7 @@ kernel_crate = "busbar-kernel"
 # ── RE-ARMED 54801 -> 54814 for the Phase-2 exit-test regression, declared above: the kernel's
 # door takes the zero hold and the unit-key mint the llm and voice planes performed. Measured 54785
 # before and 54798 after, +13; K2g's named reservation is unchanged and unspent by it.
-kernel_ceiling = 54842
+kernel_ceiling = 54915
 # `caps_crate = "busbar-caps"` WAS HERE AND IS STRUCK, 2026-09-22. The crate was folded into
 # busbar-contract by 2c9eddecf ("W2.c: fold busbar-caps into busbar-contract"); its types live at
 # `crates/busbar-contract/src/caps/`, whose own module header says "Folded from the former
