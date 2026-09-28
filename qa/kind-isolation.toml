@@ -1127,7 +1127,7 @@ to      = "busbar-plugin-dispatch-test"
 half    = "test"
 count   = "1"
 verdict = "tcb"
-cite    = "BUSBAR-1.6.0.md THE DESIGN §11.4 (compiled in = dropped in) and the plugin dispatcher: its both-ways proof dev-depends on its test plugin's rlib for the LINKED door and dlopens the same crate's cdylib for the DROPPED door; a plugin-tooling-to-plugin-tooling test edge inside the trusted computing base, the example plane's precedent."
+cite    = "BUSBAR-1.6.0.md THE DESIGN, §11.4 (compiled in = dropped in) and the plugin dispatcher: its both-ways proof dev-depends on its test plugin's rlib for the LINKED door and dlopens the same crate's cdylib for the DROPPED door; a plugin-tooling-to-plugin-tooling test edge inside the trusted computing base, the example plane's precedent."
 why     = "busbar-plugin-loader names busbar-plugin-dispatch-test: declared dev in the test graph so dispatch_tests can call the LINKED door (its rlib) and compare it against the same crate's DROPPED-IN cdylib, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
 drain   = "none while the loader and the plugin tooling are outside the kind system (BUSBAR-1.6.0.md THE DESIGN, §2: they are not kinds), and while the dispatcher is proven both ways by this fixture. The row holds the number."
 
