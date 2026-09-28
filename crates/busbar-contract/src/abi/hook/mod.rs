@@ -540,8 +540,9 @@ pub const VERB_RESTRICT: u32 = 1 << 3;
 /// ruling 7).
 pub const VERB_HAS_REJECT_STATUS: u32 = 1 << 4;
 
-/// `decide`'s `out`. Precedence when more than one verb bit is set is a KERNEL normalizer (module
-/// doc): reject > restrict > order/abstain.
+/// `decide`'s `out`. Exactly one of [`VERB_PREFER`], [`VERB_ABSTAIN`], [`VERB_REJECT`],
+/// [`VERB_RESTRICT`] must be set (H1: SEH fix-forward ruling, 2026-09-27); the validator FAULTs on
+/// 0 or 2+ bits.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct DecideOut {
