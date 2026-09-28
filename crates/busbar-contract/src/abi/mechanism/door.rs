@@ -97,6 +97,12 @@ pub struct Statement {
     pub kind_tail: *const KindTailHead,
     /// The Statement's extensions.
     pub extensions: Blob,
+    /// The settings keys whose values are secret references. The kernel resolves them, in this
+    /// order, into [`super::lifecycle::OpenIn::secrets`]. Every kind uses it (auth, store, export and
+    /// secret-service credentials).
+    pub secret_refs: *const AbiStr,
+    /// How many.
+    pub secret_refs_len: usize,
 }
 
 /// The head every kind's Statement tail leads with.

@@ -940,7 +940,9 @@ fn compute_layout() -> String {
             diag_ids,
             diag_ids_len,
             kind_tail,
-            extensions
+            extensions,
+            secret_refs,
+            secret_refs_len
         ]
     );
     record!(s, MechKindTailHead, [size, _reserved]);

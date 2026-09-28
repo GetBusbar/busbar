@@ -93,7 +93,8 @@ pub struct OpenIn {
     pub host: *const HostTables,
     /// The settings blob.
     pub settings: Blob,
-    /// The resolved secrets, each a [`super::call::BLOB_SECRET`] blob.
+    /// The resolved secrets, each a [`super::call::BLOB_SECRET`] blob: one per
+    /// [`super::door::Statement::secret_refs`] key, in that order.
     pub secrets: *const Blob,
     /// How many.
     pub secrets_len: usize,

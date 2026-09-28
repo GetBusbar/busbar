@@ -113,7 +113,7 @@ pin!(
 );
 pin!(
     Statement,
-    112,
+    128,
     8,
     size = 0,
     kind = 4,
@@ -126,7 +126,9 @@ pin!(
     diag_ids = 64,
     diag_ids_len = 72,
     kind_tail = 80,
-    extensions = 88
+    extensions = 88,
+    secret_refs = 112,
+    secret_refs_len = 120
 );
 pin!(KindTailHead, 8, 4, size = 0, _reserved = 4);
 pin!(Ticket, 8, 4, slot = 0, generation = 4);

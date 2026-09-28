@@ -133,7 +133,7 @@ fn the_door_and_the_statement_have_their_stated_layout() {
     );
     pin!(
         Statement,
-        112,
+        128,
         8,
         [
             size = 0,
@@ -147,7 +147,9 @@ fn the_door_and_the_statement_have_their_stated_layout() {
             diag_ids = 64,
             diag_ids_len = 72,
             kind_tail = 80,
-            extensions = 88
+            extensions = 88,
+            secret_refs = 112,
+            secret_refs_len = 120
         ]
     );
 }
