@@ -42,7 +42,7 @@ kind-isolation:matrix	ratchet	busbar-llm × contract	529
 kind-isolation:matrix	ratchet	busbar-llm × plane	1076
 kind-isolation:matrix	ratchet	busbar-mcp × cleanliness	5
 kind-isolation:matrix	ratchet	busbar-mcp × legacy	8
-kind-isolation:matrix	ratchet	busbar-mcp × plane	3995
+kind-isolation:matrix	ratchet	busbar-mcp × plane	3986
 kind-isolation:matrix	ratchet	busbar-mcp × plugin-tooling	10
 kind-isolation:matrix	ratchet	busbar-oauth2 × transport	77
 kind-isolation:matrix	ratchet	busbar-plane-llm × plane	600

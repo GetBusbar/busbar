@@ -32,16 +32,19 @@
 //! The key names the tool. [`BoundIdentity`] is the key plus the schema/description DIGEST the
 //! operator approved — the third component of the rule quoted above. Dispatch validates against it
 //! and not the key, so a tool whose schema drifted under a live cache is refused even though its
-//! name is unchanged. The digest lives in `super::catalogue`; this module owns the naming.
+//! name is unchanged. The digest lives in the engine's client catalogue; this module owns the naming.
 
 use std::fmt;
 
 /// Why a server id or tool name was refused. Both arms are construction-time refusals: a malformed
 /// identity must never reach the point where it is compared against a grant.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum NameError {
+pub enum NameError {
     /// A server id was empty, or a tool name was.
-    Empty { what: &'static str },
+    Empty {
+        /// Which name was empty: `server id` or `tool name`.
+        what: &'static str,
+    },
     /// A server id contained `_`, which would make `{server}_{tool}` ambiguous. See the module
     /// header: this is the separator-as-confused-deputy case, refused at the door.
     ServerIdHasSeparator(String),
@@ -49,7 +52,12 @@ pub(crate) enum NameError {
     /// scope-grant values, header values and audit resources; a name carrying whitespace, a quote,
     /// a control character or a `/` is a name that renders differently depending on which of those
     /// it is being written into, and a value compared for equality must have exactly one spelling.
-    IllegalCharacter { what: &'static str, name: String },
+    IllegalCharacter {
+        /// Which name was refused: `server id` or `tool name`.
+        what: &'static str,
+        /// The refused name, verbatim.
+        name: String,
+    },
 }
 
 impl fmt::Display for NameError {
@@ -85,10 +93,11 @@ fn legal(name: &str) -> bool {
 /// A registered upstream MCP server's id. Validated at construction, so every later use is a
 /// comparison rather than a re-check.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub(crate) struct ServerId(String);
+pub struct ServerId(String);
 
 impl ServerId {
-    pub(crate) fn new(id: &str) -> Result<Self, NameError> {
+    /// Validate `id` as a server id: non-empty, only `[A-Za-z0-9_.-]`, and no `_` separator.
+    pub fn new(id: &str) -> Result<Self, NameError> {
         if id.is_empty() {
             return Err(NameError::Empty { what: "server id" });
         }
@@ -104,7 +113,8 @@ impl ServerId {
         Ok(Self(id.to_string()))
     }
 
-    pub(crate) fn as_str(&self) -> &str {
+    /// The id, as registered.
+    pub fn as_str(&self) -> &str {
         &self.0
     }
 }
@@ -121,13 +131,14 @@ impl fmt::Display for ServerId {
 /// never compare equal because their renderings collided, and the rendering is derived rather than
 /// stored so there is no second copy to drift.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub(crate) struct ToolKey {
+pub struct ToolKey {
     server: ServerId,
     tool: String,
 }
 
 impl ToolKey {
-    pub(crate) fn new(server: ServerId, tool: &str) -> Result<Self, NameError> {
+    /// Pair a validated server id with a tool name, refusing an empty or illegal tool name.
+    pub fn new(server: ServerId, tool: &str) -> Result<Self, NameError> {
         if tool.is_empty() {
             return Err(NameError::Empty { what: "tool name" });
         }
@@ -143,17 +154,19 @@ impl ToolKey {
         })
     }
 
-    pub(crate) fn server(&self) -> &ServerId {
+    /// The server half of the key.
+    pub fn server(&self) -> &ServerId {
         &self.server
     }
 
-    pub(crate) fn tool(&self) -> &str {
+    /// The tool half of the key, as the upstream names it.
+    pub fn tool(&self) -> &str {
         &self.tool
     }
 
     /// The namespaced name: `{server}_{tool}`. THE value of an `mcp_tool` scope grant, and the name
     /// an upstream tool is exposed under.
-    pub(crate) fn namespaced(&self) -> String {
+    pub fn namespaced(&self) -> String {
         format!("{}{SEP}{}", self.server.0, self.tool)
     }
 
@@ -163,7 +176,7 @@ impl ToolKey {
     /// A rendering that does not round-trip is refused rather than guessed at. This function is what
     /// a scope-grant value is read back through, so "guess" here means "admit a tool the operator
     /// did not name".
-    pub(crate) fn parse(namespaced: &str) -> Result<Self, NameError> {
+    pub fn parse(namespaced: &str) -> Result<Self, NameError> {
         let (server, tool) = namespaced
             .split_once(SEP)
             .ok_or(NameError::Empty { what: "tool name" })?;
@@ -185,13 +198,14 @@ impl fmt::Display for ToolKey {
 /// content of at refresh time. That is the whole property, and it is why this struct has no
 /// `description` field: a routing decision made over this value cannot read one.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct BoundIdentity {
-    pub(crate) key: ToolKey,
-    /// The approved `sha256:…` digest over the tool's name, description and input schema. See
-    /// `super::catalogue::tool_digest`.
-    pub(crate) digest: String,
+pub struct BoundIdentity {
+    /// The routing key: the registered server and its tool.
+    pub key: ToolKey,
+    /// The approved `sha256:…` digest over the tool's name, description and input schema. Computed by the
+    /// engine's client catalogue (`tool_digest`).
+    pub digest: String,
 }
 
-#[cfg(all(test, feature = "test-support"))]
+#[cfg(test)]
 #[path = "tests/identity_tests.rs"]
 mod identity_tests;

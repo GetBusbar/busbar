@@ -3,7 +3,7 @@
 
 //! `{server}_{tool}` as the routing key: the separator ambiguity, and the round trip.
 
-use crate::mcp::client::identity::{NameError, ServerId, ToolKey};
+use crate::identity::{NameError, ServerId, ToolKey};
 
 #[test]
 fn a_server_id_containing_the_separator_is_refused() {

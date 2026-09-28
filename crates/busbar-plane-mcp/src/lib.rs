@@ -44,6 +44,7 @@
 pub mod claims;
 pub mod codec;
 pub mod facts;
+pub mod identity;
 pub mod jsonrpc;
 pub mod meta;
 pub mod ops;

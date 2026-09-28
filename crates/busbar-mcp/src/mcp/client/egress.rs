@@ -132,7 +132,19 @@ pub(crate) enum ToolGrant {
 /// `mcp_tool` says which of its tools. Requiring BOTH is what keeps a server-wide grant from
 /// silently becoming a tool-wide one, and SERVER FIRST is what makes an ungranted caller learn that
 /// it is ungranted for the server rather than for a tool it was never going to reach.
-impl EgressSubject for &ToolKey {
+/// A TOOL KEY AS AN EGRESS SUBJECT. The routing key is the plane's type and the gate's trait is the
+/// kernel's, so the subject is this local view of the key; it reads as the key through `Deref`.
+pub(crate) struct ToolSubject<'a>(pub(crate) &'a ToolKey);
+
+impl std::ops::Deref for ToolSubject<'_> {
+    type Target = ToolKey;
+
+    fn deref(&self) -> &ToolKey {
+        self.0
+    }
+}
+
+impl EgressSubject for &ToolSubject<'_> {
     type Grant = ToolGrant;
 
     /// FALSE, and this is the divergence the unification found rather than introduced: the A2A lease
@@ -253,7 +265,7 @@ pub(crate) fn authorise_tool_egress(
     // `now` is unused on this plane: `REQUIRE_LIVE_KEY` is false, so no expiry is consulted. Passing
     // 0 rather than plumbing a clock says that plainly — a clock argument this plane never reads
     // would be a parameter a future edit could believe was doing something.
-    busbar_kernel::egress_auth::gate::authorise(caller, key, 0)
+    busbar_kernel::egress_auth::gate::authorise(caller, &ToolSubject(key), 0)
         .map(|_witness| ())
         .map_err(EgressDenied::from)
 }
