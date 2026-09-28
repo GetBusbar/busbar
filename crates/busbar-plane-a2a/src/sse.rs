@@ -5,7 +5,7 @@
 //!
 //! Bytes in, whole events out: an SSE stream does not arrive one event per chunk, so bytes
 //! accumulate here and an event is emitted only on the blank line that terminates it. The relay's
-//! streaming legs (JSON-RPC and REST, [`crate::a2a::relay`]) are its only consumers, so it is dialect
+//! streaming legs (JSON-RPC and REST) are its only consumers, so it is dialect
 //! machinery that lives with the plane rather than in a neutral crate. The line-terminator grammar it
 //! frames on is the contract's ([`busbar_contract::protocol::find_frame_terminator`] and
 //! [`busbar_contract::protocol::sse_lines`]), shared with every other SSE reader in the tree.
@@ -32,6 +32,14 @@ pub struct SseReader {
     /// whose only bound is the megabyte-scale body cap. Reset to zero whenever a framed event is
     /// drained, because the bytes that follow it have never been scanned in their new positions.
     scanned: usize,
+    /// Test-only tally of the bytes every terminator scan has walked, so a test can assert the
+    /// reader's scanning work is linear in the bytes fed rather than in bytes × chunks.
+    #[cfg(test)]
+    scan_tally: usize,
+    /// Test-only tally of the buffer length observed at each drain, so a test can assert the
+    /// reader's drain work is linear in the bytes fed rather than in bytes × frames-per-chunk.
+    #[cfg(test)]
+    drain_tally: usize,
 }
 
 /// The longest terminator (`\r\n\r\n`) is four bytes, so a scan that resumes THREE bytes behind the
@@ -58,7 +66,9 @@ impl SseReader {
         let mut scan_from = self.scanned.saturating_sub(TERMINATOR_REWIND);
         while let Some((rel, len)) = {
             #[cfg(test)]
-            SCANNED_BYTES.with(|c| c.set(c.get() + (self.buf.len() - scan_from)));
+            {
+                self.scan_tally += self.buf.len() - scan_from;
+            }
             frame_end(&self.buf[scan_from..])
         } {
             let end = scan_from + rel + len;
@@ -91,7 +101,9 @@ impl SseReader {
     /// have left the count unchanged. Counted at the drain, a second drain counts a second time.
     fn drain_front(&mut self, upto: usize) {
         #[cfg(test)]
-        DRAINED_BYTES.with(|c| c.set(c.get() + self.buf.len()));
+        {
+            self.drain_tally += self.buf.len();
+        }
         self.buf.drain(..upto);
     }
 
@@ -101,33 +113,17 @@ impl SseReader {
         self.buf.len()
     }
 }
-
-// Test-only tally of the bytes every terminator scan has walked, so a test can assert the reader's
-// scanning work is linear in the bytes fed rather than in bytes × chunks. Thread-local, so parallel
-// tests do not contaminate each other's count.
 #[cfg(test)]
-thread_local! {
-    static SCANNED_BYTES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
-}
+impl SseReader {
+    /// Zero the scan tally and return what it held (test-only).
+    fn take_scanned_bytes(&mut self) -> usize {
+        std::mem::take(&mut self.scan_tally)
+    }
 
-/// Zero the scan tally and return what it held (test-only).
-#[cfg(test)]
-fn take_scanned_bytes() -> usize {
-    SCANNED_BYTES.with(|c| c.replace(0))
-}
-
-// Test-only tally of the buffer length observed at each `drain` call, so a test can assert the
-// reader's drain work is linear in the bytes fed rather than in bytes × frames-per-chunk. Thread-
-// local, so parallel tests do not contaminate each other's count.
-#[cfg(test)]
-thread_local! {
-    static DRAINED_BYTES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
-}
-
-/// Zero the drain tally and return what it held (test-only).
-#[cfg(test)]
-fn take_drained_bytes() -> usize {
-    DRAINED_BYTES.with(|c| c.replace(0))
+    /// Zero the drain tally and return what it held (test-only).
+    fn take_drained_bytes(&mut self) -> usize {
+        std::mem::take(&mut self.drain_tally)
+    }
 }
 
 /// WHERE THE FIRST COMPLETE SSE EVENT ENDS, and how many bytes its terminator takes: the offset of

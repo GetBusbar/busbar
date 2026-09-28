@@ -146,7 +146,7 @@ pub(crate) use busbar_kernel::egress::ChunkFlow;
 /// is the same one whatever framing sits on top of it.
 pub(crate) use busbar_kernel::egress::StreamHead;
 
-/// The plane's own SSE frame reader ([`crate::sse`]), named here where the streaming legs read it.
+/// The plane crate's frame reader, named here where the streaming legs read it.
 pub(crate) use crate::sse::{sse_data, SseReader};
 
 /// THE RELAY'S SEAMS, HELD TOGETHER, for the reason [`super::transport::LiveCardFetch`] gives for

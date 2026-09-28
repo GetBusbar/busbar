@@ -57,6 +57,7 @@ pub mod ops;
 pub mod plane;
 pub mod record;
 pub mod records;
+pub mod sse;
 pub mod surface;
 
 pub use frame::{rewrite, Direction, Frame, Tap, Transform};

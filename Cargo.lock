@@ -901,6 +901,7 @@ dependencies = [
  "busbar-contract",
  "serde",
  "serde_json",
+ "tracing",
 ]
 
 [[package]]
