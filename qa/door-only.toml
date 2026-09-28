@@ -221,11 +221,6 @@ item = "busbar_plane_decisions"
 
 [[finding]]
 rule = "door-only:static-seam"
-file = "crates/busbar-a2a/src/a2a/inbound_jws.rs"
-item = "INBOUND_JWS"
-
-[[finding]]
-rule = "door-only:static-seam"
 file = "crates/busbar-core-admin/src/v1/service.rs"
 item = "USAGE_RATE_HISTORY"
 

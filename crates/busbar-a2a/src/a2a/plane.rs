@@ -232,9 +232,6 @@ impl A2aPlane {
         if cfg.agents.is_empty() {
             return None;
         }
-        // THE INBOUND AGENT-CARD JWS SEAM's composition-root install (HOST-CAPS S3, TODO 607): every
-        // card this registry verifies reaches its signature through the installed capability.
-        super::inbound_jws::install_pass_through();
         let mut pins = BTreeMap::new();
         let mut registrations = Vec::with_capacity(cfg.agents.len());
         for (name, def) in &cfg.agents {

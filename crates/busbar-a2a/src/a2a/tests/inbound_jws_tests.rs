@@ -91,10 +91,9 @@ fn the_seam_refuses_a_wrong_key_and_a_malformed_key_exactly_as_the_free_function
 }
 
 #[test]
-fn the_composition_root_install_hands_the_installed_capability_back() {
-    // The composition root installs the pass-through on every build; a read always answers with the
-    // ONE process capability (never "none"), and it verifies byte-identically to the free function.
-    install_pass_through();
+fn the_capability_verifies_byte_identically_to_the_free_function() {
+    // A read always answers with the ONE capability (never "none"), and it verifies
+    // byte-identically to the free function.
     let installed = inbound_card_jws();
     let k = key(3);
     let card = signed_by(&k);
