@@ -35,7 +35,7 @@
 /// so every caller that spells `busbar_mcp::codec::…` or `busbar_mcp::record::…` resolves exactly
 /// what it always did. The split is a MOVE: no item changed shape crossing it.
 pub mod codec;
-pub mod record;
+pub use busbar_plane_mcp::record;
 pub use busbar_plane_mcp::{outputschema, sanitize};
 
 /// THE MCP PLANE'S DIAGNOSTICS CATALOG.

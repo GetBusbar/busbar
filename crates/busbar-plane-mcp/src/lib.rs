@@ -49,6 +49,7 @@ pub mod meta;
 pub mod ops;
 pub mod outputschema;
 pub mod plane;
+pub mod record;
 pub mod records;
 pub mod sanitize;
 

@@ -181,11 +181,6 @@ item = "busbar_plane_mcp"
 
 [[finding]]
 rule = "door-only:plugin-path"
-file = "crates/busbar-mcp/src/record.rs"
-item = "busbar_plane_mcp"
-
-[[finding]]
-rule = "door-only:plugin-path"
 file = "crates/busbar-voice/src/bin/voice-conform.rs"
 item = "busbar_plane_streaming"
 
