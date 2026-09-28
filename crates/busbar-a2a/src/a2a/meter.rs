@@ -27,23 +27,11 @@
 //! work may be a long-running task that reached down into L2 tools, and a limit enforced after it
 //! has already cost the operator the thing the limit was for.
 
-// WHAT IS LIVE HERE AND WHAT IS NOT, RE-MEASURED 2026-09-22. The note that stood here said
-// "nothing delegates outward yet" and justified a MODULE-WIDE `allow(dead_code)` with it. Both
-// halves were wrong: the delegating arm is on the live path, and a module-wide silencer over a file
-// whose dead part is three items is a silencer that would absorb the fourth.
-//
-// LIVE, BOTH ARMS. `Attribution::receiving` is constructed at `receive.rs:1930` and
-// `Attribution::delegating` at `:1943` — the same function, the same request — and the result is
-// read at `:2030` (`hop.target_agent_id`) and `:2088` (`hop.billed_key_id`). `Direction` is live
-// with the constructors that set it. They carry "whose budget this bills", which is defs 5/6 under
-// #43/#71, so they are kernel-side and they MOVE.
-//
-// DEAD, AND ONLY THIS. `Admission`, `Admission::status` and `admit` have no caller anywhere outside
-// `tests/meter_tests.rs`: this is the plane's OWN window arithmetic, which the ingress does not use
-// because it meters through the shared governance ledger (`busbar-kernel-budget::decide`) rather
-// than a second one. Their disposition is an OWNER RULING (that plan's s9.2, Wave D3) — neither
-// moved nor deleted here. The silencer now sits on those three items and nowhere else, so this file
-// is a SPLIT and not one verdict, and the next dead item in it is reported rather than absorbed.
+// LIVE, BOTH ARMS. `Attribution::receiving` and `Attribution::delegating` are constructed by the
+// receiving hot path for the same request, and the hop's `target_agent_id` and `billed_key_id` are
+// read there. `Direction` is live with the constructors that set it. They carry "whose budget this
+// bills", which is defs 5/6 under #43/#71: the kernel bills the unit's principal, and the ids stay in
+// the plane's own records.
 
 /// Which direction a metered A2A event belongs to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -127,43 +115,6 @@ impl Attribution {
             covers_downstream_l2_spend: false,
             covers_callee_internal_spend: false,
         }
-    }
-}
-
-/// The admission answer for one task, before any backend runs.
-#[cfg_attr(not(test), allow(dead_code))]
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Admission {
-    /// Admitted; charge it.
-    Admit,
-    /// Over the key's limit. 429, with `Retry-After` in seconds.
-    OverLimit { retry_after_secs: u64 },
-}
-
-#[cfg_attr(not(test), allow(dead_code))]
-impl Admission {
-    pub fn status(&self) -> Option<u16> {
-        match self {
-            Admission::Admit => None,
-            Admission::OverLimit { .. } => Some(429),
-        }
-    }
-}
-
-/// ADMIT OR REFUSE ONE TASK against the billed key's remaining allowance.
-///
-/// Reaching the limit is over it: an operator who wrote the number they consider unacceptable did
-/// not mean "one more than this".
-#[cfg_attr(not(test), allow(dead_code))]
-pub fn admit(used: u64, limit: Option<u64>, window_remaining_secs: u64) -> Admission {
-    match limit {
-        None => Admission::Admit,
-        Some(limit) if used < limit => Admission::Admit,
-        Some(_) => Admission::OverLimit {
-            // At least one second: a `Retry-After: 0` invites an immediate retry, which is a
-            // client-side hot loop pointed at a gateway that just said no.
-            retry_after_secs: window_remaining_secs.max(1),
-        },
     }
 }
 
