@@ -46,15 +46,12 @@ use std::path::Path;
 use crate::json_lite::{self, Json, Obj};
 use crate::sha256::Sha256;
 
-// NEITHER MOVED NOR OBSOLETE, so neither repointed nor struck. 647f2fae9 deleted the register and
-// kept `cargo xtask ledger` ON PURPOSE ("so a fresh register can be written when there is one worth
-// keeping"); this is the home `ledger sync --write` creates it at, `read_scopes` reads its absence
-// as an empty register, and scripts/verify-1.6.0-done.sh keys its AUDIT-LEDGER group on the same
-// path (`absent_step` while it is missing, `cargo xtask ledger --check` once it exists). Striking
-// the default would leave that `--check` with no register to find. The declaration below reds
-// (`qa-names:declaration-names-a-live-name`) the day a register is written here, which is the
-// moment to delete it.
-// qa-names: qa/audit-ledger.json -- xtask/src/audit.rs -- the DEFAULT home `cargo xtask ledger sync --write` writes a fresh register to; absent since 647f2fae9 deleted the old one, and verify-1.6.0-done.sh reads that absence as its absent_step
+// 647f2fae9 deleted the register and kept `cargo xtask ledger` ON PURPOSE ("so a fresh register can
+// be written when there is one worth keeping"); this is the home `ledger sync --write` creates it
+// at, and scripts/verify-1.6.0-done.sh keys its AUDIT-LEDGER group on the same path (`absent_step`
+// while it is missing, `cargo xtask ledger --check` once it exists). The register now exists again
+// (a fresh sync, every scope `unaudited`), so the `qa-names:` exemption that used to sit here is
+// struck: the path resolves and needs no excuse.
 pub const REGISTER_REL: &str = "qa/audit-ledger.json";
 pub const REPORT_REL: &str = "qa/evidence/AUDIT-STATUS.md";
 
