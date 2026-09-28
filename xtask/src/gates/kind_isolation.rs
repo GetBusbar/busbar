@@ -8040,18 +8040,26 @@ impl Gate for KindIsolationGate {
             &["axum", "busbar_transport_http", "busbar-plane-llm-openai"],
         ));
 
+        // CODEC CODE NEVER NAMES A TRANSPORT CRATE, AND SINCE R7 THAT IS THE PLANE'S OWN BAN. The
+        // plant used to land in `crates/busbar-llm-codec/src`, under a `codec` arm of its own; R7
+        // folded that crate into `busbar-plane-llm` as its `codec` module, so the plant goes there
+        // and must be refused by the PLANE arm, which the needle names.
         let mut ov = Overlay::new();
         ov.set(
-            "crates/busbar-llm-codec/src/planted_transport.rs",
+            "crates/busbar-plane-llm/src/codec/planted_transport.rs",
             "use busbar_transport_http::Client;\npub fn go() { let _ = Client::default(); }\n",
         );
         report.push(prove_rows_red(
             cx,
             subject,
-            "a codec naming a transport crate",
+            "folded codec code naming a transport crate — the plane's ban",
             &[ROW_VOCAB],
             ov,
-            &["busbar_transport_", "planted_transport.rs"],
+            &[
+                "busbar_transport_",
+                "crates/busbar-plane-llm/src/codec/planted_transport.rs",
+                "a TRANSPORT CRATE named inside a plane (plane crate)",
+            ],
         ));
 
         // THE CONTROL. A gate its own prose fails is a gate people learn to skip — and without

@@ -2849,15 +2849,20 @@ pub fn selftest<'a>(
     // A `[[disagreement]]` ROW WHOSE TWO SCANNERS HAVE NOTHING LEFT TO DISAGREE ABOUT. The note is
     // a hand-written sentence about a spelling; when the cell it excuses is gone the sentence is a
     // standing licence for the next disagreement nobody reads.
+    //
+    // The plant removed `busbar-llm-codec`'s manifest until R7 folded that crate into
+    // `busbar-plane-llm`, after which it removed nothing. `busbar-kernel-breaker × transport`
+    // carries a live `[[disagreement]]` row, and a kernel workflow crate is not a thing a fold
+    // retires.
     let mut ov = crate::ctx::Overlay::new();
-    ov.remove("crates/busbar-llm-codec/Cargo.toml");
+    ov.remove("crates/busbar-kernel-breaker/Cargo.toml");
     report.push(prove_rows_red(
         cx,
         gate,
         "a `[[disagreement]]` row whose cell is gone is a standing licence, and is struck",
         &[ROW_MATRIX],
         ov,
-        &["dead-disagreement", "busbar-llm-codec \u{d7} transport"],
+        &["dead-disagreement", "busbar-kernel-breaker \u{d7} transport"],
     ));
 
     // AN `[[edge]]` ROW WHOSE WHOLE CLASS IS GONE. The case used to delete the one crate of kind
