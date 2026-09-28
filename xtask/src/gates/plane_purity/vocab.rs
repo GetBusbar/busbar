@@ -202,6 +202,10 @@ fn dir_of_root(root: &str) -> Option<String> {
 }
 
 /// The plane key (and dialect, for a four-segment dialect crate) a plane-family directory names.
+///
+/// There is no `busbar-<key>-codec` arm: R7 ("Codec crates fold into their planes") folded every
+/// codec crate into its plane, and a `-codec` name is no kind in the kind table, so no such
+/// directory is ever a plane-family root.
 fn keys_of_plane_dir(dir: &str) -> (Option<String>, Option<String>) {
     let Some(rest) = dir.strip_prefix("busbar-") else {
         return (None, None);
@@ -211,9 +215,6 @@ fn keys_of_plane_dir(dir: &str) -> (Option<String>, Option<String>) {
         let key = segs.next().filter(|s| !s.is_empty()).map(str::to_string);
         let dialect = segs.next().filter(|s| !s.is_empty()).map(str::to_string);
         return (key, dialect);
-    }
-    if let Some(key) = rest.strip_suffix("-codec") {
-        return (Some(key.to_string()), None);
     }
     if !rest.contains('-') && !rest.is_empty() {
         return (Some(rest.to_string()), None);
@@ -376,10 +377,7 @@ mod tests {
             keys_of_plane_dir("busbar-plane-llm-mistral"),
             (Some("llm".into()), Some("mistral".into()))
         );
-        assert_eq!(
-            keys_of_plane_dir("busbar-voice-codec"),
-            (Some("voice".into()), None)
-        );
+        assert_eq!(keys_of_plane_dir("busbar-voice-codec"), (None, None));
         assert_eq!(keys_of_plane_dir("busbar-mcp"), (Some("mcp".into()), None));
     }
 
