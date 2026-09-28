@@ -578,7 +578,16 @@ its bench are gone.
   flight; `cut-stream` cuts it, and a cut bills what streamed. A non-streaming unit overshoots by at
   most one request. The budget check may use the plane's estimated units; billing never does: a
   line carries only far-end-reported units (`UNITS_REPORTED`), and "what streamed" is the last
-  far-end-reported cumulative count the plane gave before the cut (owner, 2026-09-28).
+  far-end-reported cumulative count the plane gave before the cut (owner, 2026-09-28). This is 1.5.5's
+  rule, measured against the v1.5.5 source: 1.5.5 had no budget cut of a stream at all (its
+  exhaustion behaviours were `block` and `downgrade`, `crates/busbar/src/config/groups.rs:183`); a
+  stream cut mid-flight by the far end set `stream_failed` (`crates/busbar/src/proxy/response_body.rs:283`)
+  and the drop-time billing gate then billed no tokens (`:642`); a stream the caller left billed only
+  the usage the far end had reported so far, and zero when no usage frame had arrived (`:633`-`:660`;
+  the billing source is the terminal usage the far end reported, `crates/busbar/src/proto/stream.rs:881`).
+  In both cases the request unit still counts: the `route.failover|fo|primary-cut-stream` cell's 1.5.5
+  golden is usage `{"requests":1}`, tokens 0. That cell and every `billing`, `ledger` and `teller` cell
+  stay byte-identical to 1.5.5; a budget cut of a stream is new 1.6.0 surface.
 - **A cut is told to the client and booked as what happened.** Client side (owner, on or before
   2026-09-15): *"A cut IS a reason the client is told. Where the protocol carries a place to say so, a
   cut ends the stream WITH AN ERROR FRAME naming budget exhaustion — not a silent end of stream."* A
@@ -1663,8 +1672,9 @@ Every `dispatch(req_bytes, sink)` runs inside a host-owned **DispatchScope** (§
 > pinning, SPKI and mTLS; a subprocess is a carrier need; credentials are auth objects, never a host-minted
 > header; `meter_charge` becomes the expected units of `arrive` plus the plane's unit reports; `auth_resolve`
 > is gone. **SUPERSEDED 2026-09-28 by THE DESIGN §11.12 for the remaining rows:** the host services a plane
-> calls are the `HostSlots` families; `journal_append` with a per-stream framing is not a plane service (the
-> audit record is the fixed one of §1, and a plane's records are store records). DispatchScope stands.
+> calls are the `HostSlots` families. A plane's journal writes are `on_piece` record writes; a chained record
+> kind keeps its declared framing (§5), now a per-record-kind declaration in the plane's tail, so deployed
+> chains still verify. The kernel's own audit chain is the fixed record of THE DESIGN §1. DispatchScope stands.
 
 Plane holds `host` + its OWN opaque state + HANDLE-IDS to host-side objects. Never holds a live
 `Transport`/`GovState`/`Admission`/`VirtualKey`/secret.
@@ -1859,6 +1869,10 @@ allow-list, pin, failover and exhaustion terminals; the driver builds no second 
   checkpoint cadence (§7); a checkpoint that dries the budget under `cut-stream` cuts the unit, the
   plane renders the error frame through `refusal`, and one Abort line settles (§7).
 - Record writes in an answer go to the store's plane-record slots as coalesced write-behind batches.
+  A record kind the plane declares as chained keeps its declared framing (§5: length-prefixed or
+  pipe-separated, with or without the scope in the digest); the host frames and verifies its chain,
+  and the boot-verify golden over deployed chains stands. This applies to plane record chains only:
+  the kernel's own audit chain is the fixed record of THE DESIGN §1.
 
 **Cancel** (client drop, deadline, reload). The driver keeps its own facts — whether the far end
 answered, whether the reply streamed, the last reported units. On every path it controls (deadline,
@@ -1891,7 +1905,8 @@ traffic, and the probe is zero-billed and draws no lease (§1's exempt origins).
 **What the plane ABI v1 gains for this** (a v1 layout edit before the 1.6.0 tag, THE DESIGN §11.11 R9):
 the `FROM_KERNEL` piece source; the ATTEMPT fields on `OnPieceIn` (member, attempt number); the
 answer's verdict on `OnPieceOut`; the `project` op; the plane's `drive` in/out with a host buffer for
-the ready sessions; a public flag on a snapshot route; the probe claim and the probe tail flag. Each
+the ready sessions; a public flag on a snapshot route; the probe claim and the probe tail flag; a
+per-record-kind chain framing declaration in the tail (verify framing for plane record chains only). Each
 lands with its validator beside it and a RED test per rule.
 
 *Proven by:* the plane conformance suite (compiled-in and dropped-in through one table); zero
