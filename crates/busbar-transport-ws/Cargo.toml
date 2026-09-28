@@ -33,8 +33,13 @@ rustls = { workspace = true }
 rustls-pki-types = { workspace = true }
 webpki-roots = { workspace = true }
 futures = { workspace = true }
+# The door's settings blob is JSON (`door::read_settings`).
+serde_json = { workspace = true }
 
 [dev-dependencies]
+# THE DOOR'S CONFORMANCE (`tests/door.rs`): the dropped-in image (`examples/ws_door.rs`)
+# loaded beside the linked one.
+libloading = { workspace = true }
 # The TEST-ONLY seal (#65). `busbar_contract::plugin::TestKernelSeal` is the one blessed
 # fixture implementor of the SEALED `KernelSeal` trait; this crate's test harnesses used to
 # forge their own. Dev-only and feature-gated, so it is absent from every release build.
@@ -54,3 +59,8 @@ tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "io-
 # cdylib that test opens. Dev-only: absent from every release build.
 busbar-plugin-loader = { path = "../plugin-loader" }
 busbar-transport-ws = { path = ".", features = ["dropped-in"] }
+
+# THE DROPPED-IN IMAGE ON THE ONE DOOR: built by `cargo test`.
+[[example]]
+name = "ws_door"
+crate-type = ["cdylib"]
