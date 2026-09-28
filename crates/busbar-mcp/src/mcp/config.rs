@@ -16,7 +16,7 @@
 //! so the word space is IDENTICAL across planes. An operator who learns the rule once should not
 //! discover that a name legal on one plane is a section knob on another. It is no longer a claim
 //! about two constants that agree: there is ONE declaration
-//! ([`RESERVED_SECTION_KEYS`]), and this section is read by the shared split
+//! (`RESERVED_SECTION_KEYS`), and this section is read by the shared split
 //! that consults it.
 //!
 //! ## `tools_allow` is a MAP, and that is the whole bound-identity rule compressed into one field
@@ -76,8 +76,9 @@
 //! collision is a LOUD BOOT REFUSAL and never an automatic rename.
 
 use busbar_contract::{
+    config::UpstreamCreds,
     plane::{PinMechanismDecl, TrustKeyDecl, TrustRole},
-    section::{split_section, RESERVED_SECTION_KEYS},
+    section::split_section,
 };
 use serde::{Deserialize, Serialize};
 
@@ -1101,7 +1102,7 @@ pub(crate) enum ChildEnvValue {
 /// a config apply can be recognised as a no-op.
 impl Eq for ChildEnvValue {}
 
-/// The top-level `tools:` map, carrying the two [`RESERVED_SECTION_KEYS`]
+/// The top-level `tools:` map, carrying the two `RESERVED_SECTION_KEYS`
 /// alongside the servers.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ToolsCfg {
@@ -1143,10 +1144,7 @@ impl ToolsCfg {
     }
 
     /// The effective upstream-credential mode for one server (SCALAR ⇒ OVERRIDE).
-    pub(crate) fn effective_upstream_credentials(
-        &self,
-        server: &str,
-    ) -> Option<busbar_contract::config::UpstreamCreds> {
+    pub(crate) fn effective_upstream_credentials(&self, server: &str) -> Option<UpstreamCreds> {
         self.servers
             .get(server)
             .and_then(|d| d.upstream_credentials)
@@ -1778,10 +1776,7 @@ pub fn validate_server(name: &str, def: &McpServerDefCfg) -> Result<(), String> 
         // An exchange mints BUSBAR's credential. `passthrough` says the CALLER supplies the
         // credential. Configuring both is an operator asking for two different answers to one
         // question, and silently preferring either is how a deputy is created.
-        if matches!(
-            def.upstream_credentials,
-            Some(busbar_contract::config::UpstreamCreds::Passthrough)
-        ) {
+        if matches!(def.upstream_credentials, Some(UpstreamCreds::Passthrough)) {
             return Err(format!(
                 "{at}: `token_exchange:` mints BUSBAR's own down-scoped credential, and \
                  `upstream_credentials: passthrough` says the CALLER supplies one. Set one or the \
