@@ -376,6 +376,21 @@ from    = 54814
 to      = 54842
 because = "ARCHITECT 2026-09-28: R-KERNEL, FOLD-LLM C1' (legacy fold rulings F19/F20; BUSBAR-1.6.0.md THE DESIGN, §7). The kernel's door now reads the ADMIT verdict (OverBudget with the door's Retry-After, whether the charge landed, the downgrade pool) that the llm plane's admit step decided itself; the door function is typed in contract and kernel types only, for the plane driver to call at ADMIT. Measured by cargo xtask gate construction: 54814 before, 54842 after, +28. The ceiling rises by exactly that."
 
+# ── THE CONTRACT CEILING PAIR, RE-ARMED BY KERNEL<>PLUGINS STEP 4a (the plane ABI v1 additions for
+#    the plane driver, validators beside each) ─────────────────────────────────────────────────
+
+[gate.ceiling_raises."gate.surface_ceilings.contract_caps"]
+file    = "qa/construction.toml"
+from    = 24057
+to      = 24306
+because = "OWNER RULING Q68(3) (docs/design/1.6.0-QUESTIONS.md): contract_caps re-arms at the MEASURED value, in its own commit. Growth is exactly KERNEL<>PLUGINS step 4a, the plane ABI v1 additions of BUSBAR-1.6.0.md Part 3 (the plane driver): FROM_KERNEL and the ATTEMPT fields on OnPieceIn, the verdict and explicit verb/target on OnPieceOut, CLAIM_PROBE/TAIL_PROBES, the project op (ProjectIn/ProjectOut over the hook RequestView), ROUTE_PUBLIC on AdminRoute, PlaneDriveIn/PlaneDriveOut, the tail record_chains framing, their compile-time layout pins and the check_project/check_drive/check_record_chains validators beside them. Measured by cargo xtask gate construction: 24057 before, 24306 after."
+
+[gate.ceiling_raises."rules.loc-ceilings.caps_contract_ceiling"]
+file    = "qa/construction.toml"
+from    = 24057
+to      = 24306
+because = "OWNER RULING Q68(3) (docs/design/1.6.0-QUESTIONS.md): contract_caps re-arms at the MEASURED value, in its own commit. Growth is exactly KERNEL<>PLUGINS step 4a, the plane ABI v1 additions of BUSBAR-1.6.0.md Part 3 (the plane driver): FROM_KERNEL and the ATTEMPT fields on OnPieceIn, the verdict and explicit verb/target on OnPieceOut, CLAIM_PROBE/TAIL_PROBES, the project op (ProjectIn/ProjectOut over the hook RequestView), ROUTE_PUBLIC on AdminRoute, PlaneDriveIn/PlaneDriveOut, the tail record_chains framing, their compile-time layout pins and the check_project/check_drive/check_record_chains validators beside them. Measured by cargo xtask gate construction: 24057 before, 24306 after."
+
 # ── THE CONTRACT CEILING PAIR, RE-ARMED BY LANDER'S BATCH (XTASK-SPEED, KI-ABI-SCOPE, M3-SDK,
 #    M3-SHAPES AUTH, billing-cite) — EXPIRED AND STRUCK
 #
@@ -627,7 +642,10 @@ because = "ARCHITECT ruling on the kernel budget (R-KERNEL, sd-extra.txt; K2-0 u
 # non-blocking (read and wait take a wake ticket, not a deadline; -11).
 # RE-ARMED 24052 -> 24057, AT THE MEASUREMENT (OWNER RULING Q68(3)), in its own commit after
 # the Unarmed refusal (+5); net -6 from the base this stack landed on, so no declaration stands.
-contract_caps = 24057
+# RE-ARMED 24057 -> 24306, AT THE MEASUREMENT (OWNER RULING Q68(3)), in its own commit after
+# KERNEL<>PLUGINS step 4a (the plane ABI v1 additions, +249); the live declaration above carries
+# the measure.
+contract_caps = 24306
 # REPOINTED, and the repoint is what makes this row a gate again. It named the CRATE
 # `busbar-grammar`, which #40 folded into `busbar-contract` and deleted — so it summed nothing,
 # measured nothing and passed, which is this file's own "zero is not clean" failure sitting inside
@@ -1276,7 +1294,9 @@ contract_crate = "busbar-contract"
 # (shared Fault type, -16).
 # LOWERED 24063 -> 24052 with its pair (the connection table made non-blocking, -11).
 # RE-ARMED 24052 -> 24057 with its pair (OWNER RULING Q68(3); the Unarmed refusal, +5).
-caps_contract_ceiling = 24057
+# RE-ARMED 24057 -> 24306 with its pair (OWNER RULING Q68(3); step 4a, the plane ABI v1
+# additions, +249).
+caps_contract_ceiling = 24306
 unit_crate_glob = "busbar-unit-*"
 # RE-KEYED on cherry-pick onto 143db6db6: this commit's own delta is -53 (two units stopped
 # declaring their own copies), measured against whatever unit_total_ceiling read when the line was
