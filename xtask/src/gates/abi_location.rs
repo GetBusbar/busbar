@@ -196,6 +196,10 @@ fn scan_file(repo: &str, rel: &str, text: &str, sigs: &BTreeSet<Sig>) -> Vec<Fin
             push(Shape::VersionConst, name);
         }
     }
+    // Most files name no `extern` at all; joining a file is the scan's dearest step.
+    if !text.contains("extern") {
+        return out;
+    }
     let text = Joined::of(&lines);
     let mut fn_ptrs = 0usize;
     for item in extern_items(&text.counted, &text.raw) {
@@ -529,13 +533,13 @@ fn skip_ws(c: &[char], mut i: usize) -> usize {
 
 /// `word` at `i`, bounded by non-identifier characters on both sides.
 fn word_at(c: &[char], i: usize, word: &str) -> bool {
-    let w: Vec<char> = word.chars().collect();
-    if i + w.len() > c.len() || c[i..i + w.len()] != w[..] {
+    let n = word.len();
+    if i + n > c.len() || !word.chars().zip(&c[i..i + n]).all(|(w, ch)| w == *ch) {
         return false;
     }
     let ident = |ch: char| ch.is_ascii_alphanumeric() || ch == '_';
     let before = i == 0 || !ident(c[i - 1]);
-    let after = i + w.len() == c.len() || !ident(c[i + w.len()]);
+    let after = i + n == c.len() || !ident(c[i + n]);
     before && after
 }
 
