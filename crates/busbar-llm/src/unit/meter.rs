@@ -99,12 +99,8 @@
 
 use std::sync::Arc;
 
-use busbar_contract::caps::{
-    step::Meter, Consumption, Decision, Grant, MeterClassId, Outcome, Pass, QuantitySource, Usage,
-    UsageLine,
-};
-use busbar_contract::ClassDirection;
-use busbar_kernel::plane_host::EngineHost;
+use busbar_contract::caps::{step::Meter, Consumption, Decision, Grant, Outcome, Pass, Usage};
+use busbar_kernel::{door, plane_host::EngineHost};
 
 /// WHAT THE ROUTE STEP OBSERVED — the facts this step is bound to, as the step before it hands
 /// them over.
@@ -322,17 +318,6 @@ impl Metered {
 pub type MeterStep =
     for<'a> fn(&Pass<Meter>, &Grant<Consumption>, &MeterCtx<'a>, &Outcome) -> Metered;
 
-/// The four reserved meter classes, in the canonical order the pricer prices them.
-///
-/// Named from the neutral reserved-unit spellings rather than any dialect's wire field, because the
-/// readers already normalize every dialect onto them: input is UNCACHED input, and the two cache
-/// tiers are ADDITIVE, so the four partition what the response consumed on every provider.
-const CLASS_INPUT: MeterClassId = MeterClassId::new(busbar_contract::records::UNIT_INPUT);
-const CLASS_OUTPUT: MeterClassId = MeterClassId::new(busbar_contract::records::UNIT_OUTPUT);
-const CLASS_CACHE_READ: MeterClassId = MeterClassId::new(busbar_contract::records::UNIT_CACHE_READ);
-const CLASS_CACHE_WRITE: MeterClassId =
-    MeterClassId::new(busbar_contract::records::UNIT_CACHE_WRITE);
-
 /// Step 6. Fold what the legs reported, post the counts, and say what the posting is made against.
 ///
 /// The provisional end is carried for the record and does not lower the fee: the fee was decided
@@ -349,7 +334,7 @@ pub fn meter(
     // client request that routed to an upstream. Decided once, here, and carried on both the step's
     // own answer and the report handed over to be priced, so the two cannot come to different
     // answers about the same unit.
-    let fee_count = u32::from(delivered && ctx.upstream_leg);
+    let fee_count = door::fee_count(delivered, ctx.upstream_leg);
     // A stream whose end carried a terminal error, whose translation aborted or whose transport was
     // cut bills what it streamed up to that end (#62): the reported usage is the charge on every end,
     // and there is no end that turns it back into mere evidence.
@@ -386,7 +371,12 @@ pub fn meter(
             crate::engine::usage::ledger_and_meter(ctx.host, sink, lane, reported, &tier);
             posted = true;
         }
-        row = Some(metering_row(sink, lane, reported));
+        row = Some(door::metering_row(
+            &sink.key.id,
+            &lane.model,
+            &lane.provider,
+            reported,
+        ));
         // THE REPORT, and it is where the money used to be. The step used to reach the legacy
         // host seam here and come back with an amount; what it hands over now is the tier split
         // it already projected, the billable count it already decided, and the two names the row
@@ -407,23 +397,7 @@ pub fn meter(
     // The report the posting is made against: one line per non-zero tier, in canonical order. A
     // response that reported nothing reports no lines — zero, not a floor, because that is what the
     // older release bills when an upstream tells it nothing.
-    let mut lines = Vec::new();
-    if let Some(u) = reported {
-        push_line(&mut lines, CLASS_INPUT, ClassDirection::Input, u.input);
-        push_line(&mut lines, CLASS_OUTPUT, ClassDirection::Response, u.output);
-        push_line(
-            &mut lines,
-            CLASS_CACHE_READ,
-            ClassDirection::CacheRead,
-            u.cache_read.unwrap_or(0),
-        );
-        push_line(
-            &mut lines,
-            CLASS_CACHE_WRITE,
-            ClassDirection::CacheWrite,
-            u.cache_creation.unwrap_or(0),
-        );
-    }
+    let lines = door::usage_lines(reported);
     let usage = Usage::report(usage_token, lines).expect("four tiers fit any record");
 
     // This step settles nothing: what the unit consumed leaves on the report, and the side that
@@ -434,64 +408,6 @@ pub fn meter(
         fee_count,
         posted,
         report,
-    }
-}
-
-/// One line, if the tier carries anything. A zero-quantity line is not a fact about anything.
-fn push_line(
-    lines: &mut Vec<UsageLine>,
-    class: MeterClassId,
-    direction: ClassDirection,
-    quantity: u64,
-) {
-    if quantity == 0 {
-        return;
-    }
-    lines.push(UsageLine {
-        class,
-        quantity,
-        // The figure came from the destination's own response, read at the locator the dialect's
-        // reader knows — not from a byte count of ours. The four directions are what partitions the
-        // tiers: uncached input, the response, and the two additive cache sides.
-        source: QuantitySource::Locator {
-            direction,
-            ptr: busbar_contract::caps::LocatorPtr::new(class.as_str()),
-        },
-        estimated: false,
-    });
-}
-
-/// The metering row this response accrues, in the shape the flush writes to the store.
-///
-/// The MODEL is the config name of the SERVING lane — the lane that actually answered, after any
-/// failover — because that is the key the rate card is written against; the wire name a lane sends
-/// upstream is not an accounting key. A delivered response always counts its request, whatever it
-/// consumed.
-fn metering_row(
-    sink: &crate::engine::UsageSink,
-    lane: &crate::engine::Lane,
-    usage: Option<&busbar_contract::billing::TokenUsage>,
-) -> busbar_contract::records::MeteringRow {
-    busbar_contract::records::MeteringRow {
-        usage_units: Default::default(),
-        key_id: sink.key.id.clone(),
-        model: lane.model.clone(),
-        provider: lane.provider.clone(),
-        tokens_input: usage.map(|u| u.input).unwrap_or(0),
-        tokens_output: usage.map(|u| u.output).unwrap_or(0),
-        tokens_cache_read: usage.and_then(|u| u.cache_read).unwrap_or(0),
-        tokens_cache_write: usage.and_then(|u| u.cache_creation).unwrap_or(0),
-        requests: 1,
-        billable_requests: 1,
-        key_group_at_use: String::new(),
-        // NOT STAMPED HERE, and deliberately. This row is the unit's EVIDENCE of what the accrual
-        // wrote, not the durable write itself — `ledger_and_meter` above is the write, and the
-        // kernel stamps the instant there, where a rate seam may be named at all. A plane crate
-        // asking when a card started would be a plane reaching a rate seam (#43: plugins are
-        // pricing-blind), so this leaves the field at its default and the durable row carries the
-        // instant. Owed: carry it back onto the evidence through the neutral facts seam.
-        priced_from_ms: 0,
-        pricing_version: String::new(),
     }
 }
 

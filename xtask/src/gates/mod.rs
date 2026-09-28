@@ -363,10 +363,6 @@ pub const CONSTRUCTION_STANDING_REDS: &[&str] = &[
     // true finding, named with what it measures and the phase that drains it.
     //
     // MONEY — DRAIN: Phase 2.
-    // `plane-no-money`: `priced_from_ms` at crates/busbar-llm/src/unit/meter.rs — a plane module
-    // naming a price (#43/#71). (Item 208 recorded that an earlier comment claimed this row was on
-    // the list while it was not; it is on it now, by name.)
-    "plane-no-money",
     // `one-pricing-site`: `busbar_kernel_ledger::cost::price` called from
     // crates/busbar-core-admin/src/v1/service.rs, outside the reviewed homes — an admin read that
     // prices on its own path (the BUDGET row: the enforcement path is not the invoice path).
