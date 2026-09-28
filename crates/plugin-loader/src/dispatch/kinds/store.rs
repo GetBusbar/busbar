@@ -9,7 +9,8 @@
 //!   `sessions_for` and `record_scan`'s lists), each of which has a short-buffer path;
 //! * the off-path results held under a lease (single records, record lists, string lists,
 //!   `heads`);
-//! * the token verdicts, `window_caps`' push, and the lifecycle `cancel`'s disposition.
+//! * the token verdicts, `window_caps`' push, and the lifecycle `cancel`'s disposition;
+//! * the purges' [`CountOut`] and `append_batch`'s [`HeadOut`].
 //!
 //! Every slice a plugin-reported count names (grants, released amounts, list items, rows,
 //! entries, leased items) is built through `check::reported` against the host's own capacity
@@ -17,14 +18,17 @@
 //! FAULT before any slice exists. The host's own inputs (`reserve`'s cells, `slice_release`'s
 //! items) are sliced from the host's own pointer and length.
 //!
-//! The ops whose `out` is a bare [`OutHead`], a [`CountOut`](busbar_contract::abi::store::CountOut)
-//! or a [`HeadOut`] state nothing a validator checks, and answer `Ok`: `put_key`, `delete_key`,
-//! `scrub_key`, `put_usage`, `add_usage`, `add_metering`, `purge_windows_before`,
-//! `purge_metering_before`, `put_credential`, `put_key_with_credential`, `revoke_credential`,
-//! `append_audit`, `add_denylist`, `upsert_plane_record`, `append_plane_record`,
-//! `purge_plane_records_before`, `delete_plane_record`, `append_batch`, `session_put`,
-//! `session_remove`, `record_put`, `add_usage_batch`, `add_metering_batch`, `append_audit_batch`,
-//! and every lifecycle slot but `cancel`.
+//! Every validator runs on every outcome and decides for itself which fields that outcome states.
+//! The only READY gate left here guards building a slice from plugin memory, which is live only
+//! under a READY answer's lease.
+//!
+//! The ops whose `out` is a bare [`OutHead`] are answered by the head only and checked by the
+//! mechanism (the table's list on `abi::store::OPS`), and answer `Ok` here: `put_key`,
+//! `delete_key`, `scrub_key`, `put_usage`, `add_usage`, `add_metering`, `put_credential`,
+//! `put_key_with_credential`, `revoke_credential`, `append_audit`, `add_denylist`,
+//! `upsert_plane_record`, `append_plane_record`, `delete_plane_record`, `session_put`,
+//! `session_remove`, `record_put`, `add_usage_batch`, `add_metering_batch`,
+//! `append_audit_batch`, and every lifecycle slot but `cancel`.
 
 use busbar_contract::abi::mechanism::call::{AbiStr, OutHead, Outcome};
 use busbar_contract::abi::mechanism::check::{fault, reported, Fault, Rule};
@@ -225,8 +229,10 @@ fn record_scan(a: &Answer) -> Result<(), Fault> {
 /// read; the plugin's count is capped at [`LIST_ITEMS_HARD_MAX`] before any slice exists.
 fn leased_list(a: &Answer, field: &'static str) -> Result<(), Fault> {
     let out = a.out::<LeasedListOut>()?;
+    // This gate guards the slice, not the check: `items` is plugin memory live only under a
+    // READY answer's lease. Any other outcome is checked with no items.
     if a.outcome != Outcome::Ready {
-        return Ok(());
+        return sc::check_leased_list(a.outcome, out, &[]).map_err(store_fault);
     }
     // SAFETY: on READY `items` is plugin memory held under `head.lease` until `release`; the
     // count is capped and a NULL pointer with a count refused before the slice is built.
@@ -237,8 +243,9 @@ fn leased_list(a: &Answer, field: &'static str) -> Result<(), Fault> {
 /// An off-path list of strings under a lease, as [`leased_list`].
 fn leased_strs(a: &Answer, field: &'static str) -> Result<(), Fault> {
     let out = a.out::<LeasedStrListOut>()?;
+    // Guards the slice only, as `leased_list`.
     if a.outcome != Outcome::Ready {
-        return Ok(());
+        return sc::check_leased_strs(a.outcome, out, &[]).map_err(store_fault);
     }
     // SAFETY: as `leased_list`.
     let items = unsafe { reported(out.items, u(out.items_len), LIST_ITEMS_HARD_MAX, field) }?;
@@ -248,8 +255,9 @@ fn leased_strs(a: &Answer, field: &'static str) -> Result<(), Fault> {
 /// `heads`, a leased list of stream heads, as [`leased_list`].
 fn heads(a: &Answer) -> Result<(), Fault> {
     let out = a.out::<HeadsOut>()?;
+    // Guards the slice only, as `leased_list`.
     if a.outcome != Outcome::Ready {
-        return Ok(());
+        return sc::check_heads(a.outcome, out, &[]).map_err(store_fault);
     }
     // SAFETY: as `leased_list`.
     let items = unsafe {
@@ -263,9 +271,9 @@ fn heads(a: &Answer) -> Result<(), Fault> {
     sc::check_heads(a.outcome, out, items).map_err(store_fault)
 }
 
-/// `window_caps`: how many caps the host pushed, and the error text the plugin stated. The
-/// validator's REFUSED rule (the text begins with a pushed cap's index) needs the text; READY and
-/// FAILED carry only the count check.
+/// `window_caps`: how many caps the host pushed, and the error text the plugin stated, passed on
+/// every outcome. The validator's REFUSED rule (the text begins with a pushed cap's index) reads
+/// the text; READY, FAILED and PENDING carry only the count check.
 fn window_caps(a: &Answer) -> Result<(), Fault> {
     let input = a.input::<WindowCapsIn>()?;
     let error: AbiStr = a.out::<OutHead>()?.error;
@@ -336,15 +344,22 @@ impl Kind for Store {
             }
             slot::WINDOW_CAPS => window_caps(a),
             life::CANCEL => sc::check_cancel(a.outcome, a.out::<CancelOut>()?).map_err(store_fault),
-            // No validator: the `out` states nothing beyond the mechanism's head.
+            // A purge's rows removed, the shipping ack's stream head.
+            slot::PURGE_WINDOWS_BEFORE
+            | slot::PURGE_METERING_BEFORE
+            | slot::PURGE_PLANE_RECORDS_BEFORE => {
+                sc::check_count(a.outcome, a.out::<CountOut>()?).map_err(store_fault)
+            }
+            slot::APPEND_BATCH => {
+                sc::check_append_batch(a.outcome, a.out::<HeadOut>()?).map_err(store_fault)
+            }
+            // Answered by the head only: the `out` is a bare `OutHead`, checked by the mechanism.
             slot::PUT_KEY
             | slot::DELETE_KEY
             | slot::SCRUB_KEY
             | slot::PUT_USAGE
             | slot::ADD_USAGE
             | slot::ADD_METERING
-            | slot::PURGE_WINDOWS_BEFORE
-            | slot::PURGE_METERING_BEFORE
             | slot::PUT_CREDENTIAL
             | slot::PUT_KEY_WITH_CREDENTIAL
             | slot::REVOKE_CREDENTIAL
@@ -352,9 +367,7 @@ impl Kind for Store {
             | slot::ADD_DENYLIST
             | slot::UPSERT_PLANE_RECORD
             | slot::APPEND_PLANE_RECORD
-            | slot::PURGE_PLANE_RECORDS_BEFORE
             | slot::DELETE_PLANE_RECORD
-            | slot::APPEND_BATCH
             | slot::SESSION_PUT
             | slot::SESSION_REMOVE
             | slot::RECORD_PUT

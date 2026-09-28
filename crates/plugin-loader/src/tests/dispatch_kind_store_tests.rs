@@ -5,18 +5,18 @@
 //! validator, a plugin count above the host's cap is FAULT before any slice exists, and every
 //! store slot has a name.
 
-use std::mem::size_of;
+use std::mem::{size_of, size_of_val};
 use std::ptr::{null, NonNull};
 
-use busbar_contract::abi::mechanism::call::{AbiStr, Blob, Outcome, BLOB_JSON};
+use busbar_contract::abi::mechanism::call::{AbiStr, Blob, InHead, Outcome, BLOB_JSON};
 use busbar_contract::abi::mechanism::check::{Fault, Rule};
 use busbar_contract::abi::mechanism::lifecycle::{slot as life, CancelOut, LIFECYCLE_SLOTS};
 use busbar_contract::abi::store::check::{self as sc, LIST_ITEMS_HARD_MAX};
 use busbar_contract::abi::store::{
-    slot, CellGrant, HostBlobs, HostBuf, HostBytesOut, HostListOut, LeasedListOut,
-    ListPlaneRecordsIn, OpId, RecordGetIn, ReleaseItem, ReserveIn, ReserveOut, SliceReleaseIn,
-    SliceReleaseOut, UnitCell, VerdictOut, WindowCapsIn, FOUND, KIND_SLOTS, OPS, RESERVE_EXHAUSTED,
-    RESERVE_NO_FAILED_CELL, RESERVE_OK,
+    slot, CellGrant, CountOut, HeadOut, HostBlobs, HostBuf, HostBytesOut, HostListOut,
+    LeasedListOut, ListPlaneRecordsIn, OpId, RecordGetIn, ReleaseItem, ReserveIn, ReserveOut,
+    SliceReleaseIn, SliceReleaseOut, UnitCell, VerdictOut, WindowCapsIn, FOUND, KIND_SLOTS, OPS,
+    RESERVE_EXHAUSTED, RESERVE_NO_FAILED_CELL, RESERVE_OK,
 };
 
 use crate::dispatch::kinds::store::{store_fault, Store};
@@ -447,6 +447,49 @@ fn cancel_green_and_red() {
     }
 }
 
+fn window_caps_error(i: &WindowCapsIn, outcome: Outcome, text: &[u8]) -> Result<(), Fault> {
+    let mut o = out_head();
+    o.error = AbiStr {
+        ptr: text.as_ptr(),
+        len: text.len(),
+    };
+    Store::check(&answer(slot::WINDOW_CAPS, outcome, i, &o))
+}
+
+#[test]
+fn window_caps_refused_error_text_is_checked() {
+    let i = WindowCapsIn {
+        head: in_head(),
+        op_id: OpId([0; 16]),
+        caps: null(),
+        caps_len: 3,
+    };
+    assert_eq!(
+        window_caps_error(&i, Outcome::Refused, b"2: STORE_CAP_CONFLICT"),
+        Ok(())
+    );
+    // A REFUSED push whose text names no cap, or a cap outside the push.
+    assert_eq!(
+        window_caps_error(&i, Outcome::Refused, b"STORE_CAP_CONFLICT"),
+        Err(store_fault(sc::Fault::Missing))
+    );
+    assert_eq!(
+        window_caps_error(&i, Outcome::Refused, b"3: STORE_CAP_CONFLICT"),
+        Err(store_fault(sc::Fault::CountOverCap))
+    );
+    // A REFUSED push with no text at all.
+    let o = out_head();
+    assert_eq!(
+        Store::check(&answer(slot::WINDOW_CAPS, Outcome::Refused, &i, &o)),
+        Err(store_fault(sc::Fault::Missing))
+    );
+    // The same text on another outcome is not a refusal's index.
+    assert_eq!(
+        window_caps_error(&i, Outcome::Failed, b"STORE_CAP_CONFLICT"),
+        Ok(())
+    );
+}
+
 #[test]
 fn window_caps_green_and_red() {
     let mut i = WindowCapsIn {
@@ -463,6 +506,97 @@ fn window_caps_green_and_red() {
     i.caps_len = LIST_ITEMS_HARD_MAX as usize + 1;
     let f = Store::check(&answer(slot::WINDOW_CAPS, Outcome::Ready, &i, &o)).unwrap_err();
     assert_eq!(f, store_fault(sc::Fault::CountOverCap));
+}
+
+// ── purges and append_batch ──────────────────────────────────────────────────────────────────
+
+#[test]
+fn purges_route_to_the_count_check() {
+    let i = in_head();
+    for s in [
+        slot::PURGE_WINDOWS_BEFORE,
+        slot::PURGE_METERING_BEFORE,
+        slot::PURGE_PLANE_RECORDS_BEFORE,
+    ] {
+        let o = CountOut {
+            head: out_head(),
+            count: 9,
+        };
+        assert_eq!(Store::check(&answer(s, Outcome::Ready, &i, &o)), Ok(()));
+        assert_eq!(
+            Store::check(&answer(s, Outcome::Failed, &i, &o)),
+            Err(store_fault(sc::Fault::WrittenOnFailed)),
+            "{}",
+            Store::op_name(s)
+        );
+    }
+}
+
+#[test]
+fn append_batch_routes_to_the_head_check() {
+    let i = in_head();
+    let o = HeadOut {
+        head: out_head(),
+        seq: 41,
+        epoch: 3,
+    };
+    assert_eq!(
+        Store::check(&answer(slot::APPEND_BATCH, Outcome::Ready, &i, &o)),
+        Ok(())
+    );
+    assert_eq!(
+        Store::check(&answer(slot::APPEND_BATCH, Outcome::Failed, &i, &o)),
+        Err(store_fault(sc::Fault::WrittenOnFailed))
+    );
+    // Too small an `out` for a head is a foreign struct.
+    let o = out_head();
+    assert_eq!(
+        rule(Store::check(&answer(
+            slot::APPEND_BATCH,
+            Outcome::Ready,
+            &i,
+            &o
+        ))),
+        Rule::Foreign
+    );
+}
+
+// ── every outcome ────────────────────────────────────────────────────────────────────────────
+
+/// Every store slot, and `cancel`, answered PENDING or REFUSED with a zeroed `in` and `out` of
+/// the slot's own sizes passes its check; the one rule about those outcomes that a zeroed `out`
+/// breaks is `window_caps`' REFUSED error text.
+#[test]
+fn a_zeroed_answer_on_pending_or_refused_passes_every_slot() {
+    let zero_in = [0u64; 128];
+    let zero_out = [0u64; 128];
+    let mut slots: Vec<(u32, usize, usize)> = OPS
+        .iter()
+        .map(|c| (c.slot, c.in_size, c.out_size))
+        .collect();
+    slots.push((life::CANCEL, size_of::<InHead>(), size_of::<CancelOut>()));
+    for (s, in_size, out_size) in slots {
+        assert!(in_size <= size_of_val(&zero_in) && out_size <= size_of_val(&zero_out));
+        for outcome in [Outcome::Pending, Outcome::Refused] {
+            // SAFETY: both buffers outlive the answer and hold at least the slot's sizes.
+            let a = unsafe {
+                Answer::new(
+                    s,
+                    outcome,
+                    zero_in.as_ptr().cast(),
+                    in_size,
+                    zero_out.as_ptr().cast(),
+                    out_size,
+                )
+            };
+            let r = Store::check(&a);
+            if s == slot::WINDOW_CAPS && outcome == Outcome::Refused {
+                assert_eq!(r, Err(store_fault(sc::Fault::Missing)));
+            } else {
+                assert_eq!(r, Ok(()), "{} {outcome:?}", Store::op_name(s));
+            }
+        }
+    }
 }
 
 // ── unchecked ops, names, faults ─────────────────────────────────────────────────────────────
