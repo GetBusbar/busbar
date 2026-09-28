@@ -424,7 +424,7 @@ pub fn validate_plane_entry(
     crate::trust::section::judge_entry(&at, entry, trust_keys)?;
     let hooks = entry
         .as_mapping()
-        .and_then(|m| m.get("hooks"))
+        .and_then(|m| m.get(Kind::Hook.root()))
         .and_then(serde_yaml::Value::as_sequence);
     for hook in hooks.into_iter().flatten() {
         if let Some(hook) = hook.as_str() {
