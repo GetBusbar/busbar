@@ -20,14 +20,15 @@
 pub use crate::abi::mechanism::check::{Fault, Rule};
 
 use super::{
-    AdminRoute, ArriveOut, BillableClass, Claim, DialectAuth, OnPieceOut, OutField, PlaneDriveOut,
-    PlaneSnapshot, PlaneTail, ProjectOut, RecordChain, RecordWrite, RefusalOut, RouteCost, Section,
-    ServeOut, UnitCount, CANCEL_ABORTED, CANCEL_OK_PARTIAL, CHAIN_DIGESTS_SCOPE,
-    CHAIN_LENGTH_PREFIXED, CHAIN_PIPE_SEPARATED, CLAIM_EXACT, CLAIM_OPEN, EMIT_DONE,
-    EMIT_TO_FAR_END, INGRESS_ACCEPT_LOOP, INGRESS_DUPLEX_SESSION, INGRESS_REQUEST_RESPONSE,
-    INGRESS_RESPONSE_STREAM, INGRESS_SUBSCRIPTION, MARK_GATE_REJECTED, PRINCIPAL_OPTIONAL,
-    RECORD_DELETE, RECORD_PUT, ROUTE_PUBLIC, SECTION_CONSUMED, SECTION_DECLARING, SECTION_REQUIRED,
-    SHAPE_PIECEWISE, SHAPE_WHOLE, TAIL_FALLBACK, TAIL_PROBES, UNITS_ESTIMATED, UNITS_REPORTED,
+    AdminRoute, ArriveOut, BillableClass, Claim, DialectAuth, OnPieceOut, OutField, PinMechanism,
+    PlaneDriveOut, PlaneSnapshot, PlaneTail, ProjectOut, RecordChain, RecordWrite, RefusalOut,
+    RouteCost, Section, ServeOut, TrustKey, UnitCount, CANCEL_ABORTED, CANCEL_OK_PARTIAL,
+    CHAIN_DIGESTS_SCOPE, CHAIN_LENGTH_PREFIXED, CHAIN_PIPE_SEPARATED, CLAIM_EXACT, CLAIM_OPEN,
+    EMIT_DONE, EMIT_TO_FAR_END, INGRESS_ACCEPT_LOOP, INGRESS_DUPLEX_SESSION,
+    INGRESS_REQUEST_RESPONSE, INGRESS_RESPONSE_STREAM, INGRESS_SUBSCRIPTION, MARK_GATE_REJECTED,
+    MECHANISM_ROOT, PIN_FINGERPRINT, PRINCIPAL_OPTIONAL, RECORD_DELETE, RECORD_PUT, ROUTE_PUBLIC,
+    SECTION_CONSUMED, SECTION_DECLARING, SECTION_REQUIRED, SHAPE_PIECEWISE, SHAPE_WHOLE,
+    TAIL_FALLBACK, TAIL_PROBES, TRUST_PIN, TRUST_RECOVERY_BACKOFF, UNITS_ESTIMATED, UNITS_REPORTED,
     VERDICT_HARD,
 };
 use crate::abi::hook::{
@@ -575,7 +576,7 @@ pub fn check_admin_routes(routes: &[AdminRoute]) -> Result<(), Fault> {
 /// The Statement tail, at load: known flags, ingress bits and dispatch shape; at least one ingress
 /// shape; no string or list counted with a NULL pointer. Its elements: [`check_sections`],
 /// [`check_dialect_auth`], [`check_route_cost`], [`check_billable_classes`], [`check_needs`],
-/// [`check_record_chains`].
+/// [`check_record_chains`], [`check_trust_keys`] and each pin's [`check_pin_mechanisms`].
 ///
 /// # Errors
 ///
@@ -632,7 +633,8 @@ pub fn check_tail(t: &PlaneTail) -> Result<(), Fault> {
         t.egress_targets_len,
         "tail.egress_targets",
     )?;
-    listed(t.record_chains, t.record_chains_len, "tail.record_chains")
+    listed(t.record_chains, t.record_chains_len, "tail.record_chains")?;
+    listed(t.trust_keys, t.trust_keys_len, "tail.trust_keys")
 }
 
 /// The tail's sections: each named, known flags, and EXACTLY ONE is the declaring section.
@@ -741,6 +743,65 @@ pub fn check_record_chains(chains: &[RecordChain], record_kinds_len: u64) -> Res
         if chains[..i].iter().any(|d| d.kind == c.kind) {
             return Err(fault(Rule::Contradiction, "record_chain.kind_twice"));
         }
+    }
+    Ok(())
+}
+
+/// The kernel-owned trust keys: each named, with a known role at most once; a pin names its
+/// mechanisms and has no default; a duration key names no mechanism and carries no pin flag.
+///
+/// # Errors
+///
+/// The rule a key breaks.
+pub fn check_trust_keys(keys: &[TrustKey]) -> Result<(), Fault> {
+    for (i, k) in keys.iter().enumerate() {
+        named(k.key, "trust_key.key")?;
+        code(
+            u64::from(k.role),
+            u64::from(TRUST_PIN),
+            u64::from(TRUST_RECOVERY_BACKOFF),
+            "trust_key.role",
+        )?;
+        text(k.default, "trust_key.default")?;
+        listed(k.mechanisms, k.mechanisms_len, "trust_key.mechanisms")?;
+        if k.role == TRUST_PIN {
+            bits(
+                u64::from(k.flags),
+                u64::from(PIN_FINGERPRINT),
+                "trust_key.flags",
+            )?;
+            if k.mechanisms_len == 0 {
+                return Err(fault(Rule::Missing, "trust_key.mechanisms"));
+            }
+            if !k.default.ptr.is_null() {
+                return Err(fault(Rule::Contradiction, "trust_key.pin_default"));
+            }
+        } else {
+            bits(u64::from(k.flags), 0, "trust_key.duration_flags")?;
+            if k.mechanisms_len != 0 {
+                return Err(fault(Rule::Contradiction, "trust_key.duration_mechanisms"));
+            }
+        }
+        if keys[..i].iter().any(|p| p.role == k.role) {
+            return Err(fault(Rule::Contradiction, "trust_key.role_twice"));
+        }
+    }
+    Ok(())
+}
+
+/// A pin's mechanisms: each named, with known flags.
+///
+/// # Errors
+///
+/// The rule a mechanism breaks.
+pub fn check_pin_mechanisms(mechanisms: &[PinMechanism]) -> Result<(), Fault> {
+    for m in mechanisms {
+        named(m.token, "pin_mechanism.token")?;
+        bits(
+            u64::from(m.flags),
+            u64::from(MECHANISM_ROOT),
+            "pin_mechanism.flags",
+        )?;
     }
     Ok(())
 }

@@ -1555,6 +1555,12 @@ fn compute_layout() -> String {
     record!(s, pkind::BillableClass, [class, family]);
     record!(s, pkind::RouteCost, [class, _reserved, weight]);
     record!(s, pkind::RecordChain, [kind, framing, flags, _reserved]);
+    record!(s, pkind::PinMechanism, [token, flags, _reserved]);
+    record!(
+        s,
+        pkind::TrustKey,
+        [key, role, flags, default, mechanisms, mechanisms_len]
+    );
     record!(
         s,
         pkind::PlaneTail,
@@ -1595,7 +1601,9 @@ fn compute_layout() -> String {
             egress_targets,
             egress_targets_len,
             record_chains,
-            record_chains_len
+            record_chains_len,
+            trust_keys,
+            trust_keys_len
         ]
     );
     record!(s, pkind::Claim, [verb, target, carrier, flags, _reserved]);

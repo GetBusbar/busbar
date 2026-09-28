@@ -97,6 +97,14 @@
 //! | `BuildCtx.public_url_*` | [`PlaneOpenIn::public_url`] |
 //! | (new) dialects, `dialect_auth`, `route_cost`, `cli_help` | tail |
 //! | (new) needs, consumed sections, egress targets | tail [`PlaneTail::needs`], [`SECTION_CONSUMED`], [`PlaneTail::egress_targets`] |
+//! | (new) kernel-owned trust keys | tail [`PlaneTail::trust_keys`] |
+//!
+//! KERNEL-OWNED TRUST KEYS. The trust lifecycle (pin, re-verification cadence, demotion) is the
+//! kernel's. A plane whose registrations carry those keys DECLARES them in its tail
+//! ([`PlaneTail::trust_keys`], each a [`TrustKey`]): which per-registration key of its declaring
+//! section holds the pin ([`TRUST_PIN`]), the re-verification bound ([`TRUST_REVERIFY_TTL`]) and the
+//! recovery backoff ([`TRUST_RECOVERY_BACKOFF`]). The kernel parses and validates those keys; the
+//! plane's own validator does not.
 //!
 //! ```
 //! use std::mem::{offset_of, size_of};
@@ -413,6 +421,52 @@ pub struct RecordChain {
     pub _reserved: u32,
 }
 
+/// [`TrustKey::role`]: the key holds the registration's pin object, `{mechanism, key?,
+/// fingerprint?}`: which authenticity root it has and the operator's out-of-band material.
+pub const TRUST_PIN: u32 = 1;
+/// [`TrustKey::role`]: the key holds the longest a verification may be reused before the
+/// counterparty is re-verified, a `<n><s|m|h|d>` duration.
+pub const TRUST_REVERIFY_TTL: u32 = 2;
+/// [`TrustKey::role`]: the key holds how long after a drift a clean answer is disbelieved, a
+/// `<n><s|m|h|d>` duration.
+pub const TRUST_RECOVERY_BACKOFF: u32 = 3;
+/// [`TrustKey::flags`], on a [`TRUST_PIN`] key only: the pin object may also carry `fingerprint`.
+pub const PIN_FINGERPRINT: u32 = 1;
+/// [`PinMechanism::flags`]: the mechanism is an authenticity root, so a pin naming it needs key
+/// material. A mechanism without it is the no-root spelling, which must carry none.
+pub const MECHANISM_ROOT: u32 = 1;
+
+/// One pin mechanism a [`TRUST_PIN`] key accepts, as the operator spells it.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct PinMechanism {
+    /// The config token.
+    pub token: AbiStr,
+    /// [`MECHANISM_ROOT`] or `0`.
+    pub flags: u32,
+    /// Alignment padding.
+    pub _reserved: u32,
+}
+
+/// One per-registration key of the plane's declaring section that the KERNEL parses for the trust
+/// lifecycle. At most one key per role.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct TrustKey {
+    /// The key, as written inside one registration.
+    pub key: AbiStr,
+    /// [`TRUST_PIN`] | [`TRUST_REVERIFY_TTL`] | [`TRUST_RECOVERY_BACKOFF`].
+    pub role: u32,
+    /// [`PIN_FINGERPRINT`] on a pin; `0` otherwise.
+    pub flags: u32,
+    /// A duration key's value when a registration writes none; absent = zero. A pin has none.
+    pub default: AbiStr,
+    /// A pin's mechanisms; empty for a duration key.
+    pub mechanisms: *const PinMechanism,
+    /// How many.
+    pub mechanisms_len: usize,
+}
+
 /// THE PLANE'S STATEMENT TAIL: static facts, `'static` data.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
@@ -491,6 +545,10 @@ pub struct PlaneTail {
     pub record_chains: *const RecordChain,
     /// How many.
     pub record_chains_len: usize,
+    /// The per-registration keys the kernel parses for the trust lifecycle.
+    pub trust_keys: *const TrustKey,
+    /// How many.
+    pub trust_keys_len: usize,
 }
 
 // ── the generation snapshot ──────────────────────────────────────────────────────────────────────

@@ -1250,7 +1250,10 @@ mod plane_kind {
     pin!(BillableClass, 32, 8, class = 0, family = 16);
     pin!(RouteCost, 16, 8, class = 0, _reserved = 4, weight = 8);
     pin!(RecordChain, 16, 4, kind = 0, framing = 4, flags = 8, _reserved = 12);
-    pin!(PlaneTail, 344, 8, head = 0, flags = 8, ingress = 12, dispatch_shape = 16,
+    pin!(PinMechanism, 24, 8, token = 0, flags = 16, _reserved = 20);
+    pin!(TrustKey, 56, 8, key = 0, role = 16, flags = 20, default = 24, mechanisms = 40,
+        mechanisms_len = 48);
+    pin!(PlaneTail, 360, 8, head = 0, flags = 8, ingress = 12, dispatch_shape = 16,
         _reserved = 20, scope = 24, label = 40, subject_noun = 56, admin_noun = 72,
         audit_kind = 88, signing_domain = 104, signing_kid_prefix = 120, cli_help = 136,
         sections = 152, sections_len = 160, dialects = 168, dialects_len = 176,
@@ -1259,7 +1262,7 @@ mod plane_kind {
         billable_classes_len = 240, route_cost = 248, route_cost_len = 256, fee_units = 264,
         fee_units_len = 272, record_kinds = 280, record_kinds_len = 288, needs = 296,
         needs_len = 304, egress_targets = 312, egress_targets_len = 320, record_chains = 328,
-        record_chains_len = 336);
+        record_chains_len = 336, trust_keys = 344, trust_keys_len = 352);
     pin!(Claim, 56, 8, verb = 0, target = 16, carrier = 32, flags = 48, _reserved = 52);
     pin!(AdminRoute, 40, 8, verb = 0, target = 16, flags = 32, _reserved = 36);
     pin!(PlaneSnapshot, 104, 8, size = 0, _reserved = 4, generation = 8, claims = 16,
