@@ -1445,7 +1445,26 @@ reviewed_allowlist = ["busbar-api", "serde", "serde_json", "tracing", "async-tra
 # busbar-llm-codec and busbar-voice-codec are GONE from this list (owner ruling R7, 2026-09-27, #39):
 # both dissolved into their plane's own `codec` module, so neither plane NAMES a codec crate at all.
 # Per-crate additions beyond the global list above, each a one-line review.
+#
+# OWNER RULING 2026-09-28 (PLUGIN LIBRARIES): "a plugin may use any third-party library it needs to
+# do its job" (tokio, hyper, h2, tracing, ...) supersedes the old posture of reviewing a transport's
+# runtime/wire-protocol crates one at a time. The four `busbar-transport-*` rows below are that
+# ruling applied: each crate's OWN direct third-party dependencies, named once. The two walls that
+# remain are unaffected — a transport's closure still holds no busbar-* crate but busbar-contract
+# (the RED (kernel/caps/unit/plane/transport) branch above, never waivable), and the host still owns
+# OS sockets, TLS, ALPN and pools (busbar-core-connector; §5) regardless of which wire library a
+# transport links to reach them.
 [rules.manifest-allowlist.reviewed_extra]
+busbar-transport-http = [
+  "tokio-util", "memchr", "futures", "tokio", "tokio-rustls", "rustls", "hyper", "hyper-util",
+  "hyper-rustls", "http-body-util", "http", "webpki-roots", "tonic", "tower",
+]
+busbar-transport-stdio = ["tokio", "futures"]
+busbar-transport-tcp = ["tokio-util", "futures", "tokio"]
+busbar-transport-ws = [
+  "tokio-util", "tokio", "tokio-tungstenite", "tokio-rustls", "rustls", "rustls-pki-types",
+  "webpki-roots", "futures",
+]
 # Ratchet, NOT a review: each busbar-plane-* adapter names its own dialect's legacy engine crate
 # (busbar-llm/-mcp/-a2a/-voice) for codecs only, read-only, no engine state crossing back — but
 # those engine crates are ALSO named in gate.plane_crates, so this is structurally the exact "a

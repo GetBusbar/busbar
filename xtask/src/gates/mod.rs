@@ -345,21 +345,10 @@ pub const CONSTRUCTION_STANDING_REDS: &[&str] = &[
     // in scope at all, and passed on that basis. M1 repointed the rule's subject to the plugin
     // dispatcher's cancel/deadline paths and the teller's one money `.await`, so it now scores a
     // real scan and is green.
-    // FOUR ROWS THAT RUN AND ARE RED ON THEIR MANIFESTS. Until item 120 the allowlist rule did not
-    // read the `transport` kind, so these were "owed but no row was recorded — DID NOT RUN". It
-    // reads it now, and every one of them FAILS for a real reason, measured: each names
-    // third-party crates no review has recorded (tokio, futures, rustls, hyper, ...). `-grpc` and
-    // `-sse` were two more, each path-depending on `busbar-transport-http`: both FOLDED INTO it
-    // (the transport fold), so their rows have no crate left to score and grpc's third-party
-    // deps (`tonic`, `tower`) are `-http`'s row's now. Drain: the owner reviews the third-party
-    // deps into `[rules.manifest-allowlist.reviewed_extra]`; each name is struck here AND in
-    // scripts/land.sh as its row goes green. `-tls` is STRUCK here and in scripts/land.sh: the crate
-    // is deleted (TRANSPORT-STACK, owner-approved 2026-09-27 — TLS is core's connection security,
-    // `busbar-core-connector`), so its row has no crate left to score.
-    "manifest-allowlist:busbar-transport-http",
-    "manifest-allowlist:busbar-transport-stdio",
-    "manifest-allowlist:busbar-transport-tcp",
-    "manifest-allowlist:busbar-transport-ws",
+    // FOUR ROWS DRAINED 2026-09-28 (owner ruling PLUGIN LIBRARIES): each named third-party crates
+    // no review had recorded (tokio, futures, rustls, hyper, ...); those names are now in
+    // `[rules.manifest-allowlist.reviewed_extra]` for each of the four crates and the rows are
+    // green.
     // Four production call sites of `pick_among(` against a ceiling of 2: the kernel-egress exhaustion
     // and walk sites beside busbar-llm's fallback and pipeline. DRAIN: Phase 4, when the plane's own
     // pick moves behind the kernel loop and only the loop and the fallback re-entry remain.
@@ -2839,8 +2828,8 @@ pub static REGISTRY: &[Registration] = &[
         batch: 1,
         tier: Tier::Fast,
         build: || Box::new(plugin_closure_deps::PluginClosureDepsGate),
-        summary: "a plugin depends on busbar-contract alone and holds no runtime, logger, thread, \
-                  socket, file or env of its own (report-only ledger)",
+        summary: "a plugin depends on busbar-contract and nothing else of busbar's (report-only \
+                  ledger)",
     },
     Registration {
         name: "c1-literals",

@@ -223,10 +223,6 @@ land_ceiling_verdict() {
 land_construction_standing_reds() {
   local reds
   reds="$(cat <<'EOF'
-manifest-allowlist:busbar-transport-http
-manifest-allowlist:busbar-transport-stdio
-manifest-allowlist:busbar-transport-tcp
-manifest-allowlist:busbar-transport-ws
 one-pick-site
 plane-no-money
 one-pricing-site
