@@ -103,6 +103,7 @@ fn replace(pool: &Pool, i: usize, old: &Arc<Worker>, started: Instant) {
         (Worker::fault_all(&mut st), gens)
     };
     pool.env.completions.forget_worker(old.index);
+    pool.env.services.forget_worker(old.index);
     let (w, rx) = Worker::new(old.index, gens);
     *pool.slots[i]
         .current

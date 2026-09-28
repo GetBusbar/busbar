@@ -48,6 +48,11 @@ pub(crate) fn recycled_generation(g: u32) -> u32 {
 pub(crate) trait WakeRoute: Send + Sync {
     /// Push `t` to the worker that owns it. Never blocks on the plugin.
     fn wake(&self, t: Ticket);
+
+    /// The host services this route's instances are served from; `None` = none.
+    fn services(&self) -> Option<super::services::Served> {
+        None
+    }
 }
 
 /// What an instance's `HostCtx` points to: the dispatcher its tickets live in. Leaked per

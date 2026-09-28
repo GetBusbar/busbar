@@ -41,6 +41,7 @@ use busbar_contract::abi::mechanism::lifecycle::{slot, CancelIn, CancelOut, Driv
 use busbar_contract::abi::mechanism::ticket::Ticket;
 
 use super::plugin::{is_lifecycle, Crossed, Instance, Plugin};
+use super::services::{HostServices, Served, ServiceStore};
 use super::ticket::{
     decode, encode, recycled_generation, Completions, WakeRoute, MAX_INDEX, MAX_WORKERS,
 };
@@ -132,6 +133,11 @@ pub(crate) struct Env {
     pub(crate) budgets: Budgets,
     pub(crate) stats: Arc<Stats>,
     pub(crate) completions: Arc<Completions<Vec<u8>>>,
+    /// The host services' stored results.
+    pub(crate) services: Arc<ServiceStore>,
+    /// What the host services are served from; `None` = the host bound none, and every service
+    /// answers REFUSED.
+    pub(crate) provider: Option<Arc<dyn HostServices>>,
 }
 
 /// One op's completion.
@@ -505,6 +511,13 @@ impl WakeRoute for Pool {
             }
         }
     }
+
+    fn services(&self) -> Option<Served> {
+        Some(Served {
+            store: Arc::clone(&self.env.services),
+            provider: Arc::clone(self.env.provider.as_ref()?),
+        })
+    }
 }
 
 impl Pool {
@@ -666,6 +679,7 @@ impl Worker {
     fn recycle_now(&self, st: &mut WorkerState, idx: u32, env: &Env) {
         let e = &mut st.entries[idx as usize];
         env.completions.forget(self.ticket(idx, e.generation));
+        env.services.forget(self.ticket(idx, e.generation));
         e.generation = recycled_generation(e.generation);
         e.live = false;
         e.latched = false;
@@ -1077,13 +1091,25 @@ impl std::fmt::Debug for Dispatcher {
 }
 
 impl Dispatcher {
-    /// Workers and a watchdog, per `config`.
+    /// Workers and a watchdog, per `config`, with no host services bound: every service answers
+    /// REFUSED.
     pub fn new(config: DispatchConfig) -> Self {
+        Self::build(config, None)
+    }
+
+    /// Workers and a watchdog, per `config`, serving the host services the kernel implements.
+    pub fn with_services(config: DispatchConfig, provider: Arc<dyn HostServices>) -> Self {
+        Self::build(config, Some(provider))
+    }
+
+    fn build(config: DispatchConfig, provider: Option<Arc<dyn HostServices>>) -> Self {
         let n = config.workers.clamp(1, MAX_WORKERS);
         let env = Arc::new(Env {
             budgets: config.budgets,
             stats: Arc::default(),
             completions: Arc::default(),
+            services: Arc::default(),
+            provider,
         });
         let mut started = Vec::new();
         let slots = (0..n)
@@ -1126,6 +1152,11 @@ impl Dispatcher {
     /// The completion handles of this dispatcher's tickets.
     pub fn completions(&self) -> &Completions<Vec<u8>> {
         &self.pool.env.completions
+    }
+
+    /// The host services' stored results.
+    pub fn services(&self) -> &ServiceStore {
+        &self.pool.env.services
     }
 
     fn worker(&self, worker: u32) -> Option<Arc<Worker>> {
