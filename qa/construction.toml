@@ -1452,8 +1452,8 @@ reviewed_allowlist = ["busbar-api", "serde", "serde_json", "tracing", "async-tra
 # ruling applied: each crate's OWN direct third-party dependencies, named once. The two walls that
 # remain are unaffected — a transport's closure still holds no busbar-* crate but busbar-contract
 # (the RED (kernel/caps/unit/plane/transport) branch above, never waivable), and the host still owns
-# OS sockets, TLS, ALPN and pools (busbar-core-connector; §5) regardless of which wire library a
-# transport links to reach them.
+# OS sockets, TLS, ALPN and pools (busbar-core-connector; BUSBAR-1.6.0.md THE DESIGN, §5) regardless
+# of which wire library a transport links to reach them.
 [rules.manifest-allowlist.reviewed_extra]
 busbar-transport-http = [
   "tokio-util", "memchr", "futures", "tokio", "tokio-rustls", "rustls", "hyper", "hyper-util",
