@@ -391,7 +391,9 @@ pub const CONSTRUCTION_STANDING_REDS: &[&str] = &[
     // C1 / THE FOLD — DRAIN: Phase 4.
     // `lean-core`: 14 string literals in the kernel and busbar-kernel-* crates naming a dialect or a
     // section 1.3 pinned word (config/mod.rs, appbuild.rs). Item 379 widened the scan to the eight
-    // kernel crates the units became, which is what made it visible.
+    // kernel crates the units became, which is what made it visible. Measured 2026-09-27: 5 (two
+    // reserved-name messages in config_validate, a metrics help text, two plane_host errors) once
+    // the 28 `known_sites` pins that had drifted off their literals were re-pointed.
     "lean-core",
     // `neutral-no-dialect` STRUCK 2026-09-25: the dialect and strict-purity drains emptied it, and
     // `--posture` scored the name STALE.
