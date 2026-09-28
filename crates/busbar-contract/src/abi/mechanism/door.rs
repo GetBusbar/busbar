@@ -103,6 +103,8 @@ pub struct Statement {
     pub secret_refs: *const AbiStr,
     /// How many.
     pub secret_refs_len: usize,
+    /// The settings schema every kind validates settings against (JSON, off-path).
+    pub settings_schema: Blob,
 }
 
 /// The head every kind's Statement tail leads with.

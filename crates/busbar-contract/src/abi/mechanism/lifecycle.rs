@@ -57,7 +57,7 @@ pub struct OpsHead {
     pub validate: Option<Op>,
     /// Boot, on the control lane; may pend. In [`OpenIn`], out [`OpenOut`].
     pub open: Option<Op>,
-    /// Reload; may pend. In [`GenIn`], out [`OutHead`].
+    /// Reload with the new config; may pend. In [`RefreshIn`], out [`OutHead`].
     pub refresh: Option<Op>,
     /// After the RCU drain of a generation. In [`GenIn`], out [`OutHead`].
     pub retire: Option<Op>,
@@ -112,7 +112,7 @@ pub struct OpenOut {
     pub instance: *mut std::os::raw::c_void,
 }
 
-/// `refresh`'s and `retire`'s `in`.
+/// `retire`'s `in`.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct GenIn {
@@ -120,6 +120,22 @@ pub struct GenIn {
     pub head: InHead,
     /// The generation.
     pub generation: u64,
+}
+
+/// `refresh`'s `in`: a reload carries the new config.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct RefreshIn {
+    /// The head.
+    pub head: InHead,
+    /// The generation this refresh opens.
+    pub generation: u64,
+    /// The new settings blob.
+    pub settings: Blob,
+    /// The re-resolved secrets, one per [`super::door::Statement::secret_refs`] key, in that order.
+    pub secrets: *const Blob,
+    /// How many.
+    pub secrets_len: usize,
 }
 
 /// `tick`'s `in`.

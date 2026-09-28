@@ -68,3 +68,9 @@ fn every_kind_tail_leads_with_a_kind_tail_head() {
 fn the_return_value_is_the_authoritative_outcome() {
     assert!(CALL.contains("The RETURN VALUE is authoritative"));
 }
+
+#[test]
+fn the_host_zeroes_every_out_before_every_call() {
+    assert!(CALL.contains("THE HOST ZEROES THE WHOLE `out` BEFORE EVERY"));
+    assert!(CALL.contains("(no template)"));
+}

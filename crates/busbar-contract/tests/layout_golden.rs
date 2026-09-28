@@ -36,8 +36,8 @@ use busbar_contract::abi::mechanism::door::{
 use busbar_contract::abi::mechanism::lifecycle::{
     CancelIn as MechCancelIn, CancelOut as MechCancelOut, DriveIn as MechDriveIn,
     GenIn as MechGenIn, OpenIn as MechOpenIn, OpenOut as MechOpenOut, OpsHead as MechOpsHead,
-    ReleaseIn as MechReleaseIn, TickIn as MechTickIn, TickOut as MechTickOut,
-    ValidateIn as MechValidateIn,
+    RefreshIn as MechRefreshIn, ReleaseIn as MechReleaseIn, TickIn as MechTickIn,
+    TickOut as MechTickOut, ValidateIn as MechValidateIn,
 };
 use busbar_contract::abi::mechanism::ticket::{
     CompletionHandle as MechCompletionHandle, HostCtx as MechHostCtx, HostTables as MechHostTables,
@@ -877,6 +877,7 @@ fn compute_layout() -> String {
             ticket,
             deadline_ns,
             trace_id,
+            parent_span_id,
             extensions
         ]
     );
@@ -942,7 +943,8 @@ fn compute_layout() -> String {
             kind_tail,
             extensions,
             secret_refs,
-            secret_refs_len
+            secret_refs_len,
+            settings_schema
         ]
     );
     record!(s, MechKindTailHead, [size, _reserved]);
@@ -963,6 +965,11 @@ fn compute_layout() -> String {
     );
     record!(s, MechOpenOut, [head, instance]);
     record!(s, MechGenIn, [head, generation]);
+    record!(
+        s,
+        MechRefreshIn,
+        [head, generation, settings, secrets, secrets_len]
+    );
     record!(s, MechTickIn, [head, now_ns]);
     record!(s, MechTickOut, [head, next_tick_ns]);
     record!(s, MechDriveIn, [head, driver]);

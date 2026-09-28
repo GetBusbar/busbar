@@ -158,8 +158,10 @@ pub struct InHead {
     pub ticket: Ticket,
     /// The deadline, on the kernel's coarse clock (nanoseconds).
     pub deadline_ns: u64,
-    /// The trace id.
-    pub trace_id: u64,
+    /// The W3C trace id, 16 bytes as `traceparent` carries it; all zero = none.
+    pub trace_id: [u8; 16],
+    /// The W3C parent span id; `0` = none.
+    pub parent_span_id: u64,
     /// The extensions blob every op carries (the shared mechanism); absent unless a pending field exists.
     pub extensions: Blob,
 }
@@ -219,7 +221,9 @@ pub struct Envelope {
     pub diags_len: usize,
 }
 
-/// The head of every `out` of every kind. Host-owned; the host initialises it before the call.
+/// The head of every `out` of every kind. Host-owned. THE HOST ZEROES THE WHOLE `out` BEFORE EVERY
+/// CALL (no template): an `out` the plugin never wrote reads `outcome` [`Outcome::Fault`] (`0`) and
+/// every tail field as absent.
 ///
 /// MEMORY, FOUR CLASSES (the design: plugin-owned memory is valid to its next refresh generation):
 /// (i) REQUEST-PATH RESULTS go into HOST-owned buffers the kind's `in`/`out` names as pointer +

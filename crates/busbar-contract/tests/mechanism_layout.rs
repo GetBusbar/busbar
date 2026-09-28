@@ -14,8 +14,8 @@ use busbar_contract::abi::mechanism::call::{
 };
 use busbar_contract::abi::mechanism::door::{Door, KindTailHead, MetricFamily, Statement};
 use busbar_contract::abi::mechanism::lifecycle::{
-    CancelIn, CancelOut, DriveIn, GenIn, OpenIn, OpenOut, OpsHead, ReleaseIn, TickIn, TickOut,
-    ValidateIn,
+    CancelIn, CancelOut, DriveIn, GenIn, OpenIn, OpenOut, OpsHead, RefreshIn, ReleaseIn, TickIn,
+    TickOut, ValidateIn,
 };
 use busbar_contract::abi::mechanism::ticket::{CompletionHandle, HostCtx, HostTables, Ticket};
 use busbar_contract::abi::{auth, export, hook, plane, secret, store, transport};
@@ -44,7 +44,7 @@ fn the_call_shape_types_have_their_stated_layout() {
     pin!(Blob, 24, 8, [ptr = 0, len = 8, fmt = 16, flags = 20]);
     pin!(
         InHead,
-        72,
+        88,
         8,
         [
             size = 0,
@@ -56,7 +56,8 @@ fn the_call_shape_types_have_their_stated_layout() {
             ticket = 24,
             deadline_ns = 32,
             trace_id = 40,
-            extensions = 48
+            parent_span_id = 56,
+            extensions = 64
         ]
     );
     pin!(
@@ -133,7 +134,7 @@ fn the_door_and_the_statement_have_their_stated_layout() {
     );
     pin!(
         Statement,
-        128,
+        152,
         8,
         [
             size = 0,
@@ -149,7 +150,8 @@ fn the_door_and_the_statement_have_their_stated_layout() {
             kind_tail = 80,
             extensions = 88,
             secret_refs = 112,
-            secret_refs_len = 120
+            secret_refs_len = 120,
+            settings_schema = 128
         ]
     );
 }
@@ -193,33 +195,45 @@ fn the_lifecycle_has_its_stated_layout() {
             close = 72
         ]
     );
-    pin!(ValidateIn, 96, 8, [head = 0, settings = 72]);
+    pin!(ValidateIn, 112, 8, [head = 0, settings = 88]);
     pin!(
         OpenIn,
-        128,
+        144,
         8,
         [
             head = 0,
-            host = 72,
-            settings = 80,
-            secrets = 104,
-            secrets_len = 112,
-            generation = 120
+            host = 88,
+            settings = 96,
+            secrets = 120,
+            secrets_len = 128,
+            generation = 136
         ]
     );
     pin!(OpenOut, 104, 8, [head = 0, instance = 96]);
-    pin!(GenIn, 80, 8, [head = 0, generation = 72]);
-    pin!(TickIn, 80, 8, [head = 0, now_ns = 72]);
+    pin!(GenIn, 96, 8, [head = 0, generation = 88]);
+    pin!(
+        RefreshIn,
+        136,
+        8,
+        [
+            head = 0,
+            generation = 88,
+            settings = 96,
+            secrets = 120,
+            secrets_len = 128
+        ]
+    );
+    pin!(TickIn, 96, 8, [head = 0, now_ns = 88]);
     pin!(TickOut, 104, 8, [head = 0, next_tick_ns = 96]);
-    pin!(DriveIn, 80, 8, [head = 0, driver = 72]);
-    pin!(CancelIn, 80, 8, [head = 0, ticket = 72]);
+    pin!(DriveIn, 96, 8, [head = 0, driver = 88]);
+    pin!(CancelIn, 96, 8, [head = 0, ticket = 88]);
     pin!(
         CancelOut,
         104,
         8,
         [head = 0, disposition = 96, _reserved = 100]
     );
-    pin!(ReleaseIn, 80, 8, [head = 0, lease = 72]);
+    pin!(ReleaseIn, 96, 8, [head = 0, lease = 88]);
 }
 
 #[test]
