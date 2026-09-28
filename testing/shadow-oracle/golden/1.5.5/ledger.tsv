@@ -706,6 +706,13 @@ admin.ops|PutIdentityProvidersName|not-found	PASS	HTTP 200; usage Δ {}
 admin.ops|PutIdentityProvidersName|ok	PASS	HTTP 200; usage Δ {}	
 admin.ops|PutIdentityProvidersName|unauth	PASS	HTTP 401; usage Δ {}	
 admin.ops|admin-token|wrong-destination	PASS	HTTP 401; usage Δ {}	
+admin.plugins|type-auth	PASS	HTTP 200; usage Δ {}	
+admin.plugins|type-bogus	PASS	HTTP 400; usage Δ {}	
+admin.plugins|type-export	PASS	HTTP 400; usage Δ {}	
+admin.plugins|type-hooks	PASS	HTTP 200; usage Δ {}	
+admin.plugins|type-missing	PASS	HTTP 400; usage Δ {}	
+admin.plugins|type-secret	PASS	HTTP 200; usage Δ {}	
+admin.plugins|type-store	PASS	HTTP 200; usage Δ {}	
 auth.lifecycle|key-expiry	PASS	script key-expiry.sh: status 0	
 auth.lifecycle|key-revoke	PASS	script key-revoke.sh: status 0	
 auth.lifecycle|key-rotate	PASS	script key-rotate.sh: status 0	
@@ -1168,6 +1175,22 @@ documented|readme|six-protocols|openai-chat	PASS	HTTP 200; usage Δ {"requests":
 documented|readme|six-protocols|openai-responses	PASS	HTTP 200; usage Δ {"requests":1,"spend_cents":250,"tokens":18}	
 documented|readme|tls-mtls	PASS	script documented-tls.sh: status 0	
 documented|readme|validate-ci	PASS	exit 0; ok: config valid — 6 provider(s), 9 model(s), 7 pool(s)   	
+egress.auth|cred-identity|anthropic	PASS	capture	
+egress.auth|cred-identity|bedrock	PASS	capture	
+egress.auth|cred-identity|cohere	PASS	capture	
+egress.auth|cred-identity|gemini	PASS	capture	
+egress.auth|cred-identity|openai	PASS	capture	
+egress.auth|cred-identity|openai-api-key	PASS	capture	
+egress.auth|cred-identity|responses	PASS	capture	
+egress.auth|h2|bearer	PASS	capture	
+egress.auth|jwt-bearer|mint-refresh	PASS	capture	
+egress.auth|login-hop|oidc	PASS	capture	
+egress.auth|oauth-cc|mint-refresh	PASS	capture	
+egress.auth|sigv4|session-token	PASS	capture	
+egress.fetch|plugins|url	PASS	capture	
+export|prometheus|raw	PASS	capture	
+export|request-log-file|jsonl	PASS	capture	
+export|request-log-webhook|loopback-refused	PASS	capture	
 hazard|no-data-dir|files	PASS	script hazard-no-data-dir.sh: status 0	
 hazard|no-data-dir|logs	PASS	script hazard-no-data-dir.sh: status 0	
 hooks|admin-list	PASS	HTTP 200; usage Δ {}	
@@ -2280,6 +2303,7 @@ neutrality|routes|stats	PASS	HTTP 200; usage Δ {}
 neutrality|routes|v1-models	PASS	HTTP 200; usage Δ {}	
 neutrality|routes|voice-shaped-404	PASS	HTTP 404; usage Δ {}	
 neutrality|stats-idle-zero	PASS	HTTP 200; usage Δ {}	
+ops.raw|header-order	PASS	capture	
 ops.scrape|healthz|admin	PASS	HTTP 200; usage Δ {}	
 ops.scrape|healthz|data	PASS	HTTP 200; usage Δ {}	
 ops.scrape|metricshooks|key	PASS	HTTP 200; usage Δ {}	
@@ -2311,6 +2335,9 @@ plugins.store-persist|store-sqlite	PASS	script store-persist.sh: status 0
 plugins.store-persist|store-valkey	PASS	script store-persist.sh: status 0	
 queue|serve|n3	PASS	N=3; statuses [200,200,200]	
 queue|timeout|n2	PASS	N=2; statuses [200,503]	
+route.529|direct|anthropic	PASS	capture	
+route.529|failover|primary	PASS	capture	
+route.cheapest|card-swap	PASS	capture	
 route.failover|fb|all-down	PASS	HTTP 503; usage Δ {"requests":1}	
 route.failover|fb|member-401	PASS	HTTP 401; usage Δ {"requests":1}	
 route.failover|fb|member-down	PASS	HTTP 200; usage Δ {"requests":1,"spend_cents":250,"tokens":18}	
@@ -2327,6 +2354,17 @@ route.failover|fo|primary-slow	PASS	HTTP 200; usage Δ {"requests":1,"spend_cent
 route.failover|fo|second-request-after-trip	PASS	HTTP 200; usage Δ {"requests":1,"spend_cents":250,"tokens":18}	
 route.failover|lb|member-down	PASS	HTTP 503; usage Δ {"requests":1}	
 route.failover|lb|up	PASS	HTTP 200; usage Δ {"requests":1,"spend_cents":250,"tokens":18}	
+store.boot|postgres|key-value	PASS	capture	
+store.boot|postgres|localhost	PASS	capture	
+store.boot|postgres|loopback	PASS	capture	
+store.boot|postgres|loopback-validate	PASS	capture	
+store.boot|postgres|multi-host	PASS	capture	
+store.boot|postgres|private-validate	PASS	capture	
+store.boot|postgres|sslmode-disable	PASS	capture	
+store.boot|postgres|sslmode-require	PASS	capture	
+store.boot|postgres|url-options	PASS	capture	
+store.boot|valkey|loopback-validate	PASS	capture	
+store.boot|valkey|private-validate	PASS	capture	
 teller|admit-refusal	PASS	script teller-admit-refusal.sh: status 0	
 teller|audit-record	PASS	script teller-audit-record.sh: status 0	
 teller|authenticate-refusal	PASS	script teller-authenticate-refusal.sh: status 0	
@@ -2334,3 +2372,11 @@ teller|exit-terminal	PASS	script teller-exit-terminal.sh: status 0
 teller|meter-row	PASS	script teller-meter-row.sh: status 0	
 teller|route-failover	PASS	script teller-route-failover.sh: status 0	
 teller|verify-refusal	PASS	script teller-verify-refusal.sh: status 0	
+webrequest|gate|abstain	PASS	capture	
+webrequest|gate|order	PASS	capture	
+webrequest|gate|prompt-ro	PASS	capture	
+webrequest|gate|reject	PASS	capture	
+webrequest|gate|sidecar-500-nothing	PASS	capture	
+webrequest|gate|sidecar-500-reject	PASS	capture	
+webrequest|tap|notify	PASS	capture	
+webrequest|transform|rewrite	PASS	capture	
