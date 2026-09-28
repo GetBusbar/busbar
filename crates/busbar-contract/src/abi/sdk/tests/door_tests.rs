@@ -1059,3 +1059,243 @@ fn a_hook_plugin_wires_every_kind_op() {
         assert!(s.is_some(), "hook kind op {i} is NULL");
     }
 }
+
+mod store_plugin {
+    //! A REAL kind table: every store kind op wired to the structs `abi::store` states for
+    //! it.
+    use super::*;
+    use crate::abi::store::{AddUsageBatchIn, AddUsageIn, AppendBatchIn, AppendPlaneRecordIn};
+    use crate::abi::store::{BlobIn, CountOut, GetPlaneRecordIn, HeadOut, HeadsOut};
+    use crate::abi::store::{HostBytesOut, HostListOut, IdIn, IdReasonIn, KeyWithCredentialIn};
+    use crate::abi::store::{KindBeforeIn, KindIdIn, LeasedBlobOut, LeasedListOut};
+    use crate::abi::store::{LeasedStrListOut, ListPlaneRecordsIn, OpBlobIn, OpBlobsIn};
+    use crate::abi::store::{PutUsageIn, RecordGetIn, RecordPutIn, RecordScanIn, ReserveIn};
+    use crate::abi::store::{ReserveOut, SessionPutIn, SessionsForIn, SliceReleaseIn};
+    use crate::abi::store::{SliceReleaseOut, TokenIn, U64In, UpsertPlaneRecordIn, VerdictOut};
+    use crate::abi::store::{WindowCapsIn, WindowIn};
+
+    macro_rules! answers {
+        ($name:ident, $in:ty, $out:ty, $outcome:expr) => {
+            pub struct $name;
+            impl Slot for $name {
+                type In = $in;
+                type Out = $out;
+                fn call(_: *mut c_void, _: &$in, _: &mut $out) -> Outcome {
+                    $outcome
+                }
+            }
+        };
+    }
+    answers!(PutKey, BlobIn, OutHead, Outcome::Ready);
+    answers!(GetKey, IdIn, LeasedBlobOut, Outcome::Refused);
+    answers!(ListKeys, InHead, LeasedListOut, Outcome::Failed);
+    answers!(DeleteKey, IdIn, OutHead, Outcome::Ready);
+    answers!(ScrubKey, IdIn, OutHead, Outcome::Refused);
+    answers!(ListKeysSince, U64In, LeasedListOut, Outcome::Failed);
+    answers!(GetUsage, WindowIn, LeasedBlobOut, Outcome::Ready);
+    answers!(PutUsage, PutUsageIn, OutHead, Outcome::Refused);
+    answers!(AddUsage, AddUsageIn, OutHead, Outcome::Failed);
+    answers!(AddMetering, OpBlobIn, OutHead, Outcome::Ready);
+    answers!(ListMetering, U64In, LeasedListOut, Outcome::Refused);
+    answers!(PurgeWindowsBefore, U64In, CountOut, Outcome::Failed);
+    answers!(PurgeMeteringBefore, IdIn, CountOut, Outcome::Ready);
+    answers!(PutCredential, BlobIn, OutHead, Outcome::Refused);
+    answers!(
+        PutKeyWithCredential,
+        KeyWithCredentialIn,
+        OutHead,
+        Outcome::Failed
+    );
+    answers!(ListCredentials, IdIn, LeasedListOut, Outcome::Ready);
+    answers!(
+        LookupCredentialSecret,
+        KindIdIn,
+        LeasedBlobOut,
+        Outcome::Refused
+    );
+    answers!(RevokeCredential, IdReasonIn, OutHead, Outcome::Failed);
+    answers!(ListCredentialsSince, U64In, LeasedListOut, Outcome::Ready);
+    answers!(AppendAudit, OpBlobIn, OutHead, Outcome::Refused);
+    answers!(ListAudit, InHead, LeasedListOut, Outcome::Failed);
+    answers!(AddDenylist, IdReasonIn, OutHead, Outcome::Ready);
+    answers!(ListDenylist, InHead, LeasedStrListOut, Outcome::Refused);
+    answers!(ListAuditTail, U64In, LeasedListOut, Outcome::Failed);
+    answers!(
+        UpsertPlaneRecord,
+        UpsertPlaneRecordIn,
+        OutHead,
+        Outcome::Ready
+    );
+    answers!(
+        GetPlaneRecord,
+        GetPlaneRecordIn,
+        HostBytesOut,
+        Outcome::Refused
+    );
+    answers!(
+        AppendPlaneRecord,
+        AppendPlaneRecordIn,
+        OutHead,
+        Outcome::Failed
+    );
+    answers!(
+        ListPlaneRecords,
+        ListPlaneRecordsIn,
+        HostListOut,
+        Outcome::Ready
+    );
+    answers!(
+        ListPlaneRecordParents,
+        IdIn,
+        LeasedStrListOut,
+        Outcome::Refused
+    );
+    answers!(
+        PurgePlaneRecordsBefore,
+        KindBeforeIn,
+        CountOut,
+        Outcome::Failed
+    );
+    answers!(DeletePlaneRecord, KindIdIn, OutHead, Outcome::Ready);
+    answers!(RedeemPlaneToken, TokenIn, VerdictOut, Outcome::Refused);
+    answers!(PlaneTokenLive, TokenIn, VerdictOut, Outcome::Failed);
+    answers!(AppendBatch, AppendBatchIn, HeadOut, Outcome::Ready);
+    answers!(Reserve, ReserveIn, ReserveOut, Outcome::Refused);
+    answers!(
+        SliceRelease,
+        SliceReleaseIn,
+        SliceReleaseOut,
+        Outcome::Failed
+    );
+    answers!(Heads, InHead, HeadsOut, Outcome::Ready);
+    answers!(SessionPut, SessionPutIn, OutHead, Outcome::Refused);
+    answers!(SessionRemove, U64In, OutHead, Outcome::Failed);
+    answers!(SessionsFor, SessionsForIn, HostListOut, Outcome::Ready);
+    answers!(RecordPut, RecordPutIn, OutHead, Outcome::Refused);
+    answers!(RecordGet, RecordGetIn, HostBytesOut, Outcome::Failed);
+    answers!(RecordScan, RecordScanIn, HostListOut, Outcome::Ready);
+    answers!(AddUsageBatch, AddUsageBatchIn, OutHead, Outcome::Refused);
+    answers!(AddMeteringBatch, OpBlobsIn, OutHead, Outcome::Failed);
+    answers!(AppendAuditBatch, OpBlobsIn, OutHead, Outcome::Ready);
+    answers!(WindowCaps, WindowCapsIn, OutHead, Outcome::Ready);
+
+    crate::plugin_door! {
+        ops: crate::abi::store::Ops,
+        statement: crate::abi::sdk::door::statement("sdk-door-store", "0.0.1", 1),
+        lifecycle: {
+            validate: Validate, open: Open, refresh: Refresh, retire: Retire, tick: Tick,
+            drive: Drive, cancel: Cancel, release: Release, close: Close,
+        },
+        kind_ops: {
+            put_key: PutKey, get_key: GetKey, list_keys: ListKeys, delete_key: DeleteKey,
+            scrub_key: ScrubKey, list_keys_since: ListKeysSince, get_usage: GetUsage,
+            put_usage: PutUsage, add_usage: AddUsage, add_metering: AddMetering,
+            list_metering: ListMetering, purge_windows_before: PurgeWindowsBefore,
+            purge_metering_before: PurgeMeteringBefore, put_credential: PutCredential,
+            put_key_with_credential: PutKeyWithCredential, list_credentials: ListCredentials,
+            lookup_credential_secret: LookupCredentialSecret,
+            revoke_credential: RevokeCredential, list_credentials_since: ListCredentialsSince,
+            append_audit: AppendAudit, list_audit: ListAudit, add_denylist: AddDenylist,
+            list_denylist: ListDenylist, list_audit_tail: ListAuditTail,
+            upsert_plane_record: UpsertPlaneRecord, get_plane_record: GetPlaneRecord,
+            append_plane_record: AppendPlaneRecord, list_plane_records: ListPlaneRecords,
+            list_plane_record_parents: ListPlaneRecordParents,
+            purge_plane_records_before: PurgePlaneRecordsBefore,
+            delete_plane_record: DeletePlaneRecord, redeem_plane_token: RedeemPlaneToken,
+            plane_token_live: PlaneTokenLive, append_batch: AppendBatch, reserve: Reserve,
+            slice_release: SliceRelease, heads: Heads, session_put: SessionPut,
+            session_remove: SessionRemove, sessions_for: SessionsFor, record_put: RecordPut,
+            record_get: RecordGet, record_scan: RecordScan, add_usage_batch: AddUsageBatch,
+            add_metering_batch: AddMeteringBatch, append_audit_batch: AppendAuditBatch,
+            window_caps: WindowCaps
+        },
+    }
+}
+
+#[test]
+fn a_store_plugin_wires_every_kind_op() {
+    use crate::abi::store::{slot as store_slot, BlobIn, Ops, WindowCapsIn};
+    // SAFETY: the macro's `'static` door and its store table.
+    let d = unsafe { &*store_plugin::door() };
+    let t = unsafe { &*d.ops.cast::<Ops>() };
+    assert_eq!(d.kind, KindCode::Store as u32);
+    assert_eq!(d.kind_abi, crate::abi::store::ABI_VERSION);
+    assert_eq!(t.head.slots, crate::abi::store::TABLE_SLOTS);
+    assert_eq!(t.head.size as usize, size_of::<Ops>());
+
+    // `put_key`, the first kind slot, answers only its own index, reading a whole `BlobIn`.
+    // SAFETY: `BlobIn` is plain data; all-zero is valid.
+    let mut input: BlobIn = unsafe { std::mem::zeroed() };
+    input.head = in_head::<BlobIn>(store_slot::PUT_KEY, Ticket::NONE);
+    // SAFETY: as above.
+    let mut out: OutHead = prefilled_head(size_of::<OutHead>());
+    assert_eq!(call(t.put_key, &input, &mut out), Outcome::Ready);
+    assert_eq!(out.outcome.outcome(), Outcome::Ready);
+    input.head.op = store_slot::GET_KEY;
+    out = prefilled_head(size_of::<OutHead>());
+    assert_eq!(call(t.put_key, &input, &mut out), Outcome::Fault);
+
+    // `window_caps`, the last kind slot, likewise.
+    // SAFETY: plain data; all-zero is valid.
+    let mut input: WindowCapsIn = unsafe { std::mem::zeroed() };
+    input.head = in_head::<WindowCapsIn>(store_slot::WINDOW_CAPS, Ticket::NONE);
+    // SAFETY: as above.
+    let mut out: OutHead = prefilled_head(size_of::<OutHead>());
+    assert_eq!(call(t.window_caps, &input, &mut out), Outcome::Ready);
+    assert_eq!(out.outcome.outcome(), Outcome::Ready);
+
+    for (i, s) in [
+        t.put_key,
+        t.get_key,
+        t.list_keys,
+        t.delete_key,
+        t.scrub_key,
+        t.list_keys_since,
+        t.get_usage,
+        t.put_usage,
+        t.add_usage,
+        t.add_metering,
+        t.list_metering,
+        t.purge_windows_before,
+        t.purge_metering_before,
+        t.put_credential,
+        t.put_key_with_credential,
+        t.list_credentials,
+        t.lookup_credential_secret,
+        t.revoke_credential,
+        t.list_credentials_since,
+        t.append_audit,
+        t.list_audit,
+        t.add_denylist,
+        t.list_denylist,
+        t.list_audit_tail,
+        t.upsert_plane_record,
+        t.get_plane_record,
+        t.append_plane_record,
+        t.list_plane_records,
+        t.list_plane_record_parents,
+        t.purge_plane_records_before,
+        t.delete_plane_record,
+        t.redeem_plane_token,
+        t.plane_token_live,
+        t.append_batch,
+        t.reserve,
+        t.slice_release,
+        t.heads,
+        t.session_put,
+        t.session_remove,
+        t.sessions_for,
+        t.record_put,
+        t.record_get,
+        t.record_scan,
+        t.add_usage_batch,
+        t.add_metering_batch,
+        t.append_audit_batch,
+        t.window_caps,
+    ]
+    .iter()
+    .enumerate()
+    {
+        assert!(s.is_some(), "store kind op {i} is NULL");
+    }
+}

@@ -476,3 +476,202 @@ store_slots! {
     46 WINDOW_CAPS window_caps WindowCapsIn, OutHead, Off, Call, HostCap,
         "`window_caps` (m3-inputs ARCHITECT ruling \"window caps\"). In [`WindowCapsIn`], out [`OutHead`]. An upsert by (cell, window_start), newest `config_gen` wins; atomic per push (\"window caps\" correction (1)).";
 }
+
+// THE SDK's VIEW OF THE STORE TABLE (`abi::sdk::door`): each kind op's `in`/`out`, stated
+// next to the table, so `plugin_door!` refuses a store plugin that wires a kind op to another
+// op's structs. Every struct named here is plain data (integers, raw pointers, `AbiStr`/`Blob`,
+// nested plain structs): every bit pattern is a valid value, which is what `AbiIn`/`AbiOut`
+// promise.
+//
+// SAFETY (all below): `#[repr(C)]`, leading with `InHead`/`OutHead`, plain data only.
+unsafe impl super::sdk::door::AbiIn for BlobIn {}
+unsafe impl super::sdk::door::AbiIn for IdIn {}
+unsafe impl super::sdk::door::AbiIn for U64In {}
+unsafe impl super::sdk::door::AbiIn for WindowIn {}
+unsafe impl super::sdk::door::AbiIn for PutUsageIn {}
+unsafe impl super::sdk::door::AbiIn for AddUsageIn {}
+unsafe impl super::sdk::door::AbiIn for OpBlobIn {}
+unsafe impl super::sdk::door::AbiIn for KeyWithCredentialIn {}
+unsafe impl super::sdk::door::AbiIn for KindIdIn {}
+unsafe impl super::sdk::door::AbiIn for IdReasonIn {}
+unsafe impl super::sdk::door::AbiIn for UpsertPlaneRecordIn {}
+unsafe impl super::sdk::door::AbiIn for GetPlaneRecordIn {}
+unsafe impl super::sdk::door::AbiIn for AppendPlaneRecordIn {}
+unsafe impl super::sdk::door::AbiIn for ListPlaneRecordsIn {}
+unsafe impl super::sdk::door::AbiIn for KindBeforeIn {}
+unsafe impl super::sdk::door::AbiIn for TokenIn {}
+unsafe impl super::sdk::door::AbiIn for AppendBatchIn {}
+unsafe impl super::sdk::door::AbiIn for ReserveIn {}
+unsafe impl super::sdk::door::AbiIn for SliceReleaseIn {}
+unsafe impl super::sdk::door::AbiIn for SessionPutIn {}
+unsafe impl super::sdk::door::AbiIn for SessionsForIn {}
+unsafe impl super::sdk::door::AbiIn for RecordPutIn {}
+unsafe impl super::sdk::door::AbiIn for RecordGetIn {}
+unsafe impl super::sdk::door::AbiIn for RecordScanIn {}
+unsafe impl super::sdk::door::AbiIn for AddUsageBatchIn {}
+unsafe impl super::sdk::door::AbiIn for OpBlobsIn {}
+unsafe impl super::sdk::door::AbiIn for WindowCapsIn {}
+unsafe impl super::sdk::door::AbiOut for LeasedBlobOut {}
+unsafe impl super::sdk::door::AbiOut for LeasedListOut {}
+unsafe impl super::sdk::door::AbiOut for CountOut {}
+unsafe impl super::sdk::door::AbiOut for LeasedStrListOut {}
+unsafe impl super::sdk::door::AbiOut for HostBytesOut {}
+unsafe impl super::sdk::door::AbiOut for HostListOut {}
+unsafe impl super::sdk::door::AbiOut for VerdictOut {}
+unsafe impl super::sdk::door::AbiOut for HeadOut {}
+unsafe impl super::sdk::door::AbiOut for ReserveOut {}
+unsafe impl super::sdk::door::AbiOut for SliceReleaseOut {}
+unsafe impl super::sdk::door::AbiOut for HeadsOut {}
+
+/// Each store kind op's `in`/`out` for [`plugin_door!`](crate::plugin_door), per [`OPS`]' table.
+/// A plugin wiring a slot to another op's structs does not compile:
+///
+/// ```compile_fail,E0271
+/// use busbar_contract::abi::store::{AddUsageBatchIn, AddUsageIn, AppendBatchIn};
+/// use busbar_contract::abi::store::{AppendPlaneRecordIn, BlobIn, CountOut, GetPlaneRecordIn};
+/// use busbar_contract::abi::store::{HeadOut, HeadsOut, HostBytesOut, HostListOut, IdIn};
+/// use busbar_contract::abi::store::{IdReasonIn, InHead, KeyWithCredentialIn, KindBeforeIn};
+/// use busbar_contract::abi::store::{KindIdIn, LeasedBlobOut, LeasedListOut, LeasedStrListOut};
+/// use busbar_contract::abi::store::{ListPlaneRecordsIn, OpBlobIn, OpBlobsIn, OutHead, PutUsageIn};
+/// use busbar_contract::abi::store::{RecordGetIn, RecordPutIn, RecordScanIn, ReserveIn};
+/// use busbar_contract::abi::store::{ReserveOut, SessionPutIn, SessionsForIn, SliceReleaseIn};
+/// use busbar_contract::abi::store::{SliceReleaseOut, TokenIn, U64In, UpsertPlaneRecordIn};
+/// use busbar_contract::abi::store::{VerdictOut, WindowCapsIn, WindowIn};
+/// use busbar_contract::abi::mechanism::call::Outcome;
+/// use busbar_contract::abi::mechanism::lifecycle::*;
+/// use busbar_contract::abi::sdk::door::Slot;
+/// # use std::ffi::c_void;
+/// # macro_rules! ready { ($n:ident, $i:ty, $o:ty) => {
+/// #     struct $n;
+/// #     impl Slot for $n { type In = $i; type Out = $o;
+/// #         fn call(_: *mut c_void, _: &$i, _: &mut $o) -> Outcome { Outcome::Ready } }
+/// # } }
+/// # ready!(V, ValidateIn, OutHead); ready!(Op_, OpenIn, OpenOut); ready!(Rf, RefreshIn, OutHead);
+/// # ready!(Rt, GenIn, OutHead); ready!(Tk, TickIn, TickOut); ready!(Dr, DriveIn, OutHead);
+/// # ready!(Cn, CancelIn, CancelOut); ready!(Rl, ReleaseIn, OutHead); ready!(Cl, InHead, OutHead);
+/// # ready!(GetKey, IdIn, LeasedBlobOut); ready!(ListKeys, InHead, LeasedListOut);
+/// # ready!(DeleteKey, IdIn, OutHead); ready!(ScrubKey, IdIn, OutHead);
+/// # ready!(ListKeysSince, U64In, LeasedListOut); ready!(GetUsage, WindowIn, LeasedBlobOut);
+/// # ready!(PutUsage, PutUsageIn, OutHead); ready!(AddUsage, AddUsageIn, OutHead);
+/// # ready!(AddMetering, OpBlobIn, OutHead); ready!(ListMetering, U64In, LeasedListOut);
+/// # ready!(PurgeWindowsBefore, U64In, CountOut); ready!(PurgeMeteringBefore, IdIn, CountOut);
+/// # ready!(PutCredential, BlobIn, OutHead);
+/// # ready!(PutKeyWithCredential, KeyWithCredentialIn, OutHead);
+/// # ready!(ListCredentials, IdIn, LeasedListOut);
+/// # ready!(LookupCredentialSecret, KindIdIn, LeasedBlobOut);
+/// # ready!(RevokeCredential, IdReasonIn, OutHead);
+/// # ready!(ListCredentialsSince, U64In, LeasedListOut); ready!(AppendAudit, OpBlobIn, OutHead);
+/// # ready!(ListAudit, InHead, LeasedListOut); ready!(AddDenylist, IdReasonIn, OutHead);
+/// # ready!(ListDenylist, InHead, LeasedStrListOut);
+/// # ready!(ListAuditTail, U64In, LeasedListOut);
+/// # ready!(UpsertPlaneRecord, UpsertPlaneRecordIn, OutHead);
+/// # ready!(GetPlaneRecord, GetPlaneRecordIn, HostBytesOut);
+/// # ready!(AppendPlaneRecord, AppendPlaneRecordIn, OutHead);
+/// # ready!(ListPlaneRecords, ListPlaneRecordsIn, HostListOut);
+/// # ready!(ListPlaneRecordParents, IdIn, LeasedStrListOut);
+/// # ready!(PurgePlaneRecordsBefore, KindBeforeIn, CountOut);
+/// # ready!(DeletePlaneRecord, KindIdIn, OutHead);
+/// # ready!(RedeemPlaneToken, TokenIn, VerdictOut); ready!(PlaneTokenLive, TokenIn, VerdictOut);
+/// # ready!(AppendBatch, AppendBatchIn, HeadOut); ready!(Reserve, ReserveIn, ReserveOut);
+/// # ready!(SliceRelease, SliceReleaseIn, SliceReleaseOut); ready!(Heads, InHead, HeadsOut);
+/// # ready!(SessionPut, SessionPutIn, OutHead); ready!(SessionRemove, U64In, OutHead);
+/// # ready!(SessionsFor, SessionsForIn, HostListOut); ready!(RecordPut, RecordPutIn, OutHead);
+/// # ready!(RecordGet, RecordGetIn, HostBytesOut);
+/// # ready!(RecordScan, RecordScanIn, HostListOut);
+/// # ready!(AddUsageBatch, AddUsageBatchIn, OutHead);
+/// # ready!(AddMeteringBatch, OpBlobsIn, OutHead); ready!(AppendAuditBatch, OpBlobsIn, OutHead);
+/// # ready!(WindowCaps, WindowCapsIn, OutHead);
+/// ready!(PutKey, IdIn, LeasedBlobOut); // `get_key`'s structs on `put_key`: refused
+/// busbar_contract::plugin_door! {
+///     ops: busbar_contract::abi::store::Ops,
+///     statement: busbar_contract::abi::sdk::door::statement("wrong", "0", 1),
+///     lifecycle: { validate: V, open: Op_, refresh: Rf, retire: Rt, tick: Tk, drive: Dr,
+///                  cancel: Cn, release: Rl, close: Cl },
+///     kind_ops: {
+///         put_key: PutKey, get_key: GetKey, list_keys: ListKeys, delete_key: DeleteKey,
+///         scrub_key: ScrubKey, list_keys_since: ListKeysSince, get_usage: GetUsage,
+///         put_usage: PutUsage, add_usage: AddUsage, add_metering: AddMetering,
+///         list_metering: ListMetering, purge_windows_before: PurgeWindowsBefore,
+///         purge_metering_before: PurgeMeteringBefore, put_credential: PutCredential,
+///         put_key_with_credential: PutKeyWithCredential, list_credentials: ListCredentials,
+///         lookup_credential_secret: LookupCredentialSecret,
+///         revoke_credential: RevokeCredential, list_credentials_since: ListCredentialsSince,
+///         append_audit: AppendAudit, list_audit: ListAudit, add_denylist: AddDenylist,
+///         list_denylist: ListDenylist, list_audit_tail: ListAuditTail,
+///         upsert_plane_record: UpsertPlaneRecord, get_plane_record: GetPlaneRecord,
+///         append_plane_record: AppendPlaneRecord, list_plane_records: ListPlaneRecords,
+///         list_plane_record_parents: ListPlaneRecordParents,
+///         purge_plane_records_before: PurgePlaneRecordsBefore,
+///         delete_plane_record: DeletePlaneRecord, redeem_plane_token: RedeemPlaneToken,
+///         plane_token_live: PlaneTokenLive, append_batch: AppendBatch, reserve: Reserve,
+///         slice_release: SliceRelease, heads: Heads, session_put: SessionPut,
+///         session_remove: SessionRemove, sessions_for: SessionsFor, record_put: RecordPut,
+///         record_get: RecordGet, record_scan: RecordScan, add_usage_batch: AddUsageBatch,
+///         add_metering_batch: AddMeteringBatch, append_audit_batch: AppendAuditBatch,
+///         window_caps: WindowCaps
+///     },
+/// }
+/// # fn main() { let _ = door(); }
+/// ```
+///
+/// With `PutKey` reading [`BlobIn`] and writing [`OutHead`] the same plugin
+/// compiles (`abi/sdk/tests/door_tests.rs`, `a_store_plugin_wires_every_kind_op`).
+macro_rules! kind_slots {
+    ($($slot:ident => $in:ty, $out:ty;)*) => {$(
+        // SAFETY: the structs `OPS`' table states for this slot.
+        unsafe impl super::sdk::door::KindSlot<{ slot::$slot }> for Ops {
+            type In = $in;
+            type Out = $out;
+        }
+    )*};
+}
+
+kind_slots! {
+    PUT_KEY => BlobIn, OutHead;
+    GET_KEY => IdIn, LeasedBlobOut;
+    LIST_KEYS => InHead, LeasedListOut;
+    DELETE_KEY => IdIn, OutHead;
+    SCRUB_KEY => IdIn, OutHead;
+    LIST_KEYS_SINCE => U64In, LeasedListOut;
+    GET_USAGE => WindowIn, LeasedBlobOut;
+    PUT_USAGE => PutUsageIn, OutHead;
+    ADD_USAGE => AddUsageIn, OutHead;
+    ADD_METERING => OpBlobIn, OutHead;
+    LIST_METERING => U64In, LeasedListOut;
+    PURGE_WINDOWS_BEFORE => U64In, CountOut;
+    PURGE_METERING_BEFORE => IdIn, CountOut;
+    PUT_CREDENTIAL => BlobIn, OutHead;
+    PUT_KEY_WITH_CREDENTIAL => KeyWithCredentialIn, OutHead;
+    LIST_CREDENTIALS => IdIn, LeasedListOut;
+    LOOKUP_CREDENTIAL_SECRET => KindIdIn, LeasedBlobOut;
+    REVOKE_CREDENTIAL => IdReasonIn, OutHead;
+    LIST_CREDENTIALS_SINCE => U64In, LeasedListOut;
+    APPEND_AUDIT => OpBlobIn, OutHead;
+    LIST_AUDIT => InHead, LeasedListOut;
+    ADD_DENYLIST => IdReasonIn, OutHead;
+    LIST_DENYLIST => InHead, LeasedStrListOut;
+    LIST_AUDIT_TAIL => U64In, LeasedListOut;
+    UPSERT_PLANE_RECORD => UpsertPlaneRecordIn, OutHead;
+    GET_PLANE_RECORD => GetPlaneRecordIn, HostBytesOut;
+    APPEND_PLANE_RECORD => AppendPlaneRecordIn, OutHead;
+    LIST_PLANE_RECORDS => ListPlaneRecordsIn, HostListOut;
+    LIST_PLANE_RECORD_PARENTS => IdIn, LeasedStrListOut;
+    PURGE_PLANE_RECORDS_BEFORE => KindBeforeIn, CountOut;
+    DELETE_PLANE_RECORD => KindIdIn, OutHead;
+    REDEEM_PLANE_TOKEN => TokenIn, VerdictOut;
+    PLANE_TOKEN_LIVE => TokenIn, VerdictOut;
+    APPEND_BATCH => AppendBatchIn, HeadOut;
+    RESERVE => ReserveIn, ReserveOut;
+    SLICE_RELEASE => SliceReleaseIn, SliceReleaseOut;
+    HEADS => InHead, HeadsOut;
+    SESSION_PUT => SessionPutIn, OutHead;
+    SESSION_REMOVE => U64In, OutHead;
+    SESSIONS_FOR => SessionsForIn, HostListOut;
+    RECORD_PUT => RecordPutIn, OutHead;
+    RECORD_GET => RecordGetIn, HostBytesOut;
+    RECORD_SCAN => RecordScanIn, HostListOut;
+    ADD_USAGE_BATCH => AddUsageBatchIn, OutHead;
+    ADD_METERING_BATCH => OpBlobsIn, OutHead;
+    APPEND_AUDIT_BATCH => OpBlobsIn, OutHead;
+    WINDOW_CAPS => WindowCapsIn, OutHead;
+}
