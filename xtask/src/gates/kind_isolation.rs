@@ -6328,11 +6328,13 @@ impl Gate for KindIsolationGate {
             // RE-TARGETED (item 89): this planted `busbar-plane-llm -> busbar-llm-codec`, which is
             // the llm plane reaching its OWN codec — the same instance, never cross-instance — and
             // the plant came back GREEN once the row's standing debt stopped hiding it. The claim
-            // is one plane reaching ANOTHER plane's half, so the plane is `mcp`.
+            // is one plane reaching ANOTHER plane's half, so the plane is `mcp`. R7 folded
+            // `busbar-llm-codec` into `busbar-plane-llm`, so the other plane's half the plant names
+            // is `busbar-plane-llm` now.
             manifest_plant(
                 "crates/busbar-plane-mcp",
                 "busbar-plane-mcp",
-                &["busbar-contract", "busbar-llm-codec"],
+                &["busbar-contract", "busbar-plane-llm"],
             ),
             &["cross-instance", "busbar-plane-mcp"],
         ));
