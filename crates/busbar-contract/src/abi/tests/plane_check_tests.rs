@@ -13,7 +13,8 @@ use crate::abi::host::conn::connector::{Need, DIRECTION_OUTBOUND, KEEP_RESPONSE_
 use crate::abi::mechanism::call::AbiStr;
 use crate::abi::mechanism::call::Outcome;
 use crate::abi::mechanism::call::Outcome::{Failed, Pending, Ready, Refused};
-use crate::abi::mechanism::check::fault;
+use crate::abi::mechanism::check::{check_needs, fault};
+use crate::abi::mechanism::door::{Section, SECTION_DECLARING, SECTION_REQUIRED};
 use crate::abi::plane::*;
 use crate::caps::ReasonCode;
 
@@ -611,8 +612,8 @@ fn a_tail_with_unknown_bits_or_no_ingress_is_fault() {
 #[test]
 fn a_tail_list_or_string_counted_with_a_null_pointer_is_fault() {
     let mut t = tail();
-    t.needs_len = 1;
-    assert_eq!(check_tail(&t), f(Rule::NullWithCount, "tail.needs"));
+    t.record_kinds_len = 1;
+    assert_eq!(check_tail(&t), f(Rule::NullWithCount, "tail.record_kinds"));
     let mut t = tail();
     t.route_cost_len = 1;
     assert_eq!(check_tail(&t), f(Rule::NullWithCount, "tail.route_cost"));

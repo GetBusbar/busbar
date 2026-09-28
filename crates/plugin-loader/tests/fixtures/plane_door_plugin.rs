@@ -23,17 +23,17 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use busbar_contract::abi::hook::signal;
 use busbar_contract::abi::mechanism::call::{AbiStr, InHead, OutHead, Outcome};
-use busbar_contract::abi::mechanism::door::{KindTailHead, Statement};
+use busbar_contract::abi::mechanism::door::{KindTailHead, Section, Statement, SECTION_DECLARING};
 use busbar_contract::abi::mechanism::lifecycle::{
     CancelIn, CancelOut, GenIn, RefreshIn, ReleaseIn, TickIn, TickOut, ValidateIn,
 };
 use busbar_contract::abi::plane::{
     ArriveIn, ArriveOut, BillableClass, OnPieceIn, OnPieceOut, OpClass, OutField, PlaneDriveIn,
     PlaneDriveOut, PlaneOpenIn, PlaneOpenOut, PlaneRefreshOut, PlaneSnapshot, PlaneTail, ProjectIn,
-    ProjectOut, RecordWrite, RefusalIn, RefusalOut, Section, ServeIn, ServeOut, UnitCount,
+    ProjectOut, RecordWrite, RefusalIn, RefusalOut, ServeIn, ServeOut, UnitCount,
     CANCEL_ABORTED, EMIT_DONE, EMIT_TO_FAR_END, FROM_CALLER, FROM_FAR_END, FROM_KERNEL,
     INGRESS_DUPLEX_SESSION, INGRESS_REQUEST_RESPONSE, MARK_GATE_REJECTED, PIECE_LAST,
-    PRINCIPAL_NONE, RECORD_PUT, REFUSAL_GATE, SECTION_DECLARING, SHAPE_PIECEWISE, UNITS_ESTIMATED,
+    PRINCIPAL_NONE, RECORD_PUT, REFUSAL_GATE, SHAPE_PIECEWISE, UNITS_ESTIMATED,
     UNITS_REPORTED, VERDICT_OK,
 };
 use busbar_contract::abi::sdk::door::{abi_str, statement};
@@ -62,7 +62,8 @@ const CLASSES: &[BillableClass] = &[BillableClass {
 }];
 const RECORD_KINDS: &[AbiStr] = &[abi_str("last")];
 
-/// The Statement tail: one of each list the per-call indices name.
+/// The Statement tail: one of each list the per-call indices name. Its sections are the
+/// Statement's own ([`SECTIONS`]).
 const TAIL: &PlaneTail = &PlaneTail {
     head: KindTailHead {
         size: size_of::<PlaneTail>() as u32,
@@ -80,8 +81,6 @@ const TAIL: &PlaneTail = &PlaneTail {
     signing_domain: NONE,
     signing_kid_prefix: NONE,
     cli_help: NONE,
-    sections: SECTIONS.as_ptr(),
-    sections_len: SECTIONS.len(),
     dialects: DIALECTS.as_ptr(),
     dialects_len: DIALECTS.len(),
     dialect_auth: ptr::null(),
@@ -98,8 +97,6 @@ const TAIL: &PlaneTail = &PlaneTail {
     fee_units_len: 0,
     record_kinds: RECORD_KINDS.as_ptr(),
     record_kinds_len: RECORD_KINDS.len(),
-    needs: ptr::null(),
-    needs_len: 0,
     egress_targets: ptr::null(),
     egress_targets_len: 0,
     record_chains: ptr::null(),
@@ -418,6 +415,8 @@ busbar_contract::plugin_door! {
     ops: busbar_contract::abi::plane::Ops,
     statement: Statement {
         kind_tail: ptr::from_ref(TAIL).cast::<KindTailHead>(),
+        sections: SECTIONS.as_ptr(),
+        sections_len: SECTIONS.len(),
         ..statement("plane-door", "1.0.0", 8)
     },
     lifecycle: {

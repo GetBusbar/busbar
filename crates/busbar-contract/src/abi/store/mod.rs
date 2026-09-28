@@ -235,16 +235,14 @@ pub const VERDICT_YES: u32 = 1;
 
 // ── the Statement tail ───────────────────────────────────────────────────────────────────────
 
-/// The store kind's Statement tail (B.1 "Tail": `ephemeral`, `durable_plane`, `fork_refusal`).
-/// Each fact is `0` (no) or `1` (yes).
+/// The store kind's Statement tail (B.1 "Tail": `durable_plane`, `fork_refusal`). Each fact is
+/// `0` (no) or `1` (yes). `ephemeral` is a Statement mark, not a tail fact
+/// ([`MARK_EPHEMERAL`](crate::abi::mechanism::door::MARK_EPHEMERAL); the design's One Statement rule).
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct StoreTail {
     /// The head; `size == size_of::<StoreTail>()`.
     pub head: KindTailHead,
-    /// The store keeps nothing across a restart (the memory store). Was the load-time
-    /// `LoadablePlugin::ephemeral` flag (registry.rs:120); now the plugin states it.
-    pub ephemeral: u8,
     /// The store keeps plane records durably (a store that does not answers the plane-record
     /// slots with nothing kept, as the 1.5.5-default RAM store did, records.rs:1481-1487).
     pub durable_plane: u8,
@@ -252,7 +250,7 @@ pub struct StoreTail {
     /// than overwriting it (Q79-fork-refusal, THE DESIGN's owner questions, ruled 2026-09-27).
     pub fork_refusal: u8,
     /// Alignment padding.
-    pub _reserved: [u8; 5],
+    pub _reserved: [u8; 6],
 }
 
 // ── the cancel vocabulary ────────────────────────────────────────────────────────────────────

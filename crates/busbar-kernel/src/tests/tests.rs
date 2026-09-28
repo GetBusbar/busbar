@@ -695,6 +695,7 @@ pub(crate) fn plugin_manifest(
         schema_derived: false,
         host: None,
         declares: Default::default(),
+        statement: None,
     }
 }
 

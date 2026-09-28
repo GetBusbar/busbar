@@ -50,6 +50,7 @@ pub fn manifest(kind: &str, name: &str, publisher: &str) -> Manifest {
         schema_derived: false,
         host: None,
         declares: Default::default(),
+        statement: None,
     }
 }
 

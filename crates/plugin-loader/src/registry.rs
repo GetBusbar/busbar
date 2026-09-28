@@ -295,6 +295,7 @@ impl LinkedPlugin {
                 schema_derived: false,
                 host: None,
                 declares: Default::default(),
+                statement: None,
             },
             entry,
             ephemeral,

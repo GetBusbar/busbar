@@ -10,6 +10,7 @@
 
 use super::call::{AbiStr, Blob};
 use super::lifecycle::OpsHead;
+use crate::abi::host::conn::connector::Need;
 
 /// The door. `'static`, answered by [`DoorFn`].
 ///
@@ -105,6 +106,113 @@ pub struct Statement {
     pub secret_refs_len: usize,
     /// The settings schema every kind validates settings against (JSON, off-path).
     pub settings_schema: Blob,
+    /// The flag marks (`MARK_*`): `one_instance`, `ephemeral`, `catalog`, `blocks`.
+    pub marks: u64,
+    /// The word marks, each a [`MarkWord`]: the hook words it claims (exclusive) and the carrier
+    /// classes it consumes (shared).
+    pub mark_words: *const MarkWord,
+    /// How many.
+    pub mark_words_len: usize,
+    /// Its live rewrites, each a [`Rewrite`]: the other names config may call it by, the reference
+    /// sugar that names it, and the setting keys it moves.
+    pub rewrites: *const Rewrite,
+    /// How many.
+    pub rewrites_len: usize,
+    /// The top-level config sections it owns or reads.
+    pub sections: *const Section,
+    /// How many.
+    pub sections_len: usize,
+    /// Its connection needs, `(transport, auth)` per direction.
+    pub needs: *const Need,
+    /// How many.
+    pub needs_len: usize,
+    /// The settings path its connection target comes from; absent = the plugin names it.
+    pub target_from: AbiStr,
+    /// The settings path its trust anchors come from; absent = the host's default.
+    pub trust_from: AbiStr,
+    /// The structured answers it declares (the `declares` answers beside the metric families
+    /// and diagnostic ids).
+    pub answers: *const AbiStr,
+    /// How many.
+    pub answers_len: usize,
+}
+
+// ── THE MARKS, REWRITES AND SECTIONS a Statement carries ────────────────────────────────────────
+//
+// The design's One Statement rule: each fact is declared once. A section, path or scheme mark is
+// DERIVED from `sections`, inbound `needs` and transport claims, and never stored.
+
+/// [`Statement::marks`]: at most one instance of the plugin may be configured.
+pub const MARK_ONE_INSTANCE: u64 = 1;
+/// [`Statement::marks`]: what the plugin holds is lost on restart (the memory store).
+pub const MARK_EPHEMERAL: u64 = 1 << 1;
+/// [`Statement::marks`]: the plugin answers the kind's catalog (what the build offers).
+pub const MARK_CATALOG: u64 = 1 << 2;
+/// [`Statement::marks`]: a call may block on slow I/O and is never run inline on a worker.
+pub const MARK_BLOCKS: u64 = 1 << 3;
+/// Every [`Statement::marks`] bit; any other bit refuses the load.
+pub const MARKS_KNOWN: u64 = MARK_ONE_INSTANCE | MARK_EPHEMERAL | MARK_CATALOG | MARK_BLOCKS;
+
+/// [`MarkWord::class`]: a hook word (a strategy word such as a ranking order). EXCLUSIVE: two
+/// plugins claiming the same word refuse boot.
+pub const MARK_WORD_HOOK: u32 = 1;
+/// [`MarkWord::class`]: a carrier class the plugin consumes (an inbound credential carrier an auth
+/// plugin reads; the kernel strips it from what a plane sees). SHARED: never a conflict.
+pub const MARK_WORD_CARRIER: u32 = 2;
+
+/// One word mark: its class and the word.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct MarkWord {
+    /// `MARK_WORD_*`.
+    pub class: u32,
+    /// Alignment padding.
+    pub _reserved: u32,
+    /// The word.
+    pub word: AbiStr,
+}
+
+/// [`Rewrite::class`]: `from` is another name config may give the plugin (a module alias). The
+/// registry holds it exclusive, beside the plugin's own name. `to` is absent.
+pub const REWRITE_ALIAS: u32 = 1;
+/// [`Rewrite::class`]: `from` is a reference key naming the plugin (`env` in `{env: X}`). `to` is
+/// absent.
+pub const REWRITE_SUGAR: u32 = 2;
+/// [`Rewrite::class`]: the setting key `from` is rewritten to the path `to` before the plugin's
+/// section reaches it (`api_key_env` to `api_key.env`).
+pub const REWRITE_KEY: u32 = 3;
+
+/// One live rewrite.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct Rewrite {
+    /// `REWRITE_*`.
+    pub class: u32,
+    /// Alignment padding.
+    pub _reserved: u32,
+    /// What config says.
+    pub from: AbiStr,
+    /// What it becomes; absent unless [`REWRITE_KEY`].
+    pub to: AbiStr,
+}
+
+/// [`Section::flags`]: the plugin's declaring section (a plane's verb).
+pub const SECTION_DECLARING: u32 = 1;
+/// [`Section::flags`]: a document must carry the section when the plugin is linked.
+pub const SECTION_REQUIRED: u32 = 1 << 1;
+/// [`Section::flags`]: the plugin reads the section but does not own its grammar.
+pub const SECTION_CONSUMED: u32 = 1 << 2;
+
+/// One top-level config section the plugin owns or reads.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct Section {
+    /// The section's key.
+    pub name: AbiStr,
+    /// `SECTION_*` bits.
+    pub flags: u32,
+    /// Alignment padding.
+    pub _reserved: u32,
 }
 
 /// The head every kind's Statement tail leads with.

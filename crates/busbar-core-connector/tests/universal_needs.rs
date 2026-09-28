@@ -79,6 +79,7 @@ fn dropped_in() -> &'static dyn busbar_contract::secret::SecretModule {
                 schema_derived: false,
                 host: None,
                 declares: Default::default(),
+                statement: None,
             };
             let signed = sign(&release(), manifest, &lib);
             let tarball = busbar_plugin_loader::tarball::package(&signed, "libneed.so", &lib)

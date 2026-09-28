@@ -50,8 +50,11 @@ use std::mem::{offset_of, size_of, MaybeUninit};
 use std::panic::{catch_unwind, RefUnwindSafe, UnwindSafe};
 use std::ptr;
 
+use crate::abi::host::conn::connector::Need;
 use crate::abi::mechanism::call::{AbiStr, Blob, InHead, Op, OutHead, Outcome, RawOutcome};
-use crate::abi::mechanism::door::{Door, KindTailHead, MetricFamily, Statement};
+use crate::abi::mechanism::door::{
+    Door, KindTailHead, MarkWord, MetricFamily, Rewrite, Section, Statement,
+};
 use crate::abi::mechanism::lifecycle::{
     self as lc, CancelIn, CancelOut, DriveIn, GenIn, OpenIn, OpenOut, OpsHead, RefreshIn,
     ReleaseIn, TickIn, TickOut, ValidateIn,
@@ -529,8 +532,8 @@ pub const fn abi_str(s: &'static str) -> AbiStr {
     }
 }
 
-/// A Statement naming the plugin, with no families, no diagnostic ids, no kind tail and no
-/// extensions. Its `size`, `kind` and `kind_abi` are stamped by [`plugin_door!`](crate::plugin_door)
+/// A Statement naming the plugin, with no families, no diagnostic ids, no kind tail, no
+/// extensions, no marks, no rewrites, no sections, no needs, no settings paths and no answers. Its `size`, `kind` and `kind_abi` are stamped by [`plugin_door!`](crate::plugin_door)
 /// ([`stamp`]); a plugin extends it with struct-update syntax.
 #[must_use]
 pub const fn statement(name: &'static str, version: &'static str, max_inflight: u32) -> Statement {
@@ -550,8 +553,27 @@ pub const fn statement(name: &'static str, version: &'static str, max_inflight: 
         settings_schema: Blob::ABSENT,
         kind_tail: ptr::null::<KindTailHead>(),
         extensions: Blob::ABSENT,
+        marks: 0,
+        mark_words: ptr::null::<MarkWord>(),
+        mark_words_len: 0,
+        rewrites: ptr::null::<Rewrite>(),
+        rewrites_len: 0,
+        sections: ptr::null::<Section>(),
+        sections_len: 0,
+        needs: ptr::null::<Need>(),
+        needs_len: 0,
+        target_from: ABSENT,
+        trust_from: ABSENT,
+        answers: ptr::null::<AbiStr>(),
+        answers_len: 0,
     }
 }
+
+/// An absent string.
+const ABSENT: AbiStr = AbiStr {
+    ptr: ptr::null(),
+    len: 0,
+};
 
 /// `statement` with `size`, `kind` and `kind_abi` stamped from `T`, so the Statement and the door
 /// can never disagree on them.

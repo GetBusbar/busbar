@@ -10,6 +10,14 @@
 //! check for an op with no short path.
 
 use super::call::{AbiStr, Blob, DeadlineClass, Outcome, RawOutcome};
+use super::door::{
+    MarkWord, Rewrite, Section, Statement, MARKS_KNOWN, MARK_WORD_CARRIER, MARK_WORD_HOOK,
+    REWRITE_ALIAS, REWRITE_KEY, SECTION_CONSUMED, SECTION_DECLARING, SECTION_REQUIRED,
+};
+use crate::abi::host::conn::connector::{
+    Need, DIRECTION_INBOUND, DIRECTION_OUTBOUND, EGRESS_DEFAULT, EGRESS_LOOPBACK_ALLOWED,
+    KEEP_RESPONSE_HEADERS_MAX, NEVER_KEPT,
+};
 
 /// [`span`]: no bytes; the span's length is then `0`.
 pub const SPAN_ABSENT: u32 = u32::MAX;
@@ -365,6 +373,202 @@ pub fn lease(
     }
     if !has_material && lease != 0 {
         return Err(fault(Rule::Contradiction, spurious));
+    }
+    Ok(())
+}
+
+/// A string that must be present: non-empty, and never counted with a NULL pointer.
+///
+/// # Errors
+///
+/// [`Rule::Missing`], [`Rule::NullWithCount`].
+pub fn named(s: AbiStr, field: &'static str) -> Result<(), Fault> {
+    if s.len == 0 {
+        return Err(fault(Rule::Missing, field));
+    }
+    text(s, field)
+}
+
+/// A string that must be absent.
+///
+/// # Errors
+///
+/// [`Rule::Contradiction`].
+pub const fn absent(s: AbiStr, field: &'static str) -> Result<(), Fault> {
+    if s.len != 0 {
+        return Err(fault(Rule::Contradiction, field));
+    }
+    Ok(())
+}
+
+// ── THE STATEMENT'S LISTS (the design's One Statement: marks, rewrites, sections, needs) ──────
+
+/// The marks: only known flag bits; every word mark of a known class, and named.
+///
+/// # Errors
+///
+/// The rule a mark breaks.
+pub fn check_marks(marks: u64, words: &[MarkWord]) -> Result<(), Fault> {
+    bits(marks, MARKS_KNOWN, "statement.marks")?;
+    for w in words {
+        code(
+            u64::from(w.class),
+            u64::from(MARK_WORD_HOOK),
+            u64::from(MARK_WORD_CARRIER),
+            "mark_word.class",
+        )?;
+        named(w.word, "mark_word.word")?;
+    }
+    Ok(())
+}
+
+/// The rewrites: a known class and a named `from`; `to` is named for a key move and absent
+/// otherwise.
+///
+/// # Errors
+///
+/// The rule a rewrite breaks.
+pub fn check_rewrites(rewrites: &[Rewrite]) -> Result<(), Fault> {
+    for r in rewrites {
+        code(
+            u64::from(r.class),
+            u64::from(REWRITE_ALIAS),
+            u64::from(REWRITE_KEY),
+            "rewrite.class",
+        )?;
+        named(r.from, "rewrite.from")?;
+        if r.class == REWRITE_KEY {
+            named(r.to, "rewrite.to")?;
+        } else {
+            absent(r.to, "rewrite.to")?;
+        }
+    }
+    Ok(())
+}
+
+/// The sections: each named, known flags, and at most one declaring section (a plane has exactly
+/// one: [`crate::abi::plane::check::check_sections`]).
+///
+/// # Errors
+///
+/// The rule the sections break.
+pub fn check_statement_sections(sections: &[Section]) -> Result<(), Fault> {
+    let known = SECTION_DECLARING | SECTION_REQUIRED | SECTION_CONSUMED;
+    for s in sections {
+        named(s.name, "section.name")?;
+        bits(u64::from(s.flags), u64::from(known), "section.flags")?;
+    }
+    if sections
+        .iter()
+        .filter(|s| s.flags & SECTION_DECLARING != 0)
+        .count()
+        > 1
+    {
+        return Err(fault(Rule::NotExactlyOne, "section.flags"));
+    }
+    Ok(())
+}
+
+/// The needs: a known direction and a transport claim; strings and details never counted with a
+/// NULL pointer.
+///
+/// # Errors
+///
+/// The rule a need breaks.
+pub fn check_needs(needs: &[Need]) -> Result<(), Fault> {
+    for n in needs {
+        code(
+            u64::from(n.direction),
+            u64::from(DIRECTION_INBOUND),
+            u64::from(DIRECTION_OUTBOUND),
+            "need.direction",
+        )?;
+        code(
+            u64::from(n.egress_class),
+            u64::from(EGRESS_DEFAULT),
+            u64::from(EGRESS_LOOPBACK_ALLOWED),
+            "need.egress_class",
+        )?;
+        named(n.transport, "need.transport")?;
+        text(n.auth, "need.auth")?;
+        text(n.target_from, "need.target_from")?;
+        text(n.trust_from, "need.trust_from")?;
+        listed(n.details.ptr, n.details.len, "need.details")?;
+        keep_response_headers(n)?;
+    }
+    Ok(())
+}
+
+/// A need's kept response head fields: a bounded list of lower-case tokens, none hop-by-hop or
+/// credential-bearing ([`NEVER_KEPT`]: [`Rule::Foreign`], a field that is not the plugin's to read).
+fn keep_response_headers(n: &Need) -> Result<(), Fault> {
+    const FIELD: &str = "need.keep_response_headers";
+    listed(n.keep_response_headers, n.keep_response_headers_len, FIELD)?;
+    if n.keep_response_headers_len > KEEP_RESPONSE_HEADERS_MAX {
+        return Err(fault(Rule::OverMax, FIELD));
+    }
+    if n.keep_response_headers_len == 0 {
+        return Ok(());
+    }
+    // SAFETY: a non-NULL list of `keep_response_headers_len` strings the plugin's door states as
+    // `'static` data (checked non-NULL above), bounded by `KEEP_RESPONSE_HEADERS_MAX`.
+    let names = unsafe {
+        core::slice::from_raw_parts(n.keep_response_headers, n.keep_response_headers_len)
+    };
+    for s in names {
+        named(*s, FIELD)?;
+        // SAFETY: `named` checked the string non-NULL with its length; the plugin's static bytes.
+        let name = unsafe { core::slice::from_raw_parts(s.ptr, s.len) };
+        let token = name
+            .iter()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || *b == b'-' || *b == b'_');
+        if !token {
+            return Err(fault(Rule::UnknownCode, FIELD));
+        }
+        if NEVER_KEPT.iter().any(|k| k.as_bytes() == name) {
+            return Err(fault(Rule::Foreign, FIELD));
+        }
+    }
+    Ok(())
+}
+
+/// A `'static` Statement list as a slice, after [`listed`].
+///
+/// # Safety
+///
+/// A non-NULL `ptr` points at `len` live `'static` `T`s.
+unsafe fn list<'a, T>(ptr: *const T, len: usize, field: &'static str) -> Result<&'a [T], Fault> {
+    listed(ptr, len, field)?;
+    if len == 0 {
+        return Ok(&[]);
+    }
+    // SAFETY: the caller's contract; `ptr` is non-NULL here.
+    Ok(unsafe { core::slice::from_raw_parts(ptr, len) })
+}
+
+/// THE STATEMENT'S LISTS, at load: every list never counted with a NULL pointer, then
+/// [`check_marks`], [`check_rewrites`], [`check_statement_sections`], [`check_needs`], the settings
+/// paths and the declared answers. The same check runs for a compiled-in row and a dropped-in door.
+///
+/// # Errors
+///
+/// The rule the Statement breaks.
+///
+/// # Safety
+///
+/// `st` is a Statement a door answered: every non-NULL list points at its stated count of live
+/// `'static` entries.
+pub unsafe fn check_statement(st: &Statement) -> Result<(), Fault> {
+    // SAFETY (each `list`): the caller's contract.
+    let words = unsafe { list(st.mark_words, st.mark_words_len, "statement.mark_words") }?;
+    check_marks(st.marks, words)?;
+    check_rewrites(unsafe { list(st.rewrites, st.rewrites_len, "statement.rewrites") }?)?;
+    check_statement_sections(unsafe { list(st.sections, st.sections_len, "statement.sections") }?)?;
+    check_needs(unsafe { list(st.needs, st.needs_len, "statement.needs") }?)?;
+    text(st.target_from, "statement.target_from")?;
+    text(st.trust_from, "statement.trust_from")?;
+    for a in unsafe { list(st.answers, st.answers_len, "statement.answers") }? {
+        named(*a, "statement.answer")?;
     }
     Ok(())
 }

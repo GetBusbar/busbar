@@ -194,6 +194,57 @@ pub struct Manifest {
     /// their signatures — are unchanged.
     #[serde(default, skip_serializing_if = "Declares::is_empty")]
     pub declares: Declares,
+    /// THE STATEMENT, as its canonical rendering in lowercase hex
+    /// ([`rendering`](busbar_contract::abi::mechanism::rendering)): rendered from the plugin's door
+    /// by the pack tool and SIGNED with everything else, so every reader that must not open the
+    /// plugin (`--validate`, `--list-plugins`) reads the plugin's facts from here, and the loader
+    /// compares it with the door's own Statement byte for byte when it admits the plugin. Absent
+    /// for a library with no door (a pre-1.6.0 artifact), and skipped when absent, so every
+    /// manifest packed before it keeps its canonical bytes and its signature.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub statement: Option<String>,
+}
+
+impl Manifest {
+    /// The Statement rendering this manifest states ([`Manifest::statement`], hex-decoded); `None`
+    /// when it states none.
+    ///
+    /// # Errors
+    ///
+    /// A `statement` that is not lowercase hex.
+    pub fn stated_rendering(&self) -> Result<Option<Vec<u8>>, String> {
+        self.statement
+            .as_deref()
+            .map(|h| {
+                if h.bytes().any(|b| b.is_ascii_uppercase()) {
+                    return Err("manifest statement is not lowercase hex".to_string());
+                }
+                hex::decode(h).map_err(|e| format!("manifest statement is not hex: {e}"))
+            })
+            .transpose()
+    }
+
+    /// The facts this manifest's Statement rendering carries, read back without opening the plugin
+    /// ([`rendering::read`](busbar_contract::abi::mechanism::rendering::read)); `None` when it
+    /// states none.
+    ///
+    /// # Errors
+    ///
+    /// A `statement` that is not lowercase hex, or not one whole Statement rendering.
+    pub fn stated(
+        &self,
+    ) -> Result<Option<busbar_contract::abi::mechanism::rendering::Read>, String> {
+        self.stated_rendering()?
+            .map(|b| {
+                busbar_contract::abi::mechanism::rendering::read(&b).map_err(|e| {
+                    format!(
+                        "manifest statement is not a Statement rendering: byte {} is not {}",
+                        e.at, e.what
+                    )
+                })
+            })
+            .transpose()
+    }
 }
 
 /// The declaration shapes a manifest's `declares` section carries, named here so a packer or a
@@ -746,6 +797,8 @@ pub fn validate_identity(m: &Manifest, host_identity: &str) -> Result<(), String
     if m.publisher.trim().is_empty() {
         return Err("manifest publisher is empty".to_string());
     }
+    // A stated Statement must be one whole rendering: every no-dlopen reader relies on it.
+    m.stated()?;
     // HOST identity gate: an ABSENT `host` means `busbar` (backward compatible with every manifest
     // packed before this field existed). An EXPLICIT `host` that is not the caller's own identity
     // is a hard structural reject — not a silent ignore — because a sibling product (busbar-ui)

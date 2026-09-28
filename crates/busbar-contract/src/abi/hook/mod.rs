@@ -51,7 +51,8 @@
 //!    strings: none/key/admin auth cannot be read off a path, and `{path, method}` is the
 //!    collision key the kernel checks at load (the same shape B.5 gives export's routes).
 //! 10. [`ConfigureIn`] gains `name`, echoing the OLD `ConfigureBody`'s instance name.
-//! 11. Hook words are [`Tail::declared_words`]: STATIC, a Statement fact (see the ASSUMPTIONS
+//! 11. Hook words are Statement word marks
+//!    ([`MARK_WORD_HOOK`](crate::abi::mechanism::door::MARK_WORD_HOOK)): STATIC, a Statement fact (see the ASSUMPTIONS
 //!    section below, now a ruling rather than an assumption).
 //!
 //! **OFF-WORKER (OWNER RULING, decided 2026-09-27, abi-brief.md section 4 item 1):** every hook call
@@ -116,7 +117,8 @@
 //! ASSUMPTIONS (M3-SHAPES, noted for the SLOT-LOG; none are money- or customer-visible — 1.5.5
 //! reply BEHAVIOUR is unchanged, only its wire shape moves from JSON to fixed C layout, which is
 //! the whole point of this milestone — so none is an owner question):
-//! - "hook words" (B.4's tail bullet) are [`Tail::declared_words`] (ARCHITECT ruling, folded in on
+//! - "hook words" (B.4's tail bullet) are Statement word marks,
+//!   [`MARK_WORD_HOOK`](crate::abi::mechanism::door::MARK_WORD_HOOK) (ARCHITECT ruling, folded in on
 //!   top of the first landing): STATIC, a Statement fact, not a per-call answer — a native
 //!   ranking strategy (the OLD `RESERVED_HOOK_NAMES`: `cheapest`/`fastest`/`least_busy`/`usage`)
 //!   becomes a hook plugin by declaring the word it claims here.
@@ -860,13 +862,6 @@ pub struct Tail {
     pub routes: *const Route,
     /// How many.
     pub routes_len: usize,
-    /// ARCHITECT RULING: the hook words this instance declares — STATIC, a Statement fact, not a
-    /// per-call answer. A native ranking strategy (the OLD `cheapest`/`fastest`/`least_busy`/
-    /// `usage` reserved words) becomes a hook plugin by declaring the word it claims here; the
-    /// kernel's reserved-word check reads this list, not a per-call reply.
-    pub declared_words: *const AbiStr,
-    /// How many.
-    pub declared_words_len: usize,
 }
 
 /// The hook kind's [`super::mechanism::lifecycle::CancelOut::disposition`] vocabulary.

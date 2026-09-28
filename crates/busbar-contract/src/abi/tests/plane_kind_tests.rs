@@ -6,6 +6,7 @@
 use std::mem::size_of;
 
 use super::*;
+use crate::abi::mechanism::door::{SECTION_CONSUMED, SECTION_DECLARING, SECTION_REQUIRED};
 use crate::abi::mechanism::lifecycle::{OpsHead, LIFECYCLE_SLOTS};
 
 #[test]

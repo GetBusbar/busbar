@@ -328,6 +328,7 @@ fn test_manifest(name: &str, alias: &str, publisher: &str, version: &str) -> Man
         schema_derived: false,
         host: None,
         declares: Default::default(),
+        statement: None,
     }
 }
 

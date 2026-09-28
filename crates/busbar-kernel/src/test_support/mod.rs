@@ -2342,6 +2342,7 @@ fn fixture_manifest(
         schema_derived: false,
         host: None,
         declares: Default::default(),
+        statement: None,
     }
 }
 

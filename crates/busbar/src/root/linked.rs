@@ -222,6 +222,7 @@ pub fn linked_exports(
             schema_derived: false,
             host: None,
             declares,
+            statement: None,
         };
         Ok(crate::root::loader::LinkedPlugin::boundary(
             manifest, entry,

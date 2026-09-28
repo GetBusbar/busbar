@@ -33,9 +33,9 @@ use busbar_contract::abi::mechanism::{KindCode, DOOR_MAGIC, MECHANISM_VERSION};
 
 use crate::dispatch::load::validate_door;
 use crate::dispatch::{
-    in_head, load_dropped, load_linked, now_ns, out_head, Bind, Budgets, Diagnostic,
-    DispatchConfig, Dispatcher, Dropped, EnvelopeSink, Frame, Kind, LoadError, ManifestFacts,
-    Metric, Plugin, Redeem, NO_BLOB,
+    in_head, load_dropped, load_linked, now_ns, out_head, rendering_of, Bind, Budgets, Diagnostic,
+    DispatchConfig, Dispatcher, Dropped, EnvelopeSink, Frame, Kind, LinkedRow, LoadError,
+    ManifestFacts, Metric, Plugin, Redeem, NO_BLOB,
 };
 
 /// The test kind's context: the Statement's `max_inflight`, as bound.
@@ -146,8 +146,27 @@ fn facts() -> ManifestFacts {
     }
 }
 
+/// The plugin's Statement rendering, as its signed manifest states it: rendered from the linked
+/// `rlib`'s door, the same crate the `cdylib` is built from.
+fn stated() -> Vec<u8> {
+    rendering_of(plug::busbar_plugin_door).expect("the door renders its Statement")
+}
+
+/// [`stated`] with its head facts replaced by `f`.
+fn stated_with(f: ManifestFacts) -> Vec<u8> {
+    let mut b = stated();
+    b[8..12].copy_from_slice(&f.mechanism_version.to_le_bytes());
+    b[12..16].copy_from_slice(&(f.kind as u32).to_le_bytes());
+    b[16..20].copy_from_slice(&f.kind_abi.to_le_bytes());
+    b
+}
+
+fn row() -> LinkedRow {
+    LinkedRow::of(plug::busbar_plugin_door).expect("the linked row states its Statement")
+}
+
 fn linked(sink: Arc<Recorder>) -> Plugin<TestKind> {
-    load_linked::<TestKind>(plug::busbar_plugin_door, bind(sink)).expect("the linked door loads")
+    load_linked::<TestKind>(&row(), bind(sink)).expect("the linked door loads")
 }
 
 /// The example `cdylib` `name` in this target dir (`cargo test` builds examples). Under CI a
@@ -174,7 +193,7 @@ fn dropped_path() -> Option<std::path::PathBuf> {
 
 fn dropped(sink: Arc<Recorder>) -> Option<Plugin<TestKind>> {
     let path = dropped_path()?;
-    Some(load_dropped::<TestKind>(&path, &facts(), bind(sink)).expect("the dropped door loads"))
+    Some(load_dropped::<TestKind>(&path, &stated(), bind(sink)).expect("the dropped door loads"))
 }
 
 /// A `tick` frame whose extensions blob names the test op.
@@ -937,6 +956,51 @@ fn red_every_door_refusal() {
         with(&|d| d.statement = fine).is_none(),
         "a well-formed kind tail loads"
     );
+    // THE STATEMENT'S LISTS (the design's One Statement): marks, rewrites, sections, needs and
+    // answers are judged at load, the same for either origin.
+    let unknown_mark = Box::leak(Box::new(Statement {
+        marks: 1 << 20,
+        ..st
+    }));
+    assert_eq!(
+        with(&|d| d.statement = unknown_mark),
+        Some(LoadError::BadStatement(
+            "statement.marks breaks UnknownCode".into()
+        ))
+    );
+    let null_needs = Box::leak(Box::new(Statement { needs_len: 1, ..st }));
+    assert_eq!(
+        with(&|d| d.statement = null_needs),
+        Some(LoadError::BadStatement(
+            "statement.needs breaks NullWithCount".into()
+        ))
+    );
+    let rewrite: &'static [busbar_contract::abi::mechanism::door::Rewrite] =
+        Box::leak(Box::new([busbar_contract::abi::mechanism::door::Rewrite {
+            class: 9,
+            _reserved: 0,
+            from: busbar_contract::abi::sdk::door::abi_str("x"),
+            to: busbar_contract::abi::sdk::door::abi_str(""),
+        }]));
+    let bad_rewrite = Box::leak(Box::new(Statement {
+        rewrites: rewrite.as_ptr(),
+        rewrites_len: 1,
+        ..st
+    }));
+    assert_eq!(
+        with(&|d| d.statement = bad_rewrite),
+        Some(LoadError::BadStatement(
+            "rewrite.class breaks UnknownCode".into()
+        ))
+    );
+    let marked = Box::leak(Box::new(Statement {
+        marks: busbar_contract::abi::mechanism::door::MARK_ONE_INSTANCE,
+        ..st
+    }));
+    assert!(
+        with(&|d| d.statement = marked).is_none(),
+        "a known mark loads"
+    );
 }
 
 extern "C" fn null_door() -> *const Door {
@@ -945,10 +1009,15 @@ extern "C" fn null_door() -> *const Door {
 
 #[test]
 fn red_both_origins_refuse_the_same_way() {
+    let null_row = LinkedRow {
+        statement: stated(),
+        door: null_door,
+    };
     assert_eq!(
-        load_linked::<TestKind>(null_door, bind(quiet())).err(),
+        load_linked::<TestKind>(&null_row, bind(quiet())).err(),
         Some(LoadError::NullDoor)
     );
+    assert_eq!(LinkedRow::of(null_door).err(), Some(LoadError::NullDoor));
     // The manifest's mechanism is checked BEFORE dlopen: a path that does not exist is never opened.
     let nowhere = std::path::Path::new("/nonexistent/libnothing.so");
     for v in [MECHANISM_VERSION - 1, MECHANISM_VERSION + 1] {
@@ -957,7 +1026,7 @@ fn red_both_origins_refuse_the_same_way() {
             ..facts()
         };
         assert_eq!(
-            load_dropped::<TestKind>(nowhere, &f, bind(quiet())).err(),
+            load_dropped::<TestKind>(nowhere, &stated_with(f), bind(quiet())).err(),
             Some(LoadError::ManifestMechanism {
                 stated: v,
                 host: MECHANISM_VERSION
@@ -969,7 +1038,7 @@ fn red_both_origins_refuse_the_same_way() {
         ..facts()
     };
     assert!(matches!(
-        load_dropped::<TestKind>(nowhere, &f, bind(quiet())).err(),
+        load_dropped::<TestKind>(nowhere, &stated_with(f), bind(quiet())).err(),
         Some(LoadError::ManifestKindAbi { .. })
     ));
     let other = *KindCode::ALL.iter().find(|k| **k != plug::KIND).unwrap();
@@ -978,15 +1047,20 @@ fn red_both_origins_refuse_the_same_way() {
         ..facts()
     };
     assert_eq!(
-        load_dropped::<TestKind>(nowhere, &f, bind(quiet())).err(),
+        load_dropped::<TestKind>(nowhere, &stated_with(f), bind(quiet())).err(),
         Some(LoadError::ManifestKind {
             stated: other,
             want: plug::KIND
         })
     );
     assert!(matches!(
-        load_dropped::<TestKind>(nowhere, &facts(), bind(quiet())).err(),
+        load_dropped::<TestKind>(nowhere, &stated(), bind(quiet())).err(),
         Some(LoadError::Open(_))
+    ));
+    // A manifest that states no rendering head is refused before dlopen, too.
+    assert!(matches!(
+        load_dropped::<TestKind>(nowhere, b"{}", bind(quiet())).err(),
+        Some(LoadError::Rendering(_))
     ));
     // A library that is not a 1.6.0 plugin exports no door: the platform's C library.
     #[cfg(target_os = "macos")]
@@ -995,9 +1069,66 @@ fn red_both_origins_refuse_the_same_way() {
     let libc = "libc.so.6";
     #[cfg(unix)]
     assert!(matches!(
-        load_dropped::<TestKind>(std::path::Path::new(libc), &facts(), bind(quiet())).err(),
+        load_dropped::<TestKind>(std::path::Path::new(libc), &stated(), bind(quiet())).err(),
         Some(LoadError::NoDoor(_))
     ));
+}
+
+/// RED, BOTH ORIGINS: a Statement other than the one the manifest (or the compiled-in row) states
+/// is refused at admit, naming the repack; the same rendering is admitted.
+#[test]
+fn red_a_statement_other_than_the_stated_one_is_refused_at_admit() {
+    assert_eq!(facts(), ManifestFacts::read(&stated()).unwrap());
+    let mut lying = stated();
+    let last = lying.len() - 1;
+    lying[last] ^= 1;
+    let lying_row = LinkedRow {
+        statement: lying.clone(),
+        door: plug::busbar_plugin_door,
+    };
+    assert_eq!(
+        load_linked::<TestKind>(&lying_row, bind(quiet())).err(),
+        Some(LoadError::StatementMismatch)
+    );
+    let mut short = stated();
+    short.pop();
+    let short_row = LinkedRow {
+        statement: short,
+        door: plug::busbar_plugin_door,
+    };
+    assert_eq!(
+        load_linked::<TestKind>(&short_row, bind(quiet())).err(),
+        Some(LoadError::StatementMismatch)
+    );
+    assert!(load_linked::<TestKind>(&row(), bind(quiet())).is_ok());
+    if let Some(path) = dropped_path() {
+        assert_eq!(
+            load_dropped::<TestKind>(&path, &lying, bind(quiet())).err(),
+            Some(LoadError::StatementMismatch)
+        );
+        assert!(load_dropped::<TestKind>(&path, &stated(), bind(quiet())).is_ok());
+    }
+}
+
+/// THE PACK-TIME RENDERING: the dropped `cdylib`'s own door renders the same Statement the linked
+/// `rlib`'s door does (what the pack tool signs); a library with no door states none.
+#[test]
+fn the_pack_time_rendering_of_a_library_is_its_door_s() {
+    if let Some(path) = dropped_path() {
+        assert_eq!(
+            crate::dispatch::rendering_of_library(&path).unwrap(),
+            Some(stated())
+        );
+    }
+    #[cfg(target_os = "macos")]
+    let libc = "/usr/lib/libSystem.B.dylib";
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let libc = "libc.so.6";
+    #[cfg(unix)]
+    assert_eq!(
+        crate::dispatch::rendering_of_library(std::path::Path::new(libc)).unwrap(),
+        None
+    );
 }
 
 /// The child half of the abort test: runs only when its parent sets the variable.
@@ -1524,7 +1655,7 @@ fn red_a_hung_ticketless_open_is_watched_from_bind() {
     });
     let sink = quiet();
     let p = load_linked::<TestKind>(
-        plug::busbar_plugin_door,
+        &row(),
         Bind {
             dispatcher: d.adopter(),
             ..bind(sink)

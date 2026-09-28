@@ -638,6 +638,7 @@ fn plane_manifest(name: &str, alias: &str, publisher: &str) -> Manifest {
         schema_derived: false,
         host: None,
         declares: Default::default(),
+        statement: None,
     }
 }
 
@@ -1283,7 +1284,6 @@ mod door {
         slot as life, CancelIn, CancelOut, GenIn, OpenIn, OpenOut, RefreshIn, TickIn, TickOut,
         ValidateIn,
     };
-    use busbar_contract::abi::mechanism::{KindCode, MECHANISM_VERSION};
     use busbar_contract::abi::plane::{
         self, slot, ArriveIn, ArriveOut, OnPieceIn, OnPieceOut, OutField, PlaneDriveIn,
         PlaneDriveOut, PlaneOpenIn, PlaneOpenOut, PlaneRefreshOut, PlaneSnapshot, ProjectIn,
@@ -1295,8 +1295,8 @@ mod door {
 
     use crate::dispatch::kinds::plane::Plane;
     use crate::dispatch::{
-        in_head, load_dropped, load_linked, out_head, Adopter, Bind, Frame, ManifestFacts, NoSink,
-        Plugin,
+        in_head, load_dropped, load_linked, out_head, rendering_of, Adopter, Bind, Frame,
+        LinkedRow, NoSink, Plugin,
     };
     use crate::plane_door_plugin as plug;
 
@@ -1358,7 +1358,8 @@ mod door {
     }
 
     fn linked() -> Plugin<Plane> {
-        load_linked::<Plane>(plug::door, bind()).expect("the linked plane door loads")
+        let row = LinkedRow::of(plug::door).expect("the linked plane states its Statement");
+        load_linked::<Plane>(&row, bind()).expect("the linked plane door loads")
     }
 
     /// The example `cdylib` in this target dir (`cargo test` builds examples). Under CI a missing
@@ -1374,13 +1375,10 @@ mod door {
             path.exists() || std::env::var_os("CI").is_none(),
             "the plane_door_plugin example cdylib is not built under CI; a both-ways proof must not skip"
         );
-        let facts = ManifestFacts {
-            mechanism_version: MECHANISM_VERSION,
-            kind: KindCode::Plane,
-            kind_abi: KindCode::Plane.abi_version(),
-        };
+        // The signed manifest's rendering: the linked rlib's door, the same crate.
+        let stated = rendering_of(plug::door).expect("the plane renders its Statement");
         path.exists().then(|| {
-            load_dropped::<Plane>(&path, &facts, bind()).expect("the dropped plane door loads")
+            load_dropped::<Plane>(&path, &stated, bind()).expect("the dropped plane door loads")
         })
     }
 
@@ -1714,7 +1712,8 @@ mod door {
 
     #[test]
     fn red_a_plane_open_over_the_lifecycle_structs_publishes_no_snapshot_and_faults() {
-        let red = load_linked::<Plane>(lifecycle_open_door, bind()).expect("the door loads");
+        let row = LinkedRow::of(lifecycle_open_door).expect("the door states its Statement");
+        let red = load_linked::<Plane>(&row, bind()).expect("the door loads");
         let mut o = open_frame(1);
         assert_eq!(red.call(life::OPEN, &mut o).outcome, Outcome::Fault);
         assert!(o.out.snapshot.is_null(), "no snapshot reached the host");

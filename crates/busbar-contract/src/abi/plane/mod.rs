@@ -49,8 +49,9 @@
 //!   (memory class (ii)).
 //! * SETTINGS — the `settings` blob `validate`, `open` and `refresh` receive has its `rate_card` and
 //!   `fees` keys stripped by the kernel before it crosses (RED-tested at the kernel).
-//! * NEEDS — a plane states its connection needs as `(transport, auth)` per direction in its tail
-//!   ([`PlaneTail::needs`], each a [`Need`]); the kernel instantiates them through the connector.
+//! * NEEDS — a plane states its connection needs as `(transport, auth)` per direction in its
+//!   Statement, as every kind does ([`Statement::needs`](crate::abi::mechanism::door::Statement),
+//!   each a `Need`); the kernel instantiates them through the connector.
 //!
 //! CANCEL BILLING — the four 1.5.5 rules, pinned . The lifecycle `cancel`
 //! answers a disposition ([`CANCEL_OK_PARTIAL`], [`CANCEL_FAILED`], [`CANCEL_ABORTED`]) and the
@@ -73,7 +74,7 @@
 //! |---|---|
 //! | `abi` (preamble), `size`, `version` | the door: magic, mechanism version, `kind_abi`; [`crate::abi::mechanism::door::KindTailHead::size`] |
 //! | `name` | [`crate::abi::mechanism::door::Statement::name`] |
-//! | `section_key` | tail: the [`PlaneTail::sections`] entry flagged [`SECTION_DECLARING`] |
+//! | `section_key` | Statement: the `sections` entry flagged [`SECTION_DECLARING`](crate::abi::mechanism::door::SECTION_DECLARING) |
 //! | `scope` | tail [`PlaneTail::scope`] |
 //! | `label` | tail [`PlaneTail::label`] |
 //! | `provided_carriers` | tail [`PlaneTail::ingress`] (`INGRESS_*` bits, same numbering) |
@@ -99,13 +100,13 @@
 //! | (new) chained record framing | tail [`PlaneTail::record_chains`] |
 //! | (new) refusal statuses per dialect and reason | tail [`PlaneTail::refusal_statuses`]; [`RefusalIn::reason`] |
 //! | `dispatch_flags` / `DISPATCH_BLOCKS` | DROPPED — a plane never blocks (the design's plugin-ABI section: no blocking on the hot path). Replaced by [`PlaneTail::dispatch_shape`] |
-//! | `required_sections` | tail: [`SECTION_REQUIRED`] on a [`PlaneTail::sections`] entry |
+//! | `required_sections` | Statement: [`SECTION_REQUIRED`](crate::abi::mechanism::door::SECTION_REQUIRED) on a `sections` entry |
 //! | `BuildCtx.host`, `host_ctx` | [`crate::abi::mechanism::lifecycle::OpenIn::host`] |
 //! | `BuildCtx.config_*` | `OpenIn::settings` (`rate_card`/`fees` stripped) |
 //! | `BuildCtx.resolved_refs_*` | `OpenIn::secrets` |
 //! | `BuildCtx.public_url_*` | [`PlaneOpenIn::public_url`] |
 //! | (new) dialects, `dialect_auth`, `route_cost`, `cli_help` | tail |
-//! | (new) needs, consumed sections, egress targets | tail [`PlaneTail::needs`], [`SECTION_CONSUMED`], [`PlaneTail::egress_targets`] |
+//! | (new) needs, consumed sections, egress targets | Statement `needs`, [`SECTION_CONSUMED`](crate::abi::mechanism::door::SECTION_CONSUMED); tail [`PlaneTail::egress_targets`] |
 //! | (new) kernel-owned trust keys | tail [`PlaneTail::trust_keys`] |
 //!
 //! KERNEL-OWNED TRUST KEYS. The trust lifecycle (pin, re-verification cadence, demotion) is the
@@ -140,8 +141,8 @@
 
 pub mod check;
 
+use crate::caps::ReasonCode;
 use super::hook::{RequestView, SignalEntry};
-use super::host::conn::connector::Need;
 use super::mechanism::call::{AbiStr, Blob, Field, InHead, Op, OutHead, Span};
 pub use super::mechanism::check::SPAN_ABSENT;
 use super::mechanism::check::{contract, OpContract};
@@ -150,7 +151,6 @@ use super::mechanism::lifecycle::{
     slot as life, CancelIn, CancelOut, DriveIn, GenIn, OpenIn, OpenOut, OpsHead, RefreshIn,
     ReleaseIn, TickIn, TickOut, ValidateIn, LIFECYCLE_SLOTS,
 };
-use crate::caps::ReasonCode;
 
 /// The plane kind's ABI version: new in 1.6.0 (v1.5.5 had no plane ABI), so it ships `1`.
 pub const ABI_VERSION: u32 = 1;
@@ -277,13 +277,6 @@ pub const SHAPE_WHOLE: u32 = 0;
 /// [`PlaneTail::dispatch_shape`]: the kernel pushes the caller's bytes piece by piece as they
 /// arrive.
 pub const SHAPE_PIECEWISE: u32 = 1;
-
-/// [`Section::flags`]: the plane's declaring section.
-pub const SECTION_DECLARING: u32 = 1;
-/// [`Section::flags`]: a document must carry the section when the plane is linked.
-pub const SECTION_REQUIRED: u32 = 1 << 1;
-/// [`Section::flags`]: the plane reads the section but does not own its grammar.
-pub const SECTION_CONSUMED: u32 = 1 << 2;
 
 /// [`UnitCount::source`]: the plane's own estimate; never billed.
 pub const UNITS_ESTIMATED: u32 = 0;
@@ -638,18 +631,6 @@ pub const fn reason_of(code: u32) -> Option<ReasonCode> {
 
 // ── the Statement tail ───────────────────────────────────────────────────────────────────────────
 
-/// One top-level config section the plane owns or reads.
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub struct Section {
-    /// The section's key.
-    pub name: AbiStr,
-    /// `SECTION_*` bits.
-    pub flags: u32,
-    /// Alignment padding.
-    pub _reserved: u32,
-}
-
 /// A dialect's default auth style (the 1.5.5 dialect defaults), as data.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
@@ -807,10 +788,6 @@ pub struct PlaneTail {
     pub signing_kid_prefix: AbiStr,
     /// The plane's command-line help text.
     pub cli_help: AbiStr,
-    /// The sections it owns or reads.
-    pub sections: *const Section,
-    /// How many.
-    pub sections_len: usize,
     /// Its dialects; per-call `dialect` indexes them.
     pub dialects: *const AbiStr,
     /// How many.
@@ -843,10 +820,6 @@ pub struct PlaneTail {
     pub record_kinds: *const AbiStr,
     /// How many.
     pub record_kinds_len: usize,
-    /// Its connection needs, `(transport, auth)` per direction.
-    pub needs: *const Need,
-    /// How many.
-    pub needs_len: usize,
     /// The config paths, inside its sections, that name its egress targets.
     pub egress_targets: *const AbiStr,
     /// How many.

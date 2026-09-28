@@ -31,7 +31,8 @@ use busbar_contract::abi::mechanism::call::{
     OutHead as MechOutHead, RawOutcome as MechRawOutcome, Span as MechSpan,
 };
 use busbar_contract::abi::mechanism::door::{
-    Door as MechDoor, KindTailHead as MechKindTailHead, MetricFamily as MechMetricFamily,
+    Door as MechDoor, KindTailHead as MechKindTailHead, MarkWord as MechMarkWord,
+    MetricFamily as MechMetricFamily, Rewrite as MechRewrite, Section as MechSection,
     Statement as MechStatement,
 };
 use busbar_contract::abi::mechanism::lifecycle::{
@@ -1008,9 +1009,25 @@ fn compute_layout() -> String {
             extensions,
             secret_refs,
             secret_refs_len,
-            settings_schema
+            settings_schema,
+            marks,
+            mark_words,
+            mark_words_len,
+            rewrites,
+            rewrites_len,
+            sections,
+            sections_len,
+            needs,
+            needs_len,
+            target_from,
+            trust_from,
+            answers,
+            answers_len
         ]
     );
+    record!(s, MechMarkWord, [class, _reserved, word]);
+    record!(s, MechRewrite, [class, _reserved, from, to]);
+    record!(s, MechSection, [name, flags, _reserved]);
     record!(s, MechKindTailHead, [size, _reserved]);
     record!(s, MechTicket, [slot, generation]);
     record!(s, MechCompletionHandle, [ticket, seq, _reserved]);
@@ -1079,7 +1096,7 @@ fn compute_layout() -> String {
     record!(
         s,
         StoreStoreTail,
-        [head, ephemeral, durable_plane, fork_refusal, _reserved]
+        [head, durable_plane, fork_refusal, _reserved]
     );
     record!(s, StoreOpId, []);
     record!(
@@ -1244,19 +1261,7 @@ fn compute_layout() -> String {
     record!(
         s,
         AuthTail,
-        [
-            head,
-            caps,
-            facts,
-            login_kind,
-            _reserved,
-            styles,
-            styles_len,
-            aliases,
-            aliases_len,
-            carriers,
-            carriers_len
-        ]
+        [head, caps, facts, login_kind, _reserved, styles, styles_len]
     );
     record!(s, AuthNamedValue, [name, value]);
     record!(
@@ -1562,7 +1567,6 @@ fn compute_layout() -> String {
         pkind::Ops,
         [head, arrive, on_piece, refusal, serve, hydrate, start, project]
     );
-    record!(s, pkind::Section, [name, flags, _reserved]);
     record!(s, pkind::DialectAuth, [dialect, _reserved, style]);
     record!(s, pkind::OpClass, [op, name]);
     record!(s, pkind::BillableClass, [class, family]);
@@ -1596,8 +1600,6 @@ fn compute_layout() -> String {
             signing_domain,
             signing_kid_prefix,
             cli_help,
-            sections,
-            sections_len,
             dialects,
             dialects_len,
             dialect_auth,
@@ -1614,8 +1616,6 @@ fn compute_layout() -> String {
             fee_units_len,
             record_kinds,
             record_kinds_len,
-            needs,
-            needs_len,
             egress_targets,
             egress_targets_len,
             record_chains,
@@ -2161,9 +2161,7 @@ fn compute_layout() -> String {
             requested_signals,
             requested_signals_len,
             routes,
-            routes_len,
-            declared_words,
-            declared_words_len
+            routes_len
         ]
     );
 

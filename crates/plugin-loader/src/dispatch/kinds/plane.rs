@@ -43,8 +43,8 @@ use busbar_contract::abi::mechanism::ticket::Ticket;
 use busbar_contract::abi::mechanism::KindCode;
 use busbar_contract::abi::plane::check::{
     check_arrive, check_cancel, check_drive, check_on_piece, check_pin_mechanisms, check_project,
-    check_refusal, check_refusal_statuses, check_serve, check_snapshot, check_tail,
-    check_trust_keys, Bounds, Caps, MAX_SESSIONS,
+    check_refusal, check_refusal_statuses, check_sections, check_serve, check_snapshot,
+    check_tail, check_trust_keys, Bounds, Caps, MAX_SESSIONS,
 };
 use busbar_contract::abi::plane::{
     self, slot, ArriveIn, ArriveOut, OnPieceIn, OnPieceOut, PinMechanism, PlaneDriveIn,
@@ -99,8 +99,9 @@ fn bounds<'a>(a: &Answer<'a>) -> Result<&'a Bounds, Fault> {
         .ok_or(fault(Rule::Missing, "plane.tail"))
 }
 
-/// The plane's tail, read from the Statement: a whole `PlaneTail` that passes `check_tail`, and
-/// refusal statuses that pass `check_refusal_statuses`.
+/// The plane's tail, read from the Statement: a whole `PlaneTail` that passes `check_tail`, the
+/// Statement's sections, exactly one of them declaring (`check_sections`), and refusal statuses
+/// that pass `check_refusal_statuses`.
 fn tail_facts(st: &Statement) -> Result<PlaneFacts, String> {
     let p = st.kind_tail;
     if p.is_null() {
@@ -120,6 +121,16 @@ fn tail_facts(st: &Statement) -> Result<PlaneFacts, String> {
     check_tail(&tail).map_err(|f| format!("the plane tail breaks {:?} at {}", f.rule, f.field))?;
     check_tail_trust_keys(&tail)
         .map_err(|f| format!("the plane tail breaks {:?} at {}", f.rule, f.field))?;
+    // A plane declares exactly one section: its verb. The loader's Statement check already
+    // refused a NULL list with a count.
+    let sections = if st.sections_len == 0 {
+        &[][..]
+    } else {
+        // SAFETY: a non-NULL `sections` holds `sections_len` `'static` entries.
+        unsafe { std::slice::from_raw_parts(st.sections, st.sections_len) }
+    };
+    check_sections(sections)
+        .map_err(|f| format!("the plane's sections break {:?} at {}", f.rule, f.field))?;
     let refusal_statuses: Vec<RefusalStatus> = (0..tail.refusal_statuses_len)
         .map(|i| {
             // SAFETY: `check_tail` refused a count over a NULL list; the list is `'static` plugin

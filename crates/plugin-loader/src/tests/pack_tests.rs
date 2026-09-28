@@ -33,6 +33,7 @@ fn packed_tarball_verifies_end_to_end() {
         schema_derived: false,
         host: None,
         declares: Default::default(),
+        statement: None,
     };
     let signed = sign(&key, m, lib);
     busbar_plugin_loader::sign::validate_structure(
@@ -226,6 +227,7 @@ fn packed_hook_needs_prompt_rw_is_signed() {
         schema_derived: false,
         host: None,
         declares: Default::default(),
+        statement: None,
     };
     let signed = sign(&key, m, lib);
     assert_eq!(signed.needs.prompt, NeedLevel::Rw);

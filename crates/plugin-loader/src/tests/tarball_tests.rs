@@ -24,6 +24,7 @@ fn manifest() -> Manifest {
         schema_derived: false,
         host: None,
         declares: Default::default(),
+        statement: None,
     }
 }
 

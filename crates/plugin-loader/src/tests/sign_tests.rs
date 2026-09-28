@@ -29,6 +29,7 @@ fn manifest(name: &str, alias: &str, publisher: &str) -> Manifest {
         schema_derived: false,
         host: None,
         declares: Default::default(),
+        statement: None,
     }
 }
 
@@ -1256,5 +1257,51 @@ fn the_declared_contract_abi_range_is_signed_and_absent_by_default() {
         signed,
         canonical_manifest_bytes(&widened),
         "the range is covered by the signature"
+    );
+}
+
+/// THE STATEMENT A MANIFEST CARRIES is signed: a tampered rendering fails the signature, a
+/// rendering that is not one whole Statement is a structural refusal, and a manifest with none keeps
+/// the canonical bytes (and so the signature) it had before the field existed.
+#[test]
+fn red_the_stated_statement_is_signed_and_must_be_one_whole_rendering() {
+    use busbar_contract::abi::mechanism::rendering::render;
+    use busbar_contract::abi::sdk::door::statement;
+    let st = statement("busbar-store-x", "1.5.0", 4);
+    // SAFETY: the SDK's Statement names only `'static` strings and no list.
+    let rendering = unsafe { render(&st) }.unwrap();
+    let key = test_key(11);
+    let mut m = manifest("busbar-store-x", "x", "busbar");
+    m.statement = Some(hex::encode(&rendering));
+    let signed = sign(&key, m, b"lib");
+    assert!(signature_ok(&signed, b"lib", &key.verifying_key()).is_ok());
+    assert_eq!(signed.stated_rendering().unwrap(), Some(rendering.clone()));
+    assert_eq!(signed.stated().unwrap().unwrap().name, "busbar-store-x");
+    assert!(validate_identity(&signed, HOST_IDENTITY).is_ok());
+
+    let mut tampered = signed.clone();
+    let mut other = rendering.clone();
+    let last = other.len() - 1;
+    other[last] ^= 1;
+    tampered.statement = Some(hex::encode(&other));
+    assert!(
+        signature_ok(&tampered, b"lib", &key.verifying_key()).is_err(),
+        "a statement changed after signing fails verification"
+    );
+
+    for bad in ["zz", "ABCD", "00"] {
+        let mut m = signed.clone();
+        m.statement = Some(bad.into());
+        assert!(
+            validate_identity(&m, HOST_IDENTITY).is_err(),
+            "{bad} is not a whole rendering"
+        );
+    }
+
+    let none = manifest("busbar-store-x", "x", "busbar");
+    let canonical = String::from_utf8(canonical_manifest_bytes(&none)).unwrap();
+    assert!(
+        !canonical.contains("statement"),
+        "an absent statement is not in the signed bytes: {canonical}"
     );
 }

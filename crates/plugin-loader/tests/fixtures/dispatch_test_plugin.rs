@@ -171,6 +171,19 @@ static STATEMENT: Shared<Statement> = Shared(Statement {
     secret_refs: std::ptr::null(),
     secret_refs_len: 0,
     settings_schema: NO_BLOB,
+    marks: 0,
+    mark_words: std::ptr::null(),
+    mark_words_len: 0,
+    rewrites: std::ptr::null(),
+    rewrites_len: 0,
+    sections: std::ptr::null(),
+    sections_len: 0,
+    needs: std::ptr::null(),
+    needs_len: 0,
+    target_from: NO_STR,
+    trust_from: NO_STR,
+    answers: std::ptr::null(),
+    answers_len: 0,
 });
 
 static OPS: Shared<OpsHead> = Shared(OpsHead {

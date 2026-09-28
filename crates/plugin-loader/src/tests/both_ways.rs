@@ -58,6 +58,7 @@ pub(crate) fn statement(kind: &str, name: &str, alias: &str, abi_version: u32) -
         schema_derived: false,
         host: None,
         declares: Default::default(),
+        statement: None,
     }
 }
 
