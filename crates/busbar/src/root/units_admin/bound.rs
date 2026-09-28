@@ -89,7 +89,7 @@ pub(crate) fn verify_effect(ledger: &dyn LedgerView) -> Result<AdminAnswer, Gove
     if ledger.has_refused_rows() {
         return Err(GovernanceError::Store);
     }
-    let (checkpoints, book) = ledger.verify_snapshot();
+    let (checkpoints, book, anchored) = ledger.verify_snapshot_anchored();
     let mut findings: Vec<Finding> = Vec::new();
     for checkpoint in &checkpoints {
         if !checkpoint.body_hash_verifies() {
@@ -106,7 +106,7 @@ pub(crate) fn verify_effect(ledger: &dyn LedgerView) -> Result<AdminAnswer, Gove
         (Some(since), Some(now)) => {
             // The checkpoint's own digest was checked above with every other one.
             findings.extend(
-                verify(since, now, &AllWindowsOpen, None)
+                verify(since, now, &AllWindowsOpen, anchored.as_ref())
                     .into_iter()
                     .filter(|f| !matches!(f, Finding::CheckpointEdited { .. })),
             );
@@ -120,6 +120,29 @@ pub(crate) fn verify_effect(ledger: &dyn LedgerView) -> Result<AdminAnswer, Gove
     let discrepancies = crate::root::ledger_identity::reconcile(&ledger_rows, &legacy_rows)
         .map_err(|_| GovernanceError::Store)?;
     let identity_holds = discrepancies.is_empty();
+    let mut findings: Vec<String> = findings.iter().map(ToString::to_string).collect();
+    // WHAT THE BOOT RECONCILIATION FOUND: a journal record the chain could not read, or a balance
+    // the book and a second replay disagree on. A settled figure edited on disk is caught here; the
+    // boot logs it and serves on, and this is where an operator asking reads it.
+    findings.extend(
+        ledger
+            .restart_findings()
+            .into_iter()
+            .map(|finding| format!("restart: {finding}")),
+    );
+    // THE AMENDMENT CHAIN, verified as it is held now: an edit made to the node's held
+    // corrections and content accesses after boot is a finding, as a rewound checkpoint is.
+    if let Err(broken) = crate::root::durability::verify_held() {
+        findings.push(format!("amendment chain: {broken}"));
+    }
+    // THE FIXED AUDIT CHAIN, walked as it is held now: a retained record edited, relinked or
+    // re-signed after it was sealed is a finding.
+    findings.extend(
+        ledger
+            .retained_audit_findings()
+            .into_iter()
+            .map(|finding| format!("audit chain: {finding}")),
+    );
     answer(&serde_json::json!({
         "checkpoints": checkpoints.len(),
         "since": since.map(|c| serde_json::json!({
@@ -128,7 +151,7 @@ pub(crate) fn verify_effect(ledger: &dyn LedgerView) -> Result<AdminAnswer, Gove
             "wall": c.wall,
         })),
         "book_verified": book_verified,
-        "findings": findings.iter().map(ToString::to_string).collect::<Vec<_>>(),
+        "findings": findings,
         "identity_holds": identity_holds,
         "discrepancies": discrepancies.len(),
         "ok": findings.is_empty() && identity_holds,

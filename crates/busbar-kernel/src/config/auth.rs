@@ -450,20 +450,15 @@ impl AuthCfg {
 
 /// The built-in signed-key verifier module name (`auth.chain: [keys]`).
 pub const KEYS_MODULE: &str = "keys";
-/// THE OPERATOR CREDENTIAL'S PROVIDER, as configuration spells it: the `auth.admin_auth:` default,
-/// referenced bare, and the one `module:` whose definition may carry `token:` — frozen config text
-/// read off `data/operator_credential.toml` (ARCHITECT 2026-09-27 AUTH-ROW, ruling F-D's terms).
-/// Which module answers it is the auth axis's business.
-pub fn operator_provider() -> &'static str {
-    crate::config::migrate::frozen_row(OPERATOR_TEXT, "provider")
-}
-
-/// The fixed principal id the operator credential's module identifies the operator as.
-pub fn operator_principal_id() -> &'static str {
-    crate::config::migrate::frozen_row(OPERATOR_TEXT, "principal_id")
-}
-
-const OPERATOR_TEXT: &str = include_str!("../../data/operator_credential.toml");
+/// THE OPERATOR CREDENTIAL'S PROVIDER, as configuration spells it (the `auth.admin_auth:` default,
+/// referenced bare, the one `module:` whose definition may carry `token:`, and a reserved hook name),
+/// and the principal id it identifies the operator as. Frozen config text the composition root's
+/// legacy table holds and hands in with its linked auth rows (ARCHITECT 2026-09-30,
+/// KERNEL-AUTH-ZERO Q2; BUSBAR-1.6.0.md:173); the kernel never spells it. Which module answers it is
+/// the auth axis's business.
+pub use busbar_kernel_identity::operator::{
+    principal_id as operator_principal_id, provider as operator_provider,
+};
 
 /// The BUILT-IN identity providers, referenced BARE from `auth.chain:`/`auth.admin_auth:` with no
 /// `identity-providers:` definition at all: the signed-key verifier and the operator credential. A

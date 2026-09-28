@@ -8,7 +8,7 @@
 //! If only busbar can verify busbar's chain then the chain is a CLAIM, not evidence. An auditor who
 //! has to run our binary to check our records has checked nothing they could not have checked by
 //! asking us. So the exact field order, the exact framing and the exact spelling of every value are
-//! a versioned public contract, written down at `docs/audit-chain-digest-v3.md`, and reproduced by
+//! a versioned public contract, written down at `docs/audit-chain-digest-v4.md`, and reproduced by
 //! a verifier that has never seen this repository.
 //!
 //! This module is what makes that promise checkable instead of aspirational. It is the ONE place
@@ -42,9 +42,18 @@
 /// carries [`Recipe::V2`] with the text it digested, so it still verifies by the rules it was sealed
 /// under. `v2` is `v1` less the three priced figures (`pre_tier`, `priced`,
 /// `hooks[].priced_delta`); `v1` stays published too, and no node retains a `v1` record.
-pub const DIGEST_RECIPE: &str = "busbar.audit.digest.v3";
+///
+/// `v4` is `v3` plus `incarnation`, directly after `unit_key`. A unit key restarts at every boot of
+/// a node, so `unit_key` alone named two different units across two boots; the boot the unit ran in
+/// (`What::incarnation`) makes the pair unique. `v3` is not rewritten: its page,
+/// `docs/audit-chain-digest-v3.md`, stays published, and a record sealed under it carries
+/// [`Recipe::V3`] and verifies by `v3`'s rules.
+pub const DIGEST_RECIPE: &str = "busbar.audit.digest.v4";
 
-/// The name of the recipe before [`DIGEST_RECIPE`]: `v3` plus `currency`.
+/// The name of the recipe before [`DIGEST_RECIPE`]: `v4` less `incarnation`.
+pub const DIGEST_RECIPE_V3: &str = "busbar.audit.digest.v3";
+
+/// The name of the recipe before [`DIGEST_RECIPE_V3`]: `v3` plus `currency`.
 pub const DIGEST_RECIPE_V2: &str = "busbar.audit.digest.v2";
 
 /// WHICH RECIPE A RECORD WAS SEALED UNDER — and so the rules it verifies by.
@@ -63,8 +72,11 @@ pub enum Recipe {
         /// The text the `v2` preimage framed in the `currency` position.
         currency: String,
     },
-    /// `busbar.audit.digest.v3`: every record this build seals.
+    /// `busbar.audit.digest.v3`: `v4` without `incarnation`. Kept so a record sealed under it
+    /// still verifies.
     V3,
+    /// `busbar.audit.digest.v4`: every record this build seals.
+    V4,
 }
 
 impl Recipe {
@@ -73,7 +85,8 @@ impl Recipe {
     pub fn name(&self) -> &'static str {
         match self {
             Recipe::V2 { .. } => DIGEST_RECIPE_V2,
-            Recipe::V3 => DIGEST_RECIPE,
+            Recipe::V3 => DIGEST_RECIPE_V3,
+            Recipe::V4 => DIGEST_RECIPE,
         }
     }
 }
@@ -125,9 +138,9 @@ impl DigestField {
 /// EVERY FIELD THAT GOES INTO ONE RECORD'S DIGEST, IN ORDER.
 ///
 /// This is the recipe. `digest_of` hashes exactly this, the range read publishes exactly this, and
-/// the document at `docs/audit-chain-digest-v3.md` describes exactly this — for a record sealed
-/// under [`Recipe::V3`]. A record sealed under [`Recipe::V2`] gets the `v2` list, which
-/// `docs/audit-chain-digest-v2.md` describes.
+/// the document at `docs/audit-chain-digest-v4.md` describes exactly this — for a record sealed
+/// under [`Recipe::V4`] (`docs/audit-chain-digest-v3.md` for [`Recipe::V3`]). A record sealed
+/// under [`Recipe::V2`] gets the `v2` list, which `docs/audit-chain-digest-v2.md` describes.
 ///
 /// The repeated groups — the usage lines, the hooks that ran, the child units — are each preceded
 /// by their COUNT, which is what stops two different groupings from digesting identically. Their
@@ -149,6 +162,10 @@ pub fn digest_fields(record: &crate::record::AuditRecord) -> Vec<DigestField> {
         subject_value(&record.subject),
     ));
     f.push(DigestField::num("unit_key", record.what.unit_key.get()));
+    // `v4` names the boot the unit ran in beside its key: a unit key restarts at every boot.
+    if record.recipe == Recipe::V4 {
+        f.push(DigestField::num("incarnation", record.what.incarnation));
+    }
     f.push(DigestField::text("op_class", record.what.op_class.as_str()));
     f.push(DigestField::text(
         "destination",

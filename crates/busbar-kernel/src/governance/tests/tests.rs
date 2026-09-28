@@ -5511,6 +5511,7 @@ fn spend(gov: &GovState, cost: &crate::cost::CostModel) -> i64 {
 
 #[test]
 fn a_planes_request_fee_charges_its_requests_and_the_pools_fee_charges_the_pools_plane() {
+    use busbar_kernel_ledger::cost::{plane_fee_lane, PER_REQUEST};
     let (store, gov, k) = team_gov();
     let cost = plane_fee_cost(1_000);
     for _ in 0..2 {
@@ -5540,13 +5541,13 @@ fn a_planes_request_fee_charges_its_requests_and_the_pools_fee_charges_the_pools
         ledger.billable_requests, 2,
         "the flat fee base is the pools plane's"
     );
-    let lane = busbar_kernel_ledger::cost::plane_fee_lane("tp");
+    let lane = plane_fee_lane("tp");
     let row = ledger
         .models
         .iter()
         .find(|m| m.model == lane)
         .expect("fee lane");
-    assert_eq!(row.usage_units[busbar_kernel_ledger::cost::PER_REQUEST], 3);
+    assert_eq!(row.usage_units[PER_REQUEST], 3);
     let restarted = GovState::new(store, None).unwrap();
     restarted.hydrate_budgets(&cost, AT).unwrap();
     assert_eq!(spend(&restarted, &cost), 19);

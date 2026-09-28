@@ -19,7 +19,7 @@
 //! before and builds no record. Events are never its business, and nothing above `floor` is.
 
 use super::projection::{ProjectedRecord, Projection};
-use busbar_plugin_loader::{ExportField as F, ExportStream::Traces};
+use busbar_contract::abi::cold::export::{ExportField as F, ExportStream::Traces};
 use serde_json::Value;
 use std::sync::Arc;
 use std::time::{Instant, UNIX_EPOCH};

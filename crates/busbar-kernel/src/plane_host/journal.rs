@@ -239,6 +239,24 @@ pub(crate) fn set_stream_sink_for_test(
     }
 }
 
+/// REPORT THE CHAIN BREAKS A RESUME FOUND, once each, after an append. A scope evicted from the
+/// journal's cache is read back from the store to take its next record; a persisted tail that does not
+/// verify is tamper evidence the journal records and resumes past (it never refuses the write). This
+/// drains those records and names each on the diagnostics envelope, so runtime tamper evidence is as
+/// visible as the boot restore's.
+fn report_resume_breaks(h: &StreamHandle) {
+    for brk in h.journal.take_resume_breaks() {
+        crate::diagnostics::diag_error!(
+            crate::diagnostics::PLANE_JOURNAL_RESUME_CHAIN_BROKEN,
+            stream = %h.kind,
+            break_detail = %brk,
+            "plane journal CHAIN VERIFICATION FAILED on resume — the persisted tail of an evicted \
+             scope does not verify against its own hash chain. The chain resumes from the broken \
+             tail; the write is not refused."
+        );
+    }
+}
+
 /// Read a borrowed `(ptr, len)` range into owned bytes; a null/empty range is the empty vector.
 fn read_bytes(ptr: *const u8, len: usize) -> Vec<u8> {
     if ptr.is_null() || len == 0 {
@@ -555,7 +573,9 @@ pub(crate) fn journal_append_scoped_full(
         };
         let reframe =
             |sc: &str, body: &[u8]| call_reframe(host, kind_id, h.reframe, h.framing, sc, body);
-        match h.journal.append_scoped(&h.kind, scope, input, &reframe) {
+        let appended = h.journal.append_scoped(&h.kind, scope, input, &reframe);
+        report_resume_breaks(&h);
+        match appended {
             Ok(record) => Ok((
                 record.seq(),
                 record.prev_hash().to_string(),
@@ -607,7 +627,9 @@ pub(crate) fn journal_append_scoped_full_hostless(
         let reframe = |sc: &str, body: &[u8]| {
             call_reframe(null_host, kind_id, h.reframe, h.framing, sc, body)
         };
-        match h.journal.append_scoped(&h.kind, scope, input, &reframe) {
+        let appended = h.journal.append_scoped(&h.kind, scope, input, &reframe);
+        report_resume_breaks(&h);
+        match appended {
             Ok(record) => Ok((
                 record.seq(),
                 record.prev_hash().to_string(),
@@ -667,7 +689,9 @@ pub(crate) extern "C-unwind" fn journal_append_scoped(
         };
         let reframe =
             |sc: &str, body: &[u8]| call_reframe(host, kind_id, h.reframe, h.framing, sc, body);
-        match h.journal.append_scoped(&h.kind, &scope, input, &reframe) {
+        let appended = h.journal.append_scoped(&h.kind, &scope, input, &reframe);
+        report_resume_breaks(&h);
+        match appended {
             Ok(record) => Seq(record.seq()),
             Err(_) => Seq::NONE,
         }

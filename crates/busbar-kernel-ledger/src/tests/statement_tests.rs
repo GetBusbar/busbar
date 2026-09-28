@@ -4,17 +4,15 @@
 //! Statements cut as of a snapshot.
 //!
 //! The claim proved here is the one the whole design rests on. A statement re-derives its figures
-//! from the quantities and never sums a cached price — so the answer does not depend on whether the
-//! recompute has been round yet, and hand-corrupting every cache in the book leaves it untouched.
+//! from the quantities: a booked line carries no price at all (#71, #77(3)), so there is nothing but
+//! the quantities and the dated history for it to read.
 //! An amendment reprices a window as a dated VIEW (#77(3)); it books no adjusting line (#77(2)).
 
 use crate::cost::{Author, CardEntryDraft, History, HistorySeq, LaneClass, RateCard};
 use busbar_contract::caps::MeterClassId;
 
-use crate::recompute::{
-    price_line, DerivedPrice, Divergence, HistoryArchive, Posting, PostingOrigin, PricedLine,
-    SealedHistory,
-};
+use crate::cost::HistoryView;
+use crate::recompute::{Divergence, Posting, PostingOrigin, PricedLine};
 use crate::totals::{totals_as_of, WindowStart};
 
 use super::fixtures::key;
@@ -64,13 +62,27 @@ fn amended() -> History {
     history
 }
 
-fn archive_of(history: History) -> SealedHistory {
-    SealedHistory::new(history)
+/// The dated history a statement is cut against, as the fixtures read it.
+struct Archive(History);
+
+impl Archive {
+    fn head(&self) -> Option<HistorySeq> {
+        self.0.head()
+    }
+
+    fn view_at(&self, at: HistorySeq) -> Option<HistoryView<'_>> {
+        let head = self.0.head()?;
+        (at <= head).then(|| self.0.snapshot(at))
+    }
 }
 
-/// A line arriving at `arrived_ms`, with its cache filled from the history it is settled under.
-fn line(node_seq: u64, arrived_ms: u64, archive: &SealedHistory) -> Posting {
-    let mut line = Posting {
+fn archive_of(history: History) -> Archive {
+    Archive(history)
+}
+
+/// A line arriving at `arrived_ms`: quantities and an instant, and no price.
+fn line(node_seq: u64, arrived_ms: u64) -> Posting {
+    Posting {
         node: 1,
         node_seq,
         key: key("b"),
@@ -89,58 +101,20 @@ fn line(node_seq: u64, arrived_ms: u64, archive: &SealedHistory) -> Posting {
         fee_count: 1,
         tier_bp: TIER_BP,
         arrived_ms,
-        cached: DerivedPrice::default(),
         origin: PostingOrigin::Client,
-    };
-    let head = archive.head().expect("the fixture's archive has a head");
-    let view = archive.view_at(head).expect("and a snapshot at it");
-    let priced = price_line(&line, &view, TIER_BP).expect("the fixture prices");
-    line.cached = DerivedPrice {
-        history_seq: head,
-        card_seq: priced.card_seq,
-        pre_tier_nanos: priced.pre_tier_nanos as i128,
-        priced_nanos: priced.priced_nanos as i128,
-    };
-    line
+    }
 }
 
 /// Two lines: one inside the interval an amendment will cover, one outside it.
-fn book(archive: &SealedHistory) -> Vec<Posting> {
-    vec![line(1, EARLY_MS, archive), line(2, LATE_MS, archive)]
-}
-
-#[test]
-fn a_statement_re_derives_from_the_quantities_and_never_sums_a_cached_price() {
-    // THE RULE, red-proofed the only way it can be: corrupt every cached figure in the book and
-    // assert the statement does not move. A statement that added the caches up would move by
-    // exactly the corruption; this one cannot see it at all.
-    let archive = archive_of(opening());
-    let head = archive.head().unwrap();
-    let view = archive.view_at(head).unwrap();
-    let mut lines = book(&archive);
-
-    let honest = totals_as_of(&view, WINDOW, lines.iter());
-    assert!(
-        honest.total_nanos() > 0,
-        "a statement of nothing would agree with an unimplemented lookup"
-    );
-
-    for line in &mut lines {
-        line.cached.priced_nanos = 999_999_999;
-        line.cached.pre_tier_nanos = -1;
-    }
-    let over_a_corrupted_book = totals_as_of(&view, WINDOW, lines.iter());
-    assert_eq!(
-        honest, over_a_corrupted_book,
-        "the read path must not be able to see a cache at all"
-    );
+fn book() -> Vec<Posting> {
+    vec![line(1, EARLY_MS), line(2, LATE_MS)]
 }
 
 #[test]
 fn a_statement_is_cut_as_of_a_snapshot_and_two_snapshots_differ_by_the_lines_the_amendment_touched()
 {
     let archive = archive_of(amended());
-    let lines = book(&archive_of(opening()));
+    let lines = book();
 
     let before = totals_as_of(
         &archive.view_at(HistorySeq::OPENING).unwrap(),
@@ -191,7 +165,7 @@ fn a_statement_lists_the_lines_it_could_not_price_rather_than_counting_them_as_z
     });
     let archive = archive_of(history);
     let view = archive.view_at(archive.head().unwrap()).unwrap();
-    let lines = book(&archive_of(opening()));
+    let lines = book();
 
     let statement = totals_as_of(&view, WINDOW, lines.iter());
     assert_eq!(statement.unpriceable.len(), 1);
@@ -217,7 +191,7 @@ fn a_statement_lists_the_lines_it_could_not_price_rather_than_counting_them_as_z
 fn a_statement_names_one_window_and_never_sums_two() {
     let archive = archive_of(opening());
     let view = archive.view_at(archive.head().unwrap()).unwrap();
-    let mut lines = book(&archive);
+    let mut lines = book();
     lines[1].window_start = WINDOW + 86_400;
 
     let statement = totals_as_of(&view, WINDOW, lines.iter());

@@ -52,8 +52,15 @@ pub mod capture;
 // host buffers filled through `Lent`/`HostBuf`, the instance typed through `Instance`.
 pub mod lent;
 pub mod safe;
-pub use lent::{HostBuf, Lent, LentList};
-pub use safe::{Instance, Plain, Published, Safe, SafeSlot};
+pub use lent::{open_failed, HostBuf, Lent, LentList, SignalScalar};
+// A SLOT'S `out`, WRITTEN BY THE SDK: scalars set, every pointer through an SDK writer.
+pub mod out;
+pub use out::{Out, Scalar};
+// A PLUGIN'S CONNECTIONS: the host connector for one op on one ticket, Ready|Pending, and exchange().
+pub mod conn;
+// ONE REQUEST, ONE REPLY over the connector: exchange() (framed) and send_and_ack() (any transport).
+pub mod exchange;
+pub use safe::{Instance, Safe, SafeSlot};
 // THE HOST SERVICES, PLUGIN SIDE: the one home of every safe host-service wrapper.
 pub mod services;
 pub use services::{ServiceError, Services};
@@ -62,6 +69,11 @@ pub use services::{ServiceError, Services};
 pub mod auth_door;
 // THE STORE KIND'S TYPED SDK: the trait a store implements to be served through the store v3 table.
 pub mod store;
+// PUBLISHED GENERATION DATA: the SDK owns what a plugin publishes (`abi::sdk::publish`).
+pub mod publish;
+pub use publish::Generations;
+// THE LIFECYCLE, ONCE FOR EVERY KIND: the nine lifecycle slots over a kind's `Life` (`abi::sdk::life`).
+pub mod life;
 
 // The `#[macro_export]` export macros, named at this module's path too, so a plugin writes
 // `busbar_contract::abi::sdk::export_store_plugin!` exactly where it wrote

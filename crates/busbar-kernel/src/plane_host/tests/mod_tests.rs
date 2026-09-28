@@ -40,9 +40,6 @@ fn builds_a_full_vtable_with_frozen_preamble() {
     assert!(vt.egress_open.is_some());
     assert!(vt.auth_resolve.is_some());
     assert!(vt.gate_scan.is_some());
-    // The minor-19 metering-lease slots are now WIRED (no longer the reserved `None`).
-    assert!(vt.cost_reserve.is_some());
-    assert!(vt.cost_settle.is_some());
     // The minor-30 HOST SERVICES are granted: a dropped-in plane gets the contract services a
     // linked one does (ARCHITECT SD-3 queue (6)).
     assert!(vt.entropy_fill.is_some());
@@ -153,7 +150,6 @@ fn wired_meter_charge_charges_a_usage_pod() {
             component: RawUsageComponent::of(UsageComponent::Tokens),
             _reserved: 0,
             amount: 1_000,
-            unit_cost_micros: 3,
             admission: AdmissionId(42),
             key_id_ptr: core::ptr::null(),
             key_id_len: 0,
@@ -169,12 +165,8 @@ fn wired_meter_charge_charges_a_usage_pod() {
             MeterOutcome::Charged,
             "a well-formed usage charges"
         );
-        // A zero-cost usage still charges (a sparse, empty breakdown is valid).
-        let zero = Usage {
-            amount: 0,
-            unit_cost_micros: 0,
-            ..usage
-        };
+        // A zero-count usage still charges.
+        let zero = Usage { amount: 0, ..usage };
         assert_eq!(
             (vt.meter_charge.unwrap())(host, &zero as *const Usage),
             MeterOutcome::Charged

@@ -1,0 +1,397 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+
+//! EVERY CLASS A PLANE REPORTS, IT DECLARES (`BUSBAR-1.6.0.md` §7).
+//!
+//! A unit's one line refuses a reported class no plane declared — fail-closed, never billed at
+//! zero. That refusal is the backstop for a plugin defect; an in-tree plane must never trip it. So
+//! this test reads every report site in the in-tree planes — each place a class key enters a usage
+//! report (`usage_units`) — and holds the classes each emits against its plane's DECLARED billable
+//! classes (`PlaneDeclaration::billable_classes`), both read off the source.
+//!
+//! Two halves, both RED-able:
+//! * COMPLETENESS: every report-site shape found in the scanned crates is a site listed below. A new
+//!   site is RED until it is listed with the classes it emits.
+//! * DECLARATION: every class a listed site emits resolves (by its constant, read off its defining
+//!   file) to a class its plane declares. A site emitting an undeclared class is RED.
+//!
+//! A listed site marked DEAD has no non-test caller: it is held instead to STAY dead, so the day it
+//! gains a caller it has to be declared first.
+
+use std::collections::BTreeSet;
+use std::path::{Path, PathBuf};
+
+fn root() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("xtask sits in the workspace")
+        .to_path_buf()
+}
+
+/// The crates whose non-test sources are scanned for report sites.
+const SCANNED: &[&str] = &[
+    "crates/busbar-plane-llm/src",
+    "crates/busbar-plane-mcp/src",
+    "crates/busbar-plane-a2a/src",
+    "crates/busbar-plane-streaming/src",
+    "crates/busbar-plane-decisions/src",
+    "crates/busbar-llm/src",
+    "crates/busbar-mcp/src",
+    "crates/busbar-a2a/src",
+    "crates/busbar-voice/src",
+];
+
+/// The shapes a class key enters a usage report through.
+const SHAPES: &[&str] = &[
+    "usage_units.insert(",
+    "usage_units.entry(",
+    "=> Billing::Counted {",
+    "usage_units: std::collections::BTreeMap::from(",
+    "usage_units: class_counts(",
+];
+
+/// Where a plane's `PlaneDeclaration` (and so its `billable_classes`) is written.
+const DECLARATIONS: &[(&str, &str)] = &[
+    ("llm", "crates/busbar-llm/src/lib.rs"),
+    ("mcp", "crates/busbar-mcp/src/mcp/mod.rs"),
+    ("a2a", "crates/busbar-a2a/src/a2a/mod.rs"),
+    ("streaming", "crates/busbar-voice/src/lib.rs"),
+];
+
+/// One report site: its plane, its file, its shape and how many times the shape occurs there, and
+/// the classes it emits — each a constant path, resolved off its defining file.
+struct Site {
+    plane: &'static str,
+    file: &'static str,
+    shape: &'static str,
+    occurrences: usize,
+    emits: &'static [&'static str],
+    /// `Some(fn)`: the site has no non-test caller of `fn`, and must keep having none.
+    dead: Option<&'static str>,
+}
+
+const SITES: &[Site] = &[
+    // The four reserved token tiers every llm dialect reports (`tier_usage`).
+    Site {
+        plane: "llm",
+        file: "crates/busbar-plane-llm/src/codec/wire_shim.rs",
+        shape: "usage_units.insert(",
+        occurrences: 1,
+        emits: &[
+            "busbar_contract::records::UNIT_INPUT",
+            "busbar_contract::records::UNIT_OUTPUT",
+            "busbar_contract::records::UNIT_CACHE_READ",
+            "busbar_contract::records::UNIT_CACHE_WRITE",
+        ],
+        dead: None,
+    },
+    // A rerank's billed search units: the one open class an llm codec counts.
+    Site {
+        plane: "llm",
+        file: "crates/busbar-plane-llm/src/codec/ir/rerank.rs",
+        shape: "=> Billing::Counted {",
+        occurrences: 1,
+        emits: &["busbar_plane_llm::codec::ir::rerank::SEARCH_UNITS_CLASS"],
+        dead: None,
+    },
+    // The Meter step's billed map: the tiers above plus the tap's `Billing::Counted` classes,
+    // FORWARDED verbatim — it mints no class of its own.
+    Site {
+        plane: "llm",
+        file: "crates/busbar-llm/src/unit/meter.rs",
+        shape: "usage_units.entry(",
+        occurrences: 1,
+        emits: &[],
+        dead: None,
+    },
+    Site {
+        plane: "mcp",
+        file: "crates/busbar-mcp/src/mcp/method.rs",
+        shape: "usage_units: std::collections::BTreeMap::from(",
+        occurrences: 1,
+        emits: &["busbar_plane_mcp::meta::CLASS_TOOL_CALLS"],
+        dead: None,
+    },
+    Site {
+        plane: "a2a",
+        file: "crates/busbar-a2a/src/a2a/receive.rs",
+        shape: "usage_units: std::collections::BTreeMap::from(",
+        occurrences: 1,
+        emits: &["busbar_plane_a2a::meta::CLASS_BYTES"],
+        dead: None,
+    },
+    // `class_counts` (busbar-plane-streaming's session.rs) names these six.
+    Site {
+        plane: "streaming",
+        file: "crates/busbar-voice/src/runtime/metering.rs",
+        shape: "usage_units: class_counts(",
+        occurrences: 1,
+        emits: &[
+            "busbar_plane_streaming::meta::CLASS_AUDIO_TOKENS_IN",
+            "busbar_plane_streaming::meta::CLASS_AUDIO_TOKENS_OUT",
+            "busbar_plane_streaming::meta::CLASS_TEXT_TOKENS_IN",
+            "busbar_plane_streaming::meta::CLASS_TEXT_TOKENS_OUT",
+            "busbar_plane_streaming::meta::CLASS_AUDIO_SECONDS_IN",
+            "busbar_plane_streaming::meta::CLASS_TOOL_CALLS",
+        ],
+        dead: None,
+    },
+    // DEAD: `to_billing_usage` would report the reserved tiers, which streaming does not declare.
+    // It has no non-test caller, and its owner deletes it (FOLD-STREAMING); once it is gone this
+    // entry is struck.
+    Site {
+        plane: "streaming",
+        file: "crates/busbar-plane-streaming/src/codec/ir/usage.rs",
+        shape: "usage_units.insert(",
+        occurrences: 3,
+        emits: &[
+            "busbar_contract::records::UNIT_INPUT",
+            "busbar_contract::records::UNIT_OUTPUT",
+            "busbar_contract::records::UNIT_CACHE_READ",
+        ],
+        dead: Some("to_billing_usage("),
+    },
+];
+
+/// Every non-test `.rs` file under `dir`.
+fn sources(dir: &Path, out: &mut Vec<PathBuf>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        if path.is_dir() {
+            if name != "tests" && name != "fixtures" {
+                sources(&path, out);
+            }
+        } else if name.ends_with(".rs") && !name.ends_with("_tests.rs") && name != "tests.rs" {
+            out.push(path);
+        }
+    }
+}
+
+/// The literal a constant path names, read off the file that defines it:
+/// `busbar_plane_mcp::meta::CLASS_BYTES` is `crates/busbar-plane-mcp/src/meta.rs`'s
+/// `const CLASS_BYTES: … = MeterClassId::new("bytes")` (or `= "bytes"`).
+fn resolve(root: &Path, path: &str) -> Result<String, String> {
+    let segments: Vec<&str> = path.split("::").collect();
+    let (krate, rest) = segments.split_first().ok_or("an empty path")?;
+    let (name, modules) = rest.split_last().ok_or("a path with no constant")?;
+    let dir = root
+        .join("crates")
+        .join(krate.replace('_', "-"))
+        .join("src");
+    let candidates = if modules.is_empty() {
+        vec![dir.join("lib.rs")]
+    } else {
+        let joined = modules.join("/");
+        vec![
+            dir.join(format!("{joined}.rs")),
+            dir.join(joined).join("mod.rs"),
+        ]
+    };
+    let file = candidates
+        .iter()
+        .find(|f| f.exists())
+        .ok_or_else(|| format!("{path}: no defining file among {candidates:?}"))?;
+    let src = std::fs::read_to_string(file).map_err(|e| format!("{path}: {e}"))?;
+    literal_of(&src, name).ok_or_else(|| format!("{path}: no `const {name}` literal in {file:?}"))
+}
+
+/// The string literal `const name` is defined as in `src`.
+fn literal_of(src: &str, name: &str) -> Option<String> {
+    let at = src.find(&format!("const {name}:"))?;
+    let tail = &src[at..];
+    let end = tail.find(';')?;
+    let def = &tail[..end];
+    let open = def.find('"')?;
+    let close = def[open + 1..].find('"')?;
+    Some(def[open + 1..open + 1 + close].to_string())
+}
+
+/// The classes a plane's `PlaneDeclaration::billable_classes` names, resolved.
+fn declared(root: &Path, plane: &str) -> Result<BTreeSet<String>, String> {
+    let (_, file) = DECLARATIONS
+        .iter()
+        .find(|(p, _)| *p == plane)
+        .ok_or_else(|| format!("no declaration file for plane {plane}"))?;
+    let src = std::fs::read_to_string(root.join(file)).map_err(|e| format!("{file}: {e}"))?;
+    let start = src
+        .find("billable_classes: &[")
+        .ok_or_else(|| format!("{file}: no billable_classes"))?;
+    let block = &src[start..];
+    let end = block.find("],").ok_or("an unterminated billable_classes")?;
+    let mut classes = BTreeSet::new();
+    for line in block[..end].lines() {
+        let Some(expr) = line.trim().strip_prefix("class:") else {
+            continue;
+        };
+        let expr = expr
+            .trim()
+            .trim_end_matches(',')
+            .trim_end_matches(".as_str()");
+        classes.insert(if let Some(lit) = expr.strip_prefix('"') {
+            lit.trim_end_matches('"').to_string()
+        } else {
+            resolve(root, expr)?
+        });
+    }
+    Ok(classes)
+}
+
+/// Every finding for `sites` over `found` (file -> shape -> count) — empty is the only good answer.
+fn findings(
+    root: &Path,
+    sites: &[Site],
+    found: &[(String, &'static str, usize)],
+    callers_of: &dyn Fn(&str, &str) -> usize,
+) -> Vec<String> {
+    let mut out = Vec::new();
+    for (file, shape, count) in found {
+        let listed = sites
+            .iter()
+            .find(|s| s.file == file && s.shape == *shape)
+            .map_or(0, |s| s.occurrences);
+        if listed != *count {
+            out.push(format!(
+                "{file}: `{shape}` occurs {count} time(s), {listed} listed — list the new report \
+                 site with the classes it emits"
+            ));
+        }
+    }
+    for site in sites {
+        // A DEAD site that has been deleted is the outcome it is listed for; any other listed site
+        // must still be in the source, exactly as listed.
+        let present = found
+            .iter()
+            .any(|(f, s, n)| f == site.file && *s == site.shape && *n == site.occurrences);
+        let deleted = !found
+            .iter()
+            .any(|(f, s, _)| f == site.file && *s == site.shape);
+        if !present && !(site.dead.is_some() && deleted) {
+            out.push(format!(
+                "{}: listed `{}` x{} is not in the source",
+                site.file, site.shape, site.occurrences
+            ));
+        }
+        if let Some(func) = site.dead {
+            let n = callers_of(func, site.file);
+            if n != 0 {
+                out.push(format!(
+                    "{}: `{func}` gained {n} non-test caller(s); declare what it reports first",
+                    site.file
+                ));
+            }
+            continue;
+        }
+        let declared = match declared(root, site.plane) {
+            Ok(d) => d,
+            Err(e) => {
+                out.push(e);
+                continue;
+            }
+        };
+        for path in site.emits {
+            match resolve(root, path) {
+                Ok(class) if declared.contains(&class) => {}
+                Ok(class) => out.push(format!(
+                    "{}: reports `{class}` ({path}), which plane `{}` does not declare \
+                     (declared: {declared:?})",
+                    site.file, site.plane
+                )),
+                Err(e) => out.push(e),
+            }
+        }
+    }
+    out
+}
+
+/// Each (file, shape, count) the scanned sources hold.
+type Found = Vec<(String, &'static str, usize)>;
+
+/// Every (file, shape, count) the scanned sources hold, and every scanned file's text.
+fn scan(root: &Path) -> (Found, Vec<(String, String)>) {
+    let mut files = Vec::new();
+    for dir in SCANNED {
+        sources(&root.join(dir), &mut files);
+    }
+    files.sort();
+    let mut found = Vec::new();
+    let mut texts = Vec::new();
+    for file in files {
+        let Ok(src) = std::fs::read_to_string(&file) else {
+            continue;
+        };
+        let rel = file
+            .strip_prefix(root)
+            .unwrap_or(&file)
+            .to_string_lossy()
+            .into_owned();
+        for shape in SHAPES {
+            let n = src.matches(shape).count();
+            if n > 0 {
+                found.push((rel.clone(), *shape, n));
+            }
+        }
+        texts.push((rel, src));
+    }
+    (found, texts)
+}
+
+#[test]
+fn every_class_an_in_tree_plane_reports_is_one_it_declares() {
+    let root = root();
+    let (found, texts) = scan(&root);
+    let callers_of = |func: &str, defined_in: &str| {
+        texts
+            .iter()
+            .map(|(file, src)| {
+                let n = src.matches(func).count();
+                // The definition's own line is not a caller.
+                if file == defined_in {
+                    n.saturating_sub(src.matches(&format!("fn {func}")).count())
+                } else {
+                    n
+                }
+            })
+            .sum()
+    };
+    let findings = findings(&root, SITES, &found, &callers_of);
+    assert!(findings.is_empty(), "{findings:#?}");
+}
+
+/// THE RED ARM: the same check, fed a site that reports a class its plane does not declare, and a
+/// report site nobody listed, must find both.
+#[test]
+fn an_undeclared_class_and_an_unlisted_site_are_both_red() {
+    let root = root();
+    let undeclared = [Site {
+        plane: "a2a",
+        file: "crates/busbar-a2a/src/a2a/receive.rs",
+        shape: "usage_units: std::collections::BTreeMap::from(",
+        occurrences: 1,
+        // mcp's tool calls, reported by a2a — which declares only bytes.
+        emits: &["busbar_plane_mcp::meta::CLASS_TOOL_CALLS"],
+        dead: None,
+    }];
+    let found = vec![
+        (
+            "crates/busbar-a2a/src/a2a/receive.rs".to_string(),
+            "usage_units: std::collections::BTreeMap::from(",
+            1,
+        ),
+        (
+            "crates/busbar-plane-a2a/src/new_site.rs".to_string(),
+            "usage_units.insert(",
+            1,
+        ),
+    ];
+    let red = findings(&root, &undeclared, &found, &|_, _| 0);
+    assert!(
+        red.iter()
+            .any(|f| f.contains("tool_calls") && f.contains("does not declare")),
+        "{red:#?}"
+    );
+    assert!(red.iter().any(|f| f.contains("new_site.rs")), "{red:#?}");
+}

@@ -494,7 +494,7 @@ fn running_past_the_reservation_posts_the_overdraft_rather_than_refusing() {
         door: Door::Own(100),
         spend: 400,
         evidence: Evidence {
-            located: Some(400),
+            reported: Some(400),
             ..Evidence::default()
         },
         ..TestUnits::default()

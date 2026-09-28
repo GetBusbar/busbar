@@ -1170,3 +1170,37 @@ fn a_back_dated_correction_survives_a_restart() {
     drop(book);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// APPLYING A CONFIGURATION REGISTERS EVERY CLASS A UNIT MAY REPORT: the reserved four and each
+/// open class a lane's `units:` names resolve afterwards by lookup, and a class nobody configured or
+/// declared does not.
+#[test]
+fn applying_rates_registers_the_classes_a_unit_may_report() {
+    let fees = plane_fees();
+    let lanes = lanes_at(1.0);
+    process_holder().apply_rates(
+        &busbar_kernel::rate_apply::RawRates {
+            lanes: &lanes,
+            units: &[(
+                "gpt".to_string(),
+                "configured_open_units".to_string(),
+                2_000,
+            )],
+            flat_minor: 0,
+            present: false,
+            plane_fees: &fees,
+        },
+        0,
+    );
+    for class in busbar_contract::records::RESERVED_UNITS {
+        assert!(
+            busbar_contract::Registration::resolve(class).is_some(),
+            "{class}"
+        );
+    }
+    assert!(busbar_contract::Registration::resolve("configured_open_units").is_some());
+    assert_eq!(
+        busbar_contract::Registration::resolve("a_class_nobody_declared_or_configured"),
+        None
+    );
+}

@@ -512,6 +512,13 @@ impl SelfAttestingAnchor {
     pub fn new() -> Self {
         SelfAttestingAnchor::default()
     }
+
+    /// One whose head is already `head` — the last checkpoint a node's own chain carries, read back
+    /// at boot, so a node that restarts is compared against the history it had anchored rather than
+    /// against nothing.
+    pub fn seeded(head: Option<AnchoredHead>) -> Self {
+        SelfAttestingAnchor { head }
+    }
 }
 
 impl CheckpointAnchor for SelfAttestingAnchor {

@@ -260,6 +260,11 @@ fn named(sites: &[(String, Reason)]) -> BTreeSet<&str> {
         .collect()
 }
 
+/// The audit journal's decoder (`audit.v4`): it reads a sealed record's outcome back — every reason
+/// a record can carry, so the whole vocabulary — and hands it to nothing but the record it rebuilds,
+/// whose digest must then match. It never raises an abort and never refuses a unit.
+const AUDIT_JOURNAL_DECODER: &str = "busbar-kernel-audit/src/journal.rs";
+
 /// The kernel's abort vocabulary is `ClientGone` and `Drain`, and no money reason is in it.
 ///
 /// These are the two ends a kernel raises on its own initiative: the client went away, and the node
@@ -268,10 +273,32 @@ fn named(sites: &[(String, Reason)]) -> BTreeSet<&str> {
 #[test]
 fn no_abort_the_shipped_kernel_can_raise_carries_a_money_reason() {
     let built = census(abort_sites_in);
+    // THE ONE EXEMPT READER: the audit journal decoder rebuilds an outcome a sealed record already
+    // carries, and accepts it only when it renders back to exactly the recorded tag. It ends no unit
+    // and raises no abort; it reads one back. Named here so a second reader is still refused.
     let computed: Vec<&(String, Reason)> = built
         .iter()
-        .filter(|(_, r)| matches!(r, Reason::Computed(_)))
+        .filter(|(file, r)| matches!(r, Reason::Computed(_)) && file != AUDIT_JOURNAL_DECODER)
         .collect();
+    // THE EXEMPTION CANNOT QUIETLY WIDEN: the exempt decoder names nothing that can refuse a unit,
+    // end one, post money or decide a step. The day it does, it is no longer only a reader.
+    let decoder = std::fs::read_to_string(crates_root().join(AUDIT_JOURNAL_DECODER))
+        .expect("the audit journal decoder exists");
+    for forbidden in [
+        "Refusal",
+        "UnitEnd",
+        "Posted",
+        "HoldAccrual",
+        "Decision",
+        "Grant<",
+        "teller",
+    ] {
+        assert!(
+            !decoder.contains(forbidden),
+            "{AUDIT_JOURNAL_DECODER} names `{forbidden}`: the exempt decoder may only read an \
+             outcome back, never refuse, end, post or decide"
+        );
+    }
     assert!(
         computed.is_empty(),
         "an abort whose reason is not written at the site cannot be answered by reading: {computed:?}"
@@ -429,13 +456,25 @@ fn every_value_a_computed_refusal_could_carry_excludes_the_ceiling_and_the_stale
     let mut values: BTreeSet<(String, String)> = BTreeSet::new();
     for (file, text) in &sources {
         for name in ["OverdraftCeiling", "StaleSlice"] {
-            let needle = format!("::{name}");
+            // `ReasonCode::` values only, the type this test is named for (ARCHITECT ruling
+            // 2026-10-01). The plane ABI's `RefusalCode` encode arms and its `ALL` list name the
+            // same two variants as kernel->plane WIRE codes: a plane receives them and never sends
+            // them, because the plane->kernel decode answers no reason for either
+            // (`a_plane_sent_ceiling_or_stale_slice_code_decodes_to_no_reason`, below).
+            let needle = format!("ReasonCode::{name}");
             let mut rest = 0;
             while let Some(found) = text[rest..].find(&needle) {
                 let at = rest + found;
                 let end = at + needle.len();
                 rest = end;
                 let after = &text[end..];
+                if text[..at]
+                    .chars()
+                    .next_back()
+                    .is_some_and(|c| c.is_alphanumeric() || c == '_')
+                {
+                    continue; // another type whose name ends in `ReasonCode`
+                }
                 if after
                     .chars()
                     .next()
@@ -499,7 +538,7 @@ fn every_value_a_computed_refusal_could_carry_excludes_the_ceiling_and_the_stale
         .collect();
     assert_eq!(
         decoders,
-        BTreeSet::from(["busbar-kernel/src/inflight.rs"]),
+        BTreeSet::from(["busbar-kernel/src/inflight.rs", AUDIT_JOURNAL_DECODER]),
         "a new reader of the whole reason vocabulary can hand out any reason, the two included"
     );
 }
@@ -584,4 +623,40 @@ fn the_overdraft_ceiling_is_a_verdict_no_shipped_path_branches_on() {
         with_a_value.is_empty(),
         "SetOverdraftCeiling is flag-only; something gave it a payload: {with_a_value:?}"
     );
+}
+
+/// THE PLANE->KERNEL HALF of the carried-refusal claim (ARCHITECT ruling 2026-10-01): the overdraft
+/// ceiling and a stale slice are kernel-only money verdicts. Their wire codes (23, 24) exist for the
+/// kernel->plane direction; a plane that sends either is answering malformed, never carrying the
+/// verdict: the decode answers no reason, and a plane tail row naming either is refused.
+///
+/// RED: a decode that answers `Some` for 23 or 24 (as the wire table's did before this guard) fails
+/// the first assertion.
+#[test]
+fn a_plane_sent_ceiling_or_stale_slice_code_decodes_to_no_reason() {
+    use busbar_contract::abi::plane::check::check_refusal_statuses;
+    use busbar_contract::abi::plane::{reason_code, reason_of, RefusalStatus, REFUSAL_ANY_DIALECT};
+    use busbar_contract::caps::ReasonCode;
+
+    for (reason, wire) in [
+        (ReasonCode::OverdraftCeiling, 23),
+        (ReasonCode::StaleSlice, 24),
+    ] {
+        assert_eq!(reason_code(reason), wire, "{reason:?} keeps its wire code");
+        assert_eq!(
+            reason_of(wire),
+            None,
+            "a plane-sent {wire} decodes to no reason: it can never become {reason:?}"
+        );
+        let row = RefusalStatus {
+            dialect: REFUSAL_ANY_DIALECT,
+            reason: wire,
+            status: 402,
+            _reserved: 0,
+        };
+        assert!(
+            check_refusal_statuses(&[row], 1).is_err(),
+            "a plane tail row naming {wire} is malformed"
+        );
+    }
 }

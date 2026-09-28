@@ -103,6 +103,12 @@ impl SessionMetering {
     ) -> TurnVerdict {
         self.account.report_turn(&plane_counts(usage, counters))
     }
+
+    /// The session's open failed after its account counted it: the kernel gives the session fee
+    /// back (Q17-6), since a session that never opened charges nothing.
+    pub fn refund_open(self) {
+        self.account.refund_open();
+    }
 }
 
 /// A closed turn's raw counts per class, as the streaming plane reads them, on the neutral carrier

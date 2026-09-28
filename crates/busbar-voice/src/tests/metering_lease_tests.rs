@@ -27,6 +27,11 @@ fn key() -> busbar_contract::records::VirtualKey {
     }
 }
 
+/// The runtime every test here opens through, over `engine`.
+fn runtime(engine: Arc<DurableHandleEngine>) -> VoiceRuntime {
+    VoiceRuntime::new(engine, Arc::new(EchoToolExecutor))
+}
+
 async fn open(host: &Arc<FixtureHost>, rt: &VoiceRuntime, call_id: &str) -> axum::http::StatusCode {
     open_governed(GovernedOpen {
         rt,
@@ -46,10 +51,7 @@ async fn open(host: &Arc<FixtureHost>, rt: &VoiceRuntime, call_id: &str) -> axum
 
 #[tokio::test]
 async fn a_served_open_is_refused_when_the_kernel_reads_the_chain_dry() {
-    let rt = VoiceRuntime::new(
-        Arc::new(DurableHandleEngine::new()),
-        Arc::new(EchoToolExecutor),
-    );
+    let rt = runtime(Arc::new(DurableHandleEngine::new()));
     let dry = Arc::new(FixtureHost::new().governed().with_count_cap(0));
     assert_eq!(
         open(&dry, &rt, "call-dry").await,
@@ -68,10 +70,7 @@ async fn a_served_open_is_refused_when_the_kernel_reads_the_chain_dry() {
 async fn a_served_sessions_turn_lands_the_planes_counts_on_the_presenting_key() {
     let host = Arc::new(FixtureHost::new().governed());
     let rt = crate::runtime::build_runtime_hosted(
-        &VoiceRuntime::new(
-            Arc::new(DurableHandleEngine::new()),
-            Arc::new(EchoToolExecutor),
-        ),
+        &runtime(Arc::new(DurableHandleEngine::new())),
         Arc::clone(&host) as Arc<dyn EngineHost>,
     );
     let meter = crate::runtime::TurnMeter::new(
@@ -118,10 +117,7 @@ async fn a_served_sessions_turn_lands_the_planes_counts_on_the_presenting_key() 
 /// and a refused open counts none. What a session costs is the kernel's read of the plane's fees.
 #[tokio::test]
 async fn each_opened_session_counts_one_session_and_a_refused_open_counts_none() {
-    let rt = VoiceRuntime::new(
-        Arc::new(DurableHandleEngine::new()),
-        Arc::new(EchoToolExecutor),
-    );
+    let rt = runtime(Arc::new(DurableHandleEngine::new()));
     let sessions = |host: &FixtureHost| host.ledger_usage(&key().id).map_or(0, |u| u.sessions);
     let room = Arc::new(FixtureHost::new().governed().with_count_cap(1_000));
     open(&room, &rt, "call-one").await;
@@ -130,4 +126,25 @@ async fn each_opened_session_counts_one_session_and_a_refused_open_counts_none()
     let dry = Arc::new(FixtureHost::new().governed().with_count_cap(0));
     open(&dry, &rt, "call-dry").await;
     assert_eq!(sessions(&dry), 0, "a refused open counts nothing");
+}
+
+/// Q17-6 (ARCHITECT ruling R4): a session whose durable open fails never opened, so it charges no
+/// `fees.per_session`. The kernel's account counted the session before the durable open; the failed
+/// open gives that count back. RED before the refund: the count stayed at 1.
+#[tokio::test]
+async fn a_failed_durable_open_gives_back_its_session_fee() {
+    let engine = Arc::new(DurableHandleEngine::new());
+    engine.set_sink(Arc::new(super::mount_tests::MemStore::down()));
+    let rt = runtime(engine);
+    let host = Arc::new(FixtureHost::new().governed().with_count_cap(1_000));
+    let status = open(&host, &rt, "call-down").await;
+    assert!(
+        status.is_server_error(),
+        "a durable open that cannot land is refused, got {status}"
+    );
+    assert_eq!(
+        host.ledger_usage(&key().id).map_or(0, |u| u.sessions),
+        0,
+        "a session that never opened charges no session fee"
+    );
 }

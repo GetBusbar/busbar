@@ -718,11 +718,11 @@ fn governance_required() -> Response {
 /// attribution tail carries those exact three words, and the amount-0 charge validates an empty
 /// breakdown and always accrues ONE REQUEST. Fire-and-forget, exactly as the direct call was.
 ///
-/// **The amount is zero and that is the kernel's reading, not an omission.** The kernel's flat
-/// per-request fee needs three facts true together — a client origin, a SELECTED UPSTREAM, and a
-/// relayed first response frame (`busbar_kernel::teller::fee_count`, and the root's `fee_evidence`
-/// over this plane's draft). A verb busbar answers out of its own state selects no upstream and
-/// relays no frame, so its `fee_count` is zero however it is asked; what it draws is the request
+/// **The amount is zero and that is the plane's report, not an omission.** A flat per-request fee
+/// unit is reported only for a client's request that SELECTED AN UPSTREAM and relayed a response
+/// (the plane reports its fee units; the kernel writes them, `busbar_kernel::teller::settle_written`).
+/// A verb busbar answers out of its own state selects no upstream and relays no frame, so it
+/// reports no fee unit however it is asked; what it draws is the request
 /// accrual, which is what this charge is. A locally-answered call is therefore not free and not
 /// double-charged: it is the same one row every other call posts, with nothing priced on a hop that
 /// did not happen.
@@ -743,7 +743,6 @@ fn meter_request(
     // inside this call — it never crosses an `.await` and the request future stays `Send`.
     let usage = busbar_contract::abi::hot::Usage::with_attribution(
         busbar_contract::abi::hot::UsageComponent::Queries,
-        0,
         0,
         busbar_contract::abi::hot::AdmissionId::NONE,
         billed_key_id.as_bytes(),
@@ -3782,8 +3781,8 @@ fn uuid_like(body: &[u8], now: u64) -> String {
 pub(crate) fn a2a_routes(
     slot: &dyn std::any::Any,
 ) -> Vec<busbar_kernel::plane_routes::PlaneRouteSpec> {
+    use busbar_contract::abi::cold::endpoint::{RouteAuth, RouteMethod};
     use busbar_kernel::plane_routes::{PlaneReqCtx, PlaneRouteFuture, PlaneRouteSpec};
-    use busbar_plugin_loader::{RouteAuth, RouteMethod};
     let plane = slot
         .downcast_ref::<super::plane::A2aPlane>()
         .expect("the a2a plane's routes slot is an A2aPlane");

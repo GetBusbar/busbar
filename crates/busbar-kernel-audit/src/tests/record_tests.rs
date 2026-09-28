@@ -26,6 +26,7 @@ fn inputs(unit: u64) -> AuditInputs {
         subject: Subject::PrincipalId(format!("pseudonym-{unit}")),
         what: What {
             unit_key: UnitKey::new(unit),
+            incarnation: 0,
             op_class: OpClassId::new("chat.completion"),
             destination: Some("upstream-a".into()),
             parent: None,
@@ -83,7 +84,22 @@ fn frozen_record() -> crate::record::AuditRecord {
     with_payloads.outcome.unit_end = Outcome::Refused(StepName::Admit, ReasonCode::OverBudget);
     with_payloads.outcome.step = Some(StepName::Admit);
     with_payloads.outcome.finish = FinishClass::Error;
+    with_payloads.what.incarnation = 3;
     chain.seal(with_payloads, &token())
+}
+
+/// The `v3` digest [`frozen_record`]'s fields froze when `busbar.audit.digest.v3` was published: no
+/// `currency`, and no `incarnation` either. Pinned, never re-captured: a record sealed under `v3`
+/// carries exactly this and must keep verifying by it.
+const FROZEN_V3: &str = "d181a17502af4f637b8e3cd8ec7a107f07d4dc9fafe95375626e4709e2e7e26c";
+
+/// [`frozen_record`] AS A `v3` NODE SEALED AND STORED IT: the same fields and the `v3` digest. The
+/// incarnation the record carries is not in a `v3` preimage, so it cannot move this value.
+fn frozen_v3_record() -> crate::record::AuditRecord {
+    let mut record = frozen_record();
+    record.recipe = crate::recipe::Recipe::V3;
+    record.hash = FROZEN_V3.to_string();
+    record
 }
 
 /// The `v2` digest [`frozen_record`]'s fields froze when `busbar.audit.digest.v2` was published,
@@ -113,27 +129,30 @@ fn frozen_v2_record() -> crate::record::AuditRecord {
 /// position entered the digest. Moved a second time — and NOT re-captured — when the recipe became
 /// `busbar.audit.digest.v2` (#43, #71, #77(3): the record stores counts, never a price). Moved a
 /// third time, the same way, when the recipe became `busbar.audit.digest.v3` (#34, OWNER
-/// 2026-09-29: `currency` leaves the signed digest). Each move is a NEW RECIPE beside the old one:
-/// the v2 value is still pinned, byte for byte, by
+/// 2026-09-29: `currency` leaves the signed digest), and a fourth when it became
+/// `busbar.audit.digest.v4` (the boot's `incarnation` enters the digest after `unit_key`, so two
+/// boots that mint the same unit key seal two different records). Each move is a NEW RECIPE beside
+/// the old one: the v3 value is still pinned by
+/// [`a_record_sealed_under_v3_still_verifies_by_the_v3_rules`], the v2 value by
 /// [`a_record_sealed_under_v2_still_verifies_by_the_v2_rules`], the v1 value by
-/// [`the_v1_frozen_digest_is_reproduced_by_v1_rules_from_a_v2_record`], and this value is the v3
-/// recipe's own, armed the day it was published. The next move needs a v4 beside these three.
+/// [`the_v1_frozen_digest_is_reproduced_by_v1_rules_from_a_v2_record`], and this value is the v4
+/// recipe's own, armed the day it was published. The next move needs a v5 beside these four.
 #[test]
 fn the_sealed_digest_of_a_fully_populated_record_is_the_frozen_hex() {
     let record = frozen_record();
-    assert_eq!(record.recipe, crate::recipe::Recipe::V3);
+    assert_eq!(record.recipe, crate::recipe::Recipe::V4);
     assert_eq!(
-        record.hash, "d181a17502af4f637b8e3cd8ec7a107f07d4dc9fafe95375626e4709e2e7e26c",
+        record.hash, "1fa69b20a864d61bb6eacf4cad6bb719d43953db27cd941d410e39ff01be2004",
         "the sealed digest moved: every persisted chain would now report itself tampered"
     );
 }
 
-/// A NEW RECORD'S PREIMAGE NAMES NO CURRENCY (#34). `v3` is `v2` less exactly `currency`: the same
+/// A `v3` PREIMAGE NAMES NO CURRENCY (#34). `v3` is `v2` less exactly `currency`: the same
 /// fields, in the same order, with that one taken out.
 #[test]
-fn a_new_record_is_sealed_under_v3_and_its_preimage_names_no_currency() {
+fn a_v3_preimage_names_no_currency() {
     use crate::recipe::digest_fields;
-    let v3: Vec<_> = digest_fields(&frozen_record())
+    let v3: Vec<_> = digest_fields(&frozen_v3_record())
         .into_iter()
         .map(|f| f.name)
         .collect();
@@ -148,7 +167,68 @@ fn a_new_record_is_sealed_under_v3_and_its_preimage_names_no_currency() {
     let v2_less_currency: Vec<_> = v2.iter().copied().filter(|n| *n != "currency").collect();
     assert_eq!(v2.len(), v3.len() + 1);
     assert_eq!(v3, v2_less_currency, "v3 is not v2 less exactly `currency`");
+    assert!(AuditChain::verify_chain(std::slice::from_ref(&frozen_v3_record())).is_ok());
+}
+
+/// A NEW RECORD IS SEALED UNDER `v4`, AND `v4` IS `v3` PLUS EXACTLY `incarnation`, framed as a
+/// number straight after `unit_key`. Nothing else moves.
+#[test]
+fn a_new_record_is_sealed_under_v4_and_its_preimage_adds_only_the_incarnation() {
+    use crate::recipe::digest_fields;
+    let v4: Vec<_> = digest_fields(&frozen_record())
+        .into_iter()
+        .map(|f| f.name)
+        .collect();
+    let v3: Vec<_> = digest_fields(&frozen_v3_record())
+        .into_iter()
+        .map(|f| f.name)
+        .collect();
+    let at = v3
+        .iter()
+        .position(|n| *n == "unit_key")
+        .expect("v3 frames unit_key")
+        + 1;
+    let mut v3_plus_incarnation = v3.clone();
+    v3_plus_incarnation.insert(at, "incarnation");
+    assert_eq!(
+        v4, v3_plus_incarnation,
+        "v4 is not v3 plus exactly `incarnation`"
+    );
+    assert_eq!(frozen_record().recipe, crate::recipe::Recipe::V4);
     assert!(AuditChain::verify_chain(std::slice::from_ref(&frozen_record())).is_ok());
+}
+
+/// A `v3` RECORD READ BACK AFTER THE UPGRADE STILL VERIFIES by the `v3` rules it was sealed under.
+#[test]
+fn a_record_sealed_under_v3_still_verifies_by_the_v3_rules() {
+    let record = frozen_v3_record();
+    assert_eq!(AuditChain::digest_of(&record), FROZEN_V3);
+    assert!(AuditChain::verify_chain(std::slice::from_ref(&record)).is_ok());
+}
+
+/// TWO BOOTS THAT MINT THE SAME UNIT KEY SEAL TWO DIFFERENT RECORDS. A unit key restarts with the
+/// process; the incarnation does not. Everything else equal, the digests differ and each record
+/// verifies on its own, so a record from one boot can never stand in for the other's.
+#[test]
+fn two_boots_minting_the_same_unit_key_seal_distinct_verified_records() {
+    let seal = |incarnation: u64| {
+        let mut chain = AuditChain::new();
+        let mut i = inputs(1);
+        i.what.incarnation = incarnation;
+        chain.seal(i, &token())
+    };
+    let (first, second) = (seal(1), seal(2));
+    assert_eq!(first.what.unit_key, second.what.unit_key);
+    assert_ne!(first.hash, second.hash, "the boot is not in the digest");
+    assert!(AuditChain::verify_chain(std::slice::from_ref(&first)).is_ok());
+    assert!(AuditChain::verify_chain(std::slice::from_ref(&second)).is_ok());
+    let mut swapped = first.clone();
+    swapped.what.incarnation = 2;
+    assert_eq!(
+        AuditChain::verify_chain(std::slice::from_ref(&swapped)).map_err(|b| b.kind),
+        Err(AuditBreakKind::DigestMismatch),
+        "a record relabelled to another boot still verifies"
+    );
 }
 
 /// AN EXISTING RECORD STILL VERIFIES, BY THE RECIPE IT WAS SEALED UNDER (#34).
@@ -181,15 +261,27 @@ fn tampering_fails_under_either_recipe_and_so_does_relabelling_one() {
         ("a v2 record relabelled v3", frozen_v2_record(), |r| {
             r.recipe = Recipe::V3
         }),
-        ("a v3 record relabelled v2", frozen_record(), |r| {
+        ("a v3 record relabelled v2", frozen_v3_record(), |r| {
             r.recipe = Recipe::V2 {
                 currency: "USD".into(),
             }
         }),
+        ("a v3 record relabelled v4", frozen_v3_record(), |r| {
+            r.recipe = Recipe::V4
+        }),
+        ("a v4 record relabelled v3", frozen_record(), |r| {
+            r.recipe = Recipe::V3
+        }),
+        ("a v4 record's incarnation", frozen_record(), |r| {
+            r.what.incarnation += 1
+        }),
         ("a v2 record's count", frozen_v2_record(), |r| {
             r.usage.lines[0].quantity += 1
         }),
-        ("a v3 record's count", frozen_record(), |r| {
+        ("a v3 record's count", frozen_v3_record(), |r| {
+            r.usage.lines[0].quantity += 1
+        }),
+        ("a v4 record's count", frozen_record(), |r| {
             r.usage.lines[0].quantity += 1
         }),
     ];
@@ -379,7 +471,7 @@ fn a_plane_contributes_exactly_two_identifiers() {
     // Same shape, different two ids.
     assert_eq!(record.what.op_class.as_str(), "tool.call");
     assert_eq!(record.outcome.finish, FinishClass::TurnComplete);
-    assert_eq!(record.recipe, crate::recipe::Recipe::V3);
+    assert_eq!(record.recipe, crate::recipe::Recipe::V4);
     assert!(record.controls.hold_ref.is_some());
 }
 

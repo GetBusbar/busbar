@@ -6,9 +6,9 @@
 //! A node that dies mid-unit leaves holds open in the journal and nobody to settle them. On the
 //! next boot this module reads those records back, MATERIALISES each hold — the one way a hold
 //! exists without having passed the door, which is why the token that does it lives in this file
-//! and nowhere else — and settles it through the same table every live unit settles through.
+//! and nowhere else — and settles it through the same writer every live unit settles through.
 //!
-//! The table's two recovery rows say the whole thing:
+//! The writer's recovery row says the whole thing:
 //!
 //! - The record shows the unit had DISPATCHED: something was sent, so something may be owed. Post
 //!   the last checkpointed accrual — zero if it never checkpointed — and mark the posting recovered.
@@ -28,7 +28,7 @@ use busbar_contract::caps::{
 };
 
 use crate::slice::Epoch;
-use crate::teller::{settle_amount, Evidence, Kernel, KERNEL_ACCRUAL_CLASS};
+use crate::teller::{settle_written, Evidence, Kernel, Written, KERNEL_ACCRUAL_CLASS};
 
 /// A hold as the journal wrote it.
 ///
@@ -69,7 +69,7 @@ pub fn materialize(kernel: &Kernel, record: &HoldRecord) -> Hold {
     )
 }
 
-/// Bring a hold back and settle it, in one step, per the table.
+/// Bring a hold back and settle it, in one step, per the writer.
 pub fn settle(kernel: &Kernel, record: &HoldRecord, canary: &Canary) -> Posted {
     let hold = materialize(kernel, record);
     let evidence = Evidence {
@@ -79,10 +79,10 @@ pub fn settle(kernel: &Kernel, record: &HoldRecord, canary: &Canary) -> Posted {
         ..Evidence::default()
     };
     // A recovered unit has no live end of its own: it stopped where it stopped. The outcome it is
-    // settled under is the one the record supports, and the table reads the recovery rows first, so
+    // settled under is the one the record supports, and the writer reads the recovery row first, so
     // the outcome here changes nothing about the amount.
     let outcome = Outcome::Failed(StepName::Route, ReasonCode::TaskLost);
-    let (amount, flags) = settle_amount(&outcome, &evidence);
+    let Written { amount, flags, .. } = settle_written(&outcome, &evidence);
     // One line, and the record holds sixteen: this report is within the bound by construction.
     let usage = Usage::estimate(
         &Grant::<Consumption>::mint(kernel.seal()),
@@ -97,7 +97,7 @@ pub fn settle(kernel: &Kernel, record: &HoldRecord, canary: &Canary) -> Posted {
         }],
     )
     .expect("one usage line is always within the record's bound");
-    // The settlement table's `amount` IS the money figure, in the nano-units the hold reserved
+    // The settlement writer's `amount` IS the money figure, in the nano-units the hold reserved
     // in; the single usage line above carries the same number as its own class's quantity because
     // that class IS nano-units. The posting takes the money figure from where it is money.
     let posted = Posted::settle(

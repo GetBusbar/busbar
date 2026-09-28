@@ -194,8 +194,9 @@ fn a_lost_task_is_settled_within_one_tick() {
         }
     );
 
+    // What the plane reported before its task disappeared: the writer writes it as told.
     let evidence = Evidence {
-        accrued_floor: 42,
+        reported: Some(42),
         ..Evidence::default()
     };
     // The unit was holding a concurrency lease when its task disappeared. The lease is recorded on
@@ -667,10 +668,9 @@ fn a_stalled_unit_posts_its_floor_and_gives_its_lease_back() {
         })
         .map_err(|_| ())
         .expect("under the cap");
-    let evidence = Evidence {
-        accrued_floor: 1_750,
-        ..Evidence::default()
-    };
+    // The plane reported nothing before it stalled: the writer writes zero, marked estimated. The
+    // kernel adds no floor of its own (`BUSBAR-1.6.0.md` §7).
+    let evidence = Evidence::default();
 
     let gauge = ConcurrencyGauge::new();
     let bucket = bucket_all("team");
@@ -691,8 +691,8 @@ fn a_stalled_unit_posts_its_floor_and_gives_its_lease_back() {
     );
     assert_eq!(
         end.posted().map(|p| p.settled()),
-        Ok(1_750),
-        "a unit that stopped is billed the floor the kernel counted"
+        Ok(0),
+        "a unit that stopped with nothing reported is billed nothing: the kernel adds no floor"
     );
     assert!(end
         .posted()

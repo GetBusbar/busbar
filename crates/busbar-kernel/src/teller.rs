@@ -61,12 +61,12 @@ use std::future::Future;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use busbar_contract::caps::{
-    Abort, AdminVerb, Admission, Admit, Admittance, Approve, Arrival, Audit, Authenticate,
-    Authenticated, CallId, Canary, Consumption, Decode, Dial, DurabilityLost, DurableWrite, Encode,
-    Exit, Grant, Hold, HoldAccrual, HoldCell, HoldCellState, KernelSeal, Meter, Origin, OriginKind,
-    Outcome, Pass, Posted, PostingFlags, PrincipalId, QuantitySource, ReasonCode, Refusal, Route,
-    SeatVerdict, SessionId, Sign, StepName, UnitEnd, UnitKey, Usage, UsageLine,
-    VerifiedDestination, Verify, WriteMoney,
+    Abort, AdminVerb, Admission, Admit, Admittance, Approve, Arrival, Audit, AuditFacts,
+    Authenticate, Authenticated, CallId, Canary, Consumption, Decode, Dial, DurabilityLost,
+    DurableWrite, Encode, Exit, Grant, Hold, HoldAccrual, HoldCell, HoldCellState, KernelSeal,
+    Meter, Origin, OriginKind, Outcome, Pass, Posted, PostingFlags, PrincipalId, QuantitySource,
+    ReasonCode, Refusal, Route, SeatVerdict, SessionId, Sign, StepName, UnitEnd, UnitKey, Usage,
+    UsageLine, VerifiedDestination, Verify, WriteMoney,
 };
 
 use crate::registry::Generation;
@@ -294,11 +294,11 @@ impl AccrualMeter {
     }
 }
 
-/// The settlement table and the fee rule the exit, the sweep and recovery all settle by. Pure data
-/// and pure functions, kept in their own module and re-exported here so every path is unchanged.
+/// The settlement writer the exit, the sweep and recovery all settle by. Pure data and pure
+/// functions, kept in their own module and re-exported here so every path is unchanged.
 pub use crate::settlement::{
-    fee_count, requests_drawn, requests_settled, settle_amount, Evidence, FeeEvidence, FinishClass,
-    StatusAt, WireStatusClass, KERNEL_ACCRUAL_CLASS,
+    requests_drawn, requests_settled, settle_written, Evidence, FinishClass, StatusAt,
+    WireStatusClass, Written, KERNEL_ACCRUAL_CLASS,
 };
 
 /// The seam every unit behind a sealed trait is reached through.
@@ -405,6 +405,12 @@ pub trait Units {
         ctx: &UnitCtx,
         refusal: &Refusal,
     ) -> SeatVerdict<Audit>;
+
+    /// The facts the audit door sealed, handed back to whoever drives the unit WITH the door's own
+    /// pass: the unit's record is sealed where its one line is written, after this door, and only
+    /// that pass can seal it — so a unit that never passed its audit step has no record to seal.
+    /// The default drops both.
+    fn audited(&self, _ctx: &UnitCtx, _facts: AuditFacts, _pass: Pass<Audit>) {}
 
     /// The bytes that leave.
     fn encode(&self, token: &Pass<Encode>, ctx: &UnitCtx, outcome: &Outcome)
@@ -606,9 +612,10 @@ pub async fn run_unit_async<U: Units, R: RouteAwait>(
             // from a decision at all, and the door is the last step it could have been raised at.
             let outcome =
                 Outcome::Refused(refusal.step().unwrap_or(StepName::Admit), refusal.reason());
-            let _sealed = units
-                .audit_refused(&Pass::<Audit>::mint(seal), ctx, &refusal)
-                .into_result(seal);
+            let pass = Pass::<Audit>::mint(seal);
+            if let Ok(facts) = units.audit_refused(&pass, ctx, &refusal).into_result(seal) {
+                units.audited(ctx, facts, pass);
+            }
             let _bytes = units
                 .encode(&Pass::<Encode>::mint(seal), ctx, &outcome)
                 .into_result(seal);
@@ -852,9 +859,10 @@ pub fn open_unit<U: Units>(kernel: &Kernel, units: &U, ctx: &UnitCtx, run: Run<'
         Err(refusal) => {
             let outcome =
                 Outcome::Refused(refusal.step().unwrap_or(StepName::Admit), refusal.reason());
-            let _sealed = units
-                .audit_refused(&Pass::<Audit>::mint(seal), ctx, &refusal)
-                .into_result(seal);
+            let pass = Pass::<Audit>::mint(seal);
+            if let Ok(facts) = units.audit_refused(&pass, ctx, &refusal).into_result(seal) {
+                units.audited(ctx, facts, pass);
+            }
             let _bytes = units
                 .encode(&Pass::<Encode>::mint(seal), ctx, &outcome)
                 .into_result(seal);
@@ -866,9 +874,10 @@ pub fn open_unit<U: Units>(kernel: &Kernel, units: &U, ctx: &UnitCtx, run: Run<'
         // step here to hand the sealed destinations to; they are discarded with the admission.
         Ok((_admission, _destinations)) => {
             let outcome = Outcome::Completed;
-            let _sealed = units
-                .audit(&Pass::<Audit>::mint(seal), ctx, &outcome)
-                .into_result(seal);
+            let pass = Pass::<Audit>::mint(seal);
+            if let Ok(facts) = units.audit(&pass, ctx, &outcome).into_result(seal) {
+                units.audited(ctx, facts, pass);
+            }
             let _bytes = units
                 .encode(&Pass::<Encode>::mint(seal), ctx, &outcome)
                 .into_result(seal);
@@ -1057,9 +1066,10 @@ fn terminal<U: Units>(
         },
         other => (outcome, other),
     };
-    let _sealed = units
-        .audit(&Pass::<Audit>::mint(seal), ctx, &outcome)
-        .into_result(seal);
+    let pass = Pass::<Audit>::mint(seal);
+    if let Ok(facts) = units.audit(&pass, ctx, &outcome).into_result(seal) {
+        units.audited(ctx, facts, pass);
+    }
     let _bytes = units
         .encode(&Pass::<Encode>::mint(seal), ctx, &outcome)
         .into_result(seal);
@@ -1182,14 +1192,10 @@ pub fn exit<U: Units>(
     match taken {
         None => Ended::AlreadySettled,
         Some(mut hold) => {
-            // The floor is what the loop's own meter counted: the kernel's reading, not a plane's.
-            let evidence = Evidence {
-                accrued_floor: run.meter.total(),
-                ..units.evidence(ctx)
-            };
-            let (amount, table_flags) = settle_amount(&outcome, &evidence);
-            let (fee, fee_flags) = fee_count(&evidence.fee);
-            let flags = table_flags.with(fee_flags);
+            // The plane reported; the kernel writes what it was told (`BUSBAR-1.6.0.md` §7). No floor, no fee of the
+            // kernel's own: the fee units are the plane's.
+            let evidence = units.evidence(ctx);
+            let Written { amount, flags, fee } = settle_written(&outcome, &evidence);
             let drawn = requests_drawn(ctx.origin, evidence.upstream_candidate);
             let requests = requests_settled(reached_admitted, drawn);
             // What the unit spent while it ran is applied to the hold here, where the hold is
@@ -1202,8 +1208,7 @@ pub fn exit<U: Units>(
             let lines = vec![UsageLine {
                 class,
                 quantity: amount,
-                // The exit path settles what the accrual meter counted while the unit ran, which
-                // is the kernel's own figure, not one a destination reported.
+                // The figure the plane reported, written as it was told.
                 source: QuantitySource::Count,
                 estimated: flags.contains(PostingFlags::ESTIMATED),
             }];
@@ -1215,7 +1220,7 @@ pub fn exit<U: Units>(
             };
             let posted = match usage {
                 Ok(usage) => {
-                    // `amount` is the settlement table's money figure, in nano-units; the line
+                    // `amount` is the settlement writer's money figure, in nano-units; the line
                     // above carries it as a quantity against whichever class the unit metered on.
                     // The posting settles the money, and reads the report for its evidence.
                     Ok(Posted::settle(

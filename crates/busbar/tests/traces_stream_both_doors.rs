@@ -31,9 +31,9 @@
 
 mod common;
 
+use busbar_contract::abi::cold::export::{HostResult, HttpRequest, HttpResponse};
 use busbar_plugin_loader::{
-    install_egress_carrier, EgressCarrier, EgressPolicy, HostResult, HttpRequest, HttpResponse,
-    LinkedPlugin, PluginRegistry,
+    install_egress_carrier, EgressCarrier, EgressPolicy, LinkedPlugin, PluginRegistry,
 };
 use common::plugins;
 use opentelemetry_proto::tonic::collector::trace::v1::ExportTraceServiceRequest;

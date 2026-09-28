@@ -1,5 +1,10 @@
 use super::*;
 
+/// The plane's sans-I/O exchange: the byte steps this engine shares with the plane's door. It is
+/// re-exported to the whole engine by `engine`'s `wire::*` glob, so the plane crate is named from
+/// this one file, not from each step that reaches it.
+pub(crate) use busbar_plane_llm::exchange as xchg;
+
 /// Record the upstream round-trip (to response headers) for the current request so the
 /// `server_timing` middleware can subtract it from the total and report Busbar's own added latency.
 /// On failover the LAST attempt's value wins (recorded after every `send`, before success/error

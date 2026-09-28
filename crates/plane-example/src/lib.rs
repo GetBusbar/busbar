@@ -16,9 +16,9 @@
 //! ## IT RIDES THE HOST VTABLE — THAT IS THE WHOLE POINT
 //!
 //! This plane is deliberately trivial in what it *computes* and deliberately NOT trivial in what it
-//! *crosses*: every dispatch makes SIX real inbound calls back through the
+//! *crosses*: every dispatch makes FOUR real inbound calls back through the
 //! [`PlaneHostVtable`](busbar_contract::abi::hot::PlaneHostVtable) — the one its work item carries (minted
-//! for that dispatch), or, from an older host, the one it was handed at `build` — and a seventh at
+//! for that dispatch), or, from an older host, the one it was handed at `build` — and a fifth at
 //! `start`. It is the tree's proof that the plane ABI is crossed in both directions by a real
 //! dropped-in artifact rather than exercised host-to-itself.
 //!
@@ -30,7 +30,7 @@
 //! slot of an otherwise-real host refuses naming that slot. A plane that merely *mentioned* the
 //! vtable would pass either way, which is the failure mode this fixture exists to make impossible.
 //!
-//! The six crossings, in the order the lifecycle makes them:
+//! The four crossings, in the order the lifecycle makes them:
 //!
 //! | hop | slot | why this plane needs it |
 //! | --- | --- | --- |
@@ -39,8 +39,6 @@
 //! | `dispatch` | `clock_now` | the work item's arrival instant, likewise the host's |
 //! | `dispatch` | `govern_admit` | admission is the HOST's decision; a `Deny` refuses the item |
 //! | `dispatch` | `meter_charge` | the one-shot raw-count fact (see the money note below) |
-//! | `dispatch` | `cost_reserve` | open the metering LEASE for the item |
-//! | `dispatch` | `cost_settle` | settle the lease and read back exhaustion |
 //! | `dispatch` | `journal_append` | one audit row per dispatch, framed and chained by the host |
 //!
 //! ## IT SERVES — THE SAME WAY LINKED OR DROPPED IN
@@ -51,18 +49,14 @@
 //! it metered and the config section it was built with, quoted verbatim — the proof the operator's
 //! `example:` section reached `build` over the ABI.
 //!
-//! ## MONEY: THIS PLANE IS PRICING-BLIND, AND EVERY NANODOLLAR IT HANDS OVER IS LITERALLY ZERO
+//! ## MONEY: THIS PLANE IS PRICING-BLIND
 //!
 //! DECISIONS #43/#71: a plane COUNTS, it never VALUES. #77(3): a price is NEVER stored. So:
 //!
 //! * The only money fact this plane produces is a RAW COUNT — the number of inbound bytes the work
-//!   item carried — emitted through `meter_charge` as [`UsageComponent::Bytes`] with
-//!   `unit_cost_micros` set to **0**. It reads no rate card, holds no rate, and performs no
-//!   multiplication whose result is money.
-//! * `cost_reserve`/`cost_settle` take ALREADY-PRICED nanodollars. A pricing-blind plane has no
-//!   priced figure to put in them, so it passes **0** for the reserve, the flat fee and every
-//!   settlement, and declares the lease UNCAPPED (`cap_present = false`). The lease is opened and
-//!   settled because the LIFECYCLE is the plane's obligation; the AMOUNT is not the plane's to know.
+//!   item carried — emitted through `meter_charge` as [`UsageComponent::Bytes`]. The charge carries
+//!   no price field at all (retired by KERNEL<>PLUGINS step 16, item 577). It reads no rate card,
+//!   holds no rate, and performs no multiplication whose result is money.
 //! * There is no `f32`/`f64` anywhere in this file, on a money path or off one (#77(8)/#81). Every
 //!   count is a `u64` and every crossing is an integer.
 //!
@@ -81,8 +75,8 @@ use busbar_contract::abi::hot::decl::{
 };
 use busbar_contract::abi::hot::host::{HostCtx, PlaneHostVtable};
 use busbar_contract::abi::hot::pod::{
-    AdmissionId, CostLeaseId, CostSettleOut, Decision, Facts, Framing, FramingDesc, MeterOutcome,
-    OpaqueState, RawFraming, RawStatus, StatusClass, Usage, UsageComponent, POD_VERSION,
+    AdmissionId, Decision, Facts, Framing, FramingDesc, MeterOutcome, OpaqueState, RawFraming,
+    RawStatus, StatusClass, Usage, UsageComponent, POD_VERSION,
 };
 use busbar_contract::abi::hot::{EmitKind, HeadField, HeadPart, PlaneDecl, WorkItem};
 use busbar_contract::abi::{host_slot, write_out, AbiPreamble};
@@ -378,12 +372,12 @@ extern "C-unwind" fn start(state: *mut c_void) -> RawStatus {
 
 /// `dispatch` — THE ingress entry point, and THE cross-ABI round trip.
 ///
-/// Recovers the built [`PlaneState`], then makes SIX REQUIRED calls back through the host vtable:
-/// `clock_now` → `govern_admit` → `meter_charge` → `cost_reserve` → `cost_settle` →
-/// `journal_append`. Any absent slot, any fail-closed reading, any `Deny`/`Rejected`/non-`Ok`, any
-/// exhausted lease and any unwritten audit row answers [`StatusClass::Refused`]; only a full round
-/// trip answers `Ok` (and writes the reply, when the work item carries a channel). See the module
-/// docs for the money posture — every nanodollar this fn hands the host is a literal `0`.
+/// Recovers the built [`PlaneState`], then makes FOUR REQUIRED calls back through the host vtable:
+/// `clock_now` → `govern_admit` → `meter_charge` → `journal_append`. Any absent slot, any fail-closed
+/// reading, any `Deny`/`Rejected`/non-`Ok` and any unwritten audit row answers
+/// [`StatusClass::Refused`]; only a full round trip answers `Ok` (and writes the reply, when the work
+/// item carries a channel). See the module docs for the money posture: the plane hands the host
+/// counts, never a figure.
 extern "C-unwind" fn dispatch(state: *mut c_void, work: *const WorkItem) -> RawStatus {
     let class = catch_unwind(AssertUnwindSafe(|| {
         if state.is_null() || work.is_null() {
@@ -440,57 +434,20 @@ extern "C-unwind" fn dispatch(state: *mut c_void, work: *const WorkItem) -> RawS
             return StatusClass::Refused;
         }
 
-        // ── 3. METER — the one-shot RAW-COUNT fact. `unit_cost_micros` is 0 BECAUSE THIS PLANE DOES
-        //    NOT PRICE (#43/#71): it reports how much was consumed, the host decides what that is
-        //    worth, and the worth is a read-time view the plane never sees and never stores (#77(3)).
+        // ── 3. METER — the one-shot RAW-COUNT fact. A plane names no price (#43/#71): it reports how
+        //    much was consumed, the host decides what that is worth, and the worth is a read-time
+        //    view the plane never sees and never stores (#77(3)).
         //    `AdmissionId::NONE` = no resolved attribution; the host synthesizes one. ───────────────
         let Some(meter_charge) = host_slot!(host, host_size, meter_charge) else {
             return StatusClass::Refused;
         };
-        let usage = Usage::charge(UsageComponent::Bytes, units, 0, AdmissionId::NONE);
+        let usage = Usage::charge(UsageComponent::Bytes, units, AdmissionId::NONE);
         let usage_ptr: *const Usage = &*usage;
         if meter_charge(ctx, usage_ptr) != MeterOutcome::Charged {
             return StatusClass::Refused;
         }
 
-        // ── 4. RESERVE — open the item's metering lease. A pricing-blind plane has no priced figure
-        //    to reserve, so the reserve, the flat fee and the cap are all `0` and the lease is
-        //    declared UNCAPPED (`cap_present = false`, which is never exhausted). Opening the lease is
-        //    the plane's LIFECYCLE obligation; sizing it is the host's money obligation. ────────────
-        let Some(cost_reserve) = host_slot!(host, host_size, cost_reserve) else {
-            return StatusClass::Refused;
-        };
-        let mut lease_slot = MaybeUninit::<CostLeaseId>::uninit();
-        let lease_out: *mut MaybeUninit<CostLeaseId> = &mut lease_slot;
-        if cost_reserve(ctx, 0, 0, 0, false, lease_out) != StatusClass::Ok {
-            return StatusClass::Refused; // init-only-on-Ok: `lease_slot` stays unread
-        }
-        // SAFETY: init-only-on-Ok — the host wrote `lease_slot` before returning `Ok`.
-        let lease = unsafe { lease_slot.assume_init() };
-        if lease.is_none() {
-            return StatusClass::Refused; // the reserved NONE sentinel is not a lease
-        }
-
-        // ── 5. SETTLE — settle the lease and read back exhaustion. `settle_nanos` is `0` for the
-        //    same reason the reserve was: the plane has no priced increment. `breakdown` is absent
-        //    (null/0) — there is no itemization of a figure the plane never computed. ──────────────
-        let Some(cost_settle) = host_slot!(host, host_size, cost_settle) else {
-            return StatusClass::Refused;
-        };
-        let mut settle_slot = MaybeUninit::<CostSettleOut>::uninit();
-        let settle_out: *mut MaybeUninit<CostSettleOut> = &mut settle_slot;
-        if cost_settle(ctx, lease, 0, core::ptr::null(), 0, settle_out) != StatusClass::Ok {
-            return StatusClass::Refused; // init-only-on-Ok: `settle_slot` stays unread
-        }
-        // SAFETY: init-only-on-Ok — the host wrote `settle_slot` before returning `Ok`.
-        let settled = unsafe { settle_slot.assume_init() };
-        if settled.exhausted != 0 {
-            // A dry lease means the carrier must hard-close — the one thing post-hoc metering
-            // structurally cannot do, and the reason this plane settles before it answers.
-            return StatusClass::Refused;
-        }
-
-        // ── 6. AUDIT — one row saying what this dispatch was, appended to the host's hash-chained
+        // ── 4. AUDIT — one row saying what this dispatch was, appended to the host's hash-chained
         //    journal. The host frames the prelude, mints the sequence and digests; the plane states
         //    only the content. A `Seq::NONE` (no row written) refuses the item: a dispatch that left
         //    no record is not one this plane answers. ────────────────────────────────────────────────
@@ -519,7 +476,7 @@ extern "C-unwind" fn dispatch(state: *mut c_void, work: *const WorkItem) -> RawS
             return provider_answer(work, status);
         }
 
-        // ── 7. REPLY — when the work item carries a reply channel (minor 23): the section this plane
+        // ── 5. REPLY — when the work item carries a reply channel (minor 23): the section this plane
         //    was built with and the raw count it metered, as one JSON object. ────────────────────────
         let reply_ptr =
             busbar_contract::abi::read_sized_field!(work, advertised, WorkItem, reply_ptr);

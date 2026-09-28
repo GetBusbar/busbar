@@ -56,8 +56,9 @@ use busbar_contract::abi::mechanism::lifecycle::{
     ValidateIn,
 };
 use busbar_contract::abi::sdk::door::{abi_str, statement};
+use busbar_contract::abi::sdk::life::Refusal;
 use busbar_contract::abi::sdk::transport::form_codes;
-use busbar_contract::abi::sdk::{self as sdk, HostBuf, Lent, Safe, SafeSlot};
+use busbar_contract::abi::sdk::{self as sdk, HostBuf, Lent, Out, Safe, SafeSlot};
 use busbar_contract::abi::transport::{
     AcceptIn, AcceptOut, AdoptIn, ArrivalIn, ArrivalOut, BeginIn, Claim, ConnIn, ConnOut, DialIn,
     EmitIn, EncodeIn, FinishIn, FramePiece, FramerOut, FramerSink, FramingIn, IngestIn, IoOut,
@@ -221,7 +222,6 @@ pub struct Instance {
 /// One framing and the error text its last failed op answered (valid until the next call).
 struct Held {
     framing: Framing,
-    error: String,
 }
 
 /// The settings blob's bytes, parsed; `Err` names the first one that is not what its declaration
@@ -260,22 +260,21 @@ fn read_settings(bytes: &[u8]) -> Result<(Posture, bool, bool), &'static str> {
     ))
 }
 
-fn err(out: &mut OutHead, text: &'static str) {
-    out.error = abi_str(text);
-}
-
 /// One slot body on the SDK's safe surface, over this framer's [`Instance`].
 macro_rules! slot {
     ($(#[$doc:meta])* $name:ident, $in:ty, $out:ty,
-     |$inst:pat_param, $input:pat_param, $o:pat_param| $body:block) => {
+     |$inst:pat_param, $input:pat_param, $o:ident| $body:block) => {
         $(#[$doc])*
         pub struct $name;
         impl SafeSlot for $name {
             type In = $in;
             type Out = $out;
             type State = Instance;
-            fn call($inst: sdk::Instance<'_, Instance>, $input: Lent<'_, $in>, $o: &mut $out)
-                -> Outcome $body
+            fn call(
+                $inst: sdk::Instance<'_, Instance>,
+                $input: Lent<'_, $in>,
+                #[allow(unused_mut)] mut $o: Out<'_, $out>,
+            ) -> Outcome $body
         }
     };
 }
@@ -288,7 +287,7 @@ slot!(
         match read_settings(i.field(|x| &x.settings).bytes()) {
             Ok(_) => Outcome::Ready,
             Err(e) => {
-                err(o, e);
+                o.error(e);
                 Outcome::Failed
             }
         }
@@ -310,7 +309,7 @@ slot!(
                 Outcome::Ready
             }
             Err(e) => {
-                err(&mut o.head, e);
+                o.error(e);
                 Outcome::Failed
             }
         }
@@ -319,20 +318,20 @@ slot!(
 
 slot!(
     /// `close`: answering READY, the SDK drops the instance.
-    Close, InHead, OutHead, |_, _, _| { Outcome::Ready }
+    Close, InHead, OutHead, |_, _, _out| { Outcome::Ready }
 );
 
 slot!(
     /// `cancel`: no framer op pends, so nothing is ever in flight to cancel.
     Cancel, CancelIn, CancelOut, |_, _, o| {
-        o.disposition = CANCEL_NOTHING_MOVED;
+        o.set(|x| &x.disposition, CANCEL_NOTHING_MOVED);
         Outcome::Ready
     }
 );
 
 slot!(
     /// `tick`: the framings keep their own deadlines, so the instance asks for no tick.
-    Tick, TickIn, TickOut, |_, _, _| { Outcome::Ready }
+    Tick, TickIn, TickOut, |_, _, _out| { Outcome::Ready }
 );
 
 macro_rules! answer {
@@ -342,7 +341,7 @@ macro_rules! answer {
             $name,
             $in,
             $out,
-            |_, _, _| { $outcome }
+            |_, _, _out| { $outcome }
         );
     };
 }
@@ -388,28 +387,29 @@ impl SafeSlot for Locate {
     type In = LocateIn;
     type Out = LocateOut;
     type State = Instance;
-    fn call(p: sdk::Instance<'_, Instance>, i: Lent<'_, LocateIn>, o: &mut LocateOut) -> Outcome {
+    fn call(
+        p: sdk::Instance<'_, Instance>,
+        i: Lent<'_, LocateIn>,
+        mut o: Out<'_, LocateOut>,
+    ) -> Outcome {
         let Ok(uri) = std::str::from_utf8(i.field(|x| &x.target).bytes())
             .ok()
             .and_then(|t| t.parse::<http::Uri>().ok())
             .ok_or(())
         else {
-            err(&mut o.head, "locate: the target is not a URL");
+            o.error("locate: the target is not a URL");
             return Outcome::Failed;
         };
         let secure = match uri.scheme_str() {
             Some("https") => true,
             Some("http") => false,
             _ => {
-                err(
-                    &mut o.head,
-                    "locate: the target's scheme is not http or https",
-                );
+                o.error("locate: the target's scheme is not http or https");
                 return Outcome::Failed;
             }
         };
         let Some(host) = uri.host() else {
-            err(&mut o.head, "locate: the target names no host");
+            o.error("locate: the target names no host");
             return Outcome::Failed;
         };
         let port = uri.port_u16().unwrap_or(if secure { 443 } else { 80 });
@@ -421,8 +421,8 @@ impl SafeSlot for Locate {
         };
         // The offer exists only where a handshake does: on a secured connection.
         let offer = offer_for(secure, p.get().is_some_and(|x| x.http1_only));
-        o.secure = u32::from(secure);
-        o.has_name = 1;
+        o.set(|x| &x.secure, u32::from(secure));
+        o.set(|x| &x.has_name, 1);
         let (mut a, mut n, mut l) = (i.authority_buf(), i.name_buf(), i.alpn_buf());
         a.extend(authority.as_bytes());
         n.extend(host.as_bytes());
@@ -432,11 +432,14 @@ impl SafeSlot for Locate {
         let (aw, and) = a.settle(short);
         let (nw, nnd) = n.settle(short);
         let (lw, lnd) = l.settle(short);
-        (o.authority_written, o.authority_needed) = (aw as u64, and as u64);
-        (o.name_written, o.name_needed) = (nw as u64, nnd as u64);
-        (o.alpn_written, o.alpn_needed) = (lw as u64, lnd as u64);
+        o.set(|x| &x.authority_written, aw as u64);
+        o.set(|x| &x.authority_needed, and as u64);
+        o.set(|x| &x.name_written, nw as u64);
+        o.set(|x| &x.name_needed, nnd as u64);
+        o.set(|x| &x.alpn_written, lw as u64);
+        o.set(|x| &x.alpn_needed, lnd as u64);
         if short {
-            err(&mut o.head, "locate: a host buffer is too small");
+            o.error("locate: a host buffer is too small");
             return Outcome::Failed;
         }
         Outcome::Ready
@@ -449,12 +452,16 @@ impl SafeSlot for Begin {
     type In = BeginIn;
     type Out = FramerOut;
     type State = Instance;
-    fn call(p: sdk::Instance<'_, Instance>, i: Lent<'_, BeginIn>, o: &mut FramerOut) -> Outcome {
+    fn call(
+        p: sdk::Instance<'_, Instance>,
+        i: Lent<'_, BeginIn>,
+        mut o: Out<'_, FramerOut>,
+    ) -> Outcome {
         let Some(inst) = p.get() else {
             return Outcome::Failed;
         };
         if i.side != SIDE_DIAL {
-            err(&mut o.head, "begin: http frames dialled connections only");
+            o.error("begin: http frames dialled connections only");
             return Outcome::Refused;
         }
         let agreed = i
@@ -466,34 +473,28 @@ impl SafeSlot for Begin {
             b"" if inst.prior_knowledge && !inst.http1_only => Proto::H2,
             b"" => Proto::H1,
             _ => {
-                err(
-                    &mut o.head,
-                    "begin: the agreed protocol is not http/1.1 or h2",
-                );
+                o.error("begin: the agreed protocol is not http/1.1 or h2");
                 return Outcome::Refused;
             }
         };
         let Ok(target) = std::str::from_utf8(i.field(|x| &x.target).bytes()) else {
-            err(&mut o.head, "begin: the target is not text");
+            o.error("begin: the target is not text");
             return Outcome::Failed;
         };
         let Ok(framing) = Framing::dial(target, proto, inst.posture, i.sink.now_monotonic_ns)
         else {
-            err(&mut o.head, "begin: the target is not a URL");
+            o.error("begin: the target is not a URL");
             return Outcome::Failed;
         };
         let token = inst.next.fetch_add(1, Ordering::Relaxed);
-        let held = Arc::new(Mutex::new(Held {
-            framing,
-            error: String::new(),
-        }));
+        let held = Arc::new(Mutex::new(Held { framing }));
         inst.framings
             .lock()
             .expect("framings")
             .insert(token, held.clone());
-        o.framing = token;
+        o.set(|x| &x.framing, token);
         let mut h = held.lock().expect("framing");
-        step(&mut h, i.field(|x| &x.sink), o, |_| Ok(()))
+        step(&mut h, i.field(|x| &x.sink), &mut o, |_| Ok(()))
     }
 }
 
@@ -503,9 +504,13 @@ impl SafeSlot for Ingest {
     type In = IngestIn;
     type Out = FramerOut;
     type State = Instance;
-    fn call(p: sdk::Instance<'_, Instance>, i: Lent<'_, IngestIn>, o: &mut FramerOut) -> Outcome {
+    fn call(
+        p: sdk::Instance<'_, Instance>,
+        i: Lent<'_, IngestIn>,
+        mut o: Out<'_, FramerOut>,
+    ) -> Outcome {
         let bytes = i.bytes();
-        with(&p, i.framing, i.field(|x| &x.sink), o, |f| {
+        with(&p, i.framing, i.field(|x| &x.sink), &mut o, |f| {
             f.ingest(bytes, i.end != 0);
             Ok(())
         })
@@ -518,10 +523,14 @@ impl SafeSlot for Emit {
     type In = EmitIn;
     type Out = FramerOut;
     type State = Instance;
-    fn call(p: sdk::Instance<'_, Instance>, i: Lent<'_, EmitIn>, o: &mut FramerOut) -> Outcome {
+    fn call(
+        p: sdk::Instance<'_, Instance>,
+        i: Lent<'_, EmitIn>,
+        mut o: Out<'_, FramerOut>,
+    ) -> Outcome {
         let bytes = i.bytes();
         let (now, deadline) = (i.sink.now_monotonic_ns, i.deadline_ns);
-        with(&p, i.framing, i.field(|x| &x.sink), o, |f| {
+        with(&p, i.framing, i.field(|x| &x.sink), &mut o, |f| {
             f.emit(i.stream, bytes, now, deadline)
         })
     }
@@ -533,8 +542,12 @@ impl SafeSlot for Timer {
     type In = FramingIn;
     type Out = FramerOut;
     type State = Instance;
-    fn call(p: sdk::Instance<'_, Instance>, i: Lent<'_, FramingIn>, o: &mut FramerOut) -> Outcome {
-        with(&p, i.framing, i.field(|x| &x.sink), o, |_| Ok(()))
+    fn call(
+        p: sdk::Instance<'_, Instance>,
+        i: Lent<'_, FramingIn>,
+        mut o: Out<'_, FramerOut>,
+    ) -> Outcome {
+        with(&p, i.framing, i.field(|x| &x.sink), &mut o, |_| Ok(()))
     }
 }
 
@@ -544,16 +557,20 @@ impl SafeSlot for Finish {
     type In = FinishIn;
     type Out = FramerOut;
     type State = Instance;
-    fn call(p: sdk::Instance<'_, Instance>, i: Lent<'_, FinishIn>, o: &mut FramerOut) -> Outcome {
+    fn call(
+        p: sdk::Instance<'_, Instance>,
+        i: Lent<'_, FinishIn>,
+        mut o: Out<'_, FramerOut>,
+    ) -> Outcome {
         let removed = p
             .get()
             .and_then(|inst| inst.framings.lock().expect("framings").remove(&i.framing));
-        o.yielded.flags = YIELD_ENDED;
+        o.set(|x| &x.yielded.flags, YIELD_ENDED);
         if removed.is_some() {
             Outcome::Ready
         } else {
-            o.yielded.flags = 0;
-            err(&mut o.head, "finish: no such framing");
+            o.set(|x| &x.yielded.flags, 0);
+            o.error("finish: no such framing");
             Outcome::Failed
         }
     }
@@ -565,33 +582,31 @@ impl SafeSlot for Encode {
     type In = EncodeIn;
     type Out = FramerOut;
     type State = Instance;
-    fn call(_: sdk::Instance<'_, Instance>, i: Lent<'_, EncodeIn>, o: &mut FramerOut) -> Outcome {
+    fn call(
+        _: sdk::Instance<'_, Instance>,
+        i: Lent<'_, EncodeIn>,
+        mut o: Out<'_, FramerOut>,
+    ) -> Outcome {
         let fields = i.fields();
         let mut pairs = Vec::with_capacity(fields.len());
         for f in fields.iter() {
             let Ok(name) = f.field(|x| &x.name).as_str() else {
-                err(&mut o.head, "encode: a field name is not text");
+                o.error("encode: a field name is not text");
                 return Outcome::Failed;
             };
             pairs.push((name, f.field(|x| &x.value).bytes()));
         }
         let Ok(bytes) = crate::transport::render_envelope(&pairs, i.body()) else {
-            err(
-                &mut o.head,
-                "encode: the envelope cannot be expressed on this wire",
-            );
+            o.error("encode: the envelope cannot be expressed on this wire");
             return Outcome::Failed;
         };
         let mut wire = i.field(|x| &x.sink).wire();
         if bytes.len() > wire.cap() {
-            err(
-                &mut o.head,
-                "encode: the rendered message is larger than the wire buffer",
-            );
+            o.error("encode: the rendered message is larger than the wire buffer");
             return Outcome::Failed;
         }
         wire.extend(&bytes);
-        o.yielded.wire_len = wire.written() as u64;
+        o.set(|x| &x.yielded.wire_len, wire.written() as u64);
         Outcome::Ready
     }
 }
@@ -601,14 +616,14 @@ fn with(
     p: &sdk::Instance<'_, Instance>,
     token: u64,
     sink: Lent<'_, FramerSink>,
-    o: &mut FramerOut,
+    o: &mut Out<'_, FramerOut>,
     f: impl FnOnce(&mut Framing) -> Result<(), engine::Failure>,
 ) -> Outcome {
     let held = p
         .get()
         .and_then(|inst| inst.framings.lock().expect("framings").get(&token).cloned());
     let Some(held) = held else {
-        err(&mut o.head, "no such framing");
+        o.error("no such framing");
         return Outcome::Failed;
     };
     let mut h = held.lock().expect("framing");
@@ -618,38 +633,33 @@ fn with(
 fn step(
     h: &mut Held,
     sink: Lent<'_, FramerSink>,
-    o: &mut FramerOut,
+    o: &mut Out<'_, FramerOut>,
     f: impl FnOnce(&mut Framing) -> Result<(), engine::Failure>,
 ) -> Outcome {
     if let Err(e) = f(&mut h.framing) {
-        return failed(h, o, e.0);
+        return failed(o, e.0);
     }
     h.framing.drive(sink.now_monotonic_ns, sink.now_unix_ns);
     let pending = h.framing.wire_pending() || !h.framing.pieces().is_empty();
     if let Some(e) = h.framing.failure().cloned() {
         if !pending {
-            return failed(h, o, e.0);
+            return failed(o, e.0);
         }
     }
     fill(&mut h.framing, sink, o);
     Outcome::Ready
 }
 
-fn failed(h: &mut Held, o: &mut FramerOut, text: String) -> Outcome {
-    h.error = text;
-    o.head.error = AbiStr {
-        ptr: h.error.as_ptr(),
-        len: h.error.len(),
-    };
-    Outcome::Failed
+fn failed(o: &mut Out<'_, FramerOut>, text: String) -> Outcome {
+    o.fail(Refusal::failed(text))
 }
 
 /// Hand the host what the framing owes it, as far as the sink holds.
-fn fill(f: &mut Framing, sink: Lent<'_, FramerSink>, o: &mut FramerOut) {
+fn fill(f: &mut Framing, sink: Lent<'_, FramerSink>, o: &mut Out<'_, FramerOut>) {
     let mut wire_buf = sink.wire();
     let wire = f.take_wire(wire_buf.cap());
     wire_buf.extend(&wire);
-    let y = &mut o.yielded;
+    let mut y = o.get().yielded;
     y.wire_len = wire_buf.written() as u64;
     let (mut frame, mut pieces): (HostBuf<'_, u8>, HostBuf<'_, FramePiece>) =
         (sink.frame(), sink.pieces());
@@ -717,6 +727,7 @@ fn fill(f: &mut Framing, sink: Lent<'_, FramerSink>, o: &mut FramerOut) {
         flags |= YIELD_ENDED;
     }
     y.flags = flags;
+    o.set(|x| &x.yielded, y);
 }
 
 fn class_of(code: u16) -> u8 {

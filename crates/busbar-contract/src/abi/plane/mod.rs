@@ -612,8 +612,10 @@ pub const fn reason_of(code: u32) -> Option<ReasonCode> {
         RefusalCode::OverBudget => ReasonCode::OverBudget,
         RefusalCode::GroupFrozen => ReasonCode::GroupFrozen,
         RefusalCode::Unpriced => ReasonCode::Unpriced,
-        RefusalCode::OverdraftCeiling => ReasonCode::OverdraftCeiling,
-        RefusalCode::StaleSlice => ReasonCode::StaleSlice,
+        // KERNEL-ONLY MONEY VERDICTS (ARCHITECT ruling 2026-10-01): a plane never carries the
+        // overdraft ceiling or a stale slice, so their codes decode to nothing, which every caller
+        // judges a malformed plane answer. The kernel's own encode ([`reason_code`]) keeps them.
+        RefusalCode::OverdraftCeiling | RefusalCode::StaleSlice => return None,
         RefusalCode::DurabilityUnavailable => ReasonCode::DurabilityUnavailable,
         RefusalCode::TierMismatch => ReasonCode::TierMismatch,
         RefusalCode::Replayed => ReasonCode::Replayed,

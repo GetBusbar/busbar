@@ -417,6 +417,25 @@ impl Registration {
         self.key(name).map(LaneId::new)
     }
 
+    /// The static name the vocabulary already holds for `value`, or `None`. A LOOKUP ONLY, open
+    /// vocabulary or closed: it never interns, so it is the one form a per-unit path may call with a
+    /// name the unit reported. Boot and config registration are what put a name here.
+    #[must_use]
+    pub fn resolve(value: &str) -> Option<&'static str> {
+        VOCABULARY
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(value)
+            .copied()
+    }
+
+    /// [`Self::resolve`] as the [`MeterClassId`] a usage line carries: a class the vocabulary holds
+    /// resolves, and a class nobody declared or configured does not.
+    #[must_use]
+    pub fn meter_class(value: &str) -> Option<MeterClassId> {
+        Self::resolve(value).map(MeterClassId::new)
+    }
+
     /// Close the image's vocabulary. The composition root's last registration-time act.
     ///
     /// Idempotent, and one-way: there is no thaw, because a vocabulary that can be reopened is a

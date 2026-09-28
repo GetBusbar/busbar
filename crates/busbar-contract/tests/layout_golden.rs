@@ -164,7 +164,6 @@ fn compute_layout() -> String {
             component,
             _reserved,
             amount,
-            unit_cost_micros,
             admission,
             key_id_ptr,
             key_id_len,
@@ -627,8 +626,6 @@ fn compute_layout() -> String {
             guard_url,
             identity_admit,
             gate_decide,
-            cost_reserve,
-            cost_settle,
             counter_add,
             // The host services (minor 30).
             entropy_fill,
@@ -1028,13 +1025,22 @@ fn compute_layout() -> String {
         MechOpsHead,
         [size, slots, validate, open, refresh, retire, tick, drive, cancel, release, close]
     );
-    record!(s, MechValidateIn, [head, settings]);
+    record!(s, MechValidateIn, [head, settings, err_buf, err_cap]);
     record!(
         s,
         MechOpenIn,
-        [head, host, settings, secrets, secrets_len, generation]
+        [
+            head,
+            host,
+            settings,
+            secrets,
+            secrets_len,
+            generation,
+            err_buf,
+            err_cap
+        ]
     );
-    record!(s, MechOpenOut, [head, instance]);
+    record!(s, MechOpenOut, [head, instance, err_len]);
     record!(s, MechGenIn, [head, generation]);
     record!(
         s,
@@ -1455,6 +1461,7 @@ fn compute_layout() -> String {
             now_unix_ns
         ]
     );
+    record!(s, tkind::FrameSpan, [offset, len]);
     record!(
         s,
         tkind::FramerYield,
@@ -1835,7 +1842,8 @@ fn compute_layout() -> String {
             trust_from,
             details,
             keep_response_headers,
-            keep_response_headers_len
+            keep_response_headers_len,
+            timeout_ms
         ]
     );
     record!(s, hconn::EstablishIn, [head, need, _reserved, target]);
@@ -1874,9 +1882,19 @@ fn compute_layout() -> String {
             checkin,
             close,
             random,
-            identity
+            identity,
+            read_reply,
+            write_request
         ]
     );
+    record!(s, hconn::ReplyPiece, [kind, code, reason, fields]);
+    record!(s, hconn::ReplyIn, [head, stream, buf, len, piece]);
+    record!(
+        s,
+        hconn::RequestPiece,
+        [kind, _reserved, method, target, fields, timeout_ms]
+    );
+    record!(s, hconn::RequestIn, [head, stream, buf, len, piece]);
     // The host services (abi/host/service.rs) and the call shape they share with the connector.
     record!(s, hsvc::ServiceHead, [size, op, handle]);
     record!(
@@ -1944,9 +1962,11 @@ fn compute_layout() -> String {
             entitlement_check,
             content_scan,
             hook_call,
-            random_fill
+            random_fill,
+            need_admit
         ]
     );
+    record!(s, hsvc::NeedAdmitIn, [head, need, _reserved]);
 
     // M3-SHAPES (abi-v2-perkind.md B.2): the secret kind's `resolve`.
     record!(s, SecretOps, [head, resolve]);

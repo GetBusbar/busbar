@@ -17,7 +17,7 @@ use self::node_plane::{proto_codec, testkit as plane};
 
 use axum::body::Bytes;
 use axum::http::HeaderMap;
-use busbar_kernel::teller::Ended;
+use busbar_kernel::teller::{Ended, Kernel};
 use busbar_kernel::test_support::{LaneSpec, MockResponse, MockServer, MockServerState, TestApp};
 
 /// The one dialect these fixtures speak. Same-protocol openai→openai, so a divergence is about
@@ -881,7 +881,7 @@ fn report_of(output: u64) -> Report {
 /// exactly the recorded 1.5.5 behaviour and exactly what this replaces.
 #[test]
 fn a_unit_prices_at_the_entry_in_force_when_it_arrived_and_not_at_the_head() {
-    let kernel = busbar_kernel::teller::Kernel::new();
+    let kernel = Kernel::new();
     let token = kernel.usage_token();
     let history = history_of(&[(0, 1.0), (5_000, 100.0)]);
 
@@ -909,7 +909,7 @@ fn a_unit_prices_at_the_entry_in_force_when_it_arrived_and_not_at_the_head() {
 /// figure to a request that was admitted under the old one.
 #[test]
 fn a_snapshot_pinned_at_admission_cannot_see_an_entry_appended_behind_it() {
-    let kernel = busbar_kernel::teller::Kernel::new();
+    let kernel = Kernel::new();
     let token = kernel.usage_token();
     let holder = crate::root::kernel::RootHistory::default();
     holder.apply(
@@ -973,7 +973,7 @@ fn a_snapshot_pinned_at_admission_cannot_see_an_entry_appended_behind_it() {
 /// prove the stopping is real rather than an accident of when the `Arc` was cloned.
 #[test]
 fn a_pin_below_the_head_reads_the_history_as_it_stood_at_that_seq() {
-    let kernel = busbar_kernel::teller::Kernel::new();
+    let kernel = Kernel::new();
     let token = kernel.usage_token();
     let head = history_of(&[(0, 1.0), (5_000, 100.0)]);
     let earlier = crate::root::kernel::PinnedHistory::for_test_at(
@@ -1003,7 +1003,7 @@ fn a_pin_below_the_head_reads_the_history_as_it_stood_at_that_seq() {
 /// answer the corrupted number and call it money.
 #[test]
 fn the_cached_price_rides_the_posting_and_is_never_read_back_for_money() {
-    let kernel = busbar_kernel::teller::Kernel::new();
+    let kernel = Kernel::new();
     let token = kernel.usage_token();
     let history = history_of(&[(0, 1.0)]);
     let at = Arrived::at(4_000, 7);
@@ -1196,6 +1196,85 @@ async fn a_driven_planes_abandoned_end_posts_once_onto_the_nodes_book() {
     rig.server.shutdown().await;
 }
 
+/// A DRIVEN PLANE'S ABANDONED END SEALS EXACTLY ONE AUDIT RECORD with its one line, from the facts
+/// and pass its audit door handed back; an abandoned unit whose audit door never answered seals none.
+/// RED: without the held pass the posting site seals no record.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_driven_planes_abandoned_end_seals_one_audit_record() {
+    use busbar_kernel::plane_driver::EndPost;
+    let rig = rig(Fixture::BufferedOk).await;
+    let node = Arc::new(Node::new());
+    let durability = crate::root::durability::build(
+        &crate::root::durability::DurabilityConfig { data_dir: None },
+        Box::new(busbar_kernel_wal::NullShipper::new()),
+        Box::new(busbar_kernel_ledger::legacy::RecordingRows::new()),
+    )
+    .expect("a memory-buffered journal cannot fail to open");
+    let book = Arc::new(std::sync::Mutex::new(durability));
+    node.bind_book(Arc::clone(&book));
+    let records = || {
+        book.lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .audit_records
+            .len()
+    };
+    let site = NodeEndPost::new(Arc::clone(&node));
+    let ctx = |key: u64| UnitCtx {
+        key: UnitKey::new(key),
+        origin: OriginKind::Client,
+        session: None,
+        generation: busbar_kernel::registry::Generation::FIRST,
+        admin_listener: false,
+        kernel_verb_only: false,
+    };
+    let who = PrincipalId::new("acct:node");
+    let facts = busbar_contract::caps::AuditFacts {
+        op_class: busbar_contract::caps::OpClassId::new("call"),
+        finish: busbar_contract::FinishClass::Complete,
+    };
+    // The audit door answered: one record, with the line.
+    let ended = drive_to_end(
+        &rig,
+        &node,
+        Fixture::BufferedOk,
+        rig.gov(),
+        plane::native_seats(),
+    )
+    .await;
+    site.open(
+        UnitKey::new(51),
+        who.clone(),
+        Arrived::at(EPOCH * 1_000, 0),
+        None,
+    );
+    site.audited(
+        UnitKey::new(51),
+        facts,
+        Pass::mint(&busbar_contract::caps::KernelSeal::acquire_for_kernel()),
+    );
+    let before = records();
+    site.post(&ctx(51), ended);
+    assert_eq!(
+        records(),
+        before + 1,
+        "exactly one audit record for the abandoned unit"
+    );
+    // The audit door never answered: the line is posted, and no record is minted for it.
+    let ended = drive_to_end(
+        &rig,
+        &node,
+        Fixture::BufferedOk,
+        rig.gov(),
+        plane::native_seats(),
+    )
+    .await;
+    site.open(UnitKey::new(52), who, Arrived::at(EPOCH * 1_000, 1), None);
+    let before = records();
+    site.post(&ctx(52), ended);
+    assert_eq!(records(), before, "no pass, no record");
+    rig.server.shutdown().await;
+}
+
 /// THE FLAT FEE IS A CLIENT'S FEE, and this plane reads which it has off the sealed origin.
 ///
 /// One unit, driven once and then asked the same question under two origins. The delivered
@@ -1227,7 +1306,7 @@ async fn a_provider_origin_unit_posts_no_flat_fee() {
             admin_listener: false,
             kernel_verb_only: false,
         };
-        busbar_kernel::teller::fee_count(&unit.evidence(&ctx).fee).0
+        unit.evidence(&ctx).fee_units
     };
     assert_eq!(
         fee(OriginKind::Client),
@@ -1320,6 +1399,7 @@ async fn drive_keeping_the_unit(
         principal: &principal,
         arrived: Arrived::at(EPOCH * 1_000, 0),
         history: history.as_ref(),
+        sealing: Mutex::new(None),
     };
     let ended = busbar_kernel::teller::run_unit_async(
         &node.kernel,
@@ -3220,7 +3300,7 @@ fn books_agree(
 /// green above meaningless.
 #[test]
 fn the_second_book_agrees_with_the_invoice_cell_by_cell_and_a_divergence_is_red() {
-    let kernel = busbar_kernel::teller::Kernel::new();
+    let kernel = Kernel::new();
     let token = kernel.usage_token();
     let billed = fee_history_of(
         &[
@@ -3371,7 +3451,7 @@ fn cache_silent_history() -> crate::root::kernel::PinnedHistory {
 /// dropped, and no partial figure reaches a book.
 #[test]
 fn an_unpriced_class_on_a_present_card_keeps_its_counts_row_and_the_read_refuses() {
-    let kernel = busbar_kernel::teller::Kernel::new();
+    let kernel = Kernel::new();
     let token = kernel.usage_token();
     let history = cache_silent_history();
     let mut report = split_report(1_000, 250, 1);
@@ -3444,7 +3524,7 @@ fn an_unpriced_class_on_a_present_card_keeps_its_counts_row_and_the_read_refuses
 /// arithmetic, past a `u64`. The narrowing used to answer `u64::MAX` — a bill nobody posted.
 #[test]
 fn a_settled_figure_past_the_record_refuses_and_is_never_pinned() {
-    let kernel = busbar_kernel::teller::Kernel::new();
+    let kernel = Kernel::new();
     let token = kernel.usage_token();
     let history = history_of(&[(0, 1_000.0)]);
     let (_, priced) = priced_posting(
@@ -3591,6 +3671,17 @@ fn a_unit_whose_task_went_away_is_marked_and_the_sweep_posts_its_hold() {
 /// this crate does not depend on the codec.
 const SEARCH_UNITS: &str = "search_units";
 
+/// The classes the units these tests drive report are DECLARED — what the boot's registration
+/// (`register_classes`: the reserved four, the llm plane's declared `search_units`) makes true in a
+/// real process. The vocabulary is the process's, so registering them again is idempotent.
+fn declare_test_classes() {
+    let mut registration = crate::root::kernel::new_registration();
+    for class in busbar_contract::records::RESERVED_UNITS {
+        let _ = registration.key(class);
+    }
+    let _ = registration.key(SEARCH_UNITS);
+}
+
 /// Run the late arm's posting for one drained `report` onto a fresh node book, and hand the book
 /// back.
 fn late_post(
@@ -3599,10 +3690,11 @@ fn late_post(
     principal: &str,
     report: &Report,
 ) -> crate::root::durability::NodeBook {
+    declare_test_classes();
     // The book prices its chain against the same history the arm priced the unit against.
     let pinned = history.clone();
     let node = crate::root::durability::node_book_over(Box::new(move || Some(pinned.clone())));
-    let kernel = busbar_kernel::teller::Kernel::new();
+    let kernel = Kernel::new();
     let (durability, ledger, usage) = (
         kernel.durability_token(),
         kernel.ledger_token(),
@@ -3619,6 +3711,7 @@ fn late_post(
         &PrincipalId::new(principal),
         at,
         report,
+        None,
     );
     node
 }
@@ -4022,6 +4115,7 @@ const RERANK_UNITS: u64 = 50;
 /// book's row held no `search_units` and priced the fee alone, while the governance ledger held 50.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_served_rerank_puts_identical_search_units_on_both_books() {
+    declare_test_classes();
     plane::install_test_seams();
     busbar_kernel::metrics::init();
 
@@ -4143,8 +4237,9 @@ async fn a_served_rerank_puts_identical_search_units_on_both_books() {
         principal: &principal,
         arrived,
         history: Some(&history),
+        sealing: Mutex::new(None),
     };
-    let _ended = busbar_kernel::teller::run_unit_async(
+    let ended = busbar_kernel::teller::run_unit_async(
         &node.kernel,
         &driven,
         &ctx,
@@ -4160,15 +4255,24 @@ async fn a_served_rerank_puts_identical_search_units_on_both_books() {
     )
     .await;
     node.inflight.remove(key_n);
-    // THE NODE'S OWN TAIL, as `answer_arriving_at` runs it: the terminal's bytes, wrapped by the
-    // late arm, drained the way a client drains them.
+    // THE NODE'S OWN TAIL, as `answer_arriving_at` runs it: the unit's one line and the terminal's
+    // bytes, wrapped by the late arm, drained the way a client drains them.
     let (answer, late) = finish();
     let response = answer
         .expect("the served unit posted its terminal")
         .into_response();
     assert_eq!(response.status(), StatusCode::OK, "the rerank was served");
-    let response =
-        node.attach_late_accrual(response, late, &principal, arrived, Some(history.clone()));
+    let seal = driven.take_seal(ctx.key);
+    assert!(seal.is_some(), "the audit door handed its pass back");
+    let response = node.tail(
+        ended,
+        response,
+        late,
+        &principal,
+        arrived,
+        Some(&history),
+        seal,
+    );
     let _body = axum::body::to_bytes(response.into_body(), usize::MAX)
         .await
         .expect("the served body drains");
@@ -4208,8 +4312,48 @@ async fn a_served_rerank_puts_identical_search_units_on_both_books() {
         classes,
     };
 
-    // THE SECOND BOOK: the late arm's row.
+    // THE UNIT'S ONE FIXED AUDIT RECORD, sealed where its one line was written (the late arm): its
+    // amount is the line's counts, and it is sealed under this boot's incarnation.
+    {
+        let durability = book.durability.lock().expect("unpoisoned");
+        assert_eq!(
+            durability.audit_records.len(),
+            1,
+            "one record per unit: {:?}",
+            durability.audit_records
+        );
+        let record = &durability.audit_records[0];
+        assert_eq!(record.what.unit_key, key_n);
+        assert_eq!(record.what.incarnation, durability.incarnation);
+        assert_eq!(
+            record.outcome.unit_end,
+            busbar_contract::caps::Outcome::Completed
+        );
+        assert!(
+            record
+                .usage
+                .lines
+                .iter()
+                .any(|l| l.class.as_str() == SEARCH_UNITS && l.quantity == RERANK_UNITS),
+            "the record's amount is the line's counts: {:?}",
+            record.usage.lines
+        );
+        assert!(durability.retained_audit_findings().is_empty());
+    }
+
+    // THE SECOND BOOK: the late arm's row, and it is the unit's ONLY line (KERNEL<>PLUGINS step
+    // 14): the exit wrote none, and the one line is a settlement carrying the counts.
     let rows = second_book_rows(&book);
+    assert_eq!(
+        rows.len(),
+        1,
+        "one line per unit: the exit writes none when the late arm writes it: {rows:?}"
+    );
+    assert_eq!(
+        rows[0].kind,
+        crate::root::durability::PostingKind::Settlement,
+        "the one line settles the unit's reservation: {rows:?}"
+    );
     assert_eq!(
         rows.first()
             .and_then(|row| row.counts.as_ref())
@@ -4428,4 +4572,126 @@ async fn the_linked_arrivals_hand_their_units_to_the_node_the_root_installs() {
         "the unit never reached the upstream, so no node drove its Route step"
     );
     rig.server.shutdown().await;
+}
+
+/// ONE LINE PER UNIT, WHEN THE LATE READING NEVER ARRIVES (KERNEL<>PLUGINS step 14).
+///
+/// The exit hands its posting to the late arm and writes none itself. A body that drains with no
+/// reading behind it (the tap never filled) must still leave the unit's line: the exit's own
+/// posting, written by the arm, closing the reservation. An arm that dropped it would leave the
+/// unit with no line at all.
+#[test]
+fn a_late_arm_with_no_reading_writes_the_exits_own_line() {
+    let history = rerank_history_on(RERANK_LANE, 3, Some(2_000_000));
+    let pinned = history.clone();
+    let book = crate::root::durability::node_book_over(Box::new(move || Some(pinned.clone())));
+    let kernel = Kernel::new();
+    let who = PrincipalId::new("acct:late-none");
+    let hold = busbar_contract::caps::Hold::open(&kernel.admit_token(), who.clone(), 0);
+    let usage = busbar_contract::caps::Usage::report(&kernel.usage_token(), Vec::new())
+        .expect("an empty report fits");
+    let exit = busbar_contract::caps::Posted::settle(hold, 0, &usage, &kernel.ledger_token());
+    let arm = LateAccrual {
+        book: Arc::clone(&book.durability),
+        history,
+        durability_token: kernel.durability_token(),
+        ledger_token: kernel.ledger_token(),
+        usage_token: kernel.usage_token(),
+        principal: who,
+        arrived: Arrived::at(EPOCH * 1_000, 3),
+        late: Box::new(|| None),
+        exit: Some(exit),
+        outcome: None,
+        seal: None,
+    };
+    arm.post();
+    let rows = second_book_rows(&book);
+    assert_eq!(rows.len(), 1, "the unit keeps its one line: {rows:?}");
+    assert_eq!(
+        rows[0].kind,
+        crate::root::durability::PostingKind::Settlement,
+        "and it is the exit's settlement: {rows:?}"
+    );
+    assert_eq!(rows[0].settled, 0);
+}
+
+/// **A CLASS NO PLANE DECLARED IS REFUSED FAIL-CLOSED, NEVER BILLED AT ZERO**
+/// (`BUSBAR-1.6.0.md` §7). The unit read 1,000 input tokens and 40 units of a class nothing
+/// declares or configures. The line is still written with EVERY count, its money is refused
+/// (`UndeclaredClass`), no balance moves, and the read over it refuses — even on a card that prices
+/// input.
+#[test]
+fn a_class_no_plane_declared_is_refused_and_keeps_its_counts() {
+    let history = cache_silent_history();
+    let mut report = split_report(1_000, 0, 1);
+    report
+        .usage
+        .usage_units
+        .insert("units_nobody_declared".to_string(), 40);
+    let at = Arrived::at(4_000, 7);
+    let node = late_post(&history, at, "vk_undeclared", &report);
+
+    let rows = second_book_rows(&node);
+    assert_eq!(rows.len(), 1, "one line per unit: {rows:?}");
+    let row = &rows[0];
+    let counts = row.counts.as_ref().expect("the line carries the counts");
+    assert_eq!(counts.classes.get("units_nobody_declared"), Some(&40));
+    assert_eq!(
+        counts.classes.get(busbar_contract::records::UNIT_INPUT),
+        Some(&1_000)
+    );
+    assert!(
+        row.refusal.as_deref().is_some_and(
+            |why| why.contains("UndeclaredClass") && why.contains("units_nobody_declared")
+        ),
+        "the money is refused and names the class: {:?}",
+        row.refusal
+    );
+    assert_eq!((row.reserved, row.settled, row.overdraft), (0, 0, 0));
+    let durability = node.durability.lock().expect("unpoisoned");
+    let key = balance(&PrincipalId::new("vk_undeclared"));
+    let window =
+        busbar_kernel_budget::budget_window(busbar_kernel_budget::window::WINDOW_DAY, at.secs());
+    assert_eq!(durability.ledger.book().get(&key, window).settled, 0);
+    assert!(durability.settled_read(&key, window).is_err());
+    drop(durability);
+
+    // And on a node with NO card, where a declared class would post at nothing, the undeclared one
+    // is still refused — the written line and every replay of it (`read_back` re-derives the chain).
+    let absent = fee_history_of(&[(0, 0.0, 0.0, 0)], false);
+    let node = late_post(&absent, at, "vk_undeclared_absent", &report);
+    let rows = second_book_rows(&node);
+    assert_eq!(rows.len(), 1, "one line per unit: {rows:?}");
+    assert!(
+        rows[0]
+            .refusal
+            .as_deref()
+            .is_some_and(|why| why.contains("UndeclaredClass")),
+        "never billed at zero, and a replay keeps the refusal: {:?}",
+        rows[0].refusal
+    );
+}
+
+/// **A DECLARED OPEN CLASS ON AN ABSENT CARD IS NOT REFUSED** — 1.5.5's billing-off shape is
+/// unchanged: a rerank's declared `search_units` on a node with no card posts its counts row at
+/// nothing, with no refusal, exactly as before the undeclared-class rule.
+#[test]
+fn a_declared_open_class_on_an_absent_card_posts_its_counts_unrefused() {
+    let absent = fee_history_of(&[(0, 0.0, 0.0, 0)], false);
+    let mut report = split_report(0, 0, 0);
+    report
+        .usage
+        .usage_units
+        .insert(SEARCH_UNITS.to_string(), 50);
+    let node = late_post(&absent, Arrived::at(4_000, 7), "vk_absent", &report);
+    let rows = second_book_rows(&node);
+    assert_eq!(rows.len(), 1, "one line per unit: {rows:?}");
+    assert_eq!(rows[0].refusal, None, "a declared class is never refused");
+    assert_eq!(
+        rows[0]
+            .counts
+            .as_ref()
+            .and_then(|c| c.classes.get(SEARCH_UNITS)),
+        Some(&50)
+    );
 }

@@ -4,8 +4,9 @@
 
 use super::*;
 use busbar_contract::caps::KernelSeal;
+use busbar_kernel_audit::{Recipe, UsageLine};
 use busbar_kernel_ledger::legacy::RecordingRows;
-use busbar_kernel_wal::{decode_run, verify_journal, NullShipper};
+use busbar_kernel_wal::{decode_run, verify_journal, NullShipper, FRAME_BYTES};
 
 /// A scratch directory that removes itself, following the journal unit's own test fixture: the
 /// point of these tests is what is and is not created, so each needs a directory nobody else is
@@ -251,7 +252,7 @@ fn posting() -> Posting {
 }
 
 /// A sealed audit record for a unit that ran.
-fn audit_inputs(unit: u64) -> busbar_kernel_audit::AuditInputs {
+fn audit_inputs(unit: u64) -> AuditInputs {
     use busbar_contract::caps::{KernelSeal, Origin, OriginKind, Outcome, UnitKey};
     use busbar_kernel_audit::{
         AuditInputs, Controls, FinishClass, OpClassId, OutcomeFacts, Subject, Usage, What,
@@ -260,6 +261,7 @@ fn audit_inputs(unit: u64) -> busbar_kernel_audit::AuditInputs {
         subject: Subject::PrincipalId(format!("pseudonym-{unit}")),
         what: What {
             unit_key: UnitKey::new(unit),
+            incarnation: 0,
             op_class: OpClassId::new("chat.completion"),
             destination: Some("upstream-a".into()),
             parent: None,
@@ -293,14 +295,16 @@ fn audit_inputs(unit: u64) -> busbar_kernel_audit::AuditInputs {
     }
 }
 
-/// A sealed audit record goes on the journal, carrying the two digests that tie it back to the
-/// audit unit's own chain — and the epochs it ran under land in the journal header, which is
-/// where a reader asking "under which policy" looks.
-#[test]
-fn a_sealed_audit_record_goes_on_the_journal() {
-    use busbar_contract::caps::{Audit as AuditStep, KernelSeal, Pass};
-    use busbar_kernel_audit::Audit as _;
+/// A pass the audit step was lent, as the loop hands it back with the unit's facts.
+fn audit_pass() -> busbar_contract::caps::Pass<busbar_contract::caps::Audit> {
+    busbar_contract::caps::Pass::mint(&busbar_contract::caps::KernelSeal::acquire_for_kernel())
+}
 
+/// A UNIT'S RECORD GOES ON THE JOURNAL WHOLE (`audit.v4`): the record read back off the chain is the
+/// record sealed, stamped with this boot's incarnation — and the epochs it ran under land in the
+/// journal header, which is where a reader asking "under which policy" looks.
+#[test]
+fn a_sealed_audit_record_goes_on_the_journal_whole() {
     let mut durability = build_for_node(
         &DurabilityConfig { data_dir: None },
         4,
@@ -309,28 +313,152 @@ fn a_sealed_audit_record_goes_on_the_journal() {
     )
     .expect("memory-buffered cannot fail");
     let token = token();
-    let audit_token: Pass<AuditStep> = Pass::mint(&KernelSeal::acquire_for_kernel());
-
-    let sealed = durability.record.seal(audit_inputs(11), &audit_token);
-    let ack = durability
-        .journal_audit(&sealed, &token, StepName::Meter)
+    let sealed = durability
+        .seal_unit(audit_inputs(11), audit_pass(), &token)
         .expect("the record goes on the chain");
+    assert_eq!(sealed.what.incarnation, durability.incarnation);
+    assert_eq!(sealed.recipe, Recipe::V4);
 
-    let record = &ack.sealed[0];
+    let records = durability.journal.replay().unwrap().unwrap();
+    let on_chain: Vec<_> = records
+        .iter()
+        .filter_map(|r| decode_audit(r).expect("it decodes").map(|a| (r, a)))
+        .collect();
+    assert_eq!(on_chain.len(), 1);
+    let (record, back) = &on_chain[0];
     assert_eq!(record.class, RecordClass::Transaction);
     assert_eq!(record.wall, sealed.wall);
     assert_eq!(record.mono, sealed.mono);
     assert_eq!(record.lease_epoch, 4);
     assert_eq!(record.policy_epoch, 7);
-    assert_eq!(
-        record.body,
-        audit_body(&sealed),
-        "the body is the sealed record's, digests first"
-    );
-    // The tie back to the audit unit's chain: the journal body opens with that chain's two
-    // hashes, so a reader holding one can find the other.
-    assert!(String::from_utf8_lossy(&record.body).contains(&sealed.hash));
+    assert_eq!(*back, sealed, "the journal keeps the whole record");
     assert_eq!(durability.record.sealed(), 1);
+    assert_eq!(durability.audit_records, vec![sealed]);
+}
+
+/// TWO BOOTS THAT MINT THE SAME UNIT KEY SEAL TWO DIFFERENT, VERIFIED RECORDS. The unit key restarts
+/// with the process; the incarnation does not. The second boot's record continues the first boot's
+/// chain (its link names the first record), and the whole chain read back verifies from genesis.
+#[test]
+fn two_boots_minting_the_same_unit_key_seal_distinct_verified_records() {
+    let scratch = ScratchDir::new("audit-two-boots");
+    let cfg = DurabilityConfig {
+        data_dir: Some(scratch.path.clone()),
+    };
+    let first = {
+        let mut durability = boot(&cfg, 7).expect("the directory is writable");
+        durability
+            .seal_unit(audit_inputs(1), audit_pass(), &token())
+            .expect("sealed")
+    };
+    let mut restarted = boot(&cfg, 7).expect("the journal reopens");
+    let second = restarted
+        .seal_unit(audit_inputs(1), audit_pass(), &token())
+        .expect("sealed");
+    assert_eq!(first.what.unit_key, second.what.unit_key);
+    assert_ne!(first.what.incarnation, second.what.incarnation);
+    assert_ne!(first.hash, second.hash, "the boot is in the digest");
+    assert_eq!(
+        second.prev_hash, first.hash,
+        "the chain continues across the boot"
+    );
+    assert_eq!(second.seq, first.seq + 1);
+
+    let reread = boot(&cfg, 7).expect("the journal reopens");
+    let whole = reread.audit_window(1, u64::MAX);
+    assert_eq!(whole, vec![first, second]);
+    assert!(AuditChain::verify_chain(&whole).is_ok());
+    assert!(reread.retained_audit_findings().is_empty());
+}
+
+/// A WINDOW OLDER THAN THE CACHE IS READ BACK OFF THE JOURNAL after a restart — never answered as
+/// empty because the in-memory ring let it go.
+#[test]
+fn a_range_older_than_the_ring_is_read_back_after_a_restart() {
+    let scratch = ScratchDir::new("audit-older-than-ring");
+    let cfg = DurabilityConfig {
+        data_dir: Some(scratch.path.clone()),
+    };
+    let total = (AUDIT_RING + 5) as u64;
+    {
+        let mut durability = boot(&cfg, 7).expect("the directory is writable");
+        for unit in 1..=total {
+            durability
+                .seal_unit(audit_inputs(unit), audit_pass(), &token())
+                .expect("sealed");
+        }
+        assert_eq!(durability.audit_records.len(), AUDIT_RING);
+    }
+    let restarted = boot(&cfg, 7).expect("the journal reopens");
+    assert_eq!(restarted.audit_records.len(), AUDIT_RING);
+    assert_eq!(
+        restarted.audit_records[0].seq, 6,
+        "the cache holds the newest"
+    );
+    let old = restarted.audit_window(1, 3);
+    assert_eq!(
+        old.iter().map(|r| r.seq).collect::<Vec<_>>(),
+        vec![1, 2, 3],
+        "the journal answers for what the cache let go"
+    );
+    assert!(AuditChain::verify_window(&old).is_ok());
+    assert_eq!(restarted.audit_window(total, total)[0].seq, total);
+}
+
+/// A RETAINED RECORD EDITED AFTER IT WAS SEALED IS A `/verify` FINDING.
+#[test]
+fn a_tampered_retained_record_is_a_verify_finding() {
+    let mut durability = build_for_node(
+        &DurabilityConfig { data_dir: None },
+        4,
+        Box::new(NullShipper::new()),
+        rows(),
+    )
+    .expect("memory-buffered cannot fail");
+    for unit in 1..=3 {
+        durability
+            .seal_unit(audit_inputs(unit), audit_pass(), &token())
+            .expect("sealed");
+    }
+    assert!(durability.retained_audit_findings().is_empty());
+    durability.audit_records[1].usage.fee_count += 1;
+    let findings = durability.retained_audit_findings();
+    assert!(
+        findings.iter().any(|f| f.contains("DigestMismatch")),
+        "{findings:?}"
+    );
+}
+
+/// A JOURNALLED RECORD NAMING A CLASS NOBODY DECLARES HERE IS A RESTART FINDING, never a record
+/// silently skipped or a line silently dropped.
+#[test]
+fn an_audit_record_naming_an_undeclared_class_is_a_restart_finding() {
+    let scratch = ScratchDir::new("audit-undeclared-class");
+    let cfg = DurabilityConfig {
+        data_dir: Some(scratch.path.clone()),
+    };
+    {
+        let mut durability = boot(&cfg, 7).expect("the directory is writable");
+        let mut inputs = audit_inputs(1);
+        inputs.usage.lines.push(UsageLine {
+            class: busbar_contract::MeterClassId::new("a_class_this_node_never_registered"),
+            quantity: 3,
+            source: busbar_contract::caps::QuantitySource::Count,
+            estimated: false,
+        });
+        durability
+            .seal_unit(inputs, audit_pass(), &token())
+            .expect("sealed");
+    }
+    let restarted = boot(&cfg, 7).expect("the journal reopens");
+    assert!(
+        restarted.restart_findings.iter().any(|f| {
+            let f = f.to_string();
+            f.contains("audit chain") && f.contains("a_class_this_node_never_registered")
+        }),
+        "{:?}",
+        restarted.restart_findings
+    );
 }
 
 /// The set branch: the operator asked for a journal on this node's disk, so one appears. The
@@ -1933,4 +2061,181 @@ fn a_mid_log_corrupt_journal_boots_quarantines_and_records_it() {
         .expect("a quarantine is recorded");
     assert_eq!(ack.sealed.len(), 1);
     assert_eq!(ack.sealed[0].class, RecordClass::ChainBreak);
+}
+
+/// A SETTLED FIGURE TAMPERED ON DISK IS CAUGHT AT BOOT (the boot reconciliation is the check a stored
+/// price would otherwise need). A settlement's counts (the figure it prices to) are edited in the journal segment while the
+/// node is down; the next boot does not take the edited figure onto its book silently — the
+/// restart findings name the journal that no longer verifies. (A booked line carries no stored price
+/// to recompute, #71; this is the check that re-derives every settled figure from the counts.)
+#[test]
+fn a_settled_figure_tampered_on_disk_is_caught_at_boot() {
+    let scratch = ScratchDir::new("tampered-figure");
+    let cfg = DurabilityConfig {
+        data_dir: Some(scratch.path.clone()),
+    };
+    let key = totals_key("vk_tampered");
+    {
+        let mut durability = boot(&cfg, 21).expect("the directory is writable");
+        settle_one(&mut durability, &key, 5_000, 4_321, 1);
+        // A later settlement, so the edited record is inside the chain rather than its torn tail.
+        settle_one(&mut durability, &totals_key("vk_after"), 1_000, 700, 2);
+    }
+    let clean = boot(&cfg, 21).expect("reopens");
+    assert!(
+        clean.restart_findings.is_empty(),
+        "{:?}",
+        clean.restart_findings
+    );
+    assert_eq!(clean.ledger.book().get(&key, 86_400).settled, 4_321);
+    drop(clean);
+    // Edit the settled counts in place: 4,321 input units become 4,322, on disk.
+    let needle = 4_321u64.to_le_bytes();
+    let forged = 4_322u64.to_le_bytes();
+    let mut edited = 0;
+    for entry in std::fs::read_dir(&scratch.path).expect("the data directory lists") {
+        let path = entry.expect("an entry").path();
+        let Ok(mut bytes) = std::fs::read(&path) else {
+            continue;
+        };
+        let mut at = 0;
+        while let Some(i) = bytes[at..].windows(8).position(|w| w == needle) {
+            bytes[at + i..at + i + 8].copy_from_slice(&forged);
+            at += i + 8;
+            edited += 1;
+        }
+        if edited > 0 {
+            std::fs::write(&path, &bytes).expect("the segment rewrites");
+            break;
+        }
+    }
+    assert!(edited > 0, "the fixture found the settled counts on disk");
+    let restarted = boot(&cfg, 21).expect("a corrupt journal does not stop the boot");
+    assert!(
+        !restarted.restart_findings.is_empty(),
+        "a figure edited on disk must be a restart finding, never taken silently onto the book"
+    );
+}
+
+/// Find the segment holding `needle` and apply `edit` at its first occurrence. Answers whether it did.
+fn edit_segment(dir: &std::path::Path, needle: &[u8], edit: impl Fn(&mut Vec<u8>, usize)) -> bool {
+    for entry in std::fs::read_dir(dir).expect("the data directory lists") {
+        let path = entry.expect("an entry").path();
+        let Ok(mut bytes) = std::fs::read(&path) else {
+            continue;
+        };
+        if let Some(i) = bytes.windows(needle.len()).position(|w| w == needle) {
+            edit(&mut bytes, i);
+            std::fs::write(&path, &bytes).expect("the segment rewrites");
+            return true;
+        }
+    }
+    false
+}
+
+/// A COMPLETED SETTLEMENT ALTERED AT THE JOURNAL'S TAIL IS NEVER A SILENT ZERO. The unit's
+/// settlement is the last record on the journal and its counts are edited on disk while the node is
+/// down. Before the WAL's header check this read as a torn tail: the record was cut silently, the
+/// hold looked open, and recovery settled the unit at its checkpoint — 4,321 became 0 with no
+/// alarm. Now the record is quarantined, the finding names it, and the hold is left
+/// OPEN-QUARANTINED: nothing settles it on a guess.
+#[test]
+fn a_settlement_altered_at_the_tail_is_quarantined_and_never_settles_at_zero() {
+    let scratch = ScratchDir::new("tampered-tail");
+    let cfg = DurabilityConfig {
+        data_dir: Some(scratch.path.clone()),
+    };
+    let key = totals_key("vk_tail");
+    {
+        let mut durability = boot(&cfg, 22).expect("the directory is writable");
+        settle_one(&mut durability, &key, 5_000, 4_321, 9);
+    }
+    let clean = boot(&cfg, 22).expect("reopens");
+    assert_eq!(clean.ledger.book().get(&key, 86_400).settled, 4_321);
+    assert!(
+        clean.restart_findings.is_empty(),
+        "{:?}",
+        clean.restart_findings
+    );
+    drop(clean);
+    assert!(
+        edit_segment(&scratch.path, &4_321u64.to_le_bytes(), |bytes, i| {
+            bytes[i..i + 8].copy_from_slice(&4_322u64.to_le_bytes());
+        }),
+        "the fixture found the settled counts on disk"
+    );
+    let restarted = boot(&cfg, 22).expect("a corrupt journal does not stop the boot");
+    assert_eq!(
+        restarted.quarantined.len(),
+        1,
+        "the altered tail record is set aside"
+    );
+    let figures = restarted.ledger.book().get(&key, 86_400);
+    assert_eq!(
+        figures.settled, 0,
+        "the altered figure is not taken onto the book"
+    );
+    assert_eq!(
+        figures.open_holds, 5_000,
+        "and the hold is NOT settled at its checkpoint: it stays open"
+    );
+    assert_eq!(
+        restarted.recovered_holds, 0,
+        "nothing was recovered on a guess"
+    );
+    let findings: Vec<String> = restarted
+        .restart_findings
+        .iter()
+        .map(ToString::to_string)
+        .collect();
+    assert!(
+        findings
+            .iter()
+            .any(|f| f.starts_with("journal quarantine:"))
+            && findings
+                .iter()
+                .any(|f| f.contains("unit 9 is left OPEN-QUARANTINED")),
+        "the findings name the quarantine and the unit: {findings:?}"
+    );
+}
+
+/// A TRUE TORN TAIL STILL TRUNCATES AND RECOVERS. The settlement's write stopped inside its frame's
+/// header (a crash mid-append): the header check fails, the tail is cut silently, and the unit's
+/// hold is recovered as it always was — nothing was acknowledged past the tear.
+#[test]
+fn a_torn_settlement_is_cut_and_its_hold_recovers() {
+    let scratch = ScratchDir::new("torn-settlement");
+    let cfg = DurabilityConfig {
+        data_dir: Some(scratch.path.clone()),
+    };
+    let key = totals_key("vk_torn");
+    {
+        let mut durability = boot(&cfg, 23).expect("the directory is writable");
+        settle_one(&mut durability, &key, 5_000, 4_321, 11);
+    }
+    // Tear the frame that carries the settlement: zero from inside its header to the end.
+    assert!(
+        edit_segment(&scratch.path, &4_321u64.to_le_bytes(), |bytes, i| {
+            let frame = FRAME_BYTES;
+            let start = (i / frame) * frame + 20;
+            for b in &mut bytes[start..] {
+                *b = 0;
+            }
+        }),
+        "the fixture found the settlement on disk"
+    );
+    let restarted = boot(&cfg, 23).expect("reopens");
+    assert!(
+        restarted.quarantined.is_empty(),
+        "a torn write is not a quarantine"
+    );
+    assert_eq!(
+        restarted.recovered_holds, 1,
+        "the open hold is recovered as before"
+    );
+    assert!(
+        restarted.open_quarantined.is_empty(),
+        "{:?}",
+        restarted.open_quarantined
+    );
 }

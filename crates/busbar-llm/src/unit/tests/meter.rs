@@ -300,6 +300,16 @@ async fn the_step_accrues_the_same_metering_row_as_the_live_tap() {
 /// posts none even on a 2xx. There is no refund row here, and that is the point: the refund of the
 /// fee base is the admitted terminal door's (step 7), decided once from the client-facing status
 /// and the admit step's `charged` — `unit/tests/chain.rs` holds it on the ledger.
+/// The plane's fee unit, moved here from the kernel's door with the decision (TD step 13): the
+/// kernel decides no fee; this plane reports one per delivered request that routed upstream.
+#[test]
+fn the_fee_unit_is_one_per_delivered_request_that_routed_upstream() {
+    assert_eq!(fee_units(true, true), 1);
+    assert_eq!(fee_units(true, false), 0);
+    assert_eq!(fee_units(false, true), 0);
+    assert_eq!(fee_units(false, false), 0);
+}
+
 #[test]
 fn the_fee_is_decided_by_the_leg_and_the_client_facing_status() {
     let host: Arc<dyn EngineHost> =

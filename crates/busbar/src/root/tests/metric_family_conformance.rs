@@ -22,7 +22,7 @@
 
 use super::tests::{dropped, linked, LINKED_HOT};
 use super::*;
-use crate::root::loader::HotDeclStr;
+use busbar_contract::abi::hot::DeclStr;
 use busbar_kernel::plane::registry::TestRegistryIsolation;
 
 /// The carried family the example plane declares.
@@ -37,7 +37,7 @@ const GOLDEN: &str =
 
 /// The one row `plane_rows` installs for a table holding only the example plane.
 fn row(linked_door: bool, dropped_in: Vec<DynPlane>) -> &'static PlaneDecl {
-    let hot: &'static [&'static HotPlaneDecl] = if linked_door { &LINKED_HOT } else { &[] };
+    let hot: &'static [&'static hot::PlaneDecl] = if linked_door { &LINKED_HOT } else { &[] };
     let rows = plane_rows(&linked(&[], hot), dropped_in).expect("the example plane is admitted");
     assert_eq!(rows.len(), 1);
     rows[0]
@@ -49,7 +49,7 @@ fn add(row: &'static PlaneDecl, family: &str, values: &[&'static str]) -> Status
     let _registry = TestRegistryIsolation::seeded(&[row]);
     let app = busbar_kernel::test_support::TestApp::new().build();
     let scope = busbar_kernel::plane_host::DispatchScope::new();
-    let values: Vec<HotDeclStr> = values.iter().map(|v| HotDeclStr::new(v)).collect();
+    let values: Vec<DeclStr> = values.iter().map(|v| DeclStr::new(v)).collect();
     busbar_kernel::plane_host::with_borrowed_host_as(row.key, &app, &scope, |host, vt| {
         let add = vt.counter_add.expect("the host wires counter_add");
         add(

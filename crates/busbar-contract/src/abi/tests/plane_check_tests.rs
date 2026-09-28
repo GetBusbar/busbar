@@ -752,7 +752,7 @@ fn a_need_keeps_only_declarable_response_fields() {
     n.direction = DIRECTION_OUTBOUND;
     n.transport = s("t");
     let kept = [
-        s("mcp-session-id"),
+        s("x-session-id"),
         s("retry-after"),
         s("x-ratelimit-remaining"),
     ];
@@ -798,6 +798,30 @@ fn a_need_keeps_only_declarable_response_fields() {
         check_needs(&[b]),
         f(Rule::NullWithCount, "need.keep_response_headers")
     );
+}
+
+/// The need's egress class is one of the four THE DESIGN names, or the connector's default.
+#[test]
+fn a_need_names_a_known_egress_class() {
+    use crate::abi::host::conn::connector::{
+        EGRESS_DEFAULT, EGRESS_LOOPBACK_ALLOWED, EGRESS_OPEN_WEB, EGRESS_OPERATOR_INFRASTRUCTURE,
+        EGRESS_PROVIDER,
+    };
+    let mut n: Need = z();
+    n.direction = DIRECTION_OUTBOUND;
+    n.transport = s("t");
+    for class in [
+        EGRESS_DEFAULT,
+        EGRESS_PROVIDER,
+        EGRESS_OPERATOR_INFRASTRUCTURE,
+        EGRESS_OPEN_WEB,
+        EGRESS_LOOPBACK_ALLOWED,
+    ] {
+        n.egress_class = class;
+        assert_eq!(check_needs(&[n]), Ok(()), "class {class}");
+    }
+    n.egress_class = EGRESS_LOOPBACK_ALLOWED + 1;
+    assert_eq!(check_needs(&[n]), f(Rule::UnknownCode, "need.egress_class"));
 }
 
 #[test]
@@ -1330,6 +1354,14 @@ fn every_wire_refusal_code_is_pinned_to_its_number_and_word() {
         assert_eq!(code.code(), *number, "{word}: its number");
         assert_eq!(RefusalCode::ALL[i], *code, "{word}: its place");
         assert_eq!(RefusalCode::of(*number), Some(*code), "{word}: the reverse");
+        if matches!(
+            code,
+            RefusalCode::OverdraftCeiling | RefusalCode::StaleSlice
+        ) {
+            // A kernel-only money verdict: pinned on the wire, never decoded from a plane.
+            assert_eq!(reason_of(*number), None, "{word}: no plane carries it");
+            continue;
+        }
         let reason = reason_of(*number).expect("a pinned code names a reason");
         assert_eq!(reason.as_str(), *word, "code {number}");
         assert_eq!(reason_code(reason), *number);
@@ -1556,4 +1588,26 @@ fn drive_names_its_ready_sessions_under_the_short_buffer_rule() {
         check_drive(Failed, &o, 4),
         f(Rule::OverMax, "drive.sessions")
     );
+}
+
+/// RED (ARCHITECT ruling 2026-10-01, a money invariant): the overdraft ceiling and a stale slice
+/// are kernel-only money verdicts. A plane that names either code is answering malformed, never
+/// carrying the verdict: its tail row is refused, and the code decodes to no reason.
+#[test]
+fn a_plane_naming_a_kernel_money_verdict_is_malformed_not_the_verdict() {
+    for reason in [ReasonCode::OverdraftCeiling, ReasonCode::StaleSlice] {
+        let code = reason_code(reason);
+        assert_eq!(reason_of(code), None, "{reason:?} decodes from no plane");
+        let row = RefusalStatus {
+            dialect: REFUSAL_ANY_DIALECT,
+            reason: code,
+            status: 402,
+            _reserved: 0,
+        };
+        assert_eq!(
+            check_refusal_statuses(&[row], 1),
+            f(Rule::UnknownCode, "refusal_status.reason"),
+            "{reason:?}: a tail row naming it is malformed"
+        );
+    }
 }

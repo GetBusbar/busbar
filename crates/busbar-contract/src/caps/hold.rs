@@ -613,6 +613,8 @@ impl PostingFlags {
     pub const UNPOSTED: PostingFlags = PostingFlags(1 << 6);
     /// The unit was served from a bucket it was downgraded into.
     pub const DOWNGRADED: PostingFlags = PostingFlags(1 << 7);
+    /// The unit reported a class no plane declared: its money is refused, never priced.
+    pub const UNDECLARED: PostingFlags = PostingFlags(1 << 8);
 
     /// Whether every flag in `other` is set here.
     pub fn contains(self, other: PostingFlags) -> bool {
@@ -622,6 +624,11 @@ impl PostingFlags {
     /// This set with `other` added.
     pub fn with(self, other: PostingFlags) -> PostingFlags {
         PostingFlags(self.0 | other.0)
+    }
+
+    /// This set with `other` removed.
+    pub fn without(self, other: PostingFlags) -> PostingFlags {
+        PostingFlags(self.0 & !other.0)
     }
 
     /// Whether no flag is set.
@@ -745,6 +752,40 @@ impl Posted {
             settled: accrual.amount,
             overdraft: accrual.amount,
             flags: PostingFlags::LATE_ACCRUAL.with(PostingFlags::OVERDRAFT),
+        }
+    }
+
+    /// THE ONE LINE of a unit whose figure arrived after its terminal (KERNEL<>PLUGINS step 14): the
+    /// exit's own posting, carried unwritten to the late arm, with the late figure folded in. The
+    /// exit writes no line of its own for such a unit, so its reservation and the figure the plane
+    /// reported close on one record.
+    ///
+    /// The late amount settles on top of what the exit settled; whatever passes the reservation is
+    /// overdraft, exactly as [`Posted::settle`] reckons it, and the line is flagged late. The exit's
+    /// `ESTIMATED` mark (it had nothing reported at the terminal) is dropped: the figure on the line
+    /// is the one the far end reported.
+    ///
+    /// The ledger's token is required and unread, as [`Posted::settle_late`] requires it.
+    pub fn with_late(self, accrual: HoldAccrual, _token: &Grant<WriteMoney>) -> Self {
+        let settled = self.settled.saturating_add(accrual.amount);
+        let overdraft = if settled > self.reserved {
+            settled - self.reserved
+        } else {
+            self.overdraft
+        };
+        let mut flags = self
+            .flags
+            .without(PostingFlags::ESTIMATED)
+            .with(PostingFlags::LATE_ACCRUAL);
+        if overdraft > 0 {
+            flags = flags.with(PostingFlags::OVERDRAFT);
+        }
+        Posted {
+            principal: self.principal,
+            reserved: self.reserved,
+            settled,
+            overdraft,
+            flags,
         }
     }
 

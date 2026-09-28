@@ -48,6 +48,7 @@ use busbar_contract::caps::{
 use busbar_contract::UnitKey;
 use busbar_core_admin::admin_codec::verbs::ResolvedVerb;
 use busbar_kernel::teller::UnitCtx;
+use busbar_kernel_audit::{expose, AuditChain, AuditKeySet, AuditRecord};
 use busbar_kernel_scope::Scope;
 
 use crate::root::kernel::{ProductionUnits, RegisteredUnits};
@@ -57,7 +58,10 @@ use busbar_core_admin::{
     verb_name, ApprovalState, KernelVerb, PostureCtx, VerbScope, AUDIT_VERBS, LEDGER_VERBS,
     LEGACY_VERBS, NAMED_SURFACES, NEW_VERBS,
 };
-use busbar_kernel_ledger::cost::{Money, MoneyError};
+use busbar_kernel_ledger::{
+    checkpoint::{AnchoredHead, Checkpoint, CheckpointVerifier},
+    cost::{Money, MoneyError},
+};
 
 /// The transport an admin claim is declared over, and therefore the one a sealed destination for an
 /// admin verb carries.
@@ -292,12 +296,12 @@ pub trait LedgerView: Send + Sync {
     fn legacy_rows(&self) -> Result<crate::root::ledger_identity::LegacySnapshot, MoneyError>;
 
     /// The sealed checkpoints, oldest first.
-    fn checkpoints(&self) -> Vec<busbar_kernel_ledger::checkpoint::Checkpoint>;
+    fn checkpoints(&self) -> Vec<Checkpoint>;
 
     /// The keyset a checkpoint's seal is verified against — the audit chain's own (Q71(3): one
     /// keyset, #82). Empty by default: a view bound to no chain vouches for no signature.
-    fn checkpoint_keys(&self) -> busbar_kernel_audit::AuditKeySet {
-        busbar_kernel_audit::AuditKeySet::new()
+    fn checkpoint_keys(&self) -> AuditKeySet {
+        AuditKeySet::new()
     }
 
     /// The marker the first boot after the upgrade sealed, if this deployment has migrated.
@@ -388,13 +392,30 @@ pub trait LedgerView: Send + Sync {
     /// The book is an option, and `None` is "this view holds no book", NEVER "the book is empty":
     /// the verifier then checks the checkpoints alone and says it did not verify a book. The default
     /// is exactly that, which is the true answer for a view with no book behind it.
-    fn verify_snapshot(
-        &self,
-    ) -> (
-        Vec<busbar_kernel_ledger::checkpoint::Checkpoint>,
-        Option<BookTotals>,
-    ) {
+    fn verify_snapshot(&self) -> (Vec<Checkpoint>, Option<BookTotals>) {
         (self.checkpoints(), None)
+    }
+
+    /// What this node's boot reconciliation found: the book it rebuilt from its journal against a
+    /// second replay, and every record the chain could not read. Empty for a view with no book, and
+    /// for a node that booted clean.
+    fn restart_findings(&self) -> Vec<String> {
+        Vec::new()
+    }
+
+    /// What a walk of this node's retained audit chain finds: a record whose digest, link or
+    /// position does not hold, or whose signature does not verify. Empty for a view with no chain.
+    fn retained_audit_findings(&self) -> Vec<String> {
+        Vec::new()
+    }
+
+    /// [`LedgerView::verify_snapshot`] with the anchor's head, all as of one moment. `None`
+    /// is "this view holds no anchor", which the verifier writes down as such; the default is that.
+    fn verify_snapshot_anchored(
+        &self,
+    ) -> (Vec<Checkpoint>, Option<BookTotals>, Option<AnchoredHead>) {
+        let (checkpoints, book) = self.verify_snapshot();
+        (checkpoints, book, None)
     }
 }
 
@@ -429,7 +450,7 @@ impl LedgerView for UnopenedLedger {
         Ok(crate::root::ledger_identity::LegacySnapshot::new())
     }
 
-    fn checkpoints(&self) -> Vec<busbar_kernel_ledger::checkpoint::Checkpoint> {
+    fn checkpoints(&self) -> Vec<Checkpoint> {
         Vec::new()
     }
 
@@ -623,11 +644,11 @@ impl LedgerView for NodeLedger {
         ))
     }
 
-    fn checkpoints(&self) -> Vec<busbar_kernel_ledger::checkpoint::Checkpoint> {
+    fn checkpoints(&self) -> Vec<Checkpoint> {
         self.lock().checkpoints.clone()
     }
 
-    fn checkpoint_keys(&self) -> busbar_kernel_audit::AuditKeySet {
+    fn checkpoint_keys(&self) -> AuditKeySet {
         crate::root::durability::keyset_of(&self.lock().record)
     }
 
@@ -678,16 +699,36 @@ impl LedgerView for NodeLedger {
     }
 
     /// Both halves under ONE hold of the lock a settlement takes.
-    fn verify_snapshot(
-        &self,
-    ) -> (
-        Vec<busbar_kernel_ledger::checkpoint::Checkpoint>,
-        Option<BookTotals>,
-    ) {
+    fn verify_snapshot(&self) -> (Vec<Checkpoint>, Option<BookTotals>) {
         let durability = self.lock();
         (
             durability.checkpoints.clone(),
             Some(durability.ledger.book().snapshot()),
+        )
+    }
+
+    fn restart_findings(&self) -> Vec<String> {
+        self.lock()
+            .restart_findings
+            .iter()
+            .map(ToString::to_string)
+            .collect()
+    }
+
+    fn retained_audit_findings(&self) -> Vec<String> {
+        self.lock().retained_audit_findings()
+    }
+
+    /// All three under ONE hold of the lock a seal takes, so a checkpoint sealed between reads
+    /// cannot read as a head that differs.
+    fn verify_snapshot_anchored(
+        &self,
+    ) -> (Vec<Checkpoint>, Option<BookTotals>, Option<AnchoredHead>) {
+        let durability = self.lock();
+        (
+            durability.checkpoints.clone(),
+            Some(durability.ledger.book().snapshot()),
+            durability.anchored_head(),
         )
     }
 }
@@ -746,7 +787,7 @@ impl LegacyRowsRead for busbar_kernel_ledger::legacy::RecordingRows {
 /// "read-only" a property of the type rather than a promise in a comment. Nothing behind it can seal
 /// a record, mint a key or move a head.
 ///
-/// It is deliberately NOT the chain. An [`busbar_kernel_audit::AuditChain`] can SEAL; a read of it
+/// It is deliberately NOT the chain. An [`AuditChain`] can SEAL; a read of it
 /// has no business holding one that it could. What the trait hands a reader is a borrow, for the
 /// duration of one render, under whatever lock the node keeps the chain behind.
 ///
@@ -761,7 +802,7 @@ pub trait AuditView: Send + Sync {
     /// end into the same body as the window's records: reading the two through separate calls would
     /// let a seal landing between them tie a window to a head it does not belong under, which is the
     /// same race [`LedgerView::identity_snapshot`] exists to close. A borrow, because
-    /// [`busbar_kernel_audit::AuditChain`] is not `Clone` — deliberately, it holds the signing key —
+    /// [`AuditChain`] is not `Clone` — deliberately, it holds the signing key —
     /// so a seam that handed one out would be handing out the ability to sign.
     ///
     /// The records are an OPTION, and `None` is not an empty window. `None` is "this node retains no
@@ -769,21 +810,27 @@ pub trait AuditView: Send + Sync {
     /// journal and were pruned has a chain, a head and no records — and it is a different fact from
     /// "no records fall in the window you asked for". `docs/design/BUSBAR-1.6.0.md:2079`: a gap and
     /// a measurement must never be the same output. The head read answers either way.
-    fn read(
+    fn read(&self, take: &mut dyn FnMut(&AuditChain, Option<&[AuditRecord]>));
+
+    /// [`AuditView::read`] for the records at positions `from` through `to`: a view whose records
+    /// outlive what it holds in memory answers an older window from where it keeps them. The
+    /// default is [`AuditView::read`].
+    fn read_window(
         &self,
-        take: &mut dyn FnMut(
-            &busbar_kernel_audit::AuditChain,
-            Option<&[busbar_kernel_audit::AuditRecord]>,
-        ),
-    );
+        _from: u64,
+        _to: u64,
+        take: &mut dyn FnMut(&AuditChain, Option<&[AuditRecord]>),
+    ) {
+        self.read(take);
+    }
 
     /// The PUBLIC halves of every key this node has signed records under.
     ///
     /// Public halves only, and there is no path from this seam to a secret one:
-    /// [`busbar_kernel_audit::AuditKeySet`] holds verifying keys and nothing else. Keys are only
+    /// [`AuditKeySet`] holds verifying keys and nothing else. Keys are only
     /// ever added — a key dropped from this answer makes every record it signed unverifiable, which
     /// from outside is indistinguishable from those records having been forged.
-    fn keys(&self) -> busbar_kernel_audit::AuditKeySet;
+    fn keys(&self) -> AuditKeySet;
 }
 
 /// The chain reads over the evidence THIS node holds.
@@ -794,17 +841,14 @@ pub trait AuditView: Send + Sync {
 /// no answer at all. The head is read HERE, per request, under the lock a seal holds — so no read
 /// can catch the chain half-sealed.
 ///
-/// ## What it does NOT have, said out loud
+/// ## The records
 ///
-/// The records. This node's sealed records go onto the journal
-/// ([`crate::root::durability::Durability::journal_audit`]) and the journal keeps a record's two
-/// digests and the facts an auditor reads it for — deliberately not the record — so there is no
-/// list of [`busbar_kernel_audit::AuditRecord`] here to hand a window read. So [`AuditView::read`]
-/// answers `None` for the records, the range verb refuses with a `NotFound` naming the absence, and
-/// the head and key reads answer in full from what the node genuinely holds. That is the honest
-/// shape: the alternative is a 200 carrying `"records": []`, which tells an auditor that the window
-/// they asked about is empty when the truth is that nobody kept it. Retention is a product decision
-/// with a storage cost attached, and it is not this seam's to invent.
+/// Each unit this node serves seals ONE record where its one line is written
+/// ([`crate::root::durability::Durability::seal_unit`]), and the journal keeps it whole
+/// (`audit.v4`). The node holds the newest [`crate::root::durability::AUDIT_RING`] in memory as a
+/// cache; a range read older than the cache is answered by reading the journal back
+/// ([`crate::root::durability::Durability::audit_window`]), so retention never loses a record the
+/// chain holds and a window is never answered as empty because the cache let it go.
 pub struct NodeAudit {
     durability: Arc<Mutex<crate::root::durability::Durability>>,
 }
@@ -830,18 +874,23 @@ impl NodeAudit {
 }
 
 impl AuditView for NodeAudit {
-    fn read(
-        &self,
-        take: &mut dyn FnMut(
-            &busbar_kernel_audit::AuditChain,
-            Option<&[busbar_kernel_audit::AuditRecord]>,
-        ),
-    ) {
+    fn read(&self, take: &mut dyn FnMut(&AuditChain, Option<&[AuditRecord]>)) {
         let durability = self.lock();
-        take(&durability.record, None);
+        take(&durability.record, Some(&durability.audit_records));
     }
 
-    fn keys(&self) -> busbar_kernel_audit::AuditKeySet {
+    fn read_window(
+        &self,
+        from: u64,
+        to: u64,
+        take: &mut dyn FnMut(&AuditChain, Option<&[AuditRecord]>),
+    ) {
+        let durability = self.lock();
+        let records = durability.audit_window(from, to);
+        take(&durability.record, Some(&records));
+    }
+
+    fn keys(&self) -> AuditKeySet {
         // The public half of the key this chain signs with, where it was given one. A node that was
         // given none answers with an EMPTY set, and that is the truth about it: nothing it sealed
         // carries a signature, so there is no key with which to check one. What the set must never
@@ -861,7 +910,7 @@ impl AuditView for NodeAudit {
 /// rather than an empty answer.
 ///
 /// A window that runs off either end of what the node holds is NOT an error: it is simply shorter,
-/// which is [`busbar_kernel_audit::expose::range_body`]'s own rule and stays its.
+/// which is [`expose::range_body`]'s own rule and stays its.
 fn audit_window(target: &str) -> Option<(u64, u64)> {
     let (_, query) = target.split_once('?')?;
     let query = query.split('#').next().unwrap_or(query);
@@ -905,7 +954,7 @@ fn render_audit_view(
         KernelVerb::GetAuditHead => {
             let mut body = None;
             view.read(&mut |chain, _records| {
-                body = Some(busbar_kernel_audit::expose::head_body(chain));
+                body = Some(expose::head_body(chain));
             });
             body.map(String::into_bytes).ok_or(GovernanceError::Store)
         }
@@ -914,10 +963,9 @@ fn render_audit_view(
             // Two layers, and they are two different answers: the outer says whether the view
             // answered, the inner says whether it retains records to answer with.
             let mut answered: Option<Option<String>> = None;
-            view.read(&mut |chain, records| {
-                answered = Some(records.map(|records| {
-                    busbar_kernel_audit::expose::range_body(chain, records, from, to)
-                }));
+            view.read_window(from, to, &mut |chain, records| {
+                answered =
+                    Some(records.map(|records| expose::range_body(chain, records, from, to)));
             });
             match answered {
                 None => Err(GovernanceError::Store),
@@ -925,9 +973,7 @@ fn render_audit_view(
                 Some(Some(body)) => Ok(body.into_bytes()),
             }
         }
-        KernelVerb::GetAuditKeys => {
-            Ok(busbar_kernel_audit::expose::keys_body(&view.keys()).into_bytes())
-        }
+        KernelVerb::GetAuditKeys => Ok(expose::keys_body(&view.keys()).into_bytes()),
         // Reachable only if the closed table and this match ever disagree, which is a defect in this
         // file rather than a request to forgive.
         _ => Err(GovernanceError::NotFound),
@@ -2154,13 +2200,10 @@ fn render_totals(
 /// auditor re-derives independently; the boolean is this node's own answer for the same question,
 /// and serving both is what lets the two be compared rather than trusted.
 ///
-/// `seal_verifies` is [`busbar_kernel_ledger::checkpoint::Checkpoint::verify_seal`] against the
+/// `seal_verifies` is [`Checkpoint::verify_seal`] against the
 /// audit keyset (Q71(3): one keyset), and `seal_refusal` is its refusal in its own words — EDITED,
 /// UNSIGNED or a signature the keyset rejects — or `null` when the seal verifies.
-fn render_checkpoints(
-    checkpoints: &[busbar_kernel_ledger::checkpoint::Checkpoint],
-    keys: &dyn busbar_kernel_ledger::checkpoint::CheckpointVerifier,
-) -> String {
+fn render_checkpoints(checkpoints: &[Checkpoint], keys: &dyn CheckpointVerifier) -> String {
     let mut out = String::from("{\"checkpoints\":[");
     for (i, cp) in checkpoints.iter().enumerate() {
         if i > 0 {
@@ -3866,7 +3909,7 @@ pub(crate) use admin_mount::*;
 // ── `adjust` and the idempotency claim journal: sibling modules, re-exported here ─────────────────
 mod adjust;
 pub use adjust::RecordedCounts;
-mod bound;
+pub(crate) mod bound;
 pub use bound::{
     live_admin_door, live_planes, live_records, no_planes, PlaneLookup, PlaneRecordSink,
 };

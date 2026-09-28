@@ -847,10 +847,11 @@ pub use busbar_kernel::config::providers::{
 // so no caller (this module's own definition-to-registry lowering, validation, `config_validate`,
 // `store`) moves.
 pub use busbar_kernel::config::hooks::{
-    caller_in_hook_groups, default_on_error, default_policy_timeout_ms, on_error_terminal, HookCfg,
-    HookDefCfg, HookDefs, HookKind, HookStage, OnErrorCfg, PromptAccess, UserAccess,
-    ALL_HOOK_STAGES, CORE_HOOK_PHASES, DEFAULT_POLICY_TIMEOUT_MS, FROZEN_HOOK_NAME_WORD_SPACE,
-    ON_ERROR_FIRST, ON_ERROR_NOTHING, ON_ERROR_REJECT, ON_ERROR_WEIGHTED, RESERVED_HOOK_NAMES,
+    caller_in_hook_groups, default_on_error, default_policy_timeout_ms, is_reserved_hook_name,
+    on_error_terminal, HookCfg, HookDefCfg, HookDefs, HookKind, HookStage, OnErrorCfg,
+    PromptAccess, UserAccess, ALL_HOOK_STAGES, CORE_HOOK_PHASES, DEFAULT_POLICY_TIMEOUT_MS,
+    FROZEN_HOOK_NAME_WORD_SPACE, ON_ERROR_FIRST, ON_ERROR_NOTHING, ON_ERROR_REJECT,
+    ON_ERROR_WEIGHTED, RESERVED_HOOK_NAMES,
 };
 pub use busbar_kernel::config::pools::{
     default_consecutive_n, default_cooldown, default_failover_timeout, default_max_cooldown,
@@ -1893,7 +1894,7 @@ pub fn resolve_export(defs: &ExportDefs, errors: &mut Vec<String>) -> ExportCfg 
             // ignored. A third party may subscribe to `metrics`; it never renders busbar's own
             // `/metrics` (#65).
             other if axis.is_some() => {
-                let metrics = busbar_plugin_loader::ExportStream::Metrics;
+                let metrics = busbar_contract::abi::cold::export::ExportStream::Metrics;
                 let carries = declared.is_some_and(|d| d.contains(&metrics));
                 let first_party = crate::export::plugin::first_party(other);
                 let scrape = carries && first_party && projection.wants_stream(metrics);
@@ -2373,7 +2374,7 @@ pub fn resolve(
         }
     }
     for (name, def) in &deploy.hooks {
-        if RESERVED_HOOK_NAMES.contains(&name.as_str()) {
+        if is_reserved_hook_name(name) {
             errors.push(format!(
                 "hooks.{name}: '{name}' is a reserved name (an on_error terminal, built-in ranking \
                  strategy, or built-in auth module) and cannot name a hook definition"

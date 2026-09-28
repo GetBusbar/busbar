@@ -18,7 +18,7 @@ use busbar_kernel::pump::{
     BodySpool, Direction, Dispatch, Emission, EmissionClock, NestedPool, Scheduler, Shape,
     SpillBudget, StreamId, TransportKind, MAX_NEEDMORE_FRAMES,
 };
-use busbar_kernel::teller::{settle_amount, Evidence, Kernel};
+use busbar_kernel::teller::{settle_written, Evidence, Kernel, Written};
 
 use common::{principal, TestDoor};
 
@@ -105,7 +105,7 @@ fn an_in_flight_cap_refusal_is_stamped_at_the_step_the_unit_was_constructed_at()
 }
 
 #[test]
-fn an_unsolicited_push_refused_at_the_cap_still_posts_the_floor_line() {
+fn an_unsolicited_push_refused_at_the_cap_still_posts_its_reported_line() {
     let kernel = Kernel::new();
     let table = InFlight::new(1);
     table
@@ -117,19 +117,25 @@ fn an_unsolicited_push_refused_at_the_cap_still_posts_the_floor_line() {
         .insert(enter(&kernel, 1, OriginKind::Provider))
         .expect_err("the table is full");
     // The hold comes BACK rather than being dropped: content the upstream will invoice is never
-    // simply discarded, so the floor is posted against the session's principal.
+    // simply discarded, so what the plane reported is posted against the session's principal.
     let hold = refused.hold;
     assert_eq!(hold.principal(), &principal());
     let evidence = Evidence {
-        located: None,
-        accrued_floor: 2_500,
+        reported: Some(2_500),
         ..Evidence::default()
     };
-    let (amount, flags) = settle_amount(
+    let Written { amount, flags, .. } = settle_written(
         &busbar_contract::caps::Outcome::Refused(refused.step, refused.reason),
         &evidence,
     );
     assert_eq!(amount, 2_500);
+    assert!(flags.is_clean(), "a reported figure is written unmarked");
+    // Nothing reported on a refused end: zero, marked estimated; never a floor.
+    let Written { amount, flags, .. } = settle_written(
+        &busbar_contract::caps::Outcome::Refused(refused.step, refused.reason),
+        &Evidence::default(),
+    );
+    assert_eq!(amount, 0);
     assert!(flags.contains(PostingFlags::ESTIMATED));
 }
 

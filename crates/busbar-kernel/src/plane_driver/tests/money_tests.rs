@@ -12,14 +12,14 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use busbar_contract::abi::plane::{UnitCount, CANCEL_OK_PARTIAL, UNITS_ESTIMATED, UNITS_REPORTED};
-use busbar_contract::caps::OriginKind;
+use busbar_contract::caps::{OriginKind, ReasonCode};
 use busbar_contract::records::VirtualKey;
 use busbar_contract::UnitKey;
 
 use super::*;
 use crate::config::groups::{GroupCfg, LimitCfg, LimitMetric, LimitWindow};
 use crate::governance::{MemoryStore, WINDOW_TOTAL};
-use crate::plane_driver::{CancelBill, CancelCause};
+use crate::plane_driver::CancelBill;
 use crate::registry::Generation;
 
 const NOW: u64 = 1_700_000_000;
@@ -191,7 +191,7 @@ fn a_cancel_bill_is_ledgered_and_the_end_adds_nothing() {
     r.money.cancelled(
         &ctx(1),
         &CancelBill {
-            cause: CancelCause::ClientGone,
+            cause: ReasonCode::ClientGone,
             disposition: CANCEL_OK_PARTIAL,
             far_end_answered: true,
             streamed: true,
@@ -380,7 +380,7 @@ fn an_undelivered_end_meters_nothing() {
 #[test]
 fn a_cancelled_stream_meters_only_a_reported_bill() {
     let bill = |billed: Vec<(u32, u64)>| CancelBill {
-        cause: CancelCause::ClientGone,
+        cause: ReasonCode::ClientGone,
         disposition: CANCEL_OK_PARTIAL,
         far_end_answered: true,
         streamed: true,
@@ -455,7 +455,7 @@ fn an_abandoned_end_goes_to_the_roots_posting_site() {
     );
 }
 
-fn bill(cause: CancelCause, amount: u64) -> CancelBill {
+fn bill(cause: ReasonCode, amount: u64) -> CancelBill {
     CancelBill {
         cause,
         disposition: CANCEL_OK_PARTIAL,
@@ -544,9 +544,9 @@ fn every_path_ledgers_a_unit_exactly_once_and_closes_it() {
         "the unit waits for its cancel bill"
     );
     r.money
-        .cancelled(&ctx(1), &bill(CancelCause::ClientGone, 25));
+        .cancelled(&ctx(1), &bill(ReasonCode::ClientGone, 25));
     r.money
-        .cancelled(&ctx(1), &bill(CancelCause::ClientGone, 25));
+        .cancelled(&ctx(1), &bill(ReasonCode::ClientGone, 25));
     assert_eq!(
         (usage(&r).0, r.money.open_units()),
         (25, 0),
@@ -557,7 +557,7 @@ fn every_path_ledgers_a_unit_exactly_once_and_closes_it() {
     let r = rig(None, 0, ExhaustionMode::FinishUnit);
     let _ = r.money.checkpoint(&ctx(1), &reported(30));
     r.money
-        .cancelled(&ctx(1), &bill(CancelCause::ClientGone, 25));
+        .cancelled(&ctx(1), &bill(ReasonCode::ClientGone, 25));
     r.money.abandoned(&ctx(1), Ended::AlreadySettled);
     assert_eq!(
         (usage(&r).0, r.money.open_units()),
@@ -568,7 +568,8 @@ fn every_path_ledgers_a_unit_exactly_once_and_closes_it() {
     // A cancel the unit returns from (a deadline), then its end.
     let r = rig(None, 0, ExhaustionMode::FinishUnit);
     let _ = r.money.checkpoint(&ctx(1), &reported(30));
-    r.money.cancelled(&ctx(1), &bill(CancelCause::Deadline, 5));
+    r.money
+        .cancelled(&ctx(1), &bill(ReasonCode::DeadlineExceeded, 5));
     r.money.settle_end(UnitKey::new(1), 504);
     assert_eq!(
         (usage(&r).0, r.money.open_units()),
@@ -587,7 +588,7 @@ fn a_cancelled_undelivered_unit_is_refunded_once_and_an_abandoned_one_never() {
     r.money.cancelled(
         &ctx(1),
         &CancelBill {
-            cause: CancelCause::Deadline,
+            cause: ReasonCode::DeadlineExceeded,
             disposition: CANCEL_OK_PARTIAL,
             far_end_answered: false,
             streamed: false,

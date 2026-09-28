@@ -29,11 +29,9 @@ path = "src/lib.rs"
 
 [dependencies]
 busbar-kernel = { path = "../busbar-kernel", default-features = false }
-# The neutral substrate: the CIMD fetch (`cimd.rs`) goes through `busbar_substrate::egress::engine`
-# directly — the SAME bounded-body/hop-deadline guard the rest of busbar's egress uses — rather than
-# a second copy of it, exactly as it did when this file compiled inside busbar-core (core names this
-# crate directly too; it is the shared Tier-0 leaf, not a plane-owned one).
-busbar-plugin-loader = { path = "../plugin-loader" }
+# The plugin contract: the route vocabulary (`RouteAuth`, `RouteMethod`) the authorization-server
+# routes are declared in is the contract's, named from the crate that owns it (BOOT-LOOP step 3, R2).
+busbar-contract = { path = "../busbar-contract" }
 axum = { workspace = true }
 base64 = { workspace = true }
 ring = { workspace = true }

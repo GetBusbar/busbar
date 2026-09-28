@@ -195,6 +195,17 @@ A persisted admin audit record could not be decoded at boot on the neutral `plan
 
 **What to do:** Treat the durable governance store as suspect: if rows are unreadable on a store a released build wrote, capture it for forensic review before it is overwritten and restore from a trusted backup once the cause is understood.
 
+<a id="plane-journal-resume-chain-broken"></a>
+### BUSBAR-2048 — A plane journal scope failed hash-chain verification on resume (tamper evidence)
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `plane-journal-resume-chain-broken`
+
+A plane journal scope that had been evicted from the in-memory cache was read back from               the durable store to take its next record, and the persisted tail does NOT verify               against its own hash chain, which is tamper evidence surfaced at runtime rather than at               boot. The chain resumes from the broken tail and the write is not refused, because               refusing here would convert a detection control into a deletion primitive.
+
+**What to do:** Treat the durable governance store as compromised until explained: capture it for              forensic review before it is overwritten, then restore from a trusted backup once the              cause is understood.
+
 ## 3xxx — Config
 
 <a id="config-overlay-not-writable"></a>
@@ -1988,6 +1999,17 @@ A provider's `api_key` secret reference could not be resolved — an unset envir
 A plane asked whether the unit's principal is entitled to a target whose scope kind is not among the scope kinds the plane's tail declares. The kernel answers NOT_ENTITLED without consulting the principal's grants.
 
 **What to do:** Declare the scope kind in the plane's tail, or correct the target the plane asks about.
+
+<a id="meter-class-undeclared"></a>
+### BUSBAR-8022 — A unit reported a usage class its plane never declared (the line is refused, not billed)
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `meter-class-undeclared`
+
+A unit's drained usage report named a class that no installed plane declares as billable, no configured `units:` entry names, and is not one of the reserved four. The unit's one line is still written with every count, but its money is REFUSED rather than priced: a class nobody declared is never billed at zero and never dropped. Every read of the balance the line sits on refuses until it is explained.
+
+**What to do:** The plane that served the unit reported a class outside its declaration, which is a plugin defect: upgrade or fix the plane so it declares every class it reports, or configure the class under the lane's `units:` if it is an operator-priced open class.
 
 ## 9xxx — Boot & lifecycle
 

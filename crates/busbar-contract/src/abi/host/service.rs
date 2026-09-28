@@ -144,10 +144,12 @@ pub mod op {
     pub const HOOK_CALL: u32 = 17;
     /// `random.fill`.
     pub const RANDOM_FILL: u32 = 18;
+    /// `need.admit`.
+    pub const NEED_ADMIT: u32 = 19;
 }
 
 /// How many services [`HostSlots`] holds.
-pub const SERVICES: u32 = 19;
+pub const SERVICES: u32 = 20;
 
 /// Whether a service may answer PENDING, and so is callable only inside a ticketed op. `false` for
 /// an index past the table.
@@ -161,6 +163,7 @@ pub const fn may_pend(service: u32) -> bool {
             | op::VERIFY_STORE
             | op::ENTITLEMENT_CHECK
             | op::RANDOM_FILL
+            | op::NEED_ADMIT
     ) && service < SERVICES
 }
 
@@ -551,6 +554,27 @@ pub struct HookCallIn {
     pub into: ServiceBufs,
 }
 
+// ── need ──────────────────────────────────────────────────────────────────────────────────────
+
+/// [`op::NEED_ADMIT`]'s `in`: the host's verdict on the calling instance's declared need `need` (its
+/// index in the Statement's needs), as the host admitted it when it bound the instance — its target,
+/// its egress class, its trust anchors (a `trust_from` anchor that does not parse is refused). Never
+/// pends. READY = admitted; REFUSED = not, with the host's text in `ServiceOut::error`.
+///
+/// It only lets a plugin's `open` answer its own words: the verdict binds FAIL-CLOSED regardless —
+/// every establish on a need that failed admission is refused by the connector, whether or not the
+/// plugin asked.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct NeedAdmitIn {
+    /// The head.
+    pub head: ServiceHead,
+    /// The need, by its index in the Statement's needs.
+    pub need: u32,
+    /// Alignment padding.
+    pub _reserved: u32,
+}
+
 // ── the table ─────────────────────────────────────────────────────────────────────────────────
 
 /// THE HOST SERVICES TABLE: one [`ServiceFn`] per [`op`], in index order. A NULL slot is a service
@@ -600,6 +624,8 @@ pub struct HostSlots {
     pub hook_call: Option<ServiceFn>,
     /// [`op::RANDOM_FILL`], in [`RandomFillIn`].
     pub random_fill: Option<ServiceFn>,
+    /// [`op::NEED_ADMIT`], in [`NeedAdmitIn`].
+    pub need_admit: Option<ServiceFn>,
 }
 
 // ── the host's checks of an `in` ──────────────────────────────────────────────────────────────
@@ -1023,6 +1049,20 @@ pub fn check_content_scan(
 /// The rule the answer breaks.
 pub fn check_hook_call(i: &HookCallIn, ret: RawOutcome, out: &ServiceOut) -> Result<Filled, Fault> {
     answer(ret, &i.head, out, into(op::HOOK_CALL, i.into, ANY))
+}
+
+/// `need.admit`'s answer: never pends; READY (`value` 0) = admitted, REFUSED = not, with the
+/// host's text.
+///
+/// # Errors
+///
+/// The rule the answer breaks.
+pub fn check_need_admit(
+    i: &NeedAdmitIn,
+    ret: RawOutcome,
+    out: &ServiceOut,
+) -> Result<Filled, Fault> {
+    answer(ret, &i.head, out, bare(op::NEED_ADMIT, (0, 0)))
 }
 
 #[cfg(test)]

@@ -85,6 +85,9 @@ pub struct MemberRoute {
     pub base_url: String,
     /// The auth binding the root opened at generation seal; `None` = no auth fields.
     pub auth: Option<AuthBinding>,
+    /// The provider the member is served by: the metering row's provider column, as 1.5.5's
+    /// `lane.provider` (v1.5.5 `crates/busbar/src/proxy/usage.rs` `ledger_and_meter`).
+    pub provider: String,
 }
 
 /// A member's auth binding: the auth instance, the handle its `open_outbound` answered, and the
@@ -390,12 +393,11 @@ impl EgressFarEnd<'_> {
             lane: member.lane,
         };
         let name = member.name.clone();
-        let passthrough = self
-            .egress
-            .routes
-            .get(&member.destination)
+        let route = self.egress.routes.get(&member.destination);
+        let passthrough = route
             .and_then(|r| r.auth.as_ref())
             .is_some_and(|a| a.passthrough);
+        let provider = route.map(|r| r.provider.clone()).unwrap_or_default();
         w.live = Some(Live {
             pool: pool.to_string(),
             member,
@@ -414,6 +416,7 @@ impl EgressFarEnd<'_> {
             name,
             pool: pool.to_string(),
             passthrough,
+            provider,
         }
     }
 

@@ -53,6 +53,11 @@ use busbar_contract::{LaneId, Registration, UnitKey};
 use busbar_kernel::plane_host::PlaneAnswer;
 use busbar_kernel::slice::GroupLeaseSlip;
 use busbar_kernel::teller::{AccrualMeter, Ended, Evidence, RouteAwait, RouteLeg, UnitCtx, Units};
+use busbar_kernel_audit::{
+    AuditInputs, Controls, FinishClass as RecordFinish, OpClassId as RecordOpClass, OutcomeFacts,
+    Subject, Usage as RecordUsage, UsageLine as RecordLine, What,
+};
+use busbar_kernel_ledger::totals::{BucketId, BucketScope, CapDimension, TotalsKey};
 
 use crate::root::linked::node::{Handed, Late, Reported, Resolve};
 
@@ -379,6 +384,7 @@ impl Node {
         arrived: Arrived,
         card: Option<&crate::root::kernel::PinnedHistory>,
         ended: busbar_kernel::teller::Ended,
+        seal: Option<UnitSeal>,
     ) {
         let Some(book) = self.book.get() else {
             return;
@@ -386,22 +392,37 @@ impl Node {
         let busbar_kernel::teller::Ended::Settled { end, .. } = ended else {
             return;
         };
+        let outcome = end.outcome();
         let Ok(posted) = end.into_posted() else {
             return;
         };
+        // THE UNIT'S RECORD, sealed with its one line: what the line wrote is the record's amount.
+        let lines = exit_lines(outcome, &posted);
         // Settle THROUGH the money-book seam rather than a `&mut` on the book itself: the lock is
         // taken and released inside the seam, so this arm settling does not hold the one book across
         // its whole exit the way a `&mut Durability` did. The pass-through settles the identical
         // posting onto the identical shared book — the bytes on the chain are unchanged.
-        let book = crate::root::durability::SharedBook::over(Arc::clone(book));
+        let shared = crate::root::durability::SharedBook::over(Arc::clone(book));
         let _settled = settle(
-            &book,
+            &shared,
             principal,
             arrived,
             card,
             &self.durability_token,
             posted,
         );
+        if let Some(seal) = seal {
+            seal.seal(
+                book,
+                &self.durability_token,
+                principal,
+                arrived,
+                card_in_force(card, arrived.ms()),
+                outcome,
+                lines,
+                0,
+            );
+        }
     }
 
     /// Open this unit's hold on the book and on the journal, if this node has a book (item 127).
@@ -547,6 +568,8 @@ impl Node {
                             requests: 0,
                             fee: 0,
                         },
+                        // A unit the sweep ends never handed back its audit pass: it has no record.
+                        None,
                     );
                 }
             }
@@ -678,6 +701,7 @@ impl Node {
                     principal: &principal,
                     arrived,
                     history: history.as_ref(),
+                    sealing: Mutex::new(None),
                 };
                 let ended = busbar_kernel::teller::run_unit_async(
                     &self.kernel,
@@ -701,10 +725,6 @@ impl Node {
                 // The SAME pin the late arm prices against, so the posting and the figure that
                 // follows it name one snapshot. Re-pinning here would read a history a live apply
                 // may have appended to since the door, which is the hazard the pin exists for.
-                self.settle_end(&principal, arrived, history.as_ref(), ended);
-                // The unit reached its own end and its posting is on the book: the slot goes
-                // straight back. Anything that leaves this function before here leaves it MARKED.
-                occupied.reached_end = true;
                 // The loop ran; the answer is whatever the terminal posted. There is no unit that
                 // reaches an end without passing one of the two audit doors, so the fallback below
                 // is unreachable — and it is an answer rather than an unwrap, because a path that
@@ -714,46 +734,80 @@ impl Node {
                 let (answer, late) = finish();
                 let response =
                     answer.map_or_else(|| unavailable(proto), PlaneAnswer::into_response);
-                // THE LATE ARM. The settlement above carried what the terminal knew, and on a plane
-                // whose money is in a cell the response's own body fills when it DRAINS, that is the
-                // record a unit ran and ended and nothing else. So the body goes out wrapped, and
-                // the figure lands when it arrives.
-                self.attach_late_accrual(response, late, &principal, arrived, history)
+                let seal = driven.take_seal(key);
+                let response = self.tail(
+                    ended,
+                    response,
+                    late,
+                    &principal,
+                    arrived,
+                    history.as_ref(),
+                    seal,
+                );
+                // The unit reached its own end and its posting is on the book or in the late arm's
+                // hands: the slot goes straight back. Anything that leaves this function before here
+                // leaves it MARKED.
+                occupied.reached_end = true;
+                response
             }
         }
     }
 
-    /// Wrap the answer's body so the figure that arrives after the terminal has somewhere to land.
+    /// THE UNIT'S TAIL: its ONE LINE (KERNEL<>PLUGINS step 14) and the answer it serves.
     ///
-    /// Nothing here changes a byte of what the client is given: the frames, their order, the trailers
-    /// and the size hint are the inner body's, forwarded. What the wrapper adds is a place to stand
-    /// at the one instant the unit's money becomes a fact.
-    ///
-    /// Two ways this hands the response straight back, and each is a case where there is nothing to
-    /// wait for. No book bound: the build carries no root ledger and there is nowhere for a posting
-    /// to go. No late reading on the response: nothing was ever going to fill one, so a wrapper would
-    /// only ever drop empty.
-    fn attach_late_accrual(
+    /// A unit whose figure arrives with its drained body has its line written by the late arm, which
+    /// carries the exit's posting there unwritten: the exit writes none for it, and the reservation
+    /// and the reported figure close on one record when the figure arrives. Every other unit's line
+    /// is the exit's posting, written here and now.
+    #[allow(clippy::too_many_arguments)]
+    fn tail(
         &self,
+        ended: Ended,
         response: Response,
         late: Option<Late>,
         principal: &PrincipalId,
         arrived: Arrived,
-        history: Option<crate::root::kernel::PinnedHistory>,
+        history: Option<&crate::root::kernel::PinnedHistory>,
+        seal: Option<UnitSeal>,
     ) -> Response {
-        let Some(book) = self.book.get() else {
-            return response;
-        };
-        // No history pinned at admission is the third: a report nothing can price is a report
-        // nothing can post, and wrapping the body to discover that when it drains would be a wrapper
-        // that only ever drops empty.
-        let Some(history) = history else {
-            return response;
-        };
-        let Some(late) = late else {
-            return response;
-        };
-        let arm = LateAccrual {
+        match self.late_arm(late, principal, arrived, history) {
+            Some(mut arm) => {
+                arm.seal = seal;
+                // THE LATE ARM. On a plane whose money is in a cell the response's own body fills
+                // when it DRAINS, the terminal knew nothing of it. So the body goes out wrapped,
+                // and the unit's one line lands when the figure arrives.
+                let arm = arm.carrying(ended);
+                let (parts, body) = response.into_parts();
+                Response::from_parts(parts, axum::body::Body::new(LateBody::new(body, arm)))
+            }
+            None => {
+                self.settle_end(principal, arrived, history, ended, seal);
+                response
+            }
+        }
+    }
+
+    /// The late arm for this unit's answer, if its line is to be written when the figure arrives.
+    ///
+    /// Nothing the arm does changes a byte of what the client is given: the wrapper forwards the
+    /// frames, their order, the trailers and the size hint. What it adds is a place to stand at the
+    /// one instant the unit's money becomes a fact.
+    ///
+    /// Three ways there is no arm, and each is a case where there is nothing to wait for: no book
+    /// bound (nowhere for a posting to go), no history pinned at admission (a report nothing can
+    /// price), and no late reading on the response (nothing was ever going to fill one). The exit
+    /// then writes the unit's one line itself.
+    fn late_arm(
+        &self,
+        late: Option<Late>,
+        principal: &PrincipalId,
+        arrived: Arrived,
+        history: Option<&crate::root::kernel::PinnedHistory>,
+    ) -> Option<LateAccrual> {
+        let book = self.book.get()?;
+        let history = history?.clone();
+        let late = late?;
+        Some(LateAccrual {
             book: Arc::clone(book),
             history,
             // MINTED FOR THIS ONE POSTING and dropped with it. A token is neither `Clone` nor `Copy`
@@ -772,9 +826,10 @@ impl Node {
             // are two postings OF one unit, and they order beside it rather than beside each other.
             arrived,
             late,
-        };
-        let (parts, body) = response.into_parts();
-        Response::from_parts(parts, axum::body::Body::new(LateBody::new(body, arm)))
+            exit: None,
+            outcome: None,
+            seal: None,
+        })
     }
 }
 
@@ -1002,13 +1057,34 @@ struct LateAccrual {
     /// drained. It keeps what the reading needs alive — the plane's carry and the cell the body
     /// fills — for exactly as long as the body is, and names neither.
     late: Late,
+    /// THE EXIT'S POSTING, carried here unwritten (KERNEL<>PLUGINS step 14): the exit writes no line
+    /// for a unit with a late arm, so its reservation closes on the one line this arm writes. `None`
+    /// when the exit had no posting to hand over (the sweep got there first, or its record was lost
+    /// and the loss is already on the end it sealed).
+    exit: Option<busbar_contract::caps::Posted>,
+    /// How the unit ended, as the exit sealed it — the record's outcome.
+    outcome: Option<Outcome>,
+    /// The unit's audit pass and facts, sealed into its one record with the line this arm writes.
+    seal: Option<UnitSeal>,
 }
 
 impl LateAccrual {
-    /// Read the tap and post what it says. Runs at most once per unit — see [`LateBody`].
+    /// Carry the exit's posting to the one line this arm writes.
+    fn carrying(mut self, ended: Ended) -> Self {
+        self.exit = match ended {
+            Ended::Settled { end, .. } => {
+                self.outcome = Some(end.outcome());
+                end.into_posted().ok()
+            }
+            _ => None,
+        };
+        self
+    }
+
+    /// Read the tap and write the unit's one line. Runs at most once per unit — see [`LateBody`].
     fn post(self) {
         let LateAccrual {
-            book,
+            book: held,
             history,
             durability_token,
             ledger_token,
@@ -1016,12 +1092,42 @@ impl LateAccrual {
             principal,
             arrived,
             late,
+            exit,
+            outcome,
+            seal,
         } = self;
+        let book = crate::root::durability::SharedBook::over(Arc::clone(&held));
+        let card = card_in_force(Some(&history), arrived.ms());
         let Some(report) = late().map(Report::of) else {
+            // Nothing arrived after all: the one line is the exit's posting as it stood, written
+            // where the exit would have written it.
+            if let Some(exit) = exit {
+                let lines = outcome.map(|o| exit_lines(o, &exit)).unwrap_or_default();
+                let _settled = settle(
+                    &book,
+                    &principal,
+                    arrived,
+                    Some(&history),
+                    &durability_token,
+                    exit,
+                );
+                if let (Some(seal), Some(outcome)) = (seal, outcome) {
+                    seal.seal(
+                        &held,
+                        &durability_token,
+                        &principal,
+                        arrived,
+                        card,
+                        outcome,
+                        lines,
+                        0,
+                    );
+                }
+            }
             return;
         };
         post_late(
-            &crate::root::durability::SharedBook::over(book),
+            &book,
             &LateTokens {
                 durability: &durability_token,
                 ledger: &ledger_token,
@@ -1031,7 +1137,20 @@ impl LateAccrual {
             &principal,
             arrived,
             &report,
+            exit,
         );
+        if let (Some(seal), Some(outcome)) = (seal, outcome) {
+            seal.seal(
+                &held,
+                &durability_token,
+                &principal,
+                arrived,
+                card,
+                outcome,
+                report_lines(&report),
+                report.fee_count,
+            );
+        }
     }
 }
 
@@ -1059,13 +1178,16 @@ fn counts_of(report: &Report) -> crate::root::durability::UnitCounts {
     }
 }
 
-/// **THE LATE ARM'S POSTING**: what one drained report leaves on the second book. ALWAYS one row
-/// (#43: the write is unconditional; #71: the fact is the counts, and pricing is the read).
+/// **THE LATE ARM'S POSTING**: what one drained report leaves on the second book. ALWAYS ONE LINE
+/// PER UNIT (KERNEL<>PLUGINS step 14; #43: the write is unconditional; #71: the fact is the counts,
+/// and pricing is the read). `exit` is the exit's posting, carried here unwritten: the line closes
+/// the unit's reservation too.
 ///
 /// - PRICED above zero: the settlement moves the book, and its record carries the counts beside
 ///   the figure.
-/// - PRICED AT ZERO, or REFUSED: a counts row that moves no balance. A refusal (#42) leaves the
-///   money unpriced — no zero, no partial — and every read of the balance it sits on refuses.
+/// - PRICED AT ZERO, or REFUSED: the line moves no balance beyond closing the reservation. A
+///   refusal (#42) leaves the money unpriced — no zero, no partial — and every read of the balance
+///   it sits on refuses.
 fn post_late(
     book: &dyn crate::root::durability::MoneyBook,
     tokens: &LateTokens<'_>,
@@ -1073,6 +1195,7 @@ fn post_late(
     principal: &PrincipalId,
     arrived: Arrived,
     report: &Report,
+    exit: Option<busbar_contract::caps::Posted>,
 ) {
     let counts = counts_of(report);
     // THE PRICING, and it happens HERE rather than on the plane. The plane said what the unit
@@ -1101,6 +1224,38 @@ fn post_late(
     // The same pinned snapshot the amount below is PRICED against, so the figure and the entry
     // number the posting claims priced it cannot come from two different reads.
     let at = settling_at(&key, arrived, Some(history), tokens.durability);
+    let refuse = |refusal: String, exit: Option<busbar_contract::caps::Posted>| match exit {
+        Some(exit) => {
+            let _line =
+                book.settle_counted_refusing(&at, exit, &counts, arrived.ms(), Some(refusal));
+        }
+        None => {
+            let _row = book.post_counts(&at, principal, &counts, arrived.ms(), Some(refusal));
+        }
+    };
+    // A CLASS NOBODY DECLARED (`BUSBAR-1.6.0.md` §7: a plane declares every class it reports). The
+    // registered vocabulary holds the reserved four, every installed plane's declared billable
+    // classes and every configured `units:` class; a reported class outside it is a plane fault.
+    // FAIL-CLOSED: the line keeps every count and its money is refused — never priced at zero,
+    // never dropped.
+    if let Some(class) = counts
+        .classes
+        .keys()
+        .find(|class| busbar_contract::Registration::resolve(class).is_none())
+    {
+        busbar_kernel::diagnostics::diag_error!(
+            busbar_kernel::diagnostics::METER_CLASS_UNDECLARED,
+            principal = principal.as_str(),
+            lane = %report.lane,
+            class = %class,
+            "a unit reported a usage class its plane never declared; its line is refused"
+        );
+        refuse(
+            format!("{}({class:?})", crate::root::durability::UNDECLARED_CLASS),
+            exit,
+        );
+        return;
+    }
     let amount = match priced_amount(history, arrived, tokens.usage, report) {
         Ok(amount) => amount,
         Err(refusal) => {
@@ -1113,18 +1268,19 @@ fn post_late(
                 "late accrual refused at settlement: the card cannot price these counts; \
                  the counts row is posted with no figure"
             );
-            let _row = book.post_counts(
-                &at,
-                principal,
-                &counts,
-                arrived.ms(),
-                Some(format!("{refusal:?}")),
-            );
+            refuse(format!("{refusal:?}"), exit);
             return;
         }
     };
     if amount == 0 {
-        let _row = book.post_counts(&at, principal, &counts, arrived.ms(), None);
+        match exit {
+            Some(exit) => {
+                let _line = book.settle_counted(&at, exit, &counts, arrived.ms());
+            }
+            None => {
+                let _row = book.post_counts(&at, principal, &counts, arrived.ms(), None);
+            }
+        }
         return;
     }
     let accrual = busbar_contract::caps::HoldAccrual::after_terminal(
@@ -1132,7 +1288,10 @@ fn post_late(
         amount,
         tokens.ledger,
     );
-    let posted = busbar_contract::caps::Posted::settle_late(accrual, tokens.ledger);
+    let posted = match exit {
+        Some(exit) => exit.with_late(accrual, tokens.ledger),
+        None => busbar_contract::caps::Posted::settle_late(accrual, tokens.ledger),
+    };
     // Through the money-book seam, as the terminal exit arm does — the same shared book, the same
     // posting, the lock taken and released behind the seam — with the counts on the record.
     let _settled = book.settle_counted(&at, posted, &counts, arrived.ms());
@@ -1297,6 +1456,26 @@ struct Driven<'n> {
     arrived: Arrived,
     /// The history snapshot the unit was admitted under.
     history: Option<&'n crate::root::kernel::PinnedHistory>,
+    /// The audit pass and facts the loop handed back at the unit's audit door (`Units::audited`),
+    /// held until the unit's one line is written, where its record is sealed with them.
+    sealing: Mutex<Option<(busbar_contract::caps::AuditFacts, Pass<Audit>)>>,
+}
+
+impl Driven<'_> {
+    /// The unit's record-to-be, if its audit door handed its pass back.
+    fn take_seal(&self, key: UnitKey) -> Option<UnitSeal> {
+        let (facts, pass) = self
+            .sealing
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()?;
+        Some(UnitSeal {
+            facts,
+            pass,
+            key,
+            origin: self.node.kernel.origin(OriginKind::Client),
+        })
+    }
 }
 
 impl Units for Driven<'_> {
@@ -1391,6 +1570,13 @@ impl Units for Driven<'_> {
     fn evidence(&self, ctx: &UnitCtx) -> Evidence {
         self.units.evidence(ctx)
     }
+
+    fn audited(&self, _ctx: &UnitCtx, facts: busbar_contract::caps::AuditFacts, pass: Pass<Audit>) {
+        *self
+            .sealing
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some((facts, pass));
+    }
 }
 
 impl RouteAwait for Driven<'_> {
@@ -1420,9 +1606,10 @@ impl RouteAwait for Driven<'_> {
     /// and given the leases back; what it hands over is the posting, which has moved no balance and
     /// left no record until something settles it. Nothing else will: the future that would have read
     /// it is the one being dropped.
-    fn abandoned(&self, _ctx: &UnitCtx, ended: Ended) {
+    fn abandoned(&self, ctx: &UnitCtx, ended: Ended) {
+        let seal = self.take_seal(ctx.key);
         self.node
-            .settle_end(self.principal, self.arrived, self.history, ended);
+            .settle_end(self.principal, self.arrived, self.history, ended, seal);
     }
 }
 
@@ -1430,13 +1617,15 @@ impl RouteAwait for Driven<'_> {
 // The driven plane's abandoned end
 // ---------------------------------------------------------------------------------------------
 
-/// Each open unit's facts, by key: its principal, its pinned arrival, its admitted card history.
+/// Each open unit's facts, by key: its principal, its pinned arrival, its admitted card history,
+/// and the audit facts and pass its audit door handed back, once it has.
 type OpenUnits = HashMap<
     UnitKey,
     (
         PrincipalId,
         Arrived,
         Option<crate::root::kernel::PinnedHistory>,
+        Option<(busbar_contract::caps::AuditFacts, Pass<Audit>)>,
     ),
 >;
 
@@ -1481,7 +1670,21 @@ impl NodeEndPost {
         arrived: Arrived,
         history: Option<crate::root::kernel::PinnedHistory>,
     ) {
-        self.lock().insert(key, (principal, arrived, history));
+        self.lock().insert(key, (principal, arrived, history, None));
+    }
+
+    /// Unit `key`'s audit door handed back its facts and pass (`Units::audited`): they are held with
+    /// the unit's facts so an abandoned end seals its one audit record where its line is written, as
+    /// a returned end does. A unit that is not open keeps nothing.
+    pub fn audited(
+        &self,
+        key: UnitKey,
+        facts: busbar_contract::caps::AuditFacts,
+        pass: Pass<Audit>,
+    ) {
+        if let Some(open) = self.lock().get_mut(&key) {
+            open.3 = Some((facts, pass));
+        }
     }
 
     /// Unit `key` returned: its end is the node's exit arm's to post, never this site's.
@@ -1501,11 +1704,141 @@ impl busbar_kernel::plane_driver::EndPost for NodeEndPost {
     /// node's in-memory posting behind one short lock, and nothing here awaits or crosses a plugin.
     fn post(&self, ctx: &UnitCtx, ended: Ended) {
         let facts = self.lock().remove(&ctx.key);
-        if let Some((principal, arrived, history)) = facts {
+        if let Some((principal, arrived, history, sealing)) = facts {
+            // The unit's one audit record is sealed with its one line, as a returned end's is.
+            let seal = sealing.map(|(facts, pass)| UnitSeal {
+                facts,
+                pass,
+                key: ctx.key,
+                origin: self.node.kernel.origin(OriginKind::Client),
+            });
             self.node
-                .settle_end(&principal, arrived, history.as_ref(), ended);
+                .settle_end(&principal, arrived, history.as_ref(), ended, seal);
         }
     }
+}
+
+// ---------------------------------------------------------------------------------------------
+// The unit's fixed audit record
+// ---------------------------------------------------------------------------------------------
+
+/// A UNIT'S RECORD-TO-BE: the facts its audit door sealed and the pass that door was lent, handed
+/// back by the loop (`Units::audited`), carried to the unit's one line and sealed there — once, since
+/// sealing consumes the pass. A unit whose audit door never answered has none, so it has no record.
+struct UnitSeal {
+    facts: busbar_contract::caps::AuditFacts,
+    pass: Pass<Audit>,
+    key: UnitKey,
+    origin: busbar_contract::caps::Origin,
+}
+
+impl UnitSeal {
+    /// Seal the record beside the line just written: its outcome is how the unit ended, its amount
+    /// is the line's counts (none for a refused unit), and the book stamps this boot's incarnation.
+    #[allow(clippy::too_many_arguments)]
+    fn seal(
+        self,
+        book: &Arc<Mutex<crate::root::durability::Durability>>,
+        token: &Grant<busbar_contract::caps::DurableWrite>,
+        principal: &PrincipalId,
+        arrived: Arrived,
+        rate_card_version: u64,
+        outcome: Outcome,
+        lines: Vec<RecordLine>,
+        fee_count: u32,
+    ) {
+        let refused = matches!(outcome, Outcome::Refused(..));
+        let inputs = AuditInputs {
+            subject: Subject::PrincipalId(principal.as_str().to_string()),
+            what: What {
+                unit_key: self.key,
+                incarnation: 0,
+                op_class: RecordOpClass::new(self.facts.op_class.as_str()),
+                destination: None,
+                parent: None,
+                pre_hook_head: None,
+                post_hook_head: None,
+            },
+            wall: arrived.secs(),
+            mono: arrived.mono(),
+            origin: self.origin,
+            outcome: OutcomeFacts {
+                unit_end: outcome,
+                step: outcome.step(),
+                finish: audit_finish(self.facts.finish),
+                hook_failed: false,
+                emission_delta: 0,
+                stale_policy: false,
+            },
+            usage: RecordUsage {
+                lines: if refused { Vec::new() } else { lines },
+                tier_bp: 10_000,
+                fee_count: if refused { 0 } else { fee_count },
+                rate_card_version,
+                bucket_chain_ref: String::new(),
+            },
+            controls: Controls::default(),
+            correlation_label: None,
+        };
+        let sealed = book
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .seal_unit(inputs, self.pass, token);
+        if let Err(lost) = sealed {
+            tracing::error!(
+                step = lost.step().as_str(),
+                unit = self.key.get(),
+                "the journal lost a unit's audit record: it is sealed on the chain and cached, and \
+                 a restart will not read it back"
+            );
+        }
+    }
+}
+
+/// How the plane classed the finish, in the record's own words.
+fn audit_finish(finish: busbar_contract::FinishClass) -> RecordFinish {
+    match finish {
+        busbar_contract::FinishClass::Complete => RecordFinish::Complete,
+        busbar_contract::FinishClass::TurnComplete => RecordFinish::TurnComplete,
+        busbar_contract::FinishClass::Partial => RecordFinish::Partial,
+        busbar_contract::FinishClass::Error => RecordFinish::Error,
+    }
+}
+
+/// The record's amount for a line the EXIT wrote: the kernel's own accrual, as the exit's usage
+/// line carried it — nothing for a refused unit, which was charged nothing.
+fn exit_lines(outcome: Outcome, posted: &busbar_contract::caps::Posted) -> Vec<RecordLine> {
+    if matches!(outcome, Outcome::Refused(..)) || posted.settled() == 0 {
+        return Vec::new();
+    }
+    vec![RecordLine {
+        class: busbar_kernel::teller::KERNEL_ACCRUAL_CLASS,
+        quantity: posted.settled(),
+        source: busbar_contract::caps::QuantitySource::Count,
+        estimated: posted
+            .flags()
+            .contains(busbar_contract::caps::PostingFlags::ESTIMATED),
+    }]
+}
+
+/// The record's amount for a line the LATE ARM wrote: every class the unit reported, by the
+/// registered name. A class nobody declared has no registered name — its line was refused — and is
+/// not a line the record can name.
+fn report_lines(report: &Report) -> Vec<RecordLine> {
+    report
+        .usage
+        .usage_units
+        .iter()
+        .filter(|(_, count)| **count > 0)
+        .filter_map(|(class, count)| {
+            Some(RecordLine {
+                class: Registration::meter_class(class)?,
+                quantity: *count,
+                source: busbar_contract::caps::QuantitySource::Count,
+                estimated: false,
+            })
+        })
+        .collect()
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1517,11 +1850,11 @@ impl busbar_kernel::plane_driver::EndPost for NodeEndPost {
 /// The caller rather than the pool, because the kernel's posting is the unit's — what the POOL spent
 /// is the governance ledger's figure and is already moved there by the walk's tap. Two figures, two
 /// books, neither a second spelling of the other.
-fn balance(principal: &PrincipalId) -> busbar_kernel_ledger::totals::TotalsKey {
-    busbar_kernel_ledger::totals::TotalsKey::new(
-        busbar_kernel_ledger::totals::BucketId::new(principal.as_str()),
-        busbar_kernel_ledger::totals::CapDimension::NanoUnits,
-        busbar_kernel_ledger::totals::BucketScope::All,
+fn balance(principal: &PrincipalId) -> TotalsKey {
+    TotalsKey::new(
+        BucketId::new(principal.as_str()),
+        CapDimension::NanoUnits,
+        BucketScope::All,
     )
 }
 
@@ -1556,7 +1889,7 @@ pub fn settle(
 /// Where a unit's posting lands: its balance, the window of its pinned arrival, stamped with the
 /// card in force at that arrival.
 fn settling_at<'a>(
-    key: &'a busbar_kernel_ledger::totals::TotalsKey,
+    key: &'a TotalsKey,
     arrived: Arrived,
     card: Option<&crate::root::kernel::PinnedHistory>,
     token: &'a busbar_contract::caps::Grant<busbar_contract::caps::DurableWrite>,

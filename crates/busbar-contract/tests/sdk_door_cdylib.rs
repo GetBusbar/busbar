@@ -209,6 +209,8 @@ fn the_dropped_in_door_answers_and_a_panicking_slot_is_fault_not_abort() {
             fmt: BLOB_ABSENT,
             flags: 0,
         },
+        err_buf: ptr::null_mut(),
+        err_cap: 0,
     };
     let mut out = out_head(size_of::<OutHead>());
     assert_eq!(call(table.head.validate, &panics, &mut out), Outcome::Fault);
@@ -222,10 +224,13 @@ fn the_dropped_in_door_answers_and_a_panicking_slot_is_fault_not_abort() {
         secrets: ptr::null(),
         secrets_len: 0,
         generation: PANIC_GEN,
+        err_buf: ptr::null_mut(),
+        err_cap: 0,
     };
     let mut out = OpenOut {
         head: out_head(size_of::<OpenOut>()),
         instance: ptr::null_mut(),
+        err_len: 0,
     };
     assert_eq!(call(table.head.open, &open, &mut out), Outcome::Fault);
     assert_eq!(out.head.outcome.outcome(), Outcome::Fault);

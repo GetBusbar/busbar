@@ -15,23 +15,21 @@
 //! nested-dispatch / work-handle / trust (drift-quarantine + approval-redeem) / metrics / clock /
 //! auth. There is deliberately NO `secret_resolve` — credentials resolve host-side by REF.
 //!
-//! ## Metering-lease seam (minor-19) + the extension point
+//! ## The extension point
 //!
-//! Metering `cost_reserve`/`cost_settle` (a reserve-then-settle `CostHold`) is the continuous-metering
-//! counterpart of the one-shot `meter_charge`, for a HIGH-RATE carrier (a live long-running session) a
-//! plane cannot price after the fact. It was added as two trailing slots + a minor bump (never a
-//! reshape) — the pattern every future capability follows: append at the TAIL, bump the airlock MINOR,
-//! re-seed the layout golden. The slots stay `None` in the wired host until the carrier that needs them
-//! lands. Do not add a new capability to the hot set until a real plane needs it.
+//! A capability is added as trailing slots + a minor bump (never a reshape): append at the TAIL, bump
+//! the airlock MINOR, re-seed the layout golden. Do not add a new capability to the hot set until a
+//! real plane needs it. (The minor-19 metering-lease slots `cost_reserve`/`cost_settle` were retired
+//! by KERNEL<>PLUGINS step 16: a plane never prices, #43/#71.)
 
 use super::pod::{
     AdmissionId, AdmitRefusal, ApprovalQuery, AuthQuery, AuthResolved, CallerRef, ChainBreakHdr,
-    ContentChunk, CostLeaseId, CostSettleOut, CounterpartyRef, Decision, EgressDesc, EgressFault,
-    EgressId, EgressOpen, Facts, FramingDesc, GateDecision, GateSubjectRef, GateVerdictOut,
-    GovRefusal, GuardVerdict, IdentityAdmitted, IdentityQuery, JournalQuery, JournalStreamDesc,
-    Key, MeterOutcome, MetricSample, OpDesc, OpResult, PipeId, ReframeOut, RestoredHdr, Seq,
-    Signal, StatusClass, TargetRef, TrustVerdict, Usage, VerifyChainHdr, VerifyDecision,
-    VerifyLease, VerifyQuery, VerifyVerdict, WorkHandleDesc, WorkHandleId,
+    ContentChunk, CounterpartyRef, Decision, EgressDesc, EgressFault, EgressId, EgressOpen, Facts,
+    FramingDesc, GateDecision, GateSubjectRef, GateVerdictOut, GovRefusal, GuardVerdict,
+    IdentityAdmitted, IdentityQuery, JournalQuery, JournalStreamDesc, Key, MeterOutcome,
+    MetricSample, OpDesc, OpResult, PipeId, ReframeOut, RestoredHdr, Seq, Signal, StatusClass,
+    TargetRef, TrustVerdict, Usage, VerifyChainHdr, VerifyDecision, VerifyLease, VerifyQuery,
+    VerifyVerdict, WorkHandleDesc, WorkHandleId,
 };
 use crate::abi::AbiPreamble;
 use core::mem::MaybeUninit;
@@ -534,41 +532,6 @@ pub type GateDecideFn = extern "C-unwind" fn(
     hook_cap: usize,
     out: *mut MaybeUninit<GateVerdictOut>,
 ) -> StatusClass;
-/// Open a reserve-then-settle metering LEASE for a high-rate carrier (a live long-running session the
-/// plane cannot price after the fact). The plane hands ALREADY-PRICED money in nanodollars — core
-/// prices NOTHING: `reserve_nanos` is the coarse over-estimate the host debits against the grant NOW,
-/// `flat_fee_nanos` a once-per-lease session fee (`0` = none), and `cap_nanos` the TRUE budget ceiling
-/// exhaustion is later judged against. `cap_present == false` ⇒ uncapped (never exhausted);
-/// `cap_present == true` with `cap_nanos == 0` ⇒ refuse-all. Per-lease amounts fit `u64` (a ~$18.4B
-/// ceiling, far above any single session) and NO `u128` crosses the seam; the host widens to its
-/// internal `CostAmount` (u128 nanodollars). Writes the opaque [`CostLeaseId`] into `out` on
-/// [`StatusClass::Ok`]; [`StatusClass::Refused`] when the grant/budget denies the reserve (`out`
-/// untouched ⇒ the plane reads [`CostLeaseId::NONE`] and fails closed); [`StatusClass::Fault`] on a
-/// caught panic (`out` untouched).
-pub type CostReserveFn = extern "C-unwind" fn(
-    host: HostCtx,
-    reserve_nanos: u64,
-    flat_fee_nanos: u64,
-    cap_nanos: u64,
-    cap_present: bool,
-    out: *mut MaybeUninit<CostLeaseId>,
-) -> StatusClass;
-/// Settle ONE exact money increment (nanodollars) against an open lease and read back whether the
-/// lease's budget is now exhausted — so the plane can hard-close a live carrier mid-stream. The host
-/// accrues ONLY the scalar `settle_nanos` toward the cap; the optional itemized `breakdown` crosses as
-/// an OPAQUE byte suffix the host never parses (an audit tap only — `breakdown_len == 0` ⇒ none).
-/// Writes [`CostSettleOut`] into `out` on [`StatusClass::Ok`]; [`StatusClass::Refused`] on an unknown /
-/// already-closed lease (`out` untouched); [`StatusClass::Fault`] on a caught panic (`out` untouched)
-/// — on either the plane fails closed and hard-closes the carrier.
-pub type CostSettleFn = extern "C-unwind" fn(
-    host: HostCtx,
-    lease: CostLeaseId,
-    settle_nanos: u64,
-    breakdown_ptr: *const u8,
-    breakdown_len: usize,
-    out: *mut MaybeUninit<CostSettleOut>,
-) -> StatusClass;
-
 /// Add `delta` to one series of a metric family the calling plane DECLARED (its declaration's
 /// metric families; minor 25). `family_ptr`/`family_len` is the family's name; `values_ptr`/
 /// `values_len` is one borrowed [`DeclStr`](super::decl::DeclStr) label VALUE per declared label key,
@@ -763,16 +726,6 @@ pub struct PlaneHostVtable {
     //    Trailing slot, append-only, same sized/versioned discipline (the minor-18 bump). ────────────────
     /// Fire the operator's request-admission hook gates over a neutral subject (writes a verdict).
     pub gate_decide: Option<GateDecideFn>,
-    // ── APPENDED (minor-19, the METERING-LEASE seam): a high-rate carrier (a live long-running
-    //    session) cannot be priced after the fact the way a one-shot `meter_charge` prices a
-    //    completed call. These two slots open a host-owned reserve-then-settle `CostHold` and settle
-    //    EXACT increments against it, reading back exhaustion so the plane hard-closes the carrier
-    //    mid-stream — the plane hands already-priced nanodollars and never holds the grant/budget
-    //    state. Trailing slots, append-only, same sized/versioned discipline (the minor-19 bump). ──────
-    /// Open a reserve-then-settle metering lease over already-priced nanodollars (writes a lease id).
-    pub cost_reserve: Option<CostReserveFn>,
-    /// Settle one exact increment against an open lease and read back exhaustion (writes settle-out).
-    pub cost_settle: Option<CostSettleFn>,
     // ── APPENDED (minor-25, the METRIC-FAMILY seam): a plane adds to a counter family it DECLARED
     //    (name, kind, label keys) and the host renders it — the only way a plane reaches a series in
     //    the reserved `busbar_` namespace, and only one the host lists. Trailing slot, append-only,
@@ -995,8 +948,6 @@ impl PlaneHostVtable {
         guard_url: None,
         identity_admit: None,
         gate_decide: None,
-        cost_reserve: None,
-        cost_settle: None,
         counter_add: None,
         entropy_fill: None,
         wall_clock: None,
@@ -1065,8 +1016,6 @@ impl PlaneHostVtable {
         guard_url: Some(stub::guard_url),
         identity_admit: Some(stub::identity_admit),
         gate_decide: Some(stub::gate_decide),
-        cost_reserve: Some(stub::cost_reserve),
-        cost_settle: Some(stub::cost_settle),
         counter_add: Some(stub::counter_add),
         entropy_fill: Some(stub::entropy_fill),
         wall_clock: Some(stub::wall_clock),
@@ -1425,28 +1374,6 @@ pub mod stub {
         _out: *mut MaybeUninit<GateVerdictOut>,
     ) -> StatusClass {
         unimplemented!("PlaneHost::gate_decide — stub")
-    }
-    /// Stub: see module docs.
-    pub extern "C-unwind" fn cost_reserve(
-        _host: HostCtx,
-        _reserve_nanos: u64,
-        _flat_fee_nanos: u64,
-        _cap_nanos: u64,
-        _cap_present: bool,
-        _out: *mut MaybeUninit<CostLeaseId>,
-    ) -> StatusClass {
-        unimplemented!("PlaneHost::cost_reserve — stub")
-    }
-    /// Stub: see module docs.
-    pub extern "C-unwind" fn cost_settle(
-        _host: HostCtx,
-        _lease: CostLeaseId,
-        _settle_nanos: u64,
-        _breakdown_ptr: *const u8,
-        _breakdown_len: usize,
-        _out: *mut MaybeUninit<CostSettleOut>,
-    ) -> StatusClass {
-        unimplemented!("PlaneHost::cost_settle — stub")
     }
     /// Stub: see module docs.
     pub extern "C-unwind" fn counter_add(

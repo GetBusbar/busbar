@@ -39,12 +39,16 @@ use busbar_contract::abi::mechanism::{KindCode, DOOR_MAGIC, MECHANISM_VERSION};
 use busbar_contract::abi::plane::{
     ArriveIn, ArriveOut, BillableClass, Claim, OnPieceIn, OnPieceOut, OpClass, Ops, OutField,
     PlaneDriveIn, PlaneDriveOut, PlaneOpenIn, PlaneOpenOut, PlaneSnapshot, PlaneTail, RefusalIn,
-    RefusalOut, RefusalStatus, Section, UnitCount, CANCEL_ABORTED, CANCEL_FAILED, CANCEL_OK_PARTIAL,
-    EMIT_DONE, EMIT_TO_FAR_END, FROM_CALLER, FROM_FAR_END, FROM_KERNEL, INGRESS_REQUEST_RESPONSE,
-    INGRESS_RESPONSE_STREAM, PIECE_FIELDS, PIECE_HAS_STATUS, PIECE_LAST, PIECE_OUT_TEXT,
-    PRINCIPAL_OPTIONAL, REFUSAL_ANY_DIALECT, SECTION_DECLARING, SHAPE_WHOLE, UNITS_ESTIMATED,
-    UNITS_REPORTED, VERDICT_RETRY,
+    RefusalOut, RefusalStatus, Section, UnitCount, CANCEL_ABORTED, CANCEL_FAILED,
+    CANCEL_OK_PARTIAL, EMIT_DONE, EMIT_TO_FAR_END, FROM_CALLER, FROM_FAR_END, FROM_KERNEL,
+    INGRESS_REQUEST_RESPONSE, INGRESS_RESPONSE_STREAM, PIECE_FIELDS, PIECE_HAS_STATUS, PIECE_LAST,
+    PIECE_OUT_TEXT, PRINCIPAL_OPTIONAL, REFUSAL_ANY_DIALECT, SECTION_DECLARING, SHAPE_WHOLE,
+    UNITS_ESTIMATED, UNITS_REPORTED, VERDICT_RETRY,
 };
+
+/// The plane's own refusal code and the status `/clock` refuses with when the host will not read
+/// its clock (`/refuse` is 7, `/post-only` is 9).
+const CLOCK_REFUSED: (u32, u32) = (8, 403);
 
 /// The counters `/stats` answers, in this order.
 #[derive(Debug, Clone, Copy)]
@@ -525,9 +529,11 @@ extern "C" fn arrive(instance: *mut c_void, input: *const c_void, out: *mut c_vo
             }
             b"/clock" => {
                 // The host's own clock, through its service table: the reading, as two amounts. A
-                // clock the host would not read (no table, no slot, not READY) refuses the arrival.
+                // clock the host would not read (no table, no slot, not READY) refuses the arrival,
+                // and like every REFUSED arrive it names the plane's own code and a 4xx status.
                 me.count(Stat::HostCalls);
                 let Some(now) = me.services.as_ref().and_then(|t| t.clock_now) else {
+                    (o.refusal, o.refusal_status) = CLOCK_REFUSED;
                     return say(out, Outcome::Refused);
                 };
                 let mut reading = ClockReading {
@@ -552,6 +558,7 @@ extern "C" fn arrive(instance: *mut c_void, input: *const c_void, out: *mut c_vo
                 if now(me.ctx, (&call as *const ClockNowIn).cast(), &mut answer).outcome()
                     != Outcome::Ready
                 {
+                    (o.refusal, o.refusal_status) = CLOCK_REFUSED;
                     return say(out, Outcome::Refused);
                 }
                 vec![estimate(0, reading.wall_ns), estimate(1, reading.mono_ns)]

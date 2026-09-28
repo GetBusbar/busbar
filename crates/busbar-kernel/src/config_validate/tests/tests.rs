@@ -1686,11 +1686,15 @@ fn test_validate_rejects_admin_token_without_module() {
     auth.admin_auth = vec![entry];
     cfg.auth = Some(auth);
     let errs = validate(&cfg).expect_err("must be a boot error");
+    // v1.5.5's text over the handed-in word (this build's double); the root pins 1.5.5's bytes.
+    let op = config::operator_provider();
     assert!(
-        errs.iter().any(|e| e
-            == "an admin-tokens token is configured but this binary was built WITHOUT the \
-                `auth-admin-tokens` feature — the admin API would be silently disabled. Rebuild \
-                with default features or wire an external admin auth module."),
+        errs.iter().any(|e| *e
+            == format!(
+                "an {op} token is configured but this binary was built WITHOUT the \
+                 `auth-{op}` feature — the admin API would be silently disabled. Rebuild \
+                 with default features or wire an external admin auth module."
+            )),
         "{errs:?}"
     );
 }
@@ -1878,7 +1882,10 @@ fn test_keys_chain_without_signing_key_is_boot_error() {
 fn test_1_5_2_oidc_chain_needs_no_mint_path() {
     let (providers, models, pools) = valid_maps();
     let mut cfg = make_root_cfg(providers, models, pools);
-    cfg.auth = Some(make_auth_chain(&["oidc"], crate::auth::UpstreamCreds::Own));
+    cfg.auth = Some(make_auth_chain(
+        &["test-idp-double"],
+        crate::auth::UpstreamCreds::Own,
+    ));
     let r = validate(&cfg);
     assert!(
         r.is_ok(),
@@ -1908,7 +1915,8 @@ fn test_1_5_2_keys_chain_external_admin_needs_full_scope_to_mint() {
         crate::config::KEYS_MODULE,
     )];
     auth.signing_key = Some(config::SecretRef::env("BUSBAR_SIGNING_KEY"));
-    auth.admin_auth = vec![crate::config::AuthChainEntry::bare("github")]; // external IdP, no mint grant
+    // external IdP, no mint grant
+    auth.admin_auth = vec![crate::config::AuthChainEntry::bare("test-external-idp")];
     cfg.auth = Some(auth);
     let errs = validate(&cfg)
         .expect_err("a keys chain whose only admin module cannot mint must fail validation");
@@ -1925,7 +1933,7 @@ fn test_1_5_2_keys_chain_external_admin_needs_full_scope_to_mint() {
         crate::config::KEYS_MODULE,
     )];
     auth_ok.signing_key = Some(config::SecretRef::env("BUSBAR_SIGNING_KEY"));
-    let mut admin = crate::config::AuthChainEntry::bare("github");
+    let mut admin = crate::config::AuthChainEntry::bare("test-external-idp");
     admin.max_admin_scope = Some("full".to_string());
     auth_ok.admin_auth = vec![admin];
     cfg.auth = Some(auth_ok);
@@ -1949,11 +1957,15 @@ fn test_validate_token_on_non_operator_entry_rejected() {
     auth.chain = vec![entry];
     cfg.auth = Some(auth);
     let errs = validate(&cfg).expect_err("token on a non-operator entry must fail validation");
+    // v1.5.5's text over the handed-in word (this build's double); the root pins 1.5.5's bytes.
+    let op = config::operator_provider();
     assert!(
-        errs.iter().any(|e| e
-            == "auth chain entry 'keys' sets `token:`, which belongs to the built-in \
-                `admin-tokens` module only; move it, e.g.:\n\n    admin_auth:\n      - \
-                admin-tokens: { token: { env: BUSBAR_ADMIN_TOKEN } }\n"),
+        errs.iter().any(|e| *e
+            == format!(
+                "auth chain entry 'keys' sets `token:`, which belongs to the built-in \
+                 `{op}` module only; move it, e.g.:\n\n    admin_auth:\n      - \
+                 {op}: {{ token: {{ env: BUSBAR_ADMIN_TOKEN }} }}\n"
+            )),
         "expected the misplaced-token error with its relocation hint; got: {errs:?}"
     );
 }
@@ -4715,16 +4727,17 @@ fn test_validate_role_binding_module_must_be_in_a_chain() {
     let mut cfg = make_root_cfg(providers, models, pools);
     cfg.auth = Some(auth_with_binding(
         &["keys"],
-        "oidc", // not in chain or admin_auth
+        "test-idp-double", // not in chain or admin_auth
         "platform",
         config::RoleBindingCfg::default(),
     ));
     let errs = validate(&cfg).expect_err("a binding under an inactive module must fail");
     assert!(
-        errs.iter()
-            .any(|e| e.contains("role_bindings names module 'oidc'")
+        errs.iter().any(
+            |e| e.contains("role_bindings names module 'test-idp-double'")
                 && e.contains("neither auth.chain nor auth.admin_auth")
-                && e.contains("chain:")),
+                && e.contains("chain:")
+        ),
         "expected the inactive-module error with the chain paste stub; got: {errs:?}"
     );
 

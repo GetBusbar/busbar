@@ -32,6 +32,11 @@ license = "Apache-2.0"
 name = "busbar_kernel_audit"
 path = "src/lib.rs"
 
+[features]
+# Test-only hooks a dependent's tests need to reach the node's one amendment journal (an in-memory
+# edit, to prove the on-demand verify sees it). Never enabled by a shipped build.
+test-support = []
+
 [dependencies]
 busbar-contract = { path = "../busbar-contract" }
 sha2 = { workspace = true }

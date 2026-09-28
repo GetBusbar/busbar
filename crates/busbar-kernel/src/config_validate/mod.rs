@@ -11,10 +11,10 @@ use crate::diagnostics::{
     CONFIG_PASSTHROUGH_UNUSED_APIKEY, CONFIG_POOL_HETEROGENEOUS, CONFIG_RATE_CARD_ALL_ZERO,
 };
 use crate::plane::registry::plane_decl_for;
+use busbar_contract::abi::cold::export::CheckPhase;
 use busbar_kernel_ledger::cost::{
     flat_card_present, split_plane_lane, PER_REQUEST, PER_SESSION, PLANE_LANE_SEP,
 };
-use busbar_plugin_loader::CheckPhase;
 
 /// Maximum byte-length of an `affinity.header_name`. HTTP header field-names must be ASCII; an
 /// over-long name is rejected at boot so a bad value cannot silently disable affinity at header
@@ -744,7 +744,7 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
     // a built-in answers to or an `on_error` terminal word. Registry uniqueness + the closed
     // `on_error` string union (see the const's doc). A collision is a boot error naming the offender.
     for hook_name in cfg.hooks.keys() {
-        if crate::config::RESERVED_HOOK_NAMES.contains(&hook_name.as_str()) {
+        if crate::config::is_reserved_hook_name(hook_name) {
             errors.push(format!(
                 "hook '{hook_name}' uses a reserved name (a built-in ranking strategy, auth module, \
                  or on_error terminal); rename the hook — a hook can never shadow a reserved word"

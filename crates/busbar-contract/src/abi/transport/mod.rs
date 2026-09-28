@@ -118,6 +118,7 @@
 //! ```
 
 pub mod check;
+pub mod fields;
 
 use super::mechanism::call::{AbiStr, Field, InHead, Op, OutHead};
 use super::mechanism::check::{contract, OpContract};
@@ -539,6 +540,17 @@ pub struct FramePiece {
     pub _reserved: [u8; 2],
     /// How long the far side asked to be left alone, in seconds.
     pub retry_after_secs: u64,
+}
+
+/// A byte range of a host buffer a piece's bytes were written into; `len == 0` = absent. (The same
+/// shape HEAD-FIELDS gives the framer's head slots, a range of [`FramerSink::frame`].)
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct FrameSpan {
+    /// Offset into the buffer.
+    pub offset: u64,
+    /// How many bytes.
+    pub len: u64,
 }
 
 /// The HOST buffers every framer op writes into, and the host's clock at the call.

@@ -29,7 +29,7 @@ pub mod traces;
 use crate::config::ExportCfg;
 use crate::export::projection::ProjectedRecord;
 use crate::plugin_routes::RouteDecl;
-use busbar_plugin_loader::{ExportField, ExportStream};
+use busbar_contract::abi::cold::export::{ExportField, ExportStream};
 use serde_json::Value;
 use std::sync::Arc;
 

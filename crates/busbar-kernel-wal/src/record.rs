@@ -29,9 +29,27 @@ pub const FRAME_PAYLOAD_BYTES: usize = FRAME_BYTES - FRAME_HEADER_BYTES;
 /// which is exactly what the zero-filled preallocated tail of a segment looks like.
 pub const FRAME_MAGIC: [u8; 4] = *b"BWAL";
 
-/// The layout version. A reader that meets a version it does not know stops there rather than
-/// guessing at the field offsets.
-pub const FRAME_VERSION: u16 = 1;
+/// The layout version this build WRITES. A reader that meets a version it does not know stops there
+/// rather than guessing at the field offsets.
+///
+/// Version 2 adds the HEADER CHECK (bytes `[HEADER_CHECK_OFFSET, +4)`): the first four bytes of a
+/// SHA-256 over the frame's fixed header fields `[0, HEADER_CHECKED_BYTES)` — magic, version,
+/// flags, identity, part numbers and the payload length. It is what tells a TORN write from a
+/// COMPLETE frame whose bytes changed afterwards: a write that stopped inside the header fails the
+/// header check, while a frame whose header checks and whose digest does not was written whole and
+/// then altered — which is never cut silently (see `crate::recover`). Version-1 frames (written
+/// before the check existed) are still read, under the rule they were written under.
+pub const FRAME_VERSION: u16 = 2;
+
+/// The layout version before the header check: still read, never written.
+pub const FRAME_VERSION_LEGACY: u16 = 1;
+
+/// How many leading header bytes the header check covers: magic, version, flags, node, node_seq,
+/// part index, part count and payload length.
+const HEADER_CHECKED_BYTES: usize = 34;
+
+/// Where the header check sits.
+const HEADER_CHECK_OFFSET: usize = 34;
 
 /// The flag bit that says another part of this record follows.
 const FLAG_MORE_PARTS: u8 = 1 << 0;
@@ -145,9 +163,23 @@ pub enum FrameError {
         /// The claimed count.
         count: u32,
     },
-    /// The digest over the frame's own bytes is not the digest stored in it. Either the frame was
-    /// half written, or it was edited.
+    /// The digest over the frame's own bytes is not the digest stored in it. On a version-1 frame
+    /// either the frame was half written, or it was edited; a version-2 frame reports this only once
+    /// its header check has passed, so the frame was written whole and then altered.
     DigestMismatch,
+    /// A version-2 frame's header check does not match its header: the write stopped inside the
+    /// header, which is what a torn write looks like.
+    HeaderMismatch,
+}
+
+impl FrameError {
+    /// Whether this is a WHOLE frame whose bytes changed after they were written: a version-2
+    /// frame whose header check passed and whose digest did not. Such a frame is never a torn
+    /// write, wherever it sits.
+    #[must_use]
+    pub fn is_altered_whole_frame(self, version: u16) -> bool {
+        version >= FRAME_VERSION && self == FrameError::DigestMismatch
+    }
 }
 
 impl std::fmt::Display for FrameError {
@@ -171,6 +203,9 @@ impl std::fmt::Display for FrameError {
             }
             FrameError::DigestMismatch => {
                 f.write_str("the frame's own bytes do not hash to the digest stored in it")
+            }
+            FrameError::HeaderMismatch => {
+                f.write_str("the frame's header does not match its header check (a torn write)")
             }
         }
     }
@@ -201,10 +236,84 @@ fn encode_frame(
     frame[24..28].copy_from_slice(&part_index.to_le_bytes());
     frame[28..32].copy_from_slice(&part_count.to_le_bytes());
     frame[32..34].copy_from_slice(&(payload.len() as u16).to_le_bytes());
+    let check = header_check(&frame);
+    frame[HEADER_CHECK_OFFSET..HEADER_CHECK_OFFSET + 4].copy_from_slice(&check);
     frame[FRAME_HEADER_BYTES..FRAME_HEADER_BYTES + payload.len()].copy_from_slice(payload);
     let digest = frame_digest(&frame);
     frame[DIGEST_OFFSET..DIGEST_OFFSET + 32].copy_from_slice(&digest);
     frame
+}
+
+/// TEST ONLY: frame a record under the LEGACY layout (version 1, no header check), as a build before
+/// the check wrote it — the shape an existing segment on disk still holds.
+#[cfg(test)]
+pub(crate) fn encode_legacy(record: &Record) -> Vec<[u8; FRAME_BYTES]> {
+    record
+        .encode()
+        .into_iter()
+        .map(|mut frame| {
+            frame[4..6].copy_from_slice(&FRAME_VERSION_LEGACY.to_le_bytes());
+            frame[HEADER_CHECK_OFFSET..HEADER_CHECK_OFFSET + 4].fill(0);
+            let digest = frame_digest(&frame);
+            frame[DIGEST_OFFSET..DIGEST_OFFSET + 32].copy_from_slice(&digest);
+            frame
+        })
+        .collect()
+}
+
+/// The header check a version-2 frame carries over its fixed header fields.
+fn header_check(frame: &[u8; FRAME_BYTES]) -> [u8; 4] {
+    let digest: [u8; 32] = Sha256::digest(&frame[0..HEADER_CHECKED_BYTES]).into();
+    [digest[0], digest[1], digest[2], digest[3]]
+}
+
+/// The version a frame claims, read without judging it (the magic is not checked here).
+#[must_use]
+pub fn frame_version(frame: &[u8; FRAME_BYTES]) -> u16 {
+    u16::from_le_bytes([frame[4], frame[5]])
+}
+
+/// The header of a frame whose header CHECK passes, whatever its digest says — the identity and the
+/// part numbers of a whole frame that was altered after it was written. `None` for a version-1
+/// frame (it has no header check) and for anything whose header does not check.
+#[must_use]
+pub fn checked_header(frame: &[u8; FRAME_BYTES]) -> Option<(FrameHeader, &[u8])> {
+    if frame[0..4] != FRAME_MAGIC || frame_version(frame) != FRAME_VERSION {
+        return None;
+    }
+    if header_check(frame)[..] != frame[HEADER_CHECK_OFFSET..HEADER_CHECK_OFFSET + 4] {
+        return None;
+    }
+    let (header, payload_len) = read_header(frame).ok()?;
+    let payload = &frame[FRAME_HEADER_BYTES..FRAME_HEADER_BYTES + usize::from(payload_len)];
+    Some((header, payload))
+}
+
+/// The header fields, bounds-checked. Shared by the verifying and the header-only reads.
+fn read_header(frame: &[u8; FRAME_BYTES]) -> Result<(FrameHeader, u16), FrameError> {
+    let payload_len = u16::from_le_bytes([frame[32], frame[33]]);
+    if payload_len as usize > FRAME_PAYLOAD_BYTES {
+        return Err(FrameError::PayloadTooLong { found: payload_len });
+    }
+    let part_index = u32::from_le_bytes([frame[24], frame[25], frame[26], frame[27]]);
+    let part_count = u32::from_le_bytes([frame[28], frame[29], frame[30], frame[31]]);
+    if part_count == 0 || part_index >= part_count {
+        return Err(FrameError::BadParts {
+            index: part_index,
+            count: part_count,
+        });
+    }
+    Ok((
+        FrameHeader {
+            node: u64::from_le_bytes(frame[8..16].try_into().unwrap_or([0; 8])),
+            node_seq: u64::from_le_bytes(frame[16..24].try_into().unwrap_or([0; 8])),
+            part_index,
+            part_count,
+            payload_len,
+            more_parts: frame[6] & FLAG_MORE_PARTS != 0,
+        },
+        payload_len,
+    ))
 }
 
 /// The digest a frame carries: over the header up to the digest field, then over the payload area.
@@ -224,35 +333,23 @@ pub fn decode_frame(frame: &[u8; FRAME_BYTES]) -> Result<(FrameHeader, &[u8]), F
     if frame[0..4] != FRAME_MAGIC {
         return Err(FrameError::NotAFrame);
     }
-    let version = u16::from_le_bytes([frame[4], frame[5]]);
-    if version != FRAME_VERSION {
+    let version = frame_version(frame);
+    if version != FRAME_VERSION && version != FRAME_VERSION_LEGACY {
         return Err(FrameError::UnknownVersion { found: version });
     }
-    let payload_len = u16::from_le_bytes([frame[32], frame[33]]);
-    if payload_len as usize > FRAME_PAYLOAD_BYTES {
-        return Err(FrameError::PayloadTooLong { found: payload_len });
+    // THE HEADER CHECK FIRST, on a version-2 frame: a write that stopped inside the header is a torn
+    // write, and is told apart from a whole frame that was altered (which fails only its digest).
+    if version == FRAME_VERSION
+        && header_check(frame)[..] != frame[HEADER_CHECK_OFFSET..HEADER_CHECK_OFFSET + 4]
+    {
+        return Err(FrameError::HeaderMismatch);
     }
-    let part_index = u32::from_le_bytes([frame[24], frame[25], frame[26], frame[27]]);
-    let part_count = u32::from_le_bytes([frame[28], frame[29], frame[30], frame[31]]);
-    if part_count == 0 || part_index >= part_count {
-        return Err(FrameError::BadParts {
-            index: part_index,
-            count: part_count,
-        });
-    }
+    let (header, payload_len) = read_header(frame)?;
     // The digest field is not itself hashed (see `frame_digest`), so the frame can be digested as
     // it stands rather than having to be copied with the field blanked first.
     if frame_digest(frame)[..] != frame[DIGEST_OFFSET..DIGEST_OFFSET + 32] {
         return Err(FrameError::DigestMismatch);
     }
-    let header = FrameHeader {
-        node: u64::from_le_bytes(frame[8..16].try_into().unwrap_or([0; 8])),
-        node_seq: u64::from_le_bytes(frame[16..24].try_into().unwrap_or([0; 8])),
-        part_index,
-        part_count,
-        payload_len,
-        more_parts: frame[6] & FLAG_MORE_PARTS != 0,
-    };
-    let payload = &frame[FRAME_HEADER_BYTES..FRAME_HEADER_BYTES + usize::from(header.payload_len)];
+    let payload = &frame[FRAME_HEADER_BYTES..FRAME_HEADER_BYTES + usize::from(payload_len)];
     Ok((header, payload))
 }

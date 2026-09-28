@@ -81,17 +81,6 @@ handle_newtype!(
     /// opaque-handle pattern, applied to inbound admission). Reserved `0` = no identity (a refusal).
     IdentityId
 );
-handle_newtype!(
-    /// An open reserve-then-settle metering LEASE the host owns (a live `CostHold`): the plane opens
-    /// it with `cost_reserve` (debiting a coarse over-estimate + any flat fee against the grant up
-    /// front), settles EXACT increments against it with `cost_settle` as a high-rate carrier consumes,
-    /// and reads back exhaustion so it can hard-close a live session mid-stream. The (sensitive)
-    /// grant/budget state stays host-side behind this opaque `u64`; only the handle crosses. Reserved
-    /// `0` = no lease (a reserve refusal). This is the continuous-metering analogue of the one-shot
-    /// `meter_charge`, for carriers a plane cannot price after the fact.
-    CostLeaseId
-);
-
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 // Small `#[repr(u8)]` outcome/kind enums returned BY VALUE or embedded in POD structs.
 // ─────────────────────────────────────────────────────────────────────────────────────────────
@@ -871,9 +860,8 @@ impl core::ops::Deref for FactsGuard<'_> {
     }
 }
 
-/// A metering charge: an opaque-component money scalar. `reserve/settle` (a `CostHold`) is
-/// DELIBERATELY NOT here and NOT on the hot vtable — it is an append-only EXTENSION POINT for a
-/// future high-rate carrier (see [`host`](super::host)).
+/// A metering charge: an opaque-component count. A plane reports how much it consumed and never a
+/// price (#43/#71); there is no reserve/settle lease on the hot vtable.
 ///
 /// ## The attribution tail (append-only minor extension)
 ///
@@ -904,8 +892,6 @@ pub struct Usage {
     pub _reserved: u8,
     /// The quantity consumed, in units of `component`.
     pub amount: u64,
-    /// Per-unit cost in micro-currency (the neutral money scalar).
-    pub unit_cost_micros: u64,
     /// The admission grant this consumption is charged against.
     pub admission: AdmissionId,
     /// (minor-5) Borrowed pointer to the resolved metering key id (NOT owned). A null pointer / zero
@@ -924,15 +910,16 @@ pub struct Usage {
     /// (minor-20) Borrowed pointer to a PACKED keyed-unit record block (NOT owned) — the dlopen
     /// analogue of the LLM plane's `usage_units`. Each record is a LE `u32` key length, then that
     /// many key bytes, then a LE `u64` count; records concatenate. A null pointer / zero
-    /// [`units_len`](Self::units_len) means "no keyed units" and the host bills via the frozen
-    /// `amount × unit_cost_micros` path — so a pre-minor-20 plane bills byte-identically to today.
+    /// [`units_len`](Self::units_len) means "no keyed units": the host ledgers `amount` of
+    /// `component` alone. A plane names counts, never a price (#43/#71; the `unit_cost_micros`
+    /// price field was retired by KERNEL<>PLUGINS step 16, item 577).
     pub units_ptr: *const u8,
     /// (minor-20) Length in BYTES of the borrowed packed keyed-unit block (`0` = absent).
     pub units_len: usize,
 }
 
 impl Usage {
-    /// Build a `Usage` charging `amount × unit_cost_micros` against `admission`, WITHOUT a resolved
+    /// Build a `Usage` reporting `amount` of `component` against `admission`, WITHOUT a resolved
     /// attribution (the tail is null → the host records against a synthetic attribution derived from
     /// the admission id). Returns a [`UsageGuard`] (no borrows to tie yet, but uniform with
     /// [`with_attribution`](Self::with_attribution)).
@@ -940,7 +927,6 @@ impl Usage {
     pub fn charge<'a>(
         component: UsageComponent,
         amount: u64,
-        unit_cost_micros: u64,
         admission: AdmissionId,
     ) -> UsageGuard<'a> {
         UsageGuard {
@@ -950,7 +936,6 @@ impl Usage {
                 component: RawUsageComponent::of(component),
                 _reserved: 0,
                 amount,
-                unit_cost_micros,
                 admission,
                 key_id_ptr: core::ptr::null(),
                 key_id_len: 0,
@@ -973,7 +958,6 @@ impl Usage {
     pub fn with_attribution<'a>(
         component: UsageComponent,
         amount: u64,
-        unit_cost_micros: u64,
         admission: AdmissionId,
         key_id: &'a [u8],
         model: &'a [u8],
@@ -986,7 +970,6 @@ impl Usage {
                 component: RawUsageComponent::of(component),
                 _reserved: 0,
                 amount,
-                unit_cost_micros,
                 admission,
                 key_id_ptr: key_id.as_ptr(),
                 key_id_len: key_id.len(),
@@ -1006,13 +989,12 @@ impl Usage {
     /// LE `u64` count (build it with [`pack_usage_units`]). The block's lifetime — like the
     /// attribution words — is tied to the returned [`UsageGuard`]. The host decodes it and prices the
     /// keys through the rate card (the dlopen analogue of the LLM plane's `usage_units`); when empty
-    /// the host bills via the frozen `amount × unit_cost_micros` path.
+    /// the host ledgers `amount` of `component` alone.
     #[allow(clippy::new_ret_no_self)]
     #[allow(clippy::too_many_arguments)]
     pub fn with_units<'a>(
         component: UsageComponent,
         amount: u64,
-        unit_cost_micros: u64,
         admission: AdmissionId,
         key_id: &'a [u8],
         model: &'a [u8],
@@ -1026,7 +1008,6 @@ impl Usage {
                 component: RawUsageComponent::of(component),
                 _reserved: 0,
                 amount,
-                unit_cost_micros,
                 admission,
                 key_id_ptr: key_id.as_ptr(),
                 key_id_len: key_id.len(),
@@ -2026,23 +2007,6 @@ pub struct GateVerdictOut {
     /// The number of hook-name bytes the host copied into the caller's `hook_buf` (`0` on a proceed).
     /// Read `hook_buf[..hook_len]`.
     pub hook_len: u32,
-}
-
-/// The out-param a `cost_settle` writes on [`StatusClass::Ok`]: the state of the lease's budget cell
-/// AFTER the just-settled increment is accrued. A plane reads `exhausted` to decide whether to
-/// hard-close a live carrier mid-stream — the one thing post-hoc metering structurally cannot do.
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub struct CostSettleOut {
-    /// `size_of::<CostSettleOut>()` when the host writes it.
-    pub size: u32,
-    /// POD schema version.
-    pub version: u16,
-    /// `1` = the lease's budget is now DRY (settled ≥ cap) ⇒ the plane must hard-close the carrier;
-    /// `0` = budget remains. An uncapped lease is never exhausted.
-    pub exhausted: u8,
-    /// Preamble tail padding.
-    pub _reserved: u8,
 }
 
 /// A metric sample a plane emits (label passthrough; the host interprets no label).

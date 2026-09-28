@@ -705,6 +705,27 @@ fn seal(journal: &mut AmendJournal, body: AmendBody, token: &Pass<Audit>) -> Ame
     amendment
 }
 
+/// VERIFY THE NODE JOURNAL AS IT IS HELD NOW — the on-demand check `GET /admin/verify` runs.
+/// The boot restore verifies what it reads back; this verifies what the process holds at the moment
+/// it is asked, so an edit made to the held run after boot is seen.
+///
+/// # Errors
+///
+/// The held run does not verify (see [`AmendJournal::verify`]).
+pub fn verify_node() -> Result<(), crate::record::AuditBreak> {
+    node().verify()
+}
+
+/// TEST ONLY: edit the newest held amendment's recorded hash in place, as an in-memory tamper would.
+/// Never compiled into a shipped build.
+#[cfg(any(test, feature = "test-support"))]
+#[doc(hidden)]
+pub fn tamper_node_for_test() {
+    if let Some(last) = node().recent.back_mut() {
+        last.hash = "0".repeat(last.hash.len().max(1));
+    }
+}
+
 /// REBUILD THE NODE JOURNAL from a whole run read back off durable storage (see
 /// [`AmendJournal::restore`]), replacing what it holds, and answer the position of the run's
 /// newest amendment (0 for an empty run) — what [`bind_node_sink`] is told was already durable.

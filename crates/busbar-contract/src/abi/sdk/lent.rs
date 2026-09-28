@@ -30,7 +30,9 @@ use std::ops::Deref;
 use std::ptr;
 use std::str::Utf8Error;
 
-use crate::abi::mechanism::call::{AbiStr, Blob, Field, Span};
+use crate::abi::mechanism::call::{AbiStr, Blob, Field, Outcome, Span};
+use crate::abi::sdk::door::AbiOut;
+use crate::abi::sdk::out::{Out, Scalar};
 
 /// A borrow of data the HOST lent the current call. Only the SDK makes one (the trampoline, from
 /// its copy of the host's `in`, and the accessors below, from what that `in` points to), so every
@@ -173,7 +175,7 @@ impl<'a, T> LentList<'a, T> {
     }
 
     /// Every value, lent.
-    pub fn iter(self) -> impl ExactSizeIterator<Item = Lent<'a, T>> + 'a {
+    pub fn iter(self) -> impl ExactSizeIterator<Item = Lent<'a, T>> + Clone + 'a {
         // SAFETY: as `get`.
         self.items.iter().map(|v| unsafe { Lent::new(v) })
     }
@@ -197,6 +199,20 @@ pub struct HostBuf<'a, T> {
 }
 
 impl<'a, T: Copy> HostBuf<'a, T> {
+    /// Write `v` at the next index while there is room; count it either way. Answers its index.
+    /// The SDK's own writer for a row that may hold a pointer: only a kind SDK in this crate
+    /// writes one, naming memory the same answer lent the host (a plugin writes [`Scalar`]s,
+    /// through [`HostBuf::push`]).
+    pub(crate) fn push_row(&mut self, v: T) -> usize {
+        let at = self.asked;
+        if at < self.cap {
+            // SAFETY: `at < cap`, and the host lent `cap` writable `T`s at `ptr` (`new`).
+            unsafe { self.ptr.add(at).write_unaligned(v) };
+        }
+        self.asked = self.asked.saturating_add(1);
+        at
+    }
+
     /// # Safety
     /// A non-NULL `ptr` points at `cap` writable `T`s, overlapping nothing else the call is lent,
     /// for `'a`.
@@ -256,16 +272,14 @@ impl<'a, T: Copy> HostBuf<'a, T> {
             (self.asked, 0)
         }
     }
+}
 
+/// Writing a host buffer: only pointer-free values ([`Scalar`]) go in by the plugin's hand, so no
+/// value in a host buffer points at memory the plugin may free.
+impl<T: Scalar> HostBuf<'_, T> {
     /// Write `v` at the next index while there is room; count it either way. Answers its index.
     pub fn push(&mut self, v: T) -> usize {
-        let at = self.asked;
-        if at < self.cap {
-            // SAFETY: `at < cap`, and the host lent `cap` writable `T`s at `ptr` (`new`).
-            unsafe { self.ptr.add(at).write_unaligned(v) };
-        }
-        self.asked = self.asked.saturating_add(1);
-        at
+        self.push_row(v)
     }
 
     /// Write `vs` from the next index while there is room; count all of them either way. Answers
@@ -291,6 +305,54 @@ impl<'a, T: Copy> HostBuf<'a, T> {
     }
 }
 
+/// A signal value with no pointer in it: what a plugin writes into a host signal buffer by hand.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum SignalScalar {
+    /// [`SIGNAL_TAG_U64`](crate::abi::hook::SIGNAL_TAG_U64).
+    U64(u64),
+    /// [`SIGNAL_TAG_I64`](crate::abi::hook::SIGNAL_TAG_I64).
+    I64(i64),
+    /// [`SIGNAL_TAG_F64`](crate::abi::hook::SIGNAL_TAG_F64).
+    F64(f64),
+    /// [`SIGNAL_TAG_BOOL`](crate::abi::hook::SIGNAL_TAG_BOOL).
+    Bool(bool),
+}
+
+impl HostBuf<'_, crate::abi::hook::SignalEntry> {
+    /// Write the signal `id` = `value` at the next index while there is room; count it either way.
+    /// Answers its index. (A string signal's value would point into memory; it is not written by
+    /// hand.)
+    pub fn push_signal(&mut self, id: u32, value: SignalScalar) -> usize {
+        use crate::abi::hook::{
+            SignalEntry, SignalValue, SIGNAL_TAG_BOOL, SIGNAL_TAG_F64, SIGNAL_TAG_I64,
+            SIGNAL_TAG_U64,
+        };
+        let (tag, value) = match value {
+            SignalScalar::U64(v) => (SIGNAL_TAG_U64, SignalValue { u64_: v }),
+            SignalScalar::I64(v) => (SIGNAL_TAG_I64, SignalValue { i64_: v }),
+            SignalScalar::F64(v) => (SIGNAL_TAG_F64, SignalValue { f64_: v }),
+            SignalScalar::Bool(v) => (
+                SIGNAL_TAG_BOOL,
+                SignalValue {
+                    boolean: u8::from(v),
+                },
+            ),
+        };
+        let at = self.asked;
+        if at < self.cap {
+            // SAFETY: `at < cap`, and the host lent `cap` writable entries at `ptr` (`new`); the
+            // entry holds no pointer (its tag names a number).
+            unsafe {
+                self.ptr
+                    .add(at)
+                    .write_unaligned(SignalEntry { id, tag, value })
+            };
+        }
+        self.asked = self.asked.saturating_add(1);
+        at
+    }
+}
+
 impl HostBuf<'_, u8> {
     /// Copy `bytes` into this ARENA and answer their [`Span`](Span): the
     /// offset they start at and their length.
@@ -305,7 +367,7 @@ impl HostBuf<'_, u8> {
     /// The [`AbiStr`] naming `span` inside this ARENA, for a struct that points into it (a
     /// `project` view). It points at the host's memory; nothing here reads it.
     #[must_use]
-    pub fn str_at(&self, span: Span) -> AbiStr {
+    pub(crate) fn str_at(&self, span: Span) -> AbiStr {
         AbiStr {
             ptr: self.ptr.wrapping_add(span.offset as usize).cast_const(),
             len: span.len as usize,
@@ -316,9 +378,32 @@ impl HostBuf<'_, u8> {
 impl<T> HostBuf<'_, T> {
     /// The buffer's host address, for a struct that points at it (a `project` view's signals).
     #[must_use]
-    pub const fn as_ptr(&self) -> *mut T {
+    pub(crate) const fn as_ptr(&self) -> *mut T {
         self.ptr
     }
+}
+
+/// ANSWER A FAILED `open` WITH ITS REASON, for any kind: `text` goes into the host's lent reason
+/// buffer ([`OpenIn::err_buf`]), cut on a char boundary to its capacity, and its length into the
+/// `out`'s `err_len` (`err_len` picks it: `|o| &o.err_len`, a plane's `|o| &o.open.err_len`).
+/// Nothing is kept on the plugin's side (no instance exists to keep it): the host copies the bytes
+/// before the call returns to its caller. Answers [`Outcome::Failed`].
+///
+/// A plane's `open` passes its lifecycle half: `input.field(|i| &i.open)`.
+pub fn open_failed<T: AbiOut>(
+    input: Lent<'_, OpenIn>,
+    out: &mut Out<'_, T>,
+    err_len: impl FnOnce(&T) -> &usize,
+    text: &str,
+) -> Outcome {
+    let mut buf = input.err_buf();
+    let mut end = text.len().min(buf.cap());
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    buf.extend(&text.as_bytes()[..end]);
+    out.set(err_len, end);
+    Outcome::Failed
 }
 
 /// The accessors of each `in`, one per pointer field and named after it, stated once. Each is `unsafe` inside only
@@ -364,8 +449,9 @@ macro_rules! lend {
     };
 }
 
-use crate::abi::auth::{IdentityBuf, NamedValue, Span as AuthSpan, VerifyIn};
-use crate::abi::mechanism::lifecycle::{OpenIn, RefreshIn};
+use crate::abi::auth::{IdentityBuf, NamedValue, VerifyIn};
+use crate::abi::mechanism::lifecycle::{OpenIn, RefreshIn, ValidateIn};
+use crate::abi::mechanism::ticket::HostTables;
 use crate::abi::plane::{
     ArriveIn, OnPieceIn, OutField, PlaneDriveIn, ProjectIn, RecordWrite, RefusalIn, ServeIn,
     UnitCount,
@@ -377,21 +463,26 @@ use crate::abi::transport::{
 
 lend! {
     // THE LIFECYCLE (`abi::mechanism::lifecycle`).
-    OpenIn { list(secrets, secrets_len) -> Blob; }
+    OpenIn {
+        list(secrets, secrets_len) -> Blob;
+        one(host) -> HostTables;
+        buf(err_buf, err_cap) -> u8;
+    }
     RefreshIn { list(secrets, secrets_len) -> Blob; }
     // THE AUTH KIND (`abi::auth`): `verify`'s carriers, and the host's identity buffer.
     VerifyIn { list(carrier, carrier_len) -> NamedValue; }
     IdentityBuf {
         buf(buf, buf_cap) -> u8;
-        buf(groups, groups_cap) -> AuthSpan;
+        buf(groups, groups_cap) -> Span;
     }
+    ValidateIn { buf(err_buf, err_cap) -> u8; }
     // THE PLANE KIND (`abi::plane`): request-path results go into host buffers.
     ArriveIn {
         list(fields, fields_len) -> Field;
         buf(units_buf, units_cap) -> UnitCount;
     }
     OnPieceIn {
-        list(head_fields, head_fields_len) -> PlaneField;
+        list(head_fields, head_fields_len) -> Field;
         buf(reply_buf, reply_cap) -> u8;
         buf(units_buf, units_cap) -> UnitCount;
         buf(records_buf, records_cap) -> RecordWrite;

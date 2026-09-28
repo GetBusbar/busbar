@@ -324,6 +324,7 @@ pub static HOST_SLOTS: HostSlots = HostSlots {
     content_scan: Some(content_scan),
     hook_call: Some(hook_call),
     random_fill: Some(random_fill),
+    need_admit: Some(need_admit),
 };
 
 /// The dispatcher an instance's context routes to, and what it serves.
@@ -826,6 +827,8 @@ unimplemented_slot! {
     verify_store = VERIFY_STORE, VerifyStoreIn;
     content_scan = CONTENT_SCAN, ContentScanIn;
     hook_call = HOOK_CALL, HookCallIn;
+    // Admission verdicts are the connector's (CONNECTOR-19 fills it, fail-closed).
+    need_admit = NEED_ADMIT, NeedAdmitIn;
 }
 
 #[cfg(test)]

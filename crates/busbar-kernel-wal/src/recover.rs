@@ -29,6 +29,15 @@
 //! the medium and nothing after them was ever written. Cutting that tail loses nothing that was
 //! acknowledged — the sync never returned — so it is cut silently, exactly as it always was.
 //!
+//! A WHOLE frame that was altered after it was written is something else again, and is never cut
+//! silently wherever it sits, the tail included. A version-2 frame carries a header check over its
+//! fixed header fields: a write that stopped inside the header fails that check (torn), while a
+//! frame whose header checks and whose digest does not was written in full and changed afterwards.
+//! Its record was acknowledged; a silent cut would drop a settlement the node had already made,
+//! and let recovery settle the unit again at its checkpoint. So it is CORRUPT, and the record's
+//! bytes as they now read are handed to the caller (`Quarantine::damaged`), which is the one place
+//! that knows what they named.
+//!
 //! A frame that fails its digest with WHOLE, VERIFYING frames after it is something else. Nothing
 //! about a crash writes a good frame past a bad one: the writes are one contiguous run from the
 //! durable end, and the space past them is zeros. So damage with a verifying frame beyond it is the
@@ -48,7 +57,7 @@ use std::io;
 use std::path::PathBuf;
 
 use crate::backend::SegmentFactory;
-use crate::record::{decode_frame, FrameError, Record, FRAME_BYTES};
+use crate::record::{checked_header, decode_frame, frame_version, FrameError, Record, FRAME_BYTES};
 use crate::segment::Segment;
 
 /// How a scan of a segment ended.
@@ -116,6 +125,12 @@ pub struct Quarantine {
     /// acknowledged and may already be in a store, so the log must never hand the same identities
     /// out again: it marks them taken.
     pub identities: Vec<(u64, u64)>,
+    /// Every record the set-aside bytes hold whose frames' HEADERS check, assembled as the bytes now
+    /// read: a whole altered record (header checks, digest does not) and every acknowledged record
+    /// behind the damage. They are gone from the log, and the caller reads what they named — a
+    /// settlement the node made must not be settled again as if it never happened. A frame whose
+    /// header does not check (a torn or unreadable one) contributes nothing.
+    pub damaged: Vec<Record>,
     /// When recovery set them aside, in milliseconds since the Unix epoch. The quarantine file's
     /// name carries the same number.
     pub at_unix_ms: u64,
@@ -208,6 +223,8 @@ pub struct Recovered {
     pub written_end: u64,
     /// Every identity a verifying frame past the stop carries. See [`Quarantine::identities`].
     pub identities_beyond: Vec<(u64, u64)>,
+    /// The records the set-aside bytes hold, as they now read. See [`Quarantine::damaged`].
+    pub damaged: Vec<Record>,
 }
 
 impl Recovered {
@@ -303,9 +320,31 @@ pub fn scan(segment: &Segment) -> io::Result<Recovered> {
     }
 
     let len = segment.len()?;
-    let beyond = look_past(segment, durable_end, stop_at, len)?;
+    let mut beyond = look_past(segment, durable_end, stop_at, len)?;
     let unreadable_layout = matches!(stopped_because, Some(FrameError::UnknownVersion { .. }));
-    let verdict = if beyond.verifies || unreadable_layout {
+    // A WHOLE frame altered after it was written: its header checks and its digest does not. The
+    // write that made it completed, so this is never a torn tail.
+    let altered = stopped_because.is_some_and(|why| {
+        let mut stop_frame = [0u8; FRAME_BYTES];
+        read_full(segment, stop_at, &mut stop_frame).unwrap_or(false)
+            && why.is_altered_whole_frame(frame_version(&stop_frame))
+    });
+    let corrupt = beyond.verifies || unreadable_layout || altered;
+    let damaged = if corrupt {
+        let records = read_set_aside(segment, durable_end, len)?;
+        // Every set-aside identity is taken, the altered record's first: it was acknowledged, and
+        // it is the one the caller asks about.
+        for id in records.iter().rev().map(Record::identity) {
+            if let Some(i) = beyond.identities.iter().position(|x| *x == id) {
+                beyond.identities.remove(i);
+            }
+            beyond.identities.insert(0, id);
+        }
+        records
+    } else {
+        Vec::new()
+    };
+    let verdict = if corrupt {
         TailVerdict::Corrupt { at: stop_at }
     } else if beyond.written_end > durable_end {
         TailVerdict::Torn
@@ -321,7 +360,54 @@ pub fn scan(segment: &Segment) -> io::Result<Recovered> {
         quarantined: None,
         written_end: beyond.written_end,
         identities_beyond: beyond.identities,
+        damaged,
     })
+}
+
+/// Every record in `[from, len)`, read frame by frame through each frame's HEADER CHECK (a
+/// version-2 frame) or its full verification (a version-1 frame), payloads joined as they now read.
+/// A frame that neither checks nor verifies is skipped, and so is a record whose parts do not run in
+/// order: what comes back is what the bytes can still attribute, never a record assembled from
+/// guesses.
+fn read_set_aside(segment: &Segment, from: u64, len: u64) -> io::Result<Vec<Record>> {
+    let mut frame = [0u8; FRAME_BYTES];
+    let mut at = from;
+    let mut records = Vec::new();
+    let mut open: Option<(u64, u64, u32, Vec<u8>)> = None;
+    while at < len && read_full(segment, at, &mut frame)? {
+        at += FRAME_BYTES as u64;
+        let read = match decode_frame(&frame) {
+            Ok((header, payload)) => Some((header, payload.to_vec())),
+            Err(_) => checked_header(&frame).map(|(header, payload)| (header, payload.to_vec())),
+        };
+        let Some((header, payload)) = read else {
+            open = None;
+            continue;
+        };
+        match open.as_mut() {
+            Some((node, node_seq, next, body))
+                if header.node == *node
+                    && header.node_seq == *node_seq
+                    && header.part_index == *next =>
+            {
+                *next += 1;
+                body.extend_from_slice(&payload);
+            }
+            _ if header.part_index == 0 => {
+                open = Some((header.node, header.node_seq, 1, payload));
+            }
+            _ => {
+                open = None;
+                continue;
+            }
+        }
+        if !header.more_parts {
+            if let Some((node, node_seq, _, body)) = open.take() {
+                records.push(Record::new(node, node_seq, body));
+            }
+        }
+    }
+    Ok(records)
 }
 
 /// What lies past the verified prefix.
@@ -449,6 +535,7 @@ pub fn recover_and_truncate(
         bytes: copy.len() as u64,
         why: recovered.stopped_because,
         identities: recovered.identities_beyond.clone(),
+        damaged: recovered.damaged.clone(),
         at_unix_ms,
         kept,
     });

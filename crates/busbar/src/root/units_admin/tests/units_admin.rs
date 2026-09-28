@@ -630,7 +630,7 @@ fn an_admin_unit_settles_at_zero_requests_and_zero_fee() {
         busbar_kernel::teller::requests_drawn(ctx.origin, evidence.upstream_candidate),
         0
     );
-    assert_eq!(busbar_kernel::teller::fee_count(&evidence.fee).0, 0);
+    assert_eq!(evidence.fee_units, 0);
 }
 
 /// The nonce is drawn, not derived. Two draws over the same unit must not agree, or a one-time
@@ -3158,6 +3158,7 @@ fn a_sealed_chain() -> SealedChain {
                 subject: Subject::PrincipalId(format!("pseudonym-{unit}")),
                 what: What {
                     unit_key: UnitKey::new(unit),
+                    incarnation: 0,
                     op_class: OpClassId::new("chat.completion"),
                     destination: Some("upstream-a".into()),
                     parent: None,
@@ -4432,11 +4433,8 @@ fn a_card_at(micro_per_unit: f64, fee_minor: i64) -> busbar_kernel_ledger::cost:
     )
 }
 
-/// One booked line: the quantities, the lane the card is keyed by, and THE INSTANT IT ARRIVED.
-///
-/// The cached figure is seeded at an absurd 999,999,999 nano-units on purpose. The cache is what a
-/// node computed at settlement and is never authoritative; a read that summed caches would answer
-/// that absurdity, so a rendering that leaked one is obvious here rather than plausible.
+/// One booked line: the quantities, the lane the card is keyed by, and THE INSTANT IT ARRIVED. It
+/// carries no price: what it is worth is the dated history's answer at read time.
 fn a_booked_line(
     bucket: &str,
     arrived_ms: u64,
@@ -4462,12 +4460,6 @@ fn a_booked_line(
         fee_count,
         tier_bp: busbar_kernel_ledger::cost::STANDARD_TIER_BP,
         arrived_ms,
-        cached: busbar_kernel_ledger::DerivedPrice {
-            history_seq: busbar_kernel_ledger::cost::HistorySeq::OPENING,
-            card_seq: busbar_kernel_ledger::cost::HistorySeq::OPENING,
-            pre_tier_nanos: 999_999_999,
-            priced_nanos: 999_999_999,
-        },
         origin: busbar_kernel_ledger::PostingOrigin::Client,
     }
 }
@@ -5457,6 +5449,7 @@ fn a_signed_record_and_a_signed_checkpoint_verify_against_the_served_audit_keys(
         subject: Subject::PrincipalId("pseudonym-keyset".into()),
         what: What {
             unit_key: UnitKey::new(1),
+            incarnation: 0,
             op_class: OpClassId::new("chat.completion"),
             destination: Some("upstream-a".into()),
             parent: None,

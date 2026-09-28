@@ -10,8 +10,8 @@
 
 use crate::testkit::engine_boot::engine;
 use crate::testkit::TestAppA2aExt;
+use busbar_contract::abi::cold::endpoint::RouteAuth;
 use busbar_kernel::test_support::engine_kit_plus::EngineAppPlus;
-use busbar_plugin_loader::RouteAuth;
 
 // THE ONE `unpinned_agent`, not a third field-for-field copy of it. `AgentDefCfg` gaining a field
 // only forces the copy whose own file is being edited to be updated; the others go on compiling
@@ -137,14 +137,14 @@ fn the_metadata_document_is_the_one_open_route_and_the_endpoint_is_not() {
         if path == crate::a2a::serve::METADATA_PATH {
             assert_eq!(
                 *auth,
-                busbar_plugin_loader::RouteAuth::None,
+                busbar_contract::abi::cold::endpoint::RouteAuth::None,
                 "the discovery document must be readable without a token"
             );
         }
         if path.starts_with("/a2a/agents") {
             assert_eq!(
                 *auth,
-                busbar_plugin_loader::RouteAuth::Key,
+                busbar_contract::abi::cold::endpoint::RouteAuth::Key,
                 "{path} must take the data-plane bar"
             );
         }

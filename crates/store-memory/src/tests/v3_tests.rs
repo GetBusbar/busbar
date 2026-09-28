@@ -7,7 +7,8 @@
 
 use super::*;
 use busbar_contract::abi::sdk::store::{
-    Cap, CapsRefused, Cell, CellKey, Dimension, OpRefused, ReserveRefused, StoreSlots,
+    Cap, CapsRefused, Cell, CellKey, Dimension, Grant, OpRefused, OpResult, ReserveRefused,
+    StoreSlots,
 };
 use busbar_contract::abi::store::{OpId, OP_ID_RETENTION_SECS};
 use busbar_contract::kinds::RecordBytes;
@@ -39,6 +40,25 @@ fn cell(dimension: Dimension<'static>, amount: u64) -> Cell<'static> {
         key: key(dimension),
         amount,
     }
+}
+
+/// `reserve`, its grants collected.
+fn reserve(
+    s: &MemoryStore,
+    op: OpId,
+    epoch: u64,
+    cells: &[Cell<'_>],
+) -> Result<Vec<Grant>, ReserveRefused> {
+    let mut grants = Vec::new();
+    s.reserve(op, epoch, cells.iter().copied(), &mut grants)
+        .map(|()| grants)
+}
+
+/// `slice_release`, its amounts collected.
+fn release(s: &MemoryStore, op: OpId, epoch: u64, items: &[(u64, u64)]) -> OpResult<Vec<u64>> {
+    let mut released = Vec::new();
+    s.slice_release(op, epoch, items.iter().copied(), &mut released)
+        .map(|()| released)
 }
 
 fn capped(dimension: Dimension<'static>, c: u64) -> MemoryStore {
@@ -206,7 +226,7 @@ fn a_metering_batch_replay_applies_once() {
 fn a_reserve_with_no_cap_pushed_is_refused_naming_the_cell() {
     let s = MemoryStore::new();
     assert_eq!(
-        s.reserve(op(1), 0, &[cell(Dimension::Requests, 1)]),
+        reserve(&s, op(1), 0, &[cell(Dimension::Requests, 1)]),
         Err(ReserveRefused::NoCap { cell: 0 })
     );
 }
@@ -214,9 +234,7 @@ fn a_reserve_with_no_cap_pushed_is_refused_naming_the_cell() {
 #[test]
 fn a_grant_is_always_the_whole_amount() {
     let s = capped(Dimension::NanoUnits, 100);
-    let g = s
-        .reserve(op(1), 0, &[cell(Dimension::NanoUnits, 60)])
-        .expect("grant");
+    let g = reserve(&s, op(1), 0, &[cell(Dimension::NanoUnits, 60)]).expect("grant");
     assert_eq!(g.len(), 1);
     assert_eq!(g[0].granted, 60);
 }
@@ -224,10 +242,9 @@ fn a_grant_is_always_the_whole_amount() {
 #[test]
 fn requests_refuse_when_used_plus_amount_passes_the_cap() {
     let s = capped(Dimension::Requests, 2);
-    s.reserve(op(1), 0, &[cell(Dimension::Requests, 2)])
-        .expect("at the cap");
+    reserve(&s, op(1), 0, &[cell(Dimension::Requests, 2)]).expect("at the cap");
     assert_eq!(
-        s.reserve(op(2), 0, &[cell(Dimension::Requests, 1)]),
+        reserve(&s, op(2), 0, &[cell(Dimension::Requests, 1)]),
         Err(ReserveRefused::Exhausted { cell: 0 })
     );
 }
@@ -235,12 +252,11 @@ fn requests_refuse_when_used_plus_amount_passes_the_cap() {
 #[test]
 fn a_class_meter_grants_the_draw_that_crosses_the_cap_and_refuses_at_it() {
     let s = capped(Dimension::Class("tokens"), 10);
-    s.reserve(op(1), 0, &[cell(Dimension::Class("tokens"), 9)])
-        .expect("under");
-    s.reserve(op(2), 0, &[cell(Dimension::Class("tokens"), 50)])
+    reserve(&s, op(1), 0, &[cell(Dimension::Class("tokens"), 9)]).expect("under");
+    reserve(&s, op(2), 0, &[cell(Dimension::Class("tokens"), 50)])
         .expect("crossing is granted whole (1.5.5 `tokens >= cap`)");
     assert_eq!(
-        s.reserve(op(3), 0, &[cell(Dimension::Class("tokens"), 1)]),
+        reserve(&s, op(3), 0, &[cell(Dimension::Class("tokens"), 1)]),
         Err(ReserveRefused::Exhausted { cell: 0 })
     );
 }
@@ -249,20 +265,18 @@ fn a_class_meter_grants_the_draw_that_crosses_the_cap_and_refuses_at_it() {
 fn money_refuses_a_draw_that_would_pass_the_cap() {
     let s = capped(Dimension::NanoUnits, 100);
     assert_eq!(
-        s.reserve(op(1), 0, &[cell(Dimension::NanoUnits, 101)]),
+        reserve(&s, op(1), 0, &[cell(Dimension::NanoUnits, 101)]),
         Err(ReserveRefused::Exhausted { cell: 0 })
     );
-    s.reserve(op(2), 0, &[cell(Dimension::NanoUnits, 100)])
-        .expect("exactly the cap");
+    reserve(&s, op(2), 0, &[cell(Dimension::NanoUnits, 100)]).expect("exactly the cap");
 }
 
 #[test]
 fn an_overflowing_draw_is_exhausted_not_wrapped() {
     let s = capped(Dimension::Requests, u64::MAX);
-    s.reserve(op(1), 0, &[cell(Dimension::Requests, u64::MAX - 1)])
-        .expect("near max");
+    reserve(&s, op(1), 0, &[cell(Dimension::Requests, u64::MAX - 1)]).expect("near max");
     assert_eq!(
-        s.reserve(op(2), 0, &[cell(Dimension::Requests, 5)]),
+        reserve(&s, op(2), 0, &[cell(Dimension::Requests, 5)]),
         Err(ReserveRefused::Exhausted { cell: 0 })
     );
 }
@@ -280,14 +294,15 @@ fn a_chain_draw_is_all_or_nothing() {
     .expect("caps");
     // The second cell fails, so the first draws nothing either.
     assert_eq!(
-        s.reserve(
+        reserve(
+            &s,
             op(1),
             0,
             &[cell(Dimension::Requests, 10), cell(Dimension::NanoUnits, 6)]
         ),
         Err(ReserveRefused::Exhausted { cell: 1 })
     );
-    s.reserve(op(2), 0, &[cell(Dimension::Requests, 10)])
+    reserve(&s, op(2), 0, &[cell(Dimension::Requests, 10)])
         .expect("the first cell's headroom is untouched");
 }
 
@@ -295,7 +310,8 @@ fn a_chain_draw_is_all_or_nothing() {
 fn two_cells_on_one_slot_count_against_each_other() {
     let s = capped(Dimension::Requests, 3);
     assert_eq!(
-        s.reserve(
+        reserve(
+            &s,
             op(1),
             0,
             &[cell(Dimension::Requests, 2), cell(Dimension::Requests, 2)]
@@ -307,29 +323,23 @@ fn two_cells_on_one_slot_count_against_each_other() {
 #[test]
 fn a_replayed_reserve_answers_the_same_grants_and_draws_nothing_more() {
     let s = capped(Dimension::Requests, 10);
-    let a = s
-        .reserve(op(1), 0, &[cell(Dimension::Requests, 6)])
-        .expect("a");
-    let b = s
-        .reserve(op(1), 0, &[cell(Dimension::Requests, 6)])
-        .expect("replay");
+    let a = reserve(&s, op(1), 0, &[cell(Dimension::Requests, 6)]).expect("a");
+    let b = reserve(&s, op(1), 0, &[cell(Dimension::Requests, 6)]).expect("replay");
     assert_eq!(a, b);
     // Only 6 are drawn: 4 more fit, 5 do not.
     assert_eq!(
-        s.reserve(op(2), 0, &[cell(Dimension::Requests, 5)]),
+        reserve(&s, op(2), 0, &[cell(Dimension::Requests, 5)]),
         Err(ReserveRefused::Exhausted { cell: 0 })
     );
-    s.reserve(op(3), 0, &[cell(Dimension::Requests, 4)])
-        .expect("the rest");
+    reserve(&s, op(3), 0, &[cell(Dimension::Requests, 4)]).expect("the rest");
 }
 
 #[test]
 fn a_reserve_op_id_reused_with_another_body_is_a_conflict() {
     let s = capped(Dimension::Requests, 10);
-    s.reserve(op(1), 0, &[cell(Dimension::Requests, 1)])
-        .expect("a");
+    reserve(&s, op(1), 0, &[cell(Dimension::Requests, 1)]).expect("a");
     assert_eq!(
-        s.reserve(op(1), 0, &[cell(Dimension::Requests, 2)]),
+        reserve(&s, op(1), 0, &[cell(Dimension::Requests, 2)]),
         Err(ReserveRefused::Conflict)
     );
 }
@@ -337,61 +347,53 @@ fn a_reserve_op_id_reused_with_another_body_is_a_conflict() {
 #[test]
 fn a_refused_reserve_is_not_recorded() {
     let s = capped(Dimension::Requests, 1);
-    s.reserve(op(1), 0, &[cell(Dimension::Requests, 1)])
-        .expect("fill");
+    reserve(&s, op(1), 0, &[cell(Dimension::Requests, 1)]).expect("fill");
     assert_eq!(
-        s.reserve(op(2), 0, &[cell(Dimension::Requests, 1)]),
+        reserve(&s, op(2), 0, &[cell(Dimension::Requests, 1)]),
         Err(ReserveRefused::Exhausted { cell: 0 })
     );
     s.window_caps(op(3), &[cap(Dimension::Requests, 2, 2)])
         .expect("raise");
     // The same op_id is evaluated afresh and now fits.
-    s.reserve(op(2), 0, &[cell(Dimension::Requests, 1)])
-        .expect("afresh");
+    reserve(&s, op(2), 0, &[cell(Dimension::Requests, 1)]).expect("afresh");
 }
 
 #[test]
 fn the_memory_store_never_answers_a_stale_epoch() {
     let s = capped(Dimension::Requests, 10);
-    s.reserve(op(1), 9, &[cell(Dimension::Requests, 1)])
-        .expect("epoch 9");
-    s.reserve(op(2), 1, &[cell(Dimension::Requests, 1)])
+    reserve(&s, op(1), 9, &[cell(Dimension::Requests, 1)]).expect("epoch 9");
+    reserve(&s, op(2), 1, &[cell(Dimension::Requests, 1)])
         .expect("an older epoch is not stale on a node-local store");
 }
 
 #[test]
 fn slice_release_is_clamped_deduped_and_frees_headroom() {
     let s = capped(Dimension::Requests, 10);
-    let g = s
-        .reserve(op(1), 0, &[cell(Dimension::Requests, 10)])
-        .expect("draw all");
+    let g = reserve(&s, op(1), 0, &[cell(Dimension::Requests, 10)]).expect("draw all");
     let id = g[0].slice_id;
-    assert_eq!(s.slice_release(op(2), 0, &[(id, 4)]), Ok(vec![4]));
+    assert_eq!(release(&s, op(2), 0, &[(id, 4)]), Ok(vec![4]));
     assert_eq!(
-        s.slice_release(op(2), 0, &[(id, 4)]),
+        release(&s, op(2), 0, &[(id, 4)]),
         Ok(vec![4]),
         "a replay answers the original and takes nothing more back"
     );
     // Clamped to what the slice has left (6), never more.
-    assert_eq!(s.slice_release(op(3), 0, &[(id, u64::MAX)]), Ok(vec![6]));
+    assert_eq!(release(&s, op(3), 0, &[(id, u64::MAX)]), Ok(vec![6]));
     // All 10 are free again.
-    s.reserve(op(4), 0, &[cell(Dimension::Requests, 10)])
-        .expect("headroom back");
+    reserve(&s, op(4), 0, &[cell(Dimension::Requests, 10)]).expect("headroom back");
 }
 
 #[test]
 fn releasing_an_unknown_slice_fails_and_applies_nothing() {
     let s = capped(Dimension::Requests, 10);
-    let g = s
-        .reserve(op(1), 0, &[cell(Dimension::Requests, 10)])
-        .expect("draw");
+    let g = reserve(&s, op(1), 0, &[cell(Dimension::Requests, 10)]).expect("draw");
     assert!(matches!(
-        s.slice_release(op(2), 0, &[(g[0].slice_id, 3), (999, 1)]),
+        release(&s, op(2), 0, &[(g[0].slice_id, 3), (999, 1)]),
         Err(OpRefused::Failed(_))
     ));
     // The known item was not applied either: still exhausted.
     assert_eq!(
-        s.reserve(op(3), 0, &[cell(Dimension::Requests, 1)]),
+        reserve(&s, op(3), 0, &[cell(Dimension::Requests, 1)]),
         Err(ReserveRefused::Exhausted { cell: 0 })
     );
 }
@@ -404,7 +406,7 @@ fn window_caps_newest_generation_wins_and_equal_generation_conflicts() {
     s.window_caps(op(2), &[cap(Dimension::Requests, 99, 4)])
         .expect("an older generation is ignored");
     assert_eq!(
-        s.reserve(op(3), 0, &[cell(Dimension::Requests, 2)]),
+        reserve(&s, op(3), 0, &[cell(Dimension::Requests, 2)]),
         Err(ReserveRefused::Exhausted { cell: 0 })
     );
     assert_eq!(
@@ -420,13 +422,12 @@ fn window_caps_newest_generation_wins_and_equal_generation_conflicts() {
     );
     // Nothing of the refused push applied: the cap is still 1.
     assert_eq!(
-        s.reserve(op(5), 0, &[cell(Dimension::Requests, 2)]),
+        reserve(&s, op(5), 0, &[cell(Dimension::Requests, 2)]),
         Err(ReserveRefused::Exhausted { cell: 0 })
     );
     s.window_caps(op(6), &[cap(Dimension::Requests, 3, 6)])
         .expect("gen 6");
-    s.reserve(op(7), 0, &[cell(Dimension::Requests, 2)])
-        .expect("cap 3");
+    reserve(&s, op(7), 0, &[cell(Dimension::Requests, 2)]).expect("cap 3");
 }
 
 #[test]

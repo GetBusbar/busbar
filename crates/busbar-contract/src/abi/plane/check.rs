@@ -37,7 +37,8 @@ use crate::abi::hook::{
     SIGNAL_TAG_BOOL, SIGNAL_TAG_STR, SIGNAL_TAG_U64,
 };
 use crate::abi::host::conn::connector::{
-    Need, DIRECTION_INBOUND, DIRECTION_OUTBOUND, KEEP_RESPONSE_HEADERS_MAX, NEVER_KEPT,
+    Need, DIRECTION_INBOUND, DIRECTION_OUTBOUND, EGRESS_DEFAULT, EGRESS_LOOPBACK_ALLOWED,
+    KEEP_RESPONSE_HEADERS_MAX, NEVER_KEPT,
 };
 use crate::abi::mechanism::call::{AbiStr, Outcome};
 use crate::abi::mechanism::check::{
@@ -784,6 +785,12 @@ pub fn check_needs(needs: &[Need]) -> Result<(), Fault> {
             u64::from(DIRECTION_INBOUND),
             u64::from(DIRECTION_OUTBOUND),
             "need.direction",
+        )?;
+        code(
+            u64::from(n.egress_class),
+            u64::from(EGRESS_DEFAULT),
+            u64::from(EGRESS_LOOPBACK_ALLOWED),
+            "need.egress_class",
         )?;
         named(n.transport, "need.transport")?;
         text(n.auth, "need.auth")?;

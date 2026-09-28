@@ -45,7 +45,7 @@ fn make_root_cfg(
         pools,
         upstream_credentials: busbar_kernel::auth::UpstreamCreds::Own,
         hooks: HashMap::new(),
-        admin_auth: vec!["admin-tokens".to_string()],
+        admin_auth: config::default_admin_auth_names(),
         groups: std::collections::BTreeMap::new(),
         rate_card: None,
         per_request_fee: 0,

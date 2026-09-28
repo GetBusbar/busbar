@@ -363,7 +363,7 @@ pub enum AdmissionMode {
 #[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq, Eq, Default)]
 #[serde(rename_all = "kebab-case")]
 pub enum ExhaustionMode {
-    /// Finish the unit in flight — the default. A non-streaming unit overshoots by at most one
+    /// Finish the unit in flight — the default. A unit that is not a stream overshoots by at most one
     /// request.
     #[default]
     FinishUnit,

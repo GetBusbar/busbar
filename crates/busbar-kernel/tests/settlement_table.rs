@@ -1,910 +1,155 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The settlement table, row by row, and the two quantity rules beside it.
+//! The settlement WRITER, row by row, and the two quantity rules beside it (TD step 13,
+//! re-baselined from the old settlement table).
 //!
-//! Every row says the same thing in a different situation: post the lower evidence, mark it, and
-//! put it where someone will look at it. These are the rows.
+//! THE PLANE REPORTS; THE KERNEL WRITES (`BUSBAR-1.6.0.md` §7, #77(2)). The kernel
+//! decides no figure and no fee: whatever the end, it writes what the plane reported, adds no
+//! floor, and resolves no disagreement. Only a unit brought back from a journal is answered by the
+//! kernel, from its own record, and never upward.
 
 use busbar_contract::caps::OriginKind;
 use busbar_contract::caps::{Outcome, PostingFlags, ReasonCode, StepName};
-use busbar_contract::{DestinationFacts, LaneId, UpstreamAddress, UpstreamIdx};
-use busbar_kernel::teller::{
-    fee_count, requests_drawn, requests_settled, settle_amount, Evidence, FeeEvidence, FinishClass,
-    StatusAt, WireStatusClass,
-};
+use busbar_kernel::teller::{requests_drawn, requests_settled, settle_written, Evidence, Written};
 
-fn live_end() -> Outcome {
-    Outcome::Failed(StepName::Route, ReasonCode::ClientGone)
+fn ends() -> [Outcome; 4] {
+    [
+        Outcome::Completed,
+        Outcome::Failed(StepName::Route, ReasonCode::ClientGone),
+        Outcome::Failed(StepName::Route, ReasonCode::OverBudget),
+        Outcome::Refused(StepName::Admit, ReasonCode::OverBudget),
+    ]
+}
+
+fn written(end: &Outcome, evidence: &Evidence) -> (u64, PostingFlags) {
+    let Written { amount, flags, .. } = settle_written(end, evidence);
+    (amount, flags)
 }
 
 #[test]
-fn row_completed_with_a_located_figure_posts_it() {
+fn a_reported_figure_is_written_as_told_on_every_end() {
+    // A cut bills what streamed (#62), an error end bills what the plane reported of it: no end
+    // lowers, zeroes or raises the plane's figure.
     let evidence = Evidence {
-        located: Some(4_200),
-        accrued_floor: 90,
+        reported: Some(4_200),
         ..Evidence::default()
     };
-    assert_eq!(
-        settle_amount(&Outcome::Completed, &evidence),
-        (4_200, PostingFlags::NONE)
-    );
+    for end in ends() {
+        assert_eq!(
+            written(&end, &evidence),
+            (4_200, PostingFlags::NONE),
+            "{end:?}"
+        );
+    }
 }
 
 #[test]
-fn row_completed_with_a_required_locator_missing_posts_zero_and_disputes_it() {
-    let evidence = Evidence {
-        located: None,
-        accrued_floor: 5_000,
-        locator_required: true,
-        ..Evidence::default()
-    };
-    let (amount, flags) = settle_amount(&Outcome::Completed, &evidence);
-    // Zero, not the floor: an upstream that reported no usage is billed nothing, exactly as before.
-    assert_eq!(amount, 0);
-    assert!(flags.contains(PostingFlags::ESTIMATED));
-    assert!(flags.contains(PostingFlags::METER_DISPUTED));
-}
-
-#[test]
-fn row_completed_with_no_card_requiring_a_locator_posts_zero_unflagged() {
-    let evidence = Evidence::default();
+fn a_completed_unit_that_reported_nothing_writes_zero_unmarked() {
     assert_eq!(
-        settle_amount(&Outcome::Completed, &evidence),
+        written(&Outcome::Completed, &Evidence::default()),
         (0, PostingFlags::NONE)
     );
 }
 
 #[test]
-fn row_live_non_completed_with_a_located_figure_posts_it() {
-    let evidence = Evidence {
-        located: Some(700),
-        ..Evidence::default()
-    };
-    assert_eq!(
-        settle_amount(&live_end(), &evidence),
-        (700, PostingFlags::NONE)
-    );
+fn an_unfinished_unit_that_reported_nothing_writes_zero_marked_estimated_and_no_floor() {
+    for end in ends().into_iter().skip(1) {
+        assert_eq!(
+            written(&end, &Evidence::default()),
+            (0, PostingFlags::ESTIMATED),
+            "{end:?}: the kernel adds no floor (BUSBAR-1.6.0.md §7)"
+        );
+    }
 }
 
 #[test]
-fn row_live_non_completed_ending_in_a_protocol_error_bills_nothing() {
-    let evidence = Evidence {
-        located: Some(700),
-        terminal_error: true,
-        ..Evidence::default()
-    };
-    assert_eq!(
-        settle_amount(&live_end(), &evidence),
-        (0, PostingFlags::NONE)
-    );
-}
-
-#[test]
-fn row_live_non_completed_with_nothing_located_posts_the_kernel_floor() {
-    let evidence = Evidence {
-        located: None,
-        accrued_floor: 1_234,
-        ..Evidence::default()
-    };
-    assert_eq!(
-        settle_amount(&live_end(), &evidence),
-        (1_234, PostingFlags::ESTIMATED)
-    );
-}
-
-#[test]
-fn row_recovered_with_a_dispatch_posts_the_last_checkpoint() {
+fn row_recovered_with_a_dispatch_writes_the_last_checkpoint() {
     let evidence = Evidence {
         recovered: true,
         dispatched: true,
-        checkpointed: 640,
-        located: Some(999_999),
+        checkpointed: 700,
+        reported: Some(9_000),
         ..Evidence::default()
     };
-    assert_eq!(
-        settle_amount(&live_end(), &evidence),
-        (640, PostingFlags::RECOVERED)
-    );
+    for end in ends() {
+        assert_eq!(
+            written(&end, &evidence),
+            (700, PostingFlags::RECOVERED),
+            "a recovered unit is answered from its record, never a live report"
+        );
+    }
 }
 
 #[test]
-fn row_recovered_with_no_dispatch_posts_zero_and_voids() {
+fn row_recovered_with_no_dispatch_writes_zero_and_voids() {
     let evidence = Evidence {
         recovered: true,
         dispatched: false,
-        checkpointed: 640,
+        checkpointed: 700,
         ..Evidence::default()
     };
     assert_eq!(
-        settle_amount(&live_end(), &evidence),
+        written(&Outcome::Completed, &evidence),
         (0, PostingFlags::VOIDED)
     );
 }
 
 #[test]
-fn row_two_reported_sources_disagreeing_posts_the_lower() {
+fn a_lost_settle_record_keeps_the_amount_and_marks_it_unposted() {
     let evidence = Evidence {
-        located: Some(9_000),
-        variance: Some((9_000, 4_000)),
-        ..Evidence::default()
-    };
-    assert_eq!(
-        settle_amount(&Outcome::Completed, &evidence),
-        (4_000, PostingFlags::METER_DISPUTED)
-    );
-}
-
-#[test]
-fn row_a_three_way_lane_mismatch_posts_the_cheaper_entry() {
-    let evidence = Evidence {
-        located: Some(9_000),
-        lane_mismatch: Some((3_000, 8_000)),
-        variance: Some((9_000, 4_000)),
-        ..Evidence::default()
-    };
-    // The lane mismatch is decided before the variance rule: the unit may not even be on the lane
-    // the other two figures were priced against.
-    assert_eq!(
-        settle_amount(&Outcome::Completed, &evidence),
-        (3_000, PostingFlags::METER_DISPUTED)
-    );
-}
-
-#[test]
-fn row_a_lost_settle_record_keeps_the_amount_and_marks_it_unposted() {
-    let evidence = Evidence {
-        located: Some(500),
+        reported: Some(300),
         settle_record_lost: true,
         ..Evidence::default()
     };
-    let (amount, flags) = settle_amount(&Outcome::Completed, &evidence);
-    assert_eq!(amount, 500);
+    let (amount, flags) = written(&Outcome::Completed, &evidence);
+    assert_eq!(amount, 300);
     assert!(flags.contains(PostingFlags::UNPOSTED));
 }
 
-/// A lost settle record is a MARK on the row that applied, never a row of its own: a completed unit
-/// whose destination reported nothing bills nothing whether or not its record survived, and the
-/// floor stays evidence. (Item 436: a second, unreachable table billed this unit at the floor.)
 #[test]
-fn row_a_lost_settle_record_on_a_completed_unlocated_unit_still_bills_nothing() {
-    let evidence = Evidence {
-        located: None,
-        accrued_floor: 120,
-        locator_required: true,
-        settle_record_lost: true,
-        ..Evidence::default()
-    };
-    assert_eq!(
-        settle_amount(&Outcome::Completed, &evidence),
-        (
-            0,
-            PostingFlags::ESTIMATED
-                .with(PostingFlags::METER_DISPUTED)
-                .with(PostingFlags::UNPOSTED)
-        )
-    );
+fn the_fee_units_are_the_planes_as_told_on_every_end() {
+    // The kernel decides no fee (TD step 13: the kernel fee decider is deleted); it writes the fee
+    // units the plane reported, whatever the end, and never invents one.
+    for fee_units in [0u32, 1, 3] {
+        let evidence = Evidence {
+            fee_units,
+            ..Evidence::default()
+        };
+        for end in ends() {
+            assert_eq!(settle_written(&end, &evidence).fee, fee_units, "{end:?}");
+        }
+    }
 }
 
 #[test]
 fn no_row_ever_resolves_upward() {
-    // Whatever the evidence, the amount posted is never more than the highest figure any source
-    // reported. This is the property the whole table exists for.
+    // Whatever the evidence, the amount written is never more than what the plane reported or the
+    // journal checkpointed.
     let cases = [
         Evidence {
-            located: Some(100),
-            accrued_floor: 900,
+            reported: Some(100),
             ..Evidence::default()
         },
-        Evidence {
-            located: None,
-            accrued_floor: 900,
-            locator_required: true,
-            ..Evidence::default()
-        },
-        Evidence {
-            variance: Some((100, 900)),
-            located: Some(900),
-            ..Evidence::default()
-        },
+        Evidence::default(),
         Evidence {
             recovered: true,
             dispatched: true,
             checkpointed: 100,
-            accrued_floor: 900,
+            reported: Some(900),
             ..Evidence::default()
         },
     ];
     for evidence in cases {
-        for end in [Outcome::Completed, live_end()] {
-            let (amount, _) = settle_amount(&end, &evidence);
-            let highest = evidence
-                .located
-                .unwrap_or(0)
-                .max(evidence.accrued_floor)
-                .max(evidence.checkpointed);
-            assert!(amount <= highest, "{evidence:?} at {end:?} posted {amount}");
+        for end in ends() {
+            let (amount, _) = written(&end, &evidence);
+            let highest = if evidence.recovered {
+                evidence.checkpointed
+            } else {
+                evidence.reported.unwrap_or(0)
+            };
+            assert!(amount <= highest, "{evidence:?} at {end:?} wrote {amount}");
         }
-    }
-}
-
-// ── the fee ──────────────────────────────────────────────────────────────────────────────────────
-
-fn billable() -> FeeEvidence {
-    FeeEvidence {
-        client_open_or_one_shot: true,
-        selected_upstream: true,
-        relayed_first_response_frame: true,
-        status_at: None,
-        status: Some(WireStatusClass::Success),
-        finish: Some(FinishClass::Complete),
-    }
-}
-
-#[test]
-fn the_fee_posts_once_on_a_relayed_success() {
-    assert_eq!(fee_count(&billable()), (1, PostingFlags::NONE));
-}
-
-#[test]
-fn a_provider_push_posts_no_fee() {
-    let evidence = FeeEvidence {
-        client_open_or_one_shot: false,
-        ..billable()
-    };
-    assert_eq!(fee_count(&evidence), (0, PostingFlags::NONE));
-}
-
-#[test]
-fn a_unit_that_never_relayed_a_response_frame_posts_no_fee() {
-    let evidence = FeeEvidence {
-        relayed_first_response_frame: false,
-        ..billable()
-    };
-    assert_eq!(fee_count(&evidence), (0, PostingFlags::NONE));
-}
-
-#[test]
-fn a_non_success_status_posts_no_fee() {
-    let evidence = FeeEvidence {
-        status: Some(WireStatusClass::FarEndFault),
-        finish: Some(FinishClass::Error),
-        ..billable()
-    };
-    assert_eq!(fee_count(&evidence), (0, PostingFlags::NONE));
-}
-
-#[test]
-fn a_plane_whose_finish_contradicts_the_status_posts_the_lower_and_disputes_it() {
-    let lying = FeeEvidence {
-        status: Some(WireStatusClass::Success),
-        finish: Some(FinishClass::Error),
-        ..billable()
-    };
-    assert_eq!(fee_count(&lying), (0, PostingFlags::METER_DISPUTED));
-
-    let other_way = FeeEvidence {
-        status: Some(WireStatusClass::FarEndFault),
-        finish: Some(FinishClass::Complete),
-        ..billable()
-    };
-    assert_eq!(fee_count(&other_way), (0, PostingFlags::METER_DISPUTED));
-}
-
-#[test]
-fn with_no_transport_status_the_planes_finish_decides_alone() {
-    let evidence = FeeEvidence {
-        status: None,
-        finish: Some(FinishClass::Partial),
-        ..billable()
-    };
-    // A partial answer is still an answer: only an error finish posts nothing.
-    assert_eq!(fee_count(&evidence), (1, PostingFlags::NONE));
-
-    let errored = FeeEvidence {
-        status: None,
-        finish: Some(FinishClass::Error),
-        ..billable()
-    };
-    assert_eq!(fee_count(&errored), (0, PostingFlags::NONE));
-}
-
-#[test]
-fn a_stream_that_dies_before_its_status_trailer_posts_nothing() {
-    // The transport reports its status on the terminal frame, and the stream ended before it.
-    let no_trailer = FeeEvidence {
-        status_at: Some(StatusAt::Terminal),
-        status: None,
-        finish: Some(FinishClass::Partial),
-        ..billable()
-    };
-    assert_eq!(fee_count(&no_trailer), (0, PostingFlags::NONE));
-
-    // The plane says the answer was whole against a status that never arrived. That is the second
-    // source disagreeing with the first, so it is the lower figure and a dispute.
-    let claiming_complete = FeeEvidence {
-        status_at: Some(StatusAt::Terminal),
-        status: None,
-        finish: Some(FinishClass::Complete),
-        ..billable()
-    };
-    assert_eq!(
-        fee_count(&claiming_complete),
-        (0, PostingFlags::METER_DISPUTED)
-    );
-
-    // The trailer that did arrive still bills, on both kinds of transport.
-    for at in [StatusAt::FirstFrame, StatusAt::Terminal] {
-        let arrived = FeeEvidence {
-            status_at: Some(at),
-            status: Some(WireStatusClass::Success),
-            ..billable()
-        };
-        assert_eq!(fee_count(&arrived), (1, PostingFlags::NONE));
-    }
-}
-
-/// EVERY combination of the three legs the fee is decided from, written out as data rather than as
-/// a second copy of the rule: where the transport says its status is reported, what it reported
-/// there, and what the plane said about the same exchange. This is the ONE table the fee has —
-/// there is no second spelling of it in a unit crate to drift from, and the arms a two-valued
-/// spelling cannot express (a `Partial` finish, a trailer that never arrived) each have a row.
-#[test]
-fn the_fee_table_is_exhaustive_over_status_placement_status_class_and_finish() {
-    #[allow(clippy::type_complexity)]
-    let rows: &[(
-        Option<StatusAt>,
-        Option<WireStatusClass>,
-        Option<FinishClass>,
-        u32,
-        bool,
-    )] = &[
-        (None, None, None, 1, false),
-        (None, None, Some(FinishClass::Complete), 1, false),
-        (None, None, Some(FinishClass::TurnComplete), 1, false),
-        (None, None, Some(FinishClass::Partial), 1, false),
-        (None, None, Some(FinishClass::Error), 0, false),
-        (None, Some(WireStatusClass::Success), None, 1, false),
-        (
-            None,
-            Some(WireStatusClass::Success),
-            Some(FinishClass::Complete),
-            1,
-            false,
-        ),
-        (
-            None,
-            Some(WireStatusClass::Success),
-            Some(FinishClass::TurnComplete),
-            1,
-            false,
-        ),
-        (
-            None,
-            Some(WireStatusClass::Success),
-            Some(FinishClass::Partial),
-            1,
-            false,
-        ),
-        (
-            None,
-            Some(WireStatusClass::Success),
-            Some(FinishClass::Error),
-            0,
-            true,
-        ),
-        (None, Some(WireStatusClass::CallerFault), None, 0, false),
-        (
-            None,
-            Some(WireStatusClass::CallerFault),
-            Some(FinishClass::Complete),
-            0,
-            true,
-        ),
-        (
-            None,
-            Some(WireStatusClass::CallerFault),
-            Some(FinishClass::TurnComplete),
-            0,
-            true,
-        ),
-        (
-            None,
-            Some(WireStatusClass::CallerFault),
-            Some(FinishClass::Partial),
-            0,
-            true,
-        ),
-        (
-            None,
-            Some(WireStatusClass::CallerFault),
-            Some(FinishClass::Error),
-            0,
-            false,
-        ),
-        (None, Some(WireStatusClass::FarEndFault), None, 0, false),
-        (
-            None,
-            Some(WireStatusClass::FarEndFault),
-            Some(FinishClass::Complete),
-            0,
-            true,
-        ),
-        (
-            None,
-            Some(WireStatusClass::FarEndFault),
-            Some(FinishClass::TurnComplete),
-            0,
-            true,
-        ),
-        (
-            None,
-            Some(WireStatusClass::FarEndFault),
-            Some(FinishClass::Partial),
-            0,
-            true,
-        ),
-        (
-            None,
-            Some(WireStatusClass::FarEndFault),
-            Some(FinishClass::Error),
-            0,
-            false,
-        ),
-        (None, Some(WireStatusClass::Other), None, 0, false),
-        (
-            None,
-            Some(WireStatusClass::Other),
-            Some(FinishClass::Complete),
-            0,
-            true,
-        ),
-        (
-            None,
-            Some(WireStatusClass::Other),
-            Some(FinishClass::TurnComplete),
-            0,
-            true,
-        ),
-        (
-            None,
-            Some(WireStatusClass::Other),
-            Some(FinishClass::Partial),
-            0,
-            true,
-        ),
-        (
-            None,
-            Some(WireStatusClass::Other),
-            Some(FinishClass::Error),
-            0,
-            false,
-        ),
-        (Some(StatusAt::FirstFrame), None, None, 0, false),
-        (
-            Some(StatusAt::FirstFrame),
-            None,
-            Some(FinishClass::Complete),
-            0,
-            true,
-        ),
-        (
-            Some(StatusAt::FirstFrame),
-            None,
-            Some(FinishClass::TurnComplete),
-            0,
-            true,
-        ),
-        (
-            Some(StatusAt::FirstFrame),
-            None,
-            Some(FinishClass::Partial),
-            0,
-            false,
-        ),
-        (
-            Some(StatusAt::FirstFrame),
-            None,
-            Some(FinishClass::Error),
-            0,
-            false,
-        ),
-        (
-            Some(StatusAt::FirstFrame),
-            Some(WireStatusClass::Success),
-            None,
-            1,
-            false,
-        ),
-        (
-            Some(StatusAt::FirstFrame),
-            Some(WireStatusClass::Success),
-            Some(FinishClass::Complete),
-            1,
-            false,
-        ),
-        (
-            Some(StatusAt::FirstFrame),
-            Some(WireStatusClass::Success),
-            Some(FinishClass::TurnComplete),
-            1,
-            false,
-        ),
-        (
-            Some(StatusAt::FirstFrame),
-            Some(WireStatusClass::Success),
-            Some(FinishClass::Partial),
-            1,
-            false,
-        ),
-        (
-            Some(StatusAt::FirstFrame),
-            Some(WireStatusClass::Success),
-            Some(FinishClass::Error),
-            0,
-            true,
-        ),
-        (
-            Some(StatusAt::FirstFrame),
-            Some(WireStatusClass::CallerFault),
-            None,
-            0,
-            false,
-        ),
-        (
-            Some(StatusAt::FirstFrame),
-            Some(WireStatusClass::CallerFault),
-            Some(FinishClass::Complete),
-            0,
-            true,
-        ),
-        (
-            Some(StatusAt::FirstFrame),
-            Some(WireStatusClass::CallerFault),
-            Some(FinishClass::TurnComplete),
-            0,
-            true,
-        ),
-        (
-            Some(StatusAt::FirstFrame),
-            Some(WireStatusClass::CallerFault),
-            Some(FinishClass::Partial),
-            0,
-            true,
-        ),
-        (
-            Some(StatusAt::FirstFrame),
-            Some(WireStatusClass::CallerFault),
-            Some(FinishClass::Error),
-            0,
-            false,
-        ),
-        (
-            Some(StatusAt::FirstFrame),
-            Some(WireStatusClass::FarEndFault),
-            None,
-            0,
-            false,
-        ),
-        (
-            Some(StatusAt::FirstFrame),
-            Some(WireStatusClass::FarEndFault),
-            Some(FinishClass::Complete),
-            0,
-            true,
-        ),
-        (
-            Some(StatusAt::FirstFrame),
-            Some(WireStatusClass::FarEndFault),
-            Some(FinishClass::TurnComplete),
-            0,
-            true,
-        ),
-        (
-            Some(StatusAt::FirstFrame),
-            Some(WireStatusClass::FarEndFault),
-            Some(FinishClass::Partial),
-            0,
-            true,
-        ),
-        (
-            Some(StatusAt::FirstFrame),
-            Some(WireStatusClass::FarEndFault),
-            Some(FinishClass::Error),
-            0,
-            false,
-        ),
-        (
-            Some(StatusAt::FirstFrame),
-            Some(WireStatusClass::Other),
-            None,
-            0,
-            false,
-        ),
-        (
-            Some(StatusAt::FirstFrame),
-            Some(WireStatusClass::Other),
-            Some(FinishClass::Complete),
-            0,
-            true,
-        ),
-        (
-            Some(StatusAt::FirstFrame),
-            Some(WireStatusClass::Other),
-            Some(FinishClass::TurnComplete),
-            0,
-            true,
-        ),
-        (
-            Some(StatusAt::FirstFrame),
-            Some(WireStatusClass::Other),
-            Some(FinishClass::Partial),
-            0,
-            true,
-        ),
-        (
-            Some(StatusAt::FirstFrame),
-            Some(WireStatusClass::Other),
-            Some(FinishClass::Error),
-            0,
-            false,
-        ),
-        (Some(StatusAt::Terminal), None, None, 0, false),
-        (
-            Some(StatusAt::Terminal),
-            None,
-            Some(FinishClass::Complete),
-            0,
-            true,
-        ),
-        (
-            Some(StatusAt::Terminal),
-            None,
-            Some(FinishClass::TurnComplete),
-            0,
-            true,
-        ),
-        (
-            Some(StatusAt::Terminal),
-            None,
-            Some(FinishClass::Partial),
-            0,
-            false,
-        ),
-        (
-            Some(StatusAt::Terminal),
-            None,
-            Some(FinishClass::Error),
-            0,
-            false,
-        ),
-        (
-            Some(StatusAt::Terminal),
-            Some(WireStatusClass::Success),
-            None,
-            1,
-            false,
-        ),
-        (
-            Some(StatusAt::Terminal),
-            Some(WireStatusClass::Success),
-            Some(FinishClass::Complete),
-            1,
-            false,
-        ),
-        (
-            Some(StatusAt::Terminal),
-            Some(WireStatusClass::Success),
-            Some(FinishClass::TurnComplete),
-            1,
-            false,
-        ),
-        (
-            Some(StatusAt::Terminal),
-            Some(WireStatusClass::Success),
-            Some(FinishClass::Partial),
-            1,
-            false,
-        ),
-        (
-            Some(StatusAt::Terminal),
-            Some(WireStatusClass::Success),
-            Some(FinishClass::Error),
-            0,
-            true,
-        ),
-        (
-            Some(StatusAt::Terminal),
-            Some(WireStatusClass::CallerFault),
-            None,
-            0,
-            false,
-        ),
-        (
-            Some(StatusAt::Terminal),
-            Some(WireStatusClass::CallerFault),
-            Some(FinishClass::Complete),
-            0,
-            true,
-        ),
-        (
-            Some(StatusAt::Terminal),
-            Some(WireStatusClass::CallerFault),
-            Some(FinishClass::TurnComplete),
-            0,
-            true,
-        ),
-        (
-            Some(StatusAt::Terminal),
-            Some(WireStatusClass::CallerFault),
-            Some(FinishClass::Partial),
-            0,
-            true,
-        ),
-        (
-            Some(StatusAt::Terminal),
-            Some(WireStatusClass::CallerFault),
-            Some(FinishClass::Error),
-            0,
-            false,
-        ),
-        (
-            Some(StatusAt::Terminal),
-            Some(WireStatusClass::FarEndFault),
-            None,
-            0,
-            false,
-        ),
-        (
-            Some(StatusAt::Terminal),
-            Some(WireStatusClass::FarEndFault),
-            Some(FinishClass::Complete),
-            0,
-            true,
-        ),
-        (
-            Some(StatusAt::Terminal),
-            Some(WireStatusClass::FarEndFault),
-            Some(FinishClass::TurnComplete),
-            0,
-            true,
-        ),
-        (
-            Some(StatusAt::Terminal),
-            Some(WireStatusClass::FarEndFault),
-            Some(FinishClass::Partial),
-            0,
-            true,
-        ),
-        (
-            Some(StatusAt::Terminal),
-            Some(WireStatusClass::FarEndFault),
-            Some(FinishClass::Error),
-            0,
-            false,
-        ),
-        (
-            Some(StatusAt::Terminal),
-            Some(WireStatusClass::Other),
-            None,
-            0,
-            false,
-        ),
-        (
-            Some(StatusAt::Terminal),
-            Some(WireStatusClass::Other),
-            Some(FinishClass::Complete),
-            0,
-            true,
-        ),
-        (
-            Some(StatusAt::Terminal),
-            Some(WireStatusClass::Other),
-            Some(FinishClass::TurnComplete),
-            0,
-            true,
-        ),
-        (
-            Some(StatusAt::Terminal),
-            Some(WireStatusClass::Other),
-            Some(FinishClass::Partial),
-            0,
-            true,
-        ),
-        (
-            Some(StatusAt::Terminal),
-            Some(WireStatusClass::Other),
-            Some(FinishClass::Error),
-            0,
-            false,
-        ),
-    ];
-    assert_eq!(
-        rows.len(),
-        3 * 5 * 5,
-        "one row per combination, none skipped"
-    );
-    for &(status_at, status, finish, fee, disputed) in rows {
-        let evidence = FeeEvidence {
-            status_at,
-            status,
-            finish,
-            ..billable()
-        };
-        let expected = if disputed {
-            PostingFlags::METER_DISPUTED
-        } else {
-            PostingFlags::NONE
-        };
-        assert_eq!(
-            fee_count(&evidence),
-            (fee, expected),
-            "at {status_at:?} / {status:?} / {finish:?}"
-        );
-        // The three preconditions dominate the whole table: fail any one and the row posts nothing,
-        // undisputed, whatever the evidence says.
-        for ineligible in [
-            FeeEvidence {
-                client_open_or_one_shot: false,
-                ..evidence
-            },
-            FeeEvidence {
-                selected_upstream: false,
-                ..evidence
-            },
-            FeeEvidence {
-                relayed_first_response_frame: false,
-                ..evidence
-            },
-        ] {
-            assert_eq!(
-                fee_count(&ineligible),
-                (0, PostingFlags::NONE),
-                "ineligible at {status_at:?} / {status:?} / {finish:?}"
-            );
-        }
-    }
-}
-
-/// Which side of the fee line a route landed on is the DESTINATION KIND's answer, read from the
-/// contract's own predicate rather than restated anywhere else: an upstream leg and a session
-/// upstream carry the fee, a kernel verb, an accrual tick and an upgrade do not.
-#[test]
-fn the_upstream_leg_of_the_fee_is_the_destination_kinds_answer() {
-    let posts = |dest: DestinationFacts| {
-        fee_count(&FeeEvidence {
-            selected_upstream: dest.is_upstream_kind(),
-            ..billable()
-        })
-    };
-    assert_eq!(
-        posts(DestinationFacts::Upstream {
-            transport: "http",
-            address: UpstreamAddress::socket("api.example:443"),
-            lane: LaneId::new("gold"),
-        }),
-        (1, PostingFlags::NONE)
-    );
-    assert_eq!(
-        posts(DestinationFacts::SessionUpstream {
-            upstream: UpstreamIdx(0),
-            stream: None,
-            lane: LaneId::new("gold"),
-        }),
-        (1, PostingFlags::NONE)
-    );
-    for other in [
-        DestinationFacts::KernelVerb { verb: "health" },
-        DestinationFacts::SessionAccrual {
-            lane: LaneId::new("gold"),
-        },
-        DestinationFacts::Upgrade { to: "ws" },
-    ] {
-        assert_eq!(
-            posts(other),
-            (0, PostingFlags::NONE),
-            "{other:?} carries no fee"
-        );
     }
 }
 

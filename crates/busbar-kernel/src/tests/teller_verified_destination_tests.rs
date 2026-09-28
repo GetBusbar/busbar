@@ -82,6 +82,8 @@ const PLANE_OWN_IDEA: &str = "plane-derived-lane-never-sealed";
 struct Fixture {
     route_seen: Mutex<Vec<VerifiedDestination>>,
     meter_seen: Mutex<Vec<VerifiedDestination>>,
+    /// Every audit fact the loop handed back with the audit door's own pass.
+    audited_seen: Mutex<Vec<busbar_contract::caps::AuditFacts>>,
 }
 
 impl Units for Fixture {
@@ -193,6 +195,15 @@ impl Units for Fixture {
         SeatVerdict::proceed(token, encoded_frame())
     }
 
+    fn audited(
+        &self,
+        _ctx: &UnitCtx,
+        facts: busbar_contract::caps::AuditFacts,
+        _pass: Pass<Audit>,
+    ) {
+        self.audited_seen.lock().unwrap().push(facts);
+    }
+
     fn evidence(&self, _ctx: &UnitCtx) -> Evidence {
         Evidence::default()
     }
@@ -204,6 +215,7 @@ fn route_and_meter_consume_the_destinations_verify_sealed() {
     let fixture = Fixture {
         route_seen: Mutex::new(Vec::new()),
         meter_seen: Mutex::new(Vec::new()),
+        audited_seen: Mutex::new(Vec::new()),
     };
     let gauge = ConcurrencyGauge::new();
     let canary = busbar_contract::caps::Canary::new();
@@ -247,6 +259,14 @@ fn route_and_meter_consume_the_destinations_verify_sealed() {
     assert_eq!(
         meter_seen, expected,
         "Meter must fold what Route did against the SAME sealed set, not a re-derived one"
+    );
+
+    // THE AUDIT DOOR HANDS ITS FACTS BACK ONCE, WITH ITS OWN PASS: the unit's record is sealed at
+    // its one line, after the door, and only that pass can seal it.
+    assert_eq!(
+        *fixture.audited_seen.lock().unwrap(),
+        vec![audit_facts()],
+        "the audit door's facts must reach whoever drives the unit exactly once"
     );
 
     // The negative half of the proof: neither step saw the stand-in for "whatever a re-deriving

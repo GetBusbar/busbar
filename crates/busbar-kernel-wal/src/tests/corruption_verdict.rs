@@ -107,8 +107,13 @@ fn a_mid_log_checksum_flip_boots_keeps_the_prefix_and_quarantines_exactly_the_da
     assert_eq!(q.bytes, 3 * FRAME_BYTES as u64);
     assert_eq!(
         q.identities,
-        vec![(3, 3), (3, 4)],
-        "the verifying records past the damage are named"
+        vec![(3, 2), (3, 3), (3, 4)],
+        "the altered record and the verifying records past the damage are named"
+    );
+    assert_eq!(
+        q.damaged.iter().map(Record::identity).collect::<Vec<_>>(),
+        vec![(3, 2), (3, 3), (3, 4)],
+        "every set-aside record is handed over, as it now reads, for the caller to attribute"
     );
 
     // The quarantine file is beside the segment and holds exactly the damaged bytes.
@@ -137,10 +142,11 @@ fn a_torn_tail_is_cut_silently_and_nothing_is_quarantined() {
     let written = four();
     let original = lay_down(dir.path(), &written);
 
-    // A crash mid-append: the last record's frame is half on the medium, nothing after it.
+    // A crash mid-append: the write of the last record's frame stopped INSIDE its header, and
+    // nothing after it was written. The header check fails: a torn write.
     let path = segment_path(dir.path());
     let mut bytes = std::fs::read(&path).unwrap();
-    for b in &mut bytes[3 * FRAME_BYTES + 100..] {
+    for b in &mut bytes[3 * FRAME_BYTES + 20..] {
         *b = 0;
     }
     std::fs::write(&path, bytes).unwrap();
@@ -160,12 +166,78 @@ fn a_torn_tail_is_cut_silently_and_nothing_is_quarantined() {
     );
 }
 
+/// A WHOLE final record altered after it was written is QUARANTINED, never cut as if it were a torn
+/// tail. Its header checks and its digest does not, so the write that made it completed and the
+/// record was acknowledged: a silent cut would lose a settlement the node had made. (Under the rule
+/// before the header check, this was cut silently.)
 #[test]
-fn a_flipped_byte_in_the_final_record_is_a_torn_tail() {
-    // Nothing verifies past it, which is exactly what a crash mid-append leaves.
+fn a_flipped_byte_in_the_final_record_is_quarantined_not_cut() {
     let dir = TempDir::new("flip-final");
     let written = four();
     lay_down(dir.path(), &written);
+    flip(dir.path(), 3 * FRAME_BYTES + 200);
+    let wal = Wal::in_directory(
+        dir.path(),
+        Box::new(NullShipper::new()),
+        crate::tests::fixtures::wall_ms,
+    )
+    .unwrap();
+    assert_eq!(wal.recovered(), &written[..3]);
+    let q = wal.quarantined();
+    assert_eq!(q.len(), 1, "the altered final record is set aside, loudly");
+    assert_eq!(q[0].identities, vec![(3, 4)]);
+    assert_eq!(
+        q[0].damaged
+            .iter()
+            .map(Record::identity)
+            .collect::<Vec<_>>(),
+        vec![(3, 4)]
+    );
+    assert_eq!(quarantine_files(dir.path()).len(), 1);
+}
+
+/// A tear INSIDE a version-2 frame's payload (the header was written whole) cannot be told from a
+/// whole frame altered afterwards, so it is quarantined rather than cut: the loud side of the
+/// ambiguity. Nothing is lost either way; the quarantine holds the bytes and says so.
+#[test]
+fn a_tear_inside_a_whole_header_frame_is_quarantined_not_cut() {
+    let dir = TempDir::new("tear-payload");
+    let written = four();
+    lay_down(dir.path(), &written);
+    let path = segment_path(dir.path());
+    let mut bytes = std::fs::read(&path).unwrap();
+    for b in &mut bytes[3 * FRAME_BYTES + 100..] {
+        *b = 0;
+    }
+    std::fs::write(&path, bytes).unwrap();
+    let wal = Wal::in_directory(
+        dir.path(),
+        Box::new(NullShipper::new()),
+        crate::tests::fixtures::wall_ms,
+    )
+    .unwrap();
+    assert_eq!(wal.recovered(), &written[..3]);
+    assert_eq!(wal.quarantined().len(), 1);
+}
+
+/// THE MIGRATION PATH: a segment written BEFORE the header check (layout version 1) is still read,
+/// under the rule it was written under — its flipped final record is a torn tail, cut silently, as
+/// that build would have cut it; the frames it already holds are never reinterpreted.
+#[test]
+fn a_legacy_segment_keeps_the_rule_it_was_written_under() {
+    let dir = TempDir::new("legacy-flip");
+    let written = four();
+    lay_down(dir.path(), &written);
+    // Rewrite every frame of the segment under the legacy layout, byte for byte otherwise.
+    let path = segment_path(dir.path());
+    let mut legacy: Vec<u8> = written
+        .iter()
+        .flat_map(crate::record::encode_legacy)
+        .flatten()
+        .collect();
+    let len = std::fs::read(&path).unwrap().len();
+    legacy.resize(len, 0);
+    std::fs::write(&path, legacy).unwrap();
     flip(dir.path(), 3 * FRAME_BYTES + 200);
     let wal = Wal::in_directory(
         dir.path(),

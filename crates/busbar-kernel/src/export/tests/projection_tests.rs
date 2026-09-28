@@ -12,7 +12,7 @@ use crate::export::projection::{
     produced_fields, resolve_projection, ProjectedRecord, Projection, ProjectionUnion,
     PRODUCED_STREAMS,
 };
-use busbar_plugin_loader::{ExportField, ExportStream};
+use busbar_contract::abi::cold::export::{ExportField, ExportStream};
 
 /// Build a one-instance `export:` map and resolve it, returning the accumulated errors.
 fn resolve_errs(yaml: &str) -> Vec<String> {

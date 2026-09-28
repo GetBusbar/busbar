@@ -20,6 +20,7 @@ use crate::abi::sdk::door::KindOps;
 use crate::abi::sdk::lent::Lent;
 
 use super::{Instance, SafeSlot};
+use crate::abi::sdk::out::Out;
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -68,7 +69,7 @@ mod plugin {
                 fn call(
                     $inst: Instance<'_, $state>,
                     $input: Lent<'_, $in>,
-                    $o: &mut $out,
+                    #[allow(unused_mut)] mut $o: Out<'_, $out>,
                 ) -> Outcome {
                     $body
                 }
@@ -96,7 +97,8 @@ mod plugin {
             OPEN_FAILED => Outcome::Failed,
             OPEN_PANICS => panic!("open panics after installing"),
             OPEN_FORGES => {
-                o.instance = 0x10 as *mut c_void;
+                // Only the SDK's own code can reach the raw `out` (`Out::raw`): a forged instance.
+                o.raw().instance = 0x10 as *mut c_void;
                 Outcome::Ready
             }
             _ => Outcome::Ready,
@@ -117,7 +119,7 @@ mod plugin {
         Outcome::Ready
     });
     safe_slot!(Tick, Probe, TickIn, TickOut, |i, _input, o| {
-        o.next_tick_ns = i.get().map_or(0, |p| p.value + 1);
+        o.set(|o| &o.next_tick_ns, i.get().map_or(0, |p| p.value + 1));
         Outcome::Ready
     });
     safe_slot!(Drive, Probe, DriveIn, OutHead, |_i, _input, _o| {
@@ -332,13 +334,4 @@ fn installing_outside_open_is_fault() {
     assert_eq!(tick(inst), (Outcome::Ready, 42));
     assert_eq!(close(inst, 0), Outcome::Ready);
     assert_eq!(drops.load(Ordering::SeqCst), 2);
-}
-
-#[test]
-fn published_abi_data_is_instance_state() {
-    fn state<T: Send + Sync + 'static>() {}
-    state::<super::Published<crate::abi::plane::PlaneSnapshot>>();
-    let snap: crate::abi::plane::PlaneSnapshot = zeroed();
-    let held = Box::new(super::Published::new(snap));
-    assert!(ptr::eq(held.as_ptr(), held.get()));
 }

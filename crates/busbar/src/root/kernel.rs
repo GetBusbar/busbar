@@ -322,6 +322,7 @@ impl RootHistory {
         now_ms: u64,
     ) -> busbar_kernel_ledger::cost::HistorySeq {
         let _one_at_a_time = self.applying.lock().unwrap_or_else(|p| p.into_inner());
+        register_classes(rates);
         let card = card_from_raw(rates);
         let form = CardForm::of(rates, &card);
         let (seq, effective_from, policy_epoch) = self.append_config(card, now_ms);
@@ -696,6 +697,31 @@ pub(crate) fn card_from_raw(
 // ---------------------------------------------------------------------------------------------
 // An applied card, as the journal keeps it
 // ---------------------------------------------------------------------------------------------
+
+/// REGISTER EVERY CLASS A UNIT MAY REPORT, at the moment a configuration is applied — boot or a later
+/// apply, both of which are registration time (config is finite). The reserved four, every installed
+/// plane's declared billable classes, and every open class a lane's `units:` names go into the
+/// process vocabulary, so a unit's one line can resolve the classes
+/// it reports by lookup ([`busbar_contract::Registration::resolve`]) and never intern one per unit.
+pub(crate) fn register_classes(rates: &busbar_kernel::rate_apply::RawRates<'_>) {
+    let mut registration = new_registration();
+    for class in busbar_contract::records::RESERVED_UNITS {
+        let _ = registration.key(class);
+    }
+    // Every installed plane's DECLARED billable classes and fee units (`PlaneDeclaration`): the
+    // classes a plane may report are the ones it declares, linked or dropped in.
+    for decl in busbar_kernel::plane::registry::plane_decls() {
+        for class in decl.billable_classes {
+            let _ = registration.key(class.class);
+        }
+        for unit in decl.fee_units {
+            let _ = registration.key(unit);
+        }
+    }
+    for (_lane, class, _nanos) in rates.units {
+        let _ = registration.key(class);
+    }
+}
 
 /// The tag a journalled config-applied card's body opens with. A `Policy`-class record, beside the
 /// signed amendment's (`units_admin::AMENDMENT_RECORD_TAG`): both are entries of the dated history.

@@ -1,17 +1,18 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The recompute as an arbiter: the lookup wins, the cache is corrected, and a head that did not
-//! move is what tells a hand edit from an amendment.
+//! A booked line and the one lookup that prices it. The line carries quantities and an instant and
+//! never a price (#71, #77(3)), so what is tested is the lookup's answer: the origin rule on the fee
+//! line, a hole in the history refusing rather than pricing at zero, the tier rule, and an overflow
+//! refusing rather than wrapping. (The cached-price arbitration that once lived here had nothing in
+//! production to arbitrate and was deleted; the boot reconciliation re-derives every settled figure
+//! from the journal's counts instead.)
 
-use crate::cost::{Author, CardEntryDraft, History, HistorySeq, LaneClass, RateCard};
+use crate::cost::{Author, CardEntryDraft, History, LaneClass, RateCard};
 use busbar_contract::caps::MeterClassId;
 
 use crate::cost::apply_tier_signed;
-use crate::recompute::{
-    price_line, recheck, recompute, DerivedPrice, Divergence, HistoryArchive, Posting,
-    PostingOrigin, PricedLine, SealedHistory, Verdict, Watermark, BASIS_POINTS,
-};
+use crate::recompute::{price_line, Divergence, Posting, PostingOrigin, PricedLine, BASIS_POINTS};
 
 use super::fixtures::key;
 
@@ -19,9 +20,8 @@ use super::fixtures::key;
 const LANE: &str = "lane-a";
 /// The instant every line arrives at, unless a test moves it on purpose.
 const ARRIVED_MS: u64 = 1_767_225_600_000;
-/// The tier the fixture's bucket is on: a discount, not the neutral value, because the tier
-/// arithmetic at ten thousand basis points is the identity function and a fixture priced only there
-/// would pass with the whole tier projection missing.
+/// A discount tier, not the neutral value: the tier arithmetic at ten thousand basis points is the
+/// identity function, and a fixture priced only there would pass with the tier projection missing.
 const DISCOUNT_TIER_BP: u32 = 9_000;
 
 /// The card the opening entry seals: two classes on one lane, and a flat fee.
@@ -35,50 +35,10 @@ fn opening_card() -> RateCard {
     )
 }
 
-/// The card an amendment writes over the opening one: every rate doubled, so a line that repriced
-/// is a visibly different number rather than the same one.
-fn amended_card() -> RateCard {
-    RateCard::from_micro_rates(
-        [
-            (LaneClass::new(LANE, "tokens_in"), 4.0),
-            (LaneClass::new(LANE, "tokens_out"), 10.0),
-        ],
-        1,
-    )
-}
-
-/// A one-entry history: the opening card, effective from instant zero, open-ended.
-fn archive() -> SealedHistory {
-    SealedHistory::new(History::opening(opening_card(), 0))
-}
-
-/// The same archive with a second entry appended over the instant the fixture's lines arrive at —
-/// an amendment, which is what moves the head.
-fn amended_archive() -> SealedHistory {
-    let mut archive = archive();
-    archive.history.append(CardEntryDraft {
-        effective_from: ARRIVED_MS - 1_000,
-        effective_until: Some(ARRIVED_MS + 1_000),
-        card: amended_card(),
-        appended_at: ARRIVED_MS + 60_000,
-        author: Author::Amend {
-            operator_fingerprint: "op-1".to_string(),
-            reason_hash: [7u8; 32],
-        },
-    });
-    archive
-}
-
-/// A line whose cache agrees with the lookup, under `archive`.
-///
-/// The cache is filled FROM the lookup rather than from a hand-written number, because the
-/// arithmetic is the cost unit's and re-stating it here would be a second copy of it — which is the
-/// exact defect the single-pricing-site rule exists to prevent. What this module tests is the
-/// arbitration, not the multiply.
-fn correct_line(node_seq: u64) -> Posting {
-    let mut line = Posting {
+fn line() -> Posting {
+    Posting {
         node: 1,
-        node_seq,
+        node_seq: 1,
         key: key("b"),
         window_start: 1,
         lane: LANE.to_string(),
@@ -95,221 +55,45 @@ fn correct_line(node_seq: u64) -> Posting {
         fee_count: 1,
         tier_bp: DISCOUNT_TIER_BP,
         arrived_ms: ARRIVED_MS,
-        cached: DerivedPrice::default(),
         origin: PostingOrigin::Client,
-    };
-    refresh(&mut line, &archive());
-    line
-}
-
-/// Fill a line's cache from the lookup under `archive`, and its `card_seq` with what resolved.
-fn refresh(line: &mut Posting, archive: &SealedHistory) {
-    let head = archive.head().expect("the fixture's archive has a head");
-    let view = archive.view_at(head).expect("and a snapshot at it");
-    let priced = price_line(line, &view, line.tier_bp).expect("the fixture prices");
-    line.cached = DerivedPrice {
-        history_seq: head,
-        card_seq: priced.card_seq,
-        pre_tier_nanos: priced.pre_tier_nanos as i128,
-        priced_nanos: priced.priced_nanos as i128,
-    };
-}
-
-#[test]
-fn a_correctly_priced_line_agrees() {
-    let outcome = recheck(&correct_line(1), &archive());
-    assert!(outcome.agrees(), "unexpected findings: {outcome:?}");
-    assert!(
-        outcome.cached_price_is_not_zero(),
-        "a fixture whose money is zero would agree with an unimplemented lookup"
-    );
-}
-
-impl crate::recompute::Recheck {
-    /// A guard on the fixture rather than on the code: a line priced at nothing agrees with every
-    /// possible bug, so the tests that assert agreement assert this too.
-    fn cached_price_is_not_zero(&self) -> bool {
-        self.corrected.is_some_and(|p| p.priced_nanos > 0)
     }
 }
 
-#[test]
-fn the_lookup_wins_and_the_cache_is_corrected_rather_than_only_reported() {
-    // The whole change of posture in one test. Under the sealed-policy model a disagreement was an
-    // alarm and nothing else, because the recompute did not know which figure was right. Under a
-    // dated history it does: the quantities are immutable and the history is append-only, so the
-    // lookup over them IS the amount.
-    let mut lines = vec![correct_line(1)];
-    let was = lines[0].cached;
-    lines[0].cached.priced_nanos += 1;
-
-    let pass = recompute(Watermark::start(), &mut lines, &archive());
-    assert_eq!(pass.corrected, 1, "the stale figure is put back");
-    assert_eq!(lines[0].cached, was, "and put back to what the lookup says");
-    assert!(
-        pass.findings
-            .iter()
-            .any(|f| matches!(f.divergence, Divergence::Priced { .. })),
-        "the correction is still reported: a silent fix is a fix nobody can audit"
-    );
-}
-
-#[test]
-fn a_head_that_moved_makes_a_stale_cache_ordinary_and_a_head_that_did_not_makes_it_an_alarm() {
-    // Two halves of the same line, and the ONLY difference between them is whether the history has
-    // been amended behind it. That is the whole discrimination: a cache going stale under a head
-    // that advanced is what an amendment does, and a cache going stale under a head that did not
-    // move cannot be anything but somebody's hand.
-    let line = correct_line(1);
-
-    let amended = amended_archive();
-    let after_amendment = recheck(&line, &amended);
-    assert_eq!(after_amendment.verdict, Verdict::Stale);
-    assert!(
-        !after_amendment.agrees(),
-        "the amended card is a different number"
-    );
-    assert!(
-        amended.head() > Some(line.history_seq()),
-        "the fixture's premise: the head has advanced past the snapshot the line was settled under"
-    );
-
-    let mut tampered = correct_line(1);
-    tampered.cached.priced_nanos -= 5;
-    let under_an_unmoved_head = recheck(&tampered, &archive());
-    assert_eq!(under_an_unmoved_head.verdict, Verdict::Alarm);
-    assert!(!under_an_unmoved_head.agrees());
-}
-
-#[test]
-fn a_pass_of_stale_caches_does_not_alarm_and_one_hand_edit_does() {
-    // The operational consequence: after an amendment an operator must not be paged for every line
-    // it touched, and must be paged for the one line nothing touched.
-    let mut lines: Vec<Posting> = (1..=5).map(correct_line).collect();
-    let pass = recompute(Watermark::start(), &mut lines, &amended_archive());
-    assert!(!pass.is_clean(), "the amended card moved every figure");
-    assert_eq!(pass.corrected, 5);
-    assert!(
-        !pass.alarms(),
-        "an amendment catching up is a journal line, not a page"
-    );
-
-    let mut one = vec![correct_line(1)];
-    one[0].cached.pre_tier_nanos += 3;
-    let pass = recompute(Watermark::start(), &mut one, &archive());
-    assert!(pass.alarms(), "nothing legitimate can have moved this one");
-}
-
-#[test]
-fn a_hand_corrupted_quantity_moves_both_figures() {
-    let mut line = correct_line(1);
-    line.lines[0].quantity += 1;
-    let outcome = recheck(&line, &archive());
-    let kinds: Vec<_> = outcome.divergences.iter().collect();
-    assert!(
-        kinds
-            .iter()
-            .any(|d| matches!(d, Divergence::PreTier { .. }))
-            && kinds.iter().any(|d| matches!(d, Divergence::Priced { .. })),
-        "the pre-tier figure and the priced one both move: {kinds:?}"
-    );
-}
-
-/// A tier edited by hand under an unmoved head is still found — through the priced figure, the
-/// same way an edited quantity is, because the tier is a ledger fact on the line like a quantity.
-#[test]
-fn a_tier_the_line_invented_is_found() {
-    let mut line = correct_line(1);
-    line.tier_bp = 5_000;
-    let outcome = recheck(&line, &archive());
-    assert_eq!(
-        outcome.verdict,
-        Verdict::Alarm,
-        "nothing legitimate moved it"
-    );
-    assert!(
-        outcome
-            .divergences
-            .iter()
-            .any(|d| matches!(d, Divergence::Priced { .. })),
-        "the invented discount shows as a priced disagreement: {outcome:?}"
-    );
-}
-
-/// **THE ARBITER PRICES BY THE RULE THE BILL IS COMPUTED WITH (item 435).**
-///
-/// The statement a customer is served ([`crate::totals_as_of`]) prices a line at the line's OWN
-/// tier. The recompute used to price at a tier held beside the archive's history, keyed by bucket,
-/// which nothing in production ever filled — so over [`SealedHistory::new`] every discounted line
-/// repriced at full price: a 9,000bp line whose statement figure is 90% of list was "corrected" to
-/// 100% of list and alarmed. Here the two paths must give the same figure for the same line.
-#[test]
-fn the_recompute_and_the_statement_price_a_discounted_line_alike() {
-    let archive = SealedHistory::new(History::opening(opening_card(), 0));
-    let line = correct_line(1);
-    assert_eq!(line.tier_bp, DISCOUNT_TIER_BP);
-
-    let outcome = recheck(&line, &archive);
-    assert!(
-        outcome.agrees(),
-        "a correct discounted line agrees: {outcome:?}"
-    );
-
-    let head = archive.head().expect("the archive has a head");
-    let view = archive.view_at(head).expect("and a snapshot at it");
-    let statement = crate::totals_as_of(&view, line.window_start, [&line]);
-    assert_eq!(
-        outcome.corrected.map(|p| p.priced_nanos),
-        Some(statement.row(&line.key).priced_nanos),
-        "the arbiter's figure is the statement's figure"
-    );
+fn priced(line: &Posting, history: &History) -> Result<u128, Divergence> {
+    let head = history.head().expect("the fixture's history has a head");
+    let view = history.snapshot(head);
+    price_line(line, &view, line.tier_bp)
+        .map(|p| p.priced_nanos)
+        .map_err(crate::recompute::divergence_of)
 }
 
 #[test]
 fn the_fee_line_is_zero_for_work_no_client_asked_for() {
-    let client = correct_line(1);
-    let mut internal = correct_line(1);
+    let history = History::opening(opening_card(), 0);
+    let mut internal = line();
     internal.origin = PostingOrigin::Internal;
-    refresh(&mut internal, &archive());
     assert!(
-        internal.cached.priced_nanos < client.cached.priced_nanos,
+        priced(&internal, &history).expect("prices") < priced(&line(), &history).expect("prices"),
         "an internally originated line must not be charged the request fee"
     );
-    assert!(recheck(&internal, &archive()).agrees());
 }
 
 #[test]
-fn on_a_deployment_with_no_rate_card_the_fee_line_is_what_gets_checked() {
-    // No class prices at all. Every class line prices at zero, so the fee line is the whole amount
-    // and the recompute is checking exactly it.
-    let archive = SealedHistory::new(History::opening(RateCard::absent(250), 0));
-    let mut line = correct_line(1);
-    line.tier_bp = BASIS_POINTS;
-    line.fee_count = 3;
-    refresh(&mut line, &archive);
-    assert!(line.cached.priced_nanos > 0, "the fee still posts");
-    assert!(recheck(&line, &archive).agrees());
-
-    line.cached.priced_nanos += 1;
-    assert!(!recheck(&line, &archive).agrees());
-}
-
-#[test]
-fn a_line_priced_under_a_history_nobody_kept_is_itself_a_finding() {
-    let mut line = correct_line(1);
-    line.cached.history_seq = HistorySeq(999);
-    assert_eq!(
-        recheck(&line, &archive()).divergences,
-        vec![Divergence::HistoryMissing {
-            seq: HistorySeq(999)
-        }]
+fn on_a_deployment_with_no_rate_card_the_fee_line_is_the_whole_price() {
+    let history = History::opening(RateCard::absent(250), 0);
+    let mut fees = line();
+    fees.tier_bp = BASIS_POINTS;
+    fees.fee_count = 3;
+    assert!(
+        priced(&fees, &history).expect("prices") > 0,
+        "the fee still posts"
     );
+    fees.fee_count = 0;
+    assert_eq!(priced(&fees, &history), Ok(0));
 }
 
 #[test]
 fn a_hole_in_the_history_is_a_refusal_and_never_a_zero() {
-    // A history whose only entry starts AFTER the line's instant. Pricing that instant at nothing
-    // is how a gap in the record becomes free service, so it refuses instead.
     let mut history = History::new();
     history.append(CardEntryDraft {
         effective_from: ARRIVED_MS + 1,
@@ -318,168 +102,39 @@ fn a_hole_in_the_history_is_a_refusal_and_never_a_zero() {
         appended_at: 0,
         author: Author::Opening,
     });
-    let outcome = recheck(&correct_line(1), &SealedHistory::new(history));
     assert_eq!(
-        outcome.divergences,
-        vec![Divergence::NoCardInForce { at: ARRIVED_MS }]
-    );
-    assert!(
-        outcome.corrected.is_none(),
-        "an unpriceable line's cache is left alone: overwriting it with a refusal would be the \
-         zero this variant exists to refuse to write"
+        priced(&line(), &history),
+        Err(Divergence::NoCardInForce { at: ARRIVED_MS })
     );
 }
 
-#[test]
-fn a_card_seq_the_line_did_not_resolve_to_is_found() {
-    let mut line = correct_line(1);
-    line.cached.card_seq = HistorySeq(41);
-    assert!(recheck(&line, &archive())
-        .divergences
-        .iter()
-        .any(|d| matches!(d, Divergence::CardSeq { .. })));
-}
-
-#[test]
-fn a_line_from_before_the_history_reads_as_priced_under_the_opening_entry() {
-    // A row migrated from the previous release carries no instant finer than the UTC day and no
-    // history number at all. It was earned under the one card the migration sealed, so it reads at
-    // the opening entry — which is effective from instant zero with no end, so no legacy row can
-    // fall in a hole however coarse its instant is.
-    let mut line = correct_line(1);
-    line.arrived_ms = 0;
-    refresh(&mut line, &archive());
-    assert!(line.is_pre_history());
-    assert_eq!(line.card_seq(), HistorySeq::OPENING);
-    assert!(recheck(&line, &archive()).agrees());
-}
-
-#[test]
-fn the_watermark_reaches_the_head_every_pass() {
-    let mut lines: Vec<Posting> = (1..=50).map(correct_line).collect();
-    let pass = recompute(Watermark::start(), &mut lines, &archive());
-    assert!(pass.is_clean());
-    assert_eq!(pass.checked, 50);
-    assert_eq!(pass.corrected, 0);
-    assert_eq!(
-        pass.history_seq,
-        Some(HistorySeq::OPENING),
-        "the pass says which history it repriced against, so a reconciliation entry carrying it is \
-         re-derivable without inferring the head from the lines"
-    );
-    assert_eq!(pass.watermark, Watermark::from_pairs([(1, 50)]));
-
-    // A second pass over the same lines checks nothing, because the watermark is already there.
-    let again = recompute(pass.watermark.clone(), &mut lines, &archive());
-    assert_eq!(again.checked, 0);
-    assert_eq!(again.watermark, pass.watermark);
-}
-
-#[test]
-fn a_line_edited_before_the_last_checkpoint_still_alarms() {
-    // The reason the watermark is a line and not a checkpoint. A checkpoint here would be far ahead
-    // of the edit, and repricing "since the last checkpoint" would never look at it again.
-    let mut lines: Vec<Posting> = (1..=100).map(correct_line).collect();
-    lines[3].cached.priced_nanos -= 7;
-
-    let pass = recompute(Watermark::start(), &mut lines, &archive());
-    assert_eq!(pass.checked, 100, "the whole run is repriced, not a tail");
-    assert_eq!(pass.findings.len(), 1);
-    assert_eq!(pass.findings[0].node_seq, 4);
-    assert_eq!(pass.findings[0].verdict, Verdict::Alarm);
-    assert_eq!(
-        pass.watermark,
-        Watermark::from_pairs([(1, 100)]),
-        "the watermark reaches the head even though a line diverged"
-    );
-}
-
-#[test]
-fn one_bad_line_does_not_stop_the_ones_after_it_being_checked() {
-    let mut lines: Vec<Posting> = (1..=10).map(correct_line).collect();
-    lines[2].cached.priced_nanos += 1;
-    lines[8].cached.priced_nanos += 1;
-    let pass = recompute(Watermark::start(), &mut lines, &archive());
-    assert_eq!(
-        pass.findings.len(),
-        2,
-        "an early alarm must not hide a later one"
-    );
-}
-
-#[test]
-fn a_watermark_that_survives_a_restart_resumes_where_it_stopped() {
-    let mut lines: Vec<Posting> = (1..=20).map(correct_line).collect();
-    let first = recompute(Watermark::start(), &mut lines[..10], &archive());
-    assert_eq!(first.checked, 10);
-    // The reconciliation entry carried the watermark across the restart; the second pass sees the
-    // whole run and checks only what is new.
-    let second = recompute(first.watermark, &mut lines, &archive());
-    assert_eq!(second.checked, 10);
-    assert_eq!(second.watermark.mark_for(1), Some(20));
-}
-
-/// **THE RECOMPUTE READS THE PRICING PATH'S TIER, NOT A SECOND ONE.**
-///
-/// This module used to import `recompute::apply_tier` — an `i128 -> i128` copy of the tier rule,
-/// re-exported as `busbar_kernel_ledger::apply_tier` next to `busbar_kernel_ledger::cost::apply_tier`,
-/// so which function a caller got depended on which `use` line they typed. It had no production
-/// caller at all: `recheck` prices through `price_line` -> `price_at_card` -> `cost::apply_tier`,
-/// and the copy existed only to be asserted about here.
-///
-/// Two copies that agree are the dangerous shape, not the safe one. The day one of them was
-/// corrected for #44 and the other was not, the recompute — whose whole job is to DETECT a tier
-/// divergence — would itself have become the divergence, reporting
-/// `Divergence::Priced{posted, recomputed}` on every posting in the book at once. An alarm that
-/// fires on all of them is an alarm that fires on none. So the copy is deleted rather than pinned
-/// to its twin, and the recompute is checked against the one function the bill is computed with.
+/// The tier rule is the one function the bill is computed with (`cost::apply_tier_signed`).
 #[test]
 fn the_tier_rounds_to_nearest_and_never_divides_first() {
-    // Dividing FIRST rounds a small amount to nothing, which is a real way to lose money one
-    // nano-unit at a time: `1 / 10_000 = 0`, then `0 x 9_999 = 0`.
     assert_eq!(apply_tier_signed(1, 9_999), 1, "0.9999 is nearer 1 than 0");
     assert_eq!(apply_tier_signed(10_000, 9_999), 9_999);
-    // 3 x 5,000bp = 1.5 exactly; 1 is odd, so half-to-even goes UP (#44 `:372`).
     assert_eq!(apply_tier_signed(3, 5_000), 2);
-    // A reversal is a negative amount and the tier applies to it the same way.
     assert_eq!(apply_tier_signed(-10_000, 9_000), -9_000);
     assert_eq!(apply_tier_signed(-3, 5_000), -2);
 }
 
-/// The neutral tier is the identity at the ceiling, in both signs.
-///
-/// This cell used to assert `apply_tier(i128::MAX, BASIS_POINTS) == i128::MAX / 10_000` and called
-/// it saturation. Ten thousand basis points is ×1: the correct answer is `i128::MAX` itself, and
-/// the assertion was pinning a ten-thousand-fold UNDER-bill at the one tier every posting this
-/// tree writes actually carries.
 #[test]
 fn the_neutral_tier_is_the_identity_at_the_ceiling_in_both_signs() {
     assert_eq!(apply_tier_signed(i128::MAX, BASIS_POINTS), i128::MAX);
     assert_eq!(apply_tier_signed(i128::MIN, BASIS_POINTS), i128::MIN);
-    // A wrap here would flip the sign, which is how a ceiling figure comes back as a credit.
-    assert!(apply_tier_signed(i128::MAX, BASIS_POINTS) > 0);
-    assert!(apply_tier_signed(i128::MIN, BASIS_POINTS) < 0);
-    // And the ordinary figures are untouched.
     assert_eq!(apply_tier_signed(10_000, 9_999), 9_999);
 }
 
-/// A figure too large to hold is a DISAGREEMENT, not a wrap — and not a pinned figure either.
-///
-/// The recompute is the arbiter the rest of the money path is checked against, so it is the last
-/// place that may answer with a wrapped number: a product of a hostile quantity and an absurd price
-/// that wrapped into the cached figure would report a clean pass over a line that is wrong. It used
-/// to SATURATE, and offer the pinned ceiling as the "corrected" figure — a bill nobody consumed.
-/// The lookup it rechecks with is the one function now, which REFUSES an overflow (item 28), so the
-/// recheck reports [`Divergence::Overflow`], offers no correction, and cannot agree.
+/// A figure too large to hold is refused (item 28), never wrapped and never pinned at a ceiling.
 #[test]
-fn a_figure_too_large_to_hold_is_reported_rather_than_wrapped() {
-    let archive = SealedHistory::new(History::opening(
+fn a_figure_too_large_to_hold_is_refused_rather_than_wrapped() {
+    let history = History::opening(
         RateCard::from_micro_rates([(LaneClass::new(LANE, "tokens_in"), 1.0e16)], 0),
         0,
-    ));
-    let mut line = correct_line(1);
-    line.tier_bp = BASIS_POINTS;
-    line.lines = vec![
+    );
+    let mut big = line();
+    big.tier_bp = BASIS_POINTS;
+    big.lines = vec![
         PricedLine {
             class: MeterClassId::new("tokens_in"),
             quantity: u64::MAX,
@@ -489,95 +144,5 @@ fn a_figure_too_large_to_hold_is_reported_rather_than_wrapped() {
             quantity: u64::MAX,
         },
     ];
-    line.cached = DerivedPrice::default();
-
-    let outcome = recheck(&line, &archive);
-    assert_eq!(
-        outcome.divergences,
-        vec![Divergence::Overflow],
-        "the figure is refused and reported as a disagreement, got {outcome:?}"
-    );
-    assert!(
-        outcome.corrected.is_none(),
-        "no pinned ceiling is offered as a correction"
-    );
-    assert!(!outcome.agrees());
-}
-
-/// The watermark is PER NODE, and the reason is that lines arrive interleaved.
-///
-/// A single `(node, node_seq)` pair compared lexicographically is a watermark that, the moment it
-/// passes the highest node, is ahead of every later line every lower-numbered node will ever write.
-/// Those lines are then skipped forever and never repriced, and the pass reports itself clean over a
-/// corrupted amount — the recompute answering "nothing wrong here" about a line it declined to look
-/// at.
-#[test]
-fn a_later_line_from_a_lower_numbered_node_is_still_repriced() {
-    // Tick one: two nodes, interleaved, both correct.
-    let mut tick_one = Vec::new();
-    for seq in 1..=2u64 {
-        for node in 1..=2u64 {
-            let mut p = correct_line(seq);
-            p.node = node;
-            tick_one.push(p);
-        }
-    }
-    let first = recompute(Watermark::start(), &mut tick_one, &archive());
-    assert!(first.is_clean());
-    assert_eq!(first.checked, 4);
-
-    // Tick two: one more line from each node, and the one from the LOWER-numbered node has had its
-    // cached amount edited by hand.
-    let mut tick_two = tick_one.clone();
-    let mut corrupted = correct_line(3);
-    corrupted.node = 1;
-    corrupted.cached.priced_nanos -= 11;
-    tick_two.push(corrupted);
-    let mut fine = correct_line(3);
-    fine.node = 2;
-    tick_two.push(fine);
-
-    let second = recompute(first.watermark, &mut tick_two, &archive());
-    assert_eq!(
-        second.checked, 2,
-        "both new lines are owed a recompute, whichever node wrote them"
-    );
-    assert_eq!(second.findings.len(), 1);
-    assert_eq!(
-        (second.findings[0].node, second.findings[0].node_seq),
-        (1, 3)
-    );
-    assert!(second.alarms());
-}
-
-#[test]
-fn a_run_across_two_nodes_orders_by_node_then_sequence() {
-    let mut lines = Vec::new();
-    for node in 1..=2u64 {
-        for seq in 1..=3u64 {
-            let mut p = correct_line(seq);
-            p.node = node;
-            lines.push(p);
-        }
-    }
-    let pass = recompute(Watermark::start(), &mut lines, &archive());
-    assert_eq!(pass.checked, 6);
-    // Both nodes reached their own head: node 2 at three, and node 1 at three as well rather than
-    // stranded behind the higher-numbered node's progress.
-    assert_eq!(pass.watermark, Watermark::from_pairs([(1, 3), (2, 3)]));
-    assert_eq!(pass.watermark.mark_for(2), Some(3));
-    assert_eq!(pass.watermark.nodes(), 2);
-}
-
-#[test]
-fn a_mark_only_ever_moves_forward() {
-    // A line that arrives behind a number already recomputed must not re-open the ones after it.
-    let mut watermark = Watermark::from_pairs([(1, 9)]);
-    watermark.advance(1, 4);
-    assert_eq!(watermark.mark_for(1), Some(9));
-    let mut behind = correct_line(4);
-    behind.node = 1;
-    assert!(!watermark.is_behind(&behind));
-    assert_eq!(watermark.to_string(), "1/9");
-    assert_eq!(Watermark::start().to_string(), "nothing recomputed yet");
+    assert_eq!(priced(&big, &history), Err(Divergence::Overflow));
 }

@@ -1047,16 +1047,6 @@ why     = "busbar names busbar-voice: declared normal, optional in the shipped g
 drain   = "none: BUSBAR-1.6.0.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
 
 [[dep]]
-from    = "busbar-a2a"
-to      = "busbar-plugin-loader"
-half    = "shipped"
-count   = "1"
-verdict = "not-allowed"
-cite    = "BUSBAR-1.6.0.md THE DESIGN, §2 \"Core -> plugin. Never plugin -> core.\" / BUSBAR-1.6.0.md THE DESIGN, §1 the three axes are blind to each other. The retiring 1.5.x crates fuse plane+core+transport in one name."
-why     = "busbar-a2a names busbar-plugin-loader: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
-drain   = "delete the busbar-plugin-loader dependency from busbar-a2a's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
-
-[[dep]]
 from    = "busbar-kernel"
 to      = "busbar-contract"
 half    = "shipped"
@@ -1064,6 +1054,16 @@ count   = "1"
 verdict = "allowed"
 cite    = "BUSBAR-1.6.0.md THE DESIGN, §2 manifest allow-list — busbar-contract is the face every kind is written against."
 why     = "busbar-kernel names busbar-contract: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none: BUSBAR-1.6.0.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
+
+[[dep]]
+from    = "busbar-oauth2"
+to      = "busbar-contract"
+half    = "shipped"
+count   = "1"
+verdict = "allowed"
+cite    = "BUSBAR-1.6.0.md THE DESIGN, §8 — a cleanliness crate reaches the kernel and the contract (ARCHITECTURE_ALLOWED cleanliness -> contract); ARCHITECT BOOT-LOOP ruling R2, 2026-09-27: the contract's route vocabulary is named from the crate that owns it, and the loader re-exports none of it."
+why     = "busbar-oauth2 names busbar-contract: declared normal in the shipped graph, 1 declaration(s) at this commit, replacing its busbar-plugin-loader edge (whose only use was the contract's RouteAuth/RouteMethod). The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
 drain   = "none: BUSBAR-1.6.0.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
 
 [[dep]]
@@ -1399,6 +1399,16 @@ cite    = "BUSBAR-1.6.0.md THE DESIGN, §1 / §9 — the composition root is the
 why     = "busbar names busbar-kernel: declared dev in the test graph (dev-dependencies), 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
 drain   = "none: BUSBAR-1.6.0.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
 
+[[dep]]
+from    = "busbar"
+to      = "busbar-kernel-audit"
+half    = "test"
+count   = "1"
+verdict = "allowed"
+cite    = "BUSBAR-1.6.0.md THE DESIGN, §1 / §9 — the composition root is the one thing that names all three axes; ARCHITECT 2026-09-30 (MONEY-CHAIN): the audit crate's test-support feature is enabled by busbar's dev-dependency rather than forwarded through busbar-kernel."
+why     = "busbar names busbar-kernel-audit: declared dev in the test graph (dev-dependencies, features test-support), 1 declaration(s) at this commit, beside the shipped edge the root already declares. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none: the same granted class as busbar -> busbar-kernel's test edge. It replaces the kernel's forwarding of the feature, which named a kernel package in busbar-kernel's own manifest (busbar-kernel x kernel)."
+
 # ------------------------------------------------------------------------------------------------
 # [[face]] — A CRATE THAT IMPLEMENTS ANOTHER KIND'S ENTRY FACE, AT ITS EXACT COUNT
 # ------------------------------------------------------------------------------------------------
@@ -1472,16 +1482,6 @@ drain = "move both implementations into a store-kind crate and have the root REG
 # CLEANLINESS (admin/oauth2) EDGES — DECISIONS #5. Pre-existing at the merge-base; recorded, not
 # introduced. Struck when busbar-core is deleted.
 # ------------------------------------------------------------------------------------------------
-
-[[dep]]
-from    = "busbar-oauth2"
-to      = "busbar-plugin-loader"
-half    = "shipped"
-count   = "1"
-verdict = "not-allowed"
-cite    = "the byte-identical busbar-admin/oauth2 extraction out of busbar-core (a compiled-in cleanliness crate, DECISIONS #5); a one-way dep pre-existing at the merge-base."
-why     = "the oauth2 crate names the plugin loader TCB."
-drain   = "folds away when busbar-core is deleted and the cleanliness crates reach the kernel/substrate/api spine by their final names."
 
 [[dep]]
 from    = "busbar"
@@ -1825,16 +1825,38 @@ drain = "none: the #36 kernel group is intra-tier by design. What the paired [[c
 # ARMED AT TODAY'S MEASURED NUMBER (Law 9, TODO rule 9.4), exact in both directions: a rise is the
 # landing that grew the naming, a fall must bring the row down with it, a zero cell must be struck.
 # The ship twin owes ZERO in every neutral crate (law0-neutral-instance). The drain is Phase 4's.
+#
+# [[core-name]] — CORE'S OWN WORDS, which the learned vocabulary must not count (ARCHITECT ruling
+# 2026-09-30, KERNEL-AUTH-ZERO Q1: a lower-only MEASUREMENT CORRECTION, the class of INBOUND-LISTEN's
+# "Tcp* = OS words"). A module-name constant teaches the axis a word; these three are words the
+# spec names as core's own, not a plugin's. The list is EXACTLY these three. No plugin name may ever
+# enter it: a word a plugin crate is named for, or one a constant outside the kernel and contract
+# spells, stays counted and the row is RED (`core-name-is-plugin`).
+
+[[core-name]]
+kind = "auth"
+name = "keys"
+cite = "BUSBAR-1.6.0.md:155 — THE DESIGN, the kernel: the badge press's auth verify (`keys`, core's own signed-key verifier, is part of it and is not a plugin)"
+
+[[core-name]]
+kind = "secret"
+name = "literal"
+cite = "BUSBAR-1.6.0.md:175 — THE DESIGN, the kernel: `literal` and `none` are core secret grammar"
+
+[[core-name]]
+kind = "secret"
+name = "none"
+cite = "BUSBAR-1.6.0.md:175 — THE DESIGN, the kernel: `literal` and `none` are core secret grammar"
 
 [[instance]]
 crate = "busbar"
 kind = "auth"
-count = "3"
+count = "2"
 
 [[instance]]
 crate = "busbar"
 kind = "secret"
-count = "10"
+count = "5"
 
 [[instance]]
 crate = "busbar-contract"
@@ -1844,7 +1866,7 @@ count = "6"
 [[instance]]
 crate = "busbar-core-admin"
 kind = "auth"
-count = "25"
+count = "17"
 
 [[instance]]
 crate = "busbar-core-admin"
@@ -1859,17 +1881,12 @@ count = "3"
 [[instance]]
 crate = "busbar-core-admin"
 kind = "secret"
-count = "43"
+count = "40"
 
 [[instance]]
 crate = "busbar-core-admin"
 kind = "store"
 count = "10"
-
-[[instance]]
-crate = "busbar-kernel"
-kind = "auth"
-count = "42"
 
 [[instance]]
 crate = "busbar-kernel"
@@ -1884,22 +1901,12 @@ count = "1"
 [[instance]]
 crate = "busbar-kernel"
 kind = "secret"
-count = "49"
+count = "40"
 
 [[instance]]
 crate = "busbar-kernel"
 kind = "store"
 count = "7"
-
-[[instance]]
-crate = "busbar-kernel-audit"
-kind = "auth"
-count = "2"
-
-[[instance]]
-crate = "busbar-kernel-identity"
-kind = "auth"
-count = "2"
 
 [[instance]]
 crate = "busbar-oauth2"

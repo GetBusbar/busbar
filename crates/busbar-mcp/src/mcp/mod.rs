@@ -685,8 +685,8 @@ pub(crate) fn mcp_hydrate(
 pub(crate) fn mcp_routes(
     slot: &dyn std::any::Any,
 ) -> Vec<busbar_kernel::plane_routes::PlaneRouteSpec> {
+    use busbar_contract::abi::cold::endpoint::{RouteAuth, RouteMethod};
     use busbar_kernel::plane_routes::{PlaneReqCtx, PlaneRouteFuture, PlaneRouteSpec};
-    use busbar_plugin_loader::{RouteAuth, RouteMethod};
     let resource = slot
         .downcast_ref::<McpResource>()
         .expect("the mcp plane's routes slot is an McpResource");

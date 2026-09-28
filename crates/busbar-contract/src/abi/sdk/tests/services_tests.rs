@@ -69,6 +69,7 @@ fn table(slot: Option<ServiceFn>) -> HostSlots {
         content_scan: None,
         hook_call: None,
         random_fill: None,
+        need_admit: None,
     }
 }
 

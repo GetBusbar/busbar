@@ -26,10 +26,10 @@ use std::marker::PhantomData;
 use std::ptr;
 
 use crate::abi::auth::{
-    AuthTail, IdentifyOut, IdentityBuf, Span, VerifyIn, IDENTITY_HAS_TTL, SPAN_ABSENT,
-    VERDICT_IDENTITY, VERDICT_PASS, VERDICT_REJECT,
+    AuthTail, IdentifyOut, IdentityBuf, VerifyIn, IDENTITY_HAS_TTL, SPAN_ABSENT, VERDICT_IDENTITY,
+    VERDICT_PASS, VERDICT_REJECT,
 };
-use crate::abi::mechanism::call::{AbiStr, Blob, InHead, MetricEntry, OutHead, Outcome};
+use crate::abi::mechanism::call::{AbiStr, Blob, InHead, MetricEntry, OutHead, Outcome, Span};
 use crate::abi::mechanism::call::{BLOB_ABSENT, METRIC_ADD};
 use crate::abi::mechanism::door::{KindTailHead, Statement};
 use crate::abi::mechanism::lifecycle::{
@@ -363,13 +363,13 @@ fn write_identity(
     let mut span = |t: Option<&str>| -> Span {
         match t {
             None => Span {
-                off: SPAN_ABSENT,
+                offset: SPAN_ABSENT,
                 len: 0,
             },
             Some(s) => {
                 let at = bytes.extend(s.as_bytes());
                 Span {
-                    off: u32::try_from(at).unwrap_or(u32::MAX),
+                    offset: u32::try_from(at).unwrap_or(u32::MAX),
                     len: u32::try_from(s.len()).unwrap_or(u32::MAX),
                 }
             }
@@ -384,7 +384,7 @@ fn write_identity(
     (o.subject, o.key_id, o.key_name) = (subject, key_id, key_name);
     (o.user, o.provider, o.name) = (user, provider, name);
     o.claims = Span {
-        off: SPAN_ABSENT,
+        offset: SPAN_ABSENT,
         len: 0,
     };
     o.claims_fmt = BLOB_ABSENT;

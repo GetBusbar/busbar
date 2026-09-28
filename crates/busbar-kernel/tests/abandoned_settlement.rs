@@ -61,7 +61,7 @@ fn one_unit(went_away: bool) -> Figures {
     // The door reserves 1,000; the destination reported 900 before the unit ended.
     let units = TestUnits {
         evidence: Evidence {
-            located: Some(900),
+            reported: Some(900),
             ..Evidence::default()
         },
         ..TestUnits::default()

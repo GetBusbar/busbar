@@ -242,23 +242,35 @@ pub trait StoreSlots: RecordStore + Sized {
         limit: u32,
     ) -> Result<Vec<(Vec<u8>, RecordBytes)>, String>;
 
-    /// `reserve` (slot 34): all or nothing; EXACTLY one [`Grant`] per cell, in order (else FAULT).
+    /// `reserve` (slot 34): all or nothing; on `Ok`, EXACTLY one [`Grant`] per cell, in order,
+    /// into `grants` (else FAULT). `cells` reads the host's array in place (clone it to read it
+    /// again) and `grants` writes into the host's, its room checked first: the request path
+    /// allocates nothing in the SDK (the design's plugin memory rule). Write grants only on `Ok`.
     ///
     /// # Errors
     /// [`ReserveRefused`]; nothing is applied.
-    fn reserve(
+    fn reserve<'c>(
         &self,
         op: OpId,
         epoch: u64,
-        cells: &[Cell<'_>],
-    ) -> Result<Vec<Grant>, ReserveRefused>;
+        cells: impl Iterator<Item = Cell<'c>> + Clone,
+        grants: &mut impl Extend<Grant>,
+    ) -> Result<(), ReserveRefused>;
 
     /// `slice_release` (slot 35): per item `(slice_id, unspent)`, the amount taken back after
-    /// clamping, in item order. Exactly one amount per item: any other count is FAULT.
+    /// clamping, in item order, into `released`. As `reserve`: `items` reads the host's array in
+    /// place and `released` writes into the host's. Exactly one amount per item: any other count
+    /// is FAULT. Write amounts only on `Ok`.
     ///
     /// # Errors
     /// [`OpRefused`]; an unknown slice or a stale epoch is `Failed`, nothing applied.
-    fn slice_release(&self, op: OpId, epoch: u64, items: &[(u64, u64)]) -> OpResult<Vec<u64>>;
+    fn slice_release(
+        &self,
+        op: OpId,
+        epoch: u64,
+        items: impl Iterator<Item = (u64, u64)> + Clone,
+        released: &mut impl Extend<u64>,
+    ) -> OpResult<()>;
 
     /// `add_usage_batch` (slot 43): the cells in order, atomically.
     ///

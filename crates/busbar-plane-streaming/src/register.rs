@@ -35,8 +35,8 @@
 //! The streaming cost model is: reserve a hold on ADMIT (the `admit` fact set names the lane, the
 //! response ceiling and the priced input span), and SETTLE it END-OF-TURN, once per completed turn
 //! (#23), against the `meter` locators the terminal `response.done` produces. That is exactly the
-//! per-unit meter the llm plane already settles through the cost seam (`busbar-caps::hold::Hold::settle`
-//! / `busbar-core::plane_host::cost_host::settle_lease`): a streaming turn is the unit, and its
+//! per-unit meter the llm plane already settles through the kernel's settlement (the plane reports
+//! counts, the kernel writes the line): a streaming turn is the unit, and its
 //! `Progress::Terminal` is where the settle fires. The conformance rig proves the reserve→turns→settle
 //! shape end to end. No new arithmetic is added here — the plane names locators, the cost unit settles.
 //!

@@ -2618,7 +2618,6 @@ fn charge_round(
     let usage = busbar_contract::abi::hot::Usage::with_attribution(
         busbar_contract::abi::hot::UsageComponent::Queries,
         0,
-        0,
         busbar_contract::abi::hot::AdmissionId::NONE,
         key.id.as_bytes(),
         namespaced.as_bytes(),

@@ -1893,8 +1893,8 @@ fn is_real_auth_plugin_ref_exempts_keys_always_and_test_groups_module_only_in_te
          release config naming it must be treated as a real (and therefore unresolvable) plugin \
          ref, not silently waved through"
     );
-    assert!(is_real_auth_plugin_ref("oidc", true));
-    assert!(is_real_auth_plugin_ref("oidc", false));
+    assert!(is_real_auth_plugin_ref("test-idp-double", true));
+    assert!(is_real_auth_plugin_ref("test-idp-double", false));
 }
 
 /// `plugins.fetch` (resource/DoS finding): a mistyped or compromised fetch URL serving an
@@ -2255,9 +2255,9 @@ fn auth_scope_caps_are_keyed_by_provider_name_not_module() {
     // Two NAMED providers on ONE plugin module, with DIFFERENT ceilings — plus a third provider
     // whose NAME is literally the module name the other two ride, the collision that escalated.
     auth.admin_auth = vec![
-        entry("corp-sso", "oidc", Some("full")),
-        entry("vendor-sso", "oidc", Some("read-only")),
-        entry("oidc", "some-other-module", Some("none")),
+        entry("corp-sso", "test-idp-double", Some("full")),
+        entry("vendor-sso", "test-idp-double", Some("read-only")),
+        entry("test-idp-double", "some-other-module", Some("none")),
     ];
     let caps = project_auth_scope_caps(&auth);
 
@@ -2273,10 +2273,10 @@ fn auth_scope_caps_are_keyed_by_provider_name_not_module() {
         "the sibling provider on the same module keeps its OWN, independent ceiling"
     );
     assert_eq!(
-        caps.get("oidc").map(String::as_str),
+        caps.get("test-idp-double").map(String::as_str),
         Some("none"),
-        "the provider actually NAMED `oidc` owns that key — not whichever provider happens to run \
-         the `oidc` module (module-keying made a last-writer-wins collision here, handing one \
+        "the provider actually NAMED `test-idp-double` owns that key — not whichever provider happens to run \
+         the `test-idp-double` module (module-keying made a last-writer-wins collision here, handing one \
          provider's ceiling to another)"
     );
     assert_eq!(caps.len(), 3, "one entry per NAMED provider: {caps:?}");

@@ -393,7 +393,6 @@ fn charge_over_usage_matches_record_metering() {
         let usage = Usage::with_attribution(
             UsageComponent::Tokens,
             100,
-            1,
             AdmissionId(7),
             b"vk_faithful_meter",
             b"tool:fs",
@@ -427,7 +426,7 @@ fn charge_without_attribution_falls_back_to_synth() {
         .cost(billing_on_cost())
         .build();
     with_dispatch_scope(&app, |host, vt| {
-        let usage = Usage::charge(UsageComponent::Tokens, 10, 1, AdmissionId(99));
+        let usage = Usage::charge(UsageComponent::Tokens, 10, AdmissionId(99));
         assert_eq!(
             (vt.meter_charge.unwrap())(host, &*usage as *const Usage),
             MeterOutcome::Charged
@@ -449,7 +448,7 @@ fn out_of_range_usage_component_is_refused_not_matched() {
         .governance(Arc::clone(&gov))
         .build();
     with_dispatch_scope(&app, |host, vt| {
-        let usage = Usage::charge(UsageComponent::Tokens, 10, 1, AdmissionId(99));
+        let usage = Usage::charge(UsageComponent::Tokens, 10, AdmissionId(99));
         // A whole, correctly-ALIGNED `Usage` image whose component byte is `9` — exactly what a
         // stale, newer or hostile plane hands in.
         let mut image = MaybeUninit::<Usage>::uninit();
@@ -497,7 +496,6 @@ fn billing_off_charge_still_appends_the_counts_to_the_ledger() {
         let usage = Usage::with_attribution(
             UsageComponent::Tokens,
             42,
-            1,
             AdmissionId(36),
             b"vk_billing_off",
             b"tool:fs",
@@ -544,7 +542,6 @@ fn charge_decodes_the_keyed_unit_tail_into_the_ledger() {
         let usage = Usage::with_units(
             UsageComponent::Queries,
             0,
-            0,
             AdmissionId(3),
             b"vk_units",
             b"rerank",
@@ -584,7 +581,6 @@ fn door_charge(caller: Option<&str>, tail_key: &[u8], read: &[&str]) -> Vec<i64>
     let charge = |host, vt: &busbar_contract::abi::hot::host::PlaneHostVtable| {
         let usage = Usage::with_units(
             UsageComponent::Queries,
-            0,
             0,
             AdmissionId(5),
             tail_key,

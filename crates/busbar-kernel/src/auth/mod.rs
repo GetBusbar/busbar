@@ -1492,12 +1492,12 @@ pub(crate) async fn auth_middleware(
     let mut declared_admin = false;
     if let Some(auth) = core_routes.declared_auth(&path, req.method()) {
         match auth {
-            busbar_plugin_loader::RouteAuth::None => {
+            busbar_contract::abi::cold::endpoint::RouteAuth::None => {
                 drop(_mw.take());
                 return Ok(next.run(req).await);
             }
-            busbar_plugin_loader::RouteAuth::Admin => declared_admin = true,
-            busbar_plugin_loader::RouteAuth::Key => {}
+            busbar_contract::abi::cold::endpoint::RouteAuth::Admin => declared_admin = true,
+            busbar_contract::abi::cold::endpoint::RouteAuth::Key => {}
         }
     }
 
@@ -1508,12 +1508,12 @@ pub(crate) async fn auth_middleware(
     // `declared_auth` returns `None` for every non-plugin path, so this is a no-op on the hot path.
     if let Some(auth) = app.plugin_routes.declared_auth(&path, req.method()) {
         match auth {
-            busbar_plugin_loader::RouteAuth::None => {
+            busbar_contract::abi::cold::endpoint::RouteAuth::None => {
                 drop(_mw.take());
                 return Ok(next.run(req).await);
             }
-            busbar_plugin_loader::RouteAuth::Admin => declared_admin = true,
-            busbar_plugin_loader::RouteAuth::Key => {}
+            busbar_contract::abi::cold::endpoint::RouteAuth::Admin => declared_admin = true,
+            busbar_contract::abi::cold::endpoint::RouteAuth::Key => {}
         }
     }
 

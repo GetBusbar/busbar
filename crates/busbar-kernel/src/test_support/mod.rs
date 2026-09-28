@@ -2284,12 +2284,24 @@ impl Drop for EnvVarGuard {
 /// TEST REGISTRY ROW — link the operator credential's auth row into this test binary's auth axis,
 /// as the composition root links it into the shipped one: `entry` is the SDK boundary
 /// (`BUSBAR_COLD_ENTRY`) of whichever auth plugin the test binary links for the purpose, registered
-/// under [`crate::config::operator_provider`]. The first install stands (the axis is process-wide).
-/// A test crate names that plugin only in its manifest; its build script turns the manifest row into
-/// the `entry` it hands here.
-pub fn install_operator_auth_row(entry: busbar_kernel_identity::operator::AuthBoundary) {
-    busbar_kernel_identity::operator::install_row(crate::config::operator_provider(), entry)
+/// under the operator words this build answers to: with no root, the kind-neutral `stand-in` double
+/// that `test-support` turns on (BUSBAR-1.6.0.md:175, "Kernel tests use kind-neutral doubles"). The
+/// first install stands (the axis is process-wide). A test crate names that plugin only in its
+/// manifest; its build script turns the manifest row into the `entry` it hands here.
+pub fn install_operator_auth_row(entry: AuthBoundary) {
+    let words = OperatorWords {
+        provider: crate::config::operator_provider(),
+        principal_id: crate::config::operator_principal_id(),
+    };
+    install_operator_auth_row_as(words, entry)
 }
+
+/// `install_operator_auth_row_as(words, entry)`: [`install_operator_auth_row`] under a test binary's
+/// OWN operator words — a binary that links the operator plugin the composition root links, and pins
+/// the root's bytes, hands in the root's words as the root does. The first install stands.
+pub use busbar_kernel_identity::operator::{
+    install_row as install_operator_auth_row_as, AuthBoundary, OperatorWords,
+};
 
 /// The builtin-only `SecretResolver` (env/file sugar, no plugin modules) for a dependent crate's
 /// tests — `SecretResolver::builtins_only` itself stays crate-private; this is the one doorway.

@@ -565,6 +565,7 @@ fn an_amendment_names_the_audit_record_it_amends() {
             subject: Subject::PrincipalId("p".into()),
             what: What {
                 unit_key: UnitKey::new(1),
+                incarnation: 0,
                 op_class: OpClassId::new("chat.completion"),
                 destination: None,
                 parent: None,

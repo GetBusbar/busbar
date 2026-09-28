@@ -28,8 +28,8 @@
 //! or far above it, raises a dispute, and neither changes the amount. See
 //! [`MeterPolicy::locator_floor_ratio`].
 //!
-//! How a unit ENDED is not decided here. The settlement table is one function, the kernel teller's
-//! `settle_amount`, and the request slot beside it is the teller's too. This unit once carried a
+//! How a unit ENDED is not decided here. The settlement writer is one function, the kernel teller's
+//! `settle_written`, and the request slot beside it is the teller's too. This unit once carried a
 //! second table of its own that nothing in production called, and it disagreed with the live one
 //! about a durability-lost unit (item 436): two tables for one amount is one table too many.
 

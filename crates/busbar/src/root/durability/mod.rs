@@ -94,8 +94,12 @@ use std::path::{Path, PathBuf};
 use crate::root::kernel::PinnedHistory;
 
 use busbar_contract::caps::{DurabilityLost, DurableWrite, Grant, PostingFlags, StepName};
-use busbar_kernel_audit::{AuditChain, AuditRecord};
-use busbar_kernel_ledger::checkpoint::Checkpoint;
+use busbar_kernel_audit::{
+    from_journal_body, journal_body, AuditChain, AuditInputs, AuditRecord, KeyError,
+};
+use busbar_kernel_ledger::checkpoint::{
+    AnchoredHead, Checkpoint, CheckpointAnchor, SelfAttestingAnchor,
+};
 use busbar_kernel_ledger::cost::{HistoryView, MoneyError};
 use busbar_kernel_ledger::legacy::{LegacyRows, RecordingRows};
 use busbar_kernel_ledger::migration::{MigrationError, MigrationMarker, MigrationRecords};
@@ -123,6 +127,7 @@ mod amend;
 // Re-exported for its one production caller, `main`'s boot-book open, which a build runs only when a
 // root leg opens the book; the unit tests reach it through `amend` directly.
 pub use amend::bind_amendments;
+pub(crate) use amend::verify_held;
 
 /// The checkpoint sealer: the cadence, and the audit keyset bound to the ledger's two seams
 /// (Q71(3)). A private child module, as `replay` is; its public items are re-exported here.
@@ -133,9 +138,25 @@ pub use seal::{Cadence, ChainSecret, CHECKPOINT_TICK_SECS};
 #[cfg(any(test, feature = "root-admin"))]
 pub use seal::{keyset_of, KeySetVerifier};
 
+/// The fixed audit chain's seams on the book: sealing a unit's one record, the cache rebuilt at boot,
+/// a window read back off the journal, and the walk `GET /admin/verify` reports. A private child
+/// module, as `replay` is; its methods are `Durability`'s own.
+mod audit;
+
+/// The money-book seam: the settling descriptor ([`Settling`], [`PostingStamp`]), what a settlement
+/// left ([`Settled`]), the [`MoneyBook`] trait an exit arm settles through and its one pass-through
+/// impl ([`SharedBook`]). Split out for `structure-lint`; a private child module, as `replay` is, its
+/// items re-exported so no caller's path changes.
+mod book;
+pub use book::{MoneyBook, PostingStamp, Settled, Settling, SharedBook};
+
 /// How many sealed checkpoints a node holds in memory: the latest 1,024, oldest evicted first
 /// (architect ruling 2026-09-26, "checkpoint retention"). The journal holds every one.
 pub const CHECKPOINT_RING: usize = 1_024;
+
+/// How many sealed audit records a node keeps in memory: a CACHE of the newest, never the record.
+/// The journal holds every one (`audit.v4`), and a window older than this is read back off it.
+pub const AUDIT_RING: usize = 1_024;
 
 /// What the root reads out of configuration to decide the durability shape.
 ///
@@ -174,6 +195,22 @@ pub struct Durability {
     /// record of every seal; the audit chain's head history (#82(d)) is kept forever on its own.
     /// The checkpoints read serves this ring.
     pub checkpoints: Vec<Checkpoint>,
+    /// THE NEWEST SEALED AUDIT RECORDS, oldest first, at most [`AUDIT_RING`]: a cache over the
+    /// journal, which keeps every record this chain ever sealed. Rebuilt from the journal at boot.
+    pub audit_records: Vec<AuditRecord>,
+    /// What the boot could not read back of the audit chain: a journalled record that does not
+    /// decode, or names a class nobody declares here. Each is a restart finding.
+    pub audit_findings: Vec<String>,
+    /// What the boot's checkpoint step check found (self-attesting): each is a restart finding.
+    pub anchor_findings: Vec<String>,
+    /// WHERE EVERY SEALED CHECKPOINT IS ANCHORED, and the head `GET /admin/verify` compares the
+    /// checkpoint it verifies against: a checkpoint rewound after it was sealed reads as
+    /// `AnchorHeadDiffers`. The default is the self-attesting in-memory anchor, seeded at boot from
+    /// the chain itself and labelled self-attesting wherever it is reported. Seeded from the chain,
+    /// it cannot see a rollback of the whole chain — only a puller holding a head it took earlier
+    /// can. What the boot does check is that the chain's checkpoints are in step with each other
+    /// (see [`anchored_on`]).
+    pub anchor: SelfAttestingAnchor,
     /// WHICH BOOT OF THIS JOURNAL this process is: one more than the highest any record on the
     /// chain was written under, and 1 on a chain that holds none.
     ///
@@ -187,6 +224,9 @@ pub struct Durability {
     /// which the book in memory and the book the journal rebuilds disagree, and any journal record
     /// that could not be read. Empty is the only good answer. See [`Durability::reconcile_with_journal`].
     pub restart_findings: Vec<JournalDisagreement>,
+    /// The holds boot left OPEN because a quarantined journal record names their unit — never
+    /// settled at the checkpoint on a guess. Each is also a restart finding.
+    pub open_quarantined: Vec<JournalDisagreement>,
     /// How many holds a predecessor left open that this boot RECOVERED and posted (item 127).
     pub recovered_holds: usize,
     /// The idempotency claims a predecessor took with no hold ever made durable behind them, VOIDED
@@ -272,34 +312,11 @@ impl Durability {
         self.journal.record_quarantines(token, at, wall)
     }
 
-    /// Put a sealed audit record on the journal.
-    ///
-    /// The audit unit sealed it; this puts it in the one order. The record's own chain is unchanged
-    /// and the previous release's chain is not touched at all — the body here is the sealed record's
-    /// two digests and the facts an auditor reads it for, and the class is `Transaction` because a
-    /// sealed record is what a unit's money movement looks like when it is finished.
-    ///
-    /// # Errors
-    ///
-    /// The journal could not make the record durable. Without a data directory that means the store
-    /// refused the batch; with one it means a write or a sync failed.
-    pub fn journal_audit(
-        &mut self,
-        record: &AuditRecord,
-        token: &Grant<DurableWrite>,
-        at: StepName,
-    ) -> Result<JournalAck, DurabilityLost> {
-        let entry = Entry::new(RecordClass::Transaction, audit_body(record))
-            .at(record.wall, record.mono)
-            .under(record.controls.lease_epoch, record.controls.policy_epoch);
-        self.journal.append(token, at, &[entry])
-    }
-
     /// Put a settlement on the journal.
     ///
     /// # Errors
     ///
-    /// As [`Durability::journal_audit`].
+    /// As [`Durability::seal_unit`].
     pub fn journal_posting(
         &mut self,
         posting: &Posting,
@@ -311,6 +328,13 @@ impl Durability {
         self.journal.append(token, at, &[entry])
     }
 
+    /// The head the checkpoint anchor holds: what `GET /admin/verify` compares the checkpoint it
+    /// verifies against. `None` when nothing has been anchored.
+    #[must_use]
+    pub fn anchored_head(&self) -> Option<AnchoredHead> {
+        self.anchor.head().ok().flatten()
+    }
+
     /// Put a sealed checkpoint on the journal.
     ///
     /// The checkpoint already carries its own body digest and its signature; what the journal adds
@@ -320,7 +344,7 @@ impl Durability {
     ///
     /// # Errors
     ///
-    /// As [`Durability::journal_audit`].
+    /// As [`Durability::seal_unit`].
     pub fn journal_checkpoint(
         &mut self,
         checkpoint: &Checkpoint,
@@ -330,6 +354,10 @@ impl Durability {
         let entry =
             Entry::new(RecordClass::Checkpoint, checkpoint_body(checkpoint)).at(checkpoint.wall, 0);
         let ack = self.journal.append(token, at, &[entry])?;
+        // ANCHORED once it has a position on the chain. The self-attesting anchor cannot refuse; a
+        // sink that could would leave the head where it was, and `/verify` then reports the head
+        // that differs rather than a checkpoint nobody anchored.
+        let _anchored = self.anchor.anchor(checkpoint);
         self.checkpoints.push(checkpoint.clone());
         // The ring: the oldest seal goes once the latest CHECKPOINT_RING are held.
         let over = self.checkpoints.len().saturating_sub(CHECKPOINT_RING);
@@ -384,7 +412,7 @@ impl Durability {
     ///
     /// # Errors
     ///
-    /// As [`Durability::journal_audit`]. The book has moved either way, and a failed append is
+    /// As [`Durability::seal_unit`]. The book has moved either way, and a failed append is
     /// retained and re-offered by the log — it is never a refusal at the door.
     pub fn open_hold(
         &mut self,
@@ -640,7 +668,7 @@ impl Durability {
     ///
     /// # Errors
     ///
-    /// As [`Durability::journal_audit`]. A failed append is retained and re-offered by the log — it
+    /// As [`Durability::seal_unit`]. A failed append is retained and re-offered by the log — it
     /// is never a refusal of the dispatch.
     pub fn journal_dispatch(&mut self, at: &Settling<'_>) -> Result<JournalAck, DurabilityLost> {
         self.journal_mark(at, Mark::Dispatched)
@@ -734,7 +762,7 @@ impl Durability {
     ///
     /// # Errors
     ///
-    /// As [`Durability::journal_audit`]. The books have already moved when this fails — value was
+    /// As [`Durability::seal_unit`]. The books have already moved when this fails — value was
     /// delivered and the settlement is the truth about it — so the failure is a durability loss to
     /// be retained and re-appended, never a settlement that is rolled back.
     pub fn settle(
@@ -785,10 +813,36 @@ impl Durability {
         counts: &UnitCounts,
         arrived_ms: u64,
     ) -> Result<Settled, DurabilityLost> {
+        self.settle_counted_refusing(at, posted, counts, arrived_ms, None)
+    }
+
+    /// [`Durability::settle_counted`] for a settlement whose counts the card REFUSED to price (#42):
+    /// the one line still closes the unit's hold and carries its counts, and the refusal rides it,
+    /// so every read of its balance and window refuses exactly as a refused counts row does
+    /// ([`Durability::settled_read`]). `None` is [`Durability::settle_counted`].
+    ///
+    /// # Errors
+    ///
+    /// As [`Durability::settle`].
+    pub fn settle_counted_refusing(
+        &mut self,
+        at: &Settling<'_>,
+        posted: busbar_contract::caps::Posted,
+        counts: &UnitCounts,
+        arrived_ms: u64,
+        refusal: Option<String>,
+    ) -> Result<Settled, DurabilityLost> {
         let settlement = self
             .ledger
             .post_counted(at.key, at.window, posted, counts.fee_count);
-        self.journal_settlement_counted(at, settlement, self.incarnation, Some(counts), arrived_ms)
+        self.journal_settlement_refusing(
+            at,
+            settlement,
+            self.incarnation,
+            Some(counts),
+            arrived_ms,
+            refusal,
+        )
     }
 
     /// PUT A UNIT'S COUNTS ON THE CHAIN WITH NO FIGURE BEHIND THEM (#43: the write is unconditional).
@@ -802,7 +856,7 @@ impl Durability {
     ///
     /// # Errors
     ///
-    /// As [`Durability::journal_audit`]. The row is kept in memory either way and a failed append
+    /// As [`Durability::seal_unit`]. The row is kept in memory either way and a failed append
     /// is retained and re-offered by the log.
     pub fn post_counts(
         &mut self,
@@ -825,7 +879,7 @@ impl Durability {
             wall: at.stamp.wall,
             mono: at.stamp.mono,
             arrived_ms,
-            flags: PostingFlags::NONE,
+            flags: undeclared_flag(PostingFlags::NONE, refusal.as_deref()),
             counts: Some(counts.clone()),
             refusal,
             era: RecordEra::Counts,
@@ -912,6 +966,20 @@ impl Durability {
         counts: Option<&UnitCounts>,
         arrived_ms: u64,
     ) -> Result<Settled, DurabilityLost> {
+        self.journal_settlement_refusing(at, settlement, incarnation, counts, arrived_ms, None)
+    }
+
+    /// [`Durability::journal_settlement_counted`], with the pricing refusal the line carries, if
+    /// any; a refused line is kept among the refused rows, as a refused counts row is.
+    fn journal_settlement_refusing(
+        &mut self,
+        at: &Settling<'_>,
+        settlement: Settlement,
+        incarnation: u64,
+        counts: Option<&UnitCounts>,
+        arrived_ms: u64,
+        refusal: Option<String>,
+    ) -> Result<Settled, DurabilityLost> {
         let stamp = at.stamp;
         let principal = settlement.posted.principal().as_str().to_string();
         let posting = Posting {
@@ -927,11 +995,14 @@ impl Durability {
             wall: stamp.wall,
             mono: stamp.mono,
             arrived_ms: counts.map_or(0, |_| arrived_ms),
-            flags: settlement.posted.flags(),
+            flags: undeclared_flag(settlement.posted.flags(), refusal.as_deref()),
             counts: counts.cloned(),
-            refusal: None,
+            refusal,
             era: RecordEra::Counts,
         };
+        if posting.refusal.is_some() {
+            self.refused.push(posting.clone());
+        }
         // The overdraft's own record. It carries no counts and no figure: the settlement above
         // already carries the fact, and the carry is DERIVED from it, so repeating anything here
         // would double what a replay adds up. What this record holds that nothing else does is the
@@ -1024,180 +1095,6 @@ impl Durability {
             },
             ChainSecret::of(&self.record),
         )
-    }
-}
-
-/// The facts a posting record needs that neither the books nor the hold hold.
-///
-/// A stamp rather than three arguments, so a caller cannot get the clock and the card version in the
-/// wrong order without the compiler noticing, and so adding a fourth is one change.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct PostingStamp {
-    /// Which card version priced the unit.
-    pub rate_card_version: u64,
-    /// The wall clock, in whole seconds. The unit's pinned arrival epoch, never a fresh read.
-    pub wall: u64,
-    /// The node's monotonic clock.
-    pub mono: u64,
-}
-
-/// Where a settlement lands: which balance, which window, on whose authority, and stamped how.
-///
-/// One borrowed value rather than six arguments, and it is not only tidiness. The window and the
-/// stamp's wall clock are the same pinned arrival epoch read two ways; passing them separately is
-/// how a straddling unit ends up booked in one window and recorded in another.
-#[derive(Debug, Clone, Copy)]
-pub struct Settling<'a> {
-    /// Which balance moves.
-    pub key: &'a TotalsKey,
-    /// Which window it moves in.
-    pub window: WindowStart,
-    /// The token the journal append is made under.
-    pub durability: &'a Grant<DurableWrite>,
-    /// Which step the append is attributed to.
-    pub step: StepName,
-    /// What the record carries beyond the figures.
-    pub stamp: PostingStamp,
-}
-
-/// What one settlement moved and what it left on the chain.
-#[derive(Debug)]
-pub struct Settled {
-    /// What the ledger did: the posting, the residual released, the overdraft noted.
-    pub settlement: Settlement,
-    /// The settlement's own journal record.
-    pub posting: Posting,
-    /// The overdraft's journal record, where the unit ran past everything reservable.
-    pub overdraft: Option<Posting>,
-}
-
-/// THE MONEY-BOOK SETTLING SEAM (DECISIONS #25 / #26 S2).
-///
-/// The single interface an exit arm calls to settle its cost onto the durability book. Its DTO is
-/// the neutral [`Settling`] descriptor already in this module: it carries the balance the hold
-/// reserved against (`key` + `window`), the authority the append is made under (`durability`), and
-/// the [`PostingStamp`] the record is dated and ordered by — the reserve/settle/stamp the exit arm
-/// performs, expressed with no plane in the name. What settles through it is "an exit arm"; what it
-/// settles onto is "the book".
-///
-/// The seam is `&self`, not `&mut`: the lock over the one book is taken and released BEHIND the
-/// seam, per settlement. So any number of exit arms hold the same seam and settle through it
-/// concurrently — the seam is the whole of their contention, not a single book each arm has to
-/// reach past the others to lock. That is what dissolves the "one-book serialization point": exit
-/// arms compose behind the seam rather than sharing one `&mut Durability`.
-///
-/// Today the only impl is [`SharedBook`], a verbatim pass-through onto the one shared [`Durability`]
-/// — byte-for-byte the settlement every exit arm makes now. The consolidated one-book is a later
-/// impl swapped in behind this same trait by a one-line composition flip; nothing above the seam
-/// changes when it is.
-pub trait MoneyBook: Send + Sync {
-    /// Settle a posting the exit path already built, and journal it.
-    ///
-    /// The exit path owns the hold and consumes it there, so what reaches the seam is a
-    /// [`busbar_contract::caps::Posted`] and never a hold. This is the settlement act every plane's exit arm
-    /// makes; see [`Durability::settle_posted`] for the book side of it.
-    ///
-    /// # Errors
-    ///
-    /// The journal could not make the record durable. The books have already moved — value was
-    /// delivered and the settlement is the truth about it — so this is a durability loss to be
-    /// retained and re-appended, never a settlement that is rolled back.
-    fn settle_posted(
-        &self,
-        at: &Settling<'_>,
-        posted: busbar_contract::caps::Posted,
-    ) -> Result<Settled, DurabilityLost>;
-
-    /// [`MoneyBook::settle_posted`] with the unit's raw counts on the record (#71). See
-    /// [`Durability::settle_counted`].
-    ///
-    /// # Errors
-    ///
-    /// As [`MoneyBook::settle_posted`].
-    fn settle_counted(
-        &self,
-        at: &Settling<'_>,
-        posted: busbar_contract::caps::Posted,
-        counts: &UnitCounts,
-        arrived_ms: u64,
-    ) -> Result<Settled, DurabilityLost>;
-
-    /// The unit's raw counts with no figure behind them — priced to nothing, or REFUSED (#42/#43).
-    /// See [`Durability::post_counts`].
-    ///
-    /// # Errors
-    ///
-    /// As [`MoneyBook::settle_posted`].
-    fn post_counts(
-        &self,
-        at: &Settling<'_>,
-        principal: &busbar_contract::caps::PrincipalId,
-        counts: &UnitCounts,
-        arrived_ms: u64,
-        refusal: Option<String>,
-    ) -> Result<Posting, DurabilityLost>;
-}
-
-/// The byte-identical pass-through: settle onto the ONE shared durability book (DECISION #25).
-///
-/// Holds a handle on the same `Arc<Mutex<Durability>>` every view reads and every arm settles onto,
-/// takes that lock exactly the way every other holder takes it, and delegates verbatim to
-/// [`Durability::settle_posted`]. It adds nothing and changes nothing: the `Settling` it is handed
-/// and the `Posted` it settles reach the ledger's one book-moving function unaltered, so the postings
-/// on the chain are the same bytes in the same order they are today. It exists so exit arms name a
-/// seam instead of a book, not so the book behaves differently.
-pub struct SharedBook {
-    durability: std::sync::Arc<std::sync::Mutex<Durability>>,
-}
-
-impl SharedBook {
-    /// A pass-through over a book the caller already opened and shares.
-    #[must_use]
-    pub fn over(durability: std::sync::Arc<std::sync::Mutex<Durability>>) -> Self {
-        SharedBook { durability }
-    }
-}
-
-impl std::fmt::Debug for SharedBook {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("SharedBook").finish_non_exhaustive()
-    }
-}
-
-impl MoneyBook for SharedBook {
-    fn settle_posted(
-        &self,
-        at: &Settling<'_>,
-        posted: busbar_contract::caps::Posted,
-    ) -> Result<Settled, DurabilityLost> {
-        // The same lock, taken the way every other holder of it takes it — read through a poisoning
-        // an unrelated unit caused rather than refusing to settle a delivered unit. Held for exactly
-        // the settlement and released, which is what lets a second arm settle behind this one.
-        let mut durability = self.durability.lock().unwrap_or_else(|p| p.into_inner());
-        durability.settle_posted(at, posted)
-    }
-
-    fn settle_counted(
-        &self,
-        at: &Settling<'_>,
-        posted: busbar_contract::caps::Posted,
-        counts: &UnitCounts,
-        arrived_ms: u64,
-    ) -> Result<Settled, DurabilityLost> {
-        let mut durability = self.durability.lock().unwrap_or_else(|p| p.into_inner());
-        durability.settle_counted(at, posted, counts, arrived_ms)
-    }
-
-    fn post_counts(
-        &self,
-        at: &Settling<'_>,
-        principal: &busbar_contract::caps::PrincipalId,
-        counts: &UnitCounts,
-        arrived_ms: u64,
-        refusal: Option<String>,
-    ) -> Result<Posting, DurabilityLost> {
-        let mut durability = self.durability.lock().unwrap_or_else(|p| p.into_inner());
-        durability.post_counts(at, principal, counts, arrived_ms, refusal)
     }
 }
 
@@ -1346,7 +1243,7 @@ impl std::fmt::Display for RefusedCounts {
 impl std::error::Error for RefusedCounts {}
 
 /// The posting flags, as the record carries them: one bit per flag, in a fixed order.
-const FLAG_BITS: [PostingFlags; 8] = [
+const FLAG_BITS: [PostingFlags; 9] = [
     PostingFlags::ESTIMATED,
     PostingFlags::METER_DISPUTED,
     PostingFlags::OVERDRAFT,
@@ -1355,6 +1252,7 @@ const FLAG_BITS: [PostingFlags; 8] = [
     PostingFlags::VOIDED,
     PostingFlags::UNPOSTED,
     PostingFlags::DOWNGRADED,
+    PostingFlags::UNDECLARED,
 ];
 
 fn flags_to_bits(flags: PostingFlags) -> u64 {
@@ -1588,6 +1486,21 @@ fn read_counts_tail(body: &mut BodyReader<'_>) -> Option<(Option<UnitCounts>, Op
         }),
         refusal,
     ))
+}
+
+/// The refusal a unit's line carries when its plane reported a class nobody declared
+/// (`BUSBAR-1.6.0.md` §7). The record keeps it as [`PostingFlags::UNDECLARED`] and every replay
+/// honours it: a declaration is a fact about the unit when it was written, so the refusal is never
+/// re-derived away — not by a card that prices the class later, not by an absent card that prices
+/// everything at nothing.
+pub const UNDECLARED_CLASS: &str = "UndeclaredClass";
+
+/// `flags`, with [`PostingFlags::UNDECLARED`] set when `refusal` is the undeclared-class refusal.
+fn undeclared_flag(flags: PostingFlags, refusal: Option<&str>) -> PostingFlags {
+    match refusal {
+        Some(why) if why.starts_with(UNDECLARED_CLASS) => flags.with(PostingFlags::UNDECLARED),
+        _ => flags,
+    }
 }
 
 /// Which of a settlement's two records a [`Posting`] is.
@@ -1972,29 +1885,34 @@ fn read_key(body: &mut BodyReader<'_>) -> Option<TotalsKey> {
     Some(TotalsKey::new(bucket, dimension, scope))
 }
 
-/// The journal body of a sealed audit record.
-///
-/// The two digests first, because they are what ties this journal record back to the audit chain the
-/// record is also on; then the facts an auditor asks for. Content is not here for the same reason it
-/// is not in the audit record: the journal is a financial record exempt from erasure, so anything put
-/// in it can never be taken out.
+/// The journal body of a sealed audit record: the whole record, `audit.v4`
+/// ([`journal_body`]), so the journal can answer for it after the cache has let
+/// it go. Content is not in it for the same reason it is not in the record: the journal is a
+/// financial record exempt from erasure, so anything put in it can never be taken out.
 #[must_use]
 pub fn audit_body(record: &AuditRecord) -> Vec<u8> {
-    let mut body = BodyWriter::new();
-    body.text(&record.prev_hash);
-    body.text(&record.hash);
-    body.num(record.what.unit_key.get());
-    body.text(record.what.op_class.as_str());
-    body.text(record.what.destination.as_deref().unwrap_or(""));
-    body.text(record.origin_kind);
-    body.text(&format!("{:?}", record.outcome.unit_end));
-    body.text(&format!("{:?}", record.outcome.finish));
-    body.num(u64::from(record.usage.tier_bp));
-    body.num(u64::from(record.usage.fee_count));
-    body.num(record.usage.rate_card_version);
-    body.text(&record.usage.bucket_chain_ref);
-    body.text(record.correlation_hash.as_deref().unwrap_or(""));
-    body.finish()
+    journal_body(record)
+}
+
+/// The journal entry a sealed audit record goes on the chain as: its whole body, stamped with its
+/// own two clocks and the epochs it ran under.
+fn audit_entry(record: &AuditRecord) -> Entry {
+    Entry::new(RecordClass::Transaction, audit_body(record))
+        .at(record.wall, record.mono)
+        .under(record.controls.lease_epoch, record.controls.policy_epoch)
+}
+
+/// Read one journal record back as the sealed audit record it keeps, if it keeps one. A usage
+/// line's class resolves against the registered vocabulary; one that does not is an error.
+///
+/// # Errors
+///
+/// The record is an `audit.v4` body that does not decode, or names a class nobody declares here.
+pub fn decode_audit(record: &JournalRecord) -> Result<Option<AuditRecord>, String> {
+    if record.class != RecordClass::Transaction {
+        return Ok(None);
+    }
+    from_journal_body(&record.body, &busbar_contract::Registration::meter_class)
 }
 
 /// The journal body of a sealed checkpoint.
@@ -2010,6 +1928,73 @@ pub fn checkpoint_body(checkpoint: &Checkpoint) -> Vec<u8> {
     body.num(checkpoint.store_seq_high_water);
     body.num(u64::from(checkpoint.signature.is_some()));
     body.finish()
+}
+
+/// EVERY HEAD THE CHAIN ANCHORED, in chain order: each checkpoint record's sequence and body digest,
+/// read off its [`checkpoint_body`] (which carries both). The ONE reader of a checkpoint record's
+/// head — the boot's seed, its step check and a supplied-anchor comparison all read through it.
+pub fn anchored_on(records: &[JournalRecord]) -> impl Iterator<Item = AnchoredHead> + '_ {
+    records
+        .iter()
+        .filter(|r| r.class == RecordClass::Checkpoint)
+        .filter_map(|r| {
+            let mut body = BodyReader::new(&r.body);
+            let checkpoint_seq = body.num()?;
+            let _node = body.num()?;
+            let _wall = body.num()?;
+            let body_hash: [u8; 32] = body.bytes()?.try_into().ok()?;
+            Some(AnchoredHead {
+                checkpoint_seq,
+                body_hash,
+            })
+        })
+}
+
+/// THE HEAD A CHAIN ANCHORED LAST: the highest-numbered checkpoint on it, or `None` for a chain that
+/// has sealed none.
+fn last_anchored_on(records: &[JournalRecord]) -> Option<AnchoredHead> {
+    anchored_on(records).max_by_key(|head| head.checkpoint_seq)
+}
+
+/// THE BOOT'S STEP CHECK (self-attesting): the checkpoint the chain wrote LAST must be the one the
+/// anchor is seeded at, the highest-numbered. A newer record carrying an older checkpoint is a
+/// checkpoint put back out of step with the chain — a partial rewind. `None` when they agree.
+fn anchor_out_of_step(records: &[JournalRecord], seeded: Option<&AnchoredHead>) -> Option<String> {
+    let newest = anchored_on(records).last()?;
+    let seeded = seeded?;
+    (newest != *seeded).then(|| {
+        format!(
+            "checkpoint anchor (self-attesting): the chain's newest checkpoint record is seq {}, \
+             but the anchor stands at seq {} — a checkpoint out of step with the chain",
+            newest.checkpoint_seq, seeded.checkpoint_seq
+        )
+    })
+}
+
+/// THE UNITS THE SET-ASIDE JOURNAL RECORDS NAME: every hold, mark, claim and posting a quarantine
+/// holds, read from its bytes as they now read. `None` when some set-aside record cannot be read as
+/// a journal record at all: then no open hold can be cleared of it.
+fn quarantined_units(
+    quarantined: &[busbar_kernel_wal::Quarantine],
+) -> Option<Vec<(u64, TotalsKey, WindowStart, u64)>> {
+    let mut units = Vec::new();
+    for record in quarantined.iter().flat_map(|q| q.damaged.iter()) {
+        let journal = JournalRecord::decode(&record.body).ok()?;
+        let unit = if let Some(posting) = Posting::from_record(&journal) {
+            Some((
+                posting.incarnation,
+                posting.key,
+                posting.window,
+                posting.mono,
+            ))
+        } else if let Some(hold) = HoldOpened::from_record(&journal) {
+            Some(hold.unit())
+        } else {
+            UnitMark::from_record(&journal).map(|mark| mark.unit())
+        };
+        units.extend(unit);
+    }
+    Some(units)
 }
 
 /// How many bytes a migration marker takes on the journal. Fixed, because every field of it is.
@@ -2257,9 +2242,15 @@ pub fn build_with_cards(
         ledger: Ledger::dual_writing(legacy_rows),
         record: AuditChain::new(),
         checkpoints: Vec::new(),
+        audit_records: Vec::new(),
+        audit_findings: Vec::new(),
+        anchor_findings: Vec::new(),
+        // Seeded from the chain below, with everything else the chain rebuilds.
+        anchor: SelfAttestingAnchor::new(),
         // Set from the chain below, before anything can write under it.
         incarnation: 0,
         restart_findings: Vec::new(),
+        open_quarantined: Vec::new(),
         recovered_holds: 0,
         voided_claims: Vec::new(),
         refused: Vec::new(),
@@ -2309,10 +2300,18 @@ pub fn build_with_cards(
     let pinned = (durability.history)();
     let view = pinned.as_ref().map(PinnedHistory::view);
     let (replayed, unreadable) = match chain {
-        Ok(Ok(records)) => (
-            replay_into(&mut durability.ledger, &records, view.as_ref(), false),
-            None,
-        ),
+        Ok(Ok(records)) => {
+            let seeded = last_anchored_on(&records);
+            if let Some(why) = anchor_out_of_step(&records, seeded.as_ref()) {
+                durability.anchor_findings.push(why);
+            }
+            durability.anchor = SelfAttestingAnchor::seeded(seeded);
+            durability.resume_audit(&records);
+            (
+                replay_into(&mut durability.ledger, &records, view.as_ref(), false),
+                None,
+            )
+        }
         Ok(Err(broken)) => (
             Replayed::nothing(),
             Some(format!("the journal does not verify: {broken:?}")),
@@ -2322,14 +2321,40 @@ pub fn build_with_cards(
             Some(format!("the journal could not be read: {e}")),
         ),
     };
-    durability.incarnation = replayed.incarnation.saturating_add(1);
+    // A sealed audit record names the boot that wrote it too, so a chain whose newest record is an
+    // audit record still hands this boot the next incarnation.
+    let audited = durability
+        .audit_records
+        .iter()
+        .map(|r| r.what.incarnation)
+        .max()
+        .unwrap_or(0);
+    durability.incarnation = replayed.incarnation.max(audited).saturating_add(1);
     durability.refused = replayed.refused;
 
     // THE HOLDS A PREDECESSOR LEFT OPEN ARE RECOVERED HERE, before anything can settle onto this
     // book (item 127): `recovery::recover_all` had no production caller, so a hold whose node died
     // mid-unit was never posted by anybody. Each is posted per the recovery table and closed on the
     // chain under the incarnation that opened it.
-    durability.recover(replayed.open);
+    // A HOLD A QUARANTINED RECORD NAMES IS NEVER SETTLED ON A GUESS. The set-aside bytes may hold
+    // the unit's settlement; recovering its hold at the checkpoint would post a zero line for a unit
+    // that settled. Those holds stay OPEN-QUARANTINED, and each is a finding. A set-aside record
+    // that cannot be read at all clears no open hold.
+    let named = quarantined_units(&durability.quarantined);
+    let (held_back, open): (Vec<Recoverable>, Vec<Recoverable>) =
+        replayed.open.into_iter().partition(|held| match &named {
+            None => true,
+            Some(units) => units.contains(&held.hold.unit()),
+        });
+    durability.open_quarantined = held_back
+        .iter()
+        .map(|held| JournalDisagreement::OpenQuarantined {
+            key: held.hold.key.clone(),
+            window: held.hold.window,
+            mono: held.hold.mono,
+        })
+        .collect();
+    durability.recover(open);
 
     // AND EVERY IDEMPOTENCY CLAIM A PREDECESSOR TOOK WITH NO HOLD BEHIND IT IS VOIDED, so a client's
     // retry is answered by running the unit rather than by a unit that never ran.
@@ -2346,6 +2371,26 @@ pub fn build_with_cards(
         replayed
             .unreadable
             .into_iter()
+            .map(JournalDisagreement::Unreadable),
+    );
+    findings.extend(
+        durability
+            .quarantined
+            .iter()
+            .map(|q| JournalDisagreement::Quarantined(q.to_string())),
+    );
+    findings.extend(durability.open_quarantined.iter().cloned());
+    findings.extend(
+        durability
+            .audit_findings
+            .iter()
+            .map(|why| JournalDisagreement::Unreadable(format!("audit chain: {why}"))),
+    );
+    findings.extend(
+        durability
+            .anchor_findings
+            .iter()
+            .cloned()
             .map(JournalDisagreement::Unreadable),
     );
     findings.extend(durability.reconcile_with_journal());

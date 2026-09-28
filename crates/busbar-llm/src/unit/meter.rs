@@ -318,6 +318,13 @@ impl Metered {
 pub type MeterStep =
     for<'a> fn(&Pass<Meter>, &Grant<Consumption>, &MeterCtx<'a>, &Outcome) -> Metered;
 
+/// THE FEE UNIT this plane reports (#44, `BUSBAR-1.6.0.md` §7: the plane reports whether a fee unit was
+/// incurred; the kernel decides no fee of its own): one per delivered client request that routed to
+/// an upstream. The kind of leg and the client-facing status decide it, and nothing else.
+pub fn fee_units(delivered: bool, upstream_leg: bool) -> u32 {
+    u32::from(delivered && upstream_leg)
+}
+
 /// Step 6. Fold what the legs reported, post the counts, and say what the posting is made against.
 ///
 /// The provisional end is carried for the record and does not lower the fee: the fee was decided
@@ -334,7 +341,7 @@ pub fn meter(
     // client request that routed to an upstream. Decided once, here, and carried on both the step's
     // own answer and the report handed over to be priced, so the two cannot come to different
     // answers about the same unit.
-    let fee_count = door::fee_count(delivered, ctx.upstream_leg);
+    let fee_count = fee_units(delivered, ctx.upstream_leg);
     // A stream whose end carried a terminal error, whose translation aborted or whose transport was
     // cut bills what it streamed up to that end (#62): the reported usage is the charge on every end,
     // and there is no end that turns it back into mere evidence.

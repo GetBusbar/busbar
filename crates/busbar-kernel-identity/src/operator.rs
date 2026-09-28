@@ -9,8 +9,10 @@
 //! row answers the provider key, over the token's digest, and hands the result here.
 //!
 //! The provider key and the principal id are frozen configuration text naming a module no crate in
-//! this tree declares; the kernel reads them off its data table and hands the provider in as `op`,
-//! so this module names no instance.
+//! the kernel declares. They sit in the composition root's legacy table, and the root hands them in
+//! with its linked auth rows as [`OperatorWords`] (ARCHITECT 2026-09-30, KERNEL-AUTH-ZERO Q2;
+//! BUSBAR-1.6.0.md:173, "sit in the root legacy table"). The kernel hands the provider on as `op`,
+//! so neither this module nor the kernel names an instance.
 
 use busbar_contract::auth::{AuthModule, AuthVerdict};
 
@@ -20,19 +22,64 @@ pub type LinkedAuth = (&'static str, AuthBoundary);
 /// The SDK boundary a linked auth row is opened through.
 pub type AuthBoundary = &'static busbar_contract::abi::cold::ColdEntry;
 
-/// The auth rows this build LINKS (the composition root's, or a test binary's), installed once
-/// before the first resolution; the first install stands.
-static LINKED: std::sync::OnceLock<&[LinkedAuth]> = std::sync::OnceLock::new();
+/// THE OPERATOR CREDENTIAL'S FROZEN WORDS, as the composition root's legacy table spells them: the
+/// provider configuration names it by (the `auth.admin_auth:` default, the one `module:` whose
+/// definition may carry `token:`, and a reserved hook name) and the principal id it identifies the
+/// operator as. Kind-neutral values; which words they are is the root's business.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct OperatorWords {
+    /// The operator credential's provider key.
+    pub provider: &'static str,
+    /// The fixed principal id the operator credential identifies the operator as.
+    pub principal_id: &'static str,
+}
 
-/// Install this build's linked auth rows.
-pub fn install_linked(rows: &'static [LinkedAuth]) {
-    let _ = LINKED.set(rows);
+/// The auth rows this build LINKS (the composition root's, or a test binary's) and the operator
+/// credential's words the root hands in beside them, installed once before the first resolution;
+/// the first install stands.
+static LINKED: std::sync::OnceLock<(&[LinkedAuth], OperatorWords)> = std::sync::OnceLock::new();
+
+/// Install this build's linked auth rows and the operator credential's words.
+pub fn install_linked(rows: &'static [LinkedAuth], words: OperatorWords) {
+    let _ = LINKED.set((rows, words));
 }
 
 /// This build's linked auth rows, in registration order.
 pub fn linked() -> &'static [LinkedAuth] {
-    LINKED.get().copied().unwrap_or_default()
+    LINKED.get().map(|l| l.0).unwrap_or_default()
 }
+
+/// The operator credential's provider key, as configuration spells it: the root's word once handed
+/// in; before any hand-in, the [`STAND_IN`]'s.
+pub fn provider() -> &'static str {
+    words().provider
+}
+
+/// The fixed principal id the operator credential identifies the operator as.
+pub fn principal_id() -> &'static str {
+    words().principal_id
+}
+
+/// The operator credential's words: the ones a root (or a test binary) handed in, else [`STAND_IN`].
+pub fn words() -> OperatorWords {
+    LINKED.get().map_or(STAND_IN, |l| l.1)
+}
+
+/// The words before any hand-in. A build no root handed words to links no operator credential: no
+/// words. A TEST build (`stand-in`) has no root and answers to a kind-neutral double instead
+/// (BUSBAR-1.6.0.md:175, "Kernel tests use kind-neutral doubles"); its principal is the id the
+/// operator auth plugin a test binary links identifies as.
+#[cfg(feature = "stand-in")]
+pub const STAND_IN: OperatorWords = OperatorWords {
+    provider: "test-operator-double",
+    principal_id: "admin",
+};
+/// The words before any hand-in, in a shipped build: none (see the `stand-in` twin above).
+#[cfg(not(feature = "stand-in"))]
+pub const STAND_IN: OperatorWords = OperatorWords {
+    provider: "",
+    principal_id: "",
+};
 
 /// The names of this build's linked auth rows, in registration order.
 pub fn linked_names() -> Vec<&'static str> {
@@ -45,11 +92,11 @@ pub fn answered(op: &str) -> bool {
 }
 
 /// A TEST REGISTRY ROW: link `entry` (the SDK boundary of the auth plugin a test binary links for
-/// the operator credential), under the operator credential's provider key `op`, as the composition
-/// root links its row. The first install stands.
-pub fn install_row(op: &'static str, entry: AuthBoundary) {
+/// the operator credential), under the provider key of `words`, as the composition root links its
+/// row. The first install stands.
+pub fn install_row(words: OperatorWords, entry: AuthBoundary) {
     static ROW: std::sync::OnceLock<[LinkedAuth; 1]> = std::sync::OnceLock::new();
-    install_linked(ROW.get_or_init(|| [(op, entry)]));
+    install_linked(ROW.get_or_init(|| [(words.provider, entry)]), words);
 }
 
 /// THE OPERATOR CREDENTIAL'S REFUSALS, v1.5.5's text byte for byte with the provider read off the
