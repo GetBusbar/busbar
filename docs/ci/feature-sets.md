@@ -259,9 +259,7 @@ Covering leg is the FIRST leg that compiles the feature; several are compiled by
 | `busbar-llm/test-support` | non-default | `check` — `--all-targets` dev-dep unification | yes (incidental) |
 | `busbar-llm/timing` | non-default | `feature-sets` (this change) | NO |
 | `busbar-llm/webhook-receiver` | non-default | `feature-sets` (this change) | NO |
-| `busbar-llm-codec/openapi-schema` | non-default | `openapi-schema` | yes |
-| `busbar-llm-codec/test-support` | non-default | `check` — `--all-targets` dev-dep unification | yes (incidental) |
-| `busbar-llm-codec/timing` | non-default | `feature-sets` (this change) | NO |
+| `busbar-plane-llm/test-support` | non-default | `check` — `--all-targets` dev-dep unification (`busbar-llm`'s dev-dep, same edge `busbar-llm-codec/test-support` carried before the codec fold, R7 2026-09-27, #39) | yes (incidental) |
 | `busbar-mcp/auth-admin-tokens` | non-default | `check` — `--all-targets` dev-dep unification | yes (incidental) |
 | `busbar-mcp/openapi-schema` | non-default | `openapi-schema` | yes |
 | `busbar-mcp/test-support` | non-default | `check` — `--all-targets` dev-dep unification | yes (incidental) |
@@ -280,4 +278,3 @@ Covering leg is the FIRST leg that compiles the feature; several are compiled by
 | `busbar-voice/openapi-schema` | non-default | `openapi-schema` | yes |
 | `busbar-voice/runtime` | non-default | `check` — reached from a workspace default | yes |
 | `busbar-voice/test-support` | non-default | `check` step "Voice runtime tests" | yes |
-| `busbar-voice-codec/runtime` | non-default | `check` — reached from a workspace default | yes |

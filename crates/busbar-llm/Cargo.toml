@@ -116,6 +116,14 @@ base64 = { workspace = true }
 busbar-contract = { path = "../busbar-contract" }
 
 [dev-dependencies]
+# Turns on `busbar-plane-llm`'s `test-support` feature under this crate's own `--all-targets` test
+# build. Owner ruling R7 (2026-09-27, #39): `busbar-llm-codec` used to carry this same incidental
+# unification edge (it was a dev-dependency of both `busbar-llm` and `busbar-plane-llm`, each
+# turning its `test-support` on) before its `test-support` feature folded into `busbar-plane-llm`'s
+# own, unchanged. Nothing in this crate's tests reads the feature; this edge exists so
+# `feature-sets` sees `busbar-plane-llm/test-support` built somewhere, matching the fuzz target's
+# own coverage of the same feature.
+busbar-plane-llm = { path = "../busbar-plane-llm", features = ["test-support"] }
 # THE NEUTRAL TEST KIT (`busbar_substrate::testkit`: the built-app seam the money-path tests forward
 # through, the warn-capture layer, the fixture seams), named explicitly here so this crate's test build
 # turns the substrate's test surface on in its own right — not as a side effect of core's dev-edge.

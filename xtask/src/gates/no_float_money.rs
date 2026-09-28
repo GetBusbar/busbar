@@ -426,22 +426,20 @@ pub struct CountRoot {
 /// second codec crate at all. Each floor is set below the tree's real count so ordinary churn does
 /// not trip it and an emptied or relocated root does.
 pub const COUNT_READ_ROOTS: &[CountRoot] = &[
+    // `busbar-llm-codec` DISSOLVED (owner ruling R7, 2026-09-27, #39: no `busbar-*-codec` crate):
+    // its files folded whole into `crates/busbar-plane-llm/src`, already a home here, so the union
+    // this group scans lost no file and the dead `crates/busbar-llm-codec/src` home is struck.
     CountRoot {
         area: "the LLM codecs, engine and plane",
-        homes: &[
-            "crates/busbar-llm-codec/src",
-            "crates/busbar-llm/src",
-            "crates/busbar-plane-llm/src",
-        ],
+        homes: &["crates/busbar-llm/src", "crates/busbar-plane-llm/src"],
         floor: 70,
     },
+    // `busbar-voice-codec` DISSOLVED THE SAME WAY, same ruling: its files folded whole into
+    // `crates/busbar-plane-streaming/src`, already a home here, so the dead
+    // `crates/busbar-voice-codec/src` home is struck.
     CountRoot {
         area: "the audio codecs, engine and plane",
-        homes: &[
-            "crates/busbar-voice-codec/src",
-            "crates/busbar-voice/src",
-            "crates/busbar-plane-streaming/src",
-        ],
+        homes: &["crates/busbar-voice/src", "crates/busbar-plane-streaming/src"],
         floor: 28,
     },
     // THE ONE FOLD THIS GROUP WAS BUILT FOR ACTUALLY HAPPENED, AND THE GROUP DID NOT MOVE WITH IT.

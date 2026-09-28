@@ -1181,11 +1181,17 @@ mod tests {
     }
 
     /// ITEM F0. The floor is a guard against a BLIND walk, not a ratchet on the roster: the fold's
-    /// planned end state (35 crates, and the 34 / 33 roster variants) must pass it, and a walk that
+    /// planned end state (34 crates, and the 33 / 32 roster variants) must pass it, and a walk that
     /// finds a handful must not. At 40 the floor errored at 39 crates, i.e. at fold #10.
+    ///
+    /// RE-MEASURED after the codec fold (owner ruling R7, 2026-09-27, #39): `busbar-llm-codec` and
+    /// `busbar-voice-codec` dissolved, taking two manifests out of `crates/` with them (36 -> 34
+    /// `.toml` files, the real walk this fixture truncates FROM). The sample set moves down with
+    /// it, one for one — it was never a ratchet on the roster, only a range of healthy sizes this
+    /// rule must not redden on.
     #[test]
     fn the_crates_walk_floor_admits_the_fold_end_state_and_rejects_a_collapse() {
-        for n in [35, 34, 33] {
+        for n in [34, 33, 32] {
             let row = rule_discovery(&crates_walk_holding(n));
             assert_eq!(
                 row.status,

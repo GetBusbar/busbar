@@ -102,7 +102,7 @@ pub const CARGO_LOCAL: &[&str] = &[
     "cargo test -p busbar -p busbar-kernel -p busbar-core-admin --features openapi-schema --locked openapi -- --nocapture",
     "cargo build --locked --bin busbar",
     "cargo test -p busbar --test migration_corpus --locked -- --nocapture",
-    "cargo test -p busbar-voice --features runtime,test-support -p busbar-voice-codec --features runtime --locked",
+    "cargo test -p busbar-voice --features runtime,test-support --locked",
     "cargo test -p busbar-llm --locked --lib unit::",
     "cargo test -p busbar-kernel --features timing --lib --test timing_smoke --locked -- timing:: smoke_records",
     "cargo build -p xtask --locked",
@@ -1268,7 +1268,7 @@ fn selftest(
         ),
         Ok(ftext) => {
             let found = discovery::cargo_invocations(&ftext);
-            let want = "cargo test -p busbar-voice --features runtime,test-support -p busbar-voice-codec --features runtime --locked";
+            let want = "cargo test -p busbar-voice --features runtime,test-support --locked";
             ok(
                 found.iter().any(|c| c == want),
                 "a cargo invocation continued over three lines is discovered WHOLE".to_string(),

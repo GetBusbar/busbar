@@ -2627,6 +2627,7 @@ jobs:
   # feature-covered: busbar-a2a/test-support -- check -- unified in by a dev-dependency under --all-targets in that job
   # feature-covered: busbar-mcp/test-support -- check -- unified in by a dev-dependency under --all-targets in that job
   # feature-covered: busbar-llm/test-support -- check -- unified in by a dev-dependency under --all-targets in that job
+  # feature-covered: busbar-plane-llm/test-support -- check -- unified in by busbar-llm's own dev-dependency under --all-targets in that job (owner ruling R7, 2026-09-27, #39: the same incidental edge busbar-llm-codec/test-support carried before the codec fold)
   # feature-covered: busbar-core-admin/openapi-schema -- openapi-schema -- the job clippies and tests -p busbar-core-admin with the feature named
   # feature-covered: busbar-contract/dispatch -- check -- reached from busbar-kernel/dispatch in the workspace default build (transport axis folded into busbar-contract, DECISIONS #38)
   # feature-covered: busbar-contract/runtime -- check -- reached from busbar-kernel/runtime in the workspace default build (transport axis folded into busbar-contract, DECISIONS #38)
