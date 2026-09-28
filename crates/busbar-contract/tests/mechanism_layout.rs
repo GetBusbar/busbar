@@ -379,102 +379,7 @@ fn the_auth_kind_has_its_stated_layout() {
     );
     pin!(
         BeginLoginOut,
-/// The store kind (v3): every `#[repr(C)]` type under `abi/store/` (B.1; m3-inputs "store v3 money
-/// slots" and "window caps").
-#[test]
-fn the_store_kind_has_its_stated_layout() {
-    pin!(store::HostBuf, 16, 8, [ptr = 0, cap = 8]);
-    pin!(
-        store::HostBlobs,
-        32,
-        8,
-        [items = 0, items_cap = 8, bytes = 16]
-    );
-    pin!(
-        store::HostBytesOut,
-        120,
-        8,
-        [
-            head = 0,
-            found = 96,
-            _reserved = 100,
-            written = 104,
-            needed = 112
-        ]
-    );
-    pin!(
-        store::HostListOut,
-        128,
-        8,
-        [
-            head = 0,
-            items_written = 96,
-            bytes_written = 104,
-            needed_items = 112,
-            needed_bytes = 120
-        ]
-    );
-    pin!(
-        store::LeasedBlobOut,
-        128,
-        8,
-        [head = 0, found = 96, _reserved = 100, record = 104]
-    );
-    pin!(
-        store::LeasedListOut,
-        112,
-        8,
-        [head = 0, items = 96, items_len = 104]
-    );
-    pin!(
-        store::LeasedStrListOut,
-        112,
-        8,
-        [head = 0, items = 96, items_len = 104]
-    );
-    pin!(store::CountOut, 104, 8, [head = 0, count = 96]);
-    pin!(
-        store::VerdictOut,
-        104,
-        8,
-        [head = 0, verdict = 96, _reserved = 100]
-    );
-    pin!(
-        store::StoreTail,
-        16,
-        4,
-        [
-            head = 0,
-            ephemeral = 8,
-            durable_plane = 9,
-            fork_refusal = 10,
-            _reserved = 11
-        ]
-    );
-    pin!(store::OpId, 16, 1, []);
-    pin!(
-        store::UnitCell,
-        72,
-        8,
-        [
-            bucket = 0,
-            pool = 16,
-            dimension = 32,
-            _r = 36,
-            class_key = 40,
-            amount = 56,
-            window_start = 64
-        ]
-    );
-    pin!(
-        store::CellGrant,
-        24,
-        8,
-        [slice_id = 0, granted = 8, valid_until_ms = 16]
-    );
-    pin!(
-        store::ReserveIn,
-        144,
+        136,
         8,
         [
             head = 0,
@@ -583,6 +488,106 @@ fn the_auth_slots_follow_the_lifecycle_contiguously() {
     assert_eq!(auth::SLOTS, LIFECYCLE_SLOTS + auth::KIND_SLOTS);
     assert_eq!(size_of::<auth::Ops>(), 8 + 8 * auth::SLOTS as usize);
 }
+
+/// The store kind (v3): every `#[repr(C)]` type under `abi/store/` (B.1; m3-inputs "store v3 money
+/// slots" and "window caps").
+#[test]
+fn the_store_kind_has_its_stated_layout() {
+    pin!(store::HostBuf, 16, 8, [ptr = 0, cap = 8]);
+    pin!(
+        store::HostBlobs,
+        32,
+        8,
+        [items = 0, items_cap = 8, bytes = 16]
+    );
+    pin!(
+        store::HostBytesOut,
+        120,
+        8,
+        [
+            head = 0,
+            found = 96,
+            _reserved = 100,
+            written = 104,
+            needed = 112
+        ]
+    );
+    pin!(
+        store::HostListOut,
+        128,
+        8,
+        [
+            head = 0,
+            items_written = 96,
+            bytes_written = 104,
+            needed_items = 112,
+            needed_bytes = 120
+        ]
+    );
+    pin!(
+        store::LeasedBlobOut,
+        128,
+        8,
+        [head = 0, found = 96, _reserved = 100, record = 104]
+    );
+    pin!(
+        store::LeasedListOut,
+        112,
+        8,
+        [head = 0, items = 96, items_len = 104]
+    );
+    pin!(
+        store::LeasedStrListOut,
+        112,
+        8,
+        [head = 0, items = 96, items_len = 104]
+    );
+    pin!(store::CountOut, 104, 8, [head = 0, count = 96]);
+    pin!(
+        store::VerdictOut,
+        104,
+        8,
+        [head = 0, verdict = 96, _reserved = 100]
+    );
+    pin!(
+        store::StoreTail,
+        16,
+        4,
+        [
+            head = 0,
+            ephemeral = 8,
+            durable_plane = 9,
+            fork_refusal = 10,
+            _reserved = 11
+        ]
+    );
+    pin!(store::OpId, 16, 1, []);
+    pin!(
+        store::UnitCell,
+        72,
+        8,
+        [
+            bucket = 0,
+            pool = 16,
+            dimension = 32,
+            _r = 36,
+            class_key = 40,
+            amount = 56,
+            window_start = 64
+        ]
+    );
+    pin!(
+        store::CellGrant,
+        24,
+        8,
+        [slice_id = 0, granted = 8, valid_until_ms = 16]
+    );
+    pin!(
+        store::ReserveIn,
+        144,
+        8,
+        [
+            head = 0,
             op_id = 88,
             epoch = 104,
             cells = 112,

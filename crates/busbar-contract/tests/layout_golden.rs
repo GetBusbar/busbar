@@ -1035,138 +1035,6 @@ fn compute_layout() -> String {
     record!(s, MechCancelIn, [head, ticket]);
     record!(s, MechCancelOut, [head, disposition, _reserved]);
     record!(s, MechReleaseIn, [head, lease]);
-    record!(
-        s,
-        AuthOps,
-        [
-            head,
-            verify,
-            begin_login,
-            complete_login,
-            open_outbound,
-            outbound_ready,
-            fields
-        ]
-    );
-    record!(s, AuthStyleDecl, [name, flags, _reserved]);
-    record!(
-        s,
-        AuthTail,
-        [
-            head,
-            caps,
-            facts,
-            login_kind,
-            _reserved,
-            styles,
-            styles_len,
-            aliases,
-            aliases_len,
-            carriers,
-            carriers_len
-        ]
-    );
-    record!(s, AuthSpan, [off, len]);
-    record!(s, AuthNamedValue, [name, value]);
-    record!(
-        s,
-        AuthRequestFacts,
-        [
-            method,
-            authority,
-            canonical_path,
-            query,
-            timestamp,
-            body_hash,
-            body_hash_present,
-            _reserved
-        ]
-    );
-    record!(
-        s,
-        AuthIdentityBuf,
-        [buf, buf_cap, groups, groups_cap, _reserved]
-    );
-    record!(
-        s,
-        AuthIdentityOut,
-        [
-            subject, key_id, key_name, user, provider, name, claims, claims_fmt, flags, ttl_secs,
-            groups_len, _reserved
-        ]
-    );
-    record!(
-        s,
-        AuthVerifyIn,
-        [head, credential, carrier, carrier_len, request, out_buf]
-    );
-    record!(
-        s,
-        AuthIdentifyOut,
-        [head, verdict, needed_groups, needed_bytes, identity]
-    );
-    record!(
-        s,
-        AuthBeginLoginIn,
-        [
-            head,
-            redirect_uri,
-            state,
-            nonce,
-            code_challenge,
-            scopes,
-            scopes_len
-        ]
-    );
-    record!(s, AuthLoginField, [name, label, kind, required]);
-    record!(
-        s,
-        AuthBeginLoginOut,
-        [head, shape, _reserved, authorize_url, form, form_len]
-    );
-    record!(
-        s,
-        AuthCompleteLoginIn,
-        [
-            head,
-            code,
-            state,
-            redirect_uri,
-            code_verifier,
-            submitted,
-            submitted_len,
-            out_buf
-        ]
-    );
-    record!(s, AuthOpenOutboundIn, [head, style, credential, settings]);
-    record!(s, AuthOpenOutboundOut, [head, handle]);
-    record!(s, AuthOutboundReadyIn, [head, handle]);
-    record!(s, AuthOutboundReadyOut, [head, ready, _reserved]);
-    record!(s, AuthFieldSpan, [name, value, flags, _reserved]);
-    record!(
-        s,
-        AuthFieldsIn,
-        [
-            head,
-            handle,
-            mode,
-            _reserved,
-            request,
-            caller_credential,
-            field_buf,
-            field_buf_cap,
-            fields,
-            fields_cap,
-            _reserved2,
-            headers,
-            headers_len
-        ]
-    );
-    record!(
-        s,
-        AuthFieldsOut,
-        [head, fields_len, needed_fields, needed_bytes]
-    );
     record!(s, StoreHostBuf, [ptr, cap]);
     record!(s, StoreHostBlobs, [items, items_cap, bytes]);
     record!(
@@ -1341,10 +1209,138 @@ fn compute_layout() -> String {
             window_caps
         ]
     );
-    record!(s, SecretOps, [head]);
-    record!(s, AuthOps, [head]);
-    record!(s, HookOps, [head]);
-    record!(s, ExportOps, [head]);
+    record!(
+        s,
+        AuthOps,
+        [
+            head,
+            verify,
+            begin_login,
+            complete_login,
+            open_outbound,
+            outbound_ready,
+            fields
+        ]
+    );
+    record!(s, AuthStyleDecl, [name, flags, _reserved]);
+    record!(
+        s,
+        AuthTail,
+        [
+            head,
+            caps,
+            facts,
+            login_kind,
+            _reserved,
+            styles,
+            styles_len,
+            aliases,
+            aliases_len,
+            carriers,
+            carriers_len
+        ]
+    );
+    record!(s, AuthSpan, [off, len]);
+    record!(s, AuthNamedValue, [name, value]);
+    record!(
+        s,
+        AuthRequestFacts,
+        [
+            method,
+            authority,
+            canonical_path,
+            query,
+            timestamp,
+            body_hash,
+            body_hash_present,
+            _reserved
+        ]
+    );
+    record!(
+        s,
+        AuthIdentityBuf,
+        [buf, buf_cap, groups, groups_cap, _reserved]
+    );
+    record!(
+        s,
+        AuthIdentityOut,
+        [
+            subject, key_id, key_name, user, provider, name, claims, claims_fmt, flags, ttl_secs,
+            groups_len, _reserved
+        ]
+    );
+    record!(
+        s,
+        AuthVerifyIn,
+        [head, credential, carrier, carrier_len, request, out_buf]
+    );
+    record!(
+        s,
+        AuthIdentifyOut,
+        [head, verdict, needed_groups, needed_bytes, identity]
+    );
+    record!(
+        s,
+        AuthBeginLoginIn,
+        [
+            head,
+            redirect_uri,
+            state,
+            nonce,
+            code_challenge,
+            scopes,
+            scopes_len
+        ]
+    );
+    record!(s, AuthLoginField, [name, label, kind, required]);
+    record!(
+        s,
+        AuthBeginLoginOut,
+        [head, shape, _reserved, authorize_url, form, form_len]
+    );
+    record!(
+        s,
+        AuthCompleteLoginIn,
+        [
+            head,
+            code,
+            state,
+            redirect_uri,
+            code_verifier,
+            submitted,
+            submitted_len,
+            out_buf
+        ]
+    );
+    record!(s, AuthOpenOutboundIn, [head, style, credential, settings]);
+    record!(s, AuthOpenOutboundOut, [head, handle]);
+    record!(s, AuthOutboundReadyIn, [head, handle]);
+    record!(s, AuthOutboundReadyOut, [head, ready, _reserved]);
+    record!(s, AuthFieldSpan, [name, value, flags, _reserved]);
+    record!(
+        s,
+        AuthFieldsIn,
+        [
+            head,
+            handle,
+            mode,
+            _reserved,
+            request,
+            caller_credential,
+            field_buf,
+            field_buf_cap,
+            fields,
+            fields_cap,
+            _reserved2,
+            headers,
+            headers_len
+        ]
+    );
+    record!(
+        s,
+        AuthFieldsOut,
+        [head, fields_len, needed_fields, needed_bytes]
+    );
     record!(s, PlaneOps, [head]);
     record!(s, TransportOps, [head]);
 
@@ -1714,6 +1710,8 @@ fn a_perturbed_hook_golden_line_fails_the_comparator() {
     let perturbed = actual.replacen(line, "HookDecideOut.order_written=144", 1);
     let err = compare(&perturbed, &actual).expect_err("a perturbed line must fail");
     assert!(err.contains("HookDecideOut.order_written=144"), "{err}");
+}
+
 /// RED ARM, store kind: one perturbed store golden line (a `UnitCell`'s `window_start` offset, the
 /// money shape of m3-inputs "store v3 money slots" / "window caps") fails the comparator.
 #[test]
