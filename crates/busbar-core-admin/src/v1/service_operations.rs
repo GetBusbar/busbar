@@ -424,7 +424,9 @@ impl AdminService {
                     let active = if name == busbar_kernel::config::KEYS_MODULE {
                         self.app.auth.keys_in_chain
                     } else if name == busbar_kernel::config::operator_provider() {
-                        self.app.admin_chain.iter().any(|m| m == name)
+                        // By module: a provider of any name backed by the operator credential.
+                        let op = &self.app.admin_modules.operator;
+                        self.app.admin_chain.iter().any(|m| op.is(m))
                     } else {
                         chain.contains(&name)
                     };

@@ -1298,7 +1298,7 @@ pub fn build_app_from_config(
     // The operator credential judges the token this build declares, or — when it declares none —
     // the one the governance state holds (that live credential stands, as it does for the rotation).
     let digest = rotated_digest.unwrap_or_else(|| governance.as_ref()?.admin_token_hash());
-    admin_modules.operator = crate::auth::open_operator(&plugin_registry, digest.as_deref())
+    *admin_modules.operator = crate::auth::open_operator(&plugin_registry, digest.as_deref())
         .map_err(|e| format!("admin auth chain construction failed: {e}"))?;
     let admin_modules = Arc::new(admin_modules);
 

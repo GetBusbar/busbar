@@ -164,3 +164,62 @@ impl OperatorCredential {
         )
     }
 }
+
+/// The operator credential on an admin chain: the credential the auth axis answered, and the
+/// provider names it answers for. A provider is the operator credential BY ITS MODULE, never by its
+/// name: `ops: { module: <operator provider> }` answers here, and a provider that carries the
+/// operator provider's own name but is backed by another module does not, so it is that module.
+/// It judges as its credential does (it dereferences to the [`OperatorCredential`] the auth axis
+/// answered), and adds only which providers it answers for.
+pub struct Operator {
+    cred: OperatorCredential,
+    op: String,
+    names: Vec<String>,
+}
+
+impl Operator {
+    /// The operator credential of the operator provider `op`, answering for `op` referenced bare,
+    /// with nothing opened yet.
+    pub fn new(op: &str) -> Self {
+        Self {
+            cred: OperatorCredential::Unanswered,
+            op: op.to_string(),
+            names: vec![op.to_string()],
+        }
+    }
+
+    /// Record that the provider `name` is backed by `module`, and answer whether that makes it the
+    /// operator credential: it answers for `name` exactly when `module` is the operator provider.
+    pub fn backs(&mut self, name: &str, module: &str) -> bool {
+        self.names.retain(|n| n != name);
+        let operator = module == self.op;
+        if operator {
+            self.names.push(name.to_string());
+        }
+        operator
+    }
+
+    /// Whether the admin-chain provider `name` is the operator credential.
+    pub fn is(&self, name: &str) -> bool {
+        self.names.iter().any(|n| n == name)
+    }
+
+    /// Whether a principal `id` that the admin-chain provider `name` identified is the operator: the
+    /// provider is the operator credential and `id` is the principal id it mints (`principal_id`).
+    pub fn mints(&self, name: Option<&str>, id: &str, principal_id: &str) -> bool {
+        name.is_some_and(|n| self.is(n)) && id == principal_id
+    }
+}
+
+impl std::ops::Deref for Operator {
+    type Target = OperatorCredential;
+    fn deref(&self) -> &OperatorCredential {
+        &self.cred
+    }
+}
+
+impl std::ops::DerefMut for Operator {
+    fn deref_mut(&mut self) -> &mut OperatorCredential {
+        &mut self.cred
+    }
+}

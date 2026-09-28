@@ -198,11 +198,12 @@ pub struct AdminAuthChain {
     /// Whether ANY resolved admin module is a loaded plugin — i.e. whether running the admin chain
     /// can block (FFI/JWKS/introspection). Decided once at build; gates the off-reactor offload.
     pub has_plugin: bool,
-    /// The operator credential, as the auth axis answers it.
-    pub operator: OperatorCredential,
+    /// The operator credential, as the auth axis answers it, and the providers it answers for: a
+    /// provider is the operator credential by its module, never by its name ([`Operator`]).
+    pub operator: Operator,
 }
 
-pub use busbar_kernel_identity::operator::OperatorCredential;
+pub use busbar_kernel_identity::operator::{Operator, OperatorCredential};
 
 /// Open the operator credential from `registry`: the row answering
 /// [`crate::config::operator_provider`], over the operator token's SHA-256 hex `digest` (the
@@ -234,7 +235,7 @@ impl AdminAuthChain {
         Self {
             modules: std::collections::HashMap::new(),
             has_plugin: false,
-            operator: OperatorCredential::Unanswered,
+            operator: Operator::new(crate::config::operator_provider()),
         }
     }
 
@@ -254,8 +255,9 @@ impl AdminAuthChain {
         let mut modules: std::collections::HashMap<String, Box<dyn AuthModule>> =
             std::collections::HashMap::new();
         let mut has_plugin = false;
+        let mut operator = Operator::new(crate::config::operator_provider());
         for entry in &cfg.admin_auth {
-            if entry.module == crate::config::operator_provider() {
+            if operator.backs(&entry.name, &entry.module) {
                 continue;
             }
             match entry.module.as_str() {
@@ -286,7 +288,7 @@ impl AdminAuthChain {
         Ok(Self {
             modules,
             has_plugin,
-            operator: OperatorCredential::Unanswered,
+            operator,
         })
     }
 }
@@ -998,7 +1000,7 @@ fn run_admin_chain(
     for name in &app.admin_chain {
         // The operator credential is NEVER cached (caching a microsecond compare only widens the
         // rotation window); external admin modules are the cache's case.
-        let operator = name == crate::config::operator_provider();
+        let operator = app.admin_modules.operator.is(name);
         let cacheable = !operator;
         if let Some(cred) = composite.as_deref().filter(|_| cacheable) {
             if let Some(outcome) = app.credential_cache.get(name, cred, now) {
@@ -1205,7 +1207,7 @@ fn module_admin_scope_cap(
     module: &str,
 ) -> Option<busbar_contract::authz::Scope> {
     use busbar_contract::authz::Scope;
-    if module == crate::config::operator_provider() {
+    if app.admin_modules.operator.is(module) {
         return None;
     }
     Some(
@@ -1255,7 +1257,7 @@ pub fn dry_run_admin_scope(
         ChainVerdict::Open => return busbar_contract::authz::Grants::default(),
         ChainVerdict::Denied => return busbar_contract::authz::Grants::default(),
     };
-    let grants = admin_scope_for(module.as_deref(), principal.as_ref(), &app.role_bindings);
+    let grants = admin_scope_for(app, module.as_deref(), principal.as_ref());
     match cap {
         Some(c) => grants.capped_by(c),
         None => grants,
@@ -1272,9 +1274,9 @@ pub fn dry_run_admin_scope(
 /// `allowed_pools` already unions across a principal's granting roles). No principal = the explicit
 /// open admin posture (empty `admin_auth:`) - full, dev-only.
 fn admin_scope_for(
+    app: &crate::state::App,
     module: Option<&str>,
     principal: Option<&Principal>,
-    role_bindings: &crate::config::RoleBindings,
 ) -> busbar_contract::authz::Grants {
     use busbar_contract::authz::{Grants, Scope};
     let Some(p) = principal else {
@@ -1289,19 +1291,19 @@ fn admin_scope_for(
     // compiled today), the only producer of a roleless principal on this path is the operator
     // credential itself.
     if p.roles.is_empty() {
-        // Full-by-reserved-id is gated on the identifying MODULE being the operator credential's
-        // provider, NOT merely on the id string: an EXTERNAL admin module returning a roleless
-        // principal that happens to carry the reserved id must NOT reach `Grants::of(Full)` — it
-        // falls to `Grants::default()`. Only the operator credential mints the operator identity,
-        // so only it confers operator authority.
-        if module == Some(crate::config::operator_provider())
-            && p.id == crate::config::operator_principal_id()
-        {
+        // Full-by-reserved-id is gated on the identifying PROVIDER being the operator credential
+        // (its module is the operator credential's, whatever its name), NOT merely on the id
+        // string or the provider's name: an EXTERNAL admin module returning a roleless principal
+        // that happens to carry the reserved id must NOT reach `Grants::of(Full)` — it falls to
+        // `Grants::default()`. Only the operator credential mints the operator identity, so only
+        // it confers operator authority.
+        let op = &app.admin_modules.operator;
+        if op.mints(module, &p.id, crate::config::operator_principal_id()) {
             return Grants::of(Scope::Full);
         }
         return Grants::default();
     }
-    let Some(table) = module.and_then(|m| role_bindings.get(m)) else {
+    let Some(table) = module.and_then(|m| app.role_bindings.get(m)) else {
         return Grants::default();
     };
     p.roles
@@ -1566,7 +1568,7 @@ pub(crate) async fn auth_middleware(
         // grant, unmapped groups grant nothing), CAPPED by the identifying module's
         // `max_admin_scope:` ceiling, and check it against the endpoint's required scope. An
         // identified principal with NO grant is 403, never 401 — authenticated but not authorized.
-        let scope = admin_scope_for(id_module.as_deref(), principal.as_ref(), &app.role_bindings);
+        let scope = admin_scope_for(&app, id_module.as_deref(), principal.as_ref());
         let scope = match scope_cap {
             Some(cap) => scope.capped_by(cap),
             None => scope,
