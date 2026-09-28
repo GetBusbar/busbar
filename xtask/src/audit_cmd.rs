@@ -288,6 +288,9 @@ fn cmd_status(git: &Git, register: &std::path::Path, report: &std::path::Path) -
 
 /// The committed markdown report. Written with the same statuses the table above prints, from the
 /// same rows, so the document and the terminal can never disagree.
+///
+/// NOT A `Ctx::write_file` HAZARD: `audit_cmd`'s `cmd_*` functions take `git: &Git` and a
+/// `register`/`report: &Path` directly, never a `Ctx` — see [`crate::audit::save`].
 fn write_report(
     path: &std::path::Path,
     rows: &[RowView],
@@ -2048,6 +2051,9 @@ mod move_tests {
         assert_eq!(s.status("crates/busbar-plugin-sdk/src"), "unaudited");
 
         // --- THE SAME RENAME THROUGH `move` ---
+        // NOT A `Ctx::write_file` HAZARD: `s.xtask(…)` is `audit_cmd::main`, which (like every
+        // `cmd_*` here) takes `register`/`git` directly and never opens a `Ctx` — see
+        // `write_report` above and `crate::audit::save`.
         std::fs::write(s.register(), &audited).expect("the register is restorable");
         assert_eq!(
             s.xtask(&[

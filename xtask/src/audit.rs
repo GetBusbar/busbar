@@ -1192,6 +1192,11 @@ pub fn load(path: &Path) -> Result<Json, String> {
 }
 
 /// Write the register the way Python wrote it, down to the single trailing newline.
+///
+/// NOT A `Ctx::write_file` HAZARD: the whole `audit`/`cmd_*` family this backs (`xtask/src/
+/// audit_cmd.rs`) takes a `register: &Path` and a `Git` directly — it never opens or threads a
+/// `Ctx` at all, so there is no `read_memo`/`walk_memo` in scope that this write could go stale
+/// against.
 pub fn save(path: &Path, doc: &Json) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;

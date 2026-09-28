@@ -563,6 +563,14 @@ impl Ctx {
     /// before. Every in-tree `std::fs::write(cx.abs(...), …)` this crate has goes through here
     /// instead so that hazard has exactly one place to be closed, not eight.
     ///
+    /// THE SAME HAZARD REACHES `walk_memo` when the write is a NEW file: a cached `collect()` for
+    /// any root that is an ancestor of `rel` was taken before this file existed, and a `list`/
+    /// `walk` over that root afterward must see it. Every cached root under which `rel` sits is
+    /// forgotten too — unconditionally, on every write, not only a create: a plain overwrite's
+    /// listing is unchanged so the drop just costs one more `collect()` next time it is asked, and
+    /// that is far cheaper than a second code path that has to prove "this path was already
+    /// there" correctly.
+    ///
     /// Returns `std::io::Result` — the same type `std::fs::write` itself returns — so every
     /// existing call site's `Ok(()) => …, Err(e) => … {e} …` arm reads exactly as it did before.
     pub fn write_file(
@@ -576,6 +584,10 @@ impl Ctx {
             .lock()
             .expect("the read memo mutex is never poisoned")
             .remove(&abs);
+        self.walk_memo
+            .lock()
+            .expect("the walk memo mutex is never poisoned")
+            .retain(|root, _| !abs.starts_with(root));
         Ok(())
     }
 
@@ -1217,6 +1229,41 @@ mod read_write_memo_tests {
 
         // A memo that was never invalidated would still answer "before" here.
         assert_eq!(cx.read(rel).as_deref(), Ok("after"));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// THE SAME HAZARD ONE LEVEL UP: `collect_memoized` remembers a directory's LISTING, and a
+    /// `write_file` that creates a file the walk had never seen must un-remember it too, not just
+    /// the bytes. A `list` straight after a create-via-`write_file` must name the new file, not
+    /// whatever `list` cached before it existed.
+    #[test]
+    fn a_list_straight_after_write_file_creates_a_file_sees_it() {
+        let root = std::env::temp_dir().join(format!(
+            "xtask-ctx-walk-memo-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let sub = root.join("sub");
+        let scratch = root.join(".fix").join("xtask");
+        std::fs::create_dir_all(&sub).expect("sub dir creates");
+        std::fs::create_dir_all(&scratch).expect("scratch dir creates");
+
+        let cx = Ctx::at(&root, &scratch).expect("ctx opens over the temp root");
+        let spec = super::WalkSpec::new(["sub"]).ext("txt").allow_empty();
+
+        // Populate the walk memo with a listing that does NOT have the file yet.
+        assert_eq!(
+            cx.list(&spec).expect("first list"),
+            Vec::<std::path::PathBuf>::new()
+        );
+
+        cx.write_file("sub/new.txt", "hi")
+            .expect("write_file creates a file the first list never saw");
+
+        // A walk memo that was never invalidated would still list nothing here.
+        let after = cx.list(&spec).expect("second list");
+        assert_eq!(after, vec![std::path::PathBuf::from("sub/new.txt")]);
 
         let _ = std::fs::remove_dir_all(&root);
     }

@@ -79,6 +79,10 @@ fn run(cx: &Ctx, args: &[String]) -> Result<i32, String> {
             let files = render::render(&fleet, fleet.plugin(repo)?, &templates)?;
             match out {
                 Some(dir) => {
+                    // NOT A `Ctx::write_file` HAZARD despite `cx` being in scope: `--out <dir>` is
+                    // an arbitrary CLI argument (a satellite plugin repo's own checkout, never
+                    // this tree) and is never resolved through `cx.abs`/`cx.root` — a fleet
+                    // render never writes under, or is ever read back through, THIS `Ctx`.
                     for f in &files {
                         let p = std::path::Path::new(&dir).join(&f.path);
                         if let Some(parent) = p.parent() {
