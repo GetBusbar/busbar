@@ -430,19 +430,14 @@ because = "ARCHITECT 2026-09-27: R-KERNEL exception for the Phase-2 exit-test re
 # Its commit reached the base, and the pair has since been lowered back to 24063 (the shared Fault);
 # the declaration is struck.
 
-# ── THE CONTRACT CEILING PAIR, RE-ARMED BY THE UNARMED REFUSAL (conn::arm) ─
-
-[gate.ceiling_raises."gate.surface_ceilings.contract_caps"]
-file    = "qa/construction.toml"
-from    = 24052
-to      = 24057
-because = "OWNER RULING Q68(3) (docs/design/1.6.0-QUESTIONS.md): contract_caps re-arms at the MEASURED value, in its own commit. This is the re-arm for the connection table's declared contract surface: ConnError::Unarmed, its refusal text and outcome byte 8 — +5 code lines. Measured by cargo xtask gate construction: 24052 before, 24057 after."
-
-[gate.ceiling_raises."rules.loc-ceilings.caps_contract_ceiling"]
-file    = "qa/construction.toml"
-from    = 24052
-to      = 24057
-because = "OWNER RULING Q68(3) (docs/design/1.6.0-QUESTIONS.md): contract_caps re-arms at the MEASURED value, in its own commit. This is the re-arm for the connection table's declared contract surface: ConnError::Unarmed, its refusal text and outcome byte 8 — +5 code lines. Measured by cargo xtask gate construction: 24052 before, 24057 after."
+# ── THE CONTRACT CEILING PAIR, RE-ARMED BY THE UNARMED REFUSAL (conn::arm) — EXPIRED AND STRUCK
+#
+# Declared `gate.surface_ceilings.contract_caps` and `rules.loc-ceilings.caps_contract_ceiling`
+# 24052 -> 24057 (OWNER RULING Q68(3); the connection table's ConnError::Unarmed, +5). Its commit
+# reached the base as part of the same stack that first LOWERED the pair 24063 -> 24052 (the conn
+# table's non-blocking read/wait), so the net change from the base this landed on is 24063 -> 24057,
+# a lower — no raise stands above the prior figure, and there is nowhere to point this declaration.
+# Struck rather than repointed.
 
 # ── THE KERNEL CEILING, RE-ARMED BY SD-8 (the substrate-values kernel landing) ─────────────────
 # Its 51100 -> 54801 declaration expired once landed and is struck; the ceiling text below keeps it.
@@ -631,7 +626,7 @@ because = "ARCHITECT ruling on the kernel budget (R-KERNEL, sd-extra.txt; K2-0 u
 # LOWERED 24063 -> 24052, AT THE MEASUREMENT, in the commit that made the connection table
 # non-blocking (read and wait take a wake ticket, not a deadline; -11).
 # RE-ARMED 24052 -> 24057, AT THE MEASUREMENT (OWNER RULING Q68(3)), in its own commit after
-# the Unarmed refusal (+5); the live declaration above carries the measure.
+# the Unarmed refusal (+5); net -6 from the base this stack landed on, so no declaration stands.
 contract_caps = 24057
 # REPOINTED, and the repoint is what makes this row a gate again. It named the CRATE
 # `busbar-grammar`, which #40 folded into `busbar-contract` and deleted — so it summed nothing,
@@ -1277,7 +1272,8 @@ contract_crate = "busbar-contract"
 # RE-ARMED 23892 -> 24063 with its pair (OWNER RULING Q68(3); KINDSLOT-STORE + PT's KindSlot,
 # store's 47 + plane's 6 + transport's 18 kind ops, no shape/layout change).
 # RE-ARMED 24063 -> 24079 with its pair (OWNER RULING Q68(3); M1 DISPATCH's abi check::reported,
-# +16).
+# +16). RATCHETED DOWN 24079 -> 24063 with its pair, in M1 DISPATCH's own checks follow-up
+# (shared Fault type, -16).
 # LOWERED 24063 -> 24052 with its pair (the connection table made non-blocking, -11).
 # RE-ARMED 24052 -> 24057 with its pair (OWNER RULING Q68(3); the Unarmed refusal, +5).
 caps_contract_ceiling = 24057
