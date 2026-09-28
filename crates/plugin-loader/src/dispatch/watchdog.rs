@@ -19,7 +19,9 @@
 
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Weak};
-use std::time::Duration;
+use std::time::{Duration, Instant};
+
+use busbar_contract::abi::mechanism::call::DeadlineClass;
 
 use super::ticket::next_generation;
 use super::worker::{spawn_worker, Pool, Worker};
@@ -50,20 +52,48 @@ fn scan(pool: &Pool) {
             .unwrap_or_else(|e| e.into_inner())
             .as_ref()
             .filter(|c| c.started.elapsed() > c.budget)
-            .map(|c| c.instance.clone());
-        if let Some(instance) = hung {
-            instance.faulted.store(true, Ordering::Release);
-            replace(pool, i, &w);
+            .map(|c| c.started);
+        if let Some(started) = hung {
+            replace(pool, i, &w, started);
+        }
+    }
+    ticketless(pool);
+}
+
+/// The ticket-less crossings of every adopted instance: one past its budget faults its instance
+/// (a caller's thread cannot be replaced; the instance is never called again).
+fn ticketless(pool: &Pool) {
+    let mut adopted = pool.adopted.lock().unwrap_or_else(|e| e.into_inner());
+    adopted.retain(|w| w.strong_count() > 0);
+    let live: Vec<_> = adopted
+        .iter()
+        .filter_map(std::sync::Weak::upgrade)
+        .collect();
+    drop(adopted);
+    for inst in live {
+        let hung = inst.lock_calls().iter().any(|&(_, started, s)| {
+            started.elapsed() > pool.env.budgets.of(s, DeadlineClass::Call)
+        });
+        if hung {
+            inst.faulted.store(true, Ordering::Release);
         }
     }
 }
 
-fn replace(pool: &Pool, i: usize, old: &Arc<Worker>) {
+/// Replace worker `i` if it is STILL inside the crossing that began at `started`: re-checked under
+/// the state lock and the crossing lock, so a crossing that returned meanwhile is never faulted.
+fn replace(pool: &Pool, i: usize, old: &Arc<Worker>, started: Instant) {
     let (gone, gens) = {
         let mut st = old.lock();
         if st.dead {
             return;
         }
+        let crossing = old.crossing.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(record) = crossing.as_ref().filter(|c| c.started == started) else {
+            return;
+        };
+        record.instance.faulted.store(true, Ordering::Release);
+        drop(crossing);
         st.dead = true;
         let gens: Vec<u32> = st
             .entries

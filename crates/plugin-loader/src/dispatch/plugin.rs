@@ -29,8 +29,9 @@
 use std::marker::PhantomData;
 use std::mem::size_of;
 use std::os::raw::c_void;
-use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, Ordering};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 use busbar_contract::abi::mechanism::call::{
     AbiStr, DeadlineClass, Diag, InHead, MetricEntry, Op, OutHead, Outcome, RawOutcome, METRIC_ADD,
@@ -144,6 +145,9 @@ pub struct Called {
     pub error: Option<Vec<u8>>,
     /// A lease the caller hands back to `release`; `0` = none.
     pub lease: u64,
+    /// A FAILED answer the kind calls SHORT ([`Kind::short`]): the caller may re-ask ONCE, through
+    /// [`Plugin::recall`], with bigger buffers.
+    pub short: bool,
 }
 
 /// What one crossing answered.
@@ -155,6 +159,8 @@ pub(crate) struct Crossed {
     pub(crate) wake_at_ns: u64,
     /// A FAILED answer the kind calls short ([`Kind::short`]).
     pub(crate) short: bool,
+    /// `cancel`'s `CancelOut.disposition`, when the op ended through `cancel`.
+    pub(crate) disposition: Option<u32>,
 }
 
 impl Crossed {
@@ -165,6 +171,7 @@ impl Crossed {
             lease: 0,
             wake_at_ns: 0,
             short: false,
+            disposition: None,
         }
     }
 }
@@ -192,6 +199,17 @@ pub(crate) struct Instance {
     diag_ids: usize,
     ptr: AtomicPtr<c_void>,
     pub(crate) faulted: AtomicBool,
+    /// `close` answered READY: every later op answers FAULT without a crossing.
+    closed: AtomicBool,
+    /// THE CROSSING GATE: the count of crossings in progress, with [`CLOSING`] set while `close`
+    /// crosses (and kept once it closed). `close` enters only when nothing else is crossing, and
+    /// nothing enters while it is set, so no crossing ever meets a freed instance.
+    gate: AtomicU32,
+    /// Crossings actually made (the witness of "without a crossing").
+    pub(crate) crossings: AtomicU64,
+    /// The ticket-less crossings in progress, for the watchdog: `(id, started, slot)`.
+    pub(crate) calls: Mutex<Vec<(u64, Instant, u32)>>,
+    next_call: AtomicU64,
     inflight: AtomicU32,
     /// Ops in flight that a reload drain waits for: every op but WriteBehind.
     pub(crate) drainable: AtomicU32,
@@ -208,6 +226,9 @@ pub(crate) struct Instance {
     /// Last: the library outlives everything above.
     _lib: Option<Lib>,
 }
+
+/// The gate bit `close` holds.
+const CLOSING: u32 = 1 << 31;
 
 /// Whether `slot` is one of the four that never overlap on one instance.
 pub(crate) fn is_lifecycle(s: u32) -> bool {
@@ -233,17 +254,58 @@ impl Instance {
         !self.ptr.load(Ordering::Acquire).is_null()
     }
 
-    /// Take one `max_inflight` unit; `false` over the cap.
-    pub(crate) fn acquire(&self) -> bool {
+    /// Take the `max_inflight` units op `s` needs: one, or for `close` ALL of them and only when
+    /// no other op is in flight (one atomic step). `None` over the cap, or `close` with ops in
+    /// flight.
+    pub(crate) fn acquire(&self, s: u32) -> Option<u32> {
+        let close = s == slot::CLOSE;
+        let want = if close { self.cap } else { 1 };
         self.inflight
             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| {
-                (n < self.cap).then_some(n + 1)
+                let fits = if close { n == 0 } else { n < self.cap };
+                fits.then_some(n + want)
+            })
+            .ok()
+            .map(|_| want)
+    }
+
+    pub(crate) fn release(&self, units: u32) {
+        self.inflight.fetch_sub(units, Ordering::AcqRel);
+    }
+
+    /// Enter the crossing gate for op `s`; see [`Instance::gate`].
+    fn enter_gate(&self, s: u32) -> bool {
+        if s == slot::CLOSE {
+            return self
+                .gate
+                .compare_exchange(0, CLOSING | 1, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok();
+        }
+        self.gate
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |g| {
+                (g & CLOSING == 0).then_some(g + 1)
             })
             .is_ok()
     }
 
-    pub(crate) fn release(&self) {
-        self.inflight.fetch_sub(1, Ordering::AcqRel);
+    fn leave_gate(&self, s: u32, closed: bool) {
+        match (s == slot::CLOSE, closed) {
+            // Closed for good: the gate stays shut.
+            (true, true) => self.gate.store(CLOSING, Ordering::Release),
+            (true, false) => self.gate.store(0, Ordering::Release),
+            _ => {
+                self.gate.fetch_sub(1, Ordering::AcqRel);
+            }
+        }
+    }
+
+    pub(crate) fn lock_calls(&self) -> std::sync::MutexGuard<'_, Vec<(u64, Instant, u32)>> {
+        self.calls.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Whether `close` answered READY.
+    pub(crate) fn is_closed(&self) -> bool {
+        self.closed.load(Ordering::Acquire)
     }
 
     pub(crate) fn inflight(&self) -> u32 {
@@ -265,7 +327,7 @@ impl Instance {
     /// the table does not have, an instance-less call before `open`, a second `open`, or an `open`
     /// whose frame cannot hold `OpenIn`/`OpenOut`.
     pub(crate) fn refuse(&self, s: u32, in_size: usize, out_size: usize) -> Option<Outcome> {
-        if self.faulted.load(Ordering::Acquire) {
+        if self.faulted.load(Ordering::Acquire) || self.is_closed() {
             return Some(Outcome::Fault);
         }
         if s >= self.slot_count() {
@@ -296,6 +358,36 @@ impl Instance {
         out: *mut OutHead,
         out_size: u32,
     ) -> Crossed {
+        if !self.enter_gate(s) {
+            // `close` with a crossing in progress is refused; anything after `close` is FAULT.
+            let o = if s == slot::CLOSE {
+                Outcome::Refused
+            } else {
+                Outcome::Fault
+            };
+            return Crossed::host(o);
+        }
+        // SAFETY: the caller's contract.
+        let crossed = unsafe { self.cross_gated(s, input, out, out_size) };
+        self.leave_gate(s, s == slot::CLOSE && crossed.outcome == Outcome::Ready);
+        crossed
+    }
+
+    /// [`Instance::cross`] inside the gate.
+    ///
+    /// # Safety
+    /// As [`Instance::cross`].
+    unsafe fn cross_gated(
+        &self,
+        s: u32,
+        input: *mut InHead,
+        out: *mut OutHead,
+        out_size: u32,
+    ) -> Crossed {
+        let needs_instance = !matches!(s, slot::VALIDATE | slot::OPEN);
+        if self.is_closed() || (needs_instance && !self.is_open()) {
+            return Crossed::host(Outcome::Fault);
+        }
         // SAFETY: the caller's contract.
         let (ticket, instance) = unsafe {
             let head = &mut *input;
@@ -315,6 +407,7 @@ impl Instance {
             (*out).size = out_size;
         }
         let op = self.slots[s as usize];
+        self.crossings.fetch_add(1, Ordering::Relaxed);
         let raw = op(instance, input.cast_const().cast(), out.cast());
         // SAFETY: the plugin wrote at most the host's `out`; read it back.
         let head = unsafe { *out };
@@ -341,7 +434,8 @@ impl Instance {
                 self.ptr.store(inst, Ordering::Release);
             }
             (slot::CLOSE, Outcome::Ready) => {
-                self.ptr.store(std::ptr::null_mut(), Ordering::Release)
+                self.closed.store(true, Ordering::Release);
+                self.ptr.store(std::ptr::null_mut(), Ordering::Release);
             }
             _ => {}
         }
@@ -355,6 +449,7 @@ impl Instance {
                 0
             },
             short,
+            disposition: None,
         }
     }
 
@@ -401,7 +496,13 @@ impl Instance {
         let Some(vals) = (unsafe { array(m.label_vals, m.label_vals_len) }) else {
             return self.sink.dropped(Dropped::BadArray);
         };
-        let labels: Vec<&[u8]> = vals.iter().map(|v| str_bytes(*v)).collect();
+        let Some(labels) = vals
+            .iter()
+            .map(|v| str_bytes(*v))
+            .collect::<Option<Vec<&[u8]>>>()
+        else {
+            return self.sink.dropped(Dropped::BadArray);
+        };
         self.sink.metric(Metric {
             family: m.family_idx,
             kind: m.kind,
@@ -417,11 +518,13 @@ impl Instance {
         if d.severity > 2 {
             return self.sink.dropped(Dropped::Severity(d.id_idx));
         }
-        let text = str_bytes(d.text);
+        let Some(text) = str_bytes(d.text) else {
+            return self.sink.dropped(Dropped::BadArray);
+        };
         self.sink.diag(Diagnostic {
             id: d.id_idx,
             severity: d.severity,
-            text: &text[..text.len().min(MAX_TEXT)],
+            text,
         });
     }
 }
@@ -455,21 +558,25 @@ unsafe fn array<'a, T>(p: *const T, len: usize) -> Option<&'a [T]> {
     }
 }
 
-/// A borrowed string's bytes; NULL reads as empty.
-fn str_bytes<'a>(s: AbiStr) -> &'a [u8] {
-    if s.ptr.is_null() || s.len == 0 {
-        return &[];
+/// A borrowed string's bytes; NULL-and-empty reads as empty. The length is capped BEFORE any
+/// slice is made: over [`MAX_TEXT`], or non-empty behind NULL, is `None` (a malformed answer).
+pub(crate) fn str_bytes<'a>(s: AbiStr) -> Option<&'a [u8]> {
+    if s.len == 0 {
+        return Some(&[]);
     }
-    // SAFETY: a non-NULL `AbiStr` in an `out` names `len` live bytes until the next op on the ticket.
-    unsafe { std::slice::from_raw_parts(s.ptr, s.len) }
+    if s.ptr.is_null() || s.len > MAX_TEXT {
+        return None;
+    }
+    // SAFETY: a non-NULL `AbiStr` in an `out` names `len` (<= MAX_TEXT) live bytes until the next
+    // op on the ticket.
+    Some(unsafe { std::slice::from_raw_parts(s.ptr, s.len) })
 }
 
-/// A copy of at most [`MAX_TEXT`] bytes; `None` for absent text.
+/// A copy of the text; `None` for absent (or malformed, which `validate` refused before).
 fn copy_str(s: AbiStr) -> Option<Vec<u8>> {
-    (!s.ptr.is_null()).then(|| {
-        let b = str_bytes(s);
-        b[..b.len().min(MAX_TEXT)].to_vec()
-    })
+    (!s.ptr.is_null())
+        .then(|| str_bytes(s).map(<[u8]>::to_vec))
+        .flatten()
 }
 
 /// A loaded plugin of kind `K`: one instance, called through its table. Cheap to clone; every clone
@@ -523,15 +630,22 @@ impl<K: Kind> Plugin<K> {
             wake: Some(host_wake),
             conns: std::ptr::null(),
         }));
+        let name = str_bytes(st.name)
+            .ok_or_else(|| LoadError::BadStatement("the name is NULL or over-long".into()))?;
         Ok(Self {
             inner: Arc::new(Instance {
                 kind: v.kind,
-                name: String::from_utf8_lossy(str_bytes(st.name)).into_owned(),
+                name: String::from_utf8_lossy(name).into_owned(),
                 slots: v.slots,
                 families,
                 diag_ids: st.diag_ids_len,
                 ptr: AtomicPtr::new(std::ptr::null_mut()),
                 faulted: AtomicBool::new(false),
+                closed: AtomicBool::new(false),
+                gate: AtomicU32::new(0),
+                crossings: AtomicU64::new(0),
+                calls: Mutex::new(Vec::new()),
+                next_call: AtomicU64::new(0),
                 inflight: AtomicU32::new(0),
                 drainable: AtomicU32::new(0),
                 cap: st.max_inflight.clamp(1, bind.max_inflight_cap.max(1)),
@@ -580,8 +694,34 @@ impl<K: Kind> Plugin<K> {
     }
 
     /// A TICKET-LESS call ([`Ticket::NONE`]): on the caller's thread, never serialized, may not
-    /// pend (PENDING is FAULT). Everything the plugin pointed at is copied before this returns.
+    /// pend (PENDING is FAULT). Everything the plugin pointed at is copied before this returns. The
+    /// crossing is recorded for the watchdog of the dispatcher that adopted the instance: past its
+    /// budget the instance is faulted (the caller's thread cannot be replaced).
     pub fn call<I: InFrame, O: OutFrame>(&self, s: u32, frame: &mut Frame<I, O>) -> Called {
+        self.call_once(s, frame, false)
+    }
+
+    /// THE ONE RE-CALL of a SHORT answer ([`Called::short`]), with the caller's bigger buffers in
+    /// `frame`. REFUSED without a crossing when `prev` was not short; a second short answer is
+    /// FAULT (ruling M-SB).
+    pub fn recall<I: InFrame, O: OutFrame>(
+        &self,
+        prev: Called,
+        s: u32,
+        frame: &mut Frame<I, O>,
+    ) -> Called {
+        if !prev.short {
+            return Called::from(Crossed::host(Outcome::Refused));
+        }
+        self.call_once(s, frame, true)
+    }
+
+    fn call_once<I: InFrame, O: OutFrame>(
+        &self,
+        s: u32,
+        frame: &mut Frame<I, O>,
+        recall: bool,
+    ) -> Called {
         let inst = &*self.inner;
         if let Some(o) = inst.refuse(s, size_of::<I>(), size_of::<O>()) {
             return Called::from(Crossed::host(o));
@@ -590,13 +730,15 @@ impl<K: Kind> Plugin<K> {
         if lifecycle && !inst.enter_lifecycle() {
             return Called::from(Crossed::host(Outcome::Refused));
         }
-        if !inst.acquire() {
+        let Some(units) = inst.acquire(s) else {
             if lifecycle {
                 inst.leave_lifecycle();
             }
             return Called::from(Crossed::host(Outcome::Refused));
-        }
+        };
         let (i, o, out_size) = frame.heads();
+        let id = inst.next_call.fetch_add(1, Ordering::Relaxed);
+        inst.lock_calls().push((id, Instant::now(), s));
         // SAFETY: the frame is ours for the call; its heads lead the structs.
         let crossed = unsafe {
             let head = &mut *i;
@@ -606,9 +748,13 @@ impl<K: Kind> Plugin<K> {
             head.ticket = Ticket::NONE;
             inst.cross(s, i, o, out_size)
         };
-        inst.release();
+        inst.lock_calls().retain(|c| c.0 != id);
+        inst.release(units);
         if lifecycle {
             inst.leave_lifecycle();
+        }
+        if recall && crossed.short {
+            return Called::from(Crossed::host(Outcome::Fault));
         }
         Called::from(crossed)
     }
@@ -620,6 +766,7 @@ impl From<Crossed> for Called {
             outcome: c.outcome,
             error: c.error,
             lease: c.lease,
+            short: c.short,
         }
     }
 }

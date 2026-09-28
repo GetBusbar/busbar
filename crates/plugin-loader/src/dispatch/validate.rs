@@ -19,7 +19,7 @@ use busbar_contract::abi::mechanism::call::{AbiStr, Envelope, OutHead, Outcome};
 use super::plugin::MAX_ENVELOPE_ENTRIES;
 
 /// The most bytes of error text a plugin may state; longer is a malformed answer.
-pub const MAX_ERROR_LEN: usize = 64 * 1024;
+pub const MAX_ERROR_LEN: usize = super::plugin::MAX_TEXT;
 
 /// What was wrong with an answer. Every violation is FAULT.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

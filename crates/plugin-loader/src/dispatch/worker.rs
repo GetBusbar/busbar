@@ -26,6 +26,7 @@
 //! * THE WATCHDOG (`watchdog`): an op that does not RETURN within its class budget faults its
 //!   instance and replaces its worker; see there for what happens to every ticket.
 
+use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
 use std::mem::size_of;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -37,6 +38,7 @@ use busbar_contract::abi::mechanism::call::{DeadlineClass, InHead, OutHead, Outc
 use busbar_contract::abi::mechanism::lifecycle::{slot, CancelIn, CancelOut, DriveIn};
 use busbar_contract::abi::mechanism::ticket::Ticket;
 
+use super::load::Lib;
 use super::plugin::{is_lifecycle, Crossed, Instance, Plugin};
 use super::ticket::{
     decode, encode, next_generation, Completions, WakeRoute, MAX_INDEX, MAX_WORKERS,
@@ -72,7 +74,7 @@ impl Default for Budgets {
 }
 
 impl Budgets {
-    fn of(&self, s: u32, class: DeadlineClass) -> Duration {
+    pub(crate) fn of(&self, s: u32, class: DeadlineClass) -> Duration {
         if s == slot::VALIDATE || is_lifecycle(s) {
             return self.lifecycle;
         }
@@ -144,6 +146,13 @@ pub struct Done<I, O> {
     pub frame: Option<Box<Frame<I, O>>>,
     /// A WriteBehind op whose caller stopped waiting at its deadline; it runs on.
     pub detached: bool,
+    /// A FAILED answer the kind calls SHORT: re-submit ONCE on the same ticket with bigger
+    /// buffers; a second short answer is FAULT (ruling M-SB).
+    pub short: bool,
+    /// When the op ended through `cancel` (a deadline or a client drop): the kind's disposition
+    /// `CancelOut.disposition` answered (store: 0 UNKNOWN, 1 NOT_APPLIED, 2 APPLIED). A `cancel`
+    /// that FAULTed makes the op FAULT, with no disposition.
+    pub disposition: Option<u32>,
 }
 
 struct ReplySlot<T> {
@@ -188,6 +197,8 @@ impl<I: InFrame, O: OutFrame> Settle for ReplySlot<Done<I, O>> {
             lease: 0,
             frame: None,
             detached,
+            short: false,
+            disposition: None,
         })
     }
 }
@@ -230,6 +241,8 @@ impl<I: InFrame, O: OutFrame> Reply<I, O> {
             lease: 0,
             frame: Some(Box::new(frame)),
             detached: false,
+            short: false,
+            disposition: None,
         });
         Self { slot }
     }
@@ -259,6 +272,8 @@ impl<I: InFrame, O: OutFrame> Job for JobOf<I, O> {
             lease: c.lease,
             frame: Some(self.frame),
             detached: false,
+            short: c.short,
+            disposition: c.disposition,
         })
     }
 }
@@ -271,6 +286,8 @@ pub(crate) struct Meta {
     class: DeadlineClass,
     deadline_ns: u64,
     in_size: u32,
+    /// The `max_inflight` units it holds: one, or all of them for `close`.
+    units: u32,
     lifecycle: bool,
     drainable: bool,
     pub(crate) reply: Arc<dyn Settle>,
@@ -279,7 +296,7 @@ pub(crate) struct Meta {
 impl Drop for Meta {
     fn drop(&mut self) {
         self.reply.settle(Outcome::Fault, false);
-        self.instance.release();
+        self.instance.release(self.units);
         if self.drainable {
             self.instance.drainable.fetch_sub(1, Ordering::AcqRel);
         }
@@ -356,6 +373,65 @@ pub(crate) struct CrossingRecord {
     pub(crate) instance: Arc<Instance>,
 }
 
+thread_local! {
+    /// How many worker-state locks this thread holds.
+    static HELD: Cell<u32> = const { Cell::new(0) };
+    /// Libraries whose last reference dropped while this thread held a worker-state lock: they
+    /// are unloaded (plugin `.fini_array` code) only once the lock is released.
+    static DEFERRED: RefCell<Vec<Lib>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Whether this thread holds a worker-state lock.
+pub(crate) fn state_held() -> bool {
+    HELD.with(|h| h.get() > 0)
+}
+
+/// Keep `lib` until this thread releases its worker-state lock.
+pub(crate) fn defer_unload(lib: Lib) {
+    DEFERRED.with(|d| d.borrow_mut().push(lib));
+}
+
+/// A held worker-state lock. NOTHING THAT RUNS PLUGIN CODE RUNS UNDER IT: the last reference to an
+/// instance (a `Meta`, a driver, a local clone) may drop here, and its library's unload is
+/// deferred to the moment this guard releases the lock.
+pub(crate) struct StateGuard<'a> {
+    g: Option<MutexGuard<'a, WorkerState>>,
+}
+
+impl<'a> StateGuard<'a> {
+    fn new(g: MutexGuard<'a, WorkerState>) -> Self {
+        HELD.with(|h| h.set(h.get() + 1));
+        Self { g: Some(g) }
+    }
+}
+
+impl std::ops::Deref for StateGuard<'_> {
+    type Target = WorkerState;
+    fn deref(&self) -> &WorkerState {
+        self.g.as_ref().expect("a live guard")
+    }
+}
+
+impl std::ops::DerefMut for StateGuard<'_> {
+    fn deref_mut(&mut self) -> &mut WorkerState {
+        self.g.as_mut().expect("a live guard")
+    }
+}
+
+impl Drop for StateGuard<'_> {
+    fn drop(&mut self) {
+        drop(self.g.take());
+        let last = HELD.with(|h| {
+            h.set(h.get() - 1);
+            h.get() == 0
+        });
+        if last {
+            let unload = DEFERRED.with(|d| std::mem::take(&mut *d.borrow_mut()));
+            drop(unload);
+        }
+    }
+}
+
 /// One worker incarnation. The watchdog replaces a wedged one with a fresh incarnation at the same
 /// index.
 pub(crate) struct Worker {
@@ -384,6 +460,8 @@ pub(crate) struct Pool {
     pub(crate) slots: Box<[WorkerSlot]>,
     pub(crate) env: Arc<Env>,
     pub(crate) stop: AtomicBool,
+    /// Every instance this dispatcher adopted, for the watchdog's ticket-less scan.
+    pub(crate) adopted: Mutex<Vec<Weak<Instance>>>,
 }
 
 impl WakeRoute for Pool {
@@ -436,8 +514,8 @@ impl Worker {
         (w, rx)
     }
 
-    pub(crate) fn lock(&self) -> MutexGuard<'_, WorkerState> {
-        self.state.lock().unwrap_or_else(|e| e.into_inner())
+    pub(crate) fn lock(&self) -> StateGuard<'_> {
+        StateGuard::new(self.state.lock().unwrap_or_else(|e| e.into_inner()))
     }
 
     fn ticket(&self, idx: u32, generation: u32) -> Ticket {
@@ -657,12 +735,12 @@ impl Worker {
     /// meanwhile (the caller exits).
     fn cross<'a>(
         &'a self,
-        st: MutexGuard<'a, WorkerState>,
+        st: StateGuard<'a>,
         instance: &Arc<Instance>,
         s: u32,
         heads: (*mut InHead, *mut OutHead, u32),
         budget: Duration,
-    ) -> Option<(MutexGuard<'a, WorkerState>, Crossed)> {
+    ) -> Option<(StateGuard<'a>, Crossed)> {
         self.begin_crossing(instance.clone(), budget);
         drop(st);
         // SAFETY: the frame is boxed and owned by this crossing; `s` passed `refuse` at submit.
@@ -675,10 +753,10 @@ impl Worker {
     /// Run the action scheduled for `idx`. `None` when this worker was replaced mid-crossing.
     fn run_one<'a>(
         &'a self,
-        mut st: MutexGuard<'a, WorkerState>,
+        mut st: StateGuard<'a>,
         idx: u32,
         env: &Env,
-    ) -> Option<MutexGuard<'a, WorkerState>> {
+    ) -> Option<StateGuard<'a>> {
         let e = &mut st.entries[idx as usize];
         let Some(action) = e.next.take() else {
             return Some(st);
@@ -772,8 +850,18 @@ impl Worker {
                 frame.input.head.size = size_of::<CancelIn>() as u32;
                 frame.input.head.deadline_class = class as u8;
                 let budget = env.budgets.of(slot::CANCEL, class);
-                let (mut st, _) = self.cross(st, &inst, slot::CANCEL, frame.heads(), budget)?;
-                self.end(&mut st, idx, Crossed::host(timeout), env);
+                let (mut st, c) = self.cross(st, &inst, slot::CANCEL, frame.heads(), budget)?;
+                // The op answers the kind's timeout with `cancel`'s disposition; a `cancel` that
+                // FAULTed makes the op FAULT.
+                let ended = if c.outcome == Outcome::Fault {
+                    Crossed::host(Outcome::Fault)
+                } else {
+                    Crossed {
+                        disposition: Some(frame.out.disposition),
+                        ..Crossed::host(timeout)
+                    }
+                };
+                self.end(&mut st, idx, ended, env);
                 Some(st)
             }
             Action::Drive => {
@@ -813,13 +901,13 @@ impl Worker {
 
     fn cross_current<'a>(
         &'a self,
-        mut st: MutexGuard<'a, WorkerState>,
+        mut st: StateGuard<'a>,
         idx: u32,
         inst: &Arc<Instance>,
         s: u32,
         budget: Duration,
         env: &Env,
-    ) -> Option<MutexGuard<'a, WorkerState>> {
+    ) -> Option<StateGuard<'a>> {
         let cur = st.entries[idx as usize].current.as_mut()?;
         let mut job = cur.job.take()?;
         let heads = job.heads();
@@ -939,6 +1027,7 @@ impl Dispatcher {
             slots,
             env: env.clone(),
             stop: AtomicBool::new(false),
+            adopted: Mutex::new(Vec::new()),
         });
         for (w, rx) in started {
             spawn_worker(w, rx, env.clone());
@@ -972,10 +1061,19 @@ impl Dispatcher {
     }
 
     /// Bind `inst`'s wakes to this dispatcher; `false` when it is bound to another.
-    fn adopt(&self, inst: &Instance) -> bool {
+    fn adopt(&self, inst: &Arc<Instance>) -> bool {
         let pool: Arc<dyn WakeRoute> = self.pool.clone();
         let mine = Arc::downgrade(&pool);
-        Weak::ptr_eq(inst.wake.route.get_or_init(|| mine.clone()), &mine)
+        let route = inst.wake.route.get_or_init(|| {
+            // First adoption: the watchdog now covers this instance's ticket-less crossings too.
+            self.pool
+                .adopted
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push(Arc::downgrade(inst));
+            mine.clone()
+        });
+        Weak::ptr_eq(route, &mine)
     }
 
     /// Whether an op on `t` is pending (test witness: it has crossed and answered PENDING).
@@ -1054,12 +1152,13 @@ impl Dispatcher {
         if lifecycle && !inst.enter_lifecycle() {
             return Reply::settled(Outcome::Refused, frame);
         }
-        if !inst.acquire() {
+        let Some(units) = inst.acquire(s) else {
+            // Over the cap, or `close` while other ops are in flight: REFUSED, never called.
             if lifecycle {
                 inst.leave_lifecycle();
             }
             return Reply::settled(Outcome::Refused, frame);
-        }
+        };
         let drainable = class != DeadlineClass::WriteBehind;
         if drainable {
             inst.drainable.fetch_add(1, Ordering::AcqRel);
@@ -1071,6 +1170,7 @@ impl Dispatcher {
             class,
             deadline_ns,
             in_size: size_of::<I>() as u32,
+            units,
             lifecycle,
             drainable,
             reply: slot.clone(),

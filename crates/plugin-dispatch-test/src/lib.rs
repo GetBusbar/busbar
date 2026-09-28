@@ -29,7 +29,7 @@ use busbar_contract::abi::mechanism::door::{
     Door, MetricFamily, Statement, FAMILY_COUNTER, FAMILY_GAUGE,
 };
 use busbar_contract::abi::mechanism::lifecycle::{
-    CancelIn, OpenIn, OpenOut, OpsHead, TickIn, TickOut, LIFECYCLE_SLOTS,
+    CancelIn, CancelOut, OpenIn, OpenOut, OpsHead, TickIn, TickOut, LIFECYCLE_SLOTS,
 };
 use busbar_contract::abi::mechanism::ticket::{HostCtx, Ticket, WakeFn};
 use busbar_contract::abi::mechanism::{KindCode, DOOR_MAGIC, MECHANISM_VERSION};
@@ -55,10 +55,18 @@ pub const PEND_STALE: &[u8] = b"pend:stale";
 pub const PEND_TIMER: &[u8] = b"pend:timer";
 /// `tick` mode: held until [`KICK`].
 pub const PEND_HOLD: &[u8] = b"pend:hold";
-/// `tick` mode: do not return until [`UNHANG`].
-pub const HANG: &[u8] = b"hang";
-/// `tick` mode: release every hung op.
-pub const UNHANG: &[u8] = b"unhang";
+/// `tick` mode: `hang:<key>` does not return until `unhang:<key>`.
+pub const HANG: &[u8] = b"hang:";
+/// `tick` mode: `unhang:<key>` releases every op hung on `<key>`.
+pub const UNHANG: &[u8] = b"unhang:";
+/// `tick` mode: `pend:hold:<d>` is held like [`PEND_HOLD`]; its `cancel` answers disposition `<d>`
+/// (`f` = `cancel` answers FAULT).
+pub const PEND_HOLD_DISPOSED: &[u8] = b"pend:hold:";
+/// `tick` mode: return READY WITHOUT writing the mirror (a host that did not zero `out` would read
+/// its own garbage as the answer).
+pub const SILENT: &[u8] = b"silent";
+/// `tick` mode: FAILED with error text of `isize::MAX + 1` bytes behind a real pointer.
+pub const HUGE_TEXT: &[u8] = b"hugetext";
 /// `tick` mode: report the counters as gauges.
 pub const COUNT: &[u8] = b"count";
 /// `tick` mode: wake the driver ticket that follows (`arm:<slot>:<generation>`) three times.
@@ -226,8 +234,8 @@ static DIAGS: Shared<[Diag; 2]> = Shared([
     },
 ]);
 
-/// Released by [`UNHANG`]; per image, so the linked and the dropped build each have one.
-static UNHUNG: AtomicBool = AtomicBool::new(false);
+/// The keys [`UNHANG`] released; per image, so the linked and the dropped build each have one.
+static UNHUNG: Mutex<Vec<Vec<u8>>> = Mutex::new(Vec::new());
 
 #[derive(Clone, Copy)]
 struct Waker {
@@ -259,6 +267,8 @@ unsafe impl Send for Gauges {}
 struct State {
     tickets: HashMap<Ticket, TicketState>,
     held: Vec<(Ticket, Arc<AtomicBool>)>,
+    /// `cancel`'s answer per held ticket: `Some(d)` a disposition, `None` FAULT.
+    dispositions: HashMap<Ticket, Option<u32>>,
     /// Per-ticket envelope memory: valid until the next op on the same ticket.
     replies: HashMap<Ticket, Gauges>,
 }
@@ -375,7 +385,14 @@ extern "C" fn cancel(instance: *mut c_void, input: *const c_void, out: *mut c_vo
         let mut st = me.state.lock().unwrap();
         st.tickets.remove(&t);
         st.held.retain(|(h, _)| *h != t);
-        say(out, Outcome::Ready)
+        match st.dispositions.remove(&t) {
+            Some(None) => RawOutcome::of(Outcome::Fault),
+            Some(Some(d)) => {
+                (*out.cast::<CancelOut>()).disposition = d;
+                say(out, Outcome::Ready)
+            }
+            None => say(out, Outcome::Ready),
+        }
     }
 }
 
@@ -432,6 +449,16 @@ extern "C" fn tick(instance: *mut c_void, input: *const c_void, out: *mut c_void
             arm(arc_of(instance), tin.head.host, driver);
             return say(out, Outcome::Ready);
         }
+        if let Some(key) = mode.strip_prefix(HANG) {
+            while !UNHUNG.lock().unwrap().iter().any(|k| k == key) {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            return say(out, Outcome::Ready);
+        }
+        if let Some(key) = mode.strip_prefix(UNHANG) {
+            UNHUNG.lock().unwrap().push(key.to_vec());
+            return say(out, Outcome::Ready);
+        }
         if mode.starts_with(b"pend:") {
             return pend(me, tin, mode, out);
         }
@@ -446,15 +473,13 @@ extern "C" fn tick(instance: *mut c_void, input: *const c_void, out: *mut c_void
                 (*out.cast::<OutHead>()).outcome = RawOutcome(9);
                 RawOutcome(9)
             }
-            HANG => {
-                while !UNHUNG.load(Ordering::SeqCst) {
-                    std::thread::sleep(Duration::from_millis(5));
-                }
-                say(out, Outcome::Ready)
-            }
-            UNHANG => {
-                UNHUNG.store(true, Ordering::SeqCst);
-                say(out, Outcome::Ready)
+            SILENT => RawOutcome::of(Outcome::Ready),
+            HUGE_TEXT => {
+                (*out.cast::<OutHead>()).error = AbiStr {
+                    ptr: HUGE_TEXT.as_ptr(),
+                    len: isize::MAX as usize + 1,
+                };
+                say(out, Outcome::Failed)
             }
             COUNT => {
                 let values = [
@@ -591,7 +616,13 @@ unsafe fn pend(me: &Inst, tin: &TickIn, mode: &[u8], out: *mut c_void) -> RawOut
                 ready.store(true, Ordering::SeqCst);
                 unsafe { (*out.cast::<OutHead>()).wake_at_ns = tin.now_ns + 30_000_000 };
             }
-            _ => st.held.push((t, ready)),
+            _ => {
+                if let Some(d) = mode.strip_prefix(PEND_HOLD_DISPOSED) {
+                    let d = std::str::from_utf8(d).ok().and_then(|d| d.parse().ok());
+                    st.dispositions.insert(t, d);
+                }
+                st.held.push((t, ready));
+            }
         }
         return unsafe { say(out, Outcome::Pending) };
     }

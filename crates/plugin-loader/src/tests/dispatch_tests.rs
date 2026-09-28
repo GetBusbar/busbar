@@ -451,8 +451,9 @@ fn script(load: &dyn Fn(Arc<Recorder>) -> Plugin<TestKind>) -> Vec<String> {
     // A driver ticket: three wakes, three drives, outside max_inflight.
     let drv = d.driver(&p, 0).expect("a driver ticket");
     let armed = p.call(TICK, &mut frame(arm(drv))).outcome;
+    // The plugin issues exactly three wakes, each only after the previous drive ran, and a wake
+    // is at most one drive: three is final the moment it is seen.
     until("three drives", || count(&p, &sink).2 >= 3);
-    std::thread::sleep(Duration::from_millis(30));
     say(
         format!(
             "driver armed={armed:?} drives={} inflight={}",
@@ -474,7 +475,14 @@ fn script(load: &dyn Fn(Arc<Recorder>) -> Plugin<TestKind>) -> Vec<String> {
         0,
     );
     let hung = d.mint(1).expect("a ticket");
-    let rg = d.submit(&p, hung, TICK, frame(plug::HANG), DeadlineClass::Call, 0);
+    let rg = d.submit(
+        &p,
+        hung,
+        TICK,
+        frame(b"hang:script"),
+        DeadlineClass::Call,
+        0,
+    );
     let (dh, dg) = (
         rh.wait(WAIT).expect("held answers"),
         rg.wait(WAIT).expect("hung answers"),
@@ -497,7 +505,7 @@ fn script(load: &dyn Fn(Arc<Recorder>) -> Plugin<TestKind>) -> Vec<String> {
     let fresh_stale = fresh.generation > 1;
     d.recycle(fresh);
     let opened2 = open(&d, &p2, 1);
-    let unhang = p2.call(TICK, &mut frame(plug::UNHANG)).outcome;
+    let unhang = p2.call(TICK, &mut frame(b"unhang:script")).outcome;
     say(
         format!(
             "watchdog: hung={:?} frame={} held={:?} faulted={} after={after:?} stale_ticket={stale:?} inflight={} replaced={} fresh_generation_bumped={fresh_stale} next_instance_open={opened2:?} unhang={unhang:?}",
@@ -668,12 +676,15 @@ fn red_a_stale_generation_wake_is_dropped() {
     let reply = d.submit(&p, t, TICK, frame(plug::PEND_HOLD), DeadlineClass::Call, 0);
     until("the held op", || d.is_pending(t));
     let stale0 = d.stats().stale_wakes;
+    let crossings0 = p.inner.crossings.load(std::sync::atomic::Ordering::SeqCst);
     crate::dispatch::ticket::host_wake(p.inner.ctx(), old);
     until("the stale wake is counted", || {
         d.stats().stale_wakes > stale0
     });
-    assert!(
-        reply.wait(Duration::from_millis(100)).is_none(),
+    // The wake was processed (counted) and resumed nothing: no crossing happened.
+    assert_eq!(
+        p.inner.crossings.load(std::sync::atomic::Ordering::SeqCst),
+        crossings0,
         "a stale wake resumed an op"
     );
     d.drop_client(t);
@@ -904,6 +915,18 @@ fn red_both_origins_refuse_the_same_way() {
         load_dropped::<TestKind>(nowhere, &f, bind(quiet())).err(),
         Some(LoadError::ManifestKindAbi { .. })
     ));
+    let other = *KindCode::ALL.iter().find(|k| **k != plug::KIND).unwrap();
+    let f = ManifestFacts {
+        kind: other,
+        ..facts()
+    };
+    assert_eq!(
+        load_dropped::<TestKind>(nowhere, &f, bind(quiet())).err(),
+        Some(LoadError::ManifestKind {
+            stated: other,
+            want: plug::KIND
+        })
+    );
     assert!(matches!(
         load_dropped::<TestKind>(nowhere, &facts(), bind(quiet())).err(),
         Some(LoadError::Open(_))
@@ -1130,4 +1153,215 @@ fn red_refuses_a_wrong_magic() {
         None,
         "the GREEN twin: the real door loads"
     );
+}
+
+// ── REVIEW FIXES (M1 fix-forward) ──────────────────────────────────────────────────────────────
+
+fn crossings(p: &Plugin<TestKind>) -> u64 {
+    p.inner.crossings.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+fn close_frame() -> Frame<busbar_contract::abi::mechanism::call::InHead, OutHead> {
+    Frame::new(in_head(), out_head())
+}
+
+#[test]
+fn red_close_is_refused_while_an_op_is_in_flight() {
+    let d = Dispatcher::new(config());
+    let (p, _sink) = opened(&d);
+    let t = d.mint(0).unwrap();
+    let held = d.submit(&p, t, TICK, frame(plug::PEND_HOLD), DeadlineClass::Call, 0);
+    until("the held op", || d.is_pending(t));
+    let n = crossings(&p);
+    assert_eq!(
+        p.call(slot::CLOSE, &mut close_frame()).outcome,
+        Outcome::Refused
+    );
+    let c = d.mint(1).unwrap();
+    let ticketed = d.submit(&p, c, slot::CLOSE, close_frame(), DeadlineClass::Call, 0);
+    assert_eq!(ticketed.wait(WAIT).unwrap().outcome, Outcome::Refused);
+    assert_eq!(crossings(&p), n, "a refused close never crossed");
+    assert!(p.is_open());
+    // The GREEN twin: with nothing in flight, close crosses and closes.
+    d.drop_client(t);
+    assert_eq!(held.wait(WAIT).unwrap().outcome, Outcome::Failed);
+    assert_eq!(
+        p.call(slot::CLOSE, &mut close_frame()).outcome,
+        Outcome::Ready
+    );
+    assert!(!p.is_open());
+}
+
+#[test]
+fn red_after_close_a_late_wake_and_every_op_fault_without_crossing() {
+    let d = Dispatcher::new(config());
+    let (p, _sink) = opened(&d);
+    let drv = d.driver(&p, 0).unwrap();
+    assert_eq!(
+        p.call(slot::CLOSE, &mut close_frame()).outcome,
+        Outcome::Ready
+    );
+    let n = crossings(&p);
+    // A late wake on the driver, then a ticketed op on the same worker: the worker handles its
+    // messages in order, so when the op answers the wake has been handled.
+    crate::dispatch::ticket::host_wake(p.inner.ctx(), drv);
+    let t = d.mint(0).unwrap();
+    let after = d.submit(&p, t, TICK, frame(answer(1)), DeadlineClass::Call, 0);
+    assert_eq!(after.wait(WAIT).unwrap().outcome, Outcome::Fault);
+    assert_eq!(p.call(TICK, &mut frame(answer(1))).outcome, Outcome::Fault);
+    assert_eq!(crossings(&p), n, "nothing crossed into a closed instance");
+}
+
+#[test]
+fn red_text_is_capped_before_any_slice_is_made() {
+    use crate::dispatch::plugin::{str_bytes, MAX_TEXT};
+    use busbar_contract::abi::mechanism::call::AbiStr;
+    let bytes = b"x";
+    let huge = AbiStr {
+        ptr: bytes.as_ptr(),
+        len: isize::MAX as usize + 1,
+    };
+    assert_eq!(str_bytes(huge), None, "no slice of isize::MAX + 1 bytes");
+    let over = AbiStr {
+        ptr: bytes.as_ptr(),
+        len: MAX_TEXT + 1,
+    };
+    assert_eq!(str_bytes(over), None);
+    let null = AbiStr {
+        ptr: std::ptr::null(),
+        len: 3,
+    };
+    assert_eq!(str_bytes(null), None);
+    assert_eq!(
+        str_bytes(AbiStr {
+            ptr: bytes.as_ptr(),
+            len: 1
+        }),
+        Some(&b"x"[..])
+    );
+    // Through a crossing: the answer is FAULT and nothing is read.
+    let d = Dispatcher::new(config());
+    let (p, _sink) = opened(&d);
+    let c = p.call(TICK, &mut frame(plug::HUGE_TEXT));
+    assert_eq!((c.outcome, c.error), (Outcome::Fault, None));
+}
+
+#[test]
+fn red_a_hung_ticketless_call_faults_its_instance() {
+    let d = Dispatcher::new(config());
+    let (p, _sink) = opened(&d);
+    let (p2, _s2) = opened(&d);
+    let hung = p.clone();
+    let caller =
+        std::thread::spawn(move || hung.call(TICK, &mut frame(b"hang:ticketless")).outcome);
+    until("the watchdog faults the instance", || p.is_faulted());
+    assert!(!p2.is_faulted(), "only the hung instance");
+    assert_eq!(p.call(TICK, &mut frame(answer(1))).outcome, Outcome::Fault);
+    assert_eq!(
+        p2.call(TICK, &mut frame(b"unhang:ticketless")).outcome,
+        Outcome::Ready
+    );
+    caller.join().unwrap();
+}
+
+#[test]
+fn cancel_carries_the_disposition_and_a_fault_on_cancel_is_fault() {
+    let d = Dispatcher::new(config());
+    let (p, _sink) = opened(&d);
+    for (mode, want) in [
+        (&b"pend:hold:0"[..], (Outcome::Failed, Some(0))),
+        (&b"pend:hold:1"[..], (Outcome::Failed, Some(1))),
+        (&b"pend:hold:2"[..], (Outcome::Failed, Some(2))),
+        (&b"pend:hold:f"[..], (Outcome::Fault, None)),
+    ] {
+        let t = d.mint(0).unwrap();
+        let r = d.submit(&p, t, TICK, frame(mode), DeadlineClass::Call, 0);
+        until("the held op", || d.is_pending(t));
+        d.drop_client(t);
+        let done = r.wait(WAIT).unwrap();
+        assert_eq!(
+            (done.outcome, done.disposition),
+            want,
+            "{}",
+            String::from_utf8_lossy(mode)
+        );
+        d.recycle(t);
+    }
+}
+
+#[test]
+fn an_unload_never_runs_under_a_worker_lock() {
+    use crate::dispatch::load::{DEFERRED_UNLOADS, UNLOADS};
+    use std::sync::atomic::Ordering::SeqCst;
+    if dropped_path().is_none() {
+        return;
+    }
+    let d = Dispatcher::new(config());
+    let p = dropped(quiet()).expect("the dropped door");
+    assert_eq!(open(&d, &p, 0), Outcome::Ready);
+    let drv = d.driver(&p, 0).unwrap();
+    let gone = std::sync::Arc::downgrade(&p.inner);
+    let (deferred0, unloads0) = (DEFERRED_UNLOADS.load(SeqCst), UNLOADS.load(SeqCst));
+    // The driver now holds the last reference, and a recycle drops it on the worker, under its
+    // state lock: the unload must wait for the lock to be released.
+    drop(p);
+    d.recycle(drv);
+    until("the instance is gone", || gone.strong_count() == 0);
+    until("the library is unloaded", || {
+        UNLOADS.load(SeqCst) > unloads0
+    });
+    assert!(
+        DEFERRED_UNLOADS.load(SeqCst) > deferred0,
+        "the unload was deferred past the lock"
+    );
+}
+
+#[test]
+fn red_a_ticketless_short_answer_is_re_called_once() {
+    let d = Dispatcher::new(config());
+    let (p, _sink) = opened(&d);
+    let first = p.call(TICK, &mut frame(plug::SHORT_ANSWER));
+    assert_eq!((first.outcome, first.short), (Outcome::Failed, true));
+    let again = p.recall(first.clone(), TICK, &mut frame(plug::SHORT_ANSWER));
+    assert_eq!(again.outcome, Outcome::Fault, "short twice is FAULT");
+    assert_eq!(
+        p.recall(first, TICK, &mut frame(answer(1))).outcome,
+        Outcome::Ready
+    );
+    let ready = p.call(TICK, &mut frame(answer(1)));
+    assert_eq!(
+        p.recall(ready, TICK, &mut frame(answer(1))).outcome,
+        Outcome::Refused,
+        "only a short answer earns a re-call"
+    );
+    // Ticketed: the reply says short.
+    let t = d.mint(0).unwrap();
+    let done = d
+        .submit(
+            &p,
+            t,
+            TICK,
+            frame(plug::SHORT_ANSWER),
+            DeadlineClass::Call,
+            0,
+        )
+        .wait(WAIT)
+        .unwrap();
+    assert!(done.short);
+    d.recycle(t);
+}
+
+#[test]
+fn red_the_host_zeroes_the_whole_out_before_a_crossing() {
+    let d = Dispatcher::new(config());
+    let (p, _sink) = opened(&d);
+    // The caller's `out` holds garbage that reads as a READY mirror; a plugin that returns READY
+    // without writing the mirror must still be FAULT, which only a zeroed `out` makes it.
+    let mut f = frame(plug::SILENT);
+    f.out.head.outcome = busbar_contract::abi::mechanism::call::RawOutcome::of(Outcome::Ready);
+    f.out.head.lease = 0xBAD;
+    f.out.next_tick_ns = 0xBAD;
+    let c = p.call(TICK, &mut f);
+    assert_eq!(c.outcome, Outcome::Fault);
+    assert_eq!(f.out.next_tick_ns, 0, "the tail was zeroed too");
 }

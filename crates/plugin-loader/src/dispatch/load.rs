@@ -209,11 +209,28 @@ pub(crate) struct Lib(Option<Library>);
 
 impl Drop for Lib {
     fn drop(&mut self) {
-        if let Some(lib) = self.0.take() {
-            crate::dlclose_on_worker(lib);
+        let Some(lib) = self.0.take() else {
+            return;
+        };
+        // Never under a worker-state lock: the unload runs plugin code.
+        if super::worker::state_held() {
+            #[cfg(test)]
+            DEFERRED_UNLOADS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            return super::worker::defer_unload(Lib(Some(lib)));
         }
+        #[cfg(test)]
+        UNLOADS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        crate::dlclose_on_worker(lib);
     }
 }
+
+/// TEST WITNESSES: unloads deferred past a worker-state lock, and unloads actually run (never
+/// under one, by construction of the branch above).
+#[cfg(test)]
+pub(crate) static DEFERRED_UNLOADS: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+#[cfg(test)]
+pub(crate) static UNLOADS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// THE DROPPED-IN DOOR: `path`'s manifest facts, then `dlopen`, then [`DOOR_SYMBOL`], then
 /// [`validate`]. A mechanism version the host does not speak is refused before the library is
