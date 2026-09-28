@@ -406,3 +406,49 @@ fn complete_login_checks_its_own_vocabulary() {
         Err(Fault::Vocabulary)
     );
 }
+
+/// M-SB REFINEMENT: one dimension short with the other reporting a fitting full size is a legal
+/// short FAILED; both fitting is FAULT.
+#[test]
+fn a_short_identify_reports_every_dimension_full_size() {
+    let mut o: IdentifyOut = zeroed();
+    o.needed_bytes = CAP as u64 + 1;
+    o.needed_groups = GROUPS_CAP;
+    assert_eq!(check_identify(Outcome::Failed, &o, &buf(), &[]), Ok(()));
+    let mut o: IdentifyOut = zeroed();
+    o.needed_bytes = CAP as u64;
+    o.needed_groups = GROUPS_CAP + 1;
+    assert_eq!(check_identify(Outcome::Failed, &o, &buf(), &[]), Ok(()));
+    let mut o: IdentifyOut = zeroed();
+    o.needed_bytes = CAP as u64;
+    o.needed_groups = GROUPS_CAP;
+    assert_eq!(
+        check_identify(Outcome::Failed, &o, &buf(), &[]),
+        Err(Fault::NeededWithinCap)
+    );
+}
+
+#[test]
+fn a_short_fields_reports_every_dimension_full_size() {
+    let mut f: FieldsOut = zeroed();
+    f.needed_bytes = CAP as u64 + 1;
+    f.needed_fields = 2;
+    assert_eq!(
+        check_fields(Outcome::Failed, &f, CAP, FIELDS_CAP, &[]),
+        Ok(())
+    );
+    let mut f: FieldsOut = zeroed();
+    f.needed_bytes = 10;
+    f.needed_fields = FIELDS_CAP + 1;
+    assert_eq!(
+        check_fields(Outcome::Failed, &f, CAP, FIELDS_CAP, &[]),
+        Ok(())
+    );
+    let mut f: FieldsOut = zeroed();
+    f.needed_bytes = 10;
+    f.needed_fields = 2;
+    assert_eq!(
+        check_fields(Outcome::Failed, &f, CAP, FIELDS_CAP, &[]),
+        Err(Fault::NeededWithinCap)
+    );
+}

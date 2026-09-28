@@ -115,8 +115,9 @@ pub struct FieldsIn {
 /// On REFUSED or PENDING, every `needed_*` is `0`. On READY, `needed_fields == 0` and `needed_bytes == 0`, `fields_len <= fields_cap`, every
 /// written [`FieldSpan`]'s name and value are present with `off + len <= field_buf_cap`, and its
 /// `flags` hold only [`super::FIELD_SENSITIVE`]. On FAILED, `needed_bytes <= u32::MAX` and
-/// `needed_fields <=` [`super::FIELDS_HARD_MAX`]; a non-zero `needed_*` at or below its capacity is
-/// FAULT (it would waste the one re-call), so a dimension that fits reports `0`.
+/// `needed_fields <=` [`super::FIELDS_HARD_MAX`]; both `0` fails the attempt;
+/// otherwise each reports its FULL size and at least one exceeds its capacity (a fitting
+/// dimension's full size is legal; none exceeding is FAULT, a wasted re-call).
 ///
 /// SHORT BUFFER: a plugin never writes past a capacity. When the fields do not fit it answers
 /// `FAILED` with `needed_fields` or `needed_bytes` above the capacity it was given and writes

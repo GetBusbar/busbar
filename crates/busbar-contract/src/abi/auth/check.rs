@@ -32,8 +32,8 @@ pub enum Fault {
     NeededNotFailed,
     /// `needed_bytes > u32::MAX`, or a `needed_<count>` above its hard maximum.
     NeededTooLarge,
-    /// FAILED with a non-zero `needed_*` that the given capacity already covers (it would waste the
-    /// one re-call).
+    /// FAILED with a non-zero `needed_*` where no dimension exceeds its capacity (it would waste
+    /// the one re-call).
     NeededWithinCap,
     /// An absent span ([`SPAN_ABSENT`]) with a non-zero length.
     AbsentWithLen,
@@ -66,7 +66,9 @@ fn span(s: Span, cap: u64, optional: bool) -> Result<(), Fault> {
     Ok(())
 }
 
-/// A FAILED answer's `needed_*`: within the hard maxima, and `0` or above the capacity given.
+/// A FAILED answer's `needed_*` (the M-SB refinement for multi-dimension answers): each within its
+/// hard maximum; all `0` is a real failure; otherwise each carries its dimension's FULL size and AT
+/// LEAST ONE exceeds its capacity. A dimension that fits reports its full size, which is legal.
 fn short(
     needed_bytes: u64,
     bytes_cap: u64,
@@ -77,12 +79,13 @@ fn short(
     if needed_bytes > u64::from(u32::MAX) || needed_count > hard {
         return Err(Fault::NeededTooLarge);
     }
-    if (needed_bytes != 0 && needed_bytes <= bytes_cap)
-        || (needed_count != 0 && needed_count <= count_cap)
-    {
-        return Err(Fault::NeededWithinCap);
+    if needed_bytes == 0 && needed_count == 0 {
+        return Ok(());
     }
-    Ok(())
+    if needed_bytes > bytes_cap || needed_count > count_cap {
+        return Ok(());
+    }
+    Err(Fault::NeededWithinCap)
 }
 
 /// REFUSED or PENDING answers ask for nothing: any non-zero `needed_*` is FAULT (ruling H3).

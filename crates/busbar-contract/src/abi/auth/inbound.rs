@@ -137,9 +137,9 @@ pub struct VerifyIn {
 /// for an identity, `subject` is present, every present [`Span`] has `off + len <= buf_cap`, an
 /// absent one ([`super::SPAN_ABSENT`]) has `len == 0`, `groups_len <= groups_cap`, every group
 /// span is present and in bounds, and `flags` holds only [`super::IDENTITY_HAS_TTL`]. On FAILED,
-/// `needed_bytes <= u32::MAX` and `needed_groups <=` [`super::IDENTITY_GROUPS_HARD_MAX`]; a
-/// non-zero `needed_*` at or below its capacity is FAULT (it would waste the one re-call), so a
-/// dimension that fits reports `0`.
+/// `needed_bytes <= u32::MAX` and `needed_groups <=` [`super::IDENTITY_GROUPS_HARD_MAX`]; both `0`
+/// is a real failure; otherwise each reports its FULL size and at least one exceeds its capacity
+/// (a fitting dimension's full size is legal; none exceeding is FAULT, a wasted re-call).
 ///
 /// The identity buffer is ALWAYS secret material to the host (claims may carry an identity token):
 /// never logged, zeroised after use. No plugin flag says so.
