@@ -2,7 +2,8 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! The hook kind's adapter: every kind op runs its `check_<op>` with the caps its `in` carries,
-//! a legal answer passes, a broken rule is FAULT, a foreign (too small) `in` is `Rule::Foreign`,
+//! a legal answer passes, a broken rule is FAULT naming its rule and field, a zeroed PENDING or
+//! REFUSED `out` passes, a foreign (too small) `in` is `Rule::Foreign`,
 //! and a FAILED `decide`/`transform` naming a `*_needed` is short.
 
 use std::mem::{size_of, MaybeUninit};
@@ -47,12 +48,7 @@ fn check<I: InFrame, O: OutFrame>(op: u32, i: &I, in_size: usize, o: &O) -> Resu
 
 fn answer<I: InFrame, O: OutFrame>(op: u32, i: &I, in_size: usize, o: &O) -> Answer<'static> {
     // SAFETY: `o`'s head leads it (`O: OutFrame`).
-    let outcome = unsafe { (*(o as *const O).cast::<OutHead>()).outcome };
-    let outcome = if outcome.0 == Outcome::Failed as u8 {
-        Outcome::Failed
-    } else {
-        Outcome::Ready
-    };
+    let outcome = unsafe { (*(o as *const O).cast::<OutHead>()).outcome }.outcome();
     assert!(in_size <= size_of::<I>());
     // SAFETY: `i`/`o` are live for the answer's use, `in_size`/`out` sizes within them, and
     // neither is written while the answer lives.
@@ -68,11 +64,9 @@ fn answer<I: InFrame, O: OutFrame>(op: u32, i: &I, in_size: usize, o: &O) -> Ans
     }
 }
 
-fn contradiction(r: Result<(), Fault>) {
-    assert_eq!(
-        r.expect_err("a broken rule is FAULT").rule,
-        Rule::Contradiction
-    );
+/// A broken rule is FAULT, naming exactly `rule` and `field`.
+fn fails(r: Result<(), Fault>, rule: Rule, field: &'static str) {
+    assert_eq!(r, Err(Fault { rule, field }));
 }
 
 fn foreign(r: Result<(), Fault>) {
@@ -118,11 +112,19 @@ fn decide_green_red_foreign() {
     // The order cap comes from the `in`: one slot past it is FAULT.
     let mut over = o;
     over.order_written = 5;
-    contradiction(check(slot::DECIDE, &i, size_of::<DecideIn>(), &over));
+    fails(
+        check(slot::DECIDE, &i, size_of::<DecideIn>(), &over),
+        Rule::OverCap,
+        "decide.order_written",
+    );
     // Two verbs on READY.
     let mut two = o;
     two.verbs = VERB_PREFER | VERB_REJECT;
-    contradiction(check(slot::DECIDE, &i, size_of::<DecideIn>(), &two));
+    fails(
+        check(slot::DECIDE, &i, size_of::<DecideIn>(), &two),
+        Rule::NotExactlyOne,
+        "decide.verbs",
+    );
 
     foreign(check(slot::DECIDE, &i, size_of::<InHead>(), &o));
 }
@@ -136,10 +138,18 @@ fn decide_caps_are_read_from_the_in() {
     o.restrict_tags_written = 8;
     assert_eq!(check(slot::DECIDE, &i, size_of::<DecideIn>(), &o), Ok(()));
     i.reject_message_cap = 7;
-    contradiction(check(slot::DECIDE, &i, size_of::<DecideIn>(), &o));
+    fails(
+        check(slot::DECIDE, &i, size_of::<DecideIn>(), &o),
+        Rule::OverCap,
+        "decide.reject_message_written",
+    );
     i.reject_message_cap = 8;
     i.restrict_tags_cap = 7;
-    contradiction(check(slot::DECIDE, &i, size_of::<DecideIn>(), &o));
+    fails(
+        check(slot::DECIDE, &i, size_of::<DecideIn>(), &o),
+        Rule::OverCap,
+        "decide.restrict_tags_written",
+    );
 }
 
 #[test]
@@ -158,7 +168,11 @@ fn decide_short_answer() {
     // A needed that fits its cap wastes the re-call.
     let mut fits = o;
     fits.order_needed = 4;
-    contradiction(check(slot::DECIDE, &i, size_of::<DecideIn>(), &fits));
+    fails(
+        check(slot::DECIDE, &i, size_of::<DecideIn>(), &fits),
+        Rule::WastedRecall,
+        "decide.needed",
+    );
 
     // A FAILED answer naming nothing needed is not short.
     let plain: DecideOut = output(Outcome::Failed);
@@ -192,10 +206,18 @@ fn transform_green_red_foreign() {
 
     let mut over = o;
     over.rewrite_written = 17;
-    contradiction(check(slot::TRANSFORM, &i, size_of::<DecideIn>(), &over));
+    fails(
+        check(slot::TRANSFORM, &i, size_of::<DecideIn>(), &over),
+        Rule::OverCap,
+        "transform.rewrite_written",
+    );
     let mut none = o;
     none.verbs = 0;
-    contradiction(check(slot::TRANSFORM, &i, size_of::<DecideIn>(), &none));
+    fails(
+        check(slot::TRANSFORM, &i, size_of::<DecideIn>(), &none),
+        Rule::NotExactlyOne,
+        "transform.verbs",
+    );
 
     foreign(check(slot::TRANSFORM, &i, size_of::<InHead>(), &o));
 }
@@ -219,7 +241,11 @@ fn transform_short_answer() {
     // A short answer writes nothing.
     let mut wrote = o;
     wrote.reject_message_written = 1;
-    contradiction(check(slot::TRANSFORM, &i, size_of::<DecideIn>(), &wrote));
+    fails(
+        check(slot::TRANSFORM, &i, size_of::<DecideIn>(), &wrote),
+        Rule::WrittenOnShort,
+        "transform.written",
+    );
 
     let plain: TransformOut = output(Outcome::Failed);
     assert!(!Hook::short(&answer(
@@ -240,7 +266,11 @@ fn notify_green_red_foreign() {
 
     let mut null = o;
     null.error.ptr = std::ptr::null();
-    contradiction(check(slot::NOTIFY, &i, size_of::<NotifyIn>(), &null));
+    fails(
+        check(slot::NOTIFY, &i, size_of::<NotifyIn>(), &null),
+        Rule::NullWithCount,
+        "notify.error",
+    );
 
     foreign(check(slot::NOTIFY, &i, size_of::<InHead>(), &o));
 }
@@ -259,12 +289,11 @@ fn configure_green_red_foreign() {
     // The pushed version comes from the `in`.
     let mut pushed = i;
     pushed.version = 8;
-    contradiction(check(
-        slot::CONFIGURE,
-        &pushed,
-        size_of::<ConfigureIn>(),
-        &o,
-    ));
+    fails(
+        check(slot::CONFIGURE, &pushed, size_of::<ConfigureIn>(), &o),
+        Rule::Contradiction,
+        "configure.acked_version",
+    );
 
     foreign(check(slot::CONFIGURE, &i, size_of::<InHead>(), &o));
 }
@@ -280,7 +309,11 @@ fn status_green_red_foreign() {
 
     let mut unleased = o;
     unleased.head.lease = 0;
-    contradiction(check(slot::STATUS, &i, size_of::<InHead>(), &unleased));
+    fails(
+        check(slot::STATUS, &i, size_of::<InHead>(), &unleased),
+        Rule::Missing,
+        "status.lease",
+    );
 
     foreign(check(slot::STATUS, &i, size_of::<InHead>() - 1, &o));
 }
@@ -293,7 +326,11 @@ fn describe_green_red_foreign() {
 
     let mut spurious = o;
     spurious.head.lease = 3;
-    contradiction(check(slot::DESCRIBE, &i, size_of::<InHead>(), &spurious));
+    fails(
+        check(slot::DESCRIBE, &i, size_of::<InHead>(), &spurious),
+        Rule::Contradiction,
+        "describe.lease_without_material",
+    );
 
     foreign(check(slot::DESCRIBE, &i, size_of::<InHead>() - 1, &o));
 }
@@ -310,7 +347,11 @@ fn serve_green_red_foreign() {
 
     let mut headers = o;
     headers.headers_out_len = 2;
-    contradiction(check(slot::SERVE, &i, size_of::<ServeIn>(), &headers));
+    fails(
+        check(slot::SERVE, &i, size_of::<ServeIn>(), &headers),
+        Rule::NullWithCount,
+        "serve.headers_out",
+    );
 
     foreign(check(slot::SERVE, &i, size_of::<InHead>(), &o));
 }
@@ -326,4 +367,57 @@ fn lifecycle_slots_state_no_hook_rule() {
         size_of::<InHead>(),
         &output::<ServeOut>(Outcome::Failed)
     )));
+}
+
+/// A zeroed `out` on PENDING and on REFUSED passes every op's check: those outcomes carry no
+/// verb, no buffer, no lease and no ack.
+#[test]
+fn zeroed_pending_and_refused_pass_every_op() {
+    let d = decide_in();
+    let mut c: ConfigureIn = input();
+    c.version = 7;
+    let h: InHead = in_head();
+    let n: NotifyIn = input();
+    let sv: ServeIn = input();
+    for o in [Outcome::Pending, Outcome::Refused] {
+        let ds = size_of::<DecideIn>();
+        let hs = size_of::<InHead>();
+        assert_eq!(check(slot::DECIDE, &d, ds, &output::<DecideOut>(o)), Ok(()));
+        assert_eq!(
+            check(slot::TRANSFORM, &d, ds, &output::<TransformOut>(o)),
+            Ok(())
+        );
+        assert_eq!(
+            check(
+                slot::NOTIFY,
+                &n,
+                size_of::<NotifyIn>(),
+                &output::<OutHead>(o)
+            ),
+            Ok(())
+        );
+        assert_eq!(
+            check(
+                slot::CONFIGURE,
+                &c,
+                size_of::<ConfigureIn>(),
+                &output::<ConfigureOut>(o)
+            ),
+            Ok(())
+        );
+        assert_eq!(check(slot::STATUS, &h, hs, &output::<StatusOut>(o)), Ok(()));
+        assert_eq!(
+            check(slot::DESCRIBE, &h, hs, &output::<DescribeOut>(o)),
+            Ok(())
+        );
+        assert_eq!(
+            check(
+                slot::SERVE,
+                &sv,
+                size_of::<ServeIn>(),
+                &output::<ServeOut>(o)
+            ),
+            Ok(())
+        );
+    }
 }

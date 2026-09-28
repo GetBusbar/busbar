@@ -15,7 +15,6 @@ use busbar_contract::abi::mechanism::call::{InHead, OutHead, Outcome};
 use busbar_contract::abi::mechanism::check::Fault;
 use busbar_contract::abi::mechanism::KindCode;
 
-use super::message_fault;
 use crate::dispatch::{lifecycle_name, Answer, InFrame, Kind, OutFrame};
 
 /// The hook kind.
@@ -53,7 +52,7 @@ impl Kind for Hook {
     }
 
     fn check(a: &Answer) -> Result<(), Fault> {
-        let r = match a.slot {
+        match a.slot {
             slot::DECIDE => {
                 let i = a.input::<DecideIn>()?;
                 validate::check_decide(
@@ -91,9 +90,8 @@ impl Kind for Hook {
                 a.input::<ServeIn>()?;
                 validate::check_serve(a.out::<ServeOut>()?)
             }
-            _ => return Ok(()),
-        };
-        r.map_err(|f| message_fault(f.0))
+            _ => Ok(()),
+        }
     }
 
     fn short(a: &Answer) -> bool {

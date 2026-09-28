@@ -6,8 +6,8 @@
 //! every READY or FAILED answer. A kind's `check_<op>` is pure and lives beside its shapes in
 //! `busbar-contract`; these adapters only read the op's `in`/`out` through [`super::Answer`], build
 //! each slice a plugin-reported count names through `abi::mechanism::check::reported` (the count
-//! checked against the host's cap first), call the check, and map the kind's own fault to the
-//! shared `Fault` the dispatcher logs.
+//! checked against the host's cap first), and call the check; a kind's own fault is mapped to
+//! the shared `Fault` the dispatcher logs where the kind does not answer it directly.
 
 pub mod auth;
 pub mod export;
@@ -16,11 +16,3 @@ pub mod plane;
 pub mod secret;
 pub mod store;
 pub mod transport;
-
-use busbar_contract::abi::mechanism::check::{fault, Fault, Rule};
-
-/// A kind whose `check_<op>` answers a message-only fault: the rule is not named, so it is
-/// reported as [`Rule::Contradiction`] with the kind's own message as the field.
-pub(crate) fn message_fault(message: &'static str) -> Fault {
-    fault(Rule::Contradiction, message)
-}

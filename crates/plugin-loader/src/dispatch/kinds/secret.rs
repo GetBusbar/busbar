@@ -8,7 +8,6 @@ use busbar_contract::abi::mechanism::check::Fault;
 use busbar_contract::abi::mechanism::KindCode;
 use busbar_contract::abi::secret::{self, slot, validate, ResolveIn, ResolveOut};
 
-use super::message_fault;
 use crate::dispatch::{lifecycle_name, Answer, InFrame, Kind, OutFrame};
 
 /// The secret kind.
@@ -33,9 +32,7 @@ impl Kind for Secret {
 
     fn check(a: &Answer) -> Result<(), Fault> {
         match a.slot {
-            slot::RESOLVE => {
-                validate::check_resolve(a.out::<ResolveOut>()?).map_err(|f| message_fault(f.0))
-            }
+            slot::RESOLVE => validate::check_resolve(a.out::<ResolveOut>()?),
             _ => Ok(()),
         }
     }
