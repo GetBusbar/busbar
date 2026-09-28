@@ -26,8 +26,8 @@ kind-isolation:matrix	ratchet	busbar × hooks	16
 kind-isolation:matrix	ratchet	busbar × kernel	1295
 kind-isolation:matrix	ratchet	busbar × plugin-tooling	96
 kind-isolation:matrix	ratchet	busbar × store	9
-kind-isolation:matrix	ratchet	busbar-contract × plane	349
-kind-isolation:matrix	ratchet	busbar-contract × transport	570
+kind-isolation:matrix	ratchet	busbar-contract × plane	219
+kind-isolation:matrix	ratchet	busbar-contract × transport	415
 kind-isolation:matrix	ratchet	busbar-kernel × transport	1813
 kind-isolation:matrix	ratchet	busbar-kernel-breaker × transport	253
 kind-isolation:matrix	ratchet	busbar-kernel-budget × kernel	52
@@ -67,7 +67,6 @@ kind-isolation:matrix	unlisted-cell	busbar-a2a × contract	351
 kind-isolation:matrix	unlisted-cell	busbar-a2a × kernel	68
 kind-isolation:matrix	unlisted-cell	busbar-contract × cleanliness	1
 kind-isolation:matrix	unlisted-cell	busbar-contract × kernel	10
-kind-isolation:matrix	unlisted-cell	busbar-contract × legacy	2
 kind-isolation:matrix	unlisted-cell	busbar-contract × plugin-tooling	1
 kind-isolation:matrix	unlisted-cell	busbar-contract × store	1
 kind-isolation:matrix	unlisted-cell	busbar-core-admin × hooks	11
@@ -125,7 +124,6 @@ kind-isolation:matrix	unlisted-edge	cleanliness -> transport	697
 kind-isolation:matrix	unlisted-edge	codec -> contract	896
 kind-isolation:matrix	unlisted-edge	contract -> cleanliness	1
 kind-isolation:matrix	unlisted-edge	contract -> kernel	10
-kind-isolation:matrix	unlisted-edge	contract -> legacy	2
 kind-isolation:matrix	unlisted-edge	contract -> plugin-tooling	1
 kind-isolation:matrix	unlisted-edge	contract -> store	1
 kind-isolation:matrix	unlisted-edge	hooks -> plane	4
