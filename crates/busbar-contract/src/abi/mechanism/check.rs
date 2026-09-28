@@ -1,12 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE SHARED ANSWER-VALIDATOR HELPERS (ARCHITECT rulings "answer validators live with the shape",
-//! M-SB and P5): the one [`Fault`], the per-op [`OpContract`] and its [`contract!`] builder, and the
+//! THE SHARED ANSWER-VALIDATOR HELPERS: the one [`Fault`], the per-op [`OpContract`] and its [`contract!`] builder, and the
 //! pure checks every kind's `check_<op>` is built from. u64 arithmetic, no statics. The dispatcher
 //! turns an `Err` into FAULT; no host re-implements a check.
 //!
-//! THE SHORT-BUFFER RULE (M-SB, its multi-buffer refinement and P1) is stated once, on
+//! THE SHORT-BUFFER RULE, with its multi-buffer form, is stated once, on
 //! [`OutHead`](super::call::OutHead); [`result`] and [`results`] enforce it, and [`within`] is the
 //! check for an op with no short path.
 
@@ -77,7 +76,7 @@ pub enum Filled {
     Short,
 }
 
-/// A host-buffer result under M-SB: `written`, `needed`, the `cap` the host gave and the kind's
+/// A host-buffer result under the short-buffer rule: `written`, `needed`, the `cap` the host gave and the kind's
 /// `max` for `needed`.
 ///
 /// # Errors
@@ -127,7 +126,7 @@ pub struct Dim {
     pub field: &'static str,
 }
 
-/// A multi-dimension host-buffer answer under the M-SB refinement: the short answer is FAILED with
+/// A multi-dimension host-buffer answer under the multi-buffer short-answer rule: the short answer is FAILED with
 /// EVERY `needed` at its dimension's full size and AT LEAST ONE above its cap (a dimension that fits
 /// reports its full size, which is legal), nothing written. FAULT when no `needed` exceeds its cap,
 /// when any exceeds its max, or when any is non-zero on another outcome. Otherwise every `written`

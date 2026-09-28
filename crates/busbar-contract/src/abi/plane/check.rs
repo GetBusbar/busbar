@@ -1,18 +1,17 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE PLANE KIND'S ANSWER VALIDATORS (ARCHITECT rulings "answer validators live with the shape",
-//! M-SB, P1, P3, P4): one pure `check_<op>` per answer, built from the shared helpers in
+//! THE PLANE KIND'S ANSWER VALIDATORS, which live beside the shapes they judge: one pure `check_<op>` per answer, built from the shared helpers in
 //! [`crate::abi::mechanism::check`]. The dispatcher turns an `Err` into FAULT.
 //!
-//! * Every host buffer follows M-SB: READY has `needed == 0`, `written <= cap`. A multi-buffer answer
-//!   (`on_piece`, `refusal`, `serve`) is ONE short answer under the M-SB refinement: FAILED, every
+//! * Every host buffer follows the short-buffer rule: READY has `needed == 0`, `written <= cap`. A multi-buffer answer
+//!   (`on_piece`, `refusal`, `serve`) is ONE short answer under the multi-buffer short-answer rule: FAILED, every
 //!   `needed` at its full size, at least one above its cap, nothing written or emitted.
 //! * `on_piece`'s reply bytes are backpressure, never short: `emitted <= reply_cap`; `more = 1`
-//!   needs at least one byte emitted and never comes with [`EMIT_DONE`] (P4).
-//! * What was written is judged on EVERY outcome (P4): no early return skips a unit, record or
+//!   needs at least one byte emitted and never comes with [`EMIT_DONE`].
+//! * What was written is judged on EVERY outcome: no early return skips a unit, record or
 //!   field.
-//! * The tail and every list element it names are checked at load (P3).
+//! * The tail and every list element it names are checked at load.
 
 pub use crate::abi::mechanism::check::{Fault, Rule};
 
@@ -124,7 +123,7 @@ fn records(buf: &[RecordWrite], n: u64, arena: u64, b: &Bounds) -> Result<(), Fa
     Ok(())
 }
 
-/// `arrive`: the expected units under M-SB and valid against the tail; on READY the indices name
+/// `arrive`: the expected units under the short-buffer rule and valid against the tail; on READY the indices name
 /// tail entries and the principal need is known.
 ///
 /// # Errors
@@ -160,7 +159,7 @@ pub fn check_arrive(
     Ok(())
 }
 
-/// `on_piece`: backpressure rules for the reply (P4), M-SB for every other buffer, a short answer
+/// `on_piece`: backpressure rules for the reply, the short-buffer rule for every other buffer, a short answer
 /// emits nothing, and every unit, record and field written is judged on any outcome.
 ///
 /// # Errors
@@ -226,7 +225,7 @@ pub fn check_on_piece(
     fields(bufs.2, u64::from(out.fields_written), out.arena_written)
 }
 
-/// `refusal`'s and `serve`'s shared reply: body, fields and arena under M-SB; a short answer writes
+/// `refusal`'s and `serve`'s shared reply: body, fields and arena under the short-buffer rule; a short answer writes
 /// nothing; every field written is judged.
 fn reply(
     outcome: Outcome,

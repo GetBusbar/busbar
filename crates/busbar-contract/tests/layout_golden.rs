@@ -80,7 +80,7 @@ use busbar_contract::abi::auth::{
     RequestFacts as AuthRequestFacts, Span as AuthSpan, StyleDecl as AuthStyleDecl,
     VerifyIn as AuthVerifyIn,
 };
-// THE PLANE (B.6) AND TRANSPORT (B.7) KINDS and THE HOST CONNECTOR: aliased, so the hot lane's names cannot collide.
+// THE PLANE AND TRANSPORT KINDS and THE HOST CONNECTOR: aliased, so the hot lane's names cannot collide.
 use busbar_contract::abi::host::conn::connector as hconn;
 use busbar_contract::abi::plane as pkind;
 use busbar_contract::abi::transport as tkind;
@@ -1348,7 +1348,7 @@ fn compute_layout() -> String {
     record!(s, PlaneOps, [head]);
     record!(s, TransportOps, [head]);
 
-    // THE TRANSPORT KIND (abi/transport/, B.7) and THE HOST CONNECTOR (abi/host/conn/connector.rs).
+    // THE TRANSPORT KIND (abi/transport/) and THE HOST CONNECTOR (abi/host/conn/connector.rs).
     record!(
         s,
         tkind::Ops,
@@ -1538,7 +1538,7 @@ fn compute_layout() -> String {
         tkind::AdoptIn,
         [head, side, _reserved, facts, leftover, leftover_len, sink]
     );
-    // THE PLANE KIND (abi/plane/, B.6).
+    // THE PLANE KIND (abi/plane/).
     record!(
         s,
         pkind::Ops,
@@ -2103,7 +2103,7 @@ fn a_perturbed_golden_line_fails_the_comparator() {
     assert!(err.contains("MechDoor.kind_abi=24"), "{err}");
 }
 
-/// RED ARM (transport kind, B.7): one perturbed transport golden line fails the comparator.
+/// RED ARM (transport kind): one perturbed transport golden line fails the comparator.
 #[test]
 fn a_perturbed_transport_golden_line_fails_the_comparator() {
     let actual = compute_layout();
@@ -2125,7 +2125,7 @@ fn a_perturbed_connector_golden_line_fails_the_comparator() {
     assert!(err.contains("hconn::ConnectorSlots.identity=88"), "{err}");
 }
 
-/// RED ARM (plane kind, B.6): one perturbed plane golden line fails the comparator.
+/// RED ARM (plane kind): one perturbed plane golden line fails the comparator.
 #[test]
 fn a_perturbed_plane_golden_line_fails_the_comparator() {
     let actual = compute_layout();

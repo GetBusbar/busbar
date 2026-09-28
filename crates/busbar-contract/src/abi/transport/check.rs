@@ -1,16 +1,14 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE TRANSPORT KIND'S ANSWER VALIDATORS (ARCHITECT rulings "answer validators live with the
-//! shape", M-SB, P1-P3): one pure `check_<op>` per answer, built from the shared helpers in
+//! THE TRANSPORT KIND'S ANSWER VALIDATORS, which live beside the shapes they judge: one pure `check_<op>` per answer, built from the shared helpers in
 //! [`crate::abi::mechanism::check`]. The dispatcher turns an `Err` into FAULT.
 //!
-//! * `arrival` and `locate` have the short path (M-SB; `locate`'s authority and name are one
-//!   multi-dimension answer, the M-SB refinement); `listen`, `accept` and `read` do not
-//!   (P1): their lengths are at most the capacity, and the host's `addr_cap`/`peer_cap` is at least
-//!   [`MAX_ADDR`].
+//! * `arrival` and `locate` have the short path (`locate`'s authority and name are one
+//!   multi-dimension answer); `listen`, `accept` and `read` do not: their lengths are at most the
+//!   capacity, and the host's `addr_cap`/`peer_cap` is at least [`MAX_ADDR`].
 //! * A framer has no short path either: a full sink is READY with [`YIELD_MORE`] (backpressure).
-//! * The tail and every list element it names are checked at load (P3).
+//! * The tail and every list element it names are checked at load.
 
 pub use crate::abi::mechanism::check::{Fault, Rule};
 
@@ -33,7 +31,7 @@ pub const MAX_PIECES: u64 = 4096;
 /// The most claims one transport entry may make.
 pub const MAX_CLAIMS: u64 = 1024;
 
-/// `listen`: no short path (P1); the bound address fits `addr_cap`.
+/// `listen`: no short path; the bound address fits `addr_cap`.
 ///
 /// # Errors
 ///
@@ -42,7 +40,7 @@ pub const fn check_listen(out: &ListenOut, addr_cap: u64) -> Result<(), Fault> {
     within(out.addr_written, addr_cap, "listen.addr_written")
 }
 
-/// `accept`: no short path (P1); the far end's address fits `peer_cap`.
+/// `accept`: no short path; the far end's address fits `peer_cap`.
 ///
 /// # Errors
 ///
@@ -51,7 +49,7 @@ pub const fn check_accept(out: &AcceptOut, peer_cap: u64) -> Result<(), Fault> {
     within(out.peer_written, peer_cap, "accept.peer_written")
 }
 
-/// `arrival`: the far end's address, under M-SB.
+/// `arrival`: the far end's address, under the short-buffer rule.
 ///
 /// # Errors
 ///
@@ -71,7 +69,7 @@ pub const fn check_arrival(outcome: Outcome, out: &ArrivalOut, peer_cap: u64) ->
 }
 
 /// `read`/`write`: no short path; at most the buffer's capacity or the bytes offered. Partial I/O
-/// is not a short buffer: a FAILED read or write MAY report the bytes it already moved (the M-SB
+/// is not a short buffer: a FAILED read or write MAY report the bytes it already moved (the short-buffer rule
 /// carve-outs, beside backpressure, in this kind's module doc).
 ///
 /// # Errors
@@ -81,7 +79,7 @@ pub const fn check_io(out: &IoOut, cap: u64) -> Result<(), Fault> {
     within(out.len, cap, "io.len")
 }
 
-/// `locate`: authority and name under M-SB; `has_name` and `secure` are flags, and no name means
+/// `locate`: authority and name under the short-buffer rule; `has_name` and `secure` are flags, and no name means
 /// nothing written or needed for it.
 ///
 /// # Errors

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE PLANE KIND'S ABI (the design's plugin-ABI section; the signed per-kind design B.6): its
+//! THE PLANE KIND'S ABI (`BUSBAR-1.6.0.md` THE DESIGN, the plugin ABI section): its
 //! version, its table, the `in`/`out` of every op, its Statement tail, its generation snapshot and
 //! its cancel vocabulary.
 //!
@@ -16,8 +16,8 @@
 //! reply bytes, reply head fields, unit counts, record writes — is written into a buffer the `in`
 //! names as pointer + capacity; the bytes of fields and record writes go into the call's `arena`,
 //! and the structs name them by [`Span`]. Nothing the host needs after the call lives in plugin
-//! memory. Each `out` states `*_written` and `*_needed` per buffer; the short-buffer rule (M-SB,
-//! with its multi-buffer refinement) is stated once, on [`OutHead`](crate::abi::mechanism::call::OutHead).
+//! memory. Each `out` states `*_written` and `*_needed` per buffer; the short-buffer rule,
+//! with its multi-buffer form, is stated once, on [`OutHead`](crate::abi::mechanism::call::OutHead).
 //!
 //! BACKPRESSURE IS NOT A SHORT BUFFER: `on_piece`'s reply bytes stream. A full `reply_buf` is READY
 //! with `more = 1` (and at least one byte `emitted`); the kernel flushes, waits for the socket to be
@@ -30,11 +30,11 @@
 //!   ([`PlaneOpenOut`]) and `refresh` ([`PlaneRefreshOut`]): valid until `retire` of that generation
 //!   (memory class (ii)).
 //! * SETTINGS — the `settings` blob `validate`, `open` and `refresh` receive has its `rate_card` and
-//!   `fees` keys stripped by the kernel before it crosses (B.6; RED-tested at the kernel).
+//!   `fees` keys stripped by the kernel before it crosses (RED-tested at the kernel).
 //! * NEEDS — a plane states its connection needs as `(transport, auth)` per direction in its tail
 //!   ([`PlaneTail::needs`], each a [`Need`]); the kernel instantiates them through the connector.
 //!
-//! CANCEL BILLING — the four 1.5.5 rules, pinned (the review's parity M3). The lifecycle `cancel`
+//! CANCEL BILLING — the four 1.5.5 rules, pinned . The lifecycle `cancel`
 //! answers a disposition ([`CANCEL_OK_PARTIAL`], [`CANCEL_FAILED`], [`CANCEL_ABORTED`]) and the
 //! kernel bills from it by [`cancel_bills_reported_units`]:
 //!
@@ -78,13 +78,13 @@
 //! | `metric_families` | [`crate::abi::mechanism::door::Statement::families`] (per-call metrics by index) |
 //! | `served_op_classes` | tail [`PlaneTail::op_classes`]; [`ArriveOut::op_class`] indexes it |
 //! | `record_kinds` | tail [`PlaneTail::record_kinds`]; [`RecordWrite::kind`] indexes it |
-//! | `dispatch_flags` / `DISPATCH_BLOCKS` | DROPPED — B.6: "`DISPATCH_BLOCKS` is deleted"; a plane never blocks (the design's plugin-ABI section: no blocking on the hot path). Replaced by [`PlaneTail::dispatch_shape`] |
+//! | `dispatch_flags` / `DISPATCH_BLOCKS` | DROPPED — a plane never blocks (the design's plugin-ABI section: no blocking on the hot path). Replaced by [`PlaneTail::dispatch_shape`] |
 //! | `required_sections` | tail: [`SECTION_REQUIRED`] on a [`PlaneTail::sections`] entry |
 //! | `BuildCtx.host`, `host_ctx` | [`crate::abi::mechanism::lifecycle::OpenIn::host`] |
 //! | `BuildCtx.config_*` | `OpenIn::settings` (`rate_card`/`fees` stripped) |
 //! | `BuildCtx.resolved_refs_*` | `OpenIn::secrets` |
 //! | `BuildCtx.public_url_*` | [`PlaneOpenIn::public_url`] |
-//! | (new, B.6) dialects, `dialect_auth`, `route_cost`, `cli_help` | tail |
+//! | (new) dialects, `dialect_auth`, `route_cost`, `cli_help` | tail |
 //! | (new) needs, consumed sections, egress targets | tail [`PlaneTail::needs`], [`SECTION_CONSUMED`], [`PlaneTail::egress_targets`] |
 //!
 //! ```
@@ -309,7 +309,7 @@ pub struct OpClass {
     pub name: AbiStr,
 }
 
-/// One billable class and the unit family it counts in. Classes are disjoint (#71).
+/// One billable class and the unit family it counts in. Classes are disjoint.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct BillableClass {

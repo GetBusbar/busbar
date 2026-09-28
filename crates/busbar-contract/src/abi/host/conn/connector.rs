@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE HOST CONNECTOR, mechanism-shaped (the design's connections section; ARCHITECT rulings for `abi/host/conn`, M3):
+//! THE HOST CONNECTOR, mechanism-shaped (`BUSBAR-1.6.0.md` THE DESIGN, the connections section):
 //! the ONE connector every plugin of every kind reaches its connections through, whatever wire it
 //! speaks over them. It lives in `abi/host/`, not `abi/transport/`: it is a HOST table any kind
 //! calls (a store, an auth, a secret, an export or a plane plugin), while `abi/transport/` is the
@@ -33,7 +33,7 @@
 //! * **Cancel may need a second stream** to the same endpoint ([`service::SIDE_STREAM`]).
 //! * **Host services:** random bytes ([`service::RANDOM`]: nonces, key-exchange seeds) and the
 //!   process identity (OS user, pid, program name; [`service::IDENTITY`]).
-//! * **The far end's notices and warnings** travel as the #85 envelope's `Diag`s, severity `0`/`1`;
+//! * **The far end's notices and warnings** travel as the metrics-and-diagnostics envelope's `Diag`s, severity `0`/`1`;
 //!   there is no other channel.
 //!
 //! THE CALL SHAPE. Every service is a [`ServiceFn`]: `svc(ctx, in, out)`, `extern "C"`, answering
@@ -42,8 +42,8 @@
 //! on resume the plugin re-issues the SAME handle and receives the stored result — the host never
 //! runs a service twice. A call with `handle.ticket` = `Ticket::NONE` may not pend.
 //!
-//! NOTHING IS WIRED YET: [`crate::abi::mechanism::ticket::HostTables`] still hands the M0
-//! connection table; this table joins it at M3-wire.
+//! NOTHING IS WIRED YET: [`crate::abi::mechanism::ticket::HostTables`] still hands the older
+//! connection table; this table joins it when the connector is wired.
 
 use std::os::raw::c_void;
 

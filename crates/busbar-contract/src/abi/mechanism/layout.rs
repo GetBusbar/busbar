@@ -793,7 +793,7 @@ pin!(
     routes_len = 32,
 );
 
-// ── THE TRANSPORT KIND (abi/transport/, B.7) ──────────────────────────────────────────────────────
+// ── THE TRANSPORT KIND (abi/transport/) ──────────────────────────────────────────────────────
 mod transport_kind {
     use crate::abi::transport::*;
     use std::mem::{align_of, offset_of, size_of};
@@ -1208,7 +1208,7 @@ mod host_connector {
     );
 }
 
-// ── THE PLANE KIND (abi/plane/, B.6) ─────────────────────────────────────────────────────────────
+// ── THE PLANE KIND (abi/plane/) ─────────────────────────────────────────────────────────────
 #[rustfmt::skip]
 mod plane_kind {
     use std::mem::{align_of, offset_of, size_of};

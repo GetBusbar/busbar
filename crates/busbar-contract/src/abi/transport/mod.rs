@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE TRANSPORT KIND'S ABI (the design's connections and plugin-ABI sections; the signed per-kind design B.7): its version, its
+//! THE TRANSPORT KIND'S ABI (`BUSBAR-1.6.0.md` THE DESIGN, the connections and plugin ABI sections): its version, its
 //! table, the `in`/`out` of every op, its Statement tail and its cancel vocabulary.
 //!
 //! TRANSPORT IS ONE KIND, BIDIRECTIONAL. A transport plays one of two ROLES, stated in its tail
@@ -10,7 +10,7 @@
 //! * a **CARRIER** listens, accepts, dials, reads and writes a byte stream (kind ops `0..=7`);
 //! * a **FRAMER** is a sans-IO state machine over a carrier's bytes (kind ops `8..=17`): no socket,
 //!   no waker, no clock of its own (the host hands it the clock in every call), and no auth service
-//!   (the kernel makes the one outbound auth call before `encode`; B.7, M1).
+//!   (the kernel makes the one outbound auth call before `encode`).
 //!
 //! Direction is a usage mode, never a kind: the same carrier accepts and dials, the same framer
 //! runs on either side ([`SIDE_ACCEPT`] / [`SIDE_DIAL`]). A plugin of ANY kind declares what it needs
@@ -23,12 +23,12 @@
 //! load). A transport fills the slots of the role it does not play with a stub that answers
 //! [`crate::abi::mechanism::call::Outcome::Refused`]; the SDK supplies it.
 //!
-//! PER-CONNECTION TOKEN SPACE (B.7; the mechanism's ticket table exempts transport). A carrier
+//! PER-CONNECTION TOKEN SPACE (the mechanism's ticket table exempts transport). A carrier
 //! connection and a framing state are each named by a plugin-minted `u64` token (`conn`, `framing`,
 //! `listener`), not by a ticket: there is no capacity cap on them and they are outside
 //! `max_inflight`. Only `wake` is shared.
 //!
-//! TWO TICKETS PER CONNECTION (P2). A connection is full-duplex, so the host holds TWO tickets for
+//! TWO TICKETS PER CONNECTION. A connection is full-duplex, so the host holds TWO tickets for
 //! it: a READ side (`read`, `accept` on a listener) and a WRITE side (`write`, `flush`, `shut`), each
 //! with at most one op in flight. A PENDING op resumes, and a `cancel` addresses, exactly one side's
 //! ticket; the other side is untouched. `dial` and `listen` run on the ticket of the op that asked.
@@ -39,12 +39,12 @@
 //! drained them. A framer op never pends.
 //!
 //! EVERY REQUEST-PATH RESULT IS IN A HOST BUFFER (memory class (i)): a carrier's addresses and read
-//! bytes, a framer's wire bytes, frame bytes and pieces. The short-buffer rule (M-SB) is stated once,
+//! bytes, a framer's wire bytes, frame bytes and pieces. The short-buffer rule is stated once,
 //! on [`OutHead`](crate::abi::mechanism::call::OutHead); this kind's cases:
 //!
 //! * `arrival` and `locate` have the short path (`locate`'s authority and name are one
 //!   multi-dimension answer).
-//! * `listen` and `accept` have NO short path (P1): the host passes `addr_cap`/`peer_cap >=`
+//! * `listen` and `accept` have NO short path: the host passes `addr_cap`/`peer_cap >=`
 //!   [`MAX_ADDR`] and an over-cap `*_written` is FAULT.
 //! * `read` and `write` have no short path, and PARTIAL I/O IS NOT A SHORT BUFFER: a FAILED read or
 //!   write MAY report the bytes it already moved in `len` (at most `cap`).
@@ -53,7 +53,7 @@
 //!
 //! The tokens an `out` carries (`listener`, `conn`, `framing`) are names, not results.
 //!
-//! WHAT THE HOT-LANE `TransportDecl` BECOMES (a mechanical re-heading, B.7):
+//! WHAT THE HOT-LANE `TransportDecl` BECOMES (a mechanical re-heading):
 //!
 //! | `TransportDecl` / slot table | here |
 //! |---|---|
@@ -209,11 +209,10 @@ pub struct Ops {
 // ── the op contracts ─────────────────────────────────────────────────────────────────────────────
 
 /// The largest address `listen` or `accept` may write: the host's `addr_cap`/`peer_cap` is at
-/// least this (P1: those ops have no short path).
+/// least this (those ops have no short path).
 pub const MAX_ADDR: u64 = 256;
 
-/// Every kind op's contract, in slot order. Carrier I/O pends on its side's ticket (read or write,
-/// P2) under the carrier's idle timeout ([`DeadlineClass::Connection`]); `listen` is boot-time and off-path. A
+/// Every kind op's contract, in slot order. Carrier I/O pends on its side's ticket (read or write) under the carrier's idle timeout ([`DeadlineClass::Connection`]); `listen` is boot-time and off-path. A
 /// framer is sans-IO: every framer op is request-path, never pends, and runs under the stream's
 /// deadline.
 #[rustfmt::skip]
@@ -261,8 +260,8 @@ pub const FRAMING_STREAM: u32 = 0;
 /// [`TransportTail::framing`]: datagrams.
 pub const FRAMING_DATAGRAM: u32 = 1;
 
-/// [`TransportTail::facts`]: the framer adds no signed field after the kernel's auth call (B.7, M1;
-/// RED-tested at the kernel).
+/// [`TransportTail::facts`]: the framer adds no signed field after the kernel's auth call
+/// (RED-tested at the kernel).
 pub const FACT_SIGNS_NOTHING_AFTER_AUTH: u32 = 1;
 /// [`TransportTail::facts`]: the framer decodes the payload.
 pub const FACT_DECODES_PAYLOAD: u32 = 2;
