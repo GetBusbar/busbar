@@ -554,3 +554,19 @@ fn red_a_tail_index_past_its_list_is_fault_at_the_crossing() {
         f(Rule::Missing, "plane.tail")
     );
 }
+
+#[test]
+fn red_a_plane_without_a_whole_tail_does_not_bind() {
+    use busbar_contract::abi::mechanism::door::{KindTailHead, Statement};
+    let mut st: Statement = z();
+    assert!(Plane::context(&st).is_err(), "no tail");
+    let short = KindTailHead {
+        size: 8,
+        _reserved: 0,
+    };
+    st.kind_tail = &short;
+    assert!(
+        Plane::context(&st).is_err(),
+        "a tail shorter than this host's"
+    );
+}
