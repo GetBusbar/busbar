@@ -91,6 +91,8 @@ pub struct Linked {
     pub stores: &'static [busbar_kernel::preflight::LinkedStore],
     /// The hook axis: each linked ranking row's `(name, aliases, open)`.
     pub hooks: &'static [busbar_kernel::preflight::LinkedHook],
+    /// The auth axis: each linked `kind: auth` plugin's `(registry key, SDK boundary)`.
+    pub auths: &'static [busbar_kernel::preflight::LinkedAuth],
     /// The kernel-loop axes (#28): the declaration key of each plane `gauntlet_install::install()`
     /// flips onto the unified loop's ONE-SHOT runner, and of each it flips onto the SESSION runner.
     pub gauntlet_one_shot: &'static [&'static str],
@@ -1354,6 +1356,10 @@ pub fn seal(units: &[&RootUnit]) {
 #[cfg(test)]
 #[path = "tests/linked.rs"]
 mod tests;
+
+#[cfg(all(test, feature = "auth-admin-tokens", linked_axis_body_ingress))]
+#[path = "tests/linked_auth.rs"]
+mod auth_tests;
 
 #[cfg(test)]
 #[path = "tests/metric_family_conformance.rs"]

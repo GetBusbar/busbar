@@ -30,6 +30,11 @@ path = "src/lib.rs"
 # `$OUT_DIR/test_linked.rs` from this list, so the test's source names no other plane.
 [package.metadata.busbar]
 test-linked = ["busbar-llm"]
+# THE OPERATOR CREDENTIAL'S TEST REGISTRY ROW: the auth plugin dev-dependency whose SDK boundary the
+# admin-verb battery's own test run links onto the auth axis (build.rs emits
+# `$OUT_DIR/test_operator_auth.rs`; the sources name no auth plugin), as the composition root links it
+# into the shipped binary.
+test-operator-auth = ["busbar-auth-admin-tokens-plugin"]
 
 [dependencies]
 # THE SEAL (1.6.0): busbar-core is no longer a PRODUCTION dependency of this plugin. The default
@@ -40,7 +45,7 @@ test-linked = ["busbar-llm"]
 # single function (`src/mcp/tests/engine.rs`, the only `busbar_core::` line in the test tree). Every
 # test reaches the engine through the neutral `busbar_substrate::testkit::engine_kit` seam from there,
 # so retargeting the tests at a different engine — or dropping this edge for a dev-dependency once the
-# weak `auth-admin-tokens` forward below no longer needs an optional dep to hang off — is a change to
+# optional dep no longer has a feature forward to hang off — is a change to
 # that one function and this manifest, not to the tests. (Optional rather than a dev-dependency today
 # because a feature cannot reference a dev-dep-only crate.)
 busbar-kernel = { path = "../busbar-kernel", default-features = false, features = ["plane-mcp"] }
@@ -110,21 +115,16 @@ schemars = { workspace = true, optional = true }
 # codec/App-free tests. (This replaced the former `busbar_mcp_native` build-script cfg + `#[path]`
 # dual-compile into busbar-core; both are gone.)
 #
-# The plane's sources carry `#[cfg(feature = "…")]` gates (the `PlaneDecl` OpenAPI-schema field, one
-# admin-tokens test path). Declared here as FORWARDS so the same `#[cfg]` resolves identically whether
-# these sources compile in this crate or dual-compile into busbar-core. Since THE SEAL made busbar-core
-# an optional dep, the openapi-schema forward now points at SUBSTRATE (where `PlaneDecl` lives) rather
-# than busbar-core, and the admin-tokens forward is weak; off by default, exactly as in core.
+# The plane's sources carry a `#[cfg(feature = "…")]` gate (the `PlaneDecl` OpenAPI-schema field).
+# Declared here as a FORWARD so the same `#[cfg]` resolves identically whether these sources compile in
+# this crate or dual-compile into busbar-core. Since THE SEAL made busbar-core an optional dep, the
+# openapi-schema forward points at SUBSTRATE (where `PlaneDecl` lives) rather than busbar-core.
 # The `openapi_schemas` field of `PlaneDecl` (now `busbar_substrate::plane::registry::PlaneDecl`) is
 # gated on substrate's `openapi-schema`, and `admin_view`'s `schemars::JsonSchema` derives need the
 # derive crate — so this forwards to SUBSTRATE (not busbar-core, which is no longer a prod dep) to keep
 # the `#[cfg(feature = "openapi-schema")]` field site and the struct definition in lock-step, plus its
 # own `schemars`. The dual-compile into busbar-core resolves the same `#[cfg]` against CORE's feature.
 openapi-schema = ["busbar-kernel/openapi-schema", "dep:schemars"]
-# The one `auth-admin-tokens` site is a test module. Forwarded WEAKLY (`?`) so enabling it never
-# force-pulls the optional busbar-core into a non-test-support build; it only cascades where
-# busbar-core is already in the closure (the test-support / dual-compile surface that test needs).
-auth-admin-tokens = ["busbar-kernel/auth-admin-tokens"]
 # Pulls busbar-core (the optional dep) and its test fixtures so the plane's test binary can bind the
 # engine's test kit (`src/mcp/tests/engine.rs`); the plane tests themselves name only the neutral
 # `busbar_substrate::testkit::engine_kit` seam. This feature is the one edge that puts busbar-core in
@@ -164,3 +164,6 @@ rustls-pki-types = { workspace = true }
 # never when busbar-admin (which itself dev-depends on this crate) links it as a library, so no reverse
 # edge exists in any non-test build.
 busbar-core-admin = { path = "../busbar-core-admin" }
+# The operator credential's test registry row (`test-operator-auth` above), from its own repo at the
+# SAME pinned rev the composition root links. Dev-only: the library names no auth plugin.
+busbar-auth-admin-tokens-plugin = { git = "https://github.com/GetBusbar/busbar-auth-admin-tokens", rev = "47cb5047e4c9a73341c613c09a056b4a4bb8eb99" }

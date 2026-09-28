@@ -40,7 +40,19 @@ const DESCRIPTION: &str = "reads a file from disk";
 /// idempotent (first-wins `OnceLock`), so every fixture may call this.
 fn install_admin_mount() {
     #[cfg(test)]
-    busbar_core_admin::install();
+    {
+        busbar_core_admin::install();
+        operator_row::for_each_operator_auth_row!(|entry| engine().install_operator_auth_row(entry));
+    }
+}
+
+/// THE OPERATOR CREDENTIAL'S TEST REGISTRY ROW for THIS crate's own test binary: the auth plugin its
+/// manifest lists under `test-operator-auth`, as build.rs emits it. The admin surface's test binary,
+/// which drives this battery through `test-support`, installs its own.
+#[cfg(test)]
+mod operator_row {
+    include!(concat!(env!("OUT_DIR"), "/test_operator_auth.rs"));
+    pub(crate) use for_each_operator_auth_row;
 }
 
 fn schema() -> serde_json::Value {
@@ -306,10 +318,10 @@ async fn connect_refuses_a_passthrough_registration() {
 /// Every response `contract::taxonomy::declared_errors` names for these routes is produced HERE, by
 /// a real request over the real router. A condition witnessed only by a sibling test is witnessed
 /// nowhere, because the registry the comparison reads is filled by whatever ran.
-// No cfg of its own: this whole module is gated on `auth-admin-tokens` at its include site in
-// `adminverbs.rs`, for the same reason its only caller in `admin/tests` is. Adding a second gate
-// here would imply the two conditions could differ, and they cannot — if this module compiles,
-// the caller does too.
+// No cfg of its own: this whole module is gated on `any(test, feature = "test-support")` at its
+// include site in `adminverbs.rs`, for the same reason its only caller in `admin/tests` is. Adding a
+// second gate here would imply the two conditions could differ, and they cannot — if this module
+// compiles, the caller does too.
 pub async fn drive_mcp_verb_errors() {
     metrics_init();
     let peer = Peer::start(vec![wire_tool("read", DESCRIPTION, schema())]).await;

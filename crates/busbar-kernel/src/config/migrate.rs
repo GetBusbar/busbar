@@ -30,10 +30,15 @@ use serde_yaml::{Mapping, Value};
 /// schema): migration reproduces that exact default, so a config that omitted `db_path` still finds
 /// its real, existing database file after migration. A key the table lacks is a build defect.
 pub fn legacy_store_text(key: &str) -> &'static str {
-    let table = include_str!("../../data/legacy_store_modules.toml");
+    frozen_row(include_str!("../../data/legacy_store_modules.toml"), key)
+}
+
+/// The `key = "value"` row of a frozen-text data `table` (one row per line; ruling F-D). A key the
+/// table lacks is a build defect.
+pub(crate) fn frozen_row(table: &'static str, key: &str) -> &'static str {
     let rows = table.lines().filter_map(|l| l.strip_prefix(key));
     let mut values = rows.filter_map(|r| r.strip_prefix(" = \"")?.strip_suffix('"'));
-    values.next().expect("a legacy_store_modules.toml row")
+    values.next().expect("a frozen-text row")
 }
 
 /// The 1.5.3 store-plugin RENAME: is `module` a retired `store.module:` spelling of the first-party
@@ -742,7 +747,7 @@ fn migrate_dropped_scopes(root: &mut Mapping, warnings: &mut Vec<String>) {
 /// 1.5.0 `auth.admin_auth` (nested under `auth`, a `Vec<AuthChainEntry>`). 1.5.0's `DeployCfg`
 /// carries NO top-level `admin_auth`, so a real 1.4.x list passed straight through and tripped
 /// `deny_unknown_fields`. Bare names carry over as bare entries; when `migrate_governance` already
-/// produced an `admin-tokens` entry (bearing the `governance.admin_token` secret ref), the
+/// produced an operator-credential entry (bearing the `governance.admin_token` secret ref), the
 /// token-bearing entry WINS and the bare duplicate is skipped.
 fn migrate_admin_auth(root: &mut Mapping, changes: &mut Vec<String>) {
     let Some(top) = take(root, "admin_auth") else {
@@ -766,7 +771,7 @@ fn migrate_admin_auth(root: &mut Mapping, changes: &mut Vec<String>) {
     for name in names {
         match entry_module_name(&name) {
             Some(m) if present.insert(m.clone()) => list.push(name),
-            Some(_) => {} // already present (e.g. the token-bearing admin-tokens entry) - skip dup
+            Some(_) => {} // already present (e.g. the token-bearing operator entry) - skip dup
             None => list.push(name),
         }
     }
@@ -1068,7 +1073,8 @@ fn migrate_governance(root: &mut Mapping, changes: &mut Vec<String>, todos: &mut
     }
     if let Some(token) = take(&mut gov, "admin_token") {
         // The old field held the (env-interpolated) token VALUE. The 1.5.0 shape is a secret
-        // reference on the admin-tokens module; a `${VAR}` reference converts mechanically.
+        // reference on the operator credential's module; a `${VAR}` reference converts mechanically.
+        let operator = crate::config::operator_provider();
         let auth = root
             .entry("auth".into())
             .or_insert_with(|| Value::Mapping(Mapping::new()));
@@ -1081,12 +1087,9 @@ fn migrate_governance(root: &mut Mapping, changes: &mut Vec<String>, todos: &mut
                     Value::Mapping(m)
                 }
                 _ => {
-                    todos.push(
-                        "auth.admin_auth[admin-tokens].token: governance.admin_token held a \
-                         literal value; move it into an env var or file and reference it \
-                         (token: { env: VAR } or { file: /path })"
-                            .into(),
-                    );
+                    todos.push(busbar_kernel_identity::operator::literal_token_todo(
+                        operator,
+                    ));
                     let mut m = Mapping::new();
                     m.insert("env".into(), "BUSBAR_ADMIN_TOKEN".into());
                     Value::Mapping(m)
@@ -1095,16 +1098,13 @@ fn migrate_governance(root: &mut Mapping, changes: &mut Vec<String>, todos: &mut
             let mut body = Mapping::new();
             body.insert("token".into(), secret_ref);
             let mut entry = Mapping::new();
-            entry.insert("admin-tokens".into(), Value::Mapping(body));
+            entry.insert(operator.into(), Value::Mapping(body));
             auth.insert(
                 "admin_auth".into(),
                 Value::Sequence(vec![Value::Mapping(entry)]),
             );
         }
-        changes.push(
-            "governance.admin_token -> auth.admin_auth: [ admin-tokens: { token: <secret-ref> } ]"
-                .into(),
-        );
+        changes.push(busbar_kernel_identity::operator::migrated_token(operator));
     }
     // `enabled` was removed in 1.5.0 (governance is presence-driven).
     if take(&mut gov, "enabled").is_some() {
@@ -1310,7 +1310,7 @@ fn migrate_auth(
                     }
                     _ => None,
                 })
-                .filter(|m| m != "keys" && m != "tokens" && m != "admin-tokens")
+                .filter(|m| m != "keys" && m != "tokens" && m != crate::config::operator_provider())
                 .collect()
         })
         .unwrap_or_default();
@@ -2422,7 +2422,7 @@ fn migrate_identity_providers(
             candidates.first().cloned()
         };
         if let Some(name) = reuse {
-            // MERGE the second plane's typed fields into the ONE definition. A `token:` (admin-tokens)
+            // MERGE the second plane's typed fields into the ONE definition. A `token:` (the operator credential)
             // or a `max_admin_scope:` written on only one of the two chains must survive the fold —
             // and so must a `settings:` bag the reused definition does not carry yet.
             if let Some(Value::Mapping(existing)) = defs.get_mut(Value::from(name.as_str())) {

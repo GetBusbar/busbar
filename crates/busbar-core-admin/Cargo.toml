@@ -28,6 +28,10 @@ path = "src/lib.rs"
 # unit tests register and loop (build.rs emits the table; the sources name none of these crates).
 [package.metadata.busbar]
 test-linked = ["busbar-llm", "busbar-mcp", "busbar-a2a"]
+# THE TEST REGISTRY ROW for the operator credential: the auth plugin dev-dependency whose SDK boundary
+# this crate's unit tests link onto the auth axis (build.rs emits it; the sources name no auth plugin),
+# as the composition root links it into the shipped binary.
+test-operator-auth = ["busbar-auth-admin-tokens-plugin"]
 
 [dependencies]
 busbar-kernel = { path = "../busbar-kernel", default-features = false }
@@ -65,14 +69,10 @@ url = { workspace = true }
 schemars = { workspace = true, optional = true }
 
 [features]
-default = ["auth-admin-tokens", "hooks-ranking", "plane-mcp", "plane-a2a"]
+default = ["hooks-ranking", "plane-mcp", "plane-a2a"]
 # The moved v1 service has a `#[cfg(feature = "hooks-ranking")]` site; declare the feature (forwarded
 # to busbar-core) so the cfg is recognized, mirroring busbar-core's own default.
 hooks-ranking = ["busbar-kernel/hooks-ranking"]
-# Forwards to busbar-core's own feature: the admin e2e tests authenticate through the `admin-tokens`
-# module, and the drift-audit test module is gated on it. A `--no-default-features` build compiles
-# the admin-token module OUT, disabling the admin API wholesale, exactly as it did in-core.
-auth-admin-tokens = ["busbar-kernel/auth-admin-tokens"]
 plane-mcp = ["busbar-kernel/plane-mcp"]
 plane-a2a = ["busbar-kernel/plane-a2a"]
 # Pulls busbar-core's `test-support` so a SIBLING crate can build an admin-configured `TestApp`, and
@@ -90,14 +90,18 @@ test-support = ["busbar-kernel/test-support"]
 openapi-schema = ["dep:schemars", "busbar-kernel/openapi-schema", "busbar-llm/openapi-schema", "busbar-mcp/openapi-schema", "busbar-a2a/openapi-schema"]
 
 [dev-dependencies]
-busbar-kernel = { path = "../busbar-kernel", default-features = false, features = ["test-support", "auth-admin-tokens", "plane-mcp", "plane-a2a"] }
+busbar-kernel = { path = "../busbar-kernel", default-features = false, features = ["test-support", "plane-mcp", "plane-a2a"] }
 # The moved cross-plane drift test drives the MCP and A2A plane trust-verb error surfaces. Their
 # testkits register the plane decls + the self-enveloping admin-verb backing (core's
 # `CorePlaneAdminEnvelope`, which STAYED in busbar-core). NOTE: do NOT enable busbar-admin/test-support
 # on these edges.
 busbar-llm = { path = "../busbar-llm", features = ["test-support"] }
-busbar-mcp = { path = "../busbar-mcp", features = ["test-support", "auth-admin-tokens"] }
-busbar-a2a = { path = "../busbar-a2a", features = ["test-support", "auth-admin-tokens"] }
+busbar-mcp = { path = "../busbar-mcp", features = ["test-support"] }
+busbar-a2a = { path = "../busbar-a2a", features = ["test-support"] }
+# THE OPERATOR CREDENTIAL'S TEST REGISTRY ROW (`test-operator-auth` above): the admin e2e tests
+# authenticate through the auth plugin the composition root links for it, from its own repo, at the
+# SAME pinned rev plugin-loader's both-ways proof drives. Dev-only: the library names no auth plugin.
+busbar-auth-admin-tokens-plugin = { git = "https://github.com/GetBusbar/busbar-auth-admin-tokens", rev = "47cb5047e4c9a73341c613c09a056b4a4bb8eb99" }
 busbar-store-memory = { path = "../store-memory" }
 # The export axis the named-map tests resolve `module: prometheus` against: the scrape sink LINKED
 # into the test binary, as the composition root links it into the shipped one — from its own repo, at

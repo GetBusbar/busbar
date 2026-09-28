@@ -196,17 +196,15 @@ const SUPERVISOR_MARKERS: [&str; 2] = ["INVOCATION_ID", "KUBERNETES_SERVICE_HOST
 // tests that exercise this run on the DEFAULT (single-OS-thread) `#[tokio::test]` flavor, where the
 // test body and the request it drives through the spawned server both execute on the same thread --
 // unlike `set_var`, this is invisible to every other test's own OS thread.
-// Only used by admin::tests, which itself requires `auth-admin-tokens` (see that module's own
-// `mod tests;` gate) -- under --no-default-features, plain `cfg(test)` compiled these in with no
-// caller, tripping -D dead-code.
-#[cfg(all(test, feature = "auth-admin-tokens"))]
+// Only used by admin::tests.
+#[cfg(test)]
 thread_local! {
     static FORCE_UNSUPERVISED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 /// Scope-guard: forces `supervisor_detected()` to `false` for the duration of `f` on THIS thread
 /// only, restoring the prior value afterward even if `f` panics.
-#[cfg(all(test, feature = "auth-admin-tokens"))]
+#[cfg(test)]
 pub(crate) async fn with_forced_unsupervised<F, Fut, T>(f: F) -> T
 where
     F: FnOnce() -> Fut,
@@ -225,7 +223,7 @@ where
 /// of absence — which is why an undetected supervisor asks for confirmation rather than refusing
 /// outright.
 pub(crate) fn supervisor_detected() -> bool {
-    #[cfg(all(test, feature = "auth-admin-tokens"))]
+    #[cfg(test)]
     if FORCE_UNSUPERVISED.with(std::cell::Cell::get) {
         return false;
     }

@@ -238,6 +238,17 @@ impl LinkedPlugin {
         Self::built_in(name, kind, abi, LinkedEntry::BuiltinSecret, false)
     }
 
+    /// A linked AUTH plugin named `name` (its own alias), at this binary's auth payload schema: the
+    /// SDK boundary its crate exports, opened by `open_auth` through the one image load a dropped-in
+    /// `kind: auth` plugin takes.
+    pub fn auth(name: &str, entry: &'static ColdEntry) -> Self {
+        let (kind, abi) = (
+            busbar_contract::abi::cold::kind::AUTH,
+            busbar_contract::abi::cold::AUTH_ABI_VERSION,
+        );
+        Self::built_in(name, kind, abi, LinkedEntry::Boundary(entry), false)
+    }
+
     /// The built-in RANKING row named `name`, at this binary's hook payload schema, answering to
     /// every one of `aliases` (see [`LinkedEntry::Ranking`]).
     pub fn ranking(
@@ -444,6 +455,12 @@ impl PluginRegistry {
             .get(name_or_alias)
             .or_else(|| self.by_alias.get(name_or_alias))
             .map(|&i| &self.rows[i])
+    }
+
+    /// Whether `name_or_alias` resolves to a loadable row of `kind`.
+    pub fn answers(&self, name_or_alias: &str, kind: &str) -> bool {
+        self.resolve(name_or_alias)
+            .is_some_and(|p| p.manifest.kind == kind)
     }
 
     /// Why a reference cannot be resolved: if a SKIPPED plugin matches it, name the skip reason -

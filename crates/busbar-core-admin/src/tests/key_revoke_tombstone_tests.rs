@@ -13,7 +13,6 @@ use std::sync::Arc;
 
 const X_ADMIN_TOKEN: &str = "x-admin-token";
 
-#[cfg(feature = "auth-admin-tokens")]
 #[tokio::test]
 async fn revoke_on_an_already_tombstoned_key_answers_200_and_audits_applied() {
     busbar_kernel::metrics::init();

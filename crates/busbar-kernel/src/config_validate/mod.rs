@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
+use crate::config::operator_provider;
+use busbar_kernel_identity::operator;
 use std::collections::{HashMap, HashSet};
 
 use crate::config::RootCfg;
@@ -847,7 +849,7 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
         }
     }
 
-    // Rule (admin_auth/known-modules): the built-in `admin-tokens` module always resolves; any
+    // Rule (admin_auth/known-modules): the operator credential's provider always resolves; any
     // OTHER name is an EXTERNAL `kind: auth` admin plugin, resolved at LOAD (`open_auth` in
     // `build_app_from_config`, which fails boot on a missing/untrusted/wrong-kind tarball) — exactly
     // as the data plane defers non-builtin `auth.chain` names to the plugin-aware check. This
@@ -1014,14 +1016,12 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
                     Ok(_) => {}
                 }
             }
-            // `token:` is the admin-tokens operator credential; on any other module it is inert
-            // and almost certainly a misplaced secret. Fail loud.
-            if entry.token.is_some() && entry.module != crate::config::ADMIN_TOKENS_MODULE {
-                errors.push(format!(
-                    "auth chain entry '{}' sets `token:`, which belongs to the built-in \
-                     `admin-tokens` module only; move it, e.g.:\n\n    admin_auth:\n      - \
-                     admin-tokens: {{ token: {{ env: BUSBAR_ADMIN_TOKEN }} }}\n",
-                    entry.module
+            // `token:` is the operator credential; on any other module it is inert and almost
+            // certainly a misplaced secret. Fail loud.
+            if entry.token.is_some() && entry.module != operator_provider() {
+                errors.push(operator::misplaced_token(
+                    operator_provider(),
+                    &entry.module,
                 ));
             }
             // (1.5.2 scope collapse: the former sibling-incomparable cross-check is GONE — a
@@ -1170,13 +1170,7 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
         // path but is dev-only — WARN that anyone can mint. `oidc`/plugin chains never set
         // `keys_in_chain`, so they never trigger this (their identities are externally issued).
         if verifies_signed_keys && !auth.usable_mint_path() {
-            errors.push(
-                "auth.chain names the built-in `keys` verifier but no admin credential can mint one \
-                 — the data plane would reject every request. Configure auth.admin_auth (an \
-                 `admin-tokens` entry with a `token:`, or an admin module granting `mint`/`full`), \
-                 or remove `keys` from auth.chain."
-                    .to_string(),
-            );
+            errors.push(operator::no_mint_path(operator_provider()));
         }
         if verifies_signed_keys && auth.admin_auth.is_empty() {
             diag_warn!(
@@ -1818,22 +1812,13 @@ fn validate_cost_model(cfg: &RootCfg, errors: &mut Vec<String>) {
         }
     }
 
-    // ADMIN-TOKENS availability: a configured admin token with the module compiled OUT would
-    // silently disable the admin API (the chain all-Passes) - a silent lockout must be a loud
-    // boot error instead.
-    #[cfg(not(feature = "auth-admin-tokens"))]
-    if cfg
-        .auth
-        .as_ref()
-        .and_then(|a| a.admin_token_ref())
-        .is_some()
-    {
-        errors.push(
-            "an admin-tokens token is configured but this binary was built WITHOUT the \
-             `auth-admin-tokens` feature — the admin API would be silently disabled. Rebuild with \
-             default features or wire an external admin auth module."
-                .to_string(),
-        );
+    // OPERATOR-CREDENTIAL availability: a configured admin token that no linked auth row answers
+    // would silently disable the admin API (the chain all-Passes) - a silent lockout must be a loud
+    // boot error instead. The row is the composition root's, linked under the operator
+    // credential's provider name by the root's packaging feature of the same name.
+    let token = cfg.auth.as_ref().and_then(|a| a.admin_token_ref());
+    if token.is_some() && !operator::answered(operator_provider()) {
+        errors.push(operator::unanswered_token(operator_provider()));
     }
 }
 
@@ -1846,25 +1831,17 @@ fn admin_root_segment() -> &'static str {
     crate::auth::ADMIN_PATH.trim_start_matches('/')
 }
 
-/// True when a `role_bindings` role name would shadow the built-in operator PRINCIPAL ID (`admin`,
-/// the id the `admin-tokens` module mints — [`busbar_auth_admin_tokens::ADMIN_TOKENS_PRINCIPAL_ID`]).
+/// True when a `role_bindings` role name would shadow the built-in operator PRINCIPAL ID
+/// ([`crate::config::operator_principal_id`], the id the operator credential's module mints).
 ///
 /// A DIFFERENT reservation from [`reserved_admin_name`], and split from it deliberately: that one
 /// guards a URL path SEGMENT (`api`), this one guards an identity string (`admin`). They shared one
 /// literal only by the coincidence that the admin path used to be `/admin` too; when the path moved
 /// to `/api` a single shared check would have silently moved the principal-id reservation to `api`
-/// as well. With `auth-admin-tokens` compiled out there is no operator principal to shadow, so
-/// nothing is reserved.
+/// as well. With no auth row linked under the operator credential's provider there is no operator
+/// principal to shadow, so nothing is reserved.
 fn reserved_operator_principal_id(role: &str) -> bool {
-    #[cfg(feature = "auth-admin-tokens")]
-    {
-        role == busbar_auth_admin_tokens::ADMIN_TOKENS_PRINCIPAL_ID
-    }
-    #[cfg(not(feature = "auth-admin-tokens"))]
-    {
-        let _ = role;
-        false
-    }
+    role == crate::config::operator_principal_id() && operator::answered(operator_provider())
 }
 
 /// True when a pool / provider / model `name` would collide with the built-in native-API operator

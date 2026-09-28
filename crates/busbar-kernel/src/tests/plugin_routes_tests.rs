@@ -341,10 +341,12 @@ fn admin_auth_route_is_classified_to_the_admin_plane_only() {
     );
 }
 
-/// An `auth: admin` plugin route is physically ABSENT from the data listener — even WITH a valid admin
-/// token it is a hard 404 there (route not mounted), exactly like `/api/v1/admin/*`; on the admin
-/// listener it is served (dispatched to the plugin). Mirrors `split_admin_listener_no_double_exposure`.
-#[cfg(feature = "auth-admin-tokens")]
+/// An `auth: admin` plugin route is physically ABSENT from the data listener — even to a caller the
+/// admin chain admits it is a hard 404 there (route not mounted), exactly like `/api/v1/admin/*`; on
+/// the admin listener it is served (dispatched to the plugin). Mirrors
+/// `split_admin_listener_no_double_exposure`. The admin chain is the explicit OPEN posture: this
+/// crate's test binary links no auth row for the operator credential, and what is under test is the
+/// route's placement, not the credential.
 #[tokio::test]
 async fn admin_auth_route_is_absent_from_the_data_listener() {
     use crate::governance::{GovState, MemoryStore};
@@ -359,6 +361,7 @@ async fn admin_auth_route_is_absent_from_the_data_listener() {
         ))
         .pool("pa", &[(0, 1)])
         .governance(gov)
+        .admin_chain(Vec::new())
         .build();
     let table = Arc::new(
         build_route_table(vec![decl(

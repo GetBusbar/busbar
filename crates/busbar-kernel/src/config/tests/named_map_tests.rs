@@ -95,7 +95,7 @@ fn referents_finds_every_bare_name_reference_site() {
     );
     let mut auth = crate::config::AuthDeployCfg {
         chain: vec!["keys".into(), "corp-ad".into()],
-        admin_auth: vec!["admin-tokens".into(), "corp-ad".into()],
+        admin_auth: vec![crate::config::operator_provider().into(), "corp-ad".into()],
         ..Default::default()
     };
     auth.role_bindings

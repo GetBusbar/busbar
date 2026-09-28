@@ -566,8 +566,8 @@ fn auth_plugin_role_binding_and_scope_cap_apply() {
 
 /// 1.5.2 admin-plane OIDC: `AdminAuthChain::build` — the function `build_app_from_config` invokes on
 /// BOTH boot and reload — resolves every NON-BUILTIN `admin_auth:` entry into a loaded `kind: auth`
-/// plugin, keyed by config name, `has_plugin: true`; `admin-tokens` (an engine arm) is NOT in the
-/// map. Building it TWICE against the same registry (boot, then the reload rebuild) both populate:
+/// plugin, keyed by config name, `has_plugin: true`; the operator credential is NOT in the map (it
+/// is held apart, `AdminAuthChain::operator`). Building it TWICE against the same registry (boot, then the reload rebuild) both populate:
 /// the reload path can never leave `admin_modules` stale/empty.
 #[test]
 fn admin_modules_rebuilt_on_reload() {
@@ -587,7 +587,7 @@ fn admin_modules_rebuilt_on_reload() {
     let mut entry = AuthChainEntry::bare("admin-oidc");
     entry.settings = settings();
     cfg.admin_auth = vec![
-        AuthChainEntry::bare(crate::config::ADMIN_TOKENS_MODULE),
+        AuthChainEntry::bare(crate::config::operator_provider()),
         entry,
     ];
     let resolver = crate::config::secret::SecretResolver::builtins_only();
@@ -605,7 +605,7 @@ fn admin_modules_rebuilt_on_reload() {
     assert_eq!(
         boot.modules.len(),
         1,
-        "admin-tokens is an engine arm, never inserted into admin_modules"
+        "the operator credential is held apart, never inserted into admin_modules"
     );
 
     // RELOAD build (the SAME code path `build_app_from_config` re-runs with `prior = Some`).
@@ -1235,8 +1235,8 @@ fn a_credential_hit_within_ttl_does_not_extend_the_cache_entrys_lifetime() {
 // consults the module again.
 //
 // `test-scope-module` is the compiled-in external-admin stand-in: it `Pass`es any credential that
-// is not `grp:<group>`, and it is cacheable for exactly the reason a real one is (`name !=
-// "admin-tokens"`).
+// is not `grp:<group>`, and it is cacheable for exactly the reason a real one is (it is not the
+// operator credential).
 
 /// An unauthenticated ADMIN caller leaves NO trace in the shared credential cache — the rule
 /// `an_unauthenticated_chain_admits_nothing_to_the_cache` already pins on the data plane.
@@ -1317,113 +1317,5 @@ fn an_identified_admin_chain_still_caches_its_identity() {
         app.credential_cache.flush_all(),
         1,
         "an identified admin chain must still cache the identity it resolved"
-    );
-}
-
-// ── THE ADMIN CHAIN COMPOSES ──────────────────────────────────────────────────────────────────
-//
-// `Reject` is TERMINAL in `run_admin_chain`. The built-in `admin-tokens` module compares an OPAQUE
-// token by hash; a JWS/JWT-shaped candidate is never its grammar, so rejecting one denied a
-// credential meant for a LATER `admin_auth:` arm — an OIDC/AD admin module legitimately sharing the
-// `Authorization: Bearer` carrier — before that arm was ever asked. `admin-tokens` now DEFERS on a
-// shape that is not its own, and this is the chain-level proof that the next arm is reached.
-
-/// An external `kind: auth` admin module that speaks JWS, exactly as a real OIDC/AD one does.
-#[cfg(feature = "auth-admin-tokens")]
-struct JwsAdminModule;
-
-#[cfg(feature = "auth-admin-tokens")]
-impl busbar_contract::auth::AuthModule for JwsAdminModule {
-    fn name(&self) -> &'static str {
-        "jws-admin-module"
-    }
-    fn authenticate(&self, candidate: Option<&str>) -> busbar_contract::auth::AuthVerdict {
-        match candidate {
-            Some(c) if c.split('.').count() == 3 => busbar_contract::auth::AuthVerdict::Identify(
-                busbar_contract::auth::Principal::from_id("idp:operator"),
-            ),
-            _ => busbar_contract::auth::AuthVerdict::Pass,
-        }
-    }
-    fn cacheable(&self) -> bool {
-        false
-    }
-}
-
-/// An app whose `admin_auth:` chain is `[admin-tokens, jws-admin-module]` with a REAL admin token
-/// configured — the shape an operator gets by adding an IdP beside the operator credential.
-///
-/// Feature-gated on the built-in module itself: with `auth-admin-tokens` compiled out there is no
-/// first arm to defer, so the composition question these two tests ask does not exist.
-#[cfg(feature = "auth-admin-tokens")]
-fn app_with_admin_tokens_then_idp() -> std::sync::Arc<crate::state::App> {
-    let store = std::sync::Arc::new(crate::governance::MemoryStore::new());
-    // An admin token makes `admin-tokens` a module with something to judge; without one it returns
-    // `Pass` on its own first line and the composition question is never reached.
-    let gov = std::sync::Arc::new(
-        crate::governance::GovState::new(store, Some("admintok".to_string())).unwrap(),
-    );
-    crate::test_support::TestApp::new()
-        .governance(gov)
-        .admin_chain(vec![
-            "admin-tokens".to_string(),
-            "jws-admin-module".to_string(),
-        ])
-        .admin_module("jws-admin-module", Box::new(JwsAdminModule))
-        .build()
-}
-
-/// THE COMPOSITION PROOF: a JWS presented to a chain whose FIRST arm is `admin-tokens` reaches the
-/// second arm and is identified there. Under the terminal reject it was `Denied` — the IdP arm the
-/// operator configured never ran.
-#[cfg(feature = "auth-admin-tokens")]
-#[test]
-fn a_jws_credential_reaches_the_idp_arm_behind_admin_tokens() {
-    let app = app_with_admin_tokens_then_idp();
-    let jws = "eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJvcGVyYXRvciJ9.c2ln";
-
-    let (verdict, _cap) = crate::auth::run_admin_chain(&app, Some(jws), None);
-
-    match verdict {
-        ChainVerdict::Identified {
-            module, principal, ..
-        } => {
-            assert_eq!(
-                module, "jws-admin-module",
-                "the LATER arm must be the one that answered"
-            );
-            assert_eq!(principal.id, "idp:operator");
-        }
-        other => panic!("a JWS must reach the IdP arm behind admin-tokens, got {other:?}"),
-    }
-}
-
-/// And the door did not widen. The operator token still identifies as the operator through the
-/// first arm, and a candidate that IS addressed to `admin-tokens` and is wrong still denies
-/// TERMINALLY — the IdP arm never gets a chance to admit it.
-#[cfg(feature = "auth-admin-tokens")]
-#[test]
-fn the_operator_token_and_a_wrong_opaque_token_are_unchanged_by_the_deferral() {
-    let app = app_with_admin_tokens_then_idp();
-
-    let (identified, _cap) = crate::auth::run_admin_chain(&app, Some("admintok"), None);
-    match identified {
-        ChainVerdict::Identified {
-            module, principal, ..
-        } => {
-            assert_eq!(module, "admin-tokens");
-            assert_eq!(
-                principal.id,
-                busbar_auth_admin_tokens::ADMIN_TOKENS_PRINCIPAL_ID
-            );
-        }
-        other => panic!("the operator token must still identify at the first arm, got {other:?}"),
-    }
-
-    let (denied, _cap) = crate::auth::run_admin_chain(&app, Some("wrong-opaque-token"), None);
-    assert_eq!(
-        denied,
-        ChainVerdict::Denied,
-        "an opaque candidate addressed to admin-tokens and wrong must still deny terminally"
     );
 }

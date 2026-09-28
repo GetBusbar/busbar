@@ -101,10 +101,6 @@ smallvec = { workspace = true }
 # dump, and only under the non-default `timing` feature. The default build does not link it.
 libc = { workspace = true, optional = true }
 busbar-plugin-loader = { path = "../plugin-loader" }
-# The built-in `admin-tokens` admin-auth module lives in its own repo (owner move-out ruling;
-# ARCHITECT 2026-09-27), pulled at a pinned rev under the same feature and name; its busbar-contract
-# resolves to this tree through the workspace `[patch]` table (one contract copy).
-busbar-auth-admin-tokens = { git = "https://github.com/GetBusbar/busbar-auth-admin-tokens", rev = "47cb5047e4c9a73341c613c09a056b4a4bb8eb99", optional = true }
 # THE STAND-IN LINKED ROWS (test-only edges): the composition root links the build's default store
 # and ranking hooks onto the cold-kind axis (`preflight::install_linked_rows`); a test build has no
 # root, so these fixtures stand in, under `test-support` (which the dev-dependency cycle through the
@@ -192,12 +188,11 @@ rcgen = { workspace = true, optional = true }
 # The `#[cfg(feature = ...)]` sites live in this crate, so this crate declares the features and
 # the `busbar` binary forwards them (busbar/<feature> = ["busbar-kernel/<feature>"]).
 #
-# NOTE (recorded so it is not forgotten): keeping `dep:busbar-auth-admin-tokens` here leaves the
-# `admin-tokens` match arm IN CORE — still a feature-gated arm inside the engine rather than a
-# dependency edge owned by the composition root. Moving that registration to the binary is the
-# protocol-extraction step's job; this split is what makes it possible. Do not "fix" it here.
-default = ["auth-admin-tokens", "hooks-ranking", "plane-llm", "plane-mcp", "plane-a2a"]
-auth-admin-tokens = ["dep:busbar-auth-admin-tokens"]
+# No auth feature and no auth-module edge (DECISIONS #40, #2; ARCHITECT 2026-09-27 AUTH-ROW): every
+# admin auth module, the operator credential's included, resolves through the auth kind's registry by
+# the key the configuration names. The composition root links the build's auth rows
+# (`preflight::install_linked_auth`); this crate names none of them.
+default = ["hooks-ranking", "plane-llm", "plane-mcp", "plane-a2a"]
 # The build links the ranking hooks: the composition root registers their row (it owns the crate
 # edge); here it only decides whether a test build's stand-in rows carry that row.
 hooks-ranking = []
@@ -316,8 +311,8 @@ timing = ["dep:libc"]
 # It ALSO enables `test-support` on both planes in a `cargo test --workspace` build, so each plane
 # crate's own `--lib` App-tests run there too (v2 resolver feature unification) — the mechanism that
 # keeps the full plane suite in the exact command CI runs, with the dual-compile gone.
-busbar-a2a = { path = "../busbar-a2a", features = ["test-support", "auth-admin-tokens"] }
-busbar-mcp = { path = "../busbar-mcp", features = ["test-support", "auth-admin-tokens"] }
+busbar-a2a = { path = "../busbar-a2a", features = ["test-support"] }
+busbar-mcp = { path = "../busbar-mcp", features = ["test-support"] }
 # THE a2a CODEC'S EDGE IS GONE WITH THE CRATE (#39). Its batteries did not go with it: the RFC 8785
 # canonicalization vectors and the anomaly cells are `busbar-plane-a2a`'s now and are UNCONDITIONAL
 # there (a plane is featureless on purpose), so `cargo test --workspace` runs them without any edge

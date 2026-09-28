@@ -40,8 +40,8 @@ impl AdminService {
     /// uptime, and pool/model/provider topology. Read scope. Infallible today, but returns `Result`
     /// for a uniform transport contract (every op is `Result<View, AdminError>`).
     pub(crate) async fn info(&self) -> Result<InfoView, AdminError> {
-        // The compiled-in plugin sets reflect the ACTUAL binary (feature-gated): the `keys` /
-        // `admin-tokens` auth builtins plus the ranking hooks. `weighted` is the one baked in
+        // The compiled-in plugin sets reflect the ACTUAL binary: the `keys` builtin and the linked
+        // auth rows, plus the ranking hooks. `weighted` is the one baked in
         // (non-removable), so it appears as `weighted_floor` below, not in `hook_plugins`.
         let auth_modules = auth_modules_compiled_in();
         let hook_plugins = hook_plugins_compiled_in();
@@ -417,13 +417,13 @@ impl AdminService {
         match ptype {
             "auth" => {
                 // Compiled-in auth modules (feature-gated). Active = wired into its chain: `keys`
-                // is engine-handled (a flag, not a boxed module), `admin-tokens` lives on the
+                // is engine-handled (a flag, not a boxed module), the operator credential lives on the
                 // ADMIN chain, and anything else is a boxed data-plane chain module.
                 let chain = self.app.auth.chain_names();
                 for name in auth_modules_compiled_in() {
                     let active = if name == busbar_kernel::config::KEYS_MODULE {
                         self.app.auth.keys_in_chain
-                    } else if name == busbar_kernel::config::ADMIN_TOKENS_MODULE {
+                    } else if name == busbar_kernel::config::operator_provider() {
                         self.app.admin_chain.iter().any(|m| m == name)
                     } else {
                         chain.contains(&name)

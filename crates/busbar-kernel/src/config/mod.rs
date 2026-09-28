@@ -459,8 +459,8 @@ pub struct RootCfg {
     /// `pools.hooks:` / `pools.<p>.hooks:`). Admin-registered hooks land here too.
     pub hooks: HashMap<String, HookCfg>,
     /// The ADMIN auth chain module names (from `auth.admin_auth:`, in order) gating
-    /// `/api/v1/admin/*`. Default `[admin-tokens]`. `[]` = OPEN admin (dev only; loud boot
-    /// warning).
+    /// `/api/v1/admin/*`. Default: the operator credential (`default_admin_auth_names`). `[]` = OPEN
+    /// admin (dev only; loud boot warning).
     pub admin_auth: Vec<String>,
     /// The top-level `groups:` limit tree.
     pub groups: std::collections::BTreeMap<String, GroupCfg>,
@@ -562,6 +562,9 @@ impl RootCfg {
 // Moved to `busbar_kernel::config::sections`; re-exported at its historical `config::` path.
 pub use busbar_kernel::config::sections::TlsCfg;
 
+pub use busbar_kernel::config::auth::{
+    builtin_identity_providers, operator_principal_id, operator_provider,
+};
 /// One entry in the top-level `identity-providers:` NAMED-DEFINITION map, the resolved auth-chain
 /// entry, the role-binding grant, the token-mint policy, the built-in provider names, and the
 /// WIRE/RESOLVED `auth:` block itself: plain data with serde derives and pure accessors — nothing
@@ -571,8 +574,7 @@ pub use busbar_kernel::config::sections::TlsCfg;
 pub use busbar_kernel::config::auth::{
     AuthCfg, AuthChainEntry, AuthDeployCfg, AuthMethodCfg, AuthMethods, AuthPolicyCfg, BindingMode,
     BrowserLoginCfg, IdentityProviderCfg, IdentityProviders, MintCeilingCfg, RoleBindingCfg,
-    RoleBindings, ADMIN_TOKENS_MODULE, BUILTIN_IDENTITY_PROVIDERS, DEFAULT_MAX_ADMIN_SCOPE,
-    KEYS_MODULE,
+    RoleBindings, DEFAULT_MAX_ADMIN_SCOPE, KEYS_MODULE,
 };
 
 /// The built-in signed-key verifier module name (`auth.chain: [keys]`).
@@ -594,16 +596,16 @@ pub const CONFIG_TARGET_VERSION: &str = env!("CARGO_PKG_VERSION");
 /// Errors are ACCUMULATED into `errors`:
 /// - a name with no definition that is not a bare built-in (a dangling reference — fail closed, never
 ///   a silently-skipped auth module);
-/// - a `token:` on a provider whose module is not the built-in `admin-tokens` (meaningless there);
+/// - a `token:` on a provider whose module is not the [`operator_provider`] (meaningless there);
 /// - a definition with an empty `module:`.
 ///
 /// The `max_admin_scope` DEFAULT is applied here, once, so every downstream reader sees the resolved
 /// ceiling rather than re-deriving it: absent ⇒ [`DEFAULT_MAX_ADMIN_SCOPE`] for every provider except
-/// the built-in `admin-tokens` operator credential, which stays `None` (exempt, full by definition) —
+/// the operator credential ([`operator_provider`]), which stays `None` (exempt, full by definition) —
 /// byte-identical to the pre-1.5.3 semantics.
-/// THE ONE `identity-providers.<name>.token:` PLACEMENT RULE. `token:` is the built-in
-/// `admin-tokens` operator credential; on any other module it is inert, so it is almost certainly a
-/// MISPLACED SECRET and must fail loud rather than sit in config doing nothing.
+/// THE ONE `identity-providers.<name>.token:` PLACEMENT RULE. `token:` is the operator credential
+/// ([`operator_provider`]); on any other module it is inert, so it is almost certainly a MISPLACED
+/// SECRET and must fail loud rather than sit in config doing nothing.
 ///
 /// Shared by [`resolve_auth`] (which sees only providers REFERENCED from a chain) and by
 /// `NamedMapSection::parse_def` (which sees every DEFINITION the admin API writes, referenced or
@@ -612,11 +614,9 @@ pub const CONFIG_TARGET_VERSION: &str = env!("CARGO_PKG_VERSION");
 /// entirely — the API answered 200 and stored the misplaced credential, and the error surfaced only
 /// once something named the provider.
 pub fn validate_token_placement(name: &str, module: &str, has_token: bool) -> Result<(), String> {
-    if has_token && module != ADMIN_TOKENS_MODULE {
-        return Err(format!(
-            "identity-providers.{name}: `token:` is the built-in `admin-tokens` operator \
-             credential and is meaningless on `module: {module}`"
-        ));
+    if has_token && module != operator_provider() {
+        let op = operator_provider();
+        return Err(busbar_kernel_identity::operator::misplaced_definition_token(op, name, module));
     }
     Ok(())
 }
@@ -639,7 +639,7 @@ pub fn resolve_auth(
                     errors.push(e);
                 }
                 let max_admin_scope = def.max_admin_scope.clone().or_else(|| {
-                    (module != ADMIN_TOKENS_MODULE).then(|| DEFAULT_MAX_ADMIN_SCOPE.to_string())
+                    (module != operator_provider()).then(|| DEFAULT_MAX_ADMIN_SCOPE.to_string())
                 });
                 AuthChainEntry {
                     name: name.clone(),
@@ -650,7 +650,7 @@ pub fn resolve_auth(
                 }
             }
             // A BARE BUILT-IN needs no definition. Anything else is a dangling reference.
-            None if BUILTIN_IDENTITY_PROVIDERS.contains(&name.as_str()) => {
+            None if builtin_identity_providers().contains(&name.as_str()) => {
                 AuthChainEntry::bare(name.clone())
             }
             None => {
@@ -658,7 +658,7 @@ pub fn resolve_auth(
                     "auth.{plane} references '{name}', which is not defined in \
                      `identity-providers:` (and is not a built-in: {}). Define it, or reference a \
                      built-in by its bare name.",
-                    BUILTIN_IDENTITY_PROVIDERS.join(" / ")
+                    builtin_identity_providers().join(" / ")
                 ));
                 AuthChainEntry::bare(name.clone())
             }
@@ -682,7 +682,7 @@ pub fn resolve_auth(
     // exactly what the retired `auth.methods:` map allowed, so nothing narrows.)
     let methods: AuthMethods = providers
         .iter()
-        .filter(|(_, def)| !BUILTIN_IDENTITY_PROVIDERS.contains(&def.module.trim()))
+        .filter(|(_, def)| !builtin_identity_providers().contains(&def.module.trim()))
         .map(|(name, def)| {
             (
                 name.clone(),
@@ -1217,7 +1217,7 @@ pub struct DeployCfg {
     /// The top-level `identity-providers:` NAMED-DEFINITION map (1.5.3): provider NAME →
     /// [`IdentityProviderCfg`]. An IdP is DEFINED here once and REFERENCED by bare name from
     /// `auth.chain:`, `auth.admin_auth:` and `auth.role_bindings:`. Absent ⇒ only the bare built-ins
-    /// (`keys` / `admin-tokens`) are referenceable.
+    /// ([`builtin_identity_providers`]) are referenceable.
     #[serde(default, rename = "identity-providers")]
     pub identity_providers: IdentityProviders,
     /// `providers:` and `models:` are REQUIRED only when a registered plane declares it requires
@@ -2610,8 +2610,8 @@ pub fn resolve(
                 .all_pool_upstream_credentials
                 .unwrap_or_default(),
             hooks: hooks_registry,
-            // The admin chain PROVIDER NAMES, from `auth.admin_auth:` (default `[admin-tokens]`
-            // when the whole `auth:` block is absent). 1.5.3: the runtime identity of an admin chain
+            // The admin chain PROVIDER NAMES, from `auth.admin_auth:` (default: the operator
+            // credential, `default_admin_auth_names`, when the whole `auth:` block is absent). 1.5.3: the runtime identity of an admin chain
             // entry is its provider NAME (what `role_bindings.<name>` binds), not its module.
             admin_auth: admin_auth_names,
             groups: deploy.groups.clone(),

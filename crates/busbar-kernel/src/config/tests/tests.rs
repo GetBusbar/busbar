@@ -1757,19 +1757,19 @@ fn test_debug_of_full_config_never_shows_resolved_secrets() {
         signing_key: Some(SecretRef::env("BUSBAR_T_DEBUG_SECRET")),
         operator_pub: None,
         chain: vec![KEYS_MODULE.to_string()],
-        admin_auth: vec![ADMIN_TOKENS_MODULE.to_string()],
+        admin_auth: vec![crate::config::operator_provider().to_string()],
         role_bindings: RoleBindings::new(),
         key_ttl: None,
         policy: Default::default(),
     };
     let mut deploy = base_deploy();
     deploy.auth = Some(auth);
-    // The `admin-tokens` operator credential now lives on its `identity-providers:` DEFINITION
+    // The operator credential now lives on its `identity-providers:` DEFINITION
     // (not inline on a chain entry), so the Debug dump must stay clean there too.
     deploy.identity_providers.insert(
-        ADMIN_TOKENS_MODULE.to_string(),
+        crate::config::operator_provider().to_string(),
         crate::config::IdentityProviderCfg {
-            module: ADMIN_TOKENS_MODULE.to_string(),
+            module: crate::config::operator_provider().to_string(),
             max_admin_scope: None,
             token: Some(SecretRef::env("BUSBAR_T_DEBUG_SECRET")),
             browser_login: None,
@@ -2175,12 +2175,12 @@ fn test_identity_provider_definition_is_referenced_by_name_from_both_planes() {
 }
 
 /// FREEZE: an OMITTED `max_admin_scope` resolves to the MOST RESTRICTIVE ceiling
-/// (`read-only`) for every provider — EXCEPT the built-in `admin-tokens` operator credential, which
+/// (`read-only`) for every provider — EXCEPT the operator credential, which
 /// is full-by-definition and stays exempt. This preserves the pre-1.5.3 semantics EXACTLY while
 /// moving the field off the chain entry onto the definition, so upgrading cannot silently widen or
 /// narrow an existing deployment's admin ceiling.
 #[test]
-fn test_max_admin_scope_default_is_most_restrictive_except_admin_tokens() {
+fn test_max_admin_scope_default_is_most_restrictive_except_the_operator_credential() {
     crate::test_support::register_neutral_test_plane();
     let deploy: DeployCfg = serde_yaml::from_str(
         "identity-providers:\n  corp-ad: { module: ad }\n  admin-tokens: { module: admin-tokens }\n\
@@ -2202,7 +2202,7 @@ fn test_max_admin_scope_default_is_most_restrictive_except_admin_tokens() {
     );
     assert_eq!(
         auth.admin_auth[0].max_admin_scope, None,
-        "the built-in admin-tokens operator credential is EXEMPT (full by definition)"
+        "the operator credential is EXEMPT (full by definition)"
     );
 }
 
@@ -2254,11 +2254,11 @@ fn test_identity_provider_typo_rejected_at_parse() {
     assert!(err.to_string().contains("unknown field"), "{err}");
 }
 
-/// A `token:` is the built-in `admin-tokens` operator credential and is MEANINGLESS on any other
+/// A `token:` is the operator credential and is MEANINGLESS on any other
 /// module — writing one there is an operator error (they believe a credential is configured) and
 /// must fail boot, not be silently ignored.
 #[test]
-fn test_token_on_a_non_admin_tokens_provider_is_an_error() {
+fn test_token_on_a_non_operator_provider_is_an_error() {
     crate::test_support::register_neutral_test_plane();
     let deploy: DeployCfg = serde_yaml::from_str(
         "identity-providers:\n  corp-ad: { module: ad, token: { env: X } }\n\
@@ -2275,7 +2275,7 @@ fn test_token_on_a_non_admin_tokens_provider_is_an_error() {
         errors
             .iter()
             .any(|e| e.contains("token") && e.contains("corp-ad")),
-        "a token on a non-admin-tokens provider must be rejected; got {errors:?}"
+        "a token on a non-operator provider must be rejected; got {errors:?}"
     );
 }
 
@@ -2396,8 +2396,8 @@ role_bindings:
     assert_eq!(ad["contractors"].allowed_pools, Some(vec![]));
     assert_eq!(ad["everyone"].allowed_pools, None, "omitted = ALL pools");
 
-    // The serde default for admin_auth is the bare admin-tokens provider NAME.
-    assert_eq!(auth.admin_auth, [ADMIN_TOKENS_MODULE]);
+    // The serde default for admin_auth is the operator credential's bare provider NAME.
+    assert_eq!(auth.admin_auth, [crate::config::operator_provider()]);
 }
 
 // ── groups / limits ──────────────────────────────────────────────────────────────────────────────
@@ -2885,13 +2885,13 @@ fn test_pools_credential_mode_refusal_is_byte_identical_to_1_5_5() {
 }
 
 /// `resolve` projects the ADMIN chain module names from `auth.admin_auth:` onto
-/// `RootCfg.admin_auth` in order, and defaults to `[admin-tokens]` when the whole `auth:` block
+/// `RootCfg.admin_auth` in order, and defaults to the operator credential when the whole `auth:` block
 /// is absent.
 #[test]
 fn test_resolve_projects_admin_auth_names() {
     // auth absent: the default admin chain.
     let cfg = resolve(&base_deploy(), &HashMap::new()).expect("resolve");
-    assert_eq!(cfg.admin_auth, [ADMIN_TOKENS_MODULE]);
+    assert_eq!(cfg.admin_auth, [crate::config::operator_provider()]);
 
     // auth present with a custom admin chain: names projected in order.
     let mut deploy = base_deploy();
@@ -2906,7 +2906,7 @@ fn test_resolve_projects_admin_auth_names() {
     )
     .expect("identity-providers parse");
     let cfg = resolve(&deploy, &HashMap::new()).expect("resolve");
-    assert_eq!(cfg.admin_auth, [ADMIN_TOKENS_MODULE, "ad"]);
+    assert_eq!(cfg.admin_auth, [crate::config::operator_provider(), "ad"]);
     // The operator credential stays reachable as a SecretRef through the resolved auth block.
     assert_eq!(
         cfg.auth
@@ -2916,11 +2916,11 @@ fn test_resolve_projects_admin_auth_names() {
         Some("BUSBAR_ADMIN_TOKEN")
     );
 
-    // auth present but admin_auth omitted: the serde default [admin-tokens] applies.
+    // auth present but admin_auth omitted: the serde default (the operator credential) applies.
     let mut deploy = base_deploy();
     deploy.auth = Some(serde_yaml::from_str("chain: [keys]\n").expect("auth parses"));
     let cfg = resolve(&deploy, &HashMap::new()).expect("resolve");
-    assert_eq!(cfg.admin_auth, [ADMIN_TOKENS_MODULE]);
+    assert_eq!(cfg.admin_auth, [crate::config::operator_provider()]);
 }
 
 /// PER-NAME anti-downgrade through `to_policy` (floors-only semantics): a validly-signed

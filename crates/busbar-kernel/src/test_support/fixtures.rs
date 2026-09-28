@@ -61,7 +61,7 @@ pub fn cfg_with_provider_api_key(api_key: crate::config::SecretRef) -> crate::co
         models: std::collections::HashMap::new(),
         pools: std::collections::HashMap::new(),
         hooks: std::collections::HashMap::new(),
-        admin_auth: vec!["admin-tokens".to_string()],
+        admin_auth: crate::config::default_admin_auth_names(),
         groups: std::collections::BTreeMap::new(),
         rate_card: None,
         per_request_fee: 0,

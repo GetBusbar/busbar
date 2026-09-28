@@ -53,6 +53,7 @@ pub(super) fn linked(
         exports: &[],
         stores: &[],
         hooks: &[],
+        auths: &[],
         gauntlet_one_shot: &[],
         gauntlet_session: &[],
         transports: &[],

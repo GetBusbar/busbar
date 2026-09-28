@@ -359,11 +359,8 @@ fn install_linked_test_seams() {
     install_test_mcp_runtime_factory(default_mcp_runtime);
 }
 
-#[cfg(feature = "auth-admin-tokens")]
 const ERROR_SURFACE_DRIVER: Option<ErrorSurfaceDriver> =
     Some(|| Box::pin(crate::mcp::admin_view::adminverbs_tests::drive_mcp_verb_errors()));
-#[cfg(not(feature = "auth-admin-tokens"))]
-const ERROR_SURFACE_DRIVER: Option<ErrorSurfaceDriver> = None;
 
 /// This plane's registry row, assembled kernel-side from its contract declaration
 /// and its behaviour table.

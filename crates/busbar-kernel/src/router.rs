@@ -1081,8 +1081,8 @@ pub fn build_split_routers_with_limits(
 }
 
 /// Project the resolved `auth:` block onto [`state::App::auth_scope_caps`] — the per-PROVIDER admin
-/// trust CEILING (`max_admin_scope:`) the admin authorization step floors every non-`admin-tokens`
-/// verdict against.
+/// trust CEILING (`max_admin_scope:`) the admin authorization step floors every verdict but the
+/// operator credential's against.
 ///
 /// KEYED BY PROVIDER NAME, not by the backing plugin MODULE. That is the whole point of the 1.5.3
 /// named-definition pattern and the invariant [`crate::auth::ChainVerdict::Identified`] states

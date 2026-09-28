@@ -64,17 +64,24 @@ fn admin_scope_resolution() {
 
     // Open posture (no principal): full.
     assert_eq!(admin_scope_for(None, None, &rb), Grants::of(Scope::Full));
-    // The operator principal (admin-tokens): full by definition, no binding required.
-    #[cfg(feature = "auth-admin-tokens")]
+    // The operator principal (the operator credential's): full by definition, no binding required.
     assert_eq!(
         admin_scope_for(
-            Some(crate::config::ADMIN_TOKENS_MODULE),
-            Some(&Principal::from_id(
-                busbar_auth_admin_tokens::ADMIN_TOKENS_PRINCIPAL_ID
-            )),
+            Some(crate::config::operator_provider()),
+            Some(&Principal::from_id(crate::config::operator_principal_id())),
             &rb
         ),
         Grants::of(Scope::Full)
+    );
+    // ... and ONLY through the operator credential's provider: the same roleless principal from any
+    // other module earns nothing.
+    assert_eq!(
+        admin_scope_for(
+            module,
+            Some(&Principal::from_id(crate::config::operator_principal_id())),
+            &rb
+        ),
+        Grants::default()
     );
     // Role-bound: the union of the principal's bound roles. `with` is a plain bitwise union (never
     // canonicalized), so `{read-only} ∪ {full}` keeps BOTH bits rather than collapsing to `{full}` —
@@ -2185,4 +2192,24 @@ fn a_keys_only_chain_is_not_an_open_front_door() {
     // keys + a boxed module: closed by both halves.
     let both = AuthMiddleware::new_builtin(&chain_cfg(&["keys", "test-groups-module"]));
     assert!(!both.is_open(), "a boxed module closes the door regardless");
+}
+
+/// THE OPERATOR CREDENTIAL, as the auth axis answers it: with no row under the operator credential's
+/// key, the registry opens nothing — the credential is `Unanswered`, and the admin chain defers it
+/// (and, alone, denies). How an opened module judges the two carriers is the authenticate step's
+/// (the authenticate step's own `operator` tests).
+#[test]
+fn the_operator_credential_opens_from_the_axis() {
+    use crate::auth::{open_operator, OperatorCredential};
+    let digest = busbar_contract::redacted::sha256_hex(b"tok");
+    // This crate's test binary links no auth row, so its linked registry has none to open.
+    let linked = crate::preflight::linked().expect("the linked registry");
+    assert!(matches!(
+        open_operator(&linked, Some(&digest)),
+        Ok(OperatorCredential::Unanswered)
+    ));
+    assert!(matches!(
+        open_operator(&linked, None),
+        Ok(OperatorCredential::Unanswered)
+    ));
 }

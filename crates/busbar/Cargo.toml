@@ -120,6 +120,12 @@ busbar-store-memory = { path = "../store-memory" }
 # THE RANKING HOOKS (`cheapest`/`fastest`/`least_busy`/`usage`), linked through the `hooks` axis
 # under `hooks-ranking` — one row, the strategy spellings its aliases. The kernel names no hook.
 busbar-hooks-ranking = { path = "../hooks-ranking", optional = true }
+# THE OPERATOR CREDENTIAL (`auth.admin_auth: [admin-tokens]`, the single operator admin token), a
+# first-party AUTH plugin linked through the `auths` axis under `auth-admin-tokens` — the same row a
+# signed tarball of it registers when dropped in (DECISIONS #2 rule (1); ARCHITECT 2026-09-27
+# AUTH-ROW). It lives in its own repo (GetBusbar/busbar-auth-admin-tokens) and is pulled at a PINNED rev; the
+# workspace `[patch]` points the busbar crates it names at this tree. The kernel names no auth module.
+busbar-auth-admin-tokens-plugin = { git = "https://github.com/GetBusbar/busbar-auth-admin-tokens", rev = "47cb5047e4c9a73341c613c09a056b4a4bb8eb99", optional = true }
 # THE REQUEST-LOG FILE SINK (`module: request-log-file`), a first-party EXPORT plugin linked through
 # the `exports` axis (K9b) — the same row a signed tarball of it registers when dropped in. It lives
 # in its own repo (GetBusbar/busbar-export-file) and is pulled at a PINNED rev; the workspace `[patch]`
@@ -289,7 +295,10 @@ root-admin = ["dep:tower"]
 # module is `#[cfg(any(test, feature = "test-harness"))]` and this feature is never enabled by a
 # release build, which is why the surface ceilings do not count it.
 test-harness = []
-auth-admin-tokens = ["busbar-kernel/auth-admin-tokens", "busbar-core-admin/auth-admin-tokens"]
+# THE OPERATOR CREDENTIAL'S LINKED ROW, DEFAULT ON: the auth plugin on the `auths` axis. Off, the
+# operator credential resolves only when a signed tarball of the module is dropped into `plugins/`,
+# and a configured admin token with no row answering it is a boot refusal naming this feature.
+auth-admin-tokens = ["dep:busbar-auth-admin-tokens-plugin"]
 hooks-ranking = ["dep:busbar-hooks-ranking", "busbar-kernel/hooks-ranking", "busbar-core-admin/hooks-ranking"]
 openapi-schema = ["busbar-kernel/openapi-schema", "busbar-core-admin/openapi-schema", "busbar-llm?/openapi-schema", "busbar-mcp?/openapi-schema", "busbar-a2a?/openapi-schema", "busbar-voice?/openapi-schema"]
 loom-model = ["busbar-kernel/loom-model"]
@@ -319,6 +328,8 @@ export-file = "busbar-export-file"
 export-webhook = "busbar-export-webhook"
 export-prometheus = "busbar-export-prometheus"
 export-otlp = "busbar-export-otlp"
+# THE AUTH AXIS: the operator credential's module, under its packaging feature.
+auth-admin-tokens = "busbar-auth-admin-tokens-plugin"
 # THE COLD-KIND AXIS's in-process rows: the default store (a required dependency: every build links
 # it) and the ranking hooks (under their feature).
 store-memory = "busbar-store-memory"
@@ -343,6 +354,7 @@ transport-stdio = "busbar-transport-stdio"
 # `node`: the entry's `install_node`, handed the node a root unit drives the entry's units through.
 # `transport`: a wire's `KEY`, `COMPOSES_OVER` and `build(lower, &TransportSettings)`.
 # `stores` / `hooks`: an in-process store's `STORE` and a ranking row's `HOOK` (`root::linked`).
+# `auths`: a `kind: auth` plugin's SDK boundary (`BUSBAR_COLD_ENTRY`), under its `linked-name` key.
 [package.metadata.busbar.linked-axes]
 proto-llm = "plane claims protocols path-ingress body-ingress protocol-seams diagnostics on-host cli-help node gauntlet-one-shot"
 plane-mcp = "plane claims protocols diagnostics egress stdio-serve cli-help gauntlet-one-shot"
@@ -353,6 +365,7 @@ export-file = "exports"
 export-webhook = "exports"
 export-prometheus = "exports"
 export-otlp = "exports"
+auth-admin-tokens = "auths"
 store-memory = "stores"
 hooks-ranking = "hooks"
 transport-tcp = "transport"
@@ -370,6 +383,12 @@ busbar-plane-decision = "crate::root::plane_decision"
 # One crate, several wires: each row past the crate's own `linked` names its entry.
 transport-sse = "busbar_transport_http::linked::sse"
 transport-grpc = "busbar_transport_http::linked::grpc"
+# An auth plugin's boundary is the SDK's, at its crate root.
+busbar-auth-admin-tokens-plugin = "busbar_auth_admin_tokens_plugin"
+
+# The key an `auths` row answers on the auth axis — the name its signed tarball's manifest states.
+[package.metadata.busbar.linked-name]
+auth-admin-tokens = "admin-tokens"
 
 # The root's own unit modules (the kernel-loop halves of planes that still live in the root), each
 # compiled when its row's cargo feature is on (the node under the `linked_axis_node` cfg that

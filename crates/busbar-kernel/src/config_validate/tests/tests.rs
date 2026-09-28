@@ -27,7 +27,7 @@ fn make_root_cfg(
         pools,
         upstream_credentials: crate::auth::UpstreamCreds::Own,
         hooks: HashMap::new(),
-        admin_auth: vec!["admin-tokens".to_string()],
+        admin_auth: config::default_admin_auth_names(),
         groups: std::collections::BTreeMap::new(),
         rate_card: None,
         per_request_fee: 0,
@@ -686,8 +686,8 @@ fn make_auth_chain(modules: &[&str], _upstream: crate::auth::UpstreamCreds) -> c
     // otherwise). 1.5.2: it also requires a USABLE MINT PATH via `admin_auth` — a vkey can only be
     // minted through that privileged chain, so `[keys]` with nothing that can mint one is a boot
     // error. Attach a signing-key ref and an explicit open `admin_auth: []` — the one structural
-    // mint path that validates under BOTH the default build and `--no-default-features` (where the
-    // `admin-tokens` module is compiled out and a configured admin token would itself be rejected).
+    // mint path that validates whether or not an auth row answers the operator credential (with none,
+    // a configured admin token would itself be rejected).
     if modules.contains(&crate::config::KEYS_MODULE) {
         auth.signing_key = Some(config::SecretRef::env("BUSBAR_SIGNING_KEY"));
         auth.admin_auth = vec![];
@@ -1599,7 +1599,7 @@ fn validate_admin_auth_plugin_name_no_longer_rejected() {
     let (providers, models, pools) = valid_maps();
     let mut cfg = make_root_cfg(providers, models, pools);
     cfg.admin_auth = vec![
-        crate::config::ADMIN_TOKENS_MODULE.to_string(),
+        crate::config::operator_provider().to_string(),
         "oidc-admin".to_string(),
     ];
     let res = validate(&cfg);
@@ -1638,85 +1638,59 @@ fn test_validate_accepts_known_failover_exclusion() {
     );
 }
 
-// ── admin-tokens token placement + secret-module resolvability (the 1.5.0 heirs of the
+// ── operator-credential token placement + secret-module resolvability (the 1.5.0 heirs of the
 // governance.admin_token validation family) ──────────────────────────────────────────────────────
 
-/// The `admin-tokens` operator credential is a SECRET REFERENCE now; `validate()` checks the
-/// MODULE resolves (env | file) without resolving the value, and a malformed built-in ref
-/// (env without settings.key) fails loud, replacing the 1.4.x blank-admin_token lockout guard.
-#[cfg(feature = "auth-admin-tokens")]
+/// The operator credential is a SECRET REFERENCE; `validate()` checks its MODULE's shape without
+/// resolving the value, and a malformed built-in ref (env without settings.key) fails loud, naming
+/// the dotted path of its entry, whether or not an auth row answers the credential. (The accepting
+/// half — a well-formed ref validates clean — needs the operator credential's row, which this crate
+/// links none of: it lives beside the row, in the composition root's `root/tests/linked_auth.rs`.)
 #[test]
-fn test_validate_admin_tokens_secret_module_checked() {
-    let build = |token: config::SecretRef| -> Result<(), Vec<String>> {
-        let (providers, models, pools) = valid_maps();
-        let mut cfg = make_root_cfg(providers, models, pools);
-        let mut auth = config::AuthCfg::default_none();
-        let mut entry = config::AuthChainEntry::bare(config::ADMIN_TOKENS_MODULE);
-        entry.token = Some(token);
-        auth.admin_auth = vec![entry];
-        cfg.auth = Some(auth);
-        validate(&cfg)
-    };
-
-    // A NON-built-in secret module (a `kind: secret` plugin reference, e.g. `vault`) is the marquee
-    // 1.5.0 "secrets are plugins" feature. `validate` runs BEFORE the plugin registry exists, so it
-    // can no longer distinguish an installed vault plugin from a typo — the module-EXISTENCE check is
-    // DEFERRED to the plugin pre-flight (`validate_secret_refs`, exercised by the main.rs integration
-    // tests). Here `validate` must NOT reject a plugin-backed module on structural grounds alone (the
-    // structural `env`/`file` shape checks below still fire); a real typo is caught downstream.
-    assert!(
-        build(config::SecretRef {
-            module: "vault".to_string(),
-            settings: serde_json::Map::new(),
-        })
-        .is_ok(),
-        "a plugin-backed secret module must not be rejected by `validate` (existence is checked \
-         against the registry at plugin pre-flight, not here)"
-    );
-
-    // env module WITHOUT settings.key: the ref can never resolve; must fail naming the shape.
-    let errs = build(config::SecretRef {
+fn test_validate_operator_token_secret_module_checked() {
+    let (providers, models, pools) = valid_maps();
+    let mut cfg = make_root_cfg(providers, models, pools);
+    let mut auth = config::AuthCfg::default_none();
+    let mut entry = config::AuthChainEntry::bare(config::operator_provider());
+    entry.token = Some(config::SecretRef {
         module: "env".to_string(),
         settings: serde_json::Map::new(),
-    })
-    .expect_err("an env secret ref without settings.key must fail validation");
-    // The path is the DOTTED config path down to the individual chain entry
-    // (e.g. `auth.admin_auth.admin-tokens.token`). It used to be the prose label "auth.admin_auth
-    // admin-tokens token", which could only ever describe ONE entry, because `secret_refs` only ever
-    // reported one: it called `AuthCfg::admin_token_ref`, which returns the FIRST `admin-tokens`
-    // entry it finds and stops. Every entry is enumerated now, so each one names itself.
+    });
+    auth.admin_auth = vec![entry];
+    cfg.auth = Some(auth);
+    let errs = validate(&cfg).expect_err("an env secret ref without settings.key must fail");
+    // The path is the DOTTED config path down to the individual chain entry. It used to be a prose
+    // label that could only ever describe ONE entry, because `secret_refs` reported only the FIRST
+    // operator-credential entry `AuthCfg::admin_token_ref` finds. Every entry is enumerated now, so
+    // each one names itself.
+    let path = format!("auth.admin_auth.{}.token", config::operator_provider());
     assert!(
         errs.iter()
-            .any(|e| e.contains("auth.admin_auth.admin-tokens.token")
-                && e.contains("requires settings.key")),
+            .any(|e| e.contains(&path) && e.contains("requires settings.key")),
         "expected the env-shape error; got: {errs:?}"
-    );
-
-    // A well-formed `{ env: VAR }` ref validates (the value is deliberately NOT resolved here:
-    // CI validates structure without secrets present).
-    #[cfg(feature = "auth-admin-tokens")]
-    assert!(
-        build(config::SecretRef::env("BUSBAR_ADMIN_TOKEN")).is_ok(),
-        "a well-formed env admin-token ref must validate"
     );
 }
 
-/// FEATURELESS counterpart: a configured admin token in a binary WITHOUT the `admin-tokens`
-/// module is a loud boot error (silently ignoring a configured credential would be a lockout,
-/// never acceptable).
-#[cfg(not(feature = "auth-admin-tokens"))]
+/// NO OPERATOR ROW: a configured admin token in a build that links no auth row answering the
+/// operator credential's provider (this crate's own test binary links none — the composition root
+/// links the build's rows) is a loud boot error, never a silently ignored credential (a lockout).
+/// The refusal is v1.5.5's `--no-default-features` refusal, byte for byte
+/// (`git show v1.5.5:crates/busbar/src/config_validate/mod.rs`, line 1723).
 #[test]
 fn test_validate_rejects_admin_token_without_module() {
     let (providers, models, pools) = valid_maps();
     let mut cfg = make_root_cfg(providers, models, pools);
     let mut auth = config::AuthCfg::default_none();
-    let mut entry = config::AuthChainEntry::bare(config::ADMIN_TOKENS_MODULE);
+    let mut entry = config::AuthChainEntry::bare(config::operator_provider());
     entry.token = Some(config::SecretRef::env("BUSBAR_ADMIN_TOKEN"));
     auth.admin_auth = vec![entry];
     cfg.auth = Some(auth);
     let errs = validate(&cfg).expect_err("must be a boot error");
     assert!(
-        errs.iter().any(|e| e.contains("auth-admin-tokens")),
+        errs.iter().any(|e| e
+            == "an admin-tokens token is configured but this binary was built WITHOUT the \
+                `auth-admin-tokens` feature — the admin API would be silently disabled. Rebuild \
+                with default features or wire an external admin auth module."),
         "{errs:?}"
     );
 }
@@ -1826,7 +1800,7 @@ fn test_validate_chain_unknown_module_rejected_keys_accepted() {
 }
 
 /// 1.5.2: `auth.chain: [keys]` with a signing key but NO usable MINT PATH via `admin_auth`
-/// (default `admin_auth: [admin-tokens]` carrying no `token:`) is a BOOT ERROR — a vkey can
+/// (the default operator-credential `admin_auth:` carrying no `token:`) is a BOOT ERROR — a vkey can
 /// only be minted through the `admin_auth` chain, so nothing could ever mint one and every
 /// request would be rejected. Before 1.5.2 no mint-path rule existed, so this config validated
 /// clean (and booted as a silent sealed relay).
@@ -1834,7 +1808,7 @@ fn test_validate_chain_unknown_module_rejected_keys_accepted() {
 fn test_1_5_2_keys_chain_without_mint_path_is_boot_error() {
     let (providers, models, pools) = valid_maps();
     let mut cfg = make_root_cfg(providers, models, pools);
-    // default_none carries admin_auth: [admin-tokens] with NO token ref → no usable mint path.
+    // default_none carries the operator credential with NO token ref → no usable mint path.
     let mut auth = crate::config::AuthCfg::default_none();
     auth.chain = vec![crate::config::AuthChainEntry::bare(
         crate::config::KEYS_MODULE,
@@ -1855,8 +1829,8 @@ fn test_1_5_2_keys_chain_without_mint_path_is_boot_error() {
 /// built-in `keys` verifier has nothing to verify busbar-signed tokens with and every request
 /// would be rejected. Isolates the signing-key rule from the mint-path rule by supplying a
 /// usable mint path: an explicit empty `admin_auth: []`, the one structural mint path that
-/// validates under BOTH the default build and `--no-default-features` (where the `admin-tokens`
-/// module is compiled out, so a configured admin token would itself be a second, unrelated error —
+/// validates whether or not an auth row answers the operator credential (with none, a configured
+/// admin token would itself be a second, unrelated error —
 /// see `make_auth_chain`). Setting `signing_key` clears the error. Before 1.5.1 busbar
 /// auto-generated a key at boot, so this config validated clean.
 #[test]
@@ -1919,7 +1893,7 @@ fn test_1_5_2_oidc_chain_needs_no_mint_path() {
 /// module in `admin_auth` but did NOT grant it `max_admin_scope: full`, so `keys`
 /// failed to validate with "no admin credential can mint one" — deep in a phase, hard to read.
 /// This locks that in as a fast, obvious boot error. Isolates the EXTERNAL-module branch of
-/// `AuthCfg::usable_mint_path` (the earlier mint-path test covers only the `admin-tokens` branch);
+/// `AuthCfg::usable_mint_path` (the earlier mint-path test covers only the operator branch);
 /// signing_key is supplied so the signing-key rule stays quiet and only the mint-path rule can fire.
 /// Feature-independent (the branch is purely structural), so it holds under `--no-default-features`.
 #[test]
@@ -1963,9 +1937,10 @@ fn test_1_5_2_keys_chain_external_admin_needs_full_scope_to_mint() {
 }
 
 #[test]
-fn test_validate_token_on_non_admin_tokens_entry_rejected() {
-    // `token:` is the admin-tokens operator credential; on any other chain entry it is inert and
-    // almost certainly a misplaced secret. Fail loud, with the paste-ready relocation stub.
+fn test_validate_token_on_non_operator_entry_rejected() {
+    // `token:` is the operator credential; on any other chain entry it is inert and almost
+    // certainly a misplaced secret. Fail loud, with the paste-ready relocation stub — v1.5.5's
+    // refusal, byte for byte (`git show v1.5.5:crates/busbar/src/config_validate/mod.rs`, 1175).
     let (providers, models, pools) = valid_maps();
     let mut cfg = make_root_cfg(providers, models, pools);
     let mut auth = config::AuthCfg::default_none();
@@ -1973,12 +1948,13 @@ fn test_validate_token_on_non_admin_tokens_entry_rejected() {
     entry.token = Some(config::SecretRef::env("MISPLACED_SECRET"));
     auth.chain = vec![entry];
     cfg.auth = Some(auth);
-    let errs = validate(&cfg).expect_err("token on a non-admin-tokens entry must fail validation");
+    let errs = validate(&cfg).expect_err("token on a non-operator entry must fail validation");
     assert!(
-        errs.iter().any(|e| e.contains("auth chain entry 'keys'")
-            && e.contains("`token:`")
-            && e.contains("admin-tokens")),
-        "expected a misplaced-token error with the admin-tokens relocation hint; got: {errs:?}"
+        errs.iter().any(|e| e
+            == "auth chain entry 'keys' sets `token:`, which belongs to the built-in \
+                `admin-tokens` module only; move it, e.g.:\n\n    admin_auth:\n      - \
+                admin-tokens: { token: { env: BUSBAR_ADMIN_TOKEN } }\n"),
+        "expected the misplaced-token error with its relocation hint; got: {errs:?}"
     );
 }
 
@@ -3428,7 +3404,7 @@ fn test_hook_reserved_name_rejected() {
         "least_busy",
         "usage",
         "tokens",
-        "admin-tokens",
+        config::operator_provider(),
     ] {
         let mut providers = HashMap::new();
         providers.insert(
@@ -4802,7 +4778,11 @@ fn test_validate_role_binding_group_must_exist() {
     );
 }
 
-/// A role name shadowing the reserved operator principal id (`admin`) is rejected.
+/// A role name shadowing the operator principal id is reserved only while an auth row answers the
+/// operator credential — that row mints the principal. This crate's test binary links none (the
+/// composition root links the build's rows), so here the name is an ordinary role, exactly as in
+/// v1.5.5's `--no-default-features` build. The reserved arm is proven beside the row, in the root's
+/// `root/tests/linked_auth.rs`.
 #[test]
 fn test_validate_role_binding_reserved_role_name_rejected() {
     let (providers, models, pools) = valid_maps();
@@ -4810,15 +4790,17 @@ fn test_validate_role_binding_reserved_role_name_rejected() {
     cfg.auth = Some(auth_with_binding(
         &["keys"],
         "keys",
-        "admin",
+        config::operator_principal_id(),
         config::RoleBindingCfg::default(),
     ));
-    let errs = validate(&cfg).expect_err("a role named 'admin' must fail validation");
+    let reserved = |errs: &[String]| {
+        errs.iter()
+            .any(|e| e.contains("role_bindings.keys") && e.contains("reserved"))
+    };
     assert!(
-        errs.iter().any(|e| e.contains("role_bindings.keys")
-            && e.contains("'admin'")
-            && e.contains("reserved")),
-        "expected the reserved-role-name error; got: {errs:?}"
+        !validate(&cfg).err().is_some_and(|errs| reserved(&errs)),
+        "no operator row, no operator principal to shadow: {:?}",
+        validate(&cfg)
     );
 }
 

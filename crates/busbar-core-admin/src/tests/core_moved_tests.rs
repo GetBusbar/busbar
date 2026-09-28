@@ -12,8 +12,6 @@ use busbar_kernel::auth::X_ADMIN_TOKEN;
 /// the admin surface. Driven end-to-end through the real router + `auth_middleware` so the
 /// extraction + constant-time compare are exercised together. A correct token via the same header
 /// authorizes, proving the 401 is the empty-filter and not a blanket reject.
-// Admin-token behavior — requires the compile-removable `admin-tokens` module.
-#[cfg(feature = "auth-admin-tokens")]
 #[tokio::test]
 async fn test_admin_blank_header_token_rejected() {
     use busbar_kernel::governance::{GovState, MemoryStore};
@@ -72,8 +70,6 @@ async fn test_admin_blank_header_token_rejected() {
 ///   - wrong Bearer  + correct x-admin-token  → authorized (Bearer miss didn't short-circuit away
 ///                                               the header compare)
 ///   - wrong + wrong                          → 401
-// Admin-token behavior — requires the compile-removable `admin-tokens` module.
-#[cfg(feature = "auth-admin-tokens")]
 #[tokio::test]
 async fn test_admin_token_both_carriers_or_fold_no_short_circuit() {
     use busbar_kernel::governance::{GovState, MemoryStore};
@@ -151,8 +147,6 @@ async fn test_admin_token_both_carriers_or_fold_no_short_circuit() {
 /// leaked/observed client header into operator-surface (key create/delete) access. This pins the
 /// boundary: the CORRECT admin secret presented via `x-api-key` or `x-goog-api-key` MUST 401,
 /// while the two sanctioned admin carriers MUST authorize.
-// Admin-token behavior — requires the compile-removable `admin-tokens` module.
-#[cfg(feature = "auth-admin-tokens")]
 #[tokio::test]
 async fn test_admin_token_not_acceptable_via_vendor_carriers() {
     use busbar_kernel::governance::{GovState, MemoryStore};
@@ -234,9 +228,6 @@ async fn test_admin_token_not_acceptable_via_vendor_carriers() {
 }
 
 /// token authenticates `/api/v1/admin/*` and returns above the data-plane gate, unchanged.
-/// (Gated on `auth-admin-tokens`: the operator admin-token module is compiled out under
-/// `--no-default-features`, so there is no admin-token authenticator to exercise there.)
-#[cfg(feature = "auth-admin-tokens")]
 #[tokio::test]
 async fn test_1_5_2_admin_path_bypasses_governance_and_mints() {
     busbar_kernel::metrics::init();
@@ -279,8 +270,6 @@ async fn test_1_5_2_admin_path_bypasses_governance_and_mints() {
 /// serves `/api/v1/admin/*` and a data router that does NOT — even for a request carrying a VALID
 /// admin token (the route is ABSENT, not merely auth-guarded), so the public data bind can never
 /// reach the management plane. Both planes keep an open, unauthenticated `/healthz`.
-// Exercises the admin-token auth link, so it only applies when that feature is compiled in.
-#[cfg(feature = "auth-admin-tokens")]
 #[tokio::test]
 async fn split_admin_listener_no_double_exposure() {
     use busbar_kernel::governance::{GovState, MemoryStore};
@@ -347,8 +336,6 @@ async fn split_admin_listener_no_double_exposure() {
 /// installs (busbar-admin is NOT a dep of the LLM plane, per BUSBAR-1.6.0.md Part 2 #37 — a PLANE crate must
 /// not depend on busbar-admin nor mount the admin surface). The duplicate there was deterministically
 /// RED (valid-token POST → 404); this is its correct home, where the seam is mounted.
-// Admin-token behavior — requires the compile-removable `admin-tokens` module.
-#[cfg(feature = "auth-admin-tokens")]
 #[tokio::test]
 async fn test_governance_admin_api() {
     use busbar_kernel::governance::{GovState, MemoryStore};

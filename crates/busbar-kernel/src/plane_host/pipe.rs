@@ -300,7 +300,7 @@ pub(super) fn open_subprocess(
     }
     // THE CHILD'S ENVIRONMENT, resolved host-side and applied under `env_clear()` so the child gets
     // ONLY these variables — NEVER the host's own environment, which holds provider API keys, store
-    // credentials and admin tokens. Inheriting them (as this path once did) would make every governed
+    // credentials and the operator credential. Inheriting them (as this path once did) would make every governed
     // subprocess a silent credential-exfiltration primitive; clearing first is the fix the in-process
     // stdio transport already applies, restated at the seam. A malformed record or an unresolvable
     // secret refuses the spawn rather than starting the child with a missing variable.

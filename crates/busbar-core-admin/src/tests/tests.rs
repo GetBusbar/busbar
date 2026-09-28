@@ -85,8 +85,9 @@ async fn test_admin_v1_info_reports_version_features_and_topology() {
         "info must report the build version"
     );
     // The `weighted_floor` is ALWAYS true (non-removable). `keys` is engine-handled and always
-    // present; `admin-tokens`/`ranking` are present iff their feature is compiled in - so the
-    // compliance-by-compilation proof holds under `--no-default-features` too.
+    // present; the operator credential is present iff its auth row is linked, `ranking` iff its
+    // feature is compiled in - so the compliance-by-compilation proof holds under
+    // `--no-default-features` too.
     assert_eq!(body["build"]["weighted_floor"], serde_json::json!(true));
     let auth_modules = body["build"]["auth_modules"].as_array().unwrap();
     assert!(
@@ -95,8 +96,9 @@ async fn test_admin_v1_info_reports_version_features_and_topology() {
     );
     assert_eq!(
         auth_modules.iter().any(|m| m == "admin-tokens"),
-        cfg!(feature = "auth-admin-tokens"),
-        "auth_modules must contain `admin-tokens` iff its feature is compiled in: {auth_modules:?}"
+        busbar_kernel::preflight::linked_auth_names()
+            .contains(&busbar_kernel::config::operator_provider()),
+        "auth_modules must contain `admin-tokens` iff its row is linked: {auth_modules:?}"
     );
     let hook_plugins = body["build"]["hook_plugins"].as_array().unwrap();
     assert_eq!(
@@ -4249,7 +4251,7 @@ async fn test_admin_v1_plugins_catalog_by_type() {
         }
     };
 
-    // auth: `keys` (engine-handled) is always listed; `admin-tokens` iff its feature is on.
+    // auth: `keys` (engine-handled) is always listed; `admin-tokens` iff its row is linked.
     let auth: serde_json::Value = get("auth").await.json().await.unwrap();
     let a_items = auth["items"].as_array().unwrap();
     let keys = a_items
@@ -4261,8 +4263,9 @@ async fn test_admin_v1_plugins_catalog_by_type() {
     let admin_tokens = a_items.iter().find(|p| p["name"] == "admin-tokens");
     assert_eq!(
         admin_tokens.is_some(),
-        cfg!(feature = "auth-admin-tokens"),
-        "admin-tokens listed iff compiled in"
+        busbar_kernel::preflight::linked_auth_names()
+            .contains(&busbar_kernel::config::operator_provider()),
+        "admin-tokens listed iff linked"
     );
     if let Some(admin_tokens) = admin_tokens {
         assert_eq!(admin_tokens["loader"], "compiled-in");

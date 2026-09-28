@@ -2041,7 +2041,7 @@ count = "10"
 [[instance]]
 crate = "busbar-kernel"
 kind = "auth"
-count = "58"
+count = "42"
 
 [[instance]]
 crate = "busbar-kernel"

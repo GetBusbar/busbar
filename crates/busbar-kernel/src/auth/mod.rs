@@ -185,16 +185,35 @@ const ADMIN_OFFLOAD_WAIT: std::time::Duration = std::time::Duration::from_secs(5
 static ADMIN_OFFLOAD_PERMITS: std::sync::LazyLock<tokio::sync::Semaphore> =
     std::sync::LazyLock::new(|| tokio::sync::Semaphore::new(ADMIN_OFFLOAD_MAX_INFLIGHT));
 
-/// The RESOLVED external admin auth chain (1.5.2 admin-plane OIDC): every non-builtin `admin_auth:`
-/// entry, opened as a signed `kind: auth` plugin (same loader/trust pipeline as the data-plane
-/// chain and store/secret plugins). Keyed by the config module name — the SAME string
-/// `App::admin_chain` names and `role_bindings.<module>` binds. `admin-tokens` is deliberately
-/// absent (it is an engine arm dispatched inline). Held behind an `Arc` on the `App` snapshot.
+/// The RESOLVED admin auth chain (1.5.2 admin-plane OIDC): every `admin_auth:` entry's module,
+/// opened through the auth kind's registry (same loader/trust pipeline as the data-plane chain and
+/// store/secret plugins). Keyed by the config provider name — the SAME string `App::admin_chain`
+/// names and `role_bindings.<name>` binds. The OPERATOR CREDENTIAL is held apart, in
+/// [`Self::operator`]: its module is opened with the operator token's digest rather than with
+/// settings, and it answers for the operator credential's provider name whether or not the chain
+/// this snapshot was built from named it (an admin-API chain swap reuses this value). Held behind an
+/// `Arc` on the `App` snapshot.
 pub struct AdminAuthChain {
     pub modules: std::collections::HashMap<String, Box<dyn AuthModule>>,
     /// Whether ANY resolved admin module is a loaded plugin — i.e. whether running the admin chain
     /// can block (FFI/JWKS/introspection). Decided once at build; gates the off-reactor offload.
     pub has_plugin: bool,
+    /// The operator credential, as the auth axis answers it.
+    pub operator: OperatorCredential,
+}
+
+pub use busbar_kernel_identity::operator::OperatorCredential;
+
+/// Open the operator credential from `registry`: the row answering
+/// [`crate::config::operator_provider`], over the operator token's SHA-256 hex `digest` (the
+/// plaintext never crosses the seam).
+pub fn open_operator(
+    registry: &busbar_plugin_loader::PluginRegistry,
+    digest: Option<&str>,
+) -> Result<OperatorCredential, String> {
+    let op = crate::config::operator_provider();
+    let answered = registry.answers(op, "auth");
+    OperatorCredential::open(answered, digest, |d| registry.open_auth(op, d))
 }
 
 impl fmt::Debug for AdminAuthChain {
@@ -207,22 +226,26 @@ impl fmt::Debug for AdminAuthChain {
 }
 
 impl AdminAuthChain {
-    /// The empty chain (admin-tokens-only, or the open dev posture) — no external admin plugin, so
-    /// the admin chain always runs inline. The default for tests and builtin-only builds.
+    /// The empty chain (the operator credential alone, or the open dev posture) — no external admin
+    /// plugin, so the admin chain always runs inline. The default for tests and builtin-only builds;
+    /// the operator credential is opened beside it ([`open_operator`]).
     #[cfg(any(test, feature = "test-support"))]
     pub fn empty() -> Self {
         Self {
             modules: std::collections::HashMap::new(),
             has_plugin: false,
+            operator: OperatorCredential::Unanswered,
         }
     }
 
-    /// Resolve every NON-BUILTIN `admin_auth:` entry as a `kind: auth` plugin via the validated
-    /// `registry` — the exact trust/load pipeline the data-plane chain and store/secret plugins use.
-    /// `admin-tokens` (an engine arm) and the compiled-in test stand-ins are skipped (they dispatch
-    /// inline in `run_admin_chain`). SecretRef-typed settings resolve BEFORE the config crosses the
-    /// ABI (ADR-0010). FAIL-CLOSED: a configured admin module that cannot load is a HARD boot/reload
-    /// error, never a silently-dropped module. Runs at boot AND reload (inside `build_app_from_config`).
+    /// Resolve every `admin_auth:` entry OTHER than the operator credential as a `kind: auth`
+    /// plugin via the validated `registry` — the exact trust/load pipeline the data-plane chain and
+    /// store/secret plugins use. The operator credential is opened by [`open_operator`] once the
+    /// build has resolved its token; until then it is [`OperatorCredential::Unanswered`]. The
+    /// compiled-in test stand-ins are skipped (they dispatch inline in `run_admin_chain`).
+    /// SecretRef-typed settings resolve BEFORE the config crosses the ABI (ADR-0010). FAIL-CLOSED: a
+    /// configured admin module that cannot load is a HARD boot/reload error, never a
+    /// silently-dropped module. Runs at boot AND reload (inside `build_app_from_config`).
     pub fn build(
         cfg: &AuthCfg,
         registry: &busbar_plugin_loader::PluginRegistry,
@@ -232,8 +255,10 @@ impl AdminAuthChain {
             std::collections::HashMap::new();
         let mut has_plugin = false;
         for entry in &cfg.admin_auth {
+            if entry.module == crate::config::operator_provider() {
+                continue;
+            }
             match entry.module.as_str() {
-                crate::config::ADMIN_TOKENS_MODULE => {}
                 // TEST-ONLY inline admin stand-ins (dispatched by name in `run_admin_chain`); never
                 // resolved as plugins. Compiled out of release binaries.
                 #[cfg(any(test, feature = "test-support"))]
@@ -261,6 +286,7 @@ impl AdminAuthChain {
         Ok(Self {
             modules,
             has_plugin,
+            operator: OperatorCredential::Unanswered,
         })
     }
 }
@@ -930,13 +956,10 @@ impl AuthModule for TestIdpModule {
 
 /// Execute the ADMIN auth chain (`admin_auth:`) over the extracted admin credential carriers.
 /// Mirrors `AuthMiddleware::run_chain` (first Identify admits, Reject denies, all-Pass denies,
-/// empty chain = the explicit open posture) but takes BOTH carriers — an admin credential
-/// legitimately arrives as `Authorization: Bearer` or `X-Admin-Token`, and the constant-time
-/// both-carriers fold lives inside the module. Unknown / compiled-out names are skipped with a
-/// loud log (config_validate rejects them at boot).
-// With admin-tokens compiled out (and outside test builds) no chain arm reads the carriers — the
-// loop still runs for the unknown-name log + fail-closed deny, so the parameters stay.
-#[cfg_attr(not(any(feature = "auth-admin-tokens", test)), allow(unused_variables))]
+/// empty chain = the explicit open posture) but takes BOTH carriers — the operator credential
+/// legitimately arrives as `Authorization: Bearer` or `X-Admin-Token`, and both are put to its
+/// module on every call ([`OperatorCredential::judge`]). Unknown names are skipped with a loud log
+/// (config_validate rejects them at boot).
 fn run_admin_chain(
     app: &crate::state::App,
     bearer: Option<&str>,
@@ -973,9 +996,10 @@ fn run_admin_chain(
     // revocation window.
     let mut pending_pass: Vec<&str> = Vec::new();
     for name in &app.admin_chain {
-        // The built-in admin-tokens module is in-process and NEVER cached (caching a microsecond
-        // compare only widens the rotation window); external admin modules are the cache's case.
-        let cacheable = name != "admin-tokens";
+        // The operator credential is NEVER cached (caching a microsecond compare only widens the
+        // rotation window); external admin modules are the cache's case.
+        let operator = name == crate::config::operator_provider();
+        let cacheable = !operator;
         if let Some(cred) = composite.as_deref().filter(|_| cacheable) {
             if let Some(outcome) = app.credential_cache.get(name, cred, now) {
                 match outcome {
@@ -995,18 +1019,10 @@ fn run_admin_chain(
                 }
             }
         }
+        let modules = &app.admin_modules.modules;
         let outcome = match name.as_str() {
-            #[cfg(feature = "auth-admin-tokens")]
-            "admin-tokens" => busbar_auth_admin_tokens::authenticate_admin_tokens(
-                app.governance
-                    .as_ref()
-                    .and_then(|g| g.admin_token_hash())
-                    .as_deref(),
-                bearer,
-                header,
-            ),
             // TEST-ONLY external-module stand-in: lets the e2e suite exercise group-mapped,
-            // NON-full principals (unreachable with admin-tokens alone). Credential grammar:
+            // NON-full principals (unreachable with the operator credential alone). Credential grammar:
             // `grp:<group>` identifies as a principal carrying exactly that group. Compiled out
             // of release binaries entirely.
             #[cfg(any(test, feature = "test-support"))]
@@ -1019,22 +1035,26 @@ fn run_admin_chain(
                 // Not my credential shape — defer to the next module (the PAM contract).
                 None => AuthVerdict::Pass,
             },
-            // Any other name is an EXTERNAL `kind: auth` admin plugin, resolved at load into
-            // `app.admin_modules` (keyed by config name — the same `name` this loop iterates).
-            // Dispatch to it; a name with no resolved module (impossible after a successful boot —
-            // `AdminAuthChain::build` fails closed on an unresolvable name) falls through to `Pass`.
-            other => match app.admin_modules.modules.get(other) {
-                Some(module) => module.authenticate(bearer.or(header)),
-                None => {
-                    diag_error!(
-                        ADMIN_MODULE_UNRESOLVED,
-                        module = other,
-                        "admin_auth names a module with no resolved plugin; skipping (boot resolves \
-                         every non-builtin admin module, fail-closed)"
-                    );
-                    AuthVerdict::Pass
-                }
-            },
+            // The operator credential (its module, resolved on the auth axis by the provider key),
+            // or an EXTERNAL `kind: auth` admin plugin, resolved at load into `app.admin_modules`
+            // (keyed by config name — the same `name` this loop iterates). A name with no resolved
+            // module (impossible after a successful boot — the build fails closed on an unresolvable
+            // name) falls through to `Pass`, loudly.
+            other => match operator {
+                true => app.admin_modules.operator.judge(bearer, header),
+                false => modules
+                    .get(other)
+                    .map(|m| m.authenticate(bearer.or(header))),
+            }
+            .unwrap_or_else(|| {
+                diag_error!(
+                    ADMIN_MODULE_UNRESOLVED,
+                    module = other,
+                    "admin_auth names a module with no resolved plugin; skipping (boot resolves \
+                     every non-builtin admin module, fail-closed)"
+                );
+                AuthVerdict::Pass
+            }),
         };
         // A `Pass` is only BUFFERED here. `Reject` is never cached at all (`auth_cache::put` drops
         // it) and short-circuits below, so the only outcome that commits anything is `Identify`.
@@ -1093,7 +1113,7 @@ fn run_admin_chain(
 /// still needing a worker to run) and every other route stall and the node fails its liveness probe.
 ///
 /// So a plugin admin chain is bounded by its OWN [`ADMIN_OFFLOAD_PERMITS`] budget (separate from the
-/// data plane's) and run on the blocking pool. An admin-tokens-only chain (no plugin) is
+/// data plane's) and run on the blocking pool. An operator-credential-only chain (no plugin) is
 /// microsecond constant-time compares and runs INLINE. FAIL-CLOSED at every failure: a permit that
 /// cannot be acquired in time, a chain that does not finish in time, and a panicking plugin (join
 /// error) are all `Denied`, never an admit.
@@ -1103,7 +1123,8 @@ async fn run_admin_chain_maybe_offloaded(
     header: Option<String>,
 ) -> (ChainVerdict, Option<busbar_contract::authz::Scope>) {
     if !app.admin_modules.has_plugin {
-        // No blocking admin plugin: run inline (admin-tokens + any compiled-in test stand-in).
+        // No blocking admin plugin: run inline (the operator credential + any compiled-in test
+        // stand-in).
         return run_admin_chain(app, bearer.as_deref(), header.as_deref());
     }
     // Warn-once transition latch: a saturated admin offload persists per request until the wedged
@@ -1175,16 +1196,16 @@ async fn run_admin_chain_maybe_offloaded(
     }
 }
 
-/// The ADMIN-SCOPE CEILING for an identifying module (`max_admin_scope:`): the built-in
-/// `admin-tokens` operator credential is exempt (full by definition — the root credential); every
-/// other module is capped at its configured ceiling, DEFAULT `read-only` — `full` through an
-/// external chain is an explicit opt-in (boot-warned in config_validate).
+/// The ADMIN-SCOPE CEILING for an identifying module (`max_admin_scope:`): the operator credential
+/// is exempt (full by definition — the root credential); every other module is capped at its
+/// configured ceiling, DEFAULT `read-only` — `full` through an external chain is an explicit opt-in
+/// (boot-warned in config_validate).
 fn module_admin_scope_cap(
     app: &crate::state::App,
     module: &str,
 ) -> Option<busbar_contract::authz::Scope> {
     use busbar_contract::authz::Scope;
-    if module == "admin-tokens" {
+    if module == crate::config::operator_provider() {
         return None;
     }
     Some(
@@ -1242,7 +1263,7 @@ pub fn dry_run_admin_scope(
 }
 
 /// Resolve a principal's ADMIN SCOPE — the authorization half, operator-owned by construction:
-/// the built-in operator token (the `admin-tokens` principal) is FULL by definition (it is the
+/// the operator credential's principal is FULL by definition (it is the
 /// root credential); any other principal gets the UNION of what its bound roles grant in
 /// `role_bindings.<identifying module>` (bindings are NESTED BY MODULE - a role asserted by
 /// module A never rides module B's binding; an unbound role grants nothing - fail closed). A
@@ -1260,22 +1281,21 @@ fn admin_scope_for(
         return Grants::of(Scope::Full);
     };
     // The operator credential. Scope is MODULE-intrinsic, keyed off the fixed principal id the
-    // admin-tokens module mints — an external module returning `id: "admin"` cannot reach here
+    // operator credential's module mints — an external module returning that id cannot reach here
     // with it, because role-carrying principals resolve THROUGH role_bindings below only when they
     // carry roles; a roleless external "admin" id would land Grants::of(Full) - so the id is
     // reserved: config_validate forbids bindings that could shadow it, and external modules are
     // capped by `max_admin_scope` when they land. Until external ADMIN modules exist (none are
-    // compiled today), the only producer of a roleless principal on this path is admin-tokens
-    // itself.
+    // compiled today), the only producer of a roleless principal on this path is the operator
+    // credential itself.
     if p.roles.is_empty() {
-        // Full-by-reserved-id is gated on the identifying MODULE being the built-in `admin-tokens`
-        // (the operator credential), NOT merely on the id string: an EXTERNAL admin module returning
-        // a roleless principal that happens to carry the reserved id (`"admin"`) must NOT reach
-        // `Grants::of(Full)` — it falls to `Grants::default()`. Only admin-tokens itself
-        // mints the operator identity, so only it confers operator authority.
-        #[cfg(feature = "auth-admin-tokens")]
-        if module == Some(crate::config::ADMIN_TOKENS_MODULE)
-            && p.id == busbar_auth_admin_tokens::ADMIN_TOKENS_PRINCIPAL_ID
+        // Full-by-reserved-id is gated on the identifying MODULE being the operator credential's
+        // provider, NOT merely on the id string: an EXTERNAL admin module returning a roleless
+        // principal that happens to carry the reserved id must NOT reach `Grants::of(Full)` — it
+        // falls to `Grants::default()`. Only the operator credential mints the operator identity,
+        // so only it confers operator authority.
+        if module == Some(crate::config::operator_provider())
+            && p.id == crate::config::operator_principal_id()
         {
             return Grants::of(Scope::Full);
         }
@@ -1511,7 +1531,7 @@ pub(crate) async fn auth_middleware(
     let admission = app.planes.admission_for(&path).cloned();
 
     // the /admin management API is gated by the ADMIN AUTH CHAIN (`admin_auth:`, default
-    // `[admin-tokens]` — the single operator token, Bearer or X-Admin-Token) — NOT a virtual key,
+    // the operator credential — the single operator token, Bearer or X-Admin-Token) — NOT a virtual key,
     // and NOT the native-SDK carriers (admin is a busbar operator surface, not a native SDK
     // ingress). The chain authenticates (WHO); the principal's admin SCOPE then authorizes against
     // the endpoint's required scope (WHAT) — the matrix, checked here at the one chokepoint
