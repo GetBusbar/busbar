@@ -119,7 +119,7 @@ pub struct Ops {
     /// `OutHead.lease`).
     pub begin_login: Option<Op>,
     /// Finish a login: the token exchange runs over the plugin's own need to its need-declared
-    /// targets. OFF-PATH; may pend; `Call`. In [`CompleteLoginIn`] (fixed 200 B), out
+    /// targets. OFF-PATH; may pend; `Call`. In [`CompleteLoginIn`] (fixed 216 B), out
     /// [`IdentifyOut`] (fixed 192 B; host [`IdentityBuf`]). The verdict is [`LOGIN_IDENTITY`],
     /// [`LOGIN_BAD_CREDENTIAL`] or [`LOGIN_OUTAGE`].
     pub complete_login: Option<Op>,
@@ -136,7 +136,7 @@ pub struct Ops {
     /// The per-attempt call the kernel makes before encode: the auth fields for this request.
     /// REQUEST-PATH; may pend only when the cached token has expired and its refresh failed
     /// (the design's expired-token rule, Q-EXPIRED), bounded by the attempt's deadline; `Call`.
-    /// In [`FieldsIn`] (fixed 272 B), out [`FieldsOut`] (fixed 112 B; fields in the host's
+    /// In [`FieldsIn`] (fixed 288 B), out [`FieldsOut`] (fixed 112 B; fields in the host's
     /// buffer, [`FIELDS_BUF_BYTES`] and [`FIELDS_MAX`] to start; one re-call when short). READY
     /// with zero fields = no auth header, so the upstream answers 401: 1.5.5's answer before the
     /// first mint and for an un-encodable key.
@@ -169,6 +169,8 @@ pub const LOGIN_KIND_CREDENTIAL: u32 = 2;
 
 /// [`StyleDecl::flags`]: `fields` needs [`RequestFacts::body_hash`] for this style.
 pub const STYLE_NEEDS_BODY_HASH: u32 = 1;
+/// [`StyleDecl::flags`]: `fields` needs [`FieldsIn::headers`], the exact envelope, for this style.
+pub const STYLE_NEEDS_HEADERS: u32 = 2;
 
 /// One outbound style a plugin serves: an open string the provider's `auth:` resolves against.
 #[repr(C)]
@@ -176,7 +178,7 @@ pub const STYLE_NEEDS_BODY_HASH: u32 = 1;
 pub struct StyleDecl {
     /// The style name.
     pub name: AbiStr,
-    /// [`STYLE_NEEDS_BODY_HASH`].
+    /// [`STYLE_NEEDS_BODY_HASH`] | [`STYLE_NEEDS_HEADERS`].
     pub flags: u32,
     /// Alignment padding.
     pub _reserved: u32,
@@ -272,3 +274,6 @@ pub const SPAN_ABSENT: u32 = u32::MAX;
 
 /// [`IdentityOut::flags`]: [`IdentityOut::ttl_secs`] is set.
 pub const IDENTITY_HAS_TTL: u32 = 1;
+/// [`IdentityOut::flags`]: the identity buffer holds sensitive material (claims may carry an
+/// id_token). The host never logs it and zeroises it after use.
+pub const IDENTITY_SENSITIVE: u32 = 2;

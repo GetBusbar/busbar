@@ -7,7 +7,7 @@
 //! `ready` fact the health prober reads. The plugin caches inside itself: bearer and api-key build
 //! at open, and minted tokens refresh ahead of expiry on `tick`.
 
-use super::inbound::{RequestFacts, Span};
+use super::inbound::{NamedValue, RequestFacts, Span};
 use crate::abi::mechanism::call::{AbiStr, Blob, InHead, OutHead};
 
 /// `open_outbound`'s `in`.
@@ -100,9 +100,20 @@ pub struct FieldsIn {
     pub fields_cap: u32,
     /// Alignment padding.
     pub _reserved2: u32,
+    /// The EXACT header envelope the framer will send, in order, filled only when the style
+    /// declares [`super::STYLE_NEEDS_HEADERS`] (NULL otherwise, so bearer and api-key pay nothing).
+    /// A signing style SETS its own fields over it (never appends) and signs the result, so its
+    /// `SignedHeaders` are 1.5.5's byte for byte.
+    pub headers: *const NamedValue,
+    /// How many.
+    pub headers_len: usize,
 }
 
 /// `fields`' `out`. READY with `fields_len == 0` = no auth header.
+///
+/// HOST BOUNDS DUTIES (any violation is FAULT): `fields_len <= fields_cap`; every written
+/// [`FieldSpan`] has `off + len <= field_buf_cap`, computed without `u32` overflow; on READY
+/// `needed_fields == 0` and `needed_bytes == 0`.
 ///
 /// SHORT BUFFER: a plugin never writes past a capacity. When the fields do not fit it answers
 /// `FAILED` with `needed_fields` or `needed_bytes` above the capacity it was given and writes

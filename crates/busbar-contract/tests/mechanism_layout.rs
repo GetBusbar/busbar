@@ -390,17 +390,17 @@ fn the_auth_kind_has_its_stated_layout() {
     );
     pin!(
         CompleteLoginIn,
-        200,
+        216,
         8,
         [
             head = 0,
             code = 88,
-            state = 104,
-            redirect_uri = 120,
-            code_verifier = 136,
-            submitted = 152,
-            submitted_len = 160,
-            out_buf = 168
+            state = 112,
+            redirect_uri = 128,
+            code_verifier = 144,
+            submitted = 168,
+            submitted_len = 176,
+            out_buf = 184
         ]
     );
     pin!(
@@ -425,7 +425,7 @@ fn the_auth_kind_has_its_stated_layout() {
     );
     pin!(
         FieldsIn,
-        272,
+        288,
         8,
         [
             head = 0,
@@ -438,7 +438,9 @@ fn the_auth_kind_has_its_stated_layout() {
             field_buf_cap = 248,
             fields = 256,
             fields_cap = 264,
-            _reserved2 = 268
+            _reserved2 = 268,
+            headers = 272,
+            headers_len = 280
         ]
     );
     pin!(

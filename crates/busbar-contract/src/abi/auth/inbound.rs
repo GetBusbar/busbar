@@ -40,10 +40,12 @@ pub struct RequestFacts {
     pub method: AbiStr,
     /// The authority (host\[:port\]).
     pub authority: AbiStr,
-    /// The path exactly as the framer will send it (already percent-encoded). A signing style
-    /// derives its own canonical form from it.
+    /// For `fields`: the path exactly as the framer will send it (already percent-encoded); a
+    /// signing style derives its own canonical form from it. For `verify`: the raw RECEIVED bytes,
+    /// never normalized.
     pub canonical_path: AbiStr,
-    /// The query as sent, without `?`; absent = none. A signing style sorts and encodes it.
+    /// The query without `?`; absent = none. For `fields`: as it will be sent (a signing style
+    /// sorts and encodes it). For `verify`: the raw RECEIVED bytes, never normalized.
     pub query: AbiStr,
     /// Wall-clock seconds since the Unix epoch, read once by the kernel for this call.
     pub timestamp: u64,
@@ -91,7 +93,7 @@ pub struct IdentityOut {
     pub claims: Span,
     /// The claims' [`Blob::fmt`](crate::abi::mechanism::call::Blob).
     pub claims_fmt: u32,
-    /// [`super::IDENTITY_HAS_TTL`].
+    /// [`super::IDENTITY_HAS_TTL`] | [`super::IDENTITY_SENSITIVE`].
     pub flags: u32,
     /// The suggested cache TTL, seconds (the plugin's cache clamps it; 3600 max, 300 default).
     pub ttl_secs: u64,
@@ -129,6 +131,10 @@ pub struct VerifyIn {
 /// large; a second short answer is FAULT. The plugin keeps the identity it reached for that ticket
 /// and serves the retry from it, never repeating the work (an authorization code redeems once).
 /// `FAILED` with both at `0` is a real failure. A buffer is at most `u32::MAX` bytes ([`Span`]).
+///
+/// HOST BOUNDS DUTIES (any violation is FAULT): every [`Span`] other than
+/// [`super::SPAN_ABSENT`] has `off + len <= buf_cap`, computed without `u32` overflow;
+/// `groups_len <= groups_cap`; on READY `needed_groups == 0` and `needed_bytes == 0`.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct IdentifyOut {
@@ -204,14 +210,16 @@ pub struct BeginLoginOut {
 pub struct CompleteLoginIn {
     /// The head.
     pub head: InHead,
-    /// The authorization code (redirect flow); absent = none.
-    pub code: AbiStr,
+    /// The authorization code (redirect flow), a
+    /// [`BLOB_SECRET`](crate::abi::mechanism::call::BLOB_SECRET) blob; absent = none.
+    pub code: Blob,
     /// The callback's state.
     pub state: AbiStr,
     /// The callback URL; absent = none.
     pub redirect_uri: AbiStr,
-    /// The PKCE verifier; absent = none.
-    pub code_verifier: AbiStr,
+    /// The PKCE verifier, a [`BLOB_SECRET`](crate::abi::mechanism::call::BLOB_SECRET) blob;
+    /// absent = none.
+    pub code_verifier: Blob,
     /// The submitted form fields (credential flow); a password value is a secret blob.
     pub submitted: *const NamedValue,
     /// How many.

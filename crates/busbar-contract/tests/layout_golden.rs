@@ -1111,7 +1111,9 @@ fn compute_layout() -> String {
             field_buf_cap,
             fields,
             fields_cap,
-            _reserved2
+            _reserved2,
+            headers,
+            headers_len
         ]
     );
     record!(
