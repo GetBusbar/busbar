@@ -239,6 +239,13 @@ pub struct Envelope {
 /// FIXED ELEMENTS: the element layouts of [`MetricEntry`], [`Diag`],
 /// [`super::door::MetricFamily`] and [`AbiStr`] are fixed by [`super::MECHANISM_VERSION`]; arrays of them
 /// carry no stride, so growing one is a mechanism bump.
+///
+/// THE SHORT-BUFFER ANSWER (ARCHITECT ruling M-SB: one outcome for every kind; every kind cites this
+/// text and does not restate it): "your buffer is too small" is [`Outcome::Failed`] with each
+/// `needed_*` the answer needs above the capacity the host gave, and NOTHING applied. The host
+/// re-calls ONCE, on the same ticket, with at least `needed_*`; a second short answer is
+/// [`Outcome::Fault`]. A non-zero `needed_*` with any outcome other than FAILED is FAULT; FAILED
+/// with `0 < needed <= the capacity given` is FAULT. REFUSED never carries `needed_*`.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct OutHead {
