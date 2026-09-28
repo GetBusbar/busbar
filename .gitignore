@@ -46,6 +46,11 @@ Thumbs.db
 # Signing keys generated locally during plugin-sign testing (never commit)
 *.key
 
+# Staging for a Latchkey run (lk-cached.sh): the history bundle, the pinned oracle engine and the
+# job's env file. Written and removed by every run; never part of the tree.
+.lk/
+.latchkeyignore
+
 # Python bytecode (bench harness)
 __pycache__/
 *.pyc
