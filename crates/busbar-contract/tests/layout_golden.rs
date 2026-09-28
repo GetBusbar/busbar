@@ -47,9 +47,14 @@ use busbar_contract::abi::{
     auth::Ops as AuthOps, plane::Ops as PlaneOps, store::Ops as StoreOps,
     transport::Ops as TransportOps,
 };
-// M3-SHAPES (abi-v2-perkind.md B.2): the secret kind's own ops and shapes; hook and export follow
-// in their own commits.
-use busbar_contract::abi::export::Ops as ExportOps;
+// M3-SHAPES (abi-v2-perkind.md B.2/B.5): the secret and export kinds' own ops and shapes; hook
+// follows in its own commit.
+use busbar_contract::abi::export::{
+    CheckIn as ExportCheckIn, CheckOut as ExportCheckOut, DeliverIn as ExportDeliverIn,
+    Ops as ExportOps, ScrapeFamily as ExportScrapeFamily, ScrapeIn as ExportScrapeIn,
+    ScrapeOut as ExportScrapeOut, ScrapeSample as ExportScrapeSample, ServeIn as ExportServeIn,
+    ServeOut as ExportServeOut, StatusOut as ExportStatusOut, Tail as ExportTail,
+};
 use busbar_contract::abi::hook::Ops as HookOps;
 use busbar_contract::abi::secret::{
     Ops as SecretOps, ResolveIn as SecretResolveIn, ResolveOut as SecretResolveOut,
@@ -1134,10 +1139,52 @@ fn compute_layout() -> String {
     record!(s, SecretOps, [head, resolve]);
     record!(s, SecretResolveIn, [head, settings]);
     record!(s, SecretResolveOut, [head, secret, error_kind, _reserved]);
-    // hook and export are still the M0 skeleton; their own ops land in their own commits.
+    // hook is still the M0 skeleton; its own ops land in their own commit.
     record!(s, HookOps, [head]);
-    record!(s, ExportOps, [head]);
 
+    // M3-SHAPES (abi-v2-perkind.md B.5): the export kind's deliver/scrape/status/check/serve and
+    // its Statement tail.
+    record!(s, ExportOps, [head, deliver, scrape, status, check, serve]);
+    record!(s, ExportDeliverIn, [head, op_id, stream, _reserved, batch]);
+    record!(s, ExportScrapeSample, [label_vals, label_vals_len, value]);
+    record!(
+        s,
+        ExportScrapeFamily,
+        [
+            name,
+            help,
+            unit,
+            label_keys,
+            label_keys_len,
+            kind,
+            _reserved,
+            samples,
+            samples_len
+        ]
+    );
+    record!(s, ExportScrapeIn, [head, families, families_len]);
+    record!(s, ExportScrapeOut, [head, exposition]);
+    record!(s, ExportStatusOut, [head, status]);
+    record!(s, ExportCheckIn, [head, phase, _reserved]);
+    record!(s, ExportCheckOut, [head, findings]);
+    record!(
+        s,
+        ExportServeIn,
+        [head, method, path, query, headers, headers_len, body]
+    );
+    record!(
+        s,
+        ExportServeOut,
+        [
+            head,
+            status_code,
+            _reserved,
+            headers_out,
+            headers_out_len,
+            body
+        ]
+    );
+    record!(s, ExportTail, [head, streams, streams_len]);
     s
 }
 
@@ -1238,4 +1285,15 @@ fn a_perturbed_secret_golden_line_fails_the_comparator() {
     let perturbed = actual.replacen(line, "SecretResolveOut.error_kind=124", 1);
     let err = compare(&perturbed, &actual).expect_err("a perturbed line must fail");
     assert!(err.contains("SecretResolveOut.error_kind=124"), "{err}");
+}
+
+/// RED ARM (M3-SHAPES, export B.5): a perturbed `DeliverIn.batch` offset fails the comparator.
+#[test]
+fn a_perturbed_export_golden_line_fails_the_comparator() {
+    let actual = compute_layout();
+    let line = "ExportDeliverIn.batch=96";
+    assert!(actual.lines().any(|l| l == line), "the golden holds {line}");
+    let perturbed = actual.replacen(line, "ExportDeliverIn.batch=104", 1);
+    let err = compare(&perturbed, &actual).expect_err("a perturbed line must fail");
+    assert!(err.contains("ExportDeliverIn.batch=104"), "{err}");
 }

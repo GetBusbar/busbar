@@ -416,6 +416,112 @@ mod auth {
     );
 }
 pin!(crate::abi::hook::Ops, 80, 8, head = 0);
-pin!(crate::abi::export::Ops, 80, 8, head = 0);
+// ── EXPORT (M3-SHAPES, abi-v2-perkind.md B.5) ───────────────────────────────────────────────────
+pin!(
+    crate::abi::export::Ops,
+    120,
+    8,
+    head = 0,
+    deliver = 80,
+    scrape = 88,
+    status = 96,
+    check = 104,
+    serve = 112,
+);
+pin!(
+    crate::abi::export::DeliverIn,
+    120,
+    8,
+    head = 0,
+    op_id = 72,
+    stream = 88,
+    _reserved = 89,
+    batch = 96,
+);
+pin!(
+    crate::abi::export::ScrapeSample,
+    24,
+    8,
+    label_vals = 0,
+    label_vals_len = 8,
+    value = 16
+);
+pin!(
+    crate::abi::export::ScrapeFamily,
+    88,
+    8,
+    name = 0,
+    help = 16,
+    unit = 32,
+    label_keys = 48,
+    label_keys_len = 56,
+    kind = 64,
+    _reserved = 65,
+    samples = 72,
+    samples_len = 80,
+);
+pin!(
+    crate::abi::export::ScrapeIn,
+    88,
+    8,
+    head = 0,
+    families = 72,
+    families_len = 80
+);
+pin!(
+    crate::abi::export::ScrapeOut,
+    120,
+    8,
+    head = 0,
+    exposition = 96
+);
+pin!(crate::abi::export::StatusOut, 120, 8, head = 0, status = 96);
+pin!(
+    crate::abi::export::CheckIn,
+    80,
+    8,
+    head = 0,
+    phase = 72,
+    _reserved = 76
+);
+pin!(
+    crate::abi::export::CheckOut,
+    120,
+    8,
+    head = 0,
+    findings = 96
+);
+pin!(
+    crate::abi::export::ServeIn,
+    160,
+    8,
+    head = 0,
+    method = 72,
+    path = 88,
+    query = 104,
+    headers = 120,
+    headers_len = 128,
+    body = 136,
+);
+pin!(
+    crate::abi::export::ServeOut,
+    144,
+    8,
+    head = 0,
+    status_code = 96,
+    _reserved = 98,
+    headers_out = 104,
+    headers_out_len = 112,
+    body = 120,
+);
+pin!(
+    crate::abi::export::Tail,
+    24,
+    8,
+    head = 0,
+    streams = 8,
+    streams_len = 16
+);
+
 pin!(crate::abi::plane::Ops, 80, 8, head = 0);
 pin!(crate::abi::transport::Ops, 80, 8, head = 0);
