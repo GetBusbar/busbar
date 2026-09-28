@@ -316,16 +316,33 @@ fn tail() -> TransportTail {
 }
 
 #[test]
-fn the_role_is_exactly_one_and_agrees_with_composes_over() {
+fn the_role_is_exactly_one_and_a_carrier_composes_over_nothing() {
     assert_eq!(check_tail(&tail()), Ok(()));
     let mut t = tail();
     t.role = 0;
     assert_eq!(check_tail(&t), f(Rule::NotExactlyOne, "tail.role"));
     t.role = ROLE_CARRIER | ROLE_FRAMER;
     assert_eq!(check_tail(&t), f(Rule::NotExactlyOne, "tail.role"));
+    // A carrier that names a layer beneath it contradicts itself: it is the bottom of its stack.
+    let mut t = tail();
+    let under = [AbiStr {
+        ptr: b"tcp".as_ptr(),
+        len: 3,
+    }];
+    t.composes_over = under.as_ptr();
+    t.composes_over_len = 1;
+    assert_eq!(check_tail(&t), f(Rule::Contradiction, "tail.composes_over"));
+    // The same list on a framer is its composition.
+    t.role = ROLE_FRAMER;
+    assert_eq!(check_tail(&t), Ok(()));
+}
+
+/// A framer that composes over nothing frames directly over the host's socket.
+#[test]
+fn a_framer_with_no_composes_over_frames_over_the_host_socket() {
     let mut t = tail();
     t.role = ROLE_FRAMER;
-    assert_eq!(check_tail(&t), f(Rule::Contradiction, "tail.composes_over"));
+    assert_eq!(check_tail(&t), Ok(()));
 }
 
 #[test]
