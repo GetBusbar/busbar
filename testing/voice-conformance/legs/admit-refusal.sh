@@ -5,7 +5,7 @@
 # shellcheck disable=SC2034  # LEG_KIND/LEG_STATUS/LEG_SLICES are read by voice-conformance.sh on source
 #
 # LEG: admit-refusal — a key whose budget is already spent is refused AT THE DOOR, before any provider
-# dial (ARCHITECTURE.md's loop, step 4 ADMIT: a refused reserve costs zero bytes and zero charge).
+# dial (BUSBAR-1.6.0.md THE DESIGN, §1's teller loop, step 4 ADMIT: a refused reserve costs zero bytes and zero charge).
 #
 # `topology::begin_session` reserves the D2 lease strictly AFTER the destination gate and strictly
 # BEFORE any socket is touched (`topology::open_admitted_session`'s doc comment: "the session's own
@@ -15,7 +15,7 @@
 # plane's own refusal, not a generic one; (b) no cost lease was ever opened host-side
 # (`FixtureHost::leases_opened()` does not advance across the refusal); (c) no ledger posting landed
 # for the presenting principal (`FixtureHost::ledger_usage`) — voice posts no separate "kernel-floor"
-# line at Admit the way ARCHITECTURE.md describes for an ALREADY-DIALED provider push (nothing is ever
+# line at Admit the way BUSBAR-1.6.0.md describes for an ALREADY-DIALED provider push (nothing is ever
 # dialed here, so nothing is owed and voice's design posts none); (d) a sanity/negative control — the SAME
 # destination with an uncapped budget opens cleanly — so a leg that always failed (or always passed)
 # could not hide behind this result.

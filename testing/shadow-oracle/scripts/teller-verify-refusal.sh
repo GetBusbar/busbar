@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright (C) 2026 Busbar Inc and contributors
 #
-# Script-driver cell: `teller|verify-refusal` -- H2 (ARCHITECTURE.md #2.2 step 2, VERIFY). Proves the
+# Script-driver cell: `teller|verify-refusal` -- H2 (BUSBAR-1.6.0.md THE DESIGN, §1 step 2, VERIFY). Proves the
 # Teller order at step 2: a credential that is authenticated fine but whose `allowed_pools` excludes
 # the target pool is refused at VERIFY (native 403), BEFORE step 4 (ADMIT) ever draws a bucket. 1.5.5
 # has no "Teller" vocabulary but already realises the order (the pool allow-list is checked before

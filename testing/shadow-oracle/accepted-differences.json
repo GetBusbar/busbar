@@ -9,7 +9,7 @@
     "An entry with `transform: {candidate: [[regex, replacement], ...]}` is line-precise: the candidate's stderr/body text is rewritten before the diff, so only that token is forgiven; the cell reports ACCEPTED, never PASS.",
     "  breaking     a deliberate change named in the 1.6.0 CHANGELOG (`changelog` field required) — the ONLY kind that may accept a `status` or `effects.usage` class",
     "The differ refuses any entry that accepts `status` or `effects.usage` without kind=breaking and a `changelog` field, and any entry with neither `cells` nor `classes` (a total blanket).",
-    "  EVERY entry, improvement or breaking, owes a `changelog` line that appears verbatim in CHANGELOG.md (ARCHITECTURE.md's owner rule accepts an improvement 'named in the CHANGELOG' too), or an explicit `\"changelog\": null` with a `changelog_reason`; a breaking entry may never waive. scripts/changelog-register-check.sh is the gate.",
+    "  EVERY entry, improvement or breaking, owes a `changelog` line that appears verbatim in CHANGELOG.md (BUSBAR-1.6.0.md's owner rule accepts an improvement 'named in the CHANGELOG' too), or an explicit `\"changelog\": null` with a `changelog_reason`; a breaking entry may never waive. scripts/changelog-register-check.sh is the gate.",
     "EVERY entry also carries (1.6.0 items 52/119, Law 10; gate `changelog-register` rows entry-signed / entry-expires / entry-premise):",
     "  `signoff`  {who, when, ruling} — the owner, the date, and the ruling that accepted THIS scope; an agent cannot sign.",
     "  `expires`  {baseline, by} — the golden baseline the entry forgives against and the date it lapses (re-sign or retire).",

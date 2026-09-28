@@ -153,7 +153,7 @@ pub const ROW_DEAD_SYMBOL: &str = "unconstructed:dead-symbol";
 /// that [`DECLARATIONS`] no longer declares `unshipped` reds [`ROW_STALE`], so the list only
 /// shrinks as the debts drain. Armed 2026-09-23 at the eighteen the file declares today.
 pub const KNOWN_UNSHIPPED: &[&str] = &[
-    // `audit-chain-signing` STRUCK 2026-09-26 (KEYSET; spec #82(a), ARCHITECTURE.md §1.2/PB-13,
+    // `audit-chain-signing` STRUCK 2026-09-26 (KEYSET; spec #82(a), BUSBAR-1.6.0.md THE DESIGN, §2/PB-13,
     // architect ruling "#82(a) key source", owner flag Q78): the root binds the deployment keyset
     // to its chain (`root::keyset::bind`); the row stays declared as a constructed guard.
     // `breaker-request-budget` STRUCK 2026-09-25 (item 142, the breaker fold): every lane's

@@ -3885,7 +3885,7 @@ jobs:
           path: target/llm-conformance/
           if-no-files-found: warn
 
-  # THE CONSTRUCTION GATE — measures how the tree is BUILT against docs/design/ARCHITECTURE.md with
+  # THE CONSTRUCTION GATE — measures how the tree is BUILT against docs/design/BUSBAR-1.6.0.md with
   # the ceilings in qa/construction.toml (one function sends the upstream attempt, request-path
   # functions stay readable, planes reach the kernel through the ABI only, every installable seam is
   # installed, the neutral crates know no dialect, one request terminal). Pure bash + stdlib python:
@@ -3980,7 +3980,7 @@ jobs:
             target
 
   construction-gate:
-    name: construction gate (how the tree is built vs ARCHITECTURE.md — BLOCKING, on its posture)
+    name: construction gate (how the tree is built vs the design — BLOCKING, on its posture)
     runs-on: latchkey-xlarge
     # Waits on the cheap hygiene tier.
     needs: [preflight]

@@ -2,7 +2,7 @@
 //!
 //! Everything here is a constant, because everything here is read once at registration and sealed
 //! into policy. The meter-class list, in particular, is the exact list
-//! `docs/design/ARCHITECTURE.md`'s protocol-inventory table names for the `voice` row —
+//! `docs/design/BUSBAR-1.6.0.md`'s protocol-inventory table names for the `voice` row —
 //! `audio_tokens_in/out, text_tokens_in/text_tokens_out, cached_tokens, audio_seconds_in,
 //! tool_calls` — and no other class is declared, because the table names that list and no other.
 //!

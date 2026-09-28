@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE DEPLOYMENT KEYSET: where the one ed25519 key that signs the audit chain AND the ledger's
-//! checkpoints comes from (spec #82(a); OWNER Q71(3) one keyset; ARCHITECTURE.md §1.2 and PB-13;
+//! checkpoints comes from (spec #82(a); OWNER Q71(3) one keyset; BUSBAR-1.6.0.md THE DESIGN, §2 and PB-13;
 //! architect ruling 2026-09-26 "#82(a) key source", flagged to the owner as Q78).
 //!
 //! ## The rule, as ruled

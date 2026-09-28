@@ -115,7 +115,7 @@ Licences of everything fetched at run time: `a2a-tck/LICENSING.md`.
 
 ## Design bindings: is the build compliant with the design?
 
-`docs/design/ARCHITECTURE.md` Appendix B is the one part of the design written as testable rules
+`qa/parity-bindings.md` is the one part of the design written as testable rules
 (the parity bindings, PB-0 and one table row per binding). `qa/design-bindings.json` maps each
 binding to the checks that prove it today, and `cargo xtask gate design-bindings` proves those
 checks still exist (one ledger row per binding through `fleet-fixtures/lib.sh`, decided by

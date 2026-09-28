@@ -51,7 +51,7 @@
 //!
 //! 1. **A PATH**, recognised by SHAPE: the whole value, with no whitespace anywhere in it, contains
 //!    a `/`, and its first segment is a directory that exists at the repo root. The no-whitespace
-//!    rule is the whole discrimination — a paragraph that mentions `docs/design/ARCHITECTURE.md` is
+//!    rule is the whole discrimination — a paragraph that mentions `docs/design/BUSBAR-1.6.0.md` is
 //!    a paragraph, and `crates/busbar-substrate/src` is a scan root. An optional `:LINE` or
 //!    `::function` tail is stripped (`known_sites` writes both), as is a trailing `/`.
 //! 2. **A KIND**, recognised by the key: a key with a `kind`/`kinds` token, in `qa/construction.toml`

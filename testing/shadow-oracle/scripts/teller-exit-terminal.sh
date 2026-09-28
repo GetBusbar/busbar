@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright (C) 2026 Busbar Inc and contributors
 #
-# Script-driver cell: `teller|exit-terminal` -- H2 (ARCHITECTURE.md #2.2 `exit`). Proves the ONE exit
+# Script-driver cell: `teller|exit-terminal` -- H2 (BUSBAR-1.6.0.md THE DESIGN, §1 `exit`). Proves the ONE exit
 # path contract: a unit that relays MULTIPLE response frames (a streamed answer -- several SSE
 # events before the terminal one) still settles to exactly ONE terminal and ONE usage posting, never
 # a post per frame and never a second post at the stream's terminal event. 1.5.5 has no "Teller"

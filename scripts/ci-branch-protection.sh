@@ -35,8 +35,8 @@
 # The contexts below are matched by GitHub against the `name:` of the GitHub
 # Actions job that reports the check, not the workflow file name and not the
 # step name. Three of the four ("ci umbrella", "structure lint",
-# "construction gate (how the tree is built vs ARCHITECTURE.md — BLOCKING, on
-# its posture)") were verified against .github/workflows/ci.yml at the time
+# "construction gate (how the tree is built vs the design — BLOCKING, on its
+# posture)") were verified against .github/workflows/ci.yml at the time
 # this script was written — they are the literal `name:` fields of jobs in
 # that file.
 #
@@ -122,7 +122,7 @@ PROTECTION_GIT_DIR="${CI_PROTECTION_GIT_DIR:-$(cd "$(dirname "$0")/.." && pwd)}"
 REQUIRED_CONTEXTS_JSON='[
   "ci umbrella",
   "structure lint",
-  "construction gate (how the tree is built vs ARCHITECTURE.md — BLOCKING, on its posture)",
+  "construction gate (how the tree is built vs the design — BLOCKING, on its posture)",
   "ship-ready"
 ]'
 
@@ -137,8 +137,15 @@ REQUIRED_CONTEXTS_JSON='[
 #
 # "gate-mutants" — a test-effectiveness check, not a release-breaking one;
 # workflow_dispatch-only and disabled_manually on GitHub.
+#
+# "construction gate (how the tree is built vs ARCHITECTURE.md — BLOCKING, on its posture)" — the construction gate's
+# job name until 2026-09-27, when it stopped naming a document the owner retired (TODO item
+# 599). The job now reports as "construction gate (how the tree is built vs the design — BLOCKING, on its posture)";
+# a context that no job reports any more would hold qa/main unmergeable forever, so the old name is
+# stripped in the same apply that adds the new one.
 RETIRED_CONTEXTS_JSON='[
-  "gate-mutants"
+  "gate-mutants",
+  "construction gate (how the tree is built vs ARCHITECTURE.md — BLOCKING, on its posture)"
 ]'
 
 feeder_of() {
@@ -573,7 +580,7 @@ print('ok' if 'gate-mutants' not in contexts else 'FAIL')
     cd "$st_repo"; git init -q; git config user.email selftest@example.invalid; git config user.name selftest
     git config core.hooksPath /dev/null   # a host's global commit hooks must not decide a fixture
     mkdir -p .github/workflows
-    printf 'on: push\njobs:\n  umbrella:\n    name: ci umbrella\n    runs-on: x\n# a column-0 comment inside jobs: must not end the job list\n  lint:\n    name: "structure lint"\n    runs-on: x\n  construction-gate:\n    name: construction gate (how the tree is built vs ARCHITECTURE.md — BLOCKING, on its posture)\n    runs-on: x\n' > .github/workflows/ci.yml
+    printf 'on: push\njobs:\n  umbrella:\n    name: ci umbrella\n    runs-on: x\n# a column-0 comment inside jobs: must not end the job list\n  lint:\n    name: "structure lint"\n    runs-on: x\n  construction-gate:\n    name: construction gate (how the tree is built vs the design — BLOCKING, on its posture)\n    runs-on: x\n' > .github/workflows/ci.yml
     git add -A; git commit -q --no-verify -m stale; git update-ref refs/remotes/origin/dev HEAD
     printf '  ship-ready:\n    runs-on: x\n' >> .github/workflows/ci.yml
     git commit -q --no-verify -am fresh; git update-ref refs/remotes/origin/qa HEAD

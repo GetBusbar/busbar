@@ -5,7 +5,7 @@
 
 //! # busbar-unit-breaker — the breaker unit
 //!
-//! The design (`docs/design/ARCHITECTURE.md` §3.1, §3.4) splits egress into two units: the EGRESS
+//! The design (`docs/design/BUSBAR-1.6.0.md` THE DESIGN, §1, §5) splits egress into two units: the EGRESS
 //! unit owns the pool per `(transport, destination)` — selection, weighting, concurrency; the
 //! BREAKER unit (this crate) owns trip / cooldown / fast-fail per `(pool, destination)`, plus the
 //! per-destination lifetime request budget. A `BreakerCell` is per pool MEMBER, independent per
@@ -138,7 +138,7 @@ mod sealed {
     pub trait Sealed {}
 }
 
-/// The breaker unit's sealed trait shape (`docs/design/ARCHITECTURE.md` §3.1: `Breaker::observe/
+/// The breaker unit's sealed trait shape (`docs/design/BUSBAR-1.6.0.md` THE DESIGN, §9: `Breaker::observe/
 /// state`). Sealed on a private supertrait so no plugin crate can implement it — only
 /// [`BreakerUnit`] does. Like the design's other seven token-taking unit traits, every call also
 /// takes a `&Pass<Route>` (`busbar-caps`'s capability token): the proof that the loop is at

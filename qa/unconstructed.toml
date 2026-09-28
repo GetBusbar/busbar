@@ -100,7 +100,7 @@ construct = ["Ledger::dual_writing("]
 scope     = ["crates"]
 why       = "The reconciliation identity and rollback both require the dual write and both are release requirements, not deployment choices. Swapping the composition root back to Ledger::new() would keep its own books correctly and lose the legacy mirror, with no test anywhere going red."
 
-# AUDIT — `audit-chain-signing` STRUCK as unshipped 2026-09-26 (spec #82(a); ARCHITECTURE.md §1.2
+# AUDIT — `audit-chain-signing` STRUCK as unshipped 2026-09-26 (spec #82(a); BUSBAR-1.6.0.md THE DESIGN, §2
 # and PB-13): the composition root binds the deployment keyset (crates/busbar/src/root/keyset.rs) to the chain it builds —
 # minted at the first boot's Bootstrap, cached 0600 under data_dir when one is written, node-local and
 # ephemeral otherwise — so records and checkpoints are signed and GET /audit/keys publishes the key.
@@ -148,7 +148,7 @@ why       = "Every deployed node seals an audit chain and ledger checkpoints; wi
 # node's `Pricer::flat(0)` stays with item 245; if that door ever needs a card, it is `from_card`.
 
 # LEDGER — `ledger-checkpoint-seal` and `ledger-checkpoint-journal` STRUCK 2026-09-26 (SEAL-ROOT;
-# OWNER Q71(3), spec #82 one keyset; ARCHITECTURE.md §4.7 cadence, architect ruling 2026-09-26: fixed
+# OWNER Q71(3), spec #82 one keyset; BUSBAR-1.6.0.md THE DESIGN, §7 cadence, architect ruling 2026-09-26: fixed
 # constants 10,000 entries / 60 s): the root's sealer (crates/busbar/src/root/durability/seal.rs)
 # calls Checkpoint::seal_as_of and Durability::journal_checkpoint on that cadence, signing with the
 # audit chain's own key, and GET /api/v1/admin/ledger/checkpoints serves each seal and its verify_seal.

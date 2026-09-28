@@ -1,7 +1,7 @@
 # qa/construction.toml — thresholds for THE CONSTRUCTION GATE (cargo xtask gate construction).
 #
 # The shadow oracle proves the tree is user-correct. This file is the owner's dial for how well the
-# tree is BUILT, measured against docs/design/ARCHITECTURE.md. Every rule below is a named invariant
+# tree is BUILT, measured against docs/design/BUSBAR-1.6.0.md. Every rule below is a named invariant
 # with a plain-language reason, a current-state threshold, and the one knob the owner tightens as the
 # construction improves. Tightening is a one-line edit here; the gate script never restates a number.
 #
@@ -56,7 +56,7 @@ plane_crates = ["busbar-llm", "busbar-mcp", "busbar-a2a", "busbar-voice"]
 # A bare `tests.rs` (Rust's `#[cfg(test)] mod tests;` file convention) is test code too.
 test_path_fragments = ["/tests/", "_tests.rs", "_test.rs", "/tests.rs"]
 
-# Directory globs (relative to the repo root) that name each PLUGIN KIND from ARCHITECTURE.md section 1.4.
+# Directory globs (relative to the repo root) that name each PLUGIN KIND from BUSBAR-1.6.0.md THE DESIGN, §2.
 # Shared by manifest-allowlist, source-denylist and forbid-unsafe so the kind boundaries are drawn
 # once. A glob matching no directory today is fine (the kind has no crate yet) — every rule below
 # treats an empty match list as nothing-to-check, not a failure.
@@ -395,7 +395,7 @@ because = "OWNER RULING Q69(3) (docs/design/1.6.0-QUESTIONS.md): kernel and cont
 lines   = 73
 because = "ARCHITECT ruling on the kernel budget (R-KERNEL, sd-extra.txt; K2-0 units plan): K2g's kernel change is ruled and not yet landed and holds up to 73 kernel code lines; every other change nets <= 0 on the kernel, and SD-8 and the timing fold re-arm by their own measured figures in their own commits."
 
-# The surface ceilings from ARCHITECTURE.md section 1.1: what a PLUGIN AUTHOR has to read. These are
+# The surface ceilings from BUSBAR-1.6.0.md THE DESIGN, §1: what a PLUGIN AUTHOR has to read. These are
 # owner decisions, not ratchets that drift upward with the tree — the gate reads them
 # from here (rather than a literal in the rule table) purely so --selftest can also produce
 # a green baseline value for a scratch copy; the checked-in numbers below never move except by the
@@ -513,7 +513,7 @@ contract_caps = 17170
 # is exactly the figure the crate carried. Unchanged, therefore, and gating for the first time since
 # the fold. `grammar.rs` next to it is deliberately NOT the subject — that is the CLAIMS/SELECTOR
 # grammar (390 lines), a different closed grammar and ordinary contract surface already spent
-# against `contract_caps`. `docs/design/ARCHITECTURE.md` names all three files for this row; that
+# against `contract_caps`. `docs/design/BUSBAR-1.6.0.md` names all three files for this row; that
 # list is wrong on `grammar.rs` and is the owner's to amend.
 grammar = 388
 
@@ -978,7 +978,7 @@ A third is a second selection policy growing beside the first."""
 verb = "pick_among"
 max_sites = 2
 
-# ── 14. loc-ceilings (ARCHITECTURE.md section 1.1) ─────────────────────────────────────────────────────────
+# ── 14. loc-ceilings (BUSBAR-1.6.0.md THE DESIGN, §1) ─────────────────────────────────────────────────────────
 [rules.loc-ceilings]
 why = """The kernel stays small by construction, not by promise. section 1.1 gives one union ceiling, one \
 per-crate ceiling for busbar-contract (with the folded caps module), one for the busbar-unit-* union (with a verbs \
@@ -1269,7 +1269,7 @@ label = "arena: the per-call bump scratch pad (DECISIONS #41)"
 patterns = ["scratch.rs"]
 ceiling = 109
 
-# ── 15. manifest-allowlist (ARCHITECTURE.md section 1.2) ────────────────────────────────────────────────────
+# ── 15. manifest-allowlist (BUSBAR-1.6.0.md THE DESIGN, §2) ────────────────────────────────────────────────────
 [rules.manifest-allowlist]
 why = """Core → plugin, never plugin → core. A plugin-kind crate (plane, store, auth, hook, export, \
 secret) may name `busbar-contract` and the closed grammar it is written on (`busbar-grammar`) freely; \
@@ -1319,7 +1319,7 @@ busbar-plane-llm = ["busbar-llm"]
 # plane's definition asks for and not a coupling this rule is about.
 busbar-plane-streaming = ["busbar-voice"]
 
-# ── 16. source-denylist (ARCHITECTURE.md section 1.2) ───────────────────────────────────────────────────────
+# ── 16. source-denylist (BUSBAR-1.6.0.md THE DESIGN, §2) ───────────────────────────────────────────────────────
 [rules.source-denylist]
 why = """The pure kinds (plane, hook, pure auth, egress-auth-scheme) do no I/O by construction: no \
 socket, no file, no process, no OS handle, no environment read, no HTTP client. A plugin that opens \
@@ -1376,7 +1376,7 @@ symbols = ["getauxval", "sysctlbyname"]
 reason = "OWNER RULING 2026-09-22, docs/design/BUSBAR-1.6.0.md: cpufeatures -> libc is NOT an I/O reach. NEEDED, and it cannot be switched off: in sha2 0.10.9 cpufeatures is a TARGET-GATED hard dependency for aarch64, x86_64 and x86 -- every platform busbar ships on -- declared behind NO feature, so force-soft forces the software hash path and still leaves the edge resolved. RIGHT CRATE: it is RustCrypto's standard runtime detector for selecting hardware SHA acceleration. ENTIRE libc SURFACE, enumerated from its source and listed in `symbols` above: getauxval and sysctlbyname, plus the c_ulong/c_void type aliases. Two function calls, both CPU-capability queries. This rule's own `why` forbids a socket, a file, a process, an OS handle, an environment read and an HTTP client; a CPU-capability query is none of those six. SCOPE, load-bearing: this exempts THAT PATH ONLY -- a pure crate reaching libc by any OTHER route is still a hit, which is the per-crate waivers' own words (re-review if any other path to libc appears) kept as the rule. getrandom -> libc is explicitly NOT ruled on here: it is a different edge with a different argument (entropy drawn by the codec instead of arriving through Ctx) and it keeps its per-crate waiver in qa/denylist-allow.toml until someone rules on it."
 owner = "owner, 2026-09-22"
 
-# ── 17. lean-core (ARCHITECTURE.md section 1.3) ─────────────────────────────────────────────────────────────
+# ── 17. lean-core (BUSBAR-1.6.0.md THE DESIGN, §1) ─────────────────────────────────────────────────────────────
 [rules.lean-core]
 why = """The kernel and the unit crates have no closed enum a plugin could need to extend, and no \
 open-vocabulary word of their own: every dialect name and plane key is a runtime registration, never \
@@ -1492,7 +1492,7 @@ known_sites = [
   "crates/busbar-kernel/src/test_support/mod.rs:220",
 ]
 
-# ── 18. no-default-bodies (ARCHITECTURE.md section 3.7) ─────────────────────────────────────────────────────
+# ── 18. no-default-bodies (BUSBAR-1.6.0.md THE DESIGN, §8) ─────────────────────────────────────────────────────
 [rules.no-default-bodies]
 why = """A kind trait with a default method body is a place a plugin's behaviour was decided for it \
 without the plugin's author ever writing a line — the opposite of "every trait method implemented". \
@@ -1513,7 +1513,7 @@ traits = [
 ]
 max_defaulted = 0
 
-# ── 19. sealed-unit-traits (ARCHITECTURE.md section 3.7) ────────────────────────────────────────────────────
+# ── 19. sealed-unit-traits (BUSBAR-1.6.0.md THE DESIGN, §8) ────────────────────────────────────────────────────
 [rules.sealed-unit-traits]
 why = """The trait a unit implements to be called by the Teller is sealed on a private supertrait, \
 so no plugin crate can implement it and stand in for a unit the kernel itself must own. \
@@ -1542,7 +1542,7 @@ crate = "busbar-kernel-audit"
 file = "crates/busbar-kernel-audit/src/record.rs"
 trait = "Audit"
 
-# ── 20. hold-discipline (ARCHITECTURE.md section 3.7 / section 8.3) ────────────────────────────────────────────────
+# ── 20. hold-discipline (BUSBAR-1.6.0.md THE DESIGN, §8) ────────────────────────────────────────────────
 [rules.hold-discipline]
 why = """Every path takes its Hold exactly once and every path that takes one actually settles it. \
 Five mechanical proxies for that, each a pattern match over busbar-kernel and busbar-unit-* \
@@ -1578,7 +1578,7 @@ max_join_abort = 0
 max_forget_or_drop = 0
 max_uncancellable_await = 0
 
-# ── 21. forbid-unsafe (ARCHITECTURE.md section 1.2) ─────────────────────────────────────────────────────────
+# ── 21. forbid-unsafe (BUSBAR-1.6.0.md THE DESIGN, §2) ─────────────────────────────────────────────────────────
 [rules.kernel-seal-impls]
 why = """`busbar_contract::plugin::KernelSeal` is what every kernel-built view the contract declares \
 takes to be constructed: a verified destination, the unit a plane reads, a one-shot secret, a \
@@ -1657,7 +1657,7 @@ known_missing_forbid = [
 known_missing_deny = [ "plugin-loader",
 ]
 
-# ── 22. secret-carrier-debug (ARCHITECTURE.md section 3.7) ───────────────────────────────────────────────────
+# ── 22. secret-carrier-debug (BUSBAR-1.6.0.md THE DESIGN, §8) ───────────────────────────────────────────────────
 [rules.secret-carrier-debug]
 why = """A value that carries secret bytes must hand-roll its `Debug` so the bytes cannot be printed \
 — never derive one. On the plugin ABI this is not a matter of caller discipline: every auth scheme \
@@ -1677,7 +1677,7 @@ generated docs. The ceiling is zero and is never calibrated upward: this is a cl
 figure the tree is allowed to carry any of."""
 max_hits = 0
 
-# ── 24. hold-escapes (ARCHITECTURE.md section 3.5) ────────────────────────────────────────────────────────────
+# ── 24. hold-escapes (BUSBAR-1.6.0.md THE DESIGN, §1) ────────────────────────────────────────────────────────────
 [rules.hold-escapes]
 why = """Rust has no linear types, so "this value must be consumed by exactly this function" is not \
 expressible: `std::mem::forget`, `ManuallyDrop`, `Box::leak` and an `AssertUnwindSafe` wrapper all \

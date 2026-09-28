@@ -417,7 +417,7 @@ id     = "construction-gate"
 status = "active"
 tier   = "fast"
 # THE CONSTRUCTION GATE (cargo xtask gate construction) — how the tree is BUILT measured against
-# docs/design/ARCHITECTURE.md with the ceilings in qa/construction.toml (one attempt seam, request-path
+# docs/design/BUSBAR-1.6.0.md with the ceilings in qa/construction.toml (one attempt seam, request-path
 # function size, ports-only plane→kernel reaches, no uninstalled seam, neutral-no-dialect, single
 # terminal). RUNS REPORT-ONLY here (`--report`: prints every row and the verdict line, exits 0), the
 # same posture as plane-grep/secret-hygiene above, because the verdict is RED by design on HEAD (rows
@@ -448,7 +448,7 @@ id     = "design-bindings"
 status = "active"
 tier   = "fast"
 # THE DESIGN BINDINGS GATE (cargo xtask gate design-bindings) — "is what we built compliant with what
-# we designed?" qa/design-bindings.json maps every ARCHITECTURE.md Appendix B binding to the checks that
+# we designed?" qa/design-bindings.json maps every qa/parity-bindings.md binding to the checks that
 # prove it (tests, oracle cells, lints, gates); the run proves every referenced check still EXISTS in
 # the tree (a renamed-away test or dropped cell is RED) and lists every UNMAPPED binding as a named gap
 # (plain mode: reported, not red — the strict form that makes a gap red is verify-1.6.0-done.sh's DONE
@@ -489,7 +489,7 @@ run    = "cargo xtask gate no-deferral --selftest && cargo xtask gate no-deferra
 id     = "inventory-ref-lint"
 status = "active"
 tier   = "fast"
-# THE INVENTORY-REFERENCE LINT (cargo xtask gate inventory-ref) — every ARCHITECTURE.md Appendix B
+# THE INVENTORY-REFERENCE LINT (cargo xtask gate inventory-ref) — every qa/parity-bindings.md
 # binding's `inventory` column names a docs/design inventory file that EXISTS. It is the companion
 # to the design-bindings gate above: design-bindings proves each binding's CHECKS still exist, this
 # proves each binding's INVENTORY citation still resolves, so a renamed or deleted inventory file

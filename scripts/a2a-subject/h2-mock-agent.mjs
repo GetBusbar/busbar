@@ -3,7 +3,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 //
 // A MINIMAL, JWS-SIGNED A2A AGENT FOR THE H2 GATING SCENARIOS (tracker row H2,
-// ARCHITECTURE.md #2.2).
+// BUSBAR-1.6.0.md THE DESIGN, §1).
 //
 // WHY THE CARD IS SIGNED. `pin.mechanism: unpinned` is a real, documented A2A pin, but
 // `crates/busbar-a2a/src/a2a/pin.rs` caps it on purpose: "An Unpinned registration ... can never be

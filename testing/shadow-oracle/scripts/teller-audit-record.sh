@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright (C) 2026 Busbar Inc and contributors
 #
-# Script-driver cell: `teller|audit-record` -- H2 (ARCHITECTURE.md #2.2 step 7, AUDIT). Proves the
+# Script-driver cell: `teller|audit-record` -- H2 (BUSBAR-1.6.0.md THE DESIGN, §1 step 7, AUDIT). Proves the
 # Teller order at step 7: a governed unit that mutates state seals ITS OWN audit record -- the chain
 # gains EXACTLY one entry, naming the right action and outcome, with the link-integrity contract
 # (first entry's prev_hash is empty; hash is a function of the entry). The data-plane `llm` request

@@ -1,6 +1,6 @@
 # busbar-unit-breaker — the breaker unit: trip / cooldown / fast-fail per (pool, destination).
 #
-# WHAT THIS CRATE IS. The design (docs/design/ARCHITECTURE.md §3.1, §3.4) names a `Breaker` unit
+# WHAT THIS CRATE IS. The design (docs/design/BUSBAR-1.6.0.md THE DESIGN, §1, §5) names a `Breaker` unit
 # trait (`observe`/`state`) separate from the egress unit that owns the pool. This crate is that
 # unit: the per-cell circuit-breaker state machine (trip, escalating cooldown with jitter, the
 # Retry-After floor, half-open recovery probes) plus the per-destination lifetime request budget,

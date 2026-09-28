@@ -1,7 +1,7 @@
 //! `cargo xtask gate inventory-coverage` — the successor to `scripts/inventory-coverage.py`,
 //! claim for claim.
 //!
-//! ARCHITECTURE.md Appendix B claims that every row of every inventory file under
+//! qa/parity-bindings.md claims that every row of every inventory file under
 //! `qa/evidence/inventory/` is a parity binding AND an oracle cell. Nothing checked that claim
 //! before the Python this gate replaces. It:
 //!

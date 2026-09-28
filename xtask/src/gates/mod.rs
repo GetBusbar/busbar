@@ -2611,7 +2611,7 @@ pub static REGISTRY: &[Registration] = &[
         batch: 2,
         tier: Tier::Fast,
         build: || Box::new(construction::ConstructionGate),
-        summary: "how the tree is BUILT, against ARCHITECTURE.md and qa/construction.toml",
+        summary: "how the tree is BUILT, against BUSBAR-1.6.0.md and qa/construction.toml",
     },
     Registration {
         name: "design-bindings",
@@ -2625,7 +2625,7 @@ pub static REGISTRY: &[Registration] = &[
         batch: 1,
         tier: Tier::Fast,
         build: || Box::new(denylist_gate::DenylistGate),
-        summary: "the pure plugin kinds carry no banned transitive source (ARCHITECTURE.md 1.2)",
+        summary: "the pure plugin kinds carry no banned transitive source (BUSBAR-1.6.0.md THE DESIGN, §2)",
     },
     Registration {
         name: "changelog",

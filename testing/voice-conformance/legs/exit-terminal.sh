@@ -7,7 +7,7 @@
 # LEG: exit-terminal — one voice session ends ONCE: exactly one metering-lease settlement and exactly
 # one admin-audit row, even when the session is INTERRUPTED (torn down before it runs a single frame,
 # and independently closed twice — the shape a parked per-frame handler's stale guard plus the node's
-# own sweep produce, ARCHITECTURE.md's loop, the "exit" step — ONE exit path).
+# own sweep produce, BUSBAR-1.6.0.md THE DESIGN, §1's teller loop, the "exit" step — ONE exit path).
 #
 # TWO INDEPENDENT PROOFS, both over the substrate's `FixtureHost` (the same faithful in-memory
 # `CostHold`/audit-ring stand-in the admit/route/audit legs use):

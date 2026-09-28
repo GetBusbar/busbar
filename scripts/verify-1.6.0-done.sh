@@ -50,13 +50,13 @@
 #                    sha256 this repository commits for 1.5.5; every in-scope cell without a golden
 #                    is named in accepted-gaps.json; and the verdict is read out of the report — so
 #                    a run that compared the wrong binary, or compared nothing at all, is a refusal.
-#   design           cargo xtask gate design-bindings --strict: every ARCHITECTURE.md Appendix B
+#   design           cargo xtask gate design-bindings --strict: every qa/parity-bindings.md
 #                    binding is mapped to a check that still exists in the tree (test, oracle cell,
 #                    lint, gate). An unmapped binding is a named gap and is RED here -- "done" means
 #                    nothing we designed is unproven. Existence only; the checks run in their own tiers.
 #   changelog        cargo xtask gate changelog-register: EVERY entry in
 #                    testing/shadow-oracle/accepted-differences.json -- improvement as well as
-#                    breaking, per ARCHITECTURE.md's owner rule -- has its `changelog` field's exact
+#                    breaking, per BUSBAR-1.6.0.md's owner rule -- has its `changelog` field's exact
 #                    line present, verbatim, in CHANGELOG.md, or an explicit null with a written
 #                    reason. A difference the owner accepted cannot silently fall out of the release
 #                    notes, and a break may never waive its line.

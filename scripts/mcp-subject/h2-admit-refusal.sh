@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright (C) 2026 Busbar Inc and contributors
 #
-# Gating scenario `mcp.rig|h2-admit-refusal` -- H2 (ARCHITECTURE.md #2.2 step 4, ADMIT) for the MCP
+# Gating scenario `mcp.rig|h2-admit-refusal` -- H2 (BUSBAR-1.6.0.md THE DESIGN, §1 step 4, ADMIT) for the MCP
 # plane. Proves the Teller order at step 4: a principal already past AUTHENTICATE/VERIFY but over
 # its group's `requests` budget is refused at ADMIT (native 429, `budget_exhausted`) before ROUTE
 # ever dials -- no egress, no charge beyond the draws already posted by the calls that were let

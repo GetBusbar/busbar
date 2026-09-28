@@ -201,7 +201,7 @@ pub struct Durability {
     /// Settled figures the book moved whose journal record the log has not confirmed yet.
     ///
     /// Each was moved out of `settled` into `unreconciled` when its append came back as a
-    /// durability loss (ARCHITECTURE.md 4.2: nothing is reported as settled that the store has not
+    /// durability loss (BUSBAR-1.6.0.md THE DESIGN, §7: nothing is reported as settled that the store has not
     /// confirmed), and each moves back when a later append succeeds — the log re-offers a retained
     /// batch ahead of the next one, so a later success is the confirmation.
     unconfirmed: Vec<(TotalsKey, WindowStart, i128)>,
@@ -226,7 +226,7 @@ pub struct Durability {
     /// ([`Durability::restore_amendments`]), and so the book whose later amendments are journalled
     /// ([`bind_amendments`]). `None` on every book that rebuilt nothing.
     amendments_through: Option<u64>,
-    /// THE CHECKPOINT CADENCE (ARCHITECTURE.md §4.7), once [`Durability::arm_checkpoints`] armed
+    /// THE CHECKPOINT CADENCE (BUSBAR-1.6.0.md THE DESIGN, §7), once [`Durability::arm_checkpoints`] armed
     /// it. `None` on a book nobody armed, which seals nothing on its own.
     cadence: Option<Cadence>,
 }

@@ -542,7 +542,7 @@ const ACCEPTED_NAMES: &[(&str, &str)] = &[];
 
 /// THE EDGE CLASSES THE ARCHITECTURE GRANTS, and the whole of what the SHIP twin permits.
 ///
-/// This is not a measurement and it is not a ratchet. It is the read of `ARCHITECTURE.md` 1.1 and
+/// This is not a measurement and it is not a ratchet. It is the read of `BUSBAR-1.6.0.md` THE DESIGN, §1 and
 /// 3.1 that an audit of all 220 workspace-internal edges produced: 105 of them land in one of these
 /// classes and 87 land nowhere the architecture speaks. The per-push rows hold the tree to the
 /// EXACT edges it has today, instance by instance, so the debt cannot grow; the ship twin holds it
@@ -597,7 +597,7 @@ const ARCHITECTURE_ALLOWED: &[(&str, &str)] = &[
     // The composition root is the one thing that names all three axes — that is what a root IS.
     //
     // ROOT -> EVERY PLUGIN KIND IT LINKS IS ONE GRANTED CLASS, not a list that grew kind by kind.
-    // Roster definition 1 (ARCHITECTURE.md 1.1): the composition root is "the only place that names
+    // Roster definition 1 (BUSBAR-1.6.0.md THE DESIGN, §1): the composition root is "the only place that names
     // which crates exist and wires them at boot" — naming a plugin crate and folding it onto its
     // axis IS the root's job, so the edge is the architecture, not debt (ARCHITECT ruling
     // 2026-09-25 "K5d residue"). `plane`, `store` and `transport` were granted as the first crate
@@ -622,14 +622,14 @@ const ARCHITECTURE_ALLOWED: &[(&str, &str)] = &[
     //
     // It granted the CLASS `transport -> transport` — eight live edges (`grpc -> http`,
     // `grpc -> tcp`, `http -> tcp`, `http -> tls`, `sse -> http`, `tls -> tcp`, `ws -> http`,
-    // `ws -> tcp`) — on the citation *"ARCHITECTURE.md 3.4 `COMPOSES_OVER`: a wire composed over
+    // `ws -> tcp`) — on the citation *"BUSBAR-1.6.0.md THE DESIGN, §5 `COMPOSES_OVER`: a wire composed over
     // a lower wire; THE ROOT SUPPLIES THE LAYER."*
     //
     // THE CITATION ARGUES AGAINST ITS OWN VERDICT. If the root supplies the layer, the transport
     // crate does not need to name the lower transport at COMPILE time; `COMPOSES_OVER` is an
-    // associated const on `TransportMeta` (ARCHITECTURE.md:669) — a RUNTIME registry string, not a
-    // crate edge — and ARCHITECTURE.md §5's composition table is a table of wire layering, not of manifests. What
-    // the cited document actually says about manifests is ARCHITECTURE.md:119 §1.2: *"any
+    // associated const on `TransportMeta` (BUSBAR-1.6.0.md THE DESIGN, §5) — a RUNTIME registry string, not a
+    // crate edge — and BUSBAR-1.6.0.md THE DESIGN, §5's composition is a table of wire layering, not of manifests. What
+    // the cited document actually says about manifests is BUSBAR-1.6.0.md THE DESIGN, §2: *"any
     // dependency on … another plane or A TRANSPORT is a CI failure"*, with exactly one exception,
     // a dialect crate naming its own plane. BUSBAR-1.6.0.md:364 #40(a) is flatter still:
     // `closure ∩ {… any other plugin} = ∅`, and a transport is one of the seven plugin kinds.
@@ -694,7 +694,7 @@ pub(super) fn names_contract_by_design(from: &str, to: &str) -> bool {
                 || ARCHITECTURE_TCB.contains(&(from, to))))
 }
 
-/// THE TRUSTED COMPUTING BASE: the loader and the plugin tooling, which `ARCHITECTURE.md` 1.4 says
+/// THE TRUSTED COMPUTING BASE: the loader and the plugin tooling, which `BUSBAR-1.6.0.md` THE DESIGN, §2 says
 /// in its own words are NOT kinds. Their edges are neither granted nor refused by the kind rules,
 /// because the kind rules are not about them — so they carry their own verdict, they are still
 /// written down instance by instance, and the ship twin still refuses them: a tag's criterion is
@@ -6714,7 +6714,7 @@ impl Gate for KindIsolationGate {
             ));
 
             // A ROW THAT GRANTED ITSELF AN EDGE THE ARCHITECTURE WITHHOLDS. `allowed` is a READING
-            // of ARCHITECTURE.md, not an opinion a ledger row is entitled to hold — otherwise the
+            // of BUSBAR-1.6.0.md, not an opinion a ledger row is entitled to hold — otherwise the
             // ledger IS the architecture and the ratchet loosens by editing one word.
             //
             // THE EDGE IS THE FIXTURE'S OWN. The case used to flip the verdict of a live row, and
@@ -8614,7 +8614,7 @@ impl Gate for KindIsolationGate {
                     "{}\n\n[[transitional]]\nfrom = \"busbar-llm\"\nto = \"{PLANTED_DRAIN_TARGET}\"\n\
                      reason = \"planted\"\n\n[[dep]]\nfrom    = \"busbar-llm\"\n\
                      to      = \"{PLANTED_DRAIN_TARGET}\"\nhalf    = \"shipped\"\ncount   = \"1\"\n\
-                     verdict = \"not-allowed\"\ncite    = \"the legacy drain: ARCHITECTURE.md 1.1 \
+                     verdict = \"not-allowed\"\ncite    = \"the legacy drain: BUSBAR-1.6.0.md THE DESIGN, §1 \
                      grants a legacy crate no cleanliness edge, and the [[transitional]] row above names \
                      this one as the retirement in flight.\"\nwhy     = \"planted: proves the drain \
                      row and its own dep count both being present is green.\"\ndrain   = \"planted \

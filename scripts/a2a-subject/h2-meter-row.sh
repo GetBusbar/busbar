@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright (C) 2026 Busbar Inc and contributors
 #
-# Gating scenario `a2a.battery|h2-meter-row` -- H2 (ARCHITECTURE.md #2.2 step 6, METER) for the A2A
+# Gating scenario `a2a.battery|h2-meter-row` -- H2 (BUSBAR-1.6.0.md THE DESIGN, §1 step 6, METER) for the A2A
 # plane. Proves the Teller order at step 6: one served `message/send` settles to a usage delta of
 # EXACTLY one request, priced by `per_request_fee` (docs/a2a.md: "A successful call records one
 # metered event with resource `agent:<agent_id>` and provider `a2a`").

@@ -5,7 +5,7 @@
 # shellcheck disable=SC2034  # LEG_KIND/LEG_STATUS/LEG_SLICES are read by voice-conformance.sh on source
 #
 # LEG: audit-record — one governed voice session lands EXACTLY ONE new admin-audit entry, carrying the
-# plane's own action literal and outcome (ARCHITECTURE.md's audit-chain discipline, applied to the
+# plane's own action literal and outcome (BUSBAR-1.6.0.md's audit-chain discipline, applied to the
 # voice-plane mutation a session open represents).
 #
 # Before this leg, NOTHING in `busbar-voice` ever called `JournalHost::audit_record` — a session could

@@ -1,4 +1,4 @@
-//! THE CONSTRUCTION GATE: how the tree is BUILT, measured against `docs/design/ARCHITECTURE.md`,
+//! THE CONSTRUCTION GATE: how the tree is BUILT, measured against `docs/design/BUSBAR-1.6.0.md`,
 //! with ceilings the owner tightens in `qa/construction.toml`.
 //!
 //! The shadow oracle proves the code on HEAD is user-correct. Nothing else measures whether it is

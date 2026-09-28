@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright (C) 2026 Busbar Inc and contributors
 #
-# Gating scenario `a2a.battery|h2-verify-refusal` -- H2 (ARCHITECTURE.md #2.2 step 2, VERIFY) for the
+# Gating scenario `a2a.battery|h2-verify-refusal` -- H2 (BUSBAR-1.6.0.md THE DESIGN, §1 step 2, VERIFY) for the
 # A2A plane. Proves the Teller order at step 2: a credential that AUTHENTICATEs fine but holds no
 # `agent` grant for the registered agent is refused BEFORE step 4 (ADMIT) ever draws a bucket -- no
 # egress reaches the fronted agent, no usage delta.

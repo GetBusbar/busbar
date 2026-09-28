@@ -1,4 +1,4 @@
-//! `cargo xtask denylist` — the transitive source denylist ARCHITECTURE.md section 1.2 specifies
+//! `cargo xtask denylist` — the transitive source denylist BUSBAR-1.6.0.md THE DESIGN, §2 specifies
 //! and docs/design/1.6.0-contract-gaps.md CG-59 found nowhere in the tree.
 //!
 //! For every crate of a PURE plugin kind (plane, hook, static/pure auth, egress-auth-scheme — the
@@ -10,7 +10,7 @@
 //!      code runs inside, so they are out of scope by construction — the same reason
 //!      `_read_cargo_deps` in the FAST-tier lint reads only `[dependencies]`).
 //!   2. Refuses any crate in that closure whose name is on the banned list (verbatim from
-//!      ARCHITECTURE.md section 1.2 via `qa/construction.toml`'s `[rules.source-denylist].patterns`,
+//!      BUSBAR-1.6.0.md THE DESIGN, §2 via `qa/construction.toml`'s `[rules.source-denylist].patterns`,
 //!      plus `hyper-util`, named by CG-60 as the vector that drags `hyper` and `tokio::net` into
 //!      `busbar-llm` transitively) — and any `tokio` node in that closure whose resolved feature
 //!      set includes `net`, `fs` or `process`.
@@ -82,7 +82,7 @@ pub struct Report {
     pub stale_waivers: Vec<String>,
 }
 
-/// `hyper-util` is not named in ARCHITECTURE.md section 1.2's own list (`reqwest`, `hyper`,
+/// `hyper-util` is not named in BUSBAR-1.6.0.md THE DESIGN, §2's own list (`reqwest`, `hyper`,
 /// `async_std`, `libc`) — it is named in docs/design/1.6.0-contract-gaps.md's CG-60 row as the
 /// crate that drags `hyper` and `tokio::net` into `busbar-llm`. Banning it by name too (rather
 /// than relying solely on the `hyper`/`tokio` hits its own dependencies would produce) makes the

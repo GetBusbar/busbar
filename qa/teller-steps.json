@@ -1,7 +1,7 @@
 {
   "_comment": [
     "H2 (docs/design/1.6.0-TRACKER.md): 'conformance rigs carry one cell per Teller step per plane'.",
-    "Steps are ARCHITECTURE.md #2.2 (arrival, decode, authenticate, verify, approve, admit, route,",
+    "Steps are BUSBAR-1.6.0.md THE DESIGN, §1 (arrival, decode, authenticate, verify, approve, admit, route,",
     "meter, audit, exit). This is the plane x step MATRIX: for every cell, either an id that names a",
     "real, run scenario in one of the conformance rigs (or the shadow oracle, for the llm plane), or",
     "the literal string \"none\" naming a genuine gap. 'gating' marks the 7 steps whose contract H2",
@@ -394,7 +394,7 @@
       "route": {
         "cell": "a2a.battery|h2-route-failover",
         "status": "new",
-        "note": "scripts/a2a-subject/h2-route-failover.sh; a down fronted agent surfaces per-attempt 502s while the breaker is closed, then trips (docs/a2a.md's documented error-rate/window rule) to a TERMINAL 503/UNSUPPORTED_OPERATION with no further egress dialled -- the down-lane-ends-terminal outcome ARCHITECTURE.md #2.2 names when there is no second pool member to fail over to",
+        "note": "scripts/a2a-subject/h2-route-failover.sh; a down fronted agent surfaces per-attempt 502s while the breaker is closed, then trips (docs/a2a.md's documented error-rate/window rule) to a TERMINAL 503/UNSUPPORTED_OPERATION with no further egress dialled -- the down-lane-ends-terminal outcome BUSBAR-1.6.0.md THE DESIGN, §1 names when there is no second pool member to fail over to",
         "root": {
           "state": "proven",
           "leg": "root-a2a",

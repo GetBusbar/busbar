@@ -3,7 +3,7 @@
 
 //! THE CHECKPOINT SEALER: the node's totals sealed into a checkpoint on a fixed cadence, signed with
 //! the audit chain's own key, and put on the journal (OWNER Q71(3); spec #82; checkpoint cadence
-//! per ARCHITECTURE.md §4.7).
+//! per BUSBAR-1.6.0.md THE DESIGN, §7).
 //!
 //! ## One keyset, two seams
 //!
@@ -19,7 +19,7 @@
 //! ## The cadence is two fixed constants, whichever comes first
 //!
 //! [`CHECKPOINT_ENTRIES`] records or [`CHECKPOINT_INTERVAL_SECS`] seconds since the last seal —
-//! ARCHITECTURE.md §4.7's defaults, fixed in 1.6.0 (architect ruling 2026-09-26: no config key).
+//! BUSBAR-1.6.0.md THE DESIGN, §7's defaults, fixed in 1.6.0 (architect ruling 2026-09-26: no config key).
 //! The interval half seals only ON CHANGE: a node that journaled nothing since its last seal has no
 //! new figure to fix, and sealing it again would be a record saying nothing happened. The entry
 //! half is checked after every serving append, so a busy node seals every [`CHECKPOINT_ENTRIES`]
@@ -39,13 +39,13 @@ use busbar_kernel_ledger::migration::OPENING_CHECKPOINT_SEQ;
 
 use super::*;
 
-/// How many journal records a checkpoint may trail by (ARCHITECTURE.md §4.7 `checkpoint_entries`).
+/// How many journal records a checkpoint may trail by (BUSBAR-1.6.0.md THE DESIGN, §7 `checkpoint_entries`).
 pub const CHECKPOINT_ENTRIES: u64 = 10_000;
 
-/// How many seconds a changed book may go unsealed (ARCHITECTURE.md §4.7 `checkpoint_interval`).
+/// How many seconds a changed book may go unsealed (BUSBAR-1.6.0.md THE DESIGN, §7 `checkpoint_interval`).
 pub const CHECKPOINT_INTERVAL_SECS: u64 = 60;
 
-/// How often the root's tick asks whether the interval has run out (ARCHITECTURE.md §4.7
+/// How often the root's tick asks whether the interval has run out (BUSBAR-1.6.0.md THE DESIGN, §7
 /// `tick_interval`), so an idle node's last change is sealed at most this long after the interval.
 pub const CHECKPOINT_TICK_SECS: u64 = 1;
 

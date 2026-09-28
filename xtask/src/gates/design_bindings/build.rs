@@ -20,7 +20,7 @@ use crate::rx::Regex;
 /// binding; below that the cells are listed one by one.
 pub const FAMILY_COLLAPSE_MIN: usize = 6;
 
-/// The binding table the ledger is derived from. It was `docs/design/ARCHITECTURE.md`'s Appendix B
+/// The binding table the ledger is derived from. It was the former `docs/design/ARCHITECTURE.md`'s Appendix B
 /// until 2026-09-27, when the owner cut docs/design to the spec and the TODO; the table is machine
 /// data, so it moved verbatim to `qa/`. Appendix A (the owner decisions) did NOT move: it is prose,
 /// absorbed into the spec, and the ledger no longer records it.

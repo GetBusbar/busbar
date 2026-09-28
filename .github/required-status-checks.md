@@ -34,7 +34,7 @@ point for that ruling: it explicitly strips `gate-mutants` out of whatever branc
 has, rather than merely not adding it, because a plain required-contexts union can never remove a
 context that is already required — see that script's header.
 
-`structure lint` and `construction gate (how the tree is built vs ARCHITECTURE.md — BLOCKING, on its
+`structure lint` and `construction gate (how the tree is built vs the design — BLOCKING, on its
 posture)` are also required on `main`/`qa`, per `scripts/ci-branch-protection.sh`'s own floor, but they
 are jobs *inside* `ci.yml`, not separate workflows needing their own cross-workflow aggregator entry —
 they are outside this file's scope by the same logic the intro paragraph states (`ci.yml`'s own

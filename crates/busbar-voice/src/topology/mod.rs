@@ -391,7 +391,7 @@ where
     // ONE ADMIN-AUDIT ROW for this governed mutation — fired exactly once (this is the single `Ok`
     // construction point below every early `?` return above), no-op on a runtime with no bound host
     // (the pre-host/dev-default runtime). Voice posts no separate "kernel-floor" line at Admit the way
-    // ARCHITECTURE.md's Admit step describes for an already-dialed provider push: a refused reserve above never
+    // BUSBAR-1.6.0.md's Admit step describes for an already-dialed provider push: a refused reserve above never
     // reaches here, so nothing is owed and nothing is journaled for it.
     rt.audit_session(
         // The ONE action literal, named where the REJECTED twin names it (`mount::hook_tap` refuses a

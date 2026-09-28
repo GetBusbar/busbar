@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright (C) 2026 Busbar Inc and contributors
 #
-# Gating scenario `mcp.rig|h2-meter-row` -- H2 (ARCHITECTURE.md #2.2 step 6, METER) for the MCP
+# Gating scenario `mcp.rig|h2-meter-row` -- H2 (BUSBAR-1.6.0.md THE DESIGN, §1 step 6, METER) for the MCP
 # plane. Proves the Teller order at step 6: one served `tools/call` settles to a usage delta of
 # EXACTLY one request, priced by `per_request_fee` (docs/mcp.md: "Every dispatch round is charged
 # against the caller's key through the same admission the LLM path uses").

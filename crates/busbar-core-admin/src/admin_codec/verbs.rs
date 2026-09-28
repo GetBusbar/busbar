@@ -14,7 +14,7 @@
 //! module assigns each one a `POST /api/v1/admin/<kebab-case-verb>` binding — the same shape every
 //! other mutating admin operation in the 1.5.5 table uses — purely so the table has *something*
 //! coherent to resolve against in the closed-loop tests below. `verify` and `plane_facts` are bound
-//! `GET` and read-only, as ARCHITECTURE.md binds them in its HTTP-binding paragraph (CG-56), so
+//! `GET` and read-only, as BUSBAR-1.6.0.md binds them in its HTTP-binding paragraph (CG-56), so
 //! the (method, path) gate agrees with the row without a carve-out; every other 1.6.0 verb is
 //! marked `full`, matching the design's statement that the irreducible/dual-controlled set is entirely mutating.
 //! If the real HTTP binding differs, only this table's literals need to change — the match logic
@@ -37,7 +37,7 @@ pub(crate) struct VerbEntry {
 /// binding flagged in the module doc; the ninth, `amend_rate_history`, carries the
 /// design's own binding under `/ledger/`.
 const NEW_VERBS_1_6_0: &[VerbEntry] = &[
-    // `GET`, not `POST`: ARCHITECTURE.md (CG-56) binds the two read-only verbs as `GET`
+    // `GET`, not `POST`: BUSBAR-1.6.0.md (CG-56) binds the two read-only verbs as `GET`
     // (`docs/design/admin-new-verbs-contract.md`, "The verify GET-vs-POST resolution"). A `POST`
     // here made the live admin gate — the (method, path) matrix, under which every non-dry-run
     // `POST` is `full` — demand `full` of a verb `verbs::required_scope` answers `read-only` for

@@ -5426,7 +5426,7 @@ fn the_admin_listener_binds_its_claim_journal_on_a_data_dir_node_only() {
     );
 }
 
-/// THE DEPLOYMENT KEYSET IS WHAT `/audit/keys` PUBLISHES (spec #82(a)(b); ARCHITECTURE.md §1.2,
+/// THE DEPLOYMENT KEYSET IS WHAT `/audit/keys` PUBLISHES (spec #82(a)(b); BUSBAR-1.6.0.md THE DESIGN, §2,
 /// PB-13; architect ruling 2026-09-26): a node bound to its keyset seals a SIGNED record and a
 /// SIGNED checkpoint, and both verify against the key the served read publishes — parsed off the
 /// wire, not handed over in-process. RED arm: the same node before the keyset is bound publishes

@@ -391,7 +391,7 @@ impl Ledger {
     /// beside it, so the value is counted once. When the recompute agrees, the caller moves it back
     /// with a negative amount.
     ///
-    /// Decided rule (ARCHITECTURE.md §4.2): "an unreconciled amount is a MOVE out of settled, never
+    /// Decided rule (BUSBAR-1.6.0.md THE DESIGN, §7): "an unreconciled amount is a MOVE out of settled, never
     /// a parallel tally" — booking it is `unreconciled += A; settled -= A` on the same figure, so
     /// the identity closes with no special case and nothing is reported as settled that the store
     /// has not confirmed.

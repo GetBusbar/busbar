@@ -2,7 +2,7 @@
 # workspace member invoked as `cargo xtask <verb>` via the `.cargo/config.toml` alias; no separate
 # build system, no shell script duplicating what Cargo already knows about the crate graph).
 #
-# WHY IT EXISTS. ARCHITECTURE.md section 1.2 specifies a transitive source denylist over the pure
+# WHY IT EXISTS. BUSBAR-1.6.0.md THE DESIGN, §2 specifies a transitive source denylist over the pure
 # plugin kinds (plane, hook, static auth, egress-auth-scheme): no banned crate anywhere in their
 # normal-dependency closure, no banned std/tokio path in their own src/. Section 8.3 lists
 # `cargo xtask gate` and section 9.1 makes `xtask` an M1 deliverable. Neither existed before this
@@ -14,7 +14,7 @@ version = "0.1.0"
 publish = false            # internal workspace tool; never goes to crates.io
 edition = "2021"
 rust-version = "1.97"
-description = "Workspace tooling: `cargo xtask denylist` proves the pure plugin kinds carry no banned transitive source (ARCHITECTURE.md section 1.2, CG-59)."
+description = "Workspace tooling: `cargo xtask denylist` proves the pure plugin kinds carry no banned transitive source (BUSBAR-1.6.0.md THE DESIGN, §2, CG-59)."
 license = "Apache-2.0"
 
 # The gate logic is a LIBRARY and the binary is a five-line dispatcher over it. `cargo test -p

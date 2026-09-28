@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The checkpoint sealer (OWNER Q71(3); ARCHITECTURE.md §4.7): the cadence's two constants, the
+//! The checkpoint sealer (OWNER Q71(3); BUSBAR-1.6.0.md THE DESIGN, §7): the cadence's two constants, the
 //! audit keyset bound to the ledger's sign and verify seams, and each seal refusal in its own words.
 
 use super::*;

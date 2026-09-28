@@ -496,7 +496,7 @@ pub fn voice_hydrate(ctx: &dyn PlaneBootCtx) -> Result<(), String> {
     }
     // DEBUG, not INFO: a 1.5.5-shaped config with no `streams:` section still runs this hook (it is
     // gated on `has_store()`, not on the plane being configured) and must not gain a new boot line at
-    // INFO — the neutrality binding (docs/design/ARCHITECTURE.md Appendix B). An operator who DID
+    // INFO — the neutrality binding (qa/parity-bindings.md). An operator who DID
     // configure `streams:` can still see this at DEBUG.
     tracing::debug!(
         active = counts.active,

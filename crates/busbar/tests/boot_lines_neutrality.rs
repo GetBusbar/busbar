@@ -4,7 +4,7 @@
 //! NEUTRALITY: a 1.5.5-shaped config (no `mcp:`/`agents:`/`streams:` section) must boot with the SAME
 //! log lines at INFO and above as the published 1.5.5 binary — no new boot line at INFO just because a
 //! later plane is compiled in, and no plane line at all unless that plane is configured (see
-//! `docs/design/ARCHITECTURE.md` Appendix B, and the shadow-oracle `neutrality|boot-lines` cell this
+//! `qa/parity-bindings.md`, and the shadow-oracle `neutrality|boot-lines` cell this
 //! test pins as a fast, always-on regression guard beside it).
 //!
 //! Boots the REAL binary, captures stdout (busbar's default log destination outside `--mcp-stdio`),

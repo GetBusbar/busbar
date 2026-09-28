@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright (C) 2026 Busbar Inc and contributors
 #
-# Script-driver cell: `teller|route-failover` -- H2 (ARCHITECTURE.md #2.2 step 5, ROUTE). Proves the
+# Script-driver cell: `teller|route-failover` -- H2 (BUSBAR-1.6.0.md THE DESIGN, §1 step 5, ROUTE). Proves the
 # Teller order at step 5: when the FIRST lane in a pool is down, the egress unit's walk fails over to
 # the next verified destination within the same unit -- the client sees ONE successful terminal, the
 # dead lane is dialled and abandoned, the live lane serves and is billed. 1.5.5 has no "Teller"

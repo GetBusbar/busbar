@@ -1,4 +1,4 @@
-//! cargo-xtask entry point. See `docs/design/ARCHITECTURE.md` sections 1.2/8.3/9.1,
+//! cargo-xtask entry point. See `docs/design/BUSBAR-1.6.0.md` THE DESIGN, §2/§8/§9,
 //! `docs/design/1.6.0-contract-gaps.md` CG-59, and `docs/design/xtask-gates.md` for why this
 //! exists and where it is going.
 //!

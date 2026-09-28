@@ -1,4 +1,4 @@
-# A synthetic pure crate that depends directly on `libc` — one of ARCHITECTURE.md section 1.2's
+# A synthetic pure crate that depends directly on `libc` — one of BUSBAR-1.6.0.md THE DESIGN, §2's
 # named banned crates — for `cargo xtask denylist --selftest` to prove RED against.
 [workspace]
 

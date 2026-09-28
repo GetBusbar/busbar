@@ -32527,7 +32527,7 @@
         "auth": "ok",
         "listener": "data"
       },
-      "why": "the pool/lane topology route answers on a plane-neutral config exactly as the operational-routes rule in ARCHITECTURE.md describes"
+      "why": "the pool/lane topology route answers on a plane-neutral config exactly as the operational-routes rule in BUSBAR-1.6.0.md describes"
     },
     {
       "id": "neutrality|routes|v1-models",

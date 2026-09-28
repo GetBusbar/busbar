@@ -71,7 +71,7 @@
 //! do ([`super::parse_registry`]), on the same terms — a missing field, an empty field or an
 //! unknown field is REFUSED AT LOAD rather than skipped. Three tables:
 //!
-//! * `[[edge]]` — one per kind → kind CLASS, carrying `cite` (the `ARCHITECTURE.md` clause that
+//! * `[[edge]]` — one per kind → kind CLASS, carrying `cite` (the `BUSBAR-1.6.0.md` clause that
 //!   grants it, or the words that say none does), `why` (what the number is made of) and `drain`
 //!   (the line that deletes it; a ceiling with no route to zero is a ceiling nobody drains). The
 //!   prose belongs to the class because that is what a reader is reading.
@@ -84,7 +84,7 @@
 //! coupling. A count BELOW its row is stale slack, and stale slack is how drift hides: the row must
 //! come down on the commit that drained it, or the gate is red. A row whose cell now measures zero
 //! is a dead allowance and must be struck. A cell above zero with no row at all is an UNLISTED
-//! EDGE — refused, whatever `ARCHITECTURE.md` may or may not grant, because an edge nobody wrote
+//! EDGE — refused, whatever `BUSBAR-1.6.0.md` may or may not grant, because an edge nobody wrote
 //! down is an edge nobody reviewed.
 //!
 //! ONE COLUMN IS NOT MEASURED, AND IT IS A RULE RATHER THAN AN ALLOWANCE: a crate of one of the
@@ -2460,7 +2460,7 @@ pub fn selftest<'a>(
     report.push(plant_ledger(
         cx,
         gate,
-        "an edge class with no row at all is refused, whatever ARCHITECTURE.md may grant",
+        "an edge class with no row at all is refused, whatever BUSBAR-1.6.0.md may grant",
         &[ROW_MATRIX],
         Ok((
             "from = \"root\"\nto = \"plane\"\n".to_string(),
