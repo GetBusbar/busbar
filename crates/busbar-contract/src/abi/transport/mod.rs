@@ -90,6 +90,8 @@
 //! assert_eq!(size_of::<Ops>(), size_of::<OpsHead>() + 8 * KIND_SLOTS as usize);
 //! ```
 
+pub mod check;
+
 use std::mem::size_of;
 
 use super::mechanism::call::{AbiStr, DeadlineClass, InHead, Op, OutHead};
