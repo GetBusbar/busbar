@@ -85,6 +85,9 @@ pub const BAD_TEXT: &[u8] = b"badtext";
 pub const BAD_ENVELOPE: &[u8] = b"badenv";
 /// `tick` mode: READY with `next_tick_ns` = [`KIND_REJECTS`] (the test kind's validator refuses it).
 pub const REJECTED: &[u8] = b"rejected";
+/// `tick` mode: REFUSED with `next_tick_ns` = [`KIND_REJECTS`] (the test kind's validator
+/// judges a REFUSED answer too).
+pub const REJECTED_REFUSED: &[u8] = b"rejectedrefused";
 /// `tick` mode: FAILED with `next_tick_ns` = [`SHORT`] (the test kind reads it as a short buffer).
 pub const SHORT_ANSWER: &[u8] = b"short";
 /// The `next_tick_ns` the test kind's `check` refuses.
@@ -556,6 +559,10 @@ extern "C" fn tick(instance: *mut c_void, input: *const c_void, out: *mut c_void
             REJECTED => {
                 (*out.cast::<TickOut>()).next_tick_ns = KIND_REJECTS;
                 say(out, Outcome::Ready)
+            }
+            REJECTED_REFUSED => {
+                (*out.cast::<TickOut>()).next_tick_ns = KIND_REJECTS;
+                say(out, Outcome::Refused)
             }
             SHORT_ANSWER => {
                 (*out.cast::<TickOut>()).next_tick_ns = SHORT;

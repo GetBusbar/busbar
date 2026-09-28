@@ -12,6 +12,7 @@ use busbar_contract::abi::mechanism::call::{InHead, OutHead, Outcome};
 use busbar_contract::abi::mechanism::check::{fault, Fault, Rule};
 use busbar_contract::abi::mechanism::lifecycle::{slot as life, CancelOut, GenIn, RefreshIn};
 use busbar_contract::abi::mechanism::KindCode;
+use busbar_contract::abi::plane::check::Bounds;
 use busbar_contract::abi::plane::{
     slot, ArriveIn, ArriveOut, OnPieceIn, OnPieceOut, OutField, PlaneOpenIn, PlaneOpenOut,
     PlaneRefreshOut, PlaneSnapshot, RecordWrite, RefusalIn, RefusalOut, ServeIn, ServeOut, Span,
@@ -33,7 +34,20 @@ fn f(rule: Rule, field: &'static str) -> Result<(), Fault> {
 }
 
 /// An answer of `slot` over the test's own `in` and `out`.
-fn answer<I, O>(s: u32, outcome: Outcome, i: &I, o: &O) -> Answer {
+/// The tail bounds every answer here is judged against: four entries in each tail list.
+static BOUNDS: Bounds = Bounds {
+    op_classes: 4,
+    dialects: 4,
+    billable_classes: 4,
+    record_kinds: 4,
+};
+
+fn answer<'a, I, O>(s: u32, outcome: Outcome, i: &I, o: &O) -> Answer<'a> {
+    bare(s, outcome, i, o).with_context(Some(&BOUNDS))
+}
+
+/// An answer judged with no tail at all.
+fn bare<'a, I, O>(s: u32, outcome: Outcome, i: &I, o: &O) -> Answer<'a> {
     // SAFETY: `i` and `o` are live for the answer's use in each test and nobody writes them.
     unsafe {
         Answer::new(
@@ -513,4 +527,30 @@ fn a_failed_answer_with_a_need_above_the_cap_is_short() {
     let a = answer(slot::REFUSAL, Outcome::Failed, &ri, &ro);
     assert_eq!(Plane::check(&a), Ok(()));
     assert!(Plane::short(&a));
+}
+
+#[test]
+fn red_a_tail_index_past_its_list_is_fault_at_the_crossing() {
+    // A billable class past the tail's four: FAULT at the crossing.
+    let mut units = [UnitCount { class: 4, ..unit() }; 1];
+    let mut i: ArriveIn = z();
+    i.units_buf = units.as_mut_ptr();
+    i.units_cap = units.len();
+    let mut o: ArriveOut = z();
+    o.units_written = 1;
+    o.principal_need = PRINCIPAL_REQUIRED;
+    let broke = Plane::check(&answer(slot::ARRIVE, Outcome::Ready, &i, &o)).unwrap_err();
+    assert_eq!(broke.rule, Rule::IndexOutOfRange);
+    // The GREEN twin: the last class in the list.
+    let mut last = [UnitCount { class: 3, ..unit() }; 1];
+    i.units_buf = last.as_mut_ptr();
+    assert_eq!(
+        Plane::check(&answer(slot::ARRIVE, Outcome::Ready, &i, &o)),
+        Ok(())
+    );
+    // Without the instance's tail bounds the answer cannot be judged: FAULT.
+    assert_eq!(
+        Plane::check(&bare(slot::ARRIVE, Outcome::Ready, &i, &o)),
+        f(Rule::Missing, "plane.tail")
+    );
 }

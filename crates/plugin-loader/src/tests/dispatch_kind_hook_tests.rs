@@ -45,7 +45,7 @@ fn check<I: InFrame, O: OutFrame>(op: u32, i: &I, in_size: usize, o: &O) -> Resu
     Hook::check(&answer(op, i, in_size, o))
 }
 
-fn answer<I: InFrame, O: OutFrame>(op: u32, i: &I, in_size: usize, o: &O) -> Answer {
+fn answer<I: InFrame, O: OutFrame>(op: u32, i: &I, in_size: usize, o: &O) -> Answer<'static> {
     // SAFETY: `o`'s head leads it (`O: OutFrame`).
     let outcome = unsafe { (*(o as *const O).cast::<OutHead>()).outcome };
     let outcome = if outcome.0 == Outcome::Failed as u8 {

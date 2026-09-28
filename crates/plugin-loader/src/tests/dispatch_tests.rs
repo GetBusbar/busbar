@@ -38,6 +38,10 @@ use crate::dispatch::{
     Metric, Plugin, Redeem, NO_BLOB,
 };
 
+/// The test kind's context: the Statement's `max_inflight`, as bound.
+#[derive(Debug, PartialEq, Eq)]
+struct TestContext(u32);
+
 /// The test plugin's kind, as the dispatcher sees it: its code, the lifecycle skeleton for a table
 /// (a test kind with no ops of its own), FAILED on a timeout.
 struct TestKind;
@@ -46,8 +50,19 @@ impl Kind for TestKind {
     type Ops = OpsHead;
     const TIMEOUT: Outcome = Outcome::Failed;
 
-    /// The test kind's `check_tick`: refuses [`plug::KIND_REJECTS`].
+    /// The test kind's context: a marker built from the Statement at bind.
+    fn context(
+        st: &busbar_contract::abi::mechanism::door::Statement,
+    ) -> Result<Option<Box<crate::dispatch::Context>>, String> {
+        Ok(Some(Box::new(TestContext(st.max_inflight))))
+    }
+
+    /// The test kind's `check_tick`: refuses [`plug::KIND_REJECTS`] on any outcome, and an answer
+    /// judged without the instance's context.
     fn check(a: &crate::dispatch::Answer) -> Result<(), Fault> {
+        if a.context::<TestContext>() != Some(&TestContext(2)) {
+            return Err(fault(Rule::Missing, "test.context"));
+        }
         if a.slot == TICK && a.out::<TickOut>()?.next_tick_ns == plug::KIND_REJECTS {
             return Err(fault(Rule::Contradiction, "tick.next_tick_ns"));
         }
@@ -1468,4 +1483,23 @@ fn red_close_is_refused_while_a_drive_is_mid_crossing() {
         p.call(slot::CLOSE, &mut close_frame()).outcome == Outcome::Ready
     });
     assert!(!p.is_open());
+}
+
+#[test]
+fn red_a_kind_check_judges_every_outcome_in_its_bound_context() {
+    let d = Dispatcher::new(config());
+    let (p, _sink) = opened(&d);
+    // REFUSED is judged too: the test kind's rule fires on it.
+    assert_eq!(
+        p.call(TICK, &mut frame(plug::REJECTED_REFUSED)).outcome,
+        Outcome::Fault
+    );
+    // The GREEN twin: an honest REFUSED answer stays REFUSED.
+    assert_eq!(
+        p.call(TICK, &mut frame(answer(4))).outcome,
+        Outcome::Refused
+    );
+    // Every crossing carried the context built from the Statement at bind (the check FAULTs
+    // without it), so every READY above and in the whole suite proves it arrived.
+    assert_eq!(p.call(TICK, &mut frame(answer(1))).outcome, Outcome::Ready);
 }

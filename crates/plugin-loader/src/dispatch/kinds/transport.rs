@@ -129,9 +129,7 @@ impl Kind for Transport {
             slot::FINISH => framer(a, a.input::<FinishIn>()?.sink),
             slot::DETACH | slot::TIMER => framer(a, a.input::<FramingIn>()?.sink),
             slot::ADOPT => framer(a, a.input::<AdoptIn>()?.sink),
-            life::CANCEL if a.outcome == Outcome::Ready => {
-                check_cancel(a.out::<CancelOut>()?.disposition)
-            }
+            life::CANCEL => check_cancel(a.outcome, a.out::<CancelOut>()?.disposition),
             // `dial`, `flush`, `shut` and the other lifecycle answers: no per-answer rule beyond
             // the mechanism's.
             _ => Ok(()),

@@ -258,6 +258,8 @@ pub(crate) struct Instance {
     short: fn(&Answer) -> bool,
     /// [`Kind::op_name`] of the bound kind.
     op_name: fn(u32) -> &'static str,
+    /// [`Kind::context`] of the bound kind, built from the Statement at bind.
+    context: Option<Box<super::Context>>,
     sink: Arc<dyn EnvelopeSink>,
     pub(crate) wake: &'static InstanceWake,
     tables: Tables,
@@ -464,8 +466,9 @@ impl Instance {
                 out_size as usize,
             )
         };
-        let answered = matches!(outcome, Outcome::Ready | Outcome::Failed);
-        if answered {
+        // Every outcome but FAULT is judged: each kind's check decides what an outcome carries.
+        let answer = answer.with_context(self.context.as_deref());
+        {
             if let Err(f) = (self.check)(&answer) {
                 tracing::warn!(
                     plugin = %self.name,
@@ -691,6 +694,7 @@ impl<K: Kind> Plugin<K> {
         }));
         let name = str_bytes(st.name)
             .ok_or_else(|| LoadError::BadStatement("the name is NULL or over-long".into()))?;
+        let context = K::context(&st).map_err(LoadError::KindTail)?;
         let plugin = Self {
             inner: Arc::new(Instance {
                 kind: v.kind,
@@ -713,6 +717,7 @@ impl<K: Kind> Plugin<K> {
                 check: K::check,
                 short: K::short,
                 op_name: K::op_name,
+                context,
                 sink: bind.sink.clone(),
                 wake,
                 tables,

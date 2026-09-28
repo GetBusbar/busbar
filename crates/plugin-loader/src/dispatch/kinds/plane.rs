@@ -10,34 +10,39 @@
 //!   `fields_buf`/`fields_cap`, every cap from the op's `in`;
 //! * `open` and `refresh` by `check_snapshot` on the generation snapshot a READY answer carries,
 //!   against the generation the `in` names;
-//! * a READY `cancel` by `check_cancel` on its disposition.
+//! * `cancel` by `check_cancel` on its disposition (answered on READY only).
+//!
+//! Every outcome is judged; each check decides what an outcome carries. A snapshot is read only
+//! from a READY `open`/`refresh`: on another outcome the plugin publishes none.
 //!
 //! `hydrate` and `start` answer a bare `OutHead`: no per-answer rule beyond the mechanism's. The
 //! snapshot's claims and admin routes (`check_claims`, `check_admin_routes`) and the Statement tail
 //! are generation and load data, judged where the kernel adopts them, not per answer.
 //!
 //! THE TAIL'S INDICES. A unit's billable class, a record's kind, `arrive`'s op class and dialect
-//! index lists of the plane's Statement tail, which this per-answer check does not hold; they are
-//! judged against [`OPEN`] (every `u32` index in range) here and against the tail by the kernel
-//! that reads them. Every other rule of each check runs in full.
+//! index lists of the plane's Statement tail ([`PlaneTail`]). The tail is read once at bind: it
+//! must be a whole `PlaneTail` that passes `check_tail`, or the load is refused. Its list lengths
+//! are the instance's context ([`Bounds`]), and every answer's indices are judged against them at
+//! the crossing: an index past its list is FAULT.
 //!
 //! SHORT ANSWERS: `arrive`, `on_piece`, `refusal` and `serve` have the short path; a FAILED answer
 //! of one of them with any `*_needed` non-zero is short.
 
 use busbar_contract::abi::mechanism::call::Outcome;
 use busbar_contract::abi::mechanism::check::{fault, reported, Fault, Rule};
+use busbar_contract::abi::mechanism::door::Statement;
 use busbar_contract::abi::mechanism::lifecycle::{slot as life, CancelOut, OpenIn, RefreshIn};
 use busbar_contract::abi::mechanism::KindCode;
 use busbar_contract::abi::plane::check::{
-    check_arrive, check_cancel, check_on_piece, check_refusal, check_serve, check_snapshot, Bounds,
-    Caps,
+    check_arrive, check_cancel, check_on_piece, check_refusal, check_serve, check_snapshot,
+    check_tail, Bounds, Caps,
 };
 use busbar_contract::abi::plane::{
     self, slot, ArriveIn, ArriveOut, OnPieceIn, OnPieceOut, PlaneOpenIn, PlaneOpenOut,
-    PlaneRefreshOut, PlaneSnapshot, RefusalIn, RefusalOut, ServeIn, ServeOut,
+    PlaneRefreshOut, PlaneSnapshot, PlaneTail, RefusalIn, RefusalOut, ServeIn, ServeOut,
 };
 
-use crate::dispatch::{lifecycle_name, Answer, InFrame, Kind, OutFrame};
+use crate::dispatch::{lifecycle_name, Answer, Context, InFrame, Kind, OutFrame};
 
 /// The plane kind.
 #[derive(Debug, Clone, Copy)]
@@ -59,17 +64,40 @@ unsafe impl OutFrame for OnPieceOut {}
 unsafe impl OutFrame for RefusalOut {}
 unsafe impl OutFrame for ServeOut {}
 
-/// The index bounds used for the tail's lists: every `u32` index is in range. The tail is not
-/// part of an answer; the kernel judges the indices against it.
-pub const OPEN: Bounds = Bounds {
-    op_classes: u32::MAX as u64 + 1,
-    dialects: u32::MAX as u64 + 1,
-    billable_classes: u32::MAX as u64 + 1,
-    record_kinds: u32::MAX as u64 + 1,
-};
+/// The instance's tail bounds; an answer judged without them is FAULT (a plane instance always
+/// binds with its tail).
+fn bounds<'a>(a: &Answer<'a>) -> Result<&'a Bounds, Fault> {
+    a.context::<Bounds>()
+        .ok_or(fault(Rule::Missing, "plane.tail"))
+}
+
+/// The plane's tail, read from the Statement: a whole `PlaneTail` that passes `check_tail`.
+fn tail_bounds(st: &Statement) -> Result<Bounds, String> {
+    let p = st.kind_tail;
+    if p.is_null() {
+        return Err("a plane states no kind tail".into());
+    }
+    // SAFETY: a non-NULL kind tail is `'static` plugin data leading with a `KindTailHead`, whose
+    // size the loader checked covers the head; the whole tail is read only once its size covers
+    // this host's `PlaneTail`.
+    let size = unsafe { (*p).size };
+    if (size as usize) < std::mem::size_of::<PlaneTail>() {
+        return Err(format!(
+            "the plane tail is {size} bytes, smaller than this host's"
+        ));
+    }
+    // SAFETY: as above.
+    let tail = unsafe { p.cast::<PlaneTail>().read_unaligned() };
+    check_tail(&tail).map_err(|f| format!("the plane tail breaks {:?} at {}", f.rule, f.field))?;
+    Ok(Bounds::of(&tail))
+}
 
 impl Kind for Plane {
     const CODE: KindCode = KindCode::Plane;
+
+    fn context(st: &Statement) -> Result<Option<Box<Context>>, String> {
+        Ok(Some(Box::new(tail_bounds(st)?)))
+    }
     type Ops = plane::Ops;
     const TIMEOUT: Outcome = Outcome::Failed;
 
@@ -146,9 +174,7 @@ impl Kind for Plane {
                     "refresh.snapshot",
                 )
             }
-            life::CANCEL if a.outcome == Outcome::Ready => {
-                check_cancel(a.out::<CancelOut>()?.disposition)
-            }
+            life::CANCEL => check_cancel(a.outcome, a.out::<CancelOut>()?.disposition),
             // `hydrate`, `start` (a bare `OutHead`) and the other lifecycle answers: no
             // per-answer rule beyond the mechanism's.
             _ => Ok(()),
@@ -193,7 +219,7 @@ fn arrive(a: &Answer) -> Result<(), Fault> {
             "arrive.units",
         )
     }?;
-    check_arrive(a.outcome, o, units, cap, &OPEN)
+    check_arrive(a.outcome, o, units, cap, bounds(a)?)
 }
 
 /// `on_piece`: units, records and fields over the host's buffers, every cap from `OnPieceIn`.
@@ -231,7 +257,7 @@ fn on_piece(a: &Answer) -> Result<(), Fault> {
             )?,
         )
     };
-    check_on_piece(a.outcome, o, (units, records, fields), &caps, &OPEN)
+    check_on_piece(a.outcome, o, (units, records, fields), &caps, bounds(a)?)
 }
 
 /// A READY `open`'s or `refresh`'s generation snapshot: present, of this host's size, then

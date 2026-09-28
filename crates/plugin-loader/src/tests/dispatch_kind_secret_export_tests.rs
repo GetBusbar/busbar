@@ -18,7 +18,7 @@ use crate::dispatch::kinds::export::Export;
 use crate::dispatch::kinds::secret::Secret;
 use crate::dispatch::{in_head, out_head, Answer, Kind, NO_BLOB};
 
-fn answer<I, O>(slot: u32, outcome: Outcome, input: &I, out: &O) -> Answer {
+fn answer<I, O>(slot: u32, outcome: Outcome, input: &I, out: &O) -> Answer<'static> {
     // SAFETY: both are live locals for the answer's use.
     unsafe {
         Answer::new(

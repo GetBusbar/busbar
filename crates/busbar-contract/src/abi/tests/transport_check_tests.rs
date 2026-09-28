@@ -9,7 +9,7 @@ use std::ptr::{null, NonNull};
 
 use super::*;
 use crate::abi::mechanism::call::AbiStr;
-use crate::abi::mechanism::call::Outcome::{Failed, Pending, Ready};
+use crate::abi::mechanism::call::Outcome::{Failed, Pending, Ready, Refused};
 use crate::abi::mechanism::check::fault;
 use crate::abi::transport::*;
 
@@ -218,9 +218,22 @@ fn a_piece_outside_the_frame_or_with_unknown_codes_is_fault() {
 
 #[test]
 fn an_unwritten_or_unknown_cancel_disposition_is_fault() {
-    assert_eq!(check_cancel(0), f(Rule::UnknownCode, "cancel.disposition"));
-    assert_eq!(check_cancel(4), f(Rule::UnknownCode, "cancel.disposition"));
-    assert_eq!(check_cancel(CANCEL_PARTIAL), Ok(()));
+    assert_eq!(
+        check_cancel(Ready, 0),
+        f(Rule::UnknownCode, "cancel.disposition")
+    );
+    assert_eq!(
+        check_cancel(Ready, 4),
+        f(Rule::UnknownCode, "cancel.disposition")
+    );
+    assert_eq!(check_cancel(Ready, CANCEL_PARTIAL), Ok(()));
+    // Another outcome answers no disposition: unwritten passes, a written one is FAULT.
+    assert_eq!(check_cancel(Failed, 0), Ok(()));
+    assert_eq!(check_cancel(Pending, 0), Ok(()));
+    assert_eq!(
+        check_cancel(Refused, CANCEL_PARTIAL),
+        f(Rule::Contradiction, "cancel.disposition")
+    );
 }
 
 #[test]

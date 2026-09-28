@@ -33,7 +33,7 @@ fn f(rule: Rule, field: &'static str) -> Result<(), Fault> {
 }
 
 /// An answer of `slot` over the test's own `in` and `out`.
-fn answer<I, O>(s: u32, outcome: Outcome, i: &I, o: &O) -> Answer {
+fn answer<I, O>(s: u32, outcome: Outcome, i: &I, o: &O) -> Answer<'static> {
     // SAFETY: `i` and `o` are live for the answer's use in each test and nobody writes them.
     unsafe {
         Answer::new(

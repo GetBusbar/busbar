@@ -34,7 +34,13 @@ const GROUPS_CAP: u32 = 2;
 const FIELDS_CAP: u32 = 2;
 
 /// The answer of op `slot` over `input`/`out`, `in_size` bytes of `in`.
-fn answer<I, O>(slot: u32, outcome: Outcome, input: &I, in_size: usize, out: &O) -> Answer {
+fn answer<I, O>(
+    slot: u32,
+    outcome: Outcome,
+    input: &I,
+    in_size: usize,
+    out: &O,
+) -> Answer<'static> {
     // SAFETY: `input`/`out` are live test locals that outlive the answer and are not written while
     // it lives; `in_size` is at most `size_of::<I>()` and the out size is exactly `size_of::<O>()`.
     unsafe {

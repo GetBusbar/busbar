@@ -167,12 +167,20 @@ pub fn check_framer(
     Ok(())
 }
 
-/// The lifecycle `cancel`'s disposition: one of the transport's three (`0` = unwritten).
+/// The lifecycle `cancel`'s disposition: on READY, one of the transport's three (`0` = unwritten is
+/// FAULT); on any other outcome the op did not answer a disposition, and it must be unwritten.
 ///
 /// # Errors
 ///
-/// [`Rule::UnknownCode`].
-pub const fn check_cancel(disposition: u32) -> Result<(), Fault> {
+/// [`Rule::UnknownCode`] for a READY disposition outside the three; [`Rule::Contradiction`] for
+/// a disposition written on another outcome.
+pub const fn check_cancel(outcome: Outcome, disposition: u32) -> Result<(), Fault> {
+    if !matches!(outcome, Outcome::Ready) {
+        if disposition != 0 {
+            return Err(fault(Rule::Contradiction, "cancel.disposition"));
+        }
+        return Ok(());
+    }
     code(
         disposition as u64,
         CANCEL_NOTHING_MOVED as u64,

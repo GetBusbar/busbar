@@ -10,7 +10,7 @@ use std::ptr::null;
 use super::*;
 use crate::abi::host::conn::connector::{Need, DIRECTION_OUTBOUND};
 use crate::abi::mechanism::call::AbiStr;
-use crate::abi::mechanism::call::Outcome::{Failed, Pending, Ready};
+use crate::abi::mechanism::call::Outcome::{Failed, Pending, Ready, Refused};
 use crate::abi::mechanism::check::fault;
 use crate::abi::plane::*;
 
@@ -347,9 +347,22 @@ fn a_serve_reply_follows_m_sb_and_its_fields_stay_in_the_arena() {
 
 #[test]
 fn an_unwritten_or_unknown_cancel_disposition_is_fault() {
-    assert_eq!(check_cancel(0), f(Rule::UnknownCode, "cancel.disposition"));
-    assert_eq!(check_cancel(4), f(Rule::UnknownCode, "cancel.disposition"));
-    assert_eq!(check_cancel(CANCEL_ABORTED), Ok(()));
+    assert_eq!(
+        check_cancel(Ready, 0),
+        f(Rule::UnknownCode, "cancel.disposition")
+    );
+    assert_eq!(
+        check_cancel(Ready, 4),
+        f(Rule::UnknownCode, "cancel.disposition")
+    );
+    assert_eq!(check_cancel(Ready, CANCEL_ABORTED), Ok(()));
+    // Another outcome answers no disposition: unwritten passes, a written one is FAULT.
+    assert_eq!(check_cancel(Failed, 0), Ok(()));
+    assert_eq!(check_cancel(Pending, 0), Ok(()));
+    assert_eq!(
+        check_cancel(Refused, CANCEL_ABORTED),
+        f(Rule::Contradiction, "cancel.disposition")
+    );
 }
 
 // ── snapshot ──

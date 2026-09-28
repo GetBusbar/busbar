@@ -27,7 +27,7 @@ const NO_STR: AbiStr = AbiStr {
     len: 0,
 };
 
-fn answer<I: InFrame, O: OutFrame>(s: u32, outcome: Outcome, i: &I, o: &O) -> Answer {
+fn answer<I: InFrame, O: OutFrame>(s: u32, outcome: Outcome, i: &I, o: &O) -> Answer<'static> {
     // SAFETY: `i`/`o` outlive every use of the answer in the test that built it.
     unsafe {
         Answer::new(

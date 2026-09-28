@@ -42,6 +42,7 @@ use busbar_contract::abi::mechanism::call::{
     Blob, InHead, Op, OutHead, Outcome, RawOutcome, BLOB_ABSENT,
 };
 use busbar_contract::abi::mechanism::check::Fault;
+use busbar_contract::abi::mechanism::door::Statement;
 use busbar_contract::abi::mechanism::lifecycle::{
     CancelIn, CancelOut, DriveIn, GenIn, OpenIn, OpenOut, OpsHead, RefreshIn, ReleaseIn, TickIn,
     TickOut, ValidateIn,
@@ -49,7 +50,7 @@ use busbar_contract::abi::mechanism::lifecycle::{
 use busbar_contract::abi::mechanism::ticket::{HostCtx, Ticket};
 use busbar_contract::abi::mechanism::KindCode;
 
-pub use answer::Answer;
+pub use answer::{Answer, Context};
 pub use load::{load_dropped, load_linked, LoadError, ManifestFacts};
 pub use plugin::{Bind, Called, Diagnostic, Dropped, EnvelopeSink, Metric, NoSink, Plugin, Recall};
 pub use ticket::{Completions, Redeem};
@@ -71,8 +72,19 @@ pub trait Kind: Send + Sync + 'static {
         lifecycle_name(slot)
     }
 
+    /// The instance's CONTEXT for its checks, built once from the Statement at bind (the plane's
+    /// tail bounds); `None` = the kind's checks need none. An `Err` refuses the load.
+    ///
+    /// # Errors
+    /// Why the Statement cannot bind this kind.
+    fn context(statement: &Statement) -> Result<Option<Box<Context>>, String> {
+        let _ = statement;
+        Ok(None)
+    }
+
     /// THE KIND'S ANSWER VALIDATION: the kind's pure `check_<op>` in `abi/<kind>/`, run after every
-    /// READY or FAILED answer of every op. `Err` is FAULT, logged once at warn with the plugin, the
+    /// answer of every op, on EVERY outcome but FAULT (each check decides which fields an outcome
+    /// carries). `Err` is FAULT, logged once at warn with the plugin, the
     /// kind, the op and the rule (never a payload byte). The dispatcher never re-implements a rule.
     /// An op whose kind states no rule beyond the mechanism's answers `Ok`.
     ///
