@@ -840,6 +840,19 @@ jobs:
         run: cargo xtask gate kind-abi-lane --selftest
       - name: Kind-ABI-lane gate (BLOCKING — each kind on the ONE lane #30 assigns it by heat)
         run: cargo xtask gate kind-abi-lane
+      # ABI-LOCATION gate: ONE PLACE FOR EVERY ABI SHAPE (OWNER 2026-09-27: "edit one crate to add
+      # something to abi and all those plugin kinds then can implement it"). A `#[repr(C)]` type, an
+      # `extern "C"` slot body or fn-pointer type, or an ABI version constant defined anywhere but
+      # crates/busbar-contract/src/abi/ is a piece of the boundary the next kind cannot reach by
+      # editing abi/. Armed at today's count (Law 9) as the drain-only ledger qa/abi-location.toml:
+      # a NEW offender is RED, a drained offender whose row was not struck is RED. Test doubles live
+      # under tests/, benches/ or #[cfg(test)] only. Sibling plugin checkouts are scanned when
+      # present; CI has none, and the row says so. Self-test FIRST: a repr(C) struct planted in a
+      # kernel file and a version const planted in plugin-loader are proven RED, a tests/ double GREEN.
+      - name: ABI-location self-test (a repr(C) in the kernel and an ABI const in the loader, planted and proven RED)
+        run: cargo xtask gate abi-location --selftest
+      - name: ABI-location gate (BLOCKING — every ABI shape defined in busbar-contract's abi/, offenders drain-only)
+        run: cargo xtask gate abi-location
       # KIND-ISOLATION gate: busbar is core + plugins, and the ~10 plugin kinds can never
       # cross-contaminate (owner ruling, 2026-09-07). A proposal to create `busbar-transport-a2a`
       # was ruled catastrophic — it fuses a KIND with another kind's INSTANCE and merges back what

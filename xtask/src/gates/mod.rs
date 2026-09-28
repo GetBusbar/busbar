@@ -18,6 +18,7 @@
 //!    [`Gate::run`] — the trait gives it no other handle — so re-implementing the predicate beside
 //!    the gate, the failure seven of the shell self-tests had, is not something a selftest CAN do.
 
+pub mod abi_location;
 pub mod blocking_ffi;
 pub mod changelog;
 pub mod changelog_register;
@@ -2770,6 +2771,14 @@ pub static REGISTRY: &[Registration] = &[
         tier: Tier::Fast,
         build: || Box::new(money_invariants::MoneyInvariantsGate),
         summary: "money records hold no plugin/plane field, store no price, seal one facts-line per unit (#77)",
+    },
+    Registration {
+        name: "abi-location",
+        batch: 1,
+        tier: Tier::Fast,
+        build: || Box::new(abi_location::AbiLocationGate),
+        summary: "every ABI shape (repr(C) type, extern \"C\" slot/fn-pointer, ABI version const) is \
+                  defined in busbar-contract's abi/; today's offenders are a drain-only ledger",
     },
     Registration {
         name: "kind-abi-lane",
