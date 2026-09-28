@@ -57,3 +57,97 @@ fn a_metadata_target_is_refused_before_any_dial() {
     assert_eq!(c.open(OWNER, NeedId(0), &desc), Err(ConnError::Refused));
     assert!(endpoint::check(desc.target).is_err());
 }
+
+// ── the table over a composed connection ──
+
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
+
+use crate::registry::{Entry, Transports};
+use crate::support::{worker, TestDoor};
+
+fn serving(wakes: Arc<AtomicU64>) -> Connector {
+    let view = Transports::new(vec![Entry {
+        door: Arc::new(TestDoor::identity("bytes")),
+        alpn: Vec::new(),
+    }])
+    .unwrap();
+    Connector::serving(
+        view,
+        None,
+        Arc::new(move |_| {
+            wakes.fetch_add(1, Ordering::SeqCst);
+        }),
+    )
+}
+
+/// A declared need over a served transport opens a real connection: the opening body goes out,
+/// a read with nothing ready is Pending with the ticket registered, the far end's bytes wake the
+/// ticket, and the next read answers them.
+#[test]
+fn a_need_over_a_served_transport_reaches_a_real_far_end() {
+    worker().block_on(async {
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let far = l.local_addr().unwrap().to_string();
+        let (tx, rx) = tokio::sync::oneshot::channel::<Vec<u8>>();
+        tokio::spawn(async move {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            let (mut s, _) = l.accept().await.unwrap();
+            let mut buf = [0_u8; 5];
+            s.read_exact(&mut buf).await.unwrap();
+            let _ = tx.send(buf.to_vec());
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            s.write_all(b"answer").await.unwrap();
+        });
+        let wakes = Arc::new(AtomicU64::new(0));
+        let c = serving(wakes.clone());
+        c.declare_over(OWNER, NeedId(0), "bytes");
+        let desc = OpenDesc {
+            target: &far,
+            body: b"first",
+            ..OpenDesc::default()
+        };
+        let id = c.open(OWNER, NeedId(0), &desc).expect("opens");
+        let mut buf = [0_u8; 64];
+        assert_eq!(c.read(OWNER, id, 7, &mut buf), Err(ConnError::Pending));
+        // Nothing drives the connection but the caller's own reads: read until the far end has the
+        // opening body (it answers only after a pause, so no answer is taken here).
+        let mut rx = rx;
+        let first = loop {
+            assert_eq!(c.read(OWNER, id, 7, &mut buf), Err(ConnError::Pending));
+            match rx.try_recv() {
+                Ok(v) => break v,
+                Err(_) => tokio::task::yield_now().await,
+            }
+        };
+        assert_eq!(first, b"first");
+        let piece = loop {
+            match c.read(OWNER, id, 7, &mut buf) {
+                Err(ConnError::Pending) => tokio::task::yield_now().await,
+                other => break other.unwrap(),
+            }
+        };
+        assert_eq!(&buf[..piece.len], b"answer");
+        assert!(wakes.load(Ordering::SeqCst) >= 1, "the ticket was woken");
+        assert_eq!(c.read(OTHER, id, 7, &mut buf), Err(ConnError::NotOwner));
+        assert_eq!(c.facts(OWNER, id).unwrap().claim.as_deref(), Some("bytes"));
+        c.close(OWNER, id).unwrap();
+        assert_eq!(c.read(OWNER, id, 7, &mut buf), Err(ConnError::Closed));
+    });
+}
+
+/// RED: a metadata target is refused through the table even when a transport serves the need.
+#[test]
+fn a_metadata_target_is_refused_even_over_a_served_transport() {
+    worker().block_on(async {
+        let c = serving(Arc::new(AtomicU64::new(0)));
+        c.declare_over(OWNER, NeedId(0), "bytes");
+        for target in ["169.254.169.254:80", "[fd00:ec2::254]:80", "100.100.100.200:80"] {
+            let desc = OpenDesc {
+                target,
+                ..OpenDesc::default()
+            };
+            assert_eq!(c.open(OWNER, NeedId(0), &desc), Err(ConnError::Refused), "{target}");
+        }
+    });
+}
