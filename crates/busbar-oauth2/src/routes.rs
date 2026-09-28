@@ -28,9 +28,9 @@
 use std::sync::Arc;
 
 use axum::response::{IntoResponse, Response};
+use busbar_contract::abi::cold::endpoint::{RouteAuth, RouteMethod};
 use busbar_kernel::core_routes::CoreRouter;
 use busbar_kernel::state::AppHandle;
-use busbar_plugin_loader::{RouteAuth, RouteMethod};
 
 /// The seam-typed mount (`busbar_kernel::oauth_as::seam::AsPlaneSeam::mount`): downcasts the
 /// type-erased plane object core hands in and defers to [`mount`]. Core cannot call [`mount`]

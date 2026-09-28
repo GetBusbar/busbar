@@ -29,8 +29,9 @@
 
 use std::sync::Arc;
 
-use crate::root::loader::{DynPlane, HotHostVtable, HotPlaneDecl, RouteAuth, RouteMethod};
-use crate::root::loader::{HotStatusClass as StatusClass, ServedPlane};
+use busbar_contract::abi::cold::endpoint::{RouteAuth, RouteMethod};
+use busbar_contract::abi::hot;
+use busbar_contract::abi::hot::StatusClass;
 use busbar_contract::ids::OpClassId;
 use busbar_contract::plane::{MetricFamily, ServedOpClass};
 use busbar_kernel::ingress::arrival::{BodyIngressEntry, PathIngressEntry};
@@ -39,6 +40,7 @@ use busbar_kernel::plane::registry::{BillableClass, BuildCtx, PlaneDeclaration, 
 use busbar_kernel::plane::PlaneAdmission;
 use busbar_kernel::plane_host::{EngineHost, LiveHostFactory};
 use busbar_kernel::plane_routes::{PlaneReqCtx, PlaneResponse, PlaneRouteSpec};
+use crate::root::loader::{DynPlane, ServedPlane};
 
 /// A provider composition step, captured off the resolved configuration before the app is built and
 /// run once the deployment's secret resolver exists.
@@ -62,7 +64,7 @@ pub struct Linked {
     /// The plane axis, HOT lane: each linked plane that exports a `#[repr(C)]` plane declaration
     /// (`busbar_contract::abi::hot::PlaneDecl`) instead of Rust hooks — admitted and adapted exactly as the
     /// same plane dropped into `plugins/` is (see [`register_planes`]).
-    pub hot_planes: &'static [&'static HotPlaneDecl],
+    pub hot_planes: &'static [&'static hot::PlaneDecl],
     /// Protocol declarations, appended to the installed protocol set in this order.
     pub protocols: &'static [&'static [&'static busbar_kernel::proto::ProtocolDecl]],
     /// URL-model arrivals, by protocol name.
@@ -185,7 +187,7 @@ pub type LinkedExport = (
     &'static str,
     &'static str,
     &'static str,
-    &'static crate::root::loader::ColdEntry,
+    &'static busbar_contract::abi::cold::ColdEntry,
 );
 
 /// The newest export payload schema this binary speaks — what a linked sink states.
@@ -221,7 +223,9 @@ pub fn linked_exports(
             host: None,
             declares,
         };
-        Ok(crate::root::loader::LinkedPlugin::boundary(manifest, entry))
+        Ok(crate::root::loader::LinkedPlugin::boundary(
+            manifest, entry,
+        ))
     };
     exports.iter().map(row).collect()
 }
@@ -479,7 +483,7 @@ static HOT_PLANES: std::sync::Mutex<Vec<&'static DynPlane>> = std::sync::Mutex::
 /// table outlives it (the ABI's build contract), and a dropped-in plane's contract host-service
 /// ports are armed over it when its door opens (minor 30). Each dispatch is handed a table and
 /// `HostCtx` of its own, minted for it.
-static HOT_HOST: std::sync::LazyLock<HotHostVtable> =
+static HOT_HOST: std::sync::LazyLock<hot::PlaneHostVtable> =
     std::sync::LazyLock::new(busbar_kernel::plane_host::build_plane_host_vtable);
 
 /// A HOT-lane plane's runtime slot for one config generation: the plane as built, and the door it
@@ -755,13 +759,15 @@ async fn hot_answer_blocking(ctx: PlaneReqCtx) -> PlaneResponse {
     if let Some(Emitted::Head(status, headers)) = rx.recv().await {
         return live_response(status, &headers, rx);
     }
-    let reply = run.await.unwrap_or_else(|_| crate::root::loader::HotReply {
-        class: StatusClass::Fault,
-        status: None,
-        headers: Vec::new(),
-        body: Vec::new(),
-        streamed: false,
-    });
+    let reply = run
+        .await
+        .unwrap_or_else(|_| crate::root::loader::HotReply {
+            class: StatusClass::Fault,
+            status: None,
+            headers: Vec::new(),
+            body: Vec::new(),
+            streamed: false,
+        });
     buffered_response(reply)
 }
 
@@ -1213,9 +1219,12 @@ impl HostEgressCarrier {
     /// The request as the hop sends it — after `policy` — and its deadline; or the refusal.
     fn prepare(
         policy: crate::root::loader::EgressPolicy,
-        request: &crate::root::loader::HttpRequest,
+        request: &busbar_contract::abi::cold::export::HttpRequest,
         body: &[u8],
-    ) -> Result<(CarriedRequest, tokio::time::Instant), crate::root::loader::HostResult> {
+    ) -> Result<
+        (CarriedRequest, tokio::time::Instant),
+        busbar_contract::abi::cold::export::HostResult,
+    > {
         if let Err(refusal) = judge(policy, &request.url, false) {
             return Err(carried_failure("refused", refusal));
         }
@@ -1247,7 +1256,7 @@ impl HostEgressCarrier {
     async fn send(
         (method, uri, headers, body): CarriedRequest,
         deadline: tokio::time::Instant,
-    ) -> crate::root::loader::HostResult {
+    ) -> busbar_contract::abi::cold::export::HostResult {
         let req = busbar_kernel::egress::engine::request(method, uri, headers, body);
         let client = CARRIER_CLIENT.get_or_init(|| {
             busbar_kernel::proxy::build_egress_client(
@@ -1260,12 +1269,12 @@ impl HostEgressCarrier {
             )
         });
         match busbar_kernel::egress::engine::send_bounded(client, req, deadline).await {
-            Ok(answer) => {
-                crate::root::loader::HostResult::Http(crate::root::loader::HttpResponse {
+            Ok(answer) => busbar_contract::abi::cold::export::HostResult::Http(
+                busbar_contract::abi::cold::export::HttpResponse {
                     status: answer.status().as_u16(),
                     body: String::new(),
-                })
-            }
+                },
+            ),
             Err(e) => carried_failure("request", e.into_cause()),
         }
     }
@@ -1297,8 +1306,8 @@ type CarriedRequest = (
 );
 
 /// A carried request's failure at `step`.
-fn carried_failure(step: &str, error: String) -> crate::root::loader::HostResult {
-    crate::root::loader::HostResult::Failed {
+fn carried_failure(step: &str, error: String) -> busbar_contract::abi::cold::export::HostResult {
+    busbar_contract::abi::cold::export::HostResult::Failed {
         step: step.to_string(),
         error,
         rotation: None,
@@ -1306,7 +1315,10 @@ fn carried_failure(step: &str, error: String) -> crate::root::loader::HostResult
 }
 
 impl crate::root::loader::EgressCarrier for HostEgressCarrier {
-    fn carry(&self, request: &crate::root::loader::HttpRequest) -> crate::root::loader::HostResult {
+    fn carry(
+        &self,
+        request: &busbar_contract::abi::cold::export::HttpRequest,
+    ) -> busbar_contract::abi::cold::export::HostResult {
         let open_web = crate::root::loader::EgressPolicy::OpenWeb;
         self.carry_under(open_web, request, request.body.as_bytes())
     }
@@ -1314,9 +1326,12 @@ impl crate::root::loader::EgressCarrier for HostEgressCarrier {
     /// The same hop, awaited by the delivery's task: no thread waits on the far end.
     fn carry_async(
         &'static self,
-        request: crate::root::loader::HttpRequest,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = crate::root::loader::HostResult> + Send>>
-    {
+        request: busbar_contract::abi::cold::export::HttpRequest,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<Output = busbar_contract::abi::cold::export::HostResult> + Send,
+        >,
+    > {
         let body = request.body.clone().into_bytes();
         self.carry_under_async(crate::root::loader::EgressPolicy::OpenWeb, request, body)
     }
@@ -1336,9 +1351,9 @@ impl crate::root::loader::EgressCarrier for HostEgressCarrier {
     fn carry_under(
         &self,
         policy: crate::root::loader::EgressPolicy,
-        request: &crate::root::loader::HttpRequest,
+        request: &busbar_contract::abi::cold::export::HttpRequest,
         body: &[u8],
-    ) -> crate::root::loader::HostResult {
+    ) -> busbar_contract::abi::cold::export::HostResult {
         let (req, deadline) = match HostEgressCarrier::prepare(policy, request, body) {
             Ok(prepared) => prepared,
             Err(refused) => return refused,
@@ -1352,10 +1367,13 @@ impl crate::root::loader::EgressCarrier for HostEgressCarrier {
     fn carry_under_async(
         &'static self,
         policy: crate::root::loader::EgressPolicy,
-        request: crate::root::loader::HttpRequest,
+        request: busbar_contract::abi::cold::export::HttpRequest,
         body: Vec<u8>,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = crate::root::loader::HostResult> + Send>>
-    {
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<Output = busbar_contract::abi::cold::export::HostResult> + Send,
+        >,
+    > {
         Box::pin(async move {
             match HostEgressCarrier::prepare(policy, &request, &body) {
                 Ok((req, deadline)) => HostEgressCarrier::send(req, deadline).await,

@@ -7,7 +7,7 @@
 
 use super::*;
 use crate::config::{resolve_export, ExportDefs};
-use busbar_plugin_loader::{Route, RouteAuth, RouteMethod};
+use busbar_contract::abi::cold::endpoint::{Route, RouteAuth, RouteMethod};
 
 /// The export axis THIS test binary resolves `export:` against: the neutral rows, and the scrape
 /// sink (`prometheus`) LINKED ahead of them as the composition root links it — the configuration

@@ -3781,8 +3781,8 @@ fn uuid_like(body: &[u8], now: u64) -> String {
 pub(crate) fn a2a_routes(
     slot: &dyn std::any::Any,
 ) -> Vec<busbar_kernel::plane_routes::PlaneRouteSpec> {
+    use busbar_contract::abi::cold::endpoint::{RouteAuth, RouteMethod};
     use busbar_kernel::plane_routes::{PlaneReqCtx, PlaneRouteFuture, PlaneRouteSpec};
-    use busbar_plugin_loader::{RouteAuth, RouteMethod};
     let plane = slot
         .downcast_ref::<super::plane::A2aPlane>()
         .expect("the a2a plane's routes slot is an A2aPlane");

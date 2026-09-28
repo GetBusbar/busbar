@@ -1894,7 +1894,7 @@ pub fn resolve_export(defs: &ExportDefs, errors: &mut Vec<String>) -> ExportCfg 
             // ignored. A third party may subscribe to `metrics`; it never renders busbar's own
             // `/metrics` (#65).
             other if axis.is_some() => {
-                let metrics = busbar_plugin_loader::ExportStream::Metrics;
+                let metrics = busbar_contract::abi::cold::export::ExportStream::Metrics;
                 let carries = declared.is_some_and(|d| d.contains(&metrics));
                 let first_party = crate::export::plugin::first_party(other);
                 let scrape = carries && first_party && projection.wants_stream(metrics);

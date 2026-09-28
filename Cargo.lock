@@ -418,7 +418,6 @@ dependencies = [
  "busbar-core-admin",
  "busbar-kernel",
  "busbar-plane-a2a",
- "busbar-plugin-loader",
  "bytes",
  "ed25519-dalek",
  "futures",
@@ -900,8 +899,8 @@ version = "1.6.0"
 dependencies = [
  "axum",
  "base64 0.23.1",
+ "busbar-contract",
  "busbar-kernel",
- "busbar-plugin-loader",
  "bytes",
  "http",
  "http-body-util",

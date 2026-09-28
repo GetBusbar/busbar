@@ -23,19 +23,19 @@
 //! one function, the equality tests below go red for the same reason that arm is unequal.
 
 use super::*;
-use crate::root::loader::sign::{DiagnosticDecl, SigningKey, TrustPolicy};
-use crate::root::loader::PluginRegistry;
 use crate::root::test_plugins;
 use busbar_kernel::plane::registry::{merged_boot_plane_decls, BuildCtx};
 use busbar_plugin_example_plane::PLANE_DECL as LINKED_DECL;
+use crate::root::loader::sign::{DiagnosticDecl, SigningKey, TrustPolicy};
+use crate::root::loader::PluginRegistry;
 
 /// The linked example plane, as the build table carries it.
-pub(super) static LINKED_HOT: [&HotPlaneDecl; 1] = [&LINKED_DECL];
+pub(super) static LINKED_HOT: [&hot::PlaneDecl; 1] = [&LINKED_DECL];
 
 /// A table with the given plane rows and HOT-lane planes and nothing on any other axis.
 pub(super) fn linked(
     planes: &'static [PlaneDecl],
-    hot_planes: &'static [&'static HotPlaneDecl],
+    hot_planes: &'static [&'static hot::PlaneDecl],
 ) -> Linked {
     Linked {
         planes,
@@ -228,10 +228,10 @@ fn dropped_again() -> Vec<DynPlane> {
 }
 
 /// The `PlaneDeclaration` a decl STATES — every field, mapped here from what the loader's admission
-/// read off the decl (`link_plane`; the loader's `plane_conformance_tests` hold that read
+/// read off the decl (`link_plane`; `busbar-plugin-loader`'s `plane_conformance_tests` hold that read
 /// to the raw `#[repr(C)]` static, field for field) — with no adapter in between. The yardstick the
 /// installed row is held to: an adapter that dropped or defaulted any one field disagrees with it.
-fn stated(d: &'static HotPlaneDecl) -> PlaneDeclaration {
+fn stated(d: &'static hot::PlaneDecl) -> PlaneDeclaration {
     let plane: &'static DynPlane = Box::leak(Box::new(
         crate::root::loader::link_plane(d, "yardstick").expect("the decl is admitted"),
     ));
@@ -292,13 +292,13 @@ fn stated(d: &'static HotPlaneDecl) -> PlaneDeclaration {
 /// each of its states.
 #[test]
 fn a_fallback_plane_that_signs_nothing_installs_exactly_that() {
-    let variant: &'static HotPlaneDecl = Box::leak(Box::new(HotPlaneDecl {
+    let variant: &'static hot::PlaneDecl = Box::leak(Box::new(hot::PlaneDecl {
         fallback: 1,
-        signing_domain: crate::root::loader::HotDeclStr::NONE,
-        signing_kid_prefix: crate::root::loader::HotDeclStr::NONE,
+        signing_domain: busbar_contract::abi::hot::DeclStr::NONE,
+        signing_kid_prefix: busbar_contract::abi::hot::DeclStr::NONE,
         ..LINKED_DECL
     }));
-    let table: &'static [&'static HotPlaneDecl] = Box::leak(Box::new([variant]));
+    let table: &'static [&'static hot::PlaneDecl] = Box::leak(Box::new([variant]));
     let rows = plane_rows(&linked(&[], table), Vec::new()).unwrap();
     assert_eq!(rows.len(), 1);
     let expected = stated(variant);
@@ -333,11 +333,11 @@ fn a_plane_whose_key_is_taken_is_skipped_the_same_way_by_either_door() {
 /// installed, and the refusal is the one function's — the linked door gives it too.
 #[test]
 fn a_plane_that_names_nothing_is_refused_at_the_linked_door_too() {
-    let nameless: &'static HotPlaneDecl = Box::leak(Box::new(HotPlaneDecl {
+    let nameless: &'static hot::PlaneDecl = Box::leak(Box::new(hot::PlaneDecl {
         name_len: 0,
         ..LINKED_DECL
     }));
-    let table: &'static [&'static HotPlaneDecl] = Box::leak(Box::new([nameless]));
+    let table: &'static [&'static hot::PlaneDecl] = Box::leak(Box::new([nameless]));
     let refusal = plane_rows(&linked(&[], table), Vec::new())
         .map(|_| ())
         .unwrap_err();
@@ -503,13 +503,13 @@ async fn serve_arm() {
         // dispatch blocks (minor 32) — which a live answer requires: served on a blocking thread
         // rather than inline — the other door mode, which must answer identically.
         "blocking" => {
-            let blocking: &'static HotPlaneDecl = Box::leak(Box::new(HotPlaneDecl {
+            let blocking: &'static hot::PlaneDecl = Box::leak(Box::new(hot::PlaneDecl {
                 provided_carriers: LINKED_DECL.provided_carriers
                     | busbar_contract::abi::hot::IngressCarrier::ResponseStream.bit(),
                 dispatch_flags: busbar_contract::abi::hot::decl::DISPATCH_BLOCKS,
                 ..LINKED_DECL
             }));
-            let table: &'static [&'static HotPlaneDecl] = Box::leak(Box::new([blocking]));
+            let table: &'static [&'static hot::PlaneDecl] = Box::leak(Box::new([blocking]));
             plane_rows(&linked(&[], table), Vec::new())
         }
         "dropped" => plane_rows(&linked(&[], &[]), dropped_in()),
@@ -1031,7 +1031,8 @@ fn a_first_party_plugins_declared_codes_join_the_catalogue_and_nothing_else_does
 #[cfg(linked_egress)]
 #[test]
 fn the_egress_carrier_refuses_what_the_host_policy_refuses() {
-    use crate::root::loader::{EgressCarrier as _, HostResult, HttpRequest};
+    use busbar_contract::abi::cold::export::{HostResult, HttpRequest};
+    use crate::root::loader::EgressCarrier as _;
     for url in [
         "http://collector.example/v1",
         "https://127.0.0.1:9/v1",
@@ -1071,7 +1072,8 @@ fn the_egress_carrier_refuses_what_the_host_policy_refuses() {
 #[cfg(linked_egress)]
 #[tokio::test(flavor = "multi_thread")]
 async fn the_collector_policy_carries_octets_to_a_loopback_collector_and_nothing_else() {
-    use crate::root::loader::{EgressCarrier as _, EgressPolicy, HostResult, HttpRequest};
+    use busbar_contract::abi::cold::export::{HostResult, HttpRequest};
+    use crate::root::loader::{EgressCarrier as _, EgressPolicy};
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await

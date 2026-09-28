@@ -66,21 +66,8 @@ pub mod transport;
 pub mod transport_adapter;
 
 pub use auth::DynAuth;
-/// Re-export the HTTP-endpoint wire types (plugin route registration + dispatch) so the engine
-/// (`crates/busbar`) names `busbar_plugin_loader::{Route, RouteAuth, ...}` without a direct
-/// `busbar-plugin` dependency — mirroring how it already reaches the loader's typed seams.
-pub use busbar_contract::abi::cold::endpoint::{
-    EndpointRequest, EndpointResponse, Route, RouteAuth, RouteMethod,
-};
+use busbar_contract::abi::cold::ColdEntry;
 pub use export::{load_export_from_bytes, load_export_image, DynExport};
-// The export PROJECTION vocabulary (the frozen `streams:` / `fields:` word-space). Re-exported for
-// the same reason the endpoint types above are: the engine names these through the loader
-// rather than taking a second, direct dependency on the ABI crate.
-pub use busbar_contract::abi::cold::export::{CheckPhase, ExportField, ExportStream};
-pub use busbar_contract::abi::cold::export::{HostResult, HttpRequest, HttpResponse};
-/// A cold plugin's LINKED boundary (`BUSBAR_COLD_ENTRY`), named for the composition root's linked
-/// tables, which hand it to [`LinkedPlugin::boundary`].
-pub use busbar_contract::abi::cold::ColdEntry;
 pub use sign::EgressPolicy;
 
 impl LinkedPlugin {
@@ -96,16 +83,6 @@ impl LinkedPlugin {
         row
     }
 }
-/// The borrowed-string range of that decl's declaration tail, re-exported beside it.
-pub use busbar_contract::abi::hot::DeclStr as HotDeclStr;
-/// The HOT-lane plane declaration, re-exported for the reason the endpoint types above are: the
-/// composition root names the decl a linked plane exports through the loader, not a second edge.
-pub use busbar_contract::abi::hot::PlaneDecl as HotPlaneDecl;
-/// The HOT-lane host vtable, re-exported for the same reason: the composition root keeps the table a
-/// served plane is built against, and names its type through the loader.
-pub use busbar_contract::abi::hot::PlaneHostVtable as HotHostVtable;
-/// The status class a served plane's dispatch answers with, re-exported beside the vtable.
-pub use busbar_contract::abi::hot::StatusClass as HotStatusClass;
 pub use carrier::{HotReply, ReplyStream, RequestHead, MAX_PLANE_REPLY_LEN};
 pub use fetch::{fetch_plugins, FetchOutcome, FetchSpec};
 pub use highwater::{HighWaterMarks, HIGH_WATER_FILE};
@@ -124,6 +101,60 @@ pub use transport::{
     DeclCarrier, DeclFramer, DynTransport, WakeToken, HOST_WAKER,
 };
 pub use transport_adapter::{CarrierIo, WireTransport};
+
+/// THE LOADER RE-EXPORTS NO CONTRACT TYPE (BOOT-LOOP step 3, ruling R2). A type the contract owns
+/// is named from `busbar_contract::abi::*`, the crate that owns it; the loader path to it does not
+/// compile. Each block below is one former loader re-export, and each must stay a compile error.
+///
+/// ```compile_fail
+/// use busbar_plugin_loader::EndpointRequest;
+/// ```
+/// ```compile_fail
+/// use busbar_plugin_loader::EndpointResponse;
+/// ```
+/// ```compile_fail
+/// use busbar_plugin_loader::Route;
+/// ```
+/// ```compile_fail
+/// use busbar_plugin_loader::RouteAuth;
+/// ```
+/// ```compile_fail
+/// use busbar_plugin_loader::RouteMethod;
+/// ```
+/// ```compile_fail
+/// use busbar_plugin_loader::CheckPhase;
+/// ```
+/// ```compile_fail
+/// use busbar_plugin_loader::ExportField;
+/// ```
+/// ```compile_fail
+/// use busbar_plugin_loader::ExportStream;
+/// ```
+/// ```compile_fail
+/// use busbar_plugin_loader::HostResult;
+/// ```
+/// ```compile_fail
+/// use busbar_plugin_loader::HttpRequest;
+/// ```
+/// ```compile_fail
+/// use busbar_plugin_loader::HttpResponse;
+/// ```
+/// ```compile_fail
+/// use busbar_plugin_loader::ColdEntry;
+/// ```
+/// ```compile_fail
+/// use busbar_plugin_loader::HotDeclStr;
+/// ```
+/// ```compile_fail
+/// use busbar_plugin_loader::HotPlaneDecl;
+/// ```
+/// ```compile_fail
+/// use busbar_plugin_loader::HotHostVtable;
+/// ```
+/// ```compile_fail
+/// use busbar_plugin_loader::HotStatusClass;
+/// ```
+pub mod contract_types_are_named_from_the_contract {}
 
 /// INTERN a plugin name into a stable `&'static str`, reusing one allocation per unique name.
 ///

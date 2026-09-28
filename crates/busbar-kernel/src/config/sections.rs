@@ -388,7 +388,7 @@ pub struct ExportDefCfg {
     /// `request-log-file` | `otlp` (see [`EXPORT_MODULES`]). An unknown module is a boot error.
     pub module: String,
     /// `streams:` — WHAT this sink subscribes to, as tokens of the frozen
-    /// `busbar_plugin_loader::ExportStream` vocabulary. Each stream carries DOCUMENTED
+    /// `busbar_contract::abi::cold::export::ExportStream` vocabulary. Each stream carries DOCUMENTED
     /// DEFAULT FIELDS. Absent ⇒ the streams the instance's `module:` itself carries (which is what
     /// every pre-projection config means), never "nothing".
     ///
