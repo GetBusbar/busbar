@@ -4,7 +4,7 @@
 //! THE ENDPOINT CHECK — a pure function over an open's target, run before any dial.
 //!
 //! An owner-answered, accepted difference from 1.5.5: the connector refuses a cloud
-//! METADATA host by name. A plugin that could reach `169.254.169.254` could read the host's cloud
+//! METADATA host by name, and the whole IPv4 link-local range they live in. A plugin that could reach `169.254.169.254` could read the host's cloud
 //! credentials, so no need, no configuration and no plugin opens one. The check reads the target
 //! the way a resolver would, so a respelling of the same address is the same address: an IPv4
 //! literal in dotted, decimal, octal or hex parts (`inet_aton` rules), and an IPv6 literal, IPv4-mapped
@@ -14,14 +14,37 @@
 use core::fmt;
 use core::net::{Ipv4Addr, Ipv6Addr};
 
-/// The IPv4 metadata address every major cloud serves its instance metadata on.
-const METADATA_V4: Ipv4Addr = Ipv4Addr::new(169, 254, 169, 254);
+/// The IPv4 metadata addresses, one per provider that serves one outside link-local.
+const METADATA_V4: &[Ipv4Addr] = &[
+    // AWS EC2 IMDS, GCP, Azure IMDS, OpenStack, DigitalOcean (also inside link-local, listed by name).
+    Ipv4Addr::new(169, 254, 169, 254),
+    // AWS ECS task metadata (also inside link-local, listed by name).
+    Ipv4Addr::new(169, 254, 170, 2),
+    // Alibaba Cloud ECS instance metadata.
+    Ipv4Addr::new(100, 100, 100, 200),
+    // Oracle Cloud (OCI) instance metadata.
+    Ipv4Addr::new(192, 0, 0, 192),
+];
 
-/// The IPv6 metadata address (EC2's IMDS over IPv6).
-const METADATA_V6: Ipv6Addr = Ipv6Addr::new(0xfd00, 0x0ec2, 0, 0, 0, 0, 0, 0x0254);
+/// The IPv6 metadata addresses.
+const METADATA_V6: &[Ipv6Addr] = &[
+    // AWS EC2 IMDS over IPv6.
+    Ipv6Addr::new(0xfd00, 0x0ec2, 0, 0, 0, 0, 0, 0x0254),
+    // AWS ECS task metadata over IPv6.
+    Ipv6Addr::new(0xfd00, 0x0ec2, 0, 0, 0, 0, 0, 0x0023),
+];
 
 /// The metadata names, lower-case and without a trailing dot.
-const METADATA_NAMES: &[&str] = &["metadata.google.internal"];
+const METADATA_NAMES: &[&str] = &[
+    // GCP's metadata server name.
+    "metadata.google.internal",
+];
+
+/// IPv4 link-local, 169.254.0.0/16: every metadata service above that lives there, and nothing a
+/// plugin legitimately dials does.
+fn link_local(v4: Ipv4Addr) -> bool {
+    v4.octets()[..2] == [169, 254]
+}
 
 /// Why the endpoint check refused a target.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -79,12 +102,13 @@ fn is_metadata(host: &str) -> bool {
     if METADATA_NAMES.contains(&name.as_str()) {
         return true;
     }
-    if let Some(v4) = ipv4_aton(&name) {
-        return v4 == METADATA_V4;
+    let v4 = |a: Ipv4Addr| METADATA_V4.contains(&a) || link_local(a);
+    if let Some(a) = ipv4_aton(&name) {
+        return v4(a);
     }
     let bare = name.split('%').next().unwrap_or(&name);
-    if let Ok(v6) = bare.parse::<Ipv6Addr>() {
-        return v6 == METADATA_V6 || v6.to_ipv4() == Some(METADATA_V4);
+    if let Ok(a) = bare.parse::<Ipv6Addr>() {
+        return METADATA_V6.contains(&a) || a.to_ipv4().is_some_and(v4);
     }
     false
 }
