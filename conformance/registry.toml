@@ -133,8 +133,8 @@ not_run_reason = "planned 1.6.0 — h2spec leg not yet green (MATRIX-RULING B-ti
 [[suite]]
 id = "jev"
 standard = "jev decision plane"
-plan = "2 typesafe SDK peers exercising /v1/systemone + /v1/models"
-tier = "conformant"
+plan = "plane battery + served POST /v1/systemone on a booted busbar (systemone only; GET /v1/models keeps its 1.5.5 bytes)"
+tier = "spec-conformant"
 label = "jev"
 verdict = "conformance-verdict-jev"
 public = "true"

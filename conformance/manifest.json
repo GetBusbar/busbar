@@ -40,13 +40,13 @@
     },
     {
       "claim": null,
-      "plan": "2 typesafe SDK peers exercising /v1/systemone + /v1/models",
+      "plan": "plane battery + served POST /v1/systemone on a booted busbar (systemone only; GET /v1/models keeps its 1.5.5 bytes)",
       "public": true,
       "reason": "not served: POST /v1/systemone answers 404, the absence code on this boot; the decisions plane is registered and configured but no route serves its operation (the kernel plane driver serves it)",
       "standard": "jev decision plane",
       "status": "fail",
       "suite": "jev",
-      "tier": "conformant"
+      "tier": "spec-conformant"
     },
     {
       "claim": "Spec-conformant — Anthropic Messages API",
