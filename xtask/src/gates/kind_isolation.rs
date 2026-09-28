@@ -5653,7 +5653,7 @@ fn rule_write(cx: &Ctx, crates: &[CrateInfo], reg: &KindRegistry) -> Row {
         }
     };
     let rewritten = rewrite_counts(&text, &repins);
-    match std::fs::write(cx.abs(REGISTRY_FILE), &rewritten) {
+    match cx.write_file(REGISTRY_FILE, &rewritten) {
         Ok(()) => Row::pass(
             ROW_WRITE,
             "every count that fell is re-pinned to what the tree measures",

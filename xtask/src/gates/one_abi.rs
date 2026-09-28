@@ -148,7 +148,7 @@ fn render_ledger(spec: &Spec, findings: &[Finding]) -> String {
 pub fn verdict(cx: &Ctx, spec: &Spec, mut findings: Vec<Finding>, errors: Vec<String>) -> Verdict {
     findings.sort();
     if cx.env().write && errors.is_empty() {
-        if let Err(e) = std::fs::write(cx.abs(spec.ledger), render_ledger(spec, &findings)) {
+        if let Err(e) = cx.write_file(spec.ledger, render_ledger(spec, &findings)) {
             return Verdict::of(vec![Row::fail(
                 spec.ledger_row(),
                 "the ledger could not be written",

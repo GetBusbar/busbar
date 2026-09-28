@@ -310,7 +310,7 @@ pub(super) fn rule_write(cx: &Ctx) -> Row {
     let written = if derived.text == committed || cx.overlay().is_some() {
         Ok(false)
     } else {
-        std::fs::write(cx.abs(BASELINE), &derived.text)
+        cx.write_file(BASELINE, &derived.text)
             .map(|()| true)
             .map_err(|e| e.to_string())
     };

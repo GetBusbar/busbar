@@ -668,7 +668,7 @@ fn write_standing(name: &str, cx: &crate::ctx::Ctx, verdict: &crate::ledger::Ver
         Err(_) => None,
     };
     let text = gates::standing_snapshot::rewrite(sr, verdict, existing.as_ref());
-    if let Err(e) = std::fs::write(cx.abs(sr.file), &text) {
+    if let Err(e) = cx.write_file(sr.file, &text) {
         eprintln!("xtask gate {name} --write-standing: {}: {e}", sr.file);
         return 1;
     }

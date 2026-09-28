@@ -868,7 +868,7 @@ fn write_rows(cx: &Ctx, ids: &[InventoryId]) -> Vec<Row> {
     }
 
     let coverage_text = render_coverage_json(&generated_at, ids, &coverage, &summary, &matrix);
-    let row_coverage_artifact = match std::fs::write(cx.abs(COVERAGE_JSON), &coverage_text) {
+    let row_coverage_artifact = match cx.write_file(COVERAGE_JSON, &coverage_text) {
         Ok(()) => Row::pass(
             ROW_COVERAGE_ARTIFACT,
             "the committed coverage detail is the fresh derivation",
@@ -928,7 +928,7 @@ fn write_rows(cx: &Ctx, ids: &[InventoryId]) -> Vec<Row> {
     }
 
     let gaps_text = render_gaps_json(&generated_at, &gaps);
-    let row_gaps_artifact = match std::fs::write(cx.abs(GAPS_JSON), &gaps_text) {
+    let row_gaps_artifact = match cx.write_file(GAPS_JSON, &gaps_text) {
         Ok(()) => Row::pass(
             ROW_GAPS_ARTIFACT,
             "the committed gaps file is the fresh derivation",
@@ -946,7 +946,7 @@ fn write_rows(cx: &Ctx, ids: &[InventoryId]) -> Vec<Row> {
         .ok()
         .and_then(|cur| render_behaviour_md(&cur, &matrix))
     {
-        Some(new_text) => match std::fs::write(cx.abs(BEHAVIOUR_MD), &new_text) {
+        Some(new_text) => match cx.write_file(BEHAVIOUR_MD, &new_text) {
             Ok(()) => Row::pass(
                 ROW_BEHAVIOUR_TABLE,
                 "the coverage matrix in the behaviour doc is the fresh derivation",

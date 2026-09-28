@@ -412,7 +412,31 @@ pub struct Ctx {
     /// `git check-ignore`'s answers, per path, SHARED by every clone and every overlay of this
     /// context. See [`Ctx::ignored_among`].
     ignore_memo: Arc<std::sync::Mutex<std::collections::BTreeMap<String, bool>>>,
+    /// The DISK'S OWN ANSWER to "what is under this directory, recursively", per absolute root,
+    /// SHARED by every clone and every overlay of this context — same rationale as `ignore_memo`,
+    /// same shape.
+    ///
+    /// A self-test case is a fresh `Ctx::with_overlay` over the same base, and a battery is
+    /// hundreds of cases: `kind-isolation`'s alone call [`Ctx::walk`] on `crates/**/*.rs` from four
+    /// separate rules, so one selftest run walked the ~1 700-file `crates/` subtree (a real
+    /// `read_dir` recursion, not a memo lookup) on the order of a thousand times before this cache
+    /// existed — the plant never touches the walk's OWN roots or extensions, only the bytes of the
+    /// one or two files it overlays, so the recursive listing itself is identical on every one of
+    /// those calls. THE LISTING IS DISK-ONLY: it is computed before the overlay is ever consulted
+    /// (see [`Ctx::list`]), so it is safe to memo for the life of one process — nothing here runs
+    /// with `--write` truly touching the tree mid-battery, an overlay is simulated in memory, and a
+    /// selftest never grows a NEW directory on disk between cases.
+    walk_memo: Arc<std::sync::Mutex<std::collections::BTreeMap<PathBuf, Arc<Vec<PathBuf>>>>>,
+    /// EVERY FILE'S BYTES, read once per absolute path and shared the same way. `Ctx::read`'s
+    /// overlay check happens first and is unaffected: this only remembers what the REAL FILE last
+    /// read as, so an overlaid path never consults it and a plain path never reads its own bytes
+    /// off disk twice in one process.
+    read_memo: Arc<std::sync::Mutex<std::collections::BTreeMap<PathBuf, Arc<ReadResult>>>>,
 }
+
+/// One file's disk read, memoized — named so [`Ctx`]'s `read_memo` field does not trip clippy's
+/// `type_complexity` lint over what is, underneath, an ordinary `Result<String, String>`.
+type ReadResult = Result<String, String>;
 
 impl Ctx {
     /// Open a context over `root`, proving the scratch directory writable BY WRITING A BYTE rather
@@ -437,6 +461,8 @@ impl Ctx {
             scratch,
             env: Env::capture(),
             ignore_memo: Arc::default(),
+            walk_memo: Arc::default(),
+            read_memo: Arc::default(),
         })
     }
 
@@ -452,6 +478,8 @@ impl Ctx {
             scratch,
             env: Env::capture(),
             ignore_memo: Arc::default(),
+            walk_memo: Arc::default(),
+            read_memo: Arc::default(),
         })
     }
 
@@ -521,7 +549,63 @@ impl Ctx {
                 None => {}
             }
         }
-        std::fs::read_to_string(self.abs(rel)).map_err(|e| format!("{}: {e}", rel.display()))
+        self.read_disk_memoized(rel, &self.abs(rel))
+    }
+
+    /// Write REAL BYTES to `rel` on disk (a `--write` gate's own ledger, never a plant — an
+    /// overlay is never written through this) and forget whatever [`Ctx::read`] cached for it.
+    ///
+    /// THE HAZARD THIS CLOSES: `read_disk_memoized` remembers a file's bytes for the life of the
+    /// process, which is correct only as long as nothing REAL changes under it — true of every
+    /// plant (an overlay, never a byte on disk) but not of a `--write` gate, which edits its own
+    /// ledger and then, in the same process, may read it again (a second gate, a later case, or the
+    /// same run's own verification pass) and must see what it just wrote, not what was there
+    /// before. Every in-tree `std::fs::write(cx.abs(...), …)` this crate has goes through here
+    /// instead so that hazard has exactly one place to be closed, not eight.
+    ///
+    /// Returns `std::io::Result` — the same type `std::fs::write` itself returns — so every
+    /// existing call site's `Ok(()) => …, Err(e) => … {e} …` arm reads exactly as it did before.
+    pub fn write_file(
+        &self,
+        rel: impl AsRef<Path>,
+        content: impl AsRef<[u8]>,
+    ) -> std::io::Result<()> {
+        let abs = self.abs(rel);
+        std::fs::write(&abs, content)?;
+        self.read_memo
+            .lock()
+            .expect("the read memo mutex is never poisoned")
+            .remove(&abs);
+        Ok(())
+    }
+
+    /// THE REAL FILE'S BYTES, memoized by absolute path for the life of this process. Never
+    /// consulted for a path the overlay claims — [`Ctx::read`] resolves the overlay first — so a
+    /// plant's bytes are never the ones remembered here, and the disk's own bytes never go stale
+    /// mid-run because nothing in a selftest battery writes a real byte to the tree. The error
+    /// text still names `rel` — the CALLER'S path — exactly as an uncached read always did; only
+    /// the cache key (`abs`) is new.
+    fn read_disk_memoized(&self, rel: &Path, abs: &Path) -> Result<String, String> {
+        // THE LOCK IS HELD ONLY FOR THE LOOKUP (an `Arc` clone — a refcount bump), NEVER FOR THE
+        // CONTENT CLONE below. Eighteen workers hammer this map per file per case; holding the
+        // mutex across a multi-KB `String::clone` would serialize them onto it exactly as hard as
+        // if there were no cache at all, which is not a speed-up, it is a single-lane bridge with a
+        // sign on it.
+        let hit = self
+            .read_memo
+            .lock()
+            .expect("the read memo mutex is never poisoned")
+            .get(abs)
+            .cloned();
+        if let Some(hit) = hit {
+            return (*hit).clone();
+        }
+        let result = std::fs::read_to_string(abs).map_err(|e| format!("{}: {e}", rel.display()));
+        self.read_memo
+            .lock()
+            .expect("the read memo mutex is never poisoned")
+            .insert(abs.to_path_buf(), Arc::new(result.clone()));
+        result
     }
 
     pub fn exists(&self, rel: impl AsRef<Path>) -> bool {
@@ -565,6 +649,31 @@ impl Ctx {
         Ok(out)
     }
 
+    /// THE RECURSIVE DIRECTORY LISTING under one absolute root, disk-only (no overlay, no ext
+    /// filter — both are applied by the caller after this returns), memoized for the life of this
+    /// process. A `read_dir` recursion over `crates/` is the expensive half of every walk over it,
+    /// and it is IDENTICAL on every call: the overlay is consulted only after this returns (see
+    /// [`Ctx::list`]), so a plant changes which paths are KEPT downstream, never what this recursion
+    /// finds on disk.
+    fn collect_memoized(&self, abs: &Path) -> Result<Arc<Vec<PathBuf>>, WalkError> {
+        if let Some(hit) = self
+            .walk_memo
+            .lock()
+            .expect("the walk memo mutex is never poisoned")
+            .get(abs)
+        {
+            return Ok(Arc::clone(hit));
+        }
+        let mut rels = Vec::new();
+        collect(abs, &self.root, &mut rels)?;
+        let rels = Arc::new(rels);
+        self.walk_memo
+            .lock()
+            .expect("the walk memo mutex is never poisoned")
+            .insert(abs.to_path_buf(), Arc::clone(&rels));
+        Ok(rels)
+    }
+
     /// THE WALK WITHOUT THE READ — the same roots, the same overlay, the same ignore rules, the
     /// same ext and exclude filters, sorted, and NO floor.
     ///
@@ -587,7 +696,7 @@ impl Ctx {
             if !abs.exists() && !overlay_adds_it {
                 return Err(WalkError::MissingRoot { root: root.clone() });
             }
-            collect(&abs, &self.root, &mut rels)?;
+            rels.extend(self.collect_memoized(&abs)?.iter().cloned());
         }
 
         if let Some(ov) = self.overlay() {
@@ -1073,5 +1182,42 @@ pub fn resolve_root(
             cwd.display(),
             compiled.display()
         ))
+    }
+}
+
+#[cfg(test)]
+mod read_write_memo_tests {
+    use super::Ctx;
+
+    /// THE HAZARD `Ctx::write_file` EXISTS TO CLOSE: `read_disk_memoized` remembers a file's
+    /// bytes for the life of the process, and a `--write` gate is the one caller that changes a
+    /// real byte under it mid-run. A write through the raw `std::fs::write` this replaced would
+    /// leave the OLD content cached; a write through `Ctx::write_file` must not — a `read`
+    /// straight after a `write_file` must see what was just written, not what `read` cached
+    /// before it.
+    #[test]
+    fn a_read_straight_after_write_file_sees_the_new_bytes_not_the_cached_ones() {
+        let root = std::env::temp_dir().join(format!(
+            "xtask-ctx-write-memo-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let scratch = root.join(".fix").join("xtask");
+        std::fs::create_dir_all(&scratch).expect("scratch dir creates");
+        let rel = "probe.txt";
+        std::fs::write(root.join(rel), "before").expect("seed write");
+
+        let cx = Ctx::at(&root, &scratch).expect("ctx opens over the temp root");
+
+        // Populate the memo with the ORIGINAL bytes, exactly as a `--write` gate's own read of
+        // its ledger would before rewriting it.
+        assert_eq!(cx.read(rel).as_deref(), Ok("before"));
+
+        cx.write_file(rel, "after").expect("write_file writes");
+
+        // A memo that was never invalidated would still answer "before" here.
+        assert_eq!(cx.read(rel).as_deref(), Ok("after"));
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 }
