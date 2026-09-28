@@ -11,6 +11,7 @@
 //! x86_64 and aarch64 alike; every field here is a fixed-width scalar or pointer), so ONE golden
 //! covers them. Re-seed intentionally with `BUSBAR_UPDATE_GOLDEN=1 cargo test -p busbar-plugin`.
 
+use busbar_contract::abi::host::conn::{ConnCtx, ConnSlots, WireOpenDesc, WirePiece};
 use busbar_contract::abi::hot::decl::{
     BuildCtx, DeclBillableClass, DeclMetricFamily, DeclServedOpClass, DeclStr, PlaneDecl,
 };
@@ -803,6 +804,38 @@ fn compute_layout() -> String {
     );
     record!(s, WireBytesOut, [ctx, put]);
     record!(s, WireField, [name, value]);
+
+    // THE CONNECTION TABLE: one slot per `Conns` operation, the open descriptor and the
+    // piece a read writes. Several fields are same-width neighbours — a swap is invisible to all
+    // but this.
+    record!(s, ConnCtx, [ptr]);
+    record!(
+        s,
+        ConnSlots,
+        [size, _reserved, open, write, read, wait, facts, close]
+    );
+    record!(
+        s,
+        WireOpenDesc,
+        [size, _reserved, target, fields, fields_len, body, body_len, timeout_ms]
+    );
+    record!(
+        s,
+        WirePiece,
+        [
+            size,
+            kind,
+            end,
+            status_class,
+            flags,
+            stream,
+            len,
+            code,
+            _reserved,
+            ns,
+            retry_after_secs
+        ]
+    );
 
     s
 }

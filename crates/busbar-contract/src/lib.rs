@@ -53,6 +53,7 @@ pub mod civil;
 #[allow(missing_docs, missing_debug_implementations)]
 pub mod codec;
 pub mod config;
+pub mod conn;
 pub mod count;
 pub mod dest;
 // The diagnostic SHAPES and the three `#[macro_export]` emit macros (#83a O3, SD-1), moved out of

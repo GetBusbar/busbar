@@ -668,40 +668,6 @@ pub struct WireField {
     pub value: DeclStr,
 }
 
-/// ONE DECLARATIVE LIST PER ROLE (the TRANSPORT-STACK shrink): each slot's fn-pointer type and the
-/// `#[repr(C)]` table holding one `Option` of each — the table's size header first, then the slots in
-/// the order listed, each named for the trait method it lowers. The coverage witness
-/// (`tests/transport_slot_coverage.rs`) reads these lists and holds them to the traits.
-macro_rules! slot_table {
-    (
-        $(#[$doc:meta])*
-        pub struct $table:ident lowers $trait:ident {
-            $(
-                $(#[$sdoc:meta])*
-                $slot:ident: $alias:ident = fn($($arg:ident: $ty:ty),* $(,)?);
-            )*
-        }
-    ) => {
-        $(
-            $(#[$sdoc])*
-            pub type $alias = extern "C-unwind" fn($($arg: $ty),*) -> RawWireOutcome;
-        )*
-        $(#[$doc])*
-        #[repr(C)]
-        #[derive(Debug, Clone, Copy)]
-        pub struct $table {
-            #[doc = concat!("`size_of::<", stringify!($table), ">()` at construction.")]
-            pub size: u32,
-            /// Alignment padding.
-            pub _reserved: u32,
-            $(
-                #[doc = concat!("`", stringify!($slot), "`.")]
-                pub $slot: Option<$alias>,
-            )*
-        }
-    };
-}
-
 // ── the carrier's slots: `crate::transport::Carrier`, one per method ─────────────────────────────
 
 slot_table! {
