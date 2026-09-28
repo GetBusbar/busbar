@@ -128,8 +128,13 @@ fn the_scrape_sink_renders_the_recorder_snapshot_byte_identically() {
     let sink = axis
         .open_export("prometheus", r#"{"buffer_seconds":60}"#)
         .expect("the scrape sink opens");
-    // Listed in the sink's stable order (families by name), so the bytes come back unchanged.
-    let own = "# TYPE busbar_plane_request_duration_seconds summary\n\
+    // Listed in the sink's stable order — every counter, then every gauge, then every
+    // histogram/summary (v1.5.5's own renderer drains its maps in that fixed order), name-sorted
+    // within a kind — so the bytes come back unchanged.
+    let own = "# TYPE busbar_requests_total counter\n\
+               busbar_requests_total{pool=\"a\\\"b\\\\c\\nd\",outcome=\"ok\"} 3\n\
+               \n\
+               # TYPE busbar_plane_request_duration_seconds summary\n\
                busbar_plane_request_duration_seconds{quantile=\"0.99\"} 0.0125\n\
                busbar_plane_request_duration_seconds_sum 1e-3\n\
                busbar_plane_request_duration_seconds_count 4\n\
@@ -140,9 +145,6 @@ fn the_scrape_sink_renders_the_recorder_snapshot_byte_identically() {
                busbar_request_duration_seconds_bucket{le=\"+Inf\"} 2\n\
                busbar_request_duration_seconds_sum 0.75\n\
                busbar_request_duration_seconds_count 2\n\
-               \n\
-               # TYPE busbar_requests_total counter\n\
-               busbar_requests_total{pool=\"a\\\"b\\\\c\\nd\",outcome=\"ok\"} 3\n\
                \n";
     let families = busbar_plugin_loader::scrape::snapshot(own).expect("the text snapshots");
     let (content_type, body) = sink.scrape(families).expect("the sink renders");

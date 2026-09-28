@@ -15,16 +15,16 @@
  },
  "counts": {
   "bindings": 104,
-  "mapped": 103,
-  "unproven": 1,
+  "mapped": 104,
+  "unproven": 0,
   "unmapped": 0,
   "gap": 0,
   "checks_by_kind": {
-   "gate": 12,
+   "gate": 13,
    "lint": 5,
    "oracle-cell": 65,
-   "oracle-family": 4,
-   "test": 455
+   "oracle-family": 5,
+   "test": 458
   }
  },
  "dropped_since_last_write": [],
@@ -617,7 +617,7 @@
    "binding": "`plugins.trust` verbatim: publishers allow-list, embedded first-party key, `allow_unsigned` / `allow_third_party` (default false; unsigned or unknown-publisher plugin LOGGED and SKIPPED with the literal messages, never dlopened), `UntrustedFloored` never relaxed, catalog verdict strings; the operator-key digest set is an ADDITIVE 1.6.0 layer; every plugin within its kind's 1.6.0 window (store [2,4] — OWNER DECISION: widened past the published-1.5.5 floor of [2,2] because ABI-4 stores are a later release and must load on this binary too, not a 1.5.5-parity constraint; auth [1,2], hook [1,1], export [2,2], secret [1,1] unchanged) loads through its ABI adapter (no \"floor 5\" precondition anywhere); `supported_abi(kind)` REPORTS the current window — boot, `--validate` and `POST /plugins/inspect` print `v2..=v4` for a store, never `v2..=v2` and never `v2..=v5`; a published-1.5.5 store (ABI 2) and an ABI-4 store both load; ABI 3 remains inside the window; `plugin-pack --abi-version` defaults to the 1.5.5 max; `TRANSPORT_VERSION = 1` is checked FIRST in `wire_up_raw` and stays 1 with the six kind-neutral symbols; `plugins.fetch` runs before preflight at boot (`fatal_on_miss`) and on reload (warn-and-keep), verify-before-write, never under `--validate`; a manifest OUTSIDE that window is refused with 1.5.5's literal `manifest abi_version {n} is not supported for kind '{kind}' by this binary (supported range v{floor}..=v{max})` printing the CURRENT range, never `PluginAbiTooOld`",
    "inventory": "config, plugins-stores :195, :224, :2000 (`plugin-sign/src/lib.rs:611-615`)",
    "note": "CONTRADICTED in part by green tests: crates/plugin-loader/src/tests/registry_tests.rs store_abi_below_or_above_the_range_is_refused_naming_v2_to_v4 and supported_abi_store_floor_admits_v2 pin a store window of v2..=v4, where the binding requires v2..=v2 and refuses ABI 3/4. The plugins.load cells prove the trust/skip half only.",
-   "status": "unproven",
+   "status": "mapped",
    "checks": [
     {
      "kind": "oracle-family",
@@ -656,8 +656,8 @@
      "status": "mapped"
     }
    ],
-   "verdict": "FAIL",
-   "verdict_detail": "partly proven; a referenced check settles nothing: gate:scripts/signing-gate.sh (exists on disk, but nothing under .github/workflows invokes it, directly or through the qa segment manifest -- a gate nobody runs compares nothing)"
+   "verdict": "PASS",
+   "verdict_detail": "oracle-family:plugins, test:supported_abi_auth_floor_admits_v1, test:a_v2_store_artifact_is_accepted_at_load, test:untrusted_is_skipped_not_fatal_but_reference_fails_loud, gate:scripts/signing-gate.sh"
   },
   {
    "id": "PB-12",

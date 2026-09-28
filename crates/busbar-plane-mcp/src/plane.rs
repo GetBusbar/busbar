@@ -107,7 +107,7 @@ impl McpPlane {
                 lane: server.lane,
             },
             None => DestinationFacts::Upstream {
-                transport: crate::claims::TRANSPORT_HTTP,
+                transport: crate::claims::CARRIER_HTTP,
                 address: busbar_contract::UpstreamAddress::socket(""),
                 lane: LaneId::new(""),
             },

@@ -256,7 +256,7 @@ pub fn declares_plane(text: &str) -> bool {
 /// read off the path the tree put the declaration at:
 ///
 /// * `crates/busbar/src/root/plane_<key>.rs` — THE COMPOSITION ROOT declares a pure plane whose
-///   crate may not name the kernel type (`busbar-plane-decision`, DECISIONS #40). The file names
+///   crate may not name the kernel type (`busbar-plane-decisions`, DECISIONS #40). The file names
 ///   the plane; the plane's code is its crate, `crates/busbar-plane-<key>/src`.
 /// * `crates/<crate>/src/<file>.rs` — a plane that IS its crate (`busbar-llm`, `busbar-voice`):
 ///   the key is the crate name without `busbar-`, the home is the crate's `src`.

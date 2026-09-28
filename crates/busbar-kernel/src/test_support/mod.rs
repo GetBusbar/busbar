@@ -792,7 +792,7 @@ static SECTION_PLANE_TEST_RUNTIME_FACTORY: std::sync::OnceLock<
 /// registers the MCP plane in the process registry MUST also call this so every `TestApp` seeds the
 /// plane's always-present runtime slot — the analogue of busbar-core's own `cfg(test)` seeding.
 #[cfg(all(not(test), feature = "test-support"))]
-pub fn install_test_mcp_runtime_factory(
+pub fn install_test_section_plane_runtime_factory(
     factory: fn() -> std::sync::Arc<dyn std::any::Any + Send + Sync>,
 ) {
     let _ = SECTION_PLANE_TEST_RUNTIME_FACTORY.set(factory);
@@ -1611,7 +1611,7 @@ impl TestApp {
         // Seed the MCP plane's always-present default runtime for every `TestApp`. In THIS crate's
         // own `cfg(test)` binary the factory comes from the `tests/`-path helper; an EXTERNAL
         // `test-support` consumer that registered the MCP plane (e.g. `busbar-admin`'s test binary)
-        // supplies the factory through [`install_test_mcp_runtime_factory`] instead — same slot, same
+        // supplies the factory through [`install_test_section_plane_runtime_factory`] instead — same slot, same
         // object, so admin mutations that walk the plane runtimes do not fault under either surface.
         #[cfg(any(test, feature = "test-support"))]
         if let Some(decl) = crate::plane::registry::plane_decl_for_config_section(

@@ -730,6 +730,130 @@ async fn completion_tap_fires_once_on_the_walk_and_never_on_a_pre_forward_refusa
     );
 }
 
+/// `response_tokens_out` IS COMPUTED AT THE COMPLETION TAP (TODO item 588): a hook that declares it
+/// reads the unit's reported output count on the `response` stage tap, on the Route step and on the
+/// live shell alike; a deployment that declares nothing gets a payload with no such key.
+///
+/// The count is the fixture's own: two output tokens, on the cross-protocol buffered path whose tap
+/// has finished before the completion tap fires.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn completion_tap_carries_response_tokens_out_when_declared() {
+    crate::testkit::install_test_seams();
+
+    async fn run(declared: bool, unit_step: bool) -> serde_json::Value {
+        let ingress = crate::proto_codec::PROTO_ANTHROPIC;
+        let state = Arc::new(MockServerState::new());
+        state.push(mock_response(Fixture::Ok, crate::proto_codec::PROTO_OPENAI));
+        let server = MockServer::new(state).await;
+        let cap = Arc::new(CaptureTap {
+            fired: std::sync::atomic::AtomicUsize::new(0),
+            last: std::sync::Mutex::new(None),
+        });
+        let policy: Arc<dyn busbar_contract::hooks::RoutingPolicy> = cap.clone();
+        let mut builder = TestApp::new()
+            .lane(
+                LaneSpec::new("m", crate::proto_codec::PROTO_OPENAI, &server.base_url())
+                    .provider("test"),
+            )
+            .pool("p", &[(0, 1)]);
+        if declared {
+            // An operator's `signals:` declaration, parsed as the config reader parses it.
+            builder = builder.hook(
+                "declarer",
+                serde_json::from_value(json!({
+                    "kind": "tap",
+                    "plugin": "test-hook",
+                    "signals": ["response_tokens_out"],
+                }))
+                .expect("a hook declaring response_tokens_out parses"),
+            );
+        }
+        let mut app = builder.build();
+        Arc::get_mut(&mut app)
+            .expect("sole owner")
+            .tap_hooks_response = vec![(
+            std::time::Duration::from_millis(500),
+            false,
+            policy,
+            Vec::new(),
+        )];
+        let (host, rt) = crate::engine::test_host_rt(&app);
+        let body = Bytes::from(request_body(ingress, "p"));
+        let headers = HeaderMap::new();
+        let resp = if unit_step {
+            let (_seal, token) = tokens();
+            route(
+                &token,
+                RouteInput {
+                    host: &host,
+                    rt: &rt,
+                    proto: ingress,
+                    op: crate::test_support::CHAT,
+                    destination: "p",
+                    headers: &headers,
+                    body: body.clone(),
+                    parsed: LazyBody::parse(&body).ok(),
+                    caller_token: None,
+                    resolved_gov_key: None,
+                    usage_sink: None,
+                    model_not_found_message: None,
+                },
+            )
+            .await
+            .response
+        } else {
+            let (cands, pool_name) = candidates(&rt, "p").expect("pool resolves");
+            crate::engine::forward_with_pool_parsed(
+                &host,
+                &rt,
+                cands,
+                body.clone(),
+                LazyBody::parse(&body).ok(),
+                APPLICATION_JSON,
+                None,
+                None,
+                pool_name,
+                None,
+                ingress,
+                crate::test_support::CHAT,
+                None,
+                Vec::new(),
+            )
+            .await
+        };
+        assert_eq!(resp.status().as_u16(), 200, "the answer was delivered");
+        let _ = axum::body::to_bytes(resp.into_body(), usize::MAX).await;
+        for _ in 0..50 {
+            if cap.fired.load(std::sync::atomic::Ordering::SeqCst) > 0 {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        server.shutdown().await;
+        let bytes = cap
+            .last
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("the completion tap fired");
+        serde_json::from_slice(&bytes).unwrap()
+    }
+
+    for unit_step in [true, false] {
+        let declared = run(true, unit_step).await;
+        assert_eq!(declared["stage"]["at"], "response");
+        assert_eq!(
+            declared["request"]["response_tokens_out"], 2,
+            "a declared response_tokens_out carries the unit's output count (unit_step={unit_step})"
+        );
+        let undeclared = run(false, unit_step).await;
+        assert!(
+            undeclared["request"].get("response_tokens_out").is_none(),
+            "an undeclared signal adds no key to the payload (unit_step={unit_step})"
+        );
+    }
+}
+
 /// NAMING THE LEGS RE-DERIVES NOTHING, INTERNS NOTHING AND LOCKS NOTHING.
 ///
 /// A leg names a lane and a dial target as borrowed static strings, and both are a pure

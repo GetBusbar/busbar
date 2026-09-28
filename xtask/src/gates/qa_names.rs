@@ -8,9 +8,9 @@
 //!
 //! THIS CLASS WAS FOUND FIVE TIMES IN ONE DAY (2026-09-22), all in `qa/construction.toml`:
 //!
-//! 1. `[gate.plugin_kinds].plane` did not name `crates/busbar-plane-decision` — the fifth plane was
+//! 1. `[gate.plugin_kinds].plane` did not name `crates/busbar-plane-decisions` — the fifth plane was
 //!    in NO kind list, so `source-denylist` never scanned it. Proven with a positive control, not
-//!    inferred: the same `use std::net::TcpStream` planted in `busbar-plane-decision` scored
+//!    inferred: the same `use std::net::TcpStream` planted in `busbar-plane-decisions` scored
 //!    `PASS denylist:hits`, the identical plant in the listed `busbar-plane-streaming` scored RED.
 //!    One caught, one invisible; the only difference was membership in a list. Fixed `2b2de9712`.
 //! 2. `[gate.plugin_kinds].export` read `crates/export-*` while DECISION #34 puts every plugin

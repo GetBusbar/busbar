@@ -187,19 +187,20 @@ pub const PLANE_CRATES: &[PlaneCrate] = &[
     // #48's fifth plane. Not wired into the binary yet — and gated anyway, because it is the
     // cleanest #71 exemplar in the tree and a rule that only watches wired code watches it late.
     PlaneCrate {
-        dir: "busbar-plane-decision",
+        dir: "busbar-plane-decisions",
         placement: "#83 def 16-20 (#48)",
     },
     // FOLD row: "each is a WIRE DIALECT, which def 16–20 absorbs. They are not homeless; they are
     // pre-fold." Scanned now so the fold cannot carry money across with it.
-    PlaneCrate {
-        dir: "busbar-llm-codec",
-        placement: "#83 FOLD -> def 16-20",
-    },
-    PlaneCrate {
-        dir: "busbar-voice-codec",
-        placement: "#83 FOLD -> def 16-20",
-    },
+    //
+    // `busbar-llm-codec` HAS NO ROW ANY MORE (owner ruling R7, 2026-09-27, #39): it dissolved into
+    // `busbar-plane-llm`'s own `codec` module, a pure move. The `busbar-plane-llm` row above already
+    // scans the whole crate directory, `codec` module included, so there is no second dir to name.
+    //
+    // `busbar-voice-codec` HAS NO ROW ANY MORE EITHER, same ruling: it dissolved into
+    // `busbar-plane-streaming`'s own `codec` module. The `busbar-plane-streaming` row above already
+    // scans the whole crate directory, `codec` module included.
+    //
     // SPLIT row: "Session, turn and dialect rules -> 16-20. But unit/{admit,approve,meter,route}
     // and runtime/metering.rs decide admission and price - that is defs 5/6, not a plane." THIS
     // GATE IS THAT SENTENCE. These four are where the money actually is.
@@ -232,7 +233,7 @@ pub const DECLARING_PLANES: &[&str] = &[
     "busbar-plane-mcp",
     "busbar-plane-a2a",
     "busbar-plane-streaming",
-    "busbar-plane-decision",
+    "busbar-plane-decisions",
 ];
 
 /// The grammar a meter-class declaration is recognised by.

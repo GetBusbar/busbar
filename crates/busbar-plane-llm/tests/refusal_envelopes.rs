@@ -178,8 +178,8 @@ fn every_refusal_is_the_dialects_own_envelope() {
         ),
     ];
     for dialect in DIALECTS {
-        let protocol =
-            busbar_llm_codec::proto_codec::protocol_for(dialect).expect("the dialect has a codec");
+        let protocol = busbar_plane_llm::codec::proto_codec::protocol_for(dialect)
+            .expect("the dialect has a codec");
         for (reason, status, kind) in cases {
             let expected_message = match status {
                 401 => "Authentication failed.",

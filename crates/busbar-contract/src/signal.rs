@@ -88,11 +88,10 @@ pub enum Signal {
     RoutingPolicy,
 
     // ── Response phase (known once the upstream response completes) ────────────────────────────
-    /// Output token count. DEFERRED wiring: the outcome-signal plumbing (`OutcomeInputs`, the
-    /// response/completion-tap outcome slice) is a separate, larger seam that does not exist
-    /// yet — the variant is reserved in the catalog so a future response-phase consumer can
-    /// declare it without a wire change, but no compute fn exists yet. TODO(outcome-signals):
-    /// wire once the response tap's `OutcomeInputs` seam lands.
+    /// Output token count: the unit's reported output units, projected onto the `response`
+    /// stage tap. Present when the tap has read a usage by the time that stage fires (every
+    /// buffered answer); absent on a stream still flowing at head time and on a transfer that
+    /// reported no usage.
     ResponseTokensOut,
 }
 
@@ -182,8 +181,8 @@ impl Serialize for SignalValue {
 /// projection only costs a heap spill, never a contract change.
 type SignalBagInner = smallvec::SmallVec<[(Signal, SignalValue); 4]>;
 
-/// The signal bag a projection (`RoutingRequest`, `Candidate`, and — once the response-phase seam
-/// lands — the response tap payload) carries. `#[serde(flatten)]`-compatible: [`SignalBag`]
+/// The signal bag a projection (`RoutingRequest`, `Candidate`, and the response stage tap's
+/// request projection) carries. `#[serde(flatten)]`-compatible: [`SignalBag`]
 /// implements [`Serialize`] as a MAP keyed by [`Signal::name`], so on the wire its entries render
 /// as flat top-level keys alongside the projection's own fields (`{"breaker_state": ...}` sits next
 /// to `request_id`, not nested under a `signals` key) — and an EMPTY bag serializes as zero

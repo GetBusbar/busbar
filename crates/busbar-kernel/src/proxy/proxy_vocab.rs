@@ -116,6 +116,9 @@ pub fn fire_stage_taps(
     taps: &[crate::hooks::TapEntry],
     shape: &StageShape<'_>,
     stage: crate::hooks::wire::HookStageProjection<'_>,
+    // The stage's declared catalog signals, computed by the caller behind `requested.wants(_)`.
+    // An empty bag adds no key to the wire.
+    signals: busbar_contract::signal::SignalBag,
     // The caller's `groups:` binding: a stage tap fires only for a caller in its `groups:` scope
     // (empty = every caller). Resolved against this deployment's group registry through the host seam
     // (self + ancestors), never a raw `&App::groups_registry` tree.
@@ -139,9 +142,7 @@ pub fn fire_stage_taps(
             system: None,
             messages: None,
             user: None,
-            // Stage taps (candidate/routing/response) project no catalog signals in this
-            // pass. Empty (never allocated), so the wire is byte-identical to before this change.
-            signals: Default::default(),
+            signals,
         },
         candidates: Vec::new(),
         context: crate::hooks::wire::HookContext {

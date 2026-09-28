@@ -36,7 +36,7 @@ fn openai_to_cohere_over_cap_stop_sequences_is_clamped_not_rejected() {
         "messages": [{"role": "user", "content": "hi"}],
         "stop": ["a", "b", "c", "d", "e", "f"]
     });
-    let hop_bytes = bytes::Bytes::from(busbar_llm_codec::json::to_vec(&body).unwrap());
+    let hop_bytes = bytes::Bytes::from(busbar_plane_llm::codec::json::to_vec(&body).unwrap());
     let (host, rt) = crate::engine::test_host_rt(&app);
     let out = translate_request_cross_protocol(
         &host,
@@ -76,7 +76,7 @@ fn openai_to_cohere_exactly_cap_stop_sequences_is_allowed() {
         "messages": [{"role": "user", "content": "hi"}],
         "stop": ["a", "b", "c", "d", "e"]
     });
-    let hop_bytes = bytes::Bytes::from(busbar_llm_codec::json::to_vec(&body).unwrap());
+    let hop_bytes = bytes::Bytes::from(busbar_plane_llm::codec::json::to_vec(&body).unwrap());
     let (host, rt) = crate::engine::test_host_rt(&app);
     let out = translate_request_cross_protocol(
         &host,
@@ -116,7 +116,7 @@ fn openai_to_gemini_over_cap_stop_sequences_is_clamped_not_rejected() {
         "messages": [{"role": "user", "content": "hi"}],
         "stop": ["a", "b", "c", "d", "e", "f"]
     });
-    let hop_bytes = bytes::Bytes::from(busbar_llm_codec::json::to_vec(&body).unwrap());
+    let hop_bytes = bytes::Bytes::from(busbar_plane_llm::codec::json::to_vec(&body).unwrap());
     let (host, rt) = crate::engine::test_host_rt(&app);
     let out = translate_request_cross_protocol(
         &host,
@@ -157,7 +157,7 @@ fn anthropic_to_openai_over_cap_stop_sequences_is_clamped_not_rejected() {
         "max_tokens": 16,
         "stop_sequences": ["a", "b", "c", "d", "e"]
     });
-    let hop_bytes = bytes::Bytes::from(busbar_llm_codec::json::to_vec(&body).unwrap());
+    let hop_bytes = bytes::Bytes::from(busbar_plane_llm::codec::json::to_vec(&body).unwrap());
     let (host, rt) = crate::engine::test_host_rt(&app);
     let out = translate_request_cross_protocol(
         &host,
@@ -200,7 +200,7 @@ fn cohere_to_cohere_over_cap_stop_sequences_is_preserved_verbatim() {
         "messages": [{"role": "user", "content": "hi"}],
         "stop_sequences": ["a", "b", "c", "d", "e", "f"]
     });
-    let hop_bytes = bytes::Bytes::from(busbar_llm_codec::json::to_vec(&body).unwrap());
+    let hop_bytes = bytes::Bytes::from(busbar_plane_llm::codec::json::to_vec(&body).unwrap());
     let (host, rt) = crate::engine::test_host_rt(&app);
     let out = translate_request_cross_protocol(
         &host,

@@ -5,6 +5,16 @@
 //! each slot. Every slot is an [`Op`]; a NULL slot refuses the load (there is no "unsupported").
 //! There is no poll slot: after a wake the host re-invokes the same op with
 //! [`super::call::FLAG_RESUME`], the same ticket and the same `in`/`out`.
+//!
+//! CONCURRENCY. An instance is shared across workers. Ops on DISTINCT tickets may run concurrently;
+//! ops on ONE ticket are serialized by the host and never overlap. The lifecycle slots `open`,
+//! `refresh`, `retire` and `close` never run concurrently with each other on one instance; `tick`
+//! and `drive` may run concurrently with request ops. Serialization does not apply to a
+//! [`Ticket::NONE`] call, and PENDING answered on one is FAULT.
+//!
+//! SLOT LAYOUT. A kind's table is [`OpsHead`] followed by contiguous `Option<Op>` fields: kind op `k`
+//! is at slot index [`LIFECYCLE_SLOTS`]` + k`. [`OpsHead::slots`] and [`OpsHead::size`] must EQUAL
+//! the host's values for that kind's ABI version, or the load is refused.
 
 use super::call::{Blob, InHead, Op, OutHead};
 use super::ticket::{HostTables, Ticket};
@@ -39,15 +49,15 @@ pub const LIFECYCLE_SLOTS: u32 = 9;
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct OpsHead {
-    /// `size_of` the whole kind table.
+    /// `size_of` the whole kind table; equal to the host's for the kind's ABI version.
     pub size: u32,
-    /// How many slots the whole kind table holds, lifecycle included.
+    /// How many slots the whole kind table holds, lifecycle included; equal to the host's.
     pub slots: u32,
     /// Pure validation of a settings blob. In [`ValidateIn`], out [`OutHead`].
     pub validate: Option<Op>,
     /// Boot, on the control lane; may pend. In [`OpenIn`], out [`OpenOut`].
     pub open: Option<Op>,
-    /// Reload; may pend. In [`GenIn`], out [`OutHead`].
+    /// Reload with the new config; may pend. In [`RefreshIn`], out [`OutHead`].
     pub refresh: Option<Op>,
     /// After the RCU drain of a generation. In [`GenIn`], out [`OutHead`].
     pub retire: Option<Op>,
@@ -83,7 +93,8 @@ pub struct OpenIn {
     pub host: *const HostTables,
     /// The settings blob.
     pub settings: Blob,
-    /// The resolved secrets, each a [`super::call::BLOB_SECRET`] blob.
+    /// The resolved secrets, each a [`super::call::BLOB_SECRET`] blob: one per
+    /// [`super::door::Statement::secret_refs`] key, in that order.
     pub secrets: *const Blob,
     /// How many.
     pub secrets_len: usize,
@@ -101,7 +112,7 @@ pub struct OpenOut {
     pub instance: *mut std::os::raw::c_void,
 }
 
-/// `refresh`'s and `retire`'s `in`.
+/// `retire`'s `in`.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct GenIn {
@@ -109,6 +120,22 @@ pub struct GenIn {
     pub head: InHead,
     /// The generation.
     pub generation: u64,
+}
+
+/// `refresh`'s `in`: a reload carries the new config.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct RefreshIn {
+    /// The head.
+    pub head: InHead,
+    /// The generation this refresh opens.
+    pub generation: u64,
+    /// The new settings blob.
+    pub settings: Blob,
+    /// The re-resolved secrets, one per [`super::door::Statement::secret_refs`] key, in that order.
+    pub secrets: *const Blob,
+    /// How many.
+    pub secrets_len: usize,
 }
 
 /// `tick`'s `in`.

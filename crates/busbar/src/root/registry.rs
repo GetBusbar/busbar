@@ -46,7 +46,7 @@
 //!
 //! **164 of the cross-plane pairs overlap** — 100 across selector families and 64 within the path
 //! family. Both numbers follow from the overlap rule as the design writes it, and neither is a
-//! rounding of the other. (The decision plane joining the seal, item 251, added eleven: its two
+//! rounding of the other. (The decisions plane joining the seal, item 251, added eleven: its two
 //! exact paths against every header claim, and its `/v1/models` against the llm plane's
 //! `v1/models/<tail>` pattern — which the order settles in the exact path's favour.)
 //!
@@ -59,7 +59,7 @@
 //! satisfies either. That reading is what took the path-family count from 119 to 65, and naming the
 //! audio surface one path at a time rather than as a prefix — so that the two one-shot audio
 //! operations belong to the plane the inventory gives them to, instead of being described by two
-//! planes at once — took it from 65 to 63, and the decision plane's `/v1/models` made it 64. Of the
+//! planes at once — took it from 65 to 63, and the decisions plane's `/v1/models` made it 64. Of the
 //! 64, 24 involve a pattern ending in a tail (which
 //! can supply whatever the fragment asks for), 24 are a fragment landing inside a pattern's
 //! variable segment, and 16 are two fragment forms that can be satisfied at once by writing a path

@@ -4,7 +4,7 @@
 //! The model-serving config SHAPE, as neutral vocabulary.
 //!
 //! [`ModelCfg`] is the per-entry shape a model-serving plane's `models:` map deserializes into —
-//! `pools.models.<name>` (the LLM plane) and `decisions.models.<name>` (the jev decision plane,
+//! `pools.models.<name>` (the LLM plane) and `decisions.models.<name>` (the jev decisions plane,
 //! DECISIONS #47) both reuse this ONE type rather than each inventing a look-alike. Before this
 //! module existed it lived kernel-side (`busbar_kernel::config::providers::ModelCfg`), which meant
 //! any plane naming it also named the kernel — a violation of DECISIONS #40's dep-wall (a plugin
@@ -82,8 +82,8 @@ pub fn neg1() -> i64 {
 
 /// `upstream_credentials:` — the OTHER reserved member every model-serving section carries next to
 /// [`ModelCfg`], and it arrived here for the same reason and by the same route. It lived in
-/// `busbar-api`, which meant the one pure plane that reused it (`busbar-plane-decision`, the jev
-/// decision plane) had to name `busbar-api` in its manifest — the only pure plane that did — and
+/// `busbar-api`, which meant the one pure plane that reused it (`busbar-plane-decisions`, the jev
+/// decisions plane) had to name `busbar-api` in its manifest — the only pure plane that did — and
 /// that edge dragged `sha2 -> cpufeatures -> libc` into a plane's dependency closure, which the
 /// transitive source denylist bans outright. The type itself needs none of that: two unit variants
 /// and two serde derives. It moved here verbatim — same name, same variants, same order, same serde

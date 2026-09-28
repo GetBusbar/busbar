@@ -40,12 +40,12 @@ A plane exists because it is configured, not because its name appears in a path 
 
 | Key | Type | Required | Default | What it is |
 |---|---|---|---|---|
-| `canonical_uri` | string | **yes** | — | The RFC 8707 resource indicator: the absolute URI naming this deployment's MCP endpoint. It is the exact `aud` every inbound token must carry, **and** the path the endpoint mounts at. |
+| `canonical_uri` | string | **yes** | — | The RFC 8707 resource indicator: the absolute URI naming this deployment's MCP endpoint. It is the exact `aud` every inbound token must carry. Its path **must be `/mcp`**; any other path refuses boot. |
 | `authorization_servers` | list of strings | **yes**, non-empty | `[]` (refused) | RFC 9728 `authorization_servers`: the issuer identifiers permitted to mint tokens for this resource. This list is the entire content of the answer a credential-less client came for. |
 | `scopes_supported` | list of strings | no | `[]` | RFC 9728 `scopes_supported`. **Advisory metadata only** — authorization is decided by the caller's grant, never by this list (`crates/busbar-mcp/src/mcp/mod.rs:240-243`). |
 | `allowed_origins` | list of strings | no | `[]` | Browser origins accepted on the ingress, for the `2026-07-28` `Origin` MUST. Empty means no browser origin is accepted; a request carrying no `Origin` (every non-browser client) is unaffected. |
 
-The **mount path is derived** from `canonical_uri`, never configured separately, so the path a client posts to and the identifier its token is bound to cannot drift apart (`crates/busbar-mcp/src/mcp/mod.rs:230-232`). `https://gateway.example.com/mcp` mounts at `/mcp`.
+The **mount path is fixed at `/mcp`**; it is not configurable. The plane's inbound paths are compile-time claims, and `/mcp` (with its discovery document) is the one it claims. `canonical_uri` chooses the scheme, host and port the audience names, and its path must be `/mcp` (a trailing slash is accepted and mounts at the same place). A `canonical_uri` naming any other path, including a nested one such as `https://gateway.example.com/api/mcp` or a differently cased one such as `/MCP`, is a boot refusal, so the path a client posts to and the identifier its token is bound to cannot drift apart.
 
 ```yaml
 mcp:
@@ -76,6 +76,7 @@ Every one of these stops the process. An MCP plane that is half-configured is wo
 | `… is not an absolute http(s) URI` | not `http://` / `https://` with a non-empty authority | `mcp/mod.rs:355-356`, `mcp/mod.rs:448-461` |
 | `… carries a query or fragment` | a `?` or `#` in the **path**, or a `#` in the **origin**. A `?` inside the authority is not tested by this arm — `split_absolute` cuts at the first `/`, so it lands in the origin, and `https://gateway.example.com?x/mcp` boots with that whole string as the audience and `/mcp` as the mount (`mcp/mod.rs:448-460`) | `mcp/mod.rs:357-359` |
 | `… has no path` | path is empty or `/` — mounting at `/` would claim every path in the deployment | `mcp/mod.rs:360-363` |
+| `… but the MCP endpoint is served only at` `` `/mcp` `` | the path is anything but `/mcp`, trailing slashes aside | `busbar-mcp/src/mcp/mod.rs` (`McpResource::from_cfg`) |
 | `mcp.authorization_servers must list at least one issuer` | empty list | `mcp/mod.rs:364-366` |
 | `… entry is not an absolute http(s) URI` | any entry | `mcp/mod.rs:367-371` |
 | **`mcp: is configured but auth.chain is empty`** | `mcp:` present and `auth.chain` absent or `[]` | `config_validate/mod.rs:945-956` |

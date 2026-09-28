@@ -12,7 +12,7 @@
 //!
 //! [`LazyBody`] replaces the eager parse with:
 //!   1. ONE validating scan over the bytes ([`LazyBody::parse`]) that PRESERVES the malformed-body
-//!      400 contract exactly (it goes through `busbar_llm_codec::json::parse`, so the depth security floor and
+//!      400 contract exactly (it goes through `busbar_plane_llm::codec::json::parse`, so the depth security floor and
 //!      the accept/reject set are unchanged — every byte is still parsed; uncaptured values are
 //!      scanned via `serde::de::IgnoredAny` instead of allocated into a tree), and
 //!   2. a tiny HEAD projection of exactly the top-level fields the pristine path reads, captured
@@ -149,7 +149,7 @@ enum Body {
 pub struct LazyBody {
     body: Body,
     /// The request facts, projected from the DOM by the ingress operation's reader (through the
-    /// neutral [`busbar_llm_codec::translate::TranslateCodec::read_facts_value`] entrypoint) and memoized here so
+    /// neutral [`busbar_plane_llm::codec::translate::TranslateCodec::read_facts_value`] entrypoint) and memoized here so
     /// one request costs one read. Held behind the [`busbar_contract::ir::facts::IrFacts`] projection, NOT the
     /// concrete IR, so this seam never names the LLM plane's representation. `None` until
     /// [`Self::ensure_ir`] is called and successful, and dropped again whenever [`Self::ensure_dom`]
@@ -160,11 +160,11 @@ pub struct LazyBody {
 
 impl LazyBody {
     /// Validate `bytes` as JSON and capture the head projection — WITHOUT building a DOM. Goes
-    /// through `busbar_llm_codec::json::parse` so the depth security floor and the malformed-body reject set
+    /// through `busbar_plane_llm::codec::json::parse` so the depth security floor and the malformed-body reject set
     /// are IDENTICAL to the old eager `parse::<Value>` (same guard, same parser, full-body scan).
     /// `Err` ⇒ the caller takes its existing malformed-body 400 path, exactly as before.
     pub fn parse(bytes: &Bytes) -> Result<Self, sonic_rs::Error> {
-        let head: Head = busbar_llm_codec::json::parse(bytes)?;
+        let head: Head = busbar_plane_llm::codec::json::parse(bytes)?;
         Ok(LazyBody {
             body: Body::Head {
                 bytes: bytes.clone(), // refcount bump — the engine retains the same pristine bytes
@@ -207,7 +207,7 @@ impl LazyBody {
     pub(crate) fn ensure_dom(&mut self) -> Result<&mut Value, ()> {
         self.ir = None;
         if let Body::Head { bytes, .. } = &self.body {
-            let v: Value = busbar_llm_codec::json::parse(bytes).map_err(|_| ())?;
+            let v: Value = busbar_plane_llm::codec::json::parse(bytes).map_err(|_| ())?;
             self.body = Body::Dom(v);
         }
         match &mut self.body {
@@ -222,7 +222,7 @@ impl LazyBody {
     /// [`busbar_contract::ir::facts::IrFacts`], and return it.
     ///
     /// The facts are read by the ingress operation's own handler through the single
-    /// [`busbar_llm_codec::translate::TranslateCodec::read_facts_value`] entrypoint, so it is the SAME parse the
+    /// [`busbar_plane_llm::codec::translate::TranslateCodec::read_facts_value`] entrypoint, so it is the SAME parse the
     /// cross-protocol translate path and the hook seam perform, not a second reading of the wire.
     /// `None` when the body cannot be materialized or the ingress protocol/operation has no handler or
     /// rejects the body: a caller that cannot get the facts falls back to what it does today, never to
@@ -236,7 +236,7 @@ impl LazyBody {
         ingress_protocol: &str,
         op: Op,
     ) -> Option<&(dyn busbar_contract::ir::facts::IrFacts + Send + Sync)> {
-        use busbar_llm_codec::translate::TranslateCodec;
+        use busbar_plane_llm::codec::translate::TranslateCodec;
         if self.ir.is_none() {
             let handler = request_handler(ingress_protocol)
                 .and_then(|rh| rh.operation_handler(op.operation))?;
@@ -253,7 +253,9 @@ impl LazyBody {
     pub(crate) fn into_value(self) -> Result<Value, ()> {
         match self.body {
             Body::Dom(v) => Ok(v),
-            Body::Head { bytes, .. } => busbar_llm_codec::json::parse(&bytes).map_err(|_| ()),
+            Body::Head { bytes, .. } => {
+                busbar_plane_llm::codec::json::parse(&bytes).map_err(|_| ())
+            }
         }
     }
 }

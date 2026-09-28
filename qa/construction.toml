@@ -97,14 +97,14 @@ test_path_fragments = ["/tests/", "_tests.rs", "_test.rs", "/tests.rs"]
 [gate.plugin_kinds]
 plane = [
   "crates/busbar-plane-a2a",
-  # The DECISION plane (jev, #48) -- the fifth plane, and it was in NO kind list at all.
+  # The DECISIONS plane (jev, #48) -- the fifth plane, and it was in NO kind list at all.
   # PROVEN 2026-09-22 with a positive control: the same `use std::net::TcpStream` planted in
-  # busbar-plane-decision scored `PASS denylist:hits - no banned transitive source in any pure
+  # busbar-plane-decisions scored `PASS denylist:hits - no banned transitive source in any pure
   # plugin kind`, while the identical plant in busbar-plane-streaming scored `RED denylist:hits`.
   # One caught, one invisible, the only difference being membership in this list. The fifth plane
   # could open a socket, read the filesystem, spawn a process or read env and the purity gate
   # reported green over it.
-  "crates/busbar-plane-decision",
+  "crates/busbar-plane-decisions",
   "crates/busbar-plane-llm",
   "crates/busbar-plane-mcp",
   "crates/busbar-plane-streaming",
@@ -169,9 +169,23 @@ abi = ["crates/busbar-contract"]
 # in `crates/busbar-mcp/src/codec/` because they name the kernel's handler matrix. Both halves are
 # already scanned — the engine half by `busbar-mcp`'s own rows, the dialect half by
 # `gate.plugin_kinds.plane` — so there is no second source root to fold in.
+#
+# LLM HAS NO ROW HERE ANY MORE EITHER (owner ruling R7, 2026-09-27). `busbar-llm-codec` dissolved
+# (#39: no `busbar-*-codec` crate): the six dialect readers/writers, the IR, the stream translator
+# and the answer-normalization pass folded into `busbar-plane-llm` as its `codec` module — a pure
+# move, no item changed shape crossing it. `busbar-plane-llm` is already `gate.plugin_kinds.plane`'s
+# own row, so the whole crate directory, `codec` module included, is scanned as part of it; there is
+# no second source root to fold in, and `busbar-llm` re-exports the moved modules under their old
+# names so no in-tree caller changed a spelling.
+#
+# VOICE HAS NO ROW HERE ANY MORE EITHER (owner ruling R7, 2026-09-27). `busbar-voice-codec`
+# dissolved (#39: no `busbar-*-codec` crate): the plane-4 duplex/session IR, the shared duplex
+# reader/writer, the Gemini Live dialect and the Twilio grammar folded into `busbar-plane-streaming`
+# as its `codec` module — a pure move. `busbar-plane-streaming` is already `gate.plugin_kinds.plane`'s
+# own row, so the whole crate directory, `codec` module included, is scanned as part of it; there is
+# no second source root to fold in, and `busbar-voice` re-exports the moved modules under their old
+# names so no in-tree caller changed a spelling.
 [gate.plane_codec_crates]
-busbar-llm = ["busbar-llm-codec"]
-busbar-voice = ["busbar-voice-codec"]
 
 # ── DECLARED CEILING RAISES ──────────────────────────────────────────────────────────────────────
 #
@@ -328,13 +342,33 @@ busbar-voice = ["busbar-voice-codec"]
 # 16403 -> 17126 (OWNER RULING Q68(3)). Its commit reached the base; struck by the kind -> verb list's
 # re-arm, which declares the pair's next figure below.
 
-# ── THE CONTRACT CEILING PAIR, RE-ARMED BY THE KIND -> VERB LIST (Kind::verb()) ─────────────────
+# ── THE CONTRACT CEILING PAIR, RE-ARMED BY THE KIND -> VERB LIST (Kind::verb()) —
+#    EXPIRED AND STRUCK
+#
+# Declared `gate.surface_ceilings.contract_caps` and `rules.loc-ceilings.caps_contract_ceiling`
+# 17126 -> 17170 (OWNER RULING Q68(3)). Its commit reached the base; struck by M0 ABI-SPEC's
+# re-arm, which declares the pair's next figure below.
 
-[gate.ceiling_raises."gate.surface_ceilings.contract_caps"]
-file    = "qa/construction.toml"
-from    = 17126
-to      = 17170
-because = "OWNER RULING Q68(3) (docs/design/1.6.0-QUESTIONS.md): contract_caps re-arms at the MEASURED value, in its own commit. This is the re-arm for THE KIND -> VERB LIST (TODO KERNEL<>PLUGINS step 9 item 1; the design's config section): busbar_contract::plugin::Kind::verb() with Verb, root_key(), root(), Kind::ALL and owning_root_key() — the one place a kind's config root key is spelled — +44 code lines. Measured by cargo xtask gate construction: 17126 before, 17170 after."
+# ── THE CONTRACT CEILING PAIR, RE-ARMED BY M0 ABI-SPEC (the one memory ABI's mechanism) —
+#    EXPIRED AND STRUCK
+#
+# Declared `gate.surface_ceilings.contract_caps` and `rules.loc-ceilings.caps_contract_ceiling`
+# 17170 -> 17775 (OWNER RULING Q68(3)). Its commit reached the base; struck by the Statement
+# secret_refs re-arm, which declares the pair's next figure below.
+
+# ── THE CONTRACT CEILING PAIR, RE-ARMED BY THE STATEMENT'S secret_refs (M0 follow-up) —
+#    EXPIRED AND STRUCK
+#
+# Declared `gate.surface_ceilings.contract_caps` and `rules.loc-ceilings.caps_contract_ceiling`
+# 17775 -> 17779 (OWNER RULING Q68(3)). Its commit reached the base; struck by the M0 decisions
+# re-arm, which declares the pair's next figure below.
+
+# ── THE CONTRACT CEILING PAIR, RE-ARMED BY THE ARCHITECT'S RULINGS ON M0 DECISIONS 1-6 —
+#    EXPIRED AND STRUCK
+#
+# Declared `gate.surface_ceilings.contract_caps` and `rules.loc-ceilings.caps_contract_ceiling`
+# 17779 -> 17802 (OWNER RULING Q68(3)). Its commit reached the base; struck by the batch re-arm
+# below, which declares the pair's next figure.
 
 [gate.ceiling_raises."rules.loc-ceilings.kernel_ceiling"]
 file    = "qa/construction.toml"
@@ -342,11 +376,26 @@ from    = 54801
 to      = 54814
 because = "ARCHITECT 2026-09-27: R-KERNEL exception for the Phase-2 exit-test regression (plane-pricing-blindness), A+C. The kernel's door now opens the zero hold an llm unit's admission carries and mints every unit key through one allocator, acts the llm and voice planes performed themselves. Measured by cargo xtask gate construction: 54785 before, 54798 after, +13. The ceiling rises by exactly that; K2g's named reservation is unchanged."
 
+# ── THE CONTRACT CEILING PAIR, RE-ARMED BY LANDER'S BATCH (XTASK-SPEED, KI-ABI-SCOPE, M3-SDK,
+#    M3-SHAPES AUTH, billing-cite) — EXPIRED AND STRUCK
+#
+# Declared `gate.surface_ceilings.contract_caps` and `rules.loc-ceilings.caps_contract_ceiling`
+# 17802 -> 18797 (OWNER RULING Q68(3)). Its commit reached the base; struck by M3-SDK's auth
+# KindSlot re-arm below, which declares the pair's next figure.
+
+# ── THE CONTRACT CEILING PAIR, RE-ARMED BY M3-SDK's AUTH KindSlot ───────────────────────────────
+
+[gate.ceiling_raises."gate.surface_ceilings.contract_caps"]
+file    = "qa/construction.toml"
+from    = 18797
+to      = 18824
+because = "OWNER RULING Q68(3) (docs/design/1.6.0-QUESTIONS.md): contract_caps re-arms at the MEASURED value, in its own commit. This is the re-arm for M3-SDK's auth KindSlot (TODO ABI-b3): abi::auth's KindSlot impls for its six kind ops and the AbiIn/AbiOut impls of their eleven In/Out structs, so plugin_door! type-checks an auth plugin's kind ops, +27 code lines. Measured by cargo xtask gate construction: 18797 before, 18824 after."
+
 [gate.ceiling_raises."rules.loc-ceilings.caps_contract_ceiling"]
 file    = "qa/construction.toml"
-from    = 17126
-to      = 17170
-because = "OWNER RULING Q68(3) (docs/design/1.6.0-QUESTIONS.md): contract_caps re-arms at the MEASURED value, in its own commit. This is the re-arm for THE KIND -> VERB LIST (TODO KERNEL<>PLUGINS step 9 item 1; the design's config section): busbar_contract::plugin::Kind::verb() with Verb, root_key(), root(), Kind::ALL and owning_root_key() — the one place a kind's config root key is spelled — +44 code lines. Measured by cargo xtask gate construction: 17126 before, 17170 after."
+from    = 18797
+to      = 18824
+because = "OWNER RULING Q68(3) (docs/design/1.6.0-QUESTIONS.md): contract_caps re-arms at the MEASURED value, in its own commit. This is the re-arm for M3-SDK's auth KindSlot (TODO ABI-b3): abi::auth's KindSlot impls for its six kind ops and the AbiIn/AbiOut impls of their eleven In/Out structs, so plugin_door! type-checks an auth plugin's kind ops, +27 code lines. Measured by cargo xtask gate construction: 18797 before, 18824 after."
 
 # ── THE KERNEL CEILING, RE-ARMED BY SD-8 (the substrate-values kernel landing) ─────────────────
 # Its 51100 -> 54801 declaration expired once landed and is struck; the ceiling text below keeps it.
@@ -504,7 +553,17 @@ because = "ARCHITECT ruling on the kernel budget (R-KERNEL, sd-extra.txt; K2-0 u
 # the framer clock seam (+30); the live declaration above carries the measure.
 # RE-ARMED 16403 -> 17126, AT THE MEASUREMENT (OWNER RULING Q68(3)), in its own commit after
 # the connection table (+723); the live declaration above carries the measure.
-contract_caps = 17170
+# RE-ARMED 17170 -> 17586, AT THE MEASUREMENT (OWNER RULING Q68(3)), in its own commit after
+# M0 ABI-SPEC's mechanism and kind skeletons (+416), then 17586 -> 17775 for its review rulings
+# (compile-time layout pins, KindTailHead, +189); the live declaration above carries the measure.
+# RE-ARMED 17775 -> 17779, AT THE MEASUREMENT (OWNER RULING Q68(3)), in its own commit after
+# the Statement's secret_refs (+4); the live declaration above carries the measure.
+# RE-ARMED 17779 -> 17802, AT THE MEASUREMENT (OWNER RULING Q68(3)), in its own commit after
+# the rulings on M0 decisions 1-6 (+23); the live declaration above carries the measure.
+# RE-ARMED 17802 -> 18797, AT THE MEASUREMENT (OWNER RULING Q68(3)), in its own commit after the batch: XTASK-SPEED (Ctx memo, no contract growth), KI-ABI-SCOPE (matrix-only, no contract growth), M3-SDK's door macro (+324), M3-SHAPES AUTH's v3 shapes, review, fix-forward and answer validators (+671), the billing.rs section-sign wording fix (no growth); the live declaration above carries the measure.
+# RE-ARMED 18797 -> 18824, AT THE MEASUREMENT (OWNER RULING Q68(3)), in its own commit after
+# M3-SDK's auth KindSlot (+27); the live declaration above carries the measure.
+contract_caps = 18824
 # REPOINTED, and the repoint is what makes this row a gate again. It named the CRATE
 # `busbar-grammar`, which #40 folded into `busbar-contract` and deleted — so it summed nothing,
 # measured nothing and passed, which is this file's own "zero is not clean" failure sitting inside
@@ -1133,7 +1192,12 @@ contract_crate = "busbar-contract"
 # LOWERED 16664 -> 16368 with its pair (the transport lowering shrink: slot tables and bridges from one declarative list per role, -296).
 # RE-ARMED 16373 -> 16403 with its pair (OWNER RULING Q68(3); the framer clock seam, +30).
 # RE-ARMED 16403 -> 17126 with its pair (OWNER RULING Q68(3); the connection table, +723).
-caps_contract_ceiling = 17170
+# RE-ARMED 17170 -> 17775 with its pair (OWNER RULING Q68(3); M0 ABI-SPEC +416, its review rulings +189).
+# RE-ARMED 17775 -> 17779 with its pair (OWNER RULING Q68(3); Statement.secret_refs, +4).
+# RE-ARMED 17779 -> 17802 with its pair (OWNER RULING Q68(3); rulings on M0 decisions, +23).
+# RE-ARMED 17802 -> 18797 with its pair (OWNER RULING Q68(3); the batch: M3-SDK's door macro +324, M3-SHAPES AUTH's shapes/review/fix-forward/validators +671, XTASK-SPEED and KI-ABI-SCOPE add no contract growth).
+# RE-ARMED 18797 -> 18824 with its pair (OWNER RULING Q68(3); M3-SDK's auth KindSlot, +27).
+caps_contract_ceiling = 18824
 unit_crate_glob = "busbar-unit-*"
 # RE-KEYED on cherry-pick onto 143db6db6: this commit's own delta is -53 (two units stopped
 # declaring their own copies), measured against whatever unit_total_ceiling read when the line was
@@ -1298,8 +1362,9 @@ consulted when present to widen the same check to transitive path/workspace deps
 # closed JSON span grammar the contract itself is written on and re-exports as `spans`, so naming it
 # directly is naming a piece of the contract rather than reaching past it; the rest are ordinary
 # third-party crates.
-reviewed_allowlist = ["busbar-api", "serde", "serde_json", "tracing", "async-trait", "bytes", "sonic-rs", "busbar-llm-codec", "busbar-voice-codec", "busbar-grammar"]
-# busbar-llm-codec: the pure codec half of the split llm crate (no I/O in its closure); the plane adapts it.
+reviewed_allowlist = ["busbar-api", "serde", "serde_json", "tracing", "async-trait", "bytes", "sonic-rs", "busbar-grammar"]
+# busbar-llm-codec and busbar-voice-codec are GONE from this list (owner ruling R7, 2026-09-27, #39):
+# both dissolved into their plane's own `codec` module, so neither plane NAMES a codec crate at all.
 # Per-crate additions beyond the global list above, each a one-line review.
 [rules.manifest-allowlist.reviewed_extra]
 # Ratchet, NOT a review: each busbar-plane-* adapter names its own dialect's legacy engine crate
@@ -1447,15 +1512,14 @@ known_sites = [
   "crates/busbar-kernel/src/appbuild.rs:240",
   "crates/busbar-kernel/src/appbuild.rs:685",
   "crates/busbar-kernel/src/appbuild.rs:759",
-  "crates/busbar-kernel/src/appbuild.rs:861",
-  "crates/busbar-kernel/src/config/migrate.rs:302",
-  "crates/busbar-kernel/src/config/migrate.rs:1481",
-  "crates/busbar-kernel/src/config/migrate.rs:1826",
-  "crates/busbar-kernel/src/config/migrate.rs:1827",
-  "crates/busbar-kernel/src/config/mod.rs:782",
-  "crates/busbar-kernel/src/config/mod.rs:2369",
+  "crates/busbar-kernel/src/appbuild.rs:872",
+  "crates/busbar-kernel/src/config/migrate.rs:333",
+  "crates/busbar-kernel/src/config/migrate.rs:1505",
+  "crates/busbar-kernel/src/config/migrate.rs:1850",
+  "crates/busbar-kernel/src/config/migrate.rs:1851",
+  "crates/busbar-kernel/src/config/mod.rs:796",
+  "crates/busbar-kernel/src/config/mod.rs:2285",
   "crates/busbar-kernel/src/config/pools.rs:302",
-  "crates/busbar-kernel/src/config/prepass.rs:123",
   # Moved from the retired shared value crate with the code that carries them (#83a SD-8), reviewed
   # there and frozen: the omitted-`protocol:` default of the 1.5.3 providers.yaml grammar, and the
   # published title of BUSBAR-3020 (docs/diagnostics.md, byte-identical).
@@ -1466,31 +1530,30 @@ known_sites = [
   # and waived nothing. A reviewed site that points at nothing is a waiver waiting for the next
   # literal written there.
   "crates/busbar-kernel/src/config/transaction.rs:365",
-  "crates/busbar-kernel/src/config_validate/mod.rs:126",
-  "crates/busbar-kernel/src/config_validate/mod.rs:134",
-  "crates/busbar-kernel/src/config_validate/mod.rs:146",
-  "crates/busbar-kernel/src/config_validate/mod.rs:175",
-  "crates/busbar-kernel/src/config_validate/mod.rs:186",
-  "crates/busbar-kernel/src/config_validate/mod.rs:207",
-  "crates/busbar-kernel/src/config_validate/mod.rs:226",
+  "crates/busbar-kernel/src/config_validate/mod.rs:132",
+  "crates/busbar-kernel/src/config_validate/mod.rs:140",
+  "crates/busbar-kernel/src/config_validate/mod.rs:152",
+  "crates/busbar-kernel/src/config_validate/mod.rs:181",
+  "crates/busbar-kernel/src/config_validate/mod.rs:192",
+  "crates/busbar-kernel/src/config_validate/mod.rs:213",
   "crates/busbar-kernel/src/config_validate/mod.rs:232",
-  "crates/busbar-kernel/src/config_validate/mod.rs:254",
-  "crates/busbar-kernel/src/config_validate/mod.rs:300",
+  "crates/busbar-kernel/src/config_validate/mod.rs:232",
+  "crates/busbar-kernel/src/config_validate/mod.rs:260",
   "crates/busbar-kernel/src/config_validate/mod.rs:306",
-  "crates/busbar-kernel/src/config_validate/mod.rs:387",
-  "crates/busbar-kernel/src/config_validate/mod.rs:416",
-  "crates/busbar-kernel/src/config_validate/mod.rs:421",
-  "crates/busbar-kernel/src/config_validate/mod.rs:1266",
-  "crates/busbar-kernel/src/config_validate/mod.rs:1984",
+  "crates/busbar-kernel/src/config_validate/mod.rs:306",
+  "crates/busbar-kernel/src/config_validate/mod.rs:394",
+  "crates/busbar-kernel/src/config_validate/mod.rs:423",
+  "crates/busbar-kernel/src/config_validate/mod.rs:428",
+  "crates/busbar-kernel/src/config_validate/mod.rs:1242",
+  "crates/busbar-kernel/src/config_validate/mod.rs:2192",
   "crates/busbar-kernel/src/endpoints.rs:109",
-  "crates/busbar-kernel/src/ingress/mod.rs:417",
-  "crates/busbar-kernel/src/ingress/mod.rs:422",
-  "crates/busbar-kernel/src/ingress/mod.rs:768",
-  "crates/busbar-kernel/src/ingress/mod.rs:915",
-  "crates/busbar-kernel/src/metrics/money.rs:160",
-  "crates/busbar-kernel/src/metrics/money.rs:224",
-  "crates/busbar-kernel/src/plane/config.rs:368",
-  "crates/busbar-kernel/src/plane_host/build_input.rs:149",
+  "crates/busbar-kernel/src/ingress/mod.rs:404",
+  "crates/busbar-kernel/src/ingress/mod.rs:409",
+  "crates/busbar-kernel/src/ingress/mod.rs:755",
+  "crates/busbar-kernel/src/ingress/mod.rs:907",
+  "crates/busbar-kernel/src/metrics/money.rs:166",
+  "crates/busbar-kernel/src/metrics/money.rs:236",
+  "crates/busbar-kernel/src/plane_host/build_input.rs:152",
   "crates/busbar-kernel/src/router.rs:424",
   "crates/busbar-kernel/src/store/vocab.rs:136",
   "crates/busbar-kernel/src/test_support/mod.rs:220",
@@ -2094,9 +2157,17 @@ which is the row that can name the home the call belongs in, so one site is neve
 # widening it to `crates/busbar-llm/src/*` would pull `src/engine/` into scope in the same edit that
 # fixes a staleness defect. Adding unreviewed debt under cover of a repoint is the move this whole
 # exercise exists to refuse; widening llm is a separate edit that owes its own review.
+#
+# `crates/busbar-*-codec/src/*` IS GONE (owner ruling R7, 2026-09-27, `BUSBAR-1.6.0.md` THE DESIGN, §9/#39: no
+# `busbar-*-codec` crate). Unlike MCP/A2A's codec dissolution — which folded into the LEGACY ENGINE
+# crate (`busbar-mcp/src`, `busbar-a2a/src`), a root this glob list already names on its own line —
+# both remaining codecs (llm, voice) folded into their PLANE crate (`busbar-plane-llm`,
+# `busbar-plane-streaming`), which `crates/busbar-plane-*/src/*` already covers whole. So there is no
+# coverage gap to widen for: the glob would match zero directories and is struck rather than left to
+# read that permanent zero back as a fact about the tree, which is the exact anti-pattern the
+# 2026-09-22 repoint above this row already fixed once.
 scope_globs = [
   "crates/busbar-plane-*/src/*",
-  "crates/busbar-*-codec/src/*",
   "crates/busbar-llm/src/unit/*",
   "crates/busbar-mcp/src/*",
   "crates/busbar-a2a/src/*",
@@ -2536,7 +2607,7 @@ plane_crates = 4
 #     `crates/busbar-core-admin` is: DECISIONS #3 excludes admin from the plugin kinds outright
 #     ("admin & oauth2 are NOT plugins ... There is no `control` plugin kind"), so that list entry
 #     had been naming a directory that does not exist, for a kind admin never was.
-#     Against those two removals, `busbar-plane-decision` was ADDED (#48, 2b2de9712): the fifth
+#     Against those two removals, `busbar-plane-decisions` was ADDED (#48, 2b2de9712): the fifth
 #     plane, which had been in no kind list at all and which source-denylist therefore could not
 #     see. DECISIONS #39 pins the roster — "planes = exactly 5 crates
 #     `busbar-plane-{llm,mcp,a2a,streaming,decision}`" — the explicit list above names exactly

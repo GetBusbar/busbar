@@ -1043,8 +1043,9 @@ fn a_sinks_outbound_request_is_carried_by_the_host_the_same_through_either_door(
 /// shape — counters, a gauge with escaped label values, a quantile summary, a bucketed histogram —
 /// read into the snapshot and handed to the prometheus sink (the `export-scrape` row) registered
 /// through the LINKED door and the DROPPED-IN door: each renders it back BYTE FOR BYTE under the
-/// text exposition's content type, in the sink's stable order (families by name, so the same
-/// metrics scrape to the same bytes), the same either way. RED ARM, in the same test: a sink over the wire that predates the op renders
+/// text exposition's content type, in the sink's stable order (every counter, then every gauge,
+/// then every histogram/summary, name-sorted within a kind, as v1.5.5 renders them), the same
+/// either way. RED ARM, in the same test: a sink over the wire that predates the op renders
 /// nothing (the host keeps serving its own exposition).
 #[test]
 fn a_sink_renders_the_recorder_snapshot_byte_identically_through_either_door() {
@@ -1067,15 +1068,20 @@ fn a_sink_renders_the_recorder_snapshot_byte_identically_through_either_door() {
         eprintln!("skip: the prometheus sink's cdylib is not built");
         return;
     };
-    // The sink renders the snapshot LOSSLESSLY in its stable order — families by name (the recorder
-    // hands them over in hash order, which differs from boot to boot): every family of the
-    // exposition, byte for byte, and nothing else.
+    // The sink renders the snapshot LOSSLESSLY in its stable order — counters, then gauges, then
+    // histograms/summaries, by name within a kind (the recorder hands them over in hash order,
+    // which differs from boot to boot): every family of the exposition, byte for byte, and
+    // nothing else.
     let family = |block: &&str| {
         let typed = block.lines().find_map(|l| l.strip_prefix("# TYPE "));
-        typed
-            .and_then(|t| t.split(' ').next())
-            .unwrap_or_default()
-            .to_string()
+        let mut parts = typed.unwrap_or_default().split(' ');
+        let name = parts.next().unwrap_or_default().to_string();
+        let rank = match parts.next() {
+            Some("counter") => 0,
+            Some("gauge") => 1,
+            _ => 2,
+        };
+        (rank, name)
     };
     let mut blocks: Vec<&str> = exposition.split_terminator("\n\n").collect();
     blocks.sort_by_key(family);

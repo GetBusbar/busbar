@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE ONE MEMORY ABI'S LAYOUT, PINNED BY HAND (THE DESIGN §11.5, M0 ABI-SPEC): the size, the
+//! THE ONE MEMORY ABI'S LAYOUT, PINNED BY HAND (`BUSBAR-1.6.0.md` THE DESIGN, §11.5): the size, the
 //! alignment and every field offset of every `#[repr(C)]` type under `abi/mechanism/` and
 //! `abi/<kind>/`, written out as numbers. The layout golden (`layout_golden.rs`) catches a DRIFT;
 //! this states the INTENDED layout a C author reads off `busbar_plugin.h`, so the two cannot agree
@@ -12,10 +12,10 @@ use std::mem::{align_of, offset_of, size_of};
 use busbar_contract::abi::mechanism::call::{
     AbiStr, Blob, Diag, Envelope, InHead, MetricEntry, OutHead, RawOutcome,
 };
-use busbar_contract::abi::mechanism::door::{Door, MetricFamily, Statement};
+use busbar_contract::abi::mechanism::door::{Door, KindTailHead, MetricFamily, Statement};
 use busbar_contract::abi::mechanism::lifecycle::{
-    CancelIn, CancelOut, DriveIn, GenIn, OpenIn, OpenOut, OpsHead, ReleaseIn, TickIn, TickOut,
-    ValidateIn,
+    CancelIn, CancelOut, DriveIn, GenIn, OpenIn, OpenOut, OpsHead, RefreshIn, ReleaseIn, TickIn,
+    TickOut, ValidateIn,
 };
 use busbar_contract::abi::mechanism::ticket::{CompletionHandle, HostCtx, HostTables, Ticket};
 use busbar_contract::abi::{auth, export, hook, plane, secret, store, transport};
@@ -44,7 +44,7 @@ fn the_call_shape_types_have_their_stated_layout() {
     pin!(Blob, 24, 8, [ptr = 0, len = 8, fmt = 16, flags = 20]);
     pin!(
         InHead,
-        72,
+        88,
         8,
         [
             size = 0,
@@ -56,7 +56,8 @@ fn the_call_shape_types_have_their_stated_layout() {
             ticket = 24,
             deadline_ns = 32,
             trace_id = 40,
-            extensions = 48
+            parent_span_id = 56,
+            extensions = 64
         ]
     );
     pin!(
@@ -133,7 +134,7 @@ fn the_door_and_the_statement_have_their_stated_layout() {
     );
     pin!(
         Statement,
-        112,
+        152,
         8,
         [
             size = 0,
@@ -147,13 +148,17 @@ fn the_door_and_the_statement_have_their_stated_layout() {
             diag_ids = 64,
             diag_ids_len = 72,
             kind_tail = 80,
-            extensions = 88
+            extensions = 88,
+            secret_refs = 112,
+            secret_refs_len = 120,
+            settings_schema = 128
         ]
     );
 }
 
 #[test]
 fn tickets_and_host_tables_have_their_stated_layout() {
+    pin!(KindTailHead, 8, 4, [size = 0, _reserved = 4]);
     pin!(Ticket, 8, 4, [slot = 0, generation = 4]);
     pin!(
         CompletionHandle,
@@ -190,42 +195,294 @@ fn the_lifecycle_has_its_stated_layout() {
             close = 72
         ]
     );
-    pin!(ValidateIn, 96, 8, [head = 0, settings = 72]);
+    pin!(ValidateIn, 112, 8, [head = 0, settings = 88]);
     pin!(
         OpenIn,
-        128,
+        144,
         8,
         [
             head = 0,
-            host = 72,
-            settings = 80,
-            secrets = 104,
-            secrets_len = 112,
-            generation = 120
+            host = 88,
+            settings = 96,
+            secrets = 120,
+            secrets_len = 128,
+            generation = 136
         ]
     );
     pin!(OpenOut, 104, 8, [head = 0, instance = 96]);
-    pin!(GenIn, 80, 8, [head = 0, generation = 72]);
-    pin!(TickIn, 80, 8, [head = 0, now_ns = 72]);
+    pin!(GenIn, 96, 8, [head = 0, generation = 88]);
+    pin!(
+        RefreshIn,
+        136,
+        8,
+        [
+            head = 0,
+            generation = 88,
+            settings = 96,
+            secrets = 120,
+            secrets_len = 128
+        ]
+    );
+    pin!(TickIn, 96, 8, [head = 0, now_ns = 88]);
     pin!(TickOut, 104, 8, [head = 0, next_tick_ns = 96]);
-    pin!(DriveIn, 80, 8, [head = 0, driver = 72]);
-    pin!(CancelIn, 80, 8, [head = 0, ticket = 72]);
+    pin!(DriveIn, 96, 8, [head = 0, driver = 88]);
+    pin!(CancelIn, 96, 8, [head = 0, ticket = 88]);
     pin!(
         CancelOut,
         104,
         8,
         [head = 0, disposition = 96, _reserved = 100]
     );
-    pin!(ReleaseIn, 80, 8, [head = 0, lease = 72]);
+    pin!(ReleaseIn, 96, 8, [head = 0, lease = 88]);
 }
 
 #[test]
 fn every_kind_table_leads_with_the_lifecycle() {
     pin!(store::Ops, 80, 8, [head = 0]);
     pin!(secret::Ops, 80, 8, [head = 0]);
-    pin!(auth::Ops, 80, 8, [head = 0]);
     pin!(hook::Ops, 80, 8, [head = 0]);
     pin!(export::Ops, 80, 8, [head = 0]);
     pin!(plane::Ops, 80, 8, [head = 0]);
     pin!(transport::Ops, 80, 8, [head = 0]);
+}
+
+#[test]
+fn the_auth_kind_has_its_stated_layout() {
+    use auth::*;
+    pin!(
+        Ops,
+        128,
+        8,
+        [
+            head = 0,
+            verify = 80,
+            begin_login = 88,
+            complete_login = 96,
+            open_outbound = 104,
+            outbound_ready = 112,
+            fields = 120
+        ]
+    );
+    pin!(StyleDecl, 24, 8, [name = 0, flags = 16, _reserved = 20]);
+    pin!(
+        AuthTail,
+        72,
+        8,
+        [
+            head = 0,
+            caps = 8,
+            facts = 12,
+            login_kind = 16,
+            _reserved = 20,
+            styles = 24,
+            styles_len = 32,
+            aliases = 40,
+            aliases_len = 48,
+            carriers = 56,
+            carriers_len = 64
+        ]
+    );
+    pin!(Span, 8, 4, [off = 0, len = 4]);
+    pin!(NamedValue, 40, 8, [name = 0, value = 16]);
+    pin!(
+        RequestFacts,
+        112,
+        8,
+        [
+            method = 0,
+            authority = 16,
+            canonical_path = 32,
+            query = 48,
+            timestamp = 64,
+            body_hash = 72,
+            body_hash_present = 104,
+            _reserved = 108
+        ]
+    );
+    pin!(
+        IdentityBuf,
+        32,
+        8,
+        [
+            buf = 0,
+            buf_cap = 8,
+            groups = 16,
+            groups_cap = 24,
+            _reserved = 28
+        ]
+    );
+    pin!(
+        IdentityOut,
+        80,
+        8,
+        [
+            subject = 0,
+            key_id = 8,
+            key_name = 16,
+            user = 24,
+            provider = 32,
+            name = 40,
+            claims = 48,
+            claims_fmt = 56,
+            flags = 60,
+            ttl_secs = 64,
+            groups_len = 72,
+            _reserved = 76
+        ]
+    );
+    pin!(
+        VerifyIn,
+        272,
+        8,
+        [
+            head = 0,
+            credential = 88,
+            carrier = 112,
+            carrier_len = 120,
+            request = 128,
+            out_buf = 240
+        ]
+    );
+    pin!(
+        IdentifyOut,
+        192,
+        8,
+        [
+            head = 0,
+            verdict = 96,
+            needed_groups = 100,
+            needed_bytes = 104,
+            identity = 112
+        ]
+    );
+    pin!(
+        BeginLoginIn,
+        168,
+        8,
+        [
+            head = 0,
+            redirect_uri = 88,
+            state = 104,
+            nonce = 120,
+            code_challenge = 136,
+            scopes = 152,
+            scopes_len = 160
+        ]
+    );
+    pin!(
+        LoginField,
+        40,
+        8,
+        [name = 0, label = 16, kind = 32, required = 36]
+    );
+    pin!(
+        BeginLoginOut,
+        136,
+        8,
+        [
+            head = 0,
+            shape = 96,
+            _reserved = 100,
+            authorize_url = 104,
+            form = 120,
+            form_len = 128
+        ]
+    );
+    pin!(
+        CompleteLoginIn,
+        216,
+        8,
+        [
+            head = 0,
+            code = 88,
+            state = 112,
+            redirect_uri = 128,
+            code_verifier = 144,
+            submitted = 168,
+            submitted_len = 176,
+            out_buf = 184
+        ]
+    );
+    pin!(
+        OpenOutboundIn,
+        152,
+        8,
+        [head = 0, style = 88, credential = 104, settings = 128]
+    );
+    pin!(OpenOutboundOut, 104, 8, [head = 0, handle = 96]);
+    pin!(OutboundReadyIn, 96, 8, [head = 0, handle = 88]);
+    pin!(
+        OutboundReadyOut,
+        104,
+        8,
+        [head = 0, ready = 96, _reserved = 100]
+    );
+    pin!(
+        FieldSpan,
+        24,
+        4,
+        [name = 0, value = 8, flags = 16, _reserved = 20]
+    );
+    pin!(
+        FieldsIn,
+        288,
+        8,
+        [
+            head = 0,
+            handle = 88,
+            mode = 96,
+            _reserved = 100,
+            request = 104,
+            caller_credential = 216,
+            field_buf = 240,
+            field_buf_cap = 248,
+            fields = 256,
+            fields_cap = 264,
+            _reserved2 = 268,
+            headers = 272,
+            headers_len = 280
+        ]
+    );
+    pin!(
+        FieldsOut,
+        112,
+        8,
+        [
+            head = 0,
+            fields_len = 96,
+            needed_fields = 100,
+            needed_bytes = 104
+        ]
+    );
+}
+
+/// The auth table's slot numbers are the lifecycle's count plus `k`, contiguous, and the table's
+/// size and slot count are what a door must state.
+#[test]
+fn the_auth_slots_follow_the_lifecycle_contiguously() {
+    use busbar_contract::abi::mechanism::lifecycle::LIFECYCLE_SLOTS;
+    let slots = [
+        (auth::slot::VERIFY, offset_of!(auth::Ops, verify)),
+        (auth::slot::BEGIN_LOGIN, offset_of!(auth::Ops, begin_login)),
+        (
+            auth::slot::COMPLETE_LOGIN,
+            offset_of!(auth::Ops, complete_login),
+        ),
+        (
+            auth::slot::OPEN_OUTBOUND,
+            offset_of!(auth::Ops, open_outbound),
+        ),
+        (
+            auth::slot::OUTBOUND_READY,
+            offset_of!(auth::Ops, outbound_ready),
+        ),
+        (auth::slot::FIELDS, offset_of!(auth::Ops, fields)),
+    ];
+    assert_eq!(slots.len() as u32, auth::KIND_SLOTS);
+    for (k, (idx, off)) in slots.into_iter().enumerate() {
+        assert_eq!(idx, LIFECYCLE_SLOTS + k as u32);
+        assert_eq!(off, 8 + 8 * idx as usize);
+    }
+    assert_eq!(auth::SLOTS, LIFECYCLE_SLOTS + auth::KIND_SLOTS);
+    assert_eq!(size_of::<auth::Ops>(), 8 + 8 * auth::SLOTS as usize);
 }

@@ -426,19 +426,20 @@ pub struct CountRoot {
 /// second codec crate at all. Each floor is set below the tree's real count so ordinary churn does
 /// not trip it and an emptied or relocated root does.
 pub const COUNT_READ_ROOTS: &[CountRoot] = &[
+    // `busbar-llm-codec` DISSOLVED (owner ruling R7, 2026-09-27, #39: no `busbar-*-codec` crate):
+    // its files folded whole into `crates/busbar-plane-llm/src`, already a home here, so the union
+    // this group scans lost no file and the dead `crates/busbar-llm-codec/src` home is struck.
     CountRoot {
         area: "the LLM codecs, engine and plane",
-        homes: &[
-            "crates/busbar-llm-codec/src",
-            "crates/busbar-llm/src",
-            "crates/busbar-plane-llm/src",
-        ],
+        homes: &["crates/busbar-llm/src", "crates/busbar-plane-llm/src"],
         floor: 70,
     },
+    // `busbar-voice-codec` DISSOLVED THE SAME WAY, same ruling: its files folded whole into
+    // `crates/busbar-plane-streaming/src`, already a home here, so the dead
+    // `crates/busbar-voice-codec/src` home is struck.
     CountRoot {
         area: "the audio codecs, engine and plane",
         homes: &[
-            "crates/busbar-voice-codec/src",
             "crates/busbar-voice/src",
             "crates/busbar-plane-streaming/src",
         ],
@@ -526,7 +527,7 @@ pub const COUNT_READ_ROOTS: &[CountRoot] = &[
 /// THE SEAM BEING REPLACED. Its own body is a list of the needle strings it hunts, so scanning it
 /// finds its own patterns rather than a defect. It is excluded for the same reason its in-crate
 /// ancestor excluded itself, and it goes away with the conversion wave.
-const SUPERSEDED_SEAM: &str = "crates/busbar-llm-codec/src/usage_count.rs";
+const SUPERSEDED_SEAM: &str = "crates/busbar-plane-llm/src/codec/usage_count.rs";
 
 /// The JSON-number accessors a count could be read through. `as_f64` is here as well as the integer
 /// pair because a count that arrives through a double has already lost the exactness #81 requires.
@@ -619,43 +620,43 @@ pub const PENDING_CEILING: usize = 0;
 pub const ALLOWED_COUNT_READS: &[Allow] = &[
     // ── Not a count, permanently ──────────────────────────────────────────────────────────────
     Allow {
-        file: "crates/busbar-llm-codec/src/bedrock/mod.rs",
+        file: "crates/busbar-plane-llm/src/codec/bedrock/mod.rs",
         needle: "contentBlockIndex",
         class: AllowClass::NotACount,
         why: "a frame's position in a sequence, not a quantity anybody is billed for",
     },
     Allow {
-        file: "crates/busbar-llm-codec/src/cohere/mod.rs",
+        file: "crates/busbar-plane-llm/src/codec/cohere/mod.rs",
         needle: "clamp_frame_index",
         class: AllowClass::NotACount,
         why: "a frame's position in a sequence, not a quantity anybody is billed for",
     },
     Allow {
-        file: "crates/busbar-llm-codec/src/openai_chat/handler.rs",
+        file: "crates/busbar-plane-llm/src/codec/openai_chat/handler.rs",
         needle: "audio::Segment",
         class: AllowClass::NotACount,
         why: "a transcription segment's own id — metadata echoed back, never metered",
     },
     Allow {
-        file: "crates/busbar-llm-codec/src/openai_chat/handler.rs",
+        file: "crates/busbar-plane-llm/src/codec/openai_chat/handler.rs",
         needle: "get(\"start\")",
         class: AllowClass::NotACount,
         why: "a transcription timing offset — metadata echoed back, never metered",
     },
     Allow {
-        file: "crates/busbar-llm-codec/src/openai_chat/handler.rs",
+        file: "crates/busbar-plane-llm/src/codec/openai_chat/handler.rs",
         needle: "get(\"end\")",
         class: AllowClass::NotACount,
         why: "a transcription timing offset — metadata echoed back, never metered",
     },
     Allow {
-        file: "crates/busbar-voice-codec/src/topology/twilio.rs",
+        file: "crates/busbar-plane-streaming/src/codec/topology/twilio.rs",
         needle: "get(\"sampleRate\")",
         class: AllowClass::NotACount,
         why: "a media format's sample rate, not a metered quantity",
     },
     Allow {
-        file: "crates/busbar-voice-codec/src/topology/twilio.rs",
+        file: "crates/busbar-plane-streaming/src/codec/topology/twilio.rs",
         needle: "get(\"channels\")",
         class: AllowClass::NotACount,
         why: "a media format's channel count, not a metered quantity",
@@ -680,7 +681,7 @@ pub const ALLOWED_COUNT_READS: &[Allow] = &[
             "the #44 config boundary: a configured decimal read once at parse, not a runtime count",
     },
     Allow {
-        file: "crates/busbar-voice-codec/src/ir/codec/mod.rs",
+        file: "crates/busbar-plane-streaming/src/codec/ir/codec/mod.rs",
         needle: "fn u64_at",
         class: AllowClass::NotACount,
         why: "measured 2026-09-24: its only callers are a truncate's content_index and three audio \
@@ -2106,7 +2107,7 @@ impl Gate for NoFloatMoneyGate {
             self,
             "the PATH form of a defaulted count read is flagged in the first codec crate",
             &[ROW_COUNT_READ],
-            "crates/busbar-llm-codec/src/planted_path_form.rs",
+            "crates/busbar-plane-llm/src/planted_path_form.rs",
             Edit::Create(
                 "use serde_json::Value;\npub fn planted(u: &Value) -> u64 {\n    u.get(\"planted_tokens\").and_then(Value::as_u64).unwrap_or(0)\n}\n"
                     .to_string(),
@@ -2120,7 +2121,7 @@ impl Gate for NoFloatMoneyGate {
             self,
             "a defaulted count read is flagged in the SECOND codec crate too",
             &[ROW_COUNT_READ],
-            "crates/busbar-voice-codec/src/planted_second_crate.rs",
+            "crates/busbar-plane-streaming/src/planted_second_crate.rs",
             Edit::Create(
                 "use serde_json::Value;\npub fn planted(u: &Value) -> u64 {\n    u.get(\"planted_tokens\").and_then(Value::as_u64).unwrap_or_default()\n}\n"
                     .to_string(),
@@ -2157,7 +2158,7 @@ impl Gate for NoFloatMoneyGate {
                 self,
                 &format!("{what} of a defaulted count read is flagged"),
                 &[ROW_COUNT_READ],
-                "crates/busbar-llm-codec/src/planted_spelling.rs",
+                "crates/busbar-plane-llm/src/planted_spelling.rs",
                 Edit::Create(format!(
                     "use serde_json::Value as Json;\npub fn planted(v: &Json) -> u64 {{\n    {body}\n}}\n"
                 )),
@@ -2169,7 +2170,7 @@ impl Gate for NoFloatMoneyGate {
         // and named, which is a different act from recording that no work happened.
         let mut ov = Overlay::new();
         ov.set(
-            "crates/busbar-llm-codec/src/planted_named_default.rs",
+            "crates/busbar-plane-llm/src/planted_named_default.rs",
             "use serde_json::Value;\npub fn planted(v: &Value, idx: u64) -> u64 {\n    v.as_u64().unwrap_or(idx)\n}\n",
         );
         report.push(Case {
@@ -2183,7 +2184,7 @@ impl Gate for NoFloatMoneyGate {
         // be pushing authors away from the very thing it wants.
         let mut ov = Overlay::new();
         ov.set(
-            "crates/busbar-llm-codec/src/planted_propagating.rs",
+            "crates/busbar-plane-llm/src/planted_propagating.rs",
             "use serde_json::Value;\npub fn planted(v: &Value) -> Option<u64> {\n    v.get(\"tokens\").and_then(Value::as_u64)\n}\n",
         );
         report.push(Case {
@@ -2195,10 +2196,13 @@ impl Gate for NoFloatMoneyGate {
 
         // AN ENUMERATED COUNT-READ ROOT THAT READS AS EMPTY IS REFUSED, not scanned as zero hits.
         // This is the instrument check for blindness 2: a renamed crate must be a red, never a
-        // silent narrowing of the ban.
-        let root = COUNT_READ_ROOTS[0].homes[0];
+        // silent narrowing of the ban. The floor is over the UNION of a group's homes (a fold that
+        // moves files between two homes in the same group must not trip it), so emptying the group
+        // means emptying EVERY home, not just the first — a group with one home (pre-fold) and a
+        // group with several (post-fold, e.g. the LLM codecs group) are proven the same way.
+        let homes = COUNT_READ_ROOTS[0].homes;
         let mut ov = Overlay::new();
-        match cx.walk(&WalkSpec::new([root]).ext("rs")) {
+        match cx.walk(&WalkSpec::new(homes.iter().copied()).ext("rs")) {
             Ok(files) => {
                 for f in &files {
                     ov.remove(&f.rel);
@@ -2213,7 +2217,7 @@ impl Gate for NoFloatMoneyGate {
                 ));
             }
             Err(e) => report.note_infra_failure(format!(
-                "no-float-money selftest: count-read root {root} is unreadable ({e})"
+                "no-float-money selftest: count-read roots {homes:?} are unreadable ({e})"
             )),
         }
 

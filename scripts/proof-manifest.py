@@ -101,8 +101,9 @@ def scrape_total(text):
 # THE GOLDEN CORPUS AND THE TESTS THAT ASSERT OVER IT, AS ONE CONSTANT.
 #
 # Both used to say `busbar-llm`. The proto module — the corpus, `translate_parity_*_tests.rs`, all
-# of it — now lives in `busbar-llm-codec`, and neither reference moved with it. Two failures came
-# out of that, in the same direction:
+# of it — lived in `busbar-llm-codec`, and neither reference moved with it. Two failures came
+# out of that, in the same direction (R7, 2026-09-27, THE DESIGN §9/#39 folded busbar-llm-codec
+# into busbar-plane-llm's own `codec` module since; GOLDEN_DIR/GOLDEN_CRATE follow that fold):
 #
 #   * `crates/busbar-llm/src/tests/proto/golden` does not exist, so `golden_dir.is_dir()` was False,
 #     the enumeration loop never ran, and `total` stayed 0 — published as `evidence_count: 0`.
@@ -113,8 +114,8 @@ def scrape_total(text):
 # The published claim was therefore "the byte-identity corpus: 0 cases, pass". Zero cases passing is
 # not evidence of anything, and it is the shape a reader is least likely to question, because the
 # word next to it is `pass`. GOLDEN_MIN below is the floor that makes it impossible to say again.
-GOLDEN_DIR = "crates/busbar-llm-codec/src/tests/proto/golden"
-GOLDEN_CRATE = "busbar-llm-codec"
+GOLDEN_DIR = "crates/busbar-plane-llm/src/codec/tests/proto/golden"
+GOLDEN_CRATE = "busbar-plane-llm"
 GOLDEN_MIN = 40  # the corpus holds >100 pairs; the floor is a collapse tripwire, not a second count
 
 

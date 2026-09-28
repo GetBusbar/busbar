@@ -329,7 +329,7 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
     // the direct substrate re-export and the composition root installed the protocols in `main`.
     //
     // UNIONED with every CONFIGURED plane's OWN declared dialects (`PlaneCfg::known_dialects`,
-    // P2-243/P2-decvalidate) — a plane like the decision plane speaks a dialect with no translating
+    // P2-243/P2-decvalidate) — a plane like the decisions plane speaks a dialect with no translating
     // IR (jev), so it is never a `busbar-llm-codec` wire codec and would otherwise be an "unknown
     // protocol" here on the very config `resolve`'s own `known_dialects` cross-check (below) just
     // accepted. Read from the STATIC plane registry via each decl's `default_section` hook — a

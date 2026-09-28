@@ -119,7 +119,7 @@ PLANES="$PLANE_KEYS"
 #     DECISIONS #18's crate rename has not landed yet. Reporting it as a gap would be dishonest in
 #     the OTHER direction: the plane genuinely is strong-form removable today, just not under its
 #     locked spelling.
-#   * `decisions` is NOT covered — `crates/busbar-plane-decision` exists but is deliberately unwired
+#   * `decisions` is NOT covered — `crates/busbar-plane-decisions` exists but is deliberately unwired
 #     (its own module doc: no root Cargo.toml/main.rs change, no `BUILTIN_PLANE_DECLS` entry, no
 #     `BuildCtx` field) and no `crates/busbar-decision(s)` I/O crate exists for `remove_crate_dir` to
 #     even find. There is nothing to `git rm -r` yet, so there is nothing this leg can prove — and it
@@ -1620,7 +1620,7 @@ run_selftest() {
       note "PASS  roster coverage: 'streaming' is NOT reported as a gap (covered via its on-disk name 'voice')"
       ;;
   esac
-  # `decisions` has no on-disk plane crate at all (busbar-plane-decision is deliberately unwired) and
+  # `decisions` has no on-disk plane crate at all (busbar-plane-decisions is deliberately unwired) and
   # MUST be named as a gap — the exact "absent plane reads as silent pass" failure this defect is
   # about, made unable to recur silently.
   case " $LOCKED_GAPS " in

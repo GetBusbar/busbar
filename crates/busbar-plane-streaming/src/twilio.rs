@@ -6,7 +6,7 @@
 //!
 //! `busbar-voice` has no dialect codec for this wire (it is not one of its two duplex dialects), and
 //! the one Twilio-shaped module that exists in that crate's source tree
-//! (`busbar_voice_codec::topology::twilio`) is gated behind busbar-voice's `runtime` cargo feature, which
+//! (`crate::codec::topology::twilio`) is gated behind busbar-voice's `runtime` cargo feature, which
 //! this crate's manifest never turns on — so it is not in this crate's dependency closure at all,
 //! and cannot be named from here. This module is therefore written from the wire shape alone
 //! (confirmed against `docs/design/BUSBAR-1.6.0.md` #18/#45 and the public Twilio Media
@@ -14,9 +14,9 @@
 //! runtime-gated module; any structural resemblance is the two independently converging on the same
 //! public wire format, not a copy.
 //!
-//! The events this module models onto the shared [`busbar_voice_codec::ir`] vocabulary: a `media` event
-//! becomes an [`busbar_voice_codec::ir::media::IrAudioFrame`] (direction `Up`, format
-//! [`busbar_voice_codec::ir::media::AudioFormat::G711Ulaw`]) carrying the base64-decoded µ-law bytes
+//! The events this module models onto the shared [`crate::codec::ir`] vocabulary: a `media` event
+//! becomes an [`crate::codec::ir::media::IrAudioFrame`] (direction `Up`, format
+//! [`crate::codec::ir::media::AudioFormat::G711Ulaw`]) carrying the base64-decoded µ-law bytes
 //! verbatim — the µ-law↔PCM16 transform happens at the plane's `encode_ingress_frame` seam
 //! ([`crate::plane`]), never here. The lifecycle events carry no audio and are surfaced as their own
 //! variant so the plane can track (or ignore) them without guessing at a synthetic IR event for a
@@ -265,7 +265,7 @@ pub fn encode_mark(stream_sid: &str, name: &str) -> Vec<u8> {
 // ── standard base64 (RFC 4648), a LOCAL copy of the workspace's one decoder contract ─────────────
 //
 // The workspace's one base64 implementation is `busbar_substrate_values::media`; every other reader
-// (`busbar_voice_codec::topology::twilio` and `ir::codec` among them) imports it and carries no
+// (`crate::codec::topology::twilio` and `ir::codec` among them) imports it and carries no
 // algorithm of its own. It is in this crate's closure (through `busbar-voice-codec`), but a plane
 // names no substrate crate (`tests/purity.rs`, `the_plane_names_no_kernel_side_crate`), so this copy
 // stands in for it. It is NOT a second algorithm: its decode contract must match that one byte for

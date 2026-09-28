@@ -13,7 +13,7 @@
 //! the config-schema snapshot are byte-identical.
 //!
 //! `ModelCfg` (the per-entry config) lives in `busbar-contract` (DECISIONS #40/#38) because a
-//! plugin crate (`busbar-plane-decision`) reuses it verbatim for its own `decisions.models.<name>`;
+//! plugin crate (`busbar-plane-decisions`) reuses it verbatim for its own `decisions.models.<name>`;
 //! it is re-exported below at its historical path.
 //!
 //! This file is config grammar: the config-schema gate tracks it, so every `Deserialize` shape below

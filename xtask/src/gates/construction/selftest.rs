@@ -1793,7 +1793,7 @@ fn money_cases<'a>(gate: &'a dyn Gate, cx: &Ctx, base: &Overlay) -> Report<'a> {
 
     let mut ov = on(base);
     ov.set(
-        "crates/busbar-llm-codec/src/zz_planted_money.rs",
+        "crates/busbar-plane-llm/src/codec/zz_planted_money.rs",
         "pub fn planted_price() {\n    let _ = RateCard::new();\n    let _ = \
          busbar_unit_cost::price_of(x);\n}\n",
     );

@@ -234,6 +234,10 @@ resolve_bin() {
     # the github.com https URL as `x-access-token`, exactly as ci.yml already does for this repo's
     # own authenticated remote. No token set (local dev over ssh / a cached credential helper) →
     # the URL is used verbatim, so nothing regresses off CI.
+    # A Latchkey runner (`latchkey run`) has no token and no credential helper, so this clone fails
+    # there. Stage the engine instead: `git clone` busbar-release into an untracked `.release/`
+    # beside the packed tree, check out $release_ref, and in the job
+    # `export BUSBAR_RELEASE_CHECKOUT=$PWD/.release` (precedence 2 above; no token leaves the machine).
     local clone_url="$RELEASE_REPO"
     local _tok="${BUSBAR_RELEASE_TOKEN:-${GH_TOKEN:-${GITHUB_TOKEN:-}}}"
     if [ -n "$_tok" ]; then

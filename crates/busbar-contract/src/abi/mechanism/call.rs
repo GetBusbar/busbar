@@ -158,8 +158,10 @@ pub struct InHead {
     pub ticket: Ticket,
     /// The deadline, on the kernel's coarse clock (nanoseconds).
     pub deadline_ns: u64,
-    /// The trace id.
-    pub trace_id: u64,
+    /// The W3C trace id, 16 bytes as `traceparent` carries it; all zero = none.
+    pub trace_id: [u8; 16],
+    /// The W3C parent span id; `0` = none.
+    pub parent_span_id: u64,
     /// The extensions blob every op carries (the shared mechanism); absent unless a pending field exists.
     pub extensions: Blob,
 }
@@ -219,13 +221,32 @@ pub struct Envelope {
     pub diags_len: usize,
 }
 
-/// The head of every `out` of every kind. Host-owned; the host initialises it before the call.
+/// The head of every `out` of every kind. Host-owned. THE HOST ZEROES THE WHOLE `out` BEFORE EVERY
+/// CALL (no template): an `out` the plugin never wrote reads `outcome` [`Outcome::Fault`] (`0`) and
+/// every tail field as absent.
+///
+/// MEMORY, FOUR CLASSES (the design: plugin-owned memory is valid to its next refresh generation):
+/// (i) REQUEST-PATH RESULTS go into HOST-owned buffers the kind's `in`/`out` names as pointer +
+/// capacity; the plugin writes at most the capacity and never hands back a pointer for a result.
+/// (ii) GENERATION DATA — only data a plugin PUBLISHES at `open`/`refresh` — stays valid until
+/// `retire` of that generation. The Door and the Statement (the Door points to it) are `'static`.
+/// (iii) PER-CALL `OutHead.error` and the `Envelope` arrays stay valid until the NEXT op on the same
+/// ticket. On [`Ticket::NONE`] they are valid only until the op returns: the
+/// host copies them before it makes any other call on that thread.
+/// (iv) OFF-PATH LISTS AND SECRETS are held under a lease until `release(lease)`.
+/// SIZES: the plugin writes at most `min(out.size, its own size of the struct)` bytes of an `out`,
+/// never reads an `in` beyond `in.size`, and reads an absent tail field as zero.
+/// FIXED ELEMENTS: the element layouts of [`MetricEntry`], [`Diag`],
+/// [`super::door::MetricFamily`] and [`AbiStr`] are fixed by [`super::MECHANISM_VERSION`]; arrays of them
+/// carry no stride, so growing one is a mechanism bump.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct OutHead {
     /// `size_of` the `out` struct the plugin wrote (the plugin writes back its own).
     pub size: u32,
-    /// [`RawOutcome`], mirrored from the return value.
+    /// [`RawOutcome`], mirrored from the return value. The RETURN VALUE is authoritative: the
+    /// dispatcher treats an `outcome` that differs from it as [`Outcome::Fault`]. [`Outcome::Pending`]
+    /// answered on a [`Ticket::NONE`] call is [`Outcome::Fault`].
     pub outcome: RawOutcome,
     /// Alignment padding.
     pub _reserved: [u8; 3],

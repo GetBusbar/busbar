@@ -5,7 +5,7 @@ of the manifest's linked table (`crates/busbar/Cargo.toml`) that `register_plane
 `LINKED`, and a plane type in `plane_claims()` — and every plane given a LIVE UNIT PATH, both kinds:
 llm, mcp, a2a and streaming through the #28 rider (`root/gauntlet_install.rs` flips each key onto a
 runner in `root/gauntlet_kernel.rs` that builds a `Units` type, and `main.rs` calls `install()`),
-decision through a `Units` impl its linked entry (`root/plane_decision.rs`, the manifest's
+decision through a `Units` impl its linked entry (`root/plane_decisions.rs`, the manifest's
 `linked-entry` row) builds in `PLANE_HOOKS`. Every `root/*.rs` module is reached from `fn main()`.
 The self-test breaks each link in turn — a key never flipped, a flip in test scope, a runner that
 builds no unit, an install nobody calls, flips in an uncalled function whose name collides with a

@@ -159,7 +159,7 @@ pub(crate) async fn operation_ingress_inner(
         match crate::engine::LazyBody::parse(&body) {
             Ok(v) => Some(v),
             Err(_) => {
-                tracing::debug!(detail = %busbar_llm_codec::json::parse_err_log(body.len()), "request body JSON parse failed");
+                tracing::debug!(detail = %busbar_plane_llm::codec::json::parse_err_log(body.len()), "request body JSON parse failed");
                 return finish_rejected_via_audit(
                     host,
                     gov,
@@ -282,13 +282,13 @@ async fn ingress_path_model_inner(
     let charged_at = host.clock_now_secs();
     // App-retype WEDGE 3: the pre-routing finish seam routes through the threaded `host` (the body-model
     // twin does the same).
-    let mut v: Value = match busbar_llm_codec::json::parse(&body) {
+    let mut v: Value = match busbar_plane_llm::codec::json::parse(&body) {
         Ok(v) => v,
         Err(_) => {
             // Log a SANITIZED note for operators (just the byte length), never the parser's raw error:
             // with sonic-rs it embeds a fragment of the malformed body, which can contain secrets/PII.
             // The client gets only the generic, vendor-plausible message.
-            tracing::debug!(detail = %busbar_llm_codec::json::parse_err_log(body.len()), "request body JSON parse failed");
+            tracing::debug!(detail = %busbar_plane_llm::codec::json::parse_err_log(body.len()), "request body JSON parse failed");
             // Pre-routing failure (model never resolved): route through `finish_rejected` with the
             // bounded `"unresolved"` label so the malformed-body request is still counted in REQUESTS_TOTAL /
             // REQUEST_DURATION_SECONDS and fires the request-log webhook, mirroring the model-miss
@@ -355,7 +355,7 @@ async fn ingress_path_model_inner(
     // `Err` arm is kept as a non-panicking, protocol-shaped guard (never `unwrap`) so the request
     // path stays panic-free even if a future change introduces a non-serializable injected value;
     // it is effectively unreachable today, hence not exercised by a dedicated test.
-    let injected: Bytes = match busbar_llm_codec::json::to_vec(&v) {
+    let injected: Bytes = match busbar_plane_llm::codec::json::to_vec(&v) {
         Ok(b) => b.into(),
         Err(_e) => {
             // Same leak class as the parse arms above: the JSON library's error Display is a

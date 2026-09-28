@@ -24,7 +24,7 @@ use crate::mcp::client::catalogue::CatalogueCache;
 use crate::mcp::config::{McpServerDefCfg, ToolsCfg};
 use crate::mcp::{McpCfg, McpResource, McpRuntime};
 use busbar_kernel::test_support::{
-    install_test_mcp_runtime_factory,
+    install_test_section_plane_runtime_factory,
     seam::{ErrorSurfaceDriver, TestPlaneSeam},
     TestAppSeam, TestAppSeamExt,
 };
@@ -356,7 +356,7 @@ pub const SERVED: (
 /// the linking test binary builds (the test-support analogue of the kernel's own `cfg(test)` seeding).
 fn install_linked_test_seams() {
     install_test_seams();
-    install_test_mcp_runtime_factory(default_mcp_runtime);
+    install_test_section_plane_runtime_factory(default_mcp_runtime);
 }
 
 const ERROR_SURFACE_DRIVER: Option<ErrorSurfaceDriver> =

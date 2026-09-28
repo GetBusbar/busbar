@@ -62,8 +62,11 @@ pub const CASE_FLOOR: usize = 46;
 const T_STRUCT: &str = "DeployCfg";
 /// One of the 1.6.0-additive LIFTED carriers — optional, and typed.
 const F_OPTIONAL: &str = "tools";
-/// A field an operator MUST write. The requiredness cases need one that is genuinely required.
-const F_REQUIRED: &str = "providers";
+/// A type holding a field an operator MUST write, and that field. The requiredness cases need one
+/// that is genuinely required: the top-level document has none since 53bf27c7d (a section is
+/// required only by a registered plane's declaration), so the anchor is a model's `provider`.
+const T_REQUIRED: &str = "ModelCfg";
+const F_REQUIRED: &str = "provider";
 const T_ENUM: &str = "HookStage";
 const V_ENUM: &str = "routing";
 const T_ALIAS: &str = "type HookDefs";
@@ -931,7 +934,7 @@ pub fn run<'a>(gate: &'a dyn Gate, cx: &'a Ctx) -> Report<'a> {
         "breaking: a field made newly REQUIRED is RED",
         &["made REQUIRED"],
         |d| {
-            d["types"][T_STRUCT]["fields"][F_REQUIRED]["optional"] = json!(true);
+            d["types"][T_REQUIRED]["fields"][F_REQUIRED]["optional"] = json!(true);
         },
     ));
 
@@ -941,7 +944,7 @@ pub fn run<'a>(gate: &'a dyn Gate, cx: &'a Ctx) -> Report<'a> {
         "breaking: a new REQUIRED field is RED (it breaks a config that omits it)",
         &["new REQUIRED field added"],
         |d| {
-            if let Some(f) = d["types"][T_STRUCT]["fields"].as_object_mut() {
+            if let Some(f) = d["types"][T_REQUIRED]["fields"].as_object_mut() {
                 f.remove(F_REQUIRED);
             }
         },

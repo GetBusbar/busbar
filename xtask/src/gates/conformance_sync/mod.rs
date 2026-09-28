@@ -129,7 +129,7 @@ impl Gate for ConformanceSyncGate {
         };
 
         rows.push(if cx.env().write {
-            match std::fs::write(cx.abs(MANIFEST_PATH), &fresh) {
+            match cx.write_file(MANIFEST_PATH, &fresh) {
                 Ok(()) => Row::pass(
                     ROW_MANIFEST_DRIFT,
                     "the committed manifest IS the fresh render (rewritten by --write)",
@@ -264,7 +264,7 @@ fn row_readme(cx: &Ctx, suites: &[render::Suite], manifest_text: &str) -> Row {
     let readme = cx.read(README_PATH).unwrap_or_default();
     if cx.env().write {
         return match render::rewrite_readme(&readme, &block) {
-            Some(next) => match std::fs::write(cx.abs(README_PATH), next) {
+            Some(next) => match cx.write_file(README_PATH, next) {
                 Ok(()) => Row::pass(
                     ROW_README_DRIFT,
                     "the README badge block IS the fresh render (rewritten by --write)",

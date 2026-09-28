@@ -102,7 +102,7 @@ pub const CARGO_LOCAL: &[&str] = &[
     "cargo test -p busbar -p busbar-kernel -p busbar-core-admin --features openapi-schema --locked openapi -- --nocapture",
     "cargo build --locked --bin busbar",
     "cargo test -p busbar --test migration_corpus --locked -- --nocapture",
-    "cargo test -p busbar-voice --features runtime,test-support -p busbar-voice-codec --features runtime --locked",
+    "cargo test -p busbar-voice --features runtime,test-support --locked",
     "cargo test -p busbar-llm --locked --lib unit::",
     "cargo test -p busbar-kernel --features timing --lib --test timing_smoke --locked -- timing:: smoke_records",
     "cargo build -p xtask --locked",
@@ -225,12 +225,28 @@ pub const CARGO_CI_ONLY: &[(&str, &str)] = &[
     ("cargo test --workspace --locked --no-run --message-format=json", "the INPUT to the unix `check` job's collected-vs-ran census. It re-resolves the binaries `cargo test --workspace --locked` (above, run locally) has already built and emits cargo's JSON artifact stream; alone it has no verdict. The verdict is the inline python census and the per-binary `--list` loop that read that stream, which are step logic in ci.yml with no local form. Running the bare line here would rebuild nothing and prove nothing."),
     ("cargo xtask gate unconstructed --selftest", CONTENT_DEBT_GATE),
     ("cargo xtask gate unconstructed", CONTENT_DEBT_GATE),
+    ("cargo xtask gate one-memory-abi --selftest", ONE_MEMORY_GATES_REASON),
+    ("cargo xtask gate one-memory-abi", ONE_MEMORY_GATES_REASON),
+    ("cargo xtask gate contract-stateless --selftest", ONE_MEMORY_GATES_REASON),
+    ("cargo xtask gate contract-stateless", ONE_MEMORY_GATES_REASON),
+    ("cargo xtask gate plugin-closure-deps --selftest", ONE_MEMORY_GATES_REASON),
+    ("cargo xtask gate plugin-closure-deps", ONE_MEMORY_GATES_REASON),
+    ("cargo xtask gate c1-literals --selftest", ONE_MEMORY_GATES_REASON),
+    ("cargo xtask gate c1-literals", ONE_MEMORY_GATES_REASON),
+    ("cargo xtask gate door-only --selftest", ONE_MEMORY_GATES_REASON),
+    ("cargo xtask gate door-only", ONE_MEMORY_GATES_REASON),
+    ("cargo xtask gate linked-dropped-features --selftest", ONE_MEMORY_GATES_REASON),
+    ("cargo xtask gate linked-dropped-features", ONE_MEMORY_GATES_REASON),
     ("cargo xtask gate --all", "run by ci.yml's `gate-all` job, PLAINLY — no --report, no continue-on-error, no `|| true` — which the umbrella waits for and declares `# report-only:` (KICKOFF 13.2: before it, `gate --all` ran in no automatic workflow). It is the whole registry in one run and is RED ON HEAD on the gates later phases drain, so in CARGO_LOCAL it would red every local full-gate run on debt this runner cannot excuse; the gates it runs are each ALSO invoked gate-by-gate in ci.yml and classified one by one above (CARGO_LOCAL, or CI-only with their own reason, or excused in REGISTRY_NOT_IN_CI), so omitting the rollup here leaves no gate unaccounted for. DELETE this entry, move the line to CARGO_LOCAL and give the job a RESULTS row in the same commit, when `cargo xtask gate --all` exits 0 on HEAD."),
 ];
 
 /// The reason the `content-debt-gates` gate shares across its two lines (item 6a). Written once so
 /// lines cannot drift into six stories.
 const CONTENT_DEBT_GATE: &str = "run by ci.yml's `content-debt-gates` job, PLAINLY — no --report, no continue-on-error, no `|| true` — which the umbrella waits for and declares `# report-only:`. `unconstructed` is RED ON HEAD, self-test and verdict both, on content item 6b (Phase 5) drains, and has no gates::REPORT_ONLY posture, so neither a `--posture` form nor a green local form exists. In CARGO_LOCAL they would red every local full-gate run on debt this runner cannot excuse. DELETE the gate's two entries, move them to CARGO_LOCAL and give the job a RESULTS row in the same commit, when that gate is green on HEAD.";
+
+/// The one reason the six one-memory-abi gates share (M0 ABI-SPEC). Written once so the twelve
+/// lines cannot drift into twelve stories.
+const ONE_MEMORY_GATES_REASON: &str = "run by ci.yml's `one-memory-abi-gates` job, PLAINLY — no --report, no continue-on-error, no `|| true` — which the umbrella waits for and declares `# report-only:`. The six gates (`one-memory-abi`, `contract-stateless`, `plugin-closure-deps`, `c1-literals`, `door-only`, `linked-dropped-features`) are signed REPORT-ONLY until M2 (GATES): each is armed as a drain-only ledger qa/<gate>.toml whose rows are M2's work list, and a gate the owner has not yet made blocking is not one a local full-gate run blocks on. DELETE the gate's two entries, move them to CARGO_LOCAL and move the steps into a counted job in the same commit, when M2 makes that gate blocking.";
 
 /// WHERE AN EXCUSED GATE IS ACTUALLY RUN — the checkable half of a written reason.
 ///
@@ -1252,7 +1268,7 @@ fn selftest(
         ),
         Ok(ftext) => {
             let found = discovery::cargo_invocations(&ftext);
-            let want = "cargo test -p busbar-voice --features runtime,test-support -p busbar-voice-codec --features runtime --locked";
+            let want = "cargo test -p busbar-voice --features runtime,test-support --locked";
             ok(
                 found.iter().any(|c| c == want),
                 "a cargo invocation continued over three lines is discovered WHOLE".to_string(),

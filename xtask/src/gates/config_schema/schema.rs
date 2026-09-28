@@ -320,9 +320,9 @@ pub fn sources(cx: &Ctx) -> Result<Vec<String>, String> {
         // `streams:` — the voice plane's grammar, including the three plane-imposed session
         // CEILINGS that bound what a live-voice deployment may ever hold.
         "crates/busbar-voice/src/config.rs".to_string(),
-        // `decisions:` — the decision plane's grammar (its `models:` map and hook references);
+        // `decisions:` — the decisions plane's grammar (its `models:` map and hook references);
         // a plane's config section is config grammar exactly as the other planes' sections are.
-        "crates/busbar-plane-decision/src/config.rs".to_string(),
+        "crates/busbar-plane-decisions/src/config.rs".to_string(),
         // `FileSettings` — an `export.<name>.module: request-log-file` instance's `settings:` —
         // moved VERBATIM out of `busbar-kernel/src/config/mod.rs` into the sink that reads it
         // (K9b: the file sink is the `busbar-export-file` export plugin). A tracked SOURCE

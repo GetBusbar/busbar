@@ -662,7 +662,7 @@ impl Gate for FieldInventoryGate {
                 )),
             )
         } else if cx.env().write {
-            match std::fs::write(cx.abs(OUT), &text) {
+            match cx.write_file(OUT, &text) {
                 Ok(()) => row_ok(
                     ROW_ARTIFACT_DRIFT,
                     "the committed inventory is the fresh derivation",

@@ -493,8 +493,8 @@ fn the_plane_key_contract_matches_plane_keys_sh() {
     assert_eq!(planes::plane_keys_other("a2a"), vec!["mcp", "voice"]);
     let src = planes::plane_src_roots();
     assert_eq!(src[0], "crates/busbar-llm/src");
-    assert!(src.contains(&"crates/busbar-llm-codec/src".to_string()));
-    assert!(src.contains(&"crates/busbar-voice-codec/src".to_string()));
+    assert!(!src.contains(&"crates/busbar-llm-codec/src".to_string()));
+    assert!(!src.contains(&"crates/busbar-voice-codec/src".to_string()));
     // READ THE SHELL, DO NOT RESTATE IT. This assertion used to be a literal copy of
     // `NEUTRAL_ROOTS_LIST`, which is the defect the test's own NAME promises to catch: when
     // `busbar-core` and `busbar-substrate` were absorbed (673ecdaaa, 5fa320208) the Rust side was
@@ -1558,7 +1558,7 @@ fn no_deferral_reports_the_unwaived_markers_and_the_stale_waiver_together() {
     let mut ov = Overlay::new();
     ov.set(
         "scripts/no-deferral.waivers",
-        "crates/busbar-core/src/no-such-file.rs:1\tplanted, matches nothing [retires: H5]\n",
+        "crates/busbar-core/src/no-such-file.rs:1\tplanted, matches nothing [retires: KP-36]\n",
     );
     let reg = gates::find("no-deferral").expect("the gate is registered");
     let gate = (reg.build)();

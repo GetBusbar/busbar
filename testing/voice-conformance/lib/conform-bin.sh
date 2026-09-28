@@ -25,7 +25,7 @@ VC_MAP="$VC_ROOT/qa/evidence/voice-cross-dialect-map.json"
 _vc_harness_trees() {
   printf '%s\n' \
     "$VC_ROOT/crates/busbar-voice/src" \
-    "$VC_ROOT/crates/busbar-voice-codec/src" \
+    "$VC_ROOT/crates/busbar-plane-streaming/src/codec" \
     "$VC_DIR/legs" \
     "$VC_DIR/lib"
 }

@@ -394,12 +394,17 @@ const MAX_NAME_SEGMENTS: usize = 4;
 ///   plane naming ITS OWN codec rather than a cross-instance reach.
 /// * `streams` is the plane's CONFIG SECTION (`streams:`, frozen 1.5.x wire), so it is the plane's
 ///   word in every other crate's source; it expires with the plane.
+/// * `decisions` is the fifth plane's crate and config verb (`busbar-plane-decisions`, `decisions:`;
+///   the owner's rename, #17/#48), while its declared `PlaneMeta::KEY` and meter class stay the
+///   durable string `"decision"`. The directory spells the plural, the declaration the singular:
+///   one instance.
 ///
 /// All three spellings are one instance for every rule here and banned vocabulary in every other
 /// kind, and an entry is RED once the crate it names is gone.
 const PLANE_ALIASES: &[(&str, &str, &str)] = &[
     ("voice", "streaming", "busbar-voice-codec"),
     ("streams", "streaming", "busbar-plane-streaming"),
+    ("decisions", "decision", "busbar-plane-decisions"),
 ];
 
 /// Kinds the target scheme defines that the tree does not carry YET, each with its reason. The
@@ -5648,7 +5653,7 @@ fn rule_write(cx: &Ctx, crates: &[CrateInfo], reg: &KindRegistry) -> Row {
         }
     };
     let rewritten = rewrite_counts(&text, &repins);
-    match std::fs::write(cx.abs(REGISTRY_FILE), &rewritten) {
+    match cx.write_file(REGISTRY_FILE, &rewritten) {
         Ok(()) => Row::pass(
             ROW_WRITE,
             "every count that fell is re-pinned to what the tree measures",
@@ -6323,11 +6328,13 @@ impl Gate for KindIsolationGate {
             // RE-TARGETED (item 89): this planted `busbar-plane-llm -> busbar-llm-codec`, which is
             // the llm plane reaching its OWN codec — the same instance, never cross-instance — and
             // the plant came back GREEN once the row's standing debt stopped hiding it. The claim
-            // is one plane reaching ANOTHER plane's half, so the plane is `mcp`.
+            // is one plane reaching ANOTHER plane's half, so the plane is `mcp`. R7 folded
+            // `busbar-llm-codec` into `busbar-plane-llm`, so the other plane's half the plant names
+            // is `busbar-plane-llm` now.
             manifest_plant(
                 "crates/busbar-plane-mcp",
                 "busbar-plane-mcp",
-                &["busbar-contract", "busbar-llm-codec"],
+                &["busbar-contract", "busbar-plane-llm"],
             ),
             &["cross-instance", "busbar-plane-mcp"],
         ));

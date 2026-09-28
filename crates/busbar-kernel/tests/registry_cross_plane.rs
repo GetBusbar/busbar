@@ -554,10 +554,14 @@ fn resolved(yaml: &str) -> RootCfg {
 /// beside `tools:`, read off its declaration) and one `agents:` entry — so every mountable linked
 /// plane has a door and binds an audience.
 fn receiving_cfg() -> RootCfg {
-    let door = linked::door_section(linked::owning("tools"));
+    let owner = linked::owning("tools");
+    let door = linked::door_section(owner);
+    // The door's path is the one its owner claims (its key), never an operator's choice: a
+    // canonical URI naming another path is a boot refusal (CG-17).
+    let key = owner.key;
     resolved(&format!(
         "providers: {{}}\nmodels: {{}}\npublic_url: \"https://busbar.example\"\n\
-         {door}:\n  canonical_uri: \"https://gw.example.com/door\"\n  \
+         {door}:\n  canonical_uri: \"https://gw.example.com/{key}\"\n  \
          authorization_servers: [\"https://login.example.com\"]\n\
          agents:\n  planner:\n    url: \"https://agent.example/planner\"\n    \
          pin: {{ mechanism: unpinned }}\n"

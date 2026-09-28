@@ -258,7 +258,7 @@ pub(crate) const DETAIL_STREAM_OPTIONS_NOT_OBJECT: &str =
 /// usage without reshaping the caller's value, and the caller refuses it (item 362). A body that
 /// already opted in re-serializes identically in effect.
 pub(crate) fn try_inject_openai_stream_include_usage(payload: Bytes) -> Result<Bytes, Bytes> {
-    let mut v: Value = match busbar_llm_codec::json::parse(&payload) {
+    let mut v: Value = match busbar_plane_llm::codec::json::parse(&payload) {
         Ok(v) => v,
         Err(_) => return Ok(payload),
     };
@@ -277,7 +277,7 @@ pub(crate) fn try_inject_openai_stream_include_usage(payload: Bytes) -> Result<B
         return Err(payload);
     };
     so_obj.insert("include_usage".to_string(), Value::Bool(true));
-    match busbar_llm_codec::json::to_vec(&v) {
+    match busbar_plane_llm::codec::json::to_vec(&v) {
         Ok(bytes) => Ok(Bytes::from(bytes)),
         Err(_) => Ok(payload),
     }

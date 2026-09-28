@@ -30,13 +30,14 @@ use busbar_contract::abi::mechanism::call::{
     InHead as MechInHead, MetricEntry as MechMetricEntry, OutHead as MechOutHead,
 };
 use busbar_contract::abi::mechanism::door::{
-    Door as MechDoor, MetricFamily as MechMetricFamily, Statement as MechStatement,
+    Door as MechDoor, KindTailHead as MechKindTailHead, MetricFamily as MechMetricFamily,
+    Statement as MechStatement,
 };
 use busbar_contract::abi::mechanism::lifecycle::{
     CancelIn as MechCancelIn, CancelOut as MechCancelOut, DriveIn as MechDriveIn,
     GenIn as MechGenIn, OpenIn as MechOpenIn, OpenOut as MechOpenOut, OpsHead as MechOpsHead,
-    ReleaseIn as MechReleaseIn, TickIn as MechTickIn, TickOut as MechTickOut,
-    ValidateIn as MechValidateIn,
+    RefreshIn as MechRefreshIn, ReleaseIn as MechReleaseIn, TickIn as MechTickIn,
+    TickOut as MechTickOut, ValidateIn as MechValidateIn,
 };
 use busbar_contract::abi::mechanism::ticket::{
     CompletionHandle as MechCompletionHandle, HostCtx as MechHostCtx, HostTables as MechHostTables,
@@ -45,6 +46,17 @@ use busbar_contract::abi::mechanism::ticket::{
 use busbar_contract::abi::{
     auth::Ops as AuthOps, export::Ops as ExportOps, hook::Ops as HookOps, plane::Ops as PlaneOps,
     secret::Ops as SecretOps, store::Ops as StoreOps, transport::Ops as TransportOps,
+};
+// THE AUTH KIND (v3, design B.3): aliased, as the mechanism's are.
+use busbar_contract::abi::auth::{
+    AuthTail, BeginLoginIn as AuthBeginLoginIn, BeginLoginOut as AuthBeginLoginOut,
+    CompleteLoginIn as AuthCompleteLoginIn, FieldSpan as AuthFieldSpan, FieldsIn as AuthFieldsIn,
+    FieldsOut as AuthFieldsOut, IdentifyOut as AuthIdentifyOut, IdentityBuf as AuthIdentityBuf,
+    IdentityOut as AuthIdentityOut, LoginField as AuthLoginField, NamedValue as AuthNamedValue,
+    OpenOutboundIn as AuthOpenOutboundIn, OpenOutboundOut as AuthOpenOutboundOut,
+    OutboundReadyIn as AuthOutboundReadyIn, OutboundReadyOut as AuthOutboundReadyOut,
+    RequestFacts as AuthRequestFacts, Span as AuthSpan, StyleDecl as AuthStyleDecl,
+    VerifyIn as AuthVerifyIn,
 };
 use std::fmt::Write as _;
 
@@ -859,7 +871,7 @@ fn compute_layout() -> String {
         ]
     );
 
-    // THE ONE MEMORY ABI (THE DESIGN §11.5, M0 ABI-SPEC): the shared mechanism and the seven kind
+    // THE ONE MEMORY ABI (`BUSBAR-1.6.0.md` THE DESIGN, §11.5): the shared mechanism and the seven kind
     // tables. `tests/mechanism_layout.rs` states the same numbers by hand.
     record!(s, MechStr, [ptr, len]);
     record!(s, MechBlob, [ptr, len, fmt, flags]);
@@ -876,6 +888,7 @@ fn compute_layout() -> String {
             ticket,
             deadline_ns,
             trace_id,
+            parent_span_id,
             extensions
         ]
     );
@@ -939,9 +952,13 @@ fn compute_layout() -> String {
             diag_ids,
             diag_ids_len,
             kind_tail,
-            extensions
+            extensions,
+            secret_refs,
+            secret_refs_len,
+            settings_schema
         ]
     );
+    record!(s, MechKindTailHead, [size, _reserved]);
     record!(s, MechTicket, [slot, generation]);
     record!(s, MechCompletionHandle, [ticket, seq, _reserved]);
     record!(s, MechHostCtx, [ptr]);
@@ -959,6 +976,11 @@ fn compute_layout() -> String {
     );
     record!(s, MechOpenOut, [head, instance]);
     record!(s, MechGenIn, [head, generation]);
+    record!(
+        s,
+        MechRefreshIn,
+        [head, generation, settings, secrets, secrets_len]
+    );
     record!(s, MechTickIn, [head, now_ns]);
     record!(s, MechTickOut, [head, next_tick_ns]);
     record!(s, MechDriveIn, [head, driver]);
@@ -967,7 +989,138 @@ fn compute_layout() -> String {
     record!(s, MechReleaseIn, [head, lease]);
     record!(s, StoreOps, [head]);
     record!(s, SecretOps, [head]);
-    record!(s, AuthOps, [head]);
+    record!(
+        s,
+        AuthOps,
+        [
+            head,
+            verify,
+            begin_login,
+            complete_login,
+            open_outbound,
+            outbound_ready,
+            fields
+        ]
+    );
+    record!(s, AuthStyleDecl, [name, flags, _reserved]);
+    record!(
+        s,
+        AuthTail,
+        [
+            head,
+            caps,
+            facts,
+            login_kind,
+            _reserved,
+            styles,
+            styles_len,
+            aliases,
+            aliases_len,
+            carriers,
+            carriers_len
+        ]
+    );
+    record!(s, AuthSpan, [off, len]);
+    record!(s, AuthNamedValue, [name, value]);
+    record!(
+        s,
+        AuthRequestFacts,
+        [
+            method,
+            authority,
+            canonical_path,
+            query,
+            timestamp,
+            body_hash,
+            body_hash_present,
+            _reserved
+        ]
+    );
+    record!(
+        s,
+        AuthIdentityBuf,
+        [buf, buf_cap, groups, groups_cap, _reserved]
+    );
+    record!(
+        s,
+        AuthIdentityOut,
+        [
+            subject, key_id, key_name, user, provider, name, claims, claims_fmt, flags, ttl_secs,
+            groups_len, _reserved
+        ]
+    );
+    record!(
+        s,
+        AuthVerifyIn,
+        [head, credential, carrier, carrier_len, request, out_buf]
+    );
+    record!(
+        s,
+        AuthIdentifyOut,
+        [head, verdict, needed_groups, needed_bytes, identity]
+    );
+    record!(
+        s,
+        AuthBeginLoginIn,
+        [
+            head,
+            redirect_uri,
+            state,
+            nonce,
+            code_challenge,
+            scopes,
+            scopes_len
+        ]
+    );
+    record!(s, AuthLoginField, [name, label, kind, required]);
+    record!(
+        s,
+        AuthBeginLoginOut,
+        [head, shape, _reserved, authorize_url, form, form_len]
+    );
+    record!(
+        s,
+        AuthCompleteLoginIn,
+        [
+            head,
+            code,
+            state,
+            redirect_uri,
+            code_verifier,
+            submitted,
+            submitted_len,
+            out_buf
+        ]
+    );
+    record!(s, AuthOpenOutboundIn, [head, style, credential, settings]);
+    record!(s, AuthOpenOutboundOut, [head, handle]);
+    record!(s, AuthOutboundReadyIn, [head, handle]);
+    record!(s, AuthOutboundReadyOut, [head, ready, _reserved]);
+    record!(s, AuthFieldSpan, [name, value, flags, _reserved]);
+    record!(
+        s,
+        AuthFieldsIn,
+        [
+            head,
+            handle,
+            mode,
+            _reserved,
+            request,
+            caller_credential,
+            field_buf,
+            field_buf_cap,
+            fields,
+            fields_cap,
+            _reserved2,
+            headers,
+            headers_len
+        ]
+    );
+    record!(
+        s,
+        AuthFieldsOut,
+        [head, fields_len, needed_fields, needed_bytes]
+    );
     record!(s, HookOps, [head]);
     record!(s, ExportOps, [head]);
     record!(s, PlaneOps, [head]);
@@ -1003,6 +1156,11 @@ fn abi_layout_matches_golden() {
          `BUSBAR_UPDATE_GOLDEN=1 cargo test -p busbar-plugin`.\n"
     );
 
+    assert!(
+        compare(&existing, &actual).is_ok(),
+        "{}",
+        compare(&existing, &actual).unwrap_err()
+    );
     assert_eq!(
         existing, actual,
         "\nABI LAYOUT DRIFT: a POD field offset/size changed.\n\
@@ -1011,4 +1169,49 @@ fn abi_layout_matches_golden() {
          If it is a REORDER/RESIZE/INSERT, that is a MAJOR airlock break — do not re-seed \
          without bumping ABI_MAJOR.\n"
     );
+}
+
+/// THE COMPARATOR: the golden and the layout agree line for line, or the first line that differs is
+/// named.
+fn compare(existing: &str, actual: &str) -> Result<(), String> {
+    if existing == actual {
+        return Ok(());
+    }
+    let e: Vec<&str> = existing.lines().collect();
+    let a: Vec<&str> = actual.lines().collect();
+    for i in 0..e.len().max(a.len()) {
+        if e.get(i) != a.get(i) {
+            return Err(format!(
+                "ABI LAYOUT DRIFT at golden line {}: golden {:?}, layout {:?}",
+                i + 1,
+                e.get(i),
+                a.get(i)
+            ));
+        }
+    }
+    Err("ABI LAYOUT DRIFT: the golden and the layout differ in line endings".to_string())
+}
+
+/// RED ARM: one perturbed golden line (the mechanism door's `kind_abi` offset) fails the comparator.
+#[test]
+fn a_perturbed_golden_line_fails_the_comparator() {
+    let actual = compute_layout();
+    assert!(compare(&actual, &actual).is_ok());
+    let line = "MechDoor.kind_abi=20";
+    assert!(actual.lines().any(|l| l == line), "the golden holds {line}");
+    let perturbed = actual.replacen(line, "MechDoor.kind_abi=24", 1);
+    let err = compare(&perturbed, &actual).expect_err("a perturbed line must fail");
+    assert!(err.contains("MechDoor.kind_abi=24"), "{err}");
+}
+
+/// RED ARM, THE AUTH KIND: one perturbed auth golden line (`fields`' slot in the auth table) fails
+/// the comparator.
+#[test]
+fn a_perturbed_auth_golden_line_fails_the_comparator() {
+    let actual = compute_layout();
+    let line = "AuthOps.fields=120";
+    assert!(actual.lines().any(|l| l == line), "the golden holds {line}");
+    let perturbed = actual.replacen(line, "AuthOps.fields=112", 1);
+    let err = compare(&perturbed, &actual).expect_err("a perturbed auth line must fail");
+    assert!(err.contains("AuthOps.fields=112"), "{err}");
 }

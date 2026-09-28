@@ -513,7 +513,7 @@ impl Gate for ConfigSchemaGate {
 
         // ── THE DRIFT GUARD. One derivation, two arms: write it, or diff it.
         rows.push(row_drift(if cx.env().write {
-            match std::fs::write(cx.abs(schema::SNAPSHOT), &fresh_text) {
+            match cx.write_file(schema::SNAPSHOT, &fresh_text) {
                 Ok(()) => DriftState::Written(n_types),
                 Err(e) => DriftState::Unwritable(e.to_string()),
             }

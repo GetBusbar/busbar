@@ -101,10 +101,9 @@ fn host_for(dialect: &str) -> &'static str {
         .expect("every dialect has a configured host")
 }
 
-/// Where the codec crate keeps its frozen outputs.
+/// Where the folded-in codec module keeps its frozen outputs.
 fn golden_dir() -> std::path::PathBuf {
-    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../busbar-llm-codec/src/tests/proto/golden")
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/codec/tests/proto/golden")
 }
 
 /// One request, taken in through the plane's decode step and back out through its egress step.

@@ -111,8 +111,12 @@ const SRC_FLOOR: usize = 117;
 ///
 /// Measured 2026-09-23: 80 tracked `Cargo.toml` files (`git ls-files '*Cargo.toml'`). It read `5`,
 /// which the three manifests the old three-root walk could not see were never going to trip. The
-/// floor sits at 64 — the population less one fifth, for crates the 1.6.0 folds delete.
-const MANIFEST_FLOOR: usize = 64;
+/// floor sat at 64 — the population less one fifth, for crates the 1.6.0 folds delete.
+///
+/// RE-MEASURED after the codec fold (owner ruling R7, 2026-09-27, #39): `busbar-llm-codec` and
+/// `busbar-voice-codec` dissolved into their plane crates, taking two manifests with them — 63
+/// tracked `Cargo.toml` files. The floor moves with it, same one-fifth margin: 50.
+const MANIFEST_FLOOR: usize = 50;
 
 pub struct SegregationGate;
 

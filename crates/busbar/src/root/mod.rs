@@ -28,7 +28,7 @@
 //! - [`adapters`] — the seams where two units name the same object at two widths, plus the boot
 //!   assertion that the two hand-kept metric label banks still agree.
 //! - [`policy`] — the values the units take from configuration rather than from a `Default`.
-//! - `plane_decision` — the decision plane's registry declaration. The one plane whose crate may
+//! - `plane_decisions` — the decisions plane's registry declaration. The one plane whose crate may
 //!   not write its own: a pure plane's manifest may name `busbar-contract` and nothing else, and a
 //!   `PlaneDecl` is a kernel type, so the root writes it. It declares identity only — no claim, no
 //!   audience, no runtime slot — which is what puts `decisions:` in the section fold without
@@ -82,8 +82,8 @@ pub mod ledger_identity;
 pub mod linked;
 pub mod migration;
 pub mod otlp;
-#[cfg(feature = "plane-decision")]
-pub mod plane_decision;
+#[cfg(feature = "plane-decisions")]
+pub mod plane_decisions;
 // The node a plane's units run through: compiled when a linked plane rides the `node` axis, read
 // off the same manifest table the root folds (the generated `linked_axis_node` cfg).
 #[cfg(linked_axis_node)]

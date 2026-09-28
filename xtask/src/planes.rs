@@ -55,14 +55,21 @@ pub fn plane_keys_other(self_key: &str) -> Vec<&'static str> {
 /// `plane_pricing_blindness::PLANE_CRATES`, kind-isolation's closure wall, and the crate's own
 /// `tests/purity.rs` — which is strictly stronger than this legacy-engine needle list. Nothing went
 /// unscanned; it changed which gate reads it.
+///
+/// LLM HAS NO `-codec` ROOT ANY MORE EITHER (owner ruling R7, 2026-09-27, #39): `busbar-llm-codec`
+/// dissolved into `busbar-plane-llm`'s own `codec` module, a pure move. `crates/busbar-plane-llm/src`
+/// is NOT listed here for the same reason `crates/busbar-plane-mcp/src` is not: it is scanned by the
+/// PLANE-KIND regime instead, which already walks the whole crate directory, `codec` module
+/// included.
+///
+/// VOICE HAS NO `-codec` ROOT ANY MORE EITHER, same ruling: `busbar-voice-codec` dissolved into
+/// `busbar-plane-streaming`'s own `codec` module. `crates/busbar-plane-streaming/src` is NOT listed
+/// here for the same reason — the PLANE-KIND regime already walks it whole.
 pub fn plane_src_roots() -> Vec<String> {
-    let mut out: Vec<String> = PLANE_KEYS
+    PLANE_KEYS
         .iter()
         .map(|k| format!("crates/busbar-{k}/src"))
-        .collect();
-    out.push("crates/busbar-llm-codec/src".to_string());
-    out.push("crates/busbar-voice-codec/src".to_string());
-    out
+        .collect()
 }
 
 /// The NEUTRAL (ABI-side) src roots — the crates a plane must never leak into and that must still
@@ -98,7 +105,7 @@ pub fn plane_src_roots() -> Vec<String> {
 ///   list that scans them;
 /// * the plugin INSTANCES (`busbar-transport-*`, `store-*`, `secret-*`, `auth-*`, `hook*`,
 ///   `export-*`, `plane-example`) — an instance crate names its own protocol by definition;
-/// * `crates/busbar` — the composition root constructs planes BY NAME (`root/plane_decision.rs`),
+/// * `crates/busbar` — the composition root constructs planes BY NAME (`root/plane_decisions.rs`),
 ///   which is the one place in the tree where naming one is the job.
 ///
 /// STILL AN EXPLICIT LIST, AND THAT IS STILL A GAP. Deriving this by exclusion from the directories

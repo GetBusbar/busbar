@@ -965,8 +965,9 @@ pub struct McpCfg {
     /// sending a `Host` header, which turns the confused-deputy defence into a formality. It is also
     /// what closes the multi-tenant gap — one deployment, one canonical audience, stated once.
     ///
-    /// The MOUNT PATH is derived from this rather than configured separately, so the path a client
-    /// posts to and the identifier its token is bound to cannot drift apart.
+    /// Its PATH must be the one path the claim table names: the mount is fixed, not configured, and
+    /// a URI naming any other path is refused at boot (CG-17). The scheme, host and port are the
+    /// operator's; the path is not.
     pub canonical_uri: String,
     /// RFC 9728 `authorization_servers`: the issuer identifiers of the authorization servers that
     /// may mint tokens for this resource — in practice, the operator's IdP. At least one is
@@ -1029,6 +1030,17 @@ pub enum McpCfgError {
     /// deployment's root: mounting the MCP plane at `/` would put it in front of the LLM residual
     /// and claim every path in the process.
     CanonicalUriHasNoPath(String),
+    /// `canonical_uri` named a path other than the one the claim table names. Inbound paths are
+    /// compile-time claims in the Statement; a configured address naming another path would
+    /// advertise, and bind every token's audience to, a path nothing is served at. The mount is
+    /// fixed rather than configurable (CG-17). Carries the URI as configured and the path it named,
+    /// normalised.
+    CanonicalUriPathNotClaimed {
+        /// The URI as configured.
+        uri: String,
+        /// The path it named, normalised to a leading and no trailing slash.
+        path: String,
+    },
     /// `authorization_servers` was empty.
     NoAuthorizationServers,
     /// An `authorization_servers` entry was not an absolute `http`/`https` URI.
@@ -1061,6 +1073,13 @@ impl std::fmt::Display for McpCfgError {
                 "mcp.canonical_uri `{v}` has no path. The MCP endpoint needs its own path so it \
                  does not claim the whole deployment. Example: `https://gateway.example.com/mcp`"
             ),
+            McpCfgError::CanonicalUriPathNotClaimed { uri, path } => write!(
+                f,
+                "mcp.canonical_uri `{uri}` names the path `{path}`, but the MCP endpoint is served \
+                 only at `{DEFAULT_MOUNT}`; the path is fixed, not configurable. Keep the scheme, \
+                 host and port and end the URI in `{DEFAULT_MOUNT}`. Example: \
+                 `https://gateway.example.com{DEFAULT_MOUNT}`"
+            ),
             McpCfgError::NoAuthorizationServers => write!(
                 f,
                 "mcp.authorization_servers must list at least one issuer. It is the entire content \
@@ -1083,7 +1102,11 @@ impl std::fmt::Display for McpCfgError {
 /// The join itself is on the CODEC side, so the plane — which declares an OPEN claim on the composed
 /// discovery path and may not name this crate — reads the same composer rather than a second one.
 /// The well-known prefix went with it; there is one place the two are put together now.
-use busbar_plane_mcp::codec::protected_resource_metadata_path;
+///
+/// `DEFAULT_MOUNT` is THE ONE PATH this endpoint is served at: the compile-time claim, read from the
+/// claim table rather than written a second time here, so the path validation accepts and the path
+/// claimed cannot disagree.
+use busbar_plane_mcp::{claims::DEFAULT_MOUNT, codec::protected_resource_metadata_path};
 
 impl McpResource {
     /// Validate and derive. Every refusal is fail-closed at BOOT rather than at first request: an
@@ -1101,6 +1124,15 @@ impl McpResource {
         let mount_path = normalise_path(path);
         if mount_path.is_empty() {
             return Err(McpCfgError::CanonicalUriHasNoPath(uri.to_string()));
+        }
+        // The mount is not operator-configurable: one path is claimed and nothing else, so an
+        // address naming any other path is a boot refusal here rather than a deployment that
+        // advertises a path it does not serve (CG-17).
+        if mount_path != DEFAULT_MOUNT {
+            return Err(McpCfgError::CanonicalUriPathNotClaimed {
+                uri: uri.to_string(),
+                path: mount_path,
+            });
         }
         if cfg.authorization_servers.is_empty() {
             return Err(McpCfgError::NoAuthorizationServers);

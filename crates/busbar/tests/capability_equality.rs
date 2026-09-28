@@ -133,7 +133,7 @@ fn plane_crate_ledger_columns() -> Vec<(&'static str, &'static [&'static str])> 
 /// THE WORKSPACE PLANE CRATES THAT ANSWER TO NO LEDGER COLUMN YET — pinned EXACTLY, at today's
 /// measurement, so the gap is named rather than invisible and cannot grow or quietly close.
 ///
-/// `busbar-plane-decision` is the fifth plane (#48) and `qa/capability-equality.json` declares no
+/// `busbar-plane-decisions` is the fifth plane (#48) and `qa/capability-equality.json` declares no
 /// column for it; mapping it to a column the ledger does not have would fail the column check, and
 /// leaving it out of the enumeration is the hole item 257 found. So it is listed here, and the
 /// cross-check below is RED if a crate joins the workspace unmapped and unlisted, AND if a listed
@@ -960,7 +960,7 @@ fn plane_keys_from_single_source(root: &Path) -> Vec<String> {
     panic!("scripts/plane-keys.sh declares no `PLANE_KEYS=...` line");
 }
 
-/// The workspace's `crates/busbar-plane-*` members, by directory suffix (`plane-decision`), read off
+/// The workspace's `crates/busbar-plane-*` members, by directory suffix (`plane-decisions`), read off
 /// the root `Cargo.toml`'s `members` list — the list cargo builds, not a list somebody keeps.
 fn workspace_pure_plane_crates(root: &Path) -> BTreeSet<String> {
     let manifest = std::fs::read_to_string(root.join("Cargo.toml")).expect("the root Cargo.toml");

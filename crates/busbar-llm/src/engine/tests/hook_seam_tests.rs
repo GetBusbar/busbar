@@ -750,6 +750,7 @@ async fn substrate_fire_stage_taps_honors_group_scope_via_host_seam() {
         &scoped_tap(&cap_in),
         &shape,
         stage(),
+        Default::default(),
         Some("user:bob"),
         &host,
     );
@@ -767,6 +768,7 @@ async fn substrate_fire_stage_taps_honors_group_scope_via_host_seam() {
         &scoped_tap(&cap_out),
         &shape,
         stage(),
+        Default::default(),
         Some("user:sue"),
         &host,
     );

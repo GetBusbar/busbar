@@ -361,7 +361,7 @@ dependencies = [
  "busbar-llm",
  "busbar-mcp",
  "busbar-oauth2",
- "busbar-plane-decision",
+ "busbar-plane-decisions",
  "busbar-plane-streaming",
  "busbar-plugin-example-plane",
  "busbar-plugin-loader",
@@ -596,7 +596,7 @@ dependencies = [
 [[package]]
 name = "busbar-export-prometheus"
 version = "1.5.0"
-source = "git+https://github.com/GetBusbar/busbar-export-prometheus?rev=087bbcc6a9bafc63591799770407a478f2742027#087bbcc6a9bafc63591799770407a478f2742027"
+source = "git+https://github.com/GetBusbar/busbar-export-prometheus?rev=ae383d230e9a8e6af4c2d10f31e476845fe6e46d#ae383d230e9a8e6af4c2d10f31e476845fe6e46d"
 dependencies = [
  "busbar-contract",
  "serde",
@@ -606,7 +606,7 @@ dependencies = [
 [[package]]
 name = "busbar-export-prometheus-plugin"
 version = "1.5.0"
-source = "git+https://github.com/GetBusbar/busbar-export-prometheus?rev=087bbcc6a9bafc63591799770407a478f2742027#087bbcc6a9bafc63591799770407a478f2742027"
+source = "git+https://github.com/GetBusbar/busbar-export-prometheus?rev=ae383d230e9a8e6af4c2d10f31e476845fe6e46d#ae383d230e9a8e6af4c2d10f31e476845fe6e46d"
 dependencies = [
  "busbar-export-prometheus",
 ]
@@ -811,7 +811,6 @@ dependencies = [
  "base64 0.23.1",
  "busbar-contract",
  "busbar-kernel",
- "busbar-llm-codec",
  "busbar-plane-llm",
  "bytes",
  "crc32fast",
@@ -838,19 +837,6 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "url",
-]
-
-[[package]]
-name = "busbar-llm-codec"
-version = "1.6.0"
-dependencies = [
- "busbar-contract",
- "bytes",
- "getrandom 0.3.4",
- "serde",
- "serde_json",
- "sonic-rs",
- "tracing",
 ]
 
 [[package]]
@@ -920,7 +906,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "busbar-plane-decision"
+name = "busbar-plane-decisions"
 version = "1.6.0"
 dependencies = [
  "busbar-contract",
@@ -933,9 +919,12 @@ name = "busbar-plane-llm"
 version = "1.6.0"
 dependencies = [
  "busbar-contract",
- "busbar-llm-codec",
+ "bytes",
+ "getrandom 0.3.4",
+ "serde",
  "serde_json",
  "sonic-rs",
+ "tracing",
 ]
 
 [[package]]
@@ -954,8 +943,8 @@ version = "1.6.0"
 dependencies = [
  "async-trait",
  "busbar-contract",
- "busbar-voice-codec",
  "bytes",
+ "serde",
  "serde_json",
 ]
 
@@ -1078,7 +1067,6 @@ dependencies = [
  "busbar-contract",
  "busbar-kernel",
  "busbar-plane-streaming",
- "busbar-voice-codec",
  "bytes",
  "futures",
  "http",
@@ -1092,16 +1080,6 @@ dependencies = [
  "tokio-tungstenite",
  "tracing",
  "url",
-]
-
-[[package]]
-name = "busbar-voice-codec"
-version = "1.6.0"
-dependencies = [
- "busbar-contract",
- "bytes",
- "serde",
- "serde_json",
 ]
 
 [[package]]

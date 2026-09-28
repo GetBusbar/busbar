@@ -281,7 +281,7 @@ fn a_padding_resumed_media_frame_is_refused_at_the_plane_entrypoint_and_opens_no
 }
 
 /// Item 419: the comment justifying the local base64 copy once told a reviewer it was the SAME
-/// algorithm `busbar_voice_codec::topology::twilio` carries — that module carries none (it imports
+/// algorithm `crate::codec::topology::twilio` carries — that module carries none (it imports
 /// the substrate decoder), and the two differed on padding, which is how the billed-byte drift above
 /// survived review. The justification must name the real single source and must not claim an
 /// equivalence nobody checked; the decode-contract tests above are what check it.

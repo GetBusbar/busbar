@@ -12,7 +12,7 @@ busbar-llm = { path = "../busbar-llm", optional = true }
 busbar-mcp = { path = "../busbar-mcp", optional = true }
 busbar-a2a = { path = "../busbar-a2a", optional = true }
 busbar-voice = { path = "../busbar-voice", optional = true }
-busbar-plane-decision = { path = "../busbar-plane-decision", optional = true }
+busbar-plane-decisions = { path = "../busbar-plane-decisions", optional = true }
 
 # The linked table the real root's build script turns into the `LINKED` table `main.rs` includes.
 [package.metadata.busbar.linked]
@@ -20,7 +20,7 @@ proto-llm = "busbar-llm"
 plane-mcp = "busbar-mcp"
 plane-a2a = "busbar-a2a"
 plane-voice = "busbar-voice"
-plane-decision = "busbar-plane-decision"
+plane-decisions = "busbar-plane-decisions"
 
 # The axes each linked crate registers on; the plane axis is what `register_planes()` folds.
 [package.metadata.busbar.linked-axes]
@@ -28,8 +28,8 @@ proto-llm = "plane protocols"
 plane-mcp = "plane protocols diagnostics"
 plane-a2a = "plane diagnostics"
 plane-voice = "plane diagnostics"
-plane-decision = "plane"
+plane-decisions = "plane"
 
-# The decision plane's entry module is in the composition root, as on the real tree.
+# The decisions plane's entry module is in the composition root, as on the real tree.
 [package.metadata.busbar.linked-entry]
-busbar-plane-decision = "crate::root::plane_decision"
+busbar-plane-decisions = "crate::root::plane_decisions"

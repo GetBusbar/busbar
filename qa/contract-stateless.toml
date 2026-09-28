@@ -1,0 +1,214 @@
+# contract-stateless: DRAIN-ONLY ledger (M0 ABI-SPEC, REPORT-ONLY).
+# busbar-contract holds no static, once-cell or thread-local outside test code: each
+# row is one the tree carries today. Strike a row in the commit that drains it;
+# never add one. Regenerate with `cargo xtask gate contract-stateless --write`.
+
+[[finding]]
+rule = "contract-stateless:once-cell"
+file = "crates/busbar-contract/src/abi/hot/services.rs"
+item = "OnceLock"
+
+[[finding]]
+rule = "contract-stateless:once-cell"
+file = "crates/busbar-contract/src/codec.rs"
+item = "OnceLock"
+
+[[finding]]
+rule = "contract-stateless:once-cell"
+file = "crates/busbar-contract/src/ids.rs"
+item = "LazyLock"
+
+[[finding]]
+rule = "contract-stateless:once-cell"
+file = "crates/busbar-contract/src/testkit/warn_capture.rs"
+item = "OnceLock"
+
+[[finding]]
+rule = "contract-stateless:static"
+file = "crates/busbar-contract/src/abi/hot/host.rs"
+item = "LIVE_GENERATIONS"
+
+[[finding]]
+rule = "contract-stateless:static"
+file = "crates/busbar-contract/src/abi/hot/host.rs"
+item = "NEXT_GENERATION"
+
+[[finding]]
+rule = "contract-stateless:static"
+file = "crates/busbar-contract/src/abi/hot/services.rs"
+item = "ARMED"
+
+[[finding]]
+rule = "contract-stateless:static"
+file = "crates/busbar-contract/src/abi/hot/services.rs"
+item = "ARMED_SIZE"
+
+[[finding]]
+rule = "contract-stateless:static"
+file = "crates/busbar-contract/src/abi/hot/services.rs"
+item = "FILLING"
+
+[[finding]]
+rule = "contract-stateless:static"
+file = "crates/busbar-contract/src/abi/hot/services.rs"
+item = "KEPT"
+
+[[finding]]
+rule = "contract-stateless:static"
+file = "crates/busbar-contract/src/abi/sdk/mod.rs"
+item = "BUSBAR_COLD_ENTRY"
+
+[[finding]]
+rule = "contract-stateless:static"
+file = "crates/busbar-contract/src/abi/sdk/mod.rs"
+item = "CTX"
+
+[[finding]]
+rule = "contract-stateless:static"
+file = "crates/busbar-contract/src/abi/sdk/mod.rs"
+item = "DOOR"
+
+[[finding]]
+rule = "contract-stateless:static"
+file = "crates/busbar-contract/src/abi/sdk/mod.rs"
+item = "MAX_LEVEL"
+
+[[finding]]
+rule = "contract-stateless:static"
+file = "crates/busbar-contract/src/abi/sdk/mod.rs"
+item = "REGISTERED"
+
+[[finding]]
+rule = "contract-stateless:static"
+file = "crates/busbar-contract/src/abi/sdk/mod.rs"
+item = "SINK"
+
+[[finding]]
+rule = "contract-stateless:static"
+file = "crates/busbar-contract/src/abi/sdk/mod.rs"
+item = "SYMBOLS"
+
+[[finding]]
+rule = "contract-stateless:static"
+file = "crates/busbar-contract/src/abi/sdk/mod.rs"
+item = "__BUSBAR_DOOR"
+
+[[finding]]
+rule = "contract-stateless:static"
+file = "crates/busbar-contract/src/abi/sdk/mod.rs"
+item = "__BUSBAR_DOOR_INIT"
+
+[[finding]]
+rule = "contract-stateless:static"
+file = "crates/busbar-contract/src/abi/sdk/mod.rs"
+item = "__BUSBAR_DOOR_SYMBOLS"
+
+[[finding]]
+rule = "contract-stateless:static"
+file = "crates/busbar-contract/src/abi/sdk/transport.rs"
+item = "TRANSPORT_DECL"
+
+[[finding]]
+rule = "contract-stateless:static"
+file = "crates/busbar-contract/src/abi/sdk/transport.rs"
+item = "__CLAIMS"
+
+[[finding]]
+rule = "contract-stateless:static"
+file = "crates/busbar-contract/src/abi/sdk/transport.rs"
+item = "__CLAIM_FACTS"
+
+[[finding]]
+rule = "contract-stateless:static"
+file = "crates/busbar-contract/src/abi/sdk/transport.rs"
+item = "__CLAIM_FORMS"
+
+[[finding]]
+rule = "contract-stateless:static"
+file = "crates/busbar-contract/src/abi/sdk/transport.rs"
+item = "__COMPOSES_OVER"
+
+[[finding]]
+rule = "contract-stateless:static"
+file = "crates/busbar-contract/src/abi/sdk/transport.rs"
+item = "__EGRESS_SELECTOR_FORMS"
+
+[[finding]]
+rule = "contract-stateless:static"
+file = "crates/busbar-contract/src/abi/sdk/transport.rs"
+item = "__SELECTOR_FORMS"
+
+[[finding]]
+rule = "contract-stateless:static"
+file = "crates/busbar-contract/src/abi/sdk/transport.rs"
+item = "__SLOTS"
+
+[[finding]]
+rule = "contract-stateless:static"
+file = "crates/busbar-contract/src/abi/sdk/transport.rs"
+item = "__TRANSPORT_FACTS"
+
+[[finding]]
+rule = "contract-stateless:static"
+file = "crates/busbar-contract/src/abi/sdk/transport.rs"
+item = "__UPGRADES_TO"
+
+[[finding]]
+rule = "contract-stateless:static"
+file = "crates/busbar-contract/src/codec.rs"
+item = "ENTROPY_SOURCE"
+
+[[finding]]
+rule = "contract-stateless:static"
+file = "crates/busbar-contract/src/codec.rs"
+item = "TRANSLATE_CAP_READER"
+
+[[finding]]
+rule = "contract-stateless:static"
+file = "crates/busbar-contract/src/codec.rs"
+item = "USAGE_TAP_FAULT_LATCH"
+
+[[finding]]
+rule = "contract-stateless:static"
+file = "crates/busbar-contract/src/codec.rs"
+item = "USAGE_TAP_FAULT_REPORTER"
+
+[[finding]]
+rule = "contract-stateless:static"
+file = "crates/busbar-contract/src/codec.rs"
+item = "WALL_CLOCK"
+
+[[finding]]
+rule = "contract-stateless:static"
+file = "crates/busbar-contract/src/ids.rs"
+item = "FROZEN"
+
+[[finding]]
+rule = "contract-stateless:static"
+file = "crates/busbar-contract/src/ids.rs"
+item = "VOCABULARY"
+
+[[finding]]
+rule = "contract-stateless:static"
+file = "crates/busbar-contract/src/records.rs"
+item = "REGISTERED"
+
+[[finding]]
+rule = "contract-stateless:static"
+file = "crates/busbar-contract/src/testkit/warn_capture.rs"
+item = "GATE"
+
+[[finding]]
+rule = "contract-stateless:static"
+file = "crates/busbar-contract/src/testkit/warn_capture.rs"
+item = "ONCE"
+
+[[finding]]
+rule = "contract-stateless:static"
+file = "crates/busbar-contract/src/transport/wire.rs"
+item = "NEXT_LISTENER_ID"
+
+[[finding]]
+rule = "contract-stateless:thread-local"
+file = "crates/busbar-contract/src/abi/hot/host.rs"
+item = "thread_local!"

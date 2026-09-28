@@ -18,11 +18,27 @@
 //! * [`ticket`] — tickets `(slot, generation)` with latched, spurious-tolerant wakes, completion
 //!   handles `(ticket, seq)`, and the host's `wake`.
 //!
-//! This is the M0 SPEC: the shapes and their numbers. Nothing dispatches through them yet (M1), and
-//! no existing path is rewired to them.
+//! MEMORY, FOUR CLASSES (the design: plugin-owned memory is valid to its next refresh generation):
+//! (i) REQUEST-PATH RESULTS go into HOST-owned buffers the kind's `in`/`out` names as pointer +
+//! capacity; the plugin writes at most the capacity and never hands back a pointer for a result.
+//! (ii) GENERATION DATA — only data a plugin PUBLISHES at `open`/`refresh` — stays valid until
+//! `retire` of that generation. The Door and the Statement (the Door points to it) are `'static`.
+//! (iii) PER-CALL `OutHead.error` and the `Envelope` arrays stay valid until the NEXT op on the same
+//! ticket. On [`Ticket::NONE`](ticket::Ticket::NONE) they are valid only until the op returns: the
+//! host copies them before it makes any other call on that thread.
+//! (iv) OFF-PATH LISTS AND SECRETS are held under a lease until `release(lease)`.
+//! SIZES: the plugin writes at most `min(out.size, its own size of the struct)` bytes of an `out`,
+//! never reads an `in` beyond `in.size`, and reads an absent tail field as zero.
+//! FIXED ELEMENTS: the element layouts of [`call::MetricEntry`], [`call::Diag`],
+//! [`door::MetricFamily`] and [`call::AbiStr`] are fixed by [`MECHANISM_VERSION`]; arrays of them
+//! carry no stride, so growing one is a mechanism bump.
+//!
+//! This module states the shapes and their numbers. Nothing dispatches through them yet, and no
+//! existing path is rewired to them.
 
 pub mod call;
 pub mod door;
+mod layout;
 pub mod lifecycle;
 pub mod ticket;
 

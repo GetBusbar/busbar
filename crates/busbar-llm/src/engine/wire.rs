@@ -1,5 +1,5 @@
 use super::*;
-use busbar_llm_codec::translate::TranslateCodec;
+use busbar_plane_llm::codec::translate::TranslateCodec;
 
 /// Record the upstream round-trip (to response headers) for the current request so the
 /// `server_timing` middleware can subtract it from the total and report Busbar's own added latency.
@@ -229,7 +229,7 @@ pub(crate) fn shape_cross_protocol_error(
 /// short-circuit safety contract: a `true` here makes a same-protocol request NON-pristine. A
 /// same-proto request that carries NEITHER of these keys is left byte-for-byte untouched and can
 /// short-circuit to its retained original bytes.
-pub use busbar_llm_codec::wire_shim::strip_router_shim_keys;
+pub use busbar_plane_llm::codec::wire_shim::strip_router_shim_keys;
 
 /// Remove the SHIM `model` key on the SAME-PROTOCOL gemini/bedrock passthrough path, AFTER
 /// `rewrite_model` has run. On same-protocol gemini/bedrock the model rides the URL, not the body, so
@@ -285,31 +285,33 @@ pub(crate) fn strip_same_protocol_model_shim(v: &mut Value, ingress_protocol: &s
 /// shaping failures (unknown ingress protocol, request translation error) and on the effectively
 /// infallible re-serialization, so neither caller can panic on the request path.
 ///
-/// Project a [`busbar_llm_codec::translate::TranslateReqReject`] — the codec entrypoint's terminal outcome — into
+/// Project a [`busbar_plane_llm::codec::translate::TranslateReqReject`] — the codec entrypoint's terminal outcome — into
 /// the caller-dialect error response. The ONE place that maps each reject arm to an HTTP shape, so the
 /// opaque and JSON request branches cannot drift: a refused body renders `ingress_reject_response`
 /// (its own 400/404 split); an egress that does not serve the operation is the 404
 /// (`DETAIL_MODEL_UNSUPPORTED_OPERATION`); an unrepresentable request is a 400 carrying the reason.
 fn map_translate_req_reject(
     ingress_protocol: &str,
-    reject: busbar_llm_codec::translate::TranslateReqReject,
+    reject: busbar_plane_llm::codec::translate::TranslateReqReject,
 ) -> Response {
     match reject {
-        busbar_llm_codec::translate::TranslateReqReject::Ingress(reject) => {
+        busbar_plane_llm::codec::translate::TranslateReqReject::Ingress(reject) => {
             ingress_reject_response(ingress_protocol, &reject)
         }
-        busbar_llm_codec::translate::TranslateReqReject::EgressUnsupported => ingress_error(
+        busbar_plane_llm::codec::translate::TranslateReqReject::EgressUnsupported => ingress_error(
             ingress_protocol,
             StatusCode::NOT_FOUND,
             KIND_NOT_FOUND,
             DETAIL_MODEL_UNSUPPORTED_OPERATION,
         ),
-        busbar_llm_codec::translate::TranslateReqReject::Unrepresentable(reason) => ingress_error(
-            ingress_protocol,
-            StatusCode::BAD_REQUEST,
-            KIND_INVALID_REQUEST,
-            &reason,
-        ),
+        busbar_plane_llm::codec::translate::TranslateReqReject::Unrepresentable(reason) => {
+            ingress_error(
+                ingress_protocol,
+                StatusCode::BAD_REQUEST,
+                KIND_INVALID_REQUEST,
+                &reason,
+            )
+        }
     }
 }
 
@@ -396,7 +398,7 @@ pub(crate) fn translate_request_cross_protocol(
             // never surfaces `EgressUnsupported` here; a refused body still renders as its reject.
             let translated = ih
                 .translate_request(
-                    busbar_llm_codec::translate::TranslateReqInput::Opaque {
+                    busbar_plane_llm::codec::translate::TranslateReqInput::Opaque {
                         bytes: hop_bytes,
                         content_type: req_content_type,
                     },
@@ -415,7 +417,7 @@ pub(crate) fn translate_request_cross_protocol(
                 // request busbar never meant to make, charged to the caller and unreadable in the
                 // log. A shaped 500 says whose fault it was and stops before the wire.
                 busbar_contract::codec::EgressWire::Json(v) => {
-                    match busbar_llm_codec::json::to_vec(&v) {
+                    match busbar_plane_llm::codec::json::to_vec(&v) {
                         Ok(p) => Ok(Bytes::from(p)),
                         Err(_) => Err(Box::new(ingress_error(
                             ingress_protocol,
@@ -431,7 +433,9 @@ pub(crate) fn translate_request_cross_protocol(
                 busbar_contract::codec::EgressWire::Unrepresentable { reason } => {
                     Err(Box::new(map_translate_req_reject(
                         ingress_protocol,
-                        busbar_llm_codec::translate::TranslateReqReject::Unrepresentable(reason),
+                        busbar_plane_llm::codec::translate::TranslateReqReject::Unrepresentable(
+                            reason,
+                        ),
                     )))
                 }
             };
@@ -498,7 +502,7 @@ pub(crate) fn translate_request_cross_protocol(
         // BEHIND the entrypoint; the seam keeps telemetry (above), the audit-and-allow emission, and
         // the error shaping (`map_translate_req_reject`) — none of which are the codec's business.
         let translated = match ingress_handler.translate_request(
-            busbar_llm_codec::translate::TranslateReqInput::Json(&body),
+            busbar_plane_llm::codec::translate::TranslateReqInput::Json(&body),
             egress_handler.map(|_| egress_name),
             prep,
             EngineTables::new(rt).lanes()[i].wire_model(),
@@ -530,7 +534,7 @@ pub(crate) fn translate_request_cross_protocol(
             busbar_contract::codec::EgressWire::Unrepresentable { reason } => {
                 return Err(Box::new(map_translate_req_reject(
                     ingress_protocol,
-                    busbar_llm_codec::translate::TranslateReqReject::Unrepresentable(reason),
+                    busbar_plane_llm::codec::translate::TranslateReqReject::Unrepresentable(reason),
                 )))
             }
         }
@@ -590,7 +594,7 @@ pub(crate) fn translate_request_cross_protocol(
         return Ok(hop_bytes.clone());
     }
     // sonic-rs: SIMD serialize of the (large, string-heavy) upstream body — the request-path hot spot.
-    match busbar_llm_codec::json::to_vec(&body) {
+    match busbar_plane_llm::codec::json::to_vec(&body) {
         Ok(p) => Ok(Bytes::from(p)),
         // Re-serializing a Value parsed from valid JSON and rewritten only with serde_json values is
         // effectively infallible; return a shaped 500 rather than panic a worker on the request path
@@ -621,7 +625,7 @@ pub(crate) use busbar_kernel::proxy::max_upstream_buffered_bytes;
 /// (core's `limits::translate_body_max_bytes` returns the same value), so they can never diverge.
 /// A function (not a `const`) so the installed value is read at each use site; falls back to the
 /// historical 32 MiB default when the limits aren't installed (e.g. unit tests).
-pub(crate) use busbar_llm_codec::wire_shim::max_translated_body_bytes;
+pub(crate) use busbar_plane_llm::codec::wire_shim::max_translated_body_bytes;
 
 // THE CAPPED READ and its `ReadEnd` outcome moved DOWN into the neutral `busbar-substrate` crate in
 // Phase-B B0-b (both core's proxy engine and the egress/auth paths read upstream bodies this way,
@@ -677,7 +681,7 @@ pub(crate) fn client_fault_kind(class: StatusClass) -> &'static str {
 /// not JSON or carries no recognizable message field, so the caller substitutes a generic detail
 /// rather than leaking the raw foreign body.
 pub(crate) fn extract_error_message(bytes: &[u8]) -> Option<String> {
-    let v: Value = busbar_llm_codec::json::parse(bytes).ok()?;
+    let v: Value = busbar_plane_llm::codec::json::parse(bytes).ok()?;
     v.get("error")
         .and_then(|e| e.get("message"))
         .and_then(|m| m.as_str())
@@ -783,7 +787,7 @@ pub(crate) fn mid_stream_error_bytes(
         // `encode_exception_frame` is the generic binary framer. A protocol that reports
         // `ingress_is_eventstream` but declines an exception mapping (a contradiction) falls through.
         if let Some((exc_name, msg)) = dialect.write_response_exception(&err) {
-            return busbar_llm_codec::eventstream::encode_exception_frame(&exc_name, &msg);
+            return busbar_plane_llm::codec::eventstream::encode_exception_frame(&exc_name, &msg);
         }
     }
     // SSE client: build the terminal error frame through the ingress protocol writer's STREAMING
@@ -812,7 +816,7 @@ pub(crate) fn mid_stream_error_bytes(
         .or_else(|| dialect.write_error_frame(&err));
     match frame {
         Some((event_type, data)) => {
-            let data = busbar_llm_codec::json::to_string(&data).unwrap_or_else(|_| {
+            let data = busbar_plane_llm::codec::json::to_string(&data).unwrap_or_else(|_| {
                 serde_json::json!({ "error": { "message": message, "type": KIND_API_ERROR } })
                     .to_string()
             });
