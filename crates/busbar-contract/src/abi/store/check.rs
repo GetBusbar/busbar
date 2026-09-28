@@ -1,20 +1,25 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE STORE ANSWER VALIDATORS (ARCHITECT ruling "answer validators live with the shape",
-//! m3-inputs, all kinds). Each is a PURE function over an op's `out`, the capacities the host
+//! THE STORE ANSWER VALIDATORS: answer validators live with the shape, for every kind. Each is a PURE function over an op's `out`, the capacities the host
 //! handed in, and the host's own view of what it handed (the cells, the items). It uses `u64`
 //! math, holds no state and dereferences no pointer: a pointer is compared as an address only.
-//! The dispatcher calls it after every READY or FAILED answer, and any `Err` makes the answer
-//! FAULT. No host re-implements them. Outcomes other than READY and FAILED carry nothing to check.
+//! The dispatcher calls it on every answer, whatever its outcome, and any `Err` makes the answer
+//! FAULT. No host re-implements them.
+//!
+//! Each validator decides per outcome which fields matter. The host zeroes the `out` before every
+//! call, so a PENDING or REFUSED answer that states nothing beyond its head passes; the only rules
+//! that bind those outcomes are about them: a `needed_*` on anything but FAILED, and a REFUSED
+//! `window_caps` push naming its first conflicting cap.
 
+use super::ledger::HeadOut;
 use super::ledger::{HostRecords, HostSessions, RecordEntry, SessionRow, StreamHead};
 use super::money::{
     CellGrant, ReleaseItem, ReserveOut, SliceReleaseOut, UnitCell, RESERVE_NO_CAP,
     RESERVE_NO_FAILED_CELL, RESERVE_OK,
 };
 use super::{
-    HostBlobs, HostBytesOut, HostListOut, LeasedBlobOut, LeasedListOut, LeasedStrListOut,
+    CountOut, HostBlobs, HostBytesOut, HostListOut, LeasedBlobOut, LeasedListOut, LeasedStrListOut,
     VerdictOut, ABSENT, CANCEL_APPLIED, FOUND, VERDICT_YES,
 };
 use crate::abi::mechanism::call::{AbiStr, Blob, Outcome, BLOB_OCTETS};
@@ -25,7 +30,7 @@ use crate::bounded::MAX_RECORD_BYTES;
 /// 2^20 items, above any list a store answers (the fan-out cap is 10,000 recipients; a scan's
 /// `limit` is a `u32` the kernel sizes).
 pub const LIST_ITEMS_HARD_MAX: u64 = 1 << 20;
-/// The hard maximum of any `needed_bytes` (the ruling: `needed_bytes <= u32::MAX`).
+/// The hard maximum of any `needed_bytes` (`needed_bytes <= u32::MAX`).
 pub const NEEDED_BYTES_HARD_MAX: u64 = u32::MAX as u64;
 
 /// Why an answer is FAULT.
@@ -41,7 +46,7 @@ pub enum Fault {
     /// FAILED with a non-zero `needed_*` that the capacity given already covers (it would waste the
     /// one re-call).
     NeededWithinCap,
-    /// FAILED with something written.
+    /// FAILED with something written (bytes, items, grants, a purge's count, a stream head).
     WrittenOnFailed,
     /// A count above its capacity (or its hard maximum).
     CountOverCap,
@@ -77,8 +82,8 @@ pub fn check_cells_len(cells_len: u64) -> Result<(), Fault> {
     Ok(())
 }
 
-/// `reserve`'s answer (m3-inputs "store v3 money slots", `reserve`; STORE RULING v2
-/// `failed_cell`). `cells` are the cells the host sent, `grants_cap` its array's capacity, and
+/// `reserve`'s answer: whole grants on READY, a reason and an optional `failed_cell` on FAILED,
+/// or the short-buffer answer. `cells` are the cells the host sent, `grants_cap` its array's capacity, and
 /// `grants` the first `min(grants_len, grants_cap)` entries of that array.
 pub fn check_reserve(
     outcome: Outcome,
@@ -143,8 +148,7 @@ pub fn check_reserve(
     }
 }
 
-/// `slice_release`'s answer (m3-inputs "store v3 money slots", `slice_release`: clamped, never
-/// more than granted). `items` are the items the host sent, `released_cap` its array's capacity,
+/// `slice_release`'s answer: clamped, never more than granted. `items` are the items the host sent, `released_cap` its array's capacity,
 /// and `released` the first `min(released_len, released_cap)` entries of that array.
 pub fn check_slice_release(
     outcome: Outcome,
@@ -191,8 +195,8 @@ fn needed_only_on_failed(outcome: Outcome, any_needed: bool) -> Result<(), Fault
     Ok(())
 }
 
-/// `window_caps`' answer (m3-inputs "window caps" correction (1)): the push is atomic, so READY
-/// and FAILED carry nothing to check; a REFUSED push names the first conflicting cap. `caps_len`
+/// `window_caps`' answer: the push is atomic, so READY and FAILED carry nothing beyond the count
+/// check; a REFUSED push names the first conflicting cap. `caps_len`
 /// is how many caps the host pushed, and `error` the bytes of `out.error` as the host copied them
 /// (`None` when the plugin left it absent). A REFUSED `error` must BEGIN with the decimal index of
 /// a cap in the push.
@@ -233,13 +237,14 @@ fn short(needed: u64, cap: u64, hard: u64) -> Result<(), Fault> {
 }
 
 /// A single-value read into a host buffer of `cap` bytes, whose value is at most `hard` bytes.
+/// `found` and `written` are read on READY only; `needed` binds every outcome (M-SB).
 fn check_bytes(outcome: Outcome, out: &HostBytesOut, cap: u64, hard: u64) -> Result<(), Fault> {
-    if out.found != FOUND && out.found != ABSENT {
-        return Err(Fault::Vocabulary);
-    }
     needed_only_on_failed(outcome, out.needed != 0)?;
     match outcome {
         Outcome::Ready => {
+            if out.found != FOUND && out.found != ABSENT {
+                return Err(Fault::Vocabulary);
+            }
             if out.written > cap || out.written > hard {
                 return Err(Fault::CountOverCap);
             }
@@ -517,6 +522,28 @@ pub fn check_heads(
 pub fn check_verdict(outcome: Outcome, out: &VerdictOut) -> Result<(), Fault> {
     if outcome == Outcome::Ready && out.verdict > VERDICT_YES {
         return Err(Fault::Vocabulary);
+    }
+    Ok(())
+}
+
+/// A purge's answer (`purge_windows_before`, `purge_metering_before`,
+/// `purge_plane_records_before`): the rows removed. The host reads `count` on READY only, where
+/// any value is the store's to state (the host sizes no buffer for it, so there is no cap); a
+/// FAILED purge removed nothing, so a count on FAILED is FAULT. PENDING and REFUSED state nothing.
+pub fn check_count(outcome: Outcome, out: &CountOut) -> Result<(), Fault> {
+    if outcome == Outcome::Failed && out.count != 0 {
+        return Err(Fault::WrittenOnFailed);
+    }
+    Ok(())
+}
+
+/// `append_batch`'s answer: where the stream has reached. The host reads `seq` and `epoch` on
+/// READY only, the store's own position (no host-side bound); a FAILED append is not the shipping
+/// ack and states no head, so a `seq` or `epoch` on FAILED is FAULT. PENDING and REFUSED state
+/// nothing.
+pub fn check_append_batch(outcome: Outcome, out: &HeadOut) -> Result<(), Fault> {
+    if outcome == Outcome::Failed && (out.seq != 0 || out.epoch != 0) {
+        return Err(Fault::WrittenOnFailed);
     }
     Ok(())
 }

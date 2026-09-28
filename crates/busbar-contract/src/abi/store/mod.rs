@@ -308,6 +308,17 @@ macro_rules! store_slots {
         }
 
         /// Every kind slot's contract, in table order.
+        ///
+        /// Every op whose `out` states anything beyond [`OutHead`] has its answer validator in
+        /// [`check`]. These ops are ANSWERED BY THE HEAD ONLY; CHECKED BY THE MECHANISM: their `out`
+        /// is exactly [`OutHead`], which the dispatcher's mechanism checks validate on every
+        /// crossing: `put_key`, `delete_key`, `scrub_key`, `put_usage`, `add_usage`,
+        /// `add_metering`, `put_credential`, `put_key_with_credential`, `revoke_credential`,
+        /// `append_audit`, `add_denylist`, `upsert_plane_record`, `append_plane_record`,
+        /// `delete_plane_record`, `session_put`, `session_remove`, `record_put`,
+        /// `add_usage_batch`, `add_metering_batch`, `append_audit_batch`. (`window_caps` also
+        /// answers with a bare [`OutHead`], but its REFUSED error text is checked by
+        /// [`check::check_window_caps`].)
         pub const OPS: [OpContract; KIND_SLOTS as usize] = [
             $(
                 OpContract {

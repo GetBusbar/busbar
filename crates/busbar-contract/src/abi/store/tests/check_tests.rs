@@ -11,15 +11,15 @@ use crate::abi::mechanism::call::{
 };
 use crate::abi::mechanism::lifecycle::CancelOut;
 use crate::abi::store::ledger::{
-    HeadsOut, HostRecords, HostSessions, RecordEntry, SessionRow, StreamHead,
+    HeadOut, HeadsOut, HostRecords, HostSessions, RecordEntry, SessionRow, StreamHead,
 };
 use crate::abi::store::money::{
     CellGrant, ReleaseItem, ReserveOut, SliceReleaseOut, UnitCell, DIM_NANO_UNITS,
     RESERVE_EXHAUSTED, RESERVE_NO_CAP, RESERVE_NO_FAILED_CELL,
 };
 use crate::abi::store::{
-    HostBlobs, HostBuf, HostBytesOut, HostListOut, LeasedBlobOut, LeasedListOut, LeasedStrListOut,
-    VerdictOut, ABSENT, FOUND,
+    CountOut, HostBlobs, HostBuf, HostBytesOut, HostListOut, LeasedBlobOut, LeasedListOut,
+    LeasedStrListOut, VerdictOut, ABSENT, FOUND,
 };
 use std::ptr::{null, null_mut};
 
@@ -955,5 +955,107 @@ fn needed_with_refused_is_fault_on_reads_and_lists() {
     assert_eq!(
         check_list_plane_records(Outcome::Refused, &list_out(0, 0, 9, 0), &host, &[]),
         Err(Fault::NeededNotFailed)
+    );
+}
+
+// ── every outcome: a zeroed `out` on PENDING or REFUSED passes ──────────────────────────────
+
+#[test]
+fn a_found_outside_the_vocabulary_is_read_on_ready_only() {
+    assert_eq!(check_record_get(F, &bytes_out(2, 0, 0), 512), Ok(()));
+    assert_eq!(
+        check_record_get(Outcome::Refused, &bytes_out(2, 0, 0), 512),
+        Ok(())
+    );
+}
+
+#[test]
+fn a_zeroed_out_on_pending_or_refused_passes_every_validator() {
+    let mut b = Bufs::new();
+    let host = b.host();
+    let cells = [cell(5)];
+    let items = [item(3)];
+    for o in [Outcome::Pending, Outcome::Refused] {
+        assert_eq!(
+            check_reserve(o, &reserve_out(0, 0, 0), &cells, 1, &[]),
+            Ok(())
+        );
+        assert_eq!(
+            check_slice_release(o, &release_out(0), &items, 1, &[]),
+            Ok(())
+        );
+        assert_eq!(check_record_get(o, &bytes_out(0, 0, 0), 512), Ok(()));
+        assert_eq!(check_get_plane_record(o, &bytes_out(0, 0, 0), 512), Ok(()));
+        assert_eq!(
+            check_list_plane_records(o, &list_out(0, 0, 0, 0), &host, &[]),
+            Ok(())
+        );
+        assert_eq!(check_count(o, &count_out(0)), Ok(()));
+        assert_eq!(check_append_batch(o, &head_out(0, 0)), Ok(()));
+        assert_eq!(
+            check_verdict(
+                o,
+                &VerdictOut {
+                    head: head(),
+                    verdict: 0,
+                    _reserved: 0
+                }
+            ),
+            Ok(())
+        );
+    }
+    assert_eq!(check_window_caps(Outcome::Pending, 3, None), Ok(()));
+}
+
+// ── purges: the rows removed ─────────────────────────────────────────────────────────────────
+
+fn count_out(count: u64) -> CountOut {
+    CountOut {
+        head: head(),
+        count,
+    }
+}
+
+#[test]
+fn count_ready_passes() {
+    assert_eq!(check_count(R, &count_out(0)), Ok(()));
+    assert_eq!(check_count(R, &count_out(u64::MAX)), Ok(()));
+    assert_eq!(check_count(F, &count_out(0)), Ok(()));
+}
+
+#[test]
+fn count_on_failed_is_fault() {
+    assert_eq!(check_count(F, &count_out(1)), Err(Fault::WrittenOnFailed));
+}
+
+// ── append_batch: the shipping ack's head ────────────────────────────────────────────────────
+
+fn head_out(seq: u64, epoch: u64) -> HeadOut {
+    HeadOut {
+        head: head(),
+        seq,
+        epoch,
+    }
+}
+
+#[test]
+fn append_batch_ready_passes() {
+    assert_eq!(check_append_batch(R, &head_out(41, 3)), Ok(()));
+    assert_eq!(check_append_batch(F, &head_out(0, 0)), Ok(()));
+}
+
+#[test]
+fn append_batch_seq_on_failed_is_fault() {
+    assert_eq!(
+        check_append_batch(F, &head_out(41, 0)),
+        Err(Fault::WrittenOnFailed)
+    );
+}
+
+#[test]
+fn append_batch_epoch_on_failed_is_fault() {
+    assert_eq!(
+        check_append_batch(F, &head_out(0, 3)),
+        Err(Fault::WrittenOnFailed)
     );
 }
