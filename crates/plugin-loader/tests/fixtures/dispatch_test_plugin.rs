@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE DISPATCHER'S TEST PLUGIN — one crate, built LINKED (`rlib`) and DROPPED (`cdylib`).
+//! THE DISPATCHER'S TEST PLUGIN — one source, compiled into the test build (the LINKED door) and
+//! built as the `dispatch_test_plugin` example `cdylib` (the DROPPED door).
 //!
 //! It exports the one door ([`busbar_plugin_door`]) over the lifecycle table only, and defines NO
 //! ABI shape of its own: the door, the Statement, the table and every `in`/`out` are
@@ -159,7 +160,7 @@ static STATEMENT: Shared<Statement> = Shared(Statement {
     kind: KIND as u32,
     kind_abi: KIND.abi_version(),
     max_inflight: 2,
-    name: s(b"busbar-plugin-dispatch-test"),
+    name: s(b"dispatch-test-plugin"),
     version: s(b"1.6.0"),
     families: &FAMILIES.0 as *const MetricFamily,
     families_len: 6,

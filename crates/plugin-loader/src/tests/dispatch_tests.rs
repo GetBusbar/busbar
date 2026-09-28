@@ -21,6 +21,7 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use crate::dispatch_test_plugin as plug;
 use busbar_contract::abi::mechanism::call::{Blob, DeadlineClass, OutHead, Outcome, BLOB_OCTETS};
 use busbar_contract::abi::mechanism::check::{fault, Fault, Rule};
 use busbar_contract::abi::mechanism::door::{Door, KindTailHead, Statement};
@@ -29,7 +30,6 @@ use busbar_contract::abi::mechanism::lifecycle::{
 };
 use busbar_contract::abi::mechanism::ticket::Ticket;
 use busbar_contract::abi::mechanism::{KindCode, DOOR_MAGIC, MECHANISM_VERSION};
-use busbar_plugin_dispatch_test as plug;
 
 use crate::dispatch::load::validate_door;
 use crate::dispatch::{
@@ -149,8 +149,26 @@ fn linked(sink: Arc<Recorder>) -> Plugin<TestKind> {
     load_linked::<TestKind>(plug::busbar_plugin_door, bind(sink)).expect("the linked door loads")
 }
 
+/// The example `cdylib` `name` in this target dir (`cargo test` builds examples). Under CI a
+/// missing artifact is a failure, never a skip.
+fn example_cdylib(name: &str) -> Option<std::path::PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let profile = exe.parent()?.parent()?;
+    let path = profile.join("examples").join(format!(
+        "{}{name}{}",
+        std::env::consts::DLL_PREFIX,
+        std::env::consts::DLL_SUFFIX
+    ));
+    let found = path.exists().then_some(path);
+    assert!(
+        found.is_some() || std::env::var_os("CI").is_none(),
+        "the {name} example cdylib is not built under CI; a both-ways proof must not skip"
+    );
+    found
+}
+
 fn dropped_path() -> Option<std::path::PathBuf> {
-    super::both_ways::cdylib("busbar_plugin_dispatch_test")
+    example_cdylib("dispatch_test_plugin")
 }
 
 fn dropped(sink: Arc<Recorder>) -> Option<Plugin<TestKind>> {
@@ -994,10 +1012,9 @@ fn red_a_panic_in_a_hand_written_slot_aborts() {
                 "--nocapture",
             ])
             .env("BUSBAR_M1_PANIC_CHILD", origin)
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-            .expect("run the child");
+            .output()
+            .expect("run the child")
+            .status;
         assert!(
             !status.success(),
             "{origin}: the child survived a panic across extern \"C\""

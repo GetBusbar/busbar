@@ -441,12 +441,6 @@ from    = 24063
 to      = 24079
 because = "OWNER RULING Q68(3) (docs/design/1.6.0-QUESTIONS.md): contract_caps re-arms at the MEASURED value, in its own commit, written by LANDER per ARCHITECT's re-measure-at-land-time authorization. Growth is M1 DISPATCH's abi check::reported (a plugin-reported count capped before any slice), one definition the plugin dispatch adapters call in production, +16 — no shape/layout change. Measured by cargo xtask gate construction: 24063 before, 24079 after."
 
-[gate.ceiling_raises."cell[crate=busbar-plugin-loader,kind=plugin-tooling].count"]
-file    = "qa/kind-isolation.toml"
-from    = 4
-to      = 6
-because = "ARCHITECT-accepted (M1 DISPATCH): the dispatcher's both-ways proof names its test plugin twice in crates/plugin-loader/src/tests/dispatch_tests.rs (the rlib `use`, the cdylib's name); the edge is the [[dep]] row busbar-plugin-loader -> busbar-plugin-dispatch-test. Measured by cargo xtask gate kind-isolation: 4 before, 6 after."
-
 # ── THE KERNEL CEILING, RE-ARMED BY SD-8 (the substrate-values kernel landing) ─────────────────
 # Its 51100 -> 54801 declaration expired once landed and is struck; the ceiling text below keeps it.
 

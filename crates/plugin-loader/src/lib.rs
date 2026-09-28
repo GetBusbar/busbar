@@ -2110,6 +2110,12 @@ mod hook_conformance_tests;
 
 /// The dispatcher through both doors: one script, LINKED and DROPPED, byte-identical, and a RED
 /// arm per mechanism rule.
+/// The dispatcher's test plugin, compiled in: the LINKED door of `dispatch_tests` (the same
+/// source is the `dispatch_test_plugin` example `cdylib`, the DROPPED door).
+#[cfg(test)]
+#[path = "../tests/fixtures/dispatch_test_plugin.rs"]
+mod dispatch_test_plugin;
+
 #[cfg(test)]
 #[path = "tests/dispatch_tests.rs"]
 mod dispatch_tests;
