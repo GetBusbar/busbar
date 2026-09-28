@@ -12,13 +12,13 @@ use super::*;
 use crate::engine::WeightedLane;
 use crate::test_support::{LaneSpec, TestApp};
 use busbar_contract::hooks::{Candidate, PolicyResult, RoutingContext, RoutingPolicy};
-use busbar_contract::signal::{Signal, SignalValue};
+use busbar_contract::signal::{Signal, SignalBag, SignalValue};
 use busbar_kernel::hooks::ResolvedPolicy;
 use std::sync::Mutex as StdMutex;
 
 /// A no-op policy that just records the candidate projections it was handed, then Abstains.
 struct CapturingCandidatesPolicy {
-    seen: std::sync::Arc<StdMutex<Option<Vec<busbar_contract::signal::SignalBag>>>>,
+    seen: std::sync::Arc<StdMutex<Option<Vec<SignalBag>>>>,
 }
 
 #[async_trait::async_trait]
@@ -64,7 +64,7 @@ fn declaring_hook(signals: Vec<Signal>) -> busbar_kernel::config::hooks::HookCfg
 
 /// Build a one-lane TestApp (optionally with a `signals:`-declaring hook registered) and run
 /// `decide_policy_order` once, returning the per-candidate signal bags the policy observed.
-async fn run_with_declared(signals: Vec<Signal>) -> Vec<busbar_contract::signal::SignalBag> {
+async fn run_with_declared(signals: Vec<Signal>) -> Vec<SignalBag> {
     let mut builder = TestApp::new()
         .lane(LaneSpec::new(
             "m0",
@@ -85,7 +85,7 @@ async fn run_with_declared(signals: Vec<Signal>) -> Vec<busbar_contract::signal:
 /// hand in any already-built snapshot rather than only the one the `TestApp` fixture produces.
 async fn run_decide<A: busbar_kernel::test_support::BuiltAppSeam + ?Sized>(
     app: &std::sync::Arc<A>,
-) -> Vec<busbar_contract::signal::SignalBag> {
+) -> Vec<SignalBag> {
     let (host, rt) = crate::engine::test_host_rt(app);
     let seen = std::sync::Arc::new(StdMutex::new(None));
     let resolved = ResolvedPolicy::Policy {
@@ -325,4 +325,164 @@ async fn error_rate_projects_the_outcome_window_fraction() {
         ),
         other => panic!("expected CandidateErrorRate = F64(0.25), got {other:?}"),
     }
+}
+
+/// Drive `n` real requests through the forward path to a one-lane pool "p" backed by an instant
+/// mock upstream, optionally with a hook declaring `signals`, then run `decide_policy_order` once
+/// and return the candidate signal bags the policy observed.
+async fn serve_then_decide(signals: Vec<Signal>, n: usize) -> Vec<SignalBag> {
+    use crate::test_support::{MockResponse, MockServer, MockServerState};
+    let state = std::sync::Arc::new(MockServerState::new());
+    for _ in 0..n {
+        state.push(MockResponse::Ok {
+            status: reqwest::StatusCode::OK,
+            body: serde_json::json!({"content": [{"type": "text", "text": "ok"}]}),
+        });
+    }
+    let server = MockServer::new(state).await;
+    let mut builder = TestApp::new()
+        .lane(LaneSpec::new(
+            "m0",
+            crate::proto_codec::PROTO_ANTHROPIC,
+            &server.base_url(),
+        ))
+        .pool("p", &[(0, 1)]);
+    if !signals.is_empty() {
+        builder = builder.hook("declarer", declaring_hook(signals));
+    }
+    let app = builder.build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
+    let body = serde_json::to_vec(&serde_json::json!({
+        "model": "m0",
+        "messages": [{"role": "user", "content": "hi"}],
+        "max_tokens": 16
+    }))
+    .unwrap();
+    for _ in 0..n {
+        let resp = crate::engine::forward_with_pool(
+            &app,
+            vec![WeightedLane {
+                reasoning: None,
+                idx: 0,
+                weight: 1,
+                attempt_timeout_ms: None,
+            }],
+            body.clone().into(),
+            None,
+            "p",
+            None,
+            "anthropic",
+            crate::test_support::CHAT,
+            None,
+        )
+        .await;
+        assert_eq!(resp.status(), reqwest::StatusCode::OK);
+    }
+    run_decide(&app).await
+}
+
+/// ITEM 587: a DECLARED `CandidateLatencyP95Ms` arrives. Served requests feed the lane's p95
+/// reservoir, and the candidate projection carries the p95 as a whole-millisecond `U64` (rounded
+/// up, so a sub-millisecond loopback upstream reads at least `1`, never a fabricated `0`). Before
+/// this item the signal parsed, took its `RequestedSignals` bit, and never reached the bag.
+#[tokio::test]
+async fn declared_latency_p95_is_computed_from_served_requests() {
+    crate::testkit::install_test_seams();
+    let bags = serve_then_decide(vec![Signal::CandidateLatencyP95Ms], 5).await;
+    assert_eq!(bags.len(), 1);
+    match bags[0].get(Signal::CandidateLatencyP95Ms) {
+        Some(SignalValue::U64(ms)) => assert!(*ms >= 1, "p95 must read at least 1 ms, got {ms}"),
+        other => panic!("expected CandidateLatencyP95Ms = U64(_), got {other:?}"),
+    }
+}
+
+/// The collection is gated like the projection: with NO hook declaring the signal, served requests
+/// never allocate or write the reservoir, so the store has no p95 to give even though the lane has
+/// served traffic (and its EWMA — the always-on `fastest` signal — has moved).
+#[tokio::test]
+async fn undeclared_latency_p95_is_never_collected() {
+    crate::testkit::install_test_seams();
+    use crate::test_support::{MockResponse, MockServer, MockServerState};
+    let state = std::sync::Arc::new(MockServerState::new());
+    state.push(MockResponse::Ok {
+        status: reqwest::StatusCode::OK,
+        body: serde_json::json!({"content": [{"type": "text", "text": "ok"}]}),
+    });
+    let server = MockServer::new(state).await;
+    let app = TestApp::new()
+        .lane(LaneSpec::new(
+            "m0",
+            crate::proto_codec::PROTO_ANTHROPIC,
+            &server.base_url(),
+        ))
+        .pool("p", &[(0, 1)])
+        .hook("declarer", declaring_hook(vec![Signal::CandidateErrorRate]))
+        .build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
+    let body = serde_json::to_vec(&serde_json::json!({
+        "model": "m0",
+        "messages": [{"role": "user", "content": "hi"}],
+        "max_tokens": 16
+    }))
+    .unwrap();
+    let resp = crate::engine::forward_with_pool(
+        &app,
+        vec![WeightedLane {
+            reasoning: None,
+            idx: 0,
+            weight: 1,
+            attempt_timeout_ms: None,
+        }],
+        body.into(),
+        None,
+        "p",
+        None,
+        "anthropic",
+        crate::test_support::CHAT,
+        None,
+    )
+    .await;
+    assert_eq!(resp.status(), reqwest::StatusCode::OK);
+    assert!(
+        app.store.lane_latency_ms(0).is_some(),
+        "the EWMA is always-on"
+    );
+    let (_h, rt) = crate::engine::test_host_rt(&app);
+    assert!(
+        crate::engine::EngineTables::new(&rt).lanes()[0]
+            .latency_reservoir
+            .get()
+            .is_none(),
+        "an undeclared p95 must never allocate or write its reservoir"
+    );
+    let bags = run_decide(&app).await;
+    assert!(bags[0].get(Signal::CandidateLatencyP95Ms).is_none());
+}
+
+/// The reservoir behind `CandidateLatencyP95Ms`: empty until a sample lands (`None`, never a
+/// fabricated `0`); nearest-rank p95 in whole ms rounded up; garbage samples are ignored; and the
+/// ring is BOUNDED — once more samples than it holds have arrived, only the most recent decide.
+#[test]
+fn latency_reservoir_p95_is_nearest_rank_and_bounded() {
+    use crate::engine::tables::LatencyReservoir;
+    let r = LatencyReservoir::new();
+    assert_eq!(r.p95_ms(), None);
+    // 1..=100 ms: nearest rank ceil(0.95 * 100) = 95 -> 95 ms.
+    for ms in 1..=100 {
+        r.record(ms as f64);
+    }
+    assert_eq!(r.p95_ms(), Some(95));
+    r.record(f64::NAN);
+    r.record(0.0);
+    r.record(-3.0);
+    assert_eq!(r.p95_ms(), Some(95));
+    // A sub-millisecond sample rounds UP to 1 ms.
+    let tiny = LatencyReservoir::new();
+    tiny.record(0.2);
+    assert_eq!(tiny.p95_ms(), Some(1));
+    // Overfill the ring with a flat 7 ms: every earlier sample is evicted.
+    for _ in 0..1000 {
+        r.record(7.0);
+    }
+    assert_eq!(r.p95_ms(), Some(7));
 }

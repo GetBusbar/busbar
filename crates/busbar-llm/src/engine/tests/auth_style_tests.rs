@@ -12,6 +12,7 @@ fn lane_with_auth(auth: Option<&str>) -> Lane {
     });
     Lane {
         prebuilt_auth: None,
+        latency_reservoir: std::sync::OnceLock::new(),
         credential: busbar_kernel::egress_auth::resolve("openai", resolved_auth),
         egress_targets: std::collections::HashMap::new(),
         reasoning: false,

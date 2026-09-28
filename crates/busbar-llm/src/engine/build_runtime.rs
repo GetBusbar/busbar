@@ -245,6 +245,7 @@ pub(crate) fn build_runtime(
             upstream_model: li.upstream_model.clone(),
             egress_targets,
             prebuilt_auth,
+            latency_reservoir: std::sync::OnceLock::new(),
         });
     }
 

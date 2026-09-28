@@ -103,9 +103,87 @@ pub(crate) struct Lane {
     /// clone (one buffer copy) iff the resolved credential mode is `Own` — Passthrough carries the
     /// CALLER's credential and always builds live.
     pub(crate) prebuilt_auth: Option<http::header::HeaderMap>,
+    /// The bounded latency reservoir behind `Signal::CandidateLatencyP95Ms`. EMPTY (no allocation,
+    /// no write) until the first sample arrives, and a sample arrives only while the config
+    /// generation declares that signal (`attempt::respond::deliver` gates on
+    /// `RequestedSignals::wants`), so a deployment that never asks for a p95 pays one null pointer
+    /// per lane and nothing per request. Per generation: a config apply builds fresh lanes, so the
+    /// p95 reads over the samples served since this lane table was built.
+    pub(crate) latency_reservoir: std::sync::OnceLock<Arc<LatencyReservoir>>,
+}
+
+/// How many of a lane's most recent latency samples the p95 reservoir holds.
+pub(crate) const LATENCY_RESERVOIR_LEN: usize = 128;
+
+/// A fixed ring of a lane's last [`LATENCY_RESERVOIR_LEN`] end-to-end latency samples, in whole
+/// MICROSECONDS (`0` = empty slot; a recorded sample is clamped to at least 1). Lock-free: a writer
+/// claims a slot with one `fetch_add` on the cursor and stores into it; a reader copies the filled
+/// slots and takes the nearest-rank p95. A reader racing a writer may see one slot's old or new
+/// value, never a torn one. Bounded by construction: the ring never grows.
+pub(crate) struct LatencyReservoir {
+    cursor: std::sync::atomic::AtomicUsize,
+    samples: [std::sync::atomic::AtomicU32; LATENCY_RESERVOIR_LEN],
+}
+
+impl LatencyReservoir {
+    pub(crate) fn new() -> Self {
+        Self {
+            cursor: std::sync::atomic::AtomicUsize::new(0),
+            samples: std::array::from_fn(|_| std::sync::atomic::AtomicU32::new(0)),
+        }
+    }
+
+    /// Record one sample, in milliseconds. A non-finite or non-positive sample is ignored.
+    pub(crate) fn record(&self, latency_ms: f64) {
+        use std::sync::atomic::Ordering;
+        if !latency_ms.is_finite() || latency_ms <= 0.0 {
+            return;
+        }
+        // `as` saturates a float-to-int cast, so an absurdly long sample clamps to `u32::MAX` us.
+        let us = ((latency_ms * 1000.0).round() as u32).max(1);
+        let slot = self.cursor.fetch_add(1, Ordering::Relaxed) % LATENCY_RESERVOIR_LEN;
+        self.samples[slot].store(us, Ordering::Relaxed);
+    }
+
+    /// The nearest-rank 95th percentile of the held samples, in whole milliseconds rounded UP (a
+    /// sub-millisecond latency reads `1`, never a `0` that would claim a free upstream). `None`
+    /// while the ring holds no sample.
+    pub(crate) fn p95_ms(&self) -> Option<u64> {
+        let mut buf = [0u32; LATENCY_RESERVOIR_LEN];
+        let mut n = 0;
+        for s in &self.samples {
+            let v = s.load(std::sync::atomic::Ordering::Relaxed);
+            if v != 0 {
+                buf[n] = v;
+                n += 1;
+            }
+        }
+        if n == 0 {
+            return None;
+        }
+        let held = &mut buf[..n];
+        held.sort_unstable();
+        // Nearest rank: the smallest sample at or above 95% of the held samples.
+        let rank = (n * 95).div_ceil(100);
+        Some(u64::from(held[rank - 1]).div_ceil(1000))
+    }
 }
 
 impl Lane {
+    /// Record one end-to-end latency sample into this lane's p95 reservoir, allocating the ring on
+    /// the first one. The caller calls this ONLY while `CandidateLatencyP95Ms` is declared.
+    pub(crate) fn record_latency_sample(&self, latency_ms: f64) {
+        self.latency_reservoir
+            .get_or_init(|| Arc::new(LatencyReservoir::new()))
+            .record(latency_ms);
+    }
+
+    /// This lane's nearest-rank p95 latency in whole milliseconds rounded up, or `None` until a
+    /// sample has been recorded (never a fabricated `0`).
+    pub(crate) fn latency_p95_ms(&self) -> Option<u64> {
+        self.latency_reservoir.get()?.p95_ms()
+    }
+
     /// The model name to send on the wire. Returns `upstream_model` when set,
     /// otherwise falls back to the config key (`self.model`).
     pub(crate) fn wire_model(&self) -> &str {
