@@ -23,6 +23,16 @@
 //! with `more = 1` (and at least one byte `emitted`); the kernel flushes, waits for the socket to be
 //! writable and calls again. `emitted` is therefore never above `reply_cap` and has no `needed`.
 //!
+//! THE KERNEL DRIVES THE ROUTE (`BUSBAR-1.6.0.md` Part 3, the plane driver). The kernel keeps the caller's body
+//! and runs its own egress walk. Each attempt starts with an ATTEMPT piece ([`FROM_KERNEL`],
+//! [`OnPieceIn::member`], [`OnPieceIn::attempt_no`]); the plane answers with the request bound for
+//! the far end, its verb and target as explicit fields ([`OnPieceOut::verb`],
+//! [`OnPieceOut::target`]), then its dialect fields and body. Far-end pieces come back
+//! [`FROM_FAR_END`], and the plane's answer may carry a `VERDICT_*` beside the walk's status table.
+//! When a hook is bound, [`slot::PROJECT`] (pure, once per unit) writes the hook kind's own request
+//! view. A duplex session's unsolicited output reaches the kernel through the instance's one driver
+//! ticket: `drive` ([`PlaneDriveIn`], [`PlaneDriveOut`]) names the ready sessions.
+//!
 //! WHAT CROSSES AND WHEN:
 //!
 //! * STATIC FACTS — the Statement's kind tail, [`PlaneTail`]: `'static`, signed in the manifest.
@@ -78,6 +88,7 @@
 //! | `metric_families` | [`crate::abi::mechanism::door::Statement::families`] (per-call metrics by index) |
 //! | `served_op_classes` | tail [`PlaneTail::op_classes`]; [`ArriveOut::op_class`] indexes it |
 //! | `record_kinds` | tail [`PlaneTail::record_kinds`]; [`RecordWrite::kind`] indexes it |
+//! | (new) chained record framing | tail [`PlaneTail::record_chains`] |
 //! | `dispatch_flags` / `DISPATCH_BLOCKS` | DROPPED — a plane never blocks (the design's plugin-ABI section: no blocking on the hot path). Replaced by [`PlaneTail::dispatch_shape`] |
 //! | `required_sections` | tail: [`SECTION_REQUIRED`] on a [`PlaneTail::sections`] entry |
 //! | `BuildCtx.host`, `host_ctx` | [`crate::abi::mechanism::lifecycle::OpenIn::host`] |
@@ -99,6 +110,7 @@
 //!     (slot::SERVE, offset_of!(Ops, serve)),
 //!     (slot::HYDRATE, offset_of!(Ops, hydrate)),
 //!     (slot::START, offset_of!(Ops, start)),
+//!     (slot::PROJECT, offset_of!(Ops, project)),
 //! ];
 //! assert_eq!(order.len() as u32, KIND_SLOTS);
 //! for (k, (index, offset)) in order.into_iter().enumerate() {
@@ -111,12 +123,13 @@
 
 pub mod check;
 
+use super::hook::{RequestView, SignalEntry};
 use super::host::conn::connector::Need;
 use super::mechanism::call::{AbiStr, Blob, InHead, Op, OutHead};
 pub use super::mechanism::check::SPAN_ABSENT;
 use super::mechanism::check::{contract, OpContract};
 use super::mechanism::door::KindTailHead;
-use super::mechanism::lifecycle::{GenIn, OpenIn, OpenOut, OpsHead, LIFECYCLE_SLOTS};
+use super::mechanism::lifecycle::{DriveIn, GenIn, OpenIn, OpenOut, OpsHead, LIFECYCLE_SLOTS};
 
 /// The plane kind's ABI version: new in 1.6.0 (v1.5.5 had no plane ABI), so it ships `1`.
 pub const ABI_VERSION: u32 = 1;
@@ -138,19 +151,22 @@ pub mod slot {
     pub const HYDRATE: u32 = LIFECYCLE_SLOTS + 4;
     /// Begin background work after the listener is bound.
     pub const START: u32 = LIFECYCLE_SLOTS + 5;
+    /// Project a unit's request into the hook kind's request view.
+    pub const PROJECT: u32 = LIFECYCLE_SLOTS + 6;
 }
 
 /// How many kind ops the table holds after the lifecycle.
-pub const KIND_SLOTS: u32 = 6;
+pub const KIND_SLOTS: u32 = 7;
 /// How many slots the whole table holds ([`OpsHead::slots`]).
 pub const SLOTS: u32 = LIFECYCLE_SLOTS + KIND_SLOTS;
 
-/// The plane kind's ops table: the lifecycle, then the plane's six ops.
+/// The plane kind's ops table: the lifecycle, then the plane's seven ops.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct Ops {
     /// The lifecycle. `open` is in [`PlaneOpenIn`], out [`PlaneOpenOut`]; `refresh` out is
-    /// [`PlaneRefreshOut`]; `cancel` answers a `CANCEL_*` disposition.
+    /// [`PlaneRefreshOut`]; `drive` is in [`PlaneDriveIn`], out [`PlaneDriveOut`]; `cancel`
+    /// answers a `CANCEL_*` disposition.
     pub head: OpsHead,
     /// [`slot::ARRIVE`]: in [`ArriveIn`], out [`ArriveOut`].
     pub arrive: Option<Op>,
@@ -164,11 +180,14 @@ pub struct Ops {
     pub hydrate: Option<Op>,
     /// [`slot::START`]: in [`GenIn`], out [`OutHead`].
     pub start: Option<Op>,
+    /// [`slot::PROJECT`]: in [`ProjectIn`], out [`ProjectOut`].
+    pub project: Option<Op>,
 }
 
 // ── the op contracts ─────────────────────────────────────────────────────────────────────────────
 
-/// Every kind op's contract, in slot order. `arrive` and `refusal` are pure: they never pend.
+/// Every kind op's contract, in slot order. `arrive`, `refusal` and `project` are pure: they never
+/// pend.
 /// `on_piece` pends (a plane waiting on its own upstream) under the stream's deadline. `hydrate`
 /// and `start` are boot-time and off-path.
 #[rustfmt::skip]
@@ -179,6 +198,7 @@ pub const CONTRACTS: [OpContract; KIND_SLOTS as usize] = [
     contract!(SERVE, true, true, ServeIn, ServeOut, Call),
     contract!(HYDRATE, false, true, GenIn, OutHead, Call),
     contract!(START, false, true, GenIn, OutHead, Call),
+    contract!(PROJECT, true, false, ProjectIn, ProjectOut, Call),
 ];
 
 // ── the cancel vocabulary and its billing rule ───────────────────────────────────────────────────
@@ -204,6 +224,14 @@ pub const fn cancel_bills_reported_units(disposition: u32, streamed: bool) -> bo
 
 /// [`PlaneTail::flags`]: the one plane that is the fallback catch-all.
 pub const TAIL_FALLBACK: u32 = 1;
+/// [`PlaneTail::flags`]: the plane answers health probes. A probe is a kernel-originated unit
+/// pinned to one member: its `arrive` names [`CLAIM_PROBE`], its ATTEMPT piece asks for the probe
+/// request, and it is zero-billed and draws no lease.
+pub const TAIL_PROBES: u32 = 1 << 1;
+
+/// [`ArriveIn::claim`]: the arrival is a health probe, not a snapshot claim. Only a plane whose
+/// tail states [`TAIL_PROBES`] is sent one.
+pub const CLAIM_PROBE: u32 = u32::MAX;
 
 /// [`PlaneTail::ingress`]: a request expecting one reply.
 pub const INGRESS_REQUEST_RESPONSE: u32 = 1;
@@ -246,6 +274,11 @@ pub const PRINCIPAL_OPTIONAL: u32 = 2;
 pub const FROM_CALLER: u32 = 0;
 /// [`OnPieceIn::from`]: the piece is the far end's.
 pub const FROM_FAR_END: u32 = 1;
+/// [`OnPieceIn::from`]: the piece is the kernel's. With [`OnPieceIn::attempt_no`] above `0` it
+/// is an ATTEMPT piece: the kernel has picked [`OnPieceIn::member`] and asks for the request bound
+/// for it (the caller's body is re-pushed on every attempt). With `attempt_no == 0` and no bytes
+/// it collects a session's unsolicited output, after `drive` named the session ready.
+pub const FROM_KERNEL: u32 = 2;
 
 /// [`OnPieceIn::flags`]: the piece completes its frame.
 pub const PIECE_END_OF_FRAME: u32 = 1;
@@ -259,6 +292,16 @@ pub const EMIT_TO_FAR_END: u32 = 1;
 /// [`OnPieceOut::flags`]: the unit's reply is complete.
 pub const EMIT_DONE: u32 = 1 << 1;
 
+/// [`OnPieceOut::verdict`]: no verdict; the walk's status table alone decides.
+pub const VERDICT_NONE: u32 = 0;
+/// [`OnPieceOut::verdict`]: the far end's answer is a success.
+pub const VERDICT_OK: u32 = 1;
+/// [`OnPieceOut::verdict`]: the far end's answer is a failure another member may not share. The
+/// walk fails over only before the first byte reaches the caller; after it, a retry is hard.
+pub const VERDICT_RETRY: u32 = 2;
+/// [`OnPieceOut::verdict`]: the far end's answer is a failure no other member would change.
+pub const VERDICT_HARD: u32 = 3;
+
 /// [`RefusalIn::cause`]: the kernel refused.
 pub const REFUSAL_KERNEL: u32 = 0;
 /// [`RefusalIn::cause`]: a gate refused.
@@ -271,6 +314,18 @@ pub const MARK_GATE_REJECTED: u32 = 1;
 pub const RECORD_PUT: u32 = 1;
 /// [`RecordWrite::op`]: delete.
 pub const RECORD_DELETE: u32 = 2;
+
+/// [`AdminRoute::flags`]: a public route. [`slot::SERVE`] serves it to an unauthenticated caller;
+/// the arrival gate and the audit still run, it meters nothing, and a signature it carries is
+/// verified by an auth plugin under the style the plane's inbound need declares.
+pub const ROUTE_PUBLIC: u32 = 1;
+
+/// [`RecordChain::framing`]: each field of the record's digest is length-prefixed.
+pub const CHAIN_LENGTH_PREFIXED: u32 = 1;
+/// [`RecordChain::framing`]: the fields of the record's digest are joined by `|`.
+pub const CHAIN_PIPE_SEPARATED: u32 = 2;
+/// [`RecordChain::flags`]: the record's scope enters its digest.
+pub const CHAIN_DIGESTS_SCOPE: u32 = 1;
 
 // ── the Statement tail ───────────────────────────────────────────────────────────────────────────
 
@@ -331,13 +386,31 @@ pub struct RouteCost {
     pub weight: f64,
 }
 
+/// One chained record kind and the framing its chain keeps. The host frames each record's prelude
+/// (previous digest, scope, sequence) in this framing, joins the plane's own field bytes and
+/// verifies the chain, so a chain written before this ABI still verifies. A record kind no entry
+/// names is not chained. This framing is the plane's record chains' only: the kernel's own audit
+/// chain is the one fixed record.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct RecordChain {
+    /// Index into [`PlaneTail::record_kinds`].
+    pub kind: u32,
+    /// [`CHAIN_LENGTH_PREFIXED`] | [`CHAIN_PIPE_SEPARATED`].
+    pub framing: u32,
+    /// [`CHAIN_DIGESTS_SCOPE`] or `0`.
+    pub flags: u32,
+    /// Alignment padding.
+    pub _reserved: u32,
+}
+
 /// THE PLANE'S STATEMENT TAIL: static facts, `'static` data.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct PlaneTail {
     /// The tail head.
     pub head: KindTailHead,
-    /// [`TAIL_FALLBACK`]; any other bit refuses the load.
+    /// [`TAIL_FALLBACK`] | [`TAIL_PROBES`]; any other bit refuses the load.
     pub flags: u32,
     /// `INGRESS_*` bits.
     pub ingress: u32,
@@ -405,6 +478,10 @@ pub struct PlaneTail {
     pub egress_targets: *const AbiStr,
     /// How many.
     pub egress_targets_len: usize,
+    /// Its chained record kinds, each with its framing; at most one entry per kind.
+    pub record_chains: *const RecordChain,
+    /// How many.
+    pub record_chains_len: usize,
 }
 
 // ── the generation snapshot ──────────────────────────────────────────────────────────────────────
@@ -429,6 +506,10 @@ pub struct AdminRoute {
     pub verb: AbiStr,
     /// The target path.
     pub target: AbiStr,
+    /// [`ROUTE_PUBLIC`] or `0`.
+    pub flags: u32,
+    /// Alignment padding.
+    pub _reserved: u32,
 }
 
 /// THE GENERATION SNAPSHOT: what the plane answers for THIS generation's settings. Valid until
@@ -597,7 +678,7 @@ pub struct ArriveOut {
 pub struct OnPieceIn {
     /// The head.
     pub head: InHead,
-    /// [`FROM_CALLER`] | [`FROM_FAR_END`].
+    /// [`FROM_CALLER`] | [`FROM_FAR_END`] | [`FROM_KERNEL`].
     pub from: u32,
     /// `PIECE_*` bits.
     pub flags: u32,
@@ -629,6 +710,13 @@ pub struct OnPieceIn {
     pub arena_buf: *mut u8,
     /// Its capacity.
     pub arena_cap: usize,
+    /// On an ATTEMPT piece: the operator's name for the member the kernel picked; absent
+    /// otherwise.
+    pub member: AbiStr,
+    /// On an ATTEMPT piece: the attempt's number, from `1`; `0` on every other piece.
+    pub attempt_no: u32,
+    /// Alignment padding.
+    pub _reserved: u32,
 }
 
 /// `on_piece`'s `out`.
@@ -657,12 +745,18 @@ pub struct OnPieceOut {
     pub records_written: u32,
     /// Short answer: the record writes `records_buf` needs.
     pub records_needed: u32,
-    /// Alignment padding.
-    pub _reserved: u32,
+    /// `VERDICT_*`: the plane's reading of a far-end answer, beside the walk's status table.
+    pub verdict: u32,
     /// Bytes written to `arena_buf`.
     pub arena_written: u64,
     /// Short answer: the bytes `arena_buf` needs.
     pub arena_needed: u64,
+    /// The answer to an ATTEMPT piece, with [`EMIT_TO_FAR_END`]: the request's verb, in the
+    /// arena; a zero length = none. The kernel adds the auth fields and sends it through the
+    /// connector.
+    pub verb: Span,
+    /// With `verb`: the request's target, in the arena; a zero length = none.
+    pub target: Span,
 }
 
 /// `refusal`'s `in`.
@@ -775,6 +869,84 @@ pub struct ServeOut {
     pub _reserved: u32,
 }
 
+/// The plane's `drive` `in`: the lifecycle's, plus a HOST buffer for the sessions with output
+/// ready. A plane instance holds ONE driver ticket; when a session has unsolicited output the
+/// plane wakes it, and `drive` names the ready sessions by their stream. The kernel then calls
+/// `on_piece` ([`FROM_KERNEL`], no bytes) once for each.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct PlaneDriveIn {
+    /// The lifecycle `in`.
+    pub drive: DriveIn,
+    /// HOST buffer for the streams of the ready sessions.
+    pub sessions_buf: *mut u64,
+    /// Its capacity.
+    pub sessions_cap: usize,
+}
+
+/// The plane's `drive` `out`.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct PlaneDriveOut {
+    /// The head.
+    pub head: OutHead,
+    /// Streams written to `sessions_buf`.
+    pub sessions_written: u32,
+    /// Short answer: the streams `sessions_buf` needs.
+    pub sessions_needed: u32,
+}
+
+/// `project`'s `in`: the arrival `arrive` classified, and HOST buffers for the view.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct ProjectIn {
+    /// The head.
+    pub head: InHead,
+    /// Index into the snapshot's claims the arrival matched.
+    pub claim: u32,
+    /// Alignment padding.
+    pub _reserved: u32,
+    /// The request target.
+    pub target: AbiStr,
+    /// The head fields.
+    pub fields: *const Field,
+    /// How many.
+    pub fields_len: usize,
+    /// The body, zero-copy.
+    pub body: Blob,
+    /// HOST buffer for the view's signals.
+    pub signals_buf: *mut SignalEntry,
+    /// Its capacity.
+    pub signals_cap: usize,
+    /// HOST arena for the view's strings and the projected body.
+    pub arena_buf: *mut u8,
+    /// Its capacity.
+    pub arena_cap: usize,
+}
+
+/// `project`'s `out`: the hook kind's own [`RequestView`], its plane-derived fields written by the
+/// plane (its strings in the arena, its signals in `signals_buf`), and the projected body where
+/// the plane has one. The kernel fills the request id and every stage field from the route walk.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct ProjectOut {
+    /// The head.
+    pub head: OutHead,
+    /// The view. `signals` is `signals_buf` and `signals_len` the signals written; `pool` and
+    /// `ingress_dialect` lie in the arena.
+    pub view: RequestView,
+    /// The projected body, in the arena; [`SPAN_ABSENT`] = the plane projects none.
+    pub body: Span,
+    /// Short answer: the signals `signals_buf` needs.
+    pub signals_needed: u32,
+    /// Alignment padding.
+    pub _reserved: u32,
+    /// Bytes written to `arena_buf`.
+    pub arena_written: u64,
+    /// Short answer: the bytes `arena_buf` needs.
+    pub arena_needed: u64,
+}
+
 // THE SDK's VIEW OF THE PLANE TABLE (`abi::sdk::door`): each kind op's `in`/`out`, stated next to
 // the table, so `plugin_door!` refuses a plane plugin that wires a kind op to another op's
 // structs. Every struct named here is plain data (integers, raw pointers, `AbiStr`/`Blob`, nested
@@ -785,17 +957,19 @@ unsafe impl super::sdk::door::AbiIn for ArriveIn {}
 unsafe impl super::sdk::door::AbiIn for OnPieceIn {}
 unsafe impl super::sdk::door::AbiIn for RefusalIn {}
 unsafe impl super::sdk::door::AbiIn for ServeIn {}
+unsafe impl super::sdk::door::AbiIn for ProjectIn {}
 unsafe impl super::sdk::door::AbiOut for ArriveOut {}
 unsafe impl super::sdk::door::AbiOut for OnPieceOut {}
 unsafe impl super::sdk::door::AbiOut for RefusalOut {}
 unsafe impl super::sdk::door::AbiOut for ServeOut {}
+unsafe impl super::sdk::door::AbiOut for ProjectOut {}
 
 /// Each plane kind op's `in`/`out` for [`plugin_door!`](crate::plugin_door), per [`Ops`]' docs. A
 /// plugin wiring a slot to another op's structs does not compile:
 ///
 /// ```compile_fail,E0271
 /// use busbar_contract::abi::plane::{ArriveIn, ArriveOut, OnPieceIn, OnPieceOut};
-/// use busbar_contract::abi::plane::{RefusalIn, RefusalOut, ServeIn, ServeOut};
+/// use busbar_contract::abi::plane::{ProjectIn, ProjectOut, RefusalIn, RefusalOut, ServeIn, ServeOut};
 /// use busbar_contract::abi::mechanism::call::{InHead, OutHead, Outcome};
 /// use busbar_contract::abi::mechanism::lifecycle::*;
 /// use busbar_contract::abi::sdk::door::Slot;
@@ -810,7 +984,7 @@ unsafe impl super::sdk::door::AbiOut for ServeOut {}
 /// # ready!(Cn, CancelIn, CancelOut); ready!(Rl, ReleaseIn, OutHead); ready!(Cl, InHead, OutHead);
 /// # ready!(Arrive, ArriveIn, ArriveOut); ready!(Refusal, RefusalIn, RefusalOut);
 /// # ready!(Serve, ServeIn, ServeOut); ready!(Hydrate, GenIn, OutHead);
-/// # ready!(Start, GenIn, OutHead);
+/// # ready!(Start, GenIn, OutHead); ready!(Project, ProjectIn, ProjectOut);
 /// ready!(OnPiece, RefusalIn, RefusalOut); // `refusal`'s structs on `on_piece`: refused
 /// busbar_contract::plugin_door! {
 ///     ops: busbar_contract::abi::plane::Ops,
@@ -818,7 +992,7 @@ unsafe impl super::sdk::door::AbiOut for ServeOut {}
 ///     lifecycle: { validate: V, open: Op_, refresh: Rf, retire: Rt, tick: Tk, drive: Dr,
 ///                  cancel: Cn, release: Rl, close: Cl },
 ///     kind_ops: { arrive: Arrive, on_piece: OnPiece, refusal: Refusal, serve: Serve,
-///                 hydrate: Hydrate, start: Start },
+///                 hydrate: Hydrate, start: Start, project: Project },
 /// }
 /// # fn main() { let _ = door(); }
 /// ```
@@ -842,6 +1016,7 @@ kind_slots! {
     SERVE => ServeIn, ServeOut;
     HYDRATE => GenIn, OutHead;
     START => GenIn, OutHead;
+    PROJECT => ProjectIn, ProjectOut;
 }
 
 #[cfg(test)]

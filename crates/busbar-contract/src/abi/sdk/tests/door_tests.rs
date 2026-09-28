@@ -1304,7 +1304,7 @@ mod plane_plugin {
     //! A REAL kind table: every plane kind op wired to the structs `abi::plane` states for it.
     use super::*;
     use crate::abi::plane::{ArriveIn, ArriveOut, OnPieceIn, OnPieceOut, RefusalIn, RefusalOut};
-    use crate::abi::plane::{ServeIn, ServeOut};
+    use crate::abi::plane::{ProjectIn, ProjectOut, ServeIn, ServeOut};
 
     macro_rules! answers {
         ($name:ident, $in:ty, $out:ty, $outcome:expr) => {
@@ -1324,6 +1324,7 @@ mod plane_plugin {
     answers!(Serve, ServeIn, ServeOut, Outcome::Ready);
     answers!(Hydrate, GenIn, OutHead, Outcome::Ready);
     answers!(Start, GenIn, OutHead, Outcome::Ready);
+    answers!(Project, ProjectIn, ProjectOut, Outcome::Ready);
 
     crate::plugin_door! {
         ops: crate::abi::plane::Ops,
@@ -1334,14 +1335,14 @@ mod plane_plugin {
         },
         kind_ops: {
             arrive: Arrive, on_piece: OnPiece, refusal: Refusal, serve: Serve, hydrate: Hydrate,
-            start: Start,
+            start: Start, project: Project,
         },
     }
 }
 
 #[test]
 fn a_plane_plugin_wires_every_kind_op() {
-    use crate::abi::plane::{slot as plane_slot, ArriveIn, ArriveOut, Ops};
+    use crate::abi::plane::{slot as plane_slot, ArriveIn, ArriveOut, Ops, ProjectIn, ProjectOut};
     // SAFETY: the macro's `'static` door and its plane table.
     let d = unsafe { &*plane_plugin::door() };
     let t = unsafe { &*d.ops.cast::<Ops>() };
@@ -1363,7 +1364,7 @@ fn a_plane_plugin_wires_every_kind_op() {
     out.head = prefilled_head(size_of::<ArriveOut>());
     assert_eq!(call(t.arrive, &input, &mut out), Outcome::Fault);
 
-    // `start`, the last kind slot, likewise.
+    // `start` likewise.
     // SAFETY: plain data; all-zero is valid.
     let mut input: GenIn = unsafe { std::mem::zeroed() };
     input.head = in_head::<GenIn>(plane_slot::START, Ticket::NONE);
@@ -1372,9 +1373,21 @@ fn a_plane_plugin_wires_every_kind_op() {
     assert_eq!(call(t.start, &input, &mut out), Outcome::Ready);
     assert_eq!(out.outcome.outcome(), Outcome::Ready);
 
-    for (i, s) in [t.arrive, t.on_piece, t.refusal, t.serve, t.hydrate, t.start]
-        .iter()
-        .enumerate()
+    // `project`, the last kind slot, reads a whole `ProjectIn` and writes a whole `ProjectOut`.
+    // SAFETY: plain data; all-zero is valid.
+    let mut input: ProjectIn = unsafe { std::mem::zeroed() };
+    input.head = in_head::<ProjectIn>(plane_slot::PROJECT, Ticket::NONE);
+    // SAFETY: as above.
+    let mut out: ProjectOut = unsafe { std::mem::zeroed() };
+    out.head = prefilled_head(size_of::<ProjectOut>());
+    assert_eq!(call(t.project, &input, &mut out), Outcome::Ready);
+    assert_eq!(out.head.outcome.outcome(), Outcome::Ready);
+
+    for (i, s) in [
+        t.arrive, t.on_piece, t.refusal, t.serve, t.hydrate, t.start, t.project,
+    ]
+    .iter()
+    .enumerate()
     {
         assert!(s.is_some(), "plane kind op {i} is NULL");
     }

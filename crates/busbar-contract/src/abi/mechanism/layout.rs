@@ -1215,14 +1215,15 @@ mod plane_kind {
 
     use crate::abi::plane::*;
 
-    pin!(Ops, 128, 8, head = 0, arrive = 80, on_piece = 88, refusal = 96, serve = 104,
-        hydrate = 112, start = 120);
+    pin!(Ops, 136, 8, head = 0, arrive = 80, on_piece = 88, refusal = 96, serve = 104,
+        hydrate = 112, start = 120, project = 128);
     pin!(Section, 24, 8, name = 0, flags = 16, _reserved = 20);
     pin!(DialectAuth, 24, 8, dialect = 0, _reserved = 4, style = 8);
     pin!(OpClass, 32, 8, op = 0, name = 16);
     pin!(BillableClass, 32, 8, class = 0, family = 16);
     pin!(RouteCost, 16, 8, class = 0, _reserved = 4, weight = 8);
-    pin!(PlaneTail, 328, 8, head = 0, flags = 8, ingress = 12, dispatch_shape = 16,
+    pin!(RecordChain, 16, 4, kind = 0, framing = 4, flags = 8, _reserved = 12);
+    pin!(PlaneTail, 344, 8, head = 0, flags = 8, ingress = 12, dispatch_shape = 16,
         _reserved = 20, scope = 24, label = 40, subject_noun = 56, admin_noun = 72,
         audit_kind = 88, signing_domain = 104, signing_kid_prefix = 120, cli_help = 136,
         sections = 152, sections_len = 160, dialects = 168, dialects_len = 176,
@@ -1230,9 +1231,10 @@ mod plane_kind {
         op_classes = 216, op_classes_len = 224, billable_classes = 232,
         billable_classes_len = 240, route_cost = 248, route_cost_len = 256, fee_units = 264,
         fee_units_len = 272, record_kinds = 280, record_kinds_len = 288, needs = 296,
-        needs_len = 304, egress_targets = 312, egress_targets_len = 320);
+        needs_len = 304, egress_targets = 312, egress_targets_len = 320, record_chains = 328,
+        record_chains_len = 336);
     pin!(Claim, 48, 8, verb = 0, target = 16, carrier = 32);
-    pin!(AdminRoute, 32, 8, verb = 0, target = 16);
+    pin!(AdminRoute, 40, 8, verb = 0, target = 16, flags = 32, _reserved = 36);
     pin!(PlaneSnapshot, 104, 8, size = 0, _reserved = 4, generation = 8, claims = 16,
         claims_len = 24, admin_routes = 32, admin_routes_len = 40, openapi = 48,
         audience = 72, resource_metadata = 88);
@@ -1248,14 +1250,15 @@ mod plane_kind {
         fields_len = 120, body = 128, units_buf = 152, units_cap = 160);
     pin!(ArriveOut, 120, 8, head = 0, op_class = 96, principal_need = 100, dialect = 104,
         units_written = 108, units_needed = 112, _reserved = 116);
-    pin!(OnPieceIn, 216, 8, head = 0, from = 88, flags = 92, stream = 96, bytes = 104,
+    pin!(OnPieceIn, 240, 8, head = 0, from = 88, flags = 92, stream = 96, bytes = 104,
         status_code = 128, status_class = 132, reply_buf = 136, reply_cap = 144,
         units_buf = 152, units_cap = 160, records_buf = 168, records_cap = 176,
-        fields_buf = 184, fields_cap = 192, arena_buf = 200, arena_cap = 208);
-    pin!(OnPieceOut, 160, 8, head = 0, emitted = 96, more = 104, flags = 108,
+        fields_buf = 184, fields_cap = 192, arena_buf = 200, arena_cap = 208, member = 216,
+        attempt_no = 232, _reserved = 236);
+    pin!(OnPieceOut, 176, 8, head = 0, emitted = 96, more = 104, flags = 108,
         reply_status = 112, fields_written = 116, fields_needed = 120, units_written = 124,
-        units_needed = 128, records_written = 132, records_needed = 136, _reserved = 140,
-        arena_written = 144, arena_needed = 152);
+        units_needed = 128, records_written = 132, records_needed = 136, verdict = 140,
+        arena_written = 144, arena_needed = 152, verb = 160, target = 168);
     pin!(RefusalIn, 168, 8, head = 0, cause = 88, status = 92, dialect = 96, _reserved = 100,
         text = 104, reply_buf = 120, reply_cap = 128, fields_buf = 136, fields_cap = 144,
         arena_buf = 152, arena_cap = 160);
@@ -1268,4 +1271,11 @@ mod plane_kind {
     pin!(ServeOut, 144, 8, head = 0, reply_written = 96, reply_needed = 104,
         arena_written = 112, arena_needed = 120, status = 128, fields_written = 132,
         fields_needed = 136, _reserved = 140);
+    pin!(PlaneDriveIn, 112, 8, drive = 0, sessions_buf = 96, sessions_cap = 104);
+    pin!(PlaneDriveOut, 104, 8, head = 0, sessions_written = 96, sessions_needed = 100);
+    pin!(ProjectIn, 184, 8, head = 0, claim = 88, _reserved = 92, target = 96, fields = 112,
+        fields_len = 120, body = 128, signals_buf = 152, signals_cap = 160, arena_buf = 168,
+        arena_cap = 176);
+    pin!(ProjectOut, 208, 8, head = 0, view = 96, body = 176, signals_needed = 184,
+        _reserved = 188, arena_written = 192, arena_needed = 200);
 }

@@ -8,16 +8,17 @@
 use std::mem::{size_of, zeroed};
 use std::ptr::{null, NonNull};
 
-use busbar_contract::abi::mechanism::call::{InHead, OutHead, Outcome};
+use busbar_contract::abi::hook::SignalEntry;
+use busbar_contract::abi::mechanism::call::{AbiStr, InHead, OutHead, Outcome};
 use busbar_contract::abi::mechanism::check::{fault, Fault, Rule};
 use busbar_contract::abi::mechanism::lifecycle::{slot as life, CancelOut, GenIn, RefreshIn};
 use busbar_contract::abi::mechanism::KindCode;
 use busbar_contract::abi::plane::check::Bounds;
 use busbar_contract::abi::plane::{
     slot, ArriveIn, ArriveOut, OnPieceIn, OnPieceOut, OutField, PlaneOpenIn, PlaneOpenOut,
-    PlaneRefreshOut, PlaneSnapshot, RecordWrite, RefusalIn, RefusalOut, ServeIn, ServeOut, Span,
-    UnitCount, CANCEL_ABORTED, CANCEL_OK_PARTIAL, EMIT_DONE, PRINCIPAL_REQUIRED, RECORD_PUT, SLOTS,
-    UNITS_REPORTED,
+    PlaneRefreshOut, PlaneSnapshot, ProjectIn, ProjectOut, RecordWrite, RefusalIn, RefusalOut,
+    ServeIn, ServeOut, Span, UnitCount, CANCEL_ABORTED, CANCEL_OK_PARTIAL, EMIT_DONE,
+    PRINCIPAL_REQUIRED, RECORD_PUT, SLOTS, UNITS_REPORTED,
 };
 
 use crate::dispatch::kinds::plane::Plane;
@@ -431,6 +432,80 @@ fn hydrate_and_start_have_no_per_answer_rule() {
     }
 }
 
+// ── project ──
+
+fn project_in(signals: &mut [SignalEntry], arena: &mut [u8]) -> ProjectIn {
+    let mut i: ProjectIn = z();
+    i.signals_buf = signals.as_mut_ptr();
+    i.signals_cap = signals.len();
+    i.arena_buf = arena.as_mut_ptr();
+    i.arena_cap = arena.len();
+    i
+}
+
+#[test]
+fn project_green_a_view_inside_the_hosts_buffers() {
+    let mut signals: [SignalEntry; 2] = z();
+    let mut arena = [0u8; 16];
+    let i = project_in(&mut signals, &mut arena);
+    let mut o: ProjectOut = z();
+    o.view.signals = i.signals_buf.cast_const();
+    o.view.signals_len = 1;
+    o.view.pool = AbiStr {
+        ptr: i.arena_buf.cast_const(),
+        len: 4,
+    };
+    o.body = span(4, 8);
+    o.arena_written = 12;
+    assert_eq!(
+        Plane::check(&answer(slot::PROJECT, Outcome::Ready, &i, &o)),
+        Ok(())
+    );
+}
+
+#[test]
+fn project_red_signals_past_the_cap_and_a_string_outside_the_arena() {
+    let mut signals: [SignalEntry; 2] = z();
+    let mut arena = [0u8; 16];
+    let i = project_in(&mut signals, &mut arena);
+    let mut o: ProjectOut = z();
+    o.view.signals = i.signals_buf.cast_const();
+    o.view.signals_len = 3;
+    assert_eq!(
+        Plane::check(&answer(slot::PROJECT, Outcome::Ready, &i, &o)),
+        f(Rule::OverCap, "project.signals")
+    );
+    let mut o: ProjectOut = z();
+    o.view.pool = AbiStr {
+        ptr: i.arena_buf.cast_const().wrapping_add(12),
+        len: 8,
+    };
+    o.arena_written = 16;
+    assert_eq!(
+        Plane::check(&answer(slot::PROJECT, Outcome::Ready, &i, &o)),
+        f(Rule::SpanOutOfBounds, "project.view.pool")
+    );
+}
+
+#[test]
+fn a_short_project_answer_is_recognised() {
+    let mut signals: [SignalEntry; 2] = z();
+    let mut arena = [0u8; 16];
+    let i = project_in(&mut signals, &mut arena);
+    let mut o: ProjectOut = z();
+    o.arena_needed = 64;
+    let a = answer(slot::PROJECT, Outcome::Failed, &i, &o);
+    assert_eq!(Plane::check(&a), Ok(()));
+    assert!(Plane::short(&a));
+    o.arena_needed = 0;
+    assert!(!Plane::short(&answer(
+        slot::PROJECT,
+        Outcome::Failed,
+        &i,
+        &o
+    )));
+}
+
 // ── foreign sizes ──
 
 #[test]
@@ -441,6 +516,7 @@ fn an_in_smaller_than_the_ops_struct_is_foreign() {
         (slot::ON_PIECE, size_of::<OnPieceOut>()),
         (slot::REFUSAL, size_of::<RefusalOut>()),
         (slot::SERVE, size_of::<ServeOut>()),
+        (slot::PROJECT, size_of::<ProjectOut>()),
     ] {
         let o = [0u64; 64];
         assert!(size_of::<[u64; 64]>() >= out_size);

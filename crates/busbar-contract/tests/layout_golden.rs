@@ -1542,13 +1542,14 @@ fn compute_layout() -> String {
     record!(
         s,
         pkind::Ops,
-        [head, arrive, on_piece, refusal, serve, hydrate, start]
+        [head, arrive, on_piece, refusal, serve, hydrate, start, project]
     );
     record!(s, pkind::Section, [name, flags, _reserved]);
     record!(s, pkind::DialectAuth, [dialect, _reserved, style]);
     record!(s, pkind::OpClass, [op, name]);
     record!(s, pkind::BillableClass, [class, family]);
     record!(s, pkind::RouteCost, [class, _reserved, weight]);
+    record!(s, pkind::RecordChain, [kind, framing, flags, _reserved]);
     record!(
         s,
         pkind::PlaneTail,
@@ -1587,11 +1588,13 @@ fn compute_layout() -> String {
             needs,
             needs_len,
             egress_targets,
-            egress_targets_len
+            egress_targets_len,
+            record_chains,
+            record_chains_len
         ]
     );
     record!(s, pkind::Claim, [verb, target, carrier]);
-    record!(s, pkind::AdminRoute, [verb, target]);
+    record!(s, pkind::AdminRoute, [verb, target, flags, _reserved]);
     record!(
         s,
         pkind::PlaneSnapshot,
@@ -1654,7 +1657,10 @@ fn compute_layout() -> String {
             fields_buf,
             fields_cap,
             arena_buf,
-            arena_cap
+            arena_cap,
+            member,
+            attempt_no,
+            _reserved
         ]
     );
     record!(
@@ -1672,9 +1678,11 @@ fn compute_layout() -> String {
             units_needed,
             records_written,
             records_needed,
-            _reserved,
+            verdict,
             arena_written,
-            arena_needed
+            arena_needed,
+            verb,
+            target
         ]
     );
     record!(
@@ -1721,6 +1729,42 @@ fn compute_layout() -> String {
             fields_written,
             fields_needed,
             _reserved
+        ]
+    );
+    record!(s, pkind::PlaneDriveIn, [drive, sessions_buf, sessions_cap]);
+    record!(
+        s,
+        pkind::PlaneDriveOut,
+        [head, sessions_written, sessions_needed]
+    );
+    record!(
+        s,
+        pkind::ProjectIn,
+        [
+            head,
+            claim,
+            _reserved,
+            target,
+            fields,
+            fields_len,
+            body,
+            signals_buf,
+            signals_cap,
+            arena_buf,
+            arena_cap
+        ]
+    );
+    record!(
+        s,
+        pkind::ProjectOut,
+        [
+            head,
+            view,
+            body,
+            signals_needed,
+            _reserved,
+            arena_written,
+            arena_needed
         ]
     );
     record!(

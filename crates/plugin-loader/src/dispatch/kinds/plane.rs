@@ -8,6 +8,8 @@
 //!   cap from `OnPieceIn`;
 //! * `refusal` by `check_refusal` and `serve` by `check_serve`, their fields over the host's
 //!   `fields_buf`/`fields_cap`, every cap from the op's `in`;
+//! * `project` by `check_project`, its view's signals over the host's `signals_buf`/`signals_cap`
+//!   and its strings and body over the host's `arena_buf`/`arena_cap`, from `ProjectIn`;
 //! * `open` and `refresh` by `check_snapshot` on the generation snapshot a READY answer carries,
 //!   against the generation the `in` names;
 //! * `cancel` by `check_cancel` on its disposition (answered on READY only).
@@ -25,8 +27,8 @@
 //! are the instance's context ([`Bounds`]), and every answer's indices are judged against them at
 //! the crossing: an index past its list is FAULT.
 //!
-//! SHORT ANSWERS: `arrive`, `on_piece`, `refusal` and `serve` have the short path; a FAILED answer
-//! of one of them with any `*_needed` non-zero is short.
+//! SHORT ANSWERS: `arrive`, `on_piece`, `refusal`, `serve` and `project` have the short path; a
+//! FAILED answer of one of them with any `*_needed` non-zero is short.
 
 use busbar_contract::abi::mechanism::call::Outcome;
 use busbar_contract::abi::mechanism::check::{fault, reported, Fault, Rule};
@@ -34,12 +36,13 @@ use busbar_contract::abi::mechanism::door::Statement;
 use busbar_contract::abi::mechanism::lifecycle::{slot as life, CancelOut, OpenIn, RefreshIn};
 use busbar_contract::abi::mechanism::KindCode;
 use busbar_contract::abi::plane::check::{
-    check_arrive, check_cancel, check_on_piece, check_refusal, check_serve, check_snapshot,
-    check_tail, Bounds, Caps,
+    check_arrive, check_cancel, check_on_piece, check_project, check_refusal, check_serve,
+    check_snapshot, check_tail, Bounds, Caps,
 };
 use busbar_contract::abi::plane::{
     self, slot, ArriveIn, ArriveOut, OnPieceIn, OnPieceOut, PlaneOpenIn, PlaneOpenOut,
-    PlaneRefreshOut, PlaneSnapshot, PlaneTail, RefusalIn, RefusalOut, ServeIn, ServeOut,
+    PlaneRefreshOut, PlaneSnapshot, PlaneTail, ProjectIn, ProjectOut, RefusalIn, RefusalOut,
+    ServeIn, ServeOut,
 };
 
 use crate::dispatch::{lifecycle_name, Answer, Context, InFrame, Kind, OutFrame};
@@ -57,12 +60,14 @@ unsafe impl InFrame for ArriveIn {}
 unsafe impl InFrame for OnPieceIn {}
 unsafe impl InFrame for RefusalIn {}
 unsafe impl InFrame for ServeIn {}
+unsafe impl InFrame for ProjectIn {}
 unsafe impl OutFrame for PlaneOpenOut {}
 unsafe impl OutFrame for PlaneRefreshOut {}
 unsafe impl OutFrame for ArriveOut {}
 unsafe impl OutFrame for OnPieceOut {}
 unsafe impl OutFrame for RefusalOut {}
 unsafe impl OutFrame for ServeOut {}
+unsafe impl OutFrame for ProjectOut {}
 
 /// The instance's tail bounds; an answer judged without them is FAULT (a plane instance always
 /// binds with its tail).
@@ -109,6 +114,7 @@ impl Kind for Plane {
             slot::SERVE => "serve",
             slot::HYDRATE => "hydrate",
             slot::START => "start",
+            slot::PROJECT => "project",
             _ => lifecycle_name(s),
         }
     }
@@ -158,6 +164,7 @@ impl Kind for Plane {
                 };
                 check_serve(a.outcome, o, fields, &caps)
             }
+            slot::PROJECT => project(a),
             life::OPEN if a.outcome == Outcome::Ready => {
                 let generation = a.input::<OpenIn>()?.generation;
                 snapshot(
@@ -199,6 +206,9 @@ impl Kind for Plane {
             slot::SERVE => a
                 .out::<ServeOut>()
                 .is_ok_and(|o| o.reply_needed != 0 || o.fields_needed != 0 || o.arena_needed != 0),
+            slot::PROJECT => a
+                .out::<ProjectOut>()
+                .is_ok_and(|o| o.signals_needed != 0 || o.arena_needed != 0),
             _ => false,
         }
     }
@@ -258,6 +268,31 @@ fn on_piece(a: &Answer) -> Result<(), Fault> {
         )
     };
     check_on_piece(a.outcome, o, (units, records, fields), &caps, bounds(a)?)
+}
+
+/// `project`: the view's signals over the host's `signals_buf`, its strings and body over the
+/// host's arena, every cap from `ProjectIn`.
+fn project(a: &Answer) -> Result<(), Fault> {
+    let i = a.input::<ProjectIn>()?;
+    let o = a.out::<ProjectOut>()?;
+    let cap = i.signals_cap as u64;
+    // SAFETY: `signals_buf` is the host's own buffer of `signals_cap` `SignalEntry`s, named by
+    // this op's `in`.
+    let signals = unsafe {
+        reported(
+            i.signals_buf.cast_const(),
+            o.view.signals_len as u64,
+            cap,
+            "project.signals",
+        )
+    }?;
+    check_project(
+        a.outcome,
+        o,
+        signals,
+        cap,
+        (i.arena_buf.cast_const(), i.arena_cap as u64),
+    )
 }
 
 /// A READY `open`'s or `refresh`'s generation snapshot: present, of this host's size, then
