@@ -56,7 +56,7 @@ pub struct UpsertPlaneRecordIn {
 
 /// `append_plane_record`'s `in`: APPEND within `parent` at `seq` (records.rs:1505-1511); an
 /// appending write, deduped on `op_id` (B.1 "Writes"). A DIFFERENT record at an already-used
-/// `seq` is refused as a fork by a store whose tail states `fork_refusal` (Q79).
+/// `seq` is refused as a fork by a store whose tail states `fork_refusal`.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct AppendPlaneRecordIn {

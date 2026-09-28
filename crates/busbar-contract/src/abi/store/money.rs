@@ -163,7 +163,7 @@ pub struct ReserveIn {
 /// short buffer (`needed_grants > grants_cap`, `reason == 0`, M-SB) or a refusal of the draw
 /// (`needed_grants == 0`, `reason` one of [`RESERVE_EXHAUSTED`], [`RESERVE_STALE_EPOCH`],
 /// [`RESERVE_UNAVAILABLE`], [`RESERVE_NO_CAP`]). A short answer is never recorded under the
-/// `op_id` (S3). A refusal with a reason outside 1-4, or a `failed_cell` that is neither below `cells_len` nor
+/// `op_id` (only an applied change is recorded). A refusal with a reason outside 1-4, or a `failed_cell` that is neither below `cells_len` nor
 /// [`RESERVE_NO_FAILED_CELL`], is FAULT; READY with `grants_len != cells_len`, a grant other than
 /// the cell's whole `amount` (a partial grant), `reason != 0` or a named `failed_cell` is FAULT
 /// ([`super::check::check_reserve`]).

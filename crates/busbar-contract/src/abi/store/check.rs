@@ -53,7 +53,8 @@ pub enum Fault {
     AbsentWithLen,
     /// An item outside the written part of the host's byte buffer.
     SpanOutOfBounds,
-    /// A grant other than the cell's whole `amount`: `0`, partial, or above it (S5).
+    /// A grant other than the cell's whole `amount`: `0`, partial, or above it (a
+    /// cell is granted whole or not at all).
     GrantOutOfRange,
     /// A release above the item's `unspent` (the store clamps; it never returns more).
     ReleaseOverUnspent,
