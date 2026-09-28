@@ -5,7 +5,7 @@
 use super::*;
 use crate::test_support::engine_kit::EngineTestKit as _;
 use crate::test_support::TestApp;
-use busbar_contract::caps::{step::Admit, Decision, KernelSeal, Pass, StepName};
+use busbar_contract::caps::{step::Admit, Decision, KernelSeal, Pass, ReasonCode, StepName};
 use std::collections::BTreeMap;
 use std::time::Instant;
 
