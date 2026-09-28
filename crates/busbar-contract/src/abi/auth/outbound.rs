@@ -103,7 +103,7 @@ pub struct FieldsIn {
     /// The EXACT header envelope the framer will send, in order, filled only when the style
     /// declares [`super::STYLE_NEEDS_HEADERS`] (NULL otherwise, so bearer and api-key pay nothing).
     /// A signing style SETS its own fields over it (never appends) and signs the result, so its
-    /// `SignedHeaders` are 1.5.5's byte for byte.
+    /// signed-header set is 1.5.5's byte for byte.
     pub headers: *const NamedValue,
     /// How many.
     pub headers_len: usize,
@@ -111,9 +111,12 @@ pub struct FieldsIn {
 
 /// `fields`' `out`. READY with `fields_len == 0` = no auth header.
 ///
-/// HOST BOUNDS DUTIES (any violation is FAULT): `fields_len <= fields_cap`; every written
-/// [`FieldSpan`] has `off + len <= field_buf_cap`, computed without `u32` overflow; on READY
-/// `needed_fields == 0` and `needed_bytes == 0`.
+/// THE ANSWER RULES, enforced by [`super::check_fields`] in `u64` math (any violation is FAULT):
+/// on READY, `needed_fields == 0` and `needed_bytes == 0`, `fields_len <= fields_cap`, every
+/// written [`FieldSpan`]'s name and value are present with `off + len <= field_buf_cap`, and its
+/// `flags` hold only [`super::FIELD_SENSITIVE`]. On FAILED, `needed_bytes <= u32::MAX` and
+/// `needed_fields <=` [`super::FIELDS_HARD_MAX`]; a non-zero `needed_*` at or below its capacity is
+/// FAULT (it would waste the one re-call), so a dimension that fits reports `0`.
 ///
 /// SHORT BUFFER: a plugin never writes past a capacity. When the fields do not fit it answers
 /// `FAILED` with `needed_fields` or `needed_bytes` above the capacity it was given and writes

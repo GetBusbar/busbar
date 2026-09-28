@@ -38,8 +38,14 @@ use super::mechanism::call::{AbiStr, Op};
 use super::mechanism::door::KindTailHead;
 use super::mechanism::lifecycle::{OpsHead, LIFECYCLE_SLOTS};
 
+mod check;
 mod inbound;
 mod outbound;
+
+pub use check::{
+    check_begin_login, check_fields, check_identify, Fault, FIELDS_HARD_MAX,
+    IDENTITY_GROUPS_HARD_MAX,
+};
 
 pub use inbound::{
     BeginLoginIn, BeginLoginOut, CompleteLoginIn, IdentifyOut, IdentityBuf, IdentityOut,
@@ -274,6 +280,3 @@ pub const SPAN_ABSENT: u32 = u32::MAX;
 
 /// [`IdentityOut::flags`]: [`IdentityOut::ttl_secs`] is set.
 pub const IDENTITY_HAS_TTL: u32 = 1;
-/// [`IdentityOut::flags`]: the identity buffer holds sensitive material (claims may carry an
-/// id_token). The host never logs it and zeroises it after use.
-pub const IDENTITY_SENSITIVE: u32 = 2;

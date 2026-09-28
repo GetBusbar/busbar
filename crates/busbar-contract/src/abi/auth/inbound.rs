@@ -93,7 +93,7 @@ pub struct IdentityOut {
     pub claims: Span,
     /// The claims' [`Blob::fmt`](crate::abi::mechanism::call::Blob).
     pub claims_fmt: u32,
-    /// [`super::IDENTITY_HAS_TTL`] | [`super::IDENTITY_SENSITIVE`].
+    /// [`super::IDENTITY_HAS_TTL`]; any other bit is FAULT.
     pub flags: u32,
     /// The suggested cache TTL, seconds (the plugin's cache clamps it; 3600 max, 300 default).
     pub ttl_secs: u64,
@@ -132,9 +132,17 @@ pub struct VerifyIn {
 /// and serves the retry from it, never repeating the work (an authorization code redeems once).
 /// `FAILED` with both at `0` is a real failure. A buffer is at most `u32::MAX` bytes ([`Span`]).
 ///
-/// HOST BOUNDS DUTIES (any violation is FAULT): every [`Span`] other than
-/// [`super::SPAN_ABSENT`] has `off + len <= buf_cap`, computed without `u32` overflow;
-/// `groups_len <= groups_cap`; on READY `needed_groups == 0` and `needed_bytes == 0`.
+/// THE ANSWER RULES, enforced by [`super::check_identify`] in `u64` math (any violation is FAULT):
+/// on READY, `needed_groups == 0` and `needed_bytes == 0`; the verdict is in the op's vocabulary;
+/// for an identity, `subject` is present, every present [`Span`] has `off + len <= buf_cap`, an
+/// absent one ([`super::SPAN_ABSENT`]) has `len == 0`, `groups_len <= groups_cap`, every group
+/// span is present and in bounds, and `flags` holds only [`super::IDENTITY_HAS_TTL`]. On FAILED,
+/// `needed_bytes <= u32::MAX` and `needed_groups <=` [`super::IDENTITY_GROUPS_HARD_MAX`]; a
+/// non-zero `needed_*` at or below its capacity is FAULT (it would waste the one re-call), so a
+/// dimension that fits reports `0`.
+///
+/// The identity buffer is ALWAYS secret material to the host (claims may carry an identity token):
+/// never logged, zeroised after use. No plugin flag says so.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct IdentifyOut {
@@ -192,7 +200,9 @@ pub struct LoginField {
 pub struct BeginLoginOut {
     /// The head.
     pub head: OutHead,
-    /// [`super::BEGIN_AUTHORIZE`] | [`super::BEGIN_FORM`]; `0` is FAULT.
+    /// EXACTLY ONE of [`super::BEGIN_AUTHORIZE`] | [`super::BEGIN_FORM`]; no bit, two bits or an
+    /// unknown bit is FAULT ([`super::check_begin_login`]). The one named must be present: a
+    /// non-empty URL, or `form_len > 0`. Any `len > 0` with a NULL pointer is FAULT.
     pub shape: u32,
     /// Alignment padding.
     pub _reserved: u32,
