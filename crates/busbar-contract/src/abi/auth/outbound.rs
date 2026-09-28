@@ -88,7 +88,9 @@ pub struct FieldsIn {
     pub request: RequestFacts,
     /// The caller's verified credential (secret), for [`super::MODE_PASSTHROUGH`]; else absent.
     pub caller_credential: Blob,
-    /// The host buffer the field bytes go into.
+    /// The host buffer the field bytes go into. It holds credential material: the host treats it
+    /// as a [`BLOB_SECRET`](crate::abi::mechanism::call::BLOB_SECRET) (never logged, zeroised once
+    /// the head is encoded).
     pub field_buf: *mut u8,
     /// Its capacity ([`super::FIELDS_BUF_BYTES`]).
     pub field_buf_cap: usize,
@@ -100,8 +102,13 @@ pub struct FieldsIn {
     pub _reserved2: u32,
 }
 
-/// `fields`' `out`. READY with `fields_len == 0` = no auth header. A plugin never writes past a
-/// capacity: fields that would not fit answer `FAILED`, which fails the attempt.
+/// `fields`' `out`. READY with `fields_len == 0` = no auth header.
+///
+/// SHORT BUFFER: a plugin never writes past a capacity. When the fields do not fit it answers
+/// `FAILED` with `needed_fields` or `needed_bytes` above the capacity it was given and writes
+/// nothing else; the host re-issues the op once, as a fresh call on the SAME ticket, with buffers
+/// at least that large, and a second short answer is FAULT. `FAILED` with both at `0` fails the
+/// attempt. Nothing the plugin needs lives in this `out`: the host zeroes it before every call.
 /// [`super::MODE_PASSTHROUGH`] on a handle whose style does not pass the caller's credential
 /// answers `REFUSED`.
 #[repr(C)]
@@ -111,6 +118,8 @@ pub struct FieldsOut {
     pub head: OutHead,
     /// How many fields were written, in order.
     pub fields_len: u32,
-    /// Alignment padding.
-    pub _reserved: u32,
+    /// Short buffer: the fields needed.
+    pub needed_fields: u32,
+    /// Short buffer: the bytes needed.
+    pub needed_bytes: u64,
 }

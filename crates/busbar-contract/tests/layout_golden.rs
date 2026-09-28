@@ -1114,7 +1114,11 @@ fn compute_layout() -> String {
             _reserved2
         ]
     );
-    record!(s, AuthFieldsOut, [head, fields_len, _reserved]);
+    record!(
+        s,
+        AuthFieldsOut,
+        [head, fields_len, needed_fields, needed_bytes]
+    );
     record!(s, HookOps, [head]);
     record!(s, ExportOps, [head]);
     record!(s, PlaneOps, [head]);

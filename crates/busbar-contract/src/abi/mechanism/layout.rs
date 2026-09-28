@@ -279,14 +279,14 @@ mod auth {
     );
     pin!(
         VerifyIn,
-        256,
+        272,
         8,
         head = 0,
-        credential = 72,
-        carrier = 96,
-        carrier_len = 104,
-        request = 112,
-        out_buf = 224
+        credential = 88,
+        carrier = 112,
+        carrier_len = 120,
+        request = 128,
+        out_buf = 240
     );
     pin!(
         IdentifyOut,
@@ -300,15 +300,15 @@ mod auth {
     );
     pin!(
         BeginLoginIn,
-        152,
+        168,
         8,
         head = 0,
-        redirect_uri = 72,
-        state = 88,
-        nonce = 104,
-        code_challenge = 120,
-        scopes = 136,
-        scopes_len = 144
+        redirect_uri = 88,
+        state = 104,
+        nonce = 120,
+        code_challenge = 136,
+        scopes = 152,
+        scopes_len = 160
     );
     pin!(
         LoginField,
@@ -332,28 +332,28 @@ mod auth {
     );
     pin!(
         CompleteLoginIn,
-        184,
+        200,
         8,
         head = 0,
-        code = 72,
-        state = 88,
-        redirect_uri = 104,
-        code_verifier = 120,
-        submitted = 136,
-        submitted_len = 144,
-        out_buf = 152
+        code = 88,
+        state = 104,
+        redirect_uri = 120,
+        code_verifier = 136,
+        submitted = 152,
+        submitted_len = 160,
+        out_buf = 168
     );
     pin!(
         OpenOutboundIn,
-        136,
+        152,
         8,
         head = 0,
-        style = 72,
-        credential = 88,
-        settings = 112
+        style = 88,
+        credential = 104,
+        settings = 128
     );
     pin!(OpenOutboundOut, 104, 8, head = 0, handle = 96);
-    pin!(OutboundReadyIn, 80, 8, head = 0, handle = 72);
+    pin!(OutboundReadyIn, 96, 8, head = 0, handle = 88);
     pin!(
         OutboundReadyOut,
         104,
@@ -373,27 +373,28 @@ mod auth {
     );
     pin!(
         FieldsIn,
-        256,
+        272,
         8,
         head = 0,
-        handle = 72,
-        mode = 80,
-        _reserved = 84,
-        request = 88,
-        caller_credential = 200,
-        field_buf = 224,
-        field_buf_cap = 232,
-        fields = 240,
-        fields_cap = 248,
-        _reserved2 = 252
+        handle = 88,
+        mode = 96,
+        _reserved = 100,
+        request = 104,
+        caller_credential = 216,
+        field_buf = 240,
+        field_buf_cap = 248,
+        fields = 256,
+        fields_cap = 264,
+        _reserved2 = 268
     );
     pin!(
         FieldsOut,
-        104,
+        112,
         8,
         head = 0,
         fields_len = 96,
-        _reserved = 100
+        needed_fields = 100,
+        needed_bytes = 104
     );
 }
 pin!(crate::abi::hook::Ops, 80, 8, head = 0);

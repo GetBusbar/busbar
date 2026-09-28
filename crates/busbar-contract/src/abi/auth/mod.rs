@@ -16,11 +16,11 @@
 //! (style, credential, settings), never by handle, and survives `refresh` and re-opening, so a
 //! reload never answers a fields call without a credential that 1.5.5 would have had.
 //!
-//! SERVICE CREDENTIALS (an LDAP bind password, an IdP client secret) are named by the mechanism
-//! Statement's `secret_refs` (the settings keys holding a secret-ref). The kernel resolves them
-//! into [`OpenIn::secrets`](super::mechanism::lifecycle::OpenIn) in the same order. The auth tail
-//! carries nothing for them. (That Statement field lands with the mechanism's own follow-up;
-//! until then this names where it will be.)
+//! SERVICE CREDENTIALS (an LDAP bind password, an IdP client secret) are named by
+//! [`Statement::secret_refs`](super::mechanism::door::Statement) (the settings keys holding a
+//! secret-ref). The kernel resolves them into
+//! [`OpenIn::secrets`](super::mechanism::lifecycle::OpenIn) in the same order, and again into
+//! [`RefreshIn`](super::mechanism::lifecycle::RefreshIn). The auth tail carries nothing for them.
 //!
 //! VERDICTS ARE ALWAYS `READY`. `FAILED` on `verify` is a module failure: the chain's error path,
 //! as 1.5.5's `STATUS_ERR`. `FAILED` on `complete_login` is [`LOGIN_OUTAGE`]. Both exclude the
@@ -107,7 +107,7 @@ pub struct Ops {
     pub head: OpsHead,
     /// Judge an inbound credential. REQUEST-PATH; may pend (a key-set fetch or a directory read
     /// over the plugin's need); [`DeadlineClass::Call`](super::mechanism::call::DeadlineClass).
-    /// In [`VerifyIn`] (fixed 256 B, plus the credential and carrier bytes), out [`IdentifyOut`]
+    /// In [`VerifyIn`] (fixed 272 B, plus the credential and carrier bytes), out [`IdentifyOut`]
     /// (fixed 192 B; results in the host's [`IdentityBuf`], [`IDENTITY_BUF_BYTES`] and
     /// [`IDENTITY_GROUPS`] to start). The verdict is [`VERDICT_IDENTITY`], [`VERDICT_REJECT`] or
     /// [`VERDICT_PASS`]. OVERLOAD: when the instance's `max_inflight` is full, the host does not
@@ -115,31 +115,31 @@ pub struct Ops {
     /// never signals overload itself.
     pub verify: Option<Op>,
     /// Start a login. OFF-PATH; may pend through the plugin's own need; `Call`. In
-    /// [`BeginLoginIn`] (fixed 152 B), out [`BeginLoginOut`] (fixed 136 B; URL and form held under
+    /// [`BeginLoginIn`] (fixed 168 B), out [`BeginLoginOut`] (fixed 136 B; URL and form held under
     /// `OutHead.lease`).
     pub begin_login: Option<Op>,
     /// Finish a login: the token exchange runs over the plugin's own need to its need-declared
-    /// targets. OFF-PATH; may pend; `Call`. In [`CompleteLoginIn`] (fixed 184 B), out
+    /// targets. OFF-PATH; may pend; `Call`. In [`CompleteLoginIn`] (fixed 200 B), out
     /// [`IdentifyOut`] (fixed 192 B; host [`IdentityBuf`]). The verdict is [`LOGIN_IDENTITY`],
     /// [`LOGIN_BAD_CREDENTIAL`] or [`LOGIN_OUTAGE`].
     pub complete_login: Option<Op>,
     /// Bind one outbound style to its credential and answer a handle. OFF-PATH, at generation
     /// seal; never pends (the first mint runs in the background on `tick`); `Call`. In
-    /// [`OpenOutboundIn`] (fixed 136 B), out [`OpenOutboundOut`] (fixed 104 B). A handle is
+    /// [`OpenOutboundIn`] (fixed 152 B), out [`OpenOutboundOut`] (fixed 104 B). A handle is
     /// GENERATION DATA: the kernel re-opens every handle at each generation, and a handle is valid
     /// until `retire` of the generation it was opened at. There is no close slot. The token cache
     /// behind a handle is keyed by (style, credential, settings) and outlives it.
     pub open_outbound: Option<Op>,
     /// The handle's `ready` fact, read by the health prober. OFF-PATH; never pends; `Call`. In
-    /// [`OutboundReadyIn`] (fixed 80 B), out [`OutboundReadyOut`] (fixed 104 B).
+    /// [`OutboundReadyIn`] (fixed 96 B), out [`OutboundReadyOut`] (fixed 104 B).
     pub outbound_ready: Option<Op>,
     /// The per-attempt call the kernel makes before encode: the auth fields for this request.
     /// REQUEST-PATH; may pend only when the cached token has expired and its refresh failed
     /// (the design's expired-token rule, Q-EXPIRED), bounded by the attempt's deadline; `Call`.
-    /// In [`FieldsIn`] (fixed 256 B), out [`FieldsOut`] (fixed 104 B; fields in the host's
-    /// buffer, at most [`FIELDS_BUF_BYTES`] and [`FIELDS_MAX`]). READY with zero fields = no auth
-    /// header, so the upstream answers 401: 1.5.5's answer before the first mint and for an
-    /// un-encodable key.
+    /// In [`FieldsIn`] (fixed 272 B), out [`FieldsOut`] (fixed 112 B; fields in the host's
+    /// buffer, [`FIELDS_BUF_BYTES`] and [`FIELDS_MAX`] to start; one re-call when short). READY
+    /// with zero fields = no auth header, so the upstream answers 401: 1.5.5's answer before the
+    /// first mint and for an un-encodable key.
     pub fields: Option<Op>,
 }
 
@@ -242,9 +242,9 @@ pub const LOGIN_OUTAGE: u32 = 3;
 pub const IDENTITY_BUF_BYTES: usize = 16 * 1024;
 /// The identity buffer the host hands `verify`/`complete_login` to start: group spans.
 pub const IDENTITY_GROUPS: u32 = 256;
-/// The field buffer the host hands `fields`: bytes, the op's maximum out.
+/// The field buffer the host hands `fields` to start: bytes.
 pub const FIELDS_BUF_BYTES: usize = 16 * 1024;
-/// The field buffer the host hands `fields`: fields, the op's maximum out.
+/// The field buffer the host hands `fields` to start: fields.
 pub const FIELDS_MAX: u32 = 16;
 
 /// [`FieldsIn::mode`]: the plugin's own bound credential.
@@ -253,7 +253,7 @@ pub const MODE_OWN: u32 = 1;
 pub const MODE_PASSTHROUGH: u32 = 2;
 
 /// [`FieldSpan::flags`]: the value is credential material. An h2 encoder sends it never-indexed,
-/// as 1.5.5 did.
+/// as 1.5.5 did; like the whole field buffer it is never logged and is zeroised after encode.
 pub const FIELD_SENSITIVE: u32 = 1;
 
 /// [`LoginField::kind`]: plain text.
