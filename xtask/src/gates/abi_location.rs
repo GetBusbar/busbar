@@ -349,7 +349,24 @@ fn version_const(counted: &str) -> Option<String> {
         let abi_segment = name.split('_').any(|seg| seg == "ABI");
         let pod = name == "POD_VERSION" || name.ends_with("_POD_VERSION");
         let typed = idents(&ty).iter().any(|w| w == "AbiVersion");
-        if abi_segment || pod || typed {
+        // A VERSION IS A NUMBER. The name alone made a path prefix a version constant
+        // (`CONTRACT_ABI_PREFIX: &str = "crates/busbar-contract/src/abi/"`): a `&str`, a byte
+        // slice or a path cannot hold a version, so only an `AbiVersion` or a bare integer counts.
+        let integer = matches!(
+            ty.trim(),
+            "u8" | "u16"
+                | "u32"
+                | "u64"
+                | "u128"
+                | "usize"
+                | "i8"
+                | "i16"
+                | "i32"
+                | "i64"
+                | "i128"
+                | "isize"
+        );
+        if typed || ((abi_segment || pod) && integer) {
             return Some(name);
         }
     }
@@ -961,6 +978,21 @@ mod tests {
             None
         );
         assert_eq!(version_const("static ALL_CAPABILITIES: u8 = 1;"), None);
+        // GREEN: an ABI segment in the name does not make a string or a byte slice a version.
+        assert_eq!(
+            version_const("const CONTRACT_ABI_PREFIX: &str = \"crates/busbar-contract/src/abi/\";"),
+            None
+        );
+        assert_eq!(
+            version_const("pub const WIRE_ABI_MAGIC: &[u8] = b\"BB\";"),
+            None
+        );
+        assert_eq!(version_const("const ABI_DIR: &Path = x;"), None);
+        // RED: a signed integer is still a number that can carry a version.
+        assert_eq!(
+            version_const("pub(crate) const HOOK_ABI_MIN: i64 = 1;"),
+            Some("HOOK_ABI_MIN".into())
+        );
         assert_eq!(version_const("pub const fn abi() -> u32 { 1 }"), None);
     }
 
