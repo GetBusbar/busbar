@@ -742,3 +742,92 @@ fn a_panicking_open_answers_fault_and_hands_back_no_instance() {
         "a panicking open handed back an instance"
     );
 }
+
+mod auth_plugin {
+    //! A REAL kind table: every auth kind op wired to the structs `abi::auth` states for it.
+    use super::*;
+    use crate::abi::auth::{
+        BeginLoginIn, BeginLoginOut, CompleteLoginIn, FieldsIn, FieldsOut, IdentifyOut,
+        OpenOutboundIn, OpenOutboundOut, OutboundReadyIn, OutboundReadyOut, VerifyIn,
+    };
+
+    macro_rules! answers {
+        ($name:ident, $in:ty, $out:ty, $outcome:expr) => {
+            pub struct $name;
+            impl Slot for $name {
+                type In = $in;
+                type Out = $out;
+                fn call(_: *mut c_void, _: &$in, _: &mut $out) -> Outcome {
+                    $outcome
+                }
+            }
+        };
+    }
+    answers!(Verify, VerifyIn, IdentifyOut, Outcome::Ready);
+    answers!(Begin, BeginLoginIn, BeginLoginOut, Outcome::Refused);
+    answers!(Complete, CompleteLoginIn, IdentifyOut, Outcome::Failed);
+    answers!(OpenOb, OpenOutboundIn, OpenOutboundOut, Outcome::Ready);
+    answers!(ObReady, OutboundReadyIn, OutboundReadyOut, Outcome::Ready);
+    answers!(Fields, FieldsIn, FieldsOut, Outcome::Refused);
+
+    crate::plugin_door! {
+        ops: crate::abi::auth::Ops,
+        statement: crate::abi::sdk::door::statement("sdk-door-auth", "0.0.1", 1),
+        lifecycle: {
+            validate: Validate, open: Open, refresh: Refresh, retire: Retire, tick: Tick,
+            drive: Drive, cancel: Cancel, release: Release, close: Close,
+        },
+        kind_ops: {
+            verify: Verify, begin_login: Begin, complete_login: Complete,
+            open_outbound: OpenOb, outbound_ready: ObReady, fields: Fields,
+        },
+    }
+}
+
+#[test]
+fn an_auth_plugin_wires_every_kind_op() {
+    use crate::abi::auth::{slot as auth_slot, FieldsIn, FieldsOut, IdentifyOut, Ops, VerifyIn};
+    // SAFETY: the macro's `'static` door and its auth table.
+    let d = unsafe { &*auth_plugin::door() };
+    let t = unsafe { &*d.ops.cast::<Ops>() };
+    assert_eq!(d.kind, KindCode::Auth as u32);
+    assert_eq!(d.kind_abi, crate::abi::auth::ABI_VERSION);
+    assert_eq!(t.head.slots, crate::abi::auth::SLOTS);
+    assert_eq!(t.head.size as usize, size_of::<Ops>());
+
+    // `verify` answers only its own index, reading a whole `VerifyIn`.
+    // SAFETY: `VerifyIn` is plain data; all-zero is valid.
+    let mut input: VerifyIn = unsafe { std::mem::zeroed() };
+    input.head = in_head::<VerifyIn>(auth_slot::VERIFY, Ticket::NONE);
+    // SAFETY: as above.
+    let mut out: IdentifyOut = unsafe { std::mem::zeroed() };
+    out.head = prefilled_head(size_of::<IdentifyOut>());
+    assert_eq!(call(t.verify, &input, &mut out), Outcome::Ready);
+    assert_eq!(out.head.outcome.outcome(), Outcome::Ready);
+    input.head.op = auth_slot::FIELDS;
+    out.head = prefilled_head(size_of::<IdentifyOut>());
+    assert_eq!(call(t.verify, &input, &mut out), Outcome::Fault);
+
+    // `fields`, the last slot, likewise.
+    // SAFETY: plain data; all-zero is valid.
+    let mut input: FieldsIn = unsafe { std::mem::zeroed() };
+    input.head = in_head::<FieldsIn>(auth_slot::FIELDS, Ticket::NONE);
+    // SAFETY: as above.
+    let mut out: FieldsOut = unsafe { std::mem::zeroed() };
+    out.head = prefilled_head(size_of::<FieldsOut>());
+    assert_eq!(call(t.fields, &input, &mut out), Outcome::Refused);
+    assert_eq!(out.head.outcome.outcome(), Outcome::Refused);
+    for (i, s) in [
+        t.verify,
+        t.begin_login,
+        t.complete_login,
+        t.open_outbound,
+        t.outbound_ready,
+        t.fields,
+    ]
+    .iter()
+    .enumerate()
+    {
+        assert!(s.is_some(), "auth kind op {i} is NULL");
+    }
+}

@@ -280,3 +280,76 @@ pub const SPAN_ABSENT: u32 = u32::MAX;
 
 /// [`IdentityOut::flags`]: [`IdentityOut::ttl_secs`] is set.
 pub const IDENTITY_HAS_TTL: u32 = 1;
+
+// THE SDK's VIEW OF THE AUTH TABLE (`abi::sdk::door`): each kind op's `in`/`out`, stated next to
+// the table, so `plugin_door!` refuses a kind op wired to any other structs. Every struct named
+// here is plain data (integers, raw pointers, `AbiStr`/`Blob`, nested plain structs): every bit
+// pattern is a valid value, which is what `AbiIn`/`AbiOut` promise.
+//
+// SAFETY (all below): `#[repr(C)]`, leading with `InHead`/`OutHead`, plain data only.
+unsafe impl super::sdk::door::AbiIn for VerifyIn {}
+unsafe impl super::sdk::door::AbiIn for BeginLoginIn {}
+unsafe impl super::sdk::door::AbiIn for CompleteLoginIn {}
+unsafe impl super::sdk::door::AbiIn for OpenOutboundIn {}
+unsafe impl super::sdk::door::AbiIn for OutboundReadyIn {}
+unsafe impl super::sdk::door::AbiIn for FieldsIn {}
+unsafe impl super::sdk::door::AbiOut for IdentifyOut {}
+unsafe impl super::sdk::door::AbiOut for BeginLoginOut {}
+unsafe impl super::sdk::door::AbiOut for OpenOutboundOut {}
+unsafe impl super::sdk::door::AbiOut for OutboundReadyOut {}
+unsafe impl super::sdk::door::AbiOut for FieldsOut {}
+
+/// Each auth kind op's `in`/`out` for [`plugin_door!`](crate::plugin_door), per [`Ops`]' docs.
+/// A plugin wiring a slot to another op's structs does not compile:
+///
+/// ```compile_fail,E0271
+/// use busbar_contract::abi::auth::{FieldsIn, FieldsOut, IdentifyOut, VerifyIn};
+/// use busbar_contract::abi::auth::{BeginLoginIn, BeginLoginOut, CompleteLoginIn};
+/// use busbar_contract::abi::auth::{OpenOutboundIn, OpenOutboundOut, OutboundReadyIn, OutboundReadyOut};
+/// use busbar_contract::abi::mechanism::call::{InHead, OutHead, Outcome};
+/// use busbar_contract::abi::mechanism::lifecycle::*;
+/// use busbar_contract::abi::sdk::door::Slot;
+/// # use std::ffi::c_void;
+/// # macro_rules! ready { ($n:ident, $i:ty, $o:ty) => {
+/// #     struct $n;
+/// #     impl Slot for $n { type In = $i; type Out = $o;
+/// #         fn call(_: *mut c_void, _: &$i, _: &mut $o) -> Outcome { Outcome::Ready } }
+/// # } }
+/// # ready!(V, ValidateIn, OutHead); ready!(Op_, OpenIn, OpenOut); ready!(Rf, RefreshIn, OutHead);
+/// # ready!(Rt, GenIn, OutHead); ready!(Tk, TickIn, TickOut); ready!(Dr, DriveIn, OutHead);
+/// # ready!(Cn, CancelIn, CancelOut); ready!(Rl, ReleaseIn, OutHead); ready!(Cl, InHead, OutHead);
+/// # ready!(Begin, BeginLoginIn, BeginLoginOut); ready!(Complete, CompleteLoginIn, IdentifyOut);
+/// # ready!(OpenOb, OpenOutboundIn, OpenOutboundOut); ready!(Ready, OutboundReadyIn, OutboundReadyOut);
+/// # ready!(Fields, FieldsIn, FieldsOut);
+/// ready!(Verify, FieldsIn, FieldsOut); // `fields`' structs on `verify`: refused
+/// busbar_contract::plugin_door! {
+///     ops: busbar_contract::abi::auth::Ops,
+///     statement: busbar_contract::abi::sdk::door::statement("wrong", "0", 1),
+///     lifecycle: { validate: V, open: Op_, refresh: Rf, retire: Rt, tick: Tk, drive: Dr,
+///                  cancel: Cn, release: Rl, close: Cl },
+///     kind_ops: { verify: Verify, begin_login: Begin, complete_login: Complete,
+///                 open_outbound: OpenOb, outbound_ready: Ready, fields: Fields },
+/// }
+/// # fn main() { let _ = door(); }
+/// ```
+///
+/// With `Verify` reading [`VerifyIn`] and writing [`IdentifyOut`] the same plugin compiles
+/// (`abi/sdk/tests/door_tests.rs`, `an_auth_plugin_wires_every_kind_op`).
+macro_rules! kind_slots {
+    ($($slot:ident => $in:ty, $out:ty;)*) => {$(
+        // SAFETY: the structs `Ops`' doc states for this slot.
+        unsafe impl super::sdk::door::KindSlot<{ slot::$slot }> for Ops {
+            type In = $in;
+            type Out = $out;
+        }
+    )*};
+}
+
+kind_slots! {
+    VERIFY => VerifyIn, IdentifyOut;
+    BEGIN_LOGIN => BeginLoginIn, BeginLoginOut;
+    COMPLETE_LOGIN => CompleteLoginIn, IdentifyOut;
+    OPEN_OUTBOUND => OpenOutboundIn, OpenOutboundOut;
+    OUTBOUND_READY => OutboundReadyIn, OutboundReadyOut;
+    FIELDS => FieldsIn, FieldsOut;
+}
