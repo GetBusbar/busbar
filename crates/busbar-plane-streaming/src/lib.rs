@@ -72,6 +72,7 @@ pub mod meta;
 pub mod oneshot;
 pub mod open_calls;
 pub mod plane;
+pub mod provider;
 pub mod register;
 pub mod session;
 pub mod tools;

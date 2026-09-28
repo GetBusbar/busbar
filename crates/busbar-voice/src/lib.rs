@@ -204,14 +204,12 @@ const VOICE_START: Option<busbar_kernel::plane::registry::BootHook> = None;
 /// ONE stable path (`busbar_voice::PLANE_KEY`) and the plane and the flip cannot drift onto two.
 pub use busbar_plane_streaming::codec::PLANE_KEY;
 
-/// THE DIALECT NAME this plane speaks first — OpenAI's bidirectional Realtime voice API. Named once
-/// here; it is the [`DECLS`] registry key and the FIRST of the plane's [`PLANE_HOOKS`] wire formats.
-pub const OPENAI_REALTIME: &str = "openai_realtime";
+/// The two dialect names this plane speaks (the streaming plane's own declarations): the [`DECLS`]
+/// registry key is the first, and both are the plane's [`PLANE_HOOKS`] wire formats.
+pub use busbar_plane_streaming::provider::{GEMINI_LIVE, OPENAI_REALTIME};
 
-/// THE SECOND DIALECT this plane speaks — Google's Gemini Live `BidiGenerateContent` API. Its codec is
-/// [`ir::GeminiLiveCodec`]; adding it to `VOICE_WIRE_FORMATS` is what EARNS the plane its superset IR
-/// (the A2A discipline — a plane earns a superset at its SECOND wire format and not before).
-pub const GEMINI_LIVE: &str = "gemini_live";
+// A dialect's provider address rules (the streaming plane's), read by the mount's provider dial.
+use busbar_plane_streaming::provider as plane_provider;
 
 /// THE TWO WIRE FORMATS this plane translates: OpenAI Realtime and Gemini Live. Its length (== 2) is
 /// what EARNS this plane a superset IR (`Plane::has_superset_ir` is DERIVED from this list's length),
