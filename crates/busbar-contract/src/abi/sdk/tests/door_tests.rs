@@ -831,3 +831,231 @@ fn an_auth_plugin_wires_every_kind_op() {
         assert!(s.is_some(), "auth kind op {i} is NULL");
     }
 }
+
+mod secret_plugin {
+    //! A REAL kind table: the secret kind's one op wired to the structs `abi::secret` states for
+    //! it.
+    use super::*;
+    use crate::abi::secret::{ResolveIn, ResolveOut};
+
+    macro_rules! answers {
+        ($name:ident, $in:ty, $out:ty, $outcome:expr) => {
+            pub struct $name;
+            impl Slot for $name {
+                type In = $in;
+                type Out = $out;
+                fn call(_: *mut c_void, _: &$in, _: &mut $out) -> Outcome {
+                    $outcome
+                }
+            }
+        };
+    }
+    answers!(Resolve, ResolveIn, ResolveOut, Outcome::Ready);
+
+    crate::plugin_door! {
+        ops: crate::abi::secret::Ops,
+        statement: crate::abi::sdk::door::statement("sdk-door-secret", "0.0.1", 1),
+        lifecycle: {
+            validate: Validate, open: Open, refresh: Refresh, retire: Retire, tick: Tick,
+            drive: Drive, cancel: Cancel, release: Release, close: Close,
+        },
+        kind_ops: {
+            resolve: Resolve,
+        },
+    }
+}
+
+#[test]
+fn a_secret_plugin_wires_every_kind_op() {
+    use crate::abi::secret::{slot as secret_slot, Ops, ResolveIn, ResolveOut};
+    // SAFETY: the macro's `'static` door and its secret table.
+    let d = unsafe { &*secret_plugin::door() };
+    let t = unsafe { &*d.ops.cast::<Ops>() };
+    assert_eq!(d.kind, KindCode::Secret as u32);
+    assert_eq!(d.kind_abi, crate::abi::secret::ABI_VERSION);
+    assert_eq!(t.head.slots, crate::abi::secret::SLOTS);
+    assert_eq!(t.head.size as usize, size_of::<Ops>());
+
+    // `resolve` answers only its own index, reading a whole `ResolveIn`.
+    // SAFETY: `ResolveIn` is plain data; all-zero is valid.
+    let mut input: ResolveIn = unsafe { std::mem::zeroed() };
+    input.head = in_head::<ResolveIn>(secret_slot::RESOLVE, Ticket::NONE);
+    // SAFETY: as above.
+    let mut out: ResolveOut = unsafe { std::mem::zeroed() };
+    out.head = prefilled_head(size_of::<ResolveOut>());
+    assert_eq!(call(t.resolve, &input, &mut out), Outcome::Ready);
+    assert_eq!(out.head.outcome.outcome(), Outcome::Ready);
+    input.head.op = secret_slot::RESOLVE + 1;
+    out.head = prefilled_head(size_of::<ResolveOut>());
+    assert_eq!(call(t.resolve, &input, &mut out), Outcome::Fault);
+
+    assert!(t.resolve.is_some(), "secret kind op resolve is NULL");
+}
+
+mod export_plugin {
+    //! A REAL kind table: every export kind op wired to the structs `abi::export` states for it.
+    use super::*;
+    use crate::abi::export::{
+        CheckIn, CheckOut, DeliverIn, ScrapeIn, ScrapeOut, ServeIn, ServeOut, StatusOut,
+    };
+
+    macro_rules! answers {
+        ($name:ident, $in:ty, $out:ty, $outcome:expr) => {
+            pub struct $name;
+            impl Slot for $name {
+                type In = $in;
+                type Out = $out;
+                fn call(_: *mut c_void, _: &$in, _: &mut $out) -> Outcome {
+                    $outcome
+                }
+            }
+        };
+    }
+    answers!(Deliver, DeliverIn, OutHead, Outcome::Ready);
+    answers!(Scrape, ScrapeIn, ScrapeOut, Outcome::Refused);
+    answers!(Status, InHead, StatusOut, Outcome::Ready);
+    answers!(Check, CheckIn, CheckOut, Outcome::Failed);
+    answers!(Serve, ServeIn, ServeOut, Outcome::Ready);
+
+    crate::plugin_door! {
+        ops: crate::abi::export::Ops,
+        statement: crate::abi::sdk::door::statement("sdk-door-export", "0.0.1", 1),
+        lifecycle: {
+            validate: Validate, open: Open, refresh: Refresh, retire: Retire, tick: Tick,
+            drive: Drive, cancel: Cancel, release: Release, close: Close,
+        },
+        kind_ops: {
+            deliver: Deliver, scrape: Scrape, status: Status, check: Check, serve: Serve,
+        },
+    }
+}
+
+#[test]
+fn an_export_plugin_wires_every_kind_op() {
+    use crate::abi::export::{slot as export_slot, DeliverIn, Ops, ServeIn, ServeOut};
+    // SAFETY: the macro's `'static` door and its export table.
+    let d = unsafe { &*export_plugin::door() };
+    let t = unsafe { &*d.ops.cast::<Ops>() };
+    assert_eq!(d.kind, KindCode::Export as u32);
+    assert_eq!(d.kind_abi, crate::abi::export::ABI_VERSION);
+    assert_eq!(t.head.slots, crate::abi::export::SLOTS);
+    assert_eq!(t.head.size as usize, size_of::<Ops>());
+
+    // `deliver` answers only its own index, reading a whole `DeliverIn`.
+    // SAFETY: `DeliverIn` is plain data; all-zero is valid.
+    let mut input: DeliverIn = unsafe { std::mem::zeroed() };
+    input.head = in_head::<DeliverIn>(export_slot::DELIVER, Ticket::NONE);
+    let mut out: OutHead = prefilled_head(size_of::<OutHead>());
+    assert_eq!(call(t.deliver, &input, &mut out), Outcome::Ready);
+    assert_eq!(out.outcome.outcome(), Outcome::Ready);
+    input.head.op = export_slot::SCRAPE;
+    out = prefilled_head(size_of::<OutHead>());
+    assert_eq!(call(t.deliver, &input, &mut out), Outcome::Fault);
+
+    // `serve`, the last slot, likewise.
+    // SAFETY: plain data; all-zero is valid.
+    let mut input: ServeIn = unsafe { std::mem::zeroed() };
+    input.head = in_head::<ServeIn>(export_slot::SERVE, Ticket::NONE);
+    // SAFETY: as above.
+    let mut out: ServeOut = unsafe { std::mem::zeroed() };
+    out.head = prefilled_head(size_of::<ServeOut>());
+    assert_eq!(call(t.serve, &input, &mut out), Outcome::Ready);
+    assert_eq!(out.head.outcome.outcome(), Outcome::Ready);
+    for (i, s) in [t.deliver, t.scrape, t.status, t.check, t.serve]
+        .iter()
+        .enumerate()
+    {
+        assert!(s.is_some(), "export kind op {i} is NULL");
+    }
+}
+
+mod hook_plugin {
+    //! A REAL kind table: every hook kind op wired to the structs `abi::hook` states for it.
+    use super::*;
+    use crate::abi::hook::{
+        ConfigureIn, ConfigureOut, DecideIn, DecideOut, DescribeOut, NotifyIn, ServeIn, ServeOut,
+        StatusOut, TransformOut,
+    };
+
+    macro_rules! answers {
+        ($name:ident, $in:ty, $out:ty, $outcome:expr) => {
+            pub struct $name;
+            impl Slot for $name {
+                type In = $in;
+                type Out = $out;
+                fn call(_: *mut c_void, _: &$in, _: &mut $out) -> Outcome {
+                    $outcome
+                }
+            }
+        };
+    }
+    answers!(Decide, DecideIn, DecideOut, Outcome::Ready);
+    answers!(Transform, DecideIn, TransformOut, Outcome::Refused);
+    answers!(Notify, NotifyIn, OutHead, Outcome::Ready);
+    answers!(Configure, ConfigureIn, ConfigureOut, Outcome::Failed);
+    answers!(Status, InHead, StatusOut, Outcome::Ready);
+    answers!(Describe, InHead, DescribeOut, Outcome::Ready);
+    answers!(Serve, ServeIn, ServeOut, Outcome::Ready);
+
+    crate::plugin_door! {
+        ops: crate::abi::hook::Ops,
+        statement: crate::abi::sdk::door::statement("sdk-door-hook", "0.0.1", 1),
+        lifecycle: {
+            validate: Validate, open: Open, refresh: Refresh, retire: Retire, tick: Tick,
+            drive: Drive, cancel: Cancel, release: Release, close: Close,
+        },
+        kind_ops: {
+            decide: Decide, transform: Transform, notify: Notify, configure: Configure,
+            status: Status, describe: Describe, serve: Serve,
+        },
+    }
+}
+
+#[test]
+fn a_hook_plugin_wires_every_kind_op() {
+    use crate::abi::hook::{slot as hook_slot, DecideIn, DecideOut, Ops, ServeIn, ServeOut};
+    // SAFETY: the macro's `'static` door and its hook table.
+    let d = unsafe { &*hook_plugin::door() };
+    let t = unsafe { &*d.ops.cast::<Ops>() };
+    assert_eq!(d.kind, KindCode::Hook as u32);
+    assert_eq!(d.kind_abi, crate::abi::hook::ABI_VERSION);
+    assert_eq!(t.head.slots, crate::abi::hook::SLOTS);
+    assert_eq!(t.head.size as usize, size_of::<Ops>());
+
+    // `decide` answers only its own index, reading a whole `DecideIn`.
+    // SAFETY: `DecideIn` is plain data; all-zero is valid.
+    let mut input: DecideIn = unsafe { std::mem::zeroed() };
+    input.head = in_head::<DecideIn>(hook_slot::DECIDE, Ticket::NONE);
+    // SAFETY: as above.
+    let mut out: DecideOut = unsafe { std::mem::zeroed() };
+    out.head = prefilled_head(size_of::<DecideOut>());
+    assert_eq!(call(t.decide, &input, &mut out), Outcome::Ready);
+    assert_eq!(out.head.outcome.outcome(), Outcome::Ready);
+    input.head.op = hook_slot::TRANSFORM;
+    out.head = prefilled_head(size_of::<DecideOut>());
+    assert_eq!(call(t.decide, &input, &mut out), Outcome::Fault);
+
+    // `serve`, the last slot, likewise.
+    // SAFETY: plain data; all-zero is valid.
+    let mut input: ServeIn = unsafe { std::mem::zeroed() };
+    input.head = in_head::<ServeIn>(hook_slot::SERVE, Ticket::NONE);
+    // SAFETY: as above.
+    let mut out: ServeOut = unsafe { std::mem::zeroed() };
+    out.head = prefilled_head(size_of::<ServeOut>());
+    assert_eq!(call(t.serve, &input, &mut out), Outcome::Ready);
+    assert_eq!(out.head.outcome.outcome(), Outcome::Ready);
+    for (i, s) in [
+        t.decide,
+        t.transform,
+        t.notify,
+        t.configure,
+        t.status,
+        t.describe,
+        t.serve,
+    ]
+    .iter()
+    .enumerate()
+    {
+        assert!(s.is_some(), "hook kind op {i} is NULL");
+    }
+}
