@@ -1,0 +1,282 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+
+//! THE STORE'S MONEY SLOTS: `reserve`, `slice_release`, the three coalesced batches and the cap
+//! input, transcribed from the BINDING ARCHITECT RULING in `m3-inputs.md`, "store v3 money slots"
+//! (2026-09-28), and its "window caps" ruling. The model is `slice.rs`: a draw is (bucket,
+//! dimension, wanted, epoch); dimension ∈ {NanoUnits, Requests, Concurrency, Class(key)}; a chain
+//! draw is all or nothing.
+//!
+//! DEDUPE, the same on every slot here: the module rule in [`super`] ("Dedupe"). The same `op_id`
+//! with the same body returns the ORIGINAL `out` and applies nothing, durably across a store
+//! restart, for at least [`super::OP_ID_RETENTION_SECS`]; with a different body it is REFUSED with
+//! [`super::DIAG_OPID_CONFLICT`] and never applied.
+
+use crate::abi::mechanism::call::{AbiStr, Blob, InHead, OutHead};
+
+/// An operation id: 16 bytes, the minting node's id (bytes 0..8) then that node's monotonic
+/// counter (bytes 8..16), both little-endian. Minted by the KERNEL, one per `reserve`, one per
+/// `slice_release`, one per coalesced batch (m3-inputs "store v3 money slots", `OpId`). A store
+/// treats it as opaque bytes and dedupes on it.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct OpId(pub [u8; 16]);
+
+impl OpId {
+    /// The id for `(node, counter)`.
+    #[must_use]
+    pub const fn from_parts(node: u64, counter: u64) -> Self {
+        let n = node.to_le_bytes();
+        let c = counter.to_le_bytes();
+        Self([
+            n[0], n[1], n[2], n[3], n[4], n[5], n[6], n[7], c[0], c[1], c[2], c[3], c[4], c[5],
+            c[6], c[7],
+        ])
+    }
+
+    /// The minting node's id.
+    #[must_use]
+    pub const fn node(self) -> u64 {
+        let b = self.0;
+        u64::from_le_bytes([b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]])
+    }
+
+    /// The node's counter.
+    #[must_use]
+    pub const fn counter(self) -> u64 {
+        let b = self.0;
+        u64::from_le_bytes([b[8], b[9], b[10], b[11], b[12], b[13], b[14], b[15]])
+    }
+}
+
+/// [`UnitCell::dimension`]: money, in nano-units (`CapDimension::NanoUnits`).
+pub const DIM_NANO_UNITS: u32 = 0;
+/// [`UnitCell::dimension`]: the admission counter (`CapDimension::Requests`).
+pub const DIM_REQUESTS: u32 = 1;
+/// [`UnitCell::dimension`]: the live gauge (`CapDimension::Concurrent`).
+pub const DIM_CONCURRENCY: u32 = 2;
+/// [`UnitCell::dimension`]: a declared meter class, keyed by [`UnitCell::class_key`]
+/// (`CapDimension::Class`).
+pub const DIM_CLASS: u32 = 3;
+
+/// One cell of a draw: THE fixed `bb_units[]` element (m3-inputs "store v3 money slots",
+/// `UnitCell`). `(bucket, pool, dimension, class_key)` names the cell; `amount` is how much.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct UnitCell {
+    /// The bucket id.
+    pub bucket: AbiStr,
+    /// The pool the bucket is scoped to; absent = `BucketScope::All`.
+    pub pool: AbiStr,
+    /// [`DIM_NANO_UNITS`] | [`DIM_REQUESTS`] | [`DIM_CONCURRENCY`] | [`DIM_CLASS`].
+    pub dimension: u32,
+    /// Alignment padding.
+    pub _r: u32,
+    /// The meter class key; present only for [`DIM_CLASS`].
+    pub class_key: AbiStr,
+    /// How much is wanted.
+    pub amount: u64,
+}
+
+/// What one cell drew (m3-inputs "store v3 money slots", `reserve` out, `CellGrant`).
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct CellGrant {
+    /// The store's handle for the slice, spoken back on `slice_release`.
+    pub slice_id: u64,
+    /// How much was granted: `0 < granted ≤` the cell's `amount`.
+    pub granted: u64,
+    /// When the node must stop drawing against it (ms).
+    pub valid_until_ms: u64,
+}
+
+/// [`ReserveOut::reason`]: granted (READY).
+pub const RESERVE_OK: u32 = 0;
+/// [`ReserveOut::reason`]: a cell's window has no headroom (`SliceError::Exhausted`).
+pub const RESERVE_EXHAUSTED: u32 = 1;
+/// [`ReserveOut::reason`]: the node's epoch is behind the fleet's (`SliceError::StaleEpoch`).
+pub const RESERVE_STALE_EPOCH: u32 = 2;
+/// [`ReserveOut::reason`]: the store could not be reached (`SliceError::Unavailable`).
+pub const RESERVE_UNAVAILABLE: u32 = 3;
+/// [`ReserveOut::reason`]: a cell names a window no `window_caps` cap was pushed for — never an
+/// implicit unlimited (m3-inputs ARCHITECT ruling "window caps", reason 4 `NoCap`).
+pub const RESERVE_NO_CAP: u32 = 4;
+
+/// `reserve`'s `in` (m3-inputs "store v3 money slots", `reserve`; `window_start` per the
+/// "window caps" ruling). Request path, may pend, [`DeadlineClass::Call`](crate::abi::mechanism::call::DeadlineClass::Call).
+///
+/// Each cell draws from its `(bucket, pool, dimension, class_key, window_start)` slot, capped by
+/// the cap `window_caps` last set for it. ATOMIC: if ANY cell would grant 0, the store applies
+/// NOTHING and answers FAILED with a [`ReserveOut::reason`] and `grants_len == 0`. A node-local
+/// store (Statement tail `ephemeral`) holds one constant epoch and never answers
+/// [`RESERVE_STALE_EPOCH`] (store_adapter.rs module doc, "Slices"). Deduped on `op_id`.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct ReserveIn {
+    /// The head.
+    pub head: InHead,
+    /// The kernel-minted id of this reserve.
+    pub op_id: OpId,
+    /// The epoch the node believes it is in.
+    pub epoch: u64,
+    /// The window every cell draws from (ms), named BY THE CALLER ("window caps" ruling).
+    pub window_start: u64,
+    /// The cells.
+    pub cells: *const UnitCell,
+    /// How many.
+    pub cells_len: usize,
+}
+
+/// `reserve`'s `out` (m3-inputs "store v3 money slots", `reserve`).
+///
+/// `grants` is a HOST-owned array of `cells_len` [`CellGrant`]s (mechanism memory class (i)); on
+/// READY the store writes one grant per cell, in cell order, and `grants_len == cells_len`. On
+/// FAILED `grants_len == 0` and `reason` is one of [`RESERVE_EXHAUSTED`], [`RESERVE_STALE_EPOCH`],
+/// [`RESERVE_UNAVAILABLE`], [`RESERVE_NO_CAP`].
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct ReserveOut {
+    /// The head.
+    pub head: OutHead,
+    /// The host's grant array, capacity `cells_len`.
+    pub grants: *mut CellGrant,
+    /// How many grants were written: `cells_len` on READY, `0` on FAILED.
+    pub grants_len: usize,
+    /// [`RESERVE_OK`] or the refusal reason.
+    pub reason: u32,
+    /// Alignment padding.
+    pub _reserved: u32,
+}
+
+/// One slice handed back (m3-inputs "store v3 money slots", `slice_release` items).
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct ReleaseItem {
+    /// The slice, as `reserve` granted it; the slice already knows its window.
+    pub slice_id: u64,
+    /// How much of it the node did not spend.
+    pub unspent: u64,
+}
+
+/// `slice_release`'s `in` (m3-inputs "store v3 money slots", `slice_release`). Request-path exit,
+/// may pend, [`DeadlineClass::Call`](crate::abi::mechanism::call::DeadlineClass::Call). Deduped on
+/// `op_id`.
+///
+/// CLAMPED: the store returns to each slice at most what that slice has left, never more than it
+/// granted.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct SliceReleaseIn {
+    /// The head.
+    pub head: InHead,
+    /// The kernel-minted id of this release.
+    pub op_id: OpId,
+    /// The epoch the node believes it is in.
+    pub epoch: u64,
+    /// The items.
+    pub items: *const ReleaseItem,
+    /// How many.
+    pub items_len: usize,
+}
+
+/// `slice_release`'s `out` (m3-inputs "store v3 money slots", `slice_release`). `released` is a
+/// HOST-owned array of `items_len` amounts; on READY the store writes, per item in order, the
+/// amount it actually took back after clamping.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct SliceReleaseOut {
+    /// The head.
+    pub head: OutHead,
+    /// The host's array, capacity `items_len`.
+    pub released: *mut u64,
+}
+
+/// One cell of the token ledger and its signed delta: the fixed (bucket, window) plus the tree's
+/// `UsageDelta` shape as a JSON blob with the #81 scale discriminator (B.1 "Record blobs").
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct UsageCell {
+    /// The bucket id (a key's own bucket or a budget-group bucket).
+    pub bucket: AbiStr,
+    /// The window start.
+    pub window_start: u64,
+    /// The `UsageDelta`.
+    pub delta: Blob,
+}
+
+/// `add_usage_batch`'s `in` (m3-inputs "store v3 money slots", batch ops; B.1 "Slots", "Writes").
+/// Off path, may pend, [`DeadlineClass::WriteBehind`](crate::abi::mechanism::call::DeadlineClass::WriteBehind).
+/// ONE `op_id` per coalesced batch; the cells apply in batch order, atomically per batch.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct AddUsageBatchIn {
+    /// The head.
+    pub head: InHead,
+    /// The kernel-minted id of this batch.
+    pub op_id: OpId,
+    /// The cells, in batch order.
+    pub cells: *const UsageCell,
+    /// How many.
+    pub cells_len: usize,
+}
+
+/// `add_metering_batch`'s and `append_audit_batch`'s `in` (m3-inputs "store v3 money slots",
+/// batch ops; B.1 "Slots", "Writes"): ONE `op_id` per coalesced batch and the records in batch
+/// order (`MeteringDelta`s or `AuditRecord`s, the tree's shapes with the scale discriminator),
+/// applied in order, atomically per batch. Off path, may pend,
+/// [`DeadlineClass::WriteBehind`](crate::abi::mechanism::call::DeadlineClass::WriteBehind).
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct OpBlobsIn {
+    /// The head.
+    pub head: InHead,
+    /// The kernel-minted id of this batch.
+    pub op_id: OpId,
+    /// The records, in batch order.
+    pub records: *const Blob,
+    /// How many.
+    pub records_len: usize,
+}
+
+/// One window's cap (m3-inputs ARCHITECT ruling "window caps", `WindowCap`).
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct WindowCap {
+    /// The bucket id.
+    pub bucket: AbiStr,
+    /// The pool scope; absent = `BucketScope::All`.
+    pub pool: AbiStr,
+    /// As [`UnitCell::dimension`].
+    pub dimension: u32,
+    /// Alignment padding.
+    pub _r: u32,
+    /// The meter class key; present only for [`DIM_CLASS`].
+    pub class_key: AbiStr,
+    /// The window this cap bounds (ms).
+    pub window_start: u64,
+    /// The cap.
+    pub cap: u64,
+    /// The configuration generation the cap was read from.
+    pub config_gen: u64,
+}
+
+/// `window_caps`' `in` (m3-inputs ARCHITECT ruling "window caps"). Off path, may pend,
+/// [`DeadlineClass::Call`](crate::abi::mechanism::call::DeadlineClass::Call). Deduped on `op_id`.
+///
+/// An UPSERT keyed by `(bucket, pool, dimension, class_key, window_start)`: a HIGHER `config_gen`
+/// replaces the cap (an operator's mid-window change takes effect, as 1.5.5 read caps from live
+/// config); an EQUAL `config_gen` with a different cap is REFUSED with
+/// [`super::DIAG_CAP_CONFLICT`]; a LOWER one is ignored. The kernel pushes caps at `open`/`refresh`
+/// and BEFORE the first `reserve` of each new window.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct WindowCapsIn {
+    /// The head.
+    pub head: InHead,
+    /// The kernel-minted id of this push.
+    pub op_id: OpId,
+    /// The caps.
+    pub caps: *const WindowCap,
+    /// How many.
+    pub caps_len: usize,
+}

@@ -199,7 +199,7 @@ pin!(
     _reserved = 100
 );
 pin!(ReleaseIn, 96, 8, head = 0, lease = 88);
-pin!(crate::abi::store::Ops, 80, 8, head = 0);
+pin!(crate::abi::store::Ops, 456, 8, head = 0);
 pin!(crate::abi::secret::Ops, 88, 8, head = 0, resolve = 80,);
 pin!(
     crate::abi::secret::ResolveIn,
