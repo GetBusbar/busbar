@@ -155,17 +155,21 @@ served_leg() {
   ports="$(free_port_pair)"; [ -n "$ports" ] || { red "served: no free port pair"; return; }
   port="$ports"; admin=$((port + 1))
   fix="$(mktemp -d "${TMPDIR:-/tmp}/jev-conformance.XXXXXX")" || return
-  printf '{}\n' >"$fix/providers.yaml"
-  # One decision provider on the one dialect this plane speaks, and one model on it. The far end
-  # is a closed loopback port: this leg asks whether busbar SERVES the operation, and a served
+  # One decision provider on the one dialect this plane speaks, and one model on it. The catalog
+  # entry carries the connection and the dialect; the config entry carries the credential. The far
+  # end is a closed loopback port: this leg asks whether busbar SERVES the operation, and a served
   # route answers before any far end is reached or refuses in its own words when it cannot be.
+  cat >"$fix/providers.yaml" <<EOF
+typesafe:
+  protocol: jev
+  base_url: http://127.0.0.1:9
+  error_map: {}
+EOF
   cat >"$fix/config.yaml" <<EOF
 listen: "127.0.0.1:$port"
 admin_listen: "127.0.0.1:$admin"
 providers:
   typesafe:
-    base_url: "http://127.0.0.1:9"
-    protocol: jev
     api_key: { env: JEV_CONFORMANCE_KEY }
 models: {}
 decisions:
