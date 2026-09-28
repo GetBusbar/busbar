@@ -6,8 +6,12 @@
 //! statics, and ships RED tests, one per rule, each failing if its check is removed. M1's
 //! dispatcher calls it; no host re-implements it." Nothing dispatches through this yet (M3-wire);
 //! this is the validator M1 will call.
+//!
+//! SEH FIX-FORWARD RULING H4 (ARCHITECT, 2026-09-27): a lease (memory class iv) is required
+//! exactly when a READY answer carries material, and forbidden when it does not; `error_kind` must
+//! stay in the known `0..=5` range and must be `ERROR_KIND_UNSET` on a READY answer.
 
-use super::{ResolveOut, ERROR_KIND_UNSET};
+use super::{ResolveOut, ERROR_KIND_INTERNAL, ERROR_KIND_UNSET};
 use crate::abi::mechanism::call::Outcome;
 
 /// Why a validator refused an `out` — FAULT, never a safe default
@@ -34,16 +38,38 @@ pub fn check_resolve(out: &ResolveOut) -> Result<(), Fault> {
     if out.secret.len as u64 > HARD_MAX_BYTES {
         return Err(Fault("resolve: secret.len exceeds the hard max"));
     }
+    // H4: error_kind must stay in the known 0..=5 range.
+    if out.error_kind as u64 > ERROR_KIND_INTERNAL as u64 {
+        return Err(Fault("resolve: error_kind exceeds the known 0..=5 range"));
+    }
+    let ready = out.head.outcome.0 == (Outcome::Ready as u8);
+    let failed = out.head.outcome.0 == (Outcome::Failed as u8);
+    // H4: error_kind must be 0 (UNSET) on a READY answer.
+    if ready && out.error_kind != ERROR_KIND_UNSET {
+        return Err(Fault("resolve: a READY answer must not set error_kind"));
+    }
     // Secret-bearing answers are ALWAYS secret on the host side (ruling): a FAILED answer must
     // never carry material — no plugin-set "sensitive" flag decides this.
-    if out.head.outcome.0 == (Outcome::Failed as u8) && !out.secret.ptr.is_null() {
+    if failed && !out.secret.ptr.is_null() {
         return Err(Fault(
             "resolve: a FAILED answer must not carry a secret blob",
         ));
     }
     // A FAILED answer's error_kind must be set (UNSET is reserved for a Ready answer).
-    if out.head.outcome.0 == (Outcome::Failed as u8) && out.error_kind == ERROR_KIND_UNSET {
+    if failed && out.error_kind == ERROR_KIND_UNSET {
         return Err(Fault("resolve: a FAILED answer must set error_kind"));
+    }
+    // H4: a lease (class iv) is required exactly when a READY answer carries material.
+    let has_material = out.secret.len > 0;
+    if ready && has_material && out.head.lease == 0 {
+        return Err(Fault(
+            "resolve: a READY answer with secret material must set a non-zero lease",
+        ));
+    }
+    if ready && !has_material && out.head.lease != 0 {
+        return Err(Fault(
+            "resolve: a READY answer with no secret material must not set a lease",
+        ));
     }
     Ok(())
 }
@@ -114,6 +140,7 @@ mod tests {
         out.secret.ptr = &byte as *const u8;
         out.secret.len = (HARD_MAX_BYTES + 1) as usize;
         out.secret.flags = BLOB_SECRET;
+        out.head.lease = 1;
         assert_eq!(
             check_resolve(&out),
             Err(Fault("resolve: secret.len exceeds the hard max"))
@@ -146,6 +173,59 @@ mod tests {
         assert_eq!(
             check_resolve(&out),
             Err(Fault("resolve: a FAILED answer must set error_kind"))
+        );
+    }
+
+    /// H4 RED: `error_kind` past the known `0..=5` range is FAULT, even on a well-formed FAILED
+    /// answer.
+    #[test]
+    fn error_kind_out_of_range_faults() {
+        let mut out = base_out();
+        out.head.outcome = RawOutcome(Outcome::Failed as u8);
+        out.error_kind = ERROR_KIND_INTERNAL + 1;
+        assert_eq!(
+            check_resolve(&out),
+            Err(Fault("resolve: error_kind exceeds the known 0..=5 range"))
+        );
+    }
+
+    /// H4 RED: a READY answer must not set `error_kind`.
+    #[test]
+    fn ready_with_error_kind_faults() {
+        let mut out = base_out();
+        out.error_kind = super::super::ERROR_KIND_UNAVAILABLE;
+        assert_eq!(
+            check_resolve(&out),
+            Err(Fault("resolve: a READY answer must not set error_kind"))
+        );
+    }
+
+    /// H4 RED: a READY answer with secret material but no lease is FAULT.
+    #[test]
+    fn ready_with_material_without_lease_faults() {
+        let byte = 0u8;
+        let mut out = base_out();
+        out.secret.ptr = &byte as *const u8;
+        out.secret.len = 1;
+        out.head.lease = 0;
+        assert_eq!(
+            check_resolve(&out),
+            Err(Fault(
+                "resolve: a READY answer with secret material must set a non-zero lease"
+            ))
+        );
+    }
+
+    /// H4 RED: a READY answer with no secret material must not set a lease.
+    #[test]
+    fn ready_with_no_material_with_lease_faults() {
+        let mut out = base_out();
+        out.head.lease = 7;
+        assert_eq!(
+            check_resolve(&out),
+            Err(Fault(
+                "resolve: a READY answer with no secret material must not set a lease"
+            ))
         );
     }
 }
