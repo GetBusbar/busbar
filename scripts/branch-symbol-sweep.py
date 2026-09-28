@@ -62,7 +62,9 @@ LEDGER_SCHEMA = 1
 # ---------------------------------------------------------------------------
 
 DOC_SUFFIXES = (".md", ".markdown", ".mdx", ".rst", ".adoc")
-DOC_PREFIXES = ("docs/",)
+# qa/evidence/ holds the audit evidence docs/design used to (moved by 77f03334c): a record of
+# what was measured, not an implementation, so a symbol only it names is still docs-only.
+DOC_PREFIXES = ("docs/", "qa/evidence/")
 
 # true binaries: tokenising these yields nonsense, and nonsense in the HAYSTACK would
 # manufacture false HARVESTEDs.
