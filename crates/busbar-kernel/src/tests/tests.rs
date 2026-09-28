@@ -749,6 +749,32 @@ fn store_plugin_with_plugins_disabled_is_boot_error_naming_the_flag() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// `plugins.logs` is refused at the one pre-flight seam every path runs (boot, `--validate`, reload,
+/// apply), naming its key: a level word that names no level, and a zero rotation size.
+#[test]
+fn a_bad_plugins_logs_value_is_refused_naming_its_key() {
+    let mut cfg = crate::config::PluginsCfg::default();
+    cfg.logs.level = Some("loud".into());
+    let run = |cfg: &crate::config::PluginsCfg| {
+        crate::plugins_preflight(
+            None,
+            None,
+            &Default::default(),
+            &Default::default(),
+            cfg,
+            &Default::default(),
+        )
+    };
+    let err = run(&cfg).unwrap_err();
+    assert!(err.contains("plugins.logs.level"), "{err}");
+    cfg.logs.level = Some("debug".into());
+    cfg.logs.rotate_mb = Some(0);
+    let err = run(&cfg).unwrap_err();
+    assert!(err.contains("plugins.logs.rotate_mb"), "{err}");
+    cfg.logs.rotate_mb = Some(8);
+    assert!(run(&cfg).is_ok(), "a good block passes");
+}
+
 /// DROP-IS-INERT: plugins present in the directory but `plugins.enabled: false` (store: memory) —
 /// boot succeeds with an EMPTY registry; nothing in the dir is even considered.
 #[test]

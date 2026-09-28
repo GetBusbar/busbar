@@ -317,6 +317,13 @@ tower = "0.5"
 tracing = "0.1.44"
 tracing-core = "0.1"
 tracing-subscriber = "0.3.23"
+tracing-log = { version = "0.2", default-features = false, features = ["log-tracer", "std"] }
+# The plugin-logging witness's libraries (plugin-loader's `log_witness_plugin` fixture): a plugin logs
+# through these from inside a call, and the door's capture must carry it. All three are already in
+# the lock.
+h2 = "0.4"
+log = "0.4"
+tungstenite = { version = "0.29", default-features = false }
 # The WHATWG URL parser, named under its OWN name: every `reqwest::Url` in the tree was this crate
 # under reqwest's re-export alias, and the egress-symmetry sweep spells the dependency honestly.
 # Already in the lock (reqwest, a2a-lf and friends all resolve it).

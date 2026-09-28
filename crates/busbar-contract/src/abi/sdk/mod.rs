@@ -43,6 +43,8 @@ pub mod transport;
 // every slot a catch_unwind trampoline (`plugin_door!` / `export_door!`).
 pub mod door;
 pub use crate::{export_door, plugin_door};
+// THE CALL CAPTURE: what a plugin logs during a call rides its reply as diagnostics (#85).
+pub mod capture;
 
 // The `#[macro_export]` export macros, named at this module's path too, so a plugin writes
 // `busbar_contract::abi::sdk::export_store_plugin!` exactly where it wrote

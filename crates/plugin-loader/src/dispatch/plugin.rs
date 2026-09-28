@@ -22,6 +22,12 @@
 //! index is out of range, or whose severity is not 0..=2, is dropped. What survives goes to the
 //! [`EnvelopeSink`], which names no kernel type. Each drop is reported to the sink as [`Dropped`].
 //!
+//! PLUGIN LOGGING rides the same envelope: a [`DIAG_LOG`] entry is a log record the plugin emitted
+//! during the call (severity 0..=4), and a [`DIAG_LOG_DROPPED`] entry counts the records its own
+//! capture could not keep. The host bounds the records of one reply at [`MAX_LOG_RECORDS`] and
+//! [`MAX_LOG_BYTES`]; whatever is over, plus what the plugin counted, is ONE
+//! [`Dropped::Logs`] per reply. The sink writes the rest to the plugin's own log file.
+//!
 //! `max_inflight`. The Statement's figure, clamped by the host to `1..=`[`Bind::max_inflight_cap`].
 //! Every op holds one unit from submission to completion (driver tickets hold none); over the cap
 //! the op answers REFUSED and the plugin is never called.
@@ -34,8 +40,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use busbar_contract::abi::mechanism::call::{
-    AbiStr, DeadlineClass, Diag, InHead, MetricEntry, Op, OutHead, Outcome, RawOutcome, METRIC_ADD,
-    METRIC_OBSERVE, METRIC_SET,
+    AbiStr, DeadlineClass, Diag, InHead, MetricEntry, Op, OutHead, Outcome, RawOutcome, DIAG_LOG,
+    DIAG_LOG_DROPPED, METRIC_ADD, METRIC_OBSERVE, METRIC_SET, SEVERITY_ERROR, SEVERITY_TRACE,
 };
 use busbar_contract::abi::mechanism::door::{FAMILY_COUNTER, FAMILY_GAUGE, FAMILY_HISTOGRAM};
 use busbar_contract::abi::mechanism::lifecycle::{slot, OpenIn, OpenOut};
@@ -49,9 +55,14 @@ use super::{validate, Frame, InFrame, Kind, OutFrame};
 use busbar_contract::abi::mechanism::check::Fault;
 
 /// The most entries one envelope array may carry; a longer array is dropped whole.
-pub const MAX_ENVELOPE_ENTRIES: usize = 256;
+pub const MAX_ENVELOPE_ENTRIES: usize = busbar_contract::abi::mechanism::call::MAX_ENVELOPE_ENTRIES;
 /// The most bytes of error or diagnostic text the host copies; longer text is cut.
-pub const MAX_TEXT: usize = 4096;
+pub const MAX_TEXT: usize = busbar_contract::abi::mechanism::call::MAX_TEXT;
+/// The most log records the host keeps from one reply; the rest count as [`Dropped::Logs`].
+pub const MAX_LOG_RECORDS: usize = 128;
+/// The most bytes of log-record text the host keeps from one reply; the record that would pass it,
+/// and every one after, count as [`Dropped::Logs`].
+pub const MAX_LOG_BYTES: usize = 64 * 1024;
 
 /// One ingested metric, borrowed for the duration of [`EnvelopeSink::metric`]: copy what you keep.
 #[derive(Debug, Clone, Copy)]
@@ -69,9 +80,11 @@ pub struct Metric<'a> {
 /// One ingested diagnostic, borrowed for the duration of [`EnvelopeSink::diag`].
 #[derive(Debug, Clone, Copy)]
 pub struct Diagnostic<'a> {
-    /// The id's index in the Statement.
+    /// The id's index in the Statement, or [`DIAG_LOG`] for a log record.
     pub id: u32,
-    /// `0` info, `1` warn, `2` error.
+    /// The declared id's name; empty for a log record.
+    pub name: &'a [u8],
+    /// `0` info, `1` warn, `2` error; a log record may also be `3` debug or `4` trace.
     pub severity: u8,
     /// The text (at most [`MAX_TEXT`] bytes).
     pub text: &'a [u8],
@@ -95,8 +108,11 @@ pub enum Dropped {
     LabelCount(u32),
     /// A diagnostic's id index is out of range.
     DiagOutOfRange(u32),
-    /// A diagnostic's severity is not 0..=2.
+    /// A diagnostic's severity is not 0..=2 (0..=4 for a log record).
     Severity(u32),
+    /// Log records of one reply the host did not keep: those over its bound, plus those the
+    /// plugin's own capture counted as dropped. At most one per reply.
+    Logs(u64),
     /// An array is NULL with a non-zero length, or longer than [`MAX_ENVELOPE_ENTRIES`].
     BadArray,
 }
@@ -232,7 +248,7 @@ pub(crate) struct Instance {
     name: String,
     slots: Box<[Op]>,
     families: Box<[FamilyShape]>,
-    diag_ids: usize,
+    diag_ids: DiagIds,
     ptr: AtomicPtr<c_void>,
     pub(crate) faulted: AtomicBool,
     /// `close` answered READY: every later op answers FAULT without a crossing.
@@ -265,6 +281,35 @@ pub(crate) struct Instance {
     tables: Tables,
     /// Last: the library outlives everything above.
     _lib: Option<Lib>,
+}
+
+/// The Statement's declared diagnostic ids: `'static` door data, alive while the instance holds its
+/// library, read when a diagnostic names one.
+struct DiagIds {
+    ptr: *const AbiStr,
+    len: usize,
+}
+// SAFETY: the ids are immutable `'static` door data, only ever read.
+unsafe impl Send for DiagIds {}
+unsafe impl Sync for DiagIds {}
+
+impl DiagIds {
+    fn name(&self, idx: u32) -> Option<&[u8]> {
+        let i = idx as usize;
+        if i >= self.len {
+            return None;
+        }
+        // SAFETY: `validate` checked `diag_ids` holds `diag_ids_len` entries.
+        str_bytes(unsafe { self.ptr.add(i).read_unaligned() })
+    }
+}
+
+/// What one reply's log records have used of the host's bound.
+#[derive(Default)]
+struct LogBudget {
+    records: usize,
+    bytes: usize,
+    dropped: u64,
 }
 
 /// The gate bit `close` holds.
@@ -526,9 +571,13 @@ impl Instance {
             None => self.sink.dropped(Dropped::BadArray),
         }
         let diags = unsafe { array(env.diags, env.diags_len) };
+        let mut budget = LogBudget::default();
         match diags {
-            Some(ds) => ds.iter().for_each(|d| self.diag(d)),
+            Some(ds) => ds.iter().for_each(|d| self.diag(d, &mut budget)),
             None => self.sink.dropped(Dropped::BadArray),
+        }
+        if budget.dropped > 0 {
+            self.sink.dropped(Dropped::Logs(budget.dropped));
         }
     }
 
@@ -573,18 +622,56 @@ impl Instance {
         });
     }
 
-    fn diag(&self, d: &Diag) {
-        if d.id_idx as usize >= self.diag_ids {
-            return self.sink.dropped(Dropped::DiagOutOfRange(d.id_idx));
+    fn diag(&self, d: &Diag, budget: &mut LogBudget) {
+        match d.id_idx {
+            DIAG_LOG_DROPPED => {
+                // What the plugin's capture could not keep; malformed text counts as one.
+                let n = str_bytes(d.text)
+                    .and_then(|t| std::str::from_utf8(t).ok())
+                    .and_then(|t| t.parse::<u64>().ok())
+                    .unwrap_or(1);
+                budget.dropped = budget.dropped.saturating_add(n);
+            }
+            DIAG_LOG => self.log(d, budget),
+            id => {
+                let Some(name) = self.diag_ids.name(id) else {
+                    return self.sink.dropped(Dropped::DiagOutOfRange(id));
+                };
+                if d.severity > SEVERITY_ERROR {
+                    return self.sink.dropped(Dropped::Severity(id));
+                }
+                let Some(text) = str_bytes(d.text) else {
+                    return self.sink.dropped(Dropped::BadArray);
+                };
+                self.sink.diag(Diagnostic {
+                    id,
+                    name,
+                    severity: d.severity,
+                    text,
+                });
+            }
         }
-        if d.severity > 2 {
-            return self.sink.dropped(Dropped::Severity(d.id_idx));
+    }
+
+    /// One log record, inside the reply's [`LogBudget`].
+    fn log(&self, d: &Diag, budget: &mut LogBudget) {
+        if d.severity > SEVERITY_TRACE {
+            return self.sink.dropped(Dropped::Severity(DIAG_LOG));
         }
         let Some(text) = str_bytes(d.text) else {
             return self.sink.dropped(Dropped::BadArray);
         };
+        if budget.records >= MAX_LOG_RECORDS || budget.bytes + text.len() > MAX_LOG_BYTES {
+            // Once over, every later record of the reply is over too: counts stay exact.
+            budget.records = MAX_LOG_RECORDS;
+            budget.dropped += 1;
+            return;
+        }
+        budget.records += 1;
+        budget.bytes += text.len();
         self.sink.diag(Diagnostic {
-            id: d.id_idx,
+            id: DIAG_LOG,
+            name: &[],
             severity: d.severity,
             text,
         });
@@ -702,7 +789,10 @@ impl<K: Kind> Plugin<K> {
                 name: String::from_utf8_lossy(name).into_owned(),
                 slots: v.slots,
                 families,
-                diag_ids: st.diag_ids_len,
+                diag_ids: DiagIds {
+                    ptr: st.diag_ids,
+                    len: st.diag_ids_len,
+                },
                 ptr: AtomicPtr::new(std::ptr::null_mut()),
                 faulted: AtomicBool::new(false),
                 closed: AtomicBool::new(false),

@@ -1382,6 +1382,12 @@ plugins:
     allow_third_party: false    # default false: signed-but-unknown-publisher plugins are skipped
   min_versions:                 # anti-downgrade floors, keyed by manifest name (third-party;
     acme-store-dynamo: "2.0.0"  # first-party is automatically floored at the binary's version)
+  logs:                         # every plugin instance's own log file
+    dir: logs/plugins           # <dir>/<instance>.log (default: logs/plugins)
+    level: info                 # off | error | warn | info | debug | trace (default: info)
+    levels: { primary: debug }  # per-instance levels, by instance name
+    rotate_mb: 64               # rotate past this size (default: never)
+    keep: 5                     # rotated archives kept (default: 5)
 ```
 
 | Field | Type | Required | Default | Notes |
@@ -1392,6 +1398,11 @@ plugins:
 | `trust.allow_unsigned` | bool | no | `false` | EXPLICIT opt-in to load plugins with no valid signature (unsigned/tampered). Without it they are logged and skipped, never `dlopen`ed. |
 | `trust.allow_third_party` | bool | no | `false` | EXPLICIT opt-in to load validly-signed plugins from a publisher NOT in `publishers`. |
 | `min_versions` | map | no | empty | Anti-downgrade floors: manifest `name` -> minimum `version`. A floored plugin must prove (trusted signature at/above the floor) that it meets it; no opt-in flag can bypass a floor. First-party plugins are automatically floored at the running binary's version. |
+| `logs.dir` | string | no | `logs/plugins` | Where each plugin instance's log file lives: `<dir>/<instance>.log`, the instance name with every character outside `[A-Za-z0-9._-]` written as `_`. Busbar creates it if missing (with any missing parent) when a plugin instance is bound, and writes the file; the plugin never touches a file. A directory that cannot be used refuses the plugin's bind as `plugins.logs.dir <dir>: <error>`. |
+| `logs.level` | string | no | `info` | The level of an instance `logs.levels` does not name: `off`, `error`, `warn`, `info`, `debug` or `trace`. Any other word is a boot error naming the key. |
+| `logs.levels` | map | no | empty | Per-instance levels: instance name -> level word. |
+| `logs.rotate_mb` | integer | no | never | Past this size the file is renamed `<file>.1` (older archives shift up) and a new file begins, the request-log file's rotation. `0` is a boot error. |
+| `logs.keep` | integer | no | `5` | How many rotated archives are kept. |
 
 **Fail-closed guarantees:** with plugins enabled, ANY invalid tarball or manifest in `dir` (unparseable, missing/malformed fields, sha256 mismatch, unsupported `abi_version`) aborts boot naming the file and reason; any name/alias conflict between loadable plugins aborts boot naming both. `busbar --validate` runs the exact same pipeline ahead of time (zero side effects, nothing loaded), and `busbar --list-plugins` prints the manifest-only inventory with each plugin's signature verdict and load status.
 

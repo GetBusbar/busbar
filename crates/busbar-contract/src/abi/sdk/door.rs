@@ -33,11 +33,17 @@
 //!   plugin's own `size_of Out` (the host clamps) and `out.outcome` MIRRORING the returned outcome.
 //!   A panicking body writes nothing but `outcome = FAULT`;
 //! * [`Outcome::Pending`] answered on a [`Ticket::NONE`](crate::abi::mechanism::ticket::Ticket::NONE)
-//!   call is [`Outcome::Fault`] (the mechanism's rule, `OutHead::outcome`).
+//!   call is [`Outcome::Fault`] (the mechanism's rule, `OutHead::outcome`);
+//! * THE CALL CAPTURE — the body runs under the plugin image's call capture as the thread's scoped
+//!   `tracing` dispatcher, and whatever it logged, through `tracing` or `log`, rides the reply's
+//!   #85 envelope as log diagnostics ([`capture`](crate::abi::sdk::capture)). A body that faulted
+//!   carries none.
 //!
 //! Every name here is a TYPE, a TRAIT or a FUNCTION: the contract crate holds no `static`
 //! (`contract-stateless`). The `'static` door, Statement and table exist only as `const` items the
-//! macro expands in the plugin crate. There is no load-time registration (`.init_array` is retired).
+//! macro expands in the plugin crate, and so does the one per-thread call-capture slot
+//! ([`CaptureHome`]), which is the plugin image's own. There is no load-time registration
+//! (`.init_array` is retired).
 
 use std::ffi::c_void;
 use std::mem::{offset_of, size_of, MaybeUninit};
@@ -53,6 +59,7 @@ use crate::abi::mechanism::lifecycle::{
     ReleaseIn, TickIn, TickOut, ValidateIn,
 };
 use crate::abi::mechanism::{KindCode, DOOR_MAGIC, MECHANISM_VERSION};
+use crate::abi::sdk::capture::CaptureHome;
 
 /// An `in` struct a slot reads.
 ///
@@ -260,16 +267,17 @@ pub trait Slot {
     fn call(instance: *mut c_void, input: &Self::In, out: &mut Self::Out) -> Outcome;
 }
 
-/// THE TRAMPOLINE every table entry is: `S`'s body behind the SDK's checks (the module doc).
-/// `INDEX` is the slot's index in its kind's table; an `in.op` naming another slot is a fault.
-extern "C" fn trampoline<S: Slot, const INDEX: u32>(
+/// THE TRAMPOLINE every table entry is: `S`'s body behind the SDK's checks (the module doc), under
+/// the call capture `H` keeps. `INDEX` is the slot's index in its kind's table; an `in.op` naming
+/// another slot is a fault.
+extern "C" fn trampoline<S: Slot, H: CaptureHome, const INDEX: u32>(
     instance: *mut c_void,
     input: *const c_void,
     out: *mut c_void,
 ) -> RawOutcome {
     // SAFETY: the host passes `in`/`out` of this slot's types (the call convention); `enter`
     // checks NULL and the heads' sizes before reading or writing beyond them.
-    RawOutcome::of(unsafe { enter::<S>(INDEX, instance, input.cast(), out.cast()) })
+    RawOutcome::of(unsafe { enter::<S, H>(INDEX, instance, input.cast(), out.cast()) })
 }
 
 /// The trampoline's body.
@@ -278,7 +286,7 @@ extern "C" fn trampoline<S: Slot, const INDEX: u32>(
 /// `out`, when non-NULL, points at a writable host `out` of at least `out.size` bytes whose first
 /// field is an [`OutHead`]; `input`, when non-NULL, points at a readable host `in` of at least
 /// `in.size` bytes whose first field is an [`InHead`].
-unsafe fn enter<S: Slot>(
+unsafe fn enter<S: Slot, H: CaptureHome>(
     index: u32,
     instance: *mut c_void,
     input: *const S::In,
@@ -334,12 +342,17 @@ unsafe fn enter<S: Slot>(
     }
 
     // The body runs on COPIES moved into the closure and hands its `out` back only by returning:
-    // a panic leaves nothing half-written for the trampoline to copy out.
-    match catch_unwind(move || {
-        let mut written = local_out;
-        let answered = S::call(instance, &local_in, &mut written);
-        (answered, written)
-    }) {
+    // a panic leaves nothing half-written for the trampoline to copy out. It runs under the call
+    // capture, which is this thread's scoped `tracing` dispatcher for exactly as long as the body.
+    let capture = H::with(|slot| slot.dispatch());
+    let ran = tracing_core::dispatcher::with_default(&capture, || {
+        catch_unwind(move || {
+            let mut written = local_out;
+            let answered = S::call(instance, &local_in, &mut written);
+            (answered, written)
+        })
+    });
+    match ran {
         Ok((answered, mut local_out)) => {
             // SAFETY: `S::In` leads with an `InHead` (`AbiIn`).
             let ticket = unsafe { (*ptr::addr_of!(local_in).cast::<InHead>()).ticket };
@@ -353,6 +366,10 @@ unsafe fn enter<S: Slot>(
             head.outcome = RawOutcome::of(outcome);
             // The plugin writes back its own size (the mechanism's growth rule); the host clamps.
             head.size = size_of::<S::Out>() as u32;
+            // What the body logged joins the envelope it answered.
+            // SAFETY: the plugin's own `diags`, when set, point to `diags_len` live entries until
+            // the next op on the ticket (the mechanism's memory rule).
+            H::with(|slot| unsafe { slot.seal(&mut head.envelope) });
             // SAFETY: `out_n <= host_out` bytes of the host's `out` are writable, and
             // `out_n <= size_of::<S::Out>()` bytes of `local_out` are readable.
             unsafe {
@@ -367,6 +384,7 @@ unsafe fn enter<S: Slot>(
         Err(payload) => {
             // A payload whose own `Drop` panics escapes here and aborts: the `extern "C"` floor.
             drop(payload);
+            H::with(|slot| slot.discard());
             // SAFETY: the host's `out` holds at least a whole `OutHead` (checked above).
             unsafe { write_fault(out_head) };
             Outcome::Fault
@@ -396,16 +414,17 @@ pub const fn slot_count<T: KindOps>() -> u32 {
     slot_at(size_of::<T>())
 }
 
-/// A table entry: the `trampoline` over `S` at `INDEX`, refusing to compile unless `S` reads and
-/// writes the structs `T` states for that slot ([`KindSlot`]): a kind op's `T` is the kind's
-/// `Ops`, a lifecycle slot's its [`KindOps::Lifecycle`].
+/// A table entry: the `trampoline` over `S` at `INDEX` under the call capture `H` keeps, refusing
+/// to compile unless `S` reads and writes the structs `T` states for that slot ([`KindSlot`]): a
+/// kind op's `T` is the kind's `Ops`, a lifecycle slot's its [`KindOps::Lifecycle`].
 #[must_use]
-pub const fn kind_op<T, S, const INDEX: u32>() -> Option<Op>
+pub const fn kind_op<T, S, H, const INDEX: u32>() -> Option<Op>
 where
     T: KindSlot<INDEX>,
     S: Slot<In = <T as KindSlot<INDEX>>::In, Out = <T as KindSlot<INDEX>>::Out>,
+    H: CaptureHome,
 {
-    Some(trampoline::<S, INDEX>)
+    Some(trampoline::<S, H, INDEX>)
 }
 
 /// The [`OpsHead`] of a `T` table: its `size` and `slots` stamped from `T`, the nine lifecycle
@@ -565,22 +584,42 @@ macro_rules! plugin_door {
             // A `path` fragment cannot open a struct literal; an alias can.
             type __Ops = $ops;
             type __Life = <__Ops as __sdk::KindOps>::Lifecycle;
+            /// THIS PLUGIN IMAGE'S CALL CAPTURE: one slot per thread, the image's own (compiled in
+            /// or dropped in, each image holds its own). Its first use on a thread makes
+            /// `tracing-log`'s `LogTracer` the image's `log` logger, if nothing is yet, and opens
+            /// `log` to every level: the capture keeps everything and the host filters.
+            struct __Capture;
+            impl $crate::abi::sdk::capture::CaptureHome for __Capture {
+                fn with<R>(
+                    f: impl ::core::ops::FnOnce(&mut $crate::abi::sdk::capture::CaptureSlot) -> R,
+                ) -> R {
+                    use $crate::abi::sdk::capture::__tracing_log as __tl;
+                    ::std::thread_local! {
+                        static __BUSBAR_CAPTURE: ::core::cell::RefCell<$crate::abi::sdk::capture::CaptureSlot> = {
+                            let _ = __tl::LogTracer::init();
+                            __tl::log::set_max_level(__tl::log::LevelFilter::Trace);
+                            ::core::cell::RefCell::new($crate::abi::sdk::capture::CaptureSlot::new())
+                        };
+                    }
+                    __BUSBAR_CAPTURE.with(|slot| f(&mut slot.borrow_mut()))
+                }
+            }
             const __STATEMENT: &$crate::abi::mechanism::door::Statement =
                 &__sdk::stamp::<__Ops>($statement);
             const __OPS: &__Ops = &__Ops {
                 head: __sdk::ops_head::<__Ops>(
-                    __sdk::kind_op::<__Life, $validate, { __lc::slot::VALIDATE }>(),
-                    __sdk::kind_op::<__Life, $open, { __lc::slot::OPEN }>(),
-                    __sdk::kind_op::<__Life, $refresh, { __lc::slot::REFRESH }>(),
-                    __sdk::kind_op::<__Life, $retire, { __lc::slot::RETIRE }>(),
-                    __sdk::kind_op::<__Life, $tick, { __lc::slot::TICK }>(),
-                    __sdk::kind_op::<__Life, $drive, { __lc::slot::DRIVE }>(),
-                    __sdk::kind_op::<__Life, $cancel, { __lc::slot::CANCEL }>(),
-                    __sdk::kind_op::<__Life, $release, { __lc::slot::RELEASE }>(),
-                    __sdk::kind_op::<__Life, $close, { __lc::slot::CLOSE }>(),
+                    __sdk::kind_op::<__Life, $validate, __Capture, { __lc::slot::VALIDATE }>(),
+                    __sdk::kind_op::<__Life, $open, __Capture, { __lc::slot::OPEN }>(),
+                    __sdk::kind_op::<__Life, $refresh, __Capture, { __lc::slot::REFRESH }>(),
+                    __sdk::kind_op::<__Life, $retire, __Capture, { __lc::slot::RETIRE }>(),
+                    __sdk::kind_op::<__Life, $tick, __Capture, { __lc::slot::TICK }>(),
+                    __sdk::kind_op::<__Life, $drive, __Capture, { __lc::slot::DRIVE }>(),
+                    __sdk::kind_op::<__Life, $cancel, __Capture, { __lc::slot::CANCEL }>(),
+                    __sdk::kind_op::<__Life, $release, __Capture, { __lc::slot::RELEASE }>(),
+                    __sdk::kind_op::<__Life, $close, __Capture, { __lc::slot::CLOSE }>(),
                 ),
                 $($(
-                    $field: __sdk::kind_op::<__Ops, $slot, { __sdk::slot_at(::core::mem::offset_of!(__Ops, $field)) }>(),
+                    $field: __sdk::kind_op::<__Ops, $slot, __Capture, { __sdk::slot_at(::core::mem::offset_of!(__Ops, $field)) }>(),
                 )*)?
             };
             const __DOOR: &$crate::abi::mechanism::door::Door = &__sdk::door::<__Ops>(__STATEMENT, __OPS);

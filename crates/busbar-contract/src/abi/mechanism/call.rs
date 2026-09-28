@@ -193,19 +193,46 @@ pub const METRIC_SET: u8 = 1;
 pub const METRIC_OBSERVE: u8 = 2;
 
 /// One diagnostic: an INDEX into the diagnostic ids the Statement declared, the same scheme as a
-/// metric.
+/// metric — or one of the two reserved ids below, which carry what the plugin LOGGED.
+///
+/// PLUGIN LOGGING. Whatever a plugin, or a library inside it, logs through `tracing` or `log`
+/// during a call is captured by the door macro's trampoline and rides that call's reply as
+/// [`DIAG_LOG`] entries; the host writes them to the plugin's own log file. One path, every kind,
+/// compiled in or dropped in (`BUSBAR-1.6.0.md` decision #85).
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct Diag {
-    /// Index into [`super::door::Statement::diag_ids`].
+    /// Index into [`super::door::Statement::diag_ids`], or [`DIAG_LOG`] / [`DIAG_LOG_DROPPED`].
     pub id_idx: u32,
-    /// `0` info, `1` warn, `2` error.
+    /// [`SEVERITY_INFO`], [`SEVERITY_WARN`] or [`SEVERITY_ERROR`]; a [`DIAG_LOG`] entry may also
+    /// state [`SEVERITY_DEBUG`] or [`SEVERITY_TRACE`].
     pub severity: u8,
     /// Alignment padding.
     pub _reserved: [u8; 3],
     /// Operator-facing text; never secret material.
     pub text: AbiStr,
 }
+
+/// [`Diag::id_idx`]: a log record the plugin emitted during the call. Its text is
+/// `target: message`, followed by any other fields as ` key=value`.
+pub const DIAG_LOG: u32 = u32::MAX;
+/// [`Diag::id_idx`]: how many log records the plugin's capture dropped over its bound, as decimal
+/// text. At most one per reply, and last.
+pub const DIAG_LOG_DROPPED: u32 = u32::MAX - 1;
+/// [`Diag::severity`]: info.
+pub const SEVERITY_INFO: u8 = 0;
+/// [`Diag::severity`]: warn.
+pub const SEVERITY_WARN: u8 = 1;
+/// [`Diag::severity`]: error.
+pub const SEVERITY_ERROR: u8 = 2;
+/// [`Diag::severity`]: debug ([`DIAG_LOG`] only).
+pub const SEVERITY_DEBUG: u8 = 3;
+/// [`Diag::severity`]: trace ([`DIAG_LOG`] only).
+pub const SEVERITY_TRACE: u8 = 4;
+/// The most entries one envelope array may carry; the host drops a longer array whole.
+pub const MAX_ENVELOPE_ENTRIES: usize = 256;
+/// The most bytes of error or diagnostic text an entry may carry; longer is a malformed entry.
+pub const MAX_TEXT: usize = 4096;
 
 /// THE #85 ENVELOPE every reply carries: metrics and diagnostics, both by index.
 #[repr(C)]

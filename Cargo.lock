@@ -500,6 +500,7 @@ dependencies = [
  "smallvec",
  "tracing",
  "tracing-core",
+ "tracing-log",
  "zeroize",
 ]
 
@@ -979,16 +980,19 @@ dependencies = [
  "flate2",
  "futures",
  "getrandom 0.3.4",
+ "h2",
  "hex",
  "jsonschema",
  "libc",
  "libloading",
+ "log",
  "serde",
  "serde_json",
  "sha2 0.11.0",
  "tar",
  "tokio",
  "tracing",
+ "tungstenite",
 ]
 
 [[package]]

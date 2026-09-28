@@ -53,6 +53,7 @@ plugins:
     allow_unsigned: false
     allow_third_party: false
   # min_versions: { acme-store-dynamo: "2.0.0" }   # anti-downgrade floors
+  # logs: { dir: logs/plugins, level: info }        # each plugin instance's own log file
 ```
 
 Referenced below wherever a section names a `module:` outside the built-in default: `auth.chain`

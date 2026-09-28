@@ -45,6 +45,9 @@ mod ffi_thread;
 pub mod highwater;
 pub mod hook;
 mod host;
+/// THE ONE DURABLE-WRITE OWNER, named once for the whole loader: every file or directory the loader
+/// publishes (fetched artifacts, the high-water marks, plugin log directories) goes through it.
+pub(crate) use busbar_kernel_wal::durable;
 mod hostlog;
 mod legacy_usage;
 pub mod observe;

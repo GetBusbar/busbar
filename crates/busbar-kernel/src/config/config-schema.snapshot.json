@@ -1343,6 +1343,33 @@
         "Url"
       ]
     },
+    "PluginLogsCfg": {
+      "deny_unknown_fields": true,
+      "fields": {
+        "dir": {
+          "optional": true,
+          "type": "String"
+        },
+        "keep": {
+          "optional": true,
+          "type": "u32"
+        },
+        "level": {
+          "optional": true,
+          "type": "String"
+        },
+        "levels": {
+          "optional": true,
+          "type": "std::collections::BTreeMap<String, String>"
+        },
+        "rotate_mb": {
+          "optional": true,
+          "type": "u64"
+        }
+      },
+      "kind": "struct",
+      "transparent": false
+    },
     "PluginPublisher": {
       "deny_unknown_fields": true,
       "fields": {
@@ -1372,6 +1399,10 @@
         "fetch": {
           "optional": true,
           "type": "Vec<PluginFetch>"
+        },
+        "logs": {
+          "optional": true,
+          "type": "PluginLogsCfg"
         },
         "min_versions": {
           "optional": true,

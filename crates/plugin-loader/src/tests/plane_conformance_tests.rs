@@ -1775,6 +1775,19 @@ mod door {
         }
     }
 
+    /// A call capture for the hand-built table entry below: one slot per thread, as `plugin_door!`
+    /// expands for a plugin's own image.
+    struct TestCapture;
+    impl busbar_contract::abi::sdk::capture::CaptureHome for TestCapture {
+        fn with<R>(f: impl FnOnce(&mut busbar_contract::abi::sdk::capture::CaptureSlot) -> R) -> R {
+            thread_local! {
+                static SLOT: std::cell::RefCell<busbar_contract::abi::sdk::capture::CaptureSlot> =
+                    std::cell::RefCell::new(busbar_contract::abi::sdk::capture::CaptureSlot::new());
+            }
+            SLOT.with(|s| f(&mut s.borrow_mut()))
+        }
+    }
+
     /// The plane door with `open` over the lifecycle's own structs: the shape `plugin_door!` gave
     /// every plane before the kind stated its lifecycle.
     extern "C" fn lifecycle_open_door() -> *const Door {
@@ -1784,7 +1797,7 @@ mod door {
             (d, *d.ops.cast::<plane::Ops>())
         };
         let mut ops = ops;
-        ops.head.open = kind_op::<Lifecycle, LifecycleOpen, { life::OPEN }>();
+        ops.head.open = kind_op::<Lifecycle, LifecycleOpen, TestCapture, { life::OPEN }>();
         let ops: &'static plane::Ops = Box::leak(Box::new(ops));
         Box::leak(Box::new(Door {
             ops: std::ptr::from_ref(ops).cast(),

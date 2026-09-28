@@ -324,7 +324,7 @@ fn flush(d: &Destination) -> HostResult {
 /// Rotate `path` by rename, keeping `keep` archives: drop the oldest, shift the rest up, rename the
 /// live file to `<path>.1`. Each failed step is recorded and the rest still run; a failed final
 /// rename leaves the live file in place to keep being appended to, never truncated.
-fn rotate(path: &str, keep: u32) -> Rotation {
+pub(crate) fn rotate(path: &str, keep: u32) -> Rotation {
     let keep = keep.clamp(1, MAX_KEEP);
     let mut faults = Vec::new();
     let fault = |step: &str, from: &str, to: Option<&str>, e: std::io::Error| RotationFault {

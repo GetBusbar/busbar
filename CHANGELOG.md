@@ -597,6 +597,17 @@ hook payload schemas are unchanged, as is the transport version (`busbar_abi() =
 exported symbols. A sink that wants the back-channel implements one new defaulted SDK method,
 `drain_observations`.
 
+**Plugin log lines now go to per-plugin files.** Every plugin instance logs to its own file,
+`logs/plugins/<instance>.log` by default, instead of the Busbar log. A plugin writes nothing itself.
+Whatever it logs during a call, through `tracing` or `log`, including from the libraries inside it,
+rides the call's reply, and Busbar writes it: one line per record, stating the time, level,
+instance, kind and target. It is the same file whether the plugin is compiled in or dropped in. A
+new `plugins.logs` block sets the directory (`dir`), the default level (`level`, default `info`),
+per-instance levels (`levels`), and rotation (`rotate_mb` and `keep`, the same rename rotation as
+the request-log file). One reply carries at most 128 records and 64 KiB; anything over is one line
+saying how many were dropped. **Migration:** an operator who read plugin lines from the Busbar log
+reads them from the plugin's file.
+
 ### Spec fidelity
 
 The LLM plane is now validated against the providers' published, machine-readable API
