@@ -94,8 +94,9 @@ GATE_TARGET_ROOT="${CARGO_TARGET_DIR:-target}"
 # ── level 1: static (once, for the whole tree) ──────────────────────────────────────────────────
 # THE NEEDLE IS DERIVED FROM THE TREE, NEVER SPELLED. This level used to grep core for the single
 # literal `busbar_proto`. There is no `crates/busbar-proto` any more and no Rust anywhere names that
-# symbol: the only surviving occurrence in the workspace is a doc comment in busbar-llm-codec quoting
-# this very grep. So level 1 — the gate's headline assertion, "core's sources never name a protocol
+# symbol: the only surviving occurrence in the workspace is a doc comment in busbar-plane-llm (R7,
+# 2026-09-27, THE DESIGN §9/#39 folded busbar-llm-codec into it) quoting this very grep. So level 1 —
+# the gate's headline assertion, "core's sources never name a protocol
 # crate" — could not fire. Planting `use busbar_mcp_codec::Frame;` in a copy of core left it printing
 # `grep count 0`. A needle that names a crate the split has already renamed is a rule nobody can
 # violate, and the whole seam is measured by this level.
@@ -332,7 +333,7 @@ if [ "${1:-}" = "--selftest" ]; then
     st_fail=1; note "SELF-TEST DIALECTS case FAILED: DECLS has $st_decls_n entries, derived $st_dialects_n ($st_dialects)"
   fi
   mkdir -p "$st_tmp/codec/alpha"
-  printf 'pub static DECLS: &[&X] = &[\n    &alpha::DECL,\n    &beta::DECL,\n];\n' > "$st_tmp/codec/lib.rs"
+  printf 'pub static DECLS: &[&X] = &[\n    &alpha::DECL,\n    &beta::DECL,\n];\n' > "$st_tmp/codec/mod.rs"
   printf 'pub const DECL: ProtocolDecl = ProtocolDecl {\n    name: "alpha-dialect",\n};\n' > "$st_tmp/codec/alpha/mod.rs"
   printf 'fn other() { let name: "not-this" = 1; }\npub const DECL: ProtocolDecl = ProtocolDecl {\n    name: "beta-dialect",\n};\n' > "$st_tmp/codec/beta.rs"
   if [ "$(llm_dialects "$st_tmp/codec")" = "alpha-dialect beta-dialect" ]; then
@@ -691,7 +692,7 @@ case " $LLM_DIALECTS " in
   *) die "the LLM leg probes /v1/messages as anthropic, but DECLS no longer declares anthropic ($LLM_DIALECTS)" ;;
 esac
 LLM_ALSO_DELETED="$(printf '%s\n' "$LLM_DIALECTS" | tr ' ' '\n' | grep -vx anthropic | tr '\n' ' ')"
-note "level 3a dialects: $LLM_DIALECTS_N derived from busbar-llm-codec DECLS ($LLM_DIALECTS)"
+note "level 3a dialects: $LLM_DIALECTS_N derived from busbar-plane-llm's codec DECLS ($LLM_DIALECTS)"
 run_gate "anthropic" "proto-llm" "plane-mcp" \
   "" "" "/v1/messages" \
   "$LLM_ALSO_DELETED"
