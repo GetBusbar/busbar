@@ -55,16 +55,17 @@
     }
   ],
   "counts": {
-    "total": 2420,
+    "total": 2466,
     "by_plane": {
       "a2a": 468,
-      "core": 891,
+      "core": 937,
       "llm": 149,
       "mcp": 912
     },
     "by_family": {
       "a2a": 468,
       "admin.ops": 323,
+      "admin.plugins": 7,
       "auth.lifecycle": 3,
       "billing": 14,
       "boot.refusal": 207,
@@ -76,6 +77,9 @@
       "cooldown": 1,
       "crosscut.traps": 5,
       "documented": 28,
+      "egress.auth": 12,
+      "egress.fetch": 1,
+      "export": 3,
       "hazard": 2,
       "hooks": 10,
       "http.crosscut": 23,
@@ -83,11 +87,16 @@
       "llm.wire": 142,
       "mcp": 912,
       "neutrality": 18,
+      "ops.raw": 1,
       "ops.scrape": 15,
       "plugins": 14,
       "queue": 2,
+      "route.529": 2,
+      "route.cheapest": 1,
       "route.failover": 16,
-      "teller": 7
+      "store.boot": 11,
+      "teller": 7,
+      "webrequest": 8
     }
   },
   "cells": [
@@ -11568,6 +11577,125 @@
       "why": "the admin operator credential is not a valid signed vkey on the data-plane chain (keys); refused before Admit ever draws a budget bucket"
     },
     {
+      "id": "admin.plugins|type-auth",
+      "plane": "core",
+      "family": "admin.plugins",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "GET",
+        "path": "/api/v1/admin/plugins?type=auth",
+        "headers": {},
+        "body": null,
+        "auth": "admin",
+        "listener": "admin"
+      },
+      "why": "GET /plugins?type=*: the auth catalog: compiled-in modules plus each wired and installed kind:auth row. Recorded under the hooks variant (the published headroom and webrequest hooks staged), from the published 1.5.5 binary; KERNEL<>PLUGINS step 6 (the plugin catalog from the Statement) is compared against it.",
+      "config_variant": "hooks"
+    },
+    {
+      "id": "admin.plugins|type-bogus",
+      "plane": "core",
+      "family": "admin.plugins",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "GET",
+        "path": "/api/v1/admin/plugins?type=bogus",
+        "headers": {},
+        "body": null,
+        "auth": "admin",
+        "listener": "admin"
+      },
+      "why": "GET /plugins?type=*: an unknown type: the refusal and its text. Recorded under the hooks variant (the published headroom and webrequest hooks staged), from the published 1.5.5 binary; KERNEL<>PLUGINS step 6 (the plugin catalog from the Statement) is compared against it.",
+      "config_variant": "hooks"
+    },
+    {
+      "id": "admin.plugins|type-export",
+      "plane": "core",
+      "family": "admin.plugins",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "GET",
+        "path": "/api/v1/admin/plugins?type=export",
+        "headers": {},
+        "body": null,
+        "auth": "admin",
+        "listener": "admin"
+      },
+      "why": "GET /plugins?type=*: an `export` type 1.5.5 does not list: the refusal it answers. Recorded under the hooks variant (the published headroom and webrequest hooks staged), from the published 1.5.5 binary; KERNEL<>PLUGINS step 6 (the plugin catalog from the Statement) is compared against it.",
+      "config_variant": "hooks"
+    },
+    {
+      "id": "admin.plugins|type-hooks",
+      "plane": "core",
+      "family": "admin.plugins",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "GET",
+        "path": "/api/v1/admin/plugins?type=hooks",
+        "headers": {},
+        "body": null,
+        "auth": "admin",
+        "listener": "admin"
+      },
+      "why": "GET /plugins?type=*: the hooks catalog under the documented plural spelling. Recorded under the hooks variant (the published headroom and webrequest hooks staged), from the published 1.5.5 binary; KERNEL<>PLUGINS step 6 (the plugin catalog from the Statement) is compared against it.",
+      "config_variant": "hooks"
+    },
+    {
+      "id": "admin.plugins|type-missing",
+      "plane": "core",
+      "family": "admin.plugins",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "GET",
+        "path": "/api/v1/admin/plugins",
+        "headers": {},
+        "body": null,
+        "auth": "admin",
+        "listener": "admin"
+      },
+      "why": "GET /plugins?type=*: the REQUIRED `type` parameter missing: the refusal and its text. Recorded under the hooks variant (the published headroom and webrequest hooks staged), from the published 1.5.5 binary; KERNEL<>PLUGINS step 6 (the plugin catalog from the Statement) is compared against it.",
+      "config_variant": "hooks"
+    },
+    {
+      "id": "admin.plugins|type-secret",
+      "plane": "core",
+      "family": "admin.plugins",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "GET",
+        "path": "/api/v1/admin/plugins?type=secret",
+        "headers": {},
+        "body": null,
+        "auth": "admin",
+        "listener": "admin"
+      },
+      "why": "GET /plugins?type=*: the secret catalog: kind:secret tarballs only (none staged here). Recorded under the hooks variant (the published headroom and webrequest hooks staged), from the published 1.5.5 binary; KERNEL<>PLUGINS step 6 (the plugin catalog from the Statement) is compared against it.",
+      "config_variant": "hooks"
+    },
+    {
+      "id": "admin.plugins|type-store",
+      "plane": "core",
+      "family": "admin.plugins",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "GET",
+        "path": "/api/v1/admin/plugins?type=store",
+        "headers": {},
+        "body": null,
+        "auth": "admin",
+        "listener": "admin"
+      },
+      "why": "GET /plugins?type=*: the store catalog: the compiled-in memory head plus each kind:store tarball in plugins.dir. Recorded under the hooks variant (the published headroom and webrequest hooks staged), from the published 1.5.5 binary; KERNEL<>PLUGINS step 6 (the plugin catalog from the Statement) is compared against it.",
+      "config_variant": "hooks"
+    },
+    {
       "id": "auth.lifecycle|key-expiry",
       "plane": "core",
       "family": "auth.lifecycle",
@@ -19674,6 +19802,1143 @@
         "env": {}
       },
       "why": "README:194 '`busbar --validate` parses your config and every provider reference and exits non-zero on anything wrong, with no server, no network and no state' (main.rs:193, :205-208, :258-263)"
+    },
+    {
+      "id": "egress.auth|cred-identity|anthropic",
+      "plane": "core",
+      "family": "egress.auth",
+      "driver": "capture",
+      "outcome": "ok",
+      "capture": {
+        "providers": "p:\n  protocol: anthropic\n  base_url: \"{CAPTURE_URL}\"\n",
+        "config": "listen: \"{LISTEN}\"\nadmin_listen: \"{ADMIN}\"\nproviders_file: \"{WORK}/providers.yaml\"\nidentity-providers:\n  admin-tokens:\n    module: admin-tokens\n    token: { env: BUSBAR_ADMIN_TOKEN }\nauth:\n  chain: [keys]\n  signing_key: { file: \"{WORK}/signing.key\" }\n  admin_auth: [admin-tokens]\ngroups:\n  oracle:\n    limits:\n      - { budget: 1000000, per: day }\nproviders:\n  p:\n    api_key: { env: CAP_KEY }\nmodels:\n  m-cap:\n    provider: p\nrate_card:\n  m-cap: { input_utok: 100000, output_utok: 200000 }\n",
+        "env": {
+          "CAP_KEY": "oracle-cred-anthropic-0001"
+        },
+        "mock": {},
+        "steps": [
+          {
+            "request": {
+              "listener": "admin",
+              "method": "POST",
+              "path": "/api/v1/admin/keys",
+              "auth": "admin",
+              "headers": [
+                [
+                  "Content-Type",
+                  "application/json"
+                ]
+              ],
+              "body": "{\"name\":\"capture\",\"group\":\"oracle\"}"
+            },
+            "save": {
+              "VK": "token"
+            },
+            "record": false,
+            "expect": 201
+          },
+          {
+            "request": {
+              "listener": "data",
+              "method": "POST",
+              "path": "/v1/chat/completions",
+              "headers": [
+                [
+                  "Authorization",
+                  "Bearer {VK}"
+                ],
+                [
+                  "Content-Type",
+                  "application/json"
+                ]
+              ],
+              "body": "{\"model\":\"m-cap\",\"messages\":[{\"role\":\"user\",\"content\":\"ping\"}]}"
+            },
+            "record": "status"
+          }
+        ],
+        "mask": []
+      },
+      "why": "the anthropic dialect's default credential: `x-api-key: <key>` plus the `anthropic-version` header, in the position 1.5.5 writes them. Every byte of the upstream request is recorded (header order and case included); only the run's port is masked. Recorded from the published 1.5.5 binary: the auth object's `decorate` (KERNEL<>PLUGINS step 21) must reproduce it exactly."
+    },
+    {
+      "id": "egress.auth|cred-identity|bedrock",
+      "plane": "core",
+      "family": "egress.auth",
+      "driver": "capture",
+      "outcome": "ok",
+      "capture": {
+        "providers": "p:\n  protocol: bedrock\n  base_url: \"{CAPTURE_URL}\"\n",
+        "config": "listen: \"{LISTEN}\"\nadmin_listen: \"{ADMIN}\"\nproviders_file: \"{WORK}/providers.yaml\"\nidentity-providers:\n  admin-tokens:\n    module: admin-tokens\n    token: { env: BUSBAR_ADMIN_TOKEN }\nauth:\n  chain: [keys]\n  signing_key: { file: \"{WORK}/signing.key\" }\n  admin_auth: [admin-tokens]\ngroups:\n  oracle:\n    limits:\n      - { budget: 1000000, per: day }\nproviders:\n  p:\n    api_key: { env: CAP_KEY }\nmodels:\n  m-cap:\n    provider: p\nrate_card:\n  m-cap: { input_utok: 100000, output_utok: 200000 }\n",
+        "env": {
+          "CAP_KEY": "AKIDORACLECAPTURE01:oracle/capture+secret/0001"
+        },
+        "mock": {},
+        "steps": [
+          {
+            "request": {
+              "listener": "admin",
+              "method": "POST",
+              "path": "/api/v1/admin/keys",
+              "auth": "admin",
+              "headers": [
+                [
+                  "Content-Type",
+                  "application/json"
+                ]
+              ],
+              "body": "{\"name\":\"capture\",\"group\":\"oracle\"}"
+            },
+            "save": {
+              "VK": "token"
+            },
+            "record": false,
+            "expect": 201
+          },
+          {
+            "request": {
+              "listener": "data",
+              "method": "POST",
+              "path": "/v1/chat/completions",
+              "headers": [
+                [
+                  "Authorization",
+                  "Bearer {VK}"
+                ],
+                [
+                  "Content-Type",
+                  "application/json"
+                ]
+              ],
+              "body": "{\"model\":\"m-cap\",\"messages\":[{\"role\":\"user\",\"content\":\"ping\"}]}"
+            },
+            "record": "status"
+          }
+        ],
+        "mask": [
+          [
+            "\\d{8}T\\d{6}Z",
+            "<AMZ-DATE>"
+          ],
+          [
+            "Signature=[0-9a-f]{64}",
+            "Signature=<SIGNATURE>"
+          ],
+          [
+            "/\\d{8}/",
+            "/<DATE>/"
+          ]
+        ],
+        "sigv4": {
+          "secret": "oracle/capture+secret/0001"
+        }
+      },
+      "why": "the bedrock dialect's default credential: AWS SigV4 over a static `ACCESS:SECRET` key (no session token). The clock-bound parts (x-amz-date, the scope date, the signature) are masked and PROVEN: the driver re-derives the signature from the captured request and the secret (`sigv4.signature_valid`). Region: the loopback host carries none, so the 1.5.5 signer's us-east-1 default is what is pinned."
+    },
+    {
+      "id": "egress.auth|cred-identity|cohere",
+      "plane": "core",
+      "family": "egress.auth",
+      "driver": "capture",
+      "outcome": "ok",
+      "capture": {
+        "providers": "p:\n  protocol: cohere\n  base_url: \"{CAPTURE_URL}\"\n",
+        "config": "listen: \"{LISTEN}\"\nadmin_listen: \"{ADMIN}\"\nproviders_file: \"{WORK}/providers.yaml\"\nidentity-providers:\n  admin-tokens:\n    module: admin-tokens\n    token: { env: BUSBAR_ADMIN_TOKEN }\nauth:\n  chain: [keys]\n  signing_key: { file: \"{WORK}/signing.key\" }\n  admin_auth: [admin-tokens]\ngroups:\n  oracle:\n    limits:\n      - { budget: 1000000, per: day }\nproviders:\n  p:\n    api_key: { env: CAP_KEY }\nmodels:\n  m-cap:\n    provider: p\nrate_card:\n  m-cap: { input_utok: 100000, output_utok: 200000 }\n",
+        "env": {
+          "CAP_KEY": "oracle-cred-cohere-0001"
+        },
+        "mock": {},
+        "steps": [
+          {
+            "request": {
+              "listener": "admin",
+              "method": "POST",
+              "path": "/api/v1/admin/keys",
+              "auth": "admin",
+              "headers": [
+                [
+                  "Content-Type",
+                  "application/json"
+                ]
+              ],
+              "body": "{\"name\":\"capture\",\"group\":\"oracle\"}"
+            },
+            "save": {
+              "VK": "token"
+            },
+            "record": false,
+            "expect": 201
+          },
+          {
+            "request": {
+              "listener": "data",
+              "method": "POST",
+              "path": "/v1/chat/completions",
+              "headers": [
+                [
+                  "Authorization",
+                  "Bearer {VK}"
+                ],
+                [
+                  "Content-Type",
+                  "application/json"
+                ]
+              ],
+              "body": "{\"model\":\"m-cap\",\"messages\":[{\"role\":\"user\",\"content\":\"ping\"}]}"
+            },
+            "record": "status"
+          }
+        ],
+        "mask": []
+      },
+      "why": "the cohere dialect's default credential: `Authorization: Bearer <key>`. Every byte of the upstream request is recorded (header order and case included); only the run's port is masked. Recorded from the published 1.5.5 binary: the auth object's `decorate` (KERNEL<>PLUGINS step 21) must reproduce it exactly."
+    },
+    {
+      "id": "egress.auth|cred-identity|gemini",
+      "plane": "core",
+      "family": "egress.auth",
+      "driver": "capture",
+      "outcome": "ok",
+      "capture": {
+        "providers": "p:\n  protocol: gemini\n  base_url: \"{CAPTURE_URL}\"\n",
+        "config": "listen: \"{LISTEN}\"\nadmin_listen: \"{ADMIN}\"\nproviders_file: \"{WORK}/providers.yaml\"\nidentity-providers:\n  admin-tokens:\n    module: admin-tokens\n    token: { env: BUSBAR_ADMIN_TOKEN }\nauth:\n  chain: [keys]\n  signing_key: { file: \"{WORK}/signing.key\" }\n  admin_auth: [admin-tokens]\ngroups:\n  oracle:\n    limits:\n      - { budget: 1000000, per: day }\nproviders:\n  p:\n    api_key: { env: CAP_KEY }\nmodels:\n  m-cap:\n    provider: p\nrate_card:\n  m-cap: { input_utok: 100000, output_utok: 200000 }\n",
+        "env": {
+          "CAP_KEY": "oracle-cred-gemini-0001"
+        },
+        "mock": {},
+        "steps": [
+          {
+            "request": {
+              "listener": "admin",
+              "method": "POST",
+              "path": "/api/v1/admin/keys",
+              "auth": "admin",
+              "headers": [
+                [
+                  "Content-Type",
+                  "application/json"
+                ]
+              ],
+              "body": "{\"name\":\"capture\",\"group\":\"oracle\"}"
+            },
+            "save": {
+              "VK": "token"
+            },
+            "record": false,
+            "expect": 201
+          },
+          {
+            "request": {
+              "listener": "data",
+              "method": "POST",
+              "path": "/v1/chat/completions",
+              "headers": [
+                [
+                  "Authorization",
+                  "Bearer {VK}"
+                ],
+                [
+                  "Content-Type",
+                  "application/json"
+                ]
+              ],
+              "body": "{\"model\":\"m-cap\",\"messages\":[{\"role\":\"user\",\"content\":\"ping\"}]}"
+            },
+            "record": "status"
+          }
+        ],
+        "mask": []
+      },
+      "why": "the gemini dialect's default credential: `x-goog-api-key: <key>` (never a `?key=` query parameter). Every byte of the upstream request is recorded (header order and case included); only the run's port is masked. Recorded from the published 1.5.5 binary: the auth object's `decorate` (KERNEL<>PLUGINS step 21) must reproduce it exactly."
+    },
+    {
+      "id": "egress.auth|cred-identity|openai",
+      "plane": "core",
+      "family": "egress.auth",
+      "driver": "capture",
+      "outcome": "ok",
+      "capture": {
+        "providers": "p:\n  protocol: openai\n  base_url: \"{CAPTURE_URL}\"\n",
+        "config": "listen: \"{LISTEN}\"\nadmin_listen: \"{ADMIN}\"\nproviders_file: \"{WORK}/providers.yaml\"\nidentity-providers:\n  admin-tokens:\n    module: admin-tokens\n    token: { env: BUSBAR_ADMIN_TOKEN }\nauth:\n  chain: [keys]\n  signing_key: { file: \"{WORK}/signing.key\" }\n  admin_auth: [admin-tokens]\ngroups:\n  oracle:\n    limits:\n      - { budget: 1000000, per: day }\nproviders:\n  p:\n    api_key: { env: CAP_KEY }\nmodels:\n  m-cap:\n    provider: p\nrate_card:\n  m-cap: { input_utok: 100000, output_utok: 200000 }\n",
+        "env": {
+          "CAP_KEY": "oracle-cred-openai-0001"
+        },
+        "mock": {},
+        "steps": [
+          {
+            "request": {
+              "listener": "admin",
+              "method": "POST",
+              "path": "/api/v1/admin/keys",
+              "auth": "admin",
+              "headers": [
+                [
+                  "Content-Type",
+                  "application/json"
+                ]
+              ],
+              "body": "{\"name\":\"capture\",\"group\":\"oracle\"}"
+            },
+            "save": {
+              "VK": "token"
+            },
+            "record": false,
+            "expect": 201
+          },
+          {
+            "request": {
+              "listener": "data",
+              "method": "POST",
+              "path": "/v1/chat/completions",
+              "headers": [
+                [
+                  "Authorization",
+                  "Bearer {VK}"
+                ],
+                [
+                  "Content-Type",
+                  "application/json"
+                ]
+              ],
+              "body": "{\"model\":\"m-cap\",\"messages\":[{\"role\":\"user\",\"content\":\"ping\"}]}"
+            },
+            "record": "status"
+          }
+        ],
+        "mask": []
+      },
+      "why": "the openai dialect's default credential: `Authorization: Bearer <key>`. Every byte of the upstream request is recorded (header order and case included); only the run's port is masked. Recorded from the published 1.5.5 binary: the auth object's `decorate` (KERNEL<>PLUGINS step 21) must reproduce it exactly."
+    },
+    {
+      "id": "egress.auth|cred-identity|openai-api-key",
+      "plane": "core",
+      "family": "egress.auth",
+      "driver": "capture",
+      "outcome": "ok",
+      "capture": {
+        "providers": "p:\n  protocol: openai\n  base_url: \"{CAPTURE_URL}\"\n  auth: api-key\n",
+        "config": "listen: \"{LISTEN}\"\nadmin_listen: \"{ADMIN}\"\nproviders_file: \"{WORK}/providers.yaml\"\nidentity-providers:\n  admin-tokens:\n    module: admin-tokens\n    token: { env: BUSBAR_ADMIN_TOKEN }\nauth:\n  chain: [keys]\n  signing_key: { file: \"{WORK}/signing.key\" }\n  admin_auth: [admin-tokens]\ngroups:\n  oracle:\n    limits:\n      - { budget: 1000000, per: day }\nproviders:\n  p:\n    api_key: { env: CAP_KEY }\nmodels:\n  m-cap:\n    provider: p\nrate_card:\n  m-cap: { input_utok: 100000, output_utok: 200000 }\n",
+        "env": {
+          "CAP_KEY": "oracle-cred-openai-api-key-0001"
+        },
+        "mock": {},
+        "steps": [
+          {
+            "request": {
+              "listener": "admin",
+              "method": "POST",
+              "path": "/api/v1/admin/keys",
+              "auth": "admin",
+              "headers": [
+                [
+                  "Content-Type",
+                  "application/json"
+                ]
+              ],
+              "body": "{\"name\":\"capture\",\"group\":\"oracle\"}"
+            },
+            "save": {
+              "VK": "token"
+            },
+            "record": false,
+            "expect": 201
+          },
+          {
+            "request": {
+              "listener": "data",
+              "method": "POST",
+              "path": "/v1/chat/completions",
+              "headers": [
+                [
+                  "Authorization",
+                  "Bearer {VK}"
+                ],
+                [
+                  "Content-Type",
+                  "application/json"
+                ]
+              ],
+              "body": "{\"model\":\"m-cap\",\"messages\":[{\"role\":\"user\",\"content\":\"ping\"}]}"
+            },
+            "record": "status"
+          }
+        ],
+        "mask": []
+      },
+      "why": "the `auth: api-key` override on an openai provider: the header-style key (Azure OpenAI's `api-key: <key>`) instead of a bearer. Every byte of the upstream request is recorded (header order and case included); only the run's port is masked. Recorded from the published 1.5.5 binary: the auth object's `decorate` (KERNEL<>PLUGINS step 21) must reproduce it exactly."
+    },
+    {
+      "id": "egress.auth|cred-identity|responses",
+      "plane": "core",
+      "family": "egress.auth",
+      "driver": "capture",
+      "outcome": "ok",
+      "capture": {
+        "providers": "p:\n  protocol: responses\n  base_url: \"{CAPTURE_URL}\"\n",
+        "config": "listen: \"{LISTEN}\"\nadmin_listen: \"{ADMIN}\"\nproviders_file: \"{WORK}/providers.yaml\"\nidentity-providers:\n  admin-tokens:\n    module: admin-tokens\n    token: { env: BUSBAR_ADMIN_TOKEN }\nauth:\n  chain: [keys]\n  signing_key: { file: \"{WORK}/signing.key\" }\n  admin_auth: [admin-tokens]\ngroups:\n  oracle:\n    limits:\n      - { budget: 1000000, per: day }\nproviders:\n  p:\n    api_key: { env: CAP_KEY }\nmodels:\n  m-cap:\n    provider: p\nrate_card:\n  m-cap: { input_utok: 100000, output_utok: 200000 }\n",
+        "env": {
+          "CAP_KEY": "oracle-cred-responses-0001"
+        },
+        "mock": {},
+        "steps": [
+          {
+            "request": {
+              "listener": "admin",
+              "method": "POST",
+              "path": "/api/v1/admin/keys",
+              "auth": "admin",
+              "headers": [
+                [
+                  "Content-Type",
+                  "application/json"
+                ]
+              ],
+              "body": "{\"name\":\"capture\",\"group\":\"oracle\"}"
+            },
+            "save": {
+              "VK": "token"
+            },
+            "record": false,
+            "expect": 201
+          },
+          {
+            "request": {
+              "listener": "data",
+              "method": "POST",
+              "path": "/v1/chat/completions",
+              "headers": [
+                [
+                  "Authorization",
+                  "Bearer {VK}"
+                ],
+                [
+                  "Content-Type",
+                  "application/json"
+                ]
+              ],
+              "body": "{\"model\":\"m-cap\",\"messages\":[{\"role\":\"user\",\"content\":\"ping\"}]}"
+            },
+            "record": "status"
+          }
+        ],
+        "mask": []
+      },
+      "why": "the responses dialect's default credential: `Authorization: Bearer <key>`. Every byte of the upstream request is recorded (header order and case included); only the run's port is masked. Recorded from the published 1.5.5 binary: the auth object's `decorate` (KERNEL<>PLUGINS step 21) must reproduce it exactly."
+    },
+    {
+      "id": "egress.auth|h2|bearer",
+      "plane": "core",
+      "family": "egress.auth",
+      "driver": "capture",
+      "outcome": "ok",
+      "capture": {
+        "providers": "p:\n  protocol: openai\n  base_url: \"{CAPTURE_URL}\"\n",
+        "config": "listen: \"{LISTEN}\"\nadmin_listen: \"{ADMIN}\"\nproviders_file: \"{WORK}/providers.yaml\"\nidentity-providers:\n  admin-tokens:\n    module: admin-tokens\n    token: { env: BUSBAR_ADMIN_TOKEN }\nauth:\n  chain: [keys]\n  signing_key: { file: \"{WORK}/signing.key\" }\n  admin_auth: [admin-tokens]\ngroups:\n  oracle:\n    limits:\n      - { budget: 1000000, per: day }\nproviders:\n  p:\n    api_key: { env: CAP_KEY }\nmodels:\n  m-cap:\n    provider: p\nrate_card:\n  m-cap: { input_utok: 100000, output_utok: 200000 }\nadvanced:\n  upstream_h2_prior_knowledge: true\n",
+        "env": {
+          "CAP_KEY": "oracle-cred-h2-0001"
+        },
+        "mock": {},
+        "steps": [
+          {
+            "request": {
+              "listener": "admin",
+              "method": "POST",
+              "path": "/api/v1/admin/keys",
+              "auth": "admin",
+              "headers": [
+                [
+                  "Content-Type",
+                  "application/json"
+                ]
+              ],
+              "body": "{\"name\":\"capture\",\"group\":\"oracle\"}"
+            },
+            "save": {
+              "VK": "token"
+            },
+            "record": false,
+            "expect": 201
+          },
+          {
+            "request": {
+              "listener": "data",
+              "method": "POST",
+              "path": "/v1/chat/completions",
+              "headers": [
+                [
+                  "Authorization",
+                  "Bearer {VK}"
+                ],
+                [
+                  "Content-Type",
+                  "application/json"
+                ]
+              ],
+              "body": "{\"model\":\"m-cap\",\"messages\":[{\"role\":\"user\",\"content\":\"ping\"}]}"
+            },
+            "record": "status"
+          }
+        ],
+        "mask": []
+      },
+      "why": "an openai bearer request over HTTP/2 prior knowledge (`advanced.upstream_h2_prior_knowledge: true`, h2c): the client's SETTINGS and frame sequence, and every header field in wire order WITH its HPACK representation (indexed / literal / never-indexed, Huffman or raw) and its exact bytes \u2014 the credential's representation is part of what 1.5.5 sent. Only the `:authority` field (it carries the run's port) keeps its representation without its bytes. KERNEL<>PLUGINS step 22's h2 bearer bytes are compared against this."
+    },
+    {
+      "id": "egress.auth|jwt-bearer|mint-refresh",
+      "plane": "core",
+      "family": "egress.auth",
+      "driver": "capture",
+      "outcome": "ok",
+      "capture": {
+        "providers": "p:\n  protocol: gemini\n  base_url: \"{CAPTURE_URL}\"\n  auth: jwt-bearer\n",
+        "config": "listen: \"{LISTEN}\"\nadmin_listen: \"{ADMIN}\"\nproviders_file: \"{WORK}/providers.yaml\"\nidentity-providers:\n  admin-tokens:\n    module: admin-tokens\n    token: { env: BUSBAR_ADMIN_TOKEN }\nauth:\n  chain: [keys]\n  signing_key: { file: \"{WORK}/signing.key\" }\n  admin_auth: [admin-tokens]\ngroups:\n  oracle:\n    limits:\n      - { budget: 1000000, per: day }\nproviders:\n  p:\n    api_key: { env: CAP_KEY }\nmodels:\n  m-cap:\n    provider: p\nrate_card:\n  m-cap: { input_utok: 100000, output_utok: 200000 }\n",
+        "env": {
+          "CAP_KEY": "{ORACLE_SA_JSON}"
+        },
+        "mock": {
+          "token_path": "/token",
+          "token_expires_in": [
+            2,
+            3600
+          ],
+          "token_prefix": "oracle-minted"
+        },
+        "steps": [
+          {
+            "request": {
+              "listener": "admin",
+              "method": "POST",
+              "path": "/api/v1/admin/keys",
+              "auth": "admin",
+              "headers": [
+                [
+                  "Content-Type",
+                  "application/json"
+                ]
+              ],
+              "body": "{\"name\":\"capture\",\"group\":\"oracle\"}"
+            },
+            "save": {
+              "VK": "token"
+            },
+            "record": false,
+            "expect": 201
+          },
+          {
+            "wait": {
+              "role": "token",
+              "count": 1,
+              "secs": 20
+            }
+          },
+          {
+            "sleep_ms": 300
+          },
+          {
+            "request": {
+              "listener": "data",
+              "method": "POST",
+              "path": "/v1/chat/completions",
+              "headers": [
+                [
+                  "Authorization",
+                  "Bearer {VK}"
+                ],
+                [
+                  "Content-Type",
+                  "application/json"
+                ]
+              ],
+              "body": "{\"model\":\"m-cap\",\"messages\":[{\"role\":\"user\",\"content\":\"ping\"}]}"
+            },
+            "record": "status"
+          },
+          {
+            "wait": {
+              "role": "token",
+              "count": 2,
+              "secs": 20
+            }
+          },
+          {
+            "sleep_ms": 300
+          },
+          {
+            "request": {
+              "listener": "data",
+              "method": "POST",
+              "path": "/v1/chat/completions",
+              "headers": [
+                [
+                  "Authorization",
+                  "Bearer {VK}"
+                ],
+                [
+                  "Content-Type",
+                  "application/json"
+                ]
+              ],
+              "body": "{\"model\":\"m-cap\",\"messages\":[{\"role\":\"user\",\"content\":\"ping\"}]}"
+            },
+            "record": "status"
+          }
+        ],
+        "mask": [
+          [
+            "assertion=[A-Za-z0-9_\\-\\.%]+",
+            "assertion=<JWT>"
+          ],
+          [
+            "\"(iat|exp)\":\\d+",
+            "\"$1\":<$1>"
+          ]
+        ],
+        "jwt": {
+          "private_key_pem": "{ORACLE_SA_KEY_PEM}"
+        }
+      },
+      "why": "`auth: jwt-bearer` (RFC 7523) from a service-account key: the assertion's header and claim JSON bytes (iss/scope/aud order and escaping; iat/exp masked, exp-iat kept), the form it is POSTed in, the refresh POST, and the bearer each chat carries. The RS256 signature is PROVEN, not trusted: the driver re-signs header.claims with the service-account key and compares byte for byte (`jwt.signature_matches_resign`). KERNEL<>PLUGINS step 22's RFC 7523 JWT is compared against this."
+    },
+    {
+      "id": "egress.auth|login-hop|oidc",
+      "plane": "core",
+      "family": "egress.auth",
+      "driver": "capture",
+      "outcome": "ok",
+      "capture": {
+        "providers": "p:\n  protocol: openai\n  base_url: \"{CAPTURE_URL}\"\n",
+        "config": "listen: \"{LISTEN}\"\nadmin_listen: \"{ADMIN}\"\nproviders_file: \"{WORK}/providers.yaml\"\npublic_url: \"https://busbar.oracle.example\"\nplugins:\n  enabled: true\n  dir: \"{WORK}/plugins\"\nidentity-providers:\n  admin-tokens:\n    module: admin-tokens\n    token: { env: BUSBAR_ADMIN_TOKEN }\n  oidc:\n    module: oidc\n    settings:\n      issuer: \"{CAPTURE_URL}\"\n      audience: \"oracle-oidc-client-0001\"\n      jwks_url: \"{CAPTURE_URL}/jwks\"\n      authorization_endpoint: \"{CAPTURE_URL}/authorize\"\n      token_endpoint: \"{CAPTURE_URL}/token\"\n    browser_login:\n      client_secret: { env: CAP_OIDC_SECRET }\nauth:\n  chain: [keys, oidc]\n  signing_key: { file: \"{WORK}/signing.key\" }\n  admin_auth: [admin-tokens]\ngroups:\n  oracle:\n    limits:\n      - { budget: 1000000, per: day }\nproviders:\n  p:\n    api_key: { env: CAP_KEY }\nmodels:\n  m-cap:\n    provider: p\nrate_card:\n  m-cap: { input_utok: 100000, output_utok: 200000 }\n",
+        "env": {
+          "CAP_KEY": "oracle-cred-login-0001",
+          "CAP_OIDC_SECRET": "oracle-oidc-secret:0001/+="
+        },
+        "mock": {
+          "token_path": "/token",
+          "token_prefix": "oracle-login",
+          "fixed": [
+            {
+              "path": "/jwks",
+              "status": 200,
+              "content_type": "application/json",
+              "body": "{\"keys\":[]}"
+            }
+          ]
+        },
+        "steps": [
+          {
+            "request": {
+              "listener": "data",
+              "method": "GET",
+              "path": "/auth/token?method=oidc",
+              "headers": []
+            },
+            "save_header": {
+              "STATE": [
+                "location",
+                "[?&]state=([^&]+)"
+              ],
+              "COOKIE": [
+                "set-cookie",
+                "^([^;]+)"
+              ]
+            },
+            "record": false,
+            "expect": 302
+          },
+          {
+            "request": {
+              "listener": "data",
+              "method": "GET",
+              "path": "/auth/token?code=oracle-code-0001&state={STATE}",
+              "headers": [
+                [
+                  "Cookie",
+                  "{COOKIE}"
+                ]
+              ]
+            },
+            "record": "status"
+          },
+          {
+            "wait": {
+              "role": "token",
+              "count": 1,
+              "secs": 20
+            }
+          },
+          {
+            "sleep_ms": 300
+          }
+        ],
+        "mask": [
+          [
+            "code_verifier=[A-Za-z0-9_\\-]+",
+            "code_verifier=<PKCE>"
+          ],
+          [
+            "([?&])state=[A-Za-z0-9_\\-]+",
+            "${1}state=<STATE>"
+          ]
+        ],
+        "plugins": [
+          "auth-oidc"
+        ]
+      },
+      "why": "the hosted browser login's token-exchange HOP: GET /auth/token?method=oidc (the 302 to the IdP; its state and login cookie carried forward), then the IdP's callback GET /auth/token?code=\u2026&state=\u2026, on which busbar POSTs the published auth-oidc module's authorization-code form to the token endpoint with the configured client_secret injected. Recorded: every byte of that POST (method, target, every header in wire order \u2014 1.5.5's reqwest `request().form()` adds its own \u2014 and the form body, field order and encoding included) and the callback's status. Only the PKCE `code_verifier` and the login `state` (random per login) are masked. KERNEL<>PLUGINS step 21 (the auth kind's login call) and the connector/http-door move of the kernel egress are compared against this."
+    },
+    {
+      "id": "egress.auth|oauth-cc|mint-refresh",
+      "plane": "core",
+      "family": "egress.auth",
+      "driver": "capture",
+      "outcome": "ok",
+      "capture": {
+        "providers": "p:\n  protocol: openai\n  base_url: \"{CAPTURE_URL}\"\n  auth: oauth-client-credentials\n  token_url: \"{CAPTURE_URL}/token\"\n  scope: \"https://cognitiveservices.azure.com/.default\"\n",
+        "config": "listen: \"{LISTEN}\"\nadmin_listen: \"{ADMIN}\"\nproviders_file: \"{WORK}/providers.yaml\"\nidentity-providers:\n  admin-tokens:\n    module: admin-tokens\n    token: { env: BUSBAR_ADMIN_TOKEN }\nauth:\n  chain: [keys]\n  signing_key: { file: \"{WORK}/signing.key\" }\n  admin_auth: [admin-tokens]\ngroups:\n  oracle:\n    limits:\n      - { budget: 1000000, per: day }\nproviders:\n  p:\n    api_key: { env: CAP_KEY }\nmodels:\n  m-cap:\n    provider: p\nrate_card:\n  m-cap: { input_utok: 100000, output_utok: 200000 }\n",
+        "env": {
+          "CAP_KEY": "oracle-client-0001:oracle:secret:with:colons"
+        },
+        "mock": {
+          "token_path": "/token",
+          "token_expires_in": [
+            2,
+            3600
+          ],
+          "token_prefix": "oracle-minted"
+        },
+        "steps": [
+          {
+            "request": {
+              "listener": "admin",
+              "method": "POST",
+              "path": "/api/v1/admin/keys",
+              "auth": "admin",
+              "headers": [
+                [
+                  "Content-Type",
+                  "application/json"
+                ]
+              ],
+              "body": "{\"name\":\"capture\",\"group\":\"oracle\"}"
+            },
+            "save": {
+              "VK": "token"
+            },
+            "record": false,
+            "expect": 201
+          },
+          {
+            "wait": {
+              "role": "token",
+              "count": 1,
+              "secs": 20
+            }
+          },
+          {
+            "sleep_ms": 300
+          },
+          {
+            "request": {
+              "listener": "data",
+              "method": "POST",
+              "path": "/v1/chat/completions",
+              "headers": [
+                [
+                  "Authorization",
+                  "Bearer {VK}"
+                ],
+                [
+                  "Content-Type",
+                  "application/json"
+                ]
+              ],
+              "body": "{\"model\":\"m-cap\",\"messages\":[{\"role\":\"user\",\"content\":\"ping\"}]}"
+            },
+            "record": "status"
+          },
+          {
+            "wait": {
+              "role": "token",
+              "count": 2,
+              "secs": 20
+            }
+          },
+          {
+            "sleep_ms": 300
+          },
+          {
+            "request": {
+              "listener": "data",
+              "method": "POST",
+              "path": "/v1/chat/completions",
+              "headers": [
+                [
+                  "Authorization",
+                  "Bearer {VK}"
+                ],
+                [
+                  "Content-Type",
+                  "application/json"
+                ]
+              ],
+              "body": "{\"model\":\"m-cap\",\"messages\":[{\"role\":\"user\",\"content\":\"ping\"}]}"
+            },
+            "record": "status"
+          }
+        ],
+        "mask": []
+      },
+      "why": "`auth: oauth-client-credentials`: the client-credentials MINT POST at boot and the REFRESH POST the 1.5.5 refresh loop makes (first token expires_in 2 -> re-mint after 1 s), byte for byte (form field order, encoding, the client secret with its colons), then the bearer each chat carries (the first token, then the refreshed one). KERNEL<>PLUGINS step 22 (minting inside busbar-auth-outbound) is compared against this."
+    },
+    {
+      "id": "egress.auth|sigv4|session-token",
+      "plane": "core",
+      "family": "egress.auth",
+      "driver": "capture",
+      "outcome": "ok",
+      "capture": {
+        "providers": "p:\n  protocol: bedrock\n  base_url: \"{CAPTURE_URL}\"\n",
+        "config": "listen: \"{LISTEN}\"\nadmin_listen: \"{ADMIN}\"\nproviders_file: \"{WORK}/providers.yaml\"\nidentity-providers:\n  admin-tokens:\n    module: admin-tokens\n    token: { env: BUSBAR_ADMIN_TOKEN }\nauth:\n  chain: [keys]\n  signing_key: { file: \"{WORK}/signing.key\" }\n  admin_auth: [admin-tokens]\ngroups:\n  oracle:\n    limits:\n      - { budget: 1000000, per: day }\nproviders:\n  p:\n    api_key: { env: CAP_KEY }\nmodels:\n  m-cap:\n    provider: p\nrate_card:\n  m-cap: { input_utok: 100000, output_utok: 200000 }\n",
+        "env": {
+          "CAP_KEY": "AKIDORACLECAPTURE02:oracle/capture+secret/0002:OracleSessionToken//+capture=0002"
+        },
+        "mock": {},
+        "steps": [
+          {
+            "request": {
+              "listener": "admin",
+              "method": "POST",
+              "path": "/api/v1/admin/keys",
+              "auth": "admin",
+              "headers": [
+                [
+                  "Content-Type",
+                  "application/json"
+                ]
+              ],
+              "body": "{\"name\":\"capture\",\"group\":\"oracle\"}"
+            },
+            "save": {
+              "VK": "token"
+            },
+            "record": false,
+            "expect": 201
+          },
+          {
+            "request": {
+              "listener": "data",
+              "method": "POST",
+              "path": "/v1/chat/completions",
+              "headers": [
+                [
+                  "Authorization",
+                  "Bearer {VK}"
+                ],
+                [
+                  "Content-Type",
+                  "application/json"
+                ]
+              ],
+              "body": "{\"model\":\"m-cap\",\"messages\":[{\"role\":\"user\",\"content\":\"ping\"}]}"
+            },
+            "record": "status"
+          }
+        ],
+        "mask": [
+          [
+            "\\d{8}T\\d{6}Z",
+            "<AMZ-DATE>"
+          ],
+          [
+            "Signature=[0-9a-f]{64}",
+            "Signature=<SIGNATURE>"
+          ],
+          [
+            "/\\d{8}/",
+            "/<DATE>/"
+          ]
+        ],
+        "sigv4": {
+          "secret": "oracle/capture+secret/0002"
+        }
+      },
+      "why": "SigV4 with a SESSION token (`ACCESS:SECRET:TOKEN`): `x-amz-security-token` is sent AND signed (it is in SignedHeaders and the canonical request). Clock-bound parts masked and proven by re-derivation (`sigv4.signature_valid`); the canonical request is recorded so the header set, order and values the signature covers are pinned. KERNEL<>PLUGINS step 22's SigV4 vector is compared against this."
+    },
+    {
+      "id": "egress.fetch|plugins|url",
+      "plane": "core",
+      "family": "egress.fetch",
+      "driver": "capture",
+      "outcome": "ok",
+      "capture": {
+        "providers": "p:\n  protocol: openai\n  base_url: \"{CAPTURE_URL}\"\n",
+        "config": "listen: \"{LISTEN}\"\nadmin_listen: \"{ADMIN}\"\nproviders_file: \"{WORK}/providers.yaml\"\nidentity-providers:\n  admin-tokens:\n    module: admin-tokens\n    token: { env: BUSBAR_ADMIN_TOKEN }\nauth:\n  chain: [keys]\n  signing_key: { file: \"{WORK}/signing.key\" }\n  admin_auth: [admin-tokens]\ngroups:\n  oracle:\n    limits:\n      - { budget: 1000000, per: day }\nproviders:\n  p:\n    api_key: { env: CAP_KEY }\nmodels:\n  m-cap:\n    provider: p\nrate_card:\n  m-cap: { input_utok: 100000, output_utok: 200000 }\nplugins:\n  enabled: true\n  dir: \"{WORK}/plugins\"\n  fetch:\n    - { url: \"{CAPTURE_URL}/releases/busbar-oracle-fetch-1.0.0.tar.gz\", sha256: \"1111111111111111111111111111111111111111111111111111111111111111\" }\n",
+        "env": {
+          "CAP_KEY": "oracle-cred-fetch-0001"
+        },
+        "mock": {
+          "fixed": [
+            {
+              "path": "/releases/busbar-oracle-fetch-1.0.0.tar.gz",
+              "status": 200,
+              "content_type": "application/octet-stream",
+              "body": "oracle: not a plugin tarball"
+            }
+          ]
+        },
+        "steps": [],
+        "mask": [
+          [
+            "\\] BUSBAR-[0-9]{4}: ",
+            "] "
+          ],
+          [
+            "\\x1b\\[[0-9;]*m",
+            ""
+          ],
+          [
+            "<TS> +",
+            "<TS> "
+          ]
+        ],
+        "boot": {
+          "expect": "exit",
+          "secs": 30
+        }
+      },
+      "why": "a `plugins.fetch: [{ url, sha256 }]` entry at boot: the download GET busbar sends (1.5.5's `Client::new().get()` \u2014 method, target, every header in wire order, the client's own defaults included), then, the body not hashing to the pin, the fatal boot refusal (fatal-on-miss at boot) and its exit code. The connector/http-door move of the kernel egress is compared against this."
+    },
+    {
+      "id": "export|prometheus|raw",
+      "plane": "core",
+      "family": "export",
+      "driver": "capture",
+      "outcome": "ok",
+      "capture": {
+        "providers": "p:\n  protocol: openai\n  base_url: \"{CAPTURE_URL}\"\n",
+        "config": "listen: \"{LISTEN}\"\nadmin_listen: \"{ADMIN}\"\nproviders_file: \"{WORK}/providers.yaml\"\nidentity-providers:\n  admin-tokens:\n    module: admin-tokens\n    token: { env: BUSBAR_ADMIN_TOKEN }\nauth:\n  chain: [keys]\n  signing_key: { file: \"{WORK}/signing.key\" }\n  admin_auth: [admin-tokens]\ngroups:\n  oracle:\n    limits:\n      - { budget: 1000000, per: day }\nproviders:\n  p:\n    api_key: { env: CAP_KEY }\nmodels:\n  m-cap:\n    provider: p\nrate_card:\n  m-cap: { input_utok: 100000, output_utok: 200000 }\nexport:\n  m:\n    module: prometheus\n    settings: { buffer_seconds: 60 }\n",
+        "env": {
+          "CAP_KEY": "oracle-cred-export-prom-0001"
+        },
+        "mock": {},
+        "steps": [
+          {
+            "request": {
+              "listener": "admin",
+              "method": "POST",
+              "path": "/api/v1/admin/keys",
+              "auth": "admin",
+              "headers": [
+                [
+                  "Content-Type",
+                  "application/json"
+                ]
+              ],
+              "body": "{\"name\":\"capture\",\"group\":\"oracle\"}"
+            },
+            "save": {
+              "VK": "token"
+            },
+            "record": false,
+            "expect": 201
+          },
+          {
+            "request": {
+              "listener": "data",
+              "method": "POST",
+              "path": "/v1/chat/completions",
+              "headers": [
+                [
+                  "Authorization",
+                  "Bearer {VK}"
+                ],
+                [
+                  "Content-Type",
+                  "application/json"
+                ]
+              ],
+              "body": "{\"model\":\"m-cap\",\"messages\":[{\"role\":\"user\",\"content\":\"ping\"}]}"
+            },
+            "record": "status"
+          },
+          {
+            "sleep_ms": 300
+          },
+          {
+            "request": {
+              "listener": "data",
+              "method": "GET",
+              "path": "/metrics",
+              "headers": [
+                [
+                  "Authorization",
+                  "Bearer {VK}"
+                ]
+              ]
+            },
+            "exposition": true
+          }
+        ],
+        "mask": [
+          [
+            "vk_[0-9a-f]{32}",
+            "vk_<KEY>"
+          ],
+          [
+            "(_seconds(?:_sum)?\\{[^}]*\\}) [0-9.eE+-]+",
+            "$1 <SECONDS>"
+          ]
+        ]
+      },
+      "why": "the prometheus export sink's PULL stream: a live `GET /metrics`, the exposition's stable structure (the kind runs, every family's HELP/TYPE lines and samples, block separators, the document end, the well-known route's response headers; the family order within a kind is 1.5.5's hash order and is not pinned) \u2014 the one export sink a loopback oracle rig can scrape directly. KERNEL<>PLUGINS step 39 (the export ABI's Metrics stream) is compared against this."
+    },
+    {
+      "id": "export|request-log-file|jsonl",
+      "plane": "core",
+      "family": "export",
+      "driver": "capture",
+      "outcome": "ok",
+      "capture": {
+        "providers": "p:\n  protocol: openai\n  base_url: \"{CAPTURE_URL}\"\n",
+        "config": "listen: \"{LISTEN}\"\nadmin_listen: \"{ADMIN}\"\nproviders_file: \"{WORK}/providers.yaml\"\nidentity-providers:\n  admin-tokens:\n    module: admin-tokens\n    token: { env: BUSBAR_ADMIN_TOKEN }\nauth:\n  chain: [keys]\n  signing_key: { file: \"{WORK}/signing.key\" }\n  admin_auth: [admin-tokens]\ngroups:\n  oracle:\n    limits:\n      - { budget: 1000000, per: day }\nproviders:\n  p:\n    api_key: { env: CAP_KEY }\nmodels:\n  m-cap:\n    provider: p\nrate_card:\n  m-cap: { input_utok: 100000, output_utok: 200000 }\nexport:\n  al:\n    module: request-log-file\n    settings: { path: \"{WORK}/audit.jsonl\" }\n",
+        "env": {
+          "CAP_KEY": "oracle-cred-export-file-0001"
+        },
+        "mock": {},
+        "steps": [
+          {
+            "request": {
+              "listener": "admin",
+              "method": "POST",
+              "path": "/api/v1/admin/keys",
+              "auth": "admin",
+              "headers": [
+                [
+                  "Content-Type",
+                  "application/json"
+                ]
+              ],
+              "body": "{\"name\":\"capture\",\"group\":\"oracle\"}"
+            },
+            "save": {
+              "VK": "token"
+            },
+            "record": false,
+            "expect": 201
+          },
+          {
+            "request": {
+              "listener": "data",
+              "method": "POST",
+              "path": "/v1/chat/completions",
+              "headers": [
+                [
+                  "Authorization",
+                  "Bearer {VK}"
+                ],
+                [
+                  "Content-Type",
+                  "application/json"
+                ]
+              ],
+              "body": "{\"model\":\"m-cap\",\"messages\":[{\"role\":\"user\",\"content\":\"ping\"}]}"
+            },
+            "record": "status"
+          },
+          {
+            "sleep_ms": 500
+          },
+          {
+            "read_file": "audit.jsonl"
+          }
+        ],
+        "mask": [
+          [
+            "\"request_id\":\\d+",
+            "\"request_id\":<REQUEST-ID>"
+          ],
+          [
+            "vk_[0-9a-f]{32}",
+            "vk_<KEY>"
+          ],
+          [
+            "\"(latency_ms|as_of|ts)\":[0-9.eE+-]+",
+            "\"$1\":<$1>"
+          ]
+        ]
+      },
+      "why": "the request-log-file export sink's PUSH stream: the JSONL line(s) it appends to disk per request, byte for byte (field order, the projection's default field set). KERNEL<>PLUGINS step 39 (the export ABI's RequestLog stream, file transport) is compared against this."
+    },
+    {
+      "id": "export|request-log-webhook|loopback-refused",
+      "plane": "core",
+      "family": "export",
+      "driver": "capture",
+      "outcome": "ok",
+      "capture": {
+        "providers": "p:\n  protocol: openai\n  base_url: \"{CAPTURE_URL}\"\n",
+        "config": "listen: \"{LISTEN}\"\nadmin_listen: \"{ADMIN}\"\nproviders_file: \"{WORK}/providers.yaml\"\nidentity-providers:\n  admin-tokens:\n    module: admin-tokens\n    token: { env: BUSBAR_ADMIN_TOKEN }\nauth:\n  chain: [keys]\n  signing_key: { file: \"{WORK}/signing.key\" }\n  admin_auth: [admin-tokens]\ngroups:\n  oracle:\n    limits:\n      - { budget: 1000000, per: day }\nproviders:\n  p:\n    api_key: { env: CAP_KEY }\nmodels:\n  m-cap:\n    provider: p\nrate_card:\n  m-cap: { input_utok: 100000, output_utok: 200000 }\nexport:\n  wh:\n    module: request-log-webhook\n    settings: { url: \"{CAPTURE_URL}/sidecar\" }\n",
+        "env": {
+          "CAP_KEY": "oracle-cred-export-webhook-0001"
+        },
+        "mock": {
+          "sidecar_path": "/sidecar"
+        },
+        "steps": [
+          {
+            "request": {
+              "listener": "admin",
+              "method": "POST",
+              "path": "/api/v1/admin/keys",
+              "auth": "admin",
+              "headers": [
+                [
+                  "Content-Type",
+                  "application/json"
+                ]
+              ],
+              "body": "{\"name\":\"capture\",\"group\":\"oracle\"}"
+            },
+            "save": {
+              "VK": "token"
+            },
+            "record": false,
+            "expect": 201
+          },
+          {
+            "request": {
+              "listener": "data",
+              "method": "POST",
+              "path": "/v1/chat/completions",
+              "headers": [
+                [
+                  "Authorization",
+                  "Bearer {VK}"
+                ],
+                [
+                  "Content-Type",
+                  "application/json"
+                ]
+              ],
+              "body": "{\"model\":\"m-cap\",\"messages\":[{\"role\":\"user\",\"content\":\"ping\"}]}"
+            },
+            "record": "status"
+          },
+          {
+            "sleep_ms": 500
+          },
+          {
+            "read_file": "busbar.log"
+          }
+        ],
+        "mask": [
+          [
+            "\\x1b\\[[0-9;]*m",
+            ""
+          ]
+        ]
+      },
+      "why": "the request-log-webhook export sink's config-time SSRF guard (`crate::observability::validate_webhook_url`): an oracle capture mock's `http://127.0.0.1:*` target is exactly what it exists to refuse (https-only, loopback/private/CGNAT blocked). Boot succeeds (the guard is fail-soft, not a boot gate); `push_target` logs the refusal at ERROR and disables the sink. Recorded: that log line and that zero sidecar deliveries arrive despite a served chat, instead of a delivery capture no loopback rig can honestly produce for this sink."
     },
     {
       "id": "hazard|no-data-dir|files",
@@ -32576,6 +33841,154 @@
       "fresh": true
     },
     {
+      "id": "ops.raw|header-order",
+      "plane": "core",
+      "family": "ops.raw",
+      "driver": "capture",
+      "outcome": "ok",
+      "capture": {
+        "providers": "p:\n  protocol: openai\n  base_url: \"{CAPTURE_URL}\"\n",
+        "config": "listen: \"{LISTEN}\"\nadmin_listen: \"{ADMIN}\"\nproviders_file: \"{WORK}/providers.yaml\"\nidentity-providers:\n  admin-tokens:\n    module: admin-tokens\n    token: { env: BUSBAR_ADMIN_TOKEN }\nauth:\n  chain: [keys]\n  signing_key: { file: \"{WORK}/signing.key\" }\n  admin_auth: [admin-tokens]\ngroups:\n  oracle:\n    limits:\n      - { budget: 1000000, per: day }\nproviders:\n  p:\n    api_key: { env: CAP_KEY }\nmodels:\n  m-cap:\n    provider: p\nrate_card:\n  m-cap: { input_utok: 100000, output_utok: 200000 }\nexport:\n  metrics: { module: prometheus, settings: { buffer_seconds: 60 } }\n",
+        "env": {
+          "CAP_KEY": "oracle-cred-headers-0001"
+        },
+        "mock": {},
+        "steps": [
+          {
+            "request": {
+              "listener": "admin",
+              "method": "POST",
+              "path": "/api/v1/admin/keys",
+              "auth": "admin",
+              "headers": [
+                [
+                  "Content-Type",
+                  "application/json"
+                ]
+              ],
+              "body": "{\"name\":\"capture\",\"group\":\"oracle\"}"
+            },
+            "save": {
+              "VK": "token"
+            },
+            "record": false,
+            "expect": 201
+          },
+          {
+            "request": {
+              "listener": "data",
+              "method": "GET",
+              "path": "/healthz",
+              "headers": []
+            },
+            "record": "head"
+          },
+          {
+            "request": {
+              "listener": "admin",
+              "method": "GET",
+              "path": "/healthz",
+              "headers": []
+            },
+            "record": "head"
+          },
+          {
+            "request": {
+              "listener": "data",
+              "method": "GET",
+              "path": "/v1/models",
+              "headers": [
+                [
+                  "Authorization",
+                  "Bearer {VK}"
+                ]
+              ]
+            },
+            "record": "head"
+          },
+          {
+            "request": {
+              "listener": "data",
+              "method": "POST",
+              "path": "/v1/chat/completions",
+              "headers": [
+                [
+                  "Authorization",
+                  "Bearer {VK}"
+                ],
+                [
+                  "Content-Type",
+                  "application/json"
+                ]
+              ],
+              "body": "{\"model\":\"m-cap\",\"messages\":[{\"role\":\"user\",\"content\":\"ping\"}]}"
+            },
+            "record": "head"
+          },
+          {
+            "request": {
+              "listener": "data",
+              "method": "POST",
+              "path": "/v1/chat/completions",
+              "headers": [
+                [
+                  "Authorization",
+                  "Bearer {VK}"
+                ],
+                [
+                  "Content-Type",
+                  "application/json"
+                ]
+              ],
+              "body": "{\"model\":\"m-cap\",\"stream\":true,\"messages\":[{\"role\":\"user\",\"content\":\"ping\"}]}"
+            },
+            "record": "head"
+          },
+          {
+            "request": {
+              "listener": "data",
+              "method": "POST",
+              "path": "/v1/chat/completions",
+              "headers": [
+                [
+                  "Content-Type",
+                  "application/json"
+                ]
+              ],
+              "body": "{\"model\":\"m-cap\",\"messages\":[{\"role\":\"user\",\"content\":\"ping\"}]}"
+            },
+            "record": "head"
+          },
+          {
+            "request": {
+              "listener": "data",
+              "method": "GET",
+              "path": "/definitely/unknown",
+              "headers": [
+                [
+                  "Authorization",
+                  "Bearer {VK}"
+                ]
+              ]
+            },
+            "record": "head"
+          },
+          {
+            "request": {
+              "listener": "admin",
+              "method": "GET",
+              "path": "/api/v1/admin/info",
+              "headers": [],
+              "auth": "admin"
+            },
+            "record": "head"
+          }
+        ],
+        "mask": []
+      },
+      "why": "the response HEADER ORDER (and status line) of the surfaces a client or a scraper reads \u2014 /healthz on both listeners, /v1/models, a buffered chat, a streamed chat, an unauthenticated chat, an unknown path and the admin /info \u2014 as 1.5.5 writes them; the http family compares headers as a map, so order is checked nowhere else. KERNEL<>PLUGINS steps 20 and 25 (the http framer, inbound serving) are compared against this."
+    },
+    {
       "id": "ops.scrape|healthz|admin",
       "plane": "core",
       "family": "ops.scrape",
@@ -33139,6 +34552,301 @@
       }
     },
     {
+      "id": "route.529|direct|anthropic",
+      "plane": "core",
+      "family": "route.529",
+      "driver": "capture",
+      "outcome": "ok",
+      "capture": {
+        "providers": "p:\n  protocol: anthropic\n  base_url: \"{CAPTURE_URL}\"\n",
+        "config": "listen: \"{LISTEN}\"\nadmin_listen: \"{ADMIN}\"\nproviders_file: \"{WORK}/providers.yaml\"\nidentity-providers:\n  admin-tokens:\n    module: admin-tokens\n    token: { env: BUSBAR_ADMIN_TOKEN }\nauth:\n  chain: [keys]\n  signing_key: { file: \"{WORK}/signing.key\" }\n  admin_auth: [admin-tokens]\ngroups:\n  oracle:\n    limits:\n      - { budget: 1000000, per: day }\nproviders:\n  p:\n    api_key: { env: CAP_KEY }\nmodels:\n  m-cap:\n    provider: p\nrate_card:\n  m-cap: { input_utok: 100000, output_utok: 200000 }\nexport:\n  metrics: { module: prometheus, settings: { buffer_seconds: 60 } }\n",
+        "env": {
+          "CAP_KEY": "oracle-cred-529-0001"
+        },
+        "mock": {
+          "fixed": [
+            {
+              "path": "/v1/messages",
+              "status": 529,
+              "content_type": "application/json",
+              "body": "{\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"Overloaded\"}}"
+            }
+          ]
+        },
+        "steps": [
+          {
+            "request": {
+              "listener": "admin",
+              "method": "POST",
+              "path": "/api/v1/admin/keys",
+              "auth": "admin",
+              "headers": [
+                [
+                  "Content-Type",
+                  "application/json"
+                ]
+              ],
+              "body": "{\"name\":\"capture\",\"group\":\"oracle\"}"
+            },
+            "save": {
+              "VK": "token",
+              "KID": "id"
+            },
+            "record": false,
+            "expect": 201
+          },
+          {
+            "request": {
+              "listener": "data",
+              "method": "POST",
+              "path": "/v1/messages",
+              "headers": [
+                [
+                  "Authorization",
+                  "Bearer {VK}"
+                ],
+                [
+                  "anthropic-version",
+                  "2023-06-01"
+                ],
+                [
+                  "Content-Type",
+                  "application/json"
+                ]
+              ],
+              "body": "{\"model\":\"m-cap\",\"max_tokens\":16,\"messages\":[{\"role\":\"user\",\"content\":\"ping\"}]}"
+            }
+          },
+          {
+            "sleep_ms": 1500
+          },
+          {
+            "request": {
+              "listener": "data",
+              "method": "GET",
+              "path": "/metrics",
+              "headers": [
+                [
+                  "Authorization",
+                  "Bearer {VK}"
+                ]
+              ]
+            },
+            "metrics_grep": "^busbar_(upstream_attempts_total|upstream_failures_total|breaker_trips_total|requests_total|key_spend_cents|key_tokens_total)"
+          },
+          {
+            "request": {
+              "listener": "admin",
+              "method": "GET",
+              "path": "/api/v1/admin/keys/{KID}/usage",
+              "headers": [],
+              "auth": "admin"
+            }
+          }
+        ],
+        "mask": [
+          [
+            "vk_[0-9a-f]{32}",
+            "vk_<KEY>"
+          ]
+        ]
+      },
+      "why": "an anthropic lane answering 529 overloaded_error, no pool: the status and anthropic envelope the caller gets, the one attempt, the failure and breaker counters, and the key's usage (what is billed)"
+    },
+    {
+      "id": "route.529|failover|primary",
+      "plane": "core",
+      "family": "route.529",
+      "driver": "capture",
+      "outcome": "ok",
+      "capture": {
+        "providers": "po:\n  protocol: openai\n  base_url: \"{CAPTURE_URL}\"\npa:\n  protocol: anthropic\n  base_url: \"{CAPTURE_URL}\"\n",
+        "config": "listen: \"{LISTEN}\"\nadmin_listen: \"{ADMIN}\"\nproviders_file: \"{WORK}/providers.yaml\"\nidentity-providers:\n  admin-tokens:\n    module: admin-tokens\n    token: { env: BUSBAR_ADMIN_TOKEN }\nauth:\n  chain: [keys]\n  signing_key: { file: \"{WORK}/signing.key\" }\n  admin_auth: [admin-tokens]\ngroups:\n  oracle:\n    limits:\n      - { budget: 1000000, per: day }\nproviders:\n  po:\n    api_key: { env: CAP_KEY }\n  pa:\n    api_key: { env: CAP_KEY }\nmodels:\n  m-first:\n    provider: po\n  m-second:\n    provider: pa\nrate_card:\n  m-first: { input_utok: 100000, output_utok: 200000 }\n  m-second: { input_utok: 100000, output_utok: 200000 }\npools:\n  cap-fo:\n    members:\n      - { model: m-first, weight: 3 }\n      - { model: m-second, weight: 1 }\n    breaker: { base_cooldown_secs: 15, max_cooldown_secs: 120, trip: { mode: consecutive, consecutive_n: 1 } }\n    failover: { timeout_secs: 120, max_hops: 3 }\nexport:\n  metrics: { module: prometheus, settings: { buffer_seconds: 60 } }\n",
+        "env": {
+          "CAP_KEY": "oracle-cred-529-0002"
+        },
+        "mock": {
+          "fixed": [
+            {
+              "path": "/v1/chat/completions",
+              "status": 529,
+              "content_type": "application/json",
+              "body": "{\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"Overloaded\"}}"
+            }
+          ]
+        },
+        "steps": [
+          {
+            "request": {
+              "listener": "admin",
+              "method": "POST",
+              "path": "/api/v1/admin/keys",
+              "auth": "admin",
+              "headers": [
+                [
+                  "Content-Type",
+                  "application/json"
+                ]
+              ],
+              "body": "{\"name\":\"capture\",\"group\":\"oracle\"}"
+            },
+            "save": {
+              "VK": "token",
+              "KID": "id"
+            },
+            "record": false,
+            "expect": 201
+          },
+          {
+            "request": {
+              "listener": "data",
+              "method": "POST",
+              "path": "/v1/chat/completions",
+              "headers": [
+                [
+                  "Authorization",
+                  "Bearer {VK}"
+                ],
+                [
+                  "Content-Type",
+                  "application/json"
+                ]
+              ],
+              "body": "{\"model\":\"cap-fo\",\"messages\":[{\"role\":\"user\",\"content\":\"ping\"}]}"
+            },
+            "record": "status"
+          },
+          {
+            "sleep_ms": 1500
+          },
+          {
+            "request": {
+              "listener": "data",
+              "method": "GET",
+              "path": "/metrics",
+              "headers": [
+                [
+                  "Authorization",
+                  "Bearer {VK}"
+                ]
+              ]
+            },
+            "metrics_grep": "^busbar_(upstream_attempts_total|upstream_failures_total|breaker_trips_total|requests_total|key_spend_cents|key_tokens_total)"
+          },
+          {
+            "request": {
+              "listener": "admin",
+              "method": "GET",
+              "path": "/api/v1/admin/keys/{KID}/usage",
+              "headers": [],
+              "auth": "admin"
+            }
+          }
+        ],
+        "mask": [
+          [
+            "vk_[0-9a-f]{32}",
+            "vk_<KEY>"
+          ]
+        ]
+      },
+      "why": "a pool whose first member (openai) answers 529 and whose second (anthropic) serves: whether 1.5.5 walks on (one 529 attempt, one served attempt), the caller's answer, the breaker trip and failure counters, and the usage billed once. The answer is recorded as its status (its body shape is llm.wire's and S-5's)"
+    },
+    {
+      "id": "route.cheapest|card-swap",
+      "plane": "core",
+      "family": "route.cheapest",
+      "driver": "capture",
+      "outcome": "ok",
+      "capture": {
+        "providers": "p:\n  protocol: openai\n  base_url: \"{CAPTURE_URL}\"\n",
+        "config": "listen: \"{LISTEN}\"\nadmin_listen: \"{ADMIN}\"\nproviders_file: \"{WORK}/providers.yaml\"\nidentity-providers:\n  admin-tokens:\n    module: admin-tokens\n    token: { env: BUSBAR_ADMIN_TOKEN }\nauth:\n  chain: [keys]\n  signing_key: { file: \"{WORK}/signing.key\" }\n  admin_auth: [admin-tokens]\ngroups:\n  oracle:\n    limits:\n      - { budget: 1000000, per: day }\nproviders:\n  p:\n    api_key: { env: CAP_KEY }\nmodels:\n  m-dear:\n    provider: p\n  m-cheap:\n    provider: p\nrate_card:\n  m-dear: { input_utok: 100000, output_utok: 200000 }\n  m-cheap: { input_utok: 1000, output_utok: 2000 }\npools:\n  cap-cheapest:\n    hooks: [cheapest]\n    members:\n      - model: m-dear\n      - model: m-cheap\n",
+        "env": {
+          "CAP_KEY": "oracle-cred-cheapest-0001"
+        },
+        "mock": {},
+        "steps": [
+          {
+            "request": {
+              "listener": "admin",
+              "method": "POST",
+              "path": "/api/v1/admin/keys",
+              "auth": "admin",
+              "headers": [
+                [
+                  "Content-Type",
+                  "application/json"
+                ]
+              ],
+              "body": "{\"name\":\"capture\",\"group\":\"oracle\"}"
+            },
+            "save": {
+              "VK": "token"
+            },
+            "record": false,
+            "expect": 201
+          },
+          {
+            "request": {
+              "listener": "data",
+              "method": "POST",
+              "path": "/v1/chat/completions",
+              "headers": [
+                [
+                  "Authorization",
+                  "Bearer {VK}"
+                ],
+                [
+                  "Content-Type",
+                  "application/json"
+                ]
+              ],
+              "body": "{\"model\":\"cap-cheapest\",\"messages\":[{\"role\":\"user\",\"content\":\"ping\"}]}"
+            }
+          },
+          {
+            "request": {
+              "listener": "admin",
+              "method": "PUT",
+              "path": "/api/v1/admin/config/settings",
+              "auth": "admin",
+              "headers": [
+                [
+                  "Content-Type",
+                  "application/json"
+                ]
+              ],
+              "body": "{\"rate_card\":{\"m-cheap\":{\"input_utok\":100000,\"output_utok\":200000},\"m-dear\":{\"input_utok\":1000,\"output_utok\":2000}}}"
+            },
+            "record": "status"
+          },
+          {
+            "sleep_ms": 500
+          },
+          {
+            "request": {
+              "listener": "data",
+              "method": "POST",
+              "path": "/v1/chat/completions",
+              "headers": [
+                [
+                  "Authorization",
+                  "Bearer {VK}"
+                ],
+                [
+                  "Content-Type",
+                  "application/json"
+                ]
+              ],
+              "body": "{\"model\":\"cap-cheapest\",\"messages\":[{\"role\":\"user\",\"content\":\"ping\"}]}"
+            }
+          }
+        ],
+        "mask": []
+      },
+      "why": "`hooks: [cheapest]` over two lanes priced 100x apart: the first chat is served by the cheap lane; a rate-card swap through the admin API (PUT config/settings) inverts the prices, and the next chat is served by the OTHER lane \u2014 the ranking reads the card in force at the time of the request, not the one at boot (1.5.5 re-projects cost_per_mtok when the settings apply). The upstream bodies name the lane each chat reached. KERNEL<>PLUGINS step 30 (hooks-ranking inline, route_cost) is compared against this."
+    },
+    {
       "id": "route.failover|fb|all-down",
       "plane": "core",
       "family": "route.failover",
@@ -33485,6 +35193,538 @@
       "mock_control": {}
     },
     {
+      "id": "store.boot|postgres|key-value",
+      "plane": "core",
+      "family": "store.boot",
+      "driver": "capture",
+      "outcome": "ok",
+      "capture": {
+        "providers": "p:\n  protocol: openai\n  base_url: \"{CAPTURE_URL}\"\n",
+        "config": "listen: \"{LISTEN}\"\nadmin_listen: \"{ADMIN}\"\nproviders_file: \"{WORK}/providers.yaml\"\nidentity-providers:\n  admin-tokens:\n    module: admin-tokens\n    token: { env: BUSBAR_ADMIN_TOKEN }\nauth:\n  chain: [keys]\n  signing_key: { file: \"{WORK}/signing.key\" }\n  admin_auth: [admin-tokens]\ngroups:\n  oracle:\n    limits:\n      - { budget: 1000000, per: day }\nproviders:\n  p:\n    api_key: { env: CAP_KEY }\nmodels:\n  m-cap:\n    provider: p\nrate_card:\n  m-cap: { input_utok: 100000, output_utok: 200000 }\nplugins:\n  enabled: true\n  dir: \"{WORK}/plugins\"\nstore:\n  module: postgres\n  settings: { url: \"host=127.0.0.1 port={CAPTURE_PORT} user=oracle password=oracle-pw dbname=busbar application_name=kv-form\" }\n",
+        "env": {
+          "CAP_KEY": "oracle-cred-store-0001"
+        },
+        "mock": {
+          "pg": true
+        },
+        "steps": [],
+        "mask": [
+          [
+            "\\] BUSBAR-[0-9]{4}: ",
+            "] "
+          ],
+          [
+            "os error [0-9]+",
+            "os error <N>"
+          ],
+          [
+            "\\(os error <N>\\)",
+            "(os error <N>)"
+          ],
+          [
+            "\\x1b\\[[0-9;]*m",
+            ""
+          ],
+          [
+            "<TS> +",
+            "<TS> "
+          ]
+        ],
+        "plugins": [
+          "store-postgres"
+        ],
+        "boot": {
+          "expect": "exit",
+          "secs": 30
+        }
+      },
+      "why": "the libpq KEY=VALUE connection-string form instead of a URL. The published store plugin paired with 1.5.5 is staged; the boot's exit code and log lines are recorded (ports, OS error numbers and timestamps masked)."
+    },
+    {
+      "id": "store.boot|postgres|localhost",
+      "plane": "core",
+      "family": "store.boot",
+      "driver": "capture",
+      "outcome": "ok",
+      "capture": {
+        "providers": "p:\n  protocol: openai\n  base_url: \"{CAPTURE_URL}\"\n",
+        "config": "listen: \"{LISTEN}\"\nadmin_listen: \"{ADMIN}\"\nproviders_file: \"{WORK}/providers.yaml\"\nidentity-providers:\n  admin-tokens:\n    module: admin-tokens\n    token: { env: BUSBAR_ADMIN_TOKEN }\nauth:\n  chain: [keys]\n  signing_key: { file: \"{WORK}/signing.key\" }\n  admin_auth: [admin-tokens]\ngroups:\n  oracle:\n    limits:\n      - { budget: 1000000, per: day }\nproviders:\n  p:\n    api_key: { env: CAP_KEY }\nmodels:\n  m-cap:\n    provider: p\nrate_card:\n  m-cap: { input_utok: 100000, output_utok: 200000 }\nplugins:\n  enabled: true\n  dir: \"{WORK}/plugins\"\nstore:\n  module: postgres\n  settings: { url: \"postgres://oracle:oracle-pw@localhost:{CAPTURE_PORT}/busbar\" }\n",
+        "env": {
+          "CAP_KEY": "oracle-cred-store-0001"
+        },
+        "mock": {
+          "pg": true
+        },
+        "steps": [],
+        "mask": [
+          [
+            "\\] BUSBAR-[0-9]{4}: ",
+            "] "
+          ],
+          [
+            "os error [0-9]+",
+            "os error <N>"
+          ],
+          [
+            "\\(os error <N>\\)",
+            "(os error <N>)"
+          ],
+          [
+            "\\x1b\\[[0-9;]*m",
+            ""
+          ],
+          [
+            "<TS> +",
+            "<TS> "
+          ]
+        ],
+        "plugins": [
+          "store-postgres"
+        ],
+        "boot": {
+          "expect": "exit",
+          "secs": 30
+        }
+      },
+      "why": "the same by NAME (`localhost`): resolution and the dial order across the names it resolves to. The published store plugin paired with 1.5.5 is staged; the boot's exit code and log lines are recorded (ports, OS error numbers and timestamps masked)."
+    },
+    {
+      "id": "store.boot|postgres|loopback",
+      "plane": "core",
+      "family": "store.boot",
+      "driver": "capture",
+      "outcome": "ok",
+      "capture": {
+        "providers": "p:\n  protocol: openai\n  base_url: \"{CAPTURE_URL}\"\n",
+        "config": "listen: \"{LISTEN}\"\nadmin_listen: \"{ADMIN}\"\nproviders_file: \"{WORK}/providers.yaml\"\nidentity-providers:\n  admin-tokens:\n    module: admin-tokens\n    token: { env: BUSBAR_ADMIN_TOKEN }\nauth:\n  chain: [keys]\n  signing_key: { file: \"{WORK}/signing.key\" }\n  admin_auth: [admin-tokens]\ngroups:\n  oracle:\n    limits:\n      - { budget: 1000000, per: day }\nproviders:\n  p:\n    api_key: { env: CAP_KEY }\nmodels:\n  m-cap:\n    provider: p\nrate_card:\n  m-cap: { input_utok: 100000, output_utok: 200000 }\nplugins:\n  enabled: true\n  dir: \"{WORK}/plugins\"\nstore:\n  module: postgres\n  settings: { url: \"postgres://oracle:oracle-pw@127.0.0.1:{CAPTURE_PORT}/busbar\" }\n",
+        "env": {
+          "CAP_KEY": "oracle-cred-store-0001"
+        },
+        "mock": {
+          "pg": true
+        },
+        "steps": [],
+        "mask": [
+          [
+            "\\] BUSBAR-[0-9]{4}: ",
+            "] "
+          ],
+          [
+            "os error [0-9]+",
+            "os error <N>"
+          ],
+          [
+            "\\(os error <N>\\)",
+            "(os error <N>)"
+          ],
+          [
+            "\\x1b\\[[0-9;]*m",
+            ""
+          ],
+          [
+            "<TS> +",
+            "<TS> "
+          ]
+        ],
+        "plugins": [
+          "store-postgres"
+        ],
+        "boot": {
+          "expect": "exit",
+          "secs": 30
+        }
+      },
+      "why": "a postgres store on LOOPBACK: 1.5.5 dials it (the StartupMessage parameters are recorded in wire order) and, refused by the capture mock's ErrorResponse, stops the boot with the store error. The 1.6.0 `operator-infrastructure` egress class must admit loopback exactly as 1.5.5 did (the same bytes, the same boot lines). The published store plugin paired with 1.5.5 is staged; the boot's exit code and log lines are recorded (ports, OS error numbers and timestamps masked)."
+    },
+    {
+      "id": "store.boot|postgres|loopback-validate",
+      "plane": "core",
+      "family": "store.boot",
+      "driver": "capture",
+      "outcome": "ok",
+      "capture": {
+        "providers": "p:\n  protocol: openai\n  base_url: \"{CAPTURE_URL}\"\n",
+        "config": "listen: \"{LISTEN}\"\nadmin_listen: \"{ADMIN}\"\nproviders_file: \"{WORK}/providers.yaml\"\nidentity-providers:\n  admin-tokens:\n    module: admin-tokens\n    token: { env: BUSBAR_ADMIN_TOKEN }\nauth:\n  chain: [keys]\n  signing_key: { file: \"{WORK}/signing.key\" }\n  admin_auth: [admin-tokens]\ngroups:\n  oracle:\n    limits:\n      - { budget: 1000000, per: day }\nproviders:\n  p:\n    api_key: { env: CAP_KEY }\nmodels:\n  m-cap:\n    provider: p\nrate_card:\n  m-cap: { input_utok: 100000, output_utok: 200000 }\nplugins:\n  enabled: true\n  dir: \"{WORK}/plugins\"\nstore:\n  module: postgres\n  settings: { url: \"postgres://oracle:oracle-pw@127.0.0.1:5432/busbar\" }\n",
+        "env": {
+          "CAP_KEY": "oracle-cred-store-0001"
+        },
+        "mock": {},
+        "steps": [],
+        "mask": [
+          [
+            "\\] BUSBAR-[0-9]{4}: ",
+            "] "
+          ],
+          [
+            "os error [0-9]+",
+            "os error <N>"
+          ],
+          [
+            "\\(os error <N>\\)",
+            "(os error <N>)"
+          ],
+          [
+            "\\x1b\\[[0-9;]*m",
+            ""
+          ],
+          [
+            "<TS> +",
+            "<TS> "
+          ]
+        ],
+        "plugins": [
+          "store-postgres"
+        ],
+        "boot": {
+          "expect": "exit",
+          "secs": 30,
+          "args": [
+            "--validate"
+          ]
+        }
+      },
+      "why": "a postgres store on loopback under `--validate`. The published store plugin paired with 1.5.5 is staged; the boot's exit code and log lines are recorded (ports, OS error numbers and timestamps masked)."
+    },
+    {
+      "id": "store.boot|postgres|multi-host",
+      "plane": "core",
+      "family": "store.boot",
+      "driver": "capture",
+      "outcome": "ok",
+      "capture": {
+        "providers": "p:\n  protocol: openai\n  base_url: \"{CAPTURE_URL}\"\n",
+        "config": "listen: \"{LISTEN}\"\nadmin_listen: \"{ADMIN}\"\nproviders_file: \"{WORK}/providers.yaml\"\nidentity-providers:\n  admin-tokens:\n    module: admin-tokens\n    token: { env: BUSBAR_ADMIN_TOKEN }\nauth:\n  chain: [keys]\n  signing_key: { file: \"{WORK}/signing.key\" }\n  admin_auth: [admin-tokens]\ngroups:\n  oracle:\n    limits:\n      - { budget: 1000000, per: day }\nproviders:\n  p:\n    api_key: { env: CAP_KEY }\nmodels:\n  m-cap:\n    provider: p\nrate_card:\n  m-cap: { input_utok: 100000, output_utok: 200000 }\nplugins:\n  enabled: true\n  dir: \"{WORK}/plugins\"\nstore:\n  module: postgres\n  settings: { url: \"postgres://oracle:oracle-pw@127.0.0.1:1,127.0.0.1:{CAPTURE_PORT}/busbar\" }\n",
+        "env": {
+          "CAP_KEY": "oracle-cred-store-0001"
+        },
+        "mock": {
+          "pg": true
+        },
+        "steps": [],
+        "mask": [
+          [
+            "\\] BUSBAR-[0-9]{4}: ",
+            "] "
+          ],
+          [
+            "os error [0-9]+",
+            "os error <N>"
+          ],
+          [
+            "\\(os error <N>\\)",
+            "(os error <N>)"
+          ],
+          [
+            "\\x1b\\[[0-9;]*m",
+            ""
+          ],
+          [
+            "<TS> +",
+            "<TS> "
+          ]
+        ],
+        "plugins": [
+          "store-postgres"
+        ],
+        "boot": {
+          "expect": "exit",
+          "secs": 30
+        }
+      },
+      "why": "a libpq MULTI-HOST URL: the first host refuses, the driver moves on to the second, which is dialled. A single-stream connect path would lose this (KERNEL<>PLUGINS step 38). The published store plugin paired with 1.5.5 is staged; the boot's exit code and log lines are recorded (ports, OS error numbers and timestamps masked)."
+    },
+    {
+      "id": "store.boot|postgres|private-validate",
+      "plane": "core",
+      "family": "store.boot",
+      "driver": "capture",
+      "outcome": "ok",
+      "capture": {
+        "providers": "p:\n  protocol: openai\n  base_url: \"{CAPTURE_URL}\"\n",
+        "config": "listen: \"{LISTEN}\"\nadmin_listen: \"{ADMIN}\"\nproviders_file: \"{WORK}/providers.yaml\"\nidentity-providers:\n  admin-tokens:\n    module: admin-tokens\n    token: { env: BUSBAR_ADMIN_TOKEN }\nauth:\n  chain: [keys]\n  signing_key: { file: \"{WORK}/signing.key\" }\n  admin_auth: [admin-tokens]\ngroups:\n  oracle:\n    limits:\n      - { budget: 1000000, per: day }\nproviders:\n  p:\n    api_key: { env: CAP_KEY }\nmodels:\n  m-cap:\n    provider: p\nrate_card:\n  m-cap: { input_utok: 100000, output_utok: 200000 }\nplugins:\n  enabled: true\n  dir: \"{WORK}/plugins\"\nstore:\n  module: postgres\n  settings: { url: \"postgres://oracle:oracle-pw@10.255.255.1:5432/busbar\" }\n",
+        "env": {
+          "CAP_KEY": "oracle-cred-store-0001"
+        },
+        "mock": {},
+        "steps": [],
+        "mask": [
+          [
+            "\\] BUSBAR-[0-9]{4}: ",
+            "] "
+          ],
+          [
+            "os error [0-9]+",
+            "os error <N>"
+          ],
+          [
+            "\\(os error <N>\\)",
+            "(os error <N>)"
+          ],
+          [
+            "\\x1b\\[[0-9;]*m",
+            ""
+          ],
+          [
+            "<TS> +",
+            "<TS> "
+          ]
+        ],
+        "plugins": [
+          "store-postgres"
+        ],
+        "boot": {
+          "expect": "exit",
+          "secs": 30,
+          "args": [
+            "--validate"
+          ]
+        }
+      },
+      "why": "a postgres store on a PRIVATE (RFC 1918) address under `--validate` (nothing is dialled): 1.5.5 accepts it. The 1.6.0 `operator-infrastructure` class must too (#store-B2). The published store plugin paired with 1.5.5 is staged; the boot's exit code and log lines are recorded (ports, OS error numbers and timestamps masked)."
+    },
+    {
+      "id": "store.boot|postgres|sslmode-disable",
+      "plane": "core",
+      "family": "store.boot",
+      "driver": "capture",
+      "outcome": "ok",
+      "capture": {
+        "providers": "p:\n  protocol: openai\n  base_url: \"{CAPTURE_URL}\"\n",
+        "config": "listen: \"{LISTEN}\"\nadmin_listen: \"{ADMIN}\"\nproviders_file: \"{WORK}/providers.yaml\"\nidentity-providers:\n  admin-tokens:\n    module: admin-tokens\n    token: { env: BUSBAR_ADMIN_TOKEN }\nauth:\n  chain: [keys]\n  signing_key: { file: \"{WORK}/signing.key\" }\n  admin_auth: [admin-tokens]\ngroups:\n  oracle:\n    limits:\n      - { budget: 1000000, per: day }\nproviders:\n  p:\n    api_key: { env: CAP_KEY }\nmodels:\n  m-cap:\n    provider: p\nrate_card:\n  m-cap: { input_utok: 100000, output_utok: 200000 }\nplugins:\n  enabled: true\n  dir: \"{WORK}/plugins\"\nstore:\n  module: postgres\n  settings: { url: \"postgres://oracle:oracle-pw@127.0.0.1:{CAPTURE_PORT}/busbar?sslmode=disable\" }\n",
+        "env": {
+          "CAP_KEY": "oracle-cred-store-0001"
+        },
+        "mock": {
+          "pg": true
+        },
+        "steps": [],
+        "mask": [
+          [
+            "\\] BUSBAR-[0-9]{4}: ",
+            "] "
+          ],
+          [
+            "os error [0-9]+",
+            "os error <N>"
+          ],
+          [
+            "\\(os error <N>\\)",
+            "(os error <N>)"
+          ],
+          [
+            "\\x1b\\[[0-9;]*m",
+            ""
+          ],
+          [
+            "<TS> +",
+            "<TS> "
+          ]
+        ],
+        "plugins": [
+          "store-postgres"
+        ],
+        "boot": {
+          "expect": "exit",
+          "secs": 30
+        }
+      },
+      "why": "`sslmode=disable`: no SSLRequest, straight to the StartupMessage. The published store plugin paired with 1.5.5 is staged; the boot's exit code and log lines are recorded (ports, OS error numbers and timestamps masked)."
+    },
+    {
+      "id": "store.boot|postgres|sslmode-require",
+      "plane": "core",
+      "family": "store.boot",
+      "driver": "capture",
+      "outcome": "ok",
+      "capture": {
+        "providers": "p:\n  protocol: openai\n  base_url: \"{CAPTURE_URL}\"\n",
+        "config": "listen: \"{LISTEN}\"\nadmin_listen: \"{ADMIN}\"\nproviders_file: \"{WORK}/providers.yaml\"\nidentity-providers:\n  admin-tokens:\n    module: admin-tokens\n    token: { env: BUSBAR_ADMIN_TOKEN }\nauth:\n  chain: [keys]\n  signing_key: { file: \"{WORK}/signing.key\" }\n  admin_auth: [admin-tokens]\ngroups:\n  oracle:\n    limits:\n      - { budget: 1000000, per: day }\nproviders:\n  p:\n    api_key: { env: CAP_KEY }\nmodels:\n  m-cap:\n    provider: p\nrate_card:\n  m-cap: { input_utok: 100000, output_utok: 200000 }\nplugins:\n  enabled: true\n  dir: \"{WORK}/plugins\"\nstore:\n  module: postgres\n  settings: { url: \"postgres://oracle:oracle-pw@127.0.0.1:{CAPTURE_PORT}/busbar?sslmode=require\" }\n",
+        "env": {
+          "CAP_KEY": "oracle-cred-store-0001"
+        },
+        "mock": {
+          "pg": true
+        },
+        "steps": [],
+        "mask": [
+          [
+            "\\] BUSBAR-[0-9]{4}: ",
+            "] "
+          ],
+          [
+            "os error [0-9]+",
+            "os error <N>"
+          ],
+          [
+            "\\(os error <N>\\)",
+            "(os error <N>)"
+          ],
+          [
+            "\\x1b\\[[0-9;]*m",
+            ""
+          ],
+          [
+            "<TS> +",
+            "<TS> "
+          ]
+        ],
+        "plugins": [
+          "store-postgres"
+        ],
+        "boot": {
+          "expect": "exit",
+          "secs": 30
+        }
+      },
+      "why": "`sslmode=require` on the 1.5.5 driver, which is built without TLS: what it sends (if anything) and the refusal it boots with. The published store plugin paired with 1.5.5 is staged; the boot's exit code and log lines are recorded (ports, OS error numbers and timestamps masked)."
+    },
+    {
+      "id": "store.boot|postgres|url-options",
+      "plane": "core",
+      "family": "store.boot",
+      "driver": "capture",
+      "outcome": "ok",
+      "capture": {
+        "providers": "p:\n  protocol: openai\n  base_url: \"{CAPTURE_URL}\"\n",
+        "config": "listen: \"{LISTEN}\"\nadmin_listen: \"{ADMIN}\"\nproviders_file: \"{WORK}/providers.yaml\"\nidentity-providers:\n  admin-tokens:\n    module: admin-tokens\n    token: { env: BUSBAR_ADMIN_TOKEN }\nauth:\n  chain: [keys]\n  signing_key: { file: \"{WORK}/signing.key\" }\n  admin_auth: [admin-tokens]\ngroups:\n  oracle:\n    limits:\n      - { budget: 1000000, per: day }\nproviders:\n  p:\n    api_key: { env: CAP_KEY }\nmodels:\n  m-cap:\n    provider: p\nrate_card:\n  m-cap: { input_utok: 100000, output_utok: 200000 }\nplugins:\n  enabled: true\n  dir: \"{WORK}/plugins\"\nstore:\n  module: postgres\n  settings: { url: \"postgres://oracle:oracle-pw@127.0.0.1:{CAPTURE_PORT}/busbar?application_name=busbar-oracle&options=-c%20statement_timeout%3D5000&connect_timeout=5&keepalives=1&target_session_attrs=any\" }\n",
+        "env": {
+          "CAP_KEY": "oracle-cred-store-0001"
+        },
+        "mock": {
+          "pg": true
+        },
+        "steps": [],
+        "mask": [
+          [
+            "\\] BUSBAR-[0-9]{4}: ",
+            "] "
+          ],
+          [
+            "os error [0-9]+",
+            "os error <N>"
+          ],
+          [
+            "\\(os error <N>\\)",
+            "(os error <N>)"
+          ],
+          [
+            "\\x1b\\[[0-9;]*m",
+            ""
+          ],
+          [
+            "<TS> +",
+            "<TS> "
+          ]
+        ],
+        "plugins": [
+          "store-postgres"
+        ],
+        "boot": {
+          "expect": "exit",
+          "secs": 30
+        }
+      },
+      "why": "libpq URL options 1.5.5's driver honours: application_name and options reach the StartupMessage; connect_timeout, keepalives and target_session_attrs shape the dial. KERNEL<>PLUGINS step 38 (postgres over connect_raw) must keep every one. The published store plugin paired with 1.5.5 is staged; the boot's exit code and log lines are recorded (ports, OS error numbers and timestamps masked)."
+    },
+    {
+      "id": "store.boot|valkey|loopback-validate",
+      "plane": "core",
+      "family": "store.boot",
+      "driver": "capture",
+      "outcome": "ok",
+      "capture": {
+        "providers": "p:\n  protocol: openai\n  base_url: \"{CAPTURE_URL}\"\n",
+        "config": "listen: \"{LISTEN}\"\nadmin_listen: \"{ADMIN}\"\nproviders_file: \"{WORK}/providers.yaml\"\nidentity-providers:\n  admin-tokens:\n    module: admin-tokens\n    token: { env: BUSBAR_ADMIN_TOKEN }\nauth:\n  chain: [keys]\n  signing_key: { file: \"{WORK}/signing.key\" }\n  admin_auth: [admin-tokens]\ngroups:\n  oracle:\n    limits:\n      - { budget: 1000000, per: day }\nproviders:\n  p:\n    api_key: { env: CAP_KEY }\nmodels:\n  m-cap:\n    provider: p\nrate_card:\n  m-cap: { input_utok: 100000, output_utok: 200000 }\nplugins:\n  enabled: true\n  dir: \"{WORK}/plugins\"\nstore:\n  module: valkey\n  settings: { url: \"redis://127.0.0.1:6379/0\" }\n",
+        "env": {
+          "CAP_KEY": "oracle-cred-store-0001"
+        },
+        "mock": {},
+        "steps": [],
+        "mask": [
+          [
+            "\\] BUSBAR-[0-9]{4}: ",
+            "] "
+          ],
+          [
+            "os error [0-9]+",
+            "os error <N>"
+          ],
+          [
+            "\\(os error <N>\\)",
+            "(os error <N>)"
+          ],
+          [
+            "\\x1b\\[[0-9;]*m",
+            ""
+          ],
+          [
+            "<TS> +",
+            "<TS> "
+          ]
+        ],
+        "plugins": [
+          "store-valkey"
+        ],
+        "boot": {
+          "expect": "exit",
+          "secs": 30,
+          "args": [
+            "--validate"
+          ]
+        }
+      },
+      "why": "a valkey store on loopback under `--validate`. The published store plugin paired with 1.5.5 is staged; the boot's exit code and log lines are recorded (ports, OS error numbers and timestamps masked)."
+    },
+    {
+      "id": "store.boot|valkey|private-validate",
+      "plane": "core",
+      "family": "store.boot",
+      "driver": "capture",
+      "outcome": "ok",
+      "capture": {
+        "providers": "p:\n  protocol: openai\n  base_url: \"{CAPTURE_URL}\"\n",
+        "config": "listen: \"{LISTEN}\"\nadmin_listen: \"{ADMIN}\"\nproviders_file: \"{WORK}/providers.yaml\"\nidentity-providers:\n  admin-tokens:\n    module: admin-tokens\n    token: { env: BUSBAR_ADMIN_TOKEN }\nauth:\n  chain: [keys]\n  signing_key: { file: \"{WORK}/signing.key\" }\n  admin_auth: [admin-tokens]\ngroups:\n  oracle:\n    limits:\n      - { budget: 1000000, per: day }\nproviders:\n  p:\n    api_key: { env: CAP_KEY }\nmodels:\n  m-cap:\n    provider: p\nrate_card:\n  m-cap: { input_utok: 100000, output_utok: 200000 }\nplugins:\n  enabled: true\n  dir: \"{WORK}/plugins\"\nstore:\n  module: valkey\n  settings: { url: \"redis://10.255.255.1:6379/0\" }\n",
+        "env": {
+          "CAP_KEY": "oracle-cred-store-0001"
+        },
+        "mock": {},
+        "steps": [],
+        "mask": [
+          [
+            "\\] BUSBAR-[0-9]{4}: ",
+            "] "
+          ],
+          [
+            "os error [0-9]+",
+            "os error <N>"
+          ],
+          [
+            "\\(os error <N>\\)",
+            "(os error <N>)"
+          ],
+          [
+            "\\x1b\\[[0-9;]*m",
+            ""
+          ],
+          [
+            "<TS> +",
+            "<TS> "
+          ]
+        ],
+        "plugins": [
+          "store-valkey"
+        ],
+        "boot": {
+          "expect": "exit",
+          "secs": 30,
+          "args": [
+            "--validate"
+          ]
+        }
+      },
+      "why": "a valkey store on a PRIVATE address under `--validate`. The published store plugin paired with 1.5.5 is staged; the boot's exit code and log lines are recorded (ports, OS error numbers and timestamps masked)."
+    },
+    {
       "id": "teller|admit-refusal",
       "plane": "llm",
       "family": "teller",
@@ -33567,6 +35807,803 @@
       "outcome": "ok",
       "weight": 10,
       "why": "step 2 VERIFY: a credential whose allowed_pools excludes the target pool is refused before step 4 ADMIT ever draws a bucket -- native 403, zero egress, zero usage delta"
+    },
+    {
+      "id": "webrequest|gate|abstain",
+      "plane": "core",
+      "family": "webrequest",
+      "driver": "capture",
+      "outcome": "ok",
+      "capture": {
+        "providers": "p:\n  protocol: openai\n  base_url: \"{CAPTURE_URL}\"\n",
+        "config": "listen: \"{LISTEN}\"\nadmin_listen: \"{ADMIN}\"\nproviders_file: \"{WORK}/providers.yaml\"\nidentity-providers:\n  admin-tokens:\n    module: admin-tokens\n    token: { env: BUSBAR_ADMIN_TOKEN }\nauth:\n  chain: [keys]\n  signing_key: { file: \"{WORK}/signing.key\" }\n  admin_auth: [admin-tokens]\ngroups:\n  oracle:\n    limits:\n      - { budget: 1000000, per: day }\nproviders:\n  p:\n    api_key: { env: CAP_KEY }\nmodels:\n  m-cap:\n    provider: p\nrate_card:\n  m-cap: { input_utok: 100000, output_utok: 200000 }\nplugins:\n  enabled: true\n  dir: \"{WORK}/plugins\"\nhooks:\n  wr:\n    module: busbar-webrequest\n    kind: gate\n    timeout_ms: 2000\n    on_error: nothing\n    settings:\n      url: \"{CAPTURE_URL}/sidecar\"\n      timeout_ms: 2000\npools:\n  cap-pool:\n    hooks: [wr]\n    members:\n      - model: m-cap\n",
+        "env": {
+          "CAP_KEY": "oracle-cred-webrequest-0001"
+        },
+        "mock": {
+          "sidecar_path": "/sidecar",
+          "sidecar_replies": {
+            "decide": {
+              "status": 200,
+              "body": "{}"
+            }
+          }
+        },
+        "steps": [
+          {
+            "request": {
+              "listener": "admin",
+              "method": "POST",
+              "path": "/api/v1/admin/keys",
+              "auth": "admin",
+              "headers": [
+                [
+                  "Content-Type",
+                  "application/json"
+                ]
+              ],
+              "body": "{\"name\":\"capture\",\"group\":\"oracle\"}"
+            },
+            "save": {
+              "VK": "token"
+            },
+            "record": false,
+            "expect": 201
+          },
+          {
+            "request": {
+              "listener": "data",
+              "method": "POST",
+              "path": "/v1/chat/completions",
+              "headers": [
+                [
+                  "Authorization",
+                  "Bearer {VK}"
+                ],
+                [
+                  "Content-Type",
+                  "application/json"
+                ]
+              ],
+              "body": "{\"model\":\"cap-pool\",\"messages\":[{\"role\":\"user\",\"content\":\"ping\"}]}"
+            }
+          },
+          {
+            "wait": {
+              "role": "sidecar",
+              "count": 1,
+              "secs": 20
+            }
+          },
+          {
+            "sleep_ms": 300
+          }
+        ],
+        "mask": [
+          [
+            "\"latency_ms\":[0-9.eE+-]+",
+            "\"latency_ms\":<LATENCY>"
+          ],
+          [
+            "vk_[0-9a-f]{32}",
+            "vk_<KEY>"
+          ],
+          [
+            "\"window_start\":[1-9][0-9]*",
+            "\"window_start\":<WINDOW>"
+          ],
+          [
+            "\"request_id\":[0-9]+",
+            "\"request_id\":<REQUEST-ID>"
+          ],
+          [
+            "(?m)^content-length: [0-9]+\\r$",
+            "content-length: <LEN>\r"
+          ]
+        ],
+        "plugins": [
+          "webrequest-hook"
+        ]
+      },
+      "why": "a gate whose sidecar abstains (`200 {}`): the decide POST the published webrequest forwarder sends (method, path, header order, the op-discriminated projection with `prompt: no` \u2014 shapes only), and the chat served as if no hook ran. The published webrequest-hook (the release paired with 1.5.5) forwards to the capture mock's sidecar path; every POST it makes is recorded byte for byte. #63: webrequest's upstream bytes stay identical to 1.5.5 when it moves onto the connector's exchange() (KERNEL<>PLUGINS step 39)."
+    },
+    {
+      "id": "webrequest|gate|order",
+      "plane": "core",
+      "family": "webrequest",
+      "driver": "capture",
+      "outcome": "ok",
+      "capture": {
+        "providers": "p:\n  protocol: openai\n  base_url: \"{CAPTURE_URL}\"\n",
+        "config": "listen: \"{LISTEN}\"\nadmin_listen: \"{ADMIN}\"\nproviders_file: \"{WORK}/providers.yaml\"\nidentity-providers:\n  admin-tokens:\n    module: admin-tokens\n    token: { env: BUSBAR_ADMIN_TOKEN }\nauth:\n  chain: [keys]\n  signing_key: { file: \"{WORK}/signing.key\" }\n  admin_auth: [admin-tokens]\ngroups:\n  oracle:\n    limits:\n      - { budget: 1000000, per: day }\nproviders:\n  p:\n    api_key: { env: CAP_KEY }\nmodels:\n  m-cap:\n    provider: p\nrate_card:\n  m-cap: { input_utok: 100000, output_utok: 200000 }\nplugins:\n  enabled: true\n  dir: \"{WORK}/plugins\"\nhooks:\n  wr:\n    module: busbar-webrequest\n    kind: gate\n    timeout_ms: 2000\n    on_error: nothing\n    settings:\n      url: \"{CAPTURE_URL}/sidecar\"\n      timeout_ms: 2000\npools:\n  cap-pool:\n    hooks: [wr]\n    members:\n      - model: m-cap\n",
+        "env": {
+          "CAP_KEY": "oracle-cred-webrequest-0001"
+        },
+        "mock": {
+          "sidecar_path": "/sidecar",
+          "sidecar_replies": {
+            "decide": {
+              "status": 200,
+              "body": "{\"order\":[0]}"
+            }
+          }
+        },
+        "steps": [
+          {
+            "request": {
+              "listener": "admin",
+              "method": "POST",
+              "path": "/api/v1/admin/keys",
+              "auth": "admin",
+              "headers": [
+                [
+                  "Content-Type",
+                  "application/json"
+                ]
+              ],
+              "body": "{\"name\":\"capture\",\"group\":\"oracle\"}"
+            },
+            "save": {
+              "VK": "token"
+            },
+            "record": false,
+            "expect": 201
+          },
+          {
+            "request": {
+              "listener": "data",
+              "method": "POST",
+              "path": "/v1/chat/completions",
+              "headers": [
+                [
+                  "Authorization",
+                  "Bearer {VK}"
+                ],
+                [
+                  "Content-Type",
+                  "application/json"
+                ]
+              ],
+              "body": "{\"model\":\"cap-pool\",\"messages\":[{\"role\":\"user\",\"content\":\"ping\"}]}"
+            }
+          },
+          {
+            "wait": {
+              "role": "sidecar",
+              "count": 1,
+              "secs": 20
+            }
+          },
+          {
+            "sleep_ms": 300
+          }
+        ],
+        "mask": [
+          [
+            "\"latency_ms\":[0-9.eE+-]+",
+            "\"latency_ms\":<LATENCY>"
+          ],
+          [
+            "vk_[0-9a-f]{32}",
+            "vk_<KEY>"
+          ],
+          [
+            "\"window_start\":[1-9][0-9]*",
+            "\"window_start\":<WINDOW>"
+          ],
+          [
+            "\"request_id\":[0-9]+",
+            "\"request_id\":<REQUEST-ID>"
+          ],
+          [
+            "(?m)^content-length: [0-9]+\\r$",
+            "content-length: <LEN>\r"
+          ]
+        ],
+        "plugins": [
+          "webrequest-hook"
+        ]
+      },
+      "why": "the order arm (`{\"order\":[0]}`) over the one candidate: served by it. The published webrequest-hook (the release paired with 1.5.5) forwards to the capture mock's sidecar path; every POST it makes is recorded byte for byte. #63: webrequest's upstream bytes stay identical to 1.5.5 when it moves onto the connector's exchange() (KERNEL<>PLUGINS step 39)."
+    },
+    {
+      "id": "webrequest|gate|prompt-ro",
+      "plane": "core",
+      "family": "webrequest",
+      "driver": "capture",
+      "outcome": "ok",
+      "capture": {
+        "providers": "p:\n  protocol: openai\n  base_url: \"{CAPTURE_URL}\"\n",
+        "config": "listen: \"{LISTEN}\"\nadmin_listen: \"{ADMIN}\"\nproviders_file: \"{WORK}/providers.yaml\"\nidentity-providers:\n  admin-tokens:\n    module: admin-tokens\n    token: { env: BUSBAR_ADMIN_TOKEN }\nauth:\n  chain: [keys]\n  signing_key: { file: \"{WORK}/signing.key\" }\n  admin_auth: [admin-tokens]\ngroups:\n  oracle:\n    limits:\n      - { budget: 1000000, per: day }\nproviders:\n  p:\n    api_key: { env: CAP_KEY }\nmodels:\n  m-cap:\n    provider: p\nrate_card:\n  m-cap: { input_utok: 100000, output_utok: 200000 }\nplugins:\n  enabled: true\n  dir: \"{WORK}/plugins\"\nhooks:\n  wr:\n    module: busbar-webrequest\n    kind: gate\n    prompt: ro\n    timeout_ms: 2000\n    on_error: nothing\n    settings:\n      url: \"{CAPTURE_URL}/sidecar\"\n      timeout_ms: 2000\npools:\n  cap-pool:\n    hooks: [wr]\n    members:\n      - model: m-cap\n",
+        "env": {
+          "CAP_KEY": "oracle-cred-webrequest-0001"
+        },
+        "mock": {
+          "sidecar_path": "/sidecar",
+          "sidecar_replies": {
+            "decide": {
+              "status": 200,
+              "body": "{}"
+            }
+          }
+        },
+        "steps": [
+          {
+            "request": {
+              "listener": "admin",
+              "method": "POST",
+              "path": "/api/v1/admin/keys",
+              "auth": "admin",
+              "headers": [
+                [
+                  "Content-Type",
+                  "application/json"
+                ]
+              ],
+              "body": "{\"name\":\"capture\",\"group\":\"oracle\"}"
+            },
+            "save": {
+              "VK": "token"
+            },
+            "record": false,
+            "expect": 201
+          },
+          {
+            "request": {
+              "listener": "data",
+              "method": "POST",
+              "path": "/v1/chat/completions",
+              "headers": [
+                [
+                  "Authorization",
+                  "Bearer {VK}"
+                ],
+                [
+                  "Content-Type",
+                  "application/json"
+                ]
+              ],
+              "body": "{\"model\":\"cap-pool\",\"messages\":[{\"role\":\"user\",\"content\":\"ping\"}]}"
+            }
+          },
+          {
+            "wait": {
+              "role": "sidecar",
+              "count": 1,
+              "secs": 20
+            }
+          },
+          {
+            "sleep_ms": 300
+          }
+        ],
+        "mask": [
+          [
+            "\"latency_ms\":[0-9.eE+-]+",
+            "\"latency_ms\":<LATENCY>"
+          ],
+          [
+            "vk_[0-9a-f]{32}",
+            "vk_<KEY>"
+          ],
+          [
+            "\"window_start\":[1-9][0-9]*",
+            "\"window_start\":<WINDOW>"
+          ],
+          [
+            "\"request_id\":[0-9]+",
+            "\"request_id\":<REQUEST-ID>"
+          ],
+          [
+            "(?m)^content-length: [0-9]+\\r$",
+            "content-length: <LEN>\r"
+          ]
+        ],
+        "plugins": [
+          "webrequest-hook"
+        ]
+      },
+      "why": "`prompt: ro`: the decide projection additionally carries the flattened system + messages text \u2014 the exact bytes a screening sidecar receives. The published webrequest-hook (the release paired with 1.5.5) forwards to the capture mock's sidecar path; every POST it makes is recorded byte for byte. #63: webrequest's upstream bytes stay identical to 1.5.5 when it moves onto the connector's exchange() (KERNEL<>PLUGINS step 39)."
+    },
+    {
+      "id": "webrequest|gate|reject",
+      "plane": "core",
+      "family": "webrequest",
+      "driver": "capture",
+      "outcome": "ok",
+      "capture": {
+        "providers": "p:\n  protocol: openai\n  base_url: \"{CAPTURE_URL}\"\n",
+        "config": "listen: \"{LISTEN}\"\nadmin_listen: \"{ADMIN}\"\nproviders_file: \"{WORK}/providers.yaml\"\nidentity-providers:\n  admin-tokens:\n    module: admin-tokens\n    token: { env: BUSBAR_ADMIN_TOKEN }\nauth:\n  chain: [keys]\n  signing_key: { file: \"{WORK}/signing.key\" }\n  admin_auth: [admin-tokens]\ngroups:\n  oracle:\n    limits:\n      - { budget: 1000000, per: day }\nproviders:\n  p:\n    api_key: { env: CAP_KEY }\nmodels:\n  m-cap:\n    provider: p\nrate_card:\n  m-cap: { input_utok: 100000, output_utok: 200000 }\nplugins:\n  enabled: true\n  dir: \"{WORK}/plugins\"\nhooks:\n  wr:\n    module: busbar-webrequest\n    kind: gate\n    timeout_ms: 2000\n    on_error: nothing\n    settings:\n      url: \"{CAPTURE_URL}/sidecar\"\n      timeout_ms: 2000\npools:\n  cap-pool:\n    hooks: [wr]\n    members:\n      - model: m-cap\n",
+        "env": {
+          "CAP_KEY": "oracle-cred-webrequest-0001"
+        },
+        "mock": {
+          "sidecar_path": "/sidecar",
+          "sidecar_replies": {
+            "decide": {
+              "status": 200,
+              "body": "{\"reject\":{\"status\":451,\"message\":\"oracle capture says no\"}}"
+            }
+          }
+        },
+        "steps": [
+          {
+            "request": {
+              "listener": "admin",
+              "method": "POST",
+              "path": "/api/v1/admin/keys",
+              "auth": "admin",
+              "headers": [
+                [
+                  "Content-Type",
+                  "application/json"
+                ]
+              ],
+              "body": "{\"name\":\"capture\",\"group\":\"oracle\"}"
+            },
+            "save": {
+              "VK": "token"
+            },
+            "record": false,
+            "expect": 201
+          },
+          {
+            "request": {
+              "listener": "data",
+              "method": "POST",
+              "path": "/v1/chat/completions",
+              "headers": [
+                [
+                  "Authorization",
+                  "Bearer {VK}"
+                ],
+                [
+                  "Content-Type",
+                  "application/json"
+                ]
+              ],
+              "body": "{\"model\":\"cap-pool\",\"messages\":[{\"role\":\"user\",\"content\":\"ping\"}]}"
+            }
+          },
+          {
+            "wait": {
+              "role": "sidecar",
+              "count": 1,
+              "secs": 20
+            }
+          },
+          {
+            "sleep_ms": 300
+          }
+        ],
+        "mask": [
+          [
+            "\"latency_ms\":[0-9.eE+-]+",
+            "\"latency_ms\":<LATENCY>"
+          ],
+          [
+            "vk_[0-9a-f]{32}",
+            "vk_<KEY>"
+          ],
+          [
+            "\"window_start\":[1-9][0-9]*",
+            "\"window_start\":<WINDOW>"
+          ],
+          [
+            "\"request_id\":[0-9]+",
+            "\"request_id\":<REQUEST-ID>"
+          ],
+          [
+            "(?m)^content-length: [0-9]+\\r$",
+            "content-length: <LEN>\r"
+          ]
+        ],
+        "plugins": [
+          "webrequest-hook"
+        ]
+      },
+      "why": "the sidecar's reject arm (`{\"reject\":{\"status\":451,...}}`): no upstream is dispatched and the caller gets the dialect-native 451 with the sanitized message. The published webrequest-hook (the release paired with 1.5.5) forwards to the capture mock's sidecar path; every POST it makes is recorded byte for byte. #63: webrequest's upstream bytes stay identical to 1.5.5 when it moves onto the connector's exchange() (KERNEL<>PLUGINS step 39)."
+    },
+    {
+      "id": "webrequest|gate|sidecar-500-nothing",
+      "plane": "core",
+      "family": "webrequest",
+      "driver": "capture",
+      "outcome": "ok",
+      "capture": {
+        "providers": "p:\n  protocol: openai\n  base_url: \"{CAPTURE_URL}\"\n",
+        "config": "listen: \"{LISTEN}\"\nadmin_listen: \"{ADMIN}\"\nproviders_file: \"{WORK}/providers.yaml\"\nidentity-providers:\n  admin-tokens:\n    module: admin-tokens\n    token: { env: BUSBAR_ADMIN_TOKEN }\nauth:\n  chain: [keys]\n  signing_key: { file: \"{WORK}/signing.key\" }\n  admin_auth: [admin-tokens]\ngroups:\n  oracle:\n    limits:\n      - { budget: 1000000, per: day }\nproviders:\n  p:\n    api_key: { env: CAP_KEY }\nmodels:\n  m-cap:\n    provider: p\nrate_card:\n  m-cap: { input_utok: 100000, output_utok: 200000 }\nplugins:\n  enabled: true\n  dir: \"{WORK}/plugins\"\nhooks:\n  wr:\n    module: busbar-webrequest\n    kind: gate\n    timeout_ms: 2000\n    on_error: nothing\n    settings:\n      url: \"{CAPTURE_URL}/sidecar\"\n      timeout_ms: 2000\npools:\n  cap-pool:\n    hooks: [wr]\n    members:\n      - model: m-cap\n",
+        "env": {
+          "CAP_KEY": "oracle-cred-webrequest-0001"
+        },
+        "mock": {
+          "sidecar_path": "/sidecar",
+          "sidecar_replies": {
+            "decide": {
+              "status": 500,
+              "body": "{\"error\":\"boom\"}"
+            }
+          }
+        },
+        "steps": [
+          {
+            "request": {
+              "listener": "admin",
+              "method": "POST",
+              "path": "/api/v1/admin/keys",
+              "auth": "admin",
+              "headers": [
+                [
+                  "Content-Type",
+                  "application/json"
+                ]
+              ],
+              "body": "{\"name\":\"capture\",\"group\":\"oracle\"}"
+            },
+            "save": {
+              "VK": "token"
+            },
+            "record": false,
+            "expect": 201
+          },
+          {
+            "request": {
+              "listener": "data",
+              "method": "POST",
+              "path": "/v1/chat/completions",
+              "headers": [
+                [
+                  "Authorization",
+                  "Bearer {VK}"
+                ],
+                [
+                  "Content-Type",
+                  "application/json"
+                ]
+              ],
+              "body": "{\"model\":\"cap-pool\",\"messages\":[{\"role\":\"user\",\"content\":\"ping\"}]}"
+            }
+          },
+          {
+            "wait": {
+              "role": "sidecar",
+              "count": 1,
+              "secs": 20
+            }
+          },
+          {
+            "sleep_ms": 300
+          }
+        ],
+        "mask": [
+          [
+            "\"latency_ms\":[0-9.eE+-]+",
+            "\"latency_ms\":<LATENCY>"
+          ],
+          [
+            "vk_[0-9a-f]{32}",
+            "vk_<KEY>"
+          ],
+          [
+            "\"window_start\":[1-9][0-9]*",
+            "\"window_start\":<WINDOW>"
+          ],
+          [
+            "\"request_id\":[0-9]+",
+            "\"request_id\":<REQUEST-ID>"
+          ],
+          [
+            "(?m)^content-length: [0-9]+\\r$",
+            "content-length: <LEN>\r"
+          ]
+        ],
+        "plugins": [
+          "webrequest-hook"
+        ]
+      },
+      "why": "a non-2xx sidecar answer is a transport ERROR, not an abstain: under `on_error: nothing` the gate drops out and the chat is served. The published webrequest-hook (the release paired with 1.5.5) forwards to the capture mock's sidecar path; every POST it makes is recorded byte for byte. #63: webrequest's upstream bytes stay identical to 1.5.5 when it moves onto the connector's exchange() (KERNEL<>PLUGINS step 39)."
+    },
+    {
+      "id": "webrequest|gate|sidecar-500-reject",
+      "plane": "core",
+      "family": "webrequest",
+      "driver": "capture",
+      "outcome": "ok",
+      "capture": {
+        "providers": "p:\n  protocol: openai\n  base_url: \"{CAPTURE_URL}\"\n",
+        "config": "listen: \"{LISTEN}\"\nadmin_listen: \"{ADMIN}\"\nproviders_file: \"{WORK}/providers.yaml\"\nidentity-providers:\n  admin-tokens:\n    module: admin-tokens\n    token: { env: BUSBAR_ADMIN_TOKEN }\nauth:\n  chain: [keys]\n  signing_key: { file: \"{WORK}/signing.key\" }\n  admin_auth: [admin-tokens]\ngroups:\n  oracle:\n    limits:\n      - { budget: 1000000, per: day }\nproviders:\n  p:\n    api_key: { env: CAP_KEY }\nmodels:\n  m-cap:\n    provider: p\nrate_card:\n  m-cap: { input_utok: 100000, output_utok: 200000 }\nplugins:\n  enabled: true\n  dir: \"{WORK}/plugins\"\nhooks:\n  wr:\n    module: busbar-webrequest\n    kind: gate\n    timeout_ms: 2000\n    on_error: reject\n    settings:\n      url: \"{CAPTURE_URL}/sidecar\"\n      timeout_ms: 2000\npools:\n  cap-pool:\n    hooks: [wr]\n    members:\n      - model: m-cap\n",
+        "env": {
+          "CAP_KEY": "oracle-cred-webrequest-0001"
+        },
+        "mock": {
+          "sidecar_path": "/sidecar",
+          "sidecar_replies": {
+            "decide": {
+              "status": 500,
+              "body": "{\"error\":\"boom\"}"
+            }
+          }
+        },
+        "steps": [
+          {
+            "request": {
+              "listener": "admin",
+              "method": "POST",
+              "path": "/api/v1/admin/keys",
+              "auth": "admin",
+              "headers": [
+                [
+                  "Content-Type",
+                  "application/json"
+                ]
+              ],
+              "body": "{\"name\":\"capture\",\"group\":\"oracle\"}"
+            },
+            "save": {
+              "VK": "token"
+            },
+            "record": false,
+            "expect": 201
+          },
+          {
+            "request": {
+              "listener": "data",
+              "method": "POST",
+              "path": "/v1/chat/completions",
+              "headers": [
+                [
+                  "Authorization",
+                  "Bearer {VK}"
+                ],
+                [
+                  "Content-Type",
+                  "application/json"
+                ]
+              ],
+              "body": "{\"model\":\"cap-pool\",\"messages\":[{\"role\":\"user\",\"content\":\"ping\"}]}"
+            }
+          },
+          {
+            "wait": {
+              "role": "sidecar",
+              "count": 1,
+              "secs": 20
+            }
+          },
+          {
+            "sleep_ms": 300
+          }
+        ],
+        "mask": [
+          [
+            "\"latency_ms\":[0-9.eE+-]+",
+            "\"latency_ms\":<LATENCY>"
+          ],
+          [
+            "vk_[0-9a-f]{32}",
+            "vk_<KEY>"
+          ],
+          [
+            "\"window_start\":[1-9][0-9]*",
+            "\"window_start\":<WINDOW>"
+          ],
+          [
+            "\"request_id\":[0-9]+",
+            "\"request_id\":<REQUEST-ID>"
+          ],
+          [
+            "(?m)^content-length: [0-9]+\\r$",
+            "content-length: <LEN>\r"
+          ]
+        ],
+        "plugins": [
+          "webrequest-hook"
+        ]
+      },
+      "why": "the same sidecar error under `on_error: reject`: fail closed with a 503, no upstream dispatched. The published webrequest-hook (the release paired with 1.5.5) forwards to the capture mock's sidecar path; every POST it makes is recorded byte for byte. #63: webrequest's upstream bytes stay identical to 1.5.5 when it moves onto the connector's exchange() (KERNEL<>PLUGINS step 39)."
+    },
+    {
+      "id": "webrequest|tap|notify",
+      "plane": "core",
+      "family": "webrequest",
+      "driver": "capture",
+      "outcome": "ok",
+      "capture": {
+        "providers": "p:\n  protocol: openai\n  base_url: \"{CAPTURE_URL}\"\n",
+        "config": "listen: \"{LISTEN}\"\nadmin_listen: \"{ADMIN}\"\nproviders_file: \"{WORK}/providers.yaml\"\nidentity-providers:\n  admin-tokens:\n    module: admin-tokens\n    token: { env: BUSBAR_ADMIN_TOKEN }\nauth:\n  chain: [keys]\n  signing_key: { file: \"{WORK}/signing.key\" }\n  admin_auth: [admin-tokens]\ngroups:\n  oracle:\n    limits:\n      - { budget: 1000000, per: day }\nproviders:\n  p:\n    api_key: { env: CAP_KEY }\nmodels:\n  m-cap:\n    provider: p\nrate_card:\n  m-cap: { input_utok: 100000, output_utok: 200000 }\nplugins:\n  enabled: true\n  dir: \"{WORK}/plugins\"\nhooks:\n  wr:\n    module: busbar-webrequest\n    kind: tap\n    timeout_ms: 2000\n    settings:\n      url: \"{CAPTURE_URL}/sidecar\"\n      timeout_ms: 2000\npools:\n  hooks: [wr]\n  cap-pool:\n    members:\n      - model: m-cap\n",
+        "env": {
+          "CAP_KEY": "oracle-cred-webrequest-0001"
+        },
+        "mock": {
+          "sidecar_path": "/sidecar",
+          "sidecar_replies": {
+            "notify": {
+              "status": 200,
+              "body": "{}"
+            }
+          }
+        },
+        "steps": [
+          {
+            "request": {
+              "listener": "admin",
+              "method": "POST",
+              "path": "/api/v1/admin/keys",
+              "auth": "admin",
+              "headers": [
+                [
+                  "Content-Type",
+                  "application/json"
+                ]
+              ],
+              "body": "{\"name\":\"capture\",\"group\":\"oracle\"}"
+            },
+            "save": {
+              "VK": "token"
+            },
+            "record": false,
+            "expect": 201
+          },
+          {
+            "request": {
+              "listener": "data",
+              "method": "POST",
+              "path": "/v1/chat/completions",
+              "headers": [
+                [
+                  "Authorization",
+                  "Bearer {VK}"
+                ],
+                [
+                  "Content-Type",
+                  "application/json"
+                ]
+              ],
+              "body": "{\"model\":\"cap-pool\",\"messages\":[{\"role\":\"user\",\"content\":\"ping\"}]}"
+            }
+          },
+          {
+            "wait": {
+              "role": "sidecar",
+              "count": 4,
+              "secs": 20
+            }
+          },
+          {
+            "sleep_ms": 300
+          }
+        ],
+        "mask": [
+          [
+            "\"latency_ms\":[0-9.eE+-]+",
+            "\"latency_ms\":<LATENCY>"
+          ],
+          [
+            "vk_[0-9a-f]{32}",
+            "vk_<KEY>"
+          ],
+          [
+            "\"window_start\":[1-9][0-9]*",
+            "\"window_start\":<WINDOW>"
+          ],
+          [
+            "\"request_id\":[0-9]+",
+            "\"request_id\":<REQUEST-ID>"
+          ],
+          [
+            "(?m)^content-length: [0-9]+\\r$",
+            "content-length: <LEN>\r"
+          ]
+        ],
+        "plugins": [
+          "webrequest-hook"
+        ],
+        "sort_upstream": true
+      },
+      "why": "a tap: one notify POST per observation stage (request, candidate, routing, response) \u2014 the stage payloads the forwarder relays; a tap is never answered and never delays the chat. The published webrequest-hook (the release paired with 1.5.5) forwards to the capture mock's sidecar path; every POST it makes is recorded byte for byte. #63: webrequest's upstream bytes stay identical to 1.5.5 when it moves onto the connector's exchange() (KERNEL<>PLUGINS step 39)."
+    },
+    {
+      "id": "webrequest|transform|rewrite",
+      "plane": "core",
+      "family": "webrequest",
+      "driver": "capture",
+      "outcome": "ok",
+      "capture": {
+        "providers": "p:\n  protocol: openai\n  base_url: \"{CAPTURE_URL}\"\n",
+        "config": "listen: \"{LISTEN}\"\nadmin_listen: \"{ADMIN}\"\nproviders_file: \"{WORK}/providers.yaml\"\nidentity-providers:\n  admin-tokens:\n    module: admin-tokens\n    token: { env: BUSBAR_ADMIN_TOKEN }\nauth:\n  chain: [keys]\n  signing_key: { file: \"{WORK}/signing.key\" }\n  admin_auth: [admin-tokens]\ngroups:\n  oracle:\n    limits:\n      - { budget: 1000000, per: day }\nproviders:\n  p:\n    api_key: { env: CAP_KEY }\nmodels:\n  m-cap:\n    provider: p\nrate_card:\n  m-cap: { input_utok: 100000, output_utok: 200000 }\nplugins:\n  enabled: true\n  dir: \"{WORK}/plugins\"\nhooks:\n  wr:\n    module: busbar-webrequest\n    kind: gate\n    prompt: rw\n    timeout_ms: 2000\n    on_error: nothing\n    settings:\n      url: \"{CAPTURE_URL}/sidecar\"\n      timeout_ms: 2000\npools:\n  cap-pool:\n    hooks: [wr]\n    members:\n      - model: m-cap\n",
+        "env": {
+          "CAP_KEY": "oracle-cred-webrequest-0001"
+        },
+        "mock": {
+          "sidecar_path": "/sidecar",
+          "sidecar_replies": {
+            "transform": {
+              "status": 200,
+              "body": "{\"rewrite\":{\"messages\":[{\"role\":\"user\",\"content\":\"rewritten by the oracle sidecar\"}]}}"
+            },
+            "decide": {
+              "status": 200,
+              "body": "{}"
+            }
+          }
+        },
+        "steps": [
+          {
+            "request": {
+              "listener": "admin",
+              "method": "POST",
+              "path": "/api/v1/admin/keys",
+              "auth": "admin",
+              "headers": [
+                [
+                  "Content-Type",
+                  "application/json"
+                ]
+              ],
+              "body": "{\"name\":\"capture\",\"group\":\"oracle\"}"
+            },
+            "save": {
+              "VK": "token"
+            },
+            "record": false,
+            "expect": 201
+          },
+          {
+            "request": {
+              "listener": "data",
+              "method": "POST",
+              "path": "/v1/chat/completions",
+              "headers": [
+                [
+                  "Authorization",
+                  "Bearer {VK}"
+                ],
+                [
+                  "Content-Type",
+                  "application/json"
+                ]
+              ],
+              "body": "{\"model\":\"cap-pool\",\"messages\":[{\"role\":\"user\",\"content\":\"ping\"}]}"
+            }
+          },
+          {
+            "wait": {
+              "role": "sidecar",
+              "count": 1,
+              "secs": 20
+            }
+          },
+          {
+            "sleep_ms": 300
+          }
+        ],
+        "mask": [
+          [
+            "\"latency_ms\":[0-9.eE+-]+",
+            "\"latency_ms\":<LATENCY>"
+          ],
+          [
+            "vk_[0-9a-f]{32}",
+            "vk_<KEY>"
+          ],
+          [
+            "\"window_start\":[1-9][0-9]*",
+            "\"window_start\":<WINDOW>"
+          ],
+          [
+            "\"request_id\":[0-9]+",
+            "\"request_id\":<REQUEST-ID>"
+          ],
+          [
+            "(?m)^content-length: [0-9]+\\r$",
+            "content-length: <LEN>\r"
+          ]
+        ],
+        "plugins": [
+          "webrequest-hook"
+        ]
+      },
+      "why": "`prompt: rw` with a rewrite reply: the transform POST the forwarder sends and the body the upstream then receives, whatever 1.5.5 made of the reply. The published webrequest-hook (the release paired with 1.5.5) forwards to the capture mock's sidecar path; every POST it makes is recorded byte for byte. #63: webrequest's upstream bytes stay identical to 1.5.5 when it moves onto the connector's exchange() (KERNEL<>PLUGINS step 39)."
     }
   ]
 }
