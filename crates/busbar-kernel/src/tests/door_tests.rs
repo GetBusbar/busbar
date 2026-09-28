@@ -111,3 +111,31 @@ fn the_metering_row_counts_its_request_and_carries_no_card_instant() {
     let empty = metering_row("k1", "lane-a", "prov", None);
     assert_eq!((empty.tokens_input, empty.requests), (0, 1));
 }
+
+#[test]
+fn an_admitted_unit_ends_as_its_plane_reported() {
+    let op = OpClassId::new("chat");
+    for reported in [
+        FinishClass::Complete,
+        FinishClass::Partial,
+        FinishClass::Error,
+    ] {
+        assert_eq!(admitted_facts(op, Some(reported), true).finish, reported);
+        assert_eq!(admitted_facts(op, Some(reported), false).finish, reported);
+    }
+}
+
+#[test]
+fn an_admitted_unit_with_no_reported_end_reads_its_status() {
+    let op = OpClassId::new("chat");
+    assert_eq!(admitted_facts(op, None, true).finish, FinishClass::Complete);
+    assert_eq!(admitted_facts(op, None, false).finish, FinishClass::Error);
+    assert_eq!(admitted_facts(op, None, true).op_class, op);
+}
+
+#[test]
+fn a_refused_unit_is_never_a_completion() {
+    let op = OpClassId::new("chat");
+    let f = refused_facts(op);
+    assert_eq!((f.op_class, f.finish), (op, FinishClass::Error));
+}

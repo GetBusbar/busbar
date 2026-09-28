@@ -58,10 +58,10 @@ use axum::response::Response;
 // Imported (rather than named at each site) so this file spells the api-crate path once: the
 // kind-isolation matrix counts each spelling as this crate naming that kind, and the door
 // pass-throughs would otherwise repeat it per signature.
-use busbar_contract::caps::{step::Audit, AuditFacts, Decision, OpClassId, Pass};
+use busbar_contract::caps::{step::Audit, Decision, OpClassId, Pass};
 use busbar_contract::records::PlaneRequestCtx;
 use busbar_contract::FinishClass;
-use busbar_kernel::plane_host::EngineHost;
+use busbar_kernel::{door, plane_host::EngineHost};
 
 /// BYTES THAT HAVE PASSED THROUGH THIS FILE — the only shape in which a response moves between the
 /// steps, and the only shape in which one leaves the plane.
@@ -320,36 +320,26 @@ pub type AuditStep = for<'a> fn(&Pass<Audit>, &AuditCtx<'a>, Served, bool) -> Au
 /// into a client-facing 502 ended in error, because the end a record seals is the end the CALLER
 /// experienced.
 ///
-/// The tap is empty while a response is still in flight, and then this reads the status exactly as
-/// it always has — so the terminal's timing and its bytes are unchanged, and what the tap adds is a
-/// truer class on every end that has already happened by the time the record is written.
+/// The tap is empty while a response is still in flight; this answers `None` then, and the kernel's
+/// door reads the status exactly as it always has, so the terminal's timing and its bytes are
+/// unchanged, and what the tap adds is a truer class on every end that has already happened by the
+/// time the record is written.
 ///
 /// [`FinishClass::TurnComplete`] is never answered here. It names one turn of a duplex exchange
 /// whose session continues, and no dialect this plane speaks has one: a completion's end is the
 /// unit's end.
-fn finish_of(resp: &Response) -> FinishClass {
-    if let Some(finish) = resp
-        .extensions()
+fn reported_finish(resp: &Response) -> Option<FinishClass> {
+    resp.extensions()
         .get::<crate::engine::TapCell>()
         .and_then(|cell| cell.get())
-        .map(|report| report.finish)
-    {
-        // THE ONE MAPPING between the engine's own three-class ending and the loop's four. It is
-        // written here because this file is the only one on this plane that speaks the loop's
-        // vocabulary; the engine spells its own so the default build does not depend on the waist's
-        // flag. `TurnComplete` has no source: nothing below can produce it, and nothing on this
-        // plane should.
-        return match finish {
+        .map(|report| match report.finish {
+            // THE ONE MAPPING between the engine's own three-class ending and the loop's four.
+            // `TurnComplete` has no source: nothing below can produce it, and nothing on this
+            // plane should.
             crate::engine::TapFinish::Complete => FinishClass::Complete,
             crate::engine::TapFinish::Partial => FinishClass::Partial,
             crate::engine::TapFinish::Error => FinishClass::Error,
-        };
-    }
-    if resp.status().is_success() {
-        FinishClass::Complete
-    } else {
-        FinishClass::Error
-    }
+        })
 }
 
 /// Seal the end of a unit that PASSED the door.
@@ -358,10 +348,11 @@ fn finish_of(resp: &Response) -> FinishClass {
 /// fail-opened without charging must not refund, because the refund is a decrement of a shared
 /// window and there is nothing of this unit's in it.
 pub fn audit(unit_token: &Pass<Audit>, ctx: &AuditCtx<'_>, resp: Served, charged: bool) -> Audited {
-    let facts = AuditFacts {
-        op_class: ctx.op_class,
-        finish: finish_of(resp.as_response()),
-    };
+    let facts = door::admitted_facts(
+        ctx.op_class,
+        reported_finish(resp.as_response()),
+        resp.as_response().status().is_success(),
+    );
     Audited {
         response: Served::of(ctx.host.finish_admitted(
             ctx.gov,
@@ -386,11 +377,7 @@ pub fn audit(unit_token: &Pass<Audit>, ctx: &AuditCtx<'_>, resp: Served, charged
 /// taken before the model was ever read — passes [`busbar_kernel::proxy::POOL_LABEL_UNRESOLVED`], which
 /// the bound maps to itself because no deployment may configure a pool by that name.
 pub fn audit_refused(unit_token: &Pass<Audit>, ctx: &AuditCtx<'_>, resp: Served) -> Audited {
-    // A refusal is never a completion, whatever status it wears.
-    let facts = AuditFacts {
-        op_class: ctx.op_class,
-        finish: FinishClass::Error,
-    };
+    let facts = door::refused_facts(ctx.op_class);
     Audited {
         response: Served::of(ctx.host.finish_rejected(
             ctx.gov,

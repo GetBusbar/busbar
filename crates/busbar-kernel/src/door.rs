@@ -8,7 +8,8 @@ use busbar_contract::caps::{
     Admission, Admittance, Grant, Hold, MeterClassId, PrincipalId, QuantitySource, ReasonCode,
     Refusal, UsageLine,
 };
-use busbar_contract::ClassDirection;
+use busbar_contract::caps::{AuditFacts, OpClassId};
+use busbar_contract::{ClassDirection, FinishClass};
 
 /// The admission of a unit the door admitted at zero: its own hold, reserving nothing, for this
 /// principal, opened with the admittance grant the loop lent for this call.
@@ -320,6 +321,33 @@ pub fn destination_guard(view: &dyn PoolView, pool: &str) -> Result<(), VerifyRe
         return Err(r);
     }
     Ok(())
+}
+
+// ── AUDIT: HOW A UNIT ENDED ───────────────────────────────────────────────────────────────────────
+
+/// THE AUDIT FACTS of a unit that passed the door: its op class and how it ended. The finish is the
+/// one the plane reported from the answer's own end; where it reported none, the client-facing
+/// status decides: a 2xx is `Complete` and anything else is `Error`.
+pub fn admitted_facts(
+    op_class: OpClassId,
+    reported: Option<FinishClass>,
+    success: bool,
+) -> AuditFacts {
+    let finish = reported.unwrap_or(if success {
+        FinishClass::Complete
+    } else {
+        FinishClass::Error
+    });
+    AuditFacts { op_class, finish }
+}
+
+/// THE AUDIT FACTS of a unit the door or a step before it refused. A refusal is never a
+/// completion, whatever status it wears.
+pub fn refused_facts(op_class: OpClassId) -> AuditFacts {
+    AuditFacts {
+        op_class,
+        finish: FinishClass::Error,
+    }
 }
 
 #[cfg(test)]
