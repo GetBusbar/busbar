@@ -165,35 +165,6 @@ reason = "legacy drain: the retiring MCP engine's tests drive the admin surface 
 # written here is what 1.6.0 still has to delete.
 
 [[edge]]
-from = "codec"
-to = "codec"
-cite = "none. BUSBAR-1.6.0.md THE DESIGN, §1 — three blind axes, one small kernel: a crate of kind codec has no clause that lets it name codec vocabulary. Every hit is a coupling to delete."
-why = "crates of kind codec naming codec vocabulary: codec package names in any spelling, the kind-qualified id (codec-<id>), and — where codec is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
-drain = "delete the codec name from the codec crate: a codec reaches codec through the contract face it is written against, never by naming it. Every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
-
-[[edge]]
-from = "codec"
-to = "legacy"
-cite = "none. The retiring 1.5.x crates predate the plane/transport split (BUSBAR-1.6.0.md THE DESIGN, §9); the number is the SIZE OF THE RETIREMENT, not an allowance, and it goes to zero when the crate does."
-why = "crates of kind codec naming legacy vocabulary: legacy package names in any spelling, the kind-qualified id (legacy-<id>), and — where legacy is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
-drain = "git rm -r the retiring 1.5.x crate. The ratchet here IS the retirement; this row cannot be edited down any other way."
-
-[[edge]]
-from = "codec"
-to = "plane"
-cite = "BUSBAR-1.6.0.md THE DESIGN, §9 — a codec IS a plane other half and is named after it by design. The clause covers the codec naming ITS OWN plane only."
-why = "crates of kind codec naming plane vocabulary: plane package names in any spelling, the kind-qualified id (plane-<id>), and — where plane is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
-drain = "delete the plane name from the codec crate: a codec reaches plane through the contract face it is written against, never by naming it. Every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
-
-
-[[edge]]
-from = "codec"
-to = "transport"
-cite = "none. BUSBAR-1.6.0.md THE DESIGN, §1 — three blind axes, one small kernel: a crate of kind codec has no clause that lets it name transport vocabulary. Every hit is a coupling to delete."
-why = "crates of kind codec naming transport vocabulary: transport package names in any spelling, the kind-qualified id (transport-<id>), and — where transport is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
-drain = "delete the transport name from the codec crate: a codec reaches transport through the contract face it is written against, never by naming it. Every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
-
-[[edge]]
 from = "contract"
 to = "plane"
 cite = "none. BUSBAR-1.6.0.md THE DESIGN, §1 — three blind axes, one small kernel: a crate of kind contract has no clause that lets it name plane vocabulary. Every hit is a coupling to delete."
@@ -227,13 +198,6 @@ to = "transport"
 cite = "none. BUSBAR-1.6.0.md THE DESIGN, §1 — three blind axes, one small kernel: a crate of kind kernel has no clause that lets it name transport vocabulary. Every hit is a coupling to delete."
 why = "crates of kind kernel naming transport vocabulary: transport package names in any spelling, the kind-qualified id (transport-<id>), and — where transport is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
 drain = "delete the transport name from the kernel crate: a kernel reaches transport through the contract face it is written against, never by naming it. Every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
-
-[[edge]]
-from = "legacy"
-to = "codec"
-cite = "none. The retiring 1.5.x crates predate the plane/transport split (BUSBAR-1.6.0.md THE DESIGN, §9); the number is the SIZE OF THE RETIREMENT, not an allowance, and it goes to zero when the crate does."
-why = "crates of kind legacy naming codec vocabulary: codec package names in any spelling, the kind-qualified id (codec-<id>), and — where codec is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
-drain = "git rm -r the retiring 1.5.x crate. The ratchet here IS the retirement; this row cannot be edited down any other way."
 
 [[edge]]
 from = "legacy"
@@ -291,13 +255,6 @@ to = "transport"
 cite = "none. The retiring 1.5.x crates predate the plane/transport split (BUSBAR-1.6.0.md THE DESIGN, §9); the number is the SIZE OF THE RETIREMENT, not an allowance, and it goes to zero when the crate does."
 why = "crates of kind legacy naming transport vocabulary: transport package names in any spelling, the kind-qualified id (transport-<id>), and — where transport is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
 drain = "git rm -r the retiring 1.5.x crate. The ratchet here IS the retirement; this row cannot be edited down any other way."
-
-[[edge]]
-from = "plane"
-to = "codec"
-cite = "BUSBAR-1.6.0.md THE DESIGN, §2 and §9 — a plane and its codec are the two halves of one plane, and the dialect split is what turns the half into busbar-plane-<p>-<d>. The plane may name ITS OWN half and nothing else; a cross-instance hit here is what the :deps row refuses."
-why = "crates of kind plane naming codec vocabulary: codec package names in any spelling, the kind-qualified id (codec-<id>), and — where codec is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
-drain = "delete the codec name from the plane crate: a plane reaches codec through the contract face it is written against, never by naming it. Every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
 
 [[edge]]
 from = "plane"
@@ -361,13 +318,6 @@ to = "transport"
 cite = "none by clause. The loader, packer, signer and SDK are the tools that BUILD plugins, so a transport name in them is a tool naming its subject; BUSBAR-1.6.0.md THE DESIGN, §2 keeps them a kind of their own for exactly that reason, and the number says how much of the subject leaked into the tool."
 why = "crates of kind plugin-tooling naming transport vocabulary: transport package names in any spelling, the kind-qualified id (transport-<id>), and — where transport is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
 drain = "delete the transport name from the plugin-tooling crate: a plugin-tooling reaches transport through the contract face it is written against, never by naming it. Every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
-
-[[edge]]
-from = "root"
-to = "codec"
-cite = "none. BUSBAR-1.6.0.md THE DESIGN, §1 gives the composition root a REGISTRY to assemble from — it mounts what a plugin DECLARES. A codec name inside crates/busbar is the assembly hand-wired instead of read, and no clause grants it."
-why = "crates of kind root naming codec vocabulary: codec package names in any spelling, the kind-qualified id (codec-<id>), and — where codec is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
-drain = "delete the per-codec wiring from crates/busbar/src/root/** and crates/busbar/src/main.rs: the root mounts a declared surface read off the registry, so each hit goes on the commit that moves the declaration into the codec itself."
 
 [[edge]]
 from = "root"
@@ -469,11 +419,6 @@ drain = "delete the transport name from the transport crate: a transport reaches
 crate = "busbar"
 kind = "cleanliness"
 count = "7"
-
-[[cell]]
-crate = "busbar"
-kind = "codec"
-count = "5"
 
 [[cell]]
 crate = "busbar"
@@ -619,11 +564,6 @@ count = "6"
 
 [[cell]]
 crate = "busbar-llm"
-kind = "codec"
-count = "26"
-
-[[cell]]
-crate = "busbar-llm"
 kind = "contract"
 count = "51"
 
@@ -712,11 +652,6 @@ count = "103"
 
 [[cell]]
 crate = "busbar-plane-llm"
-kind = "codec"
-count = "18"
-
-[[cell]]
-crate = "busbar-plane-llm"
 kind = "plane"
 count = "10"
 
@@ -739,11 +674,6 @@ count = "13"
 crate = "busbar-plane-mcp"
 kind = "transport"
 count = "68"
-
-[[cell]]
-crate = "busbar-plane-streaming"
-kind = "codec"
-count = "26"
 
 [[cell]]
 crate = "busbar-plane-streaming"
@@ -848,11 +778,6 @@ count = "2"
 crate = "busbar-transport-ws"
 kind = "transport"
 count = "52"
-
-[[cell]]
-crate = "busbar-voice"
-kind = "codec"
-count = "11"
 
 [[cell]]
 crate = "busbar-voice"
@@ -1538,7 +1463,8 @@ drain = "move both implementations into a store-kind crate and have the root REG
 # The column exists because a red team put `const VD = "anthropic";` and `fn openai_shim()` into
 # `busbar-store-memory` and every gate in the tree stayed green: there was no `dialect` column for
 # the hit to land in. The numbers below are TODAY'S MEASUREMENT, pinned exactly. They are large --
-# `busbar-llm-codec` is the `llm` plane's other half and is very nearly all vendor vocabulary -- and
+# `busbar-plane-llm`, which holds the llm codec since R7 folded it in, is very nearly all vendor
+# vocabulary -- and
 # large is the point: the ratchet is exact in BOTH directions, so a vendor word ADDED to a crate is
 # red and a vendor word DELETED without re-pinning is red too. `cargo xtask gate kind-isolation
 # --write` re-pins downward and refuses every rise.
