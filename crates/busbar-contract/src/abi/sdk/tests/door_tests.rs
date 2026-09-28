@@ -20,7 +20,7 @@ use crate::abi::mechanism::lifecycle::{
 use crate::abi::mechanism::ticket::{HostCtx, Ticket};
 use crate::abi::mechanism::{KindCode, DOOR_MAGIC, MECHANISM_VERSION};
 
-use super::{KindOps, Slot};
+use super::{KindOps, KindSlot, Slot};
 
 /// The lifecycle-only table: the shared head and no kind op.
 #[repr(C)]
@@ -36,6 +36,8 @@ unsafe impl KindOps for LifecycleOnly {
 
 /// `validate` with this settings length panics.
 const PANIC_LEN: usize = 13;
+/// `open`, and the second kind op, panic at this generation.
+const PANIC_GEN: u64 = 0xDEAD_0001;
 /// `tick` at this `now_ns` answers PENDING.
 const PEND_AT: u64 = 42;
 
@@ -56,6 +58,7 @@ impl Slot for Open {
     type In = OpenIn;
     type Out = OpenOut;
     fn call(_: *mut c_void, input: &OpenIn, out: &mut OpenOut) -> Outcome {
+        assert_ne!(input.generation, PANIC_GEN, "open panics");
         out.instance = input.generation as usize as *mut c_void;
         Outcome::Ready
     }
@@ -606,6 +609,17 @@ unsafe impl KindOps for TwoKindOps {
     const KIND: KindCode = KindCode::Store;
 }
 
+// SAFETY: this test kind states these structs for its two ops.
+unsafe impl KindSlot<{ LIFECYCLE_SLOTS }> for TwoKindOps {
+    type In = InHead;
+    type Out = OutHead;
+}
+// SAFETY: as above.
+unsafe impl KindSlot<{ LIFECYCLE_SLOTS + 1 }> for TwoKindOps {
+    type In = GenIn;
+    type Out = TickOut;
+}
+
 struct First;
 impl Slot for First {
     type In = InHead;
@@ -617,9 +631,11 @@ impl Slot for First {
 
 struct Second;
 impl Slot for Second {
-    type In = InHead;
-    type Out = OutHead;
-    fn call(_: *mut c_void, _: &InHead, _: &mut OutHead) -> Outcome {
+    type In = GenIn;
+    type Out = TickOut;
+    fn call(_: *mut c_void, input: &GenIn, out: &mut TickOut) -> Outcome {
+        assert_ne!(input.generation, PANIC_GEN, "a kind op panics");
+        out.next_tick_ns = input.generation;
         Outcome::Refused
     }
 }
@@ -654,16 +670,75 @@ fn kind_ops_sit_at_lifecycle_slots_plus_k_whatever_order_they_are_named_in() {
     assert_eq!(d.kind_abi, crate::abi::store::ABI_VERSION);
     assert_eq!(t.head.size as usize, size_of::<TwoKindOps>());
     assert_eq!(t.head.slots, LIFECYCLE_SLOTS + 2);
-    for (op, k, answer) in [
-        (t.first, 0, Outcome::Ready),
-        (t.second, 1, Outcome::Refused),
-    ] {
-        let input = in_head::<InHead>(LIFECYCLE_SLOTS + k, Ticket::NONE);
-        let mut out = prefilled_head(size_of::<OutHead>());
-        assert_eq!(call(op, &input, &mut out), answer, "kind op {k}");
-        assert_eq!(out.outcome.outcome(), answer);
-        let wrong = in_head::<InHead>(LIFECYCLE_SLOTS + 1 - k, Ticket::NONE);
-        let mut out = prefilled_head(size_of::<OutHead>());
-        assert_eq!(call(op, &wrong, &mut out), Outcome::Fault, "kind op {k}");
-    }
+    // Kind op 0 (`InHead` -> `OutHead`) answers only its own index.
+    let input = in_head::<InHead>(LIFECYCLE_SLOTS, Ticket::NONE);
+    let mut out = prefilled_head(size_of::<OutHead>());
+    assert_eq!(call(t.first, &input, &mut out), Outcome::Ready);
+    assert_eq!(out.outcome.outcome(), Outcome::Ready);
+    let wrong = in_head::<InHead>(LIFECYCLE_SLOTS + 1, Ticket::NONE);
+    let mut out = prefilled_head(size_of::<OutHead>());
+    assert_eq!(call(t.first, &wrong, &mut out), Outcome::Fault);
+
+    // Kind op 1 (`GenIn` -> `TickOut`) answers its own index, with its own structs.
+    let gen_in = |op, generation| GenIn {
+        head: in_head::<GenIn>(op, Ticket::NONE),
+        generation,
+    };
+    let tick_out = || TickOut {
+        head: prefilled_head(size_of::<TickOut>()),
+        next_tick_ns: 0,
+    };
+    let mut out = tick_out();
+    let got = call(t.second, &gen_in(LIFECYCLE_SLOTS + 1, 77), &mut out);
+    assert_eq!(got, Outcome::Refused);
+    assert_eq!(out.head.outcome.outcome(), Outcome::Refused);
+    assert_eq!(out.next_tick_ns, 77);
+    let mut out = tick_out();
+    let got = call(t.second, &gen_in(LIFECYCLE_SLOTS, 77), &mut out);
+    assert_eq!(got, Outcome::Fault);
+}
+
+#[test]
+fn a_panicking_kind_op_answers_fault_and_writes_only_the_outcome() {
+    // SAFETY: the macro's `'static` door and table.
+    let t = unsafe { &*(*kind_plugin::door()).ops.cast::<TwoKindOps>() };
+    let input = GenIn {
+        head: in_head::<GenIn>(LIFECYCLE_SLOTS + 1, Ticket::NONE),
+        generation: PANIC_GEN,
+    };
+    let mut out = TickOut {
+        head: prefilled_head(size_of::<TickOut>()),
+        next_tick_ns: 0x5EED,
+    };
+    out.head.outcome = RawOutcome::of(Outcome::Ready);
+    assert_eq!(call(t.second, &input, &mut out), Outcome::Fault);
+    assert_eq!(out.head.outcome.outcome(), Outcome::Fault);
+    assert_eq!(
+        (out.next_tick_ns, out.head.wake_at_ns, out.head.lease),
+        (0x5EED, 0xAAAA, 0xBBBB),
+        "a panicking kind op wrote its out"
+    );
+}
+
+#[test]
+fn a_panicking_open_answers_fault_and_hands_back_no_instance() {
+    let input = OpenIn {
+        head: in_head::<OpenIn>(slot::OPEN, Ticket::NONE),
+        host: ptr::null(),
+        settings: absent(),
+        secrets: ptr::null(),
+        secrets_len: 0,
+        generation: PANIC_GEN,
+    };
+    let mut out = OpenOut {
+        head: prefilled_head(size_of::<OpenOut>()),
+        instance: ptr::null_mut(),
+    };
+    out.head.outcome = RawOutcome::of(Outcome::Ready);
+    assert_eq!(call(table().head.open, &input, &mut out), Outcome::Fault);
+    assert_eq!(out.head.outcome.outcome(), Outcome::Fault);
+    assert!(
+        out.instance.is_null(),
+        "a panicking open handed back an instance"
+    );
 }

@@ -17,6 +17,12 @@ name = "sdk_door_plugin"
 path = "tests/fixtures/sdk_door_plugin.rs"
 crate-type = ["cdylib"]
 
+# Its symbol baseline: the contract linked, neither macro invoked.
+[[example]]
+name = "sdk_door_baseline"
+path = "tests/fixtures/sdk_door_baseline.rs"
+crate-type = ["cdylib"]
+
 # DEPENDENCY POLICY (the core-to-plugin section of the design). This crate is the ONLY thing a
 # plugin manifest may name from busbar, so it must stand alone: it names no kernel crate, no
 # capability crate, no unit crate, no plane and no transport. Standard library, serde, and reviewed

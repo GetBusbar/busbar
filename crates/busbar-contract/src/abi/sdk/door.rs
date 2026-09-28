@@ -98,6 +98,85 @@ pub unsafe trait KindOps: Copy + 'static {
     const KIND: KindCode;
 }
 
+/// The `in`/`out` of kind op slot `INDEX` (its ABSOLUTE index, `LIFECYCLE_SLOTS + k`, the number
+/// `InHead::op` carries) of a [`KindOps`] table. Each kind implements it next to its `Ops`, in
+/// `abi/<kind>/`, once per kind op; [`plugin_door!`](crate::plugin_door) then refuses to compile a
+/// kind op whose [`Slot`] reads or writes any other structs — the kind-op twin of the lifecycle's
+/// check.
+///
+/// ```
+/// use busbar_contract::abi::mechanism::call::{InHead, Op, OutHead, Outcome};
+/// use busbar_contract::abi::mechanism::lifecycle::*;
+/// use busbar_contract::abi::mechanism::KindCode;
+/// use busbar_contract::abi::sdk::door::{KindOps, KindSlot, Slot};
+/// # use std::ffi::c_void;
+/// #[repr(C)]
+/// #[derive(Clone, Copy)]
+/// pub struct OneOp { head: OpsHead, only: Option<Op> }
+/// unsafe impl KindOps for OneOp { const KIND: KindCode = KindCode::Store; }
+/// // Kind op 0 reads a `GenIn` and writes a `TickOut`.
+/// unsafe impl KindSlot<{ LIFECYCLE_SLOTS }> for OneOp { type In = GenIn; type Out = TickOut; }
+/// # macro_rules! ready { ($n:ident, $i:ty, $o:ty) => {
+/// #     struct $n;
+/// #     impl Slot for $n { type In = $i; type Out = $o;
+/// #         fn call(_: *mut c_void, _: &$i, _: &mut $o) -> Outcome { Outcome::Ready } }
+/// # } }
+/// # ready!(V, ValidateIn, OutHead); ready!(Op_, OpenIn, OpenOut); ready!(Rf, RefreshIn, OutHead);
+/// # ready!(Rt, GenIn, OutHead); ready!(Tk, TickIn, TickOut); ready!(Dr, DriveIn, OutHead);
+/// # ready!(Cn, CancelIn, CancelOut); ready!(Rl, ReleaseIn, OutHead); ready!(Cl, InHead, OutHead);
+/// ready!(Only, GenIn, TickOut); // the kind's own structs: compiles
+/// busbar_contract::plugin_door! {
+///     ops: OneOp,
+///     statement: busbar_contract::abi::sdk::door::statement("one-op", "0", 1),
+///     lifecycle: { validate: V, open: Op_, refresh: Rf, retire: Rt, tick: Tk, drive: Dr,
+///                  cancel: Cn, release: Rl, close: Cl },
+///     kind_ops: { only: Only },
+/// }
+/// # fn main() { let _ = door(); }
+/// ```
+///
+/// The same plugin with the kind op wired to ANOTHER op's structs does not compile:
+///
+/// ```compile_fail,E0271
+/// use busbar_contract::abi::mechanism::call::{InHead, Op, OutHead, Outcome};
+/// use busbar_contract::abi::mechanism::lifecycle::*;
+/// use busbar_contract::abi::mechanism::KindCode;
+/// use busbar_contract::abi::sdk::door::{KindOps, KindSlot, Slot};
+/// # use std::ffi::c_void;
+/// #[repr(C)]
+/// #[derive(Clone, Copy)]
+/// pub struct OneOp { head: OpsHead, only: Option<Op> }
+/// unsafe impl KindOps for OneOp { const KIND: KindCode = KindCode::Store; }
+/// unsafe impl KindSlot<{ LIFECYCLE_SLOTS }> for OneOp { type In = GenIn; type Out = TickOut; }
+/// # macro_rules! ready { ($n:ident, $i:ty, $o:ty) => {
+/// #     struct $n;
+/// #     impl Slot for $n { type In = $i; type Out = $o;
+/// #         fn call(_: *mut c_void, _: &$i, _: &mut $o) -> Outcome { Outcome::Ready } }
+/// # } }
+/// # ready!(V, ValidateIn, OutHead); ready!(Op_, OpenIn, OpenOut); ready!(Rf, RefreshIn, OutHead);
+/// # ready!(Rt, GenIn, OutHead); ready!(Tk, TickIn, TickOut); ready!(Dr, DriveIn, OutHead);
+/// # ready!(Cn, CancelIn, CancelOut); ready!(Rl, ReleaseIn, OutHead); ready!(Cl, InHead, OutHead);
+/// ready!(Only, CancelIn, CancelOut); // another op's structs: refused
+/// busbar_contract::plugin_door! {
+///     ops: OneOp,
+///     statement: busbar_contract::abi::sdk::door::statement("one-op", "0", 1),
+///     lifecycle: { validate: V, open: Op_, refresh: Rf, retire: Rt, tick: Tk, drive: Dr,
+///                  cancel: Cn, release: Rl, close: Cl },
+///     kind_ops: { only: Only },
+/// }
+/// # fn main() { let _ = door(); }
+/// ```
+///
+/// # Safety
+/// `In`/`Out` are exactly the structs the kind's ABI states for slot `INDEX` of `Self`; the
+/// trampoline trusts them to size its copies.
+pub unsafe trait KindSlot<const INDEX: u32>: KindOps {
+    /// The op's `in`.
+    type In: AbiIn;
+    /// The op's `out`.
+    type Out: AbiOut;
+}
+
 // SAFETY (all seven): each kind's `Ops` is `#[repr(C)]`, leads with `head: OpsHead`, and appends
 // only `Option<Op>` slots (`abi/<kind>/`).
 unsafe impl KindOps for crate::abi::store::Ops {
@@ -271,10 +350,14 @@ pub const fn slot_count<T: KindOps>() -> u32 {
     slot_at(size_of::<T>())
 }
 
-/// A KIND-OP table entry: the `trampoline` over `S` at `INDEX`. Its `in`/`out` are the kind's to
-/// check (each kind's typed wrapper names its op's structs); the lifecycle's are checked here.
+/// A KIND-OP table entry of a `T` table: the `trampoline` over `S` at `INDEX`, refusing to compile
+/// unless `S` reads and writes the structs `T` states for that slot ([`KindSlot`]).
 #[must_use]
-pub const fn op<S: Slot, const INDEX: u32>() -> Option<Op> {
+pub const fn kind_op<T, S, const INDEX: u32>() -> Option<Op>
+where
+    T: KindSlot<INDEX>,
+    S: Slot<In = <T as KindSlot<INDEX>>::In, Out = <T as KindSlot<INDEX>>::Out>,
+{
     Some(trampoline::<S, INDEX>)
 }
 
@@ -411,7 +494,9 @@ pub const fn door<T: KindOps>(statement: &'static Statement, ops: &'static T) ->
 /// * `lifecycle` — one [`Slot`] per lifecycle slot, each reading and writing that slot's own
 ///   `in`/`out` (a mismatch does not compile). A NULL slot refuses the load, so all nine are named.
 /// * `kind_ops` — one [`Slot`] per kind op, by the table's field name; its index is read off the
-///   field's offset (the SLOT LAYOUT rule). Every field must be named (a struct literal).
+///   field's offset (the SLOT LAYOUT rule), and its `in`/`out` must be the ones the kind states for
+///   that index ([`KindSlot`]; a mismatch does not compile). Every field must be named (a struct
+///   literal).
 #[macro_export]
 macro_rules! plugin_door {
     (
@@ -459,7 +544,7 @@ macro_rules! plugin_door {
                     __sdk::lifecycle_op::<$close, __call::InHead, __call::OutHead, { __lc::slot::CLOSE }>(),
                 ),
                 $($(
-                    $field: __sdk::op::<$slot, { __sdk::slot_at(::core::mem::offset_of!(__Ops, $field)) }>(),
+                    $field: __sdk::kind_op::<__Ops, $slot, { __sdk::slot_at(::core::mem::offset_of!(__Ops, $field)) }>(),
                 )*)?
             };
             const __DOOR: &$crate::abi::mechanism::door::Door = &__sdk::door::<__Ops>(__STATEMENT, __OPS);
