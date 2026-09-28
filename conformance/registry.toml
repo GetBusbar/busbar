@@ -138,7 +138,7 @@ tier = "conformant"
 label = "jev"
 verdict = "conformance-verdict-jev"
 public = "true"
-not_run_reason = "planned 1.6.0 — jev wiring stage in flight (MATRIX-RULING §jev)"
+not_run_reason = "no verdict artifact: testing/jev-conformance/jev-conformance.sh (qa-conformance-jev.yml) writes conformance/verdicts/jev.json"
 
 [[suite]]
 id = "oidf-oauth2"

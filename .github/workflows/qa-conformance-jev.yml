@@ -1,0 +1,66 @@
+name: jev conformance
+
+# THE DECISIONS PLANE (jev) CONFORMANCE VERDICT — the job that writes `conformance/verdicts/jev.json`.
+#
+# One job, because the suite is one runner: `testing/jev-conformance/jev-conformance.sh` runs the
+# plane's own battery and the served leg (POST /v1/systemone against a booted busbar), judges both,
+# and writes the verdict. Its `--selftest` runs first, so a verdict is never read from a judgement
+# that was not proven to bite.
+#
+# THE VERDICT IS NEVER GREEN WITHOUT A SERVED LEG. While the decisions plane is registered and
+# configured but no route serves its operation, the verdict is `fail`, reason "not served", and this
+# job is RED. A mounted route with no served battery is also `fail`. The verdict file is uploaded as
+# an artifact either way, so the release pipeline records the red rather than a missing file.
+#
+# busbar is PUBLIC and there is no secret anywhere in this file.
+
+on:
+  # SERIALISED BEHIND CI, as the other plane conformance workflows are: it runs on CI's completion on
+  # `qa`, and every checkout pins the commit that CI run tested.
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+  workflow_dispatch:
+
+concurrency:
+  group: jev-conformance-${{ github.event.workflow_run.head_branch || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verdict:
+    name: jev verdict (battery + served leg)
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       contains(fromJSON('["qa"]'), github.event.workflow_run.head_branch))
+    runs-on: latchkey-xlarge
+    # BOUNDED: one crate's tests, one bin build and one boot.
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.ref }}
+      - uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
+      - name: Prove the judgement bites
+        run: bash testing/jev-conformance/jev-conformance.sh --selftest
+      - name: Run the battery and the served leg, write the verdict
+        run: |
+          set -euo pipefail
+          bash testing/jev-conformance/jev-conformance.sh \
+            --out jev.json \
+            --run-id "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+      - name: Upload the verdict
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: conformance-verdict-jev
+          path: jev.json
+      - name: The verdict must be a pass
+        run: |
+          set -euo pipefail
+          status="$(python3 -c 'import json; print(json.load(open("jev.json"))["status"])')"
+          reason="$(python3 -c 'import json; print(json.load(open("jev.json")).get("reason", ""))')"
+          if [ "$status" != "pass" ]; then
+            echo "::error::jev verdict is ${status}: ${reason}"
+            exit 1
+          fi
