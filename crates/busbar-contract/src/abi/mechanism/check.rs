@@ -6,21 +6,11 @@
 //! pure checks every kind's `check_<op>` is built from. u64 arithmetic, no statics. The dispatcher
 //! turns an `Err` into FAULT; no host re-implements a check.
 //!
-//! THE SHORT-BUFFER RULE (M-SB, P1). A request-path result goes into a HOST buffer: the `in` names
-//! pointer + capacity, the `out` states BOTH `*_written` and `*_needed`.
-//!
-//! * READY: `needed == 0` and `written <= cap`.
-//! * SHORT: FAILED with `needed > cap`, `written == 0` and nothing applied; the host grows the buffer
-//!   and calls once more. The plugin checks capacity BEFORE it acts, so the re-call repeats nothing.
-//! * `needed != 0` on any other outcome is FAULT; FAILED with `0 < needed <= cap` is FAULT (it would
-//!   waste the one re-call).
-//! * An op that cannot know a size before it acts (a bind, an accept) has NO short path: the host
-//!   passes `cap >= ` the kind's declared maximum, and an over-cap length is FAULT ([`within`]).
-//!
-//! Backpressure is not a short buffer: a plane's `more` and a framer's full sink are
-//! "call again after draining", answered READY.
+//! THE SHORT-BUFFER RULE (M-SB, its multi-buffer refinement and P1) is stated once, on
+//! [`OutHead`](super::call::OutHead); [`result`] and [`results`] enforce it, and [`within`] is the
+//! check for an op with no short path.
 
-use super::call::{DeadlineClass, Outcome};
+use super::call::{AbiStr, DeadlineClass, Outcome};
 
 /// [`span`]: no bytes; the span's length is then `0`.
 pub const SPAN_ABSENT: u32 = u32::MAX;
@@ -190,6 +180,27 @@ pub const fn within(len: u64, cap: u64, field: &'static str) -> Result<(), Fault
 pub fn listed<T>(ptr: *const T, len: usize, field: &'static str) -> Result<(), Fault> {
     if len > 0 && ptr.is_null() {
         return Err(fault(Rule::NullWithCount, field));
+    }
+    Ok(())
+}
+
+/// A string: a length above zero never comes with a NULL pointer.
+///
+/// # Errors
+///
+/// [`Rule::NullWithCount`].
+pub fn text(s: AbiStr, field: &'static str) -> Result<(), Fault> {
+    listed(s.ptr, s.len, field)
+}
+
+/// Every string of a list, by [`text`].
+///
+/// # Errors
+///
+/// [`Rule::NullWithCount`] for the first string counted with a NULL pointer.
+pub fn texts(list: &[AbiStr], field: &'static str) -> Result<(), Fault> {
+    for s in list {
+        text(*s, field)?;
     }
     Ok(())
 }

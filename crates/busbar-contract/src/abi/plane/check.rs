@@ -27,7 +27,8 @@ use super::{
 use crate::abi::host::conn::connector::{Need, DIRECTION_INBOUND, DIRECTION_OUTBOUND};
 use crate::abi::mechanism::call::{AbiStr, Outcome};
 use crate::abi::mechanism::check::{
-    bits, code, fault, first, index, listed, result, results, span, weight, Dim, Filled, MAX_BYTES,
+    bits, code, fault, first, index, listed, result, results, span, text, weight, Dim, Filled,
+    MAX_BYTES,
 };
 
 /// The most unit counts one answer may carry.
@@ -78,10 +79,6 @@ impl Bounds {
             record_kinds: t.record_kinds_len as u64,
         }
     }
-}
-
-fn text(s: AbiStr, field: &'static str) -> Result<(), Fault> {
-    listed(s.ptr, s.len, field)
 }
 
 fn named(s: AbiStr, field: &'static str) -> Result<(), Fault> {

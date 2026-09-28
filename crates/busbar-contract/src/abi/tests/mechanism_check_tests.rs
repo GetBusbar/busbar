@@ -144,3 +144,22 @@ fn a_multi_dimension_answer_keeps_every_other_rule() {
         Ok(Filled::Written)
     );
 }
+
+#[test]
+fn a_string_counted_with_a_null_pointer_is_fault() {
+    use crate::abi::mechanism::call::AbiStr;
+    let bad = AbiStr {
+        ptr: std::ptr::null(),
+        len: 1,
+    };
+    let empty = AbiStr {
+        ptr: std::ptr::null(),
+        len: 0,
+    };
+    assert_eq!(text(empty, "t"), Ok(()));
+    assert_eq!(text(bad, "t"), Err(fault(Rule::NullWithCount, "t")));
+    assert_eq!(
+        texts(&[empty, bad], "t"),
+        Err(fault(Rule::NullWithCount, "t"))
+    );
+}

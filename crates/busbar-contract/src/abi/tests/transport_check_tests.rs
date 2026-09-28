@@ -381,3 +381,28 @@ fn every_setting_is_checked() {
         f(Rule::NullWithCount, "setting.default")
     );
 }
+
+#[test]
+fn a_null_string_element_in_composes_over_upgrades_to_or_claim_facts_is_fault() {
+    let bad = AbiStr {
+        ptr: null(),
+        len: 1,
+    };
+    let good = AbiStr {
+        ptr: b"k".as_ptr(),
+        len: 1,
+    };
+    assert_eq!(check_composes_over(&[good]), Ok(()));
+    assert_eq!(
+        check_composes_over(&[good, bad]),
+        f(Rule::NullWithCount, "composes_over.name")
+    );
+    assert_eq!(
+        check_upgrades_to(&[bad]),
+        f(Rule::NullWithCount, "upgrades_to.name")
+    );
+    assert_eq!(
+        check_claim_facts(&[bad]),
+        f(Rule::NullWithCount, "claim.fact")
+    );
+}

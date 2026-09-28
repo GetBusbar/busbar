@@ -39,16 +39,15 @@
 //! drained them. A framer op never pends.
 //!
 //! EVERY REQUEST-PATH RESULT IS IN A HOST BUFFER (memory class (i)): a carrier's addresses and read
-//! bytes, a framer's wire bytes, frame bytes and pieces. The `in` names pointer + capacity; the `out`
-//! states `*_written` and, where the op has a short path, `*_needed` (M-SB,
-//! [`crate::abi::mechanism::check`]): READY has `needed == 0`, `written <= cap`; a short answer is
-//! FAILED with `needed > cap`, nothing written and nothing applied, and the host calls once more.
+//! bytes, a framer's wire bytes, frame bytes and pieces. The short-buffer rule (M-SB) is stated once,
+//! on [`OutHead`](crate::abi::mechanism::call::OutHead); this kind's cases:
 //!
-//! * `arrival` and `locate` compute before they act, so they have the short path.
-//! * `listen` and `accept` act (bind, take a connection) before they know the address size, so they
-//!   have NO short path (P1): the host passes `addr_cap`/`peer_cap >=` [`MAX_ADDR`] and an over-cap
-//!   `*_written` is FAULT.
-//! * `read` has no short path: it reads at most `cap`.
+//! * `arrival` and `locate` have the short path (`locate`'s authority and name are one
+//!   multi-dimension answer).
+//! * `listen` and `accept` have NO short path (P1): the host passes `addr_cap`/`peer_cap >=`
+//!   [`MAX_ADDR`] and an over-cap `*_written` is FAULT.
+//! * `read` and `write` have no short path, and PARTIAL I/O IS NOT A SHORT BUFFER: a FAILED read or
+//!   write MAY report the bytes it already moved in `len` (at most `cap`).
 //! * A framer's full sink is BACKPRESSURE, not a short buffer: READY with [`YIELD_MORE`], and the
 //!   host calls again once it has drained the sink.
 //!
@@ -213,8 +212,8 @@ pub struct Ops {
 /// least this (P1: those ops have no short path).
 pub const MAX_ADDR: u64 = 256;
 
-/// Every kind op's contract, in slot order. Carrier I/O pends on its connection's ticket under the
-/// carrier's idle timeout ([`DeadlineClass::Connection`]); `listen` is boot-time and off-path. A
+/// Every kind op's contract, in slot order. Carrier I/O pends on its side's ticket (read or write,
+/// P2) under the carrier's idle timeout ([`DeadlineClass::Connection`]); `listen` is boot-time and off-path. A
 /// framer is sans-IO: every framer op is request-path, never pends, and runs under the stream's
 /// deadline.
 #[rustfmt::skip]

@@ -16,11 +16,8 @@
 //! reply bytes, reply head fields, unit counts, record writes — is written into a buffer the `in`
 //! names as pointer + capacity; the bytes of fields and record writes go into the call's `arena`,
 //! and the structs name them by [`Span`]. Nothing the host needs after the call lives in plugin
-//! memory. Each `out` states `*_written` and `*_needed` per buffer (M-SB,
-//! [`crate::abi::mechanism::check`]): READY has every `needed == 0` and `written <= cap`; a short
-//! answer is FAILED with `needed > cap` for the short buffer, nothing written and nothing applied,
-//! and the host grows it and calls once more. The plane checks every capacity BEFORE it acts, so
-//! the re-call repeats nothing (P1).
+//! memory. Each `out` states `*_written` and `*_needed` per buffer; the short-buffer rule (M-SB,
+//! with its multi-buffer refinement) is stated once, on [`OutHead`](crate::abi::mechanism::call::OutHead).
 //!
 //! BACKPRESSURE IS NOT A SHORT BUFFER: `on_piece`'s reply bytes stream. A full `reply_buf` is READY
 //! with `more = 1` (and at least one byte `emitted`); the kernel flushes, waits for the socket to be

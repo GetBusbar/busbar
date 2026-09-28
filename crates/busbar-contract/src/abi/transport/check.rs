@@ -24,17 +24,14 @@ use super::{
 };
 use crate::abi::mechanism::call::{AbiStr, Outcome};
 use crate::abi::mechanism::check::{
-    bits, code, fault, first, index, listed, range, result, results, within, Dim, MAX_BYTES,
+    bits, code, fault, first, index, listed, range, result, results, text, texts, within, Dim,
+    MAX_BYTES,
 };
 
 /// The most frame pieces one framer answer may produce.
 pub const MAX_PIECES: u64 = 4096;
 /// The most claims one transport entry may make.
-pub const MAX_CLAIMS: u64 = 256;
-
-fn text(s: AbiStr, field: &'static str) -> Result<(), Fault> {
-    listed(s.ptr, s.len, field)
-}
+pub const MAX_CLAIMS: u64 = 1024;
 
 /// `listen`: no short path (P1); the bound address fits `addr_cap`.
 ///
@@ -73,7 +70,9 @@ pub const fn check_arrival(outcome: Outcome, out: &ArrivalOut, peer_cap: u64) ->
     }
 }
 
-/// `read`/`write`: no short path; at most the buffer's capacity or the bytes offered.
+/// `read`/`write`: no short path; at most the buffer's capacity or the bytes offered. Partial I/O
+/// is not a short buffer: a FAILED read or write MAY report the bytes it already moved (the M-SB
+/// carve-outs, beside backpressure, in this kind's module doc).
 ///
 /// # Errors
 ///
@@ -271,6 +270,33 @@ pub fn check_claims(claims: &[Claim]) -> Result<(), Fault> {
         )?;
     }
     Ok(())
+}
+
+/// The claims a framer composes over: no name counted with a NULL pointer.
+///
+/// # Errors
+///
+/// [`Rule::NullWithCount`].
+pub fn check_composes_over(names: &[AbiStr]) -> Result<(), Fault> {
+    texts(names, "composes_over.name")
+}
+
+/// The claims a connection may upgrade to: no name counted with a NULL pointer.
+///
+/// # Errors
+///
+/// [`Rule::NullWithCount`].
+pub fn check_upgrades_to(names: &[AbiStr]) -> Result<(), Fault> {
+    texts(names, "upgrades_to.name")
+}
+
+/// One claim's transport fact keys: no key counted with a NULL pointer.
+///
+/// # Errors
+///
+/// [`Rule::NullWithCount`].
+pub fn check_claim_facts(keys: &[AbiStr]) -> Result<(), Fault> {
+    texts(keys, "claim.fact")
 }
 
 /// Every status row: names a claim, `lo <= hi`, and a class that is stated.
