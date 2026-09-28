@@ -21,8 +21,8 @@
 //! MEMORY, FOUR CLASSES (the design: plugin-owned memory is valid to its next refresh generation):
 //! (i) REQUEST-PATH RESULTS go into HOST-owned buffers the kind's `in`/`out` names as pointer +
 //! capacity; the plugin writes at most the capacity and never hands back a pointer for a result.
-//! (ii) GENERATION DATA — the Statement, and snapshots a plugin publishes at `open`/`refresh` — stays
-//! valid until `retire` of that generation. Door memory is `'static`.
+//! (ii) GENERATION DATA — only data a plugin PUBLISHES at `open`/`refresh` — stays valid until
+//! `retire` of that generation. The Door and the Statement (the Door points to it) are `'static`.
 //! (iii) PER-CALL `OutHead.error` and the `Envelope` arrays stay valid until the NEXT op on the same
 //! ticket. On [`Ticket::NONE`](ticket::Ticket::NONE) they are valid only until the op returns: the
 //! host copies them before it makes any other call on that thread.
