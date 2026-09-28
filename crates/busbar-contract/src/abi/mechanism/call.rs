@@ -220,12 +220,20 @@ pub struct Envelope {
 }
 
 /// The head of every `out` of every kind. Host-owned; the host initialises it before the call.
+///
+/// OUT-MEMORY LIFETIME. Every pointer a plugin writes into an `out` (the error string, the
+/// envelope's arrays, a kind's reply slices) points to plugin-owned memory that stays valid until the
+/// NEXT op on the same ticket, or until `release(lease)` when the `out` handed a non-zero lease —
+/// whichever the kind names. After that the host must not read it; the host copies what it keeps
+/// before then. Door and Statement memory is `'static`. Snapshot data a kind publishes at `refresh`
+/// stays valid until `retire` of that generation.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct OutHead {
     /// `size_of` the `out` struct the plugin wrote (the plugin writes back its own).
     pub size: u32,
-    /// [`RawOutcome`], mirrored from the return value.
+    /// [`RawOutcome`], mirrored from the return value. The RETURN VALUE is authoritative: the
+    /// dispatcher treats an `outcome` that differs from it as [`Outcome::Fault`].
     pub outcome: RawOutcome,
     /// Alignment padding.
     pub _reserved: [u8; 3],

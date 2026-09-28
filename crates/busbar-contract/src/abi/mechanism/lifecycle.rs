@@ -5,6 +5,11 @@
 //! each slot. Every slot is an [`Op`]; a NULL slot refuses the load (there is no "unsupported").
 //! There is no poll slot: after a wake the host re-invokes the same op with
 //! [`super::call::FLAG_RESUME`], the same ticket and the same `in`/`out`.
+//!
+//! CONCURRENCY. An instance is shared across workers. Ops on DISTINCT tickets may run concurrently;
+//! ops on ONE ticket are serialized by the host and never overlap. The lifecycle slots `open`,
+//! `refresh`, `retire` and `close` never run concurrently with each other on one instance; `tick`
+//! and `drive` may run concurrently with request ops.
 
 use super::call::{Blob, InHead, Op, OutHead};
 use super::ticket::{HostTables, Ticket};

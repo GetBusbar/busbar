@@ -18,6 +18,13 @@
 //! * [`ticket`] — tickets `(slot, generation)` with latched, spurious-tolerant wakes, completion
 //!   handles `(ticket, seq)`, and the host's `wake`.
 //!
+//! OUT-MEMORY LIFETIME. Every pointer a plugin writes into an `out` (the error string, the
+//! envelope's arrays, a kind's reply slices) points to plugin-owned memory that stays valid until the
+//! NEXT op on the same ticket, or until `release(lease)` when the `out` handed a non-zero lease —
+//! whichever the kind names. After that the host must not read it; the host copies what it keeps
+//! before then. Door and Statement memory is `'static`. Snapshot data a kind publishes at `refresh`
+//! stays valid until `retire` of that generation.
+//!
 //! This is the M0 SPEC: the shapes and their numbers. Nothing dispatches through them yet (M1), and
 //! no existing path is rewired to them.
 
