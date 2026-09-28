@@ -51,7 +51,7 @@ type HookOpen = fn(&str) -> Option<busbar_plugin_loader::registry::RankingPolicy
 /// the aliases, `open` handed the spelling a reference used.
 pub type LinkedHook = (&'static str, &'static [&'static str], HookOpen);
 pub use busbar_kernel_identity::operator::LinkedAuth;
-use busbar_plugin_loader::LinkedPlugin;
+use busbar_plugin_loader::{dispatch::PluginLogConfig, LinkedPlugin};
 /// The root's linked entries: its `stores`, its `hooks`, and the name of the default governance
 /// store it resolved from the store rows' own claims (empty when no linked row claims it).
 pub type RootRows = (&'static [LinkedStore], &'static [LinkedHook], &'static str);
@@ -221,6 +221,15 @@ pub fn plugins_preflight(
     plugins_cfg: &config::PluginsCfg,
     export_cfg: &config::ExportCfg,
 ) -> Result<busbar_plugin_loader::PluginRegistry, String> {
+    // `plugins.logs` is refused here, on every path (boot, `--validate`, reload, apply).
+    let l = &plugins_cfg.logs;
+    PluginLogConfig::from_words(
+        l.dir.as_deref(),
+        l.level.as_deref(),
+        &l.levels,
+        l.rotate_mb,
+        l.keep,
+    )?;
     let store_ref = store_cfg.map_or_else(config::default_governance_store, |g| g.module.clone());
     // Resolved on the store AXIS: a row this build links opens in-process; any other name is a
     // `kind: store` plugin the plugins directory must supply.

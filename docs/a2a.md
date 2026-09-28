@@ -327,7 +327,7 @@ A forbidden `Origin` answers `403` with an `UnsupportedOperation` body (`crates/
 
 ### States and legal transitions
 
-Eight states (`crates/busbar-a2a/src/a2a/task.rs:76-108`): `submitted`, `working`, `input-required`, `auth-required`, `completed`, `failed`, `canceled`, `rejected`. The last four are terminal; `input-required` and `auth-required` are *interrupted* — paused awaiting the caller, consuming no compute, and the exact rows the durable store exists for.
+Eight states (`crates/busbar-plane-a2a/src/a2a/task.rs:76-108`): `submitted`, `working`, `input-required`, `auth-required`, `completed`, `failed`, `canceled`, `rejected`. The last four are terminal; `input-required` and `auth-required` are *interrupted* — paused awaiting the caller, consuming no compute, and the exact rows the durable store exists for.
 
 `can_transition_to` is total over the pair rather than a set of guards at call sites, so the combination nobody thought about is refused by default (`task.rs:156-189`):
 

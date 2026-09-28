@@ -242,6 +242,7 @@ pub mod ingress;
 pub mod ir;
 // The host's depth-guarded JSON parse/serialize seam (sonic-rs, MAX_JSON_DEPTH = 128). The LLM plane
 // keeps its own copy of the same seam (#83a O6); both are held to one shared fixture of verdicts.
+pub mod host_services;
 pub mod json;
 pub mod limits;
 pub mod lineage;

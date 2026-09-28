@@ -317,9 +317,9 @@ pub fn sources(cx: &Ctx) -> Result<Vec<String>, String> {
         // `tool_pools:` / `agent_pools:` — one type, two sections, and `repeatable:` is the SAFETY
         // declaration that decides whether an operation with effects may be performed twice.
         core_file(cx, &core, "failover/mod.rs")?,
-        // `streams:` — the voice plane's grammar, including the three plane-imposed session
+        // `streams:` — the streaming plane's grammar, including the three plane-imposed session
         // CEILINGS that bound what a live-voice deployment may ever hold.
-        "crates/busbar-voice/src/config.rs".to_string(),
+        "crates/busbar-plane-streaming/src/config.rs".to_string(),
         // `decisions:` — the decisions plane's grammar (its `models:` map and hook references);
         // a plane's config section is config grammar exactly as the other planes' sections are.
         "crates/busbar-plane-decisions/src/config.rs".to_string(),

@@ -116,6 +116,53 @@ marker must carry a reason naming which call and where:
 Run `cargo xtask gate blocking-ffi --selftest` before trusting its verdict; CI
 runs both.
 
+### The audit ledger
+
+`cargo xtask ledger` owns `qa/audit-ledger.json`, the register of every
+production-code scope (one entry per crate/tooling directory the tree
+implies), its audit history, and whether anything it found is still open.
+`cargo xtask ledger --check` is the gate: it goes RED on incomplete coverage
+(a tracked file no scope claims), a scope the tree implies that the register
+does not carry, an unreadable or stale record, or a scope with a HIGH/MEDIUM
+finding recorded and no fix stamped. It reads GREEN once coverage is complete
+and nothing is open.
+
+To keep the register in step with the tree:
+
+```bash
+cargo xtask ledger sync --write     # add/drop scopes as crates come and go
+cargo xtask ledger status           # print the table, write qa/evidence/AUDIT-STATUS.md
+cargo xtask ledger next             # the worklist, worst-covered first
+```
+
+To record a completed audit round against a scope:
+
+```bash
+cargo xtask ledger record --scope <path> --round <n> --result <zero|findings|in_progress> \
+  --report <what the round found, in prose> --auditor <who> [--counts HIGH=1,MEDIUM=2] [--at <rev>]
+```
+
+`--report` describes the *behaviour* the round found, not the round itself — it
+is written straight into the register, a file customers can read, and is
+refused if it cites an internal round/finding id, a bare commit hash, or a
+document the reader cannot open. Once a `findings` scope's issues are fixed,
+close it with:
+
+```bash
+cargo xtask ledger fixed --scope <path> [--commit <rev>]
+```
+
+`fixed` refuses to stamp a scope whose recorded hash is not the tree its round
+actually read, so a fix can only be claimed against evidence that was really
+measured. A code move that is not a code change (a rename or a crate fold) is
+carried across with `cargo xtask ledger move <old-id> <new-id>`, never a hand
+edit of the JSON — `move` is the only command that may relocate a record, and
+it refuses whenever a plain rename would launder history instead of describing
+it. Full usage: `cargo xtask ledger` with no arguments.
+
+The register's own rules are proven by `cargo test -p xtask --lib audit`; run
+it before trusting `--check`'s verdict, exactly as with the lints above.
+
 The test suite is **in-crate**: a shared
 `#[cfg(test)] mod test_support` provides the `MockServer` harness, and each module
 carries its own `#[cfg(test)] mod tests`. There are no `tests/` integration

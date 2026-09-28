@@ -22,7 +22,7 @@ use std::sync::Arc;
 fn key() -> busbar_contract::records::VirtualKey {
     busbar_contract::records::VirtualKey {
         id: "vk-voice-session".to_string(),
-        name: "voice-session".to_string(),
+        name: "streaming-session".to_string(),
         ..Default::default()
     }
 }
@@ -77,7 +77,7 @@ async fn a_served_sessions_turn_lands_the_planes_counts_on_the_presenting_key() 
     let meter = crate::runtime::TurnMeter::new(
         Arc::clone(&host) as Arc<dyn EngineHost>,
         key(),
-        "voice-server",
+        "streaming-server",
         crate::OPENAI_REALTIME,
     );
     let (core, _handle) = crate::topology::begin_session(
@@ -104,7 +104,7 @@ async fn a_served_sessions_turn_lands_the_planes_counts_on_the_presenting_key() 
         )))
         .await;
     let rows = host.ledger_rows(&key().id);
-    let lane = "voice\u{1f}openai_realtime".to_string();
+    let lane = "streaming\u{1f}openai_realtime".to_string();
     assert_eq!(
         rows.get(&(lane.clone(), "audio_tokens_in".to_string())),
         Some(&120)

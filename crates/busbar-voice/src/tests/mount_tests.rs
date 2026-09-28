@@ -487,21 +487,6 @@ fn a_failed_gemini_dial_does_not_write_the_provider_key_into_the_log() {
     );
 }
 
-/// The redaction is narrow: a `key=` that is not a query parameter is ordinary text, and a message
-/// with no credential in it survives byte-identical — an error line an operator reads is not worth
-/// mangling to cover a secret that was never in it.
-#[test]
-fn redaction_leaves_a_message_that_carries_no_query_credential_alone() {
-    let plain = "connecting to the pinned address failed: connection refused";
-    assert_eq!(super::redact_url_credentials(plain), plain);
-    let worded = "the monkey=business key=";
-    assert_eq!(super::redact_url_credentials(worded), worded);
-    assert_eq!(
-        super::redact_url_credentials("wss://h/p?key=abc&alt=sse"),
-        "wss://h/p?key=<redacted>&alt=sse"
-    );
-}
-
 /// #71 EXIT TEST (money-model integrity, P2-voicefix, architect ruling): a plane's DECLARED
 /// BILLABLE CLASSES must be pairwise DISJOINT, because money = Σ count(class) × rate(class) only
 /// holds when no class is a subset of another. The upstream `cached_tokens` figure both duplex

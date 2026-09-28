@@ -1024,7 +1024,7 @@ fn meter(host: &Arc<FixtureHost>, key: busbar_contract::records::VirtualKey) -> 
     TurnMeter::new(
         Arc::clone(host) as Arc<dyn EngineHost>,
         key,
-        "voice-server",
+        "streaming-server",
         busbar_voice::OPENAI_REALTIME,
     )
 }
@@ -1708,7 +1708,7 @@ fn probe_session_scope() -> (&'static str, String) {
     let pool_scope = busbar_contract::records::ScopeRef::pool("fast");
     let session_here = busbar_contract::records::ScopeRef {
         kind: "session".to_string(),
-        value: "voice-server".to_string(),
+        value: "streaming-server".to_string(),
     };
     let session_elsewhere = busbar_contract::records::ScopeRef {
         kind: "session".to_string(),
@@ -2201,10 +2201,13 @@ fn probe_audit_record() -> (&'static str, String) {
         );
     }
     let row = &log[0];
-    if row.action != "voice.session.open" || row.outcome != "applied" || row.principal != "alice" {
+    if row.action != "streaming.session.open"
+        || row.outcome != "applied"
+        || row.principal != "alice"
+    {
         return ("FAIL", format!("wrong audit row shape: {row:?}"));
     }
-    if row.resource != "voice:call-audit-1" {
+    if row.resource != "streaming:call-audit-1" {
         return (
             "FAIL",
             format!("the audit row does not name this session: {row:?}"),
@@ -2238,7 +2241,7 @@ fn probe_audit_record() -> (&'static str, String) {
     (
         "PASS",
         "each governed session open lands exactly one admin-audit row, carrying the \
-         `voice.session.open` action literal and the `applied` outcome -- two sessions land exactly \
+         `streaming.session.open` action literal and the `applied` outcome -- two sessions land exactly \
          two rows, never doubled, never dropped"
             .into(),
     )

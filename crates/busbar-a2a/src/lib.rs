@@ -33,15 +33,15 @@
 pub mod a2a;
 pub mod taskstore;
 
-/// THE A2A PLANE'S DIAGNOSTICS CATALOG.
-///
-/// The `A2A_*` catalog entries and the `DIAGNOSTICS` slice previously lived in the standalone
-/// `busbar-plane-a2a-host` crate (the first byte-safe step of the fat-crate collapse — DECISIONS
-/// #19/#20/#21) and re-exported here under this path; that crate has since folded back into this
-/// one (#19/#39: mirrors `busbar-plane-mcp-host`'s deletion), so the module lives here directly now.
-/// Every `busbar_a2a::diagnostics::…` / `crate::diagnostics::…` caller still resolves exactly what
-/// it always did.
-pub mod diagnostics;
+/// THE A2A PLANE'S DIAGNOSTICS CATALOG, defined in the plane crate (`busbar_plane_a2a::diagnostics`)
+/// and re-exported under this path, so every `busbar_a2a::diagnostics::…` / `crate::diagnostics::…`
+/// caller resolves the same constants.
+pub use busbar_plane_a2a::diagnostics;
+
+/// The committed per-plane diagnostics pages, rendered through the host's renderers.
+#[cfg(test)]
+#[path = "tests/diagnostics_page_tests.rs"]
+mod diagnostics_page_tests;
 
 /// THE RELAY'S SSE FRAME READER — the plane's own dialect machinery (#83a, SD-5c): bytes in, whole
 /// events out, for the relay's streaming legs, with the one coded diagnostic it prints.
@@ -64,17 +64,13 @@ fn system_clock_secs() -> u64 {
         .as_secs()
 }
 
-/// THE DURABLE RECORD VOCABULARY. The row STRUCTS are this crate's: they name the store seam, which a pure kind may not. Their two KIND strings are the plane's schema ids and are read from there.
-///
-/// The task and task-event row shapes moved to the pure half of this plugin — split out so
-/// `busbar-plane-a2a` can name the record kinds without linking this crate's axum routes, tonic
-/// binding and reqwest relay leg. Re-exported HERE, under its old name, so every caller that spells
-/// `busbar_a2a::record::…` resolves exactly what it always did.
-pub mod record;
+/// THE DURABLE RECORD VOCABULARY: the task and task-event row structs, defined in the plane crate
+/// (`busbar_plane_a2a::record`) and re-exported under this path, so every caller that spells
+/// `busbar_a2a::record::…` resolves the same types.
+pub use busbar_plane_a2a::record;
 
-/// THE A2A PLANE'S OWN DURABLE RECORD TYPES — relocated here from `busbar-api` (1.7.0 plane
-/// extraction), re-exported at the crate root so `busbar_a2a::TaskRow` / `busbar_a2a::TaskEventRow`
-/// resolve. The neutral crates name neither.
+/// THE A2A PLANE'S DURABLE RECORD TYPES, re-exported at the crate root so `busbar_a2a::TaskRow` /
+/// `busbar_a2a::TaskEventRow` resolve. The neutral crates name neither.
 pub use record::{TaskEventRow, TaskRow};
 
 /// A2A'S PLANE CAPABILITY KEY (`"a2a"`) — the string the composition root flips onto the unified

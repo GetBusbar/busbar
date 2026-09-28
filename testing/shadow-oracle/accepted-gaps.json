@@ -35,12 +35,6 @@
       "rationale": "needs a tool-use verb in the pinned mock; product decision on the six-dialect tool-use response shape. The cell declared a mock_control the mock resolves to no verb, and an unresolvable control is served as a healthy 200 — so the cell would have recorded the tool-less happy path while claiming to pin usageMetadata.toolUsePromptTokenCount. The control is removed and the cell stays needs_fixture (SKIP) until the mock can answer with the tool-use token term and the product decides what that answer looks like in each of the six dialects; inventing either here would put the oracle's own guess into the golden. Twin of accepted-differences.json 'G-1': that register would forgive `body` when the cell records, but the same recording also moves `effects.usage` (1.5.5 bills 190, 1.6.0 bills 222), which an improvement entry may not waive — so recording is blocked on the owner promoting G-1 to kind=breaking, a product decision, not silence here."
     },
     {
-      "id": "refund-across-window",
-      "cells": "^billing\\|key-usage\\|refund-across-window$",
-      "owner": "billing",
-      "rationale": "twin of accepted-differences.json 'M-1 refund reaches the cell the charge reached'. The cell exists and is the ONE cell M-1 is allowed to forgive, but it is needs_fixture (SKIP): recording it requires the recorder to drive a CONCURRENT window straddle — a request pinned to window M whose charge lands on a cell a concurrent admission has already rolled to M+1 — which is a harness/timing capability the pinned mock and driver do not provide, not a mock verb or an in-tree fixture. And the divergence it would produce is effects.usage (a failed straddling request keeps/refunds its flat fee), a class M-1's improvement entry may not waive, so recording also waits on the owner promoting M-1 to kind=breaking. Both blockers are out of the oracle's hands; the cell stays a named gap until a straddle driver exists AND the owner rules on the class."
-    },
-    {
       "id": "stream-upstream-error",
       "cells": "^llm\\|[a-z_]+\\|[a-z_]+\\|request\\|stream_upstream_error$",
       "owner": "llm-plane",

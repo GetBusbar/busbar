@@ -21,6 +21,7 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use crate::dispatch_test_plugin as plug;
 use busbar_contract::abi::mechanism::call::{Blob, DeadlineClass, OutHead, Outcome, BLOB_OCTETS};
 use busbar_contract::abi::mechanism::check::{fault, Fault, Rule};
 use busbar_contract::abi::mechanism::door::{Door, KindTailHead, Statement};
@@ -29,7 +30,6 @@ use busbar_contract::abi::mechanism::lifecycle::{
 };
 use busbar_contract::abi::mechanism::ticket::Ticket;
 use busbar_contract::abi::mechanism::{KindCode, DOOR_MAGIC, MECHANISM_VERSION};
-use busbar_plugin_dispatch_test as plug;
 
 use crate::dispatch::load::validate_door;
 use crate::dispatch::{
@@ -149,8 +149,26 @@ fn linked(sink: Arc<Recorder>) -> Plugin<TestKind> {
     load_linked::<TestKind>(plug::busbar_plugin_door, bind(sink)).expect("the linked door loads")
 }
 
+/// The example `cdylib` `name` in this target dir (`cargo test` builds examples). Under CI a
+/// missing artifact is a failure, never a skip.
+fn example_cdylib(name: &str) -> Option<std::path::PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let profile = exe.parent()?.parent()?;
+    let path = profile.join("examples").join(format!(
+        "{}{name}{}",
+        std::env::consts::DLL_PREFIX,
+        std::env::consts::DLL_SUFFIX
+    ));
+    let found = path.exists().then_some(path);
+    assert!(
+        found.is_some() || std::env::var_os("CI").is_none(),
+        "the {name} example cdylib is not built under CI; a both-ways proof must not skip"
+    );
+    found
+}
+
 fn dropped_path() -> Option<std::path::PathBuf> {
-    super::both_ways::cdylib("busbar_plugin_dispatch_test")
+    example_cdylib("dispatch_test_plugin")
 }
 
 fn dropped(sink: Arc<Recorder>) -> Option<Plugin<TestKind>> {
@@ -994,10 +1012,9 @@ fn red_a_panic_in_a_hand_written_slot_aborts() {
                 "--nocapture",
             ])
             .env("BUSBAR_M1_PANIC_CHILD", origin)
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-            .expect("run the child");
+            .output()
+            .expect("run the child")
+            .status;
         assert!(
             !status.success(),
             "{origin}: the child survived a panic across extern \"C\""
@@ -1502,4 +1519,96 @@ fn red_a_kind_check_judges_every_outcome_in_its_bound_context() {
     // Every crossing carried the context built from the Statement at bind (the check FAULTs
     // without it), so every READY above and in the whole suite proves it arrived.
     assert_eq!(p.call(TICK, &mut frame(answer(1))).outcome, Outcome::Ready);
+}
+
+// ── THE ASYNC COMPLETION ─────────────────────────────────────────────────────────────────────────
+
+/// A runtime with ONE thread: an await that blocked it would deadlock.
+fn one_thread() -> tokio::runtime::Runtime {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("a current-thread runtime")
+}
+
+#[test]
+fn an_await_on_a_one_thread_runtime_completes() {
+    let d = Dispatcher::new(config());
+    let (p, _sink) = opened(&d);
+    let rt = one_thread();
+    // A pend that completes only on a wake from another thread, awaited on the one thread.
+    let t = d.mint(0).unwrap();
+    let reply = d.submit(&p, t, TICK, frame(plug::PEND_AFTER), DeadlineClass::Call, 0);
+    let done = rt.block_on(async {
+        tokio::time::timeout(WAIT, reply)
+            .await
+            .expect("the awaited reply completes")
+    });
+    assert_eq!(done.outcome, Outcome::Ready);
+    // Two ops awaited together on the one thread, each answered by a worker.
+    let (a, b) = (d.mint(0).unwrap(), d.mint(1).unwrap());
+    let ra = d.submit(&p, a, TICK, frame(plug::PEND_AFTER), DeadlineClass::Call, 0);
+    let rb = d.submit(
+        &p,
+        b,
+        TICK,
+        frame(plug::PEND_BEFORE),
+        DeadlineClass::Call,
+        0,
+    );
+    let (da, db) = rt
+        .block_on(async { tokio::time::timeout(WAIT, async { (ra.await, rb.await) }).await })
+        .expect("both complete");
+    assert_eq!((da.outcome, db.outcome), (Outcome::Ready, Outcome::Ready));
+    // The sync path reads the same slot.
+    let c = d.mint(1).unwrap();
+    let rc = d.submit(&p, c, TICK, frame(answer(1)), DeadlineClass::Call, 0);
+    assert_eq!(rc.wait(WAIT).unwrap().outcome, Outcome::Ready);
+}
+
+#[test]
+fn red_dropping_a_pending_reply_cancels_and_a_late_wake_is_a_no_op() {
+    let d = Dispatcher::new(config());
+    let (p, sink) = opened(&d);
+    let rt = one_thread();
+    let t = d.mint(0).unwrap();
+    let reply = d.submit(&p, t, TICK, frame(plug::PEND_HOLD), DeadlineClass::Call, 0);
+    // Poll it once on the one thread (it registers its waker and pends), then drop the future.
+    let polled = rt.block_on(async {
+        tokio::time::timeout(Duration::from_millis(20), reply)
+            .await
+            .is_err()
+    });
+    assert!(
+        polled,
+        "the held op is still pending when its future is dropped"
+    );
+    until("the dropped reply's op is cancelled", || {
+        count(&p, &sink).1 == 1
+    });
+    until("the ticket is idle", || !d.is_pending(t));
+    // A wake after the drop: nothing crosses.
+    let n = p.inner.crossings.load(std::sync::atomic::Ordering::SeqCst);
+    crate::dispatch::ticket::host_wake(p.inner.ctx(), t);
+    let probe = d.mint(0).unwrap();
+    assert_eq!(
+        d.submit(&p, probe, TICK, frame(answer(1)), DeadlineClass::Call, 0)
+            .wait(WAIT)
+            .unwrap()
+            .outcome,
+        Outcome::Ready
+    );
+    // The probe crossed once; the late wake resumed nothing.
+    assert_eq!(
+        p.inner.crossings.load(std::sync::atomic::Ordering::SeqCst),
+        n + 1
+    );
+    // The GREEN twin: a detached reply is not a client drop.
+    let w = d.mint(1).unwrap();
+    d.submit(&p, w, TICK, frame(plug::PEND_HOLD), DeadlineClass::Call, 0)
+        .detach();
+    until("the detached op pends", || d.is_pending(w));
+    assert_eq!(count(&p, &sink).1, 1, "a detached reply cancels nothing");
+    assert_eq!(p.call(TICK, &mut frame(plug::KICK)).outcome, Outcome::Ready);
+    until("the detached op completes", || !d.is_pending(w));
 }

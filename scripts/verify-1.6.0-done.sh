@@ -965,7 +965,7 @@ if [ "$SELFTEST" -eq 1 ]; then
     case ",$f," in *,plane-*) return 1 ;; esac
     parity_leg_args llm-only "$PARITY_MANIFEST" | grep -qx -- '--no-default-features'; }
   st_expect accept "the llm-only leg derives from THIS manifest: --no-default-features, no plane-*" st_llm_real
-  printf '[features]\ndefault = ["auth-admin-tokens", "proto-llm", "plane-mcp", "plane-voice", "root-admin", "root-voice"]\n' > "$st_tmp/Cargo-legs.toml"
+  printf '[features]\ndefault = ["auth-admin-tokens", "proto-llm", "plane-mcp", "plane-streaming", "root-admin", "root-voice"]\n' > "$st_tmp/Cargo-legs.toml"
   printf '[features]\ndefault = ["auth-admin-tokens", "plane-mcp", "root-admin"]\n' > "$st_tmp/Cargo-noroot.toml"
   printf '[features]\nfoo = []\n' > "$st_tmp/Cargo-nodefault.toml"
   st_llm_fixture() { [ "$(parity_llm_only_features "$st_tmp/Cargo-legs.toml")" = "auth-admin-tokens,proto-llm,root-admin" ]; }
@@ -1151,13 +1151,14 @@ if ! assert_skip_boot_leg_empty >/tmp/done-planedelete-env.$$ 2>&1; then
   CUR_RED=1; CUR_FIRST_NOTE="SKIP_BOOT_LEG set (plane-delete)"
 else
   rm -f /tmp/done-planedelete-env.$$
-  # scripts/plane-delete-test.sh iterates $PLANE_KEYS (scripts/plane-keys.sh), which is still the
+  # scripts/plane-delete-test.sh iterates $PLANE_KEYS_DELETE (scripts/plane-keys.sh): $PLANE_KEYS plus
+  # the on-disk key of each locked plane that has one (`plane-decisions`). $PLANE_KEYS is still the
   # ON-DISK spelling {llm, mcp, a2a, voice} on purpose — it is a literal `crates/busbar-<key>`
   # directory suffix, and spelling it `streaming` before the crate rename lands would make the
   # harness open a directory that is not there (the exact silent-zero-files failure plane-keys.sh
   # exists to prevent). `--all`'s own `report_coverage` already computes the gap against
   # PLANE_KEYS_LOCKED (the same 5-plane roster #18/#48 lock) and prints it — but only as a yellow
-  # informational note, never red, because a plane with literally nothing on disk yet (`decisions`)
+  # informational note, never red, because a plane with literally nothing on disk yet (none today)
   # has nothing for a strong-form removal test to prove either way. DONE, this file's own claim,
   # means the full 5-plane roster is provably deletable, so the step below promotes that gap to a
   # red HERE rather than letting a yellow note inside an exit-0 run keep it invisible.
@@ -1168,7 +1169,7 @@ else
     gaps=""
     for lp in $PLANE_KEYS_LOCKED; do
       od="$(plane_ondisk_key "$lp")"
-      case " $PLANE_KEYS " in
+      case " $PLANE_KEYS_DELETE " in
         *" ${od:-__no_ondisk_key__} "*) : ;;
         *) gaps="${gaps:+$gaps }$lp" ;;
       esac
@@ -1329,13 +1330,13 @@ sys.exit(1 if m else 0)
 # verdict per cell over its plane's `root-*` leg. Two things are asserted here and neither is the
 # other: that the column HOLDS (the cargo gate, run with every leg's feature on — `root-admin`,
 # `proto-llm` (the root's node, compiled with the plane that rides the `node` axis) and the
-# `plane-mcp` / `plane-a2a` / `plane-voice` features that link the three planes the kernel-loop rider
+# `plane-mcp` / `plane-a2a` / `plane-streaming` features that link the three planes the kernel-loop rider
 # serves), and that every cell it calls `proven`
 # actually RUNS and passes (the summary's own runner, which refuses a run that executed a different
 # set). The remaining "none" cells are the switch-over queue and are PRINTED, not fatal — the same
 # honest-ledger posture the missing set has.
 step "capability_equality gate, five legs on" \
-  cargo test -p busbar --features root-admin,plane-mcp,plane-a2a,plane-voice,proto-llm --quiet --test capability_equality
+  cargo test -p busbar --features root-admin,plane-mcp,plane-a2a,plane-streaming,proto-llm --quiet --test capability_equality
 step "every root-leg proof cell RUNS and passes" python3 scripts/capability-equality-summary.py --root-legs
 printf '  \033[36m[info]\033[0m '
 python3 scripts/capability-equality-summary.py 2>/dev/null | grep -E "^ROOT-EQUALITY:" || echo "root-equality count unavailable"
@@ -1488,7 +1489,7 @@ if [ -f qa/audit-ledger.json ]; then
   # The `audit-ledger` GATE was deleted with the old register; what survives, and what
   # judges a restored register, is `cargo xtask ledger`. Its rules' own RED proofs are its unit
   # tests, declared by count so a filter that drifts off them is RED rather than vacuously green.
-  step "audit ledger rules (xtask audit + audit_cmd tests)" filtered_cargo_test 20 cargo test -p xtask --lib audit
+  step "audit ledger rules (xtask audit + audit_cmd tests)" filtered_cargo_test 22 cargo test -p xtask --lib audit
   step "audit-ledger --check"  cargo xtask ledger --check
 else
   absent_step "audit ledger" "qa/audit-ledger.json"

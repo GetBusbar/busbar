@@ -28,7 +28,9 @@
 pub mod answer;
 pub mod kinds;
 pub mod load;
+pub mod log_file;
 pub mod plugin;
+pub mod services;
 pub mod ticket;
 pub mod validate;
 mod watchdog;
@@ -52,7 +54,12 @@ use busbar_contract::abi::mechanism::KindCode;
 
 pub use answer::{Answer, Context};
 pub use load::{load_dropped, load_linked, LoadError, ManifestFacts};
-pub use plugin::{Bind, Called, Diagnostic, Dropped, EnvelopeSink, Metric, NoSink, Plugin, Recall};
+pub use log_file::{LogLevel, PluginLogConfig, PluginLogSink};
+pub use plugin::{
+    Bind, Called, Diagnostic, Dropped, EnvelopeSink, Metric, NoSink, Plugin, Recall, MAX_LOG_BYTES,
+    MAX_LOG_RECORDS,
+};
+pub use services::{HostServices, Later, Ran, Reading, Stored};
 pub use ticket::{Completions, Redeem};
 pub use validate::Violation;
 pub use worker::{Adopter, Budgets, DispatchConfig, DispatchStats, Dispatcher, Done, Reply};

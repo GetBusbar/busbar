@@ -340,7 +340,7 @@ dependencies = [
  "busbar-auth-oidc-plugin",
  "busbar-contract",
  "busbar-core-admin",
- "busbar-core-connsec",
+ "busbar-core-connector",
  "busbar-export-file",
  "busbar-export-file-plugin",
  "busbar-export-otlp",
@@ -500,6 +500,7 @@ dependencies = [
  "smallvec",
  "tracing",
  "tracing-core",
+ "tracing-log",
  "zeroize",
 ]
 
@@ -538,15 +539,17 @@ dependencies = [
 ]
 
 [[package]]
-name = "busbar-core-connsec"
+name = "busbar-core-connector"
 version = "1.6.0"
 dependencies = [
  "busbar-contract",
  "busbar-kernel",
+ "busbar-plugin-loader",
  "futures",
  "rcgen",
  "rustls",
  "rustls-pki-types",
+ "serde_json",
  "sha2 0.11.0",
  "tokio",
  "tokio-rustls",
@@ -949,13 +952,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "busbar-plugin-dispatch-test"
-version = "1.5.0"
-dependencies = [
- "busbar-contract",
-]
-
-[[package]]
 name = "busbar-plugin-example-plane"
 version = "1.6.0"
 dependencies = [
@@ -977,7 +973,6 @@ dependencies = [
  "busbar-hook-test-plugin",
  "busbar-kernel-ledger",
  "busbar-kernel-wal",
- "busbar-plugin-dispatch-test",
  "busbar-plugin-example-plane",
  "busbar-store-memory",
  "busbar-transport-tcp",
@@ -985,16 +980,19 @@ dependencies = [
  "flate2",
  "futures",
  "getrandom 0.3.4",
+ "h2",
  "hex",
  "jsonschema",
  "libc",
  "libloading",
+ "log",
  "serde",
  "serde_json",
  "sha2 0.11.0",
  "tar",
  "tokio",
  "tracing",
+ "tungstenite",
 ]
 
 [[package]]
@@ -1018,8 +1016,11 @@ dependencies = [
  "hyper",
  "hyper-rustls",
  "hyper-util",
+ "libloading",
  "memchr",
+ "reqwest 0.12.28",
  "rustls",
+ "serde_json",
  "tokio",
  "tokio-rustls",
  "tokio-util",
@@ -1057,8 +1058,10 @@ dependencies = [
  "busbar-plugin-loader",
  "busbar-transport-ws",
  "futures",
+ "libloading",
  "rustls",
  "rustls-pki-types",
+ "serde_json",
  "tokio",
  "tokio-rustls",
  "tokio-tungstenite",

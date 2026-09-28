@@ -2898,7 +2898,7 @@ impl Gate for ReachabilityGate {
                 ov.set(
                     CRATE_MANIFEST,
                     FIXTURE_LINKED_MANIFEST
-                        .replace("plane-voice = \"plane diagnostics\"", "plane-voice = \"diagnostics\""),
+                        .replace("plane-streaming = \"plane diagnostics\"", "plane-streaming = \"diagnostics\""),
                 );
                 ov
             },
@@ -3080,8 +3080,8 @@ fn folded_install(all: bool) -> Overlay {
         );
     if all {
         manifest = manifest.replace(
-            "plane-voice = \"plane diagnostics\"",
-            "plane-voice = \"plane diagnostics gauntlet-session\"",
+            "plane-streaming = \"plane diagnostics\"",
+            "plane-streaming = \"plane diagnostics gauntlet-session\"",
         );
     }
     let mut ov = Overlay::new();
@@ -3327,7 +3327,7 @@ mod tests {
         let lines = test_scope(&normalize_test_cfgs(src));
         assert!(lines[2].gated, "a test-harness feature body is test scope");
         let prod =
-            "#[cfg(feature = \"plane-voice\")]\nfn h() {\n    let u = VoiceUnit::new(1);\n}\n";
+            "#[cfg(feature = \"plane-streaming\")]\nfn h() {\n    let u = VoiceUnit::new(1);\n}\n";
         let lines = test_scope(&normalize_test_cfgs(prod));
         assert!(!lines[2].gated, "a shipping feature body is production");
     }

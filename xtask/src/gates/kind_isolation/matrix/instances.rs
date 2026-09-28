@@ -643,11 +643,11 @@ pub fn selftest<'a>(
     use super::ROW_MATRIX;
     use crate::gates::{prove_rows_green, prove_rows_red};
 
-    // THE CORE-SIDE CRATE THE PLANTS LAND IN. `busbar-core-connsec` is a `cleanliness` crate —
+    // THE CORE-SIDE CRATE THE PLANTS LAND IN. `busbar-core-connector` is a `cleanliness` crate —
     // `Family::Neutral`, and with no `[[instance]]` row today, so each plant is a cell that was ZERO
     // and is not.
-    const CORE: &str = "crates/busbar-core-connsec";
-    const CORE_NAME: &str = "busbar-core-connsec";
+    const CORE: &str = "crates/busbar-core-connector";
+    const CORE_NAME: &str = "busbar-core-connector";
 
     let names = match one_name_per_axis(cx) {
         Ok(n) => n,
@@ -734,7 +734,7 @@ pub fn selftest<'a>(
         ov,
         &[
             "unlisted-instance",
-            "busbar-core-connsec \u{d7} store = 1",
+            "busbar-core-connector \u{d7} store = 1",
             "planted_new_store.rs",
         ],
     ));

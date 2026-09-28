@@ -8,8 +8,10 @@ use std::mem::zeroed;
 use std::ptr::null;
 
 use super::*;
+use crate::abi::hook::{SignalEntry, SignalValue, SIGNAL_TAG_BOOL, SIGNAL_TAG_STR};
 use crate::abi::host::conn::connector::{Need, DIRECTION_OUTBOUND};
 use crate::abi::mechanism::call::AbiStr;
+use crate::abi::mechanism::call::Outcome;
 use crate::abi::mechanism::call::Outcome::{Failed, Pending, Ready, Refused};
 use crate::abi::mechanism::check::fault;
 use crate::abi::plane::*;
@@ -431,6 +433,8 @@ fn every_snapshot_claim_and_route_is_named() {
     let r = AdminRoute {
         verb: s("V"),
         target: z(),
+        flags: 0,
+        _reserved: 0,
     };
     assert_eq!(
         check_admin_routes(&[r]),
@@ -456,7 +460,7 @@ fn a_tail_with_unknown_bits_or_no_ingress_is_fault() {
     t.ingress = INGRESS_REQUEST_RESPONSE | (1 << 5);
     assert_eq!(check_tail(&t), f(Rule::UnknownCode, "tail.ingress"));
     let mut t = tail();
-    t.flags = 2;
+    t.flags = 4;
     assert_eq!(check_tail(&t), f(Rule::UnknownCode, "tail.flags"));
     let mut t = tail();
     t.dispatch_shape = 2;
@@ -603,4 +607,380 @@ fn a_multi_buffer_short_answer_needs_one_buffer_over_its_cap() {
     );
     r.reply_needed = 40;
     assert_eq!(check_serve(Failed, &r, &[], &caps()), Ok(()));
+}
+
+// ── the plane driver's additions: the ATTEMPT answer, the verdict, probes, public routes, chained
+//    record framing, `project` and `drive` ──
+
+#[test]
+fn a_verdict_is_known() {
+    let mut o: OnPieceOut = z();
+    o.verdict = VERDICT_HARD;
+    assert_eq!(piece(&o, &[], &[], &[]), Ok(()));
+    o.verdict = VERDICT_HARD + 1;
+    assert_eq!(
+        piece(&o, &[], &[], &[]),
+        f(Rule::UnknownCode, "on_piece.verdict")
+    );
+}
+
+#[test]
+fn a_verdict_rides_only_a_ready_answer() {
+    let mut o: OnPieceOut = z();
+    o.verdict = VERDICT_RETRY;
+    assert_eq!(
+        check_on_piece(Pending, &o, (&[], &[], &[]), &caps(), &bounds()),
+        f(Rule::Contradiction, "on_piece.verdict_not_ready")
+    );
+    o.verdict = VERDICT_NONE;
+    assert_eq!(
+        check_on_piece(Pending, &o, (&[], &[], &[]), &caps(), &bounds()),
+        Ok(())
+    );
+}
+
+fn attempt_answer() -> OnPieceOut {
+    let mut o: OnPieceOut = z();
+    o.flags = EMIT_TO_FAR_END;
+    o.arena_written = 8;
+    o.verb = sp(0, 4);
+    o.target = sp(4, 4);
+    o
+}
+
+#[test]
+fn an_attempt_answer_names_its_verb_and_target_in_the_arena() {
+    assert_eq!(piece(&attempt_answer(), &[], &[], &[]), Ok(()));
+    let mut o = attempt_answer();
+    o.verb = sp(6, 4);
+    assert_eq!(
+        piece(&o, &[], &[], &[]),
+        f(Rule::SpanOutOfBounds, "on_piece.verb")
+    );
+    let mut o = attempt_answer();
+    o.target = sp(u32::MAX - 1, 4);
+    assert_eq!(
+        piece(&o, &[], &[], &[]),
+        f(Rule::SpanOutOfBounds, "on_piece.target")
+    );
+}
+
+#[test]
+fn a_verb_never_comes_without_a_target() {
+    let mut o = attempt_answer();
+    o.target = sp(0, 0);
+    assert_eq!(
+        piece(&o, &[], &[], &[]),
+        f(Rule::Contradiction, "on_piece.verb_without_target")
+    );
+    let mut o = attempt_answer();
+    o.verb = sp(0, 0);
+    assert_eq!(
+        piece(&o, &[], &[], &[]),
+        f(Rule::Contradiction, "on_piece.verb_without_target")
+    );
+}
+
+#[test]
+fn a_request_goes_to_the_far_end() {
+    let mut o = attempt_answer();
+    o.flags = 0;
+    assert_eq!(
+        piece(&o, &[], &[], &[]),
+        f(Rule::Contradiction, "on_piece.request_not_to_far_end")
+    );
+}
+
+#[test]
+fn a_tail_may_declare_probes() {
+    let mut t = tail();
+    t.flags = TAIL_PROBES | TAIL_FALLBACK;
+    assert_eq!(check_tail(&t), Ok(()));
+    assert_eq!(CLAIM_PROBE, u32::MAX, "never a snapshot claim index");
+}
+
+#[test]
+fn a_tail_counting_record_chains_over_a_null_pointer_is_fault() {
+    let mut t = tail();
+    t.record_chains_len = 1;
+    assert_eq!(check_tail(&t), f(Rule::NullWithCount, "tail.record_chains"));
+}
+
+#[test]
+fn an_admin_route_flag_is_known() {
+    let mut r = AdminRoute {
+        verb: s("V"),
+        target: s("/t"),
+        flags: ROUTE_PUBLIC,
+        _reserved: 0,
+    };
+    assert_eq!(check_admin_routes(&[r]), Ok(()));
+    r.flags = ROUTE_PUBLIC << 1;
+    assert_eq!(
+        check_admin_routes(&[r]),
+        f(Rule::UnknownCode, "admin_route.flags")
+    );
+}
+
+fn chain(kind: u32) -> RecordChain {
+    RecordChain {
+        kind,
+        framing: CHAIN_PIPE_SEPARATED,
+        flags: CHAIN_DIGESTS_SCOPE,
+        _reserved: 0,
+    }
+}
+
+#[test]
+fn a_record_chain_names_a_record_kind() {
+    assert_eq!(check_record_chains(&[chain(0), chain(1)], 2), Ok(()));
+    assert_eq!(
+        check_record_chains(&[chain(2)], 2),
+        f(Rule::IndexOutOfRange, "record_chain.kind")
+    );
+}
+
+#[test]
+fn a_record_chain_framing_is_known() {
+    for framing in [0, CHAIN_PIPE_SEPARATED + 1] {
+        let mut c = chain(0);
+        c.framing = framing;
+        assert_eq!(
+            check_record_chains(&[c], 1),
+            f(Rule::UnknownCode, "record_chain.framing")
+        );
+    }
+    let mut c = chain(0);
+    c.framing = CHAIN_LENGTH_PREFIXED;
+    assert_eq!(check_record_chains(&[c], 1), Ok(()));
+}
+
+#[test]
+fn a_record_chain_flag_is_known() {
+    let mut c = chain(0);
+    c.flags = CHAIN_DIGESTS_SCOPE << 1;
+    assert_eq!(
+        check_record_chains(&[c], 1),
+        f(Rule::UnknownCode, "record_chain.flags")
+    );
+}
+
+#[test]
+fn a_record_kind_is_chained_at_most_once() {
+    assert_eq!(
+        check_record_chains(&[chain(1), chain(0), chain(1)], 2),
+        f(Rule::Contradiction, "record_chain.kind_twice")
+    );
+}
+
+// ── project ──
+
+struct Host {
+    signals: [SignalEntry; 2],
+    arena: [u8; 16],
+}
+
+fn host() -> Host {
+    Host {
+        signals: z(),
+        arena: [0; 16],
+    }
+}
+
+fn arena_str(h: &Host, offset: usize, len: usize) -> AbiStr {
+    AbiStr {
+        ptr: h.arena.as_ptr().wrapping_add(offset),
+        len,
+    }
+}
+
+fn view(h: &Host, written: usize) -> ProjectOut {
+    let mut o: ProjectOut = z();
+    o.view.signals = h.signals.as_ptr();
+    o.view.signals_len = written;
+    o.view.pool = arena_str(h, 0, 4);
+    o.view.ingress_dialect = arena_str(h, 4, 4);
+    o.body = sp(8, 8);
+    o.arena_written = 16;
+    o
+}
+
+fn project(outcome: Outcome, h: &Host, o: &ProjectOut) -> Result<(), Fault> {
+    check_project(outcome, o, &h.signals, 2, (h.arena.as_ptr(), 16))
+}
+
+#[test]
+fn a_projected_view_inside_the_hosts_buffers_is_green() {
+    let h = host();
+    assert_eq!(project(Ready, &h, &view(&h, 2)), Ok(()));
+    let mut o = view(&h, 0);
+    o.body = sp(SPAN_ABSENT, 0);
+    assert_eq!(project(Ready, &h, &o), Ok(()), "no projected body");
+}
+
+#[test]
+fn project_follows_the_multi_buffer_short_rule() {
+    let h = host();
+    let mut o: ProjectOut = z();
+    o.signals_needed = 3;
+    assert_eq!(
+        project(Ready, &h, &o),
+        f(Rule::NeededNotFailed, "project.signals")
+    );
+    assert_eq!(project(Failed, &h, &o), Ok(()), "the short answer");
+    o.arena_needed = 16;
+    assert_eq!(
+        project(Failed, &h, &o),
+        Ok(()),
+        "one dimension short, the other fitting at its full size"
+    );
+    o.signals_needed = 2;
+    assert_eq!(project(Failed, &h, &o), f(Rule::WastedRecall, "project"));
+    let mut o: ProjectOut = z();
+    o.signals_needed = MAX_SIGNALS as u32 + 1;
+    assert_eq!(project(Failed, &h, &o), f(Rule::OverMax, "project.signals"));
+    let mut o: ProjectOut = z();
+    o.arena_needed = 17;
+    o.arena_written = 1;
+    assert_eq!(project(Failed, &h, &o), f(Rule::WrittenOnShort, "project"));
+}
+
+#[test]
+fn projected_signals_are_the_hosts_buffer() {
+    let h = host();
+    let other: [SignalEntry; 2] = z();
+    let mut o = view(&h, 1);
+    o.view.signals = other.as_ptr();
+    assert_eq!(
+        project(Ready, &h, &o),
+        f(Rule::Foreign, "project.view.signals")
+    );
+}
+
+#[test]
+fn projected_view_flags_are_known() {
+    let h = host();
+    let mut o = view(&h, 0);
+    o.view.flags = 1 << 3;
+    assert_eq!(
+        project(Ready, &h, &o),
+        f(Rule::UnknownCode, "project.view.flags")
+    );
+}
+
+#[test]
+fn projected_strings_lie_inside_the_arena_written() {
+    let h = host();
+    let mut o = view(&h, 0);
+    o.view.pool = arena_str(&h, 12, 8);
+    assert_eq!(
+        project(Ready, &h, &o),
+        f(Rule::SpanOutOfBounds, "project.view.pool")
+    );
+    let mut o = view(&h, 0);
+    o.view.pool = AbiStr {
+        ptr: h.arena.as_ptr().wrapping_sub(4),
+        len: 4,
+    };
+    assert_eq!(
+        project(Ready, &h, &o),
+        f(Rule::SpanOutOfBounds, "project.view.pool"),
+        "a string before the arena"
+    );
+    let mut o = view(&h, 0);
+    o.arena_written = 6;
+    o.body = sp(SPAN_ABSENT, 0);
+    assert_eq!(
+        project(Ready, &h, &o),
+        f(Rule::SpanOutOfBounds, "project.view.ingress_dialect")
+    );
+}
+
+#[test]
+fn a_projected_body_lies_inside_the_arena_written() {
+    let h = host();
+    let mut o = view(&h, 0);
+    o.body = sp(12, 8);
+    assert_eq!(
+        project(Ready, &h, &o),
+        f(Rule::SpanOutOfBounds, "project.body")
+    );
+    o.body = sp(SPAN_ABSENT, 1);
+    assert_eq!(
+        project(Ready, &h, &o),
+        f(Rule::SpanNotAbsent, "project.body")
+    );
+}
+
+#[test]
+fn a_projected_signal_has_a_known_id_and_tag() {
+    let mut h = host();
+    h.signals[0].id = crate::abi::hook::signal::RESPONSE_TOKENS_OUT + 1;
+    let o = view(&h, 1);
+    assert_eq!(
+        project(Ready, &h, &o),
+        f(Rule::UnknownCode, "project.signal.id")
+    );
+    let mut h = host();
+    h.signals[1].tag = SIGNAL_TAG_BOOL + 1;
+    let o = view(&h, 2);
+    assert_eq!(
+        project(Ready, &h, &o),
+        f(Rule::UnknownCode, "project.signal.tag")
+    );
+}
+
+#[test]
+fn a_projected_signal_value_is_valid_for_its_tag() {
+    let mut h = host();
+    h.signals[0].tag = SIGNAL_TAG_STR;
+    h.signals[0].value = SignalValue {
+        str_: arena_str(&h, 14, 4),
+    };
+    let o = view(&h, 1);
+    assert_eq!(
+        project(Ready, &h, &o),
+        f(Rule::SpanOutOfBounds, "project.signal.value")
+    );
+    let mut h = host();
+    h.signals[0].tag = SIGNAL_TAG_BOOL;
+    h.signals[0].value = SignalValue { boolean: 2 };
+    let o = view(&h, 1);
+    assert_eq!(
+        project(Ready, &h, &o),
+        f(Rule::UnknownCode, "project.signal.value")
+    );
+    h.signals[0].value = SignalValue { boolean: 1 };
+    let o = view(&h, 1);
+    assert_eq!(project(Ready, &h, &o), Ok(()));
+}
+
+// ── drive ──
+
+#[test]
+fn drive_names_its_ready_sessions_under_the_short_buffer_rule() {
+    let mut o: PlaneDriveOut = z();
+    o.sessions_written = 4;
+    assert_eq!(check_drive(Ready, &o, 4), Ok(()));
+    assert_eq!(
+        check_drive(Ready, &o, 3),
+        f(Rule::OverCap, "drive.sessions")
+    );
+    let mut o: PlaneDriveOut = z();
+    o.sessions_needed = 5;
+    assert_eq!(check_drive(Failed, &o, 4), Ok(()), "the short answer");
+    assert_eq!(
+        check_drive(Ready, &o, 4),
+        f(Rule::NeededNotFailed, "drive.sessions")
+    );
+    o.sessions_needed = 4;
+    assert_eq!(
+        check_drive(Failed, &o, 4),
+        f(Rule::WastedRecall, "drive.sessions")
+    );
+    o.sessions_needed = MAX_SESSIONS as u32 + 1;
+    assert_eq!(
+        check_drive(Failed, &o, 4),
+        f(Rule::OverMax, "drive.sessions")
+    );
 }

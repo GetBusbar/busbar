@@ -12,7 +12,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use busbar_contract::auth::{AuthModule, AuthVerdict, Principal};
-use busbar_kernel::auth::{AdminAuthChain, OperatorCredential};
+use busbar_kernel::auth::{AdminAuthChain, Operator};
 use busbar_kernel::config::{self, AuthCfg, AuthChainEntry, RoleBindingCfg, SecretRef};
 use busbar_kernel::governance::{GovState, MemoryStore};
 
@@ -210,7 +210,7 @@ async fn without_the_root_row_the_operator_token_is_refused() {
     without_row.admin_modules = Arc::new(AdminAuthChain {
         modules: HashMap::new(),
         has_plugin: false,
-        operator: OperatorCredential::Unanswered,
+        operator: Operator::new(config::operator_provider()),
     });
     let without_row = Arc::new(without_row);
 
@@ -554,4 +554,79 @@ fn blank_admin_token_refuses_to_start() {
         "the blank-string digest must never be a live admin credential"
     );
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The operator credential chosen BY MODULE: an `admin_auth:` provider under another name whose
+/// `module:` is the operator credential's (`ops: { module: admin-tokens, token: ... }`) is the
+/// operator credential. Built from configuration through the real build, it admits the operator
+/// token on either carrier with full scope and refuses a wrong one with the frozen 401. Dispatching
+/// on the provider NAME skipped it and refused every admin request.
+#[tokio::test]
+async fn a_renamed_provider_backed_by_the_operator_module_is_the_operator_credential() {
+    link();
+    busbar_kernel::metrics::init();
+    let dir = std::env::temp_dir().join(format!("busbar-op-by-module-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let (token_path, key_path) = (dir.join("admin.token"), dir.join("signing.key"));
+    std::fs::write(&token_path, TOKEN).unwrap();
+    std::fs::write(&key_path, hex::encode([7u8; 32])).unwrap();
+    let mut cfg = cfg_with_credentials(&token_path, &key_path);
+    let auth = cfg.auth.as_mut().expect("the fixture configures auth");
+    auth.admin_auth[0].name = "ops".to_string();
+    cfg.admin_auth = vec!["ops".to_string()];
+    let app = Arc::new(busbar_kernel::test_support::build_once(cfg, None).expect("boot"));
+    let _ = std::fs::remove_dir_all(&dir);
+
+    use busbar_contract::authz::Scope;
+    assert!(
+        busbar_kernel::auth::dry_run_admin_scope(&app, Some(TOKEN), None).allows(Scope::Full),
+        "the operator token earns full scope through the renamed provider"
+    );
+    for (bearer, header) in [(Some(TOKEN), None), (None, Some(TOKEN))] {
+        let (status, body) = probe(app.clone(), bearer, header).await;
+        assert_eq!(status, 200, "bearer={bearer:?} header={header:?}: {body}");
+    }
+    let (status, body) = probe(app, Some("wrong"), None).await;
+    assert_eq!(
+        (status, body),
+        (401, unauthorized()),
+        "a wrong token is refused"
+    );
+}
+
+/// The other half: a provider NAMED like the operator credential but backed by another module is
+/// that module, consulted under its own ceiling. It identifies what it identifies (a roleless
+/// principal with no grant: 403) and the operator token confers nothing through it. Dispatching on
+/// the name ran the operator credential instead and never asked the configured module.
+#[tokio::test]
+async fn a_provider_named_like_the_operator_but_backed_by_another_module_is_that_module() {
+    busbar_kernel::metrics::init();
+    let op = config::operator_provider();
+    // `admin_auth: [<op>]` with `<op>: { module: any-credential }`, as the build resolves it: the
+    // provider is recorded as backed by that module, and the module is opened under its name.
+    let named_op = || {
+        let base = app(&[op], Vec::new());
+        let mut operator = Operator::new(op);
+        assert!(!operator.backs(op, AnyCredential.name()));
+        let mut named = (*base).clone();
+        named.admin_modules = Arc::new(AdminAuthChain {
+            modules: HashMap::from([(
+                op.to_string(),
+                Box::new(AnyCredential) as Box<dyn AuthModule>,
+            )]),
+            has_plugin: false,
+            operator,
+        });
+        Arc::new(named)
+    };
+    let (status, body) = probe(named_op(), Some("an-idp-credential"), None).await;
+    assert_eq!(
+        status, 403,
+        "the configured module is consulted and identifies the caller: {body}"
+    );
+    let (status, body) = probe(named_op(), Some(TOKEN), None).await;
+    assert_eq!(
+        status, 403,
+        "the operator token is not judged by the operator credential here: {body}"
+    );
 }

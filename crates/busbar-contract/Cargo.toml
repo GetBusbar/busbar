@@ -95,6 +95,13 @@ crate-type = ["cdylib"]
 # so a plugin's own `tracing` events reach no host subscriber unless forwarded through the host's
 # log sink. It resolves to `once_cell`/`valuable` and reaches nothing else; it was already in the closure
 # of every plugin written against the SDK, so the merge moves it rather than adding it.
+#
+# `tracing-log` arrived with PLUGIN LOGGING (#85; BUSBAR-1.6.0.md THE DESIGN, section 11.2): the door
+# macro's call capture (`abi::sdk::capture`) turns what a plugin logs into its reply's diagnostics, and
+# a `log` record reaches that capture only once `LogTracer` is the image's `log` logger. The door macro
+# installs it in the plugin's image; the host installs the same one. Default features off, `log-tracer`
+# and `std` on, the set `tracing-subscriber` already resolves: it adds `log` itself, a leaf, and
+# `once_cell`/`tracing-core`, already here. None reaches `libc`.
 [dependencies]
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -108,6 +115,7 @@ http = { workspace = true }
 memchr = { workspace = true }
 tracing = { workspace = true }
 tracing-core = { workspace = true }
+tracing-log = { workspace = true }
 
 # Tests only. The ABI types that seal into the policy journal are serialised by something, and a
 # test that asserts what a serialisation does NOT contain has to run a real serializer over it.

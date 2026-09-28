@@ -65,12 +65,17 @@ pub mod claims;
 // written under it and is exempt, scoped to exactly this module.
 #[allow(missing_docs)]
 pub mod codec;
+pub mod config;
+pub mod diagnostics;
 pub mod governed;
 pub mod meta;
 pub mod oneshot;
+pub mod open_calls;
 pub mod plane;
+pub mod provider;
 pub mod register;
 pub mod session;
+pub mod session_row;
 pub mod tools;
 pub mod twilio;
 pub mod ulaw;

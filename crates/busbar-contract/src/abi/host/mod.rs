@@ -6,3 +6,4 @@
 //! table is handed with names the instance, and nothing else crosses.
 
 pub mod conn;
+pub mod service;

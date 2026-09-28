@@ -28,6 +28,7 @@ pub struct OneKindOp {
 // SAFETY: `#[repr(C)]`, `head: OpsHead` first, then one `Option<Op>`.
 unsafe impl KindOps for OneKindOp {
     const KIND: KindCode = KindCode::Secret;
+    type Lifecycle = busbar_contract::abi::sdk::door::Lifecycle;
 }
 
 // SAFETY: this test kind states these structs for its one op.

@@ -45,7 +45,7 @@
 //! Every plane now also runs through the composition root — `root-llm` (the node, behind
 //! `proto-llm`) / `root-admin` behind their features, `root-mcp` / `root-a2a` / `root-voice` on the kernel-loop rider those planes are served
 //! through (`root/gauntlet_kernel.rs`, the voice leg on its session rider, gated by `plane-mcp` /
-//! `plane-a2a` / `plane-voice`, the features that link them). A capability proven where the plane crate serves it and
+//! `plane-a2a` / `plane-streaming`, the features that link them). A capability proven where the plane crate serves it and
 //! unwitnessed where the root drives it is the same silent half-answer this file exists to refuse,
 //! so the ledger carries a SECOND verdict per cell (`root`) and this gate runs the matrix ONCE PER
 //! LEG: for each declared leg, every cell in that leg's ledger columns is checked against the leg's

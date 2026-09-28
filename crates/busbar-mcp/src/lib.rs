@@ -35,7 +35,9 @@
 /// so every caller that spells `busbar_mcp::codec::…` or `busbar_mcp::record::…` resolves exactly
 /// what it always did. The split is a MOVE: no item changed shape crossing it.
 pub mod codec;
-pub mod record;
+pub use busbar_plane_mcp::record;
+// The MCP routing key `{server}_{tool}` is the plane's dialect; the engine's client reads it.
+pub(crate) use busbar_plane_mcp::identity;
 pub use busbar_plane_mcp::{outputschema, sanitize};
 
 /// THE MCP PLANE'S DIAGNOSTICS CATALOG.

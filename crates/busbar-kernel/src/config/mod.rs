@@ -1433,6 +1433,25 @@ pub struct PluginsCfg {
     /// Signature verification remains the trust gate; sha256 is integrity/cache only. Default empty.
     #[serde(default)]
     pub fetch: Vec<PluginFetch>,
+    /// PLUGIN LOGS (`plugins.logs:`): every plugin instance logs to its own file, which the host
+    /// writes from what the plugin reported on its replies (`BUSBAR-1.6.0.md` decision #85).
+    #[serde(default)]
+    pub logs: PluginLogsCfg,
+}
+
+/// `plugins.logs:` — `dir` (default `logs/plugins`), `level` (default `info`), per-instance
+/// `levels`, `rotate_mb` (unset: never rotate; the host's rename rotation) and `keep` (default 5).
+/// Every default and every refusal is the plugin log configuration's own; the binary resolves this
+/// block at boot, so a bad value fails the boot naming its key.
+#[derive(Deserialize, Clone, Default, Debug)]
+#[serde(deny_unknown_fields, default)]
+pub struct PluginLogsCfg {
+    pub dir: Option<String>,
+    pub level: Option<String>,
+    #[serde(default)]
+    pub levels: std::collections::BTreeMap<String, String>,
+    pub rotate_mb: Option<u64>,
+    pub keep: Option<u32>,
 }
 
 /// One `plugins.fetch:` entry — an UNTAGGED enum discriminated by which key is present. `github` is a
@@ -1563,6 +1582,7 @@ impl Default for PluginsCfg {
             min_versions: std::collections::BTreeMap::new(),
             first_party_floors: std::collections::BTreeMap::new(),
             fetch: Vec::new(),
+            logs: PluginLogsCfg::default(),
         }
     }
 }

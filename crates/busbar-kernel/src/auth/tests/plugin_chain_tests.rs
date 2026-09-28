@@ -544,7 +544,13 @@ fn auth_plugin_role_binding_and_scope_cap_apply() {
         other => panic!("expected Identify, got {other:?}"),
     };
     // The role resolves to `full` in role_bindings.idp.platform...
-    let bound = crate::auth::admin_scope_for(Some("idp"), Some(&principal), &cfg.role_bindings);
+    let bound = crate::auth::admin_scope_for(
+        &crate::test_support::TestApp::new()
+            .role_bindings(cfg.role_bindings.clone())
+            .build(),
+        Some("idp"),
+        Some(&principal),
+    );
     assert_eq!(
         bound,
         crate::admin::v1::contract::Grants::of(Scope::Full),

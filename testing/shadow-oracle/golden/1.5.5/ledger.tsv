@@ -720,7 +720,7 @@ billing|key-usage|after-upstream-down	PASS	HTTP 200; usage Δ {}
 billing|key-usage|broke-after-429	PASS	HTTP 200; usage Δ {}	
 billing|key-usage|fresh	PASS	HTTP 200; usage Δ {}	
 billing|key-usage|noscope-after-403	PASS	HTTP 200; usage Δ {}	
-billing|key-usage|refund-across-window	SKIP	UNSUPPORTED: a request that straddles the window roll: its flat per-request fee must be refunded from the SAME cell the charge landed on, so the view rea	named gap: the fixture this cell needs is not in the tree yet
+billing|key-usage|refund-across-window	PASS	script refund-across-window.sh: status 0	
 billing|rate-card|epoch-mid-window	PASS	HTTP 200; usage Δ {}	
 billing|rate-card|history-mid-window	PASS	script rate-card-history.sh: status 0	
 boot.refusal|BOOT-001|validate	PASS	exit 1; 	

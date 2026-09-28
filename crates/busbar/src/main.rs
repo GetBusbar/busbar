@@ -1326,8 +1326,9 @@ fn serve_thread_per_core(
     if tls_cfg.is_some() {
         // `FailClosed`'s Display already names the listener (`TLS configuration error for '<addr>':
         // <reason>`, 1.5.5's line); wrapping it again printed that prefix twice.
-        let _ = busbar_core_connsec::prepare(&addr, tls_cfg.as_ref(), &secret_resolver, true)
-            .unwrap_or_else(|e| die(e.to_string()));
+        let _ =
+            busbar_core_connector::tls::prepare(&addr, tls_cfg.as_ref(), &secret_resolver, true)
+                .unwrap_or_else(|e| die(e.to_string()));
     }
     let core_ids = core_affinity::get_core_ids().unwrap_or_default();
     let cores: Vec<Option<core_affinity::CoreId>> =
@@ -1494,7 +1495,7 @@ async fn serve_data(
     };
     // blocking-ffi-lint: allow — BOOT, once, before this door accepts (see `serve_listener`).
     let security = tls_cfg.as_ref().map(|tls| {
-        busbar_core_connsec::prepare(label, Some(tls), &secret_resolver, true)
+        busbar_core_connector::tls::prepare(label, Some(tls), &secret_resolver, true)
             .unwrap_or_else(|e| die(e.to_string()))
     });
     // The same line per worker `serve_listener` writes: INFO once, DEBUG for every other worker.
@@ -1565,8 +1566,9 @@ async fn serve_listener(
             // (`transport_capable = true`); `prepare` still fails closed rather than silently
             // downgrading to plaintext if the material cannot be resolved/parsed (DECISIONS #40).
             // Printed as `FailClosed` renders it — it already carries the label (see above).
-            let security = busbar_core_connsec::prepare(label, Some(&tls), &secret_resolver, true)
-                .unwrap_or_else(|e| die(e.to_string()));
+            let security =
+                busbar_core_connector::tls::prepare(label, Some(&tls), &secret_resolver, true)
+                    .unwrap_or_else(|e| die(e.to_string()));
             let mtls = tls.client_ca.is_some();
             if log_at_info {
                 tracing::info!(listen = %label, mtls, "busbar listening (TLS)");

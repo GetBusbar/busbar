@@ -62,8 +62,8 @@
 use std::sync::Arc;
 
 use axum::response::Response;
-use busbar_contract::caps::{ReasonCode, Refusal, VerifiedDestination};
-use busbar_kernel::plane_host::EngineHost;
+use busbar_contract::caps::{Refusal, VerifiedDestination};
+use busbar_kernel::{door::admit_verdict, plane_host::EngineHost};
 
 /// What the door needs that the step shape has nowhere to put.
 ///
@@ -144,19 +144,19 @@ pub fn admit(ctx: &AdmitCtx<'_>, destinations: &[VerifiedDestination]) -> Admitt
     {
         Err(resp) => refused(*resp),
         Ok((admit, downgraded)) => {
-            // `Some` iff the charge landed. Governance off or no resolved key admits without
-            // charging, and that request must finish with `charged = false`.
-            let charged = admit.is_some();
+            // The kernel reads the outcome: whether the charge landed (governance off or no
+            // resolved key admits without charging) and the pool a budget downgrade moved it to.
+            let door = admit_verdict(Ok((admit.as_ref(), downgraded)));
             // A budget downgrade re-pooled the admission: the accrual scope is the pool the charge
             // landed on, not the one the caller asked for, so the sink is built against it.
-            let pool = downgraded.as_deref().unwrap_or(ctx.destination);
+            let pool = door.effective_pool.as_deref().unwrap_or(ctx.destination);
             let sink =
                 crate::native_ingress::usage_sink(ctx.host, ctx.gov, pool, ctx.charged_at, admit);
             Admitted {
                 // A yes, and nothing more: the hold it entitles the unit to is the kernel's to open.
-                verdict: Ok(()),
-                charged,
-                effective_pool: downgraded,
+                verdict: door.verdict,
+                charged: door.charged,
+                effective_pool: door.effective_pool,
                 upstream_candidate: !destinations.is_empty(),
                 sink,
                 refusal: None,
@@ -168,21 +168,16 @@ pub fn admit(ctx: &AdmitCtx<'_>, destinations: &[VerifiedDestination]) -> Admitt
 /// A door refusal: no charge, no refund, no posted link, and the door's own bytes carried through
 /// to the one step that posts.
 ///
-/// The reason code is the record's closed vocabulary, and the seam this step reaches the door
-/// through hands back a rendered response rather than the blocking bucket, so the code cannot be
-/// narrowed past "a budget in the chain had no headroom" from here. The byte-exact refusal — the
-/// status, the `kind`, the message and the retry hint an SDK reads — is the response itself, which
-/// is why it is carried rather than re-derived. The retry hint is lifted onto the refusal so the
-/// record carries the same number the wire does.
+/// The seam this step reaches the door through hands back a rendered response rather than the
+/// blocking bucket, so the kernel reads the verdict from the one fact the bytes carry that the
+/// record needs, the retry hint, and the byte-exact refusal (status, `kind`, message and retry hint
+/// an SDK reads) is the response itself, carried rather than re-derived.
 fn refused(resp: Response) -> Admitted {
-    let mut refusal = Refusal::new(ReasonCode::OverBudget);
-    if let Some(secs) = retry_after_secs(&resp) {
-        refusal = refusal.retry_after(secs);
-    }
+    let door = admit_verdict(Err(retry_after_secs(&resp)));
     Admitted {
-        verdict: Err(refusal),
-        charged: false,
-        effective_pool: None,
+        verdict: door.verdict,
+        charged: door.charged,
+        effective_pool: door.effective_pool,
         upstream_candidate: false,
         sink: None,
         refusal: Some(resp),

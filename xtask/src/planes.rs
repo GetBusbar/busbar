@@ -151,11 +151,11 @@ pub fn neutral_src_roots() -> Vec<String> {
         // THE COMPILED-IN CLEANLINESS CRATES (DECISIONS #4/#5: admin and oauth2 are not a `control`
         // kind) and the remaining neutral leaves.
         "crates/busbar-core-admin/src",
-        "crates/busbar-core-connsec/src",
+        "crates/busbar-core-connector/src",
         "crates/busbar-oauth2/src",
         // `crates/busbar-unit-transport-key/src` is STRUCK (fold F14): the crate folded into
         // `busbar-kernel-identity` (`src/transport_key/`, #36/#40), and that module is deleted in
-        // turn (TRANSPORT-STACK: TLS is core's connection security, `busbar-core-connsec`, listed
+        // turn (TRANSPORT-STACK: TLS is core's connection security, `busbar-core-connector`, listed
         // above).
     ]
     .into_iter()

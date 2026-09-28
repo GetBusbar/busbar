@@ -47,7 +47,7 @@ fn meter_capped(cap: i64) -> TurnMeter {
             id: "vk".to_string(),
             ..Default::default()
         },
-        "voice-server",
+        "streaming-server",
         crate::OPENAI_REALTIME,
     )
 }
@@ -394,7 +394,7 @@ async fn a_pinned_core_holds_nothing_open() {
             id: "vk-pin".to_string(),
             ..Default::default()
         },
-        "voice-server",
+        "streaming-server",
         crate::OPENAI_REALTIME,
     );
     let (core, _handle) = crate::topology::begin_session(

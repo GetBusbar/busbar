@@ -1624,7 +1624,48 @@ pub fn check_destination_facts(
         // A spawned program is not a network hop.
         return Ok(None);
     };
+    match check_structure(authority, paths, policy, denylist)? {
+        Structure::Pinned(pinned) => Ok(Some(pinned)),
+        Structure::Name { host, port, https } => {
+            resolve_and_pin(&host, port, https, resolver, policy)
+                .map(Some)
+                .map_err(NetworkRefusal::Guard)
+        }
+    }
+}
 
+/// What the structural half of THE CHECK decided about a destination it did not refuse.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Structure {
+    /// An IP literal: judged and pinned without a resolver.
+    Pinned(PinnedTarget),
+    /// A name that passed everything decidable without an answer: the one resolution answers for
+    /// it, and [`pin_answer`] judges what it answered.
+    Name {
+        /// The name, unbracketed.
+        host: String,
+        /// The port.
+        port: u16,
+        /// Whether the scheme is `https`.
+        https: bool,
+    },
+}
+
+/// THE STRUCTURAL HALF of [`check_destination_facts`]: steps 1 and 2 of its order, and the pin of
+/// an IP literal, with no resolver consulted. A caller that resolves on its own schedule (a service
+/// whose resolution may pend) runs this first, resolves a [`Structure::Name`], and judges the answer
+/// with [`pin_answer`]; so a refusal decidable from the name answers before any resolution, exactly
+/// as it does here.
+///
+/// # Errors
+///
+/// The host is on the denylist, or the guard refused the scheme, the name, or the literal address.
+pub fn check_structure(
+    authority: &str,
+    paths: &[&str],
+    policy: GuardPolicy,
+    denylist: &Denylist,
+) -> Result<Structure, NetworkRefusal> {
     // The denylist, over the base and over every path it is joined with.
     if !denylist.allow_all {
         for candidate in std::iter::once(authority.to_string())
@@ -1654,9 +1695,13 @@ pub fn check_destination_facts(
         Err(other) => return Err(NetworkRefusal::Guard(other)),
     };
 
-    resolve_and_pin(&host, port, https, resolver, policy)
-        .map(Some)
-        .map_err(NetworkRefusal::Guard)
+    judge_host_name(&host, policy).map_err(NetworkRefusal::Guard)?;
+    if let Ok(addr) = host.parse::<IpAddr>() {
+        return pin_answer(&host, port, https, &[addr], policy)
+            .map(Structure::Pinned)
+            .map_err(NetworkRefusal::Guard);
+    }
+    Ok(Structure::Name { host, port, https })
 }
 
 /// Join a configured base with a declared path, the way a caller building a request would.

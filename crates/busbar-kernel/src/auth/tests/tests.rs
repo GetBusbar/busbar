@@ -61,15 +61,18 @@ fn admin_scope_resolution() {
         ],
     );
     let module = Some("test-groups-module");
+    let app = crate::test_support::TestApp::new()
+        .role_bindings(rb)
+        .build();
 
     // Open posture (no principal): full.
-    assert_eq!(admin_scope_for(None, None, &rb), Grants::of(Scope::Full));
+    assert_eq!(admin_scope_for(&app, None, None), Grants::of(Scope::Full));
     // The operator principal (the operator credential's): full by definition, no binding required.
     assert_eq!(
         admin_scope_for(
+            &app,
             Some(crate::config::operator_provider()),
-            Some(&Principal::from_id(crate::config::operator_principal_id())),
-            &rb
+            Some(&Principal::from_id(crate::config::operator_principal_id()))
         ),
         Grants::of(Scope::Full)
     );
@@ -77,9 +80,9 @@ fn admin_scope_resolution() {
     // other module earns nothing.
     assert_eq!(
         admin_scope_for(
+            &app,
             module,
-            Some(&Principal::from_id(crate::config::operator_principal_id())),
-            &rb
+            Some(&Principal::from_id(crate::config::operator_principal_id()))
         ),
         Grants::default()
     );
@@ -87,23 +90,23 @@ fn admin_scope_resolution() {
     // canonicalized), so `{read-only} ∪ {full}` keeps BOTH bits rather than collapsing to `{full}` —
     // asserted on `allows`, the actual authorization behaviour, not the raw bit pattern.
     let p = grp_principal("test:alice", &["viewers", "admins"]);
-    assert!(admin_scope_for(module, Some(&p), &rb).allows(Scope::Full));
+    assert!(admin_scope_for(&app, module, Some(&p)).allows(Scope::Full));
     let p = grp_principal("test:alice", &["viewers"]);
     assert_eq!(
-        admin_scope_for(module, Some(&p), &rb),
+        admin_scope_for(&app, module, Some(&p)),
         Grants::of(Scope::ReadOnly)
     );
     // Unbound roles grant nothing (fail closed).
     let p = grp_principal("test:alice", &["strangers"]);
-    assert_eq!(admin_scope_for(module, Some(&p), &rb), Grants::default());
+    assert_eq!(admin_scope_for(&app, module, Some(&p)), Grants::default());
     // A role bound WITHOUT an admin_scope grants nothing.
     let p = grp_principal("test:alice", &["no-admin"]);
-    assert_eq!(admin_scope_for(module, Some(&p), &rb), Grants::default());
+    assert_eq!(admin_scope_for(&app, module, Some(&p)), Grants::default());
     // A roleless NON-operator principal gets nothing (an external module cannot mint the
     // operator identity by returning a bare id).
     let stranger = Principal::from_id("test:bob");
     assert_eq!(
-        admin_scope_for(module, Some(&stranger), &rb),
+        admin_scope_for(&app, module, Some(&stranger)),
         Grants::default()
     );
 }
@@ -124,19 +127,22 @@ fn admin_scope_bindings_are_module_scoped() {
         "other-module",
         &[("admins", binding(None, None, Some("full")))],
     );
+    let app = crate::test_support::TestApp::new()
+        .role_bindings(rb)
+        .build();
     let p = grp_principal("test:alice", &["admins"]);
     assert!(
-        admin_scope_for(Some("test-groups-module"), Some(&p), &rb) == Grants::default(),
+        admin_scope_for(&app, Some("test-groups-module"), Some(&p)) == Grants::default(),
         "a role asserted by module A must not ride module B's binding"
     );
     // Control: the SAME principal identified by the binding's own module resolves.
     assert_eq!(
-        admin_scope_for(Some("other-module"), Some(&p), &rb),
+        admin_scope_for(&app, Some("other-module"), Some(&p)),
         Grants::of(Scope::Full)
     );
     // A module with no binding table at all grants nothing.
     assert_eq!(
-        admin_scope_for(Some("unbound-module"), Some(&p), &rb),
+        admin_scope_for(&app, Some("unbound-module"), Some(&p)),
         Grants::default()
     );
 }

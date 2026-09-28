@@ -1,0 +1,1913 @@
+{
+ "_comment": [
+  "GENERATED scope list -- `cargo xtask ledger sync --write` derives it from the tree.",
+  "Audit records (round/result/report/auditor/fixed_at/tree_hash) are hand-stamped by",
+  "`record` and `fixed` and are preserved across sync.",
+  "tree_hash = sha256 over the sorted `path<TAB>blob-oid` list of the scope's tracked files at",
+  "the audited commit; when it stops matching the tree, the audit result has expired.",
+  "status is DERIVED at report time, never stored. See qa/evidence/AUDIT-STATUS.md."
+ ],
+ "uncovered_by_design": [
+  {
+   "glob": "crates/*/Cargo.toml",
+   "reason": "crate manifest -- governed by workspace-deps-lint, not a code audit"
+  },
+  {
+   "glob": "crates/*/Cargo.lock",
+   "reason": "resolved lockfile -- governed by the build gates, not a code audit"
+  },
+  {
+   "glob": "crates/*/fixtures/**",
+   "reason": "fixture inputs a crate's own gate reads; not shipped code"
+  },
+  {
+   "glob": "xtask/Cargo.toml",
+   "reason": "crate manifest -- governed by workspace-deps-lint, not a code audit"
+  },
+  {
+   "glob": "xtask/fixtures/**",
+   "reason": "fixture trees the workspace-deps gate builds against"
+  },
+  {
+   "glob": "docs/**",
+   "reason": "design and reference prose -- governed by the doc gates, not a code audit"
+  },
+  {
+   "glob": "*.md",
+   "reason": "top-level project prose -- governed by the doc and changelog gates"
+  },
+  {
+   "glob": "LICENSE",
+   "reason": "licence text"
+  },
+  {
+   "glob": "NOTICE",
+   "reason": "attribution notice"
+  },
+  {
+   "glob": "Cargo.toml",
+   "reason": "workspace manifest -- governed by workspace-deps-lint"
+  },
+  {
+   "glob": "Cargo.lock",
+   "reason": "resolved lockfile -- governed by the build gates"
+  },
+  {
+   "glob": "deny.toml",
+   "reason": "cargo-deny policy -- governed by the supply-chain gate"
+  },
+  {
+   "glob": "rust-toolchain.toml",
+   "reason": "pinned toolchain -- governed by the build gates"
+  },
+  {
+   "glob": "rustfmt.toml",
+   "reason": "formatter settings -- governed by `cargo fmt --check`"
+  },
+  {
+   "glob": "codecov.yml",
+   "reason": "coverage service settings"
+  },
+  {
+   "glob": ".cargo/**",
+   "reason": "cargo invocation settings"
+  },
+  {
+   "glob": ".editorconfig",
+   "reason": "editor settings"
+  },
+  {
+   "glob": ".gitignore",
+   "reason": "vcs settings"
+  },
+  {
+   "glob": ".gitattributes",
+   "reason": "vcs settings"
+  },
+  {
+   "glob": ".dockerignore",
+   "reason": "container build context settings"
+  },
+  {
+   "glob": ".github/ISSUE_TEMPLATE/**",
+   "reason": "issue forms -- prose"
+  },
+  {
+   "glob": ".github/*.md",
+   "reason": "contribution prose"
+  },
+  {
+   "glob": "Dockerfile",
+   "reason": "container recipe -- governed by the image build gate"
+  },
+  {
+   "glob": "docker/**",
+   "reason": "container-local sample config"
+  },
+  {
+   "glob": "assets/*.png",
+   "reason": "brand images"
+  },
+  {
+   "glob": "org-profile/**",
+   "reason": "the GitHub org profile -- prose and brand images"
+  },
+  {
+   "glob": "tests/migration-corpus/**",
+   "reason": "captured historical configs the migration gate replays; inputs, not code"
+  },
+  {
+   "glob": "config.yaml",
+   "reason": "the shipped sample deployment config"
+  },
+  {
+   "glob": "plugins.yaml",
+   "reason": "the shipped sample plugin manifest"
+  },
+  {
+   "glob": "providers.yaml",
+   "reason": "the shipped sample provider table"
+  }
+ ],
+ "scopes": [
+  {
+   "id": "crates/busbar/src/root",
+   "kind": "production",
+   "paths": [
+    "crates/busbar/src/root"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/busbar/src/main.rs",
+   "kind": "production",
+   "paths": [
+    "crates/busbar/src/main.rs"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/busbar/build.rs",
+   "kind": "production",
+   "paths": [
+    "crates/busbar/build.rs"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/busbar-a2a/src",
+   "kind": "production",
+   "paths": [
+    "crates/busbar-a2a/src"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null,
+   "exclude": [
+    "crates/busbar-a2a/src/tests"
+   ]
+  },
+  {
+   "id": "crates/busbar-a2a/build.rs",
+   "kind": "production",
+   "paths": [
+    "crates/busbar-a2a/build.rs"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/busbar-contract/src",
+   "kind": "production",
+   "paths": [
+    "crates/busbar-contract/src"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null,
+   "exclude": [
+    "crates/busbar-contract/src/tests"
+   ]
+  },
+  {
+   "id": "crates/busbar-core-admin/src",
+   "kind": "production",
+   "paths": [
+    "crates/busbar-core-admin/src"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null,
+   "exclude": [
+    "crates/busbar-core-admin/src/tests"
+   ]
+  },
+  {
+   "id": "crates/busbar-core-admin/build.rs",
+   "kind": "production",
+   "paths": [
+    "crates/busbar-core-admin/build.rs"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/busbar-core-connector/src",
+   "kind": "production",
+   "paths": [
+    "crates/busbar-core-connector/src"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null,
+   "exclude": [
+    "crates/busbar-core-connector/src/tests"
+   ]
+  },
+  {
+   "id": "crates/busbar-kernel/src",
+   "kind": "production",
+   "paths": [
+    "crates/busbar-kernel/src"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null,
+   "exclude": [
+    "crates/busbar-kernel/src/tests"
+   ]
+  },
+  {
+   "id": "crates/busbar-kernel/build.rs",
+   "kind": "production",
+   "paths": [
+    "crates/busbar-kernel/build.rs"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/busbar-kernel-audit/src",
+   "kind": "production",
+   "paths": [
+    "crates/busbar-kernel-audit/src"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null,
+   "exclude": [
+    "crates/busbar-kernel-audit/src/tests"
+   ]
+  },
+  {
+   "id": "crates/busbar-kernel-breaker/src",
+   "kind": "production",
+   "paths": [
+    "crates/busbar-kernel-breaker/src"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null,
+   "exclude": [
+    "crates/busbar-kernel-breaker/src/tests"
+   ]
+  },
+  {
+   "id": "crates/busbar-kernel-budget/src",
+   "kind": "production",
+   "paths": [
+    "crates/busbar-kernel-budget/src"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null,
+   "exclude": [
+    "crates/busbar-kernel-budget/src/tests"
+   ]
+  },
+  {
+   "id": "crates/busbar-kernel-egress/src",
+   "kind": "production",
+   "paths": [
+    "crates/busbar-kernel-egress/src"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null,
+   "exclude": [
+    "crates/busbar-kernel-egress/src/tests"
+   ]
+  },
+  {
+   "id": "crates/busbar-kernel-identity/src",
+   "kind": "production",
+   "paths": [
+    "crates/busbar-kernel-identity/src"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null,
+   "exclude": [
+    "crates/busbar-kernel-identity/src/tests"
+   ]
+  },
+  {
+   "id": "crates/busbar-kernel-ledger/src",
+   "kind": "production",
+   "paths": [
+    "crates/busbar-kernel-ledger/src"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null,
+   "exclude": [
+    "crates/busbar-kernel-ledger/src/tests"
+   ]
+  },
+  {
+   "id": "crates/busbar-kernel-scope/src",
+   "kind": "production",
+   "paths": [
+    "crates/busbar-kernel-scope/src"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null,
+   "exclude": [
+    "crates/busbar-kernel-scope/src/tests"
+   ]
+  },
+  {
+   "id": "crates/busbar-kernel-wal/src",
+   "kind": "production",
+   "paths": [
+    "crates/busbar-kernel-wal/src"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null,
+   "exclude": [
+    "crates/busbar-kernel-wal/src/tests"
+   ]
+  },
+  {
+   "id": "crates/busbar-llm/src",
+   "kind": "production",
+   "paths": [
+    "crates/busbar-llm/src"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null,
+   "exclude": [
+    "crates/busbar-llm/src/tests"
+   ]
+  },
+  {
+   "id": "crates/busbar-mcp/src",
+   "kind": "production",
+   "paths": [
+    "crates/busbar-mcp/src"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null,
+   "exclude": [
+    "crates/busbar-mcp/src/tests"
+   ]
+  },
+  {
+   "id": "crates/busbar-mcp/build.rs",
+   "kind": "production",
+   "paths": [
+    "crates/busbar-mcp/build.rs"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/busbar-oauth2/src",
+   "kind": "production",
+   "paths": [
+    "crates/busbar-oauth2/src"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null,
+   "exclude": [
+    "crates/busbar-oauth2/src/tests"
+   ]
+  },
+  {
+   "id": "crates/busbar-plane-a2a/src",
+   "kind": "production",
+   "paths": [
+    "crates/busbar-plane-a2a/src"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null,
+   "exclude": [
+    "crates/busbar-plane-a2a/src/tests"
+   ]
+  },
+  {
+   "id": "crates/busbar-plane-decisions/src",
+   "kind": "production",
+   "paths": [
+    "crates/busbar-plane-decisions/src"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null,
+   "exclude": [
+    "crates/busbar-plane-decisions/src/tests"
+   ]
+  },
+  {
+   "id": "crates/busbar-plane-llm/src",
+   "kind": "production",
+   "paths": [
+    "crates/busbar-plane-llm/src"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null,
+   "exclude": [
+    "crates/busbar-plane-llm/src/tests"
+   ]
+  },
+  {
+   "id": "crates/busbar-plane-mcp/src",
+   "kind": "production",
+   "paths": [
+    "crates/busbar-plane-mcp/src"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null,
+   "exclude": [
+    "crates/busbar-plane-mcp/src/tests"
+   ]
+  },
+  {
+   "id": "crates/busbar-plane-streaming/src",
+   "kind": "production",
+   "paths": [
+    "crates/busbar-plane-streaming/src"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null,
+   "exclude": [
+    "crates/busbar-plane-streaming/src/tests"
+   ]
+  },
+  {
+   "id": "crates/busbar-transport-http/src",
+   "kind": "production",
+   "paths": [
+    "crates/busbar-transport-http/src"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null,
+   "exclude": [
+    "crates/busbar-transport-http/src/tests"
+   ]
+  },
+  {
+   "id": "crates/busbar-transport-stdio/src",
+   "kind": "production",
+   "paths": [
+    "crates/busbar-transport-stdio/src"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null,
+   "exclude": [
+    "crates/busbar-transport-stdio/src/tests"
+   ]
+  },
+  {
+   "id": "crates/busbar-transport-tcp/src",
+   "kind": "production",
+   "paths": [
+    "crates/busbar-transport-tcp/src"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null,
+   "exclude": [
+    "crates/busbar-transport-tcp/src/tests"
+   ]
+  },
+  {
+   "id": "crates/busbar-transport-ws/src",
+   "kind": "production",
+   "paths": [
+    "crates/busbar-transport-ws/src"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null,
+   "exclude": [
+    "crates/busbar-transport-ws/src/tests"
+   ]
+  },
+  {
+   "id": "crates/busbar-voice/src",
+   "kind": "production",
+   "paths": [
+    "crates/busbar-voice/src"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null,
+   "exclude": [
+    "crates/busbar-voice/src/tests"
+   ]
+  },
+  {
+   "id": "crates/hook-test-plugin/src",
+   "kind": "production",
+   "paths": [
+    "crates/hook-test-plugin/src"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null,
+   "exclude": [
+    "crates/hook-test-plugin/src/tests"
+   ]
+  },
+  {
+   "id": "crates/hooks-ranking/src",
+   "kind": "production",
+   "paths": [
+    "crates/hooks-ranking/src"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null,
+   "exclude": [
+    "crates/hooks-ranking/src/tests"
+   ]
+  },
+  {
+   "id": "crates/plane-example/src",
+   "kind": "production",
+   "paths": [
+    "crates/plane-example/src"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null,
+   "exclude": [
+    "crates/plane-example/src/tests"
+   ]
+  },
+  {
+   "id": "crates/plugin-loader/src",
+   "kind": "production",
+   "paths": [
+    "crates/plugin-loader/src"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null,
+   "exclude": [
+    "crates/plugin-loader/src/tests"
+   ]
+  },
+  {
+   "id": "crates/plugin-loader/build.rs",
+   "kind": "production",
+   "paths": [
+    "crates/plugin-loader/build.rs"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/store-memory/src",
+   "kind": "production",
+   "paths": [
+    "crates/store-memory/src"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null,
+   "exclude": [
+    "crates/store-memory/src/tests"
+   ]
+  },
+  {
+   "id": "xtask/src",
+   "kind": "production",
+   "paths": [
+    "xtask/src"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null,
+   "exclude": [
+    "xtask/src/tests"
+   ]
+  },
+  {
+   "id": "crates/busbar/src/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar/src/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/busbar/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/busbar/benches",
+   "kind": "test",
+   "paths": [
+    "crates/busbar/benches"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/busbar-a2a/src/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-a2a/src/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/busbar-contract/src/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-contract/src/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/busbar-contract/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-contract/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/busbar-core-admin/src/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-core-admin/src/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/busbar-core-admin/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-core-admin/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/busbar-core-connector/src/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-core-connector/src/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/busbar-core-connector/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-core-connector/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/busbar-kernel/src/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-kernel/src/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/busbar-kernel/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-kernel/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/busbar-kernel/benches",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-kernel/benches"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/busbar-kernel-audit/src/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-kernel-audit/src/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/busbar-kernel-breaker/src/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-kernel-breaker/src/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/busbar-kernel-budget/src/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-kernel-budget/src/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/busbar-kernel-egress/src/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-kernel-egress/src/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/busbar-kernel-egress/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-kernel-egress/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/busbar-kernel-identity/src/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-kernel-identity/src/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/busbar-kernel-ledger/src/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-kernel-ledger/src/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/busbar-kernel-ledger/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-kernel-ledger/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/busbar-kernel-scope/src/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-kernel-scope/src/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/busbar-kernel-wal/src/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-kernel-wal/src/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/busbar-llm/src/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-llm/src/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/busbar-llm/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-llm/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/busbar-mcp/src/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-mcp/src/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/busbar-oauth2/src/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-oauth2/src/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/busbar-plane-a2a/src/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-plane-a2a/src/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/busbar-plane-a2a/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-plane-a2a/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/busbar-plane-decisions/src/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-plane-decisions/src/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/busbar-plane-decisions/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-plane-decisions/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/busbar-plane-llm/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-plane-llm/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/busbar-plane-mcp/src/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-plane-mcp/src/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/busbar-plane-mcp/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-plane-mcp/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/busbar-plane-streaming/src/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-plane-streaming/src/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/busbar-plane-streaming/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-plane-streaming/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/busbar-transport-http/src/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-transport-http/src/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/busbar-transport-http/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-transport-http/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/busbar-transport-stdio/src/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-transport-stdio/src/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/busbar-transport-stdio/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-transport-stdio/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/busbar-transport-tcp/src/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-transport-tcp/src/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/busbar-transport-ws/src/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-transport-ws/src/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/busbar-transport-ws/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-transport-ws/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/busbar-voice/src/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-voice/src/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/busbar-voice/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-voice/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/hooks-ranking/src/tests",
+   "kind": "test",
+   "paths": [
+    "crates/hooks-ranking/src/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/hooks-ranking/tests",
+   "kind": "test",
+   "paths": [
+    "crates/hooks-ranking/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/plugin-loader/src/tests",
+   "kind": "test",
+   "paths": [
+    "crates/plugin-loader/src/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/plugin-loader/tests",
+   "kind": "test",
+   "paths": [
+    "crates/plugin-loader/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/store-memory/src/tests",
+   "kind": "test",
+   "paths": [
+    "crates/store-memory/src/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/store-memory/tests",
+   "kind": "test",
+   "paths": [
+    "crates/store-memory/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "scripts",
+   "kind": "instrument",
+   "paths": [
+    "scripts"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "qa",
+   "kind": "instrument",
+   "paths": [
+    "qa"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": ".github/workflows",
+   "kind": "instrument",
+   "paths": [
+    ".github/workflows"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": ".githooks",
+   "kind": "instrument",
+   "paths": [
+    ".githooks"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": ".github/scripts",
+   "kind": "instrument",
+   "paths": [
+    ".github/scripts"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "assets/readme",
+   "kind": "instrument",
+   "paths": [
+    "assets/readme"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "examples",
+   "kind": "instrument",
+   "paths": [
+    "examples"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": ".github",
+   "kind": "instrument",
+   "paths": [
+    ".github"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null,
+   "exclude": [
+    ".github/workflows",
+    ".github/scripts",
+    ".github/ISSUE_TEMPLATE"
+   ]
+  },
+  {
+   "id": "testing/a2a-governance",
+   "kind": "instrument",
+   "paths": [
+    "testing/a2a-governance"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "testing/a2a-harness",
+   "kind": "instrument",
+   "paths": [
+    "testing/a2a-harness"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "testing/a2a-supplement",
+   "kind": "instrument",
+   "paths": [
+    "testing/a2a-supplement"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "testing/a2a-tck",
+   "kind": "instrument",
+   "paths": [
+    "testing/a2a-tck"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "testing/fleet-fixtures",
+   "kind": "instrument",
+   "paths": [
+    "testing/fleet-fixtures"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "testing/llm-conformance",
+   "kind": "instrument",
+   "paths": [
+    "testing/llm-conformance"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "testing/mcp-conformance",
+   "kind": "instrument",
+   "paths": [
+    "testing/mcp-conformance"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "testing/plane-copies",
+   "kind": "instrument",
+   "paths": [
+    "testing/plane-copies"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "testing/shadow-oracle",
+   "kind": "instrument",
+   "paths": [
+    "testing/shadow-oracle"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "testing/voice-conformance",
+   "kind": "instrument",
+   "paths": [
+    "testing/voice-conformance"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "testing/ws-conformance",
+   "kind": "instrument",
+   "paths": [
+    "testing/ws-conformance"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "testing",
+   "kind": "instrument",
+   "paths": [
+    "testing"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null,
+   "exclude": [
+    "testing/a2a-governance",
+    "testing/a2a-harness",
+    "testing/a2a-supplement",
+    "testing/a2a-tck",
+    "testing/fleet-fixtures",
+    "testing/llm-conformance",
+    "testing/mcp-conformance",
+    "testing/plane-copies",
+    "testing/shadow-oracle",
+    "testing/voice-conformance",
+    "testing/ws-conformance"
+   ]
+  }
+ ]
+}

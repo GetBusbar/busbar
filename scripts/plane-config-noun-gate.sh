@@ -92,9 +92,9 @@ hdr()  { printf '\n== %s ==\n' "$*"; }
 #     bodies live in busbar-kernel. It never spells `"tools"`/`"agents"`/`"pools"`/`"streams"` on a
 #     parse-steering line of its own. It is the admin HTTP surface (`/api/v1/admin/*`), not the boot
 #     config parser — the property this meter measures never lived there.
-#   * `busbar-oauth2`, `busbar-core-connsec` — compiled-in cleanliness crates by the repo's own
+#   * `busbar-oauth2`, `busbar-core-connector` — compiled-in cleanliness crates by the repo's own
 #     DECISIONS #4/#5/#40 taxonomy, but neither is config-section parsing: oauth2 is its own plane's
-#     AS surface, connsec is TLS/mTLS connection prep. Zero grep hits in either.
+#     AS surface, the connector is TLS/mTLS connection prep. Zero grep hits in either.
 #   Hook DISPATCH has no crate of its own to reject: it lives at `crates/busbar-kernel/src/hooks/`,
 #   which is UNDER the root below and so is scanned, not excluded (and `config/named_map.rs`'s own
 #   module doc says `hooks:` is "deliberately NOT" part of the named-map section set this meter

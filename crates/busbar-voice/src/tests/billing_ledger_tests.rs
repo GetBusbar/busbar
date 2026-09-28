@@ -68,7 +68,7 @@ fn a_voice_turn_lands_spend_on_the_presenting_keys_ledger() {
     let meter = TurnMeter::new(
         Arc::clone(&host) as Arc<dyn EngineHost>,
         key.clone(),
-        "voice-server",
+        "streaming-server",
         crate::OPENAI_REALTIME,
     );
     let session = meter
@@ -106,7 +106,7 @@ fn an_ungoverned_voice_turn_meters_nobody_without_panicking() {
         id: "anon".to_string(),
         ..Default::default()
     };
-    let meter = TurnMeter::new(host, key, "voice-server", crate::OPENAI_REALTIME);
+    let meter = TurnMeter::new(host, key, "streaming-server", crate::OPENAI_REALTIME);
     // Must not panic even though there is no ledger to write to.
     assert!(matches!(meter.open("voice-model"), Ok(None)));
     let _ = turn_usage(10, 5);
@@ -128,7 +128,7 @@ fn a_voice_sessions_metering_writes_no_row_keyed_by_the_upstream_provider() {
     let meter = TurnMeter::new(
         Arc::clone(&host) as Arc<dyn EngineHost>,
         key.clone(),
-        "voice-server",
+        "streaming-server",
         crate::OPENAI_REALTIME,
     );
     let session = meter
@@ -192,7 +192,7 @@ fn streams_fees_per_request_refuses_and_per_session_boots_and_charges() {
     let meter = TurnMeter::new(
         Arc::clone(&host) as Arc<dyn EngineHost>,
         key.clone(),
-        "voice-server",
+        "streaming-server",
         crate::OPENAI_REALTIME,
     );
     let _session = meter

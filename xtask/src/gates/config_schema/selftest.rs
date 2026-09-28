@@ -662,11 +662,11 @@ pub fn run<'a>(gate: &'a dyn Gate, cx: &'a Ctx) -> Report<'a> {
     // A SOURCE CHANGE THE SNAPSHOT DOES NOT CARRY. This is the drift the guard exists for, and it
     // is planted in the SOURCE rather than in the artefact, so it also proves the generator sees a
     // real edit to a real tracked file.
-    match cx.read("crates/busbar-voice/src/config.rs") {
+    match cx.read("crates/busbar-plane-streaming/src/config.rs") {
         Ok(src) => {
             let mut ov = drift_base.clone();
             ov.set(
-                "crates/busbar-voice/src/config.rs",
+                "crates/busbar-plane-streaming/src/config.rs",
                 src + "\n#[derive(serde::Deserialize)]\npub struct ZzDriftFx {\n    pub added: String,\n}\n",
             );
             report.push(prove_rows_red(
@@ -679,7 +679,7 @@ pub fn run<'a>(gate: &'a dyn Gate, cx: &'a Ctx) -> Report<'a> {
             ));
         }
         Err(e) => report.note_infra_failure(format!(
-            "the voice plane's config grammar could not be read: {e}"
+            "the streaming plane's config grammar could not be read: {e}"
         )),
     }
 

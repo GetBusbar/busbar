@@ -309,7 +309,7 @@ const NOUNS: &[Noun] = &[
         key: "tls",
         kind: "transport",
         // No crate holds this instance: `busbar-transport-tls` was deleted (TRANSPORT-STACK — TLS is
-        // core's connection security, `busbar-core-connsec`), so every spelling of the transport
+        // core's connection security, `busbar-core-connector`), so every spelling of the transport
         // crate's name is a leak wherever it appears.
         family: FAM_NONE,
         tokens: &["busbar_transport_tls", "transport_tls", "transport-tls"],

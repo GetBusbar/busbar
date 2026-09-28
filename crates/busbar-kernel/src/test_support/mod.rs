@@ -1930,7 +1930,7 @@ impl TestApp {
                     .unwrap_or_else(crate::auth::AdminAuthChain::empty);
                 let digest = self.governance.as_ref().and_then(|g| g.admin_token_hash());
                 let linked = crate::preflight::linked().expect("the linked registry");
-                chain.operator = crate::auth::open_operator(&linked, digest.as_deref())
+                *chain.operator = crate::auth::open_operator(&linked, digest.as_deref())
                     .expect("the linked operator credential opens");
                 std::sync::Arc::new(chain)
             },

@@ -85,7 +85,7 @@ the build anyone ships.
 | `core-duplex-ws` | `busbar-core/duplex-ws` | `-p busbar-core` |
 
 `core-duplex-ws` is in the matrix even though `duplex-ws` is reachable from the root binary's
-default `plane-voice` today, because that reachability is a property of a DEFAULT — and the exposure
+default `plane-streaming` today, because that reachability is a property of a DEFAULT — and the exposure
 this whole document is about is a default moving. A row that NAMES the feature is coverage that
 survives the default being flipped; reachability is not.
 
@@ -110,7 +110,7 @@ both ends:
 | `single plane llm` | `busbar/proto-llm,busbar/transport-tcp,busbar/export-prometheus,busbar/export-file,busbar/export-webhook` | `-p busbar --tests --no-default-features` |
 | `single plane mcp` | `busbar/plane-mcp,busbar/transport-tcp,busbar/export-prometheus,busbar/export-file,busbar/export-webhook` | `-p busbar --tests --no-default-features` |
 | `single plane a2a` | `busbar/plane-a2a,busbar/transport-tcp,busbar/export-prometheus,busbar/export-file,busbar/export-webhook` | `-p busbar --tests --no-default-features` |
-| `single plane voice` | `busbar/plane-voice,busbar/transport-tcp,busbar/export-prometheus,busbar/export-file,busbar/export-webhook` | `-p busbar --tests --no-default-features` |
+| `single plane voice` | `busbar/plane-streaming,busbar/transport-tcp,busbar/export-prometheus,busbar/export-file,busbar/export-webhook` | `-p busbar --tests --no-default-features` |
 | `single plane decision` | `busbar/plane-decisions,busbar/transport-tcp,busbar/export-prometheus,busbar/export-file,busbar/export-webhook` | `-p busbar --tests --no-default-features` |
 
 Every single-plane row also turns on `busbar/transport-tcp`. The rows vary planes, not wires, and
@@ -229,7 +229,7 @@ Covering leg is the FIRST leg that compiles the feature; several are compiled by
 | `busbar/openapi-schema` | non-default | `openapi-schema` | yes |
 | `busbar/plane-a2a` | default | `check` — the workspace default build | — |
 | `busbar/plane-mcp` | default | `check` — the workspace default build | — |
-| `busbar/plane-voice` | default | `check` — the workspace default build | — |
+| `busbar/plane-streaming` | default | `check` — the workspace default build | — |
 | `busbar/proto-llm` | default | `check` — the workspace default build | — |
 | `busbar/root-admin` | default | `check` — the workspace default build | — |
 | `busbar/test-harness` | non-default | `feature-sets` (this change) | NO |
@@ -250,7 +250,7 @@ Covering leg is the FIRST leg that compiles the feature; several are compiled by
 | `busbar-core/plane-a2a` | default | `check` — the workspace default build | — |
 | `busbar-core/plane-llm` | default | `check` — the workspace default build | — |
 | `busbar-core/plane-mcp` | default | `check` — the workspace default build | — |
-| `busbar-core/plane-voice` | non-default | `check` — reached from a workspace default | yes |
+| `busbar-core/plane-streaming` | non-default | `check` — reached from a workspace default | yes |
 | `busbar-core/test-support` | non-default | `check` — `--all-targets` dev-dep unification | yes (incidental) |
 | `busbar-core/timing` | non-default | `feature-sets` (this change) | NO |
 | `busbar-llm/auth-admin-tokens` | non-default | `feature-sets` (this change) | NO |
@@ -269,7 +269,7 @@ Covering leg is the FIRST leg that compiles the feature; several are compiled by
 | `busbar-substrate/plane-a2a` | non-default | `check` — reached from a workspace default | yes |
 | `busbar-substrate/plane-llm` | non-default | `check` — reached from a workspace default | yes |
 | `busbar-substrate/plane-mcp` | non-default | `check` — reached from a workspace default | yes |
-| `busbar-substrate/plane-voice` | non-default | `check` — reached from a workspace default | yes |
+| `busbar-substrate/plane-streaming` | non-default | `check` — reached from a workspace default | yes |
 | `busbar-substrate/relay` | non-default | `check` — reached from a workspace default | yes |
 | `busbar-substrate/runtime` | non-default | `check` — reached from a workspace default | yes |
 | `busbar-substrate/test-support` | non-default | `check` — `--all-targets` dev-dep unification | yes (incidental) |

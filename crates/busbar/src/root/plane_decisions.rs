@@ -27,8 +27,8 @@
 //! Everything the plane already says about itself is READ off the contract's `PlaneMeta` rather
 //! than spelled again here: the registry key is `DecisionPlane`'s own `KEY`. A second literal
 //! `"decision"` in this file would be a string that could drift from the plane's, and the drift
-//! would show up as a registry installing one name while the plane answers to another. The one
-//! value this file does have to spell is [`CONFIG_SECTION`] — see its own note.
+//! would show up as a registry installing one name while the plane answers to another. The
+//! declaring section name is the plane's too ([`CONFIG_SECTION`] reads it).
 //!
 //! ## What this declaration DOES and, more importantly, what it does NOT
 //!
@@ -86,20 +86,10 @@ use busbar_contract::{plane::PlaneMeta, plugin::Kind};
 use busbar_plane_decisions::config::DecisionsSection;
 use busbar_plane_decisions::DecisionPlane;
 
-/// THE DECLARING SECTION for the decisions plane — the top-level `config.yaml` noun whose mere
-/// existence declares this plane, beside `pools:`, `tools:`, `agents:` and `streams:`.
-///
-/// Spelled here rather than read off the plane crate because the plane crate declares no constant
-/// for it: the name is ruled in the owner's config-model sign-off and is written down in
-/// `busbar_plane_decisions::config`'s module doc and in that crate's `CONFIG_SCHEMA`, both as prose
-/// rather than as an item. This is the ONE value in this file that is a restatement, it is named
-/// once, and both places that need it below read this constant rather than a second literal.
-///
-/// PLURAL, and deliberately not the registry key: the key is the plane's identity (`decision`, what
-/// `DecisionPlane::KEY` says) and the section is the operator's noun for the set of configured
-/// decision models (`decisions`). The MCP plane's key/section pair (`mcp` / `tools`) and the voice
-/// plane's (`voice` / `streams`) differ for the same reason.
-pub const CONFIG_SECTION: &str = "decisions";
+/// THE DECLARING SECTION for the decisions plane, read off the plane's own declaration
+/// ([`busbar_plane_decisions::config::SECTION`]). The root spells no literal for it; both places
+/// that need it below read this name.
+pub const CONFIG_SECTION: &str = busbar_plane_decisions::config::SECTION;
 
 /// THE DECISIONS PLANE'S REGISTRY DECLARATION — the contract data `register_planes()` joins to
 /// [`PLANE_HOOKS`] and installs, and the composition root's whole knowledge of this plane. Plain

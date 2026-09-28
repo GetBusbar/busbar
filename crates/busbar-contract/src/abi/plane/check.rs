@@ -12,22 +12,32 @@
 //! * What was written is judged on EVERY outcome: no early return skips a unit, record or
 //!   field.
 //! * The tail and every list element it names are checked at load.
+//! * An ATTEMPT answer's verb and target come together, go to the far end and lie in the arena; a
+//!   verdict is known and rides only a READY answer.
+//! * `project`'s view points only into the host's buffers: its strings and body into the arena,
+//!   its signals at `signals_buf`.
 
 pub use crate::abi::mechanism::check::{Fault, Rule};
 
 use super::{
-    AdminRoute, ArriveOut, BillableClass, Claim, DialectAuth, OnPieceOut, OutField, PlaneSnapshot,
-    PlaneTail, RecordWrite, RefusalOut, RouteCost, Section, ServeOut, UnitCount, CANCEL_ABORTED,
-    CANCEL_OK_PARTIAL, EMIT_DONE, EMIT_TO_FAR_END, INGRESS_ACCEPT_LOOP, INGRESS_DUPLEX_SESSION,
-    INGRESS_REQUEST_RESPONSE, INGRESS_RESPONSE_STREAM, INGRESS_SUBSCRIPTION, MARK_GATE_REJECTED,
-    PRINCIPAL_OPTIONAL, RECORD_DELETE, RECORD_PUT, SECTION_CONSUMED, SECTION_DECLARING,
-    SECTION_REQUIRED, SHAPE_PIECEWISE, SHAPE_WHOLE, TAIL_FALLBACK, UNITS_ESTIMATED, UNITS_REPORTED,
+    AdminRoute, ArriveOut, BillableClass, Claim, DialectAuth, OnPieceOut, OutField, PlaneDriveOut,
+    PlaneSnapshot, PlaneTail, ProjectOut, RecordChain, RecordWrite, RefusalOut, RouteCost, Section,
+    ServeOut, UnitCount, CANCEL_ABORTED, CANCEL_OK_PARTIAL, CHAIN_DIGESTS_SCOPE,
+    CHAIN_LENGTH_PREFIXED, CHAIN_PIPE_SEPARATED, EMIT_DONE, EMIT_TO_FAR_END, INGRESS_ACCEPT_LOOP,
+    INGRESS_DUPLEX_SESSION, INGRESS_REQUEST_RESPONSE, INGRESS_RESPONSE_STREAM,
+    INGRESS_SUBSCRIPTION, MARK_GATE_REJECTED, PRINCIPAL_OPTIONAL, RECORD_DELETE, RECORD_PUT,
+    ROUTE_PUBLIC, SECTION_CONSUMED, SECTION_DECLARING, SECTION_REQUIRED, SHAPE_PIECEWISE,
+    SHAPE_WHOLE, TAIL_FALLBACK, TAIL_PROBES, UNITS_ESTIMATED, UNITS_REPORTED, VERDICT_HARD,
+};
+use crate::abi::hook::{
+    signal, SignalEntry, REQUEST_HAS_MAX_TOKENS, REQUEST_HAS_TOOLS, REQUEST_STREAM,
+    SIGNAL_TAG_BOOL, SIGNAL_TAG_STR, SIGNAL_TAG_U64,
 };
 use crate::abi::host::conn::connector::{Need, DIRECTION_INBOUND, DIRECTION_OUTBOUND};
 use crate::abi::mechanism::call::{AbiStr, Outcome};
 use crate::abi::mechanism::check::{
-    bits, code, fault, first, index, listed, result, results, span, text, weight, Dim, Filled,
-    MAX_BYTES,
+    bits, code, fault, first, index, listed, range, result, results, span, text, weight, Dim,
+    Filled, MAX_BYTES,
 };
 
 /// The most unit counts one answer may carry.
@@ -38,6 +48,10 @@ pub const MAX_FIELDS: u64 = 1024;
 pub const MAX_RECORDS: u64 = 1024;
 /// The most claims or admin routes one snapshot may carry.
 pub const MAX_ROUTES: u64 = 1024;
+/// The most ready sessions one `drive` answer may name.
+pub const MAX_SESSIONS: u64 = 1024;
+/// The most signals one `project` answer may carry.
+pub const MAX_SIGNALS: u64 = 64;
 
 /// The capacities the host gave one call, from its `in` (`0` for a buffer the op has none of).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -220,9 +234,161 @@ pub fn check_on_piece(
     if results(outcome, "on_piece", &dims)? == Filled::Short && out.emitted != 0 {
         return Err(fault(Rule::WrittenOnShort, "on_piece"));
     }
+    verdict(outcome, out.verdict)?;
+    request(out)?;
     units(bufs.0, u64::from(out.units_written), b)?;
     records(bufs.1, u64::from(out.records_written), out.arena_written, b)?;
     fields(bufs.2, u64::from(out.fields_written), out.arena_written)
+}
+
+/// `on_piece`'s verdict: a known `VERDICT_*`, and none on an answer that is not READY.
+fn verdict(outcome: Outcome, v: u32) -> Result<(), Fault> {
+    code(u64::from(v), 0, u64::from(VERDICT_HARD), "on_piece.verdict")?;
+    if v != 0 && outcome != Outcome::Ready {
+        return Err(fault(Rule::Contradiction, "on_piece.verdict_not_ready"));
+    }
+    Ok(())
+}
+
+/// `on_piece`'s request for the far end: verb and target in the arena, both or neither, and only
+/// on an answer that emits to the far end.
+fn request(out: &OnPieceOut) -> Result<(), Fault> {
+    span(
+        out.verb.offset,
+        out.verb.len,
+        out.arena_written,
+        "on_piece.verb",
+    )?;
+    span(
+        out.target.offset,
+        out.target.len,
+        out.arena_written,
+        "on_piece.target",
+    )?;
+    let (verb, target) = (out.verb.len != 0, out.target.len != 0);
+    if verb != target {
+        return Err(fault(Rule::Contradiction, "on_piece.verb_without_target"));
+    }
+    if verb && out.flags & EMIT_TO_FAR_END == 0 {
+        return Err(fault(
+            Rule::Contradiction,
+            "on_piece.request_not_to_far_end",
+        ));
+    }
+    Ok(())
+}
+
+/// A string the plugin wrote into the host arena: empty, or inside the first `written` bytes that
+/// start at `arena`; checked arithmetic.
+fn in_arena(s: AbiStr, arena: *const u8, written: u64, field: &'static str) -> Result<(), Fault> {
+    if s.len == 0 {
+        return Ok(());
+    }
+    let offset = s
+        .ptr
+        .addr()
+        .checked_sub(arena.addr())
+        .ok_or(fault(Rule::SpanOutOfBounds, field))?;
+    range(offset as u64, s.len as u64, written, field)
+}
+
+/// `project`: the signals and the arena under the multi-buffer short-answer rule; the view's
+/// signals are the host's `signals_buf`, its known flags, its strings and the projected body inside
+/// the arena written, and every signal written a known id and tag whose value is valid.
+/// `signals` starts at the host's `signals_buf` and holds at least the signals written;
+/// `signals_cap` is that buffer's capacity; `arena` is the host's `arena_buf` and its capacity.
+///
+/// # Errors
+///
+/// The rule the answer breaks.
+pub fn check_project(
+    outcome: Outcome,
+    out: &ProjectOut,
+    signals: &[SignalEntry],
+    signals_cap: u64,
+    arena: (*const u8, u64),
+) -> Result<(), Fault> {
+    let v = &out.view;
+    let written = v.signals_len as u64;
+    let dims = [
+        Dim {
+            written,
+            needed: u64::from(out.signals_needed),
+            cap: signals_cap,
+            max: MAX_SIGNALS,
+            field: "project.signals",
+        },
+        Dim {
+            written: out.arena_written,
+            needed: out.arena_needed,
+            cap: arena.1,
+            max: MAX_BYTES,
+            field: "project.arena",
+        },
+    ];
+    results(outcome, "project", &dims)?;
+    if written != 0 && !core::ptr::eq(v.signals, signals.as_ptr()) {
+        return Err(fault(Rule::Foreign, "project.view.signals"));
+    }
+    bits(
+        u64::from(v.flags),
+        u64::from(REQUEST_HAS_MAX_TOKENS | REQUEST_HAS_TOOLS | REQUEST_STREAM),
+        "project.view.flags",
+    )?;
+    in_arena(v.pool, arena.0, out.arena_written, "project.view.pool")?;
+    in_arena(
+        v.ingress_dialect,
+        arena.0,
+        out.arena_written,
+        "project.view.ingress_dialect",
+    )?;
+    span(
+        out.body.offset,
+        out.body.len,
+        out.arena_written,
+        "project.body",
+    )?;
+    for e in first(signals, written, "project.signals")? {
+        code(
+            u64::from(e.id),
+            0,
+            u64::from(signal::RESPONSE_TOKENS_OUT),
+            "project.signal.id",
+        )?;
+        code(
+            u64::from(e.tag),
+            u64::from(SIGNAL_TAG_U64),
+            u64::from(SIGNAL_TAG_BOOL),
+            "project.signal.tag",
+        )?;
+        if e.tag == SIGNAL_TAG_STR {
+            // SAFETY: the tag names `str_` live; every bit pattern of an `AbiStr` is a valid value.
+            let s = unsafe { e.value.str_ };
+            in_arena(s, arena.0, out.arena_written, "project.signal.value")?;
+        } else if e.tag == SIGNAL_TAG_BOOL {
+            // SAFETY: the tag names `boolean` live; every `u8` is a valid value.
+            let b = unsafe { e.value.boolean };
+            code(u64::from(b), 0, 1, "project.signal.value")?;
+        }
+    }
+    Ok(())
+}
+
+/// The plane's `drive`: the ready sessions under the short-buffer rule.
+///
+/// # Errors
+///
+/// The rule the answer breaks.
+pub fn check_drive(outcome: Outcome, out: &PlaneDriveOut, sessions_cap: u64) -> Result<(), Fault> {
+    result(
+        outcome,
+        u64::from(out.sessions_written),
+        u64::from(out.sessions_needed),
+        sessions_cap,
+        MAX_SESSIONS,
+        "drive.sessions",
+    )?;
+    Ok(())
 }
 
 /// `refusal`'s and `serve`'s shared reply: body, fields and arena under the short-buffer rule; a short answer writes
@@ -381,7 +547,7 @@ pub fn check_claims(claims: &[Claim]) -> Result<(), Fault> {
     Ok(())
 }
 
-/// Every snapshot admin route: a verb and a target.
+/// Every snapshot admin route: a verb, a target and known flags.
 ///
 /// # Errors
 ///
@@ -390,19 +556,29 @@ pub fn check_admin_routes(routes: &[AdminRoute]) -> Result<(), Fault> {
     for r in routes {
         named(r.verb, "admin_route.verb")?;
         named(r.target, "admin_route.target")?;
+        bits(
+            u64::from(r.flags),
+            u64::from(ROUTE_PUBLIC),
+            "admin_route.flags",
+        )?;
     }
     Ok(())
 }
 
 /// The Statement tail, at load: known flags, ingress bits and dispatch shape; at least one ingress
 /// shape; no string or list counted with a NULL pointer. Its elements: [`check_sections`],
-/// [`check_dialect_auth`], [`check_route_cost`], [`check_billable_classes`], [`check_needs`].
+/// [`check_dialect_auth`], [`check_route_cost`], [`check_billable_classes`], [`check_needs`],
+/// [`check_record_chains`].
 ///
 /// # Errors
 ///
 /// The rule the tail breaks.
 pub fn check_tail(t: &PlaneTail) -> Result<(), Fault> {
-    bits(u64::from(t.flags), u64::from(TAIL_FALLBACK), "tail.flags")?;
+    bits(
+        u64::from(t.flags),
+        u64::from(TAIL_FALLBACK | TAIL_PROBES),
+        "tail.flags",
+    )?;
     let ingress = INGRESS_REQUEST_RESPONSE
         | INGRESS_RESPONSE_STREAM
         | INGRESS_DUPLEX_SESSION
@@ -448,7 +624,8 @@ pub fn check_tail(t: &PlaneTail) -> Result<(), Fault> {
         t.egress_targets,
         t.egress_targets_len,
         "tail.egress_targets",
-    )
+    )?;
+    listed(t.record_chains, t.record_chains_len, "tail.record_chains")
 }
 
 /// The tail's sections: each named, known flags, and EXACTLY ONE is the declaring section.
@@ -530,6 +707,33 @@ pub fn check_needs(needs: &[Need]) -> Result<(), Fault> {
         text(n.target_from, "need.target_from")?;
         text(n.trust_from, "need.trust_from")?;
         listed(n.details.ptr, n.details.len, "need.details")?;
+    }
+    Ok(())
+}
+
+/// The chained record kinds: each names a record kind at most once, with a known framing and
+/// known flags.
+///
+/// # Errors
+///
+/// The rule an entry breaks.
+pub fn check_record_chains(chains: &[RecordChain], record_kinds_len: u64) -> Result<(), Fault> {
+    for (i, c) in chains.iter().enumerate() {
+        index(c.kind, record_kinds_len, "record_chain.kind")?;
+        code(
+            u64::from(c.framing),
+            u64::from(CHAIN_LENGTH_PREFIXED),
+            u64::from(CHAIN_PIPE_SEPARATED),
+            "record_chain.framing",
+        )?;
+        bits(
+            u64::from(c.flags),
+            u64::from(CHAIN_DIGESTS_SCOPE),
+            "record_chain.flags",
+        )?;
+        if chains[..i].iter().any(|d| d.kind == c.kind) {
+            return Err(fault(Rule::Contradiction, "record_chain.kind_twice"));
+        }
     }
     Ok(())
 }

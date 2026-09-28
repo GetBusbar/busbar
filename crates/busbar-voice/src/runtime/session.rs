@@ -641,7 +641,7 @@ where
             if let Err(e) = out.emit(up.0.to_vec()).await {
                 tracing::warn!(
                     error = %e,
-                    "voice: an upstream frame could not be written; abandoning the rest of this plan's upstream"
+                    "streaming: an upstream frame could not be written; abandoning the rest of this plan's upstream"
                 );
                 break;
             }

@@ -71,7 +71,7 @@ const TEST_DIRS: [&str; 2] = ["/tests/", "/test_support/"];
 /// `#[cfg(test)] mod tests;` beside a `lib.rs` or a `mod.rs` puts the module in `tests.rs`. That
 /// file ends with `/tests.rs`, not `_tests.rs`, so it matched neither suffix and sat in no `/tests/`
 /// directory either — TWELVE files, in nine crates, scanned by `settings-leak`, `response-header`
-/// and `blocking-ffi` as production source. It is not a hypothetical: `busbar-core-connsec`'s TLS
+/// and `blocking-ffi` as production source. It is not a hypothetical: `busbar-core-connector`'s TLS
 /// battery used to be `crates/busbar-kernel/src/tests/tls_tests.rs` — excluded twice over — and the
 /// #40 connection-security extraction rewrote it as `src/tests.rs`, at which point
 /// `blocking-ffi:no-inline-ffi` went red naming `build_server_config(&tls, &resolver)` inside a

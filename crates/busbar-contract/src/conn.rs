@@ -91,9 +91,10 @@ pub struct Piece {
 /// operator reads.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ConnError {
-    /// Nothing is ready yet (a try-read or a try-wait, deadline `0`).
-    NotReady,
-    /// The deadline passed first.
+    /// Nothing is ready yet. Interest is registered for the caller's [`Ticket`]; the host wakes the
+    /// ticket when something is, and the caller asks again then. Never a block.
+    Pending,
+    /// The operation's deadline CLASS passed, as the host enforces it.
     Timeout,
     /// The connection is closed, or was never opened.
     Closed,
@@ -105,26 +106,38 @@ pub enum ConnError {
     Refused,
     /// The host failed the call.
     Fault,
+    /// The plugin was handed no connection table: its host's open/refresh tables gave THIS instance
+    /// none. Decided per instance, never per image.
+    Unarmed,
 }
 
 impl std::fmt::Display for ConnError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
-            Self::NotReady => "nothing is ready on the connection yet",
+            Self::Pending => "nothing is ready on the connection yet",
             Self::Timeout => "the connection's deadline passed",
             Self::Closed => "the connection is closed",
             Self::NotOwner => "the connection belongs to another plugin instance",
             Self::UndeclaredNeed => "the plugin did not declare this need",
             Self::Refused => "the connection was refused",
             Self::Fault => "the host failed the connection call",
+            Self::Unarmed => "this plugin was handed no connection table",
         })
     }
 }
 
 impl std::error::Error for ConnError {}
 
-/// A deadline on the host's monotonic clock, in nanoseconds; `0` = answer at once.
-pub type Deadline = u64;
+/// THE CALLER'S WAKE TICKET: an opaque number the caller mints for the task waiting on a read or a
+/// wait. Nothing blocks (THE DESIGN: every wait returns pending and a wake): a call with nothing
+/// ready answers [`ConnError::Pending`] and registers interest under the ticket, and the host wakes
+/// the ticket once the operation may progress. [`NO_TICKET`] registers nothing. Deadlines are not an
+/// argument: each operation has a deadline CLASS the host enforces, answering
+/// [`ConnError::Timeout`] when it passes.
+pub type Ticket = u64;
+
+/// The ticket that names no waiting task: a call handed it registers no interest.
+pub const NO_TICKET: Ticket = 0;
 
 /// THE HOST'S CONNECTION TABLE, as the host implements it. Every method names the `caller`, which
 /// the host reads off the instance's own context.
@@ -155,31 +168,28 @@ pub trait Conns: Send + Sync {
         end: bool,
     ) -> Result<usize, ConnError>;
 
-    /// The next piece, its bytes into `buf`, by `deadline` (`0` = a try-read).
+    /// The next piece, its bytes into `buf`; with nothing ready, [`ConnError::Pending`] and interest
+    /// registered under `ticket`.
     ///
     /// # Errors
     ///
-    /// [`ConnError::NotReady`], [`ConnError::Timeout`], [`ConnError::NotOwner`],
+    /// [`ConnError::Pending`], [`ConnError::Timeout`], [`ConnError::NotOwner`],
     /// [`ConnError::Closed`].
     fn read(
         &self,
         caller: InstanceId,
         conn: ConnId,
-        deadline: Deadline,
+        ticket: Ticket,
         buf: &mut [u8],
     ) -> Result<Piece, ConnError>;
 
-    /// The position in `set` of a connection with a piece ready, by `deadline`.
+    /// The position in `set` of a connection with a piece ready; with none ready,
+    /// [`ConnError::Pending`] and interest registered under `ticket` for every id in the set.
     ///
     /// # Errors
     ///
-    /// [`ConnError::NotReady`], [`ConnError::Timeout`], and any id's own refusal.
-    fn wait(
-        &self,
-        caller: InstanceId,
-        set: &[ConnId],
-        deadline: Deadline,
-    ) -> Result<usize, ConnError>;
+    /// [`ConnError::Pending`], [`ConnError::Timeout`], and any id's own refusal.
+    fn wait(&self, caller: InstanceId, set: &[ConnId], ticket: Ticket) -> Result<usize, ConnError>;
 
     /// What connection security established on the connection.
     ///

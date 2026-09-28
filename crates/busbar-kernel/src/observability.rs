@@ -344,6 +344,10 @@ pub fn init_logging(stdout_reserved: bool) -> bool {
         .with_writer(make_writer)
         .with_target(false)
         .with_filter(stderr_filter);
+    // `try_init` also makes `tracing-log`'s `LogTracer` this process's `log` logger. A compiled-in
+    // plugin's `log` records therefore become `tracing` events and reach its door's call capture,
+    // exactly as a dropped-in plugin's do through the `LogTracer` its own image installs
+    // (`BUSBAR-1.6.0.md` decision #85: every plugin logs to its own file, compiled in or dropped in).
     let initialized = tracing_subscriber::registry()
         .with(fmt_layer)
         .with(crate::export::traces::layer(otlp_filter))

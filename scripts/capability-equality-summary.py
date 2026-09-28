@@ -43,7 +43,7 @@ ROOT_STATES = {"proven", "none", "not-applicable"}
 # the admin leg's own feature, for the mcp, a2a and voice legs (the kernel-loop rider those planes are
 # served through) the feature that links the plane, and for the llm leg the feature that links the
 # plane riding the `node` axis, which compiles the root's node (`root/plane_node.rs`).
-ROOT_FEATURES = "root-admin,plane-mcp,plane-a2a,plane-voice,proto-llm"
+ROOT_FEATURES = "root-admin,plane-mcp,plane-a2a,plane-streaming,proto-llm"
 
 
 def load(path):

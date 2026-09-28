@@ -82,7 +82,7 @@ pub(crate) mod argguard;
 pub(crate) mod catalogue;
 pub(crate) mod dispatch;
 pub(crate) mod egress;
-pub(crate) mod identity;
+pub(crate) use crate::identity;
 /// THE ONE GOVERNED ISSUANCE PATH for every method busbar sends an upstream. One gate, one audit
 /// record, one vtable send — see the module header for why a second one is a hole and not a feature.
 pub(crate) mod issue;

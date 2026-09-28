@@ -679,7 +679,7 @@ pub fn default_features(text: &str) -> Result<BTreeSet<String>, String> {
 /// The root legs the binary SHIPS: every leg whose feature is on the manifest's `default` line. A
 /// leg's feature is its `feature` member when it names one — the mcp, a2a and voice legs are the
 /// kernel-loop rider those planes are served through, gated by the feature that links the plane (`plane-mcp`,
-/// `plane-a2a`, `plane-voice`), and the llm leg is the root's node, compiled with the plane that rides
+/// `plane-a2a`, `plane-streaming`), and the llm leg is the root's node, compiled with the plane that rides
 /// the `node` axis (`proto-llm`) — and otherwise the leg's own name (`root-admin`).
 pub fn shipped_legs(m: &Matrix, default: &BTreeSet<String>) -> BTreeSet<String> {
     let legs = m.root_legs();
@@ -827,7 +827,7 @@ pub fn root_line(m: &Matrix) -> String {
 /// with: the admin leg's own feature, for the mcp, a2a and voice legs (the kernel-loop rider those
 /// planes are served through) the feature that links the plane, and for the llm leg the feature that
 /// links the plane riding the `node` axis, which compiles the root's node (`root/plane_node.rs`).
-const ROOT_FEATURES: &str = "root-admin,plane-mcp,plane-a2a,plane-voice,proto-llm";
+const ROOT_FEATURES: &str = "root-admin,plane-mcp,plane-a2a,plane-streaming,proto-llm";
 
 const ARM_USAGE: &str = "\
 usage:

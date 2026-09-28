@@ -19,16 +19,16 @@
 //! its old path, so `busbar_voice::ir::…` and `busbar_voice::topology::twilio::…` resolve exactly
 //! what they always did. The split is a MOVE: no item changed shape crossing it.
 
-/// THE REGISTRY KEY THE VOICE (STREAMING) PLANE IS KNOWN BY — the string the composition root flips
+/// THE REGISTRY KEY THE STREAMING PLANE IS KNOWN BY — the string the composition root flips
 /// onto the unified kernel loop's session admit
 /// (`busbar_kernel::plane_host::register_session_runner`) and the same string the voice session
 /// gauntlet reports from its `GauntletPlane::capability_key`.
 ///
 /// Named ONCE, here, on the pure side of the split, because the plane's `capability_key` and the
 /// composition-root FLIP must reference the SAME literal or a swap could drift onto two. It agrees
-/// with `busbar-voice`'s `PLANE_DECLARATION.key` (`"voice"`). `busbar-voice` re-exports it as
+/// with `busbar-voice`'s `PLANE_DECLARATION.key` (`"streaming"`). `busbar-voice` re-exports it as
 /// `busbar_voice::PLANE_KEY`, the one stable path the `busbar` binary names.
-pub const PLANE_KEY: &str = "voice";
+pub const PLANE_KEY: &str = "streaming";
 
 pub mod ir;
 

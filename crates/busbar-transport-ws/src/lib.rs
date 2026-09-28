@@ -31,6 +31,10 @@
 mod claims;
 mod conn;
 mod framer;
+// THE ABI BOUNDARY: the door reads and writes the host's C buffers, so it is one of the modules
+// this crate's `#![deny(unsafe_code)]` allows; every block in it states the host buffer it relies on.
+#[allow(unsafe_code)]
+pub mod door;
 mod meta;
 mod transport;
 

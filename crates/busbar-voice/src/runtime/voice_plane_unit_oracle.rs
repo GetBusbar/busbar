@@ -25,7 +25,7 @@ use busbar_plane_streaming::session::TurnCounters;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-const LANE: &str = "voice\u{1f}gpt-realtime";
+const LANE: &str = "streaming\u{1f}gpt-realtime";
 
 fn key() -> busbar_contract::records::VirtualKey {
     busbar_contract::records::VirtualKey {
@@ -38,7 +38,7 @@ fn meter(host: &Arc<FixtureHost>) -> TurnMeter {
     TurnMeter::new(
         Arc::clone(host) as Arc<dyn busbar_kernel::plane_host::EngineHost>,
         key(),
-        "voice-server",
+        "streaming-server",
         crate::OPENAI_REALTIME,
     )
 }

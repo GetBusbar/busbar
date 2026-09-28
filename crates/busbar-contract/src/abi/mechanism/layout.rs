@@ -138,13 +138,14 @@ pin!(CompletionHandle, 16, 4, ticket = 0, seq = 8, _reserved = 12);
 pin!(HostCtx, 8, 8, ptr = 0);
 pin!(
     HostTables,
-    32,
+    40,
     8,
     size = 0,
     _reserved = 4,
     ctx = 8,
     wake = 16,
-    conns = 24
+    conns = 24,
+    services = 32
 );
 pin!(
     OpsHead,
@@ -1122,18 +1123,6 @@ mod host_connector {
         trust_from = 56,
         details = 72
     );
-    pin!(ServiceHead, 24, 4, size = 0, op = 4, handle = 8);
-    pin!(
-        ServiceOut,
-        40,
-        8,
-        size = 0,
-        outcome = 4,
-        _reserved = 5,
-        value = 8,
-        len = 16,
-        error = 24
-    );
     pin!(
         EstablishIn,
         48,
@@ -1208,6 +1197,44 @@ mod host_connector {
     );
 }
 
+// ── THE HOST SERVICES (abi/host/service.rs) ─────────────────────────────────────────────────────
+#[rustfmt::skip]
+mod host_service {
+    use crate::abi::host::service::*;
+    use std::mem::{align_of, offset_of, size_of};
+
+    pin!(ServiceHead, 24, 4, size = 0, op = 4, handle = 8);
+    pin!(ServiceOut, 64, 8, size = 0, outcome = 4, _reserved = 5, value = 8, len = 16,
+        items = 24, needed_bytes = 32, needed_items = 40, error = 48);
+    pin!(ItemSpan, 16, 4, key_off = 0, key_len = 4, value_off = 8, value_len = 12);
+    pin!(ServiceBufs, 32, 8, buf = 0, cap = 8, spans = 16, spans_cap = 24);
+    pin!(ClockReading, 24, 8, size = 0, _reserved = 4, wall_ns = 8, mono_ns = 16);
+    pin!(ClockNowIn, 32, 8, head = 0, reading = 24);
+    pin!(RecordsGetIn, 88, 8, head = 0, kind = 24, key = 40, into = 56);
+    pin!(RecordsListIn, 112, 8, head = 0, kind = 24, prefix = 40, after = 56, limit = 72,
+        _reserved = 76, into = 80);
+    pin!(RecordsClaimIn, 64, 8, head = 0, kind = 24, key = 40, ttl_ms = 56);
+    pin!(DestJudgeIn, 48, 8, head = 0, dest = 24, egress_class = 40, flags = 44);
+    pin!(SignIn, 80, 8, head = 0, data = 24, into = 48);
+    pin!(UnitNestIn, 112, 8, head = 0, verb = 24, target = 40, body = 56, into = 80);
+    pin!(WorkOpenIn, 64, 8, head = 0, kind = 24, record = 40);
+    pin!(WorkFindIn, 72, 8, head = 0, reference = 24, into = 40);
+    pin!(WorkSettleIn, 56, 8, head = 0, handle = 24, record = 32);
+    pin!(WorkResumeIn, 64, 8, head = 0, handle = 24, into = 32);
+    pin!(TrustSightIn, 56, 8, head = 0, counterparty = 24, catalogue_hash = 40);
+    pin!(TrustDueIn, 56, 8, head = 0, into = 24);
+    pin!(VerifyLookupIn, 72, 8, head = 0, key = 24, into = 40);
+    pin!(VerifyStoreIn, 72, 8, head = 0, key = 24, entry = 40, ttl_ms = 64);
+    pin!(EntitlementCheckIn, 40, 8, head = 0, target = 24);
+    pin!(ContentScanIn, 80, 8, head = 0, content = 24, into = 48);
+    pin!(HookCallIn, 72, 8, head = 0, stage = 24, _reserved = 28, view = 32, into = 40);
+    pin!(HostSlots, 152, 8, size = 0, slots = 4, clock_now = 8, records_get = 16,
+        records_list = 24, records_claim = 32, dest_judge = 40, sign = 48, unit_nest = 56,
+        work_open = 64, work_find = 72, work_settle = 80, work_resume = 88, trust_sight = 96,
+        trust_due = 104, verify_lookup = 112, verify_store = 120, entitlement_check = 128,
+        content_scan = 136, hook_call = 144);
+}
+
 // ── THE PLANE KIND (abi/plane/) ─────────────────────────────────────────────────────────────
 #[rustfmt::skip]
 mod plane_kind {
@@ -1215,14 +1242,15 @@ mod plane_kind {
 
     use crate::abi::plane::*;
 
-    pin!(Ops, 128, 8, head = 0, arrive = 80, on_piece = 88, refusal = 96, serve = 104,
-        hydrate = 112, start = 120);
+    pin!(Ops, 136, 8, head = 0, arrive = 80, on_piece = 88, refusal = 96, serve = 104,
+        hydrate = 112, start = 120, project = 128);
     pin!(Section, 24, 8, name = 0, flags = 16, _reserved = 20);
     pin!(DialectAuth, 24, 8, dialect = 0, _reserved = 4, style = 8);
     pin!(OpClass, 32, 8, op = 0, name = 16);
     pin!(BillableClass, 32, 8, class = 0, family = 16);
     pin!(RouteCost, 16, 8, class = 0, _reserved = 4, weight = 8);
-    pin!(PlaneTail, 328, 8, head = 0, flags = 8, ingress = 12, dispatch_shape = 16,
+    pin!(RecordChain, 16, 4, kind = 0, framing = 4, flags = 8, _reserved = 12);
+    pin!(PlaneTail, 344, 8, head = 0, flags = 8, ingress = 12, dispatch_shape = 16,
         _reserved = 20, scope = 24, label = 40, subject_noun = 56, admin_noun = 72,
         audit_kind = 88, signing_domain = 104, signing_kid_prefix = 120, cli_help = 136,
         sections = 152, sections_len = 160, dialects = 168, dialects_len = 176,
@@ -1230,9 +1258,10 @@ mod plane_kind {
         op_classes = 216, op_classes_len = 224, billable_classes = 232,
         billable_classes_len = 240, route_cost = 248, route_cost_len = 256, fee_units = 264,
         fee_units_len = 272, record_kinds = 280, record_kinds_len = 288, needs = 296,
-        needs_len = 304, egress_targets = 312, egress_targets_len = 320);
+        needs_len = 304, egress_targets = 312, egress_targets_len = 320, record_chains = 328,
+        record_chains_len = 336);
     pin!(Claim, 48, 8, verb = 0, target = 16, carrier = 32);
-    pin!(AdminRoute, 32, 8, verb = 0, target = 16);
+    pin!(AdminRoute, 40, 8, verb = 0, target = 16, flags = 32, _reserved = 36);
     pin!(PlaneSnapshot, 104, 8, size = 0, _reserved = 4, generation = 8, claims = 16,
         claims_len = 24, admin_routes = 32, admin_routes_len = 40, openapi = 48,
         audience = 72, resource_metadata = 88);
@@ -1248,14 +1277,15 @@ mod plane_kind {
         fields_len = 120, body = 128, units_buf = 152, units_cap = 160);
     pin!(ArriveOut, 120, 8, head = 0, op_class = 96, principal_need = 100, dialect = 104,
         units_written = 108, units_needed = 112, _reserved = 116);
-    pin!(OnPieceIn, 216, 8, head = 0, from = 88, flags = 92, stream = 96, bytes = 104,
+    pin!(OnPieceIn, 240, 8, head = 0, from = 88, flags = 92, stream = 96, bytes = 104,
         status_code = 128, status_class = 132, reply_buf = 136, reply_cap = 144,
         units_buf = 152, units_cap = 160, records_buf = 168, records_cap = 176,
-        fields_buf = 184, fields_cap = 192, arena_buf = 200, arena_cap = 208);
-    pin!(OnPieceOut, 160, 8, head = 0, emitted = 96, more = 104, flags = 108,
+        fields_buf = 184, fields_cap = 192, arena_buf = 200, arena_cap = 208, member = 216,
+        attempt_no = 232, _reserved = 236);
+    pin!(OnPieceOut, 176, 8, head = 0, emitted = 96, more = 104, flags = 108,
         reply_status = 112, fields_written = 116, fields_needed = 120, units_written = 124,
-        units_needed = 128, records_written = 132, records_needed = 136, _reserved = 140,
-        arena_written = 144, arena_needed = 152);
+        units_needed = 128, records_written = 132, records_needed = 136, verdict = 140,
+        arena_written = 144, arena_needed = 152, verb = 160, target = 168);
     pin!(RefusalIn, 168, 8, head = 0, cause = 88, status = 92, dialect = 96, _reserved = 100,
         text = 104, reply_buf = 120, reply_cap = 128, fields_buf = 136, fields_cap = 144,
         arena_buf = 152, arena_cap = 160);
@@ -1268,4 +1298,11 @@ mod plane_kind {
     pin!(ServeOut, 144, 8, head = 0, reply_written = 96, reply_needed = 104,
         arena_written = 112, arena_needed = 120, status = 128, fields_written = 132,
         fields_needed = 136, _reserved = 140);
+    pin!(PlaneDriveIn, 112, 8, drive = 0, sessions_buf = 96, sessions_cap = 104);
+    pin!(PlaneDriveOut, 104, 8, head = 0, sessions_written = 96, sessions_needed = 100);
+    pin!(ProjectIn, 184, 8, head = 0, claim = 88, _reserved = 92, target = 96, fields = 112,
+        fields_len = 120, body = 128, signals_buf = 152, signals_cap = 160, arena_buf = 168,
+        arena_cap = 176);
+    pin!(ProjectOut, 208, 8, head = 0, view = 96, body = 176, signals_needed = 184,
+        _reserved = 188, arena_written = 192, arena_needed = 200);
 }

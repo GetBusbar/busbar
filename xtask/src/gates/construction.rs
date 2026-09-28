@@ -778,11 +778,10 @@ mod tests {
 
     /// ITEM 120: THE RULE READS THE `transport` KIND. It read six kinds, so the oracle above owed
     /// seven rows the rule never emitted. Every transport crate now gets a row, and
-    /// `busbar-transport-http`'s is RED on what it really depends on: the external crates no reviewed
-    /// list admits (rustls, tokio and the rest). It was `busbar-transport-tls`'s row until that crate
-    /// was deleted (TRANSPORT-STACK: TLS is core's connection security); `-http` carries the same
-    /// rustls edge for its egress client. The control is that the row is judged, not a particular
-    /// breach.
+    /// `busbar-transport-http`'s is GREEN: OWNER RULING 2026-09-28 (PLUGIN LIBRARIES) lets a
+    /// transport crate use whatever third-party library it needs, so `rustls`, `tokio` and the rest
+    /// of what it really depends on are named once in `[rules.manifest-allowlist.reviewed_extra]`
+    /// rather than refused. The control is that the row is judged, not a particular breach.
     #[test]
     fn the_manifest_allowlist_rule_emits_a_row_for_every_transport_crate() {
         let cx = Ctx::workspace().expect("workspace");
@@ -816,11 +815,10 @@ mod tests {
             .iter()
             .find(|r| r.id == "manifest-allowlist:busbar-transport-http")
             .expect("the http row");
-        assert_eq!(http.status, Status::Fail, "{}", http.detail);
+        assert_eq!(http.status, Status::Pass, "{}", http.detail);
         assert!(
             http.detail
-                .contains("busbar-transport-http (transport): not on the reviewed list:")
-                && http.detail.contains("rustls"),
+                .contains("busbar-transport-http (transport): every dependency is busbar-contract or reviewed"),
             "{}",
             http.detail
         );

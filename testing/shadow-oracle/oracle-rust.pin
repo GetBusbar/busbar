@@ -98,8 +98,13 @@
 # refused, BUSBAR-9007 x21 in one run), and a boot mutation is applied to the raw baseline, as for the
 # golden (mutating the upgraded one moved NEUT-U-top's `line 157` to `line 175`).
 #
+# 2026-09-28 (owner ruling 2026-09-28): moved 3876913 -> df3019a (same branch) — the corpus generator
+# makes billing|key-usage|refund-across-window a script cell (scripts/refund-across-window.sh, which
+# steps the binary's wall clock with fixtures/clock-shift.c to reproduce a window straddle) instead of
+# a needs_fixture http cell; `cells --generate` changes exactly that cell.
+#
 # To move the pin: set release_ref to the new busbar-release commit and re-run.
 release_repo=https://github.com/GetBusbar/busbar-release.git
-release_ref=3876913
+release_ref=df3019a
 crate=busbar-release-oracle
 bin=busbar-oracle

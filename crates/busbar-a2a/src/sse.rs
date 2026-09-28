@@ -14,28 +14,7 @@
 //! Its number and text are the published catalog entry's, field for field (`docs/diagnostics.json`;
 //! the drift test beside this module fails if they part).
 
-use busbar_contract::diagnostic::{Class, Diagnostic, Severity};
-
-/// A relayed SSE frame was not valid UTF-8 and was dropped. Frozen: `BUSBAR-7104`, the published
-/// catalog entry of the same number, byte for byte.
-pub const PLANE_SSE_FRAME_NOT_UTF8: Diagnostic = Diagnostic {
-    code: 7104,
-    class: Class::Plane,
-    slug: "plane-sse-frame-not-utf8",
-    title: "A relayed SSE frame was not valid UTF-8 and was dropped",
-    severity: Severity::Actionable,
-    summary: "The shared SSE frame reader (the JSON-RPC plane relays) assembled a complete event \
-              whose bytes are not valid UTF-8. The event-stream format is UTF-8 BY DEFINITION, so \
-              this is a malformed backend; the frame is DROPPED rather than lossily transcoded, \
-              which would hand the client a corrupted payload. The stream itself continues, so a \
-              client sees a missing event, not a failure. The `bytes` field carries the size of \
-              the frame that was dropped.",
-    action: "Investigate the named backend agent: its event stream is emitting non-UTF-8 bytes, \
-             which no conforming event-stream consumer can read. Until it is fixed the affected \
-             events are lost; busbar relays every well-formed event around them.",
-    since: "1.6.0",
-    retired: false,
-};
+pub use crate::diagnostics::PLANE_SSE_FRAME_NOT_UTF8;
 
 /// THE SSE FRAME READER: bytes in, whole events out.
 ///

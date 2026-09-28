@@ -775,7 +775,16 @@ mod verbs_tests;
 // Every test in there authenticates with `x-admin-token`, which the operator credential verifies: its
 // module is the auth row the test binary links onto the auth axis (this crate's own run: the test
 // registry row `install_admin_mount` installs; the admin surface's run: its own).
-#[cfg(any(test, feature = "test-support"))]
+//
+// GATED ON `feature = "test-support"` ALONE, never on bare `test` — the same reason `relay_harness`
+// above is: the module names `crate::testkit` (itself `test-support`-only) and needs to compile BOTH
+// in this crate's own test binary (`cfg(test)` true) AND in a linking crate's library build
+// (`cfg(test)` false), and `test-support` is the one predicate true in both of the cases this module
+// is FOR. `any(test, feature = "test-support")` also admitted a third case this module cannot
+// survive — `cfg(test)` true with the feature off, the plain `cargo test -p busbar-a2a` the crate's
+// own Cargo.toml documents as running "only the App-free unit/codec tests" — and the reference to
+// `crate::testkit` failed to resolve there, not in either case the module is actually written for.
+#[cfg(feature = "test-support")]
 #[path = "tests/adminverbs_tests.rs"]
 #[allow(dead_code)]
 pub mod adminverbs_tests;

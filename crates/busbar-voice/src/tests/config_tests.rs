@@ -4,6 +4,7 @@
 //! Tests for `crates/busbar-voice/src/config.rs`.
 
 use super::*;
+use crate::ir::control::IrVad;
 
 /// An ABSENT section (`default_section`) and an empty `streams: {}` must decode to the SAME value,
 /// or a present-but-empty block would silently differ from an omitted one.

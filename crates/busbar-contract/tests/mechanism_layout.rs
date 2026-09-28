@@ -9,6 +9,7 @@
 
 use std::mem::{align_of, offset_of, size_of};
 
+use busbar_contract::abi::host::conn::connector::{ConnectorSlots, ServiceFn};
 use busbar_contract::abi::mechanism::call::{
     AbiStr, Blob, Diag, Envelope, InHead, MetricEntry, OutHead, RawOutcome,
 };
@@ -156,6 +157,18 @@ fn the_door_and_the_statement_have_their_stated_layout() {
     );
 }
 
+/// `HostTables.conns` hands the connector table, whose every slot is an `extern "C"` service
+/// (`BUSBAR-1.6.0.md` THE DESIGN, §11.12): a panic escaping a slot aborts, it never unwinds across
+/// the boundary.
+#[test]
+fn host_tables_hand_the_connector_table() {
+    fn conns_of(t: &HostTables) -> *const ConnectorSlots {
+        t.conns
+    }
+    let establish: fn(&ConnectorSlots) -> Option<ServiceFn> = |s| s.establish;
+    let _ = (conns_of, establish);
+}
+
 #[test]
 fn tickets_and_host_tables_have_their_stated_layout() {
     pin!(KindTailHead, 8, 4, [size = 0, _reserved = 4]);
@@ -169,9 +182,16 @@ fn tickets_and_host_tables_have_their_stated_layout() {
     pin!(HostCtx, 8, 8, [ptr = 0]);
     pin!(
         HostTables,
-        32,
+        40,
         8,
-        [size = 0, _reserved = 4, ctx = 8, wake = 16, conns = 24]
+        [
+            size = 0,
+            _reserved = 4,
+            ctx = 8,
+            wake = 16,
+            conns = 24,
+            services = 32
+        ]
     );
 }
 
@@ -244,7 +264,7 @@ fn every_kind_table_leads_with_the_lifecycle() {
     pin!(secret::Ops, 88, 8, [head = 0]);
     pin!(hook::Ops, 136, 8, [head = 0]);
     pin!(export::Ops, 120, 8, [head = 0]);
-    pin!(plane::Ops, 128, 8, [head = 0]);
+    pin!(plane::Ops, 136, 8, [head = 0]);
     pin!(transport::Ops, 224, 8, [head = 0]);
 }
 

@@ -102,3 +102,27 @@ jobs:
           passed="$(printf '%s\n' "$out" | sed -nE 's/^test result: ok\. ([0-9]+) passed.*/\1/p' | awk '{s+=$1} END {print s+0}')"
           [ "$passed" -ge 1 ] || { echo "::error::the conformance target ran 0 tests; a filter that matches nothing proves nothing"; exit 1; }
           echo "conformance: $passed test(s) passed"
+
+  # A ROW THAT CANNOT RUN IS RED, NEVER SKIPPED. This is a workflow_call target, so a caller's own
+  # job normally IS the aggregation point (see .github/required-status-checks.md) — but that only
+  # holds while this file has exactly one leg. `needs:` here is the enumeration that keeps this
+  # workflow honest about its own job set as legs are added, the same way every other aggregator in
+  # this tree (e.g. qa-conformance-a2a.yml's `verdict`) refuses to let a leg that never ran read as
+  # green.
+  verdict:
+    name: plugin conformance verdict
+    needs: conformance
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: every leg must have EXECUTED
+        env:
+          CONFORMANCE: ${{ needs.conformance.result }}
+        run: |
+          set -euo pipefail
+          if [ "$CONFORMANCE" != "success" ]; then
+            echo "::error::conformance did not succeed (result: $CONFORMANCE). A leg that did not EXECUTE is red, not skipped."
+            exit 1
+          fi
+          echo "plugin conformance verdict: every leg executed and passed."

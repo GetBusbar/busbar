@@ -11951,33 +11951,13 @@
       "id": "billing|key-usage|refund-across-window",
       "plane": "core",
       "family": "billing",
-      "driver": "http",
-      "outcome": "ok",
-      "request": {
-        "method": "GET",
-        "path": "/api/v1/admin/keys/{KEY_OK}/usage",
-        "headers": {},
-        "body": null,
-        "auth": "admin",
-        "listener": "admin",
-        "pre": [
-          {
-            "method": "POST",
-            "path": "/v1/chat/completions",
-            "listener": "data",
-            "auth": "ok",
-            "headers": {
-              "Content-Type": "application/json"
-            },
-            "body": "{\"model\":\"m-openai-chat\",\"messages\":[{\"role\":\"user\",\"content\":\"ping\"}]}",
-            "mock_control": {
-              "m-openai-chat": "down"
-            }
-          }
-        ]
+      "driver": "script",
+      "script": {
+        "name": "refund-across-window.sh"
       },
-      "why": "a request that straddles the window roll: its flat per-request fee must be refunded from the SAME cell the charge landed on, so the view reads spend 0 and not one fee too high (M-1)",
-      "needs_fixture": true
+      "outcome": "ok",
+      "weight": 10,
+      "why": "a request that straddles the window roll: B is served at D+1 00:00:01 and rolls the group's day cell to D+1; A then arrives at D 23:59:30 (the binary's wall clock stepped by the preloaded clock-shift fixture, the same order a concurrent straddle produces), is charged its flat per_request_fee (7) in place on the D+1 cell, and fails upstream (503). The group usage view read back in D+1 says whether A's refund reached the cell its charge reached (spend_cents = B's 250 + one fee) or missed it (+ two fees); the key's all-time bucket, which never rolls, is recorded alongside as the control."
     },
     {
       "id": "billing|rate-card|epoch-mid-window",

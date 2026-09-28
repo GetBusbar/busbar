@@ -35,11 +35,6 @@ file = "crates/busbar-kernel/Cargo.toml"
 item = "ranking (hooks-ranking)"
 
 [[finding]]
-rule = "c1-literals:feature"
-file = "crates/busbar-kernel/Cargo.toml"
-item = "voice (plane-voice)"
-
-[[finding]]
 rule = "c1-literals:literal"
 file = "crates/busbar-kernel-identity/src/egress_auth/sigv4/mod.rs"
 item = "sigv4"

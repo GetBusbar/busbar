@@ -148,11 +148,9 @@ pub fn fetch_plugins(
             }
         }
 
-        // Durable write via the single owner (busbar_kernel_wal::durable): temp -> fsync -> atomic rename ->
+        // Durable write via the single owner (`crate::durable`): temp -> fsync -> atomic rename ->
         // parent fsync; no partial or wrong file ever appears at the target.
-        match busbar_kernel_wal::durable::write(&dir.join(&spec.filename), &bytes)
-            .map_err(|e| e.to_string())
-        {
+        match crate::durable::write(&dir.join(&spec.filename), &bytes).map_err(|e| e.to_string()) {
             Ok(()) => outcomes.push(FetchOutcome::Fetched {
                 filename: spec.filename.clone(),
             }),

@@ -20,9 +20,12 @@ does not exist.
   (`tools:`), over HTTP and over stdio. See [the MCP guide](docs/mcp.md).
 - **A2A.** Busbar serves A2A over all three of that specification's bindings (JSON-RPC, HTTP+JSON,
   gRPC) in front of registered agents (`agents:`). See [the A2A guide](docs/a2a.md).
-- **Voice.** A `streams:` block declares the live-voice plane: full-duplex realtime sessions
-  (OpenAI Realtime and Gemini Live dialects over one IR) metered by the same ledger as everything
-  else. See [the voice guide](docs/voice.md).
+- **Streaming.** A `streams:` block declares the streaming plane: full-duplex realtime sessions
+  (voice, over the OpenAI Realtime and Gemini Live dialects, on one IR) metered by the same ledger
+  as everything else. Named `streaming` rather than `voice` (owner ruling Q96/F10): voice is one
+  dialect the plane carries, not the plane itself. Since this plane did not exist in any published
+  1.5.5 release, there is nothing to migrate — refusal text, log lines, the audit record kind and
+  the plane's diagnostic all read `streaming` in 1.6.0. See [the voice guide](docs/voice.md).
 
 Each plane is inert until its section is written. An `mcp:` block with an empty `auth.chain`
 refuses to start, because an anonymous MCP request is never narrowed by a key and would run with
@@ -189,10 +192,10 @@ Each of these is an owner-accepted difference from 1.5.5: additive, or strictly 
   response and a new `409` cross-section-reference guard (deleting a definition another config
   section still references by bare name is refused).
 - **Validation messages know the new keys.** An `expected one of` list now includes the plane keys
-  (`mcp`, `oauth_as`, `tools`, `agents`, `streams`, …) and the four new group-limit metrics
-  (`tokens_input`, `tokens_output`, `tokens_cache_read`, `tokens_cache_write`); the reserved-name,
-  credential-mode and unknown-pool-member sentences are rephrased; the protocol list is reordered.
-  Same refusal, same exit code in every case.
+  (`mcp`, `oauth_as`, `tools`, `agents`, `streams`, …). A group limit's refusals keep 1.5.5's words
+  and list only 1.5.5's metrics, though the four new group-limit metrics (`tokens_input`,
+  `tokens_output`, `tokens_cache_read`, `tokens_cache_write`) parse. Same refusal, same exit code in
+  every case.
 - **An inline literal where a secret reference belongs is refused without echoing it.** Every
   secret-bearing key takes a reference — `{ env: VAR }`, `{ file: /path }`, or a secret module —
   and pasting the value inline is the mistake that grammar exists to prevent. 1.5.5 rejected it
@@ -477,6 +480,13 @@ identically, and every 1.5.5 key and minted secret carries over.
   1.5.5 charged a request whose upstream was down as if it had completed (18 tokens, 250 cents on
   the oracle's card); 1.6.0 charges nothing for it, because the upstream reported nothing. The
   request is still counted. **Migration:** none; a request whose upstream answered nothing no longer adds to a key's spend.
+- 1.6.0 Changed: a failed request's flat fee is refunded from the window bucket it was charged to, even when that bucket has rolled into the next window.
+  A request that arrives just before a window boundary can be charged on a group bucket another
+  request has already rolled into the next window. 1.5.5 refunded such a request only against a
+  bucket of its own window, so when it failed the fee stayed on the new window's bucket (one
+  `per_request_fee` too high in the group usage view and the budget it enforces for that window).
+  1.6.0 refunds the bucket the charge reached. **Migration:** none; group spend no longer keeps
+  the fee of a failed request that straddled a window roll.
 - 1.6.0 Changed: `busbar_lane_state` reads each pool's own breaker cell, so a lane tripped in a pool reads 2 there.
   1.5.5 read a lane's state across every pool, so a tripped lane could read 1 (half-open). 1.6.0
   reads 2 while tripped and 1 only during a real half-open probe. **Migration:** alerts keyed on
@@ -586,6 +596,17 @@ reads whichever shape a plugin speaks — decided once, when it loads. The store
 hook payload schemas are unchanged, as is the transport version (`busbar_abi() == 1`) and the six
 exported symbols. A sink that wants the back-channel implements one new defaulted SDK method,
 `drain_observations`.
+
+**Plugin log lines now go to per-plugin files.** Every plugin instance logs to its own file,
+`logs/plugins/<instance>.log` by default, instead of the Busbar log. A plugin writes nothing itself.
+Whatever it logs during a call, through `tracing` or `log`, including from the libraries inside it,
+rides the call's reply, and Busbar writes it: one line per record, stating the time, level,
+instance, kind and target. It is the same file whether the plugin is compiled in or dropped in. A
+new `plugins.logs` block sets the directory (`dir`), the default level (`level`, default `info`),
+per-instance levels (`levels`), and rotation (`rotate_mb` and `keep`, the same rename rotation as
+the request-log file). One reply carries at most 128 records and 64 KiB; anything over is one line
+saying how many were dropped. **Migration:** an operator who read plugin lines from the Busbar log
+reads them from the plugin's file.
 
 ### Spec fidelity
 

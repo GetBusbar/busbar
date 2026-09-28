@@ -45,6 +45,9 @@ mod ffi_thread;
 pub mod highwater;
 pub mod hook;
 mod host;
+/// THE ONE DURABLE-WRITE OWNER, named once for the whole loader: every file or directory the loader
+/// publishes (fetched artifacts, the high-water marks, plugin log directories) goes through it.
+pub(crate) use busbar_kernel_wal::durable;
 mod hostlog;
 mod legacy_usage;
 pub mod observe;
@@ -2110,9 +2113,21 @@ mod hook_conformance_tests;
 
 /// The dispatcher through both doors: one script, LINKED and DROPPED, byte-identical, and a RED
 /// arm per mechanism rule.
+/// The dispatcher's test plugin, compiled in: the LINKED door of `dispatch_tests` (the same
+/// source is the `dispatch_test_plugin` example `cdylib`, the DROPPED door).
+#[cfg(test)]
+#[path = "../tests/fixtures/dispatch_test_plugin.rs"]
+mod dispatch_test_plugin;
+
 #[cfg(test)]
 #[path = "tests/dispatch_tests.rs"]
 mod dispatch_tests;
+
+/// The plane door's test plugin, compiled in: the LINKED door of `plane_conformance_tests` (the
+/// same source is the `plane_door_plugin` example `cdylib`, the DROPPED door).
+#[cfg(test)]
+#[path = "../tests/fixtures/plane_door_plugin.rs"]
+mod plane_door_plugin;
 
 /// The secret and export kind's answer checks, through the dispatcher's `Kind` adapter.
 #[cfg(test)]
