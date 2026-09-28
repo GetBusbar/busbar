@@ -17,6 +17,23 @@
 //! Writing these answers into the host buffers of the plane ABI (`busbar_contract::abi::plane`) is
 //! the plane door's job, one generic adapter for every plane; it is not this plane's.
 //!
+//! ZERO OR SEVERAL DECISIONS MODELS — the driver's rule is today's behaviour, byte for byte. A jev
+//! request names no model, so it has a destination only when `decisions.models` holds exactly one.
+//! Measured on the busbar binary before the driver serves this plane:
+//!
+//! | config | `--validate` and boot | `POST /v1/systemone` |
+//! |---|---|---|
+//! | no jev provider, `decisions.models: {}` | accepted | `404`, the unclaimed-route body |
+//! | a jev provider, `decisions.models: {}` | refused, `BUSBAR-3015`: provider '<name>' has unknown protocol 'jev' | (no boot) |
+//! | one model | accepted | `404`, the unclaimed-route body (the served operation is new surface) |
+//! | two or more models | accepted | `404`, the unclaimed-route body |
+//!
+//! The unclaimed-route body is `{"error":{"code":null,"message":"the requested resource was not
+//! found","param":null,"type":"not_found_error"}}`. So with zero or several models the driver serves
+//! no `systemone` claim for this generation (the snapshot publishes [`served_claims`], empty) and the request falls
+//! through to that same 404; there is no boot check and no new refusal. Only exactly one model
+//! mounts the claim.
+//!
 //! WHAT THIS PLANE DOES NOT CLAIM: `GET /v1/models`. That path keeps its 1.5.5 bytes (the model
 //! list busbar already serves there), so [`tail::CLAIMS`] and [`tail::OP_CLASSES`] carry `systemone` alone and
 //! [`arrive`] answers the models operation as unclaimed.
@@ -68,6 +85,17 @@ pub mod tail {
 
     /// The claims the generation snapshot publishes, `(verb, target)`.
     pub const CLAIMS: &[(&str, &str)] = &[("POST", ops::PATH_SYSTEMONE)];
+}
+
+/// The claims a generation's snapshot publishes, given how many `decisions.models` it configures:
+/// [`tail::CLAIMS`] for exactly one, none otherwise (see the module doc's measured table).
+#[must_use]
+pub fn served_claims(models: usize) -> &'static [(&'static str, &'static str)] {
+    if models == 1 {
+        tail::CLAIMS
+    } else {
+        &[]
+    }
 }
 
 /// Whether the kernel must verify a principal before the first piece.

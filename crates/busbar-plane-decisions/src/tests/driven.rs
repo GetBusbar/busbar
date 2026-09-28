@@ -142,3 +142,10 @@ fn a_refusal_carries_the_kernel_text_in_the_dialect_shape() {
     );
 }
 
+#[test]
+fn only_exactly_one_model_mounts_the_claim() {
+    assert!(served_claims(0).is_empty());
+    assert_eq!(served_claims(1), tail::CLAIMS);
+    assert!(served_claims(2).is_empty());
+    assert!(served_claims(7).is_empty());
+}
