@@ -365,9 +365,7 @@ async fn a_served_sessions_teardown_forgets_the_calls_it_had_open() {
 }
 
 /// A node allocator for the port under test: unique keys from 1, as the kernel's mint hands them.
-fn keys() -> Box<dyn Fn() -> busbar_contract::ids::UnitKey + Send + Sync> {
+fn keys() -> Box<dyn Fn() -> UnitKey + Send + Sync> {
     let next = std::sync::atomic::AtomicU64::new(1);
-    Box::new(move || {
-        busbar_contract::ids::UnitKey::new(next.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
-    })
+    Box::new(move || UnitKey::new(next.fetch_add(1, std::sync::atomic::Ordering::Relaxed)))
 }
