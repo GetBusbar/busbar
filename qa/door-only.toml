@@ -51,7 +51,82 @@ item = "busbar_plane_a2a"
 
 [[finding]]
 rule = "door-only:plugin-path"
+file = "crates/busbar-llm/src/engine/attempt/assemble.rs"
+item = "busbar_plane_llm"
+
+[[finding]]
+rule = "door-only:plugin-path"
+file = "crates/busbar-llm/src/engine/attempt/buffered.rs"
+item = "busbar_plane_llm"
+
+[[finding]]
+rule = "door-only:plugin-path"
+file = "crates/busbar-llm/src/engine/attempt/respond.rs"
+item = "busbar_plane_llm"
+
+[[finding]]
+rule = "door-only:plugin-path"
+file = "crates/busbar-llm/src/engine/engine_tests/inject_include_usage_tests.rs"
+item = "busbar_plane_llm"
+
+[[finding]]
+rule = "door-only:plugin-path"
+file = "crates/busbar-llm/src/engine/exhaustion/mod.rs"
+item = "busbar_plane_llm"
+
+[[finding]]
+rule = "door-only:plugin-path"
+file = "crates/busbar-llm/src/engine/hooks.rs"
+item = "busbar_plane_llm"
+
+[[finding]]
+rule = "door-only:plugin-path"
+file = "crates/busbar-llm/src/engine/lazy_body.rs"
+item = "busbar_plane_llm"
+
+[[finding]]
+rule = "door-only:plugin-path"
+file = "crates/busbar-llm/src/engine/pipeline.rs"
+item = "busbar_plane_llm"
+
+[[finding]]
+rule = "door-only:plugin-path"
+file = "crates/busbar-llm/src/engine/response_body.rs"
+item = "busbar_plane_llm"
+
+[[finding]]
+rule = "door-only:plugin-path"
+file = "crates/busbar-llm/src/engine/usage.rs"
+item = "busbar_plane_llm"
+
+[[finding]]
+rule = "door-only:plugin-path"
+file = "crates/busbar-llm/src/engine/wire.rs"
+item = "busbar_plane_llm"
+
+[[finding]]
+rule = "door-only:plugin-path"
 file = "crates/busbar-llm/src/lib.rs"
+item = "busbar_plane_llm"
+
+[[finding]]
+rule = "door-only:plugin-path"
+file = "crates/busbar-llm/src/native_ingress.rs"
+item = "busbar_plane_llm"
+
+[[finding]]
+rule = "door-only:plugin-path"
+file = "crates/busbar-llm/src/testkit/shell.rs"
+item = "busbar_plane_llm"
+
+[[finding]]
+rule = "door-only:plugin-path"
+file = "crates/busbar-llm/src/unit/arrival.rs"
+item = "busbar_plane_llm"
+
+[[finding]]
+rule = "door-only:plugin-path"
+file = "crates/busbar-llm/src/unit/meter.rs"
 item = "busbar_plane_llm"
 
 [[finding]]
@@ -142,6 +217,11 @@ item = "busbar_plane_streaming"
 [[finding]]
 rule = "door-only:plugin-path"
 file = "crates/busbar-voice/src/runtime/voice_plane_unit_oracle.rs"
+item = "busbar_plane_streaming"
+
+[[finding]]
+rule = "door-only:plugin-path"
+file = "crates/busbar-voice/src/topology/mod.rs"
 item = "busbar_plane_streaming"
 
 [[finding]]
