@@ -96,7 +96,7 @@ const MAX_INFLIGHT_HOOK_CALLS: usize = 64;
 /// deadline — never wait out the wedge — and once the wedged calls drain, the freed slots let
 /// service resume. The cap is backpressure, not a latch.
 #[tokio::test]
-async fn hook_calls_are_capped_and_saturation_fails_on_the_caller_deadline() {
+async fn the_inflight_cap_saturates_and_fails_on_the_caller_deadline_through_resolve_one() {
     let _dlopen_body = super::DLOPEN_BODY_LOCK.lock().await;
     let Some(env) = super::test_env() else {
         eprintln!("skip: hook cdylib not built (run under --workspace)");
