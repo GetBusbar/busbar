@@ -426,20 +426,9 @@ because = "ARCHITECT 2026-09-27: R-KERNEL exception for the Phase-2 exit-test re
 # 23892 -> 24063 (OWNER RULING Q68(3)). Its commit reached the base; struck by M1 DISPATCH's re-arm
 # below, which declares the pair's next figure.
 
-# ── THE CONTRACT CEILING PAIR, RE-ARMED BY M1 DISPATCH (abi check::reported, one definition; the
-#    plugin dispatcher's answer validation) — measured and written by LANDER at land time ────────
-
-[gate.ceiling_raises."gate.surface_ceilings.contract_caps"]
-file    = "qa/construction.toml"
-from    = 24063
-to      = 24079
-because = "OWNER RULING Q68(3) (docs/design/1.6.0-QUESTIONS.md): contract_caps re-arms at the MEASURED value, in its own commit, written by LANDER per ARCHITECT's re-measure-at-land-time authorization. Growth is M1 DISPATCH's abi check::reported (a plugin-reported count capped before any slice), one definition the plugin dispatch adapters call in production, +16 — no shape/layout change. Measured by cargo xtask gate construction: 24063 before, 24079 after."
-
-[gate.ceiling_raises."rules.loc-ceilings.caps_contract_ceiling"]
-file    = "qa/construction.toml"
-from    = 24063
-to      = 24079
-because = "OWNER RULING Q68(3) (docs/design/1.6.0-QUESTIONS.md): contract_caps re-arms at the MEASURED value, in its own commit, written by LANDER per ARCHITECT's re-measure-at-land-time authorization. Growth is M1 DISPATCH's abi check::reported (a plugin-reported count capped before any slice), one definition the plugin dispatch adapters call in production, +16 — no shape/layout change. Measured by cargo xtask gate construction: 24063 before, 24079 after."
+# ── THE CONTRACT CEILING PAIR, RE-ARMED 24063 -> 24079 FOR `abi check::reported` ────────────────
+# Its commit reached the base, and the pair has since been lowered back to 24063 (the shared Fault);
+# the declaration is struck.
 
 # ── THE KERNEL CEILING, RE-ARMED BY SD-8 (the substrate-values kernel landing) ─────────────────
 # Its 51100 -> 54801 declaration expired once landed and is struck; the ceiling text below keeps it.
