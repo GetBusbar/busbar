@@ -14,10 +14,14 @@
 //! * **`repr-c`** — a `#[repr(C …)]` struct, enum or union. `#[repr(u8)]`/`#[repr(transparent)]`
 //!   alone are not counted: they fix a discriminant or a wrapper, not a C layout, and the tree uses
 //!   them for on-disk frames and newtypes that never meet a plugin.
-//! * **`extern-fn`** — an `extern "C"` / `extern "C-unwind"` / `extern "system"` fn DEFINITION: a
-//!   slot body a plugin or the host installs into a table. Where the slot's SIGNATURE lives is where
-//!   the ABI lives, and a body written outside `abi/` restates it. `extern "C" { … }` import blocks
-//!   are not definitions and are not counted.
+//! * **`extern-fn`** — an `extern "C"` / `extern "C-unwind"` / `extern "system"` fn DEFINITION
+//!   whose signature is NOT one of the ABI's fn types: a slot signature invented outside `abi/`.
+//!   A definition whose parameter and return types EQUAL an `extern "C…" fn(…)` pointer type
+//!   written under `abi/` (`Op`, `DoorFn`, `WakeFn`, …) is an IMPLEMENTATION of that shape, not a
+//!   shape — every plugin holds them — and is not counted (ARCHITECT ruling, M1). Types compare
+//!   whitespace-free with lower-case module paths dropped (`std::os::raw::c_void` = `c_void`). The
+//!   bare `extern "C" fn()` type excuses nothing: every argument-less callback would match it.
+//!   `extern "C" { … }` import blocks are not definitions and are not counted.
 //! * **`fn-ptr`** — an `extern "C…" fn(…)` pointer TYPE written outside `abi/`: a slot signature
 //!   spelled a second time. Keyed by its ordinal in the file (`fn-ptr-1`, …), since a type has no
 //!   name of its own and a line number rots.
@@ -56,7 +60,7 @@
 //! `repo = "<repo>"`; one that does not exist is SKIPPED AND NAMED in the row's detail — never a
 //! silent green. CI checks out no siblings, so there the row says exactly that.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use crate::ctx::{Ctx, Overlay, WalkSpec};
@@ -166,11 +170,11 @@ fn is_test_path(rel: &str) -> bool {
     p.contains("/tests/") || p.contains("/benches/")
 }
 
-/// Every ABI shape in one file's PRODUCTION lines.
-fn scan_file(repo: &str, rel: &str, text: &str) -> Vec<Finding> {
+/// Every ABI shape in one file's PRODUCTION lines. `sigs` are the ABI's fn types: a definition
+/// with one of them implements it and is not a finding.
+fn scan_file(repo: &str, rel: &str, text: &str, sigs: &BTreeSet<Sig>) -> Vec<Finding> {
     let lines = scan::test_scope(text);
     let mut out = Vec::new();
-    let mut fn_ptrs = 0usize;
     for (idx, sl) in lines.iter().enumerate() {
         if sl.gated || sl.is_comment {
             continue;
@@ -188,20 +192,118 @@ fn scan_file(repo: &str, rel: &str, text: &str) -> Vec<Finding> {
         if is_repr_c(counted) {
             push(Shape::ReprC, item_after(&lines, idx));
         }
-        for hit in extern_hits(counted, &sl.raw) {
-            match hit {
-                Some(name) => push(Shape::ExternFn, name),
-                None => {
-                    fn_ptrs += 1;
-                    push(Shape::FnPtr, format!("fn-ptr-{fn_ptrs}"));
-                }
-            }
-        }
         if let Some(name) = version_const(counted) {
             push(Shape::VersionConst, name);
         }
     }
+    let text = Joined::of(&lines);
+    let mut fn_ptrs = 0usize;
+    for item in extern_items(&text.counted, &text.raw) {
+        let line = text.line_of(item.at);
+        match item.name {
+            Some(name) => {
+                if item.sig.as_ref().is_some_and(|sig| sigs.contains(sig)) {
+                    continue;
+                }
+                out.push(Finding {
+                    repo: repo.to_string(),
+                    file: rel.to_string(),
+                    line,
+                    shape: Shape::ExternFn,
+                    item: name,
+                });
+            }
+            None => {
+                fn_ptrs += 1;
+                out.push(Finding {
+                    repo: repo.to_string(),
+                    file: rel.to_string(),
+                    line,
+                    shape: Shape::FnPtr,
+                    item: format!("fn-ptr-{fn_ptrs}"),
+                });
+            }
+        }
+    }
     out
+}
+
+/// A slot signature: its parameter types and its return type (`""` for none), normalised.
+type Sig = (Vec<String>, String);
+
+/// THE ABI'S FN TYPES: the signature of every `extern "C…" fn(…)` pointer type written in `texts`
+/// (the files under `abi/`).
+fn abi_signatures<'a>(texts: impl IntoIterator<Item = &'a str>) -> BTreeSet<Sig> {
+    let mut out = BTreeSet::new();
+    for text in texts {
+        let lines = scan::test_scope(text);
+        let joined = Joined::of(&lines);
+        out.extend(
+            extern_items(&joined.counted, &joined.raw)
+                .into_iter()
+                .filter(|i| i.name.is_none())
+                .filter_map(|i| i.sig)
+                // A bare `extern "C" fn()` (the `.init_array` constructor type) names no slot: it
+                // would excuse every argument-less callback (an `atexit(3)` hook, a stray slot).
+                .filter(|sig| !(sig.0.is_empty() && sig.1.is_empty())),
+        );
+    }
+    out
+}
+
+/// The workspace's ABI fn types, read off `abi/`.
+fn workspace_signatures(cx: &Ctx) -> Result<BTreeSet<Sig>, String> {
+    let files = cx
+        .walk(&WalkSpec::new([ONE_HOME]).ext("rs"))
+        .map_err(|e| e.to_string())?;
+    Ok(abi_signatures(files.iter().map(|f| f.text.as_str())))
+}
+
+/// A file's production text, one string: test-gated and comment lines blanked to spaces, so an
+/// item spanning lines reads whole and its offset maps back to its line.
+struct Joined {
+    counted: Vec<char>,
+    raw: Vec<char>,
+    /// `(first char offset, line number)` of every line.
+    starts: Vec<(usize, usize)>,
+}
+
+impl Joined {
+    fn of(lines: &[ScopeLine]) -> Joined {
+        let (mut counted, mut raw, mut starts) = (Vec::new(), Vec::new(), Vec::new());
+        for sl in lines {
+            starts.push((counted.len(), sl.no));
+            let c: Vec<char> = sl.counted.chars().collect();
+            if sl.gated || sl.is_comment {
+                counted.extend(std::iter::repeat_n(' ', c.len()));
+                raw.extend(std::iter::repeat_n(' ', c.len()));
+            } else {
+                let r: Vec<char> = sl.raw.chars().collect();
+                // The ABI string is read back from the raw line only where the blanker kept every
+                // character in place, as the line-by-line reading did.
+                if r.len() == c.len() {
+                    raw.extend(r);
+                } else {
+                    raw.extend(std::iter::repeat_n(' ', c.len()));
+                }
+                counted.extend(c);
+            }
+            counted.push('\n');
+            raw.push('\n');
+        }
+        Joined {
+            counted,
+            raw,
+            starts,
+        }
+    }
+
+    fn line_of(&self, at: usize) -> usize {
+        let i = self.starts.partition_point(|(off, _)| *off <= at);
+        self.starts
+            .get(i.saturating_sub(1))
+            .map_or(0, |(_, no)| *no)
+    }
 }
 
 /// A line that IS a `#[repr(…)]` attribute naming `C` among its representation hints.
@@ -236,58 +338,184 @@ fn idents(s: &str) -> Vec<String> {
         .collect()
 }
 
-/// Every `extern "C…" fn` on a line: `Some(name)` for a definition, `None` for a pointer type.
+/// One `extern "C…" fn`: where it starts, its name (`None` for a pointer type) and its signature.
+struct ExternItem {
+    at: usize,
+    name: Option<String>,
+    sig: Option<Sig>,
+}
+
+/// Every `extern "C…" fn` in a joined text: definitions (named) and pointer types (unnamed).
 ///
-/// Read off the BLANKED line so a comment or a string holding the words cannot match; the ABI
-/// string itself is a literal, so its contents are read back from the raw line at the same
+/// Read off the BLANKED text so a comment or a string holding the words cannot match; the ABI
+/// string itself is a literal, so its contents are read back from the raw text at the same
 /// position (the blanker keeps every character in place).
-fn extern_hits(counted: &str, raw: &str) -> Vec<Option<String>> {
-    let c: Vec<char> = counted.chars().collect();
-    let r: Vec<char> = raw.chars().collect();
+fn extern_items(c: &[char], r: &[char]) -> Vec<ExternItem> {
     let mut out = Vec::new();
     let mut i = 0;
     while i + 6 <= c.len() {
-        if !word_at(&c, i, "extern") {
+        if !word_at(c, i, "extern") {
             i += 1;
             continue;
         }
-        let mut j = skip_ws(&c, i + 6);
+        let at = i;
+        let mut j = skip_ws(c, i + 6);
         if c.get(j) != Some(&'"') {
             i += 6;
             continue;
         }
         let open = j;
         j += 1;
-        while j < c.len() && c[j] != '"' {
+        while j < c.len() && c[j] != '"' && c[j] != '\n' {
             j += 1;
         }
-        if j >= c.len() {
-            break;
+        if j >= c.len() || c[j] != '"' {
+            i = j;
+            continue;
         }
-        let abi: String = if r.len() == c.len() {
-            r[open + 1..j].iter().collect()
-        } else {
-            String::new()
-        };
-        let k = skip_ws(&c, j + 1);
+        let abi: String = r
+            .get(open + 1..j)
+            .map(|s| s.iter().collect())
+            .unwrap_or_default();
+        let k = skip_ws(c, j + 1);
         i = j + 1;
         if !matches!(abi.as_str(), "C" | "C-unwind" | "system" | "system-unwind") {
             continue;
         }
-        if !word_at(&c, k, "fn") {
+        if !word_at(c, k, "fn") {
             // `extern "C" { … }` — an import block, not a slot.
             continue;
         }
-        let n = skip_ws(&c, k + 2);
+        let n = skip_ws(c, k + 2);
         if c.get(n) == Some(&'(') {
-            out.push(None);
+            out.push(ExternItem {
+                at,
+                name: None,
+                sig: signature(c, n),
+            });
         } else {
             let name: String = c[n..]
                 .iter()
                 .take_while(|ch| ch.is_ascii_alphanumeric() || **ch == '_' || **ch == '$')
                 .collect();
-            out.push(Some(if name.is_empty() { "?".into() } else { name }));
+            let mut p = skip_ws(c, n + name.chars().count());
+            if c.get(p) == Some(&'<') {
+                p = skip_ws(c, close_of(c, p).map_or(c.len(), |e| e + 1));
+            }
+            let sig = (c.get(p) == Some(&'(')).then(|| signature(c, p)).flatten();
+            out.push(ExternItem {
+                at,
+                name: Some(if name.is_empty() { "?".into() } else { name }),
+                sig,
+            });
         }
+    }
+    out
+}
+
+/// The index of the bracket closing the one at `open` (`(`, `[` or `<`), skipping `->`.
+fn close_of(c: &[char], open: usize) -> Option<usize> {
+    let mut depth = 0i32;
+    let mut i = open;
+    while i < c.len() {
+        match c[i] {
+            '-' if c.get(i + 1) == Some(&'>') => i += 1,
+            '(' | '[' | '<' => depth += 1,
+            ')' | ']' | '>' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(i);
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    None
+}
+
+/// The signature whose parameter list opens at `open`: `(types…) -> ret`.
+fn signature(c: &[char], open: usize) -> Option<Sig> {
+    let close = close_of(c, open)?;
+    let mut params = Vec::new();
+    let (mut depth, mut from) = (0i32, open + 1);
+    let mut i = open + 1;
+    while i <= close {
+        match c[i] {
+            '-' if c.get(i + 1) == Some(&'>') => i += 1,
+            '(' | '[' | '<' => depth += 1,
+            ')' | ']' | '>' if i < close => depth -= 1,
+            ',' if depth == 0 => {
+                params.push(param_type(&c[from..i]));
+                from = i + 1;
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    params.push(param_type(&c[from..close]));
+    params.retain(|p| !p.is_empty());
+    let mut k = skip_ws(c, close + 1);
+    let mut ret = String::new();
+    if c.get(k) == Some(&'-') && c.get(k + 1) == Some(&'>') {
+        k += 2;
+        let (mut depth, start) = (0i32, k);
+        while k < c.len() {
+            match c[k] {
+                '-' if c.get(k + 1) == Some(&'>') => k += 1,
+                '(' | '[' | '<' => depth += 1,
+                ')' | ']' | '>' if depth == 0 => break,
+                ')' | ']' | '>' => depth -= 1,
+                '{' | ';' | ',' | '=' if depth == 0 => break,
+                _ if depth == 0 && word_at(c, k, "where") => break,
+                _ => {}
+            }
+            k += 1;
+        }
+        ret = normalise_type(&c[start..k.min(c.len())]);
+    }
+    Some((params, ret))
+}
+
+/// A parameter's type: what follows its top-level `name:` (a `::` is a path, not the colon).
+fn param_type(p: &[char]) -> String {
+    let mut depth = 0i32;
+    for (i, ch) in p.iter().enumerate() {
+        match ch {
+            '(' | '[' | '<' => depth += 1,
+            ')' | ']' | '>' => depth -= 1,
+            ':' if depth == 0 && p.get(i + 1) != Some(&':') && (i == 0 || p[i - 1] != ':') => {
+                return normalise_type(&p[i + 1..]);
+            }
+            _ => {}
+        }
+    }
+    normalise_type(p)
+}
+
+/// A type, whitespace-free, with lower-case module path segments dropped. Segments are read
+/// before the whitespace goes, so `*mut std::x` keeps its `mut`.
+fn normalise_type(t: &[char]) -> String {
+    let ident = |ch: char| ch.is_ascii_alphanumeric() || ch == '_';
+    let mut out = String::new();
+    let mut i = 0;
+    while i < t.len() {
+        if (t[i].is_ascii_alphabetic() || t[i] == '_') && (i == 0 || !ident(t[i - 1])) {
+            let end = i + t[i..].iter().take_while(|ch| ident(**ch)).count();
+            let after = skip_ws(t, end);
+            let is_module = t[i].is_ascii_lowercase() || t[i] == '_';
+            if is_module && t.get(after) == Some(&':') && t.get(after + 1) == Some(&':') {
+                i = skip_ws(t, after + 2);
+                continue;
+            }
+            out.extend(&t[i..end]);
+            i = end;
+            continue;
+        }
+        if !t[i].is_whitespace() {
+            out.push(t[i]);
+        }
+        i += 1;
     }
     out
 }
@@ -463,7 +691,7 @@ struct External {
     root: PathBuf,
 }
 
-fn scan_external(cx: &Ctx, root_decl: &str) -> External {
+fn scan_external(cx: &Ctx, root_decl: &str, sigs: &BTreeSet<Sig>) -> External {
     let root = {
         let p = Path::new(root_decl);
         if p.is_absolute() {
@@ -518,7 +746,7 @@ fn scan_external(cx: &Ctx, root_decl: &str) -> External {
                 continue;
             }
             match std::fs::read_to_string(dir.join(&rel)) {
-                Ok(text) => ext.findings.extend(scan_file(&p.repo, &rel, &text)),
+                Ok(text) => ext.findings.extend(scan_file(&p.repo, &rel, &text, sigs)),
                 Err(e) => ext.errors.push(format!("{}:{rel}: {e}", p.repo)),
             }
         }
@@ -547,6 +775,17 @@ fn collect_rs(base: &Path, dir: &Path, out: &mut Vec<String>) {
     }
 }
 
+/// Where the self-test plants a plugin crate's source.
+const PLUGIN_PLANT: &str = "crates/hook-test-plugin/src/planted_impl.rs";
+/// A plugin's `Op` and `DoorFn` bodies: implementations of abi/'s fn types, never findings.
+const PLUGIN_IMPLS: &str = "use std::os::raw::c_void;\n\
+     pub extern \"C\" fn planted_op(\n    instance: *mut c_void,\n    input: *const c_void,\n    \
+     out: *mut c_void,\n) -> busbar_contract::abi::mechanism::call::RawOutcome {\n    todo!()\n}\n\
+     #[no_mangle]\npub extern \"C\" fn busbar_plugin_door() -> *const Door {\n    todo!()\n}\n";
+/// A plugin's own shapes: a #[repr(C)] struct and a slot signature abi/ does not have.
+const PLUGIN_SHAPES: &str = "#[repr(C)]\npub struct PlantedPluginPod {\n    pub a: u32,\n}\n\
+     pub extern \"C\" fn planted_own_slot(x: u32) -> u32 {\n    x\n}\n";
+
 // ── THE GATE ────────────────────────────────────────────────────────────────────────────────────
 
 pub struct AbiLocationGate;
@@ -561,14 +800,23 @@ impl AbiLocationGate {
                     .min_files(MIN_FILES),
             )
             .map_err(|e| e.to_string())?;
+        let rel_of = |f: &crate::ctx::SourceFile| {
+            let rel = f.rel_str();
+            rel.strip_prefix("./").unwrap_or(&rel).to_string()
+        };
+        let sigs = abi_signatures(
+            files
+                .iter()
+                .filter(|f| rel_of(f).starts_with(ONE_HOME))
+                .map(|f| f.text.as_str()),
+        );
         let mut out = Vec::new();
         for f in &files {
-            let rel = f.rel_str();
-            let rel = rel.strip_prefix("./").unwrap_or(&rel).to_string();
+            let rel = rel_of(f);
             if rel.starts_with(ONE_HOME) || is_test_path(&rel) {
                 continue;
             }
-            out.extend(scan_file("", &rel, &f.text));
+            out.extend(scan_file("", &rel, &f.text, &sigs));
         }
         Ok(out)
     }
@@ -764,22 +1012,29 @@ impl Gate for AbiLocationGate {
             &["PLANTED_ABI_VERSION"],
         ));
 
-        // AN extern "C" SLOT BODY AND A FN-POINTER TYPE IN THE KERNEL.
+        // AN extern "C" SLOT BODY AND A FN-POINTER TYPE IN THE KERNEL, and in a PLUGIN CRATE a
+        // #[repr(C)] struct and a slot of a signature abi/ does not have. (AN IMPLEMENTATION IS NOT
+        // A SHAPE: that crate's `Op` and `DoorFn` bodies are planted beside them and must not be
+        // named.)
         let mut ov = Overlay::new();
         ov.set(
             "crates/busbar-kernel/src/planted_slot.rs",
             "pub extern \"C-unwind\" fn planted_slot(x: u32) -> u32 { x }\n\
              pub type PlantedPtr = Option<unsafe extern \"C\" fn(u32) -> u32>;\n",
         );
+        ov.set(PLUGIN_PLANT, format!("{PLUGIN_IMPLS}{PLUGIN_SHAPES}"));
         report.push(prove_rows_red(
             cx,
             self,
-            "an extern \"C\" slot body and a fn-pointer type outside abi/ are RED",
-            &[ROW_EXTERN],
+            "an extern \"C\" slot body and a fn-pointer type outside abi/, and a plugin crate's \
+             #[repr(C)] struct and unknown slot, are RED",
+            &[ROW_EXTERN, ROW_REPR_C],
             ov,
             &[
                 "extern-fn crates/busbar-kernel/src/planted_slot.rs:1 planted_slot",
                 "fn-ptr-1",
+                "PlantedPluginPod",
+                "planted_own_slot",
             ],
         ));
 
@@ -798,10 +1053,12 @@ impl Gate for AbiLocationGate {
              extern \"C\" fn double_slot() {}\n    const T_ABI: u32 = 1;\n}\n\
              #[cfg(test)]\nconst ALSO_ABI: u32 = 2;\n",
         );
+        ov.set(PLUGIN_PLANT, PLUGIN_IMPLS);
         report.push(prove_green(
             &cx.with_overlay(ov),
             self,
-            "a repr(C) test double under tests/ or #[cfg(test)], and ABI words in prose, are GREEN",
+            "a repr(C) test double under tests/ or #[cfg(test)], ABI words in prose, and a plugin's \
+             extern \"C\" Op and DoorFn bodies (implementations of abi/'s types) are GREEN",
             &[ROW_REPR_C, ROW_EXTERN, ROW_CONST],
         ));
 
@@ -880,7 +1137,17 @@ impl Gate for AbiLocationGate {
 }
 
 fn external_row(cx: &Ctx, ledger: &Ledger) -> Row {
-    let ext = scan_external(cx, &ledger.external_root);
+    let sigs = match workspace_signatures(cx) {
+        Ok(s) => s,
+        Err(e) => {
+            return Row::fail(
+                ROW_EXTERNAL,
+                "the ABI's fn types could not be read",
+                format!("{ONE_HOME} did not scan ({e}); an unread ABI matches nothing"),
+            )
+        }
+    };
+    let ext = scan_external(cx, &ledger.external_root, &sigs);
     let present: Vec<&str> = ext
         .scanned
         .iter()
@@ -945,18 +1212,54 @@ fn external_row(cx: &Ctx, ledger: &Ledger) -> Row {
 mod tests {
     use super::*;
 
+    fn items(l: &str) -> Vec<(Option<String>, Option<Sig>)> {
+        let c: Vec<char> = scan::blank_literals(l).chars().collect();
+        let r: Vec<char> = l.chars().collect();
+        extern_items(&c, &r)
+            .into_iter()
+            .map(|i| (i.name, i.sig))
+            .collect()
+    }
+
+    fn sig(params: &[&str], ret: &str) -> Option<Sig> {
+        Some((
+            params.iter().map(|p| (*p).to_string()).collect(),
+            ret.to_string(),
+        ))
+    }
+
     #[test]
-    fn extern_hits_tell_a_definition_from_a_pointer_and_an_import() {
+    fn extern_items_tell_a_definition_from_a_pointer_and_an_import() {
         let l = "pub(crate) extern \"C-unwind\" fn slot(p: Option<unsafe extern \"C\" fn(u8)>) {}";
-        let counted = scan::blank_literals(l);
         assert_eq!(
-            extern_hits(&counted, l),
-            vec![Some("slot".to_string()), None]
+            items(l),
+            vec![
+                (
+                    Some("slot".to_string()),
+                    sig(&["Option<unsafeextern\"\"fn(u8)>"], "")
+                ),
+                (None, sig(&["u8"], "")),
+            ]
         );
-        let imp = "extern \"C\" { fn atexit(cb: u8); }";
-        assert!(extern_hits(&scan::blank_literals(imp), imp).is_empty());
-        let rust = "extern \"Rust\" fn f() {}";
-        assert!(extern_hits(&scan::blank_literals(rust), rust).is_empty());
+        assert!(items("extern \"C\" { fn atexit(cb: u8); }").is_empty());
+        assert!(items("extern \"Rust\" fn f() {}").is_empty());
+    }
+
+    #[test]
+    fn a_signature_reads_across_lines_and_drops_module_paths() {
+        let ty = "pub type Op =\n    extern \"C\" fn(instance: *mut c_void, input: *const c_void, out: *mut c_void) -> RawOutcome;";
+        let body = "extern \"C\" fn tick(\n    _: *mut std::os::raw::c_void,\n    input: *const c_void,\n    out: *mut c_void,\n) -> busbar_contract::abi::mechanism::call::RawOutcome {\n}";
+        let want = sig(&["*mutc_void", "*constc_void", "*mutc_void"], "RawOutcome");
+        assert_eq!(items(ty), vec![(None, want.clone())]);
+        assert_eq!(items(body), vec![(Some("tick".into()), want)]);
+        assert_eq!(
+            items("pub type DoorFn = extern \"C\" fn() -> *const Door;"),
+            vec![(None, sig(&[], "*constDoor"))]
+        );
+        assert_eq!(
+            items("pub extern \"C\" fn g<T: Sync>(ctx: HostCtx, t: Ticket) where T: Send {}"),
+            vec![(Some("g".into()), sig(&["HostCtx", "Ticket"], ""))]
+        );
     }
 
     #[test]
