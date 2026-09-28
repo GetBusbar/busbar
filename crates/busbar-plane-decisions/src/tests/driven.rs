@@ -37,6 +37,7 @@ fn the_tail_names_the_decision_class_at_its_index() {
     assert_eq!(class, CLASS_DECISION);
     assert_eq!(family, "decision");
     assert!(tail::FEE_UNITS.is_empty());
+    assert_eq!(tail::SECTION_DECLARING, crate::config::SECTION);
     assert_eq!(
         tail::NEEDS,
         &[(crate::claims::TRANSPORT, "decision-egress")]
@@ -140,3 +141,4 @@ fn a_refusal_carries_the_kernel_text_in_the_dialect_shape() {
         br#"{"error":{"code":"unsupported_operation","message":"x"}}"#
     );
 }
+

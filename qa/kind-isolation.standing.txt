@@ -95,7 +95,7 @@ kind-isolation:matrix	unlisted-cell	busbar-mcp × kernel	50
 kind-isolation:matrix	unlisted-cell	busbar-oauth2 × kernel	10
 kind-isolation:matrix	unlisted-cell	busbar-oauth2 × legacy	2
 kind-isolation:matrix	unlisted-cell	busbar-plane-decisions × legacy	3
-kind-isolation:matrix	unlisted-cell	busbar-plane-decisions × plane	72
+kind-isolation:matrix	unlisted-cell	busbar-plane-decisions × plane	73
 kind-isolation:matrix	unlisted-cell	busbar-plane-decisions × transport	37
 kind-isolation:matrix	unlisted-cell	busbar-plane-llm × legacy	40
 kind-isolation:matrix	unlisted-cell	busbar-plane-streaming × legacy	32

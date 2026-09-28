@@ -89,6 +89,15 @@ pub struct DecisionsSection {
 /// transport-protocol string).
 pub const PROTOCOL: &str = "jev";
 
+/// THE DECLARING SECTION: the top-level config key whose presence declares this plane, beside
+/// `pools:`, `tools:`, `agents:` and `streams:`. The plane owns it and says so here; the composition
+/// root reads this constant for its registry declaration and spells no literal of its own.
+///
+/// Plural, and deliberately not the registry key: the key is the plane's identity (`decision`,
+/// `PlaneMeta::KEY`) and the section is the operator's noun for the set of configured decision
+/// models.
+pub const SECTION: &str = "decisions";
+
 /// CROSS-REFERENCE VALIDATION for a parsed `decisions:` section, run once the whole document is
 /// known (siblings included) — the same moment the pools plane's own model→provider check runs
 /// (`config_validate::validate`'s "model … references unknown provider" rule) and the `tools:`

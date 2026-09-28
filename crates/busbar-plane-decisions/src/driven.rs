@@ -5,7 +5,7 @@
 //!
 //! | driver crossing | here |
 //! |---|---|
-//! | the Statement tail | [`tail`]: consumed sections, dialects, scope kinds, op classes, billable classes, fee units, needs, claims |
+//! | the Statement tail | [`tail`]: declaring and consumed sections, dialects, scope kinds, op classes, billable classes, fee units, needs, claims |
 //! | `arrive` | [`arrive`]: the op class, the principal need and the dialect of a claimed request |
 //! | `on_piece`, from the caller | [`caller_piece`]: the caller's whole body arrives as one piece; the kernel keeps it |
 //! | `on_piece`, ATTEMPT (from the kernel) | [`attempt`]: the request bound for the far end, verb and target explicit |
@@ -16,10 +16,6 @@
 //! the caller owns for the length of one unit, and it is the only accumulating thing in the module.
 //! Writing these answers into the host buffers of the plane ABI (`busbar_contract::abi::plane`) is
 //! the plane door's job, one generic adapter for every plane; it is not this plane's.
-//!
-//! The declaring section's name is not in [`tail`] yet: the composition root spells it today
-//! (`crates/busbar/src/root/plane_decisions.rs`, `CONFIG_SECTION`), and it moves here when the
-//! driver reads it off this plane's Statement.
 //!
 //! WHAT THIS PLANE DOES NOT CLAIM: `GET /v1/models`. That path keeps its 1.5.5 bytes (the model
 //! list busbar already serves there), so [`tail::CLAIMS`] and [`tail::OP_CLASSES`] carry `systemone` alone and
@@ -40,6 +36,9 @@ use crate::ops;
 pub mod tail {
     use super::{MeterClassId, OpClassId};
     use crate::{claims, config, meta, ops};
+
+    /// The top-level config section whose presence declares this plane.
+    pub const SECTION_DECLARING: &str = config::SECTION;
 
     /// The sections this plane reads and does not own: every model names its provider there.
     pub const SECTIONS_CONSUMED: &[&str] = &["providers"];
