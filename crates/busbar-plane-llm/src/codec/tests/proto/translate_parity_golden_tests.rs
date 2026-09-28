@@ -35,7 +35,7 @@ const FIXED_NOW: u64 = 1_752_000_000;
 const FIXED_ID: &str = "msg_01GOLDENGOLDENGOLDENGOLD";
 
 fn golden_dir() -> std::path::PathBuf {
-    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/tests/proto/golden")
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/codec/tests/proto/golden")
 }
 
 /// Bless mode requires the EXACT value `1`, not mere presence. Under `var_os(..).is_some()` even

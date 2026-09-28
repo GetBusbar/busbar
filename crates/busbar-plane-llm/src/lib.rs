@@ -28,7 +28,7 @@
 
 pub mod claims;
 // `#![deny(missing_docs)]` above is a rule this crate holds itself to; the folded-in codec (moved
-// unchanged from the former `busbar-llm-codec`, owner ruling R7, 2026-09-27, THE DESIGN §9/#39) was
+// unchanged from the former `busbar-llm-codec`, owner ruling R7, 2026-09-27, THE DESIGN section 9/#39) was
 // never written under it, so applying it retroactively here would not be a pure move. Scoped to
 // exactly this module.
 #[allow(missing_docs)]

@@ -10,7 +10,7 @@
 //! none, because a reader trusts it.
 //!
 //! `src/codec/` IS EXCLUDED FROM EVERY SCAN BELOW. It is the folded-in dialect codecs (owner ruling
-//! R7, 2026-09-27, THE DESIGN §9/#39 — no `busbar-*-codec` crate; moved in unchanged from the former
+//! R7, 2026-09-27, THE DESIGN section 9/#39 — no `busbar-*-codec` crate; moved in unchanged from the former
 //! `busbar-llm-codec`, which carried none of these four properties as a rule). These checks are about
 //! THIS PLANE's own adapter prose and structure — `claims.rs`, `dialect.rs`, `meta.rs`, `plane.rs`,
 //! `lib.rs` — never about the codec it wraps, which the plane calls read-only and never edits.
@@ -35,7 +35,7 @@ fn manifest() -> String {
 /// property is what this test actually protects, and it is asserted directly at the bottom.
 ///
 /// ONE NAMED EXCEPTION: `test-support`, EMPTY, carried in unchanged by the codec fold (owner ruling
-/// R7, 2026-09-27, THE DESIGN §9/#39) — it gates `codec`'s own test-only constructors, never
+/// R7, 2026-09-27, THE DESIGN section 9/#39) — it gates `codec`'s own test-only constructors, never
 /// anything this crate's own `plane.rs`/`dialect.rs`/`lib.rs` read. A second feature, or a non-empty
 /// one, is not this exception and must fail below.
 #[test]
@@ -146,7 +146,7 @@ fn the_manifest_names_only_what_a_plane_may_name() {
         .split("[dependencies]")
         .nth(1)
         .expect("the manifest has a dependency section");
-    // The codecs are this crate's own `codec` module now (THE DESIGN §9/#39: no `busbar-*-codec`
+    // The codecs are this crate's own `codec` module now (THE DESIGN section 9/#39: no `busbar-*-codec`
     // crate), not a named dependency — `busbar-contract` is the only workspace crate a plane names.
     let allowed = ["busbar-contract"];
     for line in deps.lines() {

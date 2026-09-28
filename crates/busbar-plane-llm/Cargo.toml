@@ -37,7 +37,7 @@ path = "src/lib.rs"
 # impl are unconditional, never behind a `#[cfg(feature = …)]`. The contract crate holds itself to
 # the same rule and asserts it.
 #
-# ONE EXCEPTION, CARRIED IN BY THE FOLD (owner ruling R7, 2026-09-27, THE DESIGN §9/#39): the former
+# ONE EXCEPTION, CARRIED IN BY THE FOLD (owner ruling R7, 2026-09-27, THE DESIGN section 9/#39): the former
 # `busbar-llm-codec` declared `test-support`, EMPTY, purely so `#[cfg(any(test, feature =
 # "test-support"))]` on its own test-only constructors (`Protocol::anthropic()` and siblings,
 # `leaf_codec`'s per-dialect readers `fuzz` drives directly) resolves as a KNOWN feature rather than
@@ -51,7 +51,7 @@ test-support = []
 busbar-contract = { path = "../busbar-contract" }
 # THE CODECS. Read-only from `plane.rs`/`dialect.rs`: this crate calls the dialect readers, writers,
 # translator and error-envelope builders and edits none of them. Folded IN as the `codec` module
-# (owner ruling R7, 2026-09-27, THE DESIGN §9/#39: no `busbar-*-codec` crate) rather than named as a
+# (owner ruling R7, 2026-09-27, THE DESIGN section 9/#39: no `busbar-*-codec` crate) rather than named as a
 # separate crate — the fold is a pure move, so the dependencies the codecs themselves needed
 # (serde/serde_json/sonic-rs/bytes/tracing) are now this crate's own.
 serde = { workspace = true }

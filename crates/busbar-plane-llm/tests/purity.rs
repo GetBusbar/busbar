@@ -40,7 +40,7 @@ fn the_plane_is_a_plain_value() {
 /// a type alias, which is the way the property is usually lost.
 ///
 /// EXCEPT `src/codec/`: the folded-in dialect codecs (owner ruling R7, 2026-09-27, THE DESIGN
-/// §9/#39 — no `busbar-*-codec` crate; moved in unchanged from the former `busbar-llm-codec`).
+/// section 9/#39 — no `busbar-*-codec` crate; moved in unchanged from the former `busbar-llm-codec`).
 /// `codec::synth_rng` keeps a `thread_local!` `RefCell<EntropyPool>` for the writers' synthesized
 /// wire ids — a per-thread scratch pool, not plane session state, and it predates this test (the
 /// codec crate it moved from carried no purity test of this shape). The property this test asserts
