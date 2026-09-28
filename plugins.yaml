@@ -145,7 +145,7 @@ plugins:
     gate: suite
     description: "The HashiCorp Vault secret backend as a droppable busbar plugin: a cdylib exporting the secret C ABI. Drop it in the plugins folder, add vault to secrets: with its addr/token settings, and reference secrets as { module: vault, settings: { path: \"kv/data/name#field\" } }."
     macos_test: "cargo test --workspace --locked --lib --test conformance -- --skip roundtrip_against_live_vault"
-    declares: "hashicorp-vault/declares.json"
+    declares: "secret-vault/declares.json"
   - repo: busbar-auth-oidc
     kind: auth
     alias: oidc
