@@ -69,7 +69,7 @@ fn write_third_party(dir: &Path, lib: &[u8]) {
     std::fs::write(dir.join("plugins").join("tp.tar.gz"), bytes).unwrap();
 }
 
-fn write_configs(dir: &Path, data_port: u16, first_party: bool) {
+fn write_configs(dir: &Path, data_port: u16, first_party: bool, third_party: bool) {
     std::fs::write(
         dir.join("providers.yaml"),
         "mock:\n  protocol: anthropic\n  base_url: \"http://127.0.0.1:9\"\n  api_key_env: MOCK_KEY\n",
@@ -79,6 +79,13 @@ fn write_configs(dir: &Path, data_port: u16, first_party: bool) {
         "  metrics: { module: prometheus, settings: { buffer_seconds: 60 } }\n"
     } else {
         ""
+    };
+    let tp = if third_party {
+        format!(
+            "  tp: {{ module: {THIRD_PARTY}, streams: [metrics], settings: {{ buffer_seconds: 60 }} }}\n"
+        )
+    } else {
+        String::new()
     };
     std::fs::write(
         dir.join("config.yaml"),
@@ -94,8 +101,7 @@ plugins:
   trust:
     allow_unsigned: true
 export:
-{scrape}  tp: {{ module: {THIRD_PARTY}, streams: [metrics], settings: {{ buffer_seconds: 60 }} }}
-providers:
+{scrape}{tp}providers:
   mock:
     api_key: {{ env: MOCK_KEY }}
 models:
@@ -141,12 +147,11 @@ fn scrape(port: u16) -> Option<(u16, String, String)> {
     Some((status, head.to_ascii_lowercase(), body.to_string()))
 }
 
-/// Boot the binary over `dir` and return the first settled `/metrics` answer (anything but the
-/// recorder's boot-window `503`), with the log.
-fn settled_scrape(dir: &Path, data_port: u16) -> ((u16, String, String), String) {
+/// Spawn the binary over `dir`, reaped when the returned guard drops.
+fn boot(dir: &Path) -> Reap {
     let log_path = dir.join("out.log");
     let log = std::fs::File::create(&log_path).unwrap();
-    let mut child = Reap(
+    Reap(
         Command::new(common::boot::exe())
             .env("BUSBAR_CONFIG", dir.join("config.yaml"))
             .env("BUSBAR_PROVIDERS", dir.join("providers.yaml"))
@@ -156,27 +161,56 @@ fn settled_scrape(dir: &Path, data_port: u16) -> ((u16, String, String), String)
             .stderr(log)
             .spawn()
             .expect("spawn busbar"),
-    );
-    let read_log = || std::fs::read_to_string(&log_path).unwrap_or_default();
+    )
+}
+
+fn read_log(dir: &Path) -> String {
+    std::fs::read_to_string(dir.join("out.log")).unwrap_or_default()
+}
+
+/// Boot the binary over `dir` and return the first settled `/metrics` answer (anything but the
+/// recorder's boot-window `503`), with the log.
+fn settled_scrape(dir: &Path, data_port: u16) -> ((u16, String, String), String) {
+    let mut child = boot(dir);
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
         if let Some(status) = child.0.try_wait().expect("try_wait") {
             panic!(
                 "busbar refused to boot (status {status:?}); log:\n{}",
-                read_log()
+                read_log(dir)
             );
         }
         match scrape(data_port) {
-            Some(answer) if answer.0 != 503 => return (answer, read_log()),
+            Some(answer) if answer.0 != 503 => return (answer, read_log(dir)),
             _ => {}
         }
         assert!(
             Instant::now() < deadline,
             "/metrics never settled; log:\n{}",
-            read_log()
+            read_log(dir)
         );
         std::thread::sleep(Duration::from_millis(20));
     }
+}
+
+/// Fire one request through the whole request path over a raw connection (no client crate
+/// needed): the provider is unreachable, so it ends as an upstream failure, which is enough to
+/// populate both a counter family and a distribution family in the exposition.
+fn post_messages(port: u16) {
+    let Ok(mut stream) = TcpStream::connect(("127.0.0.1", port)) else {
+        return;
+    };
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(10)));
+    let body =
+        r#"{"model":"test-model","max_tokens":8,"messages":[{"role":"user","content":"hi"}]}"#;
+    let request = format!(
+        "POST /v1/messages HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        body.len(),
+        body
+    );
+    let _ = stream.write_all(request.as_bytes());
+    let mut discard = Vec::new();
+    let _ = stream.read_to_end(&mut discard);
 }
 
 #[test]
@@ -191,7 +225,7 @@ fn a_third_party_metrics_sink_never_serves_metrics() {
     let dir = fixture_dir("alone");
     write_third_party(&dir, &lib);
     let port = free_port();
-    write_configs(&dir, port, false);
+    write_configs(&dir, port, false, true);
     let ((status, _, body), log) = settled_scrape(&dir, port);
     let _ = std::fs::remove_dir_all(&dir);
     assert_eq!(
@@ -203,7 +237,7 @@ fn a_third_party_metrics_sink_never_serves_metrics() {
     let dir = fixture_dir("beside");
     write_third_party(&dir, &lib);
     let port = free_port();
-    write_configs(&dir, port, true);
+    write_configs(&dir, port, true, true);
     let ((status, head, body), log) = settled_scrape(&dir, port);
     let _ = std::fs::remove_dir_all(&dir);
     assert_eq!(
@@ -215,4 +249,113 @@ fn a_third_party_metrics_sink_never_serves_metrics() {
         "{head}"
     );
     assert!(body.contains("# TYPE "), "an exposition: {body}");
+}
+
+/// v1.5.5's own FAMILY-KIND rank: counters before gauges before distributions (histogram or
+/// summary) — the fixed pass order `metrics-exporter-prometheus::render_to_write` has always used.
+fn kind_rank(kind: &str) -> u8 {
+    match kind {
+        "counter" => 0,
+        "gauge" => 1,
+        "histogram" | "summary" => 2,
+        _ => 3,
+    }
+}
+
+/// KP-C0: the raw `/metrics` exposition emits every family in v1.5.5's own FAMILY-KIND order —
+/// every counter, then every gauge, then every histogram/summary — never a counter after a
+/// distribution.
+///
+/// DERIVATION, not a captured guess (a single 1.5.5 capture cannot pin this: within a kind the
+/// order is hash-map order and "varies between runs"). Both v1.5.5
+/// (`v1.5.5:crates/busbar/src/metrics.rs`, `render()` at line 691 calling `h.render()`) and this
+/// binary (`busbar_kernel::metrics::render()`) hand the SAME `metrics-exporter-prometheus` v0.18.3
+/// recorder's `render_to_write` the whole exposition: that function drains its counters map
+/// whole, then its gauges map whole, then its distributions (histogram + summary) map whole —
+/// three sequential, unconditional passes, in that fixed order, in every release either binary
+/// could have linked. WHICH KIND'S BLOCK COMES FIRST is therefore code-determined and identical
+/// in both; WHICH FAMILY comes first WITHIN a kind is not (hash order), so this test does not pin
+/// that.
+///
+/// Before the fix this binary's scrape sink (`busbar-export-prometheus`) sorted families by name
+/// alone, so a counter whose name sorts after a distribution's — `busbar_requests_total` and
+/// `busbar_upstream_attempts_total` both sort after `busbar_request_duration_seconds` — rendered
+/// AFTER that summary, which v1.5.5 never does. RED on the parent: the parent's exposition is
+/// fully name-sorted across kinds, so this assertion fails on it.
+#[test]
+fn every_counter_precedes_every_gauge_precedes_every_distribution() {
+    let dir = fixture_dir("kind-order");
+    let port = free_port();
+    write_configs(&dir, port, true, false);
+
+    let mut child = boot(&dir);
+    // Wait for boot: the first non-503 scrape (before any request, so possibly a bare
+    // exposition with no families yet).
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        if let Some(status) = child.0.try_wait().expect("try_wait") {
+            panic!(
+                "busbar refused to boot (status {status:?}); log:\n{}",
+                read_log(&dir)
+            );
+        }
+        if scrape(port)
+            .map(|(status, _, _)| status != 503)
+            .unwrap_or(false)
+        {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "/metrics never settled; log:\n{}",
+            read_log(&dir)
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+
+    // One request through the whole request path: the provider is unreachable, so it ends as an
+    // upstream failure, populating `busbar_requests_total` / `busbar_upstream_attempts_total`
+    // (counters) alongside `busbar_request_duration_seconds` (the summary) — a counter AND a
+    // distribution both present is what makes the ordering assertion non-vacuous.
+    post_messages(port);
+
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let body = loop {
+        if let Some((status, _, body)) = scrape(port) {
+            if status == 200 && body.contains("# TYPE ") {
+                break body;
+            }
+        }
+        assert!(
+            Instant::now() < deadline,
+            "metrics for the request never appeared; log:\n{}",
+            read_log(&dir)
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    let _ = std::fs::remove_dir_all(&dir);
+
+    let kinds: Vec<(String, String)> = body
+        .lines()
+        .filter_map(|l| l.strip_prefix("# TYPE "))
+        .filter_map(|rest| rest.split_once(' '))
+        .map(|(name, kind)| (name.to_string(), kind.to_string()))
+        .collect();
+    assert!(
+        kinds.iter().any(|(_, k)| k == "counter"),
+        "the exposition must carry at least one counter to make this assertion non-vacuous:\n{body}"
+    );
+    assert!(
+        kinds.iter().any(|(_, k)| k == "summary" || k == "histogram"),
+        "the exposition must carry at least one distribution to make this assertion non-vacuous:\n{body}"
+    );
+
+    let ranks: Vec<u8> = kinds.iter().map(|(_, k)| kind_rank(k)).collect();
+    let mut sorted_ranks = ranks.clone();
+    sorted_ranks.sort();
+    assert_eq!(
+        ranks, sorted_ranks,
+        "every counter must precede every gauge, which must precede every histogram/summary \
+         (v1.5.5's own render_to_write pass order); families in scrape order: {kinds:?}\n{body}"
+    );
 }
