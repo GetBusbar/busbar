@@ -36,7 +36,8 @@ usage:
   cargo xtask conformance check --selftest
   cargo xtask fleet render <repo> [--out <dir>]
   cargo xtask fleet check [--repo <repo>]...
-  cargo xtask fleet sync [--repo <repo>]... [--workdir <dir>] [--dry-run]";
+  cargo xtask fleet sync [--repo <repo>]... [--workdir <dir>] [--dry-run]
+  cargo xtask perf-ab [--base <busbar>] [--candidate <busbar>] [--conc 1,64,512] [--secs N] [--streams N] [--trend <file>] [--gate]";
 
 /// The environment variable the legacy release-gate scripts write their ledger through.
 const LEGACY_LEDGER_ENV: &str = "LEDGER";
@@ -49,8 +50,16 @@ const LEGACY_LEDGER_ENV: &str = "LEDGER";
 /// after `cargo xtask` as a gate name. These two are the exceptions: the runner that DRIVES the
 /// gates and the register that RECORDS the audit, neither of which has an owed row set. Listed
 /// here, beside the dispatch arms that prove it, so the reader and the dispatcher cannot drift.
-pub const NON_GATE_SUBCOMMANDS: &[&str] =
-    &["full-gate", "ledger", "conformance", "loc", "fleet", "root"];
+pub const NON_GATE_SUBCOMMANDS: &[&str] = &[
+    "full-gate",
+    "ledger",
+    "conformance",
+    "loc",
+    "fleet",
+    "root",
+    "perf-ab",
+    "perf-ab-mock",
+];
 
 pub fn main(args: &[String]) -> i32 {
     // `--root <dir>` (global, first): the tree every context opens over, in place of the current
@@ -108,6 +117,15 @@ pub fn main(args: &[String]) -> i32 {
             Ok(cx) => crate::fleet::main(&cx, &args[1..]),
             Err(code) => code,
         },
+        // THE SAME-MACHINE A/B (THE DESIGN §5; KERNEL<>PLUGINS C0, a report-only trend line from
+        // step 4, the pass/fail gate at steps 23/34/36). Not a gate: it RUNS two binaries and
+        // measures them, so it owns no row set; `--gate` is its own pass/fail. `perf-ab-mock` is the
+        // upstream it starts as a child process.
+        Some("perf-ab") => match open_ctx() {
+            Ok(cx) => crate::perf_ab::main(cx.root(), &args[1..]),
+            Err(code) => code,
+        },
+        Some("perf-ab-mock") => crate::perf_ab::mock_main(&args[1..]),
         Some("ledger") => match open_ctx() {
             Ok(cx) => crate::audit_cmd::main(cx.root(), &args[1..]),
             Err(code) => code,

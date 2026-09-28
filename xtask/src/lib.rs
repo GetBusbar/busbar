@@ -51,6 +51,7 @@ pub mod ledger;
 pub mod loc;
 pub mod manifest;
 pub mod parity;
+pub mod perf_ab;
 pub mod planes;
 pub mod rx;
 pub mod scan;
