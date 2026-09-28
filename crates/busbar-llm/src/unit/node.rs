@@ -110,6 +110,7 @@ use busbar_contract::caps::{
 use busbar_contract::slice::GroupLeaseSlip;
 use busbar_contract::LaneId;
 use busbar_kernel::{
+    door::admitted_at_zero,
     handlers::request_handler,
     ingress::arrival::{Arrival as ArrivalRequest, ArrivalCtx, ArrivalPayload},
     plane_host::PlaneAnswer,
@@ -600,10 +601,7 @@ impl Units for LlmUnit {
         // zero, for this principal — it never refused a unit the door admitted, and the spend is
         // the governance ledger's.
         match self.walk.take_admission(admitted) {
-            Ok(()) => Decision::proceed(
-                token,
-                busbar_kernel::door::admitted_at_zero(admit_token, principal.clone()),
-            ),
+            Ok(()) => Decision::proceed(token, admitted_at_zero(admit_token, principal.clone())),
             Err(refusal) => Decision::refuse(token, refusal),
         }
     }
