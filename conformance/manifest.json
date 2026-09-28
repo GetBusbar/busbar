@@ -1,7 +1,7 @@
 {
   "_generated": "by `cargo xtask gate conformance-sync --write`; DO NOT EDIT — the drift gate is fatal",
   "commit": "67ee7910305068c2c86ccd1811d4bd189973b45b",
-  "generated_at": "2026-09-19T14:05:00Z",
+  "generated_at": "2026-09-28T18:19:26Z",
   "release": "1.6.0",
   "schema": "busbar.conformance.manifest/1",
   "suites": [
@@ -42,9 +42,9 @@
       "claim": null,
       "plan": "2 typesafe SDK peers exercising /v1/systemone + /v1/models",
       "public": true,
-      "reason": "planned 1.6.0 — jev wiring stage in flight (MATRIX-RULING §jev)",
+      "reason": "not served: POST /v1/systemone answers 404, the absence code on this boot; the decisions plane is registered and configured but no route serves its operation (the kernel plane driver serves it)",
       "standard": "jev decision plane",
-      "status": "not-run",
+      "status": "fail",
       "suite": "jev",
       "tier": "conformant"
     },
