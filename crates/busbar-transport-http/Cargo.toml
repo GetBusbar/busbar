@@ -35,6 +35,8 @@ hyper-rustls = { workspace = true }
 http-body-util = { workspace = true }
 http = { workspace = true }
 bytes = { workspace = true }
+# The door's settings blob is JSON (`door::read_settings`).
+serde_json = { workspace = true }
 webpki-roots = { workspace = true }
 # THE gRPC MODULE (`src/grpc/`, folded in from `busbar-transport-grpc`).
 # `tonic` here is used ONLY for its codec/status/streaming machinery (`tonic::codec::Codec`,
@@ -49,6 +51,12 @@ tonic = { workspace = true }
 tower = { workspace = true }
 
 [dev-dependencies]
+# THE DOOR'S CONFORMANCE (`tests/conformance.rs`): a real hyper server on the far side of the
+# framer, and the dropped-in image (`examples/http_door.rs`) loaded beside the linked one.
+libloading = { workspace = true }
+# THE 1.5.5 BYTE COMPARISON (`tests/h2_parity.rs`): 1.5.5's egress client, reqwest 0.12 with its
+# `http2` feature, built exactly as 1.5.5 built it, captured beside this door on the same request.
+reqwest = { workspace = true, features = ["http2"] }
 # The TEST-ONLY seal (#65). `busbar_contract::plugin::TestKernelSeal` is the one blessed
 # fixture implementor of the SEALED `KernelSeal` trait; this crate's test harnesses used to
 # forge their own. Dev-only and feature-gated, so it is absent from every release build.
@@ -57,3 +65,8 @@ busbar-contract = { path = "../busbar-contract", features = ["test-seal"] }
 # release build: it lets the gRPC module's stalled-preface cases (item 146) prove the budget by
 # letting the runtime auto-advance virtual time to it, rather than actually waiting ten real seconds.
 tokio = { workspace = true, features = ["net", "rt-multi-thread", "sync", "io-util", "time", "macros", "test-util"] }
+
+# THE DROPPED-IN IMAGE: the same door, exported through the one symbol, built by `cargo test`.
+[[example]]
+name = "http_door"
+crate-type = ["cdylib"]

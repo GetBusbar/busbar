@@ -91,6 +91,10 @@ use tokio::sync::mpsc;
 use tokio::sync::Mutex as AsyncMutex;
 
 mod claims;
+// THE ABI BOUNDARY: the door reads and writes the host's C buffers, so it is the one module this
+// crate's `#![deny(unsafe_code)]` allows; every block in it states the host buffer it relies on.
+#[allow(unsafe_code)]
+pub mod door;
 mod meta;
 mod raw;
 mod transport;
