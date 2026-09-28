@@ -16,7 +16,7 @@
 //! so the word space is IDENTICAL across planes. An operator who learns the rule once should not
 //! discover that a name legal on one plane is a section knob on another. It is no longer a claim
 //! about two constants that agree: there is ONE declaration
-//! ([`busbar_kernel::plane::config::RESERVED_SECTION_KEYS`]), and this section is read by the shared split
+//! ([`busbar_contract::section::RESERVED_SECTION_KEYS`]), and this section is read by the shared split
 //! that consults it.
 //!
 //! ## `tools_allow` is a MAP, and that is the whole bound-identity rule compressed into one field
@@ -750,6 +750,44 @@ pub(crate) const DEFAULT_MAX_INPUT_REQUIRED_ROUNDS: u32 = 3;
 /// whatever this says.
 pub(crate) const DEFAULT_MAX_CALLER_ASK_ROUNDS: u32 = 3;
 
+/// THE KERNEL-OWNED TRUST KEYS of one `tools:` entry, declared for the kernel to parse and judge:
+/// the `pin:` object over this plane's four mechanisms (no fingerprint: an MCP server offers none an
+/// operator could approve out of band), and the `verify_ttl:` bound with its default. This plane has
+/// no recovery-backoff key; the kernel reads its absence as zero.
+pub(crate) const TRUST_KEYS: &[busbar_contract::plane::TrustKeyDecl] = &[
+    busbar_contract::plane::TrustKeyDecl {
+        key: "pin",
+        role: busbar_contract::plane::TrustRole::Pin,
+        fingerprint: false,
+        default: None,
+        mechanisms: &[
+            busbar_contract::plane::PinMechanismDecl {
+                token: "pinned_pubkey",
+                root: true,
+            },
+            busbar_contract::plane::PinMechanismDecl {
+                token: "cert_spki",
+                root: true,
+            },
+            busbar_contract::plane::PinMechanismDecl {
+                token: "mtls",
+                root: true,
+            },
+            busbar_contract::plane::PinMechanismDecl {
+                token: "unpinned",
+                root: false,
+            },
+        ],
+    },
+    busbar_contract::plane::TrustKeyDecl {
+        key: "verify_ttl",
+        role: busbar_contract::plane::TrustRole::ReverifyTtl,
+        fingerprint: false,
+        default: Some(DEFAULT_MCP_VERIFY_TTL),
+        mechanisms: &[],
+    },
+];
+
 /// THE DEPLOYMENT-WIDE MAX VERIFICATION STALENESS a registration gets when it spells no `verify_ttl:`.
 ///
 /// Deliberately the same `5s` as the sibling A2A plane's `DEFAULT_REVERIFY_TTL` (a2a/config.rs),
@@ -1059,7 +1097,7 @@ pub(crate) enum ChildEnvValue {
 /// a config apply can be recognised as a no-op.
 impl Eq for ChildEnvValue {}
 
-/// The top-level `tools:` map, carrying the two [`busbar_kernel::plane::config::RESERVED_SECTION_KEYS`]
+/// The top-level `tools:` map, carrying the two [`busbar_contract::section::RESERVED_SECTION_KEYS`]
 /// alongside the servers.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ToolsCfg {
@@ -1124,7 +1162,7 @@ impl<'de> Deserialize<'de> for ToolsCfg {
         // the file rejects.
         // The neutral substrate split, called with THIS plane's own section/noun consts (a standalone
         // plane holds no plane registry to look up); byte-identical to the core wrapper's forward.
-        let section = busbar_kernel::plane::config::split_section::<D, McpServerDefCfg>(
+        let section = busbar_contract::section::split_section::<D, McpServerDefCfg>(
             deserializer,
             super::PLANE_DECLARATION.config_section,
             super::PLANE_DECLARATION.subject_noun,
@@ -1523,31 +1561,8 @@ pub fn validate_server(name: &str, def: &McpServerDefCfg) -> Result<(), String> 
 
     validate_endpoint(&at, def)?;
 
-    // THE PIN, matched against the material its mechanism needs. This is the rule the object form
-    // exists to make expressible.
-    let has_key = def.pin.key.as_deref().is_some_and(|k| !k.trim().is_empty());
-    if def.pin.mechanism.is_a_root() && !has_key {
-        return Err(format!(
-            "{at}: `pin.mechanism: {}` needs `pin.key:` — the out-of-band material this \
-             registration is verified against. A pin with nothing to verify with is not a pin.",
-            def.pin.mechanism.token()
-        ));
-    }
-    if !def.pin.mechanism.is_a_root() && has_key {
-        return Err(format!(
-            "{at}: `pin.mechanism: unpinned` must not carry `pin.key:`. `unpinned` means there is \
-             no authenticity root; key material that is never verified against reads to an operator \
-             as protection that does not exist. Name the real mechanism, or drop the key."
-        ));
-    }
-
-    // The bound is parsed at BOOT, so a malformed `verify_ttl:` lands on the operator who wrote it
-    // rather than silently falling back to a default later — a defence that quietly uses a bound the
-    // operator did not write is a defence whose behaviour nobody can predict.
-    if let Some(ttl) = def.verify_ttl.as_deref() {
-        busbar_contract::duration::parse_duration_secs(ttl)
-            .map_err(|e| format!("{at}: `verify_ttl:` {e}"))?;
-    }
+    // THE PIN and the `verify_ttl:` bound are not judged here: they are the kernel's trust keys
+    // ([`TRUST_KEYS`]), judged by the kernel before the section reaches this plane.
 
     // The DEADLINE is parsed at boot for the same reason, and `0` is refused rather than accepted
     // as "no deadline": a zero-second budget would refuse every call to this server on the first
@@ -1790,25 +1805,8 @@ pub fn validate_server(name: &str, def: &McpServerDefCfg) -> Result<(), String> 
         }
     }
 
-    // THE PARSE-TIME PLANE BOUNDARY, owned by `plane::config` and called with this plane's own
-    // wording for the site. The rule that most needs to be identical on both planes is now one
-    // function rather than two copies that agreed only because one was pasted from the other.
-    //
-    // The cross-plane list is read back through the NEUTRAL provider seam
-    // (`busbar_kernel::plane::config::plane_sections`), which the composition root (and, under
-    // `test-support`, the plane test-kit's `install_test_seams`) binds to core's registry-coupled
-    // `config_sections` fold — so this plane reads the whole section list without naming
-    // `busbar_kernel`. Standalone (`not(feature = "test-support")`) binds no provider and never drives
-    // config resolution anyway — the plane runs inside busbar-core — so the standalone arm falls back
-    // to this plane's own section, the only one a standalone build knows; it is unreachable in
-    // practice, and no cross-plane reference is possible when only one plane exists.
-    #[cfg(feature = "test-support")]
-    let sections = busbar_kernel::plane::config::plane_sections();
-    #[cfg(not(feature = "test-support"))]
-    let sections = vec![super::PLANE_DECLARATION.config_section];
-    for hook in &def.hooks {
-        busbar_kernel::plane::config::refuse_cross_plane_reference(&at, hook, &sections)?;
-    }
+    // A hook reference reaching onto another plane is refused by the kernel, which sees every
+    // plane's section; this plane sees only its own.
     Ok(())
 }
 
@@ -2058,6 +2056,17 @@ pub(crate) fn template_parameter_names(template: &str) -> Vec<String> {
         rest = &after[close + 1..];
     }
     out
+}
+
+/// Boot's whole judgement of one registration, for tests: the kernel's (the declared trust keys and
+/// the hook references), then this plane's value rules, in that order.
+#[cfg(all(test, feature = "test-support"))]
+pub(crate) fn validate_server_at_boot(name: &str, def: &McpServerDefCfg) -> Result<(), String> {
+    use busbar_kernel::plane::config as kernel;
+    let entry = serde_yaml::to_value(def).map_err(|e| e.to_string())?;
+    let section = super::PLANE_DECLARATION.config_section;
+    kernel::validate_plane_entry(section, name, &entry, TRUST_KEYS, &kernel::plane_sections())?;
+    validate_server(name, def)
 }
 
 #[cfg(all(test, feature = "test-support"))]

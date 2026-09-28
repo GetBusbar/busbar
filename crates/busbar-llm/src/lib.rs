@@ -278,6 +278,7 @@ pub const PLANE_DECLARATION: busbar_contract::plane::PlaneDeclaration =
         // section, and every model resolves its upstream through `providers`. A build that links
         // this plane refuses a document missing either, with the config grammar's own message.
         required_config_sections: &[Kind::Transport.root(), "models"],
+        trust_keys: &[],
     };
 
 /// THE PLANE'S BEHAVIOUR — every hook the kernel runs for it, handed over BESIDE

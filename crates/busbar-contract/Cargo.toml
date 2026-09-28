@@ -105,6 +105,9 @@ crate-type = ["cdylib"]
 [dependencies]
 serde = { workspace = true }
 serde_json = { workspace = true }
+# The section-map split (`section`) reads a plane's section as YAML values, in insertion order.
+serde_yaml = { workspace = true }
+indexmap = { workspace = true }
 async-trait = { workspace = true }
 futures = { workspace = true }
 smallvec = { workspace = true }

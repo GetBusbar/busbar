@@ -4,9 +4,17 @@
 //! The `agents:` section's grammar, and the value rules that make the object pin worth having.
 
 use crate::a2a::config::{
-    policy_for, validate_agent, AgentDefCfg, AgentPinCfg, AgentsCfg, PinMechanism,
-    DEFAULT_REVERIFY_TTL,
+    policy_for, AgentDefCfg, AgentPinCfg, AgentsCfg, PinMechanism, DEFAULT_REVERIFY_TTL, TRUST_KEYS,
 };
+use busbar_kernel::plane::config::{plane_sections, validate_plane_entry, validate_plane_section};
+
+/// Boot's whole judgement of one registration: the kernel's (the declared trust keys and the hook
+/// references), then this plane's value rules, in that order.
+fn validate_agent(name: &str, def: &AgentDefCfg) -> Result<(), String> {
+    let entry = serde_yaml::to_value(def).expect("a registration serialises");
+    validate_plane_entry("agents", name, &entry, TRUST_KEYS, &plane_sections())?;
+    crate::a2a::config::validate_agent(name, def)
+}
 
 /// The section-level attach list as `config_validate` judges it: the shared rule in
 /// `plane::config`, called with THIS plane's wording and the DERIVED section list. The wrapper
@@ -50,6 +58,7 @@ static POOLS_PLANE_STANDIN: busbar_kernel::plane::registry::PlaneDecl =
             metric_families: &[],
             record_kinds: &[],
             required_config_sections: &[],
+            trust_keys: &[],
             served_op_classes: &[],
         },
         wire_format_names: || &["pools_standin"],
@@ -86,8 +95,40 @@ fn declared_pin(def: &AgentDefCfg) -> Option<CardPin> {
     busbar_kernel::trust::declared::declared_pin::<CardPin>(def.pin.declaration())
 }
 
+/// The section as boot reads it: the kernel's judgement of the keys it owns, then this plane's parse.
 fn parse(yaml: &str) -> Result<AgentsCfg, String> {
+    let value: serde_yaml::Value = serde_yaml::from_str(yaml).map_err(|e| e.to_string())?;
+    validate_plane_section("agents", &value, TRUST_KEYS, &plane_sections())?;
     serde_yaml::from_str::<AgentsCfg>(yaml).map_err(|e| e.to_string())
+}
+
+/// The mechanisms this plane declares to the kernel are exactly its own, each with the root-ness
+/// its grammar gives it, and the cadence defaults are the named ones.
+#[test]
+fn the_declared_trust_keys_match_this_planes_grammar() {
+    let pin = &TRUST_KEYS[0];
+    assert_eq!(pin.key, "pin");
+    let all = [
+        PinMechanism::JwsIssuerKey,
+        PinMechanism::CertKeyPin,
+        PinMechanism::MutualTls,
+        PinMechanism::Unpinned,
+    ];
+    assert_eq!(pin.mechanisms.len(), all.len());
+    for m in all {
+        let declared = pin
+            .mechanisms
+            .iter()
+            .find(|d| d.token == m.token())
+            .unwrap_or_else(|| panic!("`{}` is declared", m.token()));
+        assert_eq!(declared.root, m.is_a_root(), "{}", m.token());
+    }
+    assert_eq!(TRUST_KEYS[1].default, Some(DEFAULT_REVERIFY_TTL));
+    assert_eq!(
+        busbar_contract::duration::parse_duration_secs(TRUST_KEYS[2].default.unwrap()).unwrap()
+            * 1_000,
+        crate::a2a::config::DEFAULT_RECOVERY_BACKOFF_MS
+    );
 }
 
 fn signed(fingerprint: Option<&str>) -> AgentDefCfg {
@@ -353,11 +394,11 @@ fn a_bare_hook_name_is_accepted_on_both_lists() {
 /// An agent may not be NAMED by a reserved word, in either spelling.
 ///
 /// The word SET is no longer a per-plane constant to compare against the pool plane's — there is one
-/// declaration, `plane::config::RESERVED_SECTION_KEYS`, and this section is read through the shared
+/// declaration, `busbar_contract::section::RESERVED_SECTION_KEYS`, and this section is read through the shared
 /// split that consults it. What stays testable is that every word in it is refused HERE.
 #[test]
 fn an_agent_may_not_be_named_by_a_reserved_word() {
-    for reserved in busbar_kernel::plane::config::RESERVED_SECTION_KEYS {
+    for reserved in busbar_contract::section::RESERVED_SECTION_KEYS {
         let err = parse(&format!(
             "{reserved}:\n  url: \"https://x/\"\n  pin: {{ mechanism: unpinned }}\n"
         ))

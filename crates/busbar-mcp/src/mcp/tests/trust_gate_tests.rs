@@ -230,7 +230,7 @@ fn a_keyed_mechanism_with_no_material_is_refused_where_the_deleted_decision_admi
     let def = c.servers.get("fs").expect("fixture server");
 
     // It cannot BOOT: the registration is refused where an operator finds out, at config load.
-    let err = crate::mcp::config::validate_server("fs", def)
+    let err = crate::mcp::config::validate_server_at_boot("fs", def)
         .expect_err("a keyed mechanism with no material must be refused at boot");
     assert!(
         err.contains("pin.key"),

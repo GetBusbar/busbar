@@ -51,46 +51,25 @@
 //! Neither subsumes the other: this one fires on a name nothing defines, and that one fires on a
 //! name with no dot in it. Collapsing them would not deduplicate a check, it would delete one.
 //!
-//! ## THE SECTION SPLIT, and why it is here rather than once per plane
+//! ## THE SECTION SPLIT lives in the contract
 //!
-//! Every plane's named-definition section is a SIBLING OF ONE SHAPE — that is the sentence every one
-//! of the plane-local section modules opens with — and the shape is: a map whose keys are
-//! registrations, except for the two words reserved at the section level on EVERY plane
-//! ([`busbar_kernel::plane::config::RESERVED_SECTION_KEYS`]), which are lifted out first as the
-//! all-plane `hooks:` attach (a LIST, so ADDITIVE) and the all-plane `upstream_credentials:` default
-//! (a SCALAR, so OVERRIDE).
+//! The section-map split a plane reads its own section with ([`busbar_contract::section`]: the
+//! reserved-key refusals, the two typed lifts and their order) is a pure, stateless helper in
+//! `busbar-contract`, so a plane reads its section without naming the kernel. The kernel keeps only
+//! the thin [`split_section_for_plane`] wrapper that turns a plane KEY into the section/noun words.
 //!
-//! That shape was READ ONCE PER PLANE — this crate's own top-level registry section and each
-//! plane-local section type each carried its own `Deserialize` doing the same six steps in the
-//! same order: refuse a reserved key holding a MAPPING before the typed lifts (so the operator reads
-//! "that name is reserved" instead of "expected a sequence"), lift `hooks`, lift
-//! `upstream_credentials`, then walk the remainder refusing a reserved NAME, parse each value and
-//! run the plane's value rules. One copy of a parse ORDER per plane is the shape this repo's plane
-//! ledger calls DEBT, and it is the dangerous kind: the pre-lift refusal is the step a new plane
-//! would be likeliest to omit, and omitting it does not fail — it produces a confusing type error on
-//! a config that should have been named.
+//! ## THE KERNEL JUDGES EVERY PLANE'S SECTION AT BOOT
 //!
-//! So [`split_section`] owns the ORDER and every SENTENCE, and a plane supplies the only three
-//! things that genuinely differ: WHICH plane it is (the section word and the noun an operator reads
-//! back both come off the plane's own decl, so there is no second vocabulary to keep in step), the
-//! TYPE one registration parses into, and its own VALUE RULES. Everything a plane keeps after that
-//! is a rule about ITS OWN values — which is why each plane-local section module shares this
-//! module's shape and nothing else.
+//! A plane sees only its own section, so it cannot judge a reference against the others. The
+//! cross-plane refusal therefore runs in the kernel, over every loaded plane's declared section,
+//! before the section reaches the plane ([`validate_plane_section`]). The same pass judges the keys a
+//! plane declares as kernel-owned trust keys ([`crate::trust::section`]), which the plane's own
+//! validator no longer reads. Each registration is judged in order: its trust keys in declaration
+//! order, then its `hooks:` list. A key whose shape is wrong is left for the plane's own parse to
+//! refuse in its own words.
 
 use busbar_contract::plugin::Kind;
 use serde::Deserialize;
-
-// Phase-C config-seam: the NEUTRAL config-seam contracts moved to `busbar_kernel::plane::config`
-// (they name only `busbar_contract::secret_ref::SecretRef` + `serde_json`/`std`). Core re-exports them so its own call
-// sites — and every `crate::plane::config::{PlaneCfg, PlaneEndpointCfg, ContainerGateInputs,
-// refuse_cross_plane_reference}` reach in `config/mod.rs`, a plane crate's own config module,
-// `registry.rs` — are unchanged. The neutral section-map split (`split_section`, its `Section`, the
-// reserved-key literal) ALSO moved to substrate; core keeps only the thin `split_section` WRAPPER
-// below that turns a plane key into the section/noun words via `super::registry`, plus
-// `config_sections`, which reaches that registry.
-// `judge_hook_ref`/`HookRefError` are reached only by this module's `#[cfg(test)]` config tests now
-// that their one production caller (`refuse_cross_plane_reference`) moved to substrate — gate the
-// re-export to test builds so it is not an unused import under `-D warnings`.
 
 /// A PLANE'S TOP-LEVEL CONFIG SECTION, CAPTURED RAW — the neutral carrier `DeployCfg`/`RootCfg` use
 /// for a plane's section in a build where the plane that would LOWER it is compiled out.
@@ -228,10 +207,16 @@ where
     D: serde::Deserializer<'de>,
 {
     let value = serde_yaml::Value::deserialize(deserializer)?;
-    match crate::plane::registry::plane_decl_for_config_section(config_section)
-        .and_then(|d| d.parse_section)
-    {
-        Some(parse) => parse(&value).map_err(serde::de::Error::custom),
+    let decl = crate::plane::registry::plane_decl_for_config_section(config_section);
+    match decl.and_then(|d| d.parse_section.map(|parse| (d, parse))) {
+        Some((d, parse)) => {
+            // The kernel reads the keys it owns before the section reaches the plane: the trust
+            // keys the plane declares and every registration's hook references, on the same error
+            // channel the plane's own refusals ride.
+            validate_plane_section(config_section, &value, d.trust_keys, &config_sections())
+                .map_err(serde::de::Error::custom)?;
+            parse(&value).map_err(serde::de::Error::custom)
+        }
         None => {
             let raw = if value.is_null() { None } else { Some(value) };
             Ok(Box::new(RawPlaneSection { raw }))
@@ -397,6 +382,58 @@ pub fn config_sections_from(decls: &[&'static super::registry::PlaneDecl]) -> Ve
     out
 }
 
+/// THE KERNEL'S BOOT JUDGEMENT OF ONE PLANE SECTION, run before the section reaches its plane: every
+/// registration, in section order, through [`validate_plane_entry`]. The reserved section
+/// words are not registrations and are skipped; the section-level `hooks:` list is judged where every
+/// other cross-reference is, at resolve.
+///
+/// `trust_keys` is the plane's declaration of its kernel-owned trust keys; `sections` is every
+/// section the config grammar declares ([`config_sections`]).
+///
+/// # Errors
+///
+/// The first registration's refusal.
+pub fn validate_plane_section(
+    section: &str,
+    value: &serde_yaml::Value,
+    trust_keys: &[busbar_contract::plane::TrustKeyDecl],
+    sections: &[&'static str],
+) -> Result<(), String> {
+    for (name, entry) in crate::trust::section::registrations(value) {
+        validate_plane_entry(section, name, entry, trust_keys, sections)?;
+    }
+    Ok(())
+}
+
+/// THE KERNEL'S JUDGEMENT OF ONE REGISTRATION: its declared trust keys' values
+/// ([`crate::trust::section::judge_entry`], in declaration order), then each name in its `hooks:`
+/// list ([`refuse_cross_plane_reference`]). Boot runs it per registration; the admin write path runs
+/// it on the one definition it is about to persist, so both refuse the same definitions.
+///
+/// # Errors
+///
+/// The sentence an operator reads, worded at `` `<section>.<name>` ``.
+pub fn validate_plane_entry(
+    section: &str,
+    name: &str,
+    entry: &serde_yaml::Value,
+    trust_keys: &[busbar_contract::plane::TrustKeyDecl],
+    sections: &[&'static str],
+) -> Result<(), String> {
+    let at = format!("`{section}.{name}`");
+    crate::trust::section::judge_entry(&at, entry, trust_keys)?;
+    let hooks = entry
+        .as_mapping()
+        .and_then(|m| m.get("hooks"))
+        .and_then(serde_yaml::Value::as_sequence);
+    for hook in hooks.into_iter().flatten() {
+        if let Some(hook) = hook.as_str() {
+            refuse_cross_plane_reference(&at, hook, sections)?;
+        }
+    }
+    Ok(())
+}
+
 /// A whole attach list, judged by the same rule one entry is — the SECTION-level `hooks:` list has
 /// no per-entry parse to hang off, and a looser rule there would be a hole in exactly the place an
 /// operator attaches a hook to everything.
@@ -411,15 +448,8 @@ pub fn validate_section_hooks(
     Ok(())
 }
 
-// THE SECTION-MAP SPLIT and its `Section<T>` carrier relocated to `busbar_kernel::plane::config`
-// (the neutral half — the reserved-key refusals + the two typed lifts, taking its section/noun WORDS
-// as params so it names no plane registry). Re-exported here so `crate::plane::config::Section` still
-// resolves; the core `split_section` below is the thin wrapper that supplies the words from the plane
-// registry so core's own callers (this crate's own top-level registry section) pass a plane KEY
-// unchanged.
-
 /// THE SECTION-MAP SPLIT for core's callers: turn a plane KEY into the section/noun WORDS via the
-/// plane registry, then hand off to the neutral [`busbar_kernel::plane::config::split_section`].
+/// plane registry, then hand off to the neutral [`busbar_contract::section::split_section`].
 ///
 /// `plane_key` supplies the WORDS (its decl's `config_section` and `subject_noun`) so no caller
 /// carries a second vocabulary for its own section; `validate` is the plane's VALUE RULES, run on
@@ -427,7 +457,7 @@ pub fn validate_section_hooks(
 /// the same definitions — the ONE GRAMMAR, TWO PATHS rule. A plane with no value rules passes
 /// `|_, _| Ok(())`.
 ///
-/// An extracted plane crate skips this wrapper and calls the substrate split directly with its OWN
+/// An extracted plane crate skips this wrapper and calls `busbar_contract::section::split_section` with its OWN
 /// `PLANE_DECLARATION.config_section` / `subject_noun` consts — it holds no plane registry to look up.
 ///
 /// `plane_key` is normally [`super::fallback_key`]'s answer for the `pools:` section's one caller —
@@ -441,7 +471,7 @@ pub fn split_section_for_plane<'de, D, T>(
     deserializer: D,
     plane_key: &'static str,
     validate: impl Fn(&str, &T) -> Result<(), String>,
-) -> Result<Section<T>, D::Error>
+) -> Result<busbar_contract::section::Section<T>, D::Error>
 where
     D: serde::Deserializer<'de>,
     T: serde::de::DeserializeOwned,
@@ -455,7 +485,7 @@ where
              section from the config"
         ))
     })?;
-    busbar_kernel::plane::config::split_section(
+    busbar_contract::section::split_section(
         deserializer,
         d.config_section,
         d.subject_noun,
@@ -466,6 +496,10 @@ where
 #[cfg(test)]
 #[path = "tests/config_tests.rs"]
 mod config_tests;
+
+#[cfg(test)]
+#[path = "tests/boot_validation_tests.rs"]
+mod boot_validation_tests;
 
 // ==== merged from busbar-substrate (W4.b P2 engine drain) ====
 /// A PLANE'S CONFIG SECTION, ASKED FOR ITS OWN SECRETS — so core enumerates a plane's credential
@@ -781,141 +815,4 @@ pub fn attach_list(section: &[String], own: &[String]) -> Vec<String> {
         }
     }
     out
-}
-
-// ── THE SECTION-MAP SPLIT ────────────────────────────────────────────────────────────────────────
-//
-// The reserved-key refusals + the two typed lifts (`hooks:` / `upstream_credentials:`) a plane's
-// top-level section is read into, plus the reserved-key literal and the operator refusal sentence.
-// Relocated here from `busbar_kernel::plane::config` so an extracted plane crate reads its own section
-// without naming core: the ONE registry coupling — the `PlaneDecl` lookup that turned a plane key
-// into the section/noun WORDS — is lifted OUT into a param pair the caller supplies (a plane passes
-// its own `PLANE_DECLARATION.config_section` / `subject_noun` consts), so this half names only `serde` +
-// `indexmap` + `busbar_contract::config::UpstreamCreds` and no registry. Core wraps it with the lookup for its own
-// callers (`config::split_section(deserializer, plane_key, validate)`), so those are unchanged.
-
-/// THE TWO WORDS RESERVED AT EVERY PLANE SECTION'S TOP LEVEL: the all-plane `hooks:` attach list and
-/// the `upstream_credentials:` default. Every other key is a registration.
-///
-/// THE ONE declaration of the pair, now that the split that reads it lives here: core re-exports it as
-/// both `crate::plane::config::RESERVED_SECTION_KEYS` and `crate::config::RESERVED_POOLS_SECTION_KEYS`,
-/// so there is still a single `&["hooks", "upstream_credentials"]` literal in the tree and a word
-/// cannot come to be reserved on one plane and free on another.
-pub const RESERVED_SECTION_KEYS: &[&str] = &["hooks", "upstream_credentials"];
-
-/// One plane's top-level section, split into its two reserved knobs and its registrations.
-///
-/// Insertion-ordered, because catalogue construction and every operator-facing listing read it and a
-/// hash-ordered listing is a listing that changes between runs for no reason. A plane that wants
-/// another container converts once, at the end, where the conversion is visible.
-pub struct Section<T> {
-    /// The reserved `<section>.hooks:` all-plane attach list. LIST ⇒ ADDITIVE.
-    pub hooks: Vec<String>,
-    /// The reserved `<section>.upstream_credentials:` all-plane default. SCALAR ⇒ OVERRIDE.
-    pub upstream_credentials: Option<busbar_contract::config::UpstreamCreds>,
-    /// The registrations — every key that is not one of [`RESERVED_SECTION_KEYS`].
-    pub entries: indexmap::IndexMap<String, T>,
-}
-
-/// THE SECTION-MAP SPLIT, and the only copy of it: read one plane's top-level section into its two
-/// reserved knobs and its registrations, in the one order all three planes are read in.
-///
-/// `section` / `noun` supply the WORDS for the operator sentences (a plane passes its own decl's
-/// `config_section` and `subject_noun`), so no caller carries a second vocabulary for its own section
-/// and the split names no plane registry; `validate` is the plane's VALUE RULES, run on each entry as
-/// it is parsed, so the file and the admin write path refuse the same definitions — the ONE GRAMMAR,
-/// TWO PATHS rule. A plane with no value rules passes `|_, _| Ok(())`.
-///
-/// The REFUSAL ORDER is the load-bearing part. A reserved key holding a MAPPING is somebody trying to
-/// define a registration by that name, and it is refused BEFORE the typed lifts so the operator reads
-/// "that name is reserved" rather than "expected a sequence" — the diagnosis is different, and the
-/// confusing one costs an operator an afternoon.
-pub fn split_section<'de, D, T>(
-    deserializer: D,
-    section: &'static str,
-    noun: &'static str,
-    validate: impl Fn(&str, &T) -> Result<(), String>,
-) -> Result<Section<T>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-    T: serde::de::DeserializeOwned,
-{
-    use serde::de::Error as _;
-    use serde::Deserialize as _;
-
-    let mut raw: indexmap::IndexMap<String, serde_yaml::Value> =
-        indexmap::IndexMap::deserialize(deserializer)?;
-
-    // BEFORE the typed lifts, for the reason in the doc above.
-    for reserved in RESERVED_SECTION_KEYS {
-        if raw
-            .get(*reserved)
-            .is_some_and(|v| matches!(v, serde_yaml::Value::Mapping(_)))
-        {
-            return Err(D::Error::custom(reserved_name_refusal(
-                section, noun, reserved,
-            )));
-        }
-    }
-
-    let hooks: Vec<String> = match raw.shift_remove("hooks") {
-        None => Vec::new(),
-        Some(v) => Vec::<String>::deserialize(v).map_err(|e| {
-            D::Error::custom(format!(
-                "the reserved `{section}.hooks:` all-{section} attach must be a list of hook \
-                 names: {e}"
-            ))
-        })?,
-    };
-    // THE SENTENCE IS 1.5.5's, TO THE BYTE, with the section word substituted in — the same rule
-    // the reserved-name refusal below is held to. `must be a credential mode (`own` or
-    // `passthrough`)` says no more than `must be `own` or `passthrough`` and says it in different
-    // bytes, and different bytes are what an operator's log alert notices.
-    let upstream_credentials = match raw.shift_remove("upstream_credentials") {
-        None => None,
-        Some(v) => Some(
-            busbar_contract::config::UpstreamCreds::deserialize(v).map_err(|e| {
-                D::Error::custom(format!(
-                    "the reserved `{section}.upstream_credentials:` all-{section} default must be \
-                 `own` or `passthrough`: {e}"
-                ))
-            })?,
-        ),
-    };
-
-    let mut entries = indexmap::IndexMap::new();
-    for (name, value) in raw {
-        // The well-typed spellings are gone; this catches the map-valued "I meant a registration"
-        // one with a precise message instead of a type error.
-        if RESERVED_SECTION_KEYS.contains(&name.as_str()) {
-            return Err(D::Error::custom(reserved_name_refusal(
-                section, noun, &name,
-            )));
-        }
-        let def: T = T::deserialize(value).map_err(D::Error::custom)?;
-        validate(&name, &def).map_err(D::Error::custom)?;
-        entries.insert(name, def);
-    }
-
-    Ok(Section {
-        hooks,
-        upstream_credentials,
-        entries,
-    })
-}
-
-/// THE SENTENCE an operator reads when they name a registration with a reserved section word,
-/// written once for all three planes and for both spellings that reach it.
-///
-/// IT IS 1.5.5's SENTENCE, TO THE BYTE, with `pools:`/`pool` substituted in — the wording an
-/// operator's runbook, log alert and CI grep were written against. The generalisation to the other
-/// planes is the section/noun substitution and NOTHING ELSE: a clause this refusal did not carry in
-/// 1.5.5 (however true) changes the line a matcher matches, so it stays out. It names the section,
-/// what the two words ARE, and what to do instead.
-fn reserved_name_refusal(section: &str, noun: &str, name: &str) -> String {
-    format!(
-        "a {noun} may not be named `{name}`: that key is RESERVED at the \
-         `{section}:` section level (the all-{section} `hooks:` attach list and \
-         `upstream_credentials:` default). Rename the {noun}."
-    )
 }

@@ -27,6 +27,7 @@ fn decl(key: &'static str, families: &'static [MetricFamily]) -> PlaneDeclaratio
         metric_families: families,
         record_kinds: &[],
         required_config_sections: &[],
+        trust_keys: &[],
         served_op_classes: &[],
     }
 }

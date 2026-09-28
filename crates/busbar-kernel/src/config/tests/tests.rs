@@ -3561,7 +3561,7 @@ fn additive_hook_lists_dedupe_at_first_position() {
 fn pools_reserved_section_keys_are_frozen() {
     crate::test_support::register_neutral_test_plane();
     assert_eq!(
-        busbar_kernel::plane::config::RESERVED_SECTION_KEYS,
+        busbar_contract::section::RESERVED_SECTION_KEYS,
         ["hooks", "upstream_credentials"],
         "the `pools:` reserved-key set is CLOSED. A new all-scope knob must go under a reserved \
          `defaults:` sub-key, never a new top-level reserved word — adding one would turn a \
@@ -3569,7 +3569,7 @@ fn pools_reserved_section_keys_are_frozen() {
     );
 
     // BOTH reserved words are rejected as pool names, with a message that says why.
-    for reserved in busbar_kernel::plane::config::RESERVED_SECTION_KEYS {
+    for reserved in busbar_contract::section::RESERVED_SECTION_KEYS {
         let err = serde_yaml::from_str::<crate::config::PoolsCfg>(&format!(
             "{reserved}:\n  members: [ {{ model: a }} ]\n"
         ))
@@ -4243,6 +4243,7 @@ static CARD_PLANE: crate::plane::registry::PlaneDecl = crate::plane::registry::P
         metric_families: &[],
         record_kinds: &[],
         required_config_sections: &[],
+        trust_keys: &[],
         served_op_classes: &[],
     },
     wire_format_names: || &[],
@@ -4398,6 +4399,7 @@ const fn requiring_plane(required: &'static [&'static str]) -> crate::plane::reg
             metric_families: &[],
             record_kinds: &[],
             required_config_sections: required,
+            trust_keys: &[],
             served_op_classes: &[],
         },
         wire_format_names: || &[],

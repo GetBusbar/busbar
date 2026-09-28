@@ -15,7 +15,7 @@
 //! `hooks` and `upstream_credentials` are reserved at the section level here for the same reason
 //! they are on `pools:` — so the word space is IDENTICAL across planes. An operator who learns the
 //! rule once should not discover that a name legal on one plane is a section knob on another. There
-//! is ONE declaration of the pair ([`busbar_kernel::plane::config::RESERVED_SECTION_KEYS`]) and one reader
+//! is ONE declaration of the pair ([`busbar_contract::section::RESERVED_SECTION_KEYS`]) and one reader
 //! of it, so that cannot drift. The reserved set is closed; a new A2A knob lands under a per-entry
 //! key, never as a new section word.
 //!
@@ -24,8 +24,9 @@
 //! A2A's authenticity root is a JWS issuer key PLUS a card fingerprint, and where a card carries no
 //! signature it degrades to a transport binding. That is four mechanisms carrying different
 //! material, and a scalar `pin_hash:` can spell exactly one of them. So `pin:` is
-//! `{mechanism, key?, fingerprint?}` and the mechanism is checked against the material it requires,
-//! here, at parse. A registration cannot claim `jws_issuer_key` and carry nothing to verify with.
+//! `{mechanism, key?, fingerprint?}` and the mechanism is checked against the material it requires
+//! at parse, by the kernel: the pin is a kernel trust key ([`TRUST_KEYS`]). A registration cannot
+//! claim `jws_issuer_key` and carry nothing to verify with.
 //!
 //! `unpinned` is accepted and named out loud rather than being spelled as an absent field, because
 //! an operator reading a list of registrations needs to SEE which entries have no root. It is legal
@@ -43,9 +44,10 @@
 //!
 //! ## Cross-plane reference is refused, not ignored
 //!
-//! An `agents:` entry may name hooks. It may not name a pool, a tool, or another agent. The
-//! validator says so rather than silently dropping the reference, because a dropped reference is an
-//! operator believing a control is attached that is not.
+//! An `agents:` entry may name hooks. It may not name a pool, a tool, or another agent. The kernel's
+//! boot validation, which sees every plane's section, says so rather than silently dropping the
+//! reference, because a dropped reference is an operator believing a control is attached that is
+//! not.
 
 // PARTLY UNMOUNTED. Everything here is driven by boot and by the admin write path except
 // [`AgentPinCfg::declaration`], the projection [`busbar_kernel::trust::declared`] reads this plane's pin
@@ -83,6 +85,51 @@ pub(crate) const DEFAULT_REVERIFY_TTL: &str = "5s";
 /// be flaky for boring reasons, but the boring explanation and the hostile one look identical from
 /// here, so it is not what an unconfigured deployment gets.
 pub(crate) const DEFAULT_RECOVERY_BACKOFF_MS: u64 = 15 * 60 * 1_000;
+
+/// THE KERNEL-OWNED TRUST KEYS of one `agents:` entry, declared for the kernel to parse and judge:
+/// the `pin:` object (with its optional `fingerprint`) over this plane's four mechanisms, and the two
+/// cadence durations with their defaults. Declaration order is judgement order.
+pub(crate) const TRUST_KEYS: &[busbar_contract::plane::TrustKeyDecl] = &[
+    busbar_contract::plane::TrustKeyDecl {
+        key: "pin",
+        role: busbar_contract::plane::TrustRole::Pin,
+        fingerprint: true,
+        default: None,
+        mechanisms: &[
+            busbar_contract::plane::PinMechanismDecl {
+                token: "jws_issuer_key",
+                root: true,
+            },
+            busbar_contract::plane::PinMechanismDecl {
+                token: "cert_spki",
+                root: true,
+            },
+            busbar_contract::plane::PinMechanismDecl {
+                token: "mtls",
+                root: true,
+            },
+            busbar_contract::plane::PinMechanismDecl {
+                token: "unpinned",
+                root: false,
+            },
+        ],
+    },
+    busbar_contract::plane::TrustKeyDecl {
+        key: "reverify_ttl",
+        role: busbar_contract::plane::TrustRole::ReverifyTtl,
+        fingerprint: false,
+        default: Some(DEFAULT_REVERIFY_TTL),
+        mechanisms: &[],
+    },
+    busbar_contract::plane::TrustKeyDecl {
+        key: "recovery_backoff",
+        role: busbar_contract::plane::TrustRole::RecoveryBackoff,
+        fingerprint: false,
+        // The same fifteen minutes as `DEFAULT_RECOVERY_BACKOFF_MS`.
+        default: Some("15m"),
+        mechanisms: &[],
+    },
+];
 
 /// THE REFUSAL FOR `upstream_credentials: passthrough` ON THIS PLANE, written once so the per-entry
 /// and section-level paths cannot say different things about the same rule.
@@ -274,7 +321,7 @@ pub struct AgentDefCfg {
     pub hooks: Vec<String>,
 }
 
-/// The top-level `agents:` map, carrying the two [`busbar_kernel::plane::config::RESERVED_SECTION_KEYS`]
+/// The top-level `agents:` map, carrying the two [`busbar_contract::section::RESERVED_SECTION_KEYS`]
 /// alongside the agents.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct AgentsCfg {
@@ -298,7 +345,7 @@ impl<'de> Deserialize<'de> for AgentsCfg {
         // stays here is what is genuinely this plane's: `validate_agent`, run through the same
         // function the admin write path calls so the API rejects exactly what the file rejects, and
         // the passthrough refusal below.
-        let section = busbar_kernel::plane::config::split_section::<D, AgentDefCfg>(
+        let section = busbar_contract::section::split_section::<D, AgentDefCfg>(
             deserializer,
             super::PLANE_DECLARATION.config_section,
             super::PLANE_DECLARATION.subject_noun,
@@ -467,23 +514,9 @@ pub fn validate_agent(name: &str, def: &AgentDefCfg) -> Result<(), String> {
         ));
     }
 
-    // THE PIN, matched against the material its mechanism needs. This is the rule the object form
-    // exists to make expressible.
-    let has_key = def.pin.key.as_deref().is_some_and(|k| !k.trim().is_empty());
-    if def.pin.mechanism.is_a_root() && !has_key {
-        return Err(format!(
-            "{at}: `pin.mechanism: {}` needs `pin.key:` — the out-of-band material this \
-             registration is verified against. A pin with nothing to verify with is not a pin.",
-            def.pin.mechanism.token()
-        ));
-    }
-    if !def.pin.mechanism.is_a_root() && has_key {
-        return Err(format!(
-            "{at}: `pin.mechanism: unpinned` must not carry `pin.key:`. `unpinned` means there is \
-             no authenticity root; key material that is never verified against reads to an \
-             operator as protection that does not exist. Name the real mechanism, or drop the key."
-        ));
-    }
+    // THE PIN and the CADENCE (`reverify_ttl:`, `recovery_backoff:`) are not judged here: they are
+    // the kernel's trust keys ([`TRUST_KEYS`]), judged by the kernel before the section reaches
+    // this plane.
 
     // THE CLIENT IDENTITY, matched against the mechanism and the scheme the same way the pin is
     // matched against its material. `mtls` is defined as "served behind mutual TLS"; a registration
@@ -541,23 +574,8 @@ pub fn validate_agent(name: &str, def: &AgentDefCfg) -> Result<(), String> {
         }
     }
 
-    if let Some(ttl) = def.reverify_ttl.as_deref() {
-        busbar_contract::duration::parse_duration_secs(ttl)
-            .map_err(|e| format!("{at}: `reverify_ttl:` {e}"))?;
-    }
-    if let Some(backoff) = def.recovery_backoff.as_deref() {
-        busbar_contract::duration::parse_duration_secs(backoff)
-            .map_err(|e| format!("{at}: `recovery_backoff:` {e}"))?;
-    }
-
-    // THE PARSE-TIME PLANE BOUNDARY, owned by `plane::config` and called with this plane's own
-    // wording for the site. The section list it judges against is DERIVED from the config grammar,
-    // so a section added to `Plane::ALL` or `NamedMapSection::ALL` is refused here with nothing
-    // written in this file.
-    let sections = busbar_kernel::plane::config::plane_sections();
-    for hook in &def.hooks {
-        busbar_kernel::plane::config::refuse_cross_plane_reference(&at, hook, &sections)?;
-    }
+    // A hook reference reaching onto another plane is refused by the kernel, which sees every
+    // plane's section; this plane sees only its own.
     Ok(())
 }
 

@@ -931,6 +931,7 @@ const A_SERVED_PLANE: busbar_contract::plane::PlaneDeclaration =
         metric_families: &[],
         record_kinds: &["note"],
         required_config_sections: &[],
+        trust_keys: &[],
         served_op_classes: &[],
     };
 
