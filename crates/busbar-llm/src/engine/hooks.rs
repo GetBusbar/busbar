@@ -1,5 +1,6 @@
 use super::*;
 
+use busbar_contract::signal::{Signal, SignalBag, SignalValue};
 use busbar_kernel::{diag_debug, diag_warn};
 
 /// The coerced result of running a routing policy at the seam — what the ordered walk should do.
@@ -669,7 +670,6 @@ pub(crate) async fn decide_policy_order(
     let requested = host.requested_signals();
     let now_ts = now();
 
-    use busbar_contract::signal::{Signal, SignalBag, SignalValue};
     let candidates: Vec<Candidate> = live
         .iter()
         .map(|wl| {
@@ -1045,6 +1045,31 @@ pub(crate) fn coerce_on_error(
 pub(crate) use busbar_kernel::proxy::proxy_vocab::{
     fire_stage_taps, gate_rejected, spawn_bounded_tap, GateRejected, StageShape,
 };
+
+/// The RESPONSE-phase catalog signals for the completion tap, read off the unit's reported output
+/// count: the usage the tap cell holds on the response the walk returned (THE DESIGN, Money: the
+/// plane reports the units).
+///
+/// `response_tokens_out` is pushed only when some hook declared it AND the tap has reported a usage.
+/// A buffered answer's tap has finished by the time the completion tap fires, so it carries the
+/// count; a stream is still flowing at head time, and a transfer that read no usage reported none,
+/// so on those the key is absent (the same absent-when-unknown rule `candidate_error_rate` follows).
+/// The default, nothing-declared path returns the empty bag without touching the response.
+pub(crate) fn response_signals(host: &dyn EngineHost, resp: &Response) -> SignalBag {
+    let mut signals = SignalBag::new();
+    if host.requested_signals().wants(Signal::ResponseTokensOut) {
+        let output = resp
+            .extensions()
+            .get::<crate::engine::TapCell>()
+            .and_then(|cell| cell.get())
+            .and_then(|report| report.usage.as_ref())
+            .map(|usage| usage.output);
+        if let Some(output) = output {
+            signals.push(Signal::ResponseTokensOut, SignalValue::U64(output));
+        }
+    }
+    signals
+}
 
 /// Capture the stage-tap shape from the parsed body. `v == None` is an opaque/binary body (a
 /// multipart transcription/speech upload) OR the op-less pre-routing capture: the byte reader

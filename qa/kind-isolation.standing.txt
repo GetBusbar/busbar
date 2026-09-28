@@ -39,7 +39,7 @@ kind-isolation:matrix	ratchet	busbar-kernel-identity × transport	12
 kind-isolation:matrix	ratchet	busbar-kernel-ledger × kernel	10
 kind-isolation:matrix	ratchet	busbar-kernel-scope × transport	8
 kind-isolation:matrix	ratchet	busbar-llm × codec	142
-kind-isolation:matrix	ratchet	busbar-llm × contract	536
+kind-isolation:matrix	ratchet	busbar-llm × contract	529
 kind-isolation:matrix	ratchet	busbar-llm × plane	827
 kind-isolation:matrix	ratchet	busbar-llm × transport	1204
 kind-isolation:matrix	ratchet	busbar-llm-codec × transport	766

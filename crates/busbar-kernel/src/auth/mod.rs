@@ -1417,6 +1417,8 @@ fn unauthorized_with_completion_taps(
                 outcome: Some("rejected_by_auth"),
                 status: Some(status),
             },
+            // A denial served no answer, so no response-phase signal has a value.
+            Default::default(),
             // An auth denial has no authenticated caller, so no group binding: unscoped taps fire,
             // group-scoped taps do not (a groupless caller matches only an unscoped hook).
             None,

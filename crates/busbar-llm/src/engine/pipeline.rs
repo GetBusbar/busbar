@@ -270,6 +270,7 @@ pub(crate) fn forward_with_pool_parsed<'a>(
                     outcome: Some(outcome),
                     status: Some(resp.status().as_u16()),
                 },
+                crate::engine::hooks::response_signals(&**host, &resp),
                 resolved_gov_key.and_then(|k| k.group.as_deref()),
                 &**host,
             );
@@ -1791,6 +1792,7 @@ fn capture_candidate_taps<'a>(
                 outcome: None,
                 status: None,
             },
+            Default::default(),
             resolved_gov_key.and_then(|k| k.group.as_deref()),
             &**host,
         );
@@ -1832,6 +1834,7 @@ fn fire_routing_tap(
                 outcome: None,
                 status: None,
             },
+            Default::default(),
             resolved_gov_key.and_then(|k| k.group.as_deref()),
             &**host,
         );

@@ -432,6 +432,7 @@ pub(crate) async fn route_parts(input: RouteInput<'_>) -> RouteParts {
                         outcome: Some(outcome),
                         status: Some(resp.status().as_u16()),
                     },
+                    crate::engine::hooks::response_signals(&**host, &resp),
                     resolved_gov_key.and_then(|k| k.group.as_deref()),
                     &**host,
                 );
