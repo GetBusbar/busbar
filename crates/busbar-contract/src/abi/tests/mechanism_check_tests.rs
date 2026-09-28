@@ -91,6 +91,27 @@ fn a_weight_is_finite_and_not_negative() {
 }
 
 #[test]
+fn reported_checks_the_count_before_any_slice() {
+    let buf = [7u32; 4];
+    // SAFETY: `buf` is a host buffer of capacity 4.
+    assert_eq!(unsafe { reported(buf.as_ptr(), 4, 4, "t") }, Ok(&buf[..]));
+    // cap + 1, over a pointer no slice may ever be built from: refused before any read.
+    let dangling = core::ptr::NonNull::<u32>::dangling().as_ptr().cast_const();
+    assert_eq!(
+        unsafe { reported(dangling, 5, 4, "t") },
+        Err(fault(Rule::OverCap, "t"))
+    );
+    assert_eq!(
+        unsafe { reported::<u32>(core::ptr::null(), 1, 4, "t") },
+        Err(fault(Rule::NullWithCount, "t"))
+    );
+    assert_eq!(
+        unsafe { reported::<u32>(core::ptr::null(), 0, 4, "t") },
+        Ok(&[][..])
+    );
+}
+
+#[test]
 fn first_never_reads_past_the_buffer() {
     assert_eq!(first(&[1u8, 2], 3, "t"), Err(fault(Rule::OverCap, "t")));
     assert_eq!(first(&[1u8, 2], 2, "t"), Ok(&[1u8, 2][..]));

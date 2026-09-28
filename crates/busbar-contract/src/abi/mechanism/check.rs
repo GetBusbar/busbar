@@ -183,6 +183,35 @@ pub fn listed<T>(ptr: *const T, len: usize, field: &'static str) -> Result<(), F
     Ok(())
 }
 
+/// THE SLICE A PLUGIN REPORTED over a HOST buffer: `count` is checked against the `cap` the host
+/// passed, and a NULL pointer with a count refused, BEFORE any slice is built; only then is it
+/// made. The one way a validator's slice argument is built from a plugin-reported count.
+///
+/// # Errors
+///
+/// [`Rule::OverCap`] when `count > cap`; [`Rule::NullWithCount`] for a NULL buffer with a count.
+///
+/// # Safety
+///
+/// A non-NULL `ptr` is the host's own buffer of at least `cap` live `T`s.
+pub unsafe fn reported<'a, T>(
+    ptr: *const T,
+    count: u64,
+    cap: u64,
+    field: &'static str,
+) -> Result<&'a [T], Fault> {
+    if count > cap {
+        return Err(fault(Rule::OverCap, field));
+    }
+    if count == 0 {
+        return Ok(&[]);
+    }
+    listed(ptr, 1, field)?;
+    let n = usize::try_from(count).map_err(|_| fault(Rule::OverCap, field))?;
+    // SAFETY: the caller's contract; `n <= cap` elements of the host's own buffer.
+    Ok(unsafe { core::slice::from_raw_parts(ptr, n) })
+}
+
 /// A string: a length above zero never comes with a NULL pointer.
 ///
 /// # Errors
