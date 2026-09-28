@@ -21,4 +21,7 @@ jobs:
       busbar_checkout: @@busbar_checkout@@
       macos_test: @@macos_test@@
       extra_test: @@extra_test@@
+      plugin_crate: @@crate@@
+      plugin_kind: @@kind@@
+      plugin_alias: @@alias@@
     secrets: inherit

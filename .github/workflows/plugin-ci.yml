@@ -50,6 +50,18 @@ on:
         required: false
         type: string
         default: ""
+      plugin_crate:
+        description: "The cdylib's Cargo package (built with -p), e.g. busbar-store-sqlite-plugin. Used only to locate the built cdylib for the signing gate (kind store|auth|hook|secret)."
+        required: true
+        type: string
+      plugin_kind:
+        description: "store | secret | auth | hook | export | plane | transport. The signing gate runs only for store|auth|hook|secret, the kinds scripts/signing-gate.sh proves."
+        required: true
+        type: string
+      plugin_alias:
+        description: "The manifest alias (the short config name), used by the signing gate's config fixture."
+        required: true
+        type: string
     secrets:
       CODECOV_TOKEN:
         description: "Codecov upload token; the coverage job is informational and skips the upload without it."
@@ -96,6 +108,11 @@ jobs:
     needs: pin
     runs-on: ubuntu-latest
     timeout-minutes: 90
+    env:
+      # scripts/signing-gate.sh proves signed-loads + unsigned/wrong-key/tampered-refused for the
+      # four kinds it knows a config reference shape for (PB-11). export/plane/transport are outside
+      # its coverage today, same as before this became a job condition.
+      SIGNING_GATE: ${{ contains(fromJSON('["store", "auth", "hook", "secret"]'), inputs.plugin_kind) }}
     # SERVICE IMAGES ARE DIGEST-PINNED, and the digests are testing/fleet-fixtures/service-images.tsv's
     # rows (`cargo xtask gate service-images` holds every line below to them). An image expression that
     # evaluates to '' starts no container, so only the service the caller names runs.
@@ -151,8 +168,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           path: plugin
-      - name: busbar at the pin (the real binaries the end-to-end tests build and boot)
-        if: inputs.busbar_checkout
+      - name: busbar at the pin (the real binaries the end-to-end tests build and boot, and/or the signing gate)
+        if: inputs.busbar_checkout || env.SIGNING_GATE == 'true'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           repository: GetBusbar/busbar
@@ -189,7 +206,7 @@ jobs:
           components: clippy, rustfmt
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
-          workspaces: ${{ inputs.busbar_checkout && fromJSON('"plugin\nbusbar"') || 'plugin' }}
+          workspaces: ${{ (inputs.busbar_checkout || env.SIGNING_GATE == 'true') && fromJSON('"plugin\nbusbar"') || 'plugin' }}
           key: busbar-${{ needs.pin.outputs.sha }}
       - name: fmt
         working-directory: plugin
@@ -200,6 +217,21 @@ jobs:
       - name: build (the rlib a busbar build links, and the cdylib a signed tarball carries)
         working-directory: plugin
         run: cargo build --workspace --locked
+      - name: signing gate — signed loads; unsigned / wrong-key / tampered are refused (PB-11)
+        # End-to-end proof against a REAL busbar binary + the REAL first-party trust pipeline, built
+        # here with an ephemeral (never the release) embedded key: positive (correctly signed
+        # passes) and four negatives (unsigned, wrong key, tampered lib bytes, tampered manifest),
+        # each asserted on the exact refusal message. Runs only for the kinds the script covers.
+        if: env.SIGNING_GATE == 'true'
+        working-directory: plugin
+        env:
+          CRATE: ${{ inputs.plugin_crate }}
+        run: |
+          set -euo pipefail
+          lib="target/debug/lib${CRATE//-/_}.so"
+          [ -f "$lib" ] || { echo "::error::no cdylib at $lib"; ls -la target/debug/ >&2; exit 1; }
+          bash "$GITHUB_WORKSPACE/busbar/scripts/signing-gate.sh" \
+            "$GITHUB_WORKSPACE/busbar" "$CRATE" "${{ inputs.plugin_kind }}" "${{ inputs.plugin_alias }}" "$lib"
       - name: mysql strict sql_mode (a dynamic variable; only root may set it)
         if: inputs.service == 'mysql'
         run: mysql -h 127.0.0.1 -uroot -pbusbar -e "SET GLOBAL sql_mode='STRICT_ALL_TABLES,NO_ENGINE_SUBSTITUTION';"
