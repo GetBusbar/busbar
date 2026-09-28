@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! LAYER 4 — USAGE / RATE-LIMIT (EXTRACTION only). Design `plane4-duplex-session.md`.
+//! LAYER 4 — USAGE / RATE-LIMIT (EXTRACTION only). Design `BUSBAR-1.6.0.md` #18/#45.
 //!
 //! `response.done.usage` (audio vs text are SEPARATE token classes, audio dominates) and
 //! `rate_limits.updated` are EXTRACTED, never client-translated. This is the metering/audit tap that

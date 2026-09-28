@@ -1,5 +1,5 @@
 # testing/fleet-fixtures/service-images.tsv — THE pinned service-image list for the durable-store QA
-# cycle. See docs/design/store-qa-cycle.md.
+# cycle. See docs/design/BUSBAR-1.6.0.md THE DESIGN, §2.
 #
 # WHY THIS FILE EXISTS. The provisioning of the four backend services the store plugins need was
 # written FIVE times — .github/workflows/ci.yml's `check` and `coverage` jobs, release-stage.yml's

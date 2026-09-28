@@ -8,7 +8,7 @@
 //! by saying "make me one" — each constructor demands a token, handed out by the loop to one unit
 //! for the length of one step call. That is "sealed by token, not by visibility": a `pub(crate)`
 //! constructor only keeps out other crates, a token keeps out everyone who is not, at this
-//! instant, the unit entitled to act. See `docs/design/contract-notes.md` for the longer version.
+//! instant, the unit entitled to act. See `docs/design/BUSBAR-1.6.0.md` #38 for the longer version.
 //!
 //! ## What is in here
 //!

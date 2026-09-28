@@ -4,7 +4,7 @@
 
 use super::*;
 // The battery drives the `Transport` surface, which now lives in the kind's own `transport.rs`
-// (`PLUGIN-TREE.md` §3) rather than in `lib.rs`; `use super::*` no longer carries its imports.
+// (`BUSBAR-1.6.0.md` THE DESIGN, §2) rather than in `lib.rs`; `use super::*` no longer carries its imports.
 use crate::ClientSettings;
 use busbar_contract::transport::wire::{FrameMeta, TransportError};
 use busbar_contract::{

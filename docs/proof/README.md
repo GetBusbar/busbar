@@ -1,6 +1,6 @@
 # Where the published proof manifests live
 
-The Build Proof Dashboard manifest (`docs/design/1.6.0-proof-dashboard.md`) is produced by the
+The Build Proof Dashboard manifest is produced by the
 `proof-manifest` job in `.github/workflows/ci.yml` on a push to `dev`, `qa` or `main`, and published
 in two places. Neither of them is the branch it ran on.
 

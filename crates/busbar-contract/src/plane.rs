@@ -1,7 +1,7 @@
 //! The plane kind: what bytes mean. A plane names a transport only as a claim, never holds a
 //! connection, names no unit or other plane except through a nested destination, and returns
 //! facts and locators only — never an amount, a decision, a credential, a price or a scheme
-//! outside its claim. Pure over its inputs; no default bodies (see `docs/design/contract-notes.md`).
+//! outside its claim. Pure over its inputs; no default bodies (see `docs/design/BUSBAR-1.6.0.md` #38).
 
 use crate::bounded::{Facts, Ir, ScratchBytes};
 use crate::dest::{EgressBody, RoutePlan, VerifiedDestination};

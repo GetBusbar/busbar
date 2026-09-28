@@ -66,7 +66,7 @@ impl Outbound {
 }
 
 /// ONE IN-FLIGHT SERVER-SIDE TOOL CALL, correlated by [`CallRef`] and accumulated across the
-/// `CallOpen → CallArgs* → CallClose` frames the model streams (`plane4-duplex-session.md` §2.2). The raw `call_id` is kept so the
+/// `CallOpen → CallArgs* → CallClose` frames the model streams (`BUSBAR-1.6.0.md` #18/#45). The raw `call_id` is kept so the
 /// stateless writer can re-frame the `function_call_output` without consulting the map.
 #[derive(Debug, Default, Clone)]
 struct PendingCall {
@@ -264,7 +264,7 @@ where
                 match ev {
                     // ── metering: the turn closes on its usage report ────────────────────────────
                     IrServerEvent::Usage(u) => self.settle_turn(inner, Some(&u), &mut out),
-                    // ── barge-in: cancel + truncate at the audio the user actually heard (`plane4-duplex-session.md` §2.3) ────
+                    // ── barge-in: cancel + truncate at the audio the user actually heard (`BUSBAR-1.6.0.md` #18/#45) ────
                     IrServerEvent::SpeechStarted { item_id, .. } => {
                         let heard_ms = inner.decode.flush_playback();
                         out.push_up(self.codec.write_up(
@@ -288,7 +288,7 @@ where
                             &mut inner.decode,
                         ));
                     }
-                    // ── tool moat: correlate + accumulate, execute server-side on close (`plane4-duplex-session.md` §2.2) ─────
+                    // ── tool moat: correlate + accumulate, execute server-side on close (`BUSBAR-1.6.0.md` #18/#45) ─────
                     IrServerEvent::Tool(t) => {
                         let call_ref = t.call_ref();
                         match t {
@@ -354,7 +354,7 @@ where
                         out.downlink
                             .extend(self.codec.write_down(ev, &mut inner.decode));
                     }
-                    // Extraction-only — never client-translated (`plane4-duplex-session.md` §2.5).
+                    // Extraction-only — never client-translated (`BUSBAR-1.6.0.md` #18/#45).
                     IrServerEvent::RateLimits => {}
                 }
             }

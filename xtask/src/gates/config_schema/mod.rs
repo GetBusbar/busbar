@@ -74,8 +74,7 @@ pub const OWED: &[&str] = &[
 ///
 /// ## IT WAS `HEAD`, AND `HEAD` IS THE TREE BEING JUDGED
 ///
-/// This constant read `"HEAD"` until the 1.6.0 denominator audit
-/// (`docs/design/1.6.0-denominator.md` §8.2) went looking. `HEAD` is not a baseline; it is the
+/// This constant read `"HEAD"` until the 1.6.0 denominator audit went looking. `HEAD` is not a baseline; it is the
 /// commit under test. The additive check then compared the fresh render against the snapshot
 /// committed in that same tree — and the drift row above has already proven those two byte-equal,
 /// so the delta was **empty by construction, on every run, forever**. The gate reported green

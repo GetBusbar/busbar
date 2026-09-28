@@ -1,13 +1,13 @@
 # busbar-voice — THE DUPLEX / LIVE-VOICE PLANE CRATE (Plane 4).
 #
 # The fourth plane KIND — long-lived, bidirectional, per-frame-governed — added as a NEW crate that
-# owns 100% of its protocol vocabulary (see docs/design/plane4-duplex-session.md §7). Core / substrate
+# owns 100% of its protocol vocabulary (see docs/design/BUSBAR-1.6.0.md #18/#45). Core / substrate
 # / api never learn the word "audio": this crate declares its own `PlaneDecl` and a `ProtocolDecl`
 # with `codec: None` exactly as `busbar-mcp` does (the two dialects meet in the plane's own shared IR
 # types, not a `DialectCodec` facade), and the neutral registry unions whatever it declares without
 # naming it.
 #
-# STATUS: the four-layer duplex/session IR (`plane4-duplex-session.md` §2), both dialect codecs (OpenAI
+# STATUS: the four-layer duplex/session IR (`BUSBAR-1.6.0.md` #18/#45), both dialect codecs (OpenAI
 # Realtime + Gemini Live), the T2 session pump, and both topologies are implemented behind the "runtime"
 # feature. Boot-mounting into the composition root (PLANE_HOOKS' build / admission / routes hooks) is
 # separate, tracked work. It compiles, registers, and is strong-form deletable.
@@ -63,13 +63,13 @@ busbar-contract = { path = "../busbar-contract" }
 busbar-voice-codec = { path = "../busbar-voice-codec" }
 # `axum::http::StatusCode` appears in the `ProtocolDecl` field set (quota / auth-failure statuses).
 axum = { workspace = true }
-# The plane's OWN media-frame carrier: `IrAudioFrame.media` is opaque `bytes::Bytes` (`plane4-duplex-session.md` §2.4 identity IR).
+# The plane's OWN media-frame carrier: `IrAudioFrame.media` is opaque `bytes::Bytes` (`BUSBAR-1.6.0.md` #18/#45 identity IR).
 bytes = { workspace = true }
 # THE DIALECT CODEC's (de)serialization surface. The plane's IR is busbar-owned, but the OpenAI
 # Realtime wire is JSON: the `DuplexReader`/`DuplexWriter` pair parses/produces JSON event frames, so
 # the codec derives serde on its OWN wire structs and hand-maps them to/from the neutral IR. Opaque
 # JSON payloads (tool arguments, tool definitions, tool_choice) ride as `serde_json::Value` — the
-# plane never reshapes them, it carries them verbatim (the `plane4-duplex-session.md` §2.2 tool moat normalizes correlation, not
+# plane never reshapes them, it carries them verbatim (the `BUSBAR-1.6.0.md` #18/#45 tool moat normalizes correlation, not
 # the argument bytes).
 serde = { workspace = true }
 serde_json = { workspace = true }

@@ -77,7 +77,7 @@ pub fn plane_src_roots() -> Vec<String> {
 /// `plane-purity` (9 rows), `plane-transport-neutrality` (3 rows) and `plane-purity-strict`'s
 /// ceilings. Two gates print the words "the neutral crates" and read three directories.
 ///
-/// The census in `docs/design/1.6.0-gate-blindspots.md` planted the identical line
+/// The 1.6.0 gate blind-spot census planted the identical line
 /// `let _ = busbar_mcp::Thing;` in six crates and only the one in `busbar-kernel` was found; it then
 /// planted `let rtp_port = 1;` in the same six and found one again. **`busbar-contract` was not on
 /// the list** — the plugin-visible capability surface, the crate whose neutrality is the entire

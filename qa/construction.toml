@@ -19,8 +19,8 @@
 # 1471 `.rs` files, `crates/*/tests` holds 139 and `crates/*/benches` holds 4 — 143 files of real,
 # compiled, product-linked Rust that every one of the 113 rows below was asserting about and none of
 # them could open. A forged token mint, a `busbar_core::` reach, a seal site or a test double
-# written into `crates/busbar-llm/tests/` was invisible to this gate, and the census in
-# docs/design/1.6.0-gate-blindspots.md planted one and watched the gate stay green.
+# written into `crates/busbar-llm/tests/` was invisible to this gate, and the 1.6.0 gate
+# blind-spot census planted one and watched the gate stay green.
 #
 # `crates/*/tests` and `crates/*/benches` are PRODUCT code in the sense that matters here: they
 # compile against the product crates, they can name every type the product exports, and a
@@ -45,7 +45,7 @@ scan_roots = ["crates/*/src", "crates/*/tests", "crates/*/benches"]
 # The plane crates (the plugin side): one name per protocol plane, so each carries its own ceiling
 # below. This is the ROW KEY list, not the whole source surface — see gate.plane_codec_crates.
 #
-# NOTE (PLUGIN-TREE.md): "plane" is defined TWICE in this file, disjointly. This list is the four
+# NOTE (BUSBAR-1.6.0.md THE DESIGN, §2): "plane" is defined TWICE in this file, disjointly. This list is the four
 # LEGACY ENGINE crates; `gate.plugin_kinds.plane` below is the five `busbar-plane-*` crates, and the
 # two lists share zero members. manifest-allowlist reads THIS one to decide what "a plane names
 # another plane" means. The two collapse into one definition when the legacy engines are deleted;
@@ -73,7 +73,7 @@ test_path_fragments = ["/tests/", "_tests.rs", "_test.rs", "/tests.rs"]
 #     should be authoritative — is read by nothing. That is how `crates/secret-ref` (a SecretRef TYPE
 #     crate, no Secret impl) is classified `secret`, and how `crates/hooks-ranking` is classified
 #     `hook` by the directory name while implementing a busbar-api trait. Renaming the crate
-#     directories to their existing `package.name` (PLUGIN-TREE.md section 7) makes these globs
+#     directories to their existing `package.name` (BUSBAR-1.6.0.md THE DESIGN, §2) makes these globs
 #     correct by construction and is the cheap first half of kind-by-declaration.
 #
 # `kind-isolation:truths` reconciles this file, the gate's kind table and qa/kind-isolation.toml, in
@@ -155,7 +155,7 @@ abi = ["crates/busbar-contract"]
 # A cancelled kind scheduled in a config file is the DECISIONS #14 resurrection hazard exactly.
 #
 # WHAT THESE CRATES ACTUALLY ARE: a plane's own PURE half, a per-plane path-dep, kept beside the
-# plane crate and scanned as part of it (DECISIONS #6; PLUGIN-TREE.md §7). They carry no `Kind`
+# plane crate and scanned as part of it (DECISIONS #6; BUSBAR-1.6.0.md THE DESIGN, §2). They carry no `Kind`
 # variant because they are not a kind; the plane's own rules are what hold them.
 #
 # STILL TRUE AND STILL OWED, independent of D36: the llm DECLS order (anthropic, openai, gemini,
@@ -1306,7 +1306,7 @@ reviewed_allowlist = ["busbar-api", "serde", "serde_json", "tracing", "async-tra
 # STALE — verified 2026-09-07: NONE of the four edges below exists at this commit. Every plane crate
 # is exactly `busbar-contract` + its own codec and nothing else; the planes are the cleanest seam in
 # the workspace. This ratchet describes a tree that no longer exists and tells a reader the coupling
-# is still there. Delete it (PLUGIN-TREE.md section 9) — noted here, not done here, because a rule
+# is still there. Delete it (BUSBAR-1.6.0.md THE DESIGN, §2) — noted here, not done here, because a rule
 # change is not this commit's business.
 [rules.manifest-allowlist.known_red_deps]
 busbar-plane-llm = ["busbar-llm"]

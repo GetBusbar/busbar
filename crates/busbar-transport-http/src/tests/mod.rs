@@ -4,7 +4,7 @@
 
 use super::*;
 // The `Transport` surface, its meta and its claim forms moved to the kind's own `transport.rs`,
-// `meta.rs` and `claims.rs` (`PLUGIN-TREE.md` §3), so `use super::*` no longer carries them.
+// `meta.rs` and `claims.rs` (`BUSBAR-1.6.0.md` THE DESIGN, §2), so `use super::*` no longer carries them.
 use busbar_contract::transport::registry::status_ns;
 use busbar_contract::transport::wire::WireStatus;
 use busbar_contract::transport::wire::{CloseReason, FrameMeta, TransportError};

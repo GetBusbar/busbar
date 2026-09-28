@@ -4,7 +4,7 @@
 #
 # testing/fleet-fixtures/store-services.sh — the one-command way to stand the durable-store backends
 # up on a laptop, and the namespace machinery the shadow oracle needs to record two binaries against
-# them at once. See docs/design/store-qa-cycle.md, "Local docker for developers and unattended
+# them at once. See docs/design/BUSBAR-1.6.0.md THE DESIGN, §2, "Local docker for developers and unattended
 # agents" and "Namespacing — the concurrency hazard the oracle creates".
 #
 # THE GAP THIS CLOSES. busbar has FOUR published durable stores (sqlite, postgres, mysql, valkey) and
@@ -130,7 +130,7 @@ need_docker() {
   command -v docker >/dev/null 2>&1 \
     || die "docker is not on PATH. This is the one dependency; there is no way to prove a store
 persists across a process death without a server to persist into. On a host without docker the
-oracle's store cells record a NAMED GAP (SKIP), never a pass — see docs/design/store-qa-cycle.md."
+oracle's store cells record a NAMED GAP (SKIP), never a pass — see docs/design/BUSBAR-1.6.0.md THE DESIGN, §2."
 }
 
 # A TOKEN GOES INTO DDL, SO IT IS VALIDATED, NOT TRUSTED. The token is a recording's output-directory

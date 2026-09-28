@@ -3,7 +3,7 @@
 # Copyright (C) 2026 Busbar Inc and contributors
 #
 # Shared boot/mint/call helpers for the H2 A2A gating scenarios (scripts/a2a-subject/h2-*.sh),
-# tracker row H2 (BUSBAR-1.6.0.md THE DESIGN, §1). Each h2-*.sh script sources this, boots its OWN
+# the Teller-steps rule H2 (BUSBAR-1.6.0.md THE DESIGN, §1). Each h2-*.sh script sources this, boots its OWN
 # throwaway busbar + its own instance of h2-mock-agent.py on its own ports (the same isolation
 # testing/shadow-oracle/scripts/teller-*.sh use for the llm plane, and scripts/mcp-subject/h2-lib.sh
 # uses for the sibling plane).

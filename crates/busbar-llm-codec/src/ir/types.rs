@@ -1058,7 +1058,7 @@ pub struct IrUsage {
 /// It exists because the totals were already right and the ATTRIBUTION was not, and attribution is
 /// what a customer reconciles a bill against.
 ///
-/// THE ONE EXCEPTION (1.6.0 M1, `billing-unified.md`): the Cohere `billed_*` trio
+/// THE ONE EXCEPTION (1.6.0 M1, `BUSBAR-1.6.0.md` THE DESIGN, §7): the Cohere `billed_*` trio
 /// (`billed_input_tokens`/`billed_output_tokens`/`billed_classifications`) is NOT a slice of the raw
 /// totals — it is Cohere's SEPARATELY-METERED billed bucket, the counts an operator is actually
 /// invoiced on. [`IrUsage::to_token_usage`] lets `billed_input`/`billed_output` WIN over the raw
@@ -1127,7 +1127,7 @@ pub struct IrUsageDetail {
     /// Gemini writer re-emits it; other protocols have no native analog and leave it `None`.
     ///
     /// CORRECTED 2026-09-07 — THIS IS NOT A SUB-BUCKET. It was carried here (and described in
-    /// `docs/design/billing-usage-units.md` and `docs/design/billing-unified.md`) as `⊂ prompt`,
+    /// `docs/design/BUSBAR-1.6.0.md` THE DESIGN, §7 and `docs/design/BUSBAR-1.6.0.md` THE DESIGN, §7) as `⊂ prompt`,
     /// "never an addition". A real Vertex AI recording disproves that: on
     /// `src/tests/proto/golden/vendor/resp_g2g_vertex_grounding.json` this field is **32** while the
     /// entire `promptTokenCount` is **18**, and Google's stated `totalTokenCount` reconciles only
@@ -1245,7 +1245,7 @@ impl IrUsage {
     /// with `IrUsage`, so it follows it to busbar-llm at the cutover, where it becomes an
     /// `impl From<&IrUsage> for busbar_contract::billing::TokenUsage`.
     ///
-    /// COHERE `billed_units` (1.6.0 M1, `billing-unified.md`): Cohere reports usage TWICE — a
+    /// COHERE `billed_units` (1.6.0 M1, `BUSBAR-1.6.0.md` THE DESIGN, §7): Cohere reports usage TWICE — a
     /// raw `tokens` bucket and a separately-metered `billed_units` bucket, and it is the BILLED
     /// counts an operator is invoiced on. So `billed_input_tokens`/`billed_output_tokens`, when
     /// present, WIN over the raw totals for the reserved input/output tiers — a DELIBERATE,

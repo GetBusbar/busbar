@@ -1,6 +1,6 @@
 {
   "_comment": [
-    "H2 (docs/design/1.6.0-TRACKER.md): 'conformance rigs carry one cell per Teller step per plane'.",
+    "H2 (docs/design/BUSBAR-1.6.0.md THE DESIGN, §1): 'conformance rigs carry one cell per Teller step per plane'.",
     "Steps are BUSBAR-1.6.0.md THE DESIGN, §1 (arrival, decode, authenticate, verify, approve, admit, route,",
     "meter, audit, exit). This is the plane x step MATRIX: for every cell, either an id that names a",
     "real, run scenario in one of the conformance rigs (or the shadow oracle, for the llm plane), or",

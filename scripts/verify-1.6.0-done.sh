@@ -3,8 +3,8 @@
 # Copyright (C) 2026 Busbar Inc and contributors
 #
 # verify-1.6.0-done.sh — THE 1.6.0 DONE-ORACLE. A single, re-runnable, un-gameable proof that
-# "busbar 1.6.0 is done." Per docs/design/playbook/00-MASTER-PLAN.md ("DONE = scripts/verify-1.6.0-done.sh
-# green") and the gate designs (gate-no-deferral.md, gate-isomorphism.md).
+# "busbar 1.6.0 is done." Done is defined by docs/design/BUSBAR-1.6.0.md Part 0, "What done means"; this
+# script is an instrument that proves it, and the gate designs (BUSBAR-1.6.0.md #15, BUSBAR-1.6.0.md THE DESIGN, §1).
 #
 # WHAT "DONE" MEANS HERE — the umbrella asserts, as ONE verdict, that every sub-gate is green:
 #   build            the full-gate cargo battery (`cargo xtask full-gate`, driven by qa/full-gate.toml).
@@ -1698,7 +1698,7 @@ end_group
 
 # ─────────────────────────────────────────────────────────────────────────────────────────────────
 begin_group "STORE-QA — the durable-store QA cycle's service pins hold, and its fixtures still work"
-# docs/design/store-qa-cycle.md is the standing loop that keeps busbar's four durable stores
+# docs/design/BUSBAR-1.6.0.md THE DESIGN, §2 is the standing loop that keeps busbar's four durable stores
 # (sqlite, postgres, mysql, valkey) proven run after run. Its foundation is that the backend
 # containers are the SAME BYTES everywhere they are stood up — and they were not: four workflows
 # agreed on a digest while scripts/release-check.sh, the script the qa gate runs, used floating

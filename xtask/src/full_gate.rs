@@ -185,6 +185,8 @@ pub const CARGO_LOCAL: &[&str] = &[
     "cargo xtask gate structure-lint --posture",
     "cargo xtask gate no-tracked-ignored --selftest",
     "cargo xtask gate no-tracked-ignored",
+    "cargo xtask gate design-docs-allowlist --selftest",
+    "cargo xtask gate design-docs-allowlist",
     "cargo xtask gate package-selectors --selftest",
     "cargo xtask gate package-selectors",
     "cargo xtask gate qa-names --selftest",

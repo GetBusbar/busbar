@@ -1,5 +1,5 @@
 //! `cargo xtask denylist` — the transitive source denylist BUSBAR-1.6.0.md THE DESIGN, §2 specifies
-//! and docs/design/1.6.0-contract-gaps.md CG-59 found nowhere in the tree.
+//! and docs/design/BUSBAR-1.6.0.md #7 CG-59 found nowhere in the tree.
 //!
 //! For every crate of a PURE plugin kind (plane, hook, static/pure auth, egress-auth-scheme — the
 //! kind list section 1.2 scopes the denylist to; section 1.4's table is where each kind's shape is
@@ -83,7 +83,7 @@ pub struct Report {
 }
 
 /// `hyper-util` is not named in BUSBAR-1.6.0.md THE DESIGN, §2's own list (`reqwest`, `hyper`,
-/// `async_std`, `libc`) — it is named in docs/design/1.6.0-contract-gaps.md's CG-60 row as the
+/// `async_std`, `libc`) — it is named in docs/design/BUSBAR-1.6.0.md's #7 CG-60 row as the
 /// crate that drags `hyper` and `tokio::net` into `busbar-llm`. Banning it by name too (rather
 /// than relying solely on the `hyper`/`tokio` hits its own dependencies would produce) makes the
 /// report point at the crate a reviewer actually added, not just what it happens to pull in.

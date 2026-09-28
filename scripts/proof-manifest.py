@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright (C) 2026 Busbar Inc and contributors
 #
-# proof-manifest.py -- THE COLLATOR for the Build Proof Dashboard (docs/design/1.6.0-proof-dashboard.md).
+# proof-manifest.py -- THE COLLATOR for the Build Proof Dashboard (docs/proof/README.md).
 #
 # It changes NO gate. It is a thin capture layer over apparatus that already runs in CI: it runs (or
 # reads) the neutrality gates, enumerates the golden corpus, parses the field-coverage ledger, and

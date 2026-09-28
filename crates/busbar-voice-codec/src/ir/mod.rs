@@ -4,8 +4,8 @@
 //! THE PLANE-4 DUPLEX / SESSION IR — the plane's OWN vocabulary.
 //!
 //! These are the nouns that live ONLY in `busbar-voice`
-//! (`docs/design/plane4-duplex-session.md`): the four-layer duplex/session IR and its
-//! reader/writer pair. Per `plane4-duplex-session.md` "pass-through is still an IR" — the layers differ in HOW MUCH the IR
+//! (`docs/design/BUSBAR-1.6.0.md` #18/#45): the four-layer duplex/session IR and its
+//! reader/writer pair. Per `BUSBAR-1.6.0.md` #18/#45 "pass-through is still an IR" — the layers differ in HOW MUCH the IR
 //! reshapes the wire, from full normalization (tool-call) to identity (media):
 //!
 //! | Layer | Concern | Posture | Module |
@@ -20,11 +20,11 @@
 //! at the SECOND wire format and not before). `DECLS` stays `codec: None` because the plane realizes that
 //! superset as these shared IR types, not the LLM `DialectCodec` facade. It is NOT and does not extend
 //! `busbar-llm`'s chat IR — the load-bearing delta is a client→server event vocabulary
-//! ([`event::IrClientEvent`]) the LLM `IrStreamEvent` structurally lacks (`plane4-duplex-session.md`).
+//! ([`event::IrClientEvent`]) the LLM `IrStreamEvent` structurally lacks (`BUSBAR-1.6.0.md` #18/#45).
 //!
 //! Both dialect codecs ([`OpenAiRealtimeCodec`], [`GeminiLiveCodec`]) implement the reader/writer pair
 //! over these types; the T2 session pump and session store live in `crate::runtime` behind the `runtime`
-//! feature. The shapes mirror `plane4-duplex-session.md`.
+//! feature. The shapes mirror `BUSBAR-1.6.0.md` #18/#45.
 
 pub mod codec;
 pub mod config;

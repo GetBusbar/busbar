@@ -36,7 +36,7 @@
 // `Attribution::delegating` at `:1943` — the same function, the same request — and the result is
 // read at `:2030` (`hop.target_agent_id`) and `:2088` (`hop.billed_key_id`). `Direction` is live
 // with the constructors that set it. They carry "whose budget this bills", which is defs 5/6 under
-// #43/#71, so they are kernel-side and they MOVE (1.6.0-engine-split-plan.md s6.1 step A7).
+// #43/#71, so they are kernel-side and they MOVE.
 //
 // DEAD, AND ONLY THIS. `Admission`, `Admission::status` and `admit` have no caller anywhere outside
 // `tests/meter_tests.rs`: this is the plane's OWN window arithmetic, which the ingress does not use

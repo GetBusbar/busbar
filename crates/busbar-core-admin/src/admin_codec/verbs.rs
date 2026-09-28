@@ -38,7 +38,7 @@ pub(crate) struct VerbEntry {
 /// design's own binding under `/ledger/`.
 const NEW_VERBS_1_6_0: &[VerbEntry] = &[
     // `GET`, not `POST`: BUSBAR-1.6.0.md (CG-56) binds the two read-only verbs as `GET`
-    // (`docs/design/admin-new-verbs-contract.md`, "The verify GET-vs-POST resolution"). A `POST`
+    // (`docs/design/BUSBAR-1.6.0.md` THE DESIGN, §1, "The verify GET-vs-POST resolution"). A `POST`
     // here made the live admin gate — the (method, path) matrix, under which every non-dry-run
     // `POST` is `full` — demand `full` of a verb `verbs::required_scope` answers `read-only` for
     // (1.6.0 item 149).

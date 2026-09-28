@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE T2 VOICE SESSION RUNTIME — the live duplex engine (design `plane4-duplex-session.md` §8). Behind the
+//! THE T2 VOICE SESSION RUNTIME — the live duplex engine (design `BUSBAR-1.6.0.md` #18/#45). Behind the
 //! `runtime` cargo feature (OFF by default, HARD RULE 4): the default / prod build compiles the IR +
 //! declarations only, so the workspace is unaffected regardless of this module's state.
 //!

@@ -106,7 +106,7 @@ use super::{canon_plane, CrateInfo, Family, PLANE_ALIASES};
 
 pub const ROW_MATRIX: &str = "kind-isolation:matrix";
 
-/// The ledger this row shares with the rest of the gate — named in `PLUGIN-TREE.md` before either
+/// The ledger this row shares with the rest of the gate — named in `BUSBAR-1.6.0.md` THE DESIGN, §2 before either
 /// existed, which is why neither invents a second place.
 pub const LEDGER: &str = "qa/kind-isolation.toml";
 

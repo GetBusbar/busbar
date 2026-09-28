@@ -1032,7 +1032,7 @@ not the vision**. Consequences:
 - A plane naming its **own** dialects/vendors is correct (Law 5) — it is internal. A gate that reds
   on that is **scoped wrong**, and the fix is the gate's scope, not the code.
 - `plane-grep-gate` and `plane-noun-gate` are **report-only debt meters**, explicitly **excluded**
-  from the done-oracle (`docs/design/playbook/00-MASTER-PLAN.md`, `verify-1.6.0-done.sh`). They do **not** gate the
+  from the done-oracle (`verify-1.6.0-done.sh`). They do **not** gate the
   release and must never drive architecture (e.g. splitting a plane into per-dialect crates to make
   a substring count hit zero — that violates Laws 4 and 5).
 - **When an instrument must choose, it false-fails.** Owner, 2026-09-09: *"I'd rather have it
@@ -1697,7 +1697,7 @@ LLM per-token path is untouched. So per-request `meter_charge` is the 1.6.0 impl
 >   Tracker K2 is `[x]`: *"real per-key metering lease wired"*.
 >
 > **So no work falls out of this — an AMENDMENT does.** This paragraph and
-> `1.6.0-duplex-plane-and-realtime.md`’s decision **D2** (*"reserved but **not present** in
+> the retired duplex-plane design doc’s decision **D2** (*"reserved but **not present** in
 > `PlaneHostVtable`"*, *"do **not** ship the slots in 1.6.0"*) both describe a tree that no longer exists.
 > A reviewer trusting either would read the streaming plane’s D2 lease as unridden scaffolding; it is the
 > production money path.
@@ -1874,7 +1874,7 @@ renames ride the release-train wave, not mid-1.6.0.
   repo, and `gh workflow run <file/name>` in RELEASE.md/playbooks.
 - **Reconcile historical doc references** to the OLD workflow filenames in the same atomic pass — the
   migration/reference/playbook docs (`docs/ci/latchkey-migration.md`, `.github/required-status-checks.md`,
-  `docs/ci/feature-sets.md`, `docs/design/playbook/*`, `docs/{a2a,mcp}.md`, `1.6.0-proof-dashboard.md`)
+  `docs/ci/feature-sets.md`, `docs/{a2a,mcp}.md`, `docs/proof/README.md`)
   still name `a2a-conformance.yml`, `codeql.yml`, `security.yml`, `keep-proof.yml`, `release-fleet.yml`,
   etc. Update them to the renamed files (`qa-conformance-a2a.yml`, `qa-codeql.yml`, `qa-security.yml`,
   `manual-keep-proof.yml`, `fleet-autoscaler.yml`, …) so no stale path survives the rename.
@@ -3678,7 +3678,7 @@ from a closed one, and this is the second time it has had to be found by hand.
 
 #### THE DEFINITION OF DONE IS PARTLY VACUOUS — audited 2026-09-22
 
-Full evidence: `docs/design/1.6.0-instrument-audit.md`. Every "cannot red" claim below is a MATCHED
+Every "cannot red" claim below is a MATCHED
 PAIR — the same planted violation placed once inside the instrument's reach and once outside, with
 both verdicts captured. **Four findings change what a green run means.**
 
@@ -3769,7 +3769,7 @@ cut-time job on a release build.
 #### WHAT A GREEN ORACLE PROVES — measured 2026-09-22, and it is narrower than assumed
 
 The oracle is the release's central safety claim (#10: *"prove no user-visible byte changed"*).
-Nobody had measured its COVERAGE, only its pass rate. Full census: `docs/design/1.6.0-oracle-coverage.md`.
+Nobody had measured its COVERAGE, only its pass rate.
 
 **THE SAFETY NET IS 916 CELLS, NOT 2,318.** The owed set is exactly the golden's `PASS` rows, and the
 exit code is set only by `owed.is_empty()` or `diverging_total > 0` — **gaps never touch the
@@ -4209,7 +4209,7 @@ distinguishable from a working row by looking at the path.
   not simply be deleted. Several are folds still in flight. Deleting them is the same laundering
   pointed backwards — each is a `ledger move` owed by whoever owns that fold.
 - **A checklist that outlives its decision will quietly re-litigate it.** `qa/kind-isolation.toml`
-  was steering at `busbar-control-admin` — a kind the owner killed. `ARCHITECTURE.md` §1.4 and ~20
+  was steering at `busbar-control-admin` — a kind the owner killed. The retired `ARCHITECTURE.md` §1.4 and ~20
   references in the kind-isolation gate still call `control` a kind.
 - **Blanket `git add` with concurrent agents sweeps up their uncommitted work.** One commit absorbed
   three agents' changes including a billing fix. Stage explicit paths.
@@ -4480,7 +4480,7 @@ still un-enveloped, so it does not yet.
 | `busbar-kernel-ledger` | Record SHAPES / ledger SEMANTICS | `records.rs` (604 surf) → 13, **less** its `scope_kinds` `RwLock` registry (~30), which is runtime state ⇒ 2. `settle` `checkpoint` `recompute` `cost/*` `usage/*` `totals` `verify` `identity` `migration` `legacy` stay (def 6). |
 | `api` | Plugin contracts / I-O machinery / migration logic / shim | `auth` `hooks` `secret` `operation` `signal` `redacted` (727) → 13. `durable.rs` (110, real `fsync` path) → 2. `usage_migration.rs` (66) → 6. `store.rs` (9) is a pure `pub use` shim → delete. Crate dies. |
 | `busbar-kernel` | ≥6 kinds | Residual grab-bag: `config/`+`config_validate/` (31k), `plane_host/` (18k), `governance/` (12k), `auth/` (11k, duplicates def 3's territory), `plane/` (11k), `egress/` (9k, duplicates def 7's). Def 2 is `teller.rs` + the seams; the rest is owed a home. |
-| `busbar-core-admin` | HTTP surface / verb semantics | **CLOSED 2026-09-22 — the plane entry face is DELETED, not re-homed.** `admin_codec/codec.rs` (the `Plane` impl) and its exclusive tails are gone: that trait is how TRAFFIC enters the dispatch loop and this crate serves operators, never traffic (#3/#5/#83 def 11). It was never dispatched through — an admin request arrives on `admin_listen`, is matched against `admin_codec::verbs::resolve`, and walks the loop as the ADMIN UNITS (`crates/busbar/src/root/units_admin`). `kind-isolation:faces` FAIL → PASS; `construction:kernel-seal-impls` FAIL → PASS with it (the deleted test harness held the tree's last untracked `KernelSeal` forgery). `admin_codec/` is now the closed verb table, the one claim and the frozen error envelope — DECLARATIONS, no entry face. `v1/` (12.8k) = def 11. Top-level `keys/verb/rate/restart/posture/…` (4,825 lines measured 2026-09-22) = verb-execution semantics, **and their home is THIS CRATE.** The previous wording — *"still owed a home; the crate split is a later wave"* — is struck: it contradicted two OWNER-LOCKED decisions in this same document. **#37** (`:360`) names *"the surviving compiled-in scaffolding = exactly `busbar-core-admin` (cleanliness: **admin codec + verb execution**)"*, and **#36** (`:359`) rules *"`verbs` → `busbar-core-admin` (admin owns its own execution — **no codec/exec split**, since admin is a cleanliness crate not a plane)"*. Roster def 11 (`:3009`) already covers both halves. `crates/busbar-unit-verbs` does not exist; the absorption is done. There is no split to schedule and no wave to schedule it into — Part 5’s W0–W8 and its 39-row granular table name no admin verb-execution split, because #36 forbade one. (Stale destination to fix separately: `docs/design/1.6.0-composition-root-plan.md:582` still routes execution to a `busbar-unit-verbs` that #36 deleted.) Banned-word adjudication, `docs/design/1.6.0-map-proof.md` §A. |
+| `busbar-core-admin` | HTTP surface / verb semantics | **CLOSED 2026-09-22 — the plane entry face is DELETED, not re-homed.** `admin_codec/codec.rs` (the `Plane` impl) and its exclusive tails are gone: that trait is how TRAFFIC enters the dispatch loop and this crate serves operators, never traffic (#3/#5/#83 def 11). It was never dispatched through — an admin request arrives on `admin_listen`, is matched against `admin_codec::verbs::resolve`, and walks the loop as the ADMIN UNITS (`crates/busbar/src/root/units_admin`). `kind-isolation:faces` FAIL → PASS; `construction:kernel-seal-impls` FAIL → PASS with it (the deleted test harness held the tree's last untracked `KernelSeal` forgery). `admin_codec/` is now the closed verb table, the one claim and the frozen error envelope — DECLARATIONS, no entry face. `v1/` (12.8k) = def 11. Top-level `keys/verb/rate/restart/posture/…` (4,825 lines measured 2026-09-22) = verb-execution semantics, **and their home is THIS CRATE.** The previous wording — *"still owed a home; the crate split is a later wave"* — is struck: it contradicted two OWNER-LOCKED decisions in this same document. **#37** (`:360`) names *"the surviving compiled-in scaffolding = exactly `busbar-core-admin` (cleanliness: **admin codec + verb execution**)"*, and **#36** (`:359`) rules *"`verbs` → `busbar-core-admin` (admin owns its own execution — **no codec/exec split**, since admin is a cleanliness crate not a plane)"*. Roster def 11 (`:3009`) already covers both halves. `crates/busbar-unit-verbs` does not exist; the absorption is done. There is no split to schedule and no wave to schedule it into — Part 5’s W0–W8 and its 39-row granular table name no admin verb-execution split, because #36 forbade one. (Stale destination to fix separately: `docs/design/1.6.0-composition-root-plan.md:582` still routes execution to a `busbar-unit-verbs` that #36 deleted.) |
 | `busbar-llm` · `busbar-mcp` · `busbar-a2a` · `busbar-voice` | Protocol orchestration / plane entry face | Session, turn and dialect rules → 16–20. But `unit/{admit,approve,meter,route}` and `runtime/metering.rs` decide admission and price — that is defs 5/6, not a plane. |
 | `busbar-plane-decision` | Adapter / codec / kernel-side `PlaneDecl` builder | Adapter+codec = def 20 (#39 ruled the 113-LOC codec too small to split out). `registry.rs` names `busbar-kernel` — its own header calls it a #40 violation. |
 | `busbar-kernel-audit` | Record shape / a second chain mechanism | `record.rs`+`amend.rs` = def 10. `legacy/{chain,entry}.rs` (1,019) is a self-contained hash chain — def 9's KIND, kept only so 1.5.5 digests still verify. |

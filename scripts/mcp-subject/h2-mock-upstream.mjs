@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 //
-// A MINIMAL MCP UPSTREAM FOR THE H2 GATING SCENARIOS (tracker row H2, BUSBAR-1.6.0.md THE DESIGN, §1).
+// A MINIMAL MCP UPSTREAM FOR THE H2 GATING SCENARIOS (the Teller-steps rule H2, BUSBAR-1.6.0.md THE DESIGN, §1).
 //
 // The official-suite fixtures (diagnostic-upstream.mjs) exist to serve the pinned conformance
 // suite's own scenario names and carry no egress-capture instrumentation. The H2 gating scenarios

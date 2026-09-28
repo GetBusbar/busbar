@@ -418,7 +418,7 @@ pub fn parse_str(text: &str) -> Result<Document, String> {
             // AN ARRAY OF TABLES IS A REPEATED HEADER, and it is read as one: `[[registered]]`
             // written three times registers `registered.0`, `registered.1`, `registered.2`. The
             // reader refused the shape entirely until `qa/kind-isolation.toml` needed it —
-            // `docs/design/PLUGIN-TREE.md` cites `[[registered]]` rows as the mechanism that names
+            // `docs/design/BUSBAR-1.6.0.md` THE DESIGN, §2 cites `[[registered]]` rows as the mechanism that names
             // a crate's kind ahead of its rename, and a document cannot be normative about a shape
             // the only reader of it will not parse.
             let array = sc.peek() == Some(b'[');

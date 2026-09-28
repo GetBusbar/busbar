@@ -4,7 +4,7 @@
 //! What this transport declares about itself.
 //!
 //! Everything here is an associated constant, because everything here is read once at registration
-//! and sealed. Held as the kind's own `meta.rs` (`PLUGIN-TREE.md` §3) so two siblings of the
+//! and sealed. Held as the kind's own `meta.rs` (`BUSBAR-1.6.0.md` THE DESIGN, §2) so two siblings of the
 //! transport kind are indistinguishable in shape, and so the declarations are readable without
 //! reading the connection code they describe.
 

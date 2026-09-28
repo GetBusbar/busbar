@@ -19,7 +19,7 @@
 #   N3, sign.rs:90 (TODO(release-keys))       -> ITEM-589  relabel the stale tag, delete the row
 # The allowlist is a FLOOR CHECKED BOTH WAYS: a marker not waived is RED (over-count); a waiver that
 # matches no marker is RED (stale — the marker was resolved). See xtask/src/gates/no_deferral.rs
-# and docs/design/playbook/gate-no-deferral.md.
+# and docs/design/BUSBAR-1.6.0.md #15.
 #
 # no-deferral-strict-done (what scripts/verify-1.6.0-done.sh runs) additionally FAILS if ANY row below is not a
 # */hot/* row: the hot/* foundation fixtures are the ONE permanent exemption; the voice skeleton rows
@@ -77,7 +77,7 @@
 # The previous revision retired all 52 rows against H5, whose text read "Out of 1.6.0 scope; the work
 # lands with docs/design/1.6.0-protocols-as-plugins.md" — a DECISIONS #15 banned phrase pointing at a
 # file that has never existed in this repository (`git cat-file -e HEAD:docs/design/1.6.0-protocols-as-plugins.md`
-# fails; the same non-existent file is cited four more times in 1.6.0-duplex-plane-and-realtime.md).
+# fails; the same non-existent file is cited four more times in a since-retired duplex-plane note).
 # 52 markers were waived, in banned words, against a document that is not there.
 #
 # **AND THAT IS THE WORSE HALF OF THE DEFECT, NOT THE LESSER ONE.** The 39 bad line-anchors were loud:
@@ -176,10 +176,10 @@ crates/busbar-contract/src/abi/hot/host.rs:1460	class-A STUB fn-pointer slot `Pl
 
 # ── THE FOUR COMMENT TAGS, DECLARED FOR THE FIRST TIME, 2026-09-23 ──────────────────────────────
 # Until 2026-09-23 this gate matched `TODO` / `FIXME` / `XXX` / `HACK` WITH NOTHING. The playbook
-# (docs/design/playbook/gate-no-deferral.md §1b) has listed all four under Class B since the gate was
+# (docs/design/BUSBAR-1.6.0.md #15) has listed all four under Class B since the gate was
 # specified; xtask/src/gates/no_deferral.rs carried the five PHRASE forms and none of the tags. So the
 # four rows below are not new markers — they are markers that were always there, in the marker class
-# the rule is NAMED after, in front of an instrument that could not see them. `1.6.0-LEDGER.md` G55
+# the rule is NAMED after, in front of an instrument that could not see them. The 1.6.0 ledger's G55
 # called it "the headline blind spot" and it was right.
 #
 # THEY ARE NOT `hot/` ROWS, AND THAT IS THE POINT. `no-deferral-strict-done` FAILS while any non-hot

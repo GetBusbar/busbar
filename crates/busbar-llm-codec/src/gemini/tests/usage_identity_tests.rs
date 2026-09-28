@@ -119,8 +119,8 @@ fn the_four_term_usage_identity_holds_on_every_real_recording() {
 
 /// THE FINDING THAT OVERTURNED THE DOCS, stated as arithmetic rather than opinion.
 ///
-/// `IrUsageDetail::tool_use_prompt_tokens`, `docs/design/billing-usage-units.md` and
-/// `docs/design/billing-unified.md` all described `toolUsePromptTokenCount` as `⊂ prompt`. On the
+/// `IrUsageDetail::tool_use_prompt_tokens`, `docs/design/BUSBAR-1.6.0.md` THE DESIGN, §7 and
+/// `docs/design/BUSBAR-1.6.0.md` THE DESIGN, §7 all described `toolUsePromptTokenCount` as `⊂ prompt`. On the
 /// real grounding turn it is 32 against a `promptTokenCount` of 18. Nothing can be a slice of
 /// something smaller than itself, so the question is settled without appeal to any spec.
 #[test]

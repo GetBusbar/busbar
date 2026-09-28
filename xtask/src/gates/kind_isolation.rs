@@ -756,7 +756,7 @@ const EXEMPLARS: &[(&str, &str)] = &[
     ("transport", "busbar-transport-tcp"),
 ];
 
-/// THE KIND SKELETON IS THE SPEC'S, NEVER THE EXEMPLAR'S FILE LIST (`PLUGIN-TREE.md` §3).
+/// THE KIND SKELETON IS THE SPEC'S, NEVER THE EXEMPLAR'S FILE LIST (`BUSBAR-1.6.0.md` THE DESIGN, §2).
 ///
 /// It was the exemplar's top-level module set, which reads every DOMAIN module of one crate as part
 /// of its kind's shape: `busbar-unit-wal` was charged with missing `challenge`, `carrier`,
@@ -766,7 +766,7 @@ const EXEMPLARS: &[(&str, &str)] = &[
 /// rule that grows a row every time the exemplar grows a file is not measuring shape; it is
 /// measuring one crate's domain, and the only way to go green is to copy it.
 ///
-/// PLUGIN-TREE.md §3 names the intersection instead, and it is small on purpose: `src/lib.rs` (the single `pub`
+/// BUSBAR-1.6.0.md THE DESIGN, §2 names the intersection instead, and it is small on purpose: `src/lib.rs` (the single `pub`
 /// entry — checked as `no-lib`), `src/meta.rs` (the associated consts), `src/claims.rs` for the
 /// kinds that CLAIM, the kind's own entry file (`unit.rs` / `plane.rs` / `transport.rs`), and
 /// `src/tests/conformance.rs` (checked by the battery rule). Everything else is `src/<verb>.rs` —
@@ -803,7 +803,7 @@ const ENTRY_TRAIT_KINDS: &[&str] = &[
     "export",
 ];
 
-/// The kinds that declare CLAIMS (`PLUGIN-TREE.md` §3): what the crate answers for.
+/// The kinds that declare CLAIMS (`BUSBAR-1.6.0.md` THE DESIGN, §2): what the crate answers for.
 /// An AUTH plugin is here for the reason the planes are: it declares what it answers for as DATA —
 /// the same claim-table shape — rather than deciding it inside a handler. `control` and `dialect`
 /// are gone (DECISIONS #4/#5); a `cleanliness` crate is compiled-in and declares no plugin claims.
@@ -4306,7 +4306,7 @@ fn rule_shape(
             if !missing.is_empty() {
                 offenders.push(format!(
                     "skeleton\t{}/src/lib.rs\t{} is missing {} of the `{kind}` skeleton \
-                     (PLUGIN-TREE.md §3): {}",
+                     (BUSBAR-1.6.0.md THE DESIGN, §2): {}",
                     c.dir,
                     c.name,
                     missing.len(),
@@ -4509,7 +4509,7 @@ fn rule_testkit(crates: &[CrateInfo], idx: &SourceIndex) -> Row {
         }
         for c in members {
             // A BATTERY WITH NO SUBJECT PROVES NOTHING. The battery's whole content is the kind's
-            // trait exercised through the crate's own implementor (`PLUGIN-TREE.md` §3: `let _: &dyn
+            // trait exercised through the crate's own implementor (`BUSBAR-1.6.0.md` THE DESIGN, §2: `let _: &dyn
             // <KindTrait> = &P;`), so a crate of the kind that implements the trait ZERO times has
             // nothing for its battery to be about — and a file that compiles anyway is a file that
             // asserts about something else. Read off the same trait-impl index `:shape` counts with.
@@ -8884,7 +8884,7 @@ impl Gate for KindIsolationGate {
             &[
                 "busbar-transport-planted",
                 "is missing 1 of the `transport` skeleton",
-                "PLUGIN-TREE.md §3): transport",
+                "BUSBAR-1.6.0.md THE DESIGN, §2): transport",
             ],
         ));
 

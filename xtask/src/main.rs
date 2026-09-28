@@ -1,5 +1,5 @@
 //! cargo-xtask entry point. See `docs/design/BUSBAR-1.6.0.md` THE DESIGN, §2/§8/§9,
-//! `docs/design/1.6.0-contract-gaps.md` CG-59, and `docs/design/xtask-gates.md` for why this
+//! `docs/design/BUSBAR-1.6.0.md` #7 CG-59, and `docs/design/BUSBAR-1.6.0.md` Part 1 ("What this means for the gates") for why this
 //! exists and where it is going.
 //!
 //! Usage: `cargo xtask gate <name>` / `cargo xtask selftest` / `cargo xtask denylist`

@@ -1006,7 +1006,7 @@ fn tool_response_maps_to_call_result_and_roundtrips() {
     assert_eq!(back, src, "toolResponse round-trip is byte-stable");
 }
 
-// ── usageMetadata extraction (`plane4-duplex-session.md`) ──────────────────────────────────────────────────────────────
+// ── usageMetadata extraction (`BUSBAR-1.6.0.md` #18/#45) ──────────────────────────────────────────────────────────────
 
 #[test]
 fn usage_metadata_extracts_split_token_classes() {

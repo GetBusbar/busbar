@@ -764,7 +764,7 @@ fn d2_an_open_meter_class_is_handed_to_the_one_function_by_the_enforcement_side(
     }
 }
 
-/// D7 — `nano_rate` TAKES AN `f64` (#77(8), #81). PARKED (`1.6.0-money-sweep.md`): the double picks
+/// D7 — `nano_rate` TAKES AN `f64` (#77(8), #81). PARKED (`qa/evidence/1.6.0-money-sweep.md`): the double picks
 /// the wrong side of a decimal half-boundary. Kept verbatim as the parked measurement — card-build
 /// quantisation is outside this collapse, which keeps it byte-identical (#44).
 fn nano_rate_exact_from_text(decimal: &str) -> u64 {

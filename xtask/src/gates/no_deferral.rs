@@ -17,7 +17,7 @@
 //!   [`comment_tag`] for both narrowings and what each one costs.
 //!
 //! **THE FOUR TAGS WERE MATCHED BY NOTHING UNTIL 2026-09-23.** The playbook
-//! (`docs/design/playbook/gate-no-deferral.md` §1b) has listed `\bTODO\b \bFIXME\b \bXXX\b
+//! (`docs/design/BUSBAR-1.6.0.md` #15) has listed `\bTODO\b \bFIXME\b \bXXX\b
 //! \bHACK\b` under Class B since the gate was specified; the implementation carried the five
 //! phrases and none of the tags. The gate was therefore structurally incapable of saying NO about
 //! the marker class the rule is named after, and both of the tree's un-owned source deferrals
@@ -28,7 +28,7 @@
 //!
 //! **SCOPE IS `crates/**/*.rs`, AND `xtask/` IS OUT ON PURPOSE.** The intended file scope is
 //! `crates/**/*.rs` and the gate's single claim is about the SHIPPED source tree; `xtask/` is build
-//! tooling that ships to nobody. The census grep in `1.6.0-map-proof.md` §8.2 reads
+//! tooling that ships to nobody. The 1.6.0 map-proof census grep read
 //! `crates/` + `xtask/`, which is the AUDITOR's scope, not the rule's — all 17 `todo!` and all 4
 //! `XXX` hits in that census are in `xtask/`, and every one of them is a gate's own test corpus or
 //! a `\uXXXX` JSON escape. Widening discovery to `xtask/` would make this gate red on the fixture
@@ -187,10 +187,10 @@ fn class_b(raw: &str, comment: &str) -> bool {
 
 /// THE FOUR COMMENT TAGS THE RULE IS NAMED AFTER — `TODO` / `FIXME` / `XXX` / `HACK`.
 ///
-/// `docs/design/playbook/gate-no-deferral.md` §1b lists all four under Class B. **This gate matched
+/// `docs/design/BUSBAR-1.6.0.md` #15 lists all four under Class B. **This gate matched
 /// none of them with anything for as long as it existed**, so the four tags that define the rule
 /// were enforced by nothing and the tree's only un-owned source deferrals sat in exactly that hole
-/// (`1.6.0-LEDGER.md` G55). A marker class the gate never looks at cannot be waived, cannot go
+/// (the 1.6.0 ledger's G55). A marker class the gate never looks at cannot be waived, cannot go
 /// stale, and cannot make the gate say NO — it is a green row about a question never asked.
 ///
 /// Two deliberate narrowings, each stated because each is a thing this detector does NOT see:

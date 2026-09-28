@@ -439,6 +439,14 @@ jobs:
         run: cargo xtask gate no-tracked-ignored --selftest
       - name: No-tracked-ignored gate (no tracked path matches a .gitignore rule of this tree)
         run: cargo xtask gate no-tracked-ignored
+      # DESIGN-DOCS ALLOWLIST (owner, 2026-09-27): docs/design holds BUSBAR-1.6.0.md, 1.6.0-TODO.md,
+      # 1.6.0-KICKOFF.md, 1.6.0-QUESTIONS.md, 1.6.0-SLOT-LOG.md and 1.6.0-PARKED/, nothing else. A new
+      # design topic is a section of the spec; generated data and evidence go under qa/. Self-test
+      # FIRST: it plants a stray document and proves the gate names it.
+      - name: Design-docs allowlist self-test
+        run: cargo xtask gate design-docs-allowlist --selftest
+      - name: Design-docs allowlist (BLOCKING — nothing tracked under docs/design outside the list)
+        run: cargo xtask gate design-docs-allowlist
       # PACKAGE-SELECTOR LIVENESS: a `cargo ... -p <name>`, a `tests:`/`features:` matrix cell or an
       # xtask cargo command string that names a crate the 1.6.0 folds deleted. `cargo -p <gone>` does
       # not select nothing, it FAILS — and scripts/txn-fence.sh's PASS CONDITION IS A BUILD FAILURE,
@@ -1037,7 +1045,7 @@ jobs:
           # could not fire either. This is a REPAIR of a broken instrument, not a ratchet move —
           # the numbers go UP, to what the suite actually is.
           #
-          # THE DERIVATION, reproducible (docs/design/1.6.0-test-vacuity.md §8):
+          # THE DERIVATION, reproducible:
           #   cargo test --workspace --locked --no-run --message-format=json   -> 192 test binaries
           #   each binary: --list --format terse                               -> 9,888 collected
           #   each binary: --list --ignored --format terse                     ->     7 ignored
@@ -1557,8 +1565,8 @@ jobs:
       # "frozen since 1.5.3, additive-only forever" claim is actually about.
       #
       # The gate now carries its own baseline: the freeze point the rule names (see
-      # DEFAULT_BASELINE_REF in xtask/src/gates/config_schema/mod.rs, and
-      # docs/design/1.6.0-denominator.md §8.2 for how the old default was found). Leaving this
+      # DEFAULT_BASELINE_REF in xtask/src/gates/config_schema/mod.rs for how the old default was
+      # found). Leaving this
       # variable unset is what lets that default apply — setting it here at all is how the check
       # got pointed back at the tree it was judging, so a future override needs a reason written
       # beside it and should never name `HEAD`, `github.sha`, or the branch under test.
@@ -1708,7 +1716,7 @@ jobs:
       - name: Public-hygiene gate
         run: python3 scripts/public-hygiene-lint.py --root .
 
-      # SECRET-VALUE-TYPE HYGIENE (scripts/secret-hygiene-gate.sh, docs/design/1.6.0-secret-hygiene.md):
+      # SECRET-VALUE-TYPE HYGIENE (scripts/secret-hygiene-gate.sh, docs/design/BUSBAR-1.6.0.md #53/#54):
       # a known-secret field declared as a bare String/&str/Vec<u8> instead of busbar_contract::Redacted<T>
       # (leakable through a derived Debug/Serialize), and an `.expose_secret()` on the same statement
       # as a log/audit/metric sink.
@@ -1731,7 +1739,7 @@ jobs:
       - name: Secret-hygiene debt meter (report-only)
         run: SECRET_GATE_REPORT_ONLY=1 scripts/secret-hygiene-gate.sh --report
 
-  # SERVICE-IMAGE PINS. The durable-store QA cycle (docs/design/store-qa-cycle.md) rests on the
+  # SERVICE-IMAGE PINS. The durable-store QA cycle (docs/design/BUSBAR-1.6.0.md THE DESIGN, §2) rests on the
   # four backend services being the SAME BYTES everywhere they are stood up. They were not: the
   # service containers were provisioned in five places — this file's `check` and `coverage` jobs,
   # release-stage.yml's `gate`, plugin-ci.yml's `build-test-signoff`, and scripts/release-check.sh.
@@ -2965,7 +2973,7 @@ jobs:
       # Raising it is a REPAIR of a broken instrument, not a ratchet move.
       #
       # The unix pair was MEASURED (9,888 collected + 33 doc-tests - 7 ignored = 9,914; the
-      # derivation is in that job and in docs/design/1.6.0-test-vacuity.md §8). This pair is a
+      # derivation is in that job). This pair is a
       # PROJECTION off it, because nobody here has a windows runner to list binaries on: the
       # previous pair recorded windows at 0.9935 of unix EXPECTED and 0.9947 of unix MIN, and the
       # only structural difference is the cfg(unix)-only set, which has not changed shape. So
@@ -3343,7 +3351,7 @@ jobs:
           fi
 
   # ── proof-manifest: PRODUCE + TRANSPORT for the Build Proof Dashboard ──────────────────────────────
-  # (docs/design/1.6.0-proof-dashboard.md). Runs ONLY on the three stage-mirrored promotion branches
+  # (docs/proof/README.md). Runs ONLY on the three stage-mirrored promotion branches
   # (dev/qa/main). The stage mirroring is preserved in the FILE NAME, not in the branch the file is
   # committed to: a push to dev publishes docs/proof/dev.json; qa -> qa.json; main -> main.json.
   #

@@ -319,8 +319,8 @@ const FIELD_TRAFFIC_TYPE: &str = "trafficType";
 /// * `toolUsePromptTokenCount` — additive, and this OVERTURNS what busbar believed. The grounding
 ///   recording settles it with no interpretation required: `toolUsePromptTokenCount` is **32**
 ///   while the whole `promptTokenCount` is **18**. A sub-bucket cannot exceed its bucket. The
-///   IR field's own doc-comment, `docs/design/billing-usage-units.md` and
-///   `docs/design/billing-unified.md` all called it `⊂ prompt`; the wire says otherwise.
+///   IR field's own doc-comment, `docs/design/BUSBAR-1.6.0.md` THE DESIGN, §7 and
+///   `docs/design/BUSBAR-1.6.0.md` THE DESIGN, §7 all called it `⊂ prompt`; the wire says otherwise.
 ///
 /// THE MONEY CONSEQUENCE, APPLIED IN 1.6.0. busbar used to fold only prompt + candidates + thoughts
 /// into `IrUsage`, so a Gemini turn that used a server-side tool was under-counted by exactly

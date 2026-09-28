@@ -5,7 +5,7 @@
 //! closes it. A hold is the accounting side of admission — the door decides, the hold is the
 //! reservation that decision sized — and it has no `Drop` of its own on purpose: a hold that goes
 //! away without a posting is a bug the canary must see, not a thing a destructor should paper
-//! over. See `docs/design/contract-notes.md` for the fuller rationale.
+//! over. See `docs/design/BUSBAR-1.6.0.md` #38 for the fuller rationale.
 //!
 //! # What the rest of the system cannot do
 //!

@@ -2,7 +2,7 @@
   "_doc": [
     "THE PLANE-HOOK ISOMORPHISM ALLOWLIST — the accepted per-hook asymmetries across the installed",
     "planes, read by crates/busbar/tests/plane_isomorphism.rs (Assertion I2 of",
-    "docs/design/playbook/gate-isomorphism.md).",
+    "docs/design/BUSBAR-1.6.0.md THE DESIGN, §1).",
     "",
     "The test REFLECTS the actual Some/None of each installed &'static PlaneDecl (it does not re-read",
     "this file to decide the matrix). For every hook field where one plane is Some and a sibling is",

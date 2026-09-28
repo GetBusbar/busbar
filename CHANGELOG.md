@@ -436,7 +436,7 @@ identically, and every 1.5.5 key and minted secret carries over.
   count exactly as Vertex spells it, and the `totalTokenCount` busbar synthesizes now reproduces
   Google's. Nothing else about a Gemini response changed, and a turn with no server-side tool use
   bills exactly as it did. See [Spec fidelity](#spec-fidelity) and
-  [the recorded discrepancy](docs/design/gemini-usage-metadata-spec-discrepancy.md). **Migration:**
+  [the recorded discrepancy](qa/evidence/gemini-usage-metadata-spec-discrepancy.md). **Migration:**
   if your traffic uses Gemini server-side tools (grounding, code execution, function calling),
   expect those keys' recorded spend to rise to what Google actually invoices; no config change is
   needed.

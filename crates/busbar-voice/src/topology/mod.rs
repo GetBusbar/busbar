@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE TWO TOPOLOGIES the voice runtime exposes (design `plane4-duplex-session.md` §5-6), behind the `runtime` feature.
+//! THE TWO TOPOLOGIES the voice runtime exposes (design `BUSBAR-1.6.0.md` #18/#45), behind the `runtime` feature.
 //!
 //! * [`webrtc`] — the BROWSER WebRTC sideband: busbar mints the ephemeral token and holds a persistent
 //!   sideband control channel owning tools + instructions; the browser's MEDIA path is peer-to-peer, so

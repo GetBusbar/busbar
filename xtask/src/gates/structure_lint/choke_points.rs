@@ -188,7 +188,7 @@ pub fn table(a: &Addresses) -> Vec<ChokeRow> {
         //         null-out-guard-before-alloc, the mandatory catch_unwind and the total status map.
         //
         //         The ABI spike plugin's ledgered exemption is RETIRED: that crate was deleted per
-        //         docs/design/PLUGIN-TREE.md §7, so the SDK is once again the only file in the tree
+        //         docs/design/BUSBAR-1.6.0.md THE DESIGN, §2, so the SDK is once again the only file in the tree
         //         allowed to spell the export by hand.
         ChokeRow {
             id: "B-plugin-export".into(),

@@ -4,7 +4,7 @@
 //!
 //! No default bodies, feature-invariant, and bounded (except the candidate set and its
 //! permutation, which track deployment-time configuration whose size is not fixed by this crate).
-//! See `docs/design/contract-notes.md` for the full rationale.
+//! See `docs/design/BUSBAR-1.6.0.md` #38 for the full rationale.
 
 // UNSAFE POLICY (the DECISIONS #84 merge). Denied crate-wide, and allowed in exactly ONE module: `abi`,
 // the plugin C ABI folded in from the former `busbar-plugin` and `busbar-plugin-sdk` crates. That module
