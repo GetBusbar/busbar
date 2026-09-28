@@ -342,13 +342,20 @@ busbar-voice = ["busbar-voice-codec"]
 # 17170 -> 17775 (OWNER RULING Q68(3)). Its commit reached the base; struck by the Statement
 # secret_refs re-arm, which declares the pair's next figure below.
 
-# ── THE CONTRACT CEILING PAIR, RE-ARMED BY THE STATEMENT'S secret_refs (M0 follow-up) ──────────
+# ── THE CONTRACT CEILING PAIR, RE-ARMED BY THE STATEMENT'S secret_refs (M0 follow-up) —
+#    EXPIRED AND STRUCK
+#
+# Declared `gate.surface_ceilings.contract_caps` and `rules.loc-ceilings.caps_contract_ceiling`
+# 17775 -> 17779 (OWNER RULING Q68(3)). Its commit reached the base; struck by the M0 decisions
+# re-arm, which declares the pair's next figure below.
+
+# ── THE CONTRACT CEILING PAIR, RE-ARMED BY THE ARCHITECT'S RULINGS ON M0 DECISIONS 1-6 ─────────
 
 [gate.ceiling_raises."gate.surface_ceilings.contract_caps"]
 file    = "qa/construction.toml"
-from    = 17775
-to      = 17779
-because = "OWNER RULING Q68(3) (docs/design/1.6.0-QUESTIONS.md): contract_caps re-arms at the MEASURED value, in its own commit. This is the re-arm for the M0 follow-up (ARCHITECT): Statement.secret_refs and secret_refs_len, the settings keys the kernel resolves in order into OpenIn.secrets, with their two compile-time layout pins, +4 code lines. Measured by cargo xtask gate construction: 17775 before, 17779 after."
+from    = 17779
+to      = 17802
+because = "OWNER RULING Q68(3) (docs/design/1.6.0-QUESTIONS.md): contract_caps re-arms at the MEASURED value, in its own commit. This is the re-arm for the ARCHITECT rulings on M0 decisions 1-6: InHead.trace_id as the 16-byte W3C id plus parent_span_id, RefreshIn (the reload carries settings and secrets), Statement.settings_schema, and their compile-time layout pins, +23 code lines. Measured by cargo xtask gate construction: 17779 before, 17802 after."
 
 [gate.ceiling_raises."rules.loc-ceilings.kernel_ceiling"]
 file    = "qa/construction.toml"
@@ -358,9 +365,9 @@ because = "ARCHITECT 2026-09-27: R-KERNEL exception for the Phase-2 exit-test re
 
 [gate.ceiling_raises."rules.loc-ceilings.caps_contract_ceiling"]
 file    = "qa/construction.toml"
-from    = 17775
-to      = 17779
-because = "OWNER RULING Q68(3) (docs/design/1.6.0-QUESTIONS.md): contract_caps re-arms at the MEASURED value, in its own commit. This is the re-arm for the M0 follow-up (ARCHITECT): Statement.secret_refs and secret_refs_len, the settings keys the kernel resolves in order into OpenIn.secrets, with their two compile-time layout pins, +4 code lines. Measured by cargo xtask gate construction: 17775 before, 17779 after."
+from    = 17779
+to      = 17802
+because = "OWNER RULING Q68(3) (docs/design/1.6.0-QUESTIONS.md): contract_caps re-arms at the MEASURED value, in its own commit. This is the re-arm for the ARCHITECT rulings on M0 decisions 1-6: InHead.trace_id as the 16-byte W3C id plus parent_span_id, RefreshIn (the reload carries settings and secrets), Statement.settings_schema, and their compile-time layout pins, +23 code lines. Measured by cargo xtask gate construction: 17779 before, 17802 after."
 
 # ── THE KERNEL CEILING, RE-ARMED BY SD-8 (the substrate-values kernel landing) ─────────────────
 # Its 51100 -> 54801 declaration expired once landed and is struck; the ceiling text below keeps it.
@@ -523,7 +530,9 @@ because = "ARCHITECT ruling on the kernel budget (R-KERNEL, sd-extra.txt; K2-0 u
 # (compile-time layout pins, KindTailHead, +189); the live declaration above carries the measure.
 # RE-ARMED 17775 -> 17779, AT THE MEASUREMENT (OWNER RULING Q68(3)), in its own commit after
 # the Statement's secret_refs (+4); the live declaration above carries the measure.
-contract_caps = 17779
+# RE-ARMED 17779 -> 17802, AT THE MEASUREMENT (OWNER RULING Q68(3)), in its own commit after
+# the rulings on M0 decisions 1-6 (+23); the live declaration above carries the measure.
+contract_caps = 17802
 # REPOINTED, and the repoint is what makes this row a gate again. It named the CRATE
 # `busbar-grammar`, which #40 folded into `busbar-contract` and deleted — so it summed nothing,
 # measured nothing and passed, which is this file's own "zero is not clean" failure sitting inside
@@ -1154,7 +1163,8 @@ contract_crate = "busbar-contract"
 # RE-ARMED 16403 -> 17126 with its pair (OWNER RULING Q68(3); the connection table, +723).
 # RE-ARMED 17170 -> 17775 with its pair (OWNER RULING Q68(3); M0 ABI-SPEC +416, its review rulings +189).
 # RE-ARMED 17775 -> 17779 with its pair (OWNER RULING Q68(3); Statement.secret_refs, +4).
-caps_contract_ceiling = 17779
+# RE-ARMED 17779 -> 17802 with its pair (OWNER RULING Q68(3); rulings on M0 decisions, +23).
+caps_contract_ceiling = 17802
 unit_crate_glob = "busbar-unit-*"
 # RE-KEYED on cherry-pick onto 143db6db6: this commit's own delta is -53 (two units stopped
 # declaring their own copies), measured against whatever unit_total_ceiling read when the line was
