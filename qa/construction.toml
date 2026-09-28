@@ -376,20 +376,27 @@ from    = 54842
 to      = 54915
 because = "ARCHITECT 2026-09-28: R-KERNEL, FOLD-LLM C2' (legacy fold rulings F19/F20; BUSBAR-1.6.0.md THE DESIGN, §7). The kernel's door now decides the METER step's fee count, usage lines and metering-row evidence that the llm plane's meter step built itself; the door functions are typed in contract types only, for the plane driver to call at METER. Measured by cargo xtask gate construction: 54842 before, 54915 after, +73. The ceiling rises by exactly that."
 
-# ── THE CONTRACT CEILING PAIR, RE-ARMED BY KERNEL<>PLUGINS STEP 4a (the plane ABI v1 additions for
-#    the plane driver, validators beside each) ─────────────────────────────────────────────────
+# ── THE CONTRACT CEILING PAIR, RE-ARMED BY KERNEL<>PLUGINS STEP 4a (the plane ABI v1 additions
+#    for the plane driver) — EXPIRED AND STRUCK
+#
+# Declared `gate.surface_ceilings.contract_caps` and `rules.loc-ceilings.caps_contract_ceiling`
+# 24057 -> 24306 (OWNER RULING Q68(3)). Its commit reached the base; struck by the plane door's
+# re-arm below, which declares the pair's next figure.
+
+# ── THE CONTRACT CEILING PAIR, RE-ARMED BY THE PLANE DOOR (plugin_door! builds a plane: the kind
+#    states its lifecycle structs) ────────────────────────────────────────────────────────────────
 
 [gate.ceiling_raises."gate.surface_ceilings.contract_caps"]
 file    = "qa/construction.toml"
-from    = 24057
-to      = 24306
-because = "OWNER RULING Q68(3) (docs/design/1.6.0-QUESTIONS.md): contract_caps re-arms at the MEASURED value, in its own commit. Growth is exactly KERNEL<>PLUGINS step 4a, the plane ABI v1 additions of BUSBAR-1.6.0.md Part 3 (the plane driver): FROM_KERNEL and the ATTEMPT fields on OnPieceIn, the verdict and explicit verb/target on OnPieceOut, CLAIM_PROBE/TAIL_PROBES, the project op (ProjectIn/ProjectOut over the hook RequestView), ROUTE_PUBLIC on AdminRoute, PlaneDriveIn/PlaneDriveOut, the tail record_chains framing, their compile-time layout pins and the check_project/check_drive/check_record_chains validators beside them. Measured by cargo xtask gate construction: 24057 before, 24306 after."
+from    = 24306
+to      = 24340
+because = "OWNER RULING Q68(3) (docs/design/1.6.0-QUESTIONS.md): contract_caps re-arms at the MEASURED value, in its own commit. Growth is exactly the plane door of BUSBAR-1.6.0.md THE DESIGN (decision #2, §11.4: one door macro builds every kind, the plane included): KindOps::Lifecycle and the standard Lifecycle's KindSlot rows (plugin_door! wires the nine lifecycle slots through kind_op), the plane's PlaneLifecycle rows (open/refresh carry the generation snapshot, drive names the ready sessions) and the AbiIn/AbiOut marks on PlaneOpenIn/PlaneOpenOut/PlaneRefreshOut/PlaneDriveIn/PlaneDriveOut; lifecycle_op is deleted. Measured by cargo xtask gate construction: 24306 before, 24340 after."
 
 [gate.ceiling_raises."rules.loc-ceilings.caps_contract_ceiling"]
 file    = "qa/construction.toml"
-from    = 24057
-to      = 24306
-because = "OWNER RULING Q68(3) (docs/design/1.6.0-QUESTIONS.md): contract_caps re-arms at the MEASURED value, in its own commit. Growth is exactly KERNEL<>PLUGINS step 4a, the plane ABI v1 additions of BUSBAR-1.6.0.md Part 3 (the plane driver): FROM_KERNEL and the ATTEMPT fields on OnPieceIn, the verdict and explicit verb/target on OnPieceOut, CLAIM_PROBE/TAIL_PROBES, the project op (ProjectIn/ProjectOut over the hook RequestView), ROUTE_PUBLIC on AdminRoute, PlaneDriveIn/PlaneDriveOut, the tail record_chains framing, their compile-time layout pins and the check_project/check_drive/check_record_chains validators beside them. Measured by cargo xtask gate construction: 24057 before, 24306 after."
+from    = 24306
+to      = 24340
+because = "OWNER RULING Q68(3) (docs/design/1.6.0-QUESTIONS.md): contract_caps re-arms at the MEASURED value, in its own commit. Growth is exactly the plane door of BUSBAR-1.6.0.md THE DESIGN (decision #2, §11.4: one door macro builds every kind, the plane included): KindOps::Lifecycle and the standard Lifecycle's KindSlot rows (plugin_door! wires the nine lifecycle slots through kind_op), the plane's PlaneLifecycle rows (open/refresh carry the generation snapshot, drive names the ready sessions) and the AbiIn/AbiOut marks on PlaneOpenIn/PlaneOpenOut/PlaneRefreshOut/PlaneDriveIn/PlaneDriveOut; lifecycle_op is deleted. Measured by cargo xtask gate construction: 24306 before, 24340 after."
 
 # ── THE CONTRACT CEILING PAIR, RE-ARMED BY LANDER'S BATCH (XTASK-SPEED, KI-ABI-SCOPE, M3-SDK,
 #    M3-SHAPES AUTH, billing-cite) — EXPIRED AND STRUCK
@@ -645,7 +652,10 @@ because = "ARCHITECT ruling on the kernel budget (R-KERNEL, sd-extra.txt; K2-0 u
 # RE-ARMED 24057 -> 24306, AT THE MEASUREMENT (OWNER RULING Q68(3)), in its own commit after
 # KERNEL<>PLUGINS step 4a (the plane ABI v1 additions, +249); the live declaration above carries
 # the measure.
-contract_caps = 24306
+# RE-ARMED 24306 -> 24340, AT THE MEASUREMENT (OWNER RULING Q68(3)), in its own commit after
+# the plane door (the kind states its lifecycle structs, +34); the live declaration above
+# carries the measure.
+contract_caps = 24340
 # REPOINTED, and the repoint is what makes this row a gate again. It named the CRATE
 # `busbar-grammar`, which #40 folded into `busbar-contract` and deleted — so it summed nothing,
 # measured nothing and passed, which is this file's own "zero is not clean" failure sitting inside
@@ -1296,7 +1306,8 @@ contract_crate = "busbar-contract"
 # RE-ARMED 24052 -> 24057 with its pair (OWNER RULING Q68(3); the Unarmed refusal, +5).
 # RE-ARMED 24057 -> 24306 with its pair (OWNER RULING Q68(3); step 4a, the plane ABI v1
 # additions, +249).
-caps_contract_ceiling = 24306
+# RE-ARMED 24306 -> 24340 with its pair (OWNER RULING Q68(3); the plane door, +34).
+caps_contract_ceiling = 24340
 unit_crate_glob = "busbar-unit-*"
 # RE-KEYED on cherry-pick onto 143db6db6: this commit's own delta is -53 (two units stopped
 # declaring their own copies), measured against whatever unit_total_ceiling read when the line was
