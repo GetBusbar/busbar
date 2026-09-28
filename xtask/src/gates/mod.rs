@@ -1714,6 +1714,39 @@ impl<'a> Report<'a> {
             .count()
     }
 
+    /// THE CASES THAT FAILED, BY POSITION. A battery's plans are pushed in one fixed order, so a
+    /// position names the same case on the next build of the same selftest; the name rides along
+    /// so a re-take can prove it re-ran the case it meant to.
+    pub fn failing_cases(&self) -> Vec<(usize, String)> {
+        self.cases()
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| c.failure().is_some())
+            .map(|(i, c)| (i, c.name.clone()))
+            .collect()
+    }
+
+    /// KEEP ONLY THE PLANS AT THESE POSITIONS, dropping the rest untaken. For the serial re-take of
+    /// a red battery: re-running every case at `--jobs 1` to re-judge a handful turned any red
+    /// kind-isolation battery (197 cases) into a job cancelled at its time limit, which skipped the
+    /// gate and everything after it. A report something already resolved is left whole.
+    pub fn retain_positions(&mut self, keep: &std::collections::BTreeSet<usize>) {
+        if self.taken.get().is_some() {
+            return;
+        }
+        let plans = self
+            .plans
+            .get_mut()
+            .expect("the plan list is never held across a panic");
+        let all = std::mem::take(plans);
+        *plans = all
+            .into_iter()
+            .enumerate()
+            .filter(|(i, _)| keep.contains(i))
+            .map(|(_, p)| p)
+            .collect();
+    }
+
     pub fn failures(&self) -> Vec<String> {
         let mut out = self.infra.clone();
         out.extend(self.cases().iter().filter_map(Case::failure));
@@ -3596,6 +3629,69 @@ mod parallel_tests {
         }));
         assert_eq!(report.cases().len(), 1);
         assert!(!report.ok(), "the case failed, and the report says so");
+    }
+
+    fn counted(
+        name: &'static str,
+        pass: bool,
+        ran: &std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    ) -> CasePlan<'static> {
+        let ran = std::sync::Arc::clone(ran);
+        CasePlan::new(move || {
+            ran.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Case {
+                name: name.to_string(),
+                covers: vec!["r".to_string()],
+                expected: Expect::Green,
+                got: if pass {
+                    Expect::Green
+                } else {
+                    Expect::Red {
+                        naming: vec!["r".to_string()],
+                    }
+                },
+            }
+        })
+    }
+
+    /// THE SERIAL RE-TAKE RUNS THE FAILING CASES AND NOTHING ELSE. A red battery is re-judged at
+    /// `--jobs 1` to tell a race from a real red; re-running all of it put a red kind-isolation
+    /// battery past CI's job limit. The failing case is found by position, re-run, and still fails;
+    /// the cases that passed are never taken the second time (RED arm: a report whose plans are
+    /// kept whole takes all three).
+    #[test]
+    fn a_red_battery_re_takes_only_its_failing_cases() {
+        let ran = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let build = || {
+            let mut r = Report::new().with_jobs(2);
+            r.push(counted("passes first", true, &ran));
+            r.push(counted("fails", false, &ran));
+            r.push(counted("passes last", true, &ran));
+            r
+        };
+        let first = build();
+        assert_eq!(first.failing_cases(), vec![(1, "fails".to_string())]);
+        assert_eq!(ran.swap(0, std::sync::atomic::Ordering::SeqCst), 3);
+
+        let keep: std::collections::BTreeSet<usize> = [1].into_iter().collect();
+        let mut again = build();
+        again.retain_positions(&keep);
+        let names: Vec<&str> = again.cases().iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(names, vec!["fails"]);
+        assert_eq!(
+            ran.swap(0, std::sync::atomic::Ordering::SeqCst),
+            1,
+            "only the failing case ran"
+        );
+        assert_eq!(again.failures().len(), 1, "and it still fails");
+
+        let whole = build();
+        let _ = whole.cases();
+        assert_eq!(
+            ran.load(std::sync::atomic::Ordering::SeqCst),
+            3,
+            "RED arm: unfiltered takes all"
+        );
     }
 }
 

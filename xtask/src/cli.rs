@@ -836,28 +836,51 @@ fn run_selftest(gate: &dyn gates::Gate, cx: &Ctx) -> i32 {
                 println!("  - {e}");
             }
             if jobs > 1 {
-                println!(
-                    "  ...re-taking the battery at --jobs 1, to tell a real RED from a race in \
-                     the harness:"
-                );
-                gates::set_selftest_jobs(1);
-                let serial = gate.selftest(cx);
-                let _ = serial.cases();
-                let again = gates::verify_report(gate, &serial)
-                    .err()
-                    .unwrap_or_default();
-                gates::set_selftest_jobs(jobs);
-                if again.is_empty() {
+                // ONLY THE CASES THAT FAILED ARE RE-TAKEN. A race needs a case to have failed, so a
+                // case that passed has nothing to re-judge, and a finding about the battery as a
+                // whole (coverage, an owed row with no RED case) is not a race at all. Re-taking the
+                // whole battery serially cost more than CI's job limit for a large gate, so a red
+                // self-test was cancelled instead of reported, and the gate after it never ran.
+                let failing = report.failing_cases();
+                if failing.is_empty() {
                     println!(
-                        "  - EVERY finding above went away at --jobs 1 over {} case(s). That is a \
-                         defect in the SELFTEST HARNESS, not in `{}`: the cases are supposed to be \
-                         isolated by construction and one of them is not.",
-                        serial.cases().len(),
-                        gate.name()
+                        "  ...no single case failed (the findings are about the battery as a \
+                         whole), so there is nothing to re-take at --jobs 1"
                     );
                 } else {
-                    for e in &again {
-                        println!("  - (also at --jobs 1) {e}");
+                    println!(
+                        "  ...re-taking the {} failing case(s) at --jobs 1, to tell a real RED \
+                         from a race in the harness:",
+                        failing.len()
+                    );
+                    gates::set_selftest_jobs(1);
+                    let mut serial = gate.selftest(cx);
+                    let keep: std::collections::BTreeSet<usize> =
+                        failing.iter().map(|(i, _)| *i).collect();
+                    serial.retain_positions(&keep);
+                    let retaken: Vec<&str> =
+                        serial.cases().iter().map(|c| c.name.as_str()).collect();
+                    gates::set_selftest_jobs(jobs);
+                    let wanted: Vec<&str> = failing.iter().map(|(_, n)| n.as_str()).collect();
+                    let again = serial.failures();
+                    if retaken.len() == wanted.len() && retaken != wanted {
+                        println!(
+                            "  - the re-take ran {retaken:?}, not the failing {wanted:?}: this \
+                             selftest does not push its cases in one fixed order, so --jobs 1 \
+                             proves nothing about the cases above"
+                        );
+                    } else if again.is_empty() {
+                        println!(
+                            "  - EVERY failing case above passed at --jobs 1 ({} case(s)). That is \
+                             a defect in the SELFTEST HARNESS, not in `{}`: the cases are \
+                             supposed to be isolated by construction and one of them is not.",
+                            failing.len(),
+                            gate.name()
+                        );
+                    } else {
+                        for e in &again {
+                            println!("  - (also at --jobs 1) {e}");
+                        }
                     }
                 }
             }
