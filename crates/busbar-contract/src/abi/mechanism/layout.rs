@@ -203,10 +203,10 @@ pin!(crate::abi::store::Ops, 80, 8, head = 0);
 pin!(crate::abi::secret::Ops, 88, 8, head = 0, resolve = 80,);
 pin!(
     crate::abi::secret::ResolveIn,
-    96,
+    112,
     8,
     head = 0,
-    settings = 72,
+    settings = 88,
 );
 pin!(
     crate::abi::secret::ResolveOut,
@@ -515,28 +515,28 @@ pin!(
 );
 pin!(
     crate::abi::hook::DecideIn,
-    368,
+    384,
     8,
     head = 0,
-    request = 72,
-    candidates = 152,
-    candidate_dynamics = 160,
-    candidates_len = 168,
-    prompt = 176,
-    user = 224,
-    budget_remaining = 272,
-    budget = 280,
-    budget_len = 288,
-    present = 296,
-    _reserved = 300,
-    order_buf = 304,
-    order_cap = 312,
-    reject_message_buf = 320,
-    reject_message_cap = 328,
-    restrict_tags_buf = 336,
-    restrict_tags_cap = 344,
-    rewrite_buf = 352,
-    rewrite_cap = 360,
+    request = 88,
+    candidates = 168,
+    candidate_dynamics = 176,
+    candidates_len = 184,
+    prompt = 192,
+    user = 240,
+    budget_remaining = 288,
+    budget = 296,
+    budget_len = 304,
+    present = 312,
+    _reserved = 316,
+    order_buf = 320,
+    order_cap = 328,
+    reject_message_buf = 336,
+    reject_message_cap = 344,
+    restrict_tags_buf = 352,
+    restrict_tags_cap = 360,
+    rewrite_buf = 368,
+    rewrite_cap = 376,
 );
 pin!(
     crate::abi::hook::DecideOut,
@@ -588,14 +588,14 @@ pin!(
     stage_present = 132,
     _reserved2 = 136,
 );
-pin!(crate::abi::hook::NotifyIn, 216, 8, head = 0, stage = 72);
+pin!(crate::abi::hook::NotifyIn, 232, 8, head = 0, stage = 88);
 pin!(
     crate::abi::hook::ConfigureIn,
-    104,
+    120,
     8,
     head = 0,
-    version = 72,
-    settings = 80,
+    version = 88,
+    settings = 96,
 );
 pin!(
     crate::abi::hook::ConfigureOut,
@@ -614,15 +614,15 @@ pin!(
 );
 pin!(
     crate::abi::hook::ServeIn,
-    160,
+    176,
     8,
     head = 0,
-    method = 72,
-    path = 88,
-    query = 104,
-    headers = 120,
-    headers_len = 128,
-    body = 136,
+    method = 88,
+    path = 104,
+    query = 120,
+    headers = 136,
+    headers_len = 144,
+    body = 152,
 );
 pin!(
     crate::abi::hook::ServeOut,
@@ -665,13 +665,13 @@ pin!(
 );
 pin!(
     crate::abi::export::DeliverIn,
-    120,
+    136,
     8,
     head = 0,
-    op_id = 72,
-    stream = 88,
-    _reserved = 89,
-    batch = 96,
+    op_id = 88,
+    stream = 104,
+    _reserved = 105,
+    batch = 112,
 );
 pin!(
     crate::abi::export::ScrapeSample,
@@ -697,13 +697,13 @@ pin!(
 );
 pin!(
     crate::abi::export::ScrapeIn,
-    104,
+    120,
     8,
     head = 0,
-    families = 72,
-    families_len = 80,
-    buf = 88,
-    cap = 96,
+    families = 88,
+    families_len = 96,
+    buf = 104,
+    cap = 112,
 );
 pin!(
     crate::abi::export::ScrapeOut,
@@ -716,11 +716,11 @@ pin!(
 pin!(crate::abi::export::StatusOut, 120, 8, head = 0, status = 96);
 pin!(
     crate::abi::export::CheckIn,
-    80,
+    96,
     8,
     head = 0,
-    phase = 72,
-    _reserved = 76
+    phase = 88,
+    _reserved = 92
 );
 pin!(
     crate::abi::export::CheckOut,
@@ -731,15 +731,15 @@ pin!(
 );
 pin!(
     crate::abi::export::ServeIn,
-    160,
+    176,
     8,
     head = 0,
-    method = 72,
-    path = 88,
-    query = 104,
-    headers = 120,
-    headers_len = 128,
-    body = 136,
+    method = 88,
+    path = 104,
+    query = 120,
+    headers = 136,
+    headers_len = 144,
+    body = 152,
 );
 pin!(
     crate::abi::export::ServeOut,

@@ -1488,11 +1488,11 @@ fn a_perturbed_secret_golden_line_fails_the_comparator() {
 #[test]
 fn a_perturbed_export_golden_line_fails_the_comparator() {
     let actual = compute_layout();
-    let line = "ExportDeliverIn.batch=96";
+    let line = "ExportDeliverIn.batch=112";
     assert!(actual.lines().any(|l| l == line), "the golden holds {line}");
-    let perturbed = actual.replacen(line, "ExportDeliverIn.batch=104", 1);
+    let perturbed = actual.replacen(line, "ExportDeliverIn.batch=120", 1);
     let err = compare(&perturbed, &actual).expect_err("a perturbed line must fail");
-    assert!(err.contains("ExportDeliverIn.batch=104"), "{err}");
+    assert!(err.contains("ExportDeliverIn.batch=120"), "{err}");
 }
 
 /// RED ARM (M3-SHAPES, hook B.4): a perturbed `DecideOut.order_written` offset fails the
