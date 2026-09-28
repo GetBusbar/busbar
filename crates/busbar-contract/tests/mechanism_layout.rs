@@ -239,7 +239,9 @@ fn the_lifecycle_has_its_stated_layout() {
 #[test]
 fn every_kind_table_leads_with_the_lifecycle() {
     pin!(store::Ops, 80, 8, [head = 0]);
-    pin!(secret::Ops, 80, 8, [head = 0]);
+    // secret grew its own slot in M3-SHAPES (abi-v2-perkind.md B.2); hook and export follow in
+    // their own commits. `crates/busbar-contract/src/abi/mechanism/layout.rs` pins every field.
+    pin!(secret::Ops, 88, 8, [head = 0]);
     pin!(hook::Ops, 80, 8, [head = 0]);
     pin!(export::Ops, 80, 8, [head = 0]);
     pin!(plane::Ops, 80, 8, [head = 0]);

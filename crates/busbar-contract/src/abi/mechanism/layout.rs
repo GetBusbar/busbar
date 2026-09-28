@@ -200,7 +200,23 @@ pin!(
 );
 pin!(ReleaseIn, 96, 8, head = 0, lease = 88);
 pin!(crate::abi::store::Ops, 80, 8, head = 0);
-pin!(crate::abi::secret::Ops, 80, 8, head = 0);
+pin!(crate::abi::secret::Ops, 88, 8, head = 0, resolve = 80,);
+pin!(
+    crate::abi::secret::ResolveIn,
+    96,
+    8,
+    head = 0,
+    settings = 72,
+);
+pin!(
+    crate::abi::secret::ResolveOut,
+    128,
+    8,
+    head = 0,
+    secret = 96,
+    error_kind = 120,
+    _reserved = 124,
+);
 // THE AUTH KIND (v3, design B.3): its table, its Statement tail and every op's `in`/`out`.
 mod auth {
     use super::{align_of, offset_of, size_of};

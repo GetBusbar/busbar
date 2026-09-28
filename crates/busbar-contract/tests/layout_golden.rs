@@ -44,8 +44,15 @@ use busbar_contract::abi::mechanism::ticket::{
     Ticket as MechTicket,
 };
 use busbar_contract::abi::{
-    auth::Ops as AuthOps, export::Ops as ExportOps, hook::Ops as HookOps, plane::Ops as PlaneOps,
-    secret::Ops as SecretOps, store::Ops as StoreOps, transport::Ops as TransportOps,
+    auth::Ops as AuthOps, plane::Ops as PlaneOps, store::Ops as StoreOps,
+    transport::Ops as TransportOps,
+};
+// M3-SHAPES (abi-v2-perkind.md B.2): the secret kind's own ops and shapes; hook and export follow
+// in their own commits.
+use busbar_contract::abi::export::Ops as ExportOps;
+use busbar_contract::abi::hook::Ops as HookOps;
+use busbar_contract::abi::secret::{
+    Ops as SecretOps, ResolveIn as SecretResolveIn, ResolveOut as SecretResolveOut,
 };
 // THE AUTH KIND (v3, design B.3): aliased, as the mechanism's are.
 use busbar_contract::abi::auth::{
@@ -988,7 +995,6 @@ fn compute_layout() -> String {
     record!(s, MechCancelOut, [head, disposition, _reserved]);
     record!(s, MechReleaseIn, [head, lease]);
     record!(s, StoreOps, [head]);
-    record!(s, SecretOps, [head]);
     record!(
         s,
         AuthOps,
@@ -1121,10 +1127,16 @@ fn compute_layout() -> String {
         AuthFieldsOut,
         [head, fields_len, needed_fields, needed_bytes]
     );
-    record!(s, HookOps, [head]);
-    record!(s, ExportOps, [head]);
     record!(s, PlaneOps, [head]);
     record!(s, TransportOps, [head]);
+
+    // M3-SHAPES (abi-v2-perkind.md B.2): the secret kind's `resolve`.
+    record!(s, SecretOps, [head, resolve]);
+    record!(s, SecretResolveIn, [head, settings]);
+    record!(s, SecretResolveOut, [head, secret, error_kind, _reserved]);
+    // hook and export are still the M0 skeleton; their own ops land in their own commits.
+    record!(s, HookOps, [head]);
+    record!(s, ExportOps, [head]);
 
     s
 }
@@ -1214,4 +1226,16 @@ fn a_perturbed_auth_golden_line_fails_the_comparator() {
     let perturbed = actual.replacen(line, "AuthOps.fields=112", 1);
     let err = compare(&perturbed, &actual).expect_err("a perturbed auth line must fail");
     assert!(err.contains("AuthOps.fields=112"), "{err}");
+}
+
+/// RED ARM (M3-SHAPES, secret B.2): a perturbed `ResolveOut.error_kind` offset fails the
+/// comparator.
+#[test]
+fn a_perturbed_secret_golden_line_fails_the_comparator() {
+    let actual = compute_layout();
+    let line = "SecretResolveOut.error_kind=120";
+    assert!(actual.lines().any(|l| l == line), "the golden holds {line}");
+    let perturbed = actual.replacen(line, "SecretResolveOut.error_kind=124", 1);
+    let err = compare(&perturbed, &actual).expect_err("a perturbed line must fail");
+    assert!(err.contains("SecretResolveOut.error_kind=124"), "{err}");
 }
