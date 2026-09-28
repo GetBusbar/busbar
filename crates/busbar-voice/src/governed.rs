@@ -222,23 +222,27 @@ impl OpenToolCalls {
 ///
 /// What crosses is a session and a call identifier and no more: the runtime never learns which unit a
 /// call belongs to, how long its deadline is, or what a refusal costs.
-#[derive(Debug, Default)]
 pub struct NodeCalls {
     table: Arc<OpenToolCalls>,
     /// The unit key each planned client-served leg is entered under. A served session runs no unit
-    /// per call, so the port takes one from the kernel's allocator: unique on this node, which is
-    /// all the table's per-session map needs of it.
-    keys: busbar_kernel::door::UnitKeyMint,
+    /// per call, so the port takes one from the node's allocator, handed in at the compose: unique
+    /// on this node, which is all the table's per-session map needs of it.
+    mint: Box<dyn Fn() -> UnitKey + Send + Sync>,
+}
+
+impl std::fmt::Debug for NodeCalls {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NodeCalls")
+            .field("table", &self.table)
+            .finish_non_exhaustive()
+    }
 }
 
 impl NodeCalls {
-    /// Bind the port to one node's table.
+    /// Bind the port to one node's table and the allocator its legs are keyed from.
     #[must_use]
-    pub fn new(table: Arc<OpenToolCalls>) -> Self {
-        NodeCalls {
-            table,
-            keys: busbar_kernel::door::UnitKeyMint::default(),
-        }
+    pub fn new(table: Arc<OpenToolCalls>, mint: Box<dyn Fn() -> UnitKey + Send + Sync>) -> Self {
+        NodeCalls { table, mint }
     }
 
     /// The table this port answers from.
@@ -259,7 +263,7 @@ fn tool_call(call_id: &str) -> CorrelationRef<'_> {
 
 impl GovernedCalls for NodeCalls {
     fn planned(&self, session: u64, call_id: &str, now_ms: u64) -> bool {
-        let unit = self.keys.mint();
+        let unit = (self.mint)();
         self.table
             .planned(
                 session,

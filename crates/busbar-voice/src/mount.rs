@@ -49,7 +49,6 @@ use busbar_kernel::ingress::byte_duplex::serve_messages;
 use busbar_kernel::ingress::duplex_ws::{
     accept_gauntlet, install_ws_arrivals, WsAcceptFuture, WsArrival, WsArrivalSpec,
 };
-use busbar_kernel::net_guard::GuardPolicy;
 use busbar_kernel::plane::handle_engine::DurableHandleEngine;
 use busbar_kernel::plane::observe::Counted;
 use busbar_kernel::plane::registry::{BuildCtx, PlaneBootCtx};
@@ -57,6 +56,7 @@ use busbar_kernel::plane::PlaneAdmission;
 use busbar_kernel::plane_host::{EngineHost, GateOutcome, TransformVerdict};
 use busbar_kernel::plane_host::{GauntletPlane, GauntletRequest};
 use busbar_kernel::plane_routes::PlaneRouteSpec;
+use busbar_kernel::{door::UnitKeyMint, net_guard::GuardPolicy};
 use bytes::Bytes;
 use http_body_util::{BodyExt, Full};
 use std::any::Any;
@@ -286,9 +286,11 @@ pub fn compose_plane(cfg: &RootCfg) -> Option<Compose> {
 /// behind the port the session runtime reaches it through. Set once — a second compose is a no-op
 /// rather than a silent swap of the table live sessions are already keyed into.
 pub fn compose_node_calls() -> bool {
-    install_governed_calls(Arc::new(crate::governed::NodeCalls::new(Arc::new(
-        crate::governed::OpenToolCalls::new(),
-    ))))
+    let keys = UnitKeyMint::default();
+    install_governed_calls(Arc::new(crate::governed::NodeCalls::new(
+        Arc::new(crate::governed::OpenToolCalls::new()),
+        Box::new(move || keys.mint()),
+    )))
 }
 
 /// The composed Gemini Live provider endpoint, or `None` when the composition root composed none.

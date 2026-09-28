@@ -145,7 +145,7 @@ fn a_closed_session_stops_waiting_on_the_calls_it_had_open() {
 /// — asked in the spelling the session runtime asks them in.
 #[test]
 fn the_runtimes_port_reaches_the_nodes_own_table() {
-    let port = NodeCalls::new(Arc::new(OpenToolCalls::new()));
+    let port = NodeCalls::new(Arc::new(OpenToolCalls::new()), keys());
     assert!(port.planned(7, "call_aaa", 0), "a planned leg is a wait");
     assert!(port.planned(7, "call_bbb", 0));
     assert_eq!(
@@ -182,7 +182,7 @@ fn the_runtimes_port_reaches_the_nodes_own_table() {
 /// behind for a unit the served path does not have, and a finished session's entry was never removed.
 #[test]
 fn the_port_frees_every_row_it_answers_sweeps_or_closes() {
-    let port = NodeCalls::new(Arc::new(OpenToolCalls::new()));
+    let port = NodeCalls::new(Arc::new(OpenToolCalls::new()), keys());
     assert!(port.planned(7, "call_answered", 0));
     assert!(port.planned(7, "call_swept", 0));
     assert!(port.planned(8, "call_open", 0));
@@ -275,7 +275,7 @@ fn upstream_text(plan: &crate::runtime::Outbound) -> String {
 /// reaches the model on no wire.
 #[tokio::test]
 async fn a_served_session_plans_the_client_leg_and_accepts_its_reply() {
-    let port = Arc::new(NodeCalls::new(Arc::new(OpenToolCalls::new())));
+    let port = Arc::new(NodeCalls::new(Arc::new(OpenToolCalls::new()), keys()));
     let core = pump_serving_no_tool(&port, 5_151);
 
     for f in [
@@ -336,7 +336,7 @@ async fn a_served_session_plans_the_client_leg_and_accepts_its_reply() {
 /// still open leaves nothing behind in the node's table.
 #[tokio::test]
 async fn a_served_sessions_teardown_forgets_the_calls_it_had_open() {
-    let port = Arc::new(NodeCalls::new(Arc::new(OpenToolCalls::new())));
+    let port = Arc::new(NodeCalls::new(Arc::new(OpenToolCalls::new()), keys()));
     let core = Arc::new(pump_serving_no_tool(&port, 6_161));
     for f in [
         serde_json::json!({"type":"response.output_item.added",
@@ -362,4 +362,12 @@ async fn a_served_sessions_teardown_forgets_the_calls_it_had_open() {
         0,
         "the ended session's calls left the table at its teardown"
     );
+}
+
+/// A node allocator for the port under test: unique keys from 1, as the kernel's mint hands them.
+fn keys() -> Box<dyn Fn() -> busbar_contract::ids::UnitKey + Send + Sync> {
+    let next = std::sync::atomic::AtomicU64::new(1);
+    Box::new(move || {
+        busbar_contract::ids::UnitKey::new(next.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
+    })
 }
