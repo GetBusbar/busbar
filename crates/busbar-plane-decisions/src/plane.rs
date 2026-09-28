@@ -40,13 +40,13 @@ const FACT_METHOD: &str = busbar_contract::transport::facts::METHOD;
 /// The plane NAMES the scheme and never holds what is behind it. jev's auth is the core gateway's
 /// own bearer credential (the signed design: "auth = core gateway credential, plane returns a
 /// CredentialLocator, never sees the secret") — the same seam every other plane's egress hop uses.
-const EGRESS_SCHEME: &str = "decision-egress";
+pub(crate) const EGRESS_SCHEME: &str = "decision-egress";
 
 /// The envelope member naming the document type of an outbound body.
-const FIELD_CONTENT_TYPE: &str = "content-type";
+pub(crate) const FIELD_CONTENT_TYPE: &str = "content-type";
 
 /// The document type every body of this protocol is.
-const CONTENT_TYPE_JSON: &[u8] = b"application/json";
+pub(crate) const CONTENT_TYPE_JSON: &[u8] = b"application/json";
 
 impl DecisionPlane {
     /// The ONE provider a unit on this plane is dialled against, judged against and named by.
@@ -173,7 +173,7 @@ fn refusal_render(reason: RefusalReason) -> (&'static str, &'static str) {
 /// Build the bare JSON error object jev's refusal/error shape is: `{"error": {"code": ..,
 /// "message": ..}}`. Written by hand rather than through `serde_json::json!` so the byte order is
 /// pinned and a conformance test can assert the exact bytes.
-fn error_body(code: &str, message: &str) -> Vec<u8> {
+pub(crate) fn error_body(code: &str, message: &str) -> Vec<u8> {
     format!(
         "{{\"error\":{{\"code\":{},\"message\":{}}}}}",
         serde_json::to_string(code).unwrap_or_else(|_| "\"internal\"".to_string()),

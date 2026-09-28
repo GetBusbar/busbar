@@ -42,6 +42,7 @@
 pub mod claims;
 pub mod codec;
 pub mod config;
+pub mod driven;
 pub mod facts;
 pub mod meta;
 pub mod ops;
