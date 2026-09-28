@@ -1,4 +1,4 @@
-//! The decision plane: what bytes mean, for the `jev` dialect.
+//! The decisions plane: what bytes mean, for the `jev` dialect.
 //!
 //! ## What this crate is
 //!
@@ -57,7 +57,7 @@ use busbar_contract::plugin::{AbiVersion, Kind, Plugin};
 /// [`busbar_contract::ids::Registration`]: whoever builds this plane from a `decisions:` block
 /// interns every config-derived key through it exactly once and hands over names that outlive it.
 ///
-/// Nothing does that yet. The composition root (`busbar/src/root/plane_decision.rs`) installs this
+/// Nothing does that yet. The composition root (`busbar/src/root/plane_decisions.rs`) installs this
 /// plane's identity and config seam and builds no `DecisionPlane` today — its `build` is `None` —
 /// so outside this crate's own tests no `DecisionProvider` is constructed and no request reaches
 /// the plane.
@@ -73,7 +73,7 @@ pub struct DecisionProvider {
     pub transport: &'static str,
 }
 
-/// The decision plane.
+/// The decisions plane.
 ///
 /// The one field is a borrowed, immutable list. There is no cell here, no lock and no atomic: the
 /// purity test asserts that by walking the type, not by trusting this sentence.

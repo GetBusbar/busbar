@@ -9,7 +9,7 @@
 mod common;
 
 use busbar_contract::plane::Plane;
-use busbar_plane_decision::{ops, DecisionPlane};
+use busbar_plane_decisions::{ops, DecisionPlane};
 use common::{sealed_destination, Scaffold};
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;

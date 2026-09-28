@@ -27,7 +27,7 @@ members = [
     "crates/busbar-plane-mcp",
     "crates/busbar-plane-a2a",
     "crates/busbar-plane-streaming",
-    "crates/busbar-plane-decision",
+    "crates/busbar-plane-decisions",
     "crates/plugin-loader",
     "crates/hook-test-plugin",
     "crates/plane-example",

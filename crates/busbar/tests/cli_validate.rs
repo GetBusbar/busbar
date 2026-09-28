@@ -1298,7 +1298,7 @@ fn validate_refuses_none_on_a_secret_that_requires_a_credential() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-// ── DECISION PLANE CONFIG CROSS-REFERENCES (P2-243 / P2-decvalidate) ───────────────────────────
+// ── DECISIONS PLANE CONFIG CROSS-REFERENCES (P2-243 / P2-decvalidate) ───────────────────────────
 //
 // Three refusals that did not exist before this change (verified RED at HEAD): a
 // `decisions.models.<m>.provider` naming a provider `providers:` does not define booted; a
@@ -1312,7 +1312,7 @@ fn validate_refuses_none_on_a_secret_that_requires_a_credential() {
 //
 // `providers.yaml`'s `protocol:` selects the WIRE dialect (`anthropic`/`openai`/…/`jev`); a `mock`
 // provider on `protocol: jev` is what a genuine decisions deployment configures — the decision
-// plane's own `PlaneCfg::known_dialects` (`root/plane_decision.rs`) is unioned into the provider
+// plane's own `PlaneCfg::known_dialects` (`root/plane_decisions.rs`) is unioned into the provider
 // wire-codec check (`config_validate::validate_providers_with`) for exactly this reason, so `jev`
 // is a legal `protocol:` value even though no `busbar-llm-codec` dialect module translates it.
 
@@ -1320,7 +1320,7 @@ fn validate_refuses_none_on_a_secret_that_requires_a_credential() {
 /// verbatim. Mirrors `write_configs_with_api_key`'s shape (own `providers.yaml` + `config.yaml`,
 /// not the shared `write_configs` helper) because these tests vary the provider's `protocol:`,
 /// which `write_configs` hard-codes to `anthropic`.
-#[cfg(feature = "plane-decision")]
+#[cfg(feature = "plane-decisions")]
 fn write_decisions_configs(dir: &Path, protocol: &str, decisions_yaml: &str) {
     std::fs::write(
         dir.join("providers.yaml"),
@@ -1347,11 +1347,11 @@ models: {{}}
     .unwrap();
 }
 
-/// THE DECISION PLANE'S DIALECT, discovered black-box rather than spelled: a `decisions:` model whose
+/// THE DECISIONS PLANE'S DIALECT, discovered black-box rather than spelled: a `decisions:` model whose
 /// provider speaks an unknown protocol is refused naming the dialect(s) the plane speaks ("this plane
-/// speaks only: <d>."), so the binary itself says which protocol the linked decision plane reads.
+/// speaks only: <d>."), so the binary itself says which protocol the linked decisions plane reads.
 /// Exactly one is required; a refusal that stops naming it fails here, loudly.
-#[cfg(feature = "plane-decision")]
+#[cfg(feature = "plane-decisions")]
 fn decision_dialect() -> String {
     let dir = fixture_dir("decisions-dialect-probe");
     write_decisions_configs(
@@ -1382,7 +1382,7 @@ fn decision_dialect() -> String {
 /// CONTROL: a `decisions:` block naming a real `jev`-protocol provider validates clean. Proves the
 /// three refusals below are each triggered by their OWN defect, not by the mere presence of a
 /// `decisions:` section or by `protocol: jev` itself.
-#[cfg(feature = "plane-decision")]
+#[cfg(feature = "plane-decisions")]
 #[test]
 fn validate_ok_on_a_good_decisions_config() {
     let dir = fixture_dir("decisions-ok");
@@ -1401,7 +1401,7 @@ fn validate_ok_on_a_good_decisions_config() {
 }
 
 /// DEFECT 1: `decisions.models.<m>.provider` names a provider absent from `providers:`.
-#[cfg(feature = "plane-decision")]
+#[cfg(feature = "plane-decisions")]
 #[test]
 fn validate_refuses_a_decisions_model_naming_an_undefined_provider() {
     let dir = fixture_dir("decisions-badprovider");
@@ -1431,7 +1431,7 @@ fn validate_refuses_a_decisions_model_naming_an_undefined_provider() {
 }
 
 /// DEFECT 2: `decisions.hooks` names a hook absent from the top-level `hooks:` registry.
-#[cfg(feature = "plane-decision")]
+#[cfg(feature = "plane-decisions")]
 #[test]
 fn validate_refuses_a_decisions_hook_naming_an_undefined_hook() {
     let dir = fixture_dir("decisions-badhook");
@@ -1456,12 +1456,12 @@ fn validate_refuses_a_decisions_hook_naming_an_undefined_hook() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// DEFECT 3 (#51, OWNER-LOCKED): a model whose provider resolves to a dialect the decision plane
+/// DEFECT 3 (#51, OWNER-LOCKED): a model whose provider resolves to a dialect the decisions plane
 /// does not speak must FAIL CLOSED — the exact row #51 cites: "the decisions plane (only jev)
 /// handed `anthropic` fails". `write_decisions_configs`'s default catalog protocol IS `anthropic`
 /// (the shipped default, `providers.rs::DEFAULT_PROTOCOL`), so this is also the config an operator
 /// gets by simply OMITTING `protocol:` on a provider meant for the decisions plane.
-#[cfg(feature = "plane-decision")]
+#[cfg(feature = "plane-decisions")]
 #[test]
 fn validate_refuses_a_decisions_model_whose_provider_speaks_a_foreign_dialect() {
     let dir = fixture_dir("decisions-baddialect");
@@ -1502,11 +1502,11 @@ fn validate_refuses_a_decisions_model_whose_provider_speaks_a_foreign_dialect() 
 /// `boot.refusal|BOOT-020|validate`). The list is the linked provider wire codecs', so these cells
 /// also need the linked `body-ingress` axis: a build with no provider codec refuses every provider
 /// lane first (BUSBAR-3015), and that is the correct answer there, not a missed 1.5.5 line.
-#[cfg(all(feature = "plane-decision", linked_axis_body_ingress))]
+#[cfg(all(feature = "plane-decisions", linked_axis_body_ingress))]
 const PROTOCOLS_1_5_5: &str =
     "must be one of: anthropic, openai, gemini, bedrock, responses, cohere\n";
 
-#[cfg(all(feature = "plane-decision", linked_axis_body_ingress))]
+#[cfg(all(feature = "plane-decisions", linked_axis_body_ingress))]
 #[test]
 fn validate_unknown_protocol_lists_only_the_configured_planes_dialects() {
     let dir = fixture_dir("bogus-protocol-no-decisions");
@@ -1525,7 +1525,7 @@ fn validate_unknown_protocol_lists_only_the_configured_planes_dialects() {
 /// `protocol: jev` with no `decisions:` section refuses as 1.5.5 refuses it: no configured plane
 /// speaks it. (The CONTROL `validate_ok_on_a_good_decisions_config` above is the same provider WITH
 /// the section, which validates clean.)
-#[cfg(all(feature = "plane-decision", linked_axis_body_ingress))]
+#[cfg(all(feature = "plane-decisions", linked_axis_body_ingress))]
 #[test]
 fn validate_refuses_the_decision_protocol_when_no_decisions_section_is_configured() {
     let dir = fixture_dir("decision-protocol-no-decisions");

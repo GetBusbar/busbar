@@ -4020,14 +4020,14 @@ static NEUTRAL_SECTION_PLANE: crate::plane::registry::PlaneDecl =
 /// `deny_unknown_fields`, so without the lift a document carrying `decisions:` is refused outright
 /// AT THAT KEY (the test below).
 ///
-/// THE LIFT IS ALL THIS PROVES, and that is deliberate: this crate cannot name the decision plane
+/// THE LIFT IS ALL THIS PROVES, and that is deliberate: this crate cannot name the decisions plane
 /// (the dep wall, DECISIONS #40), so the plane seeded here is a NEUTRAL one that declares and owns a
 /// singular section of its own with no `parse_section` hook — the kernel keys that carrier by no
 /// literal, so the neutral section lands exactly where `decisions:` does — and the seam takes its
 /// raw arm. The typed half — that the
 /// hooks are wired, that `deny_unknown_fields` runs inside the block, and that `decisions: "hello"`
 /// is REFUSED — is proven where the owning decl is written and registrable,
-/// `crates/busbar/src/root/tests/plane_decision.rs`.
+/// `crates/busbar/src/root/tests/plane_decisions.rs`.
 #[test]
 fn test_decisions_section_parses() {
     let _registry = busbar_kernel::plane::registry::TestRegistryIsolation::seeded(&[
@@ -4178,7 +4178,7 @@ fn a_declared_section_no_carrier_holds_is_lifted_raw_for_its_plane() {
 /// refused any key it did not know. The kernel cannot say more: naming the plane that would own it
 /// means spelling a plane section it does not have (#49).
 ///
-/// This test binary IS that build: `busbar-kernel` may not name `busbar-plane-decision`, and the
+/// This test binary IS that build: `busbar-kernel` may not name `busbar-plane-decisions`, and the
 /// registry is seeded with the neutral fallback plane alone, so nothing declares `decisions`.
 #[test]
 fn a_decisions_section_with_no_owning_plane_is_refused_as_an_unknown_key() {

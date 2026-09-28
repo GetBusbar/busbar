@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The composition root hand-writes the decision plane's declaration, so these are the checks that
+//! The composition root hand-writes the decisions plane's declaration, so these are the checks that
 //! nothing else in the tree can make: that the hand-written identity is the plane's own, that the
 //! section it claims is claimable, and that what it installs is inert.
 
@@ -9,7 +9,7 @@ use busbar_contract::plane::PlaneMeta;
 use busbar_kernel::plane::registry::{
     check_owned_config_claims, merged_boot_plane_decls, CORE_OWNED_CONCRETE_SECTIONS,
 };
-use busbar_plane_decision::DecisionPlane;
+use busbar_plane_decisions::DecisionPlane;
 
 use super::{CONFIG_SECTION, PLANE_DECLARATION, PLANE_HOOKS};
 
@@ -220,7 +220,7 @@ fn an_absent_decisions_block_defaults_to_the_plane_s_own_empty_section() {
     );
 }
 
-/// **THE DECISION PLANE COUNTS NO FEE UNIT** (ARCHITECT ruling, fees): it admits nobody (see
+/// **THE DECISIONS PLANE COUNTS NO FEE UNIT** (ARCHITECT ruling, fees): it admits nobody (see
 /// `the_declaration_mounts_nothing_and_admits_nobody`), so no request or session of it is ever
 /// counted and any `decisions.fees` figure would charge nothing — boot and `--validate` refuse each
 /// such key, naming it and the (empty) counted list. A fee of 0 charges what it says and passes.

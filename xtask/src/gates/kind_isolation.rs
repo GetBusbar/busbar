@@ -394,12 +394,17 @@ const MAX_NAME_SEGMENTS: usize = 4;
 ///   plane naming ITS OWN codec rather than a cross-instance reach.
 /// * `streams` is the plane's CONFIG SECTION (`streams:`, frozen 1.5.x wire), so it is the plane's
 ///   word in every other crate's source; it expires with the plane.
+/// * `decisions` is the fifth plane's crate and config verb (`busbar-plane-decisions`, `decisions:`;
+///   the owner's rename, #17/#48), while its declared `PlaneMeta::KEY` and meter class stay the
+///   durable string `"decision"`. The directory spells the plural, the declaration the singular:
+///   one instance.
 ///
 /// All three spellings are one instance for every rule here and banned vocabulary in every other
 /// kind, and an entry is RED once the crate it names is gone.
 const PLANE_ALIASES: &[(&str, &str, &str)] = &[
     ("voice", "streaming", "busbar-voice-codec"),
     ("streams", "streaming", "busbar-plane-streaming"),
+    ("decisions", "decision", "busbar-plane-decisions"),
 ];
 
 /// Kinds the target scheme defines that the tree does not carry YET, each with its reason. The

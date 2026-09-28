@@ -48,7 +48,7 @@
 # ── DECLARATIONS ─────────────────────────────────────────────────────────────────────────────────
 #
 # NONE. The one row this file ever carried was `decision`/`registered`, and it was STRUCK by the
-# commit its own `switch` named — the one that adds the `busbar-plane-decision` dependency edge to
+# commit its own `switch` named — the one that adds the `busbar-plane-decisions` dependency edge to
 # crates/busbar/Cargo.toml and pushes a `&PlaneDecl` for it in `register_planes()`. The row read
 # "DELIBERATELY UNWIRED — no root Cargo.toml entry, no main.rs entry"; both are now false, and a
 # declaration that outlived its debt is the one thing `reachability:stale-declaration` exists to
@@ -65,9 +65,9 @@
 # `root/units_<plane>.rs` exists:
 #
 #   reachability:unit-path:decision   "NO LIVE UNIT PATH: … Rider: no non-test line routes a
-#                                     `busbar_plane_decision::…` key into
+#                                     `busbar_plane_decisions::…` key into
 #                                     `register_gauntlet_runner`/`register_session_runner` … Linked
-#                                     entry: `crates/busbar/src/root/plane_decision.rs` declares no
+#                                     entry: `crates/busbar/src/root/plane_decisions.rs` declares no
 #                                     `impl … Units for`."
 #   reachability:root-reach:decision  "NO UNIT PATH REACHED: …"
 #
@@ -90,7 +90,7 @@
 #
 # WHAT IT FOUND ON THE TREE THAT INTRODUCED THIS FILE, 2026-09-22 (`cargo xtask gate reachability`,
 # 44 files, 883 items, 422 of them reached from `fn main()`) — five findings, one of them since
-# retired by the commit that wired the decision plane:
+# retired by the commit that wired the decisions plane:
 #
 #   reachability:unit-path:mcp        `crates/busbar/src/root/units_mcp.rs` is 1 884 lines of a
 #                                     module named for a unit path and declares NO `impl … Units
@@ -108,7 +108,7 @@
 #                                     the ten-step UNIT it is a node for is not.
 #   [STRUCK 2026-09-22] reachability:registered:decision — this finding is GONE, and it is the only
 #                                     one of the five that is. `crates/busbar/Cargo.toml` names
-#                                     `busbar-plane-decision` and `register_planes()` pushes a
+#                                     `busbar-plane-decisions` and `register_planes()` pushes a
 #                                     `&PlaneDecl` for it, so the row now passes on its own merits
 #                                     rather than on a declaration. The declaration it used to
 #                                     stand on is struck above.

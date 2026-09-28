@@ -228,7 +228,7 @@ C3_PROXIMITY=56
 #     on the doc comment that claims it. `AuthView.upstream_credentials` is `&'static str` and is
 #     assigned exactly two string literals — `"own"` / `"passthrough"` — at its single construction
 #     site (`busbar-core-admin/src/v1/service.rs`, `get_auth()`), matching the published enum in
-#     `busbar-plane-decision/src/meta.rs`. It names a MODE, never a credential. It cannot be renamed
+#     `busbar-plane-decisions/src/meta.rs`. It names a MODE, never a credential. It cannot be renamed
 #     (it is a serde field name in the frozen admin OpenAPI surface), so an allowlist row is the only
 #     available disposition. It suppresses a real hit, so it is load-bearing, not dead weight.
 #   * `token|crates/busbar-contract/src/abi/cold/auth.rs|` and `secret|...same...|` are likewise vacuous

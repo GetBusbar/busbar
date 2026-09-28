@@ -4,7 +4,7 @@
 //! The test-surface plane-list memo (`TEST_MEMO`) must resolve against the registration set that is
 //! actually installed. It used to key on the set's SIZE, so two distinct sets of equal length aliased:
 //! whichever was folded first was handed back for the other (item 117 — 8 `units_llm` tests failed
-//! whenever the `plane_decision` tests ran first, even single-threaded).
+//! whenever the `plane_decisions` tests ran first, even single-threaded).
 
 use super::*;
 

@@ -137,7 +137,7 @@ fn every_plane_registration_item_is_contract_data_naming_no_kernel_type() {
         offenders.join("\n")
     );
 
-    // NON-VACUITY: the engine planes and the composition root's decision plane register through the
+    // NON-VACUITY: the engine planes and the composition root's decisions plane register through the
     // contract type. Fewer than five read means the scan read nothing, and zero offenders over zero
     // items is not a pass.
     let contract_typed = items.iter().filter(|i| i.ty == CONTRACT_TYPE).count();

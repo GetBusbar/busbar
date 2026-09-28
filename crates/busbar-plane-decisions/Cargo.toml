@@ -1,4 +1,4 @@
-# busbar-plane-decision — THE DECISION PLANE (jev), as an ADAPTER and nothing else.
+# busbar-plane-decisions — THE DECISIONS PLANE (jev), as an ADAPTER and nothing else.
 #
 # WHAT THIS CRATE IS. One implementation of the plugin contract's plane kind for the "decision"
 # protocol surface, dialect `jev` — a byte-identity passthrough to api.typesafe.ai's two operations:
@@ -36,17 +36,17 @@
 # durable state of its own (it is a stateless request/response passthrough, provider-scoped), so it
 # declares no record schemas.
 [package]
-name = "busbar-plane-decision"
+name = "busbar-plane-decisions"
 version = "1.6.0"
 publish = false            # internal workspace crate; never goes to crates.io
 edition = "2021"
 # One pinned number, set to what CI verifies — the same rationale every other member states.
 rust-version = "1.97"
-description = "The decision plane for busbar: the plugin contract's plane kind implemented over the jev dialect (api.typesafe.ai byte-identity passthrough)."
+description = "The decisions plane for busbar: the plugin contract's plane kind implemented over the jev dialect (api.typesafe.ai byte-identity passthrough)."
 license = "Apache-2.0"
 
 [lib]
-name = "busbar_plane_decision"
+name = "busbar_plane_decisions"
 path = "src/lib.rs"
 
 # NO FEATURES, ON PURPOSE. A plane compiled two ways is two planes, and the kernel would have no way

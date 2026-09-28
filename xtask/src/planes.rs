@@ -98,7 +98,7 @@ pub fn plane_src_roots() -> Vec<String> {
 ///   list that scans them;
 /// * the plugin INSTANCES (`busbar-transport-*`, `store-*`, `secret-*`, `auth-*`, `hook*`,
 ///   `export-*`, `plane-example`) — an instance crate names its own protocol by definition;
-/// * `crates/busbar` — the composition root constructs planes BY NAME (`root/plane_decision.rs`),
+/// * `crates/busbar` — the composition root constructs planes BY NAME (`root/plane_decisions.rs`),
 ///   which is the one place in the tree where naming one is the job.
 ///
 /// STILL AN EXPLICIT LIST, AND THAT IS STILL A GAP. Deriving this by exclusion from the directories

@@ -59,7 +59,7 @@ const TAXONOMY_DOC: &str = "docs/design/BUSBAR-1.6.0.md";
 const HOT_LANE_DECL_SITE: &str = "crates/busbar-contract/src/abi/hot/mod.rs";
 
 /// DOCUMENTED EXEMPTION for [`declared_plane_keys`]: the `decisions` plane (jev) declares the key
-/// `plane-decision`, whose noun COLLIDES WITH A NEUTRAL PRIMITIVE. [`BANNED`] matches
+/// `plane-decisions`, whose noun COLLIDES WITH A NEUTRAL PRIMITIVE. [`BANNED`] matches
 /// case-insensitively as a substring, so banning `decision` forbids `Decision`, `GateDecision` and
 /// `VerifyDecision` — the admit/throttle/deny verdict types that ARE the primitive governance
 /// taxonomy this witness exists to derive the ABI from. Measured: adding the token reds
@@ -74,9 +74,9 @@ const HOT_LANE_DECL_SITE: &str = "crates/busbar-contract/src/abi/hot/mod.rs";
 /// rather than on a noun and so are immune to the collision.
 ///
 /// Two spellings of the ONE plane, because the key is read two ways (see [`declared_plane_keys`]):
-/// `plane-decision` from the declaration the composition root writes for it, `decision` from its
-/// crate directory `busbar-plane-decision`. Same plane, same collision, same exemption.
-const PRIMITIVE_COLLISION_KEYS: &[&str] = &["plane-decision", "decision"];
+/// `plane-decisions` from the declaration the composition root writes for it, `decisions` from its
+/// crate directory `busbar-plane-decisions`. Same plane, same collision, same exemption.
+const PRIMITIVE_COLLISION_KEYS: &[&str] = &["plane-decisions", "decisions"];
 
 /// The banned protocol/role nouns. Matched case-insensitively as SUBSTRINGS of identifiers on
 /// declaration lines: a banned noun concatenated into a name — `McpTransport`, `server_stream` — is
@@ -285,14 +285,14 @@ fn declared_plane_keys(cx: &Ctx) -> Result<Vec<String>, String> {
         // WHY A DECLARATION LIVES IN THE ROOT AT ALL, and why this is not a widening: the decision
         // plane is ONE crate, pure, and a pure plane's manifest may name `busbar-contract` and
         // nothing else (the dep wall, DECISIONS #40). `PlaneDecl` is a `busbar-kernel` type, so the
-        // plane crate cannot hold its own declaration; `crates/busbar-plane-decision/src/registry.rs`
+        // plane crate cannot hold its own declaration; `crates/busbar-plane-decisions/src/registry.rs`
         // was DELETED for carrying that forbidden edge and the declaration was rewritten
         // in the root, both on 2026-09-22. `PRIMITIVE_COLLISION_KEYS` — which names this
         // exact plane, for the noun collision written up on it — was set a day earlier against the
         // address the declaration used to have, and has covered nothing since.
         //
         // So the key is repointed, not the rule relaxed: the root names the plane it declares in the
-        // FILE name (`root/plane_decision.rs` declares `busbar-plane-decision`), the derived key is
+        // FILE name (`root/plane_decisions.rs` declares `busbar-plane-decisions`), the derived key is
         // the same string the directory rule produced before the move, and the one documented
         // exemption below goes on doing the job it was written for. A root file that declares a
         // `PLANE_DECL` and is NOT named `plane_<key>.rs` still reads as `busbar` and is still loud.

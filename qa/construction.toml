@@ -97,14 +97,14 @@ test_path_fragments = ["/tests/", "_tests.rs", "_test.rs", "/tests.rs"]
 [gate.plugin_kinds]
 plane = [
   "crates/busbar-plane-a2a",
-  # The DECISION plane (jev, #48) -- the fifth plane, and it was in NO kind list at all.
+  # The DECISIONS plane (jev, #48) -- the fifth plane, and it was in NO kind list at all.
   # PROVEN 2026-09-22 with a positive control: the same `use std::net::TcpStream` planted in
-  # busbar-plane-decision scored `PASS denylist:hits - no banned transitive source in any pure
+  # busbar-plane-decisions scored `PASS denylist:hits - no banned transitive source in any pure
   # plugin kind`, while the identical plant in busbar-plane-streaming scored `RED denylist:hits`.
   # One caught, one invisible, the only difference being membership in this list. The fifth plane
   # could open a socket, read the filesystem, spawn a process or read env and the purity gate
   # reported green over it.
-  "crates/busbar-plane-decision",
+  "crates/busbar-plane-decisions",
   "crates/busbar-plane-llm",
   "crates/busbar-plane-mcp",
   "crates/busbar-plane-streaming",
@@ -2547,7 +2547,7 @@ plane_crates = 4
 #     `crates/busbar-core-admin` is: DECISIONS #3 excludes admin from the plugin kinds outright
 #     ("admin & oauth2 are NOT plugins ... There is no `control` plugin kind"), so that list entry
 #     had been naming a directory that does not exist, for a kind admin never was.
-#     Against those two removals, `busbar-plane-decision` was ADDED (#48, 2b2de9712): the fifth
+#     Against those two removals, `busbar-plane-decisions` was ADDED (#48, 2b2de9712): the fifth
 #     plane, which had been in no kind list at all and which source-denylist therefore could not
 #     see. DECISIONS #39 pins the roster — "planes = exactly 5 crates
 #     `busbar-plane-{llm,mcp,a2a,streaming,decision}`" — the explicit list above names exactly

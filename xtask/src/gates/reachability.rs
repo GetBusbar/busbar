@@ -294,10 +294,10 @@ const ROSTER: &[Plane] = &[
         key: "decision",
         on_disk: "decision",
         module: "units_decision",
-        linked_crate: "busbar-plane-decision",
-        register_tokens: &["DecisionPlane", "busbar_plane_decision"],
+        linked_crate: "busbar-plane-decisions",
+        register_tokens: &["DecisionPlane", "busbar_plane_decisions"],
         note:
-            "#48's fifth plane (jev). Its linked entry is `root/plane_decision.rs`, a declaration \
+            "#48's fifth plane (jev). Its linked entry is `root/plane_decisions.rs`, a declaration \
                with no served door; whether 1.6.0 serves it is owner question Q72(3)",
     },
 ];
@@ -2071,7 +2071,7 @@ impl Gate for ReachabilityGate {
             let export = linked_export(cx, &manifest, &files, &all_items, &graph, p.linked_crate);
             // The key is spelled through the plane's linked crate (`busbar_mcp::PLANE_KEY`), or
             // through its entry module when that module is in the root
-            // (`plane_decision::PLANE_DECLARATION.key`).
+            // (`plane_decisions::PLANE_DECLARATION.key`).
             let spells_key = |q: &String| *q == ident || export.in_root.as_ref() == Some(q);
             let mine: Vec<&Flip> = flips
                 .iter()
@@ -2494,7 +2494,7 @@ impl Gate for ReachabilityGate {
         // stops every RED below from being a gate that is simply red about everything.
         //
         // THE REAL RED-BEFORE-GREEN PROOF IS NOT HERE — it is `cargo xtask gate reachability` over
-        // this repository, where the gate reds on the decision plane (no runner flipped for its key,
+        // this repository, where the gate reds on the decisions plane (no runner flipped for its key,
         // a linked entry that exports no unit) and on `money_book.rs`/`vocabulary.rs`, and passes
         // the four planes the rider serves. The fixtures exist so the rules can be proven RED-able
         // hermetically and cheaply; the tree is what proves they are about something.
@@ -2559,7 +2559,7 @@ impl Gate for ReachabilityGate {
             },
             "no non-test line routes a `busbar_a2a::…` key",
         ));
-        // A PLANE WITH NEITHER A RIDER NOR A UNITS EXPORT — the real tree's decision plane: a linked
+        // A PLANE WITH NEITHER A RIDER NOR A UNITS EXPORT — the real tree's decisions plane: a linked
         // entry that is declaration only.
         report.push(red_over(
             self,
@@ -2630,7 +2630,7 @@ impl Gate for ReachabilityGate {
             "`answer` is reached by nothing from fn main()",
         ));
         // A KEY SPELLED THROUGH THE PLANE'S IN-ROOT ENTRY MODULE is this plane's key: the decision
-        // plane with no Units export, flipped onto the runner by `plane_decision::PLANE_DECLARATION.key`.
+        // plane with no Units export, flipped onto the runner by `plane_decisions::PLANE_DECLARATION.key`.
         report.push(green_over(
             self,
             cx,
@@ -2643,7 +2643,7 @@ impl Gate for ReachabilityGate {
                     FIXTURE_GREEN_INSTALL.replace(
                         VOICE_FLIP_LINE,
                         &format!(
-                            "{VOICE_FLIP_LINE}    flip_one_shot_to_kernel(crate::root::plane_decision::PLANE_DECLARATION.key);\n"
+                            "{VOICE_FLIP_LINE}    flip_one_shot_to_kernel(crate::root::plane_decisions::PLANE_DECLARATION.key);\n"
                         ),
                     ),
                 );
@@ -2782,7 +2782,7 @@ impl Gate for ReachabilityGate {
         ));
 
         // GREEN CONTROL 2 — THE DECLARED/UNDECLARED LINE, BOTH WAYS, ON ONE PLANT. The same edit
-        // that takes the decision plane's unit path away is made twice: once with a declaration and
+        // that takes the decisions plane's unit path away is made twice: once with a declaration and
         // once without. Together they are the whole of the gate's central claim — an undeclared
         // absent unit path is RED, a declared one is a tracked row — and neither half proves it alone.
         report.push(green_over(
@@ -2830,7 +2830,7 @@ impl Gate for ReachabilityGate {
             "which is not in the tree",
         ));
         // THE EXPIRY, WHICH IS THE HALF THAT STOPS THE LIST ONLY EVER GROWING. The same declaration
-        // as the case above, over the UNPLANTED green fixture — where the decision plane's unit
+        // as the case above, over the UNPLANTED green fixture — where the decisions plane's unit
         // path is live — must red the stale row. Without this, a declaration written once would
         // excuse its subject forever, which is the blanket waiver every other list in this tree had
         // to be rescued from.
@@ -2982,19 +2982,19 @@ const FIXTURE_GREEN_MAIN: &str =
 /// The green fixture's rider, runner and decision entry, verbatim (the planted variants edit a copy).
 const INSTALL_RS: &str = "crates/busbar/src/root/gauntlet_install.rs";
 const KERNEL_RS: &str = "crates/busbar/src/root/gauntlet_kernel.rs";
-const DECISION_ENTRY_RS: &str = "crates/busbar/src/root/plane_decision.rs";
+const DECISION_ENTRY_RS: &str = "crates/busbar/src/root/plane_decisions.rs";
 const FIXTURE_GREEN_INSTALL: &str =
     include_str!("../../fixtures/reachability-green/crates/busbar/src/root/gauntlet_install.rs");
 const FIXTURE_GREEN_KERNEL: &str =
     include_str!("../../fixtures/reachability-green/crates/busbar/src/root/gauntlet_kernel.rs");
 const FIXTURE_GREEN_DECISION: &str =
-    include_str!("../../fixtures/reachability-green/crates/busbar/src/root/plane_decision.rs");
+    include_str!("../../fixtures/reachability-green/crates/busbar/src/root/plane_decisions.rs");
 const A2A_FLIP_LINE: &str = "    flip_one_shot_to_kernel(busbar_a2a::PLANE_KEY);\n";
 const MCP_FLIP_LINE: &str = "    flip_one_shot_to_kernel(busbar_mcp::PLANE_KEY);\n";
 const VOICE_FLIP_LINE: &str = "    flip_session_to_kernel(busbar_voice::PLANE_KEY);\n";
 const INSTALL_CALL_LINE: &str = "    root::gauntlet_install::install();\n";
 
-/// The decision plane's entry as it is on the real tree: a declaration and hooks, no `Units` impl —
+/// The decisions plane's entry as it is on the real tree: a declaration and hooks, no `Units` impl —
 /// and no key flipped onto a runner either. Neither kind of unit path.
 fn decision_without_unit_path() -> Overlay {
     let mut ov = Overlay::new();
@@ -3099,7 +3099,7 @@ fn folded_install(all: bool) -> Overlay {
 /// (the plane's linked entry), and that module is on the fixture tree, so it holds forward and
 /// backward over both controls.
 const FIXTURE_EVIDENCE: &str = "# Reachability evidence (self-test fixture)\n\n\
-## `crates/busbar/src/root/plane_decision.rs`\n\n\
+## `crates/busbar/src/root/plane_decisions.rs`\n\n\
 The decision plane's linked entry exports no `Units` impl and no runner is flipped for its key.\n";
 
 /// The same document with no module written up at all: every module the run cites is owed and
@@ -3109,7 +3109,7 @@ Nothing is written up here.\n";
 
 /// The fixture document plus a section for a module the fixture tree does not have.
 const FIXTURE_EVIDENCE_LOST: &str = "# Reachability evidence (self-test fixture)\n\n\
-## `crates/busbar/src/root/plane_decision.rs`\n\n\
+## `crates/busbar/src/root/plane_decisions.rs`\n\n\
 The decision plane's linked entry exports no `Units` impl.\n\n\
 ## `crates/busbar/src/root/units_folded_away.rs`\n\n\
 Folded in the commit that switched it on; this section should have gone with it.\n";
@@ -3124,7 +3124,7 @@ fn evidenced_with(mut plant: Overlay, doc: &str) -> Overlay {
     plant
 }
 
-/// The decision plane's unit path taken away, AND declared: a tree the gate is satisfied by once the
+/// The decisions plane's unit path taken away, AND declared: a tree the gate is satisfied by once the
 /// evidence document writes the entry module up.
 fn dormant_declared_decision() -> Overlay {
     let mut ov = decision_without_unit_path();
@@ -3135,14 +3135,14 @@ fn dormant_declared_decision() -> Overlay {
 const FIXTURE_DECLARED_DECISION: &str = r#"[[dormant]]
 subject = "decision"
 aspect  = "unit-path"
-module  = "crates/busbar/src/root/plane_decision.rs"
+module  = "crates/busbar/src/root/plane_decisions.rs"
 reason  = "declared only: the plane registers a declaration and no served door, so there is nothing to put a unit on yet"
 switch  = "the commit that gives the plane a served door and a unit path"
 
 [[dormant]]
 subject = "decision"
 aspect  = "root-reach"
-module  = "crates/busbar/src/root/plane_decision.rs"
+module  = "crates/busbar/src/root/plane_decisions.rs"
 reason  = "declared only: the plane registers a declaration and no served door, so there is nothing to put a unit on yet"
 switch  = "the commit that gives the plane a served door and a unit path"
 "#;
@@ -3362,7 +3362,7 @@ mod tests {
     }
 
     /// ITEM 180, RE-SCOPED TO THE LIVE PATH: A ROSTER PLANE WITH NO UNIT PATH IS RED ON BOTH ROWS
-    /// ABOUT IT, NOT GREEN. The real tree's decision plane has a linked entry that is declaration
+    /// ABOUT IT, NOT GREEN. The real tree's decisions plane has a linked entry that is declaration
     /// only and no key flipped onto a runner; both rows must be RED naming that, and the evidence row
     /// must stay green, because the evidence writes the entry module up.
     #[test]

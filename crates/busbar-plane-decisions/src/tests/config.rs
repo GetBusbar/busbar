@@ -61,7 +61,7 @@ fn refuses_a_hook_naming_an_undefined_hook() {
     );
 }
 
-/// DEFECT 3 (#51, OWNER-LOCKED): a model whose provider resolves to a dialect the decision plane
+/// DEFECT 3 (#51, OWNER-LOCKED): a model whose provider resolves to a dialect the decisions plane
 /// does not speak (non-jev) must FAIL CLOSED — the exact row #51 cites: "the decisions plane (only
 /// jev) handed `anthropic` fails".
 #[test]

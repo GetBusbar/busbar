@@ -1,4 +1,4 @@
-// The decision plane's linked entry, inside the composition root (the manifest's `linked-entry`
+// The decisions plane's linked entry, inside the composition root (the manifest's `linked-entry`
 // row). Its unit path is the second kind the gate credits: a `Units` impl the entry exports, built
 // in an item its `linked-axes` row puts in the generated table (`PLANE_HOOKS`, on the plane axis).
 pub struct DecisionHooksUnit {

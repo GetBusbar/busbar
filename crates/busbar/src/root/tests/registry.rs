@@ -31,7 +31,7 @@ fn linked_registry() -> Registry {
 /// The shipped transport fold (`<wire key> <composed over, or ->` rows, in build order), as data.
 const TRANSPORT_FOLD: &str = include_str!("fixtures/transport_fold.txt");
 
-/// The sealed walk over the fifty declared claims, most specific first. The decision plane's two
+/// The sealed walk over the fifty declared claims, most specific first. The decisions plane's two
 /// exact paths (item 251) sit among the other exact paths, ahead of every pattern that could also
 /// describe them.
 ///
@@ -67,8 +67,8 @@ fn fixture_rows(text: &str) -> Vec<String> {
         .collect()
 }
 
-/// Whether this build carries the decision plane — its registry row and its two claims (item 251).
-const DECISION: bool = cfg!(feature = "plane-decision");
+/// Whether this build carries the decisions plane — its registry row and its two claims (item 251).
+const DECISION: bool = cfg!(feature = "plane-decisions");
 
 /// Every transport and every plane goes into one registry, and both counts are what the design
 /// says they are. This is the half of the seal that does not depend on the claims.
@@ -107,15 +107,15 @@ fn six_transports_and_five_planes_register() {
         registry.count(PluginKind::Plane),
         "a registered plane claims nothing, or a claimed plane is not registered: {claimed:?}"
     );
-    // The decision plane is registered exactly when its crate edge is in the build. The key is the
+    // The decisions plane is registered exactly when its crate edge is in the build. The key is the
     // crate's own, so it can only be named on a build that links the crate; on a build without it,
     // the plane count above (no fifth row beyond voice) is the statement that nothing registered.
-    #[cfg(feature = "plane-decision")]
+    #[cfg(feature = "plane-decisions")]
     assert!(
         registry
             .resolve(
                 PluginKind::Plane,
-                <busbar_plane_decision::DecisionPlane as busbar_contract::plane::PlaneMeta>::KEY
+                <busbar_plane_decisions::DecisionPlane as busbar_contract::plane::PlaneMeta>::KEY
             )
             .is_some(),
         "the decision plane is linked and not registered"
@@ -158,9 +158,9 @@ fn the_planes_declare_fifty_claims() {
             count(key)
         );
     }
-    // The decision plane's key is its crate's own, so it is also asserted by that name.
+    // The decisions plane's key is its crate's own, so it is also asserted by that name.
     assert_eq!(
-        count(<busbar_plane_decision::DecisionPlane as busbar_contract::plane::PlaneMeta>::KEY),
+        count(<busbar_plane_decisions::DecisionPlane as busbar_contract::plane::PlaneMeta>::KEY),
         2
     );
     assert_eq!(
@@ -204,7 +204,7 @@ fn one_hundred_and_sixty_four_cross_plane_pairs_overlap() {
             }
         }
     }
-    // The decision plane's two exact paths add ten cross-family pairs (a header claim can be true
+    // The decisions plane's two exact paths add ten cross-family pairs (a header claim can be true
     // of the same arrival) and one path-family pair: `/v1/models` inside the llm plane's
     // `v1/models/<tail>` pattern.
     assert_eq!(cross_family, 100);

@@ -187,7 +187,7 @@ pub const PLANE_CRATES: &[PlaneCrate] = &[
     // #48's fifth plane. Not wired into the binary yet — and gated anyway, because it is the
     // cleanest #71 exemplar in the tree and a rule that only watches wired code watches it late.
     PlaneCrate {
-        dir: "busbar-plane-decision",
+        dir: "busbar-plane-decisions",
         placement: "#83 def 16-20 (#48)",
     },
     // FOLD row: "each is a WIRE DIALECT, which def 16–20 absorbs. They are not homeless; they are
@@ -232,7 +232,7 @@ pub const DECLARING_PLANES: &[&str] = &[
     "busbar-plane-mcp",
     "busbar-plane-a2a",
     "busbar-plane-streaming",
-    "busbar-plane-decision",
+    "busbar-plane-decisions",
 ];
 
 /// The grammar a meter-class declaration is recognised by.

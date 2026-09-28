@@ -111,7 +111,7 @@ both ends:
 | `single plane mcp` | `busbar/plane-mcp,busbar/transport-tcp,busbar/export-prometheus,busbar/export-file,busbar/export-webhook` | `-p busbar --tests --no-default-features` |
 | `single plane a2a` | `busbar/plane-a2a,busbar/transport-tcp,busbar/export-prometheus,busbar/export-file,busbar/export-webhook` | `-p busbar --tests --no-default-features` |
 | `single plane voice` | `busbar/plane-voice,busbar/transport-tcp,busbar/export-prometheus,busbar/export-file,busbar/export-webhook` | `-p busbar --tests --no-default-features` |
-| `single plane decision` | `busbar/plane-decision,busbar/transport-tcp,busbar/export-prometheus,busbar/export-file,busbar/export-webhook` | `-p busbar --tests --no-default-features` |
+| `single plane decision` | `busbar/plane-decisions,busbar/transport-tcp,busbar/export-prometheus,busbar/export-file,busbar/export-webhook` | `-p busbar --tests --no-default-features` |
 
 Every single-plane row also turns on `busbar/transport-tcp`. The rows vary planes, not wires, and
 the tcp wire is the floor of a bootable node. A build without `transport-tcp` boots only with a

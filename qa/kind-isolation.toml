@@ -1036,12 +1036,12 @@ drain   = "none: the architecture grants root -> cleanliness. What this row hold
 
 [[dep]]
 from    = "busbar"
-to      = "busbar-plane-decision"
+to      = "busbar-plane-decisions"
 half    = "shipped"
 count   = "1"
 verdict = "allowed"
 cite    = "BUSBAR-1.6.0.md roster definition 1: the composition root is the only place that names which crates exist and wires them at boot (ARCHITECT 2026-09-25, K5d residue); BUSBAR-1.6.0.md THE DESIGN, §1 / §9, ARCHITECTURE_ALLOWED root -> plane."
-why     = "busbar names busbar-plane-decision: declared normal, optional in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+why     = "busbar names busbar-plane-decisions: declared normal, optional in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
 drain   = "none: BUSBAR-1.6.0.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
 
 [[dep]]

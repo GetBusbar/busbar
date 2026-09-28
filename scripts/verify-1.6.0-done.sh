@@ -1140,7 +1140,7 @@ end_group
 # So the group below is titled and asserted against {llm, mcp, a2a, streaming, decisions} — what
 # the spec says the planes ARE — not the stale on-disk spelling. This is an ENUMERATION fix, not a
 # claim the fold is finished: both `busbar-plane-voice` and `busbar-plane-streaming` exist in the
-# tree today (the rename has not landed) and `busbar-plane-decision` exists but is deliberately
+# tree today (the rename has not landed) and `busbar-plane-decisions` exists but is deliberately
 # unwired (no root Cargo.toml/main.rs entry, no on-disk `busbar-decision(s)` I/O crate) — the fold
 # is tracked separately from this file.
 begin_group "PLANE-DELETE — each locked plane (llm/mcp/a2a/streaming/decisions, BUSBAR-1.6.0 Part 2 #18/#48) is deletable"

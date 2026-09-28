@@ -57,7 +57,7 @@ use busbar_contract::config::{ModelCfg, UpstreamCreds};
 #[derive(Debug, Deserialize, Clone, Default)]
 #[serde(deny_unknown_fields)]
 pub struct DecisionsSection {
-    /// The busbar-facing model names this deployment exposes on the decision plane, each bound to a
+    /// The busbar-facing model names this deployment exposes on the decisions plane, each bound to a
     /// provider connection. REQUIRED-shaped in practice (an empty map means no `jev:` target is
     /// reachable, which is a valid but inert configuration rather than a refusal).
     #[serde(default)]
@@ -95,7 +95,7 @@ pub const PROTOCOL: &str = "jev";
 /// plane's own hook-reference check runs (`config/mod.rs`'s `resolve`). This function is PURE and
 /// kernel-free by construction (the dep wall, DECISIONS #40, forbids this crate naming a kernel
 /// type), so the composition root — the one place allowed to name both this crate's types and the
-/// kernel's (`busbar/src/root/plane_decision.rs`) — hands it borrowed, already-resolved primitives:
+/// kernel's (`busbar/src/root/plane_decisions.rs`) — hands it borrowed, already-resolved primitives:
 ///
 ///   * `provider_protocols`: every configured `providers:` entry's NAME mapped to its RESOLVED
 ///     `protocol` (post catalog-merge, the same value `providers.<p>.protocol` resolves to

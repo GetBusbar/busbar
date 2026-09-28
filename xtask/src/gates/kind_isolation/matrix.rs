@@ -201,6 +201,20 @@ fn alias_of(a: &str, b: &str) -> bool {
         .any(|(from, to, _)| (a == *from && b == *to) || (a == *to && b == *from))
 }
 
+/// PLANE SPELLINGS THAT ARE NEVER A BARE-WORD NEEDLE, each with the neutral primitive it collides
+/// with. The spelling still canonicalises onto its plane (`PLANE_ALIASES`) and still counts in its
+/// package name and its kind-qualified id (`busbar-plane-decisions`, `plane-decisions`); only the
+/// bare word is not a needle, because the bare word already names something neutral.
+///
+/// * `decisions` — the owner's rename of the fifth plane's crate (`busbar-plane-decisions`, #17/#48;
+///   its declared `KEY` stays `decision`, which is still a bare needle as it was before the rename).
+///   `decisions` is also the 1.5.x export stream (`ExportStream::Decisions`, `streams: [logs,
+///   identity, decisions, …]`), a frozen wire word the kernel's export projection and the contract's
+///   export ABI spell as the stream's own name. Counting it would report the export stream as the
+///   plane, which is the collision `plane-purity` and `plane-abi-neutrality` exempt for the same
+///   plane.
+const BARE_WORD_COLLISIONS: &[&str] = &["decisions"];
+
 /// EVERY KIND'S VOCABULARY, READ OFF THE CENSUS.
 ///
 /// A member contributes three spellings, and which of them apply is the KIND TABLE'S OWN ANSWER
@@ -271,7 +285,7 @@ fn vocabulary(crates: &[CrateInfo]) -> BTreeMap<&'static str, Vec<Needle>> {
                 owner: c.name.clone(),
                 id: id.clone(),
             });
-            if c.family != Family::Neutral {
+            if c.family != Family::Neutral && !BARE_WORD_COLLISIONS.contains(&id.as_str()) {
                 entry.push(Needle {
                     word: id.clone(),
                     owner: c.name.clone(),
@@ -727,12 +741,12 @@ fn contract_identifiers(
 
 /// THE INSTANCE NAMES THAT ARE ALSO ORDINARY ENGLISH WORDS (ARCHITECT ruling 2026-09-27, the owner
 /// law of that day: the gate measures INSTANCE knowledge, not English). `streams` is the streaming
-/// plane's section-key alias and `decision` the decision plane's bare id, and both are words a
+/// plane's section-key alias and `decision` the decisions plane's bare id, and both are words a
 /// sentence uses with no plane in mind ("the reply buffer, which streams"; "the hook's decision").
 /// In PROSE — a `//` comment of a `.rs` file, or a line of a `.md` — such a word standing on its own
 /// is masked before the scanners read the line. It still counts everywhere else: in code (an
 /// identifier, a string literal), in section-key position (`streams:`, followed by a colon), when
-/// quoted as a name (`` `decision` ``), and when joined into a longer name (`plane-decision`,
+/// quoted as a name (`` `decision` ``), and when joined into a longer name (`plane-decisions`,
 /// `decision_plane`). Instance ids that are not English words (`llm`, `mcp`, `a2a`, `voice`, every
 /// registry alias) are never masked.
 pub(super) const ENGLISH_INSTANCE_WORDS: &[&str] = &["streams", "decision", "decisions"];
@@ -2356,7 +2370,7 @@ pub fn selftest<'a>(
     // AN ENGLISH WORD THAT IS ALSO AN INSTANCE NAME, IN PROSE, IS NOT THE INSTANCE (ARCHITECT ruling
     // 2026-09-27; [`ENGLISH_INSTANCE_WORDS`]). The fixture's plane cell is recorded at its one hit;
     // a comment that says "which streams" leaves it there (GREEN). The same word as a config
-    // section key, and the decision plane's id as a code identifier, are each a hit (RED).
+    // section key, and the decisions plane's id as a code identifier, are each a hit (RED).
     let english_fixture = |extra: Option<(&'static str, &'static str)>| {
         let mut files = vec![
             ("wiring.rs", "pub const PLANE: &str = \"llm\";\n"),

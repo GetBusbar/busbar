@@ -2220,7 +2220,7 @@ jobs:
             tests: -p busbar --tests --no-default-features
             scope: package
           - name: single plane decision
-            features: busbar/plane-decision,busbar/transport-tcp
+            features: busbar/plane-decisions,busbar/transport-tcp
             default_axes: exports
             tests: -p busbar --tests --no-default-features
             scope: package
@@ -2234,7 +2234,7 @@ jobs:
           # finds by kind and refuses to skip without under CI. `check` runs the same test with the
           # default (linked) row only.
           - name: dropped-in tcp transport
-            features: busbar/auth-admin-tokens,busbar/hooks-ranking,busbar/proto-llm,busbar/plane-mcp,busbar/plane-a2a,busbar/plane-voice,busbar/plane-decision,busbar/root-admin
+            features: busbar/auth-admin-tokens,busbar/hooks-ranking,busbar/proto-llm,busbar/plane-mcp,busbar/plane-a2a,busbar/plane-voice,busbar/plane-decisions,busbar/root-admin
             default_axes: exports
             tests: -p busbar-plugin-loader -p busbar --no-default-features --test transport_dropped_in_serves
             scope: package

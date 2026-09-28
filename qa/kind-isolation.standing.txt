@@ -102,10 +102,10 @@ kind-isolation:matrix	unlisted-cell	busbar-mcp × contract	310
 kind-isolation:matrix	unlisted-cell	busbar-mcp × kernel	50
 kind-isolation:matrix	unlisted-cell	busbar-oauth2 × kernel	10
 kind-isolation:matrix	unlisted-cell	busbar-oauth2 × legacy	2
-kind-isolation:matrix	unlisted-cell	busbar-plane-decision × codec	1
-kind-isolation:matrix	unlisted-cell	busbar-plane-decision × legacy	2
-kind-isolation:matrix	unlisted-cell	busbar-plane-decision × plane	72
-kind-isolation:matrix	unlisted-cell	busbar-plane-decision × transport	37
+kind-isolation:matrix	unlisted-cell	busbar-plane-decisions × codec	1
+kind-isolation:matrix	unlisted-cell	busbar-plane-decisions × legacy	2
+kind-isolation:matrix	unlisted-cell	busbar-plane-decisions × plane	72
+kind-isolation:matrix	unlisted-cell	busbar-plane-decisions × transport	37
 kind-isolation:matrix	unlisted-cell	busbar-plane-streaming × legacy	2
 kind-isolation:matrix	unlisted-cell	busbar-plugin-example-plane × plane	2
 kind-isolation:matrix	unlisted-cell	busbar-plugin-example-plane × transport	2

@@ -361,7 +361,7 @@ dependencies = [
  "busbar-llm",
  "busbar-mcp",
  "busbar-oauth2",
- "busbar-plane-decision",
+ "busbar-plane-decisions",
  "busbar-plane-streaming",
  "busbar-plugin-example-plane",
  "busbar-plugin-loader",
@@ -920,7 +920,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "busbar-plane-decision"
+name = "busbar-plane-decisions"
 version = "1.6.0"
 dependencies = [
  "busbar-contract",

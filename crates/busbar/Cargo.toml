@@ -99,21 +99,21 @@ busbar-kernel-audit = { path = "../busbar-kernel-audit" }
 # `claims` axis), so the root names none of them. The streaming plane's edge stays for the root's own
 # streaming unit, which builds its node over the pure plane.
 busbar-plane-streaming = { path = "../busbar-plane-streaming" }
-# THE DECISION PLANE (jev), #48's fifth — and the one plane crate that is BOTH halves at once. Its
+# THE DECISIONS PLANE (jev), #48's fifth — and the one plane crate that is BOTH halves at once. Its
 # four siblings above are PURE planes whose registry declaration is carried by a separate impure
 # host crate (`busbar-llm`/`busbar-mcp`/`busbar-a2a`/`busbar-voice`, the optional protocol crates
 # declared further up); jev has no host, by the signed design, so this single crate is the plane AND
 # the section. That is why this line is OPTIONAL when the four above are not: it follows the
-# convention of the thing it is — the crate whose `PLANE_DECL` is installed — and `plane-decision`
+# convention of the thing it is — the crate whose `PLANE_DECL` is installed — and `plane-decisions`
 # below is the ONE switch for the plane and its crate edge together, exactly as `plane-a2a` and
 # `plane-voice` are. `--no-default-features` therefore still installs no plane at all, which is the
 # property the strong-form deletion test is written about.
 #
 # The declaration itself is NOT in this crate and cannot be: a pure plane's manifest may name
 # `busbar-contract` and nothing else (DECISIONS #40), and `PlaneDecl` is a `busbar-kernel` type. The
-# composition root writes it, in `src/root/plane_decision.rs`, which is the one place entitled to
+# composition root writes it, in `src/root/plane_decisions.rs`, which is the one place entitled to
 # name a kernel type and a plane in the same file.
-busbar-plane-decision = { path = "../busbar-plane-decision", optional = true }
+busbar-plane-decisions = { path = "../busbar-plane-decisions", optional = true }
 # THE DEFAULT STORE (`governance.store: memory`), linked in every build through the `stores` axis —
 # the same row a dropped-in store takes, opened in process. The kernel names no store.
 busbar-store-memory = { path = "../store-memory" }
@@ -203,7 +203,7 @@ tikv-jemallocator = { workspace = true, features = ["disable_initial_exec_tls"] 
 # are one-line re-exports of the core feature with the same name. Every protocol entry below is the
 # SAME default set the monolithic crate had; `root-admin` is the addition, and it is a path rather
 # than a surface — the operations, their bytes and their features are unchanged.
-default = ["auth-admin-tokens", "hooks-ranking", "proto-llm", "plane-mcp", "plane-a2a", "plane-voice", "plane-decision", "export-file", "export-webhook", "export-prometheus", "export-otlp", "root-admin", "transport-tcp"]
+default = ["auth-admin-tokens", "hooks-ranking", "proto-llm", "plane-mcp", "plane-a2a", "plane-voice", "plane-decisions", "export-file", "export-webhook", "export-prometheus", "export-otlp", "root-admin", "transport-tcp"]
 # A protocol crate: the dependency edge plus its registration line in main.rs. Dropping the
 # feature is the deletion test's level-1 build. There is no per-DIALECT feature and there must not
 # be one — "LLM coverage or not" is the choice this seam offers, and a `proto-gemini` knob would be
@@ -245,7 +245,7 @@ transport-ws = ["dep:busbar-transport-ws"]
 # through it (`root::registry::BootRegistry::dropped_door`). The crate edge stays — the row is what
 # the switch gates, as `export-file`'s is.
 transport-tcp = []
-# THE DECISION PLANE (jev), #48's fifth, DEFAULT ON. The analogue of `plane-a2a` above: one switch
+# THE DECISIONS PLANE (jev), #48's fifth, DEFAULT ON. The analogue of `plane-a2a` above: one switch
 # for the plane and the crate edge that carries it, never two. It forwards to NO kernel feature, and
 # that is the whole difference between this plane and its four siblings — `busbar-kernel` holds no
 # `decisions:` grammar, no decision runtime and no decision seam to gate, because this plane is
@@ -254,14 +254,14 @@ transport-tcp = []
 # deletable on the day it lands rather than as a later cleanup.
 #
 # It carries ONE config key and nothing on the wire. With the switch on, the declaration owns the
-# `decisions:` section and wires its parse/default hooks (see `src/root/plane_decision.rs`), so a
+# `decisions:` section and wires its parse/default hooks (see `src/root/plane_decisions.rs`), so a
 # malformed `decisions:` block fails `--validate` and boot, naming the key; with it off, the key is
 # the untyped raw capture every unowned section falls through to. That is the one place a
 # deployment can tell the two builds apart, and only with a malformed block. The declaration
 # claims no path, binds no audience and builds no runtime slot, so no request is answered
 # differently either way — which is what keeps the neutrality cells answering the same on both
 # legs, and is why this ships on rather than waiting for a golden it could never move.
-plane-decision = ["dep:busbar-plane-decision"]
+plane-decisions = ["dep:busbar-plane-decisions"]
 # THE REQUEST-LOG FILE SINK, DEFAULT ON: the `busbar-export-file` crate on the export axis. Off, the
 # module resolves only when a signed tarball of the sink is dropped into `plugins/`.
 export-file = ["dep:busbar-export-file"]
@@ -323,7 +323,7 @@ proto-llm = "busbar-llm"
 plane-mcp = "busbar-mcp"
 plane-a2a = "busbar-a2a"
 plane-voice = "busbar-voice"
-plane-decision = "busbar-plane-decision"
+plane-decisions = "busbar-plane-decisions"
 export-file = "busbar-export-file"
 export-webhook = "busbar-export-webhook"
 export-prometheus = "busbar-export-prometheus"
@@ -360,7 +360,7 @@ proto-llm = "plane claims protocols path-ingress body-ingress protocol-seams dia
 plane-mcp = "plane claims protocols diagnostics egress stdio-serve cli-help gauntlet-one-shot"
 plane-a2a = "plane claims diagnostics egress plane-sections admin-envelope gauntlet-one-shot"
 plane-voice = "plane claims diagnostics ws-arrivals compose gauntlet-session"
-plane-decision = "plane claims"
+plane-decisions = "plane claims"
 export-file = "exports"
 export-webhook = "exports"
 export-prometheus = "exports"
@@ -375,11 +375,11 @@ transport-ws = "transport"
 transport-grpc = "transport"
 transport-stdio = "transport"
 
-# A linked crate whose entry module is not `<crate>::linked`: the decision plane is a PURE plane
+# A linked crate whose entry module is not `<crate>::linked`: the decisions plane is a PURE plane
 # crate whose manifest names `busbar-contract` and nothing else (#40), so its kernel-typed hooks are
 # written in the composition root and its entry module is that root module.
 [package.metadata.busbar.linked-entry]
-busbar-plane-decision = "crate::root::plane_decision"
+busbar-plane-decisions = "crate::root::plane_decisions"
 # One crate, several wires: each row past the crate's own `linked` names its entry.
 transport-sse = "busbar_transport_http::linked::sse"
 transport-grpc = "busbar_transport_http::linked::grpc"
@@ -404,7 +404,7 @@ plane-a2a = "busbar-a2a"
 plane-voice = "busbar-voice"
 
 [package.metadata.busbar.root-units]
-plane-decision = "plane_decision"
+plane-decisions = "plane_decisions"
 proto-llm = "plane_node"
 
 [dev-dependencies]

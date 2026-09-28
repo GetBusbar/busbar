@@ -132,9 +132,9 @@ const FAM_STREAM: &[&str] = &[
     "busbar-voice-codec",
 ];
 // The FIFTH plane (DECISION #48, owner-locked: llm, mcp, a2a, streaming, decisions(jev)). Its one
-// crate is `busbar-plane-decision`; #39 folds codecs and dialects INTO the plane crate, so there is
+// crate is `busbar-plane-decisions`; #39 folds codecs and dialects INTO the plane crate, so there is
 // no `busbar-decision-codec` for the family to list. The family is what EXISTS.
-const FAM_DECISION: &[&str] = &["busbar-plane-decision"];
+const FAM_DECISION: &[&str] = &["busbar-plane-decisions"];
 
 // ── TRANSPORTS (each concrete transport is its own crate, except the HTTP dialects) ────────────
 // `sse` (an HTTP response body) and `grpc` (HTTP/2 framing) were FOLDED INTO

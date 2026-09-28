@@ -7,7 +7,7 @@ mod common;
 use busbar_contract::bounded::{FactValue, Facts, Ir};
 use busbar_contract::plane::{Plane, Response};
 use busbar_contract::unit::FinishClass;
-use busbar_plane_decision::{facts, meta::CLASS_DECISION, ops, DecisionPlane};
+use busbar_plane_decisions::{facts, meta::CLASS_DECISION, ops, DecisionPlane};
 use common::Scaffold;
 
 /// A successful `systemone` answer, billing 7 units.
@@ -223,9 +223,9 @@ fn pii_witness_never_surfaces_state_or_answers_in_any_fact() {
 
     // The declared pointer lists themselves never name the two members — the structural guarantee
     // behind every assertion above.
-    assert!(!busbar_plane_decision::codec::RESPONSE_PTRS.contains(&"/state"));
-    assert!(!busbar_plane_decision::codec::RESPONSE_PTRS.contains(&"/answers"));
-    assert!(busbar_plane_decision::codec::REQUEST_PTRS.is_empty());
+    assert!(!busbar_plane_decisions::codec::RESPONSE_PTRS.contains(&"/state"));
+    assert!(!busbar_plane_decisions::codec::RESPONSE_PTRS.contains(&"/answers"));
+    assert!(busbar_plane_decisions::codec::REQUEST_PTRS.is_empty());
     assert!(!facts::CONTENT_FACTS
         .iter()
         .any(|k| *k == "state" || *k == "answers"));

@@ -9,4 +9,4 @@ busbar_voice::
 busbar_plane_llm
 busbar_plane_mcp
 busbar_plane_a2a
-busbar_plane_decision
+busbar_plane_decisions

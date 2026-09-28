@@ -78,13 +78,17 @@ const IRREGULAR_SPELLINGS: &[(&str, &str)] = &[("openai", "OpenAI")];
 ///   taxonomy itself. Measured 2026-09-24: the bare word added 98 KEY hits in the neutral crates,
 ///   every one of them core naming its own verdict type. `plane-abi-neutrality` exempts the same
 ///   key for the same collision (`PRIMITIVE_COLLISION_KEYS`).
+/// * `decisions` — the same plane, the same collision, in the plural. The owner renamed the crate
+///   `busbar-plane-decisions` (#17/#48) while its declared `KEY` stays the durable string
+///   `decision`, so the tree derives BOTH keys (the directory's and the declaration's) for the one
+///   plane, and the plural is the collision's other number (`decisions` is also an export stream).
 /// * `streaming` — a response SHAPE every plane has (`may_stream`, "a non-streaming response"),
 ///   not the fourth plane. Measured the same day: 15 KEY hits, none of them the plane.
 ///
 /// NOT A LICENCE, AND NOT AN INSTANCE LIST: an entry only narrows a key the tree has already
 /// derived, a NEW plane is scanned on its bare word from the day it lands, and an entry whose key
 /// the tree no longer derives narrows nothing.
-pub const PRIMITIVE_COLLISIONS: &[&str] = &["decision", "streaming"];
+pub const PRIMITIVE_COLLISIONS: &[&str] = &["decision", "decisions", "streaming"];
 
 impl Vocab {
     /// Build every spelling from the four derived lists.
@@ -422,12 +426,18 @@ mod tests {
     #[test]
     fn a_colliding_key_is_quoted_and_a_new_key_is_bare() {
         let v = Vocab::new(
-            ["decision".to_string(), "quux".to_string()].into(),
+            [
+                "decision".to_string(),
+                "decisions".to_string(),
+                "quux".to_string(),
+            ]
+            .into(),
             BTreeSet::new(),
             BTreeSet::new(),
             BTreeSet::new(),
         );
         assert!(!v.key_words.contains(&"decision".to_string()));
+        assert!(!v.key_words.contains(&"decisions".to_string()));
         assert!(v.literal_words.contains(&"\"decisions\"".to_string()));
         assert!(v.key_words.contains(&"quux".to_string()));
         assert!(v.camel_prefixes.contains(&"Decision".to_string()));

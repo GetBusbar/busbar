@@ -15,7 +15,7 @@
 
 use busbar_contract::plane::{Ingress, Plane, PlaneMeta};
 use busbar_contract::wire::FrameCursor;
-use busbar_plane_decision::DecisionPlane;
+use busbar_plane_decisions::DecisionPlane;
 use std::path::{Path, PathBuf};
 
 mod common;

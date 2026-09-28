@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The decision plane's registry declaration, written by the composition root because the plane
+//! The decisions plane's registry declaration, written by the composition root because the plane
 //! itself may not write it.
 //!
 //! ## Why this file exists at all, when the other four planes have no counterpart
@@ -9,7 +9,7 @@
 //! Every other plane hands the binary a contract `PLANE_DECLARATION` and a kernel-typed `PLANE_HOOKS`
 //! of its own — `busbar_llm::`, `busbar_mcp::`, `busbar_a2a::`, `busbar_voice::` — and the kernel
 //! joins the two (`PlaneDecl::assemble`). Each of those four lives in an IMPURE HOST crate that
-//! already path-deps `busbar-kernel`, so naming a kernel type in its hooks costs it nothing. `busbar-plane-decision` has no host crate: the signed jev design makes it
+//! already path-deps `busbar-kernel`, so naming a kernel type in its hooks costs it nothing. `busbar-plane-decisions` has no host crate: the signed jev design makes it
 //! ONE crate, the pure plane and its own typed `decisions:` section together, and a pure plane's
 //! manifest may name `busbar-contract` and nothing else (the dep wall, DECISIONS #40). `PlaneDecl`
 //! is a `busbar-kernel` type. The plane crate therefore CANNOT hold its own hooks — it used
@@ -61,12 +61,12 @@
 //!
 //! The four sibling planes put those two functions in their own crate, beside the typed section
 //! they lower. This one cannot, and for the same reason the declaration itself is here:
-//! `Box<dyn PlaneCfg>` is a `busbar-kernel` type and `busbar-plane-decision` may name
+//! `Box<dyn PlaneCfg>` is a `busbar-kernel` type and `busbar-plane-decisions` may name
 //! `busbar-contract` and nothing else (the dep wall, DECISIONS #40). So the hooks are written HERE,
 //! over the plane's own already-written and already-tested
-//! `busbar_plane_decision::config::DecisionsSection`, and the ONE piece of mechanism this file adds
+//! `busbar_plane_decisions::config::DecisionsSection`, and the ONE piece of mechanism this file adds
 //! that the other four do not need is [`DecisionsCfg`]: a newtype, because the trait
-//! (`busbar-kernel`'s) and the section (`busbar-plane-decision`'s) are both foreign to this crate
+//! (`busbar-kernel`'s) and the section (`busbar-plane-decisions`'s) are both foreign to this crate
 //! and an `impl PlaneCfg for DecisionsSection` written here would be an orphan. The newtype carries
 //! no grammar of its own — it wraps, and every method below either forwards or answers for a
 //! section shape that has no such thing.
@@ -83,15 +83,15 @@
 //! one.
 
 use busbar_contract::{plane::PlaneMeta, plugin::Kind};
-use busbar_plane_decision::config::DecisionsSection;
-use busbar_plane_decision::DecisionPlane;
+use busbar_plane_decisions::config::DecisionsSection;
+use busbar_plane_decisions::DecisionPlane;
 
-/// THE DECLARING SECTION for the decision plane — the top-level `config.yaml` noun whose mere
+/// THE DECLARING SECTION for the decisions plane — the top-level `config.yaml` noun whose mere
 /// existence declares this plane, beside `pools:`, `tools:`, `agents:` and `streams:`.
 ///
 /// Spelled here rather than read off the plane crate because the plane crate declares no constant
 /// for it: the name is ruled in the owner's config-model sign-off and is written down in
-/// `busbar_plane_decision::config`'s module doc and in that crate's `CONFIG_SCHEMA`, both as prose
+/// `busbar_plane_decisions::config`'s module doc and in that crate's `CONFIG_SCHEMA`, both as prose
 /// rather than as an item. This is the ONE value in this file that is a restatement, it is named
 /// once, and both places that need it below read this constant rather than a second literal.
 ///
@@ -101,7 +101,7 @@ use busbar_plane_decision::DecisionPlane;
 /// plane's (`voice` / `streams`) differ for the same reason.
 pub const CONFIG_SECTION: &str = "decisions";
 
-/// THE DECISION PLANE'S REGISTRY DECLARATION — the contract data `register_planes()` joins to
+/// THE DECISIONS PLANE'S REGISTRY DECLARATION — the contract data `register_planes()` joins to
 /// [`PLANE_HOOKS`] and installs, and the composition root's whole knowledge of this plane. Plain
 /// data naming no kernel type, so it is the one half of this file the plane crate itself could hold.
 ///
@@ -132,9 +132,9 @@ pub const PLANE_DECLARATION: busbar_contract::plane::PlaneDeclaration =
         // buys is that a SECOND claimant of `decisions` is now a boot refusal by construction, which
         // is the whole reason the guard exists. Voice's `streams` claim is the precedent.
         owned_config_sections: &[CONFIG_SECTION],
-        // The class the plane crate declares (`busbar_plane_decision::meta`), by its own symbol.
+        // The class the plane crate declares (`busbar_plane_decisions::meta`), by its own symbol.
         billable_classes: &[busbar_contract::plane::BillableClass {
-            class: busbar_plane_decision::meta::CLASS_DECISION.as_str(),
+            class: busbar_plane_decisions::meta::CLASS_DECISION.as_str(),
             family: "decision",
         }],
         // The providers/models/pools merge is the LLM plane's seam; a decision provider is resolved
@@ -153,10 +153,10 @@ pub const PLANE_DECLARATION: busbar_contract::plane::PlaneDeclaration =
 /// The claims axis: the pure plane the boot seal registers, and the two exact-path claims it declares
 /// — sealed against every other plane's so a tie is refused at boot, though no hook below mounts them.
 pub const PLANE: DecisionPlane = DecisionPlane::EMPTY;
-/// The bytes the decision plane declares.
+/// The bytes the decisions plane declares.
 pub const CLAIMS: &[busbar_contract::grammar::Claim] = <DecisionPlane as PlaneMeta>::CLAIMS;
 
-/// THE DECISION PLANE'S BEHAVIOUR — every hook the kernel runs for it, handed to
+/// THE DECISIONS PLANE'S BEHAVIOUR — every hook the kernel runs for it, handed to
 /// `PlaneDecl::assemble` beside [`PLANE_DECLARATION`] by `register_planes()`. Typed by kernel seams,
 /// which is why it is written here and not in the plane crate.
 pub const PLANE_HOOKS: busbar_kernel::plane::registry::PlaneHooks =
@@ -167,7 +167,7 @@ pub const PLANE_HOOKS: busbar_kernel::plane::registry::PlaneHooks =
         // derived from this list's length rather than from a second declaration.
         wire_format_names: || &[busbar_kernel::plane::WIRE_HTTP_JSON],
         // THE INERT TRIO — see the module doc. The plane declares two exact-path claims of its own
-        // (`busbar_plane_decision::claims::CLAIMS`), and they are NOT re-declared here on purpose:
+        // (`busbar_plane_decisions::claims::CLAIMS`), and they are NOT re-declared here on purpose:
         // a path returned from this hook is a path `PlaneDispatch` mounts and resolves an audience
         // through, and a plane with no unit path to answer on it would be a mounted door with
         // nothing behind it. Identity first; the door is opened by the change that gives this plane
@@ -179,7 +179,7 @@ pub const PLANE_HOOKS: busbar_kernel::plane::registry::PlaneHooks =
         admin_routes: None,
         openapi: None,
         // NO DURABLE STATE TO RESTORE AND NOTHING TO START. jev is a stateless request/response
-        // passthrough and declares no record schemas (`busbar_plane_decision::records`), so there is
+        // passthrough and declares no record schemas (`busbar_plane_decisions::records`), so there is
         // no boot replay to run and no background loop to spawn.
         hydrate: None,
         start: None,
@@ -210,13 +210,13 @@ pub const PLANE_HOOKS: busbar_kernel::plane::registry::PlaneHooks =
         resolve_provider: None,
     };
 
-// THE DECISION PLANE'S LINKED ENTRY is this module: [`PLANE_DECLARATION`] and [`PLANE_HOOKS`] on
+// THE DECISIONS PLANE'S LINKED ENTRY is this module: [`PLANE_DECLARATION`] and [`PLANE_HOOKS`] on
 // the plane axis, addressed through the composition root's generated table like every linked
-// plugin's `linked` module (the manifest's `linked-entry` row maps the `plane-decision` crate here,
+// plugin's `linked` module (the manifest's `linked-entry` row maps the `plane-decisions` crate here,
 // because its kernel-typed half is written in the root). A plane only: no protocol, no diagnostics,
 // no arrival, no seam.
 
-/// THE DECISION PLANE'S ROOT UNIT: the read-back seal, and nothing else.
+/// THE DECISIONS PLANE'S ROOT UNIT: the read-back seal, and nothing else.
 pub const ROOT_UNIT: crate::root::linked::RootUnit = crate::root::linked::RootUnit {
     seal: Some(installed_under_its_own_key),
     drive: None,
@@ -225,7 +225,7 @@ pub const ROOT_UNIT: crate::root::linked::RootUnit = crate::root::linked::RootUn
     on_book: None,
 };
 
-/// THE DECISION PLANE, READ BACK OUT OF THE AXIS IT WAS JUST INSTALLED INTO. Every other plane is
+/// THE DECISIONS PLANE, READ BACK OUT OF THE AXIS IT WAS JUST INSTALLED INTO. Every other plane is
 /// installed under a key its own crate wrote; this one is installed under a key the ROOT wrote, and
 /// the fold between the install and the registry dedups by key and normalises order — so "the root
 /// installed it" and "the process serves it" are two facts here and one everywhere else. This is the
@@ -247,7 +247,7 @@ fn installed_under_its_own_key() -> Result<(), String> {
 /// THE PLANE'S TYPED `decisions:` SECTION, WEARING THE KERNEL'S NEUTRAL SECTION TRAIT.
 ///
 /// A newtype and nothing else. `busbar_kernel::plane::config::PlaneCfg` is a `busbar-kernel` trait
-/// and [`DecisionsSection`] is a `busbar-plane-decision` type; both are foreign to this crate, so
+/// and [`DecisionsSection`] is a `busbar-plane-decisions` type; both are foreign to this crate, so
 /// the impl below could not be written for the section directly (orphan rule). The four sibling
 /// planes have no such problem because each of them owns one side of the pair — which is the whole
 /// of why this wrapper exists, and the whole of what it does. It adds no field, no default and no
@@ -335,7 +335,7 @@ impl busbar_kernel::plane::config::PlaneCfg for DecisionsCfg {
     /// the LLM plane — which interprets whatever dialect its provider resolves to — this plane
     /// interprets exactly one and fails closed on every other.
     fn known_dialects(&self) -> Option<&'static [&'static str]> {
-        Some(&[busbar_plane_decision::config::PROTOCOL])
+        Some(&[busbar_plane_decisions::config::PROTOCOL])
     }
 
     /// True when the operator wrote CONTENT — anything other than the plane's own empty section.
@@ -392,5 +392,5 @@ fn decisions_default_section() -> Box<dyn busbar_kernel::plane::config::PlaneCfg
 }
 
 #[cfg(test)]
-#[path = "tests/plane_decision.rs"]
+#[path = "tests/plane_decisions.rs"]
 mod tests;

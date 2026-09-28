@@ -79,16 +79,16 @@ function that folds `LINKED` for every plane whose `linked-axes` row carries `ga
 (`register_gauntlet_runner`) or `gauntlet-session` (`register_session_runner`); the self-test proves
 the fold both ways.
 
-## 2. `crates/busbar/src/root/plane_decision.rs` — decision: NO LIVE UNIT PATH (owner-blocked, Q72(3))
+## 2. `crates/busbar/src/root/plane_decisions.rs` — decision: NO LIVE UNIT PATH (owner-blocked, Q72(3))
 
-The decision plane's linked entry (`[package.metadata.busbar.linked-entry]` `busbar-plane-decision =
-"crate::root::plane_decision"`, axes `plane`) exports `PLANE_DECLARATION` (:110) and `PLANE_HOOKS`
+The decision plane's linked entry (`[package.metadata.busbar.linked-entry]` `busbar-plane-decisions =
+"crate::root::plane_decisions"`, axes `plane`) exports `PLANE_DECLARATION` (:110) and `PLANE_HOOKS`
 (:150). Neither builds anything: the hooks are the inert trio (`claims: |_| Vec::new()`, `admission:
 |_| None`, `build: |_| None`) — no served door. The file declares **no `impl … Units for`**, and no
-line in `gauntlet_install.rs` (or anywhere else) routes a `busbar_plane_decision::…` or
-`plane_decision::…` key onto a runner. So both rows are RED:
+line in `gauntlet_install.rs` (or anywhere else) routes a `busbar_plane_decisions::…` or
+`plane_decisions::…` key onto a runner. So both rows are RED:
 
-- `unit-path:decision` — "NO LIVE UNIT PATH … Linked entry: `crates/busbar/src/root/plane_decision.rs`
+- `unit-path:decision` — "NO LIVE UNIT PATH … Linked entry: `crates/busbar/src/root/plane_decisions.rs`
   declares no `impl … Units for`."
 - `root-reach:decision` — "NO UNIT PATH REACHED …"
 

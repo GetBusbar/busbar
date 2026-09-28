@@ -33,7 +33,7 @@ crate plane-a2a a2a-client a2a-server
 crate plane-streaming voice-client voice-server
 #
 # owed <crate suffix>: workspace plane crates that answer to no ledger column yet, pinned exactly.
-owed plane-decision
+owed plane-decisions
 #
 # installed <plane key> <ledger column>...: the doctrine's installed-plane axis (plane_isomorphism.rs)
 # — each plane the composition root installs from its own linked entry, and the directional ledger
