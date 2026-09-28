@@ -103,9 +103,9 @@ use std::time::Instant;
 use axum::http::StatusCode;
 
 use busbar_contract::caps::{
-    Admission, Admit, Admittance, Approve, Arrival, ArrivalRecord, Audit, Authenticate,
-    Consumption, Decision, Decode, Dial, Encode, Grant, Hold, Meter, OpClassId, OriginKind,
-    Outcome, Pass, PrincipalId, ReasonCode, Refusal, Route, VerifiedDestination, Verify,
+    Admit, Admittance, Approve, Arrival, ArrivalRecord, Audit, Authenticate, Consumption, Decision,
+    Decode, Dial, Encode, Grant, Meter, OpClassId, OriginKind, Outcome, Pass, PrincipalId,
+    ReasonCode, Refusal, Route, VerifiedDestination, Verify,
 };
 use busbar_contract::slice::GroupLeaseSlip;
 use busbar_contract::LaneId;
@@ -603,12 +603,13 @@ impl Units for LlmUnit {
         );
         // The plane's half of the answer — the metering sink, whether the charge landed, and which
         // pool it landed on — stays with the walk; the door's verdict comes back here. THE HOLD IS
-        // OPENED HERE, not in the plane (#43, #83 defs 5/6): at zero, for this principal — it never
-        // refused a unit the door admitted, and the spend is the governance ledger's.
+        // OPENED BY THE KERNEL (`busbar_kernel::door`), not in the plane (#43, #83 defs 5/6): at
+        // zero, for this principal — it never refused a unit the door admitted, and the spend is
+        // the governance ledger's.
         match self.walk.take_admission(admitted) {
             Ok(()) => Decision::proceed(
                 token,
-                Admission::Own(Hold::open(admit_token, principal.clone(), 0)),
+                busbar_kernel::door::admitted_at_zero(admit_token, principal.clone()),
             ),
             Err(refusal) => Decision::refuse(token, refusal),
         }
