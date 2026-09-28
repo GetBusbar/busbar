@@ -21,7 +21,7 @@ use std::collections::BTreeMap;
 /// against the same divisor. Two independently written copies of it is exactly the drift that lets
 /// a request be judged at one rate and billed at another, so there is one declaration and everyone
 /// else points at it.
-pub use busbar_kernel_ledger::cost::NANOS_PER_CENT;
+pub use busbar_kernel_ledger::cost::{NANOS_PER_CENT, STANDARD_TIER_BP};
 
 /// The uncached input token key.
 pub const UNIT_INPUT: &str = "input";

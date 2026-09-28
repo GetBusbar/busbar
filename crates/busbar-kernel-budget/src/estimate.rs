@@ -43,8 +43,9 @@
 ///
 /// Named rather than written at the divide, because a bare ten thousand at the bottom of a
 /// money calculation is indistinguishable from a rounding scale or a percentage-times-hundred, and
-/// the three are not interchangeable.
-const BASIS_POINTS_PER_UNIT: u128 = 10_000;
+/// the three are not interchangeable. It is the standard tier itself, so the hold and the bill
+/// divide by one number.
+const BASIS_POINTS_PER_UNIT: u128 = crate::STANDARD_TIER_BP as u128;
 
 /// One meter class's contribution to the estimate: how much of it the unit is expected to consume,
 /// and the highest price any destination it may reach charges for it.

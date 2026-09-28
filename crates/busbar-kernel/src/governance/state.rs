@@ -1,6 +1,8 @@
 use super::*;
 use busbar_contract::records::{UNIT_CACHE_READ, UNIT_CACHE_WRITE, UNIT_INPUT, UNIT_OUTPUT};
-use busbar_kernel_ledger::cost::{plane_fee_lane, split_plane_lane, Money, PER_REQUEST};
+use busbar_kernel_ledger::cost::{
+    plane_fee_lane, split_plane_lane, Money, MICROS_PER_CENT, PER_REQUEST,
+};
 use std::collections::{BTreeMap, BTreeSet};
 // The wall clock, by name: the admission path reads it and never reaches a store handle for it.
 use crate::store::now_ms as wall_ms;
@@ -1523,7 +1525,7 @@ impl GovState {
                 Ok(spend_micros) => (
                     spend_micros,
                     bucket.budget_cap.map(|cap| {
-                        cap.saturating_mul(10_000)
+                        cap.saturating_mul(MICROS_PER_CENT)
                             .saturating_sub(spend_micros)
                             .max(0)
                     }),
