@@ -372,9 +372,9 @@ abi = ["crates/busbar-contract"]
 
 [gate.ceiling_raises."rules.loc-ceilings.kernel_ceiling"]
 file    = "qa/construction.toml"
-from    = 55077
-to      = 55163
-because = "ARCHITECT 2026-09-28: R-KERNEL, FOLD-LLM C4' option (a) (legacy fold rulings F19/F20; BUSBAR-1.6.0.md THE DESIGN, §1). The VERIFY step's destination guard (pool allow-list, reachable fallback pools, priced destination), PoolView and VerifyRefusal move from the llm plane's verify step into the kernel's door, contract types only, for the plane driver to call at VERIFY; no kernel -> kernel-scope edge. Rebased over LOG-BRIDGE's landed +21 (plugins.logs config grammar): measured fresh at the new base by LANDER at land time. Measured by cargo xtask gate construction: 55077 before, 55163 after, +86. The ceiling rises by exactly that."
+from    = 55163
+to      = 55182
+because = "ARCHITECT 2026-09-28: R-KERNEL, FOLD-LLM C3' (legacy fold rulings F19/F20; BUSBAR-1.6.0.md THE DESIGN, §1). The kernel's door now decides how an admitted unit ended (the plane's reported finish, else the client-facing status) and that a refused unit is never a completion, acts the llm plane's audit step decided itself; contract types only, for the plane driver to call at AUDIT. Measured by cargo xtask gate construction: 55163 before, 55182 after, +19. The ceiling rises by exactly that."
 
 # ── THE KERNEL CEILING, RE-ARMED BY LOG-BRIDGE plugin logging (#85; BUSBAR-1.6.0.md THE DESIGN, §11.2) — EXPIRED
 #    AND STRUCK
@@ -1267,7 +1267,7 @@ kernel_crate = "busbar-kernel"
 # (plugin log files, owner 2026-09-28), declared above. Measured 55056 before and 55077 after, +21.
 # ── RE-ARMED 55077 -> 55163 for FOLD-LLM C4' (the VERIFY step's destination guard, PoolView and
 # VerifyRefusal move into the kernel door), declared above. Measured 55077 before, 55163 after, +86.
-kernel_ceiling = 55163
+kernel_ceiling = 55182
 # `caps_crate = "busbar-caps"` WAS HERE AND IS STRUCK, 2026-09-22. The crate was folded into
 # busbar-contract by 2c9eddecf ("W2.c: fold busbar-caps into busbar-contract"); its types live at
 # `crates/busbar-contract/src/caps/`, whose own module header says "Folded from the former
