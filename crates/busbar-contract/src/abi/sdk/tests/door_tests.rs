@@ -1452,7 +1452,17 @@ fn a_plane_plugin_wires_every_kind_op() {
     let mut out: PlaneOpenOut = unsafe { std::mem::zeroed() };
     out.open.head = prefilled_head(size_of::<PlaneOpenOut>());
     assert_eq!(call(t.head.open, &input, &mut out), Outcome::Ready);
-    assert_eq!(out.snapshot, plane_plugin::SNAPSHOT as *const PlaneSnapshot);
+    // A `const` has no one address: the snapshot is compared by its contents.
+    assert!(!out.snapshot.is_null());
+    // SAFETY: the plugin's `'static` snapshot.
+    let snap = unsafe { &*out.snapshot };
+    assert_eq!(
+        (snap.size as usize, snap.generation),
+        (
+            size_of::<PlaneSnapshot>(),
+            plane_plugin::SNAPSHOT.generation
+        )
+    );
     assert_eq!(out.open.head.size as usize, size_of::<PlaneOpenOut>());
 
     // `drive` names the ready session in the host's buffer; a zero cap is the short answer.
