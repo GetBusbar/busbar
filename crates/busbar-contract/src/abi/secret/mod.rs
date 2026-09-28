@@ -32,6 +32,8 @@
 //! `resolve`, is the renewal path).
 
 use super::mechanism::call::{Blob, InHead, Op, OutHead};
+
+pub mod validate;
 use super::mechanism::lifecycle::{OpsHead, LIFECYCLE_SLOTS};
 
 /// The secret kind's ABI version: v1.5.5 shipped `1` (`SECRET_ABI_VERSION`), so 1.6.0 ships `2`.

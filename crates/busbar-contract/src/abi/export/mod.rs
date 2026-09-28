@@ -17,6 +17,18 @@
 //!    [`CheckOut::findings`]) are documented as memory class (iv): held live under `head.lease`
 //!    until `release(lease)`.
 //!
+//! **SECOND REVIEW PASS (ARCHITECT ruling, 2026-09-28), folded in on the same landing:**
+//! - [`Tail::routes`] carries [`Route`] entries (`path`, `method`, `auth`), not bare path
+//!   strings: none/key/admin auth cannot be read off a path alone.
+//! - [`ScrapeSample`] carries its own `name` and [`ScrapeLabel`] key/value pairs (not
+//!   value-only, family-shared keys): a histogram's `_bucket`/`_sum`/`_count` legs and a
+//!   summary's `quantile` legs need their own series name and their own `le`/`quantile` label,
+//!   and `value` is the recorder's own string spelling, not `f64` — so the exposition `scrape`
+//!   renders can reproduce the host's byte for byte.
+//! - [`CheckIn`] carries `instances`/`instances_len` ([`CheckInstance`]): the OLD
+//!   `Check{instances}` exists precisely for checks that read across every instance of a sink's
+//!   module.
+//!
 //! B.5, transcribed:
 //! - **Tail:** `streams[]`, pinned to the OLD `ExportStream::ALL` order
 //!   (`abi/cold/export.rs`: metrics, logs, traces, costs, decisions, events, identity, prompts,
@@ -46,6 +58,8 @@
 //!   `instances`, 1.5.5 `CheckPhase`) are carried as a `u32` `in` field rather than a new type.
 
 use super::mechanism::call::{AbiStr, Blob, InHead, Op, OutHead};
+
+pub mod validate;
 use super::mechanism::door::KindTailHead;
 use super::mechanism::lifecycle::{OpsHead, LIFECYCLE_SLOTS};
 
@@ -167,17 +181,47 @@ impl ExportStream {
     ];
 }
 
-/// One label value applied to a [`ScrapeSample`], in the family's declared `label_keys` order.
+/// [`ScrapeFamily::kind`]: a counter.
+pub const SCRAPE_KIND_COUNTER: u8 = 0;
+/// [`ScrapeFamily::kind`]: a gauge.
+pub const SCRAPE_KIND_GAUGE: u8 = 1;
+/// [`ScrapeFamily::kind`]: a histogram (`_bucket`/`_sum`/`_count` legs as separate
+/// [`ScrapeSample`]s).
+pub const SCRAPE_KIND_HISTOGRAM: u8 = 2;
+/// [`ScrapeFamily::kind`]: a summary (`quantile` legs as separate [`ScrapeSample`]s).
+pub const SCRAPE_KIND_SUMMARY: u8 = 3;
+/// [`ScrapeFamily::kind`]: untyped.
+pub const SCRAPE_KIND_UNTYPED: u8 = 4;
+
+/// One label on a [`ScrapeSample`]: a key AND its value, ARCHITECT review ruling (fresh-Opus
+/// M3-SHAPES review, parity item) — a value-only array cannot carry a histogram's `le` or a
+/// summary's `quantile` label, which is exactly what makes the 1.5.5 exposition losslessly
+/// reproducible.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct ScrapeLabel {
+    /// The label key.
+    pub key: AbiStr,
+    /// The label value.
+    pub value: AbiStr,
+}
+
+/// One sample of a [`ScrapeFamily`]'s snapshot: its own series name (a histogram's `_bucket`/
+/// `_sum`/`_count` and a summary's `quantile` legs are each their own named series), its labels
+/// and its value as the recorder's OWN STRING SPELLING (not `f64` — ARCHITECT review ruling:
+/// re-rendering a re-parsed float would not reproduce the host's exposition byte for byte).
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct ScrapeSample {
-    /// The label values, in the family's declared key order.
-    pub label_vals: *const AbiStr,
+    /// This sample's own series name (the family name, or the family name plus its `_bucket`/
+    /// `_sum`/`_count` suffix).
+    pub name: AbiStr,
+    /// This sample's labels.
+    pub labels: *const ScrapeLabel,
     /// How many.
-    pub label_vals_len: usize,
-    /// The recorder's own value, as it will render (a histogram's `_bucket`/`_sum`/`_count` and a
-    /// summary's `quantile` legs are samples of their family, carried as the recorder wrote them).
-    pub value: f64,
+    pub labels_len: usize,
+    /// The recorder's own spelling of the value, unchanged.
+    pub value: AbiStr,
 }
 
 /// One metric family of the host recorder's snapshot, handed to `scrape` so the sink can render
@@ -191,16 +235,14 @@ pub struct ScrapeFamily {
     pub help: AbiStr,
     /// Its unit; absent = none.
     pub unit: AbiStr,
-    /// Its label keys, in order.
-    pub label_keys: *const AbiStr,
-    /// How many.
-    pub label_keys_len: usize,
-    /// [`super::mechanism::door::FAMILY_COUNTER`] | [`super::mechanism::door::FAMILY_GAUGE`] |
-    /// [`super::mechanism::door::FAMILY_HISTOGRAM`].
+    /// [`SCRAPE_KIND_COUNTER`] | [`SCRAPE_KIND_GAUGE`] | [`SCRAPE_KIND_HISTOGRAM`] |
+    /// [`SCRAPE_KIND_SUMMARY`] | [`SCRAPE_KIND_UNTYPED`].
     pub kind: u8,
     /// Alignment padding.
     pub _reserved: [u8; 7],
-    /// The samples.
+    /// The samples, each carrying its own labels (ARCHITECT review ruling: labels moved onto the
+    /// sample, not shared at the family level, so a histogram/summary series keeps its `le`/
+    /// `quantile` label).
     pub samples: *const ScrapeSample,
     /// How many.
     pub samples_len: usize,
@@ -257,6 +299,18 @@ pub const CHECK_PHASE_LIMITS: u32 = 0;
 /// `CheckPhase::Instances` (the 1.5.5 default).
 pub const CHECK_PHASE_INSTANCES: u32 = 1;
 
+/// One instance `check` may read across, at [`CHECK_PHASE_INSTANCES`] (ARCHITECT review ruling,
+/// fresh-Opus M3-SHAPES review, parity item: the OLD `Check{instances}` exists precisely for
+/// checks that read across every instance of a sink's module, not only the one being called).
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct CheckInstance {
+    /// The instance's name.
+    pub name: AbiStr,
+    /// The instance's settings blob.
+    pub settings: Blob,
+}
+
 /// `check`'s `in`.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
@@ -267,6 +321,11 @@ pub struct CheckIn {
     pub phase: u32,
     /// Alignment padding.
     pub _reserved: u32,
+    /// Every instance of this sink's module (meaningful mainly at
+    /// [`CHECK_PHASE_INSTANCES`]).
+    pub instances: *const CheckInstance,
+    /// How many.
+    pub instances_len: usize,
 }
 
 /// `check`'s `out`. OFF-PATH: `findings` is a plugin-owned result, memory class (iv) — live under
@@ -323,7 +382,31 @@ pub struct ServeOut {
     pub body: Blob,
 }
 
-/// The export kind's Statement tail: the streams this instance carries.
+/// [`Route::auth`]: no auth required before `serve` — OLD `RouteAuth::None`.
+pub const ROUTE_AUTH_NONE: u32 = 0;
+/// [`Route::auth`]: a data-plane key required before `serve` — OLD `RouteAuth::Key`.
+pub const ROUTE_AUTH_KEY: u32 = 1;
+/// [`Route::auth`]: admin auth required, reachable only on the admin listener — OLD
+/// `RouteAuth::Admin`.
+pub const ROUTE_AUTH_ADMIN: u32 = 2;
+
+/// One HTTP route this instance serves via `serve` (ARCHITECT review ruling, fresh-Opus
+/// M3-SHAPES review, parity item): `{path, method}` is the collision key the kernel checks at
+/// load; `auth` is enforced by the kernel BEFORE `serve` is ever called.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct Route {
+    /// The path, confined to `/metrics` or `/exports/<name>/*`.
+    pub path: AbiStr,
+    /// The HTTP method.
+    pub method: AbiStr,
+    /// [`ROUTE_AUTH_NONE`] | [`ROUTE_AUTH_KEY`] | [`ROUTE_AUTH_ADMIN`].
+    pub auth: u32,
+    /// Alignment padding.
+    pub _reserved: u32,
+}
+
+/// The export kind's Statement tail: the streams this instance carries and the routes it serves.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct Tail {
@@ -333,6 +416,11 @@ pub struct Tail {
     pub streams: *const u8,
     /// How many.
     pub streams_len: usize,
+    /// The HTTP routes this instance serves via `serve` (ARCHITECT review ruling: 1.5.5 asked
+    /// each instance at load, e.g. the `Routes` op; here it is a Statement fact).
+    pub routes: *const Route,
+    /// How many.
+    pub routes_len: usize,
 }
 
 /// The export kind's [`super::mechanism::lifecycle::CancelOut::disposition`] vocabulary.

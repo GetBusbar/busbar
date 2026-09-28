@@ -45,6 +45,15 @@
 //!    [`CandidateStatic::context_max`] widened `u32` -> `u64` (a context window is a token count,
 //!    not bounded to 32 bits).
 //!
+//! **SECOND REVIEW PASS (ARCHITECT ruling, 2026-09-28), folded in on the same landing — the
+//! reviewer's own "extra parity findings" beyond the fresh-Opus review's ten items:**
+//! 9. [`Tail::routes`] carries [`Route`] entries (`path`, `method`, `auth`), not bare path
+//!    strings: none/key/admin auth cannot be read off a path, and `{path, method}` is the
+//!    collision key the kernel checks at load (the same shape B.5 gives export's routes).
+//! 10. [`ConfigureIn`] gains `name`, echoing the OLD `ConfigureBody`'s instance name.
+//! 11. Hook words are [`Tail::declared_words`]: STATIC, a Statement fact (see the ASSUMPTIONS
+//!    section below, now a ruling rather than an assumption).
+//!
 //! **OFF-WORKER (OWNER RULING, decided 2026-09-27, abi-brief.md section 4 item 1):** every hook call
 //! (`decide`/`transform`/`notify`/`configure`/`status`/`describe`/`serve`) runs OFF the request's
 //! own worker thread, never inline on it — the 1.5.5 `spawn_blocking` + hard-timeout parity this
@@ -106,12 +115,14 @@
 //! ASSUMPTIONS (M3-SHAPES, noted for the SLOT-LOG; none are money- or customer-visible — 1.5.5
 //! reply BEHAVIOUR is unchanged, only its wire shape moves from JSON to fixed C layout, which is
 //! the whole point of this milestone — so none is an owner question):
-//! - "hook words" (B.4's tail bullet) are the OLD `RESERVED_HOOK_NAMES` /
-//!   `FROZEN_HOOK_NAME_WORD_SPACE` kernel-side reserved-name check against a plugin's own
-//!   [`super::mechanism::door::Statement::name`]; they name no new Statement field.
-//! - `routes` (B.4's "routes, serve" row) is [`Tail::routes`], a Statement fact the plugin states
-//!   once (an OLD `HttpEndpointRequest`/`Route`-style declaration folded into the fixed tail);
-//!   `serve` is the op the kernel calls per matched request.
+//! - "hook words" (B.4's tail bullet) are [`Tail::declared_words`] (ARCHITECT ruling, folded in on
+//!   top of the first landing): STATIC, a Statement fact, not a per-call answer — a native
+//!   ranking strategy (the OLD `RESERVED_HOOK_NAMES`: `cheapest`/`fastest`/`least_busy`/`usage`)
+//!   becomes a hook plugin by declaring the word it claims here.
+//! - `routes` (B.4's "routes, serve" row) is [`Tail::routes`], now [`Route`] entries (path +
+//!   method + auth, ARCHITECT ruling: a bare path string cannot state none/key/admin auth), a
+//!   Statement fact the plugin states once; `serve` is the op the kernel calls per matched
+//!   request.
 //! - Signal ids ([`signal`]) are numbered in the OLD `Signal` enum's declared order
 //!   (`busbar-contract/src/signal.rs`): `RequestedModel, RequestTotalChars, RequestMessageCount,
 //!   RequestToolCount, RequestSystemChars, CandidateBreakerState, CandidateErrorRate,
@@ -124,6 +135,8 @@
 //!   verdict/response uniformly (nothing partial is ever committed for a hook reply).
 
 use super::mechanism::call::{AbiStr, Blob, InHead, Op, OutHead};
+
+pub mod validate;
 use super::mechanism::door::KindTailHead;
 use super::mechanism::lifecycle::{OpsHead, LIFECYCLE_SLOTS};
 
@@ -679,7 +692,9 @@ pub struct NotifyIn {
     pub stage: StageView,
 }
 
-/// `configure`'s `in`.
+/// `configure`'s `in`. ARCHITECT review ruling (fresh-Opus M3-SHAPES review, parity item):
+/// echoes the OLD `ConfigureBody`'s instance name, so the fresh management instance knows which
+/// instance it is configuring.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct ConfigureIn {
@@ -689,6 +704,8 @@ pub struct ConfigureIn {
     pub version: u64,
     /// The settings blob.
     pub settings: Blob,
+    /// The instance name (OLD `ConfigureBody::hook`).
+    pub name: AbiStr,
 }
 
 /// `configure`'s `out`. `acked_version == version` on success; a nack (any other outcome, or a
@@ -769,6 +786,31 @@ pub struct ServeOut {
 
 // ── Statement tail ───────────────────────────────────────────────────────────────────────────
 
+/// [`Route::auth`]: no auth required before `serve` — OLD `RouteAuth::None`.
+pub const ROUTE_AUTH_NONE: u32 = 0;
+/// [`Route::auth`]: a data-plane key required before `serve` — OLD `RouteAuth::Key`.
+pub const ROUTE_AUTH_KEY: u32 = 1;
+/// [`Route::auth`]: admin auth required, reachable only on the admin listener — OLD
+/// `RouteAuth::Admin`.
+pub const ROUTE_AUTH_ADMIN: u32 = 2;
+
+/// One HTTP route this instance serves via `serve` (ARCHITECT review ruling, fresh-Opus M3-SHAPES
+/// review, parity item): `{path, method}` is the collision key the kernel checks at load;
+/// `auth` is enforced by the kernel BEFORE `serve` is ever called — none/key/admin auth cannot be
+/// read off a bare path string, which is why a route is this struct, not an [`AbiStr`].
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct Route {
+    /// The path, confined to `/hooks/<name>/*`.
+    pub path: AbiStr,
+    /// The HTTP method.
+    pub method: AbiStr,
+    /// [`ROUTE_AUTH_NONE`] | [`ROUTE_AUTH_KEY`] | [`ROUTE_AUTH_ADMIN`].
+    pub auth: u32,
+    /// Alignment padding.
+    pub _reserved: u32,
+}
+
 /// [`Tail::kind_class`]: a GATE (fire-and-wait; `decide`/`transform` may block the chain) — OLD
 /// `HookKind::Gate`.
 pub const CLASS_GATE: u32 = 0;
@@ -789,7 +831,8 @@ pub const USER_NO: u32 = 0;
 pub const USER_RO: u32 = 1;
 
 /// The hook kind's Statement tail (B.4's "Tail"): the OLD `HookKind`, `PromptAccess`,
-/// `UserAccess`, `infallible` fact, the signals this instance wants and the routes it serves.
+/// `UserAccess`, `infallible` fact, the signals this instance wants, the routes it serves and the
+/// hook words it declares.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct Tail {
@@ -811,11 +854,17 @@ pub struct Tail {
     pub requested_signals: *const u32,
     /// How many.
     pub requested_signals_len: usize,
-    /// The HTTP route path patterns this instance serves via `serve`, confined to
-    /// `/hooks/<name>/*`.
-    pub routes: *const AbiStr,
+    /// The HTTP routes this instance serves via `serve`, confined to `/hooks/<name>/*`.
+    pub routes: *const Route,
     /// How many.
     pub routes_len: usize,
+    /// ARCHITECT RULING: the hook words this instance declares — STATIC, a Statement fact, not a
+    /// per-call answer. A native ranking strategy (the OLD `cheapest`/`fastest`/`least_busy`/
+    /// `usage` reserved words) becomes a hook plugin by declaring the word it claims here; the
+    /// kernel's reserved-word check reads this list, not a per-call reply.
+    pub declared_words: *const AbiStr,
+    /// How many.
+    pub declared_words_len: usize,
 }
 
 /// The hook kind's [`super::mechanism::lifecycle::CancelOut::disposition`] vocabulary.

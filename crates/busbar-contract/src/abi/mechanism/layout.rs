@@ -591,11 +591,12 @@ pin!(
 pin!(crate::abi::hook::NotifyIn, 232, 8, head = 0, stage = 88);
 pin!(
     crate::abi::hook::ConfigureIn,
-    120,
+    136,
     8,
     head = 0,
     version = 88,
     settings = 96,
+    name = 120,
 );
 pin!(
     crate::abi::hook::ConfigureOut,
@@ -636,8 +637,17 @@ pin!(
     body = 120,
 );
 pin!(
+    crate::abi::hook::Route,
+    40,
+    8,
+    path = 0,
+    method = 16,
+    auth = 32,
+    _reserved = 36
+);
+pin!(
     crate::abi::hook::Tail,
-    56,
+    72,
     8,
     head = 0,
     kind_class = 8,
@@ -649,6 +659,8 @@ pin!(
     requested_signals_len = 32,
     routes = 40,
     routes_len = 48,
+    declared_words = 56,
+    declared_words_len = 64,
 );
 
 // ── EXPORT (M3-SHAPES, abi-v2-perkind.md B.5) ───────────────────────────────────────────────────
@@ -673,27 +685,27 @@ pin!(
     _reserved = 105,
     batch = 112,
 );
+pin!(crate::abi::export::ScrapeLabel, 32, 8, key = 0, value = 16);
 pin!(
     crate::abi::export::ScrapeSample,
-    24,
+    48,
     8,
-    label_vals = 0,
-    label_vals_len = 8,
-    value = 16
+    name = 0,
+    labels = 16,
+    labels_len = 24,
+    value = 32
 );
 pin!(
     crate::abi::export::ScrapeFamily,
-    88,
+    72,
     8,
     name = 0,
     help = 16,
     unit = 32,
-    label_keys = 48,
-    label_keys_len = 56,
-    kind = 64,
-    _reserved = 65,
-    samples = 72,
-    samples_len = 80,
+    kind = 48,
+    _reserved = 49,
+    samples = 56,
+    samples_len = 64,
 );
 pin!(
     crate::abi::export::ScrapeIn,
@@ -715,12 +727,21 @@ pin!(
 );
 pin!(crate::abi::export::StatusOut, 120, 8, head = 0, status = 96);
 pin!(
+    crate::abi::export::CheckInstance,
+    40,
+    8,
+    name = 0,
+    settings = 16
+);
+pin!(
     crate::abi::export::CheckIn,
-    96,
+    112,
     8,
     head = 0,
     phase = 88,
-    _reserved = 92
+    _reserved = 92,
+    instances = 96,
+    instances_len = 104,
 );
 pin!(
     crate::abi::export::CheckOut,
@@ -753,12 +774,23 @@ pin!(
     body = 120,
 );
 pin!(
+    crate::abi::export::Route,
+    40,
+    8,
+    path = 0,
+    method = 16,
+    auth = 32,
+    _reserved = 36
+);
+pin!(
     crate::abi::export::Tail,
-    24,
+    40,
     8,
     head = 0,
     streams = 8,
-    streams_len = 16
+    streams_len = 16,
+    routes = 24,
+    routes_len = 32,
 );
 
 pin!(crate::abi::plane::Ops, 80, 8, head = 0);

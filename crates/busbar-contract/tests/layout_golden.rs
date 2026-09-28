@@ -49,20 +49,22 @@ use busbar_contract::abi::{
 };
 // M3-SHAPES (abi-v2-perkind.md B.2/B.4/B.5): the secret/hook/export kinds' own ops and shapes.
 use busbar_contract::abi::export::{
-    CheckIn as ExportCheckIn, CheckOut as ExportCheckOut, DeliverIn as ExportDeliverIn,
-    Ops as ExportOps, ScrapeFamily as ExportScrapeFamily, ScrapeIn as ExportScrapeIn,
-    ScrapeOut as ExportScrapeOut, ScrapeSample as ExportScrapeSample, ServeIn as ExportServeIn,
-    ServeOut as ExportServeOut, StatusOut as ExportStatusOut, Tail as ExportTail,
+    CheckIn as ExportCheckIn, CheckInstance as ExportCheckInstance, CheckOut as ExportCheckOut,
+    DeliverIn as ExportDeliverIn, Ops as ExportOps, Route as ExportRoute,
+    ScrapeFamily as ExportScrapeFamily, ScrapeIn as ExportScrapeIn,
+    ScrapeLabel as ExportScrapeLabel, ScrapeOut as ExportScrapeOut,
+    ScrapeSample as ExportScrapeSample, ServeIn as ExportServeIn, ServeOut as ExportServeOut,
+    StatusOut as ExportStatusOut, Tail as ExportTail,
 };
 use busbar_contract::abi::hook::{
     BudgetBucketState as HookBudgetBucketState, CandidateDynamic as HookCandidateDynamic,
     CandidateStatic as HookCandidateStatic, ConfigureIn as HookConfigureIn,
     ConfigureOut as HookConfigureOut, DecideIn as HookDecideIn, DecideOut as HookDecideOut,
     DescribeOut as HookDescribeOut, NotifyIn as HookNotifyIn, Ops as HookOps,
-    PromptView as HookPromptView, RequestView as HookRequestView, ServeIn as HookServeIn,
-    ServeOut as HookServeOut, SignalEntry as HookSignalEntry, SignalValue as HookSignalValue,
-    StageView as HookStageView, StatusOut as HookStatusOut, Tail as HookTail,
-    TransformOut as HookTransformOut, UserView as HookUserView,
+    PromptView as HookPromptView, RequestView as HookRequestView, Route as HookRoute,
+    ServeIn as HookServeIn, ServeOut as HookServeOut, SignalEntry as HookSignalEntry,
+    SignalValue as HookSignalValue, StageView as HookStageView, StatusOut as HookStatusOut,
+    Tail as HookTail, TransformOut as HookTransformOut, UserView as HookUserView,
 };
 use busbar_contract::abi::secret::{
     Ops as SecretOps, ResolveIn as SecretResolveIn, ResolveOut as SecretResolveOut,
@@ -1301,7 +1303,7 @@ fn compute_layout() -> String {
         ]
     );
     record!(s, HookNotifyIn, [head, stage]);
-    record!(s, HookConfigureIn, [head, version, settings]);
+    record!(s, HookConfigureIn, [head, version, settings, name]);
     record!(s, HookConfigureOut, [head, acked_version]);
     record!(s, HookStatusOut, [head, status]);
     record!(s, HookDescribeOut, [head, describe]);
@@ -1322,6 +1324,7 @@ fn compute_layout() -> String {
             body
         ]
     );
+    record!(s, HookRoute, [path, method, auth, _reserved]);
     record!(
         s,
         HookTail,
@@ -1335,7 +1338,9 @@ fn compute_layout() -> String {
             requested_signals,
             requested_signals_len,
             routes,
-            routes_len
+            routes_len,
+            declared_words,
+            declared_words_len
         ]
     );
 
@@ -1343,26 +1348,22 @@ fn compute_layout() -> String {
     // its Statement tail.
     record!(s, ExportOps, [head, deliver, scrape, status, check, serve]);
     record!(s, ExportDeliverIn, [head, op_id, stream, _reserved, batch]);
-    record!(s, ExportScrapeSample, [label_vals, label_vals_len, value]);
+    record!(s, ExportScrapeLabel, [key, value]);
+    record!(s, ExportScrapeSample, [name, labels, labels_len, value]);
     record!(
         s,
         ExportScrapeFamily,
-        [
-            name,
-            help,
-            unit,
-            label_keys,
-            label_keys_len,
-            kind,
-            _reserved,
-            samples,
-            samples_len
-        ]
+        [name, help, unit, kind, _reserved, samples, samples_len]
     );
     record!(s, ExportScrapeIn, [head, families, families_len, buf, cap]);
     record!(s, ExportScrapeOut, [head, written, needed]);
     record!(s, ExportStatusOut, [head, status]);
-    record!(s, ExportCheckIn, [head, phase, _reserved]);
+    record!(s, ExportCheckInstance, [name, settings]);
+    record!(
+        s,
+        ExportCheckIn,
+        [head, phase, _reserved, instances, instances_len]
+    );
     record!(s, ExportCheckOut, [head, findings]);
     record!(
         s,
@@ -1381,7 +1382,12 @@ fn compute_layout() -> String {
             body
         ]
     );
-    record!(s, ExportTail, [head, streams, streams_len]);
+    record!(s, ExportRoute, [path, method, auth, _reserved]);
+    record!(
+        s,
+        ExportTail,
+        [head, streams, streams_len, routes, routes_len]
+    );
     s
 }
 
