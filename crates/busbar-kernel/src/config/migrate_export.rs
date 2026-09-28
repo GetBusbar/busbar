@@ -21,6 +21,7 @@
 
 use super::migrate::{one_line, take, take_mapping, Taken};
 use busbar_contract::abi::cold::export::ExportStream;
+use busbar_contract::plugin::Kind;
 use serde_yaml::{Mapping, Value};
 
 /// The default instance NAME each built-in export module gets when the TYPE-KEYED `export:` block is
@@ -54,7 +55,7 @@ const RELEASED_MODULE_STREAMS: &[(&str, &[ExportStream])] = &[
 /// Ensure `root.export` exists as a mapping, returning a handle to splice an instance into.
 fn export_map_mut(root: &mut Mapping) -> &mut Mapping {
     let entry = root
-        .entry("export".into())
+        .entry(Kind::Export.root().into())
         .or_insert_with(|| Value::Mapping(Mapping::new()));
     if !matches!(entry, Value::Mapping(_)) {
         *entry = Value::Mapping(Mapping::new());
@@ -82,7 +83,7 @@ pub(super) fn uniq_export_name(export: &Mapping, base: &str) -> String {
 /// (`<name>: { module, settings }`). SHAPE-CONVERGENT and IDEMPOTENT: an entry that already names a
 /// `module:` is ALREADY an instance and is left untouched, so a second run is a no-op.
 pub(super) fn migrate_export_named_map(root: &mut Mapping, changes: &mut Vec<String>) {
-    let Some(Value::Mapping(export)) = root.get(Value::from("export")).cloned() else {
+    let Some(Value::Mapping(export)) = root.get(Value::from(Kind::Export.root())).cloned() else {
         return;
     };
     // Split: the retired TYPE keys to rewrite vs everything else (already-named instances) to keep.
@@ -128,7 +129,7 @@ pub(super) fn migrate_export_named_map(root: &mut Mapping, changes: &mut Vec<Str
              export map — the same module can now back several named instances)"
         ));
     }
-    root.insert("export".into(), Value::Mapping(kept));
+    root.insert(Kind::Export.root().into(), Value::Mapping(kept));
 }
 
 /// 1.5.3 — the EXPORT PROJECTION GRAMMAR: make each `export:` instance's PROJECTION EXPLICIT by
@@ -156,13 +157,14 @@ pub(super) fn migrate_export_projection(
     changes: &mut Vec<String>,
     todos: &mut Vec<String>,
 ) {
-    let Some(Value::Mapping(mut export)) = root.get(Value::from("export")).cloned() else {
+    let Some(Value::Mapping(mut export)) = root.get(Value::from(Kind::Export.root())).cloned()
+    else {
         return;
     };
     let mut out = Mapping::new();
     for key in export.keys().cloned().collect::<Vec<_>>() {
         let name = key.as_str().unwrap_or_default().to_string();
-        match take_mapping(&mut export, &name, "export", todos) {
+        match take_mapping(&mut export, &name, Kind::Export.root(), todos) {
             // Left EXACTLY as written, in place, with the TODO already pushed by `take_mapping`.
             Taken::Malformed => {
                 if let Some(v) = export.get(&key) {
@@ -177,7 +179,7 @@ pub(super) fn migrate_export_projection(
         }
     }
     // `insert` on an existing key keeps its position, so `export:` does not move within the document.
-    root.insert("export".into(), Value::Mapping(out));
+    root.insert(Kind::Export.root().into(), Value::Mapping(out));
 }
 
 /// The per-instance half of [`migrate_export_projection`].

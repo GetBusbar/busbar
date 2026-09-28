@@ -146,7 +146,9 @@ static RECORD_KINDS: [DeclStr; 1] = [DeclStr::new("example_record")];
 
 /// The concretely-parsed config section this plane requires, so the both-doors proof compares a
 /// non-empty row.
-static REQUIRED_SECTIONS: [DeclStr; 1] = [DeclStr::new("providers")];
+static REQUIRED_SECTIONS: [DeclStr; 1] = [DeclStr::new(
+    busbar_contract::plugin::Kind::Transport.root(),
+)];
 
 /// THE PATH THIS PLANE ANSWERS ON, the method it takes and the wire format it speaks — what its
 /// `claims` slot states once it is built with a public URL to be admitted under.

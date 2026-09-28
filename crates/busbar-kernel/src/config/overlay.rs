@@ -15,6 +15,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 
+use busbar_contract::plugin::Kind;
 use serde::{Deserialize, Serialize};
 
 use crate::diagnostics::{
@@ -668,7 +669,7 @@ impl OverlaySection {
     /// (`export:` ⇄ `/export` ⇄ `/overlay/export`).
     pub fn as_str(self) -> &'static str {
         match self {
-            OverlaySection::Hooks => "hooks",
+            OverlaySection::Hooks => Kind::Hook.root(),
             OverlaySection::Groups => "groups",
             OverlaySection::Root => "root",
             OverlaySection::PluginVersions => "plugin_versions",
@@ -948,7 +949,7 @@ pub fn read_state(path: &Path) -> OverlayReadState {
 /// `hooks` section carries [`HookCfg`] entries; every other section is left untouched.
 fn migrate_legacy_hook_keys(value: &mut serde_json::Value) {
     let Some(hooks) = value
-        .get_mut("hooks")
+        .get_mut(Kind::Hook.root())
         .and_then(serde_json::Value::as_object_mut)
     else {
         return;

@@ -21,6 +21,7 @@
 //! `serde_yaml::Value` tree, so it is total: an unrecognized structure passes through or gains a
 //! TODO, never a panic.
 
+use busbar_contract::plugin::Kind;
 use serde_yaml::{Mapping, Value};
 
 /// The 1.5.x store-module text this migration and its refusals print, read from the ONE data table
@@ -164,7 +165,7 @@ pub(crate) fn detect_legacy_markers(doc: &Value) -> Vec<String> {
     // LOUD-FAILS here, because booting it under 1.5.x rules would silently drop the retired transport.
     // `is_new_hook_defs` is the SAME shape check the migrator uses to stay idempotent, so the two
     // cannot drift.
-    if let Some(Value::Mapping(hooks)) = get(root, "hooks") {
+    if let Some(Value::Mapping(hooks)) = get(root, Kind::Hook.root()) {
         if !is_new_hook_defs(&hooks) {
             markers.push(
                 "top-level `hooks:` REGISTRY block with legacy socket:/webhook: entries (1.x \
@@ -267,7 +268,7 @@ pub(crate) fn detect_legacy_markers(doc: &Value) -> Vec<String> {
     // The TYPE-KEYED `export:` block (`export: { prometheus: { settings: … } }`) became a NAMED
     // map (`export: { metrics: { module: prometheus, settings: … } }`). Distinguished by SHAPE, not
     // presence: an entry naming a `module:` is already the new form and passes through (idempotent).
-    if let Some(Value::Mapping(export)) = get(root, "export") {
+    if let Some(Value::Mapping(export)) = get(root, Kind::Export.root()) {
         if export.values().any(|v| {
             v.as_mapping()
                 .is_some_and(|m| !m.contains_key(Value::from("module")))
@@ -287,7 +288,7 @@ pub(crate) fn detect_legacy_markers(doc: &Value) -> Vec<String> {
     // marker + the migrate breadcrumb. Driven by the SHARED
     // `is_retired_store_module` row so this marker and `migrate_store_module`'s
     // rewrite cannot drift over WHICH spellings are retired.
-    if let Some(store) = get(root, "store").and_then(|v| v.as_mapping().cloned()) {
+    if let Some(store) = get(root, Kind::Store.root()).and_then(|v| v.as_mapping().cloned()) {
         if let Some(module) = get(&store, "module").and_then(|v| v.as_str().map(str::to_string)) {
             if is_retired_store_module(&module) {
                 markers.push(format!(
@@ -303,7 +304,8 @@ pub(crate) fn detect_legacy_markers(doc: &Value) -> Vec<String> {
             }
         }
     }
-    if let Some(providers) = get(root, "providers").and_then(|v| v.as_mapping().cloned()) {
+    if let Some(providers) = get(root, Kind::Transport.root()).and_then(|v| v.as_mapping().cloned())
+    {
         for (name, p) in &providers {
             if p.as_mapping()
                 .is_some_and(|m| m.contains_key(Value::from("api_key_env")))
@@ -954,7 +956,7 @@ fn migrate_governance(root: &mut Mapping, changes: &mut Vec<String>, todos: &mut
         if !settings.is_empty() {
             store.insert("settings".into(), Value::Mapping(settings));
         }
-        root.insert("store".into(), Value::Mapping(store));
+        root.insert(Kind::Store.root().into(), Value::Mapping(store));
         changes.push(legacy_store_text("gov14_change").into());
     }
 
@@ -1435,7 +1437,7 @@ fn migrate_auth(
 
 /// `providers.*.api_key_env: VAR` -> `api_key: { env: VAR }`.
 fn migrate_providers(root: &mut Mapping, changes: &mut Vec<String>) {
-    let Some(Value::Mapping(providers)) = root.get_mut(Value::from("providers")) else {
+    let Some(Value::Mapping(providers)) = root.get_mut(Value::from(Kind::Transport.root())) else {
         return;
     };
     for (name, p) in providers.iter_mut() {
@@ -1583,7 +1585,7 @@ fn uniq_def_name(defs: &Mapping, base: &str) -> String {
 fn migrate_hooks_block(root: &mut Mapping, changes: &mut Vec<String>, todos: &mut Vec<String>) {
     // Take-on-match (see `Taken`): a `hooks:` that is not a mapping stays EXACTLY where the operator
     // wrote it, with a TODO, instead of being lifted out and dropped.
-    let hooks_src = match take_mapping(root, "hooks", "", todos) {
+    let hooks_src = match take_mapping(root, Kind::Hook.root(), "", todos) {
         Taken::Got(m) => Some(m),
         Taken::Absent | Taken::Malformed => None,
     };
@@ -1704,7 +1706,7 @@ fn migrate_hooks_block(root: &mut Mapping, changes: &mut Vec<String>, todos: &mu
         // The key is still present ⇒ `take_mapping` above found it MALFORMED and deliberately left
         // the operator's value in place. Writing here would destroy exactly what that arm preserved,
         // so it doesn't — it says so instead (`Taken`, property 2).
-        if root.contains_key(Value::from("hooks")) {
+        if root.contains_key(Value::from(Kind::Hook.root())) {
             todos.push(format!(
                 "hooks: {} hook definition(s) lifted from `global_hooks:`/inline pool hooks could \
                  NOT be written, because the top-level `hooks:` key is present in a shape this \
@@ -1713,7 +1715,7 @@ fn migrate_hooks_block(root: &mut Mapping, changes: &mut Vec<String>, todos: &mu
                 defs.len()
             ));
         } else {
-            root.insert("hooks".into(), Value::Mapping(defs));
+            root.insert(Kind::Hook.root().into(), Value::Mapping(defs));
         }
     }
     if !all_pools.is_empty() {
@@ -1980,7 +1982,7 @@ fn migrate_observability_export(root: &mut Mapping, changes: &mut Vec<String>) {
     // Ensure `export` exists as a mapping, returning a handle to splice a sub-exporter into.
     fn export_mut(root: &mut Mapping) -> &mut Mapping {
         let entry = root
-            .entry("export".into())
+            .entry(Kind::Export.root().into())
             .or_insert_with(|| Value::Mapping(Mapping::new()));
         if !matches!(entry, Value::Mapping(_)) {
             *entry = Value::Mapping(Mapping::new());
@@ -2152,7 +2154,7 @@ fn migrate_hook_stages(root: &mut Mapping, changes: &mut Vec<String>) {
 /// hook); this pass catches a `hooks:` map that was ALREADY the named-def shape yet still carried a
 /// retired key, which `migrate_hooks_block` passes through untouched.
 fn migrate_hook_def_keys(root: &mut Mapping, changes: &mut Vec<String>) {
-    let Some(Value::Mapping(hooks)) = root.get_mut(Value::from("hooks")) else {
+    let Some(Value::Mapping(hooks)) = root.get_mut(Value::from(Kind::Hook.root())) else {
         return;
     };
     for (name, entry) in hooks.iter_mut() {
@@ -2266,7 +2268,7 @@ fn migrate_pools_upstream_credentials(root: &mut Mapping, changes: &mut Vec<Stri
 /// anywhere else in this module: an ABSENT `store:` is the legal `memory` default, so silently
 /// losing the block would turn a durable deployment ephemeral AND still pass `busbar --validate`.
 fn migrate_store_module(root: &mut Mapping, changes: &mut Vec<String>, todos: &mut Vec<String>) {
-    let mut store = match take_mapping(root, "store", "", todos) {
+    let mut store = match take_mapping(root, Kind::Store.root(), "", todos) {
         Taken::Got(m) => m,
         Taken::Absent | Taken::Malformed => return,
     };
@@ -2289,7 +2291,7 @@ fn migrate_store_module(root: &mut Mapping, changes: &mut Vec<String>, todos: &m
     }
     // Unconditional: `take_mapping` already REMOVED the block above, so every path out of this
     // function must put the operator's `store:` back — changed or not.
-    root.insert("store".into(), Value::Mapping(store));
+    root.insert(Kind::Store.root().into(), Value::Mapping(store));
 }
 
 /// The name SUFFIX a split identity-provider definition gets, per the auth plane that forced the
@@ -2340,7 +2342,7 @@ fn migrate_identity_providers(
     };
     // Start from any EXISTING definitions so a partially-migrated config converges rather than
     // duplicating. Keyed by the definition NAME; `by_module` indexes them for the dedupe.
-    let removed_defs = root.remove(Value::from("identity-providers"));
+    let removed_defs = root.remove(Value::from(Kind::Auth.root()));
     let mut defs = match removed_defs {
         None => Mapping::new(),
         Some(Value::Mapping(m)) => m,
@@ -2350,7 +2352,7 @@ fn migrate_identity_providers(
         Some(other) => {
             let shape = one_line(&other);
             root.insert("auth".into(), Value::Mapping(auth));
-            root.insert("identity-providers".into(), other);
+            root.insert(Kind::Auth.root().into(), other);
             todos.push(format!(
                 "identity-providers: is not a mapping (`{shape}`) — it was left EXACTLY as written \
                  and no `auth.chain:`/`auth.admin_auth:`/`auth.methods:` entry was lifted into it. \
@@ -2578,7 +2580,7 @@ fn migrate_identity_providers(
 
     root.insert("auth".into(), Value::Mapping(auth));
     if !defs.is_empty() {
-        root.insert("identity-providers".into(), Value::Mapping(defs));
+        root.insert(Kind::Auth.root().into(), Value::Mapping(defs));
     }
 }
 
