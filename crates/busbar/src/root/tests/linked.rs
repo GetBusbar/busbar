@@ -23,9 +23,10 @@
 //! one function, the equality tests below go red for the same reason that arm is unequal.
 
 use super::*;
+use crate::root::test_plugins;
 use busbar_kernel::plane::registry::{merged_boot_plane_decls, BuildCtx};
 use busbar_plugin_example_plane::PLANE_DECL as LINKED_DECL;
-use busbar_plugin_loader::sign::{sign, Manifest, SigningKey, TrustPolicy};
+use busbar_plugin_loader::sign::{DiagnosticDecl, SigningKey, TrustPolicy};
 use busbar_plugin_loader::PluginRegistry;
 
 /// The linked example plane, as the build table carries it.
@@ -52,6 +53,7 @@ pub(super) fn linked(
         exports: &[],
         stores: &[],
         hooks: &[],
+        auths: &[],
         gauntlet_one_shot: &[],
         gauntlet_session: &[],
         transports: &[],
@@ -77,6 +79,7 @@ fn native(key: &'static str) -> &'static [PlaneDecl] {
         fee_units: &[],
         metric_families: &[],
         record_kinds: &[],
+        required_config_sections: &[],
         served_op_classes: &[],
     };
     let hooks = PlaneHooks {
@@ -138,16 +141,7 @@ fn folded(rows: Vec<&'static PlaneDecl>) -> Vec<String> {
 /// The example plane's cdylib in this target dir (uplifted or under `deps`, newest wins). Under CI a
 /// missing artifact is a failure, never a skip: this is the plane axis's both-doors proof.
 fn cdylib() -> Option<std::path::PathBuf> {
-    let found = (|| {
-        let exe = std::env::current_exe().ok()?;
-        let profile = exe.parent()?.parent()?;
-        let name = busbar_plugin_loader::plugin_library_filename("busbar_plugin_example_plane");
-        [profile.join(&name), profile.join("deps").join(&name)]
-            .into_iter()
-            .filter_map(|p| Some((std::fs::metadata(&p).ok()?.modified().ok()?, p)))
-            .max()
-            .map(|(_, p)| p)
-    })();
+    let found = test_plugins::cdylib_path("busbar_plugin_example_plane");
     assert!(
         found.is_some() || std::env::var_os("CI").is_none(),
         "the example plane cdylib is not built under CI; the both-doors proof must not skip"
@@ -158,45 +152,12 @@ fn cdylib() -> Option<std::path::PathBuf> {
 /// A fresh `plugins/` directory holding the example plane's cdylib as a SIGNED first-party tarball,
 /// and the default trust posture that admits it (the release key held, no opt-ins).
 fn plugins_dir(tag: &str, lib: &[u8]) -> (std::path::PathBuf, TrustPolicy) {
-    let dir = std::env::temp_dir().join(format!(
-        "busbar-root-dropped-plane-{tag}-{}",
-        std::process::id()
-    ));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    let release = SigningKey::from_bytes(&[7u8; 32]);
-    let manifest = Manifest {
-        name: "busbar-plugin-example-plane".into(),
-        alias: "example-plane".into(),
-        kind: "plane".into(),
-        version: "1.6.0".into(),
-        publisher: "busbar".into(),
-        abi_version: 1,
-        sha256: String::new(),
-        signature: String::new(),
-        description: String::new(),
-        homepage: String::new(),
-        license: String::new(),
-        needs: Default::default(),
-        settings_schema: None,
-        schema_derived: false,
-        host: None,
-        declares: Default::default(),
-    };
-    let signed = sign(&release, manifest, lib);
-    let tarball = busbar_plugin_loader::tarball::package(&signed, "libplane.so", lib).unwrap();
+    let dir = test_plugins::scratch(&format!("root-dropped-plane-{tag}"));
+    let release = test_plugins::key(7);
+    let manifest = test_plugins::manifest("plane", "example-plane", "busbar");
+    let tarball = test_plugins::signed(&release, manifest, lib);
     std::fs::write(dir.join("example-plane.tar.gz"), tarball).unwrap();
-    let policy = TrustPolicy {
-        first_party_key: Some(release.verifying_key()),
-        binary_version: "1.6.0".into(),
-        first_party_floors: Default::default(),
-        first_party_high_water: Default::default(),
-        publishers: Default::default(),
-        allow_unsigned: false,
-        allow_third_party: false,
-        min_versions: Default::default(),
-    };
-    (dir, policy)
+    (dir, test_plugins::release_policy(&release))
 }
 
 /// The example plane dropped into a fresh `plugins/` directory and found by the boot scan.
@@ -311,6 +272,7 @@ fn stated(d: &'static HotPlaneDecl) -> PlaneDeclaration {
             .collect::<Vec<_>>()
             .leak(),
         record_kinds: strs(&h.record_kinds),
+        required_config_sections: strs(&h.required_sections),
         served_op_classes: h
             .served_op_classes
             .iter()
@@ -390,7 +352,7 @@ fn an_untrusted_dropped_in_plane_reaches_no_row() {
     };
     let lib = std::fs::read(path).unwrap();
     let (dir, mut policy) = plugins_dir("untrusted", &lib);
-    policy.first_party_key = Some(SigningKey::from_bytes(&[9u8; 32]).verifying_key());
+    policy.first_party_key = Some(test_plugins::key(9).verifying_key());
     let planes = dropped_planes(&dir, &policy).unwrap();
     let _ = std::fs::remove_dir_all(&dir);
     assert!(planes.is_empty(), "an untrusted plane was loaded");
@@ -608,32 +570,29 @@ async fn serve_arm() {
     )
     .await;
     // THE CALLER'S CREDENTIAL (CRED-STRIP, #65/#40(b)): the plane echoes every header it was
-    // handed — once with the credential on the bearer carrier, once on a native-SDK key carrier. The
-    // credential is an unsigned JWT whose `aud` claim is this plane's audience (the public URL joined
-    // to `/example`), which the open chain admits.
+    // handed — once with the credential on the bearer carrier, once on a native-SDK key carrier, and
+    // once on BOTH (the bearer is the one the gate takes; the key header is a credential all the
+    // same). The credential is an unsigned JWT whose `aud` claim is this plane's audience (the public
+    // URL joined to `/example`), which the open chain admits.
     const CALLER_JWT: &str = "eyJhbGciOiJub25lIn0.\
         eyJhdWQiOiJodHRwczovL2d3LmV4YW1wbGUuY29tL2V4YW1wbGUiLCJzdWIiOiJjYWxsZXIifQ.c2ln";
     let bearer = format!("Bearer {CALLER_JWT}");
     let mut echoed = Vec::new();
-    for (carrier, value) in [
+    let (on_bearer, on_key) = (
         ("authorization", bearer.as_str()),
         ("x-api-key", CALLER_JWT),
-    ] {
-        echoed.push(
-            answered(
-                &router,
-                axum::extract::Request::<()>::builder()
-                    .method("POST")
-                    .uri("/example")
-                    .header("x-example-status", "200")
-                    .header("x-example-echo", "1")
-                    .header(carrier, value)
-                    .body(axum::body::Body::empty())
-                    .unwrap(),
-            )
-            .await["body"]
-                .clone(),
-        );
+    );
+    for carriers in [&[on_bearer][..], &[on_key], &[on_bearer, on_key]] {
+        let mut request = axum::extract::Request::<()>::builder()
+            .method("POST")
+            .uri("/example")
+            .header("x-example-status", "200")
+            .header("x-example-echo", "1");
+        for (carrier, value) in carriers {
+            request = request.header(*carrier, *value);
+        }
+        let request = request.body(axum::body::Body::empty()).unwrap();
+        echoed.push(answered(&router, request).await["body"].clone());
     }
     let first_byte = first_byte_lead(&router).await;
     let served = serde_json::json!({
@@ -873,14 +832,16 @@ fn a_linked_and_a_dropped_in_plane_serve_one_request_identically() {
     );
 
     // THE CALLER'S CREDENTIAL NEVER REACHES THE PLANE, through either door (the equality above):
-    // the header the gate consumed is gone from the head the plane read, and nothing else is.
+    // every credential carrier the gate reads is gone from the head the plane read — the one that
+    // carried the token and the one it did not need — and nothing else is.
     assert_eq!(
         linked["echoed"],
         serde_json::json!([
             "x-example-status: 200\nx-example-echo: 1\n",
             "x-example-status: 200\nx-example-echo: 1\n",
+            "x-example-status: 200\nx-example-echo: 1\n",
         ]),
-        "a plane saw a header the auth gate consumed: {linked:#}"
+        "a plane saw a credential carrier the auth gate reads: {linked:#}"
     );
 
     let bypassed = serve_in_a_fresh_process("bypass");
@@ -902,7 +863,7 @@ fn a_linked_and_a_dropped_in_plane_serve_one_request_identically() {
 /// dropped-in one answers.
 #[test]
 fn every_linked_export_row_answers_its_module_ahead_of_a_dropped_in_spelling() {
-    let release = SigningKey::from_bytes(&[7u8; 32]);
+    let release = test_plugins::key(7);
     for &(name, alias, ..) in crate::LINKED.exports {
         let scan = || export_row_registry(alias, "k9e-dropped", alias, "busbar", &release, vec![]);
         let rows = linked_exports(crate::LINKED.exports).expect("the linked export rows");
@@ -968,7 +929,7 @@ fn declaring_registry(
     tag: &str,
     publisher: &str,
     signer: &SigningKey,
-    decls: Vec<busbar_plugin_loader::sign::DiagnosticDecl>,
+    decls: Vec<DiagnosticDecl>,
 ) -> PluginRegistry {
     let name = format!("s3-{tag}");
     export_row_registry(tag, &name, &name, publisher, signer, decls)
@@ -981,51 +942,30 @@ fn export_row_registry(
     alias: &str,
     publisher: &str,
     signer: &SigningKey,
-    decls: Vec<busbar_plugin_loader::sign::DiagnosticDecl>,
+    decls: Vec<DiagnosticDecl>,
 ) -> PluginRegistry {
-    let dir = std::env::temp_dir().join(format!("busbar-root-s3-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    let release = SigningKey::from_bytes(&[7u8; 32]);
-    let mut manifest = Manifest {
-        name: name.into(),
-        alias: alias.into(),
-        kind: "export".into(),
-        version: "1.6.0".into(),
-        publisher: publisher.into(),
-        abi_version: 3,
-        sha256: String::new(),
-        signature: String::new(),
-        description: String::new(),
-        homepage: String::new(),
-        license: String::new(),
-        needs: Default::default(),
-        settings_schema: None,
-        schema_derived: false,
-        host: None,
-        declares: Default::default(),
-    };
+    let dir = test_plugins::scratch(&format!("root-s3-{tag}"));
+    let mut manifest = test_plugins::manifest("export", name, publisher);
+    manifest.alias = alias.into();
     manifest.declares.diagnostics = decls;
     let lib = b"a manifest-only row";
-    let signed = sign(signer, manifest, lib);
-    let tarball = busbar_plugin_loader::tarball::package(&signed, "lib.so", lib).unwrap();
-    std::fs::write(dir.join("s3.tar.gz"), tarball).unwrap();
-    let policy = TrustPolicy {
-        first_party_key: Some(release.verifying_key()),
-        binary_version: "1.6.0".into(),
-        publishers: [(publisher.to_string(), signer.verifying_key())]
-            .into_iter()
-            .filter(|_| publisher != "busbar")
-            .collect(),
-        ..Default::default()
-    };
-    let registry = busbar_plugin_loader::scan_and_validate(&dir, &policy).expect("the scan");
+    std::fs::write(
+        dir.join("s3.tar.gz"),
+        test_plugins::signed(signer, manifest, lib),
+    )
+    .unwrap();
+    let mut policy = test_plugins::release_policy(&test_plugins::key(7));
+    policy.publishers = [(publisher.to_string(), signer.verifying_key())]
+        .into_iter()
+        .filter(|_| publisher != "busbar")
+        .collect();
+    let registry = test_plugins::boot_with(&dir, &policy);
     let _ = std::fs::remove_dir_all(&dir);
     registry
 }
 
-fn decl(code: u16, severity: &str) -> busbar_plugin_loader::sign::DiagnosticDecl {
-    busbar_plugin_loader::sign::DiagnosticDecl {
+fn decl(code: u16, severity: &str) -> DiagnosticDecl {
+    DiagnosticDecl {
         code,
         slug: format!("s3-code-{code}"),
         title: "A declared plugin code".into(),
@@ -1046,7 +986,7 @@ fn decl(code: u16, severity: &str) -> busbar_plugin_loader::sign::DiagnosticDecl
 fn a_first_party_plugins_declared_codes_join_the_catalogue_and_nothing_else_does() {
     use busbar_contract::diagnostic::{Class, Severity};
     use busbar_kernel::diagnostics::{by_code, REGISTRY};
-    let release = SigningKey::from_bytes(&[7u8; 32]);
+    let release = test_plugins::key(7);
     assert!(by_code(6990).is_none(), "the witness code must be free");
     let registry = declaring_registry("ok", "busbar", &release, vec![decl(6990, "actionable")]);
     let declared = declared_diagnostics(&registry, &[]).expect("a first-party declaration joins");
@@ -1064,7 +1004,7 @@ fn a_first_party_plugins_declared_codes_join_the_catalogue_and_nothing_else_does
     );
     assert_eq!(d.banner().to_string(), "BUSBAR-6990");
 
-    let acme = SigningKey::from_bytes(&[8u8; 32]);
+    let acme = test_plugins::key(8);
     let third = declaring_registry("third", "acme", &acme, vec![decl(6990, "actionable")]);
     let refused = declared_diagnostics(&third, &[]).expect_err("a third party is refused");
     assert!(refused.contains("not first-party"), "{refused}");
@@ -1243,23 +1183,30 @@ async fn the_collector_policy_carries_octets_to_a_loopback_collector_and_nothing
 
 /// K5d (DECISIONS #2 rule (1), #40) — THE DEFAULT STORE AND THE RANKING HOOKS ARE ROWS OF THE ROOT'S
 /// LINKED TABLES. The kernel names neither; `main` hands the `stores`/`hooks` tables to the kernel's
-/// cold-kind axis (`preflight::install_linked_rows`), which registers them through
-/// `PluginRegistry::link` like any dropped-in row: the default `governance.store` name is an
-/// ephemeral in-process store that opens, and each built-in strategy spelling is an alias of the one
-/// hook row, opening the policy of that name.
+/// cold-kind axis (`root::linked::register_stores` -> `preflight::install_linked_rows`), which
+/// registers them through `PluginRegistry::link` like any dropped-in row: the default
+/// `governance.store` is the one row that declares itself the default, an ephemeral in-process store
+/// that opens, and each built-in strategy spelling is an alias of the one hook row, opening the
+/// policy of that name.
 ///
 /// RED by deleting the `store-memory` / `hooks-ranking` rows of `[package.metadata.busbar.linked]`:
 /// the tables carry no default store (and no ranking row) to hand the kernel.
 #[test]
 fn the_default_store_and_ranking_hooks_are_rows_of_the_linked_tables() {
-    let default = busbar_kernel::config::GOVERNANCE_STORE_MEMORY;
-    let stores: Vec<_> = crate::LINKED.stores.iter().map(|s| (s.0, s.1)).collect();
+    let default = super::default_store(crate::LINKED.stores)
+        .expect("one claim")
+        .expect("a linked store declares itself the default");
+    let stores: Vec<_> = crate::LINKED
+        .stores
+        .iter()
+        .map(|s| (s.0, s.1, s.2))
+        .collect();
     assert_eq!(
         stores,
-        [(default, true)],
+        [(default, true, true)],
         "one linked store: the ephemeral default"
     );
-    (crate::LINKED.stores[0].2)("{}").expect("the default store opens");
+    (crate::LINKED.stores[0].3)("{}").expect("the default store opens");
     let strategies = [
         busbar_kernel::config::STRATEGY_CHEAPEST,
         busbar_kernel::config::STRATEGY_FASTEST,
@@ -1281,4 +1228,62 @@ fn the_default_store_and_ranking_hooks_are_rows_of_the_linked_tables() {
             assert_eq!(open(spelling).map(|p| p.name()), Some(*spelling));
         }
     }
+}
+
+/// STORE-DEFAULT — THE DEFAULT GOVERNANCE STORE IS THE LINKED ROW THAT DECLARES ITSELF THE DEFAULT.
+/// The root holds no store name: `default_store` asks each row. The declaring row is the default
+/// wherever it sits in the table, a table with no claim has none, and the one-claim table is what the
+/// kernel resolves an omitted `store.module` to once the rows are installed.
+///
+/// RED when the resolver reads a row's position or its name instead of its claim (e.g. "the first
+/// row"): the declaring second row stops being the default.
+#[test]
+fn the_default_store_is_the_row_that_declares_it() {
+    use busbar_kernel::preflight::LinkedStore;
+    fn open(_: &str) -> Result<Box<dyn busbar_contract::records::RecordStore>, String> {
+        Err("never opened".into())
+    }
+    const PLAIN: LinkedStore = ("acme-plain", false, false, open);
+    const CLAIMS: LinkedStore = ("acme-default", true, true, open);
+    assert_eq!(
+        super::default_store(&[PLAIN, CLAIMS]),
+        Ok(Some("acme-default"))
+    );
+    assert_eq!(
+        super::default_store(&[CLAIMS, PLAIN]),
+        Ok(Some("acme-default"))
+    );
+    assert_eq!(super::default_store(&[PLAIN]), Ok(None));
+    assert_eq!(super::default_store(&[]), Ok(None));
+
+    // The shipped table: the kernel's default is the one declaring row, and an omitted
+    // `store.module` reads as it.
+    let shipped = super::default_store(crate::LINKED.stores).expect("one claim");
+    let declaring = crate::LINKED.stores.iter().find(|s| s.2).map(|s| s.0);
+    assert_eq!((shipped, shipped.is_some()), (declaring, true));
+}
+
+/// STORE-DEFAULT — TWO ROWS DECLARING THE DEFAULT REFUSE BOOT, naming both, like any duplicate claim:
+/// ambiguity is never resolved by picking a winner.
+///
+/// RED ARM: a resolver that takes the first claim (first-wins) answers `Ok(Some("acme-a"))` and the
+/// refusal assertion fails; the single-claim arm beside it stays green.
+#[test]
+fn two_rows_declaring_the_default_refuse_boot() {
+    use busbar_kernel::preflight::LinkedStore;
+    fn open(_: &str) -> Result<Box<dyn busbar_contract::records::RecordStore>, String> {
+        Err("never opened".into())
+    }
+    const A: LinkedStore = ("acme-a", true, true, open);
+    const B: LinkedStore = ("acme-b", false, true, open);
+    const C: LinkedStore = ("acme-c", false, false, open);
+    assert_eq!(
+        super::default_store(&[A, C, B]),
+        Err(
+            "linked stores 'acme-a' and 'acme-b' both declare themselves the default governance \
+             store; a build links at most one default store"
+                .to_string()
+        )
+    );
+    assert_eq!(super::default_store(&[A, C]), Ok(Some("acme-a")));
 }

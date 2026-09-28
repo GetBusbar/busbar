@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright (C) 2026 Busbar Inc and contributors
 #
-# Gating scenario `a2a.battery|h2-admit-refusal` -- H2 (ARCHITECTURE.md #2.2 step 4, ADMIT) for the
+# Gating scenario `a2a.battery|h2-admit-refusal` -- H2 (BUSBAR-1.6.0.md THE DESIGN, §1 step 4, ADMIT) for the
 # A2A plane. Proves the Teller order at step 4: a principal already past AUTHENTICATE/VERIFY but
 # over its group's `requests` budget is refused at ADMIT (native 429, `UnsupportedOperation`, "this
 # key's budget is spent" -- docs/a2a.md's own wording) before ROUTE ever dials the fronted agent --

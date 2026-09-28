@@ -12,9 +12,12 @@ use crate::ctx::Ctx;
 use crate::denylist;
 use crate::gates;
 use crate::selftest;
+use std::path::PathBuf;
 
 const USAGE: &str = "\
 usage:
+  cargo xtask [--root <dir>] <subcommand> …   (the tree read is the current git tree, or <dir>)
+  cargo xtask root
   cargo xtask gate <name> [--selftest] [--jobs N] [--report] [--strict] [--write] [--posture] [--format=tsv]
   cargo xtask gate changelog [--require-version=V] [--require-dated-top]
   cargo xtask gate changelog-register [--require-version=V]
@@ -30,7 +33,10 @@ usage:
   cargo xtask ledger {sync|status|next|record|fixed|move} | --check
   cargo xtask full-gate [--list] [--selftest] [--dump-gates|--dump-cargo [FILE]]
   cargo xtask conformance check --suite <id>|all|--musts [--sha <sha>] [--manifest <path>] [--format=tsv]
-  cargo xtask conformance check --selftest";
+  cargo xtask conformance check --selftest
+  cargo xtask fleet render <repo> [--out <dir>]
+  cargo xtask fleet check [--repo <repo>]...
+  cargo xtask fleet sync [--repo <repo>]... [--workdir <dir>] [--dry-run]";
 
 /// The environment variable the legacy release-gate scripts write their ledger through.
 const LEGACY_LEDGER_ENV: &str = "LEDGER";
@@ -43,10 +49,32 @@ const LEGACY_LEDGER_ENV: &str = "LEDGER";
 /// after `cargo xtask` as a gate name. These two are the exceptions: the runner that DRIVES the
 /// gates and the register that RECORDS the audit, neither of which has an owed row set. Listed
 /// here, beside the dispatch arms that prove it, so the reader and the dispatcher cannot drift.
-pub const NON_GATE_SUBCOMMANDS: &[&str] = &["full-gate", "ledger", "conformance", "loc"];
+pub const NON_GATE_SUBCOMMANDS: &[&str] =
+    &["full-gate", "ledger", "conformance", "loc", "fleet", "root"];
 
 pub fn main(args: &[String]) -> i32 {
+    // `--root <dir>` (global, first): the tree every context opens over, in place of the current
+    // directory's git tree. See [`crate::ctx::workspace_root`].
+    if args.first().map(String::as_str) == Some("--root") {
+        let Some(dir) = args.get(1) else {
+            eprintln!("xtask: --root needs a directory");
+            return 2;
+        };
+        crate::ctx::set_root_override(PathBuf::from(dir));
+        return main(&args[2..]);
+    }
     match args.first().map(String::as_str) {
+        // Print the tree this invocation reads — the runtime root — and nothing else.
+        Some("root") => match crate::ctx::workspace_root() {
+            Ok(root) => {
+                println!("{}", root.display());
+                0
+            }
+            Err(e) => {
+                eprintln!("xtask: {e}");
+                3
+            }
+        },
         Some("gate") => gate(&args[1..]),
         Some("selftest") => selftest_cmd(&args[1..]),
         // The pre-registry spelling, kept byte-identical: `cargo xtask denylist` prints exactly
@@ -72,6 +100,12 @@ pub fn main(args: &[String]) -> i32 {
         // tell a gate from a subcommand by shape, and nothing reconciles an owed row set for it.
         Some("loc") => match open_ctx() {
             Ok(cx) => crate::loc::main(&cx, &args[1..]),
+            Err(code) => code,
+        },
+        // THE PLUGIN FLEET. Not a gate: it renders and checks OTHER repos (plugins.yaml's), and its
+        // RED is the nightly `sched-fleet-check.yml` run, not a row in this tree's ledger.
+        Some("fleet") => match open_ctx() {
+            Ok(cx) => crate::fleet::main(&cx, &args[1..]),
             Err(code) => code,
         },
         Some("ledger") => match open_ctx() {

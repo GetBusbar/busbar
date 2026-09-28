@@ -90,6 +90,10 @@ pub struct TestUnits {
     pub evidence: Evidence,
     /// How much the route step spends.
     pub spend: u64,
+    /// The meter the route step accrues `spend` onto. A unit accrues nothing through the loop's
+    /// seam (the kernel reads its own meter at the exit), so a battery that runs a spending unit
+    /// hands the loop THIS meter as the run's meter — one meter, as production has one.
+    pub meter: Arc<AccrualMeter>,
     /// Whether the door for a unit that never passed the door was used.
     pub refused_door: AtomicBool,
     /// Whether the door for a unit that DID pass was used.
@@ -122,6 +126,7 @@ impl Default for TestUnits {
             door: Door::Own(1_000),
             evidence: Evidence::default(),
             spend: 0,
+            meter: Arc::new(AccrualMeter::new()),
             challenge: false,
             refused_door: AtomicBool::new(false),
             admitted_door: AtomicBool::new(false),
@@ -240,7 +245,6 @@ impl busbar_kernel::teller::RouteAwait for NeverRoutes<'_> {
         &'a self,
         _token: &'a Pass<Route>,
         _ctx: &'a UnitCtx,
-        _meter: &'a AccrualMeter,
         _destinations: &'a [busbar_contract::caps::VerifiedDestination],
     ) -> busbar_kernel::teller::RouteLeg<'a> {
         self.units.note(StepName::Route);
@@ -473,11 +477,10 @@ impl Units for TestUnits {
         &self,
         token: &Pass<Route>,
         _ctx: &UnitCtx,
-        meter: &AccrualMeter,
         _destinations: &[busbar_contract::caps::VerifiedDestination],
     ) -> Decision<Route> {
         self.note(StepName::Route);
-        meter.accrue(self.spend);
+        self.meter.accrue(self.spend);
         match self.refusal(StepName::Route) {
             Some(refusal) => Decision::refuse(token, refusal),
             None => Decision::proceed(token, busbar_contract::caps::RoutePlan::default()),

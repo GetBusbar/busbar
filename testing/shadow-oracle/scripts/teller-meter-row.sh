@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright (C) 2026 Busbar Inc and contributors
 #
-# Script-driver cell: `teller|meter-row` -- H2 (ARCHITECTURE.md #2.2 step 6, METER). Proves the Teller
+# Script-driver cell: `teller|meter-row` -- H2 (BUSBAR-1.6.0.md THE DESIGN, §1 step 6, METER). Proves the Teller
 # order at step 6: a single served request settles to a usage DELTA of exactly one request, with the
 # PRICED figure derived from the mock's fixed 11 prompt / 7 completion tokens through the rate
 # card, truncated once, never a partial or doubled posting. 1.5.5 has no

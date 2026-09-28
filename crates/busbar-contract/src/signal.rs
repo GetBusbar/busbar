@@ -72,13 +72,13 @@ pub enum Signal {
     /// already-tracked state, not new collection. `None`-shaped (absent from the wire) when the
     /// lane has served no outcomes in the window yet.
     CandidateErrorRate,
-    /// p95 end-to-end latency for this candidate lane. DEFERRED: no bounded sketch/reservoir
-    /// exists in the store today, and collection must be gated the same way the projection is —
-    /// an always-on reservoir is a cost every deployment would pay whether or not any consumer
-    /// declared this signal. The variant is reserved in the catalog (declarable today, so a
-    /// future collector need not touch the wire contract) but its compute fn does not exist yet —
-    /// TODO(latency-p95): wire a maintained reservoir once its own always-on collection cost is
-    /// independently justified, then implement the compute fn and remove this doc note.
+    /// p95 end-to-end latency (time to response headers, whole milliseconds rounded up) for this
+    /// candidate lane: nearest-rank p95 over a bounded reservoir of the lane's recent samples, held
+    /// by the plane's lane table for the config generation. Collection is gated like the projection:
+    /// the reservoir is allocated and written only while some consumer declares this signal, so a
+    /// deployment that never asks pays nothing per request. Absent from the wire until the lane has
+    /// served a request since the signal was declared (never a fabricated `0`). Unlike the EWMA the
+    /// `fastest` policy reads, a p95 surfaces the slow tail.
     CandidateLatencyP95Ms,
 
     // ── Routing phase (known once the policy has decided) ───────────────────────────────────────

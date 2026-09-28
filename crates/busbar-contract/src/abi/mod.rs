@@ -48,9 +48,70 @@
 
 use core::mem::MaybeUninit;
 
+/// ONE DECLARATIVE LIST PER TABLE (the TRANSPORT-STACK shrink): each slot's fn-pointer type and the
+/// `#[repr(C)]` table holding one `Option` of each — the table's size header first, then the slots in
+/// the order listed, each named for the trait method it lowers. The coverage witnesses
+/// (`tests/transport_slot_coverage.rs`, `tests/conn_slot_coverage.rs`) read these lists and hold them
+/// to the traits. A table's slots answer [`hot::transport::RawWireOutcome`] unless the list states
+/// another outcome byte (`-> Outcome`).
+macro_rules! slot_table {
+    (
+        $(#[$doc:meta])*
+        pub struct $table:ident lowers $trait:ident {
+            $($body:tt)*
+        }
+    ) => {
+        slot_table! {
+            $(#[$doc])*
+            pub struct $table lowers $trait -> RawWireOutcome {
+                $($body)*
+            }
+        }
+    };
+    (
+        $(#[$doc:meta])*
+        pub struct $table:ident lowers $trait:ident -> $ret:ty {
+            $(
+                $(#[$sdoc:meta])*
+                $slot:ident: $alias:ident = fn($($arg:ident: $ty:ty),* $(,)?);
+            )*
+        }
+    ) => {
+        $(
+            $(#[$sdoc])*
+            pub type $alias = extern "C-unwind" fn($($arg: $ty),*) -> $ret;
+        )*
+        $(#[$doc])*
+        #[repr(C)]
+        #[derive(Debug, Clone, Copy)]
+        pub struct $table {
+            #[doc = concat!("`size_of::<", stringify!($table), ">()` at construction.")]
+            pub size: u32,
+            /// Alignment padding.
+            pub _reserved: u32,
+            $(
+                #[doc = concat!("`", stringify!($slot), "`.")]
+                pub $slot: Option<$alias>,
+            )*
+        }
+    };
+}
+
 pub mod cold;
+pub mod host;
 pub mod hot;
 pub mod sdk;
+
+// THE ONE MEMORY ABI (the design's locked plugin ABI: one place for every shape): the shared
+// mechanism and one folder per kind.
+pub mod auth;
+pub mod export;
+pub mod hook;
+pub mod mechanism;
+pub mod plane;
+pub mod secret;
+pub mod store;
+pub mod transport;
 
 // The two `#[macro_export]` sized-read macros, named at this module's path too, so a caller writes
 // `busbar_contract::abi::read_sized_field!` exactly where it wrote `busbar_plugin::read_sized_field!`.
@@ -164,7 +225,28 @@ pub const ABI_MAJOR: u32 = 2;
 /// `dispatch_flags` (+ padding). A plane's dispatch runs INLINE on the request's worker — no thread
 /// hop on the hot lane — unless it sets `hot::decl::DISPATCH_BLOCKS`, when the host runs it on a
 /// blocking thread. A decl ending before the tail is run as blocking. Append-only.
-pub const ABI_MINOR: u32 = 32;
+///
+/// 32→33 (1.6.0, TRANSPORT-STACK claims; ARCHITECT 2026-09-27 ruling (A)): a transport ENTRY answers
+/// for one or more schemes. `hot::TransportDecl` appends the claims list (`claims_ptr`,
+/// `claims_len`; each `hot::transport::DeclClaim` a scheme and its per-scheme row — sessions, first
+/// unit, status leg, facts and selector forms), and `hot::transport::WireConnFacts` appends the
+/// claim the host resolved a connection to, which a framer opens its state for. A decl ending before
+/// the tail makes the one claim its row describes; facts ending before theirs name the first claim.
+/// Append-only.
+///
+/// 33→34 (1.6.0, CONFIG-REQ; ARCHITECT 2026-09-27, Law 7, Q69(1)): `hot::PlaneDecl` appends the
+/// `required_sections` tail (a borrowed list of `hot::decl::DeclStr`), so a dropped-in plane
+/// declares the config sections it requires exactly as a linked one does, and a section no
+/// registered plane requires may be omitted. A decl ending before the tail requires none.
+/// Append-only.
+///
+/// APPENDED WITHOUT A MINOR (OWNER RULING 2026-09-27: every ABI version constant ships as its v1.5.5
+/// value + 1, so pre-release changes do not bump it; the layout golden and the append-compat tests
+/// keep appends safe): the framer clock seam — `hot::transport::WireFramerOut` appends the host's time
+/// at the call and `wake_at`, `hot::transport::FramerSlots` appends `tick`, and a slot table ending
+/// before `tick` keeps no deadline — and the connection table, `host::conn::ConnSlots`, the one table
+/// every plugin of every kind reaches the network through.
+pub const ABI_MINOR: u32 = 34;
 
 /// The FROZEN-FOR-ALL-TIME ABI header. This exact layout — `magic` at offset 0, `abi_major` at 8,
 /// `abi_minor` at 12 — is a permanent contract: it may NEVER be reordered, resized, extended, or

@@ -42,7 +42,7 @@ be promoted.
 | --- | --- | --- |
 | `ci umbrella` | every gating job in `ci.yml`, in one status | qa, main |
 | `structure lint` | `kind-isolation`, structure-lint, release-order, duplex-ws | qa, main |
-| `construction gate (…)` | how the tree is built vs `ARCHITECTURE.md`, on its posture | qa, main |
+| `construction gate (…)` | how the tree is built vs the design (`docs/design/BUSBAR-1.6.0.md`), on its posture | qa, main |
 | `gate-mutants` | the gates themselves, under mutation | qa, main |
 | `ship-ready` | the ship criterion, as five rows | qa, main |
 

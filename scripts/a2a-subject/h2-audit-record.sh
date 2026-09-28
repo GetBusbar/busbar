@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright (C) 2026 Busbar Inc and contributors
 #
-# Gating scenario `a2a.battery|h2-audit-record` -- H2 (ARCHITECTURE.md #2.2 step 7, AUDIT) for the
+# Gating scenario `a2a.battery|h2-audit-record` -- H2 (BUSBAR-1.6.0.md THE DESIGN, §1 step 7, AUDIT) for the
 # A2A plane. Proves the Teller order at step 7: a served `message/send` seals exactly ONE new admin
 # audit entry, action `agent.call`, outcome `applied`, resource `agent:<agent_id>` (docs/a2a.md: "The
 # admin audit log records one row per admitted call under action `agent.call` / resource

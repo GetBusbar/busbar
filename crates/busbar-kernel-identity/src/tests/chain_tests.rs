@@ -312,7 +312,7 @@ fn test_validate_token_is_admit_or_deny() {
     assert!(!closed.validate_token(Some("cred")));
 }
 
-/// PB-92's order (`ARCHITECTURE.md`, `VirtualKey.expires_at`): signature → `exp` → denylist →
+/// PB-92's order (`BUSBAR-1.6.0.md`, `VirtualKey.expires_at`): signature → `exp` → denylist →
 /// `by_id` generation, each step short-circuiting the ones after it. This crate does not own the
 /// governance implementation of [`crate::chain::KeyVerifier`] — that lives on the composition root's
 /// side — so this is a fake that RECORDS the order it was asked to perform each check in, pinning

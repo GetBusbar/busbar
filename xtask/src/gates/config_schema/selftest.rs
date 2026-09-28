@@ -322,8 +322,7 @@ pub fn run<'a>(gate: &'a dyn Gate, cx: &'a Ctx) -> Report<'a> {
     // bytes unchanged. What keeps it red now is a TRUE finding the refusal arm could not make
     // before it read the baseline's source (item 163): `manual-de SecretRef::visit_str` — at
     // `v1.5.3` a bare string was refused outright, and today the bare string `none` parses (the
-    // keyless reference). Whether that widening is waived is the owner's call; see
-    // `docs/design/1.6.0-denominator.md` §8.1 for the history.
+    // keyless reference). Whether that widening is waived is the owner's call.
     //
     // This standing red USED to make every `ROW_ADDITIVE_ONLY` red-proof below report
     // `Impossible`, because each was measured from the real tree and `prove_red` demands a

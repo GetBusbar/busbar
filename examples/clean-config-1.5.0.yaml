@@ -119,7 +119,7 @@ pools:
 # ── HOOKS: the top-level NAMED-DEFINITION map; pools reference by bare name ──
 # hooks:                                        # requires plugins.enabled: true + the signed tarball
 #   pii:
-#     module: busbar-webrequest-hook
+#     module: busbar-hook-webrequest
 #     settings: { url: "https://sidecar.internal/pii" }
 #     groups: [engineering]                     # SCOPE: omit = all callers
 #     phase: [request, response]                # omit = the four core stages (request/candidate/routing/response)

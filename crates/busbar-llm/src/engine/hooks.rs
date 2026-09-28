@@ -669,19 +669,20 @@ pub(crate) async fn decide_policy_order(
     let requested = host.requested_signals();
     let now_ts = now();
 
+    use busbar_contract::signal::{Signal, SignalBag, SignalValue};
     let candidates: Vec<Candidate> = live
         .iter()
         .map(|wl| {
             let lane = &EngineTables::new(rt).lanes()[wl.idx];
             let meta = member_meta.and_then(|m| m.get(&wl.idx));
-            let mut signals = busbar_contract::signal::SignalBag::new();
+            let mut signals = SignalBag::new();
             if !requested.is_empty() {
                 // Both are PURE projections of state the breaker FSM already maintains on every
                 // request/outcome regardless of declaration (see `LaneRuntime::
                 // breaker_state_snapshot_in`/`error_rate_in`'s doc comments) — the gate below is
                 // the compute-the-sliver check: the read runs ONLY when
                 // declared, never call-then-discard.
-                if requested.wants(busbar_contract::signal::Signal::CandidateBreakerState) {
+                if requested.wants(Signal::CandidateBreakerState) {
                     let label = match host
                         .lane_store()
                         .breaker_state_snapshot_in(pool_name, wl.idx)
@@ -691,18 +692,20 @@ pub(crate) async fn decide_policy_order(
                         busbar_kernel::store::BreakerState::HalfOpen => "half_open",
                     };
                     signals.push(
-                        busbar_contract::signal::Signal::CandidateBreakerState,
-                        busbar_contract::signal::SignalValue::Str(std::borrow::Cow::Borrowed(
-                            label,
-                        )),
+                        Signal::CandidateBreakerState,
+                        SignalValue::Str(std::borrow::Cow::Borrowed(label)),
                     );
                 }
-                if requested.wants(busbar_contract::signal::Signal::CandidateErrorRate) {
+                if requested.wants(Signal::CandidateErrorRate) {
                     if let Some(rate) = host.lane_store().error_rate_in(pool_name, wl.idx, now_ts) {
-                        signals.push(
-                            busbar_contract::signal::Signal::CandidateErrorRate,
-                            busbar_contract::signal::SignalValue::F64(rate),
-                        );
+                        signals.push(Signal::CandidateErrorRate, SignalValue::F64(rate));
+                    }
+                }
+                // The lane's bounded p95 reservoir, fed only while this signal is declared (see
+                // `attempt::respond::deliver`); absent from the wire until it holds a sample.
+                if requested.wants(Signal::CandidateLatencyP95Ms) {
+                    if let Some(p95) = lane.latency_p95_ms() {
+                        signals.push(Signal::CandidateLatencyP95Ms, SignalValue::U64(p95));
                     }
                 }
             }

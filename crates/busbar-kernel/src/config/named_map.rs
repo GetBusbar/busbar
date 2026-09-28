@@ -22,6 +22,7 @@
 //! push), and `store:` is singular — there is no map to name into.
 
 use super::{DeployCfg, ExportDefCfg, IdentityProviderCfg};
+use busbar_contract::plugin::Kind;
 
 /// One 1.5.3 named-DEFINITION map section. The variant set is the ONLY thing a new section adds.
 ///
@@ -82,8 +83,8 @@ impl NamedMapSection {
     /// mirrors the config grammar exactly (`export:` ⇄ `/export`).
     pub fn key(self) -> &'static str {
         match self {
-            NamedMapSection::IdentityProviders => "identity-providers",
-            NamedMapSection::Export => "export",
+            NamedMapSection::IdentityProviders => Kind::Auth.root(),
+            NamedMapSection::Export => Kind::Export.root(),
             NamedMapSection::Plane(section) => section,
         }
     }

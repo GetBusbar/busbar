@@ -6,7 +6,7 @@
 #
 # LEG: route-failover — a down provider trips the breaker on its first hard-down strike, and a tripped
 # breaker refuses EVERY further dial before any socket/URL work — the documented terminal outcome
-# (ARCHITECTURE.md's loop, step 5 ROUTE) with no repeated egress once the cell is open.
+# (BUSBAR-1.6.0.md THE DESIGN, §1's teller loop, step 5 ROUTE) with no repeated egress once the cell is open.
 #
 # `topology::dial_provider` probes the `(pool, lane)` breaker cell through the host seam FIRST — before
 # any DNS/guard/socket work — and folds a real dial's outcome back into the SAME cell

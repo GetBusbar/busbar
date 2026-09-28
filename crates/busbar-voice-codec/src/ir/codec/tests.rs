@@ -954,7 +954,7 @@ fn function_call_output_authoring_roundtrips() {
     assert_eq!(&output[..], b"{\"temp\":72}");
 }
 
-// ── usage extraction (`plane4-duplex-session.md`) ──────────────────────────────────────────────────────────────────────
+// ── usage extraction (`BUSBAR-1.6.0.md` #18/#45) ──────────────────────────────────────────────────────────────────────
 
 #[test]
 fn response_done_usage_extracts_split_token_classes() {

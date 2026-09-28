@@ -77,7 +77,7 @@ pub fn plane_src_roots() -> Vec<String> {
 /// `plane-purity` (9 rows), `plane-transport-neutrality` (3 rows) and `plane-purity-strict`'s
 /// ceilings. Two gates print the words "the neutral crates" and read three directories.
 ///
-/// The census in `docs/design/1.6.0-gate-blindspots.md` planted the identical line
+/// The 1.6.0 gate blind-spot census planted the identical line
 /// `let _ = busbar_mcp::Thing;` in six crates and only the one in `busbar-kernel` was found; it then
 /// planted `let rtp_port = 1;` in the same six and found one again. **`busbar-contract` was not on
 /// the list** — the plugin-visible capability surface, the crate whose neutrality is the entire
@@ -137,7 +137,7 @@ pub fn neutral_src_roots() -> Vec<String> {
         // (The plugin ABI and its SDK, the former `busbar-plugin` / `busbar-plugin-sdk`, are
         // `busbar-contract/src/abi` since the #84 merge, so this root covers them.)
         "crates/busbar-contract/src",
-        // THE LOADER AND THE SDK — the TCB crates ARCHITECTURE.md excuses by name from the plugin
+        // THE LOADER AND THE SDK — the TCB crates BUSBAR-1.6.0.md excuses by name from the plugin
         // KINDS, which is not the same as excusing them from neutrality: the loader dlopens every
         // kind and the SDK is what an author writes against.
         "crates/plugin-loader/src",

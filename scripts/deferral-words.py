@@ -4,11 +4,11 @@
 WHY THIS EXISTS, AND WHY IT IS NOT A `grep -F`.
 ==============================================
 #15 bans four literal strings: `defer`, `1.6.x`, `later`, `out of scope for 1.6.0`.
-`docs/design/1.6.0-TRACKER.md` writes **"Out of 1.6.0 scope"** — the same phrase with two
+The retired 1.6.0 tracker wrote **"Out of 1.6.0 scope"** — the same phrase with two
 words transposed — and a literal-string grep sails straight past it. That one miss waived
 52 ABI slots.
 
-The audit in `docs/design/1.6.0-map-proof.md` §9 read all 93 banned-word occurrences by
+The 1.6.0 map-proof audit read all 93 banned-word occurrences by
 hand and found 21 real deferrals. **Not one of them says "deferred."** They say *extension
 point*, *a later wave*, *a 1.7.0 plane*, *Phase 5*, *peer later with fleet*, *minor bump*,
 *still owed a home*, *a NOTE not a migration* — and twice they say *this is not a deferral*.

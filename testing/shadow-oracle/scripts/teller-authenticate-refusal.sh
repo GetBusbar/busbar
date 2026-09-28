@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright (C) 2026 Busbar Inc and contributors
 #
-# Script-driver cell: `teller|authenticate-refusal` -- H2 (ARCHITECTURE.md #2.2 step 1, AUTHENTICATE).
+# Script-driver cell: `teller|authenticate-refusal` -- H2 (BUSBAR-1.6.0.md THE DESIGN, §1 step 1, AUTHENTICATE).
 # Proves the Teller order at step 1: a bad credential is refused BEFORE step 2 (VERIFY) is ever
 # reached, so no upstream egress is dialled and no admission slot is drawn. 1.5.5 has no "Teller"
 # vocabulary, but it already realises the order (auth middleware runs before routing/admission), so

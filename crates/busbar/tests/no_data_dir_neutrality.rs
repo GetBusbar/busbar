@@ -42,14 +42,8 @@ fn fixture_dir() -> PathBuf {
     d
 }
 
-/// A port the OS just handed out and released: the listener must be a fixed address so the test
-/// can scrape it (the boot line prints the CONFIGURED address, not the bound one).
 fn free_port() -> u16 {
-    std::net::TcpListener::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port()
+    common::boot::free_port()
 }
 
 /// The 1.5.5 shape (the shadow oracle's own config, cut down): one provider, one model, keys on

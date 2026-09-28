@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright (C) 2026 Busbar Inc and contributors
 #
-# Gating scenario `a2a.battery|h2-exit-terminal` -- H2 (ARCHITECTURE.md #2.2 step "exit") for the
+# Gating scenario `a2a.battery|h2-exit-terminal` -- H2 (BUSBAR-1.6.0.md THE DESIGN, §1 step "exit") for the
 # A2A plane. Proves the exit path settles EXACTLY ONCE per unit and never double-posts: two served
 # `message/send` requests give exactly two usage-request deltas and exactly two new admin audit rows
 # -- never zero (a step skipped), never more than two (a double post), never one (a settle merged

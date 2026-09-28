@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright (C) 2026 Busbar Inc and contributors
 #
-# Gating scenario `mcp.rig|h2-verify-refusal` -- H2 (ARCHITECTURE.md #2.2 step 2, VERIFY) for the
+# Gating scenario `mcp.rig|h2-verify-refusal` -- H2 (BUSBAR-1.6.0.md THE DESIGN, §1 step 2, VERIFY) for the
 # MCP plane. Proves the Teller order at step 2: a credential that AUTHENTICATEs fine but holds no
 # `mcp_server`/`mcp_tool` grant for the registered upstream is refused BEFORE step 4 (ADMIT) ever
 # draws a bucket -- no egress, no usage delta.

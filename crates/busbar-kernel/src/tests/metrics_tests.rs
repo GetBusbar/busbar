@@ -351,8 +351,20 @@ fn test_scrape_gauges_bucket_model_tier_and_key_labels() {
 /// Creating 2001 rows in an in-memory SQLite instance is fast (< 50 ms on any modern machine);
 /// using `put_key` directly on the store bypasses the `GovState` cache and is the simplest
 /// deterministic way to seed a large key set.
+/// THE KEY-GAUGE WARN LATCH IS PROCESS-GLOBAL (`metrics::money`, `KEY_GAUGE_LIMIT_WARNED`): the
+/// first scrape over the limit sets it, the next scrape under the limit clears it. The two tests
+/// that cross the limit therefore hold this lock for their whole body. Without it, the truncation
+/// test's over-limit scrape could land between the boundary test's at-limit scrape (latch cleared)
+/// and its over-limit scrape, take the latch, and leave the boundary test's warning at debug.
+static KEY_GAUGE_LATCH: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn key_gauge_latch() -> std::sync::MutexGuard<'static, ()> {
+    KEY_GAUGE_LATCH.lock().unwrap_or_else(|p| p.into_inner())
+}
+
 #[test]
 fn test_key_gauge_limit_truncation() {
+    let _latch = key_gauge_latch();
     init();
     // The default key-gauge limit is 2000 (no limits installed in this test ⇒ the historical
     // default). We use the same value here to keep the test self-consistent.
@@ -491,6 +503,7 @@ fn app_with_n_keys(n: usize) -> Arc<App> {
 fn test_key_gauge_limit_warning_fires_exactly_past_the_boundary() {
     use crate::test_support::warn_capture::WarnCapture;
     use tracing_subscriber::layer::SubscriberExt as _;
+    let _latch = key_gauge_latch();
     init();
     const LIMIT: usize = crate::config::DEFAULT_KEY_GAUGE_LIMIT;
 

@@ -1,5 +1,5 @@
 //! THE G6 FREEZE WITNESS — `scripts/g6-freeze-witness.sh`, folded into `plane-purity` per
-//! `docs/design/xtask-gates.md` section 1.2.
+//! `docs/design/BUSBAR-1.6.0.md` Part 1 ("What this means for the gates").
 //!
 //! The neutral-IR cutover is complete for a family only when busbar-core's PRODUCTION code
 //! references none of that family's concrete IR types: core reads the request through the neutral

@@ -190,7 +190,10 @@ pub mod testkit;
 // binary by the codec crate's `test-support` dev edge in the manifest. Nothing in this crate names
 // it directly, so there is no re-export here.
 
-use busbar_contract::plane::{BillableClass, PER_REQUEST, TOKEN_FAMILY};
+use busbar_contract::{
+    plane::{BillableClass, PER_REQUEST, TOKEN_FAMILY},
+    plugin::Kind,
+};
 use busbar_kernel::{
     ingress::arrival::install_completion_ingress, plane::registry::PlaneHooks,
     proto::install_stream_translator_factory,
@@ -274,6 +277,10 @@ pub const PLANE_DECLARATION: busbar_contract::plane::PlaneDeclaration =
         // host resolves it here, so the requesting plane spells no plane.
         record_kinds: &[],
         served_op_classes: busbar_plane_llm::meta::SERVED_OP_CLASSES,
+        // The two catalog sections this plane cannot serve without: `models` is its own target
+        // section, and every model resolves its upstream through `providers`. A build that links
+        // this plane refuses a document missing either, with the config grammar's own message.
+        required_config_sections: &[Kind::Transport.root(), "models"],
     };
 
 /// THE PLANE'S BEHAVIOUR — every hook the kernel runs for it, handed over BESIDE

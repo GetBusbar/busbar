@@ -99,10 +99,13 @@ pub const ORACLE_PROSE_CITATION_ALLOW: &[(&str, &str)] = &[
 ///
 /// ARMED AT THE POPULATION, NOT BENEATH IT (item 219). It read `6` over a walk of 120 files, so a
 /// walk narrowed to 7 still passed and `segregation:xtask-src-imports` certified xtask's
-/// independence from 6% of the runner. Measured 2026-09-23: 120 `.rs` files under `xtask/src`. The
-/// floor sits at 100 — the measured population less one sixth for files a split or a fold removes
-/// in the normal course — so a walk that lost a SUBTREE fails and a walk that lost a file does not.
-const SRC_FLOOR: usize = 100;
+/// independence from 6% of the runner. Measured 2026-09-23: 120 `.rs` files under `xtask/src`, floor
+/// set to 100. Re-measured 2026-09-27, after four days of ordinary xtask growth (no file moved or
+/// deleted): 140 `.rs` files under `xtask/src` — the old floor covered under three quarters of that
+/// and `the_walk_floors_guard_most_of_their_populations` caught it. The floor sits at 117 — the
+/// re-measured population less one sixth for files a split or a fold removes in the normal course —
+/// so a walk that lost a SUBTREE fails and a walk that lost a file does not.
+const SRC_FLOOR: usize = 117;
 
 /// Manifests are found by walking the WHOLE tree; this is the floor under that walk.
 ///

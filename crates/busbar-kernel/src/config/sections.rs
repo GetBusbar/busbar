@@ -71,22 +71,19 @@ pub struct SecurityCfg {
     pub allow_all_metadata: bool,
 }
 
-/// The compiled-in store name (`store.module: memory`) - the only store that is not a plugin.
-pub const GOVERNANCE_STORE_MEMORY: &str = "memory";
-
 /// The top-level `store:` block: the durable store as `{ module, settings }` - the same
 /// module/settings shape as every other plugin instance. `settings` is the store module's OWN
 /// config, passed through verbatim (the built-in sqlite plugin reads `db_path` /
-/// `busy_timeout_ms`; postgres/valkey read `url`). Absent block = the compiled-in ephemeral RAM
-/// store (keys/usage reset on restart).
+/// `busy_timeout_ms`; postgres/valkey read `url`). Absent block = the linked store row that
+/// declares itself the default (`crate::preflight::root_rows`).
 #[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct StoreCfg {
-    /// The store module, by plugin ALIAS or CANONICAL NAME. `memory` (default) is the compiled-in
-    /// ephemeral RAM store. Anything else names a STORE PLUGIN resolved from the `plugins.*`
-    /// registry - the shipped first-party stores (`sqlite` / `postgres` / `valkey`, canonically
-    /// `busbar-store-<x>-plugin`) or a third-party store by its manifest name. A non-`memory` store
-    /// REQUIRES `plugins.enabled: true`; anything else is a boot error naming the flag.
+    /// The store module, by plugin ALIAS or CANONICAL NAME. Omitted, it is the linked store row that
+    /// declares itself the default. A name no linked row answers to names a STORE PLUGIN resolved
+    /// from the `plugins.*` registry - the shipped first-party stores (canonically
+    /// `busbar-store-<x>-plugin`) or a third-party store by its manifest name - and REQUIRES
+    /// `plugins.enabled: true`; anything else is a boot error naming the flag.
     #[serde(default = "default_governance_store")]
     pub module: String,
     /// The module's own opaque settings, passed through verbatim as its config JSON.
@@ -107,8 +104,11 @@ impl Default for StoreCfg {
     }
 }
 
+/// The `store.module` an omitted one reads as: the default store the composition root resolved from
+/// its linked rows' claims (empty when the build links no row that claims it). The kernel names no
+/// store instance.
 pub fn default_governance_store() -> String {
-    GOVERNANCE_STORE_MEMORY.to_string()
+    crate::preflight::root_rows().2.to_owned()
 }
 
 /// A top-level `secrets:` entry — MODULE-LEVEL initialization config for a `kind: secret` plugin,

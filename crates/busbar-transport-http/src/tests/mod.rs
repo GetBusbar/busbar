@@ -4,7 +4,7 @@
 
 use super::*;
 // The `Transport` surface, its meta and its claim forms moved to the kind's own `transport.rs`,
-// `meta.rs` and `claims.rs` (`PLUGIN-TREE.md` §3), so `use super::*` no longer carries them.
+// `meta.rs` and `claims.rs` (`BUSBAR-1.6.0.md` THE DESIGN, §2), so `use super::*` no longer carries them.
 use busbar_contract::transport::registry::status_ns;
 use busbar_contract::transport::wire::WireStatus;
 use busbar_contract::transport::wire::{CloseReason, FrameMeta, TransportError};
@@ -280,8 +280,8 @@ async fn egress_round_trip_reports_status_class_on_the_first_frame() {
 #[tokio::test]
 async fn egress_maps_4xx_and_5xx_status_classes() {
     for (status, class) in [
-        (404_u16, WireStatusClass::ClientError),
-        (500, WireStatusClass::ServerError),
+        (404_u16, WireStatusClass::CallerFault),
+        (500, WireStatusClass::FarEndFault),
     ] {
         let resp: &'static [u8] = Box::leak(
             format!("HTTP/1.1 {status} X\r\nContent-Length: 0\r\n\r\n")
@@ -308,7 +308,7 @@ async fn egress_maps_4xx_and_5xx_status_classes() {
     }
 }
 
-/// The number, not just the class. A 401, a 403 and a 404 all read `ClientError`, and only one of
+/// The number, not just the class. A 401, a 403 and a 404 all read `CallerFault`, and only one of
 /// the three is a malformed request — the layer that has to tell them apart reads this field.
 #[tokio::test]
 async fn egress_reports_the_exact_upstream_status_on_the_first_frame() {

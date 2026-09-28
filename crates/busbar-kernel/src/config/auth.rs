@@ -31,9 +31,9 @@ use busbar_contract::secret_ref::SecretRef;
 /// `chain:`, once in `admin_auth:`) with two independent copies of its settings that could silently
 /// drift. Now it is defined ONCE and referenced twice.
 ///
-/// The built-in `keys` (data-plane signed-key verifier) and `admin-tokens` (operator credential)
+/// The built-in `keys` (data-plane signed-key verifier) and the operator credential
 /// are referenced BARE with no definition at all; a definition entry exists only when the provider
-/// needs config (e.g. `admin-tokens` carrying its `token:` secret ref).
+/// needs config (e.g. the operator credential carrying its `token:` secret ref).
 // `Serialize` is required by the overlay's per-entry MERGE (`config::patch::merge_entry`): an
 // overlay entry is a PATCH, so the base entry has to be projected back to JSON in order to be
 // patched. The projection is config-internal and round-trips straight back into this same struct;
@@ -42,7 +42,7 @@ use busbar_contract::secret_ref::SecretRef;
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
 #[serde(deny_unknown_fields)] // a typo'd key must fail boot, never silently disable a ceiling.
 pub struct IdentityProviderCfg {
-    /// The module backing this provider: the built-in `keys` / `admin-tokens`, or a `kind: auth`
+    /// The module backing this provider: the built-in `keys` / operator credential, or a `kind: auth`
     /// plugin name/alias resolved through the validated plugin registry. REQUIRED, non-empty.
     pub module: String,
     /// Ceiling on the ADMIN scope obtainable through THIS PROVIDER, regardless of what
@@ -62,11 +62,11 @@ pub struct IdentityProviderCfg {
     /// 1.5.3 moved this ONTO the definition: it used to sit on a data-plane CHAIN entry,
     /// which was incoherent — an admin ceiling is a property of the identity source, not of one
     /// plane's reference to it. Absent = the MOST RESTRICTIVE default (`read-only`) for every
-    /// provider EXCEPT the built-in `admin-tokens` operator credential, which is `full` by
+    /// provider EXCEPT the operator credential ([`operator_provider`]), which is `full` by
     /// definition and exempt. `full` from an external IdP is always an explicit opt-in.
     #[serde(default)]
     pub max_admin_scope: Option<String>,
-    /// The operator ADMIN credential, for a provider whose `module` is the built-in `admin-tokens`
+    /// The operator ADMIN credential, for a provider whose `module` is the [`operator_provider`]
     /// (a secret reference). Meaningless on any other module (validated).
     #[serde(default)]
     pub token: Option<SecretRef>,
@@ -102,11 +102,12 @@ pub struct AuthChainEntry {
     /// The PROVIDER NAME (the `identity-providers:` key) — the runtime identity `role_bindings.<name>`
     /// binds and `auth_scope_caps` keys off. For a bare built-in this equals the module name.
     pub name: String,
-    /// The module backing this provider (built-in `keys` / `admin-tokens`, or a plugin name/alias).
+    /// The module backing this provider (built-in `keys` / operator credential, or a plugin
+    /// name/alias).
     pub module: String,
     /// The provider's admin ceiling, from its definition. See [`IdentityProviderCfg::max_admin_scope`].
     pub max_admin_scope: Option<String>,
-    /// The `admin-tokens` operator credential, from its definition.
+    /// The operator credential's token, from its definition.
     pub token: Option<SecretRef>,
     /// The module's own opaque settings (pushed to an auth plugin verbatim).
     // settings-leak-lint: allow — operator CONFIG struct, not a projection: this is the
@@ -117,7 +118,8 @@ pub struct AuthChainEntry {
 }
 
 impl AuthChainEntry {
-    /// A bare, definition-less built-in entry (`chain: [keys]` / `admin_auth: [admin-tokens]`).
+    /// A bare, definition-less built-in entry (`chain: [keys]`, or the operator credential's bare
+    /// name in `admin_auth:`).
     pub fn bare(module: impl Into<String>) -> Self {
         let module = module.into();
         Self {
@@ -307,7 +309,7 @@ pub struct AuthDeployCfg {
     #[serde(default)]
     pub chain: Vec<String>,
     /// The ADMIN auth chain gating `/api/v1/admin/*`, as ordered PROVIDER NAMES. Default
-    /// `[admin-tokens]`. `[]` = OPEN admin (dev only; loud boot warning).
+    /// [`default_admin_auth_names`]. `[]` = OPEN admin (dev only; loud boot warning).
     #[serde(default = "default_admin_auth_names")]
     pub admin_auth: Vec<String>,
     /// Role → policy bindings, NESTED BY PROVIDER NAME (see [`RoleBindingCfg`]).
@@ -328,7 +330,7 @@ pub struct AuthDeployCfg {
 
 impl Default for AuthDeployCfg {
     /// The all-omitted `auth:` block: open front door (empty data chain) + the default
-    /// `[admin-tokens]` admin chain, matching the per-field serde defaults exactly.
+    /// operator-credential admin chain, matching the per-field serde defaults exactly.
     fn default() -> Self {
         Self {
             signing_key: None,
@@ -369,7 +371,7 @@ pub struct AuthCfg {
     /// open front door.
     pub chain: Vec<AuthChainEntry>,
     /// The ADMIN auth chain gating `/api/v1/admin/*` (the parallel of `chain` for the operator
-    /// surface). Default `[admin-tokens]`. `[]` = OPEN admin (dev only; loud boot warning).
+    /// surface). Default [`default_admin_auth`]. `[]` = OPEN admin (dev only; loud boot warning).
     pub admin_auth: Vec<AuthChainEntry>,
     /// Role -> policy bindings, NESTED BY PROVIDER NAME (see [`RoleBindingCfg`]).
     pub role_bindings: RoleBindings,
@@ -412,12 +414,13 @@ impl AuthCfg {
         }
     }
 
-    /// The `admin-tokens` operator-credential secret reference, if configured.
+    /// The operator-credential secret reference (the `token:` of the first entry backed by the
+    /// [`operator_provider`]), if configured.
     pub fn admin_token_ref(&self) -> Option<&SecretRef> {
         self.admin_auth
             .iter()
             .chain(self.chain.iter())
-            .find(|e| e.module == ADMIN_TOKENS_MODULE)
+            .find(|e| e.module == operator_provider())
             .and_then(|e| e.token.as_ref())
     }
 
@@ -426,7 +429,8 @@ impl AuthCfg {
     /// endpoint, so if nothing can mint one every data-plane request would reject). Checked at
     /// validate/boot, which runs BEFORE secrets resolve, so this is purely structural:
     /// - `admin_auth` is explicitly OPEN (`[]`) → anyone can mint (dev). TRUE — the caller WARNs.
-    /// - an `admin-tokens` entry carries a `token:` secret ref → the operator credential can mint.
+    /// - an operator-credential entry carries a `token:` secret ref → the operator credential can
+    ///   mint.
     /// - an external admin module names `max_admin_scope: full` → an admin IdP can mint (1.5.2 scope
     ///   collapse retired the narrower `mint` ceiling; `full` is now the only mutation grant).
     ///
@@ -437,37 +441,51 @@ impl AuthCfg {
             return true;
         }
         self.admin_auth.iter().any(|e| {
-            (e.module == ADMIN_TOKENS_MODULE && e.token.is_some())
-                || (e.module != ADMIN_TOKENS_MODULE
-                    && matches!(e.max_admin_scope.as_deref(), Some("full")))
+            let operator = e.module == operator_provider();
+            (operator && e.token.is_some())
+                || (!operator && matches!(e.max_admin_scope.as_deref(), Some("full")))
         })
     }
 }
 
 /// The built-in signed-key verifier module name (`auth.chain: [keys]`).
 pub const KEYS_MODULE: &str = "keys";
-/// The built-in operator admin-token module name (`auth.admin_auth: [admin-tokens]`).
-pub const ADMIN_TOKENS_MODULE: &str = "admin-tokens";
+/// THE OPERATOR CREDENTIAL'S PROVIDER, as configuration spells it: the `auth.admin_auth:` default,
+/// referenced bare, and the one `module:` whose definition may carry `token:` — frozen config text
+/// read off `data/operator_credential.toml` (ARCHITECT 2026-09-27 AUTH-ROW, ruling F-D's terms).
+/// Which module answers it is the auth axis's business.
+pub fn operator_provider() -> &'static str {
+    crate::config::migrate::frozen_row(OPERATOR_TEXT, "provider")
+}
+
+/// The fixed principal id the operator credential's module identifies the operator as.
+pub fn operator_principal_id() -> &'static str {
+    crate::config::migrate::frozen_row(OPERATOR_TEXT, "principal_id")
+}
+
+const OPERATOR_TEXT: &str = include_str!("../../data/operator_credential.toml");
 
 /// The BUILT-IN identity providers, referenced BARE from `auth.chain:`/`auth.admin_auth:` with no
-/// `identity-providers:` definition at all. A definition entry for one of these exists
-/// only when it needs config — `admin-tokens` carrying its `token:` secret ref is the one real case.
-pub const BUILTIN_IDENTITY_PROVIDERS: &[&str] = &[KEYS_MODULE, ADMIN_TOKENS_MODULE];
+/// `identity-providers:` definition at all: the signed-key verifier and the operator credential. A
+/// definition entry for one of these exists only when it needs config — the operator credential
+/// carrying its `token:` secret ref is the one real case.
+pub fn builtin_identity_providers() -> [&'static str; 2] {
+    [KEYS_MODULE, operator_provider()]
+}
 
 /// The MOST RESTRICTIVE admin ceiling — the default for a provider whose definition omits
 /// `max_admin_scope:`. "Most restrictive" is `read-only`, matching the pre-1.5.3 behavior
-/// exactly (the retired chain-entry field defaulted the same way); the built-in `admin-tokens`
-/// operator credential is EXEMPT (full by definition), which is why `resolve_auth` applies this
-/// only to non-`admin-tokens` providers.
+/// exactly (the retired chain-entry field defaulted the same way); the operator credential is EXEMPT
+/// (full by definition), which is why `resolve_auth` applies this only to the other providers.
 pub use busbar_contract::DEFAULT_MAX_ADMIN_SCOPE;
 
-/// The serde default for `auth.admin_auth:` - the built-in `admin-tokens` provider, referenced bare
-/// (the single operator admin token; byte-identical to the pre-chain behavior).
+/// The serde default for `auth.admin_auth:` - the [`operator_provider`], referenced bare (the single
+/// operator admin token; byte-identical to the pre-chain behavior).
 pub fn default_admin_auth_names() -> Vec<String> {
-    vec![ADMIN_TOKENS_MODULE.to_string()]
+    vec![operator_provider().to_string()]
 }
 
 /// The RESOLVED form of [`default_admin_auth_names`].
 pub fn default_admin_auth() -> Vec<AuthChainEntry> {
-    vec![AuthChainEntry::bare(ADMIN_TOKENS_MODULE)]
+    vec![AuthChainEntry::bare(operator_provider())]
 }

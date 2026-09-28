@@ -384,7 +384,7 @@ id     = "secret-hygiene"
 status = "active"
 tier   = "fast"
 # THE SECRET-VALUE-TYPE DEBT METER (scripts/secret-hygiene-gate.sh) — the enforcement half of the
-# secret-hygiene design (docs/design/1.6.0-secret-hygiene.md). Check 1: a known-secret field declared
+# secret-hygiene design (docs/design/BUSBAR-1.6.0.md #53/#54). Check 1: a known-secret field declared
 # as a BARE String/&str/Vec<u8> instead of busbar_contract::Redacted<T> (a value that could leak via a
 # derived Debug/Serialize). Check 2: a `.expose_secret()` on the SAME statement as a log/audit/metric
 # sink (the plaintext un-redacted straight into a tracing/println/audit/metric line). RUNS REPORT-ONLY
@@ -417,7 +417,7 @@ id     = "construction-gate"
 status = "active"
 tier   = "fast"
 # THE CONSTRUCTION GATE (cargo xtask gate construction) — how the tree is BUILT measured against
-# docs/design/ARCHITECTURE.md with the ceilings in qa/construction.toml (one attempt seam, request-path
+# docs/design/BUSBAR-1.6.0.md with the ceilings in qa/construction.toml (one attempt seam, request-path
 # function size, ports-only plane→kernel reaches, no uninstalled seam, neutral-no-dialect, single
 # terminal). RUNS REPORT-ONLY here (`--report`: prints every row and the verdict line, exits 0), the
 # same posture as plane-grep/secret-hygiene above, because the verdict is RED by design on HEAD (rows
@@ -448,7 +448,7 @@ id     = "design-bindings"
 status = "active"
 tier   = "fast"
 # THE DESIGN BINDINGS GATE (cargo xtask gate design-bindings) — "is what we built compliant with what
-# we designed?" qa/design-bindings.json maps every ARCHITECTURE.md Appendix B binding to the checks that
+# we designed?" qa/design-bindings.json maps every qa/parity-bindings.md binding to the checks that
 # prove it (tests, oracle cells, lints, gates); the run proves every referenced check still EXISTS in
 # the tree (a renamed-away test or dropped cell is RED) and lists every UNMAPPED binding as a named gap
 # (plain mode: reported, not red — the strict form that makes a gap red is verify-1.6.0-done.sh's DONE
@@ -489,7 +489,7 @@ run    = "cargo xtask gate no-deferral --selftest && cargo xtask gate no-deferra
 id     = "inventory-ref-lint"
 status = "active"
 tier   = "fast"
-# THE INVENTORY-REFERENCE LINT (cargo xtask gate inventory-ref) — every ARCHITECTURE.md Appendix B
+# THE INVENTORY-REFERENCE LINT (cargo xtask gate inventory-ref) — every qa/parity-bindings.md
 # binding's `inventory` column names a docs/design inventory file that EXISTS. It is the companion
 # to the design-bindings gate above: design-bindings proves each binding's CHECKS still exist, this
 # proves each binding's INVENTORY citation still resolves, so a renamed or deleted inventory file
@@ -570,7 +570,7 @@ id     = "inventory-coverage"
 status = "active"
 tier   = "fast"
 # THE INVENTORY COVERAGE SCOREBOARD (cargo xtask gate inventory-coverage). Every
-# docs/design/inventory/*.md row id either has a citing shadow-oracle cell that PASSes on the golden
+# qa/evidence/inventory/*.md row id either has a citing shadow-oracle cell that PASSes on the golden
 # ledger, or is a NAMED gap in qa/inventory-gaps.json carrying a written reason; an id with neither
 # is RED, and so is a gap entry naming an id that no longer exists or has since been covered — the
 # gaps file is rederived on every run, so a stale name cannot survive one. The `--selftest` proves
@@ -582,7 +582,7 @@ tier   = "fast"
 # "--check is RED: one config-inventory row — the one naming the plugin that backs a configured hook
 # — is neither covered by a citing cell nor named in qa/inventory-gaps.json", and named
 # scripts/inventory-coverage.sh, a file deleted at c8272b166. Both halves are settled. CONF-220 is
-# `hooks.<h>.module` (docs/design/inventory/1.5.5-config.md:369) — the plugin backing a configured
+# `hooks.<h>.module` (qa/evidence/inventory/1.5.5-config.md:369) — the plugin backing a configured
 # hook, exactly the row described — and cells.json now carries three cells that cite it BY ID in
 # their own `inventory` field, all three PASS on the golden ledger:
 # admin.ops|PutHooksName|ok, admin.ops|PutHooksName|if-match-malformed and

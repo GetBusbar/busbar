@@ -213,7 +213,7 @@ jobs:
   # Owner, 2026-08-08: "nothing should ever be released red", and "or ignored". Both halves are
   # rules, and the second one is the harder one.
   #
-  # WHAT MAKES THIS NECESSARY. GetBusbar/headroom-hook cut and published v2.0.5 with its CI RED. The
+  # WHAT MAKES THIS NECESSARY. GetBusbar/busbar-hook-headroom cut and published v2.0.5 with its CI RED. The
   # red was `public-hygiene-lint`, unrelated to the change, and it was sitting on a list under the
   # heading "KNOWN, TRACKED, NOT BLOCKING". That heading is institutionalised ignoring: a red that
   # sits on a list is still ignored, only with paperwork attached. Every red found across the fleet

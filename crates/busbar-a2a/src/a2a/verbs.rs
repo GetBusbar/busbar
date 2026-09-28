@@ -772,10 +772,10 @@ mod verbs_tests;
 // on this plane it is the WHOLE claim, since the verb underneath was already tested and already
 // unreachable.
 //
-// GATED ON `auth-admin-tokens` for the reason the MCP plane's sibling gives: every test in there
-// authenticates with `x-admin-token`, and under `--no-default-features` there is no admin auth
-// module, so the chain fails closed and every request is a 401 before it reaches a verb.
-#[cfg(all(any(test, feature = "test-support"), feature = "auth-admin-tokens"))]
+// Every test in there authenticates with `x-admin-token`, which the operator credential verifies: its
+// module is the auth row the test binary links onto the auth axis (this crate's own run: the test
+// registry row `install_admin_mount` installs; the admin surface's run: its own).
+#[cfg(any(test, feature = "test-support"))]
 #[path = "tests/adminverbs_tests.rs"]
 #[allow(dead_code)]
 pub mod adminverbs_tests;

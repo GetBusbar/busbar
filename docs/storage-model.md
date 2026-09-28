@@ -88,7 +88,7 @@ static-config identity keeps working.
   every node verifies the same tokens.
 
 - **Identity-provider settings** — an auth plugin's `settings:` (for example the
-  OIDC module's issuer, audience and JWKS location, GetBusbar/auth-oidc) are
+  OIDC module's issuer, audience and JWKS location, GetBusbar/busbar-auth-oidc) are
   config, reloaded from disk, so they survive a restart independent of any store.
   A verifying module holds no identities of its own: it judges each presented
   credential against its settings.

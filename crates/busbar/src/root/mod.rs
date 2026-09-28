@@ -100,3 +100,9 @@ pub mod units_admin;
 #[cfg(test)]
 #[path = "tests/percall_meter_shadow.rs"]
 mod percall_meter_shadow;
+
+// The crate's one plugin fixture (`tests/common/plugins.rs`), shared with the integration tests:
+// how a unit test packs a plugin, drops it in and reads what the boot's scan makes of it.
+#[cfg(test)]
+#[path = "../../tests/common/plugins.rs"]
+pub(crate) mod test_plugins;

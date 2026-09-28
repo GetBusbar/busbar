@@ -5,7 +5,7 @@
 # plane-config-noun-gate.sh — THE FOUR-NOUN CONFIG-PARSE DEBT METER for core's config machinery
 # (busbar-core was deleted 2026-09-20; see CORE_ROOTS below for where it lives now). REPORT-ONLY.
 #
-# WHY THIS EXISTS (docs/design/playbook/gate-isomorphism.md §2, Assertion N1):
+# WHY THIS EXISTS (docs/design/BUSBAR-1.6.0.md THE DESIGN, §1, Assertion N1):
 #   Each of the four planes declares itself by the mere EXISTENCE of one top-level config.yaml section
 #   — its `PlaneDecl.config_section`:  tools (mcp) · agents (a2a) · pools (llm) · streams (voice). The
 #   isomorphism doctrine says core's config PARSER must name NONE of those section nouns as a CONCRETE

@@ -15,7 +15,7 @@ renamed_module = "valkey"
 # The renamed plugin's canonical MANIFEST NAME: what `busbar-plugin-pack --name` stamps and what a
 # `plugins.min_versions` / `plugin_versions` anti-downgrade floor is keyed by (the plugin CRATE name).
 # v1.5.5:crates/busbar/src/config/mod.rs:1066 (STORE_MODULE_VALKEY_NAME)
-renamed_manifest_name = "busbar-store-valkey-plugin"
+renamed_manifest_name = "busbar-store-valkey"
 # The renamed plugin's release-ASSET stem: the WORKSPACE name, without the `-plugin` suffix the
 # cdylib crate and the manifest carry. Two different strings on purpose.
 # v1.5.5:crates/busbar/src/config/mod.rs:1072 (STORE_MODULE_VALKEY_ASSET_STEM)

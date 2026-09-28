@@ -166,7 +166,7 @@ fn migrate_14x_round_trips_into_deploy_cfg() {
         Some("day")
     );
     assert_eq!(get(&["groups", "growth", "parent"]).as_str(), Some("acme"));
-    // admin_token ${VAR} -> admin-tokens secret ref.
+    // admin_token ${VAR} -> the operator credential's secret ref.
     let admin_auth = get(&["auth", "admin_auth"]);
     assert_eq!(
         admin_auth.as_sequence().unwrap()[0].as_str(),
@@ -1581,7 +1581,7 @@ fn golden_migrate_inline_chain_entries_dedupe_into_identity_providers() {
     assert_eq!(
         defs.len(),
         2,
-        "one definition per MODULE (oidc + admin-tokens), not one per REFERENCE: {defs:?}"
+        "one definition per MODULE (oidc + the operator credential), not one per REFERENCE: {defs:?}"
     );
     assert_eq!(
         dig(&doc, &["identity-providers", "oidc", "module"]).and_then(|v| v.as_str()),
@@ -1615,7 +1615,7 @@ fn golden_migrate_inline_chain_entries_dedupe_into_identity_providers() {
         Some("busbar-web"),
         "browser_login is PER-PROVIDER in 1.5.3"
     );
-    // The operator credential rides onto the admin-tokens definition, not the chain entry.
+    // The operator credential rides onto its own definition, not the chain entry.
     assert_eq!(
         dig(
             &doc,

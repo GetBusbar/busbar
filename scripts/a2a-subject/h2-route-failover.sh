@@ -2,13 +2,13 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright (C) 2026 Busbar Inc and contributors
 #
-# Gating scenario `a2a.battery|h2-route-failover` -- H2 (ARCHITECTURE.md #2.2 step 5, ROUTE) for the
+# Gating scenario `a2a.battery|h2-route-failover` -- H2 (BUSBAR-1.6.0.md THE DESIGN, §1 step 5, ROUTE) for the
 # A2A plane. Proves the Teller order at step 5: a down agent's failures are surfaced per-attempt
 # (`InvalidAgentResponse`, 502) while the circuit breaker is still closed, and once the breaker trips
 # (docs/a2a.md: "error rate >= 0.5 over at least 5 outcomes in a 30-second window") the SAME agent
 # ends every further unit TERMINAL -- HTTP 503, an exact `Retry-After`, `UnsupportedOperation`
 # (`-32004`) -- WITHOUT dialling the backend at all (there is no second, healthy pool member to fail
-# over to on this fixture, so "terminal" is the documented outcome ARCHITECTURE.md #2.2 names for a
+# over to on this fixture, so "terminal" is the documented outcome BUSBAR-1.6.0.md THE DESIGN, §1 names for a
 # down lane with no failover target).
 #
 # EVERY CLAIM ABOVE IS JUDGED, not narrated: `judge_route_failover` below reads the recorded calls

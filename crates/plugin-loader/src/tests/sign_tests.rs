@@ -1153,3 +1153,108 @@ fn signature_does_not_verify_under_a_weak_key() {
         "a weak-key universal forgery must not verify"
     );
 }
+
+/// THE CONTRACT-ABI RANGE A PLUGIN DECLARES (`declares.contract_abi`) is checked at admission,
+/// before anything is opened: a range sharing no version with this binary's supported range for the
+/// kind is REFUSED, and the refusal names BOTH ranges. The binary's range is read from the one
+/// `supported_abi` table, never restated here, so the test follows the table as it moves.
+#[test]
+fn a_plugin_outside_its_declared_contract_abi_range_is_refused_naming_both_ranges() {
+    let supported: &dyn Fn(&str) -> &'static [u32] = &crate::registry::supported_abi;
+    let host = crate::registry::supported_abi("store");
+    let (floor, max) = (host[0], host[host.len() - 1]);
+    let with_range = |min: u32, hi: u32, stamp: u32| {
+        let mut m = manifest("busbar-store-future", "future", FIRST_PARTY_PUBLISHER);
+        m.abi_version = stamp;
+        m.declares.contract_abi = Some(ContractAbiRange { min, max: hi });
+        m
+    };
+
+    // Entirely ABOVE this binary: built for a contract this binary does not speak.
+    let err = validate_abi(&with_range(max + 1, max + 3, max + 1), supported)
+        .expect_err("a plugin whose range is above this binary's must be refused");
+    assert_eq!(
+        err,
+        format!(
+            "plugin 'busbar-store-future' supports contract ABI v{}..=v{} for kind 'store', and this \
+             binary supports v{floor}..=v{max}: the ranges share no version, refusing to load it",
+            max + 1,
+            max + 3
+        )
+    );
+    // Entirely BELOW this binary's floor.
+    if floor > 0 {
+        let err = validate_abi(&with_range(0, floor - 1, floor - 1), supported)
+            .expect_err("a plugin whose range is below this binary's floor must be refused");
+        assert!(
+            err.contains(&format!("v0..=v{}", floor - 1))
+                && err.contains(&format!("v{floor}..=v{max}")),
+            "{err}"
+        );
+    }
+
+    // Overlapping at one version (the plugin's newest is this binary's floor): admitted.
+    validate_abi(
+        &with_range(floor.saturating_sub(1), floor, floor),
+        supported,
+    )
+    .expect("a range sharing a version with this binary's is admitted");
+    // Wholly inside: admitted.
+    validate_abi(&with_range(max, max, max), supported).expect("the current version is admitted");
+
+    // A stamp outside the plugin's OWN range is an incoherent manifest.
+    let err = validate_abi(&with_range(max, max, floor), supported)
+        .expect_err("an abi_version outside the declared range must be refused");
+    assert!(
+        err.contains(&format!(
+            "manifest abi_version {floor} is outside the contract-ABI range v{max}..=v{max}"
+        )),
+        "{err}"
+    );
+    if floor < max {
+        // An empty range declares nothing it can speak.
+        let err = validate_abi(&with_range(max, floor, max), supported)
+            .expect_err("an empty range is refused");
+        assert!(
+            err.contains("declares an empty contract-ABI range"),
+            "{err}"
+        );
+    }
+
+    // ABSENT, the manifest is judged on its stamp alone, exactly as before the field existed.
+    let mut plain = manifest("busbar-store-plain", "plain", FIRST_PARTY_PUBLISHER);
+    plain.abi_version = max;
+    validate_abi(&plain, supported)
+        .expect("a manifest without a declared range loads on its stamp");
+}
+
+/// The declared range is SIGNED like every other `declares` statement (a tampered range fails the
+/// signature), spelled `{"contract_abi": {"min": .., "max": ..}}` in a declares file, and left off
+/// the wire when absent so every manifest packed before the field existed keeps its signed bytes.
+#[test]
+fn the_declared_contract_abi_range_is_signed_and_absent_by_default() {
+    let d: Declares =
+        serde_json::from_str(r#"{"contract_abi": {"min": 3, "max": 4}}"#).expect("parses");
+    assert_eq!(d.contract_abi, Some(ContractAbiRange { min: 3, max: 4 }));
+    assert!(!d.is_empty());
+    assert!(
+        serde_json::from_str::<Declares>(r#"{"contract_abi": {"min": 3, "max": 4, "x": 1}}"#)
+            .is_err()
+    );
+    assert!(Declares::default().is_empty());
+    assert_eq!(
+        serde_json::to_value(Declares::default()).unwrap(),
+        serde_json::json!({})
+    );
+
+    let mut m = manifest("busbar-store-ranged", "ranged", FIRST_PARTY_PUBLISHER);
+    m.declares.contract_abi = Some(ContractAbiRange { min: 3, max: 4 });
+    let signed = canonical_manifest_bytes(&m);
+    let mut widened = m.clone();
+    widened.declares.contract_abi = Some(ContractAbiRange { min: 1, max: 9 });
+    assert_ne!(
+        signed,
+        canonical_manifest_bytes(&widened),
+        "the range is covered by the signature"
+    );
+}

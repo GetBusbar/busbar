@@ -37,8 +37,16 @@ pub(super) fn deliver<'a>(
     }
     // Time-to-headers into the lane's latency signal (the `fastest` routing input). Measured to
     // response headers — a bounded proxy that never waits out a streaming body.
-    host.lane_store()
-        .record_latency_in(pool, i, upstream_started.elapsed().as_secs_f64() * 1000.0);
+    let latency_ms = upstream_started.elapsed().as_secs_f64() * 1000.0;
+    host.lane_store().record_latency_in(pool, i, latency_ms);
+    // The same sample into the lane's p95 reservoir, collected ONLY while the config generation
+    // declares `CandidateLatencyP95Ms` — an undeclared deployment never allocates or writes it.
+    if host
+        .requested_signals()
+        .wants(busbar_contract::signal::Signal::CandidateLatencyP95Ms)
+    {
+        hop.lane_row().record_latency_sample(latency_ms);
+    }
     // Cost accounting, not admission: consume one unit of the lane's lifetime request budget. The
     // result is BOUND to the refund decision — `refund_budget` unconditionally adds, so refunding a
     // no-op spend would push the budget above its cap. `true` for an unlimited lane (a no-op spend

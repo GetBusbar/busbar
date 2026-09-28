@@ -54,4 +54,4 @@ pools:
 #   enabled: true                                # master switch — default false
 #   dir: /etc/busbar/plugins                     # ABSOLUTE — the default ("plugins") resolves to /plugins here
 #   fetch:
-#     - github: "GetBusbar/store-sqlite@v1.0.0"  # or omit `fetch` and bind-mount the signed tarball yourself
+#     - github: "GetBusbar/busbar-store-sqlite@v1.0.0"  # or omit `fetch` and bind-mount the signed tarball yourself

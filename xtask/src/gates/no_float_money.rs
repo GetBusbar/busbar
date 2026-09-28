@@ -322,7 +322,7 @@ const BUDGET_FLOOR: usize = 5;
 
 /// ── TWO DEDICATED MONEY CRATES THAT WERE IN NO SCAN SET AT ALL (2026-09-23) ─────────────────────
 ///
-/// The census in `docs/design/1.6.0-gate-blindspots.md` planted ten floats on the money path and
+/// The 1.6.0 gate blind-spot census planted ten floats on the money path and
 /// this gate named two. Two of the eight it missed were whole CRATES, and both of them are where
 /// money stops being arithmetic and becomes a fact somebody can be billed from:
 ///

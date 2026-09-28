@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright (C) 2026 Busbar Inc and contributors
 #
-# Gating scenario `mcp.rig|h2-audit-record` -- H2 (ARCHITECTURE.md #2.2 step 7, AUDIT) for the MCP
+# Gating scenario `mcp.rig|h2-audit-record` -- H2 (BUSBAR-1.6.0.md THE DESIGN, §1 step 7, AUDIT) for the MCP
 # plane. Proves the Teller order at step 7: a served `tools/call` seals exactly ONE new admin audit
 # entry, action `mcp_tool.call`, outcome `applied`, resource `mcp_tool:<published-name>`
 # (docs/mcp.md: "the plane's audit resource kind is `mcp_server` and its action words are prefixed

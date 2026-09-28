@@ -14,7 +14,7 @@ Measured end to end through busbar's transport against this exact example binary
 
 > **Grammar note (1.5.0 / 1.5.3).** The built-in `socket:` / `webhook:` hook transports were
 > retired in 1.5.0 — a hook is now always a signed `kind: hook` plugin, and the out-of-process
-> posture is the first-party `busbar-webrequest-hook` forwarder. 1.5.3 then made hooks
+> posture is the first-party `busbar-hook-webrequest` forwarder. 1.5.3 then made hooks
 > **named definitions**: define once under the top-level `hooks:` map, reference by BARE NAME from
 > `pools.hooks:` / `pools.<p>.hooks:`. The wire contract below is unchanged; only where the instance
 > is written moved. The blocks below are in the current 1.5.3 shape.
@@ -60,7 +60,7 @@ co-located; plus the network if it is not.
 ```yaml
 hooks:
   smart-router:
-    module: busbar-webrequest-hook            # the first-party HTTPS forwarder plugin
+    module: busbar-hook-webrequest            # the first-party HTTPS forwarder plugin
     settings: { url: "http://127.0.0.1:8787/" }   # SSRF-guarded: loopback ok, remote must be https
     kind: gate
     timeout_ms: 1

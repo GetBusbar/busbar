@@ -40,8 +40,8 @@ impl AdminService {
     /// uptime, and pool/model/provider topology. Read scope. Infallible today, but returns `Result`
     /// for a uniform transport contract (every op is `Result<View, AdminError>`).
     pub(crate) async fn info(&self) -> Result<InfoView, AdminError> {
-        // The compiled-in plugin sets reflect the ACTUAL binary (feature-gated): the `keys` /
-        // `admin-tokens` auth builtins plus the ranking hooks. `weighted` is the one baked in
+        // The compiled-in plugin sets reflect the ACTUAL binary: the `keys` builtin and the linked
+        // auth rows, plus the ranking hooks. `weighted` is the one baked in
         // (non-removable), so it appears as `weighted_floor` below, not in `hook_plugins`.
         let auth_modules = auth_modules_compiled_in();
         let hook_plugins = hook_plugins_compiled_in();
@@ -417,13 +417,13 @@ impl AdminService {
         match ptype {
             "auth" => {
                 // Compiled-in auth modules (feature-gated). Active = wired into its chain: `keys`
-                // is engine-handled (a flag, not a boxed module), `admin-tokens` lives on the
+                // is engine-handled (a flag, not a boxed module), the operator credential lives on the
                 // ADMIN chain, and anything else is a boxed data-plane chain module.
                 let chain = self.app.auth.chain_names();
                 for name in auth_modules_compiled_in() {
                     let active = if name == busbar_kernel::config::KEYS_MODULE {
                         self.app.auth.keys_in_chain
-                    } else if name == busbar_kernel::config::ADMIN_TOKENS_MODULE {
+                    } else if name == busbar_kernel::config::operator_provider() {
                         self.app.admin_chain.iter().any(|m| m == name)
                     } else {
                         chain.contains(&name)
@@ -587,16 +587,11 @@ impl AdminService {
     /// case is one extra rescan on the next call, never a wrong answer served indefinitely (the
     /// fingerprint fix below is what actually prevents a wrong answer being served indefinitely).
     pub(super) fn store_plugin_catalog(&self) -> Vec<PluginView> {
-        // The compiled-in RAM default is always present. Which store backend is ACTIVE is a
+        // Every store this build LINKS is always present (the declared default among them), read
+        // off the root's linked rows; admin names no store. Which store backend is ACTIVE is a
         // `store.module` config concern (read via `GET /config`), not summarized per-row here,
         // the same posture the compiled-in hook rows take (`active: None`).
-        let mut out = vec![PluginView::basic(
-            "memory".to_string(),
-            "store",
-            "compiled-in",
-            None,
-            None,
-        )];
+        let mut out = linked_store_rows();
         let Ok(policy) = self.app.plugins_cfg.to_policy() else {
             return out;
         };
@@ -833,16 +828,10 @@ impl AdminService {
                     error = %join_err,
                     "admin blocking task failed"
                 );
-                // Fail soft to the always-true compiled-in row rather than an admin 500 for what is
+                // Fail soft to the always-true linked rows rather than an admin 500 for what is
                 // just a plugin CATALOG read — same posture `store_plugin_catalog` itself takes on
                 // an unparseable `plugins_cfg` (`to_policy()` failing) just above.
-                Ok(vec![PluginView::basic(
-                    "memory".to_string(),
-                    "store",
-                    "compiled-in",
-                    None,
-                    None,
-                )])
+                Ok(linked_store_rows())
             }
         }
     }
@@ -1673,4 +1662,15 @@ impl AdminService {
     fn hook_view(&self, name: &str, cfg: &HookCfg) -> HookView {
         project_hook_view(name, cfg, &self.app.global_hooks)
     }
+}
+
+/// THE LINKED STORE ROWS of the store catalog: one `compiled-in` row per store this build links, in
+/// the root's table order (the declared default among them). Read off the kernel's installed root
+/// rows, so admin names no store instance.
+fn linked_store_rows() -> Vec<PluginView> {
+    let (stores, _, _) = busbar_kernel::preflight::root_rows();
+    let row = |s: &busbar_kernel::preflight::LinkedStore| {
+        PluginView::basic(s.0.to_string(), "store", "compiled-in", None, None)
+    };
+    stores.iter().map(row).collect()
 }

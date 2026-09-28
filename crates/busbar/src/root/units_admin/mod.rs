@@ -1285,7 +1285,7 @@ fn json_answer(body: Vec<u8>) -> AdminAnswer {
 /// admitted call and adjudicates the correction itself: its shape, its cryptographic signature
 /// against the operator key the fleet sealed, and its effect.
 ///
-/// The signature is the D38 hardening (`docs/design/rate-card-history.md:445-467`; the sealed-key
+/// The signature is the D38 hardening (`docs/design/BUSBAR-1.6.0.md #79`; the sealed-key
 /// posture is `busbar-unit-verbs/src/posture.rs:28-32`). `operator` carries the single sealed
 /// ed25519 verifying key; the body's `operator_fingerprint` must equal `sha256(key)` (a which-key
 /// confirmation, not a registry lookup — there is one operator key), and the detached `signature`
@@ -3004,7 +3004,6 @@ pub(crate) fn route(
     admin: &busbar_contract::caps::Grant<busbar_contract::caps::AdminVerb>,
     token: &Pass<Route>,
     ctx: &UnitCtx,
-    _meter: &busbar_kernel::teller::AccrualMeter,
 ) -> Decision<Route> {
     let (Some(request), Some(resolved)) =
         (binding.units.request(ctx.key), binding.units.verb(ctx.key))
@@ -3629,7 +3628,6 @@ impl RegisteredUnits for AdminPlane {
         root: &ProductionUnits,
         token: &Pass<Route>,
         ctx: &UnitCtx,
-        meter: &busbar_kernel::teller::AccrualMeter,
         _destinations: &[busbar_contract::caps::VerifiedDestination],
     ) -> Decision<Route> {
         route(
@@ -3638,7 +3636,6 @@ impl RegisteredUnits for AdminPlane {
             &root.admin_token,
             token,
             ctx,
-            meter,
         )
     }
 

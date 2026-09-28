@@ -45,7 +45,7 @@ busbar-core-connsec = { path = "../busbar-core-connsec" }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
 hex = { workspace = true }
-# The deployment keyset (spec #82(a); ARCHITECTURE.md §1.2, PB-13): `root::keyset` mints the one
+# The deployment keyset (spec #82(a); BUSBAR-1.6.0.md THE DESIGN, §2, PB-13): `root::keyset` mints the one
 # ed25519 seed that signs the audit chain and the ledger's checkpoints from the OS CSPRNG.
 getrandom = { workspace = true }
 # The operator-signature verifier for the D38 `amend_rate_history` effect: the sealed operator key
@@ -120,29 +120,35 @@ busbar-store-memory = { path = "../store-memory" }
 # THE RANKING HOOKS (`cheapest`/`fastest`/`least_busy`/`usage`), linked through the `hooks` axis
 # under `hooks-ranking` — one row, the strategy spellings its aliases. The kernel names no hook.
 busbar-hooks-ranking = { path = "../hooks-ranking", optional = true }
+# THE OPERATOR CREDENTIAL (`auth.admin_auth: [admin-tokens]`, the single operator admin token), a
+# first-party AUTH plugin linked through the `auths` axis under `auth-admin-tokens` — the same row a
+# signed tarball of it registers when dropped in (DECISIONS #2 rule (1); ARCHITECT 2026-09-27
+# AUTH-ROW). It lives in its own repo (GetBusbar/busbar-auth-admin-tokens) and is pulled at a PINNED rev; the
+# workspace `[patch]` points the busbar crates it names at this tree. The kernel names no auth module.
+busbar-auth-admin-tokens-plugin = { git = "https://github.com/GetBusbar/busbar-auth-admin-tokens", rev = "47cb5047e4c9a73341c613c09a056b4a4bb8eb99", optional = true }
 # THE REQUEST-LOG FILE SINK (`module: request-log-file`), a first-party EXPORT plugin linked through
 # the `exports` axis (K9b) — the same row a signed tarball of it registers when dropped in. It lives
-# in its own repo (GetBusbar/export-file) and is pulled at a PINNED rev; the workspace `[patch]`
+# in its own repo (GetBusbar/busbar-export-file) and is pulled at a PINNED rev; the workspace `[patch]`
 # points the busbar crates it names back at this tree.
-busbar-export-file = { git = "https://github.com/GetBusbar/export-file", rev = "795eadb866e5f9a98bc854b9697ae42a28a51e92", optional = true }
+busbar-export-file = { git = "https://github.com/GetBusbar/busbar-export-file", rev = "795eadb866e5f9a98bc854b9697ae42a28a51e92", optional = true }
 # THE REQUEST-LOG WEBHOOK SINK (`module: request-log-webhook`), a first-party EXPORT plugin linked
 # through the `exports` axis (K9c) — the same row a signed tarball of it registers when dropped in. It
-# lives in its own repo (GetBusbar/export-webhook) and is pulled at a PINNED rev; the workspace
+# lives in its own repo (GetBusbar/busbar-export-webhook) and is pulled at a PINNED rev; the workspace
 # `[patch]` points the busbar crates it names back at this tree.
-busbar-export-webhook = { git = "https://github.com/GetBusbar/export-webhook", rev = "5e0170432aa2dc7640c8b6f6e89c9d38edad1df0", optional = true }
+busbar-export-webhook = { git = "https://github.com/GetBusbar/busbar-export-webhook", rev = "5e0170432aa2dc7640c8b6f6e89c9d38edad1df0", optional = true }
 # THE PROMETHEUS EXPORT SINK (`module: prometheus`), a first-party EXPORT plugin linked through the
 # `exports` axis (K9d) — the same row a signed tarball of it registers when dropped in. The host
 # keeps the recorder and serves `/metrics`; this sink renders the recorder's snapshot. It lives in its
-# own repo (GetBusbar/export-prometheus) and is pulled at a PINNED rev; the workspace `[patch]` points
+# own repo (GetBusbar/busbar-export-prometheus) and is pulled at a PINNED rev; the workspace `[patch]` points
 # the busbar crates it names back at this tree.
-busbar-export-prometheus = { git = "https://github.com/GetBusbar/export-prometheus", rev = "087bbcc6a9bafc63591799770407a478f2742027", optional = true }
+busbar-export-prometheus = { git = "https://github.com/GetBusbar/busbar-export-prometheus", rev = "087bbcc6a9bafc63591799770407a478f2742027", optional = true }
 # THE OTLP TRACE SINK (`module: otlp`), a first-party EXPORT plugin linked through the `exports` axis
 # (K9e-2; owner answer Q75: OTLP export never delivered in 1.5.5, and 1.6.0 fixes it) — the same row a
 # signed tarball of it registers when dropped in. It encodes each `traces` record as an OTLP/HTTP
 # protobuf request the host posts under the collector egress policy it declares. It lives in its own
-# repo (GetBusbar/export-otlp) and is pulled at a PINNED rev; the workspace `[patch]` points the busbar
+# repo (GetBusbar/busbar-export-otlp) and is pulled at a PINNED rev; the workspace `[patch]` points the busbar
 # crate it names back at this tree.
-busbar-export-otlp = { git = "https://github.com/GetBusbar/export-otlp", rev = "02f463307f9820faedda131467dcfaa83b25df78", optional = true }
+busbar-export-otlp = { git = "https://github.com/GetBusbar/busbar-export-otlp", rev = "02f463307f9820faedda131467dcfaa83b25df78", optional = true }
 # The transports. Composition is an edge that does not exist as a Cargo dependency — a transport may
 # not name the layer beneath it — so the root hands each wire's build the layer it built below it.
 # Which wires a build links is the `transport` rows of the linked table below; the source names none.
@@ -289,7 +295,10 @@ root-admin = ["dep:tower"]
 # module is `#[cfg(any(test, feature = "test-harness"))]` and this feature is never enabled by a
 # release build, which is why the surface ceilings do not count it.
 test-harness = []
-auth-admin-tokens = ["busbar-kernel/auth-admin-tokens", "busbar-core-admin/auth-admin-tokens"]
+# THE OPERATOR CREDENTIAL'S LINKED ROW, DEFAULT ON: the auth plugin on the `auths` axis. Off, the
+# operator credential resolves only when a signed tarball of the module is dropped into `plugins/`,
+# and a configured admin token with no row answering it is a boot refusal naming this feature.
+auth-admin-tokens = ["dep:busbar-auth-admin-tokens-plugin"]
 hooks-ranking = ["dep:busbar-hooks-ranking", "busbar-kernel/hooks-ranking", "busbar-core-admin/hooks-ranking"]
 openapi-schema = ["busbar-kernel/openapi-schema", "busbar-core-admin/openapi-schema", "busbar-llm?/openapi-schema", "busbar-mcp?/openapi-schema", "busbar-a2a?/openapi-schema", "busbar-voice?/openapi-schema"]
 loom-model = ["busbar-kernel/loom-model"]
@@ -319,6 +328,8 @@ export-file = "busbar-export-file"
 export-webhook = "busbar-export-webhook"
 export-prometheus = "busbar-export-prometheus"
 export-otlp = "busbar-export-otlp"
+# THE AUTH AXIS: the operator credential's module, under its packaging feature.
+auth-admin-tokens = "busbar-auth-admin-tokens-plugin"
 # THE COLD-KIND AXIS's in-process rows: the default store (a required dependency: every build links
 # it) and the ranking hooks (under their feature).
 store-memory = "busbar-store-memory"
@@ -343,6 +354,7 @@ transport-stdio = "busbar-transport-stdio"
 # `node`: the entry's `install_node`, handed the node a root unit drives the entry's units through.
 # `transport`: a wire's `KEY`, `COMPOSES_OVER` and `build(lower, &TransportSettings)`.
 # `stores` / `hooks`: an in-process store's `STORE` and a ranking row's `HOOK` (`root::linked`).
+# `auths`: a `kind: auth` plugin's SDK boundary (`BUSBAR_COLD_ENTRY`), under its `linked-name` key.
 [package.metadata.busbar.linked-axes]
 proto-llm = "plane claims protocols path-ingress body-ingress protocol-seams diagnostics on-host cli-help node gauntlet-one-shot"
 plane-mcp = "plane claims protocols diagnostics egress stdio-serve cli-help gauntlet-one-shot"
@@ -353,6 +365,7 @@ export-file = "exports"
 export-webhook = "exports"
 export-prometheus = "exports"
 export-otlp = "exports"
+auth-admin-tokens = "auths"
 store-memory = "stores"
 hooks-ranking = "hooks"
 transport-tcp = "transport"
@@ -370,6 +383,12 @@ busbar-plane-decision = "crate::root::plane_decision"
 # One crate, several wires: each row past the crate's own `linked` names its entry.
 transport-sse = "busbar_transport_http::linked::sse"
 transport-grpc = "busbar_transport_http::linked::grpc"
+# An auth plugin's boundary is the SDK's, at its crate root.
+busbar-auth-admin-tokens-plugin = "busbar_auth_admin_tokens_plugin"
+
+# The key an `auths` row answers on the auth axis — the name its signed tarball's manifest states.
+[package.metadata.busbar.linked-name]
+auth-admin-tokens = "admin-tokens"
 
 # The root's own unit modules (the kernel-loop halves of planes that still live in the root), each
 # compiled when its row's cargo feature is on (the node under the `linked_axis_node` cfg that
@@ -427,30 +446,27 @@ serde_json = { workspace = true }
 # the test links its `PLANE_DECL` (the linked door) and drops its cdylib into a temp `plugins/`
 # directory (the dropped-in door) and requires the two to install byte-identical registry rows.
 busbar-plugin-example-plane = { path = "../plane-example" }
-# The export axis's both-doors proof (`src/root/tests/linked_exports.rs`) for the FILE sink: its
-# repo's cdylib crate at the SAME pinned rev as the linked `busbar-export-file` edge above, so the
-# test drops in the library a signed tarball of the sink carries next to the row the build links.
-busbar-export-file-plugin = { git = "https://github.com/GetBusbar/export-file", rev = "795eadb866e5f9a98bc854b9697ae42a28a51e92" }
-# The scrape sink's both-doors proofs (`src/root/tests/linked_scrape.rs`,
-# `tests/export_scrape_is_first_party.rs`): its repo's cdylib crate at the SAME pinned rev as the
-# linked `busbar-export-prometheus` edge above — the library a signed tarball of the sink carries,
-# found in this target dir by what it loads as.
-busbar-export-prometheus-plugin = { git = "https://github.com/GetBusbar/export-prometheus", rev = "087bbcc6a9bafc63591799770407a478f2742027" }
-# The webhook sink's both-ways proof (`src/root/tests/export_webhook_conformance.rs`): its repo's
-# cdylib crate at the SAME pinned rev as the linked `busbar-export-webhook` edge above, so the test
-# drops in the library a signed tarball of the sink carries next to the row the build links.
-busbar-export-webhook-plugin = { git = "https://github.com/GetBusbar/export-webhook", rev = "5e0170432aa2dc7640c8b6f6e89c9d38edad1df0" }
+# The dropped-in export plugin's end-to-end proof (`tests/export_plugin_dropped_in_serves.rs`): the
+# FILE sink's repo's cdylib crate at the SAME pinned rev as the linked `busbar-export-file` edge
+# above, dropped into `plugins/` as the library a tarball of the sink carries. The sink's own
+# both-doors conformance lives in its repo (GetBusbar/busbar-export-file, `tests/conformance.rs`).
+busbar-export-file-plugin = { git = "https://github.com/GetBusbar/busbar-export-file", rev = "795eadb866e5f9a98bc854b9697ae42a28a51e92" }
+# The scrape role's first-party proof (`tests/export_scrape_is_first_party.rs`): the scrape sink's
+# repo's cdylib crate at the SAME pinned rev as the linked `busbar-export-prometheus` edge above —
+# the library a tarball of the sink carries, found in this target dir by what it loads as. The
+# sink's own both-doors conformance lives in its repo (GetBusbar/busbar-export-prometheus).
+busbar-export-prometheus-plugin = { git = "https://github.com/GetBusbar/busbar-export-prometheus", rev = "087bbcc6a9bafc63591799770407a478f2742027" }
 # The REAL token-verifying auth module the dropped-in auth proofs load (R-FIX2; the owner's FIXTURES
-# ruling: real plugins are the proofs): GetBusbar/auth-oidc's cdylib crate at a pinned rev. Nothing
+# ruling: real plugins are the proofs): GetBusbar/busbar-auth-oidc's cdylib crate at a pinned rev. Nothing
 # links it; the dev edge is what makes this crate's test build carry its cdylib (under `deps/`,
 # hashed), which the child-process session battery signs into a temp `plugins/` directory and drives
 # with JWTs a local issuer signs. Its busbar-contract resolves to this tree through the `[patch]`
 # table in the workspace manifest.
-busbar-auth-oidc-plugin = { git = "https://github.com/GetBusbar/auth-oidc", rev = "9ff64ff4d74bdd4d043ed7200d8771389810d19b" }
+busbar-auth-oidc-plugin = { git = "https://github.com/GetBusbar/busbar-auth-oidc", rev = "9ff64ff4d74bdd4d043ed7200d8771389810d19b" }
 # The local issuer those proofs verify against: the module's OWN test issuer (its logic crate's
 # `testkit` feature — an ES256 key, its JWKS served over a certificate-verified loopback endpoint the
 # module trusts through `ca_cert_pem`, and genuinely signed tokens), at the SAME rev.
-busbar-auth-oidc = { git = "https://github.com/GetBusbar/auth-oidc", rev = "9ff64ff4d74bdd4d043ed7200d8771389810d19b", features = ["testkit"] }
+busbar-auth-oidc = { git = "https://github.com/GetBusbar/busbar-auth-oidc", rev = "9ff64ff4d74bdd4d043ed7200d8771389810d19b", features = ["testkit"] }
 # That proof calls the router it built as the tower service it is (`ServiceExt::oneshot`). The
 # normal-edge `tower` above is `root-admin`'s own and optional, so a build without `root-admin` (every
 # single-plane build) would not compile the test; the test's edge is its own, unconditional here.
@@ -459,11 +475,8 @@ tower = { workspace = true, features = ["util"] }
 # OTLP sink's repo's cdylib crate at the SAME pinned rev as the linked `busbar-export-otlp` edge above —
 # its linked row and its dropped-in library both fed the kernel's traces producer, both posting to a
 # local collector — and the subscriber that test installs the producer under.
-busbar-export-otlp-plugin = { git = "https://github.com/GetBusbar/export-otlp", rev = "02f463307f9820faedda131467dcfaa83b25df78" }
+busbar-export-otlp-plugin = { git = "https://github.com/GetBusbar/busbar-export-otlp", rev = "02f463307f9820faedda131467dcfaa83b25df78" }
 tracing-subscriber = { workspace = true }
-# `tests/export_plugin_dropped_in_serves.rs` (item 141's positive control) finds an in-tree export
-# `cdylib` by its KIND in this target dir and drops it in: the export fixture, built as this dev-edge.
-busbar-export-example-plugin = { path = "../export-example-plugin" }
 # What that test and `tests/export_otlp_delivers_spans.rs` (the shipped binary posting to a local
 # collector) receive is decoded with the OpenTelemetry project's own generated types, and re-encoded
 # to the same bytes: the proto's publisher, not the sink's encoder, says it is an OTLP request.

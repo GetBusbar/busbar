@@ -455,14 +455,10 @@ impl Ctx {
         })
     }
 
-    /// The workspace root, from `xtask/Cargo.toml`'s own directory's parent.
+    /// The workspace root, resolved at RUNTIME ([`workspace_root`]), never the tree the binary was
+    /// compiled in.
     pub fn workspace() -> Result<Ctx, String> {
-        Ctx::new(
-            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .parent()
-                .ok_or("xtask/Cargo.toml has no parent directory")?
-                .to_path_buf(),
-        )
+        Ctx::new(workspace_root()?)
     }
 
     pub fn root(&self) -> &Path {
@@ -999,4 +995,83 @@ fn collect(dir: &Path, root: &Path, out: &mut Vec<PathBuf>) -> Result<(), WalkEr
         }
     }
     Ok(())
+}
+
+// ---------------------------------------------------------------------------------------------
+// THE WORKSPACE ROOT, AT RUNTIME
+// ---------------------------------------------------------------------------------------------
+
+/// An explicit root (`cargo xtask --root <dir> …`), set once by the CLI before any context opens.
+static ROOT_OVERRIDE: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+
+/// Record `--root <dir>`. The first call wins; the CLI makes exactly one.
+pub fn set_root_override(dir: PathBuf) {
+    let _ = ROOT_OVERRIDE.set(dir);
+}
+
+/// THE TREE A GATE READS IS THE ONE IT WAS RUN IN, NOT THE ONE IT WAS BUILT IN.
+///
+/// This used to be `env!("CARGO_MANIFEST_DIR")/..`, fixed at COMPILE time. With one target dir
+/// shared by several worktrees, `cargo xtask` in worktree B could run the binary last built in
+/// worktree A (cargo found nothing to rebuild) and every gate then read A's tree while reporting
+/// on B — a RED base once read GREEN that way, and every base-vs-candidate comparison was exposed.
+/// So the root is resolved when the binary RUNS: an explicit `--root`, else the current directory's
+/// `git rev-parse --show-toplevel`. The compile-time directory is used only when neither answers,
+/// and only when the current directory lies inside it; otherwise this refuses, naming both trees.
+pub fn workspace_root() -> Result<PathBuf, String> {
+    let cwd = std::env::current_dir().map_err(|e| format!("the current directory: {e}"))?;
+    let toplevel = std::process::Command::new("git")
+        .args(["rev-parse", "--show-toplevel"])
+        .current_dir(&cwd)
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| PathBuf::from(String::from_utf8_lossy(&o.stdout).trim()));
+    let compiled = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .map(Path::to_path_buf)
+        .ok_or("xtask/Cargo.toml has no parent directory")?;
+    resolve_root(ROOT_OVERRIDE.get().cloned(), toplevel, &cwd, &compiled)
+}
+
+/// The decision [`workspace_root`] makes, over its inputs, so every arm is testable.
+pub fn resolve_root(
+    explicit: Option<PathBuf>,
+    toplevel: Option<PathBuf>,
+    cwd: &Path,
+    compiled: &Path,
+) -> Result<PathBuf, String> {
+    let is_tree = |p: &Path| p.join("xtask").join("Cargo.toml").is_file();
+    if let Some(root) = explicit {
+        return if is_tree(&root) {
+            Ok(root)
+        } else {
+            Err(format!(
+                "--root {} is not a busbar tree (no xtask/Cargo.toml under it)",
+                root.display()
+            ))
+        };
+    }
+    if let Some(root) = toplevel {
+        return if is_tree(&root) {
+            Ok(root)
+        } else {
+            Err(format!(
+                "the current directory's git tree {} is not a busbar tree (no xtask/Cargo.toml); \
+                 run xtask from inside the tree to gate, or pass --root <dir>",
+                root.display()
+            ))
+        };
+    }
+    let canon = |p: &Path| p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
+    if canon(cwd).starts_with(canon(compiled)) {
+        Ok(compiled.to_path_buf())
+    } else {
+        Err(format!(
+            "no git tree at the current directory {} and no --root, and this binary was built in \
+             {}: refusing to read the BUILD tree in place of the one you are in. Pass --root <dir>.",
+            cwd.display(),
+            compiled.display()
+        ))
+    }
 }

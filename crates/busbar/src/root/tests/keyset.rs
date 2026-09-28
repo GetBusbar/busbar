@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The deployment keyset (spec #82(a); ARCHITECTURE.md §1.2, PB-13; architect ruling 2026-09-26):
+//! The deployment keyset (spec #82(a); BUSBAR-1.6.0.md THE DESIGN, §2, PB-13; architect ruling 2026-09-26):
 //! ephemeral without a data directory, minted-and-cached with one, and the one `KeysetMissing`
 //! refusal in its exact words.
 

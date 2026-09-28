@@ -316,13 +316,13 @@ pub struct App {
     /// Arc-shared across apply snapshots (survives every swap); bounded ring (see
     /// `admin::versions`).
     pub versions: Arc<crate::admin::versions::VersionLog>,
-    /// The ADMIN auth chain (`admin_auth:` module names, default `[admin-tokens]`) — executed by
+    /// The ADMIN auth chain (`admin_auth:` module names, default: the operator credential) — executed by
     /// the auth middleware for `/admin` paths. Empty = the explicit OPEN admin posture (dev).
     pub admin_chain: Vec<String>,
-    /// The RESOLVED external admin auth PLUGINS — every non-builtin `admin_auth:` entry opened over
-    /// the signed `kind: auth` ABI (1.5.2 admin-plane OIDC). Keyed by the config module name (the
-    /// same string `admin_chain` names and `role_bindings.<module>` binds). `admin-tokens` is NOT
-    /// here (it is an engine arm, dispatched by name in `run_admin_chain`). `has_plugin` gates the
+    /// The RESOLVED admin auth modules — every `admin_auth:` entry opened through the auth kind's
+    /// registry (1.5.2 admin-plane OIDC). Keyed by the config module name (the same string
+    /// `admin_chain` names and `role_bindings.<module>` binds); the operator credential is held apart
+    /// (`AdminAuthChain::operator`), opened over its token's digest. `has_plugin` gates the
     /// off-reactor offload of the admin chain (a plugin can do blocking JWKS/introspection I/O).
     /// Rebuilt on boot AND reload (`build_app_from_config`), Arc-shared so `App::clone` is cheap.
     pub admin_modules: Arc<crate::auth::AdminAuthChain>,

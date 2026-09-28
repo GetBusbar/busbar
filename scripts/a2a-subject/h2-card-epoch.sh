@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright (C) 2026 Busbar Inc and contributors
 #
-# Gating scenario `a2a.battery|h2-card-epoch` -- H2 (ARCHITECTURE.md #2.2 step 6, METER) for the A2A
+# Gating scenario `a2a.battery|h2-card-epoch` -- H2 (BUSBAR-1.6.0.md THE DESIGN, §1 step 6, METER) for the A2A
 # plane: the DATED-CARD question (#79). It is the a2a twin of the oracle cell
 # `billing|rate-card|history-mid-window` (testing/shadow-oracle/scripts/rate-card-history.sh), which
 # asks the same thing of the llm plane and can never ask it of this one -- the golden is 1.5.5 and

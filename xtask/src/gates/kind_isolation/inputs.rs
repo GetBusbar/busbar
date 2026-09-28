@@ -47,7 +47,7 @@ const PLUGIN_REGISTRY: &str = "plugins.yaml";
 /// `plugins.yaml` files a plugin under any of the seven kinds (every kind ships as its own repo), and
 /// it says `hook` where the table here says `hooks`.
 ///
-/// `:truths` reconciles THREE places that name the kinds: `ARCHITECTURE.md`, the kind table here,
+/// `:truths` reconciles THREE places that name the kinds: `BUSBAR-1.6.0.md`, the kind table here,
 /// and `qa/construction.toml`. This is the FOURTH, and it is not one of that row's three because it
 /// is a different KIND of file: the others describe the tree, and this one describes an out-of-tree
 /// population the loader will act on. The way four vocabularies stay one is that each is mapped,

@@ -87,10 +87,12 @@ pub struct Linked {
     pub cli_help: &'static [&'static [CliHelpRow]],
     /// The export axis: each linked export sink's statement and boundary (see [`LinkedExport`]).
     pub exports: &'static [LinkedExport],
-    /// The store axis: each linked in-process store's `(name, ephemeral, open)`.
+    /// The store axis: each linked in-process store's `(name, ephemeral, default, open)`.
     pub stores: &'static [busbar_kernel::preflight::LinkedStore],
     /// The hook axis: each linked ranking row's `(name, aliases, open)`.
     pub hooks: &'static [busbar_kernel::preflight::LinkedHook],
+    /// The auth axis: each linked `kind: auth` plugin's `(registry key, SDK boundary)`.
+    pub auths: &'static [busbar_kernel::preflight::LinkedAuth],
     /// The kernel-loop axes (#28): the declaration key of each plane `gauntlet_install::install()`
     /// flips onto the unified loop's ONE-SHOT runner, and of each it flips onto the SESSION runner.
     pub gauntlet_one_shot: &'static [&'static str],
@@ -119,13 +121,13 @@ pub mod node {
 
     use busbar_contract::caps::{OpClassId, PrincipalId};
     use busbar_kernel::plane_host::PlaneAnswer;
-    use busbar_kernel::teller::{AccrualMeter, RouteAwait, Units};
+    use busbar_kernel::teller::{RouteAwait, Units};
 
     /// A configured lane name to the interned lane the priced axis is written in, or `None` where
     /// the image's vocabulary cannot hold the name.
     pub type Resolve = Arc<dyn Fn(&str) -> Option<busbar_contract::LaneId> + Send + Sync>;
-    /// What the node lends a build: its lane resolver, the loop's meter, the pinned arrival epoch.
-    pub type Lent = (Resolve, Arc<AccrualMeter>, u64);
+    /// What the node lends a build: its lane resolver and the pinned arrival epoch.
+    pub type Lent = (Resolve, u64);
     /// What a unit consumed, read after its body drained: every class, the billable count, the
     /// serving lane's config name.
     pub type Reported = (busbar_contract::billing::Usage, u32, String);
@@ -285,6 +287,40 @@ pub fn register_protocols(linked: &Linked, units: &[&RootUnit]) {
     }
 }
 
+/// THE STORE AND HOOK AXES: the linked store and hook rows onto the kernel's cold-kind axis, with the
+/// default store resolved from the store rows' own claims ([`default_store`]). Two rows claiming the
+/// default refuse the boot (exit 2) before anything resolves a store.
+pub fn register_stores(linked: &Linked) {
+    match default_store(linked.stores) {
+        Ok(default) => {
+            let rows = (linked.stores, linked.hooks, default.unwrap_or_default());
+            busbar_kernel::preflight::install_linked_rows(rows)
+        }
+        Err(refusal) => {
+            eprintln!("busbar: {refusal}");
+            std::process::exit(2);
+        }
+    }
+}
+
+/// THE DEFAULT GOVERNANCE STORE — the one linked store row that DECLARES itself the default, the
+/// store a deployment that configures no `store.module` runs on. The root holds no store name: it
+/// asks each row what it claims. No claim is `None`; two claims are refused, naming both rows —
+/// ambiguity is never resolved by picking a winner.
+pub fn default_store(
+    stores: &[busbar_kernel::preflight::LinkedStore],
+) -> Result<Option<&'static str>, String> {
+    let mut claims = stores.iter().filter(|s| s.2).map(|s| s.0);
+    let first = claims.next();
+    match (first, claims.next()) {
+        (Some(a), Some(b)) => Err(format!(
+            "linked stores '{a}' and '{b}' both declare themselves the default governance store; \
+             a build links at most one default store"
+        )),
+        _ => Ok(first),
+    }
+}
+
 /// THE PLANE AXIS: every entry's registry row and every HOT-lane plane's — linked or dropped in —
 /// installed once. A plane whose declaration the loader will not admit refuses the boot (exit 2)
 /// whichever door it came in by, before any listener binds.
@@ -406,6 +442,7 @@ pub fn hot_plane_row(plane: &'static DynPlane) -> Result<PlaneDecl, String> {
             .leak(),
         fee_units: list(&stated.fee_units),
         record_kinds: list(&stated.record_kinds),
+        required_config_sections: list(&stated.required_sections),
         metric_families: stated
             .metric_families
             .iter()
@@ -1320,17 +1357,9 @@ pub fn seal(units: &[&RootUnit]) {
 #[path = "tests/linked.rs"]
 mod tests;
 
-#[cfg(test)]
-#[path = "tests/linked_exports.rs"]
-mod export_tests;
-
-#[cfg(test)]
-#[path = "tests/export_webhook_conformance.rs"]
-mod export_webhook_conformance;
-
-#[cfg(test)]
-#[path = "tests/linked_scrape.rs"]
-mod scrape_tests;
+#[cfg(all(test, feature = "auth-admin-tokens", linked_axis_body_ingress))]
+#[path = "tests/linked_auth.rs"]
+mod auth_tests;
 
 #[cfg(test)]
 #[path = "tests/metric_family_conformance.rs"]

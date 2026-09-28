@@ -43,11 +43,8 @@ fn fixture_dir() -> PathBuf {
     d
 }
 
-/// A free loopback port asked of the OS. thread-per-core needs a FIXED port (not `:0`): every per-core
-/// listener binds the SAME address, so an ephemeral `:0` would hand each socket a different port.
 fn free_port() -> u16 {
-    let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    l.local_addr().unwrap().port()
+    common::boot::free_port()
 }
 
 /// Minimal config that boots a full server on a fixed data port — NOTHING topology-specific in it:
@@ -98,7 +95,7 @@ fn thread_per_core_boots_and_serves_healthz() {
         .env("MOCK_KEY", "x")
         // DEBUG, not the default INFO: the per-worker "thread-per-core data plane" / "busbar
         // listening" facts below are DEBUG-level (a 1.5.5-shaped config must see no new line at INFO
-        // — the neutrality binding, docs/design/ARCHITECTURE.md Appendix B); this test still wants to
+        // — the neutrality binding, qa/parity-bindings.md); this test still wants to
         // observe them, so it opts in explicitly rather than asserting on what an operator sees by
         // default.
         .env("RUST_LOG", "debug")

@@ -42,6 +42,7 @@ pub mod ctx;
 pub mod denylist;
 pub mod discovery;
 pub mod ere;
+pub mod fleet;
 pub mod full_gate;
 pub mod gates;
 pub mod gitp;

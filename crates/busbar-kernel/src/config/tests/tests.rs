@@ -1757,19 +1757,19 @@ fn test_debug_of_full_config_never_shows_resolved_secrets() {
         signing_key: Some(SecretRef::env("BUSBAR_T_DEBUG_SECRET")),
         operator_pub: None,
         chain: vec![KEYS_MODULE.to_string()],
-        admin_auth: vec![ADMIN_TOKENS_MODULE.to_string()],
+        admin_auth: vec![crate::config::operator_provider().to_string()],
         role_bindings: RoleBindings::new(),
         key_ttl: None,
         policy: Default::default(),
     };
     let mut deploy = base_deploy();
     deploy.auth = Some(auth);
-    // The `admin-tokens` operator credential now lives on its `identity-providers:` DEFINITION
+    // The operator credential now lives on its `identity-providers:` DEFINITION
     // (not inline on a chain entry), so the Debug dump must stay clean there too.
     deploy.identity_providers.insert(
-        ADMIN_TOKENS_MODULE.to_string(),
+        crate::config::operator_provider().to_string(),
         crate::config::IdentityProviderCfg {
-            module: ADMIN_TOKENS_MODULE.to_string(),
+            module: crate::config::operator_provider().to_string(),
             max_admin_scope: None,
             token: Some(SecretRef::env("BUSBAR_T_DEBUG_SECRET")),
             browser_login: None,
@@ -2175,12 +2175,12 @@ fn test_identity_provider_definition_is_referenced_by_name_from_both_planes() {
 }
 
 /// FREEZE: an OMITTED `max_admin_scope` resolves to the MOST RESTRICTIVE ceiling
-/// (`read-only`) for every provider — EXCEPT the built-in `admin-tokens` operator credential, which
+/// (`read-only`) for every provider — EXCEPT the operator credential, which
 /// is full-by-definition and stays exempt. This preserves the pre-1.5.3 semantics EXACTLY while
 /// moving the field off the chain entry onto the definition, so upgrading cannot silently widen or
 /// narrow an existing deployment's admin ceiling.
 #[test]
-fn test_max_admin_scope_default_is_most_restrictive_except_admin_tokens() {
+fn test_max_admin_scope_default_is_most_restrictive_except_the_operator_credential() {
     crate::test_support::register_neutral_test_plane();
     let deploy: DeployCfg = serde_yaml::from_str(
         "identity-providers:\n  corp-ad: { module: ad }\n  admin-tokens: { module: admin-tokens }\n\
@@ -2202,7 +2202,7 @@ fn test_max_admin_scope_default_is_most_restrictive_except_admin_tokens() {
     );
     assert_eq!(
         auth.admin_auth[0].max_admin_scope, None,
-        "the built-in admin-tokens operator credential is EXEMPT (full by definition)"
+        "the operator credential is EXEMPT (full by definition)"
     );
 }
 
@@ -2254,11 +2254,11 @@ fn test_identity_provider_typo_rejected_at_parse() {
     assert!(err.to_string().contains("unknown field"), "{err}");
 }
 
-/// A `token:` is the built-in `admin-tokens` operator credential and is MEANINGLESS on any other
+/// A `token:` is the operator credential and is MEANINGLESS on any other
 /// module — writing one there is an operator error (they believe a credential is configured) and
 /// must fail boot, not be silently ignored.
 #[test]
-fn test_token_on_a_non_admin_tokens_provider_is_an_error() {
+fn test_token_on_a_non_operator_provider_is_an_error() {
     crate::test_support::register_neutral_test_plane();
     let deploy: DeployCfg = serde_yaml::from_str(
         "identity-providers:\n  corp-ad: { module: ad, token: { env: X } }\n\
@@ -2275,7 +2275,7 @@ fn test_token_on_a_non_admin_tokens_provider_is_an_error() {
         errors
             .iter()
             .any(|e| e.contains("token") && e.contains("corp-ad")),
-        "a token on a non-admin-tokens provider must be rejected; got {errors:?}"
+        "a token on a non-operator provider must be rejected; got {errors:?}"
     );
 }
 
@@ -2396,8 +2396,8 @@ role_bindings:
     assert_eq!(ad["contractors"].allowed_pools, Some(vec![]));
     assert_eq!(ad["everyone"].allowed_pools, None, "omitted = ALL pools");
 
-    // The serde default for admin_auth is the bare admin-tokens provider NAME.
-    assert_eq!(auth.admin_auth, [ADMIN_TOKENS_MODULE]);
+    // The serde default for admin_auth is the operator credential's bare provider NAME.
+    assert_eq!(auth.admin_auth, [crate::config::operator_provider()]);
 }
 
 // ── groups / limits ──────────────────────────────────────────────────────────────────────────────
@@ -2665,8 +2665,50 @@ advanced:
         bare.advanced.usage_flush_interval_ms,
         DEFAULT_USAGE_FLUSH_INTERVAL_MS
     );
-    // StoreCfg's own module default is the compiled-in memory store.
-    assert_eq!(StoreCfg::default().module, GOVERNANCE_STORE_MEMORY);
+    // StoreCfg's own module default is the linked row that declares itself the default.
+    let declaring = crate::preflight::root_rows()
+        .0
+        .iter()
+        .find(|s| s.2)
+        .map(|s| s.0);
+    let default = declaring.expect("the stand-in store row claims the default");
+    assert_eq!(StoreCfg::default().module, default);
+}
+
+/// STORE-DEFAULT — AN OMITTED `store.module` READS BACK AS THE DEFAULT ROW'S NAME, byte-identical to a
+/// config that names it. The kernel holds no store name: the default is the linked row that declares
+/// itself the default (read here off the rows' own claims), so the readback of
+/// `store: {settings: ...}`, of a `StoreCfg::default()` and of `store: {module: <that name>}` are one
+/// document.
+///
+/// RED when the default stops reading the declaring row (an empty or other name): the first
+/// assertion names the module an omitted one read as.
+#[test]
+fn an_omitted_store_module_reads_back_as_the_declaring_row() {
+    let declaring = crate::preflight::root_rows()
+        .0
+        .iter()
+        .find(|s| s.2)
+        .map(|s| s.0);
+    let default = declaring.expect("the stand-in store row claims the default");
+    let omitted: DeployCfg =
+        serde_yaml::from_str("providers: {}\nmodels: {}\nstore:\n  settings: {}\n")
+            .expect("a store block without a module parses");
+    let named: DeployCfg = serde_yaml::from_str(&format!(
+        "providers: {{}}\nmodels: {{}}\nstore:\n  module: {default}\n  settings: {{}}\n"
+    ))
+    .expect("a store block naming the default parses");
+    let omitted = omitted.store.expect("store block");
+    assert_eq!(
+        omitted.module, default,
+        "the omitted module reads as the default row"
+    );
+    let readback = |s: &StoreCfg| serde_json::to_string(s).expect("store block serializes");
+    assert_eq!(
+        readback(&omitted),
+        readback(&named.store.expect("store block"))
+    );
+    assert_eq!(readback(&omitted), readback(&StoreCfg::default()));
 }
 
 // ── resolve(): hook-registry synthesis + admin_auth projection ───────────────────────────────────
@@ -2843,13 +2885,13 @@ fn test_pools_credential_mode_refusal_is_byte_identical_to_1_5_5() {
 }
 
 /// `resolve` projects the ADMIN chain module names from `auth.admin_auth:` onto
-/// `RootCfg.admin_auth` in order, and defaults to `[admin-tokens]` when the whole `auth:` block
+/// `RootCfg.admin_auth` in order, and defaults to the operator credential when the whole `auth:` block
 /// is absent.
 #[test]
 fn test_resolve_projects_admin_auth_names() {
     // auth absent: the default admin chain.
     let cfg = resolve(&base_deploy(), &HashMap::new()).expect("resolve");
-    assert_eq!(cfg.admin_auth, [ADMIN_TOKENS_MODULE]);
+    assert_eq!(cfg.admin_auth, [crate::config::operator_provider()]);
 
     // auth present with a custom admin chain: names projected in order.
     let mut deploy = base_deploy();
@@ -2864,7 +2906,7 @@ fn test_resolve_projects_admin_auth_names() {
     )
     .expect("identity-providers parse");
     let cfg = resolve(&deploy, &HashMap::new()).expect("resolve");
-    assert_eq!(cfg.admin_auth, [ADMIN_TOKENS_MODULE, "ad"]);
+    assert_eq!(cfg.admin_auth, [crate::config::operator_provider(), "ad"]);
     // The operator credential stays reachable as a SecretRef through the resolved auth block.
     assert_eq!(
         cfg.auth
@@ -2874,11 +2916,11 @@ fn test_resolve_projects_admin_auth_names() {
         Some("BUSBAR_ADMIN_TOKEN")
     );
 
-    // auth present but admin_auth omitted: the serde default [admin-tokens] applies.
+    // auth present but admin_auth omitted: the serde default (the operator credential) applies.
     let mut deploy = base_deploy();
     deploy.auth = Some(serde_yaml::from_str("chain: [keys]\n").expect("auth parses"));
     let cfg = resolve(&deploy, &HashMap::new()).expect("resolve");
-    assert_eq!(cfg.admin_auth, [ADMIN_TOKENS_MODULE]);
+    assert_eq!(cfg.admin_auth, [crate::config::operator_provider()]);
 }
 
 /// PER-NAME anti-downgrade through `to_policy` (floors-only semantics): a validly-signed
@@ -4200,6 +4242,7 @@ static CARD_PLANE: crate::plane::registry::PlaneDecl = crate::plane::registry::P
         fee_units: &[],
         metric_families: &[],
         record_kinds: &[],
+        required_config_sections: &[],
         served_op_classes: &[],
     },
     wire_format_names: || &[],
@@ -4332,4 +4375,154 @@ fn a_flat_rate_card_resolves_to_itself() {
         let root = resolve(&deploy, &HashMap::new()).expect("resolves");
         assert_eq!(root.rate_card, deploy.rate_card, "{text}");
     }
+}
+
+// ── CONFIG-REQ (ARCHITECT 2026-09-27, Law 7): A CONCRETE SECTION IS REQUIRED ONLY BY A PLANE ──────
+
+/// A stub plane requiring exactly `required` of the requirable sections, and nothing else.
+const fn requiring_plane(required: &'static [&'static str]) -> crate::plane::registry::PlaneDecl {
+    crate::plane::registry::PlaneDecl {
+        declaration: crate::plane::registry::PlaneDeclaration {
+            key: "req-plane",
+            fallback: false,
+            config_section: "req-plane",
+            scope_kinds: &[],
+            subject_noun: "req thing",
+            admin_noun: "req-thing",
+            audit_kind: "req-thing",
+            card_signing_domain: None,
+            card_kid_prefix: None,
+            owned_config_sections: &[],
+            billable_classes: &[],
+            fee_units: &[],
+            metric_families: &[],
+            record_kinds: &[],
+            required_config_sections: required,
+            served_op_classes: &[],
+        },
+        wire_format_names: || &[],
+        claims: |_| Vec::new(),
+        admission: |_| None,
+        build: |_| None,
+        routes: None,
+        admin_routes: None,
+        openapi: None,
+        hydrate: None,
+        start: None,
+        config_validate: None,
+        named_def_list: None,
+        named_def_get: None,
+        registry_contains: None,
+        reresolve_gates: None,
+        openapi_schemas: None,
+        on_swap: None,
+        parse_section: None,
+        parse_endpoint: None,
+        lower_endpoint: None,
+        build_runtime: None,
+        viewer: None,
+        retain_verify_gates: None,
+        default_section: None,
+        resolve_provider: None,
+    }
+}
+
+/// The plane that requires both catalog sections — the shape a build linking the plane that owns
+/// `models` (and consumes `providers`) registers.
+static REQUIRES_BOTH: crate::plane::registry::PlaneDecl = requiring_plane(&["providers", "models"]);
+
+/// The plane that requires only `providers` — a plane that consumes the catalog but owns no models.
+static REQUIRES_PROVIDERS: crate::plane::registry::PlaneDecl = requiring_plane(&["providers"]);
+
+/// The same plane with its requirement list dropped — the build that links no plane requiring
+/// either section.
+static REQUIRES_NONE: crate::plane::registry::PlaneDecl = requiring_plane(&[]);
+
+/// A document carrying neither catalog section.
+const NO_CATALOG: &str = "listen: \"127.0.0.1:0\"\npools: {}\n";
+
+/// THE DEFAULT-BUILD REFUSAL, byte for byte: with a registered plane requiring the sections, a
+/// document missing one is refused with the config grammar's own missing-field message — the exact
+/// text the published 1.5.5 binary prints after `config.yaml: invalid YAML: ` (measured on the
+/// v1.5.5 release binary: `[error] config.yaml: invalid YAML: missing field `providers``, and
+/// `models` for a document carrying `providers:` only). `providers` is refused first, as 1.5.5 did.
+#[test]
+fn a_section_a_registered_plane_requires_is_refused_with_the_1_5_5_missing_field_text() {
+    let _isolation =
+        busbar_kernel::plane::registry::TestRegistryIsolation::seeded(&[&REQUIRES_BOTH]);
+    let err = crate::config::deploy_from_yaml_str(NO_CATALOG).expect_err("providers required");
+    assert_eq!(err.to_string(), "missing field `providers`");
+    let err = crate::config::deploy_from_yaml_str("listen: \"127.0.0.1:0\"\nproviders: {}\n")
+        .expect_err("models required");
+    assert_eq!(err.to_string(), "missing field `models`");
+    // The in-memory document path (the management surface's overlay merge) refuses identically.
+    let value: serde_yaml::Value = serde_yaml::from_str(NO_CATALOG).unwrap();
+    let err = crate::config::deploy_from_yaml_value(value).expect_err("providers required");
+    assert_eq!(err.to_string(), "missing field `providers`");
+}
+
+/// A plane that requires `providers` only makes `providers` required: `models` reads empty.
+#[test]
+fn a_plane_requiring_one_section_leaves_the_other_omissible() {
+    let _isolation =
+        busbar_kernel::plane::registry::TestRegistryIsolation::seeded(&[&REQUIRES_PROVIDERS]);
+    let err = crate::config::deploy_from_yaml_str(NO_CATALOG).expect_err("providers required");
+    assert_eq!(err.to_string(), "missing field `providers`");
+    let deploy = crate::config::deploy_from_yaml_str("providers: {}\n")
+        .expect("models is required by no registered plane");
+    assert!(deploy.models.is_empty() && deploy.providers.is_empty());
+}
+
+/// THE WARDEN DEFECT, GREEN: a build that registers no plane requiring either section (a
+/// single-plane build of a plane that needs neither) accepts a document with neither, and each
+/// reads empty. A section the document
+/// DOES carry is its own — never replaced by the supplied empty one, never read twice.
+///
+/// RED ARM (kept): this is the same registry and the same document as the refusal above, with only
+/// the plane's requirement list dropped — so the verdict is the plane's declaration, not a kernel
+/// default. Before CONFIG-REQ this document was refused with `missing field `providers`` whatever
+/// the registry held.
+#[test]
+fn a_section_no_registered_plane_requires_may_be_omitted_and_reads_empty() {
+    let _isolation =
+        busbar_kernel::plane::registry::TestRegistryIsolation::seeded(&[&REQUIRES_NONE]);
+    let deploy = crate::config::deploy_from_yaml_str(NO_CATALOG)
+        .expect("no registered plane requires a catalog section");
+    assert!(deploy.providers.is_empty(), "{:?}", deploy.providers.keys());
+    assert!(deploy.models.is_empty(), "{:?}", deploy.models.keys());
+    let value: serde_yaml::Value = serde_yaml::from_str(NO_CATALOG).unwrap();
+    crate::config::deploy_from_yaml_value(value).expect("the in-memory path agrees");
+
+    let carried = crate::config::deploy_from_yaml_str(
+        "models:\n  m1: { provider: p1 }\nlisten: \"127.0.0.1:0\"\n",
+    )
+    .expect("a carried section parses as written");
+    assert_eq!(
+        carried.models.keys().collect::<Vec<_>>(),
+        vec!["m1"],
+        "the document's own section is kept, not replaced by the supplied empty one"
+    );
+    assert!(carried.providers.is_empty());
+
+    // An unknown top-level key is still the frozen struct's own refusal, supplied sections or not.
+    let err = crate::config::deploy_from_yaml_str("listen: \"x\"\nno_such_key: 1\n")
+        .expect_err("unknown key");
+    assert!(
+        err.to_string()
+            .starts_with("unknown field `no_such_key`, expected one of"),
+        "{err}"
+    );
+}
+
+/// Whatever top-level section a plane lists is enforced — nothing is stated and left unenforced:
+/// a document omitting it is refused with serde's own missing-field message for that section.
+#[test]
+fn any_section_a_registered_plane_requires_is_refused_when_absent() {
+    static REQUIRES_POOLS: crate::plane::registry::PlaneDecl = requiring_plane(&["pools"]);
+    let _isolation =
+        busbar_kernel::plane::registry::TestRegistryIsolation::seeded(&[&REQUIRES_POOLS]);
+    let err = crate::config::deploy_from_yaml_str("listen: \"127.0.0.1:0\"\n")
+        .expect_err("pools is required by a registered plane");
+    assert_eq!(err.to_string(), "missing field `pools`");
+    crate::config::deploy_from_yaml_str("pools: {}\n").expect("carried, so accepted");
 }

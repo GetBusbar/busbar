@@ -30,6 +30,13 @@ license = "Apache-2.0"
 name = "busbar_a2a"
 path = "src/lib.rs"
 
+[package.metadata.busbar]
+# THE OPERATOR CREDENTIAL'S TEST REGISTRY ROW: the auth plugin dev-dependency whose SDK boundary the
+# admin-verb battery's own test run links onto the auth axis (build.rs emits
+# `$OUT_DIR/test_operator_auth.rs`; the sources name no auth plugin), as the composition root links it
+# into the shipped binary.
+test-operator-auth = ["busbar-auth-admin-tokens-plugin"]
+
 [dependencies]
 # THE SEAL (1.6.0): busbar-core is no longer a PRODUCTION dependency of this plugin. Optional, pulled
 # ONLY by `test-support`: the plane's tests reach the engine fixture through the neutral substrate
@@ -112,16 +119,11 @@ schemars = { workspace = true, optional = true }
 # a bare `cargo test -p busbar-a2a` runs only the App-free unit/codec tests. (This replaced the former
 # `busbar_a2a_native` build-script cfg + `#[path]` dual-compile into busbar-core; both are gone.)
 #
-# The plane's sources carry `#[cfg(feature = "…")]` gates (the `PlaneDecl` OpenAPI-schema field, one
-# admin-tokens test path). Declared here as FORWARDS so the same `#[cfg]` resolves identically whether
-# these sources compile here or dual-compile into busbar-core. The openapi-schema forward points at
-# SUBSTRATE (where `PlaneDecl` lives) since busbar-core is no longer a prod dep; the admin-tokens
-# forward is weak (off by default, exactly as in core).
+# The plane's sources carry a `#[cfg(feature = "…")]` gate (the `PlaneDecl` OpenAPI-schema field).
+# Declared here as a FORWARD so the same `#[cfg]` resolves identically whether these sources compile
+# here or dual-compile into busbar-core. The openapi-schema forward points at SUBSTRATE (where
+# `PlaneDecl` lives) since busbar-core is no longer a prod dep.
 openapi-schema = ["busbar-kernel/openapi-schema", "dep:schemars"]
-# The one `auth-admin-tokens` site is a test module. Forwarded WEAKLY (`?`) so enabling it never
-# force-pulls the optional busbar-core into a non-test-support build; it only cascades where
-# busbar-core is already in the closure.
-auth-admin-tokens = ["busbar-kernel/auth-admin-tokens"]
 # Pulls busbar-core (the optional dep) and its test fixtures: the plane's App-driving tests reach the
 # engine fixture through the neutral substrate test kit, whose engine-side implementation the
 # `tests/`-path boot files bind from busbar-core, so this feature is the one edge that puts
@@ -156,3 +158,6 @@ rustls-pki-types = { workspace = true }
 # when testing THIS crate, never when busbar-admin (which itself dev-depends on this crate) links it
 # as a library, so no reverse edge exists in any non-test build.
 busbar-core-admin = { path = "../busbar-core-admin" }
+# The operator credential's test registry row (`test-operator-auth` above), from its own repo at the
+# SAME pinned rev the composition root links. Dev-only: the library names no auth plugin.
+busbar-auth-admin-tokens-plugin = { git = "https://github.com/GetBusbar/busbar-auth-admin-tokens", rev = "47cb5047e4c9a73341c613c09a056b4a4bb8eb99" }

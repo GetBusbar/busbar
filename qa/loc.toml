@@ -18,7 +18,7 @@
 # `package.name` (this said "two", naming only the last two below; item 465), measured 2026-09-24 by
 #   for d in crates/*/; do b=$(basename $d); n=$(grep -m1 '^name' $d/Cargo.toml | cut -d'"' -f2);
 #     [ "$n" != "$b" ] && echo "$b -> $n"; done
-# api, auth-admin-tokens, auth-static-plugin, export-example-plugin, hook-test-plugin,
+# api, auth-admin-tokens, auth-static-plugin, hook-test-plugin,
 # hooks-ranking, plane-example (-> busbar-plugin-example-plane), plugin-loader,
 # secret-example-plugin, secret-ref, store-memory — every one but
 # plane-example is its directory with `busbar-` prefixed. Re-run it before quoting the count.

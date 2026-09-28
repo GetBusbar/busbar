@@ -288,6 +288,11 @@ jobs:
         run: ./scripts/a2a-subject/h2-route-failover.sh --selftest
       - name: rooms self-test
         run: ./scripts/rooms.sh --selftest
+      - name: plugin fleet scripts self-test (pin check, repin decision by commit, next version)
+        run: |
+          ./scripts/fleet/pin-check.sh --selftest
+          ./scripts/fleet/repin.sh --selftest
+          ./scripts/fleet/next-version.sh --selftest
       - name: proof-manifest collator self-test
         run: python3 scripts/proof-manifest.py --selftest
       - name: plane-noun gate self-test
@@ -316,6 +321,8 @@ jobs:
         run: ./scripts/linked-axis-features.sh --selftest
       - name: oracle premise self-test (a filtered run evaluates its forgivenesses' premises or refuses by name)
         run: ./bin/oracle premise-selftest
+      - name: oracle private-tmp self-test (a recording never sees the host's plugin staging debris)
+        run: ./bin/oracle private-tmp-selftest
       - name: secret-accessor seal witness (no cdylib plugin reaches a kernel secret accessor)
         run: ./scripts/secret-accessor-seal-witness.sh --check
       - name: qa-gate runner self-test
@@ -434,6 +441,14 @@ jobs:
         run: cargo xtask gate no-tracked-ignored --selftest
       - name: No-tracked-ignored gate (no tracked path matches a .gitignore rule of this tree)
         run: cargo xtask gate no-tracked-ignored
+      # DESIGN-DOCS ALLOWLIST (owner, 2026-09-27): docs/design holds BUSBAR-1.6.0.md, 1.6.0-TODO.md,
+      # 1.6.0-KICKOFF.md, 1.6.0-QUESTIONS.md, 1.6.0-SLOT-LOG.md and 1.6.0-PARKED/, nothing else. A new
+      # design topic is a section of the spec; generated data and evidence go under qa/. Self-test
+      # FIRST: it plants a stray document and proves the gate names it.
+      - name: Design-docs allowlist self-test
+        run: cargo xtask gate design-docs-allowlist --selftest
+      - name: Design-docs allowlist (BLOCKING — nothing tracked under docs/design outside the list)
+        run: cargo xtask gate design-docs-allowlist
       # PACKAGE-SELECTOR LIVENESS: a `cargo ... -p <name>`, a `tests:`/`features:` matrix cell or an
       # xtask cargo command string that names a crate the 1.6.0 folds deleted. `cargo -p <gone>` does
       # not select nothing, it FAILS — and scripts/txn-fence.sh's PASS CONDITION IS A BUILD FAILURE,
@@ -693,6 +708,16 @@ jobs:
         run: cargo xtask gate money-invariants --selftest
       - name: Money-invariants gate (BLOCKING — no plugin-keyed money, no stored price, one seal site)
         run: cargo xtask gate money-invariants --posture
+      # PLANE-PRICING-BLINDNESS (#43/#71), THE PHASE 2 EXIT TEST'S THIRD LEG: a plane crate opens no
+      # hold, mints no unit key, resolves no card and prices nothing — the kernel does. Its baseline
+      # (qa/plane-pricing-blindness.toml) is EMPTY since the Phase 2 close, so it runs here plainly,
+      # BLOCKING on every push. It ran only at release time and inside the report-only `--all`, and
+      # that is how two plane money acts landed and stayed unseen for two days. Every phase EXIT TEST
+      # command is a blocking CI step. Self-test first.
+      - name: Plane-pricing-blindness self-test (the plane money-act scanner cannot be lied to)
+        run: cargo xtask gate plane-pricing-blindness --selftest
+      - name: Plane-pricing-blindness gate (BLOCKING — a plane performs no money act; Phase 2 exit)
+        run: cargo xtask gate plane-pricing-blindness
       # SEAL-WITNESS (#77): the money facts-line seal has exactly ONE root minter, spelled only inside
       # the kernel crate — a second minter anywhere else is a second book. This is the money-model
       # sibling of money-invariants above; it runs on every push for the same reason. Self-test FIRST,
@@ -825,6 +850,19 @@ jobs:
         run: cargo xtask gate kind-abi-lane --selftest
       - name: Kind-ABI-lane gate (BLOCKING — each kind on the ONE lane #30 assigns it by heat)
         run: cargo xtask gate kind-abi-lane
+      # ABI-LOCATION gate: ONE PLACE FOR EVERY ABI SHAPE (OWNER 2026-09-27: "edit one crate to add
+      # something to abi and all those plugin kinds then can implement it"). A `#[repr(C)]` type, an
+      # `extern "C"` slot body or fn-pointer type, or an ABI version constant defined anywhere but
+      # crates/busbar-contract/src/abi/ is a piece of the boundary the next kind cannot reach by
+      # editing abi/. Armed at today's count (Law 9) as the drain-only ledger qa/abi-location.toml:
+      # a NEW offender is RED, a drained offender whose row was not struck is RED. Test doubles live
+      # under tests/, benches/ or #[cfg(test)] only. Sibling plugin checkouts are scanned when
+      # present; CI has none, and the row says so. Self-test FIRST: a repr(C) struct planted in a
+      # kernel file and a version const planted in plugin-loader are proven RED, a tests/ double GREEN.
+      - name: ABI-location self-test (a repr(C) in the kernel and an ABI const in the loader, planted and proven RED)
+        run: cargo xtask gate abi-location --selftest
+      - name: ABI-location gate (BLOCKING — every ABI shape defined in busbar-contract's abi/, offenders drain-only)
+        run: cargo xtask gate abi-location
       # KIND-ISOLATION gate: busbar is core + plugins, and the ~10 plugin kinds can never
       # cross-contaminate (owner ruling, 2026-09-07). A proposal to create `busbar-transport-a2a`
       # was ruled catastrophic — it fuses a KIND with another kind's INSTANCE and merges back what
@@ -937,7 +975,7 @@ jobs:
           --health-retries 5
       # NOTE: there used to be a `vault:` service here for busbar-secret-vault /
       # busbar-secret-vault-plugin's live-Vault tests. That coverage moved with the crates to
-      # GetBusbar/hashicorp-vault (its own ci.yml boots the same real hashicorp/vault dev-mode
+      # GetBusbar/busbar-secret-vault (its own ci.yml boots the same real hashicorp/vault dev-mode
       # container) — see docs/plugins.md and scripts/release-check.sh's Vault phase for how the
       # monorepo now gates on that repo's own test suite via a sibling checkout instead.
     steps:
@@ -1009,7 +1047,7 @@ jobs:
           # could not fire either. This is a REPAIR of a broken instrument, not a ratchet move —
           # the numbers go UP, to what the suite actually is.
           #
-          # THE DERIVATION, reproducible (docs/design/1.6.0-test-vacuity.md §8):
+          # THE DERIVATION, reproducible:
           #   cargo test --workspace --locked --no-run --message-format=json   -> 192 test binaries
           #   each binary: --list --format terse                               -> 9,888 collected
           #   each binary: --list --ignored --format terse                     ->     7 ignored
@@ -1529,8 +1567,8 @@ jobs:
       # "frozen since 1.5.3, additive-only forever" claim is actually about.
       #
       # The gate now carries its own baseline: the freeze point the rule names (see
-      # DEFAULT_BASELINE_REF in xtask/src/gates/config_schema/mod.rs, and
-      # docs/design/1.6.0-denominator.md §8.2 for how the old default was found). Leaving this
+      # DEFAULT_BASELINE_REF in xtask/src/gates/config_schema/mod.rs for how the old default was
+      # found). Leaving this
       # variable unset is what lets that default apply — setting it here at all is how the check
       # got pointed back at the tree it was judging, so a future override needs a reason written
       # beside it and should never name `HEAD`, `github.sha`, or the branch under test.
@@ -1680,7 +1718,7 @@ jobs:
       - name: Public-hygiene gate
         run: python3 scripts/public-hygiene-lint.py --root .
 
-      # SECRET-VALUE-TYPE HYGIENE (scripts/secret-hygiene-gate.sh, docs/design/1.6.0-secret-hygiene.md):
+      # SECRET-VALUE-TYPE HYGIENE (scripts/secret-hygiene-gate.sh, docs/design/BUSBAR-1.6.0.md #53/#54):
       # a known-secret field declared as a bare String/&str/Vec<u8> instead of busbar_contract::Redacted<T>
       # (leakable through a derived Debug/Serialize), and an `.expose_secret()` on the same statement
       # as a log/audit/metric sink.
@@ -1703,7 +1741,7 @@ jobs:
       - name: Secret-hygiene debt meter (report-only)
         run: SECRET_GATE_REPORT_ONLY=1 scripts/secret-hygiene-gate.sh --report
 
-  # SERVICE-IMAGE PINS. The durable-store QA cycle (docs/design/store-qa-cycle.md) rests on the
+  # SERVICE-IMAGE PINS. The durable-store QA cycle (docs/design/BUSBAR-1.6.0.md THE DESIGN, §2) rests on the
   # four backend services being the SAME BYTES everywhere they are stood up. They were not: the
   # service containers were provisioned in five places — this file's `check` and `coverage` jobs,
   # release-stage.yml's `gate`, plugin-ci.yml's `build-test-signoff`, and scripts/release-check.sh.
@@ -2208,6 +2246,19 @@ jobs:
             features: busbar-store-memory/dropped-in
             tests: -p busbar-store-memory --test dropped_in_door
             scope: package
+          # THE DROPPED-IN TRANSPORT DOORS OF THE STDIO CARRIER AND THE WS FRAMER (#2, #3;
+          # TRANSPORT-STACK step 5): each crate's cdylib door is compiled only under its non-default
+          # `dropped-in` feature, and its own both-ways witness (tests/conformance.rs) runs the linked
+          # door and the dropped-in cdylib through one script. These rows clippy the door on its own
+          # and run that witness.
+          - name: dropped-in stdio carrier
+            features: busbar-transport-stdio/dropped-in
+            tests: -p busbar-transport-stdio --test conformance
+            scope: package
+          - name: dropped-in ws framer
+            features: busbar-transport-ws/dropped-in
+            tests: -p busbar-transport-ws --test conformance
+            scope: package
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
@@ -2251,12 +2302,13 @@ jobs:
         # than skip for exactly that reason; this line is what keeps them from having to.
         #
         # The auth kind's cdylib is not on the list: it is the REAL token-verifying module
-        # (GetBusbar/auth-oidc), a pinned git dev-dependency of busbar-kernel, busbar and
-        # busbar-plugin-loader, so each of those crates' own test build carries it.
+        # (GetBusbar/busbar-auth-oidc), a pinned git dev-dependency of busbar-kernel, busbar and
+        # busbar-plugin-loader, so each of those crates' own test build carries it. Nor are the export
+        # kind's: they are the REAL sinks (GetBusbar/busbar-export-file, -webhook, -prometheus, -otlp), pinned
+        # git dev-dependencies of busbar and busbar-plugin-loader, carried the same way.
         run: |
           cargo build --locked \
             -p busbar-hook-test-plugin \
-            -p busbar-export-example-plugin \
             -p busbar-plugin-example-plane
       - name: Tests — ${{ matrix.name }}
         # The OWNING crates' suites, with the feature on. Compiling the `#[cfg]`-ed code proves it is
@@ -2568,9 +2620,7 @@ jobs:
   # feature-covered: busbar-kernel-identity/sha256 -- check -- reached from the default auth-admin-tokens closure in the workspace build
   # feature-covered: busbar-kernel/test-support -- check -- unified in by a dev-dependency under cargo clippy --workspace --all-targets
   # feature-covered: busbar-a2a/test-support -- check -- unified in by a dev-dependency under --all-targets in that job
-  # feature-covered: busbar-a2a/auth-admin-tokens -- check -- unified in by a dev-dependency under --all-targets in that job
   # feature-covered: busbar-mcp/test-support -- check -- unified in by a dev-dependency under --all-targets in that job
-  # feature-covered: busbar-mcp/auth-admin-tokens -- check -- unified in by a dev-dependency under --all-targets in that job
   # feature-covered: busbar-llm/test-support -- check -- unified in by a dev-dependency under --all-targets in that job
   # feature-covered: busbar-llm-codec/test-support -- check -- unified in by a dev-dependency under --all-targets in that job
   # feature-covered: busbar-core-admin/openapi-schema -- openapi-schema -- the job clippies and tests -p busbar-core-admin with the feature named
@@ -2685,7 +2735,7 @@ jobs:
   # PLUGIN PROOFS — THE SECRET, AUTH, STORE AND HOOK KINDS, PROVEN BY THE REAL PLUGIN REPOS. The owner deleted
   # the in-tree secret and auth fixtures ("these are trash … real plugins are the examples",
   # docs/design/1.6.0-QUESTIONS.md "FIXTURES"); the proofs of those two kinds are
-  # GetBusbar/hashicorp-vault (secret) and GetBusbar/auth-github (auth). Both repos depend on busbar
+  # GetBusbar/busbar-secret-vault (secret) and GetBusbar/busbar-auth-github (auth). Both repos depend on busbar
   # by `git` at the rev their `.busbar-ref` pins, and name busbar-contract alone (#40; plus
   # busbar-plugin-loader dev-only). Each is checked out at `dev` beside THIS checkout and built with
   # both busbar crates `[patch]`ed to THIS tree through cargo config (no manifest edit: what builds is
@@ -2697,8 +2747,8 @@ jobs:
   # in the plugin's own words). Unlocked on purpose: the patch rewrites the plugins' busbar source,
   # and this job's question is whether they build against this tree.
   #
-  # THE STORE AND HOOK KINDS (R-FIX2: dropped-in door proofs use REAL plugins): GetBusbar/store-sqlite
-  # (the durable store — a durable file, a restart, two nodes on one file) and GetBusbar/webrequest-hook
+  # THE STORE AND HOOK KINDS (R-FIX2: dropped-in door proofs use REAL plugins): GetBusbar/busbar-store-sqlite
+  # (the durable store — a durable file, a restart, two nodes on one file) and GetBusbar/busbar-hook-webrequest
   # (the forwarding hook — reject, restrict and a slow upstream, against the proof's own local mock
   # upstream). Both name busbar-contract alone by git at their `.busbar-ref`, and each is built AT THE
   # REV THIS FILE PINS (`STORE_SQLITE_REV`, `WEBREQUEST_HOOK_REV`), unpatched and `--locked`: the
@@ -2710,49 +2760,61 @@ jobs:
 
     # BOUNDED — see "EVERY JOB IS BOUNDED" at the top of this file. NEW JOB, no run history yet:
     # four small plugin workspaces (store-sqlite compiles a bundled SQLite) and one loader test
-    # binary, cold. Re-measure to p95 x1.5 once ten green runs exist.
-    timeout-minutes: 40
+    # binary, cold; since the metrics-reporting hook joined, a fifth plugin (its compression engine
+    # compiles tokenizers and tree-sitter grammars), cold. Re-measure to p95 x1.5 once ten green runs
+    # exist.
+    timeout-minutes: 60
     env:
       CARGO_TARGET_DIR: ${{ github.workspace }}/plugin-proofs-target
       # The real store and hook plugin commits the proofs run: each repo's `dev` after its
       # busbar-contract port. Bump deliberately, like any pin.
-      STORE_SQLITE_REV: 04f4c9ee0a151b3d9689553f0fa72ec6429f16b2
-      WEBREQUEST_HOOK_REV: 2861fa4921e95f03c553444627e08409dcf900ab
+      STORE_SQLITE_REV: 8a4b9ebeccb4ead553ac9ec1617aed5a51e17814
+      WEBREQUEST_HOOK_REV: 3a7235e71b2ff00c3da32b1f0fa63864985bc4e7
+      # The real plugin that reports its OWN metrics on its status reply (GetBusbar/busbar-hook-headroom,
+      # `dev` after its busbar-contract port): the proof that a third-party plugin's own series cross
+      # the dropped-in door. Bump deliberately, like any pin.
+      HEADROOM_HOOK_REV: d49a7404449302867ef7317ba466b3c67dfd0470
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           path: busbar
-      - name: Checkout the real secret plugin (GetBusbar/hashicorp-vault)
+      - name: Checkout the real secret plugin (GetBusbar/busbar-secret-vault)
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          repository: GetBusbar/hashicorp-vault
+          repository: GetBusbar/busbar-secret-vault
           ref: dev
-          path: hashicorp-vault
-      - name: Checkout the real auth plugin (GetBusbar/auth-github)
+          path: busbar-secret-vault
+      - name: Checkout the real auth plugin (GetBusbar/busbar-auth-github)
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          repository: GetBusbar/auth-github
+          repository: GetBusbar/busbar-auth-github
           ref: dev
-          path: auth-github
-      - name: Checkout the real durable store (GetBusbar/store-sqlite, pinned)
+          path: busbar-auth-github
+      - name: Checkout the real durable store (GetBusbar/busbar-store-sqlite, pinned)
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          repository: GetBusbar/store-sqlite
+          repository: GetBusbar/busbar-store-sqlite
           ref: ${{ env.STORE_SQLITE_REV }}
-          path: store-sqlite
-      - name: Checkout the real forwarding hook (GetBusbar/webrequest-hook, pinned)
+          path: busbar-store-sqlite
+      - name: Checkout the real forwarding hook (GetBusbar/busbar-hook-webrequest, pinned)
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          repository: GetBusbar/webrequest-hook
+          repository: GetBusbar/busbar-hook-webrequest
           ref: ${{ env.WEBREQUEST_HOOK_REV }}
-          path: webrequest-hook
+          path: busbar-hook-webrequest
+      - name: Checkout the real metrics-reporting hook (GetBusbar/busbar-hook-headroom, pinned)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: GetBusbar/busbar-hook-headroom
+          ref: ${{ env.HEADROOM_HOOK_REV }}
+          path: busbar-hook-headroom
       - uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
       - name: Patch the busbar crates both plugins name to this tree
         # `[patch]` from cargo config, not an edit of the plugins' manifests: what builds is each
         # plugin's own source, byte for byte, with only the busbar git source redirected here.
         run: |
           set -euo pipefail
-          for repo in hashicorp-vault auth-github; do
+          for repo in busbar-secret-vault busbar-auth-github; do
             mkdir -p "$repo/.cargo"
             {
               echo '[patch."https://github.com/GetBusbar/busbar"]'
@@ -2769,34 +2831,38 @@ jobs:
               fi )
           done
       - name: Build the secret plugin's cdylib against this checkout
-        working-directory: hashicorp-vault
-        # package-selector: busbar-hashicorp-vault-plugin -- .github/workflows/ci.yml -- GetBusbar/hashicorp-vault is a sibling checkout; `working-directory: hashicorp-vault` resolves this selector against that workspace, never against this one
-        run: cargo build -p busbar-hashicorp-vault-plugin
+        working-directory: busbar-secret-vault
+        # package-selector: busbar-secret-vault-plugin -- .github/workflows/ci.yml -- GetBusbar/busbar-secret-vault is a sibling checkout; `working-directory: busbar-secret-vault` resolves this selector against that workspace, never against this one
+        run: cargo build -p busbar-secret-vault-plugin
       - name: Build the auth plugin's cdylib against this checkout
-        working-directory: auth-github
-        # package-selector: busbar-auth-github-plugin -- .github/workflows/ci.yml -- GetBusbar/auth-github is a sibling checkout; `working-directory: auth-github` resolves this selector against that workspace, never against this one
+        working-directory: busbar-auth-github
+        # package-selector: busbar-auth-github-plugin -- .github/workflows/ci.yml -- GetBusbar/busbar-auth-github is a sibling checkout; `working-directory: busbar-auth-github` resolves this selector against that workspace, never against this one
         run: cargo build -p busbar-auth-github-plugin
       - name: Build the durable store's cdylib at its pinned rev
-        working-directory: store-sqlite
-        # package-selector: busbar-store-sqlite-plugin -- .github/workflows/ci.yml -- GetBusbar/store-sqlite is its own checkout; `working-directory: store-sqlite` resolves this selector against that workspace, never against this one
+        working-directory: busbar-store-sqlite
+        # package-selector: busbar-store-sqlite-plugin -- .github/workflows/ci.yml -- GetBusbar/busbar-store-sqlite is its own checkout; `working-directory: busbar-store-sqlite` resolves this selector against that workspace, never against this one
         run: cargo build --locked -p busbar-store-sqlite-plugin
       - name: Build the forwarding hook's cdylib at its pinned rev
-        working-directory: webrequest-hook
-        # package-selector: busbar-webrequest-hook-plugin -- .github/workflows/ci.yml -- GetBusbar/webrequest-hook is its own checkout; `working-directory: webrequest-hook` resolves this selector against that workspace, never against this one
-        run: cargo build --locked -p busbar-webrequest-hook-plugin
-      - name: Dlopen all four through the dropped-in door (plugin_proof_tests)
+        working-directory: busbar-hook-webrequest
+        # package-selector: busbar-hook-webrequest -- .github/workflows/ci.yml -- GetBusbar/busbar-hook-webrequest is its own checkout; `working-directory: busbar-hook-webrequest` resolves this selector against that workspace, never against this one
+        run: cargo build --locked -p busbar-hook-webrequest
+      - name: Build the metrics-reporting hook's cdylib at its pinned rev
+        working-directory: busbar-hook-headroom
+        # package-selector: busbar-hook-headroom -- .github/workflows/ci.yml -- GetBusbar/busbar-hook-headroom is its own checkout; `working-directory: busbar-hook-headroom` resolves this selector against that workspace, never against this one
+        run: cargo build --locked -p busbar-hook-headroom --lib
+      - name: Dlopen all five through the dropped-in door (plugin_proof_tests)
         working-directory: busbar
         env:
           BUSBAR_PLUGIN_PROOF_DIR: ${{ github.workspace }}/plugin-proofs-target/debug
         run: |
           set -euo pipefail
           # FLOOR ON THE MATCH COUNT: the proofs are `#[ignore]`d, so this is their only execution,
-          # and a filter that matches nothing exits 0 having proven nothing. Seven: the five real-plugin
+          # and a filter that matches nothing exits 0 having proven nothing. Eight: the six real-plugin
           # proofs, the task-state restart over the real durable store, and the two-node store proof's
           # second node (a no-op when run on its own).
           out="$(cargo test --locked -p busbar-plugin-loader --lib plugin_proof_tests -- --ignored 2>&1 | tee /dev/stderr)"
-          echo "$out" | grep -qE 'test result: ok\. 7 passed' || {
-            echo "::error::plugin_proof_tests did not run exactly the five real-plugin proofs, the task-state restart and the second node"
+          echo "$out" | grep -qE 'test result: ok\. 8 passed' || {
+            echo "::error::plugin_proof_tests did not run exactly the six real-plugin proofs, the task-state restart and the second node"
             exit 1
           }
 
@@ -2909,7 +2975,7 @@ jobs:
       # Raising it is a REPAIR of a broken instrument, not a ratchet move.
       #
       # The unix pair was MEASURED (9,888 collected + 33 doc-tests - 7 ignored = 9,914; the
-      # derivation is in that job and in docs/design/1.6.0-test-vacuity.md §8). This pair is a
+      # derivation is in that job). This pair is a
       # PROJECTION off it, because nobody here has a windows runner to list binaries on: the
       # previous pair recorded windows at 0.9935 of unix EXPECTED and 0.9947 of unix MIN, and the
       # only structural difference is the cfg(unix)-only set, which has not changed shape. So
@@ -3287,7 +3353,7 @@ jobs:
           fi
 
   # ── proof-manifest: PRODUCE + TRANSPORT for the Build Proof Dashboard ──────────────────────────────
-  # (docs/design/1.6.0-proof-dashboard.md). Runs ONLY on the three stage-mirrored promotion branches
+  # (docs/proof/README.md). Runs ONLY on the three stage-mirrored promotion branches
   # (dev/qa/main). The stage mirroring is preserved in the FILE NAME, not in the branch the file is
   # committed to: a push to dev publishes docs/proof/dev.json; qa -> qa.json; main -> main.json.
   #
@@ -3829,7 +3895,7 @@ jobs:
           path: target/llm-conformance/
           if-no-files-found: warn
 
-  # THE CONSTRUCTION GATE — measures how the tree is BUILT against docs/design/ARCHITECTURE.md with
+  # THE CONSTRUCTION GATE — measures how the tree is BUILT against docs/design/BUSBAR-1.6.0.md with
   # the ceilings in qa/construction.toml (one function sends the upstream attempt, request-path
   # functions stay readable, planes reach the kernel through the ABI only, every installable seam is
   # installed, the neutral crates know no dialect, one request terminal). Pure bash + stdlib python:
@@ -3924,7 +3990,7 @@ jobs:
             target
 
   construction-gate:
-    name: construction gate (how the tree is built vs ARCHITECTURE.md — BLOCKING, on its posture)
+    name: construction gate (how the tree is built vs the design — BLOCKING, on its posture)
     runs-on: latchkey-xlarge
     # Waits on the cheap hygiene tier.
     needs: [preflight]
@@ -4012,7 +4078,7 @@ jobs:
           if-no-files-found: warn
 
   # DESIGN BINDINGS — "is what we built compliant with what we designed?" qa/design-bindings.json maps
-  # every ARCHITECTURE.md Appendix B binding to the checks that prove it (tests, oracle cells, lints,
+  # every qa/parity-bindings.md (Appendix B) binding to the checks that prove it (tests, oracle cells, lints,
   # gates). Two things are asserted here, no toolchain needed (stdlib python + bash):
   #   1. EXISTENCE (the plain run): every referenced check still exists in the tree. A vanished
   #      test or cell is RED. An UNMAPPED binding is a named gap — listed, not red, and only a gap
@@ -4040,6 +4106,10 @@ jobs:
 
   content-debt-gates:
     name: registered gates red on content (${{ matrix.gate }} — REPORT-ONLY in the umbrella, never softened here)
+    # `map-proof` and `sweep-coverage` stood here too until 2026-09-27; both judged scratch reports
+    # under docs/design (the map-proof corpus, the sweep slices and file verdicts) that the owner's
+    # docs/design purge deletes, so both gates were retired with them rather than re-pointed.
+    #
     # THREE REGISTERED GATES RAN NOWHERE. `unconstructed`, `map-proof` and `sweep-coverage` were in
     # the registry with no call site and no written excuse, so `cargo xtask full-gate --selftest`
     # — whose registry-vs-ci.yml SET EQUALITY is what this job satisfies — exited 1, and a gate
@@ -4071,12 +4141,12 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        gate: [unconstructed, sweep-coverage, map-proof]
+        gate: [unconstructed]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          # sweep-coverage's denominator is git's tracked set and map-proof re-runs the commands its
-          # corpus prints, some of which read history; a shallow clone would measure a different tree.
+          # Full history kept from when this job also ran sweep-coverage and map-proof (both read
+          # git's tracked set and history); unconstructed does not need it, and it costs little.
           fetch-depth: 0
       - uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
       - name: Resolve cargo home (Latchkey image sets CARGO_HOME off $HOME)
@@ -4093,18 +4163,6 @@ jobs:
         # carries both. It does not soften either — the job is red if either step is.
         if: ${{ !cancelled() && matrix.gate == 'unconstructed' }}
         run: cargo xtask gate unconstructed
-      - name: sweep-coverage self-test
-        if: matrix.gate == 'sweep-coverage'
-        run: cargo xtask gate sweep-coverage --selftest
-      - name: sweep-coverage (every tracked file carries a sweep verdict)
-        if: ${{ !cancelled() && matrix.gate == 'sweep-coverage' }}
-        run: cargo xtask gate sweep-coverage
-      - name: map-proof self-test
-        if: matrix.gate == 'map-proof'
-        run: cargo xtask gate map-proof --selftest
-      - name: map-proof (every printed figure re-derived from the command that prints it)
-        if: ${{ !cancelled() && matrix.gate == 'map-proof' }}
-        run: cargo xtask gate map-proof
 
   # EVERY REGISTERED GATE, IN ONE RUN, ON EVERY PUSH -- REPORT-ONLY IN THE UMBRELLA, NEVER SOFTENED
   # HERE (KICKOFF 13.2). `cargo xtask gate --all` is the registry's own verdict: every gate, one
@@ -4235,17 +4293,17 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - repo: export-file
+          - repo: busbar-export-file
             patch: "busbar-contract=crates/busbar-contract busbar-plugin-loader=crates/plugin-loader"
-          - repo: export-prometheus
+          - repo: busbar-export-prometheus
             patch: "busbar-contract=crates/busbar-contract busbar-plugin-loader=crates/plugin-loader"
-          - repo: export-webhook
+          - repo: busbar-export-webhook
             patch: "busbar-contract=crates/busbar-contract busbar-plugin-loader=crates/plugin-loader"
-          - repo: export-otlp
+          - repo: busbar-export-otlp
             patch: "busbar-contract=crates/busbar-contract busbar-plugin-loader=crates/plugin-loader"
-          - repo: transport-tcp
+          - repo: busbar-transport-tcp
             patch: "busbar-contract=crates/busbar-contract busbar-plugin-loader=crates/plugin-loader"
-          - repo: auth-admin-tokens
+          - repo: busbar-auth-admin-tokens
             patch: "busbar-contract=crates/busbar-contract busbar-plugin-loader=crates/plugin-loader"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -4331,10 +4389,10 @@ jobs:
       - gate-all
       - plugin-proofs
       - consumers
-    # report-only: content-debt-gates -- unconstructed, map-proof and sweep-coverage are RED ON HEAD on
-    #   content that item 6b (Phase 5) drains, self-test and verdict both, and none has a
-    #   gates::REPORT_ONLY posture to score against. The job runs them plainly and goes red; the
-    #   umbrella waits for it and prints its result, and does not count it until each is green.
+    # report-only: content-debt-gates -- unconstructed is RED ON HEAD on
+    #   content that item 6b (Phase 5) drains, self-test and verdict both, and has no
+    #   gates::REPORT_ONLY posture to score against. The job runs it plainly and goes red; the
+    #   umbrella waits for it and prints its result, and does not count it until it is green.
     # report-only: gate-all -- `cargo xtask gate --all` is RED ON HEAD in the gates later phases
     #   drain (KICKOFF 13.2). The job runs it plainly and goes red on every run; the umbrella waits
     #   for it and prints its result, and does not count it until `gate --all` exits 0 on HEAD.

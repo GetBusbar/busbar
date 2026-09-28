@@ -176,7 +176,7 @@ Keep `enforce_admins: true`, `required_linear_history: true`, `allow_force_pushe
 `allow_deletions: false` on `qa` and `main`. No workflow may push a commit to either branch
 (release-order-lint R11).
 
-Full reasoning, with file:line evidence: [`docs/design/release-path-i5.md`](docs/design/release-path-i5.md).
+The ruling: [`docs/design/BUSBAR-1.6.0.md`](docs/design/BUSBAR-1.6.0.md) Part 6, the release engine.
 
 ## Downstream (self-healing, no action needed)
 

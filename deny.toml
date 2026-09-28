@@ -74,10 +74,10 @@ allow-registry = ["https://github.com/rust-lang/crates.io-index"]
 # The default plugins busbar pulls from their own repos at a PINNED rev (owner ruling, 1.6.0: one
 # repo per plugin). Each is a reviewed entry, one URL per plugin repo.
 allow-git = [
-    "https://github.com/GetBusbar/export-file",
-    "https://github.com/GetBusbar/export-otlp",
-    "https://github.com/GetBusbar/export-prometheus",
-    "https://github.com/GetBusbar/export-webhook",
-    "https://github.com/GetBusbar/auth-oidc",
-    "https://github.com/GetBusbar/auth-admin-tokens",
+    "https://github.com/GetBusbar/busbar-export-file",
+    "https://github.com/GetBusbar/busbar-export-otlp",
+    "https://github.com/GetBusbar/busbar-export-prometheus",
+    "https://github.com/GetBusbar/busbar-export-webhook",
+    "https://github.com/GetBusbar/busbar-auth-oidc",
+    "https://github.com/GetBusbar/busbar-auth-admin-tokens",
 ]

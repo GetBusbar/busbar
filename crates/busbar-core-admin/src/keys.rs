@@ -2005,10 +2005,9 @@ pub(crate) async fn delete_key(
 #[path = "tests/key_cap_tests.rs"]
 mod key_cap_tests;
 
-// The admin-surface e2e tests authenticate through the `admin-tokens` module; a
-// `--no-default-features` binary compiles it OUT, which DISABLES the admin API wholesale (the
-// admin_auth chain all-Passes ⇒ denied) — so this module only applies when the module exists.
-#[cfg(all(test, feature = "auth-admin-tokens"))]
+// The admin-surface e2e tests authenticate through the operator credential's test registry row
+// (`test_seams::ensure_seam`).
+#[cfg(test)]
 #[path = "tests/tests.rs"]
 mod tests;
 

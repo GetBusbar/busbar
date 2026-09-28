@@ -16,7 +16,7 @@ pub type SeededCheck = (&'static str, &'static str, &'static str);
 
 pub static SEED: &[(&str, &[SeededCheck])] = &[
     ("PB-0", &[
-        ("gate", "xtask/src/gates/inventory_coverage.rs", "every docs/design/inventory/*.md row id either has a citing shadow-oracle cell that PASSes on the golden ledger or is a NAMED gap in qa/inventory-gaps.json; a row with neither turns the check red, and so does a gap entry naming a row that no longer exists or has since been covered"),
+        ("gate", "xtask/src/gates/inventory_coverage.rs", "every qa/evidence/inventory/*.md row id either has a citing shadow-oracle cell that PASSes on the golden ledger or is a NAMED gap in qa/inventory-gaps.json; a row with neither turns the check red, and so does a gap entry naming a row that no longer exists or has since been covered"),
     ]),
     ("PB-1", &[
         ("test", "enforce_restricts_reapplies_compliance_tags_across_pools", "a Reject restrict with no eligible lane fails closed; the Weighted arm passes candidates unchanged"),
@@ -627,7 +627,7 @@ pub static UNPROVEN_BY_NOTE: &[(&str, &str)] = &[];
 
 /// One line per unmapped binding: the cheapest check that would move it to `mapped`.
 pub static SUGGEST: &[(&str, &str)] = &[
-    ("PB-0", "oracle-family coverage gate: every row id of docs/design/inventory/*.md appears in at least one cells.json cell (a derived cell-count test, red on any inventory row with no cell)"),
+    ("PB-0", "oracle-family coverage gate: every row id of qa/evidence/inventory/*.md appears in at least one cells.json cell (a derived cell-count test, red on any inventory row with no cell)"),
     ("PB-1", "engine unit test: gate restrict-empty with on_empty absent and with `first` both render the 503 KIND_OVERLOADED literal; plus a hooks-family oracle cell"),
     ("PB-2", "engine unit test: a lane at max_concurrent is skipped (try_admit AtCapacity) with no wait; `on_exhausted: queue` waits at most max_ms"),
     ("PB-3", "select/walk unit test: tripped, budget-exhausted and at-capacity lanes are absent from the walk order and the pool falls to on_exhausted after the requests charge"),

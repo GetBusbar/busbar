@@ -454,7 +454,7 @@ fn a_migration_with_nothing_to_decide_emits_no_comment_banner() {
 }
 
 // ── THE BOOT-WARNING COUNT ──────────────────────────────────────────────────────────────────────
-// ARCHITECTURE.md Appendix B binds the boot warnings of a migrated 1.5.5 deployment: none beyond
+// qa/parity-bindings.md binds the boot warnings of a migrated 1.5.5 deployment: none beyond
 // what 1.5.5 itself emitted, unless a 1.6.0-additive key is written into the config.
 //
 // WHY THIS TEST AND NOT THE ONE THAT WAS THERE. That binding is a COUNT, and the only checks it

@@ -1,7 +1,7 @@
 # qa/construction.toml — thresholds for THE CONSTRUCTION GATE (cargo xtask gate construction).
 #
 # The shadow oracle proves the tree is user-correct. This file is the owner's dial for how well the
-# tree is BUILT, measured against docs/design/ARCHITECTURE.md. Every rule below is a named invariant
+# tree is BUILT, measured against docs/design/BUSBAR-1.6.0.md. Every rule below is a named invariant
 # with a plain-language reason, a current-state threshold, and the one knob the owner tightens as the
 # construction improves. Tightening is a one-line edit here; the gate script never restates a number.
 #
@@ -19,8 +19,8 @@
 # 1471 `.rs` files, `crates/*/tests` holds 139 and `crates/*/benches` holds 4 — 143 files of real,
 # compiled, product-linked Rust that every one of the 113 rows below was asserting about and none of
 # them could open. A forged token mint, a `busbar_core::` reach, a seal site or a test double
-# written into `crates/busbar-llm/tests/` was invisible to this gate, and the census in
-# docs/design/1.6.0-gate-blindspots.md planted one and watched the gate stay green.
+# written into `crates/busbar-llm/tests/` was invisible to this gate, and the 1.6.0 gate
+# blind-spot census planted one and watched the gate stay green.
 #
 # `crates/*/tests` and `crates/*/benches` are PRODUCT code in the sense that matters here: they
 # compile against the product crates, they can name every type the product exports, and a
@@ -45,7 +45,7 @@ scan_roots = ["crates/*/src", "crates/*/tests", "crates/*/benches"]
 # The plane crates (the plugin side): one name per protocol plane, so each carries its own ceiling
 # below. This is the ROW KEY list, not the whole source surface — see gate.plane_codec_crates.
 #
-# NOTE (PLUGIN-TREE.md): "plane" is defined TWICE in this file, disjointly. This list is the four
+# NOTE (BUSBAR-1.6.0.md THE DESIGN, §2): "plane" is defined TWICE in this file, disjointly. This list is the four
 # LEGACY ENGINE crates; `gate.plugin_kinds.plane` below is the five `busbar-plane-*` crates, and the
 # two lists share zero members. manifest-allowlist reads THIS one to decide what "a plane names
 # another plane" means. The two collapse into one definition when the legacy engines are deleted;
@@ -56,7 +56,7 @@ plane_crates = ["busbar-llm", "busbar-mcp", "busbar-a2a", "busbar-voice"]
 # A bare `tests.rs` (Rust's `#[cfg(test)] mod tests;` file convention) is test code too.
 test_path_fragments = ["/tests/", "_tests.rs", "_test.rs", "/tests.rs"]
 
-# Directory globs (relative to the repo root) that name each PLUGIN KIND from ARCHITECTURE.md section 1.4.
+# Directory globs (relative to the repo root) that name each PLUGIN KIND from BUSBAR-1.6.0.md THE DESIGN, §2.
 # Shared by manifest-allowlist, source-denylist and forbid-unsafe so the kind boundaries are drawn
 # once. A glob matching no directory today is fine (the kind has no crate yet) — every rule below
 # treats an empty match list as nothing-to-check, not a failure.
@@ -73,7 +73,7 @@ test_path_fragments = ["/tests/", "_tests.rs", "_test.rs", "/tests.rs"]
 #     should be authoritative — is read by nothing. That is how `crates/secret-ref` (a SecretRef TYPE
 #     crate, no Secret impl) is classified `secret`, and how `crates/hooks-ranking` is classified
 #     `hook` by the directory name while implementing a busbar-api trait. Renaming the crate
-#     directories to their existing `package.name` (PLUGIN-TREE.md section 7) makes these globs
+#     directories to their existing `package.name` (BUSBAR-1.6.0.md THE DESIGN, §2) makes these globs
 #     correct by construction and is the cheap first half of kind-by-declaration.
 #
 # `kind-isolation:truths` reconciles this file, the gate's kind table and qa/kind-isolation.toml, in
@@ -119,9 +119,9 @@ hook = ["crates/hook*"]
 auth = ["crates/auth-*"]
 # BOTH spellings, and the second is the one that matters. #34 names every plugin instance
 # `busbar-<kind>-<name>`, so the roster's export sinks land at `crates/busbar-export-*` — a path the
-# bare `export-*` glob does not match. It matched the one crate that predates the naming rule
-# (`crates/export-example-plugin`) and would have gone on printing a green row while every real
-# export crate sat outside the family, unscanned. A glob that stops matching its own kind is the
+# bare `export-*` glob does not match. It matched only the export fixture that predated the naming
+# rule (deleted 2026-09-27; the real sinks live in their own repos) and would have gone on printing a
+# green row while every real export crate sat outside the family, unscanned. A glob that stops matching its own kind is the
 # same failure class as a census row that stops counting.
 export = ["crates/export-*", "crates/busbar-export-*"]
 # NON-PLUGIN-KIND infra families: loader and abi (TCB crates). `unit` is STRUCK (fold F14 2/2): the
@@ -155,7 +155,7 @@ abi = ["crates/busbar-contract"]
 # A cancelled kind scheduled in a config file is the DECISIONS #14 resurrection hazard exactly.
 #
 # WHAT THESE CRATES ACTUALLY ARE: a plane's own PURE half, a per-plane path-dep, kept beside the
-# plane crate and scanned as part of it (DECISIONS #6; PLUGIN-TREE.md §7). They carry no `Kind`
+# plane crate and scanned as part of it (DECISIONS #6; BUSBAR-1.6.0.md THE DESIGN, §2). They carry no `Kind`
 # variant because they are not a kind; the plane's own rules are what hold them.
 #
 # STILL TRUE AND STILL OWED, independent of D36: the llm DECLS order (anthropic, openai, gemini,
@@ -293,27 +293,63 @@ busbar-voice = ["busbar-voice-codec"]
 # 15206 -> 16477 (OWNER RULING Q68(3)). Its commit reached the base; struck by HOTDOOR-B queue 2's
 # re-arm, which declares the pair's next figure below.
 
-# ── THE CONTRACT CEILING PAIR, RE-ARMED BY HOTDOOR-B QUEUE 2 (PlaneDecl dispatch_flags, ABI minor 32) ─
+# ── THE CONTRACT CEILING PAIR, RE-ARMED BY HOTDOOR-B QUEUE 2 (PlaneDecl dispatch_flags, ABI minor 32) —
+#    EXPIRED AND STRUCK
+#
+# Declared `gate.surface_ceilings.contract_caps` and `rules.loc-ceilings.caps_contract_ceiling`
+# 16477 -> 16482 (OWNER RULING Q68(3)). Its commit reached the base; struck by TRANSPORT-STACK claims'
+# re-arm, which declares the pair's next figure below.
+
+# ── THE CONTRACT CEILING PAIR, RE-ARMED BY TRANSPORT-STACK CLAIMS (ABI minor 33) —
+#    EXPIRED AND STRUCK
+#
+# Declared `gate.surface_ceilings.contract_caps` and `rules.loc-ceilings.caps_contract_ceiling`
+# 16482 -> 16664 (OWNER RULING Q68(3)). Its commit reached the base; struck by the transport
+# lowering shrink, which LOWERS the pair to its measurement (16368) below.
+
+# ── THE CONTRACT CEILING PAIR, RE-ARMED BY CONFIG-REQ (PlaneDecl required_sections, ABI minor 34) —
+#    EXPIRED AND STRUCK
+#
+# Declared `gate.surface_ceilings.contract_caps` and `rules.loc-ceilings.caps_contract_ceiling`
+# 16368 -> 16373 (OWNER RULING Q68(3)). Its commit reached the base; struck by the framer clock seam's
+# re-arm, which declares the pair's next figure below.
+
+# ── THE CONTRACT CEILING PAIR, RE-ARMED BY THE FRAMER CLOCK SEAM —
+#    EXPIRED AND STRUCK
+#
+# Declared `gate.surface_ceilings.contract_caps` and `rules.loc-ceilings.caps_contract_ceiling`
+# 16373 -> 16403 (OWNER RULING Q68(3)). Its commit reached the base; struck by the connection table's
+# re-arm, which declares the pair's next figure below.
+
+# ── THE CONTRACT CEILING PAIR, RE-ARMED BY THE CONNECTION TABLE (the step-3 conn slice) —
+#    EXPIRED AND STRUCK
+#
+# Declared `gate.surface_ceilings.contract_caps` and `rules.loc-ceilings.caps_contract_ceiling`
+# 16403 -> 17126 (OWNER RULING Q68(3)). Its commit reached the base; struck by the kind -> verb list's
+# re-arm, which declares the pair's next figure below.
+
+# ── THE CONTRACT CEILING PAIR, RE-ARMED BY THE KIND -> VERB LIST (Kind::verb()) ─────────────────
 
 [gate.ceiling_raises."gate.surface_ceilings.contract_caps"]
 file    = "qa/construction.toml"
-from    = 16477
-to      = 16482
-because = "OWNER RULING Q68(3) (docs/design/1.6.0-QUESTIONS.md): contract_caps re-arms at the MEASURED value, in its own commit. This is the re-arm for HOTDOOR-B queue 2 (765b2ddc9; ARCHITECT 2026-09-27, #30 HOT lane): hot::PlaneDecl appends dispatch_flags (+ padding) and hot::decl::DISPATCH_BLOCKS at ABI minor 32, so a plane's dispatch runs inline on the request's worker unless it declares it blocks, +5 code lines. Measured by cargo xtask loc: 16477 before, 16482 after."
-
-[gate.ceiling_raises."rules.loc-ceilings.caps_contract_ceiling"]
-file    = "qa/construction.toml"
-from    = 16477
-to      = 16482
-because = "OWNER RULING Q68(3) (docs/design/1.6.0-QUESTIONS.md): contract_caps re-arms at the MEASURED value, in its own commit. This is the re-arm for HOTDOOR-B queue 2 (765b2ddc9; ARCHITECT 2026-09-27, #30 HOT lane): hot::PlaneDecl appends dispatch_flags (+ padding) and hot::decl::DISPATCH_BLOCKS at ABI minor 32, so a plane's dispatch runs inline on the request's worker unless it declares it blocks, +5 code lines. Measured by cargo xtask loc: 16477 before, 16482 after."
-
-# ── THE KERNEL CEILING, RE-ARMED BY SD-8 (the substrate-values kernel landing) ─────────────────
+from    = 17126
+to      = 17170
+because = "OWNER RULING Q68(3) (docs/design/1.6.0-QUESTIONS.md): contract_caps re-arms at the MEASURED value, in its own commit. This is the re-arm for THE KIND -> VERB LIST (TODO KERNEL<>PLUGINS step 9 item 1; the design's config section): busbar_contract::plugin::Kind::verb() with Verb, root_key(), root(), Kind::ALL and owning_root_key() — the one place a kind's config root key is spelled — +44 code lines. Measured by cargo xtask gate construction: 17126 before, 17170 after."
 
 [gate.ceiling_raises."rules.loc-ceilings.kernel_ceiling"]
 file    = "qa/construction.toml"
-from    = 51100
-to      = 54801
-because = "OWNER RULING Q69(3) (docs/design/1.6.0-QUESTIONS.md): kernel and contract ceilings re-arm at the MEASURED value after each owner-locked move commit, in its own commit (Q68(3) pattern; ARCHITECT R-KERNEL, sd-extra.txt). This is the re-arm for SD-8 (3/4, 256435c91): the KERNEL-SEMANTICS/HOST items of the deleted busbar-substrate-values land in busbar-kernel per O1. loc-ceilings:kernel measures 51090 before (d946dbcc4) and 54791 after, +3701; the ceiling rises by exactly that, keeping K2g's named reservation as the base held it."
+from    = 54801
+to      = 54814
+because = "ARCHITECT 2026-09-27: R-KERNEL exception for the Phase-2 exit-test regression (plane-pricing-blindness), A+C. The kernel's door now opens the zero hold an llm unit's admission carries and mints every unit key through one allocator, acts the llm and voice planes performed themselves. Measured by cargo xtask gate construction: 54785 before, 54798 after, +13. The ceiling rises by exactly that; K2g's named reservation is unchanged."
+
+[gate.ceiling_raises."rules.loc-ceilings.caps_contract_ceiling"]
+file    = "qa/construction.toml"
+from    = 17126
+to      = 17170
+because = "OWNER RULING Q68(3) (docs/design/1.6.0-QUESTIONS.md): contract_caps re-arms at the MEASURED value, in its own commit. This is the re-arm for THE KIND -> VERB LIST (TODO KERNEL<>PLUGINS step 9 item 1; the design's config section): busbar_contract::plugin::Kind::verb() with Verb, root_key(), root(), Kind::ALL and owning_root_key() — the one place a kind's config root key is spelled — +44 code lines. Measured by cargo xtask gate construction: 17126 before, 17170 after."
+
+# ── THE KERNEL CEILING, RE-ARMED BY SD-8 (the substrate-values kernel landing) ─────────────────
+# Its 51100 -> 54801 declaration expired once landed and is struck; the ceiling text below keeps it.
 
 # ── THE KERNEL CEILING'S OWNER-APPROVED RAISE — EXPIRED AND STRUCK ─────────────────────────────
 #
@@ -360,7 +396,7 @@ because = "OWNER RULING Q69(3) (docs/design/1.6.0-QUESTIONS.md): kernel and cont
 lines   = 73
 because = "ARCHITECT ruling on the kernel budget (R-KERNEL, sd-extra.txt; K2-0 units plan): K2g's kernel change is ruled and not yet landed and holds up to 73 kernel code lines; every other change nets <= 0 on the kernel, and SD-8 and the timing fold re-arm by their own measured figures in their own commits."
 
-# The surface ceilings from ARCHITECTURE.md section 1.1: what a PLUGIN AUTHOR has to read. These are
+# The surface ceilings from BUSBAR-1.6.0.md THE DESIGN, §1: what a PLUGIN AUTHOR has to read. These are
 # owner decisions, not ratchets that drift upward with the tree — the gate reads them
 # from here (rather than a literal in the rule table) purely so --selftest can also produce
 # a green baseline value for a scratch copy; the checked-in numbers below never move except by the
@@ -459,7 +495,16 @@ because = "ARCHITECT ruling on the kernel budget (R-KERNEL, sd-extra.txt; K2-0 u
 # RE-ARMED 16477 -> 16482, AT THE MEASUREMENT (OWNER RULING Q68(3)), in its own commit after HOTDOOR-B
 # queue 2 appended PlaneDecl's dispatch_flags at ABI minor 32 (+5); the live declaration above
 # carries the measure.
-contract_caps = 16482
+# RE-ARMED 16482 -> 16664, AT THE MEASUREMENT (OWNER RULING Q68(3)), in its own commit after
+# TRANSPORT-STACK claims appended the transport entry's claims at ABI minor 33 (+182); the live
+# declaration above carries the measure.
+# LOWERED 16664 -> 16368, AT THE MEASUREMENT, in the commit that shrank the transport lowering (slot
+# tables and bridges generated from one declarative list per role, -296).
+# RE-ARMED 16373 -> 16403, AT THE MEASUREMENT (OWNER RULING Q68(3)), in its own commit after
+# the framer clock seam (+30); the live declaration above carries the measure.
+# RE-ARMED 16403 -> 17126, AT THE MEASUREMENT (OWNER RULING Q68(3)), in its own commit after
+# the connection table (+723); the live declaration above carries the measure.
+contract_caps = 17170
 # REPOINTED, and the repoint is what makes this row a gate again. It named the CRATE
 # `busbar-grammar`, which #40 folded into `busbar-contract` and deleted — so it summed nothing,
 # measured nothing and passed, which is this file's own "zero is not clean" failure sitting inside
@@ -469,7 +514,7 @@ contract_caps = 16482
 # is exactly the figure the crate carried. Unchanged, therefore, and gating for the first time since
 # the fold. `grammar.rs` next to it is deliberately NOT the subject — that is the CLAIMS/SELECTOR
 # grammar (390 lines), a different closed grammar and ordinary contract surface already spent
-# against `contract_caps`. `docs/design/ARCHITECTURE.md` names all three files for this row; that
+# against `contract_caps`. `docs/design/BUSBAR-1.6.0.md` names all three files for this row; that
 # list is wrong on `grammar.rs` and is the owner's to amend.
 grammar = 388
 
@@ -934,7 +979,7 @@ A third is a second selection policy growing beside the first."""
 verb = "pick_among"
 max_sites = 2
 
-# ── 14. loc-ceilings (ARCHITECTURE.md section 1.1) ─────────────────────────────────────────────────────────
+# ── 14. loc-ceilings (BUSBAR-1.6.0.md THE DESIGN, §1) ─────────────────────────────────────────────────────────
 [rules.loc-ceilings]
 why = """The kernel stays small by construction, not by promise. section 1.1 gives one union ceiling, one \
 per-crate ceiling for busbar-contract (with the folded caps module), one for the busbar-unit-* union (with a verbs \
@@ -1020,7 +1065,10 @@ kernel_crate = "busbar-kernel"
 # at d946dbcc4 and 54791 at 256435c91: +3701, the moved lines exactly. 51100 + 3701 = 54801, so the
 # gap K2g's named reservation holds is the one the base held (10 of its 73 lines unspent there);
 # the reservation itself is unchanged.
-kernel_ceiling = 54801
+# ── RE-ARMED 54801 -> 54814 for the Phase-2 exit-test regression, declared above: the kernel's
+# door takes the zero hold and the unit-key mint the llm and voice planes performed. Measured 54785
+# before and 54798 after, +13; K2g's named reservation is unchanged and unspent by it.
+kernel_ceiling = 54814
 # `caps_crate = "busbar-caps"` WAS HERE AND IS STRUCK, 2026-09-22. The crate was folded into
 # busbar-contract by 2c9eddecf ("W2.c: fold busbar-caps into busbar-contract"); its types live at
 # `crates/busbar-contract/src/caps/`, whose own module header says "Folded from the former
@@ -1081,7 +1129,11 @@ contract_crate = "busbar-contract"
 # RE-ARMED 15015 -> 15206 with its pair (OWNER RULING Q68(3); TRANSPORT-STACK step 1, the carrier and framer traits, +191).
 # RE-ARMED 15206 -> 16477 with its pair (OWNER RULING Q68(3); TRANSPORT-STACK step 2, the transport HOT lowering, +1271).
 # RE-ARMED 16477 -> 16482 with its pair (OWNER RULING Q68(3); HOTDOOR-B queue 2, PlaneDecl dispatch_flags at ABI minor 32, +5).
-caps_contract_ceiling = 16482
+# RE-ARMED 16482 -> 16664 with its pair (OWNER RULING Q68(3); TRANSPORT-STACK claims, the transport entry's claims at ABI minor 33, +182).
+# LOWERED 16664 -> 16368 with its pair (the transport lowering shrink: slot tables and bridges from one declarative list per role, -296).
+# RE-ARMED 16373 -> 16403 with its pair (OWNER RULING Q68(3); the framer clock seam, +30).
+# RE-ARMED 16403 -> 17126 with its pair (OWNER RULING Q68(3); the connection table, +723).
+caps_contract_ceiling = 17170
 unit_crate_glob = "busbar-unit-*"
 # RE-KEYED on cherry-pick onto 143db6db6: this commit's own delta is -53 (two units stopped
 # declaring their own copies), measured against whatever unit_total_ceiling read when the line was
@@ -1152,7 +1204,7 @@ patterns = ["teller.rs"]
 # re-exported from `teller` under every old path; its 96 code lines still spend `kernel_ceiling`.
 # That took the row from 695 (RED against 659) to 604. Downward only.
 # ── LOWERED 604 -> 601, the measurement: TLS-RETIRE (2/3) deletes `Kernel::transport_key_token`.
-ceiling = 601
+ceiling = 599
 
 [rules.loc-ceilings.kernel_files.pump]
 label = "pump/scheduler"
@@ -1221,7 +1273,7 @@ label = "arena: the per-call bump scratch pad (DECISIONS #41)"
 patterns = ["scratch.rs"]
 ceiling = 109
 
-# ── 15. manifest-allowlist (ARCHITECTURE.md section 1.2) ────────────────────────────────────────────────────
+# ── 15. manifest-allowlist (BUSBAR-1.6.0.md THE DESIGN, §2) ────────────────────────────────────────────────────
 [rules.manifest-allowlist]
 why = """Core → plugin, never plugin → core. A plugin-kind crate (plane, store, auth, hook, export, \
 secret) may name `busbar-contract` and the closed grammar it is written on (`busbar-grammar`) freely; \
@@ -1258,7 +1310,7 @@ reviewed_allowlist = ["busbar-api", "serde", "serde_json", "tracing", "async-tra
 # STALE — verified 2026-09-07: NONE of the four edges below exists at this commit. Every plane crate
 # is exactly `busbar-contract` + its own codec and nothing else; the planes are the cleanest seam in
 # the workspace. This ratchet describes a tree that no longer exists and tells a reader the coupling
-# is still there. Delete it (PLUGIN-TREE.md section 9) — noted here, not done here, because a rule
+# is still there. Delete it (BUSBAR-1.6.0.md THE DESIGN, §2) — noted here, not done here, because a rule
 # change is not this commit's business.
 [rules.manifest-allowlist.known_red_deps]
 busbar-plane-llm = ["busbar-llm"]
@@ -1271,7 +1323,7 @@ busbar-plane-llm = ["busbar-llm"]
 # plane's definition asks for and not a coupling this rule is about.
 busbar-plane-streaming = ["busbar-voice"]
 
-# ── 16. source-denylist (ARCHITECTURE.md section 1.2) ───────────────────────────────────────────────────────
+# ── 16. source-denylist (BUSBAR-1.6.0.md THE DESIGN, §2) ───────────────────────────────────────────────────────
 [rules.source-denylist]
 why = """The pure kinds (plane, hook, pure auth, egress-auth-scheme) do no I/O by construction: no \
 socket, no file, no process, no OS handle, no environment read, no HTTP client. A plugin that opens \
@@ -1328,7 +1380,7 @@ symbols = ["getauxval", "sysctlbyname"]
 reason = "OWNER RULING 2026-09-22, docs/design/BUSBAR-1.6.0.md: cpufeatures -> libc is NOT an I/O reach. NEEDED, and it cannot be switched off: in sha2 0.10.9 cpufeatures is a TARGET-GATED hard dependency for aarch64, x86_64 and x86 -- every platform busbar ships on -- declared behind NO feature, so force-soft forces the software hash path and still leaves the edge resolved. RIGHT CRATE: it is RustCrypto's standard runtime detector for selecting hardware SHA acceleration. ENTIRE libc SURFACE, enumerated from its source and listed in `symbols` above: getauxval and sysctlbyname, plus the c_ulong/c_void type aliases. Two function calls, both CPU-capability queries. This rule's own `why` forbids a socket, a file, a process, an OS handle, an environment read and an HTTP client; a CPU-capability query is none of those six. SCOPE, load-bearing: this exempts THAT PATH ONLY -- a pure crate reaching libc by any OTHER route is still a hit, which is the per-crate waivers' own words (re-review if any other path to libc appears) kept as the rule. getrandom -> libc is explicitly NOT ruled on here: it is a different edge with a different argument (entropy drawn by the codec instead of arriving through Ctx) and it keeps its per-crate waiver in qa/denylist-allow.toml until someone rules on it."
 owner = "owner, 2026-09-22"
 
-# ── 17. lean-core (ARCHITECTURE.md section 1.3) ─────────────────────────────────────────────────────────────
+# ── 17. lean-core (BUSBAR-1.6.0.md THE DESIGN, §1) ─────────────────────────────────────────────────────────────
 [rules.lean-core]
 why = """The kernel and the unit crates have no closed enum a plugin could need to extend, and no \
 open-vocabulary word of their own: every dialect name and plane key is a runtime registration, never \
@@ -1444,7 +1496,7 @@ known_sites = [
   "crates/busbar-kernel/src/test_support/mod.rs:220",
 ]
 
-# ── 18. no-default-bodies (ARCHITECTURE.md section 3.7) ─────────────────────────────────────────────────────
+# ── 18. no-default-bodies (BUSBAR-1.6.0.md THE DESIGN, §8) ─────────────────────────────────────────────────────
 [rules.no-default-bodies]
 why = """A kind trait with a default method body is a place a plugin's behaviour was decided for it \
 without the plugin's author ever writing a line — the opposite of "every trait method implemented". \
@@ -1465,7 +1517,7 @@ traits = [
 ]
 max_defaulted = 0
 
-# ── 19. sealed-unit-traits (ARCHITECTURE.md section 3.7) ────────────────────────────────────────────────────
+# ── 19. sealed-unit-traits (BUSBAR-1.6.0.md THE DESIGN, §8) ────────────────────────────────────────────────────
 [rules.sealed-unit-traits]
 why = """The trait a unit implements to be called by the Teller is sealed on a private supertrait, \
 so no plugin crate can implement it and stand in for a unit the kernel itself must own. \
@@ -1494,7 +1546,7 @@ crate = "busbar-kernel-audit"
 file = "crates/busbar-kernel-audit/src/record.rs"
 trait = "Audit"
 
-# ── 20. hold-discipline (ARCHITECTURE.md section 3.7 / section 8.3) ────────────────────────────────────────────────
+# ── 20. hold-discipline (BUSBAR-1.6.0.md THE DESIGN, §8) ────────────────────────────────────────────────
 [rules.hold-discipline]
 why = """Every path takes its Hold exactly once and every path that takes one actually settles it. \
 Five mechanical proxies for that, each a pattern match over busbar-kernel and busbar-unit-* \
@@ -1530,7 +1582,7 @@ max_join_abort = 0
 max_forget_or_drop = 0
 max_uncancellable_await = 0
 
-# ── 21. forbid-unsafe (ARCHITECTURE.md section 1.2) ─────────────────────────────────────────────────────────
+# ── 21. forbid-unsafe (BUSBAR-1.6.0.md THE DESIGN, §2) ─────────────────────────────────────────────────────────
 [rules.kernel-seal-impls]
 why = """`busbar_contract::plugin::KernelSeal` is what every kernel-built view the contract declares \
 takes to be constructed: a verified destination, the unit a plane reads, a one-shot secret, a \
@@ -1607,10 +1659,9 @@ known_missing_forbid = [
   "hook-test-plugin", "hooks-ranking",
 ]
 known_missing_deny = [ "plugin-loader",
-  "export-example-plugin",
 ]
 
-# ── 22. secret-carrier-debug (ARCHITECTURE.md section 3.7) ───────────────────────────────────────────────────
+# ── 22. secret-carrier-debug (BUSBAR-1.6.0.md THE DESIGN, §8) ───────────────────────────────────────────────────
 [rules.secret-carrier-debug]
 why = """A value that carries secret bytes must hand-roll its `Debug` so the bytes cannot be printed \
 — never derive one. On the plugin ABI this is not a matter of caller discipline: every auth scheme \
@@ -1630,7 +1681,7 @@ generated docs. The ceiling is zero and is never calibrated upward: this is a cl
 figure the tree is allowed to carry any of."""
 max_hits = 0
 
-# ── 24. hold-escapes (ARCHITECTURE.md section 3.5) ────────────────────────────────────────────────────────────
+# ── 24. hold-escapes (BUSBAR-1.6.0.md THE DESIGN, §1) ────────────────────────────────────────────────────────────
 [rules.hold-escapes]
 why = """Rust has no linear types, so "this value must be consumed by exactly this function" is not \
 expressible: `std::mem::forget`, `ManuallyDrop`, `Box::leak` and an `AssertUnwindSafe` wrapper all \
@@ -2469,9 +2520,8 @@ plane_crates = 4
 # with no crate yet, and a blanket "at least one" would red such a documented zero while still
 # saying nothing about `plane` going from five crates to one. The count catches the narrowing and
 # leaves an intended zero alone; the day a kind's first crate appears, its number is raised with it.
-# `export`'s `crates/busbar-export-*` half matches no directory today and is the live example: the
-# kind still counts 1, from `crates/export-example-plugin`, and the second glob is the #34 landing
-# zone rather than a miscount.
+# `export` is the live example: both of its globs match no directory today (every export sink lives
+# in its own repo), so the kind counts 0 — its documented zero in this repo, not a miscount.
 #
 # ── RE-PINNED 2026-09-22, AND EVERY DECREMENT NAMES ITS CAUSE ───────────────────────────────────
 #
@@ -2533,7 +2583,7 @@ plane_crates = 4
 #
 #   * `secret` 1 -> 0. The fixture deletion (owner, docs/design/1.6.0-QUESTIONS.md "FIXTURES":
 #     "these are trash … real plugins are the examples"): `crates/secret-example-plugin` was
-#     deleted, and the secret kind is proven by the real plugin repo GetBusbar/hashicorp-vault
+#     deleted, and the secret kind is proven by the real plugin repo GetBusbar/busbar-secret-vault
 #     (crates/plugin-loader/src/tests/plugin_proof_tests.rs, ci.yml `plugin-proofs`).
 #     `crates/secret-*` now matches no directory: the kind's documented zero in this repo.
 #
@@ -2541,10 +2591,10 @@ plane_crates = 4
 #
 #   * `auth` 2 -> 1. The fixture deletion (owner, docs/design/1.6.0-QUESTIONS.md "FIXTURES": "real
 #     plugins are the examples"; ARCHITECT R-FIX2): `crates/auth-static-plugin` was deleted. The auth
-#     kind's dropped-in proofs load the REAL token-verifying module GetBusbar/auth-oidc (pinned by
+#     kind's dropped-in proofs load the REAL token-verifying module GetBusbar/busbar-auth-oidc (pinned by
 #     git: busbar-kernel `auth/tests/plugin_chain_tests.rs`, `crates/busbar/tests/mcp_stdio_serve.rs`,
 #     busbar-plugin-loader `auth_conformance_tests`), and ci.yml `plugin-proofs` proves
-#     GetBusbar/auth-github. `crates/auth-*` now matches exactly one: `crates/auth-admin-tokens`.
+#     GetBusbar/busbar-auth-github. `crates/auth-*` now matches exactly one: `crates/auth-admin-tokens`.
 #
 # ── RE-PINNED 2026-09-27: `transport` 5 -> 4 ────────────────────────────────────────────────────────────────
 #
@@ -2557,7 +2607,7 @@ plane_crates = 4
 #
 #   * `auth` 1 -> 0. The move-out (owner, "PLUGINS LIVE IN THEIR OWN REPOS"; ARCHITECT 2026-09-27:
 #     auth-admin-tokens is a REAL auth plugin, extracted with its door and conformance):
-#     `crates/auth-admin-tokens` moved to GetBusbar/auth-admin-tokens with its history, and busbar
+#     `crates/auth-admin-tokens` moved to GetBusbar/busbar-auth-admin-tokens with its history, and busbar
 #     pulls it at a pinned rev under the unchanged `auth-admin-tokens` feature (busbar-kernel) and as
 #     the loader's `auth-verify` both-ways proof. `crates/auth-*` now matches no directory: the
 #     kind's documented zero in this repo. Its `known_missing_forbid` entry leaves with it (the
@@ -2575,15 +2625,21 @@ plane_crates = 4
 #
 # store 2 -> 1 (DOOR-STORE item 4, R-FIX2 + owner FIXTURES ruling): crates/store-example-plugin is
 # DELETED — its one remaining test (the dlopen-restart durability proof) moved onto the real durable
-# store GetBusbar/store-sqlite in `plugin_proof_tests`. `crates/store-*` now matches exactly one:
+# store GetBusbar/busbar-store-sqlite in `plugin_proof_tests`. `crates/store-*` now matches exactly one:
 # `crates/store-memory`, the store kind's both-ways proof.
+#
+# export 1 -> 0 (EX-DEL, owner FIXTURES ruling "real plugins are the proofs" + Q75): the export
+# fixture crate is DELETED. Every test that loaded it now loads a REAL sink from its own repo at the
+# root's pinned rev (GetBusbar/busbar-export-file, -webhook, -prometheus, -otlp) — the loader's both-ways
+# rows `export`, `export-webhook`, `export-scrape`, `export-otlp`. Neither export glob matches a
+# directory in this repo any more: the kind's documented zero.
 [gate.census.plugin_kinds]
 plane = 5
 hook = 2
 auth = 0
 secret = 0
 store = 1
-export = 1
+export = 0
 transport = 4
 loader = 1
 abi = 1

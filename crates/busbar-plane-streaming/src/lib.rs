@@ -6,7 +6,7 @@
 //! An ADAPTER, in the same sense `busbar-plane-llm` is one: every method of the plane kind here is a
 //! thin wrapper over a codec that already exists in `busbar-voice-codec` — the OpenAI Realtime and
 //! Gemini Live dialect readers/writers and the four-layer duplex/session IR they meet in
-//! (`docs/design/plane4-duplex-session.md`, the four-layer IR section). No wire format for those two dialects is written
+//! (`docs/design/BUSBAR-1.6.0.md` #18/#45, the four-layer IR section). No wire format for those two dialects is written
 //! twice.
 //!
 //! Two things this crate DOES write itself, because nothing upstream provides them and the task this

@@ -112,6 +112,8 @@ pub const CARGO_LOCAL: &[&str] = &[
     "cargo xtask gate kernel-token-wire-purity",
     "cargo xtask gate money-invariants --selftest",
     "cargo xtask gate money-invariants --posture",
+    "cargo xtask gate plane-pricing-blindness --selftest",
+    "cargo xtask gate plane-pricing-blindness",
     "cargo xtask gate seal-witness --selftest",
     "cargo xtask gate seal-witness",
     "cargo xtask gate no-float-money --selftest",
@@ -132,6 +134,8 @@ pub const CARGO_LOCAL: &[&str] = &[
     "cargo xtask gate plane-abi-neutrality",
     "cargo xtask gate kind-abi-lane --selftest",
     "cargo xtask gate kind-abi-lane",
+    "cargo xtask gate abi-location --selftest",
+    "cargo xtask gate abi-location",
     "cargo xtask gate duplex-ws-default-edge --selftest",
     "cargo xtask gate duplex-ws-default-edge",
     "cargo xtask gate teller-steps --selftest",
@@ -158,7 +162,7 @@ pub const CARGO_LOCAL: &[&str] = &[
     // The feature-sets job's plugin cdylibs. `busbar-plugin-example-plane` joined the list in
     // ci.yml at 4e39e1a11 (the kind:plane rider `plane_abi_rider.rs` dlopens) and the local copy
     // was never moved with it, so the CI line went unclassified. One list, both places.
-    "cargo build --locked -p busbar-hook-test-plugin -p busbar-export-example-plugin -p busbar-plugin-example-plane",
+    "cargo build --locked -p busbar-hook-test-plugin -p busbar-plugin-example-plane",
     "cargo xtask gate feature-sets --selftest",
     "cargo xtask gate feature-sets",
     "cargo xtask gate field-inventory --selftest",
@@ -181,6 +185,8 @@ pub const CARGO_LOCAL: &[&str] = &[
     "cargo xtask gate structure-lint --posture",
     "cargo xtask gate no-tracked-ignored --selftest",
     "cargo xtask gate no-tracked-ignored",
+    "cargo xtask gate design-docs-allowlist --selftest",
+    "cargo xtask gate design-docs-allowlist",
     "cargo xtask gate package-selectors --selftest",
     "cargo xtask gate package-selectors",
     "cargo xtask gate qa-names --selftest",
@@ -201,10 +207,11 @@ pub const CARGO_CI_ONLY: &[(&str, &str)] = &[
     ("cargo clippy --workspace --all-targets -- -D warnings", "the WINDOWS job's clippy. It exists to catch the platform-gated code no local run compiles at all -- a #[cfg(unix)] item whose #[cfg(windows)] twin was never written is a warning THERE and nowhere here. A macOS/Linux clippy cannot substitute: it takes the other arm of every cfg. Approximated locally with 'cargo xwin clippy --target x86_64-pc-windows-msvc', which type-checks the Windows arms without a Windows host but still executes nothing."),
     ("cargo test --release --locked timing_gate -- --ignored", "a RELEASE-profile wall-clock gate on a dedicated runner. A debug tree with a compiler and a browser competing for the CPU measures the laptop, not the engine; run it directly when touching the timing path."),
     ("cargo build -p busbar --release --locked", "the RELEASE-profile build that feeds build-provenance-gate.sh (it asserts the shipped binary's optimized posture). The local build mirror is the debug 'cargo build --locked --bin busbar' above; a release build here would re-measure the laptop, not prove anything the debug build does not."),
-    ("cargo build -p busbar-hashicorp-vault-plugin", "the plugin-proofs job's build of the SECRET kind's real plugin, GetBusbar/hashicorp-vault, checked out BESIDE this tree at its `dev` with its busbar git dependencies `[patch]`ed to this tree through cargo config. Its working directory is that sibling repo, which a local run of this tree does not have."),
-    ("cargo build -p busbar-auth-github-plugin", "the plugin-proofs job's build of the AUTH kind's real plugin, GetBusbar/auth-github, checked out beside this tree the same way; same reason."),
-    ("cargo build --locked -p busbar-store-sqlite-plugin", "the plugin-proofs job's build of the STORE kind's real plugin, GetBusbar/store-sqlite, checked out beside this tree at the rev the job pins and built against that repo's own pin. Its working directory is that sibling repo, which a local run of this tree does not have."),
-    ("cargo build --locked -p busbar-webrequest-hook-plugin", "the plugin-proofs job's build of the HOOK kind's real plugin, GetBusbar/webrequest-hook, checked out beside this tree the same way; same reason."),
+    ("cargo build -p busbar-secret-vault-plugin", "the plugin-proofs job's build of the SECRET kind's real plugin, GetBusbar/busbar-secret-vault, checked out BESIDE this tree at its `dev` with its busbar git dependencies `[patch]`ed to this tree through cargo config. Its working directory is that sibling repo, which a local run of this tree does not have."),
+    ("cargo build -p busbar-auth-github-plugin", "the plugin-proofs job's build of the AUTH kind's real plugin, GetBusbar/busbar-auth-github, checked out beside this tree the same way; same reason."),
+    ("cargo build --locked -p busbar-store-sqlite-plugin", "the plugin-proofs job's build of the STORE kind's real plugin, GetBusbar/busbar-store-sqlite, checked out beside this tree at the rev the job pins and built against that repo's own pin. Its working directory is that sibling repo, which a local run of this tree does not have."),
+    ("cargo build --locked -p busbar-hook-webrequest", "the plugin-proofs job's build of the HOOK kind's real plugin, GetBusbar/busbar-hook-webrequest, checked out beside this tree the same way; same reason."),
+    ("cargo build --locked -p busbar-hook-headroom --lib", "the plugin-proofs job's build of the real metrics-reporting HOOK plugin, GetBusbar/busbar-hook-headroom, checked out beside this tree at the rev the job pins and built against that repo's own pin; same reason."),
     ("cargo test --locked -p busbar-plugin-loader --lib plugin_proof_tests -- --ignored", "the plugin-proofs job's dlopen of the two sibling-built cdylibs through the dropped-in door. The tests are #[ignore]d here because the artifacts they load exist only after the two sibling builds above, in that job's target dir (BUSBAR_PLUGIN_PROOF_DIR)."),
     ("cargo build -p busbar-transport-tcp --release --locked --features dropped-in", "the build-release job's second invocation: the tcp transport's DROPPED-IN artifact, whose `#[no_mangle]` door is compiled only under `dropped-in` so the fat-LTO release link above sees the handshake symbols once. It exists to feed the `nm -D` check that the `.so` exports its three door symbols -- an ELF release artifact on the Linux runner. The same reason as the release build above: a local release build would re-measure the laptop, and `nm -D` reads the Linux runner's ELF artifact."),
     ("cargo build -p busbar-kernel -p busbar-contract --no-default-features --features \"$FEATS\" --locked", "the plane-DELETION matrix build. $FEATS is '${{ matrix.features }}', which expands per kept-plane combination -- a CI matrix construct with no single local form, and the literal string is not a runnable command. It is mirrored locally by the delete-test gate (PLANE-DELETE group), which compiles the neutral crates with a plane removed."),
@@ -218,16 +225,12 @@ pub const CARGO_CI_ONLY: &[(&str, &str)] = &[
     ("cargo test --workspace --locked --no-run --message-format=json", "the INPUT to the unix `check` job's collected-vs-ran census. It re-resolves the binaries `cargo test --workspace --locked` (above, run locally) has already built and emits cargo's JSON artifact stream; alone it has no verdict. The verdict is the inline python census and the per-binary `--list` loop that read that stream, which are step logic in ci.yml with no local form. Running the bare line here would rebuild nothing and prove nothing."),
     ("cargo xtask gate unconstructed --selftest", CONTENT_DEBT_GATE),
     ("cargo xtask gate unconstructed", CONTENT_DEBT_GATE),
-    ("cargo xtask gate sweep-coverage --selftest", CONTENT_DEBT_GATE),
-    ("cargo xtask gate sweep-coverage", CONTENT_DEBT_GATE),
-    ("cargo xtask gate map-proof --selftest", CONTENT_DEBT_GATE),
-    ("cargo xtask gate map-proof", CONTENT_DEBT_GATE),
     ("cargo xtask gate --all", "run by ci.yml's `gate-all` job, PLAINLY — no --report, no continue-on-error, no `|| true` — which the umbrella waits for and declares `# report-only:` (KICKOFF 13.2: before it, `gate --all` ran in no automatic workflow). It is the whole registry in one run and is RED ON HEAD on the gates later phases drain, so in CARGO_LOCAL it would red every local full-gate run on debt this runner cannot excuse; the gates it runs are each ALSO invoked gate-by-gate in ci.yml and classified one by one above (CARGO_LOCAL, or CI-only with their own reason, or excused in REGISTRY_NOT_IN_CI), so omitting the rollup here leaves no gate unaccounted for. DELETE this entry, move the line to CARGO_LOCAL and give the job a RESULTS row in the same commit, when `cargo xtask gate --all` exits 0 on HEAD."),
 ];
 
-/// The one reason the three `content-debt-gates` gates share (item 6a). Written once so the six
+/// The reason the `content-debt-gates` gate shares across its two lines (item 6a). Written once so
 /// lines cannot drift into six stories.
-const CONTENT_DEBT_GATE: &str = "run by ci.yml's `content-debt-gates` job, PLAINLY — no --report, no continue-on-error, no `|| true` — which the umbrella waits for and declares `# report-only:`. All three gates (`unconstructed`, `sweep-coverage`, `map-proof`) are RED ON HEAD, self-test and verdict both, on content item 6b (Phase 5) drains, and none has a gates::REPORT_ONLY posture, so neither a `--posture` form nor a green local form exists. In CARGO_LOCAL they would red every local full-gate run on debt this runner cannot excuse. DELETE the gate's two entries, move them to CARGO_LOCAL and give the job a RESULTS row in the same commit, when that gate is green on HEAD.";
+const CONTENT_DEBT_GATE: &str = "run by ci.yml's `content-debt-gates` job, PLAINLY — no --report, no continue-on-error, no `|| true` — which the umbrella waits for and declares `# report-only:`. `unconstructed` is RED ON HEAD, self-test and verdict both, on content item 6b (Phase 5) drains, and has no gates::REPORT_ONLY posture, so neither a `--posture` form nor a green local form exists. In CARGO_LOCAL they would red every local full-gate run on debt this runner cannot excuse. DELETE the gate's two entries, move them to CARGO_LOCAL and give the job a RESULTS row in the same commit, when that gate is green on HEAD.";
 
 /// WHERE AN EXCUSED GATE IS ACTUALLY RUN — the checkable half of a written reason.
 ///
@@ -565,30 +568,6 @@ pub const REGISTRY_NOT_IN_CI: &[(&str, &str, Excuse)] = &[
         Excuse::ReleaseRun(
             "scripts/verify-1.6.0-done.sh",
             "cargo xtask gate reachability",
-        ),
-    ),
-    (
-        "plane-pricing-blindness",
-        "DECISION #43's witness — planes always ledger, and the money acts (resolve a card, price, \
-         mint a unit key, arithmetic a hold) are kernel-side. It is RED ON HEAD BY DESIGN, and the \
-         #83 roster said so before this gate ever measured it: the SPLIT row for \
-         busbar-{llm,mcp,a2a,voice} reads `Session, turn and dialect rules -> 16-20. But \
-         unit/{admit,approve,meter,route} and runtime/metering.rs decide admission and price - \
-         that is defs 5/6, not a plane.` This gate is that sentence made mechanical. It reds on 11 \
-         files across busbar-llm and busbar-voice — including `engine/usage.rs`'s \
-         `if host.cost_pricing_enabled(..)`, which is the literal branch #43 outlaws — and is \
-         GREEN on all five EXTRACTED busbar-plane-* crates, whose 125 `rate_card|nanos|price|spend` \
-         grep hits are prose. That separation is its red-before-green proof. Excused from ci.yml \
-         because a gate that is red every push is a gate somebody puts a `|| true` in front of; \
-         MOVE IT TO ci.yml when qa/plane-pricing-blindness.toml is empty. Its VERDICT is a \
-         release-time question (Tier::Full, item 185) and runs in full on the sha being staged: \
-         release-stage.yml's `done-oracle` job runs the gate plainly, on every push to qa, and that \
-         run gates the promotion. This entry used to rest on the SELFTEST alone \
-         (xtask/tests/plane_pricing_blindness.rs, still run under `cargo test --workspace --locked` \
-         on every push) — which proves the scanner can be driven red and ran the verdict nowhere.",
-        Excuse::ReleaseScript(
-            ".github/workflows/release-stage.yml",
-            "run: cargo xtask gate plane-pricing-blindness\n",
         ),
     ),
     (

@@ -101,10 +101,6 @@ smallvec = { workspace = true }
 # dump, and only under the non-default `timing` feature. The default build does not link it.
 libc = { workspace = true, optional = true }
 busbar-plugin-loader = { path = "../plugin-loader" }
-# The built-in `admin-tokens` admin-auth module lives in its own repo (owner move-out ruling;
-# ARCHITECT 2026-09-27), pulled at a pinned rev under the same feature and name; its busbar-contract
-# resolves to this tree through the workspace `[patch]` table (one contract copy).
-busbar-auth-admin-tokens = { git = "https://github.com/GetBusbar/auth-admin-tokens", rev = "47cb5047e4c9a73341c613c09a056b4a4bb8eb99", optional = true }
 # THE STAND-IN LINKED ROWS (test-only edges): the composition root links the build's default store
 # and ranking hooks onto the cold-kind axis (`preflight::install_linked_rows`); a test build has no
 # root, so these fixtures stand in, under `test-support` (which the dev-dependency cycle through the
@@ -192,12 +188,11 @@ rcgen = { workspace = true, optional = true }
 # The `#[cfg(feature = ...)]` sites live in this crate, so this crate declares the features and
 # the `busbar` binary forwards them (busbar/<feature> = ["busbar-kernel/<feature>"]).
 #
-# NOTE (recorded so it is not forgotten): keeping `dep:busbar-auth-admin-tokens` here leaves the
-# `admin-tokens` match arm IN CORE — still a feature-gated arm inside the engine rather than a
-# dependency edge owned by the composition root. Moving that registration to the binary is the
-# protocol-extraction step's job; this split is what makes it possible. Do not "fix" it here.
-default = ["auth-admin-tokens", "hooks-ranking", "plane-llm", "plane-mcp", "plane-a2a"]
-auth-admin-tokens = ["dep:busbar-auth-admin-tokens"]
+# No auth feature and no auth-module edge (DECISIONS #40, #2; ARCHITECT 2026-09-27 AUTH-ROW): every
+# admin auth module, the operator credential's included, resolves through the auth kind's registry by
+# the key the configuration names. The composition root links the build's auth rows
+# (`preflight::install_linked_auth`); this crate names none of them.
+default = ["hooks-ranking", "plane-llm", "plane-mcp", "plane-a2a"]
 # The build links the ranking hooks: the composition root registers their row (it owns the crate
 # edge); here it only decides whether a test build's stand-in rows carry that row.
 hooks-ranking = []
@@ -316,8 +311,8 @@ timing = ["dep:libc"]
 # It ALSO enables `test-support` on both planes in a `cargo test --workspace` build, so each plane
 # crate's own `--lib` App-tests run there too (v2 resolver feature unification) — the mechanism that
 # keeps the full plane suite in the exact command CI runs, with the dual-compile gone.
-busbar-a2a = { path = "../busbar-a2a", features = ["test-support", "auth-admin-tokens"] }
-busbar-mcp = { path = "../busbar-mcp", features = ["test-support", "auth-admin-tokens"] }
+busbar-a2a = { path = "../busbar-a2a", features = ["test-support"] }
+busbar-mcp = { path = "../busbar-mcp", features = ["test-support"] }
 # THE a2a CODEC'S EDGE IS GONE WITH THE CRATE (#39). Its batteries did not go with it: the RFC 8785
 # canonicalization vectors and the anomaly cells are `busbar-plane-a2a`'s now and are UNCONDITIONAL
 # there (a plane is featureless on purpose), so `cargo test --workspace` runs them without any edge
@@ -334,17 +329,17 @@ busbar-llm = { path = "../busbar-llm", features = ["test-support"] }
 # LINKED into the test binary exactly as the composition root links it into the shipped one (the
 # kernel names no export module; its tests need one on the axis). Pulled from its own repo at the SAME
 # pinned rev the composition root links.
-busbar-export-prometheus = { git = "https://github.com/GetBusbar/export-prometheus", rev = "087bbcc6a9bafc63591799770407a478f2742027" }
+busbar-export-prometheus = { git = "https://github.com/GetBusbar/busbar-export-prometheus", rev = "087bbcc6a9bafc63591799770407a478f2742027" }
 # The REAL token-verifying auth module `auth/tests/plugin_chain_tests.rs` loads through the dropped-in
-# door (R-FIX2; the owner's FIXTURES ruling: real plugins are the proofs): GetBusbar/auth-oidc's cdylib
+# door (R-FIX2; the owner's FIXTURES ruling: real plugins are the proofs): GetBusbar/busbar-auth-oidc's cdylib
 # crate at the SAME pinned rev the composition root's tests use. Nothing links it; this edge is what
 # makes `cargo test -p busbar-kernel` build its cdylib (under `deps/`, hashed), which the tests sign
 # into a temp `plugins/` directory and drive with JWTs a local issuer signs.
-busbar-auth-oidc-plugin = { git = "https://github.com/GetBusbar/auth-oidc", rev = "9ff64ff4d74bdd4d043ed7200d8771389810d19b" }
+busbar-auth-oidc-plugin = { git = "https://github.com/GetBusbar/busbar-auth-oidc", rev = "9ff64ff4d74bdd4d043ed7200d8771389810d19b" }
 # ...and the issuer those tokens come from: the module's OWN test issuer (its logic crate's `testkit`
 # feature — an ES256 key, its JWKS served over a certificate-verified loopback endpoint the module
 # trusts through `ca_cert_pem`, and genuinely signed tokens), at the SAME rev.
-busbar-auth-oidc = { git = "https://github.com/GetBusbar/auth-oidc", rev = "9ff64ff4d74bdd4d043ed7200d8771389810d19b", features = ["testkit"] }
+busbar-auth-oidc = { git = "https://github.com/GetBusbar/busbar-auth-oidc", rev = "9ff64ff4d74bdd4d043ed7200d8771389810d19b", features = ["testkit"] }
 tokio = { workspace = true, features = ["test-util"] }
 reqwest = { workspace = true, features = ["json"] }
 axum = { workspace = true, features = ["http1"] }

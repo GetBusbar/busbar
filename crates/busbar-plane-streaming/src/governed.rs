@@ -6,7 +6,7 @@
 //! Two kinds of tool call cross a live session, and they end in different places.
 //!
 //! A call for a tool **this node serves** is the tool moat the design is built around
-//! (the tool-moat section of `plane4-duplex-session.md`): the runtime accumulates the streamed arguments, executes the
+//! (the tool-moat section of `BUSBAR-1.6.0.md` #18/#45): the runtime accumulates the streamed arguments, executes the
 //! tool in-process through `busbar_voice::runtime::ToolExecutor`, and authors the `function_call_output`
 //! itself. The client never sees it and could not forge it. Nothing about that path changes here.
 //!

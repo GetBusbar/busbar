@@ -1,7 +1,7 @@
 //! The plane kind: what bytes mean. A plane names a transport only as a claim, never holds a
 //! connection, names no unit or other plane except through a nested destination, and returns
 //! facts and locators only — never an amount, a decision, a credential, a price or a scheme
-//! outside its claim. Pure over its inputs; no default bodies (see `docs/design/contract-notes.md`).
+//! outside its claim. Pure over its inputs; no default bodies (see `docs/design/BUSBAR-1.6.0.md` #38).
 
 use crate::bounded::{Facts, Ir, ScratchBytes};
 use crate::dest::{EgressBody, RoutePlan, VerifiedDestination};
@@ -394,6 +394,12 @@ pub struct PlaneDeclaration {
     /// operator cannot land a record under another plane's kind or a kind no plane reads. `&[]`
     /// for a plane that keeps none.
     pub record_kinds: &'static [&'static str],
+    /// The top-level config sections this plane REQUIRES a document to carry — the ones it owns or
+    /// consumes (`models` for the plane that owns it, `providers` for a plane that resolves its
+    /// targets through that catalog). A document omitting one is refused with the config grammar's
+    /// own missing-field message for it; a section no registered plane lists may be omitted. `&[]`
+    /// for a plane that requires none.
+    pub required_config_sections: &'static [&'static str],
 }
 
 /// Whether `decl` declares it keeps plane records of `kind` ([`PlaneDeclaration::record_kinds`]).

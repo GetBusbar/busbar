@@ -1,0 +1,268 @@
+# plugin-release — build, sign, pack and publish ONE first-party plugin release, for every plugin
+# repo. The repo's `.github/workflows/release.yml` is a thin caller rendered by `cargo xtask fleet
+# render <repo>` from plugins.yaml: on a `v*` tag it runs plugin-ci.yml on the tagged commit, then this
+# file, then plugin-consumer-verify.yml, each taken at the busbar commit the repo pins.
+#
+# What a release is, in order (each step refuses before anything is published):
+#   pin               the tagged commit's `.busbar-ref` (the busbar the cdylib compiles against and
+#                     the packer comes from).
+#   abi-completeness  kind:store only: every RecordStore method the store implements is ROUTED by the
+#                     pinned contract's store_dispatch (scripts/fleet/verify-abi-completeness.sh). A
+#                     method with a default body compiles, ships, and silently drops writes otherwise.
+#   create-release    a DRAFT release, so the per-target uploads have something to attach to.
+#   build             one signed tarball per target: the adapter's cdylib, packed with the pinned
+#                     busbar-plugin-pack into {cdylib + manifest.json} and signed with BUSBAR_SIGN_KEY.
+#                     The plugin's `declares` file (when it has one) is signed into the manifest: the
+#                     contract-ABI range the plugin supports travels there and the loader refuses the
+#                     plugin outside it. Unsigned only when the key is not provisioned, loudly.
+#                     A build-provenance attestation binds each tarball to this run.
+#   verify-assets     a release with ZERO assets is a phantom: red, and it stays a draft. Only now is
+#                     it published and marked latest.
+#   notify-marketing  the site rebuild dispatch (RELEASE_DISPATCH_TOKEN), loud when unprovisioned.
+name: plugin-release
+
+on:
+  workflow_call:
+    inputs:
+      plugin_crate:
+        description: "The cdylib's Cargo package (built with -p), e.g. busbar-store-sqlite-plugin"
+        required: true
+        type: string
+      manifest_name:
+        description: "The signed manifest's `name` (the plugin's identity at load)"
+        required: true
+        type: string
+      plugin_alias:
+        description: "The manifest alias (the short config name)"
+        required: true
+        type: string
+      plugin_kind:
+        description: "store | secret | auth | hook | export | plane | transport"
+        required: true
+        type: string
+      asset_prefix:
+        description: "The published tarball's filename prefix: <prefix>-<version>-<target>.tar.gz"
+        required: true
+        type: string
+      description:
+        description: "The manifest's one-line description"
+        required: true
+        type: string
+      lib_only:
+        description: "Build the cdylib with --lib (a crate that also has binaries)"
+        required: false
+        type: boolean
+        default: false
+      needs_prompt:
+        description: "kind:hook declared intent: no | ro | rw. Empty = not declared."
+        required: false
+        type: string
+        default: ""
+      needs_user:
+        description: "kind:hook declared intent: no | ro. Empty = not declared."
+        required: false
+        type: string
+        default: ""
+      declares_file:
+        description: "Repo-relative path of the plugin's `declares` section (JSON). Empty = none."
+        required: false
+        type: string
+        default: ""
+    secrets:
+      BUSBAR_SIGN_KEY:
+        description: "The first-party release signing seed (64 hex). Unprovisioned = an UNSIGNED tarball, loudly."
+        required: false
+      RELEASE_DISPATCH_TOKEN:
+        description: "Token for the marketing-site rebuild dispatch."
+        required: false
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+
+jobs:
+  pin:
+    name: the pinned busbar
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      sha: ${{ steps.pin.outputs.sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - id: pin
+        run: |
+          set -euo pipefail
+          sha="$(awk '{print $1; exit}' .busbar-ref)"
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::.busbar-ref field 1 is not a full 40-hex sha: '$sha'"; exit 1; }
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+  abi-completeness:
+    name: every RecordStore method is routed by the pinned ABI
+    needs: pin
+    if: inputs.plugin_kind == 'store'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          path: plugin
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: GetBusbar/busbar
+          ref: ${{ needs.pin.outputs.sha }}
+          path: busbar
+      - run: bash busbar/scripts/fleet/verify-abi-completeness.sh plugin busbar
+
+  create-release:
+    name: draft release
+    needs: [pin, abi-completeness]
+    # abi-completeness is skipped for every kind but store; skipped is not failed.
+    if: ${{ !cancelled() && needs.pin.result == 'success' && needs.abi-completeness.result != 'failure' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TITLE: ${{ inputs.asset_prefix }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" \
+            --title "${TITLE} ${GITHUB_REF_NAME}" --draft --verify-tag --generate-notes \
+          || gh release view "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}"
+
+  build:
+    name: build, sign, pack (${{ matrix.target }})
+    needs: [pin, create-release]
+    if: ${{ !cancelled() && needs.create-release.result == 'success' }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { target: x86_64-unknown-linux-gnu, os: ubuntu-latest, libext: so, libprefix: lib }
+          - { target: aarch64-unknown-linux-gnu, os: ubuntu-24.04-arm, libext: so, libprefix: lib }
+          - { target: x86_64-apple-darwin, os: macos-latest, libext: dylib, libprefix: lib }
+          - { target: aarch64-apple-darwin, os: macos-latest, libext: dylib, libprefix: lib }
+          - { target: x86_64-pc-windows-msvc, os: windows-latest, libext: dll, libprefix: "" }
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          path: plugin
+      - name: busbar at the pin (the packer's source; the plugin resolves busbar from git itself)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: GetBusbar/busbar
+          ref: ${{ needs.pin.outputs.sha }}
+          path: busbar
+      - uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          workspaces: |
+            plugin
+            busbar
+      - name: build the cdylib
+        working-directory: plugin
+        shell: bash
+        env:
+          CRATE: ${{ inputs.plugin_crate }}
+          LIB_ONLY: ${{ inputs.lib_only }}
+        run: |
+          set -euo pipefail
+          lib_flag=""; [ "$LIB_ONLY" = true ] && lib_flag="--lib"
+          cargo build --release --locked $lib_flag --target "${{ matrix.target }}" -p "$CRATE"
+      - name: build busbar-plugin-pack (host build; the packer only reads the cdylib's bytes)
+        working-directory: busbar
+        shell: bash
+        run: cargo build --release --locked -p busbar-plugin-loader --features pack --bin busbar-plugin-pack
+      - name: pack + sign
+        shell: bash
+        env:
+          BUSBAR_SIGN_KEY: ${{ secrets.BUSBAR_SIGN_KEY }}
+          CRATE: ${{ inputs.plugin_crate }}
+          NAME: ${{ inputs.manifest_name }}
+          ALIAS: ${{ inputs.plugin_alias }}
+          KIND: ${{ inputs.plugin_kind }}
+          PREFIX: ${{ inputs.asset_prefix }}
+          DESCRIPTION: ${{ inputs.description }}
+          NEEDS_PROMPT: ${{ inputs.needs_prompt }}
+          NEEDS_USER: ${{ inputs.needs_user }}
+          DECLARES: ${{ inputs.declares_file }}
+        run: |
+          set -euo pipefail
+          ver="${GITHUB_REF_NAME#v}"
+          target="${{ matrix.target }}"
+          pack="busbar/target/release/busbar-plugin-pack"
+          [ -x "$pack" ] || pack="busbar/target/release/busbar-plugin-pack.exe"
+          lib="plugin/target/${target}/release/${{ matrix.libprefix }}${CRATE//-/_}.${{ matrix.libext }}"
+          [ -f "$lib" ] || { echo "::error::no cdylib at $lib"; exit 1; }
+          extra=()
+          [ -n "$NEEDS_PROMPT" ] && extra+=(--needs-prompt "$NEEDS_PROMPT")
+          [ -n "$NEEDS_USER" ] && extra+=(--needs-user "$NEEDS_USER")
+          if [ -n "$DECLARES" ]; then
+            [ -f "plugin/$DECLARES" ] || { echo "::error::declares_file plugin/$DECLARES does not exist"; exit 1; }
+            extra+=(--declares-file "plugin/$DECLARES")
+            # The stamp is the newest contract ABI the plugin DECLARES it speaks, never the packer's
+            # own newest: a manifest stamped outside its own declared range is refused at load.
+            py="$(command -v python3 || command -v python)"
+            top="$("$py" -c 'import json,sys; r=json.load(open(sys.argv[1])).get("contract_abi"); print(r["max"] if r else "")' "plugin/$DECLARES")"
+            [ -n "$top" ] && extra+=(--abi-version "$top")
+          fi
+          if [ -z "${BUSBAR_SIGN_KEY:-}" ]; then
+            echo "::warning::BUSBAR_SIGN_KEY is not provisioned: packing an UNSIGNED tarball (loadable only under plugins.trust.allow_unsigned)."
+            extra+=(--allow-unsigned)
+          fi
+          mkdir -p plugin-dist
+          "$pack" pack --lib "$lib" --name "$NAME" --alias "$ALIAS" --kind "$KIND" \
+            --version "$ver" --publisher busbar --description "$DESCRIPTION" --license Apache-2.0 \
+            --out "plugin-dist/${PREFIX}-${ver}-${target}.tar.gz" "${extra[@]}"
+          ls -l plugin-dist
+      - name: attach to the release
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "${GITHUB_REF_NAME}" plugin-dist/*.tar.gz --repo "${GITHUB_REPOSITORY}" --clobber
+      - name: build-provenance attestation
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4
+        with:
+          subject-path: "plugin-dist/*.tar.gz"
+
+  verify-assets:
+    name: no phantom release, then publish
+    needs: build
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          count="$(gh release view "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" --json assets --jq '.assets | length')"
+          echo "release ${GITHUB_REF_NAME} has ${count} asset(s)"
+          if [ "${count}" -eq 0 ]; then
+            echo "::error::PHANTOM RELEASE: ${GITHUB_REF_NAME} has 0 assets; it stays a draft. Fix the build, delete the tag and the draft, and re-cut." >&2
+            exit 1
+          fi
+          gh release edit "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" --draft=false --latest
+          echo "::notice::published ${GITHUB_REF_NAME} with ${count} asset(s)"
+
+  notify-marketing:
+    name: site rebuild dispatch
+    needs: verify-assets
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - env:
+          GH_TOKEN: ${{ secrets.RELEASE_DISPATCH_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "${GH_TOKEN:-}" ]; then
+            echo "::error::RELEASE_DISPATCH_TOKEN is not provisioned on this repo; the site's daily poll still picks the release up." >&2
+            exit 1
+          fi
+          gh api "repos/GetBusbar/marketing/dispatches" -f event_type=upstream-release \
+            -f "client_payload[repo]=${GITHUB_REPOSITORY}" -f "client_payload[tag]=${GITHUB_REF_NAME}"

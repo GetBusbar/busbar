@@ -1,6 +1,6 @@
 //! The other plugin kinds: auth, egress auth, store, secret, hook and export — one closed shape
 //! per trait, transcribed from the plugin-kinds table of the design. See
-//! `docs/design/contract-notes.md` for why four of the six reach outside the process on a bounded
+//! `docs/design/BUSBAR-1.6.0.md` #38 for why four of the six reach outside the process on a bounded
 //! blocking pool while the other two (hook, egress-auth scheme) are pure.
 //!
 //! Fallibility: every fallible method below returns its trait's own error enum; see the trait doc

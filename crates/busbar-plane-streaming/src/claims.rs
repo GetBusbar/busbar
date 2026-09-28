@@ -1,6 +1,6 @@
 //! The claims this plane makes over arriving bytes, and the four dialects they name.
 //!
-//! `docs/design/ARCHITECTURE.md`'s protocol-inventory table (the row keyed `voice`) names the
+//! `docs/design/BUSBAR-1.6.0.md`'s protocol-inventory table (the row keyed `voice`) names the
 //! dialect roster this plane speaks and the transports it claims them on:
 //!
 //! `openai-realtime, gemini-live, twilio-media-streams, one-shot transcribe/tts` over

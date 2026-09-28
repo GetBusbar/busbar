@@ -69,7 +69,7 @@ pub(crate) fn keyless_credential_allowed(what: &str) -> bool {
 ///
 /// `--validate` promises that a clean run means a clean boot, and the converse matters just as much:
 /// it must not refuse a config boot would serve. Boot resolves exactly one identity-provider
-/// `token:` — the `admin-tokens` operator credential `AuthCfg::admin_token_ref` picks out of the
+/// `token:` — the operator credential `AuthCfg::admin_token_ref` picks out of the
 /// resolved chains — and never touches the `token:` on a definition nothing references. An operator
 /// who keeps a spare `identity-providers:` entry on file, its env var unset until the day it is
 /// wired in, has a config that boots and ran `--validate` clean in every earlier release. Resolving
@@ -245,7 +245,7 @@ fn walk_secret_refs(cfg: &RootCfg, tokens: TokenRefs) -> Vec<(String, &crate::co
     // The `identity-providers:` DEFINITION map is walked directly rather than through the resolved
     // auth chains. `resolve_auth` projects a definition onto an `AuthChainEntry` only for a provider
     // NAMED in `auth.chain:`/`auth.admin_auth:`, and `AuthCfg::admin_token_ref` then returns at most
-    // ONE token (the first `admin-tokens` entry it finds), so walking the chains alone missed both a
+    // ONE token (the first operator-credential entry it finds), so walking the chains alone missed both a
     // second operator credential and every secret on a defined-but-not-yet-referenced provider. A
     // definition the operator wrote down is a definition busbar must be able to resolve.
     for (name, def) in identity_providers {
@@ -297,8 +297,8 @@ fn walk_secret_refs(cfg: &RootCfg, tokens: TokenRefs) -> Vec<(String, &crate::co
         // Duplicate paths are harmless: both consumers are pure checks over the list.
         //
         // The boot-resolved walk reports only the token boot reads: `admin_token_ref` returns the
-        // first `admin-tokens` entry's reference, and that is compared by ADDRESS (the accessor hands
-        // back a borrow into these very entries), so a second `admin-tokens` entry, or a token on a
+        // first operator-credential entry's reference, and that is compared by ADDRESS (the accessor
+        // hands back a borrow into these very entries), so a second such entry, or a token on a
         // module that never reads one, is left out exactly as boot leaves it unread.
         let boot_token = auth.admin_token_ref();
         for (plane, entries) in [("chain", chain), ("admin_auth", admin_auth)] {

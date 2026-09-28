@@ -55,14 +55,20 @@ fn methods(trait_block: &str) -> BTreeSet<String> {
         .collect()
 }
 
-/// The slots a slot-table block declares (`pub name: Option<...>`); the sized header is not a slot.
+/// The slots a slot-table list declares (`name: Alias = fn(...)`, the one declarative list the
+/// table and its fn-pointer types are generated from); the sized header is not a slot.
 fn slots(table_block: &str) -> BTreeSet<String> {
     table_block
         .lines()
         .map(str::trim)
-        .filter_map(|l| l.strip_prefix("pub "))
-        .filter_map(|rest| rest.split_once(':'))
-        .filter(|(_, ty)| ty.trim_start().starts_with("Option<"))
+        .filter(|l| !l.starts_with("//"))
+        .filter_map(|l| l.split_once(':'))
+        .filter(|(name, ty)| {
+            !name.contains(' ')
+                && ty
+                    .split_once('=')
+                    .is_some_and(|(_, f)| f.trim().starts_with("fn("))
+        })
         .map(|(name, _)| name.trim().to_string())
         .collect()
 }
@@ -71,7 +77,10 @@ fn slots(table_block: &str) -> BTreeSet<String> {
 /// slot is a method's.
 fn covered(traits: &str, trait_name: &str, abi: &str, table_name: &str) -> Result<usize, String> {
     let methods = methods(block(traits, &format!("pub trait {trait_name}: "))?);
-    let slots = slots(block(abi, &format!("pub struct {table_name} {{"))?);
+    let slots = slots(block(
+        abi,
+        &format!("pub struct {table_name} lowers {trait_name} {{"),
+    )?);
     let unlowered: Vec<_> = methods.difference(&slots).collect();
     let unexplained: Vec<_> = slots.difference(&methods).collect();
     if methods.is_empty() {
@@ -100,7 +109,7 @@ fn every_carrier_and_framer_method_has_exactly_one_slot() {
         read("src/abi/hot/transport.rs"),
     );
     assert_eq!(covered(&traits, "Carrier", &abi, "CarrierSlots"), Ok(8));
-    assert_eq!(covered(&traits, "Framer", &abi, "FramerSlots"), Ok(9));
+    assert_eq!(covered(&traits, "Framer", &abi, "FramerSlots"), Ok(10));
 }
 
 /// THE RED ARM, kept: a trait that grew a method its slot table did not is refused, and the refusal
@@ -124,8 +133,8 @@ fn a_method_without_a_slot_is_red() {
     );
     // And the other direction: a slot no method explains.
     let widened = abi.replacen(
-        "    pub arrival: Option<CarrierArrivalFn>,",
-        "    pub arrival: Option<CarrierArrivalFn>,\n    pub poll_peek: Option<CarrierArrivalFn>,",
+        "pub struct CarrierSlots lowers Carrier {",
+        "pub struct CarrierSlots lowers Carrier {\n    poll_peek: CarrierPeekFn = fn(state: *mut c_void);",
         1,
     );
     assert_ne!(widened, abi, "the plant landed");
@@ -150,4 +159,66 @@ fn the_host_hands_a_transport_nothing_but_its_waker() {
         .filter(|l| l.contains("Option<"))
         .collect();
     assert_eq!(fns, ["wake: Option<WireWakeFn>,"]);
+}
+
+/// The fields a struct block declares (`pub name: ...`), outside comments; `_reserved` padding and
+/// the sized header are not fields a claim states.
+fn fields(struct_block: &str) -> BTreeSet<String> {
+    struct_block
+        .lines()
+        .map(str::trim)
+        .filter_map(|l| l.strip_prefix("pub "))
+        .filter_map(|rest| rest.split_once(':'))
+        .map(|(name, _)| name.trim().to_string())
+        .filter(|name| !name.starts_with('_') && name != "size")
+        .collect()
+}
+
+/// Every field of the linked `Claim` has exactly one field in `DeclClaim`, and every `DeclClaim`
+/// field is a claim's (TRANSPORT-STACK (A): the claims table is lowered as mechanically as the
+/// slots are).
+fn claims_covered(traits: &str, abi: &str) -> Result<usize, String> {
+    let linked = fields(block(traits, "pub struct Claim {")?);
+    let lowered = fields(block(abi, "pub struct DeclClaim {")?);
+    let unlowered: Vec<_> = linked.difference(&lowered).collect();
+    let unexplained: Vec<_> = lowered.difference(&linked).collect();
+    if linked.is_empty() {
+        return Err("`Claim` declares no field the witness can read".to_string());
+    }
+    if !unlowered.is_empty() || !unexplained.is_empty() {
+        return Err(format!(
+            "`Claim` -> `DeclClaim`: fields with no lowering {unlowered:?}, lowered fields no claim \
+             explains {unexplained:?}"
+        ));
+    }
+    Ok(linked.len())
+}
+
+#[test]
+fn every_claim_field_is_lowered_exactly_once() {
+    let (traits, abi) = (
+        read("src/transport/stack.rs"),
+        read("src/abi/hot/transport.rs"),
+    );
+    assert_eq!(claims_covered(&traits, &abi), Ok(8));
+}
+
+/// THE RED ARM, kept: a claim that grew a field the lowering did not is refused, by name.
+#[test]
+fn a_claim_field_without_a_lowering_is_red() {
+    let (traits, abi) = (
+        read("src/transport/stack.rs"),
+        read("src/abi/hot/transport.rs"),
+    );
+    let grown = traits.replacen(
+        "pub struct Claim {",
+        "pub struct Claim {\n    pub framing: Framing,",
+        1,
+    );
+    assert_ne!(grown, traits, "the plant landed");
+    let err = claims_covered(&grown, &abi).unwrap_err();
+    assert!(
+        err.contains("fields with no lowering [\"framing\"]"),
+        "{err}"
+    );
 }

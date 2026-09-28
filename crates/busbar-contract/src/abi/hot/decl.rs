@@ -366,6 +366,14 @@ pub struct PlaneDecl {
     pub dispatch_flags: u32,
     /// Alignment padding.
     pub _reserved3: u32,
+
+    // ── THE CONFIG SECTIONS THE PLANE REQUIRES (appended at minor 34). A decl that ends before this
+    //    tail requires none. ──
+    /// Borrowed list of the top-level config sections core parses concretely that this plane
+    /// requires a document to carry (`PlaneDeclaration::required_config_sections`).
+    pub required_sections_ptr: *const DeclStr,
+    /// Number of entries in the required-sections list.
+    pub required_sections_len: usize,
 }
 
 /// [`PlaneDecl::dispatch_flags`]: the plane's `dispatch` may block the calling thread — it calls a
@@ -447,6 +455,8 @@ impl PlaneDecl {
         record_kinds_len: 0,
         dispatch_flags: DISPATCH_BLOCKS,
         _reserved3: 0,
+        required_sections_ptr: core::ptr::null(),
+        required_sections_len: 0,
     };
 }
 

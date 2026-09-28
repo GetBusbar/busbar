@@ -18,6 +18,9 @@
 //                                            rows)
 //   [package.metadata.busbar.root-units]    <cargo feature> = "<root module>"    (`ROOT_UNIT` of
 //                                            `crate::root::<module>`, in order)
+//   [package.metadata.busbar.linked-name]   <row key> = "<registry key>"         (the key an `auths`
+//                                            row answers on the auth axis: what its signed tarball's
+//                                            manifest would state as its name)
 //
 // and this turns the rows whose feature is ENABLED into `extern crate <crate> as _;` lines, one table
 // per registration axis over each entry module's item for that axis (the `LINKED` value), the cfgs
@@ -66,6 +69,30 @@ const TRANSPORT_AXIS: &str = "transport";
 /// The claims axis: each row's entry exports the pure plane the boot seal registers (`PLANE`) and
 /// the claims it declares (`CLAIMS`); rides on `plane`.
 const CLAIMS_AXIS: &str = "claims";
+
+/// The auth axis (#2 rule (1), #40): each row's entry exports the SDK boundary every `kind: auth`
+/// plugin exports (`BUSBAR_COLD_ENTRY`), registered under the key its `linked-name` row states.
+const AUTH_AXIS: &str = "auths";
+
+/// The `value` of `key` under the `[table]` header, when the table and the row exist. The optional
+/// twin of [`metadata_map`], for the one table only some rows need.
+fn metadata_value(manifest: &str, table: &str, key: &str) -> Option<String> {
+    let header = format!("[{table}]");
+    let mut in_table = false;
+    for line in manifest.lines() {
+        let code = line.split('#').next().unwrap_or("").trim();
+        if code.starts_with('[') {
+            in_table = code == header;
+            continue;
+        }
+        if let (true, Some((k, v))) = (in_table, code.split_once('=')) {
+            if k.trim().trim_matches('"') == key {
+                return Some(v.trim().trim_matches('"').to_string());
+            }
+        }
+    }
+    None
+}
 
 /// The root-bound seams: an axis a crate DRIVES rather than fills, emitted as a cfg the root binds
 /// the seam under (the kernel compiles some of them only when a plane that drives them is linked).
@@ -208,6 +235,7 @@ pub(crate) fn linked_source(
                 axis == "plane"
                     || axis == "hot-plane"
                     || axis == TRANSPORT_AXIS
+                    || axis == AUTH_AXIS
                     || axis == CLAIMS_AXIS
                     || AXES.iter().any(|(a, _, _)| a == axis)
                     || SEAMS.iter().any(|(a, _)| a == axis),
@@ -290,6 +318,20 @@ pub(crate) fn linked_source(
             "crate::root::linked::LinkedTransport {{ key: {e}::KEY, composes_over: \
              {e}::COMPOSES_OVER, build: {e}::build }}, "
         ));
+    }
+    out.push_str("],\n");
+    out.push_str("    auths: &[");
+    for ((entry, list), (feature, krate)) in linked.iter().zip(&on) {
+        if list.iter().any(|a| a == AUTH_AXIS) {
+            let name = metadata_value(manifest, "package.metadata.busbar.linked-name", feature)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "Cargo.toml: `{feature}` ({krate}) is on the `{AUTH_AXIS}` axis but has no \
+                         `[package.metadata.busbar.linked-name]` row naming its registry key"
+                    )
+                });
+            out.push_str(&format!("({name:?}, &{entry}::BUSBAR_COLD_ENTRY), "));
+        }
     }
     out.push_str("],\n");
     out.push_str("    claims: &[");

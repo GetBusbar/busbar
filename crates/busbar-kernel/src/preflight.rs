@@ -42,44 +42,68 @@ pub fn fleet_data_dir() -> Option<std::path::PathBuf> {
 }
 
 type StoreOpen = fn(&str) -> Result<Box<dyn governance::RecordStore>, String>;
-/// A linked in-process STORE's entry: `(name, ephemeral, open)` — the name `governance.store`
-/// selects it by, whether what it holds is lost on restart, and its open.
-pub type LinkedStore = (&'static str, bool, StoreOpen);
+/// A linked in-process STORE's entry: `(name, ephemeral, default, open)` — the name
+/// `governance.store` selects it by, whether what it holds is lost on restart, whether it claims to
+/// be the store a deployment that configures none runs on, and its open.
+pub type LinkedStore = (&'static str, bool, bool, StoreOpen);
 type HookOpen = fn(&str) -> Option<busbar_plugin_loader::registry::RankingPolicy>;
 /// A linked RANKING hook's entry: `(name, aliases, open)` — one row, its frozen strategy spellings
 /// the aliases, `open` handed the spelling a reference used.
 pub type LinkedHook = (&'static str, &'static [&'static str], HookOpen);
+pub use busbar_kernel_identity::operator::LinkedAuth;
 use busbar_plugin_loader::LinkedPlugin;
+/// The root's linked entries: its `stores`, its `hooks`, and the name of the default governance
+/// store it resolved from the store rows' own claims (empty when no linked row claims it).
+pub type RootRows = (&'static [LinkedStore], &'static [LinkedHook], &'static str);
 
-/// A test build has no root: its store and ranking fixtures stand in for the root's entries.
+/// A test build has no root: its store and ranking fixtures stand in for the root's entries, the
+/// stand-in store (which claims the default) as the default.
 #[cfg(any(test, feature = "test-support"))]
-const STAND_IN: (&[LinkedStore], &[LinkedHook]) = (
+const STAND_IN: RootRows = (
     &[fixture_store::linked::STORE],
     &[
         #[cfg(feature = "hooks-ranking")]
         fixture_hook::linked::HOOK,
     ],
+    fixture_store::linked::STORE.0,
 );
 
-/// The composition root's linked store and hook entries (the build's in-process default store and,
-/// when compiled in, its ranking hooks), installed once before the first resolution.
-static ROOT_ROWS: std::sync::OnceLock<(&[LinkedStore], &[LinkedHook])> = std::sync::OnceLock::new();
+/// The composition root's linked store and hook entries (the build's in-process stores and, when
+/// compiled in, its ranking hooks) and its resolved default store, installed once before the first
+/// resolution.
+static ROOT_ROWS: std::sync::OnceLock<RootRows> = std::sync::OnceLock::new();
 
-/// THE ROOT'S DOOR onto the cold-kind axis: its linked tables' `stores` and `hooks` entries (the
-/// first install stands). The kernel names none of the plugins it registers (#2 rule (1), #40).
-pub fn install_linked_rows(stores: &'static [LinkedStore], hooks: &'static [LinkedHook]) {
-    let _ = ROOT_ROWS.set((stores, hooks));
+/// THE ROOT'S DOOR onto the cold-kind axis: its linked tables' `stores` and `hooks` entries and the
+/// default store the root resolved from the stores' claims (the first install stands). The kernel
+/// names none of the plugins it registers, and no default store (#2 rule (1), #40).
+pub fn install_linked_rows(rows: RootRows) {
+    let _ = ROOT_ROWS.set(rows);
 }
+
+/// The installed root rows (a test build stands its fixtures in). `.2` is the governance store a
+/// deployment that configures none runs on: the linked row that declares itself the default. Admin's
+/// store catalog lists `.0`, the stores this build links.
+pub fn root_rows() -> RootRows {
+    #[cfg(any(test, feature = "test-support"))]
+    let _ = ROOT_ROWS.set(STAND_IN);
+    ROOT_ROWS.get().copied().unwrap_or_default()
+}
+
+/// THE ROOT'S DOOR onto the auth axis: its linked table's `auths` entries (the first install
+/// stands; the authenticate step holds them) and their names. Every admin auth module — the operator
+/// credential's included — resolves through this axis by the key configuration names; the kernel
+/// names none of the rows it registers (DECISIONS #2 rule (1), #40; ARCHITECT 2026-09-27 AUTH-ROW).
+pub use busbar_kernel_identity::operator::{
+    install_linked as install_linked_auth, linked_names as linked_auth_names,
+};
 
 /// The rows this build LINKS onto the cold-kind axis, ahead of the plugins directory's: the root's
 /// stores, the kernel's own secret modules, the root's hooks — a test build (no root) stands its
 /// fixture entries in. Registered through `PluginRegistry::link`, the admission a dropped-in row
 /// takes (DECISIONS #2 rule (1)).
 fn linked_rows() -> Vec<LinkedPlugin> {
-    #[cfg(any(test, feature = "test-support"))]
-    let _ = ROOT_ROWS.set(STAND_IN);
-    let (stores, hooks) = ROOT_ROWS.get().copied().unwrap_or_default();
-    let store = |&(name, ephemeral, open): &LinkedStore| LinkedPlugin::store(name, open, ephemeral);
+    let (stores, hooks, _) = root_rows();
+    let store = |s: &LinkedStore| LinkedPlugin::store(s.0, s.3, s.1);
     let hook = |&(name, aliases, open): &LinkedHook| LinkedPlugin::ranking(name, aliases, open);
     let own = [
         config::secret::SECRET_MODULE_ENV,
@@ -87,7 +111,10 @@ fn linked_rows() -> Vec<LinkedPlugin> {
     ];
     let secrets = own.map(LinkedPlugin::builtin_secret);
     let rows = stores.iter().map(store).chain(secrets);
-    rows.chain(hooks.iter().map(hook)).collect()
+    let auths = busbar_kernel_identity::operator::linked().iter();
+    let rows = rows.chain(hooks.iter().map(hook));
+    rows.chain(auths.map(|&(name, entry)| LinkedPlugin::auth(name, entry)))
+        .collect()
 }
 
 /// The built-in ranking strategy `name` spells on the hook axis — its linked row opened with that
@@ -156,7 +183,7 @@ fn require_plugin(
 }
 
 /// A registry holding only the [`linked_rows`] — what a build with the plugins directory off has.
-fn linked() -> Result<busbar_plugin_loader::PluginRegistry, String> {
+pub(crate) fn linked() -> Result<busbar_plugin_loader::PluginRegistry, String> {
     busbar_plugin_loader::PluginRegistry::empty().link(linked_rows())
 }
 
@@ -173,8 +200,8 @@ fn linked() -> Result<busbar_plugin_loader::PluginRegistry, String> {
 /// config APPLY/RELOAD, and `busbar --validate`, so the pre-flight gate can never drift from real
 /// boot behavior. Fail-closed at every step:
 ///
-/// 1. CONSISTENCY: a non-`memory` `store.module` with `plugins.enabled: false` (or the block
-///    absent) is an error NAMING THE FLAG — a dropped-in tarball is inert until the switch is on.
+/// 1. CONSISTENCY: a `store.module` no linked row answers to, with `plugins.enabled: false` (or the
+///    block absent), is an error NAMING THE FLAG — a dropped-in tarball is inert until the switch is on.
 /// 2. POLICY: `plugins.trust` resolves (embedded first-party key + third-party publishers + the
 ///    explicit opt-ins + anti-downgrade floors); a malformed key is an error.
 /// 3. SCAN: when enabled, every tarball in `plugins.dir` runs the three-phase pipeline
@@ -194,12 +221,10 @@ pub fn plugins_preflight(
     plugins_cfg: &config::PluginsCfg,
     export_cfg: &config::ExportCfg,
 ) -> Result<busbar_plugin_loader::PluginRegistry, String> {
-    let store_ref = store_cfg
-        .map(|g| g.module.as_str())
-        .unwrap_or(config::GOVERNANCE_STORE_MEMORY);
+    let store_ref = store_cfg.map_or_else(config::default_governance_store, |g| g.module.clone());
     // Resolved on the store AXIS: a row this build links opens in-process; any other name is a
     // `kind: store` plugin the plugins directory must supply.
-    let store_is_plugin = linked()?.resolve(store_ref).is_none();
+    let store_is_plugin = linked()?.resolve(&store_ref).is_none();
 
     // Every non-builtin `auth.chain` module is a `kind: auth` plugin — the same manifest-only
     // pre-flight the store ref gets, so `--validate` catches a missing/wrong-kind/untrusted auth
@@ -307,7 +332,7 @@ pub fn plugins_preflight(
              plugins.enabled: true and place the signed `kind: auth` plugin tarball(s) in the \
              plugins directory ('{}'), or name a built-in.",
             idp_refs_human(&idp_plugin_refs),
-            config::BUILTIN_IDENTITY_PROVIDERS.join(" | "),
+            config::builtin_identity_providers().join(" | "),
             plugins_cfg.dir
         ));
     }
@@ -407,7 +432,7 @@ pub fn plugins_preflight(
         require_plugin(
             &registry,
             &plugins_cfg.dir,
-            store_ref,
+            &store_ref,
             PluginRef {
                 kind: "store",
                 names: format!("store.module: '{store_ref}'"),
@@ -513,7 +538,7 @@ pub fn plugins_preflight(
     Ok(registry)
 }
 
-/// Resolve the operator ADMIN credential — the `admin-tokens` chain entry's `token:` secret ref —
+/// Resolve the operator ADMIN credential — the operator-credential entry's `token:` secret ref —
 /// with the BLANK-TOKEN guard. Shared by boot and the apply/reload path so the two cannot drift.
 ///
 /// FAIL-CLOSED twice over:
@@ -532,17 +557,13 @@ pub(crate) fn resolve_admin_token(
     let Some(r) = auth.and_then(|a| a.admin_token_ref()) else {
         return Ok(None);
     };
+    use busbar_kernel_identity::operator::{blank_token, unresolved_token};
+    let op = config::operator_provider();
     let token = resolver
         .resolve_string(r)
-        .map_err(|e| format!("auth.admin_auth admin-tokens token did not resolve: {e}"))?;
+        .map_err(|e| unresolved_token(op, &e))?;
     if token.trim().is_empty() {
-        return Err(
-            "auth.admin_auth admin-tokens `token:` resolved to an EMPTY/whitespace-only value. \
-             Refusing to start: the digest would be taken over the blank string, so an empty \
-             credential would authenticate as the operator. Check the referenced env var / file \
-             actually holds the token, or remove the `token:` to disable the admin API deliberately."
-                .to_string(),
-        );
+        return Err(blank_token(op));
     }
     Ok(Some(busbar_contract::redacted::Redacted::new(token)))
 }
@@ -726,9 +747,10 @@ pub(crate) fn is_real_auth_plugin_ref(m: &str, is_test_build: bool) -> bool {
 /// The DEFINITION-side twin of [`is_real_auth_plugin_ref`]: whether an
 /// `identity-providers.<name>.module:` is a REAL `kind: auth` plugin reference that must resolve
 /// against the registry, as opposed to a built-in the engine handles inline
-/// ([`config::BUILTIN_IDENTITY_PROVIDERS`] — `keys` and `admin-tokens`) or a compiled-in test
-/// stand-in. Separate from the chain predicate because the two answer different questions over
-/// different vocabularies: `auth.chain:` never carries `admin-tokens` (that plane is `admin_auth:`),
+/// ([`config::builtin_identity_providers`] — `keys` and the operator credential) or a compiled-in
+/// test stand-in. Separate from the chain predicate because the two answer different questions over
+/// different vocabularies: `auth.chain:` never carries the operator credential (that plane is
+/// `admin_auth:`),
 /// so the chain predicate exempts only `keys`, while EVERY built-in is legal as a definition's
 /// module. Same `is_test_build` discipline for the same reason: `test-scope-module` /
 /// `test-groups-module` are only ever registered under `#[cfg(any(test, feature = "test-support"))]`
@@ -737,7 +759,7 @@ pub(crate) fn is_real_auth_plugin_ref(m: &str, is_test_build: bool) -> bool {
 /// hard-fails, and gating them on `cfg!(test)` alone refused them in a `test-support` build that
 /// registers them (item 292).
 pub(crate) fn is_real_identity_provider_plugin_ref(m: &str, is_test_build: bool) -> bool {
-    !config::BUILTIN_IDENTITY_PROVIDERS.contains(&m)
+    !config::builtin_identity_providers().contains(&m)
         && !(is_test_build && matches!(m, "test-groups-module" | "test-scope-module"))
 }
 
@@ -747,7 +769,7 @@ pub(crate) fn is_real_identity_provider_plugin_ref(m: &str, is_test_build: bool)
 pub(crate) fn valid_identity_provider_modules(
     registry: &busbar_plugin_loader::PluginRegistry,
 ) -> String {
-    let mut names: Vec<String> = config::BUILTIN_IDENTITY_PROVIDERS
+    let mut names: Vec<String> = config::builtin_identity_providers()
         .iter()
         .map(|s| (*s).to_string())
         .collect();

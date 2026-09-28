@@ -930,14 +930,16 @@ pub use exports::BUSBAR_COLD_ENTRY;
 
 /// THE LINKED ENTRY (DECISIONS #2 rule (1)): what a build that links this store registers onto the
 /// cold-kind axis — the same row a dropped-in store takes, opened in process. `STORE` is
-/// `(name, ephemeral, open)`: the name `governance.store` selects it by, its statement that what it
-/// holds is lost on restart, and the open handed the row's configuration (this backend reads none).
+/// `(name, ephemeral, default, open)`: the name `governance.store` selects it by, its statement that
+/// what it holds is lost on restart, its claim to be the governance store a deployment that
+/// configures none runs on, and the open handed the row's configuration (this backend reads none).
+/// The composition root resolves the default from the linked rows' claims; two claims refuse boot.
 pub mod linked {
     /// An in-process store row's open.
     pub type Open = fn(&str) -> Result<Box<dyn busbar_contract::records::RecordStore>, String>;
 
-    /// `(name, ephemeral, open)`.
-    pub const STORE: (&str, bool, Open) = ("memory", true, super::open);
+    /// `(name, ephemeral, default, open)`.
+    pub const STORE: (&str, bool, bool, Open) = ("memory", true, true, super::open);
 }
 
 #[cfg(test)]

@@ -96,17 +96,8 @@ struct Ports {
     mock: u16,
 }
 
-/// One port nothing else holds.
-///
-/// The bind is dropped before the number is returned, which is the same small race every test in
-/// this directory takes; the alternative is a fixed number, and a fixed number races everything on
-/// the machine rather than the moment between two calls.
 fn free_port() -> u16 {
-    std::net::TcpListener::bind("127.0.0.1:0")
-        .expect("a free port")
-        .local_addr()
-        .expect("the bound address")
-        .port()
+    common::boot::free_port()
 }
 
 /// The one lane and its provider — the oracle's `m-<dialect>` naming.

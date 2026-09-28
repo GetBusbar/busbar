@@ -110,6 +110,60 @@ if hits:
 PY
 }
 if [ "${1:-}" = "premise-filter" ]; then widen_filter "${2:?premise-filter <filter>}"; exit 0; fi
+
+# ── A RECORDING OWNS ITS TEMP DIRECTORY ─────────────────────────────────────────────────────────
+# Every busbar the recorder boots sweeps `<TMPDIR>` at startup for plugin staging dirs a dead pid
+# left, and prints `[info] removed N orphaned plugin staging dir(s)…` on stderr when it finds any
+# (1.5.5 and 1.6.0 alike). Inheriting the host TMPDIR made that line a function of whatever other
+# busbar runs on the host had crashed: boot.refusal|BOOT-170 diverged on it (C3 measure, b14d0a1a4),
+# and the 1.5.5 binary prints the same line under the same pollution. So a recording runs with
+# TMPDIR at a fresh private directory (still under the host temp base, so the recorder's temp-path
+# normalization is unchanged) and removes it afterwards, whatever the exit.
+_ptmp=""
+private_tmp() {  # private_tmp <cmd...>: run cmd with TMPDIR at a fresh private dir, removed after
+  local base="${TMPDIR:-/tmp}" rc=0
+  _ptmp="$(mktemp -d "${base%/}/busbar-oracle-tmp.XXXXXX")"
+  trap 'rm -rf "$_ptmp"' EXIT
+  TMPDIR="$_ptmp" "$@" || rc=$?
+  rm -rf "$_ptmp"; trap - EXIT
+  return "$rc"
+}
+if [ "${1:-}" = "private-tmp" ]; then shift; rc=0; private_tmp "$@" || rc=$?; exit "$rc"; fi
+if [ "${1:-}" = "private-tmp-selftest" ]; then
+  # Both record paths (`bin/oracle record` and the generated tool-dir record.sh) run against a copy
+  # of this shim with a stub engine, from a host TMPDIR planted with dead-pid staging dirs in the
+  # 1.5.5 and 1.6.0 layouts. The engine must see none of them, and its private dir must be gone.
+  # An optional argument names the shim under test (a parent revision's, for the red proof).
+  under="${2:-$here/bin/oracle}"
+  st="$(mktemp -d)"; trap 'rm -rf "$st"' EXIT
+  mkdir -p "$st/repo/bin" "$st/repo/testing/shadow-oracle" "$st/host" "$st/out"
+  cp "$under" "$st/repo/bin/oracle"
+  cp "$here/testing/shadow-oracle/oracle-rust.pin" "$st/repo/testing/shadow-oracle/"
+  dead="$(sh -c 'echo $$')"
+  mkdir -p "$st/host/busbar-plugins-$dead-x" "$st/host/busbar-plugin-staging-$(id -u)/busbar-plugins-$dead-x"
+  cat >"$st/engine" <<'E'
+#!/usr/bin/env bash
+[ "$1" = record ] || exit 0
+n="$(find "${TMPDIR:?}" -name 'busbar-plugins-*' 2>/dev/null | wc -l | tr -d ' ')"
+echo "$TMPDIR $n" >>"$(dirname "$0")/seen"
+E
+  chmod +x "$st/engine"
+  env -u ORACLE_LISTEN_PORT -u ORACLE_ADMIN_PORT -u ORACLE_MOCK_PORT TMPDIR="$st/host" \
+    BUSBAR_ORACLE_RUST_BIN="$st/engine" "$st/repo/bin/oracle" record --bin /x --out "$st/out/a" >/dev/null 2>&1
+  env TMPDIR="$st/host" BUSBAR_ORACLE_RUST_BIN="$st/engine" \
+    "$(find "$st/repo/target" -name record.sh | head -1)" --bin /x --out "$st/out/b" >/dev/null 2>&1
+  fail=0; n=0
+  while read -r dir cnt; do
+    n=$((n + 1))
+    case "$dir" in "$st/host"/busbar-oracle-tmp.*) ;; *) echo "  [FAILED] path $n: TMPDIR was not private: $dir"; fail=1;; esac
+    [ "$cnt" = 0 ] || { echo "  [FAILED] path $n: the engine saw $cnt staging dir(s) from the host"; fail=1; }
+    [ ! -e "$dir" ] || { echo "  [FAILED] path $n: the private TMPDIR outlived the run: $dir"; fail=1; }
+  done <"$st/seen"
+  [ "$n" = 2 ] || { echo "  [FAILED] expected 2 recordings (bin/oracle record, record.sh), saw $n"; fail=1; }
+  [ -d "$st/host/busbar-plugins-$dead-x" ] || { echo "  [FAILED] the host's own temp entries were touched"; fail=1; }
+  [ "$fail" = 0 ] && { echo "oracle private-tmp-selftest: each recording runs in its own private TMPDIR"; exit 0; }
+  echo "oracle private-tmp-selftest: FAILED"; exit 1
+fi
 if [ "${1:-}" = "premise-selftest" ]; then
   tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
   cat >"$tmp/cells.json" <<'J'
@@ -245,7 +299,7 @@ esac; done
 # <work>/candidate. HarnessOracle happens to name its --out "candidate", so the two used to agree by
 # luck; any other caller silently got an empty --out and read it as a recording of nothing.
 mkdir -p "\$OUT"; OUT="\$(cd "\$OUT" && pwd)"; WORK="\$(cd "\$(dirname "\$OUT")" && pwd)"
-exec "$RUST_BIN" record --native \\
+exec "$here/bin/oracle" private-tmp "$RUST_BIN" record --native \\
   --busbar-repo "\${BUSBAR_ORACLE_PRODUCT_ROOT:-$here}" \\
   --candidate-bin "\$BIN" \\
   --oracle-data "\${BUSBAR_ORACLE_DATA:-$here/testing/shadow-oracle}" \\
@@ -360,8 +414,9 @@ case "$sub" in
     mkdir -p "$OUT"; OUT="$(cd "$OUT" && pwd)"; WORK="$(cd "$(dirname "$OUT")" && pwd)"
     # A filtered recording carries the premise cells its forgivenesses probe (see premise_closure).
     [ -z "$FILTER" ] || FILTER="$(widen_filter "$FILTER")"
-    exec "$RUST_BIN" record --native --busbar-repo "$ROOT" --candidate-bin "$BIN" \
-      --oracle-data "$DATA" --work-dir "$WORK" --out-dir "$OUT" --family "$PLANE" ${FILTER:+--filter "$FILTER"} ;;
+    rc=0; private_tmp "$RUST_BIN" record --native --busbar-repo "$ROOT" --candidate-bin "$BIN" \
+      --oracle-data "$DATA" --work-dir "$WORK" --out-dir "$OUT" --family "$PLANE" ${FILTER:+--filter "$FILTER"} || rc=$?
+    exit "$rc" ;;
 
   replay)
     # OLD: replay --golden G --candidate C --out R  →  the in-process Rust differ (the judge).

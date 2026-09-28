@@ -399,8 +399,8 @@ own writable path; it does not make keys/usage/ledgers durable.
 
 A durable store ships as a **signed plugin**, not code baked into the binary or the Docker image —
 `sqlite`, `postgres`, `mysql` and `valkey` are each a separate release from their own repo
-(`GetBusbar/store-sqlite`, `GetBusbar/store-postgres`, `GetBusbar/store-mysql`,
-`GetBusbar/store-valkey` — the full list, with each plugin's alias and crate name, is
+(`GetBusbar/busbar-store-sqlite`, `GetBusbar/busbar-store-postgres`, `GetBusbar/busbar-store-mysql`,
+`GetBusbar/busbar-store-valkey` — the full list, with each plugin's alias and crate name, is
 [`plugins.yaml`](../plugins.yaml) at the repo root). "Give it a writable volume" is necessary but
 not sufficient; the complete recipe has **four** parts:
 
@@ -421,7 +421,7 @@ not sufficient; the complete recipe has **four** parts:
    - **`plugins.fetch`**: let Busbar download it at boot. One entry, `{ github: "org/repo@tag" }`,
      resolves to the exact GitHub release-asset URL
      `https://github.com/{org}/{repo}/releases/download/{tag}/{repo}.tar.gz` — for sqlite that is
-     `https://github.com/GetBusbar/store-sqlite/releases/download/v1.0.0/store-sqlite.tar.gz`
+     `https://github.com/GetBusbar/busbar-store-sqlite/releases/download/v1.0.0/store-sqlite.tar.gz`
      (pin whatever tag you actually want; `v1.0.0` here is illustrative). Because this path
      *writes* the downloaded tarball into `plugins.dir`, that directory must be **writable**, not
      merely mounted — a read-only `plugins.dir` fails the download, not just the load.
@@ -433,7 +433,7 @@ plugins:
   enabled: true
   dir: /etc/busbar/plugins          # ABSOLUTE — the default ("plugins") resolves to /plugins in the image
   fetch:
-    - github: "GetBusbar/store-sqlite@v1.0.0"   # or omit `fetch` and mount the tarball yourself
+    - github: "GetBusbar/busbar-store-sqlite@v1.0.0"   # or omit `fetch` and mount the tarball yourself
 
 store:
   module: sqlite
@@ -462,7 +462,7 @@ Every message below is copied verbatim from the code that emits it — nothing h
 | --- | --- | --- |
 | `plugins.enabled` is still `false` (the default) | `store.module: 'sqlite' requires the plugin subsystem, but plugins.enabled is false (the default). Set plugins.enabled: true and place the signed 'sqlite' store plugin tarball in the plugins directory ('plugins'), or set store.module: memory.` | `crates/busbar-kernel/src/preflight.rs`; reproduced verbatim by golden cell `boot.refusal__BOOT-130__boot` |
 | `plugins.enabled: true` but no plugin named `sqlite` is actually in `plugins.dir` (wrong path, relative `plugins.dir` resolving somewhere unexpected, or the tarball never landed) | `no plugin matching store.module: 'sqlite' is installed in '<dir>' (plugins ARE enabled; loadable: [<names>]). Two things to check: is the plugin subsystem enabled? (it is) — and is the signed tarball actually IN the folder? Add it to plugins.fetch or drop the signed tarball in the directory, or set store.module: memory.` | `crates/busbar-kernel/src/preflight.rs`; same wording (auth-plugin variant) verified live by golden cell `boot.refusal__BOOT-137c__boot` |
-| `db_path`'s directory does not exist on the mounted volume | `store 'busbar-store-sqlite-plugin' plugin load failed: plugin 'busbar-store-sqlite-plugin' open failed: unable to open database file: <path>` | `crates/busbar-kernel/src/preflight.rs` (store plugin open, called from `main.rs`); verified live by golden cell `boot.refusal__BOOT-171__boot` |
+| `db_path`'s directory does not exist on the mounted volume | `store 'busbar-store-sqlite' plugin load failed: plugin 'busbar-store-sqlite' open failed: unable to open database file: <path>` | `crates/busbar-kernel/src/preflight.rs` (store plugin open, called from `main.rs`); verified live by golden cell `boot.refusal__BOOT-171__boot` |
 | The tarball is signed but built against an ABI this binary no longer speaks (too old or too new) | `manifest abi_version <n> is not supported for kind '<kind>' by this binary (supported range v<floor>..=v<max>)` | `crates/plugin-loader/src/sign.rs:662` (the manifest ABI-range check; covered by `crates/plugin-loader/src/tests/sign_tests.rs`) |
 
 ### auth: none (local dev, open relay)

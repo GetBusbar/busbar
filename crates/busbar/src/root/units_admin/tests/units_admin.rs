@@ -441,7 +441,6 @@ fn a_money_governance_verb_is_checked_against_the_posture_the_fleet_sealed() {
             &admin,
             &token,
             &ctx,
-            &busbar_kernel::teller::AccrualMeter::new(),
         )
         .into_result(&seal);
         binding.units.close(key);
@@ -1637,7 +1636,6 @@ fn each_recovery_verb_reaches_the_store_and_a_refusing_store_is_the_answer() {
             &admin,
             &token,
             &ctx,
-            &busbar_kernel::teller::AccrualMeter::new(),
         )
         .into_result(&seal);
         binding.units.close(key);
@@ -5052,7 +5050,6 @@ fn adjust_through_route(
         &admin,
         &Pass::<Route>::mint(&seal),
         &ctx,
-        &busbar_kernel::teller::AccrualMeter::new(),
     )
     .into_result(&seal);
     let answer = binding.units.answer(key);
@@ -5426,7 +5423,7 @@ fn the_admin_listener_binds_its_claim_journal_on_a_data_dir_node_only() {
     );
 }
 
-/// THE DEPLOYMENT KEYSET IS WHAT `/audit/keys` PUBLISHES (spec #82(a)(b); ARCHITECTURE.md §1.2,
+/// THE DEPLOYMENT KEYSET IS WHAT `/audit/keys` PUBLISHES (spec #82(a)(b); BUSBAR-1.6.0.md THE DESIGN, §2,
 /// PB-13; architect ruling 2026-09-26): a node bound to its keyset seals a SIGNED record and a
 /// SIGNED checkpoint, and both verify against the key the served read publishes — parsed off the
 /// wire, not handed over in-process. RED arm: the same node before the keyset is bound publishes

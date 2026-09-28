@@ -300,15 +300,11 @@ pub enum MethodTag {
 }
 
 // Every real caller needs EITHER `openapi-schema` (the `openapi_doc`-body call, and the
-// `json/tests` consistency tests, both gated on that feature alone) OR `test` PLUS
-// `auth-admin-tokens` (the `admin::tests` taxonomy-drift audit, which itself requires that
-// feature — see its `mod tests;` gate). Plain `cfg(test)` alone is NOT a real caller: under
-// `--no-default-features` (auth-admin-tokens off) that left this compiled but unreachable,
-// tripping `-D dead-code` in CI.
-#[cfg(any(
-    feature = "openapi-schema",
-    all(any(test, feature = "test-support"), feature = "auth-admin-tokens")
-))]
+// `json/tests` consistency tests, both gated on that feature alone) OR `test-support` (the
+// admin surface's taxonomy-drift audit, which drives this crate through its `test-support` build).
+// Plain `cfg(test)` alone is NOT a real caller: it left this compiled but unreachable, tripping
+// `-D dead-code` in CI.
+#[cfg(any(test, feature = "openapi-schema", feature = "test-support"))]
 impl MethodTag {
     /// Parse an OpenAPI operation key (`"get"`, `"post"`, …) back into a tag. `None` for the `x-*`
     /// specification extensions that share the path-item object with real operations. Called from
@@ -768,7 +764,7 @@ pub fn declared_responses(method: MethodTag, rel: &str) -> Vec<(String, String)>
 #[cfg(any(test, feature = "test-support"))]
 pub mod observed {
     use super::{Cond, ErrKind, MethodTag};
-    #[cfg(all(any(test, feature = "test-support"), feature = "auth-admin-tokens"))]
+    #[cfg(any(test, feature = "test-support"))]
     use std::collections::BTreeSet;
 
     /// The tag `err_json` stamps onto an error response so the recording layer (which knows the
@@ -785,7 +781,7 @@ pub mod observed {
     /// stable string forms of the taxonomy enums rather than the enums themselves. Only the
     /// crate-under-test build reads it back (through [`snapshot`]); the plane crates' `test-support`
     /// dependency copy only ever WRITES, through `record`.
-    #[cfg(all(any(test, feature = "test-support"), feature = "auth-admin-tokens"))]
+    #[cfg(any(test, feature = "test-support"))]
     pub type Emission = (String, String, String, Option<String>);
 
     /// The stable string form of an [`ErrKind`] — its `Debug` name, which is frozen alongside the enum.
@@ -800,9 +796,8 @@ pub mod observed {
 
     /// Every emission the process has witnessed so far, read from the process-wide substrate ledger so
     /// BOTH copies of `busbar-core` in the test binary (the crate-under-test and the plane crates'
-    /// dependency copy) contribute. Its only caller is the `auth-admin-tokens`-gated taxonomy-drift
-    /// audit in `admin::tests`.
-    #[cfg(all(any(test, feature = "test-support"), feature = "auth-admin-tokens"))]
+    /// dependency copy) contribute. Its only caller is the admin surface's taxonomy-drift audit.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn snapshot() -> BTreeSet<Emission> {
         busbar_kernel::admin_witness::snapshot()
     }

@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE READER / WRITER PAIR — the bidirectional analog of the LLM plane's
-//! `ProtocolReader`/`ProtocolWriter`. Design `plane4-duplex-session.md`.
+//! `ProtocolReader`/`ProtocolWriter`. Design `BUSBAR-1.6.0.md` #18/#45.
 //!
 //! The single design delta vs the LLM `ProtocolReader` is that Plane 4 needs a client→server event
 //! vocabulary, so the plane defines TWO DIRECTIONS over one wire schema (the MCP "one reader, one
@@ -34,7 +34,7 @@ use serde_json::{json, Value};
 use std::collections::{HashMap, VecDeque};
 
 /// The dialect wire `type` tokens — named once here so the reader's dispatch and the writer's framing
-/// never drift. These are the plane's OWN vocabulary (it owns 100% of its protocol nouns, `plane4-duplex-session.md`).
+/// never drift. These are the plane's OWN vocabulary (it owns 100% of its protocol nouns, `BUSBAR-1.6.0.md` #18/#45).
 mod wire {
     // client → server
     pub const SESSION_UPDATE: &str = "session.update";
@@ -91,8 +91,8 @@ impl<'a> From<&'a WireEvent> for WireRef<'a> {
 
 /// PER-SESSION DECODE STATE threaded through the reader — the analog of the LLM reader's
 /// `StreamDecodeState`. Holds what is per-session, not per-frame: monotonic frame sequencing, the
-/// `CallRef ↔ call_id` correlation table (`plane4-duplex-session.md`), the negotiated output format, and the barge-in
-/// playback-position bookkeeping (`plane4-duplex-session.md` — the plane tracks bytes played because the upstream emits
+/// `CallRef ↔ call_id` correlation table (`BUSBAR-1.6.0.md` #18/#45), the negotiated output format, and the barge-in
+/// playback-position bookkeeping (`BUSBAR-1.6.0.md` #18/#45 — the plane tracks bytes played because the upstream emits
 /// audio faster than realtime).
 /// THE CEILING ON THE `call_id → CallRef` TABLE, stated here rather than left implicit.
 ///
@@ -608,7 +608,7 @@ pub trait DuplexWriter {
 }
 
 /// THE OpenAI Realtime GA DIALECT CODEC — the plane's sole dialect today (`codec: None`, one wire
-/// format, `plane4-duplex-session.md`). A unit struct: all per-session state lives in [`DecodeState`], so the codec itself
+/// format, `BUSBAR-1.6.0.md` #18/#45). A unit struct: all per-session state lives in [`DecodeState`], so the codec itself
 /// is stateless and shareable.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct OpenAiRealtimeCodec;
@@ -824,7 +824,7 @@ impl DuplexReader for OpenAiRealtimeCodec {
     }
 }
 
-/// Extract the split token classes from a `response.done.usage` object (`plane4-duplex-session.md` — audio vs text are
+/// Extract the split token classes from a `response.done.usage` object (`BUSBAR-1.6.0.md` #18/#45 — audio vs text are
 /// SEPARATE classes; extraction-only, never client-translated).
 ///
 /// The per-modality breakdown (`input_token_details`/`output_token_details`) is a REFINEMENT of the
@@ -1079,7 +1079,7 @@ fn usage_to_wire(u: &IrDuplexUsage) -> Value {
 
 /// THE SECOND DIALECT — Gemini Live (`BidiGenerateContent`). Its codec maps the Gemini wire to/from
 /// the SAME shared IR this file's [`OpenAiRealtimeCodec`] targets; earning the superset IR is exactly
-/// what a second dialect does (`plane4-duplex-session.md`). See [`gemini::GeminiLiveCodec`].
+/// what a second dialect does (`BUSBAR-1.6.0.md` #18/#45). See [`gemini::GeminiLiveCodec`].
 pub mod gemini;
 
 #[cfg(test)]

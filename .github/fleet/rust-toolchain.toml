@@ -1,0 +1,7 @@
+# RENDERED by `cargo xtask fleet render` from GetBusbar/busbar's plugins.yaml and .github/fleet/
+# templates. The toolchain is busbar's own pin (its rust-toolchain.toml), so a plugin and the core
+# that links it compile with one compiler.
+[toolchain]
+channel = "@@toolchain@@"
+components = ["clippy", "rustfmt"]
+profile = "minimal"

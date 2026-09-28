@@ -159,7 +159,7 @@ Each of these is an owner-accepted difference from 1.5.5: additive, or strictly 
   the endpoint rules are 1.5.5's: plaintext `http://` to a loopback collector only, `https://`
   elsewhere, link-local, private, CGNAT and cloud-metadata targets refused, and credentials in the
   URL sent as an `Authorization: Basic` header. The sink ships as a plugin
-  ([GetBusbar/export-otlp](https://github.com/GetBusbar/export-otlp)), linked into the default build.
+  ([GetBusbar/busbar-export-otlp](https://github.com/GetBusbar/busbar-export-otlp)), linked into the default build.
 - **A service-account key file that cannot be read no longer echoes the credential into the error.**
   `auth: jwt-bearer` tells a pasted service-account JSON from a path to one by a single leading
   `{`, so an operator who pastes the key BODY — or whose `env:`/`file:` reference resolves to key
@@ -368,6 +368,7 @@ Each of these is an owner-accepted difference from 1.5.5: additive, or strictly 
   Both now surface a real error to the client, record the upstream fault on the breaker, and are
   not billed as completions. The content-moderation `ERROR_TOXIC` stop is untouched: a safety
   refusal is a correctly-served response and must not fault a lane. No successful stream changes.
+- **An admin-auth provider is judged by its module, not by its name.** A provider defined under another name with `module: admin-tokens` (e.g. `ops: { module: admin-tokens, token: ... }`) admitted nobody in 1.5.5 — every admin request was a 401 — and now authenticates the operator token; a provider named `admin-tokens` that is backed by another module was never asked in 1.5.5 and is now consulted, under its own `max_admin_scope`. A config that names the operator credential as `admin-tokens: { module: admin-tokens }`, or leaves `admin_auth` at its default, is unchanged.
 - **/metrics families are emitted in a stable sorted order.** 1.5.5 printed the exposition's
   families, and the series inside each family, in its recorder's hash order, so the same metrics
   could scrape to different bytes from one boot to the next. Families now come out by name and
@@ -389,7 +390,10 @@ instead, because each waives only a caller-additive or documentation-only surfac
 money or status class: F-003 — the CLI `--help`/`--version` text is a parseable contract surface —
 and F-011c — `openapi.json`'s overlay-delete endpoint prose, registered breaking only because the
 oracle tool cannot leaf-correct a string under a `paths` key, not because the endpoint's behaviour
-changed. A reader counting `kind: breaking` rows in the register will find ten, not eight.)
+changed. A reader counting `kind: breaking` rows in the register will find ten, not eight. One
+further entry, AUTH-ROW's, is also registered `breaking` and presented under Improvements: the
+differ accepts a `status` class on no other kind, and what it waives is a misconfigured admin-auth
+provider that answered 401 now authenticating.)
 Everything else that touches a 1.5.5 config, request or plugin is named above
 as an improvement or does not exist: a config written for 1.5.5 boots, validates and migrates
 identically, and every 1.5.5 key and minted secret carries over.
@@ -432,7 +436,7 @@ identically, and every 1.5.5 key and minted secret carries over.
   count exactly as Vertex spells it, and the `totalTokenCount` busbar synthesizes now reproduces
   Google's. Nothing else about a Gemini response changed, and a turn with no server-side tool use
   bills exactly as it did. See [Spec fidelity](#spec-fidelity) and
-  [the recorded discrepancy](docs/design/gemini-usage-metadata-spec-discrepancy.md). **Migration:**
+  [the recorded discrepancy](qa/evidence/gemini-usage-metadata-spec-discrepancy.md). **Migration:**
   if your traffic uses Gemini server-side tools (grounding, code execution, function calling),
   expect those keys' recorded spend to rise to what Google actually invoices; no config change is
   needed.
@@ -538,6 +542,26 @@ the eight new plane-record verbs with "unsupported", which the engine treats as 
 and hook plugins are untouched. Stores built against ABI 4 — the ones that persist MCP call
 records and A2A tasks durably — are a later release; nothing you have installed needs rebuilding
 for 1.6.0. See [the plugin guide](docs/plugins.md).
+
+**Breaking, signed off by the owner (plugin fleet naming, 2026-09-27): every first-party plugin is
+named `busbar-<kind>-<name>`, and the repo, the crate, the signed manifest name and the release asset
+prefix are that one name.** The repos moved (`GetBusbar/store-sqlite` → `GetBusbar/busbar-store-sqlite`,
+`hashicorp-vault` → `busbar-secret-vault`, `webrequest-hook` → `busbar-hook-webrequest`,
+`headroom-hook` → `busbar-hook-headroom`, and likewise for the other twelve; GitHub redirects every old
+URL). A plugin RELEASED from here on states its repo name as its manifest name
+(`busbar-store-valkey`, not `busbar-store-valkey-plugin`; `busbar-hook-headroom`, not `busbar-headroom`)
+and publishes `busbar-<kind>-<name>-<version>-<target>.tar.gz`. **Migration:** a config that selects a
+plugin by its alias (`store.module: valkey`, `module: headroom`) needs nothing; one that names a
+plugin by its old manifest name must use the alias or the new name once the new release is
+installed, and a `plugins.fetch` that downloads by asset name must use the new prefix. Tarballs
+already published keep the names they were published with and keep loading. The container images
+keep their names (`getbusbar/busbar-headroom`, `getbusbar/headroom-hook`). `busbar --migrate-config`
+now names the Valkey store's manifest as `busbar-store-valkey`.
+
+**A plugin declares the contract-ABI range it supports** (`contract_abi: {min, max}` in its signed
+`declares` section), and Busbar refuses at load a plugin whose range shares no version with its own,
+naming both ranges. A manifest packed before the field existed is judged on its `abi_version` alone,
+as before.
 
 **Every plugin response now carries an observability envelope**, and the `export` kind's payload
 schema moves to v3 because of it. A plugin answers `{ result, metrics[], diagnostics[] }`: `result`

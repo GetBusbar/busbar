@@ -4,7 +4,7 @@
 #
 # secret-hygiene-gate.sh — THE SECRET-VALUE-TYPE DEBT METER (the "secrets are a TYPE, not a String" gate).
 #
-# WHY THIS EXISTS (docs/design/1.6.0-secret-hygiene.md):
+# WHY THIS EXISTS (docs/design/BUSBAR-1.6.0.md #53/#54):
 #   busbar's secret-hygiene guarantee is a TYPE guarantee: a value that is a secret is `Redacted<T>`
 #   (busbar_contract::Redacted — Debug/Display = [REDACTED], no Serialize, zeroize-on-drop), never a bare
 #   `String`/`&str`/`Vec<u8>`. Its safe-to-log IDENTITY is `SecretRef`/a plain id, never the value.
@@ -34,7 +34,7 @@
 #     * Check 2 needs `.expose_secret()` on the same statement as a SINK, and `format!` was not in
 #       `SINKS` at all. A secret interpolated into a message that is RETURNED rather than LOGGED
 #       had no rule anywhere in this file.
-#   `docs/design/1.6.0-secret-hygiene.md` §1.3 said "No direct `println!(secret)` found in
+#   `docs/design/BUSBAR-1.6.0.md` #53/#54 said "No direct `println!(secret)` found in
 #   production" — the audit looked at types, derives and sinks, and never at interpolation.
 #
 #   THE REMEDY CHECK 3 ASKS FOR IS REDACTION AT THE FORMATTING SITE, NEVER DELETING THE
@@ -267,7 +267,7 @@ token|crates/busbar-llm-codec/src/ir/types.rs|token"
 
 # CHECK 3 HAS NO EXCEPTIONS AND THAT IS A MEASUREMENT, NOT AN OVERSIGHT. Every one of the findings
 # Check 3 makes on this tree was read against the source and is a real member of the class (see
-# docs/design/1.6.0-secret-hygiene.md Part 5 for the row-by-row disposition). The four shapes that
+# docs/design/BUSBAR-1.6.0.md #53/#54 Part 5 for the row-by-row disposition). The four shapes that
 # LOOK like the class and are not — `SecretRef::describe()`, a public key/signature through
 # `hex::decode`, declared media through base64, a `format!` building a header VALUE rather than a
 # message — are held green BY THE RULES, not by rows here, which is the disposition this file

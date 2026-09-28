@@ -4,7 +4,7 @@
 //! What this transport declares about itself.
 //!
 //! Everything here is an associated constant, because everything here is read once at registration
-//! and sealed. Held as the kind's own `meta.rs` (`PLUGIN-TREE.md` §3) so two siblings of the
+//! and sealed. Held as the kind's own `meta.rs` (`BUSBAR-1.6.0.md` THE DESIGN, §2) so two siblings of the
 //! transport kind are indistinguishable in shape, and so the declarations are readable without
 //! reading the connection code they describe.
 
@@ -19,7 +19,7 @@ use crate::transport::WsTransport;
 
 impl Plugin for WsTransport {
     fn key(&self) -> &'static str {
-        <Self as TransportMeta>::KEY
+        <crate::WsFramer as TransportMeta>::KEY
     }
     fn kind(&self) -> Kind {
         Kind::Transport
@@ -29,7 +29,7 @@ impl Plugin for WsTransport {
     }
 }
 
-impl TransportMeta for WsTransport {
+impl TransportMeta for crate::WsFramer {
     const KEY: &'static str = "ws";
     const SELECTOR_FORMS: &'static [SelectorForm] = claims::SELECTOR_FORMS;
     const EGRESS_SELECTOR_FORMS: &'static [SelectorForm] = claims::EGRESS_SELECTOR_FORMS;

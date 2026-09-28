@@ -22,7 +22,7 @@
 //! ## The documented row splits
 //!
 //! The shell prints its findings PER LOCATION under one exit status; this gate owes one row per
-//! RULE. Where one shell tag covers two rules the split is recorded in `docs/design/xtask-gates.md`
+//! RULE. Where one shell tag covers two rules the split is recorded in `docs/design/BUSBAR-1.6.0.md` Part 1 ("What this means for the gates")
 //! section 6, and the routing that implements it is [`route_tagged`] and the id lookups beside it.
 
 use crate::gates::structure_lint::roots::Addresses;
@@ -79,7 +79,7 @@ enum Pending {
     SinkWidened,
     /// A boot-surface block: the offending FIELD LINES follow, numbered within the struct body
     /// rather than within the file — which is why the offender this gate records is the field
-    /// itself. See the row-split note in `docs/design/xtask-gates.md` section 6.
+    /// itself. See the row-split note in `docs/design/BUSBAR-1.6.0.md` Part 1 ("What this means for the gates").
     BootCtxWidened,
     /// A multi-line note whose continuation carries nothing this gate records.
     Discard,

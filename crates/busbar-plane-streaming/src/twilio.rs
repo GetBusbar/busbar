@@ -9,7 +9,7 @@
 //! (`busbar_voice_codec::topology::twilio`) is gated behind busbar-voice's `runtime` cargo feature, which
 //! this crate's manifest never turns on — so it is not in this crate's dependency closure at all,
 //! and cannot be named from here. This module is therefore written from the wire shape alone
-//! (confirmed against `docs/design/plane4-voice-dialect-landscape.md` and the public Twilio Media
+//! (confirmed against `docs/design/BUSBAR-1.6.0.md` #18/#45 and the public Twilio Media
 //! Streams reference, both cited in this crate's design notes) rather than adapted from that
 //! runtime-gated module; any structural resemblance is the two independently converging on the same
 //! public wire format, not a copy.

@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright (C) 2026 Busbar Inc and contributors
 #
-# Gating scenario `mcp.rig|h2-class-price` -- H2 (ARCHITECTURE.md #2.2 step 6, METER) for the MCP
+# Gating scenario `mcp.rig|h2-class-price` -- H2 (BUSBAR-1.6.0.md THE DESIGN, §1 step 6, METER) for the MCP
 # plane, and the PRICING half of that step rather than the posting half. h2-meter-row.sh proves ONE
 # served `tools/call` settles to ONE row carrying the flat fee (#44). This leg asks the question that
 # one cannot: what did the call MEASURE, and what does the card charge for it (#71 -- "a plane's

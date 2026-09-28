@@ -13,7 +13,7 @@ memory. A **silver** on-ramp is noted at the end.
 > documentation: keep the rows below true as the repo evolves, and use the silver on-ramp to
 > drive the next tier.
 
-> Aligns with [`docs/design/1.6.0-security-posture.md`](../design/1.6.0-security-posture.md),
+> Aligns with [`docs/security/1.6.0-security-posture.md`](1.6.0-security-posture.md),
 > [`SECURITY.md`](../../SECURITY.md), and [`THREAT_MODEL.md`](../../THREAT_MODEL.md). Where a
 > criterion is honestly *partial* or *roadmap*, this doc says so — the posture doc's rule is
 > that a claim you can verify is worth more than one you have to trust.
@@ -63,7 +63,7 @@ The badge criteria are grouped as the bestpractices.dev form groups them. Answer
 | `build` + `build_common_tools` + `build_floss_tools` | Met | `cargo` build; standard Rust toolchain pinned in `rust-toolchain.toml`. |
 | `automated_test_suite` + `test` + `test_invocation` | Met | 2,000+ unit tests, offline acceptance harness; `cargo test`. Full CI in `ci.yml` (owned separately) and `qa-gate.yml`. |
 | `test_most` — tests cover most of the code | Met | Codecov coverage badge in README; a mutation-strength test gate (`scripts/run-mutants-ec2.sh`, `gate-mutants.yml`). |
-| `test_policy` + `tests_are_added` + `tests_documented_added` | Met | Repo discipline: a bug becomes a regression test **and**, where the class allows, a CI gate — documented in `docs/design/1.6.0-security-posture.md` §4.2 and enforced by the xtask gate battery (`xtask/src/gates/`). |
+| `test_policy` + `tests_are_added` + `tests_documented_added` | Met | Repo discipline: a bug becomes a regression test **and**, where the class allows, a CI gate — documented in `docs/security/1.6.0-security-posture.md` §4.2 and enforced by the xtask gate battery (`xtask/src/gates/`). |
 | `warnings` + `warnings_fixed` + `warnings_strict` | Met | `cargo clippy --workspace --all-targets -- -D warnings` (warnings are errors) in CI and `sched-monthly-refresh.yml`. |
 
 ## Security
@@ -89,7 +89,7 @@ The badge criteria are grouped as the bestpractices.dev form groups them. Answer
 | Criterion | Status | Evidence |
 |---|---|---|
 | `hardening` — hardening mechanisms used | Met | Self-hosted static binary, credential boundary, fail-closed governance gauntlet, `catch_unwind` FFI confinement (posture doc §2.3–§2.6); k8s `securityContext` example in README. |
-| `assurance_case` — a documented assurance argument | Met | `docs/design/1.6.0-security-posture.md` is a full class→mechanism→gate assurance case. |
+| `assurance_case` — a documented assurance argument | Met | `docs/security/1.6.0-security-posture.md` is a full class→mechanism→gate assurance case. |
 
 ## Roadmap items honestly not yet at passing
 
@@ -117,7 +117,7 @@ unmet for a solo-maintained project — we leave those open rather than overclai
 | `code_of_conduct` | Met | [`CODE_OF_CONDUCT.md`](../../CODE_OF_CONDUCT.md). |
 | `roles_responsibilities` — roles documented | Met | Maintainer role + **named security contact** (`SECURITY.md`). |
 | `documentation_roadmap` | Met | `docs/design/1.6.0-*` release plans + roadmap sections. |
-| `documentation_architecture` | Met | `README.md` architecture; `docs/design/1.6.0-security-posture.md`; `THREAT_MODEL.md`. |
+| `documentation_architecture` | Met | `README.md` architecture; `docs/security/1.6.0-security-posture.md`; `THREAT_MODEL.md`. |
 | `documentation_security` — how to report + secure use | Met | `SECURITY.md`, posture doc, k8s `securityContext` example in README. |
 | `documentation_quick_start` | Met | `README.md` quick start; `docs/` getting-started. |
 | `documentation_current` | Met | Docs tracked with releases; `changelog-lint` refuses to stage stale release docs (`RELEASE.md`). |
@@ -138,7 +138,7 @@ unmet for a solo-maintained project — we leave those open rather than overclai
 | `crypto_used_network` + `crypto_tls12` + `crypto_certificate_verification` | Met | TLS / mTLS floor; posture doc §2.x. |
 | `crypto_weaknesses` + `crypto_algorithm_agility` + `crypto_credential_agility` | Met | Vetted crates, no home-grown crypto; posture doc §2.3 / §2.6. |
 | `hardening` | Met | Static binary, credential boundary, fail-closed gauntlet, FFI `catch_unwind`; k8s `securityContext`. |
-| `assurance_case` | Met | `docs/design/1.6.0-security-posture.md` class→mechanism→gate case. |
+| `assurance_case` | Met | `docs/security/1.6.0-security-posture.md` class→mechanism→gate case. |
 | `security_review` — design **and** code reviewed | Met (internal) | `THREAT_MODEL.md` design review + the posture-doc audit + the repo's documented internal code review process, which silver accepts. |
 | `dynamic_analysis` — a dynamic/fuzz tool is applied | Met | Coverage-guided **cargo-fuzz** over the codec parse surface (`fuzz/`, `qa-fuzz.yml`); loom; automated fault-injection test-effectiveness checks. |
 

@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE UNIVERSAL-`EngineHost` SEMANTIC-PURITY WITNESS (finding F3 of
-//! docs/design/playbook/neutrality-findings-and-prevention.md — the mechanical backstop that
+//! docs/design/BUSBAR-1.6.0.md THE DESIGN, §1 — the mechanical backstop that
 //! converts a SEMANTIC coupling into a compile-shape invariant).
 //!
 //! ## The coupling this gate mechanises

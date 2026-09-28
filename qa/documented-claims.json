@@ -1,11 +1,11 @@
 {
   "_comment": [
-    "PB-71 (docs/design/ARCHITECTURE.md Appendix B): the 27 README + 29 CHANGELOG documented-",
-    "behaviour claims cross-checked in docs/design/inventory/1.5.5-ops-observability.md §8 (§8.3",
+    "PB-71 (qa/parity-bindings.md): the 27 README + 29 CHANGELOG documented-",
+    "behaviour claims cross-checked in qa/evidence/inventory/1.5.5-ops-observability.md §8 (§8.3",
     "one cross-check section apiece for README and for CHANGELOG). Every claim testable through the",
     "binary has a `documented` family",
     "cell in testing/shadow-oracle/cells.json (status: \"cell\", the `cell` field names it); the two",
-    "rows ARCHITECTURE.md names CONTRADICTED get a cell that pins the CODE's actual behaviour",
+    "rows BUSBAR-1.6.0.md names CONTRADICTED get a cell that pins the CODE's actual behaviour",
     "instead (status: \"cell\", `contradicted: true`). Claims that are pure prose — external",
     "benchmarks, Docker/Kubernetes manifest literals busbar itself never observes, CI-pipeline-only",
     "behaviour, Cargo/build metadata, or a bare pointer into another §'s own detailed cross-check —",
@@ -19,7 +19,7 @@
     "An earlier version of this note claimed the design-bindings gate verified the `cell` ids.",
     "It did not: nothing in the tree opened this file at all."
   ],
-  "source": "docs/design/inventory/1.5.5-ops-observability.md §8 (§8.3 :1047-1073, §8.4 :1087-1115)",
+  "source": "qa/evidence/inventory/1.5.5-ops-observability.md §8 (§8.3 :1047-1073, §8.4 :1087-1115)",
   "counts": { "total": 56, "readme": 27, "changelog": 29, "cell": 33, "prose": 23, "contradicted": 2 },
   "claims": [
     { "id": "README:1048", "quote": "Six wire protocols, first class on both sides: OpenAI, OpenAI Responses, Anthropic, Gemini, Cohere and Bedrock Converse.", "status": "cell", "cell": ["documented|readme|six-protocols|openai-chat", "documented|readme|six-protocols|openai-responses", "documented|readme|six-protocols|anthropic", "documented|readme|six-protocols|gemini", "documented|readme|six-protocols|cohere"] },

@@ -36,21 +36,8 @@ mod envelope_boot;
 // The engine test-kit binding (`engine()`): the ONE function the plane's tests reach the engine's
 // fixture through, in a `tests/`-path file for the same reason as `envelope_boot` above. Not gated
 // on `cfg(test)`: the admin-verb battery compiles into the library under `test-support` (the shape
-// core's own test-support build takes) and binds through it there too — but ONLY when
-// `auth-admin-tokens` is on, since that battery is `#[cfg(all(any(test, feature = "test-support"),
-// feature = "auth-admin-tokens"))]`. So the binding has a caller in exactly two configurations —
-// `cfg(test)` (every other battery) and `auth-admin-tokens` (that one) — and in the third, the plain
-// `test-support` library build with admin tokens off, it has NONE and reads as dead. The dead-code
-// allowance below is scoped to precisely that third configuration: the module itself stays
-// unconditional (gating it on `cfg(test)` alone left the admin-verb battery unresolved), so no build
-// loses the binding, and every configuration that DOES have a caller keeps the real dead-code check.
-#[cfg_attr(
-    not(any(test, feature = "auth-admin-tokens")),
-    allow(
-        dead_code,
-        reason = "no caller in the test-support library build with admin tokens off"
-    )
-)]
+// core's own test-support build takes) and binds through it there too, so every configuration that
+// compiles it has a caller.
 #[path = "a2a/tests/engine_boot.rs"]
 pub(crate) mod engine_boot;
 
@@ -250,11 +237,8 @@ pub const TEST_SEAM: TestPlaneSeam = TestPlaneSeam {
     verify_gate: Some(|slots| crate::a2a::runtime_off_slots(slots).map(A2aPlane::verify_arc)),
 };
 
-#[cfg(feature = "auth-admin-tokens")]
 const ERROR_SURFACE_DRIVER: Option<ErrorSurfaceDriver> =
     Some(|| Box::pin(crate::a2a::verbs::adminverbs_tests::drive_a2a_verb_errors()));
-#[cfg(not(feature = "auth-admin-tokens"))]
-const ERROR_SURFACE_DRIVER: Option<ErrorSurfaceDriver> = None;
 
 /// This plane's registry row, assembled kernel-side from its contract declaration
 /// and its behaviour table.

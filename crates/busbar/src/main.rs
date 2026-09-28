@@ -209,8 +209,10 @@ fn register_protocols() {
 /// lands in its own slot regardless of the table's order. Then the two unconditional seams, then
 /// every root unit's seal.
 fn register_planes() {
-    // The linked store and hook rows onto the kernel's cold-kind axis, before anything resolves one.
-    busbar_kernel::preflight::install_linked_rows(LINKED.stores, LINKED.hooks);
+    // The linked store and hook rows onto the kernel's cold-kind axis, with the default store the
+    // store rows declare, and its auth rows onto the auth axis, before anything resolves one.
+    root::linked::register_stores(&LINKED);
+    busbar_kernel::preflight::install_linked_auth(LINKED.auths);
     // The configured `plugins.dir`, scanned once: its planes join the plane axis here and its export
     // modules the export axis just below — the same entries a linked plugin registers through.
     let dropped = root::linked::dropped_from_config(&LINKED);
@@ -517,7 +519,7 @@ fn compose_boot_book(
             "the journal could not record the quarantine boot recovery made"
         );
     }
-    // THE DEPLOYMENT KEYSET (spec #82(a); ARCHITECTURE.md §1.2, PB-13; architect ruling 2026-09-26),
+    // THE DEPLOYMENT KEYSET (spec #82(a); BUSBAR-1.6.0.md THE DESIGN, §2, PB-13; architect ruling 2026-09-26),
     // bound BEFORE the opening is sealed so checkpoint 0 is signed with it too. With a data
     // directory the first boot mints it, caches it there (0600) and seals its fingerprint in a
     // `Bootstrap` record; a later boot that cannot produce that fingerprint refuses `KeysetMissing`.
@@ -965,7 +967,7 @@ async fn run(data_workers: usize) {
     let book = (cfg!(feature = "root-admin") || ROOT_UNITS.iter().any(|u| u.opens_book))
         .then(|| open_boot_book(&app_handle.load()));
 
-    // THE CHECKPOINT CADENCE (OWNER Q71(3); ARCHITECTURE.md §4.7): armed on the one book once its
+    // THE CHECKPOINT CADENCE (OWNER Q71(3); BUSBAR-1.6.0.md THE DESIGN, §7): armed on the one book once its
     // opening is sealed, so every serving append checks the entry half and this tick checks the
     // interval half — whichever comes first. The tick runs for the process lifetime; each pass
     // holds the book's lock only for the check (and the seal, when one is due).
@@ -1332,7 +1334,7 @@ fn serve_thread_per_core(
         (0..n).map(|i| core_ids.get(i).copied()).collect();
     // DEBUG, not INFO: this is a per-worker implementation fact, not something a 1.5.5-shaped config
     // ever printed — an operator of such a config must see the SAME lines at INFO as 1.5.5 did (the
-    // neutrality binding, docs/design/ARCHITECTURE.md Appendix B).
+    // neutrality binding, qa/parity-bindings.md).
     tracing::debug!(
         runtimes = cores.len(),
         pinned = core_ids.len().min(n),

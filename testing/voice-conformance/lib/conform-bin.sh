@@ -15,7 +15,7 @@ VC_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 VC_DIR="$(cd "$VC_LIB_DIR/.." && pwd)"          # testing/voice-conformance
 VC_ROOT="$(cd "$VC_DIR/../.." && pwd)"          # repo root
 VC_FIXTURES="$VC_DIR/fixtures"
-VC_MAP="$VC_ROOT/docs/design/voice-cross-dialect-map.json"
+VC_MAP="$VC_ROOT/qa/evidence/voice-cross-dialect-map.json"
 
 # The trees the harness IS. A `voice-conform` older than any file under these is a binary that would
 # judge source it was not built from — which is not an error at run time, it is a PASS about code

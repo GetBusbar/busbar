@@ -59,45 +59,22 @@ unsafe extern "C-unwind" fn fake_free(ptr: *mut u8, len: usize) {
     }
 }
 
-/// Locate the hermetic `busbar-export-example-plugin` cdylib, checking BOTH the uplifted
-/// `<profile_dir>/<name>` copy and the raw `<profile_dir>/deps/<name>` compiler output (a scoped
-/// `cargo test -p busbar-plugin-loader` only produces the latter). Under CI a missing cdylib is a
-/// hard failure rather than a silent skip, so this coverage of the load seam cannot quietly vanish.
-fn hermetic_export_plugin_path() -> Option<std::path::PathBuf> {
-    let candidate = (|| {
-        let exe = std::env::current_exe().ok()?;
-        let profile_dir = exe.parent()?.parent()?;
-        let name = crate::plugin_library_filename(crate::tests::artifact("export_example_cdylib"));
-        let uplifted = profile_dir.join(&name);
-        let raw = profile_dir.join("deps").join(&name);
-        [uplifted, raw]
-            .into_iter()
-            .filter_map(|p| {
-                std::fs::metadata(&p)
-                    .and_then(|m| m.modified())
-                    .ok()
-                    .map(|mtime| (p, mtime))
-            })
-            .max_by_key(|(_, mtime)| *mtime)
-            .map(|(p, _)| p)
-    })();
-    if candidate.is_none() && std::env::var_os("CI").is_some() {
-        panic!(
-            "the export example plugin cdylib is not built under CI: `cargo test --workspace` \
-             must build the in-tree export-example-plugin (checked both the uplifted target \
-             dir and target/deps). Refusing to silently skip the routes-query load rules."
-        );
-    }
-    candidate
+/// Locate the export kind's real sink `cdylib` — the export row of `[package.metadata.busbar.both-ways]`,
+/// reached by KIND, built from its own repo under `deps/` (hashed). Under CI a missing cdylib is a
+/// hard failure rather than a silent skip ([`crate::both_ways::cdylib`] asserts it), so this
+/// coverage of the load seam cannot quietly vanish.
+fn export_sink_path() -> Option<std::path::PathBuf> {
+    let (crate_snake, _) = crate::both_ways::fixture("export");
+    crate::both_ways::cdylib(crate_snake)
 }
 
-/// Stage the hermetic export example plugin (a genuine `Library`, handle and `close`), then splice
-/// in the fake `call`/`free` so the answer to each op is the test's to choose.
+/// Stage the real export sink (a genuine `Library`, handle and `close`), then splice in the fake
+/// `call`/`free` so the answer to each op is the test's to choose.
 fn raw_with_fake_call() -> Option<RawPlugin> {
-    let path = hermetic_export_plugin_path()?;
-    let bytes = std::fs::read(&path).expect("read the export example plugin cdylib");
+    let path = export_sink_path()?;
+    let bytes = std::fs::read(&path).expect("read the export sink cdylib");
     let (lib, staged) = stage::load_library_from_bytes(&bytes, "fake-call-export")
-        .expect("stage the export example plugin cdylib for the fake-call harness");
+        .expect("stage the export sink cdylib for the fake-call harness");
     let mut raw = wire_up_raw(
         lib,
         "{}",
@@ -118,7 +95,7 @@ fn raw_with_fake_call() -> Option<RawPlugin> {
 #[test]
 fn a_panic_on_the_routes_query_fails_the_load() {
     let Some(raw) = raw_with_fake_call() else {
-        eprintln!("skip: export example plugin cdylib not built (run under --workspace)");
+        eprintln!("skip: the export sink cdylib is not built");
         return;
     };
     *ROUTES_STATUS.lock().unwrap_or_else(|p| p.into_inner()) = STATUS_PANIC;
@@ -139,7 +116,7 @@ fn a_panic_on_the_routes_query_fails_the_load() {
 #[test]
 fn an_unsupported_routes_query_loads_with_no_routes() {
     let Some(raw) = raw_with_fake_call() else {
-        eprintln!("skip: export example plugin cdylib not built (run under --workspace)");
+        eprintln!("skip: the export sink cdylib is not built");
         return;
     };
     *ROUTES_STATUS.lock().unwrap_or_else(|p| p.into_inner()) = STATUS_UNSUPPORTED;
@@ -221,7 +198,7 @@ fn a_pre_envelope_v2_sink_and_an_enveloped_v3_sink_both_load_and_serve() {
     for enveloped in [false, true] {
         *ANSWER_ENVELOPED.lock().unwrap_or_else(|p| p.into_inner()) = enveloped;
         let Some(raw) = raw_with_shaped_call() else {
-            eprintln!("skip: export example plugin cdylib not built (run under --workspace)");
+            eprintln!("skip: the export sink cdylib is not built");
             return;
         };
         let shape = if enveloped { "v3 enveloped" } else { "v2 bare" };
@@ -324,7 +301,7 @@ unsafe extern "C-unwind" fn status_call(
 #[test]
 fn status_folds_what_the_sink_reports_and_an_older_sink_reports_nothing() {
     let Some(mut raw) = raw_with_fake_call() else {
-        eprintln!("skip: export example plugin cdylib not built (run under --workspace)");
+        eprintln!("skip: the export sink cdylib is not built");
         return;
     };
     raw.call = status_call;

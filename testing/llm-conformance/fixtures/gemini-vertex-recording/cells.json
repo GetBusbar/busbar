@@ -11,7 +11,7 @@
   "",
   "Both cells are the GROUNDED turn on purpose: that is the shape that carries",
   "toolUsePromptTokenCount and toolUsePromptTokensDetails, the fields the usage-identity",
-  "measurement turns on. See docs/design/gemini-usage-metadata-spec-discrepancy.md.",
+  "measurement turns on. See qa/evidence/gemini-usage-metadata-spec-discrepancy.md.",
   "",
   "Run: bash testing/llm-conformance/run.sh \\",
   "       --recording testing/llm-conformance/fixtures/gemini-vertex-recording \\",

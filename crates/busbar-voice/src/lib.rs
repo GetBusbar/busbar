@@ -8,7 +8,7 @@
 //! [`busbar_kernel::proto::ProtocolDecl`] with `codec: None`) — plus the plane's OWN four-layer
 //! duplex/session IR ([`ir`]) and BOTH dialect codecs (OpenAI Realtime + Gemini Live). The live pump,
 //! reader/writer bodies, and session store are implemented in [`runtime`] behind the `runtime` feature
-//! (see `docs/design/plane4-duplex-session.md` §8).
+//! (see `docs/design/BUSBAR-1.6.0.md` #18/#45).
 //!
 //! BOOT-MOUNTING HAS LANDED — this paragraph used to say it was separate, tracked work, and that is
 //! no longer true. `plane-voice` is IN the binary's `default` feature set, and the composition root
@@ -24,7 +24,7 @@
 //! do NOT change to accept it, and the crate is strong-form DELETABLE (`git rm -r crates/busbar-voice`
 //! leaves the neutral crates compiling) — proven by `scripts/plane-delete-test.sh voice`.
 //!
-//! THE SUPERSET IR, EARNED (`plane4-duplex-session.md` §1.4). With TWO dialects — OpenAI Realtime and
+//! THE SUPERSET IR, EARNED (`BUSBAR-1.6.0.md` #18/#45). With TWO dialects — OpenAI Realtime and
 //! Gemini Live — the plane earns a cross-dialect superset IR: a neutral vocabulary both codecs read and
 //! write, so `Plane::has_superset_ir("voice")` is true — DERIVED from the length-2 `VOICE_WIRE_FORMATS`
 //! (the A2A rule: a plane earns a superset at its SECOND wire format and not before). The plane realizes
@@ -248,7 +248,10 @@ fn voice_egress_auth_headers(
     voice_provider_bearer(key)
 }
 
-use busbar_contract::plane::{BillableClass, PER_SESSION, TOKEN_FAMILY};
+use busbar_contract::{
+    plane::{BillableClass, PER_SESSION, TOKEN_FAMILY},
+    plugin::Kind,
+};
 use busbar_kernel::plane::registry::PlaneHooks;
 
 /// THE VOICE PLANE'S DECLARATION — contract data the composition root registers at boot, joined
@@ -329,6 +332,10 @@ pub const PLANE_DECLARATION: busbar_contract::plane::PlaneDeclaration =
         metric_families: &[],
         record_kinds: &[],
         served_op_classes: &[],
+        // The realtime provider is resolved through the deployment's `providers:` catalog (the
+        // model this plane's section names, then that model's provider), so this plane consumes
+        // `providers`. `models` belongs to the plane that owns it.
+        required_config_sections: &[Kind::Transport.root()],
     };
 
 /// THE PLANE'S BEHAVIOUR — every hook the kernel runs for it, handed over BESIDE
@@ -396,7 +403,7 @@ pub const PLANE_HOOKS: PlaneHooks = PlaneHooks {
 /// protocol declares (the MCP `DECL` shape).
 pub static DECLS: busbar_kernel::proto::ProtocolDecl = busbar_kernel::proto::ProtocolDecl {
     name: OPENAI_REALTIME,
-    // THE SUPERSET IS ITS OWN IR (`plane4-duplex-session.md` §1.4): the two dialects meet in the plane's
+    // THE SUPERSET IS ITS OWN IR (`BUSBAR-1.6.0.md` #18/#45): the two dialects meet in the plane's
     // shared IR types, not a `DialectCodec` facade — so this field stays `None`, the MCP/A2A precedent.
     codec: None,
     // NOT YET MOUNTED: no request handler wired here yet — the duplex pump exists in `crate::runtime`;

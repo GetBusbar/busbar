@@ -82,7 +82,7 @@
 //! `admission` and `build` are in, and it is why this file wires the CONFIG seam and not a runtime
 //! one.
 
-use busbar_contract::plane::PlaneMeta;
+use busbar_contract::{plane::PlaneMeta, plugin::Kind};
 use busbar_plane_decision::config::DecisionsSection;
 use busbar_plane_decision::DecisionPlane;
 
@@ -145,6 +145,9 @@ pub const PLANE_DECLARATION: busbar_contract::plane::PlaneDeclaration =
         metric_families: &[],
         record_kinds: &[],
         served_op_classes: &[],
+        // Every model this plane's section declares names its provider in the top-level
+        // `providers:` map, so this plane consumes `providers`.
+        required_config_sections: &[Kind::Transport.root()],
     };
 
 /// The claims axis: the pure plane the boot seal registers, and the two exact-path claims it declares

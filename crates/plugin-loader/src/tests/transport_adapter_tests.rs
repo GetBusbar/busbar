@@ -627,6 +627,13 @@ impl busbar_contract::transport::Framer for Lines {
         self.ingest(state, leftover, false, out)?;
         Ok(state)
     }
+    fn tick(
+        &self,
+        _: u64,
+        _: &mut dyn busbar_contract::transport::FramerOut,
+    ) -> Result<(), TransportError> {
+        Ok(())
+    }
 }
 
 /// The row of a framer composed over the fixture carrier.

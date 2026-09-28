@@ -164,14 +164,8 @@ fn fixture_dir() -> PathBuf {
     d
 }
 
-/// A free loopback port asked of the OS. The data plane binds a FIXED port on every worker socket,
-/// so an ephemeral `:0` in the config would not do.
 fn free_port() -> u16 {
-    TcpListener::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port()
+    common::boot::free_port()
 }
 
 fn write_configs(dir: &Path, data_port: u16, admin_port: u16, upstream_port: u16) {

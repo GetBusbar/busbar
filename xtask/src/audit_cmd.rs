@@ -11,7 +11,7 @@
 //! record and derives a bare `unaudited` one in its place. See the `move` section below.
 //!
 //! Every stdout line here is byte-identical to `scripts/audit-ledger.py`'s, and both data files —
-//! `qa/audit-ledger.json` and `docs/design/AUDIT-STATUS.md` — are written byte-identically. That is
+//! `qa/audit-ledger.json` and `qa/evidence/AUDIT-STATUS.md` — are written byte-identically. That is
 //! not politeness: the register is 147KB of committed evidence and the report is a committed
 //! document, so a rewrite that reflowed either would bury the one line that changed.
 
@@ -24,7 +24,7 @@ use crate::json_lite::{self, Json, Obj};
 const USAGE: &str = "\
 usage:
   cargo xtask ledger sync [--write]      derive the scope list from the tree
-  cargo xtask ledger status              print the table and write docs/design/AUDIT-STATUS.md
+  cargo xtask ledger status              print the table and write qa/evidence/AUDIT-STATUS.md
   cargo xtask ledger next                the worklist, worst first
   cargo xtask ledger record --scope S --round N --result R --report P --auditor A [--counts ..] [--at REV]
   cargo xtask ledger fixed --scope S [--commit REV]

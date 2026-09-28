@@ -219,6 +219,23 @@ pub struct Declares {
     /// before the field existed keeps its canonical bytes.
     #[serde(skip_serializing_if = "EgressPolicy::is_default")]
     pub egress: EgressPolicy,
+    /// The CONTRACT-ABI RANGE the plugin supports for its kind: the payload-schema versions
+    /// (`abi_version`'s axis) it speaks. A plugin repo states it in its `declares` file, the packer
+    /// signs it into the manifest, and admission ([`validate_abi`]) REFUSES a plugin whose range
+    /// shares no version with this binary's [`crate::supported_abi`] range, naming both. Absent on
+    /// every manifest packed before the field existed, which keep loading on `abi_version` alone
+    /// and keep their canonical bytes (the field is left off the wire when absent).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub contract_abi: Option<ContractAbiRange>,
+}
+
+/// An inclusive `min..=max` range of contract-ABI (payload-schema) versions, as a plugin declares it
+/// in `declares.contract_abi`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ContractAbiRange {
+    pub min: u32,
+    pub max: u32,
 }
 
 /// The EGRESS POLICY the host applies to every request a sink asks it to admit or carry (K9e-2,
@@ -259,6 +276,7 @@ impl Declares {
             && self.diagnostics.is_empty()
             && self.destinations.is_empty()
             && self.egress.is_default()
+            && self.contract_abi.is_none()
     }
 }
 
@@ -757,6 +775,32 @@ pub fn validate_abi(
     // `abi_version` against it: in range → ok; below floor / above max → refuse LOUD naming both.
     // An empty slice means the kind is unsupported (already caught by KNOWN_KINDS, but fail-closed).
     let supported = supported_abi(&m.kind);
+    // The plugin's OWN declared range first, so a refusal names both ranges: a range sharing no
+    // version with this binary's is a plugin built for another contract, whatever its stamp says.
+    if let (Some(r), Some(&floor), Some(&max)) =
+        (m.declares.contract_abi, supported.first(), supported.last())
+    {
+        if r.min > r.max {
+            return Err(format!(
+                "plugin '{}' declares an empty contract-ABI range v{}..=v{} for kind '{}'",
+                m.name, r.min, r.max, m.kind
+            ));
+        }
+        if r.max < floor || r.min > max {
+            return Err(format!(
+                "plugin '{}' supports contract ABI v{}..=v{} for kind '{}', and this binary \
+                 supports v{floor}..=v{max}: the ranges share no version, refusing to load it",
+                m.name, r.min, r.max, m.kind
+            ));
+        }
+        if m.abi_version < r.min || m.abi_version > r.max {
+            return Err(format!(
+                "manifest abi_version {} is outside the contract-ABI range v{}..=v{} plugin '{}' \
+                 declares for kind '{}'",
+                m.abi_version, r.min, r.max, m.name, m.kind
+            ));
+        }
+    }
     match (supported.first(), supported.last()) {
         (Some(&floor), Some(&max)) if m.abi_version >= floor && m.abi_version <= max => {}
         (Some(&floor), Some(&max)) => {

@@ -2084,15 +2084,16 @@ pub(crate) async fn put_auth(
                 busbar_kernel::config::overlay::NO_WRITABLE_OVERLAY_MSG.to_string(),
             ));
         }
-        // Known-module validation (mirrors the boot rule): `admin-tokens` is the built-in; the
-        // test-only stand-in exists in test builds only. An unknown name can never silently drop
-        // auth.
+        // Known-module validation (mirrors the boot rule): the operator credential's provider is
+        // the built-in; the test-only stand-in exists in test builds only. An unknown name can
+        // never silently drop auth.
+        let operator = busbar_kernel::config::operator_provider();
         for name in &req.admin_auth {
-            let known = name == "admin-tokens" || (cfg!(test) && name == "test-scope-module");
+            let known = name == operator || (cfg!(test) && name == "test-scope-module");
             if !known {
                 return Err(AdminError::Validation(format!(
                     "admin_auth names unknown module '{name}'; the built-in admin module is \
-                     `admin-tokens` (external admin modules are registered at compile time)"
+                     `{operator}` (external admin modules are registered at compile time)"
                 )));
             }
         }
@@ -2110,13 +2111,12 @@ pub(crate) async fn put_auth(
                  (anonymous, full-authority) dev posture must be set in config.yaml and applied at \
                  restart, not through the live admin API"
             );
-            return Err(AdminError::Validation(
+            return Err(AdminError::Validation(format!(
                 "an empty admin_auth chain is the open (anonymous, full-authority) dev posture and \
                  cannot be applied through the live admin API — set `admin_auth: []` in config.yaml \
                  and restart to opt in. Otherwise name at least one admin module (e.g. \
-                 `admin-tokens`)"
-                    .to_string(),
-            ));
+                 `{operator}`)"
+            )));
         }
         // Candidate app with the new chain, built off the FRESH post-lock snapshot — so a config
         // mutation that landed while this request was parsing cannot be clobbered by a candidate

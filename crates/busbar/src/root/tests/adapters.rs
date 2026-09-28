@@ -17,13 +17,13 @@ fn route_token() -> Pass<Route> {
 }
 
 /// A gRPC upstream's trailers-only `UNAVAILABLE`, at the production adapter's own width: the
-/// status leg the egress unit reads off that frame (the transport's coarse `ServerError` plus
+/// status leg the egress unit reads off that frame (the transport's coarse `FarEndFault` plus
 /// gRPC's own `14`), classified, recorded, and the lane suppressed as a result.
 ///
 /// This is the money defect. The number used to cross bare, get matched against HTTP's bands,
 /// match none of them, and come back `ClientFault` — so nothing was recorded, the lane stayed
 /// open, and the walk relayed a dead upstream's refusal instead of failing over. The coarse
-/// class had said `ServerError` the whole time.
+/// class had said `FarEndFault` the whole time.
 #[test]
 fn a_grpc_unavailable_is_recorded_against_the_destination_and_suppresses_the_lane() {
     let breaker = adapter_for("pool");
@@ -32,7 +32,7 @@ fn a_grpc_unavailable_is_recorded_against_the_destination_and_suppresses_the_lan
     let classified = breaker.classify(
         dest,
         UpstreamStatus {
-            class: Some(WireStatusClass::ServerError),
+            class: Some(WireStatusClass::FarEndFault),
             code: Some(WireStatus::new(
                 busbar_contract::transport::status_ns::GRPC,
                 14,
@@ -67,7 +67,7 @@ fn a_grpc_unavailable_is_recorded_against_the_destination_and_suppresses_the_lan
 fn the_adapter_carries_the_numbering_across_rather_than_the_digits() {
     use busbar_kernel_breaker::port::UpstreamCode;
     let grpc = UpstreamStatus {
-        class: Some(WireStatusClass::ServerError),
+        class: Some(WireStatusClass::FarEndFault),
         code: Some(WireStatus::new(
             busbar_contract::transport::status_ns::GRPC,
             14,
@@ -75,7 +75,7 @@ fn the_adapter_carries_the_numbering_across_rather_than_the_digits() {
         retry_after: None,
     };
     let http = UpstreamStatus {
-        class: Some(WireStatusClass::ServerError),
+        class: Some(WireStatusClass::FarEndFault),
         code: Some(WireStatus::new(
             busbar_contract::transport::status_ns::HTTP,
             14,
@@ -83,7 +83,7 @@ fn the_adapter_carries_the_numbering_across_rather_than_the_digits() {
         retry_after: None,
     };
     let classless = UpstreamStatus {
-        class: Some(WireStatusClass::ServerError),
+        class: Some(WireStatusClass::FarEndFault),
         code: None,
         retry_after: None,
     };
@@ -260,7 +260,7 @@ fn a_coarse_transport_reading_stands_in_for_a_missing_status() {
     let out = breaker.classify(
         DestinationId::new(1),
         UpstreamStatus {
-            class: Some(WireStatusClass::ServerError),
+            class: Some(WireStatusClass::FarEndFault),
             code: None,
             retry_after: Some(5),
         },
@@ -288,11 +288,11 @@ fn a_success_folds_to_no_status_at_all() {
     );
     assert_eq!(BreakerAdapter::fold_class(None), None);
     assert_eq!(
-        BreakerAdapter::fold_class(Some(WireStatusClass::ClientError)),
+        BreakerAdapter::fold_class(Some(WireStatusClass::CallerFault)),
         Some(400)
     );
     assert_eq!(
-        BreakerAdapter::fold_class(Some(WireStatusClass::ServerError)),
+        BreakerAdapter::fold_class(Some(WireStatusClass::FarEndFault)),
         Some(500)
     );
 }

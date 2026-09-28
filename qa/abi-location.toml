@@ -1,0 +1,334 @@
+# abi-location drain-only ledger — `cargo xtask gate abi-location`.
+#
+# THE RULE (OWNER 2026-09-27): "edit one crate to add something to abi and all those plugin kinds
+# then can implement it." Every ABI SHAPE — a #[repr(C)] struct/enum/union, an extern "C" slot
+# body or fn-pointer type, an ABI version constant — is defined under
+# crates/busbar-contract/src/abi/ and nowhere else. Test doubles may live under tests/, benches/ or
+# #[cfg(test)] only.
+#
+# ARMED AT TODAY'S COUNT (Law 9, KICKOFF 9.4): one [[offender]] row per shape the gate measured
+# outside abi/ on the day it landed. These rows ARE the work list for the one-ABI kernel-side slot.
+#
+#   * a shape with no row is a NEW offender  -> RED on abi-location:{repr-c,extern-fn,version-const}.
+#     Define it in abi/; never add a row here.
+#   * a row with no shape is STALE           -> RED on abi-location:ledger. A drain strikes its row
+#     in the SAME commit, so this file only ever shrinks.
+#
+# Key = (file, shape, item), never a line number. shape = repr-c | extern-fn | fn-ptr | version-const.
+# A fn-pointer type has no name, so its item is its ordinal in the file (fn-ptr-1, ...).
+# An external plugin checkout's row carries repo = "<plugins.yaml repo>" and is checked only when a
+# local clone of that repo exists under [external].root.
+
+[external]
+# Where sibling plugin checkouts are looked for, relative to the workspace root (or absolute).
+root = ".."
+
+# An extern "C" fn that is NOT a plugin/host slot. Each needs a why; a stale one is RED.
+[[not_abi]]
+file = "crates/busbar-kernel/src/timing/mod.rs"
+item = "timing_atexit"
+why = "the atexit(3) callback of the timing dump: libc calls it at process exit; no plugin or host table carries it"
+
+# ── THE CONTRACT CRATE, OUTSIDE abi/ — store/transport contracts that must move under abi/ (3)
+[[offender]]
+file = "crates/busbar-contract/src/transport/config_handle.rs"
+shape = "repr-c"
+item = "TransportConfigHandle"
+[[offender]]
+file = "crates/busbar-contract/src/plugin.rs"
+shape = "version-const"
+item = "STORE_ABI"
+[[offender]]
+file = "crates/busbar-contract/src/transport/registry.rs"
+shape = "version-const"
+item = "TRANSPORT_ABI"
+
+# ── THE KERNEL — host slot bodies (plane_host vtable, journal, egress, trust, dispatch, ...) and the journal reframe slots; the kernel should implement a Rust trait abi/ lowers, as abi::host::conn does (47)
+[[offender]]
+file = "crates/busbar-kernel/src/calllog.rs"
+shape = "extern-fn"
+item = "reframe_call_ffi"
+[[offender]]
+file = "crates/busbar-kernel/src/plane/auditlog.rs"
+shape = "extern-fn"
+item = "reframe_audit_ffi"
+[[offender]]
+file = "crates/busbar-kernel/src/plane_host/breaker.rs"
+shape = "extern-fn"
+item = "breaker_admit"
+[[offender]]
+file = "crates/busbar-kernel/src/plane_host/breaker.rs"
+shape = "extern-fn"
+item = "breaker_admit_reason"
+[[offender]]
+file = "crates/busbar-kernel/src/plane_host/breaker.rs"
+shape = "extern-fn"
+item = "breaker_settle"
+[[offender]]
+file = "crates/busbar-kernel/src/plane_host/cost_host.rs"
+shape = "extern-fn"
+item = "cost_reserve"
+[[offender]]
+file = "crates/busbar-kernel/src/plane_host/cost_host.rs"
+shape = "extern-fn"
+item = "cost_settle"
+[[offender]]
+file = "crates/busbar-kernel/src/plane_host/dispatch.rs"
+shape = "extern-fn"
+item = "nested_dispatch"
+[[offender]]
+file = "crates/busbar-kernel/src/plane_host/dispatch.rs"
+shape = "extern-fn"
+item = "workhandle_open"
+[[offender]]
+file = "crates/busbar-kernel/src/plane_host/dispatch.rs"
+shape = "extern-fn"
+item = "workhandle_resume"
+[[offender]]
+file = "crates/busbar-kernel/src/plane_host/dispatch.rs"
+shape = "extern-fn"
+item = "entitlement_check"
+[[offender]]
+file = "crates/busbar-kernel/src/plane_host/dispatch.rs"
+shape = "extern-fn"
+item = "gate_scan"
+[[offender]]
+file = "crates/busbar-kernel/src/plane_host/dispatch.rs"
+shape = "extern-fn"
+item = "gate_decide"
+[[offender]]
+file = "crates/busbar-kernel/src/plane_host/egress.rs"
+shape = "extern-fn"
+item = "egress_open"
+[[offender]]
+file = "crates/busbar-kernel/src/plane_host/egress.rs"
+shape = "extern-fn"
+item = "egress_fault"
+[[offender]]
+file = "crates/busbar-kernel/src/plane_host/egress.rs"
+shape = "extern-fn"
+item = "egress_poll"
+[[offender]]
+file = "crates/busbar-kernel/src/plane_host/egress.rs"
+shape = "extern-fn"
+item = "egress_write"
+[[offender]]
+file = "crates/busbar-kernel/src/plane_host/egress.rs"
+shape = "extern-fn"
+item = "egress_close"
+[[offender]]
+file = "crates/busbar-kernel/src/plane_host/guard.rs"
+shape = "extern-fn"
+item = "guard_url"
+[[offender]]
+file = "crates/busbar-kernel/src/plane_host/identity_admit.rs"
+shape = "extern-fn"
+item = "identity_admit"
+[[offender]]
+file = "crates/busbar-kernel/src/plane_host/journal.rs"
+shape = "extern-fn"
+item = "journal_register"
+[[offender]]
+file = "crates/busbar-kernel/src/plane_host/journal.rs"
+shape = "extern-fn"
+item = "journal_append_scoped"
+[[offender]]
+file = "crates/busbar-kernel/src/plane_host/journal.rs"
+shape = "extern-fn"
+item = "journal_read_scoped"
+[[offender]]
+file = "crates/busbar-kernel/src/plane_host/journal.rs"
+shape = "extern-fn"
+item = "journal_restore"
+[[offender]]
+file = "crates/busbar-kernel/src/plane_host/journal.rs"
+shape = "extern-fn"
+item = "journal_seed"
+[[offender]]
+file = "crates/busbar-kernel/src/plane_host/journal.rs"
+shape = "extern-fn"
+item = "journal_forget"
+[[offender]]
+file = "crates/busbar-kernel/src/plane_host/journal.rs"
+shape = "extern-fn"
+item = "journal_compact"
+[[offender]]
+file = "crates/busbar-kernel/src/plane_host/journal.rs"
+shape = "extern-fn"
+item = "journal_verify_scoped"
+[[offender]]
+file = "crates/busbar-kernel/src/plane_host/journal.rs"
+shape = "extern-fn"
+item = "journal_append"
+[[offender]]
+file = "crates/busbar-kernel/src/plane_host/journal.rs"
+shape = "extern-fn"
+item = "journal_read"
+[[offender]]
+file = "crates/busbar-kernel/src/plane_host/pipe.rs"
+shape = "extern-fn"
+item = "pipe_read"
+[[offender]]
+file = "crates/busbar-kernel/src/plane_host/pipe.rs"
+shape = "extern-fn"
+item = "pipe_write"
+[[offender]]
+file = "crates/busbar-kernel/src/plane_host/trust.rs"
+shape = "extern-fn"
+item = "verify_lookup"
+[[offender]]
+file = "crates/busbar-kernel/src/plane_host/trust.rs"
+shape = "extern-fn"
+item = "verify_store"
+[[offender]]
+file = "crates/busbar-kernel/src/plane_host/trust.rs"
+shape = "extern-fn"
+item = "verify_decide_q"
+[[offender]]
+file = "crates/busbar-kernel/src/plane_host/trust.rs"
+shape = "extern-fn"
+item = "approval_redeem_q"
+[[offender]]
+file = "crates/busbar-kernel/src/plane_host/trust.rs"
+shape = "extern-fn"
+item = "drift_quarantine"
+[[offender]]
+file = "crates/busbar-kernel/src/plane_host/trust.rs"
+shape = "extern-fn"
+item = "approval_redeem"
+[[offender]]
+file = "crates/busbar-kernel/src/plane_host/trust.rs"
+shape = "extern-fn"
+item = "trust_evaluate"
+[[offender]]
+file = "crates/busbar-kernel/src/plane_host/vtable.rs"
+shape = "extern-fn"
+item = "card_sign"
+[[offender]]
+file = "crates/busbar-kernel/src/plane_host/vtable.rs"
+shape = "extern-fn"
+item = "clock_now"
+[[offender]]
+file = "crates/busbar-kernel/src/plane_host/vtable.rs"
+shape = "extern-fn"
+item = "metrics_emit"
+[[offender]]
+file = "crates/busbar-kernel/src/plane_host/vtable.rs"
+shape = "extern-fn"
+item = "counter_add"
+[[offender]]
+file = "crates/busbar-kernel/src/plane_host/vtable.rs"
+shape = "extern-fn"
+item = "govern_admit"
+[[offender]]
+file = "crates/busbar-kernel/src/plane_host/vtable.rs"
+shape = "extern-fn"
+item = "govern_admit_reason"
+[[offender]]
+file = "crates/busbar-kernel/src/plane_host/vtable.rs"
+shape = "extern-fn"
+item = "meter_charge"
+[[offender]]
+file = "crates/busbar-kernel/src/plane_host/vtable.rs"
+shape = "extern-fn"
+item = "auth_resolve"
+
+# ── THE PLUGIN LOADER — carrier/transport host slots, the log sink, a slot fn-pointer type, and store/legacy ABI version numbers (15)
+[[offender]]
+file = "crates/plugin-loader/src/carrier.rs"
+shape = "extern-fn"
+item = "head_read"
+[[offender]]
+file = "crates/plugin-loader/src/carrier.rs"
+shape = "extern-fn"
+item = "emit_head"
+[[offender]]
+file = "crates/plugin-loader/src/carrier.rs"
+shape = "extern-fn"
+item = "emit_body"
+[[offender]]
+file = "crates/plugin-loader/src/hostlog.rs"
+shape = "extern-fn"
+item = "host_log_sink"
+[[offender]]
+file = "crates/plugin-loader/src/plane.rs"
+shape = "fn-ptr"
+item = "fn-ptr-1"
+[[offender]]
+file = "crates/plugin-loader/src/transport.rs"
+shape = "extern-fn"
+item = "host_wake"
+[[offender]]
+file = "crates/plugin-loader/src/transport.rs"
+shape = "extern-fn"
+item = "out_send"
+[[offender]]
+file = "crates/plugin-loader/src/transport.rs"
+shape = "extern-fn"
+item = "out_frame"
+[[offender]]
+file = "crates/plugin-loader/src/transport.rs"
+shape = "extern-fn"
+item = "out_end"
+[[offender]]
+file = "crates/plugin-loader/src/transport.rs"
+shape = "extern-fn"
+item = "out_wake_at"
+[[offender]]
+file = "crates/plugin-loader/src/transport.rs"
+shape = "extern-fn"
+item = "bytes_put"
+[[offender]]
+file = "crates/plugin-loader/src/legacy_usage.rs"
+shape = "version-const"
+item = "UNIT_MAP_ABI"
+[[offender]]
+file = "crates/plugin-loader/src/legacy_usage.rs"
+shape = "version-const"
+item = "PRICED_FROM_ABI"
+[[offender]]
+file = "crates/plugin-loader/src/registry.rs"
+shape = "version-const"
+item = "STORE_ABI_FLOOR"
+[[offender]]
+file = "crates/plugin-loader/src/store_adapter.rs"
+shape = "version-const"
+item = "STORE_ABI_WITH_NEW_OPS"
+
+# ── THE IN-TREE EXAMPLE PLANE — hand-written plugin slots where the abi::sdk export macro belongs (9)
+[[offender]]
+file = "crates/plane-example/src/lib.rs"
+shape = "extern-fn"
+item = "free_parsed"
+[[offender]]
+file = "crates/plane-example/src/lib.rs"
+shape = "extern-fn"
+item = "free_state"
+[[offender]]
+file = "crates/plane-example/src/lib.rs"
+shape = "extern-fn"
+item = "config_validate"
+[[offender]]
+file = "crates/plane-example/src/lib.rs"
+shape = "extern-fn"
+item = "build"
+[[offender]]
+file = "crates/plane-example/src/lib.rs"
+shape = "extern-fn"
+item = "hydrate"
+[[offender]]
+file = "crates/plane-example/src/lib.rs"
+shape = "extern-fn"
+item = "start"
+[[offender]]
+file = "crates/plane-example/src/lib.rs"
+shape = "extern-fn"
+item = "dispatch"
+[[offender]]
+file = "crates/plane-example/src/lib.rs"
+shape = "extern-fn"
+item = "claims"
+[[offender]]
+file = "crates/plane-example/src/lib.rs"
+shape = "extern-fn"
+item = "admission"

@@ -50,8 +50,8 @@ use busbar_contract::transport::wire::{
     CloseReason, Encode, Handoff, HandshakeTrigger, TransportError,
 };
 use busbar_contract::transport::{
-    BytesOut, Carrier, CarrierFacts, CarrierPoll, ConnFacts, Dest, Framed, Framer, FramerOut,
-    Located, Role, Side, TransportRow, TransportSettings,
+    BytesOut, Carrier, CarrierFacts, CarrierPoll, Claim, ConnFacts, Dest, Framed, Framer,
+    FramerOut, Located, Role, Side, TransportRow, TransportSettings,
 };
 use busbar_contract::{AbiVersion, Kind, Plugin};
 use core::mem::MaybeUninit;
@@ -770,6 +770,33 @@ extern "C-unwind" fn out_end(ctx: *mut c_void) {
     }));
 }
 
+/// THE HOST'S CLOCK for a framer call (the design's one clock): the monotonic reading every
+/// deadline is stated against — nanoseconds since this process first read it — and the wall time.
+#[must_use]
+pub fn host_time() -> busbar_contract::transport::HostTime {
+    static EPOCH: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+    let epoch = *EPOCH.get_or_init(std::time::Instant::now);
+    busbar_contract::transport::HostTime {
+        monotonic_nanos: u64::try_from(epoch.elapsed().as_nanos()).unwrap_or(u64::MAX),
+        unix_nanos: std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| u64::try_from(d.as_nanos()).unwrap_or(u64::MAX)),
+    }
+}
+
+/// `ctx` is a `*mut &mut dyn FramerOut` for the call.
+extern "C-unwind" fn out_wake_at(ctx: *mut c_void, has: u8, monotonic_nanos: u64) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if ctx.is_null() {
+            return;
+        }
+        // SAFETY: `ctx` is the caller's sink for this call.
+        unsafe {
+            (**ctx.cast::<&mut dyn FramerOut>()).wake_at((has == 1).then_some(monotonic_nanos))
+        };
+    }));
+}
+
 /// `ctx` is a `*mut &mut dyn BytesOut` for the call.
 extern "C-unwind" fn bytes_put(ctx: *mut c_void, bytes: *const u8, len: usize) {
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -793,11 +820,15 @@ extern "C-unwind" fn bytes_put(ctx: *mut c_void, bytes: *const u8, len: usize) {
 
 /// The host callbacks over the caller's sink, valid while `sink` is borrowed.
 fn framer_out(sink: &mut &mut dyn FramerOut) -> WireFramerOut {
+    let now = sink.now();
     WireFramerOut {
         ctx: (sink as *mut &mut dyn FramerOut).cast(),
         send: out_send,
         frame: out_frame,
         end: out_end,
+        now_monotonic_nanos: now.monotonic_nanos,
+        now_unix_nanos: now.unix_nanos,
+        wake_at: out_wake_at,
     }
 }
 
@@ -821,6 +852,7 @@ fn wire_facts(facts: &ConnFacts) -> WireConnFacts {
         cert_subject: opt(cert.map(|c| &c.subject)),
         cert_issuer: opt(cert.map(|c| &c.issuer)),
         cert_fingerprint: opt(cert.map(|c| &c.fingerprint)),
+        claim: opt(facts.claim.as_ref()),
     }
 }
 
@@ -1010,6 +1042,15 @@ impl Framer for DeclFramer {
         }))?;
         Ok(state)
     }
+
+    fn tick(&self, state: u64, mut out: &mut dyn FramerOut) -> Result<(), TransportError> {
+        // A framer built before the clock seam states no deadline, so it is never due.
+        let Some(f) = self.slots.tick else {
+            return Ok(());
+        };
+        let sink = framer_out(&mut out);
+        done(self.image.call("transport_tick", |s| f(s, state, &sink)))
+    }
 }
 
 // ── the admission ───────────────────────────────────────────────────────────────────────────────
@@ -1143,9 +1184,12 @@ fn assemble(
         ));
     }
     let ours = core::mem::size_of::<TransportDecl>() as u32;
-    if advertised < ours {
+    // The row and the role's slots are every generation-2 decl's; the claims tail was appended at
+    // minor 33, and a decl that ends before it makes the one claim its row describes.
+    let floor = core::mem::offset_of!(TransportDecl, claims_ptr) as u32;
+    if advertised < floor {
         return Err(format!(
-            "transport '{display}' decl attests size {advertised}, below the {ours}-byte decl — it \
+            "transport '{display}' decl attests size {advertised}, below the {floor}-byte decl — it \
              does not reach its own row and slots"
         ));
     }
@@ -1155,9 +1199,18 @@ fn assemble(
              TransportDecl ({ours} bytes); this build will not call a slot it cannot describe"
         ));
     }
-    // SAFETY: the attested size is exactly this build's decl (checked above), and the decl is
-    // immutable image data; copied out unaligned.
-    let d = unsafe { core::ptr::read_unaligned(decl) };
+    // SAFETY: the decl's attested prefix (bounded on both sides above) is immutable image data,
+    // copied over an all-zero decl — every field of which is valid zeroed (integers, null pointers,
+    // `None` slots) — so a tail the transport did not write reads as absent.
+    let d = unsafe {
+        let mut d = core::mem::MaybeUninit::<TransportDecl>::zeroed();
+        core::ptr::copy_nonoverlapping(
+            decl.cast::<u8>(),
+            d.as_mut_ptr().cast::<u8>(),
+            advertised as usize,
+        );
+        d.assume_init()
+    };
     let row = read_row(&d, &display)?;
     let init = d
         .init
@@ -1168,10 +1221,7 @@ fn assemble(
             Some(unsafe { slots::<CarrierSlots>(d.carrier, &display)? }),
             None,
         ),
-        (Role::Framer, true, false) => (
-            None,
-            Some(unsafe { slots::<FramerSlots>(d.framer, &display)? }),
-        ),
+        (Role::Framer, true, false) => (None, Some(unsafe { framer_slots(d.framer, &display)? })),
         (role, ..) => {
             return Err(format!(
                 "transport '{display}' composes over {:?}, so it is a {role:?}, and must state \
@@ -1207,6 +1257,27 @@ unsafe fn slots<T: Copy>(table: *const T, display: &str) -> Result<T, String> {
     }
     // SAFETY: the whole table is present (checked above).
     Ok(unsafe { core::ptr::read_unaligned(table) })
+}
+
+/// A framer's slot table: this build's whole table, or one that ends before `tick` (built before the clock seam), read
+/// over an all-`None` table so the slot it does not state is absent.
+///
+/// # Safety
+/// As [`slots`].
+unsafe fn framer_slots(table: *const FramerSlots, display: &str) -> Result<FramerSlots, String> {
+    // SAFETY: per this fn's contract; the size leads every table.
+    let size = unsafe { core::ptr::read_unaligned(table.cast::<u32>()) } as usize;
+    if size != core::mem::offset_of!(FramerSlots, tick) {
+        // SAFETY: per this fn's contract.
+        return unsafe { slots::<FramerSlots>(table, display) };
+    }
+    // SAFETY: every field of `FramerSlots` is valid zeroed (integers, `None` slots), and the table
+    // attests exactly the prefix up to `tick`, copied over it.
+    Ok(unsafe {
+        let mut t = core::mem::MaybeUninit::<FramerSlots>::zeroed();
+        core::ptr::copy_nonoverlapping(table.cast::<u8>(), t.as_mut_ptr().cast::<u8>(), size);
+        t.assume_init()
+    })
 }
 
 /// The ROW a decl declares, every string and list capped, checked and borrowed for the life of the
@@ -1249,14 +1320,89 @@ fn read_row(d: &TransportDecl, display: &str) -> Result<TransportRow, String> {
         handshake_trigger: decl_str(d.handshake_frame_kind, display)?.map(|frame_kind| {
             HandshakeTrigger {
                 frame_kind,
-                max_rounds: d.handshake_max_rounds,
+                max_steps: d.handshake_max_steps,
             }
         }),
         transport_facts: strs(d.transport_facts, display)?,
         decodes_payload: flag("decodes-payload", d.decodes_payload)?,
         status_at: code::status_at_of(d.status_at).map_err(|v| byte("status position", v))?,
         status_namespace: decl_str(d.status_namespace, display)?,
+        claims: &[],
     })
+    .and_then(|row| {
+        let claims = claims(d, &row, display)?;
+        Ok(TransportRow { claims, ..row })
+    })
+}
+
+/// The entry's CLAIMS: each declared claim read and checked, or — for a decl that ends before the
+/// claims tail — the one claim its row describes. A claim that repeats a key is refused: the root
+/// registers one row per claim, and two rows under one key is a boot the owner rule fails.
+fn claims(
+    d: &TransportDecl,
+    row: &TransportRow,
+    display: &str,
+) -> Result<&'static [Claim], String> {
+    let byte = |what: &str, v: u8| format!("transport '{display}' claims with {what} byte {v}");
+    let flag = |what: &str, v: u8| match v {
+        0 => Ok(false),
+        1 => Ok(true),
+        other => Err(format!(
+            "transport '{display}' claims with {what} flag {other}; a transport declares 0 or 1"
+        )),
+    };
+    if d.claims_len == 0 {
+        return Ok(Box::leak(Box::new([Claim {
+            key: row.key,
+            session: row.session,
+            session_bound: row.session_bound,
+            unit0_trigger: row.unit0_trigger,
+            status_at: row.status_at,
+            status_namespace: row.status_namespace,
+            transport_facts: row.transport_facts,
+            selector_forms: row.selector_forms,
+        }])));
+    }
+    if d.claims_len > MAX_LIST || d.claims_ptr.is_null() {
+        return Err(format!(
+            "transport '{display}' declares a {}-entry claims list it cannot back (null, or past \
+             the {MAX_LIST}-entry cap)",
+            d.claims_len
+        ));
+    }
+    let mut out: Vec<Claim> = Vec::with_capacity(d.claims_len);
+    for i in 0..d.claims_len {
+        // SAFETY: a non-null list addresses `claims_len` live entries (bounded above) for the life
+        // of the image; each is copied out unaligned.
+        let c = unsafe { core::ptr::read_unaligned(d.claims_ptr.add(i)) };
+        let key = decl_str(c.key, display)?
+            .filter(|k| !k.is_empty())
+            .ok_or_else(|| format!("transport '{display}' states a claim with no key"))?;
+        if out.iter().any(|seen| seen.key == key) {
+            return Err(format!(
+                "transport '{display}' claims '{key}' twice; one entry claims a scheme once"
+            ));
+        }
+        out.push(Claim {
+            key,
+            session: flag("session", c.session)?,
+            session_bound: flag("session-bound", c.session_bound)?,
+            unit0_trigger: code::unit0_trigger_of(c.unit0_trigger)
+                .map_err(|v| byte("first-unit trigger", v))?,
+            status_at: code::status_at_of(c.status_at).map_err(|v| byte("status position", v))?,
+            status_namespace: decl_str(c.status_namespace, display)?,
+            transport_facts: strs(c.transport_facts, display)?,
+            selector_forms: forms(c.selector_forms, display)?,
+        });
+    }
+    if out[0].key != row.key {
+        return Err(format!(
+            "transport '{display}' is keyed '{}' and its first claim is '{}'; the first claim is \
+             the entry's own",
+            row.key, out[0].key
+        ));
+    }
+    Ok(Box::leak(out.into_boxed_slice()))
 }
 
 /// A declared string list, owned `'static` (the entries borrow the image).
@@ -1323,3 +1469,7 @@ fn decl_str(d: DeclStr, display: &str) -> Result<Option<&'static str>, String> {
 #[cfg(test)]
 #[path = "tests/transport_conformance_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "tests/transport_clock_tests.rs"]
+mod clock_tests;

@@ -58,7 +58,7 @@ webhook-receiver = []
 [dependencies]
 # NO `busbar-core` HERE, ON PURPOSE. A plane is a plugin on the plane ABI: the ONLY surface between
 # it and core is the substrate's ports (`busbar_substrate::plane_host::*`) and the installable seams,
-# plus the contract crate. The plane-extraction design (docs/design/plane-extraction-design.md) makes
+# plus the contract crate. The plane-extraction design (docs/design/BUSBAR-1.6.0.md Part 3) makes
 # the NEUTRAL ABI — busbar-substrate / busbar-api — the surface a plane names; a plane MUST NOT reach
 # back into core's implementation. Historically `busbar-core` sat here as "the ONLY busbar crate this
 # plugin may name"; every item the plugin consumes (breaker signals, the IR facts/handle types, the

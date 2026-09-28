@@ -40,10 +40,10 @@ pub enum Direction {
 pub enum WireStatusClass {
     /// The upstream reported success.
     Success,
-    /// The upstream blamed the request.
-    ClientError,
-    /// The upstream blamed itself.
-    ServerError,
+    /// The request was refused because of the caller.
+    CallerFault,
+    /// The far end failed.
+    FarEndFault,
     /// The upstream reported something outside the three classes above.
     Other,
 }
@@ -364,8 +364,8 @@ pub enum Unit0Trigger {
 pub struct HandshakeTrigger {
     /// The transport's own name for the frame kind that opens the exchange.
     pub frame_kind: &'static str,
-    /// The most rounds the exchange may take.
-    pub max_rounds: u8,
+    /// The most challenge-response steps the exchange may take.
+    pub max_steps: u8,
 }
 
 /// A declared binding from a signalling exchange to the session it hands off to.

@@ -120,7 +120,9 @@
 //! number for a deployment with no hook in it** — a bench that silently measures the wrong cell is
 //! worse than one that stops.
 
-use busbar_plugin_loader::sign::{HookNeeds, Manifest, NeedLevel};
+#[path = "../tests/common/plugins.rs"]
+mod plugins;
+
 use criterion::{criterion_group, criterion_main, Criterion};
 use std::io::Read as _;
 use std::path::{Path, PathBuf};
@@ -200,32 +202,12 @@ fn install_prompt_ro_hook(dir: &Path) {
          deployment with NO hook in it. Run `cargo build --workspace --all-targets` first.",
     );
     let lib = std::fs::read(&cdylib).expect("read hook cdylib");
-    let mut m = Manifest {
-        name: "busbar-bench-hook".into(),
-        alias: "bench-hook".into(),
-        kind: "hook".into(),
-        version: "1.6.0".into(),
-        publisher: "busbar-bench".into(),
-        abi_version: *busbar_plugin_loader::supported_abi("hook")
-            .iter()
-            .max()
-            .unwrap(),
-        sha256: String::new(),
-        signature: String::new(),
-        description: String::new(),
-        homepage: String::new(),
-        license: String::new(),
-        needs: HookNeeds {
-            prompt: NeedLevel::Ro,
-            user: NeedLevel::No,
-        },
-        settings_schema: None,
-        schema_derived: false,
-        host: None,
-        declares: Default::default(),
-    };
-    m.sha256 = busbar_plugin_loader::sign::sha256_hex(&lib);
-    let tarball = busbar_plugin_loader::tarball::package(&m, "lib.so", &lib).unwrap();
+    let mut m = plugins::manifest("hook", "busbar-bench-hook", "busbar-bench");
+    m.alias = "bench-hook".into();
+    // The manifest's own spelling of the grant it asks for: `needs: { prompt: ro, user: no }`.
+    m.needs = serde_json::from_value(serde_json::json!({ "prompt": "ro", "user": "no" }))
+        .expect("a hook's needs");
+    let tarball = plugins::seal(m, &lib);
     std::fs::write(dir.join("bench-hook.tar.gz"), tarball).unwrap();
 }
 

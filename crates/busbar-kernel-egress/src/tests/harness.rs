@@ -398,7 +398,7 @@ impl Breaker for TestBreaker {
             },
             (Some(400..=499), _, _)
             | (_, Some(_), _)
-            | (None, None, Some(WireStatusClass::ClientError)) => Classified {
+            | (None, None, Some(WireStatusClass::CallerFault)) => Classified {
                 disposition: Disposition::ClientFault,
                 outcome: Outcome::RecordNothing,
                 label: disposition::TRANSIENT,

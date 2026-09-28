@@ -18,6 +18,7 @@
 //!    [`Gate::run`] — the trait gives it no other handle — so re-implementing the predicate beside
 //!    the gate, the failure seven of the shell self-tests had, is not something a selftest CAN do.
 
+pub mod abi_location;
 pub mod blocking_ffi;
 pub mod changelog;
 pub mod changelog_register;
@@ -27,6 +28,7 @@ pub mod conformance_sync;
 pub mod construction;
 pub mod denylist_gate;
 pub mod design_bindings;
+pub mod design_docs_allowlist;
 pub mod duplex_ws_default_edge;
 pub mod feature_sets;
 pub mod field_inventory;
@@ -38,7 +40,6 @@ pub mod inventory_ref;
 pub mod kernel_token_wire_purity;
 pub mod kind_abi_lane;
 pub mod kind_isolation;
-pub mod map_proof;
 pub mod money_invariants;
 pub mod no_deferral;
 pub mod no_float_money;
@@ -62,7 +63,6 @@ pub mod settings_leak;
 pub mod ship_ready;
 pub mod standing_snapshot;
 pub mod structure_lint;
-pub mod sweep_coverage;
 pub mod teller_steps;
 pub mod tracing;
 pub mod unconstructed;
@@ -2612,21 +2612,28 @@ pub static REGISTRY: &[Registration] = &[
         batch: 2,
         tier: Tier::Fast,
         build: || Box::new(construction::ConstructionGate),
-        summary: "how the tree is BUILT, against ARCHITECTURE.md and qa/construction.toml",
+        summary: "how the tree is BUILT, against BUSBAR-1.6.0.md and qa/construction.toml",
+    },
+    Registration {
+        name: "design-docs-allowlist",
+        batch: 1,
+        tier: Tier::Fast,
+        build: || Box::new(design_docs_allowlist::DesignDocsAllowlistGate),
+        summary: "docs/design holds the spec, the TODO, KICKOFF, QUESTIONS, SLOT-LOG and 1.6.0-PARKED/ only",
     },
     Registration {
         name: "design-bindings",
         batch: 2,
         tier: Tier::Fast,
         build: || Box::new(design_bindings::DesignBindingsGate),
-        summary: "every ARCHITECTURE.md Appendix B binding cites a check that compares something",
+        summary: "every qa/parity-bindings.md (Appendix B) binding cites a check that compares something",
     },
     Registration {
         name: "denylist",
         batch: 1,
         tier: Tier::Fast,
         build: || Box::new(denylist_gate::DenylistGate),
-        summary: "the pure plugin kinds carry no banned transitive source (ARCHITECTURE.md 1.2)",
+        summary: "the pure plugin kinds carry no banned transitive source (BUSBAR-1.6.0.md THE DESIGN, §2)",
     },
     Registration {
         name: "changelog",
@@ -2750,26 +2757,19 @@ pub static REGISTRY: &[Registration] = &[
         summary: "capability proofs are exactly Pass<stage> + Grant<capability> + one kernel minter (#65/#73)",
     },
     Registration {
-        name: "sweep-coverage",
-        batch: 1,
-        tier: Tier::Fast,
-        build: || Box::new(sweep_coverage::SweepCoverageGate),
-        summary: "every tracked file carries a sweep verdict; the denominator is git's, not the sweep's",
-    },
-    Registration {
-        name: "map-proof",
-        batch: 2,
-        tier: Tier::Full,
-        build: || Box::new(map_proof::MapProofGate),
-        summary: "every command the map-proof corpus prints is re-run and every printed figure \
-                  re-derived; unrunnable and unbound figures are verdicts of their own",
-    },
-    Registration {
         name: "money-invariants",
         batch: 1,
         tier: Tier::Fast,
         build: || Box::new(money_invariants::MoneyInvariantsGate),
         summary: "money records hold no plugin/plane field, store no price, seal one facts-line per unit (#77)",
+    },
+    Registration {
+        name: "abi-location",
+        batch: 1,
+        tier: Tier::Fast,
+        build: || Box::new(abi_location::AbiLocationGate),
+        summary: "every ABI shape (repr(C) type, extern \"C\" slot/fn-pointer, ABI version const) is \
+                  defined in busbar-contract's abi/; today's offenders are a drain-only ledger",
     },
     Registration {
         name: "kind-abi-lane",
@@ -2953,7 +2953,7 @@ pub static REGISTRY: &[Registration] = &[
         batch: 2,
         tier: Tier::Fast,
         build: || Box::new(inventory_coverage::InventoryCoverageGate),
-        summary: "every docs/design/inventory/*.md id is a named coverage claim or a named gap",
+        summary: "every qa/evidence/inventory/*.md id is a named coverage claim or a named gap",
     },
     Registration {
         name: "no-tracked-ignored",

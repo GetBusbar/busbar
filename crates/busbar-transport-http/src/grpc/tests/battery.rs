@@ -378,7 +378,7 @@ async fn terminal_status_is_read_from_the_grpc_status_trailer() {
     );
     assert_eq!(
         terminal.meta.status,
-        Some(WireStatusClass::ClientError),
+        Some(WireStatusClass::CallerFault),
         "PERMISSION_DENIED is the upstream blaming the request"
     );
     assert_eq!(
@@ -460,27 +460,27 @@ fn map_status_reads_the_grpc_status_trailer_honestly() {
     for (code, expected) in [
         (tonic::Code::Ok, WireStatusClass::Success),
         // The upstream blamed the request.
-        (tonic::Code::InvalidArgument, WireStatusClass::ClientError),
-        (tonic::Code::NotFound, WireStatusClass::ClientError),
-        (tonic::Code::AlreadyExists, WireStatusClass::ClientError),
-        (tonic::Code::PermissionDenied, WireStatusClass::ClientError),
-        (tonic::Code::Unauthenticated, WireStatusClass::ClientError),
+        (tonic::Code::InvalidArgument, WireStatusClass::CallerFault),
+        (tonic::Code::NotFound, WireStatusClass::CallerFault),
+        (tonic::Code::AlreadyExists, WireStatusClass::CallerFault),
+        (tonic::Code::PermissionDenied, WireStatusClass::CallerFault),
+        (tonic::Code::Unauthenticated, WireStatusClass::CallerFault),
         (
             tonic::Code::FailedPrecondition,
-            WireStatusClass::ClientError,
+            WireStatusClass::CallerFault,
         ),
-        (tonic::Code::OutOfRange, WireStatusClass::ClientError),
-        (tonic::Code::ResourceExhausted, WireStatusClass::ClientError),
+        (tonic::Code::OutOfRange, WireStatusClass::CallerFault),
+        (tonic::Code::ResourceExhausted, WireStatusClass::CallerFault),
         // The upstream blamed itself.
-        (tonic::Code::Internal, WireStatusClass::ServerError),
-        (tonic::Code::Unavailable, WireStatusClass::ServerError),
-        (tonic::Code::DataLoss, WireStatusClass::ServerError),
-        (tonic::Code::Unimplemented, WireStatusClass::ServerError),
+        (tonic::Code::Internal, WireStatusClass::FarEndFault),
+        (tonic::Code::Unavailable, WireStatusClass::FarEndFault),
+        (tonic::Code::DataLoss, WireStatusClass::FarEndFault),
+        (tonic::Code::Unimplemented, WireStatusClass::FarEndFault),
         // gRPC's own word for a server-side failure it could not attribute — and what an HTTP 5xx
         // with no `grpc-status` at all arrives as.
-        (tonic::Code::Unknown, WireStatusClass::ServerError),
-        (tonic::Code::DeadlineExceeded, WireStatusClass::ServerError),
-        (tonic::Code::Aborted, WireStatusClass::ServerError),
+        (tonic::Code::Unknown, WireStatusClass::FarEndFault),
+        (tonic::Code::DeadlineExceeded, WireStatusClass::FarEndFault),
+        (tonic::Code::Aborted, WireStatusClass::FarEndFault),
         // The one code where neither side is blamed.
         (tonic::Code::Cancelled, WireStatusClass::Other),
     ] {
@@ -500,7 +500,7 @@ fn map_status_reads_the_grpc_status_trailer_honestly() {
 /// breaker's classifier as if it were an HTTP status, matched no HTTP band, and came back as the
 /// caller's fault — so a destination that had just declared itself unavailable got no breaker
 /// record and the walk never failed over, even though the class on the very same frame said
-/// `ServerError`.
+/// `FarEndFault`.
 #[test]
 fn the_terminal_frame_names_grpcs_numbering_with_grpcs_number() {
     for code in [
@@ -532,7 +532,7 @@ fn the_terminal_frame_names_grpcs_numbering_with_grpcs_number() {
     }
     let unavailable = tonic::Status::new(tonic::Code::Unavailable, "gone");
     let frame = super::server::terminal_frame(StreamId(1), Some(&unavailable));
-    assert_eq!(frame.meta.status, Some(WireStatusClass::ServerError));
+    assert_eq!(frame.meta.status, Some(WireStatusClass::FarEndFault));
     assert_eq!(
         frame.meta.status_code,
         Some(WireStatus::new(status_ns::GRPC, 14))

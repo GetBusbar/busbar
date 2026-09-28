@@ -701,7 +701,7 @@ store:
 | `memory` (default) | compiled in, no plugin | none |
 | `sqlite` / `busbar-store-sqlite` | `busbar-store-sqlite-<ver>-<target>.tar.gz` | `db_path` (file path), `busy_timeout_ms` (default 5000) |
 | `postgres` / `busbar-store-postgres` | `busbar-store-postgres-<ver>-<target>.tar.gz` | `url` (`postgres://` libpq URL); cluster-shared |
-| `valkey` / `busbar-store-valkey-plugin` | `busbar-store-valkey-<ver>-<target>.tar.gz` | `url` (`redis://`, `rediss://` for TLS); cluster-shared |
+| `valkey` / `busbar-store-valkey` | `busbar-store-valkey-<ver>-<target>.tar.gz` | `url` (`redis://`, `rediss://` for TLS); cluster-shared |
 
 `settings` is the store module's OWN opaque configuration, passed through verbatim; a third-party
 store plugin documents its own keys. A non-`memory` store requires `plugins.enabled: true` and the
@@ -977,7 +977,7 @@ A pool's `hooks:` list therefore holds two kinds of bare name:
   `kind: hook` plugin by signed-manifest name/alias (1.5.0 retired the built-in `socket`/`webhook`
   transports; a hook is now always a signed plugin), so it requires `plugins.enabled: true` and the
   tarball installed in `plugins.dir`. Out-of-process forwarding to an HTTPS sidecar is the
-  first-party `busbar-webrequest-hook` plugin (`settings.url`). An unresolvable `module:`, or a
+  first-party `busbar-hook-webrequest` plugin (`settings.url`). An unresolvable `module:`, or a
   reference to a name that no `hooks:` entry defines, is a fail-closed boot error.
 
 ```yaml
@@ -1051,7 +1051,7 @@ with a pool's own value differently, by TYPE:
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `module` | string | **required** | The `kind: hook` plugin backing this named instance, by signed-manifest name/alias. The same module may back several named hooks. |
-| `settings` | map | `{}` | The plugin's own opaque config, pushed to it via the `configure` wire message. For the first-party `busbar-webrequest-hook`, `settings.url` is the sidecar endpoint (SSRF-guarded: loopback allowed; RFC-1918/CGNAT/link-local/metadata blocked; remote must be `https://`). |
+| `settings` | map | `{}` | The plugin's own opaque config, pushed to it via the `configure` wire message. For the first-party `busbar-hook-webrequest`, `settings.url` is the sidecar endpoint (SSRF-guarded: loopback allowed; RFC-1918/CGNAT/link-local/metadata blocked; remote must be `https://`). |
 | `groups` | list<string> | `[]` (every caller) | SCOPE: the caller groups this hook fires for. A USER is a leaf group (e.g. `user:bob`); membership walks the [`groups:`](#groups) tree, matching the caller's own group or any ancestor. |
 | `phase` | list<string> | all four stages | The pipeline stages this hook fires at: `request` \| `candidate` \| `routing` \| `response`. A **LIST**. 1.5.3 generalized the single-valued tap `at:` into it (`route`→`candidate`, `attempt`→`routing`, `completion`→`response`). Omitting `phase:` means exactly those four core stages. |
 | `kind` | `tap` \| `gate` | `gate` | `gate` = fire-and-wait (may rank/reject/restrict/rewrite); `tap` = fire-and-forget observation. |
@@ -1678,7 +1678,7 @@ Busbar validates the merged config before accepting any traffic. Fatal errors ab
 | Pool `hooks:` bare name not a built-in strategy | An out-of-process hook is an inline `{ module: ... }` ref; bare names are only `weighted`/`cheapest`/`fastest`/`least_busy`/`usage` |
 | Unknown hook module | An inline ref's `module` does not resolve to a loaded `kind: hook` plugin (by manifest name/alias) |
 | Hook plugin subsystem disabled | An inline ref names a plugin while `plugins.enabled` is false, or the tarball is not installed in `plugins.dir` |
-| Hook `busbar-webrequest` SSRF-blocked | RFC-1918, CGNAT, link-local, and metadata hosts are blocked in its `settings.url` (loopback allowed; remote must be `https://`) |
+| Hook `busbar-hook-webrequest` SSRF-blocked | RFC-1918, CGNAT, link-local, and metadata hosts are blocked in its `settings.url` (loopback allowed; remote must be `https://`) |
 | `prompt: rw` on a `kind: tap` hook | A tap observes; it can never rewrite |
 | Groups tree faults | A `parent` that does not exist (paste-ready stub), a cycle (the path is printed), or a chain deeper than 8 |
 | Malformed group limit | A limit without exactly one metric key, a windowed metric without `per:`, or `concurrent` with a `per:` |

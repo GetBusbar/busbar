@@ -691,6 +691,30 @@ fn instrument_cases<'a>(gate: &'a dyn Gate, cx: &'a Ctx) -> Report<'a> {
         &["the derivation from Appendix B FAILED"],
     ));
 
+    // THE SOURCE IS PRESENT BUT THE TABLE IS NOT: the heading renamed. That used to derive ZERO
+    // bindings, which a `--write` would have committed as an empty ledger; it is now a failed
+    // derivation, named as such. (Its twin, a heading with no PB rows under it, is pinned by
+    // `build`'s unit tests: one regen per case is this self-test's budget, and the parse is the
+    // whole of that arm.)
+    let mut ov = Overlay::new();
+    ov.set(
+        build::ARCH_REL,
+        cx.read(build::ARCH_REL)
+            .unwrap_or_default()
+            .replace("## Appendix B", "## Parity bindings"),
+    );
+    r.push(prove_rows_red(
+        &base_cx,
+        gate,
+        "a binding source with no `## Appendix B` heading is a failed derivation, never zero bindings",
+        &[ROW_REGEN],
+        base.layered(&ov),
+        &[
+            "the derivation from Appendix B FAILED",
+            "carries no `## Appendix B` heading",
+        ],
+    ));
+
     // ── NOTE-WITNESS, BOTH ARMS ────────────────────────────────────────────────────────────────
     //
     // THE RULE IS PROVEN ON PLANTED TABLES, BOTH WAYS, never read off the shipped table: a red arm

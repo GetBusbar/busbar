@@ -948,7 +948,7 @@ fn parse_freeze_witness(run: &LegacyRun) -> Result<freeze::Freeze, String> {
 /// two are different questions with different owed sets: `plane-purity` asks whether PRODUCTION
 /// code carries a side channel (a yes/no the every-push job blocks on), and `plane-purity-strict`
 /// asks whether TEST-scope debt has risen above a hand-lowered ceiling. Collapsing them onto a
-/// boolean is exactly what `docs/design/xtask-gates.md` risk 5.2 warns about — and a boolean read
+/// boolean is exactly what `docs/design/BUSBAR-1.6.0.md` Part 1 ("What this means for the gates") risk 5.2 warns about — and a boolean read
 /// from the environment is how a floor becomes overridable downward.
 /// The two counted tables `--strict` decides against: the six categories, and the per-plane-crate
 /// test-reach. Named as a pair because they are always measured, compared and refused together —

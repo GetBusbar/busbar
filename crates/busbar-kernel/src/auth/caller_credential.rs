@@ -5,10 +5,11 @@
 //! no raw secret to any plugin; the 2026-09-20 ruling "a plane passes a credential REF, never
 //! plaintext"). A plane — linked or dropped in, identically — never sees the caller's credential:
 //!
-//! - [`ConsumedCredentials`] is the set of header names the gate read a credential from for THIS
-//!   request, recorded as the gate reads them (never a fixed list). The host strips exactly those
-//!   headers from every request it hands a plane: the plane-route context (and so the HOT request
-//!   head built from it) and the protocol arrival.
+//! - [`ConsumedCredentials`] is every header the configured gate reads as a credential carrier —
+//!   taken from the gate's own carrier declarations, never a list of its own — whichever one carried
+//!   THIS request's credential: a second carrier the gate did not need is still a credential. The
+//!   host strips all of them from every request it hands a plane: the plane-route context (and so
+//!   the HOT request head built from it) and the protocol arrival.
 //! - [`CallerCredential`] is the caller's verified credential as a REF: it has no byte accessor
 //!   outside this module. A `passthrough` pool's upstream still receives the caller's credential
 //!   byte for byte, because the HOST presents it at egress ([`present_caller`]) — the plane passes
@@ -17,8 +18,8 @@
 use super::{HeaderMap, HeaderName, HeaderValue};
 use crate::{egress_auth::CredentialProvider, proto::SigningContext};
 
-/// What the auth gate consumed for one request (request extension): the header names it read a
-/// credential from, and that credential as a ref. Inserted by the gate on every request it judged;
+/// What the auth gate holds of one request's credentials (request extension): the header names the
+/// configured gate reads a credential from, and the credential it extracted, as a ref. Inserted by the gate on every request it judged;
 /// absent on a route that bypassed it (a `RouteAuth::None` route consumed nothing, so a plane there
 /// reads its own headers whole).
 #[derive(Clone, Debug, Default)]
@@ -29,10 +30,16 @@ pub struct ConsumedCredentials {
 }
 
 impl ConsumedCredentials {
-    /// Record that the gate read a credential from `name` (a repeat is harmless: stripping is
-    /// idempotent).
-    pub(crate) fn consume(&mut self, name: HeaderName) {
-        self.names.push(name);
+    /// The set over `carriers`, with no credential extracted yet.
+    pub(crate) fn carrying(carriers: &[HeaderName]) -> Self {
+        let mut set = Self::default();
+        set.carry(carriers);
+        set
+    }
+
+    /// Add `carriers` to the set (a repeat is harmless: stripping is idempotent).
+    pub(crate) fn carry(&mut self, carriers: &[HeaderName]) {
+        self.names.extend_from_slice(carriers);
     }
 
     /// Remove every consumed credential header from `headers` — every value under each name.

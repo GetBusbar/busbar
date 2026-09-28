@@ -108,11 +108,14 @@ fn seam_mount(
 #[cfg(test)]
 mod test_seams {
     include!(concat!(env!("OUT_DIR"), "/test_linked.rs"));
+    include!(concat!(env!("OUT_DIR"), "/test_operator_auth.rs"));
 
     pub(crate) fn ensure_seam() {
         use busbar_kernel::test_support::seam::{register_test_plane_seam, test_plane_seams};
         static SEAM_ONCE: std::sync::Once = std::sync::Once::new();
         SEAM_ONCE.call_once(|| {
+            // The operator credential's test registry row, before anything resolves the auth axis.
+            for_each_operator_auth_row!(busbar_kernel::test_support::install_operator_auth_row);
             for entry in TEST_LINKED {
                 register_test_plane_seam(entry);
             }
@@ -172,17 +175,17 @@ pub fn build_split_routers_with_limits(
 // The config-transaction behavior suite drives this crate's admin mutation handlers; it moved here
 // with the service from `busbar_kernel::config::transaction`'s tests (busbar-core can no longer name
 // the handlers). Wired at the crate root, the direct analogue of its old `#[path]` wiring.
-#[cfg(all(test, feature = "auth-admin-tokens"))]
+#[cfg(test)]
 #[path = "tests/txn_tests.rs"]
 mod txn_tests;
 
 // The key-revoke tombstone suite drives the admin key-revoke HTTP surface; it moved here from
 // busbar-core with the service.
-#[cfg(all(test, feature = "auth-admin-tokens"))]
+#[cfg(test)]
 #[path = "tests/key_revoke_tombstone_tests.rs"]
 mod key_revoke_tombstone_tests;
 
 // Admin-surface HTTP tests moved from busbar-core (auth-token behavior + split-listener exposure).
-#[cfg(all(test, feature = "auth-admin-tokens"))]
+#[cfg(test)]
 #[path = "tests/core_moved_tests.rs"]
 mod core_moved_tests;

@@ -186,7 +186,7 @@ pub struct Node {
     /// The names this node has already put through that interner, so the request path does not put
     /// them through it again. Shared with the resolver every unit is lent ([`Node::resolver`]).
     lane_names: Arc<Mutex<LaneNames>>,
-    next_key: AtomicU64,
+    next_key: busbar_kernel::door::UnitKeyMint,
     /// How many slots the drop guard has MARKED since the sweep last walked the table.
     ///
     /// A counter rather than a walk on every arrival: a unit whose task went away leaves its slot
@@ -296,7 +296,7 @@ impl Node {
                 resolved: HashMap::new(),
                 consulted: 0,
             })),
-            next_key: AtomicU64::new(1),
+            next_key: busbar_kernel::door::UnitKeyMint::default(),
             marked: AtomicU64::new(0),
             lost: Mutex::new(HashMap::new()),
             mono: AtomicU64::new(0),
@@ -603,7 +603,7 @@ impl Node {
         // Whose unit, what class, and the dialect a refusal this node renders is written in — the
         // plane's statements about what arrived, read off it before any step runs.
         let (principal, op_class, proto, build) = handed;
-        let key = UnitKey::new(self.next_key.fetch_add(1, Ordering::Relaxed));
+        let key = self.next_key.mint();
         // ONE METER, on both sides of the loop: the unit accrues onto it at the Meter step and the
         // kernel reads it at the exit. It is lent to the unit at the build.
         let meter = Arc::new(AccrualMeter::new());
@@ -625,7 +625,7 @@ impl Node {
         // out of the ONE arrival reading, so a request whose response completes in a later window
         // than its headers arrived cannot split its charges across two windows, and the epoch it is
         // billed in and the stamp the table enters it under cannot be two different instants.
-        let (units, route, finish) = build((self.resolver(), Arc::clone(&meter), arrived.secs()));
+        let (units, route, finish) = build((self.resolver(), arrived.secs()));
 
         let hold =
             busbar_kernel::inflight::arrival_hold(&self.kernel, &self.door, principal.clone());
@@ -1349,10 +1349,9 @@ impl Units for Driven<'_> {
         &self,
         token: &Pass<Route>,
         ctx: &UnitCtx,
-        meter: &AccrualMeter,
         destinations: &[VerifiedDestination],
     ) -> Decision<Route> {
-        self.units.route(token, ctx, meter, destinations)
+        self.units.route(token, ctx, destinations)
     }
 
     fn meter(
@@ -1394,7 +1393,6 @@ impl RouteAwait for Driven<'_> {
         &'a self,
         token: &'a Pass<Route>,
         ctx: &'a UnitCtx,
-        meter: &'a AccrualMeter,
         destinations: &'a [VerifiedDestination],
     ) -> RouteLeg<'a> {
         // THE DISPATCH, ON THE JOURNAL, before the leg leaves: what a recovery reads to tell a unit
@@ -1408,7 +1406,7 @@ impl RouteAwait for Driven<'_> {
         // Route, so it never reaches this line.
         self.node.dispatch.execute(
             self.op_class,
-            self.route.route_leg(token, ctx, meter, destinations),
+            self.route.route_leg(token, ctx, destinations),
         )
     }
 

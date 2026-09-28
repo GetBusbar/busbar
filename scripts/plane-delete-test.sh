@@ -4,7 +4,7 @@
 #
 # plane-delete-test.sh — THE STRONG-FORM DELETION TEST.
 #
-# WHY THIS EXISTS (docs/design/plane-extraction-design.md §1, §6.1):
+# WHY THIS EXISTS (docs/design/BUSBAR-1.6.0.md Part 3):
 #   The owner's literal requirement for a plane P ∈ {llm, mcp, a2a}: run `git rm -r crates/busbar-<P>`
 #   and the NEUTRAL crates — busbar-core, busbar-substrate, busbar-api — must STILL COMPILE, and the
 #   binary must still boot serving no P protocol. A protocol plane is a self-contained plugin merely

@@ -2,10 +2,10 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright (C) 2026 Busbar Inc and contributors
 #
-# Script-driver cell: `teller|admit-refusal` -- H2 (ARCHITECTURE.md #2.2 step 4, ADMIT). Proves the
+# Script-driver cell: `teller|admit-refusal` -- H2 (BUSBAR-1.6.0.md THE DESIGN, §1 step 4, ADMIT). Proves the
 # Teller order at step 4: a principal already past AUTHENTICATE/VERIFY/APPROVE but over budget is
 # refused at ADMIT (native 429, `OverBudget`), and the refusal never reaches ROUTE -- no egress is
-# dialled. ARCHITECTURE.md's kernel-floor `estimated` line is a 1.6.0-internal record with no 1.5.5
+# dialled. BUSBAR-1.6.0.md's kernel-floor `estimated` line is a 1.6.0-internal record with no 1.5.5
 # surface; what 1.5.5 already realises, and what this cell can prove against the published binary,
 # is the OBSERVABLE half of that contract: the refusal precedes any egress, and posts no billable
 # usage (1.5.5's check-then-charge returns on the first blocking bucket BEFORE charging).

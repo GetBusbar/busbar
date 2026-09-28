@@ -267,8 +267,8 @@ pub mod code {
         match s {
             None => 0,
             Some(WireStatusClass::Success) => 1,
-            Some(WireStatusClass::ClientError) => 2,
-            Some(WireStatusClass::ServerError) => 3,
+            Some(WireStatusClass::CallerFault) => 2,
+            Some(WireStatusClass::FarEndFault) => 3,
             Some(WireStatusClass::Other) => 4,
         }
     }
@@ -278,8 +278,8 @@ pub mod code {
         Ok(match b {
             0 => None,
             1 => Some(WireStatusClass::Success),
-            2 => Some(WireStatusClass::ClientError),
-            3 => Some(WireStatusClass::ServerError),
+            2 => Some(WireStatusClass::CallerFault),
+            3 => Some(WireStatusClass::FarEndFault),
             4 => Some(WireStatusClass::Other),
             other => return Err(other),
         })
@@ -578,6 +578,9 @@ pub struct WireConnFacts {
     pub cert_issuer: DeclStr,
     /// The far end's certificate fingerprint (NULL = no certificate).
     pub cert_fingerprint: DeclStr,
+    /// The claim the host resolved the connection to (appended at minor 33; NULL = the entry's
+    /// first claim).
+    pub claim: DeclStr,
 }
 
 /// One frame piece ([`crate::transport::Framed`]), borrowed for the callback.
@@ -619,6 +622,8 @@ pub type WireSendFn = extern "C-unwind" fn(ctx: *mut c_void, bytes: *const u8, l
 pub type WireFrameFn = extern "C-unwind" fn(ctx: *mut c_void, piece: *const WireFramed);
 /// `end(ctx)`: no frame follows on this connection.
 pub type WireEndFn = extern "C-unwind" fn(ctx: *mut c_void);
+/// `wake_at(ctx, has, monotonic_nanos)`: the instant to call `tick` at (`has` `0` = no deadline).
+pub type WireWakeAtFn = extern "C-unwind" fn(ctx: *mut c_void, has: u8, monotonic_nanos: u64);
 
 /// Where a framer puts what a call produced ([`crate::transport::FramerOut`]): host-owned
 /// callbacks, valid for the call only. Never unwinds.
@@ -633,6 +638,13 @@ pub struct WireFramerOut {
     pub frame: WireFrameFn,
     /// The end of the connection's frames.
     pub end: WireEndFn,
+    // ── the host's clock (appended by the clock seam) ──
+    /// The host's monotonic clock at this call, in nanoseconds.
+    pub now_monotonic_nanos: u64,
+    /// The host's wall time at this call, nanoseconds since the Unix epoch.
+    pub now_unix_nanos: u64,
+    /// The next instant to call `tick` at.
+    pub wake_at: WireWakeAtFn,
 }
 
 /// Where a framer puts rendered bytes ([`crate::transport::BytesOut`]): a host-owned callback,
@@ -658,211 +670,75 @@ pub struct WireField {
 
 // ── the carrier's slots: `crate::transport::Carrier`, one per method ─────────────────────────────
 
-/// [`Carrier::listen`](crate::transport::Carrier::listen): writes the listener and the bound
-/// address (into `addr_buf`, `out_addr_len` bytes).
-pub type CarrierListenFn = extern "C-unwind" fn(
-    state: *mut c_void,
-    bind: *const u8,
-    bind_len: usize,
-    addr_buf: *mut u8,
-    addr_cap: usize,
-    out_addr_len: *mut usize,
-    out_listener: *mut u64,
-) -> RawWireOutcome;
-/// [`Carrier::poll_accept`](crate::transport::Carrier::poll_accept): writes the connection and the
-/// far end.
-pub type CarrierPollAcceptFn = extern "C-unwind" fn(
-    state: *mut c_void,
-    listener: u64,
-    token: u64,
-    peer_buf: *mut u8,
-    peer_cap: usize,
-    out_peer_len: *mut usize,
-    out_conn: *mut u64,
-) -> RawWireOutcome;
-/// [`Carrier::dial`](crate::transport::Carrier::dial): writes the connection.
-pub type CarrierDialFn = extern "C-unwind" fn(
-    state: *mut c_void,
-    dest: *const WireDest,
-    out_conn: *mut u64,
-) -> RawWireOutcome;
-/// [`Carrier::poll_read`](crate::transport::Carrier::poll_read): writes how many (`0` = the end).
-pub type CarrierPollReadFn = extern "C-unwind" fn(
-    state: *mut c_void,
-    conn: u64,
-    token: u64,
-    buf: *mut u8,
-    buf_cap: usize,
-    out_read: *mut usize,
-) -> RawWireOutcome;
-/// [`Carrier::poll_write`](crate::transport::Carrier::poll_write): writes how many it took.
-pub type CarrierPollWriteFn = extern "C-unwind" fn(
-    state: *mut c_void,
-    conn: u64,
-    token: u64,
-    bytes: *const u8,
-    len: usize,
-    out_written: *mut usize,
-) -> RawWireOutcome;
-/// [`Carrier::poll_flush`](crate::transport::Carrier::poll_flush).
-pub type CarrierPollFlushFn =
-    extern "C-unwind" fn(state: *mut c_void, conn: u64, token: u64) -> RawWireOutcome;
-/// [`Carrier::poll_close`](crate::transport::Carrier::poll_close): `reason` is [`code::close_reason`].
-pub type CarrierPollCloseFn =
-    extern "C-unwind" fn(state: *mut c_void, conn: u64, token: u64, reason: u8) -> RawWireOutcome;
-/// [`Carrier::arrival`](crate::transport::Carrier::arrival): writes the far end and the local port;
-/// [`WireOutcome::Closed`] for an unknown connection.
-pub type CarrierArrivalFn = extern "C-unwind" fn(
-    state: *mut c_void,
-    conn: u64,
-    peer_buf: *mut u8,
-    peer_cap: usize,
-    out_peer_len: *mut usize,
-    out_local_port: *mut u16,
-) -> RawWireOutcome;
-
+slot_table! {
 /// A CARRIER's slots, one per [`Carrier`](crate::transport::Carrier) method, named for it.
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub struct CarrierSlots {
-    /// `size_of::<CarrierSlots>()` at construction.
-    pub size: u32,
-    /// Alignment padding.
-    pub _reserved: u32,
-    /// `listen`.
-    pub listen: Option<CarrierListenFn>,
-    /// `poll_accept`.
-    pub poll_accept: Option<CarrierPollAcceptFn>,
-    /// `dial`.
-    pub dial: Option<CarrierDialFn>,
-    /// `poll_read`.
-    pub poll_read: Option<CarrierPollReadFn>,
-    /// `poll_write`.
-    pub poll_write: Option<CarrierPollWriteFn>,
-    /// `poll_flush`.
-    pub poll_flush: Option<CarrierPollFlushFn>,
-    /// `poll_close`.
-    pub poll_close: Option<CarrierPollCloseFn>,
-    /// `arrival`.
-    pub arrival: Option<CarrierArrivalFn>,
+pub struct CarrierSlots lowers Carrier {
+    /// [`Carrier::listen`](crate::transport::Carrier::listen): writes the listener and the bound
+    /// address (into `addr_buf`, `out_addr_len` bytes).
+    listen: CarrierListenFn = fn(state: *mut c_void, bind: *const u8, bind_len: usize,
+        addr_buf: *mut u8, addr_cap: usize, out_addr_len: *mut usize, out_listener: *mut u64);
+    /// [`Carrier::poll_accept`](crate::transport::Carrier::poll_accept): writes the connection and the
+    /// far end.
+    poll_accept: CarrierPollAcceptFn = fn(state: *mut c_void, listener: u64, token: u64,
+        peer_buf: *mut u8, peer_cap: usize, out_peer_len: *mut usize, out_conn: *mut u64);
+    /// [`Carrier::dial`](crate::transport::Carrier::dial): writes the connection.
+    dial: CarrierDialFn = fn(state: *mut c_void, dest: *const WireDest, out_conn: *mut u64);
+    /// [`Carrier::poll_read`](crate::transport::Carrier::poll_read): writes how many (`0` = the end).
+    poll_read: CarrierPollReadFn = fn(state: *mut c_void, conn: u64, token: u64, buf: *mut u8,
+        buf_cap: usize, out_read: *mut usize);
+    /// [`Carrier::poll_write`](crate::transport::Carrier::poll_write): writes how many it took.
+    poll_write: CarrierPollWriteFn = fn(state: *mut c_void, conn: u64, token: u64, bytes: *const u8,
+        len: usize, out_written: *mut usize);
+    /// [`Carrier::poll_flush`](crate::transport::Carrier::poll_flush).
+    poll_flush: CarrierPollFlushFn = fn(state: *mut c_void, conn: u64, token: u64);
+    /// [`Carrier::poll_close`](crate::transport::Carrier::poll_close): `reason` is [`code::close_reason`].
+    poll_close: CarrierPollCloseFn = fn(state: *mut c_void, conn: u64, token: u64, reason: u8);
+    /// [`Carrier::arrival`](crate::transport::Carrier::arrival): writes the far end and the local port;
+    /// [`WireOutcome::Closed`] for an unknown connection.
+    arrival: CarrierArrivalFn = fn(state: *mut c_void, conn: u64, peer_buf: *mut u8,
+        peer_cap: usize, out_peer_len: *mut usize, out_local_port: *mut u16);
+}
 }
 
 // ── the framer's slots: `crate::transport::Framer`, one per method ───────────────────────────────
 
-/// [`Framer::locate`](crate::transport::Framer::locate): writes the authority (into `auth_buf`),
-/// the server name (into `name_buf`; `usize::MAX` in `out_name_len` = none) and the secure flag.
-pub type FramerLocateFn = extern "C-unwind" fn(
-    state: *mut c_void,
-    target: *const u8,
-    target_len: usize,
-    auth_buf: *mut u8,
-    auth_cap: usize,
-    out_auth_len: *mut usize,
-    name_buf: *mut u8,
-    name_cap: usize,
-    out_name_len: *mut usize,
-    out_secure: *mut u8,
-) -> RawWireOutcome;
-/// [`Framer::open`](crate::transport::Framer::open): `side` is [`code::side`]; writes the framing
-/// state.
-pub type FramerOpenFn = extern "C-unwind" fn(
-    state: *mut c_void,
-    side: u8,
-    target: *const u8,
-    target_len: usize,
-    facts: *const WireConnFacts,
-    out: *const WireFramerOut,
-    out_state: *mut u64,
-) -> RawWireOutcome;
-/// [`Framer::ingest`](crate::transport::Framer::ingest): `end` is `0`/`1`.
-pub type FramerIngestFn = extern "C-unwind" fn(
-    state: *mut c_void,
-    framing: u64,
-    bytes: *const u8,
-    len: usize,
-    end: u8,
-    out: *const WireFramerOut,
-) -> RawWireOutcome;
-/// [`Framer::emit`](crate::transport::Framer::emit): `end_of_frame` is `0`/`1`.
-pub type FramerEmitFn = extern "C-unwind" fn(
-    state: *mut c_void,
-    framing: u64,
-    stream: u64,
-    bytes: *const u8,
-    len: usize,
-    end_of_frame: u8,
-    out: *const WireFramerOut,
-) -> RawWireOutcome;
-/// [`Framer::encode_envelope`](crate::transport::Framer::encode_envelope): a refusal answers one of
-/// the rendering outcomes (`14..=17`).
-pub type FramerEncodeEnvelopeFn = extern "C-unwind" fn(
-    state: *mut c_void,
-    fields: *const WireField,
-    fields_len: usize,
-    body: *const u8,
-    body_len: usize,
-    out: *const WireBytesOut,
-) -> RawWireOutcome;
-/// [`Framer::refusal`](crate::transport::Framer::refusal): `has_stream` `0` = the whole connection.
-pub type FramerRefusalFn = extern "C-unwind" fn(
-    state: *mut c_void,
-    framing: u64,
-    has_stream: u8,
-    stream: u64,
-    bytes: *const u8,
-    len: usize,
-    out: *const WireFramerOut,
-) -> RawWireOutcome;
-/// [`Framer::close`](crate::transport::Framer::close): `reason` is [`code::close_reason`].
-pub type FramerCloseFn = extern "C-unwind" fn(
-    state: *mut c_void,
-    framing: u64,
-    reason: u8,
-    out: *const WireFramerOut,
-) -> RawWireOutcome;
-/// [`Framer::detach`](crate::transport::Framer::detach): the unconsumed bytes go to `out`.
-pub type FramerDetachFn = extern "C-unwind" fn(
-    state: *mut c_void,
-    framing: u64,
-    out: *const WireBytesOut,
-) -> RawWireOutcome;
-/// [`Framer::adopt`](crate::transport::Framer::adopt): writes the new framing state.
-pub type FramerAdoptFn = extern "C-unwind" fn(
-    state: *mut c_void,
-    side: u8,
-    facts: *const WireConnFacts,
-    leftover: *const u8,
-    leftover_len: usize,
-    out: *const WireFramerOut,
-    out_state: *mut u64,
-) -> RawWireOutcome;
-
+slot_table! {
 /// A FRAMER's slots, one per [`Framer`](crate::transport::Framer) method, named for it.
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub struct FramerSlots {
-    /// `size_of::<FramerSlots>()` at construction.
-    pub size: u32,
-    /// Alignment padding.
-    pub _reserved: u32,
-    /// `locate`.
-    pub locate: Option<FramerLocateFn>,
-    /// `open`.
-    pub open: Option<FramerOpenFn>,
-    /// `ingest`.
-    pub ingest: Option<FramerIngestFn>,
-    /// `emit`.
-    pub emit: Option<FramerEmitFn>,
-    /// `encode_envelope`.
-    pub encode_envelope: Option<FramerEncodeEnvelopeFn>,
-    /// `refusal`.
-    pub refusal: Option<FramerRefusalFn>,
-    /// `close`.
-    pub close: Option<FramerCloseFn>,
-    /// `detach`.
-    pub detach: Option<FramerDetachFn>,
-    /// `adopt`.
-    pub adopt: Option<FramerAdoptFn>,
+pub struct FramerSlots lowers Framer {
+    /// [`Framer::locate`](crate::transport::Framer::locate): writes the authority (into `auth_buf`),
+    /// the server name (into `name_buf`; `usize::MAX` in `out_name_len` = none) and the secure flag.
+    locate: FramerLocateFn = fn(state: *mut c_void, target: *const u8, target_len: usize,
+        auth_buf: *mut u8, auth_cap: usize, out_auth_len: *mut usize, name_buf: *mut u8,
+        name_cap: usize, out_name_len: *mut usize, out_secure: *mut u8);
+    /// [`Framer::open`](crate::transport::Framer::open): `side` is [`code::side`]; writes the framing
+    /// state.
+    open: FramerOpenFn = fn(state: *mut c_void, side: u8, target: *const u8, target_len: usize,
+        facts: *const WireConnFacts, out: *const WireFramerOut, out_state: *mut u64);
+    /// [`Framer::ingest`](crate::transport::Framer::ingest): `end` is `0`/`1`.
+    ingest: FramerIngestFn = fn(state: *mut c_void, framing: u64, bytes: *const u8, len: usize,
+        end: u8, out: *const WireFramerOut);
+    /// [`Framer::emit`](crate::transport::Framer::emit): `end_of_frame` is `0`/`1`.
+    emit: FramerEmitFn = fn(state: *mut c_void, framing: u64, stream: u64, bytes: *const u8,
+        len: usize, end_of_frame: u8, out: *const WireFramerOut);
+    /// [`Framer::encode_envelope`](crate::transport::Framer::encode_envelope): a refusal answers one of
+    /// the rendering outcomes (`14..=17`).
+    encode_envelope: FramerEncodeEnvelopeFn = fn(state: *mut c_void, fields: *const WireField,
+        fields_len: usize, body: *const u8, body_len: usize, out: *const WireBytesOut);
+    /// [`Framer::refusal`](crate::transport::Framer::refusal): `has_stream` `0` = the whole connection.
+    refusal: FramerRefusalFn = fn(state: *mut c_void, framing: u64, has_stream: u8, stream: u64,
+        bytes: *const u8, len: usize, out: *const WireFramerOut);
+    /// [`Framer::close`](crate::transport::Framer::close): `reason` is [`code::close_reason`].
+    close: FramerCloseFn = fn(state: *mut c_void, framing: u64, reason: u8,
+        out: *const WireFramerOut);
+    /// [`Framer::detach`](crate::transport::Framer::detach): the unconsumed bytes go to `out`.
+    detach: FramerDetachFn = fn(state: *mut c_void, framing: u64, out: *const WireBytesOut);
+    /// [`Framer::adopt`](crate::transport::Framer::adopt): writes the new framing state.
+    adopt: FramerAdoptFn = fn(state: *mut c_void, side: u8, facts: *const WireConnFacts,
+        leftover: *const u8, leftover_len: usize, out: *const WireFramerOut, out_state: *mut u64);
+    /// [`Framer::tick`](crate::transport::Framer::tick) (appended by the clock seam; a table ending before
+    /// it keeps no deadline).
+    tick: FramerTickFn = fn(state: *mut c_void, framing: u64, out: *const WireFramerOut);
+}
 }
 
 /// INIT: build the transport from `settings`, handed the host's `waker` handle (non-null,
@@ -921,8 +797,8 @@ pub struct TransportDecl {
     pub decodes_payload: u8,
     /// `UNIT0_TRIGGER` ([`code::unit0_trigger`]).
     pub unit0_trigger: u8,
-    /// `HANDSHAKE_TRIGGER`'s `max_rounds`.
-    pub handshake_max_rounds: u8,
+    /// `HANDSHAKE_TRIGGER`'s `max_steps`.
+    pub handshake_max_steps: u8,
     /// `STATUS_CLASS` ([`code::status_at`]).
     pub status_at: u8,
     /// Alignment padding.
@@ -935,7 +811,45 @@ pub struct TransportDecl {
     pub carrier: *const CarrierSlots,
     /// The framer's slots (non-null exactly when `composes_over` is not empty).
     pub framer: *const FramerSlots,
+    // ── the claims (appended at minor 33) ──
+    /// `CLAIMS`: every scheme the entry answers for, each with its per-scheme row
+    /// ([`DeclClaim`]); the first is the entry's own. A decl that ends before this tail makes the
+    /// one claim its row above describes.
+    pub claims_ptr: *const DeclClaim,
+    /// Number of entries in the claims list.
+    pub claims_len: usize,
 }
+
+/// ONE CLAIM of a transport entry (`crate::transport::Claim`), borrowed in the list
+/// [`TransportDecl::claims_ptr`] names: the scheme, and every per-scheme constant the root reads.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct DeclClaim {
+    /// The scheme (the row's key).
+    pub key: DeclStr,
+    /// Its selector forms, as [`code::selector_form`] bytes.
+    pub selector_forms: DeclByteList,
+    /// Its transport fact keys.
+    pub transport_facts: DeclStrList,
+    /// Its status numbering (NULL = none).
+    pub status_namespace: DeclStr,
+    /// It carries sessions (`0`/`1`).
+    pub session: u8,
+    /// A session on it caches its principal (`0`/`1`).
+    pub session_bound: u8,
+    /// What opens a session's first unit ([`code::unit0_trigger`]).
+    pub unit0_trigger: u8,
+    /// Which frame carries its status ([`code::status_at`]).
+    pub status_at: u8,
+    /// Alignment padding.
+    pub _reserved: u32,
+}
+
+// SAFETY: a claim borrows the image's own read-only data, mapped for its whole life (the `DeclStr`
+// contract).
+unsafe impl Send for DeclClaim {}
+// SAFETY: see the `Send` impl above.
+unsafe impl Sync for DeclClaim {}
 
 // SAFETY: every raw pointer in the decl points INTO the transport image's own read-only data,
 // mapped for the whole life of the loaded transport and never mutated or freed while a decl that

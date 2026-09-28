@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright (C) 2026 Busbar Inc and contributors
 #
-# Gating scenario `mcp.rig|h2-authenticate-refusal` -- H2 (ARCHITECTURE.md #2.2 step 1, AUTHENTICATE)
+# Gating scenario `mcp.rig|h2-authenticate-refusal` -- H2 (BUSBAR-1.6.0.md THE DESIGN, §1 step 1, AUTHENTICATE)
 # for the MCP plane. Proves the Teller order at step 1: a bearer that fails the RFC 8707 audience
 # check (or is missing entirely) is refused with the plane's native 401 BEFORE step 2 (VERIFY) is
 # ever reached, so no egress reaches the registered upstream and no admission slot is drawn.

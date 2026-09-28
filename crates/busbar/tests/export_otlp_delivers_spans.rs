@@ -49,11 +49,7 @@ fn fixture_dir() -> PathBuf {
 }
 
 fn free_port() -> u16 {
-    std::net::TcpListener::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port()
+    common::boot::free_port()
 }
 
 /// Every request the collector received: its head (lowercased) and its body.

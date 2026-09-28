@@ -1,7 +1,7 @@
 //! The bounded types every other module is built out of. Every ceiling below is pinned by the
 //! crate-graph section of the design and enforced at the type, not by a runtime check buried in a
 //! handler; the one resource a plugin is handed is the per-unit scratch pad, and every byte a
-//! plugin produces comes out of it. See `docs/design/contract-notes.md`.
+//! plugin produces comes out of it. See `docs/design/BUSBAR-1.6.0.md` #38.
 
 use core::fmt;
 

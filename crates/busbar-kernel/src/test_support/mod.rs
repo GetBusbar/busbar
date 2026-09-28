@@ -817,11 +817,11 @@ pub struct TestApp {
     /// and member metadata ride the sibling maps below.
     pools: std::collections::HashMap<String, Vec<(usize, u32)>>,
     auth: Option<std::sync::Arc<crate::auth::AuthMiddleware>>,
-    /// `admin_auth:` chain module names for the built App. `None` = the production default
-    /// (`[admin-tokens]`); `Some(vec![])` selects the explicit OPEN admin posture (dev).
+    /// `admin_auth:` chain module names for the built App. `None` = the production default (the
+    /// operator credential); `Some(vec![])` selects the explicit OPEN admin posture (dev).
     admin_chain: Option<Vec<String>>,
     /// Resolved external admin auth modules for the built App (1.5.2 admin-plane OIDC). `None` = the
-    /// empty chain (admin-tokens-only, runs inline). A test that needs the OFFLOAD path populates
+    /// empty chain (the operator credential alone, runs inline). A test that needs the OFFLOAD path populates
     /// this with a boxed test module and `has_plugin: true`.
     admin_modules: Option<crate::auth::AdminAuthChain>,
     /// Resolved hosted-login methods (1.5.2). `None` = empty (no hosted login). A test that
@@ -1283,10 +1283,7 @@ impl TestApp {
     pub fn admin_module(mut self, name: &str, module: Box<dyn crate::auth::AuthModule>) -> Self {
         let chain = self
             .admin_modules
-            .get_or_insert_with(|| crate::auth::AdminAuthChain {
-                modules: std::collections::HashMap::new(),
-                has_plugin: true,
-            });
+            .get_or_insert_with(crate::auth::AdminAuthChain::empty);
         chain.has_plugin = true;
         chain.modules.insert(name.to_string(), module);
         self
@@ -1924,11 +1921,19 @@ impl TestApp {
             admin_chain: self
                 .admin_chain
                 .clone()
-                .unwrap_or_else(|| vec!["admin-tokens".to_string()]),
-            admin_modules: std::sync::Arc::new(
-                self.admin_modules
-                    .unwrap_or_else(crate::auth::AdminAuthChain::empty),
-            ),
+                .unwrap_or_else(crate::config::default_admin_auth_names),
+            admin_modules: {
+                // The operator credential answers over the fixture's governance token, through
+                // whatever auth row the test binary links (none, in this crate's own tests).
+                let mut chain = self
+                    .admin_modules
+                    .unwrap_or_else(crate::auth::AdminAuthChain::empty);
+                let digest = self.governance.as_ref().and_then(|g| g.admin_token_hash());
+                let linked = crate::preflight::linked().expect("the linked registry");
+                chain.operator = crate::auth::open_operator(&linked, digest.as_deref())
+                    .expect("the linked operator credential opens");
+                std::sync::Arc::new(chain)
+            },
             login_methods: std::sync::Arc::new(
                 self.login_methods
                     .unwrap_or_else(crate::auth::token::LoginMethods::empty),
@@ -2274,6 +2279,16 @@ impl Drop for EnvVarGuard {
             None => std::env::remove_var(self.key),
         }
     }
+}
+
+/// TEST REGISTRY ROW — link the operator credential's auth row into this test binary's auth axis,
+/// as the composition root links it into the shipped one: `entry` is the SDK boundary
+/// (`BUSBAR_COLD_ENTRY`) of whichever auth plugin the test binary links for the purpose, registered
+/// under [`crate::config::operator_provider`]. The first install stands (the axis is process-wide).
+/// A test crate names that plugin only in its manifest; its build script turns the manifest row into
+/// the `entry` it hands here.
+pub fn install_operator_auth_row(entry: busbar_kernel_identity::operator::AuthBoundary) {
+    busbar_kernel_identity::operator::install_row(crate::config::operator_provider(), entry)
 }
 
 /// The builtin-only `SecretResolver` (env/file sugar, no plugin modules) for a dependent crate's

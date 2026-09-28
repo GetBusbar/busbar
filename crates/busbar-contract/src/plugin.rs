@@ -60,6 +60,75 @@ impl Kind {
     // partition was also spelled here as a predicate no caller in the workspace ever asked, and the
     // rule it stated is enforced by `source-denylist:*` in the construction gate, over the crates
     // rather than over this enum. One statement of it, in the place that acts on it.
+
+    /// THE KIND → VERB LIST: the config root key each kind is configured under. The one place a
+    /// kind's root key is spelled — every config reader, `--validate`, `busbar migrate` and the
+    /// selection step read it from here.
+    ///
+    /// A plane's verb is [`Verb::Declared`]: plane verbs are instance knowledge the kernel does not
+    /// hold, so each plane plugin states its own in its declaration.
+    #[must_use]
+    pub const fn verb(self) -> Verb {
+        match self {
+            Self::Store => Verb::Root("store"),
+            Self::Secret => Verb::Root("secrets"),
+            Self::Auth => Verb::Root("identity-providers"),
+            Self::Hook => Verb::Root("hooks"),
+            Self::Export => Verb::Root("export"),
+            Self::Transport => Verb::Root("providers"),
+            Self::Plane => Verb::Declared,
+        }
+    }
+
+    /// The root key of a kind whose verb is a root key, else `None` (a plane: see [`Kind::verb`]).
+    #[must_use]
+    pub const fn root_key(self) -> Option<&'static str> {
+        match self.verb() {
+            Verb::Root(key) => Some(key),
+            Verb::Declared => None,
+        }
+    }
+
+    /// The root key of a non-plane kind — how kernel and plugin code name it.
+    ///
+    /// # Panics
+    /// For [`Kind::Plane`] (at compile time where const-evaluated): a plane's verbs are declared by
+    /// each plane, never named by the kernel.
+    #[must_use]
+    pub const fn root(self) -> &'static str {
+        match self.root_key() {
+            Some(key) => key,
+            None => panic!("a plane's verbs are declared by the plane, never named by the kernel"),
+        }
+    }
+
+    /// Every kind, in declaration order.
+    pub const ALL: [Kind; 7] = [
+        Self::Plane,
+        Self::Transport,
+        Self::Auth,
+        Self::Store,
+        Self::Secret,
+        Self::Hook,
+        Self::Export,
+    ];
+
+    /// The kind whose root key is `key`, or `None` for a key no kind owns (a core-owned key, or a
+    /// plane's declared verb).
+    #[must_use]
+    pub fn owning_root_key(key: &str) -> Option<Kind> {
+        Self::ALL.into_iter().find(|k| k.root_key() == Some(key))
+    }
+}
+
+/// Where a kind is configured: one root key the kernel knows, or the verbs each plane plugin
+/// declares for itself.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Verb {
+    /// One root key, owned by the kind — never by any one plugin of it.
+    Root(&'static str),
+    /// Declared by each plane plugin in its declaration; the kernel names none.
+    Declared,
 }
 
 impl fmt::Display for Kind {
@@ -246,3 +315,7 @@ pub trait KernelSeal: sealed::KernelSealed {
 #[cfg(feature = "test-seal")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TestKernelSeal;
+
+#[cfg(test)]
+#[path = "tests/kind_verb_tests.rs"]
+mod kind_verb_tests;

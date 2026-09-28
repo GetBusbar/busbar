@@ -47,7 +47,19 @@ const STD: base64::engine::general_purpose::GeneralPurpose =
 /// idempotent (first-wins `OnceLock`), so every fixture may call this.
 fn install_admin_mount() {
     #[cfg(test)]
-    busbar_core_admin::install();
+    {
+        busbar_core_admin::install();
+        operator_row::for_each_operator_auth_row!(|entry| engine().install_operator_auth_row(entry));
+    }
+}
+
+/// THE OPERATOR CREDENTIAL'S TEST REGISTRY ROW for THIS crate's own test binary: the auth plugin its
+/// manifest lists under `test-operator-auth`, as build.rs emits it. The admin surface's test binary,
+/// which drives this battery through `test-support`, installs its own.
+#[cfg(test)]
+mod operator_row {
+    include!(concat!(env!("OUT_DIR"), "/test_operator_auth.rs"));
+    pub(crate) use for_each_operator_auth_row;
 }
 
 fn key() -> SigningKey {
@@ -468,8 +480,8 @@ async fn the_trust_verbs_refuse_a_caller_holding_no_admin_token_or_the_wrong_one
 
 /// THE DRIVERS for this surface's declared error set, callable from the taxonomy's own
 /// set-comparison so the assertion does not depend on which tests happened to run first.
-// No cfg of its own: this whole module is gated on `auth-admin-tokens` at its include site in
-// `adminverbs.rs`, exactly as the MCP plane's sibling is.
+// No cfg of its own: this whole module is gated on `any(test, feature = "test-support")` at its
+// include site in `adminverbs.rs`, exactly as the MCP plane's sibling is.
 pub async fn drive_a2a_verb_errors() {
     engine().metrics_init();
     let k = key();

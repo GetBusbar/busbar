@@ -992,7 +992,7 @@ fn the_boot_book_ships_its_opening_to_the_configured_store() {
         .expect("the journal reads back")
         .expect("and verifies");
     // The first boot with a data directory seals the deployment keyset's `Bootstrap` first (spec
-    // #82(a); ARCHITECTURE.md §1.2), then the opening's marker — signed with that keyset.
+    // #82(a); BUSBAR-1.6.0.md THE DESIGN, §2), then the opening's marker — signed with that keyset.
     assert_eq!(
         replayed.iter().map(|r| r.class).collect::<Vec<_>>(),
         vec![RecordClass::Bootstrap, RecordClass::Migration],
@@ -1056,7 +1056,7 @@ fn no_configured_directory_still_opens_nothing_and_writes_nothing() {
     );
 }
 
-/// THE DEPLOYMENT KEYSET AT THE BOOT SEAM (spec #82(a); ARCHITECTURE.md §1.2, PB-13; architect
+/// THE DEPLOYMENT KEYSET AT THE BOOT SEAM (spec #82(a); BUSBAR-1.6.0.md THE DESIGN, §2, PB-13; architect
 /// ruling 2026-09-26): the opening `compose_boot_book` seals is SIGNED with the keyset it bound —
 /// ephemeral without a directory, cached under it with one — and a restart over a directory whose
 /// keyset file is gone refuses `KeysetMissing` in the refusal's own words, which `die` prints.

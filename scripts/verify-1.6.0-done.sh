@@ -3,8 +3,8 @@
 # Copyright (C) 2026 Busbar Inc and contributors
 #
 # verify-1.6.0-done.sh — THE 1.6.0 DONE-ORACLE. A single, re-runnable, un-gameable proof that
-# "busbar 1.6.0 is done." Per docs/design/playbook/00-MASTER-PLAN.md ("DONE = scripts/verify-1.6.0-done.sh
-# green") and the gate designs (gate-no-deferral.md, gate-isomorphism.md).
+# "busbar 1.6.0 is done." Done is defined by docs/design/BUSBAR-1.6.0.md Part 0, "What done means"; this
+# script is an instrument that proves it, and the gate designs (BUSBAR-1.6.0.md #15, BUSBAR-1.6.0.md THE DESIGN, §1).
 #
 # WHAT "DONE" MEANS HERE — the umbrella asserts, as ONE verdict, that every sub-gate is green:
 #   build            the full-gate cargo battery (`cargo xtask full-gate`, driven by qa/full-gate.toml).
@@ -50,13 +50,13 @@
 #                    sha256 this repository commits for 1.5.5; every in-scope cell without a golden
 #                    is named in accepted-gaps.json; and the verdict is read out of the report — so
 #                    a run that compared the wrong binary, or compared nothing at all, is a refusal.
-#   design           cargo xtask gate design-bindings --strict: every ARCHITECTURE.md Appendix B
+#   design           cargo xtask gate design-bindings --strict: every qa/parity-bindings.md
 #                    binding is mapped to a check that still exists in the tree (test, oracle cell,
 #                    lint, gate). An unmapped binding is a named gap and is RED here -- "done" means
 #                    nothing we designed is unproven. Existence only; the checks run in their own tiers.
 #   changelog        cargo xtask gate changelog-register: EVERY entry in
 #                    testing/shadow-oracle/accepted-differences.json -- improvement as well as
-#                    breaking, per ARCHITECTURE.md's owner rule -- has its `changelog` field's exact
+#                    breaking, per BUSBAR-1.6.0.md's owner rule -- has its `changelog` field's exact
 #                    line present, verbatim, in CHANGELOG.md, or an explicit null with a written
 #                    reason. A difference the owner accepted cannot silently fall out of the release
 #                    notes, and a break may never waive its line.
@@ -1464,7 +1464,7 @@ fi
 end_group
 
 # ─────────────────────────────────────────────────────────────────────────────────────────────────
-begin_group "DESIGN — every ARCHITECTURE.md Appendix B binding is mapped to a check that exists"
+begin_group "DESIGN — every qa/parity-bindings.md (Appendix B) binding is mapped to a check that exists"
 # The design bindings ledger (qa/design-bindings.json) maps each parity binding to the tests, oracle
 # cells, lints and gates that prove it. Plain --check reports gaps; --strict owes EVERY binding to the
 # verdict so an unmapped binding is red. DONE means the design is fully bound, not partly.
@@ -1478,7 +1478,7 @@ begin_group "AUDIT-LEDGER — every production path is covered by a scope, nothi
 # the round that produced the result. --check is red two ways: a tracked production file that no
 # scope covers (coverage cannot silently regress when a crate is added), and a scope with findings
 # recorded and no fix commit stamped. A result whose tree hash has moved reads `stale` in
-# docs/design/AUDIT-STATUS.md rather than green — an audit describes one tree, not the code forever.
+# qa/evidence/AUDIT-STATUS.md rather than green — an audit describes one tree, not the code forever.
 if [ -f qa/audit-ledger.json ]; then
   # The gate's own RED proof runs first, as everywhere else. It judges the five rules about the
   # REGISTER (is the instrument believable); `--check` below judges those five plus the two about
@@ -1513,7 +1513,7 @@ fi
 end_group
 
 # ─────────────────────────────────────────────────────────────────────────────────────────────────
-begin_group "INVENTORY-COVERAGE — every docs/design/inventory/*.md row id is bound to an oracle cell"
+begin_group "INVENTORY-COVERAGE — every qa/evidence/inventory/*.md row id is bound to an oracle cell"
 # Appendix B says every inventory row is a parity binding AND an oracle cell; this is the check that
 # was missing. qa/inventory-gaps.json names every row id with no citing cell yet, so a gap is a
 # visible, owned line item rather than a silent hole. DONE means no id has no cell and no name.
@@ -1698,7 +1698,7 @@ end_group
 
 # ─────────────────────────────────────────────────────────────────────────────────────────────────
 begin_group "STORE-QA — the durable-store QA cycle's service pins hold, and its fixtures still work"
-# docs/design/store-qa-cycle.md is the standing loop that keeps busbar's four durable stores
+# docs/design/BUSBAR-1.6.0.md THE DESIGN, §2 is the standing loop that keeps busbar's four durable stores
 # (sqlite, postgres, mysql, valkey) proven run after run. Its foundation is that the backend
 # containers are the SAME BYTES everywhere they are stood up — and they were not: four workflows
 # agreed on a digest while scripts/release-check.sh, the script the qa gate runs, used floating

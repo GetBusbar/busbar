@@ -406,25 +406,32 @@ const PLANE_ALIASES: &[(&str, &str, &str)] = &[
 /// dead-kind rule skips these — and the ratchet runs the other way: the day a crate of one of them
 /// exists, the entry must be struck, or a kind would be both pending and live.
 ///
-/// `dialect` was a pending kind and it is not a kind at all (DECISIONS #4). `secret` is pending
-/// because its instances live OUTSIDE this repo: the owner deleted the in-tree fixture ("FIXTURES",
-/// docs/design/1.6.0-QUESTIONS.md) and the kind is proven by the real plugin repo. `auth` is
-/// pending on the same terms: its last in-tree crate, the built-in admin-tokens module, moved to its
-/// own repo and is pulled at a pinned rev.
+/// `dialect` was a pending kind and it is not a kind at all (DECISIONS #4). `secret` and `export`
+/// are pending because their instances live OUTSIDE this repo: the owner deleted the in-tree
+/// fixtures ("FIXTURES", docs/design/1.6.0-QUESTIONS.md) and each kind is proven by its real plugin
+/// repos. `auth` is pending on the same terms: its last in-tree crate, the built-in admin-tokens
+/// module, moved to its own repo and is pulled at a pinned rev.
 const PENDING_KINDS: &[(&str, &str)] = &[
     (
         "secret",
         "every plugin lives in its own repo (owner, 1.6.0-QUESTIONS.md \"PLUGIN HOME\"); the in-tree \
-         secret fixture is deleted (\"FIXTURES\") and the kind is proven by GetBusbar/hashicorp-vault \
+         secret fixture is deleted (\"FIXTURES\") and the kind is proven by GetBusbar/busbar-secret-vault \
          through crates/plugin-loader/src/tests/plugin_proof_tests.rs (ci.yml `plugin-proofs`)",
     ),
     (
         "auth",
         "every plugin lives in its own repo (owner, 1.6.0-QUESTIONS.md \"PLUGIN HOME\"); the in-tree \
          auth fixture is deleted (\"FIXTURES\") and the built-in admin-tokens module moved to \
-         GetBusbar/auth-admin-tokens (ARCHITECT 2026-09-27), pulled by busbar-kernel at a pinned \
+         GetBusbar/busbar-auth-admin-tokens (ARCHITECT 2026-09-27), pulled by busbar-kernel at a pinned \
          rev; the kind is proven both ways by crates/plugin-loader/src/tests/auth_conformance_tests.rs \
          and auth_verify_conformance_tests.rs over the pinned real plugins",
+    ),
+    (
+        "export",
+        "every plugin lives in its own repo (owner, 1.6.0-QUESTIONS.md \"PLUGIN HOME\"); the in-tree \
+         export fixture is deleted (\"FIXTURES\") and the kind is proven by its real sinks \
+         GetBusbar/busbar-export-file, -webhook, -prometheus and -otlp, pinned git dev-dependencies of \
+         busbar-plugin-loader (export_conformance_tests, both ways) and of busbar",
     ),
 ];
 
@@ -535,7 +542,7 @@ const ACCEPTED_NAMES: &[(&str, &str)] = &[];
 
 /// THE EDGE CLASSES THE ARCHITECTURE GRANTS, and the whole of what the SHIP twin permits.
 ///
-/// This is not a measurement and it is not a ratchet. It is the read of `ARCHITECTURE.md` 1.1 and
+/// This is not a measurement and it is not a ratchet. It is the read of `BUSBAR-1.6.0.md` THE DESIGN, §1 and
 /// 3.1 that an audit of all 220 workspace-internal edges produced: 105 of them land in one of these
 /// classes and 87 land nowhere the architecture speaks. The per-push rows hold the tree to the
 /// EXACT edges it has today, instance by instance, so the debt cannot grow; the ship twin holds it
@@ -590,7 +597,7 @@ const ARCHITECTURE_ALLOWED: &[(&str, &str)] = &[
     // The composition root is the one thing that names all three axes — that is what a root IS.
     //
     // ROOT -> EVERY PLUGIN KIND IT LINKS IS ONE GRANTED CLASS, not a list that grew kind by kind.
-    // Roster definition 1 (ARCHITECTURE.md 1.1): the composition root is "the only place that names
+    // Roster definition 1 (BUSBAR-1.6.0.md THE DESIGN, §1): the composition root is "the only place that names
     // which crates exist and wires them at boot" — naming a plugin crate and folding it onto its
     // axis IS the root's job, so the edge is the architecture, not debt (ARCHITECT ruling
     // 2026-09-25 "K5d residue"). `plane`, `store` and `transport` were granted as the first crate
@@ -615,14 +622,14 @@ const ARCHITECTURE_ALLOWED: &[(&str, &str)] = &[
     //
     // It granted the CLASS `transport -> transport` — eight live edges (`grpc -> http`,
     // `grpc -> tcp`, `http -> tcp`, `http -> tls`, `sse -> http`, `tls -> tcp`, `ws -> http`,
-    // `ws -> tcp`) — on the citation *"ARCHITECTURE.md 3.4 `COMPOSES_OVER`: a wire composed over
+    // `ws -> tcp`) — on the citation *"BUSBAR-1.6.0.md THE DESIGN, §5 `COMPOSES_OVER`: a wire composed over
     // a lower wire; THE ROOT SUPPLIES THE LAYER."*
     //
     // THE CITATION ARGUES AGAINST ITS OWN VERDICT. If the root supplies the layer, the transport
     // crate does not need to name the lower transport at COMPILE time; `COMPOSES_OVER` is an
-    // associated const on `TransportMeta` (ARCHITECTURE.md:669) — a RUNTIME registry string, not a
-    // crate edge — and ARCHITECTURE.md §5's composition table is a table of wire layering, not of manifests. What
-    // the cited document actually says about manifests is ARCHITECTURE.md:119 §1.2: *"any
+    // associated const on `TransportMeta` (BUSBAR-1.6.0.md THE DESIGN, §5) — a RUNTIME registry string, not a
+    // crate edge — and BUSBAR-1.6.0.md THE DESIGN, §5's composition is a table of wire layering, not of manifests. What
+    // the cited document actually says about manifests is BUSBAR-1.6.0.md THE DESIGN, §2: *"any
     // dependency on … another plane or A TRANSPORT is a CI failure"*, with exactly one exception,
     // a dialect crate naming its own plane. BUSBAR-1.6.0.md:364 #40(a) is flatter still:
     // `closure ∩ {… any other plugin} = ∅`, and a transport is one of the seven plugin kinds.
@@ -687,7 +694,7 @@ pub(super) fn names_contract_by_design(from: &str, to: &str) -> bool {
                 || ARCHITECTURE_TCB.contains(&(from, to))))
 }
 
-/// THE TRUSTED COMPUTING BASE: the loader and the plugin tooling, which `ARCHITECTURE.md` 1.4 says
+/// THE TRUSTED COMPUTING BASE: the loader and the plugin tooling, which `BUSBAR-1.6.0.md` THE DESIGN, §2 says
 /// in its own words are NOT kinds. Their edges are neither granted nor refused by the kind rules,
 /// because the kind rules are not about them — so they carry their own verdict, they are still
 /// written down instance by instance, and the ship twin still refuses them: a tag's criterion is
@@ -749,7 +756,7 @@ const EXEMPLARS: &[(&str, &str)] = &[
     ("transport", "busbar-transport-tcp"),
 ];
 
-/// THE KIND SKELETON IS THE SPEC'S, NEVER THE EXEMPLAR'S FILE LIST (`PLUGIN-TREE.md` §3).
+/// THE KIND SKELETON IS THE SPEC'S, NEVER THE EXEMPLAR'S FILE LIST (`BUSBAR-1.6.0.md` THE DESIGN, §2).
 ///
 /// It was the exemplar's top-level module set, which reads every DOMAIN module of one crate as part
 /// of its kind's shape: `busbar-unit-wal` was charged with missing `challenge`, `carrier`,
@@ -759,7 +766,7 @@ const EXEMPLARS: &[(&str, &str)] = &[
 /// rule that grows a row every time the exemplar grows a file is not measuring shape; it is
 /// measuring one crate's domain, and the only way to go green is to copy it.
 ///
-/// PLUGIN-TREE.md §3 names the intersection instead, and it is small on purpose: `src/lib.rs` (the single `pub`
+/// BUSBAR-1.6.0.md THE DESIGN, §2 names the intersection instead, and it is small on purpose: `src/lib.rs` (the single `pub`
 /// entry — checked as `no-lib`), `src/meta.rs` (the associated consts), `src/claims.rs` for the
 /// kinds that CLAIM, the kind's own entry file (`unit.rs` / `plane.rs` / `transport.rs`), and
 /// `src/tests/conformance.rs` (checked by the battery rule). Everything else is `src/<verb>.rs` —
@@ -796,7 +803,7 @@ const ENTRY_TRAIT_KINDS: &[&str] = &[
     "export",
 ];
 
-/// The kinds that declare CLAIMS (`PLUGIN-TREE.md` §3): what the crate answers for.
+/// The kinds that declare CLAIMS (`BUSBAR-1.6.0.md` THE DESIGN, §2): what the crate answers for.
 /// An AUTH plugin is here for the reason the planes are: it declares what it answers for as DATA —
 /// the same claim-table shape — rather than deciding it inside a handler. `control` and `dialect`
 /// are gone (DECISIONS #4/#5); a `cleanliness` crate is compiled-in and declares no plugin claims.
@@ -2257,11 +2264,24 @@ fn verdict_for(class: &(String, String)) -> &'static str {
 
 /// Every edge instance one half of the build graph has, measured.
 fn measure_edges(crates: &[CrateInfo], half: Half) -> Vec<DepInstance> {
+    measure_edges_granting(crates, half, &BTreeSet::new())
+}
+
+/// [`measure_edges`], with the test half's [`conformance_witness_edges`] left out: a granted edge is
+/// not a measured edge, so no rule below scores it — not as new, not as unlisted, not as a row.
+fn measure_edges_granting(
+    crates: &[CrateInfo],
+    half: Half,
+    granted: &BTreeSet<(String, String)>,
+) -> Vec<DepInstance> {
     let by_name: BTreeMap<&str, &CrateInfo> = crates.iter().map(|c| (c.name.as_str(), c)).collect();
     let mut acc: BTreeMap<(String, String), DepInstance> = BTreeMap::new();
     for c in crates {
         let Some(from) = c.kind else { continue };
         for decl in half.decls(c) {
+            if half == Half::Test && granted.contains(&(c.name.clone(), decl.pkg.clone())) {
+                continue;
+            }
             let Some(target) = by_name.get(decl.pkg.as_str()) else {
                 continue;
             };
@@ -2343,7 +2363,11 @@ fn rule_drain(crates: &[CrateInfo], reg: &KindRegistry) -> Row {
 fn rule_deps(cx: &Ctx, crates: &[CrateInfo], reg: &KindRegistry, half: Half, ship: bool) -> Row {
     let by_name: BTreeMap<&str, &CrateInfo> = crates.iter().map(|c| (c.name.as_str(), c)).collect();
     let drain_targets: BTreeSet<&str> = DRAIN_TARGET_KINDS.iter().copied().collect();
-    let measured = measure_edges(crates, half);
+    let granted = match half {
+        Half::Test => conformance_witness_edges(cx, crates),
+        Half::Shipped => BTreeSet::new(),
+    };
+    let measured = measure_edges_granting(crates, half, &granted);
     // A ROW REFUSED AT LOAD IS REPORTED, NOT DROPPED. A table that quietly skips what it cannot
     // understand is a table that says yes to it, and the row it skipped is the one somebody wrote
     // to get an edge past this rule. Only the shipped row carries them, so one bad row is one
@@ -4282,7 +4306,7 @@ fn rule_shape(
             if !missing.is_empty() {
                 offenders.push(format!(
                     "skeleton\t{}/src/lib.rs\t{} is missing {} of the `{kind}` skeleton \
-                     (PLUGIN-TREE.md §3): {}",
+                     (BUSBAR-1.6.0.md THE DESIGN, §2): {}",
                     c.dir,
                     c.name,
                     missing.len(),
@@ -4485,7 +4509,7 @@ fn rule_testkit(crates: &[CrateInfo], idx: &SourceIndex) -> Row {
         }
         for c in members {
             // A BATTERY WITH NO SUBJECT PROVES NOTHING. The battery's whole content is the kind's
-            // trait exercised through the crate's own implementor (`PLUGIN-TREE.md` §3: `let _: &dyn
+            // trait exercised through the crate's own implementor (`BUSBAR-1.6.0.md` THE DESIGN, §2: `let _: &dyn
             // <KindTrait> = &P;`), so a crate of the kind that implements the trait ZERO times has
             // nothing for its battery to be about — and a file that compiles anyway is a file that
             // asserts about something else. Read off the same trait-impl index `:shape` counts with.
@@ -4952,6 +4976,92 @@ fn cold_witness_edges(cx: &Ctx, crates: &[CrateInfo]) -> BTreeSet<(String, Strin
         }
     }
     out
+}
+
+/// THE CRATE A PLUGIN'S OWN CONFORMANCE TEST DRIVES ITS TWO DOORS THROUGH: the one loader, whose
+/// admission is the one both doors pass (#2 rule (1): one contract, one loading path).
+const CONFORMANCE_LOADER: &str = "busbar-plugin-loader";
+
+/// The one file of a plugin crate that may use [`CONFORMANCE_LOADER`], relative to the crate.
+// qa-names: tests/conformance.rs -- xtask/src/gates/kind_isolation.rs -- CRATE-RELATIVE, not a repo path: it is joined to each plugin crate's directory (crates/<crate>/tests/conformance.rs), so there is no such file at the repo root by design
+const CONFORMANCE_FILE: &str = "tests/conformance.rs";
+
+/// THE PLUGIN'S OWN BOTH-WAYS WITNESS (ARCHITECT 2026-09-27, DOOR-TRANSPORT; spec #2 (4)/(5), #3),
+/// the plugin-side mirror of [`cold_witness_edges`]: a plugin crate of ANY kind proves its linked
+/// door and its dropped-in door are one plugin in its own `tests/conformance.rs`, over the real
+/// loader rather than a host written for the test. So the `(from, to)` TEST edges returned here
+/// are granted, and no rule of this gate measures them:
+///
+/// * `(plugin, busbar-plugin-loader)` — the crate is one of the seven plugin kinds, it takes the
+///   loader in `[dev-dependencies]` and NOT in `[dependencies]`, the loader is `plugin-tooling`,
+///   and every source file under the crate that names the loader as code is exactly its
+///   `tests/conformance.rs` (at least one);
+/// * `(plugin, plugin)` — the same crate's dev-edge to ITSELF, which is how `cargo test` builds the
+///   crate's own dropped-in door (a feature of the crate under test) for that test to open. It is
+///   not an edge between two crates.
+///
+/// Nothing else is granted. A NORMAL edge on the loader is the shipped half and stays the finding
+/// it always was, and a dev-edge any other file uses (a unit test, a second integration test, a
+/// bench) is a plugin testing against the host, not a witness of its doors.
+fn conformance_witness_edges(cx: &Ctx, crates: &[CrateInfo]) -> BTreeSet<(String, String)> {
+    let loader_is_tooling = crates
+        .iter()
+        .any(|c| c.name == CONFORMANCE_LOADER && c.kind == Some(WIRE_FIXTURE_KIND));
+    let mut out = BTreeSet::new();
+    if !loader_is_tooling {
+        return out;
+    }
+    let path = format!("{}::", CONFORMANCE_LOADER.replace('-', "_"));
+    for c in crates {
+        if !c.kind.is_some_and(|k| truths::PLUGIN_KINDS.contains(&k))
+            || !c.dev_deps.iter().any(|d| d.pkg == CONFORMANCE_LOADER)
+            || c.deps.iter().any(|d| d.pkg == CONFORMANCE_LOADER)
+        {
+            continue;
+        }
+        let files = cx
+            .walk(&WalkSpec::new([c.dir.clone()]).ext("rs").allow_empty())
+            .unwrap_or_default();
+        let witness = format!("{}/{CONFORMANCE_FILE}", c.dir);
+        let users: Vec<String> = files
+            .iter()
+            .filter(|f| code_only(&f.text).contains(path.as_str()))
+            .map(|f| f.rel_str())
+            .collect();
+        if users.is_empty() || users.iter().any(|u| *u != witness) {
+            continue;
+        }
+        out.insert((c.name.clone(), CONFORMANCE_LOADER.to_string()));
+        if c.dev_deps.iter().any(|d| d.pkg == c.name) {
+            out.insert((c.name.clone(), c.name.clone()));
+        }
+    }
+    out
+}
+
+/// Whether a vocabulary hit is the granted witness naming its loader: a `plugin-tooling` hit in a
+/// crate [`conformance_witness_edges`] grants, in its `tests/conformance.rs`, or on the manifest
+/// line that declares the loader. Every other column is still counted in both files.
+fn is_witness_hit(
+    granted: &BTreeSet<(String, String)>,
+    krate: &CrateInfo,
+    kind: &str,
+    rel: &str,
+    line: &str,
+) -> bool {
+    if kind != WIRE_FIXTURE_KIND
+        || !granted.contains(&(krate.name.clone(), CONFORMANCE_LOADER.to_string()))
+    {
+        return false;
+    }
+    if rel == format!("{}/{CONFORMANCE_FILE}", krate.dir) {
+        return true;
+    }
+    rel == krate.manifest
+        && line
+            .trim_start()
+            .strip_prefix(CONFORMANCE_LOADER)
+            .is_some_and(|rest| rest.trim_start().starts_with('='))
 }
 
 /// `text` with every comment dropped and every literal blanked: a USER of a crate is code that
@@ -5985,7 +6095,7 @@ impl Gate for KindIsolationGate {
 
         // THE SCHEME'S OWN WIDTH. Five segments is a name describing the crate instead of naming
         // its kind (four segments is the widest an accepted name reaches, e.g.
-        // `busbar-export-example-plugin`).
+        // `busbar-plugin-example-plane`).
         report.push(prove_rows_red(
             cx,
             subject,
@@ -6475,6 +6585,82 @@ impl Gate for KindIsolationGate {
                 ],
             ));
 
+            // THE PLUGIN'S OWN BOTH-WAYS WITNESS (ARCHITECT 2026-09-27, DOOR-TRANSPORT), kind-neutral:
+            // planted in a STORE plugin here, so the grant is shown not to be a transport's. The
+            // crate takes the loader in `[dev-dependencies]` and itself with its dropped-in door on,
+            // and its `tests/conformance.rs` is the loader's only user: no edge, closure or cell is
+            // scored for it…
+            let conformance = |normal: bool, extra_user: bool| {
+                let dir = "crates/store-memory";
+                let rel = format!("{dir}/Cargo.toml");
+                let table = if normal {
+                    "dependencies"
+                } else {
+                    "dev-dependencies"
+                };
+                let mut ov = Overlay::new();
+                ov.set(
+                    rel.as_str(),
+                    manifest_plus(
+                        cx,
+                        &rel,
+                        &format!(
+                            "[{table}]\nbusbar-plugin-loader = {{ path = \"../plugin-loader\" }}\n\
+                             [dev-dependencies]\nbusbar-store-memory = {{ path = \".\", features = \
+                             [\"dropped-in\"] }}\n"
+                        ),
+                    ),
+                );
+                ov.set(
+                    format!("{dir}/{CONFORMANCE_FILE}"),
+                    "use busbar_plugin_loader::transport::link_transport;\n#[test]\nfn both_doors() \
+                     {\n    let _ = link_transport;\n}\n"
+                        .to_string(),
+                );
+                if extra_user {
+                    ov.set(
+                        format!("{dir}/tests/host.rs"),
+                        "#[test]\nfn t() {\n    let _ = busbar_plugin_loader::transport::link_transport;\n}\n"
+                            .to_string(),
+                    );
+                }
+                ov
+            };
+            report.push(prove_rows_green(
+                cx,
+                subject,
+                "a plugin's dev-edge to the loader, used only by its own `tests/conformance.rs`, and \
+                 its dev-edge to itself are its both-ways witness: no edge, closure reach or cell",
+                &[ROW_TEST_DEPS, closure::ROW_CLOSURE, matrix::ROW_MATRIX],
+                conformance(false, false),
+            ));
+            // …but the loader as a NORMAL dependency is a plugin linking the host: the shipped half
+            // excuses nothing…
+            report.push(prove_rows_red(
+                cx,
+                subject,
+                "a plugin taking the loader as a NORMAL dependency",
+                &[ROW_DEPS],
+                conformance(true, false),
+                &[
+                    "new-forbidden-edge",
+                    "busbar-store-memory -> busbar-plugin-loader",
+                ],
+            ));
+            // …and a loader dev-edge any file other than `tests/conformance.rs` uses is a plugin
+            // testing against the host, not a witness of its doors.
+            report.push(prove_rows_red(
+                cx,
+                subject,
+                "a plugin's loader dev-edge used outside its `tests/conformance.rs` is not a witness",
+                &[ROW_TEST_DEPS],
+                conformance(false, true),
+                &[
+                    "new-forbidden-edge",
+                    "busbar-store-memory -> busbar-plugin-loader",
+                ],
+            ));
+
             // A NEGATIVE COUNT IS A PER-CELL OFF SWITCH, and it is refused where every other
             // unreadable value is: at load. `-1` parses as a number, so `bad-count` let it through,
             // and the exact-both-directions comparison then SKIPPED the cell — one character
@@ -6528,7 +6714,7 @@ impl Gate for KindIsolationGate {
             ));
 
             // A ROW THAT GRANTED ITSELF AN EDGE THE ARCHITECTURE WITHHOLDS. `allowed` is a READING
-            // of ARCHITECTURE.md, not an opinion a ledger row is entitled to hold — otherwise the
+            // of BUSBAR-1.6.0.md, not an opinion a ledger row is entitled to hold — otherwise the
             // ledger IS the architecture and the ratchet loosens by editing one word.
             //
             // THE EDGE IS THE FIXTURE'S OWN. The case used to flip the verdict of a live row, and
@@ -7637,13 +7823,24 @@ impl Gate for KindIsolationGate {
 
         // A REGISTRY ENTRY FILED UNDER THE WRONG KIND. `plugins.yaml` is what the loader believes,
         // and a store plugin filed as `auth` is a store handed the auth ABI.
+        //
+        // PLANTED AS A FRESH ROW, not surgery on a live one. This case (and the export case below
+        // it) used to `replacen` a needle spelled off the `store-mysql`/`export-file` rows the file
+        // carried at the time; the fleet-wide rename (repo = crate = manifest = asset prefix, all
+        // `busbar-<kind>-<name>`) moved those rows' text out from under the needle, `replacen`
+        // over an absent needle returns its input unchanged, and the plant wrote `plugins.yaml`
+        // back byte-for-byte — `inert_plant` catches exactly that shape now. A synthetic entry,
+        // APPENDED rather than found by text, has no needle to go stale: `registry_entries` reads
+        // any `- …kind: …crate: …` block regardless of where it sits in the file, so this fixture
+        // resolves and mismatches on its own name and cannot be un-planted by a rename to a row it
+        // never touches.
         let mut ov = Overlay::new();
         ov.set(
             "plugins.yaml",
-            cx.read("plugins.yaml").unwrap_or_default().replacen(
-                "  - repo: store-mysql\n    kind: store\n",
-                "  - repo: store-mysql\n    kind: auth\n",
-                1,
+            format!(
+                "{}\n  - repo: busbar-store-selftest-fixture\n    kind: auth\n    crate: \
+                 busbar-store-selftest-fixture-plugin\n",
+                cx.read("plugins.yaml").unwrap_or_default().trim_end()
             ),
         );
         report.push(prove_rows_red(
@@ -7654,20 +7851,20 @@ impl Gate for KindIsolationGate {
             ov,
             &[
                 "registry-kind-mismatch",
-                "busbar-store-mysql-plugin",
+                "busbar-store-selftest-fixture-plugin",
                 "store",
             ],
         ));
 
         // THE SAME FOR A HOT-LANE KIND: every kind ships as its own repo, so an export plugin filed
-        // as a transport is an export sink handed the transport ABI.
+        // as a transport is an export sink handed the transport ABI. Same fresh-row plant as above.
         let mut ov = Overlay::new();
         ov.set(
             "plugins.yaml",
-            cx.read("plugins.yaml").unwrap_or_default().replacen(
-                "  - repo: export-file\n    kind: export\n",
-                "  - repo: export-file\n    kind: transport\n",
-                1,
+            format!(
+                "{}\n  - repo: busbar-export-selftest-fixture\n    kind: transport\n    crate: \
+                 busbar-export-selftest-fixture-plugin\n",
+                cx.read("plugins.yaml").unwrap_or_default().trim_end()
             ),
         );
         report.push(prove_rows_red(
@@ -7678,7 +7875,7 @@ impl Gate for KindIsolationGate {
             ov,
             &[
                 "registry-kind-mismatch",
-                "busbar-export-file-plugin",
+                "busbar-export-selftest-fixture-plugin",
                 "export",
             ],
         ));
@@ -8428,7 +8625,7 @@ impl Gate for KindIsolationGate {
                     "{}\n\n[[transitional]]\nfrom = \"busbar-llm\"\nto = \"{PLANTED_DRAIN_TARGET}\"\n\
                      reason = \"planted\"\n\n[[dep]]\nfrom    = \"busbar-llm\"\n\
                      to      = \"{PLANTED_DRAIN_TARGET}\"\nhalf    = \"shipped\"\ncount   = \"1\"\n\
-                     verdict = \"not-allowed\"\ncite    = \"the legacy drain: ARCHITECTURE.md 1.1 \
+                     verdict = \"not-allowed\"\ncite    = \"the legacy drain: BUSBAR-1.6.0.md THE DESIGN, §1 \
                      grants a legacy crate no cleanliness edge, and the [[transitional]] row above names \
                      this one as the retirement in flight.\"\nwhy     = \"planted: proves the drain \
                      row and its own dep count both being present is green.\"\ndrain   = \"planted \
@@ -8698,7 +8895,7 @@ impl Gate for KindIsolationGate {
             &[
                 "busbar-transport-planted",
                 "is missing 1 of the `transport` skeleton",
-                "PLUGIN-TREE.md §3): transport",
+                "BUSBAR-1.6.0.md THE DESIGN, §2): transport",
             ],
         ));
 
@@ -10199,7 +10396,7 @@ mod plant_tests {
         };
 
         let (got, idx) = read(meta(
-            "git+https://github.com/GetBusbar/transport-tcp?rev=0#0",
+            "git+https://github.com/GetBusbar/busbar-transport-tcp?rev=0#0",
         ));
         let key = got.expect("a pinned git checkout resolves");
         assert_eq!(key, format!("pinned:{exemplar}"));

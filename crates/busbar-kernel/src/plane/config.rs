@@ -77,6 +77,7 @@
 //! is a rule about ITS OWN values — which is why each plane-local section module shares this
 //! module's shape and nothing else.
 
+use busbar_contract::plugin::Kind;
 use serde::Deserialize;
 
 // Phase-C config-seam: the NEUTRAL config-seam contracts moved to `busbar_kernel::plane::config`
@@ -735,7 +736,8 @@ pub fn plane_sections() -> Vec<&'static str> {
 /// when a plane is compiled out, so a `tools:`/`agents:` block written for an absent plane is still
 /// recognised (and refused) rather than silently accepted. None is a plane KEY, so the
 /// neutral-purity lint's token rules do not fire on them.
-pub const NAMED_MAP_SECTIONS: [&str; 4] = ["identity-providers", "export", "tools", "agents"];
+pub const NAMED_MAP_SECTIONS: [&str; 4] =
+    [Kind::Auth.root(), Kind::Export.root(), "tools", "agents"];
 
 /// TEST-SUPPORT SEAM — the section-list PROVIDER a plane's `testkit` binds through
 /// [`install_plane_sections`], so an extracted plane crate reaches the NEUTRAL ABI rather than back

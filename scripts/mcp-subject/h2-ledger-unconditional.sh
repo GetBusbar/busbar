@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright (C) 2026 Busbar Inc and contributors
 #
-# Gating scenario `mcp.rig|h2-ledger-unconditional` -- H2 (ARCHITECTURE.md #2.2 step 6, METER)
+# Gating scenario `mcp.rig|h2-ledger-unconditional` -- H2 (BUSBAR-1.6.0.md THE DESIGN, §1 step 6, METER)
 # for the MCP plane, and the ONE claim at that step that has nothing to do with money:
 #
 #     A SERVED CALL POSTS ITS METERING ROW. THE RATE CARD HAS NOTHING TO DO WITH IT.

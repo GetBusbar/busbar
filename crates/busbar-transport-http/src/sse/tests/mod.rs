@@ -4,7 +4,7 @@
 
 use super::*;
 // The battery drives the `Transport` surface, which now lives in the kind's own `transport.rs`
-// (`PLUGIN-TREE.md` §3) rather than in `lib.rs`; `use super::*` no longer carries its imports.
+// (`BUSBAR-1.6.0.md` THE DESIGN, §2) rather than in `lib.rs`; `use super::*` no longer carries its imports.
 use crate::ClientSettings;
 use busbar_contract::transport::wire::{FrameMeta, TransportError};
 use busbar_contract::{
@@ -401,7 +401,7 @@ async fn an_upstream_frame_past_the_cursor_budget_ends_the_stream() {
 ///
 /// A rate-limited provider answers a JSON body with no blank line anywhere in it: nothing to carve
 /// a frame at, nothing that parses as an event. The re-segmenter therefore had a status leg in hand
-/// (`ClientError`, off `http`'s HEAD frame) and ended the stream without ever attaching it to
+/// (`CallerFault`, off `http`'s HEAD frame) and ended the stream without ever attaching it to
 /// anything, so a consumer polling this stream saw `None` on the first poll — indistinguishable
 /// from a provider that answered 200 with an empty event stream. The upstream's own answer has to
 /// survive the composition: 1.5.5 surfaces the 429 to the client, and it cannot if the transport
@@ -450,7 +450,7 @@ async fn an_upstream_error_body_reaches_the_plane_with_its_status_leg() {
         .expect("the error body is carried as a frame, not thrown away");
     assert_eq!(
         only.meta.status,
-        Some(busbar_contract::transport::wire::WireStatusClass::ClientError),
+        Some(busbar_contract::transport::wire::WireStatusClass::CallerFault),
         "the status leg http read off the 429 is attached to the frame that carries the body"
     );
     assert_eq!(
@@ -835,7 +835,7 @@ async fn no_frame_is_emitted_after_the_terminal_framing_error() {
 /// stream there says the answer arrived and was simply short, which is the one thing it was not —
 /// and the fee was already decided on the 2xx head, so "it ended fine" is a billed lie. 1.5.5
 /// surfaced exactly this to the caller as an error rather than delivering the partial
-/// (`docs/design/inventory/1.5.5-proxy-hooks.md:406-407`: the mid-stream row ends the body in an
+/// (`qa/evidence/inventory/1.5.5-proxy-hooks.md:406-407`: the mid-stream row ends the body in an
 /// error frame, the pre-first-byte/mid-body row terminates the body stream with an `io::Error`).
 /// The events that DID complete are still events, and go out ahead of it.
 #[tokio::test]

@@ -1232,6 +1232,7 @@ static TOKEN_FAMILY_PLANE: crate::plane::registry::PlaneDecl = crate::plane::reg
         fee_units: &[],
         metric_families: &[],
         record_kinds: &[],
+        required_config_sections: &[],
         served_op_classes: &[],
     },
     wire_format_names: || &[],

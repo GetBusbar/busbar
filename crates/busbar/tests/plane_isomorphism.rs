@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE 4-PLANE BEHAVIOURAL ISOMORPHISM GATE (Assertion I2 of
-//! docs/design/playbook/gate-isomorphism.md).
+//! docs/design/BUSBAR-1.6.0.md THE DESIGN, §1).
 //!
 //! Owner's ruling, recorded and slipped repeatedly, which is why this is a gate and not a paragraph:
 //!
@@ -26,7 +26,7 @@
 //! `{llm, mcp, a2a}` (each a `&'static PlaneDecl` referenced directly here — the same consts
 //! `crates/busbar/src/main.rs` installs; this is also the test-support plane registry's content). The
 //! VOICE plane is off-default, feature-gated, and NOT linked into the binary or this test target (see
-//! `docs/design/playbook/gate-no-deferral.md`), so its skeleton asymmetries are governed by the
+//! `docs/design/BUSBAR-1.6.0.md` #15), so its skeleton asymmetries are governed by the
 //! no-deferral gate + the ledger's voice pin, NOT by this reflection. When voice is wired into the
 //! binary at its DoD, adding its decl to [`installed_decls`] arms this reflection over it too.
 //!

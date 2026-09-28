@@ -12,7 +12,8 @@
 //!
 //! A fingerprint taken before verification is a fingerprint of whatever arrived, and recording it
 //! would put "this is what the agent offers" into the store about a document nobody authenticated.
-//! [`super::pin::pin_a_signed_card`] enforces the ordering and this module never reaches around it.
+//! [`super::pin::pin_a_signed_card`] enforces the ordering, reached ONLY through the inbound-JWS seam
+//! ([`super::inbound_jws`]), and this module never reaches around it.
 //!
 //! ## A failed verification is a FAILED CONTACT, not an absence of one
 //!
@@ -185,6 +186,23 @@ pub(crate) fn verify_document(
     document: &Value,
     handshake: Handshake<'_>,
 ) -> Result<VerifiedCard, VerifyRefusal> {
+    verify_document_through(
+        super::inbound_jws::inbound_card_jws(),
+        pin_cfg,
+        document,
+        handshake,
+    )
+}
+
+/// [`verify_document`] over an explicit inbound-JWS capability. The production caller passes the
+/// process capability ([`super::inbound_jws::inbound_card_jws`]); the JWS arm reaches the card's
+/// signature ONLY through `jws`, so the seam is the one verifier (TODO 607, HOST-CAPS S3).
+pub(crate) fn verify_document_through(
+    jws: &dyn super::inbound_jws::InboundCardJws,
+    pin_cfg: &AgentPinCfg,
+    document: &Value,
+    handshake: Handshake<'_>,
+) -> Result<VerifiedCard, VerifyRefusal> {
     let observed_key_pin = handshake.peer_key_pin;
     let key = pin_cfg
         .key
@@ -196,10 +214,11 @@ pub(crate) fn verify_document(
         PinMechanism::JwsIssuerKey => {
             let key = key.ok_or(VerifyRefusal::NoIssuerKey)?;
             // VERIFY FIRST, fingerprint only what passed. The ordering lives in `pin_a_signed_card`
-            // and is not re-implemented here, because a second copy of it is a second chance to get
-            // it the wrong way round.
-            let (pin, _verified) =
-                super::pin::pin_a_signed_card(document, key).map_err(VerifyRefusal::Jws)?;
+            // behind the inbound-JWS seam and is not re-implemented here, because a second copy of it
+            // is a second chance to get it the wrong way round.
+            let (pin, _verified) = jws
+                .verify_signed_card(document, key)
+                .map_err(VerifyRefusal::Jws)?;
             pin
         }
         // THE HONEST DEGRADE, implemented. An unsigned card has no JWS root; what it has is the

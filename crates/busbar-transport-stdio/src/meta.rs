@@ -4,7 +4,7 @@
 //! What this transport declares about itself.
 //!
 //! Everything here is an associated constant, because everything here is read once at registration
-//! and sealed. Held as the kind's own `meta.rs` (`PLUGIN-TREE.md` §3) so two siblings of the
+//! and sealed. Held as the kind's own `meta.rs` (`BUSBAR-1.6.0.md` THE DESIGN, §2) so two siblings of the
 //! transport kind are indistinguishable in shape.
 
 use busbar_contract::grammar::SelectorForm;
@@ -17,7 +17,7 @@ use crate::transport::StdioTransport;
 
 impl Plugin for StdioTransport {
     fn key(&self) -> &'static str {
-        <Self as TransportMeta>::KEY
+        crate::linked::KEY
     }
     fn kind(&self) -> Kind {
         Kind::Transport
@@ -27,7 +27,7 @@ impl Plugin for StdioTransport {
     }
 }
 
-impl TransportMeta for StdioTransport {
+impl TransportMeta for crate::StdioCarrier {
     const KEY: &'static str = "stdio";
     const SELECTOR_FORMS: &'static [SelectorForm] = claims::SELECTOR_FORMS;
     const EGRESS_SELECTOR_FORMS: &'static [SelectorForm] = claims::EGRESS_SELECTOR_FORMS;

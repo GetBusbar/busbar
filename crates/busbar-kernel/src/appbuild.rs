@@ -967,10 +967,11 @@ pub fn build_app_from_config(
     // on boot AND reload (this whole function is `build_app_from_config`, called on both), so a
     // reload can never leave a stale/empty admin chain. FAIL-CLOSED: an unresolvable admin module
     // aborts the build rather than silently disabling the admin plane.
-    let admin_modules = Arc::new(
+    // The operator credential's module is opened once its token has resolved (below, beside the
+    // governance credentials it has always been resolved with).
+    let mut admin_modules =
         crate::auth::AdminAuthChain::build(&auth_cfg, &plugin_registry, &secret_resolver)
-            .map_err(|e| format!("admin auth chain construction failed: {e}"))?,
-    );
+            .map_err(|e| format!("admin auth chain construction failed: {e}"))?;
     // HOSTED-LOGIN methods (1.5.2): resolve every `auth.methods:` entry as a login-capable
     // `kind: auth` plugin (ABI v2). Also runs on boot AND reload (this whole fn). FAIL-CLOSED: an
     // unresolvable method — or a `browser_login` method backed by a pre-v2 plugin (capability gate)
@@ -1105,6 +1106,9 @@ pub fn build_app_from_config(
     // itself happens HERE and is FAIL-CLOSED: an `auth.admin_auth` token ref or an `auth.signing_key`
     // that no longer resolves aborts the apply rather than silently leaving the old credential live.
     let mut rotate_gov_credentials: Option<GovCredentialRotation> = None;
+    // The digest of the operator token an apply re-resolves (below), which the rotation hands the
+    // shared governance state only after the caller persists — this build's admin chain judges it.
+    let mut rotated_digest: Option<Option<String>> = None;
     let governance = if let Some(p) = prior {
         // REUSED across applies: the keys + spend/rate state must survive config changes. But the
         // CREDENTIALS on it are config, not state: `GovState` used to freeze the admin-token digest
@@ -1114,7 +1118,7 @@ pub fn build_app_from_config(
         // into the reused instance.
         //
         // SCOPE: a credential is re-resolved exactly when THIS config DECLARES it — an
-        // `admin-tokens` entry in `auth.admin_auth`/`auth.chain` for the admin token, an explicit
+        // operator-credential entry in `auth.admin_auth`/`auth.chain` for the admin token, an explicit
         // `auth.signing_key` for the signing key. A config that declares neither is not asserting
         // "no credential"; it simply does not own that credential (the dev signing key is
         // generate-and-persist at BOOT, and re-running that on every reload would churn key
@@ -1123,16 +1127,16 @@ pub fn build_app_from_config(
         // the one that silently did nothing, now works.
         if let Some(gs) = p.governance.clone() {
             let auth = cfg.auth.as_ref();
-            let declares_admin_tokens = auth.is_some_and(|a| {
+            let declares_operator = auth.is_some_and(|a| {
                 a.admin_auth
                     .iter()
                     .chain(a.chain.iter())
-                    .any(|e| e.module == crate::config::ADMIN_TOKENS_MODULE)
+                    .any(|e| e.module == crate::config::operator_provider())
             });
             // FAIL-CLOSED: a declared ref that no longer resolves ABORTS the apply. The alternative
             // — carry on serving with the old credential — is exactly the defect being fixed.
             let admin_token: Option<Option<busbar_contract::redacted::Redacted<String>>> =
-                if declares_admin_tokens {
+                if declares_operator {
                     // Declared with no token ref resolves to `None`: the admin API is credential-less
                     // BY CONFIGURATION, so fail closed and disable it rather than keep the old secret.
                     Some(
@@ -1142,6 +1146,10 @@ pub fn build_app_from_config(
                 } else {
                     None
                 };
+            let hash = |t: &busbar_contract::redacted::Redacted<String>| {
+                busbar_contract::redacted::sha256_hex(t.expose_secret().as_bytes())
+            };
+            rotated_digest = admin_token.as_ref().map(|t| t.as_ref().map(hash));
             let signer = match auth.and_then(|a| a.signing_key.as_ref()) {
                 Some(_) => Some(resolve_signing_key(auth, &secret_resolver)?),
                 None => None,
@@ -1213,7 +1221,7 @@ pub fn build_app_from_config(
                 .open_store(&g.module, &cfg_json)
                 .map_err(|e| format!("store '{}' plugin load failed: {e}", g.module))?,
         );
-        // The operator ADMIN credential: the `admin-tokens` chain entry's `token:` secret ref.
+        // The operator ADMIN credential: the operator-credential entry's `token:` secret ref.
         // FAIL-CLOSED: a configured-but-unresolvable admin token refuses boot (a silently-absent
         // token would lock the admin API while the operator believes it is guarded).
         let admin_token: Option<busbar_contract::redacted::Redacted<String>> =
@@ -1287,6 +1295,12 @@ pub fn build_app_from_config(
             Err(e) => return Err(format!("governance init failed: {e}")),
         }
     };
+    // The operator credential judges the token this build declares, or — when it declares none —
+    // the one the governance state holds (that live credential stands, as it does for the rotation).
+    let digest = rotated_digest.unwrap_or_else(|| governance.as_ref()?.admin_token_hash());
+    admin_modules.operator = crate::auth::open_operator(&plugin_registry, digest.as_deref())
+        .map_err(|e| format!("admin auth chain construction failed: {e}"))?;
+    let admin_modules = Arc::new(admin_modules);
 
     // Resolve the global rewrite hooks (prompt: rw gates in global_hooks) into priority-ordered
     // transports ONCE. Empty unless the operator configured a rewrite hook — zero cost by default.

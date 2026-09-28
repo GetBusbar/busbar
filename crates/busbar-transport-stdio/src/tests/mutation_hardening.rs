@@ -79,7 +79,7 @@ fn static_config_declares_nothing() {
 fn plugin_key_is_stdio() {
     let t = StdioTransport::new();
     assert_eq!(Plugin::key(&t), "stdio");
-    assert_eq!(Plugin::key(&t), <StdioTransport as TransportMeta>::KEY);
+    assert_eq!(Plugin::key(&t), <crate::StdioCarrier as TransportMeta>::KEY);
 }
 
 /// stdio opens its own channel (the process's own stdin/stdout, or a spawned child's pipes) and

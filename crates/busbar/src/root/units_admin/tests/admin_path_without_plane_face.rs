@@ -930,6 +930,7 @@ const A_SERVED_PLANE: busbar_contract::plane::PlaneDeclaration =
         fee_units: &[busbar_contract::plane::PER_REQUEST],
         metric_families: &[],
         record_kinds: &["note"],
+        required_config_sections: &[],
         served_op_classes: &[],
     };
 

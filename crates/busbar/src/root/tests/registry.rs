@@ -807,30 +807,13 @@ fn the_boot_path_seals_the_composition_in_every_build() {
 /// The in-tree transport `cdylib`s, found by KIND: of the libraries beside this test binary, every
 /// one the loader admits as `kind: transport`, one per key, loaded once for the process (the root
 /// names no wire). Under CI a missing artifact is a hard failure, never a silent skip.
-fn dropped_wires() -> &'static [busbar_plugin_loader::DynTransport] {
-    static WIRES: std::sync::OnceLock<Vec<busbar_plugin_loader::DynTransport>> =
-        std::sync::OnceLock::new();
-    WIRES.get_or_init(|| {
-        let exe = std::env::current_exe().expect("the test binary");
-        let dir = exe.parent().expect("its directory");
-        let mut wires: Vec<busbar_plugin_loader::DynTransport> = Vec::new();
-        for file in busbar_plugin_loader::list_plugin_files(dir) {
-            if !file.contains("transport") {
-                continue;
-            }
-            let Ok(wire) = busbar_plugin_loader::load_transport(&dir.join(file)) else {
-                continue;
-            };
-            if !wires.iter().any(|w| w.key() == wire.key()) {
-                wires.push(wire);
-            }
-        }
-        assert!(
-            !wires.is_empty() || std::env::var_os("CI").is_none(),
-            "no in-tree transport cdylib is built beside the test binary under CI"
-        );
-        wires
-    })
+fn dropped_wires() -> &'static [DynTransport] {
+    let wires = crate::root::test_plugins::transport_wires();
+    assert!(
+        !wires.is_empty() || std::env::var_os("CI").is_none(),
+        "no in-tree transport cdylib is built beside the test binary under CI"
+    );
+    wires
 }
 
 /// A table of linked rows held for the process, as `Linked::transports` holds its own.

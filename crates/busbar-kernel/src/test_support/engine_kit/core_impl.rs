@@ -45,6 +45,10 @@ impl EngineTestKit for CoreEngineKit {
         crate::metrics::init();
     }
 
+    fn install_operator_auth_row(&self, entry: busbar_kernel_identity::operator::AuthBoundary) {
+        crate::test_support::install_operator_auth_row(entry);
+    }
+
     fn new_app(&self) -> Box<dyn TestAppKit> {
         Box::new(TestApp::new())
     }

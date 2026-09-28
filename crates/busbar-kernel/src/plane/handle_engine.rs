@@ -139,7 +139,7 @@ pub struct SweepBounds {
     /// working set goes past this number and stays there. That is the designed answer (dropping a
     /// live handle is forgetting work that is still running), but it means a burst of concurrent
     /// active handles is bounded by ADMISSION or by nothing — see
-    /// `docs/design/handle-engine-retention-sweep.md`.
+    /// `docs/design/BUSBAR-1.6.0.md` THE DESIGN, §1.
     pub max_retained: usize,
 }
 
@@ -816,7 +816,7 @@ impl DurableHandleEngine {
     /// stops at the first entry that is not due, so a sweep costs O(handles it acts on) rather than
     /// three O(n) passes. What a redesign may not change is pinned by
     /// `the_sweep_keeps_every_active_handle_and_evicts_terminal_ones_oldest_first`, and the shape is
-    /// written down in `docs/design/handle-engine-retention-sweep.md`.
+    /// written down in `docs/design/BUSBAR-1.6.0.md` THE DESIGN, §1.
     fn sweep<A, R>(&self, now: u64, bounds: SweepBounds, abandon: &A, report_fail: &R)
     where
         A: Fn(&str, &(dyn Any + Send + Sync), &ChainPosition, u64) -> Option<Mutation>,

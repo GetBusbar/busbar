@@ -769,18 +769,15 @@ mod catalog_scan_test_hooks {
     }
 }
 
-/// The auth modules COMPILED INTO this binary (feature-gated at compile time — real `#[cfg]` on each
-/// array element, so this reflects the ACTUAL binary). The single source for both `info`'s build
-/// proof and the `plugins?type=auth` catalog. `keys` (the built-in signed-key verifier) is
-/// engine-handled and always present; `admin-tokens` (the operator admin credential) is the
-/// removable default-on feature.
+/// The auth modules COMPILED INTO this binary, so this reflects the ACTUAL binary. The single source
+/// for both `info`'s build proof and the `plugins?type=auth` catalog. `keys` (the built-in
+/// signed-key verifier) is engine-handled and always present; every other entry is an auth row the
+/// build LINKS onto the auth axis (the operator credential's, in the default build — its packaging
+/// feature is the composition root's).
 fn auth_modules_compiled_in() -> Vec<&'static str> {
-    [
-        busbar_kernel::config::KEYS_MODULE,
-        #[cfg(feature = "auth-admin-tokens")]
-        busbar_kernel::config::ADMIN_TOKENS_MODULE,
-    ]
-    .to_vec()
+    let mut modules = vec![busbar_kernel::config::KEYS_MODULE];
+    modules.extend(busbar_kernel::preflight::linked_auth_names());
+    modules
 }
 
 /// The removable hook plugins COMPILED INTO this binary (feature-gated). Excludes the always-present,
