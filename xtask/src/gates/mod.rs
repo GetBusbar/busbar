@@ -29,6 +29,7 @@ pub mod conformance_sync;
 pub mod construction;
 pub mod contract_stateless;
 pub mod denylist_gate;
+pub mod dep_wall;
 pub mod design_bindings;
 pub mod design_docs_allowlist;
 pub mod door_only;
@@ -2936,6 +2937,13 @@ pub static REGISTRY: &[Registration] = &[
         tier: Tier::Fast,
         build: || Box::new(plane_transport_neutrality::PlaneTransportNeutralityGate),
         summary: "no voice-transport or media noun reaches the neutral crates",
+    },
+    Registration {
+        name: "dep-wall",
+        batch: 1,
+        tier: Tier::Fast,
+        build: || Box::new(dep_wall::DepWallGate),
+        summary: "no plugin closure carries a socket or TLS stack of its own (drain-only ledger)",
     },
     Registration {
         name: "plane-abi-neutrality",

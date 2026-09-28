@@ -834,6 +834,14 @@ jobs:
         run: cargo xtask gate plane-abi-neutrality --selftest
       - name: Plane-ABI neutrality witness (BLOCKING — no protocol/role noun in the plane ABI hot lane)
         run: cargo xtask gate plane-abi-neutrality
+      # DEP-WALL: no plugin closure carries a socket or TLS stack of its own (DECISIONS #40(a); every
+      # plugin reaches the network through a need, and the connector does the rest). Armed at today's
+      # measurement as a DRAIN-ONLY ledger (qa/dep-wall.ledger): a new offender is RED, and a drained
+      # pin that still stands is RED. Self-test first.
+      - name: Dep-wall self-test (a new offender and a stale pin are both RED)
+        run: cargo xtask gate dep-wall --selftest
+      - name: Dep-wall ledger (BLOCKING — no plugin reaches past the wall anew)
+        run: cargo xtask gate dep-wall
       # KIND-ABI-LANE gate: DECISIONS #30 binds each plugin kind to exactly ONE ABI lane by HEAT — a
       # plugin uses the tier matched to its heat, NOT both. HOT/POD lane = plane, transport (the only
       # kinds in the per-token streaming inner loop, driven over the `#[repr(C)]` `PlaneDecl` vtable);
