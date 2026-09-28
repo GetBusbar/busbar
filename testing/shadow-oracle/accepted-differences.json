@@ -1732,6 +1732,45 @@
         ]
       },
       "rationale": "Both cells POST /api/v1/admin/config/apply with a config that carries NO rate_card, after the oracle's warm-up in which key oracle-broke (group broke) was charged 250 cents under the boot card. 1.5.5 repriced that recorded spend at the applied (card-less) config: effects.metrics moved busbar_key_spend_cents{broke key} -250, busbar_bucket_spend_cents{group:broke@day} -250 and busbar_bucket_budget_remaining_cents{group:broke@day} +1. Spec #79 (owner-locked): a posting is priced at the card in force when it arrived, and publishing a new card never reprices the window before its effective_from — 1.6.0 leaves all three series unchanged. MEASURED (measured 2026-09-24 by P3A-register2 against a fresh local ./bin/oracle record of ee17adf62 with the landed operator-upgrade-step scripts b126877e1, engine pin 6067df5, default all-planes build): on both cells those three paths are the ONLY effects.metrics differences. RE-MEASURED 2026-09-24 by P3A-diverge3 (HEAD 35bcb2984, engine pin 3519882): norm.rules IS a #79 consequence and is forgiven here — the engine's `audit.hash` rule is the branch that rewrites `vk_[0-9a-f]{32}` to `vk_<KEY>`, and across the whole golden cell the ONLY such string is the `busbar_key_spend_cents{key=\"vk_...\"}` label inside the #79 metrics series; with those series unmoved the label never reaches the normalizer, so the rule cannot fire (the differ reports only_golden: [audit.hash]; body, audit rows, headers and readback identical). The earlier effects.readback residue does not reproduce: a contiguous HEAD record reads `\"settings\": {}` identical to the golden (the `limits` readback was overlay carry-over from earlier cells' PUTs; the 1.5.5 binary reads the same when those cells run first). PREMISE (evaluated, bounded by what the runner's premise grammar can see — status/body, never effects): each apply was ACCEPTED (200, applied true, config_version 1), so the entry can never cover a build where the metric moved because the apply was refused. kind=breaking because the series are money figures an operator reads."
+    },
+    {
+      "id": "AUTH-ROW the operator credential is chosen by the provider's module, not its name",
+      "kind": "breaking",
+      "changelog": "**An admin-auth provider is judged by its module, not by its name.** A provider defined under another name with `module: admin-tokens` (e.g. `ops: { module: admin-tokens, token: ... }`) admitted nobody in 1.5.5 — every admin request was a 401 — and now authenticates the operator token; a provider named `admin-tokens` that is backed by another module was never asked in 1.5.5 and is now consulted, under its own `max_admin_scope`. A config that names the operator credential as `admin-tokens: { module: admin-tokens }`, or leaves `admin_auth` at its default, is unchanged.",
+      "by": "owner (Matthew Jackson), approval of AUTH-ROW (2) 2026-09-27",
+      "signoff": {
+        "who": "owner (Matthew Jackson)",
+        "when": "2026-09-27",
+        "ruling": "ARCHITECT relay 2026-09-27 (AUTH-ROW): the owner approved the misconfiguration behaviour change (the admin-token check is chosen by module, not by provider name) as an accepted difference"
+      },
+      "expires": {
+        "baseline": "1.5.5",
+        "by": "2026-12-31"
+      },
+      "cells": "^admin\\.auth\\|operator-by-module\\|(renamed-provider|renamed-module)$",
+      "expected_cells": 0,
+      "classes": [
+        "status",
+        "body"
+      ],
+      "premise": {
+        "all": [
+          {
+            "cell": "admin.ops|GetInfo|ok",
+            "status": 200
+          },
+          {
+            "cell": "admin.ops|GetInfo|ok",
+            "pointer": "/build/auth_modules/1",
+            "equals": "admin-tokens"
+          },
+          {
+            "cell": "admin.ops|GetInfo|unauth",
+            "status": 401
+          }
+        ]
+      },
+      "rationale": "1.5.5 dispatched the operator-credential arm on the admin_auth PROVIDER NAME while every other rule keyed the MODULE, so two misconfigurations served nothing: `ops: {module: admin-tokens}` was skipped at build and logged ADMIN_MODULE_UNRESOLVED then 401 on every admin request; `admin-tokens: {module: <other>}` opened <other> but always ran the operator arm (no token digest, so Pass). 1.6.0 resolves the operator credential through the auth axis by module (AUTH-ROW), so the first authenticates the operator token and the second consults its own module under its own max_admin_scope. No corpus cell exercises either configuration (expected_cells 0, the ids reserved for the cells that will); the premise pins that the default operator credential is linked and still answers and refuses as 1.5.5 did."
     }
   ]
 }
