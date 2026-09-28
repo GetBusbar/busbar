@@ -2,8 +2,8 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE MECHANISM'S LAYOUT, PINNED AT COMPILE TIME: the size, alignment and every field offset of
-//! every `#[repr(C)]` type under `abi/mechanism/` and every kind table, as `const` assertions, so a
-//! drift fails the build of every target rather than one test run. The numbers are the 64-bit
+//! every `#[repr(C)]` type under `abi/mechanism/`, every kind table and every kind's own shapes,
+//! as `const` assertions, so a drift fails the build of every target rather than one test run. The numbers are the 64-bit
 //! layout (every target busbar ships); a 32-bit build fails here, by design. `tests/golden/abi-layout.golden` records the same numbers.
 
 use std::mem::{align_of, offset_of, size_of};
@@ -201,7 +201,201 @@ pin!(
 pin!(ReleaseIn, 96, 8, head = 0, lease = 88);
 pin!(crate::abi::store::Ops, 80, 8, head = 0);
 pin!(crate::abi::secret::Ops, 80, 8, head = 0);
-pin!(crate::abi::auth::Ops, 80, 8, head = 0);
+// THE AUTH KIND (v3, design B.3): its table, its Statement tail and every op's `in`/`out`.
+mod auth {
+    use super::{align_of, offset_of, size_of};
+    use crate::abi::auth::*;
+
+    pin!(
+        Ops,
+        128,
+        8,
+        head = 0,
+        verify = 80,
+        begin_login = 88,
+        complete_login = 96,
+        open_outbound = 104,
+        outbound_ready = 112,
+        fields = 120
+    );
+    pin!(StyleDecl, 24, 8, name = 0, flags = 16, _reserved = 20);
+    pin!(
+        AuthTail,
+        72,
+        8,
+        head = 0,
+        caps = 8,
+        facts = 12,
+        login_kind = 16,
+        _reserved = 20,
+        styles = 24,
+        styles_len = 32,
+        aliases = 40,
+        aliases_len = 48,
+        carriers = 56,
+        carriers_len = 64
+    );
+    pin!(Span, 8, 4, off = 0, len = 4);
+    pin!(NamedValue, 40, 8, name = 0, value = 16);
+    pin!(
+        RequestFacts,
+        112,
+        8,
+        method = 0,
+        authority = 16,
+        canonical_path = 32,
+        query = 48,
+        timestamp = 64,
+        body_hash = 72,
+        body_hash_present = 104,
+        _reserved = 108
+    );
+    pin!(
+        IdentityBuf,
+        32,
+        8,
+        buf = 0,
+        buf_cap = 8,
+        groups = 16,
+        groups_cap = 24,
+        _reserved = 28
+    );
+    pin!(
+        IdentityOut,
+        80,
+        8,
+        subject = 0,
+        key_id = 8,
+        key_name = 16,
+        user = 24,
+        provider = 32,
+        name = 40,
+        claims = 48,
+        claims_fmt = 56,
+        flags = 60,
+        ttl_secs = 64,
+        groups_len = 72,
+        _reserved = 76
+    );
+    pin!(
+        VerifyIn,
+        256,
+        8,
+        head = 0,
+        credential = 72,
+        carrier = 96,
+        carrier_len = 104,
+        request = 112,
+        out_buf = 224
+    );
+    pin!(
+        IdentifyOut,
+        192,
+        8,
+        head = 0,
+        verdict = 96,
+        needed_groups = 100,
+        needed_bytes = 104,
+        identity = 112
+    );
+    pin!(
+        BeginLoginIn,
+        152,
+        8,
+        head = 0,
+        redirect_uri = 72,
+        state = 88,
+        nonce = 104,
+        code_challenge = 120,
+        scopes = 136,
+        scopes_len = 144
+    );
+    pin!(
+        LoginField,
+        40,
+        8,
+        name = 0,
+        label = 16,
+        kind = 32,
+        required = 36
+    );
+    pin!(
+        BeginLoginOut,
+        136,
+        8,
+        head = 0,
+        shape = 96,
+        _reserved = 100,
+        authorize_url = 104,
+        form = 120,
+        form_len = 128
+    );
+    pin!(
+        CompleteLoginIn,
+        184,
+        8,
+        head = 0,
+        code = 72,
+        state = 88,
+        redirect_uri = 104,
+        code_verifier = 120,
+        submitted = 136,
+        submitted_len = 144,
+        out_buf = 152
+    );
+    pin!(
+        OpenOutboundIn,
+        136,
+        8,
+        head = 0,
+        style = 72,
+        credential = 88,
+        settings = 112
+    );
+    pin!(OpenOutboundOut, 104, 8, head = 0, handle = 96);
+    pin!(OutboundReadyIn, 80, 8, head = 0, handle = 72);
+    pin!(
+        OutboundReadyOut,
+        104,
+        8,
+        head = 0,
+        ready = 96,
+        _reserved = 100
+    );
+    pin!(
+        FieldSpan,
+        24,
+        4,
+        name = 0,
+        value = 8,
+        flags = 16,
+        _reserved = 20
+    );
+    pin!(
+        FieldsIn,
+        256,
+        8,
+        head = 0,
+        handle = 72,
+        mode = 80,
+        _reserved = 84,
+        request = 88,
+        caller_credential = 200,
+        field_buf = 224,
+        field_buf_cap = 232,
+        fields = 240,
+        fields_cap = 248,
+        _reserved2 = 252
+    );
+    pin!(
+        FieldsOut,
+        104,
+        8,
+        head = 0,
+        fields_len = 96,
+        _reserved = 100
+    );
+}
 pin!(crate::abi::hook::Ops, 80, 8, head = 0);
 pin!(crate::abi::export::Ops, 80, 8, head = 0);
 pin!(crate::abi::plane::Ops, 80, 8, head = 0);

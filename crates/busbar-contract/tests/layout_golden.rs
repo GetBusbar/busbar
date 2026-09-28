@@ -47,6 +47,17 @@ use busbar_contract::abi::{
     auth::Ops as AuthOps, export::Ops as ExportOps, hook::Ops as HookOps, plane::Ops as PlaneOps,
     secret::Ops as SecretOps, store::Ops as StoreOps, transport::Ops as TransportOps,
 };
+// THE AUTH KIND (v3, design B.3): aliased, as the mechanism's are.
+use busbar_contract::abi::auth::{
+    AuthTail, BeginLoginIn as AuthBeginLoginIn, BeginLoginOut as AuthBeginLoginOut,
+    CompleteLoginIn as AuthCompleteLoginIn, FieldSpan as AuthFieldSpan, FieldsIn as AuthFieldsIn,
+    FieldsOut as AuthFieldsOut, IdentifyOut as AuthIdentifyOut, IdentityBuf as AuthIdentityBuf,
+    IdentityOut as AuthIdentityOut, LoginField as AuthLoginField, NamedValue as AuthNamedValue,
+    OpenOutboundIn as AuthOpenOutboundIn, OpenOutboundOut as AuthOpenOutboundOut,
+    OutboundReadyIn as AuthOutboundReadyIn, OutboundReadyOut as AuthOutboundReadyOut,
+    RequestFacts as AuthRequestFacts, Span as AuthSpan, StyleDecl as AuthStyleDecl,
+    VerifyIn as AuthVerifyIn,
+};
 use std::fmt::Write as _;
 
 /// Append `Struct.field=offset` lines for the given fields, then a `Struct.__size=N` line.
@@ -978,7 +989,132 @@ fn compute_layout() -> String {
     record!(s, MechReleaseIn, [head, lease]);
     record!(s, StoreOps, [head]);
     record!(s, SecretOps, [head]);
-    record!(s, AuthOps, [head]);
+    record!(
+        s,
+        AuthOps,
+        [
+            head,
+            verify,
+            begin_login,
+            complete_login,
+            open_outbound,
+            outbound_ready,
+            fields
+        ]
+    );
+    record!(s, AuthStyleDecl, [name, flags, _reserved]);
+    record!(
+        s,
+        AuthTail,
+        [
+            head,
+            caps,
+            facts,
+            login_kind,
+            _reserved,
+            styles,
+            styles_len,
+            aliases,
+            aliases_len,
+            carriers,
+            carriers_len
+        ]
+    );
+    record!(s, AuthSpan, [off, len]);
+    record!(s, AuthNamedValue, [name, value]);
+    record!(
+        s,
+        AuthRequestFacts,
+        [
+            method,
+            authority,
+            canonical_path,
+            query,
+            timestamp,
+            body_hash,
+            body_hash_present,
+            _reserved
+        ]
+    );
+    record!(
+        s,
+        AuthIdentityBuf,
+        [buf, buf_cap, groups, groups_cap, _reserved]
+    );
+    record!(
+        s,
+        AuthIdentityOut,
+        [
+            subject, key_id, key_name, user, provider, name, claims, claims_fmt, flags, ttl_secs,
+            groups_len, _reserved
+        ]
+    );
+    record!(
+        s,
+        AuthVerifyIn,
+        [head, credential, carrier, carrier_len, request, out_buf]
+    );
+    record!(
+        s,
+        AuthIdentifyOut,
+        [head, verdict, needed_groups, needed_bytes, identity]
+    );
+    record!(
+        s,
+        AuthBeginLoginIn,
+        [
+            head,
+            redirect_uri,
+            state,
+            nonce,
+            code_challenge,
+            scopes,
+            scopes_len
+        ]
+    );
+    record!(s, AuthLoginField, [name, label, kind, required]);
+    record!(
+        s,
+        AuthBeginLoginOut,
+        [head, shape, _reserved, authorize_url, form, form_len]
+    );
+    record!(
+        s,
+        AuthCompleteLoginIn,
+        [
+            head,
+            code,
+            state,
+            redirect_uri,
+            code_verifier,
+            submitted,
+            submitted_len,
+            out_buf
+        ]
+    );
+    record!(s, AuthOpenOutboundIn, [head, style, credential, settings]);
+    record!(s, AuthOpenOutboundOut, [head, handle]);
+    record!(s, AuthOutboundReadyIn, [head, handle]);
+    record!(s, AuthOutboundReadyOut, [head, ready, _reserved]);
+    record!(s, AuthFieldSpan, [name, value, flags, _reserved]);
+    record!(
+        s,
+        AuthFieldsIn,
+        [
+            head,
+            handle,
+            mode,
+            _reserved,
+            request,
+            caller_credential,
+            field_buf,
+            field_buf_cap,
+            fields,
+            fields_cap,
+            _reserved2
+        ]
+    );
+    record!(s, AuthFieldsOut, [head, fields_len, _reserved]);
     record!(s, HookOps, [head]);
     record!(s, ExportOps, [head]);
     record!(s, PlaneOps, [head]);
@@ -1060,4 +1196,16 @@ fn a_perturbed_golden_line_fails_the_comparator() {
     let perturbed = actual.replacen(line, "MechDoor.kind_abi=24", 1);
     let err = compare(&perturbed, &actual).expect_err("a perturbed line must fail");
     assert!(err.contains("MechDoor.kind_abi=24"), "{err}");
+}
+
+/// RED ARM, THE AUTH KIND: one perturbed auth golden line (`fields`' slot in the auth table) fails
+/// the comparator.
+#[test]
+fn a_perturbed_auth_golden_line_fails_the_comparator() {
+    let actual = compute_layout();
+    let line = "AuthOps.fields=120";
+    assert!(actual.lines().any(|l| l == line), "the golden holds {line}");
+    let perturbed = actual.replacen(line, "AuthOps.fields=112", 1);
+    let err = compare(&perturbed, &actual).expect_err("a perturbed auth line must fail");
+    assert!(err.contains("AuthOps.fields=112"), "{err}");
 }
