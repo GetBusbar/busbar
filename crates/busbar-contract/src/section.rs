@@ -43,7 +43,8 @@ pub struct Section<T> {
 ///
 /// `section` / `noun` supply the WORDS for the operator sentences (a plane passes its own
 /// declaration's section key and subject noun); `validate` is the plane's VALUE RULES, run on each
-/// entry as it is parsed, so the file and the admin write path refuse the same definitions. A plane
+/// entry as it is parsed, so the config document and the admin write path refuse the same
+/// definitions. A plane
 /// with no value rules passes `|_, _| Ok(())`.
 ///
 /// The REFUSAL ORDER is the load-bearing part. A reserved key holding a MAPPING is somebody trying to

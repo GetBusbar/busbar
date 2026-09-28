@@ -374,7 +374,7 @@ fn a_present_but_blank_pin_key_declares_nothing() {
         key: Some("   ".to_string()),
     };
     assert!(
-        crate::mcp::config::validate_server_at_boot(&name, &def).is_err(),
+        super::super::config::validate_server_at_boot(&name, &def).is_err(),
         "boot must still refuse a rooted mechanism with no usable material"
     );
     assert_eq!(

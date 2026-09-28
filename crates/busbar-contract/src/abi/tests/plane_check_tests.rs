@@ -804,7 +804,7 @@ const MECHANISMS: [PinMechanism; 2] = [
     },
     PinMechanism {
         token: AbiStr {
-            ptr: b"none".as_ptr(),
+            ptr: b"bare".as_ptr(),
             len: 4,
         },
         flags: 0,

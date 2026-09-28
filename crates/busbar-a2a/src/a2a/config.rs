@@ -15,7 +15,7 @@
 //! `hooks` and `upstream_credentials` are reserved at the section level here for the same reason
 //! they are on `pools:` — so the word space is IDENTICAL across planes. An operator who learns the
 //! rule once should not discover that a name legal on one plane is a section knob on another. There
-//! is ONE declaration of the pair ([`busbar_contract::section::RESERVED_SECTION_KEYS`]) and one reader
+//! is ONE declaration of the pair ([`RESERVED_SECTION_KEYS`]) and one reader
 //! of it, so that cannot drift. The reserved set is closed; a new A2A knob lands under a per-entry
 //! key, never as a new section word.
 //!
@@ -59,6 +59,10 @@
 // genuinely wants the declared value — a config-vs-observed diff — exists to want it.
 #![cfg_attr(not(test), allow(dead_code))]
 
+use busbar_contract::{
+    plane::{PinMechanismDecl, TrustKeyDecl, TrustRole},
+    section::{split_section, RESERVED_SECTION_KEYS},
+};
 use serde::{Deserialize, Serialize};
 
 /// The default MAX VERIFICATION STALENESS for a registration that names none: five seconds.
@@ -89,41 +93,41 @@ pub(crate) const DEFAULT_RECOVERY_BACKOFF_MS: u64 = 15 * 60 * 1_000;
 /// THE KERNEL-OWNED TRUST KEYS of one `agents:` entry, declared for the kernel to parse and judge:
 /// the `pin:` object (with its optional `fingerprint`) over this plane's four mechanisms, and the two
 /// cadence durations with their defaults. Declaration order is judgement order.
-pub(crate) const TRUST_KEYS: &[busbar_contract::plane::TrustKeyDecl] = &[
-    busbar_contract::plane::TrustKeyDecl {
+pub(crate) const TRUST_KEYS: &[TrustKeyDecl] = &[
+    TrustKeyDecl {
         key: "pin",
-        role: busbar_contract::plane::TrustRole::Pin,
+        role: TrustRole::Pin,
         fingerprint: true,
         default: None,
         mechanisms: &[
-            busbar_contract::plane::PinMechanismDecl {
+            PinMechanismDecl {
                 token: "jws_issuer_key",
                 root: true,
             },
-            busbar_contract::plane::PinMechanismDecl {
+            PinMechanismDecl {
                 token: "cert_spki",
                 root: true,
             },
-            busbar_contract::plane::PinMechanismDecl {
+            PinMechanismDecl {
                 token: "mtls",
                 root: true,
             },
-            busbar_contract::plane::PinMechanismDecl {
+            PinMechanismDecl {
                 token: "unpinned",
                 root: false,
             },
         ],
     },
-    busbar_contract::plane::TrustKeyDecl {
+    TrustKeyDecl {
         key: "reverify_ttl",
-        role: busbar_contract::plane::TrustRole::ReverifyTtl,
+        role: TrustRole::ReverifyTtl,
         fingerprint: false,
         default: Some(DEFAULT_REVERIFY_TTL),
         mechanisms: &[],
     },
-    busbar_contract::plane::TrustKeyDecl {
+    TrustKeyDecl {
         key: "recovery_backoff",
-        role: busbar_contract::plane::TrustRole::RecoveryBackoff,
+        role: TrustRole::RecoveryBackoff,
         fingerprint: false,
         // The same fifteen minutes as `DEFAULT_RECOVERY_BACKOFF_MS`.
         default: Some("15m"),
@@ -321,7 +325,7 @@ pub struct AgentDefCfg {
     pub hooks: Vec<String>,
 }
 
-/// The top-level `agents:` map, carrying the two [`busbar_contract::section::RESERVED_SECTION_KEYS`]
+/// The top-level `agents:` map, carrying the two [`RESERVED_SECTION_KEYS`]
 /// alongside the agents.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct AgentsCfg {
@@ -345,7 +349,7 @@ impl<'de> Deserialize<'de> for AgentsCfg {
         // stays here is what is genuinely this plane's: `validate_agent`, run through the same
         // function the admin write path calls so the API rejects exactly what the file rejects, and
         // the passthrough refusal below.
-        let section = busbar_contract::section::split_section::<D, AgentDefCfg>(
+        let section = split_section::<D, AgentDefCfg>(
             deserializer,
             super::PLANE_DECLARATION.config_section,
             super::PLANE_DECLARATION.subject_noun,
@@ -516,7 +520,7 @@ pub fn validate_agent(name: &str, def: &AgentDefCfg) -> Result<(), String> {
 
     // THE PIN and the CADENCE (`reverify_ttl:`, `recovery_backoff:`) are not judged here: they are
     // the kernel's trust keys ([`TRUST_KEYS`]), judged by the kernel before the section reaches
-    // this plane.
+    // this validator.
 
     // THE CLIENT IDENTITY, matched against the mechanism and the scheme the same way the pin is
     // matched against its material. `mtls` is defined as "served behind mutual TLS"; a registration
@@ -574,8 +578,8 @@ pub fn validate_agent(name: &str, def: &AgentDefCfg) -> Result<(), String> {
         }
     }
 
-    // A hook reference reaching onto another plane is refused by the kernel, which sees every
-    // plane's section; this plane sees only its own.
+    // A dotted hook reference is refused by the kernel, which sees every section; this validator
+    // sees only its own.
     Ok(())
 }
 

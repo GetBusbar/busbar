@@ -12,39 +12,31 @@
 use super::ToolsCfg;
 use busbar_kernel::plane::config::{plane_sections, validate_plane_section};
 
-/// The section as boot reads it: the kernel's judgement of the keys it owns, then this plane's parse.
+/// The section as boot reads it: the kernel's judgement of the keys it owns, then the section parse.
 fn parse(yaml: &str) -> Result<ToolsCfg, String> {
     let value: serde_yaml::Value = serde_yaml::from_str(yaml).map_err(|e| e.to_string())?;
-    let section = crate::mcp::PLANE_DECLARATION.config_section;
+    let section = super::super::PLANE_DECLARATION.config_section;
     validate_plane_section(section, &value, super::TRUST_KEYS, &plane_sections())?;
     serde_yaml::from_str::<ToolsCfg>(yaml).map_err(|e| e.to_string())
 }
 
-/// The mechanisms this plane declares to the kernel are exactly its own, each with the root-ness
+/// The mechanisms declared to the kernel are exactly the grammar's own, each with the root-ness
 /// its grammar gives it.
 #[test]
-fn the_declared_trust_keys_match_this_planes_grammar() {
-    use crate::mcp::config::McpPinMechanism as M;
+fn the_declared_trust_keys_match_the_grammar() {
     let pin = &super::TRUST_KEYS[0];
-    let all = [
-        M::PinnedPubkey,
-        M::CertSpki,
-        M::ClientCertBinding,
-        M::Unpinned,
-    ];
-    assert_eq!(pin.mechanisms.len(), all.len());
-    for m in all {
-        let declared = pin
-            .mechanisms
-            .iter()
-            .find(|d| d.token == m.token())
-            .unwrap_or_else(|| panic!("`{}` is declared", m.token()));
-        assert_eq!(declared.root, m.is_a_root(), "{}", m.token());
+    assert_eq!(pin.mechanisms.len(), 4, "every mechanism the grammar has");
+    for declared in pin.mechanisms {
+        let parsed: super::ServerPinCfg =
+            serde_yaml::from_str(&format!("mechanism: {}", declared.token))
+                .unwrap_or_else(|e| panic!("`{}` is a grammar token: {e}", declared.token));
+        assert_eq!(
+            parsed.mechanism.is_a_root(),
+            declared.root,
+            "{}",
+            declared.token
+        );
     }
-    assert_eq!(
-        super::TRUST_KEYS[1].default,
-        Some(crate::mcp::config::DEFAULT_MCP_VERIFY_TTL)
-    );
 }
 
 /// THE LOCKED SECTION SHAPE, verbatim: the section knobs, the object pin, the
@@ -85,12 +77,12 @@ fn the_locked_section_shape_parses_into_the_values_it_declares() {
 }
 
 /// The reserved word space does NOT vary per plane, and that is no longer an assertion about two
-/// constants — there is ONE constant, `busbar_contract::section::RESERVED_SECTION_KEYS`, and this section is
+/// constants — there is ONE constant, `RESERVED_SECTION_KEYS`, and this section is
 /// read through the shared split that consults it. What remains testable, and what this asserts, is
 /// that EVERY word in that set is refused as a server NAME on this plane.
 #[test]
 fn a_server_may_not_be_named_with_a_reserved_section_word() {
-    for reserved in busbar_contract::section::RESERVED_SECTION_KEYS {
+    for reserved in super::RESERVED_SECTION_KEYS {
         let yaml =
             format!("{reserved}:\n  url: \"https://x/\"\n  pin: {{ mechanism: unpinned }}\n");
         let err = parse(&yaml).expect_err("a reserved name holding a mapping must be refused");

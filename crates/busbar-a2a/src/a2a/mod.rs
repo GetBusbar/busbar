@@ -99,8 +99,7 @@ pub const PLANE_DECLARATION: busbar_contract::plane::PlaneDeclaration =
         metric_families: &[],
         record_kinds: busbar_plane_a2a::records::RECORD_KINDS,
         required_config_sections: &[],
-        // The pin and the cadence are the kernel's to parse and judge; this plane declares where
-        // they are written.
+        // The pin and the cadence are the kernel's to parse and judge; declared here by key.
         trust_keys: crate::a2a::config::TRUST_KEYS,
         served_op_classes: &[],
     };

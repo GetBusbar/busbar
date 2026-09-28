@@ -16,7 +16,7 @@
 //! so the word space is IDENTICAL across planes. An operator who learns the rule once should not
 //! discover that a name legal on one plane is a section knob on another. It is no longer a claim
 //! about two constants that agree: there is ONE declaration
-//! ([`busbar_contract::section::RESERVED_SECTION_KEYS`]), and this section is read by the shared split
+//! ([`RESERVED_SECTION_KEYS`]), and this section is read by the shared split
 //! that consults it.
 //!
 //! ## `tools_allow` is a MAP, and that is the whole bound-identity rule compressed into one field
@@ -75,6 +75,10 @@
 //! `mcp_tool` grant on the PUBLISHED name, would silently change who can call what. That is why a
 //! collision is a LOUD BOOT REFUSAL and never an automatic rename.
 
+use busbar_contract::{
+    plane::{PinMechanismDecl, TrustKeyDecl, TrustRole},
+    section::{split_section, RESERVED_SECTION_KEYS},
+};
 use serde::{Deserialize, Serialize};
 
 /// The separator between a server id and a tool name in the `{server}_{tool}` namespaced routing
@@ -750,38 +754,38 @@ pub(crate) const DEFAULT_MAX_INPUT_REQUIRED_ROUNDS: u32 = 3;
 /// whatever this says.
 pub(crate) const DEFAULT_MAX_CALLER_ASK_ROUNDS: u32 = 3;
 
-/// THE KERNEL-OWNED TRUST KEYS of one `tools:` entry, declared for the kernel to parse and judge:
-/// the `pin:` object over this plane's four mechanisms (no fingerprint: an MCP server offers none an
-/// operator could approve out of band), and the `verify_ttl:` bound with its default. This plane has
-/// no recovery-backoff key; the kernel reads its absence as zero.
-pub(crate) const TRUST_KEYS: &[busbar_contract::plane::TrustKeyDecl] = &[
-    busbar_contract::plane::TrustKeyDecl {
+/// THE KERNEL-OWNED TRUST KEYS of one registration, declared for the kernel to parse and judge:
+/// the `pin:` object over the four mechanisms above (no fingerprint: a server here offers none an
+/// operator could approve out of band), and the `verify_ttl:` bound with its default. There is no
+/// recovery-backoff key; the kernel reads its absence as zero.
+pub(crate) const TRUST_KEYS: &[TrustKeyDecl] = &[
+    TrustKeyDecl {
         key: "pin",
-        role: busbar_contract::plane::TrustRole::Pin,
+        role: TrustRole::Pin,
         fingerprint: false,
         default: None,
         mechanisms: &[
-            busbar_contract::plane::PinMechanismDecl {
+            PinMechanismDecl {
                 token: "pinned_pubkey",
                 root: true,
             },
-            busbar_contract::plane::PinMechanismDecl {
+            PinMechanismDecl {
                 token: "cert_spki",
                 root: true,
             },
-            busbar_contract::plane::PinMechanismDecl {
+            PinMechanismDecl {
                 token: "mtls",
                 root: true,
             },
-            busbar_contract::plane::PinMechanismDecl {
+            PinMechanismDecl {
                 token: "unpinned",
                 root: false,
             },
         ],
     },
-    busbar_contract::plane::TrustKeyDecl {
+    TrustKeyDecl {
         key: "verify_ttl",
-        role: busbar_contract::plane::TrustRole::ReverifyTtl,
+        role: TrustRole::ReverifyTtl,
         fingerprint: false,
         default: Some(DEFAULT_MCP_VERIFY_TTL),
         mechanisms: &[],
@@ -1097,7 +1101,7 @@ pub(crate) enum ChildEnvValue {
 /// a config apply can be recognised as a no-op.
 impl Eq for ChildEnvValue {}
 
-/// The top-level `tools:` map, carrying the two [`busbar_contract::section::RESERVED_SECTION_KEYS`]
+/// The top-level `tools:` map, carrying the two [`RESERVED_SECTION_KEYS`]
 /// alongside the servers.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ToolsCfg {
@@ -1162,7 +1166,7 @@ impl<'de> Deserialize<'de> for ToolsCfg {
         // the file rejects.
         // The neutral substrate split, called with THIS plane's own section/noun consts (a standalone
         // plane holds no plane registry to look up); byte-identical to the core wrapper's forward.
-        let section = busbar_contract::section::split_section::<D, McpServerDefCfg>(
+        let section = split_section::<D, McpServerDefCfg>(
             deserializer,
             super::PLANE_DECLARATION.config_section,
             super::PLANE_DECLARATION.subject_noun,
@@ -1562,7 +1566,7 @@ pub fn validate_server(name: &str, def: &McpServerDefCfg) -> Result<(), String> 
     validate_endpoint(&at, def)?;
 
     // THE PIN and the `verify_ttl:` bound are not judged here: they are the kernel's trust keys
-    // ([`TRUST_KEYS`]), judged by the kernel before the section reaches this plane.
+    // ([`TRUST_KEYS`]), judged by the kernel before the section reaches this validator.
 
     // The DEADLINE is parsed at boot for the same reason, and `0` is refused rather than accepted
     // as "no deadline": a zero-second budget would refuse every call to this server on the first
@@ -1805,8 +1809,8 @@ pub fn validate_server(name: &str, def: &McpServerDefCfg) -> Result<(), String> 
         }
     }
 
-    // A hook reference reaching onto another plane is refused by the kernel, which sees every
-    // plane's section; this plane sees only its own.
+    // A dotted hook reference is refused by the kernel, which sees every section; this validator
+    // sees only its own.
     Ok(())
 }
 
@@ -2059,7 +2063,7 @@ pub(crate) fn template_parameter_names(template: &str) -> Vec<String> {
 }
 
 /// Boot's whole judgement of one registration, for tests: the kernel's (the declared trust keys and
-/// the hook references), then this plane's value rules, in that order.
+/// the hook references), then this section's value rules, in that order.
 #[cfg(all(test, feature = "test-support"))]
 pub(crate) fn validate_server_at_boot(name: &str, def: &McpServerDefCfg) -> Result<(), String> {
     use busbar_kernel::plane::config as kernel;
