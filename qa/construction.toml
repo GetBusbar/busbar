@@ -398,20 +398,26 @@ because = "ARCHITECT 2026-09-27: R-KERNEL exception for the Phase-2 exit-test re
 # re-arm below, which declares the pair's next figure.
 
 # ── THE CONTRACT CEILING PAIR, RE-ARMED BY M3-SHAPES STORE (store v3 slots, shapes, tail, cancel
-#    words, money rulings S1-S6, answer validators, M-SB) — measured and written by LANDER at
-#    land time ─────────────────────────────────────────────────────────────────────────────────
+#    words, money rulings S1-S6, answer validators, M-SB) — EXPIRED AND STRUCK
+#
+# Declared `gate.surface_ceilings.contract_caps` and `rules.loc-ceilings.caps_contract_ceiling`
+# 20223 -> 21631 (OWNER RULING Q68(3)). Its commit reached the base; struck by KINDSLOT-SEH's
+# re-arm below, which declares the pair's next figure.
+
+# ── THE CONTRACT CEILING PAIR, RE-ARMED BY KINDSLOT-SEH (KindSlot type-checking for secret,
+#    export and hook's kind ops) — measured and written by LANDER at land time ─────────────────
 
 [gate.ceiling_raises."gate.surface_ceilings.contract_caps"]
 file    = "qa/construction.toml"
-from    = 20223
-to      = 21631
-because = "OWNER RULING Q68(3) (docs/design/1.6.0-QUESTIONS.md): contract_caps re-arms at the MEASURED value, in its own commit, written by LANDER per ARCHITECT's re-measure-at-land-time authorization. Growth is M3-SHAPES STORE (design B.1): the store kind's slots, shapes, tail and cancel words, per-cell windows, the failed-cell and host-buffer shapes, the mechanism-wide short-buffer answer (M-SB) stated once, money rulings S1-S6, the store answer validators and their M-SB short-answer/multi-dimension/replay-after-cap-check rules. Measured by cargo xtask gate construction: 20223 before, 21631 after."
+from    = 21631
+to      = 21694
+because = "OWNER RULING Q68(3) (docs/design/1.6.0-QUESTIONS.md): contract_caps re-arms at the MEASURED value, in its own commit, written by LANDER per ARCHITECT's re-measure-at-land-time authorization. Growth is KINDSLOT-SEH: KindSlot type-checking for secret, export and hook's kind ops, so plugin_door! type-checks a secret/export/hook plugin's kind ops the same way M3-SDK's auth KindSlot did, +63 code lines. Measured by cargo xtask gate construction: 21631 before, 21694 after."
 
 [gate.ceiling_raises."rules.loc-ceilings.caps_contract_ceiling"]
 file    = "qa/construction.toml"
-from    = 20223
-to      = 21631
-because = "OWNER RULING Q68(3) (docs/design/1.6.0-QUESTIONS.md): contract_caps re-arms at the MEASURED value, in its own commit, written by LANDER per ARCHITECT's re-measure-at-land-time authorization. Growth is M3-SHAPES STORE (design B.1): the store kind's slots, shapes, tail and cancel words, per-cell windows, the failed-cell and host-buffer shapes, the mechanism-wide short-buffer answer (M-SB) stated once, money rulings S1-S6, the store answer validators and their M-SB short-answer/multi-dimension/replay-after-cap-check rules. Measured by cargo xtask gate construction: 20223 before, 21631 after."
+from    = 21631
+to      = 21694
+because = "OWNER RULING Q68(3) (docs/design/1.6.0-QUESTIONS.md): contract_caps re-arms at the MEASURED value, in its own commit, written by LANDER per ARCHITECT's re-measure-at-land-time authorization. Growth is KINDSLOT-SEH: KindSlot type-checking for secret, export and hook's kind ops, so plugin_door! type-checks a secret/export/hook plugin's kind ops the same way M3-SDK's auth KindSlot did, +63 code lines. Measured by cargo xtask gate construction: 21631 before, 21694 after."
 
 # ── THE KERNEL CEILING, RE-ARMED BY SD-8 (the substrate-values kernel landing) ─────────────────
 # Its 51100 -> 54801 declaration expired once landed and is struck; the ceiling text below keeps it.
@@ -585,7 +591,10 @@ because = "ARCHITECT ruling on the kernel budget (R-KERNEL, sd-extra.txt; K2-0 u
 # RE-ARMED 20223 -> 21631, AT THE MEASUREMENT (OWNER RULING Q68(3)), in its own commit after
 # M3-SHAPES STORE (store v3 slots/shapes/tail/cancel words, money rulings S1-S6, answer
 # validators, M-SB); the live declaration above carries the measure.
-contract_caps = 21631
+# RE-ARMED 21631 -> 21694, AT THE MEASUREMENT (OWNER RULING Q68(3)), in its own commit after
+# KINDSLOT-SEH (KindSlot for secret/export/hook's kind ops); the live declaration above carries
+# the measure.
+contract_caps = 21694
 # REPOINTED, and the repoint is what makes this row a gate again. It named the CRATE
 # `busbar-grammar`, which #40 folded into `busbar-contract` and deleted — so it summed nothing,
 # measured nothing and passed, which is this file's own "zero is not clean" failure sitting inside
@@ -1223,7 +1232,9 @@ contract_crate = "busbar-contract"
 # review fixes, answer validators and SEH-TESTS' follow-up).
 # RE-ARMED 20223 -> 21631 with its pair (OWNER RULING Q68(3); M3-SHAPES STORE, money rulings
 # S1-S6, answer validators, M-SB).
-caps_contract_ceiling = 21631
+# RE-ARMED 21631 -> 21694 with its pair (OWNER RULING Q68(3); KINDSLOT-SEH's secret/export/hook
+# kind-op type-checking).
+caps_contract_ceiling = 21694
 unit_crate_glob = "busbar-unit-*"
 # RE-KEYED on cherry-pick onto 143db6db6: this commit's own delta is -53 (two units stopped
 # declaring their own copies), measured against whatever unit_total_ceiling read when the line was
