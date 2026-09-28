@@ -65,6 +65,12 @@ pub const COUNT: &[u8] = b"count";
 pub const ARM: &[u8] = b"arm:";
 /// `tick` mode: finish and wake every held op.
 pub const KICK: &[u8] = b"kick";
+/// `tick` mode: READY, with `OutHead.size` larger than the host's `out`.
+pub const OVERSIZE: &[u8] = b"oversize";
+/// `tick` mode: FAILED, with error text NULL but a length.
+pub const BAD_TEXT: &[u8] = b"badtext";
+/// `tick` mode: READY, with a metrics array NULL but a length.
+pub const BAD_ENVELOPE: &[u8] = b"badenv";
 /// `tick` mode: panic. `tick` has no guard, so the process aborts.
 pub const PANIC: &[u8] = b"panic";
 
@@ -457,6 +463,26 @@ extern "C" fn tick(instance: *mut c_void, input: *const c_void, out: *mut c_void
                     ready.store(true, Ordering::SeqCst);
                     (me.wake)(tin.head.host, t);
                 }
+                say(out, Outcome::Ready)
+            }
+            OVERSIZE => {
+                (*out.cast::<OutHead>()).size = u32::MAX;
+                say(out, Outcome::Ready)
+            }
+            BAD_TEXT => {
+                (*out.cast::<OutHead>()).error = AbiStr {
+                    ptr: std::ptr::null(),
+                    len: 5,
+                };
+                say(out, Outcome::Failed)
+            }
+            BAD_ENVELOPE => {
+                (*out.cast::<OutHead>()).envelope = Envelope {
+                    metrics: std::ptr::null(),
+                    metrics_len: 3,
+                    diags: std::ptr::null(),
+                    diags_len: 0,
+                };
                 say(out, Outcome::Ready)
             }
             PANIC => panic!("a hand-written slot panicked"),

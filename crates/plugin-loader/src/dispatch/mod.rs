@@ -12,6 +12,8 @@
 //!   the #85 envelope ingest, and `max_inflight`.
 //! * [`ticket`] — tickets `(slot, generation)` unique per instance across all workers, the host's
 //!   `wake`, and completion handles `(ticket, seq)`.
+//! * [`validate`] — every answer is validated before it is read (spans, counts, `written`,
+//!   `needed`, sizes, text and array lengths); a violation is FAULT.
 //! * [`worker`] — the workers: per-worker ticket slabs, latched spurious-tolerant wakes, RESUME,
 //!   `wake_at_ns` timers, driver tickets, deadline classes and client drop.
 //! * `watchdog` — an op that does not RETURN within its class budget faults its instance and
@@ -24,6 +26,7 @@
 pub mod load;
 pub mod plugin;
 pub mod ticket;
+pub mod validate;
 mod watchdog;
 pub mod worker;
 
@@ -44,6 +47,7 @@ use busbar_contract::abi::mechanism::KindCode;
 pub use load::{load_dropped, load_linked, LoadError, ManifestFacts};
 pub use plugin::{Bind, Called, Diagnostic, Dropped, EnvelopeSink, Metric, NoSink, Plugin};
 pub use ticket::{Completions, Redeem};
+pub use validate::Violation;
 pub use worker::{Budgets, DispatchConfig, DispatchStats, Dispatcher, Done, Reply};
 
 /// A kind, as the dispatcher sees it: its code, its table and its timeout outcome. Implemented once

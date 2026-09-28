@@ -4,8 +4,9 @@
 //! [`Plugin`]`<K>`: the instance handle and THE ONE CROSSING.
 //!
 //! OUTCOME AUTHORITY. The value the slot RETURNS decides. An unknown byte is FAULT; an
-//! `OutHead.outcome` that differs from the return value is FAULT; an `OutHead.size` smaller than the
-//! head is FAULT; PENDING on [`Ticket::NONE`] (a call that may not pend) is FAULT. The host
+//! `OutHead.outcome` that differs from the return value is FAULT; an answer that fails
+//! [`super::validate`] (an `OutHead.size` outside `size_of::<OutHead>()..=` the host's `out`, error
+//! text NULL-with-length or over-long, a #85 array NULL-with-length or over-long) is FAULT; PENDING on [`Ticket::NONE`] (a call that may not pend) is FAULT. The host
 //! zeroes the whole `out` before every crossing (then states its size), so an `out` nobody wrote
 //! reads as a fault.
 //!
@@ -42,7 +43,7 @@ use busbar_contract::abi::mechanism::KindCode;
 
 use super::load::{Lib, LoadError, Validated};
 use super::ticket::{host_wake, InstanceWake};
-use super::{Frame, InFrame, Kind, OutFrame};
+use super::{validate, Frame, InFrame, Kind, OutFrame};
 
 /// The most entries one envelope array may carry; a longer array is dropped whole.
 pub const MAX_ENVELOPE_ENTRIES: usize = 256;
@@ -310,7 +311,7 @@ impl Instance {
         let raw = op(instance, input.cast_const().cast(), out.cast());
         // SAFETY: the plugin wrote at most the host's `out`; read it back.
         let head = unsafe { *out };
-        let outcome = judge(raw, &head, ticket);
+        let outcome = judge(raw, &head, ticket, out_size);
         if outcome == Outcome::Fault {
             return Crossed::host(Outcome::Fault);
         }
@@ -413,12 +414,13 @@ impl Instance {
 }
 
 /// OUTCOME AUTHORITY: the return value decides; see the module docs.
-pub(crate) fn judge(raw: RawOutcome, head: &OutHead, ticket: Ticket) -> Outcome {
+pub(crate) fn judge(raw: RawOutcome, head: &OutHead, ticket: Ticket, out_size: u32) -> Outcome {
     if !(1..=4).contains(&raw.0) || head.outcome != raw {
         return Outcome::Fault;
     }
-    if (head.size as usize) < size_of::<OutHead>() {
-        return Outcome::Fault;
+    // Validated before a byte is read through it (`validate`): size, error text, #85 arrays.
+    if let Err(v) = validate::out_head(head, out_size) {
+        return v.outcome();
     }
     match raw.outcome() {
         Outcome::Pending if ticket.is_none() => Outcome::Fault,

@@ -964,3 +964,111 @@ fn outhead_is_prefilled_as_fault() {
     let h: OutHead = out_head();
     assert_eq!(h.outcome.outcome(), Outcome::Fault);
 }
+
+// ── VALIDATE EVERY ANSWER (ARCHITECT, from the auth review): one RED arm per check ───────────────
+
+#[test]
+fn red_an_answer_that_fails_validation_is_fault() {
+    let d = Dispatcher::new(config());
+    let (p, sink) = opened(&d);
+    for mode in [plug::OVERSIZE, plug::BAD_TEXT, plug::BAD_ENVELOPE] {
+        let c = p.call(TICK, &mut frame(mode));
+        assert_eq!(
+            c.outcome,
+            Outcome::Fault,
+            "{}",
+            String::from_utf8_lossy(mode)
+        );
+        assert_eq!(c.error, None, "nothing is read through a rejected answer");
+    }
+    assert!(
+        sink.take().is_empty(),
+        "no envelope is ingested from a rejected answer"
+    );
+}
+
+#[test]
+fn red_the_reply_field_checks() {
+    use crate::dispatch::validate::{count, needed, span, written, Violation};
+    // span: inside, at the edge, past the cap, and an offset+len that overflows.
+    assert_eq!(span(2, 3, 5), Ok(2..5));
+    assert_eq!(span(0, 0, 0), Ok(0..0));
+    assert!(matches!(span(3, 3, 5), Err(Violation::Span { .. })));
+    assert!(matches!(
+        span(u64::MAX, 2, u64::MAX),
+        Err(Violation::Span { .. })
+    ));
+    // count and written: at the cap is fine, one past is not.
+    assert_eq!(count(4, 4), Ok(4));
+    assert!(matches!(count(5, 4), Err(Violation::Count { .. })));
+    assert_eq!(written(8, 8), Ok(8));
+    assert!(matches!(written(9, 8), Err(Violation::Written { .. })));
+    // needed: zero on READY; a PENDING or FAILED answer may name what it needs.
+    assert_eq!(needed(Outcome::Ready, 0), Ok(()));
+    assert_eq!(needed(Outcome::Ready, 1), Err(Violation::NeededOnReady(1)));
+    assert_eq!(needed(Outcome::Failed, 64), Ok(()));
+    assert_eq!(Violation::NeededOnReady(1).outcome(), Outcome::Fault);
+}
+
+// ── EXACT VERSIONS (item 410's replacement): older, newer and a wrong magic are each refused ─────
+
+fn door_with(f: impl Fn(&mut Door)) -> Option<LoadError> {
+    // SAFETY: the real door is `'static`.
+    let mut d = unsafe { *plug::busbar_plugin_door() };
+    f(&mut d);
+    validate_door::<TestKind>(Box::leak(Box::new(d))).err()
+}
+
+#[test]
+fn red_refuses_an_older_door() {
+    let (m, k) = (MECHANISM_VERSION, plug::KIND.abi_version());
+    assert_eq!(
+        door_with(|d| d.mechanism_version = m - 1),
+        Some(LoadError::Mechanism {
+            door: m - 1,
+            host: m
+        })
+    );
+    assert_eq!(
+        door_with(|d| d.kind_abi = k - 1),
+        Some(LoadError::KindAbi {
+            kind: plug::KIND,
+            door: k - 1,
+            host: k
+        })
+    );
+}
+
+#[test]
+fn red_refuses_a_newer_door() {
+    let (m, k) = (MECHANISM_VERSION, plug::KIND.abi_version());
+    assert_eq!(
+        door_with(|d| d.mechanism_version = m + 1),
+        Some(LoadError::Mechanism {
+            door: m + 1,
+            host: m
+        })
+    );
+    assert_eq!(
+        door_with(|d| d.kind_abi = k + 1),
+        Some(LoadError::KindAbi {
+            kind: plug::KIND,
+            door: k + 1,
+            host: k
+        })
+    );
+}
+
+#[test]
+fn red_refuses_a_wrong_magic() {
+    let retired = u64::from_le_bytes(*b"BUSPLANE");
+    assert_eq!(
+        door_with(|d| d.magic = retired),
+        Some(LoadError::Magic(retired))
+    );
+    assert_eq!(
+        door_with(|_| {}),
+        None,
+        "the GREEN twin: the real door loads"
+    );
+}
