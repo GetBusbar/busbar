@@ -88,11 +88,12 @@
 //!   ([`Tail::routes`]), confined to `/hooks/<name>/*`; none/key/admin auth is enforced before
 //!   `serve`; admin routes are admin-listener only (kernel routing, not a new shape here).
 //! - **Kernel normalizers** (HOST-SIDE, enforced on the fixed struct, unchanged from 1.5.5; not new
-//!   shapes): reject > restrict (fail-closed, `on_empty`) > abstain > order, through
-//!   `from_ranked`; `reject_status` clamped to 400-499, else 403 when [`VERB_HAS_REJECT_STATUS`] is
+//!   shapes): `reject_status` clamped to 400-499, else 403 when [`VERB_HAS_REJECT_STATUS`] is
 //!   unset; the full 1.5.5 sanitiser on the reject-message bytes (control characters, U+2028/2029,
 //!   U+200B-200F, U+202A-202E, U+2066-2069, U+FEFF; whitespace-only falls back to the default),
 //!   capped at 300 characters on a character boundary; restrict-tags trimmed, empties dropped.
+//!   (H1: exactly one `verbs` bit on READY makes the old cross-verb precedence chain moot — a
+//!   plugin cannot answer with two verbs for the kernel to rank.)
 //! - **`on_error`:** FAILED, FAULT, timeout and REFUSED feed the chain (the mechanism's own
 //!   [`Outcome`](super::mechanism::call::Outcome) values plus a deadline expiry); `timeout_ms == 0`
 //!   means the default. Kernel policy (`on_error` chain walk), not a new ABI shape.
