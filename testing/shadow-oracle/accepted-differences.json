@@ -1517,6 +1517,51 @@
       "rationale": "MEASURED (re-measured 2026-09-24 by P3A-register2 against a fresh local ./bin/oracle record of ee17adf62 with the landed operator-upgrade-step scripts b126877e1, engine pin 6067df5, default all-planes build): the key's usage after one chat whose upstream is DOWN (a 503 to the client) reads requests 1 / tokens 0 / spend_cents 0; 1.5.5 recorded requests 1 / tokens 18 / spend_cents 250 — it billed a request the upstream never answered. Owner ruling Q31 as ruled in Q32: a failed upstream charges only the usage the upstream reports, and a down upstream reports none. The cell's own `why` already stated the ruled figure (\"a 503: requests +1, billable refunded, spend 0\"). PREMISE (evaluated): exactly requests 1, tokens 0, spend 0 — any other figure withholds the entry. kind=breaking because it is a money figure a customer reads."
     },
     {
+      "id": "M-1 refund reaches the cell the charge reached",
+      "kind": "breaking",
+      "changelog": "1.6.0 Changed: a failed request's flat fee is refunded from the window bucket it was charged to, even when that bucket has rolled into the next window.",
+      "by": "owner (Matthew Jackson), 2026-09-28 ruling",
+      "signoff": {
+        "who": "owner (Matthew Jackson)",
+        "when": "2026-09-28",
+        "ruling": "ship 1.6.0's refund: the refund reaches the bucket the charge reached"
+      },
+      "expires": {
+        "baseline": "1.5.5",
+        "by": "2026-12-31"
+      },
+      "cells": "^billing\\|key-usage\\|refund-across-window$",
+      "expected_cells": 1,
+      "classes": [
+        "body"
+      ],
+      "premise": {
+        "all": [
+          {
+            "cell": "billing|key-usage|refund-across-window",
+            "pointer": "/group_day_window/spend_cents",
+            "equals": 257
+          },
+          {
+            "cell": "billing|key-usage|refund-across-window",
+            "pointer": "/group_day_window/requests",
+            "equals": 2
+          },
+          {
+            "cell": "billing|key-usage|refund-across-window",
+            "pointer": "/key_all_time/spend_cents",
+            "equals": 257
+          },
+          {
+            "cell": "billing|key-usage|refund-across-window",
+            "pointer": "/straddling_status",
+            "equals": 503
+          }
+        ]
+      },
+      "rationale": "Owner ruling 2026-09-28: ship 1.6.0's refund. A request whose arrival epoch is in window D but whose flat per_request_fee is charged in place on a group window cell another request has already rolled to D+1 (a window straddle) and which then fails is refunded from the cell the charge reached. 1.5.5 refunded only a cell whose window equalled the request's own, so the refund missed and the fee stayed on the D+1 group bucket: over-charged by one fee for the rest of that window. MEASURED on billing|key-usage|refund-across-window (per_request_fee 7, one served request B at D+1 00:00:01 = 250 cents of tokens + 7, then a straddling request A at D 23:59:30 whose upstream is down): the group's D+1 day bucket reads spend_cents 264 / budget_remaining_cents 999736 on 1.5.5 and 257 / 999743 on 1.6.0; requests 2 and tokens 18 on both; the key's all-time bucket (which never rolls, so both refunds reach it) reads 257 on both. PREMISE (evaluated): exactly the 1.6.0 figures (group spend 257 with 2 requests, key spend 257, A answered 503); any other figure withholds the entry. kind=breaking because it is a money figure an operator reads off the group usage view."
+    },
+    {
       "id": "Q40 busbar_lane_state reads the pool's own breaker cell (a tripped lane reads 2, not 1)",
       "kind": "improvement",
       "changelog": "1.6.0 Changed: `busbar_lane_state` reads each pool's own breaker cell, so a lane tripped in a pool reads 2 there.",

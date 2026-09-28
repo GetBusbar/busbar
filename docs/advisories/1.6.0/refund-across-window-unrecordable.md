@@ -1,4 +1,4 @@
-# Advisory: a refund that crosses a billing-window rollover cannot be recorded, because a key has no billing window
+# Advisory: a failed request that straddles a billing-window roll kept its flat fee on 1.5.5
 
 ## Id
 
@@ -6,88 +6,79 @@ ADV-1.6.0-4
 
 ## Classification
 
-Not a SECURITY.md-scoped vulnerability; a measurement gap in the oracle/conformance suite that
-traces to a real product limitation. Recorded as an advisory because the underlying cause —
-per-key usage is tracked in a single all-time bucket, not a rolling window — is a fact an
-operator sizing refund/proration behavior needs, even though nothing here is exploitable.
+Not a SECURITY.md-scoped vulnerability; a billing-accuracy defect in 1.5.x, fixed in 1.6.0 as a
+deliberate, owner-signed change (1.6.0 CHANGELOG, Changed: "a failed request's flat fee is
+refunded from the window bucket it was charged to, even when that bucket has rolled into the next
+window"). Recorded as an advisory because the 1.5.x figure an operator read off a group's usage
+view could be one fee too high, and because the scenario was long treated as unmeasurable.
 
 ## Summary
 
-The oracle/conformance effort attempted to record a `billing|key-usage|refund-across-window`
-cell — a request whose refund (e.g., a non-2xx or cancelled response) lands after a billing
-window has rolled over from the window the original charge was posted in — and could not,
-because the precondition the cell needs does not exist in the product: **a key has no billing
-window to roll over.**
+Busbar charges a request's flat `per_request_fee` at admission and refunds it when the request
+fails (a non-2xx outcome). Both halves are keyed off the request's arrival epoch, so they land in
+the same window of each windowed bucket (a group's `per: minute | hour | day | ...` limits).
 
-`busbar-core`'s admin usage-overview endpoint reports every key's accrual bucket in the
-**all-time** window unconditionally:
+A **window straddle** breaks that pairing. Request A reads the clock just before a window
+boundary (window D); request B reads it just after (window D+1) and reaches the group's window
+cell first, rolling it to D+1. A's charge then lands in place on the D+1 cell, which is correct:
+the charge rule accepts a cell holding the request's window or a newer one.
 
-```rust
-json_response(
-    StatusCode::OK,
-    json!({
-        "id": id,
-        "budget_period": crate::governance::WINDOW_TOTAL,
-        ...
-```
+- **1.5.x** refunded only a cell whose window *equalled* the request's own. The rolled cell holds
+  D+1, so when A failed its refund was a no-op and its fee stayed on the D+1 bucket for the rest of
+  that window: the group's reported spend and the budget it enforces read one fee too high.
+- **1.6.0** refunds the cell the charge reached (a cell holding the request's window or a newer
+  one), the exact inverse of the charge. A cell *older* than the request's window is still a no-op
+  on both.
 
-(`crates/busbar-core/src/admin/mod.rs`, near line 2060 in the current tree; the ledger's original
-measurement cites `admin/mod.rs:2054` against the commit/branch it was taken from — line numbers
-differ slightly by commit but the finding is the same code path.) `WINDOW_TOTAL` is the literal
-string `"total"` (`crates/busbar-core/src/governance/mod.rs:29`), and the accrual/refund
-bookkeeping keys off it explicitly rather than off any per-window bucket derived from a
-configured period: `state.rs:817` accrues into `super::WINDOW_TOTAL`, and `state.rs:2046`
-(`refund_bucket(&key.id, super::WINDOW_TOTAL, now)`) refunds into the same all-time bucket. A
-key's limits, where configured, live on its bound GROUP's windows (per the governance model), not
-on the key's own accrual bucket — so there is no key-level "window" for a refund to cross.
+A key's own accrual bucket is the all-time window, which never rolls, so the key usage view was
+correct on both; only windowed group buckets were affected.
+
+## Measured
+
+The oracle cell `billing|key-usage|refund-across-window` records this against the published
+1.5.5 binary and the 1.6.0 candidate. It reproduces the straddle deterministically by moving the
+binary's wall clock between two requests (`testing/shadow-oracle/fixtures/clock-shift.c`,
+preloaded by `testing/shadow-oracle/scripts/refund-across-window.sh`): B is served at
+D+1 00:00:01, then A arrives at D 23:59:30 with its upstream down (503). With
+`per_request_fee: 7` and B's tokens priced at 250 cents, the group's D+1 day bucket reads:
+
+| | requests | tokens | spend_cents | budget_remaining_cents |
+|---|---|---|---|---|
+| 1.5.5 | 2 | 18 | 264 | 999736 |
+| 1.6.0 | 2 | 18 | 257 | 999743 |
+
+The key's all-time bucket reads 257 cents on both.
 
 ## Affected versions
 
-1.5.x and 1.6.0 alike; this is the current, unchanged governance model, not a regression.
+1.5.x (every release with windowed group limits and a non-zero `per_request_fee`). Fixed in 1.6.0.
 
 ## Impact
 
-None on shipped behavior — a refund is applied correctly to the one all-time bucket that exists.
-The impact is entirely on **measurement**: the conformance suite cannot exercise a
-window-rollover refund scenario against real per-key accounting, because the scenario requires a
-key-level rolling window (e.g., "minute", per the ledger's proposed test lever) that the product
-does not implement. Any operator expecting a refund to reconcile correctly against a per-key
-rolling budget window (as opposed to a group-level one) should note that key-level budgeting is
-all-time only today.
+Over-billing by one `per_request_fee` per failed straddling request, on the group bucket of the
+window the straddle rolled into, for the life of that window. Reachable only when a failed request
+and a concurrent admission race across a window boundary, so rare in practice; a group budget near
+its cap could refuse a request it should have admitted.
 
 ## Ruling
 
-Owner item, not yet decided: whether key-level billing windows (as opposed to the existing
-group-level windows) are a wanted 1.6.0 or later feature. Per the ledger: "refund-across-window
-unrecordable on 1.5.5 — admin/mod.rs:2054 hardcodes budget_period=total, window_start=0; no
-key-level billing window exists (owner: a 1.6.0 tariff-window question, not a tool gap)." **Not
-found:** no owner ruling on whether to add key-level windows is recorded in the ledger as of this
-writing; this advisory records the open question rather than a decision.
+Owner ruling 2026-09-28: ship 1.6.0's behaviour (the refund reaches the bucket the charge
+reached). The difference is registered as a breaking entry in
+`testing/shadow-oracle/accepted-differences.json` ("M-1 refund reaches the cell the charge
+reached") with a premise that holds the 1.6.0 figures above exactly.
 
-## Evidence
-
-- `crates/busbar-core/src/admin/mod.rs` (near line 2060 in this tree) — the usage-overview
-  handler reporting `budget_period: WINDOW_TOTAL` unconditionally.
-- `crates/busbar-core/src/governance/mod.rs:29` — `WINDOW_TOTAL` sentinel definition.
-- `crates/busbar-core/src/governance/mod.rs:869` — `WINDOW_TOTAL => 0` (explicit all-time window
-  start).
-- `crates/busbar-core/src/governance/state.rs:817,1493,1559,2046` — accrual and refund bookkeeping
-  keyed to `WINDOW_TOTAL` for a key's own bucket.
-- Internal audit ledger (`gate/held.txt`): "needs_fixture still: ... billing|key-usage|
-  refund-across-window (OR-OP-2 owed)"; and, after investigation, "refund-across-window
-  unrecordable on 1.5.5 — admin/mod.rs:2054 hardcodes budget_period=total, window_start=0; no
-  key-level billing window exists (owner: a 1.6.0 tariff-window question, not a tool gap)."
+Separately, a key has no billing window of its own (its bucket is all-time, and a key's limits
+live on its group's windows); whether key-level windows are wanted is a product question this
+advisory does not decide.
 
 ## Remediation / operator action
 
-None required for current behavior; refunds against the existing all-time key bucket and
-group-level windows are unaffected. An operator who needs rolling-window refund/proration
-accounting at the individual-key level (rather than the group level) should raise this as a
-feature request; it is explicitly not implemented today and not committed to any release.
+Upgrade to 1.6.0. No configuration change is needed. On 1.5.x, a group's windowed spend can be
+over-stated by one fee per affected request until the window rolls.
 
 ## Backport
 
-Not applicable — no defect to backport.
+Not planned.
 
 ## Credit
 

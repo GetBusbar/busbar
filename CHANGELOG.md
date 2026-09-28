@@ -477,6 +477,13 @@ identically, and every 1.5.5 key and minted secret carries over.
   1.5.5 charged a request whose upstream was down as if it had completed (18 tokens, 250 cents on
   the oracle's card); 1.6.0 charges nothing for it, because the upstream reported nothing. The
   request is still counted. **Migration:** none; a request whose upstream answered nothing no longer adds to a key's spend.
+- 1.6.0 Changed: a failed request's flat fee is refunded from the window bucket it was charged to, even when that bucket has rolled into the next window.
+  A request that arrives just before a window boundary can be charged on a group bucket another
+  request has already rolled into the next window. 1.5.5 refunded such a request only against a
+  bucket of its own window, so when it failed the fee stayed on the new window's bucket (one
+  `per_request_fee` too high in the group usage view and the budget it enforces for that window).
+  1.6.0 refunds the bucket the charge reached. **Migration:** none; group spend no longer keeps
+  the fee of a failed request that straddled a window roll.
 - 1.6.0 Changed: `busbar_lane_state` reads each pool's own breaker cell, so a lane tripped in a pool reads 2 there.
   1.5.5 read a lane's state across every pool, so a tripped lane could read 1 (half-open). 1.6.0
   reads 2 while tripped and 1 only during a real half-open probe. **Migration:** alerts keyed on

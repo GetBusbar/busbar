@@ -252,6 +252,7 @@ billing|key-usage|after-upstream-down
 billing|key-usage|broke-after-429
 billing|key-usage|fresh
 billing|key-usage|noscope-after-403
+billing|key-usage|refund-across-window
 billing|rate-card|epoch-mid-window
 billing|rate-card|history-mid-window
 boot.refusal|BOOT-001|validate
