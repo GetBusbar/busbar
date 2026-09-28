@@ -36,8 +36,8 @@ pub mod auth;
 // The two BUILT-IN secret modules (`env`, `file`) the registry's built-in secret rows resolve through.
 pub mod builtin_secret;
 pub mod carrier;
-/// THE ONE DISPATCHER of the §11 memory ABI (M1): one loader path, one crossing, tickets, wakes,
-/// deadlines and the watchdog, generic over the kind. Nothing is rewired to it yet (M3).
+/// THE ONE DISPATCHER of the memory ABI (`BUSBAR-1.6.0.md` THE DESIGN, §11): one loader path, one
+/// crossing, tickets, wakes, deadlines and the watchdog, generic over the kind.
 pub mod dispatch;
 pub mod export;
 pub mod fetch;
@@ -2108,8 +2108,13 @@ mod auth_verify_conformance_tests;
 #[path = "tests/hook_conformance_tests.rs"]
 mod hook_conformance_tests;
 
-/// The M1 dispatcher through both doors: one script, LINKED and DROPPED, byte-identical, and a RED
+/// The dispatcher through both doors: one script, LINKED and DROPPED, byte-identical, and a RED
 /// arm per mechanism rule.
 #[cfg(test)]
 #[path = "tests/dispatch_tests.rs"]
 mod dispatch_tests;
+
+/// The secret and export kind's answer checks, through the dispatcher's `Kind` adapter.
+#[cfg(test)]
+#[path = "tests/dispatch_kind_secret_export_tests.rs"]
+mod dispatch_kind_secret_export_tests;

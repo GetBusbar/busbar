@@ -42,9 +42,11 @@ use busbar_contract::abi::mechanism::lifecycle::{slot, OpenIn, OpenOut};
 use busbar_contract::abi::mechanism::ticket::{HostCtx, HostTables, Ticket};
 use busbar_contract::abi::mechanism::KindCode;
 
+use super::answer::Answer;
 use super::load::{Lib, LoadError, Validated};
 use super::ticket::{host_wake, InstanceWake};
 use super::{validate, Frame, InFrame, Kind, OutFrame};
+use busbar_contract::abi::mechanism::check::Fault;
 
 /// The most entries one envelope array may carry; a longer array is dropped whole.
 pub const MAX_ENVELOPE_ENTRIES: usize = 256;
@@ -99,7 +101,7 @@ pub enum Dropped {
     BadArray,
 }
 
-/// Where the #85 envelope goes. Names no kernel type; the kernel implements it per kind (M3).
+/// Where the #85 envelope goes. Names no kernel type; the kernel implements it per kind.
 pub trait EnvelopeSink: Send + Sync {
     /// A metric that passed every check.
     fn metric(&self, m: Metric<'_>);
@@ -251,9 +253,11 @@ pub(crate) struct Instance {
     lifecycle_busy: AtomicBool,
     pub(crate) timeout: Outcome,
     /// [`Kind::check`] of the bound kind.
-    check: fn(u32, *const InHead, *const OutHead) -> bool,
+    check: fn(&Answer) -> Result<(), Fault>,
     /// [`Kind::short`] of the bound kind.
-    short: fn(u32, *const OutHead) -> bool,
+    short: fn(&Answer) -> bool,
+    /// [`Kind::op_name`] of the bound kind.
+    op_name: fn(u32) -> &'static str,
     sink: Arc<dyn EnvelopeSink>,
     pub(crate) wake: &'static InstanceWake,
     tables: Tables,
@@ -449,11 +453,32 @@ impl Instance {
         if outcome == Outcome::Fault {
             return Crossed::host(Outcome::Fault);
         }
+        // SAFETY: the op's own host `in`/`out`; the host wrote `in.size` itself.
+        let answer = unsafe {
+            Answer::new(
+                s,
+                outcome,
+                input.cast_const(),
+                (*input).size as usize,
+                out.cast_const(),
+                out_size as usize,
+            )
+        };
         let answered = matches!(outcome, Outcome::Ready | Outcome::Failed);
-        if answered && !(self.check)(s, input.cast_const(), out.cast_const()) {
-            return Crossed::host(Outcome::Fault);
+        if answered {
+            if let Err(f) = (self.check)(&answer) {
+                tracing::warn!(
+                    plugin = %self.name,
+                    kind = ?self.kind,
+                    op = (self.op_name)(s),
+                    rule = ?f.rule,
+                    field = f.field,
+                    "a plugin answer broke its kind's rule; the op answers FAULT"
+                );
+                return Crossed::host(Outcome::Fault);
+            }
         }
-        let short = outcome == Outcome::Failed && (self.short)(s, out.cast_const());
+        let short = outcome == Outcome::Failed && (self.short)(&answer);
         self.ingest(&head);
         let error = matches!(outcome, Outcome::Failed | Outcome::Refused)
             .then(|| copy_str(head.error))
@@ -687,6 +712,7 @@ impl<K: Kind> Plugin<K> {
                 timeout: K::TIMEOUT,
                 check: K::check,
                 short: K::short,
+                op_name: K::op_name,
                 sink: bind.sink.clone(),
                 wake,
                 tables,
@@ -739,7 +765,7 @@ impl<K: Kind> Plugin<K> {
 
     /// THE ONE RE-CALL of a SHORT answer, spending its [`Recall`] token, with the caller's bigger
     /// buffers in `frame`. REFUSED without a crossing when the token is another instance's or
-    /// another op's; a second short answer is FAULT (ruling M-SB).
+    /// another op's; a second short answer is FAULT (the short-buffer rule on `OutHead`).
     pub fn recall<I: InFrame, O: OutFrame>(
         &self,
         token: Recall,

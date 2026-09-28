@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE M1 DISPATCHER'S TEST PLUGIN — one crate, built LINKED (`rlib`) and DROPPED (`cdylib`).
+//! THE DISPATCHER'S TEST PLUGIN — one crate, built LINKED (`rlib`) and DROPPED (`cdylib`).
 //!
 //! It exports the one door ([`busbar_plugin_door`]) over the lifecycle table only, and defines NO
 //! ABI shape of its own: the door, the Statement, the table and every `in`/`out` are

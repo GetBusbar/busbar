@@ -9,7 +9,7 @@
 //! the #85 arrays not NULL-with-length nor over-long, the outcome mirror, and PENDING on NONE (in
 //! `plugin::judge`). A KIND's reply fields (spans, counts, `written`, `needed_*`) are checked only
 //! by that kind's pure `check_<op>` in `abi/<kind>/`, reached through [`super::Kind::check`]
-//! (ARCHITECT ruling "answer validators live with the shape"); the dispatcher adds the one re-call
+//! (answer validators live with the shape); the dispatcher adds the one re-call
 //! rule on top ([`super::Kind::short`]): a second short answer on the same ticket is FAULT.
 
 use std::mem::size_of;
@@ -28,15 +28,6 @@ pub enum Violation {
     Kind,
     /// A second SHORT answer on the one re-call.
     ShortTwice,
-    /// A plugin-reported count passed the cap the host passed.
-    Count {
-        /// The reported count.
-        count: u64,
-        /// The host's cap.
-        cap: u64,
-    },
-    /// A plugin-reported array is NULL with a non-zero count.
-    NullArray(u64),
     /// `OutHead.size` is smaller than the head or larger than the host's `out`.
     OutSize {
         /// The size the plugin wrote back.
@@ -55,31 +46,6 @@ impl Violation {
     pub const fn outcome(self) -> Outcome {
         Outcome::Fault
     }
-}
-
-/// THE SLICE A PLUGIN REPORTED, for a kind validator that takes one (e.g. auth `check_identify`):
-/// `count` is checked against the `cap` the host passed BEFORE any slice is built from plugin
-/// memory, and a NULL pointer with a count is refused; only then is the slice made.
-///
-/// # Safety
-/// `ptr` is the host buffer of capacity `cap` elements the host handed this op (or NULL).
-pub unsafe fn reported_slice<'a, T>(
-    ptr: *const T,
-    count: u64,
-    cap: u64,
-) -> Result<&'a [T], Violation> {
-    if count > cap {
-        return Err(Violation::Count { count, cap });
-    }
-    if count == 0 {
-        return Ok(&[]);
-    }
-    if ptr.is_null() {
-        return Err(Violation::NullArray(count));
-    }
-    let n = usize::try_from(count).map_err(|_| Violation::Count { count, cap })?;
-    // SAFETY: the caller's contract; `n <= cap` elements of the host's own buffer.
-    Ok(unsafe { std::slice::from_raw_parts(ptr, n) })
 }
 
 /// The mechanism's own checks of an `out` head, run on every crossing: its size, its error text

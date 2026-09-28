@@ -145,7 +145,7 @@ pub struct Done<I, O> {
     /// A WriteBehind op whose caller stopped waiting at its deadline; it runs on.
     pub detached: bool,
     /// A FAILED answer the kind calls SHORT: re-submit ONCE on the same ticket with bigger
-    /// buffers; a second short answer is FAULT (ruling M-SB).
+    /// buffers; a second short answer is FAULT (the short-buffer rule on `OutHead`).
     pub short: bool,
     /// When the op ended through `cancel` (a deadline or a client drop): the kind's disposition
     /// `CancelOut.disposition` answered (store: 0 UNKNOWN, 1 NOT_APPLIED, 2 APPLIED). A `cancel`

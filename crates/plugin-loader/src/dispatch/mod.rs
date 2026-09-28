@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE ONE DISPATCHER (the design's §11 plugin ABI, migration step M1): the host side of the shared
+//! THE ONE DISPATCHER (`BUSBAR-1.6.0.md` THE DESIGN, §11, the plugin ABI): the host side of the shared
 //! mechanism in `busbar_contract::abi::mechanism`, generic over the kind.
 //!
 //! * [`load`] — ONE loader path for both origins: [`load::load_dropped`] (a cdylib on disk) and
@@ -12,6 +12,7 @@
 //!   the #85 envelope ingest, and `max_inflight`.
 //! * [`ticket`] — tickets `(slot, generation)` unique per instance across all workers, the host's
 //!   `wake`, and completion handles `(ticket, seq)`.
+//! * [`answer`] — one answer as a kind's validator reads it ([`Kind::check`]).
 //! * [`validate`] — the mechanism's own checks of every `out` head before it is read (its size,
 //!   the error text, the #85 arrays); a violation is FAULT. A kind's reply fields are checked by
 //!   its own `abi/<kind>/check_<op>` through [`Kind::check`], never re-implemented here.
@@ -21,9 +22,11 @@
 //!   replaces its worker.
 //!
 //! Nothing here names a kernel type, and nothing existing is rewired to it: the kernel adopts it
-//! per kind (M3). A kind is a [`Kind`] marker naming its code, its table (`abi/<kind>/Ops`) and its
+//! per kind. A kind is a [`Kind`] marker naming its code, its table (`abi/<kind>/Ops`) and its
 //! timeout outcome.
 
+pub mod answer;
+pub mod kinds;
 pub mod load;
 pub mod plugin;
 pub mod ticket;
@@ -38,6 +41,7 @@ use std::time::Instant;
 use busbar_contract::abi::mechanism::call::{
     Blob, InHead, Op, OutHead, Outcome, RawOutcome, BLOB_ABSENT,
 };
+use busbar_contract::abi::mechanism::check::Fault;
 use busbar_contract::abi::mechanism::lifecycle::{
     CancelIn, CancelOut, DriveIn, GenIn, OpenIn, OpenOut, OpsHead, RefreshIn, ReleaseIn, TickIn,
     TickOut, ValidateIn,
@@ -45,6 +49,7 @@ use busbar_contract::abi::mechanism::lifecycle::{
 use busbar_contract::abi::mechanism::ticket::{HostCtx, Ticket};
 use busbar_contract::abi::mechanism::KindCode;
 
+pub use answer::Answer;
 pub use load::{load_dropped, load_linked, LoadError, ManifestFacts};
 pub use plugin::{Bind, Called, Diagnostic, Dropped, EnvelopeSink, Metric, NoSink, Plugin, Recall};
 pub use ticket::{Completions, Redeem};
@@ -52,7 +57,7 @@ pub use validate::Violation;
 pub use worker::{Adopter, Budgets, DispatchConfig, DispatchStats, Dispatcher, Done, Reply};
 
 /// A kind, as the dispatcher sees it: its code, its table and its timeout outcome. Implemented once
-/// per kind when the kernel adopts it (M3); `Ops` is that kind's `abi/<kind>/Ops`.
+/// per kind ([`kinds`]); `Ops` is that kind's `abi/<kind>/Ops`.
 pub trait Kind: Send + Sync + 'static {
     /// The kind's code; a door stating another is refused.
     const CODE: KindCode;
@@ -61,21 +66,46 @@ pub trait Kind: Send + Sync + 'static {
     /// What a Call/Stream/Connection deadline answers, after `cancel`.
     const TIMEOUT: Outcome;
 
-    /// THE KIND'S ANSWER VALIDATORS (ARCHITECT ruling "answer validators live with the shape"):
-    /// the pure `check_<op>` fns in `abi/<kind>/`, called after every READY or FAILED answer of op
-    /// `slot` with that op's `in` and `out`; `false` is FAULT. The dispatcher never re-implements
-    /// them. None exist on predev yet, so the default accepts; each kind wires its own in M3.
-    fn check(slot: u32, input: *const InHead, out: *const OutHead) -> bool {
-        let _ = (slot, input, out);
-        true
+    /// The op's name, for the log line a broken rule writes.
+    fn op_name(slot: u32) -> &'static str {
+        lifecycle_name(slot)
     }
 
-    /// Whether a FAILED answer of op `slot` is SHORT (a host buffer too small; its `needed_*` say
-    /// how much). The host re-calls once, on the same ticket, with bigger buffers; a second short
-    /// answer is FAULT. The kind's `abi/<kind>/` shape says which field carries it.
-    fn short(slot: u32, out: *const OutHead) -> bool {
-        let _ = (slot, out);
+    /// THE KIND'S ANSWER VALIDATION: the kind's pure `check_<op>` in `abi/<kind>/`, run after every
+    /// READY or FAILED answer of every op. `Err` is FAULT, logged once at warn with the plugin, the
+    /// kind, the op and the rule (never a payload byte). The dispatcher never re-implements a rule.
+    /// An op whose kind states no rule beyond the mechanism's answers `Ok`.
+    ///
+    /// # Errors
+    /// The rule the answer broke.
+    fn check(answer: &Answer) -> Result<(), Fault> {
+        let _ = answer;
+        Ok(())
+    }
+
+    /// Whether a FAILED answer (that passed [`Kind::check`]) is SHORT: a host buffer too small,
+    /// its `needed_*` above the capacity given. The caller re-calls once with bigger buffers; a
+    /// second short answer on the re-call is FAULT (the short-buffer rule on `OutHead`).
+    fn short(answer: &Answer) -> bool {
+        let _ = answer;
         false
+    }
+}
+
+/// A lifecycle slot's name; `"op"` for a kind slot a kind did not name.
+pub fn lifecycle_name(slot: u32) -> &'static str {
+    use busbar_contract::abi::mechanism::lifecycle::slot as s;
+    match slot {
+        s::VALIDATE => "validate",
+        s::OPEN => "open",
+        s::REFRESH => "refresh",
+        s::RETIRE => "retire",
+        s::TICK => "tick",
+        s::DRIVE => "drive",
+        s::CANCEL => "cancel",
+        s::RELEASE => "release",
+        s::CLOSE => "close",
+        _ => "op",
     }
 }
 

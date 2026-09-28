@@ -942,8 +942,7 @@ pub fn hold_discipline(cx: &Ctx, tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, St
         ));
     }
 
-    // (e) RESTATED (ARCHITECT, construction triage 2026-09-27): the route step it used to scan is
-    // sync, so the row was vacuous. Its real subject is the dispatcher's deadline/cancel path: in
+    // (e) The route step it once scanned is sync, so the row was vacuous there. Its real subject is the dispatcher's deadline/cancel path: in
     // every function of `cancel_scope_dirs` that names a cancel or a deadline, a money hold open at
     // or after that point is released or settled BEFORE any `.await` or `return` that follows it.
     let dirs = c.list_of("cancel_scope_dirs");

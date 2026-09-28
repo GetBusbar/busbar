@@ -14,9 +14,9 @@
 #   * a row with no shape is STALE           -> RED on abi-location:ledger. A drain strikes its row
 #     in the SAME commit, so this file only ever shrinks.
 #
-# AN IMPLEMENTATION IS NOT A SHAPE (ARCHITECT, M1): an extern "C" fn whose parameter and return
+# AN IMPLEMENTATION IS NOT A SHAPE: an extern "C" fn whose parameter and return
 # types equal one of the extern "C" fn types written under abi/ (Op, DoorFn, WakeFn, the hot lane's
-# slot types, ...) implements that shape and is not counted. Drained on that ruling: the 47 kernel
+# slot types, ...) implements that shape and is not counted. Drained on that rule: the 47 kernel
 # host slot bodies, 10 plugin-loader host slots and the 9 example-plane slots.
 #
 # Key = (file, shape, item), never a line number. shape = repr-c | extern-fn | fn-ptr | version-const.

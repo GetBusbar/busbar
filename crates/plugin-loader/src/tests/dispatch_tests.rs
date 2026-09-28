@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! **THE M1 DISPATCHER, BOTH WAYS.** One test plugin LINKED (its
+//! **THE DISPATCHER, BOTH WAYS.** One test plugin LINKED (its
 //! `rlib`'s door, through [`load_linked`]) and DROPPED (its `cdylib`, through [`load_dropped`]),
 //! driven by ONE script, and the two transcripts compared byte for byte — and against the
 //! transcript the mechanism's rules require.
@@ -22,6 +22,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use busbar_contract::abi::mechanism::call::{Blob, DeadlineClass, OutHead, Outcome, BLOB_OCTETS};
+use busbar_contract::abi::mechanism::check::{fault, Fault, Rule};
 use busbar_contract::abi::mechanism::door::{Door, KindTailHead, Statement};
 use busbar_contract::abi::mechanism::lifecycle::{
     slot, OpenIn, OpenOut, OpsHead, RefreshIn, TickIn, TickOut, ValidateIn, LIFECYCLE_SLOTS,
@@ -38,7 +39,7 @@ use crate::dispatch::{
 };
 
 /// The test plugin's kind, as the dispatcher sees it: its code, the lifecycle skeleton for a table
-/// (the kind's own ops land in M3), FAILED on a timeout.
+/// (a test kind with no ops of its own), FAILED on a timeout.
 struct TestKind;
 impl Kind for TestKind {
     const CODE: KindCode = plug::KIND;
@@ -46,19 +47,18 @@ impl Kind for TestKind {
     const TIMEOUT: Outcome = Outcome::Failed;
 
     /// The test kind's `check_tick`: refuses [`plug::KIND_REJECTS`].
-    fn check(
-        slot: u32,
-        _: *const busbar_contract::abi::mechanism::call::InHead,
-        out: *const OutHead,
-    ) -> bool {
-        // SAFETY: `tick`'s `out` is a `TickOut`.
-        slot != TICK || unsafe { (*out.cast::<TickOut>()).next_tick_ns } != plug::KIND_REJECTS
+    fn check(a: &crate::dispatch::Answer) -> Result<(), Fault> {
+        if a.slot == TICK && a.out::<TickOut>()?.next_tick_ns == plug::KIND_REJECTS {
+            return Err(fault(Rule::Contradiction, "tick.next_tick_ns"));
+        }
+        Ok(())
     }
 
     /// The test kind's short answer: `tick` FAILED with [`plug::SHORT`].
-    fn short(slot: u32, out: *const OutHead) -> bool {
-        // SAFETY: as above.
-        slot == TICK && unsafe { (*out.cast::<TickOut>()).next_tick_ns } == plug::SHORT
+    fn short(a: &crate::dispatch::Answer) -> bool {
+        a.slot == TICK
+            && a.out::<TickOut>()
+                .is_ok_and(|o| o.next_tick_ns == plug::SHORT)
     }
 }
 
@@ -1005,7 +1005,7 @@ fn outhead_is_prefilled_as_fault() {
     assert_eq!(h.outcome.outcome(), Outcome::Fault);
 }
 
-// ── VALIDATE EVERY ANSWER (ARCHITECT, from the auth review): one RED arm per check ───────────────
+// ── VALIDATE EVERY ANSWER: one RED arm per check ────────────────────────────────────────
 
 #[test]
 fn red_an_answer_that_fails_validation_is_fault() {
@@ -1073,27 +1073,7 @@ fn red_one_recall_a_second_short_answer_is_fault() {
     d.recycle(t);
 }
 
-#[test]
-fn red_a_reported_count_past_its_cap_builds_no_slice() {
-    use crate::dispatch::validate::{reported_slice, Violation};
-    let buf = [7u32; 4];
-    // SAFETY: `buf` is the host buffer of capacity 4.
-    let ok = unsafe { reported_slice(buf.as_ptr(), 4, 4) };
-    assert_eq!(ok, Ok(&buf[..]));
-    // cap + 1, over a pointer no slice may ever be built from: refused before any read.
-    let dangling = std::ptr::NonNull::<u32>::dangling().as_ptr();
-    let over = unsafe { reported_slice(dangling.cast_const(), 5, 4) };
-    assert_eq!(over, Err(Violation::Count { count: 5, cap: 4 }));
-    assert_eq!(over.unwrap_err().outcome(), Outcome::Fault);
-    let null = unsafe { reported_slice::<u32>(std::ptr::null(), 1, 4) };
-    assert_eq!(null, Err(Violation::NullArray(1)));
-    assert_eq!(
-        unsafe { reported_slice::<u32>(std::ptr::null(), 0, 4) },
-        Ok(&[][..])
-    );
-}
-
-// ── EXACT VERSIONS (item 410's replacement): older, newer and a wrong magic are each refused ─────
+// ── EXACT VERSIONS: older, newer and a wrong magic are each refused ─────────────────────────────
 
 fn door_with(f: impl Fn(&mut Door)) -> Option<LoadError> {
     // SAFETY: the real door is `'static`.
@@ -1156,7 +1136,7 @@ fn red_refuses_a_wrong_magic() {
     );
 }
 
-// ── REVIEW FIXES (M1 fix-forward) ──────────────────────────────────────────────────────────────
+// ── CLOSE, TEXT CAPS, THE WATCHDOG, UNLOADS, CANCEL DISPOSITIONS ──────────────────────────────────────────────────────────────
 
 fn crossings(p: &Plugin<TestKind>) -> u64 {
     p.inner.crossings.load(std::sync::atomic::Ordering::SeqCst)

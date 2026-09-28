@@ -18,7 +18,7 @@
 //!   whose signature is NOT one of the ABI's fn types: a slot signature invented outside `abi/`.
 //!   A definition whose parameter and return types EQUAL an `extern "C…" fn(…)` pointer type
 //!   written under `abi/` (`Op`, `DoorFn`, `WakeFn`, …) is an IMPLEMENTATION of that shape, not a
-//!   shape — every plugin holds them — and is not counted (ARCHITECT ruling, M1). Types compare
+//!   shape — every plugin holds them — and is not counted. Types compare
 //!   whitespace-free with lower-case module paths dropped (`std::os::raw::c_void` = `c_void`). The
 //!   bare `extern "C" fn()` type excuses nothing: every argument-less callback would match it.
 //!   `extern "C" { … }` import blocks are not definitions and are not counted.

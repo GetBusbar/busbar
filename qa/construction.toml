@@ -1700,8 +1700,8 @@ catch_unwind_pattern = 'catch_unwind'
 hold_word = "Hold"
 abort_pattern = '\.abort\('
 forget_or_drop_pattern = '(?:mem::forget|drop)\(\s*&?\s*[A-Za-z_][A-Za-z0-9_]*[Hh]old[A-Za-z0-9_]*'
-# (e) `cancellation-before-await`, RESTATED (ARCHITECT, construction triage 2026-09-27): the kernel
-# route step it scanned is sync, so the row was vacuous. Its subject is now the M1 dispatcher's
+# (e) `cancellation-before-await`: the kernel route step it once scanned is sync, so the row was
+# vacuous there. Its subject is the plugin dispatcher's
 # deadline/cancel path: in a function of `cancel_scope_dirs` that names a cancel or a deadline, a
 # money hold (`hold_open_pattern`) is released or settled (`hold_close_pattern`) before any `.await`
 # or `return` that follows the cancel.

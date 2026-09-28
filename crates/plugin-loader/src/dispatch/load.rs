@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! ONE LOADER PATH for both origins (§11.4: compiled in or dropped in, the same table).
+//! ONE LOADER PATH for both origins (`BUSBAR-1.6.0.md` THE DESIGN, §11.4: compiled in or dropped
+//! in, the same table).
 //!
 //! [`load_dropped`] checks the manifest's mechanism version BEFORE `dlopen`, opens the library,
 //! finds [`DOOR_SYMBOL`] and runs [`validate`]; [`load_linked`] runs the SAME [`validate`] on a
@@ -29,8 +30,8 @@ use super::{host_slots, host_table_size, Kind, FIRST_SLOT};
 
 /// What a dropped plugin's signed manifest states about its door, checked before `dlopen`.
 ///
-/// M3-secret: the first kind table adds `mechanism_version`/`kind`/`kind_abi` to the signed
-/// `sign::Manifest` and removes `ManifestFacts` (ARCHITECT ruling on M1 Q1).
+/// M3-secret: the signed `sign::Manifest` gains `mechanism_version`/`kind`/`kind_abi`, and these
+/// facts are then read from it rather than handed in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ManifestFacts {
     /// The mechanism version the plugin was built against.
