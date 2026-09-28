@@ -1455,9 +1455,9 @@ fn compute_layout() -> String {
         [wire_len, frame_len, pieces_len, flags, next_deadline_ns]
     );
     record!(s, tkind::ListenIn, [head, bind, addr_buf, addr_cap]);
-    record!(s, tkind::ListenOut, [head, listener, addr_len]);
+    record!(s, tkind::ListenOut, [head, listener, addr_written]);
     record!(s, tkind::AcceptIn, [head, listener, peer_buf, peer_cap]);
-    record!(s, tkind::AcceptOut, [head, conn, peer_len]);
+    record!(s, tkind::AcceptOut, [head, conn, peer_written]);
     record!(s, tkind::DialIn, [head, dest]);
     record!(s, tkind::ConnOut, [head, conn]);
     record!(s, tkind::ReadIn, [head, conn, buf, cap]);
@@ -1469,7 +1469,7 @@ fn compute_layout() -> String {
     record!(
         s,
         tkind::ArrivalOut,
-        [head, peer_len, local_port, _reserved]
+        [head, peer_written, peer_needed, local_port, _reserved]
     );
     record!(
         s,
@@ -1486,7 +1486,15 @@ fn compute_layout() -> String {
     record!(
         s,
         tkind::LocateOut,
-        [head, authority_len, name_len, secure, _reserved]
+        [
+            head,
+            authority_written,
+            authority_needed,
+            name_written,
+            name_needed,
+            secure,
+            has_name
+        ]
     );
     record!(s, tkind::FramerOut, [head, yielded, framing]);
     record!(

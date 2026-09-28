@@ -944,7 +944,14 @@ mod transport_kind {
         addr_buf = 104,
         addr_cap = 112
     );
-    pin!(ListenOut, 112, 8, head = 0, listener = 96, addr_len = 104);
+    pin!(
+        ListenOut,
+        112,
+        8,
+        head = 0,
+        listener = 96,
+        addr_written = 104
+    );
     pin!(
         AcceptIn,
         112,
@@ -954,7 +961,7 @@ mod transport_kind {
         peer_buf = 96,
         peer_cap = 104
     );
-    pin!(AcceptOut, 112, 8, head = 0, conn = 96, peer_len = 104);
+    pin!(AcceptOut, 112, 8, head = 0, conn = 96, peer_written = 104);
     pin!(DialIn, 96, 8, head = 0, dest = 88);
     pin!(ConnOut, 104, 8, head = 0, conn = 96);
     pin!(ReadIn, 112, 8, head = 0, conn = 88, buf = 96, cap = 104);
@@ -981,12 +988,13 @@ mod transport_kind {
     );
     pin!(
         ArrivalOut,
-        112,
+        120,
         8,
         head = 0,
-        peer_len = 96,
-        local_port = 104,
-        _reserved = 108
+        peer_written = 96,
+        peer_needed = 104,
+        local_port = 112,
+        _reserved = 116
     );
     pin!(
         LocateIn,
@@ -1001,13 +1009,15 @@ mod transport_kind {
     );
     pin!(
         LocateOut,
-        120,
+        136,
         8,
         head = 0,
-        authority_len = 96,
-        name_len = 104,
-        secure = 112,
-        _reserved = 116
+        authority_written = 96,
+        authority_needed = 104,
+        name_written = 112,
+        name_needed = 120,
+        secure = 128,
+        has_name = 132
     );
     pin!(FramerOut, 136, 8, head = 0, yielded = 96, framing = 128);
     pin!(

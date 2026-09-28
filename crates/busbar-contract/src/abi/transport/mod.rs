@@ -26,8 +26,12 @@
 //! PER-CONNECTION TOKEN SPACE (B.7; the mechanism's ticket table exempts transport). A carrier
 //! connection and a framing state are each named by a plugin-minted `u64` token (`conn`, `framing`,
 //! `listener`), not by a ticket: there is no capacity cap on them and they are outside
-//! `max_inflight`. The host mints one ticket per connection for the carrier ops that may pend; only
-//! `wake` is shared.
+//! `max_inflight`. Only `wake` is shared.
+//!
+//! TWO TICKETS PER CONNECTION (P2). A connection is full-duplex, so the host holds TWO tickets for
+//! it: a READ side (`read`, `accept` on a listener) and a WRITE side (`write`, `flush`, `shut`), each
+//! with at most one op in flight. A PENDING op resumes, and a `cancel` addresses, exactly one side's
+//! ticket; the other side is untouched. `dial` and `listen` run on the ticket of the op that asked.
 //!
 //! FRAMER OUTPUT goes into HOST buffers ([`FramerSink`]): bytes owed to the far side into `wire`,
 //! frame bytes into `frame`, frame pieces (offsets into `frame`) into `pieces`. A framer that fills a
@@ -35,11 +39,20 @@
 //! drained them. A framer op never pends.
 //!
 //! EVERY REQUEST-PATH RESULT IS IN A HOST BUFFER (memory class (i)): a carrier's addresses and read
-//! bytes, a framer's wire bytes, frame bytes and pieces. An `out`'s `*_len` states what was written;
-//! a `*_len` larger than its buffer's capacity (an address, an authority, a name) means the buffer
-//! was too small: the plugin wrote nothing into it, the `*_len` is what it needs, and the host grows
-//! the buffer and calls the op once more. The tokens an `out` carries (`listener`, `conn`,
-//! `framing`) are names, not results.
+//! bytes, a framer's wire bytes, frame bytes and pieces. The `in` names pointer + capacity; the `out`
+//! states `*_written` and, where the op has a short path, `*_needed` (M-SB,
+//! [`crate::abi::mechanism::check`]): READY has `needed == 0`, `written <= cap`; a short answer is
+//! FAILED with `needed > cap`, nothing written and nothing applied, and the host calls once more.
+//!
+//! * `arrival` and `locate` compute before they act, so they have the short path.
+//! * `listen` and `accept` act (bind, take a connection) before they know the address size, so they
+//!   have NO short path (P1): the host passes `addr_cap`/`peer_cap >=` [`MAX_ADDR`] and an over-cap
+//!   `*_written` is FAULT.
+//! * `read` has no short path: it reads at most `cap`.
+//! * A framer's full sink is BACKPRESSURE, not a short buffer: READY with [`YIELD_MORE`], and the
+//!   host calls again once it has drained the sink.
+//!
+//! The tokens an `out` carries (`listener`, `conn`, `framing`) are names, not results.
 //!
 //! WHAT THE HOT-LANE `TransportDecl` BECOMES (a mechanical re-heading, B.7):
 //!
@@ -92,9 +105,8 @@
 
 pub mod check;
 
-use std::mem::size_of;
-
-use super::mechanism::call::{AbiStr, DeadlineClass, InHead, Op, OutHead};
+use super::mechanism::call::{AbiStr, InHead, Op, OutHead};
+use super::mechanism::check::{contract, OpContract};
 use super::mechanism::door::KindTailHead;
 use super::mechanism::lifecycle::{OpsHead, LIFECYCLE_SLOTS};
 
@@ -197,38 +209,9 @@ pub struct Ops {
 
 // ── the op contracts ─────────────────────────────────────────────────────────────────────────────
 
-/// One op's contract: where it runs, whether it may pend, its largest `in`/`out`, its deadline
-/// class.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct OpContract {
-    /// The slot index.
-    pub slot: u32,
-    /// `true` = on the request path; `false` = off-path.
-    pub request_path: bool,
-    /// `true` = the op may answer PENDING (on a real ticket).
-    pub may_pend: bool,
-    /// The largest `in` the host writes, in bytes.
-    pub max_in: usize,
-    /// The largest `out` the plugin writes, in bytes.
-    pub max_out: usize,
-    /// The deadline class the host stamps in `InHead::deadline_class`.
-    pub deadline: DeadlineClass,
-}
-
-/// `contract!(slot, request_path, may_pend, In, Out, class)`: one [`OpContract`], sized from its
-/// own `in`/`out` types.
-macro_rules! contract {
-    ($slot:ident, $rp:expr, $pend:expr, $in:ty, $out:ty, $class:ident) => {
-        OpContract {
-            slot: slot::$slot,
-            request_path: $rp,
-            may_pend: $pend,
-            max_in: size_of::<$in>(),
-            max_out: size_of::<$out>(),
-            deadline: DeadlineClass::$class,
-        }
-    };
-}
+/// The largest address `listen` or `accept` may write: the host's `addr_cap`/`peer_cap` is at
+/// least this (P1: those ops have no short path).
+pub const MAX_ADDR: u64 = 256;
 
 /// Every kind op's contract, in slot order. Carrier I/O pends on its connection's ticket under the
 /// carrier's idle timeout ([`DeadlineClass::Connection`]); `listen` is boot-time and off-path. A
@@ -613,8 +596,8 @@ pub struct ListenOut {
     pub head: OutHead,
     /// The listener token.
     pub listener: u64,
-    /// Bytes of `addr_buf` written.
-    pub addr_len: u64,
+    /// Bytes of `addr_buf` written (no short path: at most `addr_cap`).
+    pub addr_written: u64,
 }
 
 /// `accept`'s `in`.
@@ -639,8 +622,8 @@ pub struct AcceptOut {
     pub head: OutHead,
     /// The connection token.
     pub conn: u64,
-    /// Bytes of `peer_buf` written.
-    pub peer_len: u64,
+    /// Bytes of `peer_buf` written (no short path: at most `peer_cap`).
+    pub peer_written: u64,
 }
 
 /// `dial`'s `in`.
@@ -746,7 +729,9 @@ pub struct ArrivalOut {
     /// The head.
     pub head: OutHead,
     /// Bytes of `peer_buf` written.
-    pub peer_len: u64,
+    pub peer_written: u64,
+    /// Short answer: the bytes `peer_buf` needs.
+    pub peer_needed: u64,
     /// The local port.
     pub local_port: u32,
     /// Alignment padding.
@@ -780,13 +765,17 @@ pub struct LocateOut {
     /// The head.
     pub head: OutHead,
     /// Bytes of `authority_buf` written.
-    pub authority_len: u64,
-    /// Bytes of `name_buf` written; `u64::MAX` = no name.
-    pub name_len: u64,
+    pub authority_written: u64,
+    /// Short answer: the bytes `authority_buf` needs.
+    pub authority_needed: u64,
+    /// Bytes of `name_buf` written.
+    pub name_written: u64,
+    /// Short answer: the bytes `name_buf` needs.
+    pub name_needed: u64,
     /// `1` = the target asks for connection security.
     pub secure: u32,
-    /// Alignment padding.
-    pub _reserved: u32,
+    /// `1` = a name is offered (`name_written` bytes); `0` = none.
+    pub has_name: u32,
 }
 
 /// Every framer op's `out`.
