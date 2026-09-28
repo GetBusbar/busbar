@@ -55,10 +55,10 @@
     }
   ],
   "counts": {
-    "total": 2419,
+    "total": 2420,
     "by_plane": {
       "a2a": 468,
-      "core": 890,
+      "core": 891,
       "llm": 149,
       "mcp": 912
     },
@@ -67,7 +67,7 @@
       "admin.ops": 323,
       "auth.lifecycle": 3,
       "billing": 14,
-      "boot.refusal": 206,
+      "boot.refusal": 207,
       "boot.warning": 31,
       "cli": 14,
       "concurrency": 3,
@@ -14777,6 +14777,23 @@
         "env": {}
       },
       "why": "expect exit 2; stderr \u220b busbar: unrecognized argument '--bogus-flag'. Try 'busbar --help'.",
+      "needs_fixture": false
+    },
+    {
+      "id": "boot.refusal|BOOT-MCP-01|validate",
+      "plane": "core",
+      "family": "boot.refusal",
+      "driver": "exec",
+      "outcome": "ok",
+      "exec": {
+        "args": [
+          "--validate"
+        ],
+        "mode": "validate",
+        "config": "mutation:BOOT-MCP-01",
+        "env": {}
+      },
+      "why": "expect exit 1; stderr \u220b mcp.canonical_uri `https://gateway.example.com/api/mcp` names the path `/api/mcp",
       "needs_fixture": false
     },
     {

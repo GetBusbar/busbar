@@ -13,7 +13,7 @@ use super::config::{
     DEFAULT_MAX_STOP_SEQUENCES, DEFAULT_MAX_STOP_SEQUENCE_BYTES, DEFAULT_TEMPERATURE_MAX_MILLI,
     DEFAULT_TEMPERATURE_MIN_MILLI,
 };
-use super::{McpCfg, McpCfgError, McpResource};
+use super::{McpCfg, McpCfgError, McpResource, DEFAULT_MOUNT};
 
 fn cfg(uri: &str) -> McpCfg {
     McpCfg {
@@ -48,18 +48,57 @@ fn the_mount_and_the_metadata_path_are_derived_from_the_one_canonical_uri() {
     assert_eq!(adm.resource_metadata, r.metadata_url());
 }
 
-/// A multi-segment path survives intact, and a trailing slash does not create a second spelling of
-/// one deployment.
+/// A multi-segment path is refused (below); a trailing slash does not create a second spelling of
+/// one deployment, and the audience stays the string the operator wrote.
 #[test]
-fn a_nested_path_and_a_trailing_slash_derive_the_same_mount() {
-    let r = McpResource::from_cfg(&cfg("https://h.example/api/mcp")).unwrap();
-    assert_eq!(r.mount_path(), "/api/mcp");
-    assert_eq!(
-        r.metadata_path(),
-        "/.well-known/oauth-protected-resource/api/mcp"
-    );
-    let slashed = McpResource::from_cfg(&cfg("https://h.example/api/mcp/")).unwrap();
-    assert_eq!(slashed.mount_path(), r.mount_path());
+fn a_trailing_slash_derives_the_same_mount() {
+    let bare = format!("https://h.example{DEFAULT_MOUNT}");
+    let slashed = format!("{bare}/");
+    let r = McpResource::from_cfg(&cfg(&bare)).unwrap();
+    let s = McpResource::from_cfg(&cfg(&slashed)).unwrap();
+    assert_eq!(s.mount_path(), DEFAULT_MOUNT);
+    assert_eq!(s.mount_path(), r.mount_path());
+    assert_eq!(s.metadata_path(), r.metadata_path());
+    assert_eq!(s.canonical_uri(), slashed);
+}
+
+/// CG-17: THE MOUNT IS FIXED, NOT OPERATOR-CONFIGURABLE. The design rules that inbound paths are
+/// compile-time claims, and a configured address naming a path nothing claims refuses boot at
+/// validation.
+///
+/// Such an address used to be accepted: the process advertised that path in its `401` challenge and
+/// bound every token's audience to it, while the claim table served another — a deployment its
+/// clients can never reach. It is a boot refusal now, and the refusal says what to type. Paths
+/// differ by case, so an upper-cased mount is another path, and so is a nested one.
+#[test]
+fn a_canonical_uri_naming_any_other_path_is_refused_at_boot() {
+    let upper = DEFAULT_MOUNT.to_uppercase();
+    let cases = [
+        format!("/api{DEFAULT_MOUNT}"),
+        format!("{DEFAULT_MOUNT}/v2"),
+        format!("{DEFAULT_MOUNT}-staging"),
+        "/tools".to_string(),
+        upper,
+    ];
+    for path in &cases {
+        for uri in [
+            format!("https://h.example{path}"),
+            format!("https://h.example{path}/"),
+        ] {
+            let err = McpResource::from_cfg(&cfg(&uri))
+                .expect_err(&format!("`{uri}` names `{path}`, which nothing claims"));
+            assert_eq!(
+                err.to_string(),
+                format!(
+                    "mcp.canonical_uri `{uri}` names the path `{path}`, but the MCP endpoint is \
+                     served only at `{DEFAULT_MOUNT}`; the path is fixed, not configurable. Keep the \
+                     scheme, host and port and end the URI in `{DEFAULT_MOUNT}`. Example: \
+                     `https://gateway.example.com{DEFAULT_MOUNT}`"
+                ),
+                "`{uri}`"
+            );
+        }
+    }
 }
 
 /// The canonical URI is NOT normalised, only recognised. It is compared byte-for-byte against the
@@ -68,9 +107,10 @@ fn a_nested_path_and_a_trailing_slash_derive_the_same_mount() {
 /// turning a correct client into a refused one, for a reason nothing logs.
 #[test]
 fn the_canonical_uri_is_preserved_verbatim_rather_than_normalised() {
-    let r = McpResource::from_cfg(&cfg("https://Gateway.Example.COM:443/MCP")).unwrap();
-    assert_eq!(r.canonical_uri(), "https://Gateway.Example.COM:443/MCP");
-    assert_eq!(r.mount_path(), "/MCP");
+    let uri = format!("https://Gateway.Example.COM:443{DEFAULT_MOUNT}");
+    let r = McpResource::from_cfg(&cfg(&uri)).unwrap();
+    assert_eq!(r.canonical_uri(), uri);
+    assert_eq!(r.mount_path(), DEFAULT_MOUNT);
 }
 
 /// Every refusal arm, with the exact error, because a boot refusal that names the wrong field sends

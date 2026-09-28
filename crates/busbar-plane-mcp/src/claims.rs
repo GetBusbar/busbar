@@ -66,7 +66,10 @@ const SCHEME: &str = "mcp-inbound";
 /// place it belongs instead: its own claim declares no scheme.
 const SCHEME_ALTS: &[&str] = &["bearer", "environment"];
 
-/// The path this protocol is served at when the configured address has no other.
+/// The ONE path this protocol is served at. It is fixed, not operator-configurable: a plane's
+/// inbound paths are its own compile-time claims, so a configured address naming any other path is
+/// refused at validation (CG-17), and the validation reads this constant rather than a second
+/// spelling of it.
 ///
 /// Named here as a constant so the one place it is written down is findable, and so the test that
 /// pins it against the codec has something to compare.

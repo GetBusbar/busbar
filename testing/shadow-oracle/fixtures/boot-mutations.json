@@ -4111,6 +4111,29 @@
       "notes": "1.6.0, no 1.5.5 inventory row: the BOOT-mode twin of BOOT-152. 1.5.5 refused this config under --validate and DEGRADED it at boot to an empty key (BOOT-W16/W17, exit 0); 1.6.0 refuses in both modes (appbuild.rs, diag BUSBAR-8020), so a provider credential that cannot resolve can no longer start a lane that could only ever 401. Suffixed `b` rather than given a fresh number because it drives the same inventory row's config as BOOT-152, in the other mode. The message names the provider and the reference and never the value. Recorder must not export the var. Will report missing.golden until the 1.5.5 golden is re-recorded \u2014 1.5.5 has no such refusal to record, and the 1.5.5 BEHAVIOUR for this config is already recorded, and registered as a break, at BOOT-W16/W17."
     },
     {
+      "id": "BOOT-MCP-01",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [
+        {
+          "set": "mcp",
+          "value": {
+            "canonical_uri": "https://gateway.example.com/api/mcp",
+            "authorization_servers": [
+              "https://login.example.com"
+            ]
+          }
+        }
+      ],
+      "expect": {
+        "exit": 1,
+        "stderr_contains": "mcp.canonical_uri `https://gateway.example.com/api/mcp` names the path `/api/mcp`, but the MCP endpoint is served only at `/mcp`",
+        "stdout_contains": null
+      },
+      "notes": "1.6.0, no 1.5.5 inventory row (the mcp plane is new in 1.6.0, so there is no 1.5.5 golden and this cell is UNBASELINED until the 1.6.0 cut records one). SPEC cell for BUSBAR-1.6.0 THE DESIGN section 2, CG-17: the mcp mount is fixed at `/mcp`, and a configured address naming any other path refuses boot at validation (McpResource::from_cfg). The baseline's auth.chain is [keys], so the mcp-needs-a-chain refusal does not fire first. The message names the configured URI and the path it named, and says what to type."
+    },
+    {
       "id": "BOOT-153",
       "family": "boot.refusal",
       "mode": "boot",

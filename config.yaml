@@ -325,8 +325,8 @@ pools:
 #
 # mcp:
 #   # The RFC 8707 resource indicator. This is THE audience every inbound token must carry, compared
-#   # for exact equality — and the endpoint's mount path is DERIVED from it (`/mcp` here), so the
-#   # path a client posts to and the identifier its token is bound to cannot drift apart. It is
+#   # for exact equality. Its path MUST be `/mcp`: the endpoint is served there and nowhere else,
+#   # and a URI naming any other path refuses boot. The scheme, host and port are yours. It is
 #   # configured rather than taken from the request's Host header on purpose: deriving it from the
 #   # request would let a caller choose its own audience, which is the whole defence, undone.
 #   canonical_uri: "https://gateway.example.com/mcp"
