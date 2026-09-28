@@ -12,7 +12,7 @@ use std::mem::{align_of, offset_of, size_of};
 use busbar_contract::abi::mechanism::call::{
     AbiStr, Blob, Diag, Envelope, InHead, MetricEntry, OutHead, RawOutcome,
 };
-use busbar_contract::abi::mechanism::door::{Door, MetricFamily, Statement};
+use busbar_contract::abi::mechanism::door::{Door, KindTailHead, MetricFamily, Statement};
 use busbar_contract::abi::mechanism::lifecycle::{
     CancelIn, CancelOut, DriveIn, GenIn, OpenIn, OpenOut, OpsHead, ReleaseIn, TickIn, TickOut,
     ValidateIn,
@@ -154,6 +154,7 @@ fn the_door_and_the_statement_have_their_stated_layout() {
 
 #[test]
 fn tickets_and_host_tables_have_their_stated_layout() {
+    pin!(KindTailHead, 8, 4, [size = 0, _reserved = 4]);
     pin!(Ticket, 8, 4, [slot = 0, generation = 4]);
     pin!(
         CompletionHandle,

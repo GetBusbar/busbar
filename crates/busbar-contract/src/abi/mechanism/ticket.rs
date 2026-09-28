@@ -17,7 +17,9 @@ use std::os::raw::c_void;
 
 use crate::abi::host::conn::ConnSlots;
 
-/// A ticket: `(slot, generation)`.
+/// A ticket: `(slot, generation)`. UNIQUE PER INSTANCE across all workers, so a plugin may key its
+/// per-ticket state by the whole `Ticket`. The encoding of `slot` is HOST-PRIVATE (a host may pack a
+/// worker and an index into it); a plugin never decodes it.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Ticket {

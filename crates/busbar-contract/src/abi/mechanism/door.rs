@@ -93,8 +93,18 @@ pub struct Statement {
     pub diag_ids: *const AbiStr,
     /// How many.
     pub diag_ids_len: usize,
-    /// The kind's own Statement tail (`abi/<kind>/`); NULL = none.
-    pub kind_tail: *const std::os::raw::c_void,
+    /// The kind's own Statement tail (`abi/<kind>/`), leading with a [`KindTailHead`]; NULL = none.
+    pub kind_tail: *const KindTailHead,
     /// The Statement's extensions.
     pub extensions: Blob,
+}
+
+/// The head every kind's Statement tail leads with.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct KindTailHead {
+    /// `size_of` the whole kind tail.
+    pub size: u32,
+    /// Alignment padding.
+    pub _reserved: u32,
 }

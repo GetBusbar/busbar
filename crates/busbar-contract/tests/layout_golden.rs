@@ -30,7 +30,8 @@ use busbar_contract::abi::mechanism::call::{
     InHead as MechInHead, MetricEntry as MechMetricEntry, OutHead as MechOutHead,
 };
 use busbar_contract::abi::mechanism::door::{
-    Door as MechDoor, MetricFamily as MechMetricFamily, Statement as MechStatement,
+    Door as MechDoor, KindTailHead as MechKindTailHead, MetricFamily as MechMetricFamily,
+    Statement as MechStatement,
 };
 use busbar_contract::abi::mechanism::lifecycle::{
     CancelIn as MechCancelIn, CancelOut as MechCancelOut, DriveIn as MechDriveIn,
@@ -942,6 +943,7 @@ fn compute_layout() -> String {
             extensions
         ]
     );
+    record!(s, MechKindTailHead, [size, _reserved]);
     record!(s, MechTicket, [slot, generation]);
     record!(s, MechCompletionHandle, [ticket, seq, _reserved]);
     record!(s, MechHostCtx, [ptr]);
@@ -1003,6 +1005,11 @@ fn abi_layout_matches_golden() {
          `BUSBAR_UPDATE_GOLDEN=1 cargo test -p busbar-plugin`.\n"
     );
 
+    assert!(
+        compare(&existing, &actual).is_ok(),
+        "{}",
+        compare(&existing, &actual).unwrap_err()
+    );
     assert_eq!(
         existing, actual,
         "\nABI LAYOUT DRIFT: a POD field offset/size changed.\n\
@@ -1011,4 +1018,37 @@ fn abi_layout_matches_golden() {
          If it is a REORDER/RESIZE/INSERT, that is a MAJOR airlock break — do not re-seed \
          without bumping ABI_MAJOR.\n"
     );
+}
+
+/// THE COMPARATOR: the golden and the layout agree line for line, or the first line that differs is
+/// named.
+fn compare(existing: &str, actual: &str) -> Result<(), String> {
+    if existing == actual {
+        return Ok(());
+    }
+    let e: Vec<&str> = existing.lines().collect();
+    let a: Vec<&str> = actual.lines().collect();
+    for i in 0..e.len().max(a.len()) {
+        if e.get(i) != a.get(i) {
+            return Err(format!(
+                "ABI LAYOUT DRIFT at golden line {}: golden {:?}, layout {:?}",
+                i + 1,
+                e.get(i),
+                a.get(i)
+            ));
+        }
+    }
+    Err("ABI LAYOUT DRIFT: the golden and the layout differ in line endings".to_string())
+}
+
+/// RED ARM: one perturbed golden line (the mechanism door's `kind_abi` offset) fails the comparator.
+#[test]
+fn a_perturbed_golden_line_fails_the_comparator() {
+    let actual = compute_layout();
+    assert!(compare(&actual, &actual).is_ok());
+    let line = "MechDoor.kind_abi=20";
+    assert!(actual.lines().any(|l| l == line), "the golden holds {line}");
+    let perturbed = actual.replacen(line, "MechDoor.kind_abi=24", 1);
+    let err = compare(&perturbed, &actual).expect_err("a perturbed line must fail");
+    assert!(err.contains("MechDoor.kind_abi=24"), "{err}");
 }

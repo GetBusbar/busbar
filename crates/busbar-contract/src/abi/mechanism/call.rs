@@ -221,19 +221,28 @@ pub struct Envelope {
 
 /// The head of every `out` of every kind. Host-owned; the host initialises it before the call.
 ///
-/// OUT-MEMORY LIFETIME. Every pointer a plugin writes into an `out` (the error string, the
-/// envelope's arrays, a kind's reply slices) points to plugin-owned memory that stays valid until the
-/// NEXT op on the same ticket, or until `release(lease)` when the `out` handed a non-zero lease —
-/// whichever the kind names. After that the host must not read it; the host copies what it keeps
-/// before then. Door and Statement memory is `'static`. Snapshot data a kind publishes at `refresh`
-/// stays valid until `retire` of that generation.
+/// MEMORY, FOUR CLASSES (the design: plugin-owned memory is valid to its next refresh generation):
+/// (i) REQUEST-PATH RESULTS go into HOST-owned buffers the kind's `in`/`out` names as pointer +
+/// capacity; the plugin writes at most the capacity and never hands back a pointer for a result.
+/// (ii) GENERATION DATA — the Statement, and snapshots a plugin publishes at `open`/`refresh` — stays
+/// valid until `retire` of that generation. Door memory is `'static`.
+/// (iii) PER-CALL `OutHead.error` and the `Envelope` arrays stay valid until the NEXT op on the same
+/// ticket. On [`Ticket::NONE`] they are valid only until the op returns: the
+/// host copies them before it makes any other call on that thread.
+/// (iv) OFF-PATH LISTS AND SECRETS are held under a lease until `release(lease)`.
+/// SIZES: the plugin writes at most `min(out.size, its own size of the struct)` bytes of an `out`,
+/// never reads an `in` beyond `in.size`, and reads an absent tail field as zero.
+/// FIXED ELEMENTS: the element layouts of [`MetricEntry`], [`Diag`],
+/// [`super::door::MetricFamily`] and [`AbiStr`] are fixed by [`super::MECHANISM_VERSION`]; arrays of them
+/// carry no stride, so growing one is a mechanism bump.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct OutHead {
     /// `size_of` the `out` struct the plugin wrote (the plugin writes back its own).
     pub size: u32,
     /// [`RawOutcome`], mirrored from the return value. The RETURN VALUE is authoritative: the
-    /// dispatcher treats an `outcome` that differs from it as [`Outcome::Fault`].
+    /// dispatcher treats an `outcome` that differs from it as [`Outcome::Fault`]. [`Outcome::Pending`]
+    /// answered on a [`Ticket::NONE`] call is [`Outcome::Fault`].
     pub outcome: RawOutcome,
     /// Alignment padding.
     pub _reserved: [u8; 3],

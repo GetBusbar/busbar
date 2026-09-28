@@ -1,0 +1,194 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+
+//! THE MECHANISM'S LAYOUT, PINNED AT COMPILE TIME: the size, alignment and every field offset of
+//! every `#[repr(C)]` type under `abi/mechanism/` and every kind table, as `const` assertions, so a
+//! drift fails the build of every target rather than one test run. The numbers are the 64-bit
+//! layout (every target busbar ships); a 32-bit build fails here, by design. `tests/golden/abi-layout.golden` records the same numbers.
+
+use std::mem::{align_of, offset_of, size_of};
+
+use super::call::{AbiStr, Blob, Diag, Envelope, InHead, MetricEntry, OutHead, RawOutcome};
+use super::door::{Door, KindTailHead, MetricFamily, Statement};
+use super::lifecycle::{
+    CancelIn, CancelOut, DriveIn, GenIn, OpenIn, OpenOut, OpsHead, ReleaseIn, TickIn, TickOut,
+    ValidateIn,
+};
+use super::ticket::{CompletionHandle, HostCtx, HostTables, Ticket};
+
+/// `pin!(T, size, align, field = offset, …)`: a compile-time layout assertion.
+macro_rules! pin {
+    ($t:ty, $size:expr, $align:expr $(, $f:ident = $off:expr)* $(,)?) => {
+        const _: () = {
+            assert!(size_of::<$t>() == $size);
+            assert!(align_of::<$t>() == $align);
+            $(assert!(offset_of!($t, $f) == $off);)*
+        };
+    };
+}
+
+pin!(RawOutcome, 1, 1);
+pin!(AbiStr, 16, 8, ptr = 0, len = 8);
+pin!(Blob, 24, 8, ptr = 0, len = 8, fmt = 16, flags = 20);
+pin!(
+    InHead,
+    72,
+    8,
+    size = 0,
+    op = 4,
+    flags = 8,
+    deadline_class = 12,
+    _reserved = 13,
+    host = 16,
+    ticket = 24,
+    deadline_ns = 32,
+    trace_id = 40,
+    extensions = 48
+);
+pin!(
+    MetricEntry,
+    32,
+    8,
+    family_idx = 0,
+    kind = 4,
+    _reserved = 5,
+    value = 8,
+    label_vals = 16,
+    label_vals_len = 24
+);
+pin!(
+    Diag,
+    24,
+    8,
+    id_idx = 0,
+    severity = 4,
+    _reserved = 5,
+    text = 8
+);
+pin!(
+    Envelope,
+    32,
+    8,
+    metrics = 0,
+    metrics_len = 8,
+    diags = 16,
+    diags_len = 24
+);
+pin!(
+    OutHead,
+    96,
+    8,
+    size = 0,
+    outcome = 4,
+    _reserved = 5,
+    wake_at_ns = 8,
+    lease = 16,
+    error = 24,
+    envelope = 40,
+    extensions = 72
+);
+pin!(
+    Door,
+    40,
+    8,
+    magic = 0,
+    mechanism_version = 8,
+    size = 12,
+    kind = 16,
+    kind_abi = 20,
+    statement = 24,
+    ops = 32
+);
+pin!(
+    MetricFamily,
+    72,
+    8,
+    name = 0,
+    help = 16,
+    unit = 32,
+    label_keys = 48,
+    label_keys_len = 56,
+    kind = 64,
+    _reserved = 65
+);
+pin!(
+    Statement,
+    112,
+    8,
+    size = 0,
+    kind = 4,
+    kind_abi = 8,
+    max_inflight = 12,
+    name = 16,
+    version = 32,
+    families = 48,
+    families_len = 56,
+    diag_ids = 64,
+    diag_ids_len = 72,
+    kind_tail = 80,
+    extensions = 88
+);
+pin!(KindTailHead, 8, 4, size = 0, _reserved = 4);
+pin!(Ticket, 8, 4, slot = 0, generation = 4);
+pin!(CompletionHandle, 16, 4, ticket = 0, seq = 8, _reserved = 12);
+pin!(HostCtx, 8, 8, ptr = 0);
+pin!(
+    HostTables,
+    32,
+    8,
+    size = 0,
+    _reserved = 4,
+    ctx = 8,
+    wake = 16,
+    conns = 24
+);
+pin!(
+    OpsHead,
+    80,
+    8,
+    size = 0,
+    slots = 4,
+    validate = 8,
+    open = 16,
+    refresh = 24,
+    retire = 32,
+    tick = 40,
+    drive = 48,
+    cancel = 56,
+    release = 64,
+    close = 72
+);
+pin!(ValidateIn, 96, 8, head = 0, settings = 72);
+pin!(
+    OpenIn,
+    128,
+    8,
+    head = 0,
+    host = 72,
+    settings = 80,
+    secrets = 104,
+    secrets_len = 112,
+    generation = 120
+);
+pin!(OpenOut, 104, 8, head = 0, instance = 96);
+pin!(GenIn, 80, 8, head = 0, generation = 72);
+pin!(TickIn, 80, 8, head = 0, now_ns = 72);
+pin!(TickOut, 104, 8, head = 0, next_tick_ns = 96);
+pin!(DriveIn, 80, 8, head = 0, driver = 72);
+pin!(CancelIn, 80, 8, head = 0, ticket = 72);
+pin!(
+    CancelOut,
+    104,
+    8,
+    head = 0,
+    disposition = 96,
+    _reserved = 100
+);
+pin!(ReleaseIn, 80, 8, head = 0, lease = 72);
+pin!(crate::abi::store::Ops, 80, 8, head = 0);
+pin!(crate::abi::secret::Ops, 80, 8, head = 0);
+pin!(crate::abi::auth::Ops, 80, 8, head = 0);
+pin!(crate::abi::hook::Ops, 80, 8, head = 0);
+pin!(crate::abi::export::Ops, 80, 8, head = 0);
+pin!(crate::abi::plane::Ops, 80, 8, head = 0);
+pin!(crate::abi::transport::Ops, 80, 8, head = 0);
