@@ -368,6 +368,7 @@ Each of these is an owner-accepted difference from 1.5.5: additive, or strictly 
   Both now surface a real error to the client, record the upstream fault on the breaker, and are
   not billed as completions. The content-moderation `ERROR_TOXIC` stop is untouched: a safety
   refusal is a correctly-served response and must not fault a lane. No successful stream changes.
+- **An admin-auth provider is judged by its module, not by its name.** A provider defined under another name with `module: admin-tokens` (e.g. `ops: { module: admin-tokens, token: ... }`) admitted nobody in 1.5.5 — every admin request was a 401 — and now authenticates the operator token; a provider named `admin-tokens` that is backed by another module was never asked in 1.5.5 and is now consulted, under its own `max_admin_scope`. A config that names the operator credential as `admin-tokens: { module: admin-tokens }`, or leaves `admin_auth` at its default, is unchanged.
 - **/metrics families are emitted in a stable sorted order.** 1.5.5 printed the exposition's
   families, and the series inside each family, in its recorder's hash order, so the same metrics
   could scrape to different bytes from one boot to the next. Families now come out by name and
@@ -389,7 +390,10 @@ instead, because each waives only a caller-additive or documentation-only surfac
 money or status class: F-003 — the CLI `--help`/`--version` text is a parseable contract surface —
 and F-011c — `openapi.json`'s overlay-delete endpoint prose, registered breaking only because the
 oracle tool cannot leaf-correct a string under a `paths` key, not because the endpoint's behaviour
-changed. A reader counting `kind: breaking` rows in the register will find ten, not eight.)
+changed. A reader counting `kind: breaking` rows in the register will find ten, not eight. One
+further entry, AUTH-ROW's, is also registered `breaking` and presented under Improvements: the
+differ accepts a `status` class on no other kind, and what it waives is a misconfigured admin-auth
+provider that answered 401 now authenticating.)
 Everything else that touches a 1.5.5 config, request or plugin is named above
 as an improvement or does not exist: a config written for 1.5.5 boots, validates and migrates
 identically, and every 1.5.5 key and minted secret carries over.
