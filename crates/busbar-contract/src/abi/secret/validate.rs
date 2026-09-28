@@ -115,7 +115,7 @@ mod tests {
         }
     }
 
-    /// RED: a READY answer with a well-formed absent secret passes.
+    /// A READY answer with a well-formed absent secret passes.
     #[test]
     fn ready_with_no_secret_passes() {
         assert!(check_resolve(&base_out()).is_ok());
