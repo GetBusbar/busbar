@@ -137,14 +137,14 @@ fn the_metadata_document_is_the_one_open_route_and_the_endpoint_is_not() {
         if path == crate::a2a::serve::METADATA_PATH {
             assert_eq!(
                 *auth,
-                busbar_contract::abi::cold::endpoint::RouteAuth::None,
+                RouteAuth::None,
                 "the discovery document must be readable without a token"
             );
         }
         if path.starts_with("/a2a/agents") {
             assert_eq!(
                 *auth,
-                busbar_contract::abi::cold::endpoint::RouteAuth::Key,
+                RouteAuth::Key,
                 "{path} must take the data-plane bar"
             );
         }
