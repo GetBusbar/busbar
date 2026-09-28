@@ -631,7 +631,7 @@ because = "ARCHITECT ruling on the kernel budget (R-KERNEL, sd-extra.txt; K2-0 u
 # RE-ARMED 24063 -> 24079, AT THE MEASUREMENT (OWNER RULING Q68(3)), in its own commit after
 # M1 DISPATCH (abi check::reported, one definition, +16); the live declaration above carries the
 # measure.
-contract_caps = 24079
+contract_caps = 24063
 # REPOINTED, and the repoint is what makes this row a gate again. It named the CRATE
 # `busbar-grammar`, which #40 folded into `busbar-contract` and deleted — so it summed nothing,
 # measured nothing and passed, which is this file's own "zero is not clean" failure sitting inside
@@ -1277,7 +1277,7 @@ contract_crate = "busbar-contract"
 # store's 47 + plane's 6 + transport's 18 kind ops, no shape/layout change).
 # RE-ARMED 24063 -> 24079 with its pair (OWNER RULING Q68(3); M1 DISPATCH's abi check::reported,
 # +16).
-caps_contract_ceiling = 24079
+caps_contract_ceiling = 24063
 unit_crate_glob = "busbar-unit-*"
 # RE-KEYED on cherry-pick onto 143db6db6: this commit's own delta is -53 (two units stopped
 # declaring their own copies), measured against whatever unit_total_ceiling read when the line was
