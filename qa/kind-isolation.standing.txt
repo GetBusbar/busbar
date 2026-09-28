@@ -18,9 +18,11 @@ kind-isolation:matrix	instance-ratchet	busbar-kernel × secret	55
 kind-isolation:matrix	instance-ratchet	busbar-plugin-loader × secret	9
 kind-isolation:matrix	measurement-disagreement	busbar-kernel × plane	1656
 kind-isolation:matrix	measurement-disagreement	busbar-kernel × transport	1813
+kind-isolation:matrix	measurement-disagreement	busbar-plane-llm × transport	792
 kind-isolation:matrix	ratchet	busbar × cleanliness	206
 kind-isolation:matrix	ratchet	busbar × hooks	16
 kind-isolation:matrix	ratchet	busbar × kernel	1295
+kind-isolation:matrix	ratchet	busbar × plane	1112
 kind-isolation:matrix	ratchet	busbar × plugin-tooling	96
 kind-isolation:matrix	ratchet	busbar × store	9
 kind-isolation:matrix	ratchet	busbar-contract × plane	219
@@ -36,15 +38,16 @@ kind-isolation:matrix	ratchet	busbar-kernel-identity × transport	12
 kind-isolation:matrix	ratchet	busbar-kernel-ledger × kernel	10
 kind-isolation:matrix	ratchet	busbar-kernel-scope × transport	8
 kind-isolation:matrix	ratchet	busbar-llm × contract	529
-kind-isolation:matrix	ratchet	busbar-llm × plane	827
+kind-isolation:matrix	ratchet	busbar-llm × plane	1076
 kind-isolation:matrix	ratchet	busbar-mcp × cleanliness	5
 kind-isolation:matrix	ratchet	busbar-mcp × plane	4022
 kind-isolation:matrix	ratchet	busbar-mcp × plugin-tooling	10
 kind-isolation:matrix	ratchet	busbar-oauth2 × transport	77
-kind-isolation:matrix	ratchet	busbar-plane-llm × plane	12
+kind-isolation:matrix	ratchet	busbar-plane-llm × plane	600
+kind-isolation:matrix	ratchet	busbar-plane-llm × transport	792
 kind-isolation:matrix	ratchet	busbar-plane-mcp × legacy	11
-kind-isolation:matrix	ratchet	busbar-plane-streaming × plane	67
-kind-isolation:matrix	ratchet	busbar-plane-streaming × transport	109
+kind-isolation:matrix	ratchet	busbar-plane-streaming × plane	86
+kind-isolation:matrix	ratchet	busbar-plane-streaming × transport	128
 kind-isolation:matrix	ratchet	busbar-plugin-loader × hooks	3
 kind-isolation:matrix	ratchet	busbar-plugin-loader × kernel	42
 kind-isolation:matrix	ratchet	busbar-plugin-loader × plane	63
@@ -140,12 +143,15 @@ kind-isolation:matrix	vendor-name	busbar crates/busbar/tests/thread_per_core_ser
 kind-isolation:matrix	vendor-name	busbar crates/busbar/tests/transport_dropped_in_serves.rs	1
 kind-isolation:matrix	vendor-name	busbar-hooks-ranking crates/hooks-ranking/src/tests/lib_tests.rs	1
 kind-isolation:matrix	vendor-name	busbar-hooks-ranking crates/hooks-ranking/tests/determinism.rs	1
+kind-isolation:test-deps	new-forbidden-edge	legacy -> plane	1
 kind-isolation:test-deps	unlisted-dep-edge	cleanliness -> kernel	1
 kind-isolation:test-deps	unlisted-dep-edge	cleanliness -> legacy	3
 kind-isolation:test-deps	unlisted-dep-edge	cleanliness -> store	1
 kind-isolation:test-deps	unlisted-dep-edge	kernel -> contract	1
 kind-isolation:test-deps	unlisted-dep-edge	legacy -> cleanliness	2
+kind-isolation:test-deps	unlisted-dep-edge	legacy -> plane	1
 kind-isolation:test-deps	unlisted-dep-edge	plugin-tooling -> contract	1
 kind-isolation:test-deps	unlisted-dep-edge	root -> cleanliness	1
 kind-isolation:test-deps	unlisted-dep-edge	root -> contract	1
 kind-isolation:test-deps	unlisted-dep-edge	root -> legacy	3
+kind-isolation:test-deps	unlisted-transitional	crates/busbar-llm	1
