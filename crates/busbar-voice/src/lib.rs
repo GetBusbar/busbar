@@ -45,6 +45,9 @@ pub use busbar_plane_streaming::codec::ir;
 /// reaches the owned grammar whether or not the live session pump is compiled in.
 pub mod config;
 
+// The streaming plane's `streams:` grammar, which `config` carries into the kernel's registry.
+use busbar_plane_streaming::config as plane_config;
+
 pub use busbar_plane_streaming::diagnostics;
 
 /// THE VOICE PLANE'S PLANE-CONTRIBUTED DIAGNOSTICS — the `&'static [&'static Diagnostic]` the
