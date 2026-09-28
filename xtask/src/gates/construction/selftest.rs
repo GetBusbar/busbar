@@ -1696,27 +1696,41 @@ fn vocabulary_cases<'a>(gate: &'a dyn Gate, cx: &Ctx, base: &Overlay) -> Report<
         "pub fn planted_take_and_settle() {\n    let hold = cell.take(token);\n    if x { return; \
          }\n    hold.settle(token);\n}\n\npub fn planted_catch() {\n    let h: Hold = make();\n    \
          let _ = catch_unwind(|| ());\n}\n\npub fn planted_abort() {\n    handle.abort();\n}\n\npub \
-         fn planted_forget() {\n    mem::forget(planted_hold_value);\n}\n\npub async fn route() \
-         {\n    let _ = planted_thing().await;\n}\n",
+         fn planted_forget() {\n    mem::forget(planted_hold_value);\n}\n",
     );
     r.push(prove_red(
         cx,
         gate,
-        "the hold discipline is broken all five ways in one planted file",
+        "the hold discipline is broken four ways in one planted file",
         &[
             "hold-discipline:no-early-exit",
             "hold-discipline:no-catch-unwind-capture",
             "hold-discipline:no-join-abort",
             "hold-discipline:no-forget-or-drop",
-            "hold-discipline:cancellation-before-await",
         ],
         ov,
         &[
             "planted_take_and_settle at",
             "planted_catch at",
             "zz_planted_hold.rs",
-            "route at",
         ],
+    ));
+
+    // The fifth, where its subject is: a dispatcher cancel path that AWAITS while a money hold is
+    // open (the hold is settled only after the await).
+    let mut ov = on(base);
+    ov.set(
+        "crates/plugin-loader/src/dispatch/zz_planted_cancel.rs",
+        "pub async fn planted_cancel_path(t: Token) {\n    let hold = Hold::open(t, p, 0);\n    \
+         cancel_op(slot::CANCEL);\n    planted_io().await;\n    hold.settle(t);\n}\n",
+    );
+    r.push(prove_red(
+        cx,
+        gate,
+        "a dispatcher cancel path awaits with a money hold open",
+        &["hold-discipline:cancellation-before-await"],
+        ov,
+        &["planted_cancel_path at"],
     ));
 
     // THE PLANT GOES WHERE THE RULES' SCOPE IS. It planted into a `busbar-unit-*` crate; fold F14

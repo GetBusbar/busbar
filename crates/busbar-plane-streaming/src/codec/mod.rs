@@ -36,17 +36,13 @@ pub mod ir;
 /// so its in-crate path is the one the runtime half still spells, and the move is invisible to
 /// every caller.
 ///
-/// UNGATED BY THIS FOLD (owner ruling R7, 2026-09-27, THE DESIGN section 9/#39: no `busbar-*-codec` crate;
-/// folded into `busbar-plane-streaming` as a pure move). It used to sit behind this crate's own
-/// `runtime` feature, forwarded from `busbar-voice`'s `runtime`, so that `busbar_voice::topology`
-/// stayed OFF by default exactly as before the split. `busbar-plane-streaming` declares NO features
-/// on purpose (a plane compiled two ways is two planes), so there is no feature left to gate this
-/// on — and none is needed: the grammar is a total function from a frame to an IR event and back,
-/// pulling nothing beyond `serde`/`bytes` (both already unconditional here), so making it
-/// unconditional adds no dependency and no I/O to this pure kind's closure. `busbar-voice`'s OWN
-/// `#[cfg(feature = "runtime")]` on its `topology` module (unchanged) is what still keeps
-/// `busbar_voice::topology::twilio` OFF by default — this module simply exists for it to reach,
-/// always, the same way `codec::ir` always does.
+/// UNGATED. This crate declares NO features on purpose (a plane compiled two ways is two planes),
+/// so there is no feature to gate this on — and none is needed: the grammar is a total function
+/// from a frame to an IR event and back, pulling nothing beyond `serde`/`bytes` (both already
+/// unconditional here), so making it unconditional adds no dependency and no I/O to this pure
+/// kind's closure. The legacy engine's own `#[cfg(feature = "runtime")]` on the module that
+/// re-exports it is what keeps that engine's Twilio path OFF by default — this module simply exists
+/// for it to reach, always, the same way `codec::ir` always does.
 pub mod topology {
     pub mod twilio;
 }

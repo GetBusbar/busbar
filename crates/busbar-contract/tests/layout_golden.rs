@@ -44,8 +44,30 @@ use busbar_contract::abi::mechanism::ticket::{
     Ticket as MechTicket,
 };
 use busbar_contract::abi::{
-    auth::Ops as AuthOps, export::Ops as ExportOps, hook::Ops as HookOps, plane::Ops as PlaneOps,
-    secret::Ops as SecretOps, store::Ops as StoreOps, transport::Ops as TransportOps,
+    auth::Ops as AuthOps, plane::Ops as PlaneOps, store::Ops as StoreOps,
+    transport::Ops as TransportOps,
+};
+// M3-SHAPES (abi-v2-perkind.md B.2/B.4/B.5): the secret/hook/export kinds' own ops and shapes.
+use busbar_contract::abi::export::{
+    CheckIn as ExportCheckIn, CheckInstance as ExportCheckInstance, CheckOut as ExportCheckOut,
+    DeliverIn as ExportDeliverIn, Ops as ExportOps, Route as ExportRoute,
+    ScrapeFamily as ExportScrapeFamily, ScrapeIn as ExportScrapeIn,
+    ScrapeLabel as ExportScrapeLabel, ScrapeOut as ExportScrapeOut,
+    ScrapeSample as ExportScrapeSample, ServeIn as ExportServeIn, ServeOut as ExportServeOut,
+    StatusOut as ExportStatusOut, Tail as ExportTail,
+};
+use busbar_contract::abi::hook::{
+    BudgetBucketState as HookBudgetBucketState, CandidateDynamic as HookCandidateDynamic,
+    CandidateStatic as HookCandidateStatic, ConfigureIn as HookConfigureIn,
+    ConfigureOut as HookConfigureOut, DecideIn as HookDecideIn, DecideOut as HookDecideOut,
+    DescribeOut as HookDescribeOut, NotifyIn as HookNotifyIn, Ops as HookOps,
+    PromptView as HookPromptView, RequestView as HookRequestView, Route as HookRoute,
+    ServeIn as HookServeIn, ServeOut as HookServeOut, SignalEntry as HookSignalEntry,
+    SignalValue as HookSignalValue, StageView as HookStageView, StatusOut as HookStatusOut,
+    Tail as HookTail, TransformOut as HookTransformOut, UserView as HookUserView,
+};
+use busbar_contract::abi::secret::{
+    Ops as SecretOps, ResolveIn as SecretResolveIn, ResolveOut as SecretResolveOut,
 };
 // THE AUTH KIND (v3, design B.3): aliased, as the mechanism's are.
 use busbar_contract::abi::auth::{
@@ -57,6 +79,36 @@ use busbar_contract::abi::auth::{
     OutboundReadyIn as AuthOutboundReadyIn, OutboundReadyOut as AuthOutboundReadyOut,
     RequestFacts as AuthRequestFacts, Span as AuthSpan, StyleDecl as AuthStyleDecl,
     VerifyIn as AuthVerifyIn,
+};
+// THE PLANE AND TRANSPORT KINDS and THE HOST CONNECTOR: aliased, so the hot lane's names cannot collide.
+use busbar_contract::abi::host::conn::connector as hconn;
+use busbar_contract::abi::plane as pkind;
+use busbar_contract::abi::transport as tkind;
+// THE STORE KIND (v3): aliased with a `Store` prefix so a golden line names its kind.
+use busbar_contract::abi::store::{
+    AddUsageBatchIn as StoreAddUsageBatchIn, AddUsageIn as StoreAddUsageIn,
+    AppendBatchIn as StoreAppendBatchIn, AppendPlaneRecordIn as StoreAppendPlaneRecordIn,
+    BlobIn as StoreBlobIn, CellGrant as StoreCellGrant, CountOut as StoreCountOut,
+    GetPlaneRecordIn as StoreGetPlaneRecordIn, HeadOut as StoreHeadOut, HeadsOut as StoreHeadsOut,
+    HostBlobs as StoreHostBlobs, HostBuf as StoreHostBuf, HostBytesOut as StoreHostBytesOut,
+    HostListOut as StoreHostListOut, HostRecords as StoreHostRecords,
+    HostSessions as StoreHostSessions, IdIn as StoreIdIn, IdReasonIn as StoreIdReasonIn,
+    KeyWithCredentialIn as StoreKeyWithCredentialIn, KindBeforeIn as StoreKindBeforeIn,
+    KindIdIn as StoreKindIdIn, LeasedBlobOut as StoreLeasedBlobOut,
+    LeasedListOut as StoreLeasedListOut, LeasedStrListOut as StoreLeasedStrListOut,
+    ListPlaneRecordsIn as StoreListPlaneRecordsIn, OpBlobIn as StoreOpBlobIn,
+    OpBlobsIn as StoreOpBlobsIn, OpId as StoreOpId, PlaneRecordRow as StorePlaneRecordRow,
+    PutUsageIn as StorePutUsageIn, RecordEntry as StoreRecordEntry,
+    RecordGetIn as StoreRecordGetIn, RecordPutIn as StoreRecordPutIn,
+    RecordScanIn as StoreRecordScanIn, ReleaseItem as StoreReleaseItem,
+    ReserveIn as StoreReserveIn, ReserveOut as StoreReserveOut, SessionPutIn as StoreSessionPutIn,
+    SessionRow as StoreSessionRow, SessionsForIn as StoreSessionsForIn,
+    SliceReleaseIn as StoreSliceReleaseIn, SliceReleaseOut as StoreSliceReleaseOut,
+    StoreTail as StoreStoreTail, StreamHead as StoreStreamHead, TokenIn as StoreTokenIn,
+    U64In as StoreU64In, UnitCell as StoreUnitCell,
+    UpsertPlaneRecordIn as StoreUpsertPlaneRecordIn, UsageCell as StoreUsageCell,
+    VerdictOut as StoreVerdictOut, WindowCap as StoreWindowCap, WindowCapsIn as StoreWindowCapsIn,
+    WindowIn as StoreWindowIn,
 };
 use std::fmt::Write as _;
 
@@ -987,8 +1039,180 @@ fn compute_layout() -> String {
     record!(s, MechCancelIn, [head, ticket]);
     record!(s, MechCancelOut, [head, disposition, _reserved]);
     record!(s, MechReleaseIn, [head, lease]);
-    record!(s, StoreOps, [head]);
-    record!(s, SecretOps, [head]);
+    record!(s, StoreHostBuf, [ptr, cap]);
+    record!(s, StoreHostBlobs, [items, items_cap, bytes]);
+    record!(
+        s,
+        StoreHostBytesOut,
+        [head, found, _reserved, written, needed]
+    );
+    record!(
+        s,
+        StoreHostListOut,
+        [
+            head,
+            items_written,
+            bytes_written,
+            needed_items,
+            needed_bytes
+        ]
+    );
+    record!(s, StoreLeasedBlobOut, [head, found, _reserved, record]);
+    record!(s, StoreLeasedListOut, [head, items, items_len]);
+    record!(s, StoreLeasedStrListOut, [head, items, items_len]);
+    record!(s, StoreCountOut, [head, count]);
+    record!(s, StoreVerdictOut, [head, verdict, _reserved]);
+    record!(
+        s,
+        StoreStoreTail,
+        [head, ephemeral, durable_plane, fork_refusal, _reserved]
+    );
+    record!(s, StoreOpId, []);
+    record!(
+        s,
+        StoreUnitCell,
+        [bucket, pool, dimension, _r, class_key, amount, window_start]
+    );
+    record!(s, StoreCellGrant, [slice_id, granted, valid_until_ms]);
+    record!(
+        s,
+        StoreReserveIn,
+        [head, op_id, epoch, cells, cells_len, grants, grants_cap]
+    );
+    record!(
+        s,
+        StoreReserveOut,
+        [head, grants_len, reason, failed_cell, needed_grants]
+    );
+    record!(s, StoreReleaseItem, [slice_id, unspent]);
+    record!(
+        s,
+        StoreSliceReleaseIn,
+        [head, op_id, epoch, items, items_len, released, released_cap]
+    );
+    record!(
+        s,
+        StoreSliceReleaseOut,
+        [head, released_len, needed_released]
+    );
+    record!(s, StoreUsageCell, [bucket, window_start, delta]);
+    record!(s, StoreAddUsageBatchIn, [head, op_id, cells, cells_len]);
+    record!(s, StoreOpBlobsIn, [head, op_id, records, records_len]);
+    record!(
+        s,
+        StoreWindowCap,
+        [
+            bucket,
+            pool,
+            dimension,
+            _r,
+            class_key,
+            window_start,
+            cap,
+            config_gen
+        ]
+    );
+    record!(s, StoreWindowCapsIn, [head, op_id, caps, caps_len]);
+    record!(s, StoreIdIn, [head, id]);
+    record!(s, StoreU64In, [head, value]);
+    record!(s, StoreWindowIn, [head, bucket, window_start]);
+    record!(s, StorePutUsageIn, [head, bucket, window_start, ledger]);
+    record!(s, StoreAddUsageIn, [head, op_id, cell]);
+    record!(s, StoreBlobIn, [head, record]);
+    record!(s, StoreOpBlobIn, [head, op_id, record]);
+    record!(s, StoreKeyWithCredentialIn, [head, key, credential]);
+    record!(s, StoreKindIdIn, [head, kind, id]);
+    record!(s, StoreIdReasonIn, [head, id, reason]);
+    record!(
+        s,
+        StorePlaneRecordRow,
+        [kind, id, parent, seq, ts, disposition, _reserved, body]
+    );
+    record!(s, StoreUpsertPlaneRecordIn, [head, record]);
+    record!(s, StoreAppendPlaneRecordIn, [head, op_id, record]);
+    record!(s, StoreGetPlaneRecordIn, [head, kind, id, body]);
+    record!(
+        s,
+        StoreListPlaneRecordsIn,
+        [head, kind, selector, _reserved, parent, out]
+    );
+    record!(s, StoreKindBeforeIn, [head, kind, before]);
+    record!(s, StoreTokenIn, [head, kind, token, expires_at, now]);
+    record!(
+        s,
+        StoreAppendBatchIn,
+        [head, op_id, stream, records, records_len]
+    );
+    record!(s, StoreHeadOut, [head, seq, epoch]);
+    record!(s, StoreStreamHead, [stream, seq, epoch]);
+    record!(s, StoreHeadsOut, [head, items, items_len]);
+    record!(s, StoreSessionPutIn, [head, session, node, principal]);
+    record!(s, StoreSessionRow, [session, node]);
+    record!(s, StoreHostSessions, [items, items_cap, bytes]);
+    record!(s, StoreSessionsForIn, [head, principal, out]);
+    record!(s, StoreRecordPutIn, [head, schema, key, value]);
+    record!(s, StoreRecordGetIn, [head, schema, key, value]);
+    record!(s, StoreRecordEntry, [key, value]);
+    record!(s, StoreHostRecords, [items, items_cap, bytes]);
+    record!(
+        s,
+        StoreRecordScanIn,
+        [head, schema, prefix, limit, _reserved, out]
+    );
+    record!(
+        s,
+        StoreOps,
+        [
+            head,
+            put_key,
+            get_key,
+            list_keys,
+            delete_key,
+            scrub_key,
+            list_keys_since,
+            get_usage,
+            put_usage,
+            add_usage,
+            add_metering,
+            list_metering,
+            purge_windows_before,
+            purge_metering_before,
+            put_credential,
+            put_key_with_credential,
+            list_credentials,
+            lookup_credential_secret,
+            revoke_credential,
+            list_credentials_since,
+            append_audit,
+            list_audit,
+            add_denylist,
+            list_denylist,
+            list_audit_tail,
+            upsert_plane_record,
+            get_plane_record,
+            append_plane_record,
+            list_plane_records,
+            list_plane_record_parents,
+            purge_plane_records_before,
+            delete_plane_record,
+            redeem_plane_token,
+            plane_token_live,
+            append_batch,
+            reserve,
+            slice_release,
+            heads,
+            session_put,
+            session_remove,
+            sessions_for,
+            record_put,
+            record_get,
+            record_scan,
+            add_usage_batch,
+            add_metering_batch,
+            append_audit_batch,
+            window_caps
+        ]
+    );
     record!(
         s,
         AuthOps,
@@ -1121,11 +1345,686 @@ fn compute_layout() -> String {
         AuthFieldsOut,
         [head, fields_len, needed_fields, needed_bytes]
     );
-    record!(s, HookOps, [head]);
-    record!(s, ExportOps, [head]);
     record!(s, PlaneOps, [head]);
     record!(s, TransportOps, [head]);
 
+    // THE TRANSPORT KIND (abi/transport/) and THE HOST CONNECTOR (abi/host/conn/connector.rs).
+    record!(
+        s,
+        tkind::Ops,
+        [
+            head, listen, accept, dial, read, write, flush, shut, arrival, locate, begin, ingest,
+            emit, encode, refuse, finish, detach, adopt, timer
+        ]
+    );
+    record!(
+        s,
+        tkind::Claim,
+        [
+            key,
+            selector_forms,
+            egress_selector_forms,
+            facts,
+            facts_len,
+            status_namespace,
+            session,
+            session_bound,
+            unit0_trigger,
+            status_at,
+            _reserved
+        ]
+    );
+    record!(s, tkind::StatusRow, [claim, lo, hi, class]);
+    record!(s, tkind::SettingDecl, [path, kind, _reserved, default]);
+    record!(
+        s,
+        tkind::TransportTail,
+        [
+            head,
+            role,
+            framing,
+            facts,
+            handshake_max_steps,
+            composes_over,
+            composes_over_len,
+            claims,
+            claims_len,
+            upgrades_to,
+            upgrades_to_len,
+            handoff_from,
+            handoff_to,
+            handoff_binding_fact,
+            handshake_frame_kind,
+            status_rows,
+            status_rows_len,
+            settings,
+            settings_len
+        ]
+    );
+    record!(s, tkind::Field, [name, value]);
+    record!(
+        s,
+        tkind::Destination,
+        [kind, _reserved, authority, program, args, args_len, env, env_len]
+    );
+    record!(
+        s,
+        tkind::ConnFacts,
+        [
+            size,
+            _reserved,
+            offered_name,
+            agreed_protocol,
+            peer_subject,
+            peer_issuer,
+            peer_fingerprint,
+            claim
+        ]
+    );
+    record!(
+        s,
+        tkind::FramePiece,
+        [
+            stream,
+            offset,
+            len,
+            status_code,
+            status_class,
+            flags,
+            _reserved,
+            retry_after_secs
+        ]
+    );
+    record!(
+        s,
+        tkind::FramerSink,
+        [
+            wire,
+            wire_cap,
+            frame,
+            frame_cap,
+            pieces,
+            pieces_cap,
+            now_monotonic_ns,
+            now_unix_ns
+        ]
+    );
+    record!(
+        s,
+        tkind::FramerYield,
+        [wire_len, frame_len, pieces_len, flags, next_deadline_ns]
+    );
+    record!(s, tkind::ListenIn, [head, bind, addr_buf, addr_cap]);
+    record!(s, tkind::ListenOut, [head, listener, addr_written]);
+    record!(s, tkind::AcceptIn, [head, listener, peer_buf, peer_cap]);
+    record!(s, tkind::AcceptOut, [head, conn, peer_written]);
+    record!(s, tkind::DialIn, [head, dest]);
+    record!(s, tkind::ConnOut, [head, conn]);
+    record!(s, tkind::ReadIn, [head, conn, buf, cap]);
+    record!(s, tkind::WriteIn, [head, conn, bytes, len]);
+    record!(s, tkind::IoOut, [head, len]);
+    record!(s, tkind::ConnIn, [head, conn]);
+    record!(s, tkind::ShutIn, [head, conn, reason, _reserved]);
+    record!(s, tkind::ArrivalIn, [head, conn, peer_buf, peer_cap]);
+    record!(
+        s,
+        tkind::ArrivalOut,
+        [head, peer_written, peer_needed, local_port, _reserved]
+    );
+    record!(
+        s,
+        tkind::LocateIn,
+        [
+            head,
+            target,
+            authority_buf,
+            authority_cap,
+            name_buf,
+            name_cap
+        ]
+    );
+    record!(
+        s,
+        tkind::LocateOut,
+        [
+            head,
+            authority_written,
+            authority_needed,
+            name_written,
+            name_needed,
+            secure,
+            has_name
+        ]
+    );
+    record!(s, tkind::FramerOut, [head, yielded, framing]);
+    record!(
+        s,
+        tkind::BeginIn,
+        [head, side, _reserved, target, facts, sink]
+    );
+    record!(
+        s,
+        tkind::IngestIn,
+        [head, framing, bytes, len, end, _reserved, sink]
+    );
+    record!(
+        s,
+        tkind::EmitIn,
+        [
+            head,
+            framing,
+            stream,
+            bytes,
+            len,
+            end_of_frame,
+            _reserved,
+            sink
+        ]
+    );
+    record!(
+        s,
+        tkind::EncodeIn,
+        [head, fields, fields_len, body, body_len, sink]
+    );
+    record!(
+        s,
+        tkind::RefuseIn,
+        [head, framing, stream, has_stream, _reserved, bytes, len, sink]
+    );
+    record!(s, tkind::FinishIn, [head, framing, reason, _reserved, sink]);
+    record!(s, tkind::FramingIn, [head, framing, sink]);
+    record!(
+        s,
+        tkind::AdoptIn,
+        [head, side, _reserved, facts, leftover, leftover_len, sink]
+    );
+    // THE PLANE KIND (abi/plane/).
+    record!(
+        s,
+        pkind::Ops,
+        [head, arrive, on_piece, refusal, serve, hydrate, start]
+    );
+    record!(s, pkind::Section, [name, flags, _reserved]);
+    record!(s, pkind::DialectAuth, [dialect, _reserved, style]);
+    record!(s, pkind::OpClass, [op, name]);
+    record!(s, pkind::BillableClass, [class, family]);
+    record!(s, pkind::RouteCost, [class, _reserved, weight]);
+    record!(
+        s,
+        pkind::PlaneTail,
+        [
+            head,
+            flags,
+            ingress,
+            dispatch_shape,
+            _reserved,
+            scope,
+            label,
+            subject_noun,
+            admin_noun,
+            audit_kind,
+            signing_domain,
+            signing_kid_prefix,
+            cli_help,
+            sections,
+            sections_len,
+            dialects,
+            dialects_len,
+            dialect_auth,
+            dialect_auth_len,
+            scope_kinds,
+            scope_kinds_len,
+            op_classes,
+            op_classes_len,
+            billable_classes,
+            billable_classes_len,
+            route_cost,
+            route_cost_len,
+            fee_units,
+            fee_units_len,
+            record_kinds,
+            record_kinds_len,
+            needs,
+            needs_len,
+            egress_targets,
+            egress_targets_len
+        ]
+    );
+    record!(s, pkind::Claim, [verb, target, carrier]);
+    record!(s, pkind::AdminRoute, [verb, target]);
+    record!(
+        s,
+        pkind::PlaneSnapshot,
+        [
+            size,
+            _reserved,
+            generation,
+            claims,
+            claims_len,
+            admin_routes,
+            admin_routes_len,
+            openapi,
+            audience,
+            resource_metadata
+        ]
+    );
+    record!(s, pkind::PlaneOpenIn, [open, public_url]);
+    record!(s, pkind::PlaneOpenOut, [open, snapshot]);
+    record!(s, pkind::PlaneRefreshOut, [head, snapshot]);
+    record!(s, pkind::Field, [name, value]);
+    record!(s, pkind::UnitCount, [class, source, amount]);
+    record!(s, pkind::Span, [offset, len]);
+    record!(s, pkind::OutField, [name, value]);
+    record!(s, pkind::RecordWrite, [kind, op, key, value]);
+    record!(
+        s,
+        pkind::ArriveIn,
+        [head, claim, _reserved, target, fields, fields_len, body, units_buf, units_cap]
+    );
+    record!(
+        s,
+        pkind::ArriveOut,
+        [
+            head,
+            op_class,
+            principal_need,
+            dialect,
+            units_written,
+            units_needed,
+            _reserved
+        ]
+    );
+    record!(
+        s,
+        pkind::OnPieceIn,
+        [
+            head,
+            from,
+            flags,
+            stream,
+            bytes,
+            status_code,
+            status_class,
+            reply_buf,
+            reply_cap,
+            units_buf,
+            units_cap,
+            records_buf,
+            records_cap,
+            fields_buf,
+            fields_cap,
+            arena_buf,
+            arena_cap
+        ]
+    );
+    record!(
+        s,
+        pkind::OnPieceOut,
+        [
+            head,
+            emitted,
+            more,
+            flags,
+            reply_status,
+            fields_written,
+            fields_needed,
+            units_written,
+            units_needed,
+            records_written,
+            records_needed,
+            _reserved,
+            arena_written,
+            arena_needed
+        ]
+    );
+    record!(
+        s,
+        pkind::RefusalIn,
+        [
+            head, cause, status, dialect, _reserved, text, reply_buf, reply_cap, fields_buf,
+            fields_cap, arena_buf, arena_cap
+        ]
+    );
+    record!(
+        s,
+        pkind::RefusalOut,
+        [
+            head,
+            reply_written,
+            reply_needed,
+            arena_written,
+            arena_needed,
+            marker,
+            fields_written,
+            fields_needed,
+            _reserved
+        ]
+    );
+    record!(
+        s,
+        pkind::ServeIn,
+        [
+            head, route, _reserved, target, fields, fields_len, body, reply_buf, reply_cap,
+            fields_buf, fields_cap, arena_buf, arena_cap
+        ]
+    );
+    record!(
+        s,
+        pkind::ServeOut,
+        [
+            head,
+            reply_written,
+            reply_needed,
+            arena_written,
+            arena_needed,
+            status,
+            fields_written,
+            fields_needed,
+            _reserved
+        ]
+    );
+    record!(
+        s,
+        hconn::Need,
+        [
+            direction,
+            egress_class,
+            transport,
+            auth,
+            target_from,
+            trust_from,
+            details
+        ]
+    );
+    record!(s, hconn::ServiceHead, [size, op, handle]);
+    record!(
+        s,
+        hconn::ServiceOut,
+        [size, outcome, _reserved, value, len, error]
+    );
+    record!(s, hconn::EstablishIn, [head, need, _reserved, target]);
+    record!(s, hconn::StreamIn, [head, stream]);
+    record!(s, hconn::IoIn, [head, stream, buf, len]);
+    record!(s, hconn::UpgradeIn, [head, stream, offered_name, trust]);
+    record!(s, hconn::FactsIn, [head, stream, facts]);
+    record!(
+        s,
+        hconn::StreamFacts,
+        [size, secure, endpoint, agreed_protocol, peer_cert_hash]
+    );
+    record!(s, hconn::CheckoutIn, [head, need, _reserved]);
+    record!(s, hconn::CheckinIn, [head, stream, disposition, _reserved]);
+    record!(s, hconn::RandomIn, [head, buf, len]);
+    record!(
+        s,
+        hconn::ProcessIdentity,
+        [size, _reserved, pid, os_user, program]
+    );
+    record!(s, hconn::IdentityIn, [head, identity]);
+    record!(
+        s,
+        hconn::ConnectorSlots,
+        [
+            size,
+            slots,
+            establish,
+            reject_endpoint,
+            side_stream,
+            read,
+            write,
+            upgrade_secure,
+            facts,
+            checkout,
+            checkin,
+            close,
+            random,
+            identity
+        ]
+    );
+
+    // M3-SHAPES (abi-v2-perkind.md B.2): the secret kind's `resolve`.
+    record!(s, SecretOps, [head, resolve]);
+    record!(s, SecretResolveIn, [head, settings]);
+    record!(s, SecretResolveOut, [head, secret, error_kind, _reserved]);
+    // M3-SHAPES (abi-v2-perkind.md B.4): the hook kind's decide/transform/notify/configure/
+    // status/describe/serve, its views and its Statement tail.
+    record!(
+        s,
+        HookOps,
+        [head, decide, transform, notify, configure, status, describe, serve]
+    );
+    record!(s, HookSignalValue, []);
+    record!(s, HookSignalEntry, [id, tag, value]);
+    record!(
+        s,
+        HookRequestView,
+        [
+            request_id,
+            pool,
+            ingress_dialect,
+            message_count,
+            total_chars,
+            max_tokens,
+            flags,
+            signals,
+            signals_len
+        ]
+    );
+    record!(
+        s,
+        HookCandidateStatic,
+        [
+            idx,
+            _reserved,
+            model,
+            provider,
+            weight,
+            _reserved3,
+            context_max,
+            tier,
+            cost_per_mtok,
+            tags,
+            tags_len,
+            present,
+            _reserved2
+        ]
+    );
+    record!(
+        s,
+        HookCandidateDynamic,
+        [
+            latency_ms,
+            available_concurrency,
+            budget_remaining,
+            rate_headroom,
+            signals,
+            signals_len,
+            present,
+            _reserved
+        ]
+    );
+    record!(s, HookPromptView, [system, message_count, body]);
+    record!(s, HookUserView, [key_id, key_name, user]);
+    record!(
+        s,
+        HookBudgetBucketState,
+        [
+            bucket_id,
+            budget_group,
+            pool,
+            spend_micros_at_current_rate,
+            remaining_micros,
+            window_start,
+            budget_period,
+            present,
+            _reserved
+        ]
+    );
+    record!(
+        s,
+        HookDecideIn,
+        [
+            head,
+            request,
+            candidates,
+            candidate_dynamics,
+            candidates_len,
+            prompt,
+            user,
+            budget_remaining,
+            budget,
+            budget_len,
+            present,
+            _reserved,
+            order_buf,
+            order_cap,
+            reject_message_buf,
+            reject_message_cap,
+            restrict_tags_buf,
+            restrict_tags_cap,
+            rewrite_buf,
+            rewrite_cap
+        ]
+    );
+    record!(
+        s,
+        HookDecideOut,
+        [
+            head,
+            verbs,
+            reject_status,
+            _reserved,
+            reject_message_written,
+            reject_message_needed,
+            restrict_tags_written,
+            restrict_tags_needed,
+            order_written,
+            order_needed
+        ]
+    );
+    record!(
+        s,
+        HookTransformOut,
+        [
+            head,
+            verbs,
+            reject_status,
+            _reserved,
+            reject_message_written,
+            reject_message_needed,
+            rewrite_written,
+            rewrite_needed
+        ]
+    );
+    record!(
+        s,
+        HookStageView,
+        [
+            request_id,
+            pool,
+            ingress_dialect,
+            message_count,
+            total_chars,
+            remaining_candidates,
+            model,
+            previous_failure,
+            outcome,
+            max_tokens,
+            flags,
+            at,
+            attempt_number,
+            status,
+            _reserved,
+            stage_present,
+            _reserved2
+        ]
+    );
+    record!(s, HookNotifyIn, [head, stage]);
+    record!(s, HookConfigureIn, [head, version, settings, name]);
+    record!(s, HookConfigureOut, [head, acked_version]);
+    record!(s, HookStatusOut, [head, status]);
+    record!(s, HookDescribeOut, [head, describe]);
+    record!(
+        s,
+        HookServeIn,
+        [head, method, path, query, headers, headers_len, body]
+    );
+    record!(
+        s,
+        HookServeOut,
+        [
+            head,
+            status_code,
+            _reserved,
+            headers_out,
+            headers_out_len,
+            body
+        ]
+    );
+    record!(s, HookRoute, [path, method, auth, _reserved]);
+    record!(
+        s,
+        HookTail,
+        [
+            head,
+            kind_class,
+            prompt_access,
+            user_access,
+            infallible,
+            _reserved,
+            requested_signals,
+            requested_signals_len,
+            routes,
+            routes_len,
+            declared_words,
+            declared_words_len
+        ]
+    );
+
+    // M3-SHAPES (abi-v2-perkind.md B.5): the export kind's deliver/scrape/status/check/serve and
+    // its Statement tail.
+    record!(s, ExportOps, [head, deliver, scrape, status, check, serve]);
+    record!(s, ExportDeliverIn, [head, op_id, stream, _reserved, batch]);
+    record!(s, ExportScrapeLabel, [key, value]);
+    record!(s, ExportScrapeSample, [name, labels, labels_len, value]);
+    record!(
+        s,
+        ExportScrapeFamily,
+        [name, help, unit, kind, _reserved, samples, samples_len]
+    );
+    record!(s, ExportScrapeIn, [head, families, families_len, buf, cap]);
+    record!(s, ExportScrapeOut, [head, written, needed]);
+    record!(s, ExportStatusOut, [head, status]);
+    record!(s, ExportCheckInstance, [name, settings]);
+    record!(
+        s,
+        ExportCheckIn,
+        [head, phase, _reserved, instances, instances_len]
+    );
+    record!(s, ExportCheckOut, [head, findings]);
+    record!(
+        s,
+        ExportServeIn,
+        [head, method, path, query, headers, headers_len, body]
+    );
+    record!(
+        s,
+        ExportServeOut,
+        [
+            head,
+            status_code,
+            _reserved,
+            headers_out,
+            headers_out_len,
+            body
+        ]
+    );
+    record!(s, ExportRoute, [path, method, auth, _reserved]);
+    record!(
+        s,
+        ExportTail,
+        [head, streams, streams_len, routes, routes_len]
+    );
     s
 }
 
@@ -1204,6 +2103,39 @@ fn a_perturbed_golden_line_fails_the_comparator() {
     assert!(err.contains("MechDoor.kind_abi=24"), "{err}");
 }
 
+/// RED ARM (transport kind): one perturbed transport golden line fails the comparator.
+#[test]
+fn a_perturbed_transport_golden_line_fails_the_comparator() {
+    let actual = compute_layout();
+    let line = "tkind::Ops.timer=216";
+    assert!(actual.lines().any(|l| l == line), "the golden holds {line}");
+    let perturbed = actual.replacen(line, "tkind::Ops.timer=208", 1);
+    let err = compare(&perturbed, &actual).expect_err("a perturbed line must fail");
+    assert!(err.contains("tkind::Ops.timer=208"), "{err}");
+}
+
+/// RED ARM (host connector): one perturbed connector golden line fails the comparator.
+#[test]
+fn a_perturbed_connector_golden_line_fails_the_comparator() {
+    let actual = compute_layout();
+    let line = "hconn::ConnectorSlots.identity=96";
+    assert!(actual.lines().any(|l| l == line), "the golden holds {line}");
+    let perturbed = actual.replacen(line, "hconn::ConnectorSlots.identity=88", 1);
+    let err = compare(&perturbed, &actual).expect_err("a perturbed line must fail");
+    assert!(err.contains("hconn::ConnectorSlots.identity=88"), "{err}");
+}
+
+/// RED ARM (plane kind): one perturbed plane golden line fails the comparator.
+#[test]
+fn a_perturbed_plane_golden_line_fails_the_comparator() {
+    let actual = compute_layout();
+    let line = "pkind::OnPieceOut.units_written=124";
+    assert!(actual.lines().any(|l| l == line), "the golden holds {line}");
+    let perturbed = actual.replacen(line, "pkind::OnPieceOut.units_written=112", 1);
+    let err = compare(&perturbed, &actual).expect_err("a perturbed line must fail");
+    assert!(err.contains("pkind::OnPieceOut.units_written=112"), "{err}");
+}
+
 /// RED ARM, THE AUTH KIND: one perturbed auth golden line (`fields`' slot in the auth table) fails
 /// the comparator.
 #[test]
@@ -1214,4 +2146,51 @@ fn a_perturbed_auth_golden_line_fails_the_comparator() {
     let perturbed = actual.replacen(line, "AuthOps.fields=112", 1);
     let err = compare(&perturbed, &actual).expect_err("a perturbed auth line must fail");
     assert!(err.contains("AuthOps.fields=112"), "{err}");
+}
+
+/// RED ARM (M3-SHAPES, secret B.2): a perturbed `ResolveOut.error_kind` offset fails the
+/// comparator.
+#[test]
+fn a_perturbed_secret_golden_line_fails_the_comparator() {
+    let actual = compute_layout();
+    let line = "SecretResolveOut.error_kind=120";
+    assert!(actual.lines().any(|l| l == line), "the golden holds {line}");
+    let perturbed = actual.replacen(line, "SecretResolveOut.error_kind=124", 1);
+    let err = compare(&perturbed, &actual).expect_err("a perturbed line must fail");
+    assert!(err.contains("SecretResolveOut.error_kind=124"), "{err}");
+}
+
+/// RED ARM (M3-SHAPES, export B.5): a perturbed `DeliverIn.batch` offset fails the comparator.
+#[test]
+fn a_perturbed_export_golden_line_fails_the_comparator() {
+    let actual = compute_layout();
+    let line = "ExportDeliverIn.batch=112";
+    assert!(actual.lines().any(|l| l == line), "the golden holds {line}");
+    let perturbed = actual.replacen(line, "ExportDeliverIn.batch=120", 1);
+    let err = compare(&perturbed, &actual).expect_err("a perturbed line must fail");
+    assert!(err.contains("ExportDeliverIn.batch=120"), "{err}");
+}
+
+/// RED ARM (M3-SHAPES, hook B.4): a perturbed `DecideOut.order_written` offset fails the
+/// comparator.
+#[test]
+fn a_perturbed_hook_golden_line_fails_the_comparator() {
+    let actual = compute_layout();
+    let line = "HookDecideOut.order_written=136";
+    assert!(actual.lines().any(|l| l == line), "the golden holds {line}");
+    let perturbed = actual.replacen(line, "HookDecideOut.order_written=144", 1);
+    let err = compare(&perturbed, &actual).expect_err("a perturbed line must fail");
+    assert!(err.contains("HookDecideOut.order_written=144"), "{err}");
+}
+
+/// RED ARM, store kind: one perturbed store golden line (a `UnitCell`'s `window_start` offset, the
+/// money shape of m3-inputs "store v3 money slots" / "window caps") fails the comparator.
+#[test]
+fn a_perturbed_store_golden_line_fails_the_comparator() {
+    let actual = compute_layout();
+    let line = "StoreUnitCell.window_start=64";
+    assert!(actual.lines().any(|l| l == line), "the golden holds {line}");
+    let perturbed = actual.replacen(line, "StoreUnitCell.window_start=56", 1);
+    let err = compare(&perturbed, &actual).expect_err("a perturbed store line must fail");
+    assert!(err.contains("StoreUnitCell.window_start=56"), "{err}");
 }

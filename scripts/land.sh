@@ -223,7 +223,6 @@ land_ceiling_verdict() {
 land_construction_standing_reds() {
   local reds
   reds="$(cat <<'EOF'
-hold-discipline:cancellation-before-await
 manifest-allowlist:busbar-transport-http
 manifest-allowlist:busbar-transport-stdio
 manifest-allowlist:busbar-transport-tcp

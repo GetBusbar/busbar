@@ -383,19 +383,69 @@ because = "ARCHITECT 2026-09-27: R-KERNEL exception for the Phase-2 exit-test re
 # 17802 -> 18797 (OWNER RULING Q68(3)). Its commit reached the base; struck by M3-SDK's auth
 # KindSlot re-arm below, which declares the pair's next figure.
 
-# ── THE CONTRACT CEILING PAIR, RE-ARMED BY M3-SDK's AUTH KindSlot ───────────────────────────────
+# ── THE CONTRACT CEILING PAIR, RE-ARMED BY M3-SDK's AUTH KindSlot — EXPIRED AND STRUCK ──────────
+#
+# Declared `gate.surface_ceilings.contract_caps` and `rules.loc-ceilings.caps_contract_ceiling`
+# 18797 -> 18824 (OWNER RULING Q68(3)). Its commit reached the base; struck by the SEH
+# (M3-SHAPES secret/export/hook, including its validators and SEH-TESTS' follow-up) re-arm below,
+# which declares the pair's next figure.
+
+# ── THE CONTRACT CEILING PAIR, RE-ARMED BY M3-SHAPES SEH (secret/export/hook v2/v3, answer
+#    validators, SEH-TESTS follow-up) — EXPIRED AND STRUCK
+#
+# Declared `gate.surface_ceilings.contract_caps` and `rules.loc-ceilings.caps_contract_ceiling`
+# 18824 -> 20223 (OWNER RULING Q68(3)). Its commit reached the base; struck by M3-SHAPES STORE's
+# re-arm below, which declares the pair's next figure.
+
+# ── THE CONTRACT CEILING PAIR, RE-ARMED BY M3-SHAPES STORE (store v3 slots, shapes, tail, cancel
+#    words, money rulings S1-S6, answer validators, M-SB) — EXPIRED AND STRUCK
+#
+# Declared `gate.surface_ceilings.contract_caps` and `rules.loc-ceilings.caps_contract_ceiling`
+# 20223 -> 21631 (OWNER RULING Q68(3)). Its commit reached the base; struck by KINDSLOT-SEH's
+# re-arm below, which declares the pair's next figure.
+
+# ── THE CONTRACT CEILING PAIR, RE-ARMED BY KINDSLOT-SEH (KindSlot type-checking for secret,
+#    export and hook's kind ops) — EXPIRED AND STRUCK
+#
+# Declared `gate.surface_ceilings.contract_caps` and `rules.loc-ceilings.caps_contract_ceiling`
+# 21631 -> 21694 (OWNER RULING Q68(3)). Its commit reached the base; struck by M3-PT's re-arm
+# below, which declares the pair's next figure.
+
+# ── THE CONTRACT CEILING PAIR, RE-ARMED BY M3-PT (abi/transport v1 table/shapes/tail/validators,
+#    abi/plane v1 table/shapes/tail/snapshot/validators, the shared mechanism answer-validator
+#    helpers) — EXPIRED AND STRUCK
+#
+# Declared `gate.surface_ceilings.contract_caps` and `rules.loc-ceilings.caps_contract_ceiling`
+# 21694 -> 23892 (OWNER RULING Q68(3)). Its commit reached the base; struck by KINDSLOT-STORE +
+# PT's KindSlot re-arm below, which declares the pair's next figure.
+
+# ── THE CONTRACT CEILING PAIR, RE-ARMED BY KINDSLOT-STORE + PT'S KINDSLOT (KindSlot type-checking
+#    for store's 47 kind ops, plane's 6 kind ops and transport's 18 kind ops) — EXPIRED AND STRUCK
+#
+# Declared `gate.surface_ceilings.contract_caps` and `rules.loc-ceilings.caps_contract_ceiling`
+# 23892 -> 24063 (OWNER RULING Q68(3)). Its commit reached the base; struck by M1 DISPATCH's re-arm
+# below, which declares the pair's next figure.
+
+# ── THE CONTRACT CEILING PAIR, RE-ARMED BY M1 DISPATCH (abi check::reported, one definition; the
+#    plugin dispatcher's answer validation) — measured and written by LANDER at land time ────────
 
 [gate.ceiling_raises."gate.surface_ceilings.contract_caps"]
 file    = "qa/construction.toml"
-from    = 18797
-to      = 18824
-because = "OWNER RULING Q68(3) (docs/design/1.6.0-QUESTIONS.md): contract_caps re-arms at the MEASURED value, in its own commit. This is the re-arm for M3-SDK's auth KindSlot (TODO ABI-b3): abi::auth's KindSlot impls for its six kind ops and the AbiIn/AbiOut impls of their eleven In/Out structs, so plugin_door! type-checks an auth plugin's kind ops, +27 code lines. Measured by cargo xtask gate construction: 18797 before, 18824 after."
+from    = 24063
+to      = 24079
+because = "OWNER RULING Q68(3) (docs/design/1.6.0-QUESTIONS.md): contract_caps re-arms at the MEASURED value, in its own commit, written by LANDER per ARCHITECT's re-measure-at-land-time authorization. Growth is M1 DISPATCH's abi check::reported (a plugin-reported count capped before any slice), one definition the plugin dispatch adapters call in production, +16 — no shape/layout change. Measured by cargo xtask gate construction: 24063 before, 24079 after."
 
 [gate.ceiling_raises."rules.loc-ceilings.caps_contract_ceiling"]
 file    = "qa/construction.toml"
-from    = 18797
-to      = 18824
-because = "OWNER RULING Q68(3) (docs/design/1.6.0-QUESTIONS.md): contract_caps re-arms at the MEASURED value, in its own commit. This is the re-arm for M3-SDK's auth KindSlot (TODO ABI-b3): abi::auth's KindSlot impls for its six kind ops and the AbiIn/AbiOut impls of their eleven In/Out structs, so plugin_door! type-checks an auth plugin's kind ops, +27 code lines. Measured by cargo xtask gate construction: 18797 before, 18824 after."
+from    = 24063
+to      = 24079
+because = "OWNER RULING Q68(3) (docs/design/1.6.0-QUESTIONS.md): contract_caps re-arms at the MEASURED value, in its own commit, written by LANDER per ARCHITECT's re-measure-at-land-time authorization. Growth is M1 DISPATCH's abi check::reported (a plugin-reported count capped before any slice), one definition the plugin dispatch adapters call in production, +16 — no shape/layout change. Measured by cargo xtask gate construction: 24063 before, 24079 after."
+
+[gate.ceiling_raises."cell[crate=busbar-plugin-loader,kind=plugin-tooling].count"]
+file    = "qa/kind-isolation.toml"
+from    = 4
+to      = 6
+because = "ARCHITECT-accepted (M1 DISPATCH): the dispatcher's both-ways proof names its test plugin twice in crates/plugin-loader/src/tests/dispatch_tests.rs (the rlib `use`, the cdylib's name); the edge is the [[dep]] row busbar-plugin-loader -> busbar-plugin-dispatch-test. Measured by cargo xtask gate kind-isolation: 4 before, 6 after."
 
 # ── THE KERNEL CEILING, RE-ARMED BY SD-8 (the substrate-values kernel landing) ─────────────────
 # Its 51100 -> 54801 declaration expired once landed and is struck; the ceiling text below keeps it.
@@ -563,7 +613,25 @@ because = "ARCHITECT ruling on the kernel budget (R-KERNEL, sd-extra.txt; K2-0 u
 # RE-ARMED 17802 -> 18797, AT THE MEASUREMENT (OWNER RULING Q68(3)), in its own commit after the batch: XTASK-SPEED (Ctx memo, no contract growth), KI-ABI-SCOPE (matrix-only, no contract growth), M3-SDK's door macro (+324), M3-SHAPES AUTH's v3 shapes, review, fix-forward and answer validators (+671), the billing.rs section-sign wording fix (no growth); the live declaration above carries the measure.
 # RE-ARMED 18797 -> 18824, AT THE MEASUREMENT (OWNER RULING Q68(3)), in its own commit after
 # M3-SDK's auth KindSlot (+27); the live declaration above carries the measure.
-contract_caps = 18824
+# RE-ARMED 18824 -> 20223, AT THE MEASUREMENT (OWNER RULING Q68(3)), in its own commit after
+# M3-SHAPES SEH (secret v2, export v3, hook v2, two rounds of review fixes, the per-kind answer
+# validators and SEH-TESTS' RED-test follow-up); the live declaration above carries the measure.
+# RE-ARMED 20223 -> 21631, AT THE MEASUREMENT (OWNER RULING Q68(3)), in its own commit after
+# M3-SHAPES STORE (store v3 slots/shapes/tail/cancel words, money rulings S1-S6, answer
+# validators, M-SB); the live declaration above carries the measure.
+# RE-ARMED 21631 -> 21694, AT THE MEASUREMENT (OWNER RULING Q68(3)), in its own commit after
+# KINDSLOT-SEH (KindSlot for secret/export/hook's kind ops); the live declaration above carries
+# the measure.
+# RE-ARMED 21694 -> 23892, AT THE MEASUREMENT (OWNER RULING Q68(3)), in its own commit after
+# M3-PT (transport v1 + plane v1 tables/shapes/tail/snapshot/validators, the shared mechanism
+# answer-validator helpers); the live declaration above carries the measure.
+# RE-ARMED 23892 -> 24063, AT THE MEASUREMENT (OWNER RULING Q68(3)), in its own commit after
+# KINDSLOT-STORE + PT's KindSlot (KindSlot type-checking for store's 47, plane's 6 and transport's
+# 18 kind ops; no shape/layout change); the live declaration above carries the measure.
+# RE-ARMED 24063 -> 24079, AT THE MEASUREMENT (OWNER RULING Q68(3)), in its own commit after
+# M1 DISPATCH (abi check::reported, one definition, +16); the live declaration above carries the
+# measure.
+contract_caps = 24079
 # REPOINTED, and the repoint is what makes this row a gate again. It named the CRATE
 # `busbar-grammar`, which #40 folded into `busbar-contract` and deleted — so it summed nothing,
 # measured nothing and passed, which is this file's own "zero is not clean" failure sitting inside
@@ -1197,7 +1265,19 @@ contract_crate = "busbar-contract"
 # RE-ARMED 17779 -> 17802 with its pair (OWNER RULING Q68(3); rulings on M0 decisions, +23).
 # RE-ARMED 17802 -> 18797 with its pair (OWNER RULING Q68(3); the batch: M3-SDK's door macro +324, M3-SHAPES AUTH's shapes/review/fix-forward/validators +671, XTASK-SPEED and KI-ABI-SCOPE add no contract growth).
 # RE-ARMED 18797 -> 18824 with its pair (OWNER RULING Q68(3); M3-SDK's auth KindSlot, +27).
-caps_contract_ceiling = 18824
+# RE-ARMED 18824 -> 20223 with its pair (OWNER RULING Q68(3); M3-SHAPES SEH secret/export/hook,
+# review fixes, answer validators and SEH-TESTS' follow-up).
+# RE-ARMED 20223 -> 21631 with its pair (OWNER RULING Q68(3); M3-SHAPES STORE, money rulings
+# S1-S6, answer validators, M-SB).
+# RE-ARMED 21631 -> 21694 with its pair (OWNER RULING Q68(3); KINDSLOT-SEH's secret/export/hook
+# kind-op type-checking).
+# RE-ARMED 21694 -> 23892 with its pair (OWNER RULING Q68(3); M3-PT, transport v1 + plane v1
+# tables/shapes/tail/snapshot/validators).
+# RE-ARMED 23892 -> 24063 with its pair (OWNER RULING Q68(3); KINDSLOT-STORE + PT's KindSlot,
+# store's 47 + plane's 6 + transport's 18 kind ops, no shape/layout change).
+# RE-ARMED 24063 -> 24079 with its pair (OWNER RULING Q68(3); M1 DISPATCH's abi check::reported,
+# +16).
+caps_contract_ceiling = 24079
 unit_crate_glob = "busbar-unit-*"
 # RE-KEYED on cherry-pick onto 143db6db6: this commit's own delta is -53 (two units stopped
 # declaring their own copies), measured against whatever unit_total_ceiling read when the line was
@@ -1637,13 +1717,23 @@ catch_unwind_pattern = 'catch_unwind'
 hold_word = "Hold"
 abort_pattern = '\.abort\('
 forget_or_drop_pattern = '(?:mem::forget|drop)\(\s*&?\s*[A-Za-z_][A-Za-z0-9_]*[Hh]old[A-Za-z0-9_]*'
-route_step_functions = ["route"]
-cancel_check_pattern = 'is_cancelled|cancellation'
+# (e) `cancellation-before-await`: the kernel route step it once scanned is sync, so the row was
+# vacuous there. Its subject is the plugin dispatcher's
+# deadline/cancel path: in a function of `cancel_scope_dirs` that names a cancel or a deadline, a
+# money hold (`hold_open_pattern`) is released or settled (`hold_close_pattern`) before any `.await`
+# or `return` that follows the cancel.
+# The dispatcher's cancel paths hold no money hold today; the ONE money `.await` in the tree is the
+# teller's `under_hold(...).await` (crates/busbar-kernel/src/teller.rs), so the row scans both: a
+# cancel or deadline path growing around it is held to the rule the day it appears.
+cancel_scope_dirs = ["crates/plugin-loader/src/dispatch/", "crates/busbar-kernel/src/teller.rs"]
+cancel_path_pattern = 'slot::CANCEL|DropClient|drop_client|deadline'
+hold_open_pattern = 'Hold::open|HoldCell|\blet\s+(?:mut\s+)?\w*[Hh]old\w*\s*[:=]'
+hold_close_pattern = '::settle\(|\.settle\(|::release\(|\.release\('
 max_early_exit = 0
 max_catch_unwind_capture = 0
 max_join_abort = 0
 max_forget_or_drop = 0
-max_uncancellable_await = 0
+max_await_with_open_hold = 0
 
 # ── 21. forbid-unsafe (BUSBAR-1.6.0.md THE DESIGN, §2) ─────────────────────────────────────────────────────────
 [rules.kernel-seal-impls]

@@ -31,14 +31,12 @@
 //! that superset as its OWN shared IR types ([`ir`]), not the LLM-style `DialectCodec` facade, so
 //! [`DECLS`] stays `codec: None` exactly as MCP / A2A do.
 
-/// THE DUPLEX IR AND THE DIALECT CODECS, RE-EXPORTED FROM `busbar-plane-streaming::codec`.
+/// THE DUPLEX IR AND THE DIALECT CODECS, RE-EXPORTED FROM THE PLANE CRATE'S OWN `codec` MODULE.
 ///
 /// The plane-4 session intermediate representation (media, control, events, tools, session config,
-/// usage), the shared duplex reader/writer and the Gemini Live dialect live in `busbar-plane-streaming`'s
-/// `codec` module now (owner ruling R7, 2026-09-27, `BUSBAR-1.6.0.md` THE DESIGN, §9/#39: no `busbar-*-codec` crate) —
-/// folded into the plane that already named them, rather than a separate crate. They are re-exported
-/// HERE, under their old name, so every caller that spells `busbar_voice::ir::…` resolves exactly
-/// what it always did. The fold is a MOVE: no item changed shape crossing it.
+/// usage), the shared duplex reader/writer and the Gemini Live dialect are that module's. They are
+/// re-exported HERE as `ir`, the path every caller of this crate already spells, and resolve to the
+/// same items.
 pub use busbar_plane_streaming::codec::ir;
 
 /// THE `streams:` CONFIG SECTION — the voice plane's owned config grammar ([`config::StreamsCfg`]) and

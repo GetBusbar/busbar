@@ -36,6 +36,9 @@ pub mod auth;
 // The two BUILT-IN secret modules (`env`, `file`) the registry's built-in secret rows resolve through.
 pub mod builtin_secret;
 pub mod carrier;
+/// THE ONE DISPATCHER of the memory ABI (`BUSBAR-1.6.0.md` THE DESIGN, §11): one loader path, one
+/// crossing, tickets, wakes, deadlines and the watchdog, generic over the kind.
+pub mod dispatch;
 pub mod export;
 pub mod fetch;
 mod ffi_thread;
@@ -2104,3 +2107,39 @@ mod auth_verify_conformance_tests;
 #[cfg(test)]
 #[path = "tests/hook_conformance_tests.rs"]
 mod hook_conformance_tests;
+
+/// The dispatcher through both doors: one script, LINKED and DROPPED, byte-identical, and a RED
+/// arm per mechanism rule.
+#[cfg(test)]
+#[path = "tests/dispatch_tests.rs"]
+mod dispatch_tests;
+
+/// The secret and export kind's answer checks, through the dispatcher's `Kind` adapter.
+#[cfg(test)]
+#[path = "tests/dispatch_kind_secret_export_tests.rs"]
+mod dispatch_kind_secret_export_tests;
+
+/// The transport kind's answer checks, through the dispatcher's `Kind` adapter.
+#[cfg(test)]
+#[path = "tests/dispatch_kind_transport_tests.rs"]
+mod dispatch_kind_transport_tests;
+
+/// The plane kind's answer checks, through the dispatcher's `Kind` adapter.
+#[cfg(test)]
+#[path = "tests/dispatch_kind_plane_tests.rs"]
+mod dispatch_kind_plane_tests;
+
+/// The store kind's answer checks, through the dispatcher's `Kind` adapter.
+#[cfg(test)]
+#[path = "tests/dispatch_kind_store_tests.rs"]
+mod dispatch_kind_store_tests;
+
+/// The hook kind's answer checks, through the dispatcher's `Kind` adapter.
+#[cfg(test)]
+#[path = "tests/dispatch_kind_hook_tests.rs"]
+mod dispatch_kind_hook_tests;
+
+/// The auth kind's answer checks, through the dispatcher's `Kind` adapter.
+#[cfg(test)]
+#[path = "tests/dispatch_kind_auth_tests.rs"]
+mod dispatch_kind_auth_tests;

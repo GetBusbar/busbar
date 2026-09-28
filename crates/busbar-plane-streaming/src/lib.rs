@@ -4,8 +4,7 @@
 //! ## What this crate is
 //!
 //! An ADAPTER, in the same sense `busbar-plane-llm` is one: every method of the plane kind here is a
-//! thin wrapper over a codec that already exists in this crate's own `codec` module (folded in from
-//! `busbar-voice-codec`, owner ruling R7, 2026-09-27, THE DESIGN section 9/#39: no `busbar-*-codec` crate) —
+//! thin wrapper over a codec in this crate's own `codec` module —
 //! the OpenAI Realtime and Gemini Live dialect readers/writers and the four-layer duplex/session IR
 //! they meet in (`docs/design/BUSBAR-1.6.0.md` #18/#45, the four-layer IR section). No wire format
 //! for those two dialects is written twice.
@@ -15,7 +14,7 @@
 //!
 //! * A minimal Twilio Media Streams JSON reader/writer ([`twilio`]) — `codec` has no dialect codec
 //!   for Twilio's own wire, and the one Twilio-shaped module in it ([`codec::topology::twilio`]) is
-//!   for `busbar-voice`'s own use, not this crate's — this crate never reaches it (see the
+//!   for the legacy engine's own use, not this crate's — this crate never reaches it (see the
 //!   crate-root dependency note below). So this crate's Twilio reader/writer is written from the
 //!   wire shape alone, independently, and is NOT a copy of that module.
 //! * A standard G.711 µ-law ↔ PCM16 transform ([`ulaw`]) — `codec` only carries the byte-rate
@@ -36,9 +35,9 @@
 //! THIS CRATE DOES NOT DEPEND ON `busbar-voice`, AND THE EDGE RUNS THE OTHER WAY. Measured with
 //! `cargo tree -p busbar-plane-streaming --edges normal --depth 1`, this crate's whole direct
 //! closure is `busbar-contract` + `serde` + `serde_json` + `bytes` + `async-trait` (a proc-macro) —
-//! the codecs are this crate's own `codec` module now, not a named dependency. It is `busbar-voice`
-//! that names THIS crate (`crates/busbar-voice/Cargo.toml`), not the reverse — so there is no
-//! `default-features = false` on a `busbar-voice` line here, because there is no such line at all.
+//! the codecs are this crate's own `codec` module, not a named dependency. The legacy engine is the
+//! crate that names THIS one, not the reverse — so there is no `default-features = false` on a line
+//! naming it here, because there is no such line at all.
 //!
 //! `busbar-voice`'s own plane machinery (`PLANE_DECL`, `mount`, `runtime`, `topology`) is built
 //! against a different, older plane architecture (`busbar_kernel::plane::registry::PlaneDecl`,
@@ -62,10 +61,8 @@
 #![deny(missing_docs)]
 
 pub mod claims;
-// `#![deny(missing_docs)]` above is a rule this crate holds itself to; the folded-in codec (moved
-// unchanged from the former `busbar-voice-codec`, owner ruling R7, 2026-09-27, THE DESIGN section 9/#39)
-// was never written under it, so applying it retroactively here would not be a pure move. Scoped to
-// exactly this module.
+// `#![deny(missing_docs)]` above is a rule this crate holds itself to; the `codec` module was not
+// written under it and is exempt, scoped to exactly this module.
 #[allow(missing_docs)]
 pub mod codec;
 pub mod governed;

@@ -4,11 +4,9 @@
 //! (`connected`, `start`, `mark`, `dtmf`, `stop`) and a per-chunk `media` event whose `payload` is
 //! base64 8 kHz G.711 µ-law audio — `{"event":"media","media":{"payload":"<base64>"},"streamSid":"..."}`.
 //!
-//! `busbar-voice` has no dialect codec for this wire (it is not one of its two duplex dialects), and
-//! the one Twilio-shaped module that exists in that crate's source tree
-//! (`crate::codec::topology::twilio`) is gated behind busbar-voice's `runtime` cargo feature, which
-//! this crate's manifest never turns on — so it is not in this crate's dependency closure at all,
-//! and cannot be named from here. This module is therefore written from the wire shape alone
+//! No duplex dialect codec covers this wire (it is not one of the plane's two duplex dialects).
+//! The one Twilio-shaped module in this crate's `codec` module (`crate::codec::topology::twilio`)
+//! is the legacy engine's, and this module does not use it: it is written from the wire shape alone
 //! (confirmed against `docs/design/BUSBAR-1.6.0.md` #18/#45 and the public Twilio Media
 //! Streams reference, both cited in this crate's design notes) rather than adapted from that
 //! runtime-gated module; any structural resemblance is the two independently converging on the same

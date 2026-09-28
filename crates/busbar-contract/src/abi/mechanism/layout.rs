@@ -199,8 +199,24 @@ pin!(
     _reserved = 100
 );
 pin!(ReleaseIn, 96, 8, head = 0, lease = 88);
-pin!(crate::abi::store::Ops, 80, 8, head = 0);
-pin!(crate::abi::secret::Ops, 80, 8, head = 0);
+pin!(crate::abi::store::Ops, 456, 8, head = 0);
+pin!(crate::abi::secret::Ops, 88, 8, head = 0, resolve = 80,);
+pin!(
+    crate::abi::secret::ResolveIn,
+    112,
+    8,
+    head = 0,
+    settings = 88,
+);
+pin!(
+    crate::abi::secret::ResolveOut,
+    128,
+    8,
+    head = 0,
+    secret = 96,
+    error_kind = 120,
+    _reserved = 124,
+);
 // THE AUTH KIND (v3, design B.3): its table, its Statement tail and every op's `in`/`out`.
 mod auth {
     use super::{align_of, offset_of, size_of};
@@ -399,7 +415,857 @@ mod auth {
         needed_bytes = 104
     );
 }
-pin!(crate::abi::hook::Ops, 80, 8, head = 0);
-pin!(crate::abi::export::Ops, 80, 8, head = 0);
-pin!(crate::abi::plane::Ops, 80, 8, head = 0);
-pin!(crate::abi::transport::Ops, 80, 8, head = 0);
+// ── HOOK (M3-SHAPES, abi-v2-perkind.md B.4) ─────────────────────────────────────────────────────
+pin!(
+    crate::abi::hook::Ops,
+    136,
+    8,
+    head = 0,
+    decide = 80,
+    transform = 88,
+    notify = 96,
+    configure = 104,
+    status = 112,
+    describe = 120,
+    serve = 128,
+);
+pin!(crate::abi::hook::SignalValue, 16, 8);
+pin!(
+    crate::abi::hook::SignalEntry,
+    24,
+    8,
+    id = 0,
+    tag = 4,
+    value = 8
+);
+pin!(
+    crate::abi::hook::RequestView,
+    80,
+    8,
+    request_id = 0,
+    pool = 8,
+    ingress_dialect = 24,
+    message_count = 40,
+    total_chars = 48,
+    max_tokens = 56,
+    flags = 60,
+    signals = 64,
+    signals_len = 72,
+);
+pin!(
+    crate::abi::hook::CandidateStatic,
+    104,
+    8,
+    idx = 0,
+    _reserved = 4,
+    model = 8,
+    provider = 24,
+    weight = 40,
+    _reserved3 = 44,
+    context_max = 48,
+    tier = 56,
+    cost_per_mtok = 72,
+    tags = 80,
+    tags_len = 88,
+    present = 96,
+    _reserved2 = 100,
+);
+pin!(
+    crate::abi::hook::CandidateDynamic,
+    56,
+    8,
+    latency_ms = 0,
+    available_concurrency = 8,
+    budget_remaining = 16,
+    rate_headroom = 24,
+    signals = 32,
+    signals_len = 40,
+    present = 48,
+    _reserved = 52,
+);
+pin!(
+    crate::abi::hook::PromptView,
+    48,
+    8,
+    system = 0,
+    message_count = 16,
+    body = 24,
+);
+pin!(
+    crate::abi::hook::UserView,
+    48,
+    8,
+    key_id = 0,
+    key_name = 16,
+    user = 32
+);
+pin!(
+    crate::abi::hook::BudgetBucketState,
+    96,
+    8,
+    bucket_id = 0,
+    budget_group = 16,
+    pool = 32,
+    spend_micros_at_current_rate = 48,
+    remaining_micros = 56,
+    window_start = 64,
+    budget_period = 72,
+    present = 88,
+    _reserved = 92,
+);
+pin!(
+    crate::abi::hook::DecideIn,
+    384,
+    8,
+    head = 0,
+    request = 88,
+    candidates = 168,
+    candidate_dynamics = 176,
+    candidates_len = 184,
+    prompt = 192,
+    user = 240,
+    budget_remaining = 288,
+    budget = 296,
+    budget_len = 304,
+    present = 312,
+    _reserved = 316,
+    order_buf = 320,
+    order_cap = 328,
+    reject_message_buf = 336,
+    reject_message_cap = 344,
+    restrict_tags_buf = 352,
+    restrict_tags_cap = 360,
+    rewrite_buf = 368,
+    rewrite_cap = 376,
+);
+pin!(
+    crate::abi::hook::DecideOut,
+    152,
+    8,
+    head = 0,
+    verbs = 96,
+    reject_status = 100,
+    _reserved = 102,
+    reject_message_written = 104,
+    reject_message_needed = 112,
+    restrict_tags_written = 120,
+    restrict_tags_needed = 128,
+    order_written = 136,
+    order_needed = 144,
+);
+pin!(
+    crate::abi::hook::TransformOut,
+    136,
+    8,
+    head = 0,
+    verbs = 96,
+    reject_status = 100,
+    _reserved = 102,
+    reject_message_written = 104,
+    reject_message_needed = 112,
+    rewrite_written = 120,
+    rewrite_needed = 128,
+);
+pin!(
+    crate::abi::hook::StageView,
+    144,
+    8,
+    request_id = 0,
+    pool = 8,
+    ingress_dialect = 24,
+    message_count = 40,
+    total_chars = 48,
+    remaining_candidates = 56,
+    model = 64,
+    previous_failure = 80,
+    outcome = 96,
+    max_tokens = 112,
+    flags = 116,
+    at = 120,
+    attempt_number = 124,
+    status = 128,
+    _reserved = 130,
+    stage_present = 132,
+    _reserved2 = 136,
+);
+pin!(crate::abi::hook::NotifyIn, 232, 8, head = 0, stage = 88);
+pin!(
+    crate::abi::hook::ConfigureIn,
+    136,
+    8,
+    head = 0,
+    version = 88,
+    settings = 96,
+    name = 120,
+);
+pin!(
+    crate::abi::hook::ConfigureOut,
+    104,
+    8,
+    head = 0,
+    acked_version = 96
+);
+pin!(crate::abi::hook::StatusOut, 120, 8, head = 0, status = 96);
+pin!(
+    crate::abi::hook::DescribeOut,
+    120,
+    8,
+    head = 0,
+    describe = 96
+);
+pin!(
+    crate::abi::hook::ServeIn,
+    176,
+    8,
+    head = 0,
+    method = 88,
+    path = 104,
+    query = 120,
+    headers = 136,
+    headers_len = 144,
+    body = 152,
+);
+pin!(
+    crate::abi::hook::ServeOut,
+    144,
+    8,
+    head = 0,
+    status_code = 96,
+    _reserved = 98,
+    headers_out = 104,
+    headers_out_len = 112,
+    body = 120,
+);
+pin!(
+    crate::abi::hook::Route,
+    40,
+    8,
+    path = 0,
+    method = 16,
+    auth = 32,
+    _reserved = 36
+);
+pin!(
+    crate::abi::hook::Tail,
+    72,
+    8,
+    head = 0,
+    kind_class = 8,
+    prompt_access = 12,
+    user_access = 16,
+    infallible = 20,
+    _reserved = 21,
+    requested_signals = 24,
+    requested_signals_len = 32,
+    routes = 40,
+    routes_len = 48,
+    declared_words = 56,
+    declared_words_len = 64,
+);
+
+// ── EXPORT (M3-SHAPES, abi-v2-perkind.md B.5) ───────────────────────────────────────────────────
+pin!(
+    crate::abi::export::Ops,
+    120,
+    8,
+    head = 0,
+    deliver = 80,
+    scrape = 88,
+    status = 96,
+    check = 104,
+    serve = 112,
+);
+pin!(
+    crate::abi::export::DeliverIn,
+    136,
+    8,
+    head = 0,
+    op_id = 88,
+    stream = 104,
+    _reserved = 105,
+    batch = 112,
+);
+pin!(crate::abi::export::ScrapeLabel, 32, 8, key = 0, value = 16);
+pin!(
+    crate::abi::export::ScrapeSample,
+    48,
+    8,
+    name = 0,
+    labels = 16,
+    labels_len = 24,
+    value = 32
+);
+pin!(
+    crate::abi::export::ScrapeFamily,
+    72,
+    8,
+    name = 0,
+    help = 16,
+    unit = 32,
+    kind = 48,
+    _reserved = 49,
+    samples = 56,
+    samples_len = 64,
+);
+pin!(
+    crate::abi::export::ScrapeIn,
+    120,
+    8,
+    head = 0,
+    families = 88,
+    families_len = 96,
+    buf = 104,
+    cap = 112,
+);
+pin!(
+    crate::abi::export::ScrapeOut,
+    112,
+    8,
+    head = 0,
+    written = 96,
+    needed = 104
+);
+pin!(crate::abi::export::StatusOut, 120, 8, head = 0, status = 96);
+pin!(
+    crate::abi::export::CheckInstance,
+    40,
+    8,
+    name = 0,
+    settings = 16
+);
+pin!(
+    crate::abi::export::CheckIn,
+    112,
+    8,
+    head = 0,
+    phase = 88,
+    _reserved = 92,
+    instances = 96,
+    instances_len = 104,
+);
+pin!(
+    crate::abi::export::CheckOut,
+    120,
+    8,
+    head = 0,
+    findings = 96
+);
+pin!(
+    crate::abi::export::ServeIn,
+    176,
+    8,
+    head = 0,
+    method = 88,
+    path = 104,
+    query = 120,
+    headers = 136,
+    headers_len = 144,
+    body = 152,
+);
+pin!(
+    crate::abi::export::ServeOut,
+    144,
+    8,
+    head = 0,
+    status_code = 96,
+    _reserved = 98,
+    headers_out = 104,
+    headers_out_len = 112,
+    body = 120,
+);
+pin!(
+    crate::abi::export::Route,
+    40,
+    8,
+    path = 0,
+    method = 16,
+    auth = 32,
+    _reserved = 36
+);
+pin!(
+    crate::abi::export::Tail,
+    40,
+    8,
+    head = 0,
+    streams = 8,
+    streams_len = 16,
+    routes = 24,
+    routes_len = 32,
+);
+
+// ── THE TRANSPORT KIND (abi/transport/) ──────────────────────────────────────────────────────
+mod transport_kind {
+    use crate::abi::transport::*;
+    use std::mem::{align_of, offset_of, size_of};
+
+    pin!(
+        Ops,
+        224,
+        8,
+        head = 0,
+        listen = 80,
+        accept = 88,
+        dial = 96,
+        read = 104,
+        write = 112,
+        flush = 120,
+        shut = 128,
+        arrival = 136,
+        locate = 144,
+        begin = 152,
+        ingest = 160,
+        emit = 168,
+        encode = 176,
+        refuse = 184,
+        finish = 192,
+        detach = 200,
+        adopt = 208,
+        timer = 216
+    );
+    pin!(
+        Claim,
+        88,
+        8,
+        key = 0,
+        selector_forms = 16,
+        egress_selector_forms = 32,
+        facts = 48,
+        facts_len = 56,
+        status_namespace = 64,
+        session = 80,
+        session_bound = 81,
+        unit0_trigger = 82,
+        status_at = 83,
+        _reserved = 84
+    );
+    pin!(StatusRow, 16, 4, claim = 0, lo = 4, hi = 8, class = 12);
+    pin!(
+        SettingDecl,
+        40,
+        8,
+        path = 0,
+        kind = 16,
+        _reserved = 20,
+        default = 24
+    );
+    pin!(
+        TransportTail,
+        168,
+        8,
+        head = 0,
+        role = 8,
+        framing = 12,
+        facts = 16,
+        handshake_max_steps = 20,
+        composes_over = 24,
+        composes_over_len = 32,
+        claims = 40,
+        claims_len = 48,
+        upgrades_to = 56,
+        upgrades_to_len = 64,
+        handoff_from = 72,
+        handoff_to = 88,
+        handoff_binding_fact = 104,
+        handshake_frame_kind = 120,
+        status_rows = 136,
+        status_rows_len = 144,
+        settings = 152,
+        settings_len = 160
+    );
+    pin!(Field, 32, 8, name = 0, value = 16);
+    pin!(
+        Destination,
+        72,
+        8,
+        kind = 0,
+        _reserved = 4,
+        authority = 8,
+        program = 24,
+        args = 40,
+        args_len = 48,
+        env = 56,
+        env_len = 64
+    );
+    pin!(
+        ConnFacts,
+        104,
+        8,
+        size = 0,
+        _reserved = 4,
+        offered_name = 8,
+        agreed_protocol = 24,
+        peer_subject = 40,
+        peer_issuer = 56,
+        peer_fingerprint = 72,
+        claim = 88
+    );
+    pin!(
+        FramePiece,
+        40,
+        8,
+        stream = 0,
+        offset = 8,
+        len = 16,
+        status_code = 24,
+        status_class = 28,
+        flags = 29,
+        _reserved = 30,
+        retry_after_secs = 32
+    );
+    pin!(
+        FramerSink,
+        64,
+        8,
+        wire = 0,
+        wire_cap = 8,
+        frame = 16,
+        frame_cap = 24,
+        pieces = 32,
+        pieces_cap = 40,
+        now_monotonic_ns = 48,
+        now_unix_ns = 56
+    );
+    pin!(
+        FramerYield,
+        32,
+        8,
+        wire_len = 0,
+        frame_len = 8,
+        pieces_len = 16,
+        flags = 20,
+        next_deadline_ns = 24
+    );
+    pin!(
+        ListenIn,
+        120,
+        8,
+        head = 0,
+        bind = 88,
+        addr_buf = 104,
+        addr_cap = 112
+    );
+    pin!(
+        ListenOut,
+        112,
+        8,
+        head = 0,
+        listener = 96,
+        addr_written = 104
+    );
+    pin!(
+        AcceptIn,
+        112,
+        8,
+        head = 0,
+        listener = 88,
+        peer_buf = 96,
+        peer_cap = 104
+    );
+    pin!(AcceptOut, 112, 8, head = 0, conn = 96, peer_written = 104);
+    pin!(DialIn, 96, 8, head = 0, dest = 88);
+    pin!(ConnOut, 104, 8, head = 0, conn = 96);
+    pin!(ReadIn, 112, 8, head = 0, conn = 88, buf = 96, cap = 104);
+    pin!(WriteIn, 112, 8, head = 0, conn = 88, bytes = 96, len = 104);
+    pin!(IoOut, 104, 8, head = 0, len = 96);
+    pin!(ConnIn, 96, 8, head = 0, conn = 88);
+    pin!(
+        ShutIn,
+        104,
+        8,
+        head = 0,
+        conn = 88,
+        reason = 96,
+        _reserved = 100
+    );
+    pin!(
+        ArrivalIn,
+        112,
+        8,
+        head = 0,
+        conn = 88,
+        peer_buf = 96,
+        peer_cap = 104
+    );
+    pin!(
+        ArrivalOut,
+        120,
+        8,
+        head = 0,
+        peer_written = 96,
+        peer_needed = 104,
+        local_port = 112,
+        _reserved = 116
+    );
+    pin!(
+        LocateIn,
+        136,
+        8,
+        head = 0,
+        target = 88,
+        authority_buf = 104,
+        authority_cap = 112,
+        name_buf = 120,
+        name_cap = 128
+    );
+    pin!(
+        LocateOut,
+        136,
+        8,
+        head = 0,
+        authority_written = 96,
+        authority_needed = 104,
+        name_written = 112,
+        name_needed = 120,
+        secure = 128,
+        has_name = 132
+    );
+    pin!(FramerOut, 136, 8, head = 0, yielded = 96, framing = 128);
+    pin!(
+        BeginIn,
+        184,
+        8,
+        head = 0,
+        side = 88,
+        _reserved = 92,
+        target = 96,
+        facts = 112,
+        sink = 120
+    );
+    pin!(
+        IngestIn,
+        184,
+        8,
+        head = 0,
+        framing = 88,
+        bytes = 96,
+        len = 104,
+        end = 112,
+        _reserved = 116,
+        sink = 120
+    );
+    pin!(
+        EmitIn,
+        192,
+        8,
+        head = 0,
+        framing = 88,
+        stream = 96,
+        bytes = 104,
+        len = 112,
+        end_of_frame = 120,
+        _reserved = 124,
+        sink = 128
+    );
+    pin!(
+        EncodeIn,
+        184,
+        8,
+        head = 0,
+        fields = 88,
+        fields_len = 96,
+        body = 104,
+        body_len = 112,
+        sink = 120
+    );
+    pin!(
+        RefuseIn,
+        192,
+        8,
+        head = 0,
+        framing = 88,
+        stream = 96,
+        has_stream = 104,
+        _reserved = 108,
+        bytes = 112,
+        len = 120,
+        sink = 128
+    );
+    pin!(
+        FinishIn,
+        168,
+        8,
+        head = 0,
+        framing = 88,
+        reason = 96,
+        _reserved = 100,
+        sink = 104
+    );
+    pin!(FramingIn, 160, 8, head = 0, framing = 88, sink = 96);
+    pin!(
+        AdoptIn,
+        184,
+        8,
+        head = 0,
+        side = 88,
+        _reserved = 92,
+        facts = 96,
+        leftover = 104,
+        leftover_len = 112,
+        sink = 120
+    );
+}
+
+// ── THE HOST CONNECTOR (abi/host/conn/connector.rs) ──────────────────────────────────────────────
+mod host_connector {
+    use crate::abi::host::conn::connector::*;
+    use std::mem::{align_of, offset_of, size_of};
+
+    pin!(
+        Need,
+        96,
+        8,
+        direction = 0,
+        egress_class = 4,
+        transport = 8,
+        auth = 24,
+        target_from = 40,
+        trust_from = 56,
+        details = 72
+    );
+    pin!(ServiceHead, 24, 4, size = 0, op = 4, handle = 8);
+    pin!(
+        ServiceOut,
+        40,
+        8,
+        size = 0,
+        outcome = 4,
+        _reserved = 5,
+        value = 8,
+        len = 16,
+        error = 24
+    );
+    pin!(
+        EstablishIn,
+        48,
+        8,
+        head = 0,
+        need = 24,
+        _reserved = 28,
+        target = 32
+    );
+    pin!(StreamIn, 32, 8, head = 0, stream = 24);
+    pin!(IoIn, 48, 8, head = 0, stream = 24, buf = 32, len = 40);
+    pin!(
+        UpgradeIn,
+        64,
+        8,
+        head = 0,
+        stream = 24,
+        offered_name = 32,
+        trust = 48
+    );
+    pin!(FactsIn, 40, 8, head = 0, stream = 24, facts = 32);
+    pin!(
+        StreamFacts,
+        56,
+        8,
+        size = 0,
+        secure = 4,
+        endpoint = 8,
+        agreed_protocol = 24,
+        peer_cert_hash = 40
+    );
+    pin!(CheckoutIn, 32, 4, head = 0, need = 24, _reserved = 28);
+    pin!(
+        CheckinIn,
+        40,
+        8,
+        head = 0,
+        stream = 24,
+        disposition = 32,
+        _reserved = 36
+    );
+    pin!(RandomIn, 40, 8, head = 0, buf = 24, len = 32);
+    pin!(
+        ProcessIdentity,
+        48,
+        8,
+        size = 0,
+        _reserved = 4,
+        pid = 8,
+        os_user = 16,
+        program = 32
+    );
+    pin!(IdentityIn, 32, 8, head = 0, identity = 24);
+    pin!(
+        ConnectorSlots,
+        104,
+        8,
+        size = 0,
+        slots = 4,
+        establish = 8,
+        reject_endpoint = 16,
+        side_stream = 24,
+        read = 32,
+        write = 40,
+        upgrade_secure = 48,
+        facts = 56,
+        checkout = 64,
+        checkin = 72,
+        close = 80,
+        random = 88,
+        identity = 96
+    );
+}
+
+// ── THE PLANE KIND (abi/plane/) ─────────────────────────────────────────────────────────────
+#[rustfmt::skip]
+mod plane_kind {
+    use std::mem::{align_of, offset_of, size_of};
+
+    use crate::abi::plane::*;
+
+    pin!(Ops, 128, 8, head = 0, arrive = 80, on_piece = 88, refusal = 96, serve = 104,
+        hydrate = 112, start = 120);
+    pin!(Section, 24, 8, name = 0, flags = 16, _reserved = 20);
+    pin!(DialectAuth, 24, 8, dialect = 0, _reserved = 4, style = 8);
+    pin!(OpClass, 32, 8, op = 0, name = 16);
+    pin!(BillableClass, 32, 8, class = 0, family = 16);
+    pin!(RouteCost, 16, 8, class = 0, _reserved = 4, weight = 8);
+    pin!(PlaneTail, 328, 8, head = 0, flags = 8, ingress = 12, dispatch_shape = 16,
+        _reserved = 20, scope = 24, label = 40, subject_noun = 56, admin_noun = 72,
+        audit_kind = 88, signing_domain = 104, signing_kid_prefix = 120, cli_help = 136,
+        sections = 152, sections_len = 160, dialects = 168, dialects_len = 176,
+        dialect_auth = 184, dialect_auth_len = 192, scope_kinds = 200, scope_kinds_len = 208,
+        op_classes = 216, op_classes_len = 224, billable_classes = 232,
+        billable_classes_len = 240, route_cost = 248, route_cost_len = 256, fee_units = 264,
+        fee_units_len = 272, record_kinds = 280, record_kinds_len = 288, needs = 296,
+        needs_len = 304, egress_targets = 312, egress_targets_len = 320);
+    pin!(Claim, 48, 8, verb = 0, target = 16, carrier = 32);
+    pin!(AdminRoute, 32, 8, verb = 0, target = 16);
+    pin!(PlaneSnapshot, 104, 8, size = 0, _reserved = 4, generation = 8, claims = 16,
+        claims_len = 24, admin_routes = 32, admin_routes_len = 40, openapi = 48,
+        audience = 72, resource_metadata = 88);
+    pin!(PlaneOpenIn, 160, 8, open = 0, public_url = 144);
+    pin!(PlaneOpenOut, 112, 8, open = 0, snapshot = 104);
+    pin!(PlaneRefreshOut, 104, 8, head = 0, snapshot = 96);
+    pin!(Field, 32, 8, name = 0, value = 16);
+    pin!(Span, 8, 4, offset = 0, len = 4);
+    pin!(OutField, 16, 4, name = 0, value = 8);
+    pin!(UnitCount, 16, 8, class = 0, source = 4, amount = 8);
+    pin!(RecordWrite, 24, 4, kind = 0, op = 4, key = 8, value = 16);
+    pin!(ArriveIn, 168, 8, head = 0, claim = 88, _reserved = 92, target = 96, fields = 112,
+        fields_len = 120, body = 128, units_buf = 152, units_cap = 160);
+    pin!(ArriveOut, 120, 8, head = 0, op_class = 96, principal_need = 100, dialect = 104,
+        units_written = 108, units_needed = 112, _reserved = 116);
+    pin!(OnPieceIn, 216, 8, head = 0, from = 88, flags = 92, stream = 96, bytes = 104,
+        status_code = 128, status_class = 132, reply_buf = 136, reply_cap = 144,
+        units_buf = 152, units_cap = 160, records_buf = 168, records_cap = 176,
+        fields_buf = 184, fields_cap = 192, arena_buf = 200, arena_cap = 208);
+    pin!(OnPieceOut, 160, 8, head = 0, emitted = 96, more = 104, flags = 108,
+        reply_status = 112, fields_written = 116, fields_needed = 120, units_written = 124,
+        units_needed = 128, records_written = 132, records_needed = 136, _reserved = 140,
+        arena_written = 144, arena_needed = 152);
+    pin!(RefusalIn, 168, 8, head = 0, cause = 88, status = 92, dialect = 96, _reserved = 100,
+        text = 104, reply_buf = 120, reply_cap = 128, fields_buf = 136, fields_cap = 144,
+        arena_buf = 152, arena_cap = 160);
+    pin!(RefusalOut, 144, 8, head = 0, reply_written = 96, reply_needed = 104,
+        arena_written = 112, arena_needed = 120, marker = 128, fields_written = 132,
+        fields_needed = 136, _reserved = 140);
+    pin!(ServeIn, 200, 8, head = 0, route = 88, _reserved = 92, target = 96, fields = 112,
+        fields_len = 120, body = 128, reply_buf = 152, reply_cap = 160, fields_buf = 168,
+        fields_cap = 176, arena_buf = 184, arena_cap = 192);
+    pin!(ServeOut, 144, 8, head = 0, reply_written = 96, reply_needed = 104,
+        arena_written = 112, arena_needed = 120, status = 128, fields_written = 132,
+        fields_needed = 136, _reserved = 140);
+}

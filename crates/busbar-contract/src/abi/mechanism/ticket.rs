@@ -5,7 +5,8 @@
 //! blocking (the design's locked plugin ABI).
 //!
 //! * A [`Ticket`] is `(slot, generation)`. A request or stream mints one and reuses it for all its
-//!   ops. The generation is bumped every time the slot is recycled, so a late wake for a recycled
+//!   ops; a full-duplex transport connection holds TWO, one per side (read, write), each with at
+//!   most one op in flight. The generation is bumped every time the slot is recycled, so a late wake for a recycled
 //!   slot names a generation that no longer exists and is dropped.
 //! * **Wakes are LATCHED:** a wake that arrives before the op answered [`super::call::Outcome::Pending`]
 //!   is kept and resumes it at once. **Wakes are SPURIOUS-TOLERANT:** a resumed op that is still not

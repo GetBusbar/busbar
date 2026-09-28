@@ -73,9 +73,15 @@ FNR==1 { inblk=0 }
 { code=strip($0); if (code ~ needle) printf "%s:%d\t%s\n", FILENAME, FNR, code }
 '
 
-# Every crate whose Cargo.toml declares a cdylib crate-type — the plugin population.
+# Every crate whose LIBRARY is a cdylib — the plugin population. Only the `[lib]` section counts:
+# a crate that builds a cdylib test double as an `[[example]]` (busbar-contract's door-macro fixture)
+# is not itself a plugin, and scanning it as one reads the kernel-side seal its own tests mint.
+lib_is_cdylib() {  # lib_is_cdylib <Cargo.toml> -> exit 0 iff its [lib] section declares cdylib
+  awk '/^[[:space:]]*\[/{sec=$0; gsub(/[[:space:]]/,"",sec)} sec=="[lib]" && /crate-type/ && /cdylib/{f=1} END{exit !f}' "$1"
+}
 plugin_crates() {
-  grep -rl 'crate-type[^]]*cdylib' crates/*/Cargo.toml 2>/dev/null | sed 's,/Cargo.toml,,'
+  local m
+  for m in crates/*/Cargo.toml; do lib_is_cdylib "$m" && printf '%s\n' "${m%/Cargo.toml}"; done
 }
 
 scan() { awk -v needle="$NEEDLES" "$strip_awk" "$@"; }
@@ -194,6 +200,15 @@ GREEN
   mkdir -p "$tmp/crates/badc/src"; cp "$tmp/bad.rs" "$tmp/crates/badc/src/lib.rs"
   if check_crates "$tmp/crates/badc" >/dev/null 2>&1; then fail=1; note "RED FAILED: planted reach passed check_crates"
   else note "RED: planted reach inside a counted crate is FAIL"; fi
+
+  # RED/GREEN: only a cdylib LIBRARY makes a plugin. A crate whose sole cdylib is an [[example]]
+  # (a test double) is not one; the same crate with `[lib] crate-type = ["cdylib"]` is.
+  printf '%s\n' '[package]' 'name = "x"' '' '[[example]]' 'name = "t"' 'crate-type = ["cdylib"]' >"$tmp/ex.toml"
+  printf '%s\n' '[package]' 'name = "y"' '' '[lib]' 'crate-type = ["cdylib", "rlib"]' >"$tmp/lib.toml"
+  if lib_is_cdylib "$tmp/ex.toml"; then fail=1; note "GREEN FAILED: an [[example]] cdylib made its crate a plugin"
+  else note "GREEN: an [[example]]-only cdylib is not a plugin crate"; fi
+  if lib_is_cdylib "$tmp/lib.toml"; then note "RED: a [lib] cdylib is a plugin crate, scanned"
+  else fail=1; note "RED FAILED: a [lib] cdylib was not counted as a plugin"; fi
 
   # Item 467: the header's justification names only crates that exist, and the seal lives where
   # the header says. A header citing a phantom crate reads as a wall that is not there.

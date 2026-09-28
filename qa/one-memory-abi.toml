@@ -11,7 +11,7 @@ item = "extern 'C-unwind'"
 
 [[finding]]
 rule = "one-memory-abi:c-unwind"
-file = "crates/busbar-contract/src/abi/host/conn.rs"
+file = "crates/busbar-contract/src/abi/host/conn/mod.rs"
 item = "extern 'C-unwind'"
 
 [[finding]]
