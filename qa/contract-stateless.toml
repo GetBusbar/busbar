@@ -53,6 +53,13 @@ rule = "contract-stateless:static"
 file = "crates/busbar-contract/src/abi/hot/services.rs"
 item = "KEPT"
 
+# The door macro's per-thread call-capture slot (plugin logging, #85), expanded in each PLUGIN's own
+# crate: one slot per plugin image, never state shared by host and plugins. Owner 2026-09-28.
+[[finding]]
+rule = "contract-stateless:static"
+file = "crates/busbar-contract/src/abi/sdk/door.rs"
+item = "__BUSBAR_CAPTURE"
+
 [[finding]]
 rule = "contract-stateless:static"
 file = "crates/busbar-contract/src/abi/sdk/mod.rs"
@@ -211,4 +218,10 @@ item = "NEXT_LISTENER_ID"
 [[finding]]
 rule = "contract-stateless:thread-local"
 file = "crates/busbar-contract/src/abi/hot/host.rs"
+item = "thread_local!"
+
+# The same slot's `thread_local!` (owner 2026-09-28).
+[[finding]]
+rule = "contract-stateless:thread-local"
+file = "crates/busbar-contract/src/abi/sdk/door.rs"
 item = "thread_local!"
