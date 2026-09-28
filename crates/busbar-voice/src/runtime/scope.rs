@@ -11,7 +11,7 @@
 //! session's `(owner, id)` into the row and drives open → bump → close.
 
 pub use crate::plane_session_row::VoiceSessionRow;
-use crate::plane_session_row::VOICE_SESSION_KIND;
+use crate::plane_session_row::STREAMING_SESSION_KIND;
 use busbar_contract::records::RecordStoreResult;
 use busbar_kernel::plane::handle_engine::{
     ChainPosition, DurableHandleEngine, HandleEngineError, HandleMeta, Mutation, RehydrateCounts,
@@ -105,7 +105,7 @@ impl SessionHandle {
                     row_record: record.clone(),
                     event: Some(SealedEvent {
                         record,
-                        tail_hash: format!("voice-genesis-{}", row.id),
+                        tail_hash: format!("streaming-genesis-{}", row.id),
                     }),
                 })
             },
@@ -137,7 +137,7 @@ impl SessionHandle {
         let row = self.scope.mutate(|row, _pos| {
             let cur = row
                 .downcast_ref::<VoiceSessionRow>()
-                .expect("voice session row");
+                .expect("streaming session row");
             let mut next = cur.clone();
             next.turns += 1;
             next.updated_at = now;
@@ -157,7 +157,7 @@ impl SessionHandle {
         self.scope.mutate(|row, _pos| {
             let cur = row
                 .downcast_ref::<VoiceSessionRow>()
-                .expect("voice session row");
+                .expect("streaming session row");
             let mut next = cur.clone();
             next.rtc_call_id = Some(rtc_call_id.to_string());
             next.updated_at = now;
@@ -171,7 +171,7 @@ impl SessionHandle {
         self.scope.mutate(|row, _pos| {
             let cur = row
                 .downcast_ref::<VoiceSessionRow>()
-                .expect("voice session row");
+                .expect("streaming session row");
             let mut next = cur.clone();
             next.terminal = true;
             next.updated_at = now;
@@ -211,7 +211,7 @@ pub fn rehydrate_sessions(
     engine: &DurableHandleEngine,
     store: &dyn PlaneStore,
 ) -> RecordStoreResult<RehydrateCounts> {
-    engine.rehydrate(store, VOICE_SESSION_KIND, |_store, body| {
+    engine.rehydrate(store, STREAMING_SESSION_KIND, |_store, body| {
         // Decode the row the durable body IS; an undecodable body is counted unreadable, never fatal.
         match serde_json::from_slice::<VoiceSessionRow>(body) {
             Ok(row) if row.terminal => Ok(RehydrateOutcome::Terminal),

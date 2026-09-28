@@ -58,7 +58,7 @@
 #                      tripped cell refuses every FURTHER dial before any socket/URL work — the
 #                      documented terminal outcome, with no repeated egress once the cell is open.
 #   audit-record       one governed session lands EXACTLY ONE new admin-audit entry, carrying the
-#                      plane's own action literal (`voice.session.open`) and outcome (`applied`).
+#                      plane's own action literal (`streaming.session.open`) and outcome (`applied`).
 #   exit-terminal      one session ends ONCE: a metering lease settles exactly once under a double
 #                      close, and a session's one admin-audit row survives being torn down before it
 #                      ever runs a frame.

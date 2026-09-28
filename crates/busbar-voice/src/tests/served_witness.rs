@@ -106,7 +106,7 @@ pub(crate) const WITNESSES: &[(&str, Witness)] = &[
 // ── FIXTURES ────────────────────────────────────────────────────────────────────────────────────
 
 /// The pool a voice session is served on — the value a `session` grant names.
-const VOICE_POOL: &str = "voice-server";
+const VOICE_POOL: &str = "streaming-server";
 
 /// The model a witness session targets, and so the ledger lane its turns land under.
 const MODEL: &str = "witness-realtime";
@@ -209,7 +209,7 @@ fn upstream_text(plan: &crate::runtime::Outbound) -> String {
 
 /// The ledger lane a witness session's turns land under: this plane's key, the separator, the model.
 fn lane() -> String {
-    format!("voice\u{1f}{MODEL}")
+    format!("streaming\u{1f}{MODEL}")
 }
 
 /// What `key` has ledgered under the witness lane for `class`, or `None`.
@@ -494,7 +494,7 @@ async fn a_served_open_lands_one_audit_row() -> u64 {
         ),
         (
             crate::mount::SESSION_AUDIT_ACTION,
-            "voice:call-audit",
+            "streaming:call-audit",
             "applied",
             "acct-witness"
         ),

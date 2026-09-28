@@ -163,8 +163,8 @@ session checks it. Holding a key valid for this plane's **audience** is not the 
 answers "may this caller walk through it", the same double gate MCP runs over `mcp_server` +
 `mcp_tool` and A2A runs over `agent`.
 
-The value the grant names is the voice front door's pool, `voice-server`, so a key is narrowed to
-voice with `allowed_scopes: [{ kind: session, value: voice-server }]`. As on every other plane, a key
+The value the grant names is the streaming front door's pool, `streaming-server`, so a key is narrowed to
+the streaming plane with `allowed_scopes: [{ kind: session, value: streaming-server }]`. As on every other plane, a key
 with **no** `allowed_scopes` list at all is the store's wildcard and is granted every kind; a key that
 carries an explicit list must have this entry in it, so a model-plane key (pool scopes only), a
 session grant aimed at another pool, and an empty list are all refused. The refusal is `403` and it
@@ -338,7 +338,7 @@ that is an audit tap, not the ceiling.
 
 | Code | Title | Severity | Meaning |
 |---|---|---|---|
-| `BUSBAR-7050` | Voice session hard-closed on metering-lease exhaustion | Benign, recurring | A live session's metering lease reached its real cap and was hard-closed rather than allowed to keep spending — the plane's fail-closed ceiling doing its job. Self-heals; if a caller needs a larger envelope, raise its configured session budget. |
+| `BUSBAR-7050` | Streaming session hard-closed on metering-lease exhaustion | Benign, recurring | A live session's metering lease reached its real cap and was hard-closed rather than allowed to keep spending — the plane's fail-closed ceiling doing its job. Self-heals; if a caller needs a larger envelope, raise its configured session budget. |
 
 (`crates/busbar-voice/src/diagnostics.rs`.) This is the plane's one contributed diagnostic in the
 `Class::Plane` (7000) band, installed into the runtime catalog at boot alongside MCP's and A2A's.
@@ -374,10 +374,10 @@ restore — only a store-level list failure refuses boot
 
 The voice plane's front door counts on the same neutral, per-mounted-plane request family MCP and
 A2A use, `busbar_plane_requests_total` / `busbar_plane_request_duration_seconds`, with
-`plane="voice"` and `ingress_protocol` set to the LEG'S OWN dialect (`openai_realtime` for the
+`plane="streaming"` and `ingress_protocol` set to the LEG'S OWN dialect (`openai_realtime` for the
 mint/SDP/sideband/telephony routes, `gemini_live` for the Gemini route) — never a plane-wide constant,
 so the second dialect's traffic is never mislabelled under the first; the front-door `pool` label is
-pinned to the constant `voice-server` for the same reason A2A pins its routing-target label — an
+pinned to the constant `streaming-server` for the same reason A2A pins its routing-target label — an
 unbounded caller-chosen value would be a cardinality DoS one valid credential could drive
 (`crates/busbar-voice/src/mount.rs`). See [Observability](/docs/observability/) for the shared metric
 families every plane emits into.

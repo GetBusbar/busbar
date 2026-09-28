@@ -284,7 +284,7 @@ async fn a_committed_rewrite_busbar_cannot_read_back_refuses_the_session_open() 
             fx.audit_log()
                 .iter()
                 .any(|e| e.action == crate::mount::SESSION_AUDIT_ACTION
-                    && e.resource == format!("voice:{CALL_ID}")
+                    && e.resource == format!("streaming:{CALL_ID}")
                     && e.outcome == "rejected"
                     && e.principal == OWNER),
             "the refusal must be ON THE AUDIT TRAIL under the plane's own session-open action — a \

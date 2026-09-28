@@ -272,7 +272,7 @@ use busbar_kernel::plane::registry::PlaneHooks;
 /// without naming it (the MCP/A2A precedent).
 pub const PLANE_DECLARATION: busbar_contract::plane::PlaneDeclaration =
     busbar_contract::plane::PlaneDeclaration {
-        key: "voice",
+        key: "streaming",
         // A MOUNTED plane, not the fallback catch-all.
         fallback: false,
         // THE DUPLEX / LIVE-VOICE PLANE'S DECLARING SECTION is `streams:` (1.6.0 config-seam KEYSTONE
@@ -285,9 +285,9 @@ pub const PLANE_DECLARATION: busbar_contract::plane::PlaneDeclaration =
         config_section: "streams",
         // One session is granted at the whole-session granularity.
         scope_kinds: &["session"],
-        subject_noun: "voice session",
-        admin_noun: "voice-session",
-        audit_kind: "voice_session",
+        subject_noun: "streaming session",
+        admin_noun: "streaming-session",
+        audit_kind: "streaming_session",
         card_signing_domain: None,
         card_kid_prefix: None,
         // config-seam: voice OWNS the `streams:` grammar. `"streams"` is NOT in core's

@@ -528,7 +528,7 @@
       "audit": {
         "cell": "voice.rig|audit-record",
         "status": "new",
-        "note": "testing/voice-conformance/legs/audit-record.sh; one governed session lands exactly one new admin-audit entry (topology::open_admitted_session -> VoiceRuntime::audit_session -> JournalHost::audit_record), carrying the voice.session.open action literal and the applied outcome; two sessions land exactly two rows",
+        "note": "testing/voice-conformance/legs/audit-record.sh; one governed session lands exactly one new admin-audit entry (topology::open_admitted_session -> VoiceRuntime::audit_session -> JournalHost::audit_record), carrying the streaming.session.open action literal and the applied outcome; two sessions land exactly two rows",
         "root": {
           "state": "proven",
           "leg": "root-voice",

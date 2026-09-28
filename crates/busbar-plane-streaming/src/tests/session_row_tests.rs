@@ -21,7 +21,7 @@ fn row(terminal: bool) -> VoiceSessionRow {
 #[test]
 fn a_row_is_kept_as_its_own_record() {
     let live = row(false).record();
-    assert_eq!(live.kind, "voice_session");
+    assert_eq!(live.kind, "streaming_session");
     assert_eq!(live.id, "call-1");
     assert_eq!(live.seq, 3);
     assert_eq!(live.ts, 1_700);

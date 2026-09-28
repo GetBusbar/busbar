@@ -10,13 +10,13 @@
 #
 # Before this leg, NOTHING in `busbar-voice` ever called `JournalHost::audit_record` — a session could
 # open, meter and close without leaving a single row on the admin audit trail. `topology::
-# open_admitted_session` now journals ONE row (`action = "voice.session.open"`, `outcome = "applied"`,
+# open_admitted_session` now journals ONE row (`action = "streaming.session.open"`, `outcome = "applied"`,
 # `principal` = the session's owner) at its single `Ok` success point, through the live host
 # (`VoiceRuntime::audit_session`, a no-op on the pre-host/dev-default runtime with nothing to journal
 # through). This leg drives that real code path twice over the substrate's `FixtureHost` — a full
 # `EngineHost` double whose `audit_record` now RECORDS (not a no-op) — and asserts:
 #
-#   * a clean session open lands EXACTLY ONE row, shaped `("voice.session.open", "voice:<call-id>",
+#   * a clean session open lands EXACTLY ONE row, shaped `("streaming.session.open", "streaming:<call-id>",
 #     "applied", <owner>)` — the literal action/outcome vocabulary, not a placeholder;
 #   * a SECOND, independent session adds exactly one MORE row (two sessions -> two rows, never
 #     doubled, never dropped) — so a leg that always saw "at least one" could not pass by luck.

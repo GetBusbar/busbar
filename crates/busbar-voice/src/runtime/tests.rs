@@ -36,7 +36,7 @@ fn caller() -> busbar_contract::records::VirtualKey {
 
 /// The lane an unmodelled OpenAI Realtime session's counts are ledgered under: the voice plane's key,
 /// the separator, and the provider label (the dialect carries its model server-side).
-const LANE: &str = "voice\u{1f}openai_realtime";
+const LANE: &str = "streaming\u{1f}openai_realtime";
 
 /// A governed fixture host whose budget view is ONE bucket capped at `cap` counts (`None`: uncapped).
 fn governed_host(cap: Option<i64>) -> Arc<FixtureHost> {
@@ -52,7 +52,7 @@ fn metering(host: &Arc<FixtureHost>) -> SessionMetering {
     TurnMeter::new(
         Arc::clone(host) as Arc<dyn busbar_kernel::plane_host::EngineHost>,
         caller(),
-        "voice-server",
+        "streaming-server",
         crate::OPENAI_REALTIME,
     )
     .open("")
@@ -319,7 +319,7 @@ async fn a_chain_dried_elsewhere_closes_the_session_at_its_next_turn() {
 #[test]
 fn a_dry_chain_refuses_the_open() {
     let open = |host: Arc<FixtureHost>| {
-        TurnMeter::new(host, caller(), "voice-server", crate::OPENAI_REALTIME)
+        TurnMeter::new(host, caller(), "streaming-server", crate::OPENAI_REALTIME)
             .open("gpt-realtime")
             .map(|m| m.is_some())
     };
@@ -1000,7 +1000,7 @@ async fn a_configured_ceiling_closes_the_session_and_settles_its_counts() {
         Some(TurnMeter::new(
             Arc::clone(&host) as Arc<dyn busbar_kernel::plane_host::EngineHost>,
             caller(),
-            "voice-server",
+            "streaming-server",
             crate::OPENAI_REALTIME,
         )),
         1,

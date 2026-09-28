@@ -28,7 +28,7 @@ fn meter(host: &Arc<FixtureHost>) -> TurnMeter {
     TurnMeter::new(
         Arc::clone(host) as Arc<dyn busbar_kernel::plane_host::EngineHost>,
         caller(),
-        "voice-server",
+        "streaming-server",
         crate::OPENAI_REALTIME,
     )
 }
@@ -86,7 +86,10 @@ fn the_session_lease_bills_the_presenting_key_and_refuses_past_the_cap_with_a_ha
     );
     assert_eq!(
         host.ledger_rows("vk-budget")
-            .get(&("voice\u{1f}m".to_string(), "audio_tokens_out".to_string()))
+            .get(&(
+                "streaming\u{1f}m".to_string(),
+                "audio_tokens_out".to_string()
+            ))
             .copied(),
         Some(40),
         "the presenting key's row, under the voice lane and the plane's own class"

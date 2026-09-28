@@ -41,9 +41,9 @@ owed plane-decisions
 installed llm llm
 installed mcp mcp-client mcp-server
 installed a2a a2a-client a2a-server
-installed voice voice-client voice-server
+installed streaming voice-client voice-server
 #
 # owned-section <plane key> <declaring section> <owned section>...: the linked planes that own the
 # grammar of a top-level section, and those sections (plane_owned_sections_boot.rs).
 owned-section mcp tools mcp
-owned-section voice streams streams
+owned-section streaming streams streams

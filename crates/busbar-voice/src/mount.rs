@@ -66,7 +66,7 @@ use std::sync::Arc;
 /// The bounded `pool` label the voice FRONT DOOR (the voice-server cell) emits under — a constant, not
 /// a caller value, so the series count stays bounded. The outbound provider dial (the voice-client
 /// cell) counts on its own `busbar_upstream_attempts_total` family in `topology::dial_provider`.
-const FRONT_DOOR_POOL: &str = "voice-server";
+const FRONT_DOOR_POOL: &str = "streaming-server";
 
 /// The session-open method label the hook gate/tap projection carries — the single operation a voice
 /// front-door request performs. Bounded (one value), so it is safe as the hook `tool` slot the
@@ -77,7 +77,7 @@ const SESSION_OPEN_METHOD: &str = "session.open";
 /// sites write it: the APPLIED row a governed open seals ([`crate::topology::begin_session`]) and the
 /// REJECTED row a committed-but-unreadable rewrite refuses under ([`hook_tap`]). An operator reading
 /// the audit stream must see ONE action with two outcomes, not two spellings that drift apart.
-pub(crate) const SESSION_AUDIT_ACTION: &str = "voice.session.open";
+pub(crate) const SESSION_AUDIT_ACTION: &str = "streaming.session.open";
 
 /// THE HOOK CONTAINER the voice plane's session-open gate/tap fire under — the plane's SINGULAR config
 /// section noun (`streams`), since voice declares no per-registration container (its config is one
@@ -108,7 +108,7 @@ pub fn session_scope_allowed(key: &busbar_contract::records::VirtualKey) -> bool
 fn session_scope_refusal() -> axum::response::Response {
     refusal(
         axum::http::StatusCode::FORBIDDEN,
-        "voice session-open refused: the presenting key holds no session scope for this voice pool \
+        "streaming session-open refused: the presenting key holds no session scope for this streaming pool \
          (fail closed)",
     )
 }
@@ -251,7 +251,7 @@ pub fn compose_from_config(cfg: &RootCfg) -> Option<Compose> {
         if let Err(e) = compose_provider(base_url.clone(), &api_key, resolver) {
             tracing::warn!(
                 target: "busbar",
-                "voice: the realtime provider credential did not resolve, so the voice mint and SDP \
+                "streaming: the realtime provider credential did not resolve, so the streaming mint and SDP \
                  routes stay uncomposed: {e}"
             );
         }
@@ -264,7 +264,7 @@ pub fn compose_from_config(cfg: &RootCfg) -> Option<Compose> {
         if let Err(e) = compose_gemini_provider(base_url, &api_key, resolver) {
             tracing::warn!(
                 target: "busbar",
-                "voice: the Gemini Live provider credential did not resolve, so the Gemini route \
+                "streaming: the Gemini Live provider credential did not resolve, so the Gemini route \
                  stays uncomposed: {e}"
             );
         }
@@ -478,11 +478,11 @@ pub fn voice_hydrate(ctx: &dyn PlaneBootCtx) -> Result<(), String> {
     // surface the outcome. A durable row a resumed session reattaches to via `SessionHandle::bind`.
     let engine = DurableHandleEngine::new();
     let counts = crate::runtime::scope::rehydrate_sessions(&engine, store.as_ref())
-        .map_err(|e| format!("voice session rehydrate failed: {e}"))?;
+        .map_err(|e| format!("streaming session rehydrate failed: {e}"))?;
     if counts.unreadable > 0 {
         tracing::warn!(
             unreadable = counts.unreadable,
-            "voice: some durable session rows could not be decoded on boot; counted and skipped"
+            "streaming: some durable session rows could not be decoded on boot; counted and skipped"
         );
     }
     // DEBUG, not INFO: a 1.5.5-shaped config with no `streams:` section still runs this hook (it is
@@ -493,7 +493,7 @@ pub fn voice_hydrate(ctx: &dyn PlaneBootCtx) -> Result<(), String> {
         active = counts.active,
         terminal = counts.terminal,
         unreadable = counts.unreadable,
-        "voice: durable session working-set rehydrated"
+        "streaming: durable session working-set rehydrated"
     );
     Ok(())
 }
@@ -514,7 +514,7 @@ pub fn voice_hydrate(ctx: &dyn PlaneBootCtx) -> Result<(), String> {
 /// through it rather than gaining a new seam.
 pub fn voice_start(_ctx: &dyn PlaneBootCtx) -> Result<(), String> {
     tracing::debug!(
-        "voice: started — sessions are admitted and served per WS-accept arrival (one \
+        "streaming: started — sessions are admitted and served per WS-accept arrival (one \
          run_gauntlet_session pass each); no process-wide background task is spawned"
     );
     Ok(())
@@ -998,7 +998,7 @@ async fn hook_tap(
         tracing::error!(
             session = %session_id,
             error = %e,
-            "the voice session-open rewrite (prompt: rw) leg did not join; the session-open proceeds \
+            "the streaming session-open rewrite (prompt: rw) leg did not join; the session-open proceeds \
              with the plane's own locked params (fail-safe: the admission gate already ran)"
         );
         TransformVerdict::Proceed {
@@ -1023,20 +1023,20 @@ async fn hook_tap(
                 Err(why) => {
                     host.audit_record(
                         SESSION_AUDIT_ACTION,
-                        &format!("voice:{session_id}"),
+                        &format!("streaming:{session_id}"),
                         "rejected",
                         owner,
                     );
                     tracing::error!(
                         session = %session_id,
                         error = %why,
-                        "a rewrite (prompt: rw) hook committed a rewrite of the voice session-open \
+                        "a rewrite (prompt: rw) hook committed a rewrite of the streaming session-open \
                          params whose output busbar could not read back; the session-open is REFUSED \
                          rather than opened with the params the hook said it had replaced"
                     );
                     Err(Box::new(refusal(
                         axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                        "a rewrite hook attached to this deployment committed a rewrite of the voice \
+                        "a rewrite hook attached to this deployment committed a rewrite of the streaming \
                          session-open params that busbar could not read back. The session-open is \
                          refused rather than opened with the params the hook said it had replaced.",
                     )))
@@ -1071,7 +1071,7 @@ async fn serve_mint(
         ),
         Err(e) => text_response(
             axum::http::StatusCode::BAD_GATEWAY,
-            format!("voice ephemeral-secret mint failed: {e}"),
+            format!("streaming ephemeral-secret mint failed: {e}"),
         ),
     }
 }
@@ -1111,7 +1111,7 @@ async fn serve_sdp(
         Err(e) => {
             return text_response(
                 axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                format!("voice SDP request did not build: {e}"),
+                format!("streaming SDP request did not build: {e}"),
             )
         }
     };
@@ -1121,7 +1121,7 @@ async fn serve_sdp(
         Err(e) => {
             return text_response(
                 axum::http::StatusCode::BAD_GATEWAY,
-                format!("voice SDP broker upstream failed: {}", e.into_cause()),
+                format!("streaming SDP broker upstream failed: {}", e.into_cause()),
             )
         }
     };
@@ -1133,7 +1133,7 @@ async fn serve_sdp(
         _ => {
             return text_response(
                 axum::http::StatusCode::BAD_GATEWAY,
-                "voice SDP answer was not read before the deadline".to_string(),
+                "streaming SDP answer was not read before the deadline".to_string(),
             )
         }
     };
@@ -1180,7 +1180,7 @@ fn egress_client() -> EngineClient {
 fn sideband_pending() -> axum::response::Response {
     refusal(
         axum::http::StatusCode::NOT_IMPLEMENTED,
-        "voice session governed-open succeeded; the inbound WS-accept seam that upgrades the browser \
+        "streaming session governed-open succeeded; the inbound WS-accept seam that upgrades the browser \
          sideband / telephony media socket lands separately",
     )
 }
@@ -1191,15 +1191,15 @@ fn start_refusal(e: &StartError) -> axum::response::Response {
     match e {
         StartError::DestinationRefused => refusal(
             axum::http::StatusCode::FORBIDDEN,
-            "voice session destination refused at the open-pass gate (fail closed)",
+            "streaming session destination refused at the open-pass gate (fail closed)",
         ),
         StartError::BudgetRefused => refusal(
             axum::http::StatusCode::PAYMENT_REQUIRED,
-            "voice session budget refused (fail closed)",
+            "streaming session budget refused (fail closed)",
         ),
         StartError::Durable(_) => refusal(
             axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-            "voice session durable open failed",
+            "streaming session durable open failed",
         ),
     }
 }
@@ -1243,7 +1243,7 @@ fn hook_refusal(status: u16, message: &str) -> axum::response::Response {
     text_response(
         status,
         if message.is_empty() {
-            "voice session-open refused by a hook gate".to_string()
+            "streaming session-open refused by a hook gate".to_string()
         } else {
             message.to_string()
         },
@@ -1261,7 +1261,7 @@ async fn serve(
     let Some(mount) = ctx.slot.downcast_ref::<VoiceMount>() else {
         return refusal(
             axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-            "voice route reached without its dispatch slot",
+            "streaming route reached without its dispatch slot",
         );
     };
     // The resolved caller the audience-checked key chain attached (the session owner), or the honest
@@ -1276,7 +1276,7 @@ async fn serve(
         .iter()
         .find(|(k, _)| k == "call_id")
         .map(|(_, v)| v.clone())
-        .unwrap_or_else(|| format!("voice-{}", unix_secs(&*ctx.host)));
+        .unwrap_or_else(|| format!("streaming-{}", unix_secs(&*ctx.host)));
     // The resolved presenting virtual key (the middleware-resolved, audience-checked key), or `None`
     // ungoverned. The hook gate reads its `(id, name)`; the Meter step lands usage on its ledger.
     let vkey = ctx.gov.as_ref().and_then(|g| g.key()).cloned();
@@ -1359,7 +1359,7 @@ where
     let Some(mount) = arrival.slot.downcast_ref::<VoiceMount>() else {
         return refusal(
             axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-            "voice WS-accept reached without its dispatch slot",
+            "streaming WS-accept reached without its dispatch slot",
         );
     };
     // The dialect this leg speaks — the `ingress_protocol` label + the composed-provider table a
@@ -1401,7 +1401,7 @@ where
         .iter()
         .find(|(k, _)| k == "call_id")
         .map(|(_, v)| v.clone())
-        .unwrap_or_else(|| format!("voice-{}", unix_secs(&*host)));
+        .unwrap_or_else(|| format!("streaming-{}", unix_secs(&*host)));
     let now = unix_secs(&*host);
     // The locked session posture: g711 for telephony, the plane-default otherwise (including Gemini —
     // the Gemini leg carries no media-format lock of its own). The destination the gauntlet judges is
@@ -1502,7 +1502,7 @@ where
                                     tracing::warn!(
                                         error = %redact_url_credentials(&e.to_string()),
                                         dialect,
-                                        "voice: provider dial failed; the just-admitted session is \
+                                        "streaming: provider dial failed; the just-admitted session is \
                                          dropped rather than served with no upstream"
                                     );
                                 }

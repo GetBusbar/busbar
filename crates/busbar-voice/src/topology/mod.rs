@@ -71,9 +71,9 @@ impl std::fmt::Display for DialProviderError {
         match self {
             DialProviderError::BreakerOpen { retry_after_secs } => write!(
                 f,
-                "voice provider dial refused: breaker open (retry after {retry_after_secs}s)"
+                "streaming provider dial refused: breaker open (retry after {retry_after_secs}s)"
             ),
-            DialProviderError::Dial(e) => write!(f, "voice provider dial failed: {e:?}"),
+            DialProviderError::Dial(e) => write!(f, "streaming provider dial failed: {e:?}"),
         }
     }
 }
@@ -199,11 +199,13 @@ impl std::fmt::Display for StartError {
             StartError::DestinationRefused => {
                 write!(
                     f,
-                    "voice session destination refused at the open-pass gate (fail closed)"
+                    "streaming session destination refused at the open-pass gate (fail closed)"
                 )
             }
-            StartError::BudgetRefused => write!(f, "voice session budget refused (fail closed)"),
-            StartError::Durable(e) => write!(f, "voice session durable open failed: {e:?}"),
+            StartError::BudgetRefused => {
+                write!(f, "streaming session budget refused (fail closed)")
+            }
+            StartError::Durable(e) => write!(f, "streaming session durable open failed: {e:?}"),
         }
     }
 }
@@ -397,7 +399,7 @@ where
         // committed rewrite busbar cannot read back under this same action) — so the two outcomes of
         // one mutation cannot drift into two spellings.
         crate::mount::SESSION_AUDIT_ACTION,
-        &format!("voice:{call_id}"),
+        &format!("streaming:{call_id}"),
         "applied",
         &owner,
     );

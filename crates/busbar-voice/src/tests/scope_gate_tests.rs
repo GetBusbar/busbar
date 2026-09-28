@@ -23,7 +23,7 @@ use busbar_kernel::plane::handle_engine::DurableHandleEngine;
 use std::sync::Arc;
 
 /// The pool a voice session is served on — the value the `session` grant names.
-const VOICE_POOL: &str = "voice-server";
+const VOICE_POOL: &str = "streaming-server";
 
 /// A key carrying an EXPLICIT scope list. An explicit list is exhaustive across kinds: whatever is
 /// not in it is not granted.

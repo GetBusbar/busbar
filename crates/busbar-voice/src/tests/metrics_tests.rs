@@ -50,7 +50,7 @@ async fn a_voice_session_open_increments_the_plane_labelled_counter() {
             r.ingress_protocol.as_str(),
             r.pool.as_str()
         ),
-        (crate::PLANE_KEY, crate::OPENAI_REALTIME, "voice-server"),
+        (crate::PLANE_KEY, crate::OPENAI_REALTIME, "streaming-server"),
         "the labels the hand-emitted counter carried"
     );
     assert_eq!(

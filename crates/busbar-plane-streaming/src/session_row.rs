@@ -8,8 +8,8 @@
 use busbar_contract::records::{PlaneDisposition, PlaneRecord};
 use serde::{Deserialize, Serialize};
 
-/// The durable-audit kind stamped on a voice session's records — matches `PLANE_DECLARATION.audit_kind`.
-pub const VOICE_SESSION_KIND: &str = "voice_session";
+/// The durable-audit kind stamped on a streaming session's records — matches `PLANE_DECLARATION.audit_kind`.
+pub const STREAMING_SESSION_KIND: &str = "streaming_session";
 
 /// THE OPAQUE DURABLE ROW for one voice session — the neutral engine stores it as `Arc<dyn Any>`; the
 /// plane owns its shape. Carries the session `(owner, id)` (the engine's scoped key), a monotonic
@@ -41,7 +41,7 @@ impl VoiceSessionRow {
     #[must_use]
     pub fn record(&self) -> PlaneRecord {
         PlaneRecord {
-            kind: VOICE_SESSION_KIND.to_string(),
+            kind: STREAMING_SESSION_KIND.to_string(),
             id: self.id.clone(),
             parent: None,
             seq: self.turns,
