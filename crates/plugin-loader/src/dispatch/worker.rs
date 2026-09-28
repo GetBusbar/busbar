@@ -27,10 +27,13 @@
 //!   instance and replaces its worker; see there for what happens to every ticket.
 
 use std::collections::VecDeque;
+use std::future::Future;
 use std::mem::size_of;
+use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{channel, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, RwLock, Weak};
+use std::task::{Context, Poll, Waker};
 use std::time::{Duration, Instant};
 
 use busbar_contract::abi::mechanism::call::{DeadlineClass, InHead, OutHead, Outcome, FLAG_RESUME};
@@ -153,31 +156,53 @@ pub struct Done<I, O> {
     pub disposition: Option<u32>,
 }
 
+/// One op's completion slot: filled ONCE by the dispatcher, read by a sync waiter (the condvar)
+/// or an async one (the registered [`Waker`]), the same slot for both.
 struct ReplySlot<T> {
-    v: Mutex<(bool, Option<T>)>,
+    v: Mutex<SlotState<T>>,
     cv: Condvar,
+}
+
+struct SlotState<T> {
+    /// An answer was given (it may already have been taken).
+    settled: bool,
+    value: Option<T>,
+    /// The async waiter to wake when the answer arrives.
+    waker: Option<Waker>,
 }
 
 impl<T> ReplySlot<T> {
     fn new() -> Self {
         Self {
-            v: Mutex::new((false, None)),
+            v: Mutex::new(SlotState {
+                settled: false,
+                value: None,
+                waker: None,
+            }),
             cv: Condvar::new(),
         }
     }
 
-    fn lock(&self) -> MutexGuard<'_, (bool, Option<T>)> {
+    fn lock(&self) -> MutexGuard<'_, SlotState<T>> {
         self.v.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    /// The FIRST answer wins; `false` when one was already given.
+    /// The FIRST answer wins; `false` when one was already given. Wakes the sync waiter and the
+    /// async one; the waker is woken outside the lock.
     fn put(&self, t: T) -> bool {
-        let mut g = self.lock();
-        if g.0 {
-            return false;
-        }
-        *g = (true, Some(t));
+        let waker = {
+            let mut g = self.lock();
+            if g.settled {
+                return false;
+            }
+            g.settled = true;
+            g.value = Some(t);
+            g.waker.take()
+        };
         self.cv.notify_all();
+        if let Some(w) = waker {
+            w.wake();
+        }
         true
     }
 }
@@ -201,9 +226,19 @@ impl<I: InFrame, O: OutFrame> Settle for ReplySlot<Done<I, O>> {
     }
 }
 
-/// The caller's end of one op.
+/// The caller's end of one op: waited on synchronously ([`Reply::wait`]) or awaited as a
+/// [`Future`] on the caller's runtime, never blocking a runtime thread (the dispatcher's worker
+/// fills the slot and wakes the task). Both read the one slot.
+///
+/// DROP IS A CLIENT DROP. Dropping a `Reply` before its answer arrived reaches the dispatcher's
+/// cancel path for the op's ticket ([`Dispatcher::drop_client`]: Call/Stream/Connection ops are
+/// cancelled, WriteBehind runs on), by a non-blocking message and nothing else, never an await.
+/// [`Reply::detach`] lets an op run on with nobody waiting.
 pub struct Reply<I, O> {
     slot: Arc<ReplySlot<Done<I, O>>>,
+    /// The op's ticket and dispatcher, for the client drop; `None` once detached or when the
+    /// reply was answered at submission.
+    owner: Option<(Ticket, Weak<Pool>)>,
 }
 
 impl<I, O> std::fmt::Debug for Reply<I, O> {
@@ -213,12 +248,12 @@ impl<I, O> std::fmt::Debug for Reply<I, O> {
 }
 
 impl<I: InFrame, O: OutFrame> Reply<I, O> {
-    /// Wait up to `timeout` for the completion.
+    /// Wait up to `timeout` for the completion (a sync caller; it blocks this thread).
     pub fn wait(&self, timeout: Duration) -> Option<Done<I, O>> {
         let until = Instant::now() + timeout;
         let mut g = self.slot.lock();
         loop {
-            if let Some(d) = g.1.take() {
+            if let Some(d) = g.value.take() {
                 return Some(d);
             }
             let left = until.checked_duration_since(Instant::now())?;
@@ -242,7 +277,48 @@ impl<I: InFrame, O: OutFrame> Reply<I, O> {
             short: false,
             disposition: None,
         });
-        Self { slot }
+        Self { slot, owner: None }
+    }
+
+    /// Let the op run on with nobody waiting: dropping the reply then cancels nothing.
+    pub fn detach(mut self) {
+        self.owner = None;
+    }
+}
+
+impl<I: InFrame, O: OutFrame> Future for Reply<I, O> {
+    type Output = Done<I, O>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Done<I, O>> {
+        let mut g = self.slot.lock();
+        if let Some(d) = g.value.take() {
+            return Poll::Ready(d);
+        }
+        match &g.waker {
+            Some(w) if w.will_wake(cx.waker()) => {}
+            _ => g.waker = Some(cx.waker().clone()),
+        }
+        Poll::Pending
+    }
+}
+
+impl<I, O> Drop for Reply<I, O> {
+    fn drop(&mut self) {
+        let settled = {
+            let mut g = self.slot.v.lock().unwrap_or_else(|e| e.into_inner());
+            // A later answer wakes nobody: this waiter is gone.
+            g.waker = None;
+            g.settled
+        };
+        if settled {
+            return;
+        }
+        if let Some((ticket, pool)) = self.owner.take() {
+            if let Some(pool) = pool.upgrade() {
+                // A message, never an await: the worker cancels the op in its own loop.
+                pool.send(ticket, Msg::DropClient(ticket));
+            }
+        }
     }
 }
 
@@ -1173,7 +1249,10 @@ impl Dispatcher {
             reply: slot.clone(),
         });
         self.pool.send(ticket, Msg::Submit { ticket, meta, job });
-        Reply { slot }
+        Reply {
+            slot,
+            owner: Some((ticket, Arc::downgrade(&self.pool))),
+        }
     }
 
     /// A reload DRAIN: wait up to `timeout` until no Call/Stream/Connection op of `plugin` is in
