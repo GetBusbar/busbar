@@ -4180,7 +4180,7 @@ jobs:
     # each plainly -- no `continue-on-error`, no `|| true`, no `--report` -- and the umbrella waits
     # for it and prints its result without counting it.
     #
-    # FLIP CONDITION (M2): move each gate's two steps into a counted job (or give this job a RESULTS
+    # FLIP CONDITION (once each gate is armed to block): move each gate's two steps into a counted job (or give this job a RESULTS
     # row in the umbrella), strike its `# report-only:` line and move the matching CARGO_CI_ONLY
     # entries in xtask/src/full_gate.rs to CARGO_LOCAL, in the same commit.
     needs: [preflight]
