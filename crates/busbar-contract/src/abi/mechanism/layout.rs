@@ -415,7 +415,203 @@ mod auth {
         needed_bytes = 104
     );
 }
-pin!(crate::abi::hook::Ops, 80, 8, head = 0);
+// ── HOOK (M3-SHAPES, abi-v2-perkind.md B.4) ─────────────────────────────────────────────────────
+pin!(
+    crate::abi::hook::Ops,
+    136,
+    8,
+    head = 0,
+    decide = 80,
+    transform = 88,
+    notify = 96,
+    configure = 104,
+    status = 112,
+    describe = 120,
+    serve = 128,
+);
+pin!(
+    crate::abi::hook::SignalEntry,
+    16,
+    8,
+    id = 0,
+    _reserved = 4,
+    value = 8
+);
+pin!(
+    crate::abi::hook::RequestView,
+    80,
+    8,
+    request_id = 0,
+    pool = 8,
+    ingress_protocol = 24,
+    message_count = 40,
+    total_chars = 48,
+    max_tokens = 56,
+    flags = 60,
+    signals = 64,
+    signals_len = 72,
+);
+pin!(
+    crate::abi::hook::CandidateStatic,
+    96,
+    8,
+    idx = 0,
+    _reserved = 4,
+    model = 8,
+    provider = 24,
+    weight = 40,
+    context_max = 44,
+    tier = 48,
+    cost_per_mtok = 64,
+    tags = 72,
+    tags_len = 80,
+    present = 88,
+    _reserved2 = 92,
+);
+pin!(
+    crate::abi::hook::CandidateDynamic,
+    56,
+    8,
+    latency_ms = 0,
+    available_concurrency = 8,
+    budget_remaining = 16,
+    rate_headroom = 24,
+    signals = 32,
+    signals_len = 40,
+    present = 48,
+    _reserved = 52,
+);
+pin!(
+    crate::abi::hook::PromptView,
+    48,
+    8,
+    system = 0,
+    message_count = 16,
+    body = 24,
+);
+pin!(
+    crate::abi::hook::UserView,
+    48,
+    8,
+    key_id = 0,
+    key_name = 16,
+    user = 32
+);
+pin!(
+    crate::abi::hook::DecideIn,
+    296,
+    8,
+    head = 0,
+    request = 72,
+    candidates = 152,
+    candidate_dynamics = 160,
+    candidates_len = 168,
+    prompt = 176,
+    user = 224,
+    present = 272,
+    _reserved = 276,
+    order_buf = 280,
+    order_cap = 288,
+);
+pin!(
+    crate::abi::hook::DecideOut,
+    144,
+    8,
+    head = 0,
+    verbs = 96,
+    reject_status = 100,
+    _reserved = 102,
+    reject_message = 104,
+    restrict_tags = 120,
+    restrict_tags_len = 128,
+    order_written = 136,
+);
+pin!(
+    crate::abi::hook::TransformOut,
+    144,
+    8,
+    head = 0,
+    verbs = 96,
+    reject_status = 100,
+    _reserved = 102,
+    reject_message = 104,
+    rewrite = 120,
+);
+pin!(
+    crate::abi::hook::StageView,
+    64,
+    8,
+    request_id = 0,
+    pool = 8,
+    ingress_protocol = 24,
+    message_count = 40,
+    total_chars = 48,
+    max_tokens = 56,
+    flags = 60,
+);
+pin!(crate::abi::hook::NotifyIn, 136, 8, head = 0, stage = 72);
+pin!(
+    crate::abi::hook::ConfigureIn,
+    104,
+    8,
+    head = 0,
+    version = 72,
+    settings = 80,
+);
+pin!(
+    crate::abi::hook::ConfigureOut,
+    104,
+    8,
+    head = 0,
+    acked_version = 96
+);
+pin!(crate::abi::hook::StatusOut, 120, 8, head = 0, status = 96);
+pin!(
+    crate::abi::hook::DescribeOut,
+    120,
+    8,
+    head = 0,
+    describe = 96
+);
+pin!(
+    crate::abi::hook::ServeIn,
+    160,
+    8,
+    head = 0,
+    method = 72,
+    path = 88,
+    query = 104,
+    headers = 120,
+    headers_len = 128,
+    body = 136,
+);
+pin!(
+    crate::abi::hook::ServeOut,
+    144,
+    8,
+    head = 0,
+    status_code = 96,
+    _reserved = 98,
+    headers_out = 104,
+    headers_out_len = 112,
+    body = 120,
+);
+pin!(
+    crate::abi::hook::Tail,
+    56,
+    8,
+    head = 0,
+    kind_class = 8,
+    prompt_access = 12,
+    user_access = 16,
+    infallible = 20,
+    _reserved = 21,
+    requested_signals = 24,
+    requested_signals_len = 32,
+    routes = 40,
+    routes_len = 48,
+);
+
 // ── EXPORT (M3-SHAPES, abi-v2-perkind.md B.5) ───────────────────────────────────────────────────
 pin!(
     crate::abi::export::Ops,

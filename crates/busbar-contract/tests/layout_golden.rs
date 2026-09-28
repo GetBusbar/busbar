@@ -47,15 +47,22 @@ use busbar_contract::abi::{
     auth::Ops as AuthOps, plane::Ops as PlaneOps, store::Ops as StoreOps,
     transport::Ops as TransportOps,
 };
-// M3-SHAPES (abi-v2-perkind.md B.2/B.5): the secret and export kinds' own ops and shapes; hook
-// follows in its own commit.
+// M3-SHAPES (abi-v2-perkind.md B.2/B.4/B.5): the secret/hook/export kinds' own ops and shapes.
 use busbar_contract::abi::export::{
     CheckIn as ExportCheckIn, CheckOut as ExportCheckOut, DeliverIn as ExportDeliverIn,
     Ops as ExportOps, ScrapeFamily as ExportScrapeFamily, ScrapeIn as ExportScrapeIn,
     ScrapeOut as ExportScrapeOut, ScrapeSample as ExportScrapeSample, ServeIn as ExportServeIn,
     ServeOut as ExportServeOut, StatusOut as ExportStatusOut, Tail as ExportTail,
 };
-use busbar_contract::abi::hook::Ops as HookOps;
+use busbar_contract::abi::hook::{
+    CandidateDynamic as HookCandidateDynamic, CandidateStatic as HookCandidateStatic,
+    ConfigureIn as HookConfigureIn, ConfigureOut as HookConfigureOut, DecideIn as HookDecideIn,
+    DecideOut as HookDecideOut, DescribeOut as HookDescribeOut, NotifyIn as HookNotifyIn,
+    Ops as HookOps, PromptView as HookPromptView, RequestView as HookRequestView,
+    ServeIn as HookServeIn, ServeOut as HookServeOut, SignalEntry as HookSignalEntry,
+    StageView as HookStageView, StatusOut as HookStatusOut, Tail as HookTail,
+    TransformOut as HookTransformOut, UserView as HookUserView,
+};
 use busbar_contract::abi::secret::{
     Ops as SecretOps, ResolveIn as SecretResolveIn, ResolveOut as SecretResolveOut,
 };
@@ -1139,8 +1146,157 @@ fn compute_layout() -> String {
     record!(s, SecretOps, [head, resolve]);
     record!(s, SecretResolveIn, [head, settings]);
     record!(s, SecretResolveOut, [head, secret, error_kind, _reserved]);
-    // hook is still the M0 skeleton; its own ops land in their own commit.
-    record!(s, HookOps, [head]);
+    // M3-SHAPES (abi-v2-perkind.md B.4): the hook kind's decide/transform/notify/configure/
+    // status/describe/serve, its views and its Statement tail.
+    record!(
+        s,
+        HookOps,
+        [head, decide, transform, notify, configure, status, describe, serve]
+    );
+    record!(s, HookSignalEntry, [id, _reserved, value]);
+    record!(
+        s,
+        HookRequestView,
+        [
+            request_id,
+            pool,
+            ingress_protocol,
+            message_count,
+            total_chars,
+            max_tokens,
+            flags,
+            signals,
+            signals_len
+        ]
+    );
+    record!(
+        s,
+        HookCandidateStatic,
+        [
+            idx,
+            _reserved,
+            model,
+            provider,
+            weight,
+            context_max,
+            tier,
+            cost_per_mtok,
+            tags,
+            tags_len,
+            present,
+            _reserved2
+        ]
+    );
+    record!(
+        s,
+        HookCandidateDynamic,
+        [
+            latency_ms,
+            available_concurrency,
+            budget_remaining,
+            rate_headroom,
+            signals,
+            signals_len,
+            present,
+            _reserved
+        ]
+    );
+    record!(s, HookPromptView, [system, message_count, body]);
+    record!(s, HookUserView, [key_id, key_name, user]);
+    record!(
+        s,
+        HookDecideIn,
+        [
+            head,
+            request,
+            candidates,
+            candidate_dynamics,
+            candidates_len,
+            prompt,
+            user,
+            present,
+            _reserved,
+            order_buf,
+            order_cap
+        ]
+    );
+    record!(
+        s,
+        HookDecideOut,
+        [
+            head,
+            verbs,
+            reject_status,
+            _reserved,
+            reject_message,
+            restrict_tags,
+            restrict_tags_len,
+            order_written
+        ]
+    );
+    record!(
+        s,
+        HookTransformOut,
+        [
+            head,
+            verbs,
+            reject_status,
+            _reserved,
+            reject_message,
+            rewrite
+        ]
+    );
+    record!(
+        s,
+        HookStageView,
+        [
+            request_id,
+            pool,
+            ingress_protocol,
+            message_count,
+            total_chars,
+            max_tokens,
+            flags
+        ]
+    );
+    record!(s, HookNotifyIn, [head, stage]);
+    record!(s, HookConfigureIn, [head, version, settings]);
+    record!(s, HookConfigureOut, [head, acked_version]);
+    record!(s, HookStatusOut, [head, status]);
+    record!(s, HookDescribeOut, [head, describe]);
+    record!(
+        s,
+        HookServeIn,
+        [head, method, path, query, headers, headers_len, body]
+    );
+    record!(
+        s,
+        HookServeOut,
+        [
+            head,
+            status_code,
+            _reserved,
+            headers_out,
+            headers_out_len,
+            body
+        ]
+    );
+    record!(
+        s,
+        HookTail,
+        [
+            head,
+            kind_class,
+            prompt_access,
+            user_access,
+            infallible,
+            _reserved,
+            requested_signals,
+            requested_signals_len,
+            routes,
+            routes_len
+        ]
+    );
 
     // M3-SHAPES (abi-v2-perkind.md B.5): the export kind's deliver/scrape/status/check/serve and
     // its Statement tail.
@@ -1296,4 +1452,16 @@ fn a_perturbed_export_golden_line_fails_the_comparator() {
     let perturbed = actual.replacen(line, "ExportDeliverIn.batch=104", 1);
     let err = compare(&perturbed, &actual).expect_err("a perturbed line must fail");
     assert!(err.contains("ExportDeliverIn.batch=104"), "{err}");
+}
+
+/// RED ARM (M3-SHAPES, hook B.4): a perturbed `DecideOut.order_written` offset fails the
+/// comparator.
+#[test]
+fn a_perturbed_hook_golden_line_fails_the_comparator() {
+    let actual = compute_layout();
+    let line = "HookDecideOut.order_written=136";
+    assert!(actual.lines().any(|l| l == line), "the golden holds {line}");
+    let perturbed = actual.replacen(line, "HookDecideOut.order_written=144", 1);
+    let err = compare(&perturbed, &actual).expect_err("a perturbed line must fail");
+    assert!(err.contains("HookDecideOut.order_written=144"), "{err}");
 }
