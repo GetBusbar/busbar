@@ -80,8 +80,9 @@ use busbar_contract::abi::auth::{
     RequestFacts as AuthRequestFacts, Span as AuthSpan, StyleDecl as AuthStyleDecl,
     VerifyIn as AuthVerifyIn,
 };
-// THE TRANSPORT KIND (B.7) and THE HOST CONNECTOR: aliased, so the hot lane's names cannot collide.
+// THE PLANE (B.6) AND TRANSPORT (B.7) KINDS and THE HOST CONNECTOR: aliased, so the hot lane's names cannot collide.
 use busbar_contract::abi::host::conn::connector as hconn;
+use busbar_contract::abi::plane as pkind;
 use busbar_contract::abi::transport as tkind;
 // THE STORE KIND (v3): aliased with a `Store` prefix so a golden line names its kind.
 use busbar_contract::abi::store::{
@@ -1529,6 +1530,158 @@ fn compute_layout() -> String {
         tkind::AdoptIn,
         [head, side, _reserved, facts, leftover, leftover_len, sink]
     );
+    // THE PLANE KIND (abi/plane/, B.6).
+    record!(
+        s,
+        pkind::Ops,
+        [head, arrive, on_piece, refusal, serve, hydrate, start]
+    );
+    record!(s, pkind::Section, [name, flags, _reserved]);
+    record!(s, pkind::DialectAuth, [dialect, _reserved, style]);
+    record!(s, pkind::OpClass, [op, name]);
+    record!(s, pkind::BillableClass, [class, family]);
+    record!(s, pkind::RouteCost, [class, _reserved, weight]);
+    record!(
+        s,
+        pkind::PlaneTail,
+        [
+            head,
+            flags,
+            ingress,
+            dispatch_shape,
+            _reserved,
+            scope,
+            label,
+            subject_noun,
+            admin_noun,
+            audit_kind,
+            signing_domain,
+            signing_kid_prefix,
+            cli_help,
+            sections,
+            sections_len,
+            dialects,
+            dialects_len,
+            dialect_auth,
+            dialect_auth_len,
+            scope_kinds,
+            scope_kinds_len,
+            op_classes,
+            op_classes_len,
+            billable_classes,
+            billable_classes_len,
+            route_cost,
+            route_cost_len,
+            fee_units,
+            fee_units_len,
+            record_kinds,
+            record_kinds_len,
+            needs,
+            needs_len,
+            egress_targets,
+            egress_targets_len
+        ]
+    );
+    record!(s, pkind::Claim, [verb, target, carrier]);
+    record!(s, pkind::AdminRoute, [verb, target]);
+    record!(
+        s,
+        pkind::PlaneSnapshot,
+        [
+            size,
+            _reserved,
+            generation,
+            claims,
+            claims_len,
+            admin_routes,
+            admin_routes_len,
+            openapi,
+            audience,
+            resource_metadata
+        ]
+    );
+    record!(s, pkind::PlaneOpenIn, [open, public_url]);
+    record!(s, pkind::PlaneOpenOut, [open, snapshot]);
+    record!(s, pkind::PlaneRefreshOut, [head, snapshot]);
+    record!(s, pkind::Field, [name, value]);
+    record!(s, pkind::UnitCount, [class, source, amount]);
+    record!(s, pkind::Span, [offset, len]);
+    record!(s, pkind::OutField, [name, value]);
+    record!(s, pkind::RecordWrite, [kind, op, key, value]);
+    record!(
+        s,
+        pkind::ArriveIn,
+        [head, claim, _reserved, target, fields, fields_len, body, units_buf, units_cap]
+    );
+    record!(
+        s,
+        pkind::ArriveOut,
+        [head, op_class, principal_need, dialect, units_len]
+    );
+    record!(
+        s,
+        pkind::OnPieceIn,
+        [
+            head,
+            from,
+            flags,
+            stream,
+            bytes,
+            status_code,
+            status_class,
+            reply_buf,
+            reply_cap,
+            units_buf,
+            units_cap,
+            records_buf,
+            records_cap,
+            fields_buf,
+            fields_cap,
+            arena_buf,
+            arena_cap
+        ]
+    );
+    record!(
+        s,
+        pkind::OnPieceOut,
+        [
+            head,
+            emitted,
+            more,
+            flags,
+            reply_status,
+            fields_len,
+            units_len,
+            records_len,
+            arena_len
+        ]
+    );
+    record!(
+        s,
+        pkind::RefusalIn,
+        [
+            head, cause, status, dialect, _reserved, text, reply_buf, reply_cap, fields_buf,
+            fields_cap, arena_buf, arena_cap
+        ]
+    );
+    record!(
+        s,
+        pkind::RefusalOut,
+        [head, emitted, marker, fields_len, arena_len]
+    );
+    record!(
+        s,
+        pkind::ServeIn,
+        [
+            head, route, _reserved, target, fields, fields_len, body, reply_buf, reply_cap,
+            fields_buf, fields_cap, arena_buf, arena_cap
+        ]
+    );
+    record!(
+        s,
+        pkind::ServeOut,
+        [head, status, fields_len, emitted, arena_len]
+    );
     record!(
         s,
         hconn::Need,
@@ -1929,6 +2082,17 @@ fn a_perturbed_connector_golden_line_fails_the_comparator() {
     let perturbed = actual.replacen(line, "hconn::ConnectorSlots.identity=88", 1);
     let err = compare(&perturbed, &actual).expect_err("a perturbed line must fail");
     assert!(err.contains("hconn::ConnectorSlots.identity=88"), "{err}");
+}
+
+/// RED ARM (plane kind, B.6): one perturbed plane golden line fails the comparator.
+#[test]
+fn a_perturbed_plane_golden_line_fails_the_comparator() {
+    let actual = compute_layout();
+    let line = "pkind::OnPieceOut.units_len=120";
+    assert!(actual.lines().any(|l| l == line), "the golden holds {line}");
+    let perturbed = actual.replacen(line, "pkind::OnPieceOut.units_len=112", 1);
+    let err = compare(&perturbed, &actual).expect_err("a perturbed line must fail");
+    assert!(err.contains("pkind::OnPieceOut.units_len=112"), "{err}");
 }
 
 /// RED ARM, THE AUTH KIND: one perturbed auth golden line (`fields`' slot in the auth table) fails

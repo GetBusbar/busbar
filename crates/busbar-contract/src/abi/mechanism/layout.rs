@@ -793,8 +793,6 @@ pin!(
     routes_len = 32,
 );
 
-pin!(crate::abi::plane::Ops, 80, 8, head = 0);
-
 // ── THE TRANSPORT KIND (abi/transport/, B.7) ──────────────────────────────────────────────────────
 mod transport_kind {
     use crate::abi::transport::*;
@@ -1198,4 +1196,63 @@ mod host_connector {
         random = 88,
         identity = 96
     );
+}
+
+// ── THE PLANE KIND (abi/plane/, B.6) ─────────────────────────────────────────────────────────────
+#[rustfmt::skip]
+mod plane_kind {
+    use std::mem::{align_of, offset_of, size_of};
+
+    use crate::abi::plane::*;
+
+    pin!(Ops, 128, 8, head = 0, arrive = 80, on_piece = 88, refusal = 96, serve = 104,
+        hydrate = 112, start = 120);
+    pin!(Section, 24, 8, name = 0, flags = 16, _reserved = 20);
+    pin!(DialectAuth, 24, 8, dialect = 0, _reserved = 4, style = 8);
+    pin!(OpClass, 32, 8, op = 0, name = 16);
+    pin!(BillableClass, 32, 8, class = 0, family = 16);
+    pin!(RouteCost, 16, 8, class = 0, _reserved = 4, weight = 8);
+    pin!(PlaneTail, 328, 8, head = 0, flags = 8, ingress = 12, dispatch_shape = 16,
+        _reserved = 20, scope = 24, label = 40, subject_noun = 56, admin_noun = 72,
+        audit_kind = 88, signing_domain = 104, signing_kid_prefix = 120, cli_help = 136,
+        sections = 152, sections_len = 160, dialects = 168, dialects_len = 176,
+        dialect_auth = 184, dialect_auth_len = 192, scope_kinds = 200, scope_kinds_len = 208,
+        op_classes = 216, op_classes_len = 224, billable_classes = 232,
+        billable_classes_len = 240, route_cost = 248, route_cost_len = 256, fee_units = 264,
+        fee_units_len = 272, record_kinds = 280, record_kinds_len = 288, needs = 296,
+        needs_len = 304, egress_targets = 312, egress_targets_len = 320);
+    pin!(Claim, 48, 8, verb = 0, target = 16, carrier = 32);
+    pin!(AdminRoute, 32, 8, verb = 0, target = 16);
+    pin!(PlaneSnapshot, 104, 8, size = 0, _reserved = 4, generation = 8, claims = 16,
+        claims_len = 24, admin_routes = 32, admin_routes_len = 40, openapi = 48,
+        audience = 72, resource_metadata = 88);
+    pin!(PlaneOpenIn, 160, 8, open = 0, public_url = 144);
+    pin!(PlaneOpenOut, 112, 8, open = 0, snapshot = 104);
+    pin!(PlaneRefreshOut, 104, 8, head = 0, snapshot = 96);
+    pin!(Field, 32, 8, name = 0, value = 16);
+    pin!(Span, 8, 4, offset = 0, len = 4);
+    pin!(OutField, 16, 4, name = 0, value = 8);
+    pin!(UnitCount, 16, 8, class = 0, source = 4, amount = 8);
+    pin!(RecordWrite, 24, 4, kind = 0, op = 4, key = 8, value = 16);
+    pin!(ArriveIn, 168, 8, head = 0, claim = 88, _reserved = 92, target = 96, fields = 112,
+        fields_len = 120, body = 128, units_buf = 152, units_cap = 160);
+    pin!(ArriveOut, 112, 8, head = 0, op_class = 96, principal_need = 100, dialect = 104,
+        units_len = 108);
+    pin!(OnPieceIn, 216, 8, head = 0, from = 88, flags = 92, stream = 96, bytes = 104,
+        status_code = 128, status_class = 132, reply_buf = 136, reply_cap = 144,
+        units_buf = 152, units_cap = 160, records_buf = 168, records_cap = 176,
+        fields_buf = 184, fields_cap = 192, arena_buf = 200, arena_cap = 208);
+    pin!(OnPieceOut, 136, 8, head = 0, emitted = 96, more = 104, flags = 108,
+        reply_status = 112, fields_len = 116, units_len = 120, records_len = 124,
+        arena_len = 128);
+    pin!(RefusalIn, 168, 8, head = 0, cause = 88, status = 92, dialect = 96, _reserved = 100,
+        text = 104, reply_buf = 120, reply_cap = 128, fields_buf = 136, fields_cap = 144,
+        arena_buf = 152, arena_cap = 160);
+    pin!(RefusalOut, 120, 8, head = 0, emitted = 96, marker = 104, fields_len = 108,
+        arena_len = 112);
+    pin!(ServeIn, 200, 8, head = 0, route = 88, _reserved = 92, target = 96, fields = 112,
+        fields_len = 120, body = 128, reply_buf = 152, reply_cap = 160, fields_buf = 168,
+        fields_cap = 176, arena_buf = 184, arena_cap = 192);
+    pin!(ServeOut, 120, 8, head = 0, status = 96, fields_len = 100, emitted = 104,
+        arena_len = 112);
 }
