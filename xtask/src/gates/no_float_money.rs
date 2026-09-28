@@ -2196,10 +2196,13 @@ impl Gate for NoFloatMoneyGate {
 
         // AN ENUMERATED COUNT-READ ROOT THAT READS AS EMPTY IS REFUSED, not scanned as zero hits.
         // This is the instrument check for blindness 2: a renamed crate must be a red, never a
-        // silent narrowing of the ban.
-        let root = COUNT_READ_ROOTS[0].homes[0];
+        // silent narrowing of the ban. The floor is over the UNION of a group's homes (a fold that
+        // moves files between two homes in the same group must not trip it), so emptying the group
+        // means emptying EVERY home, not just the first — a group with one home (pre-fold) and a
+        // group with several (post-fold, e.g. the LLM codecs group) are proven the same way.
+        let homes = COUNT_READ_ROOTS[0].homes;
         let mut ov = Overlay::new();
-        match cx.walk(&WalkSpec::new([root]).ext("rs")) {
+        match cx.walk(&WalkSpec::new(homes.iter().copied()).ext("rs")) {
             Ok(files) => {
                 for f in &files {
                     ov.remove(&f.rel);
@@ -2214,7 +2217,7 @@ impl Gate for NoFloatMoneyGate {
                 ));
             }
             Err(e) => report.note_infra_failure(format!(
-                "no-float-money selftest: count-read root {root} is unreadable ({e})"
+                "no-float-money selftest: count-read roots {homes:?} are unreadable ({e})"
             )),
         }
 
