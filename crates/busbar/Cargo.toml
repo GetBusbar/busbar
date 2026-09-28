@@ -214,7 +214,7 @@ default = ["auth-admin-tokens", "hooks-ranking", "proto-llm", "plane-mcp", "plan
 # plane's arrivals hand every unit to the node and there is no other path an arrival can take
 # (ARCHITECT R7(b): the build that served them through the shell instead is dropped). There is no
 # second, per-node switch (spec #17: one feature per plane, no `root-*`; ARCHITECT K2i residue).
-proto-llm = ["dep:busbar-llm", "busbar-kernel/plane-llm"]
+proto-llm = ["dep:busbar-llm"]
 # THE MCP PROTOCOL, carried by `busbar-mcp`: the dependency edge plus the `busbar_mcp::PROTO_DECL`
 # registration line in main.rs. ONE switch for MCP the protocol codec today and MCP the plane once
 # it folds in — never two — so it keeps the plane-kind name `plane-mcp` rather than a `proto-mcp`

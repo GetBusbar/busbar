@@ -70,7 +70,7 @@ webhook-receiver = []
 # The NEUTRAL ABI (the substrate + contract crates). A plane depends on these DIRECTLY. `busbar-core`
 # re-exports these same items, so every historical repoint from a core path to `busbar_substrate::X` /
 # `busbar_api::X` was by-identity (the very same type/const), i.e. byte-identical behaviour.
-busbar-kernel = { path = "../busbar-kernel", default-features = false, features = ["plane-llm"] }
+busbar-kernel = { path = "../busbar-kernel", default-features = false }
 # THE PURE PLANE this plugin hosts: its entry hands the composition root's boot seal the plane and
 # the claims it declares, so the root names neither (the edge `busbar-mcp` -> `busbar-plane-mcp` has).
 # ALSO THE CODECS: the dialect readers/writers, the IR, the stream translator and the

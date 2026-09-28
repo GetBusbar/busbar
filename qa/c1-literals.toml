@@ -22,11 +22,6 @@ item = "jsonrpc (jsonrpc-ingress)"
 [[finding]]
 rule = "c1-literals:feature"
 file = "crates/busbar-kernel/Cargo.toml"
-item = "llm (plane-llm)"
-
-[[finding]]
-rule = "c1-literals:feature"
-file = "crates/busbar-kernel/Cargo.toml"
 item = "mcp (plane-mcp)"
 
 [[finding]]
