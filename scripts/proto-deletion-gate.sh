@@ -95,7 +95,7 @@ GATE_TARGET_ROOT="${CARGO_TARGET_DIR:-target}"
 # THE NEEDLE IS DERIVED FROM THE TREE, NEVER SPELLED. This level used to grep core for the single
 # literal `busbar_proto`. There is no `crates/busbar-proto` any more and no Rust anywhere names that
 # symbol: the only surviving occurrence in the workspace is a doc comment in busbar-plane-llm (R7,
-# 2026-09-27, THE DESIGN §9/#39 folded busbar-llm-codec into it) quoting this very grep. So level 1 —
+# 2026-09-27, `BUSBAR-1.6.0.md` THE DESIGN, §9/#39 folded busbar-llm-codec into it) quoting this very grep. So level 1 —
 # the gate's headline assertion, "core's sources never name a protocol
 # crate" — could not fire. Planting `use busbar_mcp_codec::Frame;` in a copy of core left it printing
 # `grep count 0`. A needle that names a crate the split has already renamed is a rule nobody can

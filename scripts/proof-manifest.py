@@ -102,7 +102,7 @@ def scrape_total(text):
 #
 # Both used to say `busbar-llm`. The proto module — the corpus, `translate_parity_*_tests.rs`, all
 # of it — lived in `busbar-llm-codec`, and neither reference moved with it. Two failures came
-# out of that, in the same direction (R7, 2026-09-27, THE DESIGN §9/#39 folded busbar-llm-codec
+# out of that, in the same direction (R7, 2026-09-27, `BUSBAR-1.6.0.md` THE DESIGN, §9/#39 folded busbar-llm-codec
 # into busbar-plane-llm's own `codec` module since; GOLDEN_DIR/GOLDEN_CRATE follow that fold):
 #
 #   * `crates/busbar-llm/src/tests/proto/golden` does not exist, so `golden_dir.is_dir()` was False,
