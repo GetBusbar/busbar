@@ -36,6 +36,9 @@ pub mod auth;
 // The two BUILT-IN secret modules (`env`, `file`) the registry's built-in secret rows resolve through.
 pub mod builtin_secret;
 pub mod carrier;
+/// THE ONE DISPATCHER of the §11 memory ABI (M1): one loader path, one crossing, tickets, wakes,
+/// deadlines and the watchdog, generic over the kind. Nothing is rewired to it yet (M3).
+pub mod dispatch;
 pub mod export;
 pub mod fetch;
 mod ffi_thread;
