@@ -50,8 +50,15 @@ fn close_code_for(reason: CloseReason) -> CloseCode {
     match reason {
         // "An orderly close" is exactly what 1000 means.
         CloseReason::Normal => CloseCode::Normal,
-        // This endpoint is completing a closing handshake the FAR side started: from the peer's own
-        // point of view, its counterpart is the one departing, which is what "going away" names.
+        // For an explicit `Transport::close(conn, PeerClosed)` call: THIS endpoint is closing
+        // `conn` because it learned, some way other than a Close frame arriving ON `conn` itself,
+        // that its counterpart is gone (e.g. a multiplexing layer tearing down a related
+        // connection). "Going away" is 1001's own definition.
+        //
+        // NOT the code for replying to a Close frame this transport reads directly off `conn`'s
+        // own wire — that reply is tungstenite's, not this function's: `frames()` below drives it
+        // out with a flush rather than building one, and it echoes the PEER's own code (1000 in
+        // the ordinary case), never a hardcoded 1001.
         CloseReason::PeerClosed => CloseCode::Away,
         // Node draining is a deliberate, orderly shutdown for maintenance/redeploy — "the server is
         // restarting" is 1012's own definition, reconnect-elsewhere guidance included.
@@ -206,7 +213,11 @@ pub(crate) fn split_ws_url(url: &str) -> Result<(bool, String, u16, String), Tra
 /// tests in ONE place for the whole stack instead of one place per transport.
 pub struct WsTransport {
     next_id: AtomicU64,
-    conns: SyncMutex<HashMap<u64, Arc<ConnState>>>,
+    // `Arc`-wrapped so `frames()` — which only ever gets `&self`, not `Arc<Self>` — can clone a
+    // handle to the SAME registry into its (`'static`) pump future. That handle is what lets the
+    // pump deregister a connection when it finishes a peer-initiated close, which is what actually
+    // drops the socket: see the Close arm in `frames()`.
+    conns: Arc<SyncMutex<HashMap<u64, Arc<ConnState>>>>,
     /// The largest message this transport will read. Zero means nothing was declared and the
     /// library's default stands.
     ///
@@ -239,7 +250,7 @@ impl WsTransport {
     pub fn new() -> Self {
         Self {
             next_id: AtomicU64::new(1),
-            conns: SyncMutex::new(HashMap::new()),
+            conns: Arc::new(SyncMutex::new(HashMap::new())),
             max_message_bytes: std::sync::atomic::AtomicUsize::new(0),
             lower: None,
             targets: SyncMutex::new(HashMap::new()),
@@ -272,7 +283,7 @@ impl WsTransport {
     pub fn over(lower: Arc<dyn Transport>) -> Self {
         Self {
             next_id: AtomicU64::new(1),
-            conns: SyncMutex::new(HashMap::new()),
+            conns: Arc::new(SyncMutex::new(HashMap::new())),
             max_message_bytes: std::sync::atomic::AtomicUsize::new(0),
             lower: Some(lower),
             targets: SyncMutex::new(HashMap::new()),
@@ -577,134 +588,256 @@ impl Transport for WsTransport {
                 Err::<(StreamId, Frame), TransportError>(TransportError::Closed)
             }));
         };
+        let conns = self.conns.clone();
         Box::pin(futures::stream::unfold(
             (state, false),
-            move |(state, done)| async move {
-                if done || state.is_poisoned() || state.is_closed() {
-                    return None;
-                }
-                let mut slot = state.reader.lock().await;
-                let Some(taken) = slot.take() else {
-                    drop(slot);
-                    // The reader is gone. A connection that was closed or fenced put it back before
-                    // this poll and is a clean end — the checks above already caught those, but the
-                    // window between them and this lock is a real one, so re-read the fences here and
-                    // end quietly if either fired. What is left is the reader being HELD by another
-                    // live `frames()` stream on a clone of this `Conn`: a WebSocket carries one
-                    // message stream and it has exactly one reader, so a second consumer cannot get
-                    // frames. Returning `None` here would report it as a peer that cleanly closed —
-                    // indistinguishable from a real close, and a silent lie about a session that is
-                    // still running for the first consumer. It is a caller-side contract violation,
-                    // and the honest answer is to say so loudly rather than fake an end of stream.
-                    if state.is_poisoned() || state.is_closed() {
+            move |(state, done)| {
+                let conns = conns.clone();
+                async move {
+                    if done || state.is_poisoned() || state.is_closed() {
                         return None;
                     }
-                    panic!(
+                    let mut slot = state.reader.lock().await;
+                    let Some(taken) = slot.take() else {
+                        drop(slot);
+                        // The reader is gone. A connection that was closed or fenced put it back before
+                        // this poll and is a clean end — the checks above already caught those, but the
+                        // window between them and this lock is a real one, so re-read the fences here and
+                        // end quietly if either fired. What is left is the reader being HELD by another
+                        // live `frames()` stream on a clone of this `Conn`: a WebSocket carries one
+                        // message stream and it has exactly one reader, so a second consumer cannot get
+                        // frames. Returning `None` here would report it as a peer that cleanly closed —
+                        // indistinguishable from a real close, and a silent lie about a session that is
+                        // still running for the first consumer. It is a caller-side contract violation,
+                        // and the honest answer is to say so loudly rather than fake an end of stream.
+                        if state.is_poisoned() || state.is_closed() {
+                            return None;
+                        }
+                        panic!(
                         "busbar-transport-ws: frames() called concurrently on the same connection; \
                          a WebSocket carries one message stream with one reader and admits exactly \
                          one consumer — the second silently terminating as a clean close would be a \
                          session cut nothing could see"
                     );
-                };
-                drop(slot);
-                // The reader belongs to the connection, not to this future. Holding it in a guard
-                // is what makes a cancelled read the same non-event a cancelled poll of any other
-                // stream is: the guard's `Drop` runs whether this future completes or is dropped
-                // mid-read, so the next pump reads on rather than seeing a reader-shaped hole it
-                // would report as a clean end of session.
-                let mut held = ReaderGuard {
-                    state: state.clone(),
-                    reader: Some(taken),
-                };
-                let reader = held.reader.as_mut().expect("held for the guard's lifetime");
-                let item = loop {
-                    match reader.next().await {
-                        None => break None, // the peer closed the socket
-                        Some(Ok(Message::Binary(b))) => {
-                            // One copy, straight into the slab: `to_vec` then `Arc::from` copied the payload
-                            // twice, on the hot path, for every inbound message.
-                            let bytes = SlabBytes::new(Arc::<[u8]>::from(&b[..]));
-                            let meta = FrameMeta {
-                                bytes: bytes.len() as u64,
-                                transport_units: None,
-                                status: None,
-                                status_code: None,
-                                retry_after_secs: None,
-                            };
-                            break Some(Ok((
-                                StreamId(0),
-                                Frame {
-                                    direction: Direction::Inbound,
-                                    stream: StreamId(0),
-                                    bytes,
-                                    meta,
-                                },
-                            )));
-                        }
-                        Some(Ok(Message::Text(t))) => {
-                            let bytes = SlabBytes::new(Arc::<[u8]>::from(t.as_bytes()));
-                            let meta = FrameMeta {
-                                bytes: bytes.len() as u64,
-                                transport_units: None,
-                                status: None,
-                                status_code: None,
-                                retry_after_secs: None,
-                            };
-                            break Some(Ok((
-                                StreamId(0),
-                                Frame {
-                                    direction: Direction::Inbound,
-                                    stream: StreamId(0),
-                                    bytes,
-                                    meta,
-                                },
-                            )));
-                        }
-                        Some(Ok(Message::Close(_))) => break None,
-                        // Ping/Pong carry no plane data; tungstenite does not auto-answer a Ping
-                        // on a raw split stream, so this transport answers it itself and keeps
-                        // reading — a protocol-blind, byte-level obligation, not plane meaning.
-                        //
-                        // The answer is still a write, and it is the one write in this crate that
-                        // nothing above it can cancel: the pump is suspended INSIDE it, so a peer
-                        // that pings and then stops reading parks the pump in the send forever,
-                        // holds the connection state the pump carries, and keeps the socket alive
-                        // for the life of the process. The budget is what ends that, and a failure
-                        // is reported rather than swallowed — the layer above is otherwise told the
-                        // session is healthy by a pump that will never yield another frame. The
-                        // fence goes with it, because a send abandoned at the budget is a send
-                        // interrupted mid-frame, which is what every other write here fences for.
-                        Some(Ok(Message::Ping(payload))) => {
-                            let answered = tokio::time::timeout(PONG_BUDGET, async {
-                                let mut w = state.writer.lock().await;
-                                futures::SinkExt::send(&mut *w, Message::Pong(payload)).await
-                            })
-                            .await;
-                            match answered {
-                                Ok(Ok(())) => continue,
-                                Ok(Err(e)) => break Some(Err(read_error(&e))),
-                                Err(_) => {
-                                    state.poisoned.store(true, Ordering::Release);
-                                    break Some(Err(TransportError::Backpressure));
+                    };
+                    drop(slot);
+                    // The reader belongs to the connection, not to this future. Holding it in a guard
+                    // is what makes a cancelled read the same non-event a cancelled poll of any other
+                    // stream is: the guard's `Drop` runs whether this future completes or is dropped
+                    // mid-read, so the next pump reads on rather than seeing a reader-shaped hole it
+                    // would report as a clean end of session.
+                    let mut held = ReaderGuard {
+                        state: state.clone(),
+                        reader: Some(taken),
+                    };
+                    let reader = held.reader.as_mut().expect("held for the guard's lifetime");
+                    // Set only by THIS iteration's own violation handling below, never by a
+                    // `close()` racing in from elsewhere: the late-close check just past the loop
+                    // exists for that external race ("a frame that arrived afterwards belongs to a
+                    // session already told closed") and must keep discarding for it. But `closed`
+                    // is the one fence both that race and a violation THIS pump just answered set,
+                    // so without a separate flag the check could not tell "an external close beat
+                    // me to it" from "I am the reason `closed` just became true" -- and would
+                    // discard the very violation error this arm exists to report, turning a real
+                    // protocol failure into a silent, indistinguishable clean end of session.
+                    let mut closed_by_this_violation = false;
+                    let item = loop {
+                        match reader.next().await {
+                            None => break None, // the peer closed the socket
+                            Some(Ok(Message::Binary(b))) => {
+                                // One copy, straight into the slab: `to_vec` then `Arc::from` copied the payload
+                                // twice, on the hot path, for every inbound message.
+                                let bytes = SlabBytes::new(Arc::<[u8]>::from(&b[..]));
+                                let meta = FrameMeta {
+                                    bytes: bytes.len() as u64,
+                                    transport_units: None,
+                                    status: None,
+                                    status_code: None,
+                                    retry_after_secs: None,
+                                };
+                                break Some(Ok((
+                                    StreamId(0),
+                                    Frame {
+                                        direction: Direction::Inbound,
+                                        stream: StreamId(0),
+                                        bytes,
+                                        meta,
+                                    },
+                                )));
+                            }
+                            Some(Ok(Message::Text(t))) => {
+                                let bytes = SlabBytes::new(Arc::<[u8]>::from(t.as_bytes()));
+                                let meta = FrameMeta {
+                                    bytes: bytes.len() as u64,
+                                    transport_units: None,
+                                    status: None,
+                                    status_code: None,
+                                    retry_after_secs: None,
+                                };
+                                break Some(Ok((
+                                    StreamId(0),
+                                    Frame {
+                                        direction: Direction::Inbound,
+                                        stream: StreamId(0),
+                                        bytes,
+                                        meta,
+                                    },
+                                )));
+                            }
+                            // RFC 6455 §5.5.1/§7.1.5: an endpoint that receives a Close frame and has
+                            // not already sent one MUST send a Close frame in response before the
+                            // underlying connection ends. NO REPLY IS BUILT HERE: tungstenite parses
+                            // the incoming Close and already QUEUES the reply the moment `reader.next()`
+                            // (above) returns it -- echoing the peer's own code and reason, as §5.5.1
+                            // recommends -- the prebuilt library owns that decision, not this crate. Its
+                            // own docs are explicit that the queued reply needs a caller to keep driving
+                            // read/write/flush to actually reach the wire (tungstenite
+                            // `protocol/mod.rs`: "You should continue calling read, write or flush to
+                            // drive the reply to the close frame... until Error::ConnectionClosed").
+                            // This pump was doing none of those after a Close, so the queued reply sat
+                            // in the write buffer forever and every peer-initiated close timed out
+                            // waiting for one — on every single connection this transport ever served.
+                            // The fix is the flush the docs ask for, budget-bound like every other
+                            // write this pump answers unprompted.
+                            //
+                            // `closed` is the SAME fence `close()` sets, tested and set here with one
+                            // atomic op: whichever of the two call sites gets there first drives the
+                            // reply out, and the other finds it already sent and stays quiet -- a
+                            // concurrent explicit `close()` and a peer-initiated close racing here can
+                            // otherwise both try to write, which is a second frame after a close no peer
+                            // is still parsing.
+                            //
+                            // DEREGISTERING is not optional either. Flushing the reply satisfies the WS
+                            // *frame* layer, but RFC 6455 §7.1.1 also puts the underlying TCP teardown on
+                            // this (server) side, and a peer's WebSocket library — `ws`, browsers, every
+                            // one Autobahn drives — waits for the SOCKET to end, not merely for the reply
+                            // frame, before it calls the handshake closed. `self.conns` is the only other
+                            // owner of this connection's `Arc<ConnState>` ("the fence goes up before
+                            // anything is spawned" doc on `close()`, above); removing this id from it
+                            // drops the last reference once this pump's own local `state` clone goes out
+                            // of scope, which drops `reader`/`writer` and, with them, the socket — the
+                            // FIN the peer is waiting for. Left registered, the reply frame answers the
+                            // WS-level handshake and the TCP connection leaks for the rest of the
+                            // process, which every peer sees as a hang, not a close.
+                            Some(Ok(Message::Close(_))) => {
+                                if state
+                                    .closed
+                                    .compare_exchange(
+                                        false,
+                                        true,
+                                        Ordering::AcqRel,
+                                        Ordering::Acquire,
+                                    )
+                                    .is_ok()
+                                {
+                                    let _ = tokio::time::timeout(CLOSE_BUDGET, async {
+                                        let mut w = state.writer.lock().await;
+                                        futures::SinkExt::flush(&mut *w).await
+                                    })
+                                    .await;
+                                    conns.lock().unwrap().remove(&id);
+                                }
+                                break None;
+                            }
+                            // Ping/Pong carry no plane data; tungstenite does not auto-answer a Ping
+                            // on a raw split stream, so this transport answers it itself and keeps
+                            // reading — a protocol-blind, byte-level obligation, not plane meaning.
+                            //
+                            // The answer is still a write, and it is the one write in this crate that
+                            // nothing above it can cancel: the pump is suspended INSIDE it, so a peer
+                            // that pings and then stops reading parks the pump in the send forever,
+                            // holds the connection state the pump carries, and keeps the socket alive
+                            // for the life of the process. The budget is what ends that, and a failure
+                            // is reported rather than swallowed — the layer above is otherwise told the
+                            // session is healthy by a pump that will never yield another frame. The
+                            // fence goes with it, because a send abandoned at the budget is a send
+                            // interrupted mid-frame, which is what every other write here fences for.
+                            Some(Ok(Message::Ping(payload))) => {
+                                let answered = tokio::time::timeout(PONG_BUDGET, async {
+                                    let mut w = state.writer.lock().await;
+                                    futures::SinkExt::send(&mut *w, Message::Pong(payload)).await
+                                })
+                                .await;
+                                match answered {
+                                    Ok(Ok(())) => continue,
+                                    Ok(Err(e)) => break Some(Err(read_error(&e))),
+                                    Err(_) => {
+                                        state.poisoned.store(true, Ordering::Release);
+                                        break Some(Err(TransportError::Backpressure));
+                                    }
                                 }
                             }
+                            Some(Ok(Message::Pong(_))) | Some(Ok(Message::Frame(_))) => continue,
+                            // RFC 6455 §7.1.7 "Fail the WebSocket Connection": a locally-detected
+                            // protocol violation (a reserved opcode, a message over the cap, a text
+                            // frame that is not UTF-8) obliges this endpoint to fail the connection,
+                            // and SHOULD send a Close frame naming why first. UNLIKE the peer-Close
+                            // arm above, tungstenite queues nothing here on its own -- there is no
+                            // peer code to echo, because the peer never sent a valid Close; the code
+                            // is this endpoint's OWN finding, so it is built from the same
+                            // reason→code table `close()` already uses (not new protocol logic, the
+                            // crate's one existing table), picking `CapacityExhausted` for a message
+                            // over the cap and `TransportFailed` (Protocol, 1002) for everything
+                            // else `read_error` calls `Framing`. Best-effort and budget-bound, same
+                            // as every other write this pump answers unprompted -- and the SAME
+                            // deregister the peer-Close arm does, for the SAME reason: without it the
+                            // socket leaks past this failed session for the rest of the process.
+                            Some(Err(e)) => {
+                                let terr = read_error(&e);
+                                if terr == TransportError::Framing
+                                    && state
+                                        .closed
+                                        .compare_exchange(
+                                            false,
+                                            true,
+                                            Ordering::AcqRel,
+                                            Ordering::Acquire,
+                                        )
+                                        .is_ok()
+                                {
+                                    closed_by_this_violation = true;
+                                    let reason = if matches!(
+                                        e,
+                                        tokio_tungstenite::tungstenite::Error::Capacity(_)
+                                    ) {
+                                        CloseReason::CapacityExhausted
+                                    } else {
+                                        CloseReason::TransportFailed
+                                    };
+                                    let close_frame = CloseFrame {
+                                        code: close_code_for(reason),
+                                        reason: "".into(),
+                                    };
+                                    let _ = tokio::time::timeout(CLOSE_BUDGET, async {
+                                        let mut w = state.writer.lock().await;
+                                        futures::SinkExt::send(
+                                            &mut *w,
+                                            Message::Close(Some(close_frame)),
+                                        )
+                                        .await
+                                    })
+                                    .await;
+                                    conns.lock().unwrap().remove(&id);
+                                }
+                                break Some(Err(terr));
+                            }
                         }
-                        Some(Ok(Message::Pong(_))) | Some(Ok(Message::Frame(_))) => continue,
-                        Some(Err(e)) => break Some(Err(read_error(&e))),
+                    };
+                    drop(held);
+                    // Checked again on the way out, not only on the way in: this pump was already
+                    // suspended in the read when the close was decided, and a frame that arrived
+                    // afterwards belongs to a session the layer above has been told is over. NOT
+                    // when THIS iteration is the one that just closed it (a violation answered
+                    // above) — that item is the whole reason this pump has anything to report.
+                    if state.is_closed() && !closed_by_this_violation {
+                        return None;
                     }
-                };
-                drop(held);
-                // Checked again on the way out, not only on the way in: this pump was already
-                // suspended in the read when the close was decided, and a frame that arrived
-                // afterwards belongs to a session the layer above has been told is over.
-                if state.is_closed() {
-                    return None;
-                }
-                match item {
-                    None => None,
-                    Some(result) => {
-                        let done_next = result.is_err();
-                        Some((result, (state, done_next)))
+                    match item {
+                        None => None,
+                        Some(result) => {
+                            let done_next = result.is_err();
+                            Some((result, (state, done_next)))
+                        }
                     }
                 }
             },
@@ -815,7 +948,19 @@ impl Transport for WsTransport {
             // The fence goes up before anything is spawned, and before the courtesy frame goes
             // out: leaving the registry is invisible to a pump that already holds this state, and
             // a frame delivered after the close is one nothing upstream still owns.
-            state.closed.store(true, Ordering::Release);
+            //
+            // TESTED, not just set: the frame pump (`frames()`, above) answers a peer-initiated
+            // Close through this SAME fence, so a caller that closes a connection just as the peer
+            // is closing it can race the pump here. `compare_exchange` makes only the winner send
+            // the courtesy frame; the loser finds it already sent and skips a second one a peer
+            // that already got its close reply is no longer parsing.
+            if state
+                .closed
+                .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+                .is_err()
+            {
+                return;
+            }
             // The code this peer is told, not a bare close: a peer that gets 1009 can act on the
             // specific cause where a bare close leaves it guessing.
             let close_frame = CloseFrame {
