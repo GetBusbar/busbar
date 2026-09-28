@@ -23,10 +23,12 @@
 //!   drop or a reload: at its deadline the caller stops waiting (the reply answers the timeout
 //!   outcome, `detached`), the ticket stays, and a later wake still completes it. A reload drain
 //!   ([`Dispatcher::drain`]) never waits on WriteBehind ops: they carry over to the new generation.
+//! * THE WATCHDOG (`watchdog`): an op that does not RETURN within its class budget faults its
+//!   instance and replaces its worker; see there for what happens to every ticket.
 
 use std::collections::VecDeque;
 use std::mem::size_of;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{channel, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, RwLock, Weak};
 use std::time::{Duration, Instant};
@@ -39,18 +41,68 @@ use super::plugin::{is_lifecycle, Crossed, Instance, Plugin};
 use super::ticket::{
     decode, encode, next_generation, Completions, WakeRoute, MAX_INDEX, MAX_WORKERS,
 };
-use super::{in_head, now_ns, out_head, Frame, InFrame, Kind, OutFrame};
+use super::{in_head, now_ns, out_head, watchdog, Frame, InFrame, Kind, OutFrame};
+
+/// The longest a crossing may take before the watchdog faults it, per class. A crossing never
+/// blocks by contract, so these bound a wedged plugin, not a slow request (that is the deadline).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Budgets {
+    /// Call-class crossings (and `tick`).
+    pub call: Duration,
+    /// Stream-class crossings.
+    pub stream: Duration,
+    /// Connection-class crossings (and `drive`).
+    pub connection: Duration,
+    /// WriteBehind-class crossings.
+    pub write_behind: Duration,
+    /// `validate`, `open`, `refresh`, `retire` and `close`.
+    pub lifecycle: Duration,
+}
+
+impl Default for Budgets {
+    fn default() -> Self {
+        Self {
+            call: Duration::from_secs(1),
+            stream: Duration::from_secs(1),
+            connection: Duration::from_secs(1),
+            write_behind: Duration::from_secs(5),
+            lifecycle: Duration::from_secs(30),
+        }
+    }
+}
+
+impl Budgets {
+    fn of(&self, s: u32, class: DeadlineClass) -> Duration {
+        if s == slot::VALIDATE || is_lifecycle(s) {
+            return self.lifecycle;
+        }
+        match class {
+            DeadlineClass::Call => self.call,
+            DeadlineClass::Stream => self.stream,
+            DeadlineClass::Connection => self.connection,
+            DeadlineClass::WriteBehind => self.write_behind,
+        }
+    }
+}
 
 /// A dispatcher's shape.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DispatchConfig {
     /// How many workers (clamped to `1..=4096`).
     pub workers: u32,
+    /// The watchdog's budgets.
+    pub budgets: Budgets,
+    /// How often the watchdog looks.
+    pub watchdog_period: Duration,
 }
 
 impl Default for DispatchConfig {
     fn default() -> Self {
-        Self { workers: 1 }
+        Self {
+            workers: 1,
+            budgets: Budgets::default(),
+            watchdog_period: Duration::from_millis(50),
+        }
     }
 }
 
@@ -59,6 +111,8 @@ impl Default for DispatchConfig {
 pub struct DispatchStats {
     /// Wakes dropped: a stale generation, a recycled slot, an unknown worker or index.
     pub stale_wakes: u64,
+    /// Workers the watchdog replaced.
+    pub replacements: u64,
     /// WriteBehind ops that completed after their caller stopped waiting.
     pub write_behind_late: u64,
 }
@@ -66,11 +120,13 @@ pub struct DispatchStats {
 #[derive(Debug, Default)]
 pub(crate) struct Stats {
     stale_wakes: AtomicU64,
+    pub(crate) replacements: AtomicU64,
     write_behind_late: AtomicU64,
 }
 
 /// What a worker thread needs besides its worker.
 pub(crate) struct Env {
+    pub(crate) budgets: Budgets,
     pub(crate) stats: Arc<Stats>,
     pub(crate) completions: Arc<Completions<Vec<u8>>>,
 }
@@ -260,7 +316,7 @@ enum Action {
 
 #[derive(Default)]
 pub(crate) struct Entry {
-    generation: u32,
+    pub(crate) generation: u32,
     live: bool,
     latched: bool,
     client_dropped: bool,
@@ -291,11 +347,20 @@ pub(crate) enum Msg {
     Stop,
 }
 
-/// One worker incarnation.
+/// The crossing a worker is inside, for the watchdog.
+pub(crate) struct CrossingRecord {
+    pub(crate) started: Instant,
+    pub(crate) budget: Duration,
+    pub(crate) instance: Arc<Instance>,
+}
+
+/// One worker incarnation. The watchdog replaces a wedged one with a fresh incarnation at the same
+/// index.
 pub(crate) struct Worker {
     pub(crate) index: u32,
     tx: Sender<Msg>,
     pub(crate) state: Mutex<WorkerState>,
+    pub(crate) crossing: Mutex<Option<CrossingRecord>>,
 }
 
 pub(crate) struct WorkerSlot {
@@ -312,10 +377,11 @@ impl WorkerSlot {
 }
 
 /// The dispatcher's shared state. Worker threads never hold it (no cycle); instances reach it by a
-/// `Weak` for `wake`.
+/// `Weak` for `wake`, the watchdog by a `Weak`.
 pub(crate) struct Pool {
     pub(crate) slots: Box<[WorkerSlot]>,
     pub(crate) env: Arc<Env>,
+    pub(crate) stop: AtomicBool,
 }
 
 impl WakeRoute for Pool {
@@ -363,6 +429,7 @@ impl Worker {
             index,
             tx,
             state: Mutex::new(state),
+            crossing: Mutex::new(None),
         });
         (w, rx)
     }
@@ -564,18 +631,33 @@ impl Worker {
         Duration::from_nanos(next.saturating_sub(now)).min(Duration::from_millis(100))
     }
 
-    /// One crossing with the state unlocked; `None` when this worker stopped meanwhile (the caller
-    /// exits).
+    fn begin_crossing(&self, instance: Arc<Instance>, budget: Duration) {
+        *self.crossing.lock().unwrap_or_else(|e| e.into_inner()) = Some(CrossingRecord {
+            started: Instant::now(),
+            budget,
+            instance,
+        });
+    }
+
+    fn end_crossing(&self) {
+        *self.crossing.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    }
+
+    /// One crossing with the state unlocked; `None` when the watchdog replaced this worker
+    /// meanwhile (the caller exits).
     fn cross<'a>(
         &'a self,
         st: MutexGuard<'a, WorkerState>,
         instance: &Arc<Instance>,
         s: u32,
         heads: (*mut InHead, *mut OutHead, u32),
+        budget: Duration,
     ) -> Option<(MutexGuard<'a, WorkerState>, Crossed)> {
+        self.begin_crossing(instance.clone(), budget);
         drop(st);
         // SAFETY: the frame is boxed and owned by this crossing; `s` passed `refuse` at submit.
         let crossed = unsafe { instance.cross(s, heads.0, heads.1, heads.2) };
+        self.end_crossing();
         let st = self.lock();
         (!st.dead).then_some((st, crossed))
     }
@@ -622,7 +704,7 @@ impl Worker {
                     h.ticket = ticket;
                     h.deadline_ns = meta.deadline_ns;
                 }
-                let s = meta.slot;
+                let (s, budget) = (meta.slot, env.budgets.of(meta.slot, meta.class));
                 e.current = Some(Current {
                     meta,
                     job: Some(job),
@@ -634,7 +716,7 @@ impl Worker {
                     self.end(&mut st, idx, Crossed::host(o), env);
                     return Some(st);
                 }
-                self.cross_current(st, idx, &inst, s, env)
+                self.cross_current(st, idx, &inst, s, budget, env)
             }
             Action::Resume => {
                 let Some(cur) = e.current.as_mut().filter(|c| c.pending) else {
@@ -642,7 +724,7 @@ impl Worker {
                 };
                 cur.pending = false;
                 let inst = cur.meta.instance.clone();
-                let s = cur.meta.slot;
+                let (s, budget) = (cur.meta.slot, env.budgets.of(cur.meta.slot, cur.meta.class));
                 if inst.faulted.load(Ordering::Acquire) {
                     self.end(&mut st, idx, Crossed::host(Outcome::Fault), env);
                     return Some(st);
@@ -651,7 +733,7 @@ impl Worker {
                     // SAFETY: as above.
                     unsafe { (*job.heads().0).flags = FLAG_RESUME };
                 }
-                self.cross_current(st, idx, &inst, s, env)
+                self.cross_current(st, idx, &inst, s, budget, env)
             }
             Action::Cancel => {
                 let Some(cur) = e.current.as_mut() else {
@@ -679,7 +761,8 @@ impl Worker {
                 );
                 frame.input.head.size = size_of::<CancelIn>() as u32;
                 frame.input.head.deadline_class = class as u8;
-                let (mut st, _) = self.cross(st, &inst, slot::CANCEL, frame.heads())?;
+                let budget = env.budgets.of(slot::CANCEL, class);
+                let (mut st, _) = self.cross(st, &inst, slot::CANCEL, frame.heads(), budget)?;
                 self.end(&mut st, idx, Crossed::host(timeout), env);
                 Some(st)
             }
@@ -700,7 +783,8 @@ impl Worker {
                 frame.input.head.ticket = ticket;
                 frame.input.driver = ticket;
                 d.pending = false;
-                let (mut st, c) = self.cross(st, &inst, slot::DRIVE, frame.heads())?;
+                let budget = env.budgets.of(slot::DRIVE, DeadlineClass::Connection);
+                let (mut st, c) = self.cross(st, &inst, slot::DRIVE, frame.heads(), budget)?;
                 let e = &mut st.entries[idx as usize];
                 if e.generation == generation {
                     if let Some(d) = e.driver.as_mut() {
@@ -723,12 +807,13 @@ impl Worker {
         idx: u32,
         inst: &Arc<Instance>,
         s: u32,
+        budget: Duration,
         env: &Env,
     ) -> Option<MutexGuard<'a, WorkerState>> {
         let cur = st.entries[idx as usize].current.as_mut()?;
         let mut job = cur.job.take()?;
         let heads = job.heads();
-        let (mut st, c) = self.cross(st, inst, s, heads)?;
+        let (mut st, c) = self.cross(st, inst, s, heads, budget)?;
         let e = &mut st.entries[idx as usize];
         let Some(cur) = e.current.as_mut() else {
             return Some(st);
@@ -746,7 +831,7 @@ impl Worker {
         Some(st)
     }
 
-    /// Settle everything this worker holds as FAULT (shutdown).
+    /// Settle everything this worker holds as FAULT (shutdown, or the watchdog replaced it).
     pub(crate) fn fault_all(st: &mut WorkerState) -> Vec<Entry> {
         st.runnable.clear();
         st.free.clear();
@@ -808,7 +893,7 @@ pub(crate) fn spawn_worker(w: Arc<Worker>, rx: Receiver<Msg>, env: Arc<Env>) {
         .expect("spawn a dispatch worker");
 }
 
-/// THE DISPATCHER: its workers.
+/// THE DISPATCHER: its workers and its watchdog.
 pub struct Dispatcher {
     pool: Arc<Pool>,
 }
@@ -822,10 +907,11 @@ impl std::fmt::Debug for Dispatcher {
 }
 
 impl Dispatcher {
-    /// Workers, per `config`.
+    /// Workers and a watchdog, per `config`.
     pub fn new(config: DispatchConfig) -> Self {
         let n = config.workers.clamp(1, MAX_WORKERS);
         let env = Arc::new(Env {
+            budgets: config.budgets,
             stats: Arc::default(),
             completions: Arc::default(),
         });
@@ -842,10 +928,12 @@ impl Dispatcher {
         let pool = Arc::new(Pool {
             slots,
             env: env.clone(),
+            stop: AtomicBool::new(false),
         });
         for (w, rx) in started {
             spawn_worker(w, rx, env.clone());
         }
+        watchdog::spawn(Arc::downgrade(&pool), config.watchdog_period);
         Self { pool }
     }
 
@@ -859,6 +947,7 @@ impl Dispatcher {
         let s = &self.pool.env.stats;
         DispatchStats {
             stale_wakes: s.stale_wakes.load(Ordering::Relaxed),
+            replacements: s.replacements.load(Ordering::Relaxed),
             write_behind_late: s.write_behind_late.load(Ordering::Relaxed),
         }
     }
@@ -991,6 +1080,7 @@ impl Dispatcher {
 
 impl Drop for Dispatcher {
     fn drop(&mut self) {
+        self.pool.stop.store(true, Ordering::Release);
         for slot in self.pool.slots.iter() {
             let _ = slot.get().tx.send(Msg::Stop);
         }

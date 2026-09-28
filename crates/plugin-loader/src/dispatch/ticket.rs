@@ -159,4 +159,9 @@ impl<T: Clone> Completions<T> {
     pub fn forget(&self, ticket: Ticket) {
         self.lock().remove(&ticket);
     }
+
+    /// Forget every handle of worker `worker` (it was replaced).
+    pub(crate) fn forget_worker(&self, worker: u32) {
+        self.lock().retain(|t, _| decode(t.slot).0 != worker);
+    }
 }
