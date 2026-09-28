@@ -1,11 +1,11 @@
-//! The decisions plane's answers to the kernel plane driver (`BUSBAR-1.6.0.md` Part 3, section 12,
+//! This plane's answers to the kernel plane driver (`BUSBAR-1.6.0.md` Part 3, section 12,
 //! "The plane driver"), in this plane's own vocabulary.
 //!
 //! The driver serves a unit in five crossings, and this module answers each one:
 //!
 //! | driver crossing | here |
 //! |---|---|
-//! | the Statement tail | [`tail`]: sections, dialects, scope kinds, op classes, billable classes, fee units, needs, claims |
+//! | the Statement tail | [`tail`]: consumed sections, dialects, scope kinds, op classes, billable classes, fee units, needs, claims |
 //! | `arrive` | [`arrive`]: the op class, the principal need and the dialect of a claimed request |
 //! | `on_piece`, from the caller | [`caller_piece`]: the caller's whole body arrives as one piece; the kernel keeps it |
 //! | `on_piece`, ATTEMPT (from the kernel) | [`attempt`]: the request bound for the far end, verb and target explicit |
@@ -17,8 +17,12 @@
 //! Writing these answers into the host buffers of the plane ABI (`busbar_contract::abi::plane`) is
 //! the plane door's job, one generic adapter for every plane; it is not this plane's.
 //!
-//! WHAT THIS PLANE DOES NOT CLAIM: `GET /v1/models`. That path keeps its 1.5.5 bytes (the LLM
-//! plane's model list), so [`tail::CLAIMS`] and [`tail::OP_CLASSES`] carry `systemone` alone and
+//! The declaring section's name is not in [`tail`] yet: the composition root spells it today
+//! (`crates/busbar/src/root/plane_decisions.rs`, `CONFIG_SECTION`), and it moves here when the
+//! driver reads it off this plane's Statement.
+//!
+//! WHAT THIS PLANE DOES NOT CLAIM: `GET /v1/models`. That path keeps its 1.5.5 bytes (the model
+//! list busbar already serves there), so [`tail::CLAIMS`] and [`tail::OP_CLASSES`] carry `systemone` alone and
 //! [`arrive`] answers the models operation as unclaimed.
 //!
 //! Money-blind, like the rest of the crate: the plane reports how many decision units the far end
@@ -26,17 +30,16 @@
 
 use busbar_contract::ids::{MeterClassId, OpClassId};
 
-use crate::codec::{self, PTR_ERROR, PTR_USAGE_UNITS};
+use crate::codec::{
+    self, error_body, CONTENT_TYPE_JSON, EGRESS_SCHEME, FIELD_CONTENT_TYPE, PTR_ERROR,
+    PTR_USAGE_UNITS,
+};
 use crate::ops;
-use crate::plane::{error_body, CONTENT_TYPE_JSON, EGRESS_SCHEME, FIELD_CONTENT_TYPE};
 
 /// The plane's Statement tail, as data.
 pub mod tail {
     use super::{MeterClassId, OpClassId};
     use crate::{claims, config, meta, ops};
-
-    /// The top-level config section whose presence declares this plane.
-    pub const SECTION_DECLARING: &str = "decisions";
 
     /// The sections this plane reads and does not own: every model names its provider there.
     pub const SECTIONS_CONSUMED: &[&str] = &["providers"];

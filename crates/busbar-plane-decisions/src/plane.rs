@@ -20,7 +20,8 @@ use busbar_contract::unit::{
 use busbar_contract::wire::{Decode, Encode, Frame, FrameCursor, TransportEnvelope};
 
 use crate::codec::{
-    self, PTR_ERROR, PTR_ID, PTR_REQUEST_ID, PTR_USAGE_UNITS, REQUEST_PTRS, RESPONSE_PTRS,
+    self, error_body, CONTENT_TYPE_JSON, EGRESS_SCHEME, FIELD_CONTENT_TYPE, PTR_ERROR, PTR_ID,
+    PTR_REQUEST_ID, PTR_USAGE_UNITS, REQUEST_PTRS, RESPONSE_PTRS,
 };
 use crate::facts as f;
 use crate::meta::CLASS_DECISION;
@@ -34,19 +35,6 @@ const FACT_PATH: &str = busbar_contract::transport::facts::PATH;
 /// key. jev needs it because its two operations are told apart by verb+path, never by a body
 /// member the way MCP/A2A's JSON-RPC method name is.
 const FACT_METHOD: &str = busbar_contract::transport::facts::METHOD;
-
-/// The egress-auth scheme an outbound hop to the provider is decorated under.
-///
-/// The plane NAMES the scheme and never holds what is behind it. jev's auth is the core gateway's
-/// own bearer credential (the signed design: "auth = core gateway credential, plane returns a
-/// CredentialLocator, never sees the secret") — the same seam every other plane's egress hop uses.
-pub(crate) const EGRESS_SCHEME: &str = "decision-egress";
-
-/// The envelope member naming the document type of an outbound body.
-pub(crate) const FIELD_CONTENT_TYPE: &str = "content-type";
-
-/// The document type every body of this protocol is.
-pub(crate) const CONTENT_TYPE_JSON: &[u8] = b"application/json";
 
 impl DecisionPlane {
     /// The ONE provider a unit on this plane is dialled against, judged against and named by.
@@ -168,18 +156,6 @@ fn refusal_render(reason: RefusalReason) -> (&'static str, &'static str) {
             ("internal", "the request could not be served at this time")
         }
     }
-}
-
-/// Build the bare JSON error object jev's refusal/error shape is: `{"error": {"code": ..,
-/// "message": ..}}`. Written by hand rather than through `serde_json::json!` so the byte order is
-/// pinned and a conformance test can assert the exact bytes.
-pub(crate) fn error_body(code: &str, message: &str) -> Vec<u8> {
-    format!(
-        "{{\"error\":{{\"code\":{},\"message\":{}}}}}",
-        serde_json::to_string(code).unwrap_or_else(|_| "\"internal\"".to_string()),
-        serde_json::to_string(message).unwrap_or_else(|_| "\"error\"".to_string()),
-    )
-    .into_bytes()
 }
 
 /// Which operation a `(verb, path)` pair on the transport names, decoded into the row.
