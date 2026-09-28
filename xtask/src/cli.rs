@@ -37,7 +37,7 @@ usage:
   cargo xtask fleet render <repo> [--out <dir>]
   cargo xtask fleet check [--repo <repo>]...
   cargo xtask fleet sync [--repo <repo>]... [--workdir <dir>] [--dry-run]
-  cargo xtask perf-ab [--base <busbar>] [--candidate <busbar>] [--conc 1,64,512] [--secs N] [--streams N] [--trend <file>] [--gate]";
+  cargo xtask perf-ab [--base <busbar>] [--candidate <busbar>] [--conc 1,64,512] [--secs N] [--streams N] [--trend <file>]";
 
 /// The environment variable the legacy release-gate scripts write their ledger through.
 const LEGACY_LEDGER_ENV: &str = "LEDGER";
@@ -118,9 +118,9 @@ pub fn main(args: &[String]) -> i32 {
             Err(code) => code,
         },
         // THE SAME-MACHINE A/B (THE DESIGN §5; KERNEL<>PLUGINS C0, a report-only trend line from
-        // step 4, the pass/fail gate at steps 23/34/36). Not a gate: it RUNS two binaries and
-        // measures them, so it owns no row set; `--gate` is its own pass/fail. `perf-ab-mock` is the
-        // upstream it starts as a child process.
+        // step 4). Not a gate and never one (THE DESIGN §11.9: the pass/fail A/B is PHASE SIX's): it
+        // RUNS two binaries and measures them, so it owns no row set. `perf-ab-mock` is the upstream
+        // it starts as a child process.
         Some("perf-ab") => match open_ctx() {
             Ok(cx) => crate::perf_ab::main(cx.root(), &args[1..]),
             Err(code) => code,

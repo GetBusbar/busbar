@@ -4,8 +4,9 @@
 //! `docs/design/BUSBAR-1.6.0.md` THE DESIGN §5 owes it: "a same-machine A/B against published 1.5.5
 //! on the llm path — p50 ≤ +5 %, p99 ≤ +10 %, req/s ≥ −5 %" plus 2,000 concurrent streams
 //! (`cap.perf.streams-2000`); the KERNEL<>PLUGINS table places it (step C0 builds it; from step 4 it
-//! runs after EVERY landing as a report-only trend line; steps 23, 34 and 36 are its pass/fail gates;
-//! the owner's absolute gates run the same command at Phase 5/qa on a fixed reference machine).
+//! runs after EVERY landing as a report-only trend line). It NEVER gates: the pass/fail A/B is PHASE
+//! SIX's (THE DESIGN §11.9, which superseded the step 23/34/36 gates on 2026-09-27), so this command
+//! has no pass/fail mode at all — a breach of the §5 tolerances is printed and the run exits 0.
 //!
 //! WHAT ONE RUN DOES. For each concurrency level (default 1, 64, 512) it boots the base, loads it
 //! closed-loop for `--secs` after a warm-up, stops it, then does the same for the candidate — the two
@@ -17,11 +18,10 @@
 //!
 //! WHAT IT PRINTS: per level, base and candidate p50/p99 latency and req/s with the deltas; for the
 //! streams cell, completed/failed and TTFB/TTLB p50/p99 with the deltas. With `--trend <file>` it
-//! appends ONE line to that file (TSV, header written when the file is new). With `--gate` it
-//! enforces the spec's tolerances on every level (p50 ≤ +5 %, p99 ≤ +10 %, req/s ≥ −5 %) and a
-//! streams cell with every stream completed, and exits 1 on a breach; WITHOUT `--gate` it never
-//! fails on a measurement (report-only — the trend line). A harness that could not measure (a boot
-//! that never came up, a mint that failed) is exit 3 either way: no number is not a good number.
+//! appends ONE line to that file (TSV, header written when the file is new). A level outside the
+//! spec's tolerances (p50 ≤ +5 %, p99 ≤ +10 %, req/s ≥ −5 %) or a stream that did not complete is
+//! REPORTED, never failed on (report-only — the trend line). A harness that could not measure (a boot
+//! that never came up, a mint that failed) is exit 3: no number is not a good number.
 //!
 //! THE BASE defaults to the published 1.5.5 binary exactly where `./bin/oracle fetch-golden` puts it
 //! (`~/.cache/busbar-oracle/1.5.5/busbar`; that command verifies it against the pinned digests), and
@@ -46,11 +46,11 @@ use std::time::{Duration, Instant};
 const USAGE: &str = "\
 usage: cargo xtask perf-ab [--base <busbar>] [--candidate <busbar>] [--conc 1,64,512] [--secs 10]
                            [--warmup 2] [--streams 2000] [--stream-chunks 20] [--stream-gap-ms 50]
-                           [--trend <file>] [--label <text>] [--gate]
+                           [--trend <file>] [--label <text>]
   defaults: --base = the published 1.5.5 (~/.cache/busbar-oracle/1.5.5/busbar, via ./bin/oracle fetch-golden)
             --candidate = target/release/busbar
-  --gate enforces p50 <= +5%, p99 <= +10%, req/s >= -5% and every stream completing (exit 1);
-  without it the run is report-only (exit 0 on any measurement). exit 3 = the harness could not measure.";
+  report-only: a breach of p50 <= +5%, p99 <= +10%, req/s >= -5% or an incomplete stream is printed,
+  never failed on (exit 0 on any measurement). exit 3 = the harness could not measure.";
 
 /// The spec's tolerances (THE DESIGN §5).
 pub const P50_MAX_PCT: f64 = 5.0;
@@ -69,7 +69,6 @@ struct Opts {
     stream_gap_ms: u64,
     trend: Option<PathBuf>,
     label: String,
-    gate: bool,
 }
 
 fn parse(root: &Path, args: &[String]) -> Result<Opts, String> {
@@ -84,7 +83,6 @@ fn parse(root: &Path, args: &[String]) -> Result<Opts, String> {
         stream_gap_ms: 50,
         trend: None,
         label: String::new(),
-        gate: false,
     };
     let mut i = 0;
     let val = |i: usize| -> Result<&String, String> {
@@ -120,11 +118,6 @@ fn parse(root: &Path, args: &[String]) -> Result<Opts, String> {
             }
             "--trend" => o.trend = Some(PathBuf::from(val(i)?)),
             "--label" => o.label = val(i)?.clone(),
-            "--gate" => {
-                o.gate = true;
-                i += 1;
-                continue;
-            }
             other => return Err(format!("unknown argument `{other}`")),
         }
         i += 2;
@@ -1037,9 +1030,6 @@ fn run(root: &Path, o: &Opts) -> Result<i32, String> {
     if breaches.is_empty() {
         println!("\nperf-ab: within tolerance (p50 ≤ +{P50_MAX_PCT}%, p99 ≤ +{P99_MAX_PCT}%, req/s ≥ {RPS_MIN_PCT}%)");
         Ok(0)
-    } else if o.gate {
-        println!("\nperf-ab: GATE BREACHED:\n  {}", breaches.join("\n  "));
-        Ok(1)
     } else {
         println!(
             "\nperf-ab: report-only — outside tolerance (not failing):\n  {}",
@@ -1161,9 +1151,10 @@ mod tests {
     #[test]
     fn arguments_parse_and_refuse() {
         let root = Path::new("/r");
-        let o = parse(root, &["--conc".into(), "1,8".into(), "--gate".into()]).unwrap();
+        let o = parse(root, &["--conc".into(), "1,8".into()]).unwrap();
         assert_eq!(o.conc, vec![1, 8]);
-        assert!(o.gate);
+        // Report-only (THE DESIGN §11.9): there is no pass/fail mode to ask for.
+        assert!(parse(root, &["--gate".into()]).is_err());
         assert!(parse(root, &["--conc".into(), "0".into()]).is_err());
         assert!(parse(root, &["--bogus".into()]).is_err());
     }
