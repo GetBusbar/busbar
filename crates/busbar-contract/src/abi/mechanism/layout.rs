@@ -138,13 +138,14 @@ pin!(CompletionHandle, 16, 4, ticket = 0, seq = 8, _reserved = 12);
 pin!(HostCtx, 8, 8, ptr = 0);
 pin!(
     HostTables,
-    32,
+    40,
     8,
     size = 0,
     _reserved = 4,
     ctx = 8,
     wake = 16,
-    conns = 24
+    conns = 24,
+    services = 32
 );
 pin!(
     OpsHead,
@@ -1122,18 +1123,6 @@ mod host_connector {
         trust_from = 56,
         details = 72
     );
-    pin!(ServiceHead, 24, 4, size = 0, op = 4, handle = 8);
-    pin!(
-        ServiceOut,
-        40,
-        8,
-        size = 0,
-        outcome = 4,
-        _reserved = 5,
-        value = 8,
-        len = 16,
-        error = 24
-    );
     pin!(
         EstablishIn,
         48,
@@ -1206,6 +1195,44 @@ mod host_connector {
         random = 88,
         identity = 96
     );
+}
+
+// ── THE HOST SERVICES (abi/host/service.rs) ─────────────────────────────────────────────────────
+#[rustfmt::skip]
+mod host_service {
+    use crate::abi::host::service::*;
+    use std::mem::{align_of, offset_of, size_of};
+
+    pin!(ServiceHead, 24, 4, size = 0, op = 4, handle = 8);
+    pin!(ServiceOut, 64, 8, size = 0, outcome = 4, _reserved = 5, value = 8, len = 16,
+        items = 24, needed_bytes = 32, needed_items = 40, error = 48);
+    pin!(ItemSpan, 16, 4, key_off = 0, key_len = 4, value_off = 8, value_len = 12);
+    pin!(ServiceBufs, 32, 8, buf = 0, cap = 8, spans = 16, spans_cap = 24);
+    pin!(ClockReading, 24, 8, size = 0, _reserved = 4, wall_ns = 8, mono_ns = 16);
+    pin!(ClockNowIn, 32, 8, head = 0, reading = 24);
+    pin!(RecordsGetIn, 88, 8, head = 0, kind = 24, key = 40, into = 56);
+    pin!(RecordsListIn, 112, 8, head = 0, kind = 24, prefix = 40, after = 56, limit = 72,
+        _reserved = 76, into = 80);
+    pin!(RecordsClaimIn, 64, 8, head = 0, kind = 24, key = 40, ttl_ms = 56);
+    pin!(DestJudgeIn, 48, 8, head = 0, dest = 24, egress_class = 40, flags = 44);
+    pin!(SignIn, 80, 8, head = 0, data = 24, into = 48);
+    pin!(UnitNestIn, 112, 8, head = 0, verb = 24, target = 40, body = 56, into = 80);
+    pin!(WorkOpenIn, 64, 8, head = 0, kind = 24, record = 40);
+    pin!(WorkFindIn, 72, 8, head = 0, reference = 24, into = 40);
+    pin!(WorkSettleIn, 56, 8, head = 0, handle = 24, record = 32);
+    pin!(WorkResumeIn, 64, 8, head = 0, handle = 24, into = 32);
+    pin!(TrustSightIn, 56, 8, head = 0, counterparty = 24, catalogue_hash = 40);
+    pin!(TrustDueIn, 56, 8, head = 0, into = 24);
+    pin!(VerifyLookupIn, 72, 8, head = 0, key = 24, into = 40);
+    pin!(VerifyStoreIn, 72, 8, head = 0, key = 24, entry = 40, ttl_ms = 64);
+    pin!(EntitlementCheckIn, 40, 8, head = 0, target = 24);
+    pin!(ContentScanIn, 80, 8, head = 0, content = 24, into = 48);
+    pin!(HookCallIn, 72, 8, head = 0, stage = 24, _reserved = 28, view = 32, into = 40);
+    pin!(HostSlots, 152, 8, size = 0, slots = 4, clock_now = 8, records_get = 16,
+        records_list = 24, records_claim = 32, dest_judge = 40, sign = 48, unit_nest = 56,
+        work_open = 64, work_find = 72, work_settle = 80, work_resume = 88, trust_sight = 96,
+        trust_due = 104, verify_lookup = 112, verify_store = 120, entitlement_check = 128,
+        content_scan = 136, hook_call = 144);
 }
 
 // ── THE PLANE KIND (abi/plane/) ─────────────────────────────────────────────────────────────

@@ -82,6 +82,7 @@ use busbar_contract::abi::auth::{
 };
 // THE PLANE AND TRANSPORT KINDS and THE HOST CONNECTOR: aliased, so the hot lane's names cannot collide.
 use busbar_contract::abi::host::conn::connector as hconn;
+use busbar_contract::abi::host::service as hsvc;
 use busbar_contract::abi::plane as pkind;
 use busbar_contract::abi::transport as tkind;
 // THE STORE KIND (v3): aliased with a `Store` prefix so a golden line names its kind.
@@ -1014,7 +1015,11 @@ fn compute_layout() -> String {
     record!(s, MechTicket, [slot, generation]);
     record!(s, MechCompletionHandle, [ticket, seq, _reserved]);
     record!(s, MechHostCtx, [ptr]);
-    record!(s, MechHostTables, [size, _reserved, ctx, wake, conns]);
+    record!(
+        s,
+        MechHostTables,
+        [size, _reserved, ctx, wake, conns, services]
+    );
     record!(
         s,
         MechOpsHead,
@@ -1780,12 +1785,6 @@ fn compute_layout() -> String {
             details
         ]
     );
-    record!(s, hconn::ServiceHead, [size, op, handle]);
-    record!(
-        s,
-        hconn::ServiceOut,
-        [size, outcome, _reserved, value, len, error]
-    );
     record!(s, hconn::EstablishIn, [head, need, _reserved, target]);
     record!(s, hconn::StreamIn, [head, stream]);
     record!(s, hconn::IoIn, [head, stream, buf, len]);
@@ -1823,6 +1822,74 @@ fn compute_layout() -> String {
             close,
             random,
             identity
+        ]
+    );
+    // The host services (abi/host/service.rs) and the call shape they share with the connector.
+    record!(s, hsvc::ServiceHead, [size, op, handle]);
+    record!(
+        s,
+        hsvc::ServiceOut,
+        [
+            size,
+            outcome,
+            _reserved,
+            value,
+            len,
+            items,
+            needed_bytes,
+            needed_items,
+            error
+        ]
+    );
+    record!(s, hsvc::ItemSpan, [key_off, key_len, value_off, value_len]);
+    record!(s, hsvc::ServiceBufs, [buf, cap, spans, spans_cap]);
+    record!(s, hsvc::ClockReading, [size, _reserved, wall_ns, mono_ns]);
+    record!(s, hsvc::ClockNowIn, [head, reading]);
+    record!(s, hsvc::RecordsGetIn, [head, kind, key, into]);
+    record!(
+        s,
+        hsvc::RecordsListIn,
+        [head, kind, prefix, after, limit, _reserved, into]
+    );
+    record!(s, hsvc::RecordsClaimIn, [head, kind, key, ttl_ms]);
+    record!(s, hsvc::DestJudgeIn, [head, dest, egress_class, flags]);
+    record!(s, hsvc::SignIn, [head, data, into]);
+    record!(s, hsvc::UnitNestIn, [head, verb, target, body, into]);
+    record!(s, hsvc::WorkOpenIn, [head, kind, record]);
+    record!(s, hsvc::WorkFindIn, [head, reference, into]);
+    record!(s, hsvc::WorkSettleIn, [head, handle, record]);
+    record!(s, hsvc::WorkResumeIn, [head, handle, into]);
+    record!(s, hsvc::TrustSightIn, [head, counterparty, catalogue_hash]);
+    record!(s, hsvc::TrustDueIn, [head, into]);
+    record!(s, hsvc::VerifyLookupIn, [head, key, into]);
+    record!(s, hsvc::VerifyStoreIn, [head, key, entry, ttl_ms]);
+    record!(s, hsvc::EntitlementCheckIn, [head, target]);
+    record!(s, hsvc::ContentScanIn, [head, content, into]);
+    record!(s, hsvc::HookCallIn, [head, stage, _reserved, view, into]);
+    record!(
+        s,
+        hsvc::HostSlots,
+        [
+            size,
+            slots,
+            clock_now,
+            records_get,
+            records_list,
+            records_claim,
+            dest_judge,
+            sign,
+            unit_nest,
+            work_open,
+            work_find,
+            work_settle,
+            work_resume,
+            trust_sight,
+            trust_due,
+            verify_lookup,
+            verify_store,
+            entitlement_check,
+            content_scan,
+            hook_call
         ]
     );
 

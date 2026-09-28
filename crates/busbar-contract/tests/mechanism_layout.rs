@@ -182,9 +182,16 @@ fn tickets_and_host_tables_have_their_stated_layout() {
     pin!(HostCtx, 8, 8, [ptr = 0]);
     pin!(
         HostTables,
-        32,
+        40,
         8,
-        [size = 0, _reserved = 4, ctx = 8, wake = 16, conns = 24]
+        [
+            size = 0,
+            _reserved = 4,
+            ctx = 8,
+            wake = 16,
+            conns = 24,
+            services = 32
+        ]
     );
 }
 

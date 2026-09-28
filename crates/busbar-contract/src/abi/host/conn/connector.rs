@@ -36,19 +36,20 @@
 //! * **The far end's notices and warnings** travel as the metrics-and-diagnostics envelope's `Diag`s, severity `0`/`1`;
 //!   there is no other channel.
 //!
-//! THE CALL SHAPE. Every service is a [`ServiceFn`]: `svc(ctx, in, out)`, `extern "C"`, answering
-//! the mechanism's [`RawOutcome`]. `in` leads with a [`ServiceHead`] carrying the service's
-//! [`CompletionHandle`]; a service that cannot finish answers PENDING, wakes the handle's ticket, and
+//! THE CALL SHAPE, shared with the host services (`abi/host/service.rs`). Every service is a
+//! [`ServiceFn`]: `svc(ctx, in, out)`, `extern "C"`, answering the mechanism's outcome. `in` leads
+//! with a [`ServiceHead`] carrying the service's completion handle; a service that cannot finish answers PENDING, wakes the handle's ticket, and
 //! on resume the plugin re-issues the SAME handle and receives the stored result — the host never
 //! runs a service twice. A call with `handle.ticket` = `Ticket::NONE` may not pend.
 //!
 //! [`crate::abi::mechanism::ticket::HostTables::conns`] hands this table to every instance that
 //! declared a need.
 
-use std::os::raw::c_void;
-
-use crate::abi::mechanism::call::{AbiStr, Blob, RawOutcome};
-use crate::abi::mechanism::ticket::{CompletionHandle, HostCtx};
+// THE SHARED CALL SHAPE. In a connector answer, `ServiceOut::value` is the stream a service produced
+// (`ESTABLISH`, `REJECT_ENDPOINT`, `SIDE_STREAM`, `CHECKOUT`), `0` otherwise, and `ServiceOut::len`
+// the bytes moved (`READ`: `0` = the end; `WRITE`; `RANDOM`).
+pub use crate::abi::host::service::{ServiceFn, ServiceHead, ServiceOut};
+use crate::abi::mechanism::call::{AbiStr, Blob};
 
 /// [`Need::direction`]: the plugin is reached (it listens).
 pub const DIRECTION_INBOUND: u32 = 1;
@@ -107,41 +108,6 @@ pub mod service {
 
 /// How many services [`ConnectorSlots`] holds.
 pub const SERVICES: u32 = 12;
-
-/// A connector service: `svc(ctx, in, out)`. `extern "C"`: a panic escaping it aborts.
-pub type ServiceFn =
-    extern "C" fn(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome;
-
-/// The head of every service `in`.
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub struct ServiceHead {
-    /// `size_of` the whole `in`.
-    pub size: u32,
-    /// The [`service`] index.
-    pub op: u32,
-    /// The completion handle; on resume the plugin re-issues the same one.
-    pub handle: CompletionHandle,
-}
-
-/// Every service's `out`.
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub struct ServiceOut {
-    /// `size_of::<ServiceOut>()`.
-    pub size: u32,
-    /// The outcome, mirrored from the return value (the return value is authoritative).
-    pub outcome: RawOutcome,
-    /// Alignment padding.
-    pub _reserved: [u8; 3],
-    /// The stream a service produced ([`service::ESTABLISH`], [`service::REJECT_ENDPOINT`],
-    /// [`service::SIDE_STREAM`], [`service::CHECKOUT`]); `0` otherwise.
-    pub value: u64,
-    /// Bytes moved ([`service::READ`]: `0` = the end; [`service::WRITE`]; [`service::RANDOM`]).
-    pub len: u64,
-    /// For FAILED/REFUSED: the reason; never secret material.
-    pub error: AbiStr,
-}
 
 /// [`service::ESTABLISH`]'s `in`: dial the need's endpoints in the host's order, apply connection
 /// security when the need asks for it, and answer the stream. The plugin's own authentication

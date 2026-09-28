@@ -691,6 +691,7 @@ impl<K: Kind> Plugin<K> {
             },
             wake: Some(host_wake),
             conns: std::ptr::null(),
+            services: std::ptr::null(),
         }));
         let name = str_bytes(st.name)
             .ok_or_else(|| LoadError::BadStatement("the name is NULL or over-long".into()))?;
