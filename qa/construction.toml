@@ -377,19 +377,25 @@ to      = 54814
 because = "ARCHITECT 2026-09-27: R-KERNEL exception for the Phase-2 exit-test regression (plane-pricing-blindness), A+C. The kernel's door now opens the zero hold an llm unit's admission carries and mints every unit key through one allocator, acts the llm and voice planes performed themselves. Measured by cargo xtask gate construction: 54785 before, 54798 after, +13. The ceiling rises by exactly that; K2g's named reservation is unchanged."
 
 # ── THE CONTRACT CEILING PAIR, RE-ARMED BY LANDER'S BATCH (XTASK-SPEED, KI-ABI-SCOPE, M3-SDK,
-#    M3-SHAPES AUTH, billing-cite) ──────────────────────────────────────────────────────────────
+#    M3-SHAPES AUTH, billing-cite) — EXPIRED AND STRUCK
+#
+# Declared `gate.surface_ceilings.contract_caps` and `rules.loc-ceilings.caps_contract_ceiling`
+# 17802 -> 18797 (OWNER RULING Q68(3)). Its commit reached the base; struck by M3-SDK's auth
+# KindSlot re-arm below, which declares the pair's next figure.
+
+# ── THE CONTRACT CEILING PAIR, RE-ARMED BY M3-SDK's AUTH KindSlot ───────────────────────────────
 
 [gate.ceiling_raises."gate.surface_ceilings.contract_caps"]
 file    = "qa/construction.toml"
-from    = 17802
-to      = 18797
-because = "OWNER RULING Q68(3) (docs/design/1.6.0-QUESTIONS.md): contract_caps re-arms at the MEASURED value, in its own commit, written by LANDER per ARCHITECT's re-measure-at-land-time authorization for this batch. Growth is M3-SDK's door macro (+324, ABI-b3) and M3-SHAPES AUTH's v3 shapes, review, fix-forward and answer validators (+671, B.3); XTASK-SPEED and KI-ABI-SCOPE add no contract growth. Measured by cargo xtask gate construction: 17802 before, 18797 after."
+from    = 18797
+to      = 18824
+because = "OWNER RULING Q68(3) (docs/design/1.6.0-QUESTIONS.md): contract_caps re-arms at the MEASURED value, in its own commit. This is the re-arm for M3-SDK's auth KindSlot (TODO ABI-b3): abi::auth's KindSlot impls for its six kind ops and the AbiIn/AbiOut impls of their eleven In/Out structs, so plugin_door! type-checks an auth plugin's kind ops, +27 code lines. Measured by cargo xtask gate construction: 18797 before, 18824 after."
 
 [gate.ceiling_raises."rules.loc-ceilings.caps_contract_ceiling"]
 file    = "qa/construction.toml"
-from    = 17802
-to      = 18797
-because = "OWNER RULING Q68(3) (docs/design/1.6.0-QUESTIONS.md): contract_caps re-arms at the MEASURED value, in its own commit, written by LANDER per ARCHITECT's re-measure-at-land-time authorization for this batch. Growth is M3-SDK's door macro (+324, ABI-b3) and M3-SHAPES AUTH's v3 shapes, review, fix-forward and answer validators (+671, B.3); XTASK-SPEED and KI-ABI-SCOPE add no contract growth. Measured by cargo xtask gate construction: 17802 before, 18797 after."
+from    = 18797
+to      = 18824
+because = "OWNER RULING Q68(3) (docs/design/1.6.0-QUESTIONS.md): contract_caps re-arms at the MEASURED value, in its own commit. This is the re-arm for M3-SDK's auth KindSlot (TODO ABI-b3): abi::auth's KindSlot impls for its six kind ops and the AbiIn/AbiOut impls of their eleven In/Out structs, so plugin_door! type-checks an auth plugin's kind ops, +27 code lines. Measured by cargo xtask gate construction: 18797 before, 18824 after."
 
 # ── THE KERNEL CEILING, RE-ARMED BY SD-8 (the substrate-values kernel landing) ─────────────────
 # Its 51100 -> 54801 declaration expired once landed and is struck; the ceiling text below keeps it.
@@ -555,7 +561,9 @@ because = "ARCHITECT ruling on the kernel budget (R-KERNEL, sd-extra.txt; K2-0 u
 # RE-ARMED 17779 -> 17802, AT THE MEASUREMENT (OWNER RULING Q68(3)), in its own commit after
 # the rulings on M0 decisions 1-6 (+23); the live declaration above carries the measure.
 # RE-ARMED 17802 -> 18797, AT THE MEASUREMENT (OWNER RULING Q68(3)), in its own commit after the batch: XTASK-SPEED (Ctx memo, no contract growth), KI-ABI-SCOPE (matrix-only, no contract growth), M3-SDK's door macro (+324), M3-SHAPES AUTH's v3 shapes, review, fix-forward and answer validators (+671), the billing.rs section-sign wording fix (no growth); the live declaration above carries the measure.
-contract_caps = 18797
+# RE-ARMED 18797 -> 18824, AT THE MEASUREMENT (OWNER RULING Q68(3)), in its own commit after
+# M3-SDK's auth KindSlot (+27); the live declaration above carries the measure.
+contract_caps = 18824
 # REPOINTED, and the repoint is what makes this row a gate again. It named the CRATE
 # `busbar-grammar`, which #40 folded into `busbar-contract` and deleted — so it summed nothing,
 # measured nothing and passed, which is this file's own "zero is not clean" failure sitting inside
@@ -1188,7 +1196,8 @@ contract_crate = "busbar-contract"
 # RE-ARMED 17775 -> 17779 with its pair (OWNER RULING Q68(3); Statement.secret_refs, +4).
 # RE-ARMED 17779 -> 17802 with its pair (OWNER RULING Q68(3); rulings on M0 decisions, +23).
 # RE-ARMED 17802 -> 18797 with its pair (OWNER RULING Q68(3); the batch: M3-SDK's door macro +324, M3-SHAPES AUTH's shapes/review/fix-forward/validators +671, XTASK-SPEED and KI-ABI-SCOPE add no contract growth).
-caps_contract_ceiling = 18797
+# RE-ARMED 18797 -> 18824 with its pair (OWNER RULING Q68(3); M3-SDK's auth KindSlot, +27).
+caps_contract_ceiling = 18824
 unit_crate_glob = "busbar-unit-*"
 # RE-KEYED on cherry-pick onto 143db6db6: this commit's own delta is -53 (two units stopped
 # declaring their own copies), measured against whatever unit_total_ceiling read when the line was
