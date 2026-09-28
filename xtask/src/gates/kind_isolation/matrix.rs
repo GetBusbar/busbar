@@ -2862,7 +2862,10 @@ pub fn selftest<'a>(
         "a `[[disagreement]]` row whose cell is gone is a standing licence, and is struck",
         &[ROW_MATRIX],
         ov,
-        &["dead-disagreement", "busbar-kernel-breaker \u{d7} transport"],
+        &[
+            "dead-disagreement",
+            "busbar-kernel-breaker \u{d7} transport",
+        ],
     ));
 
     // AN `[[edge]]` ROW WHOSE WHOLE CLASS IS GONE. The case used to delete the one crate of kind
