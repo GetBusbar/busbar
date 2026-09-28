@@ -92,7 +92,7 @@ pub mod runtime;
 /// THE NODE'S OPEN-CALL TABLE — the client-served tool calls this node's sessions are waiting on,
 /// and the port the session runtime reaches it through; composed by this plane's own `compose` step.
 #[cfg(feature = "runtime")]
-pub mod governed;
+pub use busbar_plane_streaming::open_calls as governed;
 #[cfg(feature = "runtime")]
 pub mod topology;
 

@@ -183,6 +183,11 @@ pub fn build_runtime_hosted(
 #[cfg(test)]
 mod tests;
 
+// The open-call table as a served session pump reaches it (the table itself is the plane's).
+#[cfg(test)]
+#[path = "../tests/governed_table_tests.rs"]
+mod governed_table_tests;
+
 // THE VOICE PLANE-UNIT BILLING ORACLE — the voice money-path regression backstop that replaces the D2
 // lease oracle (Q21b): one fixed session script, every per-class count it ledgers and every verdict
 // the kernel answers pinned.

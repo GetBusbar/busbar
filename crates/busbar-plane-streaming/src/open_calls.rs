@@ -13,7 +13,7 @@
 //! [`OpenToolCalls`]; the runtime learns nothing but whether a reply was taken.
 //!
 //! This plane installs the table itself, from its own linked entry (its `compose` step, see
-//! [`crate::mount`]): one table per node, set once, bound to every session the served door opens. A
+//! `mount`): one table per node, set once, bound to every session the served door opens. A
 //! served session that ends forgets its calls ([`GovernedCalls::closed`]), and an answered or swept
 //! call's row leaves the table with its wait — on the served path no per-call unit is left to read
 //! how a call ended, so the port reads it.
@@ -21,11 +21,11 @@
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
 
+use crate::governed::{GovernedCalls, ReplyRefusal};
 use busbar_contract::dest::ClientMode;
 use busbar_contract::ids::{CorrelationRef, CorrelationValue, UnitKey};
 use busbar_contract::reply::{AwaitingReplies, NotWaiting};
 use busbar_contract::Millis;
-use busbar_plane_streaming::governed::{GovernedCalls, ReplyRefusal};
 
 /// The leg a provider-pushed tool call plans: deliver it to the client, and wait for the answer.
 ///
@@ -33,8 +33,8 @@ use busbar_plane_streaming::governed::{GovernedCalls, ReplyRefusal};
 /// second spelling of either here would be a wait entered under one key and answered under another,
 /// with both files looking correct on their own.
 pub const TOOL_REPLY_LEG: ClientMode = ClientMode::AwaitReply {
-    correlation_key: busbar_plane_streaming::plane::FACT_TOOL_CORRELATION,
-    deadline_secs: busbar_plane_streaming::plane::TOOL_REPLY_DEADLINE_SECS,
+    correlation_key: crate::plane::FACT_TOOL_CORRELATION,
+    deadline_secs: crate::plane::TOOL_REPLY_DEADLINE_SECS,
 };
 
 /// Why a client's tool reply woke nothing.
@@ -256,7 +256,7 @@ impl NodeCalls {
 /// the key the plane's leg names — the one pair `planned` enters and `replied` answers.
 fn tool_call(call_id: &str) -> CorrelationRef<'_> {
     CorrelationRef {
-        fact_key: busbar_plane_streaming::plane::FACT_TOOL_CORRELATION,
+        fact_key: crate::plane::FACT_TOOL_CORRELATION,
         value: CorrelationValue::Str(call_id),
     }
 }
@@ -304,5 +304,5 @@ impl GovernedCalls for NodeCalls {
 }
 
 #[cfg(test)]
-#[path = "tests/governed_table_tests.rs"]
+#[path = "tests/open_calls_tests.rs"]
 mod tests;

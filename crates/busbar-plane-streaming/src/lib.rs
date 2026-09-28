@@ -69,6 +69,7 @@ pub mod diagnostics;
 pub mod governed;
 pub mod meta;
 pub mod oneshot;
+pub mod open_calls;
 pub mod plane;
 pub mod register;
 pub mod session;
