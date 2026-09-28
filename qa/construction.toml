@@ -397,19 +397,25 @@ because = "ARCHITECT 2026-09-28: R-KERNEL, H1 KERNEL<>PLUGINS 3a HostSlots. busb
 
 # ── THE CONTRACT CEILING PAIR, RE-ARMED BY H1 KERNEL<>PLUGINS 3a HostSlots (abi/host/service.rs,
 #    the HostServices trait and its loader dispatch) — measured and written by LANDER at land time,
-#    rebased over PLANE-DOOR's already-landed figure ─────────────────────────────────────────────
+#    rebased over PLANE-DOOR's already-landed figure — EXPIRED AND STRUCK
+#
+# Declared `gate.surface_ceilings.contract_caps` and `rules.loc-ceilings.caps_contract_ceiling`
+# 24340 -> 24900 (OWNER RULING Q68(3)). Its commit reached the base; struck by the transport
+# stream-end rule's re-arm, which declares the pair's next figure below.
+
+# ── THE CONTRACT CEILING PAIR, RE-ARMED BY THE TRANSPORT STREAM-END RULE ─
 
 [gate.ceiling_raises."gate.surface_ceilings.contract_caps"]
 file    = "qa/construction.toml"
-from    = 24340
-to      = 24900
-because = "OWNER RULING Q68(3) (docs/design/1.6.0-QUESTIONS.md): contract_caps re-arms at the MEASURED value, in its own commit, written by LANDER per ARCHITECT's re-measure-at-land-time authorization. Growth is H1's KERNEL<>PLUGINS step 3a, the host services of BUSBAR-1.6.0.md THE DESIGN: abi/host/service.rs (HostSlots, its eighteen in shapes, the shared ServiceHead/ServiceOut, a check_<op> beside every shape) and services.rs (the HostServices trait the kernel implements and the loader dispatches into), +560 (H1's own delta, rebased over PLANE-DOOR's landed +34). Measured by cargo xtask gate construction: 24340 before, 24900 after."
+from    = 24900
+to      = 24909
+because = "OWNER RULING Q68(3) (docs/design/1.6.0-QUESTIONS.md): contract_caps re-arms at the MEASURED value, in its own commit. This is the re-arm for the transport kind's declared stream-end surface: PIECE_STREAM_FAILED and the check_framer rule that an empty or failed piece carries PIECE_END_OF_FRAME, +9 code lines. Measured by cargo xtask gate construction: 24900 before, 24909 after."
 
 [gate.ceiling_raises."rules.loc-ceilings.caps_contract_ceiling"]
 file    = "qa/construction.toml"
-from    = 24340
-to      = 24900
-because = "OWNER RULING Q68(3) (docs/design/1.6.0-QUESTIONS.md): contract_caps re-arms at the MEASURED value, in its own commit, written by LANDER per ARCHITECT's re-measure-at-land-time authorization. Growth is H1's KERNEL<>PLUGINS step 3a, the host services of BUSBAR-1.6.0.md THE DESIGN: abi/host/service.rs (HostSlots, its eighteen in shapes, the shared ServiceHead/ServiceOut, a check_<op> beside every shape) and services.rs (the HostServices trait the kernel implements and the loader dispatches into), +560 (H1's own delta, rebased over PLANE-DOOR's landed +34). Measured by cargo xtask gate construction: 24340 before, 24900 after."
+from    = 24900
+to      = 24909
+because = "OWNER RULING Q68(3) (docs/design/1.6.0-QUESTIONS.md): contract_caps re-arms at the MEASURED value, in its own commit. This is the re-arm for the transport kind's declared stream-end surface: PIECE_STREAM_FAILED and the check_framer rule that an empty or failed piece carries PIECE_END_OF_FRAME, +9 code lines. Measured by cargo xtask gate construction: 24900 before, 24909 after."
 
 # ── THE CONTRACT CEILING PAIR, RE-ARMED BY LANDER'S BATCH (XTASK-SPEED, KI-ABI-SCOPE, M3-SDK,
 #    M3-SHAPES AUTH, billing-cite) — EXPIRED AND STRUCK
@@ -670,7 +676,9 @@ because = "ARCHITECT ruling on the kernel budget (R-KERNEL, sd-extra.txt; K2-0 u
 # carries the measure.
 # RE-ARMED 24340 -> 24900, AT THE MEASUREMENT (OWNER RULING Q68(3)), in its own commit after H1
 # KERNEL<>PLUGINS 3a HostSlots (+560); the live declaration above carries the measure.
-contract_caps = 24900
+# RE-ARMED 24900 -> 24909, AT THE MEASUREMENT (OWNER RULING Q68(3)), in its own commit after
+# the transport stream-end rule (+9); the live declaration above carries the measure.
+contract_caps = 24909
 # REPOINTED, and the repoint is what makes this row a gate again. It named the CRATE
 # `busbar-grammar`, which #40 folded into `busbar-contract` and deleted — so it summed nothing,
 # measured nothing and passed, which is this file's own "zero is not clean" failure sitting inside
@@ -1328,7 +1336,8 @@ contract_crate = "busbar-contract"
 # RE-ARMED 24306 -> 24340 with its pair (OWNER RULING Q68(3); the plane door, +34).
 # RE-ARMED 24340 -> 24900 with its pair (OWNER RULING Q68(3); H1 KERNEL<>PLUGINS 3a HostSlots,
 # +560).
-caps_contract_ceiling = 24900
+# RE-ARMED 24900 -> 24909 with its pair (OWNER RULING Q68(3); the transport stream-end rule, +9).
+caps_contract_ceiling = 24909
 unit_crate_glob = "busbar-unit-*"
 # RE-KEYED on cherry-pick onto 143db6db6: this commit's own delta is -53 (two units stopped
 # declaring their own copies), measured against whatever unit_total_ceiling read when the line was
