@@ -335,13 +335,20 @@ busbar-voice = ["busbar-voice-codec"]
 # 17126 -> 17170 (OWNER RULING Q68(3)). Its commit reached the base; struck by M0 ABI-SPEC's
 # re-arm, which declares the pair's next figure below.
 
-# ── THE CONTRACT CEILING PAIR, RE-ARMED BY M0 ABI-SPEC (the one memory ABI's mechanism) ─────────
+# ── THE CONTRACT CEILING PAIR, RE-ARMED BY M0 ABI-SPEC (the one memory ABI's mechanism) —
+#    EXPIRED AND STRUCK
+#
+# Declared `gate.surface_ceilings.contract_caps` and `rules.loc-ceilings.caps_contract_ceiling`
+# 17170 -> 17775 (OWNER RULING Q68(3)). Its commit reached the base; struck by the Statement
+# secret_refs re-arm, which declares the pair's next figure below.
+
+# ── THE CONTRACT CEILING PAIR, RE-ARMED BY THE STATEMENT'S secret_refs (M0 follow-up) ──────────
 
 [gate.ceiling_raises."gate.surface_ceilings.contract_caps"]
 file    = "qa/construction.toml"
-from    = 17170
-to      = 17775
-because = "OWNER RULING Q68(3) (docs/design/1.6.0-QUESTIONS.md): contract_caps re-arms at the MEASURED value, in its own commit. This is the re-arm for M0 ABI-SPEC (TODO ABI-a/ABI-b5; the design's locked plugin ABI): abi::mechanism (MECHANISM_VERSION, DOOR_MAGIC, DOOR_SYMBOL, KindCode; call: RawOutcome, Outcome, Op, FLAG_RESUME, DeadlineClass, AbiStr, Blob, InHead, MetricEntry, Diag, Envelope, OutHead; door: Door, DoorFn, MetricFamily, Statement; lifecycle: slot numbers, OpsHead, ValidateIn, OpenIn, OpenOut, GenIn, TickIn, TickOut, DriveIn, CancelIn, CancelOut, ReleaseIn; ticket: Ticket, CompletionHandle, HostCtx, WakeFn, HostTables) and abi::{store,secret,auth,hook,export,plane,transport} (ABI_VERSION + an Ops skeleton each), +416 code lines; then the ARCHITECT review rulings R1-R9: KindTailHead and the compile-time layout pins of every mechanism struct and kind table (abi/mechanism/layout.rs), +189. Measured by cargo xtask gate construction: 17170 before, 17775 after."
+from    = 17775
+to      = 17779
+because = "OWNER RULING Q68(3) (docs/design/1.6.0-QUESTIONS.md): contract_caps re-arms at the MEASURED value, in its own commit. This is the re-arm for the M0 follow-up (ARCHITECT): Statement.secret_refs and secret_refs_len, the settings keys the kernel resolves in order into OpenIn.secrets, with their two compile-time layout pins, +4 code lines. Measured by cargo xtask gate construction: 17775 before, 17779 after."
 
 [gate.ceiling_raises."rules.loc-ceilings.kernel_ceiling"]
 file    = "qa/construction.toml"
@@ -351,9 +358,9 @@ because = "ARCHITECT 2026-09-27: R-KERNEL exception for the Phase-2 exit-test re
 
 [gate.ceiling_raises."rules.loc-ceilings.caps_contract_ceiling"]
 file    = "qa/construction.toml"
-from    = 17170
-to      = 17775
-because = "OWNER RULING Q68(3) (docs/design/1.6.0-QUESTIONS.md): contract_caps re-arms at the MEASURED value, in its own commit. This is the re-arm for M0 ABI-SPEC (TODO ABI-a/ABI-b5; the design's locked plugin ABI): abi::mechanism (MECHANISM_VERSION, DOOR_MAGIC, DOOR_SYMBOL, KindCode; call: RawOutcome, Outcome, Op, FLAG_RESUME, DeadlineClass, AbiStr, Blob, InHead, MetricEntry, Diag, Envelope, OutHead; door: Door, DoorFn, MetricFamily, Statement; lifecycle: slot numbers, OpsHead, ValidateIn, OpenIn, OpenOut, GenIn, TickIn, TickOut, DriveIn, CancelIn, CancelOut, ReleaseIn; ticket: Ticket, CompletionHandle, HostCtx, WakeFn, HostTables) and abi::{store,secret,auth,hook,export,plane,transport} (ABI_VERSION + an Ops skeleton each), +416 code lines; then the ARCHITECT review rulings R1-R9: KindTailHead and the compile-time layout pins of every mechanism struct and kind table (abi/mechanism/layout.rs), +189. Measured by cargo xtask gate construction: 17170 before, 17775 after."
+from    = 17775
+to      = 17779
+because = "OWNER RULING Q68(3) (docs/design/1.6.0-QUESTIONS.md): contract_caps re-arms at the MEASURED value, in its own commit. This is the re-arm for the M0 follow-up (ARCHITECT): Statement.secret_refs and secret_refs_len, the settings keys the kernel resolves in order into OpenIn.secrets, with their two compile-time layout pins, +4 code lines. Measured by cargo xtask gate construction: 17775 before, 17779 after."
 
 # ── THE KERNEL CEILING, RE-ARMED BY SD-8 (the substrate-values kernel landing) ─────────────────
 # Its 51100 -> 54801 declaration expired once landed and is struck; the ceiling text below keeps it.
@@ -514,7 +521,9 @@ because = "ARCHITECT ruling on the kernel budget (R-KERNEL, sd-extra.txt; K2-0 u
 # RE-ARMED 17170 -> 17586, AT THE MEASUREMENT (OWNER RULING Q68(3)), in its own commit after
 # M0 ABI-SPEC's mechanism and kind skeletons (+416), then 17586 -> 17775 for its review rulings
 # (compile-time layout pins, KindTailHead, +189); the live declaration above carries the measure.
-contract_caps = 17775
+# RE-ARMED 17775 -> 17779, AT THE MEASUREMENT (OWNER RULING Q68(3)), in its own commit after
+# the Statement's secret_refs (+4); the live declaration above carries the measure.
+contract_caps = 17779
 # REPOINTED, and the repoint is what makes this row a gate again. It named the CRATE
 # `busbar-grammar`, which #40 folded into `busbar-contract` and deleted — so it summed nothing,
 # measured nothing and passed, which is this file's own "zero is not clean" failure sitting inside
@@ -1144,7 +1153,8 @@ contract_crate = "busbar-contract"
 # RE-ARMED 16373 -> 16403 with its pair (OWNER RULING Q68(3); the framer clock seam, +30).
 # RE-ARMED 16403 -> 17126 with its pair (OWNER RULING Q68(3); the connection table, +723).
 # RE-ARMED 17170 -> 17775 with its pair (OWNER RULING Q68(3); M0 ABI-SPEC +416, its review rulings +189).
-caps_contract_ceiling = 17775
+# RE-ARMED 17775 -> 17779 with its pair (OWNER RULING Q68(3); Statement.secret_refs, +4).
+caps_contract_ceiling = 17779
 unit_crate_glob = "busbar-unit-*"
 # RE-KEYED on cherry-pick onto 143db6db6: this commit's own delta is -53 (two units stopped
 # declaring their own copies), measured against whatever unit_total_ceiling read when the line was
