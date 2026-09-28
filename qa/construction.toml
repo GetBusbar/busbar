@@ -314,19 +314,26 @@ busbar-voice = ["busbar-voice-codec"]
 # 16368 -> 16373 (OWNER RULING Q68(3)). Its commit reached the base; struck by the framer clock seam's
 # re-arm, which declares the pair's next figure below.
 
-# ── THE CONTRACT CEILING PAIR, RE-ARMED BY THE FRAMER CLOCK SEAM ─
+# ── THE CONTRACT CEILING PAIR, RE-ARMED BY THE FRAMER CLOCK SEAM —
+#    EXPIRED AND STRUCK
+#
+# Declared `gate.surface_ceilings.contract_caps` and `rules.loc-ceilings.caps_contract_ceiling`
+# 16373 -> 16403 (OWNER RULING Q68(3)). Its commit reached the base; struck by the connection table's
+# re-arm, which declares the pair's next figure below.
+
+# ── THE CONTRACT CEILING PAIR, RE-ARMED BY THE CONNECTION TABLE (the step-3 conn slice) ─
 
 [gate.ceiling_raises."gate.surface_ceilings.contract_caps"]
 file    = "qa/construction.toml"
-from    = 16373
-to      = 16403
-because = "OWNER RULING Q68(3) (docs/design/1.6.0-QUESTIONS.md): contract_caps re-arms at the MEASURED value, in its own commit (ARCHITECT approval 2026-09-27 for the clock seam). This is the re-arm for the framer clock seam (the design's one clock, which also drives every plugin's tick; appended without an ABI minor per the owner's 2026-09-27 version ruling): transport::HostTime, FramerOut::now and FramerOut::wake_at, Framer::tick, the FramerSlots tick slot and its sdk bridge, and WireFramerOut's appended host time and wake_at callback, +30 code lines. Measured by cargo xtask gate construction: 16373 before, 16403 after."
+from    = 16403
+to      = 17126
+because = "OWNER RULING Q68(3) (docs/design/1.6.0-QUESTIONS.md): contract_caps re-arms at the MEASURED value, in its own commit (ARCHITECT standing approval 2026-09-27 for the conn table). This is the re-arm for the connection table (the design's connections; ARCHITECT step-3 conn slice): crate::conn (InstanceId, NeedId, ConnId, OpenDesc, PieceKind, Piece, ConnError with its refusal texts, Deadline, the Conns trait, and ConnSlab, the ownership book that refuses a cross-instance id, a closed id and an undeclared need) and abi::host::conn (RawConnOutcome and ConnOutcome, ConnCtx, WireOpenDesc, WirePiece, ConnSlots lowered from one declarative list, the host bridges over a ConnHost and the HostConns plugin client), with slot_table! moved to abi so both tables share it, +723 code lines. Measured by cargo xtask gate construction: 16403 before, 17126 after."
 
 [gate.ceiling_raises."rules.loc-ceilings.caps_contract_ceiling"]
 file    = "qa/construction.toml"
-from    = 16373
-to      = 16403
-because = "OWNER RULING Q68(3) (docs/design/1.6.0-QUESTIONS.md): contract_caps re-arms at the MEASURED value, in its own commit (ARCHITECT approval 2026-09-27 for the clock seam). This is the re-arm for the framer clock seam (the design's one clock, which also drives every plugin's tick; appended without an ABI minor per the owner's 2026-09-27 version ruling): transport::HostTime, FramerOut::now and FramerOut::wake_at, Framer::tick, the FramerSlots tick slot and its sdk bridge, and WireFramerOut's appended host time and wake_at callback, +30 code lines. Measured by cargo xtask gate construction: 16373 before, 16403 after."
+from    = 16403
+to      = 17126
+because = "OWNER RULING Q68(3) (docs/design/1.6.0-QUESTIONS.md): contract_caps re-arms at the MEASURED value, in its own commit (ARCHITECT standing approval 2026-09-27 for the conn table). This is the re-arm for the connection table (the design's connections; ARCHITECT step-3 conn slice): crate::conn (InstanceId, NeedId, ConnId, OpenDesc, PieceKind, Piece, ConnError with its refusal texts, Deadline, the Conns trait, and ConnSlab, the ownership book that refuses a cross-instance id, a closed id and an undeclared need) and abi::host::conn (RawConnOutcome and ConnOutcome, ConnCtx, WireOpenDesc, WirePiece, ConnSlots lowered from one declarative list, the host bridges over a ConnHost and the HostConns plugin client), with slot_table! moved to abi so both tables share it, +723 code lines. Measured by cargo xtask gate construction: 16403 before, 17126 after."
 
 # ── THE KERNEL CEILING, RE-ARMED BY SD-8 (the substrate-values kernel landing) ─────────────────
 
@@ -487,7 +494,9 @@ because = "ARCHITECT ruling on the kernel budget (R-KERNEL, sd-extra.txt; K2-0 u
 # tables and bridges generated from one declarative list per role, -296).
 # RE-ARMED 16373 -> 16403, AT THE MEASUREMENT (OWNER RULING Q68(3)), in its own commit after
 # the framer clock seam (+30); the live declaration above carries the measure.
-contract_caps = 16403
+# RE-ARMED 16403 -> 17126, AT THE MEASUREMENT (OWNER RULING Q68(3)), in its own commit after
+# the connection table (+723); the live declaration above carries the measure.
+contract_caps = 17126
 # REPOINTED, and the repoint is what makes this row a gate again. It named the CRATE
 # `busbar-grammar`, which #40 folded into `busbar-contract` and deleted — so it summed nothing,
 # measured nothing and passed, which is this file's own "zero is not clean" failure sitting inside
@@ -1112,7 +1121,8 @@ contract_crate = "busbar-contract"
 # RE-ARMED 16482 -> 16664 with its pair (OWNER RULING Q68(3); TRANSPORT-STACK claims, the transport entry's claims at ABI minor 33, +182).
 # LOWERED 16664 -> 16368 with its pair (the transport lowering shrink: slot tables and bridges from one declarative list per role, -296).
 # RE-ARMED 16373 -> 16403 with its pair (OWNER RULING Q68(3); the framer clock seam, +30).
-caps_contract_ceiling = 16403
+# RE-ARMED 16403 -> 17126 with its pair (OWNER RULING Q68(3); the connection table, +723).
+caps_contract_ceiling = 17126
 unit_crate_glob = "busbar-unit-*"
 # RE-KEYED on cherry-pick onto 143db6db6: this commit's own delta is -53 (two units stopped
 # declaring their own copies), measured against whatever unit_total_ceiling read when the line was
