@@ -65,7 +65,8 @@
 //! * S1 REPLAY: the same `op_id` replayed with the same body applies nothing and returns the
 //!   ORIGINAL `out`; where the result lives in a host buffer the `in` names (`reserve`'s grants,
 //!   `slice_release`'s released amounts) the replay RE-WRITES the ORIGINAL results into the NEW
-//!   call's host buffers.
+//!   call's host buffers. The capacity check (M-SB) PRECEDES the replay lookup: a replay into a
+//!   short buffer answers the short FAILED and writes nothing (S1 addendum).
 //! * S2 SAME BODY means the op's VALUE fields only: the epoch, the cells or items, the amounts, the
 //!   caps and the window fields. Host-buffer pointers and capacities are EXCLUDED. The same `op_id`
 //!   with different value fields is never applied: the store answers REFUSED with the diagnostic

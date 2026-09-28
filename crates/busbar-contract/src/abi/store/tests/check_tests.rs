@@ -550,6 +550,32 @@ fn list_needed_bytes_over_u32_max_is_fault() {
 }
 
 #[test]
+fn list_short_in_one_dimension_with_the_other_fitting_is_legal() {
+    // M-SB REFINEMENT: items over their cap (4), bytes at their full size that fits (10 <= 64).
+    let mut b = Bufs::new();
+    let host = b.host();
+    assert_eq!(
+        check_list_plane_records(F, &list_out(0, 0, 5, 10), &host, &[]),
+        Ok(())
+    );
+    // Bytes over their cap (64), items at their full size that fits (2 <= 4).
+    assert_eq!(
+        check_list_plane_records(F, &list_out(0, 0, 2, 65), &host, &[]),
+        Ok(())
+    );
+}
+
+#[test]
+fn list_short_with_both_dimensions_fitting_is_fault() {
+    let mut b = Bufs::new();
+    let host = b.host();
+    assert_eq!(
+        check_list_plane_records(F, &list_out(0, 0, 2, 10), &host, &[]),
+        Err(Fault::NeededWithinCap)
+    );
+}
+
+#[test]
 fn list_needed_within_the_capacity_is_fault() {
     let mut b = Bufs::new();
     let host = b.host();

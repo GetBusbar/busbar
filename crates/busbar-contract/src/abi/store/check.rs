@@ -105,7 +105,7 @@ pub fn check_reserve(
             }
             for (cell, grant) in cells.iter().zip(grants) {
                 // S5: 1.5.5 is whole-or-nothing, so a READY grant is the cell's whole amount.
-                if grant.granted == 0 || grant.granted != cell.amount {
+                if grant.granted != cell.amount {
                     return Err(Fault::GrantOutOfRange);
                 }
             }
@@ -328,8 +328,19 @@ fn check_list(
             if out.items_written != 0 || out.bytes_written != 0 {
                 return Err(Fault::WrittenOnFailed);
             }
-            short(out.needed_items, bufs.items_cap, LIST_ITEMS_HARD_MAX)?;
-            short(out.needed_bytes, bufs.bytes_cap, NEEDED_BYTES_HARD_MAX)
+            // M-SB REFINEMENT (multi-dimension): every `needed_*` is that dimension's FULL size,
+            // so a dimension that fits reports a size `<=` its cap; the answer is short only if
+            // AT LEAST ONE dimension is over its cap.
+            if out.needed_items > LIST_ITEMS_HARD_MAX || out.needed_bytes > NEEDED_BYTES_HARD_MAX {
+                return Err(Fault::NeededTooLarge);
+            }
+            if (out.needed_items != 0 || out.needed_bytes != 0)
+                && out.needed_items <= bufs.items_cap
+                && out.needed_bytes <= bufs.bytes_cap
+            {
+                return Err(Fault::NeededWithinCap);
+            }
+            Ok(())
         }
         _ => Ok(()),
     }
