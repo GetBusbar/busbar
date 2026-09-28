@@ -100,7 +100,10 @@ pub struct FieldsIn {
     pub _reserved2: u32,
 }
 
-/// `fields`' `out`. READY with `fields_len == 0` = no auth header.
+/// `fields`' `out`. READY with `fields_len == 0` = no auth header. A plugin never writes past a
+/// capacity: fields that would not fit answer `FAILED`, which fails the attempt.
+/// [`super::MODE_PASSTHROUGH`] on a handle whose style does not pass the caller's credential
+/// answers `REFUSED`.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct FieldsOut {

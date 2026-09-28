@@ -40,9 +40,10 @@ pub struct RequestFacts {
     pub method: AbiStr,
     /// The authority (host\[:port\]).
     pub authority: AbiStr,
-    /// The canonical path.
+    /// The path exactly as the framer will send it (already percent-encoded). A signing style
+    /// derives its own canonical form from it.
     pub canonical_path: AbiStr,
-    /// The query, without `?`; absent = none.
+    /// The query as sent, without `?`; absent = none. A signing style sorts and encodes it.
     pub query: AbiStr,
     /// Wall-clock seconds since the Unix epoch, read once by the kernel for this call.
     pub timestamp: u64,
@@ -106,9 +107,11 @@ pub struct IdentityOut {
 pub struct VerifyIn {
     /// The head.
     pub head: InHead,
-    /// The extracted candidate credential (secret); absent = none presented.
+    /// The candidate credential (secret), extracted by the kernel exactly as 1.5.5 extracted the
+    /// opaque string it passed to `authenticate`; absent = none presented.
     pub credential: Blob,
-    /// The carrier fields the tail names, as presented.
+    /// The carrier fields the tail names, as presented (every request header when the tail states
+    /// [`super::FACT_INBOUND_ALL_HEADERS`]).
     pub carrier: *const NamedValue,
     /// How many.
     pub carrier_len: usize,
@@ -122,7 +125,10 @@ pub struct VerifyIn {
 ///
 /// SHORT BUFFER: when the identity does not fit, the plugin answers `FAILED` with `needed_bytes`
 /// or `needed_groups` above the capacity it was given and writes nothing else. The host re-issues
-/// the op once with buffers at least that large. `FAILED` with both at `0` is a real failure.
+/// the op once, as a fresh call (no `FLAG_RESUME`) on the SAME ticket, with buffers at least that
+/// large; a second short answer is FAULT. The plugin keeps the identity it reached for that ticket
+/// and serves the retry from it, never repeating the work (an authorization code redeems once).
+/// `FAILED` with both at `0` is a real failure. A buffer is at most `u32::MAX` bytes ([`Span`]).
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct IdentifyOut {

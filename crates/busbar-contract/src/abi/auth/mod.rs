@@ -8,15 +8,23 @@
 //!
 //! THE CACHE LIVES IN THE PLUGIN (owner ruling Q-INCACHE). The kernel makes one call per request
 //! and keeps no verdict cache. The plugin caches internally: Identify TTL clamped to 3600 s
-//! (default 300), Reject never cached, 4096 entries. FLUSH THROUGH REFRESH: an auth plugin DROPS
+//! (default 300), Reject never cached, Pass never cached (Pass buffering, if any, is the
+//! kernel's), 4096 entries. FLUSH THROUGH REFRESH: an auth plugin DROPS
 //! its inbound cache on every `refresh`. `POST /admin/auth/cache/flush` (unchanged) is a `refresh`
 //! with a NEW generation number and unchanged settings, so generations stay monotonic and memory
-//! class (ii) holds.
+//! class (ii) holds. Only the INBOUND cache is dropped: the outbound token cache is keyed by
+//! (style, credential, settings), never by handle, and survives `refresh` and re-opening, so a
+//! reload never answers a fields call without a credential that 1.5.5 would have had.
 //!
 //! SERVICE CREDENTIALS (an LDAP bind password, an IdP client secret) are named by the mechanism
 //! Statement's `secret_refs` (the settings keys holding a secret-ref). The kernel resolves them
 //! into [`OpenIn::secrets`](super::mechanism::lifecycle::OpenIn) in the same order. The auth tail
-//! carries nothing for them.
+//! carries nothing for them. (That Statement field lands with the mechanism's own follow-up;
+//! until then this names where it will be.)
+//!
+//! VERDICTS ARE ALWAYS `READY`. `FAILED` on `verify` is a module failure: the chain's error path,
+//! as 1.5.5's `STATUS_ERR`. `FAILED` on `complete_login` is [`LOGIN_OUTAGE`]. Both exclude the
+//! short-buffer answer ([`IdentifyOut`]).
 //!
 //! DEADLINES ARE HOST-OWNED. No op carries a timeout of its own: the host stamps
 //! `InHead.deadline_ns`, bounds every read on a need's connection, and calls `cancel` at expiry.
@@ -119,7 +127,8 @@ pub struct Ops {
     /// seal; never pends (the first mint runs in the background on `tick`); `Call`. In
     /// [`OpenOutboundIn`] (fixed 136 B), out [`OpenOutboundOut`] (fixed 104 B). A handle is
     /// GENERATION DATA: the kernel re-opens every handle at each generation, and a handle is valid
-    /// until `retire` of the generation it was opened at. There is no close slot.
+    /// until `retire` of the generation it was opened at. There is no close slot. The token cache
+    /// behind a handle is keyed by (style, credential, settings) and outlives it.
     pub open_outbound: Option<Op>,
     /// The handle's `ready` fact, read by the health prober. OFF-PATH; never pends; `Call`. In
     /// [`OutboundReadyIn`] (fixed 80 B), out [`OutboundReadyOut`] (fixed 104 B).
@@ -141,11 +150,15 @@ pub const CAP_LOGIN: u32 = 2;
 /// [`AuthTail::caps`]: the plugin serves `open_outbound`/`outbound_ready`/`fields`.
 pub const CAP_OUTBOUND: u32 = 4;
 
-/// [`AuthTail::facts`]: the plugin's verdicts may be cached. The plugin caches them itself; the
-/// kernel keeps no verdict cache.
+/// [`AuthTail::facts`]: the plugin's verdicts may be cached. INFORMATIONAL (status, operators):
+/// the plugin caches them itself, and the kernel keeps no verdict cache.
 pub const FACT_CACHEABLE: u32 = 1;
 /// [`AuthTail::facts`]: `verify` reads the request's body hash ([`RequestFacts::body_hash`]).
 pub const FACT_INBOUND_NEEDS_BODY_HASH: u32 = 2;
+/// [`AuthTail::facts`]: `verify` reads EVERY request header, not only [`AuthTail::carriers`]; the
+/// kernel passes them all in [`VerifyIn::carrier`]. An inbound signature check needs it: the set of
+/// signed headers varies per request.
+pub const FACT_INBOUND_ALL_HEADERS: u32 = 4;
 
 /// [`AuthTail::login_kind`]: no login ([`CAP_LOGIN`] not declared).
 pub const LOGIN_KIND_NONE: u32 = 0;
@@ -177,10 +190,11 @@ pub struct AuthTail {
     pub head: KindTailHead,
     /// [`CAP_INBOUND`] | [`CAP_LOGIN`] | [`CAP_OUTBOUND`].
     pub caps: u32,
-    /// [`FACT_CACHEABLE`] | [`FACT_INBOUND_NEEDS_BODY_HASH`].
+    /// [`FACT_CACHEABLE`] | [`FACT_INBOUND_NEEDS_BODY_HASH`] | [`FACT_INBOUND_ALL_HEADERS`].
     pub facts: u32,
     /// [`LOGIN_KIND_NONE`] | [`LOGIN_KIND_REDIRECT`] | [`LOGIN_KIND_CREDENTIAL`]: the
-    /// classification the login chooser reads without calling `begin_login`.
+    /// classification the login chooser reads without calling `begin_login`. It is `NONE` exactly
+    /// when [`CAP_LOGIN`] is absent; a tail where the two disagree refuses the load.
     pub login_kind: u32,
     /// Alignment padding.
     pub _reserved: u32,
