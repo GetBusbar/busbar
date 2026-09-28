@@ -55,11 +55,12 @@ use busbar_contract::abi::export::{
     ServeOut as ExportServeOut, StatusOut as ExportStatusOut, Tail as ExportTail,
 };
 use busbar_contract::abi::hook::{
-    CandidateDynamic as HookCandidateDynamic, CandidateStatic as HookCandidateStatic,
-    ConfigureIn as HookConfigureIn, ConfigureOut as HookConfigureOut, DecideIn as HookDecideIn,
-    DecideOut as HookDecideOut, DescribeOut as HookDescribeOut, NotifyIn as HookNotifyIn,
-    Ops as HookOps, PromptView as HookPromptView, RequestView as HookRequestView,
-    ServeIn as HookServeIn, ServeOut as HookServeOut, SignalEntry as HookSignalEntry,
+    BudgetBucketState as HookBudgetBucketState, CandidateDynamic as HookCandidateDynamic,
+    CandidateStatic as HookCandidateStatic, ConfigureIn as HookConfigureIn,
+    ConfigureOut as HookConfigureOut, DecideIn as HookDecideIn, DecideOut as HookDecideOut,
+    DescribeOut as HookDescribeOut, NotifyIn as HookNotifyIn, Ops as HookOps,
+    PromptView as HookPromptView, RequestView as HookRequestView, ServeIn as HookServeIn,
+    ServeOut as HookServeOut, SignalEntry as HookSignalEntry, SignalValue as HookSignalValue,
     StageView as HookStageView, StatusOut as HookStatusOut, Tail as HookTail,
     TransformOut as HookTransformOut, UserView as HookUserView,
 };
@@ -1153,14 +1154,15 @@ fn compute_layout() -> String {
         HookOps,
         [head, decide, transform, notify, configure, status, describe, serve]
     );
-    record!(s, HookSignalEntry, [id, _reserved, value]);
+    record!(s, HookSignalValue, []);
+    record!(s, HookSignalEntry, [id, tag, value]);
     record!(
         s,
         HookRequestView,
         [
             request_id,
             pool,
-            ingress_protocol,
+            ingress_dialect,
             message_count,
             total_chars,
             max_tokens,
@@ -1178,6 +1180,7 @@ fn compute_layout() -> String {
             model,
             provider,
             weight,
+            _reserved3,
             context_max,
             tier,
             cost_per_mtok,
@@ -1205,6 +1208,21 @@ fn compute_layout() -> String {
     record!(s, HookUserView, [key_id, key_name, user]);
     record!(
         s,
+        HookBudgetBucketState,
+        [
+            bucket_id,
+            budget_group,
+            pool,
+            spend_micros_at_current_rate,
+            remaining_micros,
+            window_start,
+            budget_period,
+            present,
+            _reserved
+        ]
+    );
+    record!(
+        s,
         HookDecideIn,
         [
             head,
@@ -1214,10 +1232,19 @@ fn compute_layout() -> String {
             candidates_len,
             prompt,
             user,
+            budget_remaining,
+            budget,
+            budget_len,
             present,
             _reserved,
             order_buf,
-            order_cap
+            order_cap,
+            reject_message_buf,
+            reject_message_cap,
+            restrict_tags_buf,
+            restrict_tags_cap,
+            rewrite_buf,
+            rewrite_cap
         ]
     );
     record!(
@@ -1228,10 +1255,12 @@ fn compute_layout() -> String {
             verbs,
             reject_status,
             _reserved,
-            reject_message,
-            restrict_tags,
-            restrict_tags_len,
-            order_written
+            reject_message_written,
+            reject_message_needed,
+            restrict_tags_written,
+            restrict_tags_needed,
+            order_written,
+            order_needed
         ]
     );
     record!(
@@ -1242,8 +1271,10 @@ fn compute_layout() -> String {
             verbs,
             reject_status,
             _reserved,
-            reject_message,
-            rewrite
+            reject_message_written,
+            reject_message_needed,
+            rewrite_written,
+            rewrite_needed
         ]
     );
     record!(
@@ -1252,11 +1283,21 @@ fn compute_layout() -> String {
         [
             request_id,
             pool,
-            ingress_protocol,
+            ingress_dialect,
             message_count,
             total_chars,
+            remaining_candidates,
+            model,
+            previous_failure,
+            outcome,
             max_tokens,
-            flags
+            flags,
+            at,
+            attempt_number,
+            status,
+            _reserved,
+            stage_present,
+            _reserved2
         ]
     );
     record!(s, HookNotifyIn, [head, stage]);
@@ -1318,8 +1359,8 @@ fn compute_layout() -> String {
             samples_len
         ]
     );
-    record!(s, ExportScrapeIn, [head, families, families_len]);
-    record!(s, ExportScrapeOut, [head, exposition]);
+    record!(s, ExportScrapeIn, [head, families, families_len, buf, cap]);
+    record!(s, ExportScrapeOut, [head, written, needed]);
     record!(s, ExportStatusOut, [head, status]);
     record!(s, ExportCheckIn, [head, phase, _reserved]);
     record!(s, ExportCheckOut, [head, findings]);

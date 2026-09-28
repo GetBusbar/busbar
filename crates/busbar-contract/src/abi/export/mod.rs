@@ -6,6 +6,17 @@
 //! (`abi-v2-perkind.md` B.5): `deliver`, `scrape`, `status`, `check` and `serve`, and the frozen
 //! [`ExportStream`] tail. NOTHING dispatches through this yet (M3-wire, after M1).
 //!
+//! **ARCHITECT REVIEW RULING (fresh-Opus M3-SHAPES review, 2026-09-28), folded in on top of the
+//! first landing:**
+//! 2. `scrape`'s rendered-exposition buffer is HOST-owned and lives in [`ScrapeIn`]
+//!    (`buf`/`cap`), never a plugin-owned pointer in `out`: the host zeroes `out` before the call,
+//!    so nothing the plugin needs may live there. [`ScrapeOut`] carries `written`/`needed`: too
+//!    small a `cap` means the plugin writes nothing, sets `needed`, and the host re-invokes ONCE
+//!    with a bigger buffer.
+//! 3. Off-path plugin-owned results ([`ServeOut::body`], [`StatusOut::status`],
+//!    [`CheckOut::findings`]) are documented as memory class (iv): held live under `head.lease`
+//!    until `release(lease)`.
+//!
 //! B.5, transcribed:
 //! - **Tail:** `streams[]`, pinned to the OLD `ExportStream::ALL` order
 //!   (`abi/cold/export.rs`: metrics, logs, traces, costs, decisions, events, identity, prompts,
@@ -195,7 +206,10 @@ pub struct ScrapeFamily {
     pub samples_len: usize,
 }
 
-/// `scrape`'s `in`.
+/// `scrape`'s `in`. ARCHITECT review ruling 2 (fresh-Opus M3-SHAPES review, 2026-09-28): the
+/// rendered-exposition buffer is HOST-owned and lives here, in the `in` (request-path results are
+/// host buffers, never a plugin-owned pointer in `out`; the host zeroes `out` before the call, so
+/// nothing the plugin needs may live there).
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct ScrapeIn {
@@ -205,6 +219,10 @@ pub struct ScrapeIn {
     pub families: *const ScrapeFamily,
     /// How many.
     pub families_len: usize,
+    /// The host-owned buffer the plugin renders its exposition text into.
+    pub buf: *mut u8,
+    /// `buf`'s capacity, in bytes.
+    pub cap: usize,
 }
 
 /// `scrape`'s `out`.
@@ -213,19 +231,22 @@ pub struct ScrapeIn {
 pub struct ScrapeOut {
     /// The head.
     pub head: OutHead,
-    /// The rendered exposition text, into the host's buffer (`out.exposition.len` is the
-    /// capacity; the plugin writes at most that many bytes, the request-path buffer discipline).
-    pub exposition: Blob,
+    /// How many bytes the plugin wrote into [`ScrapeIn::buf`].
+    pub written: usize,
+    /// `0` unless `written == 0` because `buf` was too small: the byte length the plugin needed.
+    /// The host re-invokes ONCE with a buffer at least this large.
+    pub needed: usize,
 }
 
-/// `status`'s `out`.
+/// `status`'s `out`. OFF-PATH: `status` is a plugin-owned result, memory class (iv) — live under
+/// `head.lease` until `release(lease)` (ARCHITECT review ruling 3).
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct StatusOut {
     /// The head.
     pub head: OutHead,
-    /// The 1.5.5 status JSON, unchanged, as a [`super::mechanism::call::BLOB_JSON`] blob (off-path
-    /// JSON-as-payload is allowed here per the mechanism's one JSON rule).
+    /// The 1.5.5 status JSON, unchanged, as a [`super::mechanism::call::BLOB_JSON`] blob, under
+    /// `head.lease` (off-path JSON-as-payload is allowed here per the mechanism's one JSON rule).
     pub status: Blob,
 }
 
@@ -248,14 +269,16 @@ pub struct CheckIn {
     pub _reserved: u32,
 }
 
-/// `check`'s `out`.
+/// `check`'s `out`. OFF-PATH: `findings` is a plugin-owned result, memory class (iv) — live under
+/// `head.lease` until `release(lease)` (ARCHITECT review ruling 3).
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct CheckOut {
     /// The head.
     pub head: OutHead,
-    /// The sink's check findings, as a [`super::mechanism::call::BLOB_JSON`] blob (so they keep
-    /// their place among the configuration's other errors, the 1.5.5 `CheckPhase` ordering).
+    /// The sink's check findings, as a [`super::mechanism::call::BLOB_JSON`] blob, under
+    /// `head.lease` (so they keep their place among the configuration's other errors, the 1.5.5
+    /// `CheckPhase` ordering).
     pub findings: Blob,
 }
 
@@ -280,7 +303,8 @@ pub struct ServeIn {
     pub body: Blob,
 }
 
-/// `serve`'s `out`.
+/// `serve`'s `out`. OFF-PATH: the response is a plugin-owned result, memory class (iv) — the
+/// headers and body live under `head.lease` until `release(lease)` (ARCHITECT review ruling 3).
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct ServeOut {
@@ -295,7 +319,7 @@ pub struct ServeOut {
     pub headers_out: *const AbiStr,
     /// How many `AbiStr` entries `headers_out` holds.
     pub headers_out_len: usize,
-    /// The response body.
+    /// The response body, under `head.lease` until `release(lease)` (memory class iv).
     pub body: Blob,
 }
 
@@ -315,8 +339,8 @@ pub struct Tail {
 ///
 /// ASSUMPTION (M3-SHAPES): B.5 states no cancel disposition vocabulary. `deliver`, `scrape` and
 /// `serve` are the `may_pend` ops; the dispositions below cover all three uniformly (a batch/
-/// exposition/response either landed or did not — there is no partial-delivery concept for a
-/// telemetry sink, unlike plane's `ok_partial`).
+/// exposition/response either landed or did not — a telemetry sink has no partial-delivery
+/// concept of its own, unlike a chunked streaming reply's own disposition vocabulary).
 pub mod cancel {
     /// The pending op was aborted before it produced anything (deliver: the batch was not
     /// accepted; scrape/serve: no bytes were written to the host buffer).

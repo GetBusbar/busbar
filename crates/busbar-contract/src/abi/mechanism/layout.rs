@@ -429,12 +429,13 @@ pin!(
     describe = 120,
     serve = 128,
 );
+pin!(crate::abi::hook::SignalValue, 16, 8);
 pin!(
     crate::abi::hook::SignalEntry,
-    16,
+    24,
     8,
     id = 0,
-    _reserved = 4,
+    tag = 4,
     value = 8
 );
 pin!(
@@ -443,7 +444,7 @@ pin!(
     8,
     request_id = 0,
     pool = 8,
-    ingress_protocol = 24,
+    ingress_dialect = 24,
     message_count = 40,
     total_chars = 48,
     max_tokens = 56,
@@ -453,20 +454,21 @@ pin!(
 );
 pin!(
     crate::abi::hook::CandidateStatic,
-    96,
+    104,
     8,
     idx = 0,
     _reserved = 4,
     model = 8,
     provider = 24,
     weight = 40,
-    context_max = 44,
-    tier = 48,
-    cost_per_mtok = 64,
-    tags = 72,
-    tags_len = 80,
-    present = 88,
-    _reserved2 = 92,
+    _reserved3 = 44,
+    context_max = 48,
+    tier = 56,
+    cost_per_mtok = 72,
+    tags = 80,
+    tags_len = 88,
+    present = 96,
+    _reserved2 = 100,
 );
 pin!(
     crate::abi::hook::CandidateDynamic,
@@ -498,8 +500,22 @@ pin!(
     user = 32
 );
 pin!(
+    crate::abi::hook::BudgetBucketState,
+    96,
+    8,
+    bucket_id = 0,
+    budget_group = 16,
+    pool = 32,
+    spend_micros_at_current_rate = 48,
+    remaining_micros = 56,
+    window_start = 64,
+    budget_period = 72,
+    present = 88,
+    _reserved = 92,
+);
+pin!(
     crate::abi::hook::DecideIn,
-    296,
+    368,
     8,
     head = 0,
     request = 72,
@@ -508,48 +524,71 @@ pin!(
     candidates_len = 168,
     prompt = 176,
     user = 224,
-    present = 272,
-    _reserved = 276,
-    order_buf = 280,
-    order_cap = 288,
+    budget_remaining = 272,
+    budget = 280,
+    budget_len = 288,
+    present = 296,
+    _reserved = 300,
+    order_buf = 304,
+    order_cap = 312,
+    reject_message_buf = 320,
+    reject_message_cap = 328,
+    restrict_tags_buf = 336,
+    restrict_tags_cap = 344,
+    rewrite_buf = 352,
+    rewrite_cap = 360,
 );
 pin!(
     crate::abi::hook::DecideOut,
-    144,
+    152,
     8,
     head = 0,
     verbs = 96,
     reject_status = 100,
     _reserved = 102,
-    reject_message = 104,
-    restrict_tags = 120,
-    restrict_tags_len = 128,
+    reject_message_written = 104,
+    reject_message_needed = 112,
+    restrict_tags_written = 120,
+    restrict_tags_needed = 128,
     order_written = 136,
+    order_needed = 144,
 );
 pin!(
     crate::abi::hook::TransformOut,
-    144,
+    136,
     8,
     head = 0,
     verbs = 96,
     reject_status = 100,
     _reserved = 102,
-    reject_message = 104,
-    rewrite = 120,
+    reject_message_written = 104,
+    reject_message_needed = 112,
+    rewrite_written = 120,
+    rewrite_needed = 128,
 );
 pin!(
     crate::abi::hook::StageView,
-    64,
+    144,
     8,
     request_id = 0,
     pool = 8,
-    ingress_protocol = 24,
+    ingress_dialect = 24,
     message_count = 40,
     total_chars = 48,
-    max_tokens = 56,
-    flags = 60,
+    remaining_candidates = 56,
+    model = 64,
+    previous_failure = 80,
+    outcome = 96,
+    max_tokens = 112,
+    flags = 116,
+    at = 120,
+    attempt_number = 124,
+    status = 128,
+    _reserved = 130,
+    stage_present = 132,
+    _reserved2 = 136,
 );
-pin!(crate::abi::hook::NotifyIn, 136, 8, head = 0, stage = 72);
+pin!(crate::abi::hook::NotifyIn, 216, 8, head = 0, stage = 72);
 pin!(
     crate::abi::hook::ConfigureIn,
     104,
@@ -658,18 +697,21 @@ pin!(
 );
 pin!(
     crate::abi::export::ScrapeIn,
-    88,
+    104,
     8,
     head = 0,
     families = 72,
-    families_len = 80
+    families_len = 80,
+    buf = 88,
+    cap = 96,
 );
 pin!(
     crate::abi::export::ScrapeOut,
-    120,
+    112,
     8,
     head = 0,
-    exposition = 96
+    written = 96,
+    needed = 104
 );
 pin!(crate::abi::export::StatusOut, 120, 8, head = 0, status = 96);
 pin!(
