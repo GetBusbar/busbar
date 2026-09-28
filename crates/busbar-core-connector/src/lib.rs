@@ -11,6 +11,8 @@
 //!   then writes, reads, waits and closes it. Ownership is the shared book
 //!   ([`busbar_contract::conn::ConnSlab`]): a connection another instance owns, a closed one and a
 //!   need nobody declared are refused.
+//! * [`endpoint`] is the pure check an open's target passes before any dial: a cloud metadata host,
+//!   in any spelling, is refused by name.
 //! * [`tls`] is connection security — core-only, never a plugin, never crossing the ABI.
 //!
 //! THE SHELL. This landing holds the table and its ownership book; composing a need's transports
@@ -20,6 +22,7 @@
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
 
+pub mod endpoint;
 pub mod tls;
 
 use busbar_contract::conn::{
@@ -59,9 +62,10 @@ impl Conns for Connector {
         &self,
         caller: InstanceId,
         need: NeedId,
-        _desc: &OpenDesc<'_>,
+        desc: &OpenDesc<'_>,
     ) -> Result<ConnId, ConnError> {
         self.slab.check_need(caller, need)?;
+        endpoint::check(desc.target).map_err(|_| ConnError::Refused)?;
         Err(NO_TRANSPORT_YET)
     }
 

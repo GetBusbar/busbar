@@ -44,3 +44,16 @@ fn an_id_the_shell_never_opened_is_closed() {
     assert_eq!(c.facts(OWNER, ConnId(1)), Err(ConnError::Closed));
     assert_eq!(c.close(OWNER, ConnId(1)), Err(ConnError::Closed));
 }
+
+/// A declared need whose target is a cloud metadata host is refused before any dial.
+#[test]
+fn a_metadata_target_is_refused_before_any_dial() {
+    let c = Connector::new();
+    c.declare(OWNER, NeedId(0));
+    let desc = OpenDesc {
+        target: "169.254.169.254:80",
+        ..OpenDesc::default()
+    };
+    assert_eq!(c.open(OWNER, NeedId(0), &desc), Err(ConnError::Refused));
+    assert!(endpoint::check(desc.target).is_err());
+}
