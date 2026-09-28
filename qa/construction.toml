@@ -1552,7 +1552,7 @@ way."""
 # opened the file (14 -> 14).
 # RETIRED BY NAME (fold F14 2/2): `busbar-unit-transport-key` is deleted; its code became
 # `busbar-kernel-identity`'s `transport_key` module (itself deleted by TRANSPORT-STACK: TLS is
-# core-only connection security, `busbar-core-connsec`), so striking the name narrows nothing.
+# core-only connection security, `busbar-core-connector`), so striking the name narrows nothing.
 crates_kernel = ["busbar-kernel"]
 crate_glob = "busbar-kernel-*"
 # section 6's dialect names + the section 1.3 pinned word list, verbatim.
@@ -2763,7 +2763,7 @@ plane_crates = 4
 # ── RE-PINNED 2026-09-27: `transport` 5 -> 4 ────────────────────────────────────────────────────────────────
 #
 #   * `transport` 5 -> 4. TRANSPORT-STACK (owner-approved 2026-09-27, docs/design/1.6.0-QUESTIONS.md;
-#     spec #3): TLS is core-only connection security — `busbar-core-connsec` is the one TLS path and
+#     spec #3): TLS is core-only connection security — `busbar-core-connector` is the one TLS path and
 #     never crosses the plugin ABI — so `crates/busbar-transport-tls` was deleted, not moved.
 #     `crates/busbar-transport-*` now matches exactly four: http, stdio, tcp and ws.
 #

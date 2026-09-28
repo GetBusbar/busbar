@@ -73,10 +73,10 @@ kind-isolation:matrix	unlisted-cell	busbar-core-admin × plane	92
 kind-isolation:matrix	unlisted-cell	busbar-core-admin × plugin-tooling	93
 kind-isolation:matrix	unlisted-cell	busbar-core-admin × store	3
 kind-isolation:matrix	unlisted-cell	busbar-core-admin × transport	612
-kind-isolation:matrix	unlisted-cell	busbar-core-connsec × cleanliness	2
-kind-isolation:matrix	unlisted-cell	busbar-core-connsec × legacy	1
-kind-isolation:matrix	unlisted-cell	busbar-core-connsec × plane	1
-kind-isolation:matrix	unlisted-cell	busbar-core-connsec × transport	8
+kind-isolation:matrix	unlisted-cell	busbar-core-connector × cleanliness	2
+kind-isolation:matrix	unlisted-cell	busbar-core-connector × legacy	1
+kind-isolation:matrix	unlisted-cell	busbar-core-connector × plane	1
+kind-isolation:matrix	unlisted-cell	busbar-core-connector × transport	8
 kind-isolation:matrix	unlisted-cell	busbar-hooks-ranking × plane	4
 kind-isolation:matrix	unlisted-cell	busbar-kernel × cleanliness	47
 kind-isolation:matrix	unlisted-cell	busbar-kernel × hooks	35

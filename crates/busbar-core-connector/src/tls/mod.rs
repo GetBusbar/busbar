@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! `busbar-core-connsec` — the core-side connection-security seam (DECISIONS #40).
+//! `busbar-core-connector::tls` — the core-side connection-security seam (DECISIONS #40), folded in
+//! verbatim from the `busbar-core-connsec` crate it was (THE DESIGN: TLS lives only in the connector).
 //!
 //! A trusted, compiled-in `core`-kind sibling of `busbar-kernel` (the same category as
 //! `busbar-core-admin` / `busbar-core-oauth2`): never a plugin, always linked, off the hot path. It owns the

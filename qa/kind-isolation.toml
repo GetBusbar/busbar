@@ -1310,39 +1310,39 @@ drain   = "delete the busbar-kernel dependency from busbar-voice's Cargo.toml. A
 
 
 
-# busbar-core-connsec is the core-side connection-security seam carved out of busbar-kernel
+# busbar-core-connector (formerly busbar-core-connsec) is the core-side connection-security seam carved out of busbar-kernel
 # (DECISIONS #40). It is `cleanliness` kind: BUSBAR-1.6.0.md:3780 (R2/#37) seats it in the same
 # tier as busbar-core-admin and busbar-oauth2 -- compiled in, one-way dependency on the kernel, off
 # the hot path, never a plugin -- and the kind table names it exactly. It reaches the contract and
 # the kernel, both granted cleanliness classes (ARCHITECTURE_ALLOWED).
 [[dep]]
-from    = "busbar-core-connsec"
+from    = "busbar-core-connector"
 to      = "busbar-contract"
 half    = "shipped"
 count   = "1"
 verdict = "allowed"
 cite    = "BUSBAR-1.6.0.md:3780 (R2/#37) and ARCHITECT ruling: cleanliness crates are compiled-in with a one-way dependency on the kernel; the root links them (ARCHITECTURE_ALLOWED cleanliness -> contract). Here the opaque busbar_contract::transport::wire::ConnectionSecurity wrap, DECISIONS #40."
-why     = "busbar-core-connsec names busbar-contract: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+why     = "busbar-core-connector names busbar-contract: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
 drain   = "none: BUSBAR-1.6.0.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
 
 [[dep]]
-from    = "busbar-core-connsec"
+from    = "busbar-core-connector"
 to      = "busbar-kernel"
 half    = "shipped"
 count   = "1"
 verdict = "allowed"
 cite    = "BUSBAR-1.6.0.md:3780 (R2/#37) and ARCHITECT ruling: cleanliness crates are compiled-in with a one-way dependency on the kernel; the root links them (ARCHITECTURE_ALLOWED cleanliness -> kernel). Here it reads busbar_kernel's TlsCfg config shape and resolves key material through its SecretResolver seam, DECISIONS #40."
-why     = "busbar-core-connsec names busbar-kernel: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+why     = "busbar-core-connector names busbar-kernel: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
 drain   = "none: BUSBAR-1.6.0.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
 
 [[dep]]
 from    = "busbar"
-to      = "busbar-core-connsec"
+to      = "busbar-core-connector"
 half    = "shipped"
 count   = "1"
 verdict = "allowed"
 cite    = "BUSBAR-1.6.0.md:3780 (R2/#37) and ARCHITECT ruling: cleanliness crates are compiled-in with a one-way dependency on the kernel; the root links them (ARCHITECTURE_ALLOWED root -> cleanliness). The binary composes the connection-security seam at boot, which is the root linking a compiled-in cleanliness crate."
-why     = "busbar names busbar-core-connsec: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+why     = "busbar names busbar-core-connector: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
 drain   = "none: the architecture grants root -> cleanliness. What this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
 
 [[dep]]

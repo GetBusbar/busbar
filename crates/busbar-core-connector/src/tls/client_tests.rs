@@ -5,7 +5,7 @@
 //! handshake through [`TlsDial`] against a real rustls server, over an in-memory duplex pipe.
 
 use super::*;
-use crate::Tls;
+use crate::tls::Tls;
 use rustls::pki_types::pem::PemObject;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, ServerName};
 

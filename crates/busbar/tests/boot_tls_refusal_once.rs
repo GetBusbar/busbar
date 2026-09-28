@@ -6,7 +6,7 @@
 //!
 //! `[error] TLS configuration error for '<addr>': TLS cert (env:…) contains no certificates …`
 //!
-//! `busbar_core_connsec::FailClosed` already renders that prefix; the composition root wrapped it in
+//! `busbar_core_connector::tls::FailClosed` already renders that prefix; the composition root wrapped it in
 //! the same prefix a second time (since 029230dd7), so the line read `TLS configuration error for
 //! '<addr>': TLS configuration error for '<addr>': …`. This boots the real binary on the oracle's own
 //! mutation (non-PEM bytes resolved from the environment) and counts the prefix.

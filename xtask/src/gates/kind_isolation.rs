@@ -242,7 +242,7 @@ struct KindDef {
 /// retiring legacy crates.
 ///
 /// `control` and `dialect` are NOT kinds (DECISIONS #4/#5): a dialect is a thing INSIDE a plane
-/// (llm 6, mcp 1, a2a 1, streaming N) with no crate of its own, and admin/oauth2/connsec are
+/// (llm 6, mcp 1, a2a 1, streaming N) with no crate of its own, and admin/oauth2/connector are
 /// compiled-in CLEANLINESS crates, one-way dep on the kernel, off the hot path — not a `control`
 /// plugin kind. They resolve here as the `cleanliness` infra family, never as one of the seven
 /// plugin kinds.
@@ -263,13 +263,13 @@ static KINDS: &[KindDef] = &[
     // NO `codec` ROW. R7 ("Codec crates fold into their planes") folded `busbar-llm-codec` into
     // `busbar-plane-llm` and `busbar-voice-codec` into `busbar-plane-streaming`, the row matched no
     // crate and scored `dead-kind`, and it is struck. Codec code is plane code now.
-    // CLEANLINESS SURFACES — admin, oauth2 and connsec, and NOT a `control` plugin kind
+    // CLEANLINESS SURFACES — admin, oauth2 and connector, and NOT a `control` plugin kind
     // (DECISIONS #5).
     //
     // > "admin & oauth2 are NOT plugins. They are compiled-in cleanliness crates, one-way dep on
     // > core, off the hot path. There is no `control` plugin kind." — DECISIONS #5
     //
-    // BUSBAR-1.6.0.md:3780 (R2/#37) seats `busbar-core-connsec` in the same tier: "a trusted
+    // BUSBAR-1.6.0.md:3780 (R2/#37) seats `busbar-core-connector` (then `busbar-core-connsec`) in the same tier: "a trusted
     // core-side CLEANLINESS crate, same category as `busbar-core-admin`/`busbar-core-oauth2` —
     // compiled in, one-way dep, off the hot path, never a plugin and never an 8th kind". After the
     // core -> kernel absorption, "one-way dep on core" is a one-way dep on the KERNEL: a
@@ -291,7 +291,7 @@ static KINDS: &[KindDef] = &[
         matchers: &[
             "=busbar-admin",
             "=busbar-core-admin",
-            "=busbar-core-connsec",
+            "=busbar-core-connector",
             "=busbar-oauth2",
         ],
     },
@@ -317,7 +317,7 @@ static KINDS: &[KindDef] = &[
         family: Family::Neutral,
         matchers: &["=busbar-kernel", "busbar-kernel-"],
     },
-    // There is no `core` kind: its members (`busbar-core-admin`, `busbar-core-connsec`) are the
+    // There is no `core` kind: its members (`busbar-core-admin`, `busbar-core-connector`) are the
     // cleanliness tier above (BUSBAR-1.6.0.md:3780, R2/#37), and a kind that matches no crate
     // scores `dead-kind`.
     // `busbar-caps` is KILLED/folded into `busbar-contract` (DECISIONS #37/#38, W2.c): the capability
@@ -647,7 +647,7 @@ const ARCHITECTURE_ALLOWED: &[(&str, &str)] = &[
     // shape and stay: neither is one of the seven plugin kinds, and #36's group structure grants
     // intra-tier edges inside the kernel by name. (`("unit", "contract")` and `("unit", "unit")`
     // went with the `unit` kind, fold F14 2/2.)
-    // A CLEANLINESS SURFACE (admin/oauth2/connsec) is compiled-in with a ONE-WAY dep on the kernel
+    // A CLEANLINESS SURFACE (admin/oauth2/connector) is compiled-in with a ONE-WAY dep on the kernel
     // (DECISIONS #5; BUSBAR-1.6.0.md:3780, R2/#37 — "one-way dep on core" is the kernel since the
     // core -> kernel absorption). So it may name the contract it is written against and the kernel
     // it serves, and the root links it (`root -> cleanliness`, above). Nothing else is granted: a
@@ -734,7 +734,7 @@ const DRAIN_TARGET_KINDS: &[&str] = &["plane", "transport", CLEANLINESS];
 /// the file has moved: two did, and each compared nothing on every tree.
 const CLEANLINESS: &str = "cleanliness";
 
-// A CLEANLINESS SURFACE (admin/oauth2/connsec) is compiled-in with a one-way dep on the kernel
+// A CLEANLINESS SURFACE (admin/oauth2/connector) is compiled-in with a one-way dep on the kernel
 // (DECISIONS #5; BUSBAR-1.6.0.md:3780). Unlike the retired `control` kind, its edges are NOT a
 // closed sink set: beyond the granted contract and kernel edges it legitimately names the
 // substrate and the plugin-loader TCB, so those edges are recorded in the measured graph (the
@@ -8458,7 +8458,7 @@ impl Gate for KindIsolationGate {
         // had not been made with it.
         //
         // The subject is the `cleanliness` kind: a real infra kind with real crates (admin, oauth2,
-        // connsec), so an empty registry alone leaves it alive, and "neither a crate nor an
+        // connector), so an empty registry alone leaves it alive, and "neither a crate nor an
         // announcement" is the plant — every cleanliness manifest gone and no `[[announced]]` row.
         // It was the `core` kind until that kind's crates were seated in this one.
         report.push(prove_rows_red(

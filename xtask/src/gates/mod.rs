@@ -354,7 +354,7 @@ pub const CONSTRUCTION_STANDING_REDS: &[&str] = &[
     // deps into `[rules.manifest-allowlist.reviewed_extra]`; each name is struck here AND in
     // scripts/land.sh as its row goes green. `-tls` is STRUCK here and in scripts/land.sh: the crate
     // is deleted (TRANSPORT-STACK, owner-approved 2026-09-27 — TLS is core's connection security,
-    // `busbar-core-connsec`), so its row has no crate left to score.
+    // `busbar-core-connector`), so its row has no crate left to score.
     "manifest-allowlist:busbar-transport-http",
     "manifest-allowlist:busbar-transport-stdio",
     "manifest-allowlist:busbar-transport-tcp",

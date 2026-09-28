@@ -340,7 +340,7 @@ dependencies = [
  "busbar-auth-oidc-plugin",
  "busbar-contract",
  "busbar-core-admin",
- "busbar-core-connsec",
+ "busbar-core-connector",
  "busbar-export-file",
  "busbar-export-file-plugin",
  "busbar-export-otlp",
@@ -538,15 +538,17 @@ dependencies = [
 ]
 
 [[package]]
-name = "busbar-core-connsec"
+name = "busbar-core-connector"
 version = "1.6.0"
 dependencies = [
  "busbar-contract",
  "busbar-kernel",
+ "busbar-plugin-loader",
  "futures",
  "rcgen",
  "rustls",
  "rustls-pki-types",
+ "serde_json",
  "sha2 0.11.0",
  "tokio",
  "tokio-rustls",

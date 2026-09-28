@@ -18,7 +18,7 @@ use busbar_contract::transport::wire::{ConnectionSecurity, RawIo, SecuredIoFut};
 use sha2::Digest as _;
 use tokio_util::compat::{FuturesAsyncReadCompatExt, TokioAsyncReadCompatExt};
 
-use crate::install_crypto_provider;
+use crate::tls::install_crypto_provider;
 
 /// The platform trust anchors every outbound connection starts from.
 fn webpki_roots_store() -> rustls::RootCertStore {

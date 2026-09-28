@@ -1,0 +1,62 @@
+# busbar-core-connector — the connector (`BUSBAR-1.6.0.md` THE DESIGN, the connections
+# section): the chain is kernel -> busbar-core-connector -> transport plugins. Every plugin that needs an
+# external connection declares a need; the kernel instantiates the transport through this crate. It
+# holds the one connection table every kind reaches the network through (`busbar_contract::conn`),
+# and it is the one place TLS lives: connection security (`tls`, formerly the `busbar-core-connsec`
+# crate, folded in verbatim) is core-only and never crosses to a plugin.
+#
+# A trusted, compiled-in, CLEANLINESS crate, same category as `busbar-core-admin` /
+# `busbar-core-oauth2` (DECISIONS #37's core tier): a mandatory sibling of `busbar-kernel`, never a
+# plugin. One-way dependency on `busbar-kernel` (it reads `TlsCfg` and resolves key material through
+# `SecretResolver`) — `busbar-kernel` depends on nothing here.
+#
+# THE NAME. `connector` names what the crate does for every kind — it connects a need to a transport
+# — not any one kind or transport instance, so it needs no waiver under #37's "no
+# `busbar-core-<kind>` ever".
+[package]
+name = "busbar-core-connector"
+version = "1.6.0"
+publish = false            # internal workspace crate; never goes to crates.io
+edition = "2021"
+rust-version = "1.97"
+description = "The connector: the one connection table every plugin kind reaches the network through, and core-only connection security (the opaque ConnectionSecurity wrap, identity / rustls-backed TLS, fail-closed on a TLS-configured binding no capable transport can serve)."
+license = "Apache-2.0"
+
+[lib]
+name = "busbar_core_connector"
+path = "src/lib.rs"
+
+[dependencies]
+busbar-contract = { path = "../busbar-contract" }
+# One-way: this crate reads `busbar-kernel`'s `TlsCfg` config shape and its `SecretResolver` seam
+# (the "secret kind" — the one place a `SecretRef` is turned into bytes); `busbar-kernel` names
+# nothing here.
+busbar-kernel = { path = "../busbar-kernel", default-features = false }
+rustls = { workspace = true }
+rustls-pki-types = { workspace = true }
+tokio-rustls = { workspace = true }
+futures = { workspace = true }
+# Bridges the contract's rustls-free, futures-io-based `RawIo` (the wrap's parameter/return type)
+# to the tokio-io types `tokio_rustls::TlsAcceptor` requires — the same compat seam the kernel's
+# accept loop (`busbar_kernel::tls::serve_one`) crosses on the other side of `wrap`.
+tokio-util = { workspace = true }
+# The OUTBOUND half (`tls::client`): the platform trust anchors every dialled connection starts from, and
+# the SHA-256 an SPKI pin is compared under. Both moved here with the outbound trust itself, which a
+# transport no longer holds (TRANSPORT-STACK: TLS is core's connection security).
+webpki-roots = { workspace = true }
+sha2 = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "io-util"] }
+rcgen = { workspace = true }
+# THE UNIVERSAL-NEEDS WITNESS (tests/universal_needs.rs, its only user): the fixture below is loaded
+# dropped in through the real admission, scan and open, never a host written for the test. Dev-only.
+busbar-plugin-loader = { path = "../plugin-loader" }
+serde_json = { workspace = true }
+
+# THE UNIVERSAL-NEEDS FIXTURE: a secret-kind plugin that declares one outbound need and dials through
+# the connection table. A cargo example, built by `cargo test` as a cdylib — a fixture, never a
+# product plugin, and not a crate of its own.
+[[example]]
+name = "need_dialler"
+crate-type = ["cdylib"]
