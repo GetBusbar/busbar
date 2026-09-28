@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Tests for `crates/busbar-voice/src/diagnostics.rs`.
+//! Tests for `crates/busbar-plane-streaming/src/diagnostics.rs`.
 
 use super::*;
 

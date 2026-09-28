@@ -45,7 +45,7 @@ pub use busbar_plane_streaming::codec::ir;
 /// reaches the owned grammar whether or not the live session pump is compiled in.
 pub mod config;
 
-pub mod diagnostics;
+pub use busbar_plane_streaming::diagnostics;
 
 /// THE VOICE PLANE'S PLANE-CONTRIBUTED DIAGNOSTICS — the `&'static [&'static Diagnostic]` the
 /// composition root installs via `busbar_kernel::diagnostics::install_diagnostics`, re-exported at

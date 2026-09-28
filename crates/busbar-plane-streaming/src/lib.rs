@@ -65,6 +65,7 @@ pub mod claims;
 // written under it and is exempt, scoped to exactly this module.
 #[allow(missing_docs)]
 pub mod codec;
+pub mod diagnostics;
 pub mod governed;
 pub mod meta;
 pub mod oneshot;
