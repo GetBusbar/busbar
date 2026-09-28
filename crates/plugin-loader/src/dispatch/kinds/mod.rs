@@ -9,8 +9,13 @@
 //! checked against the host's cap first), call the check, and map the kind's own fault to the
 //! shared `Fault` the dispatcher logs.
 
+pub mod auth;
 pub mod export;
+pub mod hook;
+pub mod plane;
 pub mod secret;
+pub mod store;
+pub mod transport;
 
 use busbar_contract::abi::mechanism::check::{fault, Fault, Rule};
 

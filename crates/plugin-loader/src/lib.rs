@@ -2118,3 +2118,28 @@ mod dispatch_tests;
 #[cfg(test)]
 #[path = "tests/dispatch_kind_secret_export_tests.rs"]
 mod dispatch_kind_secret_export_tests;
+
+/// The transport kind's answer checks, through the dispatcher's `Kind` adapter.
+#[cfg(test)]
+#[path = "tests/dispatch_kind_transport_tests.rs"]
+mod dispatch_kind_transport_tests;
+
+/// The plane kind's answer checks, through the dispatcher's `Kind` adapter.
+#[cfg(test)]
+#[path = "tests/dispatch_kind_plane_tests.rs"]
+mod dispatch_kind_plane_tests;
+
+/// The store kind's answer checks, through the dispatcher's `Kind` adapter.
+#[cfg(test)]
+#[path = "tests/dispatch_kind_store_tests.rs"]
+mod dispatch_kind_store_tests;
+
+/// The hook kind's answer checks, through the dispatcher's `Kind` adapter.
+#[cfg(test)]
+#[path = "tests/dispatch_kind_hook_tests.rs"]
+mod dispatch_kind_hook_tests;
+
+/// The auth kind's answer checks, through the dispatcher's `Kind` adapter.
+#[cfg(test)]
+#[path = "tests/dispatch_kind_auth_tests.rs"]
+mod dispatch_kind_auth_tests;
