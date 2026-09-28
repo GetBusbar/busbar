@@ -7,9 +7,8 @@
 //! `egress_auth::tests::*`) do not directly assert. This file does not re-port behaviour those
 //! suites already pin byte-for-byte against v1.5.5 (fail-closed mapping, warn-once latch, chain
 //! semantics, carrier precedence, dual-carrier operator fold, SigV4 constant-time/body-hash-rebind,
-//! byte-for-byte header handling) — see the inventory
-//! (`/Users/matthew/Developer/tmp/busbar-run/inventory-auth.md` §5) for that cross-reference. It
-//! targets the two genuine gaps found by that inventory pass:
+//! byte-for-byte header handling). It targets the two genuine gaps an inventory of those suites
+//! found:
 //!
 //! 1. The nine auth fault/saturation diagnostic identities (`auth/mod.rs:14-18`) have NO test
 //!    anywhere asserting their (code, slug) or that they actually fire on their documented trigger
@@ -201,7 +200,7 @@ fn admin_module_unresolved_diag_fires_and_falls_through_to_pass() {
 /// these styles means that wiring was bypassed). Zero header bytes on the wire is exactly what turns
 /// into the upstream's OWN ordinary 401 — no busbar-side header is emitted for the upstream to
 /// reject on shape, and no raw secret material is sent as a bogus bearer either. Pins v1.5.5
-/// `crates/busbar/src/egress_auth/mod.rs:150-200` (cited by design doc abi-v2.json line 61) via the
+/// `crates/busbar/src/egress_auth/mod.rs:150-200` via the
 /// CURRENT public surface, not by reaching into `NoCredential` directly.
 #[test]
 fn ready_credential_with_no_fields_emits_no_auth_header_through_public_resolve() {

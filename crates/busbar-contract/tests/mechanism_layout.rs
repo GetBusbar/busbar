@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE ONE MEMORY ABI'S LAYOUT, PINNED BY HAND (THE DESIGN §11.5, M0 ABI-SPEC): the size, the
+//! THE ONE MEMORY ABI'S LAYOUT, PINNED BY HAND (`BUSBAR-1.6.0.md` THE DESIGN, §11.5): the size, the
 //! alignment and every field offset of every `#[repr(C)]` type under `abi/mechanism/` and
 //! `abi/<kind>/`, written out as numbers. The layout golden (`layout_golden.rs`) catches a DRIFT;
 //! this states the INTENDED layout a C author reads off `busbar_plugin.h`, so the two cannot agree

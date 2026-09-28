@@ -860,7 +860,7 @@ fn compute_layout() -> String {
         ]
     );
 
-    // THE ONE MEMORY ABI (THE DESIGN §11.5, M0 ABI-SPEC): the shared mechanism and the seven kind
+    // THE ONE MEMORY ABI (`BUSBAR-1.6.0.md` THE DESIGN, §11.5): the shared mechanism and the seven kind
     // tables. `tests/mechanism_layout.rs` states the same numbers by hand.
     record!(s, MechStr, [ptr, len]);
     record!(s, MechBlob, [ptr, len, fmt, flags]);

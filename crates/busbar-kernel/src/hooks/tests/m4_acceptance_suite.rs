@@ -43,7 +43,7 @@
 //! ## What is physically consolidated HERE vs left at its existing (passing) location
 //!
 //! This file adds the ONE test from the plugin-loader-origin group whose PINNED 1.5.5 behaviour
-//! (inventory §4: `MAX_INFLIGHT_HOOK_CALLS = 64` per loaded hook) had no equivalent anywhere in
+//! (`MAX_INFLIGHT_HOOK_CALLS = 64` per loaded hook) had no equivalent anywhere in
 //! this crate's own `tests.rs` dlopen coverage — the concurrency-cap/backpressure guarantee — ported
 //! against the real `resolve_one` harness rather than a bare `DlopenPolicy`. Everything else in the
 //! plugin-loader-origin 16 already has a same-behaviour sibling in `tests.rs` above, reached through

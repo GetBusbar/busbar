@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! EVERY ABI VERSION IS ITS v1.5.5 VALUE + 1 (THE DESIGN §11.2; owner ruling on §10; Q-CONST:
+//! EVERY ABI VERSION IS ITS v1.5.5 VALUE + 1 (`BUSBAR-1.6.0.md` THE DESIGN, §11.2; owner ruling on §10;
 //! `TRANSPORT_VERSION` becomes `MECHANISM_VERSION`). A kind whose ABI is new in 1.6.0 had no v1.5.5
 //! value and ships 1.
 //!

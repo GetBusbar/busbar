@@ -33,8 +33,8 @@
 //! [`door::MetricFamily`] and [`call::AbiStr`] are fixed by [`MECHANISM_VERSION`]; arrays of them
 //! carry no stride, so growing one is a mechanism bump.
 //!
-//! This is the M0 SPEC: the shapes and their numbers. Nothing dispatches through them yet (M1), and
-//! no existing path is rewired to them.
+//! This module states the shapes and their numbers. Nothing dispatches through them yet, and no
+//! existing path is rewired to them.
 
 pub mod call;
 pub mod door;
