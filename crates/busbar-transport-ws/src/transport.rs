@@ -106,17 +106,21 @@ pub(crate) const PONG_BUDGET: std::time::Duration = std::time::Duration::from_se
 /// asks for it at `listen`, and the composition root answers it from the listener view it builds.
 pub const MESSAGE_MAX_BYTES_KEY: &str = "limits.request_body_max_bytes";
 
-/// The `'static` view of a dial address, allocated at most once per distinct string.
+/// Every string [`intern`] has made `'static`, each exactly once.
+static INTERNED: std::sync::LazyLock<SyncMutex<std::collections::HashSet<&'static str>>> =
+    std::sync::LazyLock::new(|| SyncMutex::new(std::collections::HashSet::new()));
+
+/// The `'static` view of a derived dial address, allocated at most once per distinct string, and
+/// only ever at registration ([`WsTransport::register_target`]) — never by `dial` (CG-06: a
+/// config-derived key is leaked exactly once, at the registration that reads it).
 ///
 /// The sealed destination's address shape is already `'static`, but a `ws://` dial target is a URL:
-/// the `host:port` this transport hands the layer below, and the certificate name it offers, are
-/// derived from it and may name a port the URL never spelled, so neither is a slice of anything
-/// that already lives forever. Allocating one per dial would grow the process without bound against
-/// a flapping upstream; interning makes it leak-once, the same posture the boot-time lane names
-/// take, so a redial reuses what the first dial allocated.
+/// the `host:port` this transport hands the layer below is derived from it, and where the URL
+/// leaves the port implicit or brackets the host that string is not a slice of anything that
+/// already lives forever. Interning makes the registration of such a target leak-once, the same
+/// posture the boot-time lane names take, so a reload that registers it again reuses what the
+/// first registration allocated.
 pub(crate) fn intern(s: &str) -> &'static str {
-    static INTERNED: std::sync::LazyLock<SyncMutex<std::collections::HashSet<&'static str>>> =
-        std::sync::LazyLock::new(|| SyncMutex::new(std::collections::HashSet::new()));
     let mut table = INTERNED.lock().expect("ws address intern table poisoned");
     if let Some(already) = table.get(s) {
         return already;
@@ -124,6 +128,30 @@ pub(crate) fn intern(s: &str) -> &'static str {
     let once: &'static str = Box::leak(s.to_string().into_boxed_str());
     table.insert(once);
     once
+}
+
+/// Whether `s` has been interned — the battery's view of what this process has leaked.
+#[cfg(test)]
+pub(crate) fn is_interned(s: &str) -> bool {
+    INTERNED
+        .lock()
+        .expect("ws address intern table poisoned")
+        .contains(s)
+}
+
+/// The `host:port` a `ws://` URL spells, as a slice of the URL itself, when the URL spells exactly
+/// the authority `dial` hands the layer below: an explicit port and an unbracketed host. The URL a
+/// sealed destination carries is `'static` already (leaked once where it was registered), so this
+/// view costs nothing. `None` where the authority is derived rather than spelled — an implicit
+/// port, a bracketed host — which is the shape [`WsTransport::register_target`] interns.
+fn spelled_authority(url: &str) -> Option<&str> {
+    let (_, host, port, _) = split_ws_url(url).ok()?;
+    let rest = url
+        .strip_prefix("ws://")
+        .or_else(|| url.strip_prefix("wss://"))?;
+    let authority = rest.find('/').map_or(rest, |i| &rest[..i]);
+    let (h, p) = authority.rsplit_once(':')?;
+    (h == host && p == port.to_string()).then_some(authority)
 }
 
 type FrameStream =
@@ -192,6 +220,10 @@ pub struct WsTransport {
     /// The layer this one composes over. `None` for an instance used only through
     /// [`WsTransport::adopt`] or the in-memory handshake seam, which are handed a stream directly.
     lower: Option<Arc<dyn Transport>>,
+    /// The dial targets registered on this instance whose `host:port` is derived rather than
+    /// spelled, each mapped to its interned authority. `dial` reads this and never interns: a
+    /// target that is neither spelled nor registered is refused, not leaked (CG-06).
+    targets: SyncMutex<HashMap<String, &'static str>>,
 }
 
 impl Default for WsTransport {
@@ -210,6 +242,7 @@ impl WsTransport {
             conns: SyncMutex::new(HashMap::new()),
             max_message_bytes: std::sync::atomic::AtomicUsize::new(0),
             lower: None,
+            targets: SyncMutex::new(HashMap::new()),
         }
     }
 
@@ -242,6 +275,7 @@ impl WsTransport {
             conns: SyncMutex::new(HashMap::new()),
             max_message_bytes: std::sync::atomic::AtomicUsize::new(0),
             lower: Some(lower),
+            targets: SyncMutex::new(HashMap::new()),
         }
     }
 
@@ -258,6 +292,38 @@ impl WsTransport {
         let t = Self::over(lower);
         t.max_message_bytes.store(max, Ordering::Relaxed);
         t
+    }
+
+    /// Register a configured dial target: the one point at which this transport may allocate a
+    /// `'static` view of the address it derives from the URL (CG-06). A target whose URL spells its
+    /// `host:port` needs nothing and stores nothing; one whose port is implicit or whose host is
+    /// bracketed has its authority interned here, once per distinct string across every instance,
+    /// so a reload that registers it again allocates nothing new. `dial` only looks targets up.
+    ///
+    /// # Errors
+    ///
+    /// [`TransportError::AddressRefused`] for a target that is not a `ws://`/`wss://` URL.
+    pub fn register_target(&self, url: &str) -> Result<(), TransportError> {
+        let (_, host, port, _) = split_ws_url(url)?;
+        if spelled_authority(url).is_none() {
+            let authority = intern(&format!("{host}:{port}"));
+            self.targets
+                .lock()
+                .expect("ws target table poisoned")
+                .insert(url.to_string(), authority);
+        }
+        Ok(())
+    }
+
+    /// The authority `dial` hands the layer below for `url`: spelled in the URL, or registered.
+    pub(crate) fn dial_authority(&self, url: &'static str) -> Option<&'static str> {
+        spelled_authority(url).or_else(|| {
+            self.targets
+                .lock()
+                .expect("ws target table poisoned")
+                .get(url)
+                .copied()
+        })
     }
 
     fn lower(&self) -> Result<&Arc<dyn Transport>, TransportError> {
@@ -444,7 +510,6 @@ impl Transport for WsTransport {
             };
             let url = address.authority().ok_or(TransportError::AddressRefused)?;
             let (secure, host_name, port, path) = split_ws_url(url)?;
-            let authority: &'static str = intern(&format!("{host_name}:{port}"));
 
             // The socket is the layer below's, dialled against the address this destination already
             // carries — no name is resolved here, which is what puts the network guard in front of
@@ -464,16 +529,17 @@ impl Transport for WsTransport {
             if secure {
                 return Err(TransportError::AddressRefused);
             }
+            // The authority was made `'static` where the target was registered, or is a slice of the
+            // URL the destination already carries; `dial` allocates nothing that outlives it (CG-06).
+            let authority = self
+                .dial_authority(url)
+                .ok_or(TransportError::AddressRefused)?;
             let beneath = dest
                 .beneath(
                     lower.key(),
                     busbar_contract::transport::dest::UpstreamAddress::Socket {
                         authority,
-                        sni: address.sni().or(if secure {
-                            Some(intern(&host_name))
-                        } else {
-                            None
-                        }),
+                        sni: address.sni(),
                         extras: &[],
                     },
                 )

@@ -1030,10 +1030,10 @@ async fn a_peer_that_pings_and_then_stops_reading_does_not_park_the_pump_forever
     );
 }
 
-/// A redial against the same upstream must not allocate a second `'static` address. `dial` needs
-/// both halves for the lifetime of the process, so the allocation is deliberate; what would not be
-/// deliberate is one per dial, which a redial loop against a flapping upstream turns into unbounded
-/// growth. Identical strings must come back as the identical allocation.
+/// Registering the same target again must not allocate a second `'static` address. The allocation
+/// a registration makes is deliberate and lives for the process; what would not be deliberate is
+/// one per registration, which a reload loop turns into unbounded growth. Identical strings must
+/// come back as the identical allocation.
 #[test]
 fn a_redial_reuses_the_interned_address_rather_than_leaking_a_new_one() {
     let first = crate::transport::intern("example.invalid:8443");
@@ -1045,4 +1045,85 @@ fn a_redial_reuses_the_interned_address_rather_than_leaking_a_new_one() {
     let other = crate::transport::intern("elsewhere.invalid:8443");
     assert!(!std::ptr::eq(first, other));
     assert_eq!(other, "elsewhere.invalid:8443");
+}
+
+/// CG-06: a config-derived key is leaked exactly once, at the registration that reads it — never
+/// per dial. N dials to a target nobody registered, whose `host:port` is derived (an implicit port),
+/// are refused and leave nothing behind; before this, the first of them leaked the address.
+#[tokio::test]
+async fn n_dials_to_an_unregistered_derived_address_leak_nothing() {
+    let (io, _peer) = tokio::io::duplex(64);
+    let t = WsTransport::over(Arc::new(StubLower::holding(io)));
+    let keys = test_key_handle();
+    for _ in 0..8 {
+        assert_eq!(
+            t.dial(&verified_upstream("ws://cg06-unregistered.invalid/"), &keys)
+                .await
+                .unwrap_err(),
+            TransportError::AddressRefused,
+            "a derived target nobody registered is refused, not interned on the spot"
+        );
+    }
+    assert!(
+        !crate::transport::is_interned("cg06-unregistered.invalid:80"),
+        "dial leaked a 'static address: the rule allows that only at registration"
+    );
+}
+
+/// CG-06: N dials to one registered target leak once — at registration — and a second registration
+/// of the same target (a reload's fresh instance) allocates nothing new. Every dial reaches the layer
+/// below with the one interned authority.
+#[tokio::test]
+async fn n_dials_to_one_registered_address_leak_once_at_registration() {
+    const URL: &str = "ws://cg06-registered.invalid/p";
+    const AUTHORITY: &str = "cg06-registered.invalid:80";
+    assert!(!crate::transport::is_interned(AUTHORITY));
+    let (io, _peer) = tokio::io::duplex(64);
+    let t = WsTransport::over(Arc::new(StubLower::holding(io)));
+    t.register_target(URL).unwrap();
+    assert!(
+        crate::transport::is_interned(AUTHORITY),
+        "registration interns"
+    );
+    let first = t.dial_authority(URL).expect("registered");
+    assert_eq!(first, AUTHORITY);
+
+    let keys = test_key_handle();
+    for _ in 0..8 {
+        // StubLower refuses every dial: reaching it at all is the proof the authority was found.
+        assert_eq!(
+            t.dial(&verified_upstream(URL), &keys).await.unwrap_err(),
+            TransportError::HandoffMismatch
+        );
+        assert!(std::ptr::eq(t.dial_authority(URL).unwrap(), first));
+    }
+
+    let reloaded = WsTransport::new();
+    reloaded.register_target(URL).unwrap();
+    assert!(
+        std::ptr::eq(reloaded.dial_authority(URL).unwrap(), first),
+        "a second registration of the same target reuses the first allocation"
+    );
+}
+
+/// A URL that spells its own `host:port` needs no registration and no allocation: the authority is
+/// a slice of the `'static` URL the sealed destination already carries.
+#[tokio::test]
+async fn a_spelled_authority_is_a_slice_of_the_url_and_interns_nothing() {
+    const URL: &str = "ws://cg06-spelled.invalid:9000/p";
+    let (io, _peer) = tokio::io::duplex(64);
+    let t = WsTransport::over(Arc::new(StubLower::holding(io)));
+    let keys = test_key_handle();
+    for _ in 0..8 {
+        assert_eq!(
+            t.dial(&verified_upstream(URL), &keys).await.unwrap_err(),
+            TransportError::HandoffMismatch
+        );
+    }
+    let authority = t.dial_authority(URL).unwrap();
+    assert_eq!(authority, "cg06-spelled.invalid:9000");
+    assert!(std::ptr::eq(authority, &URL[5..URL.len() - 2]));
+    assert!(!crate::transport::is_interned("cg06-spelled.invalid:9000"));
+    // A bracketed host is derived, not spelled: it wants registration like an implicit port does.
+    assert_eq!(t.dial_authority("ws://[::1]:9000/p"), None);
 }
