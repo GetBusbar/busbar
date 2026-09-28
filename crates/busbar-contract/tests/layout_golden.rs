@@ -24,6 +24,28 @@ use busbar_contract::abi::hot::transport::{
 use busbar_contract::abi::hot::workitem::{EmitHandle, HeadField, InboundHandle, WorkItem};
 use busbar_contract::abi::hot::*;
 use busbar_contract::abi::AbiPreamble;
+// THE ONE MEMORY ABI (M0 ABI-SPEC): aliased, so a name the hot lane also uses cannot collide.
+use busbar_contract::abi::mechanism::call::{
+    AbiStr as MechStr, Blob as MechBlob, Diag as MechDiag, Envelope as MechEnvelope,
+    InHead as MechInHead, MetricEntry as MechMetricEntry, OutHead as MechOutHead,
+};
+use busbar_contract::abi::mechanism::door::{
+    Door as MechDoor, MetricFamily as MechMetricFamily, Statement as MechStatement,
+};
+use busbar_contract::abi::mechanism::lifecycle::{
+    CancelIn as MechCancelIn, CancelOut as MechCancelOut, DriveIn as MechDriveIn,
+    GenIn as MechGenIn, OpenIn as MechOpenIn, OpenOut as MechOpenOut, OpsHead as MechOpsHead,
+    ReleaseIn as MechReleaseIn, TickIn as MechTickIn, TickOut as MechTickOut,
+    ValidateIn as MechValidateIn,
+};
+use busbar_contract::abi::mechanism::ticket::{
+    CompletionHandle as MechCompletionHandle, HostCtx as MechHostCtx, HostTables as MechHostTables,
+    Ticket as MechTicket,
+};
+use busbar_contract::abi::{
+    auth::Ops as AuthOps, export::Ops as ExportOps, hook::Ops as HookOps, plane::Ops as PlaneOps,
+    secret::Ops as SecretOps, store::Ops as StoreOps, transport::Ops as TransportOps,
+};
 use std::fmt::Write as _;
 
 /// Append `Struct.field=offset` lines for the given fields, then a `Struct.__size=N` line.
@@ -836,6 +858,120 @@ fn compute_layout() -> String {
             retry_after_secs
         ]
     );
+
+    // THE ONE MEMORY ABI (THE DESIGN §11.5, M0 ABI-SPEC): the shared mechanism and the seven kind
+    // tables. `tests/mechanism_layout.rs` states the same numbers by hand.
+    record!(s, MechStr, [ptr, len]);
+    record!(s, MechBlob, [ptr, len, fmt, flags]);
+    record!(
+        s,
+        MechInHead,
+        [
+            size,
+            op,
+            flags,
+            deadline_class,
+            _reserved,
+            host,
+            ticket,
+            deadline_ns,
+            trace_id,
+            extensions
+        ]
+    );
+    record!(
+        s,
+        MechMetricEntry,
+        [
+            family_idx,
+            kind,
+            _reserved,
+            value,
+            label_vals,
+            label_vals_len
+        ]
+    );
+    record!(s, MechDiag, [id_idx, severity, _reserved, text]);
+    record!(s, MechEnvelope, [metrics, metrics_len, diags, diags_len]);
+    record!(
+        s,
+        MechOutHead,
+        [size, outcome, _reserved, wake_at_ns, lease, error, envelope, extensions]
+    );
+    record!(
+        s,
+        MechDoor,
+        [
+            magic,
+            mechanism_version,
+            size,
+            kind,
+            kind_abi,
+            statement,
+            ops
+        ]
+    );
+    record!(
+        s,
+        MechMetricFamily,
+        [
+            name,
+            help,
+            unit,
+            label_keys,
+            label_keys_len,
+            kind,
+            _reserved
+        ]
+    );
+    record!(
+        s,
+        MechStatement,
+        [
+            size,
+            kind,
+            kind_abi,
+            max_inflight,
+            name,
+            version,
+            families,
+            families_len,
+            diag_ids,
+            diag_ids_len,
+            kind_tail,
+            extensions
+        ]
+    );
+    record!(s, MechTicket, [slot, generation]);
+    record!(s, MechCompletionHandle, [ticket, seq, _reserved]);
+    record!(s, MechHostCtx, [ptr]);
+    record!(s, MechHostTables, [size, _reserved, ctx, wake, conns]);
+    record!(
+        s,
+        MechOpsHead,
+        [size, slots, validate, open, refresh, retire, tick, drive, cancel, release, close]
+    );
+    record!(s, MechValidateIn, [head, settings]);
+    record!(
+        s,
+        MechOpenIn,
+        [head, host, settings, secrets, secrets_len, generation]
+    );
+    record!(s, MechOpenOut, [head, instance]);
+    record!(s, MechGenIn, [head, generation]);
+    record!(s, MechTickIn, [head, now_ns]);
+    record!(s, MechTickOut, [head, next_tick_ns]);
+    record!(s, MechDriveIn, [head, driver]);
+    record!(s, MechCancelIn, [head, ticket]);
+    record!(s, MechCancelOut, [head, disposition, _reserved]);
+    record!(s, MechReleaseIn, [head, lease]);
+    record!(s, StoreOps, [head]);
+    record!(s, SecretOps, [head]);
+    record!(s, AuthOps, [head]);
+    record!(s, HookOps, [head]);
+    record!(s, ExportOps, [head]);
+    record!(s, PlaneOps, [head]);
+    record!(s, TransportOps, [head]);
 
     s
 }

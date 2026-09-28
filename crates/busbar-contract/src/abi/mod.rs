@@ -102,6 +102,17 @@ pub mod host;
 pub mod hot;
 pub mod sdk;
 
+// THE ONE MEMORY ABI (the design's locked plugin ABI: one place for every shape): the shared
+// mechanism and one folder per kind.
+pub mod auth;
+pub mod export;
+pub mod hook;
+pub mod mechanism;
+pub mod plane;
+pub mod secret;
+pub mod store;
+pub mod transport;
+
 // The two `#[macro_export]` sized-read macros, named at this module's path too, so a caller writes
 // `busbar_contract::abi::read_sized_field!` exactly where it wrote `busbar_plugin::read_sized_field!`.
 pub use crate::{host_slot, read_sized_field};
