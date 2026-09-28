@@ -34,7 +34,7 @@
 //!   A NEW class is refused; a class that no longer exists is refused as a
 //!   dead allowance. The measured graph is printed in the row's detail so the owner can tighten it
 //!   by deleting lines rather than by re-deriving it. Inside the plane family a crate may only
-//!   name its OWN instance, so `busbar-plane-llm` naming `busbar-llm-codec` is refused.
+//!   name its OWN instance, so `busbar-plane-mcp` naming `busbar-plane-llm` is refused.
 //! * `kind-isolation:test-deps` — THE OTHER HALF OF THE BUILD GRAPH. `[dev-dependencies]` was read
 //!   by the battery rule and by nothing else, on the sentence "a test edge is not a shipped edge" —
 //!   which is true, and is not a reason to leave it unmeasured. A plane declared in a transport's
@@ -43,8 +43,9 @@
 //!   into `:deps` would grant the shipped artifact the same edge.
 //! * `kind-isolation:vocab` — non-comment, literal-blanked source of a kind-X crate never names
 //!   another kind's instance identifiers: a transport never says `a2a`/`mcp`/`voice`/`llm`/`admin`,
-//!   a plane never says `axum`/`hyper`/`tonic`/`tungstenite`/`tokio::net`, and neither a plane nor
-//!   a codec ever names a transport crate.
+//!   a plane never says `axum`/`hyper`/`tonic`/`tungstenite`/`tokio::net`, and a plane never names
+//!   a transport crate. Its codec is plane code (R7 folded every codec crate into its plane), so
+//!   the plane's ban is the codec's ban.
 //! * `kind-isolation:registry` — every crate in the census resolves to a kind IN THE TABLE. One
 //!   that does not is refused with the owner's own instruction: **make a new plugin kind, do not
 //!   fuse two.** THE CENSUS IS EVERY `Cargo.toml` IN THE REPOSITORY, and where a manifest sits is a
@@ -67,8 +68,8 @@
 //!
 //! The owner's scheme (2026-09-07) is `busbar-<kind>-<name>`: SEGMENT TWO IS THE KIND. The tree is
 //! not renamed yet, so the kinds whose crates predate it — `busbar-caps`, `busbar-kernel`,
-//! `busbar-contract`, `busbar-grammar`,
-//! the `*-codec` halves and the `busbar-plugin-*` tooling — reach their kind through
+//! `busbar-contract`, `busbar-grammar`
+//! and the `busbar-plugin-*` tooling — reach their kind through
 //! the EXPLICIT TABLE below rather than through segment two. That table is the whole of the
 //! exception: a name that is neither in it nor `busbar-<kind>-…` for a kind IN it is refused, in
 //! the owner's own words. Nothing is grandfathered by silence, and a FIVE-segment name is refused
@@ -79,14 +80,17 @@
 //! A DIALECT is a thing INSIDE a plane (llm 6, mcp 1, a2a 1, streaming N) — DECISIONS #4. It is not
 //! a plugin and not a kind: there are no per-dialect crates, no Dialect trait, no `dialect` row in
 //! the table, and no four-segment `busbar-plane-<plane>-<dialect>` crate to resolve into one.
-//! Today's `*-codec` crates are the codec halves of their plane (`busbar-llm-codec` belongs to
-//! `llm`), which is why the plane-to-codec edge is in the measured graph.
+//! Nor is a codec a crate or a kind any more. R7 ("Codec crates fold into their planes") folded
+//! `busbar-llm-codec` into `busbar-plane-llm` and `busbar-voice-codec` into
+//! `busbar-plane-streaming`, each as the plane's own `codec` module, so codec code is plane code
+//! and carries every rule the plane carries.
 //!
 //! ## VOICE AND STREAMS ARE THE STREAMING PLANE
 //!
 //! The fourth plane is STREAMING (DECISIONS #18): `busbar-plane-streaming`, whose `PlaneMeta::KEY`
-//! is `"streaming"`. `voice` is one dialect inside it, still spelled by `busbar-voice-codec` until
-//! the #19 codec rename, and `streams` is its config section (`streams:`). [`PLANE_ALIASES`] holds
+//! is `"streaming"`. `voice` is one dialect inside it and still the key the plane's own codec
+//! module registers its sessions under (`codec::PLANE_KEY`), and `streams` is its config section
+//! (`streams:`). [`PLANE_ALIASES`] holds
 //! the three spellings together so they are one instance for every rule here — canonical on the
 //! plane's DECLARED key, which `:registry` reads off the plane's own source — and holds each on a
 //! ratchet: an alias is RED once the crate that spells it is gone.
@@ -209,9 +213,9 @@ const MIN_SOURCES: usize = 600;
 
 /// Which instance vocabulary a kind draws its names from.
 ///
-/// `Plane` covers the plane crates, their pure `-codec` halves and the retiring legacy crates,
-/// because a codec IS a plane's other half and is named after it by design. `Transport`
-/// covers the transports. `Neutral` is every kind with no instance vocabulary of its own — and a
+/// `Plane` covers the plane crates and the retiring legacy crates. A plane's codec is a module
+/// inside its plane crate (R7 folded the codec crates into their planes), so it is plane code and
+/// needs no family of its own. `Transport` covers the transports. `Neutral` is every kind with no instance vocabulary of its own — and a
 /// neutral crate may carry NEITHER vocabulary in its name.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Family {
@@ -256,14 +260,9 @@ static KINDS: &[KindDef] = &[
     // A DIALECT IS NOT A KIND (DECISIONS #4). It is a thing INSIDE a plane — no per-dialect crate,
     // no Dialect trait/kind — so there is no `dialect` row here and no four-segment
     // `busbar-plane-<plane>-<dialect>` crate to refine into one.
-    // THE PRE-SPLIT DIALECTS. `busbar-llm-codec` is the `llm` plane's other half; the rename turns
-    // it into a `busbar-plane-llm-<dialect>`. Until then it is its own kind, and the day the last
-    // one goes the dead-kind rule below demands this row be struck.
-    KindDef {
-        kind: "codec",
-        family: Family::Plane,
-        matchers: &["*-codec"],
-    },
+    // NO `codec` ROW. R7 ("Codec crates fold into their planes") folded `busbar-llm-codec` into
+    // `busbar-plane-llm` and `busbar-voice-codec` into `busbar-plane-streaming`, the row matched no
+    // crate and scored `dead-kind`, and it is struck. Codec code is plane code now.
     // CLEANLINESS SURFACES — admin, oauth2 and connsec, and NOT a `control` plugin kind
     // (DECISIONS #5).
     //
@@ -576,8 +575,8 @@ const ARCHITECTURE_ALLOWED: &[(&str, &str)] = &[
     ("secret", "contract"),
     ("store", "contract"),
     ("transport", "contract"),
-    // No `(codec, grammar)`, `(contract, grammar)` or `(kernel, grammar)` grant: the closed span
-    // grammar is `busbar-contract`'s own surface since `busbar-grammar` folded into it (#40), so a
+    // No `(contract, grammar)` or `(kernel, grammar)` grant: the closed span grammar is
+    // `busbar-contract`'s own surface since `busbar-grammar` folded into it (#40), so a plane's
     // codec or the loop reaching it is the `-> contract` edge, and a grant naming a kind the table
     // does not have is a `dead-grant`.
     ("kernel", "contract"),
@@ -591,14 +590,9 @@ const ARCHITECTURE_ALLOWED: &[(&str, &str)] = &[
     // A kernel crate may name the author-side plugin machinery face (the dep-wall admits plugin-tooling).
     ("kernel", "plugin-tooling"),
     ("legacy", "contract"),
-    // A PLANE ADAPTER PATH-DEPS ITS OWN CODEC (DECISIONS #6/#18/#21). The codec crate is stateful
-    // (entropy pools, streaming accumulators, feature `#[cfg]`) and so cannot live in the pure
-    // `busbar-plane-<x>` adapter's `src/`; #21 states in its own words that "the codec crate REMAINS
-    // a pure path-dep of its plane adapter". So `busbar-plane-<x> -> busbar-<x>-codec` is the
-    // architecture's intended PERMANENT shape, not grandfathered debt. This grants the CLASS; the
-    // instance seal below (the cross-instance witness) still refuses a plane naming a DIFFERENT
-    // plane's codec — a plane may path-dep ITS OWN codec and nothing else.
-    ("plane", "codec"),
+    // No `(plane, codec)` grant. It granted `busbar-plane-<x> -> busbar-<x>-codec`, and R7 ("Codec
+    // crates fold into their planes") made that edge a module path inside one crate. A grant naming
+    // a kind the table no longer has is a `dead-grant`.
     // The composition root is the one thing that names all three axes — that is what a root IS.
     //
     // ROOT -> EVERY PLUGIN KIND IT LINKS IS ONE GRANTED CLASS, not a list that grew kind by kind.
@@ -724,7 +718,7 @@ const DEP_HALVES: &[&str] = &["shipped", "test"];
 ///
 /// An edge from a legacy crate into one of these leaves the blanket `legacy`-as-source exemption
 /// and must be named by a `[[transitional]]` row. Everything else a legacy crate names (the
-/// contract, the api, the substrate, its own codec half, the plugin tooling) is a 1.5.x edge that
+/// contract, the api, the substrate, the plugin tooling) is a 1.5.x edge that
 /// predates the split and dies with the crate; reporting those would restate the retirement rather
 /// than gate it. These four are different: `busbar-core -> busbar-unit-audit` is the drain in
 /// flight and `busbar-core -> busbar-transport-ws` is the fusion, and nothing about "legacy is
@@ -842,8 +836,8 @@ const CONFORMANCE_MARKER: &str = "conformance";
 /// it names the crate that moves the bytes it has stopped being a plane.
 const TRANSPORT_LIBS: &[&str] = &["axum", "hyper", "tonic", "tungstenite"];
 
-/// A transport crate NAMED as a dependency path, in either spelling. Neither a plane nor a codec
-/// may say it.
+/// A transport crate NAMED as a dependency path, in either spelling. A plane may not say it, and
+/// that includes the plane's own `codec` module.
 const TRANSPORT_CRATE_PATHS: &[&str] = &["busbar_transport_", "busbar-transport-"];
 
 /// The one `tokio` submodule a plane may not reach: sockets are the transport's, not the plane's.
@@ -1570,7 +1564,7 @@ struct CrateInfo {
     ambiguous: Vec<&'static str>,
 }
 
-/// Every kind's marker HEAD WORD — `plane`, `transport`, `unit`, `store`, `codec`, … — derived from
+/// Every kind's marker HEAD WORD — `plane`, `transport`, `store`, `kernel`, … — derived from
 /// the table's own matchers rather than restated beside it.
 fn kind_head_words() -> BTreeMap<String, &'static str> {
     let mut out = BTreeMap::new();
@@ -1760,9 +1754,9 @@ const NEUTRAL_LEGACY: &str = "busbar-core";
 /// them would have to be added here by hand, and a plane crate nobody added is a plane crate the
 /// backwards-reach rule scans zero files of — which is the passing answer to a ban.
 ///
-/// The kind table already answers "is this crate plane-kind": [`Family::Plane`] covers the planes,
-/// the dialects, the pre-split `-codec` halves and the retiring legacy plane crates. So the
-/// population comes from there, and a crate named tomorrow is scanned tomorrow.
+/// The kind table already answers "is this crate plane-kind": [`Family::Plane`] covers the planes
+/// and the retiring legacy plane crates, and a plane's folded codec is under the plane's own
+/// `src/`. So the population comes from there, and a crate named tomorrow is scanned tomorrow.
 pub fn plane_kind_src_roots(cx: &Ctx) -> Result<Vec<String>, String> {
     let mut out: Vec<String> = census(cx)?
         .into_iter()
@@ -1972,7 +1966,7 @@ fn vocabularies(crates: &[CrateInfo]) -> (BTreeSet<String>, BTreeSet<String>) {
     }
     // EVERY SPELLING OF A PLANE IS VOCABULARY. `busbar-transport-streams` has to be refused on the
     // day the alias lands, not on the day the rename does — and `voice` stays the streaming plane's
-    // word after `busbar-plane-voice` is gone, for as long as `busbar-voice-codec` spells it.
+    // word after `busbar-plane-voice` is gone, for as long as the plane registers under it.
     for (from, to, _) in PLANE_ALIASES {
         if planes.contains(*from) || planes.contains(*to) {
             planes.insert((*from).to_string());
@@ -2418,8 +2412,8 @@ fn rule_deps(cx: &Ctx, crates: &[CrateInfo], reg: &KindRegistry, half: Half, shi
             };
             let Some(to) = target.kind else { continue };
 
-            // THE PLANE FAMILY IS INSTANCE-SEALED. A plane's own codec is the intended shape; any
-            // other instance is one plane reaching into another's vocabulary.
+            // THE PLANE FAMILY IS INSTANCE-SEALED. A plane's codec is a module of the plane crate
+            // itself; any other instance is one plane reaching into another's vocabulary.
             if c.family == Family::Plane && target.family == Family::Plane {
                 if let (Some(mine), Some(theirs)) = (&c.instance, &target.instance) {
                     if mine != theirs {
@@ -2896,7 +2890,7 @@ fn word_ci(lower: &str, needle: &str) -> bool {
 /// `max_concurrent_streams`/`MAX_CONCURRENT_STREAMS` — none of which name the `busbar-plane-streaming`
 /// plane instance. This is not a blanket exemption for the word: it matches the EXACT library
 /// spellings tonic ships, so a source line that genuinely names the plane (`busbar_plane_streaming`,
-/// `busbar-streaming-codec`, a bare `streaming::` module path) still trips the ban.
+/// `busbar-plane-streaming`, a bare `streaming::` module path) still trips the ban.
 const GRPC_LIBRARY_VOCAB: &[&str] = &["tonic::streaming", ".streaming(", "max_concurrent_streams"];
 
 /// Whether a hit on `needle` at this source line is tonic's own gRPC API surface rather than a
@@ -2923,8 +2917,9 @@ fn banned_for(kind: &str, planes: &BTreeSet<String>) -> Vec<(String, &'static st
                 out.push((p.clone(), "a PLANE instance named inside a transport"));
             }
         }
-        // A PLANE SPEAKS THE PLANE ABI, NEVER THE WIRE. `dialect` is not a kind (DECISIONS #4); its
-        // pre-split codec halves carry the codec ban below. There is no `control` arm — admin/oauth2
+        // A PLANE SPEAKS THE PLANE ABI, NEVER THE WIRE. `dialect` is not a kind (DECISIONS #4), and
+        // there is no `codec` arm: R7 folded each codec crate into its plane as a `codec` module,
+        // so this arm is the codec's ban too. There is no `control` arm — admin/oauth2
         // are `cleanliness` crates, served surfaces that legitimately reference transports over the
         // kernel, so they carry no transport ban (DECISIONS #5).
         "plane" => {
@@ -2940,11 +2935,6 @@ fn banned_for(kind: &str, planes: &BTreeSet<String>) -> Vec<(String, &'static st
             ));
             for p in TRANSPORT_CRATE_PATHS {
                 out.push(((*p).to_string(), "a TRANSPORT CRATE named inside a plane"));
-            }
-        }
-        "codec" => {
-            for p in TRANSPORT_CRATE_PATHS {
-                out.push(((*p).to_string(), "a TRANSPORT CRATE named inside a codec"));
             }
         }
         _ => {}
@@ -4600,8 +4590,8 @@ const MIN_PLANE_STEPS: usize = 5;
 /// THE STEPS A PLANE OWNS: the kernel's step table, intersected with the plane trait's methods.
 ///
 /// Neither source alone is the answer. The step table holds `Arrival`, `Decode` and `Encode`, which
-/// are the KERNEL's three and which no plane implements; the plane trait holds the codec halves
-/// (`decode_ingress`, `encode_refusal`, …) and the fact reporters, which are not steps of the loop.
+/// are the KERNEL's three and which no plane implements; the plane trait holds the decode and
+/// encode methods (`decode_ingress`, `encode_refusal`, …) and the fact reporters, which are not steps of the loop.
 /// What both name is exactly the strict step list a data plane runs, and reading it off the two
 /// files means a step added to the loop is owed by every plane on the same commit.
 fn plane_owned_steps(cx: &Ctx) -> Result<Vec<String>, String> {
@@ -4899,7 +4889,8 @@ fn rule_control(cx: &Ctx, crates: &[CrateInfo]) -> Row {
 /// The two kinds that MAY name a transport crate. Everything else may not, and the rule is spelled
 /// as the exception rather than the list for the reason every list in this file is spelled that way.
 ///
-/// It WAS a list — `["plane", "dialect", "control", "unit", "codec"]` — and a red team walked
+/// It WAS a list — `["plane", "dialect", "control", "unit", "codec"]`, of which only `plane` is a
+/// kind today — and a red team walked
 /// through the gap in one line: `store-memory`, a store plugin, took a `[dependencies]` edge on
 /// `busbar-transport-tcp` and this row PASSED, reporting "no plugin links one", because `store` was
 /// not on the list. Nor were `auth`, `secret`, `hooks` or `export` — four more plugin kinds, and
