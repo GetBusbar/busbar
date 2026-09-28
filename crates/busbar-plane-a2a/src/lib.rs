@@ -47,6 +47,7 @@ pub mod a2a {
 }
 
 pub mod claims;
+pub mod diagnostics;
 pub mod facts;
 pub mod frame;
 pub mod jsonrpc;

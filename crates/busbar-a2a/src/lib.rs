@@ -33,15 +33,15 @@
 pub mod a2a;
 pub mod taskstore;
 
-/// THE A2A PLANE'S DIAGNOSTICS CATALOG.
-///
-/// The `A2A_*` catalog entries and the `DIAGNOSTICS` slice previously lived in the standalone
-/// `busbar-plane-a2a-host` crate (the first byte-safe step of the fat-crate collapse — DECISIONS
-/// #19/#20/#21) and re-exported here under this path; that crate has since folded back into this
-/// one (#19/#39: mirrors `busbar-plane-mcp-host`'s deletion), so the module lives here directly now.
-/// Every `busbar_a2a::diagnostics::…` / `crate::diagnostics::…` caller still resolves exactly what
-/// it always did.
-pub mod diagnostics;
+/// THE A2A PLANE'S DIAGNOSTICS CATALOG, defined in the plane crate (`busbar_plane_a2a::diagnostics`)
+/// and re-exported under this path, so every `busbar_a2a::diagnostics::…` / `crate::diagnostics::…`
+/// caller resolves the same constants.
+pub use busbar_plane_a2a::diagnostics;
+
+/// The committed per-plane diagnostics pages, rendered through the host's renderers.
+#[cfg(test)]
+#[path = "tests/diagnostics_page_tests.rs"]
+mod diagnostics_page_tests;
 
 /// THE RELAY'S SSE FRAME READER — the plane's own dialect machinery (#83a, SD-5c): bytes in, whole
 /// events out, for the relay's streaming legs, with the one coded diagnostic it prints.

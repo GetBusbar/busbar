@@ -3,15 +3,12 @@
 
 //! A2A plane diagnostics — the `A2A_*` catalog entries this crate OWNS.
 //!
-//! These consts were plane-specific vocabulary living in the neutral
-//! `busbar_kernel::diagnostics` catalog; the plane extraction relocated them here so the neutral
-//! crate names no `A2A_*` diagnostic. Each keeps its stable `BUSBAR-NNNN` number and slug — the
-//! move preserves identity, it does not renumber: codes are REGISTERED, never collapsed.
+//! These consts are plane-specific vocabulary, so the host's neutral catalog names no `A2A_*`
+//! diagnostic. Each keeps its stable `BUSBAR-NNNN` number and slug: codes are REGISTERED, never
+//! renumbered or collapsed.
 //!
-//! [`DIAGNOSTICS`] is the slice the composition root hands to
-//! [`install_diagnostics`](busbar_kernel::diagnostics::install_diagnostics) so these codes join
-//! the runtime catalog (`REGISTRY ∪ installed`) and resolve through `by_code`. The `busbar` binary
-//! names one stable path: `busbar-a2a::DIAGNOSTICS`.
+//! [`DIAGNOSTICS`] is the slice the composition root hands to the host's `install_diagnostics`, so
+//! these codes join the runtime catalog (`REGISTRY ∪ installed`) and resolve through `by_code`.
 
 use busbar_contract::diagnostic::{Class, Diagnostic, Severity};
 
@@ -617,6 +614,27 @@ pub const A2A_PUSH_REARM_FAILED: Diagnostic = Diagnostic {
     retired: false,
 };
 
+/// A relayed SSE frame was not valid UTF-8 and was dropped. Frozen: `BUSBAR-7104`, the published
+/// catalog entry of the same number, byte for byte.
+pub const PLANE_SSE_FRAME_NOT_UTF8: Diagnostic = Diagnostic {
+    code: 7104,
+    class: Class::Plane,
+    slug: "plane-sse-frame-not-utf8",
+    title: "A relayed SSE frame was not valid UTF-8 and was dropped",
+    severity: Severity::Actionable,
+    summary: "The shared SSE frame reader (the JSON-RPC plane relays) assembled a complete event \
+              whose bytes are not valid UTF-8. The event-stream format is UTF-8 BY DEFINITION, so \
+              this is a malformed backend; the frame is DROPPED rather than lossily transcoded, \
+              which would hand the client a corrupted payload. The stream itself continues, so a \
+              client sees a missing event, not a failure. The `bytes` field carries the size of \
+              the frame that was dropped.",
+    action: "Investigate the named backend agent: its event stream is emitting non-UTF-8 bytes, \
+             which no conforming event-stream consumer can read. Until it is fixed the affected \
+             events are lost; busbar relays every well-formed event around them.",
+    since: "1.6.0",
+    retired: false,
+};
+
 /// A2A'S PLANE-CONTRIBUTED DIAGNOSTICS — the `&'static [&'static Diagnostic]` the composition
 /// root installs via `install_diagnostics`. Ascending by code, mirroring the neutral `REGISTRY`.
 /// The last, `BUSBAR-7104`, came out of the host registry with the relay's frame reader that emits
@@ -657,7 +675,7 @@ pub static DIAGNOSTICS: &[&Diagnostic] = &[
     &A2A_PUSH_CALLBACK_UNPERSISTED,
     &A2A_PUSH_CONFIG_UNDELETED,
     &A2A_PUSH_REARM_FAILED,
-    &crate::sse::PLANE_SSE_FRAME_NOT_UTF8,
+    &PLANE_SSE_FRAME_NOT_UTF8,
 ];
 
 #[cfg(test)]
