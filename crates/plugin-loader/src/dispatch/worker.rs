@@ -286,21 +286,34 @@ pub(crate) struct Meta {
     in_size: u32,
     /// The `max_inflight` units it holds: one, or all of them for `close`.
     units: u32,
+    /// Whether it still holds them (see [`Meta::give_back`]).
+    units_held: bool,
     lifecycle: bool,
     drainable: bool,
     pub(crate) reply: Arc<dyn Settle>,
 }
 
+impl Meta {
+    /// Give back what the op held — its `max_inflight` units, its drain count, the lifecycle
+    /// exclusion — once. Done BEFORE the answer is delivered, so a caller woken by it finds the
+    /// units free.
+    fn give_back(&mut self) {
+        if std::mem::take(&mut self.units_held) {
+            self.instance.release(self.units);
+            if self.drainable {
+                self.instance.drainable.fetch_sub(1, Ordering::AcqRel);
+            }
+            if self.lifecycle {
+                self.instance.leave_lifecycle();
+            }
+        }
+    }
+}
+
 impl Drop for Meta {
     fn drop(&mut self) {
+        self.give_back();
         self.reply.settle(Outcome::Fault, false);
-        self.instance.release(self.units);
-        if self.drainable {
-            self.instance.drainable.fetch_sub(1, Ordering::AcqRel);
-        }
-        if self.lifecycle {
-            self.instance.leave_lifecycle();
-        }
     }
 }
 
@@ -517,6 +530,8 @@ impl Worker {
                     }
                 }
                 Some((_, e)) if e.client_dropped => {
+                    let mut meta = meta;
+                    meta.give_back();
                     meta.reply.settle(Outcome::Refused, false);
                 }
                 // A stale or foreign ticket: `meta` drops and settles FAULT.
@@ -544,7 +559,8 @@ impl Worker {
                         .into_iter()
                         .partition(|(m, _)| m.class == DeadlineClass::WriteBehind);
                     e.queue = keep;
-                    for (m, _) in gone {
+                    for (mut m, _) in gone {
+                        m.give_back();
                         m.reply.settle(m.instance.timeout, false);
                     }
                     let cancel = e
@@ -599,6 +615,8 @@ impl Worker {
         } else if c.short {
             e.short_slot = Some(cur.meta.slot);
         }
+        let mut cur = cur;
+        cur.meta.give_back();
         if let Some(job) = cur.job {
             if !job.finish(c) {
                 env.stats.write_behind_late.fetch_add(1, Ordering::Relaxed);
@@ -1145,6 +1163,7 @@ impl Dispatcher {
             deadline_ns,
             in_size: size_of::<I>() as u32,
             units,
+            units_held: true,
             lifecycle,
             drainable,
             reply: slot.clone(),
