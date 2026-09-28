@@ -40,72 +40,15 @@
 //! bytes, which is what keeps every terminal on this plane on one path — and what lets this file
 //! carry no HTTP vocabulary beyond the two kind constants the live doors already spell.
 
-use busbar_contract::caps::{
-    Decision, Pass, PrincipalId, ReasonCode, Refusal, VerifiedDestination, Verify,
-};
+use busbar_contract::caps::{Decision, Pass, PrincipalId, Refusal, VerifiedDestination, Verify};
 use busbar_kernel::plane_host::{EngineHost, EngineTablesView};
 
 use crate::unit::audit::RefusalOutcome;
 
-/// The closed refusal set of this step: two refusals, and there is no third.
-///
-/// They are kept apart rather than collapsed because they are different answers to different
-/// questions and they carry different statuses. A pool the caller may not reach is settled before
-/// pricing is asked about at all; a name with no configured rate is a bad request, not an exhausted
-/// budget. Collapsing them would make two refusals indistinguishable to anything reading the record.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum VerifyRefusal {
-    /// The caller's key may not reach the pool it named, or a fallback pool reachable from it.
-    ///
-    /// One refusal for both, on purpose: a denial must be indistinguishable from outside whether it
-    /// tripped on the requested pool or on a pool it would only have reached under exhaustion.
-    NotAuthorized,
-    /// A rate card is present and the name the caller supplied has no configured rate.
-    NoRate {
-        /// The name, as the caller spelled it — it appears in the message.
-        name: String,
-    },
-}
+pub use busbar_kernel::door::{destination_guard, PoolView, VerifyRefusal};
 
-impl VerifyRefusal {
-    /// The status this refusal carries on the wire.
-    ///
-    /// Vendor-faithful and never 402: a pool the key may not reach is a permission answer, and an
-    /// unbillable name is a bad request. No real provider answers either with a payment status, and
-    /// emitting one would be a busbar tell.
-    #[must_use]
-    pub fn status(&self) -> u16 {
-        match self {
-            VerifyRefusal::NotAuthorized => 403,
-            VerifyRefusal::NoRate { .. } => 400,
-        }
-    }
-
-    /// The dialect-shaped kind word, read from the same bank the live doors read it from rather
-    /// than respelled here.
-    #[must_use]
-    pub fn kind(&self) -> &'static str {
-        match self {
-            VerifyRefusal::NotAuthorized => busbar_kernel::proxy::KIND_PERMISSION,
-            VerifyRefusal::NoRate { .. } => busbar_kernel::proxy::KIND_INVALID_REQUEST,
-        }
-    }
-
-    /// The caller-facing message, verbatim.
-    ///
-    /// The permission copy is vendor-plausible and names NOTHING of the operator's: not the key id,
-    /// not the pool, not a word of governance vocabulary — a native vendor 403 never does, and the
-    /// key id and pool go to the operator's own diagnostics instead (see [`verify`]).
-    #[must_use]
-    pub fn message(&self) -> String {
-        match self {
-            VerifyRefusal::NotAuthorized => {
-                "Your API key does not have permission to access this resource.".to_string()
-            }
-            VerifyRefusal::NoRate { name } => format!("no configured rate for model '{name}'"),
-        }
-    }
-
+/// The terminal's reading of a [`VerifyRefusal`]: the one value the audit step renders.
+pub trait VerifyOutcome {
     /// THE NAMED OUTCOME — the three parts of this refusal as the one value the terminal renders.
     ///
     /// The twin of `ArrivalRefusal::outcome` and `DecodeRefusal::outcome`, and it exists for the
@@ -114,7 +57,11 @@ impl VerifyRefusal {
     /// looks like. Assembling them here means the step names its outcome and the audit step renders
     /// it, which is one place each.
     #[must_use]
-    pub fn outcome(&self) -> RefusalOutcome {
+    fn outcome(&self) -> RefusalOutcome;
+}
+
+impl VerifyOutcome for VerifyRefusal {
+    fn outcome(&self) -> RefusalOutcome {
         RefusalOutcome::new(
             axum::http::StatusCode::from_u16(self.status())
                 .expect("the two statuses this step names are statuses the doors emit"),
@@ -122,104 +69,6 @@ impl VerifyRefusal {
             self.message(),
         )
     }
-
-    /// The reason code the record files this refusal under.
-    #[must_use]
-    pub fn reason(&self) -> ReasonCode {
-        match self {
-            VerifyRefusal::NotAuthorized => ReasonCode::PoolNotPermitted,
-            VerifyRefusal::NoRate { .. } => ReasonCode::NoRate,
-        }
-    }
-}
-
-/// Everything the three guards read about the deployment's pools and the caller's key.
-///
-/// A view rather than a snapshot: the live guards read these off the running app on the request
-/// path, and copying them into a struct first would be a second reading that can disagree with the
-/// one the door then charges against.
-pub trait PoolView {
-    /// Whether the caller presented a key at all. With no key every guard below is inert — that is
-    /// the ungoverned posture, and it is one boolean rather than three absent checks.
-    fn has_key(&self) -> bool;
-
-    /// Whether the key names a pool restriction at all. `false` means it names none and admits
-    /// every pool, so guard two has nothing to walk; an explicit EMPTY list is a restriction that
-    /// denies everything, which is a different thing and is why this is not "is the list non-empty".
-    fn key_is_scoped(&self) -> bool;
-
-    /// Whether the key may use one pool.
-    fn pool_allowed(&self, pool: &str) -> bool;
-
-    /// The pool this one falls over to when it exhausts, where its exhaustion policy names one.
-    /// `None` when the policy stays inside this pool, or the pool is not configured at all.
-    fn on_exhausted_fallback(&self, pool: &str) -> Option<String>;
-
-    /// Whether the name refers to a configured pool or a configured by-model lane. Either is priced
-    /// by construction — boot refuses a card that does not cover them — so only an arbitrary
-    /// caller-supplied name can reach the third guard.
-    fn is_configured(&self, name: &str) -> bool;
-
-    /// Whether a PRESENT card leaves this name unpriced — `false` for every name when no card is
-    /// configured, because there is no card to miss (#42: rate_card absent reads 0, it never
-    /// refuses). The card's presence is the kernel's question, answered inside this one read; the
-    /// plane never asks whether billing is on (#43), so the guard below carries no billing branch.
-    fn is_unpriced(&self, name: &str) -> bool;
-}
-
-/// Guard one: the requested pool's allow-list. Inert with no key.
-fn pool_authorized(view: &dyn PoolView, pool: &str) -> Option<VerifyRefusal> {
-    (view.has_key() && !view.pool_allowed(pool)).then_some(VerifyRefusal::NotAuthorized)
-}
-
-/// Guard two: every fallback pool the request could reach if the requested one exhausts.
-///
-/// Multi-level (A→B→C) and possibly cyclic (A→B→A), so the walk carries a visited set and stops for
-/// the same reason the dispatch stops. A denial is the SAME refusal guard one raises.
-fn fallback_pools_authorized(view: &dyn PoolView, pool: &str) -> Option<VerifyRefusal> {
-    if !view.has_key() || !view.key_is_scoped() {
-        return None;
-    }
-    let mut visited: std::collections::HashSet<String> = std::collections::HashSet::new();
-    let mut current = pool.to_string();
-    loop {
-        if !visited.insert(current.clone()) {
-            return None;
-        }
-        let next = view.on_exhausted_fallback(&current)?;
-        if let Some(refusal) = pool_authorized(view, &next) {
-            return Some(refusal);
-        }
-        current = next;
-    }
-}
-
-/// Guard three: with a card present, every governed request must resolve to a priced destination.
-///
-/// With no card configured [`PoolView::is_unpriced`] is `false` for every name, so the guard is inert
-/// without this step ever reading whether billing is on (#43).
-fn priced(view: &dyn PoolView, name: &str) -> Option<VerifyRefusal> {
-    (view.has_key() && !view.is_configured(name) && view.is_unpriced(name)).then(|| {
-        VerifyRefusal::NoRate {
-            name: name.to_string(),
-        }
-    })
-}
-
-/// The three guards, in their fixed order. Named separately from [`verify`] so the ORDER can be
-/// checked without a token in hand, and so the composition root can ask the same question at a
-/// boot-time dry run.
-pub fn destination_guard(view: &dyn PoolView, pool: &str) -> Result<(), VerifyRefusal> {
-    if let Some(r) = pool_authorized(view, pool) {
-        return Err(r);
-    }
-    if let Some(r) = fallback_pools_authorized(view, pool) {
-        return Err(r);
-    }
-    if let Some(r) = priced(view, pool) {
-        return Err(r);
-    }
-    Ok(())
 }
 
 /// WHAT THE STEP ANSWERS WITH: the decision the loop reads, and the named refusal that produced it.

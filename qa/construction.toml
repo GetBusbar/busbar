@@ -756,7 +756,7 @@ needle = "busbar_kernel::"
 # measurement on the committed tree (HEAD b091b4e83), a raise the owner ruled is a needle repair
 # arming the true count, not a relaxation of what the instrument ever saw. Downward only from here.
 [rules.ports-only.max_per_crate]
-busbar-llm = 252
+busbar-llm = 251
 busbar-mcp = 285
 busbar-a2a = 236
 busbar-voice = 88
@@ -2382,13 +2382,9 @@ forbidden_deps = ["busbar-kernel-ledger"]
 max_hits = 0
 # Reviewed per-file exceptions: file -> the symbols accepted there, the reason recorded here.
 #
-#   The llm plane's Verify step holds a `CostHandle` and calls its guard `priced`, and neither
-#   learns a price: the handle is opaque and the two questions asked through it
-#   (`cost_pricing_enabled`, `cost_model_unpriced`) answer yes or no, so the step can refuse a lane
-#   the card does not cover without any figure crossing the seam. Every amount-bearing symbol above
-#   is still held against that file.
+#   None stands: the destination guard (and its `priced` question) is the kernel's
+#   (busbar-kernel-scope, re-exported by the kernel door).
 [rules.plane-no-money.allowlist]
-"crates/busbar-llm/src/unit/verify.rs" = ["CostHandle", "priced"]
 
 # ── 29. one-pricing-site ─────────────────────────────────────────────────────────────────────────
 [rules.one-pricing-site]

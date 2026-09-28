@@ -120,6 +120,7 @@ use busbar_kernel::{
 };
 
 use crate::arrival::PathArrivalFacts;
+use crate::unit::verify::VerifyOutcome as _;
 use crate::unit::walk::{Walk, WalkArrival};
 use crate::unit::{admit, approve, arrival, audit, authenticate, decode, verify};
 

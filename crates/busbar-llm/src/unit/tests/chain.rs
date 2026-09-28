@@ -10,6 +10,7 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::Response;
 
 use crate::test_support::engine_kit::EngineTestKit as _;
+use crate::unit::verify::VerifyOutcome as _;
 use busbar_contract::caps::{
     Approve, Audit, Authenticate, Consumption, Dial, Grant, KernelSeal, OpClassId, Outcome, Pass,
     PrincipalId, Route, VerifiedDestination, Verify,
