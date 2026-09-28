@@ -1049,6 +1049,26 @@ fn red_one_recall_a_second_short_answer_is_fault() {
     d.recycle(t);
 }
 
+#[test]
+fn red_a_reported_count_past_its_cap_builds_no_slice() {
+    use crate::dispatch::validate::{reported_slice, Violation};
+    let buf = [7u32; 4];
+    // SAFETY: `buf` is the host buffer of capacity 4.
+    let ok = unsafe { reported_slice(buf.as_ptr(), 4, 4) };
+    assert_eq!(ok, Ok(&buf[..]));
+    // cap + 1, over a pointer no slice may ever be built from: refused before any read.
+    let dangling = std::ptr::NonNull::<u32>::dangling().as_ptr();
+    let over = unsafe { reported_slice(dangling.cast_const(), 5, 4) };
+    assert_eq!(over, Err(Violation::Count { count: 5, cap: 4 }));
+    assert_eq!(over.unwrap_err().outcome(), Outcome::Fault);
+    let null = unsafe { reported_slice::<u32>(std::ptr::null(), 1, 4) };
+    assert_eq!(null, Err(Violation::NullArray(1)));
+    assert_eq!(
+        unsafe { reported_slice::<u32>(std::ptr::null(), 0, 4) },
+        Ok(&[][..])
+    );
+}
+
 // ── EXACT VERSIONS (item 410's replacement): older, newer and a wrong magic are each refused ─────
 
 fn door_with(f: impl Fn(&mut Door)) -> Option<LoadError> {
