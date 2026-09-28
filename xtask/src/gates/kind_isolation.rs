@@ -7823,13 +7823,24 @@ impl Gate for KindIsolationGate {
 
         // A REGISTRY ENTRY FILED UNDER THE WRONG KIND. `plugins.yaml` is what the loader believes,
         // and a store plugin filed as `auth` is a store handed the auth ABI.
+        //
+        // PLANTED AS A FRESH ROW, not surgery on a live one. This case (and the export case below
+        // it) used to `replacen` a needle spelled off the `store-mysql`/`export-file` rows the file
+        // carried at the time; the fleet-wide rename (repo = crate = manifest = asset prefix, all
+        // `busbar-<kind>-<name>`) moved those rows' text out from under the needle, `replacen`
+        // over an absent needle returns its input unchanged, and the plant wrote `plugins.yaml`
+        // back byte-for-byte — `inert_plant` catches exactly that shape now. A synthetic entry,
+        // APPENDED rather than found by text, has no needle to go stale: `registry_entries` reads
+        // any `- …kind: …crate: …` block regardless of where it sits in the file, so this fixture
+        // resolves and mismatches on its own name and cannot be un-planted by a rename to a row it
+        // never touches.
         let mut ov = Overlay::new();
         ov.set(
             "plugins.yaml",
-            cx.read("plugins.yaml").unwrap_or_default().replacen(
-                "  - repo: store-mysql\n    kind: store\n",
-                "  - repo: store-mysql\n    kind: auth\n",
-                1,
+            format!(
+                "{}\n  - repo: busbar-store-selftest-fixture\n    kind: auth\n    crate: \
+                 busbar-store-selftest-fixture-plugin\n",
+                cx.read("plugins.yaml").unwrap_or_default().trim_end()
             ),
         );
         report.push(prove_rows_red(
@@ -7840,20 +7851,20 @@ impl Gate for KindIsolationGate {
             ov,
             &[
                 "registry-kind-mismatch",
-                "busbar-store-mysql-plugin",
+                "busbar-store-selftest-fixture-plugin",
                 "store",
             ],
         ));
 
         // THE SAME FOR A HOT-LANE KIND: every kind ships as its own repo, so an export plugin filed
-        // as a transport is an export sink handed the transport ABI.
+        // as a transport is an export sink handed the transport ABI. Same fresh-row plant as above.
         let mut ov = Overlay::new();
         ov.set(
             "plugins.yaml",
-            cx.read("plugins.yaml").unwrap_or_default().replacen(
-                "  - repo: export-file\n    kind: export\n",
-                "  - repo: export-file\n    kind: transport\n",
-                1,
+            format!(
+                "{}\n  - repo: busbar-export-selftest-fixture\n    kind: transport\n    crate: \
+                 busbar-export-selftest-fixture-plugin\n",
+                cx.read("plugins.yaml").unwrap_or_default().trim_end()
             ),
         );
         report.push(prove_rows_red(
@@ -7864,7 +7875,7 @@ impl Gate for KindIsolationGate {
             ov,
             &[
                 "registry-kind-mismatch",
-                "busbar-export-file-plugin",
+                "busbar-export-selftest-fixture-plugin",
                 "export",
             ],
         ));
