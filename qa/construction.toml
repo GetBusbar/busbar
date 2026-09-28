@@ -340,8 +340,8 @@ busbar-voice = ["busbar-voice-codec"]
 [gate.ceiling_raises."gate.surface_ceilings.contract_caps"]
 file    = "qa/construction.toml"
 from    = 17170
-to      = 17586
-because = "OWNER RULING Q68(3) (docs/design/1.6.0-QUESTIONS.md): contract_caps re-arms at the MEASURED value, in its own commit. This is the re-arm for M0 ABI-SPEC (TODO ABI-a/ABI-b5; the design's locked plugin ABI): abi::mechanism (MECHANISM_VERSION, DOOR_MAGIC, DOOR_SYMBOL, KindCode; call: RawOutcome, Outcome, Op, FLAG_RESUME, DeadlineClass, AbiStr, Blob, InHead, MetricEntry, Diag, Envelope, OutHead; door: Door, DoorFn, MetricFamily, Statement; lifecycle: slot numbers, OpsHead, ValidateIn, OpenIn, OpenOut, GenIn, TickIn, TickOut, DriveIn, CancelIn, CancelOut, ReleaseIn; ticket: Ticket, CompletionHandle, HostCtx, WakeFn, HostTables) and abi::{store,secret,auth,hook,export,plane,transport} (ABI_VERSION + an Ops skeleton each), +416 code lines. Measured by cargo xtask gate construction: 17170 before, 17586 after."
+to      = 17775
+because = "OWNER RULING Q68(3) (docs/design/1.6.0-QUESTIONS.md): contract_caps re-arms at the MEASURED value, in its own commit. This is the re-arm for M0 ABI-SPEC (TODO ABI-a/ABI-b5; the design's locked plugin ABI): abi::mechanism (MECHANISM_VERSION, DOOR_MAGIC, DOOR_SYMBOL, KindCode; call: RawOutcome, Outcome, Op, FLAG_RESUME, DeadlineClass, AbiStr, Blob, InHead, MetricEntry, Diag, Envelope, OutHead; door: Door, DoorFn, MetricFamily, Statement; lifecycle: slot numbers, OpsHead, ValidateIn, OpenIn, OpenOut, GenIn, TickIn, TickOut, DriveIn, CancelIn, CancelOut, ReleaseIn; ticket: Ticket, CompletionHandle, HostCtx, WakeFn, HostTables) and abi::{store,secret,auth,hook,export,plane,transport} (ABI_VERSION + an Ops skeleton each), +416 code lines; then the ARCHITECT review rulings R1-R9: KindTailHead and the compile-time layout pins of every mechanism struct and kind table (abi/mechanism/layout.rs), +189. Measured by cargo xtask gate construction: 17170 before, 17775 after."
 
 [gate.ceiling_raises."rules.loc-ceilings.kernel_ceiling"]
 file    = "qa/construction.toml"
@@ -352,8 +352,8 @@ because = "ARCHITECT 2026-09-27: R-KERNEL exception for the Phase-2 exit-test re
 [gate.ceiling_raises."rules.loc-ceilings.caps_contract_ceiling"]
 file    = "qa/construction.toml"
 from    = 17170
-to      = 17586
-because = "OWNER RULING Q68(3) (docs/design/1.6.0-QUESTIONS.md): contract_caps re-arms at the MEASURED value, in its own commit. This is the re-arm for M0 ABI-SPEC (TODO ABI-a/ABI-b5; the design's locked plugin ABI): abi::mechanism (MECHANISM_VERSION, DOOR_MAGIC, DOOR_SYMBOL, KindCode; call: RawOutcome, Outcome, Op, FLAG_RESUME, DeadlineClass, AbiStr, Blob, InHead, MetricEntry, Diag, Envelope, OutHead; door: Door, DoorFn, MetricFamily, Statement; lifecycle: slot numbers, OpsHead, ValidateIn, OpenIn, OpenOut, GenIn, TickIn, TickOut, DriveIn, CancelIn, CancelOut, ReleaseIn; ticket: Ticket, CompletionHandle, HostCtx, WakeFn, HostTables) and abi::{store,secret,auth,hook,export,plane,transport} (ABI_VERSION + an Ops skeleton each), +416 code lines. Measured by cargo xtask gate construction: 17170 before, 17586 after."
+to      = 17775
+because = "OWNER RULING Q68(3) (docs/design/1.6.0-QUESTIONS.md): contract_caps re-arms at the MEASURED value, in its own commit. This is the re-arm for M0 ABI-SPEC (TODO ABI-a/ABI-b5; the design's locked plugin ABI): abi::mechanism (MECHANISM_VERSION, DOOR_MAGIC, DOOR_SYMBOL, KindCode; call: RawOutcome, Outcome, Op, FLAG_RESUME, DeadlineClass, AbiStr, Blob, InHead, MetricEntry, Diag, Envelope, OutHead; door: Door, DoorFn, MetricFamily, Statement; lifecycle: slot numbers, OpsHead, ValidateIn, OpenIn, OpenOut, GenIn, TickIn, TickOut, DriveIn, CancelIn, CancelOut, ReleaseIn; ticket: Ticket, CompletionHandle, HostCtx, WakeFn, HostTables) and abi::{store,secret,auth,hook,export,plane,transport} (ABI_VERSION + an Ops skeleton each), +416 code lines; then the ARCHITECT review rulings R1-R9: KindTailHead and the compile-time layout pins of every mechanism struct and kind table (abi/mechanism/layout.rs), +189. Measured by cargo xtask gate construction: 17170 before, 17775 after."
 
 # ── THE KERNEL CEILING, RE-ARMED BY SD-8 (the substrate-values kernel landing) ─────────────────
 # Its 51100 -> 54801 declaration expired once landed and is struck; the ceiling text below keeps it.
@@ -512,8 +512,9 @@ because = "ARCHITECT ruling on the kernel budget (R-KERNEL, sd-extra.txt; K2-0 u
 # RE-ARMED 16403 -> 17126, AT THE MEASUREMENT (OWNER RULING Q68(3)), in its own commit after
 # the connection table (+723); the live declaration above carries the measure.
 # RE-ARMED 17170 -> 17586, AT THE MEASUREMENT (OWNER RULING Q68(3)), in its own commit after
-# M0 ABI-SPEC's mechanism and kind skeletons (+416); the live declaration above carries the measure.
-contract_caps = 17586
+# M0 ABI-SPEC's mechanism and kind skeletons (+416), then 17586 -> 17775 for its review rulings
+# (compile-time layout pins, KindTailHead, +189); the live declaration above carries the measure.
+contract_caps = 17775
 # REPOINTED, and the repoint is what makes this row a gate again. It named the CRATE
 # `busbar-grammar`, which #40 folded into `busbar-contract` and deleted — so it summed nothing,
 # measured nothing and passed, which is this file's own "zero is not clean" failure sitting inside
@@ -1142,8 +1143,8 @@ contract_crate = "busbar-contract"
 # LOWERED 16664 -> 16368 with its pair (the transport lowering shrink: slot tables and bridges from one declarative list per role, -296).
 # RE-ARMED 16373 -> 16403 with its pair (OWNER RULING Q68(3); the framer clock seam, +30).
 # RE-ARMED 16403 -> 17126 with its pair (OWNER RULING Q68(3); the connection table, +723).
-# RE-ARMED 17170 -> 17586 with its pair (OWNER RULING Q68(3); M0 ABI-SPEC, +416).
-caps_contract_ceiling = 17586
+# RE-ARMED 17170 -> 17775 with its pair (OWNER RULING Q68(3); M0 ABI-SPEC +416, its review rulings +189).
+caps_contract_ceiling = 17775
 unit_crate_glob = "busbar-unit-*"
 # RE-KEYED on cherry-pick onto 143db6db6: this commit's own delta is -53 (two units stopped
 # declaring their own copies), measured against whatever unit_total_ceiling read when the line was
