@@ -638,7 +638,8 @@ fn measure(cx: &Ctx, crates: &[CrateInfo]) -> Result<Measured, String> {
         // the contract's own exported shapes, and the neutrality gates
         // (instance-noun-neutrality, plane-abi-neutrality, c1-literals) still scan every byte of
         // `abi/` exactly as before — only the kind-isolation MATRIX stops filing it into a cell. Code
-        // in `busbar-contract` OUTSIDE `abi/` is still counted, same as any other crate.
+        // in `busbar-contract` OUTSIDE `abi/` is still counted, same as any other crate, except the
+        // two layout mirrors that restate `abi/`'s shapes ([`CONTRACT_ABI_LAYOUT_MIRRORS`]).
         if c.name == CONTRACT_PACKAGE && is_contract_abi_shape(&rel) {
             continue;
         }
@@ -700,10 +701,21 @@ const CONTRACT_PACKAGE: &str = "busbar-contract";
 /// this does and does not touch.
 const CONTRACT_ABI_PREFIX: &str = "crates/busbar-contract/src/abi/";
 
-/// Whether `rel` (a path under `crates/`) is inside [`CONTRACT_ABI_PREFIX`] — the MATRIX's one
-/// carve-out, and the only place this gate calls it.
+/// THE TWO LAYOUT MIRRORS of [`CONTRACT_ABI_PREFIX`]: the layout golden and the test that writes
+/// it. They exist only to restate, field by field, the shapes that live in `src/abi/` (the export
+/// tail's `streams`/`streams_len` fields, for one), so the same ARCHITECT ruling that scopes
+/// `src/abi/` covers them. Named exactly, two files and nothing else: every other file under
+/// `busbar-contract/tests/` is still counted, and no word is exempted anywhere.
+const CONTRACT_ABI_LAYOUT_MIRRORS: &[&str] = &[
+    "crates/busbar-contract/tests/golden/abi-layout.golden",
+    "crates/busbar-contract/tests/layout_golden.rs",
+];
+
+/// Whether `rel` (a path under `crates/`) is inside [`CONTRACT_ABI_PREFIX`] or is one of its
+/// [`CONTRACT_ABI_LAYOUT_MIRRORS`] — the MATRIX's one carve-out, and the only place this gate
+/// calls it.
 fn is_contract_abi_shape(rel: &str) -> bool {
-    rel.starts_with(CONTRACT_ABI_PREFIX)
+    rel.starts_with(CONTRACT_ABI_PREFIX) || CONTRACT_ABI_LAYOUT_MIRRORS.contains(&rel)
 }
 
 /// THE CONTRACT'S OWN IDENTIFIERS — every item `busbar-contract` declares `pub` (struct, enum,
@@ -2385,6 +2397,38 @@ pub fn selftest<'a>(
             cx,
             "crates/busbar-contract/src/abi/plane/leak.rs",
             "//! Not an ABI shape: the mcp plane's frames are described here.\n",
+        ),
+    ));
+
+    // THE LAYOUT MIRRORS, BOTH WAYS. `tests/golden/abi-layout.golden` and `tests/layout_golden.rs`
+    // restate `src/abi/`'s shapes and are named, exactly, as part of the carve-out
+    // ([`CONTRACT_ABI_LAYOUT_MIRRORS`]). The carve-out is two files, not `tests/`: the same noun in
+    // any other `busbar-contract` test file still counts.
+    report.push(prove_rows_red(
+        cx,
+        gate,
+        "a plane word planted in any other `busbar-contract` test file still counts",
+        &[ROW_MATRIX],
+        plant(
+            cx,
+            "crates/busbar-contract/tests/planted_plane_word.rs",
+            "//! Not a layout mirror: the mcp plane's frames are described here.\n",
+        ),
+        &["busbar-contract", "plane"],
+    ));
+    // The mirror keeps every line it has and GAINS one, so the only thing the plant changes is a
+    // plane word added to a mirror.
+    let mirror = "crates/busbar-contract/tests/golden/abi-layout.golden";
+    let mirror_text = cx.read(mirror).unwrap_or_default();
+    report.push(prove_rows_green(
+        cx,
+        gate,
+        "the same noun in a layout mirror of `src/abi/` does not count",
+        &[ROW_MATRIX],
+        plant(
+            cx,
+            mirror,
+            &format!("{}\nPlaneTail.mcp=8\n", mirror_text.trim_end()),
         ),
     ));
 
