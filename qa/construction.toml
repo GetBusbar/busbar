@@ -546,7 +546,8 @@ because = "ARCHITECT ruling on the kernel budget (R-KERNEL, sd-extra.txt; K2-0 u
 # the Statement's secret_refs (+4); the live declaration above carries the measure.
 # RE-ARMED 17779 -> 17802, AT THE MEASUREMENT (OWNER RULING Q68(3)), in its own commit after
 # the rulings on M0 decisions 1-6 (+23); the live declaration above carries the measure.
-contract_caps = 17802
+# RE-ARMED 17802 -> 18797, AT THE MEASUREMENT (OWNER RULING Q68(3)), in its own commit after the batch: XTASK-SPEED (Ctx memo, no contract growth), KI-ABI-SCOPE (matrix-only, no contract growth), M3-SDK's door macro (+324), M3-SHAPES AUTH's v3 shapes, review, fix-forward and answer validators (+671), the billing.rs section-sign wording fix (no growth); the live declaration above carries the measure.
+contract_caps = 18797
 # REPOINTED, and the repoint is what makes this row a gate again. It named the CRATE
 # `busbar-grammar`, which #40 folded into `busbar-contract` and deleted — so it summed nothing,
 # measured nothing and passed, which is this file's own "zero is not clean" failure sitting inside
@@ -1178,7 +1179,8 @@ contract_crate = "busbar-contract"
 # RE-ARMED 17170 -> 17775 with its pair (OWNER RULING Q68(3); M0 ABI-SPEC +416, its review rulings +189).
 # RE-ARMED 17775 -> 17779 with its pair (OWNER RULING Q68(3); Statement.secret_refs, +4).
 # RE-ARMED 17779 -> 17802 with its pair (OWNER RULING Q68(3); rulings on M0 decisions, +23).
-caps_contract_ceiling = 17802
+# RE-ARMED 17802 -> 18797 with its pair (OWNER RULING Q68(3); the batch: M3-SDK's door macro +324, M3-SHAPES AUTH's shapes/review/fix-forward/validators +671, XTASK-SPEED and KI-ABI-SCOPE add no contract growth).
+caps_contract_ceiling = 18797
 unit_crate_glob = "busbar-unit-*"
 # RE-KEYED on cherry-pick onto 143db6db6: this commit's own delta is -53 (two units stopped
 # declaring their own copies), measured against whatever unit_total_ceiling read when the line was
