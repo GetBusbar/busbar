@@ -403,19 +403,27 @@ because = "ARCHITECT 2026-09-28: R-KERNEL, owner 2026-09-28 plugin log files rul
 # 24340 -> 24900 (OWNER RULING Q68(3)). Its commit reached the base; struck by the transport
 # stream-end rule's re-arm, which declares the pair's next figure below.
 
-# ── THE CONTRACT CEILING PAIR, RE-ARMED BY THE TRANSPORT STREAM-END RULE ─
+# ── THE CONTRACT CEILING PAIR, RE-ARMED BY THE TRANSPORT STREAM-END RULE — EXPIRED AND STRUCK
+#
+# Declared `gate.surface_ceilings.contract_caps` and `rules.loc-ceilings.caps_contract_ceiling`
+# 24900 -> 24909 (OWNER RULING Q68(3)). Its commit reached the base; struck by LOG-BRIDGE's
+# re-arm below, which declares the pair's next figure.
+
+# ── THE CONTRACT CEILING PAIR, RE-ARMED BY LOG-BRIDGE plugin logging (#85; THE DESIGN §11.2) —
+#    measured and written by LANDER at land time, rebased over DOOR-TRANSPORT's already-landed
+#    figure ──────────────────────────────────────────────────────────────────────────────────
 
 [gate.ceiling_raises."gate.surface_ceilings.contract_caps"]
 file    = "qa/construction.toml"
-from    = 24900
-to      = 24909
-because = "OWNER RULING Q68(3) (docs/design/1.6.0-QUESTIONS.md): contract_caps re-arms at the MEASURED value, in its own commit. This is the re-arm for the transport kind's declared stream-end surface: PIECE_STREAM_FAILED and the check_framer rule that an empty or failed piece carries PIECE_END_OF_FRAME, +9 code lines. Measured by cargo xtask gate construction: 24900 before, 24909 after."
+from    = 24909
+to      = 25143
+because = "ARCHITECT 2026-09-28 plugin logging, the standing contract-pair exception: the step's declared surface is the door macro's call capture (abi::sdk::capture), its wiring into the trampoline and plugin_door!, and the reserved log diagnostic ids and bounds in abi::mechanism::call (BUSBAR-1.6.0.md #85 and THE DESIGN, §11.2 Plugin logging), +234 (LOG-BRIDGE's own delta, rebased over DOOR-TRANSPORT's landed +9). Measured by cargo xtask gate construction: 24909 before, 25143 after."
 
 [gate.ceiling_raises."rules.loc-ceilings.caps_contract_ceiling"]
 file    = "qa/construction.toml"
-from    = 24900
-to      = 24909
-because = "OWNER RULING Q68(3) (docs/design/1.6.0-QUESTIONS.md): contract_caps re-arms at the MEASURED value, in its own commit. This is the re-arm for the transport kind's declared stream-end surface: PIECE_STREAM_FAILED and the check_framer rule that an empty or failed piece carries PIECE_END_OF_FRAME, +9 code lines. Measured by cargo xtask gate construction: 24900 before, 24909 after."
+from    = 24909
+to      = 25143
+because = "ARCHITECT 2026-09-28 plugin logging, the standing contract-pair exception: the step's declared surface is the door macro's call capture (abi::sdk::capture), its wiring into the trampoline and plugin_door!, and the reserved log diagnostic ids and bounds in abi::mechanism::call (BUSBAR-1.6.0.md #85 and THE DESIGN, §11.2 Plugin logging), +234 (LOG-BRIDGE's own delta, rebased over DOOR-TRANSPORT's landed +9). Measured by cargo xtask gate construction: 24909 before, 25143 after."
 
 # ── THE CONTRACT CEILING PAIR, RE-ARMED BY LANDER'S BATCH (XTASK-SPEED, KI-ABI-SCOPE, M3-SDK,
 #    M3-SHAPES AUTH, billing-cite) — EXPIRED AND STRUCK
@@ -677,8 +685,10 @@ because = "ARCHITECT ruling on the kernel budget (R-KERNEL, sd-extra.txt; K2-0 u
 # RE-ARMED 24340 -> 24900, AT THE MEASUREMENT (OWNER RULING Q68(3)), in its own commit after H1
 # KERNEL<>PLUGINS 3a HostSlots (+560); the live declaration above carries the measure.
 # RE-ARMED 24900 -> 24909, AT THE MEASUREMENT (OWNER RULING Q68(3)), in its own commit after
-# the transport stream-end rule (+9); the live declaration above carries the measure.
-contract_caps = 24909
+# the transport stream-end rule (+9); struck by LOG-BRIDGE's re-arm below.
+# RE-ARMED 24909 -> 25143, AT THE MEASUREMENT, in its own commit after LOG-BRIDGE plugin logging
+# (#85, +234); the live declaration above carries the measure.
+contract_caps = 25143
 # REPOINTED, and the repoint is what makes this row a gate again. It named the CRATE
 # `busbar-grammar`, which #40 folded into `busbar-contract` and deleted — so it summed nothing,
 # measured nothing and passed, which is this file's own "zero is not clean" failure sitting inside
@@ -1339,7 +1349,8 @@ contract_crate = "busbar-contract"
 # RE-ARMED 24340 -> 24900 with its pair (OWNER RULING Q68(3); H1 KERNEL<>PLUGINS 3a HostSlots,
 # +560).
 # RE-ARMED 24900 -> 24909 with its pair (OWNER RULING Q68(3); the transport stream-end rule, +9).
-caps_contract_ceiling = 24909
+# RE-ARMED 24909 -> 25143 with its pair (LOG-BRIDGE plugin logging #85, +234).
+caps_contract_ceiling = 25143
 unit_crate_glob = "busbar-unit-*"
 # RE-KEYED on cherry-pick onto 143db6db6: this commit's own delta is -53 (two units stopped
 # declaring their own copies), measured against whatever unit_total_ceiling read when the line was
