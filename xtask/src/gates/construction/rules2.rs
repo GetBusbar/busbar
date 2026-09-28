@@ -942,48 +942,65 @@ pub fn hold_discipline(cx: &Ctx, tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, St
         ));
     }
 
-    // (e) a cancellation-token check before every `.await` in the route step.
-    let cancel_rx = Regex::new(need_str(c, "cancel_check_pattern", "hold-discipline")?)?;
-    let route_fns = c.list_of("route_step_functions");
-    let mut uncancellable = Vec::new();
-    let mut any_route_await = false;
-    for rel in &files {
+    // (e) RESTATED (ARCHITECT, construction triage 2026-09-27): the route step it used to scan is
+    // sync, so the row was vacuous. Its real subject is the dispatcher's deadline/cancel path: in
+    // every function of `cancel_scope_dirs` that names a cancel or a deadline, a money hold open at
+    // or after that point is released or settled BEFORE any `.await` or `return` that follows it.
+    let dirs = c.list_of("cancel_scope_dirs");
+    let cancel_rx = Regex::new(need_str(c, "cancel_path_pattern", "hold-discipline")?)?;
+    let open_rx = Regex::new(need_str(c, "hold_open_pattern", "hold-discipline")?)?;
+    let close_rx = Regex::new(need_str(c, "hold_close_pattern", "hold-discipline")?)?;
+    let cancel_files: Vec<&String> = tree
+        .files
+        .keys()
+        .filter(|r| dirs.iter().any(|d| r.starts_with(d.as_str())))
+        .collect();
+    let (mut open_across, mut cancel_fns) = (Vec::new(), 0usize);
+    for rel in cancel_files {
         for f in tree.fns.get(rel).into_iter().flat_map(|v| v.iter()) {
-            if f.intest || !route_fns.contains(&f.name) {
+            if f.intest {
                 continue;
             }
-            let mut seen_check = false;
-            for l in &tree.files[rel][f.start - 1..f.end] {
-                if cancel_rx.is_match(l.code_bytes()) {
-                    seen_check = true;
+            let body = &tree.files[rel][f.start - 1..f.end];
+            let Some(cancel_i) = body.iter().position(|l| cancel_rx.is_match(l.code_bytes()))
+            else {
+                continue;
+            };
+            cancel_fns += 1;
+            let mut open = false;
+            for (i, l) in body.iter().enumerate() {
+                if open_rx.is_match(l.code_bytes()) {
+                    open = true;
                 }
-                if l.code.contains(".await") {
-                    any_route_await = true;
-                    if !seen_check {
-                        uncancellable.push(format!("{} at {rel}:{}", f.name, l.no));
-                    }
+                if close_rx.is_match(l.code_bytes()) {
+                    open = false;
+                }
+                let exits = l.code.contains(".await") || return_rx.is_match(l.code_bytes());
+                if open && exits && i >= cancel_i {
+                    open_across.push(format!("{} at {rel}:{}", f.name, l.no));
                 }
             }
         }
     }
-    let max_uncancellable = need_int(c, "max_uncancellable_await", "hold-discipline")?;
+    let max_open = need_int(c, "max_await_with_open_hold", "hold-discipline")?;
     rows.push(plain(
         "hold-discipline:cancellation-before-await",
-        uncancellable.len() as i64 <= max_uncancellable,
-        "a cancellation-token check precedes every `.await` in the route step",
-        if any_route_await {
+        open_across.len() as i64 <= max_open,
+        "a money hold is released or settled before any `.await` or `return` after a cancel or deadline",
+        if cancel_fns > 0 {
             format!(
-                "{} `.await` in a route step with no prior cancellation check (ceiling \
-                 {max_uncancellable}): {}",
-                uncancellable.len(),
-                join_or_none(&uncancellable)
+                "{} `.await`/`return` with a hold open after a cancel or deadline, over {cancel_fns} \
+                 cancel-path function(s) in {} (ceiling {max_open}): {}",
+                open_across.len(),
+                dirs.join(", "),
+                join_or_none(&open_across)
             )
         } else {
-            format!("{VACUOUS}no `.await` found inside a route-step function in scope")
+            format!("{VACUOUS}no cancel-path function found in {}", dirs.join(", "))
         },
-        uncancellable.len() as i64,
-        max_uncancellable,
-        uncancellable,
+        open_across.len() as i64,
+        max_open,
+        open_across,
     ));
     Ok(rows)
 }

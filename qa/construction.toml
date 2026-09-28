@@ -1700,13 +1700,20 @@ catch_unwind_pattern = 'catch_unwind'
 hold_word = "Hold"
 abort_pattern = '\.abort\('
 forget_or_drop_pattern = '(?:mem::forget|drop)\(\s*&?\s*[A-Za-z_][A-Za-z0-9_]*[Hh]old[A-Za-z0-9_]*'
-route_step_functions = ["route"]
-cancel_check_pattern = 'is_cancelled|cancellation'
+# (e) `cancellation-before-await`, RESTATED (ARCHITECT, construction triage 2026-09-27): the kernel
+# route step it scanned is sync, so the row was vacuous. Its subject is now the M1 dispatcher's
+# deadline/cancel path: in a function of `cancel_scope_dirs` that names a cancel or a deadline, a
+# money hold (`hold_open_pattern`) is released or settled (`hold_close_pattern`) before any `.await`
+# or `return` that follows the cancel.
+cancel_scope_dirs = ["crates/plugin-loader/src/dispatch/"]
+cancel_path_pattern = 'slot::CANCEL|DropClient|drop_client|deadline'
+hold_open_pattern = 'Hold::open|HoldCell|\blet\s+(?:mut\s+)?\w*[Hh]old\w*\s*[:=]'
+hold_close_pattern = '::settle\(|\.settle\(|::release\(|\.release\('
 max_early_exit = 0
 max_catch_unwind_capture = 0
 max_join_abort = 0
 max_forget_or_drop = 0
-max_uncancellable_await = 0
+max_await_with_open_hold = 0
 
 # ── 21. forbid-unsafe (BUSBAR-1.6.0.md THE DESIGN, §2) ─────────────────────────────────────────────────────────
 [rules.kernel-seal-impls]
