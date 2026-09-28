@@ -4164,6 +4164,82 @@ jobs:
         if: ${{ !cancelled() && matrix.gate == 'unconstructed' }}
         run: cargo xtask gate unconstructed
 
+  one-memory-abi-gates:
+    name: one-memory-abi gates (${{ matrix.gate }} — REPORT-ONLY in the umbrella, never softened here)
+    # THE ONE-MEMORY-ABI GATES (M0 ABI-SPEC; the design's locked plugin ABI). Six gates measure how
+    # far the tree is from "plugins speak the memory ABI only": one-memory-abi, contract-stateless,
+    # plugin-closure-deps, c1-literals, door-only and linked-dropped-features. Each is armed at the
+    # count it measured on the day it landed, as a drain-only ledger qa/<gate>.toml whose rows are
+    # the M2 (GATES) work list: a NEW finding reds it, a drained finding whose row was not struck
+    # reds it. The owner signed them REPORT-ONLY until M2 ("never blocking yet"), so this job runs
+    # each plainly -- no `continue-on-error`, no `|| true`, no `--report` -- and the umbrella waits
+    # for it and prints its result without counting it.
+    #
+    # FLIP CONDITION (M2): move each gate's two steps into a counted job (or give this job a RESULTS
+    # row in the umbrella), strike its `# report-only:` line and move the matching CARGO_CI_ONLY
+    # entries in xtask/src/full_gate.rs to CARGO_LOCAL, in the same commit.
+    needs: [preflight]
+    runs-on: latchkey-large
+
+    # BOUNDED -- see "EVERY JOB IS BOUNDED" at the top of this file. NEW JOB: each gate is a text
+    # scan and its self-test measured under a minute locally; 30 is the content-debt-gates bound.
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        gate: [one-memory-abi, contract-stateless, plugin-closure-deps, c1-literals, door-only, linked-dropped-features]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
+      - name: Resolve cargo home (Latchkey image sets CARGO_HOME off $HOME)
+        uses: ./.github/actions/cargo-home
+      - name: Build the gate runner once
+        run: cargo build -p xtask --locked
+      # Spelled out per gate rather than `cargo xtask gate ${{ matrix.gate }}`: full-gate's
+      # set-equality check reads gate NAMES off executed lines, and a matrix expression names none.
+      - name: one-memory-abi self-test
+        if: matrix.gate == 'one-memory-abi'
+        run: cargo xtask gate one-memory-abi --selftest
+      - name: one-memory-abi (one exported symbol, no COLD/JSON lane, no blocking thread in the loader, extern "C" slots)
+        # `!cancelled()`: the verdict is printed even when the self-test above is red.
+        if: ${{ !cancelled() && matrix.gate == 'one-memory-abi' }}
+        run: cargo xtask gate one-memory-abi
+      - name: contract-stateless self-test
+        if: matrix.gate == 'contract-stateless'
+        run: cargo xtask gate contract-stateless --selftest
+      - name: contract-stateless (busbar-contract holds no static, once-cell or thread-local)
+        # `!cancelled()`: the verdict is printed even when the self-test above is red.
+        if: ${{ !cancelled() && matrix.gate == 'contract-stateless' }}
+        run: cargo xtask gate contract-stateless
+      - name: plugin-closure-deps self-test
+        if: matrix.gate == 'plugin-closure-deps'
+        run: cargo xtask gate plugin-closure-deps --selftest
+      - name: plugin-closure-deps (a plugin depends on busbar-contract alone, no runtime, logger, thread, socket, file or env)
+        # `!cancelled()`: the verdict is printed even when the self-test above is red.
+        if: ${{ !cancelled() && matrix.gate == 'plugin-closure-deps' }}
+        run: cargo xtask gate plugin-closure-deps
+      - name: c1-literals self-test
+        if: matrix.gate == 'c1-literals'
+        run: cargo xtask gate c1-literals --selftest
+      - name: c1-literals (the kernel and loader spell no plugin, style or protocol)
+        # `!cancelled()`: the verdict is printed even when the self-test above is red.
+        if: ${{ !cancelled() && matrix.gate == 'c1-literals' }}
+        run: cargo xtask gate c1-literals
+      - name: door-only self-test
+        if: matrix.gate == 'door-only'
+        run: cargo xtask gate door-only --selftest
+      - name: door-only (the binary closure reaches a plugin only through its door, no static fn-pointer seam)
+        # `!cancelled()`: the verdict is printed even when the self-test above is red.
+        if: ${{ !cancelled() && matrix.gate == 'door-only' }}
+        run: cargo xtask gate door-only
+      - name: linked-dropped-features self-test
+        if: matrix.gate == 'linked-dropped-features'
+        run: cargo xtask gate linked-dropped-features --selftest
+      - name: linked-dropped-features (a linked plugin is built with its dropped-in build's features)
+        # `!cancelled()`: the verdict is printed even when the self-test above is red.
+        if: ${{ !cancelled() && matrix.gate == 'linked-dropped-features' }}
+        run: cargo xtask gate linked-dropped-features
+
   # EVERY REGISTERED GATE, IN ONE RUN, ON EVERY PUSH -- REPORT-ONLY IN THE UMBRELLA, NEVER SOFTENED
   # HERE (KICKOFF 13.2). `cargo xtask gate --all` is the registry's own verdict: every gate, one
   # closing rollup. Until this job it ran in NO automatic workflow -- its only caller was
@@ -4386,6 +4462,7 @@ jobs:
       - teller-steps
       - construction-gate
       - content-debt-gates
+      - one-memory-abi-gates
       - gate-all
       - plugin-proofs
       - consumers
@@ -4393,6 +4470,10 @@ jobs:
     #   content that item 6b (Phase 5) drains, self-test and verdict both, and has no
     #   gates::REPORT_ONLY posture to score against. The job runs it plainly and goes red; the
     #   umbrella waits for it and prints its result, and does not count it until it is green.
+    # report-only: one-memory-abi-gates -- the six one-memory-abi gates (M0 ABI-SPEC) are signed
+    #   REPORT-ONLY until M2: each is armed as a drain-only ledger whose rows are the M2 work list.
+    #   The job runs them plainly; the umbrella waits for it and prints its result, and does not
+    #   count it until M2 moves them into a counted job.
     # report-only: gate-all -- `cargo xtask gate --all` is RED ON HEAD in the gates later phases
     #   drain (KICKOFF 13.2). The job runs it plainly and goes red on every run; the umbrella waits
     #   for it and prints its result, and does not count it until `gate --all` exits 0 on HEAD.
@@ -4422,6 +4503,8 @@ jobs:
       CONSTRUCTION_RESULT: ${{ needs.construction-gate.result }}
       # Report-only: printed, never counted. Flip condition is on the content-debt-gates job.
       CONTENT_DEBT_GATES_RESULT: ${{ needs.content-debt-gates.result }}
+      # Report-only: printed, never counted. Flip condition is on the one-memory-abi-gates job.
+      ONE_MEMORY_ABI_GATES_RESULT: ${{ needs.one-memory-abi-gates.result }}
       # Report-only: printed, never counted. Flip condition is on the gate-all job.
       GATE_ALL_RESULT: ${{ needs.gate-all.result }}
       # 'true' on any run where the full tier is expected to execute: every event except a push,
@@ -4497,6 +4580,7 @@ jobs:
           # row went red that the gate's standing list does not name.
           printf '  %-24s %s\n' "construction-gate" "posture verdict=${CONSTRUCTION_VERDICT:-unset} (job result ${CONSTRUCTION_RESULT:-unset}; SCORED)"
           printf '  %-24s %s\n' "content-debt-gates" "job result ${CONTENT_DEBT_GATES_RESULT:-unset} (REPORT-ONLY until item 6b drains it; NOT COUNTED)"
+          printf '  %-24s %s\n' "one-memory-abi-gates" "job result ${ONE_MEMORY_ABI_GATES_RESULT:-unset} (REPORT-ONLY until M2; NOT COUNTED)"
           printf '  %-24s %s\n' "gate-all" "job result ${GATE_ALL_RESULT:-unset} (REPORT-ONLY until gate --all is green on HEAD; NOT COUNTED)"
           if [ "$fails" -ne 0 ]; then
             echo "::error::ci umbrella: RED — ${fails} required job(s) did not pass on this ref."

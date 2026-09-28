@@ -1,0 +1,141 @@
+# plugin-closure-deps: DRAIN-ONLY ledger (M0 ABI-SPEC, REPORT-ONLY).
+# A plugin depends on busbar-contract and nothing else of busbar's, holds no runtime,
+# logger or recorder, and reaches no thread, socket, file or env of its own. Each row
+# is one the tree carries today; `file` is the plugin's manifest or source file.
+# Strike a row in the commit that drains it; never add one.
+# Regenerate with `cargo xtask gate plugin-closure-deps --write`.
+
+[[finding]]
+rule = "plugin-closure-deps:busbar-deps"
+file = "crates/busbar-plane-llm/Cargo.toml"
+item = "busbar-llm-codec"
+
+[[finding]]
+rule = "plugin-closure-deps:busbar-deps"
+file = "crates/busbar-plane-streaming/Cargo.toml"
+item = "busbar-voice-codec"
+
+[[finding]]
+rule = "plugin-closure-deps:runtime-deps"
+file = "crates/busbar-plane-a2a/Cargo.toml"
+item = "tracing (via busbar-contract)"
+
+[[finding]]
+rule = "plugin-closure-deps:runtime-deps"
+file = "crates/busbar-plane-decision/Cargo.toml"
+item = "tracing (via busbar-contract)"
+
+[[finding]]
+rule = "plugin-closure-deps:runtime-deps"
+file = "crates/busbar-plane-llm/Cargo.toml"
+item = "tracing (via busbar-contract)"
+
+[[finding]]
+rule = "plugin-closure-deps:runtime-deps"
+file = "crates/busbar-plane-mcp/Cargo.toml"
+item = "tracing (via busbar-contract)"
+
+[[finding]]
+rule = "plugin-closure-deps:runtime-deps"
+file = "crates/busbar-plane-streaming/Cargo.toml"
+item = "tracing (via busbar-contract)"
+
+[[finding]]
+rule = "plugin-closure-deps:runtime-deps"
+file = "crates/busbar-transport-http/Cargo.toml"
+item = "hyper"
+
+[[finding]]
+rule = "plugin-closure-deps:runtime-deps"
+file = "crates/busbar-transport-http/Cargo.toml"
+item = "hyper-util"
+
+[[finding]]
+rule = "plugin-closure-deps:runtime-deps"
+file = "crates/busbar-transport-http/Cargo.toml"
+item = "tokio"
+
+[[finding]]
+rule = "plugin-closure-deps:runtime-deps"
+file = "crates/busbar-transport-http/Cargo.toml"
+item = "tracing (via busbar-contract)"
+
+[[finding]]
+rule = "plugin-closure-deps:runtime-deps"
+file = "crates/busbar-transport-stdio/Cargo.toml"
+item = "tokio"
+
+[[finding]]
+rule = "plugin-closure-deps:runtime-deps"
+file = "crates/busbar-transport-stdio/Cargo.toml"
+item = "tracing (via busbar-contract)"
+
+[[finding]]
+rule = "plugin-closure-deps:runtime-deps"
+file = "crates/busbar-transport-tcp/Cargo.toml"
+item = "tokio"
+
+[[finding]]
+rule = "plugin-closure-deps:runtime-deps"
+file = "crates/busbar-transport-tcp/Cargo.toml"
+item = "tracing (via busbar-contract)"
+
+[[finding]]
+rule = "plugin-closure-deps:runtime-deps"
+file = "crates/busbar-transport-ws/Cargo.toml"
+item = "tokio"
+
+[[finding]]
+rule = "plugin-closure-deps:runtime-deps"
+file = "crates/busbar-transport-ws/Cargo.toml"
+item = "tracing (via busbar-contract)"
+
+[[finding]]
+rule = "plugin-closure-deps:runtime-deps"
+file = "crates/hook-test-plugin/Cargo.toml"
+item = "tracing"
+
+[[finding]]
+rule = "plugin-closure-deps:runtime-deps"
+file = "crates/hooks-ranking/Cargo.toml"
+item = "tracing (via busbar-contract)"
+
+[[finding]]
+rule = "plugin-closure-deps:runtime-deps"
+file = "crates/store-memory/Cargo.toml"
+item = "tracing (via busbar-contract)"
+
+[[finding]]
+rule = "plugin-closure-deps:std-io"
+file = "crates/busbar-transport-http/src/grpc/conn.rs"
+item = "std::thread"
+
+[[finding]]
+rule = "plugin-closure-deps:std-io"
+file = "crates/busbar-transport-stdio/src/carrier.rs"
+item = "std::thread"
+
+[[finding]]
+rule = "plugin-closure-deps:std-io"
+file = "crates/busbar-transport-stdio/src/transport.rs"
+item = "std::thread"
+
+[[finding]]
+rule = "plugin-closure-deps:std-io"
+file = "crates/busbar-transport-tcp/src/carrier.rs"
+item = "std::net"
+
+[[finding]]
+rule = "plugin-closure-deps:std-io"
+file = "crates/busbar-transport-tcp/src/carrier.rs"
+item = "std::thread"
+
+[[finding]]
+rule = "plugin-closure-deps:std-io"
+file = "crates/busbar-transport-tcp/src/lib.rs"
+item = "std::net"
+
+[[finding]]
+rule = "plugin-closure-deps:std-io"
+file = "crates/hook-test-plugin/src/lib.rs"
+item = "std::thread"

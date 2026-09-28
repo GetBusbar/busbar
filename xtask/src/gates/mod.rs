@@ -20,15 +20,18 @@
 
 pub mod abi_location;
 pub mod blocking_ffi;
+pub mod c1_literals;
 pub mod changelog;
 pub mod changelog_register;
 pub mod ci_umbrella;
 pub mod config_schema;
 pub mod conformance_sync;
 pub mod construction;
+pub mod contract_stateless;
 pub mod denylist_gate;
 pub mod design_bindings;
 pub mod design_docs_allowlist;
+pub mod door_only;
 pub mod duplex_ws_default_edge;
 pub mod feature_sets;
 pub mod field_inventory;
@@ -40,16 +43,20 @@ pub mod inventory_ref;
 pub mod kernel_token_wire_purity;
 pub mod kind_abi_lane;
 pub mod kind_isolation;
+pub mod linked_dropped_features;
 pub mod money_invariants;
 pub mod no_deferral;
 pub mod no_float_money;
 pub mod no_self_filed_issues;
 pub mod no_tracked_ignored;
+pub mod one_abi;
+pub mod one_memory_abi;
 pub mod package_selectors;
 pub mod plane_abi_neutrality;
 pub mod plane_pricing_blindness;
 pub mod plane_purity;
 pub mod plane_transport_neutrality;
+pub mod plugin_closure_deps;
 pub mod population;
 pub mod qa_gate_dispatch;
 pub mod qa_names;
@@ -2770,6 +2777,56 @@ pub static REGISTRY: &[Registration] = &[
         build: || Box::new(abi_location::AbiLocationGate),
         summary: "every ABI shape (repr(C) type, extern \"C\" slot/fn-pointer, ABI version const) is \
                   defined in busbar-contract's abi/; today's offenders are a drain-only ledger",
+    },
+    // THE ONE-MEMORY-ABI GATES (M0 ABI-SPEC; the design's locked plugin ABI). REPORT-ONLY: each is
+    // armed at today's count as a drain-only ledger qa/<name>.toml whose rows are the M2 work
+    // list, and ci.yml runs them in the `one-memory-abi-gates` job the umbrella does not count.
+    Registration {
+        name: "one-memory-abi",
+        batch: 1,
+        tier: Tier::Fast,
+        build: || Box::new(one_memory_abi::OneMemoryAbiGate),
+        summary: "plugins speak the memory ABI only: one exported symbol, no COLD/JSON lane, no \
+                  blocking thread in the loader, extern \"C\" slots (report-only ledger)",
+    },
+    Registration {
+        name: "contract-stateless",
+        batch: 1,
+        tier: Tier::Fast,
+        build: || Box::new(contract_stateless::ContractStatelessGate),
+        summary: "busbar-contract holds no static, once-cell or thread-local (report-only ledger)",
+    },
+    Registration {
+        name: "plugin-closure-deps",
+        batch: 1,
+        tier: Tier::Fast,
+        build: || Box::new(plugin_closure_deps::PluginClosureDepsGate),
+        summary: "a plugin depends on busbar-contract alone and holds no runtime, logger, thread, \
+                  socket, file or env of its own (report-only ledger)",
+    },
+    Registration {
+        name: "c1-literals",
+        batch: 1,
+        tier: Tier::Fast,
+        build: || Box::new(c1_literals::C1LiteralsGate),
+        summary: "the kernel and loader spell no plugin, style or protocol in a literal, feature or \
+                  cfg site (report-only ledger)",
+    },
+    Registration {
+        name: "door-only",
+        batch: 1,
+        tier: Tier::Fast,
+        build: || Box::new(door_only::DoorOnlyGate),
+        summary: "the binary closure reaches a plugin only through its door and installs no static \
+                  fn-pointer seam but oauth2's and admin's (report-only ledger)",
+    },
+    Registration {
+        name: "linked-dropped-features",
+        batch: 1,
+        tier: Tier::Fast,
+        build: || Box::new(linked_dropped_features::LinkedDroppedFeaturesGate),
+        summary: "a plugin linked into the binary is built with its dropped-in build's features \
+                  (report-only ledger)",
     },
     Registration {
         name: "kind-abi-lane",

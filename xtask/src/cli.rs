@@ -379,6 +379,14 @@ fn gate(args: &[String]) -> i32 {
                 | "conformance-sync"
                 | "config-schema"
                 | "instance-noun-neutrality"
+                // The six one-memory-abi gates (M0 ABI-SPEC) regenerate their drain-only ledgers
+                // (`gates::one_abi`) in the run and answer through it.
+                | "one-memory-abi"
+                | "contract-stateless"
+                | "plugin-closure-deps"
+                | "c1-literals"
+                | "door-only"
+                | "linked-dropped-features"
         ) {
             let verdict = gates::execute(gate.as_ref(), &cx);
             gates::print_verdict(reg.name, &verdict);
