@@ -2,7 +2,7 @@
 //!
 //! The kernel's single named home for the v1.5.5 `kind: hook` test corpus, ported as BLACK-BOX
 //! assertions against the CURRENT dispatch path (the real `test_env`/`resolve_one` harness above,
-//! which resolves a `plugin:` ref through the same `busbar_plugin_loader::scan_and_validate` +
+//! which resolves a `plugin:` ref through the same loader `scan_and_validate` +
 //! `resolve_gate_transport` seam a live request uses — not a hand-rolled `DlopenPolicy::new`).
 //!
 //! ## Reconciliation: 189 counted vs the signed brief's "178+4"
@@ -34,22 +34,22 @@
 //!   projection/rewrite-gate coverage, verified all v1.5.5 names present there or renamed
 //!   1:1 — e.g. `block_text_responses_reasoning_rejects_malformed_encrypted_content` →
 //!   `responses_reasoning_reader_rejects_malformed_encrypted_content`); 16 live in
-//!   `plugin-loader/src/tests/{hook_tests.rs,hook_transform_failure_tests.rs,
-//!   hook_panic_status_tests.rs}` (split, +5 predev-only); 16 live in `hooks-ranking/src/tests/
-//!   lib_tests.rs` + `hooks-ranking/tests/determinism.rs` (split, +5 predev-only). 89+70+16+16=191
+//!   the plugin loader's own hook, transform-failure and panic-status tests (split, +5
+//!   predev-only); 16 live in the ranking hook's own unit and determinism suites (split, +5
+//!   predev-only). 89+70+16+16=191
 //!   ≠ 184 only because the "+N predev-only" additions above are counted in the file totals but not
 //!   in the 184 (they are net-new, tracked in inventory-hook.md §5's own predev-only list).
 //!
 //! ## What is physically consolidated HERE vs left at its existing (passing) location
 //!
-//! This file adds the ONE test from the plugin-loader-origin group whose PINNED 1.5.5 behaviour
+//! This file adds the ONE test from the loader-origin group whose PINNED 1.5.5 behaviour
 //! (`MAX_INFLIGHT_HOOK_CALLS = 64` per loaded hook) had no equivalent anywhere in
 //! this crate's own `tests.rs` dlopen coverage — the concurrency-cap/backpressure guarantee — ported
 //! against the real `resolve_one` harness rather than a bare `DlopenPolicy`. Everything else in the
-//! plugin-loader-origin 16 already has a same-behaviour sibling in `tests.rs` above, reached through
+//! loader-origin 16 already has a same-behaviour sibling in `tests.rs` above, reached through
 //! the identical harness, and is not duplicated:
 //!
-//! | v1.5.5 (`plugin-loader/src/hook.rs`) | this crate's already-passing equivalent |
+//! | v1.5.5 (the loader's hook module) | this crate's already-passing equivalent |
 //! |---|---|
 //! | `dlopen_policy_drives_every_op` | `dlopen_decide_order_and_abstain` + `dlopen_transform_rewrite_and_reject` + `dlopen_status_and_schema_reads` |
 //! | `dlopen_policy_abstains_and_drops_unknown_idx` | `dlopen_decide_order_and_abstain` |
@@ -63,15 +63,15 @@
 //! | `dlopen_a_hook_that_cannot_answer_is_an_err_not_an_abstain` | `dlopen_decide_raw_reply_is_fail_closed` |
 //!
 //! Genuinely not consolidated (no equivalent in `tests.rs`, but currently passing, unignored, at
-//! their v1.5.5-inherited predev location `crates/plugin-loader/src/tests/`, which this crate does
+//! their v1.5.5-inherited predev location in the plugin loader's own tests, which this crate does
 //! not duplicate because they assert on the loader's OWN internal load/log plumbing rather than an
 //! observable reply/timeout/metric the request path exposes): `load_refuses_kind_mismatch`,
 //! `load_refuses_malformed_config`, `dlopen_plugin_panic_is_fail_closed_err`,
 //! `a_plugin_log_reaches_the_host`, `the_log_ctx_is_interned_not_allocated_per_load`.
 //!
-//! The `busbar-llm`-origin 70 and `hooks-ranking`-origin 16 are similarly left at their existing,
+//! The `busbar-llm`-origin 70 and ranking-hook-origin 16 are similarly left at their existing,
 //! passing predev locations: both exercise crate-private test scaffolding (`busbar_llm`'s
-//! `WeightedLane`/prompt-projection fixtures; `hooks-ranking`'s native-policy signal tables) that
+//! `WeightedLane`/prompt-projection fixtures; the ranking hook's native-policy signal tables) that
 //! is not exported for cross-crate reuse, so relocating them here would mean rewriting rather than
 //! porting them — out of scope for a byte-for-byte behaviour port.
 //!
@@ -82,14 +82,14 @@
 use std::time::Duration;
 
 /// PINNED (inventory-hook.md §4): `MAX_INFLIGHT_HOOK_CALLS = 64` per loaded hook
-/// (`crates/plugin-loader/src/hook.rs`, private const — mirrored here as a literal since it is not
+/// (the plugin loader's hook module, a private const — mirrored here as a literal since it is not
 /// exported across the crate boundary; the value is the pinned 1.5.5 constant, not a guess).
 const MAX_INFLIGHT_HOOK_CALLS: usize = 64;
 
-/// Ported from `crates/plugin-loader/src/tests/hook_tests.rs::hook_calls_are_capped_and_
-/// saturation_fails_on_the_caller_deadline` (v1.5.5 `hook.rs` inline test), rebuilt against THIS
-/// crate's `resolve_one`/`test_env` harness (the real `plugin:` resolution path) instead of a bare
-/// `DlopenPolicy`.
+/// Ported from the plugin loader's
+/// `hook_calls_are_capped_and_saturation_fails_on_the_caller_deadline` (v1.5.5 `hook.rs` inline
+/// test), rebuilt against THIS crate's `resolve_one`/`test_env` harness (the real `plugin:`
+/// resolution path) instead of a bare `DlopenPolicy`.
 ///
 /// One hook is saturated with `MAX_INFLIGHT_HOOK_CALLS` calls that never return inside the test's
 /// budget (the fixture's `sleep_ms` knob). A further call must fail CLOSED on the caller's own

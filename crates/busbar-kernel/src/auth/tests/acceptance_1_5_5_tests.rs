@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! M4b AUTH-PARITY acceptance suite: black-box pins for 1.5.5 auth behaviour that the scattered
+//! The auth acceptance suite: black-box pins for 1.5.5 auth behaviour that the scattered
 //! unit suites (`tests.rs`, `plugin_chain_tests.rs`, `self_keys_tests.rs`, `token_tests.rs`,
-//! `busbar-kernel-identity::operator_tests`, `busbar-kernel-identity::ingress_sigv4_tests`,
+//! the identity crate's `operator_tests` and `ingress_sigv4_tests`,
 //! `egress_auth::tests::*`) do not directly assert. This file does not re-port behaviour those
 //! suites already pin byte-for-byte against v1.5.5 (fail-closed mapping, warn-once latch, chain
 //! semantics, carrier precedence, dual-carrier operator fold, SigV4 constant-time/body-hash-rebind,
