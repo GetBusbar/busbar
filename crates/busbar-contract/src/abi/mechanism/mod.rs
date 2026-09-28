@@ -37,6 +37,7 @@
 //! existing path is rewired to them.
 
 pub mod call;
+pub mod check;
 pub mod door;
 mod layout;
 pub mod lifecycle;
