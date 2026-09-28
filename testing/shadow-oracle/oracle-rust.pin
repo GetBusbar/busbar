@@ -103,17 +103,19 @@
 # steps the binary's wall clock with fixtures/clock-shift.c to reproduce a window straddle) instead of
 # a needs_fixture http cell; `cells --generate` changes exactly that cell.
 #
-# 2026-09-28 (KERNEL<>PLUGINS C0): moved df3019a -> 13bc2d8, branch `c0/capture-egress-accept` cut from
+# 2026-09-28 (KERNEL<>PLUGINS C0): moved df3019a -> c853683, branch `c0/capture-egress-accept` cut from
 # df3019a. It carries the capture driver (a cell owns its boot and config; a capture mock keeps the
 # exact bytes busbar sends: method, target, every header in wire order, body) and its 46 cells. Those
 # are the 44 from the unmerged C0 slot, re-proven from the published v1.5.5, plus two new egress-hop
 # cells: egress.auth|login-hop|oidc (the browser login's token-exchange POST) and
 # egress.fetch|plugins|url (the plugins.fetch GET). `cells --generate` changes exactly those 46 cells.
+# c853683 also applies D-1 (the owner-signed diagnostic code) to the request-log-webhook cell's log tail,
+# as the store.boot capture cells already do.
 # NOTE: a feature branch head, the same shape as the previous pins; re-pin to the merge commit when
 # it lands.
 #
 # To move the pin: set release_ref to the new busbar-release commit and re-run.
 release_repo=https://github.com/GetBusbar/busbar-release.git
-release_ref=13bc2d8
+release_ref=c853683
 crate=busbar-release-oracle
 bin=busbar-oracle
