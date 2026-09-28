@@ -305,7 +305,6 @@ pub struct OpContract {
 
 /// `contract!(SLOT, request_path, may_pend, In, Out, Class)`: one [`OpContract`] for the calling
 /// kind's `slot::SLOT`, sized from its own `in`/`out` types.
-#[allow(unused_macros)]
 macro_rules! contract {
     ($slot:ident, $rp:expr, $pend:expr, $in:ty, $out:ty, $class:ident) => {
         $crate::abi::mechanism::check::OpContract {
@@ -318,7 +317,6 @@ macro_rules! contract {
         }
     };
 }
-#[allow(unused_imports)] // used by every kind's `CONTRACTS`; the kinds converge onto it (P5).
 pub(crate) use contract;
 
 #[cfg(test)]

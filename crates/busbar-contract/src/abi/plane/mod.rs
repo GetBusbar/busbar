@@ -16,10 +16,15 @@
 //! reply bytes, reply head fields, unit counts, record writes — is written into a buffer the `in`
 //! names as pointer + capacity; the bytes of fields and record writes go into the call's `arena`,
 //! and the structs name them by [`Span`]. Nothing the host needs after the call lives in plugin
-//! memory. Each `out` states what it wrote as a `*_len`; a `*_len` larger than its capacity means the
-//! buffer was too small: the plugin wrote nothing into it, the `*_len` is what it needs, and the host
-//! grows the buffer and calls the op once more. The one exception is `on_piece`'s reply bytes, which
-//! stream: a full `reply_buf` is backpressure (`more`), never a re-call.
+//! memory. Each `out` states `*_written` and `*_needed` per buffer (M-SB,
+//! [`crate::abi::mechanism::check`]): READY has every `needed == 0` and `written <= cap`; a short
+//! answer is FAILED with `needed > cap` for the short buffer, nothing written and nothing applied,
+//! and the host grows it and calls once more. The plane checks every capacity BEFORE it acts, so
+//! the re-call repeats nothing (P1).
+//!
+//! BACKPRESSURE IS NOT A SHORT BUFFER: `on_piece`'s reply bytes stream. A full `reply_buf` is READY
+//! with `more = 1` (and at least one byte `emitted`); the kernel flushes, waits for the socket to be
+//! writable and calls again. `emitted` is therefore never above `reply_cap` and has no `needed`.
 //!
 //! WHAT CROSSES AND WHEN:
 //!
@@ -109,10 +114,10 @@
 
 pub mod check;
 
-use std::mem::size_of;
-
 use super::host::conn::connector::Need;
-use super::mechanism::call::{AbiStr, Blob, DeadlineClass, InHead, Op, OutHead};
+use super::mechanism::call::{AbiStr, Blob, InHead, Op, OutHead};
+pub use super::mechanism::check::SPAN_ABSENT;
+use super::mechanism::check::{contract, OpContract};
 use super::mechanism::door::KindTailHead;
 use super::mechanism::lifecycle::{GenIn, OpenIn, OpenOut, OpsHead, LIFECYCLE_SLOTS};
 
@@ -165,39 +170,6 @@ pub struct Ops {
 }
 
 // ── the op contracts ─────────────────────────────────────────────────────────────────────────────
-
-/// One op's contract: where it runs, whether it may pend, its largest `in`/`out`, its deadline
-/// class.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct OpContract {
-    /// The slot index.
-    pub slot: u32,
-    /// `true` = on the request path; `false` = off-path.
-    pub request_path: bool,
-    /// `true` = the op may answer PENDING (on a real ticket).
-    pub may_pend: bool,
-    /// The largest `in` the host writes, in bytes.
-    pub max_in: usize,
-    /// The largest `out` the plugin writes, in bytes.
-    pub max_out: usize,
-    /// The deadline class the host stamps in `InHead::deadline_class`.
-    pub deadline: DeadlineClass,
-}
-
-/// `contract!(slot, request_path, may_pend, In, Out, class)`: one [`OpContract`], sized from its
-/// own `in`/`out` types.
-macro_rules! contract {
-    ($slot:ident, $rp:expr, $pend:expr, $in:ty, $out:ty, $class:ident) => {
-        OpContract {
-            slot: slot::$slot,
-            request_path: $rp,
-            may_pend: $pend,
-            max_in: size_of::<$in>(),
-            max_out: size_of::<$out>(),
-            deadline: DeadlineClass::$class,
-        }
-    };
-}
 
 /// Every kind op's contract, in slot order. `arrive` and `refusal` are pure: they never pend.
 /// `on_piece` pends (a plane waiting on its own upstream) under the stream's deadline. `hydrate`
@@ -531,9 +503,6 @@ pub struct Field {
     pub value: AbiStr,
 }
 
-/// [`Span::offset`]: no bytes (the span's `len` is then `0`).
-pub const SPAN_ABSENT: u32 = u32::MAX;
-
 /// A byte range of the call's HOST `arena`; [`SPAN_ABSENT`] = none.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
@@ -618,7 +587,11 @@ pub struct ArriveOut {
     /// Index into [`PlaneTail::dialects`].
     pub dialect: u32,
     /// Expected units written to `units_buf` (the admission estimate).
-    pub units_len: u32,
+    pub units_written: u32,
+    /// Short answer: the units `units_buf` needs.
+    pub units_needed: u32,
+    /// Alignment padding.
+    pub _reserved: u32,
 }
 
 /// `on_piece`'s `in`.
@@ -676,13 +649,23 @@ pub struct OnPieceOut {
     /// The reply status number, when this piece starts the caller's reply; `0` otherwise.
     pub reply_status: u32,
     /// Fields written to `fields_buf`.
-    pub fields_len: u32,
+    pub fields_written: u32,
+    /// Short answer: the fields `fields_buf` needs.
+    pub fields_needed: u32,
     /// Cumulative units written to `units_buf`.
-    pub units_len: u32,
+    pub units_written: u32,
+    /// Short answer: the units `units_buf` needs.
+    pub units_needed: u32,
     /// Record writes written to `records_buf`.
-    pub records_len: u32,
+    pub records_written: u32,
+    /// Short answer: the record writes `records_buf` needs.
+    pub records_needed: u32,
+    /// Alignment padding.
+    pub _reserved: u32,
     /// Bytes written to `arena_buf`.
-    pub arena_len: u64,
+    pub arena_written: u64,
+    /// Short answer: the bytes `arena_buf` needs.
+    pub arena_needed: u64,
 }
 
 /// `refusal`'s `in`.
@@ -722,13 +705,21 @@ pub struct RefusalOut {
     /// The head.
     pub head: OutHead,
     /// Bytes written to `reply_buf`.
-    pub emitted: u64,
+    pub reply_written: u64,
+    /// Short answer: the bytes `reply_buf` needs.
+    pub reply_needed: u64,
+    /// Bytes written to `arena_buf`.
+    pub arena_written: u64,
+    /// Short answer: the bytes `arena_buf` needs.
+    pub arena_needed: u64,
     /// [`MARK_GATE_REJECTED`] or `0`.
     pub marker: u32,
     /// Fields written to `fields_buf`.
-    pub fields_len: u32,
-    /// Bytes written to `arena_buf`.
-    pub arena_len: u64,
+    pub fields_written: u32,
+    /// Short answer: the fields `fields_buf` needs.
+    pub fields_needed: u32,
+    /// Alignment padding.
+    pub _reserved: u32,
 }
 
 /// `serve`'s `in`.
@@ -769,14 +760,22 @@ pub struct ServeIn {
 pub struct ServeOut {
     /// The head.
     pub head: OutHead,
+    /// Bytes written to `reply_buf`.
+    pub reply_written: u64,
+    /// Short answer: the bytes `reply_buf` needs.
+    pub reply_needed: u64,
+    /// Bytes written to `arena_buf`.
+    pub arena_written: u64,
+    /// Short answer: the bytes `arena_buf` needs.
+    pub arena_needed: u64,
     /// The reply status number.
     pub status: u32,
     /// Fields written to `fields_buf`.
-    pub fields_len: u32,
-    /// Bytes written to `reply_buf`.
-    pub emitted: u64,
-    /// Bytes written to `arena_buf`.
-    pub arena_len: u64,
+    pub fields_written: u32,
+    /// Short answer: the fields `fields_buf` needs.
+    pub fields_needed: u32,
+    /// Alignment padding.
+    pub _reserved: u32,
 }
 
 #[cfg(test)]

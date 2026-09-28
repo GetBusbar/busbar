@@ -1246,23 +1246,26 @@ mod plane_kind {
     pin!(RecordWrite, 24, 4, kind = 0, op = 4, key = 8, value = 16);
     pin!(ArriveIn, 168, 8, head = 0, claim = 88, _reserved = 92, target = 96, fields = 112,
         fields_len = 120, body = 128, units_buf = 152, units_cap = 160);
-    pin!(ArriveOut, 112, 8, head = 0, op_class = 96, principal_need = 100, dialect = 104,
-        units_len = 108);
+    pin!(ArriveOut, 120, 8, head = 0, op_class = 96, principal_need = 100, dialect = 104,
+        units_written = 108, units_needed = 112, _reserved = 116);
     pin!(OnPieceIn, 216, 8, head = 0, from = 88, flags = 92, stream = 96, bytes = 104,
         status_code = 128, status_class = 132, reply_buf = 136, reply_cap = 144,
         units_buf = 152, units_cap = 160, records_buf = 168, records_cap = 176,
         fields_buf = 184, fields_cap = 192, arena_buf = 200, arena_cap = 208);
-    pin!(OnPieceOut, 136, 8, head = 0, emitted = 96, more = 104, flags = 108,
-        reply_status = 112, fields_len = 116, units_len = 120, records_len = 124,
-        arena_len = 128);
+    pin!(OnPieceOut, 160, 8, head = 0, emitted = 96, more = 104, flags = 108,
+        reply_status = 112, fields_written = 116, fields_needed = 120, units_written = 124,
+        units_needed = 128, records_written = 132, records_needed = 136, _reserved = 140,
+        arena_written = 144, arena_needed = 152);
     pin!(RefusalIn, 168, 8, head = 0, cause = 88, status = 92, dialect = 96, _reserved = 100,
         text = 104, reply_buf = 120, reply_cap = 128, fields_buf = 136, fields_cap = 144,
         arena_buf = 152, arena_cap = 160);
-    pin!(RefusalOut, 120, 8, head = 0, emitted = 96, marker = 104, fields_len = 108,
-        arena_len = 112);
+    pin!(RefusalOut, 144, 8, head = 0, reply_written = 96, reply_needed = 104,
+        arena_written = 112, arena_needed = 120, marker = 128, fields_written = 132,
+        fields_needed = 136, _reserved = 140);
     pin!(ServeIn, 200, 8, head = 0, route = 88, _reserved = 92, target = 96, fields = 112,
         fields_len = 120, body = 128, reply_buf = 152, reply_cap = 160, fields_buf = 168,
         fields_cap = 176, arena_buf = 184, arena_cap = 192);
-    pin!(ServeOut, 120, 8, head = 0, status = 96, fields_len = 100, emitted = 104,
-        arena_len = 112);
+    pin!(ServeOut, 144, 8, head = 0, reply_written = 96, reply_needed = 104,
+        arena_written = 112, arena_needed = 120, status = 128, fields_written = 132,
+        fields_needed = 136, _reserved = 140);
 }

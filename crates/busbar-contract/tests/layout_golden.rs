@@ -1624,7 +1624,15 @@ fn compute_layout() -> String {
     record!(
         s,
         pkind::ArriveOut,
-        [head, op_class, principal_need, dialect, units_len]
+        [
+            head,
+            op_class,
+            principal_need,
+            dialect,
+            units_written,
+            units_needed,
+            _reserved
+        ]
     );
     record!(
         s,
@@ -1658,10 +1666,15 @@ fn compute_layout() -> String {
             more,
             flags,
             reply_status,
-            fields_len,
-            units_len,
-            records_len,
-            arena_len
+            fields_written,
+            fields_needed,
+            units_written,
+            units_needed,
+            records_written,
+            records_needed,
+            _reserved,
+            arena_written,
+            arena_needed
         ]
     );
     record!(
@@ -1675,7 +1688,17 @@ fn compute_layout() -> String {
     record!(
         s,
         pkind::RefusalOut,
-        [head, emitted, marker, fields_len, arena_len]
+        [
+            head,
+            reply_written,
+            reply_needed,
+            arena_written,
+            arena_needed,
+            marker,
+            fields_written,
+            fields_needed,
+            _reserved
+        ]
     );
     record!(
         s,
@@ -1688,7 +1711,17 @@ fn compute_layout() -> String {
     record!(
         s,
         pkind::ServeOut,
-        [head, status, fields_len, emitted, arena_len]
+        [
+            head,
+            reply_written,
+            reply_needed,
+            arena_written,
+            arena_needed,
+            status,
+            fields_written,
+            fields_needed,
+            _reserved
+        ]
     );
     record!(
         s,
@@ -2096,11 +2129,11 @@ fn a_perturbed_connector_golden_line_fails_the_comparator() {
 #[test]
 fn a_perturbed_plane_golden_line_fails_the_comparator() {
     let actual = compute_layout();
-    let line = "pkind::OnPieceOut.units_len=120";
+    let line = "pkind::OnPieceOut.units_written=124";
     assert!(actual.lines().any(|l| l == line), "the golden holds {line}");
-    let perturbed = actual.replacen(line, "pkind::OnPieceOut.units_len=112", 1);
+    let perturbed = actual.replacen(line, "pkind::OnPieceOut.units_written=112", 1);
     let err = compare(&perturbed, &actual).expect_err("a perturbed line must fail");
-    assert!(err.contains("pkind::OnPieceOut.units_len=112"), "{err}");
+    assert!(err.contains("pkind::OnPieceOut.units_written=112"), "{err}");
 }
 
 /// RED ARM, THE AUTH KIND: one perturbed auth golden line (`fields`' slot in the auth table) fails
