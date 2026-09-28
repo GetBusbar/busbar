@@ -858,6 +858,26 @@
             "equals": "1.6.0"
           },
           {
+            "cell": "admin.ops|GetOpenapiJson|ok",
+            "pointer": "/paths/~1api~1v1~1admin~1commit-upgrade/post/x-busbar-since",
+            "equals": "1.6.0"
+          },
+          {
+            "cell": "admin.ops|GetOpenapiJson|ok",
+            "pointer": "/paths/~1api~1v1~1admin~1plane-facts/get/x-busbar-since",
+            "equals": "1.6.0"
+          },
+          {
+            "cell": "admin.ops|GetOpenapiJson|ok",
+            "pointer": "/paths/~1api~1v1~1admin~1plane-record-write/post/x-busbar-since",
+            "equals": "1.6.0"
+          },
+          {
+            "cell": "admin.ops|GetOpenapiJson|ok",
+            "pointer": "/paths/~1api~1v1~1admin~1verify/get/x-busbar-since",
+            "equals": "1.6.0"
+          },
+          {
             "not": {
               "cell": "admin.ops|GetOpenapiJson|ok",
               "pointer": "/paths/~1api~1v1~1admin~1tools",
@@ -873,7 +893,7 @@
           }
         ]
       },
-      "rationale": "MEASURED 2026-09-24 by P3A-register3 against a local ./bin/oracle record (pin 3519882) of b712a5763 (+ the Q54 message patch, which does not touch the document), default all-planes build, the oracle's 1.5.5-shaped config: the served document keeps all 49 of 1.5.5's paths and adds 26 core admin paths, every one marked `x-busbar-since: 1.6.0` (13 bound: adjust, audit head/keys/range, chain-break, ledger amend-rate-history/checkpoints/migration/openapi.json/reconciliation/totals, reseal-epoch-floor, store-restore; 13 marked `x-busbar-effect-bound: false`, which the architect ruling in Q56 removes from service and from the document); no `tools`/`agents` path is served. Owner ruling Q56 (answered in Q61): accept the core verbs as an additive difference every 1.6.0 node has. REPLACES F-011c's breaking blanket (and F-011b's additive coverage) on THIS cell: kind=additive, so the runner proves the candidate document a JSON superset of 1.5.5's at every leaf 1.5.5 names — a 1.5.5 operation, parameter, response or schema member that changed or went away stays red. What 1.5.5 operations gained is additive and ruled elsewhere: the `409 unpriced_class` response on the three usage reads (#42, owner-locked), the rotate `400` for an overlong id (K-1), the overlay-delete section enum's growth. The pin 3519882 runner resolves `~1`-escaped pointers, so F-011c's `/paths` prose leaves are now named leaf by leaf instead of blanketed. DESCRIPTION_CORRECTIONS (string leaves only, each already owner-signed on this cell): F-011b's six (HookView x2, NamedDefView x2, OverlayResetView reset, info.version); AuditEntry/description (Q41: the record's `scheme` frames the hash); PluginSchemaView restart_required_default/description (a Rust path renamed in prose, previously forgiven under F-011c's blanket); the overlay-delete summary, 400 and 409 descriptions (F-011c's 2026-09-15 owner decision: the grown section list and the new `conflict` guard). PREMISE (evaluated): the cell answers 200, each of the 13 bound core verbs carries `x-busbar-since: 1.6.0`, and the document advertises no `tools`/`agents` path. LIMIT: the premise grammar cannot say \"no OTHER path was added\" — the superset proof permits additions — so the 26 are enumerated here and in the CHANGELOG line, and a future unrelated addition is only caught by a reviewer reading this cell's ACCEPTED row."
+      "rationale": "RE-MEASURED 2026-09-28 against origin/predev of 2026-09-28 (release build, the engine oracle-rust.pin names, ./bin/oracle replay --strict over admin.ops, admin.auth, boot.refusal, billing, ledger, teller, crosscut.traps and neutrality, green), the oracle's 1.5.5-shaped config: the served document keeps all 49 of 1.5.5's paths and adds 17 core admin paths, every one marked `x-busbar-since: 1.6.0` and none marked `x-busbar-effect-bound: false` (the architect ruling in Q56 removed the unbound verbs from service and from the document, so the 13 the 2026-09-24 count carried are gone): adjust, audit head/keys/range, chain-break, commit-upgrade, ledger amend-rate-history/checkpoints/migration/openapi.json/reconciliation/totals, plane-facts, plane-record-write, reseal-epoch-floor, store-restore, verify. No `tools`/`agents` path is served. The 2026-09-24 figures (26 added: 13 bound, 13 unbound) are superseded; commit-upgrade, plane-facts, plane-record-write and verify are core admin verbs added since, and the premise now names all 17. MEASURED 2026-09-24 by P3A-register3 against a local ./bin/oracle record (pin 3519882) of b712a5763 (+ the Q54 message patch, which does not touch the document), default all-planes build, the oracle's 1.5.5-shaped config: the served document keeps all 49 of 1.5.5's paths and adds 26 core admin paths, every one marked `x-busbar-since: 1.6.0` (13 bound: adjust, audit head/keys/range, chain-break, ledger amend-rate-history/checkpoints/migration/openapi.json/reconciliation/totals, reseal-epoch-floor, store-restore; 13 marked `x-busbar-effect-bound: false`, which the architect ruling in Q56 removes from service and from the document); no `tools`/`agents` path is served. Owner ruling Q56 (answered in Q61): accept the core verbs as an additive difference every 1.6.0 node has. REPLACES F-011c's breaking blanket (and F-011b's additive coverage) on THIS cell: kind=additive, so the runner proves the candidate document a JSON superset of 1.5.5's at every leaf 1.5.5 names — a 1.5.5 operation, parameter, response or schema member that changed or went away stays red. What 1.5.5 operations gained is additive and ruled elsewhere: the `409 unpriced_class` response on the three usage reads (#42, owner-locked), the rotate `400` for an overlong id (K-1), the overlay-delete section enum's growth. The pin 3519882 runner resolves `~1`-escaped pointers, so F-011c's `/paths` prose leaves are now named leaf by leaf instead of blanketed. DESCRIPTION_CORRECTIONS (string leaves only, each already owner-signed on this cell): F-011b's six (HookView x2, NamedDefView x2, OverlayResetView reset, info.version); AuditEntry/description (Q41: the record's `scheme` frames the hash); PluginSchemaView restart_required_default/description (a Rust path renamed in prose, previously forgiven under F-011c's blanket); the overlay-delete summary, 400 and 409 descriptions (F-011c's 2026-09-15 owner decision: the grown section list and the new `conflict` guard). PREMISE (evaluated): the cell answers 200, each of the 17 core verbs carries `x-busbar-since: 1.6.0`, and the document advertises no `tools`/`agents` path. LIMIT: the premise grammar cannot say \"no OTHER path was added\" — the superset proof permits additions — so the 17 are enumerated here, and a future unrelated addition is only caught by a reviewer reading this cell's ACCEPTED row."
     },
     {
       "id": "S-7 responses-door streams stream",
