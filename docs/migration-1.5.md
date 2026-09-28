@@ -55,7 +55,7 @@ guards the Admin API is the built-in `admin-tokens` module, whose `token` is a s
 
 The 1.4.x `hooks:` REGISTRY block is **gone**, and the built-in `socket`/`webhook` hook transports
 are retired. A hook is now a signed `kind: hook` plugin and requires `plugins.enabled: true`. For the
-HTTP-sidecar case (out-of-process forwarding), use the first-party `busbar-webrequest-hook` plugin.
+HTTP-sidecar case (out-of-process forwarding), use the first-party `busbar-hook-webrequest` plugin.
 
 **Before (1.4.x):** a registry entry carrying a built-in transport.
 
@@ -178,7 +178,7 @@ store:
   settings: { url: "postgres://user:pass@host/busbar" }
 ```
 
-> **Renamed in 1.5.3 (the only place these words still appear):** the first-party Redis-protocol store plugin is now **Valkey**. `store.module: redis` → `valkey`, artifact `busbar-store-redis-*.tar.gz` → `busbar-store-valkey-<ver>-<target>.tar.gz`, manifest name `busbar-store-redis` → `busbar-store-valkey-plugin`. `busbar --migrate-config` rewrites the module for you and boot loud-fails on the old spelling; install the renamed tarball, and leave your `settings.url` alone (`redis://` / `rediss://` is the driver's URL scheme, not a Busbar name). Any `plugins.min_versions` / pinned version floor keyed by the OLD name no longer applies. Re-pin it under the new name if you rely on it.
+> **Renamed in 1.5.3 (the only place these words still appear):** the first-party Redis-protocol store plugin is now **Valkey**. `store.module: redis` → `valkey`, artifact `busbar-store-redis-*.tar.gz` → `busbar-store-valkey-<ver>-<target>.tar.gz`, manifest name `busbar-store-redis` → `busbar-store-valkey`. `busbar --migrate-config` rewrites the module for you and boot loud-fails on the old spelling; install the renamed tarball, and leave your `settings.url` alone (`redis://` / `rediss://` is the driver's URL scheme, not a Busbar name). Any `plugins.min_versions` / pinned version floor keyed by the OLD name no longer applies. Re-pin it under the new name if you rely on it.
 
 See [Configuration → `store`](configuration.md#store) and [plugins.md](plugins.md).
 
@@ -259,7 +259,7 @@ Along with the above, these one-name-each renames are enforced (unknown keys fai
 
 - [ ] `busbar --migrate-config old.yaml > config-1.5.yaml`; review every TODO/WARNING (esp. each `allowed_pools: []`, whose meaning flipped to *none*)
 - [ ] `auth.client_tokens` / `BUSBAR_CLIENT_TOKEN` → `auth.chain: [keys]` + `admin_auth: [admin-tokens]` (`BUSBAR_ADMIN_TOKEN`)
-- [ ] 1.4.x `hooks:` REGISTRY + `socket`/`webhook` transports → a 1.5.3 `hooks:` DEFINITION map of `kind: hook` plugins (`busbar-webrequest-hook` for the HTTP sidecar), referenced by bare name
+- [ ] 1.4.x `hooks:` REGISTRY + `socket`/`webhook` transports → a 1.5.3 `hooks:` DEFINITION map of `kind: hook` plugins (`busbar-hook-webrequest` for the HTTP sidecar), referenced by bare name
 - [ ] `governance:` → `groups:` + `rate_card:` + `per_request_fee:` + `store:`
 - [ ] per-key `rpm_limit`/`tpm_limit`/`max_budget_cents`/`budget_period` → group `limits:`
 - [ ] durable store → `store: { module: sqlite|postgres|valkey }` + `plugins.enabled: true` (default is ephemeral `memory`)

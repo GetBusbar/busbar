@@ -1822,7 +1822,7 @@ run_validate_smoke() {
   [ -n "$needs_flag" ] && pack_extra=(--needs-prompt rw)
   "$PACK_BIN" pack \
     --lib "$lib" \
-    --name "busbar-${name}" --alias "${name}" --kind "$kind" \
+    --name "busbar-${kind}-${name}" --alias "${name}" --kind "$kind" \
     --version "$VER" --publisher busbar \
     --description "busbar ${name} hook plugin (local release-check smoke test)" \
     --license Apache-2.0 \
@@ -1859,7 +1859,7 @@ if ! phase_selected "${HEADROOM_SMOKE_PHASE}"; then
   record_phase_skip "${HEADROOM_SMOKE_PHASE}" "not-in-segment"
 elif [ -d "$HEADROOM_SRC" ]; then
   begin_phase "${HEADROOM_SMOKE_PHASE}" "Phase 5: headroom-hook — busbar --validate dlopen smoke"
-  run_validate_smoke "headroom" "${HEADROOM_SRC}/Cargo.toml" "headroom_hook" hook needs
+  run_validate_smoke "headroom" "${HEADROOM_SRC}/Cargo.toml" "busbar_hook_headroom" hook needs
   end_phase ran
 else
   note "SKIP: ../busbar-hook-headroom not present as a sibling checkout on this machine."
@@ -1870,7 +1870,7 @@ if ! phase_selected "${WEBREQUEST_SMOKE_PHASE}"; then
   record_phase_skip "${WEBREQUEST_SMOKE_PHASE}" "not-in-segment"
 elif [ -d "$WEBREQUEST_SRC" ]; then
   begin_phase "${WEBREQUEST_SMOKE_PHASE}" "Phase 5: webrequest-hook — busbar --validate dlopen smoke"
-  run_validate_smoke "webrequest" "${WEBREQUEST_SRC}/Cargo.toml" "busbar_webrequest_hook_plugin" hook
+  run_validate_smoke "webrequest" "${WEBREQUEST_SRC}/Cargo.toml" "busbar_hook_webrequest" hook
   end_phase ran
 else
   note "SKIP: ../busbar-hook-webrequest not present as a sibling checkout on this machine."

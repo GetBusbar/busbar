@@ -50,7 +50,7 @@ if [ "$MODE" = "--selftest" ]; then
   # 5's cases, so check 2's fail-injection below never executed on the happy path and could not
   # change the outcome on the unhappy one. The EXIT trap counts the cases that actually ran and
   # turns a green exit with any case unrun into RED.
-  SELFTEST_CASES=12
+  SELFTEST_CASES=14
   ran=0
   selftest_exit() {
     local st=$?
@@ -219,6 +219,24 @@ MUT
     printf '  [FAILED] %s\n' "check 1 passed a kind:${first_kind} repo named busbar-${other}-..."; rc=1
   fi
 
+  cp plugins.yaml "$c1/plugins.yaml"
+  ran=$((ran + 1))
+  first_crate="$(awk '/^  - repo: /{n++} n==1 && /^    crate: /{print $2; exit}' plugins.yaml)"
+  sed -i.bak "s/^    crate: ${first_crate}\$/    crate: legacy-${first_crate}/" "$c1/plugins.yaml"
+  if c1_says "is neither ${first} nor ${first}-plugin"; then
+    printf '  [ok]     %s\n' "a cdylib crate named outside <repo> / <repo>-plugin is RED"
+  else
+    printf '  [FAILED] %s\n' "check 1 passed crate legacy-${first_crate}"; rc=1
+  fi
+  cp plugins.yaml "$c1/plugins.yaml"
+  ran=$((ran + 1))
+  awk -v r="$first" '{print} $0=="  - repo: "r {print "    manifest_name: \"" r "-plugin\""}' plugins.yaml > "$c1/plugins.yaml"
+  if c1_says "manifest_name '${first}-plugin' is not the repo name"; then
+    printf '  [ok]     %s\n' "a manifest name that is not the repo name is RED"
+  else
+    printf '  [FAILED] %s\n' "check 1 passed manifest_name ${first}-plugin"; rc=1
+  fi
+
   echo
   [ "$rc" = 0 ] && { echo "plugin-registry-check selftest: the org sweep fails loud and still finds strays, a comment cannot stand in for the registry loop, and a plugin repo is named busbar-<kind>-<name>"; exit 0; }
   echo "plugin-registry-check selftest: FAILED"; exit 1
@@ -291,6 +309,15 @@ for p in plugins:
     if not re.match(rf"^busbar-{re.escape(p['kind'])}-[a-z0-9]+(-[a-z0-9]+)*$", p["repo"]):
         fail.append(f"{p['repo']}: repo name does not match ^busbar-{p['kind']}-<name> "
                     f"(every plugin repo is busbar-<kind>-<name>, for its own kind)")
+    # repo = crate = artifact prefix: the cdylib crate is the repo's own name (a single-crate plugin)
+    # or <repo>-plugin beside the <repo> logic crate; the signed manifest name and the release asset
+    # prefix ARE the repo name (their default), never a second spelling.
+    if p["crate"] not in (p["repo"], p["repo"] + "-plugin"):
+        fail.append(f"{p['repo']}: crate '{p['crate']}' is neither {p['repo']} nor {p['repo']}-plugin "
+                    f"(repo = crate = artifact prefix)")
+    for k in ("manifest_name", "asset_prefix"):
+        if k in p and str(p[k]).strip() != p["repo"]:
+            fail.append(f"{p['repo']}: {k} '{p[k]}' is not the repo name (repo = crate = artifact prefix)")
 if not plugins:
     fail.append("plugins.yaml parsed to an empty plugin list")
 

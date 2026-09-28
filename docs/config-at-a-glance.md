@@ -41,7 +41,7 @@ tls:                            # absent = plain HTTP. Each field is a SECRET RE
 
 One signed artifact format, trust model, and loader for all four plugin kinds (**store**,
 **secret**, **auth**, and **hook**), every one loaded **in-process** over the hybrid ABI (see
-[plugins.md](plugins.md)). For out-of-process isolation, the first-party `busbar-webrequest-hook`
+[plugins.md](plugins.md)). For out-of-process isolation, the first-party `busbar-hook-webrequest`
 plugin forwards to an HTTPS sidecar.
 
 ```yaml

@@ -2737,12 +2737,12 @@ jobs:
       CARGO_TARGET_DIR: ${{ github.workspace }}/plugin-proofs-target
       # The real store and hook plugin commits the proofs run: each repo's `dev` after its
       # busbar-contract port. Bump deliberately, like any pin.
-      STORE_SQLITE_REV: 04f4c9ee0a151b3d9689553f0fa72ec6429f16b2
-      WEBREQUEST_HOOK_REV: 2861fa4921e95f03c553444627e08409dcf900ab
+      STORE_SQLITE_REV: 8a4b9ebeccb4ead553ac9ec1617aed5a51e17814
+      WEBREQUEST_HOOK_REV: 3a7235e71b2ff00c3da32b1f0fa63864985bc4e7
       # The real plugin that reports its OWN metrics on its status reply (GetBusbar/busbar-hook-headroom,
       # `dev` after its busbar-contract port): the proof that a third-party plugin's own series cross
       # the dropped-in door. Bump deliberately, like any pin.
-      HEADROOM_HOOK_REV: 1db9747b14d253e164f0da075b1fe6f697ee9290
+      HEADROOM_HOOK_REV: d49a7404449302867ef7317ba466b3c67dfd0470
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -2752,38 +2752,38 @@ jobs:
         with:
           repository: GetBusbar/busbar-secret-vault
           ref: dev
-          path: hashicorp-vault
+          path: busbar-secret-vault
       - name: Checkout the real auth plugin (GetBusbar/busbar-auth-github)
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           repository: GetBusbar/busbar-auth-github
           ref: dev
-          path: auth-github
+          path: busbar-auth-github
       - name: Checkout the real durable store (GetBusbar/busbar-store-sqlite, pinned)
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           repository: GetBusbar/busbar-store-sqlite
           ref: ${{ env.STORE_SQLITE_REV }}
-          path: store-sqlite
+          path: busbar-store-sqlite
       - name: Checkout the real forwarding hook (GetBusbar/busbar-hook-webrequest, pinned)
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           repository: GetBusbar/busbar-hook-webrequest
           ref: ${{ env.WEBREQUEST_HOOK_REV }}
-          path: webrequest-hook
+          path: busbar-hook-webrequest
       - name: Checkout the real metrics-reporting hook (GetBusbar/busbar-hook-headroom, pinned)
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           repository: GetBusbar/busbar-hook-headroom
           ref: ${{ env.HEADROOM_HOOK_REV }}
-          path: headroom-hook
+          path: busbar-hook-headroom
       - uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
       - name: Patch the busbar crates both plugins name to this tree
         # `[patch]` from cargo config, not an edit of the plugins' manifests: what builds is each
         # plugin's own source, byte for byte, with only the busbar git source redirected here.
         run: |
           set -euo pipefail
-          for repo in hashicorp-vault auth-github; do
+          for repo in busbar-secret-vault busbar-auth-github; do
             mkdir -p "$repo/.cargo"
             {
               echo '[patch."https://github.com/GetBusbar/busbar"]'
@@ -2800,25 +2800,25 @@ jobs:
               fi )
           done
       - name: Build the secret plugin's cdylib against this checkout
-        working-directory: hashicorp-vault
-        # package-selector: busbar-hashicorp-vault-plugin -- .github/workflows/ci.yml -- GetBusbar/busbar-secret-vault is a sibling checkout; `working-directory: hashicorp-vault` resolves this selector against that workspace, never against this one
-        run: cargo build -p busbar-hashicorp-vault-plugin
+        working-directory: busbar-secret-vault
+        # package-selector: busbar-secret-vault-plugin -- .github/workflows/ci.yml -- GetBusbar/busbar-secret-vault is a sibling checkout; `working-directory: busbar-secret-vault` resolves this selector against that workspace, never against this one
+        run: cargo build -p busbar-secret-vault-plugin
       - name: Build the auth plugin's cdylib against this checkout
-        working-directory: auth-github
-        # package-selector: busbar-auth-github-plugin -- .github/workflows/ci.yml -- GetBusbar/busbar-auth-github is a sibling checkout; `working-directory: auth-github` resolves this selector against that workspace, never against this one
+        working-directory: busbar-auth-github
+        # package-selector: busbar-auth-github-plugin -- .github/workflows/ci.yml -- GetBusbar/busbar-auth-github is a sibling checkout; `working-directory: busbar-auth-github` resolves this selector against that workspace, never against this one
         run: cargo build -p busbar-auth-github-plugin
       - name: Build the durable store's cdylib at its pinned rev
-        working-directory: store-sqlite
-        # package-selector: busbar-store-sqlite-plugin -- .github/workflows/ci.yml -- GetBusbar/busbar-store-sqlite is its own checkout; `working-directory: store-sqlite` resolves this selector against that workspace, never against this one
+        working-directory: busbar-store-sqlite
+        # package-selector: busbar-store-sqlite-plugin -- .github/workflows/ci.yml -- GetBusbar/busbar-store-sqlite is its own checkout; `working-directory: busbar-store-sqlite` resolves this selector against that workspace, never against this one
         run: cargo build --locked -p busbar-store-sqlite-plugin
       - name: Build the forwarding hook's cdylib at its pinned rev
-        working-directory: webrequest-hook
-        # package-selector: busbar-webrequest-hook-plugin -- .github/workflows/ci.yml -- GetBusbar/busbar-hook-webrequest is its own checkout; `working-directory: webrequest-hook` resolves this selector against that workspace, never against this one
-        run: cargo build --locked -p busbar-webrequest-hook-plugin
+        working-directory: busbar-hook-webrequest
+        # package-selector: busbar-hook-webrequest -- .github/workflows/ci.yml -- GetBusbar/busbar-hook-webrequest is its own checkout; `working-directory: busbar-hook-webrequest` resolves this selector against that workspace, never against this one
+        run: cargo build --locked -p busbar-hook-webrequest
       - name: Build the metrics-reporting hook's cdylib at its pinned rev
-        working-directory: headroom-hook
-        # package-selector: headroom-hook -- .github/workflows/ci.yml -- GetBusbar/busbar-hook-headroom is its own checkout; `working-directory: headroom-hook` resolves this selector against that workspace, never against this one
-        run: cargo build --locked -p headroom-hook --lib
+        working-directory: busbar-hook-headroom
+        # package-selector: busbar-hook-headroom -- .github/workflows/ci.yml -- GetBusbar/busbar-hook-headroom is its own checkout; `working-directory: busbar-hook-headroom` resolves this selector against that workspace, never against this one
+        run: cargo build --locked -p busbar-hook-headroom --lib
       - name: Dlopen all five through the dropped-in door (plugin_proof_tests)
         working-directory: busbar
         env:

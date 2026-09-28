@@ -15,7 +15,9 @@
 #   kind:          store | secret | auth | hook | export | plane | transport  (busbar plugin kind;
 #                  selects the C ABI; every kind ships as its own repo)
 #   alias:         short config name (busbar-plugin-pack --alias)
-#   crate:         the plugin cdylib's Cargo package name
+#   crate:         the plugin cdylib's Cargo package name: <repo>-plugin beside the <repo> logic
+#                  crate, or <repo> itself for a single-crate plugin (owner ruling: repo = crate =
+#                  artifact prefix; the registry gate refuses any other name)
 #   version_line:  the semver line current releases live on (headroom's 1.x is pre-plugin
 #                  1.4.2-era and must never be retagged)
 #   service:       real backend container its tests need (mysql|postgres|valkey|vault|none)
@@ -50,8 +52,9 @@
 # Fleet fields (read by `cargo xtask fleet`, which renders every plugin repo's CI callers, toolchain,
 # lint config, LICENSE and README header from this file plus .github/fleet/, and checks the repos
 # against the render). Defaults in brackets:
-#   manifest_name  the signed manifest's `name` (the plugin's identity at load) [crate]
-#   asset_prefix   the published tarball's filename prefix [crate]
+#   manifest_name  the signed manifest's `name` (the plugin's identity at load) [repo; the
+#                  registry gate refuses any other value]
+#   asset_prefix   the published tarball's filename prefix [repo; likewise]
 #   description    the manifest's one-line description (also the README header's)
 #   ci_service     the backend plugin-ci.yml's Linux leg runs against [service]
 #   busbar_checkout  the end-to-end tests build and boot a real busbar from a checkout at the pin [false]
@@ -93,7 +96,6 @@ plugins:
     service: mysql
     release_gate: optional
     gate: suite
-    asset_prefix: "busbar-store-mysql"
     description: "First-party signed kind:store plugin cdylib: the MySQL/MariaDB backend for busbar's durable governance store, exported over the store C ABI. Drop the built library into the plugins folder and set store.module: mysql to share virtual keys, budgets, and usage across a fleet of busbar nodes."
     ci_service: "mysql"
     busbar_checkout: true
@@ -107,7 +109,6 @@ plugins:
     service: postgres
     release_gate: required
     gate: suite
-    asset_prefix: "busbar-store-postgres"
     description: "First-party signed kind:store plugin cdylib: the Postgres backend for busbar's durable governance store, exported over the store C ABI. Drop the built library into the plugins folder and set store.module: postgres to share virtual keys, budgets, and usage across a fleet of busbar nodes."
     busbar_checkout: true
     declares: "store-postgres/declares.json"
@@ -119,7 +120,6 @@ plugins:
     service: none
     release_gate: optional
     gate: binary
-    asset_prefix: "busbar-store-sqlite"
     description: "First-party signed kind:store plugin cdylib: the SQLite governance store packaged as a droppable busbar plugin exporting the store C ABI. Drop the built library into the plugins folder and set store.module: sqlite."
     busbar_checkout: true
     declares: "store-sqlite/declares.json"
@@ -131,7 +131,6 @@ plugins:
     service: valkey
     release_gate: optional
     gate: suite
-    asset_prefix: "busbar-store-valkey"
     description: "The Valkey store as a droppable busbar plugin: a cdylib exporting the store C ABI. Drop it in the plugins folder and set store.module: valkey. One Valkey behind a fleet of busbar nodes means shared virtual keys, budgets, usage, and audit across the cluster."
     busbar_checkout: true
     extra_test: "cargo test -p busbar-store-valkey --locked -- --ignored --test-threads=1"
@@ -139,13 +138,11 @@ plugins:
   - repo: busbar-secret-vault
     kind: secret
     alias: vault
-    crate: busbar-hashicorp-vault-plugin
+    crate: busbar-secret-vault-plugin
     version_line: "1.0"
     service: vault
     release_gate: optional
     gate: suite
-    manifest_name: "busbar-hashicorp-vault"
-    asset_prefix: "busbar-hashicorp-vault"
     description: "The HashiCorp Vault secret backend as a droppable busbar plugin: a cdylib exporting the secret C ABI. Drop it in the plugins folder, add vault to secrets: with its addr/token settings, and reference secrets as { module: vault, settings: { path: \"kv/data/name#field\" } }."
     macos_test: "cargo test --workspace --locked --lib --test conformance -- --skip roundtrip_against_live_vault"
     declares: "hashicorp-vault/declares.json"
@@ -157,7 +154,6 @@ plugins:
     service: none
     release_gate: optional
     gate: suite
-    asset_prefix: "busbar-auth-oidc-plugin"
     description: "The OIDC auth module as a droppable busbar plugin: a cdylib exporting the auth C ABI. Drop it in the plugins folder and add oidc to auth.chain with its settings nested under it."
     busbar_checkout: true
     macos_test: "cargo test --workspace --locked --lib --test conformance"
@@ -172,7 +168,6 @@ plugins:
     service: none
     release_gate: optional
     gate: suite
-    asset_prefix: "busbar-auth-github-plugin"
     description: "The GitHub-OAuth login module as a droppable busbar plugin: a cdylib exporting the auth C ABI (login-capable). Drop it in the plugins folder and add github to auth.chain with a browser_login block (the core injects client_secret)."
     ci_service: "wiremock"
     busbar_checkout: true
@@ -186,7 +181,6 @@ plugins:
     service: none
     release_gate: optional
     gate: suite
-    asset_prefix: "busbar-auth-ldap-plugin"
     description: "The AD/LDAP auth module as a droppable busbar plugin: a cdylib exporting the auth C ABI. Drop it in the plugins folder, define it once under identity-providers.<name> (module: ldap, settings: url, bind_dn_template, base_dn, group_attr) and reference that name from auth.chain."
     ci_service: "openldap"
     busbar_checkout: true
@@ -209,13 +203,11 @@ plugins:
   - repo: busbar-hook-webrequest
     kind: hook
     alias: webrequest
-    crate: busbar-webrequest-hook-plugin
+    crate: busbar-hook-webrequest
     version_line: "1.0"
     service: none
     release_gate: optional
     gate: smoke
-    manifest_name: "busbar-webrequest"
-    asset_prefix: "busbar-webrequest"
     description: "A transparent HTTP forwarder that POSTs each hook op envelope (decide/transform/notify/configure/describe/status) to an operator-configured URL and returns the capped JSON reply: a busbar first-party kind:hook plugin (dlopen cdylib)."
     busbar_checkout: true
     lib_only: true
@@ -225,13 +217,11 @@ plugins:
   - repo: busbar-hook-headroom
     kind: hook
     alias: headroom
-    crate: headroom-hook
+    crate: busbar-hook-headroom
     version_line: "2.0"
     service: none
     release_gate: optional
     gate: smoke
-    manifest_name: "busbar-headroom"
-    asset_prefix: "busbar-headroom"
     description: "Compresses LLM chat history with the real headroom-core BM25 TextCrusher engine as a prompt:rw rewrite gate: a busbar first-party kind:hook plugin (dlopen cdylib)."
     busbar_checkout: true
     lib_only: true

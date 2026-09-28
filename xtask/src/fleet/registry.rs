@@ -154,12 +154,8 @@ pub fn parse(text: &str) -> Result<Fleet, String> {
             kind: req(e, "kind", &who)?.to_string(),
             alias: req(e, "alias", &who)?.to_string(),
             released,
-            manifest_name: s(e, "manifest_name", &who)?
-                .unwrap_or(&crate_name)
-                .to_string(),
-            asset_prefix: s(e, "asset_prefix", &who)?
-                .unwrap_or(&crate_name)
-                .to_string(),
+            manifest_name: s(e, "manifest_name", &who)?.unwrap_or(&repo).to_string(),
+            asset_prefix: s(e, "asset_prefix", &who)?.unwrap_or(&repo).to_string(),
             description: req(e, "description", &who)?.to_string(),
             ci_service: s(e, "ci_service", &who)?.unwrap_or(&service).to_string(),
             busbar_checkout: b(e, "busbar_checkout", &who, false)?,

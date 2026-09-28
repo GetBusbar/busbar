@@ -366,16 +366,16 @@ A missing or corrupt overlay is ignored at boot: a bad overlay can never brick s
 
 | Endpoint | Does |
 |---|---|
-| `POST /hooks` | Register a hook at runtime. Body `{ "name": "...", "config": { "kind": "gate\|tap", "module": "<kind: hook plugin name/alias>", "settings": {...}, ... } }`. `module` names a loaded `kind: hook` plugin (1.5.0 retired the built-in `socket`/`webhook` transports; for HTTPS-sidecar forwarding use the first-party `busbar-webrequest-hook` plugin, and note `plugins.enabled: true` is required). **`201` when the name is new; `200` when it replaces an existing overlay hook** (honest upsert). A `global: true` hook is live for the next request. Invalid definitions are `400` and change nothing; a base-config-defined name is a terminal `409` (the API never silently shadows file config) |
+| `POST /hooks` | Register a hook at runtime. Body `{ "name": "...", "config": { "kind": "gate\|tap", "module": "<kind: hook plugin name/alias>", "settings": {...}, ... } }`. `module` names a loaded `kind: hook` plugin (1.5.0 retired the built-in `socket`/`webhook` transports; for HTTPS-sidecar forwarding use the first-party `busbar-hook-webrequest` plugin, and note `plugins.enabled: true` is required). **`201` when the name is new; `200` when it replaces an existing overlay hook** (honest upsert). A `global: true` hook is live for the next request. Invalid definitions are `400` and change nothing; a base-config-defined name is a terminal `409` (the API never silently shadows file config) |
 | `PUT /hooks/{name}` | Replace an existing **overlay** hook, live. `404` for an unknown name (PUT replaces; POST creates); terminal `409` for a base-defined hook or a grant change: `kind`/`prompt`/`user` are immutable (delete and re-register to change them) |
 | `DELETE /hooks/{name}` | Remove an overlay hook, live. **`204`** (still carrying the new config ETag); `404` if unregistered; terminal `409` for a base-defined hook. The deletion is tombstoned in the overlay so it survives restart |
-| `PATCH /hooks/{name}/settings` | Push an opaque settings map to the **running** hook and **commit on ack**: Busbar sends the `configure` op (5s deadline) and only a version-echoing acknowledgment commits the change (audited, versioned, persisted). A nack/timeout commits nothing (`400` names the reason); if another mutation landed during the push, the commit is refused with `409`, retry. A forwarding hook (e.g. `busbar-webrequest-hook`) relays committed settings to its sidecar, so a restarted sidecar never runs blind |
+| `PATCH /hooks/{name}/settings` | Push an opaque settings map to the **running** hook and **commit on ack**: Busbar sends the `configure` op (5s deadline) and only a version-echoing acknowledgment commits the change (audited, versioned, persisted). A nack/timeout commits nothing (`400` names the reason); if another mutation landed during the push, the commit is refused with `409`, retry. A forwarding hook (e.g. `busbar-hook-webrequest`) relays committed settings to its sidecar, so a restarted sidecar never runs blind |
 
 All hook mutations honor `If-Match` against the config-plane ETag, are audited (including rejections: probing which names exist leaves a trail), recorded in version history, and overlay-persisted.
 
 ```bash
 # Register a global compression gate, live immediately (forwarding to an HTTPS sidecar via the
-# first-party busbar-webrequest-hook plugin; requires plugins.enabled: true)
+# first-party busbar-hook-webrequest plugin; requires plugins.enabled: true)
 curl -s -X POST -H "x-admin-token: $TOK" -H 'content-type: application/json' \
   --data '{"name":"compress","config":{"kind":"gate","module":"webrequest","settings":{"url":"https://127.0.0.1:8900/"},"prompt":"rw","global":true}}' \
   http://localhost:8081/api/v1/admin/hooks
