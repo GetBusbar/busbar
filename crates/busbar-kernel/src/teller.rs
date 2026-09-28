@@ -378,7 +378,6 @@ pub trait Units {
         &self,
         token: &Pass<Route>,
         ctx: &UnitCtx,
-        meter: &AccrualMeter,
         destinations: &[VerifiedDestination],
     ) -> Decision<Route>;
 
@@ -452,7 +451,6 @@ pub trait RouteAwait {
         &'a self,
         token: &'a Pass<Route>,
         ctx: &'a UnitCtx,
-        meter: &'a AccrualMeter,
         destinations: &'a [VerifiedDestination],
     ) -> RouteLeg<'a>;
 
@@ -490,10 +488,9 @@ impl<U: Units> RouteAwait for Blocking<'_, U> {
         &'a self,
         token: &'a Pass<Route>,
         ctx: &'a UnitCtx,
-        meter: &'a AccrualMeter,
         destinations: &'a [VerifiedDestination],
     ) -> RouteLeg<'a> {
-        let answer = self.0.route(token, ctx, meter, destinations);
+        let answer = self.0.route(token, ctx, destinations);
         Box::pin(std::future::ready(answer))
     }
 
@@ -660,7 +657,6 @@ pub async fn run_unit_async<U: Units, R: RouteAwait>(
                 // caller going away could interrupt. It still ends where every admitted unit ends.
                 Some(outcome) => terminal(kernel, units, ctx, run, outcome, settling),
                 None => {
-                    let meter = run.meter;
                     // THE ONE AWAIT is inside this scope, and so is the only place a caller that
                     // goes away can drop the loop. The guard owns the terminal for the length of it.
                     let mut abandoned = Abandoned {
@@ -670,7 +666,7 @@ pub async fn run_unit_async<U: Units, R: RouteAwait>(
                         ctx,
                         ending: Some((run, settling)),
                     };
-                    let outcome = under_hold(kernel, units, route, ctx, meter, &destinations).await;
+                    let outcome = under_hold(kernel, units, route, ctx, &destinations).await;
                     abandoned.reached(outcome)
                 }
             }
@@ -1130,12 +1126,11 @@ async fn under_hold<U: Units, R: RouteAwait>(
     units: &U,
     route: &R,
     ctx: &UnitCtx,
-    meter: &AccrualMeter,
     destinations: &[VerifiedDestination],
 ) -> Outcome {
     let seal = &kernel.seal;
     let token = Pass::<Route>::mint(seal);
-    let leg = route.route_leg(&token, ctx, meter, destinations).await;
+    let leg = route.route_leg(&token, ctx, destinations).await;
     match leg.into_result(seal) {
         Err(refusal) => {
             Outcome::Failed(refusal.step().unwrap_or(StepName::Route), refusal.reason())
@@ -1186,7 +1181,11 @@ pub fn exit<U: Units>(
     match taken {
         None => Ended::AlreadySettled,
         Some(mut hold) => {
-            let evidence = units.evidence(ctx);
+            // The floor is what the loop's own meter counted: the kernel's reading, not a plane's.
+            let evidence = Evidence {
+                accrued_floor: run.meter.total(),
+                ..units.evidence(ctx)
+            };
             let (amount, table_flags) = settle_amount(&outcome, &evidence);
             let (fee, fee_flags) = fee_count(&evidence.fee);
             let flags = table_flags.with(fee_flags);

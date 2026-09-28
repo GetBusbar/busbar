@@ -121,13 +121,13 @@ pub mod node {
 
     use busbar_contract::caps::{OpClassId, PrincipalId};
     use busbar_kernel::plane_host::PlaneAnswer;
-    use busbar_kernel::teller::{AccrualMeter, RouteAwait, Units};
+    use busbar_kernel::teller::{RouteAwait, Units};
 
     /// A configured lane name to the interned lane the priced axis is written in, or `None` where
     /// the image's vocabulary cannot hold the name.
     pub type Resolve = Arc<dyn Fn(&str) -> Option<busbar_contract::LaneId> + Send + Sync>;
-    /// What the node lends a build: its lane resolver, the loop's meter, the pinned arrival epoch.
-    pub type Lent = (Resolve, Arc<AccrualMeter>, u64);
+    /// What the node lends a build: its lane resolver and the pinned arrival epoch.
+    pub type Lent = (Resolve, u64);
     /// What a unit consumed, read after its body drained: every class, the billable count, the
     /// serving lane's config name.
     pub type Reported = (busbar_contract::billing::Usage, u32, String);

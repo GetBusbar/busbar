@@ -115,7 +115,7 @@ use busbar_kernel::{
     plane_host::PlaneAnswer,
     proxy::POOL_LABEL_UNRESOLVED,
     store::now,
-    teller::{AccrualMeter, Ended, Evidence, FeeEvidence, RouteAwait, RouteLeg, UnitCtx, Units},
+    teller::{Ended, Evidence, FeeEvidence, RouteAwait, RouteLeg, UnitCtx, Units},
 };
 
 use crate::arrival::PathArrivalFacts;
@@ -130,9 +130,9 @@ use crate::unit::{admit, approve, arrival, audit, authenticate, decode, verify};
 /// the priced axis is written in, or `None` where the image's vocabulary cannot hold the name.
 pub type Resolve = Arc<dyn Fn(&str) -> Option<LaneId> + Send + Sync>;
 
-/// What the node lends the unit it builds: its lane resolver, the loop's own meter, and the unit's
+/// What the node lends the unit it builds: its lane resolver and the unit's
 /// pinned header-arrival epoch — the window every charge and every refund it makes lands in.
-pub type Lent = (Resolve, Arc<AccrualMeter>, u64);
+pub type Lent = (Resolve, u64);
 
 /// WHAT A UNIT CONSUMED, read after its body drained: every class the tap reported, the billable
 /// count the Meter step decided, and the serving lane's config name. A report, never an amount.
@@ -199,7 +199,7 @@ pub(crate) fn handed(
     let proto = arrival.proto;
     let op_class = OpClassId::new(arrival.operation.name());
     let principal = authenticate::principal_id(&arrival.gov);
-    let build: Build = Box::new(move |(resolve, meter, charged_at)| {
+    let build: Build = Box::new(move |(resolve, charged_at)| {
         let unit = Arc::new(LlmUnit {
             seats,
             walk: Arc::new(Walk::open(arrival)),
@@ -210,7 +210,6 @@ pub(crate) fn handed(
             resolve,
             deferred: Mutex::new(None),
             model: Mutex::new(String::new()),
-            meter,
         });
         let finish: Finish = {
             let unit = Arc::clone(&unit);
@@ -309,12 +308,6 @@ pub struct LlmUnit {
     deferred: Mutex<Option<decode::DecodeRefusal>>,
     /// The model the caller named, once the ladder has read it.
     model: Mutex<String>,
-    /// THE LOOP'S OWN METER, lent at the build and read at the unit's evidence.
-    ///
-    /// The same value on both sides: the kernel is handed a borrow of this and the Meter step
-    /// accrues onto it, because the step that knows what the unit is worth is not the step the loop
-    /// hands the meter to. Two meters would be a unit that accrued on one and settled the other.
-    meter: Arc<AccrualMeter>,
 }
 
 impl std::fmt::Debug for LlmUnit {
@@ -619,7 +612,6 @@ impl Units for LlmUnit {
         &self,
         token: &Pass<Route>,
         _ctx: &UnitCtx,
-        _meter: &AccrualMeter,
         _destinations: &[VerifiedDestination],
     ) -> Decision<Route> {
         // THIS PLANE'S ROUTE AWAITS, so it is answered by the `RouteAwait` arm below and this one is
@@ -710,7 +702,6 @@ impl Units for LlmUnit {
             // record that a unit ran and ended. Carrying the money as well needs the settlement to
             // happen where the figure is, which is past this unit's terminal.
             located: None,
-            accrued_floor: self.meter.total(),
             locator_required: false,
             terminal_error: status.is_some_and(|s| !(200..300).contains(&s)),
             recovered: false,
@@ -746,6 +737,8 @@ impl Units for LlmUnit {
                     }
                 }),
             },
+            // The accrued floor is the kernel's, filled at the exit from the loop's own meter.
+            ..Evidence::default()
         }
     }
 }
@@ -761,7 +754,6 @@ impl RouteAwait for LlmUnit {
         &'a self,
         token: &'a Pass<Route>,
         _ctx: &'a UnitCtx,
-        _meter: &'a AccrualMeter,
         _destinations: &'a [VerifiedDestination],
     ) -> RouteLeg<'a> {
         // The destination the charge actually LANDED on — post-downgrade, never the requested one.

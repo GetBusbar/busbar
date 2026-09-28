@@ -62,7 +62,7 @@ use busbar_contract::caps::{
 };
 use busbar_kernel::inflight::ArrivalDoor;
 use busbar_kernel::slice::GroupLeaseSlip;
-use busbar_kernel::teller::{AccrualMeter, Evidence, UnitCtx, Units};
+use busbar_kernel::teller::{Evidence, UnitCtx, Units};
 use busbar_kernel_budget::{Door, InMemoryCells};
 use busbar_kernel_egress::trust::Trust;
 use busbar_kernel_egress::EgressUnit;
@@ -1616,7 +1616,6 @@ pub trait RegisteredUnits: Send + Sync {
         root: &ProductionUnits,
         token: &Pass<Route>,
         ctx: &UnitCtx,
-        meter: &AccrualMeter,
         destinations: &[busbar_contract::caps::VerifiedDestination],
     ) -> Decision<Route>;
 
@@ -1802,11 +1801,10 @@ impl Units for ProductionUnits {
         &self,
         token: &Pass<Route>,
         ctx: &UnitCtx,
-        meter: &AccrualMeter,
         destinations: &[busbar_contract::caps::VerifiedDestination],
     ) -> Decision<Route> {
         if let Some(plane) = self.registry.resolve(self, ctx) {
-            return plane.route(self, token, ctx, meter, destinations);
+            return plane.route(self, token, ctx, destinations);
         }
         Decision::refuse(
             token,

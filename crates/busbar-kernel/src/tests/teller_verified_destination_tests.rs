@@ -140,7 +140,6 @@ impl Units for Fixture {
         &self,
         token: &Pass<Route>,
         _ctx: &UnitCtx,
-        _meter: &AccrualMeter,
         destinations: &[VerifiedDestination],
     ) -> Decision<Route> {
         self.route_seen

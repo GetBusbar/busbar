@@ -45,7 +45,6 @@ fn run(
 ) -> Ended {
     let gauge = ConcurrencyGauge::new();
     let leases = LeaseCell::new();
-    let meter = AccrualMeter::new();
     run_unit(
         kernel,
         units,
@@ -56,7 +55,7 @@ fn run(
             leases: &leases,
             gauge: &gauge,
             canary,
-            meter: &meter,
+            meter: &units.meter,
         },
     )
 }

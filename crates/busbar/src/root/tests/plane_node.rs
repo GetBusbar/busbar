@@ -1204,7 +1204,7 @@ async fn drive_keeping_the_unit(
     let (principal, op_class, _proto, build) = plane::handed_seated(arrival, None, seats);
     let key = node.next_key.mint();
     let meter = Arc::new(AccrualMeter::new());
-    let (units, route, _finish) = build((node.resolver(), Arc::clone(&meter), EPOCH));
+    let (units, route, _finish) = build((node.resolver(), EPOCH));
     let history = crate::root::kernel::ROOT_CARD.pin();
     let hold = busbar_kernel::inflight::arrival_hold(&node.kernel, &node.door, principal.clone());
     let slot = node
@@ -4026,7 +4026,7 @@ async fn a_served_rerank_puts_identical_search_units_on_both_books() {
     // THE UNIT, as the plane's path arrival hands it to the node.
     let (principal, op_class, _proto, build) = plane::handed(arrival, None);
     let meter = Arc::new(AccrualMeter::new());
-    let (units, route, finish) = build((node.resolver(), Arc::clone(&meter), EPOCH));
+    let (units, route, finish) = build((node.resolver(), EPOCH));
     let hold = busbar_kernel::inflight::arrival_hold(&node.kernel, &node.door, principal.clone());
     let slot = node
         .inflight

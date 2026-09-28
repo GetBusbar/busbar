@@ -3004,7 +3004,6 @@ pub(crate) fn route(
     admin: &busbar_contract::caps::Grant<busbar_contract::caps::AdminVerb>,
     token: &Pass<Route>,
     ctx: &UnitCtx,
-    _meter: &busbar_kernel::teller::AccrualMeter,
 ) -> Decision<Route> {
     let (Some(request), Some(resolved)) =
         (binding.units.request(ctx.key), binding.units.verb(ctx.key))
@@ -3629,7 +3628,6 @@ impl RegisteredUnits for AdminPlane {
         root: &ProductionUnits,
         token: &Pass<Route>,
         ctx: &UnitCtx,
-        meter: &busbar_kernel::teller::AccrualMeter,
         _destinations: &[busbar_contract::caps::VerifiedDestination],
     ) -> Decision<Route> {
         route(
@@ -3638,7 +3636,6 @@ impl RegisteredUnits for AdminPlane {
             &root.admin_token,
             token,
             ctx,
-            meter,
         )
     }
 

@@ -103,10 +103,9 @@ impl Units for ParentExitsMidRoute<'_> {
         &self,
         token: &Pass<Route>,
         ctx: &UnitCtx,
-        meter: &AccrualMeter,
         destinations: &[VerifiedDestination],
     ) -> Decision<Route> {
-        let routed = self.child.route(token, ctx, meter, destinations);
+        let routed = self.child.route(token, ctx, destinations);
         self.parent_exits();
         routed
     }
@@ -170,12 +169,8 @@ fn child_outliving_its_parent(door_backs: Option<ReasonCode>) -> (Ended, HoldCel
         door_backs,
     };
     let child_cell = cell(&kernel);
-    let (leases, gauge, meter, canary) = (
-        LeaseCell::new(),
-        ConcurrencyGauge::new(),
-        AccrualMeter::new(),
-        Canary::new(),
-    );
+    let (leases, gauge, canary) = (LeaseCell::new(), ConcurrencyGauge::new(), Canary::new());
+    let meter = Arc::clone(&units.child.meter);
     let ended = run_unit(
         &kernel,
         &units,

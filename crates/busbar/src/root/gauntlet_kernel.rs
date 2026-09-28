@@ -185,7 +185,6 @@ impl Units for GauntletKernelUnit<'_> {
         &self,
         token: &Pass<Route>,
         _ctx: &UnitCtx,
-        _meter: &AccrualMeter,
         _destinations: &[busbar_contract::caps::VerifiedDestination],
     ) -> Decision<Route> {
         // This rider's Route AWAITS (the plane's `drive`), so the loop reaches it through the
@@ -263,7 +262,6 @@ impl RouteAwait for GauntletKernelUnit<'_> {
         &'a self,
         token: &'a Pass<Route>,
         _ctx: &'a UnitCtx,
-        _meter: &'a AccrualMeter,
         _destinations: &'a [busbar_contract::caps::VerifiedDestination],
     ) -> RouteLeg<'a> {
         Box::pin(async move {

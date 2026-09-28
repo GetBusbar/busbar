@@ -625,7 +625,7 @@ impl Node {
         // out of the ONE arrival reading, so a request whose response completes in a later window
         // than its headers arrived cannot split its charges across two windows, and the epoch it is
         // billed in and the stamp the table enters it under cannot be two different instants.
-        let (units, route, finish) = build((self.resolver(), Arc::clone(&meter), arrived.secs()));
+        let (units, route, finish) = build((self.resolver(), arrived.secs()));
 
         let hold =
             busbar_kernel::inflight::arrival_hold(&self.kernel, &self.door, principal.clone());
@@ -1349,10 +1349,9 @@ impl Units for Driven<'_> {
         &self,
         token: &Pass<Route>,
         ctx: &UnitCtx,
-        meter: &AccrualMeter,
         destinations: &[VerifiedDestination],
     ) -> Decision<Route> {
-        self.units.route(token, ctx, meter, destinations)
+        self.units.route(token, ctx, destinations)
     }
 
     fn meter(
@@ -1394,7 +1393,6 @@ impl RouteAwait for Driven<'_> {
         &'a self,
         token: &'a Pass<Route>,
         ctx: &'a UnitCtx,
-        meter: &'a AccrualMeter,
         destinations: &'a [VerifiedDestination],
     ) -> RouteLeg<'a> {
         // THE DISPATCH, ON THE JOURNAL, before the leg leaves: what a recovery reads to tell a unit
@@ -1408,7 +1406,7 @@ impl RouteAwait for Driven<'_> {
         // Route, so it never reaches this line.
         self.node.dispatch.execute(
             self.op_class,
-            self.route.route_leg(token, ctx, meter, destinations),
+            self.route.route_leg(token, ctx, destinations),
         )
     }
 

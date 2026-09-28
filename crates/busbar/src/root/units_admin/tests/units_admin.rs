@@ -441,7 +441,6 @@ fn a_money_governance_verb_is_checked_against_the_posture_the_fleet_sealed() {
             &admin,
             &token,
             &ctx,
-            &busbar_kernel::teller::AccrualMeter::new(),
         )
         .into_result(&seal);
         binding.units.close(key);
@@ -1637,7 +1636,6 @@ fn each_recovery_verb_reaches_the_store_and_a_refusing_store_is_the_answer() {
             &admin,
             &token,
             &ctx,
-            &busbar_kernel::teller::AccrualMeter::new(),
         )
         .into_result(&seal);
         binding.units.close(key);
@@ -5052,7 +5050,6 @@ fn adjust_through_route(
         &admin,
         &Pass::<Route>::mint(&seal),
         &ctx,
-        &busbar_kernel::teller::AccrualMeter::new(),
     )
     .into_result(&seal);
     let answer = binding.units.answer(key);
