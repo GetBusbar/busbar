@@ -141,7 +141,7 @@ busbar-export-webhook = { git = "https://github.com/GetBusbar/busbar-export-webh
 # keeps the recorder and serves `/metrics`; this sink renders the recorder's snapshot. It lives in its
 # own repo (GetBusbar/busbar-export-prometheus) and is pulled at a PINNED rev; the workspace `[patch]` points
 # the busbar crates it names back at this tree.
-busbar-export-prometheus = { git = "https://github.com/GetBusbar/busbar-export-prometheus", rev = "087bbcc6a9bafc63591799770407a478f2742027", optional = true }
+busbar-export-prometheus = { git = "https://github.com/GetBusbar/busbar-export-prometheus", rev = "ae383d230e9a8e6af4c2d10f31e476845fe6e46d", optional = true }
 # THE OTLP TRACE SINK (`module: otlp`), a first-party EXPORT plugin linked through the `exports` axis
 # (K9e-2; owner answer Q75: OTLP export never delivered in 1.5.5, and 1.6.0 fixes it) — the same row a
 # signed tarball of it registers when dropped in. It encodes each `traces` record as an OTLP/HTTP
@@ -455,7 +455,7 @@ busbar-export-file-plugin = { git = "https://github.com/GetBusbar/busbar-export-
 # repo's cdylib crate at the SAME pinned rev as the linked `busbar-export-prometheus` edge above —
 # the library a tarball of the sink carries, found in this target dir by what it loads as. The
 # sink's own both-doors conformance lives in its repo (GetBusbar/busbar-export-prometheus).
-busbar-export-prometheus-plugin = { git = "https://github.com/GetBusbar/busbar-export-prometheus", rev = "087bbcc6a9bafc63591799770407a478f2742027" }
+busbar-export-prometheus-plugin = { git = "https://github.com/GetBusbar/busbar-export-prometheus", rev = "ae383d230e9a8e6af4c2d10f31e476845fe6e46d" }
 # The REAL token-verifying auth module the dropped-in auth proofs load (R-FIX2; the owner's FIXTURES
 # ruling: real plugins are the proofs): GetBusbar/busbar-auth-oidc's cdylib crate at a pinned rev. Nothing
 # links it; the dev edge is what makes this crate's test build carry its cdylib (under `deps/`,

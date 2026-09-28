@@ -102,7 +102,7 @@ busbar-plugin-example-plane = { path = "../plane-example" }
 # busbar-contract resolves to this tree through the workspace `[patch]` table.
 busbar-export-file-plugin = { git = "https://github.com/GetBusbar/busbar-export-file", rev = "795eadb866e5f9a98bc854b9697ae42a28a51e92" }
 busbar-export-webhook-plugin = { git = "https://github.com/GetBusbar/busbar-export-webhook", rev = "5e0170432aa2dc7640c8b6f6e89c9d38edad1df0" }
-busbar-export-prometheus-plugin = { git = "https://github.com/GetBusbar/busbar-export-prometheus", rev = "087bbcc6a9bafc63591799770407a478f2742027" }
+busbar-export-prometheus-plugin = { git = "https://github.com/GetBusbar/busbar-export-prometheus", rev = "ae383d230e9a8e6af4c2d10f31e476845fe6e46d" }
 busbar-export-otlp-plugin = { git = "https://github.com/GetBusbar/busbar-export-otlp", rev = "02f463307f9820faedda131467dcfaa83b25df78" }
 # The `kind: store` BOTH-WAYS proof is a REAL store (owner FIXTURES ruling: "store: store-memory +
 # store-*"; R-FIX1: every real plugin gets its dropped-in door): the build's default RAM store. Its
