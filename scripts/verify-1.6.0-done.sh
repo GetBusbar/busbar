@@ -1151,13 +1151,14 @@ if ! assert_skip_boot_leg_empty >/tmp/done-planedelete-env.$$ 2>&1; then
   CUR_RED=1; CUR_FIRST_NOTE="SKIP_BOOT_LEG set (plane-delete)"
 else
   rm -f /tmp/done-planedelete-env.$$
-  # scripts/plane-delete-test.sh iterates $PLANE_KEYS (scripts/plane-keys.sh), which is still the
+  # scripts/plane-delete-test.sh iterates $PLANE_KEYS_DELETE (scripts/plane-keys.sh): $PLANE_KEYS plus
+  # the on-disk key of each locked plane that has one (`plane-decisions`). $PLANE_KEYS is still the
   # ON-DISK spelling {llm, mcp, a2a, voice} on purpose — it is a literal `crates/busbar-<key>`
   # directory suffix, and spelling it `streaming` before the crate rename lands would make the
   # harness open a directory that is not there (the exact silent-zero-files failure plane-keys.sh
   # exists to prevent). `--all`'s own `report_coverage` already computes the gap against
   # PLANE_KEYS_LOCKED (the same 5-plane roster #18/#48 lock) and prints it — but only as a yellow
-  # informational note, never red, because a plane with literally nothing on disk yet (`decisions`)
+  # informational note, never red, because a plane with literally nothing on disk yet (none today)
   # has nothing for a strong-form removal test to prove either way. DONE, this file's own claim,
   # means the full 5-plane roster is provably deletable, so the step below promotes that gap to a
   # red HERE rather than letting a yellow note inside an exit-0 run keep it invisible.
@@ -1168,7 +1169,7 @@ else
     gaps=""
     for lp in $PLANE_KEYS_LOCKED; do
       od="$(plane_ondisk_key "$lp")"
-      case " $PLANE_KEYS " in
+      case " $PLANE_KEYS_DELETE " in
         *" ${od:-__no_ondisk_key__} "*) : ;;
         *) gaps="${gaps:+$gaps }$lp" ;;
       esac

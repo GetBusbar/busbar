@@ -64,11 +64,11 @@
 #                     PASS on a properly-neutralised one (GREEN control). Detects, never hard-codes, which
 #                     planes the current tree couples. Green self-test is the acceptance bar.
 #   --baseline        INFORMATIONAL. Runs the strong form for every plane in $PLANES (scripts/
-#                     plane-keys.sh's on-disk PLANE_KEYS — llm, mcp, a2a, voice today) and prints
-#                     per-plane PASS/FAIL with evidence, PLUS a roster-coverage line against the
-#                     five-plane LOCKED roster (PLANE_KEYS_LOCKED: llm, mcp, a2a, streaming,
-#                     decisions) so a plane this harness cannot yet reach (`decisions`, today) is
-#                     named rather than silently absent. ALWAYS exits 0 — surfaced on every push
+#                     plane-keys.sh's PLANE_KEYS_DELETE — llm, mcp, a2a, voice, plane-decisions today)
+#                     and prints per-plane PASS/FAIL with evidence, PLUS a roster-coverage line against
+#                     the five-plane LOCKED roster (PLANE_KEYS_LOCKED: llm, mcp, a2a, streaming,
+#                     decisions) so a plane this harness cannot reach is named rather than silently
+#                     absent. ALWAYS exits 0 — surfaced on every push
 #                     WITHOUT reddening CI until the extraction lands, exactly like
 #                     plane-purity-lint.sh --baseline.
 #   <plane>           BLOCKING (fail-closed). Run the strong form for one plane in $PLANES; exit 0 =
@@ -102,7 +102,7 @@ hdr()  { printf '\n== %s ==\n' "$*"; }
 # a plane it was never told about — adding a plane there arms this harness for it automatically.
 # shellcheck source=scripts/plane-keys.sh
 . "$(dirname "$0")/plane-keys.sh"
-PLANES="$PLANE_KEYS"
+PLANES="$PLANE_KEYS_DELETE"
 
 # ── ROSTER TRUTH vs COVERAGE TRUTH — be careful and honest here ────────────────────────────────────
 # `PLANES` ($PLANE_KEYS) is what this harness can MECHANICALLY operate on today: each entry is a
@@ -119,14 +119,14 @@ PLANES="$PLANE_KEYS"
 #     DECISIONS #18's crate rename has not landed yet. Reporting it as a gap would be dishonest in
 #     the OTHER direction: the plane genuinely is strong-form removable today, just not under its
 #     locked spelling.
-#   * `decisions` is NOT covered — `crates/busbar-plane-decisions` exists but is deliberately unwired
-#     (its own module doc: no root Cargo.toml/main.rs change, no `BUILTIN_PLANE_DECLS` entry, no
-#     `BuildCtx` field) and no `crates/busbar-decision(s)` I/O crate exists for `remove_crate_dir` to
-#     even find. There is nothing to `git rm -r` yet, so there is nothing this leg can prove — and it
-#     must say exactly that, out loud, rather than let the plane's absence from `$PLANES` read as a
-#     silent, uncommented pass.
+#   * `decisions` IS covered — tested as `plane-decisions`: the plane is ONE crate,
+#     `crates/busbar-plane-decisions`, with no I/O host crate beside it, so `git rm -r` of that one
+#     directory removes the whole plane. `$PLANES` is `PLANE_KEYS_DELETE` (scripts/plane-keys.sh),
+#     which carries that on-disk key without adding the bare word to `PLANE_KEYS`. The plane serves
+#     no route yet (`plane_unserved` below), so its boot leg's route probe carries no weight and the
+#     refusal witness is its presence/absence evidence.
 # Computed from PLANE_KEYS_LOCKED against PLANES via the alias, never hard-coded, so a plane that
-# gains an on-disk stand-in (a rename landing, or `decisions` getting wired into the bin) drops out of
+# gains an on-disk stand-in (a rename landing, or a new one-crate plane) drops out of
 # the gap with no edit here, and a locked plane added with no stand-in yet lands in it automatically.
 LOCKED_GAPS=""
 for _lp in $PLANE_KEYS_LOCKED; do
@@ -154,7 +154,7 @@ report_coverage() {
         if [ "$od" = "$lp" ]; then
           grn "  $lp: covered (tested as \`$od\`)"
         else
-          grn "  $lp: covered (tested under its pre-rename on-disk name \`$od\`)"
+          grn "  $lp: covered (tested under its on-disk name \`$od\`)"
         fi
         ;;
     esac
@@ -204,13 +204,14 @@ command -v cargo >/dev/null 2>&1 || { echo "plane-delete-test: cargo not found" 
 # default plane set (removing voice touches neither mcp nor a2a). A feature that FORWARDS to
 # `plane-voice` would leave the bin's default build incoherent without the crate until it came out
 # too — which is what neutralise_bin's forwarding closure is for.
-bin_feature() { case "$1" in llm) echo proto-llm ;; mcp) echo plane-mcp ;; a2a) echo plane-a2a ;; voice) echo plane-voice ;; esac; }
+bin_feature() { case "$1" in llm) echo proto-llm ;; mcp) echo plane-mcp ;; a2a) echo plane-a2a ;; voice) echo plane-voice ;; plane-decisions) echo plane-decisions ;; esac; }
 neutral_keep() {
   case "$1" in
     llm) echo "plane-mcp,plane-a2a" ;;
     mcp) echo "plane-a2a" ;;
     a2a) echo "plane-mcp" ;;
     voice) echo "plane-mcp,plane-a2a" ;;
+    plane-decisions) echo "plane-mcp,plane-a2a" ;;
   esac
 }
 valid_plane() { case " $PLANES " in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
@@ -604,6 +605,14 @@ PYEOF
 plane_probe_boot() {   # which boot config mounts this plane: `mcp` (closed chain) or `open`
   case "$1" in mcp) echo mcp ;; *) echo open ;; esac
 }
+# plane_unserved <plane> → 0 when the plane is compiled in and configured but MOUNTS NO ROUTE yet.
+# `plane-decisions` is one: its `POST /v1/systemone` is served by the kernel plane driver
+# (`BUSBAR-1.6.0.md` Part 3, §12), which has not landed, so with the plane present the probe reads
+# exactly what absence reads and the route leg can prove nothing. For such a plane the judge REQUIRES
+# the control to read absent (a plane that starts serving while still marked here is RED, so the mark
+# cannot go stale) and the REFUSAL WITNESS carries the presence/absence verdict. Strike the mark the
+# moment the plane serves; the route leg then judges it like every other plane.
+plane_unserved() { case "$1" in plane-decisions) return 0 ;; *) return 1 ;; esac; }
 # THE LLM PROBE IS A `GET`, AND THAT IS THE WHOLE POINT — see the calibration note below.
 plane_probe_method() { case "$1" in mcp | llm) echo GET ;; *) echo POST ;; esac; }
 plane_probe_path() {
@@ -612,12 +621,14 @@ plane_probe_path() {
     mcp)   echo "/.well-known/oauth-protected-resource/mcp" ;;
     a2a)   echo "/a2a" ;;
     voice) echo "/v1/realtime/client_secrets" ;;
+    plane-decisions) echo "/v1/systemone" ;;
   esac
 }
 plane_probe_body() {
   case "$1" in
     a2a)   printf '{"jsonrpc":"2.0","method":"message/send","id":1}' ;;
     voice) printf '{"model":"gpt-realtime"}' ;;
+    plane-decisions) printf '{"state":{},"context":{}}' ;;
     llm | mcp) printf '' ;;
   esac
 }
@@ -626,7 +637,7 @@ plane_probe_body() {
 # the SUBJECT boot must not carry. Space-separated; empty for a plane the fixture does not configure.
 # This is the same fail-closed pairing the product enforces at resolve: the section exists only while
 # the plane that owns it is compiled in.
-plane_config_sections() { case "$1" in mcp) echo "mcp" ;; a2a) echo "agents" ;; voice) echo "streams" ;; *) echo "" ;; esac; }
+plane_config_sections() { case "$1" in mcp) echo "mcp" ;; a2a) echo "agents" ;; voice) echo "streams" ;; plane-decisions) echo "decisions" ;; *) echo "" ;; esac; }
 # section_omitted <section> <omit-list> → 0 when <section> is in the space-separated <omit-list>.
 section_omitted() { case " ${2:-} " in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
 
@@ -686,6 +697,11 @@ write_boot_config() {
       # voice probe read 404 with the plane compiled in: a positive control that could not pass.
       section_omitted streams "$omit" || \
         printf 'streams:\n  context_window_tokens: 16384\n' >>"$f"
+      # THE DECISIONS PLANE'S OWN SECTION. `upstream_credentials` is a member the plane declares, so
+      # the block is CONTENT (not the empty section) and names no provider or model — the fixture
+      # stays free of upstreams. A build without the plane refuses it as an unknown field.
+      section_omitted decisions "$omit" || \
+        printf 'decisions:\n  upstream_credentials: own\n' >>"$f"
       ;;
   esac
 }
@@ -829,6 +845,11 @@ judge_refusal() {
 refusal_witness() {
   local bin="$1" p="$2" mode secs ports port admin_port fix pid rc waited
   secs="$(plane_config_sections "$p")"
+  if [ -z "$secs" ] && plane_unserved "$p"; then
+    red "  refusal witness ($p): the plane is UNSERVED and the fixture configures no section it owns — there is no evidence at all"
+    note "    An unserved plane's route leg proves nothing, so its section refusal is the only witness. Give it a section."
+    return 1
+  fi
   if [ -z "$secs" ]; then
     note "refusal witness ($p): not applicable — the boot fixture configures no section this plane owns,"
     note "    so its subject config is byte-identical to the control's and the 404 above stands alone"
@@ -917,7 +938,24 @@ judge_codes() {
     red "  boot leg ($p): the control run recorded no code for this plane — the probe never ran"
     return 1
   fi
-  if [ "$cc" = "$ab" ]; then
+  # AN UNSERVED PLANE (`plane_unserved`): the plane is present and mounts no route, so its probe must
+  # read ABSENT on the control too. Anything else means it serves now and its mark is stale — RED, so
+  # the route leg starts judging it. The subject must read absent as well. Neither half is evidence
+  # that the plane left; that is the refusal witness's, which `boot_serve` requires for this plane.
+  if plane_unserved "$p"; then
+    if [ "$cc" != "$ab" ]; then
+      red "  boot leg ($p): marked UNSERVED, but $(plane_probe_method "$p") $(plane_probe_path "$p") answers $cc with the plane present (absence here reads $ab)"
+      note "    The plane serves this route now. Strike its \`plane_unserved\` mark so the route leg judges the deletion."
+      return 1
+    fi
+    sc="$(code_for "$sub" "$p")"
+    if [ "$sc" != "$ab" ]; then
+      fail=1
+      red "  boot leg ($p): marked UNSERVED, and the plane-less build answers ${sc:-<no answer>} on its route, not the absence code $ab"
+    else
+      note "boot leg ($p): UNSERVED — $(plane_probe_method "$p") $(plane_probe_path "$p") reads absent ($ab) with and without the plane; the route leg carries no weight here and the refusal witness is the verdict"
+    fi
+  elif [ "$cc" = "$ab" ]; then
     red "  boot leg ($p): POSITIVE CONTROL FAILED — $(plane_probe_method "$p") $(plane_probe_path "$p") is $cc"
     note "    on the UNMUTATED tree, where crates/busbar-$p is present and compiled in — and $ab is exactly"
     note "    what a route that DOES NOT EXIST answers on this boot. A probe that reads absent whether or"
@@ -925,26 +963,27 @@ judge_codes() {
     note "    unfalsifiable. Fix the probe (path/method/body) or the boot config that is supposed to mount"
     note "    this plane — do not read this as a pass."
     return 1
-  fi
-  note "positive control ($p): $(plane_probe_method "$p") $(plane_probe_path "$p") answers $cc with the plane present (absence on this boot reads $ab)"
-
-  # THE DELETION: the byte-identical request must now read as ABSENT.
-  #
-  # For a plane whose section the subject boot had to OMIT (`plane_config_sections`, because the
-  # product refuses a config naming a compiled-out plane), this is NECESSARY but not sufficient on
-  # its own — P's routes mount from P's section, so an omitted section makes the probe read absent
-  # too. The sufficient half is `refusal_witness`, which `boot_serve` requires alongside this. Said
-  # out loud here so a reader of the green line never reads more into it than it carries.
-  sc="$(code_for "$sub" "$p")"
-  if [ "$sc" = "$ab" ]; then
-    if [ -n "$(plane_config_sections "$p")" ]; then
-      note "boot leg ($p): the same request now answers $sc — absent on this boot (necessary; the subject boot omits \`$(plane_config_sections "$p"):\`, so the refusal witness carries sufficiency)"
-    else
-      note "boot leg ($p): the same request now answers $sc — absent on this boot; the plane's route left with the crate"
-    fi
   else
-    fail=1
-    red "  boot leg ($p): $(plane_probe_method "$p") $(plane_probe_path "$p") answered ${sc:-<no answer>}, not the measured absence code $ab — the route survived deletion"
+    note "positive control ($p): $(plane_probe_method "$p") $(plane_probe_path "$p") answers $cc with the plane present (absence on this boot reads $ab)"
+
+    # THE DELETION: the byte-identical request must now read as ABSENT.
+    #
+    # For a plane whose section the subject boot had to OMIT (`plane_config_sections`, because the
+    # product refuses a config naming a compiled-out plane), this is NECESSARY but not sufficient on
+    # its own — P's routes mount from P's section, so an omitted section makes the probe read absent
+    # too. The sufficient half is `refusal_witness`, which `boot_serve` requires alongside this. Said
+    # out loud here so a reader of the green line never reads more into it than it carries.
+    sc="$(code_for "$sub" "$p")"
+    if [ "$sc" = "$ab" ]; then
+      if [ -n "$(plane_config_sections "$p")" ]; then
+        note "boot leg ($p): the same request now answers $sc — absent on this boot (necessary; the subject boot omits \`$(plane_config_sections "$p"):\`, so the refusal witness carries sufficiency)"
+      else
+        note "boot leg ($p): the same request now answers $sc — absent on this boot; the plane's route left with the crate"
+      fi
+    else
+      fail=1
+      red "  boot leg ($p): $(plane_probe_method "$p") $(plane_probe_path "$p") answered ${sc:-<no answer>}, not the measured absence code $ab — the route survived deletion"
+    fi
   fi
 
   # THE NEIGHBOUR CONTROL: every OTHER plane the control mounted must still serve on this binary.
@@ -1026,14 +1065,14 @@ remove_and_assert() {
   pre_bin="$s/.plane-delete-pre-bin.toml"
   cp "$s/Cargo.toml" "$pre_root" 2>/dev/null || { red "  cannot read the scratch's root manifest"; return 1; }
   cp "$s/crates/busbar/Cargo.toml" "$pre_bin" 2>/dev/null || { red "  cannot read the scratch's bin manifest"; return 1; }
-  pre_dep="$(grep -c "^busbar-$p = " "$pre_bin" 2>/dev/null)"; pre_dep="${pre_dep:-0}"
+  pre_dep="$(grep -c "^busbar-${p}[[:space:]]*=[[:space:]]*{" "$pre_bin" 2>/dev/null)"; pre_dep="${pre_dep:-0}"
 
   apply_removal "$s" "$p"
 
   local ev_dir ev_mem ev_dep
   ev_dir="$([ -d "$s/crates/busbar-$p" ] && echo PRESENT || echo GONE)"
   ev_mem="$(grep -c "\"crates/busbar-$p\"" "$s/Cargo.toml" 2>/dev/null)"; ev_mem="${ev_mem:-0}"
-  ev_dep="$(grep -c "^busbar-$p = " "$s/crates/busbar/Cargo.toml" 2>/dev/null)"; ev_dep="${ev_dep:-0}"
+  ev_dep="$(grep -c "^busbar-${p}[[:space:]]*=[[:space:]]*{" "$s/crates/busbar/Cargo.toml" 2>/dev/null)"; ev_dep="${ev_dep:-0}"
   note "removed: crate dir=$pre_dir->$ev_dir  members-refs=$ev_mem  bin-dep-lines=$pre_dep->$ev_dep"
 
   if [ "$pre_dir" != "PRESENT" ]; then
@@ -1111,7 +1150,12 @@ strong_form() {
   # this leg FAILS, because a leg that quietly does nothing for one plane is a PASS nobody earned.
   log="$CACHE_TARGET/.plane-delete-$p-plane.log"
   pc="$(plane_contract_crate "$p")"
-  if [ -z "$pc" ] || [ ! -d "$s/crates/$pc" ]; then
+  if [ -n "$pc" ] && [ "$pc" = "busbar-$p" ]; then
+    # A ONE-CRATE PLANE: its contract plane crate IS the crate removed above, so there is no second
+    # crate left to compile and the property this leg guards (a plane crate reaching into its plugin
+    # crate) has no second crate to hold. Said, not skipped.
+    note "  leg 1b: $pc is the whole plane (one crate), removed above — there is no separate plane crate to compile"
+  elif [ -z "$pc" ] || [ ! -d "$s/crates/$pc" ]; then
     fail=1; red "  leg 1b: no contract plane crate for '$p' (derived: '${pc:-<none>}') — the plane crate was NOT compiled"
   else
     run_check "$s" "$log" -- -p "$pc" --all-targets; rc=$?
@@ -1495,6 +1539,30 @@ run_selftest() {
   else
     note "PASS  boot-judge: a control with no absence calibration is refused, not defaulted"
   fi
+  # (5j) AN UNSERVED PLANE (`plane_unserved`). Its probe reading absent on the control is expected,
+  #      not a vacuous probe; the same probe answering anything else means the plane serves now and
+  #      its mark is stale, which must be RED so the route leg starts judging it.
+  printf "${CAL}llm=200\nmcp=200\na2a=200\nvoice=200\nplane-decisions=404\n" >"$ctl"
+  printf "${CAL}llm=200\nmcp=200\na2a=200\nvoice=200\nplane-decisions=404\n" >"$sub"
+  if judge_codes "$ctl" "$sub" plane-decisions >/dev/null 2>&1; then
+    note "PASS  boot-judge UNSERVED: an unserved plane reading absent with and without its crate is judged by its refusal witness"
+  else
+    fail=1; note "FAIL  boot-judge UNSERVED: an unserved plane reading absent on both builds was refused"
+  fi
+  printf "${CAL}llm=200\nmcp=200\na2a=200\nvoice=200\nplane-decisions=200\n" >"$ctl"
+  if judge_codes "$ctl" "$sub" plane-decisions >/dev/null 2>&1; then
+    fail=1; note "FAIL  boot-judge UNSERVED: a plane marked unserved that SERVES its route was accepted — the mark went stale silently"
+  else
+    note "PASS  boot-judge UNSERVED: a plane marked unserved that serves its route is RED (strike the mark)"
+  fi
+  printf "${CAL}llm=200\nmcp=200\na2a=200\nvoice=200\nplane-decisions=404\n" >"$ctl"
+  printf "${CAL}llm=200\nmcp=200\na2a=200\nvoice=200\nplane-decisions=200\n" >"$sub"
+  if judge_codes "$ctl" "$sub" plane-decisions >/dev/null 2>&1; then
+    fail=1; note "FAIL  boot-judge UNSERVED: the plane-less build serving the unserved plane's route was accepted"
+  else
+    note "PASS  boot-judge UNSERVED: a route appearing on the plane-less build is RED"
+  fi
+
   # (5i) THE SUBJECT BOOT MUST NOT CONFIGURE THE PLANE IT JUST DELETED. This is the fixture defect
   #      the refusal witness exists beside: the shared boot config NAMES every plane, and busbar
   #      refuses — correctly, fail-closed — to boot a config that configures a plane the build was
@@ -1620,15 +1688,18 @@ run_selftest() {
       note "PASS  roster coverage: 'streaming' is NOT reported as a gap (covered via its on-disk name 'voice')"
       ;;
   esac
-  # `decisions` has no on-disk plane crate at all (busbar-plane-decisions is deliberately unwired) and
-  # MUST be named as a gap — the exact "absent plane reads as silent pass" failure this defect is
-  # about, made unable to recur silently.
+  # `decisions` is covered under its on-disk key `plane-decisions` (the one-crate plane
+  # `crates/busbar-plane-decisions`), which must be in $PLANES and must not be reported as a gap.
   case " $LOCKED_GAPS " in
     *" decisions "*)
-      note "PASS  roster coverage: 'decisions' IS reported as a gap (no on-disk plane crate exists yet)"
+      fail=1; note "FAIL  roster coverage: 'decisions' reported as a GAP, but it is tested as 'plane-decisions'"
       ;;
     *)
-      fail=1; note "FAIL  roster coverage: 'decisions' is NOT reported as a gap — an untestable plane would read as covered"
+      if valid_plane plane-decisions && [ -d "$REPO/crates/busbar-plane-decisions" ]; then
+        note "PASS  roster coverage: 'decisions' is covered (tested as 'plane-decisions', crates/busbar-plane-decisions)"
+      else
+        fail=1; note "FAIL  roster coverage: 'decisions' is not a gap, yet 'plane-decisions' is not a runnable plane on disk"
+      fi
       ;;
   esac
   # And the RED control for the mechanism itself: a locked key with no `plane_ondisk_key` mapping AND
@@ -1748,7 +1819,7 @@ case "${1:-}" in
       *" $1 "*)
         od="$(plane_ondisk_key "$1")"
         if [ -n "$od" ] && [ "$od" != "$1" ]; then
-          echo "plane-delete-test: '$1' is not a runnable plane key here — it is tested under its pre-rename on-disk name: run \`$0 $od\`" >&2
+          echo "plane-delete-test: '$1' is not a runnable plane key here — it is tested under its on-disk name: run \`$0 $od\`" >&2
         else
           echo "plane-delete-test: '$1' is in the locked five-plane roster but has no on-disk plane crate yet — nothing exists to strong-form remove." >&2
         fi

@@ -65,18 +65,38 @@ unset _pk
 # planes that differ from it.
 PLANE_KEYS_LOCKED="llm mcp a2a streaming decisions"
 
-# plane_ondisk_key <locked-key> → the PLANE_KEYS entry that plane is REACHABLE under today, or empty
-# if none exists yet. `streaming` is reachable — under its pre-rename name `voice`, the crate DECISIONS
-# #18 has not yet renamed — so a caller asking "is streaming covered" gets a truthful "yes, as voice",
-# not a false gap. A locked key with no entry here (`decisions`) returns empty: there is no on-disk
-# stand-in, so a caller must report that plane as a NAMED GAP, never as a silent pass over zero files.
+# plane_ondisk_key <locked-key> → the on-disk key that plane is REACHABLE under today (the suffix of
+# its `crates/busbar-<key>` directory), or empty if none exists yet. `streaming` is reachable — under
+# its pre-rename name `voice`, the crate DECISIONS #18 has not yet renamed — so a caller asking "is
+# streaming covered" gets a truthful "yes, as voice", not a false gap. `decisions` is reachable as
+# `plane-decisions`: the plane is ONE crate, `crates/busbar-plane-decisions`, with no I/O host crate
+# beside it, so its on-disk key is that crate's suffix. It is NOT in `PLANE_KEYS` (see the header:
+# the bare word would flood the grep gates that treat every entry as a needle); it is in
+# `PLANE_KEYS_DELETE` below, the list the deletion harness removes crates by. A locked key with no
+# entry here returns empty: a caller must report that plane as a NAMED GAP, never as a silent pass.
 plane_ondisk_key() {
   case "$1" in
     streaming) printf 'voice' ;;
+    decisions) printf 'plane-decisions' ;;
     llm | mcp | a2a) printf '%s' "$1" ;;
     *) printf '' ;;
   esac
 }
+
+# PLANE_KEYS_DELETE — every on-disk key the strong-form deletion harness can `git rm -r` as
+# `crates/busbar-<key>`: `PLANE_KEYS`, plus the on-disk key of every locked plane that has one and is
+# not already in it. DERIVED, so a locked plane that gains an on-disk key joins the harness with no
+# second edit, and a key that is not on disk is never invented.
+PLANE_KEYS_DELETE="$PLANE_KEYS"
+for _lp in $PLANE_KEYS_LOCKED; do
+  _od="$(plane_ondisk_key "$_lp")"
+  [ -n "$_od" ] || continue
+  case " $PLANE_KEYS_DELETE " in
+    *" $_od "*) : ;;
+    *) PLANE_KEYS_DELETE="$PLANE_KEYS_DELETE $_od" ;;
+  esac
+done
+unset _lp _od
 
 plane_src_roots() {   # echo "crates/busbar-<k>/src crates/busbar-<k>-codec/src …", canonical order.
   local k out=""
