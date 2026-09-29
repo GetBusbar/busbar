@@ -270,8 +270,8 @@ fn a_word_mark_has_a_known_class_and_a_word() {
 fn a_rewrite_moves_a_key_to_a_path_and_an_alias_or_sugar_names_nothing_else() {
     let ok = [
         rewrite(REWRITE_ALIAS, "tokens", NONE),
-        rewrite(REWRITE_SUGAR, "env", NONE),
-        rewrite(REWRITE_KEY, "api_key_env", abi_str("api_key.env")),
+        rewrite(REWRITE_SUGAR, "sugar", NONE),
+        rewrite(REWRITE_KEY, "key_ref", abi_str("key.ref")),
     ];
     assert_eq!(check_rewrites(&ok), Ok(()));
     assert_eq!(
@@ -283,7 +283,7 @@ fn a_rewrite_moves_a_key_to_a_path_and_an_alias_or_sugar_names_nothing_else() {
         Err(fault(Rule::Missing, "rewrite.from"))
     );
     assert_eq!(
-        check_rewrites(&[rewrite(REWRITE_KEY, "api_key_env", NONE)]),
+        check_rewrites(&[rewrite(REWRITE_KEY, "key_ref", NONE)]),
         Err(fault(Rule::Missing, "rewrite.to"))
     );
     assert_eq!(

@@ -175,11 +175,11 @@ pub struct MarkWord {
 /// [`Rewrite::class`]: `from` is another name config may give the plugin (a module alias). The
 /// registry holds it exclusive, beside the plugin's own name. `to` is absent.
 pub const REWRITE_ALIAS: u32 = 1;
-/// [`Rewrite::class`]: `from` is a reference key naming the plugin (`env` in `{env: X}`). `to` is
+/// [`Rewrite::class`]: `from` is a reference key naming the plugin (the `k` in `{k: X}`). `to` is
 /// absent.
 pub const REWRITE_SUGAR: u32 = 2;
 /// [`Rewrite::class`]: the setting key `from` is rewritten to the path `to` before the plugin's
-/// section reaches it (`api_key_env` to `api_key.env`).
+/// section reaches it (a flat key to a nested path).
 pub const REWRITE_KEY: u32 = 3;
 
 /// One live rewrite.

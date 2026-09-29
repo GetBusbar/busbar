@@ -55,8 +55,8 @@ const REWRITES: &[Rewrite] = &[
     Rewrite {
         class: REWRITE_KEY,
         _reserved: 0,
-        from: abi_str("key_env"),
-        to: abi_str("key.env"),
+        from: abi_str("key_ref"),
+        to: abi_str("key.ref"),
     },
 ];
 const SECTIONS: &[Section] = &[Section {
@@ -212,7 +212,7 @@ fn a_rendering_reads_back_to_every_fact_it_carries() {
         r.rewrites,
         vec![
             (REWRITE_ALIAS, "old-name".to_string(), String::new()),
-            (REWRITE_KEY, "key_env".to_string(), "key.env".to_string()),
+            (REWRITE_KEY, "key_ref".to_string(), "key.ref".to_string()),
         ]
     );
     assert_eq!(r.sections, vec![("golden".to_string(), SECTION_DECLARING)]);
