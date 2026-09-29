@@ -60,7 +60,7 @@ kind-isolation:matrix	unlisted-cell	busbar-core-admin × store	2
 kind-isolation:matrix	unlisted-cell	busbar-core-admin × transport	109
 kind-isolation:matrix	unlisted-cell	busbar-core-connector × cleanliness	2
 kind-isolation:matrix	unlisted-cell	busbar-core-connector × legacy	1
-kind-isolation:matrix	unlisted-cell	busbar-core-connector × transport	1
+kind-isolation:matrix	unlisted-cell	busbar-core-connector × transport	51
 kind-isolation:matrix	unlisted-cell	busbar-hooks-ranking × plane	4
 kind-isolation:matrix	unlisted-cell	busbar-kernel × cleanliness	47
 kind-isolation:matrix	unlisted-cell	busbar-kernel × hooks	34
@@ -95,7 +95,7 @@ kind-isolation:matrix	unlisted-edge	cleanliness -> legacy	22
 kind-isolation:matrix	unlisted-edge	cleanliness -> plane	93
 kind-isolation:matrix	unlisted-edge	cleanliness -> plugin-tooling	95
 kind-isolation:matrix	unlisted-edge	cleanliness -> store	7
-kind-isolation:matrix	unlisted-edge	cleanliness -> transport	119
+kind-isolation:matrix	unlisted-edge	cleanliness -> transport	169
 kind-isolation:matrix	unlisted-edge	contract -> cleanliness	1
 kind-isolation:matrix	unlisted-edge	contract -> kernel	1
 kind-isolation:matrix	unlisted-edge	contract -> plugin-tooling	1
