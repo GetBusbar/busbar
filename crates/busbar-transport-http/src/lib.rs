@@ -63,7 +63,7 @@
 //! when it streams — so the cap is held against the bytes that actually arrive, and an upstream past
 //! it ends the frame stream rather than growing this node's heap.
 
-#![deny(unsafe_code)]
+#![forbid(unsafe_code)]
 #![deny(missing_docs)]
 
 use std::collections::HashMap;
@@ -91,9 +91,8 @@ use tokio::sync::mpsc;
 use tokio::sync::Mutex as AsyncMutex;
 
 mod claims;
-// THE ABI BOUNDARY: the door reads and writes the host's C buffers, so it is the one module this
-// crate's `#![deny(unsafe_code)]` allows; every block in it states the host buffer it relies on.
-#[allow(unsafe_code)]
+// THE ABI BOUNDARY: the door reads and writes the host's C buffers through the SDK's safe surface
+// (`busbar_contract::abi::sdk::{SafeSlot, Lent, HostBuf}`), so it holds no `unsafe` either.
 pub mod door;
 mod meta;
 mod raw;

@@ -26,6 +26,10 @@
 //! No op pends. An op that has nothing more to do answers what it has, with the next instant it
 //! must be called at when hyper is waiting on a timer.
 //!
+//! Every slot is a `SafeSlot` on the SDK's safe surface: the instance is the SDK's typed
+//! `sdk::Instance<Instance>`, host-lent bytes and host buffers go through `Lent` and `HostBuf`, and
+//! this crate holds no `unsafe`.
+//!
 //! The accepted side is not this door's: an ingress request is served by the kernel's own door,
 //! so `begin` for [`SIDE_ACCEPT`] is refused, and so are `refuse`, `detach`, `adopt` and every
 //! carrier op.
@@ -33,19 +37,19 @@
 pub mod engine;
 
 use std::collections::HashMap;
-use std::ffi::c_void;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use busbar_contract::abi::mechanism::call::{AbiStr, Blob, InHead, OutHead, Outcome};
+use busbar_contract::abi::mechanism::call::{AbiStr, InHead, OutHead, Outcome};
 use busbar_contract::abi::mechanism::door::{KindTailHead, Statement};
 use busbar_contract::abi::mechanism::lifecycle::{
     CancelIn, CancelOut, DriveIn, GenIn, OpenIn, OpenOut, RefreshIn, ReleaseIn, TickIn, TickOut,
     ValidateIn,
 };
-use busbar_contract::abi::sdk::door::{abi_str, statement, Slot};
+use busbar_contract::abi::sdk::door::{abi_str, statement};
 use busbar_contract::abi::sdk::transport::form_codes;
+use busbar_contract::abi::sdk::{self as sdk, HostBuf, Lent, Safe, SafeSlot};
 use busbar_contract::abi::transport::{
     AcceptIn, AcceptOut, AdoptIn, ArrivalIn, ArrivalOut, BeginIn, Claim, ConnIn, ConnOut, DialIn,
     EmitIn, EncodeIn, FinishIn, FramePiece, FramerOut, FramerSink, FramingIn, IngestIn, IoOut,
@@ -212,14 +216,10 @@ struct Held {
     error: String,
 }
 
-/// The settings, parsed; `Err` names the first one that is not what its declaration says.
-fn read_settings(b: &Blob) -> Result<(Posture, bool, bool), &'static str> {
-    let text: &[u8] = if b.ptr.is_null() || b.len == 0 {
-        b"{}"
-    } else {
-        // SAFETY: the host's blob, valid for the call.
-        unsafe { std::slice::from_raw_parts(b.ptr, b.len) }
-    };
+/// The settings blob's bytes, parsed; `Err` names the first one that is not what its declaration
+/// says. An absent blob reads as `{}`.
+fn read_settings(bytes: &[u8]) -> Result<(Posture, bool, bool), &'static str> {
+    let text: &[u8] = if bytes.is_empty() { b"{}" } else { bytes };
     let v: serde_json::Value = serde_json::from_slice(text).map_err(|_| "settings: not JSON")?;
     let flag = |k: &'static str| match v.get(k) {
         None => Ok(false),
@@ -252,32 +252,32 @@ fn read_settings(b: &Blob) -> Result<(Posture, bool, bool), &'static str> {
     ))
 }
 
-fn instance<'a>(p: *mut c_void) -> &'a Instance {
-    // SAFETY: the host passes back the pointer `open` answered, until `close`.
-    unsafe { &*p.cast::<Instance>() }
-}
-
 fn err(out: &mut OutHead, text: &'static str) {
     out.error = abi_str(text);
 }
 
-fn text(s: &AbiStr) -> &[u8] {
-    if s.ptr.is_null() {
-        return &[];
-    }
-    // SAFETY: host-borrowed input, valid for the call.
-    unsafe { std::slice::from_raw_parts(s.ptr, s.len) }
+/// One slot body on the SDK's safe surface, over this framer's [`Instance`].
+macro_rules! slot {
+    ($(#[$doc:meta])* $name:ident, $in:ty, $out:ty,
+     |$inst:pat_param, $input:pat_param, $o:pat_param| $body:block) => {
+        $(#[$doc])*
+        pub struct $name;
+        impl SafeSlot for $name {
+            type In = $in;
+            type Out = $out;
+            type State = Instance;
+            fn call($inst: sdk::Instance<'_, Instance>, $input: Lent<'_, $in>, $o: &mut $out)
+                -> Outcome $body
+        }
+    };
 }
 
 // ── the lifecycle ────────────────────────────────────────────────────────────────────────────────
 
-/// `validate`.
-pub struct Validate;
-impl Slot for Validate {
-    type In = ValidateIn;
-    type Out = OutHead;
-    fn call(_: *mut c_void, i: &ValidateIn, o: &mut OutHead) -> Outcome {
-        match read_settings(&i.settings) {
+slot!(
+    /// `validate`.
+    Validate, ValidateIn, OutHead, |_, i, o| {
+        match read_settings(i.field(|x| &x.settings).bytes()) {
             Ok(_) => Outcome::Ready,
             Err(e) => {
                 err(o, e);
@@ -285,24 +285,20 @@ impl Slot for Validate {
             }
         }
     }
-}
+);
 
-/// `open`.
-pub struct Open;
-impl Slot for Open {
-    type In = OpenIn;
-    type Out = OpenOut;
-    fn call(_: *mut c_void, i: &OpenIn, o: &mut OpenOut) -> Outcome {
-        match read_settings(&i.settings) {
+slot!(
+    /// `open`.
+    Open, OpenIn, OpenOut, |instance, i, o| {
+        match read_settings(i.field(|x| &x.settings).bytes()) {
             Ok((posture, prior_knowledge, http1_only)) => {
-                o.instance = Box::into_raw(Box::new(Instance {
+                instance.open(Instance {
                     posture,
                     prior_knowledge,
                     http1_only,
                     framings: Mutex::new(HashMap::new()),
                     next: AtomicU64::new(1),
-                }))
-                .cast();
+                });
                 Outcome::Ready
             }
             Err(e) => {
@@ -311,54 +307,35 @@ impl Slot for Open {
             }
         }
     }
-}
+);
 
-/// `close`.
-pub struct Close;
-impl Slot for Close {
-    type In = InHead;
-    type Out = OutHead;
-    fn call(p: *mut c_void, _: &InHead, _: &mut OutHead) -> Outcome {
-        if !p.is_null() {
-            // SAFETY: `open`'s box, closed once.
-            drop(unsafe { Box::from_raw(p.cast::<Instance>()) });
-        }
-        Outcome::Ready
-    }
-}
+slot!(
+    /// `close`: answering READY, the SDK drops the instance.
+    Close, InHead, OutHead, |_, _, _| { Outcome::Ready }
+);
 
-/// `cancel`: no framer op pends, so nothing is ever in flight to cancel.
-pub struct Cancel;
-impl Slot for Cancel {
-    type In = CancelIn;
-    type Out = CancelOut;
-    fn call(_: *mut c_void, _: &CancelIn, o: &mut CancelOut) -> Outcome {
+slot!(
+    /// `cancel`: no framer op pends, so nothing is ever in flight to cancel.
+    Cancel, CancelIn, CancelOut, |_, _, o| {
         o.disposition = CANCEL_NOTHING_MOVED;
         Outcome::Ready
     }
-}
+);
 
-/// `tick`: the framings keep their own deadlines, so the instance asks for no tick.
-pub struct Tick;
-impl Slot for Tick {
-    type In = TickIn;
-    type Out = TickOut;
-    fn call(_: *mut c_void, _: &TickIn, _: &mut TickOut) -> Outcome {
-        Outcome::Ready
-    }
-}
+slot!(
+    /// `tick`: the framings keep their own deadlines, so the instance asks for no tick.
+    Tick, TickIn, TickOut, |_, _, _| { Outcome::Ready }
+);
 
 macro_rules! answer {
     ($name:ident, $in:ty, $out:ty, $outcome:expr) => {
-        #[doc = concat!("`", stringify!($name), "`.")]
-        pub struct $name;
-        impl Slot for $name {
-            type In = $in;
-            type Out = $out;
-            fn call(_: *mut c_void, _: &$in, _: &mut $out) -> Outcome {
-                $outcome
-            }
-        }
+        slot!(
+            #[doc = concat!("`", stringify!($name), "`.")]
+            $name,
+            $in,
+            $out,
+            |_, _, _| { $outcome }
+        );
     };
 }
 
@@ -385,11 +362,12 @@ answer!(Adopt, AdoptIn, FramerOut, Outcome::Refused);
 
 /// `locate`.
 pub struct Locate;
-impl Slot for Locate {
+impl SafeSlot for Locate {
     type In = LocateIn;
     type Out = LocateOut;
-    fn call(_: *mut c_void, i: &LocateIn, o: &mut LocateOut) -> Outcome {
-        let Ok(uri) = std::str::from_utf8(text(&i.target))
+    type State = Instance;
+    fn call(_: sdk::Instance<'_, Instance>, i: Lent<'_, LocateIn>, o: &mut LocateOut) -> Outcome {
+        let Ok(uri) = std::str::from_utf8(i.field(|x| &x.target).bytes())
             .ok()
             .and_then(|t| t.parse::<http::Uri>().ok())
             .ok_or(())
@@ -421,40 +399,40 @@ impl Slot for Locate {
         };
         o.secure = u32::from(secure);
         o.has_name = 1;
-        if authority.len() > i.authority_cap || host.len() > i.name_cap {
-            o.authority_needed = authority.len() as u64;
-            o.name_needed = host.len() as u64;
+        let (mut a, mut n) = (i.authority_buf(), i.name_buf());
+        a.extend(authority.as_bytes());
+        n.extend(host.as_bytes());
+        // One short answer for both buffers, each at its full size.
+        let short = !(a.fits() && n.fits());
+        let (aw, and) = a.settle(short);
+        let (nw, nnd) = n.settle(short);
+        (o.authority_written, o.authority_needed) = (aw as u64, and as u64);
+        (o.name_written, o.name_needed) = (nw as u64, nnd as u64);
+        if short {
             err(&mut o.head, "locate: a host buffer is too small");
             return Outcome::Failed;
         }
-        // SAFETY: host buffers of the stated capacity, checked above.
-        unsafe {
-            std::ptr::copy_nonoverlapping(authority.as_ptr(), i.authority_buf, authority.len());
-            std::ptr::copy_nonoverlapping(host.as_ptr(), i.name_buf, host.len());
-        }
-        o.authority_written = authority.len() as u64;
-        o.name_written = host.len() as u64;
         Outcome::Ready
     }
 }
 
 /// `begin`.
 pub struct Begin;
-impl Slot for Begin {
+impl SafeSlot for Begin {
     type In = BeginIn;
     type Out = FramerOut;
-    fn call(p: *mut c_void, i: &BeginIn, o: &mut FramerOut) -> Outcome {
-        let inst = instance(p);
+    type State = Instance;
+    fn call(p: sdk::Instance<'_, Instance>, i: Lent<'_, BeginIn>, o: &mut FramerOut) -> Outcome {
+        let Some(inst) = p.get() else {
+            return Outcome::Failed;
+        };
         if i.side != SIDE_DIAL {
             err(&mut o.head, "begin: http frames dialled connections only");
             return Outcome::Refused;
         }
-        let agreed = if i.facts.is_null() {
-            &[][..]
-        } else {
-            // SAFETY: host-borrowed for the call.
-            text(unsafe { &(*i.facts).agreed_protocol })
-        };
+        let agreed = i
+            .facts()
+            .map_or(&[][..], |f| f.field(|x| &x.agreed_protocol).bytes());
         let proto = match agreed {
             b"h2" => Proto::H2,
             b"http/1.1" => Proto::H1,
@@ -468,7 +446,7 @@ impl Slot for Begin {
                 return Outcome::Refused;
             }
         };
-        let Ok(target) = std::str::from_utf8(text(&i.target)) else {
+        let Ok(target) = std::str::from_utf8(i.field(|x| &x.target).bytes()) else {
             err(&mut o.head, "begin: the target is not text");
             return Outcome::Failed;
         };
@@ -488,18 +466,19 @@ impl Slot for Begin {
             .insert(token, held.clone());
         o.framing = token;
         let mut h = held.lock().expect("framing");
-        step(&mut h, &i.sink, o, |_| Ok(()))
+        step(&mut h, i.field(|x| &x.sink), o, |_| Ok(()))
     }
 }
 
 /// `ingest`.
 pub struct Ingest;
-impl Slot for Ingest {
+impl SafeSlot for Ingest {
     type In = IngestIn;
     type Out = FramerOut;
-    fn call(p: *mut c_void, i: &IngestIn, o: &mut FramerOut) -> Outcome {
-        let bytes = raw(i.bytes, i.len);
-        with(p, i.framing, &i.sink, o, |f| {
+    type State = Instance;
+    fn call(p: sdk::Instance<'_, Instance>, i: Lent<'_, IngestIn>, o: &mut FramerOut) -> Outcome {
+        let bytes = i.bytes();
+        with(&p, i.framing, i.field(|x| &x.sink), o, |f| {
             f.ingest(bytes, i.end != 0);
             Ok(())
         })
@@ -508,36 +487,39 @@ impl Slot for Ingest {
 
 /// `emit`.
 pub struct Emit;
-impl Slot for Emit {
+impl SafeSlot for Emit {
     type In = EmitIn;
     type Out = FramerOut;
-    fn call(p: *mut c_void, i: &EmitIn, o: &mut FramerOut) -> Outcome {
-        let bytes = raw(i.bytes, i.len);
-        with(p, i.framing, &i.sink, o, |f| f.emit(i.stream, bytes))
+    type State = Instance;
+    fn call(p: sdk::Instance<'_, Instance>, i: Lent<'_, EmitIn>, o: &mut FramerOut) -> Outcome {
+        let bytes = i.bytes();
+        with(&p, i.framing, i.field(|x| &x.sink), o, |f| {
+            f.emit(i.stream, bytes)
+        })
     }
 }
 
 /// `timer`.
 pub struct Timer;
-impl Slot for Timer {
+impl SafeSlot for Timer {
     type In = FramingIn;
     type Out = FramerOut;
-    fn call(p: *mut c_void, i: &FramingIn, o: &mut FramerOut) -> Outcome {
-        with(p, i.framing, &i.sink, o, |_| Ok(()))
+    type State = Instance;
+    fn call(p: sdk::Instance<'_, Instance>, i: Lent<'_, FramingIn>, o: &mut FramerOut) -> Outcome {
+        with(&p, i.framing, i.field(|x| &x.sink), o, |_| Ok(()))
     }
 }
 
 /// `finish`.
 pub struct Finish;
-impl Slot for Finish {
+impl SafeSlot for Finish {
     type In = FinishIn;
     type Out = FramerOut;
-    fn call(p: *mut c_void, i: &FinishIn, o: &mut FramerOut) -> Outcome {
-        let removed = instance(p)
-            .framings
-            .lock()
-            .expect("framings")
-            .remove(&i.framing);
+    type State = Instance;
+    fn call(p: sdk::Instance<'_, Instance>, i: Lent<'_, FinishIn>, o: &mut FramerOut) -> Outcome {
+        let removed = p
+            .get()
+            .and_then(|inst| inst.framings.lock().expect("framings").remove(&i.framing));
         o.yielded.flags = YIELD_ENDED;
         if removed.is_some() {
             Outcome::Ready
@@ -551,67 +533,52 @@ impl Slot for Finish {
 
 /// `encode`: one HTTP/1.1 request message into the wire buffer.
 pub struct Encode;
-impl Slot for Encode {
+impl SafeSlot for Encode {
     type In = EncodeIn;
     type Out = FramerOut;
-    fn call(_: *mut c_void, i: &EncodeIn, o: &mut FramerOut) -> Outcome {
-        let fields: &[busbar_contract::abi::transport::Field] = if i.fields.is_null() {
-            &[]
-        } else {
-            // SAFETY: host-borrowed for the call.
-            unsafe { std::slice::from_raw_parts(i.fields, i.fields_len) }
-        };
+    type State = Instance;
+    fn call(_: sdk::Instance<'_, Instance>, i: Lent<'_, EncodeIn>, o: &mut FramerOut) -> Outcome {
+        let fields = i.fields();
         let mut pairs = Vec::with_capacity(fields.len());
-        for f in fields {
-            let Ok(name) = std::str::from_utf8(text(&f.name)) else {
+        for f in fields.iter() {
+            let Ok(name) = f.field(|x| &x.name).as_str() else {
                 err(&mut o.head, "encode: a field name is not text");
                 return Outcome::Failed;
             };
-            pairs.push((name, text(&f.value)));
+            pairs.push((name, f.field(|x| &x.value).bytes()));
         }
-        let Ok(bytes) = crate::transport::render_envelope(&pairs, raw(i.body, i.body_len)) else {
+        let Ok(bytes) = crate::transport::render_envelope(&pairs, i.body()) else {
             err(
                 &mut o.head,
                 "encode: the envelope cannot be expressed on this wire",
             );
             return Outcome::Failed;
         };
-        if bytes.len() > i.sink.wire_cap {
+        let mut wire = i.field(|x| &x.sink).wire();
+        if bytes.len() > wire.cap() {
             err(
                 &mut o.head,
                 "encode: the rendered message is larger than the wire buffer",
             );
             return Outcome::Failed;
         }
-        // SAFETY: the host's wire buffer, of the capacity checked above.
-        unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), i.sink.wire, bytes.len()) };
-        o.yielded.wire_len = bytes.len() as u64;
+        wire.extend(&bytes);
+        o.yielded.wire_len = wire.written() as u64;
         Outcome::Ready
     }
 }
 
-fn raw<'a>(p: *const u8, n: usize) -> &'a [u8] {
-    if p.is_null() || n == 0 {
-        return &[];
-    }
-    // SAFETY: host-borrowed for the call.
-    unsafe { std::slice::from_raw_parts(p, n) }
-}
-
 /// Run `f` on framing `token`, then drive it and fill the sink.
 fn with(
-    p: *mut c_void,
+    p: &sdk::Instance<'_, Instance>,
     token: u64,
-    sink: &FramerSink,
+    sink: Lent<'_, FramerSink>,
     o: &mut FramerOut,
     f: impl FnOnce(&mut Framing) -> Result<(), engine::Failure>,
 ) -> Outcome {
-    let held = instance(p)
-        .framings
-        .lock()
-        .expect("framings")
-        .get(&token)
-        .cloned();
+    let held = p
+        .get()
+        .and_then(|inst| inst.framings.lock().expect("framings").get(&token).cloned());
     let Some(held) = held else {
         err(&mut o.head, "no such framing");
         return Outcome::Failed;
@@ -622,7 +589,7 @@ fn with(
 
 fn step(
     h: &mut Held,
-    sink: &FramerSink,
+    sink: Lent<'_, FramerSink>,
     o: &mut FramerOut,
     f: impl FnOnce(&mut Framing) -> Result<(), engine::Failure>,
 ) -> Outcome {
@@ -650,21 +617,21 @@ fn failed(h: &mut Held, o: &mut FramerOut, text: String) -> Outcome {
 }
 
 /// Hand the host what the framing owes it, as far as the sink holds.
-fn fill(f: &mut Framing, sink: &FramerSink, o: &mut FramerOut) {
-    let wire = f.take_wire(sink.wire_cap);
-    if !wire.is_empty() {
-        // SAFETY: the host's wire buffer; `take_wire` took at most its capacity.
-        unsafe { std::ptr::copy_nonoverlapping(wire.as_ptr(), sink.wire, wire.len()) };
-    }
+fn fill(f: &mut Framing, sink: Lent<'_, FramerSink>, o: &mut FramerOut) {
+    let mut wire_buf = sink.wire();
+    let wire = f.take_wire(wire_buf.cap());
+    wire_buf.extend(&wire);
     let y = &mut o.yielded;
-    y.wire_len = wire.len() as u64;
+    y.wire_len = wire_buf.written() as u64;
+    let (mut frame, mut pieces): (HostBuf<'_, u8>, HostBuf<'_, FramePiece>) =
+        (sink.frame(), sink.pieces());
     let mut frame_len = 0_usize;
     let mut n = 0_usize;
-    while n < sink.pieces_cap {
+    while n < pieces.cap() {
         let Some(piece) = f.pieces().front_mut() else {
             break;
         };
-        let room = sink.frame_cap - frame_len;
+        let room = frame.cap() - frame_len;
         let take = piece.bytes.len().min(room);
         if take == 0 && !piece.bytes.is_empty() {
             break;
@@ -695,11 +662,9 @@ fn fill(f: &mut Framing, sink: &FramerSink, o: &mut FramerOut) {
             fp.retry_after_secs = secs;
         }
         fp.flags = flags;
-        // SAFETY: host buffers of the stated capacities; `take <= room`, `n < pieces_cap`.
-        unsafe {
-            std::ptr::copy_nonoverlapping(piece.bytes.as_ptr(), sink.frame.add(frame_len), take);
-            sink.pieces.add(n).write(fp);
-        }
+        // `take <= room` and `n < pieces_cap`: both fit.
+        frame.extend(&piece.bytes[..take]);
+        pieces.push(fp);
         frame_len += take;
         n += 1;
         if whole {
@@ -739,35 +704,35 @@ busbar_contract::plugin_door! {
     ops: Ops,
     statement: STATEMENT,
     lifecycle: {
-        validate: Validate,
-        open: Open,
-        refresh: Refresh,
-        retire: Retire,
-        tick: Tick,
-        drive: Drive,
-        cancel: Cancel,
-        release: Release,
-        close: Close,
+        validate: Safe<Validate>,
+        open: Safe<Open>,
+        refresh: Safe<Refresh>,
+        retire: Safe<Retire>,
+        tick: Safe<Tick>,
+        drive: Safe<Drive>,
+        cancel: Safe<Cancel>,
+        release: Safe<Release>,
+        close: Safe<Close>,
     },
     kind_ops: {
-        listen: Listen,
-        accept: Accept,
-        dial: Dial,
-        read: Read,
-        write: Write,
-        flush: Flush,
-        shut: Shut,
-        arrival: Arrival,
-        locate: Locate,
-        begin: Begin,
-        ingest: Ingest,
-        emit: Emit,
-        encode: Encode,
-        refuse: Refuse,
-        finish: Finish,
-        detach: Detach,
-        adopt: Adopt,
-        timer: Timer,
+        listen: Safe<Listen>,
+        accept: Safe<Accept>,
+        dial: Safe<Dial>,
+        read: Safe<Read>,
+        write: Safe<Write>,
+        flush: Safe<Flush>,
+        shut: Safe<Shut>,
+        arrival: Safe<Arrival>,
+        locate: Safe<Locate>,
+        begin: Safe<Begin>,
+        ingest: Safe<Ingest>,
+        emit: Safe<Emit>,
+        encode: Safe<Encode>,
+        refuse: Safe<Refuse>,
+        finish: Safe<Finish>,
+        detach: Safe<Detach>,
+        adopt: Safe<Adopt>,
+        timer: Safe<Timer>,
     },
 }
 

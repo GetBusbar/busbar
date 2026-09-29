@@ -3,25 +3,21 @@
 
 use super::*;
 
-fn blob(s: &'static str) -> Blob {
-    Blob {
-        ptr: s.as_ptr(),
-        len: s.len(),
-        fmt: busbar_contract::abi::mechanism::call::BLOB_JSON,
-        flags: 0,
-    }
+/// A settings blob's bytes, as `validate`/`open` read them off the lent blob.
+fn blob(s: &'static str) -> &'static [u8] {
+    s.as_bytes()
 }
 
 /// The settings default to 1.5.5's posture, and a value of the wrong kind is refused by name.
 #[test]
 fn the_settings_read_at_their_paths_and_refuse_the_wrong_kind() {
-    let (p, prior, h1) = read_settings(&blob("{}")).expect("defaults");
+    let (p, prior, h1) = read_settings(blob("{}")).expect("defaults");
     assert_eq!(p.keep_alive_interval, Some(Duration::from_secs(30)));
     assert_eq!(p.keep_alive_timeout, Duration::from_secs(10));
     assert!(p.adaptive_window);
     assert_eq!(p.head_timeout, Duration::from_secs(300));
     assert!(!prior && !h1);
-    let (p, prior, h1) = read_settings(&blob(
+    let (p, prior, h1) = read_settings(blob(
         r#"{"advanced.upstream_h2_prior_knowledge":true,"advanced.upstream_http1_only":true,
             "limits.upstream_request_timeout_secs":7,"limits.request_body_max_bytes":9}"#,
     ))
@@ -32,10 +28,10 @@ fn the_settings_read_at_their_paths_and_refuse_the_wrong_kind() {
         (Duration::from_secs(7), 9)
     );
     assert_eq!(
-        read_settings(&blob(r#"{"advanced.upstream_http1_only":"yes"}"#)).err(),
+        read_settings(blob(r#"{"advanced.upstream_http1_only":"yes"}"#)).err(),
         Some("settings: a value is not of its declared kind")
     );
-    assert_eq!(read_settings(&blob("[")).err(), Some("settings: not JSON"));
+    assert_eq!(read_settings(blob("[")).err(), Some("settings: not JSON"));
 }
 
 /// Each status band lands in its class; anything outside the three bands is other.
