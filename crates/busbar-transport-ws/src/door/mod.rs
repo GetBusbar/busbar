@@ -374,15 +374,21 @@ impl Slot for Locate {
             return Outcome::Failed;
         };
         let name = at.server_name.clone().unwrap_or_default();
+        // The protocol offer for a secured connection (ALPN): the opening handshake is HTTP/1.1.
+        let offer: &[u8] = if at.secure { b"\x08http/1.1" } else { &[] };
         o.secure = u32::from(at.secure);
         o.has_name = u32::from(at.server_name.is_some());
-        if at.authority.len() > i.authority_cap || name.len() > i.name_cap {
+        if at.authority.len() > i.authority_cap
+            || name.len() > i.name_cap
+            || offer.len() > i.alpn_cap
+        {
             o.authority_needed = at.authority.len() as u64;
             o.name_needed = if at.server_name.is_some() {
                 name.len() as u64
             } else {
                 0
             };
+            o.alpn_needed = offer.len() as u64;
             o.head.error = abi_str("locate: a host buffer is too small");
             return Outcome::Failed;
         }
@@ -394,9 +400,13 @@ impl Slot for Locate {
                 at.authority.len(),
             );
             std::ptr::copy_nonoverlapping(name.as_ptr(), i.name_buf, name.len());
+            if !offer.is_empty() {
+                std::ptr::copy_nonoverlapping(offer.as_ptr(), i.alpn_buf, offer.len());
+            }
         }
         o.authority_written = at.authority.len() as u64;
         o.name_written = name.len() as u64;
+        o.alpn_written = offer.len() as u64;
         Outcome::Ready
     }
 }
