@@ -1,12 +1,11 @@
 //! `cargo xtask perf-ab` — THE SAME-MACHINE A/B: a base busbar against a candidate busbar on the
 //! llm path, one command, anywhere the tree is checked out.
 //!
-//! `docs/design/BUSBAR-1.6.0.md` THE DESIGN §5 owes it: "a same-machine A/B against published 1.5.5
-//! on the llm path — p50 ≤ +5 %, p99 ≤ +10 %, req/s ≥ −5 %" plus 2,000 concurrent streams
-//! (`cap.perf.streams-2000`); the KERNEL<>PLUGINS table places it (step C0 builds it; from step 4 it
-//! runs after EVERY landing as a report-only trend line). It NEVER gates: the pass/fail A/B is PHASE
-//! SIX's (THE DESIGN §11.9, which superseded the step 23/34/36 gates on 2026-09-27), so this command
-//! has no pass/fail mode at all — a breach of the §5 tolerances is printed and the run exits 0.
+//! It measures a same-machine A/B against the published 1.5.5 on the llm path against the release
+//! tolerances (p50 ≤ +5 %, p99 ≤ +10 %, req/s ≥ −5 %) plus 2,000 concurrent streams, and runs after
+//! every landing as a report-only trend line. It NEVER gates: the pass/fail A/B is a separate,
+//! later release check, so this command has no pass/fail mode at all — a breach of the tolerances
+//! is printed and the run exits 0.
 //!
 //! WHAT ONE RUN DOES. For each concurrency level (default 1, 64, 512) it boots the base, loads it
 //! closed-loop for `--secs` after a warm-up, stops it, then does the same for the candidate — the two
@@ -52,7 +51,7 @@ usage: cargo xtask perf-ab [--base <busbar>] [--candidate <busbar>] [--conc 1,64
   report-only: a breach of p50 <= +5%, p99 <= +10%, req/s >= -5% or an incomplete stream is printed,
   never failed on (exit 0 on any measurement). exit 3 = the harness could not measure.";
 
-/// The spec's tolerances (THE DESIGN §5).
+/// The release tolerances the report compares against.
 pub const P50_MAX_PCT: f64 = 5.0;
 pub const P99_MAX_PCT: f64 = 10.0;
 pub const RPS_MIN_PCT: f64 = -5.0;
@@ -1153,7 +1152,7 @@ mod tests {
         let root = Path::new("/r");
         let o = parse(root, &["--conc".into(), "1,8".into()]).unwrap();
         assert_eq!(o.conc, vec![1, 8]);
-        // Report-only (THE DESIGN §11.9): there is no pass/fail mode to ask for.
+        // Report-only: there is no pass/fail mode to ask for.
         assert!(parse(root, &["--gate".into()]).is_err());
         assert!(parse(root, &["--conc".into(), "0".into()]).is_err());
         assert!(parse(root, &["--bogus".into()]).is_err());

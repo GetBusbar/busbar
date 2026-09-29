@@ -117,9 +117,9 @@ pub fn main(args: &[String]) -> i32 {
             Ok(cx) => crate::fleet::main(&cx, &args[1..]),
             Err(code) => code,
         },
-        // THE SAME-MACHINE A/B (THE DESIGN §5; KERNEL<>PLUGINS C0, a report-only trend line from
-        // step 4). Not a gate and never one (THE DESIGN §11.9: the pass/fail A/B is PHASE SIX's): it
-        // RUNS two binaries and measures them, so it owns no row set. `perf-ab-mock` is the upstream
+        // THE SAME-MACHINE A/B, a report-only trend line. Not a gate and never one (the pass/fail
+        // A/B is a separate, later release check): it RUNS two binaries and measures them, so it
+        // owns no row set. `perf-ab-mock` is the upstream
         // it starts as a child process.
         Some("perf-ab") => match open_ctx() {
             Ok(cx) => crate::perf_ab::main(cx.root(), &args[1..]),
