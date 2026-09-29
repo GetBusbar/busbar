@@ -315,6 +315,26 @@ fn a_ready_value_outside_the_service_range_is_fault() {
 }
 
 #[test]
+fn a_claim_with_no_time_to_live_is_refused() {
+    let mut claim = RecordsClaimIn {
+        head: head(
+            op::RECORDS_CLAIM,
+            TICKET,
+            core::mem::size_of::<RecordsClaimIn>(),
+        ),
+        kind: none(),
+        key: none(),
+        ttl_ms: 0,
+    };
+    assert_eq!(
+        check_records_claim_in(&claim).unwrap_err(),
+        fault(Rule::Missing, "records_claim.ttl_ms")
+    );
+    claim.ttl_ms = 1;
+    assert!(check_records_claim_in(&claim).is_ok());
+}
+
+#[test]
 fn a_clock_reading_must_be_there_and_of_this_layout() {
     let o = out(Outcome::Ready);
     let null = ClockNowIn {

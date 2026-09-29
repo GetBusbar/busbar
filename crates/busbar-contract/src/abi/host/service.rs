@@ -227,7 +227,8 @@ pub struct RecordsListIn {
 }
 
 /// [`op::RECORDS_CLAIM`]'s `in`: a one-time put-if-absent with a time to live. The ONE path for
-/// approval redemption and replay refusal. `value` = [`CLAIM_WON`] | [`CLAIM_TAKEN`].
+/// approval redemption and replay refusal. `value` = [`CLAIM_WON`] | [`CLAIM_TAKEN`]. The host
+/// refuses an `in` that breaks [`check_records_claim_in`].
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct RecordsClaimIn {
@@ -237,7 +238,7 @@ pub struct RecordsClaimIn {
     pub kind: AbiStr,
     /// The key.
     pub key: AbiStr,
-    /// How long the claim stands, in milliseconds; `0` = the store's default.
+    /// How long the claim stands, in milliseconds. Never `0`: there is no default.
     pub ttl_ms: u64,
 }
 
@@ -591,6 +592,19 @@ pub fn check_bufs(into: &ServiceBufs) -> Result<(), Fault> {
         into.spans_cap,
         "service.into.spans",
     )
+}
+
+/// A `records.claim` `in`: a claim states how long it stands; a zero time to live is refused, as
+/// there is no default to fall back on.
+///
+/// # Errors
+///
+/// [`Rule::Missing`] for `ttl_ms == 0`.
+pub const fn check_records_claim_in(i: &RecordsClaimIn) -> Result<(), Fault> {
+    if i.ttl_ms == 0 {
+        return Err(fault(Rule::Missing, "records_claim.ttl_ms"));
+    }
+    Ok(())
 }
 
 // ── the caller's checks of an answer ──────────────────────────────────────────────────────────
