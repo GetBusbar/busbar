@@ -51,13 +51,16 @@ impl futures::io::AsyncRead for HostStream {
             }
             return Poll::Ready(Ok(n));
         }
-        self.sock
-            .poll_io(Direction::Read, cx, |mut s| s.read(buf))
+        self.sock.poll_io(Direction::Read, cx, |mut s| s.read(buf))
     }
 }
 
 impl futures::io::AsyncWrite for HostStream {
-    fn poll_write(self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &[u8]) -> Poll<io::Result<usize>> {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<io::Result<usize>> {
         self.sock
             .poll_io(Direction::Write, cx, |mut s| s.write(buf))
     }

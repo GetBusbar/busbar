@@ -13,8 +13,12 @@ fn linked_claims() -> Vec<PlaneClaim> {
 
 /// The linked transports folded bottom-up, as the boot seal folds them.
 fn linked_fold() -> Vec<Built> {
-    compose(crate::LINKED.transports, Dropped::NONE, &TransportSettings::default())
-        .expect("the stack composes")
+    compose(
+        crate::LINKED.transports,
+        Dropped::NONE,
+        &TransportSettings::default(),
+    )
+    .expect("the stack composes")
 }
 
 /// Every linked transport as the composition check reads it.
@@ -647,8 +651,12 @@ fn the_operators_body_cap_reaches_every_mounted_planes_transport() {
             ..*row
         })
         .collect();
-    compose(&rows, Dropped::NONE, &crate::root::policy::client_settings(&limits))
-        .expect("the stack composes");
+    compose(
+        &rows,
+        Dropped::NONE,
+        &crate::root::policy::client_settings(&limits),
+    )
+    .expect("the stack composes");
     assert_eq!(
         *SEEN.lock().expect("seen"),
         vec![CAP; rows.len()],
@@ -695,11 +703,12 @@ fn the_fold_builds_bottom_up_in_composes_over_order() {
 
     let mut reversed = crate::LINKED.transports.to_vec();
     reversed.reverse();
-    let refolded: Vec<Registered> = compose(&reversed, Dropped::NONE, &TransportSettings::default())
-        .expect("the reversed table composes")
-        .into_iter()
-        .map(|(row, _)| row)
-        .collect();
+    let refolded: Vec<Registered> =
+        compose(&reversed, Dropped::NONE, &TransportSettings::default())
+            .expect("the reversed table composes")
+            .into_iter()
+            .map(|(row, _)| row)
+            .collect();
     for (i, row) in refolded.iter().enumerate() {
         for layer in row.composes_over {
             if linked.contains(layer) {
@@ -866,7 +875,8 @@ fn a_dropped_in_wire_rides_the_one_fold_in_place_of_its_linked_row() {
     };
     let sealed =
         seal(&without, one_door(), TransportSettings::default()).expect("the composition seals");
-    let linked = seal(&crate::LINKED, Dropped::NONE, TransportSettings::default()).expect("it seals linked");
+    let linked =
+        seal(&crate::LINKED, Dropped::NONE, TransportSettings::default()).expect("it seals linked");
 
     let by_key = |mut rows: Vec<Registered>| {
         rows.sort_by_key(|r| r.key);
@@ -901,11 +911,7 @@ fn a_dropped_in_wire_on_a_linked_key_is_refused_as_a_second_linked_row_is() {
         eprintln!("skip: no in-tree transport cdylib is built beside the test binary");
         return;
     };
-    let Some(row) = crate::LINKED
-        .transports
-        .iter()
-        .find(|r| r.key == wire.key)
-    else {
+    let Some(row) = crate::LINKED.transports.iter().find(|r| r.key == wire.key) else {
         return;
     };
     let dropped = seal(&crate::LINKED, one_door(), Default::default())

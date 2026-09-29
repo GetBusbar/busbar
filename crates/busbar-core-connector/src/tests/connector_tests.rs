@@ -142,12 +142,20 @@ fn a_metadata_target_is_refused_even_over_a_served_transport() {
     worker().block_on(async {
         let c = serving(Arc::new(AtomicU64::new(0)));
         c.declare_over(OWNER, NeedId(0), "bytes");
-        for target in ["169.254.169.254:80", "[fd00:ec2::254]:80", "100.100.100.200:80"] {
+        for target in [
+            "169.254.169.254:80",
+            "[fd00:ec2::254]:80",
+            "100.100.100.200:80",
+        ] {
             let desc = OpenDesc {
                 target,
                 ..OpenDesc::default()
             };
-            assert_eq!(c.open(OWNER, NeedId(0), &desc), Err(ConnError::Refused), "{target}");
+            assert_eq!(
+                c.open(OWNER, NeedId(0), &desc),
+                Err(ConnError::Refused),
+                "{target}"
+            );
         }
     });
 }

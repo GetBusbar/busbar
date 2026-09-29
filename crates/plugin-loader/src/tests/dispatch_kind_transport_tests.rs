@@ -426,8 +426,12 @@ fn the_tail_is_read_at_bind_and_a_missing_one_refuses() {
         kind_tail: std::ptr::from_ref(&tail).cast::<KindTailHead>(),
         ..bare
     };
-    let ctx = Transport::context(&st).expect("a framer tail binds").expect("a context");
-    let facts = ctx.downcast_ref::<TransportFacts>().expect("the transport facts");
+    let ctx = Transport::context(&st)
+        .expect("a framer tail binds")
+        .expect("a context");
+    let facts = ctx
+        .downcast_ref::<TransportFacts>()
+        .expect("the transport facts");
     assert_eq!(facts.claims, ["one", "two"]);
     assert!(facts.composes_over.is_empty());
     assert_eq!(facts.role, ROLE_FRAMER);

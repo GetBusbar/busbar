@@ -244,7 +244,10 @@ impl FramerDoor for TestDoor {
                 None => ("timer", failed("no such framing")),
                 Some(st) if !st.heard && st.deadline_ns != 0 => {
                     let _ = (i, o);
-                    ("timer", failed("the far end said nothing before its deadline"))
+                    (
+                        "timer",
+                        failed("the far end said nothing before its deadline"),
+                    )
                 }
                 Some(st) => {
                     answer(st, &i.sink, o, silence);

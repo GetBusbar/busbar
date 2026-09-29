@@ -22,7 +22,7 @@ use busbar_contract::abi::transport::ROLE_FRAMER;
 fn fixture() -> Option<Vec<u8>> {
     let krate = HOT_FIXTURES
         .iter()
-        .find(|(kind, _)| *kind == "transport")
+        .find(|(kind, _)| *kind == busbar_contract::abi::cold::kind::TRANSPORT)
         .map(|&(_, krate)| krate)
         .expect("a `transport` row in [package.metadata.busbar.both-ways]");
     let found = cdylib(krate);
@@ -42,24 +42,39 @@ fn bind() -> Bind {
 }
 
 fn manifest() -> crate::sign::Manifest {
-    statement("transport", "tcp", "tcp", busbar_contract::abi::ABI_MINOR)
+    statement(
+        busbar_contract::abi::cold::kind::TRANSPORT,
+        "door-fixture",
+        "door-fixture",
+        busbar_contract::abi::ABI_MINOR,
+    )
+}
+
+/// The manifest as the structural gate reads a packed one: an artifact digest present.
+fn packed() -> crate::sign::Manifest {
+    crate::sign::Manifest {
+        sha256: crate::sign::sha256_hex(b"lib"),
+        ..manifest()
+    }
 }
 
 #[test]
 fn a_signed_door_tarball_is_opened_through_the_one_door() {
     let Some(lib) = fixture() else { return };
-    let registry = dropped("transport-door", manifest(), &lib);
+    let registry = dropped("door-fixture", manifest(), &lib);
     let entries = registry
         .open_transport_entries(&bind())
         .expect("the door opens");
     assert!(entries.hot.is_empty(), "a door image is not a HOT decl");
     assert_eq!(entries.doors.len(), 1);
     let door = &entries.doors[0];
-    assert_eq!(door.name(), "tcp");
     let facts = door.context::<TransportFacts>().expect("its tail");
     assert_eq!(facts.role, ROLE_FRAMER);
-    assert_eq!(facts.claims, ["tcp"]);
-    assert!(facts.composes_over.is_empty(), "it frames the host's socket");
+    assert_eq!(facts.claims, [door.name()], "one claim: its own");
+    assert!(
+        facts.composes_over.is_empty(),
+        "it frames the host's socket"
+    );
     let mut i: OpenIn = blank_in();
     i.head = in_head();
     let mut o: OpenOut = blank_out();
@@ -72,9 +87,9 @@ fn a_signed_door_tarball_is_opened_through_the_one_door() {
 
 #[test]
 fn a_manifest_outside_the_transport_version_window_is_refused() {
-    validate_structure(&manifest(), b"lib", &crate::supported_abi, "")
+    validate_structure(&packed(), b"lib", &crate::supported_abi, "")
         .expect("a transport is a kind the loader admits");
-    let mut old = manifest();
+    let mut old = packed();
     old.abi_version = busbar_contract::abi::hot::TRANSPORT_DECL_MINOR - 1;
     assert!(validate_structure(&old, b"lib", &crate::supported_abi, "").is_err());
 }

@@ -2338,10 +2338,16 @@ jobs:
         # busbar-plugin-loader, so each of those crates' own test build carries it. Nor are the export
         # kind's: they are the REAL sinks (GetBusbar/busbar-export-file, -webhook, -prometheus, -otlp), pinned
         # git dev-dependencies of busbar and busbar-plugin-loader, carried the same way.
+        # The connector's universal-needs witness dlopens two transport doors beside the test
+        # binary and drives each against a real far end: the http door (an example of its crate,
+        # `examples/http_door.rs`) and a socket-framing door found by kind (the tcp cdylib, whose
+        # door is compiled under its `dropped-in` feature). A package-scoped row builds both.
         run: |
           cargo build --locked \
             -p busbar-hook-test-plugin \
             -p busbar-plugin-example-plane
+          cargo build --locked -p busbar-transport-http --example http_door
+          cargo build --locked -p busbar-transport-tcp --features dropped-in
       - name: Tests — ${{ matrix.name }}
         # The OWNING crates' suites, with the feature on. Compiling the `#[cfg]`-ed code proves it is
         # valid Rust; running the suite is what proves it does anything.

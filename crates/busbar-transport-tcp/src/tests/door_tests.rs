@@ -13,7 +13,7 @@ use busbar_contract::abi::mechanism::door::Door;
 use busbar_contract::abi::mechanism::lifecycle::{slot as life, OpenIn, OpenOut};
 use busbar_contract::abi::transport::check::{check_framer, check_tail};
 use busbar_contract::abi::transport::{
-    slot, AdoptIn, BeginIn, DialIn, ConnOut, EmitIn, EncodeIn, Field, FinishIn, FramePiece,
+    slot, AdoptIn, BeginIn, ConnOut, DialIn, EmitIn, EncodeIn, Field, FinishIn, FramePiece,
     FramerOut, FramerSink, FramingIn, IngestIn, LocateIn, LocateOut, Ops, TransportTail,
     PIECE_END_OF_FRAME, ROLE_FRAMER, SIDE_ACCEPT, YIELD_ENDED, YIELD_MORE,
 };
@@ -70,7 +70,13 @@ impl Host {
     fn new(wire: usize, frame: usize, pieces: usize) -> Self {
         let mut i: OpenIn = z();
         let mut o: OpenOut = z();
-        let r = call(ops().head.open, std::ptr::null_mut(), &mut i, &mut o, life::OPEN);
+        let r = call(
+            ops().head.open,
+            std::ptr::null_mut(),
+            &mut i,
+            &mut o,
+            life::OPEN,
+        );
         assert_eq!(r, Outcome::Ready);
         let mut h = Self {
             inst: o.instance,
@@ -192,7 +198,10 @@ fn the_tail_is_a_framer_over_the_host_socket() {
 fn one_read_is_one_frame_byte_exact() {
     let mut h = Host::new(64, 64, 4);
     h.ingest(b"hello, far side", false);
-    assert_eq!(h.frames, vec![(b"hello, far side".to_vec(), PIECE_END_OF_FRAME)]);
+    assert_eq!(
+        h.frames,
+        vec![(b"hello, far side".to_vec(), PIECE_END_OF_FRAME)]
+    );
     h.ingest(b"again", false);
     assert_eq!(h.frames.len(), 2, "a second read is a second frame");
     assert_eq!(h.joined(), b"hello, far sideagain");

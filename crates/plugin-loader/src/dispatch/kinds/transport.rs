@@ -30,9 +30,9 @@ use busbar_contract::abi::transport::check::{
     check_io, check_listen, check_locate, check_tail,
 };
 use busbar_contract::abi::transport::{
-    self, slot, Claim, TransportTail, AcceptIn, AcceptOut, AdoptIn, ArrivalIn, ArrivalOut, BeginIn, ConnIn, ConnOut,
-    DialIn, EmitIn, EncodeIn, FinishIn, FramerOut, FramerSink, FramingIn, IngestIn, IoOut,
-    ListenIn, ListenOut, LocateIn, LocateOut, ReadIn, RefuseIn, ShutIn, WriteIn,
+    self, slot, AcceptIn, AcceptOut, AdoptIn, ArrivalIn, ArrivalOut, BeginIn, Claim, ConnIn,
+    ConnOut, DialIn, EmitIn, EncodeIn, FinishIn, FramerOut, FramerSink, FramingIn, IngestIn, IoOut,
+    ListenIn, ListenOut, LocateIn, LocateOut, ReadIn, RefuseIn, ShutIn, TransportTail, WriteIn,
 };
 
 use crate::dispatch::{lifecycle_name, Answer, Context, InFrame, Kind, OutFrame};

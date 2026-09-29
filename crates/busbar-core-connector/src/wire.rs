@@ -23,8 +23,8 @@ use std::time::Duration;
 
 use busbar_contract::abi::transport::{CLOSE_NORMAL, SIDE_ACCEPT, SIDE_DIAL};
 use busbar_contract::transport::wire::{
-    ArrivalRecord, CloseReason, Conn, ConnHandle, Direction as FrameDirection, FrameMeta,
-    Listener, ListenerHandle, RawStream, TransportError,
+    ArrivalRecord, CloseReason, Conn, ConnHandle, Direction as FrameDirection, FrameMeta, Listener,
+    ListenerHandle, RawStream, TransportError,
 };
 use busbar_contract::transport::FrameStream;
 use busbar_contract::{
@@ -155,9 +155,7 @@ pub fn map_io_err(e: &io::Error) -> TransportError {
     match e.kind() {
         io::ErrorKind::ConnectionRefused => TransportError::Refused,
         io::ErrorKind::TimedOut => TransportError::Timeout,
-        io::ErrorKind::ConnectionReset | io::ErrorKind::ConnectionAborted => {
-            TransportError::Reset
-        }
+        io::ErrorKind::ConnectionReset | io::ErrorKind::ConnectionAborted => TransportError::Reset,
         io::ErrorKind::AddrNotAvailable | io::ErrorKind::InvalidInput => {
             TransportError::AddressRefused
         }
@@ -211,9 +209,7 @@ impl HostWire {
         side: u32,
         target: &str,
     ) -> Result<Conn, TransportError> {
-        stream
-            .set_nonblocking(true)
-            .map_err(|e| map_io_err(&e))?;
+        stream.set_nonblocking(true).map_err(|e| map_io_err(&e))?;
         let local_port = stream.local_addr().map_or(0, |a| a.port());
         let sock = reactor::register(stream).map_err(|e| map_io_err(&e))?;
         self.frame(Arc::new(sock), peer, local_port, side, target)
@@ -268,7 +264,13 @@ impl HostWire {
             Ok(Ok(())) => {}
         }
         let local_port = sock.get_ref().local_addr().map_or(0, |a| a.port());
-        self.frame(Arc::new(sock), addr.to_string(), local_port, SIDE_DIAL, authority)
+        self.frame(
+            Arc::new(sock),
+            addr.to_string(),
+            local_port,
+            SIDE_DIAL,
+            authority,
+        )
     }
 
     /// The connections this wire holds.
@@ -334,10 +336,11 @@ impl Transport for HostWire {
                 .get(&l.id())
                 .cloned()
                 .ok_or(TransportError::Closed)?;
-            let (stream, peer) =
-                futures::future::poll_fn(|cx| reg.poll_io(Direction::Read, cx, TcpListener::accept))
-                    .await
-                    .map_err(|e| map_io_err(&e))?;
+            let (stream, peer) = futures::future::poll_fn(|cx| {
+                reg.poll_io(Direction::Read, cx, TcpListener::accept)
+            })
+            .await
+            .map_err(|e| map_io_err(&e))?;
             self.hold(stream, peer.to_string(), SIDE_ACCEPT, "")
         })
     }

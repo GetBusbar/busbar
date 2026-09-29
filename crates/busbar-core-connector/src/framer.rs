@@ -337,7 +337,9 @@ pub fn locate(door: &dyn FramerDoor, target: &str) -> Result<Located, Refused> {
         let c = door.cross(Call::Locate(&mut i, &mut o));
         let short = o.authority_needed > auth_cap as u64 || o.name_needed > name_cap as u64;
         if c.outcome == Outcome::Failed && short {
-            auth_cap = usize::try_from(o.authority_needed).unwrap_or(0).max(auth_cap);
+            auth_cap = usize::try_from(o.authority_needed)
+                .unwrap_or(0)
+                .max(auth_cap);
             name_cap = usize::try_from(o.name_needed).unwrap_or(0).max(name_cap);
             continue;
         }
@@ -376,7 +378,11 @@ pub fn encode(
         })
         .collect();
     // `encode` renders a whole message at once: room for the body and every field, and the head.
-    let room = body.len() + fields.iter().map(|f| f.name.len + f.value.len + 8).sum::<usize>();
+    let room = body.len()
+        + fields
+            .iter()
+            .map(|f| f.name.len + f.value.len + 8)
+            .sum::<usize>();
     let mut bufs = Buffers::new(room + 4096, 1, 1);
     let mut i: EncodeIn = blank_in();
     i.fields = fields.as_ptr();
@@ -541,7 +547,12 @@ impl Framing {
     /// # Errors
     ///
     /// The framer refused them.
-    pub fn emit(&mut self, stream: u64, bytes: &[u8], end_of_frame: bool) -> Result<Yielded, Refused> {
+    pub fn emit(
+        &mut self,
+        stream: u64,
+        bytes: &[u8],
+        end_of_frame: bool,
+    ) -> Result<Yielded, Refused> {
         let mut i: EmitIn = blank_in();
         i.framing = self.token;
         i.stream = stream;

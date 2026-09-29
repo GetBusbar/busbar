@@ -117,3 +117,286 @@ fn a_secret_plugin_reaches_the_network_only_through_a_need() {
     };
     assert_eq!(err.message, TODAY.to_string(), "the host's named refusal");
 }
+
+// ── the connector drives a dropped-in framer door ───────────────────────────────────────────────
+
+/// A dropped-in transport door, as the connector reaches it: the one dispatcher's crossing, the
+/// host's `in`/`out` copied in and the answer copied back.
+struct DroppedDoor {
+    plugin: busbar_plugin_loader::dispatch::Plugin<
+        busbar_plugin_loader::dispatch::kinds::transport::Transport,
+    >,
+    facts: busbar_core_connector::framer::DoorFacts,
+}
+
+fn cross<I, O>(
+    p: &busbar_plugin_loader::dispatch::Plugin<
+        busbar_plugin_loader::dispatch::kinds::transport::Transport,
+    >,
+    s: u32,
+    i: &mut I,
+    o: &mut O,
+) -> busbar_core_connector::framer::Crossed
+where
+    I: busbar_plugin_loader::dispatch::InFrame,
+    O: busbar_plugin_loader::dispatch::OutFrame,
+{
+    let mut f = busbar_plugin_loader::dispatch::Frame::new(*i, *o);
+    let c = p.call(s, &mut f);
+    *i = f.input;
+    *o = f.out;
+    busbar_core_connector::framer::Crossed {
+        outcome: c.outcome,
+        error: c.error,
+    }
+}
+
+impl busbar_core_connector::framer::FramerDoor for DroppedDoor {
+    fn facts(&self) -> &busbar_core_connector::framer::DoorFacts {
+        &self.facts
+    }
+
+    fn cross(
+        &self,
+        call: busbar_core_connector::framer::Call<'_>,
+    ) -> busbar_core_connector::framer::Crossed {
+        use busbar_contract::abi::transport::slot;
+        use busbar_core_connector::framer::Call;
+        let p = &self.plugin;
+        match call {
+            Call::Locate(i, o) => cross(p, slot::LOCATE, i, o),
+            Call::Begin(i, o) => cross(p, slot::BEGIN, i, o),
+            Call::Ingest(i, o) => cross(p, slot::INGEST, i, o),
+            Call::Emit(i, o) => cross(p, slot::EMIT, i, o),
+            Call::Encode(i, o) => cross(p, slot::ENCODE, i, o),
+            Call::Refuse(i, o) => cross(p, slot::REFUSE, i, o),
+            Call::Finish(i, o) => cross(p, slot::FINISH, i, o),
+            Call::Detach(i, o) => cross(p, slot::DETACH, i, o),
+            Call::Adopt(i, o) => cross(p, slot::ADOPT, i, o),
+            Call::Timer(i, o) => cross(p, slot::TIMER, i, o),
+        }
+    }
+}
+
+/// The transport door example `name` beside this test binary, admitted and opened through the one
+/// dispatcher. A missing artifact is a failure, never a skip.
+fn dropped_door(name: &str) -> std::sync::Arc<dyn busbar_core_connector::framer::FramerDoor> {
+    let exe = std::env::current_exe().expect("the test binary has a path");
+    let examples = exe
+        .parent()
+        .and_then(|d| d.parent())
+        .expect("target/<profile>")
+        .join("examples");
+    let file = busbar_plugin_loader::plugin_library_filename(name);
+    let path = [examples.join(&file), examples.join("deps").join(&file)]
+        .into_iter()
+        .find(|p| p.exists())
+        .unwrap_or_else(|| panic!("the {name} door ({file}) is not built beside the test binary"));
+    open_door(&path).expect("the door is admitted")
+}
+
+/// A door that frames the host's socket (an empty `composes_over`), found by KIND among the
+/// libraries beside this test binary: the first the one dispatcher admits as such a transport.
+fn socket_framer_door() -> Option<std::sync::Arc<dyn busbar_core_connector::framer::FramerDoor>> {
+    let exe = std::env::current_exe().ok()?;
+    let profile = exe.parent()?.parent()?.to_path_buf();
+    [profile.clone(), profile.join("deps")]
+        .iter()
+        .flat_map(|dir| {
+            busbar_plugin_loader::list_plugin_files(dir)
+                .into_iter()
+                .map(move |f| dir.join(f))
+        })
+        .filter_map(|p| open_door(&p))
+        .find(|d| d.facts().composes_over.is_empty())
+}
+
+/// `path` admitted and opened through the one dispatcher as a transport door; `None` when it is
+/// not one.
+fn open_door(
+    path: &std::path::Path,
+) -> Option<std::sync::Arc<dyn busbar_core_connector::framer::FramerDoor>> {
+    use busbar_contract::abi::mechanism::lifecycle::{slot as life, OpenIn, OpenOut};
+    use busbar_contract::abi::mechanism::{KindCode, MECHANISM_VERSION};
+    use busbar_contract::abi::sdk::door::{blank_in, blank_out};
+    use busbar_plugin_loader::dispatch::kinds::transport::{Transport, TransportFacts};
+    use busbar_plugin_loader::dispatch::{
+        load_dropped, Bind, DispatchConfig, Dispatcher, Frame, ManifestFacts, NoSink,
+    };
+    static ONE: OnceLock<Dispatcher> = OnceLock::new();
+    let facts = ManifestFacts {
+        mechanism_version: MECHANISM_VERSION,
+        kind: KindCode::Transport,
+        kind_abi: KindCode::Transport.abi_version(),
+    };
+    let bind = Bind {
+        max_inflight_cap: 64,
+        sink: std::sync::Arc::new(NoSink),
+        dispatcher: ONE
+            .get_or_init(|| Dispatcher::new(DispatchConfig::default()))
+            .adopter(),
+    };
+    let plugin = load_dropped::<Transport>(path, &facts, bind).ok()?;
+    let stated = plugin.context::<TransportFacts>().cloned()?;
+    let mut f = Frame::new(blank_in::<OpenIn>(), blank_out::<OpenOut>());
+    assert_eq!(
+        plugin.call(life::OPEN, &mut f).outcome,
+        busbar_contract::abi::mechanism::call::Outcome::Ready
+    );
+    Some(std::sync::Arc::new(DroppedDoor {
+        facts: busbar_core_connector::framer::DoorFacts {
+            name: plugin.name().to_owned(),
+            claims: stated.claims,
+            composes_over: stated.composes_over,
+        },
+        plugin,
+    }))
+}
+
+/// THE CONNECTOR DRIVES THE DROPPED-IN HTTP DOOR AGAINST A REAL SERVER: the connector dials the
+/// host socket on the worker's reactor, the door encodes the request and frames the server's
+/// HTTP/1.1 response into a head piece (with its status), body pieces and the empty piece that ends
+/// the stream. DOOR-TRANSPORT's own conformance proves the http door's linked and dropped doors
+/// answer alike through one table; the linked arm here arrives at KERNEL<>PLUGINS step 20, when
+/// http becomes a root door row.
+#[test]
+fn the_connector_drives_the_dropped_in_http_door_against_a_real_server() {
+    use busbar_core_connector::compose::{Connection, Dial};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let door = dropped_door("http_door");
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    rt.block_on(async {
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = l.local_addr().unwrap().port();
+        let (seen_tx, seen_rx) = tokio::sync::oneshot::channel::<String>();
+        tokio::spawn(async move {
+            let (mut s, _) = l.accept().await.unwrap();
+            let mut req = Vec::new();
+            let mut buf = [0_u8; 1024];
+            while !req.windows(4).any(|w| w == b"\r\n\r\n") {
+                let n = s.read(&mut buf).await.unwrap();
+                assert!(n > 0, "the request head arrives");
+                req.extend_from_slice(&buf[..n]);
+            }
+            let _ = seen_tx.send(String::from_utf8_lossy(&req).into_owned());
+            s.write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 5\r\n\r\nhello")
+                .await
+                .unwrap();
+        });
+        let mut c = Connection::dial(
+            door,
+            Dial {
+                target: format!("http://127.0.0.1:{port}/v1/probe"),
+                tls: None,
+                alpn: Vec::new(),
+                open_timeout: std::time::Duration::from_secs(5),
+                opening: Some((
+                    vec![
+                        ("method".to_owned(), b"GET".to_vec()),
+                        ("path".to_owned(), b"/v1/probe".to_vec()),
+                    ],
+                    Vec::new(),
+                )),
+            },
+        )
+        .expect("the connector dials through the http door");
+        let mut pieces = Vec::new();
+        loop {
+            let p = tokio::time::timeout(
+                std::time::Duration::from_secs(10),
+                futures::future::poll_fn(|cx| c.poll_piece(cx)),
+            )
+            .await
+            .expect("the server answers")
+            .expect("no failure");
+            let Some(p) = p else { break };
+            let last = p.end_of_frame && p.bytes.is_empty();
+            pieces.push(p);
+            if last {
+                break;
+            }
+        }
+        let seen = seen_rx.await.unwrap();
+        assert!(seen.starts_with("GET /v1/probe HTTP/1.1\r\n"), "{seen}");
+        let head = pieces.first().expect("a head piece");
+        assert_eq!(head.status_code, Some(200));
+        let body: Vec<u8> = pieces[1..].iter().flat_map(|p| p.bytes.clone()).collect();
+        assert_eq!(body, b"hello");
+        assert!(pieces
+            .last()
+            .is_some_and(|p| p.end_of_frame && p.bytes.is_empty()));
+        c.close();
+    });
+}
+
+/// THE CONNECTOR DRIVES A DROPPED-IN DOOR THAT FRAMES THE HOST'S SOCKET against a real far end: the
+/// opening message and a write go out through the door, the echo comes back as its frames, byte for
+/// byte. The door is found by kind, never named. Its linked arm is the root's door row, which every
+/// default build serves through the same connector.
+#[test]
+fn the_connector_drives_a_dropped_in_socket_framer_against_a_real_far_end() {
+    use busbar_core_connector::compose::{Connection, Dial};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let Some(door) = socket_framer_door() else {
+        assert!(
+            std::env::var_os("CI").is_none(),
+            "a socket-framing transport door is built beside the test binary under CI"
+        );
+        return;
+    };
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    rt.block_on(async {
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let far = l.local_addr().unwrap().to_string();
+        tokio::spawn(async move {
+            let (mut s, _) = l.accept().await.unwrap();
+            let mut buf = [0_u8; 4096];
+            while let Ok(n) = s.read(&mut buf).await {
+                if n == 0 || s.write_all(&buf[..n]).await.is_err() {
+                    break;
+                }
+            }
+        });
+        let mut c = Connection::dial(
+            door,
+            Dial {
+                target: far,
+                tls: None,
+                alpn: Vec::new(),
+                open_timeout: std::time::Duration::from_secs(5),
+                opening: Some((Vec::new(), b"opening;".to_vec())),
+            },
+        )
+        .expect("the connector dials through the door");
+        let payload: Vec<u8> = (0..=255_u8).cycle().take(40_000).collect();
+        c.write(
+            &payload,
+            true,
+            &mut std::task::Context::from_waker(std::task::Waker::noop()),
+        )
+        .expect("the write is taken");
+        let mut got = Vec::new();
+        while got.len() < 8 + payload.len() {
+            let p = tokio::time::timeout(
+                std::time::Duration::from_secs(10),
+                futures::future::poll_fn(|cx| c.poll_piece(cx)),
+            )
+            .await
+            .expect("the far end answers")
+            .expect("no failure")
+            .expect("not ended");
+            got.extend(p.bytes);
+        }
+        assert_eq!(&got[..8], b"opening;");
+        assert_eq!(&got[8..], &payload[..]);
+        c.close();
+    });
+}

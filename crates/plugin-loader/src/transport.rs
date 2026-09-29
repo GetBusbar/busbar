@@ -330,7 +330,6 @@ impl DynTransport {
         }
         Ok(Image { wire: self, state })
     }
-
 }
 
 /// One built transport's state, freed through its own `free` on drop.

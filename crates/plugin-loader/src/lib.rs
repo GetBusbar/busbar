@@ -2077,7 +2077,6 @@ mod store_scope_kind_conformance_tests;
 #[path = "tests/both_ways.rs"]
 mod both_ways;
 
-
 /// `kind: store` through both doors: one row, one store, one fold over every store operation.
 #[cfg(test)]
 #[path = "tests/store_conformance_tests.rs"]

@@ -710,16 +710,22 @@ impl PluginRegistry {
         {
             let name = &p.manifest.name;
             let (lib, staged) = crate::stage::load_library_from_bytes(&p.lib_bytes, name)?;
-            match load_staged::<crate::dispatch::kinds::transport::Transport>(lib, staged, bind.clone())
-                .map_err(|e| format!("transport plugin '{name}' refused at its door: {e}"))?
+            match load_staged::<crate::dispatch::kinds::transport::Transport>(
+                lib,
+                staged,
+                bind.clone(),
+            )
+            .map_err(|e| format!("transport plugin '{name}' refused at its door: {e}"))?
             {
                 Staging::Door(plugin) => entries.doors.push(plugin),
-                Staging::NotADoor(lib, staged) => entries.hot.push(crate::transport::wire_up_transport(
-                    lib,
-                    name.clone(),
-                    &p.manifest.kind,
-                    Some(staged),
-                )?),
+                Staging::NotADoor(lib, staged) => {
+                    entries.hot.push(crate::transport::wire_up_transport(
+                        lib,
+                        name.clone(),
+                        &p.manifest.kind,
+                        Some(staged),
+                    )?)
+                }
             }
         }
         Ok(entries)

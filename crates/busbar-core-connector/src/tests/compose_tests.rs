@@ -85,7 +85,11 @@ fn bytes_go_through_the_framer_both_ways_byte_exact() {
             .unwrap();
         let got = gather(&mut c, 6 + sent.len()).await;
         assert_eq!(&got[..6], b"hello ", "the opening message goes first");
-        assert_eq!(&got[6..], &sent[..], "every byte, in order, through the framer");
+        assert_eq!(
+            &got[6..],
+            &sent[..],
+            "every byte, in order, through the framer"
+        );
         assert!(door.count("ingest") >= 1 && door.count("emit") >= 2);
         c.close();
         assert_eq!(door.count("finish"), 1);
@@ -104,7 +108,11 @@ fn the_far_ends_close_ends_the_connection() {
         let door = Arc::new(TestDoor::identity("bytes"));
         let mut c = Connection::dial(door, dial(&far)).unwrap();
         assert_eq!(gather(&mut c, 3).await, b"bye");
-        assert_eq!(next(&mut c).await, Ok(None), "the end, once the bytes are taken");
+        assert_eq!(
+            next(&mut c).await,
+            Ok(None),
+            "the end, once the bytes are taken"
+        );
     });
 }
 
@@ -122,7 +130,11 @@ fn a_metadata_host_is_refused_before_any_socket_exists() {
             let door = Arc::new(TestDoor::identity("bytes"));
             let r = Connection::dial(door.clone(), dial(target));
             assert!(matches!(r, Err(Failure::Refused(_))), "{target}");
-            assert_eq!(door.count("locate"), 0, "{target}: refused before the entry is asked");
+            assert_eq!(
+                door.count("locate"),
+                0,
+                "{target}: refused before the entry is asked"
+            );
         }
         let door = Arc::new(TestDoor::new(
             "bytes",
@@ -161,9 +173,15 @@ fn a_silent_far_end_is_held_to_the_framers_deadline() {
             .expect("the deadline fires, the connection does not hang");
         assert_eq!(r, Err(Failure::Timeout));
         let took = start.elapsed();
-        assert!(took >= Duration::from_millis(300), "not before the deadline: {took:?}");
+        assert!(
+            took >= Duration::from_millis(300),
+            "not before the deadline: {took:?}"
+        );
         assert!(took < Duration::from_secs(5), "at the deadline: {took:?}");
-        assert!(door.count("timer") >= 1, "the deadline reached the framer as `timer`");
+        assert!(
+            door.count("timer") >= 1,
+            "the deadline reached the framer as `timer`"
+        );
     });
 }
 

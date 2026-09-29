@@ -4,7 +4,7 @@
 //! THE `tcp` DOOR: this transport as an IDENTITY FRAMER on the transport kind's table
 //! (`busbar_contract::abi::transport`), compiled in or dropped in through the one door.
 //!
-//! The socket is the host's (`BUSBAR-1.6.0.md` THE DESIGN, §5): the connector dials, accepts, reads
+//! The socket is the host's (`BUSBAR-1.6.0.md` THE DESIGN, §5): the host dials, accepts, reads
 //! and writes it on the calling worker's reactor. This framer composes over nothing, so it frames
 //! directly over that socket, and the framing it does is none: a byte stream stays a byte stream.
 //!
@@ -39,8 +39,8 @@ use busbar_contract::abi::transport::{
     AcceptIn, AcceptOut, AdoptIn, ArrivalIn, ArrivalOut, BeginIn, Claim, ConnIn, ConnOut, DialIn,
     EmitIn, EncodeIn, FinishIn, FramePiece, FramerOut, FramerSink, FramingIn, IngestIn, IoOut,
     ListenIn, ListenOut, LocateIn, LocateOut, Ops, ReadIn, RefuseIn, ShutIn, TransportTail,
-    WriteIn, CANCEL_NOTHING_MOVED, FRAMING_STREAM, PIECE_END_OF_FRAME, ROLE_FRAMER, UNIT0_FIRST_BYTES,
-    YIELD_ENDED, YIELD_MORE,
+    WriteIn, CANCEL_NOTHING_MOVED, FRAMING_STREAM, PIECE_END_OF_FRAME, ROLE_FRAMER,
+    UNIT0_FIRST_BYTES, YIELD_ENDED, YIELD_MORE,
 };
 use busbar_contract::transport::registry::facts as tfacts;
 use busbar_contract::SelectorForm;
@@ -418,7 +418,10 @@ impl Slot for Encode {
         let body = raw(i.body, i.body_len);
         if body.len() > i.sink.wire_cap {
             // `encode` renders a whole message at once: the host gives it room for the body.
-            err(&mut o.head, "encode: the wire buffer is smaller than the body");
+            err(
+                &mut o.head,
+                "encode: the wire buffer is smaller than the body",
+            );
             return Outcome::Failed;
         }
         // SAFETY: a host buffer of `wire_cap` bytes, checked above.

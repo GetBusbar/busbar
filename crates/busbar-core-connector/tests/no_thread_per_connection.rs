@@ -67,7 +67,9 @@ fn dial(target: &str, first: Vec<u8>) -> Dial {
 /// RED arm of the next test: the thread count this file reads DOES see a thread per connection.
 #[test]
 fn a_thread_per_connection_is_seen_by_the_count() {
-    let _one = ONE_AT_A_TIME.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let _one = ONE_AT_A_TIME
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let before = thread_count();
     let (tx, rx) = std::sync::mpsc::channel::<()>();
     let rx = Arc::new(std::sync::Mutex::new(rx));
@@ -94,7 +96,9 @@ fn a_thread_per_connection_is_seen_by_the_count() {
 /// more threads than before the first; every framer crossing ran on the one worker thread.
 #[test]
 fn no_thread_per_connection() {
-    let _one = ONE_AT_A_TIME.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let _one = ONE_AT_A_TIME
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let rt = worker();
     let before = thread_count();
     rt.block_on(async {

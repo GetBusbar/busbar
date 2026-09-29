@@ -19,10 +19,12 @@ use busbar_contract::abi::mechanism::door::DoorFn;
 use busbar_contract::abi::mechanism::lifecycle::{slot as life, OpenIn, OpenOut};
 use busbar_contract::abi::sdk::door::{blank_in, blank_out};
 use busbar_contract::abi::transport::slot;
-use busbar_core_connector::framer::{Call, Crossed, DoorFacts, FramerDoor};
-use busbar_core_connector::wire::HostWire;
-use busbar_plugin_loader::dispatch::kinds::transport::{Transport as TransportKind, TransportFacts};
+use busbar_core_connector::{
+    framer::{Call, Crossed, DoorFacts, FramerDoor},
+    wire::HostWire,
+};
 use busbar_plugin_loader::dispatch::{
+    kinds::transport::{Transport as TransportKind, TransportFacts},
     load_linked, Bind, DispatchConfig, Dispatcher, Frame, InFrame, NoSink, OutFrame, Plugin,
 };
 
@@ -122,7 +124,9 @@ impl FramerDoor for Dispatched {
 /// # Errors
 ///
 /// The door would not open, or it composes over a layer (it does not frame the host's socket).
-pub fn host_wire(plugin: Plugin<TransportKind>) -> Result<Arc<dyn busbar_contract::Transport>, String> {
+pub fn host_wire(
+    plugin: Plugin<TransportKind>,
+) -> Result<Arc<dyn busbar_contract::Transport>, String> {
     let door = Dispatched::open(plugin)?;
     Ok(Arc::new(HostWire::new(Arc::new(door))?))
 }

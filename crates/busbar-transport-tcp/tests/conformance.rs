@@ -67,9 +67,12 @@ fn open(p: &Plugin<Transport>) {
     assert_eq!(p.call(life::OPEN, &mut f).outcome, Outcome::Ready);
 }
 
+/// What one script saw: the wire bytes, the frame bytes with their pieces' flags, the last flags.
+type Script = (Vec<u8>, Vec<(Vec<u8>, u8)>, u32);
+
 /// One scripted exchange through the dispatcher: begin, emit, ingest (tight sink), ingest the end.
 /// What comes back: the wire bytes, the frame bytes with their pieces' flags, the last flags.
-fn script(p: &Plugin<Transport>) -> (Vec<u8>, Vec<(Vec<u8>, u8)>, u32) {
+fn script(p: &Plugin<Transport>) -> Script {
     let mut wire = vec![0_u8; 4];
     let mut frame = vec![0_u8; 3];
     let mut pieces: Vec<FramePiece> = vec![z(); 1];

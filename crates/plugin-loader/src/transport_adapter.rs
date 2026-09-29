@@ -939,4 +939,3 @@ impl Transport for WireTransport {
         })
     }
 }
-

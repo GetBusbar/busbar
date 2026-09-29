@@ -93,10 +93,16 @@ fn half_close_lets_the_other_side_keep_writing() {
         let w = wire();
         let (client, server, _l) = pair(&w).await;
         // The client's side ends its writing half by handing the stream up and closing it.
-        let mut raw = w.detach(&client).expect("an idle connection hands its stream up").into_io();
+        let mut raw = w
+            .detach(&client)
+            .expect("an idle connection hands its stream up")
+            .into_io();
         futures::io::AsyncWriteExt::close(&mut raw).await.unwrap();
         let mut frames = w.frames(server.clone());
-        assert!(frames.next().await.is_none(), "the far end's end ends the frames");
+        assert!(
+            frames.next().await.is_none(),
+            "the far end's end ends the frames"
+        );
         w.write(&server, StreamId(0), ScratchBytes::new(b"still here"))
             .await
             .unwrap();
@@ -183,9 +189,14 @@ fn a_unit0_refusal_is_delivered_and_finalises_the_connection() {
             stream: None,
             correlates: None,
         };
-        w.unit0_refusal(server.clone(), None, &refusal, ScratchBytes::new(b"refused"))
-            .await
-            .unwrap();
+        w.unit0_refusal(
+            server.clone(),
+            None,
+            &refusal,
+            ScratchBytes::new(b"refused"),
+        )
+        .await
+        .unwrap();
         assert_eq!(read_n(&w, &client, 7).await, b"refused");
         assert!(w.frames(server).next().await.is_none(), "finalised");
     });
@@ -209,7 +220,11 @@ fn each_acceptor_binds_its_own_listener_on_one_address() {
 fn a_dial_to_a_metadata_host_or_a_name_is_refused() {
     worker().block_on(async {
         let w = wire();
-        for a in ["169.254.169.254:80", "[fd00:ec2::254]:80", "upstream.example:80"] {
+        for a in [
+            "169.254.169.254:80",
+            "[fd00:ec2::254]:80",
+            "upstream.example:80",
+        ] {
             assert_eq!(
                 w.dial_authority(a).await.map(|_| ()),
                 Err(TransportError::AddressRefused),
@@ -221,6 +236,11 @@ fn a_dial_to_a_metadata_host_or_a_name_is_refused() {
 
 #[test]
 fn an_entry_that_composes_over_a_layer_is_not_served_over_the_socket() {
-    let door = Arc::new(TestDoor::new("over", &["over"], &["under"], Knobs::default()));
+    let door = Arc::new(TestDoor::new(
+        "over",
+        &["over"],
+        &["under"],
+        Knobs::default(),
+    ));
     assert!(HostWire::new(door).is_err());
 }

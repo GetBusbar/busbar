@@ -172,7 +172,9 @@ impl Connection {
                     .map_or(located.authority.clone(), |(h, _)| h.to_owned())
             });
             let name = rustls::pki_types::ServerName::try_from(
-                host.trim_start_matches('[').trim_end_matches(']').to_owned(),
+                host.trim_start_matches('[')
+                    .trim_end_matches(']')
+                    .to_owned(),
             )
             .map_err(|e| Failure::Refused(format!("the name offered is not a server name: {e}")))?;
             Some(rustls::ClientConnection::new(Arc::new(config), name).map_err(failed)?)
@@ -254,15 +256,18 @@ impl Connection {
     /// # Errors
     ///
     /// The connection is closed or failed, or the framer refused the bytes.
-    pub fn write(&mut self, bytes: &[u8], end: bool, cx: &mut Context<'_>) -> Result<usize, Failure> {
+    pub fn write(
+        &mut self,
+        bytes: &[u8],
+        end: bool,
+        cx: &mut Context<'_>,
+    ) -> Result<usize, Failure> {
         match &self.phase {
             Phase::Failed(f) => return Err(f.clone()),
             Phase::Ended => return Err(Failure::Closed),
             Phase::Open => {
                 let framing = self.framing.as_mut().ok_or(Failure::Closed)?;
-                let y = framing
-                    .emit(EXCHANGE_STREAM, bytes, end)
-                    .map_err(failed)?;
+                let y = framing.emit(EXCHANGE_STREAM, bytes, end).map_err(failed)?;
                 self.absorb(y)?;
             }
             Phase::Connecting | Phase::Handshaking => self.early.push((bytes.to_vec(), end)),
@@ -322,7 +327,10 @@ impl Connection {
     /// Read what the socket has, and hand it on.
     fn read(&mut self, cx: &mut Context<'_>) -> Result<bool, Failure> {
         let mut buf = [0_u8; READ_CHUNK];
-        match self.sock.poll_io(Direction::Read, cx, |mut s| s.read(&mut buf)) {
+        match self
+            .sock
+            .poll_io(Direction::Read, cx, |mut s| s.read(&mut buf))
+        {
             Poll::Ready(Ok(0)) => {
                 self.feed(&[], true)?;
                 Ok(true)
@@ -397,8 +405,10 @@ impl Connection {
         self.absorb(y)?;
         if let Some((fields, body)) = self.opening.take() {
             if !fields.is_empty() || !body.is_empty() {
-                let fields: Vec<(&str, &[u8])> =
-                    fields.iter().map(|(n, v)| (n.as_str(), v.as_slice())).collect();
+                let fields: Vec<(&str, &[u8])> = fields
+                    .iter()
+                    .map(|(n, v)| (n.as_str(), v.as_slice()))
+                    .collect();
                 let message = framer::encode(self.door.as_ref(), &fields, &body)
                     .map_err(|e| Failure::Refused(e.to_string()))?;
                 let framing = self.framing.as_mut().ok_or(Failure::Closed)?;
@@ -429,7 +439,9 @@ impl Connection {
         }
         if matches!(self.phase, Phase::Handshaking) {
             if end {
-                return Err(Failure::Refused("tls: the far end closed the handshake".into()));
+                return Err(Failure::Refused(
+                    "tls: the far end closed the handshake".into(),
+                ));
             }
             if !self.tls.as_ref().is_some_and(|t| t.is_handshaking()) {
                 self.established.agreed_protocol = self
@@ -464,11 +476,7 @@ impl Connection {
 
     fn ingest(&mut self, bytes: &[u8], end: bool) -> Result<(), Failure> {
         let Some(framing) = self.framing.as_mut() else {
-            return if end {
-                Err(Failure::Closed)
-            } else {
-                Ok(())
-            };
+            return if end { Err(Failure::Closed) } else { Ok(()) };
         };
         let y = framing.ingest(bytes, end).map_err(failed)?;
         self.absorb(y)

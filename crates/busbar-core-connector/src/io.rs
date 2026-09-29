@@ -70,7 +70,11 @@ impl<T: AsRawFd> Registered<T> {
     /// # Errors
     ///
     /// The reactor failed the registration.
-    pub fn poll_ready(&self, dir: Direction, cx: &mut Context<'_>) -> Poll<io::Result<Ready<'_, T>>> {
+    pub fn poll_ready(
+        &self,
+        dir: Direction,
+        cx: &mut Context<'_>,
+    ) -> Poll<io::Result<Ready<'_, T>>> {
         match dir {
             Direction::Read => self.0.poll_read_ready(cx),
             Direction::Write => self.0.poll_write_ready(cx),

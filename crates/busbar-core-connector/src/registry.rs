@@ -142,7 +142,12 @@ impl Transports {
     #[must_use]
     pub fn serving(&self, scheme: &str) -> Option<Served<'_>> {
         self.entries.iter().find_map(|entry| {
-            let claim = entry.door.facts().claims.iter().position(|c| c == scheme)?;
+            let claim = entry
+                .door
+                .facts()
+                .claims
+                .iter()
+                .position(|c| *c == scheme)?;
             Some(Served { entry, claim })
         })
     }

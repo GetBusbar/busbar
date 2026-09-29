@@ -3,7 +3,7 @@
 
 //! The `tcp` transport: a byte stream, and nothing else.
 //!
-//! The socket is the host's (`BUSBAR-1.6.0.md` THE DESIGN, §5): `busbar-core-connector` dials,
+//! The socket is the host's (`BUSBAR-1.6.0.md` THE DESIGN, §5): the host dials,
 //! accepts, reads and writes it, with its readiness on the calling worker's reactor, and wraps it in
 //! connection security where a binding asks for it. This crate is the framer that sits on that
 //! socket — an IDENTITY framer ([`door`]): the bytes the far side sent are the frames, and the bytes
