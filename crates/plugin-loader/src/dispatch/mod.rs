@@ -29,6 +29,7 @@ pub mod answer;
 pub mod kinds;
 pub mod load;
 pub mod log_file;
+pub mod plane_calls;
 pub mod plugin;
 pub mod services;
 pub mod ticket;

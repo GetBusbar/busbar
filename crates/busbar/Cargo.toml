@@ -498,6 +498,14 @@ busbar-contract = { path = "../busbar-contract", features = ["test-seal"] }
 # black-box instrument that boots the shipped binary (see the bench's own header). The split gives
 # it the OPTION of becoming a lib-level bench against busbar-core; taking that option is step 9's
 # business, not this unit's.
+# THE PLANE DRIVER'S TEST PLANE (`tests/plane_driver.rs`): one source, compiled into the test as a
+# module (the LINKED door) and built here as a `cdylib` (the DROPPED door), so one unit runs end to end
+# through the kernel's plane driver and both doors. An example, not a crate: it never ships.
+[[example]]
+name = "plane_driver_test_plane"
+path = "tests/fixtures/plane_driver_test_plane.rs"
+crate-type = ["cdylib"]
+
 [[bench]]
 name = "hook_path"
 harness = false
