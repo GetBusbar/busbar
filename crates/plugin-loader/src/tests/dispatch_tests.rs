@@ -1646,3 +1646,117 @@ fn red_dropping_a_pending_reply_cancels_and_a_late_wake_is_a_no_op() {
     assert_eq!(p.call(TICK, &mut frame(plug::KICK)).outcome, Outcome::Ready);
     until("the detached op completes", || !d.is_pending(w));
 }
+
+/// Host-lent memory whose drop the test can see: the bytes a `tick` frame's extensions blob points
+/// at, owned here and nowhere else but the dispatcher's job.
+struct LentMode {
+    bytes: Vec<u8>,
+    dropped: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl Drop for LentMode {
+    fn drop(&mut self) {
+        self.dropped
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+/// A `tick` frame over `lent`'s bytes (NOT `'static`: the pointer is only as good as `lent`).
+fn lent_frame(lent: &LentMode) -> Frame<TickIn, TickOut> {
+    let mut f = frame(b"");
+    f.input.head.extensions = Blob {
+        ptr: lent.bytes.as_ptr(),
+        len: lent.bytes.len(),
+        fmt: BLOB_OCTETS,
+        flags: 0,
+    };
+    f
+}
+
+fn lent(mode: &[u8]) -> (Arc<LentMode>, Arc<std::sync::atomic::AtomicBool>) {
+    let dropped = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let lent = Arc::new(LentMode {
+        bytes: mode.to_vec(),
+        dropped: dropped.clone(),
+    });
+    (lent, dropped)
+}
+
+/// RED (ARCHITECT ruling 2026-09-29, every kind): the caller DROPS its `Reply` while the plugin is
+/// still inside a crossing reading host-lent memory (`hang:<key>` re-reads its key from the lent
+/// blob every 5ms until released), and drops its own owner too. The memory must live until the
+/// crossing RETURNS — through the watchdog tripping and replacing the worker meanwhile — and go
+/// once it has. Without the dispatcher holding the owner, the memory is freed at the caller's drop,
+/// under a plugin still reading it.
+#[test]
+fn red_a_dropped_reply_keeps_its_lent_memory_until_the_crossing_returns() {
+    let d = Dispatcher::new(config());
+    let (p, _sink) = opened(&d);
+    let (owner, dropped) = lent(b"hang:lent");
+    let t = d.mint(0).unwrap();
+    let reply = d.submit_lent(
+        &p,
+        t,
+        TICK,
+        lent_frame(&owner),
+        DeadlineClass::Call,
+        0,
+        owner.clone(),
+    );
+    until("the op is inside its crossing", || {
+        p.inner.crossings.load(std::sync::atomic::Ordering::SeqCst) > 1
+    });
+    drop(reply);
+    drop(owner);
+    // Past the watchdog's 400ms budget: the instance is faulted and the worker replaced, while the
+    // hung thread still reads the lent blob.
+    until("the watchdog replaced the hung worker", || {
+        d.stats().replacements == 1
+    });
+    std::thread::sleep(Duration::from_millis(50));
+    assert!(
+        !dropped.load(std::sync::atomic::Ordering::SeqCst),
+        "the lent memory must outlive a crossing that has not returned"
+    );
+    // Release the hang from a second instance (the first is faulted); the crossing returns.
+    let (p2, _) = opened(&d);
+    assert_eq!(
+        p2.call(TICK, &mut frame(b"unhang:lent")).outcome,
+        Outcome::Ready
+    );
+    until("the lent memory goes once the crossing returned", || {
+        dropped.load(std::sync::atomic::Ordering::SeqCst)
+    });
+}
+
+/// The PENDING twin: a dropped `Reply` on a pending op cancels it; the lent memory lives through
+/// the `cancel` and goes after it, never at the caller's drop.
+#[test]
+fn a_dropped_pending_reply_keeps_its_lent_memory_until_the_cancel() {
+    let d = Dispatcher::new(config());
+    let (p, sink) = opened(&d);
+    let (owner, dropped) = lent(plug::PEND_HOLD);
+    let t = d.mint(0).unwrap();
+    let reply = d.submit_lent(
+        &p,
+        t,
+        TICK,
+        lent_frame(&owner),
+        DeadlineClass::Call,
+        0,
+        owner.clone(),
+    );
+    until("the op pends", || d.is_pending(t));
+    drop(owner);
+    assert!(
+        !dropped.load(std::sync::atomic::Ordering::SeqCst),
+        "a pending op holds its lent memory"
+    );
+    drop(reply);
+    until("the dropped reply's op is cancelled", || {
+        count(&p, &sink).1 == 1
+    });
+    until("the lent memory goes after the cancel", || {
+        dropped.load(std::sync::atomic::Ordering::SeqCst)
+    });
+}

@@ -62,7 +62,7 @@ pub use plugin::{
 pub use services::{HostServices, Later, Ran, Reading, Stored};
 pub use ticket::{Completions, Redeem};
 pub use validate::Violation;
-pub use worker::{Adopter, Budgets, DispatchConfig, DispatchStats, Dispatcher, Done, Reply};
+pub use worker::{Adopter, Budgets, DispatchConfig, DispatchStats, Dispatcher, Done, Lent, Reply};
 
 /// A kind, as the dispatcher sees it: its code, its table and its timeout outcome. Implemented once
 /// per kind ([`kinds`]); `Ops` is that kind's `abi/<kind>/Ops`.
