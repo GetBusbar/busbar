@@ -197,7 +197,7 @@
             "type": "boolean"
           },
           "modules": {
-            "description": "The active admin-plane guard module names, the `admin_auth` chain verbatim (e.g.\n`[\"admin-tokens\"]`), reported in order. Empty when the admin plane is open.",
+            "description": "The active admin-plane guard module names, the `admin_auth` chain verbatim (by default the\noperator credential's provider alone), reported in order. Empty when the admin plane is open.",
             "items": {
               "type": "string"
             },
@@ -2850,7 +2850,7 @@
             "type": "array"
           },
           "token_configured": {
-            "description": "`identity-providers` ONLY: whether a `token:` secret REFERENCE is configured (the built-in\n`admin-tokens` operator credential). The reference itself is never projected.",
+            "description": "`identity-providers` ONLY: whether a `token:` secret REFERENCE is configured (the operator\ncredential). The reference itself is never projected.",
             "type": [
               "boolean",
               "null"
