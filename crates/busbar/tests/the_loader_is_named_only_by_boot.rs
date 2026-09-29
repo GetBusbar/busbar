@@ -4,7 +4,7 @@
 //! **ONE SOURCE FILE NAMES THE LOADER** (`BUSBAR-1.6.0.md` THE DESIGN, §3 Boot:
 //! "`crates/busbar/src/root/boot.rs` is the one source file that names the loader").
 //!
-//! Every `busbar_plugin_loader::<item>` spelling in the composition root's source (its unit tests
+//! Every spelling of the loader crate's path, `<loader>::<item>`, in the composition root's source (its unit tests
 //! excluded) is a row of [`SITES`], by file and item, with its count and the TODO step that removes
 //! it. DRAIN-ONLY (ARCHITECT ruling 2026-09-28, BOOT-CHAIN (2)): a spelling no row holds fails; a
 //! row whose spellings are gone fails until it is struck; a count that rose fails. `root/boot.rs`
@@ -45,6 +45,9 @@ const SITES: &[(&str, &str, usize, &str)] = &[
     ("root/registry.rs", "WireTransport", 2, "BL9"),
 ];
 
+/// The loader crate's path, as the source spells it.
+const NEEDLE: &str = "busbar_plugin_loader::";
+
 /// The file that names the loader by design.
 const BOOT: &str = "root/boot.rs";
 
@@ -65,10 +68,9 @@ fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
-/// `(file, item) -> count` of every `busbar_plugin_loader::<item>` spelling: the first path segment
+/// `(file, item) -> count` of every [`NEEDLE`]`<item>` spelling: the first path segment
 /// after the crate, each name of a braced list counted once.
 fn measure(files: &[(String, String)]) -> BTreeMap<(String, String), usize> {
-    const NEEDLE: &str = "busbar_plugin_loader::";
     let mut out = BTreeMap::new();
     for (file, text) in files {
         let mut rest = text.as_str();
@@ -107,13 +109,13 @@ fn verdict(files: &[(String, String)]) -> Vec<String> {
         }
         match SITES.iter().find(|(f, i, _, _)| f == file && i == item) {
             None => problems.push(format!(
-                "{file} names busbar_plugin_loader::{item} ({n}x) and no row holds it: the loader is named only by {BOOT}"
+                "{file} names the loader's {item} ({n}x) and no row holds it: the loader is named only by {BOOT}"
             )),
             Some((_, _, want, _)) if n > want => problems.push(format!(
-                "{file} names busbar_plugin_loader::{item} {n}x, above its row's {want}"
+                "{file} names the loader's {item} {n}x, above its row's {want}"
             )),
             Some((_, _, want, step)) if n < want => problems.push(format!(
-                "{file} names busbar_plugin_loader::{item} {n}x, below its row's {want}: lower the row ({step})"
+                "{file} names the loader's {item} {n}x, below its row's {want}: lower the row ({step})"
             )),
             Some(_) => {}
         }
@@ -121,7 +123,7 @@ fn verdict(files: &[(String, String)]) -> Vec<String> {
     for (file, item, _, step) in SITES {
         if !got.contains_key(&(file.to_string(), item.to_string())) {
             problems.push(format!(
-                "{file} no longer names busbar_plugin_loader::{item}: strike its row ({step})"
+                "{file} no longer names the loader's {item}: strike its row ({step})"
             ));
         }
     }
@@ -158,28 +160,23 @@ fn the_loader_is_named_only_by_boot_and_the_named_remainder() {
 fn red_a_new_site_a_rise_and_an_unstruck_row_each_fail() {
     let base: Vec<(String, String)> = SITES
         .iter()
-        .map(|(f, i, n, _)| {
-            (
-                f.to_string(),
-                format!("busbar_plugin_loader::{i}; ").repeat(*n),
-            )
-        })
+        .map(|(f, i, n, _)| (f.to_string(), format!("{NEEDLE}{i}; ").repeat(*n)))
         .collect();
     assert!(verdict(&base).is_empty(), "{:?}", verdict(&base));
     let mut new_site = base.clone();
     new_site.push((
         "root/adapters.rs".into(),
-        "use busbar_plugin_loader::{PluginRegistry, scan_and_validate};".into(),
+        format!("use {NEEDLE}{{PluginRegistry, scan_and_validate}};"),
     ));
     assert_eq!(verdict(&new_site).len(), 2);
     let mut rise = base.clone();
-    rise[0].1.push_str("busbar_plugin_loader::store_adapter::X");
+    rise[0].1.push_str(&format!("{NEEDLE}store_adapter::X"));
     assert!(verdict(&rise)[0].contains("above its row"));
     let drained: Vec<_> = base[1..].to_vec();
     assert!(verdict(&drained)
         .iter()
         .any(|p| p.contains("strike its row")));
     let mut boot = base;
-    boot.push((BOOT.into(), "busbar_plugin_loader::load(".into()));
+    boot.push((BOOT.into(), format!("{NEEDLE}load(")));
     assert!(verdict(&boot).is_empty(), "{BOOT} names the loader freely");
 }

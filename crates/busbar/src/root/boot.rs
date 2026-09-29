@@ -14,9 +14,7 @@
 use std::sync::Arc;
 
 use busbar_contract::abi::mechanism::KindCode;
-use busbar_plugin_loader::boot::{select, Candidate, Origin, Selected, Uses};
-use busbar_plugin_loader::dispatch::{LoadError, ManifestFacts};
-use busbar_plugin_loader::PluginRegistry;
+use busbar_plugin_loader::{boot::*, dispatch::LoadError, dispatch::ManifestFacts, PluginRegistry};
 
 /// STAGE 0, PLAN: what the configuration file at `path` uses, read off its raw document (secret
 /// references stay raw; environment references are interpolated leniently, as the boot's early
