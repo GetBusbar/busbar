@@ -50,7 +50,7 @@ pub mod capture;
 pub mod lent;
 pub mod safe;
 pub use lent::{HostBuf, Lent, LentList};
-pub use safe::{Instance, Safe, SafeSlot};
+pub use safe::{Instance, Plain, Published, Safe, SafeSlot};
 
 // The `#[macro_export]` export macros, named at this module's path too, so a plugin writes
 // `busbar_contract::abi::sdk::export_store_plugin!` exactly where it wrote

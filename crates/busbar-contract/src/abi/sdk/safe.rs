@@ -256,6 +256,57 @@ impl<S: SafeSlot> Entry for Safe<S> {
     }
 }
 
+/// ABI data a plugin PUBLISHES and the host reads: plain `#[repr(C)]` values — integers, raw pointers
+/// and structs of them — that a plugin keeps in its instance state (memory class (ii), generation
+/// data such as a plane's snapshot).
+///
+/// # Safety
+/// The implementor is plain data: integers, raw pointers, `AbiStr`/`Blob` and structs or arrays of
+/// them; no reference, no interior mutability, no `Drop`. Its raw pointers are only ever read by
+/// the host (under the ABI) or by `unsafe` code, never through a safe path.
+pub unsafe trait Plain: Copy + 'static {}
+
+// SAFETY (all below): plain data per `Plain`'s contract (`abi::mechanism::call`, `abi::plane`).
+unsafe impl Plain for crate::abi::mechanism::call::AbiStr {}
+unsafe impl Plain for crate::abi::mechanism::call::Blob {}
+unsafe impl Plain for crate::abi::plane::PlaneSnapshot {}
+unsafe impl Plain for crate::abi::plane::Claim {}
+unsafe impl Plain for crate::abi::plane::AdminRoute {}
+
+/// A published ABI value held in instance state, which must be `Send + Sync`
+/// ([`SafeSlot::State`]): a raw pointer is neither, yet sending or sharing one is harmless where
+/// nothing dereferences it on a safe path. Box it to give it a stable address, then answer
+/// [`Published::as_ptr`] to the host (a snapshot pointer); the value stays until the plugin drops
+/// it (at `retire` of its generation, or `close`).
+#[derive(Debug, Clone, Copy)]
+pub struct Published<T: Plain>(T);
+
+// SAFETY: `T: Plain` holds only integers and raw pointers, which a safe path never dereferences
+// (`Plain`'s contract): moving or sharing the bits across threads cannot race.
+unsafe impl<T: Plain> Send for Published<T> {}
+// SAFETY: as `Send`; `&Published<T>` exposes the value only by copy or by `*const` address.
+unsafe impl<T: Plain> Sync for Published<T> {}
+
+impl<T: Plain> Published<T> {
+    /// Hold `value`.
+    #[must_use]
+    pub const fn new(value: T) -> Self {
+        Self(value)
+    }
+
+    /// The value.
+    #[must_use]
+    pub const fn get(&self) -> &T {
+        &self.0
+    }
+
+    /// Its address, for the host: valid while `self` lives at this address.
+    #[must_use]
+    pub const fn as_ptr(&self) -> *const T {
+        &self.0
+    }
+}
+
 #[cfg(test)]
 #[path = "tests/safe_tests.rs"]
 mod tests;

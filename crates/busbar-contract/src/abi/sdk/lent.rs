@@ -18,7 +18,11 @@
 //!
 //! THE CALL CONTRACT these rely on, and nothing else: every pointer the host puts in an `in` is
 //! valid, as the kind's ABI states it, until the call returns; the host's buffers are writable for
-//! their stated capacity and overlap nothing else the call is lent.
+//! their stated capacity and overlap nothing else the call is lent. A call answering PENDING is
+//! re-invoked with the same `in` and `out`, so the host keeps what it lent alive until the call
+//! completes, even when the caller that submitted it has gone (the dispatcher's duty, not the
+//! plugin's). A `Lent` never outlives one invocation: it borrows the trampoline's frame, so a body
+//! that pends keeps nothing lent and re-reads its `in` on resume.
 
 use std::marker::PhantomData;
 use std::mem::size_of;
