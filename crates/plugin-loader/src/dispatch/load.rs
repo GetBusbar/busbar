@@ -134,7 +134,7 @@ pub fn rendering_of_library(path: &Path) -> Result<Option<Vec<u8>>, LoadError> {
         Err(_) => return Ok(None),
     };
     let rendering = rendering_of(door);
-    drop(Lib(Some(lib)));
+    drop(Lib(Some(lib), None));
     rendering.map(Some)
 }
 
@@ -310,12 +310,17 @@ pub(crate) struct Validated {
 }
 
 /// The loaded library, unloaded on the loader's worker when the last instance handle drops.
-pub(crate) struct Lib(Option<Library>);
+pub(crate) struct Lib(Option<Library>, Option<crate::stage::Staged>);
 
 impl Drop for Lib {
     fn drop(&mut self) {
+        let staged = self.1.take();
         if let Some(lib) = self.0.take() {
-            reap(Box::new(move || crate::dlclose_on_worker(lib)));
+            // The staged backing (a verified-bytes load) is released only after the unload.
+            reap(Box::new(move || {
+                crate::dlclose_on_worker(lib);
+                drop(staged);
+            }));
         }
     }
 }
@@ -411,6 +416,40 @@ pub fn load_dropped<K: Kind>(
     stated: &[u8],
     bind: Bind,
 ) -> Result<Plugin<K>, LoadError> {
+    check_facts::<K>(stated)?;
+    let lib = crate::dlopen_on_worker(path.as_os_str()).map_err(LoadError::Open)?;
+    bind_library::<K>(Lib(Some(lib), None), stated, bind)
+}
+
+/// [`load_dropped`] over a dropped plugin's VERIFIED library bytes (the bytes its signed manifest's
+/// `sha256` names): staged by the loader's one staging path and opened from exactly those bytes.
+/// `display` labels a refusal.
+pub fn load_dropped_bytes<K: Kind>(
+    bytes: &[u8],
+    display: &str,
+    stated: &[u8],
+    bind: Bind,
+) -> Result<Plugin<K>, LoadError> {
+    check_facts::<K>(stated)?;
+    let (lib, staged) =
+        crate::stage::load_library_from_bytes(bytes, display).map_err(LoadError::Open)?;
+    bind_library::<K>(Lib(Some(lib), Some(staged)), stated, bind)
+}
+
+/// The door of an opened library, admitted against `stated`.
+fn bind_library<K: Kind>(lib: Lib, stated: &[u8], bind: Bind) -> Result<Plugin<K>, LoadError> {
+    let door = {
+        let l = lib.0.as_ref().expect("an opened library");
+        // SAFETY: `DOOR_SYMBOL` is typed `DoorFn` by the mechanism; the symbol is copied out as a
+        // plain fn pointer, kept valid by `Lib` for as long as any handle to the instance lives.
+        unsafe { l.get::<DoorFn>(DOOR_SYMBOL).map(|s| *s) }
+    };
+    let door = door.map_err(|e| LoadError::NoDoor(e.to_string()))?;
+    Plugin::bind(admitted::<K>(door, stated)?, Some(lib), bind)
+}
+
+/// The stated rendering's head facts against the host's, before anything is opened.
+fn check_facts<K: Kind>(stated: &[u8]) -> Result<(), LoadError> {
     let facts = ManifestFacts::read(stated)?;
     if facts.mechanism_version != MECHANISM_VERSION {
         return Err(LoadError::ManifestMechanism {
@@ -430,13 +469,7 @@ pub fn load_dropped<K: Kind>(
             host: K::CODE.abi_version(),
         });
     }
-    let lib = crate::dlopen_on_worker(path.as_os_str()).map_err(LoadError::Open)?;
-    // SAFETY: `DOOR_SYMBOL` is typed `DoorFn` by the mechanism; the symbol is copied out as a plain
-    // fn pointer, kept valid by `Lib` for as long as any handle to the instance lives.
-    let door = unsafe { lib.get::<DoorFn>(DOOR_SYMBOL).map(|s| *s) };
-    let lib = Lib(Some(lib));
-    let door = door.map_err(|e| LoadError::NoDoor(e.to_string()))?;
-    Plugin::bind(admitted::<K>(door, stated)?, Some(lib), bind)
+    Ok(())
 }
 
 /// What a staged library turned out to be.

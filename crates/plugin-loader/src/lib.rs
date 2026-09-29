@@ -34,6 +34,9 @@ use std::path::Path;
 
 pub mod auth;
 // The two BUILT-IN secret modules (`env`, `file`) the registry's built-in secret rows resolve through.
+/// THE BOOT STAGES the loader owns: what config uses, Discover, Select and the one load
+/// (`BUSBAR-1.6.0.md` THE DESIGN, §3).
+pub mod boot;
 pub mod builtin_secret;
 pub mod carrier;
 /// THE ONE DISPATCHER of the memory ABI (`BUSBAR-1.6.0.md` THE DESIGN, §11): one loader path, one

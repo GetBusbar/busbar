@@ -56,8 +56,8 @@ use busbar_contract::abi::mechanism::KindCode;
 
 pub use answer::{Answer, Context};
 pub use load::{
-    load_dropped, load_linked, rendering_of, rendering_of_library, LinkedRow, LoadError,
-    ManifestFacts,
+    load_dropped, load_dropped_bytes, load_linked, rendering_of, rendering_of_library, LinkedRow,
+    LoadError, ManifestFacts,
 };
 pub use log_file::{LogLevel, PluginLogConfig, PluginLogSink};
 pub use plugin::{

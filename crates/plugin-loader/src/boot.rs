@@ -1,0 +1,414 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+
+//! THE BOOT STAGES the loader owns (`BUSBAR-1.6.0.md` THE DESIGN, §3 Boot): what the configuration
+//! USES (read from stage 0's plan), DISCOVER (stage 1: each plugin's facts, read from the linked
+//! row or the signed manifest, nothing loaded), SELECT (stage 2: the plugins the configuration uses,
+//! §2 "A plugin loads if and only if config uses it", §4 "Selection follows the classes") and the
+//! ONE LOAD (every selected instance bound through the one dispatcher, each to its own log sink).
+//!
+//! [`Uses::of`], [`Candidate`] and [`select`] are pure: no file is read, nothing is opened, no
+//! library is loaded, so `--validate` (stages 0-2) and `--list-plugins` run them without dialing
+//! or opening anything. [`load`] is the only function here that opens a plugin.
+
+use std::collections::BTreeSet;
+use std::sync::Arc;
+
+use busbar_contract::abi::mechanism::door::{
+    DoorFn, REWRITE_ALIAS, REWRITE_SUGAR, SECTION_DECLARING,
+};
+use busbar_contract::abi::mechanism::rendering::{read, Read};
+use busbar_contract::abi::mechanism::KindCode;
+use busbar_contract::plugin::Kind;
+
+use crate::dispatch::kinds::{
+    auth::Auth, export::Export, hook::Hook, plane::Plane, secret::Secret, store::Store,
+    transport::Transport,
+};
+use crate::dispatch::{
+    load_dropped_bytes, load_linked, Adopter, Bind, EnvelopeSink, LinkedRow, Plugin,
+    PluginLogConfig,
+};
+
+/// The kind a [`KindCode`] names, in the contract's kind vocabulary (whose [`Kind::root_key`] is
+/// the ONE spelling of each kind's root key).
+#[must_use]
+pub const fn kind_of(code: KindCode) -> Kind {
+    match code {
+        KindCode::Store => Kind::Store,
+        KindCode::Secret => Kind::Secret,
+        KindCode::Auth => Kind::Auth,
+        KindCode::Hook => Kind::Hook,
+        KindCode::Export => Kind::Export,
+        KindCode::Plane => Kind::Plane,
+        KindCode::Transport => Kind::Transport,
+    }
+}
+
+// ── USES: what the configuration names, read from the plan's document ──────────────────────────
+
+/// WHAT THE CONFIGURATION USES, by the three classes of root key (THE DESIGN §4): the root keys it
+/// carries (a plane is used iff its verb is one), every `module:` an entry under a non-plane kind's
+/// root key names, the reference keys it spells (`{k: X}`, a plugin's sugar), and the URL schemes its
+/// URLs use (a transport is used iff it claims one).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Uses {
+    /// The document's root keys.
+    pub roots: BTreeSet<String>,
+    /// `(kind, instance, module)`: each entry under a non-plane kind's root key, by its key.
+    pub modules: Vec<(KindCode, String, String)>,
+    /// Every key of a one-key mapping anywhere in the document: a reference's sugar word.
+    pub refs: BTreeSet<String>,
+    /// Every URL scheme a string value anywhere under `providers:` or a non-plane kind's root key
+    /// uses (`scheme://…`).
+    pub schemes: BTreeSet<String>,
+}
+
+/// The non-plane kinds whose root key holds a `module:`-naming definition.
+const DEFINED: [KindCode; 5] = [
+    KindCode::Store,
+    KindCode::Secret,
+    KindCode::Auth,
+    KindCode::Hook,
+    KindCode::Export,
+];
+
+impl Uses {
+    /// What `doc` (the plan's document, secret references still raw) uses.
+    #[must_use]
+    pub fn of(doc: &serde_json::Value) -> Self {
+        let mut uses = Uses::default();
+        let Some(root) = doc.as_object() else {
+            return uses;
+        };
+        uses.roots = root.keys().cloned().collect();
+        refs(doc, &mut uses.refs);
+        for code in DEFINED {
+            let Some(key) = kind_of(code).root_key() else {
+                continue;
+            };
+            let Some(v) = root.get(key) else {
+                continue;
+            };
+            schemes(v, &mut uses.schemes);
+            match (code, v.as_object()) {
+                // One instance, `{module, settings}`.
+                (KindCode::Store, Some(entry)) => {
+                    if let Some(m) = entry.get("module").and_then(|m| m.as_str()) {
+                        uses.modules.push((code, key.to_string(), m.to_string()));
+                    }
+                }
+                // Module-level settings, keyed by module.
+                (KindCode::Secret, Some(map)) => {
+                    for m in map.keys() {
+                        uses.modules.push((code, m.clone(), m.clone()));
+                    }
+                }
+                // Named definitions, each naming its module.
+                (_, Some(map)) => {
+                    for (name, entry) in map {
+                        if let Some(m) = entry.get("module").and_then(|m| m.as_str()) {
+                            uses.modules.push((code, name.clone(), m.to_string()));
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        if let Some(v) = kind_of(KindCode::Transport)
+            .root_key()
+            .and_then(|k| root.get(k))
+        {
+            schemes(v, &mut uses.schemes);
+        }
+        uses
+    }
+}
+
+fn refs(v: &serde_json::Value, out: &mut BTreeSet<String>) {
+    match v {
+        serde_json::Value::Object(map) => {
+            if map.len() == 1 {
+                out.extend(map.keys().cloned());
+            }
+            map.values().for_each(|v| refs(v, out));
+        }
+        serde_json::Value::Array(items) => items.iter().for_each(|v| refs(v, out)),
+        _ => {}
+    }
+}
+
+fn schemes(v: &serde_json::Value, out: &mut BTreeSet<String>) {
+    match v {
+        serde_json::Value::String(s) => {
+            if let Some((scheme, _)) = s.split_once("://") {
+                let ok = scheme.starts_with(|c: char| c.is_ascii_alphabetic())
+                    && scheme
+                        .chars()
+                        .all(|c| c.is_ascii_alphanumeric() || "+.-".contains(c));
+                if ok {
+                    out.insert(scheme.to_ascii_lowercase());
+                }
+            }
+        }
+        serde_json::Value::Object(map) => map.values().for_each(|v| schemes(v, out)),
+        serde_json::Value::Array(items) => items.iter().for_each(|v| schemes(v, out)),
+        _ => {}
+    }
+}
+
+// ── DISCOVER: each plugin's facts, from its linked row or its signed manifest ───────────────────
+
+/// Where a candidate's plugin comes from, for [`load`].
+#[derive(Debug, Clone)]
+pub enum Origin {
+    /// A compiled-in row.
+    Linked(LinkedRow),
+    /// A dropped-in plugin: its tarball's file name and its verified library bytes.
+    Dropped {
+        /// The tarball's file name.
+        file: String,
+        /// The library bytes its signed manifest's `sha256` names.
+        bytes: Arc<Vec<u8>>,
+    },
+}
+
+/// ONE DISCOVERED PLUGIN: the facts [`select`] reads, off its Statement rendering (a linked row's or
+/// a signed manifest's) — never off an opened plugin.
+#[derive(Debug, Clone)]
+pub struct Candidate {
+    /// Its kind.
+    pub kind: KindCode,
+    /// Its name.
+    pub name: String,
+    /// The other names config may give it: its Statement's alias rewrites and, for a dropped
+    /// plugin, its manifest's alias.
+    pub aliases: Vec<String>,
+    /// The reference keys that name it (its sugar rewrites).
+    pub sugar: Vec<String>,
+    /// Its declaring sections (a plane's verbs).
+    pub verbs: Vec<String>,
+    /// The URL schemes it claims (a transport's claims).
+    pub schemes: Vec<String>,
+    /// Its Statement rendering: what [`load`] admits it against.
+    pub stated: Vec<u8>,
+    /// Where it comes from.
+    pub origin: Origin,
+}
+
+impl Candidate {
+    /// The candidate a Statement rendering states. `alias` is a dropped plugin's manifest alias;
+    /// `schemes` the claims a transport states in its kind tail.
+    ///
+    /// # Errors
+    ///
+    /// A rendering that does not read back, or that names no kind.
+    pub fn from_rendering(
+        stated: Vec<u8>,
+        alias: Option<&str>,
+        schemes: Vec<String>,
+        origin: Origin,
+    ) -> Result<Self, String> {
+        let r: Read = read(&stated).map_err(|e| {
+            format!(
+                "the Statement rendering does not read back: byte {} is not {}",
+                e.at, e.what
+            )
+        })?;
+        let kind = KindCode::from_raw(r.kind)
+            .ok_or_else(|| format!("the Statement names kind {}", r.kind))?;
+        let words = |class| {
+            r.rewrites
+                .iter()
+                .filter(move |(c, _, _)| *c == class)
+                .map(|(_, from, _)| from.clone())
+        };
+        let mut aliases: Vec<String> = words(REWRITE_ALIAS).collect();
+        if let Some(a) = alias.filter(|a| *a != r.name && !aliases.iter().any(|x| x == a)) {
+            aliases.push(a.to_string());
+        }
+        Ok(Self {
+            kind,
+            aliases,
+            sugar: words(REWRITE_SUGAR).collect(),
+            verbs: r
+                .sections
+                .iter()
+                .filter(|(_, flags)| flags & SECTION_DECLARING != 0)
+                .map(|(name, _)| name.clone())
+                .collect(),
+            schemes,
+            name: r.name,
+            stated,
+            origin,
+        })
+    }
+
+    /// A compiled-in row's candidate: its row's rendering.
+    ///
+    /// # Errors
+    ///
+    /// As [`Candidate::from_rendering`].
+    pub fn linked(door: DoorFn, schemes: Vec<String>) -> Result<Self, String> {
+        let row = LinkedRow::of(door).map_err(|e| e.to_string())?;
+        Self::from_rendering(row.statement.clone(), None, schemes, Origin::Linked(row))
+    }
+
+    /// Whether config names this plugin by `word` (its name or an alias).
+    fn answers(&self, word: &str) -> bool {
+        self.name == word || self.aliases.iter().any(|a| a == word)
+    }
+}
+
+// ── SELECT: the plugins the configuration uses ──────────────────────────────────────────────────
+
+/// One selected instance: which candidate, under which instance name (the config key).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Selected {
+    /// The index into the candidates.
+    pub candidate: usize,
+    /// The instance name: the entry's key, the kind's root key for the one store, the verb for a
+    /// plane, the plugin's name for secret sugar and a transport.
+    pub instance: String,
+}
+
+/// STAGE 2, SELECT (THE DESIGN §4 "Selection follows the classes"; pure): a plane is selected iff
+/// one of its verbs is a root key; a store, secret, auth, hook or export plugin once per entry whose
+/// `module` names it (its name or an alias) and once if a reference uses its sugar; a transport iff
+/// a configured URL uses a scheme it claims. Candidates are read in order and the first that answers
+/// an entry takes it, so a linked row listed ahead answers its module ahead of a dropped-in plugin
+/// spelling the same word. An entry no candidate answers selects nothing here: the kind's own
+/// validation refuses it, naming the missing module.
+#[must_use]
+pub fn select(uses: &Uses, candidates: &[Candidate]) -> Vec<Selected> {
+    let mut out = Vec::new();
+    let mut taken: BTreeSet<(u32, String)> = BTreeSet::new();
+    let mut take = |out: &mut Vec<Selected>, i: usize, kind: KindCode, instance: String| {
+        if taken.insert((kind as u32, instance.clone())) {
+            out.push(Selected {
+                candidate: i,
+                instance,
+            });
+        }
+    };
+    for (i, c) in candidates.iter().enumerate() {
+        match c.kind {
+            KindCode::Plane => {
+                if let Some(verb) = c.verbs.iter().find(|v| uses.roots.contains(*v)) {
+                    take(&mut out, i, c.kind, verb.clone());
+                }
+            }
+            KindCode::Transport => {
+                if c.schemes.iter().any(|s| uses.schemes.contains(s)) {
+                    take(&mut out, i, c.kind, c.name.clone());
+                }
+            }
+            kind => {
+                for (k, instance, module) in &uses.modules {
+                    if *k == kind && c.answers(module) {
+                        take(&mut out, i, kind, instance.clone());
+                    }
+                }
+                if c.sugar.iter().any(|s| uses.refs.contains(s)) {
+                    take(&mut out, i, kind, c.name.clone());
+                }
+            }
+        }
+    }
+    out
+}
+
+// ── THE ONE LOAD ─────────────────────────────────────────────────────────────────────────────────
+
+/// One bound instance, of its kind.
+#[derive(Debug)]
+#[allow(missing_docs)]
+pub enum Bound {
+    Store(Plugin<Store>),
+    Secret(Plugin<Secret>),
+    Auth(Plugin<Auth>),
+    Hook(Plugin<Hook>),
+    Export(Plugin<Export>),
+    Plane(Plugin<Plane>),
+    Transport(Plugin<Transport>),
+}
+
+/// THE ONE LOAD's request: the discovered candidates, the selection over them, and what every bind
+/// takes — the plugin log configuration (each instance gets its own sink, THE DESIGN §11.2 Plugin
+/// logging), where the #85 metrics go, the dispatcher that adopts every instance, and the host's
+/// clamp on a Statement's `max_inflight`.
+pub struct LoadRequest<'a> {
+    /// The discovered plugins.
+    pub candidates: &'a [Candidate],
+    /// The instances selected over them.
+    pub selected: &'a [Selected],
+    /// `plugins.logs`, resolved once per configuration.
+    pub logs: &'a PluginLogConfig,
+    /// Where every instance's #85 metrics and dropped records go.
+    pub metrics: Arc<dyn EnvelopeSink>,
+    /// The dispatcher that adopts every instance.
+    pub dispatcher: Adopter,
+    /// The host's clamp on `max_inflight`.
+    pub max_inflight_cap: u32,
+}
+
+/// What [`load`] bound: `(instance, bound)`, in selection order.
+#[derive(Debug, Default)]
+pub struct Loaded {
+    /// The bound instances.
+    pub bound: Vec<(String, Bound)>,
+}
+
+/// THE ONE LOAD: every selected instance, bound through the one loader path — a compiled-in row's
+/// door ([`load_linked`]) or a dropped plugin's verified bytes ([`load_dropped_bytes`]), each
+/// admitted against its stated Statement — to its own log sink.
+///
+/// # Errors
+///
+/// The first instance that will not bind, named: `<instance>: <why>`.
+pub fn load(req: &LoadRequest<'_>) -> Result<Loaded, String> {
+    let mut loaded = Loaded::default();
+    for s in req.selected {
+        let c = req
+            .candidates
+            .get(s.candidate)
+            .ok_or_else(|| format!("{}: no such candidate", s.instance))?;
+        let sink = req
+            .logs
+            .sink(&s.instance, c.kind, req.metrics.clone())
+            .map_err(|e| format!("{}: {e}", s.instance))?;
+        let bind = Bind {
+            max_inflight_cap: req.max_inflight_cap,
+            sink: Arc::new(sink),
+            dispatcher: req.dispatcher.clone(),
+        };
+        let bound = bind_one(c, bind).map_err(|e| format!("{}: {e}", s.instance))?;
+        loaded.bound.push((s.instance.clone(), bound));
+    }
+    Ok(loaded)
+}
+
+fn bind_one(c: &Candidate, bind: Bind) -> Result<Bound, String> {
+    fn one<K: crate::dispatch::Kind>(c: &Candidate, bind: Bind) -> Result<Plugin<K>, String> {
+        match &c.origin {
+            Origin::Linked(row) => load_linked::<K>(row, bind),
+            Origin::Dropped { file, bytes } => {
+                load_dropped_bytes::<K>(bytes, file, &c.stated, bind)
+            }
+        }
+        .map_err(|e| e.to_string())
+    }
+    Ok(match c.kind {
+        KindCode::Store => Bound::Store(one(c, bind)?),
+        KindCode::Secret => Bound::Secret(one(c, bind)?),
+        KindCode::Auth => Bound::Auth(one(c, bind)?),
+        KindCode::Hook => Bound::Hook(one(c, bind)?),
+        KindCode::Export => Bound::Export(one(c, bind)?),
+        KindCode::Plane => Bound::Plane(one(c, bind)?),
+        KindCode::Transport => Bound::Transport(one(c, bind)?),
+    })
+}
+
+#[cfg(test)]
+#[path = "tests/boot_tests.rs"]
+mod tests;
