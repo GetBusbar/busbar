@@ -376,16 +376,17 @@ pub(crate) use router::build_router_with_limits;
 #[cfg(any(test, feature = "test-support"))]
 pub use router::build_router_with_limits;
 
+#[cfg(any(test, feature = "test-support"))]
+use busbar_contract::abi::cold::endpoint::RouteAuth;
+
 /// TEST-SUPPORT ROUTER-SURFACE VIEW: the `(path, declared admission bar)` pairs the base data router
 /// mounts for `app`, built through the very same `router::base_data_router` production calls (off the
 /// App's neutral slots). Exposed as a curated `pub` seam — over PUBLIC types (`String`,
-/// [`busbar_contract::abi::cold::endpoint::RouteAuth`]) — ONLY under the test-support surface, so an extracted
+/// [`RouteAuth`]) — ONLY under the test-support surface, so an extracted
 /// plane's own ingress tests can assert the mounted surface (which paths appear, at which bar) WITHOUT
 /// core widening the `pub(crate)` router fn or the `CoreRouteTable`/`CoreRoute` types to `pub`.
 #[cfg(any(test, feature = "test-support"))]
-pub fn base_data_route_table_view(
-    app: &state::App,
-) -> Vec<(String, busbar_contract::abi::cold::endpoint::RouteAuth)> {
+pub fn base_data_route_table_view(app: &state::App) -> Vec<(String, RouteAuth)> {
     router::base_data_router(&app.plugin_routes, &app.plane_slots, app.oauth_as.as_ref())
         .1
         .routes()
@@ -397,15 +398,9 @@ pub fn base_data_route_table_view(
 /// TEST-SUPPORT ROUTER-SURFACE VIEW, with the declared METHOD. The sibling of
 /// [`base_data_route_table_view`] for the plane-boundary ratchet, which walks each mounted route with
 /// a real request and so needs the method too. Over PUBLIC types only (`String`, `String`,
-/// [`busbar_contract::abi::cold::endpoint::RouteAuth`]) — the `pub(crate)` `CoreRoute`/`CoreRouteTable` stay sealed.
+/// [`RouteAuth`]) — the `pub(crate)` `CoreRoute`/`CoreRouteTable` stay sealed.
 #[cfg(any(test, feature = "test-support"))]
-pub fn base_data_route_method_view(
-    app: &state::App,
-) -> Vec<(
-    String,
-    String,
-    busbar_contract::abi::cold::endpoint::RouteAuth,
-)> {
+pub fn base_data_route_method_view(app: &state::App) -> Vec<(String, String, RouteAuth)> {
     router::base_data_router(&app.plugin_routes, &app.plane_slots, app.oauth_as.as_ref())
         .1
         .routes()
