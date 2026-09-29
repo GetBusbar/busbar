@@ -45,6 +45,12 @@ pub mod door;
 pub use crate::{export_door, plugin_door};
 // THE CALL CAPTURE: what a plugin logs during a call rides its reply as diagnostics (#85).
 pub mod capture;
+// THE SAFE SURFACE (THE DESIGN, plugins and the plugin ABI): a slot body with no `unsafe` — host-lent memory read and
+// host buffers filled through `Lent`/`HostBuf`, the instance typed through `Instance`.
+pub mod lent;
+pub mod safe;
+pub use lent::{HostBuf, Lent, LentList};
+pub use safe::{Instance, Safe, SafeSlot};
 
 // The `#[macro_export]` export macros, named at this module's path too, so a plugin writes
 // `busbar_contract::abi::sdk::export_store_plugin!` exactly where it wrote
