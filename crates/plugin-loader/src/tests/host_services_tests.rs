@@ -27,6 +27,17 @@ const TICKET: Ticket = Ticket {
 struct Provider {
     judged: AtomicUsize,
     held: Mutex<Vec<Later>>,
+    /// Every caller-scoped call, as `(instance, service, first argument)`.
+    scoped: Mutex<Vec<(String, &'static str, Vec<u8>)>>,
+}
+
+impl Provider {
+    fn saw(&self, c: &Caller, what: &'static str, arg: &[u8]) {
+        self.scoped
+            .lock()
+            .unwrap()
+            .push((c.instance.to_string(), what, arg.to_vec()));
+    }
 }
 
 impl HostServices for Provider {
@@ -49,6 +60,39 @@ impl HostServices for Provider {
             }
             None => Ran::Now(Stored::refused("no ticket")),
         }
+    }
+
+    fn records_get(&self, c: &Caller, kind: &str, key: &[u8], later: Later) -> Ran {
+        self.saw(c, "records.get", kind.as_bytes());
+        let mut stored = Stored::ready(svc::FOUND);
+        stored.bytes = [key, b"=v"].concat();
+        stored.spans = vec![ItemSpan {
+            key_off: 0,
+            key_len: key.len() as u32,
+            value_off: key.len() as u32,
+            value_len: 2,
+        }];
+        later(stored);
+        Ran::Later
+    }
+
+    fn records_claim(&self, c: &Caller, kind: &str, _key: &[u8], ttl: u64, _l: Later) -> Ran {
+        self.saw(c, "records.claim", kind.as_bytes());
+        Ran::Now(Stored::ready(if ttl == 1 {
+            svc::CLAIM_WON
+        } else {
+            svc::CLAIM_TAKEN
+        }))
+    }
+
+    fn sign(&self, c: &Caller, data: &[u8]) -> Stored {
+        self.saw(c, "sign", data);
+        Stored::ready(0)
+    }
+
+    fn trust_due(&self, c: &Caller) -> Stored {
+        self.saw(c, "trust.due", b"");
+        Stored::ready(0)
     }
 }
 
@@ -86,6 +130,14 @@ fn double() -> Double {
     let wake: &'static InstanceWake = Box::leak(Box::default());
     let dyn_route: Arc<dyn WakeRoute> = route.clone();
     assert!(wake.route.set(Arc::downgrade(&dyn_route)).is_ok());
+    assert!(wake
+        .caller
+        .set(Caller {
+            instance: Arc::from("double"),
+            plugin: Arc::from("double-plugin"),
+            kind: busbar_contract::abi::mechanism::KindCode::Plane,
+        })
+        .is_ok());
     Double {
         route,
         ctx: HostCtx {
@@ -205,7 +257,7 @@ fn a_may_pend_service_from_a_ticketless_op_is_refused() {
         if may_pend(service) {
             assert_eq!(ret.outcome(), Outcome::Refused, "service {service}");
             assert_eq!(error(&o), UNTICKETED, "service {service}");
-        } else if service != op::CLOCK_NOW {
+        } else if !matches!(service, op::CLOCK_NOW | op::SIGN | op::TRUST_DUE) {
             assert_eq!(ret.outcome(), Outcome::Refused, "service {service}");
             assert_eq!(error(&o), UNIMPLEMENTED, "service {service}");
         }
@@ -378,4 +430,123 @@ fn a_recall_reads_the_stored_result_without_running_again() {
 
     store.forget(TICKET);
     assert_eq!(store.held(), 0, "a recycled ticket's results are forgotten");
+}
+
+fn text(s: &'static str) -> AbiStr {
+    AbiStr {
+        ptr: s.as_ptr(),
+        len: s.len(),
+    }
+}
+
+fn claim_in(ttl_ms: u64) -> RecordsClaimIn {
+    RecordsClaimIn {
+        head: head(op::RECORDS_CLAIM, TICKET, 0, size_of::<RecordsClaimIn>()),
+        kind: text("approval"),
+        key: text("k1"),
+        ttl_ms,
+    }
+}
+
+fn call_claim(d: &Double, i: &RecordsClaimIn) -> (RawOutcome, ServiceOut) {
+    let mut o = blank();
+    let ret = HOST_SLOTS.records_claim.unwrap()(d.ctx, std::ptr::from_ref(i).cast(), &mut o);
+    (ret, o)
+}
+
+/// A caller-scoped service called from an instance bind stated no caller for is REFUSED and never
+/// reaches the kernel.
+#[test]
+fn a_caller_scoped_service_with_no_caller_is_refused() {
+    let d = double();
+    let wake: &'static InstanceWake = Box::leak(Box::default());
+    let dyn_route: Arc<dyn WakeRoute> = d.route.clone();
+    assert!(wake.route.set(Arc::downgrade(&dyn_route)).is_ok());
+    let anon = HostCtx {
+        ptr: std::ptr::from_ref(wake).cast_mut().cast(),
+    };
+    let i = claim_in(1);
+    let mut o = blank();
+    let ret = HOST_SLOTS.records_claim.unwrap()(anon, std::ptr::from_ref(&i).cast(), &mut o);
+    assert_eq!(ret.outcome(), Outcome::Refused);
+    assert_eq!(error(&o), NO_CALLER);
+    assert!(d.route.provider.scoped.lock().unwrap().is_empty());
+}
+
+/// A claim with no time to live is refused before it reaches the kernel; there is no default.
+#[test]
+fn a_claim_with_no_time_to_live_is_refused_and_never_runs() {
+    let d = double();
+    let (ret, o) = call_claim(&d, &claim_in(0));
+    assert_eq!(ret.outcome(), Outcome::Refused);
+    assert_eq!(error(&o), NO_TTL);
+    assert!(d.route.provider.scoped.lock().unwrap().is_empty());
+    let (ret, o) = call_claim(&d, &claim_in(1));
+    assert_eq!(ret.outcome(), Outcome::Ready);
+    assert_eq!(o.value, svc::CLAIM_WON);
+    assert!(svc::check_records_claim(&claim_in(1), ret, &o).is_ok());
+}
+
+/// `records.get` hands the kernel the caller bind stated, the kind and the key, and delivers what
+/// it answered into the caller's buffers.
+#[test]
+fn records_get_reaches_the_kernel_as_its_caller_and_delivers_the_record() {
+    let d = double();
+    let mut buf = [0u8; 16];
+    let mut spans = [ItemSpan {
+        key_off: 0,
+        key_len: 0,
+        value_off: 0,
+        value_len: 0,
+    }; 1];
+    let i = RecordsGetIn {
+        head: head(op::RECORDS_GET, TICKET, 0, size_of::<RecordsGetIn>()),
+        kind: text("approval"),
+        key: text("k1"),
+        into: bufs(&mut buf, &mut spans),
+    };
+    let mut o = blank();
+    let ret = HOST_SLOTS.records_get.unwrap()(d.ctx, std::ptr::from_ref(&i).cast(), &mut o);
+    assert_eq!(ret.outcome(), Outcome::Ready);
+    assert_eq!(o.value, svc::FOUND);
+    assert_eq!(&buf[..4], b"k1=v");
+    assert!(svc::check_records_get(&i, ret, &o).is_ok());
+    assert_eq!(
+        d.route.provider.scoped.lock().unwrap().as_slice(),
+        &[("double".to_string(), "records.get", b"approval".to_vec())]
+    );
+}
+
+/// The services that never pend reach the kernel from a ticketless op, as their caller.
+#[test]
+fn sign_and_trust_due_reach_the_kernel_without_a_ticket() {
+    let d = double();
+    let data = b"payload";
+    let i = SignIn {
+        head: head(op::SIGN, Ticket::NONE, 0, size_of::<SignIn>()),
+        data: busbar_contract::abi::mechanism::call::Blob {
+            ptr: data.as_ptr(),
+            len: data.len(),
+            fmt: 0,
+            flags: 0,
+        },
+        into: bufs(&mut [], &mut []),
+    };
+    let mut o = blank();
+    let ret = HOST_SLOTS.sign.unwrap()(d.ctx, std::ptr::from_ref(&i).cast(), &mut o);
+    assert_eq!(ret.outcome(), Outcome::Ready);
+    let due = TrustDueIn {
+        head: head(op::TRUST_DUE, Ticket::NONE, 0, size_of::<TrustDueIn>()),
+        into: bufs(&mut [], &mut []),
+    };
+    let ret = HOST_SLOTS.trust_due.unwrap()(d.ctx, std::ptr::from_ref(&due).cast(), &mut o);
+    assert_eq!(ret.outcome(), Outcome::Ready);
+    let seen = d.route.provider.scoped.lock().unwrap().clone();
+    assert_eq!(
+        seen,
+        vec![
+            ("double".to_string(), "sign", data.to_vec()),
+            ("double".to_string(), "trust.due", Vec::new()),
+        ]
+    );
 }
