@@ -1022,7 +1022,9 @@ fn compute_layout() -> String {
             target_from,
             trust_from,
             answers,
-            answers_len
+            answers_len,
+            claims,
+            claims_len
         ]
     );
     record!(s, MechMarkWord, [class, _reserved, word]);

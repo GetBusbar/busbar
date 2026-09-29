@@ -166,7 +166,6 @@ fn a_candidate_reads_its_facts_off_its_rendering() {
     let c = Candidate::from_rendering(
         stated,
         Some("manifest-alias"),
-        Vec::new(),
         Origin::Dropped {
             file: "f".into(),
             bytes: Arc::new(Vec::new()),
@@ -184,13 +183,55 @@ fn a_candidate_reads_its_facts_off_its_rendering() {
     assert!(Candidate::from_rendering(
         b"not a rendering".to_vec(),
         None,
-        Vec::new(),
         Origin::Dropped {
             file: "f".into(),
             bytes: Arc::new(Vec::new())
         }
     )
     .is_err());
+}
+
+/// A dropped transport is selected by the URL schemes its signed rendering claims: Discover reads
+/// them off the rendering, so nothing is opened to learn them (ARCHITECT ruling 2026-09-29).
+#[test]
+fn a_dropped_transport_is_selected_by_the_claims_its_rendering_states() {
+    const CLAIMS: &[busbar_contract::abi::mechanism::call::AbiStr] =
+        &[abi_str("wss"), abi_str("ws")];
+    let st = busbar_contract::abi::mechanism::door::Statement {
+        kind: KindCode::Transport as u32,
+        claims: CLAIMS.as_ptr(),
+        claims_len: CLAIMS.len(),
+        ..statement("sockets", "1.0.0", 1)
+    };
+    let dropped = |st: &busbar_contract::abi::mechanism::door::Statement| {
+        // SAFETY: the claims are a `'static` array of their stated count.
+        let stated = unsafe { render(st) }.unwrap();
+        Candidate::from_rendering(
+            stated,
+            None,
+            Origin::Dropped {
+                file: "sockets.tar.gz".into(),
+                bytes: Arc::new(Vec::new()),
+            },
+        )
+        .unwrap()
+    };
+    let c = dropped(&st);
+    assert_eq!(c.schemes, vec!["wss".to_string(), "ws".to_string()]);
+    let u = Uses::of(&doc(
+        r#"{"providers": {"up": {"base_url": "wss://u.example"}}}"#,
+    ));
+    let cands = vec![c];
+    assert_eq!(
+        picked(&select(&u, &cands), &cands),
+        vec![("sockets".to_string(), "sockets".to_string())]
+    );
+    // RED: the same transport claiming nothing is not selected.
+    let cands = vec![dropped(&busbar_contract::abi::mechanism::door::Statement {
+        claims_len: 0,
+        ..st
+    })];
+    assert!(select(&u, &cands).is_empty());
 }
 
 fn example_cdylib(name: &str) -> Option<PathBuf> {
@@ -222,7 +263,7 @@ fn the_one_load_binds_each_selected_instance_to_its_own_log_sink() {
         None,
     )
     .unwrap();
-    let linked = Candidate::linked(plug::door, Vec::new()).expect("the linked plane states itself");
+    let linked = Candidate::linked(plug::door).expect("the linked plane states itself");
     assert_eq!(linked.verbs, vec!["door".to_string()]);
     let mut cands = vec![linked.clone()];
     let mut uses = Uses::default();
@@ -291,7 +332,7 @@ fn red_an_instance_that_will_not_bind_is_named() {
     let Some(path) = example_cdylib("plane_door_plugin") else {
         return;
     };
-    let mut c = Candidate::linked(plug::door, Vec::new()).unwrap();
+    let mut c = Candidate::linked(plug::door).unwrap();
     c.origin = Origin::Dropped {
         file: "plane-door.tar.gz".into(),
         bytes: Arc::new(std::fs::read(path).unwrap()),

@@ -74,6 +74,7 @@ const NEEDS: &[Need] = &[Need {
     details: blob(b"{}", BLOB_JSON),
 }];
 const ANSWERS: &[AbiStr] = &[abi_str("status")];
+const CLAIMS: &[AbiStr] = &[abi_str("https"), abi_str("sse")];
 const TAIL: &KindTailHead = &KindTailHead {
     size: 8,
     _reserved: 0,
@@ -107,6 +108,8 @@ fn full() -> Statement {
         trust_from: abi_str("settings.ca"),
         answers: ANSWERS.as_ptr(),
         answers_len: ANSWERS.len(),
+        claims: CLAIMS.as_ptr(),
+        claims_len: CLAIMS.len(),
         ..statement("golden-plugin", "1.2.3", 7)
     }
 }
@@ -179,6 +182,7 @@ fn every_field_changes_the_bytes() {
     push("target_from", &|s| s.target_from = NONE);
     push("trust_from", &|s| s.trust_from = NONE);
     push("answers dropped", &|s| s.answers_len = 0);
+    push("a claim dropped", &|s| s.claims_len = 1);
     // Moving a string between two adjacent fields keeps every byte but the boundary: the length
     // prefixes are what tell them apart.
     push("name/version boundary", &|s| {
@@ -222,6 +226,7 @@ fn a_rendering_reads_back_to_every_fact_it_carries() {
     assert_eq!(r.target_from, "settings.url");
     assert_eq!(r.trust_from, "settings.ca");
     assert_eq!(r.answers, vec!["status".to_string()]);
+    assert_eq!(r.claims, vec!["https".to_string(), "sse".to_string()]);
 }
 
 #[test]

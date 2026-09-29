@@ -184,6 +184,8 @@ static STATEMENT: Shared<Statement> = Shared(Statement {
     trust_from: NO_STR,
     answers: std::ptr::null(),
     answers_len: 0,
+    claims: std::ptr::null(),
+    claims_len: 0,
 });
 
 static OPS: Shared<OpsHead> = Shared(OpsHead {

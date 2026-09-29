@@ -33,6 +33,7 @@
 //! target_from      str
 //! trust_from       str
 //! answers          list of str
+//! claims           list of str
 //!
 //! str   = u32 length, then the bytes
 //! list  = u32 count, then each item
@@ -205,6 +206,11 @@ pub unsafe fn render(st: &Statement) -> Result<Vec<u8>, TooLong> {
         for a in answers {
             o.str(*a, "answer")?;
         }
+        let claims = items(st.claims, st.claims_len);
+        o.len(claims.len(), "claims")?;
+        for c in claims {
+            o.str(*c, "claim")?;
+        }
     }
     Ok(o.0)
 }
@@ -299,6 +305,8 @@ pub struct Read {
     pub trust_from: String,
     /// Its declared answers.
     pub answers: Vec<String>,
+    /// The URL schemes it claims.
+    pub claims: Vec<String>,
 }
 
 /// Why a rendering could not be read back: the byte offset and what was expected there.
@@ -439,6 +447,7 @@ pub fn read(bytes: &[u8]) -> Result<Read, Unreadable> {
     let target_from = i.str("target_from")?;
     let trust_from = i.str("trust_from")?;
     let answers = i.strs("answers")?;
+    let claims = i.strs("claims")?;
     if i.at != bytes.len() {
         return Err(Unreadable {
             at: i.at,
@@ -466,6 +475,7 @@ pub fn read(bytes: &[u8]) -> Result<Read, Unreadable> {
         target_from,
         trust_from,
         answers,
+        claims,
     })
 }
 

@@ -570,6 +570,9 @@ pub unsafe fn check_statement(st: &Statement) -> Result<(), Fault> {
     for a in unsafe { list(st.answers, st.answers_len, "statement.answers") }? {
         named(*a, "statement.answer")?;
     }
+    for c in unsafe { list(st.claims, st.claims_len, "statement.claims") }? {
+        named(*c, "statement.claim")?;
+    }
     Ok(())
 }
 

@@ -188,7 +188,7 @@ pub struct Candidate {
     pub sugar: Vec<String>,
     /// Its declaring sections (a plane's verbs).
     pub verbs: Vec<String>,
-    /// The URL schemes it claims (a transport's claims).
+    /// The URL schemes it claims (its Statement's claims; a transport's).
     pub schemes: Vec<String>,
     /// Its Statement rendering: what [`load`] admits it against.
     pub stated: Vec<u8>,
@@ -197,8 +197,9 @@ pub struct Candidate {
 }
 
 impl Candidate {
-    /// The candidate a Statement rendering states. `alias` is a dropped plugin's manifest alias;
-    /// `schemes` the claims a transport states in its kind tail.
+    /// The candidate a Statement rendering states. `alias` is a dropped plugin's manifest alias. The
+    /// URL schemes a transport claims are the rendering's own `claims`: read off the signed
+    /// manifest, never off an opened plugin.
     ///
     /// # Errors
     ///
@@ -206,7 +207,6 @@ impl Candidate {
     pub fn from_rendering(
         stated: Vec<u8>,
         alias: Option<&str>,
-        schemes: Vec<String>,
         origin: Origin,
     ) -> Result<Self, String> {
         let r: Read = read(&stated).map_err(|e| {
@@ -237,7 +237,7 @@ impl Candidate {
                 .filter(|(_, flags)| flags & SECTION_DECLARING != 0)
                 .map(|(name, _)| name.clone())
                 .collect(),
-            schemes,
+            schemes: r.claims,
             name: r.name,
             stated,
             origin,
@@ -249,9 +249,9 @@ impl Candidate {
     /// # Errors
     ///
     /// As [`Candidate::from_rendering`].
-    pub fn linked(door: DoorFn, schemes: Vec<String>) -> Result<Self, String> {
+    pub fn linked(door: DoorFn) -> Result<Self, String> {
         let row = LinkedRow::of(door).map_err(|e| e.to_string())?;
-        Self::from_rendering(row.statement.clone(), None, schemes, Origin::Linked(row))
+        Self::from_rendering(row.statement.clone(), None, Origin::Linked(row))
     }
 
     /// Whether config names this plugin by `word` (its name or an alias).

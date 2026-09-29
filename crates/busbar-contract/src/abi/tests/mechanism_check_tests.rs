@@ -357,6 +357,7 @@ fn the_sdk_statement_states_no_marks_rewrites_sections_needs_paths_or_answers() 
     assert_eq!(st.target_from.len, 0);
     assert_eq!(st.trust_from.len, 0);
     assert!(st.answers.is_null() && st.answers_len == 0);
+    assert!(st.claims.is_null() && st.claims_len == 0);
     // SAFETY: every list is NULL with a zero count.
     assert_eq!(unsafe { check_statement(&st) }, Ok(()));
 }
@@ -379,6 +380,7 @@ fn a_statement_list_is_checked_whole_and_a_null_list_with_a_count_is_fault() {
         ("statement.sections", |s| s.sections_len = 1),
         ("statement.needs", |s| s.needs = core::ptr::null()),
         ("statement.answers", |s| s.answers_len = 1),
+        ("statement.claims", |s| s.claims_len = 1),
         ("statement.target_from", |s| s.target_from.len = 1),
     ] {
         let mut bad = st;

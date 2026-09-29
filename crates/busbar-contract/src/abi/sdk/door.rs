@@ -533,7 +533,7 @@ pub const fn abi_str(s: &'static str) -> AbiStr {
 }
 
 /// A Statement naming the plugin, with no families, no diagnostic ids, no kind tail, no
-/// extensions, no marks, no rewrites, no sections, no needs, no settings paths and no answers. Its `size`, `kind` and `kind_abi` are stamped by [`plugin_door!`](crate::plugin_door)
+/// extensions, no marks, no rewrites, no sections, no needs, no settings paths, no answers and no claims. Its `size`, `kind` and `kind_abi` are stamped by [`plugin_door!`](crate::plugin_door)
 /// ([`stamp`]); a plugin extends it with struct-update syntax.
 #[must_use]
 pub const fn statement(name: &'static str, version: &'static str, max_inflight: u32) -> Statement {
@@ -566,6 +566,8 @@ pub const fn statement(name: &'static str, version: &'static str, max_inflight: 
         trust_from: ABSENT,
         answers: ptr::null::<AbiStr>(),
         answers_len: 0,
+        claims: ptr::null::<AbiStr>(),
+        claims_len: 0,
     }
 }
 

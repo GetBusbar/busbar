@@ -135,6 +135,11 @@ pub struct Statement {
     pub answers: *const AbiStr,
     /// How many.
     pub answers_len: usize,
+    /// The URL schemes it claims (a transport's claims; every other kind states none). Select reads
+    /// them off the signed rendering, so a dropped transport is chosen without being opened.
+    pub claims: *const AbiStr,
+    /// How many.
+    pub claims_len: usize,
 }
 
 // ── THE MARKS, REWRITES AND SECTIONS a Statement carries ────────────────────────────────────────

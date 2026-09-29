@@ -62,7 +62,7 @@ pub fn discover(registry: &PluginRegistry) -> Result<Vec<Candidate>, String> {
             bytes: Arc::new(row.lib_bytes.clone()),
         };
         out.push(
-            Candidate::from_rendering(stated, Some(&row.manifest.alias), Vec::new(), origin)
+            Candidate::from_rendering(stated, Some(&row.manifest.alias), origin)
                 .map_err(|e| format!("plugin '{}': {e}", row.manifest.name))?,
         );
     }
