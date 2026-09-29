@@ -8,7 +8,7 @@
 //! If only busbar can verify busbar's chain then the chain is a CLAIM, not evidence. An auditor who
 //! has to run our binary to check our records has checked nothing they could not have checked by
 //! asking us. So the exact field order, the exact framing and the exact spelling of every value are
-//! a versioned public contract, written down at `docs/audit-chain-digest-v2.md`, and reproduced by
+//! a versioned public contract, written down at `docs/audit-chain-digest-v3.md`, and reproduced by
 //! a verifier that has never seen this repository.
 //!
 //! This module is what makes that promise checkable instead of aspirational. It is the ONE place
@@ -35,13 +35,48 @@
 /// The recipe's version name. Goes in every published body so a verifier never has to guess which
 /// rules to apply, and so a future recipe can exist beside this one instead of replacing it.
 ///
-/// `v2` is `v1` less the three priced figures (`pre_tier`, `priced`, `hooks[].priced_delta`) —
-/// the record stores counts, and price is read-time (#43, #71). `v1` is not rewritten: its page,
-/// `docs/audit-chain-digest-v1.md`, stays published beside this one, so a v1 body anybody pulled
-/// still verifies by the rules it was sealed under. No v1 record is retained by a node (the journal
-/// keeps a projection, not the record), and no released build sealed one: the fixed record is
-/// 1.6.0-new.
-pub const DIGEST_RECIPE: &str = "busbar.audit.digest.v2";
+/// `v3` is `v2` less `currency` (#34, OWNER 2026-09-29: remove and migrate). Money is unitless
+/// abstract cost (#66: no currency type and no symbol), so a denomination in the signed preimage
+/// was a claim the node does not make. `v2` is not rewritten: its page,
+/// `docs/audit-chain-digest-v2.md`, stays published beside this one, and a record sealed under it
+/// carries [`Recipe::V2`] with the text it digested, so it still verifies by the rules it was sealed
+/// under. `v2` is `v1` less the three priced figures (`pre_tier`, `priced`,
+/// `hooks[].priced_delta`); `v1` stays published too, and no node retains a `v1` record.
+pub const DIGEST_RECIPE: &str = "busbar.audit.digest.v3";
+
+/// The name of the recipe before [`DIGEST_RECIPE`]: `v3` plus `currency`.
+pub const DIGEST_RECIPE_V2: &str = "busbar.audit.digest.v2";
+
+/// WHICH RECIPE A RECORD WAS SEALED UNDER — and so the rules it verifies by.
+///
+/// A record carries this rather than the chain, because a chain that crossed a recipe change holds
+/// records of both, and each verifies only by its own rules. It is not itself digested and does not
+/// need to be: moving a record between the arms changes the field list (a `v2` record relabelled
+/// `v3` loses a field, a `v3` record relabelled `v2` gains one), so the relabelled record no longer
+/// hashes to its sealed digest.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Recipe {
+    /// `busbar.audit.digest.v2`, which digested a `currency` text between `fee_count` and
+    /// `rate_card_version`. The text is kept HERE, as the preimage byte the record was sealed
+    /// over, and nowhere else: no price reads it and no new record carries it.
+    V2 {
+        /// The text the `v2` preimage framed in the `currency` position.
+        currency: String,
+    },
+    /// `busbar.audit.digest.v3`: every record this build seals.
+    V3,
+}
+
+impl Recipe {
+    /// The published name of this recipe.
+    #[must_use]
+    pub fn name(&self) -> &'static str {
+        match self {
+            Recipe::V2 { .. } => DIGEST_RECIPE_V2,
+            Recipe::V3 => DIGEST_RECIPE,
+        }
+    }
+}
 
 /// One value as the digest consumes it.
 ///
@@ -90,7 +125,9 @@ impl DigestField {
 /// EVERY FIELD THAT GOES INTO ONE RECORD'S DIGEST, IN ORDER.
 ///
 /// This is the recipe. `digest_of` hashes exactly this, the range read publishes exactly this, and
-/// the document at `docs/audit-chain-digest-v2.md` describes exactly this.
+/// the document at `docs/audit-chain-digest-v3.md` describes exactly this — for a record sealed
+/// under [`Recipe::V3`]. A record sealed under [`Recipe::V2`] gets the `v2` list, which
+/// `docs/audit-chain-digest-v2.md` describes.
 ///
 /// The repeated groups — the usage lines, the hooks that ran, the child units — are each preceded
 /// by their COUNT, which is what stops two different groupings from digesting identically. Their
@@ -181,7 +218,10 @@ pub fn digest_fields(record: &crate::record::AuditRecord) -> Vec<DigestField> {
         "fee_count",
         u64::from(record.usage.fee_count),
     ));
-    f.push(DigestField::text("currency", record.usage.currency.clone()));
+    // `v2` framed a `currency` text here; `v3` does not (#34).
+    if let Recipe::V2 { currency } = &record.recipe {
+        f.push(DigestField::text("currency", currency.clone()));
+    }
     f.push(DigestField::num(
         "rate_card_version",
         record.usage.rate_card_version,

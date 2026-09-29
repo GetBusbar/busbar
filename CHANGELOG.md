@@ -494,6 +494,12 @@ identically, and every 1.5.5 key and minted secret carries over.
 - 1.6.0 Changed: every audit entry carries its `scheme`, the signing scheme of the record.
   `GET /api/v1/admin/audit` items gain `scheme`, and `openapi.json` marks it required.
   **Migration:** none; every 1.5.5 member is unchanged.
+- 1.6.0 Changed: a newly sealed audit record signs under `busbar.audit.digest.v3`, which drops `currency` from the digest.
+  Money is unitless abstract cost, so the signed preimage no longer names a denomination. A record
+  already sealed keeps verifying under `busbar.audit.digest.v2`, and every record in
+  `GET /api/v1/admin/audit/range` names its own recipe in a `recipe` member;
+  `docs/audit-chain-digest-v3.md` publishes the new field order beside the v2 page. **Migration:**
+  a third-party verifier adds the v3 order (v2 less `currency`); no stored record is rewritten.
 - 1.6.0 Changed: a request served before a rate-card edit keeps the price of the card in force when it arrived.
   1.5.5 priced every row of `GET /api/v1/admin/usage` at the card current at read time, so a card
   edited to one micro-unit per token made requests served earlier under a dearer card read 18

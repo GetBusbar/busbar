@@ -14,7 +14,7 @@
 //! not evidence, which is the whole of why the recipe is published at all.
 //!
 //! So the check here rebuilds the digest preimage from the PUBLISHED ARTIFACTS ONLY: the field
-//! table in `docs/audit-chain-digest-v2.md`, and the worked example and key set that document
+//! table in `docs/audit-chain-digest-v3.md`, and the worked example and key set that document
 //! quotes. It frames them itself, hashes them itself, and compares against the digest the document
 //! and the build each claim.
 //!
@@ -38,7 +38,7 @@ use sha2::{Digest as _, Sha256};
 
 /// Where the published contract lives. The ONE input this check is allowed to trust.
 fn published_spec() -> String {
-    published_page("audit-chain-digest-v2.md")
+    published_page("audit-chain-digest-v3.md")
 }
 
 /// One published recipe page, by file name.
@@ -259,9 +259,45 @@ fn the_v1_page_is_kept_and_v2_is_v1_less_the_three_priced_fields() {
         .collect();
     assert_eq!(v1_less_priced.len() + priced.len(), v1_order.len());
     assert_eq!(
-        published_field_order(&published_spec()),
+        published_field_order(&published_page("audit-chain-digest-v2.md")),
         v1_less_priced,
         "the v2 page is not the v1 page less exactly the three priced fields"
+    );
+}
+
+/// THE V2 PAGE STILL CHECKS OUT ON ITS OWN TERMS, AND V3 IS V2 LESS `currency` (#34).
+///
+/// `v3` was published BESIDE `v2`: a record sealed under `v2` is checked by the `v2` page, so that
+/// page must stay followable — its table reproduces its own example's digest, its example still
+/// names `v2` — and the `v3` table is the `v2` table with exactly `currency` taken out, in the same
+/// order and kinds. Read off the two pages, never off the code.
+#[test]
+fn the_v2_page_is_kept_and_v3_is_v2_less_currency() {
+    let v2 = published_page("audit-chain-digest-v2.md");
+    let v2_order = published_field_order(&v2);
+    let v2_record = &spec_json_block(&v2, 0)["records"][0];
+    assert_eq!(
+        digest_from_published(&v2_order, v2_record),
+        v2_record["hash"]
+            .as_str()
+            .expect("the v2 example carries its digest"),
+        "the v2 page no longer reproduces its own example — a v2 record could not be verified"
+    );
+    assert_eq!(
+        spec_json_block(&v2, 0)["recipe"].as_str(),
+        Some("busbar.audit.digest.v2")
+    );
+
+    let v2_less_currency: Vec<_> = v2_order
+        .iter()
+        .filter(|(name, _)| name != "currency")
+        .cloned()
+        .collect();
+    assert_eq!(v2_less_currency.len() + 1, v2_order.len());
+    assert_eq!(
+        published_field_order(&published_spec()),
+        v2_less_currency,
+        "the v3 page is not the v2 page less exactly `currency`"
     );
 }
 
