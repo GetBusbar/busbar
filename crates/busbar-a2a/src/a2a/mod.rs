@@ -532,44 +532,19 @@ pub(crate) fn admin_routes(
 }
 
 /// THE A2A TRUST VERBS' OpenAPI FRAGMENT — the two admin paths keyed absolute, merged into the admin
-/// document. Kept beside the routes that answer them so the two cannot drift.
+/// document. The plane states the fragment once (`door::openapi_fragment`); the
+/// engine keys it under the kernel's admin mount.
 // Read only by the OpenAPI generator (feature `openapi-schema`) and the non-vacuity floor test.
 #[cfg_attr(not(any(test, feature = "openapi-schema")), allow(dead_code))]
 pub(crate) fn openapi_fragment() -> serde_json::Value {
-    let ap = |rel: &str| format!("{}{rel}", busbar_kernel::api::ADMIN_PREFIX);
-    serde_json::json!({
-        ap("/agents/{name}/connect"): {
-            "post": {
-                "summary": "Fetch a registered agent's card, verify it against the operator's out-of-band root, and report the fingerprint. Approves nothing and writes nothing",
-                "security": [{"adminToken": []}],
-                "parameters": [{
-                    "name": "name", "in": "path", "required": true,
-                    "schema": {"type": "string"}
-                }],
-                "responses": {
-                    "200": {"description": "OK (the derived trust state and the fingerprint a human is being asked to approve; a card that could not be authenticated is still a 200 — the reason is in `failure` and the state is `error`)"},
-                }
-            }
-        },
-        ap("/agents/{name}/approve"): {
-            "post": {
-                "summary": "Lock a registered agent to the card fingerprint the operator has SEEN. The card is re-fetched and re-verified, and an approval naming any other fingerprint is refused",
-                "security": [{"adminToken": []}],
-                "parameters": [{
-                    "name": "name", "in": "path", "required": true,
-                    "schema": {"type": "string"}
-                }],
-                "responses": {
-                    "200": {"description": "OK (the registration's state AFTER the approval, read off the live registry)"},
-                }
-            }
-        }
-    })
+    door::openapi_fragment(busbar_kernel::api::ADMIN_PREFIX)
 }
 
 /// The plane crate's `a2a` modules (the `agents:` grammar, the credential types), which the
 /// host-side modules below re-export under their own paths.
 pub(crate) use busbar_plane_a2a::a2a as plane_crate;
+/// The plane's door: the facts it states once, which the engine reads rather than restates.
+pub(crate) use busbar_plane_a2a::door;
 
 pub mod admin_view;
 /// MOVED to `busbar-plane-a2a` (the wire dialect, #39), re-exported here under its old in-crate path
@@ -643,3 +618,7 @@ pub use busbar_plane_a2a::a2a::task;
 pub(crate) mod transport;
 pub mod verbs;
 pub(crate) mod verify;
+
+#[cfg(test)]
+#[path = "tests/door_pin_tests.rs"]
+mod door_pin_tests;

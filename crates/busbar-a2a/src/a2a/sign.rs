@@ -59,17 +59,16 @@ use super::canonical::canonicalize;
 use super::card::{signing_payload, CardError};
 use super::jws::B64URL;
 
-/// The domain string the card-signing subkey is derived under. Versioned, so a future change to the
-/// derivation is a NEW key rather than a silently different one under the same name.
-pub(crate) const CARD_SIGNING_DOMAIN: &str = "a2a/agent-card-signing/v1";
-
-/// The `kid` PREFIX busbar stamps into every card signature, prepended to the token signer's own kid.
+/// The domain string the card-signing subkey is derived under, and the `kid` PREFIX busbar stamps
+/// into every card signature, stated once by the door.
 ///
-/// Prefixed rather than reused bare, because a `kid` that read `k1` on both a token and a card
-/// would tell an operator that one key signs both — which is exactly the thing the derivation
-/// exists to make untrue. Declared on this plane's `PlaneDecl` (`card_kid_prefix`) so the host builds
-/// the published issuer `kid` (`GovState::card_issuer`) from it without naming this plane.
-pub(crate) const CARD_KID_PREFIX: &str = "busbar-a2a-card-";
+/// The domain is versioned, so a future change to the derivation is a NEW key rather than a
+/// silently different one under the same name. The prefix is prepended to the token signer's own
+/// kid rather than reusing it bare, because a `kid` that read `k1` on both a token and a card would
+/// tell an operator that one key signs both — which is exactly the thing the derivation exists to
+/// make untrue. Declared on this plane's `PlaneDecl` (`card_kid_prefix`) so the host builds the
+/// published issuer `kid` (`GovState::card_issuer`) from it without naming this plane.
+pub(crate) use super::door::{CARD_KID_PREFIX, CARD_SIGNING_DOMAIN};
 
 /// Why a card could not be signed.
 #[derive(Clone, Debug, PartialEq, Eq)]
