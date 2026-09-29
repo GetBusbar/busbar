@@ -81,6 +81,7 @@ pub mod kernel;
 pub mod keyset;
 pub mod ledger_identity;
 pub mod linked;
+pub(crate) mod loader;
 pub mod migration;
 pub mod otlp;
 #[cfg(feature = "plane-decisions")]

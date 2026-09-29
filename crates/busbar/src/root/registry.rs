@@ -88,7 +88,7 @@
 //!
 //! The rows are the linked wires (`LINKED.transports`, manifest order) followed by the wires
 //! DROPPED INTO `plugins.dir` (scan order), each admitted over the HOT-tier ABI by the loader and
-//! presented as a `Transport` by its adapter (`busbar_plugin_loader::WireTransport`) — #2 rule (1):
+//! presented as a `Transport` by its adapter (`crate::root::loader::WireTransport`) — #2 rule (1):
 //! one contract, one loading path; #3: a transport is swappable, compiled in OR dropped in. The
 //! fold does not ask which door a row came in by, except to build it.
 //!
@@ -105,11 +105,11 @@
 
 use std::sync::Arc;
 
+use crate::root::loader::{DynTransport, WireTransport};
 use busbar_contract::transport::TransportSettings;
 use busbar_contract::{check_composition, CompositionError, Plugin, Registered, Transport};
 use busbar_core_admin::admin_codec::AdminPlane;
 use busbar_kernel::registry::{seal_claims, ClaimConflict, PlaneClaim, Registry, ResolvedOverlap};
-use busbar_plugin_loader::{DynTransport, WireTransport};
 
 use crate::root::linked::{Linked, LinkedClaims, LinkedTransport};
 

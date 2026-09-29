@@ -12,7 +12,7 @@
 
 use std::sync::{Arc, OnceLock};
 
-use busbar_plugin_loader::dispatch::{DispatchConfig, Dispatcher};
+use crate::root::loader::dispatch::{DispatchConfig, Dispatcher};
 
 static DISPATCHER: OnceLock<Arc<Dispatcher>> = OnceLock::new();
 

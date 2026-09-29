@@ -25,7 +25,7 @@
 //! - There is NO off-node import/export CLI: the owner cut `export_keyset`, so an import would have
 //!   no source.
 //!
-//! [`STORE_ABI_WITH_NEW_OPS`]: busbar_plugin_loader::store_adapter::STORE_ABI_WITH_NEW_OPS
+//! [`STORE_ABI_WITH_NEW_OPS`]: crate::root::loader::store_adapter::STORE_ABI_WITH_NEW_OPS
 
 use std::path::{Path, PathBuf};
 

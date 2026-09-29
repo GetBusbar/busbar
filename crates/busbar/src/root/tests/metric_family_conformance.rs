@@ -22,8 +22,8 @@
 
 use super::tests::{dropped, linked, LINKED_HOT};
 use super::*;
+use crate::root::loader::HotDeclStr;
 use busbar_kernel::plane::registry::TestRegistryIsolation;
-use busbar_plugin_loader::HotDeclStr;
 
 /// The carried family the example plane declares.
 const FAMILY: &str = "busbar_billing_tap_decode_fail_total";

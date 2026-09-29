@@ -23,11 +23,11 @@
 //! one function, the equality tests below go red for the same reason that arm is unequal.
 
 use super::*;
+use crate::root::loader::sign::{DiagnosticDecl, SigningKey, TrustPolicy};
+use crate::root::loader::PluginRegistry;
 use crate::root::test_plugins;
 use busbar_kernel::plane::registry::{merged_boot_plane_decls, BuildCtx};
 use busbar_plugin_example_plane::PLANE_DECL as LINKED_DECL;
-use busbar_plugin_loader::sign::{DiagnosticDecl, SigningKey, TrustPolicy};
-use busbar_plugin_loader::PluginRegistry;
 
 /// The linked example plane, as the build table carries it.
 pub(super) static LINKED_HOT: [&HotPlaneDecl; 1] = [&LINKED_DECL];
@@ -187,7 +187,7 @@ fn a_linked_and_a_dropped_in_plane_install_byte_identical_rows() {
     );
 
     // Not vacuous: the plane's row is there, after the linked row, and says what the plane declares.
-    let plane = busbar_plugin_loader::link_plane(&LINKED_DECL, "reference").unwrap();
+    let plane = crate::root::loader::link_plane(&LINKED_DECL, "reference").unwrap();
     assert_eq!(linked_arm.len(), 2, "{linked_arm:#?}");
     assert!(
         linked_arm[0].contains("key: \"neutral\""),
@@ -227,14 +227,14 @@ fn dropped_again() -> Vec<DynPlane> {
 }
 
 /// The `PlaneDeclaration` a decl STATES — every field, mapped here from what the loader's admission
-/// read off the decl (`link_plane`; `busbar-plugin-loader`'s `plane_conformance_tests` hold that read
+/// read off the decl (`link_plane`; the loader's `plane_conformance_tests` hold that read
 /// to the raw `#[repr(C)]` static, field for field) — with no adapter in between. The yardstick the
 /// installed row is held to: an adapter that dropped or defaulted any one field disagrees with it.
 fn stated(d: &'static HotPlaneDecl) -> PlaneDeclaration {
     let plane: &'static DynPlane = Box::leak(Box::new(
-        busbar_plugin_loader::link_plane(d, "yardstick").expect("the decl is admitted"),
+        crate::root::loader::link_plane(d, "yardstick").expect("the decl is admitted"),
     ));
-    let h: &'static busbar_plugin_loader::HotDeclaration = plane.declaration();
+    let h: &'static crate::root::loader::HotDeclaration = plane.declaration();
     let strs = |v: &'static [String]| -> &'static [&'static str] {
         v.iter().map(|x| x.as_str()).collect::<Vec<_>>().leak()
     };
@@ -292,8 +292,8 @@ fn stated(d: &'static HotPlaneDecl) -> PlaneDeclaration {
 fn a_fallback_plane_that_signs_nothing_installs_exactly_that() {
     let variant: &'static HotPlaneDecl = Box::leak(Box::new(HotPlaneDecl {
         fallback: 1,
-        signing_domain: busbar_plugin_loader::HotDeclStr::NONE,
-        signing_kid_prefix: busbar_plugin_loader::HotDeclStr::NONE,
+        signing_domain: crate::root::loader::HotDeclStr::NONE,
+        signing_kid_prefix: crate::root::loader::HotDeclStr::NONE,
         ..LINKED_DECL
     }));
     let table: &'static [&'static HotPlaneDecl] = Box::leak(Box::new([variant]));
@@ -312,7 +312,7 @@ fn a_plane_whose_key_is_taken_is_skipped_the_same_way_by_either_door() {
         eprintln!("skip: example plane cdylib not built");
         return;
     };
-    let key = busbar_plugin_loader::link_plane(&LINKED_DECL, "reference")
+    let key = crate::root::loader::link_plane(&LINKED_DECL, "reference")
         .unwrap()
         .name()
         .to_string();
@@ -557,7 +557,7 @@ async fn serve_arm() {
             .unwrap(),
     )
     .await;
-    let over = busbar_plugin_loader::MAX_PLANE_REPLY_LEN + 1;
+    let over = crate::root::loader::MAX_PLANE_REPLY_LEN + 1;
     let streamed = answered(
         &router,
         axum::http::Request::builder()
@@ -826,7 +826,7 @@ fn a_linked_and_a_dropped_in_plane_serve_one_request_identically() {
                 "x-example-id: 5a5a5a5a5a5a5a5a",
             ],
             "known_len": null,
-            "body": { "len": busbar_plugin_loader::MAX_PLANE_REPLY_LEN + 1, "pattern": true },
+            "body": { "len": crate::root::loader::MAX_PLANE_REPLY_LEN + 1, "pattern": true },
         }),
         "{linked:#}"
     );
@@ -1029,7 +1029,7 @@ fn a_first_party_plugins_declared_codes_join_the_catalogue_and_nothing_else_does
 #[cfg(linked_egress)]
 #[test]
 fn the_egress_carrier_refuses_what_the_host_policy_refuses() {
-    use busbar_plugin_loader::{EgressCarrier as _, HostResult, HttpRequest};
+    use crate::root::loader::{EgressCarrier as _, HostResult, HttpRequest};
     for url in [
         "http://collector.example/v1",
         "https://127.0.0.1:9/v1",
@@ -1069,7 +1069,7 @@ fn the_egress_carrier_refuses_what_the_host_policy_refuses() {
 #[cfg(linked_egress)]
 #[tokio::test(flavor = "multi_thread")]
 async fn the_collector_policy_carries_octets_to_a_loopback_collector_and_nothing_else() {
-    use busbar_plugin_loader::{EgressCarrier as _, EgressPolicy, HostResult, HttpRequest};
+    use crate::root::loader::{EgressCarrier as _, EgressPolicy, HostResult, HttpRequest};
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await

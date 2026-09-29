@@ -29,6 +29,8 @@
 
 use std::sync::Arc;
 
+use crate::root::loader::{DynPlane, HotHostVtable, HotPlaneDecl, RouteAuth, RouteMethod};
+use crate::root::loader::{HotStatusClass as StatusClass, ServedPlane};
 use busbar_contract::ids::OpClassId;
 use busbar_contract::plane::{MetricFamily, ServedOpClass};
 use busbar_kernel::ingress::arrival::{BodyIngressEntry, PathIngressEntry};
@@ -37,8 +39,6 @@ use busbar_kernel::plane::registry::{BillableClass, BuildCtx, PlaneDeclaration, 
 use busbar_kernel::plane::PlaneAdmission;
 use busbar_kernel::plane_host::{EngineHost, LiveHostFactory};
 use busbar_kernel::plane_routes::{PlaneReqCtx, PlaneResponse, PlaneRouteSpec};
-use busbar_plugin_loader::{DynPlane, HotHostVtable, HotPlaneDecl, RouteAuth, RouteMethod};
-use busbar_plugin_loader::{HotStatusClass as StatusClass, ServedPlane};
 
 /// A provider composition step, captured off the resolved configuration before the app is built and
 /// run once the deployment's secret resolver exists.
@@ -185,12 +185,12 @@ pub type LinkedExport = (
     &'static str,
     &'static str,
     &'static str,
-    &'static busbar_plugin_loader::ColdEntry,
+    &'static crate::root::loader::ColdEntry,
 );
 
 /// The newest export payload schema this binary speaks — what a linked sink states.
 fn export_abi() -> u32 {
-    let supported = busbar_plugin_loader::supported_abi("export");
+    let supported = crate::root::loader::supported_abi("export");
     supported.iter().copied().max().unwrap_or_default()
 }
 
@@ -199,16 +199,16 @@ fn export_abi() -> u32 {
 /// `signature`, which describe a file a linked row does not have.
 pub fn linked_exports(
     exports: &[LinkedExport],
-) -> Result<Vec<busbar_plugin_loader::LinkedPlugin>, String> {
+) -> Result<Vec<crate::root::loader::LinkedPlugin>, String> {
     let row = |&(name, alias, declares, entry): &LinkedExport| {
         let declares = serde_json::from_str(declares)
             .map_err(|e| format!("linked export '{name}': its declares section: {e}"))?;
-        let manifest = busbar_plugin_loader::sign::Manifest {
+        let manifest = crate::root::loader::sign::Manifest {
             name: name.into(),
             alias: alias.into(),
             kind: "export".into(),
             version: env!("CARGO_PKG_VERSION").into(),
-            publisher: busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER.into(),
+            publisher: crate::root::loader::sign::FIRST_PARTY_PUBLISHER.into(),
             abi_version: export_abi(),
             sha256: String::new(),
             signature: String::new(),
@@ -221,9 +221,7 @@ pub fn linked_exports(
             host: None,
             declares,
         };
-        Ok(busbar_plugin_loader::LinkedPlugin::boundary(
-            manifest, entry,
-        ))
+        Ok(crate::root::loader::LinkedPlugin::boundary(manifest, entry))
     };
     exports.iter().map(row).collect()
 }
@@ -346,7 +344,7 @@ pub fn plane_rows(
     let mut hot = linked
         .hot_planes
         .iter()
-        .map(|decl| busbar_plugin_loader::link_plane(decl, "linked plane"))
+        .map(|decl| crate::root::loader::link_plane(decl, "linked plane"))
         .collect::<Result<Vec<DynPlane>, String>>()?;
     hot.extend(dropped);
     // The HOT-lane planes live as long as the process, as a linked plane's image does, and so do the
@@ -624,11 +622,11 @@ enum Emitted {
 /// How many streamed chunks may wait for the caller before the plane's next `emit_body` blocks.
 const HOT_STREAM_DEPTH: usize = 8;
 
-/// The dispatching thread's [`busbar_plugin_loader::ReplyStream`]: each event goes to the caller's
+/// The dispatching thread's [`crate::root::loader::ReplyStream`]: each event goes to the caller's
 /// response; `false` once the caller went away.
 struct ToCaller(tokio::sync::mpsc::Sender<Emitted>);
 
-impl busbar_plugin_loader::ReplyStream for ToCaller {
+impl crate::root::loader::ReplyStream for ToCaller {
     fn head(&mut self, status: Option<u16>, headers: &[(Vec<u8>, Vec<u8>)]) -> bool {
         self.0
             .blocking_send(Emitted::Head(status, headers.to_vec()))
@@ -674,7 +672,7 @@ struct Held {
     cap: usize,
 }
 
-impl busbar_plugin_loader::ReplyStream for Held {
+impl crate::root::loader::ReplyStream for Held {
     fn head(&mut self, status: Option<u16>, headers: &[(Vec<u8>, Vec<u8>)]) -> bool {
         self.head = Some((status, headers.to_vec()));
         true
@@ -726,7 +724,7 @@ fn live_response(
 }
 
 /// A buffered answer: the plane's stated head on `Ok`, else its class status (see [`hot_response`]).
-fn buffered_response(reply: busbar_plugin_loader::HotReply) -> PlaneResponse {
+fn buffered_response(reply: crate::root::loader::HotReply) -> PlaneResponse {
     let body = axum::body::Body::from(reply.body);
     match (reply.class, reply.status) {
         (StatusClass::Ok, Some(status)) => hot_response(status, Some(&reply.headers), body),
@@ -756,15 +754,13 @@ async fn hot_answer_blocking(ctx: PlaneReqCtx) -> PlaneResponse {
     if let Some(Emitted::Head(status, headers)) = rx.recv().await {
         return live_response(status, &headers, rx);
     }
-    let reply = run
-        .await
-        .unwrap_or_else(|_| busbar_plugin_loader::HotReply {
-            class: StatusClass::Fault,
-            status: None,
-            headers: Vec::new(),
-            body: Vec::new(),
-            streamed: false,
-        });
+    let reply = run.await.unwrap_or_else(|_| crate::root::loader::HotReply {
+        class: StatusClass::Fault,
+        status: None,
+        headers: Vec::new(),
+        body: Vec::new(),
+        streamed: false,
+    });
     buffered_response(reply)
 }
 
@@ -804,8 +800,8 @@ fn hot_response(
 /// larger than the reply buffer goes to `stream` (DEC-SERVE G2).
 fn hot_dispatch(
     ctx: &PlaneReqCtx,
-    stream: &mut dyn busbar_plugin_loader::ReplyStream,
-) -> busbar_plugin_loader::HotReply {
+    stream: &mut dyn crate::root::loader::ReplyStream,
+) -> crate::root::loader::HotReply {
     let slot = ctx.slot.downcast_ref::<HotSlot>();
     let handle = ctx.engine.downcast_ref::<busbar_kernel::state::AppHandle>();
     let headers: Vec<(&[u8], &[u8])> = ctx
@@ -813,14 +809,14 @@ fn hot_dispatch(
         .iter()
         .map(|(name, value)| (name.as_str().as_bytes(), value.as_bytes()))
         .collect();
-    let head = busbar_plugin_loader::RequestHead {
+    let head = crate::root::loader::RequestHead {
         method: ctx.method.as_str().as_bytes(),
         path: ctx.uri.path().as_bytes(),
         query: ctx.uri.query().unwrap_or_default().as_bytes(),
         headers: &headers,
     };
     let (Some(slot), Some(handle)) = (slot, handle) else {
-        return busbar_plugin_loader::HotReply {
+        return crate::root::loader::HotReply {
             class: StatusClass::Fault,
             status: None,
             headers: Vec::new(),
@@ -881,9 +877,9 @@ pub const HOT_PLANE_HOOKS: PlaneHooks = PlaneHooks {
 /// a trusted plane that will not LOAD is a refusal here, as a linked plane's would be.
 pub fn dropped_planes(
     dir: &std::path::Path,
-    policy: &busbar_plugin_loader::sign::TrustPolicy,
+    policy: &crate::root::loader::sign::TrustPolicy,
 ) -> Result<Vec<DynPlane>, String> {
-    let Ok(registry) = busbar_plugin_loader::scan_and_validate(dir, policy) else {
+    let Ok(registry) = crate::root::loader::scan_and_validate(dir, policy) else {
         return Ok(Vec::new());
     };
     registry.open_planes()
@@ -903,7 +899,7 @@ pub fn dropped_planes(
 /// axis holds both doors' rows, and a build that links a sink has an axis with no `plugins:` block.
 pub fn dropped_from_config(
     linked: &Linked,
-) -> Option<&'static busbar_plugin_loader::PluginRegistry> {
+) -> Option<&'static crate::root::loader::PluginRegistry> {
     let rows = linked_exports(linked.exports).unwrap_or_else(|refusal| {
         eprintln!("busbar: {refusal}");
         std::process::exit(2);
@@ -912,7 +908,7 @@ pub fn dropped_from_config(
     if scanned.is_none() && rows.is_empty() {
         return None;
     }
-    let registry = scanned.unwrap_or_else(busbar_plugin_loader::PluginRegistry::empty);
+    let registry = scanned.unwrap_or_else(crate::root::loader::PluginRegistry::empty);
     let registry = registry.link(rows).unwrap_or_else(|refusal| {
         eprintln!("busbar: {refusal}");
         std::process::exit(2);
@@ -923,11 +919,11 @@ pub fn dropped_from_config(
 }
 
 /// The one plugin registry [`dropped_from_config`] builds, held for the process.
-static REGISTRY: std::sync::OnceLock<busbar_plugin_loader::PluginRegistry> =
+static REGISTRY: std::sync::OnceLock<crate::root::loader::PluginRegistry> =
     std::sync::OnceLock::new();
 
 /// The configured `plugins.dir`'s admitted rows (see [`dropped_from_config`]).
-fn scan_configured() -> Option<busbar_plugin_loader::PluginRegistry> {
+fn scan_configured() -> Option<crate::root::loader::PluginRegistry> {
     let path =
         crate::root::cli::resolve_config_path(crate::root::cli::config_path_flag().as_deref());
     let raw = std::fs::read_to_string(path).ok()?;
@@ -944,16 +940,16 @@ fn scan_configured() -> Option<busbar_plugin_loader::PluginRegistry> {
             .filter(|p| p.enabled)?;
     let mut policy = plugins.to_policy().ok()?;
     let data_dir = busbar_kernel::preflight::fleet_data_dir();
-    policy.first_party_high_water = busbar_plugin_loader::HighWaterMarks::load(data_dir.as_deref())
+    policy.first_party_high_water = crate::root::loader::HighWaterMarks::load(data_dir.as_deref())
         .0
         .marks();
-    busbar_plugin_loader::scan_and_validate(std::path::Path::new(&plugins.dir), &policy).ok()
+    crate::root::loader::scan_and_validate(std::path::Path::new(&plugins.dir), &policy).ok()
 }
 
 /// THE PLANES DROPPED INTO `dropped` (see [`dropped_from_config`]): every `kind: plane` plugin it
 /// admitted, loaded over the HOT-tier ABI — a trusted plane that will not LOAD refuses the boot,
 /// as a linked plane's would.
-pub fn dropped_planes_of(dropped: Option<&busbar_plugin_loader::PluginRegistry>) -> Vec<DynPlane> {
+pub fn dropped_planes_of(dropped: Option<&crate::root::loader::PluginRegistry>) -> Vec<DynPlane> {
     dropped
         .map_or(Ok(Vec::new()), |registry| registry.open_planes())
         .unwrap_or_else(|refusal| {
@@ -967,8 +963,8 @@ pub fn dropped_planes_of(dropped: Option<&busbar_plugin_loader::PluginRegistry>)
 /// for the process, so the boot seal folds them beside the linked wires
 /// (`crate::root::registry::compose`) and a wire the data door serves through lives as long as the
 /// door. A trusted transport that will not LOAD refuses the boot, as a linked plane's would.
-pub fn dropped_transports() -> &'static [busbar_plugin_loader::DynTransport] {
-    static WIRES: std::sync::OnceLock<Vec<busbar_plugin_loader::DynTransport>> =
+pub fn dropped_transports() -> &'static [crate::root::loader::DynTransport] {
+    static WIRES: std::sync::OnceLock<Vec<crate::root::loader::DynTransport>> =
         std::sync::OnceLock::new();
     WIRES.get_or_init(|| {
         REGISTRY
@@ -987,11 +983,11 @@ pub fn dropped_transports() -> &'static [busbar_plugin_loader::DynTransport] {
 /// once, before the configuration is resolved (`busbar_kernel::export::plugin::install`). The kernel
 /// serves no export module of its own (K9e-2: `otlp`, its last, is a linked row), so every module
 /// is a row here, and a linked row answers its module ahead of any dropped-in row spelling it.
-pub fn register_exports(dropped: Option<&'static busbar_plugin_loader::PluginRegistry>) {
-    busbar_plugin_loader::observe::install_host_series(host_series);
+pub fn register_exports(dropped: Option<&'static crate::root::loader::PluginRegistry>) {
+    crate::root::loader::observe::install_host_series(host_series);
     // The host's egress, which every sink's outbound request rides (K9a S5) — whatever else this
     // build links.
-    busbar_plugin_loader::install_egress_carrier(&HostEgressCarrier);
+    crate::root::loader::install_egress_carrier(&HostEgressCarrier);
     let Some(registry) = dropped else {
         return;
     };
@@ -1049,7 +1045,7 @@ pub fn host_series(name: &str) -> bool {
 
 /// The plugin registry [`register_exports`] installed — read again by [`register_diagnostics`], so
 /// the configured `plugins.dir` is scanned once.
-static DROPPED: std::sync::OnceLock<&'static busbar_plugin_loader::PluginRegistry> =
+static DROPPED: std::sync::OnceLock<&'static crate::root::loader::PluginRegistry> =
     std::sync::OnceLock::new();
 
 /// THE DIAGNOSTICS AXIS: every entry's owned diagnostics, and every first-party plugin's DECLARED
@@ -1078,7 +1074,7 @@ pub fn register_diagnostics(linked: &Linked) {
 /// catalogue already holds, a class that is not the host's, or a severity that is not a severity
 /// token is refused naming the plugin — a code is REGISTERED, never shadowed or renumbered.
 pub fn declared_diagnostics(
-    registry: &busbar_plugin_loader::PluginRegistry,
+    registry: &crate::root::loader::PluginRegistry,
     taken: &[&'static busbar_contract::diagnostic::Diagnostic],
 ) -> Result<Vec<&'static busbar_contract::diagnostic::Diagnostic>, String> {
     use busbar_contract::diagnostic::{Class, Diagnostic, Severity};
@@ -1186,10 +1182,10 @@ static CARRIER_CLIENT: std::sync::OnceLock<busbar_kernel::proxy::EgressClient> =
 impl HostEgressCarrier {
     /// The request as the hop sends it — after `policy` — and its deadline; or the refusal.
     fn prepare(
-        policy: busbar_plugin_loader::EgressPolicy,
-        request: &busbar_plugin_loader::HttpRequest,
+        policy: crate::root::loader::EgressPolicy,
+        request: &crate::root::loader::HttpRequest,
         body: &[u8],
-    ) -> Result<(CarriedRequest, tokio::time::Instant), busbar_plugin_loader::HostResult> {
+    ) -> Result<(CarriedRequest, tokio::time::Instant), crate::root::loader::HostResult> {
         if let Err(refusal) = judge(policy, &request.url, false) {
             return Err(carried_failure("refused", refusal));
         }
@@ -1221,7 +1217,7 @@ impl HostEgressCarrier {
     async fn send(
         (method, uri, headers, body): CarriedRequest,
         deadline: tokio::time::Instant,
-    ) -> busbar_plugin_loader::HostResult {
+    ) -> crate::root::loader::HostResult {
         let req = busbar_kernel::egress::engine::request(method, uri, headers, body);
         let client = CARRIER_CLIENT.get_or_init(|| {
             busbar_kernel::proxy::build_egress_client(
@@ -1235,7 +1231,7 @@ impl HostEgressCarrier {
         });
         match busbar_kernel::egress::engine::send_bounded(client, req, deadline).await {
             Ok(answer) => {
-                busbar_plugin_loader::HostResult::Http(busbar_plugin_loader::HttpResponse {
+                crate::root::loader::HostResult::Http(crate::root::loader::HttpResponse {
                     status: answer.status().as_u16(),
                     body: String::new(),
                 })
@@ -1248,15 +1244,15 @@ impl HostEgressCarrier {
 /// `policy`'s verdict on `url`: the open web's (the webhook URL policy), or the collector's —
 /// `resolve` adds the collector guard's resolution half, which a sink's start-time admission asks.
 fn judge(
-    policy: busbar_plugin_loader::EgressPolicy,
+    policy: crate::root::loader::EgressPolicy,
     url: &str,
     resolve: bool,
 ) -> Result<(), String> {
     match policy {
-        busbar_plugin_loader::EgressPolicy::OpenWeb => {
+        crate::root::loader::EgressPolicy::OpenWeb => {
             busbar_kernel::observability::validate_webhook_url(Some(url.to_string())).map(|_| ())
         }
-        busbar_plugin_loader::EgressPolicy::Collector => {
+        crate::root::loader::EgressPolicy::Collector => {
             crate::root::otlp::collector_policy(url, resolve)
         }
     }
@@ -1271,40 +1267,37 @@ type CarriedRequest = (
 );
 
 /// A carried request's failure at `step`.
-fn carried_failure(step: &str, error: String) -> busbar_plugin_loader::HostResult {
-    busbar_plugin_loader::HostResult::Failed {
+fn carried_failure(step: &str, error: String) -> crate::root::loader::HostResult {
+    crate::root::loader::HostResult::Failed {
         step: step.to_string(),
         error,
         rotation: None,
     }
 }
 
-impl busbar_plugin_loader::EgressCarrier for HostEgressCarrier {
-    fn carry(
-        &self,
-        request: &busbar_plugin_loader::HttpRequest,
-    ) -> busbar_plugin_loader::HostResult {
-        let open_web = busbar_plugin_loader::EgressPolicy::OpenWeb;
+impl crate::root::loader::EgressCarrier for HostEgressCarrier {
+    fn carry(&self, request: &crate::root::loader::HttpRequest) -> crate::root::loader::HostResult {
+        let open_web = crate::root::loader::EgressPolicy::OpenWeb;
         self.carry_under(open_web, request, request.body.as_bytes())
     }
 
     /// The same hop, awaited by the delivery's task: no thread waits on the far end.
     fn carry_async(
         &'static self,
-        request: busbar_plugin_loader::HttpRequest,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = busbar_plugin_loader::HostResult> + Send>>
+        request: crate::root::loader::HttpRequest,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = crate::root::loader::HostResult> + Send>>
     {
         let body = request.body.clone().into_bytes();
-        self.carry_under_async(busbar_plugin_loader::EgressPolicy::OpenWeb, request, body)
+        self.carry_under_async(crate::root::loader::EgressPolicy::OpenWeb, request, body)
     }
 
     fn admit(&self, url: &str) -> Result<(), String> {
-        self.admit_under(busbar_plugin_loader::EgressPolicy::OpenWeb, url)
+        self.admit_under(crate::root::loader::EgressPolicy::OpenWeb, url)
     }
 
     fn admit_under(
         &self,
-        policy: busbar_plugin_loader::EgressPolicy,
+        policy: crate::root::loader::EgressPolicy,
         url: &str,
     ) -> Result<(), String> {
         judge(policy, url, true)
@@ -1312,10 +1305,10 @@ impl busbar_plugin_loader::EgressCarrier for HostEgressCarrier {
 
     fn carry_under(
         &self,
-        policy: busbar_plugin_loader::EgressPolicy,
-        request: &busbar_plugin_loader::HttpRequest,
+        policy: crate::root::loader::EgressPolicy,
+        request: &crate::root::loader::HttpRequest,
         body: &[u8],
-    ) -> busbar_plugin_loader::HostResult {
+    ) -> crate::root::loader::HostResult {
         let (req, deadline) = match HostEgressCarrier::prepare(policy, request, body) {
             Ok(prepared) => prepared,
             Err(refused) => return refused,
@@ -1328,10 +1321,10 @@ impl busbar_plugin_loader::EgressCarrier for HostEgressCarrier {
 
     fn carry_under_async(
         &'static self,
-        policy: busbar_plugin_loader::EgressPolicy,
-        request: busbar_plugin_loader::HttpRequest,
+        policy: crate::root::loader::EgressPolicy,
+        request: crate::root::loader::HttpRequest,
         body: Vec<u8>,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = busbar_plugin_loader::HostResult> + Send>>
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = crate::root::loader::HostResult> + Send>>
     {
         Box::pin(async move {
             match HostEgressCarrier::prepare(policy, &request, &body) {

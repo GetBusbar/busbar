@@ -968,8 +968,8 @@ fn the_boot_path_opens_the_configured_directory_and_seals_before_it_settles() {
 /// resolves to at boot. Not a recording double.
 #[test]
 fn the_boot_book_ships_its_opening_to_the_configured_store() {
+    use crate::root::loader::store_adapter::StoreAdapter;
     use busbar_kernel_wal::RecordClass;
-    use busbar_plugin_loader::store_adapter::StoreAdapter;
 
     let dir = BookDir::new("ships");
     let store: std::sync::Arc<dyn busbar_contract::records::RecordStore> =
@@ -1023,7 +1023,7 @@ fn the_boot_book_ships_its_opening_to_the_configured_store() {
 /// this also pins that the two decisions are independent: no directory does not mean no opening.
 #[test]
 fn no_configured_directory_still_opens_nothing_and_writes_nothing() {
-    use busbar_plugin_loader::store_adapter::StoreAdapter;
+    use crate::root::loader::store_adapter::StoreAdapter;
 
     // A directory the node was never told about. Nothing may appear in it.
     let unnamed = BookDir::new("unnamed");
@@ -1062,7 +1062,7 @@ fn no_configured_directory_still_opens_nothing_and_writes_nothing() {
 /// keyset file is gone refuses `KeysetMissing` in the refusal's own words, which `die` prints.
 #[test]
 fn the_boot_book_signs_its_opening_and_refuses_keyset_missing_without_the_cache() {
-    use busbar_plugin_loader::store_adapter::StoreAdapter;
+    use crate::root::loader::store_adapter::StoreAdapter;
 
     let adapter = || {
         let store: std::sync::Arc<dyn busbar_contract::records::RecordStore> =

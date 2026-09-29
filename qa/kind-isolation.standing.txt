@@ -22,7 +22,6 @@ kind-isolation:matrix	measurement-disagreement	busbar-plane-llm × transport	792
 kind-isolation:matrix	ratchet	busbar × cleanliness	206
 kind-isolation:matrix	ratchet	busbar × hooks	16
 kind-isolation:matrix	ratchet	busbar × kernel	1295
-kind-isolation:matrix	ratchet	busbar × plugin-tooling	96
 kind-isolation:matrix	ratchet	busbar × store	9
 kind-isolation:matrix	ratchet	busbar-a2a × legacy	12
 kind-isolation:matrix	ratchet	busbar-contract × plane	219

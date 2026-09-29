@@ -438,7 +438,7 @@ count = "1104"
 [[cell]]
 crate = "busbar"
 kind = "plugin-tooling"
-count = "28"
+count = "12"
 
 [[cell]]
 crate = "busbar"
