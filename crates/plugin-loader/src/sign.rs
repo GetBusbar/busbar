@@ -107,7 +107,7 @@ pub fn embedded_release_pubkey() -> Option<VerifyingKey> {
 ///
 /// `deny_unknown_fields`: a manifest with fields this binary does not understand FAILS structural
 /// validation (fail-closed) rather than silently dropping content the signature may cover.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Manifest {
     /// Canonical plugin name, e.g. `busbar-store-valkey-plugin`. Lowercase `[a-z0-9-]+`.
