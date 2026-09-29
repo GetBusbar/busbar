@@ -419,13 +419,31 @@ fn a_snapshot_list_counted_with_a_null_pointer_or_too_long_is_fault() {
     );
 }
 
+fn claim(verb: &'static str, target: &'static str, flags: u32) -> Claim {
+    Claim {
+        verb: s(verb),
+        target: s(target),
+        carrier: s("c"),
+        flags,
+        _reserved: 0,
+    }
+}
+
+#[test]
+fn a_claim_states_only_known_flags() {
+    let open_exact = claim("V", "/t", CLAIM_OPEN | CLAIM_EXACT);
+    assert_eq!(check_claims(&[open_exact]), Ok(()));
+    // RED: a bit neither CLAIM_OPEN nor CLAIM_EXACT.
+    let unknown = claim("V", "/t", CLAIM_EXACT << 1);
+    assert_eq!(
+        check_claims(&[unknown]),
+        f(Rule::UnknownCode, "claim.flags")
+    );
+}
+
 #[test]
 fn every_snapshot_claim_and_route_is_named() {
-    let c = Claim {
-        verb: s("V"),
-        target: s("/t"),
-        carrier: s("c"),
-    };
+    let c = claim("V", "/t", 0);
     assert_eq!(check_claims(&[c]), Ok(()));
     let mut bad = c;
     bad.carrier = z();

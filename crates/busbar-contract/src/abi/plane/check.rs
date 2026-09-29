@@ -23,11 +23,12 @@ use super::{
     AdminRoute, ArriveOut, BillableClass, Claim, DialectAuth, OnPieceOut, OutField, PlaneDriveOut,
     PlaneSnapshot, PlaneTail, ProjectOut, RecordChain, RecordWrite, RefusalOut, RouteCost, Section,
     ServeOut, UnitCount, CANCEL_ABORTED, CANCEL_OK_PARTIAL, CHAIN_DIGESTS_SCOPE,
-    CHAIN_LENGTH_PREFIXED, CHAIN_PIPE_SEPARATED, EMIT_DONE, EMIT_TO_FAR_END, INGRESS_ACCEPT_LOOP,
-    INGRESS_DUPLEX_SESSION, INGRESS_REQUEST_RESPONSE, INGRESS_RESPONSE_STREAM,
-    INGRESS_SUBSCRIPTION, MARK_GATE_REJECTED, PRINCIPAL_OPTIONAL, RECORD_DELETE, RECORD_PUT,
-    ROUTE_PUBLIC, SECTION_CONSUMED, SECTION_DECLARING, SECTION_REQUIRED, SHAPE_PIECEWISE,
-    SHAPE_WHOLE, TAIL_FALLBACK, TAIL_PROBES, UNITS_ESTIMATED, UNITS_REPORTED, VERDICT_HARD,
+    CHAIN_LENGTH_PREFIXED, CHAIN_PIPE_SEPARATED, CLAIM_EXACT, CLAIM_OPEN, EMIT_DONE,
+    EMIT_TO_FAR_END, INGRESS_ACCEPT_LOOP, INGRESS_DUPLEX_SESSION, INGRESS_REQUEST_RESPONSE,
+    INGRESS_RESPONSE_STREAM, INGRESS_SUBSCRIPTION, MARK_GATE_REJECTED, PRINCIPAL_OPTIONAL,
+    RECORD_DELETE, RECORD_PUT, ROUTE_PUBLIC, SECTION_CONSUMED, SECTION_DECLARING, SECTION_REQUIRED,
+    SHAPE_PIECEWISE, SHAPE_WHOLE, TAIL_FALLBACK, TAIL_PROBES, UNITS_ESTIMATED, UNITS_REPORTED,
+    VERDICT_HARD,
 };
 use crate::abi::hook::{
     signal, SignalEntry, REQUEST_HAS_MAX_TOKENS, REQUEST_HAS_TOOLS, REQUEST_STREAM,
@@ -533,7 +534,8 @@ pub fn check_snapshot(s: &PlaneSnapshot, generation: u64) -> Result<(), Fault> {
     text(s.resource_metadata, "snapshot.resource_metadata")
 }
 
-/// Every snapshot claim: a verb, a target and a carrier.
+/// Every snapshot claim: a verb, a target, a carrier and known flags. Two claims of one route are
+/// not judged here: overlapping claims resolve by precedence in the kernel's registry.
 ///
 /// # Errors
 ///
@@ -543,6 +545,11 @@ pub fn check_claims(claims: &[Claim]) -> Result<(), Fault> {
         named(c.verb, "claim.verb")?;
         named(c.target, "claim.target")?;
         named(c.carrier, "claim.carrier")?;
+        bits(
+            u64::from(c.flags),
+            u64::from(CLAIM_OPEN | CLAIM_EXACT),
+            "claim.flags",
+        )?;
     }
     Ok(())
 }

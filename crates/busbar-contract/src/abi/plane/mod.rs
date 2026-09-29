@@ -232,6 +232,12 @@ pub const TAIL_FALLBACK: u32 = 1;
 /// request, and it is zero-billed and draws no lease.
 pub const TAIL_PROBES: u32 = 1 << 1;
 
+/// [`Claim::flags`]: the route takes no inbound credential; the kernel admits an arrival on it
+/// without verifying a caller. Without it, the route takes one.
+pub const CLAIM_OPEN: u32 = 1;
+/// [`Claim::flags`]: the target matches exactly. Without it, the target is a prefix.
+pub const CLAIM_EXACT: u32 = 1 << 1;
+
 /// [`ArriveIn::claim`]: the arrival is a health probe, not a snapshot claim. Only a plane whose
 /// tail states [`TAIL_PROBES`] is sent one.
 pub const CLAIM_PROBE: u32 = u32::MAX;
@@ -489,7 +495,8 @@ pub struct PlaneTail {
 
 // ── the generation snapshot ──────────────────────────────────────────────────────────────────────
 
-/// One path the built plane answers on.
+/// One path the built plane answers on. One route — a verb, a target and whether the target is
+/// matched exactly or as a prefix — is claimed at most once in a snapshot.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct Claim {
@@ -499,6 +506,10 @@ pub struct Claim {
     pub target: AbiStr,
     /// The transport claim it arrives over.
     pub carrier: AbiStr,
+    /// [`CLAIM_OPEN`] | [`CLAIM_EXACT`]; any other bit refuses the snapshot.
+    pub flags: u32,
+    /// Alignment padding.
+    pub _reserved: u32,
 }
 
 /// One admin route the built plane serves through [`slot::SERVE`].

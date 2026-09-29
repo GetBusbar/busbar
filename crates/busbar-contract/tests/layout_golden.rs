@@ -1598,7 +1598,7 @@ fn compute_layout() -> String {
             record_chains_len
         ]
     );
-    record!(s, pkind::Claim, [verb, target, carrier]);
+    record!(s, pkind::Claim, [verb, target, carrier, flags, _reserved]);
     record!(s, pkind::AdminRoute, [verb, target, flags, _reserved]);
     record!(
         s,

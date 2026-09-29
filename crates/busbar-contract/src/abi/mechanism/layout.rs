@@ -1260,7 +1260,7 @@ mod plane_kind {
         fee_units_len = 272, record_kinds = 280, record_kinds_len = 288, needs = 296,
         needs_len = 304, egress_targets = 312, egress_targets_len = 320, record_chains = 328,
         record_chains_len = 336);
-    pin!(Claim, 48, 8, verb = 0, target = 16, carrier = 32);
+    pin!(Claim, 56, 8, verb = 0, target = 16, carrier = 32, flags = 48, _reserved = 52);
     pin!(AdminRoute, 40, 8, verb = 0, target = 16, flags = 32, _reserved = 36);
     pin!(PlaneSnapshot, 104, 8, size = 0, _reserved = 4, generation = 8, claims = 16,
         claims_len = 24, admin_routes = 32, admin_routes_len = 40, openapi = 48,
