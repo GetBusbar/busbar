@@ -74,6 +74,7 @@ fn serving(wakes: Arc<AtomicU64>) -> Connector {
     .unwrap();
     Connector::serving(
         view,
+        Arc::new(crate::LiteralsOnly),
         None,
         Arc::new(move |_| {
             wakes.fetch_add(1, Ordering::SeqCst);

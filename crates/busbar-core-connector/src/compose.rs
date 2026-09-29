@@ -149,16 +149,72 @@ impl Connection {
     /// [`Failure::Refused`] before any socket exists; [`Failure::Failed`] off a worker or when the
     /// socket cannot be made.
     pub fn dial(door: Arc<dyn FramerDoor>, dial: Dial) -> Result<Self, Failure> {
+        let planned = Planned::locate(door, dial)?;
+        let addr = socket::address_of(planned.authority()).ok_or_else(|| {
+            Failure::Refused(format!(
+                "`{}` is not an address the connector dials without resolving a name",
+                planned.authority()
+            ))
+        })?;
+        planned.dial_at(addr)
+    }
+}
+
+/// A dial located but not yet dialled: the target and the authority the entry named passed the
+/// endpoint check, and the address to dial is still to be judged.
+pub struct Planned {
+    door: Arc<dyn FramerDoor>,
+    dial: Dial,
+    located: framer::Located,
+}
+
+impl std::fmt::Debug for Planned {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Planned")
+            .field("target", &self.dial.target)
+            .finish_non_exhaustive()
+    }
+}
+
+impl Planned {
+    /// The endpoint check, the entry's `locate`, and a second endpoint check on the authority it
+    /// named.
+    ///
+    /// # Errors
+    ///
+    /// [`Failure::Refused`]: the target or the authority is refused, or the entry locates nothing.
+    pub fn locate(door: Arc<dyn FramerDoor>, dial: Dial) -> Result<Self, Failure> {
         endpoint::check(&dial.target).map_err(|e| Failure::Refused(e.to_string()))?;
         let located = framer::locate(door.as_ref(), &dial.target)
             .map_err(|e| Failure::Refused(e.to_string()))?;
         endpoint::check(&located.authority).map_err(|e| Failure::Refused(e.to_string()))?;
-        let addr = socket::address_of(&located.authority).ok_or_else(|| {
-            Failure::Refused(format!(
-                "`{}` is not an address the connector dials without resolving a name",
-                located.authority
-            ))
-        })?;
+        Ok(Self {
+            door,
+            dial,
+            located,
+        })
+    }
+
+    /// The authority the entry named (`host:port`), as the judge reads it.
+    #[must_use]
+    pub fn authority(&self) -> &str {
+        &self.located.authority
+    }
+
+    /// Dial exactly `addr` — the address judged for [`Self::authority`] — with the name the entry
+    /// located offered to connection security: a non-blocking connect registered on the calling
+    /// worker's reactor. The connection comes back at once, its open in flight.
+    ///
+    /// # Errors
+    ///
+    /// [`Failure::Refused`] when security is asked for and none is set; [`Failure::Failed`] off a
+    /// worker or when the socket cannot be made.
+    pub fn dial_at(self, addr: std::net::SocketAddr) -> Result<Connection, Failure> {
+        let Self {
+            door,
+            dial,
+            located,
+        } = self;
         let tls = if located.secure {
             let base = dial.tls.clone().ok_or_else(|| {
                 Failure::Refused("the target asks for connection security and none is set".into())
@@ -187,7 +243,7 @@ impl Connection {
             agreed_protocol: None,
             claim: door.facts().claims.first().map(|c| (*c).to_owned()),
         };
-        Ok(Self {
+        Ok(Connection {
             door,
             sock,
             target: dial.target,
@@ -204,7 +260,9 @@ impl Connection {
             sleep: None,
         })
     }
+}
 
+impl Connection {
     /// What connection security established (the agreed protocol, the name offered).
     #[must_use]
     pub fn established(&self) -> &Established {

@@ -46,6 +46,7 @@ pub mod udp;
 pub mod wire;
 
 use std::collections::HashMap;
+use std::net::SocketAddr;
 use std::sync::{Arc, Mutex, RwLock};
 use std::task::{Context, Poll, Wake, Waker};
 use std::time::Duration;
@@ -58,7 +59,7 @@ use busbar_contract::ids::StreamId;
 use busbar_contract::transport::wire::WireStatusClass;
 use busbar_contract::transport::ConnFacts;
 
-use crate::compose::{Connection, Dial, Failure, DEFAULT_OPEN_TIMEOUT};
+use crate::compose::{Connection, Dial, Failure, Planned, DEFAULT_OPEN_TIMEOUT};
 use crate::registry::Transports;
 
 /// What an open for a DECLARED need answers while no transport serves it: refused, never a silent
@@ -68,9 +69,74 @@ pub const NO_TRANSPORT_YET: ConnError = ConnError::Refused;
 /// How the host wakes a caller's ticket.
 pub type WakeTicket = Arc<dyn Fn(Ticket) + Send + Sync>;
 
+/// A `DEST_*` verdict (`busbar_contract::abi::host::service`) refusing a dial.
+pub type Verdict = u64;
+
+/// Where a pended judgement goes: the address to dial, or the verdict refusing it. Called once,
+/// from any thread.
+pub type Judged = Box<dyn FnOnce(Result<SocketAddr, Verdict>) + Send>;
+
+/// The egress class a need's dial is judged under: the host's default.
+pub const DIAL_CLASS: u32 = 0;
+
+/// THE KERNEL'S DESTINATION JUDGE, as a dial reaches it (`dest.judge`, R-K): every authority the
+/// connector dials is judged here and the connector dials EXACTLY the address the judgement pinned,
+/// so a name is resolved once, by the judge, and never again. A refusal the name decides (and an IP
+/// literal) answers at once, `Some`, before any resolution; a name that must resolve answers `None`
+/// and `done` gets the pin or the refusal later, from any thread.
+pub trait DialJudge: Send + Sync {
+    /// Judge `dest` (`host:port`) under egress class `class`.
+    fn judge_dial(
+        &self,
+        dest: &str,
+        class: u32,
+        done: Judged,
+    ) -> Option<Result<SocketAddr, Verdict>>;
+}
+
+/// Any function of the judge's shape is a judge: the root joins the kernel's one judge
+/// (`KernelServices::judge_dial`) here without the connector naming a kernel type.
+impl<F> DialJudge for F
+where
+    F: Fn(&str, u32, Judged) -> Option<Result<SocketAddr, Verdict>> + Send + Sync,
+{
+    fn judge_dial(
+        &self,
+        dest: &str,
+        class: u32,
+        done: Judged,
+    ) -> Option<Result<SocketAddr, Verdict>> {
+        self(dest, class, done)
+    }
+}
+
+/// The judge a connector built with none holds: an IP literal is its own address and a name is
+/// refused, because nothing here resolves one.
+struct LiteralsOnly;
+
+impl DialJudge for LiteralsOnly {
+    fn judge_dial(&self, dest: &str, _: u32, _: Judged) -> Option<Result<SocketAddr, Verdict>> {
+        Some(socket::address_of(dest).ok_or(busbar_contract::abi::host::service::DEST_UNRESOLVABLE))
+    }
+}
+
+/// A judgement's answer once it came, and the waker of the read or wait that found none.
+type Answer = Arc<Mutex<(Option<Result<SocketAddr, Verdict>>, Option<Waker>)>>;
+
+/// A dial whose judgement pended: what to dial once it answers, the answer, and the waker of the
+/// read or wait that found it unanswered.
+struct Judging {
+    planned: Option<Planned>,
+    /// Writes the caller made before the dial, in order.
+    early: Vec<(Vec<u8>, bool)>,
+    answer: Answer,
+}
+
 /// One connection the connector holds for its owner.
 struct Held {
     conn: Mutex<Option<Connection>>,
+    /// The judgement the dial waits on; `None` once dialled.
+    judging: Mutex<Option<Judging>>,
     /// The piece a short caller buffer left, and whether the end was answered.
     rest: Mutex<(Option<Piece>, Vec<u8>, bool)>,
 }
@@ -89,6 +155,7 @@ pub struct Connector {
     transports: RwLock<Transports>,
     tls: Option<Arc<rustls::ClientConfig>>,
     wake: WakeTicket,
+    judge: Arc<dyn DialJudge>,
 }
 
 impl std::fmt::Debug for Connector {
@@ -105,6 +172,7 @@ impl Default for Connector {
             transports: RwLock::new(Transports::default()),
             tls: None,
             wake: Arc::new(|_| {}),
+            judge: Arc::new(LiteralsOnly),
         }
     }
 }
@@ -149,11 +217,13 @@ impl Connector {
         Self::default()
     }
 
-    /// The same connector serving `transports`, securing connections with `tls` where a target
-    /// asks for it, and waking a caller's ticket through `wake`.
+    /// The same connector serving `transports`, judging every dial's address through `judge`,
+    /// securing connections with `tls` where a target asks for it, and waking a caller's ticket
+    /// through `wake`.
     #[must_use]
     pub fn serving(
         transports: Transports,
+        judge: Arc<dyn DialJudge>,
         tls: Option<Arc<rustls::ClientConfig>>,
         wake: WakeTicket,
     ) -> Self {
@@ -161,6 +231,7 @@ impl Connector {
             transports: RwLock::new(transports),
             tls,
             wake,
+            judge,
             ..Self::default()
         }
     }
@@ -178,6 +249,38 @@ impl Connector {
             .lock()
             .expect("needs")
             .insert((owner, need), transport.to_owned());
+    }
+
+    /// Dial a held connection whose judgement has answered. `Ok(false)`: still judging, `waker`
+    /// (where given) registered for the answer. A refusal stays the connection's answer.
+    fn settle(held: &Held, waker: Option<&Waker>) -> Result<bool, ConnError> {
+        let mut judging = held.judging.lock().expect("judging");
+        let Some(j) = judging.as_mut() else {
+            return Ok(true);
+        };
+        let got = {
+            let mut a = j.answer.lock().expect("judgement");
+            match a.0 {
+                None => {
+                    if let Some(w) = waker {
+                        a.1 = Some(w.clone());
+                    }
+                    return Ok(false);
+                }
+                Some(got) => got,
+            }
+        };
+        let addr = got.map_err(|_| ConnError::Refused)?;
+        let planned = j.planned.take().ok_or(ConnError::Refused)?;
+        let early = std::mem::take(&mut j.early);
+        *judging = None;
+        let mut conn = planned.dial_at(addr).map_err(|f| map(&f))?;
+        for (bytes, end) in early {
+            conn.write(&bytes, end, &mut Context::from_waker(Waker::noop()))
+                .map_err(|f| map(&f))?;
+        }
+        *held.conn.lock().expect("connection") = Some(conn);
+        Ok(true)
     }
 
     fn waker(&self, ticket: Ticket) -> Waker {
@@ -229,12 +332,41 @@ impl Conns for Connector {
                 desc.body.to_vec(),
             )),
         };
-        let conn = Connection::dial(door, dial).map_err(|f| map(&f))?;
+        let planned = Planned::locate(door, dial).map_err(|f| map(&f))?;
+        let answer: Answer = Arc::new(Mutex::new((None, None)));
+        let later = Arc::clone(&answer);
+        let judged = self.judge.judge_dial(
+            planned.authority(),
+            DIAL_CLASS,
+            Box::new(move |v| {
+                let mut a = later.lock().expect("judgement");
+                a.0 = Some(v);
+                if let Some(w) = a.1.take() {
+                    w.wake();
+                }
+            }),
+        );
+        let (conn, judging) = match judged {
+            // Decided at once: a refusal answers the open, as 1.5.5 answered it.
+            Some(Err(_)) => return Err(ConnError::Refused),
+            Some(Ok(addr)) => (Some(planned.dial_at(addr).map_err(|f| map(&f))?), None),
+            // The name resolves off this thread: the open is in flight, and an address refusal
+            // answers the read or wait that finds it.
+            None => (
+                None,
+                Some(Judging {
+                    planned: Some(planned),
+                    early: Vec::new(),
+                    answer,
+                }),
+            ),
+        };
         self.slab.insert(
             caller,
             need,
             Held {
-                conn: Mutex::new(Some(conn)),
+                conn: Mutex::new(conn),
+                judging: Mutex::new(judging),
                 rest: Mutex::new((None, Vec::new(), false)),
             },
         )
@@ -248,6 +380,12 @@ impl Conns for Connector {
         end: bool,
     ) -> Result<usize, ConnError> {
         let (_, held) = self.slab.get(caller, conn)?;
+        if !Self::settle(&held, None)? {
+            if let Some(j) = held.judging.lock().expect("judging").as_mut() {
+                j.early.push((bytes.to_vec(), end));
+                return Ok(bytes.len());
+            }
+        }
         let mut c = held.conn.lock().expect("connection");
         let c = c.as_mut().ok_or(ConnError::Closed)?;
         let waker = Waker::noop();
@@ -270,9 +408,12 @@ impl Conns for Connector {
                 if rest.2 {
                     return Err(ConnError::Closed);
                 }
+                let waker = self.waker(ticket);
+                if !Self::settle(&held, Some(&waker))? {
+                    return Err(ConnError::Pending);
+                }
                 let mut c = held.conn.lock().expect("connection");
                 let c = c.as_mut().ok_or(ConnError::Closed)?;
-                let waker = self.waker(ticket);
                 match c.poll_piece(&mut Context::from_waker(&waker)) {
                     Poll::Pending => return Err(ConnError::Pending),
                     Poll::Ready(Err(f)) => return Err(map(&f)),
@@ -327,6 +468,11 @@ impl Conns for Connector {
             if held.rest.lock().expect("rest").0.is_some() {
                 return Ok(at);
             }
+            match Self::settle(&held, Some(&waker)) {
+                Ok(false) => continue,
+                Err(_) => return Ok(at),
+                Ok(true) => {}
+            }
             let mut c = held.conn.lock().expect("connection");
             let Some(c) = c.as_mut() else {
                 return Ok(at);
@@ -340,6 +486,9 @@ impl Conns for Connector {
 
     fn facts(&self, caller: InstanceId, conn: ConnId) -> Result<ConnFacts, ConnError> {
         let (_, held) = self.slab.get(caller, conn)?;
+        if !Self::settle(&held, None)? {
+            return Err(ConnError::Pending);
+        }
         let c = held.conn.lock().expect("connection");
         let e = c.as_ref().ok_or(ConnError::Closed)?.established();
         Ok(ConnFacts {
