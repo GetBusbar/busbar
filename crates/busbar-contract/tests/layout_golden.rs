@@ -1485,7 +1485,9 @@ fn compute_layout() -> String {
             authority_buf,
             authority_cap,
             name_buf,
-            name_cap
+            name_cap,
+            alpn_buf,
+            alpn_cap
         ]
     );
     record!(
@@ -1498,7 +1500,9 @@ fn compute_layout() -> String {
             name_written,
             name_needed,
             secure,
-            has_name
+            has_name,
+            alpn_written,
+            alpn_needed
         ]
     );
     record!(s, tkind::FramerOut, [head, yielded, framing]);
@@ -1523,7 +1527,8 @@ fn compute_layout() -> String {
             len,
             end_of_frame,
             _reserved,
-            sink
+            sink,
+            deadline_ns
         ]
     );
     record!(

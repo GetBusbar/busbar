@@ -79,8 +79,9 @@ pub const fn check_io(out: &IoOut, cap: u64) -> Result<(), Fault> {
     within(out.len, cap, "io.len")
 }
 
-/// `locate`: authority and name under the short-buffer rule; `has_name` and `secure` are flags, and no name means
-/// nothing written or needed for it.
+/// `locate`: authority, name and protocol offer under the short-buffer rule; `has_name` and
+/// `secure` are flags, and no name means nothing written or needed for it. The offer (`alpn`, the
+/// bytes written into the host's `alpn_buf`) is [`check_alpn`]'s.
 ///
 /// # Errors
 ///
@@ -90,6 +91,8 @@ pub fn check_locate(
     out: &LocateOut,
     authority_cap: u64,
     name_cap: u64,
+    alpn_cap: u64,
+    alpn: &[u8],
 ) -> Result<(), Fault> {
     code(u64::from(out.secure), 0, 1, "locate.secure")?;
     code(u64::from(out.has_name), 0, 1, "locate.has_name")?;
@@ -114,9 +117,68 @@ pub fn check_locate(
                 max: MAX_BYTES,
                 field: "locate.name",
             },
+            Dim {
+                written: out.alpn_written,
+                needed: out.alpn_needed,
+                cap: alpn_cap,
+                max: MAX_ALPN_BYTES,
+                field: "locate.alpn",
+            },
         ],
     )?;
+    if outcome == Outcome::Ready {
+        check_alpn(alpn)?;
+    }
     Ok(())
+}
+
+/// The most bytes one protocol offer may take (a TLS ProtocolNameList is at most `2^16 - 1`).
+pub const MAX_ALPN_BYTES: u64 = 0xffff;
+
+/// A protocol offer in the handshake's ProtocolNameList encoding: it partitions exactly into ids,
+/// each one length byte (`1..=255`) and that many bytes.
+///
+/// # Errors
+///
+/// [`Rule::Missing`] for an empty id; [`Rule::SpanOutOfBounds`] for a length that runs past the
+/// end.
+pub fn check_alpn(offer: &[u8]) -> Result<(), Fault> {
+    let mut at = 0usize;
+    while at < offer.len() {
+        let n = usize::from(offer[at]);
+        if n == 0 {
+            return Err(fault(Rule::Missing, "locate.alpn.id"));
+        }
+        if at + 1 + n > offer.len() {
+            return Err(fault(Rule::SpanOutOfBounds, "locate.alpn.id"));
+        }
+        at += 1 + n;
+    }
+    Ok(())
+}
+
+/// The protocol the handshake agreed, against the framer's offer: none agreed, or one of the
+/// offered ids exactly. The connector checks it before it hands the framer
+/// [`ConnFacts::agreed_protocol`].
+///
+/// # Errors
+///
+/// [`check_alpn`]'s rules for a malformed offer; [`Rule::Contradiction`] for an agreed protocol the
+/// framer never offered.
+pub fn check_agreed(offer: &[u8], agreed: &[u8]) -> Result<(), Fault> {
+    check_alpn(offer)?;
+    if agreed.is_empty() {
+        return Ok(());
+    }
+    let mut at = 0usize;
+    while at < offer.len() {
+        let n = usize::from(offer[at]);
+        if &offer[at + 1..at + 1 + n] == agreed {
+            return Ok(());
+        }
+        at += 1 + n;
+    }
+    Err(fault(Rule::Contradiction, "facts.agreed_protocol"))
 }
 
 /// Every framer answer: what it wrote fits its sink (no short path: a full sink is
