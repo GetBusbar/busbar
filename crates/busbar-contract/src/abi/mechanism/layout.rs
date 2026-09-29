@@ -1281,15 +1281,15 @@ mod plane_kind {
     pin!(OutField, 16, 4, name = 0, value = 8);
     pin!(UnitCount, 16, 8, class = 0, source = 4, amount = 8);
     pin!(RecordWrite, 24, 4, kind = 0, op = 4, key = 8, value = 16);
-    pin!(ArriveIn, 168, 8, head = 0, claim = 88, _reserved = 92, target = 96, fields = 112,
-        fields_len = 120, body = 128, units_buf = 152, units_cap = 160);
+    pin!(ArriveIn, 176, 8, head = 0, unit = 88, claim = 96, _reserved = 100, target = 104,
+        fields = 120, fields_len = 128, body = 136, units_buf = 160, units_cap = 168);
     pin!(ArriveOut, 120, 8, head = 0, op_class = 96, principal_need = 100, dialect = 104,
         units_written = 108, units_needed = 112, _reserved = 116);
-    pin!(OnPieceIn, 240, 8, head = 0, from = 88, flags = 92, stream = 96, bytes = 104,
-        status_code = 128, status_class = 132, reply_buf = 136, reply_cap = 144,
-        units_buf = 152, units_cap = 160, records_buf = 168, records_cap = 176,
-        fields_buf = 184, fields_cap = 192, arena_buf = 200, arena_cap = 208, member = 216,
-        attempt_no = 232, _reserved = 236);
+    pin!(OnPieceIn, 248, 8, head = 0, unit = 88, from = 96, flags = 100, stream = 104,
+        bytes = 112, status_code = 136, status_class = 140, reply_buf = 144, reply_cap = 152,
+        units_buf = 160, units_cap = 168, records_buf = 176, records_cap = 184,
+        fields_buf = 192, fields_cap = 200, arena_buf = 208, arena_cap = 216, member = 224,
+        attempt_no = 240, _reserved = 244);
     pin!(OnPieceOut, 176, 8, head = 0, emitted = 96, more = 104, flags = 108,
         reply_status = 112, fields_written = 116, fields_needed = 120, units_written = 124,
         units_needed = 128, records_written = 132, records_needed = 136, verdict = 140,

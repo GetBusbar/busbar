@@ -23,6 +23,10 @@
 //! with `more = 1` (and at least one byte `emitted`); the kernel flushes, waits for the socket to be
 //! writable and calls again. `emitted` is therefore never above `reply_cap` and has no `needed`.
 //!
+//! ONE UNIT, ONE KEY. The kernel mints the unit's key and hands it to every op of the unit:
+//! [`ArriveIn::unit`] and [`OnPieceIn::unit`]. The caller's head (target and fields) crosses ONCE,
+//! at `arrive`; a plane keeps what it needs of it keyed by `unit`, and no piece re-sends it.
+//!
 //! THE KERNEL DRIVES THE ROUTE (`BUSBAR-1.6.0.md` Part 3, the plane driver). The kernel keeps the caller's body
 //! and runs its own egress walk. Each attempt starts with an ATTEMPT piece ([`FROM_KERNEL`],
 //! [`OnPieceIn::member`], [`OnPieceIn::attempt_no`]); the plane answers with the request bound for
@@ -706,6 +710,10 @@ pub struct RecordWrite {
 pub struct ArriveIn {
     /// The head.
     pub head: InHead,
+    /// The unit, as the kernel minted it: every [`OnPieceIn`] of this unit carries the same key.
+    /// The caller's head (`target`, `fields`) crosses here ONCE; a plane keeps what it needs of it
+    /// keyed by `unit`, and no piece re-sends it.
+    pub unit: u64,
     /// Index into the snapshot's claims the arrival matched.
     pub claim: u32,
     /// Alignment padding.
@@ -750,11 +758,13 @@ pub struct ArriveOut {
 pub struct OnPieceIn {
     /// The head.
     pub head: InHead,
+    /// The unit, as the kernel minted it: the key its [`ArriveIn::unit`] carried.
+    pub unit: u64,
     /// [`FROM_CALLER`] | [`FROM_FAR_END`] | [`FROM_KERNEL`].
     pub from: u32,
     /// `PIECE_*` bits.
     pub flags: u32,
-    /// The stream.
+    /// A duplex session's stream, as `drive` names it; `0` for a request unit.
     pub stream: u64,
     /// The piece's bytes, zero-copy.
     pub bytes: Blob,

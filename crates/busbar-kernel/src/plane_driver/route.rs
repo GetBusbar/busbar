@@ -190,9 +190,9 @@ impl Piece {
     }
 }
 
-/// An `on_piece` frame over `bufs`. Built and handed to the dispatcher in one breath, so no raw
-/// pointer is ever held across an await.
-fn frame(bufs: &mut PieceBufs, p: &Piece, stream: u64) -> (OnPieceIn, OnPieceOut) {
+/// An `on_piece` frame of `unit` over `bufs`. Built and handed to the dispatcher in one breath, so
+/// no raw pointer is ever held across an await. A request unit has no session stream.
+fn frame(bufs: &mut PieceBufs, p: &Piece, unit: u64) -> (OnPieceIn, OnPieceOut) {
     let bytes = match p.src {
         Src::Body => &bufs.body[..],
         Src::Input => &bufs.input[..],
@@ -215,9 +215,10 @@ fn frame(bufs: &mut PieceBufs, p: &Piece, stream: u64) -> (OnPieceIn, OnPieceOut
     };
     let input = OnPieceIn {
         head: blank_in(),
+        unit,
         from: p.from,
         flags: p.flags,
-        stream,
+        stream: 0,
         bytes: blob,
         status_code: p.status.0,
         status_class: p.status.1,

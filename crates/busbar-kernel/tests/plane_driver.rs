@@ -160,7 +160,12 @@ impl PieceInFlight for Flight {
 
 #[derive(Default)]
 struct Double {
-    units: Mutex<HashMap<Ticket, Unit>>,
+    /// Each unit's state, keyed by the unit's kernel-minted key.
+    units: Mutex<HashMap<u64, Unit>>,
+    /// The caller's target each unit's `arrive` carried, keyed by `unit`: it crosses once.
+    heads: Mutex<HashMap<u64, Vec<u8>>>,
+    /// The unit each ticket serves, for `cancel`.
+    tickets: Mutex<HashMap<Ticket, u64>>,
     /// The ops held pending, by ticket, and what their `cancel` will answer.
     held: Mutex<HashMap<Ticket, (Arc<Shared>, OnPieceOut)>>,
     next: AtomicU32,
@@ -209,6 +214,13 @@ impl Double {
         self.stats[k].fetch_add(1, Ordering::SeqCst);
     }
 
+    /// The state of the unit `ticket` serves, removed.
+    fn unit_of(&self, ticket: Ticket) -> Unit {
+        let unit = self.tickets.lock().unwrap().remove(&ticket);
+        unit.and_then(|k| self.units.lock().unwrap().remove(&k))
+            .unwrap_or_default()
+    }
+
     /// The disposition `cancel` answers for `u`; `None` = FAULT.
     fn disposition(&self, u: &Unit) -> Option<u32> {
         let d = if u.mode == b"cancel-fault" {
@@ -227,8 +239,14 @@ impl Double {
     /// One `on_piece`, as the test plane answers it: the outcome, and whether it is held.
     unsafe fn piece(&self, t: Ticket, i: &OnPieceIn, o: &mut OnPieceOut) -> (Answered, Hold) {
         self.count(stat::ON_PIECES);
+        self.stats[stat::UNIT].store(i.unit, Ordering::SeqCst);
+        let Some(head) = self.heads.lock().unwrap().get(&i.unit).cloned() else {
+            // A piece of a unit that never arrived: the caller's head is not re-sent.
+            return (ready(Outcome::Fault), Hold::No);
+        };
+        self.tickets.lock().unwrap().insert(t, i.unit);
         let mut units = self.units.lock().unwrap();
-        let u = units.entry(t).or_default();
+        let u = units.entry(i.unit).or_default();
         let piece = bytes(i.bytes);
         match i.from {
             FROM_KERNEL if i.attempt_no > 0 => {
@@ -246,7 +264,7 @@ impl Double {
                 }
                 let mut at = 0;
                 o.verb = put(i, &mut at, b"POST");
-                o.target = put(i, &mut at, &[b"/far/".as_slice(), &u.mode].concat());
+                o.target = put(i, &mut at, &[b"/far/".as_slice(), &u.mode, &head].concat());
                 let name = put(i, &mut at, b"x-attempt");
                 let value = put(i, &mut at, u.attempt.to_string().as_bytes());
                 *i.fields_buf = OutField { name, value };
@@ -357,6 +375,10 @@ impl PlaneCalls for Double {
         grow: Grow<'_, ArriveIn, ArriveOut>,
     ) -> Outcome {
         let target = unsafe { text(input.target) }.to_vec();
+        self.heads
+            .lock()
+            .unwrap()
+            .insert(input.unit, target.clone());
         let estimate = |amount| UnitCount {
             class: 0,
             source: UNITS_ESTIMATED,
@@ -447,12 +469,7 @@ impl PlaneCalls for Double {
 
     fn cancel(&self, ticket: Ticket) -> Option<u32> {
         self.count(stat::CANCELS);
-        let u = self
-            .units
-            .lock()
-            .unwrap()
-            .remove(&ticket)
-            .unwrap_or_default();
+        let u = self.unit_of(ticket);
         self.disposition(&u)
     }
 
@@ -473,12 +490,7 @@ impl PlaneCalls for Double {
         };
         self.count(stat::CANCELS);
         self.count(stat::CANCELS_ON_WORKER);
-        let u = self
-            .units
-            .lock()
-            .unwrap()
-            .remove(&ticket)
-            .unwrap_or_default();
+        let u = self.unit_of(ticket);
         let answer = match self.disposition(&u) {
             Some(d) => Answered {
                 outcome: Outcome::Failed,

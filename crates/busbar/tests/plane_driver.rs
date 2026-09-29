@@ -138,6 +138,7 @@ fn stats(plugin: &Plugin<Plane>) -> [u64; cases::stat::COUNT] {
     let mut frame = Frame::new(
         ArriveIn {
             head: in_head(),
+            unit: 0,
             claim: 0,
             _reserved: 0,
             target: busbar_contract::abi::mechanism::call::AbiStr {
@@ -259,6 +260,7 @@ fn wake(plugin: &Plugin<Plane>, t: busbar_contract::abi::mechanism::ticket::Tick
     let mut frame = Frame::new(
         ArriveIn {
             head: in_head(),
+            unit: 0,
             claim: 0,
             _reserved: 0,
             target: busbar_contract::abi::mechanism::call::AbiStr {
@@ -313,9 +315,10 @@ fn the_crossing_is_under_a_microsecond() {
         let mut frame = Frame::new(
             OnPieceIn {
                 head: in_head(),
+                unit: 0,
                 from: FROM_FAR_END,
                 flags: 0,
-                stream: 1,
+                stream: 0,
                 bytes: NO_BLOB,
                 status_code: 0,
                 status_class: 0,
@@ -338,6 +341,8 @@ fn the_crossing_is_under_a_microsecond() {
             },
             zero_piece_out(),
         );
+        // Unit 0 arrives first (its `arrive` on `/stats`), so the plane holds its head.
+        stats(&plugin);
         const BATCH: u32 = 1_000;
         let mut samples = Vec::new();
         for _ in 0..300 {

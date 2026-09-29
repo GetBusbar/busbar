@@ -350,8 +350,9 @@ impl<S, F, C> PlaneUnits<'_, S, F, C> {
         self.lock().bill.clone()
     }
 
-    /// S1: `arrive`, ticketless, with the one re-call a short answer earns.
-    fn arrive(&self) -> Option<Decoded> {
+    /// S1: `arrive`, ticketless, with the one re-call a short answer earns. The caller's head
+    /// crosses here, once, under the unit's kernel-minted key.
+    fn arrive(&self, unit: u64) -> Option<Decoded> {
         let a = &self.arrival;
         let fields: Vec<Field> = a
             .fields
@@ -364,6 +365,7 @@ impl<S, F, C> PlaneUnits<'_, S, F, C> {
         let mut units = vec![ZERO_UNIT; self.driver.config.caps.units];
         let mut input = ArriveIn {
             head: blank_in(),
+            unit,
             claim: a.claim,
             _reserved: 0,
             target: abi_str(&a.target),
@@ -535,8 +537,8 @@ impl<S: Units + Sync, F: FarEnd, C: CallerEnd> Units for PlaneUnits<'_, S, F, C>
     }
 
     /// S1, DECODE: the plane's `arrive`.
-    fn decode(&self, token: &Pass<Decode>, _ctx: &UnitCtx) -> StepAnswer<Decode> {
-        let op = self.arrive().and_then(|d| {
+    fn decode(&self, token: &Pass<Decode>, ctx: &UnitCtx) -> StepAnswer<Decode> {
+        let op = self.arrive(ctx.key.get()).and_then(|d| {
             let op = self
                 .driver
                 .config

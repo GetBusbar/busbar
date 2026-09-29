@@ -58,9 +58,11 @@ pub enum Stat {
     LastDisposition = 4,
     /// `drive` crossings.
     Drives = 5,
+    /// The unit key the last `on_piece` carried.
+    Unit = 6,
 }
 /// How many counters `/stats` answers.
-pub const STATS: usize = 6;
+pub const STATS: usize = 7;
 
 struct Shared<T>(T);
 // SAFETY: immutable `'static` data (pointers into other statics).
@@ -215,7 +217,7 @@ pub extern "C" fn door() -> *const Door {
 
 busbar_contract::export_door!(door);
 
-/// One unit, keyed by its ticket.
+/// One unit, keyed by its kernel-minted `unit`.
 #[derive(Default)]
 struct Unit {
     mode: Vec<u8>,
@@ -234,7 +236,11 @@ struct Inst {
     wake: WakeFn,
     ctx: HostCtx,
     snapshot: Box<PlaneSnapshot>,
-    units: Mutex<HashMap<Ticket, Unit>>,
+    units: Mutex<HashMap<u64, Unit>>,
+    /// The caller's target each unit's `arrive` carried, keyed by `unit`: it crosses once.
+    heads: Mutex<HashMap<u64, Vec<u8>>>,
+    /// The unit each ticket serves, for `cancel`.
+    tickets: Mutex<HashMap<Ticket, u64>>,
     stats: [AtomicU64; STATS],
     /// The envelope `drive` answers: valid until the next op on the driver ticket.
     drive_metric: Box<Mutex<MetricEntry>>,
@@ -323,6 +329,8 @@ extern "C" fn open(_: *mut c_void, input: *const c_void, out: *mut c_void) -> Ra
             ctx: host.ctx,
             snapshot,
             units: Mutex::new(HashMap::new()),
+            heads: Mutex::new(HashMap::new()),
+            tickets: Mutex::new(HashMap::new()),
             stats: Default::default(),
             drive_metric: Box::new(Mutex::new(MetricEntry {
                 family_idx: 0,
@@ -381,6 +389,7 @@ extern "C" fn arrive(instance: *mut c_void, input: *const c_void, out: *mut c_vo
         let i = &*input.cast::<ArriveIn>();
         let o = &mut *out.cast::<ArriveOut>();
         let target = text(i.target);
+        me.heads.lock().unwrap().insert(i.unit, target.to_vec());
         let cap = i.units_cap;
         let write = |units: &[UnitCount]| {
             for (k, u) in units.iter().enumerate() {
@@ -454,8 +463,14 @@ extern "C" fn on_piece(
         let i = &*input.cast::<OnPieceIn>();
         let o = &mut *out.cast::<OnPieceOut>();
         let t = i.head.ticket;
+        me.stats[Stat::Unit as usize].store(i.unit, Ordering::SeqCst);
+        let Some(head) = me.heads.lock().unwrap().get(&i.unit).cloned() else {
+            // A piece of a unit that never arrived: the caller's head is not re-sent.
+            return RawOutcome::of(Outcome::Fault);
+        };
+        me.tickets.lock().unwrap().insert(t, i.unit);
         let mut units = me.units.lock().unwrap();
-        let u = units.entry(t).or_default();
+        let u = units.entry(i.unit).or_default();
         let piece = bytes(i.bytes);
         let resume = i.head.flags & FLAG_RESUME != 0;
         match i.from {
@@ -474,7 +489,7 @@ extern "C" fn on_piece(
                 }
                 let mut at = 0;
                 o.verb = put(i, &mut at, b"POST");
-                let target = [b"/far/".as_slice(), &u.mode].concat();
+                let target = [b"/far/".as_slice(), &u.mode, &head].concat();
                 o.target = put(i, &mut at, &target);
                 let name = put(i, &mut at, b"x-attempt");
                 let value = put(i, &mut at, u.attempt.to_string().as_bytes());
@@ -610,7 +625,10 @@ extern "C" fn cancel(instance: *mut c_void, input: *const c_void, out: *mut c_vo
             me.count(Stat::CancelsOnWorker);
         }
         let t = cancel_in.ticket;
-        let u = me.units.lock().unwrap().remove(&t).unwrap_or_default();
+        let unit = me.tickets.lock().unwrap().remove(&t);
+        let u = unit
+            .and_then(|k| me.units.lock().unwrap().remove(&k))
+            .unwrap_or_default();
         let last = &me.stats[Stat::LastDisposition as usize];
         if u.mode.as_slice() == b"cancel-fault" {
             last.store(0, Ordering::SeqCst);

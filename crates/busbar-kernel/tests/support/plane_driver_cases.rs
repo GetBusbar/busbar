@@ -49,8 +49,10 @@ pub mod stat {
     /// `drive` crossings (read by the composition root's suite only).
     #[allow(dead_code)]
     pub const DRIVES: usize = 5;
+    /// The unit key the last `on_piece` carried.
+    pub const UNIT: usize = 6;
     /// How many.
-    pub const COUNT: usize = 6;
+    pub const COUNT: usize = 7;
 }
 
 // ── the doubles ──────────────────────────────────────────────────────────────────────────────────
@@ -243,7 +245,10 @@ async fn one_unit_end_to_end() {
         let sent = far.sent();
         assert_eq!(sent.len(), 1, "{way:?}: one live attempt");
         assert_eq!(sent[0].verb, b"POST");
-        assert_eq!(sent[0].target, b"/far/ok");
+        assert_eq!(
+            sent[0].target, b"/far/ok/call",
+            "{way:?}: the plane kept the caller's target from `arrive`, keyed by the unit"
+        );
         assert_eq!(
             sent[0].body, b"ping",
             "{way:?}: the kept caller body is re-pushed"
@@ -333,6 +338,30 @@ async fn backpressure_flushes_and_calls_again() {
     }
 }
 
+/// ONE UNIT, ONE KEY: `arrive` and every `on_piece` carry the unit's kernel-minted key, the
+/// caller's head crosses once at `arrive`, and the plane finds it again by that key.
+#[tokio::test]
+async fn every_op_of_a_unit_carries_its_kernel_minted_key() {
+    for way in ways() {
+        let r = rig(way, BufferCaps::default(), Book::default());
+        let (steps, far, caller) = (
+            TestUnits::passing(),
+            Far::new(&["ok"], CHUNKS),
+            Caller::default(),
+        );
+        let units = r
+            .driver
+            .unit(&steps, &far, &caller, arrival("/keyed", b"k"), 0);
+        assert!(matches!(drive(&units).await, Outcome::Completed));
+        assert_eq!(
+            r.stats()[stat::UNIT],
+            ctx(7).key.get(),
+            "{way:?}: the pieces carried the unit's key"
+        );
+        assert_eq!(far.sent()[0].target, b"/far/ok/keyed", "{way:?}");
+    }
+}
+
 /// A PENDING `on_piece` is an await; the runtime thread keeps running other tasks while the
 /// plane waits, and the plane's one wake resumes it. On a current-thread runtime a blocking wait
 /// would starve the ticker below.
@@ -413,7 +442,7 @@ async fn a_retry_verdict_before_the_first_byte_fails_over() {
         assert!(matches!(drive(&units).await, Outcome::Completed));
         let sent = far.sent();
         assert_eq!(sent.len(), 2, "{way:?}: failed over to the second member");
-        assert_eq!(sent[1].target, b"/far/ok");
+        assert_eq!(sent[1].target, b"/far/ok/call");
         assert_eq!(
             sent[1].body, b"p",
             "{way:?}: the kept body is re-pushed on attempt 2"
