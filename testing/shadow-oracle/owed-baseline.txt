@@ -979,3 +979,12 @@ webrequest|gate|sidecar-500-nothing
 webrequest|gate|sidecar-500-reject
 webrequest|tap|notify
 webrequest|transform|rewrite
+wire.h1|large-body|openai
+wire.h1|stream|anthropic
+wire.h1|stream|gemini
+wire.h2|keepalive-ping
+wire.h2|large-body|openai
+wire.h2|stream|openai
+wire.h2|two-requests|same-conn
+wire.tls|client-hello|default
+wire.tls|client-hello|http1-only

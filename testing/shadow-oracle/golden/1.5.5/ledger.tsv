@@ -2380,3 +2380,12 @@ webrequest|gate|sidecar-500-nothing	PASS	capture
 webrequest|gate|sidecar-500-reject	PASS	capture	
 webrequest|tap|notify	PASS	capture	
 webrequest|transform|rewrite	PASS	capture	
+wire.h1|large-body|openai	PASS	capture	
+wire.h1|stream|anthropic	PASS	capture	
+wire.h1|stream|gemini	PASS	capture	
+wire.h2|keepalive-ping	PASS	capture	
+wire.h2|large-body|openai	PASS	capture	
+wire.h2|stream|openai	PASS	capture	
+wire.h2|two-requests|same-conn	PASS	capture	
+wire.tls|client-hello|default	PASS	capture	
+wire.tls|client-hello|http1-only	PASS	capture	
