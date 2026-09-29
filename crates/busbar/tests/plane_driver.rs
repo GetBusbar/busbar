@@ -81,6 +81,7 @@ fn load(way: Way, dispatcher: &Dispatcher) -> Plugin<Plane> {
 /// [`load`], with the #85 envelope going to `sink`.
 fn load_with(way: Way, dispatcher: &Dispatcher, sink: Arc<dyn EnvelopeSink>) -> Plugin<Plane> {
     let bind = Bind {
+        instance: Arc::from("the-instance"),
         max_inflight_cap: 64,
         sink,
         dispatcher: dispatcher.adopter(),

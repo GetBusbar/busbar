@@ -64,6 +64,7 @@ fn fixture() -> Option<Vec<u8>> {
 
 fn bind() -> Bind {
     Bind {
+        instance: Arc::from("the-instance"),
         max_inflight_cap: 64,
         sink: Arc::new(NoSink),
         dispatcher: Adopter::unwatched(),

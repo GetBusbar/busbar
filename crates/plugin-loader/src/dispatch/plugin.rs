@@ -140,6 +140,9 @@ impl EnvelopeSink for NoSink {
 /// What the host binds a loaded plugin to.
 #[derive(Clone)]
 pub struct Bind {
+    /// The host's label for this opened instance, unique per instance: two instances of one plugin
+    /// share a Statement name and never a label. The host services know the instance by it.
+    pub instance: Arc<str>,
     /// The host's clamp on the Statement's `max_inflight`.
     pub max_inflight_cap: u32,
     /// Where the envelope goes.
@@ -151,7 +154,7 @@ pub struct Bind {
     /// ```compile_fail
     /// let sink = std::sync::Arc::new(busbar_plugin_loader::dispatch::NoSink);
     /// // missing field `dispatcher`: there is no unwatched production bind
-    /// let _ = busbar_plugin_loader::dispatch::Bind { max_inflight_cap: 1, sink };
+    /// let _ = busbar_plugin_loader::dispatch::Bind { instance: "a".into(), max_inflight_cap: 1, sink };
     /// ```
     pub dispatcher: super::worker::Adopter,
 }
@@ -159,6 +162,7 @@ pub struct Bind {
 impl std::fmt::Debug for Bind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Bind")
+            .field("instance", &self.instance)
             .field("max_inflight_cap", &self.max_inflight_cap)
             .finish_non_exhaustive()
     }
@@ -782,6 +786,11 @@ impl<K: Kind> Plugin<K> {
         }));
         let name = str_bytes(st.name)
             .ok_or_else(|| LoadError::BadStatement("the name is NULL or over-long".into()))?;
+        let _ = wake.caller.set(busbar_contract::services::Caller {
+            instance: Arc::clone(&bind.instance),
+            plugin: Arc::from(String::from_utf8_lossy(name).as_ref()),
+            kind: v.kind,
+        });
         let context = K::context(&st).map_err(LoadError::KindTail)?;
         let plugin = Self {
             inner: Arc::new(Instance {

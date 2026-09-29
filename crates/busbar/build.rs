@@ -320,7 +320,7 @@ fn linked_transports_source(manifest: &str, enabled: &dyn Fn(&str) -> bool) -> (
             let n = rows.matches("LinkedWire {").count();
             door_builds.push_str(&format!(
                 "fn __door_build_{n}(lower: Option<Wire>, settings: &::busbar_contract::transport::TransportSettings) -> Wire {{\n    \
-                 self::__busbar_doors::build(::{entry}::door, lower, settings)\n}}\n"
+                 self::__busbar_doors::build(::{entry}::KEY, ::{entry}::door, lower, settings)\n}}\n"
             ));
             format!("__door_build_{n}")
         } else {

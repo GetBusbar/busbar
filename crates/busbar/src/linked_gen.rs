@@ -330,7 +330,7 @@ pub(crate) fn linked_source(
                 "fn __door_build_{n}(\n    lower: Option<std::sync::Arc<dyn busbar_contract::Transport>>,\n    \
                  settings: &busbar_contract::transport::TransportSettings,\n\
                  ) -> std::sync::Arc<dyn busbar_contract::Transport> {{\n    \
-                 crate::root::doors::build({e}::door, lower, settings)\n}}\n"
+                 crate::root::doors::build({e}::KEY, {e}::door, lower, settings)\n}}\n"
             ));
             format!("__door_build_{n}")
         } else {

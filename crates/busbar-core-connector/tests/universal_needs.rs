@@ -235,6 +235,7 @@ fn open_door(
         kind_abi: KindCode::Transport.abi_version(),
     };
     let bind = Bind {
+        instance: std::sync::Arc::from("the-instance"),
         max_inflight_cap: 64,
         sink: std::sync::Arc::new(NoSink),
         dispatcher: ONE

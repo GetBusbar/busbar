@@ -843,6 +843,29 @@ fn dropped_doors() -> &'static [DroppedDoor] {
     doors
 }
 
+/// TWO LINKED DOOR ROWS ARE TWO INSTANCES: a linked transport door is bound under its own row name,
+/// so no two linked rows share a label and the host services never take them for one instance
+/// (ARCHITECT ruling 2026-09-30 (B)).
+#[test]
+fn two_linked_door_rows_are_bound_under_two_distinct_labels() {
+    let (a, b) = (
+        crate::root::doors::row_bind("first-row"),
+        crate::root::doors::row_bind("second-row"),
+    );
+    assert_eq!(
+        &*a.instance, "first-row",
+        "a linked door is labelled by its row name"
+    );
+    assert_eq!(
+        &*b.instance, "second-row",
+        "a linked door is labelled by its row name"
+    );
+    assert_ne!(
+        a.instance, b.instance,
+        "two linked rows are bound under two labels"
+    );
+}
+
 fn one_door() -> Dropped {
     Dropped {
         hot: &[],

@@ -29,6 +29,7 @@ fn open() -> LoadedStore {
     let plugin = load_linked::<Store>(
         crate::both_ways::store_fixture::door,
         Bind {
+            instance: Arc::from("the-instance"),
             max_inflight_cap: 1024,
             sink: Arc::new(NoSink),
             dispatcher: d.adopter(),

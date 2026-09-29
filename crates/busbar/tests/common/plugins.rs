@@ -179,6 +179,7 @@ fn transport_door(path: &Path) -> Option<(Plugin<Transport>, &'static str)> {
         kind_abi: busbar_contract::abi::mechanism::KindCode::Transport.abi_version(),
     };
     let bind = Bind {
+        instance: std::sync::Arc::from("the-instance"),
         max_inflight_cap: 64,
         sink: std::sync::Arc::new(NoSink),
         dispatcher: d.adopter(),

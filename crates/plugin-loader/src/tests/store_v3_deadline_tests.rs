@@ -143,6 +143,7 @@ fn open() -> (LoadedStore, Arc<Dispatcher>) {
     let p = load_linked::<Store>(
         hung::door,
         Bind {
+            instance: Arc::from("the-instance"),
             max_inflight_cap: 64,
             sink: Arc::new(NoSink),
             dispatcher: d.adopter(),

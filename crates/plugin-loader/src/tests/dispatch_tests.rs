@@ -131,6 +131,7 @@ impl Recorder {
 
 fn bind(sink: Arc<Recorder>) -> Bind {
     Bind {
+        instance: Arc::from("the-instance"),
         max_inflight_cap: 64,
         sink,
         dispatcher: crate::dispatch::Adopter::unwatched(),
@@ -1794,4 +1795,36 @@ fn a_dropped_pending_reply_keeps_its_lent_memory_until_the_cancel() {
     until("the lent memory goes after the cancel", || {
         dropped.load(std::sync::atomic::Ordering::SeqCst)
     });
+}
+
+/// Bind states the instance to the host services by the host's label for it, beside the plugin's
+/// Statement name and its kind; the kernel keys every per-instance fact by the label.
+#[test]
+fn bind_states_the_caller_to_the_host_services() {
+    let p = linked(quiet());
+    let caller = p.inner.wake.caller.get().expect("bind states a caller");
+    assert_eq!(&*caller.instance, "the-instance");
+    assert_eq!(&*caller.plugin, p.inner.name());
+    assert_eq!(caller.kind, p.inner.kind);
+}
+
+/// Two instances of one plugin share its Statement name and are two callers: each is known by its
+/// own label.
+#[test]
+fn two_instances_of_one_plugin_are_two_callers() {
+    let first = linked(quiet());
+    let second = load_linked::<TestKind>(
+        plug::busbar_plugin_door,
+        Bind {
+            instance: Arc::from("the-second"),
+            ..bind(quiet())
+        },
+    )
+    .expect("the linked door loads twice");
+    let (a, b) = (
+        first.inner.wake.caller.get().unwrap(),
+        second.inner.wake.caller.get().unwrap(),
+    );
+    assert_eq!(a.plugin, b.plugin);
+    assert_ne!(a.instance, b.instance);
 }

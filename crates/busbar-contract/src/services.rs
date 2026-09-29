@@ -7,8 +7,25 @@
 //! this, and neither names the other. The ABI a plugin sees is `abi::host::service`; nothing here
 //! crosses the plugin boundary.
 
+use std::sync::Arc;
+
 use crate::abi::host::service::ItemSpan;
 use crate::abi::mechanism::call::Outcome;
+use crate::abi::mechanism::KindCode;
+
+/// Who called a service: the opened instance, by the label the host configured for it, the plugin
+/// it is an instance of, and its kind. The loader states it at bind. The kernel keys every
+/// per-instance fact it holds by `instance`, never by `plugin`: two instances of one plugin share a
+/// Statement name and never a registry.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Caller {
+    /// The host's label for this opened instance, unique per instance.
+    pub instance: Arc<str>,
+    /// The plugin's Statement name.
+    pub plugin: Arc<str>,
+    /// Its kind.
+    pub kind: KindCode,
+}
 
 /// A reading of the kernel's one clock.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
