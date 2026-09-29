@@ -13,9 +13,9 @@ mod common;
 use std::sync::Arc;
 
 use busbar_contract::caps::{
-    Admit, Admittance, Approve, Arrival, Audit, Authenticate, Canary, Consumption, Decision,
-    Decode, Dial, Encode, Grant, HoldAccrual, HoldCell, HoldCellState, Meter, Outcome, Pass,
-    PostingFlags, PrincipalId, ReasonCode, Refusal, Route, StepName, VerifiedDestination, Verify,
+    Admit, Admittance, Approve, Arrival, Audit, Authenticate, Canary, Consumption, Decode, Dial,
+    Encode, Grant, HoldAccrual, HoldCell, HoldCellState, Meter, Outcome, Pass, PostingFlags,
+    PrincipalId, ReasonCode, Refusal, Route, SeatVerdict, StepName, VerifiedDestination, Verify,
 };
 use busbar_kernel::slice::{ConcurrencyGauge, GroupLeaseSlip, LeaseCell};
 use busbar_kernel::teller::{
@@ -60,13 +60,13 @@ impl ParentExitsMidRoute<'_> {
 }
 
 impl Units for ParentExitsMidRoute<'_> {
-    fn arrival(&self, token: &Pass<Arrival>, ctx: &UnitCtx) -> Decision<Arrival> {
+    fn arrival(&self, token: &Pass<Arrival>, ctx: &UnitCtx) -> SeatVerdict<Arrival> {
         self.child.arrival(token, ctx)
     }
-    fn decode(&self, token: &Pass<Decode>, ctx: &UnitCtx) -> Decision<Decode> {
+    fn decode(&self, token: &Pass<Decode>, ctx: &UnitCtx) -> SeatVerdict<Decode> {
         self.child.decode(token, ctx)
     }
-    fn authenticate(&self, token: &Pass<Authenticate>, ctx: &UnitCtx) -> Decision<Authenticate> {
+    fn authenticate(&self, token: &Pass<Authenticate>, ctx: &UnitCtx) -> SeatVerdict<Authenticate> {
         self.child.authenticate(token, ctx)
     }
     fn verify(
@@ -75,7 +75,7 @@ impl Units for ParentExitsMidRoute<'_> {
         trust: &Grant<Dial>,
         ctx: &UnitCtx,
         principal: &PrincipalId,
-    ) -> Decision<Verify> {
+    ) -> SeatVerdict<Verify> {
         self.child.verify(token, trust, ctx, principal)
     }
     fn approve(
@@ -84,7 +84,7 @@ impl Units for ParentExitsMidRoute<'_> {
         ctx: &UnitCtx,
         principal: &PrincipalId,
         destinations: &[VerifiedDestination],
-    ) -> Decision<Approve> {
+    ) -> SeatVerdict<Approve> {
         self.child.approve(token, ctx, principal, destinations)
     }
     fn admit(
@@ -95,7 +95,7 @@ impl Units for ParentExitsMidRoute<'_> {
         principal: &PrincipalId,
         destinations: &[VerifiedDestination],
         leases: &GroupLeaseSlip,
-    ) -> Decision<Admit> {
+    ) -> SeatVerdict<Admit> {
         self.child
             .admit(token, admit, ctx, principal, destinations, leases)
     }
@@ -104,7 +104,7 @@ impl Units for ParentExitsMidRoute<'_> {
         token: &Pass<Route>,
         ctx: &UnitCtx,
         destinations: &[VerifiedDestination],
-    ) -> Decision<Route> {
+    ) -> SeatVerdict<Route> {
         let routed = self.child.route(token, ctx, destinations);
         self.parent_exits();
         routed
@@ -116,11 +116,11 @@ impl Units for ParentExitsMidRoute<'_> {
         ctx: &UnitCtx,
         provisional: &Outcome,
         destinations: &[VerifiedDestination],
-    ) -> Decision<Meter> {
+    ) -> SeatVerdict<Meter> {
         self.child
             .meter(token, usage, ctx, provisional, destinations)
     }
-    fn audit(&self, token: &Pass<Audit>, ctx: &UnitCtx, outcome: &Outcome) -> Decision<Audit> {
+    fn audit(&self, token: &Pass<Audit>, ctx: &UnitCtx, outcome: &Outcome) -> SeatVerdict<Audit> {
         self.child.audit(token, ctx, outcome)
     }
     fn audit_refused(
@@ -128,10 +128,15 @@ impl Units for ParentExitsMidRoute<'_> {
         token: &Pass<Audit>,
         ctx: &UnitCtx,
         refusal: &Refusal,
-    ) -> Decision<Audit> {
+    ) -> SeatVerdict<Audit> {
         self.child.audit_refused(token, ctx, refusal)
     }
-    fn encode(&self, token: &Pass<Encode>, ctx: &UnitCtx, outcome: &Outcome) -> Decision<Encode> {
+    fn encode(
+        &self,
+        token: &Pass<Encode>,
+        ctx: &UnitCtx,
+        outcome: &Outcome,
+    ) -> SeatVerdict<Encode> {
         self.child.encode(token, ctx, outcome)
     }
     fn evidence(&self, ctx: &UnitCtx) -> Evidence {

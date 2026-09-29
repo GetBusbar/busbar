@@ -56,8 +56,8 @@ pub use super::auth_bindings;
 use std::sync::{Arc, LazyLock, Mutex};
 
 use busbar_contract::caps::{
-    Admit, Admittance, Approve, Arrival, Audit, Authenticate, Consumption, Decision, Decode,
-    Encode, Grant, Hold, Meter, Outcome, Pass, PrincipalId, Refusal, Route, VerifiedDestination,
+    Admit, Admittance, Approve, Arrival, Audit, Authenticate, Consumption, Decode, Encode, Grant,
+    Hold, Meter, Outcome, Pass, PrincipalId, Refusal, Route, SeatVerdict, VerifiedDestination,
     Verify,
 };
 use busbar_kernel::inflight::ArrivalDoor;
@@ -1556,7 +1556,7 @@ pub trait RegisteredUnits: Send + Sync {
         root: &ProductionUnits,
         token: &Pass<Arrival>,
         ctx: &UnitCtx,
-    ) -> Decision<Arrival>;
+    ) -> SeatVerdict<Arrival>;
 
     /// The plane's Decode step. See [`Units::decode`].
     fn decode(
@@ -1564,7 +1564,7 @@ pub trait RegisteredUnits: Send + Sync {
         root: &ProductionUnits,
         token: &Pass<Decode>,
         ctx: &UnitCtx,
-    ) -> Decision<Decode>;
+    ) -> SeatVerdict<Decode>;
 
     /// The plane's Authenticate step. See [`Units::authenticate`].
     fn authenticate(
@@ -1572,7 +1572,7 @@ pub trait RegisteredUnits: Send + Sync {
         root: &ProductionUnits,
         token: &Pass<Authenticate>,
         ctx: &UnitCtx,
-    ) -> Decision<Authenticate>;
+    ) -> SeatVerdict<Authenticate>;
 
     /// The plane's Verify step. See [`Units::verify`].
     fn verify(
@@ -1582,7 +1582,7 @@ pub trait RegisteredUnits: Send + Sync {
         trust: &busbar_contract::caps::Grant<busbar_contract::caps::Dial>,
         ctx: &UnitCtx,
         principal: &PrincipalId,
-    ) -> Decision<Verify>;
+    ) -> SeatVerdict<Verify>;
 
     /// The plane's Approve step. See [`Units::approve`].
     fn approve(
@@ -1592,7 +1592,7 @@ pub trait RegisteredUnits: Send + Sync {
         ctx: &UnitCtx,
         principal: &PrincipalId,
         destinations: &[VerifiedDestination],
-    ) -> Decision<Approve>;
+    ) -> SeatVerdict<Approve>;
 
     /// The plane's Admit step. See [`Units::admit`].
     // One argument over the lint's ceiling, and it is the `root` every method on this trait leads
@@ -1608,7 +1608,7 @@ pub trait RegisteredUnits: Send + Sync {
         principal: &PrincipalId,
         destinations: &[VerifiedDestination],
         leases: &GroupLeaseSlip,
-    ) -> Decision<Admit>;
+    ) -> SeatVerdict<Admit>;
 
     /// The plane's Route step. See [`Units::route`].
     fn route(
@@ -1617,7 +1617,7 @@ pub trait RegisteredUnits: Send + Sync {
         token: &Pass<Route>,
         ctx: &UnitCtx,
         destinations: &[busbar_contract::caps::VerifiedDestination],
-    ) -> Decision<Route>;
+    ) -> SeatVerdict<Route>;
 
     /// The plane's Meter step. See [`Units::meter`].
     fn meter(
@@ -1628,7 +1628,7 @@ pub trait RegisteredUnits: Send + Sync {
         ctx: &UnitCtx,
         provisional: &Outcome,
         destinations: &[busbar_contract::caps::VerifiedDestination],
-    ) -> Decision<Meter>;
+    ) -> SeatVerdict<Meter>;
 
     /// The plane's Audit step. See [`Units::audit`].
     fn audit(
@@ -1637,7 +1637,7 @@ pub trait RegisteredUnits: Send + Sync {
         token: &Pass<Audit>,
         ctx: &UnitCtx,
         outcome: &Outcome,
-    ) -> Decision<Audit>;
+    ) -> SeatVerdict<Audit>;
 
     /// The plane's refused-Audit step. See [`Units::audit_refused`].
     fn audit_refused(
@@ -1646,7 +1646,7 @@ pub trait RegisteredUnits: Send + Sync {
         token: &Pass<Audit>,
         ctx: &UnitCtx,
         refusal: &Refusal,
-    ) -> Decision<Audit>;
+    ) -> SeatVerdict<Audit>;
 
     /// The plane's Encode step. See [`Units::encode`].
     fn encode(
@@ -1655,7 +1655,7 @@ pub trait RegisteredUnits: Send + Sync {
         token: &Pass<Encode>,
         ctx: &UnitCtx,
         outcome: &Outcome,
-    ) -> Decision<Encode>;
+    ) -> SeatVerdict<Encode>;
 
     /// The plane's Evidence read. See [`Units::evidence`].
     fn evidence(&self, root: &ProductionUnits, ctx: &UnitCtx) -> Evidence;
@@ -1717,31 +1717,31 @@ impl ProductionUnits {
 // never takes at runtime. The old `allow(unused_variables)` the no-plane build once needed is gone
 // with the per-method refusals that made the arguments dead.
 impl Units for ProductionUnits {
-    fn arrival(&self, token: &Pass<Arrival>, ctx: &UnitCtx) -> Decision<Arrival> {
+    fn arrival(&self, token: &Pass<Arrival>, ctx: &UnitCtx) -> SeatVerdict<Arrival> {
         if let Some(plane) = self.registry.resolve(self, ctx) {
             return plane.arrival(self, token, ctx);
         }
-        Decision::refuse(
+        SeatVerdict::refuse(
             token,
             Refusal::new(busbar_contract::caps::ReasonCode::NoDestination),
         )
     }
 
-    fn decode(&self, token: &Pass<Decode>, ctx: &UnitCtx) -> Decision<Decode> {
+    fn decode(&self, token: &Pass<Decode>, ctx: &UnitCtx) -> SeatVerdict<Decode> {
         if let Some(plane) = self.registry.resolve(self, ctx) {
             return plane.decode(self, token, ctx);
         }
-        Decision::refuse(
+        SeatVerdict::refuse(
             token,
             Refusal::new(busbar_contract::caps::ReasonCode::DecodeFailed),
         )
     }
 
-    fn authenticate(&self, token: &Pass<Authenticate>, ctx: &UnitCtx) -> Decision<Authenticate> {
+    fn authenticate(&self, token: &Pass<Authenticate>, ctx: &UnitCtx) -> SeatVerdict<Authenticate> {
         if let Some(plane) = self.registry.resolve(self, ctx) {
             return plane.authenticate(self, token, ctx);
         }
-        Decision::refuse(
+        SeatVerdict::refuse(
             token,
             Refusal::new(busbar_contract::caps::ReasonCode::Unauthenticated),
         )
@@ -1753,11 +1753,11 @@ impl Units for ProductionUnits {
         trust: &busbar_contract::caps::Grant<busbar_contract::caps::Dial>,
         ctx: &UnitCtx,
         principal: &PrincipalId,
-    ) -> Decision<Verify> {
+    ) -> SeatVerdict<Verify> {
         if let Some(plane) = self.registry.resolve(self, ctx) {
             return plane.verify(self, token, trust, ctx, principal);
         }
-        Decision::refuse(
+        SeatVerdict::refuse(
             token,
             Refusal::new(busbar_contract::caps::ReasonCode::NoDestination),
         )
@@ -1769,11 +1769,11 @@ impl Units for ProductionUnits {
         ctx: &UnitCtx,
         principal: &PrincipalId,
         destinations: &[VerifiedDestination],
-    ) -> Decision<Approve> {
+    ) -> SeatVerdict<Approve> {
         if let Some(plane) = self.registry.resolve(self, ctx) {
             return plane.approve(self, token, ctx, principal, destinations);
         }
-        Decision::refuse(
+        SeatVerdict::refuse(
             token,
             Refusal::new(busbar_contract::caps::ReasonCode::ScopeDenied),
         )
@@ -1787,11 +1787,11 @@ impl Units for ProductionUnits {
         principal: &PrincipalId,
         destinations: &[VerifiedDestination],
         leases: &GroupLeaseSlip,
-    ) -> Decision<Admit> {
+    ) -> SeatVerdict<Admit> {
         if let Some(plane) = self.registry.resolve(self, ctx) {
             return plane.admit(self, token, admit, ctx, principal, destinations, leases);
         }
-        Decision::refuse(
+        SeatVerdict::refuse(
             token,
             Refusal::new(busbar_contract::caps::ReasonCode::NoDestination),
         )
@@ -1802,11 +1802,11 @@ impl Units for ProductionUnits {
         token: &Pass<Route>,
         ctx: &UnitCtx,
         destinations: &[busbar_contract::caps::VerifiedDestination],
-    ) -> Decision<Route> {
+    ) -> SeatVerdict<Route> {
         if let Some(plane) = self.registry.resolve(self, ctx) {
             return plane.route(self, token, ctx, destinations);
         }
-        Decision::refuse(
+        SeatVerdict::refuse(
             token,
             Refusal::new(busbar_contract::caps::ReasonCode::NoDestination),
         )
@@ -1819,21 +1819,21 @@ impl Units for ProductionUnits {
         ctx: &UnitCtx,
         provisional: &Outcome,
         destinations: &[busbar_contract::caps::VerifiedDestination],
-    ) -> Decision<Meter> {
+    ) -> SeatVerdict<Meter> {
         if let Some(plane) = self.registry.resolve(self, ctx) {
             return plane.meter(self, token, usage, ctx, provisional, destinations);
         }
-        Decision::refuse(
+        SeatVerdict::refuse(
             token,
             Refusal::new(busbar_contract::caps::ReasonCode::Unpriced),
         )
     }
 
-    fn audit(&self, token: &Pass<Audit>, ctx: &UnitCtx, outcome: &Outcome) -> Decision<Audit> {
+    fn audit(&self, token: &Pass<Audit>, ctx: &UnitCtx, outcome: &Outcome) -> SeatVerdict<Audit> {
         if let Some(plane) = self.registry.resolve(self, ctx) {
             return plane.audit(self, token, ctx, outcome);
         }
-        Decision::proceed(token, unclaimed_facts(outcome))
+        SeatVerdict::proceed(token, unclaimed_facts(outcome))
     }
 
     fn audit_refused(
@@ -1841,11 +1841,11 @@ impl Units for ProductionUnits {
         token: &Pass<Audit>,
         ctx: &UnitCtx,
         refusal: &Refusal,
-    ) -> Decision<Audit> {
+    ) -> SeatVerdict<Audit> {
         if let Some(plane) = self.registry.resolve(self, ctx) {
             return plane.audit_refused(self, token, ctx, refusal);
         }
-        Decision::proceed(
+        SeatVerdict::proceed(
             token,
             // The step is the decision's stamp. A refusal that reaches the refused-audit door
             // without one never came from a decision; the door itself is the latest step it could
@@ -1859,11 +1859,16 @@ impl Units for ProductionUnits {
         )
     }
 
-    fn encode(&self, token: &Pass<Encode>, ctx: &UnitCtx, outcome: &Outcome) -> Decision<Encode> {
+    fn encode(
+        &self,
+        token: &Pass<Encode>,
+        ctx: &UnitCtx,
+        outcome: &Outcome,
+    ) -> SeatVerdict<Encode> {
         if let Some(plane) = self.registry.resolve(self, ctx) {
             return plane.encode(self, token, ctx, outcome);
         }
-        Decision::refuse(
+        SeatVerdict::refuse(
             token,
             Refusal::new(busbar_contract::caps::ReasonCode::DecodeFailed),
         )

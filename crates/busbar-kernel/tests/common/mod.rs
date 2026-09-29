@@ -13,9 +13,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use busbar_contract::caps::{
-    Admission, Admit, Admittance, Approve, Arrival, Audit, Authenticate, Consumption, Decision,
-    Decode, Encode, Grant, Hold, HoldCell, Meter, MeterClassId, OriginKind, Outcome, Pass,
-    PrincipalId, ReasonCode, Refusal, Route, ScopeFacts, StepName, UnitKey, Usage, UsageLine,
+    Admission, Admit, Admittance, Approve, Arrival, Audit, Authenticate, Consumption, Decode,
+    Encode, Grant, Hold, HoldCell, Meter, MeterClassId, OriginKind, Outcome, Pass, PrincipalId,
+    ReasonCode, Refusal, Route, ScopeFacts, SeatVerdict, StepName, UnitKey, Usage, UsageLine,
     VerifiedDestination, Verify,
 };
 use busbar_kernel::registry::Generation;
@@ -224,7 +224,7 @@ pub struct Never<'u> {
 }
 
 impl std::future::Future for Never<'_> {
-    type Output = Decision<Route>;
+    type Output = SeatVerdict<Route>;
 
     fn poll(
         self: std::pin::Pin<&mut Self>,
@@ -342,18 +342,18 @@ macro_rules! step {
     ($self:ident, $token:ident, $marker:ty, $name:expr, $facts:expr) => {{
         $self.note($name);
         match $self.refusal($name) {
-            Some(refusal) => Decision::<$marker>::refuse($token, refusal),
-            None => Decision::<$marker>::proceed($token, $facts),
+            Some(refusal) => SeatVerdict::<$marker>::refuse($token, refusal),
+            None => SeatVerdict::<$marker>::proceed($token, $facts),
         }
     }};
 }
 
 impl Units for TestUnits {
-    fn arrival(&self, token: &Pass<Arrival>, _ctx: &UnitCtx) -> Decision<Arrival> {
+    fn arrival(&self, token: &Pass<Arrival>, _ctx: &UnitCtx) -> SeatVerdict<Arrival> {
         step!(self, token, Arrival, StepName::Arrival, arrival_record())
     }
 
-    fn decode(&self, token: &Pass<Decode>, _ctx: &UnitCtx) -> Decision<Decode> {
+    fn decode(&self, token: &Pass<Decode>, _ctx: &UnitCtx) -> SeatVerdict<Decode> {
         step!(
             self,
             token,
@@ -363,7 +363,11 @@ impl Units for TestUnits {
         )
     }
 
-    fn authenticate(&self, token: &Pass<Authenticate>, _ctx: &UnitCtx) -> Decision<Authenticate> {
+    fn authenticate(
+        &self,
+        token: &Pass<Authenticate>,
+        _ctx: &UnitCtx,
+    ) -> SeatVerdict<Authenticate> {
         let facts = if self.challenge {
             busbar_contract::caps::Authenticated::Challenge(busbar_contract::Challenge {
                 bytes: b"nonce".to_vec(),
@@ -382,14 +386,14 @@ impl Units for TestUnits {
         trust: &busbar_contract::caps::Grant<busbar_contract::caps::Dial>,
         _ctx: &UnitCtx,
         _principal: &PrincipalId,
-    ) -> Decision<Verify> {
+    ) -> SeatVerdict<Verify> {
         self.note(StepName::Verify);
         match self.refusal(StepName::Verify) {
-            Some(refusal) => Decision::refuse(token, refusal),
+            Some(refusal) => SeatVerdict::refuse(token, refusal),
             // The trust token the loop lends this step is what seals a destination, so the fixture
             // seals one: a step that answered with the empty set would exercise the loop's
             // no-destination path on every test rather than the one that names it.
-            None => Decision::proceed(
+            None => SeatVerdict::proceed(
                 token,
                 vec![VerifiedDestination::seal(
                     trust,
@@ -405,7 +409,7 @@ impl Units for TestUnits {
         _ctx: &UnitCtx,
         principal: &PrincipalId,
         destinations: &[VerifiedDestination],
-    ) -> Decision<Approve> {
+    ) -> SeatVerdict<Approve> {
         self.seated_principals
             .lock()
             .unwrap()
@@ -431,21 +435,21 @@ impl Units for TestUnits {
         principal: &PrincipalId,
         _destinations: &[VerifiedDestination],
         leases: &busbar_kernel::slice::GroupLeaseSlip,
-    ) -> Decision<Admit> {
+    ) -> SeatVerdict<Admit> {
         self.note(StepName::Admit);
         self.seated_principals
             .lock()
             .unwrap()
             .push(principal.clone());
         match self.refusal(StepName::Admit) {
-            Some(refusal) => Decision::refuse(token, refusal),
+            Some(refusal) => SeatVerdict::refuse(token, refusal),
             None => {
                 // The cap, on the door's own counter, exactly where a real door takes it: as part
                 // of the decision, before anything else is answered. A full group refuses, and the
                 // refusal is the rate-limited one the ratified table renders a concurrency cap as.
                 if let Some(group) = &self.capped {
                     let Some(counted) = group.count_one() else {
-                        return Decision::refuse(token, Refusal::new(ReasonCode::RateLimited));
+                        return SeatVerdict::refuse(token, Refusal::new(ReasonCode::RateLimited));
                     };
                     // And handed straight over, because the count is the cap and the cap has to
                     // outlive the call that took it.
@@ -468,7 +472,7 @@ impl Units for TestUnits {
                         }
                     }
                 };
-                Decision::proceed(token, admission)
+                SeatVerdict::proceed(token, admission)
             }
         }
     }
@@ -478,12 +482,12 @@ impl Units for TestUnits {
         token: &Pass<Route>,
         _ctx: &UnitCtx,
         _destinations: &[busbar_contract::caps::VerifiedDestination],
-    ) -> Decision<Route> {
+    ) -> SeatVerdict<Route> {
         self.note(StepName::Route);
         self.meter.accrue(self.spend);
         match self.refusal(StepName::Route) {
-            Some(refusal) => Decision::refuse(token, refusal),
-            None => Decision::proceed(token, busbar_contract::caps::RoutePlan::default()),
+            Some(refusal) => SeatVerdict::refuse(token, refusal),
+            None => SeatVerdict::proceed(token, busbar_contract::caps::RoutePlan::default()),
         }
     }
 
@@ -494,18 +498,18 @@ impl Units for TestUnits {
         _ctx: &UnitCtx,
         _provisional: &Outcome,
         _destinations: &[busbar_contract::caps::VerifiedDestination],
-    ) -> Decision<Meter> {
+    ) -> SeatVerdict<Meter> {
         self.note(StepName::Meter);
         match self.refusal(StepName::Meter) {
-            Some(refusal) => Decision::refuse(token, refusal),
-            None => Decision::proceed(token, usage(usage_token, self.spend)),
+            Some(refusal) => SeatVerdict::refuse(token, refusal),
+            None => SeatVerdict::proceed(token, usage(usage_token, self.spend)),
         }
     }
 
-    fn audit(&self, token: &Pass<Audit>, _ctx: &UnitCtx, _outcome: &Outcome) -> Decision<Audit> {
+    fn audit(&self, token: &Pass<Audit>, _ctx: &UnitCtx, _outcome: &Outcome) -> SeatVerdict<Audit> {
         self.note(StepName::Audit);
         self.admitted_door.store(true, Ordering::Release);
-        Decision::proceed(token, audit_facts())
+        SeatVerdict::proceed(token, audit_facts())
     }
 
     fn audit_refused(
@@ -513,15 +517,20 @@ impl Units for TestUnits {
         token: &Pass<Audit>,
         _ctx: &UnitCtx,
         _refusal: &Refusal,
-    ) -> Decision<Audit> {
+    ) -> SeatVerdict<Audit> {
         self.calls.lock().unwrap().push(StepName::Audit);
         self.refused_door.store(true, Ordering::Release);
-        Decision::proceed(token, audit_facts())
+        SeatVerdict::proceed(token, audit_facts())
     }
 
-    fn encode(&self, token: &Pass<Encode>, _ctx: &UnitCtx, _outcome: &Outcome) -> Decision<Encode> {
+    fn encode(
+        &self,
+        token: &Pass<Encode>,
+        _ctx: &UnitCtx,
+        _outcome: &Outcome,
+    ) -> SeatVerdict<Encode> {
         self.note(StepName::Encode);
-        Decision::proceed(token, encoded_frame())
+        SeatVerdict::proceed(token, encoded_frame())
     }
 
     fn evidence(&self, _ctx: &UnitCtx) -> Evidence {

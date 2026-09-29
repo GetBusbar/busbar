@@ -58,7 +58,7 @@ use axum::response::Response;
 // Imported (rather than named at each site) so this file spells the api-crate path once: the
 // kind-isolation matrix counts each spelling as this crate naming that kind, and the door
 // pass-throughs would otherwise repeat it per signature.
-use busbar_contract::caps::{step::Audit, Decision, OpClassId, Pass};
+use busbar_contract::caps::{step::Audit, OpClassId, Pass, SeatVerdict};
 use busbar_contract::records::PlaneRequestCtx;
 use busbar_contract::FinishClass;
 use busbar_kernel::{door, plane_host::EngineHost};
@@ -288,7 +288,7 @@ pub struct AuditCtx<'a> {
 /// not this step — is what hands it back to the transport.
 pub struct Audited {
     /// The sealed step-7 answer: what the plane says this unit was, and how it says it ended.
-    pub decision: Decision<Audit>,
+    pub decision: SeatVerdict<Audit>,
     /// The posted response, in the sealed shape — the only shape a response moves in outside this
     /// file.
     pub response: Served,
@@ -296,7 +296,7 @@ pub struct Audited {
 
 impl Audited {
     /// The step's answer on its own, which is what the loop takes.
-    pub fn into_decision(self) -> Decision<Audit> {
+    pub fn into_decision(self) -> SeatVerdict<Audit> {
         self.decision
     }
 }
@@ -363,7 +363,7 @@ pub fn audit(unit_token: &Pass<Audit>, ctx: &AuditCtx<'_>, resp: Served, charged
             resp.into_response(),
             charged,
         )),
-        decision: Decision::proceed(unit_token, facts),
+        decision: SeatVerdict::proceed(unit_token, facts),
     }
 }
 
@@ -387,7 +387,7 @@ pub fn audit_refused(unit_token: &Pass<Audit>, ctx: &AuditCtx<'_>, resp: Served)
             ctx.charged_at,
             resp.into_response(),
         )),
-        decision: Decision::proceed(unit_token, facts),
+        decision: SeatVerdict::proceed(unit_token, facts),
     }
 }
 

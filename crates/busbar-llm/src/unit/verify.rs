@@ -40,7 +40,7 @@
 //! bytes, which is what keeps every terminal on this plane on one path — and what lets this file
 //! carry no HTTP vocabulary beyond the two kind constants the live doors already spell.
 
-use busbar_contract::caps::{Decision, Pass, PrincipalId, Refusal, VerifiedDestination, Verify};
+use busbar_contract::caps::{Pass, PrincipalId, Refusal, SeatVerdict, VerifiedDestination, Verify};
 use busbar_kernel::plane_host::{EngineHost, EngineTablesView};
 
 use crate::unit::audit::RefusalOutcome;
@@ -74,7 +74,7 @@ impl VerifyOutcome for VerifyRefusal {
 /// WHAT THE STEP ANSWERS WITH: the decision the loop reads, and the named refusal that produced it.
 ///
 /// The two travel together because they are two readings of one answer for two different readers.
-/// The [`Decision`] is the kernel's: it carries the reason code and the retry hint, in the neutral
+/// The [`SeatVerdict`] is the kernel's: it carries the reason code and the retry hint, in the neutral
 /// vocabulary every step's decision is written in, and it must stay free of any dialect's status
 /// numbers and sentences — a `Refusal` that carried a wire triple would put HTTP into the one type
 /// every plane's every step shares. The [`VerifyRefusal`] is the terminal's: it is the same refusal
@@ -88,7 +88,7 @@ impl VerifyOutcome for VerifyRefusal {
 #[must_use = "a decision that is not returned to the loop silently skips the step"]
 pub struct Verified {
     /// The loop's answer: proceed with the sealed destination set, or refuse at this step.
-    pub decision: Decision<Verify>,
+    pub decision: SeatVerdict<Verify>,
     /// The refusal as this step named it, present exactly when `decision` refused.
     pub refusal: Option<VerifyRefusal>,
 }
@@ -179,7 +179,7 @@ pub fn verify(
 ) -> Verified {
     match destination_guard(view, pool) {
         Ok(()) => Verified {
-            decision: Decision::proceed(token, destinations),
+            decision: SeatVerdict::proceed(token, destinations),
             refusal: None,
         },
         Err(refusal) => {
@@ -195,7 +195,7 @@ pub fn verify(
                 }
             }
             Verified {
-                decision: Decision::refuse(token, Refusal::new(refusal.reason())),
+                decision: SeatVerdict::refuse(token, Refusal::new(refusal.reason())),
                 refusal: Some(refusal),
             }
         }

@@ -158,7 +158,7 @@ impl std::fmt::Debug for CallId {
 /// A stage-pass: the proof that the loop is running step `S` for the current unit right now (#72).
 ///
 /// Handed by reference to the unit that owns step `S`, and to no one else. It is the only thing that
-/// can build a [`crate::caps::Decision`] for `S`, so a unit cannot answer a question it was not asked,
+/// can build a [`crate::caps::SeatVerdict`] for `S`, so a unit cannot answer a question it was not asked,
 /// and it is the only thing that can read one back, so a unit cannot open its own answer.
 ///
 /// Neither `Clone` nor `Copy`; minted fresh by the kernel and dropped when the call it was lent to

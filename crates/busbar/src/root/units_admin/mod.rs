@@ -41,8 +41,8 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use busbar_contract::caps::{
-    Admission, Admit, Admittance, Approve, Audit, Authenticate, Consumption, Decision, Decode,
-    Encode, Grant, Meter, Outcome, Pass, PrincipalId, ReasonCode, Refusal, Route, Usage,
+    Admission, Admit, Admittance, Approve, Audit, Authenticate, Consumption, Decode, Encode, Grant,
+    Meter, Outcome, Pass, PrincipalId, ReasonCode, Refusal, Route, SeatVerdict, Usage,
     VerifiedDestination, Verify,
 };
 use busbar_contract::UnitKey;
@@ -2809,9 +2809,9 @@ pub(crate) fn arrival(
     binding: &AdminBinding,
     token: &Pass<busbar_contract::caps::Arrival>,
     ctx: &UnitCtx,
-) -> Decision<busbar_contract::caps::Arrival> {
+) -> SeatVerdict<busbar_contract::caps::Arrival> {
     let _ = binding;
-    Decision::proceed(
+    SeatVerdict::proceed(
         token,
         busbar_contract::ArrivalRecord {
             source: String::new(),
@@ -2834,15 +2834,15 @@ pub(crate) fn decode(
     binding: &AdminBinding,
     token: &Pass<Decode>,
     ctx: &UnitCtx,
-) -> Decision<Decode> {
+) -> SeatVerdict<Decode> {
     let Some(request) = binding.units.request(ctx.key) else {
-        return Decision::refuse(token, Refusal::new(ReasonCode::DecodeFailed));
+        return SeatVerdict::refuse(token, Refusal::new(ReasonCode::DecodeFailed));
     };
     match busbar_core_admin::admin_codec::verbs::resolve(&request.method, &request.path) {
-        None => Decision::refuse(token, Refusal::new(ReasonCode::DecodeFailed)),
+        None => SeatVerdict::refuse(token, Refusal::new(ReasonCode::DecodeFailed)),
         Some(resolved) => {
             binding.units.set_verb(ctx.key, resolved);
-            Decision::proceed(token, resolved.op_class())
+            SeatVerdict::proceed(token, resolved.op_class())
         }
     }
 }
@@ -2865,9 +2865,9 @@ pub(crate) fn authenticate(
     bindings: &crate::root::auth_bindings::AuthBindings,
     token: &Pass<Authenticate>,
     ctx: &UnitCtx,
-) -> Decision<Authenticate> {
+) -> SeatVerdict<Authenticate> {
     let Some(request) = binding.units.request(ctx.key) else {
-        return Decision::refuse(token, Refusal::new(ReasonCode::Unauthenticated));
+        return SeatVerdict::refuse(token, Refusal::new(ReasonCode::Unauthenticated));
     };
     auth.resolve(
         &AuthRequest {
@@ -2906,14 +2906,14 @@ pub(crate) fn verify(
     token: &Pass<Verify>,
     ctx: &UnitCtx,
     principal: &PrincipalId,
-) -> Decision<Verify> {
+) -> SeatVerdict<Verify> {
     // The first step the loop hands the resolved identity to, so it is the step that keeps it. Every
     // later step that has to say WHO reads it from here rather than from the request, because the
     // request carries the presented credential and a credential is not an identity.
     binding.units.set_principal(ctx.key, principal.clone());
     match binding.units.verb(ctx.key) {
-        None => Decision::refuse(token, Refusal::new(ReasonCode::NoDestination)),
-        Some(_resolved) => Decision::proceed(token, Vec::new()),
+        None => SeatVerdict::refuse(token, Refusal::new(ReasonCode::NoDestination)),
+        Some(_resolved) => SeatVerdict::proceed(token, Vec::new()),
     }
 }
 
@@ -2929,22 +2929,22 @@ pub(crate) fn approve(
     ctx: &UnitCtx,
     _principal: &PrincipalId,
     _destinations: &[VerifiedDestination],
-) -> Decision<Approve> {
+) -> SeatVerdict<Approve> {
     // A caller holding no grant at all is refused here, before the operation is reached. An absent
     // grant is not a narrow one: there is no scope to compare the matrix against, so there is
     // nothing this step could admit.
     let Some(granted) = granted else {
-        return Decision::refuse(token, Refusal::new(ReasonCode::ScopeDenied));
+        return SeatVerdict::refuse(token, Refusal::new(ReasonCode::ScopeDenied));
     };
     let Some(request) = binding.units.request(ctx.key) else {
-        return Decision::refuse(token, Refusal::new(ReasonCode::ScopeDenied));
+        return SeatVerdict::refuse(token, Refusal::new(ReasonCode::ScopeDenied));
     };
     let needed = busbar_kernel_scope::admin_required_scope(&request.method, &request.path);
     binding.units.set_granted(ctx.key, granted);
     if !granted.allows(scope_as_verb_scope(needed)) {
-        return Decision::refuse(token, Refusal::new(ReasonCode::ScopeDenied));
+        return SeatVerdict::refuse(token, Refusal::new(ReasonCode::ScopeDenied));
     }
-    Decision::proceed(token, busbar_contract::ScopeFacts::default())
+    SeatVerdict::proceed(token, busbar_contract::ScopeFacts::default())
 }
 
 /// The scope unit and the verbs unit spell the same two-rung split with two types. Neither is wrong
@@ -2971,12 +2971,12 @@ pub(crate) fn admit(
     ctx: &UnitCtx,
     _principal: &PrincipalId,
     _destinations: &[VerifiedDestination],
-) -> Decision<Admit> {
+) -> SeatVerdict<Admit> {
     let Some(resolved) = binding.units.verb(ctx.key) else {
-        return Decision::refuse(token, Refusal::new(ReasonCode::NoDestination));
+        return SeatVerdict::refuse(token, Refusal::new(ReasonCode::NoDestination));
     };
     let Some(verb) = kernel_verb(&resolved) else {
-        return Decision::refuse(token, Refusal::new(ReasonCode::NoDestination));
+        return SeatVerdict::refuse(token, Refusal::new(ReasonCode::NoDestination));
     };
     // The class is read here — that is the binding — and read is ALL it is. `Forbidden` in this
     // vocabulary does not mean the verb is refused; it means the verb is not a mutation and the
@@ -2985,7 +2985,7 @@ pub(crate) fn admit(
     // every read on the surface into a 403, which is exactly the kind of thing a vocabulary shared
     // between two crates invites.
     let _class = mutation_class(verb);
-    Decision::proceed(token, Admission::ZeroHold)
+    SeatVerdict::proceed(token, Admission::ZeroHold)
 }
 
 /// Step 5. The verb runs, where its body lives.
@@ -3004,14 +3004,14 @@ pub(crate) fn route(
     admin: &busbar_contract::caps::Grant<busbar_contract::caps::AdminVerb>,
     token: &Pass<Route>,
     ctx: &UnitCtx,
-) -> Decision<Route> {
+) -> SeatVerdict<Route> {
     let (Some(request), Some(resolved)) =
         (binding.units.request(ctx.key), binding.units.verb(ctx.key))
     else {
-        return Decision::refuse(token, Refusal::new(ReasonCode::NoDestination));
+        return SeatVerdict::refuse(token, Refusal::new(ReasonCode::NoDestination));
     };
     let Some(verb) = kernel_verb(&resolved) else {
-        return Decision::refuse(token, Refusal::new(ReasonCode::NoDestination));
+        return SeatVerdict::refuse(token, Refusal::new(ReasonCode::NoDestination));
     };
     let granted = binding
         .units
@@ -3027,7 +3027,7 @@ pub(crate) fn route(
     if mints_its_own_identity(verb) {
         let answer = binding.dispatch.execute(verb, &request);
         binding.units.set_answer(ctx.key, answer);
-        return Decision::proceed(token, busbar_contract::RoutePlan::default());
+        return SeatVerdict::proceed(token, busbar_contract::RoutePlan::default());
     }
 
     // The same identity the record attributes to, so the rate-limit bucket, the audit row and the
@@ -3113,7 +3113,7 @@ pub(crate) fn route(
                         &backup_ref,
                     ),
                     None => {
-                        return Decision::refuse(token, Refusal::new(ReasonCode::DecodeFailed));
+                        return SeatVerdict::refuse(token, Refusal::new(ReasonCode::DecodeFailed));
                     }
                 }
             }
@@ -3124,9 +3124,9 @@ pub(crate) fn route(
         return match ran {
             Ok(()) => {
                 binding.units.set_answer(ctx.key, applied_answer());
-                Decision::proceed(token, busbar_contract::RoutePlan::default())
+                SeatVerdict::proceed(token, busbar_contract::RoutePlan::default())
             }
-            Err(refusal) => Decision::refuse(token, Refusal::new(verbs_reason(refusal.reason))),
+            Err(refusal) => SeatVerdict::refuse(token, Refusal::new(verbs_reason(refusal.reason))),
         };
     }
 
@@ -3143,13 +3143,13 @@ pub(crate) fn route(
         Ok(packed) => match AdminAnswer::unpack(&packed) {
             Some(answer) => {
                 binding.units.set_answer(ctx.key, answer);
-                Decision::proceed(token, busbar_contract::RoutePlan::default())
+                SeatVerdict::proceed(token, busbar_contract::RoutePlan::default())
             }
             // The only producer of these bytes is this file's own packer, so a shape that does not
             // parse is this file being wrong rather than an input to forgive.
-            None => Decision::refuse(token, Refusal::new(ReasonCode::DecodeFailed)),
+            None => SeatVerdict::refuse(token, Refusal::new(ReasonCode::DecodeFailed)),
         },
-        Err(refusal) => Decision::refuse(token, Refusal::new(verbs_reason(refusal.reason))),
+        Err(refusal) => SeatVerdict::refuse(token, Refusal::new(verbs_reason(refusal.reason))),
     }
 }
 
@@ -3309,10 +3309,10 @@ pub(crate) fn meter(
     usage: &Grant<Consumption>,
     _ctx: &UnitCtx,
     _provisional: &Outcome,
-) -> Decision<Meter> {
+) -> SeatVerdict<Meter> {
     match Usage::report(usage, Vec::new()) {
-        Ok(reported) => Decision::proceed(token, reported),
-        Err(_) => Decision::refuse(token, Refusal::new(ReasonCode::Unpriced)),
+        Ok(reported) => SeatVerdict::proceed(token, reported),
+        Err(_) => SeatVerdict::refuse(token, Refusal::new(ReasonCode::Unpriced)),
     }
 }
 
@@ -3329,10 +3329,10 @@ pub(crate) fn audit(
     token: &Pass<Audit>,
     ctx: &UnitCtx,
     outcome: &Outcome,
-) -> Decision<Audit> {
+) -> SeatVerdict<Audit> {
     let (Some(_), Some(resolved)) = (binding.units.request(ctx.key), binding.units.verb(ctx.key))
     else {
-        return Decision::proceed(
+        return SeatVerdict::proceed(
             token,
             unresolved_facts(
                 binding
@@ -3350,7 +3350,7 @@ pub(crate) fn audit(
             .answer(ctx.key)
             .is_some_and(|answer| (200..300).contains(&answer.status));
     seal_root_only(binding, ctx, &resolved, applied);
-    Decision::proceed(
+    SeatVerdict::proceed(
         token,
         busbar_contract::AuditFacts {
             op_class: resolved.op_class(),
@@ -3390,7 +3390,7 @@ pub(crate) fn audit_refused(
     token: &Pass<Audit>,
     ctx: &UnitCtx,
     refusal: &Refusal,
-) -> Decision<Audit> {
+) -> SeatVerdict<Audit> {
     let (Some(_), Some(resolved)) = (binding.units.request(ctx.key), binding.units.verb(ctx.key))
     else {
         // THE REFUSAL THAT HAPPENED, not one composed here. This arm used to seal every unresolved
@@ -3399,7 +3399,7 @@ pub(crate) fn audit_refused(
         // bytes did not parse. That is the single thing an audit record exists to state, and it was
         // the field this door overwrote. The step is the decision's own stamp where it carries one,
         // and the door itself is the latest step it could have been raised at where it does not.
-        return Decision::proceed(
+        return SeatVerdict::proceed(
             token,
             unresolved_facts(
                 binding
@@ -3417,7 +3417,7 @@ pub(crate) fn audit_refused(
         );
     };
     seal_root_only(binding, ctx, &resolved, false);
-    Decision::proceed(
+    SeatVerdict::proceed(
         token,
         busbar_contract::AuditFacts {
             op_class: resolved.op_class(),
@@ -3484,13 +3484,13 @@ pub(crate) fn encode(
     token: &Pass<Encode>,
     ctx: &UnitCtx,
     _outcome: &Outcome,
-) -> Decision<Encode> {
+) -> SeatVerdict<Encode> {
     let bytes = binding
         .units
         .answer(ctx.key)
         .map(|answer| answer.body)
         .unwrap_or_default();
-    Decision::proceed(
+    SeatVerdict::proceed(
         token,
         busbar_contract::Frame {
             direction: busbar_contract::Direction::Outbound,
@@ -3549,7 +3549,7 @@ impl RegisteredUnits for AdminPlane {
         root: &ProductionUnits,
         token: &Pass<busbar_contract::caps::Arrival>,
         ctx: &UnitCtx,
-    ) -> Decision<busbar_contract::caps::Arrival> {
+    ) -> SeatVerdict<busbar_contract::caps::Arrival> {
         arrival(&root.admin, token, ctx)
     }
 
@@ -3558,7 +3558,7 @@ impl RegisteredUnits for AdminPlane {
         root: &ProductionUnits,
         token: &Pass<Decode>,
         ctx: &UnitCtx,
-    ) -> Decision<Decode> {
+    ) -> SeatVerdict<Decode> {
         decode(&root.admin, token, ctx)
     }
 
@@ -3567,7 +3567,7 @@ impl RegisteredUnits for AdminPlane {
         root: &ProductionUnits,
         token: &Pass<Authenticate>,
         ctx: &UnitCtx,
-    ) -> Decision<Authenticate> {
+    ) -> SeatVerdict<Authenticate> {
         authenticate(&root.auth, &root.admin, &root.auth_bindings, token, ctx)
     }
 
@@ -3578,7 +3578,7 @@ impl RegisteredUnits for AdminPlane {
         _trust: &busbar_contract::caps::Grant<busbar_contract::caps::Dial>,
         ctx: &UnitCtx,
         principal: &PrincipalId,
-    ) -> Decision<Verify> {
+    ) -> SeatVerdict<Verify> {
         verify(&root.admin, token, ctx, principal)
     }
 
@@ -3589,7 +3589,7 @@ impl RegisteredUnits for AdminPlane {
         ctx: &UnitCtx,
         principal: &PrincipalId,
         destinations: &[VerifiedDestination],
-    ) -> Decision<Approve> {
+    ) -> SeatVerdict<Approve> {
         approve(
             &root.admin,
             root.admin_grant(principal),
@@ -3612,7 +3612,7 @@ impl RegisteredUnits for AdminPlane {
         // The administrative surface charges through no configured group — a kernel verb is exempt
         // from the gauge entirely — so this door names none.
         _leases: &busbar_kernel::slice::GroupLeaseSlip,
-    ) -> Decision<Admit> {
+    ) -> SeatVerdict<Admit> {
         admit(
             &root.admin,
             token,
@@ -3629,7 +3629,7 @@ impl RegisteredUnits for AdminPlane {
         token: &Pass<Route>,
         ctx: &UnitCtx,
         _destinations: &[busbar_contract::caps::VerifiedDestination],
-    ) -> Decision<Route> {
+    ) -> SeatVerdict<Route> {
         route(
             &root.admin,
             Arc::clone(&root.store),
@@ -3647,7 +3647,7 @@ impl RegisteredUnits for AdminPlane {
         ctx: &UnitCtx,
         provisional: &Outcome,
         _destinations: &[busbar_contract::caps::VerifiedDestination],
-    ) -> Decision<Meter> {
+    ) -> SeatVerdict<Meter> {
         meter(token, usage, ctx, provisional)
     }
 
@@ -3657,7 +3657,7 @@ impl RegisteredUnits for AdminPlane {
         token: &Pass<Audit>,
         ctx: &UnitCtx,
         outcome: &Outcome,
-    ) -> Decision<Audit> {
+    ) -> SeatVerdict<Audit> {
         audit(&root.admin, token, ctx, outcome)
     }
 
@@ -3667,7 +3667,7 @@ impl RegisteredUnits for AdminPlane {
         token: &Pass<Audit>,
         ctx: &UnitCtx,
         refusal: &Refusal,
-    ) -> Decision<Audit> {
+    ) -> SeatVerdict<Audit> {
         audit_refused(&root.admin, token, ctx, refusal)
     }
 
@@ -3677,7 +3677,7 @@ impl RegisteredUnits for AdminPlane {
         token: &Pass<Encode>,
         ctx: &UnitCtx,
         outcome: &Outcome,
-    ) -> Decision<Encode> {
+    ) -> SeatVerdict<Encode> {
         encode(&root.admin, token, ctx, outcome)
     }
 
@@ -3693,7 +3693,7 @@ trait TapAdmin: Sized {
     }
 }
 
-impl<S: busbar_contract::caps::Step> TapAdmin for Decision<S> {}
+impl<S: busbar_contract::caps::Step> TapAdmin for SeatVerdict<S> {}
 
 /// The store the verbs unit is handed, behind the published ABI.
 ///

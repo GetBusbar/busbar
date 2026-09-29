@@ -16,9 +16,9 @@ use std::sync::Mutex;
 
 use busbar_contract::caps::{
     Admission, Admit, Admittance, Approve, Arrival, Audit, Authenticate, Authenticated,
-    Consumption, Decision, Decode, Dial, Encode, Grant, Hold, LaneId, Meter, OriginKind, Outcome,
-    Pass, PrincipalId, Refusal, Route, RoutePlan, ScopeFacts, UnitKey, Usage, VerifiedDestination,
-    Verify,
+    Consumption, Decode, Dial, Encode, Grant, Hold, LaneId, Meter, OriginKind, Outcome, Pass,
+    PrincipalId, Refusal, Route, RoutePlan, ScopeFacts, SeatVerdict, UnitKey, Usage,
+    VerifiedDestination, Verify,
 };
 
 use crate::registry::Generation;
@@ -85,16 +85,20 @@ struct Fixture {
 }
 
 impl Units for Fixture {
-    fn arrival(&self, token: &Pass<Arrival>, _ctx: &UnitCtx) -> Decision<Arrival> {
-        Decision::proceed(token, arrival_record())
+    fn arrival(&self, token: &Pass<Arrival>, _ctx: &UnitCtx) -> SeatVerdict<Arrival> {
+        SeatVerdict::proceed(token, arrival_record())
     }
 
-    fn decode(&self, token: &Pass<Decode>, _ctx: &UnitCtx) -> Decision<Decode> {
-        Decision::proceed(token, busbar_contract::caps::OpClassId::new("fixture"))
+    fn decode(&self, token: &Pass<Decode>, _ctx: &UnitCtx) -> SeatVerdict<Decode> {
+        SeatVerdict::proceed(token, busbar_contract::caps::OpClassId::new("fixture"))
     }
 
-    fn authenticate(&self, token: &Pass<Authenticate>, _ctx: &UnitCtx) -> Decision<Authenticate> {
-        Decision::proceed(token, Authenticated::Principal(principal()))
+    fn authenticate(
+        &self,
+        token: &Pass<Authenticate>,
+        _ctx: &UnitCtx,
+    ) -> SeatVerdict<Authenticate> {
+        SeatVerdict::proceed(token, Authenticated::Principal(principal()))
     }
 
     fn verify(
@@ -103,12 +107,12 @@ impl Units for Fixture {
         trust: &Grant<Dial>,
         _ctx: &UnitCtx,
         _principal: &PrincipalId,
-    ) -> Decision<Verify> {
+    ) -> SeatVerdict<Verify> {
         let sealed = sealed_lanes()
             .into_iter()
             .map(|lane| VerifiedDestination::seal(trust, lane))
             .collect();
-        Decision::proceed(token, sealed)
+        SeatVerdict::proceed(token, sealed)
     }
 
     fn approve(
@@ -117,8 +121,8 @@ impl Units for Fixture {
         _ctx: &UnitCtx,
         _principal: &PrincipalId,
         _destinations: &[VerifiedDestination],
-    ) -> Decision<Approve> {
-        Decision::proceed(token, ScopeFacts::default())
+    ) -> SeatVerdict<Approve> {
+        SeatVerdict::proceed(token, ScopeFacts::default())
     }
 
     fn admit(
@@ -129,8 +133,8 @@ impl Units for Fixture {
         principal: &PrincipalId,
         _destinations: &[VerifiedDestination],
         _leases: &GroupLeaseSlip,
-    ) -> Decision<Admit> {
-        Decision::proceed(
+    ) -> SeatVerdict<Admit> {
+        SeatVerdict::proceed(
             token,
             Admission::Own(Hold::open(admit, principal.clone(), 1_000)),
         )
@@ -141,12 +145,12 @@ impl Units for Fixture {
         token: &Pass<Route>,
         _ctx: &UnitCtx,
         destinations: &[VerifiedDestination],
-    ) -> Decision<Route> {
+    ) -> SeatVerdict<Route> {
         self.route_seen
             .lock()
             .unwrap()
             .extend_from_slice(destinations);
-        Decision::proceed(token, RoutePlan::default())
+        SeatVerdict::proceed(token, RoutePlan::default())
     }
 
     fn meter(
@@ -156,19 +160,19 @@ impl Units for Fixture {
         _ctx: &UnitCtx,
         _provisional: &Outcome,
         destinations: &[VerifiedDestination],
-    ) -> Decision<Meter> {
+    ) -> SeatVerdict<Meter> {
         self.meter_seen
             .lock()
             .unwrap()
             .extend_from_slice(destinations);
-        Decision::proceed(
+        SeatVerdict::proceed(
             token,
             Usage::report(usage_token, Vec::new()).expect("an empty usage report is within bound"),
         )
     }
 
-    fn audit(&self, token: &Pass<Audit>, _ctx: &UnitCtx, _outcome: &Outcome) -> Decision<Audit> {
-        Decision::proceed(token, audit_facts())
+    fn audit(&self, token: &Pass<Audit>, _ctx: &UnitCtx, _outcome: &Outcome) -> SeatVerdict<Audit> {
+        SeatVerdict::proceed(token, audit_facts())
     }
 
     fn audit_refused(
@@ -176,12 +180,17 @@ impl Units for Fixture {
         token: &Pass<Audit>,
         _ctx: &UnitCtx,
         _refusal: &Refusal,
-    ) -> Decision<Audit> {
-        Decision::proceed(token, audit_facts())
+    ) -> SeatVerdict<Audit> {
+        SeatVerdict::proceed(token, audit_facts())
     }
 
-    fn encode(&self, token: &Pass<Encode>, _ctx: &UnitCtx, _outcome: &Outcome) -> Decision<Encode> {
-        Decision::proceed(token, encoded_frame())
+    fn encode(
+        &self,
+        token: &Pass<Encode>,
+        _ctx: &UnitCtx,
+        _outcome: &Outcome,
+    ) -> SeatVerdict<Encode> {
+        SeatVerdict::proceed(token, encoded_frame())
     }
 
     fn evidence(&self, _ctx: &UnitCtx) -> Evidence {

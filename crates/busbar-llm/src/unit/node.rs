@@ -103,9 +103,9 @@ use std::time::Instant;
 use axum::http::StatusCode;
 
 use busbar_contract::caps::{
-    Admit, Admittance, Approve, Arrival, ArrivalRecord, Audit, Authenticate, Consumption, Decision,
-    Decode, Dial, Encode, Grant, Meter, OpClassId, OriginKind, Outcome, Pass, PrincipalId,
-    ReasonCode, Refusal, Route, VerifiedDestination, Verify,
+    Admit, Admittance, Approve, Arrival, ArrivalRecord, Audit, Authenticate, Consumption, Decode,
+    Dial, Encode, Grant, Meter, OpClassId, OriginKind, Outcome, Pass, PrincipalId, ReasonCode,
+    Refusal, Route, SeatVerdict, VerifiedDestination, Verify,
 };
 use busbar_contract::slice::GroupLeaseSlip;
 use busbar_contract::LaneId;
@@ -367,7 +367,7 @@ impl LlmUnit {
 // ---------------------------------------------------------------------------------------------
 
 impl Units for LlmUnit {
-    fn arrival(&self, token: &Pass<Arrival>, _ctx: &UnitCtx) -> Decision<Arrival> {
+    fn arrival(&self, token: &Pass<Arrival>, _ctx: &UnitCtx) -> SeatVerdict<Arrival> {
         let record = ArrivalRecord {
             source: String::new(),
             port: 0,
@@ -394,12 +394,12 @@ impl Units for LlmUnit {
                 Ok(arrived) => {
                     let ct = arrival::content_type(self.walk.headers()).to_string();
                     self.walk.keep_arrival(arrived.into_arrival(ct));
-                    Decision::proceed(token, record)
+                    SeatVerdict::proceed(token, record)
                 }
                 Err(refusal) => {
                     self.walk
                         .hold_bytes(audit::render_refusal(self.walk.proto(), &refusal.outcome()));
-                    Decision::refuse(token, Refusal::new(ReasonCode::DecodeFailed))
+                    SeatVerdict::refuse(token, Refusal::new(ReasonCode::DecodeFailed))
                 }
             };
         }
@@ -410,28 +410,28 @@ impl Units for LlmUnit {
         // RAISED at the decode arm, where it belongs; what happens here is only the reading.
         if let Err(refusal) = decode::handler_for(self.walk.proto(), self.walk.operation()) {
             *self.deferred.lock().unwrap_or_else(|e| e.into_inner()) = Some(refusal);
-            return Decision::proceed(token, record);
+            return SeatVerdict::proceed(token, record);
         }
         match arrival::arrival_body(self.walk.headers(), self.walk.body()) {
             Ok(arrived) => {
                 self.walk.keep_arrival(arrived);
-                Decision::proceed(token, record)
+                SeatVerdict::proceed(token, record)
             }
             Err(refusal) => {
                 // A named refusal becomes bytes at the audit step and nowhere else: the step names
                 // the refusal, one function renders it, and the terminal posts it.
                 self.walk
                     .hold_bytes(audit::render_refusal(self.walk.proto(), &refusal.outcome()));
-                Decision::refuse(token, Refusal::new(ReasonCode::DecodeFailed))
+                SeatVerdict::refuse(token, Refusal::new(ReasonCode::DecodeFailed))
             }
         }
     }
 
-    fn decode(&self, token: &Pass<Decode>, _ctx: &UnitCtx) -> Decision<Decode> {
+    fn decode(&self, token: &Pass<Decode>, _ctx: &UnitCtx) -> SeatVerdict<Decode> {
         let refuse = |refusal: decode::DecodeRefusal| {
             self.walk
                 .hold_bytes(audit::render_refusal(self.walk.proto(), &refusal.outcome()));
-            Decision::refuse(token, Refusal::new(ReasonCode::DecodeFailed))
+            SeatVerdict::refuse(token, Refusal::new(ReasonCode::DecodeFailed))
         };
         if let Some(refusal) = self
             .deferred
@@ -451,7 +451,7 @@ impl Units for LlmUnit {
             return match read {
                 Ok(model) => {
                     *self.model.lock().unwrap_or_else(|e| e.into_inner()) = model;
-                    Decision::proceed(token, self.op_class)
+                    SeatVerdict::proceed(token, self.op_class)
                 }
                 Err(refusal) => refuse(refusal),
             };
@@ -473,14 +473,18 @@ impl Units for LlmUnit {
         match read {
             Some(Ok(model)) => {
                 *self.model.lock().unwrap_or_else(|e| e.into_inner()) = model;
-                Decision::proceed(token, self.op_class)
+                SeatVerdict::proceed(token, self.op_class)
             }
             Some(Err(refusal)) => refuse(refusal),
-            None => Decision::refuse(token, Refusal::new(ReasonCode::DecodeFailed)),
+            None => SeatVerdict::refuse(token, Refusal::new(ReasonCode::DecodeFailed)),
         }
     }
 
-    fn authenticate(&self, token: &Pass<Authenticate>, _ctx: &UnitCtx) -> Decision<Authenticate> {
+    fn authenticate(
+        &self,
+        token: &Pass<Authenticate>,
+        _ctx: &UnitCtx,
+    ) -> SeatVerdict<Authenticate> {
         // The read of the auth middleware's already-resolved outcome. It cannot refuse — every
         // refusal this step could raise is the middleware's, upstream of the plane — and it is still
         // called, because "the middleware answered" is a fact this step states rather than one the
@@ -494,7 +498,7 @@ impl Units for LlmUnit {
         trust: &Grant<Dial>,
         _ctx: &UnitCtx,
         principal: &PrincipalId,
-    ) -> Decision<Verify> {
+    ) -> SeatVerdict<Verify> {
         let model = self.model();
         // THE SEALED SET, over the lanes this deployment CONFIGURED for the destination — the
         // runtime names read off the running tables and interned once through the node's own
@@ -535,7 +539,7 @@ impl Units for LlmUnit {
         _ctx: &UnitCtx,
         principal: &PrincipalId,
         destinations: &[VerifiedDestination],
-    ) -> Decision<Approve> {
+    ) -> SeatVerdict<Approve> {
         // THE SEATS, as the node was composed with them. The step's only refusal is a seated gate's
         // veto, and [`NATIVE_SEATS`] is empty on every deployment today — so on every deployment
         // today this step proceeds, which is the same unit-for-unit behaviour as the live path. It
@@ -548,7 +552,7 @@ impl Units for LlmUnit {
         // it exactly as it posts every other step's. Without it the not-charged door would find
         // nothing rendered and a client refused on policy would read the node's overload sentence.
         //
-        // It is rendered BEFORE the ask rather than after it because a `Decision` is the kernel's to
+        // It is rendered BEFORE the ask rather than after it because a `SeatVerdict` is the kernel's to
         // read and no step can open its own. The cost is one response for a unit that may proceed —
         // paid only where a gate is actually seated, which is nowhere today — and it is discarded
         // the moment any later step ends the unit: the door overwrites it with its own refusal and
@@ -580,7 +584,7 @@ impl Units for LlmUnit {
         // registration and names none of them here. The unit is counted on the node-wide gauge
         // exactly as it always has been.
         _leases: &GroupLeaseSlip,
-    ) -> Decision<Admit> {
+    ) -> SeatVerdict<Admit> {
         let model = self.model();
         // THE DOOR, taken without its terminal: `admission_check` is the check-and-charge that
         // `admission_door` wraps its refusing arm in a posting. So a refusal here is BYTES rather
@@ -602,8 +606,8 @@ impl Units for LlmUnit {
         // zero, for this principal — it never refused a unit the door admitted, and the spend is
         // the governance ledger's.
         match self.walk.take_admission(admitted) {
-            Ok(()) => Decision::proceed(token, admitted_at_zero(admit_token, principal.clone())),
-            Err(refusal) => Decision::refuse(token, refusal),
+            Ok(()) => SeatVerdict::proceed(token, admitted_at_zero(admit_token, principal.clone())),
+            Err(refusal) => SeatVerdict::refuse(token, refusal),
         }
     }
 
@@ -612,13 +616,13 @@ impl Units for LlmUnit {
         token: &Pass<Route>,
         _ctx: &UnitCtx,
         _destinations: &[VerifiedDestination],
-    ) -> Decision<Route> {
+    ) -> SeatVerdict<Route> {
         // THIS PLANE'S ROUTE AWAITS, so it is answered by the `RouteAwait` arm below and this one is
         // not a path any unit on this plane takes: the node drives the loop's asynchronous entry point
         // and there is no other caller. Answered rather than unwrapped — an arm that
         // cannot be taken is still an arm that must say something — and answered with the reason a
         // synchronous driver would truly have: there is no task here to run the leg on.
-        Decision::refuse(token, Refusal::new(ReasonCode::TaskLost))
+        SeatVerdict::refuse(token, Refusal::new(ReasonCode::TaskLost))
     }
 
     fn meter(
@@ -628,7 +632,7 @@ impl Units for LlmUnit {
         _ctx: &UnitCtx,
         _provisional: &Outcome,
         _destinations: &[VerifiedDestination],
-    ) -> Decision<Meter> {
+    ) -> SeatVerdict<Meter> {
         // THE ACCRUAL IS NOT MADE HERE, and the reason is a fact about this plane rather than a
         // choice. What the unit is worth is what the response's tap reports, and the tap fills its
         // cell when the BODY is consumed — which on this surface is after the loop's terminal has
@@ -644,7 +648,7 @@ impl Units for LlmUnit {
         self.walk.meter(token, usage)
     }
 
-    fn audit(&self, token: &Pass<Audit>, _ctx: &UnitCtx, _outcome: &Outcome) -> Decision<Audit> {
+    fn audit(&self, token: &Pass<Audit>, _ctx: &UnitCtx, _outcome: &Outcome) -> SeatVerdict<Audit> {
         // THE CHARGED TERMINAL. A unit that passed the door leaves here, whatever it ended on: a
         // delivered answer, a relayed upstream failure, or a destination that resolved to nothing
         // after the caller was already charged. All three are the same door.
@@ -659,7 +663,7 @@ impl Units for LlmUnit {
         token: &Pass<Audit>,
         _ctx: &UnitCtx,
         _refusal: &Refusal,
-    ) -> Decision<Audit> {
+    ) -> SeatVerdict<Audit> {
         // THE NOT-CHARGED TERMINAL. Nothing was charged, so nothing is refunded — and the label is
         // the same bound the charged door applies over the same destination, so a refusal raised
         // against a CONFIGURED pool is recorded under that pool's name on both paths.
@@ -670,11 +674,16 @@ impl Units for LlmUnit {
             })
     }
 
-    fn encode(&self, token: &Pass<Encode>, _ctx: &UnitCtx, _outcome: &Outcome) -> Decision<Encode> {
+    fn encode(
+        &self,
+        token: &Pass<Encode>,
+        _ctx: &UnitCtx,
+        _outcome: &Outcome,
+    ) -> SeatVerdict<Encode> {
         // The terminal already produced the bytes and the transport already owns the envelope: this
         // is an HTTP response, and there is no frame this plane writes around one. An empty envelope
         // is the honest answer rather than a trailer this surface does not send.
-        Decision::proceed(
+        SeatVerdict::proceed(
             token,
             busbar_contract::caps::Frame {
                 direction: busbar_contract::Direction::Outbound,

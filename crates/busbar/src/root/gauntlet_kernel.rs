@@ -26,9 +26,9 @@ use axum::response::Response;
 
 use busbar_contract::caps::{
     Admission, Admit, Admittance, Approve, Arrival, ArrivalRecord, Audit, Authenticate,
-    Authenticated, Consumption, Decision, Decode, Dial, Encode, Frame, Grant, Meter, OpClassId,
-    OriginKind, Outcome, Pass, PrincipalId, ReasonCode, Refusal, Route, Usage, VerifiedDestination,
-    Verify,
+    Authenticated, Consumption, Decode, Dial, Encode, Frame, Grant, Meter, OpClassId, OriginKind,
+    Outcome, Pass, PrincipalId, ReasonCode, Refusal, Route, SeatVerdict, Usage,
+    VerifiedDestination, Verify,
 };
 use busbar_contract::{AuditFacts, FinishClass, RoutePlan, ScopeFacts, UnitKey};
 use busbar_kernel::plane_host::{
@@ -104,8 +104,8 @@ impl<'p> GauntletKernelUnit<'p> {
 }
 
 impl Units for GauntletKernelUnit<'_> {
-    fn arrival(&self, token: &Pass<Arrival>, _ctx: &UnitCtx) -> Decision<Arrival> {
-        Decision::proceed(
+    fn arrival(&self, token: &Pass<Arrival>, _ctx: &UnitCtx) -> SeatVerdict<Arrival> {
+        SeatVerdict::proceed(
             token,
             ArrivalRecord {
                 source: String::new(),
@@ -118,13 +118,17 @@ impl Units for GauntletKernelUnit<'_> {
         )
     }
 
-    fn decode(&self, token: &Pass<Decode>, _ctx: &UnitCtx) -> Decision<Decode> {
-        Decision::proceed(token, self.op_class)
+    fn decode(&self, token: &Pass<Decode>, _ctx: &UnitCtx) -> SeatVerdict<Decode> {
+        SeatVerdict::proceed(token, self.op_class)
     }
 
-    fn authenticate(&self, token: &Pass<Authenticate>, _ctx: &UnitCtx) -> Decision<Authenticate> {
+    fn authenticate(
+        &self,
+        token: &Pass<Authenticate>,
+        _ctx: &UnitCtx,
+    ) -> SeatVerdict<Authenticate> {
         // Identity is already resolved upstream and threaded via `gov`; this step states it.
-        Decision::proceed(token, Authenticated::Principal(self.principal.clone()))
+        SeatVerdict::proceed(token, Authenticated::Principal(self.principal.clone()))
     }
 
     fn verify(
@@ -133,7 +137,7 @@ impl Units for GauntletKernelUnit<'_> {
         _trust: &Grant<Dial>,
         _ctx: &UnitCtx,
         _principal: &PrincipalId,
-    ) -> Decision<Verify> {
+    ) -> SeatVerdict<Verify> {
         // The plane's OWN pre-admission destination check, in its verify-STRICTLY-before-charge
         // position — byte-identical to the substrate gauntlet. A refusal is the plane's own finished
         // response, stashed for the outer handler; the sealed set is empty (the plane's engine owns
@@ -149,10 +153,12 @@ impl Units for GauntletKernelUnit<'_> {
             }
         };
         match outcome {
-            VerifyOutcome::Proceed => Decision::proceed(token, Vec::<VerifiedDestination>::new()),
+            VerifyOutcome::Proceed => {
+                SeatVerdict::proceed(token, Vec::<VerifiedDestination>::new())
+            }
             VerifyOutcome::Refuse(resp) => {
                 self.table.store(self.key, PlaneAnswer::Live(resp));
-                Decision::refuse(token, Refusal::new(ReasonCode::NoDestination))
+                SeatVerdict::refuse(token, Refusal::new(ReasonCode::NoDestination))
             }
         }
     }
@@ -163,8 +169,8 @@ impl Units for GauntletKernelUnit<'_> {
         _ctx: &UnitCtx,
         _principal: &PrincipalId,
         _destinations: &[VerifiedDestination],
-    ) -> Decision<Approve> {
-        Decision::proceed(token, ScopeFacts::default())
+    ) -> SeatVerdict<Approve> {
+        SeatVerdict::proceed(token, ScopeFacts::default())
     }
 
     fn admit(
@@ -175,10 +181,10 @@ impl Units for GauntletKernelUnit<'_> {
         _principal: &PrincipalId,
         _destinations: &[VerifiedDestination],
         _leases: &GroupLeaseSlip,
-    ) -> Decision<Admit> {
+    ) -> SeatVerdict<Admit> {
         // THE EMPTY DOOR. The plane's own admission/charge lives inside `drive`, so the kernel door
         // opens nothing — the zero-hold admission — and the exit settles nothing.
-        Decision::proceed(token, Admission::ZeroHold)
+        SeatVerdict::proceed(token, Admission::ZeroHold)
     }
 
     fn route(
@@ -186,11 +192,11 @@ impl Units for GauntletKernelUnit<'_> {
         token: &Pass<Route>,
         _ctx: &UnitCtx,
         _destinations: &[busbar_contract::caps::VerifiedDestination],
-    ) -> Decision<Route> {
+    ) -> SeatVerdict<Route> {
         // This rider's Route AWAITS (the plane's `drive`), so the loop reaches it through the
         // `RouteAwait` arm below and this synchronous one is never taken. Answered rather than
         // unwrapped: there is no task here to run the leg on.
-        Decision::refuse(token, Refusal::new(ReasonCode::TaskLost))
+        SeatVerdict::refuse(token, Refusal::new(ReasonCode::TaskLost))
     }
 
     fn meter(
@@ -200,17 +206,17 @@ impl Units for GauntletKernelUnit<'_> {
         _ctx: &UnitCtx,
         _provisional: &Outcome,
         _destinations: &[busbar_contract::caps::VerifiedDestination],
-    ) -> Decision<Meter> {
+    ) -> SeatVerdict<Meter> {
         // The plane metered inside `drive`; the kernel meter reports nothing, so the exit settles a
         // zero it cannot mistake for a charge. Empty is a valid report.
-        Decision::proceed(
+        SeatVerdict::proceed(
             token,
             Usage::report(usage, Vec::new()).expect("an empty usage report never overflows"),
         )
     }
 
-    fn audit(&self, token: &Pass<Audit>, _ctx: &UnitCtx, _outcome: &Outcome) -> Decision<Audit> {
-        Decision::proceed(
+    fn audit(&self, token: &Pass<Audit>, _ctx: &UnitCtx, _outcome: &Outcome) -> SeatVerdict<Audit> {
+        SeatVerdict::proceed(
             token,
             AuditFacts {
                 op_class: self.op_class,
@@ -224,9 +230,9 @@ impl Units for GauntletKernelUnit<'_> {
         token: &Pass<Audit>,
         _ctx: &UnitCtx,
         _refusal: &Refusal,
-    ) -> Decision<Audit> {
+    ) -> SeatVerdict<Audit> {
         // The plane already finished its refusal (stashed at Verify); nothing was charged.
-        Decision::proceed(
+        SeatVerdict::proceed(
             token,
             AuditFacts {
                 op_class: self.op_class,
@@ -235,10 +241,15 @@ impl Units for GauntletKernelUnit<'_> {
         )
     }
 
-    fn encode(&self, token: &Pass<Encode>, _ctx: &UnitCtx, _outcome: &Outcome) -> Decision<Encode> {
+    fn encode(
+        &self,
+        token: &Pass<Encode>,
+        _ctx: &UnitCtx,
+        _outcome: &Outcome,
+    ) -> SeatVerdict<Encode> {
         // The plane's `drive` already produced the bytes and the transport owns the envelope; there
         // is no frame this rider writes around one.
-        Decision::proceed(
+        SeatVerdict::proceed(
             token,
             Frame {
                 direction: busbar_contract::Direction::Outbound,
@@ -281,7 +292,7 @@ impl RouteAwait for GauntletKernelUnit<'_> {
             // The plane's response is the answer, verbatim — stashed as a live body the outer handler
             // serves. Byte identity is a property of this construction: the loop wraps nothing.
             self.table.store(self.key, PlaneAnswer::Live(resp));
-            Decision::proceed(token, RoutePlan::default())
+            SeatVerdict::proceed(token, RoutePlan::default())
         })
     }
 

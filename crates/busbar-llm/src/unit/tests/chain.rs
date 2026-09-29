@@ -1600,7 +1600,7 @@ async fn the_live_carry_hands_the_meter_step_the_meter_half_the_walk_took() {
 
 /// GAP 3, CLOSED — the VERIFY step hands its named refusal back with the decision.
 ///
-/// `verify::verify` answers a [`verify::Verified`]: the `Decision<Verify>` the loop reads, whose
+/// `verify::verify` answers a [`verify::Verified`]: the `SeatVerdict<Verify>` the loop reads, whose
 /// `Refusal` carries the neutral reason code and retry hint, and beside it the `VerifyRefusal` the
 /// step actually raised. The wire triple therefore comes from the ONE reading of the guards that
 /// produced the refusal, rather than from a second reading that could answer differently.
@@ -1876,7 +1876,7 @@ async fn the_refused_terminal_labels_a_configured_pool_with_its_name() {
 
 /// GAP 8, CLOSED — ROUTE and AUDIT are on the token seam.
 ///
-/// Both now take a `Pass<S>` and answer with a `Decision<S>` over the step's own facts:
+/// Both now take a `Pass<S>` and answer with a `SeatVerdict<S>` over the step's own facts:
 /// `route::route` with a `RoutePlan`, `audit::audit` and `audit::audit_refused` with `AuditFacts`.
 /// The response each of them still carries rides beside the decision rather than instead of it, the
 /// way the admit step's rendered refusal already does — a plane's steps decide, and the last of

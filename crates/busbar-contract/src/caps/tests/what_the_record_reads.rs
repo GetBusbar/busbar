@@ -170,13 +170,13 @@ fn a_decisions_debug_names_its_own_step_and_the_reason_it_refused() {
     // which reason, because "a decision" tells a reader nothing they did not already know.
     let k = seal();
     let admit: Pass<Admit> = Pass::mint(&k);
-    let proceed = Decision::proceed(&admit, Admission::ZeroHold);
+    let proceed = SeatVerdict::proceed(&admit, Admission::ZeroHold);
     let printed = format!("{proceed:?}");
     assert!(printed.contains("admit"), "{printed}");
     assert!(printed.contains("Proceed"), "{printed}");
 
     let route: Pass<Route> = Pass::mint(&k);
-    let refused = Decision::refuse(&route, Refusal::new(ReasonCode::BreakerOpen));
+    let refused = SeatVerdict::refuse(&route, Refusal::new(ReasonCode::BreakerOpen));
     let printed = format!("{refused:?}");
     assert!(printed.contains("route"), "{printed}");
     assert!(printed.contains("Refuse"), "{printed}");

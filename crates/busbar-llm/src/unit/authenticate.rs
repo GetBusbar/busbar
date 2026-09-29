@@ -34,7 +34,7 @@
 //! `Revoked` refusal respectively, and the table above grows a row; until they do, an empty refusal
 //! set is the honest description of what the plane's authenticate step does.
 
-use busbar_contract::caps::{Authenticate, Authenticated, Decision, Pass, PrincipalId};
+use busbar_contract::caps::{Authenticate, Authenticated, Pass, PrincipalId, SeatVerdict};
 
 /// The actor id an unkeyed request is attributed to.
 ///
@@ -50,13 +50,13 @@ fn anonymous_actor_id() -> &'static str {
 ///
 /// Takes the step's own token and gives back the step's own answer, so this drops straight into the
 /// composition root's authenticate seam. It cannot refuse — see the module docs — so the return is
-/// always `Decision::proceed`, and the facts are always an established identity: this plane opens
+/// always `SeatVerdict::proceed`, and the facts are always an established identity: this plane opens
 /// no handshake unit, so the challenge arm is unreachable from here rather than unimplemented.
 pub fn authenticate(
     token: &Pass<Authenticate>,
     gov: &busbar_contract::records::PlaneRequestCtx,
-) -> Decision<Authenticate> {
-    Decision::proceed(token, Authenticated::Principal(principal_id(gov)))
+) -> SeatVerdict<Authenticate> {
+    SeatVerdict::proceed(token, Authenticated::Principal(principal_id(gov)))
 }
 
 /// The identity the rest of the loop attributes to, as the loop spells identities.

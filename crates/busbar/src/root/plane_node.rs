@@ -45,8 +45,8 @@ use axum::http::StatusCode;
 use axum::response::Response;
 
 use busbar_contract::caps::{
-    Admit, Admittance, Approve, Arrival, Audit, Authenticate, Consumption, Decision, Decode, Dial,
-    Encode, Grant, Meter, OpClassId, OriginKind, Outcome, Pass, PrincipalId, Refusal, Route,
+    Admit, Admittance, Approve, Arrival, Audit, Authenticate, Consumption, Decode, Dial, Encode,
+    Grant, Meter, OpClassId, OriginKind, Outcome, Pass, PrincipalId, Refusal, Route, SeatVerdict,
     VerifiedDestination, Verify,
 };
 use busbar_contract::{LaneId, Registration, UnitKey};
@@ -1300,15 +1300,15 @@ struct Driven<'n> {
 }
 
 impl Units for Driven<'_> {
-    fn arrival(&self, token: &Pass<Arrival>, ctx: &UnitCtx) -> Decision<Arrival> {
+    fn arrival(&self, token: &Pass<Arrival>, ctx: &UnitCtx) -> SeatVerdict<Arrival> {
         self.units.arrival(token, ctx)
     }
 
-    fn decode(&self, token: &Pass<Decode>, ctx: &UnitCtx) -> Decision<Decode> {
+    fn decode(&self, token: &Pass<Decode>, ctx: &UnitCtx) -> SeatVerdict<Decode> {
         self.units.decode(token, ctx)
     }
 
-    fn authenticate(&self, token: &Pass<Authenticate>, ctx: &UnitCtx) -> Decision<Authenticate> {
+    fn authenticate(&self, token: &Pass<Authenticate>, ctx: &UnitCtx) -> SeatVerdict<Authenticate> {
         self.units.authenticate(token, ctx)
     }
 
@@ -1318,7 +1318,7 @@ impl Units for Driven<'_> {
         trust: &Grant<Dial>,
         ctx: &UnitCtx,
         principal: &PrincipalId,
-    ) -> Decision<Verify> {
+    ) -> SeatVerdict<Verify> {
         self.units.verify(token, trust, ctx, principal)
     }
 
@@ -1328,7 +1328,7 @@ impl Units for Driven<'_> {
         ctx: &UnitCtx,
         principal: &PrincipalId,
         destinations: &[VerifiedDestination],
-    ) -> Decision<Approve> {
+    ) -> SeatVerdict<Approve> {
         self.units.approve(token, ctx, principal, destinations)
     }
 
@@ -1340,7 +1340,7 @@ impl Units for Driven<'_> {
         principal: &PrincipalId,
         destinations: &[VerifiedDestination],
         leases: &GroupLeaseSlip,
-    ) -> Decision<Admit> {
+    ) -> SeatVerdict<Admit> {
         self.units
             .admit(token, admit, ctx, principal, destinations, leases)
     }
@@ -1350,7 +1350,7 @@ impl Units for Driven<'_> {
         token: &Pass<Route>,
         ctx: &UnitCtx,
         destinations: &[VerifiedDestination],
-    ) -> Decision<Route> {
+    ) -> SeatVerdict<Route> {
         self.units.route(token, ctx, destinations)
     }
 
@@ -1361,12 +1361,12 @@ impl Units for Driven<'_> {
         ctx: &UnitCtx,
         provisional: &Outcome,
         destinations: &[VerifiedDestination],
-    ) -> Decision<Meter> {
+    ) -> SeatVerdict<Meter> {
         self.units
             .meter(token, usage, ctx, provisional, destinations)
     }
 
-    fn audit(&self, token: &Pass<Audit>, ctx: &UnitCtx, outcome: &Outcome) -> Decision<Audit> {
+    fn audit(&self, token: &Pass<Audit>, ctx: &UnitCtx, outcome: &Outcome) -> SeatVerdict<Audit> {
         self.units.audit(token, ctx, outcome)
     }
 
@@ -1375,11 +1375,16 @@ impl Units for Driven<'_> {
         token: &Pass<Audit>,
         ctx: &UnitCtx,
         refusal: &Refusal,
-    ) -> Decision<Audit> {
+    ) -> SeatVerdict<Audit> {
         self.units.audit_refused(token, ctx, refusal)
     }
 
-    fn encode(&self, token: &Pass<Encode>, ctx: &UnitCtx, outcome: &Outcome) -> Decision<Encode> {
+    fn encode(
+        &self,
+        token: &Pass<Encode>,
+        ctx: &UnitCtx,
+        outcome: &Outcome,
+    ) -> SeatVerdict<Encode> {
         self.units.encode(token, ctx, outcome)
     }
 

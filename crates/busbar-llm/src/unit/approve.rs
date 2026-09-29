@@ -38,7 +38,7 @@
 //! is the whole point of having the seat at this step rather than the next one.
 
 use busbar_contract::caps::{
-    Approve, Decision, Pass, PrincipalId, ReasonCode, Refusal, ScopeFacts, VerifiedDestination,
+    Approve, Pass, PrincipalId, ReasonCode, Refusal, ScopeFacts, SeatVerdict, VerifiedDestination,
 };
 
 /// A 1.6.0-native gate seated at Approve.
@@ -75,7 +75,7 @@ pub fn approve(
     principal: &PrincipalId,
     destinations: &[VerifiedDestination],
     seats: &[&dyn VetoSeat],
-) -> Decision<Approve> {
+) -> SeatVerdict<Approve> {
     match seats.iter().position(|s| s.vetoes(principal, destinations)) {
         Some(at) => {
             // The operator's diagnostic names WHICH seat stopped it, because "a hook vetoed" without
@@ -85,11 +85,11 @@ pub fn approve(
                 seat = at,
                 "approve: a seated gate vetoed the unit before the door"
             );
-            Decision::refuse(token, Refusal::new(ReasonCode::HookVeto))
+            SeatVerdict::refuse(token, Refusal::new(ReasonCode::HookVeto))
         }
         // The LLM plane names no resource locators: its resource is its destination, and the
         // destination set was sealed one step earlier.
-        None => Decision::proceed(token, ScopeFacts::default()),
+        None => SeatVerdict::proceed(token, ScopeFacts::default()),
     }
 }
 

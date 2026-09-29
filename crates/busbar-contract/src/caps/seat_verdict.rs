@@ -8,11 +8,11 @@
 //! It cannot answer a step it was not asked. The token names the step; so does the answer:
 //!
 //! ```compile_fail,E0308
-//! use busbar_contract::caps::{Admit, Admission, Decision, Meter, Pass};
+//! use busbar_contract::caps::{Admit, Admission, SeatVerdict, Meter, Pass};
 //!
-//! fn forge(token: &Pass<Meter>) -> Decision<Admit> {
+//! fn forge(token: &Pass<Meter>) -> SeatVerdict<Admit> {
 //!     // The token is for the meter step; the decision it builds is a meter decision.
-//!     Decision::proceed(token, Admission::ZeroHold)
+//!     SeatVerdict::proceed(token, Admission::ZeroHold)
 //! }
 //! ```
 //!
@@ -20,11 +20,11 @@
 //! reason it is meant to and not because something was misspelled:
 //!
 //! ```
-//! use busbar_contract::caps::{Consumption, Decision, Grant, KernelSeal, Meter, Pass, Usage};
+//! use busbar_contract::caps::{Consumption, SeatVerdict, Grant, KernelSeal, Meter, Pass, Usage};
 //! let seal = KernelSeal::acquire_for_kernel();
 //! let token: Pass<Meter> = Pass::mint(&seal);
 //! let usage = Usage::report(&Grant::<Consumption>::mint(&seal), Vec::new()).unwrap();
-//! let decision: Decision<Meter> = Decision::proceed(&token, usage);
+//! let decision: SeatVerdict<Meter> = SeatVerdict::proceed(&token, usage);
 //! assert_eq!(decision.into_result(&seal).unwrap().total(), 0);
 //! ```
 //!
@@ -54,9 +54,9 @@
 //! It cannot open its own answer, because reading a decision needs the kernel's seal:
 //!
 //! ```compile_fail,E0061
-//! use busbar_contract::caps::{Decision, Verify};
+//! use busbar_contract::caps::{SeatVerdict, Verify};
 //!
-//! fn peek(d: Decision<Verify>) {
+//! fn peek(d: SeatVerdict<Verify>) {
 //!     let _ = d.into_result();
 //! }
 //! ```
@@ -275,22 +275,22 @@ impl Refusal {
 /// `Copy`, so one token yields one answer, and `#[must_use]`, so an answer cannot be quietly
 /// dropped on the way back to the loop.
 #[must_use = "a decision that is not returned to the loop silently skips the step"]
-pub struct Decision<S: Step>(Inner<S>);
+pub struct SeatVerdict<S: Step>(Inner<S>);
 
 enum Inner<S: Step> {
     Proceed(S::Facts),
     Refuse(Refusal),
 }
 
-impl<S: Step> Decision<S> {
+impl<S: Step> SeatVerdict<S> {
     /// Proceed past step `S`, carrying `facts` to the next step.
     pub fn proceed(_token: &Pass<S>, facts: S::Facts) -> Self {
-        Decision(Inner::Proceed(facts))
+        SeatVerdict(Inner::Proceed(facts))
     }
 
     /// Stop the unit at step `S`. The refusal is stamped with `S`, so the record says where.
     pub fn refuse(_token: &Pass<S>, refusal: Refusal) -> Self {
-        Decision(Inner::Refuse(refusal.at(S::NAME)))
+        SeatVerdict(Inner::Refuse(refusal.at(S::NAME)))
     }
 
     /// Open the answer. Only the kernel reads decisions.
@@ -302,11 +302,11 @@ impl<S: Step> Decision<S> {
     }
 }
 
-impl<S: Step> std::fmt::Debug for Decision<S> {
+impl<S: Step> std::fmt::Debug for SeatVerdict<S> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match &self.0 {
-            Inner::Proceed(_) => write!(f, "Decision<{}>::Proceed", S::NAME),
-            Inner::Refuse(r) => write!(f, "Decision<{}>::Refuse({})", S::NAME, r.reason),
+            Inner::Proceed(_) => write!(f, "SeatVerdict<{}>::Proceed", S::NAME),
+            Inner::Refuse(r) => write!(f, "SeatVerdict<{}>::Refuse({})", S::NAME, r.reason),
         }
     }
 }

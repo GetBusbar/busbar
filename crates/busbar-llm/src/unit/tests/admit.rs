@@ -5,7 +5,7 @@
 use super::*;
 use crate::test_support::engine_kit::EngineTestKit as _;
 use crate::test_support::TestApp;
-use busbar_contract::caps::{step::Admit, Decision, KernelSeal, Pass, ReasonCode, StepName};
+use busbar_contract::caps::{step::Admit, KernelSeal, Pass, ReasonCode, SeatVerdict, StepName};
 use std::collections::BTreeMap;
 use std::time::Instant;
 
@@ -300,7 +300,7 @@ async fn over_budget_refuses_with_no_charge_and_nothing_to_refund() {
     );
 
     // Sealed the way the kernel's `Units::admit` row seals the verdict.
-    let refusal = Decision::refuse(&unit_token, refused.verdict.expect_err("the door said no"))
+    let refusal = SeatVerdict::refuse(&unit_token, refused.verdict.expect_err("the door said no"))
         .into_result(&seal)
         .expect_err("the door said no");
     assert_eq!(refusal.reason(), ReasonCode::OverBudget);

@@ -156,9 +156,9 @@ fn a_block_comment_spanning_lines_is_stripped() {
 #[test]
 fn an_item_body_is_the_item_and_not_the_file() {
     let src = r#"
-pub fn meter(&mut self) -> Decision<Meter> {
+pub fn meter(&mut self) -> SeatVerdict<Meter> {
     let d = self.walk.step();
-    Decision::proceed(d)
+    SeatVerdict::proceed(d)
 }
 
 pub fn audit(&mut self) {

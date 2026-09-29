@@ -4,7 +4,7 @@
 //! The sealed answer: the unit the loop calls at the verify step.
 
 use busbar_contract::caps::VerifiedDestination;
-use busbar_contract::caps::{Decision, Dial, Grant, Pass, Refusal, Verify};
+use busbar_contract::caps::{Dial, Grant, Pass, Refusal, SeatVerdict, Verify};
 
 use crate::trust::destination::{
     kind_permitted, kind_rule_passes, DestinationFacts, KindFacts, OriginKind,
@@ -50,10 +50,10 @@ impl Trust {
         breaker: &dyn BreakerView,
         trust: &Grant<Dial>,
         token: &Pass<Verify>,
-    ) -> Decision<Verify> {
+    ) -> SeatVerdict<Verify> {
         // The three guards, in their fixed order, all before anything is charged.
         if let Err(refusal) = destination_guard(pools, req.pool, req.unpriced_message) {
-            return Decision::refuse(token, Refusal::new(refusal.kind.reason()));
+            return SeatVerdict::refuse(token, Refusal::new(refusal.kind.reason()));
         }
 
         // The breaker is asked HERE, through the same query the pre-walk's filter asks through, so a
@@ -78,6 +78,6 @@ impl Trust {
             .map(|lane| VerifiedDestination::seal(trust, lane))
             .collect();
 
-        Decision::proceed(token, sealed)
+        SeatVerdict::proceed(token, sealed)
     }
 }

@@ -160,7 +160,7 @@ fn the_ten_steps_are_in_order_and_three_belong_to_the_kernel() {
 fn a_refusal_is_stamped_with_the_step_that_raised_it() {
     let k = Kernel::new();
     let token: Pass<Approve> = Pass::mint(&k.seal);
-    let decision = Decision::refuse(
+    let decision = SeatVerdict::refuse(
         &token,
         Refusal::new(ReasonCode::ScopeDenied).retry_after(30),
     );
@@ -191,7 +191,7 @@ fn a_refusal_that_was_never_stamped_names_no_step() {
     );
 
     let token: Pass<Meter> = Pass::mint(&k.seal);
-    let refusal = Decision::refuse(&token, Refusal::new(ReasonCode::OverBudget))
+    let refusal = SeatVerdict::refuse(&token, Refusal::new(ReasonCode::OverBudget))
         .into_result(&k.seal)
         .expect_err("this decision refuses");
     assert_eq!(refusal.step(), Some(StepName::Meter));
@@ -202,7 +202,7 @@ fn a_refusal_that_was_never_stamped_names_no_step() {
 fn a_decision_carries_the_facts_of_its_own_step() {
     let k = Kernel::new();
     let token: Pass<Meter> = Pass::mint(&k.seal);
-    let decision = Decision::proceed(&token, usage_of(&k, 42));
+    let decision = SeatVerdict::proceed(&token, usage_of(&k, 42));
     let usage = decision.into_result(&k.seal).expect("this one proceeds");
     assert_eq!(usage.total(), 42);
 }
@@ -943,7 +943,8 @@ fn the_doors_answer_is_one_of_three_shapes() {
     let admit = k.admit_token();
     let token: Pass<Admit> = Pass::mint(&k.seal);
 
-    let decision = Decision::proceed(&token, Admission::Own(Hold::open(&admit, who("acct-1"), 5)));
+    let decision =
+        SeatVerdict::proceed(&token, Admission::Own(Hold::open(&admit, who("acct-1"), 5)));
     match decision.into_result(&k.seal).expect("proceeds") {
         Admission::Own(hold) => {
             let _ = Posted::settle(hold, 5, &usage_of(&k, 5), &k.ledger_token());
@@ -953,7 +954,7 @@ fn the_doors_answer_is_one_of_three_shapes() {
 
     // A zero-priced unit holds nothing, which is why the heartbeat always runs.
     let token: Pass<Admit> = Pass::mint(&k.seal);
-    let decision = Decision::proceed(&token, Admission::ZeroHold);
+    let decision = SeatVerdict::proceed(&token, Admission::ZeroHold);
     assert!(matches!(
         decision.into_result(&k.seal).expect("proceeds"),
         Admission::ZeroHold
