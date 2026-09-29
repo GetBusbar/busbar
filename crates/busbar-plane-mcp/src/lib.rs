@@ -41,6 +41,8 @@
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
 
+/// The session revisions raised into, and lowered out of, the one dispatch.
+pub mod adapt;
 pub mod claims;
 pub mod client;
 pub mod codec;
