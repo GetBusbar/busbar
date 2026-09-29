@@ -12,6 +12,7 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 /// `(file under crates/busbar/src, item, count, the TODO step that removes it)`.
 const SITES: &[(&str, &str, usize, &str)] = &[
@@ -20,8 +21,6 @@ const SITES: &[(&str, &str, usize, &str)] = &[
     ("root/keyset.rs", "store_adapter", 1, "BL10"),
     ("root/migration.rs", "store_adapter", 1, "BL10"),
     // BOOT-LOOP 8 (this step's structural move into root/boot.rs, after CONNECTOR-19 lands).
-    ("main.rs", "sweep_dead_staging", 1, "BL8"),
-    ("root/cli.rs", "inventory_tarballs", 1, "BL8"),
     ("root/linked.rs", "DynTransport", 2, "BL8"),
     ("root/linked.rs", "EgressCarrier", 1, "BL8"),
     ("root/linked.rs", "EgressPolicy", 10, "BL8"),
@@ -45,8 +44,21 @@ const SITES: &[(&str, &str, usize, &str)] = &[
     ("root/registry.rs", "WireTransport", 2, "BL9"),
 ];
 
-/// The loader crate's path, as the source spells it.
-const NEEDLE: &str = "busbar_plugin_loader::";
+/// The loader crate's path, as the source spells it: read off this crate's manifest, the one
+/// dependency whose `path` is the loader's directory, so the ledger never spells the crate itself.
+fn needle() -> &'static str {
+    static NEEDLE: OnceLock<String> = OnceLock::new();
+    NEEDLE.get_or_init(|| {
+        let manifest = Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
+        let text = std::fs::read_to_string(manifest).expect("read Cargo.toml");
+        let dep = text
+            .lines()
+            .find(|l| l.contains("path = \"../plugin-loader\""))
+            .and_then(|l| l.split('=').next())
+            .expect("the composition root depends on the loader by path");
+        format!("{}::", dep.trim().replace('-', "_"))
+    })
+}
 
 /// The file that names the loader by design.
 const BOOT: &str = "root/boot.rs";
@@ -68,14 +80,15 @@ fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
-/// `(file, item) -> count` of every [`NEEDLE`]`<item>` spelling: the first path segment
+/// `(file, item) -> count` of every [`needle`]`<item>` spelling: the first path segment
 /// after the crate, each name of a braced list counted once.
 fn measure(files: &[(String, String)]) -> BTreeMap<(String, String), usize> {
+    let needle = needle();
     let mut out = BTreeMap::new();
     for (file, text) in files {
         let mut rest = text.as_str();
-        while let Some(i) = rest.find(NEEDLE) {
-            rest = &rest[i + NEEDLE.len()..];
+        while let Some(i) = rest.find(needle) {
+            rest = &rest[i + needle.len()..];
             let items: Vec<&str> = if let Some(list) = rest.strip_prefix('{') {
                 let end = list.find('}').unwrap_or(list.len());
                 list[..end]
@@ -158,25 +171,26 @@ fn the_loader_is_named_only_by_boot_and_the_named_remainder() {
 /// The ledger's own RED arms: a new site, a risen count and a drained row each fail.
 #[test]
 fn red_a_new_site_a_rise_and_an_unstruck_row_each_fail() {
+    let needle = needle();
     let base: Vec<(String, String)> = SITES
         .iter()
-        .map(|(f, i, n, _)| (f.to_string(), format!("{NEEDLE}{i}; ").repeat(*n)))
+        .map(|(f, i, n, _)| (f.to_string(), format!("{needle}{i}; ").repeat(*n)))
         .collect();
     assert!(verdict(&base).is_empty(), "{:?}", verdict(&base));
     let mut new_site = base.clone();
     new_site.push((
         "root/adapters.rs".into(),
-        format!("use {NEEDLE}{{PluginRegistry, scan_and_validate}};"),
+        format!("use {needle}{{PluginRegistry, scan_and_validate}};"),
     ));
     assert_eq!(verdict(&new_site).len(), 2);
     let mut rise = base.clone();
-    rise[0].1.push_str(&format!("{NEEDLE}store_adapter::X"));
+    rise[0].1.push_str(&format!("{needle}store_adapter::X"));
     assert!(verdict(&rise)[0].contains("above its row"));
     let drained: Vec<_> = base[1..].to_vec();
     assert!(verdict(&drained)
         .iter()
         .any(|p| p.contains("strike its row")));
     let mut boot = base;
-    boot.push((BOOT.into(), format!("{NEEDLE}load(")));
+    boot.push((BOOT.into(), format!("{needle}load(")));
     assert!(verdict(&boot).is_empty(), "{BOOT} names the loader freely");
 }

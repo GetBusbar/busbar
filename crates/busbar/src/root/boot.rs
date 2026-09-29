@@ -14,7 +14,12 @@
 use std::sync::Arc;
 
 use busbar_contract::abi::mechanism::KindCode;
-use busbar_plugin_loader::{boot::*, dispatch::LoadError, dispatch::ManifestFacts, PluginRegistry};
+// The root's other loader calls (the staging sweep, the tarball inventory) reach the loader through
+// this one line too.
+pub(crate) use busbar_plugin_loader::{
+    boot::*, dispatch::LoadError, dispatch::ManifestFacts, inventory_tarballs, sweep_dead_staging,
+    PluginRegistry,
+};
 
 /// STAGE 0, PLAN: what the configuration file at `path` uses, read off its raw document (secret
 /// references stay raw; environment references are interpolated leniently, as the boot's early
