@@ -111,6 +111,18 @@
       "cells": "^boot\\.refusal\\|BOOT-MCP-01\\|validate$",
       "owner": "boot",
       "rationale": "The boot.refusal cell b74ba3aee (CG-17) added for the mcp plane's fixed /mcp mount: a `mcp.canonical_uri` naming any other path refuses `--validate` (CanonicalUriPathNotClaimed). It is not recorded because the committed 1.5.5 golden (testing/shadow-oracle/golden/1.5.5) was taken before the cell existed and the refusal is NEW 1.6.0 surface, not a difference from 1.5.5, so no accepted-differences.json twin exists or is owed; the cell is judged by its own contract (crates/busbar-mcp/src/mcp/tests/config_tests.rs, a_canonical_uri_naming_any_other_path_is_refused) until the 1.6.0 golden is cut."
+    },
+    {
+      "id": "predev-fence-no-1.5.5-baseline",
+      "cells": "^(a2a|mcp)\\|fence\\|",
+      "owner": "oracle / ARCHITECT (fence re-records)",
+      "rationale": "no 1.5.5 baseline; predev fence. 1.5.5 had no a2a or mcp plane, so golden/1.5.5 cannot owe what busbar sends their upstreams. These cells are owed instead by testing/shadow-oracle/fence/predev-275cbd80b/ (recorded twice, byte-identical, from a clean release build of predev 275cbd80b; ARCHITECT ruling 2026-09-28), which bin/oracle replay judges in its own 'predev fence' section. They are never merged into golden/1.5.5, and they are re-recorded only under an ARCHITECT ruling."
+    },
+    {
+      "id": "decisions-plane-no-1.5.5-baseline",
+      "cells": "^decisions\\|",
+      "owner": "decisions plane (KERNEL<>PLUGINS step 33/34)",
+      "rationale": "no 1.5.5 baseline; predev fence. 1.5.5 had no decisions plane. On predev the plane is inert, so there is nothing to fence yet: it claims no path, admits no caller, has no build or routes, and places no byte on the wire (crates/busbar/src/root/plane_decisions.rs PLANE_HOOKS: claims empty, admission/build/routes None). A `decisions:` block reaches only the config-validation surface. The fence for its metering and egress is recorded from a named predev build, into fence/predev-<sha>/ under the same ARCHITECT rules, in the landing that makes the plane serve. Until then no decisions| cell exists, and this entry names that on purpose."
     }
   ]
 }
