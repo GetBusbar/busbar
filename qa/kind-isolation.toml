@@ -744,15 +744,11 @@ crate = "busbar-transport-stdio"
 kind = "transport"
 count = "3"
 
-[[cell]]
-crate = "busbar-transport-tcp"
-kind = "plane"
-count = "1"
 
 [[cell]]
 crate = "busbar-transport-tcp"
 kind = "transport"
-count = "2"
+count = "1"
 
 [[cell]]
 crate = "busbar-transport-ws"
@@ -1422,6 +1418,14 @@ count = "1"
 cite = "none. BUSBAR-1.6.0.md THE DESIGN, §1 — a legacy 1.5.x crate is not a transport; the retirement is what ends this."
 why = "the retiring a2a engine carries its own transport implementation, from before the plane/transport split existed. One implementation, in shipped source."
 drain = "finish the a2a drain and delete busbar-a2a; the row goes with the crate."
+
+[[face]]
+crate = "busbar-core-connector"
+face = "Transport"
+count = "1"
+cite = "BUSBAR-1.6.0.md THE DESIGN, §5 — the host owns every socket; the connector serves a framer entry over them. F12 relocation (ARCHITECT): the retired tcp carrier implemented this face in busbar-transport-tcp."
+why = "`busbar_core_connector::wire::HostWire` presents a memory-ABI framer door over the host's sockets as the kernel's legacy transport seam, so the kernel's listeners and upgrades drive it. One implementation, in shipped source."
+drain = "drains at TODO step 36, when the kernel's serve/egress path stops speaking `Transport` and the engine is deleted."
 
 [[face]]
 crate = "busbar-plugin-loader"
