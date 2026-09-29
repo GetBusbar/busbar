@@ -230,6 +230,8 @@ struct Unit {
     streamed: bool,
     saw_last: bool,
     pended: bool,
+    /// The last answer was `more = 1` from this source: the next piece is its re-call.
+    more_from: Option<u32>,
 }
 
 struct Inst {
@@ -473,6 +475,12 @@ extern "C" fn on_piece(
         let u = units.entry(i.unit).or_default();
         let piece = bytes(i.bytes);
         let resume = i.head.flags & FLAG_RESUME != 0;
+        if let Some(from) = u.more_from.take() {
+            // The re-call after `more = 1`: the same source, no bytes, no flags.
+            if i.from != from || !piece.is_empty() || i.flags != 0 {
+                return RawOutcome::of(Outcome::Fault);
+            }
+        }
         match i.from {
             FROM_KERNEL if i.attempt_no > 0 => {
                 *u = Unit {
@@ -558,6 +566,7 @@ extern "C" fn on_piece(
         u.streamed |= n > 0;
         o.emitted = n as u64;
         o.more = u32::from(!u.pending.is_empty() && n > 0);
+        u.more_from = (o.more == 1).then_some(i.from);
         let wide = if u.mode.starts_with(b"short") { 12 } else { 1 };
         for k in 0..wide {
             *i.units_buf.add(k) = UnitCount {

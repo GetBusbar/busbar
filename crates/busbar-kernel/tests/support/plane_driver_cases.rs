@@ -338,6 +338,38 @@ async fn backpressure_flushes_and_calls_again() {
     }
 }
 
+/// The re-call after `more = 1` is a piece of the same `from` with no bytes and no flags: the
+/// plane faults any other (plane ABI, the backpressure re-call rule). Toward the caller the source
+/// is the far end; the re-calls never re-push the far end's bytes.
+#[tokio::test]
+async fn the_more_recall_keeps_its_source_and_carries_no_bytes() {
+    for way in ways() {
+        let caps = BufferCaps {
+            reply: 2,
+            ..BufferCaps::default()
+        };
+        let r = rig(way, caps, Book::default());
+        let (steps, far, caller) = (
+            TestUnits::passing(),
+            Far::new(&["ok"], &[b"abcdef", b"gh"]),
+            Caller::default(),
+        );
+        let units = r
+            .driver
+            .unit(&steps, &far, &caller, arrival("/call", b"x"), 0);
+        let outcome = drive(&units).await;
+        assert!(
+            matches!(outcome, Outcome::Completed),
+            "{way:?}: {outcome:?}"
+        );
+        assert_eq!(
+            caller.text(),
+            "abcdefgh",
+            "{way:?}: each byte once, in order"
+        );
+    }
+}
+
 /// ONE UNIT, ONE KEY: `arrive` and every `on_piece` carry the unit's kernel-minted key, the
 /// caller's head crosses once at `arrive`, and the plane finds it again by that key.
 #[tokio::test]

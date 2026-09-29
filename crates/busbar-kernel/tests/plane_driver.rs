@@ -104,6 +104,8 @@ struct Unit {
     pended: bool,
     /// The last answer was short: the next is the one re-call.
     short: bool,
+    /// The last answer was `more = 1` from this source: the next piece is its re-call.
+    more_from: Option<u32>,
 }
 
 /// One answer, held until it is due. The `out` carries plane pointers; the host reads it only
@@ -248,6 +250,12 @@ impl Double {
         let mut units = self.units.lock().unwrap();
         let u = units.entry(i.unit).or_default();
         let piece = bytes(i.bytes);
+        if let Some(from) = u.more_from.take() {
+            // The re-call after `more = 1`: the same source, no bytes, no flags.
+            if i.from != from || !piece.is_empty() || i.flags != 0 {
+                return (ready(Outcome::Fault), Hold::No);
+            }
+        }
         match i.from {
             FROM_KERNEL if i.attempt_no > 0 => {
                 *u = Unit {
@@ -340,6 +348,7 @@ impl Double {
         u.streamed |= n > 0;
         o.emitted = n as u64;
         o.more = u32::from(!u.pending.is_empty() && n > 0);
+        u.more_from = (o.more == 1).then_some(i.from);
         let wide = if u.mode.starts_with(b"short") { 12 } else { 1 };
         for k in 0..wide {
             *i.units_buf.add(k) = UnitCount {

@@ -22,6 +22,10 @@
 //! BACKPRESSURE IS NOT A SHORT BUFFER: `on_piece`'s reply bytes stream. A full `reply_buf` is READY
 //! with `more = 1` (and at least one byte `emitted`); the kernel flushes, waits for the socket to be
 //! writable and calls again. `emitted` is therefore never above `reply_cap` and has no `needed`.
+//! THAT RE-CALL CARRIES NO NEW BYTES: it is an `on_piece` of the same unit with the SAME `from` as
+//! the piece that answered `more = 1`, zero bytes, no `PIECE_*` flags and no status; the piece's
+//! bytes were taken whole, and the re-call answers only what the first could not hold (the
+//! transport's `YIELD_MORE` re-call, in the plane's terms).
 //!
 //! ONE UNIT, ONE KEY. The kernel mints the unit's key and hands it to every op of the unit:
 //! [`ArriveIn::unit`] and [`OnPieceIn::unit`]. The caller's head (target and fields) crosses ONCE,
@@ -809,7 +813,8 @@ pub struct OnPieceOut {
     pub head: OutHead,
     /// Bytes written to `reply_buf`.
     pub emitted: u64,
-    /// `1` = more output is waiting; flush and call again once writable.
+    /// `1` = more output is waiting; flush and call again once writable, with the same `from`,
+    /// no bytes and no `PIECE_*` flags.
     pub more: u32,
     /// `EMIT_*` bits.
     pub flags: u32,

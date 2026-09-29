@@ -12,7 +12,7 @@
 //! far end's pieces are pushed [`FROM_FAR_END`] and the plane's emitted bytes go to the caller.
 //! A retry verdict fails over only while no byte has reached the caller; after the first byte it
 //! is treated as hard. `more = 1` flushes, awaits the caller's side and calls again with an empty
-//! piece. A short answer is re-called once with the buffers it named; the dispatcher faults a
+//! piece of the same `from`. A short answer is re-called once with the buffers it named; the dispatcher faults a
 //! second short answer. Every READY answer's cumulative units go to the money seam.
 //!
 //! THE HOST BUFFERS AN OP'S `in` POINTS INTO ([`PieceBufs`]) belong to the unit's pump guard and
@@ -178,7 +178,8 @@ struct Piece {
 }
 
 impl Piece {
-    /// The empty piece that asks for more output after `more = 1`.
+    /// The piece that asks for more output after `more = 1`: the same `from`, no bytes, no flags,
+    /// no status (the plane ABI's re-call rule).
     fn continuation(self) -> Self {
         Piece {
             flags: 0,
