@@ -57,6 +57,8 @@ pub mod records;
 /// The dated revisions of the one MCP dialect, and their negotiation.
 pub mod revision;
 pub mod sanitize;
+/// Bounded, owner-bound session state for the session revisions.
+pub mod session;
 
 /// THE REGISTRY KEY MCP IS KNOWN BY, in the protocol registry and in the plane registry alike.
 ///
