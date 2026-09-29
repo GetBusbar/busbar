@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! **ONE SOURCE FILE NAMES THE LOADER** (`BUSBAR-1.6.0.md` THE DESIGN, §3 Boot:
-//! "`crates/busbar/src/root/boot.rs` is the one source file that names the loader").
+//! **ONE SOURCE FILE NAMES THE LOADER** (`BUSBAR-1.6.0.md` THE DESIGN, §3 Boot; ARCHITECT ruling
+//! 2026-09-29: the one file is the `root::loader` module, which every other busbar file imports from).
 //!
 //! Every spelling of the loader crate's path, `<loader>::<item>`, in the composition root's source (its unit tests
 //! excluded) is a row of [`SITES`], by file and item, with its count and the TODO step that removes
 //! it. DRAIN-ONLY (ARCHITECT ruling 2026-09-28, BOOT-CHAIN (2)): a spelling no row holds fails; a
-//! row whose spellings are gone fails until it is struck; a count that rose fails. `root/boot.rs`
+//! row whose spellings are gone fails until it is struck; a count that rose fails. `root/loader.rs`
 //! is the one file that needs no row.
 
 use std::collections::BTreeMap;
@@ -60,8 +60,8 @@ fn needle() -> &'static str {
     })
 }
 
-/// The file that names the loader by design.
-const BOOT: &str = "root/boot.rs";
+/// The module that names the loader by design (`root::loader`).
+const LOADER: &str = "root/loader.rs";
 
 fn src() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("src")
@@ -117,12 +117,12 @@ fn verdict(files: &[(String, String)]) -> Vec<String> {
     let got = measure(files);
     let mut problems = Vec::new();
     for ((file, item), n) in &got {
-        if file == BOOT {
+        if file == LOADER {
             continue;
         }
         match SITES.iter().find(|(f, i, _, _)| f == file && i == item) {
             None => problems.push(format!(
-                "{file} names the loader's {item} ({n}x) and no row holds it: the loader is named only by {BOOT}"
+                "{file} names the loader's {item} ({n}x) and no row holds it: the loader is named only by {LOADER}"
             )),
             Some((_, _, want, _)) if n > want => problems.push(format!(
                 "{file} names the loader's {item} {n}x, above its row's {want}"
@@ -191,6 +191,9 @@ fn red_a_new_site_a_rise_and_an_unstruck_row_each_fail() {
         .iter()
         .any(|p| p.contains("strike its row")));
     let mut boot = base;
-    boot.push((BOOT.into(), format!("{needle}load(")));
-    assert!(verdict(&boot).is_empty(), "{BOOT} names the loader freely");
+    boot.push((LOADER.into(), format!("{needle}load(")));
+    assert!(
+        verdict(&boot).is_empty(),
+        "{LOADER} names the loader freely"
+    );
 }

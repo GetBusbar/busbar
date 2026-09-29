@@ -1,25 +1,18 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE BOOT (`BUSBAR-1.6.0.md` THE DESIGN, §3): the one source file of the composition root that
-//! names the plugin loader. Stage 0 Plan reads what the configuration USES; stage 1 Discover reads
+//! THE BOOT (`BUSBAR-1.6.0.md` THE DESIGN, §3): the composition root's boot stages, reaching the
+//! plugin loader through [`super::loader`] (the one module that names it). Stage 0 Plan reads what the configuration USES; stage 1 Discover reads
 //! each plugin's facts off its Statement (a signed manifest's rendering; nothing is opened); stage 2
 //! Select picks the plugins the configuration uses (§2, §4 Law 7). `--validate` runs these three
 //! stages and nothing dials, no library is opened and no store is opened.
 //!
-//! The rest of boot — the one load, register and seal — moves here as BOOT-LOOP 8 (the loader-naming
-//! sites still outside this file are the drain-only ledger in
-//! `tests/the_loader_is_named_only_by_boot.rs`).
+//! The rest of boot — the one load, register and seal — moves here as BOOT-LOOP 8.
 
 use std::sync::Arc;
 
+use super::loader::*;
 use busbar_contract::abi::mechanism::KindCode;
-// The root's other loader calls (the staging sweep, the tarball inventory) reach the loader through
-// this one line too.
-pub(crate) use busbar_plugin_loader::{
-    boot::*, dispatch::LoadError, dispatch::ManifestFacts, inventory_tarballs, sweep_dead_staging,
-    PluginRegistry,
-};
 
 /// STAGE 0, PLAN: what the configuration file at `path` uses, read off its raw document (secret
 /// references stay raw; environment references are interpolated leniently, as the boot's early

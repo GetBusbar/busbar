@@ -196,7 +196,7 @@ fn a_candidate_reads_its_facts_off_its_rendering() {
 #[test]
 fn a_dropped_transport_is_selected_by_the_claims_its_rendering_states() {
     const CLAIMS: &[busbar_contract::abi::mechanism::call::AbiStr] =
-        &[abi_str("wss"), abi_str("ws")];
+        &[abi_str("tele"), abi_str("teles")];
     let st = busbar_contract::abi::mechanism::door::Statement {
         kind: KindCode::Transport as u32,
         claims: CLAIMS.as_ptr(),
@@ -217,9 +217,9 @@ fn a_dropped_transport_is_selected_by_the_claims_its_rendering_states() {
         .unwrap()
     };
     let c = dropped(&st);
-    assert_eq!(c.schemes, vec!["wss".to_string(), "ws".to_string()]);
+    assert_eq!(c.schemes, vec!["tele".to_string(), "teles".to_string()]);
     let u = Uses::of(&doc(
-        r#"{"providers": {"up": {"base_url": "wss://u.example"}}}"#,
+        r#"{"providers": {"up": {"base_url": "teles://u.example"}}}"#,
     ));
     let cands = vec![c];
     assert_eq!(

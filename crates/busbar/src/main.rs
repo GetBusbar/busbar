@@ -711,7 +711,7 @@ async fn run(data_workers: usize) {
     // BOOT-TIME dead-pid sweep: remove any orphaned plugin staging directory a CRASHED prior busbar
     // left behind (a clean shutdown removes its own; a dead pid's files are unlocked). Runs even
     // when plugins are disabled — the orphan may predate a config change.
-    let swept = root::boot::sweep_dead_staging();
+    let swept = root::loader::sweep_dead_staging();
     if swept > 0 {
         eprintln!(
             "[info] removed {swept} orphaned plugin staging dir(s) left by a crashed prior run"
