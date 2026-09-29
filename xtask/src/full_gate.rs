@@ -167,6 +167,11 @@ pub const CARGO_LOCAL: &[&str] = &[
     // ci.yml at 4e39e1a11 (the kind:plane rider `plane_abi_rider.rs` dlopens) and the local copy
     // was never moved with it, so the CI line went unclassified. One list, both places.
     "cargo build --locked -p busbar-hook-test-plugin -p busbar-plugin-example-plane",
+    // The connector's universal-needs witness dlopens two transport doors beside its test binary
+    // (the http door example and the socket-framing tcp door); the same feature-sets step builds
+    // them.
+    "cargo build --locked -p busbar-transport-http --example http_door",
+    "cargo build --locked -p busbar-transport-tcp --features dropped-in",
     "cargo xtask gate feature-sets --selftest",
     "cargo xtask gate feature-sets",
     "cargo xtask gate field-inventory --selftest",

@@ -1884,7 +1884,13 @@ fn census(cx: &Ctx) -> Result<Vec<CrateInfo>, String> {
         let (deps, dev_deps) = deps_of(&text, &renames);
         let dir = manifest_dir(&rel);
         let declared_keys = match kind {
-            Some("transport") => declared_meta_keys(cx, &dir, "TransportMeta"),
+            Some("transport") => {
+                let mut keys = declared_meta_keys(cx, &dir, "TransportMeta");
+                keys.extend(declared_door_keys(cx, &dir));
+                keys.sort();
+                keys.dedup();
+                keys
+            }
             Some("plane") => declared_meta_keys(cx, &dir, "PlaneMeta"),
             _ => Vec::new(),
         };
@@ -1942,6 +1948,36 @@ fn declared_meta_keys(cx: &Ctx, dir: &str, meta: &str) -> Vec<String> {
     }
     keys.sort();
     keys.dedup();
+    keys
+}
+
+/// The keys a memory-ABI transport DOOR declares: in a source file that states a `TransportTail`,
+/// every claim written `key: abi_str("<key>")` and the entry key written
+/// `pub const KEY: &str = "<key>";`. A door has no `impl TransportMeta`, so its claims are read off
+/// its Statement tail, which is where it states them.
+fn declared_door_keys(cx: &Ctx, dir: &str) -> Vec<String> {
+    let spec = WalkSpec::new([format!("{dir}/src")])
+        .ext("rs")
+        .allow_empty();
+    let Ok(files) = cx.walk(&spec) else {
+        return Vec::new();
+    };
+    let mut keys = Vec::new();
+    for f in files.iter().filter(|f| f.text.contains("TransportTail {")) {
+        for line in f.text.lines() {
+            let t = line.trim();
+            let key = t
+                .strip_prefix("key: abi_str(\"")
+                .and_then(|r| r.strip_suffix("\"),"))
+                .or_else(|| {
+                    t.strip_prefix("pub const KEY: &str = \"")
+                        .and_then(|r| r.strip_suffix("\";"))
+                });
+            if let Some(key) = key {
+                keys.push(key.to_string());
+            }
+        }
+    }
     keys
 }
 
@@ -9844,7 +9880,8 @@ mod plant_tests {
     }
 
     /// A WIRE A TRANSPORT CRATE DECLARES IS TRANSPORT VOCABULARY (#50), read off its
-    /// `impl TransportMeta` rather than off its crate name, so a wire folded into a sibling crate
+    /// `impl TransportMeta` (or a door's Statement tail) rather than off its crate name, so a wire
+    /// folded into a sibling crate
     /// (as `grpc` and `sse` are folded into `http`) stays a transport word. Every transport crate declares its own id,
     /// and a key declared by a module planted inside another transport crate joins the vocabulary.
     #[test]
