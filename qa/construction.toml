@@ -1876,6 +1876,9 @@ busbar-transport-stdio = ["tokio", "futures"]
 # the `Mcp-Name` header's `=?base64?...?=` sentinel for a name a header value cannot carry.
 busbar-plane-mcp = ["base64"]
 busbar-transport-ws = ["tokio-util", "tokio", "tokio-tungstenite", "futures"]
+# The same ruling applied to a plane: the `agents:` grammar keeps its registrations in the order an
+# operator wrote them.
+busbar-plane-a2a = ["indexmap"]
 # Ratchet, NOT a review: each busbar-plane-* adapter names its own dialect's legacy engine crate
 # (busbar-llm/-mcp/-a2a/-voice) for codecs only, read-only, no engine state crossing back — but
 # those engine crates are ALSO named in gate.plane_crates, so this is structurally the exact "a

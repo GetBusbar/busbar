@@ -44,6 +44,8 @@
 pub mod a2a {
     pub mod anomaly;
     pub mod canonical;
+    pub mod config;
+    pub mod creds;
     pub mod task;
 }
 

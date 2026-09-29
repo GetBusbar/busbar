@@ -46,6 +46,8 @@ serde = { workspace = true }
 # The object notation the codec speaks. The adapter hands values across the seam and never invents
 # a second parser.
 serde_json = { workspace = true }
+# The `agents:` section keeps its registrations in the order an operator wrote them.
+indexmap = { workspace = true, features = ["serde"] }
 # The frame reader's one diagnostic goes out through the contract's `diag_warn!`, which expands to
 # `tracing`.
 tracing = { workspace = true }

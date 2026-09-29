@@ -223,14 +223,17 @@ fn a2a_parse_section(
     v: &serde_yaml::Value,
 ) -> Result<Box<dyn busbar_kernel::plane::config::PlaneCfg>, String> {
     serde_yaml::from_value::<crate::a2a::config::AgentsCfg>(v.clone())
-        .map(|c| Box::new(c) as Box<dyn busbar_kernel::plane::config::PlaneCfg>)
+        .map(|c| {
+            Box::new(crate::a2a::config::AgentsSection(c))
+                as Box<dyn busbar_kernel::plane::config::PlaneCfg>
+        })
         .map_err(|e| e.to_string())
 }
 
 /// [`busbar_kernel::plane::registry::PlaneDecl::default_section`] hook — the empty `agents:` registry, so an
 /// ABSENT section defaults to `AgentsCfg::default()` byte-identically to the pre-seam typed field.
 fn a2a_default_section() -> Box<dyn busbar_kernel::plane::config::PlaneCfg> {
-    Box::<crate::a2a::config::AgentsCfg>::default()
+    Box::<crate::a2a::config::AgentsSection>::default()
 }
 
 /// PRUNE THE A2A VERIFY-ON-CALL GATES to the agents THIS generation fronts — the
@@ -563,6 +566,10 @@ pub(crate) fn openapi_fragment() -> serde_json::Value {
         }
     })
 }
+
+/// The plane crate's `a2a` modules (the `agents:` grammar, the credential types), which the
+/// host-side modules below re-export under their own paths.
+pub(crate) use busbar_plane_a2a::a2a as plane_crate;
 
 pub mod admin_view;
 /// MOVED to `busbar-plane-a2a` (the wire dialect, #39), re-exported here under its old in-crate path

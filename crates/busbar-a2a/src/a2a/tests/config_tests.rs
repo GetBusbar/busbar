@@ -4,7 +4,8 @@
 //! The `agents:` section's grammar, and the value rules that make the object pin worth having.
 
 use crate::a2a::config::{
-    policy_for, AgentDefCfg, AgentPinCfg, AgentsCfg, PinMechanism, DEFAULT_REVERIFY_TTL, TRUST_KEYS,
+    pin_declaration, policy_for, AgentDefCfg, AgentPinCfg, AgentsCfg, PinMechanism,
+    DEFAULT_REVERIFY_TTL, TRUST_KEYS,
 };
 use busbar_kernel::{
     plane::config::{plane_sections, validate_plane_entry, validate_plane_section},
@@ -95,7 +96,7 @@ static POOLS_PLANE_STANDIN: busbar_kernel::plane::registry::PlaneDecl =
 /// (`AgentPinCfg::declaration`), the sequence is `busbar_kernel::trust::declared`'s, and the artifact is
 /// this plane's `Declares` impl in `a2a::pin`.
 fn declared_pin(def: &AgentDefCfg) -> Option<CardPin> {
-    busbar_kernel::trust::declared::declared_pin::<CardPin>(def.pin.declaration())
+    busbar_kernel::trust::declared::declared_pin::<CardPin>(pin_declaration(&def.pin))
 }
 
 /// The section as boot reads it: the kernel's judgement of the keys it owns, then the section parse.
