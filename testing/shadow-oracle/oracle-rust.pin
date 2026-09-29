@@ -114,8 +114,15 @@
 # NOTE: a feature branch head, the same shape as the previous pins; re-pin to the merge commit when
 # it lands.
 #
+# 2026-09-29 (ARCHITECT ruling 2026-09-28, predev fences): moved c853683 -> 37a53a8, the same branch's
+# next commit. It adds the two predev fence cells, a2a|fence|egress-message-send and
+# mcp|fence|egress-tools-call, whose bytes are owed by testing/shadow-oracle/fence/predev-275cbd80b/,
+# never by golden/1.5.5. It also adds the driver steps they need: an audience-bound bearer, a card
+# signed at run time for the jws_issuer_key pin, and a JSON-RPC upstream. `cells --generate` changes
+# exactly those two cells (2466 -> 2468).
+#
 # To move the pin: set release_ref to the new busbar-release commit and re-run.
 release_repo=https://github.com/GetBusbar/busbar-release.git
-release_ref=c853683
+release_ref=37a53a8
 crate=busbar-release-oracle
 bin=busbar-oracle

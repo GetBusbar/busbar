@@ -55,15 +55,15 @@
     }
   ],
   "counts": {
-    "total": 2466,
+    "total": 2468,
     "by_plane": {
       "a2a": 468,
-      "core": 937,
+      "core": 939,
       "llm": 149,
       "mcp": 912
     },
     "by_family": {
-      "a2a": 468,
+      "a2a": 469,
       "admin.ops": 323,
       "admin.plugins": 7,
       "auth.lifecycle": 3,
@@ -85,7 +85,7 @@
       "http.crosscut": 23,
       "ledger": 5,
       "llm.wire": 142,
-      "mcp": 912,
+      "mcp": 913,
       "neutrality": 18,
       "ops.raw": 1,
       "ops.scrape": 15,
@@ -100,6 +100,136 @@
     }
   },
   "cells": [
+    {
+      "id": "a2a|fence|egress-message-send",
+      "plane": "core",
+      "family": "a2a",
+      "driver": "capture",
+      "outcome": "ok",
+      "capture": {
+        "providers": "p:\n  protocol: openai\n  base_url: \"{CAPTURE_URL}\"\n",
+        "config": "listen: \"{LISTEN}\"\nadmin_listen: \"{ADMIN}\"\nproviders_file: \"{WORK}/providers.yaml\"\npublic_url: \"http://{LISTEN}\"\nidentity-providers:\n  admin-tokens: { module: admin-tokens, token: { env: BUSBAR_ADMIN_TOKEN } }\nauth:\n  chain: [keys]\n  admin_auth: [admin-tokens]\n  signing_key: { file: \"{WORK}/signing.key\" }\ngroups:\n  oracle:\n    limits:\n      - { budget: 1000000, per: day }\nproviders:\n  p:\n    api_key: { env: CAP_KEY }\nmodels:\n  m-cap:\n    provider: p\nagents:\n  probe:\n    url: \"{CAPTURE_URL}/\"\n    allow_private: true\n    pin: { mechanism: jws_issuer_key, key: \"{CARD_ISSUER_KEY}\" }\n",
+        "env": {
+          "CAP_KEY": "oracle-cred-fence-a2a-0001"
+        },
+        "mock": {
+          "fixed": [
+            {
+              "path": "/.well-known/agent-card.json",
+              "status": 200,
+              "content_type": "application/json",
+              "body": "{\"name\":\"Oracle Fence Agent\",\"description\":\"A capture-mock A2A agent.\",\"url\":\"{CAPTURE_URL}/\",\"version\":\"1.0.0\",\"capabilities\":{\"streaming\":false,\"pushNotifications\":false,\"extendedAgentCard\":false},\"defaultInputModes\":[\"text/plain\"],\"defaultOutputModes\":[\"text/plain\"],\"skills\":[{\"id\":\"echo\",\"name\":\"Echo\",\"description\":\"Returns the text it was given.\",\"tags\":[\"echo\"]}]}"
+            },
+            {
+              "path": "/",
+              "status": 200,
+              "content_type": "application/json",
+              "body": "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"task\":{\"id\":\"task-0001\",\"contextId\":\"ctx-0001\",\"status\":{\"state\":\"TASK_STATE_COMPLETED\",\"timestamp\":\"2026-01-01T00:00:00Z\"},\"artifacts\":[{\"artifactId\":\"art-0001\",\"parts\":[{\"text\":\"ping\"}]}]}}}"
+            }
+          ],
+          "jws_sign": [
+            "/.well-known/agent-card.json"
+          ]
+        },
+        "steps": [
+          {
+            "request": {
+              "listener": "admin",
+              "method": "POST",
+              "path": "/api/v1/admin/keys",
+              "auth": "admin",
+              "headers": [
+                [
+                  "Content-Type",
+                  "application/json"
+                ]
+              ],
+              "body": "{\"name\":\"capture\",\"group\":\"oracle\"}"
+            },
+            "save": {
+              "VK": "token"
+            },
+            "record": false,
+            "expect": 201
+          },
+          {
+            "request": {
+              "listener": "admin",
+              "method": "POST",
+              "path": "/api/v1/admin/agents/probe/connect",
+              "auth": "admin",
+              "headers": [
+                [
+                  "Content-Type",
+                  "application/json"
+                ]
+              ]
+            },
+            "record": false,
+            "expect": 200,
+            "save": {
+              "FP": "fingerprint"
+            }
+          },
+          {
+            "request": {
+              "listener": "admin",
+              "method": "POST",
+              "path": "/api/v1/admin/agents/probe/approve",
+              "auth": "admin",
+              "headers": [
+                [
+                  "Content-Type",
+                  "application/json"
+                ]
+              ],
+              "body": "{\"fingerprint\":\"{FP}\"}"
+            },
+            "record": false,
+            "expect": 200
+          },
+          {
+            "audience_token": {
+              "as": "AT",
+              "from": "{VK}",
+              "aud": "http://{LISTEN}/a2a"
+            }
+          },
+          {
+            "request": {
+              "listener": "data",
+              "method": "POST",
+              "path": "/a2a/agents/probe",
+              "headers": [
+                [
+                  "Authorization",
+                  "Bearer {AT}"
+                ],
+                [
+                  "Content-Type",
+                  "application/json"
+                ]
+              ],
+              "body": "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"message/send\",\"params\":{\"message\":{\"role\":\"user\",\"messageId\":\"msg-0001\",\"parts\":[{\"text\":\"ping\"}]}}}"
+            }
+          },
+          {
+            "sleep_ms": 300
+          }
+        ],
+        "mask": [
+          [
+            "vk_[0-9a-f]{32}",
+            "vk_<KEY>"
+          ],
+          [
+            "sha256/[A-Za-z0-9+/=]+",
+            "sha256/<FINGERPRINT>"
+          ]
+        ]
+      },
+      "why": "PREDEV FENCE (no 1.5.5 baseline: 1.5.5 had no a2a plane). One registered agent on a loopback capture mock, pinned by `jws_issuer_key` to the oracle's card key: every request busbar sends the agent (the agent-card fetch and the message/send hop \u2014 method, target, every header in wire order, body) and the caller's answer, recorded from a named predev build. The kernel egress (plane_host/egress.rs) moving onto the connector and the http door is compared against this."
+    },
     {
       "id": "a2a|grpc|client|client|CancelTask|malformed",
       "plane": "a2a",
@@ -23507,6 +23637,118 @@
       "outcome": "upstream_down",
       "why": "upstream refuses/times out -> Route failover / native upstream error",
       "fresh": true
+    },
+    {
+      "id": "mcp|fence|egress-tools-call",
+      "plane": "core",
+      "family": "mcp",
+      "driver": "capture",
+      "outcome": "ok",
+      "capture": {
+        "providers": "p:\n  protocol: openai\n  base_url: \"{CAPTURE_URL}\"\n",
+        "config": "listen: \"{LISTEN}\"\nadmin_listen: \"{ADMIN}\"\nproviders_file: \"{WORK}/providers.yaml\"\nidentity-providers:\n  admin-tokens: { module: admin-tokens, token: { env: BUSBAR_ADMIN_TOKEN } }\nauth:\n  chain: [keys]\n  admin_auth: [admin-tokens]\n  signing_key: { file: \"{WORK}/signing.key\" }\ngroups:\n  oracle:\n    limits:\n      - { budget: 1000000, per: day }\nproviders:\n  p:\n    api_key: { env: CAP_KEY }\nmodels:\n  m-cap:\n    provider: p\nmcp:\n  canonical_uri: \"http://{LISTEN}/mcp\"\n  authorization_servers:\n    - \"http://{ADMIN}\"\n  scopes_supported: [\"mcp:tools:list\", \"mcp:tools:call\"]\ntools:\n  probe:\n    url: \"{CAPTURE_URL}/mcp\"\n    allow_private: true\n    pin:\n      mechanism: pinned_pubkey\n      key: \"sha256/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=\"\n    tools_allow:\n      ping:\n        schema_hash: \"sha256:7939d1408e8fc1ac98025ed864c53703091d173e733b1d5c6156f14732da75b0\"\n        description: \"Returns the label it was given.\"\n",
+        "env": {
+          "CAP_KEY": "oracle-cred-fence-mcp-0001"
+        },
+        "mock": {
+          "rpc_path": "/mcp",
+          "rpc_replies": {
+            "tools/list": {
+              "status": 200,
+              "body": "{\"jsonrpc\":\"2.0\",\"id\":{ID},\"result\":{\"tools\":[{\"name\":\"ping\",\"description\":\"Returns the label it was given.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"label\":{\"type\":\"string\"}},\"additionalProperties\":false}}]}}"
+            },
+            "tools/call": {
+              "status": 200,
+              "body": "{\"jsonrpc\":\"2.0\",\"id\":{ID},\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"ping: fence\"}],\"isError\":false}}"
+            }
+          }
+        },
+        "steps": [
+          {
+            "request": {
+              "listener": "admin",
+              "method": "POST",
+              "path": "/api/v1/admin/keys",
+              "auth": "admin",
+              "headers": [
+                [
+                  "Content-Type",
+                  "application/json"
+                ]
+              ],
+              "body": "{\"name\":\"capture\",\"group\":\"oracle\"}"
+            },
+            "save": {
+              "VK": "token"
+            },
+            "record": false,
+            "expect": 201
+          },
+          {
+            "request": {
+              "listener": "admin",
+              "method": "POST",
+              "path": "/api/v1/admin/tools/probe/connect",
+              "auth": "admin",
+              "headers": [
+                [
+                  "Content-Type",
+                  "application/json"
+                ]
+              ]
+            },
+            "record": false,
+            "expect": 200
+          },
+          {
+            "audience_token": {
+              "as": "AT",
+              "from": "{VK}",
+              "aud": "http://{LISTEN}/mcp"
+            }
+          },
+          {
+            "request": {
+              "listener": "data",
+              "method": "POST",
+              "path": "/mcp",
+              "headers": [
+                [
+                  "authorization",
+                  "Bearer {AT}"
+                ],
+                [
+                  "content-type",
+                  "application/json"
+                ],
+                [
+                  "mcp-method",
+                  "tools/call"
+                ],
+                [
+                  "mcp-protocol-version",
+                  "2026-07-28"
+                ],
+                [
+                  "Mcp-Name",
+                  "probe_ping"
+                ]
+              ],
+              "body": "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"probe_ping\",\"arguments\":{\"label\":\"fence\"},\"_meta\":{\"io.modelcontextprotocol/protocolVersion\":\"2026-07-28\",\"io.modelcontextprotocol/clientCapabilities\":{}}}}"
+            }
+          },
+          {
+            "sleep_ms": 300
+          }
+        ],
+        "mask": [
+          [
+            "vk_[0-9a-f]{32}",
+            "vk_<KEY>"
+          ]
+        ]
+      },
+      "why": "PREDEV FENCE (no 1.5.5 baseline: 1.5.5 had no mcp plane). One registered MCP server on a loopback capture mock (a JSON-RPC responder at /mcp answering tools/list and tools/call), its one tool pre-approved by schema hash: every request busbar sends it (the connect-time tools/list and the tools/call hop \u2014 method, target, every header in wire order, body) and the caller's answer, recorded from a named predev build. The kernel egress (plane_host/egress.rs) moving onto the connector and the http door is compared against this."
     },
     {
       "id": "mcp|stdio|client|client|DELETE /mcp (terminate session)|malformed",
