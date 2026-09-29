@@ -1591,3 +1591,91 @@ fn validate_orders_a_webhook_sinks_refusals_among_the_limits_as_before() {
         "{stderr}"
     );
 }
+
+/// A store tarball whose signed manifest states a 1.6.0 Statement (`kind_abi` as given) over
+/// `lib`: bytes that are NOT a library, so any `dlopen` of them fails.
+fn write_stated_store(dir: &Path, name: &str, alias: &str, kind_abi: u32, lib: &[u8]) {
+    use busbar_contract::abi::mechanism::door::Statement;
+    use busbar_contract::abi::mechanism::rendering::render;
+    use busbar_contract::abi::mechanism::KindCode;
+    let st = Statement {
+        size: std::mem::size_of::<Statement>() as u32,
+        kind: KindCode::Store as u32,
+        kind_abi,
+        ..busbar_contract::abi::sdk::door::statement("busbar-store-stated", "1.6.0", 4)
+    };
+    // SAFETY: the SDK Statement names only `'static` strings and no list.
+    let rendering = unsafe { render(&st) }.unwrap();
+    let mut m = plugins::manifest("store", name, "acme");
+    m.alias = alias.into();
+    m.statement = Some(hex::encode(&rendering));
+    std::fs::write(
+        dir.join("plugins").join(format!("{name}.tar.gz")),
+        plugins::seal(m, lib),
+    )
+    .unwrap();
+}
+
+/// STAGES 0-2 (THE DESIGN §3): `--validate` names a dropped-in plugin's stated facts and whether the
+/// configuration selects it, read off its signed manifest — WITHOUT opening it: the library bytes
+/// are not a library, so a `dlopen` would refuse the run.
+#[cfg(linked_axis_body_ingress)]
+#[test]
+fn validate_names_a_dropped_plugins_stated_facts_without_opening_it() {
+    use busbar_contract::abi::mechanism::KindCode;
+    let dir = fixture_dir("stated");
+    let abi = KindCode::Store.abi_version();
+    write_stated_store(&dir, "busbar-store-stated", "stated", abi, b"not a library");
+    write_configs(
+        &dir,
+        &format!(
+            "{}store:\n  module: stated\n",
+            plugins_block(&dir, true, true)
+        ),
+    );
+    let (code, stdout, stderr) = run_busbar(&dir, &["--validate"]);
+    assert_eq!(code, 0, "stderr={stderr}");
+    assert!(
+        stdout.contains(&format!(
+            "    plugin: busbar-store-stated (store, ABI {abi}) — selected as store"
+        )),
+        "got {stdout}"
+    );
+    // Not named by the configuration: listed, not selected.
+    write_configs(&dir, &plugins_block(&dir, true, true));
+    let (code, stdout, stderr) = run_busbar(&dir, &["--validate"]);
+    assert_eq!(code, 0, "stderr={stderr}");
+    assert!(
+        stdout.contains("busbar-store-stated (store, ABI")
+            && stdout.contains("not used by this config"),
+        "got {stdout}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// RED (THE DESIGN §11.8): a SELECTED dropped-in plugin whose Statement states another kind ABI
+/// version than this host's is refused by `--validate`, naming the rebuild — still without opening
+/// it.
+#[cfg(linked_axis_body_ingress)]
+#[test]
+fn validate_refuses_a_selected_plugin_built_for_another_host() {
+    use busbar_contract::abi::mechanism::KindCode;
+    let dir = fixture_dir("stated-abi");
+    let abi = KindCode::Store.abi_version() + 1;
+    write_stated_store(&dir, "busbar-store-stated", "stated", abi, b"not a library");
+    write_configs(
+        &dir,
+        &format!(
+            "{}store:\n  module: stated\n",
+            plugins_block(&dir, true, true)
+        ),
+    );
+    let (code, _stdout, stderr) = run_busbar(&dir, &["--validate"]);
+    assert_eq!(code, 1);
+    assert!(
+        stderr.contains("busbar-store-stated")
+            && stderr.contains("rebuild the plugin against the 1.6.0 SDK"),
+        "got {stderr}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
