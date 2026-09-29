@@ -494,7 +494,8 @@
       "capability": "governance-budget",
       "plane": "a2a-server",
       "state": "proven",
-      "test": "crates/busbar-a2a/src/a2a/tests/meter_tests.rs::reaching_the_limit_is_over_it_and_the_refusal_carries_a_retry_after",
+      "test": "crates/busbar-kernel-budget/src/tests/cells.rs::admit_yields_a_hold_sized_from_the_estimate",
+      "note": "RE-POINTED. 2627275578 folded a2a-server's own admit()/Admission into the kernel budget step (\"the live path is refused by the kernel's budget step\") and deleted the four meter_tests.rs cases that covered only that plane-local function, including the pinned one. The capability now lives in busbar-kernel-budget::AdmissionUnit::admit, the seam every plane (a2a-server included) is refused through; this test proves both halves the cell claims on that seam -- the hold's principal is the presenting key (`hold.principal().as_str() == \"vk_hold\"`) and a second admit over the same cap is refused with `retry_after_secs().is_some()`.",
       "root": {
         "state": "proven",
         "leg": "root-a2a",
