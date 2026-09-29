@@ -934,6 +934,7 @@ dependencies = [
 name = "busbar-plane-mcp"
 version = "1.6.0"
 dependencies = [
+ "base64 0.23.1",
  "busbar-contract",
  "bytes",
  "serde",
